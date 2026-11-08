@@ -2223,6 +2223,8 @@ const FPHA_LAG_INFLOW_STD_M3S: [[f64; 5]; 2] = [
 ];
 /// Standardized PAR(2) coefficients per hydro, every one nonzero.
 const FPHA_LAG_AR_COEFFICIENTS: [[f64; 2]; 2] = [[0.4, 0.2], [0.35, 0.25]];
+/// The key under which the FPHA lag study is registered.
+pub const FPHA_LAG_STUDY_KEY: &str = "structural/fpha-lag";
 // Below the downstream hydro's stage-1 inflow mean, so the row is violated.
 const FPHA_LAG_GENERIC_CAP_M3S: f64 = 60.0;
 // Above the thermal cost and below the upstream plane's marginal benefit, so the upstream hydro still releases.
@@ -2709,7 +2711,7 @@ pub fn structural_studies_as(
             super::build_setup_in_code_as(slack_system_for_setup, &slack_config, emission),
         ),
         (
-            "structural/fpha-lag".to_string(),
+            FPHA_LAG_STUDY_KEY.to_string(),
             fpha_lag_system,
             super::build_setup_in_code_with_models_as(
                 fpha_lag_system_for_setup,

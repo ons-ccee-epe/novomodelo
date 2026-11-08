@@ -864,6 +864,7 @@ mod tests {
             setup_time_ms: 0,
             load_imbalance_ms: 0,
             scheduling_overhead_ms: 0,
+            aggregation_time_ms: 0,
         })
         .unwrap();
         tx.send(make_iteration_summary(1)).unwrap();

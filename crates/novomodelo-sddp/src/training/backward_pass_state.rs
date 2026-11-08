@@ -5,7 +5,7 @@
 
 use std::ops::Range;
 use std::sync::mpsc::Sender;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use novomodelo_comm::{Communicator, ReduceOp};
 use novomodelo_core::{TrainingEvent, WorkerPhaseTimings, WorkerTimingPhase};
@@ -18,9 +18,7 @@ use rayon::iter::{
 };
 
 use crate::risk_measure::BackwardOutcome;
-#[cfg(test)]
-use crate::setup::node_graph::NodeId;
-use crate::setup::node_graph::{EnumeratedPlan, NodeGraph, NodePos, StageIdx, Traversal};
+use crate::setup::node_graph::{EnumeratedPlan, NodeGraph, NodeId, NodePos, StageIdx, Traversal};
 use crate::{
     backward::{
         BackwardResult, ReplicatedScratch, StageWorkerOpeningDelta, StagedCut, SuccessorEntry,
@@ -37,7 +35,7 @@ use crate::{
     error::SddpError,
     forward::EnumeratedForwardScratch,
     horizon_mode::HorizonMode,
-    lp::indexer::{CutStateProjection, StateSpace},
+    lp::indexer::{CutStateProjection, InflowForm, StateSpace},
     rank_reconcile::reconcile_result_with_max,
     risk_measure::RiskMeasure,
     solve::StageOpeningSolver,
@@ -49,7 +47,10 @@ use crate::{
     state_exchange::ExchangeBuffers,
     training_session::{rank_distribution::RankDistribution, runtime::RuntimeHandles},
     trajectory::TrajectoryRecord,
-    workspace::{BasisStore, BasisStoreSliceMut, ByNodeScratch, SolverWorkspace, WorkspacePool},
+    workspace::{
+        BasisStore, BasisStoreSliceMut, ByNodeScratch, SolverWorkspace, WorkspacePool,
+        workspace::{ByNodeOutcomeShape, record_dims},
+    },
 };
 
 /// Per-iteration argument bundle for [`BackwardPassState::run`].
@@ -275,15 +276,15 @@ pub struct BackwardPassState {
     binding_tracking: bool,
 
     /// Maximum local forward-pass count across the run; with
-    /// `bwd_max_openings` and `n_state`, sizes [`Self::by_node_scratch`] when
+    /// `bwd_max_openings` and `outcome_shape`, sizes [`Self::by_node_scratch`] when
     /// [`Self::set_scheduler`] resolves `ByNode`.
     max_local_fwd: usize,
 
     /// Maximum opening count across all stages; see [`Self::max_local_fwd`].
     bwd_max_openings: usize,
 
-    /// State dimension; see [`Self::max_local_fwd`].
-    n_state: usize,
+    /// How the by-node scheduler stores an opening's outcome; see [`Self::max_local_fwd`].
+    outcome_shape: ByNodeOutcomeShape,
 
     /// Number of stages in the study; with `bwd_max_openings`, sizes
     /// [`Self::by_node_scratch`]'s per-`(stage, block-index)` pivot accumulator
@@ -399,6 +400,14 @@ impl BackwardPassState {
         horizon: &HorizonMode,
     ) -> Self {
         let n_state = state.n_state;
+        let outcome_shape = match state.inflow_form {
+            InflowForm::Logical => ByNodeOutcomeShape::Dense { n_state },
+            InflowForm::Compact => ByNodeOutcomeShape::Folded {
+                n_state,
+                n_hydros: state.hydro_count,
+                lag_depth: state.max_par_order,
+            },
+        };
         let num_stages = horizon.num_stages();
         let send_stride = n_workers_local * bwd_max_openings * WORKER_STATS_ENTRY_STRIDE;
         Self {
@@ -427,7 +436,7 @@ impl BackwardPassState {
             binding_tracking: true,
             max_local_fwd,
             bwd_max_openings,
-            n_state,
+            outcome_shape,
             num_stages,
             by_node_scratch: ByNodeScratch::default(),
             level_nodes_scratch: Vec::new(),
@@ -471,12 +480,31 @@ impl BackwardPassState {
             ByNodeScratch::sized(
                 self.max_local_fwd,
                 self.bwd_max_openings,
-                self.n_state,
+                self.outcome_shape,
                 self.num_stages,
+                self.stage_worker_stats_buf.n_workers(),
             )
         } else {
             ByNodeScratch::default()
         };
+    }
+
+    /// Grows the by-node aggregation scratch to `pool_capacity` pool slots and the pair
+    /// bound of `layouts`, never shrinking; a no-op unless the by-node scheduler holds the
+    /// compact form. Call it wherever the resident pools grow.
+    pub(crate) fn reserve_by_node_aggregate(
+        &mut self,
+        layouts: &[CutStateProjection],
+        pool_capacity: usize,
+    ) {
+        if matches!(self.scheduler, BackwardScheduler::ByNode { .. })
+            && matches!(self.outcome_shape, ByNodeOutcomeShape::Folded { .. })
+        {
+            let (_, pair_bound) = record_dims(layouts);
+            self.by_node_scratch
+                .aggregate
+                .reserve(pool_capacity, self.bwd_max_openings * pair_bound);
+        }
     }
 
     /// Overrides whether the by-node scheduler claims work
@@ -635,12 +663,13 @@ impl BackwardPassState {
         let mut stage_stats: Vec<(usize, Vec<StageWorkerOpeningDelta>)> =
             Vec::with_capacity(num_stages.saturating_sub(1));
         let mut state_exchange_ms: u64 = 0;
-        let mut cut_batch_build_ms: u64 = 0;
+        let mut cut_batch_build = Duration::ZERO;
         let mut setup_ms: u64 = 0;
         let mut max_worker_ms = 0.0_f64;
         let mut worker_total_ms = 0.0_f64;
         let mut scheduling_ms: u64 = 0;
         let mut cut_sync_ms: u64 = 0;
+        let mut aggregation = Duration::ZERO;
 
         // Reverse-topological cut-sharing sweep: descending-stage levels, nodes
         // within a level processed independently (nested per-node risk makes
@@ -651,12 +680,13 @@ impl BackwardPassState {
             let out = run_one_backward_level(self, inputs, level, &params)?;
             cuts_generated += out.cuts_generated;
             state_exchange_ms += out.state_exchange_ms;
-            cut_batch_build_ms += out.cut_batch_build_ms;
+            cut_batch_build += out.cut_batch_build;
             setup_ms += out.setup_ms;
             max_worker_ms += out.max_worker_ms;
             worker_total_ms += out.worker_total_ms;
             scheduling_ms += out.scheduling_ms;
             cut_sync_ms += out.cut_sync_ms;
+            aggregation += out.aggregation;
             stage_stats.extend(out.stage_entries);
         }
 
@@ -681,7 +711,7 @@ impl BackwardPassState {
             lp_solves: solves_after - solves_before,
             stage_stats,
             state_exchange_time_ms: state_exchange_ms,
-            cut_batch_build_time_ms: cut_batch_build_ms,
+            cut_batch_build_time_ms: u64::try_from(cut_batch_build.as_millis()).unwrap_or(u64::MAX),
             setup_time_ms: setup_ms,
             load_imbalance_ms: global_load_imbalance_ms(
                 max_worker_ms,
@@ -691,6 +721,7 @@ impl BackwardPassState {
             )?,
             scheduling_overhead_ms: scheduling_ms,
             cut_sync_time_ms: cut_sync_ms,
+            aggregation_time_ms: u64::try_from(aggregation.as_millis()).unwrap_or(u64::MAX),
         })
     }
 
@@ -908,6 +939,7 @@ impl BackwardPassState {
             load_imbalance_ms: 0,
             scheduling_overhead_ms: 0,
             cut_sync_time_ms: 0,
+            aggregation_time_ms: 0,
         })
     }
 
@@ -1047,8 +1079,7 @@ impl BackwardPassState {
             &self.metadata_sync_buf,
             &mut self.global_increments_buf,
             ReduceOp::Sum,
-        )
-        .map_err(SddpError::from)?;
+        )?;
         for (slot, &inc) in self.global_increments_buf.iter().enumerate() {
             if inc > 0 {
                 fcf.pools[pool].record_binding(slot, inc, iteration);
@@ -1312,8 +1343,8 @@ struct LevelOutput {
     stage_entries: Vec<(usize, Vec<StageWorkerOpeningDelta>)>,
     /// Time in the level's one `exchange.exchange()`, in ms.
     state_exchange_ms: u64,
-    /// `build_delta_cut_row_batch_into` time summed over the level's nodes, in ms.
-    cut_batch_build_ms: u64,
+    /// `build_delta_cut_row_batch_into` time summed over the level's nodes.
+    cut_batch_build: Duration,
     /// Aggregate non-solve setup time summed over the level's nodes, in ms.
     setup_ms: u64,
     /// Slowest worker across ranks, summed over the level's nodes, in ms.
@@ -1324,6 +1355,8 @@ struct LevelOutput {
     scheduling_ms: u64,
     /// Time in the level's one batched cut-sync `allgatherv`, in ms.
     cut_sync_ms: u64,
+    /// Serial aggregation time summed over the level's nodes.
+    aggregation: Duration,
 }
 
 /// Per-node result of [`compute_one_backward_node`], consumed by the level's
@@ -1339,8 +1372,8 @@ struct NodeCompute {
     pool_regions: Range<usize>,
     /// Opening count of the node's successor outcome set (stats stride).
     n_openings: usize,
-    /// `build_delta_cut_row_batch_into` time for this node, in ms.
-    cut_batch_build_ms: u64,
+    /// `build_delta_cut_row_batch_into` time for this node.
+    cut_batch_build: Duration,
     /// Aggregate non-solve setup time for this node, in ms.
     setup_ms: u64,
     /// Slowest worker's total work time across every rank, in ms.
@@ -1349,6 +1382,8 @@ struct NodeCompute {
     worker_total_ms: f64,
     /// Scheduling overhead for this node, in ms.
     scheduling_ms: u64,
+    /// Serial aggregation time after the node's parallel solves.
+    aggregation: Duration,
 }
 
 /// Milliseconds elapsed since `start`; every duration measured here is well
@@ -1696,7 +1731,7 @@ fn run_one_backward_level<S: SolverInterface + Send, C: Communicator>(
     // Each node appends its successor pool regions here; ranges recorded in
     // `NodeCompute::pool_regions` drive the per-distinct-pool metadata sync below.
     state.level_pool_regions_scratch.clear();
-    let mut cut_batch_build_ms = 0u64;
+    let mut cut_batch_build = Duration::ZERO;
     for (level_idx, &node_pos) in level.iter().enumerate() {
         let trial_points = &routed_trials[routed_offsets[level_idx]..routed_offsets[level_idx + 1]];
         let nc = compute_one_backward_node(
@@ -1707,7 +1742,7 @@ fn run_one_backward_level<S: SolverInterface + Send, C: Communicator>(
             node_visit_offsets[level_idx],
             params,
         )?;
-        cut_batch_build_ms += nc.cut_batch_build_ms;
+        cut_batch_build += nc.cut_batch_build;
         nodes_out.push(nc);
     }
 
@@ -1747,6 +1782,7 @@ fn run_one_backward_level<S: SolverInterface + Send, C: Communicator>(
     let mut max_worker_ms = 0.0_f64;
     let mut worker_total_ms = 0.0_f64;
     let mut scheduling_ms = 0u64;
+    let mut aggregation = Duration::ZERO;
     // Mem-swapped local so the per-region borrow does not conflict with
     // `state.sync_stage_metadata`'s `&mut self`.
     let pool_regions = std::mem::take(&mut state.level_pool_regions_scratch);
@@ -1774,6 +1810,7 @@ fn run_one_backward_level<S: SolverInterface + Send, C: Communicator>(
         max_worker_ms += nc.max_worker_ms;
         worker_total_ms += nc.worker_total_ms;
         scheduling_ms += nc.scheduling_ms;
+        aggregation += nc.aggregation;
         let entries = state.gather_stage_solver_stats(
             nc.n_openings,
             params.n_ranks,
@@ -1796,12 +1833,13 @@ fn run_one_backward_level<S: SolverInterface + Send, C: Communicator>(
         cuts_generated,
         stage_entries,
         state_exchange_ms,
-        cut_batch_build_ms,
+        cut_batch_build,
         setup_ms,
         max_worker_ms,
         worker_total_ms,
         scheduling_ms,
         cut_sync_ms,
+        aggregation,
     })
 }
 
@@ -1869,7 +1907,7 @@ fn compute_one_backward_node<S: SolverInterface + Send, C: Communicator>(
         });
     }
     let pool_regions = pool_regions_start..state.level_pool_regions_scratch.len();
-    let cut_batch_build_ms = ms_elapsed(batch_start);
+    let cut_batch_build = batch_start.elapsed();
 
     let outcomes = SuccessorOutcomes::new(
         &state.successor_meta_buf,
@@ -1909,110 +1947,121 @@ fn compute_one_backward_node<S: SolverInterface + Send, C: Communicator>(
     );
 
     let process_start = Instant::now();
-    let (local_solve, parallel_wall_ms): (Result<usize, SddpError>, u64) = if use_by_node {
-        let configured_block_size = match state.scheduler {
-            BackwardScheduler::ByNode { block_size } => block_size,
-            BackwardScheduler::ByScenario {} => None,
-        };
-        let block_size = resolve_block_size(n_openings, configured_block_size);
-        let n_blocks = by_node_block_count(n_openings, block_size);
-        if state.hardest_first_claim_order {
-            // Hardest-first order keyed by the GENERATING node (CA5), so sibling fan
-            // nodes at one level each read their own history — never a shared
-            // successor-stage row. Chain: one node per stage, byte-identical.
-            let row = state.by_node_scratch.block_pivot_row(node_pos, n_blocks);
-            hardest_first_block_order(
-                &state.by_node_scratch.block_pivots_prev[row],
-                n_blocks,
-                &mut state.by_node_scratch.block_order,
+    let (local_solve, parallel_wall_ms, aggregation): (Result<usize, SddpError>, u64, Duration) =
+        if use_by_node {
+            let configured_block_size = match state.scheduler {
+                BackwardScheduler::ByNode { block_size } => block_size,
+                BackwardScheduler::ByScenario {} => None,
+            };
+            let block_size = resolve_block_size(n_openings, configured_block_size);
+            let n_blocks = by_node_block_count(n_openings, block_size);
+            if state.hardest_first_claim_order {
+                // Hardest-first order keyed by the GENERATING node (CA5), so sibling fan
+                // nodes at one level each read their own history — never a shared
+                // successor-stage row. Chain: one node per stage, byte-identical.
+                let row = state.by_node_scratch.block_pivot_row(node_pos, n_blocks);
+                hardest_first_block_order(
+                    &state.by_node_scratch.block_pivots_prev[row],
+                    n_blocks,
+                    &mut state.by_node_scratch.block_order,
+                );
+            } else {
+                identity_block_order(n_blocks, &mut state.by_node_scratch.block_order);
+            }
+            // The by-node scheduler claims over the whole reified successor outcome set:
+            // each block partitions the flattened outcomes and every contiguous same-child
+            // run inside it prices that child against its OWN LP. A single-child node has
+            // one run per block, reproducing the chain claim loop byte-for-byte.
+            let worker_out = process_stage_backward_by_node(
+                inputs.workspaces,
+                ctx,
+                training_ctx,
+                trial_points,
+                inputs.exchange,
+                inputs.fwd_offset,
+                inputs.iteration,
+                &succ_spec,
+                &outcomes,
+                &*inputs.basis_store,
+                block_size,
+                &state.by_node_scratch.block_order[..n_blocks],
             );
-        } else {
-            identity_block_order(n_blocks, &mut state.by_node_scratch.block_order);
-        }
-        // The by-node scheduler claims over the whole reified successor outcome set:
-        // each block partitions the flattened outcomes and every contiguous same-child
-        // run inside it prices that child against its OWN LP. A single-child node has
-        // one run per block, reproducing the chain claim loop byte-for-byte.
-        let worker_out = process_stage_backward_by_node(
-            inputs.workspaces,
-            ctx,
-            training_ctx,
-            trial_points,
-            inputs.exchange,
-            inputs.fwd_offset,
-            inputs.iteration,
-            &succ_spec,
-            &outcomes,
-            &*inputs.basis_store,
-            block_size,
-            &state.by_node_scratch.block_order[..n_blocks],
-        );
-        let elapsed_ms = ms_elapsed(process_start);
-        // Telemetry-only merge (sddp.md "by-node scheduler is
-        // warm-start-only" — disjoint from the per-`(m, ω)` arena scatter and
-        // ascending-m aggregation `by_node_finish` performs below); keyed by the
-        // generating node so multi-node siblings never share a hardest-first row.
-        merge_block_pivots(
-            inputs.workspaces.iter().map(|ws| {
-                (
-                    ws.backward_accum.block_pivot_sum.as_slice(),
-                    ws.backward_accum.block_pivot_count.as_slice(),
+            let elapsed_ms = ms_elapsed(process_start);
+            // Telemetry-only merge (sddp.md "by-node scheduler is
+            // warm-start-only" — disjoint from the per-`(m, ω)` arena scatter and
+            // ascending-m aggregation `by_node_finish` performs below); keyed by the
+            // generating node so multi-node siblings never share a hardest-first row.
+            merge_block_pivots(
+                inputs.workspaces.iter().map(|ws| {
+                    (
+                        ws.backward_accum.block_pivot_sum.as_slice(),
+                        ws.backward_accum.block_pivot_count.as_slice(),
+                    )
+                }),
+                n_blocks,
+                node_pos,
+                &mut state.by_node_scratch,
+            );
+            let finish_start = Instant::now();
+            let result = by_node_finish(
+                worker_out,
+                &*inputs.workspaces,
+                trial_points,
+                training_ctx,
+                &succ_spec,
+                &outcomes,
+                inputs.exchange,
+                &inputs.risk_measures[node_stage.0],
+                &mut state.by_node_scratch,
+            )
+            .map(|()| {
+                commit_by_node_cuts(
+                    &state.by_node_scratch,
+                    trial_points.len(),
+                    cut_state_projection.n_slots(),
+                    inputs.fcf,
+                    node_id,
+                    pool_id,
+                    inputs.iteration,
+                    node_visit_offset,
                 )
-            }),
-            n_blocks,
-            node_pos,
-            &mut state.by_node_scratch,
-        );
-        let result = by_node_finish(
-            worker_out,
-            &*inputs.workspaces,
-            trial_points,
-            n_openings,
-            cut_state_projection.n_slots(),
-            &state.probabilities_buf,
-            &inputs.risk_measures[node_stage.0],
-            inputs.fcf,
-            node_id,
-            pool_id,
-            inputs.iteration,
-            node_visit_offset,
-            &mut state.by_node_scratch,
-        );
-        (result, elapsed_ms)
-    } else {
-        let basis_slices = inputs
-            .basis_store
-            .split_workers_mut(inputs.local_work, params.n_workers_local.max(1));
-        let worker_staged = process_stage_backward(
-            inputs.workspaces,
-            ctx,
-            training_ctx,
-            trial_points,
-            inputs.exchange,
-            inputs.fwd_offset,
-            node_visit_offset,
-            inputs.iteration,
-            dcs_params,
-            inputs.risk_measures,
-            &succ_spec,
-            &outcomes,
-            basis_slices,
-        );
-        let elapsed_ms = ms_elapsed(process_start);
+            });
+            (result, elapsed_ms, finish_start.elapsed())
+        } else {
+            let basis_slices = inputs
+                .basis_store
+                .split_workers_mut(inputs.local_work, params.n_workers_local.max(1));
+            let worker_staged = process_stage_backward(
+                inputs.workspaces,
+                ctx,
+                training_ctx,
+                trial_points,
+                inputs.exchange,
+                inputs.fwd_offset,
+                node_visit_offset,
+                inputs.iteration,
+                dcs_params,
+                inputs.risk_measures,
+                &succ_spec,
+                &outcomes,
+                basis_slices,
+            );
+            let elapsed_ms = ms_elapsed(process_start);
 
-        let result = by_scenario_finish(
-            worker_staged,
-            &*inputs.workspaces,
-            trial_points,
-            cut_state_projection.n_slots(),
-            inputs.fcf,
-            node_id,
-            pool_id,
-            inputs.iteration,
-            &mut state.staged_cuts_buf,
-        );
-        (result, elapsed_ms)
-    };
+            let finish_start = Instant::now();
+            let result = by_scenario_finish(
+                worker_staged,
+                &*inputs.workspaces,
+                trial_points,
+                cut_state_projection.n_slots(),
+                inputs.fcf,
+                node_id,
+                pool_id,
+                inputs.iteration,
+                &mut state.staged_cuts_buf,
+            );
+            (result, elapsed_ms, finish_start.elapsed())
+        };
 
     // Reconcile the divergent backward solve outcome BEFORE the level's sync
     // collectives (mirrors the forward-phase precedent): ranks solve disjoint
@@ -2030,17 +2079,57 @@ fn compute_one_backward_node<S: SolverInterface + Send, C: Communicator>(
         pool_id,
         pool_regions,
         n_openings,
-        cut_batch_build_ms,
+        cut_batch_build,
         setup_ms: timing.setup,
         max_worker_ms,
         worker_total_ms: timing.worker_total,
         scheduling_ms: timing.scheduling,
+        aggregation,
     })
+}
+
+/// Commits the cuts `by_node_finish` staged in `scratch`, one per routed position, in
+/// ascending position, and returns how many it added.
+fn commit_by_node_cuts(
+    scratch: &ByNodeScratch,
+    n_trial: usize,
+    cut_n_state: usize,
+    fcf: &mut FutureCostFunction,
+    node_id: NodeId,
+    pool: usize,
+    iteration: u64,
+    node_visit_offset: usize,
+) -> usize {
+    for pos in 0..n_trial {
+        // The FCF slot addresses the pool's per-iteration block at stride
+        // `visit_bound[pool]` (this node's routed visit count), so the tag is the
+        // NODE-RELATIVE position `node_visit_offset + pos`: `pos` is the compacted
+        // index and `node_visit_offset` is this node's visits from strictly-lower
+        // ranks, keeping the slot globally unique once a multi-rank fan makes the
+        // by-node path multi-branching. `fwd_offset + pos` (the global forward-pass
+        // offset) is the wrong-but-compiling alternative — it overshoots the smaller
+        // `visit_bound` stride across ranks on a fan; mirrors the by-scenario path.
+        let node_relative_index = node_visit_offset + pos;
+        debug_assert!(
+            u32::try_from(node_relative_index).is_ok(),
+            "node-relative forward-pass index overflows u32"
+        );
+        #[allow(clippy::cast_possible_truncation)]
+        fcf.add_cut(
+            node_id,
+            pool,
+            iteration,
+            node_relative_index as u32,
+            scratch.cut_intercepts[pos],
+            &scratch.cut_arena[pos * cut_n_state..(pos + 1) * cut_n_state],
+        );
+    }
+    n_trial
 }
 
 /// Evaluate this node's routed `trial_points` for a single backward stage,
 /// returning staged cuts (one per trial point).
-// RATIONALE: 10 args are individually-borrowed slices passed through the rayon closure
+// RATIONALE: the args are individually-borrowed slices passed through the rayon closure
 // boundary. Bundling them into a struct would require either cloning or an `Arc`, both of
 // which conflict with the zero-allocation HPC constraint for backward-pass hot code.
 #[allow(clippy::too_many_arguments)]
@@ -2065,8 +2154,8 @@ pub(crate) fn process_stage_backward<S: SolverInterface + Send>(
     // per-worker max: a reduced stage after a full one must shrink, or
     // `write_opening_outcome`'s `copy_from_slice` reads stale full-length data.
     let cut_n_state = succ.cut_state.n_slots();
-    // Sized to the max populated pool across the node's children so a child with
-    // more cuts than the first cannot index the binding-metadata buffer out of bounds.
+    // Sum over every child's populated pool: each child's binding increments land in its
+    // own region, so sibling pools never collide.
     let pop = outcomes.total_metadata_len();
     let tracks_binding = outcomes.cut_activity_tolerance.is_some();
 
@@ -4881,9 +4970,10 @@ mod tests {
         assert_eq!(baseline.by_node_scratch_arena_capacity(), 0);
 
         // set_scheduler(ByNode) sizes it.
-        let mut by_node_only = BackwardPassState::new(1, 1, 4, 2, &state, &horizon);
+        let mut by_node_only = BackwardPassState::new(3, 1, 4, 2, &state, &horizon);
         by_node_only.set_scheduler(BackwardScheduler::ByNode { block_size: None });
         assert!(by_node_only.by_node_scratch_arena_capacity() > 0);
+        assert!(by_node_only.by_node_scratch.worker_counts.capacity() >= 3);
 
         // set_scheduler(ByScenario) keeps it empty.
         let mut by_scenario_only = BackwardPassState::new(1, 1, 4, 2, &state, &horizon);

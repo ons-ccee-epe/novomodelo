@@ -11,8 +11,8 @@
 use novomodelo_comm::Communicator;
 use novomodelo_solver::{RowBatch, SolverError, SolverInterface};
 
-use crate::cut::CutRowMap;
 use crate::cut::row::append_new_cuts_to_lp;
+use crate::cut::{CutPool, CutRowMap};
 use crate::{
     backward::{OpeningNoise, resolve_opening_noise},
     context::{StageContext, TrainingContext},
@@ -20,14 +20,16 @@ use crate::{
     cut::row::build_cut_row_batch_into,
     error::SddpError,
     lp::builder::PatchBuffer,
-    lp::indexer::StateSpace,
+    lp::indexer::{InflowForm, StateSpace},
     rank_reconcile::reconcile_error_flag,
     risk_measure::{RiskMeasure, RiskMeasureScratch},
     setup::{
         NodeGraph, NodeSuccessor,
         node_graph::{NodePos, StageIdx, assemble_outcome_weights},
     },
-    training::stage_solve_prep::{StageSolvePrep, StageSolvePrepParams, StateSource},
+    training::stage_solve_prep::{
+        BracketSource, FoldedCutRows, StageSolvePrep, StageSolvePrepParams, StateSource,
+    },
     workspace::ScratchBuffers,
 };
 
@@ -165,8 +167,30 @@ fn lb_init_rank0<S: SolverInterface>(
     Ok(())
 }
 
-/// Solves the stage-0 LP once per root opening through [`StageSolvePrep::run`],
-/// writing each objective into `objectives_buf`.
+/// The pool slot of each cut row of the lower-bound LP, in LP row order,
+/// including rows whose slot the pool has since deactivated.
+fn lb_cut_slots_into(map: Option<&CutRowMap>, pool: &CutPool, out: &mut Vec<usize>) {
+    out.clear();
+    match map {
+        Some(map) => {
+            out.resize(map.total_cut_rows(), usize::MAX);
+            for slot in 0..pool.populated() {
+                if let Some(row) = map.lp_row_for_slot(slot) {
+                    out[row - map.base_row_offset()] = slot;
+                }
+            }
+            debug_assert!(
+                !out.contains(&usize::MAX),
+                "lb_cut_slots_into: a mapped cut row has no populated slot"
+            );
+        }
+        None => out.extend(pool.active_cuts().map(|(slot, _, _)| slot)),
+    }
+}
+
+/// Solves the stage-0 LP once per root opening, writing each objective into
+/// `scratch.lb_scratch.objectives_buf`. A compact layout pins once and opens
+/// per opening through the folded phases, every cut row at its own bracket.
 ///
 /// # Errors
 ///
@@ -174,12 +198,18 @@ fn lb_init_rank0<S: SolverInterface>(
 /// [`SddpError::Solver`] for other LP solve failures.
 fn lb_evaluate_stage_0<S: SolverInterface>(
     solver: &mut S,
+    fcf: &FutureCostFunction,
     ctx: &StageContext<'_>,
     training_ctx: &TrainingContext<'_>,
-    patch_buf: &mut PatchBuffer,
-    scratch: &mut ScratchBuffers,
-    objectives_buf: &mut Vec<f64>,
+    scratch: &mut LbEvalScratchBundle<'_>,
 ) -> Result<(), SddpError> {
+    let LbEvalScratchBundle {
+        patch_buf,
+        lb_cut_row_map,
+        noise_scratch,
+        lb_scratch,
+        ..
+    } = scratch;
     let initial_state = training_ctx.initial_state;
     let opening_tree = training_ctx.stochastic.opening_tree();
     // Enumerate the ROOT NODE's own Ω, not the stage-0 generated tree: an External
@@ -192,7 +222,7 @@ fn lb_evaluate_stage_0<S: SolverInterface>(
     let n_openings = root_openings.len;
 
     // `raw_noise_buf` holds the External column across the loop without a per-iteration allocation.
-    let mut ext_buf = std::mem::take(&mut scratch.raw_noise_buf);
+    let mut ext_buf = std::mem::take(&mut noise_scratch.raw_noise_buf);
     let noise = resolve_opening_noise(
         training_ctx,
         StageIdx(0),
@@ -201,6 +231,39 @@ fn lb_evaluate_stage_0<S: SolverInterface>(
         &mut ext_buf,
     )?;
 
+    let mut slots = std::mem::take(&mut noise_scratch.cut_slots_buf);
+    let folded = match training_ctx.state.inflow_form {
+        InflowForm::Logical => None,
+        InflowForm::Compact => {
+            let pool_id = training_ctx.node_graph.nodes[root_pos].pool_id;
+            let pool = &fcf.pools[pool_id];
+            lb_cut_slots_into(lb_cut_row_map.as_deref(), pool, &mut slots);
+            let first_row = lb_cut_row_map.as_deref().map_or(
+                ctx.template(StageIdx(0)).num_rows,
+                CutRowMap::base_row_offset,
+            );
+            let rows = FoldedCutRows {
+                pool,
+                projection: &training_ctx.cut_state_layouts[pool_id],
+                slots: &slots,
+                first_row,
+            };
+            StageSolvePrep::pin_folded(
+                solver,
+                patch_buf,
+                noise_scratch,
+                ctx,
+                training_ctx,
+                StageIdx(0),
+                StateSource(initial_state),
+                &rows,
+                BracketSource::InUnit,
+            );
+            Some(rows)
+        }
+    };
+
+    let objectives_buf = &mut lb_scratch.objectives_buf;
     objectives_buf.clear();
 
     for opening_idx in 0..n_openings {
@@ -209,19 +272,32 @@ fn lb_evaluate_stage_0<S: SolverInterface>(
             OpeningNoise::Generated => opening_tree.opening(0, root_openings.offset + opening_idx),
         };
 
-        let prep_params = StageSolvePrepParams {
-            state_source: StateSource(initial_state),
-            raw_noise,
-        };
-        StageSolvePrep::run(
-            solver,
-            patch_buf,
-            scratch,
-            ctx,
-            training_ctx,
-            StageIdx(0),
-            &prep_params,
-        );
+        if let Some(rows) = &folded {
+            StageSolvePrep::open_folded(
+                solver,
+                patch_buf,
+                noise_scratch,
+                ctx,
+                training_ctx,
+                StageIdx(0),
+                raw_noise,
+                rows,
+            );
+        } else {
+            let prep_params = StageSolvePrepParams {
+                state_source: StateSource(initial_state),
+                raw_noise,
+            };
+            StageSolvePrep::run(
+                solver,
+                patch_buf,
+                noise_scratch,
+                ctx,
+                training_ctx,
+                StageIdx(0),
+                &prep_params,
+            );
+        }
 
         let view = solver.solve(None).map_err(|e| match e {
             SolverError::Infeasible => SddpError::Infeasible {
@@ -234,7 +310,8 @@ fn lb_evaluate_stage_0<S: SolverInterface>(
         objectives_buf.push(view.objective);
     }
 
-    scratch.raw_noise_buf = ext_buf;
+    noise_scratch.raw_noise_buf = ext_buf;
+    noise_scratch.cut_slots_buf = slots;
     Ok(())
 }
 
@@ -369,16 +446,7 @@ pub fn evaluate_lower_bound<S: SolverInterface, C: Communicator>(
                 &mut scratch.lb_scratch.weights_buf,
             )
         })
-        .and_then(|()| {
-            lb_evaluate_stage_0(
-                solver,
-                ctx,
-                training_ctx,
-                scratch.patch_buf,
-                scratch.noise_scratch,
-                &mut scratch.lb_scratch.objectives_buf,
-            )
-        });
+        .and_then(|()| lb_evaluate_stage_0(solver, fcf, ctx, training_ctx, scratch));
         // Reconcile rank 0's root-weight assembly and stage-0 solve across ranks
         // BEFORE the broadcast pair (mirrors the forward-phase precedent): a
         // rank-0 failure makes every rank return Err here rather than let a
@@ -413,13 +481,14 @@ mod tests {
     use super::{
         LbEvalScratch, LbEvalScratchBundle, assemble_outcome_weights,
         assemble_root_outcome_weights, evaluate_lower_bound, find_root_position,
-        lb_aggregate_and_broadcast, lb_evaluate_stage_0, lb_init_rank0, lower_bound_patch_buffer,
+        lb_aggregate_and_broadcast, lb_cut_slots_into, lb_evaluate_stage_0, lb_init_rank0,
+        lower_bound_patch_buffer,
     };
     use crate::{
         PrepareHydroModelsResult, ResolvedParameters, StageTemplates,
         build_stage_templates_resolving_layout,
         context::TrainingContext,
-        cut::FutureCostFunction,
+        cut::{CutPool, CutRowMap, FutureCostFunction},
         error::SddpError,
         horizon_mode::HorizonMode,
         inflow_method::InflowNonNegativityMethod,
@@ -1876,20 +1945,20 @@ mod tests {
             ctx.inflow_coupling,
         );
         let mut scratch = ScratchBuffers::new(&training_ctx, &ctx, WorkspaceSizing::default());
-        let mut objectives_buf = Vec::new();
+        let fcf = make_fcf(1, state.n_state);
+        let (mut row_batch, mut lb_scratch) = make_lb_locals();
+        let mut bundle = LbEvalScratchBundle::from_scratch_fields(
+            &mut patch_buf,
+            &mut row_batch,
+            None,
+            &mut scratch,
+            &mut lb_scratch,
+        );
         let actual_n_openings = stoch.opening_tree().n_openings(0);
         let mut solver =
             MockSolver::with_objectives(vec![10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0]);
 
-        lb_evaluate_stage_0(
-            &mut solver,
-            &ctx,
-            &training_ctx,
-            &mut patch_buf,
-            &mut scratch,
-            &mut objectives_buf,
-        )
-        .unwrap();
+        lb_evaluate_stage_0(&mut solver, &fcf, &ctx, &training_ctx, &mut bundle).unwrap();
 
         assert_eq!(
             solver.set_col_bounds_calls,
@@ -1901,6 +1970,34 @@ mod tests {
         assert!(
             actual_n_openings > 0,
             "opening tree must have at least one opening at stage 0"
+        );
+    }
+
+    #[test]
+    fn lb_cut_slots_follow_lp_row_order_and_keep_deactivated_rows() {
+        let mut pool = CutPool::new(4, 1, 1, 0);
+        for (k, intercept) in [1.0, 2.0, 3.0].into_iter().enumerate() {
+            pool.add_cut(NodeId(0), k as u64, 0, intercept, &[0.0]);
+        }
+        let mut map = CutRowMap::new(4, 10);
+        for slot in [1, 2, 0] {
+            map.insert(slot);
+        }
+        pool.set_active(2, false);
+
+        let mut out = Vec::new();
+        lb_cut_slots_into(Some(&map), &pool, &mut out);
+        assert_eq!(
+            out,
+            [1, 2, 0],
+            "slots in LP row order, deactivated row kept"
+        );
+
+        lb_cut_slots_into(None, &pool, &mut out);
+        assert_eq!(
+            out,
+            [0, 1],
+            "map-less rows are the active cuts in slot order"
         );
     }
 

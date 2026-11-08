@@ -13,9 +13,8 @@ use novomodelo_sddp::test_support::{
 };
 use novomodelo_solver::StageTemplate;
 
+use super::common::in_code_studies::FPHA_LAG_STUDY_KEY;
 use super::common::{expected_study_count, for_each_study_in_both_forms};
-
-const FPHA_LAG_STUDY: &str = "structural/fpha-lag";
 
 fn equal(a: i32, b: i32) -> bool {
     a == b
@@ -221,6 +220,14 @@ fn expanded_state_columns_match_todays_state_map() {
             );
         }
         for h in (0..logical_state.hydro_count).map(HydroSys::new) {
+            for l in 0..logical_state.max_par_order {
+                assert_eq!(
+                    layout.incoming_lag_col(h, l),
+                    logical_state.inflow_lags.start + l * logical_state.hydro_count + h.get(),
+                    "{key}: incoming lag {l} column of hydro {}",
+                    h.get()
+                );
+            }
             assert_eq!(
                 layout.z_col(h),
                 z_inflow_column(logical_state, h),
@@ -238,17 +245,11 @@ fn expanded_state_columns_match_todays_state_map() {
         let ranges = [
             ("storage", &state.storage, &logical_state.storage),
             (
-                "inflow_lags",
-                &state.inflow_lags,
-                &logical_state.inflow_lags,
-            ),
-            (
                 "transit_buckets_out",
                 &state.transit_buckets_out,
                 &logical_state.transit_buckets_out,
             ),
             ("commit_out", &state.commit_out, &logical_state.commit_out),
-            ("z_inflow", &state.z_inflow, &logical_state.z_inflow),
             ("storage_in", &state.storage_in, &logical_state.storage_in),
             (
                 "transit_buckets_in",
@@ -290,7 +291,7 @@ fn expanded_scaling_follows_the_compact_template() {
             compact_templates.templates.len(),
             "{key}: scaled template count"
         );
-        let is_fpha_lag = key == FPHA_LAG_STUDY;
+        let is_fpha_lag = key == FPHA_LAG_STUDY_KEY;
         saw_fpha_lag |= is_fpha_lag;
 
         for (stage, scaled) in expanded.scaled.iter().enumerate() {
@@ -350,18 +351,21 @@ fn expanded_scaling_follows_the_compact_template() {
     });
 
     assert_eq!(visited, expected_study_count(), "every study is visited");
-    assert!(saw_fpha_lag, "the {FPHA_LAG_STUDY} study is not visited");
+    assert!(
+        saw_fpha_lag,
+        "the {FPHA_LAG_STUDY_KEY} study is not visited"
+    );
     assert!(
         saw_scaled_z,
-        "no {FPHA_LAG_STUDY} stage has a z column with a non-unit scale"
+        "no {FPHA_LAG_STUDY_KEY} stage has a z column with a non-unit scale"
     );
     assert!(
         saw_scaled_lag,
-        "no {FPHA_LAG_STUDY} stage has a lag column with a non-unit scale"
+        "no {FPHA_LAG_STUDY_KEY} stage has a lag column with a non-unit scale"
     );
     assert!(
         saw_rescaled_touched_row,
-        "no {FPHA_LAG_STUDY} stage has a coupled row scaled differently from the compact row"
+        "no {FPHA_LAG_STUDY_KEY} stage has a coupled row scaled differently from the compact row"
     );
 }
 
@@ -407,7 +411,7 @@ fn expanded_solve_patch_matches_todays_patched_template() {
                 logical_state.inflow_lags.contains(&col)
             })
             .collect();
-        let is_fpha_lag = key == FPHA_LAG_STUDY;
+        let is_fpha_lag = key == FPHA_LAG_STUDY_KEY;
         saw_fpha_lag |= is_fpha_lag;
 
         for stage in 0..expanded.scaled.len() {
@@ -484,9 +488,12 @@ fn expanded_solve_patch_matches_todays_patched_template() {
         saw_distinct_z,
         "no study, stage and hydro has three distinct z-row values across the noise samples (needs a PAR model with a non-zero sigma)"
     );
-    assert!(saw_fpha_lag, "the {FPHA_LAG_STUDY} study is not visited");
+    assert!(
+        saw_fpha_lag,
+        "the {FPHA_LAG_STUDY_KEY} study is not visited"
+    );
     assert!(
         saw_lag_scale_split,
-        "no {FPHA_LAG_STUDY} stage has a lag dimension whose incoming and outgoing columns scale differently"
+        "no {FPHA_LAG_STUDY_KEY} stage has a lag dimension whose incoming and outgoing columns scale differently"
     );
 }

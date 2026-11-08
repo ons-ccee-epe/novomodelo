@@ -7604,6 +7604,76 @@ fn inflow_form_defaults_to_logical_and_the_test_support_constructor_selects_comp
     );
 }
 
+#[test]
+fn compact_and_logical_setups_share_one_construction_chain() {
+    let system = minimal_system(3);
+    let without_boundary = minimal_config(2, 10);
+    let mut with_boundary = minimal_config(2, 10);
+    with_boundary.policy.boundary = Some(novomodelo_io::BoundaryPolicy {
+        path: "unused-boundary-checkpoint".to_string(),
+        strict: false,
+    });
+    let stochastic = || {
+        build_stochastic_context(
+            &system,
+            42,
+            None,
+            &[],
+            &[],
+            OpeningTreeInputs::default(),
+            ClassSchemes {
+                inflow: Some(SamplingScheme::InSample),
+                load: Some(SamplingScheme::InSample),
+                ncs: Some(SamplingScheme::InSample),
+            },
+        )
+        .expect("stochastic context")
+    };
+    let both_forms = |config: &Config| {
+        let logical = StudySetup::new(
+            &system,
+            config,
+            stochastic(),
+            PrepareHydroModelsResult::default_from_system(&system),
+            Vec::new(),
+        )
+        .expect("logical setup");
+        let compact = StudySetup::new_compact(
+            &system,
+            config,
+            stochastic(),
+            PrepareHydroModelsResult::default_from_system(&system),
+            Vec::new(),
+        )
+        .expect("compact setup");
+        (logical, compact)
+    };
+    let absent = both_forms(&without_boundary);
+    let set = both_forms(&with_boundary);
+
+    assert!(set.0.boundary_requirements.is_present());
+    assert!(!absent.0.boundary_requirements.is_present());
+
+    for (logical, compact) in [&absent, &set] {
+        assert_eq!(
+            logical.boundary_requirements.is_present(),
+            compact.boundary_requirements.is_present()
+        );
+        assert_eq!(
+            logical.boundary_requirements.inflow_lag_depth(),
+            compact.boundary_requirements.inflow_lag_depth()
+        );
+        assert_eq!(
+            logical.inputs.stage_data.state.inflow_form,
+            InflowForm::Logical
+        );
+        assert_eq!(
+            compact.inputs.stage_data.state.inflow_form,
+            InflowForm::Compact
+        );
+    }
+}
+
 /// Given a boundary-inferred depth (24) greater than the fitted AR order
 /// (2, from `minimal_system_2_hydros_with_history`'s `ar_coefficients: vec![0.5,
 /// 0.3]`), `resolve_state_layout` must widen BOTH the dense stride

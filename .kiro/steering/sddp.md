@@ -35,7 +35,10 @@ pairing projected coefficient slot `j` with global state dimension
 `global_state_index(j)`. `CutStateProjection::dot_trial_state` is the single
 owner; every backward intercept site routes through it
 (`backward/replicated.rs`, `backward/outcome_aggregation.rs`'s
-`write_opening_outcome`, which the by-scenario and by-node schedulers share).
+`write_opening_outcome`, which the by-scenario and by-node schedulers share on
+the logical form, and `cut/chain_rule.rs`'s `per_opening_cut_into` and
+`aggregate_first_cut_into`, which the compact form of both schedulers reaches
+through `backward/by_scenario.rs`'s `aggregate_folded_cut`).
 
 A positional `coefficients.iter().zip(x̂)` is the wrong-but-compiling
 alternative. It agrees ONLY for the all-enabled identity projection; the moment a
@@ -50,11 +53,73 @@ spurious crossover. Reduces to the positional dot bit-for-bit for an all-enabled
 pool (`global_state_index(j) == j`), so no existing full-projection study moves.
 Read: `lp/indexer/cut_state_projection.rs` (`dot_trial_state`,
 `global_state_index`), `training/backward/replicated.rs`,
-`training/backward/outcome_aggregation.rs` (`write_opening_outcome`). Pinned by
+`training/backward/outcome_aggregation.rs` (`write_opening_outcome`),
+`cut/chain_rule.rs` (`per_opening_cut_into`, `aggregate_first_cut_into`). Pinned by
 `dot_trial_state_gathers_reduced_projection_not_positional` (the gather picks the
 anticipated dimension past the dropped lag block) and
 `dot_trial_state_all_enabled_matches_positional_zip` (byte-neutral for the
 identity projection), both in `lp/indexer/cut_state_projection.rs`.
+
+### Chain-rule accumulators start at negative zero; cut-RHS dots start at positive zero
+
+The chain-rule kernel in `cut/chain_rule.rs` starts its accumulators at −0.0:
+the lag sums `w` of `lag_coefficients_into`, and `aggregate_first_cut_into`'s Q̄
+(`q_bar`), its coefficient vector and its Gᵀπ sums (`chain.g`).
+`per_opening_cut_into` starts each `g` at `−(Gᵀπ)(h)`, the bits of
+`−0.0 − (Gᵀπ)(h)`, and adds the cut-dual terms into that same accumulator; a
+zero cut dual, of either sign, is skipped, never multiplied in.
+`aggregate_first_cut_into` likewise skips an opening whose weight is exactly 0.0
+before any of its adds, so a zero-weight opening, such as a pure-CVaR opening
+outside the tail, changes no bit. −0.0 is the
+identity of IEEE-754 addition: `-0.0 + x` has the bits of `x` for every `x`,
+`x = −0.0` included. So the aggregate of one opening at weight 1.0 returns
+`per_opening_cut_into`'s bits, and an empty sum keeps a −0.0 coefficient's
+sign.
+
+The canonical cut-RHS dots of `cut/rhs.rs` start at +0.0: S, P and W are
+ascending-slot dots from +0.0 inside `cut_bracket` and `cut_noise_term`, which
+`cut_brackets_into` and `cut_rhs_into` call per row. The aggregate's ȳ slots
+also start at +0.0 (`AggregateScratch` holds every one at 0.0 between calls).
+Every writer of the canonical cut-row RHS must produce the same bits, so a
+writer that recomputes an RHS calls the canonical function, never a re-derived
+fold.
+
+The wrong-but-compiling alternatives:
+
+- a `0.0` start in the kernel (a `fill(0.0)`, a `q_bar` of `0.0`, or a
+  cut-dual sum formed from +0.0 and added to `g` afterwards): `+0.0 + (−0.0)`
+  is `+0.0`, so a lone −0.0 term flips to +0.0, and the aggregate of one
+  opening at weight 1.0 no longer equals `per_opening_cut_into` bit for bit;
+- multiplying a zero weight in (`q_bar += 0.0 * Q`, `g -= 0.0 * coupled`): `0·x`
+  is −0.0 for a negative `x` and +0.0 for a positive one, so a zero-weight
+  opening flips a −0.0 accumulator, and the aggregate no longer equals the cut
+  of its weighted openings bit for bit;
+- an iterator `sum()`, which starts from −0.0, or any fold from −0.0 in place
+  of a `cut/rhs.rs` dot: an empty dot, or one whose every product is −0.0
+  (a negative coefficient times a zero value), then returns −0.0 where the
+  canonical function returns +0.0, so that writer's RHS no longer has the bits
+  of every writer that calls the canonical function.
+
+All three compile, and each breaks a bitwise identity between a cut and its
+per-opening form or between two writers of one cut's RHS.
+Read: `cut/chain_rule.rs` (`per_opening_cut_into`, `lag_coefficients_into`,
+`aggregate_first_cut_into`, `AggregateScratch`), `cut/rhs.rs` (the module
+documentation, `cut_bracket`, `cut_noise_term`). Pinned by
+`zero_cut_duals_leave_the_bits_unchanged` (padding the cut duals with +0.0 and
+−0.0 entries over infinite pool rows changes no bit),
+`single_accumulator_keeps_the_sign_of_a_negated_zero_coupling` (a zero
+coupling's −0.0 survives in `g`, which a cut-dual sum formed apart from +0.0
+would flip),
+`an_empty_cut_sum_keeps_the_sign_of_a_negated_zero_coefficient` (an empty `w`
+keeps ψ·g's −0.0),
+`aggregate_of_one_opening_at_unit_weight_equals_the_per_opening_cut` (one
+opening at weight 1.0, with a −0.0 state dual, returns the per-opening
+coefficients and intercept bit for bit) and
+`a_zero_weight_opening_changes_no_bit` (a zero-weight opening whose products
+would flip each −0.0 accumulator changes no bit of the cut or its intercept),
+all in `cut/chain_rule.rs`; and
+`bracket_accumulators_start_at_positive_zero` (`cut/rhs.rs`: a bracket whose
+every product is −0.0 is +0.0, where a fold from −0.0 gives −0.0).
 
 ## State pinning uses column bounds, not equality rows
 
@@ -62,7 +127,14 @@ Incoming state is pinned with `set_col_bounds` on the incoming-state LP column;
 there is no state-fixing row range in the LP. Always resolve the LP column —
 for both pinning and dual extraction — via
 `StateSpace::state_to_lp_incoming_column`; never assume a fixing-row index.
-Read: `lp/indexer/state_space.rs`.
+`StateSpace::incoming_block_start(region)` owns which incoming column block a
+region pins and `StateSpace::outgoing_block_start(region)` the outgoing block
+that holds its values; a region without LP columns, such as the compact lag
+region, has no block, and asking either resolver for one panics in every build
+profile.
+Read: `lp/indexer/state_space.rs`. Pinned by
+`compact_lag_region_has_no_incoming_lp_block` and
+`compact_lag_region_has_no_outgoing_lp_block` (`lp/indexer/state_space.rs`).
 
 ## Inflow noise enters only through the z rows
 
@@ -2118,6 +2190,12 @@ With the switch off a sampled backward pass does none of the recording work:
 - `run_one_backward_level` does not call `sync_stage_metadata`, so no per-worker
   sum, no `allreduce` and no `CutPool::record_binding` runs.
 
+The folded extraction is the exception: on a pool whose cut-state projection has
+lag slots it reads every cut-row dual whatever the switch, because the chain
+rule's Σ y β terms need them. Gating that read on the switch drops them from
+every cut of a compact study run without a reader, which still compiles and
+converges.
+
 The workers read the switch from the threshold on the successor view
 (`SuccessorOutcomes`, `SuccessorChild`), an option that is `None` when binding is
 not tracked; the lazy solve reads the same option before
@@ -2146,7 +2224,8 @@ Read: `config.rs` (`CutManagementConfig::tracks_binding_activity`),
 `process_stage_backward`, `sync_stage_metadata`), `training/backward/mod.rs`
 (`SuccessorOutcomes`, `SuccessorChild`),
 `training/backward/duals_extraction.rs` (`extract_duals_from_view`,
-`fill_resident_cut_dual_slots`),
+`extract_folded_duals`, `fill_resident_cut_dual_slots`),
+`training/backward/opening_solve.rs` (`solve_backward_opening`),
 `training/backward/outcome_aggregation.rs` (`count_binding_slots`,
 `fold_slot_increments_into_sync`),
 `training/backward/by_scenario.rs` (`process_by_scenario_backward`),
@@ -2163,7 +2242,11 @@ the truth table over a budget and every strategy),
 (`training/backward/tests.rs`: with the switch off, under both schedulers, the
 pass issues no `u64` sum reduction, moves no slot's metadata, fills no
 (slot, y) pair and touches no worker buffer, and its cuts equal those of the
-pass with the switch on) and `binding_activity_is_recorded_only_for_a_reader`
+pass with the switch on),
+`compact_backward_reads_cut_duals_without_binding_tracking`
+(`training/backward/tests.rs`: with the switch off, a compact pool with lag
+slots still reads its cut-row pairs, and the stored cut carries their Σ y β
+terms) and `binding_activity_is_recorded_only_for_a_reader`
 (`tests/cut_basis.rs`: a `level1` run without a budget records nothing, a
 budget-only run and a `dynamic` run record, and a budget that evicts nothing
 gives the cuts and bounds of a run without one). No in-process test can show
@@ -2218,19 +2301,35 @@ scheduling timing — but each opening's outcome is WRITTEN into a per-`(m, ω)`
 arena and AGGREGATED per trial point over CANONICAL ω, in ASCENDING m. The
 generated cut set is therefore independent of claim order and worker count:
 reordering claims changes only which worker warms which block, never which cut
-is produced. Aggregating the arena in claim/solve-position order, or keying it
-on the claim index instead of `(m, ω)`, is the wrong-but-compiling
-alternative — CVaR's tail weighting is order-sensitive, so it silently breaks
-CVaR reproducibility and declaration-order invariance the same way a
-solve-order-keyed aggregation would break the by-scenario path above. An
+is produced. On the compact form no arena exists: each worker packs its
+openings into its own `OpeningRecords`, keyed by `(trial position, ω)`;
+`by_node_finish` locates every `(position, ω)` through a table it fills by
+walking the workers in `canonical_scatter` order, and aggregates each position
+once over canonical ω, in ascending position, through `aggregate_folded_cut`.
+The cuts are staged and committed afterwards, in ascending position
+(`commit_by_node_cuts`), because the aggregation reads the successor pools that
+`add_cut` mutates. Aggregating the arena or the records in claim/solve-position
+order, or keying them on the claim index instead of `(m, ω)`, is the
+wrong-but-compiling alternative — CVaR's tail weighting is order-sensitive, so
+it silently breaks CVaR reproducibility and declaration-order invariance the
+same way a solve-order-keyed aggregation would break the by-scenario path
+above. An
 active `dynamic` iteration always falls back to the by-scenario path: the
 by-node scheduler's frozen-LP load is incompatible with the lazy solve's
 cut-free core.
 Read: `training/backward/by_node.rs`
 (`process_stage_backward_by_node`'s claim loop,
-`by_node_finish`'s per-`(m, ω)` arena and ascending-m aggregation),
+`by_node_finish`'s per-`(m, ω)` arena or record location table and
+ascending-position aggregation), `workspace/workspace.rs` (`OpeningRecords`),
+`claim_scatter.rs` (`canonical_scatter`),
 `training/backward_pass_state.rs` (`compute_one_backward_node`'s
-scheduler dispatch via `resolve_backward_scheduler`). Pinned by
+scheduler dispatch via `resolve_backward_scheduler`, `commit_by_node_cuts`).
+On the compact form the claim-order independence is pinned by
+`compact_aggregate_first_cut_is_scheduler_and_worker_independent`
+(`training/backward/tests.rs`: on a stub solver whose solution depends on the
+noise only, by-node at one and two workers, with and without hardest-first,
+equals by-scenario bit for bit under CVaR over three openings, so an ω-reversed
+lookup fails). Pinned by
 `by_node_scheduler_determinism_expectation` and
 `by_node_scheduler_determinism_cvar` in `tests/mpi_wire.rs` (threads=4
 / a same-shape threads=4 repeat / threads=2 / threads=1 / a `Rank0Of2`
@@ -2277,7 +2376,9 @@ computation, the `run` swap). Pinned by
 `p_ω/α`, total mass 1, openings visited by cost descending then canonical index
 ascending via `sort_unstable_by` on the pre-allocated scratch). Every opening keeps at
 least `(1−λ)·p_ω` and at most `(1−λ)·p_ω + λ·p_ω/α`. The same kernel feeds
-`RiskMeasure::aggregate_cut_into` (every backward scheduler), `evaluate_risk_into`
+`RiskMeasure::aggregate_cut_into` (every backward scheduler on the logical form),
+`RiskMeasure::opening_weights_into` (the compact form's one joint weight call per
+trial point, in `aggregate_folded_cut`), `evaluate_risk_into`
 (the nested upper bound) and the root lower bound, so LB and UB sit under one measure.
 
 A single greedy whose per-opening cap is `(1−λ)·p_ω + λ·p_ω/α`, with no floor, is
@@ -2306,8 +2407,11 @@ single flattened joint outcome vector spanning every successor and every one of
 their openings, weighted by the product `P(n→child)·q_{child,ω}` and ordered
 canonically — ascending child node id, then within-child opening.
 `RiskMeasure::aggregate_cut_into` runs exactly once per trial point over that joint
-arena; `assemble_outcome_weights` fills the product weights in the canonical order
-the aggregation depends on (`CVaR`'s tail weighting is index-order-sensitive).
+arena on the logical form; on the compact form `aggregate_folded_cut` makes one
+`RiskMeasure::opening_weights_into` call over the same flattened costs and one
+`aggregate_first_cut_into` over the children. `assemble_outcome_weights` fills
+the product weights in the canonical order the aggregation depends on (`CVaR`'s
+tail weighting is index-order-sensitive).
 
 Applying the measure per child and then probability-averaging the children — a
 NESTED measure — is the wrong-but-compiling alternative. It is indistinguishable
@@ -2321,7 +2425,8 @@ concentrates on the worst two → `35`, while `max`-per-child-then-average gives
 
 Read: `convergence/risk_measure.rs` (`RiskMeasure::aggregate_cut_into`),
 `setup/node_graph.rs` (`assemble_outcome_weights` — the canonical product-weight
-fill), `training/backward/by_scenario.rs` (`process_by_scenario_backward`),
+fill), `training/backward/by_scenario.rs` (`process_by_scenario_backward`,
+`aggregate_folded_cut`),
 `training/backward/by_node.rs` (`by_node_finish`), `training/backward/replicated.rs`
 (the replicated path applies the same single aggregation over the same flattened
 arena). Pinned by `joint_cvar_differs_from_nested_per_child_then_average` in

@@ -202,6 +202,9 @@ pub struct IterationRecord {
     /// Backward scheduling/sync overhead (ms) → `bwd_scheduling_overhead_ms`. Backward sub-component.
     pub time_bwd_scheduling_overhead_ms: u64,
 
+    /// Serial aggregation after each stage's parallel solves (ms) → `bwd_aggregation_ms`. Backward sub-component.
+    pub time_bwd_aggregation_ms: u64,
+
     /// Estimated forward worker load imbalance (ms) → `fwd_load_imbalance_ms`. Forward sub-component.
     pub time_fwd_load_imbalance_ms: u64,
 
@@ -323,7 +326,7 @@ pub struct RowSelectionRecord {
 ///   `fwd_setup_ms`, `lazy_scoring_ms`). Rank-only slots are `0` on these rows.
 ///
 /// `SUM(col) GROUP BY iteration` across all rows recovers the
-/// single-row-per-iteration value for each of the 16 timing columns.
+/// single-row-per-iteration value for each timing column.
 #[derive(Debug, Clone)]
 pub struct WorkerTimingRecord {
     /// Training iteration (1-based).
@@ -332,11 +335,11 @@ pub struct WorkerTimingRecord {
     pub rank: i32,
     /// Rayon worker index within the rank's pool, or `None` for rank-aggregated rows.
     pub worker_id: Option<i32>,
-    /// Fixed-size timing payload matching the 16 timing columns of
-    /// `iteration_timing_schema()` (positions 3–18, after `iteration`, `rank`,
-    /// `worker_id`). Slot indices correspond to the `WORKER_TIMING_SLOT_*`
-    /// constants defined in `novomodelo-core`.
-    pub timings: [u64; 16],
+    /// Fixed-size timing payload matching the timing columns of
+    /// `iteration_timing_schema()` (after `iteration`, `rank`, `worker_id`).
+    /// Slot indices correspond to the `WORKER_TIMING_SLOT_*` constants defined
+    /// in `novomodelo-core`.
+    pub timings: [u64; 17],
 }
 
 /// Aggregate type carrying all training data needed for output writing.
@@ -636,6 +639,7 @@ mod tests {
                 time_cut_batch_build_ms: 0,
                 time_bwd_load_imbalance_ms: 0,
                 time_bwd_scheduling_overhead_ms: 0,
+                time_bwd_aggregation_ms: 0,
                 time_fwd_load_imbalance_ms: 0,
                 time_fwd_scheduling_overhead_ms: 0,
                 time_overhead_ms: 0,
@@ -711,6 +715,7 @@ mod tests {
             time_cut_batch_build_ms: 0,
             time_bwd_load_imbalance_ms: 0,
             time_bwd_scheduling_overhead_ms: 0,
+            time_bwd_aggregation_ms: 0,
             time_fwd_load_imbalance_ms: 0,
             time_fwd_scheduling_overhead_ms: 0,
             time_overhead_ms: 400u64.saturating_sub(150 + 250 + 5 + 3 + 4),

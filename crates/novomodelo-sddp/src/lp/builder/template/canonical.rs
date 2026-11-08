@@ -355,6 +355,7 @@ pub(crate) fn encode_stage_templates_facts(
         templates,
         state_boxes,
         pre_scaling_templates: _,
+        row_families: _,
         block_hours_per_stage,
         cost_scale_factor,
         load_bus_indices,

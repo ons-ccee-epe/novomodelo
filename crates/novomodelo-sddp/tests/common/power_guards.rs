@@ -28,8 +28,8 @@ pub enum Guard {
     NonUnitLagScale,
     /// Some recorded coupled row has a nonzero dual and compact and expanded scales that differ by bits.
     RescaledCoupledRowWithDual,
-    /// Some recorded coupled row has a nonzero dual and an expanded scale that differs from 1.0 by bits.
-    NonUnitCoupledRowScaleWithDual,
+    /// Some recorded coupled row has a nonzero dual and a compact row scale that differs from 1.0 by bits.
+    NonUnitCompactCoupledRowScaleWithDual,
     /// Some recorded dual of the family is nonzero.
     FamilyDual(DualFamily),
     /// Every hydro has some recorded nonzero coupling dual.
@@ -48,7 +48,7 @@ pub struct PowerEvidence {
     non_unit_z_scale: bool,
     non_unit_lag_scale: bool,
     rescaled_coupled_row_with_dual: bool,
-    non_unit_coupled_row_scale_with_dual: bool,
+    non_unit_compact_coupled_row_scale_with_dual: bool,
     family_dual: [bool; 3],
     coupling_dual: Vec<bool>,
 }
@@ -69,7 +69,7 @@ impl PowerEvidence {
             non_unit_z_scale: false,
             non_unit_lag_scale: false,
             rescaled_coupled_row_with_dual: false,
-            non_unit_coupled_row_scale_with_dual: false,
+            non_unit_compact_coupled_row_scale_with_dual: false,
             family_dual: [false; 3],
             coupling_dual: vec![false; n_hydros],
         }
@@ -99,12 +99,13 @@ impl PowerEvidence {
         self.non_unit_lag_scale |= lag_scales.iter().copied().any(is_non_unit);
     }
 
-    /// Records a coupled row's dual and its compact and expanded scales.
+    /// Records a coupled row's unscaled dual, from either LP (they agree at a shared optimum), and
+    /// its compact and expanded row scales.
     pub fn record_coupled_row(&mut self, dual: f64, compact_scale: f64, expanded_scale: f64) {
         if dual != 0.0 {
             self.rescaled_coupled_row_with_dual |=
                 compact_scale.to_bits() != expanded_scale.to_bits();
-            self.non_unit_coupled_row_scale_with_dual |= is_non_unit(expanded_scale);
+            self.non_unit_compact_coupled_row_scale_with_dual |= is_non_unit(compact_scale);
         }
     }
 
@@ -123,14 +124,18 @@ impl PowerEvidence {
         self.coupling_dual[hydro] |= gt_pi != 0.0;
     }
 
-    fn holds(&self, guard: Guard) -> bool {
+    /// Whether the recorded evidence meets `guard`.
+    #[must_use]
+    pub fn holds(&self, guard: Guard) -> bool {
         match guard {
             Guard::BindingLagCut => self.binding_lag_cut,
             Guard::BindingShiftedLagCut => self.binding_shifted_lag_cut,
             Guard::NonUnitZScale => self.non_unit_z_scale,
             Guard::NonUnitLagScale => self.non_unit_lag_scale,
             Guard::RescaledCoupledRowWithDual => self.rescaled_coupled_row_with_dual,
-            Guard::NonUnitCoupledRowScaleWithDual => self.non_unit_coupled_row_scale_with_dual,
+            Guard::NonUnitCompactCoupledRowScaleWithDual => {
+                self.non_unit_compact_coupled_row_scale_with_dual
+            }
             Guard::FamilyDual(family) => self.family_dual[family as usize],
             Guard::CouplingDualEveryHydro => self.coupling_dual.iter().all(|&seen| seen),
         }

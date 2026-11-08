@@ -7,7 +7,9 @@ use novomodelo_core::commissioning::commissioning_active;
 use novomodelo_core::temporal::StageLagTransition;
 use novomodelo_solver::SolverInterface;
 use novomodelo_stochastic::par::lag_kernel::{LagMajor, advance_lag_chain};
-use novomodelo_stochastic::{StochasticContext, evaluate_par_batch};
+use novomodelo_stochastic::{
+    StochasticContext, add_par_noise_batch, evaluate_par_batch, evaluate_par_noise_term_batch,
+};
 
 use crate::indexer::{BlockIdx, HydroSys, NcsSys, StateSpace};
 use crate::lp::builder::StageGeometry;
@@ -59,8 +61,8 @@ pub(crate) fn transform_inflow_noise(
         return;
     }
 
-    scratch.par_inflow_buf.clear();
-    scratch.par_inflow_buf.resize(n_hydros, 0.0);
+    scratch.realized_inflow_buf.clear();
+    scratch.realized_inflow_buf.resize(n_hydros, 0.0);
     if has_par {
         let pinned_lags = &current_state[state.state_dim_lag_range()];
         debug_assert_eq!(pinned_lags.len(), state.max_par_order * n_hydros);
@@ -69,22 +71,79 @@ pub(crate) fn transform_inflow_noise(
             stage.0,
             pinned_lags,
             hydro_noise,
-            &mut scratch.par_inflow_buf,
+            &mut scratch.realized_inflow_buf,
         );
     }
 
-    let fixes_the_correction = *inflow_method == InflowNonNegativityMethod::Truncation;
-    for &r in &scratch.par_inflow_buf {
+    fill_inflow_slack_bounds(
+        *inflow_method,
+        &scratch.realized_inflow_buf,
+        &mut scratch.inflow_slack_lower_buf,
+        &mut scratch.inflow_slack_upper_buf,
+    );
+}
+
+/// Realized inflow ẑ from the conditional mean in the scratch, the noise term
+/// `σ·η` the cut right-hand sides read, and, under the truncation methods, the
+/// inflow-slack bounds from ẑ.
+pub(crate) fn transform_inflow_noise_folded(
+    raw_noise: &[f64],
+    stage: StageIdx,
+    training_ctx: &TrainingContext<'_>,
+    scratch: &mut ScratchBuffers,
+) {
+    let dims = training_ctx.stochastic.class_dimensions();
+    let hydro_noise = &raw_noise[dims.hydro_range()];
+    let par_lp = training_ctx.stochastic.par();
+
+    scratch.realized_inflow_buf.clear();
+    scratch.realized_inflow_buf.resize(dims.n_hydros, 0.0);
+    if par_lp.n_stages() > 0 {
+        add_par_noise_batch(
+            par_lp,
+            stage.0,
+            &scratch.par_mean_buf,
+            hydro_noise,
+            &mut scratch.realized_inflow_buf,
+        );
+        evaluate_par_noise_term_batch(
+            par_lp,
+            stage.0,
+            hydro_noise,
+            &mut scratch.par_noise_term_buf,
+        );
+    } else {
+        scratch.par_noise_term_buf.fill(0.0);
+    }
+
+    scratch.inflow_slack_lower_buf.clear();
+    scratch.inflow_slack_upper_buf.clear();
+    if training_ctx.inflow_method.truncates() {
+        fill_inflow_slack_bounds(
+            *training_ctx.inflow_method,
+            &scratch.realized_inflow_buf,
+            &mut scratch.inflow_slack_lower_buf,
+            &mut scratch.inflow_slack_upper_buf,
+        );
+    }
+}
+
+fn fill_inflow_slack_bounds(
+    inflow_method: InflowNonNegativityMethod,
+    realized_inflow: &[f64],
+    lower: &mut Vec<f64>,
+    upper: &mut Vec<f64>,
+) {
+    let fixes_the_correction = inflow_method == InflowNonNegativityMethod::Truncation;
+    for &r in realized_inflow {
         // An explicit branch writes +0.0, never the -0.0 `(-r).max(0.0)` can return.
         let truncation_amount = if r < 0.0 { -r } else { 0.0 };
-        scratch
-            .inflow_slack_lower_buf
-            .push(if fixes_the_correction {
-                truncation_amount
-            } else {
-                0.0
-            });
-        scratch.inflow_slack_upper_buf.push(truncation_amount);
+        lower.push(if fixes_the_correction {
+            truncation_amount
+        } else {
+            0.0
+        });
+        upper.push(truncation_amount);
     }
 }
 
@@ -892,9 +951,8 @@ mod tests {
     fn test_transform_inflow_noise_none_method() {
         let stochastic = make_one_hydro_stochastic(1);
         // State layout: 1 hydro, 0 PAR lags → n_state = 1
-        let layout = test_support::state_layout(1, 0);
         let state = test_support::state_layout(1, 0);
-        let current_state = vec![0.0; layout.n_state];
+        let current_state = vec![0.0; state.n_state];
 
         // sigma = 1.0, base = 0.0 (the fixture's AR(0) white-noise model), eta = -3.0
         // expected z_inflow_rhs: 0.0 + 1.0 * (-3.0) = -3.0
@@ -945,9 +1003,8 @@ mod tests {
     fn test_transform_inflow_noise_truncation_writes_the_raw_rhs_and_fixes_the_correction() {
         let stochastic = make_one_hydro_stochastic(1);
         // 1 hydro, 0 PAR lags
-        let layout = test_support::state_layout(1, 0);
         let state = test_support::state_layout(1, 0);
-        let current_state = vec![0.0; layout.n_state];
+        let current_state = vec![0.0; state.n_state];
 
         // Very negative eta guarantees negative inflow (AR(0) with sigma=1).
         let raw_noise = vec![-5.0_f64];
@@ -1058,9 +1115,8 @@ mod tests {
     #[test]
     fn test_transform_inflow_noise_truncation_passthrough() {
         let stochastic = make_one_hydro_stochastic(1);
-        let layout = test_support::state_layout(1, 0);
         let state = test_support::state_layout(1, 0);
-        let current_state = vec![0.0; layout.n_state];
+        let current_state = vec![0.0; state.n_state];
 
         let inflow_method = InflowNonNegativityMethod::Truncation;
         let horizon = HorizonMode::Finite { num_stages: 1 };

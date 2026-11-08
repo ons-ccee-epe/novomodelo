@@ -81,7 +81,9 @@ pub(crate) use by_node::{
     identity_block_order, merge_block_pivots, process_stage_backward_by_node, resolve_block_size,
 };
 pub(crate) use by_scenario::{by_scenario_finish, process_by_scenario_backward};
-pub(crate) use duals_extraction::extract_state_duals_only;
+pub(crate) use duals_extraction::{
+    FoldedDuals, FoldedExtraction, extract_folded_duals, extract_state_duals_only,
+};
 pub(crate) use lp_setup::{OpeningNoise, resolve_opening_noise};
 pub(crate) use replicated::{ReplicatedScratch, run_backward_node_replicated};
 
@@ -160,6 +162,11 @@ pub struct BackwardResult {
 
     /// Per-stage cut synchronization time, accumulated across all stages (milliseconds).
     pub cut_sync_time_ms: u64,
+
+    /// This rank's serial aggregation time after each stage's parallel solves,
+    /// accumulated across all stages (milliseconds). Summed as a `Duration` and
+    /// converted once per pass.
+    pub aggregation_time_ms: u64,
 }
 
 /// Per-thread staging buffer for one aggregated cut produced at a single trial

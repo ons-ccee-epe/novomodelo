@@ -1,10 +1,11 @@
-//! Probe substrate and lag-fold probes over the `novomodelo_rodada` case.
+//! Probe substrate and lag-fold probes over the reduced ago/26 case.
 //!
 //! Kept entry points:
 //!
-//! - `classify_stage_rows_reconciles_on_a_hand_built_geometry` — fast,
-//!   non-ignored unit test pinning the row-family classifier against the
-//!   real `StageLayout::new` allocation order.
+//! - `row_classifier::the_row_classifier_places_every_row_of_every_study` —
+//!   fast, non-ignored, template-only sweep of the shared row classifier
+//!   over every committed deck and structural study, in both inflow forms
+//!   and the expanded rebuild of each compact form.
 //! - `lag_fold_chain_rule_identity` (`#[ignore]`) — verifies the pinned
 //!   inflow-lag columns' coupling channels and the chain-rule
 //!   reconstruction of Benders cut coefficients from row duals + pool
@@ -12,16 +13,21 @@
 //! - `lag_fold_static_ab` (`#[ignore]`) — original-vs-cut-row-folded twin
 //!   performance A/B over full backward chains (~1 h, trains three
 //!   checkpoints).
+//! - `by_node_backward_aggregation_share_on_the_reduced_case` (`#[ignore]`) —
+//!   share of the compact-LP `by_node` backward pass spent in the serial
+//!   aggregation after each stage's parallel solves, on 14 threads, projected
+//!   to the production worker count (ten iterations).
 //!
 //! ```text
 //! cargo nextest run --release -p novomodelo-sddp --features test-support --test basis_trajectory_probe \
 //!     --run-ignored ignored-only -E 'test(lag_fold_chain_rule_identity)'
 //! ```
 //!
-//! `case_dir` resolves the converted `novomodelo_rodada` case from `$HOME` — it
-//! lives outside this repository (a sibling checkout), so no repo-relative
-//! path can name it; the probes panic with a clear message if the checkout
-//! is absent rather than silently skipping.
+//! `case_dir` resolves the reduced ago/26 case, the bridge's conversion of the
+//! raw `newave-ago-26-reduzido` deck, from `$HOME` — it lives outside this
+//! repository (in the bridge checkout), so no repo-relative path can name it;
+//! the probes panic with a clear message if the case is absent rather than
+//! silently skipping.
 //!
 //! `StageGeometry::fpha` exposes the FPHA row range these probes read
 //! (per-hydro plane counts are non-uniform, so no exposed count multiplies
@@ -43,315 +49,131 @@
     clippy::single_match_else
 )]
 
-use novomodelo_io::config::TrainingSelection;
+use novomodelo_io::Config;
+use novomodelo_io::config::{
+    BackwardScheduler, SelectionMethod, StoppingRuleConfig, TrainingSelection,
+};
 use std::collections::{BTreeMap, BTreeSet};
-use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
 
+use novomodelo_core::{TrainingEvent, WorkerTimingPhase};
 use novomodelo_solver::{ActiveSolver, SolverInterface, StageTemplate};
 
-use novomodelo_sddp::context::StageContext;
 use novomodelo_sddp::cut::pool::CutPool;
 use novomodelo_sddp::forward::{ForwardPassBatch, run_forward_pass};
-use novomodelo_sddp::indexer::{StateDim, StateSpace};
+use novomodelo_sddp::indexer::StateDim;
+use novomodelo_sddp::lp::builder::RowFamily;
 use novomodelo_sddp::setup::NodeId;
 use novomodelo_sddp::setup::NodePos;
 use novomodelo_sddp::setup::StageIdx;
-use novomodelo_sddp::test_support::{
-    StageContextFixture, patch_backward_opening_for_probe, solve_stage_for_probe,
-};
+use novomodelo_sddp::test_support::{patch_backward_opening_for_probe, solve_stage_for_probe};
 use novomodelo_sddp::workspace::{BasisStore, CapturedBasis, SolverWorkspace};
-use novomodelo_sddp::{PrepareHydroModelsResult, StudySetup, TrajectoryRecord};
+use novomodelo_sddp::{
+    PrepareHydroModelsResult, PrepareStochasticResult, StudySetup, TrajectoryRecord,
+};
 
 mod common;
-use common::StubComm;
+use common::row_families::{self, RowClass};
+use common::{Emission, StubComm};
 
 // ---------------------------------------------------------------------------
 // Row-family classification
 // ---------------------------------------------------------------------------
 
-/// One of the row families `StageLayout::new`'s row cursor allocates, in its
-/// fixed allocation order — NOT `fill_stage_rows`'s call order, which only
-/// writes bounds into already-allocated positions and is order-independent —
-/// plus a residual `GenericConstraint` region and the appended-cuts region.
-/// The real order (`lp/builder/layout.rs`, the `row.alloc(...)` sequence in
-/// `StageLayout::new`): `z_inflow`, `water_balance`, `transit_bucket_definition`,
-/// `load_balance`, `fpha`, `evaporation`, the four operational-violation families,
-/// `filling_target`, `filled_min_storage_floor`, the three anticipated-thermal
-/// families, then generic constraints.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(u8)]
-enum RowFamily {
-    ZInflow = 0,
-    WaterBalance = 1,
-    TransitBucketDefinition = 2,
-    LoadBalance = 3,
-    Fpha = 4,
-    Evaporation = 5,
-    MinOutflowViolation = 6,
-    MaxOutflowViolation = 7,
-    MinTurbineViolation = 8,
-    MinGenerationViolation = 9,
-    FillingTarget = 10,
-    FilledMinStorageFloor = 11,
-    GenericConstraint = 12,
-    CutRow = 13,
-}
+mod row_classifier {
+    use std::collections::BTreeMap;
 
-impl RowFamily {
-    fn as_str(self) -> &'static str {
-        match self {
-            RowFamily::ZInflow => "z_inflow",
-            RowFamily::WaterBalance => "water_balance",
-            RowFamily::TransitBucketDefinition => "transit_bucket_definition",
-            RowFamily::LoadBalance => "load_balance",
-            RowFamily::Fpha => "fpha",
-            RowFamily::Evaporation => "evaporation",
-            RowFamily::MinOutflowViolation => "min_outflow_violation",
-            RowFamily::MaxOutflowViolation => "max_outflow_violation",
-            RowFamily::MinTurbineViolation => "min_turbine_violation",
-            RowFamily::MinGenerationViolation => "min_generation_violation",
-            RowFamily::FillingTarget => "filling_target",
-            RowFamily::FilledMinStorageFloor => "filled_min_storage_floor",
-            RowFamily::GenericConstraint => "generic_constraint",
-            RowFamily::CutRow => "cut_row",
+    use novomodelo_sddp::test_support::expander::expand_stage_templates;
+
+    use super::common::row_families::{
+        RowClass, census, classify_expanded_rows, classify_stage_rows,
+    };
+    use super::common::{expected_study_count, for_each_study_in_both_forms};
+
+    const CUT_ROWS: usize = 2;
+
+    fn assert_trailing_cuts(context: &str, classes: &[RowClass], base: usize) {
+        assert_eq!(classes.len(), base + CUT_ROWS, "{context}: row count");
+        assert_eq!(
+            classes[base..],
+            [RowClass::Cut; CUT_ROWS],
+            "{context}: the rows past the structural rows"
+        );
+    }
+
+    #[test]
+    fn the_row_classifier_places_every_row_of_every_study() {
+        let mut union: BTreeMap<&'static str, usize> = BTreeMap::new();
+        let visited = for_each_study_in_both_forms(|key, system, logical, compact| {
+            let expanded = expand_stage_templates(system, compact);
+            let logical_templates = &logical.inputs.stage_data.stage_templates.templates;
+            let compact_templates = &compact.inputs.stage_data.stage_templates.templates;
+            for (stage, scaled) in expanded.scaled.iter().enumerate() {
+                let context = format!("{key} stage {stage}");
+
+                let logical_base = logical_templates[stage].num_rows;
+                let logical_classes = classify_stage_rows(logical, stage, logical_base + CUT_ROWS);
+                assert_trailing_cuts(
+                    &format!("{context} logical"),
+                    &logical_classes,
+                    logical_base,
+                );
+                for (name, rows) in census(&logical_classes) {
+                    *union.entry(name).or_insert(0) += rows;
+                }
+
+                let compact_base = compact_templates[stage].num_rows;
+                let compact_classes = classify_stage_rows(compact, stage, compact_base + CUT_ROWS);
+                assert_trailing_cuts(
+                    &format!("{context} compact"),
+                    &compact_classes,
+                    compact_base,
+                );
+
+                let loaded = scaled.num_rows + CUT_ROWS;
+                let expanded_classes =
+                    classify_expanded_rows(compact, &expanded.layout, stage, loaded);
+                let todays_classes = classify_stage_rows(logical, stage, loaded);
+                let first_mismatch = (0..loaded)
+                    .find(|&row| expanded_classes[row] != todays_classes[row])
+                    .map(|row| (row, expanded_classes[row], todays_classes[row]));
+                assert_eq!(
+                    first_mismatch, None,
+                    "{context}: first row (row, expanded, logical) whose class differs"
+                );
+            }
+        });
+        assert_eq!(
+            visited,
+            expected_study_count(),
+            "the sweep visited a different number of studies than there are"
+        );
+
+        for family in [
+            "water_balance",
+            "load_balance",
+            "fpha",
+            "evaporation",
+            "filling_target",
+            "generic_constraint",
+        ] {
+            assert!(
+                union.contains_key(family),
+                "no study has a {family} row; reached {union:?}"
+            );
         }
+        assert!(
+            [
+                "anticipated_fishing",
+                "anticipated_state_out_def",
+                "anticipated_slot_definition",
+            ]
+            .iter()
+            .any(|family| union.contains_key(family)),
+            "no study has an anticipated row; reached {union:?}"
+        );
     }
-}
-
-/// Assign every LP row of `template` (loaded at `stage`) to a [`RowFamily`],
-/// given `base_row_count` — the template's own pre-cut row count
-/// (`StageContext::templates[stage].num_rows`), the authoritative boundary
-/// between structural rows and appended cut rows.
-///
-/// Reconstructs each unexposed family's position by chaining off the ranges
-/// `StageGeometry` does expose (`water_balance`, `filling_target`,
-/// `filled_min_storage_floor`, `load_balance`, `fpha`) and
-/// `StateSpace::z_inflow_rows()`, plus counts derivable from
-/// `StageContext`/`StageGeometry`
-/// (`evap_indices.len()`, `n_hydros * n_blks` per operational-violation
-/// family) — never a hand-copied row-fill formula.
-/// Three families this walk cannot place directly are handled by
-/// construction: `transit_bucket_definition`'s size falls out of the
-/// `water_balance.end() .. load_balance.start()` gap regardless of its value; the
-/// three anticipated-thermal families are asserted empty (panics naming the
-/// gap) rather than silently misclassified — `novomodelo_rodada` has neither
-/// declared travel-time arcs nor anticipated thermals, confirmed by the
-/// `filling_target.start` reconciliation this function asserts; and
-/// `generic_constraint` is the un-subdivided residual between the anticipated
-/// region and `base_row_count` (this classifier does not further decompose
-/// active generic-constraint rows by declared constraint).
-fn classify_stage_rows(
-    ctx: &StageContext<'_>,
-    state_space: &StateSpace,
-    stage: usize,
-    template: &StageTemplate,
-    base_row_count: usize,
-) -> Vec<RowFamily> {
-    let geom = &ctx.geometry_per_stage[stage];
-    let n_hydros = state_space.hydro_count;
-    let n_blks = geom.n_blks;
-    let total_rows = template.num_rows;
-
-    let mut fam = vec![RowFamily::CutRow; total_rows];
-    let mark = |fam: &mut [RowFamily], range: Range<usize>, family: RowFamily| {
-        fam[range].fill(family);
-    };
-
-    let z_inflow_range = state_space.z_inflow_rows();
-    mark(&mut fam, z_inflow_range.clone(), RowFamily::ZInflow);
-    assert_eq!(
-        z_inflow_range.start, 0,
-        "classify_stage_rows: z_inflow does not start at row 0 at stage {stage} — state \
-         pinning uses column bounds, so no row family should precede it"
-    );
-    assert_eq!(
-        geom.water_balance.start(),
-        z_inflow_range.end,
-        "classify_stage_rows: water_balance does not immediately follow z_inflow at stage {stage}"
-    );
-
-    mark(
-        &mut fam,
-        geom.water_balance.range(),
-        RowFamily::WaterBalance,
-    );
-    mark(
-        &mut fam,
-        geom.water_balance.end()..geom.load_balance.start(),
-        RowFamily::TransitBucketDefinition,
-    );
-    mark(&mut fam, geom.load_balance.range(), RowFamily::LoadBalance);
-    assert_eq!(
-        geom.fpha.start,
-        geom.load_balance.end(),
-        "classify_stage_rows: fpha does not immediately follow load_balance at stage {stage}"
-    );
-    mark(&mut fam, geom.fpha.clone(), RowFamily::Fpha);
-
-    let evap_len = geom.evap_indices.len();
-    let evap_range = geom.fpha.end..geom.fpha.end + evap_len;
-    mark(&mut fam, evap_range.clone(), RowFamily::Evaporation);
-
-    let mut next = evap_range.end;
-    let opviol_len = n_hydros * n_blks;
-    for family in [
-        RowFamily::MinOutflowViolation,
-        RowFamily::MaxOutflowViolation,
-        RowFamily::MinTurbineViolation,
-        RowFamily::MinGenerationViolation,
-    ] {
-        mark(&mut fam, next..next + opviol_len, family);
-        next += opviol_len;
-    }
-
-    assert_eq!(
-        next, geom.filling_target.start,
-        "classify_stage_rows: computed row offset {next} before filling_target does not match \
-         StageGeometry::filling_target.start {} at stage {stage} — family-order or size \
-         assumption is wrong",
-        geom.filling_target.start
-    );
-    mark(
-        &mut fam,
-        geom.filling_target.clone(),
-        RowFamily::FillingTarget,
-    );
-    assert_eq!(
-        geom.filled_min_storage_floor.start, geom.filling_target.end,
-        "classify_stage_rows: filled_min_storage_floor does not immediately follow \
-         filling_target at stage {stage}"
-    );
-    mark(
-        &mut fam,
-        geom.filled_min_storage_floor.clone(),
-        RowFamily::FilledMinStorageFloor,
-    );
-
-    assert_eq!(
-        state_space.n_anticipated, 0,
-        "classify_stage_rows: n_anticipated={} but this classifier does not yet derive the \
-         sparse anticipated row families (anticipated_fishing / anticipated_state_out_def / \
-         anticipated_slot_definition) — extend it before probing a case with anticipated \
-         thermals",
-        state_space.n_anticipated
-    );
-    assert!(
-        geom.filled_min_storage_floor.end <= base_row_count,
-        "classify_stage_rows: filled_min_storage_floor.end {} exceeds base_row_count {} at \
-         stage {stage}",
-        geom.filled_min_storage_floor.end,
-        base_row_count
-    );
-    mark(
-        &mut fam,
-        geom.filled_min_storage_floor.end..base_row_count,
-        RowFamily::GenericConstraint,
-    );
-
-    fam
-}
-
-/// Structural equality-floor / FPHA / operational-violation census for one
-/// stage, logged so family-composition drift across runs is visible.
-struct RowCensus {
-    water_balance: usize,
-    z_inflow: usize,
-    evaporation: usize,
-    load_balance: usize,
-    fpha: usize,
-    operational_violation: usize,
-    cut_rows: usize,
-}
-
-fn census(fam: &[RowFamily]) -> RowCensus {
-    let count = |f: RowFamily| fam.iter().filter(|&&x| x == f).count();
-    RowCensus {
-        water_balance: count(RowFamily::WaterBalance),
-        z_inflow: count(RowFamily::ZInflow),
-        evaporation: count(RowFamily::Evaporation),
-        load_balance: count(RowFamily::LoadBalance),
-        fpha: count(RowFamily::Fpha),
-        operational_violation: count(RowFamily::MinOutflowViolation)
-            + count(RowFamily::MaxOutflowViolation)
-            + count(RowFamily::MinTurbineViolation)
-            + count(RowFamily::MinGenerationViolation),
-        cut_rows: count(RowFamily::CutRow),
-    }
-}
-
-#[test]
-fn classify_stage_rows_reconciles_on_a_hand_built_geometry() {
-    use novomodelo_sddp::test_support::{eq, geometry, state_layout};
-
-    let dims = eq(
-        /* hydro_count */ 3, /* max_par_order */ 0, /* n_thermals */ 0,
-        /* n_lines */ 0, /* n_buses */ 2, /* n_blks */ 2,
-        /* has_inflow_penalty */ false,
-    );
-    let fpha_hydro_indices = vec![0_usize, 1];
-    let fpha_planes = [2_usize, 3];
-    let evap_hydro_indices = vec![2_usize];
-    let geom = geometry(&dims, fpha_hydro_indices, &fpha_planes, evap_hydro_indices);
-    let n_hydros = dims.hydro_count;
-    let n_blks = dims.n_blks;
-    let state = state_layout(n_hydros, dims.max_par_order);
-
-    let total_fpha_rows = 2 * n_blks + 3 * n_blks;
-    let evap_rows = geom.evap_indices.len(); // one evap hydro
-    let opviol_rows = 4 * n_hydros * n_blks;
-    // z_inflow (n_hydros) + water_balance (n_hydros, BlockMode::Parallel) +
-    // load_balance + fpha + evaporation + 4 operational-violation families;
-    // no filling/anticipated/generic-constraint rows in this fixture.
-    let base_row_count = n_hydros
-        + n_hydros
-        + geom.load_balance.range().len()
-        + total_fpha_rows
-        + evap_rows
-        + opviol_rows;
-    assert_eq!(
-        state.z_inflow_rows().start,
-        0,
-        "fixture arithmetic sanity: z_inflow must be the first row family"
-    );
-
-    let total_rows = base_row_count + 5; // + 5 synthetic cut rows
-    let template = StageTemplate {
-        num_cols: 1,
-        num_rows: total_rows,
-        num_nz: 0,
-        col_starts: vec![0, 0],
-        row_indices: vec![],
-        values: vec![],
-        col_lower: vec![0.0],
-        col_upper: vec![0.0],
-        objective: vec![0.0],
-        row_lower: vec![0.0; total_rows],
-        row_upper: vec![0.0; total_rows],
-        n_state: 0,
-        col_scale: Vec::new(),
-        row_scale: Vec::new(),
-    };
-
-    let fixture = StageContextFixture::new(
-        std::slice::from_ref(&template),
-        &[],
-        std::slice::from_ref(&geom),
-    )
-    .study_stage_ids(&[0])
-    .discount_factors(&[1.0])
-    .cumulative_discount_factors(&[1.0]);
-    let ctx = fixture.ctx();
-
-    let fam = classify_stage_rows(&ctx, &state, 0, &template, base_row_count);
-    let c = census(&fam);
-    assert_eq!(c.water_balance, n_hydros);
-    assert_eq!(c.z_inflow, n_hydros);
-    assert_eq!(c.evaporation, evap_rows);
-    assert_eq!(c.load_balance, 2 * n_blks);
-    assert_eq!(c.fpha, total_fpha_rows);
-    assert_eq!(c.operational_violation, opviol_rows);
-    assert_eq!(c.cut_rows, 5);
 }
 
 // ---------------------------------------------------------------------------
@@ -361,13 +183,14 @@ fn classify_stage_rows_reconciles_on_a_hand_built_geometry() {
 const SEED: u64 = 42;
 
 fn case_dir() -> PathBuf {
-    let home =
-        std::env::var("HOME").expect("HOME must be set to resolve the novomodelo_rodada case");
-    let dir = PathBuf::from(home).join("git/novomodelo-bridge/example/novomodelo_rodada");
+    let home = std::env::var("HOME").expect("HOME must be set to resolve the reduced ago/26 case");
+    let dir = PathBuf::from(home).join(
+        "git/onstec-modelos/novomodelo-bridge/example/casos-exemplo-ct/newave/novomodelo-ago-26-reduzido",
+    );
     assert!(
         dir.join("config.json").exists(),
-        "novomodelo_rodada case not found at {}; these probes target the converted case checked \
-         out as a sibling of this repository",
+        "reduced ago/26 case not found at {}; convert the raw deck newave-ago-26-reduzido with the \
+         current bridge into novomodelo-ago-26-reduzido",
         dir.display()
     );
     dir
@@ -376,6 +199,25 @@ fn case_dir() -> PathBuf {
 // ---------------------------------------------------------------------------
 // Case loading (fresh per checkpoint)
 // ---------------------------------------------------------------------------
+
+/// The stochastic context and hydro models every probe setup is built from.
+fn prepare_case(
+    case_dir: &Path,
+    config: &Config,
+) -> (PrepareStochasticResult, PrepareHydroModelsResult) {
+    let system =
+        novomodelo_io::load_case(case_dir).expect("load_case must succeed for the reduced case");
+    let source = config
+        .training_scenario_source(&case_dir.join("config.json"))
+        .expect("training_scenario_source must resolve");
+    let prepared =
+        novomodelo_sddp::setup::prepare_stochastic(system, case_dir, config, SEED, &source, None)
+            .expect("prepare_stochastic must succeed for the reduced case");
+    let hydro_models =
+        novomodelo_sddp::hydro_models::prepare_hydro_models(&prepared.system, case_dir, false)
+            .expect("prepare_hydro_models must succeed for the reduced case");
+    (prepared, hydro_models)
+}
 
 /// Load a fresh `StudySetup` for `case_dir`, overriding `forward_passes` and
 /// the iteration-limit stopping rule so each checkpoint is an independent,
@@ -391,27 +233,14 @@ fn fresh_setup(
     let config_path = case_dir.join("config.json");
     let mut config = novomodelo_io::parse_config(&config_path).expect("config.json must parse");
     config.training.selection = Some(TrainingSelection::Sampled { forward_passes });
-    config.training.stopping_rules = Some(vec![
-        novomodelo_io::config::StoppingRuleConfig::IterationLimit {
-            limit: iteration_limit,
-        },
-    ]);
+    config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit {
+        limit: iteration_limit,
+    }]);
     if cut_selection_off {
         config.training.cut_selection = novomodelo_io::config::RowSelectionConfig::default();
     }
 
-    let system =
-        novomodelo_io::load_case(case_dir).expect("load_case must succeed for novomodelo_rodada");
-    let source = config
-        .training_scenario_source(&config_path)
-        .expect("training_scenario_source must resolve");
-    let prepared =
-        novomodelo_sddp::setup::prepare_stochastic(system, case_dir, &config, SEED, &source, None)
-            .expect("prepare_stochastic must succeed for novomodelo_rodada");
-    let hydro_models: PrepareHydroModelsResult =
-        novomodelo_sddp::hydro_models::prepare_hydro_models(&prepared.system, case_dir, false)
-            .expect("prepare_hydro_models must succeed for novomodelo_rodada");
-
+    let (prepared, hydro_models) = prepare_case(case_dir, &config);
     StudySetup::new(
         &prepared.system,
         &config,
@@ -419,7 +248,7 @@ fn fresh_setup(
         hydro_models,
         Vec::new(),
     )
-    .expect("StudySetup::new must build for novomodelo_rodada")
+    .expect("StudySetup::new must build for the reduced case")
 }
 
 struct CheckpointRun {
@@ -443,7 +272,7 @@ fn train_checkpoint(
 
     let outcome = setup
         .train(&mut solver, &comm, threads, ActiveSolver::new, None, None)
-        .expect("train() must not return Err on novomodelo_rodada");
+        .expect("train() must not return Err on the reduced case");
     assert!(
         outcome.error.is_none(),
         "training error at checkpoint {iteration_limit}: {:?}",
@@ -522,7 +351,7 @@ fn run_extra_forward_pass(
         &batch,
         &mut records,
     )
-    .expect("the extra deterministic forward pass must not error on novomodelo_rodada");
+    .expect("the extra deterministic forward pass must not error on the reduced case");
 
     ForwardProbe {
         basis_store,
@@ -611,7 +440,7 @@ fn lag_fold_check_stage(
     let num_stages = setup.num_stages();
     let n_trials = forward_probe.records.len() / num_stages;
     let base_row_count = ctx.templates[stage].num_rows;
-    let family_ids = classify_stage_rows(&ctx, state_space, stage, template, base_row_count);
+    let family_ids = row_families::classify_stage_rows(setup, stage, template.num_rows);
 
     let n_state = state_space.n_state;
     let n = state_space.hydro_count;
@@ -665,14 +494,14 @@ fn lag_fold_check_stage(
             if r >= base_row_count {
                 continue;
             }
-            let fam = family_ids[r].as_str();
+            let fam = row_families::name(family_ids[r]);
             if j < n {
                 *storage_support_families.entry(fam).or_insert(0) += 1;
             } else {
                 *lag_support_families.entry(fam).or_insert(0) += 1;
                 match family_ids[r] {
-                    RowFamily::ZInflow => z_rows += 1,
-                    RowFamily::WaterBalance => wb_rows += 1,
+                    RowClass::Base(RowFamily::ZInflow) => z_rows += 1,
+                    RowClass::Base(RowFamily::WaterBalance) => wb_rows += 1,
                     _ => {
                         *unexpected_lag_support.entry(fam).or_insert(0) += 1;
                     }
@@ -716,7 +545,7 @@ fn lag_fold_check_stage(
         for (r, _v) in csc_col(zc) {
             if r < base_row_count {
                 *z_col_support_families
-                    .entry(family_ids[r].as_str())
+                    .entry(row_families::name(family_ids[r]))
                     .or_insert(0) += 1;
             }
         }
@@ -813,7 +642,7 @@ fn lag_fold_check_stage(
                 m,
                 NodeId(stage as i32),
             )
-            .expect("stage solve must not error on novomodelo_rodada");
+            .expect("stage solve must not error on the reduced case");
             let rc = view.reduced_costs;
             let y = view.dual;
             solves += 1;
@@ -872,7 +701,7 @@ fn lag_fold_check_stage(
     }
 }
 
-/// Lag-fold feasibility probe: trains one checkpoint of the `novomodelo_rodada`
+/// Lag-fold feasibility probe: trains one checkpoint of the reduced ago/26
 /// case (cut selection off, so resident-cut mass is production-shaped), then
 /// verifies on every replayed backward solve that the pinned inflow-lag
 /// columns couple to the LP through exactly three channels (their z-inflow
@@ -881,7 +710,7 @@ fn lag_fold_check_stage(
 /// from row duals and pool coefficients alone. See [`lag_fold_check_stage`]
 /// for the four identities.
 #[test]
-#[ignore = "slow: trains a real checkpoint against the novomodelo_rodada case; \
+#[ignore = "slow: trains a real checkpoint against the reduced ago/26 case; \
             run with --run-ignored --release"]
 fn lag_fold_chain_rule_identity() {
     let case = case_dir();
@@ -1116,7 +945,7 @@ fn run_lag_fold_ab_stage(
                     m,
                     NodeId(stage as i32),
                 )
-                .expect("stage solve must not error on novomodelo_rodada");
+                .expect("stage solve must not error on the reduced case");
                 let wall_ms = view.solve_time_seconds * 1_000.0;
                 let pivots = view.iterations;
                 let objective = view.objective;
@@ -1155,14 +984,14 @@ fn run_lag_fold_ab_stage(
 }
 
 /// Lag-fold static A/B (the fold's go/no-go performance readout): trains
-/// checkpoints {3, 10, 30} of the `novomodelo_rodada` case with cut selection off
+/// checkpoints {3, 10, 30} of the reduced ago/26 case with cut selection off
 /// (resident cuts ~24/80/240 — the density curve up to production-shaped
 /// mass), then replays every trial's backward chain at stages {5, 32, 60}
 /// on the original frozen template and on its per-trial cut-row-folded twin,
 /// asserting per-opening objective equality and reporting wall/pivot ratios
 /// per (checkpoint, stage).
 #[test]
-#[ignore = "slow (~1h): trains three checkpoints against the novomodelo_rodada case; \
+#[ignore = "slow (~1h): trains three checkpoints against the reduced ago/26 case; \
             run with --run-ignored --release"]
 fn lag_fold_static_ab() {
     let case = case_dir();
@@ -1210,5 +1039,130 @@ fn lag_fold_static_ab() {
                 s.max_obj_rel_diff,
             );
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// By-node backward aggregation share
+// ---------------------------------------------------------------------------
+
+/// Worker count of one production rank; the projection below moves with it.
+const PRODUCTION_WORKERS: usize = 32;
+const SHARE_PROBE_THREADS: usize = 14;
+const SHARE_PROBE_ITERATIONS: u32 = 10;
+
+/// Trains the reduced ago/26 case for ten iterations on the compact LP
+/// under `by_node` with 14 threads and reports the share of the backward pass
+/// spent in the serial aggregation after each stage's parallel solves:
+/// `A / E` over the iterations, with `A` the reported aggregation time and `E`
+/// the backward elapsed time.
+///
+/// The projection to `PRODUCTION_WORKERS` workers is `A / (A + K / W)`, with
+/// `K` the backward wall time summed over every worker. That is the parallel
+/// time when every stage has at least `W` work units, as the production deck
+/// has, so the projected share is an upper estimate. The reduced deck keeps
+/// the production deck's plants and PAR orders, so the aggregation work per
+/// trial point matches and the share does not depend on the forward-pass
+/// count. The probe measures and asserts no budget.
+#[test]
+#[ignore = "slow: trains ten iterations of the reduced ago/26 case on 14 threads; \
+            run with --run-ignored --release"]
+fn by_node_backward_aggregation_share_on_the_reduced_case() {
+    let case = case_dir();
+    let hardware = std::thread::available_parallelism()
+        .expect("available_parallelism must resolve")
+        .get();
+    assert!(
+        hardware >= SHARE_PROBE_THREADS,
+        "the probe needs {SHARE_PROBE_THREADS} hardware threads, this host has {hardware}"
+    );
+
+    let mut config =
+        novomodelo_io::parse_config(&case.join("config.json")).expect("config.json must parse");
+    config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit {
+        limit: SHARE_PROBE_ITERATIONS,
+    }]);
+    if matches!(
+        config.training.cut_selection.selection,
+        Some(SelectionMethod::Dynamic { .. })
+    ) {
+        config.training.cut_selection.selection = None;
+        println!("row selection `dynamic` switched off: `by_node` never runs under it");
+    }
+
+    let (prepared, hydro_models) = prepare_case(&case, &config);
+    let mut setup = common::build_setup_for_case_as(
+        &case,
+        &config,
+        &prepared.system,
+        prepared.stochastic,
+        hydro_models,
+        Emission::Compact,
+    );
+    setup.set_scheduler(BackwardScheduler::ByNode { block_size: None });
+
+    let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
+    let (event_tx, event_rx) = mpsc::channel::<TrainingEvent>();
+    let outcome = setup
+        .train(
+            &mut solver,
+            &StubComm,
+            SHARE_PROBE_THREADS,
+            ActiveSolver::new,
+            Some(event_tx),
+            None,
+        )
+        .expect("train() must not return Err on the reduced case");
+    assert!(
+        outcome.error.is_none(),
+        "training error: {:?}",
+        outcome.error
+    );
+
+    let mut elapsed_ms = 0.0;
+    let mut aggregation_ms = 0.0;
+    let mut worker_work_ms = 0.0;
+    for event in event_rx.try_iter() {
+        match event {
+            TrainingEvent::BackwardPassComplete {
+                elapsed_ms: wall,
+                aggregation_time_ms,
+                ..
+            } => {
+                elapsed_ms += wall as f64;
+                aggregation_ms += aggregation_time_ms as f64;
+            }
+            TrainingEvent::WorkerTiming {
+                phase: WorkerTimingPhase::Backward,
+                timings,
+                ..
+            } => worker_work_ms += timings.backward_wall_ms,
+            _ => {}
+        }
+    }
+
+    let share = aggregation_ms / elapsed_ms;
+    let projected = aggregation_ms / (aggregation_ms + worker_work_ms / PRODUCTION_WORKERS as f64);
+
+    println!("backward aggregation share: {share:.4}");
+    println!(
+        "backward seconds: aggregation={:.3} worker work={:.3} elapsed={:.3}",
+        aggregation_ms / 1000.0,
+        worker_work_ms / 1000.0,
+        elapsed_ms / 1000.0
+    );
+    println!(
+        "projected backward aggregation share at {PRODUCTION_WORKERS} workers: {projected:.4}"
+    );
+    assert!(
+        aggregation_ms <= elapsed_ms,
+        "aggregation {aggregation_ms} ms exceeds the backward elapsed {elapsed_ms} ms"
+    );
+    assert!(worker_work_ms > 0.0, "no backward worker time was reported");
+    for (name, value) in [("share", share), ("projected share", projected)] {
+        assert!(
+            value.is_finite() && (0.0..=1.0).contains(&value),
+            "backward aggregation {name} {value} lies outside [0, 1]"
+        );
     }
 }

@@ -5,6 +5,7 @@ use std::ops::Range;
 use novomodelo_core::temporal::BlockMode;
 use novomodelo_sddp::indexer::{BlockRowFamily, EvaporationIndices, HydroSys, StateSpace};
 use novomodelo_sddp::lp::builder::{GenericConstraintRowEntry, StageGeometry};
+use novomodelo_sddp::test_support::template_structure::column_entries;
 use novomodelo_solver::StageTemplate;
 
 pub struct CompactMap {
@@ -189,15 +190,6 @@ pub fn assert_compact_scales_match(
             "{key} stage {stage}: coupled compact row {row} row_scale {scale} must be finite and positive"
         );
     }
-}
-
-fn column_entries(template: &StageTemplate, c: usize) -> impl Iterator<Item = (usize, f64)> + '_ {
-    let start = usize::try_from(template.col_starts[c]).expect("column start is non-negative");
-    let end = usize::try_from(template.col_starts[c + 1]).expect("column end is non-negative");
-    (start..end).map(move |k| {
-        let row = usize::try_from(template.row_indices[k]).expect("row index is non-negative");
-        (row, template.values[k])
-    })
 }
 
 /// On the pre-scaling templates, the compact template is the logical one with

@@ -21,6 +21,7 @@ use novomodelo_core::System;
 use novomodelo_io::{CaseArtifacts, Config, ErrorKind, LoadError, PolicyMode, ReportEntry};
 
 use crate::hydro_models::prepare_hydro_models_from_artifacts;
+use crate::lp::indexer::InflowForm;
 use crate::policy::full_fcf_load::{
     CheckedFullFcfLoad, FullFcfLoadError, FullFcfLoadKind, check_full_fcf_load, locate_policy_dir,
 };
@@ -375,6 +376,7 @@ pub fn validate_study(request: ValidateRequest<'_>) -> Result<ValidatedStudy, Va
         hydro_models,
         requirements,
         params,
+        InflowForm::Logical,
     )
     .map_err(at(setup_phase))?;
 

@@ -76,10 +76,13 @@ use novomodelo_sddp::policy_export::{BindingCounters, build_stage_cut_records};
 use novomodelo_sddp::setup::{NodePos, OpeningSource, StageIdx};
 use novomodelo_sddp::test_support::{
     dcs_k_fan_setup, extensive_form_optimum, external_distinct_fan_setup,
-    external_distinct_fan_setup_heterogeneous_cut_state, external_root_fan_setup, k_fan_setup,
+    external_distinct_fan_setup_heterogeneous_cut_state,
+    external_distinct_fan_setup_heterogeneous_cut_state_in_both_forms,
+    external_distinct_fan_setup_lagged_parent_in_both_forms, external_root_fan_setup, k_fan_setup,
     node_prefix_counts, node_scenario_count, node_visit_probabilities, oracle_chain_setup,
     pool_cut_state_dimensions, terminal_generated_fan_setup, try_k_fan_simulation_enumerated,
     water_binding_external_fan_setup, water_binding_external_fan_setup_reversed,
+    water_binding_generated_fan_setup_in_both_forms,
 };
 use novomodelo_solver::ActiveSolver;
 
@@ -1426,6 +1429,174 @@ mod terminal_fusion {
             "the compute-win mirror: a Generated terminal leaf is never fused, so the backward \
              must solve every one of the {FUSION_FAN_K} leaves on every one of the \
              {FUSION_MAX_ITERATIONS} iterations, got {backward_lp_solves} backward LP solves"
+        );
+    }
+}
+
+mod compact_form {
+    use super::{
+        NodePos, OpeningSource, StageIdx, assert_distinct_external_leaf_columns, close,
+        extensive_form_optimum, external_distinct_fan_setup_heterogeneous_cut_state_in_both_forms,
+        external_distinct_fan_setup_lagged_parent_in_both_forms, pool_cut_state_dimensions,
+        train_bounds, train_bounds_threads, water_binding_generated_fan_setup_in_both_forms,
+    };
+
+    const FAN_K: usize = 2;
+    const TERMINAL_FAN_K: usize = 3;
+    const MAX_ITERATIONS: u32 = 30;
+
+    /// Trains the compact twin and closes it against the extensive-form
+    /// optimum of its logical twin: the compact LP prices the same problem.
+    #[test]
+    fn external_distinct_fan_heterogeneous_cut_state_compact_matches_extensive_form() {
+        let (logical, mut compact) =
+            external_distinct_fan_setup_heterogeneous_cut_state_in_both_forms(
+                FAN_K,
+                MAX_ITERATIONS,
+            );
+        assert_distinct_external_leaf_columns(&compact);
+        assert!(
+            compact.stage_state().z_inflow.is_empty() && !logical.stage_state().z_inflow.is_empty(),
+            "power check: the compact LP carries no lag columns and its logical twin does"
+        );
+
+        let optimum = extensive_form_optimum(&logical);
+        let (lb, ub) = train_bounds(&mut compact);
+
+        assert!(
+            close(lb, optimum),
+            "compact heterogeneous-cut-state fan final_lb {lb} must equal extensive-form optimum \
+             {optimum} (gap {})",
+            lb - optimum
+        );
+        assert!(
+            close(lb, ub),
+            "compact heterogeneous-cut-state fan final_lb {lb} must equal final_ub {ub} (gap {})",
+            lb - ub
+        );
+    }
+
+    /// The leaf pool and the cut-generating parent pool project the same lag
+    /// slot, so the folded leaf slice reads a lag dual the compact LP has no
+    /// column for.
+    #[test]
+    fn external_distinct_fan_lagged_parent_compact_matches_extensive_form() {
+        let (logical, mut compact) =
+            external_distinct_fan_setup_lagged_parent_in_both_forms(FAN_K, MAX_ITERATIONS);
+        assert_distinct_external_leaf_columns(&compact);
+        assert!(
+            compact.stage_state().z_inflow.is_empty() && !logical.stage_state().z_inflow.is_empty(),
+            "power check: the compact LP carries no lag columns and its logical twin does"
+        );
+        let g = &compact.inputs.node_graph;
+        let root_pool = (0..g.nodes.len())
+            .map(NodePos)
+            .find(|&pos| g.nodes[pos].stage == StageIdx(0))
+            .map(|pos| g.nodes[pos].pool_id)
+            .expect("fixture must have a stage-0 root");
+        let dims = pool_cut_state_dimensions(&compact);
+        for pos in (0..g.nodes.len())
+            .map(NodePos)
+            .filter(|&p| g.successors[p].is_empty())
+        {
+            let leaf_pool = g.nodes[pos].pool_id;
+            assert_eq!(
+                dims[leaf_pool], dims[root_pool],
+                "power check: leaf pool {leaf_pool} and root pool {root_pool} must project the \
+                 same cut-state dimension ({dims:?}), lag slot included"
+            );
+        }
+
+        let optimum = extensive_form_optimum(&logical);
+        let (lb, ub) = train_bounds(&mut compact);
+
+        assert!(
+            close(lb, optimum),
+            "compact lagged-parent fan final_lb {lb} must equal extensive-form optimum \
+             {optimum} (gap {})",
+            lb - optimum
+        );
+        assert!(
+            close(lb, ub),
+            "compact lagged-parent fan final_lb {lb} must equal final_ub {ub} (gap {})",
+            lb - ub
+        );
+    }
+
+    /// The Generated leaves share one pool and no leaf is an External terminal
+    /// leaf, so every leaf goes through the replicated per-node solve, which
+    /// pins once per child load and chain-rules each opening. The hydro is
+    /// productive in a scarce reservoir, so the pinned incoming storage changes
+    /// the leaf's cost and its cut coefficient.
+    #[test]
+    fn water_binding_generated_fan_compact_matches_extensive_form() {
+        let (mut logical, mut compact) =
+            water_binding_generated_fan_setup_in_both_forms(TERMINAL_FAN_K, MAX_ITERATIONS);
+        assert!(
+            compact.stage_state().z_inflow.is_empty() && !logical.stage_state().z_inflow.is_empty(),
+            "power check: the compact LP carries no lag columns and its logical twin does"
+        );
+        let g = &compact.inputs.node_graph;
+        let leaves: Vec<NodePos> = (0..g.nodes.len())
+            .map(NodePos)
+            .filter(|&pos| g.successors[pos].is_empty())
+            .collect();
+        assert_eq!(leaves.len(), TERMINAL_FAN_K, "one leaf per fan branch");
+        assert!(
+            leaves
+                .iter()
+                .all(|&pos| g.nodes[pos].openings.source == OpeningSource::Generated),
+            "power check: no leaf is an External terminal leaf, so none is read from a \
+             captured slice"
+        );
+        let root_pool = (0..g.nodes.len())
+            .map(NodePos)
+            .find(|&pos| g.nodes[pos].stage == StageIdx(0))
+            .map(|pos| g.nodes[pos].pool_id)
+            .expect("fixture must have a stage-0 root");
+
+        let optimum = extensive_form_optimum(&logical);
+        let (logical_lb, _) = train_bounds(&mut logical);
+        assert!(
+            close(logical_lb, optimum),
+            "harness check: logical water-binding fan final_lb {logical_lb} must equal \
+             extensive-form optimum {optimum} (gap {})",
+            logical_lb - optimum
+        );
+
+        let (lb, ub) = train_bounds(&mut compact);
+        assert!(
+            compact.fcf.pools[root_pool]
+                .active_cuts()
+                .any(|(_, _, coefficients)| coefficients.iter().any(|&c| c != 0.0)),
+            "power check: water has value, so some root cut must carry a nonzero coefficient"
+        );
+        assert!(
+            close(lb, optimum),
+            "compact water-binding fan final_lb {lb} must equal extensive-form optimum \
+             {optimum} (gap {})",
+            lb - optimum
+        );
+        assert!(
+            close(lb, ub),
+            "compact water-binding fan final_lb {lb} must equal final_ub {ub} (gap {})",
+            lb - ub
+        );
+    }
+
+    #[test]
+    fn water_binding_generated_fan_compact_final_lb_is_thread_shape_invariant() {
+        let (_, mut one) =
+            water_binding_generated_fan_setup_in_both_forms(TERMINAL_FAN_K, MAX_ITERATIONS);
+        let (_, mut two) =
+            water_binding_generated_fan_setup_in_both_forms(TERMINAL_FAN_K, MAX_ITERATIONS);
+        let (lb1, _) = train_bounds_threads(&mut one, 1);
+        let (lb2, _) = train_bounds_threads(&mut two, 2);
+        assert_eq!(
+            lb1.to_bits(),
+            lb2.to_bits(),
+            "compact water-binding fan final_lb must be bit-identical across --threads 1 \
+             ({lb1}) and --threads 2 ({lb2})"
         );
     }
 }

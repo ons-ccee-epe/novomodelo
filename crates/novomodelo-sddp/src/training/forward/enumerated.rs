@@ -19,7 +19,7 @@ use std::sync::mpsc::Sender;
 use std::time::Instant;
 
 use novomodelo_core::{TrainingEvent, WorkerTimingPhase};
-use novomodelo_solver::{SolutionView, SolverInterface, StageTemplate};
+use novomodelo_solver::{SolverInterface, StageTemplate};
 use novomodelo_stochastic::{
     ClassSampleRequest, ForwardNoiseTables, ForwardSampler, SampleRequest,
 };
@@ -31,31 +31,20 @@ use crate::{
     cut::FutureCostFunction,
     dcs::DcsParams,
     error::SddpError,
-    indexer::CutStateProjection,
     noise::AccumSnapshot,
     setup::node_graph::{EnumeratedPlan, NodeGraph, NodeId, NodePos, StageIdx, TypedVec},
     solve::StageOpeningSolver,
     solver_stats::SolverStatsDelta,
-    training::backward::extract_state_duals_only,
     trajectory::TrajectoryRecord,
     workspace::{BasisStore, CapturedBasis, SolverWorkspace},
 };
 
 use super::{
     capture_forward_basis,
-    node_solve::{ForwardBasisApply, ForwardNodeSolve, solve_forward_node_core},
+    node_solve::{
+        ForwardBasisApply, ForwardNodeSolve, FusedTerminalSlice, solve_forward_node_core,
+    },
 };
-
-/// A node's terminal-leaf subgradient, captured on the forward for the
-/// backward to consume instead of re-solving (`NodeGraph::is_external_terminal_leaf`).
-/// `captured` is `false` for every non-eligible node; `objective`/`state_duals`
-/// are meaningful only when it is `true`.
-#[derive(Clone, Default)]
-pub(super) struct FusedTerminalSlice {
-    captured: bool,
-    objective: f64,
-    state_duals: Vec<f64>,
-}
 
 /// One node's forward visit outcome, keyed by canonical node position in the
 /// per-node arena and produced worker-locally in the claim loop.
@@ -75,6 +64,21 @@ struct NodeVisit {
     basis: Option<CapturedBasis>,
     /// Populated only for an eligible External terminal leaf; see [`FusedTerminalSlice`].
     fused: FusedTerminalSlice,
+}
+
+impl NodeVisit {
+    /// A slot whose outgoing state and fused subgradient never grow: both hold at
+    /// most `n_state` entries.
+    fn with_state_capacity(n_state: usize) -> Self {
+        Self {
+            out_state: Vec::with_capacity(n_state),
+            fused: FusedTerminalSlice {
+                subgradient: Vec::with_capacity(n_state),
+                ..FusedTerminalSlice::default()
+            },
+            ..Self::default()
+        }
+    }
 }
 
 /// Reused per-iteration mutable scratch for the enumerated forward engine —
@@ -134,7 +138,7 @@ impl EnumeratedForwardScratch {
                 fused: FusedTerminalSlice {
                     captured: false,
                     objective: 0.0,
-                    state_duals: Vec::with_capacity(n_state),
+                    subgradient: Vec::with_capacity(n_state),
                 },
             })
             .collect();
@@ -154,14 +158,14 @@ impl EnumeratedForwardScratch {
     }
 
     /// Node `node`'s captured terminal-leaf subgradient from the most recent
-    /// [`run_enumerated_forward`] call — `Some((objective, state_duals))` for
+    /// [`run_enumerated_forward`] call — `Some((objective, subgradient))` for
     /// an eligible External terminal leaf, `None` otherwise. Mirrors
     /// [`Self::out_state`]'s node-indexed read.
     pub(crate) fn fused_terminal_slice(&self, node: NodePos) -> Option<(f64, &[f64])> {
         let fused = &self.arena[node].fused;
         fused
             .captured
-            .then_some((fused.objective, fused.state_duals.as_slice()))
+            .then_some((fused.objective, fused.subgradient.as_slice()))
     }
 
     /// Test-only: directly seed node `node`'s `out_state`, growing the arena to
@@ -200,27 +204,6 @@ pub(crate) struct EnumeratedForwardResult {
     pub stage_stats: Vec<SolverStatsDelta>,
 }
 
-/// For an eligible node (`cut_state.is_some()`), extract this node's own
-/// incoming-state subgradient via [`extract_state_duals_only`] — reused
-/// verbatim, never re-derived (`rc / col_scale`, divided; sddp.md "Benders cut
-/// sign & subgradient extraction") — before `view` is dropped; otherwise mark
-/// `fused_out` uncaptured.
-pub(super) fn capture_fused_terminal_slice(
-    view: &SolutionView<'_>,
-    col_scale: &[f64],
-    cut_state: Option<&CutStateProjection>,
-    fused_out: &mut FusedTerminalSlice,
-) {
-    match cut_state {
-        Some(cut_state) => {
-            fused_out.objective =
-                extract_state_duals_only(view, cut_state, col_scale, &mut fused_out.state_duals);
-            fused_out.captured = true;
-        }
-        None => fused_out.captured = false,
-    }
-}
-
 /// Solve one node's LP at the incoming state already installed on
 /// `ws.current_state`, warm-started from `stored_basis` (matched by node id, or
 /// applied 1:1 at the terminal stage — `ForwardBasisApply`); leaves
@@ -234,7 +217,7 @@ pub(super) fn capture_fused_terminal_slice(
 /// never races the session basis store. The DCS path captures no basis, leaving
 /// `basis_out` untouched. `fused_out` is populated independently of the basis
 /// capture, gated on `NodeGraph::is_external_terminal_leaf` — see
-/// [`capture_fused_terminal_slice`].
+/// [`FusedTerminalSlice`].
 ///
 /// `scenario_index` (the caller's `EnumeratedForwardScratch::m_rep[node]`) is
 /// this call's solve/stats-bookkeeping role only; the SAME underlying value's
@@ -342,7 +325,7 @@ fn solve_forward_node<S: SolverInterface + Send>(
 // RATIONALE: the stage-synced outer loop, per-stage (node, prefix) claim distribution, and
 // canonical-order arena scatter are one reproducibility-critical sequence; splitting it
 // would fragment the claim-order-independence contract for no clarity gain.
-#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+#[allow(clippy::too_many_lines)]
 pub(crate) fn run_enumerated_forward<S>(
     plan: &EnumeratedPlan,
     scratch: &mut EnumeratedForwardScratch,
@@ -483,10 +466,10 @@ where
                 src.accum.copy_into(&mut dst.accum);
                 dst.fused.captured = src.fused.captured;
                 dst.fused.objective = src.fused.objective;
-                dst.fused.state_duals.clear();
+                dst.fused.subgradient.clear();
                 dst.fused
-                    .state_duals
-                    .extend_from_slice(&src.fused.state_duals);
+                    .subgradient
+                    .extend_from_slice(&src.fused.subgradient);
             }
             scratch.solved[node] = true;
             if capture_basis {
@@ -676,7 +659,7 @@ fn enumerated_stage_worker<S: SolverInterface + Send>(
         // frontier is covered; every buffer inside is then reused across stages
         // and iterations.
         if captures.len() <= count {
-            captures.push(NodeVisit::default());
+            captures.push(NodeVisit::with_state_capacity(n_state));
         }
         let stored = store.get(local_m, node);
         let stats_before = ws.solver.statistics();
@@ -758,15 +741,18 @@ mod tests {
     use super::*;
     use novomodelo_comm::LocalBackend;
     use novomodelo_core::temporal::StageStateConfig;
-    use novomodelo_solver::ActiveSolver;
+    use novomodelo_solver::{ActiveSolver, SolutionView};
 
     use crate::{
-        indexer::StateSpace,
+        indexer::{CutStateProjection, InflowForm, StateSpace},
         lead_time::AnticipatedResolution,
         setup::{StudySetup, node_graph::Traversal},
         solver_phase::Phase,
         test_support,
-        training::forward::build_sampler_from_ctx,
+        training::{
+            backward::extract_state_duals_only,
+            forward::{build_sampler_from_ctx, node_solve::capture_fused_terminal_slice},
+        },
         workspace::WorkspacePool,
     };
 
@@ -815,7 +801,7 @@ mod tests {
 
         assert!(fused_out.captured);
         assert_eq!(fused_out.objective, expected_objective);
-        assert_eq!(fused_out.state_duals, expected_duals);
+        assert_eq!(fused_out.subgradient, expected_duals);
     }
 
     /// A `None` `cut_state` (the non-eligible-node signal) resets an
@@ -834,7 +820,7 @@ mod tests {
         let mut fused_out = FusedTerminalSlice {
             captured: true,
             objective: 99.0,
-            state_duals: vec![1.0, 2.0],
+            subgradient: vec![1.0, 2.0],
         };
 
         capture_fused_terminal_slice(&view, &[], None, &mut fused_out);
@@ -943,10 +929,7 @@ mod tests {
         let node_graph = &setup.inputs.node_graph;
         let num_stages = setup.num_stages();
 
-        let eligible: Vec<NodePos> = (0..node_graph.nodes.len())
-            .map(NodePos)
-            .filter(|&p| node_graph.is_external_terminal_leaf(p, num_stages))
-            .collect();
+        let eligible = eligible_external_terminal_leaves(&setup);
         let ineligible: Vec<NodePos> = (0..node_graph.nodes.len())
             .map(NodePos)
             .filter(|&p| !node_graph.is_external_terminal_leaf(p, num_stages))
@@ -1034,12 +1017,8 @@ mod tests {
     fn enumerated_forward_fused_slice_projects_with_parent_pool_not_leaf_pool() {
         let setup = test_support::external_distinct_fan_setup_heterogeneous_cut_state(2, 1);
         let node_graph = &setup.inputs.node_graph;
-        let num_stages = setup.num_stages();
 
-        let eligible: Vec<NodePos> = (0..node_graph.nodes.len())
-            .map(NodePos)
-            .filter(|&p| node_graph.is_external_terminal_leaf(p, num_stages))
-            .collect();
+        let eligible = eligible_external_terminal_leaves(&setup);
         assert_eq!(
             eligible.len(),
             2,
@@ -1092,6 +1071,197 @@ mod tests {
                  this assertion cannot distinguish the fix from the wrong-projection bug"
             );
         }
+    }
+
+    fn eligible_external_terminal_leaves(setup: &StudySetup) -> Vec<NodePos> {
+        let node_graph = &setup.inputs.node_graph;
+        let num_stages = setup.num_stages();
+        (0..node_graph.nodes.len())
+            .map(NodePos)
+            .filter(|&p| node_graph.is_external_terminal_leaf(p, num_stages))
+            .collect()
+    }
+
+    /// `(leaf pool projection, cut-generating parent pool projection)` of `leaf`.
+    fn leaf_and_parent_projections(
+        setup: &StudySetup,
+        leaf: NodePos,
+    ) -> (&CutStateProjection, &CutStateProjection) {
+        let node_graph = &setup.inputs.node_graph;
+        let parent = node_graph
+            .node_parent(leaf)
+            .unwrap_or_else(|| panic!("eligible leaf {leaf:?} must have a parent"));
+        (
+            &setup.inputs.cut_state_layouts[node_graph.nodes[leaf].pool_id],
+            &setup.inputs.cut_state_layouts[node_graph.nodes[parent].pool_id],
+        )
+    }
+
+    /// On the compact LP the captured slice spans the cut-generating PARENT's
+    /// projection, which here differs in size from the leaf's own pool.
+    #[test]
+    fn enumerated_forward_compact_fused_slice_spans_the_parent_projection() {
+        let (_, setup) =
+            test_support::external_distinct_fan_setup_heterogeneous_cut_state_in_both_forms(2, 1);
+        assert_eq!(setup.stage_state().inflow_form, InflowForm::Compact);
+        let eligible = eligible_external_terminal_leaves(&setup);
+        assert_eq!(eligible.len(), 2, "both leaves of the fan are eligible");
+        for &node in &eligible {
+            let (leaf, parent) = leaf_and_parent_projections(&setup, node);
+            assert!(leaf.has_lag_slots(), "power check: the leaf projects lag");
+            assert!(!parent.has_lag_slots(), "power check: the parent does not");
+            assert_ne!(
+                leaf.n_slots(),
+                parent.n_slots(),
+                "power check: a swapped projection must change the slice length"
+            );
+        }
+
+        let (mut pool, mut basis_store, mut records) = fresh_rig(&setup);
+        let mut scratch = EnumeratedForwardScratch::default();
+        run_iteration(
+            &setup,
+            &mut scratch,
+            &mut pool.workspaces,
+            &mut basis_store,
+            &mut records,
+            1,
+            None,
+        );
+
+        for &node in &eligible {
+            let (leaf, parent) = leaf_and_parent_projections(&setup, node);
+            let (objective, subgradient) = scratch
+                .fused_terminal_slice(node)
+                .unwrap_or_else(|| panic!("eligible leaf {node:?} must be captured"));
+            assert!(objective.is_finite());
+            assert_eq!(subgradient.len(), parent.n_slots());
+            assert_ne!(subgradient.len(), leaf.n_slots());
+            assert!(subgradient.iter().all(|c| c.is_finite()));
+        }
+
+        let n_state = setup.stage_state().n_state;
+        let slots = scratch.worker_captures.iter().flatten();
+        assert!(slots.clone().count() > 0, "power check: the run captured");
+        for slot in slots {
+            assert_eq!(slot.out_state.capacity(), n_state);
+            assert_eq!(slot.fused.subgradient.capacity(), n_state);
+        }
+    }
+
+    /// A parent that projects a lag slot is the case a storage-only read of the
+    /// compact LP cannot serve: the incoming lag column does not exist there.
+    #[test]
+    fn enumerated_forward_compact_fused_slice_reads_a_lagged_parent() {
+        let (_, setup) =
+            test_support::external_distinct_fan_setup_lagged_parent_in_both_forms(2, 1);
+        assert_eq!(setup.stage_state().inflow_form, InflowForm::Compact);
+        let eligible = eligible_external_terminal_leaves(&setup);
+        assert_eq!(eligible.len(), 2, "both leaves of the fan are eligible");
+        for &node in &eligible {
+            let (_, parent) = leaf_and_parent_projections(&setup, node);
+            assert!(
+                parent.has_lag_slots(),
+                "power check: the parent projects a lag slot"
+            );
+        }
+
+        let (mut pool, mut basis_store, mut records) = fresh_rig(&setup);
+        let mut scratch = EnumeratedForwardScratch::default();
+        run_iteration(
+            &setup,
+            &mut scratch,
+            &mut pool.workspaces,
+            &mut basis_store,
+            &mut records,
+            1,
+            None,
+        );
+
+        for &node in &eligible {
+            let (_, parent) = leaf_and_parent_projections(&setup, node);
+            let (objective, subgradient) = scratch
+                .fused_terminal_slice(node)
+                .unwrap_or_else(|| panic!("eligible leaf {node:?} must be captured"));
+            assert!(objective.is_finite());
+            assert_eq!(subgradient.len(), parent.n_slots());
+        }
+    }
+
+    /// The compact terminal leaf stores a basis in the compact layout and the
+    /// next iteration offers it back 1:1, never through reconstruction.
+    #[test]
+    fn enumerated_forward_compact_terminal_leaf_warm_starts_one_to_one() {
+        let (logical, setup) =
+            test_support::external_distinct_fan_setup_lagged_parent_in_both_forms(2, 1);
+        let node_graph = &setup.inputs.node_graph;
+        let eligible = eligible_external_terminal_leaves(&setup);
+        assert_eq!(eligible.len(), 2, "both leaves of the fan are eligible");
+
+        let (mut pool, mut basis_store, mut records) = fresh_rig(&setup);
+        assert!(
+            pool.workspaces.iter().all(|ws| ws.solver.warm_starts()),
+            "power check: the default profile warm-starts, or the offer counts below are vacuous"
+        );
+        let mut scratch = EnumeratedForwardScratch::default();
+        run_iteration(
+            &setup,
+            &mut scratch,
+            &mut pool.workspaces,
+            &mut basis_store,
+            &mut records,
+            1,
+            None,
+        );
+
+        let terminal = StageIdx(setup.num_stages() - 1);
+        let compact_template = setup.stage_ctx().template(terminal).clone();
+        let logical_cols = logical.stage_ctx().template(terminal).num_cols;
+        assert!(
+            compact_template.num_cols < logical_cols,
+            "power check: the compact template has fewer columns than its logical twin"
+        );
+        for &node in &eligible {
+            let stored = basis_store
+                .get(scratch.m_rep[node], node)
+                .unwrap_or_else(|| panic!("eligible leaf {node:?}'s basis must be stored"));
+            let leaf_pool = &setup.fcf.pools[node_graph.nodes[node].pool_id];
+            assert_eq!(stored.basis.col_status.len(), compact_template.num_cols);
+            assert_eq!(
+                stored.basis.row_status.len(),
+                compact_template.num_rows + leaf_pool.active_count()
+            );
+        }
+
+        let totals = |workspaces: &[SolverWorkspace<ActiveSolver>]| {
+            workspaces.iter().fold((0, 0, 0), |(o, r, f), ws| {
+                let stats = ws.solver.statistics();
+                (
+                    o + stats.basis_offered,
+                    r + stats.basis_reconstructions,
+                    f + stats.basis_consistency_failures,
+                )
+            })
+        };
+        let (offered_before, reconstructed_before, failures_before) = totals(&pool.workspaces);
+        run_iteration(
+            &setup,
+            &mut scratch,
+            &mut pool.workspaces,
+            &mut basis_store,
+            &mut records,
+            2,
+            None,
+        );
+        let (offered_after, reconstructed_after, failures_after) = totals(&pool.workspaces);
+
+        let one_to_one = (offered_after - offered_before)
+            .saturating_sub(reconstructed_after - reconstructed_before);
+        assert!(
+            one_to_one >= eligible.len() as u64,
+            "each terminal leaf must be offered its stored basis without reconstruction, got {one_to_one}"
+        );
+        assert_eq!(failures_after, failures_before);
     }
 
     /// A Generated terminal leaf is never captured, even though its basis is —

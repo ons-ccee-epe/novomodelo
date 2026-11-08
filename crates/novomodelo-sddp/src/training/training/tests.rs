@@ -27,6 +27,7 @@ use novomodelo_core::{
         StageStateConfig,
     },
 };
+use novomodelo_io::config::BackwardScheduler;
 use novomodelo_solver::{
     Basis, BasisStatus, RowBatch, SolverError, SolverInterface, SolverStatistics, StageTemplate,
 };
@@ -2884,4 +2885,108 @@ fn a_representable_payload_length_reaches_every_rank() {
         broadcast_len(&LengthBroadcast::new(1, 7), 0, "op").unwrap(),
         7
     );
+}
+
+#[test]
+fn backward_aggregation_time_lies_within_the_backward_pass() {
+    let n_stages = 2;
+    let state = test_support::state_layout(1, 0);
+    let templates = vec![minimal_template(state.n_state); n_stages];
+    let initial_state = vec![0.0_f64; state.n_state];
+    let stochastic = make_stochastic_context(n_stages, 1);
+    let stages = make_stages(n_stages);
+    let horizon = HorizonMode::Finite {
+        num_stages: n_stages,
+    };
+    let state_boxes = permissive_state_boxes(state.n_state, n_stages);
+    let geometry = equipment_free_geometry(&[1usize, 1]);
+    let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let stage_ctx = fixture.ctx();
+
+    for backward_scheduler in [
+        BackwardScheduler::ByScenario {},
+        BackwardScheduler::ByNode { block_size: None },
+    ] {
+        let mut fcf = make_fcf(n_stages, state.n_state, 1, 10);
+        let (tx, rx) = mpsc::channel::<TrainingEvent>();
+        let config = TrainingConfig {
+            loop_config: LoopConfig {
+                forward_passes: 1,
+                training_enumerated: false,
+                max_iterations: 10,
+                start_iteration: 0,
+                resume_lower_bound_history: Vec::new(),
+                n_fwd_threads: 2,
+                stopping_rules: iteration_limit_rules(2),
+            },
+            cut_management: CutManagementConfig {
+                cut_selection: None,
+                budget: None,
+                cut_activity_tolerance: 0.0,
+                risk_measures: vec![RiskMeasure::Expectation; n_stages],
+            },
+            events: EventConfig {
+                event_sender: Some(tx),
+                periodic_checkpoint: None,
+                shutdown_flag: None,
+                export_states: false,
+            },
+        };
+        let mut solver = MockSolver::with_fixed(100.0);
+
+        train(
+            &mut solver,
+            config,
+            &mut fcf,
+            &stage_ctx,
+            &TrainingContext {
+                node_graph: &crate::test_support::chain_node_graph(&stochastic),
+                horizon: &horizon,
+                state: &state,
+                cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
+                study_dims: &test_support::study_dims(),
+                inflow_method: &InflowNonNegativityMethod::None,
+                stochastic: &stochastic,
+                initial_state: &initial_state,
+                inflow_scheme: SamplingScheme::InSample,
+                load_scheme: SamplingScheme::InSample,
+                ncs_scheme: SamplingScheme::InSample,
+                stages: &stages,
+                historical_library: None,
+                external_inflow_library: None,
+                external_load_library: None,
+                external_ncs_library: None,
+                lag_accum_seed: &[],
+                lag_weight_seed: &[],
+                dcs: None,
+            },
+            &StubComm,
+            || Ok(MockSolver::with_fixed(100.0)),
+            LoadedPolicy::default(),
+            SolverProfiles {
+                backward_scheduler,
+                ..SolverProfiles::default()
+            },
+        )
+        .unwrap();
+
+        let passes: Vec<(u64, u64)> = rx
+            .try_iter()
+            .filter_map(|event| match event {
+                TrainingEvent::BackwardPassComplete {
+                    elapsed_ms,
+                    aggregation_time_ms,
+                    ..
+                } => Some((aggregation_time_ms, elapsed_ms)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(passes.len(), 2, "{backward_scheduler:?}");
+        for (aggregation_time_ms, elapsed_ms) in passes {
+            assert!(
+                aggregation_time_ms <= elapsed_ms,
+                "{backward_scheduler:?}: aggregation {aggregation_time_ms} ms exceeds the backward pass {elapsed_ms} ms"
+            );
+        }
+    }
 }

@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+#[cfg(any(test, feature = "test-support"))]
+use std::ops::Range;
 
 use novomodelo_core::{EntityId, Stage, System};
 use novomodelo_solver::StageTemplate;
@@ -9,6 +11,8 @@ use crate::bucket_topology::TransitBucketTopology;
 use crate::hydro_models::{EvaporationModelSet, ProductionModelSet};
 
 use super::inflow_coupling::{InflowCoupling, InflowCouplingSink};
+#[cfg(any(test, feature = "test-support"))]
+use super::layout::RowFamily;
 use super::layout::{ResolvedTables, StageGeometry, StageLayout, TemplateBuildCtx};
 use super::{GenericConstraintRowEntry, LpBuildInputs, StateBox, columns, entries, rows, scaling};
 use crate::lp::indexer::{InflowForm, StateSpace};
@@ -30,6 +34,9 @@ pub struct StageTemplates {
     /// `templates` as built, before `postprocess_templates` scaled them.
     #[cfg(any(test, feature = "test-support"))]
     pre_scaling_templates: Vec<StageTemplate>,
+    /// Per-stage structural row families, in allocation order.
+    #[cfg(any(test, feature = "test-support"))]
+    row_families: Vec<Vec<(RowFamily, Range<usize>)>>,
     /// Per-stage block durations in hours (`block_hours_per_stage[stage]` is length
     /// `n_blocks`). Converts load-balance duals $/MW → $/`MWh`:
     /// `spot_price = dual / block_hours`.
@@ -82,6 +89,8 @@ impl StageTemplates {
             state_boxes: Vec::new(),
             #[cfg(any(test, feature = "test-support"))]
             pre_scaling_templates: Vec::new(),
+            #[cfg(any(test, feature = "test-support"))]
+            row_families: Vec::new(),
             block_hours_per_stage: Vec::new(),
             cost_scale_factor,
             load_bus_indices: Vec::new(),
@@ -136,6 +145,13 @@ impl StageTemplates {
     pub fn pre_scaling_templates(&self) -> &[StageTemplate] {
         &self.pre_scaling_templates
     }
+
+    /// Per-stage structural row families, in allocation order.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn row_families(&self) -> &[Vec<(RowFamily, Range<usize>)>] {
+        &self.row_families
+    }
 }
 
 /// Per-stage outputs of [`build_single_stage_template`], transposed by
@@ -149,6 +165,8 @@ pub(super) struct StageBuildOutput {
     /// from this stage's [`StageLayout`].
     pub equipment_geometry: StageGeometry,
     pub inflow_coupling: InflowCoupling,
+    #[cfg(any(test, feature = "test-support"))]
+    pub row_families: Vec<(RowFamily, Range<usize>)>,
 }
 
 /// Construct the [`StageBuildOutput`] for a single study stage.
@@ -215,11 +233,16 @@ pub(super) fn build_single_stage_template(
         row_scale: Vec::new(),
     };
 
+    #[cfg(any(test, feature = "test-support"))]
+    let row_families = layout.row_families();
+
     StageBuildOutput {
         template,
         gc_entries: layout.generic_constraint_rows,
         equipment_geometry: layout.geometry,
         inflow_coupling,
+        #[cfg(any(test, feature = "test-support"))]
+        row_families,
     }
 }
 
@@ -474,11 +497,15 @@ fn assemble_stage_templates_output(
     let mut generic_constraint_row_entries = Vec::with_capacity(n_study);
     let mut geometry_per_stage = Vec::with_capacity(n_study);
     let mut inflow_coupling_per_stage = Vec::with_capacity(n_study);
+    #[cfg(any(test, feature = "test-support"))]
+    let mut row_families = Vec::with_capacity(n_study);
     for out in stage_outputs {
         templates.push(out.template);
         generic_constraint_row_entries.push(out.gc_entries);
         geometry_per_stage.push(out.equipment_geometry);
         inflow_coupling_per_stage.push(out.inflow_coupling);
+        #[cfg(any(test, feature = "test-support"))]
+        row_families.push(out.row_families);
     }
 
     let block_hours_per_stage = scaling::compute_stage_hours(study_stages);
@@ -488,6 +515,8 @@ fn assemble_stage_templates_output(
         state_boxes: Vec::new(),
         #[cfg(any(test, feature = "test-support"))]
         pre_scaling_templates: Vec::new(),
+        #[cfg(any(test, feature = "test-support"))]
+        row_families,
         block_hours_per_stage,
         cost_scale_factor,
         load_bus_indices,

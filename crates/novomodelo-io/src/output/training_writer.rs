@@ -248,6 +248,7 @@ fn build_iteration_timing_batch(
     let mut fwd_scheduling_overhead_ms = Int64Builder::with_capacity(n);
     let mut overhead_ms = Int64Builder::with_capacity(n);
     let mut lazy_scoring_ms = Int64Builder::with_capacity(n);
+    let mut bwd_aggregation_ms = Int64Builder::with_capacity(n);
 
     for rec in records {
         iteration.append_value(rec.iteration as i32);
@@ -270,6 +271,7 @@ fn build_iteration_timing_batch(
         fwd_scheduling_overhead_ms.append_value(rec.timings[13] as i64);
         overhead_ms.append_value(rec.timings[14] as i64);
         lazy_scoring_ms.append_value(rec.timings[15] as i64);
+        bwd_aggregation_ms.append_value(rec.timings[16] as i64);
     }
 
     RecordBatch::try_new(
@@ -294,6 +296,7 @@ fn build_iteration_timing_batch(
             Arc::new(fwd_scheduling_overhead_ms.finish()),
             Arc::new(overhead_ms.finish()),
             Arc::new(lazy_scoring_ms.finish()),
+            Arc::new(bwd_aggregation_ms.finish()),
         ],
     )
     .map_err(|e| OutputError::serialization("iteration_timing", e.to_string()))
@@ -440,6 +443,7 @@ mod tests {
             time_cut_batch_build_ms: 0,
             time_bwd_load_imbalance_ms: 0,
             time_bwd_scheduling_overhead_ms: 0,
+            time_bwd_aggregation_ms: 0,
             time_fwd_load_imbalance_ms: 0,
             time_fwd_scheduling_overhead_ms: 0,
             time_overhead_ms: 0,
@@ -485,7 +489,9 @@ mod tests {
             iteration,
             rank: 0,
             worker_id: None,
-            timings: [100, 200, 10, 5, 8, 3, 4, 7, 50, 60, 20, 40, 30, 15, 12, 0],
+            timings: [
+                100, 200, 10, 5, 8, 3, 4, 7, 50, 60, 20, 40, 30, 15, 12, 0, 0,
+            ],
         }
     }
 
@@ -545,8 +551,8 @@ mod tests {
         assert_eq!(batch.num_rows(), 3, "3 records yield 3 rows");
         assert_eq!(
             batch.num_columns(),
-            19,
-            "iteration_timing schema has 19 columns (16 timings + iteration + rank + worker_id)"
+            20,
+            "iteration_timing schema has 20 columns (17 timings + iteration + rank + worker_id)"
         );
 
         let expected_schema = iteration_timing_schema();
@@ -590,6 +596,7 @@ mod tests {
                 time_cut_batch_build_ms: 0,
                 time_bwd_load_imbalance_ms: u64::from(i) * 20,
                 time_bwd_scheduling_overhead_ms: u64::from(i) * 30,
+                time_bwd_aggregation_ms: u64::from(i) * 70,
                 time_fwd_load_imbalance_ms: u64::from(i) * 50,
                 time_fwd_scheduling_overhead_ms: u64::from(i) * 60,
                 time_overhead_ms: 0,
@@ -626,6 +633,7 @@ mod tests {
                     u64::from(i) * 60,
                     0,
                     0,
+                    u64::from(i) * 70,
                 ],
             })
             .collect();
@@ -640,7 +648,7 @@ mod tests {
         let batch = read_first_batch(&timing_path);
 
         assert_eq!(batch.num_rows(), 3);
-        assert_eq!(batch.num_columns(), 19);
+        assert_eq!(batch.num_columns(), 20);
 
         // Old column names should not be present.
         assert!(batch.column_by_name("bwd_rayon_overhead_ms").is_none());
@@ -660,6 +668,7 @@ mod tests {
             ("fwd_setup_ms", 40_i64),
             ("fwd_load_imbalance_ms", 50_i64),
             ("fwd_scheduling_overhead_ms", 60_i64),
+            ("bwd_aggregation_ms", 70_i64),
         ] {
             let col = batch
                 .column_by_name(col_name)
@@ -853,7 +862,7 @@ mod tests {
         let timing_path = tmp.path().join("training/timing/iterations.parquet");
         let batch = read_first_batch(&timing_path);
         assert_eq!(batch.num_rows(), 5);
-        assert_eq!(batch.num_columns(), 19, "timing schema has 19 columns");
+        assert_eq!(batch.num_columns(), 20, "timing schema has 20 columns");
     }
 
     #[test]

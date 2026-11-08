@@ -7,6 +7,7 @@
 
 use novomodelo_core::temporal::StageLagTransition;
 use novomodelo_solver::{SolutionView, SolverError, SolverInterface};
+use novomodelo_stochastic::par::{LagMajor, advance_lag_chain};
 
 use crate::{
     basis_reconstruct::{ReconstructionTarget, enforce_basic_count_invariant, reconstruct_basis},
@@ -14,7 +15,7 @@ use crate::{
     cut::pool::CutPool,
     error::SddpError,
     lp::builder::StateBox,
-    lp::indexer::{REGION_ORDER, StateRegion, StateSpace},
+    lp::indexer::{InflowForm, REGION_ORDER, StateRegion, StateSpace},
     noise::{DownstreamAccumState, LagAccumState, accumulate_and_shift_lag_state},
     setup::{NodeId, StageIdx},
     workspace::{CapturedBasis, SolverWorkspace},
@@ -36,9 +37,10 @@ pub struct StageInputs<'a> {
     pub stage_index: StageIdx,
     /// Scenario index `m`.
     pub scenario_index: usize,
-    /// Training iteration (1-based) on the forward pass; `None` on backward and
-    /// simulation. Forward supplies it so `SddpError::Infeasible { iteration }`
-    /// is populated without the caller re-wrapping the error.
+    /// Training iteration (1-based) on the forward and backward passes; `None`
+    /// on simulation and on the test-support probes. A training solve supplies
+    /// it so `SddpError::Infeasible { iteration }` is populated without the
+    /// caller re-wrapping the error.
     pub iteration: Option<u64>,
     /// Declared id of the node being solved (`NodeGraph::node_ids[node]`); a
     /// `stored_basis` whose `node_id` differs is treated as cold.
@@ -281,16 +283,15 @@ pub(crate) fn fill_unscaled_dual(out: &mut Vec<f64>, scaled: &[f64], row_scale: 
 /// state (the trajectory, the backward pass's `x_hat`, the cut intercept, the
 /// simulation output) reads this same canonical vector; there is no second
 /// canonicalization point at LP pin time.
-// Rationale (too_many_arguments): every argument is a caller-owned buffer or
-// borrow threaded straight through to `accumulate_and_shift_lag_state` (which
-// already takes the same shape) plus the box this seam adds; a bundle would
-// just wrap them for one call site.
-#[allow(clippy::too_many_arguments)]
+///
+/// `realized_inflow` is ẑ, the stage's realized inflow: the compact layout feeds
+/// lag 0 from it, and the logical layout from its inflow columns.
 #[allow(clippy::float_cmp)]
 pub(crate) fn assemble_outgoing_state(
     current_state: &mut Vec<f64>,
     unscaled_primal: &[f64],
-    lag_matrix_buf: &[f64],
+    incoming_lags: &[f64],
+    realized_inflow: &[f64],
     layout: &StateSpace,
     state_box: &StateBox,
     stage_lag: StageLagTransition,
@@ -299,17 +300,39 @@ pub(crate) fn assemble_outgoing_state(
 ) {
     current_state.clear();
     for region in REGION_ORDER {
-        current_state.extend_from_slice(&unscaled_primal[layout.outgoing_block_range(region)]);
+        if layout.has_lp_columns(region) {
+            current_state.extend_from_slice(&unscaled_primal[layout.outgoing_block_range(region)]);
+        } else {
+            debug_assert_eq!(incoming_lags.len(), layout.state_dim_lag_range().len());
+            current_state.extend_from_slice(incoming_lags);
+        }
     }
-    accumulate_and_shift_lag_state(
-        current_state,
-        lag_matrix_buf,
-        unscaled_primal,
-        layout,
-        &stage_lag,
-        lag,
-        ds,
-    );
+    match layout.inflow_form {
+        InflowForm::Logical => accumulate_and_shift_lag_state(
+            current_state,
+            incoming_lags,
+            unscaled_primal,
+            layout,
+            &stage_lag,
+            lag,
+            ds,
+        ),
+        InflowForm::Compact => {
+            debug_assert_eq!(realized_inflow.len(), layout.hydro_count);
+            advance_lag_chain(
+                LagMajor {
+                    entity_count: layout.hydro_count,
+                    max_order: layout.max_par_order,
+                },
+                &mut current_state[layout.state_dim_lag_range().start..],
+                incoming_lags,
+                realized_inflow,
+                &stage_lag,
+                lag,
+                ds,
+            );
+        }
+    }
     debug_assert_bucket_copy_gap_intact(current_state.as_slice(), unscaled_primal, layout);
 
     for (j, value) in current_state.iter_mut().take(layout.n_state).enumerate() {
@@ -380,11 +403,12 @@ mod tests {
         SddpError,
         cut::pool::CutPool,
         lp::builder::{PatchBuffer, StageGeometry, StateBox},
-        lp::indexer::HydroSys,
+        lp::indexer::{HydroSys, StateSpace},
         noise::{DownstreamAccumState, LagAccumState, accumulate_and_shift_lag_state},
         setup::{NodeId, StageIdx},
         test_support::{
-            StageContextFixture, TrainingContextFixture, equipment_free_geometry, state_layout,
+            StageContextFixture, TrainingContextFixture, constant_lead_resolution,
+            equipment_free_geometry, permissive_state_boxes, state_layout,
             state_layout_with_transit_buckets,
         },
         workspace::{CapturedBasis, SolverWorkspace, WorkspaceSizing},
@@ -1231,7 +1255,7 @@ mod tests {
     /// `N=1, L=1, B=1, A=1, K_max=1` layout: `n_state = 4`
     /// (storage, lag0, `bucket_out`, `commit_out`), mirroring the
     /// `transit_bucket_copy_gap` fixture shape.
-    fn seam_layout() -> crate::lp::indexer::StateSpace {
+    fn seam_layout() -> StateSpace {
         state_layout_with_transit_buckets(1, 1, vec![(HydroSys::new(0), 0)], vec![1])
     }
 
@@ -1259,7 +1283,7 @@ mod tests {
     fn assemble_outgoing_state_in_box_is_byte_identical() {
         let layout = seam_layout();
         let unscaled_primal = seam_primal(10.0, 30.0, 20.0);
-        let lag_matrix_buf = vec![2.0_f64];
+        let incoming_lags = vec![2.0_f64];
         let stage_lag = identity_stage_lag();
         let state_box = StateBox {
             lower: vec![0.0, f64::NEG_INFINITY, 0.0, 0.0],
@@ -1279,7 +1303,7 @@ mod tests {
         let mut exp_ds_n_completed = 0_usize;
         accumulate_and_shift_lag_state(
             &mut expected,
-            &lag_matrix_buf,
+            &incoming_lags,
             &unscaled_primal,
             &layout,
             &stage_lag,
@@ -1306,7 +1330,8 @@ mod tests {
         assemble_outgoing_state(
             &mut current_state,
             &unscaled_primal,
-            &lag_matrix_buf,
+            &incoming_lags,
+            &[],
             &layout,
             &state_box,
             stage_lag,
@@ -1336,7 +1361,7 @@ mod tests {
         let commit_j = layout.commit_out.start;
         let mut unscaled_primal = seam_primal(10.0, 30.0, 20.0);
         unscaled_primal[commit_j] = -0.5; // 0.5 below the box lower of 0.0
-        let lag_matrix_buf = vec![2.0_f64];
+        let incoming_lags = vec![2.0_f64];
         let stage_lag = identity_stage_lag();
         let state_box = StateBox {
             lower: vec![0.0, f64::NEG_INFINITY, 0.0, 0.0],
@@ -1353,7 +1378,8 @@ mod tests {
         assemble_outgoing_state(
             &mut current_state,
             &unscaled_primal,
-            &lag_matrix_buf,
+            &incoming_lags,
+            &[],
             &layout,
             &state_box,
             stage_lag,
@@ -1398,6 +1424,7 @@ mod tests {
             &mut current_state,
             &unscaled_primal,
             &[2.0_f64],
+            &[],
             &layout,
             &state_box,
             identity_stage_lag(),
@@ -1425,5 +1452,140 @@ mod tests {
                 "{region:?} must be copied from its outgoing block"
             );
         }
+    }
+
+    const COMPACT_INCOMING_LAGS: [f64; 4] = [1.0, 2.0, 3.0, 4.0];
+    const COMPACT_REALIZED_INFLOW: [f64; 2] = [5.5, 6.25];
+
+    struct CompactAssembly {
+        layout: StateSpace,
+        unscaled_primal: Vec<f64>,
+        state: Vec<f64>,
+        lag_accumulator: Vec<f64>,
+    }
+
+    /// Assembles a two-hydro compact layout of `max_order` lags from `incoming_lags` and
+    /// `COMPACT_REALIZED_INFLOW`; the primal holds no lag columns and distinct values in the
+    /// storage block.
+    fn assemble_compact(
+        max_order: usize,
+        incoming_lags: &[f64],
+        stage_lag: StageLagTransition,
+    ) -> CompactAssembly {
+        let layout = StateSpace::new_compact(
+            2,
+            max_order,
+            Vec::new(),
+            Vec::new(),
+            constant_lead_resolution(&[], 2),
+            &[max_order, max_order],
+        );
+        let unscaled_primal: Vec<f64> = (100_u32..).map(f64::from).take(layout.theta + 1).collect();
+        let state_box = permissive_state_boxes(layout.n_state, 1).remove(0);
+
+        let mut state = Vec::new();
+        let mut lag_accumulator = vec![0.0_f64; max_order];
+        let mut lag_weight_accum = vec![0.0_f64; max_order];
+        let mut ds_accum: Vec<f64> = vec![];
+        let mut ds_weight = 0.0_f64;
+        let mut ds_completed: Vec<f64> = vec![];
+        let mut ds_n_completed = 0_usize;
+        assemble_outgoing_state(
+            &mut state,
+            &unscaled_primal,
+            incoming_lags,
+            &COMPACT_REALIZED_INFLOW,
+            &layout,
+            &state_box,
+            stage_lag,
+            &mut LagAccumState {
+                accumulator: &mut lag_accumulator,
+                weight_accum: &mut lag_weight_accum,
+            },
+            &mut DownstreamAccumState {
+                accumulator: &mut ds_accum,
+                weight_accum: &mut ds_weight,
+                completed_lags: &mut ds_completed,
+                n_completed: &mut ds_n_completed,
+                par_order: 0,
+            },
+        );
+        CompactAssembly {
+            layout,
+            unscaled_primal,
+            state,
+            lag_accumulator,
+        }
+    }
+
+    fn bits(values: &[f64]) -> Vec<u64> {
+        values.iter().map(|v| v.to_bits()).collect()
+    }
+
+    #[test]
+    fn assemble_outgoing_state_seeds_the_compact_lag_slice_from_the_incoming_lags() {
+        let non_finalizing = StageLagTransition {
+            accumulate_weight: 0.25,
+            finalize_period: false,
+            ..identity_stage_lag()
+        };
+        let out = assemble_compact(2, &COMPACT_INCOMING_LAGS, non_finalizing);
+
+        assert_eq!(
+            bits(&out.state[out.layout.state_dim_lag_range()]),
+            bits(&COMPACT_INCOMING_LAGS),
+            "a non-finalizing stage keeps the incoming lags bit for bit"
+        );
+        for (h, realized) in COMPACT_REALIZED_INFLOW.iter().enumerate() {
+            assert_eq!(
+                out.lag_accumulator[h].to_bits(),
+                (0.0 + realized * 0.25).to_bits(),
+                "hydro {h}: the accumulator gains the realized inflow times the weight"
+            );
+        }
+    }
+
+    #[test]
+    fn assemble_outgoing_state_shifts_the_compact_lag_slice_onto_the_realized_inflow() {
+        let out = assemble_compact(2, &COMPACT_INCOMING_LAGS, identity_stage_lag());
+        let lags = &out.state[out.layout.state_dim_lag_range()];
+
+        assert_eq!(
+            bits(&lags[..2]),
+            bits(&COMPACT_REALIZED_INFLOW),
+            "lag 0 is the realized inflow"
+        );
+        assert_eq!(
+            bits(&lags[2..]),
+            bits(&COMPACT_INCOMING_LAGS[..2]),
+            "lag 1 is the incoming lag 0"
+        );
+    }
+
+    #[test]
+    fn assemble_outgoing_state_shifts_a_compact_lag_slice_deeper_than_the_hydro_count() {
+        let incoming_lags = [10.0, 11.0, 20.0, 21.0, 30.0, 31.0];
+        let out = assemble_compact(3, &incoming_lags, identity_stage_lag());
+
+        let expected: Vec<f64> = COMPACT_REALIZED_INFLOW
+            .iter()
+            .chain(&incoming_lags[..4])
+            .copied()
+            .collect();
+        assert_eq!(
+            bits(&out.state[out.layout.state_dim_lag_range()]),
+            bits(&expected),
+            "lag 0 is the realized inflow and lag l the incoming lag l - 1"
+        );
+    }
+
+    #[test]
+    fn assemble_outgoing_state_copies_compact_storage_from_its_outgoing_block() {
+        let out = assemble_compact(2, &COMPACT_INCOMING_LAGS, identity_stage_lag());
+
+        assert_eq!(
+            bits(&out.state[out.layout.state_dim_range(StateRegion::Storage)]),
+            bits(&out.unscaled_primal[out.layout.outgoing_block_range(StateRegion::Storage)]),
+        );
     }
 }

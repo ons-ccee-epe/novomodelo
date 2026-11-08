@@ -32,7 +32,8 @@ pub struct ChainRuleInputs<'a> {
 pub struct OpeningDuals<'a> {
     /// Q, in cost units.
     pub objective: f64,
-    /// State duals in the extracted slot space; the slots outside `extracted_lag` are read.
+    /// The state duals of the extracted slots outside `extracted_lag`, in slot order, with no
+    /// entry for a lag slot; [`ChainRuleSlots::non_lag`] maps each position to its slot.
     pub state_duals: &'a [f64],
     /// (Gᵀπ)_h, length N.
     pub coupled_duals: &'a [f64],
@@ -41,20 +42,20 @@ pub struct OpeningDuals<'a> {
 }
 
 /// Reusable accumulators of the kernel; both buffers are overwritten on every call.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ChainRuleScratch {
     g: Vec<f64>,
     w: Vec<f64>,
 }
 
 impl ChainRuleScratch {
-    /// Scratch sized for `slots`: g holds N values and w holds N·(L−1).
+    /// Scratch built from the layout's N (`n_hydros`) and L (`lag_depth`): g holds N values and w
+    /// holds N·(L−1). Every pool pair of one layout shares that shape.
     #[must_use]
-    pub fn new(slots: &ChainRuleSlots) -> Self {
-        let n_hydros = slots.n_hydros();
+    pub fn new(n_hydros: usize, lag_depth: usize) -> Self {
         Self {
             g: vec![0.0; n_hydros],
-            w: vec![0.0; n_hydros * slots.lag_depth().saturating_sub(1)],
+            w: vec![0.0; n_hydros * lag_depth.saturating_sub(1)],
         }
     }
 }
@@ -102,7 +103,12 @@ fn lag_coefficients_into(
         } else {
             &[]
         };
+        debug_assert!(
+            psi.len() <= lag_depth,
+            "chain rule: the PAR order exceeds the lag depth"
+        );
         for l in 0..lag_depth {
+            // A lag past the PAR order carries ψ = 0: the lag state is widened past it.
             let psi_l = psi.get(l).copied().unwrap_or(0.0);
             let at = l * n_hydros + h;
             lag_out[at] = if l + 1 < lag_depth {
@@ -121,9 +127,10 @@ fn lag_coefficients_into(
 ///
 /// # Panics
 ///
-/// In debug builds, panics if `coefficients.len() != extracted.n_slots()`, if
-/// `state_duals.len() != coefficients.len()`, if `coupled_duals.len() != N`, if the slots of
-/// `cut_duals` do not strictly ascend, or if `scratch` was built for another pair.
+/// In debug builds, panics if `coefficients.len() != extracted.n_slots()`, if `state_duals` is
+/// not lag-free (its length is not `extracted.n_slots()` minus the lag width), if
+/// `coupled_duals.len() != N`, if the slots of `cut_duals` do not strictly ascend, if a PAR order
+/// is deeper than the lag depth, or if `scratch` was built for another pair.
 pub fn per_opening_cut_into(
     inputs: &ChainRuleInputs<'_>,
     opening: &OpeningDuals<'_>,
@@ -132,10 +139,12 @@ pub fn per_opening_cut_into(
     coefficients: &mut [f64],
 ) -> f64 {
     debug_assert_eq!(coefficients.len(), inputs.extracted.n_slots());
-    debug_assert_eq!(opening.state_duals.len(), coefficients.len());
+    debug_assert_eq!(opening.state_duals.len(), inputs.slots.non_lag()[1].1.end);
     debug_assert_eq!(opening.coupled_duals.len(), inputs.slots.n_hydros());
 
-    coefficients.copy_from_slice(opening.state_duals);
+    for (slots, positions) in inputs.slots.non_lag() {
+        coefficients[slots].copy_from_slice(&opening.state_duals[positions]);
+    }
     let lag = inputs.slots.extracted_lag();
     if !lag.is_empty() {
         for (g_h, &coupled) in scratch.g.iter_mut().zip(opening.coupled_duals) {
@@ -154,7 +163,8 @@ pub struct ChildOpenings<'a> {
     pub openings: &'a [OpeningDuals<'a>],
 }
 
-/// Reusable buffers of [`aggregate_cut_into`]; every ȳ slot is 0.0 and every bitmap word 0 between calls.
+/// Reusable buffers of [`aggregate_first_cut_into`], sized by [`AggregateScratch::reserve`]; every ȳ
+/// slot is 0.0, every bitmap word 0 and `pairs` empty between calls.
 #[derive(Debug, Clone)]
 pub struct AggregateScratch {
     y_bar: Vec<f64>,
@@ -165,16 +175,28 @@ pub struct AggregateScratch {
 }
 
 impl AggregateScratch {
-    /// Scratch for `slots`; the ȳ buffers start empty and grow with the resident pool.
+    /// Scratch built from the layout's N and L; the ȳ buffers start empty and
+    /// [`AggregateScratch::reserve`] sizes them.
     #[must_use]
-    pub fn new(slots: &ChainRuleSlots) -> Self {
+    pub fn new(n_hydros: usize, lag_depth: usize) -> Self {
         Self {
             y_bar: Vec::new(),
             touched: Vec::new(),
             pairs: Vec::new(),
-            chain: ChainRuleScratch::new(slots),
-            child_lag: vec![0.0; slots.n_hydros() * slots.lag_depth()],
+            chain: ChainRuleScratch::new(n_hydros, lag_depth),
+            child_lag: vec![0.0; n_hydros * lag_depth],
         }
+    }
+
+    /// Grows ȳ and the bitmap to cover `pool_capacity` pool slots and the pair buffer to `pair_hint`
+    /// entries, never shrinking them. Call it wherever the resident pool grows:
+    /// [`aggregate_first_cut_into`] does not grow them.
+    pub fn reserve(&mut self, pool_capacity: usize, pair_hint: usize) {
+        if self.y_bar.len() < pool_capacity {
+            self.y_bar.resize(pool_capacity, 0.0);
+            self.touched.resize(pool_capacity.div_ceil(64), 0);
+        }
+        self.pairs.reserve(pair_hint);
     }
 }
 
@@ -189,16 +211,21 @@ impl AggregateScratch {
 /// # Panics
 ///
 /// In debug builds, panics if `children` is empty, if `weights.len()` is not the total opening
-/// count, if the children differ in `extracted_lag` or in `extracted.n_slots()`, or if
-/// `coefficients.len() != extracted.n_slots()`.
-pub fn aggregate_cut_into(
+/// count, if the children differ in `extracted_lag` or in `extracted.n_slots()`, if
+/// `coefficients.len() != extracted.n_slots()`, if an opening's `state_duals` is not lag-free or
+/// its `coupled_duals.len()` is not N, if an opening's objective is not finite, if a PAR order is
+/// deeper than the lag depth, or if `scratch` was not reserved for the resident pool.
+pub fn aggregate_first_cut_into(
     children: &[ChildOpenings<'_>],
     weights: &[f64],
     x_hat: &[f64],
     scratch: &mut AggregateScratch,
     coefficients: &mut [f64],
 ) -> f64 {
-    debug_assert!(!children.is_empty(), "aggregate_cut_into: no children");
+    debug_assert!(
+        !children.is_empty(),
+        "aggregate_first_cut_into: no children"
+    );
     let (slots, extracted) = (children[0].inputs.slots, children[0].inputs.extracted);
     let lag = slots.extracted_lag();
     debug_assert_eq!(
@@ -221,7 +248,7 @@ pub fn aggregate_cut_into(
         chain,
         child_lag,
     } = scratch;
-    let non_lag = [0..lag.start, lag.end..coefficients.len()];
+    let non_lag = slots.non_lag();
     coefficients.fill(-0.0);
     let mut q_bar = -0.0;
     let mut rest = weights;
@@ -229,10 +256,19 @@ pub fn aggregate_cut_into(
         let (child_weights, tail) = rest.split_at(child.openings.len());
         rest = tail;
         for (opening, &mu) in child.openings.iter().zip(child_weights) {
+            debug_assert_eq!(opening.state_duals.len(), non_lag[1].1.end);
+            debug_assert_eq!(opening.coupled_duals.len(), slots.n_hydros());
+            debug_assert!(
+                opening.objective.is_finite(),
+                "aggregate-first chain rule: an opening objective is not finite"
+            );
+            if mu == 0.0 {
+                continue;
+            }
             q_bar += mu * opening.objective;
-            for range in &non_lag {
+            for (range, positions) in &non_lag {
                 let dst = &mut coefficients[range.clone()];
-                for (c, &d) in dst.iter_mut().zip(&opening.state_duals[range.clone()]) {
+                for (c, &d) in dst.iter_mut().zip(&opening.state_duals[positions.clone()]) {
                     *c += mu * d;
                 }
             }
@@ -242,19 +278,18 @@ pub fn aggregate_cut_into(
         }
 
         let populated = child.inputs.resident_pool.populated();
-        if y_bar.len() < populated {
-            y_bar.resize(populated, 0.0);
-            touched.resize(populated.div_ceil(64), 0);
-            pairs.reserve(populated);
-        }
+        debug_assert!(
+            y_bar.len() >= populated,
+            "aggregate scratch is not reserved for the resident pool"
+        );
         chain.g.fill(-0.0);
         let (mut first_word, mut last_word) = (usize::MAX, 0);
         for (opening, &mu) in child.openings.iter().zip(child_weights) {
-            for (g_h, &coupled) in chain.g.iter_mut().zip(opening.coupled_duals) {
-                *g_h -= mu * coupled;
-            }
             if mu == 0.0 {
                 continue;
+            }
+            for (g_h, &coupled) in chain.g.iter_mut().zip(opening.coupled_duals) {
+                *g_h -= mu * coupled;
             }
             for &(slot, y) in opening.cut_duals {
                 if y == 0.0 {
@@ -297,7 +332,7 @@ mod tests {
 
     use super::{
         AggregateScratch, ChainRuleInputs, ChainRuleScratch, ChainRuleSlots, ChildOpenings,
-        OpeningDuals, PrecomputedPar, aggregate_cut_into, per_opening_cut_into,
+        OpeningDuals, PrecomputedPar, aggregate_first_cut_into, per_opening_cut_into,
     };
     use crate::cut::CutPool;
     use crate::indexer::CutStateProjection;
@@ -354,7 +389,7 @@ mod tests {
         }
 
         fn run(&self, opening: &OpeningDuals<'_>, x_hat: &[f64]) -> (Vec<f64>, f64) {
-            let mut scratch = ChainRuleScratch::new(&self.slots);
+            let mut scratch = ChainRuleScratch::new(self.slots.n_hydros(), self.slots.lag_depth());
             let mut coefficients = vec![0.0; self.extracted.n_slots()];
             let alpha = per_opening_cut_into(
                 &self.inputs(),
@@ -374,8 +409,17 @@ mod tests {
         scratch: &mut AggregateScratch,
     ) -> (Vec<f64>, f64) {
         let mut coefficients = vec![0.0; children[0].inputs.extracted.n_slots()];
-        let alpha = aggregate_cut_into(children, weights, x_hat, scratch, &mut coefficients);
+        let alpha = aggregate_first_cut_into(children, weights, x_hat, scratch, &mut coefficients);
         (coefficients, alpha)
+    }
+
+    fn reserved_scratch(pairs: &[&Pair]) -> AggregateScratch {
+        let first = pairs[0];
+        let mut scratch = AggregateScratch::new(first.slots.n_hydros(), first.slots.lag_depth());
+        for pair in pairs {
+            scratch.reserve(pair.pool.capacity, pair.pool.populated());
+        }
+        scratch
     }
 
     fn par_with_psi(n_hydros: usize, psi: &[f64]) -> PrecomputedPar {
@@ -418,7 +462,7 @@ mod tests {
         );
         let opening = OpeningDuals {
             objective: 100.0,
-            state_duals: &[-1.5, -2.5, 77.0, 77.0, 77.0, 77.0],
+            state_duals: &[-1.5, -2.5],
             coupled_duals: &[4.0, 8.0],
             cut_duals: &[(0, 2.0), (1, 1.0), (2, 0.0)],
         };
@@ -427,6 +471,51 @@ mod tests {
 
         assert_eq!(coefficients, [-1.5, -2.5, 14.5, 17.0, 0.75, 0.5]);
         assert_eq!(alpha, 112.25);
+    }
+
+    #[test]
+    fn one_scratch_serves_every_pair_of_the_layout() {
+        let a = Pair::new(
+            (2, 2),
+            (ALL, ALL),
+            &[&CLOSED_FORM_ROWS[0], &CLOSED_FORM_ROWS[1]],
+            par_with_psi(2, &[0.5, 0.25]),
+        );
+        let b = Pair::new(
+            (2, 2),
+            (STORAGE_ONLY, ALL),
+            &[&[100.0, 50.0], &[25.0, 75.0]],
+            par_with_psi(2, &[0.5, 0.25]),
+        );
+        let opening_a = OpeningDuals {
+            objective: 100.0,
+            state_duals: &[-1.5, -2.5],
+            coupled_duals: &[4.0, 8.0],
+            cut_duals: &[(0, 2.0), (1, 1.0)],
+        };
+        let opening_b = OpeningDuals {
+            objective: 40.0,
+            state_duals: &[0.25, -0.5],
+            coupled_duals: &[3.0, -6.0],
+            cut_duals: &[(0, 3.0), (1, 1.5)],
+        };
+
+        let mut scratch = ChainRuleScratch::new(2, 2);
+        for (pair, opening) in [(&a, &opening_a), (&b, &opening_b)] {
+            let mut coefficients = vec![0.0; pair.extracted.n_slots()];
+            let alpha = per_opening_cut_into(
+                &pair.inputs(),
+                opening,
+                &CLOSED_FORM_X_HAT,
+                &mut scratch,
+                &mut coefficients,
+            );
+
+            let (fresh, fresh_alpha) = pair.run(opening, &CLOSED_FORM_X_HAT);
+
+            assert_eq!(bits(&coefficients), bits(&fresh));
+            assert_eq!(alpha.to_bits(), fresh_alpha.to_bits());
+        }
     }
 
     #[test]
@@ -443,7 +532,7 @@ mod tests {
             pair.run(
                 &OpeningDuals {
                     objective: 100.0,
-                    state_duals: &[-1.5, -2.5, 77.0, 77.0, 77.0, 77.0],
+                    state_duals: &[-1.5, -2.5],
                     coupled_duals: &[4.0, 8.0],
                     cut_duals,
                 },
@@ -466,7 +555,7 @@ mod tests {
         let pair = Pair::new((1, 1), (ALL, ALL), &[], par_with_psi(1, &[0.5]));
         let opening = OpeningDuals {
             objective: 0.0,
-            state_duals: &[0.0, 0.0],
+            state_duals: &[0.0],
             coupled_duals: &[0.0],
             cut_duals: &[],
         };
@@ -483,7 +572,7 @@ mod tests {
         let pair = Pair::new((1, 2), (ALL, ALL), &[], par_with_psi(1, &[0.5, 0.25]));
         let opening = OpeningDuals {
             objective: 0.0,
-            state_duals: &[0.0; 3],
+            state_duals: &[0.0],
             coupled_duals: &[0.0],
             cut_duals: &[],
         };
@@ -503,7 +592,7 @@ mod tests {
         );
         let opening = OpeningDuals {
             objective: 0.0,
-            state_duals: &[0.0; 6],
+            state_duals: &[0.0; 2],
             coupled_duals: &[4.0, 8.0],
             cut_duals: &[(0, 3.0)],
         };
@@ -539,7 +628,7 @@ mod tests {
         let pair = Pair::new((1, 3), (ALL, ALL), &[], par_with_psi(1, &[0.5, 0.25]));
         let opening = OpeningDuals {
             objective: 0.0,
-            state_duals: &[0.0; 4],
+            state_duals: &[0.0],
             coupled_duals: &[-2.0],
             cut_duals: &[],
         };
@@ -554,7 +643,7 @@ mod tests {
         let pair = Pair::new((1, 1), (ALL, ALL), &[], PrecomputedPar::default());
         let opening = OpeningDuals {
             objective: 0.0,
-            state_duals: &[0.0; 2],
+            state_duals: &[0.0],
             coupled_duals: &[-2.0],
             cut_duals: &[],
         };
@@ -576,7 +665,7 @@ mod tests {
         );
         let opening = OpeningDuals {
             objective: 0.0,
-            state_duals: &[0.0; 6],
+            state_duals: &[0.0; 2],
             coupled_duals: &[4.0, 8.0],
             cut_duals: &[(1, 1.0), (0, 2.0)],
         };
@@ -600,7 +689,7 @@ mod tests {
         );
         let openings = [OpeningDuals {
             objective: 100.0,
-            state_duals: &[-0.0, -2.5, 77.0, 77.0, 77.0, 77.0],
+            state_duals: &[-0.0, -2.5],
             coupled_duals: &[4.0, 8.0],
             cut_duals: &[(0, 2.0), (1, 1.0), (2, 0.0)],
         }];
@@ -611,7 +700,7 @@ mod tests {
             inputs: pair.inputs(),
             openings: &openings,
         }];
-        let mut scratch = AggregateScratch::new(&pair.slots);
+        let mut scratch = reserved_scratch(&[&pair]);
         let (coefficients, alpha) = aggregate(&children, &[1.0], &CLOSED_FORM_X_HAT, &mut scratch);
 
         assert_eq!(bits(&coefficients), bits(&expected));
@@ -636,13 +725,13 @@ mod tests {
         let child0 = [
             OpeningDuals {
                 objective: 40.0,
-                state_duals: &[-1.0, 0.0, 0.0],
+                state_duals: &[-1.0],
                 coupled_duals: &[2.0],
                 cut_duals: &[(0, 1.0)],
             },
             OpeningDuals {
                 objective: 30.0,
-                state_duals: &[-2.0, 0.0, 0.0],
+                state_duals: &[-2.0],
                 coupled_duals: &[4.0],
                 cut_duals: &[(0, 1.0), (1, 2.0)],
             },
@@ -650,13 +739,13 @@ mod tests {
         let child1 = [
             OpeningDuals {
                 objective: 20.0,
-                state_duals: &[-1.0, 0.0, 0.0],
+                state_duals: &[-1.0],
                 coupled_duals: &[1.0],
                 cut_duals: &[(0, 3.0)],
             },
             OpeningDuals {
                 objective: 10.0,
-                state_duals: &[-3.0, 0.0, 0.0],
+                state_duals: &[-3.0],
                 coupled_duals: &[0.0],
                 cut_duals: &[],
             },
@@ -700,7 +789,7 @@ mod tests {
                 openings: &child1,
             },
         ];
-        let mut scratch = AggregateScratch::new(&pair0.slots);
+        let mut scratch = reserved_scratch(&[&pair0, &pair1]);
         let (coefficients, alpha) = aggregate(&children, weights, &x_hat, &mut scratch);
 
         assert_eq!(coefficients, [-1.625, 3.6875, 0.34375]);
@@ -709,8 +798,9 @@ mod tests {
         assert_eq!(alpha, reference_alpha);
     }
 
-    #[test]
-    fn aggregate_scan_yields_ascending_slots_and_resets_only_touched_words() {
+    const SCAN_X_HAT: [f64; 3] = [1.0; 3];
+
+    fn scan_fixture() -> (Pair, [OpeningDuals<'static>; 2]) {
         let mut rows = vec![[0.0; 3]; 71];
         rows[0] = [0.0, 1.0, 1.0];
         rows[3] = [0.0, 2.0, 1.0];
@@ -719,26 +809,32 @@ mod tests {
         let row_refs: Vec<&[f64]> = rows.iter().map(<[f64; 3]>::as_slice).collect();
         let pair = Pair::new((1, 2), (ALL, ALL), &row_refs, par_with_psi(1, &[0.5, 0.25]));
         assert_eq!(pair.pool.populated(), 71);
-        let x_hat = [1.0; 3];
         let openings = [
             OpeningDuals {
                 objective: 10.0,
-                state_duals: &[-1.0, 0.0, 0.0],
+                state_duals: &[-1.0],
                 coupled_duals: &[0.0],
                 cut_duals: &[(3, 1.0), (70, 1.0)],
             },
             OpeningDuals {
                 objective: 10.0,
-                state_duals: &[-1.0, 0.0, 0.0],
+                state_duals: &[-1.0],
                 coupled_duals: &[0.0],
                 cut_duals: &[(0, 1.0), (65, 1.0)],
             },
         ];
+        (pair, openings)
+    }
+
+    #[test]
+    fn aggregate_scan_yields_ascending_slots_and_resets_only_touched_words() {
+        let (pair, openings) = scan_fixture();
+        let x_hat = SCAN_X_HAT;
         let children = [ChildOpenings {
             inputs: pair.inputs(),
             openings: &openings,
         }];
-        let mut scratch = AggregateScratch::new(&pair.slots);
+        let mut scratch = reserved_scratch(&[&pair]);
 
         let (coefficients, alpha) = aggregate(&children, &[0.5, 0.5], &x_hat, &mut scratch);
 
@@ -752,7 +848,7 @@ mod tests {
         scratch.y_bar[10] = untouched;
         let single = [OpeningDuals {
             objective: 10.0,
-            state_duals: &[-1.0, 0.0, 0.0],
+            state_duals: &[-1.0],
             coupled_duals: &[0.0],
             cut_duals: &[(65, 1.0)],
         }];
@@ -761,12 +857,8 @@ mod tests {
             openings: &single,
         }];
         let (reused, reused_alpha) = aggregate(&again, &[1.0], &x_hat, &mut scratch);
-        let (fresh, fresh_alpha) = aggregate(
-            &again,
-            &[1.0],
-            &x_hat,
-            &mut AggregateScratch::new(&pair.slots),
-        );
+        let (fresh, fresh_alpha) =
+            aggregate(&again, &[1.0], &x_hat, &mut reserved_scratch(&[&pair]));
 
         assert_eq!(reused, [-1.0, 3.0, 1.0]);
         assert_eq!(reused_alpha, 7.0);
@@ -796,13 +888,13 @@ mod tests {
         let openings = [
             OpeningDuals {
                 objective: 40.0,
-                state_duals: &[-1.0, 0.0, 0.0],
+                state_duals: &[-1.0],
                 coupled_duals: &[2.0],
                 cut_duals: &[(0, 1.0)],
             },
             OpeningDuals {
                 objective: 30.0,
-                state_duals: &[-2.0, 0.0, 0.0],
+                state_duals: &[-2.0],
                 coupled_duals: &[4.0],
                 cut_duals: &[(1, 5.0)],
             },
@@ -819,11 +911,117 @@ mod tests {
             &children,
             &[1.0, 0.0],
             &x_hat,
-            &mut AggregateScratch::new(&pair.slots),
+            &mut reserved_scratch(&[&pair]),
         );
 
         assert!(coefficients.iter().all(|v| !v.is_nan()) && !alpha.is_nan());
         assert_eq!(bits(&coefficients), bits(&expected));
         assert_eq!(alpha.to_bits(), expected_alpha.to_bits());
+    }
+
+    #[test]
+    fn a_reserved_scratch_never_grows() {
+        let (pair, openings) = scan_fixture();
+        let mut scratch = AggregateScratch::new(pair.slots.n_hydros(), pair.slots.lag_depth());
+        scratch.reserve(71, 4);
+        assert!(scratch.pairs.capacity() < pair.pool.populated());
+        let held = |scratch: &AggregateScratch| {
+            (
+                scratch.y_bar.as_ptr(),
+                scratch.y_bar.capacity(),
+                scratch.touched.as_ptr(),
+                scratch.touched.capacity(),
+                scratch.pairs.as_ptr(),
+                scratch.pairs.capacity(),
+            )
+        };
+        let before = held(&scratch);
+        let children = [ChildOpenings {
+            inputs: pair.inputs(),
+            openings: &openings,
+        }];
+
+        let _ = aggregate(&children, &[0.5, 0.5], &SCAN_X_HAT, &mut scratch);
+
+        assert_eq!(held(&scratch), before);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "aggregate scratch is not reserved for the resident pool")]
+    fn an_unreserved_scratch_panics_in_debug() {
+        let pair = Pair::new(
+            (1, 2),
+            (ALL, ALL),
+            &[&[0.0, 1.0, 1.0]],
+            par_with_psi(1, &[0.5, 0.25]),
+        );
+        let mut scratch = AggregateScratch::new(1, 2);
+        assert!(scratch.y_bar.len() < pair.pool.populated());
+        let openings = [OpeningDuals {
+            objective: 10.0,
+            state_duals: &[-1.0],
+            coupled_duals: &[2.0],
+            cut_duals: &[(0, 1.0)],
+        }];
+        let children = [ChildOpenings {
+            inputs: pair.inputs(),
+            openings: &openings,
+        }];
+
+        let _ = aggregate(&children, &[1.0], &[1.0; 3], &mut scratch);
+    }
+
+    #[test]
+    fn a_zero_weight_opening_changes_no_bit() {
+        let pair = Pair::new((1, 1), (ALL, ALL), &[&[0.0, 1.0]], par_with_psi(1, &[0.5]));
+        let x_hat = [-1.0, -1.0];
+        let openings = [
+            OpeningDuals {
+                objective: -0.0,
+                state_duals: &[-0.0],
+                coupled_duals: &[0.0],
+                cut_duals: &[],
+            },
+            OpeningDuals {
+                objective: 30.0,
+                state_duals: &[2.0],
+                coupled_duals: &[-4.0],
+                cut_duals: &[(0, 5.0)],
+            },
+        ];
+        let (expected, expected_alpha) = pair.run(&openings[0], &x_hat);
+        assert_eq!(bits(&expected), bits(&[-0.0, -0.0]));
+        assert_eq!(expected_alpha.to_bits(), (-0.0_f64).to_bits());
+
+        let children = [ChildOpenings {
+            inputs: pair.inputs(),
+            openings: &openings,
+        }];
+        let (coefficients, alpha) = aggregate(
+            &children,
+            &[1.0, 0.0],
+            &x_hat,
+            &mut reserved_scratch(&[&pair]),
+        );
+
+        assert_eq!(bits(&coefficients), bits(&expected));
+        assert_eq!(alpha.to_bits(), expected_alpha.to_bits());
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "chain rule: the PAR order exceeds the lag depth")]
+    fn a_par_order_deeper_than_the_lag_depth_panics_in_debug() {
+        let pair = Pair::new((1, 1), (ALL, ALL), &[], par_with_psi(1, &[0.5, 0.25]));
+        assert!(pair.par.psi_slice(0, 0).len() > pair.slots.lag_depth());
+        let opening = OpeningDuals {
+            objective: 0.0,
+            state_duals: &[0.0],
+            coupled_duals: &[-2.0],
+            cut_duals: &[],
+        };
+
+        let _ = pair.run(&opening, &[0.0; 2]);
     }
 }

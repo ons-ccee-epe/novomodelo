@@ -511,14 +511,15 @@ pub(crate) fn convergence_schema() -> Schema {
 /// Row semantics: one row per `(iteration, rank)` for rank-only sequential values
 /// (`worker_id = NULL`), and one row per `(iteration, rank, worker_id)` for
 /// per-worker parallel-region values. `SUM(col) GROUP BY iteration` recovers the
-/// single-row-per-iteration value for each of the 16 timing columns.
+/// single-row-per-iteration value for each timing column.
 ///
 /// Only the top-level non-overlapping phases (`forward_wall_ms`,
 /// `backward_wall_ms`, `cut_selection_ms`, `mpi_allreduce_ms`, `lower_bound_ms`)
 /// and `overhead_ms` are addends of the iteration total; the `*_setup_ms`,
 /// `*_load_imbalance_ms`, `*_scheduling_overhead_ms`, `cut_sync_ms`,
-/// `state_exchange_ms`, `cut_batch_build_ms`, and `lazy_scoring_ms` columns are
-/// sub-components nested under a pass, not top-level addends.
+/// `state_exchange_ms`, `cut_batch_build_ms`, `bwd_aggregation_ms`, and
+/// `lazy_scoring_ms` columns are sub-components nested under a pass, not
+/// top-level addends.
 pub(crate) fn iteration_timing_schema() -> Schema {
     Schema::new(vec![
         Field::new("iteration", DataType::Int32, false),
@@ -540,6 +541,7 @@ pub(crate) fn iteration_timing_schema() -> Schema {
         Field::new("fwd_scheduling_overhead_ms", DataType::Int64, false),
         Field::new("overhead_ms", DataType::Int64, false),
         Field::new("lazy_scoring_ms", DataType::Int64, false),
+        Field::new("bwd_aggregation_ms", DataType::Int64, false),
     ])
 }
 
@@ -1523,8 +1525,8 @@ mod tests {
         let schema = iteration_timing_schema();
         assert_eq!(
             schema.fields().len(),
-            19,
-            "iteration_timing schema must have 19 fields"
+            20,
+            "iteration_timing schema must have 20 fields"
         );
     }
 
@@ -1709,7 +1711,7 @@ mod tests {
             ("generic_violations", 7),
             ("paths", 3),
             ("convergence", 16),
-            ("iteration_timing", 19),
+            ("iteration_timing", 20),
             ("cut_selection", 13),
             ("solver_iterations", 20),
             ("retry_histogram", 5),

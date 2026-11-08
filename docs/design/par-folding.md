@@ -1,13 +1,16 @@
 # PAR folding
 
-> **Status**: Proposal — not implemented. This is the target design for removing the
-> PAR(p) inflow model from the stage LP: the builder stops emitting the lag columns,
-> the z columns and the z rows, and their effect enters as right-hand-side constants
-> computed outside the solver. The work lives on the long-lived branch `folding`,
-> where the compact LP replaces today's LP outright (no runtime switch, no cargo
-> feature). The branch is evaluated against main in production before any merge is
-> considered. Figures quoted here are calibration-time estimates for the converted
-> NEWAVE PMO deck, not standing claims.
+> **Status**: Proposal, in implementation on the long-lived branch `folding`. This is
+> the target design for removing the PAR(p) inflow model from the stage LP: the
+> builder stops emitting the lag columns, the z columns and the z rows, and their
+> effect enters as right-hand-side constants computed outside the solver. On the
+> branch the compact LP is built beside today's LP behind an internal emission switch
+> until one commit moves every site to it; from that commit the compact LP replaces
+> today's LP outright (no runtime switch, no cargo feature). Symbols this design names
+> may already exist on the branch: check the tree before adding one. The branch is
+> evaluated against main in production before any merge is considered. Figures quoted
+> here are calibration-time estimates for the converted NEWAVE PMO deck, not standing
+> claims; a figure that a committed bench reproduces names its §9.7 group.
 >
 > **Companions**: `docs/design/lp-builder-contract.md` (the four jobs of the builder,
 > which this design amends in Jobs 1, 2 and 4, §8.2); `.claude/rules/sddp.md` (the
@@ -308,9 +311,11 @@ larger one: the template the builder emits is the template the solver loads.
   slot's incoming and outgoing column, `render_pairs` and `global_state_index`. It
   gains, built at setup, the lag-slot ranges of §4.4 and the chain rule's slot maps
   between the resident projection P_t and the extracted projection P_{t−1}, keyed by
-  global state dimension. `render_pairs`, `incoming_column` and `outgoing_column` cover
-  only the slots that have an LP column, so `push_cut_row`,
-  `build_delta_cut_row_batch_into` and `extract_duals_from_view` keep their shape.
+  global state dimension. `render_pairs`, `incoming_pairs` and `outgoing_pairs` are the
+  views that yield only the slots that have an LP column, in slot order, so
+  `push_cut_row`, `build_delta_cut_row_batch_into` and `extract_duals_from_view` keep
+  their shape. The projection has no per-slot column lookup that a compact lag slot
+  could reach.
 - **The policy export reads by state index.** `policy/policy_export.rs` classifies a
   slot through `StateSpace::classify(projection.global_state_index(slot))` instead of
   `classify_incoming_column(projection.incoming_column(slot))`, so it no longer depends
@@ -334,7 +339,7 @@ open questions of its own (§12).
 ### 4.5 Buffers of record
 
 Each worker holds the out-of-LP values in existing `ScratchBuffers` fields, renamed for
-their role: `lag_matrix_buf` holds â and `par_inflow_buf` holds ẑ (today's bits, §3.5).
+their role: `incoming_lags_buf` holds â and `realized_inflow_buf` holds ẑ (today's bits, §3.5).
 In the backward, â is the lag slice of the pinned trial state, borrowed rather than
 copied. p, written once per trial point, is the one added vector. The base-row shifts
 are written straight into the `PatchBuffer` region that replaces the z-row patches, so
@@ -510,7 +515,8 @@ their weights.
   space, and `ᾱ = Σ_ω μ_ω Q_ω − dot_trial_state(β̄, x̂)`. ȳ is formed per (trial point,
   child) before the β product, in canonical ω order, in a per-worker slot-space
   accumulator with a touched bitmap. The bitmap's word scan yields the touched slots in
-  ascending order and resets in O(nnz), independent of the pool size. One walk
+  ascending order and resets in O(nnz) plus a scan of at most one word per 64 pool slots
+  between the first and last touched slot. One walk
   `Σ_k ȳ_k β_k` follows; the opening loop never sits inside it. Binding-activity
   tracking reads each opening's (slot, y) pairs before aggregation, because under pure
   CVaR some μ are 0. On a fan, μ comes from one weight-kernel call over the flattened
@@ -525,15 +531,15 @@ their weights.
 
 The kernel takes Gᵀπ and a borrowed slice of (slot, y) pairs of any length, in strictly
 ascending slot order, and never reads the G store, so T-ID (§9.3) can feed it values
-formed on the expanded LP. It skips an exact-zero weight (y, or ȳ) and accumulates each
+formed on the expanded LP. It skips an exact-zero weight (y, ȳ, or μ, the last before any of that opening's adds) and accumulates each
 ḡ_h in one accumulator: the Gᵀπ terms in canonical ω order, then the ȳ_k β_{k,(h,0)}
 terms in ascending slot. With both rules its bits do not depend on whether zero duals
-are present. A Σ_k summed separately from +0.0 and added afterwards breaks this:
+or zero-weight openings are present. A Σ_k summed separately from +0.0 and added afterwards breaks this:
 +0.0 + (−0.0) is +0.0, and the sign the per-opening shape preserves is lost.
 
 The aggregate-first shape goes into production only after the per-opening shape passes
 the chain-rule oracles; the tolerance test of §9.4 pins that aggregating first commutes
-with `aggregate_cut_into`. There is no second implementation.
+with `RiskMeasure::aggregate_cut_into`. There is no second implementation.
 
 DCS always runs `by_scenario`:
 `training/backward_pass_state.rs::resolve_backward_scheduler` forces it whenever DCS
@@ -558,16 +564,18 @@ At stage t for pass m, with trial state x̂ = `records[m, t−1].state`:
 
 ### 5.5 Backward `by_node`, per stage
 
-`process_stage_backward_by_node` claims units (trial point m, opening block, child)
-from a shared cursor; the two blocks of one trial point usually run on different
-workers. Each rank's backward runs only its own forward trials, so every trial point's
-slab entry is rank-local.
+`process_stage_backward_by_node` claims units (trial point m, opening block) from a
+shared cursor, where a block is a range of the trial point's flattened child × opening
+outcomes; the two blocks of one trial point usually run on different workers. Within a
+unit, each child whose outcomes meet the block is one run: one LP load, one pin of the
+state columns and one B, then the run's openings. Each rank's backward runs only its
+own forward trials, so every trial point's slab entry is rank-local.
 
 1. **Per-stage pre-pass,** parallel over rows, ended by one join before the claim
    loop: σ·η for every opening of the child, from the evaluator's noise term into a
    stage-scoped Ω×N scratch, then W `[ω][k]` for every resident row of the child LP
    (frozen rows, then delta rows).
-2. **Per unit (pin phase):**
+2. **Per run (pin phase):**
    - `load_backward_lp` (frozen template plus the delta batch);
    - pin the state columns once;
    - compute p;
@@ -581,7 +589,13 @@ slab entry is rank-local.
    - solve; append the opening's folded extraction to the worker's record buffer
      (§6.3).
 4. **Per trial point, once both units finish:** the aggregate-first chain rule (§5.3),
-   reading each opening's record in place through the location table.
+   reading each opening's record in place through the location table, run serially on
+   the calling thread in ascending position after the canonical scatter. This is a
+   serial section. Its cost grows with the union of non-zero cut duals across a trial
+   point's openings, and its share of backward wall time grows with the worker count,
+   because the parallel part shrinks as 1/W and the finish does not. If the measured
+   share exceeds the budget, the lever is a parallel loop over trial points into
+   per-position slots, followed by the serial ascending cut insert.
 
 ### 5.6 Other sites
 
@@ -681,12 +695,27 @@ Rejected:
 - solving the forward's opening first (warm-start only, in-sample only).
 
 **Expected out-of-LP time** on the NEWAVE PMO deck, all ranks, per iteration: about
-8.9 / 9.4 / 12.6 CPU-s at 5 / 30 / 300 non-zero cut duals per opening, against
-36 / 40 / 75 for the fold with no caches. The 300 column is an upper envelope: the
-compact PMO LP admits at most 169 (§5.7). That is about 0.6% of LP time at 5 ms per solve and 2% at
-1.5 ms. Computing the delta-row bracket in every unit adds one bracket per extra
-opening block of a trial point. The remainder is dominated by the forward's own
-bracket pass, which no cache removes because every forward state is new.
+8.9 / 9.4 / 12.6 CPU-s at 5 / 30 / 300 touched slots per aggregate, against
+36 / 40 / 75 for the fold with no caches.
+
+One aggregate walk runs per (trial point, child) over the union of its openings'
+supports, ∪_{ω: μ_ω > 0} supp y_ω, so the column is the size of that union, not a
+per-opening count. The union is at least the largest opening's non-zero count and at
+most min(Ω⁺·B_t, R_c): Ω⁺ counts the openings with μ_ω > 0 (all of them when λ < 1),
+B_t bounds each opening (§5.7), and R_c is the child's resident cut rows. The three
+columns assume the openings share their non-zero cut rows, which is unmeasured.
+
+At 5 touched slots this is about 0.6% of LP time at 5 ms per solve and 2% at 1.5 ms.
+With disjoint supports the PMO worst case is 20 · 169 = 3,380 touched slots, about
+51 CPU-s: about 3.4% of LP time at 5 ms and 11% at 1.5 ms. Computing the delta-row
+bracket in every unit adds one bracket per extra opening block of a trial point. The
+remainder is dominated by the forward's own bracket pass, which no cache removes
+because every forward state is new.
+
+These figures are CPU seconds and do not show the serial finish's share of wall time
+(§5.5, step 4). Measure it as the coordinator's backward wall minus the longest worker
+backward wall, at the production worker count, or project it from the measured serial
+and parallel seconds.
 
 ### 5.9 Warm start and stored bases
 
@@ -716,7 +745,7 @@ bracket pass, which no cache removes because every forward state is new.
   (`.claude/architecture-rules.md`).
 - Kernels are safe Rust; enum dispatch, no `Box<dyn Trait>`.
 - New per-worker buffers are sized in the existing serial helpers
-  (`WorkspacePool::resize_scratch_bases`, `WorkspacePool::reserve_dcs_scratch`), one
+  (`WorkspacePool::resize_scratch_bases`, `WorkspacePool::reserve_cut_scratch`), one
   sizing shape for the struct.
 - What changes in `novomodelo-stochastic` (the p/ẑ split) and `novomodelo-solver` (the
   range push) stays algorithm-neutral, per the infrastructure-crate rule.
@@ -763,6 +792,11 @@ existing buffers (§4.5). The slab replaces `TrajectoryRecord.primal` and
 - The buffers reserve from `B_t` (§5.7), never from the cut-row count, and grow
   monotonically past it, as `BackwardAccumulators` does. A record past `B_t` is stored
   whole: nothing truncates, clamps or errors.
+- Each worker reserves its record store once, serially, at workspace construction:
+  one record per local trial point and opening (the most one worker can claim under
+  dynamic claiming) and a pair hint of records times the largest resident structural
+  bound. These are reservations, not writes: a worker commits only the pages its
+  claims fill, and the first write happens on the claiming thread.
 - Sizing by the resident cut-row count is the rejected alternative. It costs 16 B per
   cut row per record, twice a dense f64 per row, and grows with the pool. Storing dense
   y with the indices kept separately is rejected with it:
@@ -808,8 +842,10 @@ thread and rank shape.
   only. The order keeps the result independent of declaration order, and no step
   divides by a scale.
 - **Chain rule:** one kernel, two call shapes (§5.3).
-  - It reads the pool rows of the non-zero cut duals only. Skipping an exact zero gives
-    the same bits as the dense sum under the single-accumulator rule of §5.3.
+  - It reads the pool rows of the non-zero cut duals only. A zero dual of either sign and
+    an opening of zero weight are skipped, so the bits do not depend on whether zero pairs
+    or zero-weight openings are present. The result is not bit-equal to a dense sum from
+    +0.0, where a +0.0 product turns a −0.0 accumulator into +0.0.
   - Order is ascending slot within each output element.
   - The walk is row-major: each non-zero row streams once across the full lag width,
     into a 2,016-element accumulator (16 KB, resident in L1d). It is bit-identical to a
@@ -1037,7 +1073,7 @@ conversion is exact only for first-try solves, since retries change solver optio
   PreFilling-routed hydro and a generic `HydroInflow` entry. The twin tests and
   `run_cut_oracles` do not count: they are built on the same G and ψ as production.
 - **Mutation-kill table,** run once at the switch-over against the coupling-independence
-  set alone and recorded with that commit's ticket, with no permanent code: flip −ζ,
+  set alone and recorded in the switch-over commit message, with no permanent code: flip −ζ,
   swap τ_k, route PreFilling to the owner's row, skip the generic merge, skip the
   row-scale multiply in the shift, l versus l+1 in the Φ_t owner. Each mutation must
   make at least one test fail. A T4-8 chronological closed form is added only if a
@@ -1145,7 +1181,7 @@ The expanded LP (§4.7) is the logical oracle, behind `test-support`.
   test-support control forces a tag mismatch, which must recompute B, also compute W in
   the unit through the canonical function, increment the miss counter and give
   identical bits. Chain fixtures assert zero misses.
-- **Aggregate-first:** matches the per-opening shape followed by `aggregate_cut_into`
+- **Aggregate-first:** matches the per-opening shape followed by `RiskMeasure::aggregate_cut_into`
   to tolerance. A pure-CVaR fixture (some μ = 0) checks that binding counts still come
   from the per-opening duals.
 - **`mpi_wire.rs` gates under the fold:** thread and rank invariance, opening order,
@@ -1170,7 +1206,11 @@ In `tests/conformance.rs`, per backend: a tiny LP with a ≥ row pushed through
 finite upper loses it to the push; a push at a nonzero `first_row` changes only its
 rows; `set_row_bounds` accepts a +∞ upper; and, at an optimum, every row whose logical
 is basic reports a dual equal to 0.0 (either sign), which pins the premise of the
-non-zero bound of §5.7 against a solver upgrade.
+non-zero bound of §5.7 against a solver upgrade. That case runs a sequence of warm
+bound pushes on non-dyadic data with a degenerate duplicate row, so the binding row
+changes and the duals come from non-trivial factorizations, and on CLP it runs again
+at a short factorization frequency. It also asserts the bound itself: no more of those
+rows carry a non-zero dual than the number of columns they are supported on.
 
 ### 9.6 Behavioral and golden
 
@@ -1315,9 +1355,15 @@ Verified in code:
   - its IPM rungs keep `run_crossover` at its default, which is on.
 
   This is implementation behaviour, not an API contract.
-- CLP 1.17.11 runs simplex on every rung. That a row whose logical is basic reports an
-  exact zero is probable (one BTRAN, slack columns pivot as identity columns) but
-  unverified; §9.5 pins it.
+- CLP 1.17.11 runs simplex on every rung. A row whose logical is basic reports an exact
+  zero when the final duals come from a fresh factorization: a basic slack is then a
+  singleton identity column, so BTRAN returns ±0.0 for it. CLP refactorizes before its
+  final status check whenever the solve pivoted, unless special option 2048 is set,
+  which no backend sets. This is read from the vendored source
+  (`ClpSimplexDual::statusOfProblemInDual`), not an API contract. §9.5 pins it on the
+  default settings and at a short factorization frequency; the perturbation, scaling
+  and primal rungs of the retry ladder are not exercised. A miss there costs records
+  past B_t, never a wrong cut.
 - Checkpoints are written only at iteration end.
 - The NEWAVE converter emits `level1`, `by_node` with block size 10, `out_of_sample`
   training and simulation inflows, simulation `cut_set = active`, and a chain graph.
@@ -1325,8 +1371,9 @@ Verified in code:
   that.
 
 Assumed, to be measured: LP time per solve (1.5–5 ms used above); the non-zero cut
-duals per opening on PMO (structurally at most 169, §5.7) and their union across a
-stage's trial points, which places the chain-rule walk between its warm and cold costs;
+duals per opening on PMO (structurally at most 169, §5.7), the union of each
+aggregate's openings (§5.8), and the union across a stage's trial points, which places
+the chain-rule walk between its warm and cold costs;
 the batched RHS kernel's gain with every core busy (§6.4); CLP's range-push cost.
 
 Measured on small decks only: an instrumented frozen-path training run on four decks

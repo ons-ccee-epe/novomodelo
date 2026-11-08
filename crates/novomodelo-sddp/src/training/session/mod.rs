@@ -150,6 +150,7 @@ pub(crate) struct TrainingSession<'a, S: SolverInterface + Send, C: Communicator
 
     // ── Per-run scratch buffers (owned; reused across iterations) ─────────
     fwd_pool: WorkspacePool<S>,
+    sizing: WorkspaceSizing,
     basis_store: BasisStore,
     exchange_bufs: ExchangeBuffers,
     cut_sync_bufs: CutSyncBuffers,
@@ -222,17 +223,18 @@ where
             .max()
             .unwrap_or(0)
             .max(training_ctx.node_graph.max_successor_outcome_count());
+        let sizing = WorkspaceSizing {
+            max_openings,
+            initial_pool_capacity: max_pool_capacity,
+            max_local_fwd: ranks.max_local_fwd,
+            noise: NoisePreallocation::StochasticDim,
+        };
         let mut fwd_pool = WorkspacePool::try_new(
             ranks.fwd_rank,
             n_threads,
             training_ctx,
             stage_ctx,
-            WorkspaceSizing {
-                max_openings,
-                initial_pool_capacity: max_pool_capacity,
-                max_local_fwd: ranks.max_local_fwd,
-                noise: NoisePreallocation::StochasticDim,
-            },
+            sizing,
             solver_factory,
         )
         .map_err(SddpError::Solver)?;
@@ -253,10 +255,11 @@ where
             .unwrap_or(0);
         fwd_pool.resize_scratch_bases(max_cols, max_rows);
 
-        // DcsSolveScratch/DcsScoringScratch are shared per worker, not per pool,
-        // so they must cover the LARGEST pool a worker's sweep may touch (same
-        // `max_pool_capacity` the per-slot backward buffers size from).
-        fwd_pool.reserve_dcs_scratch(state.n_state, max_pool_capacity);
+        // The per-worker cut scratch (the DCS scratch and the cut-row buffers)
+        // is shared per worker, not per pool, so it must cover the LARGEST pool
+        // a worker's sweep may touch (same `max_pool_capacity` the per-slot
+        // backward buffers size from).
+        fwd_pool.reserve_backward_scratch(training_ctx, sizing, max_pool_capacity);
 
         // Sized for max local forward passes so scenario indices stay stable
         // across iterations, which leaves spare rows on a rank holding fewer:
@@ -338,22 +341,10 @@ where
 
         let results = TrainingResults::new(config.loop_config.start_iteration);
 
-        // The LB LP is the ROOT's stage-0 LP, so its append-only cut-row map is
-        // sized from the root pool's capacity — resolved by STAGE, never by array
-        // position: nodes[0] is the smallest-id node, not necessarily the root, so
-        // fcf.pools[0] could under-size the map for a root pool larger than pool 0.
-        // On a chain the root IS nodes[0] (pool 0), so this equals pools[0].
-        let lb_root_node = training_ctx
-            .node_graph
-            .frontier_node(StageIdx(0))
-            .ok_or_else(|| {
-                SddpError::Validation("training session: stage 0 carries no alive node".to_string())
-            })?;
-        let lb_root_pool = training_ctx.node_graph.nodes[lb_root_node].pool_id;
         let scratch = IterationScratch::new(
             ranks.max_local_fwd,
             &training_ctx.node_graph.pool_stage,
-            fcf.pools[lb_root_pool].capacity,
+            fcf.pools[lb_root_pool(training_ctx.node_graph)?].capacity,
             stage_ctx.template(StageIdx(0)).num_rows,
             training_ctx,
             stage_ctx,
@@ -406,6 +397,7 @@ where
         bwd_state.set_scheduler(solver_profiles.backward_scheduler);
         bwd_state.set_hardest_first_claim_order(solver_profiles.hardest_first_claim_order);
         bwd_state.set_binding_tracking(config.cut_management.tracks_binding_activity());
+        bwd_state.reserve_by_node_aggregate(training_ctx.cut_state_layouts, max_pool_capacity);
 
         Ok(Self {
             solver,
@@ -417,6 +409,7 @@ where
             runtime,
             ranks,
             fwd_pool,
+            sizing,
             basis_store,
             exchange_bufs,
             cut_sync_bufs,
@@ -510,11 +503,16 @@ where
             self.training_ctx.horizon.num_stages(),
         );
         // Growth-only: a pool `grow_pools_for_next_iteration` just grew may now
-        // exceed what the DCS scratch covers; re-reserve before the next
-        // sweep touches it (never inside the sweep itself).
+        // exceed what the per-worker cut scratch covers; re-reserve before the
+        // next sweep touches it (never inside the sweep itself).
         let max_pool_capacity = self.fcf.pools.iter().map(|p| p.capacity).max().unwrap_or(0);
         self.fwd_pool
-            .reserve_dcs_scratch(self.training_ctx.state.n_state, max_pool_capacity);
+            .reserve_pool_scratch(self.training_ctx, self.sizing, max_pool_capacity);
+        self.bwd_state
+            .reserve_by_node_aggregate(self.training_ctx.cut_state_layouts, max_pool_capacity);
+        self.scratch.reserve_lb_cut_scratch(
+            self.fcf.pools[lb_root_pool(self.training_ctx.node_graph)?].capacity,
+        );
 
         let (lb, lb_lp_solves, lb_wall_ms, lb_solve_time_ms) = self.run_lower_bound(iteration)?;
 
@@ -1102,6 +1100,7 @@ where
                 setup_time_ms: backward_result.setup_time_ms,
                 load_imbalance_ms: backward_result.load_imbalance_ms,
                 scheduling_overhead_ms: backward_result.scheduling_overhead_ms,
+                aggregation_time_ms: backward_result.aggregation_time_ms,
             },
         );
 
@@ -1441,6 +1440,16 @@ pub(crate) fn interior_cut_nodes(node_graph: &NodeGraph) -> Vec<NodePos> {
         .filter(|&(pos, n)| n.stage >= StageIdx(1) && !node_graph.successors[pos].is_empty())
         .map(|(pos, _)| pos)
         .collect()
+}
+
+/// The pool of the lower bound's LP, the root's stage-0 node. Resolved by STAGE,
+/// never by array position: `nodes[0]` is the smallest-id node, not necessarily
+/// the root, so `fcf.pools[0]` could under-size the root's buffers.
+fn lb_root_pool(node_graph: &NodeGraph) -> Result<usize, SddpError> {
+    let root = node_graph.frontier_node(StageIdx(0)).ok_or_else(|| {
+        SddpError::Validation("training session: stage 0 carries no alive node".to_string())
+    })?;
+    Ok(node_graph.nodes[root].pool_id)
 }
 
 /// The study's root when it generates cuts: stage 0 with a successor.

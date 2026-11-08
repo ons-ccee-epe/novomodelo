@@ -6,6 +6,7 @@
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
+use std::ops::Range;
 
 use novomodelo_core::{BlockMode, ContractType, System};
 use novomodelo_solver::StageTemplate;
@@ -233,10 +234,35 @@ pub fn ring_lanes(state: &StateSpace, geom: &StageGeometry) -> Vec<RingLane> {
     lanes
 }
 
-/// `hours * M3S_TO_HM3`, so no test declares the conversion constant again.
+/// Derived: 3600 s per hour over 10⁶ m³ per hm³.
+const HM3_PER_M3S_HOUR: f64 = 3_600.0 / 1_000_000.0;
+
+/// `hours` of a 1 m³/s flow in hm³, from a constant derived here and not read from the code under
+/// test, so no test declares the conversion constant again.
 #[must_use]
 pub fn hours_to_hm3(hours: f64) -> f64 {
-    hours * crate::block_clock::M3S_TO_HM3
+    hours * HM3_PER_M3S_HOUR
+}
+
+/// The `(row, value)` entries of column `c` of `template`, in stored order. Shared by the expander
+/// and the compact-template map, so no test reads a column's CSC span itself.
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "CSC offsets and row indices are non-negative by construction"
+)]
+pub fn column_entries(
+    template: &StageTemplate,
+    c: usize,
+) -> impl Iterator<Item = (usize, f64)> + '_ {
+    let span = template.col_starts[c] as usize..template.col_starts[c + 1] as usize;
+    span.map(|k| (template.row_indices[k] as usize, template.values[k]))
+}
+
+/// The state dimensions that hold inflow lags, lag-major: dimension `start + l * N + h` is hydro
+/// `h`'s lag `l`.
+#[must_use]
+pub fn state_lag_dims(state: &StateSpace) -> Range<usize> {
+    state.state_dim_lag_range()
 }
 
 /// Decoded owner of a water-balance, load-balance or z-inflow row.

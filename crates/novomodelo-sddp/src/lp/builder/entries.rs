@@ -1618,7 +1618,7 @@ pub(super) fn fill_generic_constraints_for_test(
 ///
 /// Returns `(col_starts, row_indices, values)` in the format required by
 /// `SolverInterface::load_model`.
-pub(super) fn assemble_csc(col_entries: &[Vec<(usize, f64)>]) -> (Vec<i32>, Vec<i32>, Vec<f64>) {
+pub(crate) fn assemble_csc(col_entries: &[Vec<(usize, f64)>]) -> (Vec<i32>, Vec<i32>, Vec<f64>) {
     // Caller owns the sort; `assemble_csc` does NOT sort. Unsorted `row_indices` within a
     // column can make HiGHS/CLP silently misfactorize, so this debug_assert surfaces a
     // missing caller-side sort rather than masking it with a re-sort.

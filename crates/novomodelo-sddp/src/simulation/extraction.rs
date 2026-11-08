@@ -15,6 +15,10 @@
 //!
 //! The equipment column layout is defined per stage by `StageLayout`, threaded
 //! into extraction as [`StageGeometry`].
+//!
+//! Under the compact form the `inflow_lags` and `z_inflow` ranges are empty, and
+//! the inflow outputs read the realized inflow and the incoming lags from the
+//! solve scratch.
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -32,8 +36,8 @@ use crate::lp::builder::{
 };
 use crate::lp::indexer::{
     AnticipatedLocal, AnticipatedPlants, BlockIdx, Boundary, BusSys, EvapLocal, FillingTargetLocal,
-    FloorLocal, FphaCellLocal, FphaLocal, HydroCell, HydroCellIndex, HydroSys, LineSys, NcsSys,
-    PlantFloorLocal, PumpingSys, StateSpace, StudyDimensions, ThermalSys,
+    FloorLocal, FphaCellLocal, FphaLocal, HydroCell, HydroCellIndex, HydroSys, InflowForm, LineSys,
+    NcsSys, PlantFloorLocal, PumpingSys, StateSpace, StudyDimensions, ThermalSys,
     anticipated_resolution_for, is_anticipated_decision_active_for_delivery,
 };
 use crate::setup::NodeId;
@@ -602,7 +606,10 @@ pub struct SolutionView<'a> {
     pub objective: f64,
     /// Objective coefficient vector from the stage template.
     pub objective_coeffs: &'a [f64],
-    /// Row lower bounds from the stage template (may be patched for load noise).
+    /// Unscaled template row lower bounds, with the load-balance rows overwritten
+    /// by the realized load. Every other row keeps its template bound, a coupled
+    /// row whose solved bound carries the inflow shift included. Extraction reads
+    /// only the load-balance rows.
     pub row_lower: &'a [f64],
 }
 
@@ -654,6 +661,9 @@ pub struct StageExtractionSpec<'a> {
     pub entity_counts: &'a EntityCounts,
     /// Volumetric inflow per hydro (m³/s), one entry per hydro plant.
     pub inflow_m3s_per_hydro: &'a [f64],
+    /// Incoming lag slice of the pinned state in state-vector order, read by the
+    /// `inflow_lags` output when the LP has no incoming-lag columns.
+    pub incoming_lags: &'a [f64],
     /// Block hours per dispatch block, used to convert duals to spot prices.
     pub block_hours: &'a [f64],
     /// Per-row metadata for active generic constraint rows at this stage.
@@ -723,11 +733,9 @@ impl StageExtractionSpec<'_> {
 /// `col_scale[col]` when in range and non-zero; `1.0` otherwise.
 #[inline]
 fn col_scale_factor_at(col_scale: &[f64], col: usize) -> f64 {
-    if col < col_scale.len() {
-        let d = col_scale[col];
-        if d == 0.0 { 1.0 } else { d }
-    } else {
-        1.0
+    match col_scale.get(col) {
+        Some(&d) if d != 0.0 => d,
+        _ => 1.0,
     }
 }
 
@@ -1825,12 +1833,21 @@ fn extract_stub_collections(
     inflow_lags.extend(spec.entity_counts.hydro_ids.iter().enumerate().flat_map(
         |(h, &hydro_id)| {
             (0..state.max_par_order).map(move |l| {
+                let inflow_m3s = match state.inflow_form {
+                    InflowForm::Logical => {
+                        view.primal[state.lag_incoming_col(l, HydroSys::new(h)).get()]
+                    }
+                    InflowForm::Compact => {
+                        let lag_dim = state.lag_state_dim(l, HydroSys::new(h)).get();
+                        spec.incoming_lags[lag_dim - state.state_dim_lag_range().start]
+                    }
+                };
                 #[allow(clippy::cast_possible_truncation)]
                 SimulationInflowLagResult {
                     stage_id,
                     hydro_id,
                     lag_index: l as u32,
-                    inflow_m3s: view.primal[state.lag_incoming_col(l, HydroSys::new(h)).get()],
+                    inflow_m3s,
                 }
             })
         },

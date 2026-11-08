@@ -35,6 +35,10 @@ impl InflowCouplingSink {
         hydro_starts.push(0);
         for entries in &mut self.per_hydro {
             entries.sort_by_key(|&(row, _)| row);
+            debug_assert!(
+                entries.windows(2).all(|pair| pair[0].0 < pair[1].0),
+                "inflow-coupling sink: duplicate row for one hydro"
+            );
             for &(row, coefficient) in entries.iter() {
                 debug_assert!(
                     row < n_base_rows,
@@ -84,7 +88,7 @@ impl InflowCouplingSink {
 }
 
 /// Hydro-major `(touched-row position, unscaled coefficient)` entries, positions
-/// ascending within a hydro and duplicates kept, where a position indexes
+/// strictly ascending within a hydro, one entry per (row, hydro), where a position indexes
 /// [`Self::touched_rows`], plus the unscaled template bounds of each of those rows.
 #[derive(Debug, Clone)]
 pub struct InflowCoupling {

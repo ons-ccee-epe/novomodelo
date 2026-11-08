@@ -265,6 +265,16 @@ pub struct StudySetup {
     pub(crate) boundary_requirements: BoundaryStateRequirements,
 }
 
+/// No case directory is available to read the source checkpoint, so the depth is
+/// unresolved; presence still follows the config.
+pub(crate) fn unresolved_boundary_requirements(config: &Config) -> BoundaryStateRequirements {
+    if config.policy.boundary.is_some() {
+        BoundaryStateRequirements::present(0)
+    } else {
+        BoundaryStateRequirements::none()
+    }
+}
+
 impl StudySetup {
     /// Build all precomputed study state from a validated system and config.
     ///
@@ -283,21 +293,38 @@ impl StudySetup {
         hydro_models: PrepareHydroModelsResult,
         scalar_parameters: Vec<ScalarParameter>,
     ) -> Result<Self, SddpError> {
-        // No case dir to read the source checkpoint, so the depth is unresolved
-        // (None); presence still follows the config, matching the boundary-mask
-        // gate an entry point resolves via `resolve_boundary_state_requirements`.
-        let boundary = if config.policy.boundary.is_some() {
-            BoundaryStateRequirements::present(0)
-        } else {
-            BoundaryStateRequirements::none()
-        };
-        Self::new_with_boundary_requirements(
+        Self::new_with_boundary_requirements_in_form(
             system,
             config,
             stochastic,
             hydro_models,
-            boundary,
+            unresolved_boundary_requirements(config),
             scalar_parameters,
+            InflowForm::Logical,
+        )
+    }
+
+    /// [`Self::new`] building the compact inflow emission.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::new`].
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn new_compact(
+        system: &System,
+        config: &Config,
+        stochastic: StochasticContext,
+        hydro_models: PrepareHydroModelsResult,
+        scalar_parameters: Vec<ScalarParameter>,
+    ) -> Result<Self, SddpError> {
+        Self::new_with_boundary_requirements_in_form(
+            system,
+            config,
+            stochastic,
+            hydro_models,
+            unresolved_boundary_requirements(config),
+            scalar_parameters,
+            InflowForm::Compact,
         )
     }
 
@@ -321,12 +348,46 @@ impl StudySetup {
         boundary: BoundaryStateRequirements,
         scalar_parameters: Vec<ScalarParameter>,
     ) -> Result<Self, SddpError> {
-        let params = StudyParams::from_config(config, scalar_parameters)?;
-        Self::new_from_params(system, config, stochastic, hydro_models, boundary, params)
+        Self::new_with_boundary_requirements_in_form(
+            system,
+            config,
+            stochastic,
+            hydro_models,
+            boundary,
+            scalar_parameters,
+            InflowForm::Logical,
+        )
     }
 
-    /// [`Self::new_with_boundary_requirements`] from parameters the caller has
-    /// already extracted from `config`, so `StudyParams::from_config` runs once.
+    /// [`Self::new_with_boundary_requirements`] building `inflow_form`.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::new`].
+    pub(crate) fn new_with_boundary_requirements_in_form(
+        system: &System,
+        config: &Config,
+        stochastic: StochasticContext,
+        hydro_models: PrepareHydroModelsResult,
+        boundary: BoundaryStateRequirements,
+        scalar_parameters: Vec<ScalarParameter>,
+        inflow_form: InflowForm,
+    ) -> Result<Self, SddpError> {
+        let params = StudyParams::from_config(config, scalar_parameters)?;
+        Self::new_from_params(
+            system,
+            config,
+            stochastic,
+            hydro_models,
+            boundary,
+            params,
+            inflow_form,
+        )
+    }
+
+    /// [`Self::new_with_boundary_requirements_in_form`] from parameters the
+    /// caller has already extracted from `config`, so `StudyParams::from_config`
+    /// runs once.
     pub(crate) fn new_from_params(
         system: &System,
         config: &Config,
@@ -334,6 +395,7 @@ impl StudySetup {
         hydro_models: PrepareHydroModelsResult,
         boundary: BoundaryStateRequirements,
         mut params: StudyParams,
+        inflow_form: InflowForm,
     ) -> Result<Self, SddpError> {
         params.boundary = boundary;
         // Sentinel: the scenario-source resolvers use the path only for error
@@ -346,13 +408,14 @@ impl StudySetup {
         let simulation_source = config
             .simulation_scenario_source(sentinel_path)
             .map_err(|e| SddpError::Validation(e.to_string()))?;
-        Self::from_broadcast_params(
+        Self::from_broadcast_params_with_form(
             system,
             stochastic,
             params,
             hydro_models,
             &training_source,
             &simulation_source,
+            inflow_form,
         )
     }
 

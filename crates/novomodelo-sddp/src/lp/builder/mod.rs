@@ -63,6 +63,8 @@ mod test_support;
 #[cfg(any(test, feature = "test-support"))]
 pub use delivery_ring::DeliveryRing;
 pub use inflow_coupling::InflowCoupling;
+#[cfg(any(test, feature = "test-support"))]
+pub use layout::RowFamily;
 pub use layout::StageGeometry;
 pub use patch::PatchBuffer;
 pub use state_box::StateBox;
@@ -70,6 +72,8 @@ pub use template::StageTemplates;
 
 // --- Crate-internal re-exports ---
 pub(crate) use build_inputs::LpBuildInputs;
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) use entries::assemble_csc;
 pub(crate) use hydro_state::{storage_floor_relaxed, warn_on_inert_plant_floor_overrides};
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) use layout::ResolvedTables;

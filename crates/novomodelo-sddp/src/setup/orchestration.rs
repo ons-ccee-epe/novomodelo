@@ -281,21 +281,22 @@ impl StudySetup {
         solver_factory: impl Fn() -> Result<S, SolverError>,
     ) -> Result<WorkspacePool<S>, SolverError> {
         let rank = i32::try_from(comm.rank()).expect("MPI rank fits in i32");
+        let sizing = WorkspaceSizing {
+            max_openings: (0..self.inputs.stage_data.stage_templates.templates.len())
+                .map(|t| self.inputs.stochastic.opening_tree().n_openings(t))
+                .max()
+                .unwrap_or(0),
+            initial_pool_capacity: 0,
+            // Simulation-only pool: forward-worker scratch fields unused.
+            max_local_fwd: 0,
+            noise: NoisePreallocation::OnDemand,
+        };
         let mut pool = WorkspacePool::try_new(
             rank,
             n_threads,
             &self.training_ctx(),
             &self.stage_ctx(),
-            WorkspaceSizing {
-                max_openings: (0..self.inputs.stage_data.stage_templates.templates.len())
-                    .map(|t| self.inputs.stochastic.opening_tree().n_openings(t))
-                    .max()
-                    .unwrap_or(0),
-                initial_pool_capacity: 0,
-                // Simulation-only pool: forward-worker scratch fields unused.
-                max_local_fwd: 0,
-                noise: NoisePreallocation::OnDemand,
-            },
+            sizing,
             solver_factory,
         )?;
         // Always pre-size scratch bases — basis reconstruction runs
@@ -304,6 +305,8 @@ impl StudySetup {
         let max_cols = templates.iter().map(|t| t.num_cols).max().unwrap_or(0);
         let max_rows = templates.iter().map(|t| t.num_rows).max().unwrap_or(0);
         pool.resize_scratch_bases(max_cols, max_rows);
+        let max_pool_capacity = self.fcf.pools.iter().map(|p| p.capacity).max().unwrap_or(0);
+        pool.reserve_backward_scratch(&self.training_ctx(), sizing, max_pool_capacity);
         Ok(pool)
     }
 }

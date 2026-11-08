@@ -11,9 +11,10 @@ use novomodelo_stochastic::par::precompute::PrecomputedPar;
 
 use crate::cut::FutureCostFunction;
 use crate::indexer::{CutSlot, CutStateProjection, HydroSys, InflowForm, StateDim, StateSpace};
-use crate::lp::builder::{InflowCoupling, StageTemplates};
+use crate::lp::builder::{InflowCoupling, StageTemplates, assemble_csc};
 use crate::setup::StudySetup;
 use crate::setup::template_postprocess::postprocess_templates;
+use crate::test_support::template_structure::column_entries;
 
 /// Index maps from a compact stage LP to its expanded (today's) shape.
 #[derive(Debug)]
@@ -31,7 +32,7 @@ fn shifted(range: &Range<usize>, by: usize) -> Range<usize> {
 }
 
 impl ExpandedLayout {
-    /// Expands a compact [`StateSpace`] with the incoming-lag and z column ranges.
+    /// Moves every region of a compact [`StateSpace`] after the lag block to its expanded column.
     ///
     /// # Panics
     ///
@@ -48,10 +49,8 @@ impl ExpandedLayout {
         let past_z = lags + n;
 
         let mut state = compact.clone();
-        state.inflow_lags = n..n + lags;
         state.transit_buckets_out = shifted(&compact.transit_buckets_out, lags);
         state.commit_out = shifted(&compact.commit_out, lags);
-        state.z_inflow = storage_in_start + lags..storage_in_start + past_z;
         state.storage_in = shifted(&compact.storage_in, past_z);
         state.transit_buckets_in = shifted(&compact.transit_buckets_in, past_z);
         state.commit_in = shifted(&compact.commit_in, past_z);
@@ -64,7 +63,8 @@ impl ExpandedLayout {
         }
     }
 
-    /// The expanded state space; its `inflow_form` stays compact.
+    /// The compact state space with every region after the lag block moved to its expanded
+    /// column; read the lag and z columns from this layout, never from the state.
     #[must_use]
     pub fn state(&self) -> &StateSpace {
         &self.state
@@ -158,35 +158,6 @@ pub struct ExpandedStudy {
     pub unscaled: Vec<StageTemplate>,
     /// Per-stage expanded templates after the column and row scaling.
     pub scaled: Vec<StageTemplate>,
-}
-
-#[expect(
-    clippy::cast_sign_loss,
-    reason = "CSC row indices are non-negative by construction"
-)]
-fn column_entries(template: &StageTemplate, c: usize) -> impl Iterator<Item = (usize, f64)> + '_ {
-    let span = template.col_starts[c] as usize..template.col_starts[c + 1] as usize;
-    span.map(|k| (template.row_indices[k] as usize, template.values[k]))
-}
-
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    reason = "the solver C API takes i32 offsets and row indices, and a stage LP is far below i32::MAX"
-)]
-fn assemble_csc(entries: &[Vec<(usize, f64)>]) -> (Vec<i32>, Vec<i32>, Vec<f64>) {
-    let mut col_starts = Vec::with_capacity(entries.len() + 1);
-    let mut row_indices = Vec::new();
-    let mut values = Vec::new();
-    for column in entries {
-        col_starts.push(values.len() as i32);
-        for &(row, value) in column {
-            row_indices.push(row as i32);
-            values.push(value);
-        }
-    }
-    col_starts.push(values.len() as i32);
-    (col_starts, row_indices, values)
 }
 
 fn expand_template(

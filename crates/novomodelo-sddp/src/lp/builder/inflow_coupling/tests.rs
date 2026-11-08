@@ -26,6 +26,23 @@ fn finish_rejects_a_nan_coefficient() {
     let _ = sink.finish(&[0.0; 1], &[0.0; 1]);
 }
 
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "inflow-coupling sink: duplicate row for one hydro")]
+fn finish_rejects_a_duplicate_row_for_one_hydro() {
+    let mut sink = InflowCouplingSink::new(1);
+    sink.record(HydroSys::new(0), 2, -2.0);
+    sink.record(HydroSys::new(0), 2, -2.5);
+    let _ = sink.finish(&[0.0; 3], &[0.0; 3]);
+}
+
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "inflow-coupling sink: row bound slices differ in length")]
+fn finish_rejects_row_bound_slices_of_different_lengths() {
+    let _ = InflowCouplingSink::new(1).finish(&[0.0; 2], &[0.0; 1]);
+}
+
 #[test]
 fn finish_orders_hydros_canonically_and_rows_ascending_within_a_hydro() {
     let mut sink = InflowCouplingSink::new(3);
@@ -33,13 +50,12 @@ fn finish_orders_hydros_canonically_and_rows_ascending_within_a_hydro() {
     sink.record(HydroSys::new(0), 7, -7.0);
     sink.record(HydroSys::new(2), 1, -1.0);
     sink.record(HydroSys::new(0), 2, -2.0);
-    sink.record(HydroSys::new(0), 2, -2.5);
 
     let coupling = sink.finish(&[0.0; 8], &[0.0; 8]);
     let entries = |h: usize| coupling.hydro_entries(HydroSys::new(h)).collect::<Vec<_>>();
 
     assert_eq!(coupling.n_hydros(), 3);
-    assert_eq!(entries(0), vec![(2, -2.0), (2, -2.5), (7, -7.0)]);
+    assert_eq!(entries(0), vec![(2, -2.0), (7, -7.0)]);
     assert_eq!(entries(1), Vec::<(usize, f64)>::new());
     assert_eq!(entries(2), vec![(1, -1.0), (4, -4.0)]);
 }

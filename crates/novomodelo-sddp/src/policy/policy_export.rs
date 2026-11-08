@@ -71,8 +71,8 @@ fn lag_reference_anchor(all_stages: &[Stage], pool_pos_in_all: Option<usize>, la
 /// Slots are emitted in `projection`'s storage → lag → buckets →
 /// commitment-hold order, so slot `j` describes the entity owning positional
 /// coefficient `j` — the order a consumer matches the manifest against the cut
-/// coefficients. Each slot is classified by the global [`StateSpace`] region
-/// containing its incoming-state column ([`CutStateProjection::incoming_column`]),
+/// coefficients. Each slot is classified by the global [`StateSpace`] region of
+/// the state dimension it projects ([`CutStateProjection::global_state_index`]),
 /// never by re-deriving column arithmetic.
 ///
 /// Each hydro-region slot's `was_active` comes from [`hydro_operating_active`].

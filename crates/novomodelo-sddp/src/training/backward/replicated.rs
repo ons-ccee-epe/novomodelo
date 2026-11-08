@@ -23,18 +23,26 @@ use novomodelo_solver::SolverInterface;
 use crate::{
     SddpError,
     context::{StageContext, TrainingContext},
+    cut::chain_rule::{ChainRuleInputs, OpeningDuals, per_opening_cut_into},
     cut_sync::OutcomeExchangeScratch,
     forward::EnumeratedForwardScratch,
+    indexer::{ChainRuleSlots, InflowForm},
     risk_measure::{BackwardOutcome, RiskMeasure},
     solve::partition,
     stage_solve::{StageInputs, run_stage_solve},
+    training::stage_solve_prep::{BracketSource, FoldedCutRows, StageSolvePrep, StateSource},
     workspace::SolverWorkspace,
 };
 
 use super::{
     SuccessorChild, SuccessorOutcomes, SuccessorSpec,
-    duals_extraction::extract_state_duals_only,
-    lp_setup::{OpeningNoise, load_backward_lp, patch_opening_bounds, resolve_opening_noise},
+    duals_extraction::{
+        FoldedDuals, FoldedExtraction, extract_folded_duals, extract_state_duals_only,
+    },
+    lp_setup::{
+        OpeningNoise, folded_cut_rows, load_backward_lp, patch_opening_bounds,
+        resolve_opening_noise,
+    },
 };
 
 /// Per-rank scratch for [`run_backward_node_replicated`]: the local
@@ -65,9 +73,9 @@ pub(crate) fn outcome_stride(n_state: usize) -> usize {
 /// index space `child.outcome_range`'s offset addresses into the node's joint
 /// arena) at the shared incoming state `x_hat`, appending each opening's
 /// `objective ‖ subgradient` (`1 + cut_state.n_slots()` doubles) to `out`. The
-/// child's LP loads once; an `External` child (`openings.len == 1`) reads its
-/// declared column via [`resolve_opening_noise`] instead of the
-/// generated opening tree.
+/// child's LP loads once, and on the compact LP `x_hat` is pinned once with it;
+/// an `External` child (`openings.len == 1`) reads its declared column via
+/// [`resolve_opening_noise`] instead of the generated opening tree.
 ///
 /// # Errors
 ///
@@ -92,14 +100,35 @@ pub(crate) fn solve_replicated_outcome_slice<S: SolverInterface + Send>(
     out: &mut Vec<f64>,
 ) -> Result<(), SddpError> {
     let s = succ.successor;
-    let n_state = succ.cut_state.n_slots();
     let tree_view = training_ctx.stochastic.tree_view();
 
     ws.solver.reset_solver_state();
     load_backward_lp(ws, child);
 
+    let rows = folded_cut_rows(training_ctx, child, child.successor_active_slots);
+    if training_ctx.state.inflow_form == InflowForm::Compact {
+        StageSolvePrep::pin_folded(
+            &mut ws.solver,
+            &mut ws.patch_buf,
+            &mut ws.scratch,
+            ctx,
+            training_ctx,
+            s,
+            StateSource(x_hat),
+            &rows,
+            BracketSource::InUnit,
+        );
+    }
+
     let mut state_duals = std::mem::take(&mut ws.backward_accum.state_duals_buf);
+    let mut coupled_duals = std::mem::take(&mut ws.backward_accum.coupled_duals_buf);
+    let mut cut_dual_slots = std::mem::take(&mut ws.backward_accum.cut_dual_slots);
     let mut buf = std::mem::take(&mut ws.backward_accum.external_noise_buf);
+    let mut duals = FoldedDuals {
+        state_duals: &mut state_duals,
+        coupled_duals: &mut coupled_duals,
+        cut_dual_slots: &mut cut_dual_slots,
+    };
 
     match resolve_opening_noise(
         training_ctx,
@@ -114,7 +143,6 @@ pub(crate) fn solve_replicated_outcome_slice<S: SolverInterface + Send>(
                 (0, 1),
                 "an External child has exactly one opening"
             );
-            patch_opening_bounds(ws, ctx, training_ctx, noise, x_hat, s);
             let inputs = StageInputs {
                 stage_context: ctx,
                 pool: child.successor_pool,
@@ -124,20 +152,21 @@ pub(crate) fn solve_replicated_outcome_slice<S: SolverInterface + Send>(
                 iteration: Some(iteration),
                 node_id: child.successor_node_id,
             };
-            let view = run_stage_solve(ws, &inputs)?;
-            let objective = extract_state_duals_only(
-                &view,
-                succ.cut_state,
-                &ctx.template(s).col_scale,
-                &mut state_duals,
-            );
-            out.push(objective);
-            out.extend_from_slice(&state_duals[..n_state]);
+            solve_replicated_opening(
+                ws,
+                training_ctx,
+                succ,
+                child,
+                &rows,
+                x_hat,
+                noise,
+                &inputs,
+                &mut duals,
+                out,
+            )?;
         }
         OpeningNoise::Generated => {
             for local_omega in local_start..local_end {
-                let raw_noise = tree_view.opening(s.0, local_omega);
-                patch_opening_bounds(ws, ctx, training_ctx, raw_noise, x_hat, s);
                 let inputs = StageInputs {
                     stage_context: ctx,
                     pool: child.successor_pool,
@@ -147,20 +176,123 @@ pub(crate) fn solve_replicated_outcome_slice<S: SolverInterface + Send>(
                     iteration: Some(iteration),
                     node_id: child.successor_node_id,
                 };
-                let view = run_stage_solve(ws, &inputs)?;
-                let objective = extract_state_duals_only(
-                    &view,
-                    succ.cut_state,
-                    &ctx.template(s).col_scale,
-                    &mut state_duals,
-                );
-                out.push(objective);
-                out.extend_from_slice(&state_duals[..n_state]);
+                solve_replicated_opening(
+                    ws,
+                    training_ctx,
+                    succ,
+                    child,
+                    &rows,
+                    x_hat,
+                    tree_view.opening(s.0, local_omega),
+                    &inputs,
+                    &mut duals,
+                    out,
+                )?;
             }
         }
     }
     ws.backward_accum.external_noise_buf = buf;
+    ws.backward_accum.cut_dual_slots = cut_dual_slots;
+    ws.backward_accum.coupled_duals_buf = coupled_duals;
     ws.backward_accum.state_duals_buf = state_duals;
+    Ok(())
+}
+
+/// Solves one opening of `child`'s loaded LP at `x_hat` and appends its
+/// `objective ‖ subgradient` to `out`; on the compact LP the subgradient is the
+/// opening's chain-rule coefficients, which the successor intercept dots at the
+/// same `x_hat`.
+///
+/// # Errors
+///
+/// Propagates `SddpError::Infeasible`/`SddpError::Solver` from the solve.
+// RATIONALE: the per-opening solve inputs (workspace, training context,
+// successor+child specs, the child's cut rows, trial state, noise, solve inputs,
+// dual buffers, output buffer) are threaded positionally like
+// `solve_replicated_outcome_slice`'s; bundling them here alone would desync that
+// shape without cutting the real coupling.
+#[allow(clippy::too_many_arguments)]
+fn solve_replicated_opening<S: SolverInterface + Send>(
+    ws: &mut SolverWorkspace<S>,
+    training_ctx: &TrainingContext<'_>,
+    succ: &SuccessorSpec<'_>,
+    child: &SuccessorChild<'_>,
+    rows: &FoldedCutRows<'_>,
+    x_hat: &[f64],
+    raw_noise: &[f64],
+    inputs: &StageInputs<'_>,
+    duals: &mut FoldedDuals<'_>,
+    out: &mut Vec<f64>,
+) -> Result<(), SddpError> {
+    let ctx = inputs.stage_context;
+    let s = inputs.stage_index;
+    let n_state = succ.cut_state.n_slots();
+    match training_ctx.state.inflow_form {
+        InflowForm::Logical => {
+            patch_opening_bounds(ws, ctx, training_ctx, raw_noise, x_hat, s);
+            let view = run_stage_solve(ws, inputs)?;
+            let objective = extract_state_duals_only(
+                &view,
+                succ.cut_state,
+                &ctx.template(s).col_scale,
+                duals.state_duals,
+            );
+            out.push(objective);
+            out.extend_from_slice(&duals.state_duals[..n_state]);
+        }
+        InflowForm::Compact => {
+            StageSolvePrep::open_folded(
+                &mut ws.solver,
+                &mut ws.patch_buf,
+                &mut ws.scratch,
+                ctx,
+                training_ctx,
+                s,
+                raw_noise,
+                rows,
+            );
+            let view = run_stage_solve(ws, inputs)?;
+            let template = ctx.template(s);
+            let objective = extract_folded_duals(
+                &view,
+                &FoldedExtraction {
+                    extracted: succ.cut_state,
+                    col_scale: &template.col_scale,
+                    row_scale: &template.row_scale,
+                    coupling: &ctx.inflow_coupling[s.0],
+                    first_cut_row: child.template_num_rows,
+                    cut_row_slots: child.successor_active_slots,
+                    read_cut_duals: rows.projection.has_lag_slots(),
+                },
+                duals,
+            );
+            out.push(objective);
+            let start = out.len();
+            out.resize(start + n_state, 0.0);
+            per_opening_cut_into(
+                &ChainRuleInputs {
+                    slots: &ChainRuleSlots::compose(
+                        training_ctx.state,
+                        rows.projection,
+                        succ.cut_state,
+                    ),
+                    resident_pool: child.successor_pool,
+                    extracted: succ.cut_state,
+                    par: training_ctx.stochastic.par(),
+                    stage: s.0,
+                },
+                &OpeningDuals {
+                    objective,
+                    state_duals: duals.state_duals,
+                    coupled_duals: duals.coupled_duals,
+                    cut_duals: duals.cut_dual_slots,
+                },
+                x_hat,
+                &mut ws.backward_accum.chain_scratch,
+                &mut out[start..],
+            );
+        }
+    }
     Ok(())
 }
 
@@ -242,7 +374,7 @@ pub(crate) fn run_backward_node_replicated<S: SolverInterface + Send, C: Communi
         let fused = is_eligible_terminal_leaf
             .then(|| enumerated_state.fused_terminal_slice(child.successor_node))
             .flatten();
-        if let Some((objective, duals)) = fused {
+        if let Some((objective, subgradient)) = fused {
             debug_assert_eq!(
                 (
                     lo - child.outcome_range.start,
@@ -252,12 +384,12 @@ pub(crate) fn run_backward_node_replicated<S: SolverInterface + Send, C: Communi
                 "an External terminal leaf has exactly one opening"
             );
             debug_assert_eq!(
-                duals.len(),
+                subgradient.len(),
                 n_state,
-                "the fused slice's dual length must equal the cut-state dimension"
+                "the fused slice's subgradient length must equal the cut-state dimension"
             );
             scratch.local_slice.push(objective);
-            scratch.local_slice.extend_from_slice(duals);
+            scratch.local_slice.extend_from_slice(subgradient);
             continue;
         }
         if is_eligible_terminal_leaf {

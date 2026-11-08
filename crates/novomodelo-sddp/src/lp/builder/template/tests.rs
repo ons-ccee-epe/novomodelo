@@ -3154,11 +3154,12 @@ fn anticipated_bounds_table_shape_is_two_plants_by_three_stages() {
 
 // ── Operational-violation RHS & matrix-coefficient verification ──────────
 
-use super::super::layout::StageLayout;
+use super::super::layout::{RowFamily, StageLayout};
 use crate::DEFAULT_COST_SCALE_FACTOR;
 use crate::hydro_models::{ProductionModelSet, ResolvedProductionModel};
 use novomodelo_core::System;
 use novomodelo_solver::StageTemplate;
+use std::ops::Range;
 
 /// One-hydro system with all operational-violation bounds active (min/max
 /// outflow, min turbine, min generation > 0), two blocks per stage, and
@@ -4711,6 +4712,107 @@ fn stage_geometry_rerouted_ranges_match_layout_source_at_every_stage() {
     assert!(
         saw_empty_filled_floor,
         "fixture must exercise a non-Operating stage"
+    );
+}
+
+/// The non-empty row families of every stage tile `0..num_rows` exactly: each
+/// row has one family, and the families follow the allocation order. The union
+/// assertion guards the test's power, so a fixture that stops reaching a family
+/// fails here rather than passing on empty ranges.
+#[test]
+fn row_families_partition_every_stage_row() {
+    let check_partition = |fixture: &str,
+                           stage: usize,
+                           families: &[(RowFamily, Range<usize>)],
+                           num_rows: usize|
+     -> Vec<RowFamily> {
+        let mut owner: Vec<Option<RowFamily>> = vec![None; num_rows];
+        let mut previous_start = 0;
+        let mut placed = Vec::new();
+        for (family, range) in families.iter().filter(|(_, range)| !range.is_empty()) {
+            assert!(
+                range.start >= previous_start,
+                "{fixture} stage {stage}: {family:?} starts at row {} before the previous family's start {previous_start}",
+                range.start
+            );
+            previous_start = range.start;
+            assert!(
+                range.end <= num_rows,
+                "{fixture} stage {stage}: {family:?} ends at row {} past num_rows {num_rows}",
+                range.end
+            );
+            for row in range.clone() {
+                assert!(
+                    owner[row].is_none(),
+                    "{fixture} stage {stage}: row {row} is in both {:?} and {family:?}",
+                    owner[row]
+                );
+                owner[row] = Some(*family);
+            }
+            placed.push(*family);
+        }
+        if let Some(row) = owner.iter().position(Option::is_none) {
+            panic!("{fixture} stage {stage}: row {row} is in no family");
+        }
+        placed
+    };
+
+    let mut union: Vec<RowFamily> = Vec::new();
+
+    let (layout, template) = build_active_violations_layout_and_template();
+    union.extend(check_partition(
+        "active violations",
+        0,
+        &layout.row_families(),
+        template.num_rows,
+    ));
+
+    let system = system_with_contracts_filling_and_anticipated();
+    let hydro_result = PrepareHydroModelsResult::default_from_system(&system);
+    let templates = crate::build_stage_templates_resolving_layout(
+        &system,
+        InflowNonNegativityMethod::None,
+        &PrecomputedPar::default(),
+        &PrecomputedNormal::default(),
+        &hydro_result.production,
+        &hydro_result.evaporation,
+        &empty_resolved_params(),
+    )
+    .expect("build_stage_templates: valid system");
+    assert_eq!(
+        templates.row_families().len(),
+        templates.templates.len(),
+        "one row-family record per stage"
+    );
+    for (stage, families) in templates.row_families().iter().enumerate() {
+        union.extend(check_partition(
+            "contracts, filling and anticipated",
+            stage,
+            families,
+            templates.templates[stage].num_rows,
+        ));
+    }
+
+    for required in [
+        RowFamily::WaterBalance,
+        RowFamily::LoadBalance,
+        RowFamily::MinOutflow,
+        RowFamily::FillingTarget,
+    ] {
+        assert!(
+            union.contains(&required),
+            "no fixture reaches {required:?}; reached {union:?}"
+        );
+    }
+    assert!(
+        [
+            RowFamily::AnticipatedFishing,
+            RowFamily::AnticipatedStateOutDef,
+            RowFamily::AnticipatedSlotDefinition,
+        ]
+        .iter()
+        .any(|family| union.contains(family)),
+        "no fixture reaches an anticipated family; reached {union:?}"
     );
 }
 

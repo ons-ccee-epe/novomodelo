@@ -30,12 +30,14 @@ pub mod anticipated_structural_assertions;
 pub mod builders;
 pub mod compact_map;
 pub mod cut_oracles;
+pub mod expanded_solve;
 pub mod in_code_studies;
 pub mod oracle_tolerance;
 pub mod parity_hash;
 pub mod parquet_fixtures;
 pub mod permute;
 pub mod power_guards;
+pub mod row_families;
 pub mod selection_fingerprint;
 
 /// `n` as a positive count; panics on zero.
@@ -88,6 +90,20 @@ impl Communicator for StubComm {
     fn abort(&self, error_code: i32) -> ! {
         std::process::exit(error_code)
     }
+}
+
+/// Trains `setup` on one rank with every cut's trial state stored.
+pub fn train_storing_trial_states(label: &str, setup: &mut StudySetup) {
+    setup.set_export_states(true);
+    let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
+    let outcome = setup
+        .train(&mut solver, &StubComm, 1, ActiveSolver::new, None, None)
+        .expect("training must return Ok");
+    assert!(
+        outcome.error.is_none(),
+        "{label}: training must not error: {:?}",
+        outcome.error
+    );
 }
 
 /// `size() == 2` sibling of [`StubComm`]: every collective writes only this
@@ -628,10 +644,12 @@ pub fn stochastic_in_code(system: &System) -> StochasticContext {
     .expect("build_stochastic_context")
 }
 
-/// Fallible core shared by every in-code `StudySetup` constructor below: the
-/// sole call site of `StudySetup::new` in this module. `Compact` mirrors
-/// `StudySetup::new`'s chain down to `from_broadcast_params_compact`.
-#[allow(clippy::needless_pass_by_value)]
+/// Fallible core of every in-code `StudySetup` constructor below: selects
+/// `StudySetup::new` or `StudySetup::new_compact` by `emission`.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "callers pass an owned System inline; the body only borrows it"
+)]
 fn try_build_setup_in_code_with_models(
     system: System,
     config: &Config,
@@ -639,32 +657,11 @@ fn try_build_setup_in_code_with_models(
     emission: Emission,
 ) -> Result<StudySetup, SddpError> {
     let stochastic = stochastic_in_code(&system);
-    match emission {
-        Emission::Logical => StudySetup::new(&system, config, stochastic, hydro_models, Vec::new()),
-        Emission::Compact => {
-            let sentinel = Path::new("config.json");
-            let training_source = config
-                .training_scenario_source(sentinel)
-                .map_err(|e| SddpError::Validation(e.to_string()))?;
-            let simulation_source = config
-                .simulation_scenario_source(sentinel)
-                .map_err(|e| SddpError::Validation(e.to_string()))?;
-            let mut params = StudyParams::from_config(config, Vec::new())?;
-            params.boundary = if config.policy.boundary.is_some() {
-                BoundaryStateRequirements::present(0)
-            } else {
-                BoundaryStateRequirements::none()
-            };
-            StudySetup::from_broadcast_params_compact(
-                &system,
-                stochastic,
-                params,
-                hydro_models,
-                &training_source,
-                &simulation_source,
-            )
-        }
-    }
+    let build = match emission {
+        Emission::Logical => StudySetup::new,
+        Emission::Compact => StudySetup::new_compact,
+    };
+    build(&system, config, stochastic, hydro_models, Vec::new())
 }
 
 /// Construct a [`StudySetup`] in-process from an explicit `hydro_models`

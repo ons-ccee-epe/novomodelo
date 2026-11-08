@@ -28,13 +28,6 @@ pub(crate) enum InflowForm {
     /// Lag columns and one `z_inflow` column per hydro.
     Logical,
     /// Compact emission, built beside [`Self::Logical`].
-    #[cfg_attr(
-        not(any(test, feature = "test-support")),
-        expect(
-            dead_code,
-            reason = "only the test-support constructor selects it until production setup does"
-        )
-    )]
     Compact,
 }
 
@@ -472,19 +465,21 @@ impl StateSpace {
     /// `region`'s incoming pinned-block start column — the single owner of
     /// which block [`Self::state_to_lp_incoming_column`] pins.
     ///
-    /// # Panics (debug builds only)
+    /// # Panics
     ///
     /// Panics if `region` has no LP columns ([`Self::has_lp_columns`]).
     #[inline]
     #[must_use]
     pub(crate) fn incoming_block_start(&self, region: StateRegion) -> usize {
-        debug_assert!(
-            self.has_lp_columns(region),
-            "{region:?} has no incoming LP block"
-        );
         match region {
             StateRegion::Storage => self.storage_in.start,
-            StateRegion::Lag => self.inflow_lags.start,
+            StateRegion::Lag => {
+                assert!(
+                    self.has_lp_columns(region),
+                    "{region:?} has no incoming LP block"
+                );
+                self.inflow_lags.start
+            }
             StateRegion::Buckets => self.transit_buckets_in.start,
             StateRegion::CommitmentHold => self.commit_in.start,
         }
@@ -492,19 +487,21 @@ impl StateSpace {
 
     /// The single owner of where `region`'s outgoing values sit in the primal.
     ///
-    /// # Panics (debug builds only)
+    /// # Panics
     ///
     /// Panics if `region` has no LP columns ([`Self::has_lp_columns`]).
     #[inline]
     #[must_use]
     pub(crate) fn outgoing_block_start(&self, region: StateRegion) -> usize {
-        debug_assert!(
-            self.has_lp_columns(region),
-            "{region:?} has no outgoing LP block"
-        );
         match region {
             StateRegion::Storage => self.storage.start,
-            StateRegion::Lag => self.inflow_lags.start,
+            StateRegion::Lag => {
+                assert!(
+                    self.has_lp_columns(region),
+                    "{region:?} has no outgoing LP block"
+                );
+                self.inflow_lags.start
+            }
             StateRegion::Buckets => self.transit_buckets_out.start,
             StateRegion::CommitmentHold => self.commit_out.start,
         }
@@ -2310,6 +2307,22 @@ mod tests {
             .into_iter()
             .all(|region| idx.has_lp_columns(region))
         );
+    }
+
+    #[test]
+    #[should_panic(expected = "Lag has no incoming LP block")]
+    fn compact_lag_region_has_no_incoming_lp_block() {
+        let idx = compact_with_buckets_and_one_plant();
+        assert!(!idx.has_lp_columns(StateRegion::Lag));
+        let _ = idx.incoming_block_start(StateRegion::Lag);
+    }
+
+    #[test]
+    #[should_panic(expected = "Lag has no outgoing LP block")]
+    fn compact_lag_region_has_no_outgoing_lp_block() {
+        let idx = compact_with_buckets_and_one_plant();
+        assert!(!idx.has_lp_columns(StateRegion::Lag));
+        let _ = idx.outgoing_block_start(StateRegion::Lag);
     }
 
     #[cfg(debug_assertions)]

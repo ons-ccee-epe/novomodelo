@@ -15,8 +15,11 @@
     clippy::too_many_lines
 )]
 
-use novomodelo_io::config::{SimulationSelection, StoppingRuleConfig};
+use novomodelo_io::config::{
+    BackwardScheduler, Config, SelectionMethod, SimulationSelection, StoppingRuleConfig,
+};
 use novomodelo_io::test_support::{producer_block_defaults, stage_cuts_payload_defaults};
+use std::num::NonZeroU32;
 use std::path::Path;
 use std::sync::mpsc;
 
@@ -33,7 +36,10 @@ use novomodelo_sddp::{
 use novomodelo_solver::{ActiveSolver, SolverInterface};
 
 mod common;
-use common::{D03_EXPECTED_COST, StubComm, build_setup_for_case, fresh_setup_with};
+use common::{
+    D03_EXPECTED_COST, Emission, StubComm, build_setup_for_case, build_setup_for_case_as,
+    fresh_setup_with,
+};
 
 /// Train a case (`StubComm`, `ActiveSolver`, seed 42, 1 thread) and return the
 /// setup, the canonicalized system, the training result, and the live solver.
@@ -45,8 +51,40 @@ fn train_deterministic_case(
     novomodelo_sddp::TrainingResult,
     ActiveSolver,
 ) {
+    train_case_as(case_dir, Emission::Logical, |_| {})
+}
+
+/// [`train_deterministic_case`] building the chosen inflow `emission`, with
+/// `configure` applied to the setup before training.
+fn train_case_as(
+    case_dir: &Path,
+    emission: Emission,
+    configure: impl FnOnce(&mut StudySetup),
+) -> (
+    StudySetup,
+    novomodelo_core::System,
+    novomodelo_sddp::TrainingResult,
+    ActiveSolver,
+) {
+    train_case_with(case_dir, emission, |_| {}, configure)
+}
+
+/// [`train_case_as`] with `edit_config` applied to the parsed config before the
+/// setup is built.
+fn train_case_with(
+    case_dir: &Path,
+    emission: Emission,
+    edit_config: impl FnOnce(&mut Config),
+    configure: impl FnOnce(&mut StudySetup),
+) -> (
+    StudySetup,
+    novomodelo_core::System,
+    novomodelo_sddp::TrainingResult,
+    ActiveSolver,
+) {
     let config_path = case_dir.join("config.json");
-    let config = novomodelo_io::parse_config(&config_path).expect("config must parse");
+    let mut config = novomodelo_io::parse_config(&config_path).expect("config must parse");
+    edit_config(&mut config);
 
     let system = novomodelo_io::load_case(case_dir).expect("load_case must succeed");
 
@@ -61,7 +99,15 @@ fn train_deterministic_case(
     let hydro_models =
         prepare_hydro_models(&system, case_dir, false).expect("prepare_hydro_models must succeed");
 
-    let mut setup = build_setup_for_case(case_dir, &config, &system, stochastic, hydro_models);
+    let mut setup = build_setup_for_case_as(
+        case_dir,
+        &config,
+        &system,
+        stochastic,
+        hydro_models,
+        emission,
+    );
+    configure(&mut setup);
 
     let comm = StubComm;
     let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
@@ -2085,6 +2131,8 @@ fn d18_ncs_commissioning_window() {
     );
 }
 
+const D16_EXPECTED_COST: f64 = 7_759_078.749_993_78;
+
 /// D16: PAR(1) lag-shift deterministic test.
 ///
 /// ## System
@@ -2131,7 +2179,36 @@ fn d16_par1_lag_shift() {
     // producing higher deficits than the no-shift bug (Z = 150 at every stage).
     // Pinned value adds the universal `turbined_cost` regularization (`≈ 2_828.75 $`)
     // to the deficit-only cost `7_756_250.0`.
-    assert_cost(result.final_lb, 7_759_078.749_993_78, 1.0, "D16");
+    assert_cost(result.final_lb, D16_EXPECTED_COST, 1.0, "D16");
+}
+
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: run with --features slow-tests"
+)]
+#[test]
+fn d16_par1_lag_shift_on_the_compact_lp() {
+    let case_dir = Path::new("../../examples/deterministic/d16-par1-lag-shift");
+    let (_, _, result, _) = train_case_as(case_dir, Emission::Compact, |_| {});
+    assert_cost(result.final_lb, D16_EXPECTED_COST, 1.0, "D16 compact");
+}
+
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: run with --features slow-tests"
+)]
+#[test]
+fn d16_par1_lag_shift_on_the_compact_lp_by_node() {
+    let case_dir = Path::new("../../examples/deterministic/d16-par1-lag-shift");
+    let (_, _, result, _) = train_case_as(case_dir, Emission::Compact, |setup| {
+        setup.set_scheduler(BackwardScheduler::ByNode { block_size: None });
+    });
+    assert_cost(
+        result.final_lb,
+        D16_EXPECTED_COST,
+        1.0,
+        "D16 compact by_node",
+    );
 }
 
 /// Regression guard for the model-persistence optimization.
@@ -3167,6 +3244,80 @@ fn d26_estimated_par2() {
     assert!(
         result.iterations <= 100,
         "D26: must converge within 100 iterations, got {}",
+        result.iterations
+    );
+}
+
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: run with --features slow-tests"
+)]
+#[test]
+fn d26_estimated_par2_on_the_compact_lp() {
+    let case_dir = Path::new("../../examples/deterministic/d26-estimated-par2");
+    let (_, _, result, _) = train_case_as(case_dir, Emission::Compact, |_| {});
+    assert_cost(result.final_lb, D26_EXPECTED_COST, 1.0, "D26 compact");
+    assert!(
+        result.iterations <= 100,
+        "D26 compact: must converge within 100 iterations, got {}",
+        result.iterations
+    );
+}
+
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: run with --features slow-tests"
+)]
+#[test]
+fn d26_estimated_par2_on_the_compact_lp_by_node() {
+    let case_dir = Path::new("../../examples/deterministic/d26-estimated-par2");
+    let (_, _, result, _) = train_case_as(case_dir, Emission::Compact, |setup| {
+        setup.set_scheduler(BackwardScheduler::ByNode { block_size: None });
+    });
+    assert_cost(
+        result.final_lb,
+        D26_EXPECTED_COST,
+        1.0,
+        "D26 compact by_node",
+    );
+    assert!(
+        result.iterations <= 100,
+        "D26 compact by_node: must converge within 100 iterations, got {}",
+        result.iterations
+    );
+}
+
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: run with --features slow-tests"
+)]
+#[test]
+fn d26_estimated_par2_on_the_compact_lp_under_dynamic_selection() {
+    let case_dir = Path::new("../../examples/deterministic/d26-estimated-par2");
+    let positive = |n| NonZeroU32::new(n).expect("a positive count");
+    let (_, _, result, _) = train_case_with(
+        case_dir,
+        Emission::Compact,
+        |config| {
+            config.training.cut_selection.selection = Some(SelectionMethod::Dynamic {
+                start_iteration: positive(2),
+                seed_window: 5,
+                candidate_recency: None,
+                max_added_per_round: positive(10),
+                violation_tolerance: None,
+            });
+        },
+        |_| {},
+    );
+    assert_cost(
+        result.final_lb,
+        D26_EXPECTED_COST,
+        1.0,
+        "D26 compact dynamic",
+    );
+    assert!(
+        result.iterations <= 100,
+        "D26 compact dynamic: must converge within 100 iterations, got {}",
         result.iterations
     );
 }

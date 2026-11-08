@@ -13,7 +13,9 @@ use crate::SddpError;
 use crate::SddpError::Validation;
 use crate::backward::{OpeningOutcome, StagedCut};
 use crate::context::{StageContext, TrainingContext};
+use crate::cut::chain_rule::{AggregateScratch, ChainRuleScratch, ChildOpenings, OpeningDuals};
 use crate::dcs::DcsSolveScratch;
+use crate::indexer::{ChainRuleSlots, CutStateProjection};
 use crate::lp::builder::{PatchBuffer, StageGeometry};
 use crate::risk_measure::{BackwardOutcome, RiskMeasureScratch};
 use crate::setup::{NodeId, NodePos};
@@ -365,9 +367,11 @@ pub enum NoisePreallocation {
 /// per-worker fields need no synchronisation; the sequential merge phase after
 /// the parallel region sums their contributions.
 ///
-/// `slot_increments`, `metadata_sync_contribution` and `cut_dual_slots` are
-/// grown, zeroed and filled only while the pass records binding activity (the
-/// successor view's `cut_activity_tolerance` is `Some`).
+/// `slot_increments` and `metadata_sync_contribution` are grown, zeroed and
+/// filled only while the pass records binding activity (the successor view's
+/// `cut_activity_tolerance` is `Some`). `cut_dual_slots` is filled on every pool
+/// whose cut-state projection has lag slots, whatever the binding switch; only
+/// the binding count reads the switch.
 #[derive(Default)]
 pub(crate) struct BackwardAccumulators {
     /// Per-opening backward outcomes, grown to the maximum `n_openings` seen.
@@ -410,10 +414,12 @@ pub(crate) struct BackwardAccumulators {
     pub(crate) block_pivot_sum: Vec<u64>,
     /// Per-block solved-opening count, parallel to `block_pivot_sum`.
     pub(crate) block_pivot_count: Vec<u64>,
-    /// Per-opening scratch for the incoming-state columns' reduced costs; grows to `indexer.n_state`.
+    /// Per-opening scratch for the incoming-state columns' reduced costs, reserved to the widest
+    /// pool's slot count by [`WorkspacePool::reserve_backward_scratch`].
     pub(crate) state_duals_buf: Vec<f64>,
-    /// Per-opening scratch of (pool slot, raw cut-row dual) pairs, one per cut
-    /// row the binding count reads; grows to `succ.num_cuts_at_successor`.
+    /// Per-opening scratch of (pool slot, raw cut-row dual) pairs, zero-free and
+    /// by ascending slot; reserved to the largest `structural_dual_bound` by
+    /// [`WorkspacePool::reserve_backward_scratch`].
     pub(crate) cut_dual_slots: Vec<(usize, f64)>,
     /// Reusable `[hydro | load-bus | NCS]` opening-noise buffer for an External
     /// successor node, assembled from the external libraries at the node's
@@ -447,12 +453,27 @@ pub(crate) struct BackwardAccumulators {
     /// Per-opening after-solve statistics snapshot; counterpart to
     /// `stats_before_buf`.
     pub(crate) stats_after_buf: SolverStatistics,
+    /// (Gᵀπ)_h per hydro for the current opening, in unscaled cost units.
+    pub(crate) coupled_duals_buf: Vec<f64>,
+    /// Per-opening chain-rule accumulators, shaped by the layout's (N, L).
+    pub(crate) chain_scratch: ChainRuleScratch,
+    /// Folded openings this worker solved, read by the aggregate-first cut.
+    pub(crate) folded_records: OpeningRecords,
+    /// Reusable state of one aggregate-first call.
+    pub(crate) folded_aggregate: FoldedAggregateScratch,
 }
 
 impl BackwardAccumulators {
-    /// Allocate accumulators pre-sized from the given dimensions; any may be
-    /// `0`, in which case those buffers start empty and grow lazily.
-    pub(crate) fn new(max_openings: usize, initial_pool_capacity: usize, n_state: usize) -> Self {
+    /// Allocate accumulators pre-sized from the given dimensions; any
+    /// (`n_hydros` and `lag_depth` included) may be `0`, in which case those
+    /// buffers start empty and grow lazily.
+    pub(crate) fn new(
+        max_openings: usize,
+        initial_pool_capacity: usize,
+        n_state: usize,
+        n_hydros: usize,
+        lag_depth: usize,
+    ) -> Self {
         let outcomes = (0..max_openings)
             .map(|_| BackwardOutcome {
                 intercept: 0.0,
@@ -481,28 +502,232 @@ impl BackwardAccumulators {
             dcs_initial_resident: Vec::with_capacity(initial_pool_capacity),
             stats_before_buf: SolverStatistics::default(),
             stats_after_buf: SolverStatistics::default(),
+            coupled_duals_buf: vec![0.0; n_hydros],
+            chain_scratch: ChainRuleScratch::new(n_hydros, lag_depth),
+            folded_records: OpeningRecords::default(),
+            folded_aggregate: FoldedAggregateScratch::new(n_hydros, lag_depth, max_openings),
         }
     }
+
+    /// Appends the opening just solved at `outcomes[omega]` to
+    /// [`Self::folded_records`] under `(trial_pos, omega)`.
+    pub(crate) fn record_folded_opening(&mut self, trial_pos: usize, omega: usize) {
+        self.folded_records.push(
+            (trial_pos, omega),
+            self.outcomes[omega].objective_value,
+            &self.state_duals_buf,
+            &self.coupled_duals_buf,
+            &self.cut_dual_slots,
+        );
+    }
+}
+
+/// Grows `buf` to `target` capacity, growth-only: `additional` is computed from
+/// `len()`, which `Vec::reserve` counts from.
+fn reserve_to<T>(buf: &mut Vec<T>, target: usize) {
+    if buf.capacity() < target {
+        buf.reserve(target - buf.len());
+    }
+}
+
+/// Reuses the allocation of `v` for a vector of a same-layout type, so a buffer of
+/// borrowing views keeps its capacity across calls that borrow for different lifetimes.
+pub(crate) fn recycle<T, U>(mut v: Vec<T>) -> Vec<U> {
+    v.clear();
+    v.into_iter().map(|_| unreachable!("cleared")).collect()
+}
+
+/// Packed folded openings of one worker. A record holds its `(trial position, ω)` key,
+/// Q, `state_len` lag-free state duals, N coupled duals and a range of the shared
+/// zero-free `(slot, y)` pair buffer.
+///
+/// Reserved once, serially, through [`Self::reserve`] and never inside a claim, child or
+/// unit loop: reserved capacity is virtual memory, and a worker commits only the pages
+/// its own pushes write. A record with more pairs than the hint grows the pair buffer;
+/// nothing is truncated.
+#[derive(Default)]
+pub(crate) struct OpeningRecords {
+    state_len: usize,
+    n_hydros: usize,
+    keys: Vec<(usize, usize)>,
+    objectives: Vec<f64>,
+    state_duals: Vec<f64>,
+    coupled_duals: Vec<f64>,
+    pair_ends: Vec<usize>,
+    pairs: Vec<(usize, f64)>,
+}
+
+impl OpeningRecords {
+    /// Empties the store and fixes the per-record shape of the pushes that follow.
+    pub(crate) fn clear(&mut self, state_len: usize, n_hydros: usize) {
+        self.state_len = state_len;
+        self.n_hydros = n_hydros;
+        self.keys.clear();
+        self.objectives.clear();
+        self.state_duals.clear();
+        self.coupled_duals.clear();
+        self.pair_ends.clear();
+        self.pairs.clear();
+    }
+
+    /// Grows every buffer to hold `records` records of the given shape and `pair_hint`
+    /// pairs, never shrinking.
+    pub(crate) fn reserve(
+        &mut self,
+        records: usize,
+        state_len: usize,
+        n_hydros: usize,
+        pair_hint: usize,
+    ) {
+        reserve_to(&mut self.keys, records);
+        reserve_to(&mut self.objectives, records);
+        reserve_to(&mut self.pair_ends, records);
+        reserve_to(&mut self.state_duals, records * state_len);
+        reserve_to(&mut self.coupled_duals, records * n_hydros);
+        reserve_to(&mut self.pairs, pair_hint);
+    }
+
+    pub(crate) fn push(
+        &mut self,
+        key: (usize, usize),
+        objective: f64,
+        state_duals: &[f64],
+        coupled_duals: &[f64],
+        pairs: &[(usize, f64)],
+    ) {
+        debug_assert_eq!(state_duals.len(), self.state_len);
+        debug_assert_eq!(coupled_duals.len(), self.n_hydros);
+        self.keys.push(key);
+        self.objectives.push(objective);
+        self.state_duals.extend_from_slice(state_duals);
+        self.coupled_duals.extend_from_slice(coupled_duals);
+        self.pairs.extend_from_slice(pairs);
+        self.pair_ends.push(self.pairs.len());
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.keys.len()
+    }
+
+    pub(crate) fn key(&self, i: usize) -> (usize, usize) {
+        self.keys[i]
+    }
+
+    #[cfg(test)]
+    pub(crate) fn buffer_identity(&self) -> [(usize, usize); 6] {
+        [
+            (self.keys.as_ptr().addr(), self.keys.capacity()),
+            (self.objectives.as_ptr().addr(), self.objectives.capacity()),
+            (
+                self.state_duals.as_ptr().addr(),
+                self.state_duals.capacity(),
+            ),
+            (
+                self.coupled_duals.as_ptr().addr(),
+                self.coupled_duals.capacity(),
+            ),
+            (self.pair_ends.as_ptr().addr(), self.pair_ends.capacity()),
+            (self.pairs.as_ptr().addr(), self.pairs.capacity()),
+        ]
+    }
+
+    pub(crate) fn view(&self, i: usize) -> OpeningDuals<'_> {
+        let pairs_start = if i == 0 { 0 } else { self.pair_ends[i - 1] };
+        OpeningDuals {
+            objective: self.objectives[i],
+            state_duals: &self.state_duals[i * self.state_len..(i + 1) * self.state_len],
+            coupled_duals: &self.coupled_duals[i * self.n_hydros..(i + 1) * self.n_hydros],
+            cut_duals: &self.pairs[pairs_start..self.pair_ends[i]],
+        }
+    }
+}
+
+/// Reusable state of one aggregate-first cut: the kernel scratch, the flattened
+/// opening costs, the per-child slot pairs, and the view vectors recycled across
+/// lifetimes so the call allocates nothing after its first use.
+pub(crate) struct FoldedAggregateScratch {
+    pub(crate) aggregate: AggregateScratch,
+    pub(crate) costs: Vec<f64>,
+    pub(crate) slots: Vec<ChainRuleSlots>,
+    pub(crate) views: Vec<OpeningDuals<'static>>,
+    pub(crate) children: Vec<ChildOpenings<'static>>,
+    /// Record index of each canonical ω within one by-scenario unit.
+    pub(crate) location: Vec<usize>,
+}
+
+impl FoldedAggregateScratch {
+    /// Scratch for a layout of `n_hydros` and `lag_depth`, holding up to `max_openings`
+    /// openings per call.
+    pub(crate) fn new(n_hydros: usize, lag_depth: usize, max_openings: usize) -> Self {
+        Self {
+            aggregate: AggregateScratch::new(n_hydros, lag_depth),
+            costs: Vec::with_capacity(max_openings),
+            slots: Vec::with_capacity(max_openings),
+            views: Vec::with_capacity(max_openings),
+            children: Vec::with_capacity(max_openings),
+            location: Vec::with_capacity(max_openings),
+        }
+    }
+
+    /// Grows the kernel scratch to `pool_capacity` pool slots and `pair_hint` pairs,
+    /// never shrinking; the kernel itself does not grow it.
+    pub(crate) fn reserve(&mut self, pool_capacity: usize, pair_hint: usize) {
+        self.aggregate.reserve(pool_capacity, pair_hint);
+    }
+}
+
+impl Default for FoldedAggregateScratch {
+    fn default() -> Self {
+        Self::new(0, 0, 0)
+    }
+}
+
+/// Per-record dimensions every pool of the study needs: the largest `columned_len` (the
+/// lag-free state duals of a record) and the largest `structural_dual_bound` (the pair
+/// count of a record, a reservation and not a capacity).
+pub(crate) fn record_dims(layouts: &[CutStateProjection]) -> (usize, usize) {
+    layouts.iter().fold((0, 0), |(state_len, bound), layout| {
+        (
+            state_len.max(layout.columned_len()),
+            bound.max(layout.structural_dual_bound()),
+        )
+    })
 }
 
 // ---------------------------------------------------------------------------
 // ByNodeScratch
 // ---------------------------------------------------------------------------
 
+/// How the by-node scheduler stores an opening's outcome until
+/// `by_node_finish` aggregates it.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ByNodeOutcomeShape {
+    /// A dense `(m, ω)` arena of `n_state`-length per-opening cuts.
+    Dense { n_state: usize },
+    /// The workers' packed [`OpeningRecords`], located by a `(m, ω)` table.
+    Folded {
+        n_state: usize,
+        n_hydros: usize,
+        lag_depth: usize,
+    },
+}
+
 /// Rank-level pre-allocated scratch for the by-node scheduler
 /// (`training.parallelism.backward_scheduler`), held on `BackwardPassState`
 /// and reused across every backward stage for the lifetime of a training run.
 ///
-/// Empty (`arena` capacity `0`) unless `ByNode` could be the scheduler a run
-/// actually dispatches to: sized by `BackwardPassState::resize_by_node_scratch`
-/// (called from `set_scheduler`) whenever the configured scheduler is
-/// literally `ByNode`. Untouched by the enumerated traversal — its per-node
-/// solve (`BackwardPassState::run_enumerated_backward`) never dispatches
-/// through the by-node scheduler at all. Never resized on the hot path
-/// (sddp.md "By-node scheduler is warm-start-only").
+/// Empty (`arena` and `location` capacity `0`) unless `ByNode` could be the
+/// scheduler a run actually dispatches to: sized by
+/// `BackwardPassState::resize_by_node_scratch` (called from `set_scheduler`)
+/// whenever the configured scheduler is literally `ByNode`. Untouched by the
+/// enumerated traversal — its per-node solve
+/// (`BackwardPassState::run_enumerated_backward`) never dispatches through the
+/// by-node scheduler at all. Never resized on the hot path (sddp.md "By-node
+/// scheduler is warm-start-only").
 #[derive(Default)]
 pub(crate) struct ByNodeScratch {
-    /// Per-`(m, ω)` outcome arena, addressed `arena[m * n_openings + omega]` for
+    /// Per-`(m, ω)` outcome arena of the [`ByNodeOutcomeShape::Dense`] shape,
+    /// addressed `arena[m * n_openings + omega]` for
     /// the CURRENT stage's `n_openings` — a prefix of the full
     /// `max_local_fwd * bwd_max_openings`-outcome allocation; a stage with fewer
     /// openings than the run's max simply uses less of it. Mirrors
@@ -514,6 +739,13 @@ pub(crate) struct ByNodeScratch {
     /// invariant) to the CURRENT stage's `cut_n_state` during that scatter, a
     /// stage whose successor disables a state group projecting to fewer slots.
     pub(crate) arena: Vec<BackwardOutcome>,
+    /// `(worker, record)` of each `(m, ω)` under the [`ByNodeOutcomeShape::Folded`]
+    /// shape, addressed like [`Self::arena`].
+    pub(crate) location: Vec<(usize, usize)>,
+    /// Aggregate-first scratch of `aggregate_folded_cut` under the `Folded` shape.
+    pub(crate) aggregate: FoldedAggregateScratch,
+    /// Outcome count each worker recorded in the stage, in worker order.
+    pub(crate) worker_counts: Vec<usize>,
     /// `CVaR` weight-computation scratch for `by_node_finish`'s per-trial-point
     /// aggregation loop.
     pub(crate) risk_scratch: RiskMeasureScratch,
@@ -521,6 +753,12 @@ pub(crate) struct ByNodeScratch {
     /// aggregation loop; starts at `n_state` length, resized (within reserved
     /// capacity) to each stage's `cut_n_state` — see [`Self::arena`].
     pub(crate) coeffs_buf: Vec<f64>,
+    /// The stage's aggregated cuts, one `cut_n_state` row and one intercept per
+    /// routed position, held until `by_node_finish` commits them: the aggregation
+    /// reads the successor pools, which the commit mutates.
+    pub(crate) cut_arena: Vec<f64>,
+    /// Intercept of each staged cut, by routed position.
+    pub(crate) cut_intercepts: Vec<f64>,
     /// Per-`(generating node, block-index)` `(simplex_iterations sum,
     /// solved-opening count)` pivot accumulator, addressed via
     /// [`Self::block_pivot_row`] — never re-derived at a call site. Keyed by
@@ -556,32 +794,61 @@ pub(crate) struct ByNodeScratch {
 }
 
 impl ByNodeScratch {
-    /// Allocate the arena and aggregation scratch for `ByNode`: `arena`
-    /// holds `max_local_fwd * bwd_max_openings` outcomes, each with an
-    /// `n_state`-length coefficient vector; `block_pivots` and
+    /// Allocate the outcome storage and aggregation scratch for `ByNode`: under
+    /// `Dense`, `arena` holds `max_local_fwd * bwd_max_openings` outcomes, each with
+    /// an `n_state`-length coefficient vector; under `Folded`, no arena, and
+    /// `location` is reserved for as many entries. `block_pivots` and
     /// `block_pivots_prev` each hold `row_axis_len * bwd_max_openings`
     /// accumulator cells, `row_axis_len` an upper bound on the GENERATING
     /// node count (see [`Self::block_pivots`] — never a stage count, though
     /// it coincides with one on a chain); `block_order` holds
-    /// `bwd_max_openings` claim-order scratch slots.
+    /// `bwd_max_openings` claim-order scratch slots; `worker_counts` holds one
+    /// count per each of `n_workers` workers.
     #[must_use]
     pub(crate) fn sized(
         max_local_fwd: usize,
         bwd_max_openings: usize,
-        n_state: usize,
+        shape: ByNodeOutcomeShape,
         row_axis_len: usize,
+        n_workers: usize,
     ) -> Self {
-        let arena = (0..max_local_fwd * bwd_max_openings)
-            .map(|_| BackwardOutcome {
-                intercept: 0.0,
-                coefficients: vec![0.0_f64; n_state],
-                objective_value: 0.0,
-            })
-            .collect();
+        let outcomes = max_local_fwd * bwd_max_openings;
+        let (n_state, arena, location, aggregate) = match shape {
+            ByNodeOutcomeShape::Dense { n_state } => {
+                let arena = (0..outcomes)
+                    .map(|_| BackwardOutcome {
+                        intercept: 0.0,
+                        coefficients: vec![0.0_f64; n_state],
+                        objective_value: 0.0,
+                    })
+                    .collect();
+                (
+                    n_state,
+                    arena,
+                    Vec::new(),
+                    FoldedAggregateScratch::default(),
+                )
+            }
+            ByNodeOutcomeShape::Folded {
+                n_state,
+                n_hydros,
+                lag_depth,
+            } => (
+                n_state,
+                Vec::new(),
+                Vec::with_capacity(outcomes),
+                FoldedAggregateScratch::new(n_hydros, lag_depth, bwd_max_openings),
+            ),
+        };
         Self {
             arena,
+            location,
+            aggregate,
+            worker_counts: Vec::with_capacity(n_workers),
             risk_scratch: RiskMeasureScratch::new(),
             coeffs_buf: vec![0.0_f64; n_state],
+            cut_arena: vec![0.0_f64; max_local_fwd * n_state],
+            cut_intercepts: vec![0.0_f64; max_local_fwd],
             block_pivots: vec![(0u64, 0u64); row_axis_len * bwd_max_openings],
             block_pivots_prev: vec![(0u64, 0u64); row_axis_len * bwd_max_openings],
             n_blocks_max: bwd_max_openings,
@@ -609,8 +876,18 @@ impl ByNodeScratch {
 #[allow(clippy::struct_field_names)]
 pub struct ScratchBuffers {
     pub(crate) inflow_m3s_buf: Vec<f64>,
-    pub(crate) lag_matrix_buf: Vec<f64>,
-    pub(crate) par_inflow_buf: Vec<f64>,
+    pub(crate) incoming_lags_buf: Vec<f64>,
+    pub(crate) realized_inflow_buf: Vec<f64>,
+    /// p, the PAR conditional mean at the pinned lags, per hydro.
+    pub(crate) par_mean_buf: Vec<f64>,
+    /// σ·η per hydro for the current opening.
+    pub(crate) par_noise_term_buf: Vec<f64>,
+    /// Pool slot of each cut row of the loaded LP, in LP row order.
+    pub(crate) cut_slots_buf: Vec<usize>,
+    /// The bracket B of each cut row, in LP row order.
+    pub(crate) cut_bracket_buf: Vec<f64>,
+    /// The cut-row lower bound B + W, in LP row order.
+    pub(crate) cut_rhs_buf: Vec<f64>,
     pub(crate) ncs_col_upper_buf: Vec<f64>,
     pub(crate) ncs_col_lower_buf: Vec<f64>,
     pub(crate) ncs_col_indices_buf: Vec<usize>,
@@ -765,6 +1042,8 @@ impl<S: SolverInterface> SolverWorkspace<S> {
                 sizing.max_openings,
                 sizing.initial_pool_capacity,
                 training_ctx.state.n_state,
+                training_ctx.state.hydro_count,
+                training_ctx.state.max_par_order,
             ),
             worker_timing_buf: WorkerPhaseTimings::default(),
         }
@@ -798,8 +1077,13 @@ impl ScratchBuffers {
         };
         Self {
             inflow_m3s_buf: Vec::with_capacity(hydro_count),
-            lag_matrix_buf: Vec::with_capacity(max_par_order * hydro_count),
-            par_inflow_buf: Vec::with_capacity(hydro_count),
+            incoming_lags_buf: Vec::with_capacity(max_par_order * hydro_count),
+            realized_inflow_buf: Vec::with_capacity(hydro_count),
+            par_mean_buf: vec![0.0; hydro_count],
+            par_noise_term_buf: vec![0.0; hydro_count],
+            cut_slots_buf: Vec::with_capacity(initial_pool_capacity),
+            cut_bracket_buf: Vec::with_capacity(initial_pool_capacity),
+            cut_rhs_buf: Vec::with_capacity(initial_pool_capacity),
             ncs_col_upper_buf: Vec::new(),
             ncs_col_lower_buf: Vec::new(),
             ncs_col_indices_buf: Vec::new(),
@@ -959,17 +1243,100 @@ impl<S: SolverInterface> WorkspacePool<S> {
         }
     }
 
-    /// Re-reserve every workspace's DCS scratch ([`DcsSolveScratch`]) to
-    /// `pool_capacity`, growth-only (`DcsSolveScratch::reserve`) — a no-op once
-    /// every workspace already covers it.
+    /// Re-reserve every workspace's DCS solve scratch ([`DcsSolveScratch`]),
+    /// its three cut-row buffers (`cut_slots_buf`, `cut_bracket_buf`,
+    /// `cut_rhs_buf`) and its aggregate-first scratch to `pool_capacity`
+    /// (`pair_hint` pairs for the latter), growth-only — a no-op once every
+    /// workspace already covers it.
     ///
     /// `pool_capacity` must be the LARGEST capacity across every pool a
     /// workspace's sweep may touch, never a single pool's own value: the
     /// scratch is shared per WORKER, not per pool, so sizing it from one
     /// pool under-covers every other pool that worker also solves against.
-    pub(crate) fn reserve_dcs_scratch(&mut self, n_state: usize, pool_capacity: usize) {
+    pub(crate) fn reserve_cut_scratch(
+        &mut self,
+        n_state: usize,
+        pool_capacity: usize,
+        pair_hint: usize,
+    ) {
         for ws in &mut self.workspaces {
             ws.backward_accum.dcs_solve.reserve(n_state, pool_capacity);
+            ws.backward_accum
+                .folded_aggregate
+                .reserve(pool_capacity, pair_hint);
+            let scratch = &mut ws.scratch;
+            scratch
+                .cut_slots_buf
+                .reserve(pool_capacity.saturating_sub(scratch.cut_slots_buf.len()));
+            scratch
+                .cut_bracket_buf
+                .reserve(pool_capacity.saturating_sub(scratch.cut_bracket_buf.len()));
+            scratch
+                .cut_rhs_buf
+                .reserve(pool_capacity.saturating_sub(scratch.cut_rhs_buf.len()));
+        }
+    }
+
+    /// Reserves every workspace's [`OpeningRecords`] for `records` records of
+    /// `state_len` state duals and `pair_hint_per_record` pairs each,
+    /// growth-only. Serial, once at construction: the claim loops only push.
+    pub(crate) fn reserve_opening_records(
+        &mut self,
+        records: usize,
+        state_len: usize,
+        pair_hint_per_record: usize,
+    ) {
+        for ws in &mut self.workspaces {
+            let n_hydros = ws.backward_accum.coupled_duals_buf.len();
+            ws.backward_accum.folded_records.reserve(
+                records,
+                state_len,
+                n_hydros,
+                records * pair_hint_per_record,
+            );
+        }
+    }
+
+    /// Re-reserves the scratch whose size follows `pool_capacity`: the cut scratch of
+    /// [`Self::reserve_cut_scratch`] with the study's pair bound. Growth-only, for the
+    /// point where the pools have just grown; [`Self::reserve_backward_scratch`] fixes
+    /// everything else at construction.
+    pub(crate) fn reserve_pool_scratch(
+        &mut self,
+        training_ctx: &TrainingContext<'_>,
+        sizing: WorkspaceSizing,
+        pool_capacity: usize,
+    ) {
+        let (_, bound) = record_dims(training_ctx.cut_state_layouts);
+        self.reserve_cut_scratch(
+            training_ctx.state.n_state,
+            pool_capacity,
+            sizing.max_openings * bound,
+        );
+    }
+
+    /// Reserves everything a backward sweep of `sizing`'s shape pushes into: the
+    /// pool-sized scratch through [`Self::reserve_pool_scratch`], the by-node record
+    /// bound, `max_local_fwd * max_openings`, which covers the by-scenario one, and
+    /// each worker's per-opening dual buffers. Once, at construction.
+    pub(crate) fn reserve_backward_scratch(
+        &mut self,
+        training_ctx: &TrainingContext<'_>,
+        sizing: WorkspaceSizing,
+        pool_capacity: usize,
+    ) {
+        let (state_len, bound) = record_dims(training_ctx.cut_state_layouts);
+        let max_slots = training_ctx
+            .cut_state_layouts
+            .iter()
+            .map(CutStateProjection::n_slots)
+            .max()
+            .unwrap_or(0);
+        self.reserve_pool_scratch(training_ctx, sizing, pool_capacity);
+        self.reserve_opening_records(sizing.max_local_fwd * sizing.max_openings, state_len, bound);
+        for ws in &mut self.workspaces {
+            reserve_to(&mut ws.backward_accum.state_duals_buf, max_slots);
+            reserve_to(&mut ws.backward_accum.cut_dual_slots, bound);
         }
     }
 }
@@ -1171,8 +1538,13 @@ impl ScratchBuffers {
     pub(crate) fn for_test(hydro_count: usize) -> Self {
         Self {
             inflow_m3s_buf: Vec::with_capacity(hydro_count),
-            lag_matrix_buf: Vec::new(),
-            par_inflow_buf: Vec::with_capacity(hydro_count),
+            incoming_lags_buf: Vec::new(),
+            realized_inflow_buf: Vec::with_capacity(hydro_count),
+            par_mean_buf: vec![0.0; hydro_count],
+            par_noise_term_buf: vec![0.0; hydro_count],
+            cut_slots_buf: Vec::new(),
+            cut_bracket_buf: Vec::new(),
+            cut_rhs_buf: Vec::new(),
             ncs_col_upper_buf: Vec::new(),
             ncs_col_lower_buf: Vec::new(),
             ncs_col_indices_buf: Vec::new(),
@@ -1211,8 +1583,9 @@ mod tests {
     #[cfg(feature = "highs")]
     use super::PatchBuffer;
     use super::{
-        BasisStore, BasisStoreSliceMut, ByNodeScratch, CapturedBasis, NodeId, NodePos,
-        ScratchBuffers, SolverWorkspace, WorkspacePool, WorkspaceSizing,
+        BasisStore, BasisStoreSliceMut, ByNodeOutcomeShape, ByNodeScratch, CapturedBasis, NodeId,
+        NodePos, OpeningRecords, ScratchBuffers, SolverWorkspace, WorkspacePool, WorkspaceSizing,
+        recycle,
     };
     use crate::context::StageContext;
     use crate::lead_time::AnticipatedResolution;
@@ -1322,6 +1695,153 @@ mod tests {
             assert_eq!(ws.patch_buf.indices.len(), 3, "patch_buf length");
             assert_eq!(ws.current_state.capacity(), 9, "current_state capacity");
             assert_eq!(ws.current_state.len(), 0, "current_state starts empty");
+        }
+    }
+
+    #[test]
+    fn scratch_buffers_size_the_folded_prep_vectors() {
+        let ctx = TrainingContextFixture::new(state_layout(3, 2));
+        let scratch = ScratchBuffers::new(
+            &ctx.training_ctx(),
+            &empty_stage_ctx(),
+            WorkspaceSizing {
+                initial_pool_capacity: 7,
+                ..WorkspaceSizing::default()
+            },
+        );
+        for (name, buf) in [
+            ("par_mean_buf", &scratch.par_mean_buf),
+            ("par_noise_term_buf", &scratch.par_noise_term_buf),
+        ] {
+            assert_eq!(buf.len(), 3, "{name} must hold one value per hydro");
+            assert!(
+                buf.iter().all(|v| v.to_bits() == 0.0_f64.to_bits()),
+                "{name} must start at +0.0"
+            );
+        }
+        for (name, len, capacity) in [
+            (
+                "cut_slots_buf",
+                scratch.cut_slots_buf.len(),
+                scratch.cut_slots_buf.capacity(),
+            ),
+            (
+                "cut_bracket_buf",
+                scratch.cut_bracket_buf.len(),
+                scratch.cut_bracket_buf.capacity(),
+            ),
+            (
+                "cut_rhs_buf",
+                scratch.cut_rhs_buf.len(),
+                scratch.cut_rhs_buf.capacity(),
+            ),
+        ] {
+            assert_eq!(len, 0, "{name} must start empty");
+            assert!(
+                capacity >= 7,
+                "{name} must reserve initial_pool_capacity (7), got {capacity}"
+            );
+        }
+    }
+
+    #[test]
+    fn backward_accumulators_size_the_coupled_duals_to_the_hydro_count() {
+        let ctx = TrainingContextFixture::new(state_layout(3, 2));
+        let pool = WorkspacePool::new(
+            0,
+            2,
+            &ctx.training_ctx(),
+            &empty_stage_ctx(),
+            WorkspaceSizing::default(),
+            || MockSolver,
+        );
+        assert_eq!(pool.workspaces.len(), 2);
+        for (i, ws) in pool.workspaces.iter().enumerate() {
+            let coupled = &ws.backward_accum.coupled_duals_buf;
+            assert_eq!(coupled.len(), 3, "workspace {i}: one value per hydro");
+            assert!(
+                coupled.iter().all(|v| v.to_bits() == 0.0_f64.to_bits()),
+                "workspace {i}: coupled_duals_buf must start at +0.0"
+            );
+        }
+    }
+
+    #[test]
+    fn reserve_cut_scratch_grows_the_cut_row_buffers_only_upward() {
+        let ctx = TrainingContextFixture::new(state_layout(2, 1));
+        let n_state = ctx.training_ctx().state.n_state;
+        let mut pool = WorkspacePool::new(
+            0,
+            2,
+            &ctx.training_ctx(),
+            &empty_stage_ctx(),
+            WorkspaceSizing::default(),
+            || MockSolver,
+        );
+        let cut_row_buffers = |s: &ScratchBuffers| {
+            [
+                (
+                    "cut_slots_buf",
+                    s.cut_slots_buf.len(),
+                    s.cut_slots_buf.capacity(),
+                ),
+                (
+                    "cut_bracket_buf",
+                    s.cut_bracket_buf.len(),
+                    s.cut_bracket_buf.capacity(),
+                ),
+                ("cut_rhs_buf", s.cut_rhs_buf.len(), s.cut_rhs_buf.capacity()),
+            ]
+        };
+
+        pool.reserve_cut_scratch(n_state, 5, 0);
+        for (i, ws) in pool.workspaces.iter().enumerate() {
+            for (name, len, capacity) in cut_row_buffers(&ws.scratch) {
+                assert_eq!(len, 0, "workspace {i}: {name} must stay empty");
+                assert!(
+                    capacity >= 5,
+                    "workspace {i}: {name} must reserve 5, got {capacity}"
+                );
+            }
+        }
+
+        pool.workspaces[0].scratch.cut_bracket_buf.resize(5, 1.0);
+        pool.reserve_cut_scratch(n_state, 3, 0);
+        for (i, ws) in pool.workspaces.iter().enumerate() {
+            for (name, _, capacity) in cut_row_buffers(&ws.scratch) {
+                assert!(
+                    capacity >= 5,
+                    "workspace {i}: {name} must not shrink, got {capacity}"
+                );
+            }
+        }
+        let bracket = &pool.workspaces[0].scratch.cut_bracket_buf;
+        assert_eq!(bracket.len(), 5, "a smaller reserve must keep the contents");
+        assert!(
+            bracket.iter().all(|v| v.to_bits() == 1.0_f64.to_bits()),
+            "a smaller reserve must keep the contents"
+        );
+
+        let scratch = &mut pool.workspaces[1].scratch;
+        scratch.cut_slots_buf = Vec::with_capacity(10);
+        scratch.cut_bracket_buf = Vec::with_capacity(10);
+        scratch.cut_rhs_buf = Vec::with_capacity(10);
+        scratch.cut_slots_buf.resize(2, 0);
+        scratch.cut_bracket_buf.resize(2, 0.0);
+        scratch.cut_rhs_buf.resize(2, 0.0);
+        for (name, _, capacity) in cut_row_buffers(scratch) {
+            assert!(
+                (10..12).contains(&capacity),
+                "{name}: the case needs a capacity below the target, got {capacity}"
+            );
+        }
+        pool.reserve_cut_scratch(n_state, 12, 0);
+        for (name, len, capacity) in cut_row_buffers(&pool.workspaces[1].scratch) {
+            assert_eq!(len, 2, "{name} must keep its contents");
+            assert!(
+                capacity >= 12,
+                "{name}: a target past the capacity must grow a partly filled buffer, got {capacity}"
+            );
         }
     }
 
@@ -1546,7 +2066,13 @@ mod tests {
         let n_state = 5_usize;
         let num_stages = 6_usize;
 
-        let scratch = ByNodeScratch::sized(max_local_fwd, bwd_max_openings, n_state, num_stages);
+        let scratch = ByNodeScratch::sized(
+            max_local_fwd,
+            bwd_max_openings,
+            ByNodeOutcomeShape::Dense { n_state },
+            num_stages,
+            2,
+        );
 
         assert_eq!(
             scratch.arena.len(),
@@ -1561,6 +2087,8 @@ mod tests {
             "every outcome's coefficients must be pre-sized to n_state"
         );
         assert_eq!(scratch.coeffs_buf.len(), n_state);
+        assert_eq!(scratch.cut_arena.len(), max_local_fwd * n_state);
+        assert_eq!(scratch.cut_intercepts.len(), max_local_fwd);
         assert_eq!(
             scratch.block_pivots.len(),
             num_stages * bwd_max_openings,
@@ -1595,12 +2123,80 @@ mod tests {
 
     #[test]
     fn backward_by_node_scratch_sized_zero_dims_yields_empty_arena() {
-        let scratch = ByNodeScratch::sized(0, 0, 0, 0);
+        let scratch = ByNodeScratch::sized(0, 0, ByNodeOutcomeShape::Dense { n_state: 0 }, 0, 0);
         assert!(scratch.arena.is_empty());
         assert!(scratch.coeffs_buf.is_empty());
         assert!(scratch.block_pivots.is_empty());
         assert!(scratch.block_pivots_prev.is_empty());
         assert!(scratch.block_order.is_empty());
+    }
+
+    #[test]
+    fn folded_by_node_scratch_reserves_locations_and_no_arena() {
+        let scratch = ByNodeScratch::sized(
+            3,
+            4,
+            ByNodeOutcomeShape::Folded {
+                n_state: 5,
+                n_hydros: 2,
+                lag_depth: 3,
+            },
+            6,
+            2,
+        );
+        assert_eq!(scratch.arena.capacity(), 0, "no dense arena");
+        assert!(scratch.location.capacity() >= 12);
+        assert_eq!(scratch.coeffs_buf.len(), 5);
+        assert_eq!(scratch.block_pivots.len(), 6 * 4);
+        assert!(scratch.worker_counts.capacity() >= 2);
+        assert!(scratch.aggregate.slots.capacity() >= 4);
+        assert!(scratch.aggregate.children.capacity() >= 4);
+    }
+
+    #[test]
+    fn opening_records_round_trip_without_reallocating() {
+        let pairs = [(2_usize, 0.5_f64), (5, -1.25), (9, 3.0)];
+        let fill = |records: &mut OpeningRecords| {
+            records.clear(2, 1);
+            records.reserve(2, 2, 1, 3);
+            records.push((1, 0), 7.0, &[1.0, -0.0], &[4.0], &[]);
+            records.push((0, 1), 9.5, &[2.0, 3.0], &[-6.0], &pairs);
+        };
+        let mut records = OpeningRecords::default();
+        fill(&mut records);
+        let first = records.buffer_identity();
+
+        assert_eq!(records.len(), 2);
+        assert_eq!(records.key(0), (1, 0));
+        assert_eq!(records.key(1), (0, 1));
+        let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+        let view = records.view(0);
+        assert_eq!(view.objective.to_bits(), 7.0_f64.to_bits());
+        assert_eq!(bits(view.state_duals), bits(&[1.0, -0.0]));
+        assert_eq!(bits(view.coupled_duals), bits(&[4.0]));
+        assert!(view.cut_duals.is_empty());
+        let view = records.view(1);
+        assert_eq!(view.objective.to_bits(), 9.5_f64.to_bits());
+        assert_eq!(bits(view.state_duals), bits(&[2.0, 3.0]));
+        assert_eq!(bits(view.coupled_duals), bits(&[-6.0]));
+        assert_eq!(view.cut_duals, pairs.as_slice());
+
+        fill(&mut records);
+        assert_eq!(
+            records.buffer_identity(),
+            first,
+            "a refill must reuse its buffers"
+        );
+
+        let views: Vec<super::OpeningDuals<'static>> = Vec::with_capacity(4);
+        let (ptr, capacity) = (views.as_ptr(), views.capacity());
+        let reborrowed: Vec<super::OpeningDuals<'_>> = recycle(views);
+        assert_eq!(
+            (reborrowed.as_ptr(), reborrowed.capacity()),
+            (ptr, capacity)
+        );
+        let views: Vec<super::OpeningDuals<'static>> = recycle(reborrowed);
+        assert_eq!((views.as_ptr(), views.capacity()), (ptr, capacity));
     }
 
     // ---------------------------------------------------------------------------

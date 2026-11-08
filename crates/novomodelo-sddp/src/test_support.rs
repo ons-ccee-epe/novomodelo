@@ -72,11 +72,9 @@ use crate::lp::builder::{
     FactGroups, InflowCoupling, PatchBuffer, StageGeometry, StageLayout, StageTemplates, StateBox,
     encode_stage_templates_facts, encode_time_value_facts,
 };
-#[cfg(test)]
-use crate::lp::indexer::InflowForm;
 use crate::lp::indexer::{
     AnticipatedPlants, BlockRowFamily, CutStateProjection, EntityPositions, HydroCellIndex,
-    HydroSys, REGION_ORDER, StateDim, StateSpace, StudyDimensions,
+    HydroSys, InflowForm, REGION_ORDER, StateDim, StateSpace, StudyDimensions,
 };
 use crate::noise::{
     DownstreamAccumState, LagAccumState, apply_inflow_slack_col_bounds, transform_inflow_noise,
@@ -89,6 +87,7 @@ use crate::setup::node_graph::{
     NodeGraph, NodeId, NodePos, OpeningSource, StageIdx, build_node_graph,
     enumerated_node_visit_counts, enumerated_scenario_count,
 };
+use crate::setup::unresolved_boundary_requirements;
 #[cfg(test)]
 use crate::setup::{ResolvedStateLayout, resolve_state_layout};
 use crate::solve::stage_solve::{StageInputs, assemble_outgoing_state, run_stage_solve};
@@ -99,7 +98,9 @@ use crate::time_value::{PostStudyResolved, TimeValue};
 use crate::training::backward::{
     extract_state_duals_only, fill_external_opening_noise, write_opening_outcome,
 };
-use crate::training::stage_solve_prep::{StageSolvePrep, StageSolvePrepParams, StateSource};
+use crate::training::stage_solve_prep::{
+    BracketSource, FoldedCutRows, StageSolvePrep, StageSolvePrepParams, StateSource,
+};
 use crate::trajectory::TrajectoryRecord;
 use crate::workspace::{CapturedBasis, ScratchBuffers, SolverWorkspace, WorkspaceSizing};
 use novomodelo_core::scenario::{ExternalLoadRow, ExternalScenarioRow};
@@ -1774,6 +1775,57 @@ pub fn patch_backward_opening_for_counterfactual_probe<S: SolverInterface + Send
     );
 }
 
+/// The cut rows of the LP a [`folded_prep_for_probe`] call prepares.
+pub struct FoldedProbeCuts<'a> {
+    /// The resident pool the cut rows come from.
+    pub pool: &'a CutPool,
+    /// The pool's index, which selects its cut-state projection.
+    pub pool_id: usize,
+    /// `slots[k]` is the pool slot of cut row `k`, which follows the structural rows.
+    pub slots: &'a [usize],
+}
+
+/// Prepare one folded stage-LP solve: the single-solve folded prep
+/// (`StageSolvePrep::pin_folded` then `StageSolvePrep::open_folded`), delegated
+/// verbatim with no probe-side copy of the pipeline.
+pub fn folded_prep_for_probe<S: SolverInterface + Send>(
+    ws: &mut SolverWorkspace<S>,
+    ctx: &StageContext<'_>,
+    training_ctx: &TrainingContext<'_>,
+    stage: StageIdx,
+    pinned_state: &[f64],
+    raw_noise: &[f64],
+    cuts: &FoldedProbeCuts<'_>,
+) {
+    let rows = FoldedCutRows {
+        pool: cuts.pool,
+        projection: &training_ctx.cut_state_layouts[cuts.pool_id],
+        slots: cuts.slots,
+        first_row: ctx.templates[stage.0].num_rows,
+    };
+    StageSolvePrep::pin_folded(
+        &mut ws.solver,
+        &mut ws.patch_buf,
+        &mut ws.scratch,
+        ctx,
+        training_ctx,
+        stage,
+        StateSource(pinned_state),
+        &rows,
+        BracketSource::OnTheFly,
+    );
+    StageSolvePrep::open_folded(
+        &mut ws.solver,
+        &mut ws.patch_buf,
+        &mut ws.scratch,
+        ctx,
+        training_ctx,
+        stage,
+        raw_noise,
+        &rows,
+    );
+}
+
 /// Run one stage-LP solve exactly as production's shared `run_stage_solve`
 /// entry point does (`solve::stage_solve`, `pub(crate)` — the module
 /// forward/backward/simulation all route through, no external consumer by
@@ -1889,6 +1941,7 @@ pub fn write_backward_opening_outcome_for_probe<S: SolverInterface + Send>(
         &mut canonical_state,
         &unscaled_primal,
         &incoming_lags,
+        &[],
         layout,
         ctx.state_box(producer_stage),
         ctx.stage_lag(producer_stage),
@@ -3833,13 +3886,76 @@ fn terminal_generated_fan_policy_graph(k: usize) -> HorizonGraph {
 /// # Panics
 ///
 /// Never in practice — as [`k_fan_setup`].
+#[must_use]
+pub fn terminal_generated_fan_setup(k: usize, max_iterations: u32) -> StudySetup {
+    build_terminal_generated_fan_setup(k, max_iterations, FanWater::Worthless, InflowForm::Logical)
+}
+
+/// Whether the terminal-Generated fan's water is worth anything.
+#[derive(Clone, Copy)]
+enum FanWater {
+    /// The control fan: zero-productivity hydro in a wide reservoir, so every cut
+    /// coefficient is zero and no trial state is observable.
+    Worthless,
+    /// A productive hydro in a scarce reservoir ([`WATER_BINDING_STORAGE`],
+    /// [`WATER_BINDING_PRODUCTIVITY`]), so the stored water offsets deficit.
+    Binding,
+}
+
+/// The water-binding terminal-Generated fan as a `(logical, compact)` pair of the
+/// same study. The leaves are Generated, so the enumerated backward solves each of
+/// them through the replicated per-node solve rather than reading a captured slice,
+/// and the trial state carries a nonzero cut coefficient.
+///
+/// # Panics
+///
+/// Never in practice — as [`terminal_generated_fan_setup`].
+#[must_use]
+pub fn water_binding_generated_fan_setup_in_both_forms(
+    k: usize,
+    max_iterations: u32,
+) -> (StudySetup, StudySetup) {
+    (
+        build_terminal_generated_fan_setup(
+            k,
+            max_iterations,
+            FanWater::Binding,
+            InflowForm::Logical,
+        ),
+        build_terminal_generated_fan_setup(
+            k,
+            max_iterations,
+            FanWater::Binding,
+            InflowForm::Compact,
+        ),
+    )
+}
+
 #[expect(
     clippy::expect_used,
     reason = "build_stochastic_context/StudySetup::new never error on this fixture's fixed, internally consistent inputs"
 )]
-#[must_use]
-pub fn terminal_generated_fan_setup(k: usize, max_iterations: u32) -> StudySetup {
-    let system = fan_or_chain_system(TERMINAL_FAN_STAGES, terminal_generated_fan_policy_graph(k));
+fn build_terminal_generated_fan_setup(
+    k: usize,
+    max_iterations: u32,
+    water: FanWater,
+    form: InflowForm,
+) -> StudySetup {
+    let storage = match water {
+        FanWater::Worthless => StorageSpec::wide(),
+        FanWater::Binding => WATER_BINDING_STORAGE,
+    };
+    let system = fan_or_chain_system_ext(
+        TERMINAL_FAN_STAGES,
+        terminal_generated_fan_policy_graph(k),
+        0.0,
+        0.0,
+        storage,
+        Vec::new(),
+        Vec::new(),
+        None,
+        &[],
+    );
     let config = k_fan_config_enumerated(max_iterations);
     let stochastic = build_stochastic_context(
         &system,
@@ -3851,9 +3967,20 @@ pub fn terminal_generated_fan_setup(k: usize, max_iterations: u32) -> StudySetup
         in_sample_class_schemes(),
     )
     .expect("terminal_generated_fan_setup: build_stochastic_context must succeed");
-    let hydro_models = PrepareHydroModelsResult::default_from_system(&system);
-    StudySetup::new(&system, &config, stochastic, hydro_models, Vec::new())
-        .expect("terminal_generated_fan_setup: StudySetup::new must succeed")
+    let mut hydro_models = PrepareHydroModelsResult::default_from_system(&system);
+    if matches!(water, FanWater::Binding) {
+        inject_water_binding_production(&mut hydro_models, &system, TERMINAL_FAN_STAGES);
+    }
+    StudySetup::new_with_boundary_requirements_in_form(
+        &system,
+        &config,
+        stochastic,
+        hydro_models,
+        unresolved_boundary_requirements(&config),
+        Vec::new(),
+        form,
+    )
+    .expect("terminal_generated_fan_setup: StudySetup::new must succeed")
 }
 
 /// [`k_fan_config`] with an active Dynamic cut-selection strategy (`start_iteration
@@ -3914,7 +4041,13 @@ const EXTERNAL_FAN_LOAD_STD: f64 = 20.0;
 /// fixture.
 #[must_use]
 pub fn external_distinct_fan_setup(k: usize, max_iterations: u32) -> StudySetup {
-    build_external_distinct_fan_setup(k, max_iterations, None)
+    build_external_distinct_fan_setup(
+        k,
+        max_iterations,
+        None,
+        K_FAN_DEFAULT_STATE_CONFIG,
+        InflowForm::Logical,
+    )
 }
 
 /// [`external_distinct_fan_setup`] with an active inflow-lag slot
@@ -3942,7 +4075,64 @@ pub fn external_distinct_fan_setup_heterogeneous_cut_state(
     k: usize,
     max_iterations: u32,
 ) -> StudySetup {
-    build_external_distinct_fan_setup(k, max_iterations, Some(1))
+    build_external_distinct_fan_setup(
+        k,
+        max_iterations,
+        Some(1),
+        K_FAN_DEFAULT_STATE_CONFIG,
+        InflowForm::Logical,
+    )
+}
+
+/// [`external_distinct_fan_setup_heterogeneous_cut_state`] as a `(logical, compact)`
+/// pair of the same study. Each leaf's terminal pool projects storage and lag while
+/// the cut-generating root pool projects storage only, so the leaf and parent
+/// projections differ in `n_slots` and only the leaf has lag slots.
+///
+/// # Panics
+///
+/// Never in practice — as [`external_distinct_fan_setup`].
+#[must_use]
+pub fn external_distinct_fan_setup_heterogeneous_cut_state_in_both_forms(
+    k: usize,
+    max_iterations: u32,
+) -> (StudySetup, StudySetup) {
+    external_distinct_fan_pair(k, max_iterations, K_FAN_DEFAULT_STATE_CONFIG)
+}
+
+/// A `(logical, compact)` pair of the external distinct fan whose leaf stage
+/// declares inflow lags, with an inflow-lag depth of `Some(1)`. The root pool is
+/// sized from the leaf's declared config, so the leaf and parent projections are
+/// equal and both carry the lag slot a storage-only capture cannot read on the
+/// compact LP.
+///
+/// # Panics
+///
+/// Never in practice — as [`external_distinct_fan_setup`].
+#[must_use]
+pub fn external_distinct_fan_setup_lagged_parent_in_both_forms(
+    k: usize,
+    max_iterations: u32,
+) -> (StudySetup, StudySetup) {
+    external_distinct_fan_pair(
+        k,
+        max_iterations,
+        StageStateConfig {
+            storage: true,
+            inflow_lags: true,
+        },
+    )
+}
+
+fn external_distinct_fan_pair(
+    k: usize,
+    max_iterations: u32,
+    leaf_state_config: StageStateConfig,
+) -> (StudySetup, StudySetup) {
+    let build = |form| {
+        build_external_distinct_fan_setup(k, max_iterations, Some(1), leaf_state_config, form)
+    };
+    (build(InflowForm::Logical), build(InflowForm::Compact))
 }
 
 #[expect(
@@ -3959,6 +4149,8 @@ fn build_external_distinct_fan_setup(
     k: usize,
     max_iterations: u32,
     inflow_lag_depth: Option<u32>,
+    leaf_state_config: StageStateConfig,
+    form: InflowForm,
 ) -> StudySetup {
     assert!(
         k >= 2 && k <= EXTERNAL_FAN_INFLOWS.len(),
@@ -4032,7 +4224,7 @@ fn build_external_distinct_fan_setup(
         StorageSpec::wide(),
         rows,
         load_rows,
-        None,
+        Some(&[K_FAN_DEFAULT_STATE_CONFIG, leaf_state_config]),
         &[],
     );
 
@@ -4052,7 +4244,7 @@ fn build_external_distinct_fan_setup(
     )
     .expect("build_external_distinct_fan_setup: build_stochastic_context must succeed");
     let hydro_models = PrepareHydroModelsResult::default_from_system(&system);
-    StudySetup::new_with_boundary_requirements(
+    StudySetup::new_with_boundary_requirements_in_form(
         &system,
         &config,
         stochastic,
@@ -4062,6 +4254,7 @@ fn build_external_distinct_fan_setup(
             BoundaryStateRequirements::present,
         ),
         Vec::new(),
+        form,
     )
     .expect("build_external_distinct_fan_setup: StudySetup::new must succeed")
 }
@@ -4350,18 +4543,28 @@ fn build_water_binding_external_fan(k: usize, max_iterations: u32, reversed: boo
     )
     .expect("water_binding_external_fan_setup: build_stochastic_context must succeed");
     let mut hydro_models = PrepareHydroModelsResult::default_from_system(&system);
+    inject_water_binding_production(&mut hydro_models, &system, 2);
+    StudySetup::new(&system, &config, stochastic, hydro_models, Vec::new())
+        .expect("water_binding_external_fan_setup: StudySetup::new must succeed")
+}
+
+/// Replaces `default_from_system`'s zero-MW production placeholder with
+/// [`WATER_BINDING_PRODUCTIVITY`] at every stage of the fan's single hydro.
+fn inject_water_binding_production(
+    hydro_models: &mut PrepareHydroModelsResult,
+    system: &System,
+    n_stages: usize,
+) {
     hydro_models.production = ProductionModelSet::new(
         vec![vec![
             ResolvedProductionModel::ConstantProductivity {
                 productivity: WATER_BINDING_PRODUCTIVITY,
             };
-            2
+            n_stages
         ]],
         system.hydros(),
-        2,
+        n_stages,
     );
-    StudySetup::new(&system, &config, stochastic, hydro_models, Vec::new())
-        .expect("water_binding_external_fan_setup: StudySetup::new must succeed")
 }
 
 // ── Non-uniform-projection branching fixture (3-stage binary tree) ──────────

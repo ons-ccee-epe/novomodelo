@@ -16,12 +16,14 @@ use novomodelo_stochastic::{
     ClassSampleRequest, ForwardNoiseTables, ForwardSampler, SampleRequest,
 };
 
-use crate::cut::CutSet;
+use crate::cut::{CutPool, CutSet};
 use crate::energy_conversion::EnergyConversionSet;
 use crate::error::SddpError::Infeasible;
 use crate::error::SddpError::Solver;
 use crate::lp::builder::{GenericConstraintRowEntry, StageGeometry};
-use crate::lp::indexer::{AnticipatedPlants, BlockIdx, BlockRowFamily, StudyDimensions};
+use crate::lp::indexer::{
+    AnticipatedPlants, BlockIdx, BlockRowFamily, CutStateProjection, InflowForm, StudyDimensions,
+};
 use crate::noise::{DownstreamAccumState, LagAccumState};
 use crate::simulation::state::{SimulationInputs, SimulationState};
 use crate::stage_solve::StageInputs;
@@ -46,8 +48,10 @@ use crate::{
     },
     solve::{LazyInputs, StageOpeningSolver},
     solver_stats::SolverStatsDelta,
-    training::stage_solve_prep::{StageSolvePrep, StageSolvePrepParams, StateSource},
-    workspace::{CapturedBasis, SolverWorkspace},
+    training::stage_solve_prep::{
+        BracketSource, FoldedCutRows, StageSolvePrep, StageSolvePrepParams, StateSource,
+    },
+    workspace::{CapturedBasis, ScratchBuffers, SolverWorkspace},
 };
 
 /// Reserved sentinel iteration for every simulation seed derivation call
@@ -367,6 +371,73 @@ fn map_sim_solver_error(e: SddpError, ids: &SimStageIds) -> SimulationError {
     }
 }
 
+fn prepare_simulation_stage<S: SolverInterface>(
+    ws: &mut SolverWorkspace<S>,
+    ctx: &StageContext<'_>,
+    training_ctx: &TrainingContext<'_>,
+    t: StageIdx,
+    raw_noise: &[f64],
+    pool: &CutPool,
+    resident: &CutStateProjection,
+    cut_set: CutSet,
+    opening_solver: &StageOpeningSolver,
+) {
+    match training_ctx.state.inflow_form {
+        InflowForm::Logical => {
+            let prep_params = StageSolvePrepParams {
+                state_source: StateSource(&ws.current_state),
+                raw_noise,
+            };
+            StageSolvePrep::run(
+                &mut ws.solver,
+                &mut ws.patch_buf,
+                &mut ws.scratch,
+                ctx,
+                training_ctx,
+                t,
+                &prep_params,
+            );
+        }
+        InflowForm::Compact => {
+            let mut slots = std::mem::take(&mut ws.scratch.cut_slots_buf);
+            slots.clear();
+            slots.extend(pool.cuts_in(cut_set).map(|(slot, _, _)| slot));
+            let rows = FoldedCutRows {
+                pool,
+                projection: resident,
+                slots: &slots,
+                first_row: ctx.template(t).num_rows,
+            };
+            StageSolvePrep::pin_folded(
+                &mut ws.solver,
+                &mut ws.patch_buf,
+                &mut ws.scratch,
+                ctx,
+                training_ctx,
+                t,
+                StateSource(&ws.current_state),
+                &rows,
+                BracketSource::OnTheFly,
+            );
+            let open = match opening_solver {
+                StageOpeningSolver::Frozen => StageSolvePrep::open_folded,
+                StageOpeningSolver::Lazy(_) => StageSolvePrep::open_folded_lazy,
+            };
+            open(
+                &mut ws.solver,
+                &mut ws.patch_buf,
+                &mut ws.scratch,
+                ctx,
+                training_ctx,
+                t,
+                raw_noise,
+                &rows,
+            );
+            ws.scratch.cut_slots_buf = slots;
+        }
+    }
+}
+
 /// Solve one stage for one simulation scenario, updating workspace in-place.
 ///
 /// Returns `(immediate_cost, SimulationStageResult)`. The warm-start basis is a
@@ -394,26 +465,26 @@ pub(crate) fn solve_simulation_stage<S: SolverInterface>(
         ..
     } = training_ctx;
     let dcs = dcs.map(|config| config.resolve(load_spec.solver_tolerance));
+    let opening_solver = StageOpeningSolver::from_dcs_params(dcs);
     let t = ids.t;
+    let pool_id = training_ctx.node_graph.nodes[ids.node].pool_id;
+    let pool = &fcf.pools[pool_id];
     // DCS loads the cut-free base so its fresh CutRowMap owns the resident cut
     // subset; loading the frozen template would double-append the embedded cut rows.
-    if dcs.is_some() {
-        ws.solver.load_model(ctx.template(t));
-    } else {
-        ws.solver.load_model(load_spec.frozen_template);
+    match opening_solver {
+        StageOpeningSolver::Frozen => ws.solver.load_model(load_spec.frozen_template),
+        StageOpeningSolver::Lazy(_) => ws.solver.load_model(ctx.template(t)),
     }
-    let prep_params = StageSolvePrepParams {
-        state_source: StateSource(&ws.current_state),
-        raw_noise,
-    };
-    StageSolvePrep::run(
-        &mut ws.solver,
-        &mut ws.patch_buf,
-        &mut ws.scratch,
+    prepare_simulation_stage(
+        ws,
         ctx,
         training_ctx,
         t,
-        &prep_params,
+        raw_noise,
+        pool,
+        &training_ctx.cut_state_layouts[pool_id],
+        load_spec.cut_set,
+        &opening_solver,
     );
     // stage_id (the commissioning key the dormancy predicate compares NCS windows
     // against), NOT the stage index `t`: they differ when negative-id placeholder
@@ -433,10 +504,6 @@ pub(crate) fn solve_simulation_stage<S: SolverInterface>(
     let col_scale = &ctx.template(t).col_scale;
     let row_scale = &ctx.template(t).row_scale;
 
-    let pool_id = training_ctx.node_graph.nodes[ids.node].pool_id;
-
-    let opening_solver = StageOpeningSolver::from_dcs_params(dcs);
-    let pool = &fcf.pools[pool_id];
     if !opening_solver.captures_basis() {
         debug_assert_eq!(
             pool.count_in(load_spec.cut_set),
@@ -487,14 +554,14 @@ pub(crate) fn solve_simulation_stage<S: SolverInterface>(
     let include_terminal_theta =
         training_ctx.horizon.is_terminal(t.next().0) && pool.has_prefix_cuts();
 
+    // Snapshot incoming lags before state is overwritten below.
+    ws.scratch.incoming_lags_buf.clear();
+    ws.scratch
+        .incoming_lags_buf
+        .extend_from_slice(&ws.current_state[state.state_dim_lag_range()]);
+
     let (immediate_cost, result) = extract_sim_stage_result(
-        &mut ws.scratch.inflow_m3s_buf,
-        &mut ws.scratch.row_lower_buf,
-        &ws.scratch.load_rhs_buf,
-        &ws.scratch.ncs_col_upper_buf,
-        &mut ws.scratch.ncs_col_upper_extract_buf,
-        &ws.scratch.unscaled_primal,
-        &ws.scratch.unscaled_dual,
+        &mut ws.scratch,
         view_objective,
         include_terminal_theta,
         ctx,
@@ -505,11 +572,6 @@ pub(crate) fn solve_simulation_stage<S: SolverInterface>(
         n_stochastic_ncs,
         lookups,
     );
-    // Snapshot incoming lags before state is overwritten below.
-    ws.scratch.lag_matrix_buf.clear();
-    ws.scratch
-        .lag_matrix_buf
-        .extend_from_slice(&ws.current_state[state.state_dim_lag_range()]);
 
     let stage_lag = ctx.stage_lag(t);
     let downstream_par_order = study_dims.downstream_par_order;
@@ -519,7 +581,8 @@ pub(crate) fn solve_simulation_stage<S: SolverInterface>(
     assemble_outgoing_state(
         &mut ws.current_state,
         unscaled_primal_ref,
-        &ws.scratch.lag_matrix_buf,
+        &ws.scratch.incoming_lags_buf,
+        &ws.scratch.realized_inflow_buf,
         state,
         ctx.state_box(t),
         stage_lag,
@@ -551,22 +614,15 @@ fn resolve_load_rows(ctx: &StageContext<'_>, t: StageIdx) -> (BlockRowFamily, us
 
 /// Extract the cost and result record from a solved simulation stage LP.
 ///
-/// RATIONALE (`too_many_arguments`): takes individual scratch field borrows rather
-/// than `&mut ScratchBuffers` so `unscaled_primal`/`unscaled_dual` can be passed as
-/// `&[f64]` while `inflow_m3s_buf`/`row_lower_buf` are `&mut`; a single
-/// `&mut ScratchBuffers` would block that disjoint split.
+/// RATIONALE (`too_many_arguments`): the stage, output, training and lookup contexts
+/// are separate owners threaded from the per-scenario loop; the scratch is taken whole
+/// and destructured by field.
 // Rationale (too_many_lines): a single linear per-stage assembly culminating in one
 // `StageExtractionSpec` literal; splitting it would only relocate the ~25 borrowed
 // inputs into a parameter list, scattering the assembly the literal reads.
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub(crate) fn extract_sim_stage_result(
-    inflow_m3s_buf: &mut Vec<f64>,
-    row_lower_buf: &mut Vec<f64>,
-    load_rhs_buf: &[f64],
-    ncs_col_upper_buf: &[f64],
-    ncs_col_upper_extract_buf: &mut Vec<f64>,
-    unscaled_primal: &[f64],
-    unscaled_dual: &[f64],
+    scratch: &mut ScratchBuffers,
     view_objective: f64,
     include_terminal_theta: bool,
     ctx: &StageContext<'_>,
@@ -577,6 +633,18 @@ pub(crate) fn extract_sim_stage_result(
     n_stochastic_ncs: usize,
     lookups: &SimLookups,
 ) -> (f64, SimulationStageResult) {
+    let ScratchBuffers {
+        inflow_m3s_buf,
+        row_lower_buf,
+        load_rhs_buf,
+        ncs_col_upper_buf,
+        ncs_col_upper_extract_buf,
+        unscaled_primal,
+        unscaled_dual,
+        realized_inflow_buf,
+        incoming_lags_buf,
+        ..
+    } = scratch;
     let t = ids.t;
     // Terminal boundary θ prices the post-horizon value-to-go: KEEP it in the
     // reported per-scenario cost (matching the training UB/LB); the interior
@@ -593,11 +661,18 @@ pub(crate) fn extract_sim_stage_result(
         let theta_contribution = unscaled_primal[training_ctx.state.theta] * theta_obj_coeff;
         (view_objective - theta_contribution) * ctx.cost_scale_factor
     };
-    // Realized inflow Z_t from the z_h primal: the incremental (local) inflow, the
-    // raw PAR value (lag included), gross of withdrawal and of the non-negativity slack.
-    inflow_m3s_buf.clear();
-    inflow_m3s_buf.extend_from_slice(&unscaled_primal[training_ctx.state.z_inflow.clone()]);
-    debug_assert_eq!(inflow_m3s_buf.len(), training_ctx.state.hydro_count);
+    let inflow_m3s_per_hydro: &[f64] = match training_ctx.state.inflow_form {
+        InflowForm::Logical => {
+            // Realized inflow Z_t from the z_h primal: the incremental (local) inflow, the
+            // raw PAR value (lag included), gross of withdrawal and of the non-negativity slack.
+            inflow_m3s_buf.clear();
+            inflow_m3s_buf.extend_from_slice(&unscaled_primal[training_ctx.state.z_inflow.clone()]);
+            inflow_m3s_buf
+        }
+        // ẑ from the opening phase, the value the coupled rows were shifted by.
+        InflowForm::Compact => realized_inflow_buf,
+    };
+    debug_assert_eq!(inflow_m3s_per_hydro.len(), training_ctx.state.hydro_count);
     let (load_rows, load_n_blks) = resolve_load_rows(ctx, t);
     let row_lower_ref = build_row_lower_unscaled(
         &ctx.template(t).row_lower,
@@ -660,7 +735,8 @@ pub(crate) fn extract_sim_stage_result(
         geometry,
         hydro_cell_index: output.hydro_cell_index,
         entity_counts: output.entity_counts,
-        inflow_m3s_per_hydro: inflow_m3s_buf,
+        inflow_m3s_per_hydro,
+        incoming_lags: incoming_lags_buf,
         block_hours: output.block_hours_per_stage[t.0].as_slice(),
         generic_constraint_entries: &output.generic_constraint_row_entries[t.0],
         ncs_col_upper,
