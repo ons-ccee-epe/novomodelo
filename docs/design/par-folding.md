@@ -464,8 +464,9 @@ each piece once:
   `extract_state_duals_only`. It returns Q, the non-lag state duals (`r̃c / c` at the
   storage, bucket and commitment incoming columns), the N-vector Gᵀπ, formed from the
   coupled rows' unscaled duals `π_r = r_r π̃_r` with the compact template's row scales,
-  and the cut duals as sparse (slot, y) pairs (§5.7). The fused terminal slice is the
-  same call with the (leaf, parent) projection pair.
+  and the cut duals as zero-free (slot, y) pairs, appended straight from the solver's
+  dual slice with no dense copy (§5.7). The fused terminal slice is the same call with
+  the (leaf, parent) projection pair.
 - **Outgoing state** through one `assemble_outgoing_state` (§3.5, §4.3).
 
 Sites keep only their loops and their real differences: the cut-row set (frozen rows;
@@ -506,9 +507,13 @@ their weights.
   pool slot. Then
   `ḡ_h = −Σ_ω μ_ω (Gᵀπ_ω)_h + Σ_k ȳ_k β_{k,(h,0)}`,
   `β̄_{h,l} = ψ_{h,l} ḡ_h + Σ_k ȳ_k β_{k,(h,l+1)}` with `ȳ = Σ_ω μ_ω y_ω` in slot
-  space, and `ᾱ = Σ_ω μ_ω Q_ω − dot_trial_state(β̄, x̂)`. Binding-activity tracking
-  reads each opening's (slot, y) pairs before aggregation, because under pure CVaR some
-  μ are 0. On a fan, μ comes from one weight-kernel call over the flattened
+  space, and `ᾱ = Σ_ω μ_ω Q_ω − dot_trial_state(β̄, x̂)`. ȳ is formed per (trial point,
+  child) before the β product, in canonical ω order, in a per-worker slot-space
+  accumulator with a touched bitmap. The bitmap's word scan yields the touched slots in
+  ascending order and resets in O(nnz), independent of the pool size. One walk
+  `Σ_k ȳ_k β_k` follows; the opening loop never sits inside it. Binding-activity
+  tracking reads each opening's (slot, y) pairs before aggregation, because under pure
+  CVaR some μ are 0. On a fan, μ comes from one weight-kernel call over the flattened
   successor × opening set; each child's ȳ_c and Ḡ_c are partial sums under those joint
   weights, never renormalised per child, and β̄ = Σ_c β̄_c. Openings are taken in
   canonical order.
@@ -518,8 +523,13 @@ their weights.
   the replicated and fused-slice payloads, which are per opening
   (`objective ‖ subgradient`), and T-KKT (§9.3).
 
-The kernel takes Gᵀπ and the (slot, y) pairs as inputs and never reads the G store,
-so T-ID (§9.3) can feed it values formed on the expanded LP.
+The kernel takes Gᵀπ and a borrowed slice of (slot, y) pairs of any length, in strictly
+ascending slot order, and never reads the G store, so T-ID (§9.3) can feed it values
+formed on the expanded LP. It skips an exact-zero weight (y, or ȳ) and accumulates each
+ḡ_h in one accumulator: the Gᵀπ terms in canonical ω order, then the ȳ_k β_{k,(h,0)}
+terms in ascending slot. With both rules its bits do not depend on whether zero duals
+are present. A Σ_k summed separately from +0.0 and added afterwards breaks this:
++0.0 + (−0.0) is +0.0, and the sign the per-opening shape preserves is lost.
 
 The aggregate-first shape goes into production only after the per-opening shape passes
 the chain-rule oracles; the tolerance test of §9.4 pins that aggregating first commutes
@@ -568,8 +578,10 @@ slab entry is rank-local.
    - base-row shifts −G·ẑ_ω, scaled as the bound is written, load rows, NCS and slack
      bounds as today;
    - cut RHS = B + W[ω], one contiguous add, then one range push;
-   - solve; store the opening's folded extraction.
-4. **Per trial point, once both units finish:** the aggregate-first chain rule (§5.3).
+   - solve; append the opening's folded extraction to the worker's record buffer
+     (§6.3).
+4. **Per trial point, once both units finish:** the aggregate-first chain rule (§5.3),
+   reading each opening's record in place through the location table.
 
 ### 5.6 Other sites
 
@@ -595,9 +607,30 @@ A per-stage setup flag, true when the resident pool's projection has lag slots, 
 whether the folded extraction reads the cut-row duals. It reads them once, as (slot, y)
 pairs, for both the chain rule and binding-activity recording, which keeps its own
 predicate for whether it records. On the DCS path the pairs come through
-`scratch.row_map`. The slice spans the cut rows after the compact base rows: frozen
-rows in `active_cuts()` order, then delta rows in `active_delta_cuts(iteration)` order,
-mapped to slots through the precomputed per-iteration list, never by slot arithmetic.
+`scratch.row_map`, by the ascending walk over the populated slots, so they are sorted
+with no sort; a resident row outside the dual slice is an invariant breach, never a
+skip. The slice spans the cut rows after the compact base rows: frozen rows in
+`active_cuts()` order, then delta rows in `active_delta_cuts(iteration)` order, mapped
+to slots through the precomputed per-iteration list, never by slot arithmetic. That
+list ascends in slot, because the pool is append-only.
+
+Two predicates, never conflated:
+
+- **Storage keeps `y != 0.0`.** The IEEE comparison drops −0.0, which HiGHS reports on
+  every basic row. A bit test (`to_bits() != 0`) keeps every −0.0, so nnz becomes the
+  row count. A tolerance drops real Σyβ terms and changes the cut.
+- **The binding count keeps `y > row_activity_tolerance`.** It runs per opening, before
+  μ exists. The tolerance is validated ≥ 0, so an omitted zero never counted, and the
+  counts are bitwise unchanged.
+
+**The non-zero count is bounded independently of the cut count.** In a basic optimal
+solution, a row whose logical is basic has dual 0. The rows with a nonbasic logical are
+linearly independent on the basic structural columns. Cut rows touch only θ and the
+outgoing non-lag state columns (a lag slot has no LP column). So at most
+`B_t = 1 + n_x^LP` cut duals are non-zero: 169 on the PMO compact LP, whatever the
+number of cut rows. `B_t` sizes reservations (§6.3). It is never a capacity, because
+its premise is solver behaviour that no backend API contracts (§13), and an expanded-LP
+caller (T-ID) reaches up to 2,185.
 
 ### 5.8 Caches
 
@@ -648,8 +681,9 @@ Rejected:
 - solving the forward's opening first (warm-start only, in-sample only).
 
 **Expected out-of-LP time** on the NEWAVE PMO deck, all ranks, per iteration: about
-8.9 / 9.4 / 12.6 CPU-s at 5 / 30 / 300 binding cuts per opening, against 36 / 40 / 75
-for the fold with no caches. That is about 0.6% of LP time at 5 ms per solve and 2% at
+8.9 / 9.4 / 12.6 CPU-s at 5 / 30 / 300 non-zero cut duals per opening, against
+36 / 40 / 75 for the fold with no caches. The 300 column is an upper envelope: the
+compact PMO LP admits at most 169 (§5.7). That is about 0.6% of LP time at 5 ms per solve and 2% at
 1.5 ms. Computing the delta-row bracket in every unit adds one bracket per extra
 opening block of a trial point. The remainder is dominated by the forward's own
 bracket pass, which no cache removes because every forward state is new.
@@ -708,11 +742,34 @@ with measurements as evidence:
 | Bracket slab `[m][t][k]`, tagged (iteration, node_id) | the forward's trajectory records | iteration | 46 MB ÷ total ranks |
 | σ·η per opening (Ω×N) and W `[ω][k]` in LP cut-row order (frozen rows, then delta) | `BackwardPassState` | stage | 96 KB, reused |
 | p, the assembled B, the RHS | `ScratchBuffers` (per worker) | reused | about 5 KB each |
-| Per opening: Q, Gᵀπ (N-vector), sparse (slot, y) | outcome arena | stage | about 6× smaller than today's dense per-opening coefficients |
+| Per opening: Q, non-lag state duals, Gᵀπ (N-vector), zero-free (slot, y) | per-worker record buffers (below) | stage under `by_node`, one unit under `by_scenario` | at most about 5.4 KB per record on PMO whatever the cut count, against 17.5 KB today |
 
 ψ, b and σ are read from `PrecomputedPar`, their one owner; â and ẑ live in renamed
 existing buffers (§4.5). The slab replaces `TrajectoryRecord.primal` and
 `TrajectoryRecord.dual`, which today are only cleared and never read.
+
+**Per-opening records.**
+
+- Each worker appends its records to its own flat buffers.
+- Under `by_node`, a (trial position, ω) → (worker, record) location table, built in
+  canonical order, lets the finish read every record in place in (position, ω) order,
+  whichever worker wrote it. No stage-long arena is kept, and nothing is copied into one.
+- Today's arena is a second dense copy of every outcome, committed in full at sizing
+  (about 2 × 70 MB per stage at 1 rank), with a serial scatter into it (about 7.6 ms per
+  stage).
+- The fixed part of a record is 2.7 KB, and the cut-dual part is at most 2.7 KB at
+  `B_t = 169`. So a `by_node` stage holds at most about 22 MB at 1 rank, typically
+  11–13 MB.
+- The buffers reserve from `B_t` (§5.7), never from the cut-row count, and grow
+  monotonically past it, as `BackwardAccumulators` does. A record past `B_t` is stored
+  whole: nothing truncates, clamps or errors.
+- Sizing by the resident cut-row count is the rejected alternative. It costs 16 B per
+  cut row per record, twice a dense f64 per row, and grows with the pool. Storing dense
+  y with the indices kept separately is rejected with it:
+  - the cut-dual part alone exceeds today's whole record above 2,184 cut rows;
+  - the shared index list does not exist under DCS, where `row_map` is insertion-ordered
+    and reset per child;
+  - on a fan, each child has its own slot space.
 
 New memory is about 46 MB at 1 rank and 12 MB at 4 ranks, under 0.4% of a 13.5 GB
 per-rank budget. The slab is sized at freeze: when a freeze leaves more frozen rows than
@@ -750,11 +807,18 @@ thread and rank shape.
   straight into `PatchBuffer` (§4.5), the idiom of `fill_load_patches`; finite bounds
   only. The order keeps the result independent of declaration order, and no step
   divides by a scale.
-- **Chain rule:** one kernel, two call shapes (§5.3). It reads only the rows of binding
-  cuts; skipping an exact y = 0.0 gives the same bits as the dense sum. Order is
-  ascending slot within each output element. Loops nest as 256-wide j-tiles, then
-  binding rows, then openings, so accumulators stay in L1. Cost is about 0.44 µs per
-  binding row per opening; the aggregate-first shape runs it once per trial point.
+- **Chain rule:** one kernel, two call shapes (§5.3).
+  - It reads the pool rows of the non-zero cut duals only. Skipping an exact zero gives
+    the same bits as the dense sum under the single-accumulator rule of §5.3.
+  - Order is ascending slot within each output element.
+  - The walk is row-major: each non-zero row streams once across the full lag width,
+    into a 2,016-element accumulator (16 KB, resident in L1d). It is bit-identical to a
+    256-wide j-tile nest and measured 10–31% faster on a performance core.
+  - The opening loop belongs to ȳ formation (§5.3). Nesting it inside the walk costs
+    Ω times the multiply-adds and changes the association.
+  - Cost is about 0.4–0.5 µs per non-zero row with the pool warm, and 1.2 µs cold from a
+    pool much larger than the last-level cache. The aggregate-first shape runs it once
+    per trial point and child.
 
 ### 6.5 Determinism
 
@@ -856,7 +920,8 @@ Restated:
    the shifts, l\* and outgoing lag 0. The chain rule never differentiates l\*.
 6. **Binding activity only for a configured reader.** Cut-row duals gain a second
    reader, the chain rule, decided by the per-stage lag-slot flag; both read one
-   (slot, y) extraction (§5.7).
+   zero-free (slot, y) extraction, filtered by `y != 0.0`: never a bit test and never a
+   tolerance. Its non-zero bound sizes reservations and never caps a record (§5.7).
 7. **Append-only pool and slot-identity basis.** Bases use the compact layout; the base
    row count is today's − N. Across builds, stored bases are dropped with
    `UnusedStoredBases`.
@@ -1103,7 +1168,9 @@ The expanded LP (§4.7) is the logical oracle, behind `test-support`.
 In `tests/conformance.rs`, per backend: a tiny LP with a ≥ row pushed through
 `set_row_lower_bounds_range`, checked against the hand-derived optimum; a row with a
 finite upper loses it to the push; a push at a nonzero `first_row` changes only its
-rows; and `set_row_bounds` accepts a +∞ upper.
+rows; `set_row_bounds` accepts a +∞ upper; and, at an optimum, every row whose logical
+is basic reports a dual equal to 0.0 (either sign), which pins the premise of the
+non-zero bound of §5.7 against a solver upgrade.
 
 ### 9.6 Behavioral and golden
 
@@ -1128,7 +1195,9 @@ One bench target in `crates/novomodelo-sddp/benches/`, with one group per measur
 - the RHS kernel: the plain row loop, the batched form and `dgemm`, at 1 thread and
   with every local core busy, the count recorded (the gate of §6.4);
 - the per-stage W pass;
-- the chain rule at 5–300 binding cuts per opening, per opening versus aggregated;
+- the chain rule at 5, 30 and 169 non-zero cut duals per opening, plus a degraded case
+  at a tenth of the cut rows, per opening versus aggregated, with the pool warm and
+  with a pool much larger than the last-level cache;
 - the solver push, set-based versus range.
 
 ### 9.8 Gate
@@ -1238,12 +1307,28 @@ Verified in code:
   `cfg(any(test, feature = "test-support"))`.
 - HiGHS's C API has no lower-only row-bound call; `Highs_changeRowsBoundsByRange`
   takes both slices.
+- HiGHS 1.13.1 (vendored) zeroes the duals of basic variables in
+  `HEkk::getSolution` before negating, so a row whose logical is basic reports
+  exactly −0.0. Every result the backend accepts is OPTIMAL and basic:
+  - its simplex rungs return a basis;
+  - presolve is followed by a postsolved basis;
+  - its IPM rungs keep `run_crossover` at its default, which is on.
+
+  This is implementation behaviour, not an API contract.
+- CLP 1.17.11 runs simplex on every rung. That a row whose logical is basic reports an
+  exact zero is probable (one BTRAN, slack columns pivot as identity columns) but
+  unverified; §9.5 pins it.
 - Checkpoints are written only at iteration end.
 - The NEWAVE converter emits `level1`, `by_node` with block size 10, `out_of_sample`
   training and simulation inflows, simulation `cut_set = active`, and a chain graph.
   The converted `config.json` itself has not been read; the pre-flight (§11.2) closes
   that.
 
-Assumed, to be measured: LP time per solve (1.5–5 ms used above); binding cuts per
-opening (5–300); the batched RHS kernel's gain with every core busy (§6.4); CLP's
-range-push cost.
+Assumed, to be measured: LP time per solve (1.5–5 ms used above); the non-zero cut
+duals per opening on PMO (structurally at most 169, §5.7) and their union across a
+stage's trial points, which places the chain-rule walk between its warm and cold costs;
+the batched RHS kernel's gain with every core busy (§6.4); CLP's range-push cost.
+
+Measured on small decks only: an instrumented frozen-path training run on four decks
+found no opening with more non-zero cut duals than `1 + n_x^LP`, and one deck attained
+the bound.
