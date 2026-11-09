@@ -3,8 +3,10 @@
 //! [`parse_penalties`] reads `penalties.json`, bridges the four nested JSON
 //! sections (`bus`, `line`, `hydro`, `non_controllable_source`) through
 //! intermediate serde types to the flat [`GlobalPenaltyDefaults`], and validates
-//! it. Every penalty is strictly positive except `hydro.turbined_cost`, which may
-//! be zero (constant-head plants have `gamma_v = 0`).
+//! it. Every penalty is strictly positive except `hydro.turbined_cost`
+//! (constant-head plants have `gamma_v = 0`) and
+//! `non_controllable_source.curtailment_cost` (curtailing is then free), which
+//! may be zero.
 //!
 //! See the penalty system spec §3 for the full requirements.
 
@@ -78,7 +80,7 @@ pub(crate) struct RawLinePenalties {
 pub(crate) struct RawHydroPenalties {
     /// Spillage penalty ($/(m³/s·h)).
     spillage_cost: f64,
-    /// Turbined-flow regularization cost ($/(m³/s·h)).
+    /// Turbined-flow regularization cost ($/(m³/s·h)). Must be >= 0.
     turbined_cost: f64,
     /// Diversion flow penalty ($/(m³/s·h)).
     diversion_cost: f64,
@@ -117,7 +119,7 @@ pub(crate) struct RawHydroPenalties {
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub(crate) struct RawNcsPenalties {
-    /// Curtailment cost ($/`MWh`).
+    /// Curtailment cost ($/`MWh`). Must be >= 0.
     curtailment_cost: f64,
 }
 
@@ -302,12 +304,12 @@ fn validate_hydro(raw: &RawPenalties, path: &Path) -> Result<(), LoadError> {
 }
 
 fn validate_ncs(raw: &RawPenalties, path: &Path) -> Result<(), LoadError> {
-    if raw.non_controllable_source.curtailment_cost <= 0.0 {
+    if raw.non_controllable_source.curtailment_cost < 0.0 {
         return Err(LoadError::SchemaError {
             path: path.to_path_buf(),
             field: "non_controllable_source.curtailment_cost".to_string(),
             message: format!(
-                "penalty value must be > 0.0, got {}",
+                "penalty value must be >= 0.0, got {}",
                 raw.non_controllable_source.curtailment_cost
             ),
         });
@@ -831,6 +833,50 @@ mod tests {
                     message.contains(">= 0.0"),
                     "message should mention '>= 0.0', got: {message}"
                 );
+            }
+            other => panic!("expected SchemaError, got: {other:?}"),
+        }
+    }
+
+    fn penalties_json_with_ncs_curtailment_cost(curtailment_cost: f64) -> String {
+        format!(
+            r#"{{
+          "bus": {{
+            "deficit_segments": [{{ "depth_mw": null, "cost": 1000.0 }}],
+            "excess_cost": 100.0
+          }},
+          "line": {{ "exchange_cost": 2.0 }},
+          "hydro": {{
+            "spillage_cost": 0.01, "turbined_cost": 0.05,
+            "diversion_cost": 0.1, "storage_violation_below_cost": 10000.0,
+            "filling_target_violation_cost": 50000.0,
+            "turbined_violation_below_cost": 500.0,
+            "outflow_violation_below_cost": 500.0,
+            "outflow_violation_above_cost": 500.0,
+            "generation_violation_below_cost": 1000.0,
+            "evaporation_violation_cost": 5000.0,
+            "water_withdrawal_violation_cost": 1000.0
+          }},
+          "non_controllable_source": {{ "curtailment_cost": {curtailment_cost:?} }}
+        }}"#
+        )
+    }
+
+    #[test]
+    fn test_parse_penalties_ncs_curtailment_cost_zero_valid() {
+        let f = write_json(&penalties_json_with_ncs_curtailment_cost(0.0));
+        let defaults = parse_penalties(f.path()).expect("curtailment_cost = 0.0 should be valid");
+        assert_eq!(defaults.ncs_curtailment_cost.to_bits(), 0.0_f64.to_bits());
+    }
+
+    #[test]
+    fn test_parse_penalties_ncs_curtailment_cost_negative_invalid() {
+        let f = write_json(&penalties_json_with_ncs_curtailment_cost(-0.0001));
+        let err = parse_penalties(f.path()).unwrap_err();
+        match &err {
+            LoadError::SchemaError { field, message, .. } => {
+                assert_eq!(field, "non_controllable_source.curtailment_cost");
+                assert!(message.contains(">= 0.0"), "got: {message}");
             }
             other => panic!("expected SchemaError, got: {other:?}"),
         }

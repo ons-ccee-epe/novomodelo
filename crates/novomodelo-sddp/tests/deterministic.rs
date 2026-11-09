@@ -1894,6 +1894,200 @@ fn d15_non_controllable_source() {
     );
 }
 
+/// Builds a D15 variant with two NCS sources priced at zero curtailment cost at
+/// all three levels: `penalties.json` (NCS1 falls back to it), the entity-level
+/// `curtailment_cost` (NCS0), and a `penalty_overrides_ncs.parquet` row (NCS1,
+/// stage 1). Load is 40 MW against 100 MW of availability, so 60 MW must be
+/// curtailed and the thermal never dispatches. `reverse_declaration` lists the
+/// sources in descending `id` order.
+fn d15_zero_curtailment_case(reverse_declaration: bool) -> tempfile::TempDir {
+    use crate::common::parquet_fixtures::write_seasonal_stats;
+    use arrow::array::{Float64Array, Int32Array};
+    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::record_batch::RecordBatch;
+    use parquet::arrow::ArrowWriter;
+    use std::sync::Arc;
+
+    let tmp = copy_case_dir(Path::new(
+        "../../examples/deterministic/d15-non-controllable-source",
+    ));
+    let case = tmp.path();
+
+    edit_json(&case.join("penalties.json"), |v| {
+        v["non_controllable_source"]["curtailment_cost"] = serde_json::json!(0.0);
+    });
+    let ncs = |id: i32, curtailment_cost: Option<f64>| {
+        let mut source = serde_json::json!({
+            "id": id,
+            "name": format!("NCS{id}"),
+            "operational_start_date": "2020-01-01",
+            "bus_id": 0,
+            "max_generation_mw": 100.0,
+        });
+        if let Some(cost) = curtailment_cost {
+            source["curtailment_cost"] = serde_json::json!(cost);
+        }
+        source
+    };
+    let mut sources = vec![ncs(0, Some(0.0)), ncs(1, None)];
+    if reverse_declaration {
+        sources.reverse();
+    }
+    edit_json(&case.join("system/non_controllable_sources.json"), |v| {
+        v["non_controllable_sources"] = serde_json::Value::Array(sources);
+    });
+
+    let scenarios = case.join("scenarios");
+    write_seasonal_stats(
+        &scenarios.join("load_seasonal_stats.parquet"),
+        "bus_id",
+        "mean_mw",
+        "std_mw",
+        &[(0, 0, 40.0, 0.0), (0, 1, 40.0, 0.0)],
+    );
+    write_seasonal_stats(
+        &scenarios.join("inflow_seasonal_stats.parquet"),
+        "hydro_id",
+        "mean_m3s",
+        "std_m3s",
+        &[],
+    );
+    write_seasonal_stats(
+        &scenarios.join("non_controllable_stats.parquet"),
+        "ncs_id",
+        "mean",
+        "std",
+        &[
+            (0, 0, 0.5, 0.0),
+            (0, 1, 0.5, 0.0),
+            (1, 0, 0.5, 0.0),
+            (1, 1, 0.5, 0.0),
+        ],
+    );
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("ncs_id", DataType::Int32, false),
+        Field::new("stage_id", DataType::Int32, false),
+        Field::new("curtailment_cost", DataType::Float64, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1])),
+            Arc::new(Int32Array::from(vec![1])),
+            Arc::new(Float64Array::from(vec![Some(0.0)])),
+        ],
+    )
+    .expect("valid RecordBatch for penalty_overrides_ncs");
+    std::fs::create_dir_all(case.join("constraints")).expect("create constraints dir");
+    let file = std::fs::File::create(case.join("constraints/penalty_overrides_ncs.parquet"))
+        .expect("create penalty_overrides_ncs.parquet");
+    let mut writer = ArrowWriter::try_new(file, schema, None).expect("ArrowWriter for override");
+    writer.write(&batch).expect("write override batch");
+    writer.close().expect("close override writer");
+
+    tmp
+}
+
+/// Per-NCS `(stage_id, ncs_id, generation bits, curtailment bits)`, sorted.
+fn ncs_dispatch_bits(
+    scenario: &novomodelo_sddp::SimulationScenarioResult,
+) -> Vec<(u32, i32, u64, u64)> {
+    let mut rows: Vec<_> = scenario
+        .stages
+        .iter()
+        .flat_map(|stage| &stage.non_controllables)
+        .map(|n| {
+            (
+                n.stage_id,
+                n.non_controllable_id,
+                n.generation_mw.to_bits(),
+                n.curtailment_mw.to_bits(),
+            )
+        })
+        .collect();
+    rows.sort_unstable();
+    rows
+}
+
+/// Zero curtailment cost at the global, entity and per-stage-override levels.
+///
+/// ## Expected behaviour
+///
+/// Every cost term is zero at the optimum: the 40 MW load is met by NCS
+/// generation, the 60 MW surplus is curtailed for free (excess costs
+/// $0.01/MWh), and the $10/MWh thermal stays off. Lower bound = **0**.
+///
+/// Generation and curtailment tie between the two sources, so the split is not
+/// unique; it must still be bit-for-bit identical across runs and across
+/// declaration orders.
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: run with --features slow-tests"
+)]
+#[test]
+fn d15_zero_curtailment_cost() {
+    const TOL: f64 = 1e-6;
+
+    let case = d15_zero_curtailment_case(false);
+    let (result, scenarios, _summary) = run_with_simulation(case.path());
+    assert_cost(result.final_lb, 0.0, TOL, "D15-zero");
+    assert_eq!(scenarios.len(), 1);
+    let scenario = &scenarios[0];
+    assert_eq!(scenario.stages.len(), 2);
+
+    for stage in &scenario.stages {
+        let s = stage.stage_id;
+        let generation: f64 = stage
+            .non_controllables
+            .iter()
+            .map(|n| n.generation_mw)
+            .sum();
+        let curtailment: f64 = stage
+            .non_controllables
+            .iter()
+            .map(|n| n.curtailment_mw)
+            .sum();
+        let thermal: f64 = stage.thermals.iter().map(|t| t.generation_mw).sum();
+        let excess: f64 = stage.buses.iter().map(|b| b.excess_mw).sum();
+        assert!(
+            (generation - 40.0).abs() < TOL,
+            "stage {s}: NCS generation {generation}"
+        );
+        assert!(
+            (curtailment - 60.0).abs() < TOL,
+            "stage {s}: curtailment {curtailment}"
+        );
+        assert!(thermal.abs() < TOL, "stage {s}: thermal {thermal}");
+        assert!(excess.abs() < TOL, "stage {s}: excess {excess}");
+        for n in &stage.non_controllables {
+            assert_eq!(
+                n.curtailment_cost, 0.0,
+                "stage {s} NCS{}",
+                n.non_controllable_id
+            );
+        }
+    }
+
+    let baseline = ncs_dispatch_bits(scenario);
+
+    let rerun = d15_zero_curtailment_case(false);
+    let (_, rerun_scenarios, _) = run_with_simulation(rerun.path());
+    assert_eq!(
+        ncs_dispatch_bits(&rerun_scenarios[0]),
+        baseline,
+        "run-to-run reproducibility"
+    );
+
+    let reversed = d15_zero_curtailment_case(true);
+    let (_, reversed_scenarios, _) = run_with_simulation(reversed.path());
+    assert_eq!(
+        ncs_dispatch_bits(&reversed_scenarios[0]),
+        baseline,
+        "declaration-order invariance"
+    );
+}
+
 /// D18 per-stage NCS commissioning dormancy varies across the window.
 ///
 /// The fixture declares two NCS sources on a 3-stage horizon: NCS0 with
