@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `constraints/generic_constraints.json` accepts `hydro_outflow_volume(h)`,
+  `hydro_diversion_volume(h)` and `pumping_volume(station)`, stage volumes in
+  hm3. Their constraints may add only volume and storage terms, with no block
+  argument, `per_stage_block` parameter or bounds row with a `block_id`.
+
 ## [0.20.0] - 2026-11-03
 
 ### Added

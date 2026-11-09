@@ -9,6 +9,7 @@
 //! bundle holding every parsed output when all files parse cleanly, or `None`
 //! when any parse or schema error is encountered.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use novomodelo_core::{
@@ -26,11 +27,12 @@ use crate::{
         BusPenaltyOverrideRow, ContractBoundsRow, GenericConstraintBoundsRow, HydroBoundsRow,
         HydroPenaltyOverrideRow, HydroUnitGroupBoundsRow, LineBoundsRow, LinePenaltyOverrideRow,
         NcsBoundsRow, NcsPenaltyOverrideRow, PumpingBoundsRow, ThermalBoundsRow,
-        build_line_bus_pair_index, load_contract_bounds, load_generic_constraint_bounds,
-        load_generic_constraints, load_hydro_bounds, load_hydro_unit_group_bounds,
-        load_line_bounds, load_ncs_bounds, load_penalty_overrides_bus,
-        load_penalty_overrides_hydro, load_penalty_overrides_line, load_penalty_overrides_ncs,
-        load_pumping_bounds, load_thermal_bounds,
+        build_line_bus_pair_index,
+        generic::{NamedSourcesByConstraint, parse_generic_constraints_with_provenance},
+        load_contract_bounds, load_generic_constraint_bounds, load_hydro_bounds,
+        load_hydro_unit_group_bounds, load_line_bounds, load_ncs_bounds,
+        load_penalty_overrides_bus, load_penalty_overrides_hydro, load_penalty_overrides_line,
+        load_penalty_overrides_ncs, load_pumping_bounds, load_thermal_bounds,
     },
     extensions::{
         FphaHyperplaneRow, HydroEnergyProductivityRow, HydroGeometryRow, PlaneReductionConfig,
@@ -64,9 +66,9 @@ use crate::{
 
 /// All parsed file outputs produced by Layer 2 schema validation.
 ///
-/// One field per input file (the field doc names the file). Required files use
-/// direct types; optional files use `Vec<T>` (Parquet rows) or `Option<T>`
-/// (structured JSON) and are empty or `None` when the file is absent.
+/// One field per input file (the field doc names the file), plus side tables recorded while
+/// parsing. Required files use direct types; optional files use `Vec<T>` (Parquet rows) or
+/// `Option<T>` (structured JSON) and are empty or `None` when the file is absent.
 pub(crate) struct ParsedData {
     /// `config.json`.
     pub(crate) config: Config,
@@ -143,6 +145,9 @@ pub(crate) struct ParsedData {
     pub(crate) contract_bounds: Vec<ContractBoundsRow>,
     /// `constraints/generic_constraints.json`.
     pub(crate) generic_constraints: Vec<GenericConstraint>,
+    /// The named expressions each generic constraint reached, by constraint id; a constraint
+    /// that reached none has no entry.
+    pub(crate) generic_constraint_named_sources: NamedSourcesByConstraint,
     /// `constraints/generic_constraint_bounds.parquet`.
     pub(crate) generic_constraint_bounds: Vec<GenericConstraintBoundsRow>,
     /// `constraints/penalty_overrides_bus.parquet`.
@@ -547,17 +552,17 @@ pub(crate) fn validate_schema(
         .map(|p| (p.name.clone(), p.id))
         .collect();
 
-    let generic_constraints = optional_or_error(
+    let (generic_constraints, generic_constraint_named_sources) = optional_or_error(
         manifest.present(InputFile::ConstraintsGenericConstraintsJson),
         || {
             let line_pair_index = build_line_bus_pair_index(lines.as_deref().unwrap_or(&[]))?;
-            load_generic_constraints(
-                Some(&case_root.join("constraints/generic_constraints.json")),
+            parse_generic_constraints_with_provenance(
+                &case_root.join("constraints/generic_constraints.json"),
                 &scalar_name_to_id,
                 &line_pair_index,
             )
         },
-        Vec::new,
+        || (Vec::new(), BTreeMap::new()),
         "constraints/generic_constraints.json",
         ctx,
     );
@@ -692,6 +697,7 @@ pub(crate) fn validate_schema(
         pumping_bounds,
         contract_bounds,
         generic_constraints,
+        generic_constraint_named_sources,
         generic_constraint_bounds,
         penalty_overrides_bus,
         penalty_overrides_line,
