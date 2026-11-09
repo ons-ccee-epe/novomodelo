@@ -1,5 +1,5 @@
 use novomodelo_core::commissioning::Phase;
-use novomodelo_core::{BlockMode, ContractType, Stage, is_exact_zero};
+use novomodelo_core::{BlockMode, ContractType, Stage, VariableRef, is_exact_zero};
 
 use super::generic_constraints::resolve_variable_ref;
 use crate::hydro_models::EvaporationModel;
@@ -1181,6 +1181,18 @@ pub(super) fn fill_generic_constraint_entries(
 
         row_entries.clear();
         for (term_idx, term) in constraint.expression.terms.iter().enumerate() {
+            // The loader refuses this composition (semantic.5a.56-5a.58); only a SystemBuilder System reaches it.
+            debug_assert!(
+                entry.is_stage_level
+                    || !matches!(
+                        term.variable,
+                        VariableRef::HydroOutflowVolume { .. }
+                            | VariableRef::HydroDiversionVolume { .. }
+                            | VariableRef::PumpingVolume { .. }
+                    ),
+                "generic constraint {}: a stage-volume term reaches a per-block row",
+                constraint.id.0
+            );
             let coefficient = ctx.resolved.resolved_generic_coefficients.term_value(
                 entry.constraint_idx,
                 term_idx,
@@ -7583,6 +7595,7 @@ mod pumping_water_tests {
     /// The conservation `debug_assert` fires when a declared arc's `k` does not
     /// sum to 1.0 — the guard is real, not dead code.
     #[test]
+    #[cfg(debug_assertions)]
     #[should_panic(expected = "stage-clock weights must sum to 1.0")]
     fn declared_arc_non_conserving_k_panics_in_debug() {
         let up = 1;
@@ -7852,6 +7865,7 @@ mod pumping_water_tests {
     /// (`declared_arc_non_conserving_k_panics_in_debug`), closing the gap
     /// where only the chrono-specific identities were fill-time-asserted.
     #[test]
+    #[cfg(debug_assertions)]
     #[should_panic(expected = "stage-clock weights must sum to 1.0")]
     fn row_8_chrono_stage_clock_sum_panics_on_disagreement() {
         let up = 1;
@@ -7896,6 +7910,7 @@ mod pumping_water_tests {
     /// when a hand-built resolution's block deposits disagree with its own
     /// stage-level `stage_weights` — the guard is real, not dead code.
     #[test]
+    #[cfg(debug_assertions)]
     #[should_panic(expected = "block deposits must aggregate to k_d")]
     fn row_9_shared_density_consistency_panics_on_disagreement() {
         let up = 1;
@@ -8098,6 +8113,7 @@ mod pumping_water_tests {
     /// `arc_arrival_density` table entry violates conservation — the guard is
     /// real, not dead code, after the arrival-frame lookup swap.
     #[test]
+    #[cfg(debug_assertions)]
     #[should_panic(expected = "arrival_density must sum to 1.0")]
     fn fill_chronological_water_entries_arrival_density_conservation_panics_on_disagreement() {
         let up = 1;
@@ -11197,6 +11213,131 @@ mod pumping_water_tests {
                 entry_count_at(&col_entries, col_slack, row),
                 1,
                 "blk {blk_idx}: exactly one slack entry, no duplicate or leftover var_c term"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "a stage-volume term reaches a per-block row")]
+    fn stage_volume_term_on_a_split_parameter_row_panics_in_debug() {
+        let constraint = GenericConstraint {
+            id: EntityId(7),
+            name: "gc_volume_split".to_string(),
+            description: None,
+            expression: ConstraintExpression {
+                terms: vec![LinearTerm {
+                    coefficient: novomodelo_core::ScalarExpr::param(EntityId(42)),
+                    variable: VariableRef::HydroOutflowVolume {
+                        hydro_id: EntityId(1),
+                    },
+                }],
+            },
+            slack: None,
+            bound_lower: None,
+            bound_upper: None,
+        };
+        let mut fixtures = PumpFixtures::new(vec![fixture_hydro(1)], Vec::new())
+            .with_generic_constraint(constraint, 100.0);
+        fixtures.base.resolved_parameters = crate::resolved_parameters::ResolvedParameters {
+            per_param: vec![vec![vec![1.0, 2.0]]],
+            id_to_slot: vec![(42, 0)],
+            cost_scale_factor: 1_000_000.0,
+        };
+        let ctx = fixtures.make_ctx();
+        let stage = two_block_stage(0, [300.0, 444.0]);
+        let layout = StageLayout::new(&ctx, &stage, 0);
+        assert_eq!(
+            layout.rows.n_generic_rows, 2,
+            "the per-block parameter must split the row, one per block"
+        );
+        assert!(
+            layout
+                .generic_constraint_rows
+                .iter()
+                .all(|r| !r.is_stage_level),
+            "a split row is never stage-level"
+        );
+
+        let _ = filled_generic_rows(&ctx, &layout);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "a stage-volume term reaches a per-block row")]
+    fn stage_volume_term_on_a_block_bounds_row_panics_in_debug() {
+        let constraint = GenericConstraint {
+            id: EntityId(7),
+            name: "gc_volume_block_row".to_string(),
+            description: None,
+            expression: ConstraintExpression {
+                terms: vec![LinearTerm::literal(
+                    1.0,
+                    VariableRef::HydroOutflowVolume {
+                        hydro_id: EntityId(1),
+                    },
+                )],
+            },
+            slack: None,
+            bound_lower: None,
+            bound_upper: None,
+        };
+        let id_map: HashMap<i32, usize> = [(constraint.id.0, 0)].into_iter().collect();
+        let mut fixtures = PumpFixtures::new(vec![fixture_hydro(1)], Vec::new());
+        fixtures.base.resolved_generic_bounds = ResolvedGenericConstraintBounds::new(
+            &id_map,
+            [(constraint.id.0, 0, Some(1), None, Some(100.0))].into_iter(),
+        );
+        fixtures.base.generic_constraints = vec![constraint];
+        let ctx = fixtures.make_ctx();
+        let stage = two_block_stage(0, [300.0, 444.0]);
+        let layout = StageLayout::new(&ctx, &stage, 0);
+        assert_eq!(layout.rows.n_generic_rows, 1);
+        assert!(
+            !layout.generic_constraint_rows[0].is_stage_level,
+            "a Some(block) bounds row is never stage-level"
+        );
+
+        let _ = filled_generic_rows(&ctx, &layout);
+    }
+
+    #[test]
+    fn stage_volume_term_on_a_collapsed_row_fills_without_panicking() {
+        let constraint = GenericConstraint {
+            id: EntityId(7),
+            name: "gc_volume_collapsed".to_string(),
+            description: None,
+            expression: ConstraintExpression {
+                terms: vec![LinearTerm::literal(
+                    1.0,
+                    VariableRef::HydroOutflowVolume {
+                        hydro_id: EntityId(1),
+                    },
+                )],
+            },
+            slack: None,
+            bound_lower: None,
+            bound_upper: None,
+        };
+        let mut fixtures = PumpFixtures::new(vec![fixture_hydro(1)], Vec::new())
+            .with_generic_constraint(constraint, 100.0);
+        let ctx = fixtures.make_ctx();
+        let stage = two_block_stage(0, [300.0, 444.0]);
+        let layout = StageLayout::new(&ctx, &stage, 0);
+        assert_eq!(layout.rows.n_generic_rows, 1);
+        assert!(layout.generic_constraint_rows[0].is_stage_level);
+
+        let col_entries = filled_generic_rows(&ctx, &layout);
+
+        let row = layout.rows.row_generic_start;
+        for blk in 0..layout.clock.n_blks() {
+            let col = layout
+                .geometry
+                .spillage_col(HydroSys::new(0), BlockIdx::new(blk));
+            let on_row = col_entries[col].iter().filter(|&&(r, _)| r == row).count();
+            assert_eq!(
+                on_row, 1,
+                "blk {blk}: the spillage column holds one entry on the stage-level row"
             );
         }
     }
