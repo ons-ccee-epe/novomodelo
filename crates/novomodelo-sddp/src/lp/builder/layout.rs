@@ -884,7 +884,7 @@ fn allocate_generic_slack_cols(
 }
 
 /// Whether a single [`VariableRef`] resolves to the *same* LP column(s) regardless
-/// of `block_idx` — **block-independent** ("stock"). Seven kinds qualify:
+/// of `block_idx` — **block-independent**. These kinds qualify:
 /// [`VariableRef::HydroStorage`] (stage-final alias `Sᴷ`),
 /// [`VariableRef::AnticipatedDecision`], [`VariableRef::HydroEvaporation`] (a fixed
 /// single-block column or the all-block sum — both `block_idx`-independent), and the
@@ -892,18 +892,21 @@ fn allocate_generic_slack_cols(
 /// [`VariableRef::HydroStorageFinal`] / [`VariableRef::HydroUsefulVolumeInitial`] /
 /// [`VariableRef::HydroUsefulVolumeFinal`], each resolving to a fixed boundary column
 /// (`Sᵏ` / `S⁰` / `Sᴷ`) that does not follow the materialized row's block.
+/// A stage-volume variant ([`VariableRef::HydroOutflowVolume`] /
+/// [`VariableRef::HydroDiversionVolume`] / [`VariableRef::PumpingVolume`]) reads
+/// every block's flow column itself, so it is stage-level.
 ///
 /// [`VariableRef::HydroInflow`] is block-DEPENDENT: its upstream-release terms are
-/// per-block columns. Classifying it "stock" would collapse a multi-block expression
-/// to one mis-priced stage-level row reading upstream columns at a single arbitrary
-/// block, silently dropping the other blocks. [`VariableRef::PumpingFlow`] /
+/// per-block columns. Classifying it block-independent would collapse a multi-block
+/// expression to one mis-priced stage-level row reading upstream columns at a single
+/// arbitrary block, silently dropping the other blocks. [`VariableRef::PumpingFlow`] /
 /// [`VariableRef::PumpingPower`] are block-level for the same reason. The stub kinds
 /// (withdrawal, contracts, non-controllable) resolve to no columns and are
-/// conservatively block-level, so only *provably* stock variables enable the
-/// single-row collapse.
+/// conservatively block-level, so only *provably* block-independent variables enable
+/// the single-row collapse.
 ///
 /// The match is exhaustive (no wildcard): a future variant forces a compile error
-/// here, defaulting nothing to "stock" by omission.
+/// here, defaulting nothing to block-independent by omission.
 #[must_use]
 pub(super) fn variable_ref_is_block_independent(var_ref: &VariableRef) -> bool {
     match var_ref {
@@ -913,7 +916,10 @@ pub(super) fn variable_ref_is_block_independent(var_ref: &VariableRef) -> bool {
         | VariableRef::HydroUsefulVolumeInitial { .. }
         | VariableRef::HydroUsefulVolumeFinal { .. }
         | VariableRef::HydroEvaporation { .. }
-        | VariableRef::AnticipatedDecision { .. } => true,
+        | VariableRef::AnticipatedDecision { .. }
+        | VariableRef::HydroOutflowVolume { .. }
+        | VariableRef::HydroDiversionVolume { .. }
+        | VariableRef::PumpingVolume { .. } => true,
         VariableRef::HydroInflow { .. }
         | VariableRef::HydroTurbined { .. }
         | VariableRef::HydroSpillage { .. }
