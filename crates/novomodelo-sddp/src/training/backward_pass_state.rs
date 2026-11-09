@@ -21,11 +21,11 @@ use crate::risk_measure::BackwardOutcome;
 use crate::setup::node_graph::{EnumeratedPlan, NodeGraph, NodeId, NodePos, StageIdx, Traversal};
 use crate::{
     backward::{
-        BackwardResult, ReplicatedScratch, StageWorkerOpeningDelta, StagedCut, SuccessorEntry,
-        SuccessorOutcomes, SuccessorSpec, by_node_block_count, by_node_finish, by_scenario_finish,
-        hardest_first_block_order, identity_block_order, merge_block_pivots,
-        process_by_scenario_backward, process_stage_backward_by_node, reify_successor_outcomes,
-        resolve_block_size, run_backward_node_replicated,
+        BackwardResult, ReplicatedScratch, SlabLookup, StageNoiseTable, StageWorkerOpeningDelta,
+        StagedCut, SuccessorEntry, SuccessorOutcomes, SuccessorSpec, by_node_block_count,
+        by_node_finish, by_scenario_finish, hardest_first_block_order, identity_block_order,
+        merge_block_pivots, process_by_scenario_backward, process_stage_backward_by_node,
+        reify_successor_outcomes, resolve_block_size, run_backward_node_replicated,
     },
     config::CutManagementConfig,
     context::{StageContext, TrainingContext},
@@ -275,6 +275,10 @@ pub struct BackwardPassState {
     /// [`Self::set_binding_tracking`], which states the rank contract.
     binding_tracking: bool,
 
+    /// Whether every pin recomputes its brackets and every solve its σ·η and cut-row W.
+    #[cfg(any(test, feature = "test-support"))]
+    solve_cache_bypass: bool,
+
     /// Maximum local forward-pass count across the run; with
     /// `bwd_max_openings` and `outcome_shape`, sizes [`Self::by_node_scratch`] when
     /// [`Self::set_scheduler`] resolves `ByNode`.
@@ -296,6 +300,9 @@ pub struct BackwardPassState {
     /// it for `BackwardScheduler::ByNode` (sddp.md "By-node
     /// scheduler is warm-start-only").
     by_node_scratch: ByNodeScratch,
+
+    /// The compact form's per-node σ·η and cut-row W tables, refilled at each node.
+    stage_noise: StageNoiseTable,
 
     /// Per-level node-compute results, reused across levels (mem-swapped out in
     /// `run_one_backward_level` so the level loop allocates no per-level buffer).
@@ -434,11 +441,14 @@ impl BackwardPassState {
             scheduler: BackwardScheduler::default(),
             hardest_first_claim_order: true,
             binding_tracking: true,
+            #[cfg(any(test, feature = "test-support"))]
+            solve_cache_bypass: false,
             max_local_fwd,
             bwd_max_openings,
             outcome_shape,
             num_stages,
             by_node_scratch: ByNodeScratch::default(),
+            stage_noise: StageNoiseTable::default(),
             level_nodes_scratch: Vec::new(),
             level_pools_scratch: Vec::new(),
             routed_trials_scratch: Vec::new(),
@@ -507,6 +517,21 @@ impl BackwardPassState {
         }
     }
 
+    /// Grows the per-node noise tables to `pool_capacity` cut rows over the widest outcome
+    /// set, never shrinking; a no-op on the logical form. Call it wherever the resident pools
+    /// grow.
+    pub(crate) fn reserve_stage_noise(&mut self, noise_dim: usize, pool_capacity: usize) {
+        if let ByNodeOutcomeShape::Folded { n_hydros, .. } = self.outcome_shape {
+            self.stage_noise
+                .reserve(self.bwd_max_openings, n_hydros, pool_capacity, noise_dim);
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn stage_noise(&self) -> &StageNoiseTable {
+        &self.stage_noise
+    }
+
     /// Overrides whether the by-node scheduler claims work
     /// hardest-`(stage, block)`-first using the previous iteration's
     /// mean pivots (default `true`). `false` forces the canonical ascending
@@ -520,6 +545,12 @@ impl BackwardPassState {
     /// collective, so one rank disagreeing blocks the run. Call before `run()`.
     pub fn set_binding_tracking(&mut self, enabled: bool) {
         self.binding_tracking = enabled;
+    }
+
+    /// Makes every compact pin miss its slab and every solve compute its own noise terms. Call before `run()`.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn set_solve_cache_bypass(&mut self, bypass: bool) {
+        self.solve_cache_bypass = bypass;
     }
 
     /// Execute the backward pass for one training iteration on this rank.
@@ -851,6 +882,8 @@ impl BackwardPassState {
                     my_rank,
                     probabilities: &self.probabilities_buf,
                     cut_state: &training_ctx.cut_state_layouts[pool_id],
+                    slab: SlabLookup::Unavailable,
+                    stage_noise: None,
                 };
 
                 let n_state = succ_spec.cut_state.n_slots();
@@ -1925,22 +1958,46 @@ fn compute_one_backward_node<S: SolverInterface + Send, C: Communicator>(
         n_openings,
         "the reified successor outcome set must have as many outcomes as flattened weights"
     );
+    let stage_noise_table = training_ctx.state.inflow_form == InflowForm::Compact;
+    #[cfg(any(test, feature = "test-support"))]
+    let stage_noise_table = stage_noise_table && !state.solve_cache_bypass;
+    if stage_noise_table {
+        state
+            .stage_noise
+            .fill(training_ctx, successor_stage, &outcomes)?;
+    }
 
+    let dcs_params = training_ctx
+        .dcs
+        .map(|p| p.resolve(state.profile.primal_feasibility_tolerance))
+        .filter(|p| p.is_active(inputs.iteration));
+    let slab = if dcs_params.is_none() {
+        SlabLookup::Frozen {
+            records: inputs.records,
+            n_stages: training_ctx.horizon.num_stages(),
+            iteration: inputs.iteration,
+        }
+    } else {
+        SlabLookup::Unavailable
+    };
+    #[cfg(any(test, feature = "test-support"))]
+    let slab = match slab {
+        SlabLookup::Frozen { .. } if state.solve_cache_bypass => SlabLookup::ForcedMiss,
+        other => other,
+    };
     let succ_spec = SuccessorSpec {
         t: node_stage,
         successor: successor_stage,
         my_rank: params.my_rank,
         probabilities: &state.probabilities_buf,
         cut_state: cut_state_projection,
+        slab,
+        stage_noise: stage_noise_table.then_some(&state.stage_noise),
     };
 
     // `resolve_backward_scheduler` owns the DCS fallback: its cut-free lazy
     // core is incompatible with the by-node frozen-LP load (sddp.md "By-node
     // scheduler is warm-start-only").
-    let dcs_params = training_ctx
-        .dcs
-        .map(|p| p.resolve(state.profile.primal_feasibility_tolerance))
-        .filter(|p| p.is_active(inputs.iteration));
     let use_by_node = matches!(
         resolve_backward_scheduler(dcs_params.is_some(), state.scheduler),
         BackwardScheduler::ByNode { .. }
@@ -2966,11 +3023,8 @@ mod tests {
         states
             .iter()
             .map(|state| TrajectoryRecord {
-                primal: Vec::new(),
-                dual: Vec::new(),
-                stage_cost: 0.0,
-                node_id: NodeId(0),
                 state: state.to_vec(),
+                ..TrajectoryRecord::default()
             })
             .collect()
     }
@@ -3228,15 +3282,13 @@ mod tests {
             .zip(leaf_node_ids)
             .flat_map(|(state, &leaf_node_id)| {
                 (0..n_stages).map(move |t| TrajectoryRecord {
-                    primal: Vec::new(),
-                    dual: Vec::new(),
-                    stage_cost: 0.0,
                     node_id: if t + 1 == n_stages {
                         leaf_node_id
                     } else {
                         NodeId(0)
                     },
                     state: state.clone(),
+                    ..TrajectoryRecord::default()
                 })
             })
             .collect()
@@ -3576,11 +3628,9 @@ mod tests {
             .zip(stage1_ids)
             .flat_map(|(state, &stage1_id)| {
                 (0..n_stages).map(move |t| TrajectoryRecord {
-                    primal: Vec::new(),
-                    dual: Vec::new(),
-                    stage_cost: 0.0,
                     node_id: if t == 1 { stage1_id } else { NodeId(0) },
                     state: state.clone(),
+                    ..TrajectoryRecord::default()
                 })
             })
             .collect()
@@ -5109,13 +5159,7 @@ mod tests {
             .expect("workspace pool must build");
         let mut basis_store = BasisStore::new(total_forward_passes, node_graph.nodes.len());
         let mut records: Vec<TrajectoryRecord> = (0..total_forward_passes * num_stages)
-            .map(|_| TrajectoryRecord {
-                primal: Vec::new(),
-                dual: Vec::new(),
-                stage_cost: 0.0,
-                node_id: NodeId(0),
-                state: Vec::new(),
-            })
+            .map(|_| TrajectoryRecord::default())
             .collect();
 
         let fixture = StageContextFixture::from_stage_templates(

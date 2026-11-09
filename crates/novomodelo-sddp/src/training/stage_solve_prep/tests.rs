@@ -22,7 +22,10 @@ use novomodelo_stochastic::{
     StochasticContext, evaluate_par_conditional_mean_batch, evaluate_par_noise_term_batch,
 };
 
-use super::{BracketSource, FoldedCutRows, StageSolvePrep, StageSolvePrepParams, StateSource};
+use super::{
+    BracketSource, FoldedCutRows, NoiseTermSource, StageSolvePrep, StageSolvePrepParams,
+    StateSource,
+};
 use crate::{
     context::{StageContext, TrainingContext},
     cut::{
@@ -1048,13 +1051,15 @@ impl CompactCase {
             slots,
             source,
             raw_noise.as_slice(),
+            NoiseTermSource::OnTheFly,
             |_| {},
         );
         (solver, patch_buf, scratch)
     }
 
     /// One pin phase on `trial_state`, then one opening phase per entry of `raw_noises`, each with
-    /// a recorder cleared of the earlier calls. `prepare` edits the fresh scratch before the pin.
+    /// `noise` and a recorder cleared of the earlier calls. `prepare` edits the fresh scratch before
+    /// the pin.
     /// Returns the recorder and scratch as the last opening left them, and the cut-row RHS after
     /// each opening.
     fn run_openings(
@@ -1064,6 +1069,7 @@ impl CompactCase {
         slots: &[usize],
         source: BracketSource,
         raw_noises: &[&[f64]],
+        noise: NoiseTermSource<'_>,
         prepare: impl FnOnce(&mut ScratchBuffers),
     ) -> (RecordingSolver, PatchBuffer, ScratchBuffers, Vec<Vec<f64>>) {
         let fixture = self.fixture();
@@ -1108,6 +1114,7 @@ impl CompactCase {
                 StageIdx(0),
                 raw_noise,
                 &cut_rows,
+                noise,
             );
             rhs_after_each.push(scratch.cut_rhs_buf.clone());
         }
@@ -1181,6 +1188,127 @@ fn pin_folded_reads_the_cut_rows_in_slot_list_order() {
     );
 }
 
+const SLAB_SLOTS: [usize; 3] = [0, 1, 2];
+
+fn slab_case() -> CompactCase {
+    CompactCase::new(&[
+        (1.0, [4.0, 2.0, 3.0]),
+        (10.0, [1.0, 1.5, 2.0]),
+        (-3.0, [0.5, 3.0, 1.0]),
+    ])
+}
+
+fn differ_from_the_intercepts(case: &CompactCase, brackets: &[f64]) -> bool {
+    SLAB_SLOTS
+        .iter()
+        .zip(brackets)
+        .all(|(&slot, b)| b.to_bits() != case.pool.intercept(slot).to_bits())
+}
+
+fn in_unit_brackets(case: &CompactCase) -> Vec<f64> {
+    let (_, _, scratch) = case.pin_folded(&TRIAL_STATE, &SLAB_SLOTS, BracketSource::InUnit);
+    scratch.cut_bracket_buf
+}
+
+fn slab_reference(case: &CompactCase) -> Vec<f64> {
+    let reference = in_unit_brackets(case);
+    assert!(
+        differ_from_the_intercepts(case, &reference),
+        "the reference brackets {reference:?} must not equal the bare intercepts"
+    );
+    reference
+}
+
+#[test]
+fn pin_folded_slab_reference_brackets_carry_the_trial_state() {
+    let case = slab_case();
+
+    let reference = slab_reference(&case);
+
+    assert_eq!(bits(&reference), bits(&[216.0, 170.0, 302.0]));
+}
+
+#[test]
+fn pin_folded_slab_power_check_fails_without_cut_coefficients() {
+    let case = CompactCase::new(&[
+        (1.0, [0.0, 0.0, 0.0]),
+        (10.0, [0.0, 0.0, 0.0]),
+        (-3.0, [0.0, 0.0, 0.0]),
+    ]);
+
+    let reference = in_unit_brackets(&case);
+
+    assert_eq!(bits(&reference), bits(&[1.0, 10.0, -3.0]));
+    assert!(!differ_from_the_intercepts(&case, &reference));
+}
+
+#[test]
+fn pin_folded_slab_hit_equals_the_in_unit_brackets_and_does_not_count() {
+    let case = slab_case();
+    let reference = slab_reference(&case);
+
+    let (_, _, scratch) = case.pin_folded(
+        &TRIAL_STATE,
+        &SLAB_SLOTS,
+        BracketSource::Slab(Some(&reference[..1])),
+    );
+
+    assert_eq!(bits(&scratch.cut_bracket_buf), bits(&reference));
+    assert_eq!(scratch.slab_misses, 0);
+}
+
+#[test]
+fn pin_folded_slab_reads_the_prefix_and_computes_the_delta() {
+    let case = slab_case();
+    let reference = slab_reference(&case);
+    let perturbed: Vec<f64> = reference.iter().map(|b| b + 1000.0).collect();
+
+    let (_, _, scratch) = case.pin_folded(
+        &TRIAL_STATE,
+        &SLAB_SLOTS,
+        BracketSource::Slab(Some(&perturbed[..1])),
+    );
+
+    assert_eq!(
+        bits(&scratch.cut_bracket_buf),
+        bits(&[perturbed[0], reference[1], reference[2]])
+    );
+    assert_eq!(scratch.slab_misses, 0);
+}
+
+#[test]
+fn pin_folded_slab_full_prefix_computes_nothing() {
+    let case = slab_case();
+    let reference = slab_reference(&case);
+    let perturbed: Vec<f64> = reference.iter().map(|b| b + 1000.0).collect();
+
+    let (_, _, scratch) = case.pin_folded(
+        &TRIAL_STATE,
+        &SLAB_SLOTS,
+        BracketSource::Slab(Some(&reference)),
+    );
+    assert_eq!(bits(&scratch.cut_bracket_buf), bits(&reference));
+
+    let (_, _, scratch) = case.pin_folded(
+        &TRIAL_STATE,
+        &SLAB_SLOTS,
+        BracketSource::Slab(Some(&perturbed)),
+    );
+    assert_eq!(bits(&scratch.cut_bracket_buf), bits(&perturbed));
+    assert_eq!(scratch.slab_misses, 0);
+}
+
+#[test]
+fn pin_folded_slab_miss_equals_the_in_unit_brackets_and_counts() {
+    let case = slab_case();
+    let reference = slab_reference(&case);
+
+    let (_, _, scratch) = case.pin_folded(&TRIAL_STATE, &SLAB_SLOTS, BracketSource::Slab(None));
+
+    assert_eq!(bits(&scratch.cut_bracket_buf), bits(&reference));
+    assert_eq!(scratch.slab_misses, 1);
+}
+
 #[test]
 fn open_folded_pushes_the_shifted_rows_then_the_column_bounds_then_the_cut_range() {
     let case = CompactCase::new(&[(1.0, [4.0, 2.0, 3.0])]);
@@ -1238,6 +1366,166 @@ fn open_folded_writes_cut_rhs_as_bracket_plus_noise_term() {
     assert_eq!(bits(&solver.row_range_calls[0].1), bits(&expected));
 }
 
+const STAGE_NOISE_CUTS: [(f64, [f64; 3]); 3] = [
+    (1.0, [4.0, 2.0, 3.0]),
+    (10.0, [1.0, 1.5, 2.0]),
+    (-3.0, [0.5, 3.0, 1.0]),
+];
+const STAGE_NOISE_SLOTS: [usize; 2] = [2, 0];
+
+/// The stage-wide σ·η of the one hydro at `eta` (0.0 without a PAR model) and the W of each slot.
+fn stage_noise_values(case: &CompactCase, slots: &[usize], eta: f64) -> (Vec<f64>, Vec<f64>) {
+    let par = case.stochastic.par();
+    let mut noise_term = vec![0.0; 1];
+    if par.n_stages() > 0 {
+        evaluate_par_noise_term_batch(par, 0, &[eta], &mut noise_term);
+    }
+    let lag_point = case.prep.cut_state_layouts[0].lag_point();
+    let cut_noise = slots
+        .iter()
+        .map(|&slot| cut_noise_term(case.pool.coefficient_row(slot), lag_point, &noise_term))
+        .collect();
+    (noise_term, cut_noise)
+}
+
+/// Whether `Stage` and `OnTheFly` could differ at `eta`: σ·η and every W are nonzero and the
+/// realized inflow is negative, so the truncation bound is active.
+fn stage_noise_has_power(case: &CompactCase, slots: &[usize], eta: f64) -> bool {
+    let (noise_term, cut_noise) = stage_noise_values(case, slots, eta);
+    let (_, _, scratch, _) = case.run_openings(
+        InflowNonNegativityMethod::Truncation,
+        &TRIAL_STATE,
+        slots,
+        BracketSource::OnTheFly,
+        &[&[eta]],
+        NoiseTermSource::OnTheFly,
+        |_| {},
+    );
+    noise_term.iter().all(|&w| w != 0.0)
+        && cut_noise.iter().all(|&w| w != 0.0)
+        && scratch.realized_inflow_buf.iter().all(|&z| z < 0.0)
+}
+
+fn bounds_call_bits(
+    calls: &[(Vec<usize>, Vec<f64>, Vec<f64>)],
+) -> Vec<(Vec<usize>, Vec<u64>, Vec<u64>)> {
+    calls
+        .iter()
+        .map(|(indices, lower, upper)| (indices.clone(), bits(lower), bits(upper)))
+        .collect()
+}
+
+fn assert_stage_noise_matches_on_the_fly(
+    case: &CompactCase,
+    slots: &[usize],
+    method: InflowNonNegativityMethod,
+    eta: f64,
+) {
+    let (noise_term, cut_noise) = stage_noise_values(case, slots, eta);
+    let (on_the_fly_solver, _, on_the_fly, _) = case.run_openings(
+        method,
+        &TRIAL_STATE,
+        slots,
+        BracketSource::OnTheFly,
+        &[&[eta]],
+        NoiseTermSource::OnTheFly,
+        |_| {},
+    );
+    let (stage_solver, _, stage, _) = case.run_openings(
+        method,
+        &TRIAL_STATE,
+        slots,
+        BracketSource::OnTheFly,
+        &[&[eta]],
+        NoiseTermSource::Stage {
+            noise_term: &noise_term,
+            cut_noise: &cut_noise,
+        },
+        |scratch| scratch.par_noise_term_buf.fill(f64::NAN),
+    );
+
+    let label = format!("{method:?}, eta {eta}");
+    assert_eq!(
+        bits(&stage.realized_inflow_buf),
+        bits(&on_the_fly.realized_inflow_buf),
+        "{label}: realized inflow"
+    );
+    assert_eq!(
+        bits(&stage.inflow_slack_lower_buf),
+        bits(&on_the_fly.inflow_slack_lower_buf),
+        "{label}: slack lower"
+    );
+    assert_eq!(
+        bits(&stage.inflow_slack_upper_buf),
+        bits(&on_the_fly.inflow_slack_upper_buf),
+        "{label}: slack upper"
+    );
+    assert_eq!(
+        stage_solver.calls, on_the_fly_solver.calls,
+        "{label}: calls"
+    );
+    assert_eq!(
+        bounds_call_bits(&stage_solver.row_bounds_calls),
+        bounds_call_bits(&on_the_fly_solver.row_bounds_calls),
+        "{label}: row bounds"
+    );
+    assert_eq!(
+        bounds_call_bits(&stage_solver.col_bounds_calls),
+        bounds_call_bits(&on_the_fly_solver.col_bounds_calls),
+        "{label}: column bounds"
+    );
+    assert_eq!(stage_solver.row_range_calls.len(), 1, "{label}: cut range");
+    let (first_row, rhs) = &stage_solver.row_range_calls[0];
+    let (on_the_fly_first_row, on_the_fly_rhs) = &on_the_fly_solver.row_range_calls[0];
+    assert_eq!(first_row, on_the_fly_first_row, "{label}: cut range start");
+    assert_eq!(bits(rhs), bits(on_the_fly_rhs), "{label}: cut range");
+    assert_eq!(
+        bits(&stage.par_noise_term_buf),
+        [f64::NAN.to_bits()],
+        "{label}: the stage source leaves the scratch noise term unwritten"
+    );
+}
+
+#[test]
+fn open_folded_stage_noise_matches_on_the_fly_bit_for_bit() {
+    let case = CompactCase::new(&STAGE_NOISE_CUTS);
+
+    for (eta, truncation_active) in [(0.5, false), (-4.0, true)] {
+        assert_eq!(
+            stage_noise_has_power(&case, &STAGE_NOISE_SLOTS, eta),
+            truncation_active,
+            "eta {eta}"
+        );
+        assert_stage_noise_matches_on_the_fly(
+            &case,
+            &STAGE_NOISE_SLOTS,
+            InflowNonNegativityMethod::Truncation,
+            eta,
+        );
+    }
+}
+
+#[test]
+fn open_folded_stage_noise_without_a_par_model_matches_on_the_fly() {
+    let case = CompactCase::with_stochastic(stochastic_context(None, false), &STAGE_NOISE_CUTS);
+    assert_eq!(case.stochastic.par().n_stages(), 0);
+
+    assert_stage_noise_matches_on_the_fly(
+        &case,
+        &STAGE_NOISE_SLOTS,
+        InflowNonNegativityMethod::Truncation,
+        0.5,
+    );
+}
+
+#[test]
+fn open_folded_stage_noise_power_check_fails_at_zero_noise() {
+    let case = CompactCase::new(&STAGE_NOISE_CUTS);
+
+    assert!(stage_noise_has_power(&case, &STAGE_NOISE_SLOTS, -4.0));
+    assert!(!stage_noise_has_power(&case, &STAGE_NOISE_SLOTS, 0.0));
+}
+
 #[test]
 fn one_pin_serves_every_opening_after_it() {
     let case = CompactCase::new(&[(1.0, [4.0, 2.0, 3.0]), (10.0, [1.0, 1.5, 2.0])]);
@@ -1252,6 +1540,7 @@ fn one_pin_serves_every_opening_after_it() {
         &slots,
         BracketSource::InUnit,
         &[&[etas[0]], &[etas[1]]],
+        NoiseTermSource::OnTheFly,
         |_| {},
     );
 
@@ -1313,6 +1602,7 @@ fn without_a_par_model_p_w_and_the_realized_inflow_are_positive_zero() {
         &slots,
         BracketSource::OnTheFly,
         &[&[0.5]],
+        NoiseTermSource::OnTheFly,
         |scratch| {
             scratch.par_mean_buf.fill(f64::NAN);
             scratch.par_noise_term_buf.fill(f64::NAN);
@@ -1397,7 +1687,13 @@ fn folded_slack_bounds_match_the_logical_arm_bit_for_bit() {
 
             let (_, _, mut folded) =
                 case.run_folded(method, &TRIAL_STATE, &[], BracketSource::OnTheFly, None);
-            transform_inflow_noise_folded(&raw_noise, StageIdx(0), &training_ctx, &mut folded);
+            transform_inflow_noise_folded(
+                &raw_noise,
+                StageIdx(0),
+                &training_ctx,
+                &mut folded,
+                None,
+            );
 
             let label = format!("{method:?}, eta {eta}");
             assert_eq!(

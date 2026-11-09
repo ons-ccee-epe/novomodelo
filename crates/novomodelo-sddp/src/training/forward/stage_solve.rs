@@ -8,6 +8,7 @@ use novomodelo_solver::SolverInterface;
 use crate::{
     context::{StageContext, TrainingContext},
     error::SddpError,
+    indexer::InflowForm,
     solve::StageOpeningSolver,
     trajectory::TrajectoryRecord,
     workspace::{BasisStoreSliceMut, SolverWorkspace},
@@ -90,15 +91,16 @@ pub(crate) fn run_forward_stage<S: SolverInterface + Send>(
     })?;
 
     let rec = &mut worker_records[local_m * training_ctx.horizon.num_stages() + t.0];
-    // rec.primal/dual stay empty: only state and node_id feed downstream
-    // consumers (the backward pass reads state; node_id tags the visit for
-    // per-node output) — simulation reads primal/dual directly from the solver.
-    rec.primal.clear();
-    rec.dual.clear();
     rec.stage_cost = stage_cost;
     rec.node_id = node_id;
     rec.state.clear();
     rec.state.extend_from_slice(&ws.current_state);
+    if training_ctx.state.inflow_form == InflowForm::Compact
+        && matches!(opening_solver, StageOpeningSolver::Frozen)
+    {
+        rec.frozen_brackets
+            .write(iteration, node_id, &ws.scratch.cut_bracket_buf);
+    }
 
     if opening_solver.captures_basis() {
         capture_forward_basis(

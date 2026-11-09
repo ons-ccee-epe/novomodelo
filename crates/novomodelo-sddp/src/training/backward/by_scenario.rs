@@ -249,7 +249,8 @@ pub(crate) fn process_by_scenario_backward<S: SolverInterface + Send>(
         ws.solver.reset_solver_state();
         prepare_child_lp(opening_solver, ws, ctx, succ, &child, iteration);
         if compact {
-            pin_folded_child_lp(ws, ctx, training_ctx, &child, x_hat, s);
+            let source = succ.bracket_source(m, child.successor_node_id);
+            pin_folded_child_lp(ws, ctx, training_ctx, &child, x_hat, s, source);
         }
 
         // Resolved per child, never once from child 0: each child's External
@@ -353,7 +354,7 @@ pub(crate) fn process_by_scenario_backward<S: SolverInterface + Send>(
         "agg_arena must be sized to cover this trial point's slot before the solve"
     );
     ws.backward_accum.agg_arena[coefficients_range.clone()]
-        .copy_from_slice(&ws.backward_accum.agg_coefficients[..n_state]);
+        .copy_from_slice(&ws.backward_accum.agg_coefficients);
     // The cut's `forward_pass_index` addresses `CutPool`'s per-iteration slot
     // block at stride `visit_bound[pool]` (the node's own routed visit count),
     // NOT `forward_passes`, so it must be the node-relative position within THIS

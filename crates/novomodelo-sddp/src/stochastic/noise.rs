@@ -85,12 +85,14 @@ pub(crate) fn transform_inflow_noise(
 
 /// Realized inflow ẑ from the conditional mean in the scratch, the noise term
 /// `σ·η` the cut right-hand sides read, and, under the truncation methods, the
-/// inflow-slack bounds from ẑ.
+/// inflow-slack bounds from ẑ. With `noise_term` given, ẑ adds those `σ·η` values
+/// and the scratch's noise term is left unwritten.
 pub(crate) fn transform_inflow_noise_folded(
     raw_noise: &[f64],
     stage: StageIdx,
     training_ctx: &TrainingContext<'_>,
     scratch: &mut ScratchBuffers,
+    noise_term: Option<&[f64]>,
 ) {
     let dims = training_ctx.stochastic.class_dimensions();
     let hydro_noise = &raw_noise[dims.hydro_range()];
@@ -98,22 +100,35 @@ pub(crate) fn transform_inflow_noise_folded(
 
     scratch.realized_inflow_buf.clear();
     scratch.realized_inflow_buf.resize(dims.n_hydros, 0.0);
-    if par_lp.n_stages() > 0 {
-        add_par_noise_batch(
-            par_lp,
-            stage.0,
-            &scratch.par_mean_buf,
-            hydro_noise,
-            &mut scratch.realized_inflow_buf,
-        );
-        evaluate_par_noise_term_batch(
-            par_lp,
-            stage.0,
-            hydro_noise,
-            &mut scratch.par_noise_term_buf,
-        );
-    } else {
-        scratch.par_noise_term_buf.fill(0.0);
+    match (par_lp.n_stages() > 0, noise_term) {
+        (true, None) => {
+            add_par_noise_batch(
+                par_lp,
+                stage.0,
+                &scratch.par_mean_buf,
+                hydro_noise,
+                &mut scratch.realized_inflow_buf,
+            );
+            evaluate_par_noise_term_batch(
+                par_lp,
+                stage.0,
+                hydro_noise,
+                &mut scratch.par_noise_term_buf,
+            );
+        }
+        (true, Some(noise_term)) => {
+            debug_assert_eq!(noise_term.len(), dims.n_hydros, "one noise term per hydro");
+            for ((z, &mean), &term) in scratch
+                .realized_inflow_buf
+                .iter_mut()
+                .zip(&scratch.par_mean_buf)
+                .zip(noise_term)
+            {
+                *z = mean + term;
+            }
+        }
+        (false, None) => scratch.par_noise_term_buf.fill(0.0),
+        (false, Some(_)) => {}
     }
 
     scratch.inflow_slack_lower_buf.clear();

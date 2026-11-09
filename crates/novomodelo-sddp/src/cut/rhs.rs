@@ -1,7 +1,8 @@
-//! Canonical cut-row RHS: B = fl(fl(α + S) + P) and RHS = fl(B + W), the one association every
-//! cut-row RHS site uses. S, P and W are ascending-slot dots from +0.0: the shifted slots against
-//! â, the lag-0 slots against p, and the lag-0 slots against σ·η. Not one dot over ẑ = fl(p + σ·η),
-//! not the blocked GEMM kernel for S, not a dot started from an iterator sum's −0.0.
+//! Canonical cut-row RHS: B = fl(fl(α + S) + P) and RHS = fl(B + W), the one association both RHS
+//! writers (`cut_rhs_into` and `cut_rhs_from_noise_terms_into`) use. S, P and W are ascending-slot
+//! dots from +0.0: the shifted slots against â, the lag-0 slots against p, and the lag-0 slots
+//! against σ·η. Not one dot over ẑ = fl(p + σ·η), not the blocked GEMM kernel for S, not a dot
+//! started from an iterator sum's −0.0, no fused multiply-add.
 
 use crate::cut::CutPool;
 use crate::indexer::CutLagPoint;
@@ -106,11 +107,26 @@ pub fn cut_rhs_into(
     }
 }
 
+/// Writes `rhs[i] = brackets[i] + noise_terms[i]`, where `noise_terms[i]` is the
+/// [`cut_noise_term`] of row `i`.
+pub fn cut_rhs_from_noise_terms_into(brackets: &[f64], noise_terms: &[f64], rhs: &mut [f64]) {
+    debug_assert!(
+        noise_terms.len() == brackets.len() && rhs.len() == brackets.len(),
+        "cut_rhs_from_noise_terms_into: brackets, noise_terms and rhs differ in length"
+    );
+
+    for ((out, &bracket), &noise_term) in rhs.iter_mut().zip(brackets).zip(noise_terms) {
+        *out = bracket + noise_term;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use novomodelo_core::temporal::StageStateConfig;
 
-    use super::{cut_bracket, cut_brackets_into, cut_noise_term, cut_rhs_into};
+    use super::{
+        cut_bracket, cut_brackets_into, cut_noise_term, cut_rhs_from_noise_terms_into, cut_rhs_into,
+    };
     use crate::cut::CutPool;
     use crate::indexer::{CutStateProjection, StateSpace};
     use crate::lead_time::AnticipatedResolution;
@@ -238,6 +254,35 @@ mod tests {
         }
         assert_eq!(brackets.map(f64::to_bits), [56.0, 38.0].map(f64::to_bits));
         assert_eq!(rhs.map(f64::to_bits), [80.0, 63.0].map(f64::to_bits));
+    }
+
+    #[test]
+    fn cut_rhs_from_noise_terms_equals_cut_rhs_into_bit_for_bit() {
+        let projection = projection(2, 2, ALL_ENABLED);
+        let lag_point = projection.lag_point();
+        let rows: [(f64, [f64; 6]); 3] = [
+            (10.0, [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]),
+            (20.0, [7.0, 8.0, 9.0, 10.0, 11.0, 12.0]),
+            (30.0, [2.0, 1.0, 4.0, 3.0, 6.0, 5.0]),
+        ];
+        let mut pool = CutPool::new(3, projection.n_slots(), 1, 0);
+        for (k, (intercept, row)) in (0_u64..).zip(&rows) {
+            pool.add_cut(NodeId(0), k, 0, *intercept, row);
+        }
+        let (lag_state, mean, noise) = ([0.1, 0.2, 0.3, 0.4], [0.7, 0.9], [0.1, -0.3]);
+        let slots = [2, 0, 1];
+        let mut brackets = [f64::NAN; 3];
+        cut_brackets_into(&pool, &slots, lag_point, &lag_state, &mean, &mut brackets);
+        let noise_terms =
+            slots.map(|slot| cut_noise_term(pool.coefficient_row(slot), lag_point, &noise));
+        assert!(noise_terms.iter().all(|&w| w != 0.0));
+
+        let mut expected = [f64::NAN; 3];
+        let mut actual = [f64::NAN; 3];
+        cut_rhs_into(&pool, &slots, lag_point, &noise, &brackets, &mut expected);
+        cut_rhs_from_noise_terms_into(&brackets, &noise_terms, &mut actual);
+
+        assert_eq!(actual.map(f64::to_bits), expected.map(f64::to_bits));
     }
 
     #[test]

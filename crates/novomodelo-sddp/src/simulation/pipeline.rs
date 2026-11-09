@@ -49,7 +49,8 @@ use crate::{
     solve::{LazyInputs, StageOpeningSolver},
     solver_stats::SolverStatsDelta,
     training::stage_solve_prep::{
-        BracketSource, FoldedCutRows, StageSolvePrep, StageSolvePrepParams, StateSource,
+        BracketSource, FoldedCutRows, NoiseTermSource, StageSolvePrep, StageSolvePrepParams,
+        StateSource,
     },
     workspace::{CapturedBasis, ScratchBuffers, SolverWorkspace},
 };
@@ -432,6 +433,7 @@ fn prepare_simulation_stage<S: SolverInterface>(
                 t,
                 raw_noise,
                 &rows,
+                NoiseTermSource::OnTheFly,
             );
             ws.scratch.cut_slots_buf = slots;
         }

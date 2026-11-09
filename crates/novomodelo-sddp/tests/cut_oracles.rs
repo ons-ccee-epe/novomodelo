@@ -1010,7 +1010,6 @@ mod expander_cut_rows {
 mod mapped_basis_warm_start {
     use novomodelo_core::System;
     use novomodelo_sddp::StudySetup;
-    use novomodelo_sddp::setup::StageIdx;
     use novomodelo_sddp::test_support::decks::committed_decks;
     use novomodelo_sddp::test_support::expander::expand_stage_templates;
 
@@ -1024,21 +1023,12 @@ mod mapped_basis_warm_start {
     use crate::common::power_guards::{Guard, PowerEvidence};
     use crate::common::{
         Emission, build_setup_in_code_with_models_as, fresh_setup_with, fresh_system_and_setup_as,
-        train_storing_trial_states,
+        is_chain, train_storing_trial_states,
     };
 
     struct WarmStartCounts {
         solves: usize,
         skipped_stages: usize,
-    }
-
-    fn is_chain(setup: &StudySetup) -> bool {
-        setup
-            .inputs
-            .node_graph
-            .nodes
-            .iter_indexed()
-            .all(|(pos, node)| node.stage == StageIdx(pos.0) && node.pool_id == pos.0)
     }
 
     fn warm_start_every_stage(

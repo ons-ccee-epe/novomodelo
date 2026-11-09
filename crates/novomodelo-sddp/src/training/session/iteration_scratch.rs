@@ -13,7 +13,7 @@ use crate::{
     forward::NestedUbScratch,
     lower_bound::LbEvalScratch,
     lp::builder::PatchBuffer,
-    setup::{NodeId, node_graph::StageIdx},
+    setup::node_graph::StageIdx,
     solver_stats::SolverStatsDelta,
     trajectory::TrajectoryRecord,
     workspace::{ScratchBuffers, WorkspaceSizing},
@@ -87,11 +87,8 @@ impl IterationScratch {
         let num_stages = training_ctx.horizon.num_stages();
         let records: Vec<TrajectoryRecord> = (0..max_local_fwd * num_stages)
             .map(|_| TrajectoryRecord {
-                primal: Vec::new(),
-                dual: Vec::new(),
-                stage_cost: 0.0,
-                node_id: NodeId(0),
                 state: vec![0.0; n_state],
+                ..TrajectoryRecord::default()
             })
             .collect();
 

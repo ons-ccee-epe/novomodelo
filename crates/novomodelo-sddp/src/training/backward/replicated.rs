@@ -30,7 +30,9 @@ use crate::{
     risk_measure::{BackwardOutcome, RiskMeasure},
     solve::partition,
     stage_solve::{StageInputs, run_stage_solve},
-    training::stage_solve_prep::{BracketSource, FoldedCutRows, StageSolvePrep, StateSource},
+    training::stage_solve_prep::{
+        BracketSource, FoldedCutRows, NoiseTermSource, StageSolvePrep, StateSource,
+    },
     workspace::SolverWorkspace,
 };
 
@@ -250,6 +252,7 @@ fn solve_replicated_opening<S: SolverInterface + Send>(
                 s,
                 raw_noise,
                 rows,
+                NoiseTermSource::OnTheFly,
             );
             let view = run_stage_solve(ws, inputs)?;
             let template = ctx.template(s);

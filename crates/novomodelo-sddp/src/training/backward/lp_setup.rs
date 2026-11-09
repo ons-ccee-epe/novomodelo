@@ -86,6 +86,7 @@ pub(crate) fn pin_folded_child_lp<S: SolverInterface + Send>(
     child: &SuccessorChild<'_>,
     x_hat: &[f64],
     s: StageIdx,
+    source: BracketSource<'_>,
 ) {
     debug_assert_eq!(
         training_ctx.state.inflow_form,
@@ -109,7 +110,7 @@ pub(crate) fn pin_folded_child_lp<S: SolverInterface + Send>(
         s,
         StateSource(x_hat),
         &folded_cut_rows(training_ctx, child, &slots),
-        BracketSource::InUnit,
+        source,
     );
     ws.scratch.cut_slots_buf = slots;
 }

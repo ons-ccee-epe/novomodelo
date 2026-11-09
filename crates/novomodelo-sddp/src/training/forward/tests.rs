@@ -200,15 +200,7 @@ fn fixed_solution(num_cols: usize, objective: f64, theta_col: usize, theta_val: 
 }
 
 fn empty_records(n: usize) -> Vec<TrajectoryRecord> {
-    (0..n)
-        .map(|_| TrajectoryRecord {
-            primal: Vec::new(),
-            dual: Vec::new(),
-            stage_cost: 0.0,
-            node_id: NodeId(0),
-            state: Vec::new(),
-        })
-        .collect()
+    (0..n).map(|_| TrajectoryRecord::default()).collect()
 }
 
 /// Build a minimal `StochasticContext` for a single-hydro, `n_stages`-stage
@@ -3446,13 +3438,7 @@ mod dcs_forward {
             ws.solver.load_model(frozen);
         }
 
-        let mut records = vec![TrajectoryRecord {
-            primal: Vec::new(),
-            dual: Vec::new(),
-            stage_cost: 0.0,
-            node_id: NodeId(0),
-            state: Vec::new(),
-        }];
+        let mut records = vec![TrajectoryRecord::default()];
         let raw_noise = vec![0.0; stochastic.dim()];
         let key = StageKey {
             t: StageIdx(0),
@@ -3633,7 +3619,7 @@ mod transit_bucket_copy_gap {
     use crate::inflow_method::InflowNonNegativityMethod;
     use crate::lp::builder::{PatchBuffer, StateBox};
     use crate::lp::indexer::HydroSys;
-    use crate::setup::{NodeId, NodePos, StageIdx};
+    use crate::setup::{NodePos, StageIdx};
     use crate::test_support;
     use crate::test_support::StageContextFixture;
     use crate::trajectory::TrajectoryRecord;
@@ -3800,13 +3786,7 @@ mod transit_bucket_copy_gap {
         ws.solver.load_model(&template);
 
         let mut basis_store = BasisStore::new(1, 1);
-        let mut records = vec![TrajectoryRecord {
-            primal: Vec::new(),
-            dual: Vec::new(),
-            stage_cost: 0.0,
-            node_id: NodeId(0),
-            state: Vec::new(),
-        }];
+        let mut records = vec![TrajectoryRecord::default()];
         let key = StageKey {
             t: StageIdx(0),
             m: 0,

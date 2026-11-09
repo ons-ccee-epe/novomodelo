@@ -99,7 +99,8 @@ use crate::training::backward::{
     extract_state_duals_only, fill_external_opening_noise, write_opening_outcome,
 };
 use crate::training::stage_solve_prep::{
-    BracketSource, FoldedCutRows, StageSolvePrep, StageSolvePrepParams, StateSource,
+    BracketSource, FoldedCutRows, NoiseTermSource, StageSolvePrep, StageSolvePrepParams,
+    StateSource,
 };
 use crate::trajectory::TrajectoryRecord;
 use crate::workspace::{CapturedBasis, ScratchBuffers, SolverWorkspace, WorkspaceSizing};
@@ -1823,6 +1824,7 @@ pub fn folded_prep_for_probe<S: SolverInterface + Send>(
         stage,
         raw_noise,
         &rows,
+        NoiseTermSource::OnTheFly,
     );
 }
 
@@ -2249,11 +2251,8 @@ pub fn trial_state_records(states: &[Vec<f64>], n_stages: usize) -> Vec<Trajecto
         .iter()
         .flat_map(|state| {
             (0..n_stages).map(move |_| TrajectoryRecord {
-                primal: Vec::new(),
-                dual: Vec::new(),
-                stage_cost: 0.0,
-                node_id: NodeId(0),
                 state: state.clone(),
+                ..TrajectoryRecord::default()
             })
         })
         .collect()

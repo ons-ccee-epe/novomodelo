@@ -886,6 +886,9 @@ pub struct ScratchBuffers {
     pub(crate) cut_slots_buf: Vec<usize>,
     /// The bracket B of each cut row, in LP row order.
     pub(crate) cut_bracket_buf: Vec<f64>,
+    /// Pin phases that found no slab for the frozen prefix, counted over the workspace's lifetime.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) slab_misses: u64,
     /// The cut-row lower bound B + W, in LP row order.
     pub(crate) cut_rhs_buf: Vec<f64>,
     pub(crate) ncs_col_upper_buf: Vec<f64>,
@@ -1083,6 +1086,8 @@ impl ScratchBuffers {
             par_noise_term_buf: vec![0.0; hydro_count],
             cut_slots_buf: Vec::with_capacity(initial_pool_capacity),
             cut_bracket_buf: Vec::with_capacity(initial_pool_capacity),
+            #[cfg(any(test, feature = "test-support"))]
+            slab_misses: 0,
             cut_rhs_buf: Vec::with_capacity(initial_pool_capacity),
             ncs_col_upper_buf: Vec::new(),
             ncs_col_lower_buf: Vec::new(),
@@ -1264,16 +1269,9 @@ impl<S: SolverInterface> WorkspacePool<S> {
             ws.backward_accum
                 .folded_aggregate
                 .reserve(pool_capacity, pair_hint);
-            let scratch = &mut ws.scratch;
-            scratch
-                .cut_slots_buf
-                .reserve(pool_capacity.saturating_sub(scratch.cut_slots_buf.len()));
-            scratch
-                .cut_bracket_buf
-                .reserve(pool_capacity.saturating_sub(scratch.cut_bracket_buf.len()));
-            scratch
-                .cut_rhs_buf
-                .reserve(pool_capacity.saturating_sub(scratch.cut_rhs_buf.len()));
+            reserve_to(&mut ws.scratch.cut_slots_buf, pool_capacity);
+            reserve_to(&mut ws.scratch.cut_bracket_buf, pool_capacity);
+            reserve_to(&mut ws.scratch.cut_rhs_buf, pool_capacity);
         }
     }
 
@@ -1544,6 +1542,7 @@ impl ScratchBuffers {
             par_noise_term_buf: vec![0.0; hydro_count],
             cut_slots_buf: Vec::new(),
             cut_bracket_buf: Vec::new(),
+            slab_misses: 0,
             cut_rhs_buf: Vec::new(),
             ncs_col_upper_buf: Vec::new(),
             ncs_col_lower_buf: Vec::new(),

@@ -28,7 +28,8 @@ use crate::{
         node_graph::{NodePos, StageIdx, assemble_outcome_weights},
     },
     training::stage_solve_prep::{
-        BracketSource, FoldedCutRows, StageSolvePrep, StageSolvePrepParams, StateSource,
+        BracketSource, FoldedCutRows, NoiseTermSource, StageSolvePrep, StageSolvePrepParams,
+        StateSource,
     },
     workspace::ScratchBuffers,
 };
@@ -282,6 +283,7 @@ fn lb_evaluate_stage_0<S: SolverInterface>(
                 StageIdx(0),
                 raw_noise,
                 rows,
+                NoiseTermSource::OnTheFly,
             );
         } else {
             let prep_params = StageSolvePrepParams {

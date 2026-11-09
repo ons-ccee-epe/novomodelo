@@ -17,7 +17,7 @@ use novomodelo_sddp::{
     BoundaryStateRequirements, SddpError, SimulationScenarioResult, StudySetup,
     hydro_models::{PrepareHydroModelsResult, prepare_hydro_models},
     indexer::CutSlot,
-    setup::{NodePos, StudyParams, prepare_stochastic},
+    setup::{NodePos, StageIdx, StudyParams, prepare_stochastic},
     test_support::decks::{SLOW_DECKS, committed_decks},
 };
 use novomodelo_solver::ActiveSolver;
@@ -293,7 +293,7 @@ pub fn fresh_system_and_setup_as(case_dir: &Path, emission: Emission) -> (System
     fresh_system_and_setup_with_emission(case_dir, |_| {}, emission)
 }
 
-fn fresh_system_and_setup_with_emission(
+pub fn fresh_system_and_setup_with_emission(
     case_dir: &Path,
     mutate: impl FnOnce(&mut Config),
     emission: Emission,
@@ -331,6 +331,16 @@ fn fresh_system_and_setup_with_emission(
         emission,
     );
     (system, setup)
+}
+
+/// Whether every node's stage and pool equal its position: no branching, no shared pool.
+pub fn is_chain(setup: &StudySetup) -> bool {
+    setup
+        .inputs
+        .node_graph
+        .nodes
+        .iter_indexed()
+        .all(|(pos, node)| node.stage == StageIdx(pos.0) && node.pool_id == pos.0)
 }
 
 /// Build a fresh [`StudySetup`] from `case_dir`'s config: applies `mutate`,

@@ -20,7 +20,8 @@ use crate::{
     training::{
         backward::{FoldedDuals, FoldedExtraction, extract_folded_duals, extract_state_duals_only},
         stage_solve_prep::{
-            BracketSource, FoldedCutRows, StageSolvePrep, StageSolvePrepParams, StateSource,
+            BracketSource, FoldedCutRows, NoiseTermSource, StageSolvePrep, StageSolvePrepParams,
+            StateSource,
         },
     },
     workspace::{CapturedBasis, SolverWorkspace},
@@ -290,6 +291,7 @@ fn prepare_stage_solve<S: SolverInterface + Send>(
                 t,
                 raw_noise,
                 &rows,
+                NoiseTermSource::OnTheFly,
             );
             ws.scratch.cut_slots_buf = slots;
         }

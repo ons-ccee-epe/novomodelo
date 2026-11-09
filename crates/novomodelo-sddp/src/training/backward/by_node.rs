@@ -251,7 +251,8 @@ pub(crate) fn process_stage_backward_by_node<S: SolverInterface + Send>(
                     ws.solver.reset_solver_state();
                     load_backward_lp(ws, &child);
                     if compact {
-                        pin_folded_child_lp(ws, ctx, training_ctx, &child, x_hat, s);
+                        let source = succ.bracket_source(m, child.successor_node_id);
+                        pin_folded_child_lp(ws, ctx, training_ctx, &child, x_hat, s, source);
                     }
 
                     // take/fill/restore reuses `external_noise_buf`: no hot-path allocation.

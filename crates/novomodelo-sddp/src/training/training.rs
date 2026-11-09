@@ -44,6 +44,10 @@ pub struct TrainingOutcome {
     /// training completed normally (convergence, iteration limit, or
     /// time limit).
     pub error: Option<SddpError>,
+
+    /// This rank's frozen pins that recomputed B over the run.
+    #[cfg(any(test, feature = "test-support"))]
+    pub slab_misses: u64,
 }
 
 /// Summary statistics produced when the training loop terminates.

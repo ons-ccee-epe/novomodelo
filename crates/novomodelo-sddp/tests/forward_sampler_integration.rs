@@ -2699,7 +2699,7 @@ mod compact_forward_routing {
     use novomodelo_sddp::{
         StudySetup, TrajectoryRecord,
         forward::{ForwardPassBatch, run_forward_pass},
-        setup::{NodeId, StageIdx},
+        setup::StageIdx,
         workspace::BasisStore,
     };
     use novomodelo_solver::{ActiveSolver, StageTemplate};
@@ -2730,13 +2730,7 @@ mod compact_forward_routing {
             .collect();
         let mut basis_store = BasisStore::new(PASSES, training_ctx.node_graph.nodes.len());
         let mut records: Vec<TrajectoryRecord> = (0..PASSES * num_stages)
-            .map(|_| TrajectoryRecord {
-                primal: Vec::new(),
-                dual: Vec::new(),
-                stage_cost: 0.0,
-                node_id: NodeId(0),
-                state: Vec::new(),
-            })
+            .map(|_| TrajectoryRecord::default())
             .collect();
         iterations
             .iter()

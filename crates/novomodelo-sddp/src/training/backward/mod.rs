@@ -61,6 +61,8 @@ use crate::{
     indexer::CutStateProjection,
     setup::node_graph::{NodeId, NodeOpenings, NodePos, StageIdx},
     solver_stats::SolverStatsDelta,
+    training::stage_solve_prep::BracketSource,
+    trajectory::TrajectoryRecord,
 };
 
 use std::ops::Range;
@@ -72,6 +74,7 @@ mod lp_setup;
 mod opening_solve;
 mod outcome_aggregation;
 mod replicated;
+mod stage_noise;
 
 #[cfg(test)]
 mod tests;
@@ -86,6 +89,7 @@ pub(crate) use duals_extraction::{
 };
 pub(crate) use lp_setup::{OpeningNoise, resolve_opening_noise};
 pub(crate) use replicated::{ReplicatedScratch, run_backward_node_replicated};
+pub(crate) use stage_noise::StageNoiseTable;
 
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) use lp_setup::fill_external_opening_noise;
@@ -219,6 +223,46 @@ pub(crate) struct SuccessorSpec<'a> {
     /// columns dual extraction reads. `n_slots()` equals every successor pool's
     /// `state_dimension` (all children share one stage and `state_config`).
     pub(crate) cut_state: &'a CutStateProjection,
+    /// Where each child's pin phase takes the frozen-row brackets from.
+    pub(crate) slab: SlabLookup<'a>,
+    /// The node's σ·η and cut-row W tables, or `None` where each opening computes its own.
+    pub(crate) stage_noise: Option<&'a StageNoiseTable>,
+}
+
+impl<'a> SuccessorSpec<'a> {
+    /// The pin source for trial `m`'s pin of the child `successor_node_id`.
+    pub(crate) fn bracket_source(&self, m: usize, successor_node_id: NodeId) -> BracketSource<'a> {
+        match self.slab {
+            SlabLookup::Unavailable => BracketSource::InUnit,
+            #[cfg(any(test, feature = "test-support"))]
+            SlabLookup::ForcedMiss => BracketSource::Slab(None),
+            SlabLookup::Frozen {
+                records,
+                n_stages,
+                iteration,
+            } => BracketSource::Slab(
+                records[m * n_stages + self.successor.0]
+                    .frozen_brackets
+                    .read(iteration, successor_node_id),
+            ),
+        }
+    }
+}
+
+/// Where a backward node's pins find the brackets the forward wrote.
+#[derive(Clone, Copy)]
+pub(crate) enum SlabLookup<'a> {
+    /// The loaded LP is not the frozen template the forward pinned: every pin computes its brackets.
+    Unavailable,
+    /// Every pin counts a slab miss and computes its brackets, whatever tag the slab carries.
+    #[cfg(any(test, feature = "test-support"))]
+    ForcedMiss,
+    /// The iteration's records, read at the successor stage's slab of each local trial.
+    Frozen {
+        records: &'a [TrajectoryRecord],
+        n_stages: usize,
+        iteration: u64,
+    },
 }
 
 /// Owned per-child metadata for one successor outcome. Borrow-free so it lives in a
@@ -343,6 +387,14 @@ impl<'a> SuccessorOutcomes<'a> {
     /// non-overlapping slot region (`metadata_offset..metadata_offset + populated`).
     pub(crate) fn total_metadata_len(&self) -> usize {
         self.entries.iter().map(|e| e.populated_count).sum()
+    }
+
+    /// The child whose `outcome_range` holds outcome `omega`.
+    pub(crate) fn child_of_outcome(&self, omega: usize) -> SuccessorChild<'a> {
+        self.child(
+            self.entries
+                .partition_point(|entry| entry.outcome_range.end <= omega),
+        )
     }
 
     /// Resolve child `i`'s full LP bundle from the pool-indexed arrays.

@@ -496,6 +496,7 @@ mod retry_armed_determinism {
             backward,
             backward_scheduler: BackwardScheduler::default(),
             hardest_first_claim_order: true,
+            ..SolverProfiles::default()
         }
     }
 

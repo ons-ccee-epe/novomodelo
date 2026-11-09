@@ -511,8 +511,6 @@ where
                 .unwrap_or(1.0);
             cost += cum_d * visit.stage_cost;
             let rec = &mut records[local_m * num_stages + t];
-            rec.primal.clear();
-            rec.dual.clear();
             rec.stage_cost = visit.stage_cost;
             rec.node_id = visit.node_id;
             rec.state.clear();
@@ -848,13 +846,7 @@ mod tests {
             .expect("workspace pool");
         let basis_store = BasisStore::new(total_forward_passes, node_graph.nodes.len());
         let records: Vec<TrajectoryRecord> = (0..total_forward_passes * setup.num_stages())
-            .map(|_| TrajectoryRecord {
-                primal: Vec::new(),
-                dual: Vec::new(),
-                stage_cost: 0.0,
-                node_id: NodeId(0),
-                state: Vec::new(),
-            })
+            .map(|_| TrajectoryRecord::default())
             .collect();
         (pool, basis_store, records)
     }

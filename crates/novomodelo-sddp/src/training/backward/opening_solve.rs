@@ -10,7 +10,7 @@ use crate::{
     solve::{LazyInputs, StageOpeningSolver},
     solver_stats::SolverStatsDelta,
     stage_solve::StageInputs,
-    training::stage_solve_prep::StageSolvePrep,
+    training::stage_solve_prep::{NoiseTermSource, StageSolvePrep},
     workspace::{CapturedBasis, SolverWorkspace},
 };
 
@@ -61,6 +61,13 @@ pub(super) fn solve_backward_opening<S: SolverInterface + Send>(
         InflowForm::Logical => patch_opening_bounds(ws, ctx, training_ctx, raw_noise, x_hat, s),
         InflowForm::Compact => {
             let slots = std::mem::take(&mut ws.scratch.cut_slots_buf);
+            let noise = match succ.stage_noise {
+                Some(table) => NoiseTermSource::Stage {
+                    noise_term: table.noise_term(omega),
+                    cut_noise: table.cut_noise(omega, slots.len()),
+                },
+                None => NoiseTermSource::OnTheFly,
+            };
             let open = match opening_solver {
                 StageOpeningSolver::Frozen => StageSolvePrep::open_folded,
                 StageOpeningSolver::Lazy(_) => StageSolvePrep::open_folded_lazy,
@@ -74,6 +81,7 @@ pub(super) fn solve_backward_opening<S: SolverInterface + Send>(
                 s,
                 raw_noise,
                 &folded_cut_rows(training_ctx, child, &slots),
+                noise,
             );
             ws.scratch.cut_slots_buf = slots;
         }

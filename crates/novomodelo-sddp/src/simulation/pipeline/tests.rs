@@ -2328,15 +2328,8 @@ mod anticipated_ring_matches_forward_propagation {
 
         let mut basis_store = BasisStore::new(1, N_STAGES);
         let mut slices = basis_store.split_workers_mut(basis_store.num_scenarios(), 1);
-        let mut records: Vec<TrajectoryRecord> = (0..N_STAGES)
-            .map(|_| TrajectoryRecord {
-                primal: Vec::new(),
-                dual: Vec::new(),
-                stage_cost: 0.0,
-                node_id: NodeId(0),
-                state: Vec::new(),
-            })
-            .collect();
+        let mut records: Vec<TrajectoryRecord> =
+            (0..N_STAGES).map(|_| TrajectoryRecord::default()).collect();
 
         let mut trajectory = Vec::with_capacity(N_STAGES);
         for (t, template) in templates.iter().enumerate() {

@@ -1317,13 +1317,7 @@ mod tests {
             let workspaces = vec![single_workspace(solver, &state)];
             let basis_store = BasisStore::new(n_scenarios, n_stages);
             let records = (0..n_scenarios * n_stages)
-                .map(|_| TrajectoryRecord {
-                    primal: Vec::new(),
-                    dual: Vec::new(),
-                    stage_cost: 0.0,
-                    node_id: NodeId(0),
-                    state: Vec::new(),
-                })
+                .map(|_| TrajectoryRecord::default())
                 .collect();
             Self {
                 n_stages,
@@ -1433,13 +1427,7 @@ mod tests {
             .collect();
         fx.basis_store = BasisStore::new(store_rows, fx.n_stages);
         fx.records = (0..local_passes * fx.n_stages)
-            .map(|_| TrajectoryRecord {
-                primal: Vec::new(),
-                dual: Vec::new(),
-                stage_cost: 0.0,
-                node_id: NodeId(0),
-                state: Vec::new(),
-            })
+            .map(|_| TrajectoryRecord::default())
             .collect();
         let state_boxes = permissive_state_boxes(fx.state.n_state, fx.n_stages);
         let geometry = equipment_free_geometry(&vec![0; fx.templates.len()]);
@@ -1649,13 +1637,7 @@ mod tests {
         let mut basis_slices = basis_store.split_workers_mut(fx.n_scenarios, 1);
         let mut basis_slice = basis_slices.remove(0);
         let mut records: Vec<TrajectoryRecord> = (0..fx.n_scenarios * fx.n_stages)
-            .map(|_| TrajectoryRecord {
-                primal: Vec::new(),
-                dual: Vec::new(),
-                stage_cost: 0.0,
-                node_id: NodeId(0),
-                state: Vec::new(),
-            })
+            .map(|_| TrajectoryRecord::default())
             .collect();
         let mut per_stage_stats: Vec<SolverStatsDelta> = (0..fx.n_stages)
             .map(|_| SolverStatsDelta::default())
@@ -2147,13 +2129,7 @@ mod tests {
         let mut basis_store = BasisStore::new(1, 1);
         let mut basis_slices = basis_store.split_workers_mut(1, 1);
         let mut basis_slice = basis_slices.remove(0);
-        let mut records: Vec<TrajectoryRecord> = vec![TrajectoryRecord {
-            primal: Vec::new(),
-            dual: Vec::new(),
-            stage_cost: 0.0,
-            node_id: NodeId(0),
-            state: Vec::new(),
-        }];
+        let mut records: Vec<TrajectoryRecord> = vec![TrajectoryRecord::default()];
         let mut per_stage_stats = vec![SolverStatsDelta::default()];
 
         // Reset happens at trajectory start (t == 0), before any LP solve;
@@ -2248,13 +2224,7 @@ mod tests {
         let root_state = vec![7.0_f64, 8.0_f64];
         let num_stages = 2_usize;
         let mut worker_records: Vec<TrajectoryRecord> = (0..num_stages)
-            .map(|_| TrajectoryRecord {
-                primal: Vec::new(),
-                dual: Vec::new(),
-                stage_cost: 0.0,
-                node_id: NodeId(0),
-                state: Vec::new(),
-            })
+            .map(|_| TrajectoryRecord::default())
             .collect();
         worker_records[0].state = root_state.clone();
         worker_records[0].node_id = node_graph.node_ids[root];
@@ -2422,13 +2392,7 @@ mod tests {
         let mut basis_slices = basis_store.split_workers_mut(forward_passes, 1);
         let mut basis_slice = basis_slices.remove(0);
         let mut records: Vec<TrajectoryRecord> = (0..forward_passes * 2)
-            .map(|_| TrajectoryRecord {
-                primal: Vec::new(),
-                dual: Vec::new(),
-                stage_cost: 0.0,
-                node_id: NodeId(0),
-                state: Vec::new(),
-            })
+            .map(|_| TrajectoryRecord::default())
             .collect();
         let mut per_stage_stats = vec![SolverStatsDelta::default(); 2];
 
@@ -2624,13 +2588,7 @@ mod tests {
             .collect();
         let mut basis_store = BasisStore::new(ranks.max_local_fwd, fx.n_stages);
         let mut records: Vec<TrajectoryRecord> = (0..ranks.my_actual_fwd * fx.n_stages)
-            .map(|_| TrajectoryRecord {
-                primal: Vec::new(),
-                dual: Vec::new(),
-                stage_cost: 0.0,
-                node_id: NodeId(0),
-                state: Vec::new(),
-            })
+            .map(|_| TrajectoryRecord::default())
             .collect();
 
         let mut state = ForwardPassState::new(n_workers, fx.n_stages, ranks.max_local_fwd);

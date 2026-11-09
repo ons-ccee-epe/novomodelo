@@ -322,13 +322,7 @@ fn run_extra_forward_pass(
 
     let mut basis_store = BasisStore::new(local_forward_passes, num_stages);
     let mut records: Vec<TrajectoryRecord> = (0..local_forward_passes * num_stages)
-        .map(|_| TrajectoryRecord {
-            primal: Vec::new(),
-            dual: Vec::new(),
-            stage_cost: 0.0,
-            node_id: NodeId(0),
-            state: Vec::new(),
-        })
+        .map(|_| TrajectoryRecord::default())
         .collect();
 
     let ctx = setup.stage_ctx();

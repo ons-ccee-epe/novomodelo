@@ -40,6 +40,7 @@ use crate::{
     cut_sync::CutSyncBuffers,
     forward::{ForwardBound, ForwardResult, SyncResult, sync_forward},
     forward_pass_state::{ForwardPassInputs, ForwardPassState},
+    indexer::InflowForm,
     lower_bound::LbEvalScratchBundle,
     lower_bound::evaluate_lower_bound,
     policy::orchestration::CheckpointState,
@@ -397,7 +398,13 @@ where
         bwd_state.set_scheduler(solver_profiles.backward_scheduler);
         bwd_state.set_hardest_first_claim_order(solver_profiles.hardest_first_claim_order);
         bwd_state.set_binding_tracking(config.cut_management.tracks_binding_activity());
+        #[cfg(any(test, feature = "test-support"))]
+        bwd_state.set_solve_cache_bypass(solver_profiles.bypass_solve_caches);
         bwd_state.reserve_by_node_aggregate(training_ctx.cut_state_layouts, max_pool_capacity);
+        bwd_state.reserve_stage_noise(
+            training_ctx.stochastic.class_dimensions().total(),
+            max_pool_capacity,
+        );
 
         Ok(Self {
             solver,
@@ -442,6 +449,16 @@ where
                     round_cap_hits: t.round_cap_hits + d.round_cap_hits,
                 }
             })
+    }
+
+    /// Frozen pins that recomputed B across this rank's workspaces.
+    #[cfg(any(test, feature = "test-support"))]
+    fn slab_miss_local_total(&self) -> u64 {
+        self.fwd_pool
+            .workspaces
+            .iter()
+            .map(|w| w.scratch.slab_misses)
+            .sum()
     }
 
     /// Largest resident-set size observed across this rank's forward-pass
@@ -510,6 +527,10 @@ where
             .reserve_pool_scratch(self.training_ctx, self.sizing, max_pool_capacity);
         self.bwd_state
             .reserve_by_node_aggregate(self.training_ctx.cut_state_layouts, max_pool_capacity);
+        self.bwd_state.reserve_stage_noise(
+            self.training_ctx.stochastic.class_dimensions().total(),
+            max_pool_capacity,
+        );
         self.scratch.reserve_lb_cut_scratch(
             self.fcf.pools[lb_root_pool(self.training_ctx.node_graph)?].capacity,
         );
@@ -680,6 +701,8 @@ where
         #[allow(clippy::cast_possible_truncation)]
         let total_time_ms = (self.results.start_time.elapsed().as_millis() as u64).max(1);
 
+        #[cfg(any(test, feature = "test-support"))]
+        let slab_misses = self.slab_miss_local_total();
         let frozen_templates = self.scratch.frozen_templates;
         let TrainingResults {
             final_lb,
@@ -734,6 +757,8 @@ where
         Ok(TrainingOutcome {
             result,
             error: None,
+            #[cfg(any(test, feature = "test-support"))]
+            slab_misses,
         })
     }
 
@@ -770,6 +795,8 @@ where
         } else {
             CheckpointBasisStore::default()
         };
+        #[cfg(any(test, feature = "test-support"))]
+        let slab_misses = self.slab_miss_local_total();
         let frozen_templates = self.scratch.frozen_templates;
         let TrainingResults {
             final_lb,
@@ -817,6 +844,8 @@ where
         TrainingOutcome {
             result,
             error: Some(err),
+            #[cfg(any(test, feature = "test-support"))]
+            slab_misses,
         }
     }
 
@@ -1307,6 +1336,10 @@ where
     /// flag, never a `pool_stage`-derived early return baked into the loop bounds,
     /// so the priming call still bakes the terminal pool.
     ///
+    /// On the compact form each frozen pool also reserves its frozen row count on
+    /// every trajectory record of its stage, the only sizing of the forward's
+    /// bracket write.
+    ///
     /// Deliberately left unoptimized: the refreeze is quadratic in the active-cut
     /// count only in the no-cut-selection default, which production never runs at
     /// scale. An append-only fast path would fire only there, so the full refreeze
@@ -1317,6 +1350,7 @@ where
         let node_graph = self.training_ctx.node_graph;
         let num_stages = self.training_ctx.horizon.num_stages();
         let terminal_stage = (num_stages > 0).then(|| StageIdx(num_stages - 1));
+        let reserves_brackets = state.inflow_form == InflowForm::Compact && num_stages > 0;
         for p in 0..node_graph.n_pools {
             let t = node_graph.pool_stage[p];
             if skip_static_terminal && terminal_stage == Some(t) {
@@ -1333,6 +1367,18 @@ where
             #[allow(clippy::cast_possible_truncation)]
             {
                 total_rows_frozen += self.scratch.freeze_row_batches[p].num_rows as u64;
+            }
+            if reserves_brackets {
+                let rows = self.scratch.freeze_row_batches[p].num_rows;
+                for rec in self
+                    .scratch
+                    .records
+                    .iter_mut()
+                    .skip(t.0)
+                    .step_by(num_stages)
+                {
+                    rec.frozen_brackets.reserve(rows);
+                }
             }
             freeze_rows_into_template(
                 self.stage_ctx.template(t),

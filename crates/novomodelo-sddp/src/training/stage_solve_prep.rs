@@ -15,7 +15,7 @@ use crate::{
     context::{StageContext, TrainingContext},
     cut::{
         CutPool,
-        rhs::{cut_brackets_into, cut_rhs_into},
+        rhs::{cut_brackets_into, cut_rhs_from_noise_terms_into, cut_rhs_into},
     },
     lp::builder::{PatchBuffer, StateBox},
     lp::indexer::{BlockGrid, CutStateProjection, InflowForm},
@@ -48,12 +48,26 @@ pub(crate) struct StageSolvePrepParams<'a> {
 }
 
 /// Where the pin phase takes the cut-row bracket B from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum BracketSource {
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum BracketSource<'a> {
     /// The unit (a trial point on a loaded LP) computes B once; every opening of the unit reads it.
     InUnit,
     /// A single-solve site computes B immediately before its one opening phase.
     OnTheFly,
+    /// The frozen-prefix brackets the forward wrote, or `None` for a miss; the rows after the prefix are computed.
+    Slab(Option<&'a [f64]>),
+}
+
+/// Where the opening phase takes the noise term σ·η and the cut-row terms W from.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum NoiseTermSource<'a> {
+    /// The opening computes σ·η and each W from its own raw noise.
+    OnTheFly,
+    /// σ·η per hydro, and `cut_noise[i]` the W of `cut_rows.slots[i]`, both computed once for the stage.
+    Stage {
+        noise_term: &'a [f64],
+        cut_noise: &'a [f64],
+    },
 }
 
 /// The cut rows of the loaded LP whose brackets the pin phase computes.
@@ -203,7 +217,7 @@ impl StageSolvePrep {
         stage: StageIdx,
         trial_state: StateSource<'_>,
         cut_rows: &FoldedCutRows<'_>,
-        source: BracketSource,
+        source: BracketSource<'_>,
     ) where
         S: SolverInterface,
     {
@@ -235,19 +249,32 @@ impl StageSolvePrep {
             scratch.par_mean_buf.fill(0.0);
         }
 
-        match source {
-            BracketSource::InUnit | BracketSource::OnTheFly => {
-                scratch.cut_bracket_buf.resize(cut_rows.slots.len(), 0.0);
-                cut_brackets_into(
-                    cut_rows.pool,
-                    cut_rows.slots,
-                    cut_rows.projection.lag_point(),
-                    incoming_lags,
-                    &scratch.par_mean_buf,
-                    &mut scratch.cut_bracket_buf,
-                );
+        let prefix: &[f64] = match source {
+            BracketSource::InUnit | BracketSource::OnTheFly => &[],
+            BracketSource::Slab(Some(prefix)) => prefix,
+            BracketSource::Slab(None) => {
+                #[cfg(any(test, feature = "test-support"))]
+                {
+                    scratch.slab_misses += 1;
+                }
+                &[]
             }
-        }
+        };
+        let n = prefix.len();
+        debug_assert!(
+            n <= cut_rows.slots.len(),
+            "the slab prefix exceeds the cut rows of the loaded LP"
+        );
+        scratch.cut_bracket_buf.resize(cut_rows.slots.len(), 0.0);
+        scratch.cut_bracket_buf[..n].copy_from_slice(prefix);
+        cut_brackets_into(
+            cut_rows.pool,
+            &cut_rows.slots[n..],
+            cut_rows.projection.lag_point(),
+            incoming_lags,
+            &scratch.par_mean_buf,
+            &mut scratch.cut_bracket_buf[n..],
+        );
     }
 
     /// Patches this solve's noise-dependent rows and column bounds; runs once per solve.
@@ -306,6 +333,7 @@ impl StageSolvePrep {
         stage: StageIdx,
         raw_noise: &[f64],
         cut_rows: &FoldedCutRows<'_>,
+        noise: NoiseTermSource<'_>,
     ) where
         S: SolverInterface,
     {
@@ -318,6 +346,7 @@ impl StageSolvePrep {
             stage,
             raw_noise,
             cut_rows,
+            noise,
         );
         solver.set_row_lower_bounds_range(cut_rows.first_row, &scratch.cut_rhs_buf);
     }
@@ -334,6 +363,7 @@ impl StageSolvePrep {
         stage: StageIdx,
         raw_noise: &[f64],
         cut_rows: &FoldedCutRows<'_>,
+        noise: NoiseTermSource<'_>,
     ) where
         S: SolverInterface,
     {
@@ -346,6 +376,7 @@ impl StageSolvePrep {
             stage,
             raw_noise,
             cut_rows,
+            noise,
         );
     }
 
@@ -358,6 +389,7 @@ impl StageSolvePrep {
         stage: StageIdx,
         raw_noise: &[f64],
         cut_rows: &FoldedCutRows<'_>,
+        noise: NoiseTermSource<'_>,
     ) where
         S: SolverInterface,
     {
@@ -366,7 +398,11 @@ impl StageSolvePrep {
             InflowForm::Compact,
             "the folded opening phase runs on a compact layout only"
         );
-        transform_inflow_noise_folded(raw_noise, stage, training_ctx, scratch);
+        let stage_noise_term = match noise {
+            NoiseTermSource::OnTheFly => None,
+            NoiseTermSource::Stage { noise_term, .. } => Some(noise_term),
+        };
+        transform_inflow_noise_folded(raw_noise, stage, training_ctx, scratch, stage_noise_term);
         Self::patch_load_rows(patch_buf, scratch, ctx, training_ctx, stage, raw_noise);
         patch_buf.fill_inflow_shift_patches(
             &ctx.inflow_coupling[stage.0],
@@ -389,14 +425,28 @@ impl StageSolvePrep {
             "the opening phase reads one bracket per cut row of the pin phase"
         );
         scratch.cut_rhs_buf.resize(cut_rows.slots.len(), 0.0);
-        cut_rhs_into(
-            cut_rows.pool,
-            cut_rows.slots,
-            cut_rows.projection.lag_point(),
-            &scratch.par_noise_term_buf,
-            &scratch.cut_bracket_buf,
-            &mut scratch.cut_rhs_buf,
-        );
+        match noise {
+            NoiseTermSource::OnTheFly => cut_rhs_into(
+                cut_rows.pool,
+                cut_rows.slots,
+                cut_rows.projection.lag_point(),
+                &scratch.par_noise_term_buf,
+                &scratch.cut_bracket_buf,
+                &mut scratch.cut_rhs_buf,
+            ),
+            NoiseTermSource::Stage { cut_noise, .. } => {
+                debug_assert_eq!(
+                    cut_noise.len(),
+                    cut_rows.slots.len(),
+                    "one stage W per cut row"
+                );
+                cut_rhs_from_noise_terms_into(
+                    &scratch.cut_bracket_buf,
+                    cut_noise,
+                    &mut scratch.cut_rhs_buf,
+                );
+            }
+        }
     }
 
     fn patch_load_rows(

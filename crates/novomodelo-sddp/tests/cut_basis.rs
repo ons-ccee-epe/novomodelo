@@ -5488,3 +5488,208 @@ mod simulation_cut_set {
         }
     }
 }
+
+mod solve_cache_equivalence {
+    use novomodelo_io::config::BackwardScheduler;
+    use novomodelo_sddp::test_support::decks::committed_decks;
+    use novomodelo_sddp::{SolverProfiles, StudySetup, TrainingOutcome};
+    use novomodelo_solver::ActiveSolver;
+
+    use super::common::cut_oracles::apply_oracle_config;
+    use super::common::in_code_studies::fpha_lag_study;
+    use super::common::{
+        Emission, StubComm, build_setup_in_code_with_models_as, fresh_system_and_setup_with,
+        fresh_system_and_setup_with_emission, is_chain,
+    };
+
+    type Run = (StudySetup, TrainingOutcome);
+
+    fn train(mut setup: StudySetup, profiles: SolverProfiles) -> Run {
+        let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
+        let outcome = setup
+            .train_with_solver_profiles(&mut solver, &StubComm, 2, ActiveSolver::new, profiles)
+            .expect("train_with_solver_profiles must return Ok");
+        assert!(
+            outcome.error.is_none(),
+            "expected no training error, got: {:?}",
+            outcome.error
+        );
+        (setup, outcome)
+    }
+
+    fn assert_same_bits(label: &str, cached: &Run, bypassed: &Run) {
+        let bits = |values: &[f64]| values.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+        let (cached_result, bypassed_result) = (&cached.1.result, &bypassed.1.result);
+        assert_eq!(
+            cached_result.final_lb.to_bits(),
+            bypassed_result.final_lb.to_bits(),
+            "{label}: final_lb"
+        );
+        assert_eq!(
+            cached_result.iterations, bypassed_result.iterations,
+            "{label}: iterations"
+        );
+        assert_eq!(
+            bits(&cached_result.lower_bound_history),
+            bits(&bypassed_result.lower_bound_history),
+            "{label}: lower_bound_history"
+        );
+        assert_eq!(
+            cached.0.fcf.pools.len(),
+            bypassed.0.fcf.pools.len(),
+            "{label}: pool count"
+        );
+        for (pool_id, (cached_pool, bypassed_pool)) in cached
+            .0
+            .fcf
+            .pools
+            .iter()
+            .zip(&bypassed.0.fcf.pools)
+            .enumerate()
+        {
+            assert_eq!(
+                cached_pool.populated(),
+                bypassed_pool.populated(),
+                "{label}: pool {pool_id} populated"
+            );
+            assert_eq!(
+                bits(cached_pool.intercepts_prefix()),
+                bits(bypassed_pool.intercepts_prefix()),
+                "{label}: pool {pool_id} intercepts"
+            );
+            assert_eq!(
+                bits(cached_pool.coefficients_prefix()),
+                bits(bypassed_pool.coefficients_prefix()),
+                "{label}: pool {pool_id} coefficients"
+            );
+        }
+    }
+
+    fn stores_a_lag_cut(setup: &StudySetup) -> bool {
+        let training_ctx = setup.training_ctx();
+        setup.fcf.pools.iter().enumerate().any(|(pool_id, pool)| {
+            let lag0 = training_ctx.cut_state_layouts[pool_id].lag_point().lag0();
+            (0..pool.populated()).any(|slot| {
+                pool.coefficient_row(slot)[lag0.clone()]
+                    .iter()
+                    .any(|&c| c != 0.0)
+            })
+        })
+    }
+
+    #[test]
+    fn fpha_lag_study_trains_to_the_same_bits_with_the_solve_caches_bypassed() {
+        for backward_scheduler in [
+            BackwardScheduler::ByScenario {},
+            BackwardScheduler::ByNode { block_size: None },
+        ] {
+            let leg = |bypass_solve_caches| {
+                let (system, mut config, hydro_models) = fpha_lag_study();
+                apply_oracle_config(&mut config);
+                let setup = build_setup_in_code_with_models_as(
+                    system,
+                    &config,
+                    hydro_models,
+                    Emission::Compact,
+                );
+                train(
+                    setup,
+                    SolverProfiles {
+                        backward_scheduler,
+                        bypass_solve_caches,
+                        ..SolverProfiles::default()
+                    },
+                )
+            };
+            let (cached, bypassed) = (leg(false), leg(true));
+            let label = format!("{backward_scheduler:?}");
+
+            assert!(is_chain(&cached.0), "{label}: the study must be a chain");
+            assert!(
+                stores_a_lag_cut(&cached.0),
+                "{label}: no stored cut has a nonzero lag-0 coefficient"
+            );
+            assert_same_bits(&label, &cached, &bypassed);
+            assert_eq!(cached.1.slab_misses, 0, "{label}: cached slab misses");
+            assert!(
+                bypassed.1.slab_misses > 0,
+                "{label}: the bypass recomputed no bracket"
+            );
+        }
+    }
+
+    #[test]
+    fn lag_cut_guard_is_false_without_inflow_lags() {
+        let setup = committed_decks()
+            .into_iter()
+            .find_map(|deck| {
+                let (_, setup) = fresh_system_and_setup_with(&deck.dir, apply_oracle_config);
+                (setup.stage_state().max_par_order == 0).then_some(setup)
+            })
+            .expect("some committed deck has no inflow lags");
+
+        let (trained, _) = train(setup, SolverProfiles::default());
+
+        assert!(
+            trained.fcf.pools.iter().any(|pool| pool.populated() > 0),
+            "the de-powered deck stored no cut"
+        );
+        assert!(!stores_a_lag_cut(&trained));
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "slow-tests"),
+        ignore = "trains every committed deck with inflow lags twice"
+    )]
+    fn every_lagged_deck_trains_to_the_same_bits_with_the_solve_caches_bypassed() {
+        let mut selected: Vec<String> = Vec::new();
+        let mut powered_decks = 0;
+        for deck in committed_decks() {
+            let build = || {
+                fresh_system_and_setup_with_emission(
+                    &deck.dir,
+                    apply_oracle_config,
+                    Emission::Compact,
+                )
+                .1
+            };
+            let setup = build();
+            if setup.stage_state().max_par_order == 0 {
+                continue;
+            }
+            let cached = train(setup, SolverProfiles::default());
+            let bypassed = train(
+                build(),
+                SolverProfiles {
+                    bypass_solve_caches: true,
+                    ..SolverProfiles::default()
+                },
+            );
+
+            assert_same_bits(&deck.key, &cached, &bypassed);
+            if is_chain(&cached.0) {
+                assert_eq!(cached.1.slab_misses, 0, "{}: cached slab misses", deck.key);
+            }
+            assert!(
+                bypassed.1.slab_misses >= cached.1.slab_misses,
+                "{}: the bypass missed less than the cache",
+                deck.key
+            );
+            powered_decks += usize::from(stores_a_lag_cut(&cached.0) && bypassed.1.slab_misses > 0);
+            selected.push(deck.key.clone());
+        }
+        eprintln!(
+            "selected {} decks: {selected:?}; powered={powered_decks}",
+            selected.len()
+        );
+        assert!(
+            !selected.is_empty(),
+            "no committed deck has inflow-lag state"
+        );
+        assert!(
+            powered_decks > 0,
+            "no deck stored a lag cut and recomputed a bracket under the bypass"
+        );
+    }
+}

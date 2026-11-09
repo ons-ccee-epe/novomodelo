@@ -73,7 +73,6 @@ use crate::{
 /// use novomodelo_sddp::TrajectoryRecord;
 /// use novomodelo_sddp::indexer::StateSpace;
 /// use novomodelo_sddp::lead_time::AnticipatedResolution;
-/// use novomodelo_sddp::setup::NodeId;
 /// use novomodelo_sddp::setup::StageIdx;
 ///
 /// // Three scenarios, two-element state vectors, single rank.
@@ -87,11 +86,11 @@ use crate::{
 /// );
 /// let mut bufs = ExchangeBuffers::new(&state, 3, 1);
 ///
-/// let records: Vec<TrajectoryRecord> = vec![
-///     TrajectoryRecord { primal: vec![], dual: vec![], stage_cost: 0.0, node_id: NodeId(0), state: vec![1.0, 2.0] },
-///     TrajectoryRecord { primal: vec![], dual: vec![], stage_cost: 0.0, node_id: NodeId(0), state: vec![3.0, 4.0] },
-///     TrajectoryRecord { primal: vec![], dual: vec![], stage_cost: 0.0, node_id: NodeId(0), state: vec![5.0, 6.0] },
-/// ];
+/// let mut records: Vec<TrajectoryRecord> =
+///     (0..3).map(|_| TrajectoryRecord::default()).collect();
+/// records[0].state = vec![1.0, 2.0];
+/// records[1].state = vec![3.0, 4.0];
+/// records[2].state = vec![5.0, 6.0];
 ///
 /// let comm = LocalBackend;
 /// bufs.exchange(&records, StageIdx(0), 1, &comm).unwrap();
@@ -368,7 +367,6 @@ mod tests {
 
     use super::ExchangeBuffers;
     use crate::lp::indexer::StateSpace;
-    use crate::setup::NodeId;
     use crate::setup::node_graph::StageIdx;
     use crate::test_support;
     use crate::trajectory::TrajectoryRecord;
@@ -377,11 +375,8 @@ mod tests {
 
     fn make_record(state: Vec<f64>) -> TrajectoryRecord {
         TrajectoryRecord {
-            primal: vec![],
-            dual: vec![],
-            stage_cost: 0.0,
-            node_id: NodeId(0),
             state,
+            ..TrajectoryRecord::default()
         }
     }
 

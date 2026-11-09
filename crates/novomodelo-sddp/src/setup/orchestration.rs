@@ -54,6 +54,8 @@ impl StudySetup {
             backward: self.backward_profile,
             backward_scheduler: self.backward_scheduler,
             hardest_first_claim_order: self.hardest_first_claim_order,
+            #[cfg(any(test, feature = "test-support"))]
+            bypass_solve_caches: false,
         };
         self.train_inner(
             solver,
