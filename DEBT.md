@@ -38,4 +38,15 @@ owner:     novomodelo-sddp maintainers
 blast:     crates/novomodelo-sddp/src/lp/builder/layout/tests.rs only; `cargo test -p novomodelo-sddp --lib` must pass in debug and in release
 origin:    found on branch feat/generic-constraint-stage-volume while adding the stage-volume builder guard; not introduced by that work
 
+### DEBT-002
+what:      novomodelo-sddp integration tests hold test-local generic_constraint_bounds.parquet writers beside the shared tests/common/parquet_fixtures.rs:write_generic_constraint_bounds — tests/deterministic.rs (the inline writers and the module-local write_generic_constraint_bounds), tests/cut_basis.rs:write_generic_constraint_bounds_parquet, tests/anticipated_scenarios.rs:write_constraint_bounds_parquet — and tests/template_integration/generic_constraints.rs restates the GenericBoundsRow tuple alias
+why-now:   deliberate — the stage-volume work adds the shared writer for its own decks and leaves the pre-existing copies, to keep the change to the stated capability
+quadrant:  deliberate x prudent
+interest:  a change to the bounds parquet schema (a new column, a type change) must be repeated in every copy; a missed copy writes a file the loader refuses or reads differently, and each new test that copies a local writer adds one more
+payoff:    replace each test-local writer with a call to common::parquet_fixtures::write_generic_constraint_bounds and delete the local copies, in a structure-only change
+trigger:   the next change to the generic_constraint_bounds.parquet schema, or the next edit to one of the listed writers
+owner:     novomodelo-sddp maintainers
+blast:     crates/novomodelo-sddp/tests/{deterministic.rs,cut_basis.rs,anticipated_scenarios.rs,template_integration/generic_constraints.rs}; the deterministic, cut_basis, anticipated_scenarios and template_integration test binaries must pass with --features test-support, slow-tests included
+origin:    recorded on branch feat/generic-constraint-stage-volume when the shared bounds writer was planned; the local copies predate that work
+
 ## Paid

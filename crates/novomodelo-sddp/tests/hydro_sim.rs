@@ -3854,24 +3854,35 @@ mod generic_slack_penalty_basis {
     const RHO_MWH_ID: i32 = 1;
     const MAX_STORED_ENERGY_MWH_ID: i32 = 2;
     const FLOOR_SHARE_ID: i32 = 3;
+    /// derived: the hydro has no diversion channel, so its diversion columns are pinned
+    /// `[0, 0]`, the stage diversion volume is 0 and the shortfall is the whole floor on
+    /// every stage.
+    const DIVERSION_FLOOR_HM3: f64 = 50.0;
 
-    fn stages() -> Vec<Stage> {
+    const SINGLE_BLOCK_HOURS: [&[f64]; 2] = [&[168.0], &[744.0]];
+    const SPLIT_BLOCK_HOURS: [&[f64]; 2] = [&[42.0, 126.0], &[186.0, 558.0]];
+
+    fn stages(block_hours: [&[f64]; 2]) -> Vec<Stage> {
         let mut start = NaiveDate::from_ymd_opt(2024, 1, 1).expect("valid date");
-        STAGE_HOURS
+        block_hours
             .iter()
             .enumerate()
-            .map(|(i, &hours)| {
-                let end = start + chrono::Duration::hours(hours as i64);
+            .map(|(i, hours)| {
+                let end = start + chrono::Duration::hours(hours.iter().sum::<f64>() as i64);
                 let stage = make_stage(
                     i,
                     StageSpec {
                         start_date: start,
                         end_date: end,
-                        blocks: vec![Block {
-                            index: 0,
-                            name: "S".to_string(),
-                            duration_hours: hours,
-                        }],
+                        blocks: hours
+                            .iter()
+                            .enumerate()
+                            .map(|(k, &duration_hours)| Block {
+                                index: k,
+                                name: format!("S{k}"),
+                                duration_hours,
+                            })
+                            .collect(),
                         block_mode: BlockMode::Parallel,
                         state_config: StageStateConfig {
                             storage: true,
@@ -3900,6 +3911,28 @@ mod generic_slack_penalty_basis {
                 terms: vec![LinearTerm::literal(
                     1.0,
                     VariableRef::HydroStorage {
+                        hydro_id: EntityId(HYDRO_ID),
+                    },
+                )],
+            },
+            slack: Some(SlackConfig {
+                penalty: PENALTY,
+                penalty_basis,
+            }),
+            bound_lower: None,
+            bound_upper: None,
+        }
+    }
+
+    fn diversion_volume_floor(penalty_basis: PenaltyBasis) -> GenericConstraint {
+        GenericConstraint {
+            id: EntityId(CONSTRAINT_ID),
+            name: "diversion_volume_floor".to_string(),
+            description: None,
+            expression: ConstraintExpression {
+                terms: vec![LinearTerm::literal(
+                    1.0,
+                    VariableRef::HydroDiversionVolume {
                         hydro_id: EntityId(HYDRO_ID),
                     },
                 )],
@@ -3982,7 +4015,7 @@ mod generic_slack_penalty_basis {
         hydro_models
     }
 
-    fn build_system(floor: GenericConstraint, row_lower: f64) -> System {
+    fn build_system(floor: GenericConstraint, row_lower: f64, stages: Vec<Stage>) -> System {
         let bus = make_bus(
             EntityId(BUS_ID),
             BusSpec {
@@ -4005,7 +4038,6 @@ mod generic_slack_penalty_basis {
             },
         );
 
-        let stages = stages();
         let n_stages = stages.len();
         let inflow_models: Vec<InflowModel> = (0..n_stages)
             .map(|i| InflowModel {
@@ -4138,12 +4170,20 @@ mod generic_slack_penalty_basis {
     }
 
     fn storage_floor_setup(penalty_basis: PenaltyBasis) -> StudySetup {
-        let system = build_system(storage_floor(penalty_basis), STORAGE_FLOOR_HM3);
+        let system = build_system(
+            storage_floor(penalty_basis),
+            STORAGE_FLOOR_HM3,
+            stages(SINGLE_BLOCK_HOURS),
+        );
         build_setup_in_code(system, &config())
     }
 
     fn stored_energy_floor_setup(penalty_basis: PenaltyBasis) -> StudySetup {
-        let system = build_system(stored_energy_floor(penalty_basis), 0.0);
+        let system = build_system(
+            stored_energy_floor(penalty_basis),
+            0.0,
+            stages(SINGLE_BLOCK_HOURS),
+        );
         let hydro_models = constant_productivity_models(&system);
         StudySetup::new(
             &system,
@@ -4153,6 +4193,15 @@ mod generic_slack_penalty_basis {
             stored_energy_parameters(),
         )
         .expect("generic_slack_penalty_basis: stored-energy study builds")
+    }
+
+    fn diversion_volume_floor_setup(penalty_basis: PenaltyBasis) -> StudySetup {
+        let system = build_system(
+            diversion_volume_floor(penalty_basis),
+            DIVERSION_FLOOR_HM3,
+            stages(SPLIT_BLOCK_HOURS),
+        );
+        build_setup_in_code(system, &config())
     }
 
     /// The `(slack_value, slack_cost)` the simulation reports for the floor row
@@ -4231,6 +4280,30 @@ mod generic_slack_penalty_basis {
         let violations = reported_violations(stored_energy_floor_setup(PenaltyBasis::PerHour));
         assert_violations(&violations, SHORTFALL_MWH, |hours| {
             PENALTY * SHORTFALL_MWH * hours
+        });
+    }
+
+    /// derived: `per_unit` costs `PENALTY × DIVERSION_FLOOR_HM3` on both stages, whatever the split.
+    #[test]
+    fn per_unit_diversion_volume_shortfall_costs_the_same_on_two_block_stages() {
+        let violations = reported_violations(diversion_volume_floor_setup(PenaltyBasis::PerUnit));
+        assert_violations(&violations, DIVERSION_FLOOR_HM3, |_| {
+            PENALTY * DIVERSION_FLOOR_HM3
+        });
+    }
+
+    /// derived: `per_hour` costs `PENALTY × DIVERSION_FLOOR_HM3 × total stage hours`, not block hours.
+    #[test]
+    fn per_hour_diversion_volume_shortfall_cost_scales_with_total_stage_hours() {
+        for (blocks, hours) in SPLIT_BLOCK_HOURS.iter().zip(STAGE_HOURS) {
+            assert!(
+                (blocks.iter().sum::<f64>() - hours).abs() < 1e-9,
+                "split blocks {blocks:?} must sum to the stage's {hours} h"
+            );
+        }
+        let violations = reported_violations(diversion_volume_floor_setup(PenaltyBasis::PerHour));
+        assert_violations(&violations, DIVERSION_FLOOR_HM3, |hours| {
+            PENALTY * DIVERSION_FLOOR_HM3 * hours
         });
     }
 }

@@ -107,6 +107,42 @@ const ROWS: &[ParityRow] = &[
         fragment: "repeated block argument in variable",
     },
     ParityRow {
+        name: "stage_volume_term_with_a_block_argument",
+        base_case: "deterministic/d60-stage-outflow-volume-cap",
+        mutate: stage_volume_term_with_a_block_argument,
+        outcome: Outcome::BracketedRefusal {
+            kind: "SchemaViolation",
+        },
+        fragment: "does not accept a block argument",
+    },
+    ParityRow {
+        name: "stage_volume_term_beside_a_per_block_term",
+        base_case: "deterministic/d60-stage-outflow-volume-cap",
+        mutate: stage_volume_term_beside_a_per_block_term,
+        outcome: Outcome::BracketedRefusal {
+            kind: "BusinessRuleViolation",
+        },
+        fragment: "cannot appear beside a stage-volume term",
+    },
+    ParityRow {
+        name: "stage_volume_constraint_with_a_per_block_parameter",
+        base_case: "deterministic/d60-stage-outflow-volume-cap",
+        mutate: stage_volume_constraint_with_a_per_block_parameter,
+        outcome: Outcome::BracketedRefusal {
+            kind: "BusinessRuleViolation",
+        },
+        fragment: "takes no coefficient or bound that varies by block",
+    },
+    ParityRow {
+        name: "stage_volume_constraint_with_a_block_bounds_row",
+        base_case: "deterministic/d60-stage-outflow-volume-cap",
+        mutate: stage_volume_constraint_with_a_block_bounds_row,
+        outcome: Outcome::BracketedRefusal {
+            kind: "BusinessRuleViolation",
+        },
+        fragment: "takes one row per stage with a null block_id",
+    },
+    ParityRow {
         name: "policy_path_empty",
         base_case: "1dtoy",
         mutate: empty_policy_path,
@@ -433,12 +469,50 @@ fn duplicate_january_season(case: &Path) {
     });
 }
 
-fn repeat_generic_constraint_block_argument(case: &Path) {
+fn set_constraint_expression(case: &Path, expression: &str) {
     edit_json(
         &case.join("constraints/generic_constraints.json"),
         |constraints| {
-            constraints["constraints"][0]["expression"] = json!("thermal_generation(0, 0, 0)");
+            constraints["constraints"][0]["expression"] = json!(expression);
         },
+    );
+}
+
+fn repeat_generic_constraint_block_argument(case: &Path) {
+    set_constraint_expression(case, "thermal_generation(0, 0, 0)");
+}
+
+fn stage_volume_term_with_a_block_argument(case: &Path) {
+    set_constraint_expression(case, "hydro_outflow_volume(0, 0)");
+}
+
+fn stage_volume_term_beside_a_per_block_term(case: &Path) {
+    set_constraint_expression(case, "hydro_outflow_volume(0) + thermal_generation(0)");
+}
+
+fn stage_volume_constraint_with_a_per_block_parameter(case: &Path) {
+    let block_values: Vec<Value> = (0..=3)
+        .flat_map(|stage| (0..=1).map(move |block| json!([stage, block, 1.0])))
+        .collect();
+    fs::write(
+        case.join("constraints/generic_parameters.json"),
+        serde_json::to_string_pretty(&json!({
+            "scalar_parameters": [{
+                "id": 1,
+                "name": "block_weight",
+                "kind": "per_stage_block",
+                "block_values": block_values
+            }]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    set_constraint_expression(case, "@block_weight * hydro_outflow_volume(0)");
+}
+
+fn stage_volume_constraint_with_a_block_bounds_row(case: &Path) {
+    write_volume_bounds_with_a_block_row(
+        &case.join("constraints/generic_constraint_bounds.parquet"),
     );
 }
 
@@ -527,6 +601,30 @@ fn write_inflow_seasonal_stats_with_zero_deviation_at_stage_3(path: &Path) {
             Arc::new(Int32Array::from(stage_ids)),
             Arc::new(Float64Array::from(vec![200.0; rows])),
             Arc::new(Float64Array::from(std_m3s)),
+        ],
+    )
+    .unwrap();
+    let mut writer = ArrowWriter::try_new(fs::File::create(path).unwrap(), schema, None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+}
+
+fn write_volume_bounds_with_a_block_row(path: &Path) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("constraint_id", DataType::Int32, false),
+        Field::new("stage_id", DataType::Int32, false),
+        Field::new("block_id", DataType::Int32, true),
+        Field::new("bound_lower", DataType::Float64, true),
+        Field::new("bound_upper", DataType::Float64, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 1, 1])),
+            Arc::new(Int32Array::from(vec![0, 1, 2])),
+            Arc::new(Int32Array::from(vec![Some(0), None, None])),
+            Arc::new(Float64Array::from(vec![Some(36.0), None, Some(64.8)])),
+            Arc::new(Float64Array::from(vec![Some(36.0), Some(10.8), None])),
         ],
     )
     .unwrap();
