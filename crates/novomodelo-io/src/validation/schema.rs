@@ -145,8 +145,7 @@ pub(crate) struct ParsedData {
     pub(crate) contract_bounds: Vec<ContractBoundsRow>,
     /// `constraints/generic_constraints.json`.
     pub(crate) generic_constraints: Vec<GenericConstraint>,
-    /// The named expressions each generic constraint reached, by constraint id; a constraint
-    /// that reached none has no entry.
+    /// Recorded while parsing `constraints/generic_constraints.json`.
     pub(crate) generic_constraint_named_sources: NamedSourcesByConstraint,
     /// `constraints/generic_constraint_bounds.parquet`.
     pub(crate) generic_constraint_bounds: Vec<GenericConstraintBoundsRow>,

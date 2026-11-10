@@ -12922,16 +12922,16 @@ mod stage_outflow_volume_cap {
     const TAU_EQUAL: f64 = EQUAL_HOURS * (3_600.0 / 1_000_000.0);
     const TWIN_RATE_M3S: f64 = 25.0;
 
-    /// derived: a PEAK hm³ displaces `SUB_COST · HOURS[0] / TAU[0] = 83,333` $ of T-SUB and an OFFPEAK hm³ `CHEAP_COST · HOURS[1] / TAU[1] = 2,778` $ of T-CHEAP, so PEAK runs at `Q_MAX` and stage 0 gives OFFPEAK `(EQUALITY_HM3 − TAU[0] · Q_MAX) / TAU[1]`, stage 1 releases only PEAK, and stages 2 and 3 run both blocks at `Q_MAX`; water never binds.
+    /// derived: a PEAK hm³ displaces `SUB_COST · HOURS[0] / TAU[0]` $ of T-SUB and an OFFPEAK hm³ `CHEAP_COST · HOURS[1] / TAU[1]` $ of T-CHEAP, so PEAK runs at `Q_MAX` and stage 0 gives OFFPEAK `(EQUALITY_HM3 − TAU[0] · Q_MAX) / TAU[1]`, stage 1 releases only PEAK, and stages 2 and 3 run both blocks at `Q_MAX`; water never binds.
     const D60_TURBINED_M3S: [[f64; 2]; 4] = [
         [Q_MAX, (EQUALITY_HM3 - TAU[0] * Q_MAX) / TAU[1]],
         [Q_MAX, 0.0],
         [Q_MAX, Q_MAX],
         [Q_MAX, Q_MAX],
     ];
-    /// derived: stage 1's PEAK release `TAU[0] · Q_MAX` exceeds `CEILING_HM3` by the slack, since a PEAK hm³ is worth more than the 10,000 $ penalty; stages 0 and 2 meet their bound.
+    /// derived: stage 1's PEAK release `TAU[0] · Q_MAX` exceeds `CEILING_HM3` by the slack, since a PEAK hm³ is worth more than `PENALTY`; stages 0 and 2 meet their bound.
     const D60_SLACK_HM3: [f64; 3] = [0.0, TAU[0] * Q_MAX - CEILING_HM3, 0.0];
-    /// derived: stage 2's `FLOOR_HM3` exceeds the `(TAU[0] + TAU[1]) · Q_MAX` both blocks turbine, and spilling the gap costs 20 $ against 10,000 $ per hm³ of slack.
+    /// derived: stage 2's `FLOOR_HM3` exceeds the `(TAU[0] + TAU[1]) · Q_MAX` both blocks turbine, and spilling the gap costs `SPILL_COST · 10⁶ / 3600` per hm³ against `PENALTY` per hm³ of slack.
     const D60_SPILL_HM3: f64 = FLOOR_HM3 - (TAU[0] + TAU[1]) * Q_MAX;
 
     /// derived: `Σ_k hours[k] · (CHEAP_COST · min(L_k − q_k, CHEAP_MAX_MW) + SUB_COST · max(L_k − q_k − CHEAP_MAX_MW, 0))` with `L_k = LOAD_MW · LOAD_FACTOR[k]`.
@@ -12948,7 +12948,7 @@ mod stage_outflow_volume_cap {
         cost
     }
 
-    /// derived: `thermal_cost(HOURS, q)` at each stage's closed-form dispatch: `[640,000, 700,000, 580,000, 580,000]`.
+    /// derived: `thermal_cost(HOURS, q)` at each stage's closed-form dispatch.
     const D60_THERMAL_COST: [f64; 4] = [
         thermal_cost(HOURS, D60_TURBINED_M3S[0]),
         thermal_cost(HOURS, D60_TURBINED_M3S[1]),
@@ -12962,33 +12962,33 @@ mod stage_outflow_volume_cap {
         PENALTY * D60_SLACK_HM3[2],
         0.0,
     ];
-    /// derived: `SPILL_COST · spill · 10⁶ / 3600`, block-independent, at stage 2 only: 20 $.
+    /// derived: `SPILL_COST · spill · 10⁶ / 3600`, block-independent, at stage 2 only.
     const D60_SPILLAGE_COST: [f64; 4] = [
         0.0,
         0.0,
         SPILL_COST * D60_SPILL_HM3 * (1_000_000.0 / 3_600.0),
         0.0,
     ];
-    /// derived: thermal plus violation plus spillage cost per stage: `[640,000, 736,000, 580,020, 580,000]`.
+    /// derived: thermal plus violation plus spillage cost per stage.
     const D60_IMMEDIATE_COST: [f64; 4] = [
         D60_THERMAL_COST[0] + D60_VIOLATION_COST[0] + D60_SPILLAGE_COST[0],
         D60_THERMAL_COST[1] + D60_VIOLATION_COST[1] + D60_SPILLAGE_COST[1],
         D60_THERMAL_COST[2] + D60_VIOLATION_COST[2] + D60_SPILLAGE_COST[2],
         D60_THERMAL_COST[3] + D60_VIOLATION_COST[3] + D60_SPILLAGE_COST[3],
     ];
-    /// derived: the stages' immediate costs summed, with no discount: 2,536,020.
+    /// derived: the stages' immediate costs summed, with no discount.
     const D60_TOTAL_COST: f64 = D60_IMMEDIATE_COST[0]
         + D60_IMMEDIATE_COST[1]
         + D60_IMMEDIATE_COST[2]
         + D60_IMMEDIATE_COST[3];
-    /// derived: `Σ_k TAU[k] · q_k` plus the stage-2 spill: `[36.0, 14.4, 64.8, 57.6]` hm³.
+    /// derived: `Σ_k TAU[k] · q_k` plus the stage-2 spill.
     const D60_OUTFLOW_VOLUME_HM3: [f64; 4] = [
         TAU[0] * D60_TURBINED_M3S[0][0] + TAU[1] * D60_TURBINED_M3S[0][1],
         TAU[0] * D60_TURBINED_M3S[1][0] + TAU[1] * D60_TURBINED_M3S[1][1],
         TAU[0] * D60_TURBINED_M3S[2][0] + TAU[1] * D60_TURBINED_M3S[2][1] + D60_SPILL_HM3,
         TAU[0] * D60_TURBINED_M3S[3][0] + TAU[1] * D60_TURBINED_M3S[3][1],
     ];
-    /// derived: `V_INIT` less the stages' outflow volumes so far, with no inflow: `[864.0, 849.6, 784.8, 727.2]` hm³.
+    /// derived: `V_INIT` less the stages' outflow volumes so far, with no inflow.
     const D60_STORAGE_FINAL_HM3: [f64; 4] = [
         V_INIT - D60_OUTFLOW_VOLUME_HM3[0],
         V_INIT - D60_OUTFLOW_VOLUME_HM3[0] - D60_OUTFLOW_VOLUME_HM3[1],
@@ -13000,13 +13000,13 @@ mod stage_outflow_volume_cap {
             - D60_OUTFLOW_VOLUME_HM3[3],
     ];
 
-    /// derived: with 200 h blocks the stage-0 equality gives `(Q_MAX, (EQUALITY_HM3 − TAU_EQUAL · Q_MAX) / TAU_EQUAL) = (40, 10)`.
+    /// derived: with `EQUAL_HOURS` blocks the stage-0 equality gives `(Q_MAX, (EQUALITY_HM3 − TAU_EQUAL · Q_MAX) / TAU_EQUAL)`.
     const D60_EQUAL_HOURS_STAGE0_TURBINED_M3S: [f64; 2] =
         [Q_MAX, (EQUALITY_HM3 - TAU_EQUAL * Q_MAX) / TAU_EQUAL];
-    /// derived: `thermal_cost` of the equal-hours stage-0 dispatch, with no slack or spill at stage 0: 980,000.
+    /// derived: `thermal_cost` of the equal-hours stage-0 dispatch, with no slack or spill at stage 0.
     const D60_EQUAL_HOURS_STAGE0_COST: f64 =
         thermal_cost([EQUAL_HOURS; 2], D60_EQUAL_HOURS_STAGE0_TURBINED_M3S);
-    /// derived: `980,000 + 1,180,000 + 920,020 + 920,000`, where stage 1 adds the ceiling slack `PENALTY · (TAU_EQUAL · Q_MAX − CEILING_HM3)` to its thermal cost and stage 2 adds the spill `SPILL_COST · (FLOOR_HM3 − 2 · TAU_EQUAL · Q_MAX) · 10⁶ / 3600`.
+    /// derived: the four equal-hours stage costs summed, where stage 1 adds the ceiling slack `PENALTY · (TAU_EQUAL · Q_MAX − CEILING_HM3)` to its thermal cost and stage 2 adds the spill `SPILL_COST · (FLOOR_HM3 − 2 · TAU_EQUAL · Q_MAX) · 10⁶ / 3600`.
     const D60_EQUAL_HOURS_TOTAL_COST: f64 = D60_EQUAL_HOURS_STAGE0_COST
         + thermal_cost([EQUAL_HOURS; 2], [Q_MAX, 0.0])
         + PENALTY * (TAU_EQUAL * Q_MAX - CEILING_HM3)
@@ -13014,11 +13014,11 @@ mod stage_outflow_volume_cap {
         + SPILL_COST * (FLOOR_HM3 - 2.0 * TAU_EQUAL * Q_MAX) * (1_000_000.0 / 3_600.0)
         + thermal_cost([EQUAL_HOURS; 2], [Q_MAX, Q_MAX]);
 
-    /// derived: the same 36 hm³ spread as a uniform rate, `EQUALITY_HM3 / (TAU[0] + TAU[1]) = 25` m³/s in both blocks.
+    /// derived: `EQUALITY_HM3` spread as one uniform rate, `EQUALITY_HM3 / (TAU[0] + TAU[1])` m³/s in both blocks, the rate `TWIN_RATE_M3S` sets on the twin.
     const D60_PER_BLOCK_RATE_M3S: f64 = EQUALITY_HM3 / (TAU[0] + TAU[1]);
-    /// derived: `thermal_cost(HOURS, (25, 25))` at stage 0: 1,075,000.
+    /// derived: `thermal_cost` of the uniform-rate dispatch at stage 0.
     const D60_PER_BLOCK_STAGE0_COST: f64 = thermal_cost(HOURS, [D60_PER_BLOCK_RATE_M3S; 2]);
-    /// derived: stage 0 plus three stages with no bounds row, each at `thermal_cost(HOURS, (Q_MAX, Q_MAX)) = 580,000`: 2,815,000.
+    /// derived: stage 0 plus three stages with no bounds row, each at `thermal_cost(HOURS, (Q_MAX, Q_MAX))`.
     const D60_PER_BLOCK_TOTAL_COST: f64 =
         D60_PER_BLOCK_STAGE0_COST + 3.0 * thermal_cost(HOURS, [Q_MAX, Q_MAX]);
 
@@ -13421,7 +13421,6 @@ mod stage_outflow_volume_cap {
         }
     }
 
-    /// A volume constraint with no bounds file adds no row, column or coefficient to any stage template.
     #[test]
     fn d60_unbounded_volume_constraint_without_a_bounds_file_builds_the_unconstrained_templates() {
         let unbounded = without_bounds_file(case_dir());
@@ -13460,7 +13459,6 @@ mod stage_outflow_volume_cap {
         );
     }
 
-    /// A volume constraint with an empty bounds file adds no row, column or coefficient to any stage template.
     #[test]
     fn d60_unbounded_volume_constraint_with_an_empty_bounds_file_builds_the_unconstrained_templates()
      {
@@ -13500,7 +13498,6 @@ mod stage_outflow_volume_cap {
         );
     }
 
-    /// The bounded volume constraint adds one stage-level row at each stage with a bounds row and none elsewhere.
     #[test]
     fn d60_bounded_volume_constraint_adds_one_stage_level_row_per_bounded_stage() {
         const ADDED_ROWS: [usize; 4] = [1, 1, 1, 0];

@@ -571,9 +571,6 @@ fn hydro_outflow_expands_to_turbine_and_spillage() {
     assert_eq!(result[1], (spillage_col, 1.0));
 }
 
-/// The three 744 h blocks read turbine `22 + k` and spillage `34 + k`, each at the
-/// block's `tau`, and `block_idx` is ignored.
-///
 /// derived: tau = 744 h * 3600 s/h / 1e6 m³/hm³
 #[test]
 fn hydro_outflow_volume_resolves_tau_weighted_turbine_and_spillage_on_every_block() {
@@ -626,9 +623,9 @@ fn hydro_outflow_block_id_some_uses_explicit_block() {
 
 // ── Stage-volume tests ────────────────────────────────────────────────────
 
-/// Sets the stage's three blocks to 100, 300 and 344 h and returns each block's `tau`.
+/// Gives the stage's three blocks unequal hours and returns each block's `tau`.
 ///
-/// derived: tau_k = h_k * (3_600.0 / 1_000_000.0)
+/// derived: tau_k = h_k * 3600 s/h / 1e6 m³/hm³
 fn set_unequal_block_hours(fx: &mut ResolverFixture) -> [f64; 3] {
     let hours = [100.0, 300.0, 344.0];
     for (block, h) in fx.stage.blocks.iter_mut().zip(hours) {
@@ -637,7 +634,6 @@ fn set_unequal_block_hours(fx: &mut ResolverFixture) -> [f64; 3] {
     hours.map(|h| h * (3_600.0 / 1_000_000.0))
 }
 
-/// derived: tau_k = h_k * (3_600.0 / 1_000_000.0)
 #[test]
 fn hydro_outflow_volume_weights_each_block_by_its_own_hours() {
     let mut fx = default_fixture();
@@ -667,7 +663,6 @@ fn hydro_outflow_volume_weights_each_block_by_its_own_hours() {
     );
 }
 
-/// derived: tau_k = h_k * (3_600.0 / 1_000_000.0)
 #[test]
 fn hydro_diversion_volume_weights_each_block_by_its_own_hours() {
     let mut fx = default_fixture();
@@ -687,7 +682,6 @@ fn hydro_diversion_volume_weights_each_block_by_its_own_hours() {
     assert_eq!(result, vec![(40, tau0), (41, tau1), (42, tau2)]);
 }
 
-/// derived: tau_k = h_k * (3_600.0 / 1_000_000.0)
 #[test]
 fn pumping_volume_weights_each_block_by_its_own_hours() {
     let mut fx = default_fixture();

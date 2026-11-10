@@ -1906,8 +1906,6 @@ fn flow_columns(
     }
 }
 
-/// derived: the `(col, value)` pairs of one row in ascending column order, read
-/// through `csc_entries_at` over every column.
 fn row_entries(t: &StageTemplate, row: usize) -> Vec<(usize, f64)> {
     (0..t.num_cols)
         .flat_map(|col| {
@@ -1918,8 +1916,7 @@ fn row_entries(t: &StageTemplate, row: usize) -> Vec<(usize, f64)> {
         .collect()
 }
 
-/// derived: unequal block hours, so a uniform `ζ / K` split cannot match the
-/// per-block `tau`.
+/// Unequal, so a uniform `ζ / K` split cannot match the per-block `tau`.
 const VOLUME_BLOCK_HOURS: [f64; 2] = [100.0, 300.0];
 
 const VOLUME_CONSTRAINT_JSON: &str = r#"{"constraints":[{"id":100,"name":"vol","expression":"hydro_outflow_volume(5)","slack":{"enabled":false}}]}"#;
@@ -2095,7 +2092,7 @@ fn stage_volume_collapse_constraint_without_bounds_row_adds_no_row() {
 
 const VOLUME_SLACK_PENALTY: f64 = 40.0;
 
-/// Objective coefficient of the slack on a soft `hydro_outflow_volume(5) <= 50` row,
+/// Objective coefficient of the slack on a soft `hydro_outflow_volume(5)` ceiling row,
 /// on a parallel stage of `block_hours` blocks, under the declared `penalty_basis`.
 fn volume_slack_objective(block_hours: &[f64], penalty_basis: &str) -> f64 {
     use novomodelo_core::BlockMode;
@@ -2176,7 +2173,7 @@ const STAGE_VOLUME_MATRIX_JSON: &str = r#"{"constraints":[
   {"id":103,"name":"vol_weighted","expression":"@k * hydro_outflow_volume(5) + 2 * hydro_outflow_volume(10)","slack":{"enabled":false}}
 ]}"#;
 
-/// The id map pins ids 101 to 103 to their sorted positions, whatever the JSON or `bounds_ids` order.
+/// The id map pins each constraint id to its sorted position, whatever the JSON or `bounds_ids` order.
 fn stage_volume_matrix_templates(
     hydros: Vec<novomodelo_core::Hydro>,
     constraints_json: &str,
@@ -2558,7 +2555,7 @@ fn stage_volume_twin_diversion_volume_of_a_non_diverter_reads_its_pinned_column(
     }
 }
 
-/// derived: `pumping_flow(30)` is the pump column alone at 1.0 and `pumping_volume(30)` the two pump columns at `volume_tau`, never the 0.5 power coefficient; the pump moves water from plant 10 (`+tau`) to plant 5 (`-tau`), the reverse of the diversion.
+/// derived: `pumping_flow(30)` is the pump column alone at 1.0 and `pumping_volume(30)` the two pump columns at `volume_tau`, never the power coefficient `consumption_mw_per_m3s`; the pump moves water from plant 10 (`+tau`) to plant 5 (`-tau`), the reverse of the diversion.
 #[test]
 fn stage_volume_twin_pumping_volume_reads_the_pumping_flow_columns() {
     let json = r#"{"constraints":[{"id":401,"name":"flow","expression":"pumping_flow(30)","slack":{"enabled":false}},{"id":402,"name":"vol","expression":"pumping_volume(30)","slack":{"enabled":false}}]}"#;
