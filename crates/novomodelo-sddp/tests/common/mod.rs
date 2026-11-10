@@ -12,13 +12,14 @@ use std::sync::mpsc;
 use novomodelo_comm::{CommData, CommError, Communicator, ReduceOp};
 use novomodelo_core::scenario::SamplingScheme;
 use novomodelo_core::{BlockMode, System};
-use novomodelo_io::Config;
+use novomodelo_io::test_support::owned_piece_defaults;
+use novomodelo_io::{Config, OwnedPolicyCutRecord};
 use novomodelo_sddp::{
-    BoundaryStateRequirements, SddpError, SimulationScenarioResult, StudySetup,
+    BoundaryStateRequirements, CutPool, SddpError, SimulationScenarioResult, StudySetup,
     hydro_models::{PrepareHydroModelsResult, prepare_hydro_models},
     indexer::CutSlot,
     setup::{NodePos, StageIdx, StudyParams, prepare_stochastic},
-    test_support::decks::{SLOW_DECKS, committed_decks},
+    test_support::decks::{Deck, SLOW_DECKS, committed_decks},
 };
 use novomodelo_solver::ActiveSolver;
 use novomodelo_stochastic::{
@@ -29,7 +30,6 @@ use tempfile::TempDir;
 pub mod anticipated_structural_assertions;
 pub mod builders;
 pub mod compact_map;
-pub mod cut_oracles;
 pub mod expanded_solve;
 pub mod in_code_studies;
 pub mod oracle_tolerance;
@@ -39,6 +39,7 @@ pub mod permute;
 pub mod power_guards;
 pub mod row_families;
 pub mod selection_fingerprint;
+pub mod stored_cut_oracles;
 
 /// `n` as a positive count; panics on zero.
 pub const fn positive(n: u32) -> NonZeroU32 {
@@ -358,9 +359,19 @@ pub fn fresh_setup_with_openings(
     num_openings: u32,
     mutate: impl FnOnce(&mut Config),
 ) -> StudySetup {
+    fresh_setup_with_openings_as(case_dir, num_openings, mutate, Emission::Logical)
+}
+
+/// [`fresh_setup_with_openings`] building the chosen inflow `emission`.
+pub fn fresh_setup_with_openings_as(
+    case_dir: &Path,
+    num_openings: u32,
+    mutate: impl FnOnce(&mut Config),
+    emission: Emission,
+) -> StudySetup {
     let tmp =
         copy_case_with_stage_field(case_dir, "num_openings", &serde_json::json!(num_openings));
-    fresh_setup_with(tmp.path(), mutate)
+    fresh_system_and_setup_with_emission(tmp.path(), mutate, emission).1
 }
 
 pub fn copy_toy_case(src: &Path, dst: &Path) {
@@ -523,6 +534,14 @@ fn build_flip_or_panic(
     }
 }
 
+/// Committed decks a sweep visits: all of them, minus [`SLOW_DECKS`] unless
+/// `slow-tests` is enabled.
+fn swept_decks() -> impl Iterator<Item = Deck> {
+    committed_decks()
+        .into_iter()
+        .filter(|deck| cfg!(feature = "slow-tests") || !SLOW_DECKS.contains(&deck.key.as_str()))
+}
+
 /// Visits every committed deck (skipping [`SLOW_DECKS`] unless `slow-tests`
 /// is enabled) that has a stage of `n_blks > 1` — read from the [`Parallel`]
 /// flip's `block_hours_per_stage` — building both mode flips and visiting
@@ -532,12 +551,8 @@ fn build_flip_or_panic(
 pub fn for_each_deck_in_both_block_modes(
     mut visit: impl FnMut(&str, (&System, &StudySetup), (&System, &StudySetup)),
 ) -> usize {
-    let slow_tests_enabled = cfg!(feature = "slow-tests");
     let mut count = 0;
-    for deck in committed_decks() {
-        if !slow_tests_enabled && SLOW_DECKS.contains(&deck.key.as_str()) {
-            continue;
-        }
+    for deck in swept_decks() {
         let Some((parallel_system, parallel_setup)) =
             build_flip_or_panic(&deck.key, &deck.dir, BlockMode::Parallel)
         else {
@@ -572,12 +587,8 @@ pub fn for_each_deck_in_both_block_modes(
 /// enabled), then every [`in_code_studies::structural_studies`] entry, building
 /// one [`System`] and [`StudySetup`] at a time; returns the total visit count.
 pub fn for_each_study(mut visit: impl FnMut(&str, &System, &StudySetup)) -> usize {
-    let slow_tests_enabled = cfg!(feature = "slow-tests");
     let mut count = 0;
-    for deck in committed_decks() {
-        if !slow_tests_enabled && SLOW_DECKS.contains(&deck.key.as_str()) {
-            continue;
-        }
+    for deck in swept_decks() {
         let (system, setup) = fresh_system_and_setup_with(&deck.dir, |_| {});
         visit(&deck.key, &system, &setup);
         count += 1;
@@ -594,12 +605,8 @@ pub fn for_each_study(mut visit: impl FnMut(&str, &System, &StudySetup)) -> usiz
 pub fn for_each_study_in_both_forms(
     mut visit: impl FnMut(&str, &System, &StudySetup, &StudySetup),
 ) -> usize {
-    let slow_tests_enabled = cfg!(feature = "slow-tests");
     let mut count = 0;
-    for deck in committed_decks() {
-        if !slow_tests_enabled && SLOW_DECKS.contains(&deck.key.as_str()) {
-            continue;
-        }
+    for deck in swept_decks() {
         let (system, logical) = fresh_system_and_setup_as(&deck.dir, Emission::Logical);
         let (_, compact) = fresh_system_and_setup_as(&deck.dir, Emission::Compact);
         visit(&deck.key, &system, &logical, &compact);
@@ -721,6 +728,33 @@ pub fn build_setup_in_code_as(system: System, config: &Config, emission: Emissio
 pub fn try_build_setup_in_code(system: System, config: &Config) -> Result<StudySetup, SddpError> {
     let hydro_models = PrepareHydroModelsResult::default_from_system(&system);
     try_build_setup_in_code_with_models(system, config, hydro_models, Emission::Logical)
+}
+
+/// Replaces the terminal pool with one zero-coefficient cut per intercept, at slots `0..intercepts.len()`.
+pub fn inject_constant_terminal_boundary_cuts(
+    setup: &mut StudySetup,
+    intercepts: &[f64],
+    is_active: bool,
+) {
+    let terminal = setup
+        .inputs
+        .node_graph
+        .terminal_pool(setup.num_stages())
+        .expect("the study has a terminal pool");
+    let state_dim = setup.fcf.state_dimension;
+    let records: Vec<OwnedPolicyCutRecord> = (0..)
+        .zip(intercepts)
+        .map(|(slot_index, &intercept)| OwnedPolicyCutRecord {
+            slot_index,
+            coefficients: vec![0.0; state_dim],
+            intercept,
+            iteration: 0,
+            is_active,
+            ..owned_piece_defaults()
+        })
+        .collect();
+    setup.fcf.pools[terminal] =
+        CutPool::new_with_warm_start(state_dim, setup.fcf.forward_passes, 0, &records);
 }
 
 /// The trial states the pool of `node` stored, in slot order, at the global state

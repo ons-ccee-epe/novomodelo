@@ -49,8 +49,7 @@ use crate::{
     solve::{LazyInputs, StageOpeningSolver},
     solver_stats::SolverStatsDelta,
     training::stage_solve_prep::{
-        BracketSource, FoldedCutRows, NoiseTermSource, StageSolvePrep, StageSolvePrepParams,
-        StateSource,
+        FoldedSolvePrepParams, StageSolvePrep, StageSolvePrepParams, StateSource,
     },
     workspace::{CapturedBasis, ScratchBuffers, SolverWorkspace},
 };
@@ -399,44 +398,22 @@ fn prepare_simulation_stage<S: SolverInterface>(
                 &prep_params,
             );
         }
-        InflowForm::Compact => {
-            let mut slots = std::mem::take(&mut ws.scratch.cut_slots_buf);
-            slots.clear();
-            slots.extend(pool.cuts_in(cut_set).map(|(slot, _, _)| slot));
-            let rows = FoldedCutRows {
+        InflowForm::Compact => StageSolvePrep::prepare_folded_single(
+            &mut ws.solver,
+            &mut ws.patch_buf,
+            &mut ws.scratch,
+            ctx,
+            training_ctx,
+            t,
+            &FoldedSolvePrepParams {
+                state_source: StateSource(&ws.current_state),
+                raw_noise,
                 pool,
                 projection: resident,
-                slots: &slots,
-                first_row: ctx.template(t).num_rows,
-            };
-            StageSolvePrep::pin_folded(
-                &mut ws.solver,
-                &mut ws.patch_buf,
-                &mut ws.scratch,
-                ctx,
-                training_ctx,
-                t,
-                StateSource(&ws.current_state),
-                &rows,
-                BracketSource::OnTheFly,
-            );
-            let open = match opening_solver {
-                StageOpeningSolver::Frozen => StageSolvePrep::open_folded,
-                StageOpeningSolver::Lazy(_) => StageSolvePrep::open_folded_lazy,
-            };
-            open(
-                &mut ws.solver,
-                &mut ws.patch_buf,
-                &mut ws.scratch,
-                ctx,
-                training_ctx,
-                t,
-                raw_noise,
-                &rows,
-                NoiseTermSource::OnTheFly,
-            );
-            ws.scratch.cut_slots_buf = slots;
-        }
+                opening_solver,
+            },
+            pool.cuts_in(cut_set).map(|(slot, _, _)| slot),
+        ),
     }
 }
 
@@ -575,8 +552,6 @@ pub(crate) fn solve_simulation_stage<S: SolverInterface>(
         lookups,
     );
 
-    let stage_lag = ctx.stage_lag(t);
-    let downstream_par_order = study_dims.downstream_par_order;
     // Pass unscaled_primal as a separate borrow so the borrow checker sees it is
     // disjoint from the &mut ws.scratch.lag_* fields passed alongside it.
     let unscaled_primal_ref: &[f64] = &ws.scratch.unscaled_primal;
@@ -587,7 +562,7 @@ pub(crate) fn solve_simulation_stage<S: SolverInterface>(
         &ws.scratch.realized_inflow_buf,
         state,
         ctx.state_box(t),
-        stage_lag,
+        ctx.stage_lag(t),
         &mut LagAccumState {
             accumulator: &mut ws.scratch.lag_accumulator,
             weight_accum: &mut ws.scratch.lag_weight_accum,
@@ -597,7 +572,7 @@ pub(crate) fn solve_simulation_stage<S: SolverInterface>(
             weight_accum: &mut ws.scratch.downstream_weight_accum,
             completed_lags: &mut ws.scratch.downstream_completed_lags,
             n_completed: &mut ws.scratch.downstream_n_completed,
-            par_order: downstream_par_order,
+            par_order: study_dims.downstream_par_order,
         },
     );
 

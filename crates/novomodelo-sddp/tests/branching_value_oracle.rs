@@ -67,7 +67,6 @@
 mod common;
 
 use novomodelo_io::config::BackwardScheduler;
-use novomodelo_io::test_support::owned_piece_defaults;
 use novomodelo_sddp::CutPool;
 use novomodelo_sddp::StudySetup;
 use novomodelo_sddp::cut::SlotOrigin;
@@ -86,7 +85,7 @@ use novomodelo_sddp::test_support::{
 };
 use novomodelo_solver::ActiveSolver;
 
-use common::{StubComm, run_simulation};
+use common::{StubComm, inject_constant_terminal_boundary_cuts, run_simulation};
 
 /// Relative + absolute LP tolerance for oracle-vs-engine value comparison. The
 /// backend primal/dual feasibility tolerance is `≈ 1e-9`; scaled by the objective
@@ -932,32 +931,6 @@ fn external_distinct_fan_terminal_pool_stays_fixed_and_single_materialized() {
 /// in-horizon optimal policy.
 const TERMINAL_BOUNDARY_INTERCEPT: f64 = 100.0;
 
-/// Replace `setup`'s terminal FCF pool with a single constant boundary cut
-/// (`θ_terminal ≥ intercept`, zero state coefficients), so the terminal θ prices a
-/// nonzero post-horizon value-to-go — the terminal-boundary-policy shape no
-/// existing fixture exercised. Mirrors `inject_boundary_cuts`, building the fixed
-/// warm-start pool directly from a hand-constructed record (the validated
-/// file-load path is unnecessary for a synthetic fixture).
-fn inject_constant_terminal_boundary_fcf(setup: &mut StudySetup, intercept: f64, is_active: bool) {
-    let terminal = setup
-        .inputs
-        .node_graph
-        .terminal_pool(setup.num_stages())
-        .unwrap();
-    let state_dim = setup.fcf.state_dimension;
-    let forward_passes = setup.fcf.forward_passes;
-    let record = novomodelo_io::OwnedPolicyCutRecord {
-        slot_index: 0,
-        coefficients: vec![0.0; state_dim],
-        intercept,
-        iteration: 0,
-        is_active,
-        ..owned_piece_defaults()
-    };
-    setup.fcf.pools[terminal] =
-        CutPool::new_with_warm_start(state_dim, forward_passes, 0, &[record]);
-}
-
 /// A terminal boundary FCF (nonzero post-horizon value-to-go) must be booked
 /// identically in the lower and upper bound, so a converged deterministic chain
 /// still closes `final_lb == final_ub`. Before the terminal-θ-in-cost fix the UB
@@ -975,7 +948,7 @@ fn terminal_boundary_fcf_training_gap_is_consistent() {
     );
 
     let mut boundary = oracle_chain_setup(30);
-    inject_constant_terminal_boundary_fcf(&mut boundary, TERMINAL_BOUNDARY_INTERCEPT, true);
+    inject_constant_terminal_boundary_cuts(&mut boundary, &[TERMINAL_BOUNDARY_INTERCEPT], true);
     let (lb_b, ub_b) = train_bounds(&mut boundary);
 
     assert!(
@@ -1014,7 +987,7 @@ fn terminal_boundary_fcf_simulation_cost_includes_post_horizon() {
     let mean_plain = mean_scenario_total_cost(&run_simulation(&mut plain, 1));
 
     let mut boundary = try_k_fan_simulation_enumerated(2).expect("simulate-enabled fixture builds");
-    inject_constant_terminal_boundary_fcf(&mut boundary, TERMINAL_BOUNDARY_INTERCEPT, true);
+    inject_constant_terminal_boundary_cuts(&mut boundary, &[TERMINAL_BOUNDARY_INTERCEPT], true);
     let mean_boundary = mean_scenario_total_cost(&run_simulation(&mut boundary, 1));
 
     assert!(
@@ -1086,7 +1059,7 @@ fn terminal_boundary_records_all_inactive_leave_the_plain_chain_bounds() {
     let (lb_plain, ub_plain) = train_bounds(&mut plain);
 
     let mut inactive = oracle_chain_setup(30);
-    inject_constant_terminal_boundary_fcf(&mut inactive, TERMINAL_BOUNDARY_INTERCEPT, false);
+    inject_constant_terminal_boundary_cuts(&mut inactive, &[TERMINAL_BOUNDARY_INTERCEPT], false);
     let (lb_inactive, ub_inactive) = train_bounds(&mut inactive);
 
     assert_inactive_boundary_record_leaves_bounds_unchanged(
@@ -1110,7 +1083,7 @@ fn terminal_boundary_records_all_inactive_leave_the_plain_fan_bounds() {
     let (lb_plain, ub_plain) = train_bounds(&mut plain);
 
     let mut inactive = terminal_generated_fan_setup(2, MAX_ITERATIONS);
-    inject_constant_terminal_boundary_fcf(&mut inactive, TERMINAL_BOUNDARY_INTERCEPT, false);
+    inject_constant_terminal_boundary_cuts(&mut inactive, &[TERMINAL_BOUNDARY_INTERCEPT], false);
     let (lb_inactive, ub_inactive) = train_bounds(&mut inactive);
 
     assert_inactive_boundary_record_leaves_bounds_unchanged(

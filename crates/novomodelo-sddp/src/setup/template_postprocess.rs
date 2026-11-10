@@ -98,7 +98,7 @@ mod tests {
     use super::postprocess_templates;
     use crate::lp::builder::StageTemplates;
     use crate::lp::indexer::{AnticipatedPlants, StateSpace};
-    use crate::test_support::{equipment_free_geometry, state_layout_full};
+    use crate::test_support::{bits, equipment_free_geometry, state_layout_full};
     use crate::time_value::{PostStudyResolved, TimeValue};
     use chrono::NaiveDate;
     use novomodelo_core::temporal::{
@@ -208,10 +208,6 @@ mod tests {
             "the storage box's upper bound must be the physical max_storage, \
              not col_upper / col_scale"
         );
-    }
-
-    fn bits(values: &[f64]) -> Vec<u64> {
-        values.iter().copied().map(f64::to_bits).collect()
     }
 
     #[test]

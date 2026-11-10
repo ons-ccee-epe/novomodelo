@@ -593,9 +593,10 @@ own forward trials, so every trial point's slab entry is rank-local.
    the calling thread in ascending position after the canonical scatter. This is a
    serial section. Its cost grows with the union of non-zero cut duals across a trial
    point's openings, and its share of backward wall time grows with the worker count,
-   because the parallel part shrinks as 1/W and the finish does not. If the measured
-   share exceeds the budget, the lever is a parallel loop over trial points into
-   per-position slots, followed by the serial ascending cut insert.
+   because the parallel part shrinks as 1/W and the finish does not. The
+   `by_node_finish` group sizes it: the finish's time per trial position, serial and as
+   a loop over positions into per-position slots. If its share exceeds the budget, the
+   lever is that loop, followed by the serial ascending cut insert.
 
 ### 5.6 Other sites
 
@@ -686,36 +687,50 @@ Rejected:
   different paths, to save one bracket per extra opening block;
 - a slab under DCS, in `replicated` or in the enumerated forward: a second, slot-keyed
   layout to save a fraction of B;
-- caching p from the forward (it costs 1–2 µs to recompute);
-- splitting the base-row shift into Gp + Gσ·η (it would re-associate Gẑ for under
-  1 µs per opening);
+- caching p from the forward (an estimated 1–2 µs to recompute);
+- splitting the base-row shift into Gp + Gσ·η (it would re-associate Gẑ to save an
+  estimated 1 µs per opening at most);
 - caching the full lower-bound RHS (about 0.01 s per iteration);
 - reusing the forward's lag product in the ownership scan (under 4% of that scan);
 - building the enumerated External interior child cache (nothing to reuse);
 - solving the forward's opening first (warm-start only, in-sample only).
 
-**Expected out-of-LP time** on the NEWAVE PMO deck, all ranks, per iteration: about
-8.9 / 9.4 / 12.6 CPU-s at 5 / 30 / 300 touched slots per aggregate, against
-36 / 40 / 75 for the fold with no caches.
+**Expected out-of-LP time** on the NEWAVE PMO deck, all ranks, per iteration. Every
+figure here is an estimate built from the per-row cost of the named bench group.
 
 One aggregate walk runs per (trial point, child) over the union of its openings'
-supports, ∪_{ω: μ_ω > 0} supp y_ω, so the column is the size of that union, not a
+supports, ∪_{ω: μ_ω > 0} supp y_ω, so the walk is the size of that union, not a
 per-opening count. The union is at least the largest opening's non-zero count and at
 most min(Ω⁺·B_t, R_c): Ω⁺ counts the openings with μ_ω > 0 (all of them when λ < 1),
-B_t bounds each opening (§5.7), and R_c is the child's resident cut rows. The three
-columns assume the openings share their non-zero cut rows, which is unmeasured.
+B_t bounds each opening (§5.7), and R_c is the child's resident cut rows. How far the
+openings share their non-zero cut rows is not known for PMO; the two sizes below are
+the ends of the range.
 
-At 5 touched slots this is about 0.6% of LP time at 5 ms per solve and 2% at 1.5 ms.
-With disjoint supports the PMO worst case is 20 · 169 = 3,380 touched slots, about
-51 CPU-s: about 3.4% of LP time at 5 ms and 11% at 1.5 ms. Computing the delta-row
-bracket in every unit adds one bracket per extra opening block of a trial point. The
-remainder is dominated by the forward's own bracket pass, which no cache removes
-because every forward state is new.
+The walks number 200 forward passes × 72 stages, one child each: about 14,400 per
+iteration, against about 302,400 LP solves (one forward solve and Ω = 20 backward
+openings per trial point). A walk is estimated at touched slots × c, where c is the
+per-row cost `chain_rule` reports: lowest with the rows resident in cache, highest from
+a pool larger than the last-level cache. A warm walk whose rows' lag spans exceed that
+cache pays about the cold value.
+
+- At the CLP touched-slot p99 of 5, the walks are estimated at about 0.03 CPU-s warm
+  and 0.1 CPU-s cold, under 0.05% of LP time at 1.5 or 5 ms per solve. The 5 is the
+  CLP value from a reduced deck (HiGHS gave 4) with few openings per stage and few cut
+  rows, so it is a lower bound and not typical of production.
+- At the disjoint worst case, 20 · 169 = 3,380 touched slots, the walks are estimated
+  at about 60–65 CPU-s: about 4% of LP time at 5 ms per solve and 13–14% at 1.5 ms.
+  `chain_rule_walk` runs the walk at both sizes.
+
+Computing the delta-row bracket in every unit adds one bracket per extra opening block
+of a trial point. At the p99 size the rest is dominated by the forward's own bracket
+pass, which no cache removes because every forward state is new: 14,400 passes over
+about 400 frozen rows, estimated at about 5.5–11 CPU-s from the per-row cost of
+`rhs_kernel` at one thread and of `rhs_kernel_all_cores`, both benched at 400 rows.
 
 These figures are CPU seconds and do not show the serial finish's share of wall time
-(§5.5, step 4). Measure it as the coordinator's backward wall minus the longest worker
-backward wall, at the production worker count, or project it from the measured serial
-and parallel seconds.
+(§5.5, step 4). `by_node_finish` times the finish per trial position; on a run, the
+share is the coordinator's backward wall minus the longest worker backward wall, at
+the production worker count.
 
 ### 5.9 Warm start and stored bases
 
@@ -825,15 +840,19 @@ thread and rank shape.
   DCS. Accumulators start at +0.0; no FMA; no skipping of zero coefficients; lanes
   across rows or trials only. It replaces `gemm_block` here because S has an inner
   dimension of 1,848, above the 513 to which `gemm_block` is pinned (`INNER_DIMS`).
-  - It starts as a plain loop over rows of the scalar canonical function.
-  - A batched form, 8 rows at a time in 256-element chunks, replaces the loop only if
-    the bench of §9.7 shows it at least 1.3× faster with every local core busy (the
-    core count is recorded with the result), not only at 1 thread. Each β element read from the pool feeds one
-    multiply and one add, about 0.25 flop per byte, so under full-socket load the S pass
-    is bandwidth-bound and the 8-row advantage can vanish.
-  - If the batched form ships, the scalar function moves behind `test-support` as its
-    reference, as `cut/selection_reference.rs` is for cut selection. There is no
-    trial-point-lane variant.
+  - It is a batched form that takes rows a group at a time, lanes across rows only: each
+    row keeps one accumulator from +0.0 across the chunks of the shifted range and one
+    for the lag-0 range, so its bits are those of the scalar function. A final short
+    group runs the same code with fewer lanes.
+  - The batched form ships because `rhs_kernel_all_cores` (§9.7) showed it faster than
+    the plain loop by the gate's margin with every local core busy, not only at 1
+    thread. Each β element read from the pool feeds one multiply and one add, so under
+    full-socket load the S pass is bandwidth-bound and the advantage could have
+    vanished.
+  - `batched_brackets_equal_the_scalar_reference_bit_for_bit` pins it (§9.4).
+  - The scalar function lives behind `test-support` as `cut/rhs_reference.rs`, the
+    reference the batched form must equal bit for bit, as `cut/selection_reference.rs` is
+    for cut selection. There is no trial-point-lane variant.
 - **Per opening:** RHS = B + W[ω], one contiguous add, then one range push.
 - **Base-row shifts:** through the CSR, accumulating each row's shift Σ_h G_{r,h} ẑ_h
   from +0.0 in ascending canonical hydro id, subtracting it from the row's unscaled
@@ -849,18 +868,19 @@ thread and rank shape.
   - Order is ascending slot within each output element.
   - The walk is row-major: each non-zero row streams once across the full lag width,
     into a 2,016-element accumulator (16 KB, resident in L1d). It is bit-identical to a
-    256-wide j-tile nest and measured 10–31% faster on a performance core.
+    256-wide j-tile nest, and `chain_rule_walk` compares the two on a performance core
+    and on an efficiency core.
   - The opening loop belongs to ȳ formation (§5.3). Nesting it inside the walk costs
     Ω times the multiply-adds and changes the association.
-  - Cost is about 0.4–0.5 µs per non-zero row with the pool warm, and 1.2 µs cold from a
-    pool much larger than the last-level cache. The aggregate-first shape runs it once
+  - Cost per non-zero row is what `chain_rule` reports, with the pool warm and cold from
+    a pool much larger than the last-level cache. The aggregate-first shape runs it once
     per trial point and child.
 
 ### 6.5 Determinism
 
 Each output element is computed by one thread in a fixed order; no floating-point
 reduction crosses threads. Remote cuts keep ascending peer-rank order. Tests (§9.4):
-the kernel property test when the batched form ships, and the cache on/off bitwise
+the batched-form property test, and the cache on/off bitwise
 test. No FMA guard covers the hand-written kernels, and none is needed: rustc never
 contracts `a * b + c` into a fused multiply-add, so no build flag can introduce one,
 and "no `mul_add`" is a review item. The existing
@@ -901,8 +921,8 @@ fn set_row_lower_bounds_range(&mut self, first_row: usize, lower: &[f64]);
   sizes there (`row_value`, `row_dual`, `row_activity`, `row_magnitude`,
   `basis_row_i32`), and passes its prefix as the upper slice. It checks that indices fit
   in `i32`, asserts a non-error status, and adds to the existing
-  `total_set_bounds_time_seconds`. Measured at 600 rows: 2.1 µs against 39 µs for
-  today's set-based call.
+  `total_set_bounds_time_seconds`. The `solver_push` group compares it with today's
+  set-based call, on this backend and on CLP.
 - **CLP (correct, not tuned):** writes the lower bounds and `row_upper = +∞` into the
   Rust-side bound copies over the range, then makes the whole-array
   `novomodelo_clp_chg_row_lower` / `novomodelo_clp_chg_row_upper` push through one
@@ -978,8 +998,8 @@ New:
 12. **The cut-row RHS has one association.** ((α + S) + P) + W, each dot ascending,
     vectorized across rows or trials only, no `mul_add`, independent of batch shape;
     caches store only values this function produced. Pinned by the cache on/off
-    bitwise test, the thread-shape gate with its power preconditions, and the kernel
-    property test when the batched form ships.
+    bitwise test, the thread-shape gate with its power preconditions, and the
+    batched-form property test.
 13. **The realized inflow has one route into the LP.** The builder references it only
     through the inflow-coupling sink, and ψ, b and σ have one owner, `PrecomputedPar`.
     Pinned by the closed forms T4-1, T4-3 and T4-4 and the sink's structural tests
@@ -1096,7 +1116,7 @@ Each test is labeled `/// derived:` and has a non-degeneracy twin.
 | T4-1 | 1 hydro, PAR(1), no future | Sign of the G term; κ |
 | T4-2 | PAR(2) with one injected binding cut | Missing w_{(h,0)}; l vs l+1; an alias on the oldest lag; negated Σyβ; col_scale multiplied instead of divided (ψ₁ = 0.5) |
 | T4-3 | PreFilling upstream → target | Using the owner's row instead of the target's |
-| T4-4 | Binding generic `hydro_inflow` row (d54) | Missing −w·π_gen; equality or range rows shifting only one bound |
+| T4-4 | Hand-built binding generic `hydro_inflow` row of range sense | Missing −w·π_gen; equality or range rows shifting only one bound |
 | T4-5 | Storage-only projection | Lag slots leaking into a storage-only cut |
 | T4-6 | Truncation with ẑ < 0 | Differentiating l\* |
 | T4-7 | Multi-resolution non-finalize stage | Breaking today's alias |
@@ -1117,16 +1137,19 @@ The expanded LP (§4.7) is the logical oracle, behind `test-support`.
   expanded duals; and that the objectives are equal. Degeneracy cannot make it pass or
   fail spuriously, because both sides read one vertex.
 - **One T-KKT configuration per cut-row-set shape:** frozen rows; frozen plus delta
-  rows; the lower bound's whole `CutRowMap`; the DCS resident set. One more
-  configuration covers the projection pair: the fused terminal slice, where the
-  resident (leaf) projection differs from the extracted (parent) one and slots map by
-  global dimension. The configurations, and the full-run recorder's per-kind ones, are
-  built by an exhaustive match over the production enums the shared folded primitive
-  dispatches on to choose its cut-row set and projection pair: the frozen-or-lazy
-  dispatch, the source of B, and the extraction's projection pair. The test-side table
-  of solve-site kinds in `test_support.rs` is keyed from those variants, so a new
-  production variant does not compile under `test-support` until it has a
-  configuration.
+  rows; the lower bound's whole `CutRowMap`; the DCS resident set. The projection
+  pair is not a property of the kind: every site that extracts a cut reads the
+  successor pool's projection for its resident rows and its own pool's for the
+  extracted cut. One more configuration, on a fixture whose two projections differ,
+  covers the pair, where slots map by global dimension. The dispatch enums do not
+  determine the cut-row set or the projection pair: the slot list is filled per site at
+  run time, and both projections share one type. So the table in
+  `test_support/solve_sites.rs` names each site with the cut-row shape it loads, and is
+  bound to every variant of the frozen-or-lazy dispatch, the source of B and the source
+  of the noise term by wildcard-free matches. A new variant of those enums, or a new
+  kind, does not compile under `test-support` until it is mapped and configured; a new
+  site that reuses existing variants is caught at run time, because every kind's
+  configuration fails loudly when it records no cut-row push.
 - **The recorder.** `BoundRecordingSolver` (`test_support.rs`) is extended to record the
   bounds of the rows `add_rows` appends, `set_row_lower_bounds_range`, and a per-solve
   log. T-KKT and the full-run recorder use it; no new `SolverInterface` implementor is
@@ -1154,8 +1177,8 @@ The expanded LP (§4.7) is the logical oracle, behind `test-support`.
   the water and generic duals.
 - **Lag study with FPHA.** An in-code study in `structural_studies()` gives T-ID and
   T-KKT binding FPHA and evaporation rows next to lag-bearing cuts: 3 stages, 2 hydros
-  with PAR(2), FPHA on one and evaporation on the other, a generic `hydro_inflow` range
-  row and load above the hydro capacity. Its power guard fails loudly unless, at
+  with PAR(2), FPHA on one and evaporation on the other, a generic `hydro_inflow` row
+  with an upper bound (T4-4 gates the range-sense shift) and load above the hydro capacity. Its power guard fails loudly unless, at
   stage 1, an FPHA plane, the evaporation row and the generic row have nonzero duals, a
   binding cut carries a nonzero lag coefficient, Gᵀπ ≠ 0 on each hydro, c_z ≠ 1 and
   c_a ≠ 1, and a binding coupled row has different compact and expanded row scales. A
@@ -1163,7 +1186,7 @@ The expanded LP (§4.7) is the logical oracle, behind `test-support`.
   or smallest |entry|, so the study is built for it.
 - **T-OBJ and T-VALID, independent cold solves** of the compact and the expanded LP.
   Objectives agree within `ORACLE_ABS_TOL + ORACLE_REL_TOL·|Q|`
-  (`tests/common/cut_oracles.rs`), and each formulation's cuts minorize the other's Q
+  (`tests/common/oracle_tolerance.rs`), and each formulation's cuts minorize the other's Q
   at sampled points. These never compare coefficients or primals.
 - **Deleted once T-ID and T-KKT pass:** the ignored probes
   `lag_fold_chain_rule_identity` and `lag_fold_static_ab` in
@@ -1173,9 +1196,9 @@ The expanded LP (§4.7) is the logical oracle, behind `test-support`.
 
 ### 9.4 Caching and determinism
 
-- **RHS kernel property test,** only if the batched form ships: bitwise against the
-  scalar canonical function at 2,016 lag slots, up to 10⁴ rows, batch widths 1..W and
-  random row subsets.
+- **RHS kernel property test,** `batched_brackets_equal_the_scalar_reference_bit_for_bit`:
+  bitwise against the scalar canonical function at 2,016 lag slots, up to 10⁴ rows,
+  every batch remainder and random row subsets.
 - **Cache on vs off:** bitwise-identical results with the slab and W enabled versus
   recomputed, over one backward stage and over a full small training run. The one
   test-support control forces a tag mismatch, which must recompute B, also compute W in
@@ -1230,15 +1253,33 @@ rows carry a non-zero dual than the number of columns they are supported on.
 
 ### 9.7 Benches (Criterion, not run in CI)
 
-One bench target in `crates/novomodelo-sddp/benches/`, with one group per measurement:
+One bench target, `fold_kernels` in `crates/novomodelo-sddp/benches/`, with one group
+per measurement. Every group with more than one variant checks, before any timing, that
+the variants agree, and each group names what it decides:
 
-- the RHS kernel: the plain row loop, the batched form and `dgemm`, at 1 thread and
-  with every local core busy, the count recorded (the gate of §6.4);
-- the per-stage W pass;
-- the chain rule at 5, 30 and 169 non-zero cut duals per opening, plus a degraded case
-  at a tenth of the cut rows, per opening versus aggregated, with the pool warm and
-  with a pool much larger than the last-level cache;
-- the solver push, set-based versus range.
+- `rhs_kernel`: the plain row loop of the cut-row bracket, the scalar reference, against
+  the batched form and `dgemm`, at 1 thread.
+- `rhs_kernel_all_cores`: the same variants with every local core running the whole pass
+  over one shared pool, timed as the slowest thread's pass, the core count recorded. It
+  is the gate of §6.4.
+- `noise_term_pass`: the per-stage noise-term pass as two steps against the fused RHS
+  form. It decides whether the W pass stays a separate step.
+- `chain_rule`: one chain rule per opening against the aggregate-first form, with the
+  pool warm and with a pool much larger than the last-level cache. Its per-row cost
+  sizes the estimate of §5.8.
+- `chain_rule_walk`: the row-major walk against the 256-wide j-tile nest, at the
+  touched-slot p99 and at the disjoint worst case, on a performance core and on an
+  efficiency core. It decides the walk order of §6.4.
+- `y_bar_formation`: ȳ formed with the touched bitmap against a dense scan of the pool.
+  It decides whether the bitmap earns its place (§5.3).
+- `by_node_finish`: the serial per-position finish of the backward against a loop over
+  positions on scoped threads. It sizes the serial section of §5.5, step 4.
+- `solver_push`: the set-based row-bound push against the lower-bounds range push, on
+  HiGHS and on CLP. It decides the range push of §7.1.
+
+The HiGHS build runs
+`cargo bench -p novomodelo-sddp --features test-support --bench fold_kernels`; the CLP
+build adds `--no-default-features --features "clp test-support"`.
 
 ### 9.8 Gate
 
@@ -1370,12 +1411,22 @@ Verified in code:
   The converted `config.json` itself has not been read; the pre-flight (§11.2) closes
   that.
 
-Assumed, to be measured: LP time per solve (1.5–5 ms used above); the non-zero cut
-duals per opening on PMO (structurally at most 169, §5.7), the union of each
-aggregate's openings (§5.8), and the union across a stage's trial points, which places
-the chain-rule walk between its warm and cold costs;
-the batched RHS kernel's gain with every core busy (§6.4); CLP's range-push cost.
+The cut-dual counts are checked against B_t (§5.7) by the default test
+`cut_dual_counts_stay_within_the_structural_bound` and, on every committed deck with
+lagged inflow, by its slow sweep
+`cut_dual_counts_stay_within_the_structural_bound_on_every_lagged_deck`. The ignored
+probe `cut_dual_counts_on_the_reduced_case` trains a reduced deck and prints the
+distribution of non-zero cut duals, touched slots and stage unions.
 
-Measured on small decks only: an instrumented frozen-path training run on four decks
-found no opening with more non-zero cut duals than `1 + n_x^LP`, and one deck attained
-the bound.
+Assumed, each with what measures it:
+
+- LP time per solve (1.5–5 ms used above): the main-only run of §11.2, step 7, and the
+  local check of §10.
+- The non-zero cut duals per opening on PMO (structurally at most 169, §5.7): the tests
+  above, and the probe on a reduced deck.
+- The union of each aggregate's openings (§5.8) and the union across a stage's trial
+  points: the probe's distribution on a reduced deck. `chain_rule` and
+  `chain_rule_walk` place the walk between its warm and cold costs.
+- The batched RHS kernel's gain with every core busy (§6.4): `rhs_kernel_all_cores`.
+- CLP's range-push cost: `solver_push`.
+- The serial finish's share of wall time (§5.5, step 4): `by_node_finish`.

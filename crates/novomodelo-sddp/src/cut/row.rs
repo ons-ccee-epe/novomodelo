@@ -125,7 +125,7 @@ pub(crate) fn build_cut_set_row_batch_into(
     );
 }
 
-fn fill_cut_rows<'a>(
+pub(crate) fn fill_cut_rows<'a>(
     batch: &mut RowBatch,
     cuts: impl Iterator<Item = (usize, f64, &'a [f64])>,
     state: &StateSpace,
@@ -382,6 +382,7 @@ mod tests {
     use crate::indexer::{CutStateProjection, StateSpace};
     use crate::lead_time::AnticipatedResolution;
     use crate::setup::NodeId;
+    use crate::test_support::empty_row_batch;
 
     /// Build a finalized storage+lag [`StateSpace`] (no anticipated thermals)
     /// with the full `max_par_order` lag stride for every hydro — the dense
@@ -551,17 +552,6 @@ mod tests {
 
         fn name(&self) -> &'static str {
             "RecordingMock"
-        }
-    }
-
-    fn empty_row_batch() -> RowBatch {
-        RowBatch {
-            num_rows: 0,
-            row_starts: Vec::new(),
-            col_indices: Vec::new(),
-            values: Vec::new(),
-            row_lower: Vec::new(),
-            row_upper: Vec::new(),
         }
     }
 

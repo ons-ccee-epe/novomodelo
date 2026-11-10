@@ -27,6 +27,7 @@ use crate::{
         NodeGraph, NodeSuccessor,
         node_graph::{NodePos, StageIdx, assemble_outcome_weights},
     },
+    solve::StageOpeningSolver,
     training::stage_solve_prep::{
         BracketSource, FoldedCutRows, NoiseTermSource, StageSolvePrep, StageSolvePrepParams,
         StateSource,
@@ -258,7 +259,7 @@ fn lb_evaluate_stage_0<S: SolverInterface>(
                 StageIdx(0),
                 StateSource(initial_state),
                 &rows,
-                BracketSource::InUnit,
+                BracketSource::Computed,
             );
             Some(rows)
         }
@@ -284,6 +285,7 @@ fn lb_evaluate_stage_0<S: SolverInterface>(
                 raw_noise,
                 rows,
                 NoiseTermSource::OnTheFly,
+                &StageOpeningSolver::Frozen,
             );
         } else {
             let prep_params = StageSolvePrepParams {
@@ -503,8 +505,8 @@ mod tests {
             NodeGraph, NodeId, NodeOpenings, NodePos, NodeRuntime, NodeSuccessor, OpeningSource,
         },
         test_support::{
-            self, StageContextFixture, equipment_free_geometry, inflow_coupling_with_entries,
-            permissive_state_boxes,
+            self, StageContextFixture, empty_row_batch, equipment_free_geometry,
+            inflow_coupling_with_entries, permissive_state_boxes,
         },
         workspace::{ScratchBuffers, WorkspaceSizing},
     };
@@ -520,17 +522,6 @@ mod tests {
         ClassSchemes, OpeningTree, OpeningTreeInputs, PrecomputedNormal, StochasticContext,
         build_stochastic_context, generate_opening_tree,
     };
-
-    fn empty_row_batch() -> RowBatch {
-        RowBatch {
-            num_rows: 0,
-            row_starts: Vec::new(),
-            col_indices: Vec::new(),
-            values: Vec::new(),
-            row_lower: Vec::new(),
-            row_upper: Vec::new(),
-        }
-    }
 
     /// Return the owned locals needed to build an [`LbEvalScratchBundle`] for tests.
     fn make_lb_locals() -> (RowBatch, LbEvalScratch) {
@@ -2029,8 +2020,7 @@ mod tests {
         let rm = RiskMeasure::Expectation;
         let comm = LocalComm;
 
-        let mut row_batch = empty_row_batch();
-        let mut lb_scratch = LbEvalScratch::new();
+        let (mut row_batch, mut lb_scratch) = make_lb_locals();
         let mut noise_scratch = ScratchBuffers::new(
             &fixture.training_ctx(),
             &fixture.ctx().ctx(),

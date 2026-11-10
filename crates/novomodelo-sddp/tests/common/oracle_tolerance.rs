@@ -1,7 +1,19 @@
 //! Solver feasibility tolerances converted into the unscaled units of the row or column they
-//! bound, and the check that every solve an oracle ran succeeded on its first attempt.
+//! bound, the tolerance on a compared objective or cut value, and the check that every solve an
+//! oracle ran succeeded on its first attempt.
 
 use novomodelo_solver::{ActiveProfile, SolverStatistics};
+
+/// Absolute part of [`value_tolerance`].
+pub const ORACLE_ABS_TOL: f64 = 1e-6;
+/// Relative part of [`value_tolerance`].
+pub const ORACLE_REL_TOL: f64 = 1e-7;
+
+/// Bounds the difference of two values of one quantity, an objective or a cut's value.
+#[must_use]
+pub fn value_tolerance(a: f64, b: f64) -> f64 {
+    ORACLE_ABS_TOL + ORACLE_REL_TOL * a.abs().max(b.abs())
+}
 
 /// Primal and dual feasibility tolerances of a scaled LP.
 #[derive(Clone, Copy, Debug)]

@@ -233,7 +233,7 @@ impl<'a> SuccessorSpec<'a> {
     /// The pin source for trial `m`'s pin of the child `successor_node_id`.
     pub(crate) fn bracket_source(&self, m: usize, successor_node_id: NodeId) -> BracketSource<'a> {
         match self.slab {
-            SlabLookup::Unavailable => BracketSource::InUnit,
+            SlabLookup::Unavailable => BracketSource::Computed,
             #[cfg(any(test, feature = "test-support"))]
             SlabLookup::ForcedMiss => BracketSource::Slab(None),
             SlabLookup::Frozen {

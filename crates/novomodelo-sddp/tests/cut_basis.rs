@@ -1417,6 +1417,7 @@ mod selection_in_a_training_run {
     use novomodelo_io::config::{
         SelectionMethod, SimulationSelection, StoppingRuleConfig, TrainingSelection,
     };
+    use novomodelo_sddp::test_support::bits;
     use novomodelo_sddp::{
         FutureCostFunction, StudySetup, TrainingResult, build_training_output,
         cut::{CutPool, CutSet, SlotOrigin, SlotRole},
@@ -2629,10 +2630,6 @@ mod selection_in_a_training_run {
                 lookback_iterations: lookback.and_then(NonZeroU32::new),
             });
         }
-    }
-
-    fn bits(values: &[f64]) -> Vec<u64> {
-        values.iter().map(|value| value.to_bits()).collect()
     }
 
     /// The pool's roles and stored states, with the ownership record a rebuild
@@ -5495,8 +5492,8 @@ mod solve_cache_equivalence {
     use novomodelo_sddp::{SolverProfiles, StudySetup, TrainingOutcome};
     use novomodelo_solver::ActiveSolver;
 
-    use super::common::cut_oracles::apply_oracle_config;
     use super::common::in_code_studies::fpha_lag_study;
+    use super::common::stored_cut_oracles::apply_oracle_config;
     use super::common::{
         Emission, StubComm, build_setup_in_code_with_models_as, fresh_system_and_setup_with,
         fresh_system_and_setup_with_emission, is_chain,
@@ -5693,3 +5690,6 @@ mod solve_cache_equivalence {
         );
     }
 }
+
+#[path = "cut_basis/cut_row_push_coverage.rs"]
+mod cut_row_push_coverage;

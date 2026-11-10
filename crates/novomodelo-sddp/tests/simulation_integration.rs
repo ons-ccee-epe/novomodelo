@@ -2482,12 +2482,11 @@ mod compact_simulation_outputs {
     use novomodelo_sddp::simulation::SimulationScenarioResult;
     use novomodelo_solver::ActiveSolver;
 
-    use crate::common::cut_oracles::apply_oracle_config;
     use crate::common::in_code_studies::fpha_lag_study;
+    use crate::common::oracle_tolerance::{ORACLE_ABS_TOL, ORACLE_REL_TOL};
+    use crate::common::stored_cut_oracles::apply_oracle_config;
     use crate::common::{Emission, StubComm, build_setup_in_code_with_models_as};
 
-    const ABS_TOL: f64 = 1e-6;
-    const REL_TOL: f64 = 1e-7;
     const LAG_REL_TOL: f64 = 1e-12;
     const NUM_SCENARIOS: u32 = 4;
     const SIMULATION_SEED: i64 = 7;
@@ -2644,7 +2643,7 @@ mod compact_simulation_outputs {
     }
 
     pub(super) fn assert_close(what: &str, got: f64, want: f64) {
-        let tolerance = ABS_TOL + REL_TOL * want.abs();
+        let tolerance = ORACLE_ABS_TOL + ORACLE_REL_TOL * want.abs();
         assert!(
             (got - want).abs() <= tolerance,
             "{what}: compact {got:?} vs logical {want:?}, tolerance {tolerance:e}"

@@ -19,7 +19,6 @@
 use crate::setup::NodeId;
 
 /// One local trial's stage cost, visited node and end-of-stage state at one stage.
-/// It also holds the B of its node's frozen rows, for the frozen backward.
 #[derive(Debug, Clone, Default)]
 pub struct TrajectoryRecord {
     /// LP objective value at this stage, excluding the future-cost theta variable.
@@ -62,6 +61,12 @@ impl FrozenBrackets {
 
     pub(crate) fn read(&self, iteration: u64, node_id: NodeId) -> Option<&[f64]> {
         (self.tag == Some((iteration, node_id))).then_some(self.values.as_slice())
+    }
+
+    /// The buffer's address and capacity, to tell where it grows.
+    #[cfg(test)]
+    pub(crate) fn allocation(&self) -> (usize, usize) {
+        (self.values.as_ptr().addr(), self.values.capacity())
     }
 }
 

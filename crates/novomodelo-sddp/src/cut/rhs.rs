@@ -3,43 +3,36 @@
 //! dots from +0.0: the shifted slots against â, the lag-0 slots against p, and the lag-0 slots
 //! against σ·η. Not one dot over ẑ = fl(p + σ·η), not the blocked GEMM kernel for S, not a dot
 //! started from an iterator sum's −0.0, no fused multiply-add.
+//!
+//! `cut_brackets_into` takes `LANES` rows at a time, lanes across rows only, each row ascending
+//! from +0.0; `rhs_reference` is the scalar statement it equals bit for bit.
+
+use std::array;
 
 use crate::cut::CutPool;
 use crate::indexer::CutLagPoint;
 
-fn ascending_dot(coefficients: &[f64], values: &[f64]) -> f64 {
+const LANES: usize = 8;
+const CHUNK: usize = 256;
+
+type BracketLanes = fn(&CutPool, &[usize], &CutLagPoint, &[f64], &[f64], &mut [f64]);
+
+const BRACKET_LANES: [BracketLanes; LANES] = [
+    bracket_lanes::<1>,
+    bracket_lanes::<2>,
+    bracket_lanes::<3>,
+    bracket_lanes::<4>,
+    bracket_lanes::<5>,
+    bracket_lanes::<6>,
+    bracket_lanes::<7>,
+    bracket_lanes::<LANES>,
+];
+
+pub(crate) fn ascending_dot(coefficients: &[f64], values: &[f64]) -> f64 {
     coefficients
         .iter()
         .zip(values)
         .fold(0.0, |acc, (&b, &v)| acc + b * v)
-}
-
-/// B = fl(fl(α + S) + P) of one cut row. Reads `lag_state[..shifted.len()]` only.
-#[must_use]
-pub fn cut_bracket(
-    intercept: f64,
-    coefficients: &[f64],
-    lag_point: &CutLagPoint,
-    lag_state: &[f64],
-    conditional_mean: &[f64],
-) -> f64 {
-    let (lag0, shifted) = (lag_point.lag0(), lag_point.shifted());
-    debug_assert!(
-        conditional_mean.len() >= lag0.len(),
-        "cut_bracket: conditional_mean shorter than the lag-0 range"
-    );
-    debug_assert!(
-        lag_state.len() >= shifted.len(),
-        "cut_bracket: lag_state shorter than the shifted range"
-    );
-    debug_assert!(
-        coefficients.len() >= shifted.end.max(lag0.end),
-        "cut_bracket: coefficients shorter than the lag slots"
-    );
-
-    let shifted_dot = ascending_dot(&coefficients[shifted.clone()], &lag_state[..shifted.len()]);
-    let mean_dot = ascending_dot(&coefficients[lag0.clone()], &conditional_mean[..lag0.len()]);
-    (intercept + shifted_dot) + mean_dot
 }
 
 /// W of one cut row; the RHS is `fl(bracket + W)`.
@@ -72,15 +65,48 @@ pub fn cut_brackets_into(
         "cut_brackets_into: brackets and slots differ in length"
     );
 
-    for (i, &slot) in slots.iter().enumerate() {
-        brackets[i] = cut_bracket(
-            pool.intercept(slot),
-            pool.coefficient_row(slot),
-            lag_point,
-            lag_state,
-            conditional_mean,
-        );
+    for (group, out) in slots.chunks(LANES).zip(brackets.chunks_mut(LANES)) {
+        BRACKET_LANES[group.len() - 1](pool, group, lag_point, lag_state, conditional_mean, out);
     }
+}
+
+fn bracket_lanes<const R: usize>(
+    pool: &CutPool,
+    group: &[usize],
+    lag_point: &CutLagPoint,
+    lag_state: &[f64],
+    conditional_mean: &[f64],
+    brackets: &mut [f64],
+) {
+    let (lag0, shifted) = (lag_point.lag0(), lag_point.shifted());
+    let rows: [&[f64]; R] = array::from_fn(|r| pool.coefficient_row(group[r]));
+    let shifted_dots = ascending_dots(
+        rows.map(|row| &row[shifted.clone()]),
+        &lag_state[..shifted.len()],
+    );
+    let mean_dots = ascending_dots(
+        rows.map(|row| &row[lag0.clone()]),
+        &conditional_mean[..lag0.len()],
+    );
+    for (r, &slot) in group.iter().enumerate() {
+        brackets[r] = (pool.intercept(slot) + shifted_dots[r]) + mean_dots[r];
+    }
+}
+
+// A chunk only blocks the loads: each lane's accumulator runs across chunks, never one partial
+// per chunk.
+fn ascending_dots<const R: usize>(rows: [&[f64]; R], values: &[f64]) -> [f64; R] {
+    let mut acc = [0.0_f64; R];
+    for (chunk_at, chunk) in values.chunks(CHUNK).enumerate() {
+        let base = chunk_at * CHUNK;
+        let tiles: [&[f64]; R] = array::from_fn(|r| &rows[r][base..base + chunk.len()]);
+        for (j, &v) in chunk.iter().enumerate() {
+            for (a, tile) in acc.iter_mut().zip(&tiles) {
+                *a += tile[j] * v;
+            }
+        }
+    }
+    acc
 }
 
 /// Writes `rhs[i] = brackets[i] + W` for the cut at `slots[i]`, reading each row in place from
@@ -123,11 +149,14 @@ pub fn cut_rhs_from_noise_terms_into(brackets: &[f64], noise_terms: &[f64], rhs:
 #[cfg(test)]
 mod tests {
     use novomodelo_core::temporal::StageStateConfig;
+    use proptest::prelude::*;
+    use proptest::test_runner::RngSeed;
 
     use super::{
-        cut_bracket, cut_brackets_into, cut_noise_term, cut_rhs_from_noise_terms_into, cut_rhs_into,
+        LANES, cut_brackets_into, cut_noise_term, cut_rhs_from_noise_terms_into, cut_rhs_into,
     };
     use crate::cut::CutPool;
+    use crate::cut::rhs_reference::{cut_bracket, cut_brackets_reference_into};
     use crate::indexer::{CutStateProjection, StateSpace};
     use crate::lead_time::AnticipatedResolution;
     use crate::setup::NodeId;
@@ -210,8 +239,8 @@ mod tests {
 
     #[test]
     fn bracket_accumulators_start_at_positive_zero() {
-        let lag_point = projection(1, 2, LAGS_ONLY);
-        let lag_point = lag_point.lag_point();
+        let projection = projection(1, 2, LAGS_ONLY);
+        let lag_point = projection.lag_point();
         let coefficients = [-1.0, -1.0];
         let values = [0.0, 0.0];
         let started_at_negative_zero = coefficients
@@ -220,9 +249,21 @@ mod tests {
             .fold(-0.0_f64, |acc, (&b, &v)| acc + b * v);
         assert_eq!(started_at_negative_zero.to_bits(), (-0.0_f64).to_bits());
 
-        let bracket = cut_bracket(-0.0, &coefficients, lag_point, &values, &[0.0]);
-
-        assert_eq!(bracket.to_bits(), 0.0_f64.to_bits());
+        let mut pool = CutPool::new(LANES, projection.n_slots(), 1, 0);
+        for k in 0..LANES as u64 {
+            pool.add_cut(NodeId(0), k, 0, -0.0, &coefficients);
+        }
+        for rows in [1, LANES] {
+            let slots: Vec<usize> = (0..rows).collect();
+            let mut brackets = vec![f64::NAN; rows];
+            cut_brackets_into(&pool, &slots, lag_point, &values, &[0.0], &mut brackets);
+            assert!(
+                brackets
+                    .iter()
+                    .all(|bracket| bracket.to_bits() == 0.0_f64.to_bits()),
+                "{rows} rows"
+            );
+        }
     }
 
     #[test]
@@ -323,5 +364,91 @@ mod tests {
         let noise = cut_noise_term(&[1.0, 2.0], storage_only.lag_point(), &[]);
         assert_eq!(bracket.to_bits(), 3.5_f64.to_bits());
         assert_eq!((bracket + noise).to_bits(), 3.5_f64.to_bits());
+    }
+
+    const MAX_ROWS: usize = 10_000;
+
+    struct SplitMix(u64);
+
+    impl SplitMix {
+        fn next_u64(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^ (z >> 31)
+        }
+
+        fn below(&mut self, n: usize) -> usize {
+            (self.next_u64() % n as u64) as usize
+        }
+
+        fn value(&mut self) -> f64 {
+            let r = self.next_u64();
+            let sign = (r & 1) << 63;
+            if (r >> 1).is_multiple_of(8) {
+                return f64::from_bits(sign);
+            }
+            let exponent = 983 + (r >> 4) % 81;
+            f64::from_bits(sign | exponent << 52 | self.next_u64() >> 12)
+        }
+
+        fn values(&mut self, len: usize) -> Vec<f64> {
+            (0..len).map(|_| self.value()).collect()
+        }
+
+        fn subset(&mut self, n_slots: usize, n_rows: usize) -> Vec<usize> {
+            let mut slots: Vec<usize> = (0..n_slots).collect();
+            for i in 0..n_rows {
+                let j = i + self.below(n_slots - i);
+                slots.swap(i, j);
+            }
+            slots.truncate(n_rows);
+            slots.sort_unstable();
+            slots
+        }
+    }
+
+    fn subset_draw() -> impl Strategy<Value = (usize, usize, u64)> {
+        (1..=MAX_ROWS).prop_flat_map(|n_slots| (Just(n_slots), 1..=n_slots, any::<u64>()))
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            rng_seed: RngSeed::Fixed(42),
+            ..ProptestConfig::with_cases(32)
+        })]
+
+        #[test]
+        fn batched_brackets_equal_the_scalar_reference_bit_for_bit(
+            (n_slots, n_rows, seed) in subset_draw(),
+        ) {
+            let projection = projection(168, 12, LAGS_ONLY);
+            let lag_point = projection.lag_point();
+            prop_assert_eq!(projection.n_slots(), 2_016);
+            prop_assert_eq!((lag_point.shifted().len(), lag_point.lag0().len()), (1_848, 168));
+
+            let mut rng = SplitMix(seed);
+            let mut pool = CutPool::new(n_slots, projection.n_slots(), 1, 0);
+            for k in 0..n_slots as u64 {
+                let (intercept, row) = (rng.value(), rng.values(projection.n_slots()));
+                pool.add_cut(NodeId(0), k, 0, intercept, &row);
+            }
+            let (lag_state, mean) = (rng.values(1_848), rng.values(168));
+            let slots = rng.subset(n_slots, n_rows);
+            let mut reference = vec![f64::NAN; n_rows];
+            cut_brackets_reference_into(&pool, &slots, lag_point, &lag_state, &mean, &mut reference);
+
+            let mut batched = vec![f64::NAN; n_rows];
+            for len in (1..=2 * LANES + 1).filter(|&len| len < n_rows).chain([n_rows]) {
+                batched[..len].fill(f64::NAN);
+                cut_brackets_into(&pool, &slots[..len], lag_point, &lag_state, &mean, &mut batched[..len]);
+                let mismatch = batched[..len]
+                    .iter()
+                    .zip(&reference)
+                    .position(|(got, want)| got.to_bits() != want.to_bits());
+                prop_assert_eq!(mismatch, None, "{} rows", len);
+            }
+        }
     }
 }

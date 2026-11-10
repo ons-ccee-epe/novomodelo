@@ -407,7 +407,7 @@ mod tests {
         noise::{DownstreamAccumState, LagAccumState, accumulate_and_shift_lag_state},
         setup::{NodeId, StageIdx},
         test_support::{
-            StageContextFixture, TrainingContextFixture, constant_lead_resolution,
+            StageContextFixture, TrainingContextFixture, bits, constant_lead_resolution,
             equipment_free_geometry, permissive_state_boxes, state_layout,
             state_layout_with_transit_buckets,
         },
@@ -1516,10 +1516,6 @@ mod tests {
             state,
             lag_accumulator,
         }
-    }
-
-    fn bits(values: &[f64]) -> Vec<u64> {
-        values.iter().map(|v| v.to_bits()).collect()
     }
 
     #[test]

@@ -1607,7 +1607,8 @@ mod tests {
     use novomodelo_io::OwnedPolicyCutRecord;
     use novomodelo_io::test_support::owned_piece_defaults;
     use novomodelo_solver::{
-        Basis, RowBatch, SolverError, SolverInterface, SolverStatistics, StageTemplate,
+        ActiveSolver, Basis, RowBatch, SolverError, SolverInterface, SolverStatistics,
+        StageTemplate,
     };
     use novomodelo_stochastic::{
         ClassSchemes, OpeningTreeInputs, StochasticContext, build_stochastic_context,
@@ -1615,13 +1616,13 @@ mod tests {
 
     use super::{
         IterationOutcome, LazySolveTotals, TrainingSession, grow_pools_for_next_iteration,
-        reduce_lazy_totals_delta,
+        lb_root_pool, reduce_lazy_totals_delta,
     };
     use crate::training::training::MissingScenarioBasis;
     use crate::workspace::CapturedBasis;
     use crate::{
         CutPool, LoadedPolicy, SolverProfiles, StoppingMode, StoppingRule, StoppingRuleSet,
-        TrainingConfig,
+        TrainingConfig, TrajectoryRecord,
         config::{CutManagementConfig, EventConfig, LoopConfig},
         context::TrainingContext,
         cut::fcf::FutureCostFunction,
@@ -1629,7 +1630,7 @@ mod tests {
         horizon_mode::HorizonMode,
         inflow_method::InflowNonNegativityMethod,
         lp::builder::{StageGeometry, StateBox},
-        lp::indexer::{CutStateProjection, StateSpace, StudyDimensions},
+        lp::indexer::{CutStateProjection, InflowForm, StateSpace, StudyDimensions},
         risk_measure::RiskMeasure,
         setup::node_graph::StageIdx,
         setup::{
@@ -1637,7 +1638,8 @@ mod tests {
         },
         solver_stats::WORKER_STATS_ENTRY_STRIDE,
         test_support::{
-            self, StageContextFixture, equipment_free_geometry, permissive_state_boxes,
+            self, LagFold, StageContextFixture, dual_folding_setup_in_both_forms,
+            equipment_free_geometry, permissive_state_boxes,
         },
     };
 
@@ -3768,5 +3770,115 @@ mod tests {
             SolverProfiles::default(),
         )
         .expect("a deterministic trunk + terminal fan stays sound at world >= 2");
+    }
+
+    #[test]
+    fn the_bracket_slab_grows_only_when_the_templates_are_frozen() {
+        let (_, mut setup) = dual_folding_setup_in_both_forms(LagFold::Unfolded, 2, 4);
+        let stage_ctx = setup.inputs.stage_ctx();
+        let training_ctx = setup.inputs.training_ctx();
+        assert_eq!(training_ctx.state.inflow_form, InflowForm::Compact);
+        let n_stages = training_ctx.horizon.num_stages();
+        let node_graph = training_ctx.node_graph;
+        let root = node_graph.frontier_node(StageIdx(0)).unwrap();
+        let root_node_id = node_graph.node_ids[root];
+        assert!(
+            training_ctx.cut_state_layouts[node_graph.nodes[root].pool_id].has_lag_slots(),
+            "the root pool has no lag slots, so its cut rows carry no bracket"
+        );
+        let config = make_config(setup.loop_params.forward_passes, 4, 4, n_stages);
+        let mut solver = ActiveSolver::new().unwrap();
+        let mut session = TrainingSession::new(
+            &mut solver,
+            config,
+            &mut setup.fcf,
+            &stage_ctx,
+            &training_ctx,
+            &StubComm,
+            ActiveSolver::new,
+            Vec::new(),
+            SolverProfiles::default(),
+        )
+        .unwrap();
+        session.prime_frozen_templates();
+
+        let allocations = |records: &[TrajectoryRecord]| -> Vec<(usize, usize)> {
+            records
+                .iter()
+                .map(|record| record.frozen_brackets.allocation())
+                .collect()
+        };
+        let assert_unmoved = |iteration: u64,
+                              phase: &str,
+                              before: &[(usize, usize)],
+                              records: &[TrajectoryRecord]| {
+            let after = allocations(records);
+            if let Some(i) = before.iter().zip(&after).position(|(b, a)| b != a) {
+                panic!(
+                    "iteration {iteration}: the {phase} phase moved the slab of record {i} \
+                     from {:?} to {:?}",
+                    before[i], after[i]
+                );
+            }
+        };
+
+        let mut freeze_moved_a_capacity = false;
+        for iteration in 1..=4_u64 {
+            let before = allocations(&session.scratch.records);
+            let _ = session.run_forward_phase(iteration).unwrap();
+            assert_unmoved(iteration, "forward", &before, &session.scratch.records);
+            if iteration >= 2 {
+                for (pass, record) in session.scratch.records.iter().step_by(n_stages).enumerate() {
+                    let brackets = record.frozen_brackets.read(iteration, root_node_id);
+                    assert!(
+                        brackets.is_some_and(|b| !b.is_empty()),
+                        "iteration {iteration}: the forward wrote no root bracket on pass {pass}"
+                    );
+                }
+            }
+
+            let _ = session.run_backward_phase(iteration).unwrap();
+            assert_unmoved(iteration, "backward", &before, &session.scratch.records);
+
+            session.run_cut_management(iteration);
+            freeze_moved_a_capacity |= before
+                .iter()
+                .zip(allocations(&session.scratch.records))
+                .any(|(b, a)| b.1 != a.1);
+
+            grow_pools_for_next_iteration(
+                session.fcf,
+                u64::from(session.config.loop_config.forward_passes),
+                session.training_ctx.node_graph,
+                session.training_ctx.horizon.num_stages(),
+            );
+            let max_pool_capacity = session
+                .fcf
+                .pools
+                .iter()
+                .map(|p| p.capacity)
+                .max()
+                .unwrap_or(0);
+            session.fwd_pool.reserve_pool_scratch(
+                session.training_ctx,
+                session.sizing,
+                max_pool_capacity,
+            );
+            session.bwd_state.reserve_by_node_aggregate(
+                session.training_ctx.cut_state_layouts,
+                max_pool_capacity,
+            );
+            session.bwd_state.reserve_stage_noise(
+                session.training_ctx.stochastic.class_dimensions().total(),
+                max_pool_capacity,
+            );
+            session.scratch.reserve_lb_cut_scratch(
+                session.fcf.pools[lb_root_pool(session.training_ctx.node_graph).unwrap()].capacity,
+            );
+        }
+        assert!(
+            freeze_moved_a_capacity,
+            "no cut management moved a slab capacity, so the snapshots compare nothing the freeze moves"
+        );
     }
 }

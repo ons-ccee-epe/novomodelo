@@ -20,8 +20,7 @@ use crate::{
     training::{
         backward::{FoldedDuals, FoldedExtraction, extract_folded_duals, extract_state_duals_only},
         stage_solve_prep::{
-            BracketSource, FoldedCutRows, NoiseTermSource, StageSolvePrep, StageSolvePrepParams,
-            StateSource,
+            FoldedSolvePrepParams, StageSolvePrep, StageSolvePrepParams, StateSource,
         },
     },
     workspace::{CapturedBasis, SolverWorkspace},
@@ -257,44 +256,22 @@ fn prepare_stage_solve<S: SolverInterface + Send>(
                 &prep_params,
             );
         }
-        InflowForm::Compact => {
-            let mut slots = std::mem::take(&mut ws.scratch.cut_slots_buf);
-            slots.clear();
-            slots.extend(pool.active_cuts().map(|(slot, _, _)| slot));
-            let rows = FoldedCutRows {
+        InflowForm::Compact => StageSolvePrep::prepare_folded_single(
+            &mut ws.solver,
+            &mut ws.patch_buf,
+            &mut ws.scratch,
+            ctx,
+            training_ctx,
+            t,
+            &FoldedSolvePrepParams {
+                state_source: StateSource(&ws.current_state),
+                raw_noise,
                 pool,
                 projection: resident,
-                slots: &slots,
-                first_row: ctx.template(t).num_rows,
-            };
-            StageSolvePrep::pin_folded(
-                &mut ws.solver,
-                &mut ws.patch_buf,
-                &mut ws.scratch,
-                ctx,
-                training_ctx,
-                t,
-                StateSource(&ws.current_state),
-                &rows,
-                BracketSource::OnTheFly,
-            );
-            let open = match opening_solver {
-                StageOpeningSolver::Frozen => StageSolvePrep::open_folded,
-                StageOpeningSolver::Lazy(_) => StageSolvePrep::open_folded_lazy,
-            };
-            open(
-                &mut ws.solver,
-                &mut ws.patch_buf,
-                &mut ws.scratch,
-                ctx,
-                training_ctx,
-                t,
-                raw_noise,
-                &rows,
-                NoiseTermSource::OnTheFly,
-            );
-            ws.scratch.cut_slots_buf = slots;
-        }
+                opening_solver,
+            },
+            pool.active_cuts().map(|(slot, _, _)| slot),
+        ),
     }
 }
 

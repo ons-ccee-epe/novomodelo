@@ -5,17 +5,17 @@ use common::compact_map::{
     CompactMap, assert_compact_generic_rows_match, assert_compact_geometry_matches,
     assert_compact_scales_match, assert_compact_template_matches,
 };
+use common::row_families::{RowClass, census, classify_stage_rows, name};
 use common::{
     Emission, expected_study_count, for_each_study_in_both_forms, fresh_system_and_setup_as,
 };
+use novomodelo_sddp::lp::builder::RowFamily;
 use novomodelo_sddp::test_support::{
-    assert_all_templates_byte_identical, stage_state_box_bounds, template_fact_groups,
+    assert_all_templates_byte_identical, bits, stage_state_box_bounds, template_fact_groups,
 };
+use std::collections::BTreeSet;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
-
-fn bits(values: &[f64]) -> Vec<u64> {
-    values.iter().copied().map(f64::to_bits).collect()
-}
 
 fn nested_bits(rows: &[Vec<f64>]) -> Vec<Vec<u64>> {
     rows.iter().map(|row| bits(row)).collect()
@@ -141,4 +141,76 @@ fn every_study_compacts_to_its_logical_template() {
     assert_eq!(visited, expected_study_count(), "every study is visited");
     assert!(saw_commit_out, "no visited study has a commit_out range");
     assert!(saw_par_lags, "no visited study has PAR lags");
+}
+
+#[test]
+fn row_families_tile_every_stage_row_of_both_forms() {
+    let z_inflow = name(RowClass::Base(RowFamily::ZInflow));
+    let mut compact_families = BTreeSet::new();
+    let visited = for_each_study_in_both_forms(|key, _, logical, compact| {
+        let hydro_count = logical.stage_state().hydro_count;
+        let stages = logical.inputs.stage_data.stage_templates.templates.len();
+        assert_eq!(
+            stages,
+            compact.inputs.stage_data.stage_templates.templates.len(),
+            "{key}: template count"
+        );
+        for stage in 0..stages {
+            let [mut logical_census, mut compact_census] =
+                [("logical", logical), ("compact", compact)].map(|(form, setup)| {
+                    let num_rows =
+                        setup.inputs.stage_data.stage_templates.templates[stage].num_rows;
+                    let classes = catch_unwind(AssertUnwindSafe(|| {
+                        classify_stage_rows(setup, stage, num_rows)
+                    }))
+                    .unwrap_or_else(|payload| {
+                        let message = payload
+                            .downcast_ref::<String>()
+                            .map(String::as_str)
+                            .or_else(|| payload.downcast_ref::<&str>().copied())
+                            .unwrap_or("non-string panic payload");
+                        panic!("{key}, {form} form: {message}")
+                    });
+                    census(&classes)
+                });
+            assert_eq!(
+                logical_census.remove(z_inflow).unwrap_or(0),
+                hydro_count,
+                "{key} stage {stage}: logical z_inflow rows"
+            );
+            assert_eq!(
+                compact_census.remove(z_inflow).unwrap_or(0),
+                0,
+                "{key} stage {stage}: compact z_inflow rows"
+            );
+            assert_eq!(
+                logical_census, compact_census,
+                "{key} stage {stage}: row families outside z_inflow differ between forms"
+            );
+            compact_families.extend(compact_census.into_keys());
+        }
+    });
+
+    assert_eq!(visited, expected_study_count(), "every study is visited");
+    for family in [
+        RowFamily::Fpha,
+        RowFamily::Evaporation,
+        RowFamily::GenericConstraint,
+        RowFamily::WaterBalance,
+    ] {
+        assert!(
+            compact_families.contains(name(RowClass::Base(family))),
+            "no study reaches {family:?} on the compact form; reached {compact_families:?}"
+        );
+    }
+    assert!(
+        [
+            RowFamily::AnticipatedFishing,
+            RowFamily::AnticipatedStateOutDef,
+            RowFamily::AnticipatedSlotDefinition,
+        ]
+        .into_iter()
+        .any(|family| compact_families.contains(name(RowClass::Base(family)))),
+        "no study reaches an anticipated family on the compact form; reached {compact_families:?}"
+    );
 }

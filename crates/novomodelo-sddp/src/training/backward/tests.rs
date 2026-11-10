@@ -100,7 +100,7 @@ use crate::{
     test_support::{
         self, StageContextFixture,
         bound_recording::{BoundRecordingSolver, BoundWrite, RecordedSolve},
-        equipment_free_geometry, permissive_state_boxes,
+        empty_row_batch, equipment_free_geometry, permissive_state_boxes,
     },
     training::stage_solve_prep::{BracketSource, FoldedCutRows, StageSolvePrep, StateSource},
     trajectory::TrajectoryRecord,
@@ -250,17 +250,6 @@ impl MultiSuccessor {
             template_num_rows,
             cut_activity_tolerance,
         )
-    }
-}
-
-fn empty_row_batch() -> RowBatch {
-    RowBatch {
-        num_rows: 0,
-        row_starts: Vec::new(),
-        col_indices: Vec::new(),
-        values: Vec::new(),
-        row_lower: Vec::new(),
-        row_upper: Vec::new(),
     }
 }
 
@@ -5930,6 +5919,7 @@ struct CompactPass {
     intercepts: Vec<f64>,
     coefficients: Vec<f64>,
     slab_misses: u64,
+    successor_active_counts: Vec<u64>,
 }
 
 struct CompactUnit<S: SolverInterface> {
@@ -6312,6 +6302,9 @@ impl CompactBackwardCase {
             intercepts: fcf.pools[0].intercepts_prefix().to_vec(),
             coefficients: fcf.pools[0].coefficients_prefix().to_vec(),
             slab_misses: workspaces.iter().map(|ws| ws.scratch.slab_misses).sum(),
+            successor_active_counts: (0..fcf.pools[1].populated())
+                .map(|slot| fcf.pools[1].metadata(slot).active_count)
+                .collect(),
         }
     }
 
@@ -6542,7 +6535,6 @@ fn compact_forward_stage_writes_the_brackets_of_its_frozen_rows() {
     let node = NodePos(1);
     let node_id = case.node_graph.node_ids[node];
     let raw_noise = vec![0.0; case.stochastic.dim()];
-    let bits = |values: &[f64]| values.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
 
     case.with_contexts(|ctx, training_ctx| {
         let forward_record = |dcs: Option<DcsParams>| {
@@ -6578,16 +6570,16 @@ fn compact_forward_stage_writes_the_brackets_of_its_frozen_rows() {
             records.swap_remove(1)
         };
 
-        let expected = bits(&compact_slab_reference(&case, &COMPACT_X_HAT));
+        let expected = to_bits(&compact_slab_reference(&case, &COMPACT_X_HAT));
         assert_eq!(expected.len(), 2);
-        assert_ne!(expected, bits(&BARE_INTERCEPTS));
+        assert_ne!(expected, to_bits(&BARE_INTERCEPTS));
 
         let frozen = forward_record(None);
         let written = frozen
             .frozen_brackets
             .read(ITERATION, node_id)
             .expect("a frozen compact stage writes its brackets");
-        assert_eq!(bits(written), expected);
+        assert_eq!(to_bits(written), expected);
         assert_eq!(frozen.frozen_brackets.read(ITERATION + 1, node_id), None);
 
         let start = ITERATION - 1;
@@ -6711,7 +6703,7 @@ fn compact_slab_reference(case: &CompactBackwardCase, state: &[f64]) -> Vec<f64>
                 slots: &[0, 2],
                 first_row: COMPACT_TEMPLATE_ROWS,
             },
-            BracketSource::InUnit,
+            BracketSource::Computed,
         );
         reference.scratch.cut_bracket_buf.clone()
     })
@@ -6937,7 +6929,7 @@ fn compact_slab_lookup_maps_to_the_pin_source() {
 
     assert_eq!(
         spec(super::SlabLookup::Unavailable).bracket_source(1, node_id),
-        BracketSource::InUnit
+        BracketSource::Computed
     );
     assert_eq!(
         spec(frozen(7)).bracket_source(1, node_id),
@@ -7135,6 +7127,57 @@ fn compact_aggregate_first_agrees_with_weighted_per_opening_cuts() {
             .any(|(a, b)| (a - b).abs() > 1e-9),
         "the CVaR weights must move the cut off the probability-weighted one"
     );
+}
+
+#[test]
+fn pure_cvar_counts_every_binding_opening_as_expectation_does() {
+    const PURE_CVAR: RiskMeasure = RiskMeasure::CVaR {
+        alpha: 0.5,
+        lambda: 1.0,
+    };
+    let case = CompactBackwardCase::new(&[0.2, 0.3, 0.5]);
+    let states = compact_two_trial_states();
+
+    let unit = case.run_unit(
+        NoiseKeyedSolver::new(case.solution()),
+        PURE_CVAR,
+        Some(1e-9),
+        false,
+    );
+    let records = &unit.ws.backward_accum.folded_records;
+    let mut order: Vec<usize> = (0..records.len()).collect();
+    order.sort_by_key(|&i| records.key(i).1);
+    let costs: Vec<f64> = order.iter().map(|&i| records.view(i).objective).collect();
+    let mut risk_scratch = RiskMeasureScratch::new();
+    let weights = PURE_CVAR.opening_weights_into(&costs, &case.probabilities, &mut risk_scratch);
+    assert!(
+        weights.contains(&0.0),
+        "pure CVaR must give an opening an exact zero weight: {weights:?}"
+    );
+
+    let counts = |scheduler, risk_measure| {
+        let spec = PassSpec {
+            scheduler,
+            states: &states,
+            risk_measure,
+            hardest_first: false,
+            bypass_solve_caches: false,
+        };
+        case.run_pass_with(&spec, 2, || NoiseKeyedSolver::new(case.solution()))
+            .successor_active_counts
+    };
+    let openings_times_trials = (case.probabilities.len() * states.len()) as u64;
+    for scheduler in [BackwardScheduler::ByScenario {}, compact_by_node(2)] {
+        let pure = counts(scheduler, PURE_CVAR);
+        let expectation = counts(scheduler, RiskMeasure::Expectation);
+
+        assert_eq!(pure, expectation, "{scheduler:?}");
+        assert_eq!(
+            pure,
+            [openings_times_trials, 0, openings_times_trials],
+            "{scheduler:?}"
+        );
+    }
 }
 
 #[test]

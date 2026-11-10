@@ -2239,7 +2239,7 @@ fn fpha_lag_hydro_penalties() -> HydroPenalties {
     }
 }
 
-fn fpha_lag_stages() -> Vec<Stage> {
+fn fpha_lag_stages(openings: usize, last_stage_inflow_lags: bool) -> Vec<Stage> {
     let blocks: Vec<Block> = FPHA_LAG_BLOCK_HOURS
         .iter()
         .enumerate()
@@ -2265,11 +2265,11 @@ fn fpha_lag_stages() -> Vec<Stage> {
                     },
                     state_config: StageStateConfig {
                         storage: true,
-                        inflow_lags: true,
+                        inflow_lags: i + 1 < FPHA_LAG_N_STAGES || last_stage_inflow_lags,
                     },
                     risk_config: StageRiskConfig::Expectation,
                     scenario_config: ScenarioSourceConfig {
-                        branching_factor: 1,
+                        branching_factor: openings,
                         noise_method: NoiseMethod::Saa,
                     },
                 },
@@ -2538,7 +2538,19 @@ fn fpha_lag_generic_cap() -> (GenericConstraint, ResolvedGenericConstraintBounds
     (constraint, bounds)
 }
 
-fn build_fpha_lag_system() -> novomodelo_core::System {
+fn declared<T>(vector: &str, mut entries: Vec<T>, reverse: bool) -> Vec<T> {
+    if reverse {
+        assert!(
+            entries.len() >= 2,
+            "fpha_lag_study: the {vector} vector has {} entry, so reversing it permutes nothing",
+            entries.len()
+        );
+        entries.reverse();
+    }
+    entries
+}
+
+fn build_fpha_lag_system(options: FphaLagOptions) -> novomodelo_core::System {
     let bus = make_bus(
         FPHA_LAG_BUS_ID,
         BusSpec {
@@ -2560,19 +2572,30 @@ fn build_fpha_lag_system() -> novomodelo_core::System {
         })
         .collect();
     let (generic_constraint, generic_bounds) = fpha_lag_generic_cap();
+    let reverse = options.reverse_declaration_order;
+    let mut initial_conditions = fpha_lag_initial_conditions();
+    initial_conditions.storage = declared("initial storage", initial_conditions.storage, reverse);
+    initial_conditions.recent_observations = declared(
+        "recent observation",
+        initial_conditions.recent_observations,
+        reverse,
+    );
 
     SystemBuilder::new()
         .buses(vec![bus])
-        .hydros(fpha_lag_hydros())
-        .thermals(fpha_lag_thermals())
-        .stages(fpha_lag_stages())
+        .hydros(declared("hydro", fpha_lag_hydros(), reverse))
+        .thermals(declared("thermal", fpha_lag_thermals(), reverse))
+        .stages(fpha_lag_stages(
+            options.openings,
+            options.last_stage_inflow_lags,
+        ))
         .inflow_models(fpha_lag_inflow_models())
         .load_models(load_models)
         .bounds(fpha_lag_bounds())
         .penalties(fpha_lag_penalties())
         .generic_constraints(vec![generic_constraint])
         .resolved_generic_bounds(generic_bounds)
-        .initial_conditions(fpha_lag_initial_conditions())
+        .initial_conditions(initial_conditions)
         .policy_graph(HorizonGraph {
             season_map: Some(monthly_season_map()),
             ..HorizonGraph::default()
@@ -2618,10 +2641,44 @@ fn fpha_lag_hydro_models(system: &novomodelo_core::System) -> PrepareHydroModels
 /// the chronological stage only. The load exceeds both plants' capacity, with one
 /// ordinary and one `LeadStages(1)` anticipated thermal. Every stage's lag
 /// coefficients are nonzero and none has magnitude one. The feature checks live
-/// in `fpha_lag_study_checks` (`tests/cut_oracles.rs`).
+/// in `fpha_lag_study_checks` (`tests/cut_oracles/fpha_lag_study_checks.rs`).
 #[must_use]
 pub fn fpha_lag_study() -> (novomodelo_core::System, Config, PrepareHydroModelsResult) {
-    let system = build_fpha_lag_system();
+    fpha_lag_study_with(FphaLagOptions::default())
+}
+
+/// Each field is one variation of [`fpha_lag_study`]; the default is the study itself.
+#[derive(Clone, Copy, Debug)]
+pub struct FphaLagOptions {
+    /// Noise openings at every stage.
+    pub openings: usize,
+    /// Whether the last stage keeps inflow lags in its state; `false` leaves the pool before it storage-only.
+    pub last_stage_inflow_lags: bool,
+    /// Declares the hydros, thermals, recent observations and initial storages in reverse order.
+    pub reverse_declaration_order: bool,
+}
+
+impl Default for FphaLagOptions {
+    fn default() -> Self {
+        Self {
+            openings: 1,
+            last_stage_inflow_lags: true,
+            reverse_declaration_order: false,
+        }
+    }
+}
+
+/// [`fpha_lag_study`] varied by `options`; panics when `options.openings` is 0.
+#[must_use]
+pub fn fpha_lag_study_with(
+    options: FphaLagOptions,
+) -> (novomodelo_core::System, Config, PrepareHydroModelsResult) {
+    assert!(
+        options.openings >= 1,
+        "fpha_lag_study_with: openings must be at least 1, got {}",
+        options.openings
+    );
+    let system = build_fpha_lag_system(options);
     let hydro_models = fpha_lag_hydro_models(&system);
     (system, build_config(), hydro_models)
 }

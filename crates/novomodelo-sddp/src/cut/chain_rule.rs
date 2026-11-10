@@ -329,6 +329,9 @@ pub fn aggregate_first_cut_into(
 mod tests {
     use novomodelo_core::EntityId;
     use novomodelo_core::temporal::StageStateConfig;
+    use proptest::prelude::*;
+    use proptest::strategy::ValueTree;
+    use proptest::test_runner::{RngSeed, TestRunner};
 
     use super::{
         AggregateScratch, ChainRuleInputs, ChainRuleScratch, ChainRuleSlots, ChildOpenings,
@@ -338,7 +341,7 @@ mod tests {
     use crate::indexer::CutStateProjection;
     use crate::risk_measure::{BackwardOutcome, RiskMeasure, RiskMeasureScratch};
     use crate::setup::NodeId;
-    use crate::test_support::{par_with_ar_coefficients, state_layout};
+    use crate::test_support::{bits, par_with_ar_coefficients, state_layout};
 
     const ALL: StageStateConfig = StageStateConfig {
         storage: true,
@@ -436,10 +439,6 @@ mod tests {
             );
         }
         par
-    }
-
-    fn bits(values: &[f64]) -> Vec<u64> {
-        values.iter().map(|v| v.to_bits()).collect()
     }
 
     const CLOSED_FORM_X_HAT: [f64; 6] = [10.0, 20.0, 1.0, 2.0, 3.0, 4.0];
@@ -1023,5 +1022,580 @@ mod tests {
         };
 
         let _ = pair.run(&opening, &[0.0; 2]);
+    }
+
+    fn fixed_config() -> ProptestConfig {
+        ProptestConfig {
+            cases: 256,
+            rng_seed: RngSeed::Fixed(42),
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        }
+    }
+
+    fn gamma(n: usize) -> f64 {
+        let n_u = f64::from(u32::try_from(n).unwrap()) * (f64::EPSILON / 2.0);
+        n_u / (1.0 - n_u)
+    }
+
+    // The reference rounds K + 3 times per opening plus Ω_total in the weighted sum; the aggregate rounds Ω_c + K_c + C + 2 ≤ Ω_total + K + 3 times.
+    const fn lag_chain_length(openings: usize, rows: usize) -> usize {
+        openings + rows + 3
+    }
+
+    #[derive(Clone, Debug)]
+    struct FanCase {
+        n_hydros: usize,
+        lag_depth: usize,
+        measure: RiskMeasure,
+        x_hat: Vec<f64>,
+        probabilities: Vec<f64>,
+        resident: Vec<StageStateConfig>,
+        rows: Vec<Vec<Vec<f64>>>,
+        psi: Vec<Vec<f64>>,
+        opening_counts: Vec<usize>,
+        objectives: Vec<f64>,
+        state_duals: Vec<Vec<f64>>,
+        coupled_duals: Vec<Vec<f64>>,
+        cut_duals: Vec<Vec<(usize, f64)>>,
+    }
+
+    impl FanCase {
+        fn pairs(&self) -> Vec<Pair> {
+            (0..self.resident.len())
+                .map(|child| {
+                    let rows: Vec<&[f64]> = self.rows[child].iter().map(Vec::as_slice).collect();
+                    let par = if self.psi[child].is_empty() {
+                        PrecomputedPar::default()
+                    } else {
+                        par_with_psi(self.n_hydros, &self.psi[child])
+                    };
+                    Pair::new(
+                        (self.n_hydros, self.lag_depth),
+                        (self.resident[child], ALL),
+                        &rows,
+                        par,
+                    )
+                })
+                .collect()
+        }
+
+        fn duals(&self) -> Vec<OpeningDuals<'_>> {
+            (0..self.objectives.len())
+                .map(|at| OpeningDuals {
+                    objective: self.objectives[at],
+                    state_duals: &self.state_duals[at],
+                    coupled_duals: &self.coupled_duals[at],
+                    cut_duals: &self.cut_duals[at],
+                })
+                .collect()
+        }
+
+        fn children<'a>(
+            &self,
+            pairs: &'a [Pair],
+            duals: &'a [OpeningDuals<'a>],
+        ) -> Vec<ChildOpenings<'a>> {
+            let mut rest = duals;
+            pairs
+                .iter()
+                .zip(&self.opening_counts)
+                .map(|(pair, &count)| {
+                    let (openings, tail) = rest.split_at(count);
+                    rest = tail;
+                    ChildOpenings {
+                        inputs: pair.inputs(),
+                        openings,
+                    }
+                })
+                .collect()
+        }
+
+        fn weights(&self) -> Vec<f64> {
+            self.measure
+                .opening_weights_into(
+                    &self.objectives,
+                    &self.probabilities,
+                    &mut RiskMeasureScratch::new(),
+                )
+                .to_vec()
+        }
+
+        fn aggregate_first(&self, weights: &[f64]) -> (Vec<f64>, f64) {
+            let pairs = self.pairs();
+            let duals = self.duals();
+            let children = self.children(&pairs, &duals);
+            let mut scratch = reserved_scratch(&pairs.iter().collect::<Vec<_>>());
+            aggregate(&children, weights, &self.x_hat, &mut scratch)
+        }
+
+        fn weighted_per_opening(&self) -> (Vec<f64>, f64) {
+            let pairs = self.pairs();
+            let duals = self.duals();
+            let children = self.children(&pairs, &duals);
+            weighted_per_opening_cut(self.measure, &children, &self.probabilities, &self.x_hat)
+        }
+
+        fn removable_zero_weight(&self, weights: &[f64]) -> Option<usize> {
+            let mut first = 0;
+            for &count in &self.opening_counts {
+                if count > 1
+                    && let Some(at) = weights[first..first + count]
+                        .iter()
+                        .position(|&mu| mu == 0.0)
+                {
+                    return Some(first + at);
+                }
+                first += count;
+            }
+            None
+        }
+
+        fn retaining(&self, keep: impl Fn(usize) -> bool) -> Self {
+            let mut kept = Self {
+                resident: Vec::new(),
+                rows: Vec::new(),
+                psi: Vec::new(),
+                opening_counts: Vec::new(),
+                objectives: Vec::new(),
+                probabilities: Vec::new(),
+                state_duals: Vec::new(),
+                coupled_duals: Vec::new(),
+                cut_duals: Vec::new(),
+                ..self.clone()
+            };
+            let mut first = 0;
+            for (child, &count) in self.opening_counts.iter().enumerate() {
+                let retained: Vec<usize> = (first..first + count).filter(|&at| keep(at)).collect();
+                first += count;
+                if retained.is_empty() {
+                    continue;
+                }
+                kept.resident.push(self.resident[child]);
+                kept.rows.push(self.rows[child].clone());
+                kept.psi.push(self.psi[child].clone());
+                kept.opening_counts.push(retained.len());
+                for at in retained {
+                    kept.objectives.push(self.objectives[at]);
+                    kept.probabilities.push(self.probabilities[at]);
+                    kept.state_duals.push(self.state_duals[at].clone());
+                    kept.coupled_duals.push(self.coupled_duals[at].clone());
+                    kept.cut_duals.push(self.cut_duals[at].clone());
+                }
+            }
+            kept
+        }
+
+        fn with_zero_pairs(&self) -> Self {
+            let mut padded = self.clone();
+            let mut inserted = 0;
+            let mut first = 0;
+            for (child, &count) in self.opening_counts.iter().enumerate() {
+                for cut_duals in &mut padded.cut_duals[first..first + count] {
+                    for slot in 0..self.rows[child].len() {
+                        if cut_duals.iter().all(|&(held, _)| held != slot) {
+                            let zero = if inserted % 2 == 0 { 0.0 } else { -0.0 };
+                            cut_duals.push((slot, zero));
+                            inserted += 1;
+                        }
+                    }
+                    cut_duals.sort_by_key(|&(slot, _)| slot);
+                }
+                first += count;
+            }
+            padded
+        }
+
+        fn absolute_sums(&self, weights: &[f64]) -> (Vec<f64>, f64) {
+            let (n_hydros, lag_depth) = (self.n_hydros, self.lag_depth);
+            let mut slot_sums = vec![0.0; n_hydros + n_hydros * lag_depth];
+            let mut objective_sum = 0.0;
+            let mut first = 0;
+            for (child, &count) in self.opening_counts.iter().enumerate() {
+                for (at, &mu) in weights.iter().enumerate().skip(first).take(count) {
+                    objective_sum += mu * self.objectives[at].abs();
+                    for h in 0..n_hydros {
+                        slot_sums[h] += mu * self.state_duals[at][h].abs();
+                        for l in 0..lag_depth {
+                            let psi = self.psi[child].get(l).map_or(0.0, |psi| psi.abs());
+                            let mut through_g = self.coupled_duals[at][h].abs();
+                            let mut through_w = 0.0;
+                            if self.resident[child].inflow_lags {
+                                for &(slot, y) in &self.cut_duals[at] {
+                                    let row = &self.rows[child][slot];
+                                    through_g += (y * row[n_hydros + h]).abs();
+                                    if l + 1 < lag_depth {
+                                        through_w +=
+                                            (y * row[n_hydros + (l + 1) * n_hydros + h]).abs();
+                                    }
+                                }
+                            }
+                            slot_sums[n_hydros + l * n_hydros + h] +=
+                                mu * (psi * through_g + through_w);
+                        }
+                    }
+                }
+                first += count;
+            }
+            let state_sum: f64 = slot_sums
+                .iter()
+                .zip(&self.x_hat)
+                .map(|(sum, x)| sum * x.abs())
+                .sum();
+            (slot_sums, objective_sum + state_sum)
+        }
+
+        fn shape(&self) -> String {
+            let rows: Vec<usize> = self.rows.iter().map(Vec::len).collect();
+            format!(
+                "N={} L={} C={} K_c={rows:?} openings_c={:?} measure={:?}",
+                self.n_hydros,
+                self.lag_depth,
+                self.resident.len(),
+                self.opening_counts,
+                self.measure
+            )
+        }
+    }
+
+    fn weighted_per_opening_cut(
+        measure: RiskMeasure,
+        children: &[ChildOpenings<'_>],
+        probabilities: &[f64],
+        x_hat: &[f64],
+    ) -> (Vec<f64>, f64) {
+        let slots = children[0].inputs.slots;
+        let mut chain = ChainRuleScratch::new(slots.n_hydros(), slots.lag_depth());
+        let mut outcomes = Vec::with_capacity(probabilities.len());
+        for child in children {
+            for opening in child.openings {
+                let mut coefficients = vec![0.0; child.inputs.extracted.n_slots()];
+                let intercept = per_opening_cut_into(
+                    &child.inputs,
+                    opening,
+                    x_hat,
+                    &mut chain,
+                    &mut coefficients,
+                );
+                outcomes.push(BackwardOutcome {
+                    intercept,
+                    coefficients,
+                    objective_value: opening.objective,
+                });
+            }
+        }
+        let mut intercept = 0.0;
+        let mut coefficients = vec![0.0; children[0].inputs.extracted.n_slots()];
+        measure.aggregate_cut_into(
+            &outcomes,
+            probabilities,
+            &mut intercept,
+            &mut coefficients,
+            &mut RiskMeasureScratch::new(),
+        );
+        (coefficients, intercept)
+    }
+
+    fn per_child_normalised_weights(
+        measure: RiskMeasure,
+        opening_counts: &[usize],
+        costs: &[f64],
+        probabilities: &[f64],
+    ) -> Vec<f64> {
+        let mut scratch = RiskMeasureScratch::new();
+        let mut weights = Vec::with_capacity(costs.len());
+        let mut first = 0;
+        for &count in opening_counts {
+            let child = first..first + count;
+            let mass: f64 = probabilities[child.clone()].iter().sum();
+            let normalised: Vec<f64> = probabilities[child.clone()]
+                .iter()
+                .map(|p| p / mass)
+                .collect();
+            let child_weights =
+                measure.opening_weights_into(&costs[child], &normalised, &mut scratch);
+            weights.extend(child_weights.iter().map(|w| w * mass));
+            first += count;
+        }
+        weights
+    }
+
+    fn cvar_fan() -> impl Strategy<Value = FanCase> {
+        let measure = prop_oneof![
+            1 => Just(RiskMeasure::Expectation),
+            1 => (0.05..0.95_f64).prop_map(|alpha| RiskMeasure::CVaR { alpha, lambda: 0.5 }),
+            2 => (0.05..0.95_f64).prop_map(|alpha| RiskMeasure::CVaR { alpha, lambda: 1.0 }),
+        ];
+        let cut_dual = prop_oneof![
+            3 => Just(None),
+            5 => (-3.0..3.0_f64).prop_map(Some),
+            1 => Just(Some(0.0)),
+            1 => Just(Some(-0.0)),
+        ];
+        (1..=2_usize, 1..=3_usize)
+            .prop_flat_map(|(n_hydros, lag_depth)| {
+                let shape = (
+                    prop_oneof![3 => Just(ALL), 1 => Just(STORAGE_ONLY)],
+                    1..=6_usize,
+                    0..=lag_depth,
+                    1..=5_usize,
+                );
+                (
+                    Just(n_hydros),
+                    Just(lag_depth),
+                    prop::collection::vec(shape, 1..=3),
+                )
+            })
+            .prop_flat_map(move |(n_hydros, lag_depth, shapes)| {
+                let n_state = n_hydros + n_hydros * lag_depth;
+                let total_openings: usize =
+                    shapes.iter().map(|&(_, _, _, openings)| openings).sum();
+                let children: Vec<_> = shapes
+                    .into_iter()
+                    .map(|(resident, rows, order, openings)| {
+                        let width = if resident.inflow_lags {
+                            n_state
+                        } else {
+                            n_hydros
+                        };
+                        let opening = (
+                            -100.0..100.0_f64,
+                            prop::collection::vec(-5.0..5.0_f64, n_hydros),
+                            prop::collection::vec(-5.0..5.0_f64, n_hydros),
+                            (0..rows)
+                                .map(|slot| {
+                                    cut_dual.clone().prop_map(move |y| y.map(|y| (slot, y)))
+                                })
+                                .collect::<Vec<_>>()
+                                .prop_map(|pairs| pairs.into_iter().flatten().collect::<Vec<_>>()),
+                        );
+                        (
+                            Just(resident),
+                            prop::collection::vec(
+                                prop::collection::vec(-2.0..2.0_f64, width),
+                                rows,
+                            ),
+                            prop::collection::vec(-0.99..0.99_f64, order),
+                            prop::collection::vec(opening, openings),
+                        )
+                    })
+                    .collect();
+                (
+                    Just(n_hydros),
+                    Just(lag_depth),
+                    children,
+                    measure.clone(),
+                    prop::collection::vec(-10.0..10.0_f64, n_state),
+                    prop::collection::vec(1e-3..1.0_f64, total_openings),
+                )
+            })
+            .prop_map(
+                |(n_hydros, lag_depth, children, measure, x_hat, raw_probabilities)| {
+                    let mass: f64 = raw_probabilities.iter().sum();
+                    let mut case = FanCase {
+                        n_hydros,
+                        lag_depth,
+                        measure,
+                        x_hat,
+                        probabilities: raw_probabilities.iter().map(|p| p / mass).collect(),
+                        resident: Vec::new(),
+                        rows: Vec::new(),
+                        psi: Vec::new(),
+                        opening_counts: Vec::new(),
+                        objectives: Vec::new(),
+                        state_duals: Vec::new(),
+                        coupled_duals: Vec::new(),
+                        cut_duals: Vec::new(),
+                    };
+                    for (resident, rows, psi, openings) in children {
+                        case.resident.push(resident);
+                        case.rows.push(rows);
+                        case.psi.push(psi);
+                        case.opening_counts.push(openings.len());
+                        for (objective, state_duals, coupled_duals, cut_duals) in openings {
+                            case.objectives.push(objective);
+                            case.state_duals.push(state_duals);
+                            case.coupled_duals.push(coupled_duals);
+                            case.cut_duals.push(cut_duals);
+                        }
+                    }
+                    case
+                },
+            )
+    }
+
+    proptest! {
+        #![proptest_config(fixed_config())]
+
+        #[test]
+        fn aggregate_first_equals_weighted_per_opening_cuts(case in cvar_fan()) {
+            let shape = case.shape();
+            let weights = case.weights();
+            let (coefficients, alpha) = case.aggregate_first(&weights);
+            let (reference, reference_alpha) = case.weighted_per_opening();
+            let (slot_sums, intercept_sum) = case.absolute_sums(&weights);
+            let max_rows = case.rows.iter().map(Vec::len).max().unwrap();
+            let n_beta = lag_chain_length(weights.len(), max_rows);
+
+            for (j, (got, want)) in coefficients.iter().zip(&reference).enumerate() {
+                let bound = 2.0 * gamma(n_beta) * slot_sums[j];
+                prop_assert!(
+                    (got - want).abs() <= bound,
+                    "{shape}: slot {j}: aggregate {got} vs reference {want}, S_j {}, n_beta {n_beta}, bound {bound}",
+                    slot_sums[j]
+                );
+            }
+            let alpha_bound = 2.0 * gamma(n_beta + coefficients.len() + 2) * intercept_sum;
+            prop_assert!(
+                (alpha - reference_alpha).abs() <= alpha_bound,
+                "{shape}: intercept: aggregate {alpha} vs reference {reference_alpha}, T_alpha {intercept_sum}, bound {alpha_bound}"
+            );
+
+            let single = case.retaining(|at| at == 0);
+            let (pairs, duals) = (single.pairs(), single.duals());
+            let (expected, expected_alpha) = pairs[0].run(&duals[0], &single.x_hat);
+            let (got, got_alpha) = single.aggregate_first(&[1.0]);
+            prop_assert_eq!(bits(&got), bits(&expected), "{}: one opening at unit weight", shape);
+            prop_assert_eq!(got_alpha.to_bits(), expected_alpha.to_bits());
+
+            if let Some(removed) = case.removable_zero_weight(&weights) {
+                let reduced = case.retaining(|at| at != removed);
+                let mut reduced_weights = weights.clone();
+                reduced_weights.remove(removed);
+                let (got, got_alpha) = reduced.aggregate_first(&reduced_weights);
+                prop_assert_eq!(bits(&got), bits(&coefficients), "{}: opening {} removed at zero weight", shape, removed);
+                prop_assert_eq!(got_alpha.to_bits(), alpha.to_bits());
+            }
+
+            let (got, got_alpha) = case.with_zero_pairs().aggregate_first(&weights);
+            prop_assert_eq!(bits(&got), bits(&coefficients), "{}: zero pairs inserted", shape);
+            prop_assert_eq!(got_alpha.to_bits(), alpha.to_bits());
+        }
+    }
+
+    #[test]
+    fn the_fan_strategy_draws_joint_weights_that_per_child_normalisation_would_change() {
+        let strategy = cvar_fan();
+        let mut runner = TestRunner::new(fixed_config());
+        let (mut joint_differs, mut removable_zero_weight) = (false, false);
+        for _ in 0..256 {
+            let case = strategy.new_tree(&mut runner).unwrap().current();
+            let weights = case.weights();
+            let normalised = per_child_normalised_weights(
+                case.measure,
+                &case.opening_counts,
+                &case.objectives,
+                &case.probabilities,
+            );
+            let risk_averse =
+                matches!(case.measure, RiskMeasure::CVaR { lambda, .. } if lambda > 0.0);
+            joint_differs |= case.resident.len() >= 2
+                && risk_averse
+                && weights
+                    .iter()
+                    .zip(&normalised)
+                    .any(|(joint, per_child)| (joint - per_child).abs() > 1e-6);
+            removable_zero_weight |= case.removable_zero_weight(&weights).is_some();
+        }
+
+        assert!(
+            joint_differs,
+            "no sampled case had C >= 2, lambda > 0 and joint weights apart from the per-child-normalised ones"
+        );
+        assert!(
+            removable_zero_weight,
+            "no sampled case had a zero weight on an opening whose child keeps another"
+        );
+    }
+
+    #[test]
+    fn aggregate_under_pure_cvar_matches_the_weighted_per_opening_cuts() {
+        let x_hat = [10.0, 1.0, 2.0];
+        let pair0 = Pair::new(
+            (1, 2),
+            (ALL, ALL),
+            &[&[0.0, 1.0, 2.0], &[0.0, 3.0, 1.0], &[0.0, 2.0, 4.0]],
+            par_with_psi(1, &[0.5, 0.25]),
+        );
+        let pair1 = Pair::new(
+            (1, 2),
+            (ALL, ALL),
+            &[&[0.0, 2.0, 2.0], &[0.0, 1.0, 3.0]],
+            par_with_psi(1, &[0.5, 0.25]),
+        );
+        let child0 = [
+            OpeningDuals {
+                objective: 30.0,
+                state_duals: &[-1.0],
+                coupled_duals: &[2.0],
+                cut_duals: &[(0, 1.0), (2, 0.5)],
+            },
+            OpeningDuals {
+                objective: 40.0,
+                state_duals: &[-2.0],
+                coupled_duals: &[4.0],
+                cut_duals: &[(0, 1.0), (1, 2.0)],
+            },
+            OpeningDuals {
+                objective: 10.0,
+                state_duals: &[-3.0],
+                coupled_duals: &[6.0],
+                cut_duals: &[(1, 4.0), (2, 2.0)],
+            },
+        ];
+        let child1 = [
+            OpeningDuals {
+                objective: 50.0,
+                state_duals: &[-1.0],
+                coupled_duals: &[1.0],
+                cut_duals: &[(0, 3.0)],
+            },
+            OpeningDuals {
+                objective: 20.0,
+                state_duals: &[-2.0],
+                coupled_duals: &[8.0],
+                cut_duals: &[(1, 1.0)],
+            },
+        ];
+        let measure = RiskMeasure::CVaR {
+            alpha: 0.4,
+            lambda: 1.0,
+        };
+        let probabilities = [0.25, 0.125, 0.125, 0.25, 0.25];
+        let costs = [30.0, 40.0, 10.0, 50.0, 20.0];
+        let mut weight_scratch = RiskMeasureScratch::new();
+        let weights = measure.opening_weights_into(&costs, &probabilities, &mut weight_scratch);
+        let normalised = per_child_normalised_weights(measure, &[3, 2], &costs, &probabilities);
+
+        assert_eq!(weights, [0.0625, 0.3125, 0.0, 0.625, 0.0]);
+        assert_eq!(normalised, [0.1875, 0.3125, 0.0, 0.5, 0.0]);
+        assert!(
+            child0
+                .iter()
+                .chain(&child1)
+                .zip(weights)
+                .any(|(opening, &mu)| mu == 0.0 && opening.cut_duals.iter().any(|&(_, y)| y != 0.0)),
+            "a zero-weight opening must carry non-zero cut duals"
+        );
+
+        let children = [
+            ChildOpenings {
+                inputs: pair0.inputs(),
+                openings: &child0,
+            },
+            ChildOpenings {
+                inputs: pair1.inputs(),
+                openings: &child1,
+            },
+        ];
+        let (reference, reference_alpha) =
+            weighted_per_opening_cut(measure, &children, &probabilities, &x_hat);
+        let mut scratch = reserved_scratch(&[&pair0, &pair1]);
+        let (coefficients, alpha) = aggregate(&children, weights, &x_hat, &mut scratch);
+
+        assert_eq!(coefficients, [-1.3125, 7.28125, 1.015_625]);
+        assert_eq!(alpha, 49.4375);
+        assert_eq!(coefficients, reference);
+        assert_eq!(alpha, reference_alpha);
     }
 }

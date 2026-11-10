@@ -65,6 +65,21 @@ impl StageOpeningSolver {
         matches!(self, StageOpeningSolver::Frozen)
     }
 
+    /// Hands the cut rows' `rhs`, which the opening phase has filled in either
+    /// mode, to the solver as one range from `first_row`; the lazy mode pushes
+    /// each row it makes resident instead.
+    pub(crate) fn push_cut_rhs<S: SolverInterface>(
+        &self,
+        solver: &mut S,
+        first_row: usize,
+        rhs: &[f64],
+    ) {
+        match self {
+            StageOpeningSolver::Frozen => solver.set_row_lower_bounds_range(first_row, rhs),
+            StageOpeningSolver::Lazy(_) => {}
+        }
+    }
+
     /// Solves the LP loaded in `ws` for `inputs` in this mode.
     ///
     /// `cut_rows` are the frozen LP's cut rows in row order; the lazy mode

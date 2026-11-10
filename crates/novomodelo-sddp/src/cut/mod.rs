@@ -40,6 +40,8 @@ pub mod fcf;
 mod ownership;
 pub mod pool;
 pub mod rhs;
+#[cfg(any(test, feature = "test-support"))]
+pub mod rhs_reference;
 pub mod row;
 pub mod row_map;
 #[cfg(test)]

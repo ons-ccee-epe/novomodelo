@@ -36,8 +36,9 @@ pairing projected coefficient slot `j` with global state dimension
 owner; every backward intercept site routes through it
 (`backward/replicated.rs`, `backward/outcome_aggregation.rs`'s
 `write_opening_outcome`, which the by-scenario and by-node schedulers share on
-the logical form, and `cut/chain_rule.rs`'s `per_opening_cut_into` and
-`aggregate_first_cut_into`, which the compact form of both schedulers reaches
+the logical form, and `cut/chain_rule.rs`'s `per_opening_cut_into`, reached
+from `backward/replicated.rs` and `forward/node_solve.rs`, and
+`aggregate_first_cut_into`, reached by the compact form of both schedulers
 through `backward/by_scenario.rs`'s `aggregate_folded_cut`).
 
 A positional `coefficients.iter().zip(x̂)` is the wrong-but-compiling
@@ -77,8 +78,10 @@ identity of IEEE-754 addition: `-0.0 + x` has the bits of `x` for every `x`,
 sign.
 
 The canonical cut-RHS dots of `cut/rhs.rs` start at +0.0: S, P and W are
-ascending-slot dots from +0.0 inside `cut_bracket` and `cut_noise_term`, which
-`cut_brackets_into` and `cut_rhs_into` call per row. The aggregate's ȳ slots
+ascending-slot dots from +0.0. `cut_brackets_into` is the production owner of S
+and P, a batched form with lanes across rows only, and
+`rhs_reference::cut_bracket` is their scalar statement; `cut_noise_term` owns W,
+which `cut_rhs_into` calls per row. The aggregate's ȳ slots
 also start at +0.0 (`AggregateScratch` holds every one at 0.0 between calls).
 Every writer of the canonical cut-row RHS must produce the same bits, so a
 writer that recomputes an RHS calls the canonical function, never a re-derived
@@ -98,13 +101,20 @@ The wrong-but-compiling alternatives:
   of a `cut/rhs.rs` dot: an empty dot, or one whose every product is −0.0
   (a negative coefficient times a zero value), then returns −0.0 where the
   canonical function returns +0.0, so that writer's RHS no longer has the bits
-  of every writer that calls the canonical function.
+  of every writer that calls the canonical function;
+- a reassociated row in the batched form of `cut_brackets_into`: each chunk of
+  the shifted range summed into its own partial and the partials added, or a
+  lane taken across one row's slots. The row's dot is no longer the ascending
+  fold from +0.0, so its bracket no longer has the bits of
+  `rhs_reference::cut_bracket`.
 
-All three compile, and each breaks a bitwise identity between a cut and its
+All four compile, and each breaks a bitwise identity between a cut and its
 per-opening form or between two writers of one cut's RHS.
 Read: `cut/chain_rule.rs` (`per_opening_cut_into`, `lag_coefficients_into`,
 `aggregate_first_cut_into`, `AggregateScratch`), `cut/rhs.rs` (the module
-documentation, `cut_bracket`, `cut_noise_term`). Pinned by
+documentation, `cut_brackets_into`, the batched form, `cut_noise_term`),
+`cut/rhs_reference.rs` (`rhs_reference::cut_bracket`, the scalar statement).
+Pinned by
 `zero_cut_duals_leave_the_bits_unchanged` (padding the cut duals with +0.0 and
 −0.0 entries over infinite pool rows changes no bit),
 `single_accumulator_keeps_the_sign_of_a_negated_zero_coupling` (a zero
@@ -117,9 +127,13 @@ opening at weight 1.0, with a −0.0 state dual, returns the per-opening
 coefficients and intercept bit for bit) and
 `a_zero_weight_opening_changes_no_bit` (a zero-weight opening whose products
 would flip each −0.0 accumulator changes no bit of the cut or its intercept),
-all in `cut/chain_rule.rs`; and
-`bracket_accumulators_start_at_positive_zero` (`cut/rhs.rs`: a bracket whose
-every product is −0.0 is +0.0, where a fold from −0.0 gives −0.0).
+all in `cut/chain_rule.rs`; and, in `cut/rhs.rs`,
+`bracket_accumulators_start_at_positive_zero` (a bracket whose every product is
+−0.0 is +0.0 over one row and over a full group of lanes, where a fold from −0.0
+gives −0.0) and `batched_brackets_equal_the_scalar_reference_bit_for_bit` (every
+bracket of the batched form equals `rhs_reference::cut_bracket` bit for bit over
+random row subsets, every remainder of a group included; a chunk-summed row
+fails it).
 
 ## State pinning uses column bounds, not equality rows
 
@@ -183,7 +197,9 @@ cost 0 under `truncation` or to `[0, l*]` at `c_inf·T` (the hydro's
 noise. `transform_inflow_noise` writes the physical bounds and
 `apply_inflow_slack_col_bounds` applies them divided by `col_scale`,
 identically at every solve site (forward, enumerated forward, backward per
-opening, simulation, lower bound) through `StageSolvePrep::run`.
+opening, simulation, lower bound) through `StageSolvePrep::run` on the logical
+form and the folded opening phase (`StageSolvePrep::open_folded`) on the compact
+form.
 
 Wrong-but-compiling alternatives:
 
@@ -212,13 +228,14 @@ is then not guaranteed to stay below the upper bound, and a `gap` rule
 reads `(UB − LB).max(0.0)`. This is not remedied. Each stored cut stays a
 valid minorant of the successor value with the slack bounds frozen at its own
 trial state, which is what the cut oracles assert (`check_pool` in
-`tests/common/cut_oracles.rs`), so validity is checked on every truncation
+`tests/common/stored_cut_oracles.rs`), so validity is checked on every truncation
 deck with no exclusion.
 
 Read: `stochastic/noise.rs` (`transform_inflow_noise`,
 `apply_inflow_slack_col_bounds`), `training/stage_solve_prep.rs`
-(`StageSolvePrep::run`), `lp/builder/columns.rs` (`fill_inflow_slack_columns`),
-`lp/builder/entries.rs` (`push_local_inflow_coupling`),
+(`StageSolvePrep::run`, `StageSolvePrep::open_folded`), `lp/builder/columns.rs`
+(`fill_inflow_slack_columns`), `lp/builder/entries.rs`
+(`push_local_inflow_coupling`),
 `lp/builder/generic_constraints.rs` (`push_local_inflow_rate`),
 `stochastic/inflow_method.rs` (`truncates`, `slack_is_priced`),
 `solve/stage_solve.rs` (`assemble_outgoing_state`). Pinned by
@@ -1369,9 +1386,10 @@ Read: `stochastic/noise.rs` (`transform_ncs_noise`).
 
 ## Lower-bound evaluation must patch NCS
 
-`evaluate_lower_bound` patches NCS column bounds per opening via
-`StageSolvePrep::run`'s internal `transform_ncs_noise` call, exactly as the
-forward and backward passes do. Skipping the patch understates the bound (a
+`evaluate_lower_bound` patches NCS column bounds per opening via the internal
+`transform_ncs_noise` call of `StageSolvePrep::run` on the logical form and of
+`StageSolvePrep::open_folded` on the compact form, exactly as the forward and
+backward passes do. Skipping the patch understates the bound (a
 real bug caught during D15). The patch inputs ride on `StageContext`
 (`ncs_max_gen`, `ncs_allow_curtailment`), the same struct every other solve
 site reads.

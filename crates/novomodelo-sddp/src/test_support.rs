@@ -57,7 +57,11 @@ use crate::StudySetup;
 #[cfg(test)]
 use crate::bucket_topology::{TransitBucketTopology, build_transit_bucket_topology};
 use crate::context::{StageContext, TrainingContext};
+use crate::cut::chain_rule::{
+    ChainRuleInputs, ChainRuleScratch, OpeningDuals, per_opening_cut_into,
+};
 use crate::cut::pool::CutPool;
+use crate::cut::row::fill_cut_rows;
 use crate::error::SddpError;
 use crate::horizon_mode::HorizonMode;
 use crate::hydro_models::{
@@ -73,8 +77,8 @@ use crate::lp::builder::{
     encode_stage_templates_facts, encode_time_value_facts,
 };
 use crate::lp::indexer::{
-    AnticipatedPlants, BlockRowFamily, CutStateProjection, EntityPositions, HydroCellIndex,
-    HydroSys, InflowForm, REGION_ORDER, StateDim, StateSpace, StudyDimensions,
+    AnticipatedPlants, BlockRowFamily, ChainRuleSlots, CutStateProjection, EntityPositions,
+    HydroCellIndex, HydroSys, InflowForm, REGION_ORDER, StateDim, StateSpace, StudyDimensions,
 };
 use crate::noise::{
     DownstreamAccumState, LagAccumState, apply_inflow_slack_col_bounds, transform_inflow_noise,
@@ -90,17 +94,18 @@ use crate::setup::node_graph::{
 use crate::setup::unresolved_boundary_requirements;
 #[cfg(test)]
 use crate::setup::{ResolvedStateLayout, resolve_state_layout};
+use crate::solve::StageOpeningSolver;
 use crate::solve::stage_solve::{StageInputs, assemble_outgoing_state, run_stage_solve};
 use crate::solver_stats::SolverStatsDelta;
 #[cfg(test)]
 use crate::time_value::DeliveryCalendar;
 use crate::time_value::{PostStudyResolved, TimeValue};
 use crate::training::backward::{
-    extract_state_duals_only, fill_external_opening_noise, write_opening_outcome,
+    FoldedDuals, FoldedExtraction, extract_folded_duals, extract_state_duals_only,
+    fill_external_opening_noise, write_opening_outcome,
 };
 use crate::training::stage_solve_prep::{
-    BracketSource, FoldedCutRows, NoiseTermSource, StageSolvePrep, StageSolvePrepParams,
-    StateSource,
+    FoldedSolvePrepParams, StageSolvePrep, StageSolvePrepParams, StateSource,
 };
 use crate::trajectory::TrajectoryRecord;
 use crate::workspace::{CapturedBasis, ScratchBuffers, SolverWorkspace, WorkspaceSizing};
@@ -113,6 +118,7 @@ use novomodelo_solver::{
 pub mod bound_recording;
 pub mod decks;
 pub mod expander;
+pub mod solve_sites;
 pub mod template_structure;
 
 pub(crate) mod ctx_fixture;
@@ -164,6 +170,25 @@ impl Default for GeometryDims {
             lead_stages: 0,
             anticipated_plants: AnticipatedPlants::default(),
         }
+    }
+}
+
+/// The IEEE-754 bit patterns of `values`, for bit-for-bit comparisons.
+#[must_use]
+pub fn bits(values: &[f64]) -> Vec<u64> {
+    values.iter().copied().map(f64::to_bits).collect()
+}
+
+/// The well-formed empty [`RowBatch`]: `row_starts` has length `num_rows + 1`.
+#[must_use]
+pub fn empty_row_batch() -> RowBatch {
+    RowBatch {
+        num_rows: 0,
+        row_starts: vec![0],
+        col_indices: Vec::new(),
+        values: Vec::new(),
+        row_lower: Vec::new(),
+        row_upper: Vec::new(),
     }
 }
 
@@ -1776,6 +1801,26 @@ pub fn patch_backward_opening_for_counterfactual_probe<S: SolverInterface + Send
     );
 }
 
+/// Writes the compact cut rows of `slots` of `pool` into `batch`, in list order, active or not.
+pub fn cut_rows_for_slots_into(
+    batch: &mut RowBatch,
+    pool: &CutPool,
+    slots: &[usize],
+    state: &StateSpace,
+    cut_state: &CutStateProjection,
+    col_scale: &[f64],
+) {
+    fill_cut_rows(
+        batch,
+        slots
+            .iter()
+            .map(|&slot| (slot, pool.intercept(slot), pool.coefficient_row(slot))),
+        state,
+        cut_state,
+        col_scale,
+    );
+}
+
 /// The cut rows of the LP a [`folded_prep_for_probe`] call prepares.
 pub struct FoldedProbeCuts<'a> {
     /// The resident pool the cut rows come from.
@@ -1786,9 +1831,8 @@ pub struct FoldedProbeCuts<'a> {
     pub slots: &'a [usize],
 }
 
-/// Prepare one folded stage-LP solve: the single-solve folded prep
-/// (`StageSolvePrep::pin_folded` then `StageSolvePrep::open_folded`), delegated
-/// verbatim with no probe-side copy of the pipeline.
+/// Prepare one folded stage-LP solve through its production owner,
+/// [`StageSolvePrep::prepare_folded_single`], with the frozen opening solver.
 pub fn folded_prep_for_probe<S: SolverInterface + Send>(
     ws: &mut SolverWorkspace<S>,
     ctx: &StageContext<'_>,
@@ -1798,34 +1842,176 @@ pub fn folded_prep_for_probe<S: SolverInterface + Send>(
     raw_noise: &[f64],
     cuts: &FoldedProbeCuts<'_>,
 ) {
-    let rows = FoldedCutRows {
-        pool: cuts.pool,
-        projection: &training_ctx.cut_state_layouts[cuts.pool_id],
-        slots: cuts.slots,
-        first_row: ctx.templates[stage.0].num_rows,
-    };
-    StageSolvePrep::pin_folded(
+    StageSolvePrep::prepare_folded_single(
         &mut ws.solver,
         &mut ws.patch_buf,
         &mut ws.scratch,
         ctx,
         training_ctx,
         stage,
-        StateSource(pinned_state),
-        &rows,
-        BracketSource::OnTheFly,
+        &FoldedSolvePrepParams {
+            state_source: StateSource(pinned_state),
+            raw_noise,
+            pool: cuts.pool,
+            projection: &training_ctx.cut_state_layouts[cuts.pool_id],
+            opening_solver: &StageOpeningSolver::Frozen,
+        },
+        cuts.slots.iter().copied(),
     );
-    StageSolvePrep::open_folded(
-        &mut ws.solver,
-        &mut ws.patch_buf,
-        &mut ws.scratch,
+}
+
+/// One compact opening a [`folded_opening_cut_for_probe`] call solves.
+pub struct FoldedProbeOpening<'a> {
+    /// The solved stage.
+    pub stage: StageIdx,
+    /// The incoming trial state x̂, one entry per state dimension.
+    pub pinned_state: &'a [f64],
+    /// The opening's raw noise.
+    pub raw_noise: &'a [f64],
+    /// The cut rows of the loaded LP.
+    pub cuts: FoldedProbeCuts<'a>,
+    /// The index of the pool the new cut joins, which selects the extracted projection.
+    pub extracted_pool_id: usize,
+}
+
+/// The cut one compact opening yields, with the solution and duals it is built from.
+///
+/// `primal`, `dual` and `reduced_costs` are the loaded LP's scaled solution; the other fields
+/// are in unscaled cost units.
+pub struct FoldedProbeCut {
+    /// The opening's objective Q.
+    pub objective: f64,
+    /// The cut intercept α.
+    pub intercept: f64,
+    /// The cut coefficients, in the extracted projection's slot order.
+    pub coefficients: Vec<f64>,
+    /// Scaled column values.
+    pub primal: Vec<f64>,
+    /// Scaled row duals.
+    pub dual: Vec<f64>,
+    /// Scaled reduced costs.
+    pub reduced_costs: Vec<f64>,
+    /// The extracted non-lag slots' state duals, in slot order.
+    pub state_duals: Vec<f64>,
+    /// (Gᵀπ)_h per hydro.
+    pub coupled_duals: Vec<f64>,
+    /// The resident cut-row duals `(slot, y)`, zero-free, by ascending slot.
+    pub cut_dual_slots: Vec<(usize, f64)>,
+    /// The realized inflow ẑ per hydro the prep wrote, in m³/s.
+    pub realized_inflow: Vec<f64>,
+    chain_scratch: ChainRuleScratch,
+}
+
+impl FoldedProbeCut {
+    /// Empty buffers, with the chain-rule scratch sized for `training_ctx`'s state layout.
+    #[must_use]
+    pub fn new(training_ctx: &TrainingContext<'_>) -> Self {
+        let state = training_ctx.state;
+        Self {
+            objective: 0.0,
+            intercept: 0.0,
+            coefficients: Vec::new(),
+            primal: Vec::new(),
+            dual: Vec::new(),
+            reduced_costs: Vec::new(),
+            state_duals: Vec::new(),
+            coupled_duals: Vec::new(),
+            cut_dual_slots: Vec::new(),
+            realized_inflow: Vec::new(),
+            chain_scratch: ChainRuleScratch::new(state.hydro_count, state.max_par_order),
+        }
+    }
+}
+
+/// Solve one compact opening and build its cut through the production extraction and chain
+/// rule, [`extract_folded_duals`] and [`per_opening_cut_into`].
+///
+/// The caller loads the compact template and appends the rows of `opening.cuts.slots`, in that
+/// order, first. A repeat call at the same stage and row count allocates nothing in `out`.
+///
+/// # Errors
+///
+/// Returns [`SddpError::Infeasible`] when the LP is infeasible, or [`SddpError::Solver`] for any
+/// other solver failure.
+pub fn folded_opening_cut_for_probe<S: SolverInterface + Send>(
+    ws: &mut SolverWorkspace<S>,
+    ctx: &StageContext<'_>,
+    training_ctx: &TrainingContext<'_>,
+    opening: &FoldedProbeOpening<'_>,
+    out: &mut FoldedProbeCut,
+) -> Result<(), SddpError> {
+    let stage = opening.stage;
+    let cuts = &opening.cuts;
+    folded_prep_for_probe(
+        ws,
         ctx,
         training_ctx,
         stage,
-        raw_noise,
-        &rows,
-        NoiseTermSource::OnTheFly,
+        opening.pinned_state,
+        opening.raw_noise,
+        cuts,
     );
+    out.realized_inflow.clear();
+    out.realized_inflow
+        .extend_from_slice(&ws.scratch.realized_inflow_buf);
+    let view = ws.solver.solve(None).map_err(|e| match e {
+        SolverError::Infeasible => SddpError::Infeasible {
+            stage: stage.0,
+            iteration: 0,
+            scenario: 0,
+        },
+        other => SddpError::Solver(other),
+    })?;
+
+    out.primal.clear();
+    out.primal.extend_from_slice(view.primal);
+    out.dual.clear();
+    out.dual.extend_from_slice(view.dual);
+    out.reduced_costs.clear();
+    out.reduced_costs.extend_from_slice(view.reduced_costs);
+
+    let template = ctx.template(stage);
+    let resident = &training_ctx.cut_state_layouts[cuts.pool_id];
+    let extracted = &training_ctx.cut_state_layouts[opening.extracted_pool_id];
+    out.objective = extract_folded_duals(
+        &view,
+        &FoldedExtraction {
+            extracted,
+            col_scale: &template.col_scale,
+            row_scale: &template.row_scale,
+            coupling: &ctx.inflow_coupling[stage.0],
+            first_cut_row: template.num_rows,
+            cut_row_slots: cuts.slots,
+            read_cut_duals: resident.has_lag_slots(),
+        },
+        &mut FoldedDuals {
+            state_duals: &mut out.state_duals,
+            coupled_duals: &mut out.coupled_duals,
+            cut_dual_slots: &mut out.cut_dual_slots,
+        },
+    );
+
+    out.coefficients.clear();
+    out.coefficients.resize(extracted.n_slots(), 0.0);
+    out.intercept = per_opening_cut_into(
+        &ChainRuleInputs {
+            slots: &ChainRuleSlots::compose(training_ctx.state, resident, extracted),
+            resident_pool: cuts.pool,
+            extracted,
+            par: training_ctx.stochastic.par(),
+            stage: stage.0,
+        },
+        &OpeningDuals {
+            objective: out.objective,
+            state_duals: &out.state_duals,
+            coupled_duals: &out.coupled_duals,
+            cut_duals: &out.cut_dual_slots,
+        },
+        opening.pinned_state,
+        &mut out.chain_scratch,
+        &mut out.coefficients,
+    );
+    Ok(())
 }
 
 /// Run one stage-LP solve exactly as production's shared `run_stage_solve`
@@ -4013,7 +4199,7 @@ pub fn dcs_k_fan_setup(k: usize, forward_passes: u32, max_iterations: u32) -> KF
 /// Per-child External inflow realizations for [`external_distinct_fan_setup`]:
 /// materially different m³/s so a child-0 collapse (every leaf priced against
 /// column 0) yields a different value than the correct fan-out.
-const EXTERNAL_FAN_INFLOWS: [f64; 3] = [20.0, 90.0, 160.0];
+const EXTERNAL_FAN_INFLOWS: [f64; 4] = [20.0, 90.0, 160.0, 230.0];
 
 /// Deterministic external LOAD (MW) every column of the all-external fan carries:
 /// equal to the load-model mean so the standardized eta is zero and load is
@@ -4153,7 +4339,8 @@ fn build_external_distinct_fan_setup(
 ) -> StudySetup {
     assert!(
         k >= 2 && k <= EXTERNAL_FAN_INFLOWS.len(),
-        "external fan k in 2..=3"
+        "external fan k in 2..={}",
+        EXTERNAL_FAN_INFLOWS.len()
     );
 
     let policy_graph = {
@@ -4290,7 +4477,8 @@ pub fn external_root_fan_setup(k: usize, max_iterations: u32) -> StudySetup {
 
     assert!(
         k >= 2 && k <= EXTERNAL_FAN_INFLOWS.len(),
-        "external fan k in 2..=3"
+        "external fan k in 2..={}",
+        EXTERNAL_FAN_INFLOWS.len()
     );
 
     let policy_graph = {
@@ -5197,12 +5385,38 @@ fn dual_folding_system(fold: LagFold) -> System {
 /// Never in practice — every literal is a hand-checked, internally-consistent
 /// fixture (as [`k_fan_setup`]); `build_stochastic_context`/`StudySetup::new`
 /// only error on a malformed study.
+#[must_use]
+pub fn dual_folding_setup(fold: LagFold, forward_passes: u32, max_iterations: u32) -> StudySetup {
+    build_dual_folding_setup(fold, forward_passes, max_iterations, InflowForm::Logical)
+}
+
+/// [`dual_folding_setup`] as a `(logical, compact)` pair of the same study.
+///
+/// # Panics
+///
+/// Never in practice — as [`dual_folding_setup`].
+#[must_use]
+pub fn dual_folding_setup_in_both_forms(
+    fold: LagFold,
+    forward_passes: u32,
+    max_iterations: u32,
+) -> (StudySetup, StudySetup) {
+    (
+        build_dual_folding_setup(fold, forward_passes, max_iterations, InflowForm::Logical),
+        build_dual_folding_setup(fold, forward_passes, max_iterations, InflowForm::Compact),
+    )
+}
+
 #[expect(
     clippy::expect_used,
     reason = "build_stochastic_context/StudySetup::new never error on this fixture's fixed, internally consistent inputs"
 )]
-#[must_use]
-pub fn dual_folding_setup(fold: LagFold, forward_passes: u32, max_iterations: u32) -> StudySetup {
+fn build_dual_folding_setup(
+    fold: LagFold,
+    forward_passes: u32,
+    max_iterations: u32,
+    form: InflowForm,
+) -> StudySetup {
     let system = dual_folding_system(fold);
     let config = k_fan_config(forward_passes, max_iterations);
     // One explicit lag slot, independent of the fitted AR order, so both `fold`
@@ -5232,13 +5446,14 @@ pub fn dual_folding_setup(fold: LagFold, forward_passes: u32, max_iterations: u3
         system.hydros(),
         3,
     );
-    StudySetup::new_with_boundary_requirements(
+    StudySetup::new_with_boundary_requirements_in_form(
         &system,
         &config,
         stochastic,
         hydro_models,
         BoundaryStateRequirements::present(1),
         Vec::new(),
+        form,
     )
     .expect("dual_folding_setup: StudySetup::new must succeed")
 }

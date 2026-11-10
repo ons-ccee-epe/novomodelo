@@ -23,15 +23,17 @@ use novomodelo_stochastic::{
 };
 
 use super::{
-    BracketSource, FoldedCutRows, NoiseTermSource, StageSolvePrep, StageSolvePrepParams,
-    StateSource,
+    BracketSource, FoldedCutRows, FoldedSolvePrepParams, NoiseTermSource, StageSolvePrep,
+    StageSolvePrepParams, StateSource,
 };
 use crate::{
     context::{StageContext, TrainingContext},
     cut::{
         CutPool,
-        rhs::{cut_bracket, cut_noise_term, cut_rhs_into},
+        rhs::{cut_noise_term, cut_rhs_into},
+        rhs_reference::cut_bracket,
     },
+    dcs::DcsParams,
     horizon_mode::HorizonMode,
     inflow_method::InflowNonNegativityMethod,
     lead_time::AnticipatedResolution,
@@ -45,8 +47,9 @@ use crate::{
         NodeId,
         node_graph::{NodeGraph, StageIdx},
     },
+    solve::StageOpeningSolver,
     test_support::{
-        StageContextFixture, all_enabled_cut_state_layouts, chain_node_graph,
+        StageContextFixture, all_enabled_cut_state_layouts, bits, chain_node_graph,
         equipment_free_geometry, geometry_with_load_balance, inflow_coupling_with_entries,
         state_layout, study_dims, transit_bucket_only_template,
     },
@@ -1032,7 +1035,7 @@ impl CompactCase {
             method,
             &TRIAL_STATE,
             slots,
-            BracketSource::OnTheFly,
+            BracketSource::Computed,
             Some(raw_noise),
         )
     }
@@ -1055,6 +1058,40 @@ impl CompactCase {
             |_| {},
         );
         (solver, patch_buf, scratch)
+    }
+
+    /// Runs `prep` on a fresh recorder, patch buffer and scratch; returns the recorder and scratch.
+    fn record(
+        &self,
+        method: InflowNonNegativityMethod,
+        prep: impl FnOnce(
+            &mut RecordingSolver,
+            &mut PatchBuffer,
+            &mut ScratchBuffers,
+            &StageContext<'_>,
+            &TrainingContext<'_>,
+        ),
+    ) -> (RecordingSolver, ScratchBuffers) {
+        let fixture = self.fixture();
+        let ctx = fixture.ctx();
+        let training_ctx = self.prep.ctx(
+            &self.state,
+            &self.stochastic,
+            &self.study_dims,
+            &method,
+            &[],
+        );
+        let mut scratch = Self::scratch(&ctx, &training_ctx);
+        let mut solver = RecordingSolver::default();
+        let mut patch_buf = PatchBuffer::new(&self.state, &[], &self.geometry, &self.couplings);
+        prep(
+            &mut solver,
+            &mut patch_buf,
+            &mut scratch,
+            &ctx,
+            &training_ctx,
+        );
+        (solver, scratch)
     }
 
     /// One pin phase on `trial_state`, then one opening phase per entry of `raw_noises`, each with
@@ -1115,15 +1152,12 @@ impl CompactCase {
                 raw_noise,
                 &cut_rows,
                 noise,
+                &StageOpeningSolver::Frozen,
             );
             rhs_after_each.push(scratch.cut_rhs_buf.clone());
         }
         (solver, patch_buf, scratch, rhs_after_each)
     }
-}
-
-fn bits(values: &[f64]) -> Vec<u64> {
-    values.iter().map(|v| v.to_bits()).collect()
 }
 
 const TRIAL_STATE: [f64; 3] = [42.0, 5.0, 7.0];
@@ -1132,7 +1166,7 @@ const TRIAL_STATE: [f64; 3] = [42.0, 5.0, 7.0];
 fn pin_folded_pins_the_columned_regions_and_skips_the_compact_lags() {
     let case = CompactCase::new(&[(1.0, [4.0, 2.0, 3.0])]);
 
-    let (solver, patch_buf, _) = case.pin_folded(&TRIAL_STATE, &[0], BracketSource::OnTheFly);
+    let (solver, patch_buf, _) = case.pin_folded(&TRIAL_STATE, &[0], BracketSource::Computed);
 
     assert_eq!(solver.calls, ['c']);
     assert_eq!(
@@ -1146,7 +1180,7 @@ fn pin_folded_pins_the_columned_regions_and_skips_the_compact_lags() {
 fn pin_folded_brackets_each_cut_row_from_the_raw_trial_state() {
     let case = CompactCase::new(&[(1.0, [4.0, 2.0, 3.0])]);
 
-    let (_, _, scratch) = case.pin_folded(&TRIAL_STATE, &[0], BracketSource::InUnit);
+    let (_, _, scratch) = case.pin_folded(&TRIAL_STATE, &[0], BracketSource::Computed);
 
     let mut expected_mean = vec![0.0; 1];
     evaluate_par_conditional_mean_batch(
@@ -1169,7 +1203,7 @@ fn pin_folded_reads_the_cut_rows_in_slot_list_order() {
     ]);
     let slots = [2, 0];
 
-    let (_, _, scratch) = case.pin_folded(&TRIAL_STATE, &slots, BracketSource::OnTheFly);
+    let (_, _, scratch) = case.pin_folded(&TRIAL_STATE, &slots, BracketSource::Computed);
 
     assert_eq!(scratch.cut_bracket_buf.len(), slots.len());
     for (k, &slot) in slots.iter().enumerate() {
@@ -1205,13 +1239,13 @@ fn differ_from_the_intercepts(case: &CompactCase, brackets: &[f64]) -> bool {
         .all(|(&slot, b)| b.to_bits() != case.pool.intercept(slot).to_bits())
 }
 
-fn in_unit_brackets(case: &CompactCase) -> Vec<f64> {
-    let (_, _, scratch) = case.pin_folded(&TRIAL_STATE, &SLAB_SLOTS, BracketSource::InUnit);
+fn computed_brackets(case: &CompactCase) -> Vec<f64> {
+    let (_, _, scratch) = case.pin_folded(&TRIAL_STATE, &SLAB_SLOTS, BracketSource::Computed);
     scratch.cut_bracket_buf
 }
 
 fn slab_reference(case: &CompactCase) -> Vec<f64> {
-    let reference = in_unit_brackets(case);
+    let reference = computed_brackets(case);
     assert!(
         differ_from_the_intercepts(case, &reference),
         "the reference brackets {reference:?} must not equal the bare intercepts"
@@ -1236,14 +1270,14 @@ fn pin_folded_slab_power_check_fails_without_cut_coefficients() {
         (-3.0, [0.0, 0.0, 0.0]),
     ]);
 
-    let reference = in_unit_brackets(&case);
+    let reference = computed_brackets(&case);
 
     assert_eq!(bits(&reference), bits(&[1.0, 10.0, -3.0]));
     assert!(!differ_from_the_intercepts(&case, &reference));
 }
 
 #[test]
-fn pin_folded_slab_hit_equals_the_in_unit_brackets_and_does_not_count() {
+fn pin_folded_slab_hit_equals_the_computed_brackets_and_does_not_count() {
     let case = slab_case();
     let reference = slab_reference(&case);
 
@@ -1299,7 +1333,7 @@ fn pin_folded_slab_full_prefix_computes_nothing() {
 }
 
 #[test]
-fn pin_folded_slab_miss_equals_the_in_unit_brackets_and_counts() {
+fn pin_folded_slab_miss_equals_the_computed_brackets_and_counts() {
     let case = slab_case();
     let reference = slab_reference(&case);
 
@@ -1396,7 +1430,7 @@ fn stage_noise_has_power(case: &CompactCase, slots: &[usize], eta: f64) -> bool 
         InflowNonNegativityMethod::Truncation,
         &TRIAL_STATE,
         slots,
-        BracketSource::OnTheFly,
+        BracketSource::Computed,
         &[&[eta]],
         NoiseTermSource::OnTheFly,
         |_| {},
@@ -1426,7 +1460,7 @@ fn assert_stage_noise_matches_on_the_fly(
         method,
         &TRIAL_STATE,
         slots,
-        BracketSource::OnTheFly,
+        BracketSource::Computed,
         &[&[eta]],
         NoiseTermSource::OnTheFly,
         |_| {},
@@ -1435,7 +1469,7 @@ fn assert_stage_noise_matches_on_the_fly(
         method,
         &TRIAL_STATE,
         slots,
-        BracketSource::OnTheFly,
+        BracketSource::Computed,
         &[&[eta]],
         NoiseTermSource::Stage {
             noise_term: &noise_term,
@@ -1533,12 +1567,12 @@ fn one_pin_serves_every_opening_after_it() {
     let etas = [-0.5, 1.5];
     let lag_point = case.prep.cut_state_layouts[0].lag_point();
 
-    let (_, _, pinned) = case.pin_folded(&TRIAL_STATE, &slots, BracketSource::InUnit);
+    let (_, _, pinned) = case.pin_folded(&TRIAL_STATE, &slots, BracketSource::Computed);
     let (_, _, scratch, rhs) = case.run_openings(
         InflowNonNegativityMethod::None,
         &TRIAL_STATE,
         &slots,
-        BracketSource::InUnit,
+        BracketSource::Computed,
         &[&[etas[0]], &[etas[1]]],
         NoiseTermSource::OnTheFly,
         |_| {},
@@ -1600,7 +1634,7 @@ fn without_a_par_model_p_w_and_the_realized_inflow_are_positive_zero() {
         InflowNonNegativityMethod::None,
         &TRIAL_STATE,
         &slots,
-        BracketSource::OnTheFly,
+        BracketSource::Computed,
         &[&[0.5]],
         NoiseTermSource::OnTheFly,
         |scratch| {
@@ -1686,7 +1720,7 @@ fn folded_slack_bounds_match_the_logical_arm_bit_for_bit() {
             );
 
             let (_, _, mut folded) =
-                case.run_folded(method, &TRIAL_STATE, &[], BracketSource::OnTheFly, None);
+                case.run_folded(method, &TRIAL_STATE, &[], BracketSource::Computed, None);
             transform_inflow_noise_folded(
                 &raw_noise,
                 StageIdx(0),
@@ -1737,4 +1771,149 @@ fn open_folded_with_no_cut_rows_pushes_an_empty_range() {
     assert_eq!(solver.calls.last(), Some(&'R'));
     assert_eq!(solver.row_range_calls, [(1, vec![])]);
     assert!(scratch.cut_rhs_buf.is_empty());
+}
+
+fn range_call_bits(solver: &RecordingSolver) -> Vec<(usize, Vec<u64>)> {
+    solver
+        .row_range_calls
+        .iter()
+        .map(|(first_row, rhs)| (*first_row, bits(rhs)))
+        .collect()
+}
+
+#[test]
+fn prepare_folded_single_makes_the_pin_then_open_calls_bit_for_bit() {
+    let case = CompactCase::new(&STAGE_NOISE_CUTS);
+    let method = InflowNonNegativityMethod::Truncation;
+    let raw_noise = [0.5];
+    let projection = &case.prep.cut_state_layouts[0];
+
+    let (single, single_scratch) =
+        case.record(method, |solver, patch_buf, scratch, ctx, training_ctx| {
+            StageSolvePrep::prepare_folded_single(
+                solver,
+                patch_buf,
+                scratch,
+                ctx,
+                training_ctx,
+                StageIdx(0),
+                &FoldedSolvePrepParams {
+                    state_source: StateSource(&TRIAL_STATE),
+                    raw_noise: &raw_noise,
+                    pool: &case.pool,
+                    projection,
+                    opening_solver: &StageOpeningSolver::Frozen,
+                },
+                STAGE_NOISE_SLOTS.iter().copied(),
+            );
+        });
+    let (two_step, _) = case.record(method, |solver, patch_buf, scratch, ctx, training_ctx| {
+        let rows = FoldedCutRows {
+            pool: &case.pool,
+            projection,
+            slots: &STAGE_NOISE_SLOTS,
+            first_row: ctx.template(StageIdx(0)).num_rows,
+        };
+        StageSolvePrep::pin_folded(
+            solver,
+            patch_buf,
+            scratch,
+            ctx,
+            training_ctx,
+            StageIdx(0),
+            StateSource(&TRIAL_STATE),
+            &rows,
+            BracketSource::Computed,
+        );
+        StageSolvePrep::open_folded(
+            solver,
+            patch_buf,
+            scratch,
+            ctx,
+            training_ctx,
+            StageIdx(0),
+            &raw_noise,
+            &rows,
+            NoiseTermSource::OnTheFly,
+            &StageOpeningSolver::Frozen,
+        );
+    });
+
+    assert_eq!(single.calls, ['c', 'r', 'c', 'R']);
+    assert!(single.row_range_calls[0].1.iter().any(|&rhs| rhs != 0.0));
+    assert_eq!(single.calls, two_step.calls);
+    assert_eq!(
+        bounds_call_bits(&single.col_bounds_calls),
+        bounds_call_bits(&two_step.col_bounds_calls)
+    );
+    assert_eq!(
+        bounds_call_bits(&single.row_bounds_calls),
+        bounds_call_bits(&two_step.row_bounds_calls)
+    );
+    assert_eq!(range_call_bits(&single), range_call_bits(&two_step));
+    assert_eq!(single_scratch.cut_slots_buf, STAGE_NOISE_SLOTS);
+}
+
+#[test]
+fn the_lazy_opening_solver_leaves_the_cut_range_to_the_lazy_solve() {
+    let case = CompactCase::new(&STAGE_NOISE_CUTS);
+    let raw_noise = [0.5];
+    let open_with = |opening_solver: &StageOpeningSolver| {
+        case.record(
+            InflowNonNegativityMethod::None,
+            |solver, patch_buf, scratch, ctx, training_ctx| {
+                let rows = FoldedCutRows {
+                    pool: &case.pool,
+                    projection: &case.prep.cut_state_layouts[0],
+                    slots: &STAGE_NOISE_SLOTS,
+                    first_row: ctx.template(StageIdx(0)).num_rows,
+                };
+                StageSolvePrep::pin_folded(
+                    solver,
+                    patch_buf,
+                    scratch,
+                    ctx,
+                    training_ctx,
+                    StageIdx(0),
+                    StateSource(&TRIAL_STATE),
+                    &rows,
+                    BracketSource::Computed,
+                );
+                StageSolvePrep::open_folded(
+                    solver,
+                    patch_buf,
+                    scratch,
+                    ctx,
+                    training_ctx,
+                    StageIdx(0),
+                    &raw_noise,
+                    &rows,
+                    NoiseTermSource::OnTheFly,
+                    opening_solver,
+                );
+            },
+        )
+    };
+
+    let (frozen, _) = open_with(&StageOpeningSolver::Frozen);
+    let (lazy, lazy_scratch) = open_with(&StageOpeningSolver::Lazy(DcsParams {
+        candidate_recency: None,
+        seed_window: 2,
+        max_added_per_round: 10,
+        violation_tolerance: 1e-9,
+        start_iteration: 1,
+        max_inner_iterations: 50,
+    }));
+
+    assert_eq!(frozen.calls, ['c', 'r', 'R']);
+    let [(_, pushed)] = frozen.row_range_calls.as_slice() else {
+        unreachable!("the frozen run pushes one cut range");
+    };
+    assert!(
+        pushed.iter().any(|&rhs| rhs != 0.0),
+        "the pushed range is all zero"
+    );
+    assert_eq!(lazy.calls, ['c', 'r']);
+    assert!(lazy.row_range_calls.is_empty());
+    assert_eq!(bits(&lazy_scratch.cut_rhs_buf), bits(pushed));
 }

@@ -68,11 +68,7 @@ pub(super) fn solve_backward_opening<S: SolverInterface + Send>(
                 },
                 None => NoiseTermSource::OnTheFly,
             };
-            let open = match opening_solver {
-                StageOpeningSolver::Frozen => StageSolvePrep::open_folded,
-                StageOpeningSolver::Lazy(_) => StageSolvePrep::open_folded_lazy,
-            };
-            open(
+            StageSolvePrep::open_folded(
                 &mut ws.solver,
                 &mut ws.patch_buf,
                 &mut ws.scratch,
@@ -82,6 +78,7 @@ pub(super) fn solve_backward_opening<S: SolverInterface + Send>(
                 raw_noise,
                 &folded_cut_rows(training_ctx, child, &slots),
                 noise,
+                opening_solver,
             );
             ws.scratch.cut_slots_buf = slots;
         }

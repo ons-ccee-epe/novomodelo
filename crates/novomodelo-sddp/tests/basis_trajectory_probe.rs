@@ -17,6 +17,15 @@
 //!   share of the compact-LP `by_node` backward pass spent in the serial
 //!   aggregation after each stage's parallel solves, on 14 threads, projected
 //!   to the production worker count (ten iterations).
+//! - `compact_and_expanded_agree_at_identical_pinned_states_on_the_reduced_case`
+//!   (`#[ignore]`) — the cut-row RHS and lifted-solution checks of the compact
+//!   and expanded LPs at stored incoming states of three stages (three
+//!   iterations, two forward passes).
+//! - `cut_dual_counts` — the non-zero cut-dual count per solve, the touched-slot
+//!   count per trial state and the stage union of non-zero slots, against their
+//!   structural bounds: on the three-opening lag study, on every committed lagged
+//!   deck (`slow-tests`) and, printed per stage, on the reduced ago/26 case
+//!   (`#[ignore]`, the deck's own configuration).
 //!
 //! ```text
 //! cargo nextest run --release -p novomodelo-sddp --features test-support --test basis_trajectory_probe \
@@ -67,6 +76,7 @@ use novomodelo_sddp::lp::builder::RowFamily;
 use novomodelo_sddp::setup::NodeId;
 use novomodelo_sddp::setup::NodePos;
 use novomodelo_sddp::setup::StageIdx;
+use novomodelo_sddp::test_support::expander::expand_stage_templates;
 use novomodelo_sddp::test_support::{patch_backward_opening_for_probe, solve_stage_for_probe};
 use novomodelo_sddp::workspace::{BasisStore, CapturedBasis, SolverWorkspace};
 use novomodelo_sddp::{
@@ -74,6 +84,7 @@ use novomodelo_sddp::{
 };
 
 mod common;
+use common::expanded_solve::{PinnedStateRun, stored_incoming_states};
 use common::row_families::{self, RowClass};
 use common::{Emission, StubComm};
 
@@ -1158,5 +1169,407 @@ fn by_node_backward_aggregation_share_on_the_reduced_case() {
             value.is_finite() && (0.0..=1.0).contains(&value),
             "backward aggregation {name} {value} lies outside [0, 1]"
         );
+    }
+}
+
+const PINNED_STATE_LABEL: &str = "reduced ago/26";
+const PINNED_STATES_PER_STAGE: usize = 2;
+
+/// Trains the reduced ago/26 case on the compact LP (two sampled forward passes, three iterations,
+/// cut selection off, trial states exported) and checks the compact and expanded LPs at the first
+/// two stored incoming states of stage 1, the middle stage and the second-to-last stage, every
+/// opening each: each cut row's RHS against the expanded z rows' evaluation within its rounding
+/// bound, and the lifted compact solution on every expanded row.
+///
+/// The deck must be converted by the current bridge; one converted by an older bridge is not the
+/// case the probe is specified on:
+///
+/// ```text
+/// $HOME/git/onstec-modelos/novomodelo-bridge/.venv/bin/novomodelo-bridge convert newave \
+///     "$HOME/git/onstec-modelos/novomodelo-bridge/example/casos-exemplo-ct/newave/newave-ago-26-reduzido" \
+///     "$HOME/git/onstec-modelos/novomodelo-bridge/example/casos-exemplo-ct/newave/novomodelo-ago-26-reduzido" \
+///     --force
+/// ```
+#[test]
+#[ignore = "trains the reduced ago/26 case; run with --run-ignored --release"]
+fn compact_and_expanded_agree_at_identical_pinned_states_on_the_reduced_case() {
+    let case = case_dir();
+    let mut config =
+        novomodelo_io::parse_config(&case.join("config.json")).expect("config.json must parse");
+    config.training.selection = Some(TrainingSelection::Sampled { forward_passes: 2 });
+    config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit { limit: 3 }]);
+    config.training.cut_selection = novomodelo_io::config::RowSelectionConfig::default();
+
+    let (prepared, hydro_models) = prepare_case(&case, &config);
+    let mut compact = common::build_setup_for_case_as(
+        &case,
+        &config,
+        &prepared.system,
+        prepared.stochastic,
+        hydro_models,
+        Emission::Compact,
+    );
+    common::train_storing_trial_states(PINNED_STATE_LABEL, &mut compact);
+    let expanded = expand_stage_templates(&prepared.system, &compact);
+
+    let n_pools = compact.fcf.pools.len();
+    let mut checked_stages = vec![1, n_pools / 2, n_pools - 2];
+    checked_stages.dedup();
+    let mut run = PinnedStateRun::new(PINNED_STATE_LABEL, &compact, &compact, &expanded);
+    for stage in checked_stages {
+        let mut states = stored_incoming_states(&compact, stage).unwrap_or_else(|| {
+            panic!("{PINNED_STATE_LABEL} stage {stage}: the producer pool drops a state dimension")
+        });
+        states.truncate(PINNED_STATES_PER_STAGE);
+        run.check_stage(stage, &states);
+    }
+    println!("{}", run.summary());
+    run.assert_powers();
+}
+
+mod cut_dual_counts {
+    use std::collections::BTreeSet;
+
+    use novomodelo_core::System;
+    use novomodelo_sddp::setup::StageIdx;
+    use novomodelo_sddp::test_support::decks::{SLOW_DECKS, committed_decks};
+    use novomodelo_sddp::test_support::{
+        FoldedProbeCut, FoldedProbeCuts, FoldedProbeOpening, cut_rows_for_slots_into,
+        empty_row_batch, folded_opening_cut_for_probe,
+    };
+    use novomodelo_sddp::{RiskMeasure, StudySetup};
+    use novomodelo_solver::{ActiveSolver, SolverInterface};
+
+    use super::common::expanded_solve::{
+        CutRowSet, stages_whose_producer_drops_a_state_dimension, stored_incoming_states,
+    };
+    use super::common::in_code_studies::{FphaLagOptions, fpha_lag_study_with};
+    use super::common::stored_cut_oracles::apply_oracle_config;
+    use super::common::{
+        Emission, StubComm, build_setup_for_case_as, build_setup_in_code_with_models_as,
+        fresh_system_and_setup_with_emission, is_chain, train_storing_trial_states,
+    };
+    use super::{StoppingRuleConfig, case_dir, prepare_case};
+
+    const LAG_STUDY_LABEL: &str = "fpha lag study";
+    const LAG_STUDY_ITERATIONS: u32 = 5;
+    const REDUCED_LABEL: &str = "reduced ago/26";
+
+    struct StageCounts {
+        stage: usize,
+        bound: usize,
+        resident_rows: usize,
+        nnz: Vec<usize>,
+        touched: Vec<usize>,
+        union: usize,
+    }
+
+    fn record_cut_dual_counts(
+        label: &str,
+        system: &System,
+        setup: &StudySetup,
+        states_per_stage: usize,
+    ) -> Vec<StageCounts> {
+        let risk_measures: Vec<RiskMeasure> = system
+            .stages()
+            .iter()
+            .filter(|stage| stage.id >= 0)
+            .map(|stage| RiskMeasure::from(stage.risk_config))
+            .collect();
+        let ctx = setup.stage_ctx();
+        let training_ctx = setup.training_ctx();
+        let tree = training_ctx.stochastic.tree_view();
+        let n_pools = setup.fcf.pools.len();
+        let mut workspaces = setup
+            .create_workspace_pool(&StubComm, 1, ActiveSolver::new)
+            .expect("the workspace pool must build");
+        let ws = &mut workspaces.workspaces[0];
+        let mut cut = FoldedProbeCut::new(&training_ctx);
+        let quantiles = |values: &[usize]| -> [usize; 4] {
+            let mut sorted = values.to_vec();
+            sorted.sort_unstable();
+            let at = |percent: usize| sorted[(sorted.len() * percent).div_ceil(100) - 1];
+            [sorted[0], at(50), at(99), at(100)]
+        };
+
+        let mut dropped = Vec::new();
+        let mut recorded = Vec::new();
+        for t in 0..n_pools {
+            let projection = &training_ctx.cut_state_layouts[t];
+            let rows = CutRowSet::active(&setup.fcf, t, t.saturating_sub(1));
+            let skipped = if t + 1 == n_pools {
+                Some("terminal stage")
+            } else if !projection.has_lag_slots() {
+                Some("its pool has no lag slots")
+            } else if rows.slots.is_empty() {
+                Some("its pool holds no active cut")
+            } else {
+                None
+            };
+            if let Some(reason) = skipped {
+                println!("{label}: stage {t} skipped: {reason}");
+                continue;
+            }
+
+            let states = if t == 0 {
+                vec![training_ctx.initial_state.to_vec()]
+            } else {
+                let Some(stored) = stored_incoming_states(setup, t) else {
+                    println!(
+                        "{label}: stage {t} dropped: its producer pool drops a state dimension"
+                    );
+                    dropped.push(t);
+                    continue;
+                };
+                if stored.is_empty() {
+                    println!("{label}: stage {t} skipped: its producer pool stored no state");
+                    continue;
+                }
+                let picked = states_per_stage.min(stored.len());
+                let wanted: Vec<usize> = (0..picked).map(|i| i * stored.len() / picked).collect();
+                stored
+                    .into_iter()
+                    .enumerate()
+                    .filter_map(|(k, x)| wanted.contains(&k).then_some(x))
+                    .collect()
+            };
+
+            if let RiskMeasure::CVaR { alpha, lambda } = risk_measures[t] {
+                assert!(
+                    lambda < 1.0 || alpha >= 1.0,
+                    "{label}: stage {t}: pure CVaR (lambda {lambda}, alpha {alpha}) can give an \
+                     opening zero weight, so the openings with positive weight are not every opening"
+                );
+            }
+
+            let template = &setup.inputs.stage_data.stage_templates.templates[t];
+            let mut batch = empty_row_batch();
+            cut_rows_for_slots_into(
+                &mut batch,
+                &setup.fcf.pools[t],
+                &rows.slots,
+                setup.stage_state(),
+                projection,
+                &template.col_scale,
+            );
+            let mut columns: BTreeSet<usize> = batch
+                .col_indices
+                .iter()
+                .map(|&column| usize::try_from(column).expect("column index is non-negative"))
+                .collect();
+            columns.remove(&setup.stage_state().theta);
+            let bound = 1 + columns.len();
+            let resident_rows = rows.slots.len();
+            ws.solver.load_model(template);
+            ws.solver.add_rows(&batch);
+
+            let openings = tree.n_openings(t);
+            let touched_bound = (openings * bound).min(resident_rows);
+            let (mut nnz, mut touched, mut union) = (Vec::new(), Vec::new(), BTreeSet::new());
+            for (i, x) in states.iter().enumerate() {
+                let mut aggregate = BTreeSet::new();
+                for omega in 0..openings {
+                    let context = format!("{label}: stage {t} state {i} opening {omega}");
+                    folded_opening_cut_for_probe(
+                        ws,
+                        &ctx,
+                        &training_ctx,
+                        &FoldedProbeOpening {
+                            stage: StageIdx(t),
+                            pinned_state: x,
+                            raw_noise: tree.opening(t, omega),
+                            cuts: FoldedProbeCuts {
+                                pool: &setup.fcf.pools[t],
+                                pool_id: t,
+                                slots: &rows.slots,
+                            },
+                            extracted_pool_id: rows.extracted_pool,
+                        },
+                        &mut cut,
+                    )
+                    .unwrap_or_else(|error| {
+                        panic!("{context}: the stored-state solve failed: {error:?}")
+                    });
+                    let count = cut.cut_dual_slots.len();
+                    assert!(
+                        count <= bound,
+                        "{context}: {count} non-zero cut duals exceed B_t {bound} (resident rows \
+                         {resident_rows}, largest |y| {})",
+                        cut.cut_dual_slots
+                            .iter()
+                            .map(|&(_, y)| y.abs())
+                            .fold(0.0, f64::max)
+                    );
+                    nnz.push(count);
+                    aggregate.extend(cut.cut_dual_slots.iter().map(|&(slot, _)| slot));
+                }
+                assert!(
+                    aggregate.len() <= touched_bound,
+                    "{label}: stage {t} state {i}: {} touched slots exceed min({openings} * B_t \
+                     {bound}, resident rows {resident_rows})",
+                    aggregate.len()
+                );
+                touched.push(aggregate.len());
+                union.extend(aggregate);
+            }
+
+            println!(
+                "{label}: t={t} R_t={resident_rows} B_t={bound} openings={openings} \
+                 nnz[min/median/p99/max]={:?} touched[min/median/p99/max]={:?} stage_union={}",
+                quantiles(&nnz),
+                quantiles(&touched),
+                union.len()
+            );
+            recorded.push(StageCounts {
+                stage: t,
+                bound,
+                resident_rows,
+                nnz,
+                touched,
+                union: union.len(),
+            });
+        }
+
+        let listed = stages_whose_producer_drops_a_state_dimension(setup);
+        for &stage in &dropped {
+            assert!(
+                listed.contains(&stage),
+                "{label}: stage {stage} was dropped but is not among the stages whose producer \
+                 drops a state dimension {listed:?}: pool state_dimension {}, projection n_slots {}",
+                setup.fcf.pools[stage - 1].state_dimension,
+                training_ctx.cut_state_layouts[stage - 1].n_slots()
+            );
+        }
+        if !recorded.is_empty() {
+            let pooled: Vec<usize> = recorded
+                .iter()
+                .flat_map(|counts| counts.touched.iter().copied())
+                .collect();
+            let (worst_stage, worst_ratio) = recorded
+                .iter()
+                .map(|counts| {
+                    let peak = counts.nnz.iter().copied().max().unwrap_or(0);
+                    (counts.stage, peak as f64 / counts.bound as f64)
+                })
+                .fold(
+                    (0, 0.0),
+                    |worst, next| if next.1 > worst.1 { next } else { worst },
+                );
+            println!(
+                "{label}: {} stages recorded, dropped {dropped:?}; max nnz/B_t {worst_ratio:.4} \
+                 (stage {worst_stage}); touched p99 {}; max stage union {}",
+                recorded.len(),
+                quantiles(&pooled)[2],
+                recorded
+                    .iter()
+                    .map(|counts| counts.union)
+                    .max()
+                    .unwrap_or(0)
+            );
+        }
+        recorded
+    }
+
+    #[test]
+    fn cut_dual_counts_stay_within_the_structural_bound() {
+        let options = FphaLagOptions {
+            openings: 3,
+            ..FphaLagOptions::default()
+        };
+        let (system, mut config, hydro_models) = fpha_lag_study_with(options);
+        apply_oracle_config(&mut config);
+        config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit {
+            limit: LAG_STUDY_ITERATIONS,
+        }]);
+        let mut setup =
+            build_setup_in_code_with_models_as(system, &config, hydro_models, Emission::Compact);
+        train_storing_trial_states(LAG_STUDY_LABEL, &mut setup);
+        let (system, _, _) = fpha_lag_study_with(options);
+
+        let counts = record_cut_dual_counts(LAG_STUDY_LABEL, &system, &setup, 4);
+        assert!(
+            counts.iter().any(|stage| stage.stage >= 1),
+            "{LAG_STUDY_LABEL}: no stage past the first was recorded"
+        );
+        assert!(
+            counts.iter().flat_map(|stage| &stage.nnz).any(|&n| n > 0),
+            "{LAG_STUDY_LABEL}: no recorded opening has a non-zero cut dual"
+        );
+        assert!(
+            counts.iter().any(|stage| stage.resident_rows > stage.bound),
+            "{LAG_STUDY_LABEL}: no recorded stage has more resident rows than its bound, so a \
+             dense dual vector would pass; (stage, R_t, B_t) = {:?}",
+            counts
+                .iter()
+                .map(|stage| (stage.stage, stage.resident_rows, stage.bound))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "slow-tests"),
+        ignore = "trains every committed deck with lagged inflow"
+    )]
+    fn cut_dual_counts_stay_within_the_structural_bound_on_every_lagged_deck() {
+        let (mut visited, mut not_chain, mut recorded) = (Vec::new(), Vec::new(), Vec::new());
+        let mut some_non_zero = false;
+        for deck in committed_decks() {
+            if SLOW_DECKS.contains(&deck.key.as_str()) {
+                continue;
+            }
+            let (system, mut setup) = fresh_system_and_setup_with_emission(
+                &deck.dir,
+                apply_oracle_config,
+                Emission::Compact,
+            );
+            if setup.stage_state().max_par_order == 0 {
+                continue;
+            }
+            if !is_chain(&setup) {
+                println!("{}: skipped, not a chain", deck.key);
+                not_chain.push(deck.key);
+                continue;
+            }
+            visited.push(deck.key.clone());
+            train_storing_trial_states(&deck.key, &mut setup);
+            let counts = record_cut_dual_counts(&deck.key, &system, &setup, 8);
+            some_non_zero |= counts.iter().flat_map(|stage| &stage.nnz).any(|&n| n > 0);
+            if !counts.is_empty() {
+                recorded.push(deck.key);
+            }
+        }
+        println!(
+            "visited {} lagged decks: {visited:?}; not chains: {not_chain:?}; recorded: {recorded:?}",
+            visited.len()
+        );
+        assert!(
+            !visited.is_empty(),
+            "no committed lagged chain deck was visited"
+        );
+        assert!(
+            some_non_zero,
+            "no recorded opening of {recorded:?} has a non-zero cut dual"
+        );
+    }
+
+    #[test]
+    #[ignore = "trains the reduced ago/26 case; run with --run-ignored --release"]
+    fn cut_dual_counts_on_the_reduced_case() {
+        let case = case_dir();
+        let config =
+            novomodelo_io::parse_config(&case.join("config.json")).expect("config.json must parse");
+        let (prepared, hydro_models) = prepare_case(&case, &config);
+        let mut setup = build_setup_for_case_as(
+            &case,
+            &config,
+            &prepared.system,
+            prepared.stochastic,
+            hydro_models,
+            Emission::Compact,
+        );
+        train_storing_trial_states(REDUCED_LABEL, &mut setup);
+
+        record_cut_dual_counts(REDUCED_LABEL, &prepared.system, &setup, 8);
     }
 }

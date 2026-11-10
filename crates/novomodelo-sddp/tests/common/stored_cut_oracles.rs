@@ -23,12 +23,11 @@ use novomodelo_solver::{
 use novomodelo_stochastic::OpeningTreeView;
 
 use super::StubComm;
+use super::oracle_tolerance::value_tolerance;
 
 const ORACLE_ITERATIONS: u32 = 3;
 const ORACLE_RANDOM_POINTS: usize = 5;
 const ORACLE_SEED: u64 = 0x5EED_C0BE_5EED_C0BE;
-const ORACLE_ABS_TOL: f64 = 1e-6;
-const ORACLE_REL_TOL: f64 = 1e-7;
 const MASK_ABS_TOL: f64 = 1e-9;
 const MASK_REL_TOL: f64 = 1e-9;
 const ORACLE_MIN_FEASIBLE_POINTS: usize = 3;
@@ -240,10 +239,6 @@ fn dot(a: &[f64], b: &[f64]) -> f64 {
 
 fn max_abs(v: &[f64]) -> f64 {
     v.iter().fold(0.0_f64, |acc, &x| acc.max(x.abs()))
-}
-
-fn q_tol(a: f64, b: f64) -> f64 {
-    ORACLE_ABS_TOL + ORACLE_REL_TOL * a.abs().max(b.abs())
 }
 
 fn check_mask(
@@ -648,7 +643,7 @@ fn check_pool(
                         continue;
                     }
                     let lhs = pool_t.intercept(slot) + dot(pool_t.coefficient_row(slot), &proj);
-                    let bound = q_tol(q_frozen, lhs);
+                    let bound = value_tolerance(q_frozen, lhs);
                     if lhs > q_frozen + bound {
                         report.validity.push(format!(
                             "{label}: pool {t} point {idx} slot {slot} (active={}): cut value \
@@ -665,7 +660,7 @@ fn check_pool(
                 if is_trial && reactivated == 0 {
                     report.under_tightness_points_checked += 1;
                     let evaluated = pool_t.evaluate_at_state(&proj);
-                    let bound = q_tol(evaluated, eval.q_hat);
+                    let bound = value_tolerance(evaluated, eval.q_hat);
                     if evaluated < eval.q_hat - bound {
                         report.tightness.push(format!(
                             "{label}: pool {t} trial point {idx}: evaluate_at_state={evaluated} \

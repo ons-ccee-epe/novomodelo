@@ -2704,12 +2704,11 @@ mod compact_forward_routing {
     };
     use novomodelo_solver::{ActiveSolver, StageTemplate};
 
+    use super::common::oracle_tolerance::value_tolerance;
     use super::common::{StubComm, for_each_study_in_both_forms};
 
     const PASSES: usize = 2;
     const ITERATIONS: [u64; 2] = [1, 2];
-    const ORACLE_ABS_TOL: f64 = 1e-6;
-    const ORACLE_REL_TOL: f64 = 1e-7;
 
     fn has_cut_free_frozen_templates(setup: &StudySetup) -> bool {
         setup.training_ctx().dcs.is_none() && setup.fcf.total_active_cuts() == 0
@@ -2828,7 +2827,7 @@ mod compact_forward_routing {
                     let a = logical_records[m * num_stages].stage_cost;
                     let b = compact_records[m * num_stages].stage_cost;
                     assert!(
-                        (a - b).abs() <= ORACLE_ABS_TOL + ORACLE_REL_TOL * a.abs().max(b.abs()),
+                        (a - b).abs() <= value_tolerance(a, b),
                         "{key}: iteration {iteration} pass {m}: stage-0 cost logical {a} vs compact {b}"
                     );
                 }

@@ -24,6 +24,7 @@ use crate::{
         transform_inflow_noise_folded, transform_load_noise, transform_ncs_noise,
     },
     setup::node_graph::StageIdx,
+    solve::StageOpeningSolver,
     workspace::ScratchBuffers,
 };
 
@@ -47,13 +48,21 @@ pub(crate) struct StageSolvePrepParams<'a> {
     pub raw_noise: &'a [f64],
 }
 
+/// Inputs of the single-solve folded prep: the pinned state, this solve's raw
+/// noise, the resident pool and its projection, and the opening solver.
+pub(crate) struct FoldedSolvePrepParams<'a> {
+    pub(crate) state_source: StateSource<'a>,
+    pub(crate) raw_noise: &'a [f64],
+    pub(crate) pool: &'a CutPool,
+    pub(crate) projection: &'a CutStateProjection,
+    pub(crate) opening_solver: &'a StageOpeningSolver,
+}
+
 /// Where the pin phase takes the cut-row bracket B from.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum BracketSource<'a> {
-    /// The unit (a trial point on a loaded LP) computes B once; every opening of the unit reads it.
-    InUnit,
-    /// A single-solve site computes B immediately before its one opening phase.
-    OnTheFly,
+    /// The pin phase computes every cut row's bracket from the trial state.
+    Computed,
     /// The frozen-prefix brackets the forward wrote, or `None` for a miss; the rows after the prefix are computed.
     Slab(Option<&'a [f64]>),
 }
@@ -250,7 +259,7 @@ impl StageSolvePrep {
         }
 
         let prefix: &[f64] = match source {
-            BracketSource::InUnit | BracketSource::OnTheFly => &[],
+            BracketSource::Computed => &[],
             BracketSource::Slab(Some(prefix)) => prefix,
             BracketSource::Slab(None) => {
                 #[cfg(any(test, feature = "test-support"))]
@@ -322,8 +331,15 @@ impl StageSolvePrep {
 
     /// Folded opening phase: runs once per solve, after the pin phase of the
     /// unit. Pushes the shifted and load rows in one set, then the NCS and
-    /// inflow-slack column bounds, then the cut rows' `B + W` in one range.
-    /// Allocates nothing once the scratch buffers are sized.
+    /// inflow-slack column bounds, then fills every cut row's `B + W` and hands
+    /// it to `opening_solver`, which pushes it as one range (frozen) or leaves
+    /// it for the lazy solve. Allocates nothing once the scratch buffers are
+    /// sized.
+    // Rationale (too_many_arguments): solver, patch_buf, and scratch are three
+    // disjoint mutable borrows of the workspace that must stay separate
+    // parameters — a bundling struct would reborrow the whole workspace and
+    // defeat the split; the rest are distinct immutable inputs.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn open_folded<S>(
         solver: &mut S,
         patch_buf: &mut PatchBuffer,
@@ -334,62 +350,7 @@ impl StageSolvePrep {
         raw_noise: &[f64],
         cut_rows: &FoldedCutRows<'_>,
         noise: NoiseTermSource<'_>,
-    ) where
-        S: SolverInterface,
-    {
-        Self::open_folded_values(
-            solver,
-            patch_buf,
-            scratch,
-            ctx,
-            training_ctx,
-            stage,
-            raw_noise,
-            cut_rows,
-            noise,
-        );
-        solver.set_row_lower_bounds_range(cut_rows.first_row, &scratch.cut_rhs_buf);
-    }
-
-    /// The opening phase for an LP whose cut rows are resident lazily; it writes
-    /// `B + W` for every slot of `cut_rows` into the scratch, and the lazy solve
-    /// pushes the value of each row it makes resident.
-    pub(crate) fn open_folded_lazy<S>(
-        solver: &mut S,
-        patch_buf: &mut PatchBuffer,
-        scratch: &mut ScratchBuffers,
-        ctx: &StageContext<'_>,
-        training_ctx: &TrainingContext<'_>,
-        stage: StageIdx,
-        raw_noise: &[f64],
-        cut_rows: &FoldedCutRows<'_>,
-        noise: NoiseTermSource<'_>,
-    ) where
-        S: SolverInterface,
-    {
-        Self::open_folded_values(
-            solver,
-            patch_buf,
-            scratch,
-            ctx,
-            training_ctx,
-            stage,
-            raw_noise,
-            cut_rows,
-            noise,
-        );
-    }
-
-    fn open_folded_values<S>(
-        solver: &mut S,
-        patch_buf: &mut PatchBuffer,
-        scratch: &mut ScratchBuffers,
-        ctx: &StageContext<'_>,
-        training_ctx: &TrainingContext<'_>,
-        stage: StageIdx,
-        raw_noise: &[f64],
-        cut_rows: &FoldedCutRows<'_>,
-        noise: NoiseTermSource<'_>,
+        opening_solver: &StageOpeningSolver,
     ) where
         S: SolverInterface,
     {
@@ -447,6 +408,58 @@ impl StageSolvePrep {
                 );
             }
         }
+        opening_solver.push_cut_rhs(solver, cut_rows.first_row, &scratch.cut_rhs_buf);
+    }
+
+    /// The folded prep of a site that solves one opening per loaded LP and
+    /// pinned state: the pin phase, then the opening phase through
+    /// `params.opening_solver`. `slots` are the pool slots of the loaded LP's
+    /// cut rows in row order. Allocates nothing once the slot buffer has grown.
+    pub(crate) fn prepare_folded_single<S>(
+        solver: &mut S,
+        patch_buf: &mut PatchBuffer,
+        scratch: &mut ScratchBuffers,
+        ctx: &StageContext<'_>,
+        training_ctx: &TrainingContext<'_>,
+        stage: StageIdx,
+        params: &FoldedSolvePrepParams<'_>,
+        slots: impl Iterator<Item = usize>,
+    ) where
+        S: SolverInterface,
+    {
+        let mut slot_buf = std::mem::take(&mut scratch.cut_slots_buf);
+        slot_buf.clear();
+        slot_buf.extend(slots);
+        let rows = FoldedCutRows {
+            pool: params.pool,
+            projection: params.projection,
+            slots: &slot_buf,
+            first_row: ctx.template(stage).num_rows,
+        };
+        Self::pin_folded(
+            solver,
+            patch_buf,
+            scratch,
+            ctx,
+            training_ctx,
+            stage,
+            params.state_source,
+            &rows,
+            BracketSource::Computed,
+        );
+        Self::open_folded(
+            solver,
+            patch_buf,
+            scratch,
+            ctx,
+            training_ctx,
+            stage,
+            params.raw_noise,
+            &rows,
+            NoiseTermSource::OnTheFly,
+            params.opening_solver,
+        );
+        scratch.cut_slots_buf = slot_buf;
     }
 
     fn patch_load_rows(

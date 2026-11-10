@@ -9,7 +9,7 @@ use novomodelo_core::System;
 use novomodelo_solver::{RowBatch, StageTemplate};
 use novomodelo_stochastic::par::precompute::PrecomputedPar;
 
-use crate::cut::FutureCostFunction;
+use crate::cut::CutPool;
 use crate::indexer::{CutSlot, CutStateProjection, HydroSys, InflowForm, StateDim, StateSpace};
 use crate::lp::builder::{InflowCoupling, StageTemplates, assemble_csc};
 use crate::setup::StudySetup;
@@ -280,8 +280,8 @@ fn csr_index(n: usize) -> i32 {
     i32::try_from(n).expect("CSR index exceeds i32::MAX")
 }
 
-/// Writes `pool`'s active cuts into `batch` as rows of the expanded LP, scaled by the
-/// pool's stage's expanded `col_scale`.
+/// Writes the cuts of `slots` of `pool` into `batch` as rows of the expanded LP, in list order,
+/// scaled by the pool's stage's expanded `col_scale`.
 ///
 /// # Panics
 ///
@@ -289,19 +289,20 @@ fn csr_index(n: usize) -> i32 {
 /// a column index or the entry count exceeds `i32::MAX`.
 pub fn expanded_cut_rows_into(
     batch: &mut RowBatch,
-    fcf: &FutureCostFunction,
-    pool: usize,
+    pool: &CutPool,
+    slots: &[usize],
     cut_state: &CutStateProjection,
     layout: &ExpandedLayout,
     col_scale: &[f64],
 ) {
     batch.clear();
     let state = layout.state();
-    for (slot, intercept, coefficients) in fcf.active_cuts(pool) {
+    for &slot in slots {
+        let (intercept, coefficients) = (pool.intercept(slot), pool.coefficient_row(slot));
         assert_eq!(
             coefficients.len(),
             cut_state.n_slots(),
-            "pool {pool} cut slot {slot}: coefficient count"
+            "cut slot {slot}: coefficient count"
         );
         batch.row_starts.push(csr_index(batch.values.len()));
         for (j, &coefficient) in coefficients.iter().enumerate() {

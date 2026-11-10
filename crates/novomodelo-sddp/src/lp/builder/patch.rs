@@ -485,7 +485,7 @@ mod tests {
     use crate::lp::builder::inflow_coupling::InflowCouplingSink;
     use crate::lp::indexer::{BlockGrid, BlockRowFamily, HydroSys, StateDim};
     use crate::test_support::{
-        constant_lead_resolution, equipment_free_geometry, inflow_coupling_with_entries,
+        bits, constant_lead_resolution, equipment_free_geometry, inflow_coupling_with_entries,
         state_layout, state_layout_full, state_layout_with_transit_buckets,
     };
 
@@ -701,10 +701,6 @@ mod tests {
         );
         buf.fill_inflow_shift_patches(coupling, z_hat, row_scale);
         buf
-    }
-
-    fn bits(values: &[f64]) -> Vec<u64> {
-        values.iter().map(|v| v.to_bits()).collect()
     }
 
     #[test]

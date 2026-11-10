@@ -28,7 +28,7 @@ use crate::{
     forward::EnumeratedForwardScratch,
     indexer::{ChainRuleSlots, InflowForm},
     risk_measure::{BackwardOutcome, RiskMeasure},
-    solve::partition,
+    solve::{StageOpeningSolver, partition},
     stage_solve::{StageInputs, run_stage_solve},
     training::stage_solve_prep::{
         BracketSource, FoldedCutRows, NoiseTermSource, StageSolvePrep, StateSource,
@@ -118,7 +118,7 @@ pub(crate) fn solve_replicated_outcome_slice<S: SolverInterface + Send>(
             s,
             StateSource(x_hat),
             &rows,
-            BracketSource::InUnit,
+            BracketSource::Computed,
         );
     }
 
@@ -253,6 +253,7 @@ fn solve_replicated_opening<S: SolverInterface + Send>(
                 raw_noise,
                 rows,
                 NoiseTermSource::OnTheFly,
+                &StageOpeningSolver::Frozen,
             );
             let view = run_stage_solve(ws, inputs)?;
             let template = ctx.template(s);

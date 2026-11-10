@@ -4142,3 +4142,569 @@ mod selection_on_determinism {
         );
     }
 }
+
+#[cfg(feature = "test-support")]
+mod compact_fold_determinism {
+    //! Compact-form determinism gates: each trains the compact form of one
+    //! study under several execution shapes and asserts that every shape's
+    //! [`SelectionFingerprint`] (the cut pools, their provenance and binding
+    //! counters, and the reported bounds) is bit-identical to the first shape's.
+    //! Compact runs are compared with compact runs only.
+    //!
+    //! - The by-node `CVaR` gates compare threads 4, a threads-4 repeat, 2 and 1,
+    //!   and the `Rank0Of2` stub with a single rank, both at threads 4.
+    //! - The opening-order gate compares threads 4 with threads 1 and a repeat
+    //!   under the default scheduler, then the stub with a single rank.
+    //! - The fan gate compares threads 1, 2 and 4 under each scheduler.
+    //! - The world gates compare each rank of the MPI world with a single rank,
+    //!   both at threads 1, by node: the lag study and d43 under `CVaR`, the fan
+    //!   with four leaves.
+    //!
+    //! The lag study is the uniform fixture: three small PAR(2) stages whose
+    //! pools all project the same lag-bearing state. `d43-storage-only-cut`
+    //! drops the lags of one stage, so its pools project different cut-state
+    //! dimensions; it trains with five openings, as shipped it has one. The
+    //! heterogeneous fan fuses the terminal slice: its leaf pool projects
+    //! storage and lag, its root pool storage only.
+    //!
+    //! Every run asserts that an earlier iteration's cut is active in a later
+    //! iteration. The lag study and d43 record binding under a budget that
+    //! evicts nothing, and each of their runs asserts that a binding cut carries
+    //! a nonzero lag coefficient. No cut of the fan carries one, because its only
+    //! lag-bearing pool is the terminal leaf pool, which receives no cut, so its
+    //! power is the projection heterogeneity of the fused terminal slice. The
+    //! thread legs of the lag study and d43 assert that the shapes split the
+    //! forward passes differently, the world legs that every rank holds a trial
+    //! and, on two or more ranks, fewer than all of them, and the stub legs that
+    //! they train the one forward pass at which the stub is faithful. No stub leg
+    //! runs on the fan: its backward level has several nodes, where the stub
+    //! leaves the per-pool count buffer stale.
+
+    use std::collections::BTreeSet;
+    use std::path::Path;
+
+    use novomodelo_comm::{BackendKind, Communicator, LocalBackend, create_communicator};
+    use novomodelo_io::Config;
+    use novomodelo_io::config::{BackwardScheduler, StoppingRuleConfig, TrainingSelection};
+    use novomodelo_sddp::indexer::CutStateProjection;
+    use novomodelo_sddp::setup::NodePos;
+    use novomodelo_sddp::test_support::external_distinct_fan_setup_heterogeneous_cut_state_in_both_forms;
+    use novomodelo_sddp::{RiskMeasure, StudySetup, TrainingResult};
+    use novomodelo_solver::ActiveSolver;
+
+    use crate::common::in_code_studies::{FphaLagOptions, fpha_lag_study_with};
+    use crate::common::selection_fingerprint::SelectionFingerprint;
+    use crate::common::{
+        Emission, Rank0Of2, StubComm, build_setup_in_code_with_models_as,
+        fresh_setup_with_openings_as,
+    };
+
+    const LAG_STUDY: &str = "lag study";
+    const LAG_STUDY_OPENINGS: usize = 3;
+    const LAG_STUDY_ITERATIONS: u32 = 3;
+    const D43: &str = "d43";
+    const D43_CASE: &str = "../../examples/deterministic/d43-storage-only-cut";
+    const D43_OPENINGS: u32 = 5;
+    const D43_ITERATIONS: u32 = 5;
+    const FAN: &str = "heterogeneous fan";
+    const FAN_ITERATIONS: u32 = 3;
+    const THREAD_LEG_FORWARD_PASSES: u32 = 4;
+    const WORLD_FORWARD_PASSES: u32 = 4;
+    const WORLD_FAN_LEAVES: usize = 4;
+    const BY_NODE_THREAD_SHAPES: [usize; 4] = [4, 4, 2, 1];
+    const OPENING_ORDER_THREAD_SHAPES: [usize; 3] = [4, 1, 1];
+    const FAN_THREAD_SHAPES: [usize; 3] = [1, 2, 4];
+    const BY_NODE: BackwardScheduler = BackwardScheduler::ByNode { block_size: None };
+    const CVAR: RiskMeasure = RiskMeasure::CVaR {
+        alpha: 0.5,
+        lambda: 1.0,
+    };
+    /// Binding is recorded only for a reader, and a budget no pool reaches is a
+    /// reader that evicts nothing.
+    const BUDGET_THAT_EVICTS_NOTHING: u32 = 100_000;
+
+    fn sample(config: &mut Config, forward_passes: u32, iterations: u32) {
+        config.training.selection = Some(TrainingSelection::Sampled { forward_passes });
+        config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit {
+            limit: iterations,
+        }]);
+        config.training.cut_selection.max_active_per_stage = Some(BUDGET_THAT_EVICTS_NOTHING);
+    }
+
+    fn lag_study(forward_passes: u32, iterations: u32) -> StudySetup {
+        let (system, mut config, hydro_models) = fpha_lag_study_with(FphaLagOptions {
+            openings: LAG_STUDY_OPENINGS,
+            ..FphaLagOptions::default()
+        });
+        sample(&mut config, forward_passes, iterations);
+        build_setup_in_code_with_models_as(system, &config, hydro_models, Emission::Compact)
+    }
+
+    fn d43(forward_passes: u32, iterations: u32) -> StudySetup {
+        fresh_setup_with_openings_as(
+            Path::new(D43_CASE),
+            D43_OPENINGS,
+            |config| sample(config, forward_passes, iterations),
+            Emission::Compact,
+        )
+    }
+
+    fn fan() -> StudySetup {
+        external_distinct_fan_setup_heterogeneous_cut_state_in_both_forms(2, FAN_ITERATIONS).1
+    }
+
+    fn by_node_cvar(mut setup: StudySetup) -> StudySetup {
+        setup.set_scheduler(BY_NODE);
+        let num_stages = setup.num_stages();
+        setup.set_risk_measures(vec![CVAR; num_stages]);
+        setup
+    }
+
+    /// Trains `setup` on a fresh solver and returns its fingerprint, after
+    /// asserting the run's own power checks. `budget` is the
+    /// `max_active_per_stage` the fixture was built with.
+    fn train(
+        mut setup: StudySetup,
+        comm: &impl Communicator,
+        n_threads: usize,
+        fixture: &str,
+        budget: Option<u32>,
+    ) -> SelectionFingerprint {
+        let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
+        let outcome = setup
+            .train(&mut solver, comm, n_threads, ActiveSolver::new, None, None)
+            .expect("train must return Ok");
+        assert!(
+            outcome.error.is_none(),
+            "{fixture}: training must not error: {:?}",
+            outcome.error
+        );
+        assert_frozen_rows_exist(fixture, &setup, &outcome.result);
+        if let Some(budget) = budget {
+            assert_budget_evicted_nothing(fixture, &setup, budget);
+            assert_lag_bearing_binding_cut(fixture, &setup);
+        }
+        SelectionFingerprint::capture(&setup, &outcome.result)
+    }
+
+    fn assert_budget_evicted_nothing(fixture: &str, setup: &StudySetup, budget: u32) {
+        let budget = usize::try_from(budget).unwrap();
+        for (pool_id, pool) in setup.fcf.pools.iter().enumerate() {
+            assert!(
+                pool.populated() <= budget,
+                "{fixture}: pool {pool_id} populates {} slots, above the budget of {budget}, so \
+                 the budget may have evicted a cut",
+                pool.populated()
+            );
+        }
+    }
+
+    fn cut_generating_pools(setup: &StudySetup) -> BTreeSet<usize> {
+        let graph = &setup.inputs.node_graph;
+        graph
+            .nodes
+            .iter()
+            .zip(graph.successors.iter())
+            .filter(|(_, successors)| !successors.is_empty())
+            .map(|(node, _)| node.pool_id)
+            .collect()
+    }
+
+    fn assert_frozen_rows_exist(fixture: &str, setup: &StudySetup, result: &TrainingResult) {
+        assert!(
+            result.iterations >= 2,
+            "{fixture}: trained {} iteration(s), so no cut reached a later iteration's templates",
+            result.iterations
+        );
+        let frozen = cut_generating_pools(setup).into_iter().any(|pool_id| {
+            let pool = &setup.fcf.pools[pool_id];
+            (0..pool.populated()).any(|slot| {
+                pool.is_active(slot) && pool.metadata(slot).iteration_generated < result.iterations
+            })
+        });
+        assert!(
+            frozen,
+            "{fixture}: no cut-generating pool holds an active cut generated before the last of \
+             {} iterations",
+            result.iterations
+        );
+    }
+
+    fn assert_lag_bearing_binding_cut(fixture: &str, setup: &StudySetup) {
+        let context = setup.training_ctx();
+        let mut lag_pools = Vec::new();
+        let mut binding_cuts = 0;
+        let mut lag_coefficient_cuts = 0;
+        let mut lag_bearing_binding_cuts = 0;
+        for (pool_id, layout) in context.cut_state_layouts.iter().enumerate() {
+            if !layout.has_lag_slots() {
+                continue;
+            }
+            lag_pools.push(pool_id);
+            let pool = &setup.fcf.pools[pool_id];
+            let lags = layout.lag_point().full();
+            for slot in 0..pool.populated() {
+                let binding = pool.metadata(slot).active_count > 0;
+                let lag_bearing = pool.coefficient_row(slot)[lags.clone()]
+                    .iter()
+                    .any(|&coefficient| coefficient != 0.0);
+                binding_cuts += usize::from(binding);
+                lag_coefficient_cuts += usize::from(lag_bearing);
+                lag_bearing_binding_cuts += usize::from(binding && lag_bearing);
+            }
+        }
+        assert!(
+            lag_bearing_binding_cuts > 0,
+            "{fixture}: no binding cut carries a nonzero lag coefficient: over the lag-bearing \
+             pools {lag_pools:?}, {binding_cuts} cut(s) bound and {lag_coefficient_cuts} carry a \
+             nonzero lag coefficient"
+        );
+    }
+
+    fn assert_forward_windows_differ(fixture: &str, forward_passes: u32, shapes: &[usize]) {
+        let widest = shapes.iter().copied().max().unwrap_or(0);
+        assert!(
+            forward_passes >= 2 && usize::try_from(forward_passes).unwrap() >= widest,
+            "{fixture}: {forward_passes} forward pass(es) over thread shapes {shapes:?}; the \
+             one-worker shape holds every trial point and the widest gives each worker a strict \
+             subset only with at least 2 and at least {widest} forward passes"
+        );
+    }
+
+    /// `by_node::resolve_block_size` under no configured block size, then the block count.
+    fn resolved_block_count(n_openings: usize) -> usize {
+        let block_size = n_openings.div_ceil(2).min(n_openings);
+        n_openings.div_ceil(block_size.max(1))
+    }
+
+    fn openings_per_stage(setup: &StudySetup) -> Vec<usize> {
+        let tree = setup.inputs.stochastic.tree_view();
+        (0..setup.num_stages())
+            .map(|stage| tree.n_openings(stage))
+            .collect()
+    }
+
+    fn assert_has_multi_block_stage(fixture: &str, setup: &StudySetup) {
+        let blocks: Vec<usize> = openings_per_stage(setup)
+            .into_iter()
+            .map(resolved_block_count)
+            .collect();
+        assert!(
+            blocks.iter().any(|&count| count >= 2),
+            "{fixture}: per-stage opening-block counts {blocks:?}; the by-node legs need a stage \
+             with at least two blocks"
+        );
+    }
+
+    fn assert_fused_slice_is_heterogeneous(fixture: &str, setup: &StudySetup) {
+        let graph = &setup.inputs.node_graph;
+        let context = setup.training_ctx();
+        let root_pool = graph.nodes[NodePos(0)].pool_id;
+        let leaf_pools: BTreeSet<usize> = graph
+            .nodes
+            .iter()
+            .zip(graph.successors.iter())
+            .filter(|(_, successors)| successors.is_empty())
+            .map(|(node, _)| node.pool_id)
+            .collect();
+        let layouts = context.cut_state_layouts;
+        for &leaf_pool in &leaf_pools {
+            assert_ne!(
+                layouts[leaf_pool].n_slots(),
+                layouts[root_pool].n_slots(),
+                "{fixture}: the leaf pool {leaf_pool} projects as many slots as the root pool \
+                 {root_pool}"
+            );
+        }
+        let lag_pools: BTreeSet<usize> = (0..layouts.len())
+            .filter(|&pool_id| layouts[pool_id].has_lag_slots())
+            .collect();
+        assert_eq!(
+            lag_pools, leaf_pools,
+            "{fixture}: the lag-bearing pools are not exactly the leaf pools"
+        );
+    }
+
+    fn assert_has_three_opening_stage(fixture: &str, setup: &StudySetup) {
+        let openings = openings_per_stage(setup);
+        assert!(
+            openings.iter().any(|&count| count >= 3),
+            "{fixture}: per-stage opening counts {openings:?}; the shortest-chain order reorders \
+             only a stage with at least three openings"
+        );
+    }
+
+    /// Trains one fresh `build()` per shape and returns the first shape's fingerprint.
+    fn assert_thread_shapes_agree(
+        fixture: &str,
+        budget: Option<u32>,
+        build: impl Fn() -> StudySetup,
+        shapes: &[usize],
+    ) -> SelectionFingerprint {
+        let reference = train(build(), &StubComm, shapes[0], fixture, budget);
+        for (index, &n_threads) in shapes.iter().enumerate().skip(1) {
+            let repeat = if shapes[..index].contains(&n_threads) {
+                " repeat"
+            } else {
+                ""
+            };
+            train(build(), &StubComm, n_threads, fixture, budget).assert_matches(
+                &reference,
+                &format!("{fixture} threads={n_threads}{repeat}"),
+            );
+        }
+        reference
+    }
+
+    /// `build` gives a fixture built through [`sample`].
+    fn assert_rank_stub_matches_single_rank(
+        fixture: &str,
+        build: impl Fn() -> StudySetup,
+        n_threads: usize,
+    ) {
+        let single_rank = build();
+        assert_eq!(
+            single_rank.loop_params.forward_passes, 1,
+            "{fixture}: `Rank0Of2` is faithful only with one forward pass"
+        );
+        let budget = Some(BUDGET_THAT_EVICTS_NOTHING);
+        let reference = train(single_rank, &StubComm, n_threads, fixture, budget);
+        train(build(), &Rank0Of2, n_threads, fixture, budget).assert_matches(
+            &reference,
+            &format!("{fixture} Rank0Of2 threads={n_threads}"),
+        );
+    }
+
+    /// `build` gives a fixture built through [`sample`], under the default
+    /// scheduler and `Expectation`.
+    fn assert_by_node_cvar_thread_shapes_agree(fixture: &str, build: impl Fn() -> StudySetup) {
+        let by_node_cvar_build = || by_node_cvar(build());
+        let probe = by_node_cvar_build();
+        assert_forward_windows_differ(
+            fixture,
+            probe.loop_params.forward_passes,
+            &BY_NODE_THREAD_SHAPES,
+        );
+        assert_has_multi_block_stage(fixture, &probe);
+        let budget = Some(BUDGET_THAT_EVICTS_NOTHING);
+        let cvar =
+            assert_thread_shapes_agree(fixture, budget, by_node_cvar_build, &BY_NODE_THREAD_SHAPES);
+
+        let mut expectation = build();
+        expectation.set_scheduler(BY_NODE);
+        let expectation = train(expectation, &StubComm, 1, fixture, budget);
+        assert!(
+            expectation.cuts != cvar.cuts,
+            "{fixture}: the Expectation run's pools have the CVaR run's bits, so the risk measure \
+             acted on no cut"
+        );
+    }
+
+    /// `build` gives a fixture built through [`sample`], under the default
+    /// scheduler and `Expectation`.
+    fn assert_by_node_cvar_rank_stub_matches_single_rank(
+        fixture: &str,
+        build: impl Fn() -> StudySetup,
+    ) {
+        let by_node_cvar_build = || by_node_cvar(build());
+        assert_has_multi_block_stage(fixture, &by_node_cvar_build());
+        assert_rank_stub_matches_single_rank(fixture, by_node_cvar_build, 4);
+    }
+
+    #[test]
+    fn compact_by_node_cvar_thread_shapes_agree_on_the_lag_study() {
+        assert_by_node_cvar_thread_shapes_agree(LAG_STUDY, || {
+            lag_study(THREAD_LEG_FORWARD_PASSES, LAG_STUDY_ITERATIONS)
+        });
+    }
+
+    #[test]
+    fn compact_by_node_cvar_rank_stub_matches_single_rank_on_the_lag_study() {
+        assert_by_node_cvar_rank_stub_matches_single_rank(LAG_STUDY, || {
+            lag_study(1, LAG_STUDY_ITERATIONS)
+        });
+    }
+
+    #[test]
+    fn compact_opening_order_is_result_neutral_on_the_lag_study() {
+        let build = || lag_study(THREAD_LEG_FORWARD_PASSES, LAG_STUDY_ITERATIONS);
+        let probe = build();
+        assert_has_three_opening_stage(LAG_STUDY, &probe);
+        assert_forward_windows_differ(
+            LAG_STUDY,
+            probe.loop_params.forward_passes,
+            &OPENING_ORDER_THREAD_SHAPES,
+        );
+        assert_thread_shapes_agree(
+            LAG_STUDY,
+            Some(BUDGET_THAT_EVICTS_NOTHING),
+            build,
+            &OPENING_ORDER_THREAD_SHAPES,
+        );
+        assert_rank_stub_matches_single_rank(LAG_STUDY, || lag_study(1, LAG_STUDY_ITERATIONS), 1);
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "slow-tests"),
+        ignore = "slow: trains the compact form of d43 and the fan"
+    )]
+    fn compact_by_node_cvar_shapes_agree_on_d43() {
+        let n_slots: BTreeSet<usize> = d43(1, D43_ITERATIONS)
+            .training_ctx()
+            .cut_state_layouts
+            .iter()
+            .map(CutStateProjection::n_slots)
+            .collect();
+        assert!(
+            n_slots.len() > 1,
+            "{D43}: every pool projects {n_slots:?} cut-state slots, so the projection is uniform"
+        );
+        assert_by_node_cvar_thread_shapes_agree(D43, || {
+            d43(THREAD_LEG_FORWARD_PASSES, D43_ITERATIONS)
+        });
+        assert_by_node_cvar_rank_stub_matches_single_rank(D43, || d43(1, D43_ITERATIONS));
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "slow-tests"),
+        ignore = "slow: trains the compact form of d43 and the fan"
+    )]
+    fn compact_fused_slice_thread_shapes_agree_on_the_heterogeneous_fan() {
+        assert_fused_slice_is_heterogeneous(FAN, &fan());
+
+        for scheduler in [BackwardScheduler::ByScenario {}, BY_NODE] {
+            let fixture = format!("{FAN} {scheduler:?}");
+            assert_thread_shapes_agree(
+                &fixture,
+                None,
+                || {
+                    let mut setup = fan();
+                    setup.set_scheduler(scheduler);
+                    setup
+                },
+                &FAN_THREAD_SHAPES,
+            );
+        }
+    }
+
+    /// Every rank of the world must hold a trial and, on two or more ranks, a
+    /// strict share of them, so a rank's forward window differs from the single
+    /// rank's.
+    fn assert_world_splits_the_trials(fixture: &str, world: &impl Communicator, trials: usize) {
+        assert!(
+            world.size() <= trials,
+            "a world of {} ranks leaves a rank without a trial",
+            world.size()
+        );
+        if world.size() >= 2 {
+            let share = trials.div_ceil(world.size());
+            assert!(
+                share < trials,
+                "{fixture}: a rank trains {share} of the {trials} trials on {} ranks, so its \
+                 forward window is the single rank's",
+                world.size()
+            );
+        }
+    }
+
+    fn assert_matches_single_rank(
+        world: &impl Communicator,
+        on_world: &SelectionFingerprint,
+        reference: &SelectionFingerprint,
+    ) {
+        on_world.assert_matches(
+            reference,
+            &format!(
+                "rank {} of {} must be bit-identical to the single-rank reference",
+                world.rank(),
+                world.size()
+            ),
+        );
+    }
+
+    /// Compares every rank's fingerprint of the by-node `CVaR` lag study, trained
+    /// on the MPI world, with a single-rank run of the same study in the same
+    /// process. Under `cargo test` the world has one rank and the comparison is
+    /// an identity.
+    #[test]
+    #[cfg_attr(not(feature = "slow-tests"), ignore = "slow: trains on the MPI world")]
+    fn compact_lag_study_is_world_size_invariant() {
+        let world =
+            create_communicator(BackendKind::Auto).expect("communicator construction must succeed");
+        let trials = usize::try_from(WORLD_FORWARD_PASSES).unwrap();
+        assert_world_splits_the_trials(LAG_STUDY, &world, trials);
+
+        let build = || {
+            let setup = by_node_cvar(lag_study(WORLD_FORWARD_PASSES, LAG_STUDY_ITERATIONS));
+            assert_has_multi_block_stage(LAG_STUDY, &setup);
+            setup
+        };
+        let budget = Some(BUDGET_THAT_EVICTS_NOTHING);
+        let reference = train(build(), &LocalBackend, 1, LAG_STUDY, budget);
+        let on_world = train(build(), &world, 1, LAG_STUDY, budget);
+        assert_matches_single_rank(&world, &on_world, &reference);
+    }
+
+    /// Compares every rank's fingerprint of by-node `CVaR` d43, trained on the MPI
+    /// world, with a single-rank run of the same study in the same process. Under
+    /// `cargo test` the world has one rank and the comparison is an identity.
+    #[test]
+    #[cfg_attr(not(feature = "slow-tests"), ignore = "slow: trains on the MPI world")]
+    fn compact_d43_is_world_size_invariant() {
+        let world =
+            create_communicator(BackendKind::Auto).expect("communicator construction must succeed");
+        let trials = usize::try_from(WORLD_FORWARD_PASSES).unwrap();
+        assert_world_splits_the_trials(D43, &world, trials);
+
+        let build = || {
+            let setup = by_node_cvar(d43(WORLD_FORWARD_PASSES, D43_ITERATIONS));
+            assert_has_multi_block_stage(D43, &setup);
+            setup
+        };
+        let budget = Some(BUDGET_THAT_EVICTS_NOTHING);
+        let reference = train(build(), &LocalBackend, 1, D43, budget);
+        let on_world = train(build(), &world, 1, D43, budget);
+        assert_matches_single_rank(&world, &on_world, &reference);
+    }
+
+    /// Compares every rank's fingerprint of the by-node heterogeneous fan with
+    /// four leaves, trained on the MPI world, with a single-rank run of the same
+    /// study in the same process. Under `cargo test` the world has one rank and
+    /// the comparison is an identity.
+    #[test]
+    #[cfg_attr(not(feature = "slow-tests"), ignore = "slow: trains on the MPI world")]
+    fn compact_fused_slice_is_world_size_invariant() {
+        let world =
+            create_communicator(BackendKind::Auto).expect("communicator construction must succeed");
+        let build = || {
+            let mut setup = external_distinct_fan_setup_heterogeneous_cut_state_in_both_forms(
+                WORLD_FAN_LEAVES,
+                FAN_ITERATIONS,
+            )
+            .1;
+            setup.set_scheduler(BY_NODE);
+            assert_fused_slice_is_heterogeneous(FAN, &setup);
+            setup
+        };
+        let probe = build();
+        let trials = probe
+            .inputs
+            .node_graph
+            .successors
+            .iter()
+            .filter(|successors| successors.is_empty())
+            .count();
+        assert_eq!(
+            trials, WORLD_FAN_LEAVES,
+            "{FAN}: the enumerated forward pass holds one trial per leaf, and the world legs \
+             need {WORLD_FAN_LEAVES}"
+        );
+        assert_world_splits_the_trials(FAN, &world, trials);
+
+        let reference = train(probe, &LocalBackend, 1, FAN, None);
+        let on_world = train(build(), &world, 1, FAN, None);
+        assert_matches_single_rank(&world, &on_world, &reference);
+    }
+}
