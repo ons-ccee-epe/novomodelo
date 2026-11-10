@@ -252,7 +252,11 @@ Inferring it from the row's terms is the wrong-but-compiling alternative. An
 amount can be written with flow terms, for example a volume row built from
 hours-weighted turbined and spilled flow. Adding or removing one term would
 then silently change what the penalty means and rescale the slack price by the
-stage hours, which still compiles and still converges.
+stage hours, which still compiles and still converges. The stage-volume terms
+`hydro_outflow_volume`, `hydro_diversion_volume` and `pumping_volume` are
+another way to write an amount. A row built only from them reads as an amount,
+which makes inferring the basis from the terms more tempting, not less; the
+declared basis still prices it.
 
 Read: `crates/novomodelo-core/src/constraints/generic_constraint.rs`
 (`SlackConfig::unit_cost`, `PenaltyBasis`), `lp/builder/entries.rs`
@@ -263,9 +267,130 @@ Read: `crates/novomodelo-core/src/constraints/generic_constraint.rs`
 720 h and 2160 h stages),
 `per_unit_storage_shortfall_costs_the_same_on_a_week_and_a_month` and
 `per_hour_storage_shortfall_cost_scales_with_stage_hours` (`tests/hydro_sim.rs`,
-reported cost on 168 h and 744 h stages), and
+reported cost on 168 h and 744 h stages),
 `generic_constraint_collapsed_slack_priced_by_total_stage_hours` (a stage-level
-`per_hour` row prices at the total stage hours).
+`per_hour` row prices at the total stage hours),
+`stage_volume_slack_price_follows_the_declared_basis`
+(`tests/template_integration/generic_constraints.rs`, a volume row's objective
+coefficient under both bases), and
+`per_unit_diversion_volume_shortfall_costs_the_same_on_two_block_stages` and
+its twin `per_hour_diversion_volume_shortfall_cost_scales_with_total_stage_hours`
+(`tests/hydro_sim.rs`; a `per_hour` volume row on two-block stages is priced at
+the total stage hours, never a block's hours).
+
+## A stage-volume term is the τ-weighted block sum on one stage-level row
+
+A stage-volume term (`hydro_outflow_volume`, `hydro_diversion_volume`,
+`pumping_volume`) is the stage volume in hm³: `Σ_k τ_k · flow_k` over every
+block of the stage, in ascending block order, on parallel and chronological
+stages alike. τ_k comes only from `BlockClock::tau`
+(`duration_hours * M3S_TO_HM3`). `resolve_stage_volume` multiplies the flow
+counterpart's columns by that τ, so the flow resolvers stay the single owners
+of which columns a flow reads, and no column or row family is added.
+
+The outflow volume reads turbine (every cell) plus spillage and excludes
+diversion: the same flow `hydro_outflow` and both outflow rows bind (see "Both
+outflow rows bind the non-diverted river-remnant flow"). The diversion volume
+reads the diversion column alone. The pumping volume reads the pump's flow
+column at unit multiplier, never the power coefficient. Each volume is what the
+plant or station releases in the stage: never the water arriving from upstream
+and never the travel-time delivery columns.
+
+The stage-volume variants are block-independent
+(`variable_ref_is_block_independent`), so a constraint with a volume term
+materialises as one stage-level row per stage, addressed by a bounds row with a
+null `block_id`. `novomodelo-io` refuses each input that would split that row:
+the expression parser (`build_variable_ref`) refuses a block argument on a
+volume term, and `check_stage_volume_constraints` refuses a per-(stage, block)
+parameter, a bounds row with a block id, and any other term that is not a stage
+amount, which is how a block-dependent flow term would split it.
+`fill_generic_constraint_entries` backs the refusal with a `debug_assert!`. A
+`SystemBuilder` caller that bypasses `novomodelo-io` in a release build gets
+per-block rows, each carrying the whole-stage volume, with no error. That path
+is a gap recorded here and covered by no test, not a guarantee.
+
+Each volume reads the same columns as its flow counterpart, so commissioning
+needs no special case: a `PreFilling` plant's outflow volume is zero (turbine
+and spillage pinned), a `Filling` plant's outflow volume is its spillage only,
+the diversion volume is zero while the diversion columns are pinned, and an
+inactive pumping station's volume is zero (see "Spillage is frozen `[0, 0]`
+during PreFilling"). The generic-constraint echo reports the user's
+coefficient, never τ times it.
+
+The wrong-but-compiling alternatives, and the tests that pin them:
+
+- **Weighting every block by ζ, or by the uniform split ζ/K.** ζ counts each
+  block's flow for the whole stage's hours, and ζ/K gives a long block's flow
+  the weight of a short one's. Both equal τ_k only when every block has the
+  same hours, so on unequal blocks the row bounds the wrong volume. Pinned by
+  `hydro_outflow_volume_weights_each_block_by_its_own_hours`
+  (`lp/builder/generic_constraints/tests.rs`),
+  `stage_volume_collapse_one_row_carries_tau_on_turbine_and_spillage`
+  (`tests/template_integration/generic_constraints.rs`) and
+  `d60_outflow_volume_band_matches_closed_form` (`tests/deterministic.rs`; the
+  unequal-hours closed form moves).
+  `stage_volume_collapse_twin_with_equal_hours_carries_the_uniform_split` and
+  `d60_equal_hours_twin_matches_its_own_closed_form` are controls, not pins:
+  they pass under the uniform split by design.
+- **A second τ derivation** (hours times a locally restated conversion, or a
+  split of ζ). `BlockClock::tau` is the only owner. A derivation that rounds
+  differently fails the bit-exact `*_weights_each_block_by_its_own_hours`
+  comparisons (`lp/builder/generic_constraints/tests.rs`). Some second
+  derivations round identically and pass, which is why the single-owner rule is
+  the contract.
+- **Reading one block only** (a truncated block loop, or the row's
+  `block_idx`). The row then holds one block's volume, not the stage's. Pinned
+  by `stage_volume_resolution_ignores_the_block_argument_and_the_block_mode`
+  (`lp/builder/generic_constraints/tests.rs`) and
+  `stage_volume_outflow_reads_the_frozen_turbines_of_a_filling_plant`
+  (`tests/filling_commissioning.rs`, at a multi-block stage).
+- **Per-block replication**: a volume term on per-block rows, each carrying the
+  whole-stage volume. Each block row then bounds the whole stage, so the
+  tightest block bound governs the stage and a `per_unit` violation is charged
+  once per block row. Pinned by `stage_volume_variants_are_block_independent`
+  (`lp/builder/generic_constraints/tests.rs`),
+  `stage_volume_term_on_a_split_parameter_row_panics_in_debug` and
+  `stage_volume_term_on_a_block_bounds_row_panics_in_debug`
+  (`lp/builder/entries.rs`, debug builds only), and
+  `d60_bounded_volume_constraint_adds_one_stage_level_row_per_bounded_stage`
+  (`tests/deterministic.rs`).
+- **Including diversion in the outflow volume.** The volume then counts water
+  routed to another target, so a cap on the plant's outflow volume also limits
+  its diversion and a floor can be met with diverted water. Pinned by
+  `stage_volume_twin_outflow_volume_excludes_an_open_diversion`
+  (`tests/template_integration/generic_constraints.rs`).
+- **Reading another plant's columns or the upstream arrival.** The row then
+  counts water the plant receives, not what it releases. Pinned by
+  `stage_volume_matrix_rows_read_their_own_plants_columns`
+  (`tests/template_integration/generic_constraints.rs`; on a zero-travel-time
+  cascade the upstream turbine enters the downstream water row, and the
+  downstream volume row still reads only its own plant's columns). The
+  travel-time clause holds by construction: `resolve_stage_volume` reads only
+  the flow resolvers' columns.
+- **The pump's power coefficient instead of its flow column.** The row then
+  sums power scaled by τ, not water. Pinned by
+  `stage_volume_twin_pumping_volume_reads_the_pumping_flow_columns`
+  (`tests/template_integration/generic_constraints.rs`).
+- **Special-casing a commissioning phase or an inactive station.** A volume
+  that forces its own value for a phase can disagree with the column pins its
+  flow counterpart reads. Pinned by
+  `stage_volume_diversion_reads_the_pinned_diversion_columns` and
+  `stage_volume_pumping_reads_the_station_flow_outside_its_window`
+  (`tests/filling_commissioning.rs`).
+- **Echoing τ times the coefficient.** The echo then reports a τ-scaled value
+  instead of the coefficient the user declared. Pinned by
+  `stage_volume_row_echoes_the_user_coefficient_not_tau`
+  (`generic_constraint_echo.rs`) and
+  `d60_echo_carries_the_declared_coefficient_and_shapes`
+  (`tests/deterministic.rs`).
+
+Read: `crates/novomodelo-sddp/src/block_clock.rs` (`BlockClock::tau`),
+`lp/builder/generic_constraints.rs` (`resolve_stage_volume`),
+`lp/builder/layout.rs` (`variable_ref_is_block_independent`),
+`lp/builder/entries.rs` (`fill_generic_constraint_entries`),
+`crates/novomodelo-io/src/validation/semantic/constraints.rs`
+(`check_stage_volume_constraints`), and `docs/design/wire-format-evolution.md`
+(the `VariableRef` tail register, which owns the variants' wire encoding).
 
 ## Hydro-cell aggregation assumes one production map per cell
 
