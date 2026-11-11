@@ -118,7 +118,6 @@ _MASKED_PARQUET_COLUMNS = frozenset(
         "bwd_setup_ms",  # wall-clock (per-iteration phase timing)
         "bwd_load_imbalance_ms",  # wall-clock (per-iteration phase timing)
         "bwd_scheduling_overhead_ms",  # wall-clock (per-iteration phase timing)
-        "bwd_aggregation_ms",  # wall-clock (per-iteration phase timing)
         "fwd_setup_ms",  # wall-clock (per-iteration phase timing)
         "fwd_load_imbalance_ms",  # wall-clock (per-iteration phase timing)
         "fwd_scheduling_overhead_ms",  # wall-clock (per-iteration phase timing)

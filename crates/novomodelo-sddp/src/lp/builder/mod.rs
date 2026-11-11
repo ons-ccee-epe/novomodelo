@@ -22,11 +22,11 @@
 //! ## Patch sequence
 //!
 //! Each forward-pass solve writes the row buffer (load balance when
-//! `n_load_buses > 0`, z-inflow) via `fill_load_patches` /
-//! `fill_z_inflow_patches`, and the column buffer (incoming storage,
-//! AR lags, travel-time buckets, anticipated state) via `fill_col_state_patches`.
+//! `n_load_buses > 0`, the realized-inflow shift) via `fill_load_patches` /
+//! `fill_inflow_shift_patches`, and the column buffer (incoming storage,
+//! travel-time buckets, anticipated state) via `fill_col_state_patches`.
 //! The backward pass writes only the column buffer; noise comes from the fixed
-//! opening tree through `fill_z_inflow_patches` with the opening-specific vector.
+//! opening tree through `fill_inflow_shift_patches` with the opening-specific vector.
 //!
 //! ## Commissioning window
 //!

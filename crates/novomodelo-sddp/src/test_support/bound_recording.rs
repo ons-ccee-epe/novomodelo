@@ -78,6 +78,15 @@ pub struct CutRowPushRecord {
     pub first_stale_row: Option<usize>,
 }
 
+/// How a recorder counts a cut row's own bound when the row is appended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AppendedCutRowBound {
+    /// The appended bound is not a write: the row needs a later write.
+    Patched,
+    /// The appended bound is final: it counts as a write unless a structural write follows in the same window.
+    Final,
+}
+
 /// The records of every recorder built on it, in solve order; clones share one list.
 #[derive(Clone, Debug, Default)]
 pub struct CutRowPushLog(Arc<Mutex<Vec<CutRowPushRecord>>>);
@@ -118,9 +127,11 @@ pub struct BoundRecordingSolver<S: SolverInterface> {
     recorded: Vec<RecordedSolve>,
     log: Option<CutRowPushLog>,
     theta_col: usize,
+    appended_bound: AppendedCutRowBound,
     first_cut_row: usize,
     fresh: Vec<bool>,
     written: Vec<bool>,
+    credit_from: usize,
     structural_window: bool,
     added_in_window: usize,
 }
@@ -145,9 +156,11 @@ impl<S: SolverInterface> BoundRecordingSolver<S> {
             recorded: Vec::new(),
             log: None,
             theta_col: 0,
+            appended_bound: AppendedCutRowBound::Patched,
             first_cut_row: 0,
             fresh: Vec::new(),
             written: Vec::new(),
+            credit_from: 0,
             structural_window: false,
             added_in_window: 0,
         }
@@ -161,16 +174,24 @@ impl<S: SolverInterface> BoundRecordingSolver<S> {
     /// change of pinned state or noise, which is a write to a structural row or to a column bound.
     /// After such a write every cut row must be written again before the next solve; between two
     /// solves without one, the rows already fresh stay fresh and only the rows appended since need
-    /// a write. An appended row's own bound is not a write.
+    /// a write. Under [`AppendedCutRowBound::Patched`] an appended row's own bound is not a write;
+    /// under [`AppendedCutRowBound::Final`] a row appended after the window's last structural write
+    /// counts as written in that window.
     ///
-    /// The rule is the compact form's: on the logical form an appended row's bound is its RHS and
-    /// no write follows, so every appended row would count stale. `load_model` and `add_rows`
-    /// panic on a template or an appended row that breaks the cut-row shape.
+    /// `Patched` is the production append-then-patch rule; `Final` models an append whose bound is
+    /// its RHS and needs no later write. `load_model` and `add_rows` panic on a template or an
+    /// appended row that breaks the cut-row shape.
     #[must_use]
-    pub fn logging_cut_row_pushes(inner: S, theta_col: usize, log: CutRowPushLog) -> Self {
+    pub fn logging_cut_row_pushes(
+        inner: S,
+        theta_col: usize,
+        log: CutRowPushLog,
+        appended_bound: AppendedCutRowBound,
+    ) -> Self {
         Self {
             log: Some(log),
             theta_col,
+            appended_bound,
             ..Self::new(inner)
         }
     }
@@ -208,8 +229,14 @@ impl<S: SolverInterface> BoundRecordingSolver<S> {
         self.fresh.resize(cut_rows, false);
         self.written.clear();
         self.written.resize(cut_rows, false);
+        self.credit_from = cut_rows;
         self.structural_window = false;
         self.added_in_window = 0;
+    }
+
+    fn note_structural_write(&mut self) {
+        self.structural_window = true;
+        self.credit_from = self.fresh.len();
     }
 
     fn note_added_rows(&mut self, rows: &RowBatch) {
@@ -236,14 +263,18 @@ impl<S: SolverInterface> BoundRecordingSolver<S> {
         }
         match row.checked_sub(self.first_cut_row) {
             Some(cut) => self.written[cut] = true,
-            None => self.structural_window = true,
+            None => self.note_structural_write(),
         }
     }
 
     fn close_window(&mut self) -> CutRowPushRecord {
         let structural_window = self.structural_window;
-        for (fresh, &written) in self.fresh.iter_mut().zip(&self.written) {
-            *fresh = written || (*fresh && !structural_window);
+        let credited_from = match self.appended_bound {
+            AppendedCutRowBound::Patched => self.fresh.len(),
+            AppendedCutRowBound::Final => self.credit_from,
+        };
+        for (cut, (fresh, &written)) in self.fresh.iter_mut().zip(&self.written).enumerate() {
+            *fresh = written || cut >= credited_from || (*fresh && !structural_window);
         }
         let first_stale = self.fresh.iter().position(|&fresh| !fresh);
         let record = CutRowPushRecord {
@@ -256,6 +287,7 @@ impl<S: SolverInterface> BoundRecordingSolver<S> {
             first_stale_row: first_stale.map(|cut| self.first_cut_row + cut),
         };
         self.written.fill(false);
+        self.credit_from = self.fresh.len();
         self.structural_window = false;
         self.added_in_window = 0;
         record
@@ -383,7 +415,7 @@ impl<S: SolverInterface> SolverInterface for BoundRecordingSolver<S> {
             t.col_upper[i] = upper[k];
         }
         if self.log.is_some() {
-            self.structural_window = true;
+            self.note_structural_write();
         }
         self.writes.push(BoundWrite::ColBounds {
             indices: indices.to_vec(),
@@ -458,7 +490,9 @@ mod tests {
         ActiveProfile, ActiveSolver, RowBatch, SolverInterface, StageTemplate,
     };
 
-    use super::{BoundRecordingSolver, BoundWrite, CutRowPushLog, CutRowPushRecord};
+    use super::{
+        AppendedCutRowBound, BoundRecordingSolver, BoundWrite, CutRowPushLog, CutRowPushRecord,
+    };
 
     const THETA_COL: usize = 1;
 
@@ -524,7 +558,19 @@ mod tests {
     }
 
     fn logging_recorder(log: &CutRowPushLog) -> BoundRecordingSolver<ActiveSolver> {
-        BoundRecordingSolver::logging_cut_row_pushes(solver(), THETA_COL, log.clone())
+        recorder_with(log, AppendedCutRowBound::Patched)
+    }
+
+    fn recorder_with(
+        log: &CutRowPushLog,
+        appended_bound: AppendedCutRowBound,
+    ) -> BoundRecordingSolver<ActiveSolver> {
+        BoundRecordingSolver::logging_cut_row_pushes(
+            solver(),
+            THETA_COL,
+            log.clone(),
+            appended_bound,
+        )
     }
 
     fn write_structural_row(rec: &mut BoundRecordingSolver<ActiveSolver>) {
@@ -698,6 +744,55 @@ mod tests {
                 first_stale_row: Some(4),
             }
         );
+    }
+
+    #[test]
+    fn a_final_append_after_the_pin_is_fresh_without_a_push() {
+        let log = CutRowPushLog::new();
+        let mut rec = recorder_with(&log, AppendedCutRowBound::Final);
+        rec.load_model(&theta_template());
+        rec.set_col_bounds(&[0], &[0.0], &[10.0]);
+        rec.set_row_lower_bounds_range(1, &[2.0, 3.0]);
+        rec.add_rows(&theta_row());
+        rec.solve(None).expect("the recorded LP is feasible");
+
+        let [record] = log.records().try_into().expect("one solve logged");
+        assert!(record.structural_window);
+        assert_eq!(record.stale_rows, 0);
+        assert_eq!(record.added_in_window, 1);
+    }
+
+    #[test]
+    fn a_final_append_before_a_later_pin_still_needs_a_push() {
+        let log = CutRowPushLog::new();
+        let mut rec = recorder_with(&log, AppendedCutRowBound::Final);
+        rec.load_model(&theta_template());
+        rec.set_row_lower_bounds_range(1, &[2.0, 3.0]);
+        rec.add_rows(&theta_row());
+        rec.set_col_bounds(&[0], &[0.0], &[10.0]);
+        rec.solve(None).expect("first LP is feasible");
+
+        rec.set_col_bounds(&[0], &[0.0], &[10.0]);
+        rec.set_row_lower_bounds_range(1, &[2.0, 3.0, 4.0]);
+        rec.solve(None).expect("second LP is feasible");
+
+        let [stale, written] = log.records().try_into().expect("two solves logged");
+        assert_eq!((stale.stale_rows, stale.first_stale_row), (1, Some(3)));
+        assert_eq!(written.stale_rows, 0);
+    }
+
+    #[test]
+    fn a_patched_append_needs_a_push_even_after_the_pin() {
+        let log = CutRowPushLog::new();
+        let mut rec = recorder_with(&log, AppendedCutRowBound::Patched);
+        rec.load_model(&theta_template());
+        write_structural_row(&mut rec);
+        rec.set_row_lower_bounds_range(1, &[2.0, 3.0]);
+        rec.add_rows(&theta_row());
+        rec.solve(None).expect("the recorded LP is feasible");
+
+        let [record] = log.records().try_into().expect("one solve logged");
+        assert_eq!((record.stale_rows, record.first_stale_row), (1, Some(3)));
     }
 
     #[test]

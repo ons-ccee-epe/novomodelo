@@ -3205,8 +3205,8 @@ fn one_anticipated_thermal_system(
 /// - `n_ant_state = n_anticipated * k_max = 1 * lead_stages`
 /// - the ring contributes `n_ant_state` outgoing columns AND `n_ant_state`
 ///   incoming columns (doubled, unlike the water/lag blocks which are
-///   outgoing-only): `theta = n_ant_state + n_ant_state + 0 (z_inflow)
-///   + 0 (storage_in) = 2 * n_ant_state`
+///   outgoing-only): `theta = n_ant_state + n_ant_state + 0 (storage_in)
+///   = 2 * n_ant_state`
 /// - `decision_start = theta + 1`
 /// - `col_thermal_start = decision_start` (0 turbine/spillage/diversion cols)
 /// - `col_anticipated_decision_start = col_thermal_start + n_thermals * n_blks`
@@ -4305,45 +4305,45 @@ fn build_k0_baseline_system() -> novomodelo_core::System {
 /// `commit_in.start` (incoming ring, the column the always-active
 /// fishing row couples) for the roundtrip geometry (N=1, L=0, K=k).
 ///
-/// = N*(3+L) + k = 3 + k: the incoming block sits after
-/// `z_inflow`/`storage_in`, K stages after `theta`'s outgoing-side start.
+/// = N*(2+L') + k = 2 + k (the lag region has no column): the incoming block sits
+/// after `storage_in`, K stages after `theta`'s outgoing-side start.
 fn rt_col_ant_state_incoming_start(k: usize) -> usize {
-    3 + k
+    2 + k
 }
 
 /// `col_thermal_start` for the roundtrip geometry (N=1, L=0, K=k).
 ///
 /// The anticipated ring contributes `2*k` columns (outgoing `commit_out`
 /// AND incoming `commit_in`, each width `k`) before `theta`.
-/// theta = N*(3+L) + 2*k = 3 + 2*k, decision_start = theta+1 = 4+2k, so
-/// col_thermal_start = decision_start + 3*N*n_blks = decision_start + 6 = 10+2K.
+/// theta = N*2 + 2*k = 2 + 2*k, decision_start = theta+1 = 3+2k, so
+/// col_thermal_start = decision_start + 3*N*n_blks = decision_start + 6 = 9+2K.
 fn rt_col_thermal_start(k: usize) -> usize {
-    10 + 2 * k
+    9 + 2 * k
 }
 
 /// `col_anticipated_decision_start` for the roundtrip geometry.
 ///
-/// = col_thermal_start + T*n_blks = (10+2K) + 2 = 12+2K.
+/// = col_thermal_start + T*n_blks = (9+2K) + 2 = 11+2K.
 fn rt_col_ant_dec_start(k: usize) -> usize {
-    12 + 2 * k
+    11 + 2 * k
 }
 
 /// `row_anticipated_fishing_start` for the roundtrip geometry. Incoming state
 /// is pinned by column bounds, so no row pins it: = min_generation_start +
-/// n_op_rows = 11 + 1 = 12 (K-independent: row layout does not depend on the
+/// n_op_rows = 10 + 1 = 11 (K-independent: row layout does not depend on the
 /// anticipated ring's column width).
 fn rt_row_ant_fishing_start(_k: usize) -> usize {
-    12
+    11
 }
 
 /// Expected `num_cols` for the roundtrip geometry with anticipation K=k.
 ///
-/// = 27+2K: the anticipated ring contributes `2*n_ant_state = 2*k` columns
+/// = 26+2K: the anticipated ring contributes `2*n_ant_state = 2*k` columns
 /// (outgoing `commit_out` + incoming `commit_in`) plus the
 /// stage-level `anticipated_decision` column, one more than the pre-ring
 /// no-anticipated baseline's single combined block.
 fn rt_expected_num_cols(k: usize) -> usize {
-    27 + 2 * k
+    26 + 2 * k
 }
 
 /// Expected `num_rows` for the roundtrip geometry with anticipation K=k and stage
@@ -4355,18 +4355,16 @@ fn rt_expected_num_cols(k: usize) -> usize {
 /// definition row iff it is within the horizon-reachable cap
 /// `slot < n_stages - stage_idx - 1`.
 fn rt_expected_num_rows(k: usize, stage_idx: usize) -> usize {
-    // base = 12 (incoming state is pinned by column bounds; no row pins it)
+    // base = 11 (incoming state is pinned by column bounds; no row pins it)
     let fishing = 1_usize; // always-active: 1 fishing row per anticipated plant
     let state_out_def = usize::from(stage_idx + k < 4);
     let horizon_cap = 4_usize.saturating_sub(stage_idx + 1);
     let interior_active = (0..k.saturating_sub(1))
         .filter(|&slot| slot < horizon_cap)
         .count();
-    12 + fishing + state_out_def + interior_active
+    11 + fishing + state_out_def + interior_active
 }
 
-#[path = "template_integration/compact_form.rs"]
-mod compact_form;
 #[path = "template_integration/deficit_and_withdrawal.rs"]
 mod deficit_and_withdrawal;
 #[path = "template_integration/evaporation.rs"]

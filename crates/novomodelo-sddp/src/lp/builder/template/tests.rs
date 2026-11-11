@@ -495,7 +495,6 @@ fn build_template_build_ctx_pumping_stations_id_sorted_and_pos_mapped() {
     );
     let ctx = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,
@@ -556,7 +555,6 @@ fn build_template_build_ctx_n_pumping_matches_slice_and_bounds() {
     );
     let ctx = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,
@@ -636,7 +634,6 @@ fn build_stage_templates_records_the_layout_pumping_flow_range_per_stage() {
     );
     let ctx = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,
@@ -890,7 +887,6 @@ fn geometry_ncs_family_matches_the_stage_layout() {
     );
     let ctx = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,
@@ -1180,7 +1176,6 @@ fn build_template_build_ctx_contracts_counted_and_pos_mapped() {
     );
     let ctx = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,
@@ -1255,7 +1250,6 @@ fn stage_layout_geometry_populates_contract_ranges() {
     );
     let ctx = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,
@@ -1314,7 +1308,6 @@ fn stage_layout_geometry_empty_contracts_are_pumping_end_anchored() {
     );
     let ctx = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,
@@ -1462,7 +1455,6 @@ fn build_template_build_ctx_contract_count_divergence_panics() {
     );
     let _ = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,
@@ -1543,7 +1535,6 @@ fn build_template_build_ctx_populates_anticipated_metadata() {
     );
     let ctx = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,
@@ -1631,7 +1622,6 @@ fn build_template_build_ctx_zero_anticipated_when_none() {
     );
     let ctx = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,
@@ -2044,7 +2034,6 @@ fn lp_template_invariant_under_anticipated_index_permutation() {
     );
     let ctx_a = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,
@@ -2138,7 +2127,6 @@ fn lp_template_invariant_under_anticipated_index_permutation() {
     );
     let ctx_b = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &ctx_b_state,
@@ -2626,7 +2614,6 @@ fn delivery_stage_ids_equals_study_stage_ids_with_no_post_study() {
     );
     let ctx = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,
@@ -2675,7 +2662,6 @@ fn delivery_stage_ids_continue_the_horizon_with_synthetic_ids() {
     );
     let ctx = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,
@@ -2732,7 +2718,6 @@ fn delivery_vectors_read_the_post_study_element_at_its_delivery_index() {
     );
     let ctx = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,
@@ -2784,7 +2769,6 @@ fn delivery_cumulative_discount_matches_recomputed_extended_horizon() {
     );
     let ctx = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,
@@ -3005,7 +2989,6 @@ fn build_post_study_resolved_for(
     );
     let ctx = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,
@@ -3430,7 +3413,6 @@ fn build_active_violations_layout_and_template() -> (StageLayout<'static>, Stage
     )));
     let ctx = super::build_template_build_ctx(
         system,
-        par_lp,
         production,
         &hydro_models.evaporation,
         &resolved.state,
@@ -3931,7 +3913,6 @@ fn block_template(block_mode: BlockMode, n_blks: usize) -> StageTemplate {
     );
     let ctx = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &production,
         &hydro_models.evaporation,
         &resolved.state,
@@ -4047,7 +4028,6 @@ fn block_layout_and_template(
     )));
     let ctx = super::build_template_build_ctx(
         system,
-        par_lp,
         production,
         &hydro_models.evaporation,
         &resolved.state,
@@ -4621,7 +4601,6 @@ fn stage_geometry_rerouted_ranges_match_layout_source_at_every_stage() {
     );
     let ctx = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,
@@ -5169,7 +5148,6 @@ fn filling_block_layout_and_template(
     )));
     let ctx = super::build_template_build_ctx(
         system,
-        par_lp,
         production,
         &hydro_models.evaporation,
         &resolved.state,
@@ -5502,7 +5480,6 @@ fn template_anticipated_resolution_matches_setup_lead_time() {
     );
     let ctx = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,
@@ -5591,7 +5568,6 @@ fn template_leadstages_byte_identical_to_setup_and_fallback() {
     );
     let ctx = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,

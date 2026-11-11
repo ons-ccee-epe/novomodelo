@@ -308,7 +308,12 @@ impl StudySetup {
         let max_rows = templates.iter().map(|t| t.num_rows).max().unwrap_or(0);
         pool.resize_scratch_bases(max_cols, max_rows);
         let max_pool_capacity = self.fcf.pools.iter().map(|p| p.capacity).max().unwrap_or(0);
-        pool.reserve_backward_scratch(&self.training_ctx(), sizing, max_pool_capacity);
+        pool.reserve_backward_scratch(
+            &self.training_ctx(),
+            sizing,
+            max_pool_capacity,
+            &self.backward_scheduler,
+        );
         Ok(pool)
     }
 }

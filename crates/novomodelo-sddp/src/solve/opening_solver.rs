@@ -6,10 +6,10 @@ use novomodelo_solver::{SolutionView, SolverInterface};
 use crate::{
     cut::CutPool,
     dcs::{
-        DcsParams, DcsSolveContext, FoldedCutRhs, build_initial_resident_set, lazy_solve_preloaded,
+        ActiveCutRhs, DcsParams, DcsSolveContext, build_initial_resident_set, lazy_solve_preloaded,
     },
     error::SddpError,
-    lp::indexer::{CutStateProjection, InflowForm, StateSpace},
+    lp::indexer::{CutStateProjection, StateSpace},
     workspace::SolverWorkspace,
 };
 
@@ -84,7 +84,7 @@ impl StageOpeningSolver {
     ///
     /// `cut_rows` are the frozen LP's cut rows in row order; the lazy mode
     /// ignores them and reads `inputs.pool`. `lazy` is read only by the lazy mode.
-    /// On the compact layout the caller's opening phase has left the active cuts'
+    /// The caller's opening phase has left the active cuts'
     /// values in the scratch, which the lazy mode pushes to the rows it makes
     /// resident.
     ///
@@ -104,12 +104,8 @@ impl StageOpeningSolver {
                 // The cut-free core, never the frozen template: that one already
                 // carries the active cuts, which the lazy loop would append again.
                 let core = inputs.stage_context.template(inputs.stage_index);
-                let cut_rhs = match lazy.state.inflow_form {
-                    InflowForm::Compact => Some(FoldedCutRhs {
-                        slots: &ws.scratch.cut_slots_buf,
-                        rhs: &ws.scratch.cut_rhs_buf,
-                    }),
-                    InflowForm::Logical => None,
+                let cut_rhs = ActiveCutRhs {
+                    rhs: &ws.scratch.cut_rhs_buf,
                 };
                 lazy_solve_preloaded(
                     &mut ws.solver,

@@ -202,9 +202,6 @@ pub struct IterationRecord {
     /// Backward scheduling/sync overhead (ms) → `bwd_scheduling_overhead_ms`. Backward sub-component.
     pub time_bwd_scheduling_overhead_ms: u64,
 
-    /// Serial aggregation after each stage's parallel solves (ms) → `bwd_aggregation_ms`. Backward sub-component.
-    pub time_bwd_aggregation_ms: u64,
-
     /// Estimated forward worker load imbalance (ms) → `fwd_load_imbalance_ms`. Forward sub-component.
     pub time_fwd_load_imbalance_ms: u64,
 
@@ -339,7 +336,7 @@ pub struct WorkerTimingRecord {
     /// `iteration_timing_schema()` (after `iteration`, `rank`, `worker_id`).
     /// Slot indices correspond to the `WORKER_TIMING_SLOT_*` constants defined
     /// in `novomodelo-core`.
-    pub timings: [u64; 17],
+    pub timings: [u64; 16],
 }
 
 /// Aggregate type carrying all training data needed for output writing.
@@ -639,7 +636,6 @@ mod tests {
                 time_cut_batch_build_ms: 0,
                 time_bwd_load_imbalance_ms: 0,
                 time_bwd_scheduling_overhead_ms: 0,
-                time_bwd_aggregation_ms: 0,
                 time_fwd_load_imbalance_ms: 0,
                 time_fwd_scheduling_overhead_ms: 0,
                 time_overhead_ms: 0,
@@ -715,7 +711,6 @@ mod tests {
             time_cut_batch_build_ms: 0,
             time_bwd_load_imbalance_ms: 0,
             time_bwd_scheduling_overhead_ms: 0,
-            time_bwd_aggregation_ms: 0,
             time_fwd_load_imbalance_ms: 0,
             time_fwd_scheduling_overhead_ms: 0,
             time_overhead_ms: 400u64.saturating_sub(150 + 250 + 5 + 3 + 4),

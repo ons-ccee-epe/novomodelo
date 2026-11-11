@@ -14,22 +14,20 @@ use crate::{
         FutureCostFunction,
         chain_rule::{ChainRuleInputs, ChildOpenings, OpeningDuals, aggregate_first_cut_into},
     },
-    indexer::{ChainRuleSlots, InflowForm},
     risk_measure::{RiskMeasure, RiskMeasureScratch},
     setup::node_graph::NodeId,
     solve::StageOpeningSolver,
     state_exchange::ExchangeBuffers,
     workspace::{
         BasisStoreSliceMut, SolverWorkspace,
-        workspace::{FoldedAggregateScratch, recycle},
+        workspace::{SuccessorAggregateScratch, recycle},
     },
 };
 
 use super::{
     StagedCut, SuccessorChild, SuccessorOutcomes, SuccessorSpec,
     lp_setup::{
-        OpeningNoise, load_backward_lp, pin_folded_child_lp, resolve_backward_basis,
-        resolve_opening_noise,
+        OpeningNoise, load_backward_lp, pin_child_lp, resolve_backward_basis, resolve_opening_noise,
     },
     opening_solve::solve_backward_opening,
     outcome_aggregation::{fold_slot_increments_into_sync, save_basis_at_omega_zero},
@@ -61,21 +59,20 @@ pub(super) fn prepare_child_lp<S: SolverInterface + Send>(
 /// Writes the aggregate-first cut over `succ`'s whole opening set into `coefficients` and returns
 /// its intercept: one joint weight call over the canonical-ω costs, then one
 /// [`aggregate_first_cut_into`] over the children. `view_of` maps a canonical ω to its duals.
-pub(super) fn aggregate_folded_cut<'r>(
+pub(super) fn aggregate_successor_cut<'r>(
     training_ctx: &TrainingContext<'_>,
     succ: &SuccessorSpec<'_>,
     outcomes: &SuccessorOutcomes<'_>,
     risk_measure: &RiskMeasure,
     x_hat: &[f64],
     view_of: impl Fn(usize) -> OpeningDuals<'r>,
-    scratch: &mut FoldedAggregateScratch,
+    scratch: &mut SuccessorAggregateScratch,
     risk_scratch: &mut RiskMeasureScratch,
     coefficients: &mut [f64],
 ) -> f64 {
-    let FoldedAggregateScratch {
+    let SuccessorAggregateScratch {
         aggregate,
         costs,
-        slots,
         views,
         children,
         ..
@@ -90,21 +87,12 @@ pub(super) fn aggregate_folded_cut<'r>(
     }
     let weights = risk_measure.opening_weights_into(costs, succ.probabilities, risk_scratch);
 
-    slots.clear();
-    for ci in 0..outcomes.n_children() {
-        let resident = &training_ctx.cut_state_layouts[outcomes.child(ci).pool_id];
-        slots.push(ChainRuleSlots::compose(
-            training_ctx.state,
-            resident,
-            succ.cut_state,
-        ));
-    }
     let mut child_list: Vec<ChildOpenings<'_>> = recycle(std::mem::take(children));
-    for (ci, child_slots) in slots.iter().enumerate() {
+    for ci in 0..outcomes.n_children() {
         let child = outcomes.child(ci);
         child_list.push(ChildOpenings {
             inputs: ChainRuleInputs {
-                slots: child_slots,
+                slots: child.chain_rule_slots,
                 resident_pool: child.successor_pool,
                 extracted: succ.cut_state,
                 par: training_ctx.stochastic.par(),
@@ -119,8 +107,8 @@ pub(super) fn aggregate_folded_cut<'r>(
     intercept
 }
 
-/// The compact unit's cut: the unit's records located by canonical ω, then
-/// [`aggregate_folded_cut`] into `agg_coefficients`.
+/// The unit's cut: the unit's records located by canonical ω, then
+/// [`aggregate_successor_cut`] into `agg_coefficients`.
 fn aggregate_unit_records<S: SolverInterface + Send>(
     ws: &mut SolverWorkspace<S>,
     training_ctx: &TrainingContext<'_>,
@@ -132,47 +120,29 @@ fn aggregate_unit_records<S: SolverInterface + Send>(
     let accum = &mut ws.backward_accum;
     let n_openings = succ.probabilities.len();
     debug_assert_eq!(
-        accum.folded_records.len(),
+        accum.opening_records.len(),
         n_openings,
         "every opening of the unit records exactly once"
     );
-    let mut location = std::mem::take(&mut accum.folded_aggregate.location);
+    let mut location = std::mem::take(&mut accum.successor_aggregate.location);
     location.clear();
     location.resize(n_openings, usize::MAX);
-    for i in 0..accum.folded_records.len() {
-        location[accum.folded_records.key(i).1] = i;
+    for i in 0..accum.opening_records.len() {
+        location[accum.opening_records.key(i).1] = i;
     }
-    let records = &accum.folded_records;
-    let intercept = aggregate_folded_cut(
+    let records = &accum.opening_records;
+    let intercept = aggregate_successor_cut(
         training_ctx,
         succ,
         outcomes,
         risk_measure,
         x_hat,
         |omega| records.view(location[omega]),
-        &mut accum.folded_aggregate,
+        &mut accum.successor_aggregate,
         &mut accum.risk_scratch,
         &mut accum.agg_coefficients,
     );
-    accum.folded_aggregate.location = location;
-    intercept
-}
-
-/// The logical unit's cut: the per-opening outcomes averaged by `risk_measure` into
-/// `agg_coefficients`.
-fn aggregate_unit_outcomes<S: SolverInterface + Send>(
-    ws: &mut SolverWorkspace<S>,
-    succ: &SuccessorSpec<'_>,
-    risk_measure: &RiskMeasure,
-) -> f64 {
-    let mut intercept = 0.0_f64;
-    risk_measure.aggregate_cut_into(
-        &ws.backward_accum.outcomes[..succ.probabilities.len()],
-        succ.probabilities,
-        &mut intercept,
-        &mut ws.backward_accum.agg_coefficients,
-        &mut ws.backward_accum.risk_scratch,
-    );
+    accum.successor_aggregate.location = location;
     intercept
 }
 
@@ -233,13 +203,10 @@ pub(crate) fn process_by_scenario_backward<S: SolverInterface + Send>(
     // warm-start chain, never which cuts are produced.
     let solve_order = tree_view.solve_order_data(s.0);
     let captures_basis = opening_solver.captures_basis();
-    let compact = training_ctx.state.inflow_form == InflowForm::Compact;
-    if compact {
-        ws.backward_accum.folded_records.clear(
-            succ.cut_state.columned_len(),
-            training_ctx.state.hydro_count,
-        );
-    }
+    ws.backward_accum.opening_records.clear(
+        succ.cut_state.columned_len(),
+        training_ctx.state.hydro_count,
+    );
 
     for ci in 0..outcomes.n_children() {
         let child = outcomes.child(ci);
@@ -248,10 +215,8 @@ pub(crate) fn process_by_scenario_backward<S: SolverInterface + Send>(
         // One child ⟹ once per trial point ⟹ chain byte-parity.
         ws.solver.reset_solver_state();
         prepare_child_lp(opening_solver, ws, ctx, succ, &child, iteration);
-        if compact {
-            let source = succ.bracket_source(m, child.successor_node_id);
-            pin_folded_child_lp(ws, ctx, training_ctx, &child, x_hat, s, source);
-        }
+        let source = succ.bracket_source(m, child.successor_node_id);
+        pin_child_lp(ws, ctx, training_ctx, &child, x_hat, s, source);
 
         // Resolved per child, never once from child 0: each child's External
         // column is its own.
@@ -279,16 +244,13 @@ pub(crate) fn process_by_scenario_backward<S: SolverInterface + Send>(
                     &child,
                     stored,
                     noise,
-                    x_hat,
                     s,
                     scenario,
                     iteration,
+                    0,
                     omega,
                     false,
                 )?;
-                if compact {
-                    ws.backward_accum.record_folded_opening(0, omega);
-                }
                 if captures_basis {
                     save_basis_at_omega_zero(ws, &child, basis_slice, m, x_hat);
                 }
@@ -320,16 +282,13 @@ pub(crate) fn process_by_scenario_backward<S: SolverInterface + Send>(
                         &child,
                         stored,
                         raw_noise,
-                        x_hat,
                         s,
                         scenario,
                         iteration,
+                        0,
                         omega,
                         !is_first,
                     )?;
-                    if compact {
-                        ws.backward_accum.record_folded_opening(0, omega);
-                    }
                     if is_first && captures_basis {
                         save_basis_at_omega_zero(ws, &child, basis_slice, m, x_hat);
                     }
@@ -342,11 +301,8 @@ pub(crate) fn process_by_scenario_backward<S: SolverInterface + Send>(
     // Aggregate into `agg_coefficients`, then copy into this trial point's arena
     // slot so the bytes outlive the parallel closure without a per-cut allocation.
     let risk_measure = &risk_measures[succ.t.0];
-    let agg_intercept = if compact {
-        aggregate_unit_records(ws, training_ctx, succ, outcomes, risk_measure, x_hat)
-    } else {
-        aggregate_unit_outcomes(ws, succ, risk_measure)
-    };
+    let agg_intercept =
+        aggregate_unit_records(ws, training_ctx, succ, outcomes, risk_measure, x_hat);
     let n_state = ws.backward_accum.agg_coefficients.len();
     let coefficients_range = arena_offset..arena_offset + n_state;
     debug_assert!(

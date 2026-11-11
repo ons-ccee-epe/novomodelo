@@ -116,7 +116,7 @@ use crate::{
     },
     lp::indexer::{
         AnticipatedLocal, AnticipatedPlants, CutStateProjection, HydroCellIndex, HydroSys,
-        InflowForm, StateSpace, StudyDimensions, ThermalSys,
+        StateSpace, StudyDimensions, ThermalSys,
     },
     policy::orchestration::PeriodicCheckpoint,
     risk_measure::{RiskMeasure, uniform_effective_measure},
@@ -293,38 +293,13 @@ impl StudySetup {
         hydro_models: PrepareHydroModelsResult,
         scalar_parameters: Vec<ScalarParameter>,
     ) -> Result<Self, SddpError> {
-        Self::new_with_boundary_requirements_in_form(
+        Self::new_with_boundary_requirements(
             system,
             config,
             stochastic,
             hydro_models,
             unresolved_boundary_requirements(config),
             scalar_parameters,
-            InflowForm::Logical,
-        )
-    }
-
-    /// [`Self::new`] building the compact inflow emission.
-    ///
-    /// # Errors
-    ///
-    /// Same as [`Self::new`].
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn new_compact(
-        system: &System,
-        config: &Config,
-        stochastic: StochasticContext,
-        hydro_models: PrepareHydroModelsResult,
-        scalar_parameters: Vec<ScalarParameter>,
-    ) -> Result<Self, SddpError> {
-        Self::new_with_boundary_requirements_in_form(
-            system,
-            config,
-            stochastic,
-            hydro_models,
-            unresolved_boundary_requirements(config),
-            scalar_parameters,
-            InflowForm::Compact,
         )
     }
 
@@ -348,44 +323,11 @@ impl StudySetup {
         boundary: BoundaryStateRequirements,
         scalar_parameters: Vec<ScalarParameter>,
     ) -> Result<Self, SddpError> {
-        Self::new_with_boundary_requirements_in_form(
-            system,
-            config,
-            stochastic,
-            hydro_models,
-            boundary,
-            scalar_parameters,
-            InflowForm::Logical,
-        )
-    }
-
-    /// [`Self::new_with_boundary_requirements`] building `inflow_form`.
-    ///
-    /// # Errors
-    ///
-    /// Same as [`Self::new`].
-    pub(crate) fn new_with_boundary_requirements_in_form(
-        system: &System,
-        config: &Config,
-        stochastic: StochasticContext,
-        hydro_models: PrepareHydroModelsResult,
-        boundary: BoundaryStateRequirements,
-        scalar_parameters: Vec<ScalarParameter>,
-        inflow_form: InflowForm,
-    ) -> Result<Self, SddpError> {
         let params = StudyParams::from_config(config, scalar_parameters)?;
-        Self::new_from_params(
-            system,
-            config,
-            stochastic,
-            hydro_models,
-            boundary,
-            params,
-            inflow_form,
-        )
+        Self::new_from_params(system, config, stochastic, hydro_models, boundary, params)
     }
 
-    /// [`Self::new_with_boundary_requirements_in_form`] from parameters the
+    /// [`Self::new_with_boundary_requirements`] from parameters the
     /// caller has already extracted from `config`, so `StudyParams::from_config`
     /// runs once.
     pub(crate) fn new_from_params(
@@ -395,7 +337,6 @@ impl StudySetup {
         hydro_models: PrepareHydroModelsResult,
         boundary: BoundaryStateRequirements,
         mut params: StudyParams,
-        inflow_form: InflowForm,
     ) -> Result<Self, SddpError> {
         params.boundary = boundary;
         // Sentinel: the scenario-source resolvers use the path only for error
@@ -408,14 +349,13 @@ impl StudySetup {
         let simulation_source = config
             .simulation_scenario_source(sentinel_path)
             .map_err(|e| SddpError::Validation(e.to_string()))?;
-        Self::from_broadcast_params_with_form(
+        Self::from_broadcast_params(
             system,
             stochastic,
             params,
             hydro_models,
             &training_source,
             &simulation_source,
-            inflow_form,
         )
     }
 
@@ -438,56 +378,11 @@ impl StudySetup {
     ///   model shape does not match `system` (see `validate_par_shape`).
     pub fn from_broadcast_params(
         system: &System,
-        stochastic: StochasticContext,
-        config: StudyParams,
-        hydro_models: PrepareHydroModelsResult,
-        training_source: &ScenarioSource,
-        simulation_source: &ScenarioSource,
-    ) -> Result<Self, SddpError> {
-        Self::from_broadcast_params_with_form(
-            system,
-            stochastic,
-            config,
-            hydro_models,
-            training_source,
-            simulation_source,
-            InflowForm::Logical,
-        )
-    }
-
-    /// [`Self::from_broadcast_params`] building the compact inflow emission.
-    ///
-    /// # Errors
-    ///
-    /// Same as [`Self::from_broadcast_params`].
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn from_broadcast_params_compact(
-        system: &System,
-        stochastic: StochasticContext,
-        config: StudyParams,
-        hydro_models: PrepareHydroModelsResult,
-        training_source: &ScenarioSource,
-        simulation_source: &ScenarioSource,
-    ) -> Result<Self, SddpError> {
-        Self::from_broadcast_params_with_form(
-            system,
-            stochastic,
-            config,
-            hydro_models,
-            training_source,
-            simulation_source,
-            InflowForm::Compact,
-        )
-    }
-
-    fn from_broadcast_params_with_form(
-        system: &System,
         mut stochastic: StochasticContext,
         config: StudyParams,
         hydro_models: PrepareHydroModelsResult,
         training_source: &ScenarioSource,
         simulation_source: &ScenarioSource,
-        inflow_form: InflowForm,
     ) -> Result<Self, SddpError> {
         validate_par_shape(system, stochastic.par())?;
 
@@ -514,7 +409,7 @@ impl StudySetup {
             energy_conversion,
             resolved_generic_coefficients,
             transit_seed_arcs,
-        } = resolve_stage_data(system, &config, &stochastic, &hydro_models, inflow_form)?;
+        } = resolve_stage_data(system, &config, &stochastic, &hydro_models)?;
         let n_stages = stage_data.stage_templates.templates.len();
 
         let study_stage_ids: Vec<i32> = stage_data.stages.iter().map(|s| s.id).collect();
@@ -1256,7 +1151,6 @@ pub(crate) fn resolve_state_layout(
     par_lp: &PrecomputedPar,
     transit_bucket_topology: &bucket_topology::TransitBucketTopology,
     inflow_lag_depth: Option<u32>,
-    inflow_form: InflowForm,
 ) -> Result<ResolvedStateLayout, SddpError> {
     let anticipated_plants = AnticipatedPlants::build(system.thermals());
 
@@ -1336,7 +1230,6 @@ pub(crate) fn resolve_state_layout(
         transit_bucket_topology,
         anticipated_lead_stages,
         anticipated_resolution,
-        inflow_form,
     );
 
     debug_assert_eq!(
@@ -1364,18 +1257,10 @@ pub(crate) fn resolve_state_and_topology(
     par_lp: &PrecomputedPar,
     inflow_lag_depth: Option<u32>,
     boundary_present: bool,
-    inflow_form: InflowForm,
 ) -> Result<(bucket_topology::TransitBucketTopology, ResolvedStateLayout), SddpError> {
     let topology =
         bucket_topology::build_transit_bucket_topology(system, calendar, boundary_present);
-    let layout = resolve_state_layout(
-        system,
-        calendar,
-        par_lp,
-        &topology,
-        inflow_lag_depth,
-        inflow_form,
-    )?;
+    let layout = resolve_state_layout(system, calendar, par_lp, &topology, inflow_lag_depth)?;
     Ok((topology, layout))
 }
 
@@ -2014,7 +1899,6 @@ fn resolve_stage_data(
     config: &StudyParams,
     stochastic: &StochasticContext,
     hydro_models: &PrepareHydroModelsResult,
-    inflow_form: InflowForm,
 ) -> Result<ResolvedStageInputs, SddpError> {
     let calendar = DeliveryCalendar::from_system(system);
     let (transit_bucket_topology, layout) = resolve_state_and_topology(
@@ -2023,7 +1907,6 @@ fn resolve_stage_data(
         stochastic.par(),
         config.boundary.inflow_lag_depth(),
         config.boundary.is_present(),
-        inflow_form,
     )?;
     let transit_seed_arcs = build_transit_seed_arcs(system, &transit_bucket_topology);
     warn_on_boundary_absent_post_study_delivery(

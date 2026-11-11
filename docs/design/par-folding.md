@@ -589,14 +589,17 @@ own forward trials, so every trial point's slab entry is rank-local.
    - solve; append the opening's folded extraction to the worker's record buffer
      (§6.3).
 4. **Per trial point, once both units finish:** the aggregate-first chain rule (§5.3),
-   reading each opening's record in place through the location table, run serially on
-   the calling thread in ascending position after the canonical scatter. This is a
-   serial section. Its cost grows with the union of non-zero cut duals across a trial
-   point's openings, and its share of backward wall time grows with the worker count,
-   because the parallel part shrinks as 1/W and the finish does not. The
-   `by_node_finish` group sizes it: the finish's time per trial position, serial and as
-   a loop over positions into per-position slots. If its share exceeds the budget, the
-   lever is that loop, followed by the serial ascending cut insert.
+   reading each opening's record in place through the location table. After the
+   canonical scatter, the trial positions are split into one contiguous range per
+   worker and finished in parallel. Each position's cut is computed by one thread, with
+   its range's own scratch, into that position's slot of the staged-cut arena. No
+   floating-point value is reduced across threads, so the cuts are bit-identical for any
+   worker count. The ascending cut insert that follows stays serial. **Budget:** on one
+   performance core, one position's finish takes at most 1 ms at 30 non-zero cut duals
+   per opening and at most 4 ms at 169. The `by_node_finish` bench group measured
+   0.72–0.74 ms and 3.20 ms. The finish, as the parallel loop plus the serial insert,
+   stays within 5% of the stage's by-node backward wall time. If a profile exceeds
+   either bound, the next lever is the serial ascending insert.
 
 ### 5.6 Other sites
 
@@ -727,7 +730,7 @@ pass, which no cache removes because every forward state is new: 14,400 passes o
 about 400 frozen rows, estimated at about 5.5–11 CPU-s from the per-row cost of
 `rhs_kernel` at one thread and of `rhs_kernel_all_cores`, both benched at 400 rows.
 
-These figures are CPU seconds and do not show the serial finish's share of wall time
+These figures are CPU seconds and do not show the finish's share of wall time
 (§5.5, step 4). `by_node_finish` times the finish per trial position; on a run, the
 share is the coordinator's backward wall minus the longest worker backward wall, at
 the production worker count.
@@ -962,7 +965,10 @@ Restated:
    ring coefficients stay r̃c/c at the incoming column. Cut rows keep −β·c on the
    columns they have; the lag slots go to the RHS.
 2. **Intercept through the projection.** Computed only after the lag β are rebuilt;
-   under aggregate-first it is Σμ·Q − β̄·x̂.
+   under aggregate-first it is Σμ·Q − β̄·x̂, where μ comes from one weight-kernel
+   call over the flattened successor × opening set; each child's ȳ_c and Ḡ_c are
+   partial sums under those joint weights, never renormalised per child, and
+   β̄ = Σ_c β̄_c (§5.3).
 3. **State pinning by column bounds.** Lags have no LP column; their values enter only
    through the ẑ shifts and the cut RHS. There is still no state-fixing row.
 4. **"Inflow noise enters only through the z rows"** becomes **"Inflow enters only
@@ -1172,7 +1178,7 @@ The expanded LP (§4.7) is the logical oracle, behind `test-support`.
   the final BTRAN's backward error, which no rounding bound covers. A separate check ties
   ρ_a to the reported r̃c_a/c_a within ε_dual/c_a. It never pairs compact duals with
   expanded ones. It replaces
-  `basis_trajectory_probe.rs::lag_fold_check_stage`, which assumes the state is storage
+  `lag_fold_check_stage`, which assumes the state is storage
   plus lags and feeds the z-row dual straight in, so it never tests reconstruction from
   the water and generic duals.
 - **Lag study with FPHA.** An in-code study in `structural_studies()` gives T-ID and
@@ -1189,10 +1195,13 @@ The expanded LP (§4.7) is the logical oracle, behind `test-support`.
   (`tests/common/oracle_tolerance.rs`), and each formulation's cuts minorize the other's Q
   at sampled points. These never compare coefficients or primals.
 - **Deleted once T-ID and T-KKT pass:** the ignored probes
-  `lag_fold_chain_rule_identity` and `lag_fold_static_ab` in
-  `tests/basis_trajectory_probe.rs`, with `lag_fold_check_stage` and their other
+  `lag_fold_chain_rule_identity` and `lag_fold_static_ab`, with
+  `lag_fold_check_stage` and their other
   helpers. After the switch-over they would
-  check an LP that production no longer solves.
+  check an LP that production no longer solves. The reduced-deck checks, which ran at
+  real scale during the switch-over (all plants, the deck's PAR orders), were then
+  deleted too: no test reads a case outside the repository, and the in-code studies
+  keep the identities covered in CI.
 
 ### 9.4 Caching and determinism
 
@@ -1272,8 +1281,8 @@ the variants agree, and each group names what it decides:
   efficiency core. It decides the walk order of §6.4.
 - `y_bar_formation`: ȳ formed with the touched bitmap against a dense scan of the pool.
   It decides whether the bitmap earns its place (§5.3).
-- `by_node_finish`: the serial per-position finish of the backward against a loop over
-  positions on scoped threads. It sizes the serial section of §5.5, step 4.
+- `by_node_finish`: the per-position finish of the backward, serial against a loop over
+  positions on scoped threads. It sets the budget of §5.5, step 4.
 - `solver_push`: the set-based row-bound push against the lower-bounds range push, on
   HiGHS and on CLP. It decides the range push of §7.1.
 
@@ -1285,6 +1294,64 @@ build adds `--no-default-features --features "clp test-support"`.
 
 The full workspace test command from `CLAUDE.md`, the CLP suite, clippy pedantic with
 zero warnings, `cargo fmt --check`, and `bash scripts/ci/check-deny.sh`.
+
+### 9.9 Gate status
+
+Every gate that §9.1 to §9.7 name, with the tests that carry it or the point at which it is discharged.
+`landed` means the tests exist on the production path and the workspace test command runs them, the slow ones under `slow-tests`.
+`at the switch-over` means the gate acts on the logical arm or on values the switch-over moves, and is discharged in the switch-over change itself.
+The §9.3 checks are labelled by what they check: basis transfer, the primary KKT check, the shared-dual identity and the independent cold solves.
+
+| Gate | Status | Tests |
+|---|---|---|
+| 9.1 Transition oracle | at the switch-over | compares the compact template with the logical one, deleted with the logical arm: `every_study_compacts_to_its_logical_template`, `compact_emission_of_a_hydro_free_deck_equals_the_logical_template` |
+| 9.1 Expander check | at the switch-over | compares the expander with today's emission, deleted with the logical arm: `expanded_templates_rebuild_todays_emission`, `expanded_state_columns_match_todays_state_map`, `expanded_solve_patch_matches_todays_patched_template`, `expanded_cut_rows_match_todays_cut_rows_on_every_lag_deck`, `expanded_cut_rows_match_todays_cut_rows_on_the_lag_study` |
+| 9.1 The sink's structural tests | landed | `inflow_coupling_parallel_stage_is_minus_zeta_on_the_water_row`, `inflow_coupling_chronological_stage_is_minus_tau_per_block_row`, `inflow_coupling_prefilling_routes_to_the_target_water_rows`, `inflow_coupling_merges_generic_hydro_inflow_terms_on_one_hydro`; a `should_panic` test for each clause of the debug assertion: `finish_rejects_a_duplicate_row_for_one_hydro`, `finish_rejects_a_nan_coefficient`, `finish_rejects_a_row_past_the_base_rows`, `finish_rejects_row_bound_slices_of_different_lengths`, `record_rejects_a_hydro_past_the_sink` |
+| 9.1 Coupling-independence set: parallel −ζ | landed | `every_study_reads_z_inflow_on_its_water_rows`, `inflow_coupling_parallel_stage_is_minus_zeta_on_the_water_row`, `a_terminal_stage_prices_a_par1_lag_at_psi_kappa_times_the_water_value`, `a_terminal_stage_prices_a_par1_lag_at_psi_kappa_times_the_water_value_on_another_psi_and_stage_length`, `d16_par1_lag_shift` |
+| 9.1 Coupling-independence set: chronological −τ_k | landed | `every_study_reads_z_inflow_on_its_water_rows`, `inflow_coupling_chronological_stage_is_minus_tau_per_block_row`, `chronological_inflow_noise_moves_only_its_own_hydro` |
+| 9.1 Coupling-independence set: the PreFilling route | landed | `every_study_reads_z_inflow_on_its_water_rows`, `inflow_coupling_prefilling_routes_to_the_target_water_rows`, `a_prefilling_upstream_inflow_is_priced_at_the_target_water_value`, `a_prefilling_upstream_inflow_is_priced_at_the_target_water_value_with_the_productivities_swapped`, `d39_converges_to_known_optimum`, `d40_converges_to_known_optimum`, `inflow_slack_follows_z_routing_for_prefilling` |
+| 9.1 Coupling-independence set: generic `HydroInflow` | landed | `inflow_coupling_merges_generic_hydro_inflow_terms_on_one_hydro`, `a_range_inflow_row_prices_the_lag_on_both_of_its_sides`, `a_range_inflow_row_prices_the_lag_on_both_of_its_sides_on_a_narrower_range`, and every test of `hydro_inflow_travel_time` (for example `hydro_inflow_rows_match_the_water_balance_inflow_side_with_travel_time`) |
+| 9.1 Coupling-independence set: the Φ alias | landed | `an_injected_binding_cut_adds_its_next_lag_coefficient_to_the_producer_cut`, `an_injected_binding_cut_adds_its_next_lag_coefficient_to_the_producer_cut_with_the_injected_lags_swapped`, `a_non_finalizing_stage_keeps_the_lag_alias`, `a_finalizing_stage_keeps_the_lag_alias`, `d16_par1_lag_shift_on_the_compact_lp`, `d29_weekly_par_noise_sharing`, `d30_multi_resolution_loads_and_trains` |
+| 9.1 Mutation-kill table | at the switch-over | run once against the coupling-independence set above, recorded in the switch-over commit message, no permanent code |
+| 9.1 Scaling | landed | `expanded_scaling_follows_the_compact_template` |
+| 9.1 Fewer columns and base rows | landed | `expanded_scaling_follows_the_compact_template` (asserts the column and row counts against the compact template) |
+| 9.1 Delta cut-row batch identity | landed | `compact_cut_rows_match_across_writers_and_carry_no_lag_entry` |
+| 9.1 ψ_eff on `PrecomputedPar` | landed | `classical_par_has_no_lag_11_slot`, `lag_0_psi_combines_ar_and_annual`, `lag_11_psi_equals_psi_hat_over_twelve` in `par_a_lag12_lp_coefficient.rs` |
+| 9.2 T4-1 | landed | `a_terminal_stage_prices_a_par1_lag_at_psi_kappa_times_the_water_value`, `a_terminal_stage_prices_a_par1_lag_at_psi_kappa_times_the_water_value_on_another_psi_and_stage_length` |
+| 9.2 T4-2 | landed | `an_injected_binding_cut_adds_its_next_lag_coefficient_to_the_producer_cut`, `an_injected_binding_cut_adds_its_next_lag_coefficient_to_the_producer_cut_with_the_injected_lags_swapped` |
+| 9.2 T4-3 | landed | `a_prefilling_upstream_inflow_is_priced_at_the_target_water_value`, `a_prefilling_upstream_inflow_is_priced_at_the_target_water_value_with_the_productivities_swapped` |
+| 9.2 T4-4 | landed | `a_range_inflow_row_prices_the_lag_on_both_of_its_sides`, `a_range_inflow_row_prices_the_lag_on_both_of_its_sides_on_a_narrower_range` |
+| 9.2 T4-5 | landed | `a_storage_only_cut_carries_no_lag_coefficient`, `a_cut_that_keeps_the_lag_state_carries_its_lag_coefficient` |
+| 9.2 T4-6 | landed | `a_truncated_negative_draw_prices_the_lag_without_the_truncation_bound`, `a_truncated_positive_draw_prices_the_lag_at_the_same_water_value` |
+| 9.2 T4-7 | landed | `a_non_finalizing_stage_keeps_the_lag_alias`, `a_finalizing_stage_keeps_the_lag_alias` |
+| 9.3 Basis transfer | landed | `the_mapped_compact_basis_is_optimal_on_the_expanded_lp`, `the_mapped_compact_basis_is_optimal_on_d43_outside_its_lag_dropping_stage`, `every_lag_deck_warm_starts_from_the_mapped_basis` |
+| 9.3 Primary KKT check | landed | `the_lifted_compact_solution_meets_every_expanded_row`, `compact_and_expanded_agree_at_identical_pinned_states`, `compact_and_expanded_agree_at_identical_pinned_states_on_every_lag_deck` |
+| 9.3 KKT configuration per cut-row-set shape | landed | `the_fold_meets_the_expanded_kkt_conditions_at_every_cut_row_shape`, `every_solve_site_kind_is_reached_by_each_dispatch_enum` |
+| 9.3 The recorder | landed | `a_structural_window_requires_every_cut_row_written`, `a_round_without_structural_writes_keeps_earlier_rows_fresh`, `load_model_resets_the_push_flags`, `the_log_mode_keeps_no_solves`, `warm_starts_follows_the_inner_solver`, `every_solve_site_patches_every_resident_cut_row_at_every_solve`, `every_committed_deck_patches_every_resident_cut_row_at_every_solve` |
+| 9.3 Power guards | landed | every test of `power_guard_checks` (for example `complete_evidence_meets_every_guard`, `every_unmet_guard_is_listed_in_one_panic`) |
+| 9.3 Shared-dual identity | landed | `the_shared_dual_identity_holds_on_the_fpha_lag_study`, `the_shared_dual_identity_holds_on_d19`, `the_shared_dual_identity_holds_on_a_lag_state_deeper_than_the_par_order`, `the_shared_dual_identity_holds_at_every_opening_of_a_three_opening_lag_study`, `the_shared_dual_identity_holds_on_d43_outside_its_lag_dropping_stage` |
+| 9.3 Lag study with FPHA | landed | `fpha_lag_study_has_every_required_feature`, `fpha_lag_study_duals_bind_on_a_no_cut_stage_solve` |
+| 9.3 Independent cold solves | landed | `cold_solves_and_cuts_agree_across_the_formulations`, `cold_solves_and_cuts_agree_across_the_formulations_on_every_lag_deck` |
+| 9.3 Probes deleted once the identity and KKT checks pass | landed | the replacing checks are the shared-dual identity and KKT rows above; the probes `lag_fold_chain_rule_identity` and `lag_fold_static_ab` are deleted |
+| 9.4 RHS kernel property test | landed | `batched_brackets_equal_the_scalar_reference_bit_for_bit` |
+| 9.4 Cache on vs off | landed | `every_lagged_deck_trains_to_the_same_bits_with_the_solve_caches_bypassed`, `fpha_lag_study_trains_to_the_same_bits_with_the_solve_caches_bypassed`, `compact_solve_cache_bypass_forces_the_miss_and_gives_the_cached_bits`, `compact_slab_hit_reads_without_a_miss_and_matches_the_unwritten_run`, `compact_slab_foreign_tags_miss_on_every_pin_and_match_the_unwritten_run`, `compact_slab_unwritten_slab_misses_on_every_pin`, `pin_folded_slab_miss_equals_the_computed_brackets_and_counts` |
+| 9.4 Aggregate-first | landed | `aggregate_first_equals_weighted_per_opening_cuts`, `compact_aggregate_first_agrees_with_weighted_per_opening_cuts`, `aggregate_under_pure_cvar_matches_the_weighted_per_opening_cuts`, `pure_cvar_counts_every_binding_opening_as_expectation_does`, `aggregate_on_a_cvar_fan_uses_joint_weights_never_renormalised`, `the_fan_strategy_draws_joint_weights_that_per_child_normalisation_would_change`, `compact_aggregate_first_cut_is_scheduler_and_worker_independent` |
+| 9.4 `mpi_wire.rs` gates under the fold | landed | in `compact_fold_determinism`: `compact_by_node_cvar_thread_shapes_agree_on_the_lag_study`, `compact_by_node_cvar_rank_stub_matches_single_rank_on_the_lag_study`, `compact_opening_order_is_result_neutral_on_the_lag_study`, `compact_by_node_cvar_shapes_agree_on_d43`, `compact_fused_slice_thread_shapes_agree_on_the_heterogeneous_fan`, `compact_lag_study_is_world_size_invariant`, `compact_d43_is_world_size_invariant`, `compact_fused_slice_is_world_size_invariant` |
+| 9.4 Declaration order | landed | `finish_orders_entries_canonically_whatever_the_push_order`, `the_lag_study_template_is_invariant_to_declaration_order_in_both_forms`, `every_lag_deck_compact_template_is_invariant_to_declaration_order`, `the_compact_lag_study_trains_to_the_same_bits_in_either_declaration_order` |
+| 9.4 No allocation | landed | `a_folded_solve_and_its_cut_allocate_nothing_after_warm_up`, `the_bracket_slab_grows_only_when_the_templates_are_frozen`, `reserve_never_shrinks_and_a_write_within_capacity_keeps_the_buffer` |
+| 9.5 Solver crate conformance | landed | in `conformance.rs`: `highs_range_push_sets_lower_bounds`, `highs_range_push_drops_finite_upper`, `highs_range_push_at_nonzero_first_row_changes_only_its_rows`, `highs_range_push_empty_is_noop`, `highs_set_row_bounds_accepts_infinite_upper`, `highs_basic_rows_report_a_zero_dual_across_warm_bound_pushes`, and the `clp_` counterparts of each plus `clp_basic_rows_report_a_zero_dual_at_a_short_factorization_frequency` |
+| 9.6 `deterministic.rs` keeps its assertions | at the switch-over | the tolerance twins `d43_storage_only_cut_converges`, `d06_fpha_variable_head` keep passing unchanged; the bit pins `d43_observation_free_final_lb_is_bit_exact`, `test_fpha_variable_head_case_bit_exact`, `gated_off_final_lb_is_byte_stable` may move only inside the recorded window, each moved value derived or explained |
+| 9.6 `run_cut_oracles` and the cross-formulation oracle | landed | `cut_oracles_hold_on_every_committed_deck_with_lag_or_anticipated_state`, `cold_solves_and_cuts_agree_across_the_formulations_on_every_lag_deck` |
+| 9.6 `extensive_form_oracle.rs`, `inflow_nonnegativity.rs` and the retargeted pinning tests | landed | every test of the `extensive_form_oracle` and `inflow_nonnegativity` binaries (for example `chain_matches_extensive_form`, `water_balance_closure::simulated_water_balance_closes_from_outputs`); `chronological_inflow_noise_moves_only_its_own_hydro`, `every_noise_dimension_patches_only_its_own_entity`, `inflow_slack_follows_z_routing_for_prefilling` |
+| 9.6 Parity hashes | at the switch-over | every test of the modules `parity_hash_highs` and `parity_hash_clp` and the D06 parity tests `d06_parity_hash_matches_existing_baseline_highs`, `d06_parity_hash_matches_existing_baseline_clp`: the baseline directories are re-baselined together in the switch-over commit |
+| 9.7 Bench group `rhs_kernel` | landed | bench group `rhs_kernel` of `fold_kernels` (plain row loop, batched form and `dgemm`, single-threaded); a bench, not a test |
+| 9.7 Bench group `rhs_kernel_all_cores` | landed | bench group `rhs_kernel_all_cores` of `fold_kernels` (the same variants on every local core); a bench, not a test |
+| 9.7 Bench group `noise_term_pass` | landed | bench group `noise_term_pass` of `fold_kernels` (separate passes against the fused pass); a bench, not a test |
+| 9.7 Bench group `chain_rule` | landed | bench group `chain_rule` of `fold_kernels` (per-opening against aggregate-first); a bench, not a test |
+| 9.7 Bench group `chain_rule_walk` | landed | bench group `chain_rule_walk` of `fold_kernels` (row-major walk against the j-tile nest); a bench, not a test |
+| 9.7 Bench group `y_bar_formation` | landed | bench group `y_bar_formation` of `fold_kernels` (touched bitmap against a dense scan); a bench, not a test |
+| 9.7 Bench group `by_node_finish` | landed | bench group `by_node_finish` of `fold_kernels` (serial against scoped threads); a bench, not a test |
+| 9.7 Bench group `solver_push` | landed | bench group `solver_push` of `fold_kernels` (set-based push against the range push, HiGHS and CLP); a bench, not a test |
 
 ## 10. Local performance check
 
@@ -1414,19 +1481,20 @@ Verified in code:
 The cut-dual counts are checked against B_t (§5.7) by the default test
 `cut_dual_counts_stay_within_the_structural_bound` and, on every committed deck with
 lagged inflow, by its slow sweep
-`cut_dual_counts_stay_within_the_structural_bound_on_every_lagged_deck`. The ignored
-probe `cut_dual_counts_on_the_reduced_case` trains a reduced deck and prints the
-distribution of non-zero cut duals, touched slots and stage unions.
+`cut_dual_counts_stay_within_the_structural_bound_on_every_lagged_deck`. During the
+switch-over, a run on a reduced deck with the production deck's plants and PAR orders
+printed the distribution of non-zero cut duals, touched slots and stage unions; that
+run was then deleted.
 
 Assumed, each with what measures it:
 
 - LP time per solve (1.5–5 ms used above): the main-only run of §11.2, step 7, and the
   local check of §10.
 - The non-zero cut duals per opening on PMO (structurally at most 169, §5.7): the tests
-  above, and the probe on a reduced deck.
+  above, and the reduced-deck run of the switch-over.
 - The union of each aggregate's openings (§5.8) and the union across a stage's trial
-  points: the probe's distribution on a reduced deck. `chain_rule` and
+  points: the distribution of that reduced-deck run. `chain_rule` and
   `chain_rule_walk` place the walk between its warm and cold costs.
 - The batched RHS kernel's gain with every core busy (§6.4): `rhs_kernel_all_cores`.
 - CLP's range-push cost: `solver_push`.
-- The serial finish's share of wall time (§5.5, step 4): `by_node_finish`.
+- The finish's share of wall time (§5.5, step 4): `by_node_finish`.

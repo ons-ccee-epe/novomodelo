@@ -320,7 +320,6 @@ fn put_geometry(buf: &mut Vec<u8>, geometry: &StageGeometry, state: &StateSpace)
     put_range(buf, plant_max_turbine);
     put_range(buf, plant_max_generation);
 
-    put_usize(buf, state.z_inflow_rows().start);
     put_usize(buf, *n_blks);
 
     put_usize(buf, state.storage_in.start);

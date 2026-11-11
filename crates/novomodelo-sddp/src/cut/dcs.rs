@@ -11,7 +11,7 @@
 //! [`DcsConfig::resolve`] from the [`DcsConfig`] that
 //! [`DcsConfig::from_strategy`] derives from the strategy.
 
-use std::{ops::Range, time::Instant};
+use std::time::Instant;
 
 use novomodelo_solver::{
     Basis, ProfiledSolver, RowBatch, SolutionView, SolverError, SolverInterface, StageTemplate,
@@ -28,6 +28,7 @@ use crate::gemm::gemm_block;
 use crate::indexer::{CutStateProjection, StateSpace};
 use crate::setup::{NodeId, StageIdx};
 use crate::workspace::CapturedBasis;
+use crate::workspace::workspace::reserve_to;
 
 /// Parameters of the `dynamic` lazy row generation, as a phase runs them.
 ///
@@ -167,26 +168,12 @@ pub struct DcsScoringScratch {
     pub violations: Vec<(f64, u32)>,
 }
 
-/// Grow `buf` to `target` capacity, growth-only — `additional` is computed
-/// from `len()`, not `capacity()`, per `DcsScoringScratch::reserve`'s doc.
-fn reserve_to<T>(buf: &mut Vec<T>, target: usize) {
-    if buf.capacity() < target {
-        buf.reserve(target - buf.len());
-    }
-}
-
 impl DcsScoringScratch {
     /// Grow the scratch buffers to hold `n_state` state entries and up to
     /// `pool_capacity` candidate cuts, growth-only.
     ///
     /// `cand_coef_block` is reserved to `pool_capacity * n_state` (the
     /// all-eligible worst case); the other buffers to `pool_capacity` each.
-    ///
-    /// `Vec::reserve(additional)` grows to `len() + additional`, not to a target
-    /// capacity, so `additional` is computed from `len()` here — subtracting
-    /// `capacity()` instead under-reserves the moment this runs a second time
-    /// from a nonzero (but still-short-of-target) capacity, e.g. a pool that
-    /// grew twice.
     pub fn reserve(&mut self, n_state: usize, pool_capacity: usize) {
         reserve_to(&mut self.unscaled_state, n_state);
         reserve_to(&mut self.cand_coef_block, pool_capacity * n_state);
@@ -289,14 +276,14 @@ pub fn score_violated_candidates(
         current_iteration,
         scratch,
         out_selected,
-        None,
+        pool.intercepts_prefix(),
     )
 }
 
-/// [`score_violated_candidates`] without the column check. With `rhs_by_slot`, a
-/// candidate's floor is the folded value of its slot plus the product over the
-/// columned slots, and the pool intercept is not read: a compact layout's cut row
-/// is bounded by `B + W`, which already carries the lag terms.
+/// [`score_violated_candidates`] without the column check. A candidate's floor is
+/// `rhs_by_slot[slot]` plus the product over the columned slots: a cut row is
+/// bounded by `B + W`, which already carries the lag terms, so the pool intercept
+/// is not read.
 // Rationale: the arguments of `score_violated_candidates` plus the folded values.
 #[allow(clippy::too_many_arguments)]
 fn score_candidates(
@@ -310,7 +297,7 @@ fn score_candidates(
     current_iteration: u64,
     scratch: &mut DcsScoringScratch,
     out_selected: &mut Vec<u32>,
-    rhs_by_slot: Option<&[f64]>,
+    rhs_by_slot: &[f64],
 ) -> usize {
     let n_state = cut_state.n_slots();
     let theta = state.theta;
@@ -393,11 +380,7 @@ fn score_candidates(
     );
 
     for (i, &slot) in scratch.cand_slots.iter().enumerate() {
-        let base = match rhs_by_slot {
-            Some(rhs) => rhs[slot as usize],
-            None => pool.intercept(slot as usize),
-        };
-        let alpha = base + scratch.alpha[i];
+        let alpha = rhs_by_slot[slot as usize] + scratch.alpha[i];
         let v = alpha - theta_raw;
         if v > params.violation_tolerance * theta_raw.abs().max(alpha.abs()) {
             scratch.violations.push((v, slot));
@@ -452,14 +435,12 @@ pub struct DcsSolveContext {
     pub node_id: NodeId,
 }
 
-/// The folded value `B + W` of every active cut of a compact layout's solve:
-/// `rhs[k]` is the lower bound of the row of `slots[k]`, and `slots` are the
-/// active cuts in [`CutPool::active_cuts`] order.
+/// The folded value `B + W` of every active cut of a compact layout's solve, in
+/// [`CutPool::active_cuts`] order: `rhs[k]` is the lower bound of the row of the
+/// `k`-th active cut.
 #[derive(Clone, Copy, Debug)]
-pub struct FoldedCutRhs<'a> {
-    /// Pool slot of each value.
-    pub slots: &'a [usize],
-    /// Folded value of the cut at the same position of `slots`.
+pub struct ActiveCutRhs<'a> {
+    /// Folded value of each active cut.
     pub rhs: &'a [f64],
 }
 
@@ -674,10 +655,10 @@ fn solve_mapped<'a, S: SolverInterface>(
 /// tolerance and every one reported is appended, so each cycle shrinks the
 /// finite non-resident set.
 ///
-/// With `cut_rhs` (a compact layout) a cut row's lower bound is its folded value
-/// rather than the pool intercept: scoring reads it, every row the solve makes
-/// resident is pushed with it, and a continued solve pushes it again over every
-/// resident row, since the noise changed since the rows were appended.
+/// A cut row's lower bound is its folded value `cut_rhs`, never the pool
+/// intercept: scoring reads it, every row the solve makes resident is appended
+/// with it, and a continued solve pushes it again over every resident row, since
+/// the noise changed since the rows were appended.
 ///
 /// The initial solve is warm from a uniform-BASIC reconstruction of
 /// `stored_basis` ([`reconstruct_basis_uniform_basic`] +
@@ -690,6 +671,10 @@ fn solve_mapped<'a, S: SolverInterface>(
 /// Propagates solver failures via the same mapping as `run_stage_solve`:
 /// `SolverError::Infeasible` → [`SddpError::Infeasible`] with stage/scenario/
 /// iteration context; every other variant → [`SddpError::Solver`].
+///
+/// # Panics
+///
+/// When `cut_rhs` does not hold one value per active cut of `pool`.
 ///
 /// # Allocation
 ///
@@ -707,47 +692,39 @@ pub fn lazy_solve_preloaded<S: SolverInterface>(
     col_scale: &[f64],
     stored_basis: Option<&CapturedBasis>,
     initial_resident: &[u32],
-    cut_rhs: Option<FoldedCutRhs<'_>>,
+    cut_rhs: ActiveCutRhs<'_>,
     params: &DcsParams,
     scratch: &mut DcsSolveScratch,
     ctx: DcsSolveContext,
 ) -> Result<(), SddpError> {
     let current_iteration = ctx.iteration.unwrap_or(0);
 
-    if let Some(folded) = cut_rhs {
-        debug_assert_eq!(
-            folded.rhs.len(),
-            folded.slots.len(),
-            "one folded value per slot"
-        );
-        debug_assert!(
-            folded
-                .slots
-                .iter()
-                .copied()
-                .eq(pool.active_cuts().map(|(slot, _, _)| slot)),
-            "the folded values are those of the pool's active cuts"
-        );
-        scratch.rhs_by_slot.resize(pool.populated(), 0.0);
-        for (&slot, &value) in folded.slots.iter().zip(folded.rhs) {
-            scratch.rhs_by_slot[slot] = value;
-        }
+    assert_eq!(
+        cut_rhs.rhs.len(),
+        pool.active_count(),
+        "one folded value per active cut"
+    );
+    scratch.rhs_by_slot.resize(pool.populated(), 0.0);
+    for ((slot, _, _), &value) in pool.active_cuts().zip(cut_rhs.rhs) {
+        scratch.rhs_by_slot[slot] = value;
     }
+    let row_lower_by_slot = scratch.rhs_by_slot.as_slice();
 
     // Two modes, see `DcsSolveContext::continue_carry`.
     let mut view = if ctx.continue_carry {
         // CONTINUE: carry the loaded LP, resident rows, and warm basis; only the
         // bounds changed. No reset / seed / reload — just re-solve warm.
-        if cut_rhs.is_some() {
-            push_folded_rhs(
-                solver,
-                &scratch.row_map,
-                0..pool.populated(),
-                core.num_rows..core.num_rows + scratch.row_map.total_cut_rows(),
-                &scratch.rhs_by_slot,
-                &mut scratch.rhs_rows,
-            );
-        }
+        let resident = scratch.row_map.resident_slots();
+        assert_eq!(
+            resident.len(),
+            scratch.row_map.total_cut_rows(),
+            "every resident cut row holds one slot"
+        );
+        scratch.rhs_rows.clear();
+        scratch
+            .rhs_rows
+            .extend(resident.iter().map(|&slot| row_lower_by_slot[slot]));
+        solver.set_row_lower_bounds_range(core.num_rows, &scratch.rhs_rows);
         solve_mapped(solver, None, ctx)?
     } else {
         // FRESH: reset the carried row map, append the seed, run the initial
@@ -758,22 +735,13 @@ pub fn lazy_solve_preloaded<S: SolverInterface>(
             solver,
             pool,
             initial_resident,
+            row_lower_by_slot,
             state,
             cut_state,
             col_scale,
             &mut scratch.row_map,
             &mut scratch.batch,
         );
-        if cut_rhs.is_some() {
-            push_folded_rhs(
-                solver,
-                &scratch.row_map,
-                initial_resident.iter().map(|&slot| slot as usize),
-                core.num_rows..core.num_rows + scratch.row_map.total_cut_rows(),
-                &scratch.rhs_by_slot,
-                &mut scratch.rhs_rows,
-            );
-        }
 
         let cut_rows = scratch.row_map.total_cut_rows();
         // A stored basis whose node_id differs from the node being solved is
@@ -807,34 +775,19 @@ pub fn lazy_solve_preloaded<S: SolverInterface>(
             &lifted_params
         };
         let t0 = Instant::now();
-        let violated = if cut_rhs.is_some() {
-            score_candidates(
-                pool,
-                state,
-                cut_state,
-                view.primal,
-                col_scale,
-                &scratch.row_map,
-                scoring_params,
-                current_iteration,
-                &mut scratch.scoring,
-                &mut scratch.out_selected,
-                Some(&scratch.rhs_by_slot),
-            )
-        } else {
-            score_violated_candidates(
-                pool,
-                state,
-                cut_state,
-                view.primal,
-                col_scale,
-                &scratch.row_map,
-                scoring_params,
-                current_iteration,
-                &mut scratch.scoring,
-                &mut scratch.out_selected,
-            )
-        };
+        let violated = score_candidates(
+            pool,
+            state,
+            cut_state,
+            view.primal,
+            col_scale,
+            &scratch.row_map,
+            scoring_params,
+            current_iteration,
+            &mut scratch.scoring,
+            &mut scratch.out_selected,
+            &scratch.rhs_by_slot,
+        );
         scratch.scoring_time_seconds += t0.elapsed().as_secs_f64();
 
         if violated == 0 {
@@ -846,56 +799,19 @@ pub fn lazy_solve_preloaded<S: SolverInterface>(
         }
         round = round.saturating_add(1);
 
-        let first_row = core.num_rows + scratch.row_map.total_cut_rows();
         append_slots_to_lp(
             solver,
             pool,
             &scratch.out_selected,
+            row_lower_by_slot,
             state,
             cut_state,
             col_scale,
             &mut scratch.row_map,
             &mut scratch.batch,
         );
-        if cut_rhs.is_some() {
-            push_folded_rhs(
-                solver,
-                &scratch.row_map,
-                scratch.out_selected.iter().map(|&slot| slot as usize),
-                first_row..core.num_rows + scratch.row_map.total_cut_rows(),
-                &scratch.rhs_by_slot,
-                &mut scratch.rhs_rows,
-            );
-        }
         view = solve_mapped(solver, None, ctx)?;
     }
-}
-
-/// Overwrites the lower bound of LP rows `rows` with the folded value of the
-/// slot each holds: `append_slots_to_lp` writes the pool intercept there, which
-/// is not a compact layout's row bound.
-fn push_folded_rhs<S: SolverInterface>(
-    solver: &mut ProfiledSolver<S>,
-    row_map: &CutRowMap,
-    slots: impl Iterator<Item = usize>,
-    rows: Range<usize>,
-    rhs_by_slot: &[f64],
-    buf: &mut Vec<f64>,
-) {
-    if rows.is_empty() {
-        return;
-    }
-    buf.clear();
-    buf.resize(rows.len(), 0.0);
-    let mut written = 0_usize;
-    for slot in slots {
-        if let Some(row) = row_map.lp_row_for_slot(slot).filter(|r| rows.contains(r)) {
-            buf[row - rows.start] = rhs_by_slot[slot];
-            written += 1;
-        }
-    }
-    debug_assert_eq!(written, rows.len(), "every pushed row holds one given slot");
-    solver.set_row_lower_bounds_range(rows.start, buf);
 }
 
 // ---------------------------------------------------------------------------
@@ -959,7 +875,7 @@ mod tests {
     };
 
     use super::{
-        DcsConfig, DcsParams, DcsScoringScratch, DcsSolveContext, DcsSolveScratch, FoldedCutRhs,
+        ActiveCutRhs, DcsConfig, DcsParams, DcsScoringScratch, DcsSolveContext, DcsSolveScratch,
         MAX_INNER_ITERATIONS, ReconstructionTarget, build_initial_resident_set,
         lazy_solve_preloaded, reconstruct_basis_uniform_basic, score_candidates,
         score_violated_candidates,
@@ -972,7 +888,7 @@ mod tests {
     use crate::indexer::{CutSlot, CutStateProjection, StateSpace};
     use crate::lead_time::AnticipatedResolution;
     use crate::setup::{NodeId, StageIdx};
-    use crate::test_support::bound_recording::BoundRecordingSolver;
+    use crate::test_support::bound_recording::{BoundRecordingSolver, BoundWrite};
     use crate::workspace::CapturedBasis;
 
     /// All-enabled per-pool projection of `idx`: every scoring/append test uses a
@@ -1135,10 +1051,10 @@ mod tests {
 
     // All scoring tests use n_state = 2 (StateSpace::new(2, 0, [], [], default, …)):
     //   - state columns 0, 1 (identity state_to_lp_column for j < hydro_count)
-    //   - theta column 6 (= n * (3 + l) with n = 2, l = 0)
-    // So `primal` must be at least length 7.
+    //   - theta column 4 (= 2 * n with n = 2, no lag region)
+    // So `primal` must be at least length 5.
     const N_STATE: usize = 2;
-    const THETA_COL: usize = 6;
+    const THETA_COL: usize = 4;
     const PRIMAL_LEN: usize = THETA_COL + 1;
 
     fn indexer() -> StateSpace {
@@ -1191,7 +1107,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "cut scoring needs an LP column for every cut slot")]
     fn scoring_refuses_a_projection_with_lag_slots_without_columns() {
-        let idx = StateSpace::new_compact(
+        let idx = StateSpace::new(
             1,
             1,
             Vec::new(),
@@ -1219,7 +1135,7 @@ mod tests {
 
     /// One storage slot and one lag slot, which has no LP column.
     fn compact_state() -> StateSpace {
-        StateSpace::new_compact(
+        StateSpace::new(
             1,
             1,
             Vec::new(),
@@ -1257,7 +1173,7 @@ mod tests {
             10,
             &mut scratch,
             &mut out,
-            Some(&[1.0, 4.0]),
+            &[1.0, 4.0],
         );
 
         assert_eq!(count, 2);
@@ -1382,7 +1298,7 @@ mod tests {
         let mut primal = vec![0.0_f64; PRIMAL_LEN];
         primal[0] = 2.0; // scaled x[0]
         primal[THETA_COL] = 1.0; // scaled theta
-        // col_scale must cover all columns up to theta (index 6).
+        // col_scale must cover all columns up to theta (index 4).
         let mut col_scale = vec![1.0_f64; PRIMAL_LEN];
         col_scale[0] = 0.5; // state column 0 scale
         col_scale[THETA_COL] = 2.0; // theta scale
@@ -2218,10 +2134,9 @@ mod tests {
             &[],
             None,
             &[0],
-            Some(FoldedCutRhs {
-                slots: &[0, 1, 2],
+            ActiveCutRhs {
                 rhs: &[1.0, 5.0, 2.0],
-            }),
+            },
             &lazy_params(1, MAX_INNER_ITERATIONS),
             &mut scratch,
             ctx(),
@@ -2254,7 +2169,6 @@ mod tests {
         let core = compact_core(&idx);
         let mut solver = recording_solver();
         let mut scratch = DcsSolveScratch::default();
-        let slots = [0_usize, 1, 2];
         solver.load_model(&core);
 
         let mut solve = |continue_carry: bool, rhs: &[f64]| {
@@ -2267,7 +2181,7 @@ mod tests {
                 &[],
                 None,
                 &[0],
-                Some(FoldedCutRhs { slots: &slots, rhs }),
+                ActiveCutRhs { rhs },
                 &lazy_params(10, MAX_INNER_ITERATIONS),
                 &mut scratch,
                 DcsSolveContext {
@@ -2283,17 +2197,78 @@ mod tests {
         assert!((solve(true, &[1.0, 0.0, 3.0]) - 3.0).abs() < 1e-9);
     }
 
+    #[test]
+    fn appended_folded_rows_carry_the_folded_bound_without_a_second_push() {
+        let idx = compact_state();
+        let projection = cut_state(&idx);
+        let pool = compact_pool(&projection);
+        let core = compact_core(&idx);
+        let mut solver = recording_solver();
+        let mut scratch = DcsSolveScratch::default();
+        solver.load_model(&core);
+
+        let mut solve = |continue_carry: bool, rhs: &[f64]| {
+            lazy_solve_preloaded(
+                &mut solver,
+                &core,
+                &pool,
+                &idx,
+                &projection,
+                &[],
+                None,
+                &[0, 2],
+                ActiveCutRhs { rhs },
+                &lazy_params(10, MAX_INNER_ITERATIONS),
+                &mut scratch,
+                DcsSolveContext {
+                    continue_carry,
+                    ..ctx()
+                },
+            )
+            .expect("lazy_solve_preloaded must succeed");
+        };
+        solve(false, &[3.25, 1.0, 2.5]);
+        solve(true, &[1.5, 0.0, 4.75]);
+
+        let appended_bits: Vec<u64> = scratch
+            .batch
+            .row_lower
+            .iter()
+            .map(|v| v.to_bits())
+            .collect();
+        assert_eq!(appended_bits, [3.25_f64.to_bits(), 2.5_f64.to_bits()]);
+        assert_eq!(scratch.row_map.resident_slots(), [0, 2]);
+        let [fresh, carried] = solver.inner().recorded() else {
+            panic!("two solves recorded");
+        };
+        assert_eq!(
+            fresh.writes,
+            [BoundWrite::AddRows {
+                first_row: 0,
+                count: 2
+            }]
+        );
+        assert_eq!(
+            carried.writes,
+            [BoundWrite::RowLowerRange {
+                first_row: 0,
+                lower: vec![1.5, 4.75]
+            }]
+        );
+        assert!((scratch.result_view().objective - 4.75).abs() < 1e-9);
+    }
+
     // -----------------------------------------------------------------------
     // lazy_solve fixtures
     // -----------------------------------------------------------------------
 
-    // Synthetic LP for StateSpace::new(1, 0, …): n_state = 1, theta = col 3.
-    //   Columns: 0 = state x0 (pinned to 2.0), 1 and 2 fixed to 0, 3 = theta.
+    // Synthetic LP for StateSpace::new(1, 0, …): n_state = 1, theta = col 2.
+    //   Columns: 0 = state x0 (pinned to 2.0), 1 fixed to 0, 2 = theta.
     //   No structural rows (num_rows = 0) — cuts are the only rows.
     //   Objective: minimize theta. So at the optimum theta equals the max cut
     //   floor `intercept + coeff*x0` over the resident cuts.
     const STATE_X0: f64 = 2.0;
-    const LAZY_THETA_COL: usize = 3;
+    const LAZY_THETA_COL: usize = 2;
 
     fn lazy_indexer() -> StateSpace {
         StateSpace::new(
@@ -2309,16 +2284,16 @@ mod tests {
     /// Cut-free core template with x0 pinned to `STATE_X0` and theta free.
     fn core_template() -> StageTemplate {
         StageTemplate {
-            num_cols: 4,
+            num_cols: 3,
             num_rows: 0,
             num_nz: 0,
-            col_starts: vec![0_i32; 5], // num_cols + 1, all zero (no structural nz)
+            col_starts: vec![0_i32; 4], // num_cols + 1, all zero (no structural nz)
             row_indices: Vec::new(),
             values: Vec::new(),
-            // x0 pinned to STATE_X0; cols 1,2 fixed to 0; theta free (bounded box).
-            col_lower: vec![STATE_X0, 0.0, 0.0, -1.0e6],
-            col_upper: vec![STATE_X0, 0.0, 0.0, 1.0e6],
-            objective: vec![0.0, 0.0, 0.0, 1.0], // minimize theta
+            // x0 pinned to STATE_X0; col 1 fixed to 0; theta free (bounded box).
+            col_lower: vec![STATE_X0, 0.0, -1.0e6],
+            col_upper: vec![STATE_X0, 0.0, 1.0e6],
+            objective: vec![0.0, 0.0, 1.0], // minimize theta
             row_lower: Vec::new(),
             row_upper: Vec::new(),
             n_state: 1,
@@ -2332,9 +2307,9 @@ mod tests {
     /// between rounds of a lazy solve.
     fn free_state_template() -> StageTemplate {
         StageTemplate {
-            col_lower: vec![0.0, 0.0, 0.0, 0.0],
-            col_upper: vec![10.0, 0.0, 0.0, 1.0e6],
-            objective: vec![1.0, 0.0, 0.0, 1.0],
+            col_lower: vec![0.0, 0.0, 0.0],
+            col_upper: vec![10.0, 0.0, 1.0e6],
+            objective: vec![1.0, 0.0, 1.0],
             ..core_template()
         }
     }
@@ -2357,6 +2332,12 @@ mod tests {
     /// (floor 20). Used to exercise the opening-reuse continue path.
     fn make_four_cut_pool() -> CutPool {
         cuts_pool(&[(1.0, 0.0), (0.0, 1.0), (5.0, 0.0), (0.0, 2.0)])
+    }
+
+    fn intercepts(pool: &CutPool) -> Vec<f64> {
+        pool.active_cuts()
+            .map(|(_, intercept, _)| intercept)
+            .collect()
     }
 
     fn active_profiled() -> ProfiledSolver<ActiveSolver> {
@@ -2405,6 +2386,7 @@ mod tests {
             &mut solver,
             pool,
             &all_slots,
+            pool.intercepts_prefix(),
             state,
             &cs,
             &[],
@@ -2451,7 +2433,9 @@ mod tests {
             &[],
             None,
             &[],
-            None,
+            ActiveCutRhs {
+                rhs: &intercepts(&pool),
+            },
             &lazy_params(1, MAX_INNER_ITERATIONS),
             &mut scratch,
             ctx(),
@@ -2513,7 +2497,9 @@ mod tests {
             &[],
             None,
             &[0],
-            None,
+            ActiveCutRhs {
+                rhs: &intercepts(&pool),
+            },
             &lazy_params(1, 0),
             &mut scratch,
             ctx(),
@@ -2565,7 +2551,9 @@ mod tests {
             &[],
             None,
             &[0, 1],
-            None,
+            ActiveCutRhs {
+                rhs: &intercepts(&pool),
+            },
             &DcsParams {
                 violation_tolerance: eps,
                 ..lazy_params(10, 50)
@@ -2631,11 +2619,10 @@ mod tests {
                 &cut_state(&indexer),
                 &[],
                 None,
-                &seed, None,
+                &seed, ActiveCutRhs { rhs: &intercepts(&pool) },
                 &params,
                 &mut scratch,
-                ctx(),
-            )
+                ctx(),)
             .expect("lazy_solve_preloaded must succeed");
 
             let view = scratch.result_view();
@@ -2667,7 +2654,7 @@ mod tests {
         let mut t = core_template();
         t.num_rows = 1;
         t.num_nz = 1;
-        t.col_starts = vec![0_i32, 1, 1, 1, 1];
+        t.col_starts = vec![0_i32, 1, 1, 1];
         t.row_indices = vec![0_i32];
         t.values = vec![1.0];
         t.row_lower = vec![STATE_X0];
@@ -2682,7 +2669,7 @@ mod tests {
     /// `enforce_basic_count_invariant` surfaces `SddpError::BasisShapeMismatch`
     /// if it is ever attempted.
     fn make_deficit_basis(node_id: NodeId) -> CapturedBasis {
-        CapturedBasis::new(4, 1, 1, 0, 0, node_id)
+        CapturedBasis::new(3, 1, 1, 0, 0, node_id)
     }
 
     /// A node-id mismatch on `stored_basis` must drop to the cold path before
@@ -2710,7 +2697,9 @@ mod tests {
             &[],
             Some(&stored),
             &[],
-            None,
+            ActiveCutRhs {
+                rhs: &intercepts(&pool),
+            },
             &params,
             &mut scratch,
             DcsSolveContext {
@@ -2754,7 +2743,9 @@ mod tests {
             &[],
             Some(&stored),
             &[],
-            None,
+            ActiveCutRhs {
+                rhs: &intercepts(&pool),
+            },
             &params,
             &mut scratch,
             DcsSolveContext {
@@ -2798,7 +2789,9 @@ mod tests {
             &[],
             None,
             &[0, 1], // omit binding slot 2
-            None,
+            ActiveCutRhs {
+                rhs: &intercepts(&pool),
+            },
             &params,
             &mut scratch,
             ctx(),
@@ -2850,7 +2843,9 @@ mod tests {
             &[],
             None,
             &[0, 1, 2],
-            None,
+            ActiveCutRhs {
+                rhs: &intercepts(&pool),
+            },
             &params,
             &mut scratch,
             ctx(),
@@ -2896,7 +2891,9 @@ mod tests {
             &[],
             None,
             &[0, 1], // omit binding slot 2
-            None,
+            ActiveCutRhs {
+                rhs: &intercepts(&pool),
+            },
             &params,
             &mut scratch,
             ctx(),
@@ -2951,7 +2948,9 @@ mod tests {
             &[],
             None,
             &[0, 1],
-            None,
+            ActiveCutRhs {
+                rhs: &intercepts(&pool),
+            },
             &params,
             &mut scratch,
             DcsSolveContext {
@@ -2966,7 +2965,7 @@ mod tests {
             "opening A theta (x0=2)"
         );
 
-        // Re-pin the incoming state to x0 = 10 (what `patch_opening_bounds` does
+        // Re-pin the incoming state to x0 = 10 (what the opening pin does
         // per opening) — only the bounds change; the loaded LP and the carried
         // resident cut rows persist.
         solver.set_col_bounds(&[0], &[10.0], &[10.0]);
@@ -2984,7 +2983,9 @@ mod tests {
             &[],
             None,
             &[], // ignored in continue mode
-            None,
+            ActiveCutRhs {
+                rhs: &intercepts(&pool),
+            },
             &params,
             &mut scratch,
             DcsSolveContext {
@@ -3015,7 +3016,9 @@ mod tests {
             &[],
             None,
             &[], // ignored in continue mode
-            None,
+            ActiveCutRhs {
+                rhs: &intercepts(&pool),
+            },
             &params,
             &mut scratch,
             DcsSolveContext {
@@ -3070,7 +3073,9 @@ mod tests {
             &[],
             None,
             &[0, 1], // omit binding slot 2 → inner loop runs
-            None,
+            ActiveCutRhs {
+                rhs: &intercepts(&pool),
+            },
             &params,
             &mut scratch,
             ctx(),
@@ -3114,7 +3119,9 @@ mod tests {
                 &[],
                 None,
                 &[0, 1, 2], // all three cuts resident from the seed → no growth
-                None,
+                ActiveCutRhs {
+                    rhs: &intercepts(&pool),
+                },
                 &params,
                 &mut scratch,
                 ctx(),
@@ -3156,7 +3163,9 @@ mod tests {
             &[],
             None,
             &[0, 1, 2], // binding cut already resident → single scoring pass, no growth
-            None,
+            ActiveCutRhs {
+                rhs: &intercepts(&pool),
+            },
             &params,
             &mut scratch,
             ctx(),
@@ -3208,7 +3217,9 @@ mod tests {
             &[],
             None,
             &[],
-            None,
+            ActiveCutRhs {
+                rhs: &intercepts(&pool),
+            },
             &params,
             &mut scratch,
             ctx(),
@@ -3244,7 +3255,9 @@ mod tests {
                 &[],
                 None,
                 &[0],
-                None,
+                ActiveCutRhs {
+                    rhs: &intercepts(&pool),
+                },
                 &params,
                 &mut scratch,
                 ctx(),
@@ -3288,7 +3301,9 @@ mod tests {
                 &[],
                 None,
                 &[0, 1], // omit binding slot 2 → at least one add, fills res_* twice
-                None,
+                ActiveCutRhs {
+                    rhs: &intercepts(&pool),
+                },
                 &params,
                 scratch,
                 ctx(),
@@ -3427,7 +3442,7 @@ mod tests {
         let indexer = lazy_indexer();
         let pool = CutPool::new(16, 1, 16, 0);
         let core = core_template();
-        let theta_floor = vec![STATE_X0, 0.0, 0.0, 0.0];
+        let theta_floor = vec![STATE_X0, 0.0, 0.0];
         let mut mock = TwoPhaseMock::new(theta_floor.clone(), theta_floor);
         mock.warm = warm;
         let mut solver = ProfiledSolver::new(mock);
@@ -3446,7 +3461,9 @@ mod tests {
             &[],
             Some(&stored),
             &[],
-            None,
+            ActiveCutRhs {
+                rhs: &intercepts(&pool),
+            },
             &params,
             &mut scratch,
             ctx(),
@@ -3481,8 +3498,8 @@ mod tests {
         // Primal layout: [x0, c1, c2, theta]. First solve reports theta = 0
         // (cut 0 floor 5 > 0 → violated). After adding cut 0, the mock reports
         // theta = 5 (floor 5 == theta → not violated → stop).
-        let first = vec![STATE_X0, 0.0, 0.0, 0.0];
-        let rest = vec![STATE_X0, 0.0, 0.0, 5.0];
+        let first = vec![STATE_X0, 0.0, 0.0];
+        let rest = vec![STATE_X0, 0.0, 5.0];
         let mut solver = ProfiledSolver::new(TwoPhaseMock::new(first, rest));
         let core = core_template();
         let mut scratch = DcsSolveScratch::default();
@@ -3498,7 +3515,9 @@ mod tests {
             &[],
             None,
             &[], // omit cut 0 so the loop must add it mid-loop
-            None,
+            ActiveCutRhs {
+                rhs: &intercepts(&pool),
+            },
             &params,
             &mut scratch,
             ctx(),

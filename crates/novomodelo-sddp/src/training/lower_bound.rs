@@ -20,7 +20,7 @@ use crate::{
     cut::row::build_cut_row_batch_into,
     error::SddpError,
     lp::builder::PatchBuffer,
-    lp::indexer::{InflowForm, StateSpace},
+    lp::indexer::StateSpace,
     rank_reconcile::reconcile_error_flag,
     risk_measure::{RiskMeasure, RiskMeasureScratch},
     setup::{
@@ -29,8 +29,7 @@ use crate::{
     },
     solve::StageOpeningSolver,
     training::stage_solve_prep::{
-        BracketSource, FoldedCutRows, NoiseTermSource, StageSolvePrep, StageSolvePrepParams,
-        StateSource,
+        BracketSource, LoadedCutRows, NoiseTermSource, StageSolvePrep, StateSource,
     },
     workspace::ScratchBuffers,
 };
@@ -191,8 +190,8 @@ fn lb_cut_slots_into(map: Option<&CutRowMap>, pool: &CutPool, out: &mut Vec<usiz
 }
 
 /// Solves the stage-0 LP once per root opening, writing each objective into
-/// `scratch.lb_scratch.objectives_buf`. A compact layout pins once and opens
-/// per opening through the folded phases, every cut row at its own bracket.
+/// `scratch.lb_scratch.objectives_buf`. Pins once and opens per opening through
+/// the folded phases, every cut row at its own bracket.
 ///
 /// # Errors
 ///
@@ -234,36 +233,30 @@ fn lb_evaluate_stage_0<S: SolverInterface>(
     )?;
 
     let mut slots = std::mem::take(&mut noise_scratch.cut_slots_buf);
-    let folded = match training_ctx.state.inflow_form {
-        InflowForm::Logical => None,
-        InflowForm::Compact => {
-            let pool_id = training_ctx.node_graph.nodes[root_pos].pool_id;
-            let pool = &fcf.pools[pool_id];
-            lb_cut_slots_into(lb_cut_row_map.as_deref(), pool, &mut slots);
-            let first_row = lb_cut_row_map.as_deref().map_or(
-                ctx.template(StageIdx(0)).num_rows,
-                CutRowMap::base_row_offset,
-            );
-            let rows = FoldedCutRows {
-                pool,
-                projection: &training_ctx.cut_state_layouts[pool_id],
-                slots: &slots,
-                first_row,
-            };
-            StageSolvePrep::pin_folded(
-                solver,
-                patch_buf,
-                noise_scratch,
-                ctx,
-                training_ctx,
-                StageIdx(0),
-                StateSource(initial_state),
-                &rows,
-                BracketSource::Computed,
-            );
-            Some(rows)
-        }
+    let pool_id = training_ctx.node_graph.nodes[root_pos].pool_id;
+    let pool = &fcf.pools[pool_id];
+    lb_cut_slots_into(lb_cut_row_map.as_deref(), pool, &mut slots);
+    let first_row = lb_cut_row_map.as_deref().map_or(
+        ctx.template(StageIdx(0)).num_rows,
+        CutRowMap::base_row_offset,
+    );
+    let rows = LoadedCutRows {
+        pool,
+        projection: &training_ctx.cut_state_layouts[pool_id],
+        slots: &slots,
+        first_row,
     };
+    StageSolvePrep::pin_and_bracket(
+        solver,
+        patch_buf,
+        noise_scratch,
+        ctx,
+        training_ctx,
+        StageIdx(0),
+        StateSource(initial_state),
+        &rows,
+        BracketSource::Computed,
+    );
 
     let objectives_buf = &mut lb_scratch.objectives_buf;
     objectives_buf.clear();
@@ -274,34 +267,18 @@ fn lb_evaluate_stage_0<S: SolverInterface>(
             OpeningNoise::Generated => opening_tree.opening(0, root_openings.offset + opening_idx),
         };
 
-        if let Some(rows) = &folded {
-            StageSolvePrep::open_folded(
-                solver,
-                patch_buf,
-                noise_scratch,
-                ctx,
-                training_ctx,
-                StageIdx(0),
-                raw_noise,
-                rows,
-                NoiseTermSource::OnTheFly,
-                &StageOpeningSolver::Frozen,
-            );
-        } else {
-            let prep_params = StageSolvePrepParams {
-                state_source: StateSource(initial_state),
-                raw_noise,
-            };
-            StageSolvePrep::run(
-                solver,
-                patch_buf,
-                noise_scratch,
-                ctx,
-                training_ctx,
-                StageIdx(0),
-                &prep_params,
-            );
-        }
+        StageSolvePrep::patch_opening(
+            solver,
+            patch_buf,
+            noise_scratch,
+            ctx,
+            training_ctx,
+            StageIdx(0),
+            raw_noise,
+            &rows,
+            NoiseTermSource::OnTheFly,
+            &StageOpeningSolver::Frozen,
+        );
 
         let view = solver.solve(None).map_err(|e| match e {
             SolverError::Infeasible => SddpError::Infeasible {
@@ -530,17 +507,16 @@ mod tests {
 
     /// Minimal stage template for N=1 hydro, L=0 PAR order.
     ///
-    /// Column layout: [storage (0), `z_inflow` (1), theta (2)]
-    /// Row layout: [z-inflow definition (0)]
+    /// Column layout: [`storage_out` (0), `storage_in` (1), theta (2)]; one row.
     fn minimal_template() -> StageTemplate {
         StageTemplate {
             num_cols: 3,
             num_rows: 1,
             num_nz: 1,
-            col_starts: vec![0_i32, 0, 1, 1], // col 1 (z_inflow) has NZ at row 0
+            col_starts: vec![0_i32, 0, 1, 1], // col 1 (storage_in) has NZ at row 0
             row_indices: vec![0_i32],
             values: vec![1.0],
-            col_lower: vec![0.0, f64::NEG_INFINITY, 0.0],
+            col_lower: vec![0.0, 0.0, 0.0],
             col_upper: vec![f64::INFINITY, f64::INFINITY, f64::INFINITY],
             objective: vec![0.0, 0.0, 1.0], // minimise theta
             row_lower: vec![0.0],
@@ -994,6 +970,7 @@ mod tests {
 
         fn ctx(&self) -> StageContextFixture<'_> {
             StageContextFixture::new(&self.templates, &self.state_boxes, &self.geometry_per_stage)
+                .without_inflow_entries(1)
         }
 
         fn training_ctx(&self) -> TrainingContext<'_> {
@@ -1457,8 +1434,8 @@ mod tests {
     /// Integration: full round-trip with `LocalComm` and 2 openings.
     ///
     /// Verifies that the function correctly integrates with `build_cut_row_batch`
-    /// (`cut_batch` with 0 cuts still produces the right result), `fill_z_inflow_patches`,
-    /// and `RiskMeasure::Expectation`.
+    /// (`cut_batch` with 0 cuts still produces the right result), the per-opening
+    /// inflow patch and `RiskMeasure::Expectation`.
     #[test]
     fn integration_two_openings_local_backend_expectation() {
         let fixture = SimpleLbFixture::new(
@@ -1898,6 +1875,7 @@ mod tests {
             ..test_support::equipment_free_geometry(&[block_count]).remove(0)
         }];
         let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry)
+            .without_inflow_entries(0)
             .ncs_stochastic_dense_col(&ncs_stochastic_dense_col)
             .ncs_stochastic_windows(&ncs_stochastic_windows)
             .ncs_max_gen(&ncs_max_gen)
@@ -1955,9 +1933,9 @@ mod tests {
 
         assert_eq!(
             solver.set_col_bounds_calls,
-            2 * actual_n_openings,
-            "set_col_bounds must be called twice per opening ({actual_n_openings} openings), \
-             got {} calls — NCS bounds are not being patched per opening",
+            1 + actual_n_openings,
+            "set_col_bounds must be called once for the state pin and once per opening \
+             ({actual_n_openings} openings), got {} calls — NCS bounds are not being patched per opening",
             solver.set_col_bounds_calls
         );
         assert!(
@@ -2000,13 +1978,13 @@ mod tests {
     /// [`evaluate_lower_bound`] calls.
     ///
     /// Calls `evaluate_lower_bound` twice on the same `noise_scratch` and
-    /// verifies that `z_inflow_rhs_buf.capacity()` does not decrease on the
+    /// verifies that `realized_inflow_buf.capacity()` does not decrease on the
     /// second call (i.e., no reallocation occurred). This guards against
     /// regressions that would re-introduce per-iteration heap allocation on
     /// the lower-bound hot path.
     #[test]
     fn lb_eval_scratch_reuses_buffers_across_calls() {
-        // Use n_hydros = 1 so that z_inflow_rhs_buf gets populated (capacity
+        // Use n_hydros = 1 so that realized_inflow_buf gets populated (capacity
         // grows to 1 after the first call).
         let fixture = SimpleLbFixture::new(
             minimal_template(),
@@ -2048,10 +2026,10 @@ mod tests {
             .unwrap();
         }
 
-        let cap_after_first = noise_scratch.z_inflow_rhs_buf.capacity();
+        let cap_after_first = noise_scratch.realized_inflow_buf.capacity();
         assert!(
             cap_after_first > 0,
-            "z_inflow_rhs_buf must have nonzero capacity after first call (n_hydros = 1)"
+            "realized_inflow_buf must have nonzero capacity after first call (n_hydros = 1)"
         );
 
         let mut solver2 = MockSolver::with_objectives(vec![20.0]);
@@ -2075,10 +2053,10 @@ mod tests {
             .unwrap();
         }
 
-        let cap_after_second = noise_scratch.z_inflow_rhs_buf.capacity();
+        let cap_after_second = noise_scratch.realized_inflow_buf.capacity();
         assert_eq!(
             cap_after_second, cap_after_first,
-            "z_inflow_rhs_buf capacity must be stable across calls (first={cap_after_first}, second={cap_after_second}); \
+            "realized_inflow_buf capacity must be stable across calls (first={cap_after_first}, second={cap_after_second}); \
              a decrease indicates reallocation on the lower-bound hot path"
         );
     }
@@ -2100,10 +2078,10 @@ mod tests {
     /// cascade), on a single bus:
     /// - `H_A` (id 3): `start_stage_id = 0`, `entry_stage_id = 1`. At stage 0 it is
     ///   in the terminal `Filling` stage (`entry − 1 == 0`), so stage 0 carries the
-    ///   `filling_target`/`σ_fill` row+column family. Its own z-inflow coupling is
+    ///   `filling_target`/`σ_fill` row+column family. Its own inflow coupling is
     ///   NOT routed away (Filling keeps PAR noise).
     /// - `H_B` (id 4): `start_stage_id = 2`, `entry_stage_id = 4`. At stage 0
-    ///   (`id 0 < start 2`) it is `PreFilling`, so its z-inflow column carries no
+    ///   (`id 0 < start 2`) it is `PreFilling`, so its inflow coupling carries no
     ///   entry on any water row (a sink: neither hydro declares a downstream).
     ///
     /// Returns the built [`StageTemplates`] plus the system indices of the two
@@ -2237,7 +2215,7 @@ mod tests {
             .collect();
 
         // White-noise inflow models (non-zero std so the Operating/Filling
-        // z-inflow coupling is real where the PreFilling routing is the contrast).
+        // inflow coupling is real where the PreFilling routing is the contrast).
         let inflow_models: Vec<InflowModel> = [EntityId(3), EntityId(4)]
             .into_iter()
             .flat_map(|hid| {
@@ -2486,7 +2464,7 @@ mod tests {
     /// per-stage `filling_target`/`σ_fill` family at EVERY Filling stage (the
     /// per-stage widening, not only the terminal `entry − 1` stage) and the renamed
     /// `filled_min_storage_floor`/`σ^{v-}` operating-floor family — and the
-    /// `PreFilling` hydro's own z-inflow column carries no water-row entry.
+    /// `PreFilling` hydro's inflow coupling reaches no water row.
     ///
     /// The lower bound's `StageContext.templates[0]` is bound to
     /// `stage_ctx.templates[0]` — the SAME object the forward/backward passes
@@ -2585,41 +2563,32 @@ mod tests {
             geom4.filled_min_storage_floor
         );
 
-        // PreFilling z-inflow routing: H_B is PreFilling at stage 0 (id 0 <
-        // start 2), so its own z-inflow column carries no entry on any water
-        // row — the frozen-storage-identity freeze (the PreFilling row-pinning
-        // contract) the lower bound inherits via the loaded template. Neither
-        // hydro declares a downstream, so H_B's coupling routes nowhere (a
-        // sink), never onto H_A's row. H_A is Filling at stage 0 (not
-        // PreFilling), so its OWN z-inflow column carries `-zeta` on its own
-        // water row — the contrast that makes the routing check non-vacuous.
-        let state = test_support::state_layout(n_hydros, 0);
-        let raw_at = |col: usize, row: usize| -> f64 {
-            let start = usize::try_from(tpl0.col_starts[col]).unwrap();
-            let end = usize::try_from(tpl0.col_starts[col + 1]).unwrap();
-            tpl0.row_indices[start..end]
-                .iter()
-                .zip(&tpl0.values[start..end])
-                .filter(|&(&r, _)| usize::try_from(r).unwrap() == row)
-                .map(|(_, &v)| v)
-                .sum()
-        };
-        let z_col_a = state.z_inflow.start + h_a;
-        let z_col_b = state.z_inflow.start + h_b;
+        // PreFilling inflow routing: H_B is PreFilling at stage 0 (id 0 <
+        // start 2), so its inflow coupling reaches no water row — the
+        // frozen-storage-identity freeze (the PreFilling row-pinning contract)
+        // the lower bound inherits via the loaded template. Neither hydro
+        // declares a downstream, so H_B's coupling routes nowhere (a sink),
+        // never onto H_A's row. H_A is Filling at stage 0 (not PreFilling), so
+        // its OWN coupling carries `-zeta` on its own water row — the contrast
+        // that makes the routing check non-vacuous.
+        let coupling = &templates.inflow_coupling_per_stage[0];
         let water_row_a = geom0.water_balance_row(HydroSys::new(h_a), BlockIdx::new(0));
         assert_eq!(
-            raw_at(z_col_a, water_row_a),
-            -templates.block_hours_per_stage[0].iter().sum::<f64>()
-                * crate::block_clock::M3S_TO_HM3,
-            "Filling hydro H_A's own z-inflow column must carry -zeta on its own water row"
+            coupling
+                .hydro_entries(HydroSys::new(h_a))
+                .collect::<Vec<_>>(),
+            vec![(
+                water_row_a,
+                -templates.block_hours_per_stage[0].iter().sum::<f64>()
+                    * crate::block_clock::M3S_TO_HM3
+            )],
+            "Filling hydro H_A's own inflow coupling must be -zeta on its own water row"
         );
-        for row in geom0.water_balance.range() {
-            assert_eq!(
-                raw_at(z_col_b, row),
-                0.0,
-                "PreFilling hydro H_B's z-inflow column must carry no entry on water row {row}"
-            );
-        }
+        assert_eq!(
+            coupling.hydro_entries(HydroSys::new(h_b)).count(),
+            0,
+            "PreFilling hydro H_B's inflow coupling must reach no water row"
+        );
     }
 
     /// AC2: the lower-bound evaluation code references NO filling-specific symbol —
@@ -2642,7 +2611,7 @@ mod tests {
         // `σ_fill`/`filling_target` family and the renamed `filled_min_storage_floor`
         // (`σ^{v-}`) operating-floor family. There is no `filling_retention` needle:
         // the retention family was removed (the Filling phase keeps PAR noise via
-        // its own z-inflow coupling, not a retention row), so referencing it would
+        // its own inflow coupling, not a retention row), so referencing it would
         // itself be a stale symbol — the rename/removal is mirrored here so the
         // guard cannot rot back to the abandoned family name.
         let needles: [String; 4] = [
@@ -2703,8 +2672,8 @@ mod tests {
             "σ_fill slack column must be a real column of templates[0]"
         );
 
-        // The per-opening z-inflow patch reads the loaded template's own z-inflow
-        // coupling — H_B's PreFilling row carries none — exactly as the
+        // The per-opening inflow shift patch reads the stage's own inflow coupling
+        // — H_B's PreFilling hydro carries no entry — exactly as the
         // forward/backward passes do, so the bound sees the same stage-0
         // constraints.
         let mut solver = ActiveSolver::new().expect("ActiveSolver::new");
@@ -2714,17 +2683,18 @@ mod tests {
         let state = test_support::state_layout(2, 0);
         let fcf = make_fcf(templates.templates.len(), state.n_state);
         let initial_state = vec![0.0_f64; state.n_state];
-        let mut patch_buf = PatchBuffer::new(&state, &[], &[], &[]);
+        let mut patch_buf = PatchBuffer::new(
+            &state,
+            &[],
+            &templates.geometry_per_stage,
+            &templates.inflow_coupling_per_stage,
+        );
         let opening_tree = filling_opening_tree(1);
         let rm = RiskMeasure::Expectation;
         let stochastic = wrap_opening_tree(state.hydro_count, opening_tree);
         let state_boxes = permissive_state_boxes(state.n_state, templates.templates.len());
 
-        let fixture = StageContextFixture::new(
-            &templates.templates,
-            &state_boxes,
-            &templates.geometry_per_stage,
-        );
+        let fixture = StageContextFixture::from_stage_templates(&templates, &state_boxes);
         let ctx = fixture.ctx();
         let horizon = HorizonMode::Finite {
             num_stages: templates.templates.len(),
@@ -2810,7 +2780,8 @@ mod tests {
         let state_boxes = permissive_state_boxes(state.n_state, 1);
 
         let geometry = equipment_free_geometry(&[0]);
-        let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+        let fixture =
+            StageContextFixture::new(&templates, &state_boxes, &geometry).without_inflow_entries(0);
         let ctx = fixture.ctx();
         let horizon = HorizonMode::Finite { num_stages: 1 };
         let study_dims = test_support::study_dims();
@@ -3232,15 +3203,7 @@ mod tests {
         ];
         let fixture = StageContextFixture::new(&[], &[], &[]).inflow_coupling(&couplings);
         let ctx = fixture.ctx();
-        let compact = StateSpace::new_compact(
-            2,
-            1,
-            Vec::new(),
-            Vec::new(),
-            AnticipatedResolution::default(),
-            &[1, 1],
-        );
-        let logical = StateSpace::new(
+        let state = StateSpace::new(
             2,
             1,
             Vec::new(),
@@ -3249,7 +3212,6 @@ mod tests {
             &[1, 1],
         );
 
-        assert_eq!(lower_bound_patch_buffer(&compact, &ctx).indices.len(), 1);
-        assert_eq!(lower_bound_patch_buffer(&logical, &ctx).indices.len(), 2);
+        assert_eq!(lower_bound_patch_buffer(&state, &ctx).indices.len(), 1);
     }
 }

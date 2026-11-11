@@ -1,6 +1,11 @@
 //! `shape` section tests.
 
 use super::*;
+use common::row_families::{RowClass, census, classify_stage_rows, name};
+use common::{expected_study_count, for_each_study};
+use novomodelo_sddp::lp::builder::RowFamily;
+use std::collections::BTreeSet;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 
 #[test]
 fn empty_stages_returns_empty() {
@@ -59,7 +64,7 @@ fn num_cols_formula_no_hydro_no_thermal_no_line() {
 #[test]
 fn num_cols_formula_one_hydro_lag_zero() {
     // N=1, L=0, T=0, Lines=0, B=1, K=1
-    // State cols: N*(2+L)+1 = 1*2+1 = 3  (v_out, v_in, theta)
+    // State cols: N*2+1 = 3  (v_out, v_in, theta); the lag region has no LP column.
     // Decision: turbine[1] + spillage[1] + deficit[1] + excess[1] = 4
     // Total: 7
     let system = one_hydro_system(1, 0);
@@ -76,17 +81,16 @@ fn num_cols_formula_one_hydro_lag_zero() {
     let t = &result.templates[0];
     // N=1 withdrawal slacks add 2 columns (neg + pos): 7 + 2 = 9.
     // N=1 operational violation slacks add 4 columns: 9 + 4 = 13.
-    // N=1 z-inflow column adds 1: 13 + 1 = 14.
-    // N=1 diversion column adds 1: 14 + 1 = 15.
-    assert_eq!(t.num_cols, 15, "num_cols mismatch for N=1 L=0");
+    // N=1 diversion column adds 1: 13 + 1 = 14.
+    assert_eq!(t.num_cols, 14, "num_cols mismatch for N=1 L=0");
 }
 
 #[test]
 fn num_cols_formula_one_hydro_lag_two() {
     // N=1, L=2, T=0, Lines=0, B=1, K=1
-    // State cols: N*(2+L)+1 = 1*4+1 = 5  (v_out, lag0, lag1, v_in, theta)
+    // State cols: N*2+1 = 3  (v_out, v_in, theta); the two lags add no column.
     // Decision: turbine[1] + spillage[1] + deficit[1] + excess[1] = 4
-    // Total: 9
+    // Total: 7
     let system = one_hydro_system(1, 2);
     let result = build_stage_templates_resolving_layout(
         &system,
@@ -99,11 +103,10 @@ fn num_cols_formula_one_hydro_lag_two() {
     )
     .expect("constant productivity ok");
     let t = &result.templates[0];
-    // N=1 withdrawal slacks add 2 columns (neg + pos): 9 + 2 = 11.
-    // N=1 operational violation slacks add 4 columns: 11 + 4 = 15.
-    // N=1 z-inflow column adds 1: 15 + 1 = 16.
-    // N=1 diversion column adds 1: 16 + 1 = 17.
-    assert_eq!(t.num_cols, 17, "num_cols mismatch for N=1 L=2");
+    // N=1 withdrawal slacks add 2 columns (neg + pos): 7 + 2 = 9.
+    // N=1 operational violation slacks add 4 columns: 9 + 4 = 13.
+    // N=1 diversion column adds 1: 13 + 1 = 14.
+    assert_eq!(t.num_cols, 14, "num_cols mismatch for N=1 L=2");
 }
 
 #[test]
@@ -129,7 +132,7 @@ fn num_rows_formula_no_hydro() {
 #[test]
 fn num_rows_formula_one_hydro_lag_zero() {
     // N=1, L=0, B=1, K=1; no state-fixing rows (incoming state pinned via column bounds).
-    // num_rows = N z_inflow(1) + N water_balance(1) + B*K load_balance(1) + 4 op-violation = 7
+    // num_rows = N water_balance(1) + B*K load_balance(1) + 4 op-violation = 6
     let system = one_hydro_system(1, 0);
     let result = build_stage_templates_resolving_layout(
         &system,
@@ -142,13 +145,13 @@ fn num_rows_formula_one_hydro_lag_zero() {
     )
     .expect("constant productivity ok");
     let t = &result.templates[0];
-    assert_eq!(t.num_rows, 7, "num_rows mismatch for N=1 L=0");
+    assert_eq!(t.num_rows, 6, "num_rows mismatch for N=1 L=0");
 }
 
 #[test]
 fn num_rows_formula_one_hydro_lag_two() {
-    // N=1, L=2, B=1, K=1; lags do not add rows, no state-fixing rows. Same 7 as L=0:
-    // num_rows = N z_inflow(1) + N water_balance(1) + B*K load_balance(1) + 4 op-violation = 7
+    // N=1, L=2, B=1, K=1; lags add no rows, no state-fixing rows. Same 6 as L=0:
+    // num_rows = N water_balance(1) + B*K load_balance(1) + 4 op-violation = 6
     let system = one_hydro_system(1, 2);
     let result = build_stage_templates_resolving_layout(
         &system,
@@ -161,7 +164,7 @@ fn num_rows_formula_one_hydro_lag_two() {
     )
     .expect("constant productivity ok");
     let t = &result.templates[0];
-    assert_eq!(t.num_rows, 7, "num_rows mismatch for N=1 L=2");
+    assert_eq!(t.num_rows, 6, "num_rows mismatch for N=1 L=2");
 }
 
 #[test]
@@ -309,11 +312,55 @@ fn spillage_objective_nonzero_for_nonzero_penalty() {
     )
     .expect("constant productivity ok");
     let t = &result.templates[0];
-    // spillage col for h=0, blk=0: col_spillage_start + 0 = N*(3+L)+1 + N*K
-    // With N=1, L=0, K=1: theta=3, decision_start=4, turbine_start=4, spill_start=5
-    let spill_col = 5;
+    // N=1, L=0, K=1: v_out=0, v_in=1, theta=2, turbine_start=3, spill_start=4
+    let spill_col = 4;
     assert!(
         t.objective[spill_col] > 0.0,
         "spillage objective must be > 0 when spillage_cost > 0"
+    );
+}
+
+#[test]
+fn row_families_tile_every_stage_row() {
+    let mut families = BTreeSet::new();
+    let visited = for_each_study(|key, _, setup| {
+        let templates = &setup.inputs.stage_data.stage_templates.templates;
+        for (stage, template) in templates.iter().enumerate() {
+            let classes = catch_unwind(AssertUnwindSafe(|| {
+                classify_stage_rows(setup, stage, template.num_rows)
+            }))
+            .unwrap_or_else(|payload| {
+                let message = payload
+                    .downcast_ref::<String>()
+                    .map(String::as_str)
+                    .or_else(|| payload.downcast_ref::<&str>().copied())
+                    .unwrap_or("non-string panic payload");
+                panic!("{key}: {message}")
+            });
+            families.extend(census(&classes).into_keys());
+        }
+    });
+
+    assert_eq!(visited, expected_study_count(), "every study is visited");
+    for family in [
+        RowFamily::Fpha,
+        RowFamily::Evaporation,
+        RowFamily::GenericConstraint,
+        RowFamily::WaterBalance,
+    ] {
+        assert!(
+            families.contains(name(RowClass::Base(family))),
+            "no study reaches {family:?}; reached {families:?}"
+        );
+    }
+    assert!(
+        [
+            RowFamily::AnticipatedFishing,
+            RowFamily::AnticipatedStateOutDef,
+            RowFamily::AnticipatedSlotDefinition,
+        ]
+        .into_iter()
+        .any(|family| families.contains(name(RowClass::Base(family)))),
+        "no study reaches an anticipated family; reached {families:?}"
     );
 }

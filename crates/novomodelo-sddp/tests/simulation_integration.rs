@@ -639,7 +639,8 @@ fn train_simulate_write_cycle() {
 
     let geometry = vec![hydro_only_bus_geometry(); fx.n_stages];
     let state_boxes = permissive_state_boxes(fx.state.n_state, fx.n_stages);
-    let stage_ctx_fixture = StageContextFixture::new(&fx.templates, &state_boxes, &geometry);
+    let stage_ctx_fixture = StageContextFixture::new(&fx.templates, &state_boxes, &geometry)
+        .without_inflow_entries(fx.state.hydro_count);
     let stage_ctx = stage_ctx_fixture.ctx();
     let cut_state_layouts = all_enabled_cut_state_layouts(&fx.state, fx.n_stages);
     let study_dims = study_dims_for(false);
@@ -1279,7 +1280,8 @@ fn simulation_min_outflow_slack_extracted_from_primal() {
     let mut fcf = make_fcf(n_stages);
 
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
-    let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &equipment_geometry);
+    let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &equipment_geometry)
+        .without_inflow_entries(state.hydro_count);
     let stage_ctx = stage_ctx_fixture.ctx();
 
     let training_config = TrainingConfig {
@@ -1467,7 +1469,8 @@ fn enumerated_census_k1_matches_sampled_single_scenario() {
     // `minimal_template`'s N=1 hydro, 1 bus, 1-block layout.
     let geometry: Vec<StageGeometry> = vec![hydro_only_bus_geometry(); fx.n_stages];
     let state_boxes = permissive_state_boxes(fx.state.n_state, fx.n_stages);
-    let stage_ctx_fixture = StageContextFixture::new(&fx.templates, &state_boxes, &geometry);
+    let stage_ctx_fixture = StageContextFixture::new(&fx.templates, &state_boxes, &geometry)
+        .without_inflow_entries(fx.state.hydro_count);
     let stage_ctx = stage_ctx_fixture.ctx();
     let cut_state_layouts = all_enabled_cut_state_layouts(&fx.state, fx.n_stages);
     let study_dims = study_dims_for(false);
@@ -2479,23 +2482,17 @@ mod compact_simulation_outputs {
     };
     use novomodelo_sddp::StudySetup;
     use novomodelo_sddp::indexer::CutSlot;
-    use novomodelo_sddp::simulation::SimulationScenarioResult;
+    use novomodelo_sddp::simulation::{SimulationScenarioResult, SimulationStageResult};
+    use novomodelo_sddp::test_support::template_structure::state_lag_dims;
     use novomodelo_solver::ActiveSolver;
 
     use crate::common::in_code_studies::fpha_lag_study;
-    use crate::common::oracle_tolerance::{ORACLE_ABS_TOL, ORACLE_REL_TOL};
     use crate::common::stored_cut_oracles::apply_oracle_config;
-    use crate::common::{Emission, StubComm, build_setup_in_code_with_models_as};
+    use crate::common::{StubComm, build_setup_in_code_with_models};
 
     const LAG_REL_TOL: f64 = 1e-12;
     const NUM_SCENARIOS: u32 = 4;
     const SIMULATION_SEED: i64 = 7;
-
-    struct Forms {
-        compact: StudySetup,
-        logical_results: Vec<SimulationScenarioResult>,
-        compact_results: Vec<SimulationScenarioResult>,
-    }
 
     pub(super) fn simulate_sampled(setup: &StudySetup) -> Vec<SimulationScenarioResult> {
         let mut pool = setup
@@ -2513,7 +2510,7 @@ mod compact_simulation_outputs {
 
     fn pool_zero_lag_cuts(setup: &StudySetup) -> usize {
         let layout = &setup.training_ctx().cut_state_layouts[0];
-        let lag_dims = &setup.stage_state().inflow_lags;
+        let lag_dims = state_lag_dims(setup.stage_state());
         setup
             .fcf
             .active_cuts(0)
@@ -2525,39 +2522,12 @@ mod compact_simulation_outputs {
             .count()
     }
 
-    fn assert_forms_share_cut_geometry(logical: &StudySetup, compact: &StudySetup) {
-        let (logical_layouts, compact_layouts) = (
-            logical.training_ctx().cut_state_layouts,
-            compact.training_ctx().cut_state_layouts,
-        );
-        assert_eq!(
-            logical_layouts.len(),
-            compact_layouts.len(),
-            "the forms have different pool counts"
-        );
-        for (pool, (l, c)) in logical_layouts.iter().zip(compact_layouts).enumerate() {
-            assert_eq!(
-                l.n_slots(),
-                c.n_slots(),
-                "pool {pool}: the forms project different slot counts"
-            );
-            for j in 0..l.n_slots() {
-                let slot = CutSlot::new(j);
-                assert_eq!(
-                    l.global_state_index(slot),
-                    c.global_state_index(slot),
-                    "pool {pool} slot {j}: the forms project different state dimensions"
-                );
-            }
-        }
-    }
-
-    fn assert_every_stage_has_lags(form: &str, results: &[SimulationScenarioResult]) {
+    fn assert_every_stage_has_lags(results: &[SimulationScenarioResult]) {
         for result in results {
             for stage in &result.stages {
                 assert!(
                     !stage.inflow_lags.is_empty(),
-                    "{form} scenario {} stage {}: no inflow_lags record, so no lag output is read",
+                    "scenario {} stage {}: no inflow_lags record, so no lag output is read",
                     result.scenario_id,
                     stage.stage_id
                 );
@@ -2565,7 +2535,7 @@ mod compact_simulation_outputs {
         }
     }
 
-    pub(super) fn trained_forms(edit: impl FnOnce(&mut Config)) -> (StudySetup, StudySetup) {
+    pub(super) fn trained(edit: impl FnOnce(&mut Config)) -> StudySetup {
         let (system, mut config, hydro_models) = fpha_lag_study();
         apply_oracle_config(&mut config);
         config.simulation = SimulationConfig {
@@ -2585,13 +2555,9 @@ mod compact_simulation_outputs {
             cut_set: SimulationRowSet::All,
         };
         edit(&mut config);
-        let mut logical =
-            build_setup_in_code_with_models_as(system, &config, hydro_models, Emission::Logical);
-        let (system, _, hydro_models) = fpha_lag_study();
-        let mut compact =
-            build_setup_in_code_with_models_as(system, &config, hydro_models, Emission::Compact);
+        let mut setup = build_setup_in_code_with_models(system, &config, hydro_models);
         let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
-        let outcome = logical
+        let outcome = setup
             .train(&mut solver, &StubComm, 1, ActiveSolver::new, None, None)
             .expect("training must return Ok");
         assert!(
@@ -2599,29 +2565,19 @@ mod compact_simulation_outputs {
             "training must not error: {:?}",
             outcome.error
         );
-        assert_forms_share_cut_geometry(&logical, &compact);
-        compact.fcf = logical.fcf.clone();
-
         assert!(
-            compact.stage_state().z_inflow.is_empty(),
-            "the compact form still has z columns, so no z primal is missing"
-        );
-        assert!(
-            pool_zero_lag_cuts(&logical) > 0,
+            pool_zero_lag_cuts(&setup) > 0,
             "pool 0 holds no active cut with a nonzero lag coefficient, so a missing lag pin goes unseen"
         );
-        (logical, compact)
+        setup
     }
 
-    fn forms() -> Forms {
-        let (logical, compact) = trained_forms(|_| {});
-        let logical_results = simulate_sampled(&logical);
-        let compact_results = simulate_sampled(&compact);
-        assert_eq!(logical_results.len(), NUM_SCENARIOS as usize);
-        assert_eq!(compact_results.len(), NUM_SCENARIOS as usize);
-        assert_every_stage_has_lags("logical", &logical_results);
-        assert_every_stage_has_lags("compact", &compact_results);
-        let first_stage_inflows: Vec<Vec<u64>> = logical_results
+    fn simulated() -> (StudySetup, Vec<SimulationScenarioResult>) {
+        let setup = trained(|_| {});
+        let results = simulate_sampled(&setup);
+        assert_eq!(results.len(), NUM_SCENARIOS as usize);
+        assert_every_stage_has_lags(&results);
+        let first_stage_inflows: Vec<Vec<u64>> = results
             .iter()
             .map(|r| {
                 r.stages[0]
@@ -2635,64 +2591,17 @@ mod compact_simulation_outputs {
             first_stage_inflows.windows(2).any(|w| w[0] != w[1]),
             "every scenario draws the same first-stage inflow, so the noise never moves the realized inflow"
         );
-        Forms {
-            compact,
-            logical_results,
-            compact_results,
-        }
-    }
-
-    pub(super) fn assert_close(what: &str, got: f64, want: f64) {
-        let tolerance = ORACLE_ABS_TOL + ORACLE_REL_TOL * want.abs();
-        assert!(
-            (got - want).abs() <= tolerance,
-            "{what}: compact {got:?} vs logical {want:?}, tolerance {tolerance:e}"
-        );
+        (setup, results)
     }
 
     #[test]
-    fn compact_inflow_outputs_match_the_logical_form_at_the_first_stage() {
-        let forms = forms();
-        for (want, got) in forms.logical_results.iter().zip(&forms.compact_results) {
-            let id = want.scenario_id;
-            assert_eq!(got.scenario_id, id);
-            let (want, got) = (&want.stages[0], &got.stages[0]);
-            assert_eq!(want.hydros.len(), got.hydros.len());
-            for (want, got) in want.hydros.iter().zip(&got.hydros) {
-                assert_eq!(want.hydro_id, got.hydro_id);
-                let hydro = want.hydro_id;
-                assert_close(
-                    &format!("scenario {id} hydro {hydro} incremental_inflow_m3s"),
-                    got.incremental_inflow_m3s,
-                    want.incremental_inflow_m3s,
-                );
-                assert_close(
-                    &format!("scenario {id} hydro {hydro} inflow_m3s"),
-                    got.inflow_m3s,
-                    want.inflow_m3s,
-                );
-                assert_close(
-                    &format!("scenario {id} hydro {hydro} incremental_inflow_energy_mw"),
-                    got.incremental_inflow_energy_mw,
-                    want.incremental_inflow_energy_mw,
-                );
-            }
-        }
-        for (want, got) in forms.logical_results.iter().zip(&forms.compact_results) {
-            assert_close(
-                &format!("scenario {} first-stage total_cost", want.scenario_id),
-                got.stages[0].costs[0].total_cost,
-                want.stages[0].costs[0].total_cost,
-            );
-        }
-    }
-
-    fn assert_lags_carry_previous_inflow(form: &str, results: &[SimulationScenarioResult]) {
-        for result in results {
+    fn lag_outputs_carry_the_previous_stage_inflow() {
+        let (_, results) = simulated();
+        for result in &results {
             for t in 1..result.stages.len() {
                 let (previous, stage) = (&result.stages[t - 1], &result.stages[t]);
                 for hydro in &previous.hydros {
-                    let lags = |stage: &novomodelo_sddp::simulation::SimulationStageResult| {
+                    let lags = |stage: &SimulationStageResult| {
                         let mut lags: Vec<_> = stage
                             .inflow_lags
                             .iter()
@@ -2710,7 +2619,7 @@ mod compact_simulation_outputs {
                         };
                         assert!(
                             (got - want).abs() <= LAG_REL_TOL * want.abs().max(1.0),
-                            "{form} scenario {} stage {t} hydro {} lag {l}: got {got:?}, want {want:?}",
+                            "scenario {} stage {t} hydro {} lag {l}: got {got:?}, want {want:?}",
                             result.scenario_id,
                             hydro.hydro_id
                         );
@@ -2721,18 +2630,11 @@ mod compact_simulation_outputs {
     }
 
     #[test]
-    fn lag_outputs_carry_the_previous_stage_inflow_in_both_forms() {
-        let forms = forms();
-        assert_lags_carry_previous_inflow("logical", &forms.logical_results);
-        assert_lags_carry_previous_inflow("compact", &forms.compact_results);
-    }
-
-    #[test]
     fn compact_simulation_is_reproducible() {
-        let forms = forms();
-        let again = simulate_sampled(&forms.compact);
+        let (setup, results) = simulated();
+        let again = simulate_sampled(&setup);
         assert_eq!(
-            serde_json::to_vec(&forms.compact_results).expect("results serialize"),
+            serde_json::to_vec(&results).expect("results serialize"),
             serde_json::to_vec(&again).expect("results serialize"),
             "a second compact simulation on a fresh pool moved a result"
         );
@@ -2743,12 +2645,12 @@ mod compact_dcs_simulation {
     use std::num::NonZeroU32;
 
     use novomodelo_io::config::{SelectionMethod, SimulationRowSet};
-    use novomodelo_sddp::StudySetup;
 
-    use super::compact_simulation_outputs::{assert_close, simulate_sampled, trained_forms};
+    use super::compact_simulation_outputs::{simulate_sampled, trained};
 
-    fn dcs_forms() -> (StudySetup, StudySetup) {
-        let (logical, compact) = trained_forms(|config| {
+    #[test]
+    fn compact_dcs_simulation_is_reproducible() {
+        let compact = trained(|config| {
             config.training.cut_selection.selection = Some(SelectionMethod::Dynamic {
                 start_iteration: NonZeroU32::MIN,
                 seed_window: 2,
@@ -2759,10 +2661,6 @@ mod compact_dcs_simulation {
             config.simulation.cut_set = SimulationRowSet::Active;
         });
         assert!(
-            logical.training_ctx().dcs.is_some(),
-            "the logical form has no dynamic cut selection, so no lazy solve runs"
-        );
-        assert!(
             compact.training_ctx().dcs.is_some(),
             "the compact form has no dynamic cut selection, so no lazy solve runs"
         );
@@ -2770,41 +2668,6 @@ mod compact_dcs_simulation {
             compact.fcf.active_cuts(0).nth(1).is_some(),
             "pool 0 holds fewer than two active cuts, so the one-per-round limit never forces a second round"
         );
-        (logical, compact)
-    }
-
-    #[test]
-    fn compact_dcs_stage_costs_match_the_logical_form() {
-        let (logical, compact) = dcs_forms();
-        let (logical_results, compact_results) =
-            (simulate_sampled(&logical), simulate_sampled(&compact));
-        for (want, got) in logical_results.iter().zip(&compact_results) {
-            let id = want.scenario_id;
-            assert_eq!(got.scenario_id, id);
-            let (want, got) = (&want.stages[0], &got.stages[0]);
-            assert_close(
-                &format!("scenario {id} stage-0 total_cost"),
-                got.costs[0].total_cost,
-                want.costs[0].total_cost,
-            );
-            assert_eq!(want.hydros.len(), got.hydros.len());
-            for (want, got) in want.hydros.iter().zip(&got.hydros) {
-                assert_eq!(want.hydro_id, got.hydro_id);
-                assert_close(
-                    &format!(
-                        "scenario {id} hydro {} incremental_inflow_m3s",
-                        want.hydro_id
-                    ),
-                    got.incremental_inflow_m3s,
-                    want.incremental_inflow_m3s,
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn compact_dcs_simulation_is_reproducible() {
-        let (_, compact) = dcs_forms();
         assert_eq!(
             serde_json::to_vec(&simulate_sampled(&compact)).expect("results serialize"),
             serde_json::to_vec(&simulate_sampled(&compact)).expect("results serialize"),

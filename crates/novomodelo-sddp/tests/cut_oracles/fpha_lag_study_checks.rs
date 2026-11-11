@@ -5,37 +5,31 @@ use novomodelo_sddp::setup::{NodePos, StageIdx};
 use novomodelo_sddp::test_support::{capture_patched_node_template_at, oracle_initial_state};
 use novomodelo_solver::{ActiveSolver, SolverInterface};
 
-use super::shared_dual_identity::dual_family;
-use crate::common::compact_map::CompactMap;
+use crate::common::build_setup_in_code_with_models;
 use crate::common::in_code_studies::fpha_lag_study;
 use crate::common::power_guards::{DualFamily, Guard, PowerEvidence};
 use crate::common::row_families::{RowClass, classify_stage_rows};
-use crate::common::{Emission, build_setup_in_code_with_models_as};
+use crate::shared_dual_identity::dual_family;
 
 const CHRONOLOGICAL_STAGE: usize = 1;
 const UNIT_SCALE_BITS: u64 = 1.0_f64.to_bits();
 
-fn build(emission: Emission) -> StudySetup {
+fn build() -> StudySetup {
     let (system, config, hydro_models) = fpha_lag_study();
-    build_setup_in_code_with_models_as(system, &config, hydro_models, emission)
+    build_setup_in_code_with_models(system, &config, hydro_models)
 }
 
 #[test]
 fn fpha_lag_study_has_every_required_feature() {
     let (system, _, _) = fpha_lag_study();
-    let logical = build(Emission::Logical);
-    let compact = build(Emission::Compact);
-    let logical_state = logical.stage_state();
-    let compact_state = compact.stage_state();
+    let setup = build();
+    let state = setup.stage_state();
 
-    assert_eq!(
-        logical_state.max_par_order, 2,
-        "the logical form's lag state must be PAR(2)"
-    );
-    let logical_ctx = logical.training_ctx();
-    let par = logical_ctx.stochastic.par();
+    assert_eq!(state.max_par_order, 2, "the lag state must be PAR(2)");
+    let ctx = setup.training_ctx();
+    let par = ctx.stochastic.par();
     for stage in 0..system.stages().len() {
-        for hydro in 0..logical_state.hydro_count {
+        for hydro in 0..state.hydro_count {
             for (lag, &psi) in par.psi_slice(stage, hydro).iter().enumerate() {
                 assert!(
                     psi != 0.0 && psi.abs() != 1.0,
@@ -66,94 +60,51 @@ fn fpha_lag_study_has_every_required_feature() {
         "the chronological stage needs two blocks of different hours, got {hours:?}"
     );
 
-    let compact_templates = &compact.inputs.stage_data.stage_templates;
-    let compact_classes = classify_stage_rows(
-        &compact,
+    let templates = &setup.inputs.stage_data.stage_templates;
+    let classes = classify_stage_rows(
+        &setup,
         CHRONOLOGICAL_STAGE,
-        compact_templates.templates[CHRONOLOGICAL_STAGE].num_rows,
+        templates.templates[CHRONOLOGICAL_STAGE].num_rows,
     );
-    let coupling = &compact.stage_ctx().inflow_coupling[CHRONOLOGICAL_STAGE];
+    let coupling = &setup.stage_ctx().inflow_coupling[CHRONOLOGICAL_STAGE];
     assert!(
-        coupling.touched_rows().iter().any(|&row| {
-            compact_classes[row as usize] == RowClass::Base(RowFamily::GenericConstraint)
-        }),
+        coupling
+            .touched_rows()
+            .iter()
+            .any(|&row| classes[row as usize] == RowClass::Base(RowFamily::GenericConstraint)),
         "stage {CHRONOLOGICAL_STAGE}: no touched inflow-coupling row is a generic-constraint \
          row; touched rows {:?}",
         coupling.touched_rows()
     );
 
-    for (form, state) in [("logical", logical_state), ("compact", compact_state)] {
-        assert!(
-            state.n_anticipated > 0 && !state.commit_out.is_empty(),
-            "{form}: anticipated state absent (n_anticipated {}, commit_out {:?})",
-            state.n_anticipated,
-            state.commit_out
-        );
-    }
-
-    let logical_templates = &logical.inputs.stage_data.stage_templates;
-    let scales_by_stage = |columns: &std::ops::Range<usize>| -> Vec<Vec<f64>> {
-        (0..system.stages().len())
-            .map(|stage| logical_templates.templates[stage].col_scale[columns.clone()].to_vec())
-            .collect()
-    };
-    let any_off_unit = |scales: &[Vec<f64>]| {
-        scales
-            .iter()
-            .flatten()
-            .any(|scale| scale.to_bits() != UNIT_SCALE_BITS)
-    };
-    let z_scales = scales_by_stage(&logical_state.z_inflow);
-    let lag_scales = scales_by_stage(&logical_state.inflow_lags);
     assert!(
-        any_off_unit(&z_scales),
-        "no z column scale differs from 1.0 on the logical templates; z scales by stage {z_scales:?}"
-    );
-    assert!(
-        any_off_unit(&lag_scales),
-        "no inflow-lag column scale differs from 1.0 on the logical templates; \
-         lag scales by stage {lag_scales:?}"
+        state.n_anticipated > 0 && !state.commit_out.is_empty(),
+        "anticipated state absent (n_anticipated {}, commit_out {:?})",
+        state.n_anticipated,
+        state.commit_out
     );
 
-    let coupled_row_scales: Vec<(usize, u32, f64, f64)> = (0..system.stages().len())
+    let coupled_row_scales: Vec<(usize, u32, f64)> = (0..system.stages().len())
         .flat_map(|stage| {
-            let logical_template = &logical_templates.templates[stage];
-            let compact_template = &compact_templates.templates[stage];
-            let map = CompactMap::of_stage(
-                logical_state,
-                compact_state,
-                logical_template,
-                compact_template,
-            );
-            compact_templates.inflow_coupling_per_stage[stage]
+            let template = &templates.templates[stage];
+            templates.inflow_coupling_per_stage[stage]
                 .touched_rows()
                 .iter()
-                .map(|&row| {
-                    let logical_row = (0..logical_template.num_rows)
-                        .find(|&r| map.row(r) == Some(row as usize))
-                        .expect("a coupled compact row is a kept logical row");
-                    (
-                        stage,
-                        row,
-                        logical_template.row_scale[logical_row],
-                        compact_template.row_scale[row as usize],
-                    )
-                })
+                .map(|&row| (stage, row, template.row_scale[row as usize]))
                 .collect::<Vec<_>>()
         })
         .collect();
     assert!(
         coupled_row_scales
             .iter()
-            .any(|&(_, _, logical, compact)| logical.to_bits() != compact.to_bits()),
-        "no compact coupled row's scale differs from its logical row's; \
-         (stage, compact row, logical scale, compact scale): {coupled_row_scales:?}"
+            .any(|&(_, _, scale)| scale.to_bits() != UNIT_SCALE_BITS),
+        "no coupled row's scale differs from 1.0; (stage, row, scale): {coupled_row_scales:?}"
     );
 }
 
 #[test]
 fn fpha_lag_study_duals_bind_on_a_no_cut_stage_solve() {
-    let setup = build(Emission::Logical);
+    let setup = build();
     assert_eq!(
         setup.inputs.node_graph.nodes[NodePos(CHRONOLOGICAL_STAGE)].stage,
         StageIdx(CHRONOLOGICAL_STAGE),

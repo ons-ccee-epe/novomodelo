@@ -58,7 +58,7 @@ use crate::{
     context::{StageContext, TrainingContext},
     cut::{FutureCostFunction, pool::CutPool},
     forward::build_delta_cut_row_batch_into,
-    indexer::CutStateProjection,
+    indexer::{ChainRuleSlots, CutStateProjection},
     setup::node_graph::{NodeId, NodeOpenings, NodePos, StageIdx},
     solver_stats::SolverStatsDelta,
     training::stage_solve_prep::BracketSource,
@@ -80,13 +80,11 @@ mod stage_noise;
 mod tests;
 
 pub(crate) use by_node::{
-    OpeningOutcome, by_node_block_count, by_node_finish, hardest_first_block_order,
-    identity_block_order, merge_block_pivots, process_stage_backward_by_node, resolve_block_size,
+    by_node_block_count, by_node_finish, hardest_first_block_order, identity_block_order,
+    merge_block_pivots, process_stage_backward_by_node, resolve_block_size,
 };
 pub(crate) use by_scenario::{by_scenario_finish, process_by_scenario_backward};
-pub(crate) use duals_extraction::{
-    FoldedDuals, FoldedExtraction, extract_folded_duals, extract_state_duals_only,
-};
+pub(crate) use duals_extraction::{DualExtractionSpec, OpeningDualBuffers, extract_opening_duals};
 pub(crate) use lp_setup::{OpeningNoise, resolve_opening_noise};
 pub(crate) use replicated::{ReplicatedScratch, run_backward_node_replicated};
 pub(crate) use stage_noise::StageNoiseTable;
@@ -95,13 +93,7 @@ pub(crate) use stage_noise::StageNoiseTable;
 pub(crate) use lp_setup::fill_external_opening_noise;
 
 #[cfg(test)]
-pub(crate) use lp_setup::{load_backward_lp, patch_opening_bounds, resolve_backward_basis};
-
-/// `any(test, feature = "test-support")`, not the bare `#[cfg(test)]` above:
-/// an external `tests/` binary drives this through `test_support` under
-/// `--features test-support`, which never sets `cfg(test)` on this library.
-#[cfg(any(test, feature = "test-support"))]
-pub(crate) use outcome_aggregation::write_opening_outcome;
+pub(crate) use lp_setup::{load_backward_lp, resolve_backward_basis};
 
 /// Per-`(rank, worker_id, opening)` solver delta collected during a single
 /// backward stage, as returned inside [`BackwardResult::stage_stats`].
@@ -295,6 +287,8 @@ pub(crate) struct SuccessorEntry {
     pub(crate) openings: NodeOpenings,
     /// This child's contiguous slice of the flattened outcome/weight vector.
     pub(crate) outcome_range: Range<usize>,
+    /// Chain-rule slot ranges: the child's pool resident, the generating node's pool extracted.
+    pub(crate) chain_rule_slots: ChainRuleSlots,
 }
 
 /// A fully-resolved successor child: [`SuccessorEntry`] metadata plus the
@@ -331,6 +325,8 @@ pub(crate) struct SuccessorChild<'a> {
     pub(crate) openings: NodeOpenings,
     /// This child's contiguous slice of the flattened outcome/weight vector.
     pub(crate) outcome_range: Range<usize>,
+    /// Chain-rule slot ranges of this child's pool against the generating node's pool.
+    pub(crate) chain_rule_slots: &'a ChainRuleSlots,
 }
 
 /// The current node's reified successor outcome set: one [`SuccessorEntry`] per
@@ -415,6 +411,7 @@ impl<'a> SuccessorOutcomes<'a> {
             successor_pool: &self.pools[e.pool_id],
             openings: e.openings,
             outcome_range: e.outcome_range.clone(),
+            chain_rule_slots: &e.chain_rule_slots,
         }
     }
 }
@@ -443,6 +440,7 @@ pub(crate) fn reify_successor_outcomes(
     let successor_stage = node_graph.nodes[node_pos].stage.next();
     let template_num_rows = ctx.template(successor_stage).num_rows;
     let cut_state = training_ctx.state;
+    let generating_layout = &training_ctx.cut_state_layouts[node_graph.nodes[node_pos].pool_id];
 
     meta_buf.clear();
     active_slots_buf.clear();
@@ -479,6 +477,11 @@ pub(crate) fn reify_successor_outcomes(
             metadata_offset,
             openings: child_openings,
             outcome_range: outcome_offset..outcome_offset + outcome_len,
+            chain_rule_slots: ChainRuleSlots::compose(
+                cut_state,
+                child_cut_layout,
+                generating_layout,
+            ),
         });
         outcome_offset += outcome_len;
         metadata_offset += populated_count;

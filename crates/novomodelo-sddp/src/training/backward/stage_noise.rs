@@ -11,6 +11,7 @@ use rayon::{
 use super::{OpeningNoise, SuccessorOutcomes, resolve_opening_noise};
 use crate::{
     SddpError, context::TrainingContext, cut::rhs::cut_noise_term, setup::node_graph::StageIdx,
+    workspace::workspace::reserve_to,
 };
 
 #[derive(Debug, Default)]
@@ -20,10 +21,6 @@ pub(crate) struct StageNoiseTable {
     n_hydros: usize,
     stride: usize,
     external_noise: Vec<f64>,
-}
-
-fn reserve_to(buffer: &mut Vec<f64>, capacity: usize) {
-    buffer.reserve(capacity.saturating_sub(buffer.len()));
 }
 
 impl StageNoiseTable {

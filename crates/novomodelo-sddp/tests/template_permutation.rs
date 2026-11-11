@@ -22,8 +22,8 @@ use common::in_code_studies::{
 use common::permute::permute_case;
 use common::selection_fingerprint::SelectionFingerprint;
 use common::{
-    Emission, StubComm, build_setup_in_code, build_setup_in_code_with_models_as, fresh_setup_with,
-    fresh_system_and_setup_with_emission,
+    StubComm, build_setup_in_code, build_setup_in_code_with_models, fresh_setup_with,
+    fresh_system_and_setup_with,
 };
 
 const SEED: u64 = 0x5EED_C0BE_5EED_C0BE;
@@ -135,46 +135,39 @@ const LAG_STUDY_FORWARD_PASSES: u32 = 2;
 const LAG_STUDY_ITERATIONS: u32 = 3;
 const BUDGET_THAT_EVICTS_NOTHING: u32 = 100_000;
 
-fn lag_study_setup(reverse_declaration_order: bool, emission: Emission) -> StudySetup {
+fn lag_study_setup(reverse_declaration_order: bool) -> StudySetup {
     let (system, config, hydro_models) = fpha_lag_study_with(FphaLagOptions {
         reverse_declaration_order,
         ..FphaLagOptions::default()
     });
-    build_setup_in_code_with_models_as(system, &config, hydro_models, emission)
+    build_setup_in_code_with_models(system, &config, hydro_models)
 }
 
 #[test]
-fn the_lag_study_template_is_invariant_to_declaration_order_in_both_forms() {
+fn the_lag_study_template_is_invariant_to_declaration_order() {
     let mut mismatches: Vec<(String, String)> = Vec::new();
 
-    for (form, emission) in [
-        ("logical", Emission::Logical),
-        ("compact", Emission::Compact),
-    ] {
-        let label = format!("in-code/fpha-lag/{form}");
-        let base_setup = lag_study_setup(false, emission);
-        let reversed_setup = lag_study_setup(true, emission);
-        for group in mismatched_groups(&base_setup, &reversed_setup, &label) {
-            mismatches.push((label.clone(), group));
-        }
-
-        if emission == Emission::Compact {
-            assert!(
-                template_fact_groups(&base_setup).contains_key("lp.inflow_coupling"),
-                "{label}: no lp.inflow_coupling fact group"
-            );
-            assert!(
-                base_setup
-                    .inputs
-                    .stage_data
-                    .stage_templates
-                    .inflow_coupling_per_stage
-                    .iter()
-                    .any(|coupling| !coupling.touched_rows().is_empty()),
-                "{label}: no stage's inflow coupling has an entry, so the comparison does not reach it"
-            );
-        }
+    let label = "in-code/fpha-lag".to_string();
+    let base_setup = lag_study_setup(false);
+    let reversed_setup = lag_study_setup(true);
+    for group in mismatched_groups(&base_setup, &reversed_setup, &label) {
+        mismatches.push((label.clone(), group));
     }
+
+    assert!(
+        template_fact_groups(&base_setup).contains_key("lp.inflow_coupling"),
+        "{label}: no lp.inflow_coupling fact group"
+    );
+    assert!(
+        base_setup
+            .inputs
+            .stage_data
+            .stage_templates
+            .inflow_coupling_per_stage
+            .iter()
+            .any(|coupling| !coupling.touched_rows().is_empty()),
+        "{label}: no stage's inflow coupling has an entry, so the comparison does not reach it"
+    );
 
     assert!(
         mismatches.is_empty(),
@@ -199,15 +192,13 @@ fn every_lag_deck_compact_template_is_invariant_to_declaration_order() {
             continue;
         }
 
-        let base_setup =
-            fresh_system_and_setup_with_emission(&deck.dir, |_| {}, Emission::Compact).1;
+        let base_setup = fresh_system_and_setup_with(&deck.dir, |_| {}).1;
         if base_setup.stage_state().max_par_order == 0 {
             skipped.push(deck.key);
             continue;
         }
         let permuted_dir = permute_case(&deck.dir, SEED);
-        let permuted_setup =
-            fresh_system_and_setup_with_emission(permuted_dir.path(), |_| {}, Emission::Compact).1;
+        let permuted_setup = fresh_system_and_setup_with(permuted_dir.path(), |_| {}).1;
 
         for group in mismatched_groups(&base_setup, &permuted_setup, &deck.key) {
             mismatches.push((deck.key.clone(), group));
@@ -243,8 +234,7 @@ fn train_compact_lag_study(reverse_declaration_order: bool) -> (StudySetup, Trai
         limit: LAG_STUDY_ITERATIONS,
     }]);
     config.training.cut_selection.max_active_per_stage = Some(BUDGET_THAT_EVICTS_NOTHING);
-    let mut setup =
-        build_setup_in_code_with_models_as(system, &config, hydro_models, Emission::Compact);
+    let mut setup = build_setup_in_code_with_models(system, &config, hydro_models);
     let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
     let outcome = setup
         .train(&mut solver, &StubComm, 1, ActiveSolver::new, None, None)

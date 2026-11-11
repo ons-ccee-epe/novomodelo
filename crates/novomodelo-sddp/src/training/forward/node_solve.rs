@@ -10,7 +10,7 @@ use crate::{
         chain_rule::{ChainRuleInputs, OpeningDuals, per_opening_cut_into},
     },
     error::SddpError,
-    indexer::{ChainRuleSlots, CutStateProjection, InflowForm},
+    indexer::{ChainRuleSlots, CutStateProjection},
     noise::{DownstreamAccumState, LagAccumState},
     setup::node_graph::{NodePos, StageIdx},
     solve::{LazyInputs, StageOpeningSolver},
@@ -18,10 +18,8 @@ use crate::{
         StageInputs, assemble_outgoing_state, fill_unscaled, run_stage_solve_terminal_static,
     },
     training::{
-        backward::{FoldedDuals, FoldedExtraction, extract_folded_duals, extract_state_duals_only},
-        stage_solve_prep::{
-            FoldedSolvePrepParams, StageSolvePrep, StageSolvePrepParams, StateSource,
-        },
+        backward::{DualExtractionSpec, OpeningDualBuffers, extract_opening_duals},
+        stage_solve_prep::{SingleSolvePrepParams, StageSolvePrep, StateSource},
     },
     workspace::{CapturedBasis, SolverWorkspace},
 };
@@ -34,7 +32,7 @@ use crate::{
 pub(super) struct FusedTerminalSlice {
     pub(super) captured: bool,
     pub(super) objective: f64,
-    /// The opening's cut coefficients in the parent projection: the state duals on the logical LP, the chain-rule result on the compact LP.
+    /// The opening's cut coefficients in the parent projection: the chain-rule result.
     pub(super) subgradient: Vec<f64>,
 }
 
@@ -64,7 +62,8 @@ pub(super) struct ForwardNodeSolve<'a> {
 /// the outgoing state there and returns the raw stage cost. The caller loads the
 /// model and owns the basis capture and the trajectory record.
 ///
-/// `fused_out` is filled from the solved view in either solve mode.
+/// `fused_out` is filled from the solved view in either solve mode, or marked
+/// uncaptured when `fusion_cut_state` is `None`.
 ///
 /// # Errors
 ///
@@ -74,7 +73,7 @@ pub(super) fn solve_forward_node_core<S: SolverInterface + Send>(
     ctx: &StageContext<'_>,
     training_ctx: &TrainingContext<'_>,
     solve: &ForwardNodeSolve<'_>,
-    mut fused_out: Option<&mut FusedTerminalSlice>,
+    fused_out: Option<&mut FusedTerminalSlice>,
 ) -> Result<f64, SddpError> {
     let ForwardNodeSolve {
         t,
@@ -104,24 +103,22 @@ pub(super) fn solve_forward_node_core<S: SolverInterface + Send>(
 
     let col_scale = &ctx.template(t).col_scale;
 
-    let folded_parent = fusion_cut_state
-        .filter(|_| fused_out.is_some() && state.inflow_form == InflowForm::Compact);
+    let fuses = fused_out.is_some() && fusion_cut_state.is_some();
 
     // Taken out before the solve so they can be filled from `view` slices tied to
     // `ws`; restored after the last read so the next stage reuses the allocation.
     let mut unscaled_primal = std::mem::take(&mut ws.scratch.unscaled_primal);
-    let (cut_row_slots, mut state_duals, mut coupled_duals, mut cut_dual_slots) =
-        if folded_parent.is_some() {
-            (
-                std::mem::take(&mut ws.scratch.cut_slots_buf),
-                std::mem::take(&mut ws.backward_accum.state_duals_buf),
-                std::mem::take(&mut ws.backward_accum.coupled_duals_buf),
-                std::mem::take(&mut ws.backward_accum.cut_dual_slots),
-            )
-        } else {
-            Default::default()
-        };
-    let mut folded_duals = FoldedDuals {
+    let (cut_row_slots, mut state_duals, mut coupled_duals, mut cut_dual_slots) = if fuses {
+        (
+            std::mem::take(&mut ws.scratch.cut_slots_buf),
+            std::mem::take(&mut ws.backward_accum.state_duals_buf),
+            std::mem::take(&mut ws.backward_accum.coupled_duals_buf),
+            std::mem::take(&mut ws.backward_accum.cut_dual_slots),
+        )
+    } else {
+        Default::default()
+    };
+    let mut opening_duals = OpeningDualBuffers {
         state_duals: &mut state_duals,
         coupled_duals: &mut coupled_duals,
         cut_dual_slots: &mut cut_dual_slots,
@@ -153,23 +150,6 @@ pub(super) fn solve_forward_node_core<S: SolverInterface + Send>(
         )?,
     };
     fill_unscaled(&mut unscaled_primal, view.primal, col_scale);
-    if let Some(out) = fused_out.as_deref_mut() {
-        match folded_parent {
-            Some(parent) => {
-                out.objective = extract_compact_slice(
-                    &view,
-                    ctx,
-                    t,
-                    parent,
-                    resident,
-                    &cut_row_slots,
-                    &mut folded_duals,
-                );
-            }
-            None => capture_fused_terminal_slice(&view, col_scale, fusion_cut_state, out),
-        }
-    }
-
     // The terminal boundary theta prices the post-horizon value-to-go and stays in
     // the cost; the interior form would drop it from the UB alone.
     let stage_cost = if is_terminal && pool.has_prefix_cuts() {
@@ -180,20 +160,33 @@ pub(super) fn solve_forward_node_core<S: SolverInterface + Send>(
     };
 
     // x̂ is `ws.current_state` until `assemble_outgoing_state` overwrites it.
-    if let (Some(parent), Some(out)) = (folded_parent, fused_out) {
-        chain_rule_compact_slice(
-            ws,
-            training_ctx,
-            solve,
-            parent,
-            resident,
-            &folded_duals,
-            out,
-        );
-        ws.scratch.cut_slots_buf = cut_row_slots;
-        ws.backward_accum.state_duals_buf = state_duals;
-        ws.backward_accum.coupled_duals_buf = coupled_duals;
-        ws.backward_accum.cut_dual_slots = cut_dual_slots;
+    match (fused_out, fusion_cut_state) {
+        (Some(out), Some(parent)) => {
+            out.objective = extract_fused_slice(
+                &view,
+                ctx,
+                t,
+                parent,
+                resident,
+                &cut_row_slots,
+                &mut opening_duals,
+            );
+            chain_rule_fused_slice(
+                ws,
+                training_ctx,
+                solve,
+                parent,
+                resident,
+                &opening_duals,
+                out,
+            );
+            ws.scratch.cut_slots_buf = cut_row_slots;
+            ws.backward_accum.state_duals_buf = state_duals;
+            ws.backward_accum.coupled_duals_buf = coupled_duals;
+            ws.backward_accum.cut_dual_slots = cut_dual_slots;
+        }
+        (Some(out), None) => out.captured = false,
+        (None, _) => {}
     }
 
     ws.scratch.incoming_lags_buf.clear();
@@ -240,75 +233,37 @@ fn prepare_stage_solve<S: SolverInterface + Send>(
         opening_solver,
         ..
     } = *solve;
-    match training_ctx.state.inflow_form {
-        InflowForm::Logical => {
-            let prep_params = StageSolvePrepParams {
-                state_source: StateSource(&ws.current_state),
-                raw_noise,
-            };
-            StageSolvePrep::run(
-                &mut ws.solver,
-                &mut ws.patch_buf,
-                &mut ws.scratch,
-                ctx,
-                training_ctx,
-                t,
-                &prep_params,
-            );
-        }
-        InflowForm::Compact => StageSolvePrep::prepare_folded_single(
-            &mut ws.solver,
-            &mut ws.patch_buf,
-            &mut ws.scratch,
-            ctx,
-            training_ctx,
-            t,
-            &FoldedSolvePrepParams {
-                state_source: StateSource(&ws.current_state),
-                raw_noise,
-                pool,
-                projection: resident,
-                opening_solver,
-            },
-            pool.active_cuts().map(|(slot, _, _)| slot),
-        ),
-    }
+    StageSolvePrep::prepare_single(
+        &mut ws.solver,
+        &mut ws.patch_buf,
+        &mut ws.scratch,
+        ctx,
+        training_ctx,
+        t,
+        &SingleSolvePrepParams {
+            state_source: StateSource(&ws.current_state),
+            raw_noise,
+            pool,
+            projection: resident,
+            opening_solver,
+        },
+        pool.active_cuts().map(|(slot, _, _)| slot),
+    );
 }
 
-/// For an eligible node (`cut_state.is_some()`), extract this node's own
-/// incoming-state subgradient via [`extract_state_duals_only`] — reused
-/// verbatim, never re-derived (`rc / col_scale`, divided; sddp.md "Benders cut
-/// sign & subgradient extraction") — before `view` is dropped; otherwise mark
-/// `fused_out` uncaptured.
-pub(super) fn capture_fused_terminal_slice(
-    view: &SolutionView<'_>,
-    col_scale: &[f64],
-    cut_state: Option<&CutStateProjection>,
-    fused_out: &mut FusedTerminalSlice,
-) {
-    match cut_state {
-        Some(cut_state) => {
-            fused_out.objective =
-                extract_state_duals_only(view, cut_state, col_scale, &mut fused_out.subgradient);
-            fused_out.captured = true;
-        }
-        None => fused_out.captured = false,
-    }
-}
-
-fn extract_compact_slice(
+fn extract_fused_slice(
     view: &SolutionView<'_>,
     ctx: &StageContext<'_>,
     t: StageIdx,
     parent: &CutStateProjection,
     resident: &CutStateProjection,
     cut_row_slots: &[usize],
-    duals: &mut FoldedDuals<'_>,
+    duals: &mut OpeningDualBuffers<'_>,
 ) -> f64 {
     let template = ctx.template(t);
-    extract_folded_duals(
+    extract_opening_duals(
         view,
-        &FoldedExtraction {
+        &DualExtractionSpec {
             extracted: parent,
             col_scale: &template.col_scale,
             row_scale: &template.row_scale,
@@ -323,13 +278,13 @@ fn extract_compact_slice(
 
 /// The solved leaf's own projection is the resident one and the parent's the
 /// extracted one; swapping them compiles.
-fn chain_rule_compact_slice<S: SolverInterface + Send>(
+fn chain_rule_fused_slice<S: SolverInterface + Send>(
     ws: &mut SolverWorkspace<S>,
     training_ctx: &TrainingContext<'_>,
     solve: &ForwardNodeSolve<'_>,
     parent: &CutStateProjection,
     resident: &CutStateProjection,
-    duals: &FoldedDuals<'_>,
+    duals: &OpeningDualBuffers<'_>,
     out: &mut FusedTerminalSlice,
 ) {
     out.subgradient.resize(parent.n_slots(), 0.0);

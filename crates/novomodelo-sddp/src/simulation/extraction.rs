@@ -2,22 +2,10 @@
 //!
 //! ## Column layout
 //!
-//! The state-region column layout is defined by [`StateSpace`]:
-//!
-//! ```text
-//! [0, N)             storage      — outgoing storage volumes
-//! [N, N*(1+L))       inflow_lags  — AR lag variables (hydro-major order)
-//! [N*(1+L), N*(2+L)) z_inflow     — realized inflow (auxiliary, not state)
-//! [N*(2+L), N*(3+L)) storage_in   — incoming storage volumes (fixed vars)
-//! N*(3+L)            theta        — future cost variable
-//! [theta+1, ...)     equipment    — turbine, spillage, thermal, lines, deficit, excess
-//! ```
-//!
-//! The equipment column layout is defined per stage by `StageLayout`, threaded
-//! into extraction as [`StageGeometry`].
-//!
-//! Under the compact form the `inflow_lags` and `z_inflow` ranges are empty, and
-//! the inflow outputs read the realized inflow and the incoming lags from the
+//! The state-region column layout is defined by [`StateSpace`]; the equipment
+//! column layout is defined per stage by `StageLayout`, threaded into
+//! extraction as [`StageGeometry`]. The AR lag state has no LP column: the
+//! inflow outputs read the realized inflow and the incoming lags from the
 //! solve scratch.
 
 use std::collections::HashMap;
@@ -36,8 +24,8 @@ use crate::lp::builder::{
 };
 use crate::lp::indexer::{
     AnticipatedLocal, AnticipatedPlants, BlockIdx, Boundary, BusSys, EvapLocal, FillingTargetLocal,
-    FloorLocal, FphaCellLocal, FphaLocal, HydroCell, HydroCellIndex, HydroSys, InflowForm, LineSys,
-    NcsSys, PlantFloorLocal, PumpingSys, StateSpace, StudyDimensions, ThermalSys,
+    FloorLocal, FphaCellLocal, FphaLocal, HydroCell, HydroCellIndex, HydroSys, LineSys, NcsSys,
+    PlantFloorLocal, PumpingSys, StateSpace, StudyDimensions, ThermalSys,
     anticipated_resolution_for, is_anticipated_decision_active_for_delivery,
 };
 use crate::setup::NodeId;
@@ -1833,15 +1821,8 @@ fn extract_stub_collections(
     inflow_lags.extend(spec.entity_counts.hydro_ids.iter().enumerate().flat_map(
         |(h, &hydro_id)| {
             (0..state.max_par_order).map(move |l| {
-                let inflow_m3s = match state.inflow_form {
-                    InflowForm::Logical => {
-                        view.primal[state.lag_incoming_col(l, HydroSys::new(h)).get()]
-                    }
-                    InflowForm::Compact => {
-                        let lag_dim = state.lag_state_dim(l, HydroSys::new(h)).get();
-                        spec.incoming_lags[lag_dim - state.state_dim_lag_range().start]
-                    }
-                };
+                let lag_dim = state.lag_state_dim(l, HydroSys::new(h)).get();
+                let inflow_m3s = spec.incoming_lags[lag_dim - state.state_dim_lag_range().start];
                 #[allow(clippy::cast_possible_truncation)]
                 SimulationInflowLagResult {
                     stage_id,

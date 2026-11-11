@@ -12,8 +12,6 @@ use crate::{
     lp::builder::InflowCoupling,
 };
 
-use super::SuccessorChild;
-
 fn unscaled_reduced_cost(view: &SolutionView<'_>, col_scale: &[f64], col: InCol) -> f64 {
     // Divided, not multiplied (module-level contract). Empty col_scale ⇒ raw rc.
     let col = col.get();
@@ -23,59 +21,6 @@ fn unscaled_reduced_cost(view: &SolutionView<'_>, col_scale: &[f64], col: InCol)
     } else {
         rc / col_scale[col]
     }
-}
-
-fn fill_state_duals(
-    view: &SolutionView<'_>,
-    cut_state: &CutStateProjection,
-    col_scale: &[f64],
-    state_duals: &mut Vec<f64>,
-) {
-    assert_eq!(
-        cut_state.columned_len(),
-        cut_state.n_slots(),
-        "dual extraction needs an LP column for every cut slot"
-    );
-    state_duals.clear();
-    state_duals.extend(
-        cut_state
-            .incoming_pairs()
-            .map(|(_, col)| unscaled_reduced_cost(view, col_scale, col)),
-    );
-}
-
-/// Extract state and cut duals from the live solver view into pre-warmed scratch
-/// buffers, returning the LP objective. `state_duals` holds the unscaled
-/// incoming-state reduced costs of the stage's enabled cut-state dimensions (the
-/// module-level `col_scale`-division contract), iterated over `cut_state`; a
-/// disabled dimension's reduced cost is computed in the LP but not extracted.
-/// `cut_dual_slots` holds one (pool slot, raw cut-row dual) pair per active cut
-/// row when binding is tracked (`succ.cut_activity_tolerance` is `Some`), and is
-/// left empty otherwise. A zero dual (either sign) yields no pair.
-pub(crate) fn extract_duals_from_view(
-    view: &SolutionView<'_>,
-    cut_state: &CutStateProjection,
-    col_scale: &[f64],
-    succ: &SuccessorChild<'_>,
-    state_duals: &mut Vec<f64>,
-    cut_dual_slots: &mut Vec<(usize, f64)>,
-) -> f64 {
-    fill_state_duals(view, cut_state, col_scale, state_duals);
-
-    cut_dual_slots.clear();
-    if succ.cut_activity_tolerance.is_some() {
-        let n = succ
-            .num_cuts_at_successor
-            .min(succ.successor_active_slots.len());
-        push_nonzero_cut_row_duals(
-            view.dual,
-            succ.template_num_rows,
-            &succ.successor_active_slots[..n],
-            cut_dual_slots,
-        );
-    }
-
-    view.objective
 }
 
 /// Appends `(slot, y)` for each cut row `k` whose dual `y = dual[first_cut_row + k]`
@@ -95,8 +40,8 @@ fn push_nonzero_cut_row_duals(
     }
 }
 
-/// What the folded extraction reads of one solved compact opening.
-pub(crate) struct FoldedExtraction<'a> {
+/// What the extraction reads of one solved opening.
+pub(crate) struct DualExtractionSpec<'a> {
     /// Projection the opening's state duals are read in.
     pub(crate) extracted: &'a CutStateProjection,
     /// The loaded compact template's column scales; empty when unscaled.
@@ -112,8 +57,8 @@ pub(crate) struct FoldedExtraction<'a> {
     pub(crate) read_cut_duals: bool,
 }
 
-/// The per-worker buffers the folded extraction fills.
-pub(crate) struct FoldedDuals<'a> {
+/// The per-worker buffers the extraction fills.
+pub(crate) struct OpeningDualBuffers<'a> {
     pub(crate) state_duals: &'a mut Vec<f64>,
     pub(crate) coupled_duals: &'a mut Vec<f64>,
     pub(crate) cut_dual_slots: &'a mut Vec<(usize, f64)>,
@@ -128,16 +73,16 @@ pub(crate) struct FoldedDuals<'a> {
 /// ascending slot order, and is left empty unless `read_cut_duals`. Set
 /// `read_cut_duals` when the resident pool's projection carries lag slots or
 /// binding activity is tracked.
-pub(crate) fn extract_folded_duals(
+pub(crate) fn extract_opening_duals(
     view: &SolutionView<'_>,
-    spec: &FoldedExtraction<'_>,
-    out: &mut FoldedDuals<'_>,
+    spec: &DualExtractionSpec<'_>,
+    out: &mut OpeningDualBuffers<'_>,
 ) -> f64 {
     let extracted = spec.extracted;
     debug_assert_eq!(
         extracted.columned_len(),
         extracted.n_slots() - extracted.lag_point().full().len(),
-        "folded extraction reads a projection whose lag slots have no LP column"
+        "extraction reads a projection whose lag slots have no LP column"
     );
     out.state_duals.clear();
     out.state_duals.extend(
@@ -204,33 +149,14 @@ pub(crate) fn fill_resident_cut_dual_slots(
     }));
 }
 
-/// State-dual half of [`extract_duals_from_view`] for the lazy-solve path: fills
-/// `state_duals` with the unscaled incoming-state reduced costs of the enabled
-/// cut-state dimensions, iterated over `cut_state`.
-///
-/// Unlike [`extract_duals_from_view`] it does NOT read cut-row duals — under
-/// lazy-solve the resident cut rows are an insertion-order subset, so the
-/// cut-row→slot mapping does not apply ([`fill_resident_cut_dual_slots`] reads
-/// them through the row map).
-pub(crate) fn extract_state_duals_only(
-    view: &SolutionView<'_>,
-    cut_state: &CutStateProjection,
-    col_scale: &[f64],
-    state_duals: &mut Vec<f64>,
-) -> f64 {
-    fill_state_duals(view, cut_state, col_scale, state_duals);
-
-    view.objective
-}
-
 #[cfg(test)]
 #[allow(clippy::cast_precision_loss)]
 mod tests {
     use novomodelo_solver::{ActiveSolver, SolutionView, SolverInterface, StageTemplate};
 
     use super::{
-        FoldedDuals, FoldedExtraction, extract_folded_duals, extract_state_duals_only,
-        fill_resident_cut_dual_slots, fill_state_duals, push_nonzero_cut_row_duals,
+        DualExtractionSpec, OpeningDualBuffers, extract_opening_duals,
+        fill_resident_cut_dual_slots, push_nonzero_cut_row_duals,
     };
     use crate::cut::{CutPool, CutRowMap};
     use crate::indexer::{CutSlot, CutStateProjection, HydroSys, StateDim, StateSpace};
@@ -282,7 +208,7 @@ mod tests {
         buckets: Vec<(HydroSys, usize)>,
     ) -> StateSpace {
         let lag_counts = vec![max_par_order; hydro_count];
-        StateSpace::new_compact(
+        StateSpace::new(
             hydro_count,
             max_par_order,
             buckets,
@@ -315,11 +241,11 @@ mod tests {
     }
 
     impl Buffers {
-        fn extract(&mut self, view: &SolutionView<'_>, spec: &FoldedExtraction<'_>) -> f64 {
-            extract_folded_duals(
+        fn extract(&mut self, view: &SolutionView<'_>, spec: &DualExtractionSpec<'_>) -> f64 {
+            extract_opening_duals(
                 view,
                 spec,
-                &mut FoldedDuals {
+                &mut OpeningDualBuffers {
                     state_duals: &mut self.state_duals,
                     coupled_duals: &mut self.coupled_duals,
                     cut_dual_slots: &mut self.cut_dual_slots,
@@ -337,41 +263,30 @@ mod tests {
         assert_eq!(cut_state.n_slots(), 3);
 
         let rc: Vec<f64> = (0..=global.theta).map(|c| c as f64).collect();
-        let view = indexed_view(&rc);
-        let mut state_duals = Vec::new();
+        let coupling = empty_coupling(3);
+        let mut buffers = Buffers::default();
 
-        let _ = extract_state_duals_only(&view, &cut_state, &[], &mut state_duals);
+        buffers.extract(
+            &indexed_view(&rc),
+            &DualExtractionSpec {
+                extracted: &cut_state,
+                col_scale: &[],
+                row_scale: &[],
+                coupling: &coupling,
+                first_cut_row: 0,
+                cut_row_slots: &[],
+                read_cut_duals: false,
+            },
+        );
 
-        assert_eq!(state_duals.len(), 3);
-        for (j, &dual) in state_duals.iter().enumerate() {
+        assert_eq!(buffers.state_duals.len(), 3);
+        for (j, &dual) in buffers.state_duals.iter().enumerate() {
             assert_eq!(
                 dual,
                 global.state_to_lp_incoming_column(StateDim::new(j)).get() as f64,
                 "storage slot {j} reads its storage_in column reduced cost"
             );
         }
-    }
-
-    /// All-enabled `CutStateProjection` reproduces the pre-change global-loop result:
-    /// `n_slots()` equals the global `n_state` and every slot reads the same LP
-    /// column the global `StateSpace` resolver would.
-    #[test]
-    fn all_enabled_reproduces_global_loop_result() {
-        let global = state_layout(3, 2);
-        let cut_state = CutStateProjection::new(&global, ALL_ENABLED);
-        assert_eq!(cut_state.n_slots(), global.n_state);
-
-        let rc: Vec<f64> = (0..=global.theta).map(|c| c as f64).collect();
-        let view = indexed_view(&rc);
-
-        let mut via_cut_state = Vec::new();
-        let _ = extract_state_duals_only(&view, &cut_state, &[], &mut via_cut_state);
-
-        let global_loop: Vec<f64> = (0..global.n_state)
-            .map(|j| rc[global.state_to_lp_incoming_column(StateDim::new(j)).get()])
-            .collect();
-
-        assert_eq!(via_cut_state, global_loop);
     }
 
     /// Slots 3 then 1 are resident, so the row map's order (3, 1) is not slot
@@ -447,7 +362,7 @@ mod tests {
 
         buffers.extract(
             &indexed_view(&rc),
-            &FoldedExtraction {
+            &DualExtractionSpec {
                 extracted: &projection,
                 col_scale: &col_scale,
                 row_scale: &[],
@@ -475,17 +390,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "dual extraction needs an LP column for every cut slot")]
-    fn logical_extraction_refuses_a_projection_with_lag_slots_without_columns() {
-        let global = compact_layout(2, 2, Vec::new());
-        let projection = CutStateProjection::new(&global, ALL_ENABLED);
-        assert!(projection.columned_len() < projection.n_slots());
-        let rc = vec![0.0; global.theta + 1];
-
-        fill_state_duals(&indexed_view(&rc), &projection, &[], &mut Vec::new());
-    }
-
-    #[test]
     fn folded_coupled_duals_sum_unscaled_base_row_duals_in_entry_order() {
         let global = compact_layout(2, 1, Vec::new());
         let projection = CutStateProjection::new(&global, STORAGE_ONLY);
@@ -500,7 +404,7 @@ mod tests {
         let extract = |buffers: &mut Buffers, row_scale: &[f64]| {
             buffers.extract(
                 &view_with_duals(&rc, &dual),
-                &FoldedExtraction {
+                &DualExtractionSpec {
                     extracted: &projection,
                     col_scale: &[],
                     row_scale,
@@ -540,7 +444,7 @@ mod tests {
 
         let q = buffers.extract(
             &view_with_duals(&rc, &dual),
-            &FoldedExtraction {
+            &DualExtractionSpec {
                 extracted: &projection,
                 col_scale: &[],
                 row_scale: &[],
@@ -569,7 +473,7 @@ mod tests {
 
         buffers.extract(
             &view_with_duals(&rc, &dual),
-            &FoldedExtraction {
+            &DualExtractionSpec {
                 extracted: &projection,
                 col_scale: &[],
                 row_scale: &[],
@@ -597,7 +501,7 @@ mod tests {
         let extract = |buffers: &mut Buffers| {
             buffers.extract(
                 &view_with_duals(&rc, &dual),
-                &FoldedExtraction {
+                &DualExtractionSpec {
                     extracted: &projection,
                     col_scale: &[],
                     row_scale: &[],
@@ -711,7 +615,7 @@ mod tests {
 
             let q = buffers.extract(
                 &view,
-                &FoldedExtraction {
+                &DualExtractionSpec {
                     extracted: &projection,
                     col_scale: &[],
                     row_scale: &[],

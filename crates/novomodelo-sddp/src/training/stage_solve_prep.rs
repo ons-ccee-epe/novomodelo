@@ -1,5 +1,5 @@
-//! Shared stage-LP solve-preparation pipeline (`pin → open: row_patches → ncs_patch →
-//! inflow_slack_patch`): the single owner the forward pass, backward pass, simulation
+//! Shared stage-LP solve-preparation pipeline (pin and bracket, then patch the
+//! opening): the single owner the forward pass, backward pass, simulation
 //! pipeline, and lower-bound evaluation all route through, so every solve site
 //! patches the LP identically (the "patch NCS identically" contract, D15).
 //!
@@ -18,10 +18,10 @@ use crate::{
         rhs::{cut_brackets_into, cut_rhs_from_noise_terms_into, cut_rhs_into},
     },
     lp::builder::{PatchBuffer, StateBox},
-    lp::indexer::{BlockGrid, CutStateProjection, InflowForm},
+    lp::indexer::{BlockGrid, CutStateProjection},
     noise::{
-        apply_inflow_slack_col_bounds, apply_ncs_col_bounds, transform_inflow_noise,
-        transform_inflow_noise_folded, transform_load_noise, transform_ncs_noise,
+        apply_inflow_slack_col_bounds, apply_ncs_col_bounds, realize_inflow, transform_load_noise,
+        transform_ncs_noise,
     },
     setup::node_graph::StageIdx,
     solve::StageOpeningSolver,
@@ -34,23 +34,9 @@ use crate::{
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct StateSource<'a>(pub &'a [f64]);
 
-/// Per-call variation points for [`StageSolvePrep::run`] — the divergences
-/// among the four solve sites.
-///
-/// Neither the NCS availability patch nor the inflow-slack bound patch is a
-/// variation point: [`StageSolvePrep::run`] gates them internally, on
-/// `n_stochastic_ncs() > 0` and on `inflow_method.truncates()`, the same gates
-/// every solve site applies.
-pub(crate) struct StageSolvePrepParams<'a> {
-    /// Which slice this solve pins as incoming state.
-    pub state_source: StateSource<'a>,
-    /// This solve's realized noise draw, laid out `[hydro | load-bus | NCS]`.
-    pub raw_noise: &'a [f64],
-}
-
-/// Inputs of the single-solve folded prep: the pinned state, this solve's raw
+/// Inputs of the single-solve prep: the pinned state, this solve's raw
 /// noise, the resident pool and its projection, and the opening solver.
-pub(crate) struct FoldedSolvePrepParams<'a> {
+pub(crate) struct SingleSolvePrepParams<'a> {
     pub(crate) state_source: StateSource<'a>,
     pub(crate) raw_noise: &'a [f64],
     pub(crate) pool: &'a CutPool,
@@ -80,7 +66,7 @@ pub(crate) enum NoiseTermSource<'a> {
 }
 
 /// The cut rows of the loaded LP whose brackets the pin phase computes.
-pub(crate) struct FoldedCutRows<'a> {
+pub(crate) struct LoadedCutRows<'a> {
     /// The resident pool the cut rows come from.
     pub(crate) pool: &'a CutPool,
     /// That pool's projection, the owner of the lag point B reads.
@@ -95,31 +81,6 @@ pub(crate) struct FoldedCutRows<'a> {
 pub(crate) struct StageSolvePrep;
 
 impl StageSolvePrep {
-    /// Executes `pin → open: row_patches → ncs_patch → inflow_slack_patch` over
-    /// caller-owned `&mut` scratch: allocates nothing.
-    pub(crate) fn run<S>(
-        solver: &mut S,
-        patch_buf: &mut PatchBuffer,
-        scratch: &mut ScratchBuffers,
-        ctx: &StageContext<'_>,
-        training_ctx: &TrainingContext<'_>,
-        stage: StageIdx,
-        params: &StageSolvePrepParams<'_>,
-    ) where
-        S: SolverInterface,
-    {
-        Self::run_with_producer_box(
-            solver,
-            patch_buf,
-            scratch,
-            ctx,
-            training_ctx,
-            stage,
-            params,
-            Self::producer_box(ctx, stage),
-        );
-    }
-
     /// The previous stage's admissible box, which bounds the pinned incoming state;
     /// `None` at stage 0, whose incoming state is the study's initial condition.
     fn producer_box<'a>(ctx: &'a StageContext<'_>, stage: StageIdx) -> Option<&'a StateBox> {
@@ -130,63 +91,6 @@ impl StageSolvePrep {
         }
     }
 
-    /// Test-support-only variant of [`run`](Self::run) for a deliberate
-    /// counterfactual pin that lies outside its producer's admissible box on
-    /// purpose (an LP-sensitivity probe): same pipeline, but never checks the
-    /// pinned state against a producer box.
-    #[cfg(any(test, feature = "test-support"))]
-    pub(crate) fn run_ignoring_producer_box<S>(
-        solver: &mut S,
-        patch_buf: &mut PatchBuffer,
-        scratch: &mut ScratchBuffers,
-        ctx: &StageContext<'_>,
-        training_ctx: &TrainingContext<'_>,
-        stage: StageIdx,
-        params: &StageSolvePrepParams<'_>,
-    ) where
-        S: SolverInterface,
-    {
-        Self::run_with_producer_box(
-            solver,
-            patch_buf,
-            scratch,
-            ctx,
-            training_ctx,
-            stage,
-            params,
-            None,
-        );
-    }
-
-    // Rationale (too_many_arguments): solver, patch_buf, and scratch are three
-    // disjoint mutable borrows of the workspace that must stay separate
-    // parameters — a bundling struct would reborrow the whole workspace and
-    // defeat the split; ctx/training_ctx/params are distinct immutable contexts.
-    #[allow(clippy::too_many_arguments)]
-    fn run_with_producer_box<S>(
-        solver: &mut S,
-        patch_buf: &mut PatchBuffer,
-        scratch: &mut ScratchBuffers,
-        ctx: &StageContext<'_>,
-        training_ctx: &TrainingContext<'_>,
-        stage: StageIdx,
-        params: &StageSolvePrepParams<'_>,
-        producer_box: Option<&StateBox>,
-    ) where
-        S: SolverInterface,
-    {
-        Self::pin(
-            solver,
-            patch_buf,
-            ctx,
-            training_ctx,
-            stage,
-            params.state_source.0,
-            producer_box,
-        );
-        Self::open(solver, patch_buf, scratch, ctx, training_ctx, stage, params);
-    }
-
     /// Pins the incoming state on the loaded LP; runs once per loaded LP and state.
     fn pin<S>(
         solver: &mut S,
@@ -195,7 +99,6 @@ impl StageSolvePrep {
         training_ctx: &TrainingContext<'_>,
         stage: StageIdx,
         pinned_state: &[f64],
-        producer_box: Option<&StateBox>,
     ) where
         S: SolverInterface,
     {
@@ -203,7 +106,7 @@ impl StageSolvePrep {
             training_ctx.state,
             pinned_state,
             &ctx.template(stage).col_scale,
-            producer_box,
+            Self::producer_box(ctx, stage),
         );
         let cp = patch_buf.active_state_col_patch_count();
         solver.set_col_bounds(
@@ -213,11 +116,11 @@ impl StageSolvePrep {
         );
     }
 
-    /// Folded pin phase: runs once per unit (a trial point on a loaded LP). Pins
+    /// Pin phase: runs once per unit (a trial point on a loaded LP). Pins
     /// the columned state regions, then computes p and the cut-row brackets B from
     /// the raw `trial_state`, never from the scaled pin. Allocates nothing
     /// once the scratch buffers are sized.
-    pub(crate) fn pin_folded<S>(
+    pub(crate) fn pin_and_bracket<S>(
         solver: &mut S,
         patch_buf: &mut PatchBuffer,
         scratch: &mut ScratchBuffers,
@@ -225,25 +128,12 @@ impl StageSolvePrep {
         training_ctx: &TrainingContext<'_>,
         stage: StageIdx,
         trial_state: StateSource<'_>,
-        cut_rows: &FoldedCutRows<'_>,
+        cut_rows: &LoadedCutRows<'_>,
         source: BracketSource<'_>,
     ) where
         S: SolverInterface,
     {
-        debug_assert_eq!(
-            training_ctx.state.inflow_form,
-            InflowForm::Compact,
-            "the folded pin phase runs on a compact layout only"
-        );
-        Self::pin(
-            solver,
-            patch_buf,
-            ctx,
-            training_ctx,
-            stage,
-            trial_state.0,
-            Self::producer_box(ctx, stage),
-        );
+        Self::pin(solver, patch_buf, ctx, training_ctx, stage, trial_state.0);
 
         let incoming_lags = &trial_state.0[training_ctx.state.state_dim_lag_range()];
         let par_lp = training_ctx.stochastic.par();
@@ -286,50 +176,7 @@ impl StageSolvePrep {
         );
     }
 
-    /// Patches this solve's noise-dependent rows and column bounds; runs once per solve.
-    fn open<S>(
-        solver: &mut S,
-        patch_buf: &mut PatchBuffer,
-        scratch: &mut ScratchBuffers,
-        ctx: &StageContext<'_>,
-        training_ctx: &TrainingContext<'_>,
-        stage: StageIdx,
-        params: &StageSolvePrepParams<'_>,
-    ) where
-        S: SolverInterface,
-    {
-        transform_inflow_noise(
-            params.raw_noise,
-            stage,
-            params.state_source.0,
-            training_ctx,
-            scratch,
-        );
-        Self::patch_load_rows(
-            patch_buf,
-            scratch,
-            ctx,
-            training_ctx,
-            stage,
-            params.raw_noise,
-        );
-        patch_buf.fill_z_inflow_patches(
-            training_ctx.state,
-            &scratch.z_inflow_rhs_buf,
-            &ctx.template(stage).row_scale,
-        );
-
-        let pc = patch_buf.forward_patch_count();
-        solver.set_row_bounds(
-            &patch_buf.indices[..pc],
-            &patch_buf.lower[..pc],
-            &patch_buf.upper[..pc],
-        );
-
-        Self::apply_noise_col_bounds(solver, scratch, ctx, training_ctx, stage, params.raw_noise);
-    }
-
-    /// Folded opening phase: runs once per solve, after the pin phase of the
+    /// Opening phase: runs once per solve, after the pin phase of the
     /// unit. Pushes the shifted and load rows in one set, then the NCS and
     /// inflow-slack column bounds, then fills every cut row's `B + W` and hands
     /// it to `opening_solver`, which pushes it as one range (frozen) or leaves
@@ -340,7 +187,7 @@ impl StageSolvePrep {
     // parameters — a bundling struct would reborrow the whole workspace and
     // defeat the split; the rest are distinct immutable inputs.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn open_folded<S>(
+    pub(crate) fn patch_opening<S>(
         solver: &mut S,
         patch_buf: &mut PatchBuffer,
         scratch: &mut ScratchBuffers,
@@ -348,22 +195,17 @@ impl StageSolvePrep {
         training_ctx: &TrainingContext<'_>,
         stage: StageIdx,
         raw_noise: &[f64],
-        cut_rows: &FoldedCutRows<'_>,
+        cut_rows: &LoadedCutRows<'_>,
         noise: NoiseTermSource<'_>,
         opening_solver: &StageOpeningSolver,
     ) where
         S: SolverInterface,
     {
-        debug_assert_eq!(
-            training_ctx.state.inflow_form,
-            InflowForm::Compact,
-            "the folded opening phase runs on a compact layout only"
-        );
         let stage_noise_term = match noise {
             NoiseTermSource::OnTheFly => None,
             NoiseTermSource::Stage { noise_term, .. } => Some(noise_term),
         };
-        transform_inflow_noise_folded(raw_noise, stage, training_ctx, scratch, stage_noise_term);
+        realize_inflow(raw_noise, stage, training_ctx, scratch, stage_noise_term);
         Self::patch_load_rows(patch_buf, scratch, ctx, training_ctx, stage, raw_noise);
         patch_buf.fill_inflow_shift_patches(
             &ctx.inflow_coupling[stage.0],
@@ -411,18 +253,18 @@ impl StageSolvePrep {
         opening_solver.push_cut_rhs(solver, cut_rows.first_row, &scratch.cut_rhs_buf);
     }
 
-    /// The folded prep of a site that solves one opening per loaded LP and
+    /// The prep of a site that solves one opening per loaded LP and
     /// pinned state: the pin phase, then the opening phase through
     /// `params.opening_solver`. `slots` are the pool slots of the loaded LP's
     /// cut rows in row order. Allocates nothing once the slot buffer has grown.
-    pub(crate) fn prepare_folded_single<S>(
+    pub(crate) fn prepare_single<S>(
         solver: &mut S,
         patch_buf: &mut PatchBuffer,
         scratch: &mut ScratchBuffers,
         ctx: &StageContext<'_>,
         training_ctx: &TrainingContext<'_>,
         stage: StageIdx,
-        params: &FoldedSolvePrepParams<'_>,
+        params: &SingleSolvePrepParams<'_>,
         slots: impl Iterator<Item = usize>,
     ) where
         S: SolverInterface,
@@ -430,13 +272,13 @@ impl StageSolvePrep {
         let mut slot_buf = std::mem::take(&mut scratch.cut_slots_buf);
         slot_buf.clear();
         slot_buf.extend(slots);
-        let rows = FoldedCutRows {
+        let rows = LoadedCutRows {
             pool: params.pool,
             projection: params.projection,
             slots: &slot_buf,
             first_row: ctx.template(stage).num_rows,
         };
-        Self::pin_folded(
+        Self::pin_and_bracket(
             solver,
             patch_buf,
             scratch,
@@ -447,7 +289,7 @@ impl StageSolvePrep {
             &rows,
             BracketSource::Computed,
         );
-        Self::open_folded(
+        Self::patch_opening(
             solver,
             patch_buf,
             scratch,

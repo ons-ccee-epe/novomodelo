@@ -50,6 +50,7 @@ use novomodelo_io::{
 use novomodelo_stochastic::par::precompute::PrecomputedPar;
 use novomodelo_stochastic::{
     ClassSchemes, OpeningTreeInputs, StochasticContext, build_stochastic_context,
+    evaluate_par_conditional_mean_batch,
 };
 
 use crate::BoundaryStateRequirements;
@@ -70,7 +71,6 @@ use crate::hydro_models::{
 };
 use crate::lead_time::{AnticipatedResolution, DeliveryAxis, LeadTime};
 use crate::lower_bound::{LbEvalScratch, LbEvalScratchBundle, evaluate_lower_bound};
-#[cfg(test)]
 use crate::lp::builder::inflow_coupling::InflowCouplingSink;
 use crate::lp::builder::{
     FactGroups, InflowCoupling, PatchBuffer, StageGeometry, StageLayout, StageTemplates, StateBox,
@@ -78,37 +78,33 @@ use crate::lp::builder::{
 };
 use crate::lp::indexer::{
     AnticipatedPlants, BlockRowFamily, ChainRuleSlots, CutStateProjection, EntityPositions,
-    HydroCellIndex, HydroSys, InflowForm, REGION_ORDER, StateDim, StateSpace, StudyDimensions,
+    HydroCellIndex, HydroSys, REGION_ORDER, StateDim, StateSpace, StudyDimensions,
 };
 use crate::noise::{
-    DownstreamAccumState, LagAccumState, apply_inflow_slack_col_bounds, transform_inflow_noise,
+    DownstreamAccumState, LagAccumState, apply_inflow_slack_col_bounds, realize_inflow,
 };
 use crate::policy::policy_load::{
     FullFcf, PolicyLoadProof, PolicyStageManifest, validate_policy_load,
 };
 use crate::risk_measure::BackwardOutcome;
 use crate::setup::node_graph::{
-    NodeGraph, NodeId, NodePos, OpeningSource, StageIdx, build_node_graph,
-    enumerated_node_visit_counts, enumerated_scenario_count,
+    NodeGraph, NodePos, OpeningSource, StageIdx, build_node_graph, enumerated_node_visit_counts,
+    enumerated_scenario_count,
 };
 use crate::setup::unresolved_boundary_requirements;
 #[cfg(test)]
 use crate::setup::{ResolvedStateLayout, resolve_state_layout};
 use crate::solve::StageOpeningSolver;
-use crate::solve::stage_solve::{StageInputs, assemble_outgoing_state, run_stage_solve};
-use crate::solver_stats::SolverStatsDelta;
+use crate::solve::stage_solve::assemble_outgoing_state;
 #[cfg(test)]
 use crate::time_value::DeliveryCalendar;
 use crate::time_value::{PostStudyResolved, TimeValue};
 use crate::training::backward::{
-    FoldedDuals, FoldedExtraction, extract_folded_duals, extract_state_duals_only,
-    fill_external_opening_noise, write_opening_outcome,
+    DualExtractionSpec, OpeningDualBuffers, extract_opening_duals, fill_external_opening_noise,
 };
-use crate::training::stage_solve_prep::{
-    FoldedSolvePrepParams, StageSolvePrep, StageSolvePrepParams, StateSource,
-};
+use crate::training::stage_solve_prep::{SingleSolvePrepParams, StageSolvePrep, StateSource};
 use crate::trajectory::TrajectoryRecord;
-use crate::workspace::{CapturedBasis, ScratchBuffers, SolverWorkspace, WorkspaceSizing};
+use crate::workspace::{ScratchBuffers, SolverWorkspace, WorkspaceSizing};
 use novomodelo_core::scenario::{ExternalLoadRow, ExternalScenarioRow};
 use novomodelo_solver::{
     ActiveSolver, Basis, BasisStatus, LpSolution, RowBatch, SolutionView, SolverError,
@@ -381,15 +377,8 @@ pub(crate) fn resolved_layout_for(
 ) -> (TransitBucketTopology, ResolvedStateLayout) {
     let calendar = DeliveryCalendar::from_system(system);
     let topology = build_transit_bucket_topology(system, &calendar, false);
-    let layout = resolve_state_layout(
-        system,
-        &calendar,
-        par_lp,
-        &topology,
-        None,
-        InflowForm::Logical,
-    )
-    .expect("resolved_layout_for: valid test fixture");
+    let layout = resolve_state_layout(system, &calendar, par_lp, &topology, None)
+        .expect("resolved_layout_for: valid test fixture");
     (topology, layout)
 }
 
@@ -410,7 +399,6 @@ pub(crate) fn bucket_seed_state(system: &System, topology: &TransitBucketTopolog
         topology,
         Vec::new(),
         AnticipatedResolution::default(),
-        InflowForm::Logical,
     )
 }
 
@@ -899,19 +887,22 @@ pub fn hydro_only_bus_geometry() -> StageGeometry {
     )
 }
 
+const HYDRO_ONLY_BUS_NUM_COLS: usize = 14;
+const HYDRO_ONLY_BUS_NUM_ROWS: usize = 6;
+const HYDRO_ONLY_BUS_THETA_COL: usize = 2;
+
 /// Stage template matching [`hydro_only_bus_geometry`]'s N=1 hydro, 1 bus,
 /// 1-block layout, so per-block hydro/load extraction addresses real columns
 /// and rows instead of an empty family. A mock solver never reads the
 /// coefficients, so every column past the state region (`storage_out`(0),
-/// `z_inflow`(1), `storage_in`(2), `theta`(3)) is free (zero cost, zero NZ).
+/// `storage_in`(1), `theta`(2)) is free (zero cost, zero NZ).
 #[must_use]
 pub fn hydro_only_bus_template() -> StageTemplate {
-    let num_cols = 15;
-    let num_rows = 7;
-    let mut col_lower = vec![0.0; num_cols];
-    col_lower[1] = f64::NEG_INFINITY;
+    let num_cols = HYDRO_ONLY_BUS_NUM_COLS;
+    let num_rows = HYDRO_ONLY_BUS_NUM_ROWS;
+    let col_lower = vec![0.0; num_cols];
     let mut objective = vec![0.0; num_cols];
-    objective[3] = 1.0;
+    objective[HYDRO_ONLY_BUS_THETA_COL] = 1.0;
     StageTemplate {
         num_cols,
         num_rows,
@@ -930,16 +921,16 @@ pub fn hydro_only_bus_template() -> StageTemplate {
     }
 }
 
-/// Fixed [`LpSolution`] for [`hydro_only_bus_template`]'s layout; theta at col 3.
+/// Fixed [`LpSolution`] for [`hydro_only_bus_template`]'s layout.
 #[must_use]
 pub fn hydro_only_bus_solution(objective: f64, theta_val: f64) -> LpSolution {
-    let num_cols = 15;
+    let num_cols = HYDRO_ONLY_BUS_NUM_COLS;
     let mut primal = vec![0.0_f64; num_cols];
-    primal[3] = theta_val;
+    primal[HYDRO_ONLY_BUS_THETA_COL] = theta_val;
     LpSolution {
         objective,
         primal,
-        dual: vec![0.0_f64; 7],
+        dual: vec![0.0_f64; HYDRO_ONLY_BUS_NUM_ROWS],
         reduced_costs: vec![0.0_f64; num_cols],
         iterations: 0,
         solve_time_seconds: 0.0,
@@ -954,6 +945,7 @@ pub struct StageContextFixture<'a> {
     state_boxes: &'a [StateBox],
     geometry_per_stage: &'a [StageGeometry],
     inflow_coupling: &'a [InflowCoupling],
+    entry_free_inflow_coupling: Vec<InflowCoupling>,
     cost_scale_factor: f64,
     load_bus_indices: &'a [usize],
     ncs_stochastic_dense_col: &'a [usize],
@@ -990,6 +982,7 @@ impl<'a> StageContextFixture<'a> {
             state_boxes,
             geometry_per_stage,
             inflow_coupling: &[],
+            entry_free_inflow_coupling: Vec::new(),
             cost_scale_factor: 1_000_000.0,
             load_bus_indices: &[],
             ncs_stochastic_dense_col: &[],
@@ -1032,6 +1025,16 @@ impl<'a> StageContextFixture<'a> {
     #[must_use]
     pub fn inflow_coupling(mut self, v: &'a [InflowCoupling]) -> Self {
         self.inflow_coupling = v;
+        self.entry_free_inflow_coupling.clear();
+        self
+    }
+
+    /// Sets [`StageContext::inflow_coupling`] to one coupling per stage over
+    /// `n_hydros` hydros with no entries, so no row is shifted by the inflow.
+    #[must_use]
+    pub fn without_inflow_entries(mut self, n_hydros: usize) -> Self {
+        self.entry_free_inflow_coupling =
+            vec![inflow_coupling_with_entries(n_hydros, &[]); self.templates.len()];
         self
     }
 
@@ -1119,7 +1122,11 @@ impl<'a> StageContextFixture<'a> {
             templates: self.templates,
             state_boxes: self.state_boxes,
             geometry_per_stage: self.geometry_per_stage,
-            inflow_coupling: self.inflow_coupling,
+            inflow_coupling: if self.entry_free_inflow_coupling.is_empty() {
+                self.inflow_coupling
+            } else {
+                &self.entry_free_inflow_coupling
+            },
             cost_scale_factor: self.cost_scale_factor,
             load_bus_indices: self.load_bus_indices,
             ncs_stochastic_dense_col: self.ncs_stochastic_dense_col,
@@ -1138,11 +1145,8 @@ impl<'a> StageContextFixture<'a> {
 
 /// An [`InflowCoupling`] over `n_hydros` with each `(hydro, row)` recorded at
 /// coefficient `-1.0`, over zero row bounds reaching the largest row.
-#[cfg(test)]
-pub(crate) fn inflow_coupling_with_entries(
-    n_hydros: usize,
-    entries: &[(usize, usize)],
-) -> InflowCoupling {
+#[must_use]
+pub fn inflow_coupling_with_entries(n_hydros: usize, entries: &[(usize, usize)]) -> InflowCoupling {
     let mut sink = InflowCouplingSink::new(n_hydros);
     for &(hydro, row) in entries {
         sink.record(HydroSys::new(hydro), row, -1.0);
@@ -1294,27 +1298,6 @@ pub fn state_layout_with_transit_buckets_and_resolution(
         anticipated_resolution,
         &effective_lag_count,
     )
-}
-
-/// Per-hydro inflow `extract_hydros`/`extract_hydro_bus_generation` read from
-/// `StageExtractionSpec::inflow_m3s_per_hydro`: the lag-0 incoming column when
-/// `state` carries PAR lags, `0.0` otherwise.
-#[cfg(test)]
-#[must_use]
-pub(crate) fn inflow_m3s_per_hydro_from_primal(
-    state: &StateSpace,
-    primal: &[f64],
-    n_hydros: usize,
-) -> Vec<f64> {
-    (0..n_hydros)
-        .map(|h| {
-            if state.max_par_order > 0 {
-                primal[state.lag_incoming_col(0, HydroSys::new(h)).get()]
-            } else {
-                0.0
-            }
-        })
-        .collect()
 }
 
 /// Bucket-only [`StageTemplate`]: `num_cols` free columns, zero rows.
@@ -1746,61 +1729,6 @@ pub fn anticipated_slot_over(thermal_id: i32, ring_slot: u32, start: i32, end: i
     EntitySlot::anticipated(thermal_id, ring_slot, true).with_interval(start, end)
 }
 
-/// Patch one stage-LP solve exactly as the production backward pass's
-/// `patch_opening_bounds` does (`training/backward/lp_setup.rs`): delegates
-/// verbatim to `StageSolvePrep::run` — no probe-side reimplementation of the
-/// patch pipeline (the z-inflow column's RHS, NCS availability).
-pub fn patch_backward_opening_for_probe<S: SolverInterface + Send>(
-    ws: &mut SolverWorkspace<S>,
-    ctx: &StageContext<'_>,
-    training_ctx: &TrainingContext<'_>,
-    stage: StageIdx,
-    pinned_state: &[f64],
-    raw_noise: &[f64],
-) {
-    let prep_params = StageSolvePrepParams {
-        state_source: StateSource(pinned_state),
-        raw_noise,
-    };
-    StageSolvePrep::run(
-        &mut ws.solver,
-        &mut ws.patch_buf,
-        &mut ws.scratch,
-        ctx,
-        training_ctx,
-        stage,
-        &prep_params,
-    );
-}
-
-/// Variant of [`patch_backward_opening_for_probe`] for a deliberate
-/// counterfactual pin that lies outside its producer's admissible box on
-/// purpose (an LP-sensitivity probe measuring the response to a value the
-/// seam would never itself produce): same pipeline, but skips the pin-time
-/// box-membership assert the production path always runs.
-pub fn patch_backward_opening_for_counterfactual_probe<S: SolverInterface + Send>(
-    ws: &mut SolverWorkspace<S>,
-    ctx: &StageContext<'_>,
-    training_ctx: &TrainingContext<'_>,
-    stage: StageIdx,
-    pinned_state: &[f64],
-    raw_noise: &[f64],
-) {
-    let prep_params = StageSolvePrepParams {
-        state_source: StateSource(pinned_state),
-        raw_noise,
-    };
-    StageSolvePrep::run_ignoring_producer_box(
-        &mut ws.solver,
-        &mut ws.patch_buf,
-        &mut ws.scratch,
-        ctx,
-        training_ctx,
-        stage,
-        &prep_params,
-    );
-}
-
 /// Writes the compact cut rows of `slots` of `pool` into `batch`, in list order, active or not.
 pub fn cut_rows_for_slots_into(
     batch: &mut RowBatch,
@@ -1821,8 +1749,8 @@ pub fn cut_rows_for_slots_into(
     );
 }
 
-/// The cut rows of the LP a [`folded_prep_for_probe`] call prepares.
-pub struct FoldedProbeCuts<'a> {
+/// The cut rows of the LP a [`prep_for_probe`] call prepares.
+pub struct ProbeCuts<'a> {
     /// The resident pool the cut rows come from.
     pub pool: &'a CutPool,
     /// The pool's index, which selects its cut-state projection.
@@ -1831,25 +1759,25 @@ pub struct FoldedProbeCuts<'a> {
     pub slots: &'a [usize],
 }
 
-/// Prepare one folded stage-LP solve through its production owner,
-/// [`StageSolvePrep::prepare_folded_single`], with the frozen opening solver.
-pub fn folded_prep_for_probe<S: SolverInterface + Send>(
+/// Prepare one stage-LP solve through its production owner,
+/// [`StageSolvePrep::prepare_single`], with the frozen opening solver.
+pub fn prep_for_probe<S: SolverInterface + Send>(
     ws: &mut SolverWorkspace<S>,
     ctx: &StageContext<'_>,
     training_ctx: &TrainingContext<'_>,
     stage: StageIdx,
     pinned_state: &[f64],
     raw_noise: &[f64],
-    cuts: &FoldedProbeCuts<'_>,
+    cuts: &ProbeCuts<'_>,
 ) {
-    StageSolvePrep::prepare_folded_single(
+    StageSolvePrep::prepare_single(
         &mut ws.solver,
         &mut ws.patch_buf,
         &mut ws.scratch,
         ctx,
         training_ctx,
         stage,
-        &FoldedSolvePrepParams {
+        &SingleSolvePrepParams {
             state_source: StateSource(pinned_state),
             raw_noise,
             pool: cuts.pool,
@@ -1860,8 +1788,56 @@ pub fn folded_prep_for_probe<S: SolverInterface + Send>(
     );
 }
 
-/// One compact opening a [`folded_opening_cut_for_probe`] call solves.
-pub struct FoldedProbeOpening<'a> {
+/// [`prep_for_probe`] for a deliberate counterfactual pin that lies outside its producer's
+/// admissible box on purpose (an LP-sensitivity probe measuring the response to a value the seam
+/// would never itself produce).
+///
+/// The prep runs at `pinned_state` clamped into the box, then the LP-column pin is rewritten at
+/// `pinned_state` itself, so the counterfactual may differ from the clamp on LP-column dimensions
+/// only: the lag region, which has no column, must lie in the box.
+///
+/// # Panics
+///
+/// Panics if `stage` is 0, whose incoming state has no producer box, or in a debug build if the
+/// lag region of `pinned_state` lies outside the box.
+pub fn prep_for_counterfactual_probe<S: SolverInterface + Send>(
+    ws: &mut SolverWorkspace<S>,
+    ctx: &StageContext<'_>,
+    training_ctx: &TrainingContext<'_>,
+    stage: StageIdx,
+    pinned_state: &[f64],
+    raw_noise: &[f64],
+    cuts: &ProbeCuts<'_>,
+) {
+    let state_box = ctx.state_box(StageIdx(stage.0 - 1));
+    let clamped: Vec<f64> = pinned_state
+        .iter()
+        .enumerate()
+        .map(|(j, &v)| v.clamp(state_box.lower[j], state_box.upper[j]))
+        .collect();
+    let lag_range = training_ctx.state.state_dim_lag_range();
+    debug_assert_eq!(
+        clamped[lag_range.clone()],
+        pinned_state[lag_range],
+        "a counterfactual pin must keep the lag region inside the producer box"
+    );
+    prep_for_probe(ws, ctx, training_ctx, stage, &clamped, raw_noise, cuts);
+    ws.patch_buf.fill_col_state_patches(
+        training_ctx.state,
+        pinned_state,
+        &ctx.template(stage).col_scale,
+        None,
+    );
+    let pinned = ws.patch_buf.active_state_col_patch_count();
+    ws.solver.set_col_bounds(
+        &ws.patch_buf.col_indices[..pinned],
+        &ws.patch_buf.col_lower[..pinned],
+        &ws.patch_buf.col_upper[..pinned],
+    );
+}
+
+/// One compact opening a [`opening_cut_for_probe`] call solves.
+pub struct ProbeOpening<'a> {
     /// The solved stage.
     pub stage: StageIdx,
     /// The incoming trial state x̂, one entry per state dimension.
@@ -1869,16 +1845,19 @@ pub struct FoldedProbeOpening<'a> {
     /// The opening's raw noise.
     pub raw_noise: &'a [f64],
     /// The cut rows of the loaded LP.
-    pub cuts: FoldedProbeCuts<'a>,
+    pub cuts: ProbeCuts<'a>,
     /// The index of the pool the new cut joins, which selects the extracted projection.
     pub extracted_pool_id: usize,
+    /// Physical (m³/s) `(lower, upper)` inflow-slack bounds, one entry per slack column, written
+    /// over the prep's before the solve.
+    pub inflow_slack_bounds: Option<(&'a [f64], &'a [f64])>,
 }
 
 /// The cut one compact opening yields, with the solution and duals it is built from.
 ///
 /// `primal`, `dual` and `reduced_costs` are the loaded LP's scaled solution; the other fields
 /// are in unscaled cost units.
-pub struct FoldedProbeCut {
+pub struct ProbeCut {
     /// The opening's objective Q.
     pub objective: f64,
     /// The cut intercept α.
@@ -1899,10 +1878,13 @@ pub struct FoldedProbeCut {
     pub cut_dual_slots: Vec<(usize, f64)>,
     /// The realized inflow ẑ per hydro the prep wrote, in m³/s.
     pub realized_inflow: Vec<f64>,
+    /// The solved inflow-slack primal per hydro, unscaled, in m³/s; empty when the method has no
+    /// slack family.
+    pub inflow_slack: Vec<f64>,
     chain_scratch: ChainRuleScratch,
 }
 
-impl FoldedProbeCut {
+impl ProbeCut {
     /// Empty buffers, with the chain-rule scratch sized for `training_ctx`'s state layout.
     #[must_use]
     pub fn new(training_ctx: &TrainingContext<'_>) -> Self {
@@ -1918,31 +1900,37 @@ impl FoldedProbeCut {
             coupled_duals: Vec::new(),
             cut_dual_slots: Vec::new(),
             realized_inflow: Vec::new(),
+            inflow_slack: Vec::new(),
             chain_scratch: ChainRuleScratch::new(state.hydro_count, state.max_par_order),
         }
     }
 }
 
 /// Solve one compact opening and build its cut through the production extraction and chain
-/// rule, [`extract_folded_duals`] and [`per_opening_cut_into`].
+/// rule, [`extract_opening_duals`] and [`per_opening_cut_into`].
 ///
 /// The caller loads the compact template and appends the rows of `opening.cuts.slots`, in that
 /// order, first. A repeat call at the same stage and row count allocates nothing in `out`.
+///
+/// # Panics
+///
+/// Panics if `opening.inflow_slack_bounds` does not hold one bound per inflow-slack column in
+/// each slice.
 ///
 /// # Errors
 ///
 /// Returns [`SddpError::Infeasible`] when the LP is infeasible, or [`SddpError::Solver`] for any
 /// other solver failure.
-pub fn folded_opening_cut_for_probe<S: SolverInterface + Send>(
+pub fn opening_cut_for_probe<S: SolverInterface + Send>(
     ws: &mut SolverWorkspace<S>,
     ctx: &StageContext<'_>,
     training_ctx: &TrainingContext<'_>,
-    opening: &FoldedProbeOpening<'_>,
-    out: &mut FoldedProbeCut,
+    opening: &ProbeOpening<'_>,
+    out: &mut ProbeCut,
 ) -> Result<(), SddpError> {
     let stage = opening.stage;
     let cuts = &opening.cuts;
-    folded_prep_for_probe(
+    prep_for_probe(
         ws,
         ctx,
         training_ctx,
@@ -1951,6 +1939,30 @@ pub fn folded_opening_cut_for_probe<S: SolverInterface + Send>(
         opening.raw_noise,
         cuts,
     );
+    let template = ctx.template(stage);
+    let geometry = &ctx.geometry_per_stage[stage.0];
+    if let Some((lower, upper)) = opening.inflow_slack_bounds {
+        assert_eq!(
+            lower.len(),
+            geometry.inflow_slack.len(),
+            "override lower bounds must have one entry per inflow-slack column"
+        );
+        assert_eq!(
+            upper.len(),
+            geometry.inflow_slack.len(),
+            "override upper bounds must have one entry per inflow-slack column"
+        );
+        ws.scratch.inflow_slack_lower_buf.clear();
+        ws.scratch.inflow_slack_lower_buf.extend_from_slice(lower);
+        ws.scratch.inflow_slack_upper_buf.clear();
+        ws.scratch.inflow_slack_upper_buf.extend_from_slice(upper);
+        apply_inflow_slack_col_bounds(
+            &mut ws.solver,
+            &mut ws.scratch,
+            geometry,
+            &template.col_scale,
+        );
+    }
     out.realized_inflow.clear();
     out.realized_inflow
         .extend_from_slice(&ws.scratch.realized_inflow_buf);
@@ -1969,13 +1981,19 @@ pub fn folded_opening_cut_for_probe<S: SolverInterface + Send>(
     out.dual.extend_from_slice(view.dual);
     out.reduced_costs.clear();
     out.reduced_costs.extend_from_slice(view.reduced_costs);
+    out.inflow_slack.clear();
+    out.inflow_slack.extend(
+        geometry
+            .inflow_slack
+            .clone()
+            .map(|col| view.primal[col] * template.col_scale.get(col).copied().unwrap_or(1.0)),
+    );
 
-    let template = ctx.template(stage);
     let resident = &training_ctx.cut_state_layouts[cuts.pool_id];
     let extracted = &training_ctx.cut_state_layouts[opening.extracted_pool_id];
-    out.objective = extract_folded_duals(
+    out.objective = extract_opening_duals(
         &view,
-        &FoldedExtraction {
+        &DualExtractionSpec {
             extracted,
             col_scale: &template.col_scale,
             row_scale: &template.row_scale,
@@ -1984,7 +2002,7 @@ pub fn folded_opening_cut_for_probe<S: SolverInterface + Send>(
             cut_row_slots: cuts.slots,
             read_cut_duals: resident.has_lag_slots(),
         },
-        &mut FoldedDuals {
+        &mut OpeningDualBuffers {
             state_duals: &mut out.state_duals,
             coupled_duals: &mut out.coupled_duals,
             cut_dual_slots: &mut out.cut_dual_slots,
@@ -2014,62 +2032,81 @@ pub fn folded_opening_cut_for_probe<S: SolverInterface + Send>(
     Ok(())
 }
 
-/// Run one stage-LP solve exactly as production's shared `run_stage_solve`
-/// entry point does (`solve::stage_solve`, `pub(crate)` — the module
-/// forward/backward/simulation all route through, no external consumer by
-/// design): basis reconstruction by cut-pool slot identity when
-/// `stored_basis` is `Some`, else an implicit warm start from whatever the
-/// solver instance currently retains. Reachable here so a probe can drive the
-/// identical hot path on a scratch workspace without duplicating its
-/// reconstruction/invariant-enforcement logic.
-///
-/// # Errors
-///
-/// Propagates the same [`SddpError`] variants as production's stage solve
-/// (`Infeasible`, `Solver`, or a basis-shape mismatch).
-pub fn solve_stage_for_probe<'ws, S: SolverInterface>(
-    ws: &'ws mut SolverWorkspace<S>,
-    stage_context: &StageContext<'_>,
-    pool: &CutPool,
-    stored_basis: Option<&CapturedBasis>,
-    stage_index: StageIdx,
-    scenario_index: usize,
-    node_id: NodeId,
-) -> Result<SolutionView<'ws>, SddpError> {
-    let inputs = StageInputs {
-        stage_context,
-        pool,
-        stored_basis,
-        stage_index,
-        scenario_index,
-        iteration: None,
-        node_id,
-    };
-    run_stage_solve(ws, &inputs)
-}
-
 /// The three observations [`write_backward_opening_outcome_for_probe`] returns.
 pub struct CanonicalCutProbe {
-    /// The cut `write_opening_outcome` wrote for opening 0 (coefficients +
-    /// intercept + objective), read back — never recomputed.
+    /// The cut the opening yields (coefficients + intercept + objective), read
+    /// back — never recomputed.
     pub outcome: BackwardOutcome,
     /// The producer-stage outgoing state after `assemble_outgoing_state`'s
     /// clamp: the value the read-back seam canonicalizes the raw input to.
     pub canonical_x_hat: Vec<f64>,
     /// The state the successor LP was actually pinned at, recovered from the
     /// solved primal of the pinned incoming-state columns
-    /// (`state_to_lp_incoming_column`, `lb == ub`) and unscaled by `col_scale`.
+    /// (`state_to_lp_incoming_column`, `lb == ub`) and unscaled by `col_scale`;
+    /// the lag region has no LP column and reads the pinned value.
     /// Its data path — set-bounds, solve, read primal — is independent of the
-    /// `x_hat` handed to `write_opening_outcome`, so the returned cut and pin
-    /// can be cross-checked rather than tautologically re-derived.
+    /// `x_hat` the cut is built at, so the returned cut and pin can be
+    /// cross-checked rather than tautologically re-derived.
     pub pinned_x_hat: Vec<f64>,
+}
+
+/// The producer stage's canonical outgoing state, assembled exactly as the forward and
+/// simulation read-back seam does from the unscaled primal, the incoming lags and the
+/// realized inflow, with the lag accumulators fresh.
+fn canonical_outgoing_state_for_probe(
+    ctx: &StageContext<'_>,
+    training_ctx: &TrainingContext<'_>,
+    producer_stage: StageIdx,
+    unscaled_primal: &[f64],
+    incoming_lags: &[f64],
+    realized_inflow: &[f64],
+) -> Vec<f64> {
+    let layout = training_ctx.state;
+    let mut canonical_state: Vec<f64> = Vec::new();
+    let mut lag_accumulator = vec![0.0_f64; layout.hydro_count.max(1)];
+    let mut lag_weight_accum = vec![0.0_f64; layout.hydro_count.max(1)];
+    let ds_par_order = training_ctx.study_dims.downstream_par_order;
+    let mut ds_accumulator = vec![
+        0.0_f64;
+        if ds_par_order > 0 {
+            layout.hydro_count
+        } else {
+            0
+        }
+    ];
+    let mut ds_weight_accum = 0.0_f64;
+    let mut ds_completed_lags = vec![0.0_f64; ds_par_order * layout.hydro_count];
+    let mut ds_n_completed = 0_usize;
+    assemble_outgoing_state(
+        &mut canonical_state,
+        unscaled_primal,
+        incoming_lags,
+        realized_inflow,
+        layout,
+        ctx.state_box(producer_stage),
+        ctx.stage_lag(producer_stage),
+        &mut LagAccumState {
+            accumulator: &mut lag_accumulator,
+            weight_accum: &mut lag_weight_accum,
+        },
+        &mut DownstreamAccumState {
+            accumulator: &mut ds_accumulator,
+            weight_accum: &mut ds_weight_accum,
+            completed_lags: &mut ds_completed_lags,
+            n_completed: &mut ds_n_completed,
+            par_order: ds_par_order,
+        },
+    );
+    canonical_state
 }
 
 /// Canonicalize a RAW producer-stage state exactly as the forward/simulation
 /// read-back seam does (`raw_producer_state`, possibly outside the producer's
-/// admissible box; [`assemble_outgoing_state`] performs the clamp), then
+/// admissible box; [`assemble_outgoing_state`] performs the clamp; the lag
+/// region is unbounded and passes through), then
 /// delegate to [`write_backward_opening_outcome_at_canonical_state_for_probe`]
-/// with the resulting canonical `x_hat`.
+/// with the resulting canonical `x_hat`; `pool_id` selects the cut pool and its
+/// projection.
 ///
 /// # Panics
 ///
@@ -2084,9 +2121,8 @@ pub fn write_backward_opening_outcome_for_probe<S: SolverInterface + Send>(
     ctx: &StageContext<'_>,
     training_ctx: &TrainingContext<'_>,
     cut_pool: &CutPool,
-    cut_state: &CutStateProjection,
+    pool_id: usize,
     stage: StageIdx,
-    node_id: NodeId,
     raw_producer_state: &[f64],
     raw_noise: &[f64],
 ) -> Result<CanonicalCutProbe, SddpError> {
@@ -2104,70 +2140,44 @@ pub fn write_backward_opening_outcome_for_probe<S: SolverInterface + Send>(
 
     let mut unscaled_primal =
         vec![0.0_f64; ctx.template(producer_stage).num_cols.max(layout.n_state)];
-    for region in REGION_ORDER {
+    for region in REGION_ORDER.into_iter().filter(|r| r.has_lp_columns()) {
         unscaled_primal[layout.outgoing_block_range(region)]
             .copy_from_slice(&raw_producer_state[layout.state_dim_range(region)]);
     }
+    let lag_range = layout.state_dim_lag_range();
+    let raw_lags = &raw_producer_state[lag_range.clone()];
 
-    let mut canonical_state: Vec<f64> = Vec::new();
-    let mut lag_accumulator = vec![0.0_f64; layout.hydro_count.max(1)];
-    let mut lag_weight_accum = vec![0.0_f64; layout.hydro_count.max(1)];
-    let incoming_lags = vec![0.0_f64; layout.hydro_count * layout.max_par_order];
-    let ds_par_order = training_ctx.study_dims.downstream_par_order;
-    let mut ds_accumulator = vec![
-        0.0_f64;
-        if ds_par_order > 0 {
-            layout.hydro_count
-        } else {
-            0
-        }
-    ];
-    let mut ds_weight_accum = 0.0_f64;
-    let mut ds_completed_lags = vec![0.0_f64; ds_par_order * layout.hydro_count];
-    let mut ds_n_completed = 0_usize;
-    assemble_outgoing_state(
-        &mut canonical_state,
+    let realized_inflow = vec![0.0_f64; layout.hydro_count];
+    let canonical_state = canonical_outgoing_state_for_probe(
+        ctx,
+        training_ctx,
+        producer_stage,
         &unscaled_primal,
-        &incoming_lags,
-        &[],
-        layout,
-        ctx.state_box(producer_stage),
-        ctx.stage_lag(producer_stage),
-        &mut LagAccumState {
-            accumulator: &mut lag_accumulator,
-            weight_accum: &mut lag_weight_accum,
-        },
-        &mut DownstreamAccumState {
-            accumulator: &mut ds_accumulator,
-            weight_accum: &mut ds_weight_accum,
-            completed_lags: &mut ds_completed_lags,
-            n_completed: &mut ds_n_completed,
-            par_order: ds_par_order,
-        },
+        raw_lags,
+        &realized_inflow,
     );
-    let canonical_x_hat = canonical_state[..layout.n_state].to_vec();
+    let mut canonical_x_hat = canonical_state[..layout.n_state].to_vec();
+    canonical_x_hat[lag_range].copy_from_slice(raw_lags);
 
     write_backward_opening_outcome_at_canonical_state_for_probe(
         ws,
         ctx,
         training_ctx,
         cut_pool,
-        cut_state,
+        pool_id,
         stage,
-        node_id,
         &canonical_x_hat,
         raw_noise,
     )
 }
 
-/// Drive the real read-back canonicalization and the real backward
-/// cut-intercept write for one opening at an already-canonical state `x̂`.
+/// Drive the real opening solve and cut extraction for one opening at an
+/// already-canonical state `x̂`.
 ///
 /// That canonical value is the single `x_hat` threaded into BOTH the pin
-/// ([`patch_backward_opening_for_probe`] → `StageSolvePrep::run` →
-/// `set_col_bounds`) and the intercept ([`write_opening_outcome`]), mirroring
-/// the backward opening loop. The state the LP was pinned at is recovered
-/// separately from the solved primal — an independent data path — so
+/// ([`prep_for_probe`]) and the intercept ([`per_opening_cut_into`]),
+/// mirroring the backward opening loop. The state the LP was pinned at is
+/// recovered separately from the solved primal — an independent data path — so
 /// [`CanonicalCutProbe::pinned_x_hat`] cross-checks the pin against the cut
 /// instead of re-deriving the intercept's own formula.
 ///
@@ -2183,111 +2193,61 @@ pub fn write_backward_opening_outcome_at_canonical_state_for_probe<S: SolverInte
     ctx: &StageContext<'_>,
     training_ctx: &TrainingContext<'_>,
     cut_pool: &CutPool,
-    cut_state: &CutStateProjection,
+    pool_id: usize,
     stage: StageIdx,
-    node_id: NodeId,
     canonical_x_hat: &[f64],
     raw_noise: &[f64],
 ) -> Result<CanonicalCutProbe, SddpError> {
-    probe_backward_opening(
-        ws,
-        ctx,
-        training_ctx,
-        cut_pool,
-        cut_state,
-        stage,
-        node_id,
-        canonical_x_hat,
-        raw_noise,
-        None,
-    )
-    .map(|(probe, _)| probe)
-}
-
-/// [`write_backward_opening_outcome_at_canonical_state_for_probe`] with the
-/// inflow-slack column bounds overridden by the given physical (m³/s) per-hydro
-/// bounds after the regular patch; also returns the solved, unscaled slack primal
-/// per hydro.
-///
-/// # Panics
-///
-/// Panics if `canonical_x_hat.len() != StateSpace::n_state`, or if either bound
-/// slice does not have one entry per inflow-slack column.
-///
-/// # Errors
-///
-/// Propagates [`SddpError`] from the stage solve.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the canonical-state probe's nine solve inputs plus the slack-bound override; a bundling struct would only relocate them"
-)]
-pub fn write_backward_opening_outcome_with_inflow_slack_bounds_for_probe<
-    S: SolverInterface + Send,
->(
-    ws: &mut SolverWorkspace<S>,
-    ctx: &StageContext<'_>,
-    training_ctx: &TrainingContext<'_>,
-    cut_pool: &CutPool,
-    cut_state: &CutStateProjection,
-    stage: StageIdx,
-    node_id: NodeId,
-    canonical_x_hat: &[f64],
-    raw_noise: &[f64],
-    inflow_slack_lower: &[f64],
-    inflow_slack_upper: &[f64],
-) -> Result<(CanonicalCutProbe, Vec<f64>), SddpError> {
-    probe_backward_opening(
-        ws,
-        ctx,
-        training_ctx,
-        cut_pool,
-        cut_state,
-        stage,
-        node_id,
-        canonical_x_hat,
-        raw_noise,
-        Some((inflow_slack_lower, inflow_slack_upper)),
-    )
-}
-
-/// The solved z-inflow primal per hydro (unscaled, canonical hydro order) of `stage`'s
-/// LP loaded, patched and solved at `incoming_state` and `raw_noise` the way a backward
-/// opening is.
-///
-/// # Panics
-///
-/// Panics if `incoming_state.len() != StateSpace::n_state`.
-///
-/// # Errors
-///
-/// Propagates [`SddpError`] from the stage solve.
-pub fn z_inflow_primal_for_probe<S: SolverInterface + Send>(
-    ws: &mut SolverWorkspace<S>,
-    ctx: &StageContext<'_>,
-    training_ctx: &TrainingContext<'_>,
-    cut_pool: &CutPool,
-    stage: StageIdx,
-    node_id: NodeId,
-    incoming_state: &[f64],
-    raw_noise: &[f64],
-) -> Result<Vec<f64>, SddpError> {
     let layout = training_ctx.state;
     assert_eq!(
-        incoming_state.len(),
+        canonical_x_hat.len(),
         layout.n_state,
-        "incoming_state must have one entry per state dimension"
+        "canonical_x_hat must have one entry per state dimension"
     );
+
     let template = ctx.template(stage);
     ws.solver.reset_solver_state();
     ws.solver.load_model(template);
-    patch_backward_opening_for_probe(ws, ctx, training_ctx, stage, incoming_state, raw_noise);
-    let col_scale = &template.col_scale;
-    let view = solve_stage_for_probe(ws, ctx, cut_pool, None, stage, 0, node_id)?;
-    Ok(layout
-        .z_inflow
-        .clone()
-        .map(|col| view.primal[col] * col_scale.get(col).copied().unwrap_or(1.0))
-        .collect())
+    let mut cut = ProbeCut::new(training_ctx);
+    opening_cut_for_probe(
+        ws,
+        ctx,
+        training_ctx,
+        &ProbeOpening {
+            stage,
+            pinned_state: canonical_x_hat,
+            raw_noise,
+            cuts: ProbeCuts {
+                pool: cut_pool,
+                pool_id,
+                slots: &[],
+            },
+            extracted_pool_id: pool_id,
+            inflow_slack_bounds: None,
+        },
+        &mut cut,
+    )?;
+
+    let lag_range = layout.state_dim_lag_range();
+    let pinned_x_hat: Vec<f64> = (0..layout.n_state)
+        .map(|j| {
+            if lag_range.contains(&j) {
+                return canonical_x_hat[j];
+            }
+            let col = layout.state_to_lp_incoming_column(StateDim::new(j)).get();
+            cut.primal[col] * template.col_scale.get(col).copied().unwrap_or(1.0)
+        })
+        .collect();
+
+    Ok(CanonicalCutProbe {
+        outcome: BackwardOutcome {
+            intercept: cut.intercept,
+            coefficients: cut.coefficients,
+            objective_value: cut.objective,
+        },
+        canonical_x_hat: canonical_x_hat.to_vec(),
+        pinned_x_hat,
+    })
 }
 
 /// The physical (m³/s) inflow-slack bounds the per-solve transform writes for
@@ -2300,130 +2260,22 @@ pub fn inflow_slack_bounds_for_probe<S: SolverInterface>(
     incoming_state: &[f64],
     raw_noise: &[f64],
 ) -> (Vec<f64>, Vec<f64>) {
-    transform_inflow_noise(
-        raw_noise,
-        stage,
-        incoming_state,
-        training_ctx,
-        &mut ws.scratch,
-    );
+    let par = training_ctx.stochastic.par();
+    if par.n_stages() > 0 {
+        evaluate_par_conditional_mean_batch(
+            par,
+            stage.0,
+            &incoming_state[training_ctx.state.state_dim_lag_range()],
+            &mut ws.scratch.par_mean_buf,
+        );
+    } else {
+        ws.scratch.par_mean_buf.fill(0.0);
+    }
+    realize_inflow(raw_noise, stage, training_ctx, &mut ws.scratch, None);
     (
         ws.scratch.inflow_slack_lower_buf.clone(),
         ws.scratch.inflow_slack_upper_buf.clone(),
     )
-}
-
-/// Shared body of the canonical-state probes: patch, optionally override the
-/// inflow-slack bounds, solve, and write the opening outcome.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the canonical-state probe's nine solve inputs plus the slack-bound override; a bundling struct would only relocate them"
-)]
-fn probe_backward_opening<S: SolverInterface + Send>(
-    ws: &mut SolverWorkspace<S>,
-    ctx: &StageContext<'_>,
-    training_ctx: &TrainingContext<'_>,
-    cut_pool: &CutPool,
-    cut_state: &CutStateProjection,
-    stage: StageIdx,
-    node_id: NodeId,
-    canonical_x_hat: &[f64],
-    raw_noise: &[f64],
-    slack_override: Option<(&[f64], &[f64])>,
-) -> Result<(CanonicalCutProbe, Vec<f64>), SddpError> {
-    let layout = training_ctx.state;
-    assert_eq!(
-        canonical_x_hat.len(),
-        layout.n_state,
-        "canonical_x_hat must have one entry per state dimension"
-    );
-
-    let template = ctx.template(stage);
-    ws.solver.reset_solver_state();
-    ws.solver.load_model(template);
-    patch_backward_opening_for_probe(ws, ctx, training_ctx, stage, canonical_x_hat, raw_noise);
-    let geometry = &ctx.geometry_per_stage[stage.0];
-    if let Some((lower, upper)) = slack_override {
-        assert_eq!(
-            lower.len(),
-            geometry.inflow_slack.len(),
-            "override lower bounds must have one entry per inflow-slack column"
-        );
-        assert_eq!(
-            upper.len(),
-            geometry.inflow_slack.len(),
-            "override upper bounds must have one entry per inflow-slack column"
-        );
-        ws.scratch.inflow_slack_lower_buf.clear();
-        ws.scratch.inflow_slack_lower_buf.extend_from_slice(lower);
-        ws.scratch.inflow_slack_upper_buf.clear();
-        ws.scratch.inflow_slack_upper_buf.extend_from_slice(upper);
-        apply_inflow_slack_col_bounds(
-            &mut ws.solver,
-            &mut ws.scratch,
-            geometry,
-            &template.col_scale,
-        );
-    }
-
-    let mut stats_before = SolverStatistics::default();
-    ws.solver.statistics_into(&mut stats_before);
-    let mut state_duals = std::mem::take(&mut ws.backward_accum.state_duals_buf);
-    let view = solve_stage_for_probe(ws, ctx, cut_pool, None, stage, 0, node_id)?;
-
-    let col_scale = &template.col_scale;
-    let objective = extract_state_duals_only(&view, cut_state, col_scale, &mut state_duals);
-    let pinned_x_hat: Vec<f64> = (0..layout.n_state)
-        .map(|j| {
-            let col = layout.state_to_lp_incoming_column(StateDim::new(j)).get();
-            view.primal[col] * col_scale.get(col).copied().unwrap_or(1.0)
-        })
-        .collect();
-    let slack_primal: Vec<f64> = geometry
-        .inflow_slack
-        .clone()
-        .map(|col| view.primal[col] * col_scale.get(col).copied().unwrap_or(1.0))
-        .collect();
-    ws.backward_accum.state_duals_buf = state_duals;
-
-    let mut stats_after = SolverStatistics::default();
-    ws.solver.statistics_into(&mut stats_after);
-
-    let n_slots = cut_state.n_slots();
-    if ws.backward_accum.outcomes.is_empty() {
-        ws.backward_accum.outcomes.push(BackwardOutcome {
-            intercept: 0.0,
-            coefficients: vec![0.0; n_slots],
-            objective_value: 0.0,
-        });
-    }
-    ws.backward_accum.outcomes[0]
-        .coefficients
-        .resize(n_slots, 0.0);
-    if ws.backward_accum.per_opening_stats.is_empty() {
-        ws.backward_accum
-            .per_opening_stats
-            .push(SolverStatsDelta::default());
-    }
-
-    write_opening_outcome(
-        ws,
-        cut_state,
-        0,
-        objective,
-        canonical_x_hat,
-        &stats_before,
-        &stats_after,
-    );
-
-    Ok((
-        CanonicalCutProbe {
-            outcome: ws.backward_accum.outcomes[0].clone(),
-            canonical_x_hat: canonical_x_hat.to_vec(),
-            pinned_x_hat,
-        },
-        slack_primal,
-    ))
 }
 
 /// Trial-point states in the flat shape the passes index, `records[m * n_stages + stage]`.
@@ -3369,7 +3221,7 @@ pub fn try_k_fan_simulation_enumerated(k: usize) -> Result<StudySetup, SddpError
 /// Recording [`SolverInterface`] that captures a fully-patched stage template:
 /// `load_model` clones the base template, `set_row_bounds`/`set_col_bounds`
 /// overwrite the clone's bounds at the patched indices. `solve` is never reached —
-/// the capture drives only [`StageSolvePrep::run`]'s bound-patch side, which never
+/// the capture drives only [`StageSolvePrep::prepare_single`]'s bound-patch side, which never
 /// calls `add_rows` or `solve`.
 struct TemplateCaptureSolver {
     template: Option<StageTemplate>,
@@ -3466,7 +3318,7 @@ pub fn state_space(setup: &StudySetup) -> &StateSpace {
 /// The `[hydro | load-bus | NCS]` standardized noise draw for `node_pos`: an
 /// `External` node reads its own scenario column from the standardized external
 /// inflow library; a `Generated` node draws zeros — the oracle fixtures carry
-/// `std == 0` on every generated stage, so `transform_inflow_noise` recovers the
+/// `std == 0` on every generated stage, so `realize_inflow` recovers the
 /// mean regardless.
 fn oracle_raw_noise(setup: &StudySetup, node_pos: NodePos) -> Vec<f64> {
     let stage = setup.inputs.node_graph.nodes[node_pos].stage;
@@ -3491,23 +3343,18 @@ fn oracle_raw_noise(setup: &StudySetup, node_pos: NodePos) -> Vec<f64> {
 /// Capture `node_pos`'s engine-exact, fully-patched single-stage [`StageTemplate`]
 /// — the base template for the node's stage with the incoming-state pin and the
 /// realized noise applied exactly as the training solve does (via the shared
-/// [`StageSolvePrep::run`] pipeline). The incoming-state columns land pinned to
+/// [`StageSolvePrep::prepare_single`] pipeline). The incoming-state columns land pinned to
 /// `SolveInputs::initial`; the extensive-form composer frees and couples them for
 /// non-root nodes.
 ///
 /// # Panics
 ///
 /// Panics if `node_pos` (or its resolved stage) is out of range, or if the
-/// template is absent after [`StageSolvePrep::run`].
+/// template is absent after [`StageSolvePrep::prepare_single`].
 #[must_use]
 pub fn capture_patched_node_template(setup: &StudySetup, node_pos: NodePos) -> StageTemplate {
     let raw_noise = oracle_raw_noise(setup, node_pos);
-    capture_patched_node_template_with_raw_noise(
-        setup,
-        node_pos,
-        &raw_noise,
-        &setup.inputs.initial.state,
-    )
+    capture_patched_node_with_raw_noise(setup, node_pos, &raw_noise, &setup.inputs.initial.state).0
 }
 
 /// [`capture_patched_node_template`] with a caller-chosen standardized inflow
@@ -3518,7 +3365,7 @@ pub fn capture_patched_node_template(setup: &StudySetup, node_pos: NodePos) -> S
 ///
 /// Panics if `inflow_eta` is not `hydro_count` long, if `node_pos` (or its
 /// resolved stage) is out of range, or if the template is absent after
-/// [`StageSolvePrep::run`].
+/// [`StageSolvePrep::prepare_single`].
 #[must_use]
 pub fn capture_patched_node_template_with_inflow_noise(
     setup: &StudySetup,
@@ -3533,12 +3380,7 @@ pub fn capture_patched_node_template_with_inflow_noise(
     );
     let mut raw_noise = vec![0.0_f64; setup.inputs.stochastic.dim()];
     raw_noise[hydro].copy_from_slice(inflow_eta);
-    capture_patched_node_template_with_raw_noise(
-        setup,
-        node_pos,
-        &raw_noise,
-        &setup.inputs.initial.state,
-    )
+    capture_patched_node_with_raw_noise(setup, node_pos, &raw_noise, &setup.inputs.initial.state).0
 }
 
 /// [`capture_patched_node_template`] at a caller-chosen raw noise vector and
@@ -3550,7 +3392,7 @@ pub fn capture_patched_node_template_with_inflow_noise(
 /// Panics if `raw_noise.len() != setup.inputs.stochastic.dim()`, if
 /// `incoming_state.len() != setup.inputs.stage_data.state.n_state`, if `node_pos`
 /// (or its resolved stage) is out of range, or if the template is absent
-/// after [`StageSolvePrep::run`].
+/// after [`StageSolvePrep::prepare_single`].
 #[must_use]
 pub fn capture_patched_node_template_at(
     setup: &StudySetup,
@@ -3568,7 +3410,7 @@ pub fn capture_patched_node_template_at(
         setup.inputs.stage_data.state.n_state,
         "incoming_state must hold one entry per state dimension"
     );
-    capture_patched_node_template_with_raw_noise(setup, node_pos, raw_noise, incoming_state)
+    capture_patched_node_with_raw_noise(setup, node_pos, raw_noise, incoming_state).0
 }
 
 /// Opening `opening`'s raw `[hydro | load-bus | NCS]` noise vector at
@@ -3619,14 +3461,14 @@ pub fn node_opening_noise(setup: &StudySetup, node_pos: NodePos, opening: usize)
 
 #[expect(
     clippy::expect_used,
-    reason = "TemplateCaptureSolver::template is set before StageSolvePrep::run and only load_model/set_row_bounds/set_col_bounds touch it, so it is always Some after run"
+    reason = "TemplateCaptureSolver::template is set before StageSolvePrep::prepare_single and only load_model/set_row_bounds/set_col_bounds touch it, so it is always Some after run"
 )]
-fn capture_patched_node_template_with_raw_noise(
+fn capture_patched_node_with_raw_noise(
     setup: &StudySetup,
     node_pos: NodePos,
     raw_noise: &[f64],
     incoming_state: &[f64],
-) -> StageTemplate {
+) -> (StageTemplate, Vec<f64>) {
     let stage = setup.inputs.node_graph.nodes[node_pos].stage;
     let base = setup.inputs.stage_data.stage_templates.templates[stage.0].clone();
     let mut solver = TemplateCaptureSolver {
@@ -3643,24 +3485,29 @@ fn capture_patched_node_template_with_raw_noise(
     );
     let training_ctx = setup.training_ctx();
     let mut scratch = ScratchBuffers::new(&training_ctx, &ctx, WorkspaceSizing::default());
-    let params = StageSolvePrepParams {
-        state_source: StateSource(incoming_state),
-        raw_noise,
-    };
-    StageSolvePrep::run(
+    let pool_id = setup.inputs.node_graph.nodes[node_pos].pool_id;
+    StageSolvePrep::prepare_single(
         &mut solver,
         &mut patch_buf,
         &mut scratch,
         &ctx,
         &training_ctx,
         stage,
-        &params,
+        &SingleSolvePrepParams {
+            state_source: StateSource(incoming_state),
+            raw_noise,
+            pool: &setup.fcf.pools[pool_id],
+            projection: &training_ctx.cut_state_layouts[pool_id],
+            opening_solver: &StageOpeningSolver::Frozen,
+        },
+        std::iter::empty(),
     );
 
-    solver
+    let template = solver
         .template
         .take()
-        .expect("capture_patched_node_template: template present after run")
+        .expect("capture_patched_node_template: template present after run");
+    (template, scratch.realized_inflow_buf)
 }
 
 /// The study's incoming initial state vector (`n_state` entries) — the value the
@@ -4073,7 +3920,7 @@ fn terminal_generated_fan_policy_graph(k: usize) -> HorizonGraph {
 /// Never in practice — as [`k_fan_setup`].
 #[must_use]
 pub fn terminal_generated_fan_setup(k: usize, max_iterations: u32) -> StudySetup {
-    build_terminal_generated_fan_setup(k, max_iterations, FanWater::Worthless, InflowForm::Logical)
+    build_terminal_generated_fan_setup(k, max_iterations, FanWater::Worthless)
 }
 
 /// Whether the terminal-Generated fan's water is worth anything.
@@ -4087,33 +3934,17 @@ enum FanWater {
     Binding,
 }
 
-/// The water-binding terminal-Generated fan as a `(logical, compact)` pair of the
-/// same study. The leaves are Generated, so the enumerated backward solves each of
-/// them through the replicated per-node solve rather than reading a captured slice,
-/// and the trial state carries a nonzero cut coefficient.
+/// The water-binding terminal-Generated fan. The leaves are Generated, so the
+/// enumerated backward solves each of them through the replicated per-node solve
+/// rather than reading a captured slice, and the trial state carries a nonzero cut
+/// coefficient.
 ///
 /// # Panics
 ///
 /// Never in practice — as [`terminal_generated_fan_setup`].
 #[must_use]
-pub fn water_binding_generated_fan_setup_in_both_forms(
-    k: usize,
-    max_iterations: u32,
-) -> (StudySetup, StudySetup) {
-    (
-        build_terminal_generated_fan_setup(
-            k,
-            max_iterations,
-            FanWater::Binding,
-            InflowForm::Logical,
-        ),
-        build_terminal_generated_fan_setup(
-            k,
-            max_iterations,
-            FanWater::Binding,
-            InflowForm::Compact,
-        ),
-    )
+pub fn water_binding_generated_fan_setup(k: usize, max_iterations: u32) -> StudySetup {
+    build_terminal_generated_fan_setup(k, max_iterations, FanWater::Binding)
 }
 
 #[expect(
@@ -4124,7 +3955,6 @@ fn build_terminal_generated_fan_setup(
     k: usize,
     max_iterations: u32,
     water: FanWater,
-    form: InflowForm,
 ) -> StudySetup {
     let storage = match water {
         FanWater::Worthless => StorageSpec::wide(),
@@ -4156,14 +3986,13 @@ fn build_terminal_generated_fan_setup(
     if matches!(water, FanWater::Binding) {
         inject_water_binding_production(&mut hydro_models, &system, TERMINAL_FAN_STAGES);
     }
-    StudySetup::new_with_boundary_requirements_in_form(
+    StudySetup::new_with_boundary_requirements(
         &system,
         &config,
         stochastic,
         hydro_models,
         unresolved_boundary_requirements(&config),
         Vec::new(),
-        form,
     )
     .expect("terminal_generated_fan_setup: StudySetup::new must succeed")
 }
@@ -4226,13 +4055,7 @@ const EXTERNAL_FAN_LOAD_STD: f64 = 20.0;
 /// fixture.
 #[must_use]
 pub fn external_distinct_fan_setup(k: usize, max_iterations: u32) -> StudySetup {
-    build_external_distinct_fan_setup(
-        k,
-        max_iterations,
-        None,
-        K_FAN_DEFAULT_STATE_CONFIG,
-        InflowForm::Logical,
-    )
+    build_external_distinct_fan_setup(k, max_iterations, None, K_FAN_DEFAULT_STATE_CONFIG)
 }
 
 /// [`external_distinct_fan_setup`] with an active inflow-lag slot
@@ -4260,64 +4083,42 @@ pub fn external_distinct_fan_setup_heterogeneous_cut_state(
     k: usize,
     max_iterations: u32,
 ) -> StudySetup {
+    build_external_distinct_fan_setup(k, max_iterations, Some(1), K_FAN_DEFAULT_STATE_CONFIG)
+}
+
+/// The external distinct fan whose leaf stage declares lags but no storage.
+#[must_use]
+pub fn external_distinct_fan_setup_storage_free_leaf(k: usize, max_iterations: u32) -> StudySetup {
     build_external_distinct_fan_setup(
         k,
         max_iterations,
         Some(1),
-        K_FAN_DEFAULT_STATE_CONFIG,
-        InflowForm::Logical,
-    )
-}
-
-/// [`external_distinct_fan_setup_heterogeneous_cut_state`] as a `(logical, compact)`
-/// pair of the same study. Each leaf's terminal pool projects storage and lag while
-/// the cut-generating root pool projects storage only, so the leaf and parent
-/// projections differ in `n_slots` and only the leaf has lag slots.
-///
-/// # Panics
-///
-/// Never in practice — as [`external_distinct_fan_setup`].
-#[must_use]
-pub fn external_distinct_fan_setup_heterogeneous_cut_state_in_both_forms(
-    k: usize,
-    max_iterations: u32,
-) -> (StudySetup, StudySetup) {
-    external_distinct_fan_pair(k, max_iterations, K_FAN_DEFAULT_STATE_CONFIG)
-}
-
-/// A `(logical, compact)` pair of the external distinct fan whose leaf stage
-/// declares inflow lags, with an inflow-lag depth of `Some(1)`. The root pool is
-/// sized from the leaf's declared config, so the leaf and parent projections are
-/// equal and both carry the lag slot a storage-only capture cannot read on the
-/// compact LP.
-///
-/// # Panics
-///
-/// Never in practice — as [`external_distinct_fan_setup`].
-#[must_use]
-pub fn external_distinct_fan_setup_lagged_parent_in_both_forms(
-    k: usize,
-    max_iterations: u32,
-) -> (StudySetup, StudySetup) {
-    external_distinct_fan_pair(
-        k,
-        max_iterations,
         StageStateConfig {
-            storage: true,
+            storage: false,
             inflow_lags: true,
         },
     )
 }
 
-fn external_distinct_fan_pair(
-    k: usize,
-    max_iterations: u32,
-    leaf_state_config: StageStateConfig,
-) -> (StudySetup, StudySetup) {
-    let build = |form| {
-        build_external_distinct_fan_setup(k, max_iterations, Some(1), leaf_state_config, form)
-    };
-    (build(InflowForm::Logical), build(InflowForm::Compact))
+/// The external distinct fan whose leaf stage declares inflow lags, with an
+/// inflow-lag depth of `Some(1)`. The root pool is sized from the leaf's declared
+/// config, so the leaf and parent projections are equal and both carry the lag
+/// slot a storage-only capture cannot read.
+///
+/// # Panics
+///
+/// Never in practice — as [`external_distinct_fan_setup`].
+#[must_use]
+pub fn external_distinct_fan_setup_lagged_parent(k: usize, max_iterations: u32) -> StudySetup {
+    build_external_distinct_fan_setup(
+        k,
+        max_iterations,
+        Some(1),
+        StageStateConfig {
+            storage: true,
+            inflow_lags: true,
+        },
+    )
 }
 
 #[expect(
@@ -4335,7 +4136,6 @@ fn build_external_distinct_fan_setup(
     max_iterations: u32,
     inflow_lag_depth: Option<u32>,
     leaf_state_config: StageStateConfig,
-    form: InflowForm,
 ) -> StudySetup {
     assert!(
         k >= 2 && k <= EXTERNAL_FAN_INFLOWS.len(),
@@ -4430,7 +4230,7 @@ fn build_external_distinct_fan_setup(
     )
     .expect("build_external_distinct_fan_setup: build_stochastic_context must succeed");
     let hydro_models = PrepareHydroModelsResult::default_from_system(&system);
-    StudySetup::new_with_boundary_requirements_in_form(
+    StudySetup::new_with_boundary_requirements(
         &system,
         &config,
         stochastic,
@@ -4440,7 +4240,6 @@ fn build_external_distinct_fan_setup(
             BoundaryStateRequirements::present,
         ),
         Vec::new(),
-        form,
     )
     .expect("build_external_distinct_fan_setup: StudySetup::new must succeed")
 }
@@ -5082,13 +4881,61 @@ pub fn node_visit_probabilities(setup: &StudySetup) -> Vec<f64> {
     prob
 }
 
+/// Every node's engine-exact patched template, captured at the incoming lags its path from
+/// the root determines (the lag region has no LP column to couple).
+#[expect(
+    clippy::expect_used,
+    reason = "the order visits every node, so every slot is filled before the collect"
+)]
+fn capture_path_templates(setup: &StudySetup) -> Vec<StageTemplate> {
+    let g = &setup.inputs.node_graph;
+    let n = g.nodes.len();
+    let n_state = setup.stage_state().n_state;
+    let lag_range = setup.stage_state().state_dim_lag_range();
+    let ctx = setup.stage_ctx();
+    let training_ctx = setup.training_ctx();
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by_key(|&i| g.nodes[NodePos(i)].stage);
+    let mut incoming = vec![setup.inputs.initial.state.clone(); n];
+    let mut captured: Vec<Option<StageTemplate>> = (0..n).map(|_| None).collect();
+    for &i in &order {
+        let node = NodePos(i);
+        let (template, realized_inflow) = capture_patched_node_with_raw_noise(
+            setup,
+            node,
+            &oracle_raw_noise(setup, node),
+            &incoming[i],
+        );
+        if !g.successors[node].is_empty() {
+            let outgoing = canonical_outgoing_state_for_probe(
+                &ctx,
+                &training_ctx,
+                g.nodes[node].stage,
+                &vec![0.0_f64; template.num_cols.max(n_state)],
+                &incoming[i][lag_range.clone()],
+                &realized_inflow,
+            );
+            for succ in &g.successors[node] {
+                incoming[succ.child.0][lag_range.clone()]
+                    .copy_from_slice(&outgoing[lag_range.clone()]);
+            }
+        }
+        captured[i] = Some(template);
+    }
+    captured
+        .into_iter()
+        .map(|template| template.expect("every node is captured"))
+        .collect()
+}
+
 /// The extensive-form LP optimum — `setup.inputs.node_graph`'s true first-stage value,
 /// computed independently of the node-native training algorithm: one column
 /// block per node (its engine-exact patched template via
 /// [`capture_patched_node_template`]), objective scaled by
 /// [`node_visit_probabilities`], state coupled parent-outgoing to child-incoming
-/// by one equality row per state dimension, root incoming state left pinned to
-/// the initial state. Solved once. The blessed extensive-form oracle for any
+/// by one equality row per state dimension with an LP column, root incoming state
+/// left pinned to the initial state. A lag dimension has no column: each node's template
+/// is captured at the incoming lags its path from the root determines. Solved once. The blessed extensive-form oracle for any
 /// finite acyclic branching graph small enough to expand —
 /// validates VALUE only, not cuts, duals, or unvisited states.
 ///
@@ -5121,9 +4968,8 @@ pub fn extensive_form_optimum(setup: &StudySetup) -> f64 {
         }
     }
 
-    let templates: Vec<StageTemplate> = (0..n)
-        .map(|i| capture_patched_node_template(setup, NodePos(i)))
-        .collect();
+    let lag_range = state.state_dim_lag_range();
+    let templates = capture_path_templates(setup);
 
     // Column / row bases of each node's block, block-diagonal.
     let mut cbase = vec![0_usize; n + 1];
@@ -5170,7 +5016,7 @@ pub fn extensive_form_optimum(setup: &StudySetup) -> f64 {
         if !has_pred[c] {
             continue;
         }
-        for s in 0..n_state {
+        for s in (0..n_state).filter(|s| !lag_range.contains(s)) {
             let local = state.state_to_lp_incoming_column(StateDim::new(s)).get();
             let g_col = cbase[c] + local;
             col_lower[g_col] = f64::NEG_INFINITY;
@@ -5206,7 +5052,7 @@ pub fn extensive_form_optimum(setup: &StudySetup) -> f64 {
     for p in 0..n {
         for succ in &g.successors[NodePos(p)] {
             let c = succ.child.0;
-            for s in 0..n_state {
+            for s in (0..n_state).filter(|s| !lag_range.contains(s)) {
                 let out_local = state.lp_column_for_state(StateDim::new(s)).get();
                 let in_local = state.state_to_lp_incoming_column(StateDim::new(s)).get();
                 let cs_p = templates[p]
@@ -5386,37 +5232,11 @@ fn dual_folding_system(fold: LagFold) -> System {
 /// fixture (as [`k_fan_setup`]); `build_stochastic_context`/`StudySetup::new`
 /// only error on a malformed study.
 #[must_use]
-pub fn dual_folding_setup(fold: LagFold, forward_passes: u32, max_iterations: u32) -> StudySetup {
-    build_dual_folding_setup(fold, forward_passes, max_iterations, InflowForm::Logical)
-}
-
-/// [`dual_folding_setup`] as a `(logical, compact)` pair of the same study.
-///
-/// # Panics
-///
-/// Never in practice — as [`dual_folding_setup`].
-#[must_use]
-pub fn dual_folding_setup_in_both_forms(
-    fold: LagFold,
-    forward_passes: u32,
-    max_iterations: u32,
-) -> (StudySetup, StudySetup) {
-    (
-        build_dual_folding_setup(fold, forward_passes, max_iterations, InflowForm::Logical),
-        build_dual_folding_setup(fold, forward_passes, max_iterations, InflowForm::Compact),
-    )
-}
-
 #[expect(
     clippy::expect_used,
     reason = "build_stochastic_context/StudySetup::new never error on this fixture's fixed, internally consistent inputs"
 )]
-fn build_dual_folding_setup(
-    fold: LagFold,
-    forward_passes: u32,
-    max_iterations: u32,
-    form: InflowForm,
-) -> StudySetup {
+pub fn dual_folding_setup(fold: LagFold, forward_passes: u32, max_iterations: u32) -> StudySetup {
     let system = dual_folding_system(fold);
     let config = k_fan_config(forward_passes, max_iterations);
     // One explicit lag slot, independent of the fitted AR order, so both `fold`
@@ -5446,14 +5266,13 @@ fn build_dual_folding_setup(
         system.hydros(),
         3,
     );
-    StudySetup::new_with_boundary_requirements_in_form(
+    StudySetup::new_with_boundary_requirements(
         &system,
         &config,
         stochastic,
         hydro_models,
         BoundaryStateRequirements::present(1),
         Vec::new(),
-        form,
     )
     .expect("dual_folding_setup: StudySetup::new must succeed")
 }

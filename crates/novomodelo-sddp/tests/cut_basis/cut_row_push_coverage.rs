@@ -7,10 +7,10 @@ use novomodelo_io::config::{
 };
 use novomodelo_sddp::setup::StageIdx;
 use novomodelo_sddp::test_support::bound_recording::{
-    BoundRecordingSolver, CutRowPushLog, CutRowPushRecord,
+    AppendedCutRowBound, BoundRecordingSolver, CutRowPushLog, CutRowPushRecord,
 };
 use novomodelo_sddp::test_support::decks::{SLOW_DECKS, committed_decks};
-use novomodelo_sddp::test_support::external_distinct_fan_setup_heterogeneous_cut_state_in_both_forms;
+use novomodelo_sddp::test_support::external_distinct_fan_setup_heterogeneous_cut_state;
 use novomodelo_sddp::test_support::pool_cut_state_dimensions;
 use novomodelo_sddp::test_support::solve_sites::SolveSiteKind;
 use novomodelo_sddp::{SolverProfiles, StudySetup, TrainingResult};
@@ -19,7 +19,7 @@ use novomodelo_solver::ActiveSolver;
 use crate::common::in_code_studies::{FphaLagOptions, fpha_lag_study_with};
 use crate::common::stored_cut_oracles::{apply_oracle_config, apply_oracle_config_with_selection};
 use crate::common::{
-    Emission, StubComm, build_setup_in_code_with_models_as, fresh_system_and_setup_with_emission,
+    StubComm, build_setup_in_code_with_models, fresh_system_and_setup_with,
     inject_constant_terminal_boundary_cuts, positive,
 };
 
@@ -158,17 +158,15 @@ fn build_setup(spec: &RunSpec) -> StudySetup {
             if spec.simulate {
                 enable_simulation(&mut config);
             }
-            build_setup_in_code_with_models_as(system, &config, hydro_models, Emission::Compact)
+            build_setup_in_code_with_models(system, &config, hydro_models)
         }
         Fixture::TerminalFan => {
             assert!(
                 spec.selection == TrainingSelection::Enumerated {},
                 "the terminal fan runs enumerated"
             );
-            let (_, mut setup) = external_distinct_fan_setup_heterogeneous_cut_state_in_both_forms(
-                FAN_K,
-                FAN_ITERATIONS,
-            );
+            let mut setup =
+                external_distinct_fan_setup_heterogeneous_cut_state(FAN_K, FAN_ITERATIONS);
             inject_constant_terminal_boundary_cuts(
                 &mut setup,
                 &[BOUNDARY_INTERCEPT; BOUNDARY_CUTS],
@@ -184,23 +182,26 @@ fn record_run(
     mut setup: StudySetup,
     backward_scheduler: BackwardScheduler,
     simulate: bool,
+    appended_bound: AppendedCutRowBound,
 ) -> RecordedRun {
     let theta = setup.training_ctx().state.theta;
     let lower_bound_log = CutRowPushLog::new();
     let worker_log = CutRowPushLog::new();
     let simulation_log = CutRowPushLog::new();
-    let recording = |log: &CutRowPushLog| {
-        ActiveSolver::new()
-            .map(|solver| BoundRecordingSolver::logging_cut_row_pushes(solver, theta, log.clone()))
+    let recording = |log: &CutRowPushLog, appended_bound| {
+        ActiveSolver::new().map(|solver| {
+            BoundRecordingSolver::logging_cut_row_pushes(solver, theta, log.clone(), appended_bound)
+        })
     };
 
-    let mut solver = recording(&lower_bound_log).expect("ActiveSolver::new must succeed");
+    let mut solver = recording(&lower_bound_log, AppendedCutRowBound::Patched)
+        .expect("ActiveSolver::new must succeed");
     let outcome = setup
         .train_with_solver_profiles(
             &mut solver,
             &StubComm,
             THREADS,
-            || recording(&worker_log),
+            || recording(&worker_log, appended_bound),
             SolverProfiles {
                 backward_scheduler,
                 ..SolverProfiles::default()
@@ -215,7 +216,9 @@ fn record_run(
 
     if simulate {
         let mut pool = setup
-            .create_workspace_pool(&StubComm, THREADS, || recording(&simulation_log))
+            .create_workspace_pool(&StubComm, THREADS, || {
+                recording(&simulation_log, appended_bound)
+            })
             .unwrap_or_else(|error| {
                 panic!("{label}: create_workspace_pool must succeed: {error:?}")
             });
@@ -247,11 +250,17 @@ fn record_run(
 
 fn run_recorded(spec: &RunSpec) -> RecordedRun {
     let label = format!("{:?}", spec.fixture);
+    let appended_bound = if spec.dynamic_cut_selection {
+        AppendedCutRowBound::Final
+    } else {
+        AppendedCutRowBound::Patched
+    };
     record_run(
         &label,
         build_setup(spec),
         spec.backward_scheduler,
         spec.simulate,
+        appended_bound,
     )
 }
 
@@ -401,15 +410,17 @@ fn every_committed_deck_patches_every_resident_cut_row_at_every_solve() {
         if SLOW_DECKS.contains(&deck.key.as_str()) {
             continue;
         }
-        let (_, setup) = fresh_system_and_setup_with_emission(
-            &deck.dir,
-            |config| {
-                apply_oracle_config(config);
-                enable_simulation(config);
-            },
-            Emission::Compact,
+        let (_, setup) = fresh_system_and_setup_with(&deck.dir, |config| {
+            apply_oracle_config(config);
+            enable_simulation(config);
+        });
+        let run = record_run(
+            &deck.key,
+            setup,
+            BackwardScheduler::ByScenario {},
+            true,
+            AppendedCutRowBound::Patched,
         );
-        let run = record_run(&deck.key, setup, BackwardScheduler::ByScenario {}, true);
         assert_no_stale_rows(&deck.key, &run);
         lag_bearing |= stores_a_lag_cut(&run.setup);
         visited += 1;

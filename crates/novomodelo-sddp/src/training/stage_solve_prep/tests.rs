@@ -1,5 +1,5 @@
-//! [`StageSolvePrep::run`] must reproduce the open-coded forward block
-//! (`training/forward/stage_solve.rs`) call-for-call for the same fixture.
+//! [`StageSolvePrep`]'s pin and opening phases reach the solver with the same
+//! calls the direct transforms produce, in the same order.
 
 use std::collections::BTreeMap;
 
@@ -23,8 +23,8 @@ use novomodelo_stochastic::{
 };
 
 use super::{
-    BracketSource, FoldedCutRows, FoldedSolvePrepParams, NoiseTermSource, StageSolvePrep,
-    StageSolvePrepParams, StateSource,
+    BracketSource, LoadedCutRows, NoiseTermSource, SingleSolvePrepParams, StageSolvePrep,
+    StateSource,
 };
 use crate::{
     context::{StageContext, TrainingContext},
@@ -40,8 +40,8 @@ use crate::{
     lp::builder::{InflowCoupling, PatchBuffer, StageGeometry, StateBox},
     lp::indexer::{BlockGrid, BlockRowFamily, CutStateProjection, StateSpace, StudyDimensions},
     noise::{
-        build_dense_ncs_col_indices, gather_dense_ncs_bounds, transform_inflow_noise,
-        transform_inflow_noise_folded, transform_load_noise, transform_ncs_noise,
+        build_dense_ncs_col_indices, gather_dense_ncs_bounds, realize_inflow, transform_load_noise,
+        transform_ncs_noise,
     },
     setup::{
         NodeId,
@@ -225,7 +225,7 @@ fn minimal_forward_template() -> StageTemplate {
     }
 }
 
-/// Single hydro, single stochastic load bus, 2 rows (load balance + z-inflow).
+/// Single hydro, single stochastic load bus, 2 rows (water balance + load balance).
 fn single_hydro_load_template() -> StageTemplate {
     StageTemplate {
         num_rows: 2,
@@ -363,103 +363,40 @@ impl SolverInterface for RecordingSolver {
     }
 }
 
-#[test]
-fn run_matches_open_coded_forward_block_for_minimal_fixture() {
-    let state = state_layout(1, 0);
-    let stochastic = make_stochastic_context(None);
-    let template = minimal_forward_template();
-    let templates = vec![template.clone()];
-    let state_boxes = vec![unbounded_state_box(state.n_state)];
-    let geometry = equipment_free_geometry(&[1]);
-    let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
-    let ctx = fixture.ctx();
-    let prep = PrepContext::new(&state, &stochastic);
-    let study_dims = study_dims();
-    let training_ctx = prep.ctx(
-        &state,
-        &stochastic,
-        &study_dims,
-        &InflowNonNegativityMethod::None,
-        &[],
-    );
-
-    let current_state = vec![42.0_f64];
-    let raw_noise = vec![0.3_f64];
-    let sizing = minimal_sizing();
-
-    // ---- reference: the literal open-coded forward block for this fixture
-    // (no load buses, no anticipated thermals, no NCS in scope) ----
-    let mut reference_scratch = ScratchBuffers::new(&training_ctx, &ctx, sizing);
-    let mut reference_solver = RecordingSolver::default();
-    let mut reference_patch_buf = PatchBuffer::new(&state, &[], &[], &[]);
-
-    transform_inflow_noise(
-        &raw_noise,
+/// The pin phase then the opening phase on `pinned_state` and `raw_noise` over a
+/// loaded LP with no cut rows.
+fn prepare_without_cut_rows(
+    solver: &mut RecordingSolver,
+    patch_buf: &mut PatchBuffer,
+    scratch: &mut ScratchBuffers,
+    ctx: &StageContext<'_>,
+    training_ctx: &TrainingContext<'_>,
+    pinned_state: &[f64],
+    raw_noise: &[f64],
+) {
+    let projection = &training_ctx.cut_state_layouts[0];
+    let pool = CutPool::new(1, projection.n_slots(), 1, 0);
+    StageSolvePrep::prepare_single(
+        solver,
+        patch_buf,
+        scratch,
+        ctx,
+        training_ctx,
         StageIdx(0),
-        &current_state,
-        &training_ctx,
-        &mut reference_scratch,
-    );
-    reference_patch_buf.fill_col_state_patches(&state, &current_state, &template.col_scale, None);
-    reference_patch_buf.fill_z_inflow_patches(
-        &state,
-        &reference_scratch.z_inflow_rhs_buf,
-        &template.row_scale,
-    );
-    let cp = reference_patch_buf.state_col_patch_count();
-    reference_solver.set_col_bounds(
-        &reference_patch_buf.col_indices[..cp],
-        &reference_patch_buf.col_lower[..cp],
-        &reference_patch_buf.col_upper[..cp],
-    );
-    let pc = reference_patch_buf.forward_patch_count();
-    reference_solver.set_row_bounds(
-        &reference_patch_buf.indices[..pc],
-        &reference_patch_buf.lower[..pc],
-        &reference_patch_buf.upper[..pc],
-    );
-
-    // ---- owner: StageSolvePrep::run configured the way forward would ----
-    let mut owner_scratch = ScratchBuffers::new(&training_ctx, &ctx, sizing);
-    let mut owner_solver = RecordingSolver::default();
-    let mut owner_patch_buf = PatchBuffer::new(&state, &[], &[], &[]);
-    let params = StageSolvePrepParams {
-        state_source: StateSource(&current_state),
-        raw_noise: &raw_noise,
-    };
-    StageSolvePrep::run(
-        &mut owner_solver,
-        &mut owner_patch_buf,
-        &mut owner_scratch,
-        &ctx,
-        &training_ctx,
-        StageIdx(0),
-        &params,
-    );
-
-    assert_eq!(
-        owner_solver.col_bounds_calls, reference_solver.col_bounds_calls,
-        "set_col_bounds calls must match the open-coded forward block one-for-one"
-    );
-    assert_eq!(
-        owner_solver.row_bounds_calls, reference_solver.row_bounds_calls,
-        "set_row_bounds calls must match the open-coded forward block one-for-one"
-    );
-    assert_eq!(
-        owner_solver.col_bounds_calls.len(),
-        1,
-        "the minimal fixture pins exactly one state column (storage)"
-    );
-    assert_eq!(
-        owner_solver.row_bounds_calls.len(),
-        1,
-        "the minimal fixture patches exactly one z-inflow row"
+        &SingleSolvePrepParams {
+            state_source: StateSource(pinned_state),
+            raw_noise,
+            pool: &pool,
+            projection,
+            opening_solver: &StageOpeningSolver::Frozen,
+        },
+        std::iter::empty(),
     );
 }
 
 /// One bus, one NCS entity, availability factor `mean=0.5, std=0.1` — the D15
 /// NCS fixture shape (`lb_evaluate_stage_0_patches_ncs_bounds_per_opening` in
-/// `training/lower_bound.rs`), adapted to drive [`StageSolvePrep::run`].
+/// `training/lower_bound.rs`), adapted to drive [`StageSolvePrep::prepare_single`].
 fn make_ncs_stochastic_context() -> (StochasticContext, Stage) {
     let ncs_entity_id = EntityId(10);
     let bus = Bus {
@@ -556,16 +493,15 @@ fn make_ncs_stochastic_context() -> (StochasticContext, Stage) {
     (stoch, stage)
 }
 
-/// [`StageSolvePrep::run`]'s internal NCS-patch wiring must reach the solver
-/// with the same `set_col_bounds` call the pre-collapse inline pattern produces
-/// (`transform_ncs_noise` → `build_dense_ncs_col_indices` → `gather_dense_ncs_bounds`
-/// → `set_col_bounds`, as forward/backward/lower-bound each still write it inline).
+/// [`StageSolvePrep`]'s NCS-patch wiring must reach the solver with the same
+/// `set_col_bounds` call the direct sequence produces (`transform_ncs_noise` →
+/// `build_dense_ncs_col_indices` → `gather_dense_ncs_bounds` → `set_col_bounds`).
 // Rationale: the inline System/StochasticContext fixture and the reference vs.
 // owner comparison are one coherent scenario; splitting them into helpers would
 // scatter the setup the assertions depend on and obscure the test.
 #[allow(clippy::too_many_lines)]
 #[test]
-fn run_wires_ncs_patch_matching_pre_collapse_inline_pattern() {
+fn the_prep_wires_the_ncs_patch_matching_the_direct_sequence() {
     let (stoch, ncs_stage) = make_ncs_stochastic_context();
     let state = state_layout(0, 0);
     let templates = vec![StageTemplate {
@@ -589,12 +525,15 @@ fn run_wires_ncs_patch_matching_pre_collapse_inline_pattern() {
     let ncs_stochastic_dense_col = vec![0_usize];
     let ncs_stochastic_windows: Vec<(Option<i32>, Option<i32>)> = vec![(None, None)];
     let state_boxes = vec![unbounded_state_box(state.n_state)];
+    let couplings = vec![inflow_coupling_with_entries(0, &[])];
     let geometry = vec![StageGeometry {
         ncs_generation: 0..1,
         n_blks: 1,
         ..equipment_free_geometry(&[1]).remove(0)
     }];
     let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry)
+        .without_inflow_entries(1)
+        .inflow_coupling(&couplings)
         .ncs_stochastic_dense_col(&ncs_stochastic_dense_col)
         .ncs_stochastic_windows(&ncs_stochastic_windows)
         .ncs_max_gen(&ncs_max_gen)
@@ -613,14 +552,9 @@ fn run_wires_ncs_patch_matching_pre_collapse_inline_pattern() {
 
     let raw_noise = vec![0.37_f64];
     let sizing = minimal_sizing();
-    let params = StageSolvePrepParams {
-        state_source: StateSource(&[]),
-        raw_noise: &raw_noise,
-    };
 
     // ---- reference: transform_ncs_noise -> build indices -> gather -> set,
-    // called directly (the pre-collapse inline pattern), independent of
-    // StageSolvePrep::run's own wiring ----
+    // called directly, independent of StageSolvePrep's own wiring ----
     let mut reference_scratch = ScratchBuffers::new(&training_ctx, &ctx, sizing);
     let mut reference_solver = RecordingSolver::default();
     transform_ncs_noise(
@@ -653,24 +587,24 @@ fn run_wires_ncs_patch_matching_pre_collapse_inline_pattern() {
         &reference_scratch.ncs_col_upper_active_buf,
     );
 
-    // ---- owner: StageSolvePrep::run's internal NCS-patch wiring ----
+    // ---- owner: StageSolvePrep's NCS-patch wiring ----
     let mut owner_scratch = ScratchBuffers::new(&training_ctx, &ctx, sizing);
     let mut owner_solver = RecordingSolver::default();
-    let mut owner_patch_buf = PatchBuffer::new(&state, &[], &[], &[]);
-    StageSolvePrep::run(
+    let mut owner_patch_buf = PatchBuffer::new(&state, &[], &[], &couplings);
+    prepare_without_cut_rows(
         &mut owner_solver,
         &mut owner_patch_buf,
         &mut owner_scratch,
         &ctx,
         &training_ctx,
-        StageIdx(0),
-        &params,
+        &[],
+        &raw_noise,
     );
 
     assert_eq!(
         owner_solver.col_bounds_calls.last(),
         reference_solver.col_bounds_calls.last(),
-        "StageSolvePrep::run's NCS patch must match the pre-collapse inline pattern"
+        "the prep's NCS patch must match the direct sequence"
     );
     let (indices, lower, upper) = owner_solver
         .col_bounds_calls
@@ -683,9 +617,9 @@ fn run_wires_ncs_patch_matching_pre_collapse_inline_pattern() {
 }
 
 /// The state pin reaches the solver first, then the row bounds, then the NCS
-/// column bounds.
+/// column bounds, then the cut-row range.
 #[test]
-fn run_pins_the_state_columns_before_any_row_bound() {
+fn the_prep_pins_the_state_columns_before_any_row_bound() {
     let (stoch, ncs_stage) = make_ncs_stochastic_context();
     let state = state_layout(0, 0);
     let templates = vec![StageTemplate {
@@ -709,12 +643,15 @@ fn run_pins_the_state_columns_before_any_row_bound() {
     let ncs_stochastic_dense_col = vec![0_usize];
     let ncs_stochastic_windows: Vec<(Option<i32>, Option<i32>)> = vec![(None, None)];
     let state_boxes = vec![unbounded_state_box(state.n_state)];
+    let couplings = vec![inflow_coupling_with_entries(0, &[])];
     let geometry = vec![StageGeometry {
         ncs_generation: 0..1,
         n_blks: 1,
         ..equipment_free_geometry(&[1]).remove(0)
     }];
     let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry)
+        .without_inflow_entries(1)
+        .inflow_coupling(&couplings)
         .ncs_stochastic_dense_col(&ncs_stochastic_dense_col)
         .ncs_stochastic_windows(&ncs_stochastic_windows)
         .ncs_max_gen(&ncs_max_gen)
@@ -734,22 +671,18 @@ fn run_pins_the_state_columns_before_any_row_bound() {
     let raw_noise = vec![0.37_f64];
     let mut scratch = ScratchBuffers::new(&training_ctx, &ctx, minimal_sizing());
     let mut solver = RecordingSolver::default();
-    let mut patch_buf = PatchBuffer::new(&state, &[], &[], &[]);
-    let params = StageSolvePrepParams {
-        state_source: StateSource(&[]),
-        raw_noise: &raw_noise,
-    };
-    StageSolvePrep::run(
+    let mut patch_buf = PatchBuffer::new(&state, &[], &[], &couplings);
+    prepare_without_cut_rows(
         &mut solver,
         &mut patch_buf,
         &mut scratch,
         &ctx,
         &training_ctx,
-        StageIdx(0),
-        &params,
+        &[],
+        &raw_noise,
     );
 
-    assert_eq!(solver.calls, ['c', 'r', 'c']);
+    assert_eq!(solver.calls, ['c', 'r', 'c', 'R']);
     assert_eq!(
         solver.col_bounds_calls[0].0.len(),
         patch_buf.state_col_patch_count(),
@@ -757,10 +690,10 @@ fn run_pins_the_state_columns_before_any_row_bound() {
     );
 }
 
-/// `StageSolvePrep::run` patches the load-balance row and the z-inflow row from
+/// The prep patches the load-balance row and shifts the inflow-coupled row from
 /// the raw noise, each matching a direct reference call of its own transform.
 #[test]
-fn run_patches_the_load_row_and_the_z_row_from_the_raw_noise() {
+fn the_prep_patches_the_load_row_and_shifts_the_coupled_row_from_the_raw_noise() {
     let state = state_layout(1, 0);
     let stochastic = make_stochastic_context(Some(LoadModel {
         bus_id: EntityId(0),
@@ -772,7 +705,10 @@ fn run_patches_the_load_row_and_the_z_row_from_the_raw_noise() {
     let state_boxes = vec![unbounded_state_box(state.n_state)];
     let geometry_per_stage = vec![geometry_with_load_balance(1, 1, 1)];
     let load_bus_indices = [0_usize];
+    let couplings = vec![inflow_coupling_with_entries(1, &[(0, 0)])];
     let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry_per_stage)
+        .without_inflow_entries(1)
+        .inflow_coupling(&couplings)
         .load_bus_indices(&load_bus_indices);
     let ctx = fixture.ctx();
     let prep = PrepContext::new(&state, &stochastic);
@@ -792,19 +728,16 @@ fn run_patches_the_load_row_and_the_z_row_from_the_raw_noise() {
     let mut scratch = ScratchBuffers::new(&training_ctx, &ctx, sizing);
 
     let mut solver = RecordingSolver::default();
-    let mut patch_buf = PatchBuffer::new(&state, &load_bus_indices, &geometry_per_stage, &[]);
-    let params = StageSolvePrepParams {
-        state_source: StateSource(&current_state),
-        raw_noise: &raw_noise,
-    };
-    StageSolvePrep::run(
+    let mut patch_buf =
+        PatchBuffer::new(&state, &load_bus_indices, &geometry_per_stage, &couplings);
+    prepare_without_cut_rows(
         &mut solver,
         &mut patch_buf,
         &mut scratch,
         &ctx,
         &training_ctx,
-        StageIdx(0),
-        &params,
+        &current_state,
+        &raw_noise,
     );
 
     assert_eq!(solver.col_bounds_calls.len(), 1, "the state pin runs");
@@ -818,7 +751,7 @@ fn run_patches_the_load_row_and_the_z_row_from_the_raw_noise() {
         &mut reference_scratch.load_rhs_buf,
     );
     let mut reference_patch_buf =
-        PatchBuffer::new(&state, &load_bus_indices, &geometry_per_stage, &[]);
+        PatchBuffer::new(&state, &load_bus_indices, &geometry_per_stage, &couplings);
     let grid = BlockGrid::new(1, training_ctx.study_dims.max_deficit_segments);
     let load_rows = BlockRowFamily::per_block(1..2);
     reference_patch_buf.fill_load_patches(
@@ -828,23 +761,34 @@ fn run_patches_the_load_row_and_the_z_row_from_the_raw_noise() {
         &[0],
         &[],
     );
-    transform_inflow_noise(
+    evaluate_par_conditional_mean_batch(
+        stochastic.par(),
+        0,
+        &current_state[state.state_dim_lag_range()],
+        &mut reference_scratch.par_mean_buf,
+    );
+    realize_inflow(
         &raw_noise,
         StageIdx(0),
-        &current_state,
         &training_ctx,
         &mut reference_scratch,
+        None,
     );
     assert!(
-        (reference_scratch.z_inflow_rhs_buf[0] - 109.0).abs() < 1e-12,
+        (reference_scratch.realized_inflow_buf[0] - 109.0).abs() < 1e-12,
         "PAR(0) with mean 100 and std 30 at eta 0.3 gives 109, got {}",
-        reference_scratch.z_inflow_rhs_buf[0]
+        reference_scratch.realized_inflow_buf[0]
+    );
+    reference_patch_buf.fill_inflow_shift_patches(
+        &couplings[0],
+        &reference_scratch.realized_inflow_buf,
+        &[],
     );
 
     let (indices, lower, upper) = solver
         .row_bounds_calls
         .last()
-        .expect("the load and z-inflow patches must issue one set_row_bounds call");
+        .expect("the load and inflow patches must issue one set_row_bounds call");
     assert_eq!(solver.row_bounds_calls.len(), 1);
     assert_eq!(indices, &[1_usize, 0_usize]);
     assert_eq!(
@@ -854,29 +798,34 @@ fn run_patches_the_load_row_and_the_z_row_from_the_raw_noise() {
     );
     assert_eq!(
         (lower[1], upper[1]),
-        (
-            reference_scratch.z_inflow_rhs_buf[0],
-            reference_scratch.z_inflow_rhs_buf[0]
-        ),
-        "the z-inflow row must match the direct transform_inflow_noise reference"
+        (reference_patch_buf.lower[1], reference_patch_buf.upper[1]),
+        "the coupled row must match the direct realize_inflow + fill_inflow_shift_patches reference"
+    );
+    assert_eq!(
+        (lower[1], upper[1]),
+        (109.0, 109.0),
+        "the coupled row is shifted by the realized inflow"
     );
 }
 
-/// `StageSolvePrep::run` patches the inflow-slack bounds after the other patches
+/// The prep patches the inflow-slack bounds after the other patches
 /// only under the truncation methods: PAR(0) with mean 100 and std 30 at η = -5
 /// gives `r = -50`, so `TruncationWithPenalty`'s cap is 50 and `Truncation` fixes
 /// the slack at `[50, 50]`; `Penalty` gets no slack patch.
 #[test]
-fn run_patches_the_inflow_slack_bounds_only_under_the_truncation_methods() {
+fn the_prep_patches_the_inflow_slack_bounds_only_under_the_truncation_methods() {
     let state = state_layout(1, 0);
     let stochastic = make_stochastic_context(None);
     let templates = vec![minimal_forward_template()];
     let state_boxes = vec![unbounded_state_box(state.n_state)];
+    let couplings = vec![inflow_coupling_with_entries(1, &[(0, 0)])];
     let geometry = vec![StageGeometry {
         inflow_slack: 4..5,
         ..equipment_free_geometry(&[1]).remove(0)
     }];
-    let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry)
+        .without_inflow_entries(1)
+        .inflow_coupling(&couplings);
     let ctx = fixture.ctx();
     let prep = PrepContext::new(&state, &stochastic);
     let study_dims = study_dims();
@@ -899,19 +848,15 @@ fn run_patches_the_inflow_slack_bounds_only_under_the_truncation_methods() {
         let training_ctx = prep.ctx(&state, &stochastic, &study_dims, &method, &[]);
         let mut scratch = ScratchBuffers::new(&training_ctx, &ctx, minimal_sizing());
         let mut solver = RecordingSolver::default();
-        let mut patch_buf = PatchBuffer::new(&state, &[], &geometry, &[]);
-        let params = StageSolvePrepParams {
-            state_source: StateSource(&current_state),
-            raw_noise: &raw_noise,
-        };
-        StageSolvePrep::run(
+        let mut patch_buf = PatchBuffer::new(&state, &[], &geometry, &couplings);
+        prepare_without_cut_rows(
             &mut solver,
             &mut patch_buf,
             &mut scratch,
             &ctx,
             &training_ctx,
-            StageIdx(0),
-            &params,
+            &current_state,
+            &raw_noise,
         );
         assert_eq!(
             solver.col_bounds_calls.len(),
@@ -952,7 +897,7 @@ impl CompactCase {
     }
 
     fn with_stochastic(stochastic: StochasticContext, cuts: &[(f64, [f64; 3])]) -> Self {
-        let state = StateSpace::new_compact(
+        let state = StateSpace::new(
             1,
             2,
             Vec::new(),
@@ -997,6 +942,7 @@ impl CompactCase {
 
     fn fixture(&self) -> StageContextFixture<'_> {
         StageContextFixture::new(&self.templates, &self.state_boxes, &self.geometry)
+            .without_inflow_entries(1)
             .inflow_coupling(&self.couplings)
     }
 
@@ -1008,7 +954,7 @@ impl CompactCase {
         ScratchBuffers::new(training_ctx, ctx, sizing)
     }
 
-    fn pin_folded(
+    fn pin_and_bracket(
         &self,
         trial_state: &[f64],
         slots: &[usize],
@@ -1025,7 +971,7 @@ impl CompactCase {
 
     /// The pin phase on [`TRIAL_STATE`], then, with a recorder cleared of the pin's
     /// calls, the opening phase on `raw_noise`.
-    fn open_folded(
+    fn patch_opening(
         &self,
         method: InflowNonNegativityMethod,
         slots: &[usize],
@@ -1122,13 +1068,13 @@ impl CompactCase {
         prepare(&mut scratch);
         let mut solver = RecordingSolver::default();
         let mut patch_buf = PatchBuffer::new(&self.state, &[], &self.geometry, &self.couplings);
-        let cut_rows = FoldedCutRows {
+        let cut_rows = LoadedCutRows {
             pool: &self.pool,
             projection: &self.prep.cut_state_layouts[0],
             slots,
             first_row: ctx.template(StageIdx(0)).num_rows,
         };
-        StageSolvePrep::pin_folded(
+        StageSolvePrep::pin_and_bracket(
             &mut solver,
             &mut patch_buf,
             &mut scratch,
@@ -1142,7 +1088,7 @@ impl CompactCase {
         let mut rhs_after_each = Vec::new();
         for raw_noise in raw_noises {
             solver = RecordingSolver::default();
-            StageSolvePrep::open_folded(
+            StageSolvePrep::patch_opening(
                 &mut solver,
                 &mut patch_buf,
                 &mut scratch,
@@ -1166,7 +1112,7 @@ const TRIAL_STATE: [f64; 3] = [42.0, 5.0, 7.0];
 fn pin_folded_pins_the_columned_regions_and_skips_the_compact_lags() {
     let case = CompactCase::new(&[(1.0, [4.0, 2.0, 3.0])]);
 
-    let (solver, patch_buf, _) = case.pin_folded(&TRIAL_STATE, &[0], BracketSource::Computed);
+    let (solver, patch_buf, _) = case.pin_and_bracket(&TRIAL_STATE, &[0], BracketSource::Computed);
 
     assert_eq!(solver.calls, ['c']);
     assert_eq!(
@@ -1180,7 +1126,7 @@ fn pin_folded_pins_the_columned_regions_and_skips_the_compact_lags() {
 fn pin_folded_brackets_each_cut_row_from_the_raw_trial_state() {
     let case = CompactCase::new(&[(1.0, [4.0, 2.0, 3.0])]);
 
-    let (_, _, scratch) = case.pin_folded(&TRIAL_STATE, &[0], BracketSource::Computed);
+    let (_, _, scratch) = case.pin_and_bracket(&TRIAL_STATE, &[0], BracketSource::Computed);
 
     let mut expected_mean = vec![0.0; 1];
     evaluate_par_conditional_mean_batch(
@@ -1203,7 +1149,7 @@ fn pin_folded_reads_the_cut_rows_in_slot_list_order() {
     ]);
     let slots = [2, 0];
 
-    let (_, _, scratch) = case.pin_folded(&TRIAL_STATE, &slots, BracketSource::Computed);
+    let (_, _, scratch) = case.pin_and_bracket(&TRIAL_STATE, &slots, BracketSource::Computed);
 
     assert_eq!(scratch.cut_bracket_buf.len(), slots.len());
     for (k, &slot) in slots.iter().enumerate() {
@@ -1240,7 +1186,7 @@ fn differ_from_the_intercepts(case: &CompactCase, brackets: &[f64]) -> bool {
 }
 
 fn computed_brackets(case: &CompactCase) -> Vec<f64> {
-    let (_, _, scratch) = case.pin_folded(&TRIAL_STATE, &SLAB_SLOTS, BracketSource::Computed);
+    let (_, _, scratch) = case.pin_and_bracket(&TRIAL_STATE, &SLAB_SLOTS, BracketSource::Computed);
     scratch.cut_bracket_buf
 }
 
@@ -1281,7 +1227,7 @@ fn pin_folded_slab_hit_equals_the_computed_brackets_and_does_not_count() {
     let case = slab_case();
     let reference = slab_reference(&case);
 
-    let (_, _, scratch) = case.pin_folded(
+    let (_, _, scratch) = case.pin_and_bracket(
         &TRIAL_STATE,
         &SLAB_SLOTS,
         BracketSource::Slab(Some(&reference[..1])),
@@ -1297,7 +1243,7 @@ fn pin_folded_slab_reads_the_prefix_and_computes_the_delta() {
     let reference = slab_reference(&case);
     let perturbed: Vec<f64> = reference.iter().map(|b| b + 1000.0).collect();
 
-    let (_, _, scratch) = case.pin_folded(
+    let (_, _, scratch) = case.pin_and_bracket(
         &TRIAL_STATE,
         &SLAB_SLOTS,
         BracketSource::Slab(Some(&perturbed[..1])),
@@ -1316,14 +1262,14 @@ fn pin_folded_slab_full_prefix_computes_nothing() {
     let reference = slab_reference(&case);
     let perturbed: Vec<f64> = reference.iter().map(|b| b + 1000.0).collect();
 
-    let (_, _, scratch) = case.pin_folded(
+    let (_, _, scratch) = case.pin_and_bracket(
         &TRIAL_STATE,
         &SLAB_SLOTS,
         BracketSource::Slab(Some(&reference)),
     );
     assert_eq!(bits(&scratch.cut_bracket_buf), bits(&reference));
 
-    let (_, _, scratch) = case.pin_folded(
+    let (_, _, scratch) = case.pin_and_bracket(
         &TRIAL_STATE,
         &SLAB_SLOTS,
         BracketSource::Slab(Some(&perturbed)),
@@ -1337,7 +1283,8 @@ fn pin_folded_slab_miss_equals_the_computed_brackets_and_counts() {
     let case = slab_case();
     let reference = slab_reference(&case);
 
-    let (_, _, scratch) = case.pin_folded(&TRIAL_STATE, &SLAB_SLOTS, BracketSource::Slab(None));
+    let (_, _, scratch) =
+        case.pin_and_bracket(&TRIAL_STATE, &SLAB_SLOTS, BracketSource::Slab(None));
 
     assert_eq!(bits(&scratch.cut_bracket_buf), bits(&reference));
     assert_eq!(scratch.slab_misses, 1);
@@ -1347,7 +1294,7 @@ fn pin_folded_slab_miss_equals_the_computed_brackets_and_counts() {
 fn open_folded_pushes_the_shifted_rows_then_the_column_bounds_then_the_cut_range() {
     let case = CompactCase::new(&[(1.0, [4.0, 2.0, 3.0])]);
 
-    let (solver, _, _) = case.open_folded(InflowNonNegativityMethod::Truncation, &[0], &[0.5]);
+    let (solver, _, _) = case.patch_opening(InflowNonNegativityMethod::Truncation, &[0], &[0.5]);
 
     assert_eq!(solver.calls, ['r', 'c', 'R']);
     assert_eq!(
@@ -1365,7 +1312,7 @@ fn open_folded_pushes_the_shifted_rows_then_the_column_bounds_then_the_cut_range
 fn open_folded_writes_cut_rhs_as_bracket_plus_noise_term() {
     let one_cut = CompactCase::new(&[(1.0, [4.0, 2.0, 3.0])]);
 
-    let (_, _, scratch) = one_cut.open_folded(InflowNonNegativityMethod::None, &[0], &[0.5]);
+    let (_, _, scratch) = one_cut.patch_opening(InflowNonNegativityMethod::None, &[0], &[0.5]);
 
     assert_eq!(
         bits(&scratch.cut_rhs_buf),
@@ -1381,7 +1328,7 @@ fn open_folded_writes_cut_rhs_as_bracket_plus_noise_term() {
     ]);
     let slots = [2, 0];
 
-    let (solver, _, scratch) = case.open_folded(InflowNonNegativityMethod::None, &slots, &[0.5]);
+    let (solver, _, scratch) = case.patch_opening(InflowNonNegativityMethod::None, &slots, &[0.5]);
 
     let mut noise_term = vec![0.0; 1];
     evaluate_par_noise_term_batch(case.stochastic.par(), 0, &[0.5], &mut noise_term);
@@ -1567,7 +1514,7 @@ fn one_pin_serves_every_opening_after_it() {
     let etas = [-0.5, 1.5];
     let lag_point = case.prep.cut_state_layouts[0].lag_point();
 
-    let (_, _, pinned) = case.pin_folded(&TRIAL_STATE, &slots, BracketSource::Computed);
+    let (_, _, pinned) = case.pin_and_bracket(&TRIAL_STATE, &slots, BracketSource::Computed);
     let (_, _, scratch, rhs) = case.run_openings(
         InflowNonNegativityMethod::None,
         &TRIAL_STATE,
@@ -1672,7 +1619,7 @@ fn without_a_par_model_p_w_and_the_realized_inflow_are_positive_zero() {
 fn open_folded_shifts_the_coupled_rows_by_the_realized_inflow() {
     let case = CompactCase::new(&[(1.0, [4.0, 2.0, 3.0])]);
 
-    let (solver, _, scratch) = case.open_folded(InflowNonNegativityMethod::None, &[0], &[0.5]);
+    let (solver, _, scratch) = case.patch_opening(InflowNonNegativityMethod::None, &[0], &[0.5]);
 
     assert_eq!(bits(&scratch.realized_inflow_buf), bits(&[115.0]));
     assert_eq!(solver.calls, ['r', 'R']);
@@ -1690,75 +1637,33 @@ fn open_folded_shifts_the_coupled_rows_by_the_realized_inflow() {
 }
 
 #[test]
-fn folded_slack_bounds_match_the_logical_arm_bit_for_bit() {
+fn slack_bounds_follow_the_method_and_write_positive_zero_for_a_non_negative_inflow() {
     let case = CompactCase::new(&[(1.0, [4.0, 2.0, 3.0])]);
+    let positive_zero = 0.0_f64.to_bits();
 
     for method in [
         InflowNonNegativityMethod::Truncation,
         InflowNonNegativityMethod::TruncationWithPenalty,
-        InflowNonNegativityMethod::Penalty,
-        InflowNonNegativityMethod::None,
     ] {
-        for eta in [-5.0_f64, 0.5] {
-            let raw_noise = [eta];
-            let fixture = case.fixture();
-            let ctx = fixture.ctx();
-            let training_ctx = case.prep.ctx(
-                &case.state,
-                &case.stochastic,
-                &case.study_dims,
-                &method,
-                &[],
-            );
-            let mut logical = CompactCase::scratch(&ctx, &training_ctx);
-            transform_inflow_noise(
-                &raw_noise,
-                StageIdx(0),
-                &TRIAL_STATE,
-                &training_ctx,
-                &mut logical,
-            );
+        let (_, _, negative) = case.patch_opening(method, &[], &[-5.0]);
+        let (lower, upper) = match method {
+            InflowNonNegativityMethod::Truncation => ([50.0], [50.0]),
+            _ => ([0.0], [50.0]),
+        };
+        assert_eq!(negative.inflow_slack_lower_buf, lower, "{method:?}: lower");
+        assert_eq!(negative.inflow_slack_upper_buf, upper, "{method:?}: upper");
 
-            let (_, _, mut folded) =
-                case.run_folded(method, &TRIAL_STATE, &[], BracketSource::Computed, None);
-            transform_inflow_noise_folded(
-                &raw_noise,
-                StageIdx(0),
-                &training_ctx,
-                &mut folded,
-                None,
-            );
-
-            let label = format!("{method:?}, eta {eta}");
-            assert_eq!(
-                bits(&folded.inflow_slack_lower_buf),
-                bits(&logical.inflow_slack_lower_buf),
-                "{label}: lower"
-            );
-            assert_eq!(
-                bits(&folded.inflow_slack_upper_buf),
-                bits(&logical.inflow_slack_upper_buf),
-                "{label}: upper"
-            );
-            if method.truncates() {
-                assert_eq!(
-                    bits(&folded.realized_inflow_buf),
-                    bits(&logical.realized_inflow_buf),
-                    "{label}: realized inflow"
-                );
-                if eta > 0.0 {
-                    assert_eq!(
-                        bits(&folded.inflow_slack_upper_buf),
-                        bits(&[0.0]),
-                        "{label}: a non-negative inflow writes +0.0"
-                    );
-                }
-            }
-            if method == InflowNonNegativityMethod::Truncation && eta < 0.0 {
-                assert_eq!(folded.inflow_slack_lower_buf, [50.0]);
-                assert_eq!(folded.inflow_slack_upper_buf, [50.0]);
-            }
-        }
+        let (_, _, positive) = case.patch_opening(method, &[], &[0.5]);
+        assert_eq!(
+            bits(&positive.inflow_slack_lower_buf),
+            [positive_zero],
+            "{method:?}: lower"
+        );
+        assert_eq!(
+            bits(&positive.inflow_slack_upper_buf),
+            [positive_zero],
+            "{method:?}: upper"
+        );
     }
 }
 
@@ -1766,7 +1671,7 @@ fn folded_slack_bounds_match_the_logical_arm_bit_for_bit() {
 fn open_folded_with_no_cut_rows_pushes_an_empty_range() {
     let case = CompactCase::new(&[(1.0, [4.0, 2.0, 3.0])]);
 
-    let (solver, _, scratch) = case.open_folded(InflowNonNegativityMethod::None, &[], &[0.5]);
+    let (solver, _, scratch) = case.patch_opening(InflowNonNegativityMethod::None, &[], &[0.5]);
 
     assert_eq!(solver.calls.last(), Some(&'R'));
     assert_eq!(solver.row_range_calls, [(1, vec![])]);
@@ -1790,14 +1695,14 @@ fn prepare_folded_single_makes_the_pin_then_open_calls_bit_for_bit() {
 
     let (single, single_scratch) =
         case.record(method, |solver, patch_buf, scratch, ctx, training_ctx| {
-            StageSolvePrep::prepare_folded_single(
+            StageSolvePrep::prepare_single(
                 solver,
                 patch_buf,
                 scratch,
                 ctx,
                 training_ctx,
                 StageIdx(0),
-                &FoldedSolvePrepParams {
+                &SingleSolvePrepParams {
                     state_source: StateSource(&TRIAL_STATE),
                     raw_noise: &raw_noise,
                     pool: &case.pool,
@@ -1808,13 +1713,13 @@ fn prepare_folded_single_makes_the_pin_then_open_calls_bit_for_bit() {
             );
         });
     let (two_step, _) = case.record(method, |solver, patch_buf, scratch, ctx, training_ctx| {
-        let rows = FoldedCutRows {
+        let rows = LoadedCutRows {
             pool: &case.pool,
             projection,
             slots: &STAGE_NOISE_SLOTS,
             first_row: ctx.template(StageIdx(0)).num_rows,
         };
-        StageSolvePrep::pin_folded(
+        StageSolvePrep::pin_and_bracket(
             solver,
             patch_buf,
             scratch,
@@ -1825,7 +1730,7 @@ fn prepare_folded_single_makes_the_pin_then_open_calls_bit_for_bit() {
             &rows,
             BracketSource::Computed,
         );
-        StageSolvePrep::open_folded(
+        StageSolvePrep::patch_opening(
             solver,
             patch_buf,
             scratch,
@@ -1862,13 +1767,13 @@ fn the_lazy_opening_solver_leaves_the_cut_range_to_the_lazy_solve() {
         case.record(
             InflowNonNegativityMethod::None,
             |solver, patch_buf, scratch, ctx, training_ctx| {
-                let rows = FoldedCutRows {
+                let rows = LoadedCutRows {
                     pool: &case.pool,
                     projection: &case.prep.cut_state_layouts[0],
                     slots: &STAGE_NOISE_SLOTS,
                     first_row: ctx.template(StageIdx(0)).num_rows,
                 };
-                StageSolvePrep::pin_folded(
+                StageSolvePrep::pin_and_bracket(
                     solver,
                     patch_buf,
                     scratch,
@@ -1879,7 +1784,7 @@ fn the_lazy_opening_solver_leaves_the_cut_range_to_the_lazy_solve() {
                     &rows,
                     BracketSource::Computed,
                 );
-                StageSolvePrep::open_folded(
+                StageSolvePrep::patch_opening(
                     solver,
                     patch_buf,
                     scratch,

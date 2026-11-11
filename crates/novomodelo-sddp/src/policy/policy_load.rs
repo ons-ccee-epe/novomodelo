@@ -4538,6 +4538,29 @@ mod tests {
     }
 
     #[test]
+    fn a_basis_with_lag_and_z_columns_is_dropped_on_its_column_count() {
+        let (hydros, depth, cols, rows) = (2, 3, 40, 30);
+        let record = dim_basis_record(cols + hydros * (depth + 1), rows + hydros, 0);
+        let (node_ids, node_pools) = single_node_ids_and_pools();
+
+        let load = super::build_basis_cache_for_nodes(
+            &[record],
+            &[],
+            &node_ids,
+            &node_pools,
+            &[(cols, rows)],
+        );
+
+        assert_only_record_dropped(
+            &load,
+            StoredBasisMisfit::Columns {
+                expected: 40,
+                found: 48,
+            },
+        );
+    }
+
+    #[test]
     fn stored_basis_with_fewer_rows_than_the_template_is_dropped() {
         let load = load_single_record(dim_basis_record(4, 2, 0), &[]);
 

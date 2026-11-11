@@ -8,7 +8,7 @@ use novomodelo_core::temporal::StageStateConfig;
 
 use super::{CutSlot, InCol, OutCol, REGION_ORDER, StateDim, StateRegion, StateSpace};
 
-/// Cut-slot ranges of the lag point a folded cut row is evaluated at: Φ(h, 0) =
+/// Cut-slot ranges of the lag point a cut row is evaluated at: Φ(h, 0) =
 /// `ẑ_h`, the realized inflow of this stage, and Φ(h, l) = `â_(h, l−1)` for
 /// l ≥ 1, the incoming lag one step back. Slots are lag-major: with N hydros,
 /// slot `lag0.start + l·N + h` holds (h, l).
@@ -50,11 +50,12 @@ impl CutLagPoint {
 ///
 /// ## Default-identity contract
 ///
-/// When `storage: true, inflow_lags: true` the projection is the identity:
-/// [`Self::n_slots`] equals [`StateSpace::n_state`],
-/// [`Self::incoming_pairs`] yields `(CutSlot(j), the global incoming column of j)`
-/// for every `j`, and [`Self::render_pairs`] reproduces the global
-/// `nonzero_state_indices` render exactly. Holds because the construction walks
+/// When `storage: true, inflow_lags: true` the projection is the identity on
+/// dimensions: [`Self::n_slots`] equals [`StateSpace::n_state`], slot `j` projects
+/// dimension `j`, [`Self::incoming_pairs`] yields
+/// `(CutSlot(j), the global incoming column of j)` for every `j` outside the lag
+/// region, and [`Self::render_pairs`] reproduces the global
+/// `nonzero_state_indices` render of those dimensions exactly. Holds because the construction walks
 /// the state index space in `REGION_ORDER`'s storage → lag → buckets →
 /// anticipated order — the single owner [`StateSpace::set_nonzero_mask`] also
 /// walks. The forbidden alternative is reordering dimensions (e.g. anticipated
@@ -65,10 +66,9 @@ impl CutLagPoint {
 ///
 /// Incoming ([`Self::incoming_pairs`]) and outgoing
 /// ([`Self::outgoing_pairs`]) both span every slot of `[0, n_slots())` that has an
-/// LP column, including structurally-zero AR- and anticipated-padding slots,
-/// because dual extraction and DCS scoring read every enabled dimension; under
-/// `Compact` a lag slot has no LP column, so neither yields it and it is never
-/// rendered.
+/// LP column, including structurally-zero anticipated-padding slots, because dual
+/// extraction and DCS scoring read every enabled dimension; a lag slot has no LP
+/// column, so neither yields it and it is never rendered.
 /// Render ([`Self::render_pairs`]) is the **nonzero subset** (padding dropped,
 /// matching the global `nonzero_state_indices`), because a cut row emits no entry
 /// for a structurally-zero coefficient.
@@ -78,7 +78,7 @@ pub struct CutStateProjection {
     /// global→projected gather index (identity for an all-enabled pool).
     global_state_indices: Vec<StateDim>,
 
-    /// Cut slots that have an LP column, ascending; a compact lag slot has none.
+    /// Cut slots that have an LP column, ascending; a lag slot has none.
     columned_slots: Vec<CutSlot>,
 
     /// LP incoming column per columned slot (extraction hot path); parallel to
@@ -149,7 +149,7 @@ impl CutStateProjection {
 
         for region in REGION_ORDER {
             if region.cut_enabled(state_config) {
-                let has_columns = global.has_lp_columns(region);
+                let has_columns = region.has_lp_columns();
                 for g in global.state_dim_range(region) {
                     push_dim(StateDim::new(g), has_columns);
                 }
@@ -212,8 +212,7 @@ impl CutStateProjection {
         self.global_state_indices.len()
     }
 
-    /// Count of slots that have an LP column: [`Self::n_slots`] on the logical
-    /// layout, [`Self::n_slots`] less the lag slots on the compact one.
+    /// Count of slots that have an LP column: [`Self::n_slots`] less the lag slots.
     #[inline]
     #[must_use]
     pub fn columned_len(&self) -> usize {
@@ -253,8 +252,7 @@ impl CutStateProjection {
     /// reduced pool selects the enabled dimensions, which are NOT a prefix (a
     /// `storage:false` pool begins at the first inflow-lag [`StateDim`]). Index a
     /// `StateDim`-packed trial-state vector through this, never the columns of
-    /// [`Self::outgoing_pairs`], which remap inflow-lag slots off the [`StateDim`]
-    /// axis (to `z_inflow`, outside `[0, n_state)`).
+    /// [`Self::outgoing_pairs`], which skip the lag slots.
     ///
     /// Neither a [`StateDim`] nor an [`OutCol`] can stand in for the [`CutSlot`]
     /// `s`: state-dimension and cut-slot space diverge under a non-identity
@@ -350,9 +348,8 @@ impl CutStateProjection {
     /// ascending slot order — storage → lag → buckets → anticipated for the
     /// enabled subset.
     ///
-    /// A compact lag slot has no LP column and is skipped; a caller that must
-    /// read every slot checks [`Self::columned_len`] against [`Self::n_slots`]
-    /// first.
+    /// A lag slot has no LP column and is skipped; a caller that must read every
+    /// slot checks [`Self::columned_len`] against [`Self::n_slots`] first.
     #[inline]
     #[must_use]
     pub fn incoming_pairs(&self) -> impl ExactSizeIterator<Item = (CutSlot, InCol)> + '_ {
@@ -379,18 +376,15 @@ impl CutStateProjection {
     }
 
     /// Iterate the cut-row render pairs `(cut_slot, outgoing_lp_column)` for this
-    /// pool, in nonzero-subset order (storage → lag → buckets → anticipated,
-    /// padding slots dropped).
+    /// pool, in nonzero-subset order (storage → buckets → anticipated, padding
+    /// slots dropped).
     ///
     /// `cut_slot` indexes a stored cut's `coefficients` slice (length
     /// [`Self::n_slots`]); `outgoing_lp_column` is where the cut-row builder places
-    /// the negated, scaled coefficient — identity for storage; for a lag
-    /// dimension the outgoing state (after `shift_lag_state`) holds `z_inflow`
-    /// at lag 0 and the shifted incoming lags at lag 1+, so the column
-    /// addresses `z_inflow` / incoming lag `l−1`; under `Compact` a lag slot has
-    /// no LP column and is never rendered. For an all-enabled logical study this
-    /// reproduces the global `nonzero_state_indices` render — same reduced index,
-    /// same column.
+    /// the negated, scaled coefficient. A lag slot has no LP column and is never
+    /// rendered. For an all-enabled pool this reproduces the global
+    /// `nonzero_state_indices` render of the columned dimensions — same reduced
+    /// index, same column.
     #[inline]
     #[must_use]
     pub fn render_pairs(&self) -> impl ExactSizeIterator<Item = (CutSlot, OutCol)> + '_ {
@@ -514,7 +508,6 @@ mod tests {
         ChainRuleSlots, CutSlot, CutStateProjection, InCol, OutCol, StageStateConfig, StateDim,
     };
     use crate::indexer::{HydroSys, StateRegion, StateSpace};
-    use crate::lead_time::AnticipatedResolution;
     use crate::test_support::constant_lead_resolution;
 
     fn finalized(
@@ -563,21 +556,53 @@ mod tests {
         inflow_lags: true,
     };
 
-    /// Per-slot incoming and outgoing columns of a projection whose every slot
-    /// has an LP column; asserts both pair views cover exactly `0..n_slots()`.
-    pub(super) fn collect_logical_columns(cut: &CutStateProjection) -> (Vec<InCol>, Vec<OutCol>) {
-        let all_slots: Vec<usize> = (0..cut.n_slots()).collect();
-        let (incoming_slots, incoming): (Vec<usize>, Vec<InCol>) = cut
-            .incoming_pairs()
-            .map(|(slot, col)| (slot.get(), col))
-            .unzip();
-        let (outgoing_slots, outgoing): (Vec<usize>, Vec<OutCol>) = cut
-            .outgoing_pairs()
-            .map(|(slot, col)| (slot.get(), col))
-            .unzip();
-        assert_eq!(incoming_slots, all_slots, "incoming pairs skip a slot");
-        assert_eq!(outgoing_slots, all_slots, "outgoing pairs skip a slot");
+    type SlotColumns = (Vec<Option<InCol>>, Vec<Option<OutCol>>);
+
+    /// Per-slot incoming and outgoing columns, `None` exactly at the lag slots;
+    /// asserts both pair views cover every other slot.
+    pub(super) fn collect_columns(cut: &CutStateProjection) -> SlotColumns {
+        let lag = cut.lag_point().full();
+        let mut incoming = vec![None; cut.n_slots()];
+        let mut outgoing = vec![None; cut.n_slots()];
+        for (slot, col) in cut.incoming_pairs() {
+            incoming[slot.get()] = Some(col);
+        }
+        for (slot, col) in cut.outgoing_pairs() {
+            outgoing[slot.get()] = Some(col);
+        }
+        for (j, (in_col, out_col)) in incoming.iter().zip(&outgoing).enumerate() {
+            assert_eq!(in_col.is_none(), lag.contains(&j), "incoming slot {j}");
+            assert_eq!(out_col.is_none(), lag.contains(&j), "outgoing slot {j}");
+        }
+        assert_eq!(incoming.iter().flatten().count(), cut.columned_len());
         (incoming, outgoing)
+    }
+
+    /// The global resolvers' columns of state dimension `dim`, `None` for a lag
+    /// dimension, which has no LP column.
+    pub(super) fn global_columns(
+        global: &StateSpace,
+        dim: usize,
+    ) -> (Option<InCol>, Option<OutCol>) {
+        if global.state_dim_lag_range().contains(&dim) {
+            return (None, None);
+        }
+        let dim = StateDim::new(dim);
+        (
+            Some(global.state_to_lp_incoming_column(dim)),
+            Some(global.lp_column_for_state(dim)),
+        )
+    }
+
+    /// The global nonzero-mask render without the lag dimensions.
+    pub(super) fn global_render(global: &StateSpace) -> Vec<(CutSlot, OutCol)> {
+        let lag = global.state_dim_lag_range();
+        global
+            .nonzero_state_indices
+            .iter()
+            .filter(|g| !lag.contains(&g.get()))
+            .map(|&g| (CutSlot::new(g.get()), global.lp_column_for_state(g)))
+            .collect()
     }
 
     #[test]
@@ -587,11 +612,11 @@ mod tests {
 
         assert_eq!(global.n_state, 9);
         assert_eq!(cut.n_slots(), global.n_state);
-        let (incoming, _) = collect_logical_columns(&cut);
+        let (incoming, _) = collect_columns(&cut);
         for (j, &col) in incoming.iter().enumerate() {
             assert_eq!(
                 col,
-                global.state_to_lp_incoming_column(StateDim::new(j)),
+                global_columns(&global, j).0,
                 "default projection must match the global resolver at j={j}"
             );
         }
@@ -603,11 +628,11 @@ mod tests {
         let cut = CutStateProjection::new(&global, STORAGE_ONLY);
 
         assert_eq!(cut.n_slots(), 3);
-        let (incoming, _) = collect_logical_columns(&cut);
+        let (incoming, _) = collect_columns(&cut);
         for (j, &col) in incoming.iter().enumerate() {
             assert_eq!(
                 col,
-                InCol::new(global.storage_in.start + j),
+                Some(InCol::new(global.storage_in.start + j)),
                 "storage-only slot {j} must map to storage_in.start + {j}"
             );
         }
@@ -734,41 +759,37 @@ mod tests {
         let cut = CutStateProjection::new(&global, STORAGE_ONLY);
 
         assert_eq!(cut.n_slots(), 4);
-        let (incoming, _) = collect_logical_columns(&cut);
+        let (incoming, _) = collect_columns(&cut);
         for (j, &col) in incoming.iter().take(2).enumerate() {
-            assert_eq!(col, InCol::new(global.storage_in.start + j));
+            assert_eq!(col, Some(InCol::new(global.storage_in.start + j)));
         }
         for i in 0..2 {
             assert_eq!(
                 incoming[2 + i],
-                InCol::new(global.commit_in.start + i),
+                Some(InCol::new(global.commit_in.start + i)),
                 "anticipated slot {i} must map to commit_in.start + {i}"
             );
         }
     }
 
     /// `storage: false`: cut state begins at the first enabled dimension, the
-    /// inflow lags (`N*L = 2` slots, no storage or anticipated).
+    /// inflow lags (`N*L = 2` slots, no storage or anticipated), none of which has
+    /// an LP column.
     #[test]
     fn storage_disabled_begins_at_first_enabled_dimension() {
         let global = finalized(2, 1, &[]);
-        let cut = CutStateProjection::new(
-            &global,
-            StageStateConfig {
-                storage: false,
-                inflow_lags: true,
-            },
-        );
+        let cut = CutStateProjection::new(&global, LAGS_ONLY);
 
         assert_eq!(cut.n_slots(), global.hydro_count * global.max_par_order);
-        let (incoming, _) = collect_logical_columns(&cut);
-        for (i, &col) in incoming.iter().enumerate() {
-            assert_eq!(
-                col,
-                InCol::new(global.inflow_lags.start + i),
-                "first enabled dimension is the inflow lags: slot {i}"
-            );
-        }
+        assert_eq!(
+            cut.global_state_index(CutSlot::new(0)),
+            StateDim::new(global.state_dim_lag_range().start),
+            "first enabled dimension is the inflow lags"
+        );
+        assert_eq!(cut.lag_point().full(), 0..cut.n_slots());
+        assert_eq!(cut.columned_len(), 0);
+        assert_eq!(cut.incoming_pairs().count(), 0);
+        assert_eq!(cut.render_len(), 0);
     }
 
     // ── Outgoing projection / render-pairs tests ──────────────────────────────
@@ -779,26 +800,23 @@ mod tests {
         let cut = CutStateProjection::new(&global, ALL_ENABLED);
 
         assert_eq!(cut.n_slots(), global.n_state);
-        let (_, outgoing) = collect_logical_columns(&cut);
+        let (_, outgoing) = collect_columns(&cut);
         for (j, &col) in outgoing.iter().enumerate() {
             assert_eq!(
                 col,
-                global.lp_column_for_state(StateDim::new(j)),
+                global_columns(&global, j).1,
                 "default outgoing projection must match the global resolver at j={j}"
             );
         }
 
         let rendered: Vec<(CutSlot, OutCol)> = cut.render_pairs().collect();
-        let global_render: Vec<(CutSlot, OutCol)> = global
-            .nonzero_state_indices
-            .iter()
-            .map(|&g| (CutSlot::new(g.get()), global.lp_column_for_state(g)))
-            .collect();
+        let expected = global_render(&global);
         assert_eq!(
-            rendered, global_render,
-            "render_pairs must reproduce the global nonzero_state_indices render"
+            rendered, expected,
+            "render_pairs must reproduce the global nonzero_state_indices render \
+             without the lag dimensions"
         );
-        assert_eq!(cut.render_len(), global.nonzero_state_indices.len());
+        assert_eq!(cut.render_len(), expected.len());
     }
 
     #[test]
@@ -820,46 +838,13 @@ mod tests {
             ]
         );
 
-        // No rendered column lands in the lag block [N, N*(1+L)) = [3, 9).
         for (_, col) in &rendered {
             assert!(
-                !global.inflow_lags.contains(&col.get()),
-                "storage-only render must touch no lag column (got {})",
+                global.storage.contains(&col.get()),
+                "storage-only render must touch only storage columns (got {})",
                 col.get()
             );
         }
-    }
-
-    /// AR-padding slots are dropped from the render but kept in the full enabled
-    /// range. Per-hydro lag counts `[1, 3]` give hydro 0 padding at lags 1,2, so
-    /// the render (nonzero subset) is shorter than `n_slots`.
-    #[test]
-    fn render_drops_ar_padding_slots() {
-        let lag_counts = [1usize, 3];
-        let global = StateSpace::new(
-            2,
-            3,
-            Vec::new(),
-            vec![],
-            AnticipatedResolution::default(),
-            &lag_counts,
-        );
-        let cut = CutStateProjection::new(&global, ALL_ENABLED);
-
-        assert_eq!(cut.n_slots(), global.n_state);
-        assert_eq!(cut.render_len(), global.nonzero_state_indices.len());
-        assert!(
-            cut.render_len() < cut.n_slots(),
-            "padding slots must be dropped, so render_len < n_slots"
-        );
-
-        let rendered: Vec<(CutSlot, OutCol)> = cut.render_pairs().collect();
-        let global_render: Vec<(CutSlot, OutCol)> = global
-            .nonzero_state_indices
-            .iter()
-            .map(|&g| (CutSlot::new(g.get()), global.lp_column_for_state(g)))
-            .collect();
-        assert_eq!(rendered, global_render);
     }
 
     // ── Bucket block tests ────────────────────────────────────────────────────
@@ -878,19 +863,19 @@ mod tests {
         let cut = CutStateProjection::new(&global, STORAGE_ONLY);
 
         assert_eq!(cut.n_slots(), 6);
-        let (incoming, _) = collect_logical_columns(&cut);
+        let (incoming, _) = collect_columns(&cut);
 
         for (j, &col) in incoming.iter().take(2).enumerate() {
             assert_eq!(
                 col,
-                InCol::new(global.storage_in.start + j),
+                Some(InCol::new(global.storage_in.start + j)),
                 "storage slot {j} must map to storage_in.start + {j}"
             );
         }
         for i in 0..2 {
             assert_eq!(
                 incoming[2 + i],
-                InCol::new(global.transit_buckets_in.start + i),
+                Some(InCol::new(global.transit_buckets_in.start + i)),
                 "bucket slot {i} must map to transit_buckets_in.start + {i} despite \
                  inflow_lags disabled"
             );
@@ -898,7 +883,7 @@ mod tests {
         for i in 0..2 {
             assert_eq!(
                 incoming[4 + i],
-                InCol::new(global.commit_in.start + i),
+                Some(InCol::new(global.commit_in.start + i)),
                 "anticipated slot {i} must map to commit_in.start + {i}"
             );
         }
@@ -907,9 +892,9 @@ mod tests {
     /// The ordering regression guard for the storage→lag→buckets→anticipated walk:
     /// swapping buckets and anticipated would misassign reduced coefficient
     /// indices even though every `(index, column)` pair still resolves to a valid
-    /// column.
+    /// column. The lag slots between storage and buckets hold no render pair.
     #[test]
-    fn bucket_render_pairs_sit_between_lag_and_anticipated() {
+    fn bucket_render_pairs_sit_between_storage_and_anticipated() {
         let global = finalized_with_transit_buckets(
             2,
             1,
@@ -918,19 +903,15 @@ mod tests {
         );
         let cut = CutStateProjection::new(&global, ALL_ENABLED);
 
-        assert_eq!(global.transit_buckets_out, 4..6);
+        assert_eq!(global.transit_buckets_out, 2..4);
         assert_eq!(cut.n_slots(), global.n_state);
 
         let rendered: Vec<(CutSlot, OutCol)> = cut.render_pairs().collect();
-        let global_render: Vec<(CutSlot, OutCol)> = global
-            .nonzero_state_indices
-            .iter()
-            .map(|&g| (CutSlot::new(g.get()), global.lp_column_for_state(g)))
-            .collect();
         assert_eq!(
-            rendered, global_render,
+            rendered,
+            global_render(&global),
             "render_pairs must match the global walk order exactly, \
-             storage→lag→buckets→anticipated"
+             storage→buckets→anticipated"
         );
 
         let transit_bucket_positions: Vec<usize> = rendered
@@ -941,9 +922,9 @@ mod tests {
             .collect();
         assert_eq!(
             transit_bucket_positions,
-            vec![4, 5],
-            "bucket render pairs must land after the lag block (positions 0..4) \
-             and before the anticipated block (positions 6..8)"
+            vec![2, 3],
+            "bucket render pairs must land after the storage block (positions 0..2) \
+             and before the anticipated block (positions 4..6)"
         );
     }
 
@@ -957,23 +938,19 @@ mod tests {
 
         assert_eq!(global.n_buckets, 0);
         assert_eq!(cut.n_slots(), global.n_state);
-        let (incoming, _) = collect_logical_columns(&cut);
+        let (incoming, _) = collect_columns(&cut);
         for (j, &col) in incoming.iter().enumerate() {
             assert_eq!(
                 col,
-                global.state_to_lp_incoming_column(StateDim::new(j)),
+                global_columns(&global, j).0,
                 "B==0 default projection must match the global resolver at j={j}"
             );
         }
 
         let rendered: Vec<(CutSlot, OutCol)> = cut.render_pairs().collect();
-        let global_render: Vec<(CutSlot, OutCol)> = global
-            .nonzero_state_indices
-            .iter()
-            .map(|&g| (CutSlot::new(g.get()), global.lp_column_for_state(g)))
-            .collect();
         assert_eq!(
-            rendered, global_render,
+            rendered,
+            global_render(&global),
             "B==0 render must reproduce the global nonzero_state_indices render"
         );
     }
@@ -1011,7 +988,7 @@ mod tests {
 
         let buckets = global.state_dim_range(StateRegion::Buckets);
         assert_eq!(buckets.len(), global.n_buckets);
-        let (incoming, outgoing) = collect_logical_columns(&cut);
+        let (incoming, outgoing) = collect_columns(&cut);
 
         for g in buckets.clone() {
             let dim = StateDim::new(g);
@@ -1030,12 +1007,12 @@ mod tests {
 
             assert_eq!(
                 incoming[slot.get()],
-                InCol::new(global.transit_buckets_in.start + offset),
+                Some(InCol::new(global.transit_buckets_in.start + offset)),
                 "bucket dim {g}: incoming column is the pinned bucket column (subgradient read site)"
             );
             assert_eq!(
                 outgoing[slot.get()],
-                OutCol::new(global.transit_buckets_out.start + offset),
+                Some(OutCol::new(global.transit_buckets_out.start + offset)),
                 "bucket dim {g}: outgoing column is the identity bucket column (cut-render site)"
             );
 
@@ -1079,48 +1056,36 @@ mod tests {
         );
         assert_eq!(cut_with.n_slots(), with_ring.n_state);
 
-        let (incoming, _) = collect_logical_columns(&cut_with);
+        let (incoming, _) = collect_columns(&cut_with);
         for (i, j) in with_ring.commit_in.clone().enumerate() {
             assert_eq!(
                 incoming[cut_pre.n_slots() + i],
-                InCol::new(j),
+                Some(InCol::new(j)),
                 "commitment-hold ring incoming slot {j} must appear in the projection"
             );
         }
     }
 
-    // ── Compact layout tests ────────────────────────────────────────────────
+    // ── Lag region tests ────────────────────────────────────────────────────
 
-    /// The compact layout and its logical twin over N = 2, L = 2, two buckets
-    /// and one anticipated plant.
-    fn compact_and_logical_twins() -> (StateSpace, StateSpace) {
+    /// N = 2, L = 2, two buckets and one anticipated plant.
+    fn lagged_state_space() -> StateSpace {
         let buckets = vec![(HydroSys::new(0), 1), (HydroSys::new(1), 1)];
         let leads = vec![2];
-        let lag_counts = [2, 2];
-        let compact = StateSpace::new_compact(
-            2,
-            2,
-            buckets.clone(),
-            leads.clone(),
-            constant_lead_resolution(&leads, 4),
-            &lag_counts,
-        );
-        let logical = StateSpace::new(
+        StateSpace::new(
             2,
             2,
             buckets,
             leads.clone(),
             constant_lead_resolution(&leads, 4),
-            &lag_counts,
-        );
-        (compact, logical)
+            &[2, 2],
+        )
     }
 
     #[test]
-    fn compact_projection_keeps_every_slot_and_renders_no_lag_slot() {
-        let (global, logical_global) = compact_and_logical_twins();
+    fn projection_keeps_every_slot_and_renders_no_lag_slot() {
+        let global = lagged_state_space();
         let cut = CutStateProjection::new(&global, ALL_ENABLED);
-        let logical = CutStateProjection::new(&logical_global, ALL_ENABLED);
         let lag_range = global.state_dim_lag_range();
 
         assert_eq!(cut.n_slots(), global.n_state);
@@ -1154,14 +1119,16 @@ mod tests {
             .filter(|g| lag_range.contains(&g.get()))
             .count();
         assert_eq!(lag_dims_in_mask, global.hydro_count * global.max_par_order);
-        assert_eq!(cut.render_len(), logical.render_len() - lag_dims_in_mask);
+        assert_eq!(
+            cut.render_len(),
+            global.nonzero_state_indices.len() - lag_dims_in_mask
+        );
     }
 
     #[test]
-    fn compact_projection_pairs_skip_exactly_the_lag_slots() {
-        let (compact, logical) = compact_and_logical_twins();
-        let cut = CutStateProjection::new(&compact, ALL_ENABLED);
-        let logical_cut = CutStateProjection::new(&logical, ALL_ENABLED);
+    fn projection_pairs_skip_exactly_the_lag_slots() {
+        let global = lagged_state_space();
+        let cut = CutStateProjection::new(&global, ALL_ENABLED);
         let full = cut.lag_point().full();
         assert!(!full.is_empty());
 
@@ -1174,59 +1141,50 @@ mod tests {
         for (slot, col) in cut.incoming_pairs() {
             assert_eq!(
                 col,
-                compact.state_to_lp_incoming_column(cut.global_state_index(slot))
+                global.state_to_lp_incoming_column(cut.global_state_index(slot))
             );
         }
         for (slot, col) in cut.outgoing_pairs() {
             assert_eq!(
                 col,
-                compact.lp_column_for_state(cut.global_state_index(slot))
+                global.lp_column_for_state(cut.global_state_index(slot))
             );
         }
-        assert_eq!(logical_cut.columned_len(), logical_cut.n_slots());
     }
 
     #[test]
     fn lag_point_follows_the_lag_region_of_each_projection() {
-        let (compact, logical) = compact_and_logical_twins();
+        let global = lagged_state_space();
 
         for (config, lag0, shifted, full) in [
             (ALL_ENABLED, 2..4, 4..6, 2..6),
             (STORAGE_ONLY, 0..0, 0..0, 0..0),
             (LAGS_ONLY, 0..2, 2..4, 0..4),
         ] {
-            let compact_cut = CutStateProjection::new(&compact, config);
-            let logical_cut = CutStateProjection::new(&logical, config);
-            for cut in [&compact_cut, &logical_cut] {
-                assert_eq!(cut.lag_point().lag0(), lag0, "{config:?}");
-                assert_eq!(cut.lag_point().shifted(), shifted, "{config:?}");
-                assert_eq!(cut.lag_point().full(), full, "{config:?}");
-            }
-            assert_eq!(compact_cut.lag_point(), logical_cut.lag_point());
+            let cut = CutStateProjection::new(&global, config);
+            assert_eq!(cut.lag_point().lag0(), lag0, "{config:?}");
+            assert_eq!(cut.lag_point().shifted(), shifted, "{config:?}");
+            assert_eq!(cut.lag_point().full(), full, "{config:?}");
         }
     }
 
     #[test]
     fn has_lag_slots_follows_the_lag_point() {
-        let (compact, logical) = compact_and_logical_twins();
-        for global in [&compact, &logical] {
-            assert!(CutStateProjection::new(global, ALL_ENABLED).has_lag_slots());
-            assert!(CutStateProjection::new(global, LAGS_ONLY).has_lag_slots());
-            assert!(!CutStateProjection::new(global, STORAGE_ONLY).has_lag_slots());
-        }
+        let global = lagged_state_space();
+        assert!(CutStateProjection::new(&global, ALL_ENABLED).has_lag_slots());
+        assert!(CutStateProjection::new(&global, LAGS_ONLY).has_lag_slots());
+        assert!(!CutStateProjection::new(&global, STORAGE_ONLY).has_lag_slots());
         let no_lags = CutStateProjection::new(&finalized(3, 0, &[]), ALL_ENABLED);
         assert!(!no_lags.has_lag_slots());
     }
 
     #[test]
     fn structural_dual_bound_counts_theta_and_the_rendered_columns() {
-        let (compact, logical) = compact_and_logical_twins();
-        for global in [&compact, &logical] {
-            let cut = CutStateProjection::new(global, ALL_ENABLED);
-            assert_eq!(cut.structural_dual_bound(), 1 + cut.render_pairs().count());
-        }
+        let global = lagged_state_space();
+        let cut = CutStateProjection::new(&global, ALL_ENABLED);
+        assert_eq!(cut.structural_dual_bound(), 1 + cut.render_pairs().count());
 
-        let storage_columns_only = StateSpace::new_compact(
+        let storage_columns_only = StateSpace::new(
             2,
             2,
             Vec::new(),
@@ -1254,7 +1212,7 @@ mod tests {
     }
 
     fn compose_pair(resident: StageStateConfig, extracted: StageStateConfig) -> ChainRuleSlots {
-        let (_, global) = compact_and_logical_twins();
+        let global = lagged_state_space();
         ChainRuleSlots::compose(
             &global,
             &CutStateProjection::new(&global, resident),
@@ -1297,27 +1255,27 @@ mod tests {
 
     #[test]
     fn chain_rule_slots_map_the_non_lag_slots_onto_the_columned_order() {
-        let (compact, logical) = compact_and_logical_twins();
-        let n = CutStateProjection::new(&logical, ALL_ENABLED).n_slots();
+        let global = lagged_state_space();
+        let n = CutStateProjection::new(&global, ALL_ENABLED).n_slots();
         assert!(n > 6);
         assert_eq!(
             compose_pair(ALL_ENABLED, ALL_ENABLED).non_lag(),
             [(0..2, 0..2), (6..n, 2..n - 4)]
         );
-        let m = CutStateProjection::new(&logical, LAGS_ONLY).n_slots();
+        let m = CutStateProjection::new(&global, LAGS_ONLY).n_slots();
         assert_eq!(
             compose_pair(ALL_ENABLED, LAGS_ONLY).non_lag(),
             [(0..0, 0..0), (4..m, 0..m - 4)]
         );
-        let k = CutStateProjection::new(&logical, STORAGE_ONLY).n_slots();
+        let k = CutStateProjection::new(&global, STORAGE_ONLY).n_slots();
         assert_eq!(
             compose_pair(ALL_ENABLED, STORAGE_ONLY).non_lag(),
             [(0..0, 0..0), (0..k, 0..k)]
         );
 
-        let p = CutStateProjection::new(&compact, ALL_ENABLED);
+        let p = CutStateProjection::new(&global, ALL_ENABLED);
         let [(head_slots, head_positions), (tail_slots, tail_positions)] =
-            ChainRuleSlots::compose(&compact, &p, &p).non_lag();
+            ChainRuleSlots::compose(&global, &p, &p).non_lag();
         let mapped_slots: Vec<usize> = head_slots.chain(tail_slots).collect();
         let columned_slots: Vec<usize> = p.incoming_pairs().map(|(slot, _)| slot.get()).collect();
         assert_eq!(mapped_slots, columned_slots);
@@ -1331,8 +1289,8 @@ mod proptests {
     use proptest::prelude::*;
     use proptest::test_runner::RngSeed;
 
-    use super::tests::collect_logical_columns;
-    use super::{CutSlot, CutStateProjection, OutCol, StageStateConfig, StateDim};
+    use super::tests::{collect_columns, global_columns, global_render};
+    use super::{CutSlot, CutStateProjection, OutCol, StageStateConfig};
     use crate::indexer::{HydroSys, StateSpace};
     use crate::lead_time::{AnticipatedResolution, DeliveryAxis, LeadTime};
 
@@ -1467,28 +1425,20 @@ mod proptests {
             let cut = CutStateProjection::new(&global, ALL_ENABLED);
 
             prop_assert_eq!(cut.n_slots(), global.n_state);
-            let (incoming, outgoing) = collect_logical_columns(&cut);
+            let (incoming, outgoing) = collect_columns(&cut);
             for (j, (&in_col, &out_col)) in incoming.iter().zip(&outgoing).enumerate() {
-                prop_assert_eq!(
-                    in_col,
-                    global.state_to_lp_incoming_column(StateDim::new(j))
-                );
-                prop_assert_eq!(out_col, global.lp_column_for_state(StateDim::new(j)));
+                prop_assert_eq!((in_col, out_col), global_columns(&global, j));
             }
 
             let rendered: Vec<(CutSlot, OutCol)> = cut.render_pairs().collect();
-            let global_render: Vec<(CutSlot, OutCol)> = global
-                .nonzero_state_indices
-                .iter()
-                .map(|&g| (CutSlot::new(g.get()), global.lp_column_for_state(g)))
-                .collect();
-            prop_assert_eq!(rendered, global_render);
+            prop_assert_eq!(rendered, global_render(&global));
         }
 
-        /// Generalizes `bucket_render_pairs_sit_between_lag_and_anticipated` over
-        /// every gate combination. The expected mapping is built from the
+        /// Generalizes `bucket_render_pairs_sit_between_storage_and_anticipated`
+        /// over every gate combination. The expected mapping is built from the
         /// concrete per-region block formulas (the raw range fields, with the
-        /// storage → lag → buckets → anticipated order written out literally) —
+        /// storage → buckets → anticipated order of the columned slots written
+        /// out literally; the lag slots have no columns) —
         /// never from `REGION_ORDER` or the resolvers the constructor itself
         /// walks, which would shift both sides of the assertion in lockstep
         /// and turn a walk-order or resolver bug green.
@@ -1505,18 +1455,6 @@ mod proptests {
                     expected.push((global.storage_in.start + h, global.storage.start + h));
                 }
             }
-            if state_config.inflow_lags {
-                for lag in 0..global.max_par_order {
-                    for h in 0..n {
-                        let outgoing = if lag == 0 {
-                            global.z_inflow.start + h
-                        } else {
-                            global.inflow_lags.start + (lag - 1) * n + h
-                        };
-                        expected.push((global.inflow_lags.start + lag * n + h, outgoing));
-                    }
-                }
-            }
             for b in 0..global.n_buckets {
                 expected.push((
                     global.transit_buckets_in.start + b,
@@ -1527,11 +1465,11 @@ mod proptests {
                 expected.push((global.commit_in.start + o, global.commit_out.start + o));
             }
 
-            let (incoming, outgoing) = collect_logical_columns(&cut);
+            let (incoming, outgoing) = collect_columns(&cut);
             let collected: Vec<(usize, usize)> = incoming
                 .iter()
                 .zip(&outgoing)
-                .map(|(in_col, out_col)| (in_col.get(), out_col.get()))
+                .filter_map(|(in_col, out_col)| Some((in_col.as_ref()?.get(), out_col.as_ref()?.get())))
                 .collect();
             prop_assert_eq!(collected, expected);
         }

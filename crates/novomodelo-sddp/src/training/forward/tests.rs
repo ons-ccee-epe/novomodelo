@@ -165,21 +165,20 @@ impl SolverInterface for MockSolver {
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
-/// Minimal N=1, L=0 template: `[storage_out, z_inflow, storage_in, theta]`.
-/// row 0: z-inflow definition (`z_inflow[0]` = rhs); row 1: pins `storage_in`.
+// Columns: storage_out (0), storage_in (1), theta (2); row 0 pins `storage_in`.
 fn minimal_template_1_0() -> StageTemplate {
     StageTemplate {
-        num_cols: 4,
-        num_rows: 2,
-        num_nz: 2,
-        col_starts: vec![0_i32, 0, 1, 2, 2], // col 1 (z_inflow) NZ at row 0; col 2 (storage_in) NZ at row 1
-        row_indices: vec![0_i32, 1],
-        values: vec![1.0, 1.0],
-        col_lower: vec![0.0, f64::NEG_INFINITY, 0.0, 0.0],
-        col_upper: vec![f64::INFINITY; 4],
-        objective: vec![0.0, 0.0, 0.0, 1.0], // minimise theta (at col 3)
-        row_lower: vec![0.0, 0.0],
-        row_upper: vec![0.0, 0.0],
+        num_cols: 3,
+        num_rows: 1,
+        num_nz: 1,
+        col_starts: vec![0_i32, 0, 1, 1],
+        row_indices: vec![0_i32],
+        values: vec![1.0],
+        col_lower: vec![0.0, 0.0, 0.0],
+        col_upper: vec![f64::INFINITY; 3],
+        objective: vec![0.0, 0.0, 1.0],
+        row_lower: vec![0.0],
+        row_upper: vec![0.0],
         n_state: 1,
         col_scale: Vec::new(),
         row_scale: Vec::new(),
@@ -588,7 +587,7 @@ fn make_stages_3() -> Vec<Stage> {
 fn ac_two_scenarios_three_stages_fixed_solution() {
     // State layout: N=1, L=0 → n_state=1, theta=3, num_cols=4
     let state = test_support::state_layout(1, 0);
-    let solution = fixed_solution(4, 100.0, state.theta, 30.0);
+    let solution = fixed_solution(3, 100.0, state.theta, 30.0);
     let solver = MockSolver::always_ok(solution);
     let fcf = FutureCostFunction::new(3, state.n_state, 2, 100, &[0; 3]);
     let config = TrainingConfig {
@@ -635,7 +634,8 @@ fn ac_two_scenarios_three_stages_fixed_solution() {
 
     let state_boxes = permissive_state_boxes(state.n_state, templates.len());
     let geometry = equipment_free_geometry(&[1usize, 1, 1]);
-    let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let fixture =
+        StageContextFixture::new(&templates, &state_boxes, &geometry).without_inflow_entries(1);
     let ctx = fixture.ctx();
     let result = run_forward_pass(
         std::slice::from_mut(&mut ws),
@@ -695,7 +695,7 @@ fn ac_two_scenarios_three_stages_fixed_solution() {
 #[allow(clippy::too_many_lines)]
 fn ac_infeasible_at_stage_1_scenario_0_returns_infeasible_error() {
     let state = test_support::state_layout(1, 0);
-    let solution = fixed_solution(4, 100.0, state.theta, 30.0);
+    let solution = fixed_solution(3, 100.0, state.theta, 30.0);
     // Stage-first loop: with 2 scenarios and 3 stages, the solve order is
     // (s0,t0), (s1,t0), (s0,t1), (s1,t1), ... — the 3rd call (index 2)
     // is stage 1 of scenario 0.
@@ -745,7 +745,8 @@ fn ac_infeasible_at_stage_1_scenario_0_returns_infeasible_error() {
 
     let state_boxes = permissive_state_boxes(state.n_state, templates.len());
     let geometry = equipment_free_geometry(&[1usize, 1, 1]);
-    let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let fixture =
+        StageContextFixture::new(&templates, &state_boxes, &geometry).without_inflow_entries(1);
     let ctx = fixture.ctx();
     let result = run_forward_pass(
         std::slice::from_mut(&mut ws),
@@ -812,7 +813,7 @@ fn ac_global_scenario_index_rank1_scenario0() {
 #[allow(clippy::too_many_lines)]
 fn cost_statistics_accumulated_correctly() {
     let state = test_support::state_layout(1, 0);
-    let solution = fixed_solution(4, 100.0, state.theta, 30.0);
+    let solution = fixed_solution(3, 100.0, state.theta, 30.0);
     let solver = MockSolver::always_ok(solution);
     let fcf = FutureCostFunction::new(3, state.n_state, 2, 100, &[0; 3]);
     let config = TrainingConfig {
@@ -859,7 +860,8 @@ fn cost_statistics_accumulated_correctly() {
 
     let state_boxes = permissive_state_boxes(state.n_state, templates.len());
     let geometry = equipment_free_geometry(&[1usize, 1, 1]);
-    let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let fixture =
+        StageContextFixture::new(&templates, &state_boxes, &geometry).without_inflow_entries(1);
     let ctx = fixture.ctx();
     let result = run_forward_pass(
         std::slice::from_mut(&mut ws),
@@ -1490,7 +1492,8 @@ fn run_one_iteration(
 
     let state_boxes = permissive_state_boxes(state.n_state, templates.len());
     let geometry = equipment_free_geometry(&[1usize, 1, 1]);
-    let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let fixture =
+        StageContextFixture::new(&templates, &state_boxes, &geometry).without_inflow_entries(1);
     let ctx = fixture.ctx();
     run_forward_pass(
         std::slice::from_mut(ws),
@@ -1537,7 +1540,7 @@ fn run_one_iteration(
 #[test]
 fn warm_start_first_iteration_cold_second_iteration_warm() {
     let state = test_support::state_layout(1, 0);
-    let solution = fixed_solution(4, 100.0, state.theta, 30.0);
+    let solution = fixed_solution(3, 100.0, state.theta, 30.0);
     let solver = MockSolver::always_ok(solution);
     // Single workspace and a shared basis store (1 scenario × 3 stages).
     let mut ws = single_workspace(solver, &state);
@@ -1568,7 +1571,7 @@ fn warm_start_first_iteration_cold_second_iteration_warm() {
 #[test]
 fn basis_invalidated_on_solver_error() {
     let state = test_support::state_layout(1, 0);
-    let solution = fixed_solution(4, 100.0, state.theta, 30.0);
+    let solution = fixed_solution(3, 100.0, state.theta, 30.0);
     // Call 4 = second iteration, stage 1 (calls 0-2 = first iteration
     // stages 0,1,2; calls 3,4,5 = second iteration stages 0,1,2).
     let solver = MockSolver::infeasible_on(solution, 4);
@@ -1613,7 +1616,7 @@ fn basis_invalidated_on_solver_error() {
 #[allow(clippy::too_many_lines)]
 fn test_forward_pass_parallel_cost_agreement() {
     let state = test_support::state_layout(1, 0);
-    let solution = fixed_solution(4, 100.0, state.theta, 30.0);
+    let solution = fixed_solution(3, 100.0, state.theta, 30.0);
     let stochastic = make_stochastic_context_1_hydro(3, true);
     let stages = make_stages_3();
     let fcf = FutureCostFunction::new(3, state.n_state, 2, 100, &[0; 3]);
@@ -1628,7 +1631,8 @@ fn test_forward_pass_parallel_cost_agreement() {
 
     let state_boxes = permissive_state_boxes(state.n_state, templates.len());
     let geometry = equipment_free_geometry(&[1usize, 1, 1]);
-    let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let fixture =
+        StageContextFixture::new(&templates, &state_boxes, &geometry).without_inflow_entries(1);
     let ctx = fixture.ctx();
 
     let mut ws1 = single_workspace(MockSolver::always_ok(solution.clone()), &state);
@@ -1747,7 +1751,7 @@ fn test_forward_pass_parallel_cost_agreement() {
 #[test]
 fn test_forward_pass_work_distribution() {
     let state = test_support::state_layout(1, 0);
-    let solution = fixed_solution(4, 100.0, state.theta, 30.0);
+    let solution = fixed_solution(3, 100.0, state.theta, 30.0);
     let stochastic = make_stochastic_context_1_hydro(3, true);
     let stages = make_stages_3();
     let fcf = FutureCostFunction::new(3, state.n_state, 2, 100, &[0; 3]);
@@ -1770,7 +1774,8 @@ fn test_forward_pass_work_distribution() {
 
     let state_boxes = permissive_state_boxes(state.n_state, templates.len());
     let geometry = equipment_free_geometry(&[1usize, 1, 1]);
-    let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let fixture =
+        StageContextFixture::new(&templates, &state_boxes, &geometry).without_inflow_entries(1);
     let ctx = fixture.ctx();
     let _result = run_forward_pass(
         &mut workspaces,
@@ -1989,14 +1994,14 @@ fn make_stochastic_1h_1s(mean_m3s: f64, std_m3s: f64) -> StochasticContext {
 }
 
 /// Helper that runs `run_forward_pass` with 1 scenario, 1 stage, and returns
-/// the `z_inflow_rhs_buf` and the physical inflow-slack bounds from the workspace
+/// the `realized_inflow_buf` and the physical inflow-slack bounds from the workspace
 /// after the call.
 fn run_single_stage_forward(
     stochastic: &StochasticContext,
     inflow_method: InflowNonNegativityMethod,
 ) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
     let state = test_support::state_layout(1, 0);
-    let solution = fixed_solution(4, 0.0, state.theta, 0.0);
+    let solution = fixed_solution(3, 0.0, state.theta, 0.0);
     let solver = MockSolver::always_ok(solution);
     let fcf = FutureCostFunction::new(1, state.n_state, 1, 10, &[0; 1]);
     let horizon = HorizonMode::Finite { num_stages: 1 };
@@ -2009,7 +2014,8 @@ fn run_single_stage_forward(
 
     let state_boxes = permissive_state_boxes(state.n_state, templates.len());
     let geometry = equipment_free_geometry(&[1usize]);
-    let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let fixture =
+        StageContextFixture::new(&templates, &state_boxes, &geometry).without_inflow_entries(1);
     let ctx = fixture.ctx();
     let stages = vec![Stage {
         index: 0,
@@ -2075,7 +2081,7 @@ fn run_single_stage_forward(
     .unwrap();
 
     (
-        ws.scratch.z_inflow_rhs_buf.clone(),
+        ws.scratch.realized_inflow_buf.clone(),
         ws.scratch.inflow_slack_lower_buf.clone(),
         ws.scratch.inflow_slack_upper_buf.clone(),
     )
@@ -2092,7 +2098,7 @@ fn truncation_writes_the_raw_rhs_and_fixes_the_slack_at_the_correction() {
     let (z, lower, upper) =
         run_single_stage_forward(&stochastic, InflowNonNegativityMethod::Truncation);
 
-    assert_eq!(z.len(), 1, "z_inflow_rhs_buf must have 1 entry");
+    assert_eq!(z.len(), 1, "realized_inflow_buf must have 1 entry");
     assert!(z[0] < 0.0, "the z RHS stays raw, got {}", z[0]);
     assert_eq!(lower[0].to_bits(), (-z[0]).to_bits(), "lower bound is -z");
     assert_eq!(upper[0].to_bits(), (-z[0]).to_bits(), "upper bound is -z");
@@ -2118,7 +2124,7 @@ fn truncation_fixes_the_slack_at_zero_when_inflow_is_positive() {
 #[allow(clippy::too_many_lines)]
 fn none_method_unchanged_with_truncation_code_present() {
     let state = test_support::state_layout(1, 0);
-    let solution = fixed_solution(4, 100.0, state.theta, 30.0);
+    let solution = fixed_solution(3, 100.0, state.theta, 30.0);
     let solver = MockSolver::always_ok(solution);
     let fcf = FutureCostFunction::new(3, state.n_state, 2, 100, &[0; 3]);
     let config = TrainingConfig {
@@ -2164,7 +2170,8 @@ fn none_method_unchanged_with_truncation_code_present() {
 
     let state_boxes = permissive_state_boxes(state.n_state, templates.len());
     let geometry = equipment_free_geometry(&[1usize, 1, 1]);
-    let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let fixture =
+        StageContextFixture::new(&templates, &state_boxes, &geometry).without_inflow_entries(1);
     let ctx = fixture.ctx();
     let result = run_forward_pass(
         std::slice::from_mut(&mut ws),
@@ -2364,7 +2371,7 @@ fn make_stochastic_context_1_hydro_1_load_bus(mean_mw: f64, std_mw: f64) -> Stoc
 #[test]
 fn test_forward_pass_parallel_infeasibility() {
     let state = test_support::state_layout(1, 0);
-    let solution = fixed_solution(4, 100.0, state.theta, 30.0);
+    let solution = fixed_solution(3, 100.0, state.theta, 30.0);
     let stochastic = make_stochastic_context_1_hydro(3, true);
     let stages = make_stages_3();
     let fcf = FutureCostFunction::new(3, state.n_state, 2, 100, &[0; 3]);
@@ -2396,7 +2403,8 @@ fn test_forward_pass_parallel_infeasibility() {
 
     let state_boxes = permissive_state_boxes(state.n_state, templates.len());
     let geometry = equipment_free_geometry(&[1usize, 1, 1]);
-    let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let fixture =
+        StageContextFixture::new(&templates, &state_boxes, &geometry).without_inflow_entries(1);
     let ctx = fixture.ctx();
     let result = run_forward_pass(
         &mut workspaces,
@@ -2486,7 +2494,7 @@ fn forward_pass_load_noise_positive_realization() {
         rank: 0,
         worker_id: 0,
         solver: ProfiledSolver::new(MockSolver::always_ok(fixed_solution(
-            4,
+            3,
             100.0,
             state.theta,
             30.0,
@@ -2508,6 +2516,7 @@ fn forward_pass_load_noise_positive_realization() {
 
     let state_boxes = permissive_state_boxes(state.n_state, templates.len());
     let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry_per_stage)
+        .without_inflow_entries(1)
         .load_bus_indices(&load_bus_indices);
     let ctx = fixture.ctx();
     let _fwd = run_forward_pass(
@@ -2595,7 +2604,7 @@ fn forward_pass_load_noise_clamped_to_zero() {
         rank: 0,
         worker_id: 0,
         solver: ProfiledSolver::new(MockSolver::always_ok(fixed_solution(
-            4,
+            3,
             100.0,
             state.theta,
             30.0,
@@ -2617,6 +2626,7 @@ fn forward_pass_load_noise_clamped_to_zero() {
 
     let state_boxes = permissive_state_boxes(state.n_state, templates.len());
     let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry_per_stage)
+        .without_inflow_entries(1)
         .load_bus_indices(&load_bus_indices);
     let ctx = fixture.ctx();
     let _fwd = run_forward_pass(
@@ -2687,8 +2697,10 @@ fn forward_pass_no_load_buses_unchanged() {
     let stochastic = make_stochastic_context_1_hydro(3, true);
     let stages = make_stages_3();
     let state = test_support::state_layout(1, 0);
-    let solution = fixed_solution(4, 100.0, state.theta, 30.0);
+    let solution = fixed_solution(3, 100.0, state.theta, 30.0);
+    let inflow_coupling = vec![test_support::inflow_coupling_with_entries(1, &[(0, 0)]); 3];
     let mut ws = single_workspace(MockSolver::always_ok(solution), &state);
+    ws.patch_buf = PatchBuffer::new(&state, &[], &[], &inflow_coupling);
 
     let templates = vec![
         minimal_template_1_0(),
@@ -2703,7 +2715,8 @@ fn forward_pass_no_load_buses_unchanged() {
 
     let state_boxes = permissive_state_boxes(state.n_state, templates.len());
     let geometry = equipment_free_geometry(&[1, 1, 1]);
-    let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry)
+        .inflow_coupling(&inflow_coupling);
     let ctx = fixture.ctx();
     let _fwd = run_forward_pass(
         std::slice::from_mut(&mut ws),
@@ -2746,12 +2759,10 @@ fn forward_pass_no_load_buses_unchanged() {
     )
     .unwrap();
 
-    // With n_load_buses=0, active_load_patches stays 0; the sole patch is the
-    // one z-inflow row `minimal_template_1_0`'s single hydro implies.
     assert_eq!(
         ws.patch_buf.forward_patch_count(),
-        1,
-        "forward_patch_count must equal the single hydro's z-inflow row when \
+        inflow_coupling[0].touched_rows().len(),
+        "forward_patch_count must equal the rows the inflow coupling shifts when \
          n_load_buses=0, got {}",
         ws.patch_buf.forward_patch_count()
     );
@@ -2945,36 +2956,25 @@ fn test_build_delta_matches_full_batch_when_pool_has_only_current_iter() {
 }
 
 #[test]
-fn compact_cut_rows_match_across_writers_and_carry_no_lag_entry() {
-    let lag_counts = [1, 1];
-    let compact = StateSpace::new_compact(
+fn cut_rows_match_across_writers_and_carry_no_lag_entry() {
+    let state = StateSpace::new(
         2,
         1,
         Vec::new(),
         Vec::new(),
         test_support::constant_lead_resolution(&[], 2),
-        &lag_counts,
+        &[1, 1],
     );
-    let logical = StateSpace::new(
-        2,
-        1,
-        Vec::new(),
-        Vec::new(),
-        test_support::constant_lead_resolution(&[], 2),
-        &lag_counts,
-    );
-    assert_eq!(compact.n_state, logical.n_state);
-    assert!(compact.theta < logical.theta);
 
-    let mut fcf = FutureCostFunction::new(2, compact.n_state, 2, 10, &[0; 2]);
+    let mut fcf = FutureCostFunction::new(2, state.n_state, 2, 10, &[0; 2]);
     fcf.add_cut(NodeId(0), 0, 1, 0, 10.0, &[1.5, 2.5, 3.5, 4.5]);
     fcf.add_cut(NodeId(0), 0, 1, 1, 20.0, &[-1.0, 2.0, -3.0, 4.0]);
 
-    let compact_cut_state = test_support::cut_state_projection(&compact);
+    let cut_state = test_support::cut_state_projection(&state);
     let mut full = empty_delta_batch();
-    build_cut_row_batch_into(&mut full, &fcf, 0, &compact, &compact_cut_state, &[]);
+    build_cut_row_batch_into(&mut full, &fcf, 0, &state, &cut_state, &[]);
     let mut delta = empty_delta_batch();
-    build_delta_cut_row_batch_into(&mut delta, &fcf, 0, &compact, &compact_cut_state, &[], 1);
+    build_delta_cut_row_batch_into(&mut delta, &fcf, 0, &state, &cut_state, &[], 1);
 
     assert_eq!(delta.num_rows, full.num_rows);
     assert_eq!(delta.row_starts, full.row_starts);
@@ -2983,48 +2983,30 @@ fn compact_cut_rows_match_across_writers_and_carry_no_lag_entry() {
     assert_eq!(delta.row_lower, full.row_lower);
     assert_eq!(delta.row_upper, full.row_upper);
 
+    let theta = i32::try_from(state.theta).expect("theta fits i32");
     assert_eq!(full.num_rows, 2);
     assert_eq!(full.row_starts, vec![0_i32, 3, 6]);
-
-    let mut logical_batch = empty_delta_batch();
-    build_cut_row_batch_into(
-        &mut logical_batch,
-        &fcf,
-        0,
-        &logical,
-        &test_support::cut_state_projection(&logical),
-        &[],
+    assert_eq!(
+        full.col_indices,
+        vec![0, 1, theta, 0, 1, theta],
+        "one entry per storage dimension and theta, none for the two lag dimensions"
     );
-    assert_eq!(logical_batch.row_starts, vec![0_i32, 5, 10]);
-
-    let compact_theta = i32::try_from(compact.theta).expect("theta fits i32");
-    for row in 0..2 {
-        let compact_entries = 3 * row..3 * row + 3;
-        let logical_entries = 5 * row..5 * row + 5;
-        let logical_cols = &logical_batch.col_indices[logical_entries.clone()];
-        let logical_values = &logical_batch.values[logical_entries];
-
-        assert_eq!(
-            full.col_indices[compact_entries.clone()],
-            [logical_cols[0], logical_cols[1], compact_theta]
-        );
-        assert_eq!(full.col_indices[3 * row..3 * row + 2], [0, 1]);
-        assert_eq!(
-            full.values[compact_entries],
-            [logical_values[0], logical_values[1], logical_values[4]]
-        );
-    }
-    assert_eq!(full.row_lower, logical_batch.row_lower);
-    assert_eq!(full.row_upper, logical_batch.row_upper);
+    assert_eq!(full.values, vec![-1.5, -2.5, 1.0, 1.0, -2.0, 1.0]);
+    assert_eq!(full.row_lower, vec![10.0, 20.0]);
 }
 
 #[test]
 fn test_build_delta_sparse_path() {
     // n_hydro=1, n_lag=1 gives a non-empty nonzero_state_indices mask (n_state=2);
     // full sparse-path correctness is covered by build_cut_row_batch_into's own
-    // tests — this only checks col_indices.len() == mask.len() + 1 per row.
+    // tests — this only checks col_indices.len() == non-lag mask entries + 1 per row.
     let state = test_support::state_layout(1, 1);
-    let mask_len = state.nonzero_state_indices.len();
+    let lag_dims = state.state_dim_lag_range();
+    let mask_len = state
+        .nonzero_state_indices
+        .iter()
+        .filter(|dim| !lag_dims.contains(&dim.get()))
+        .count();
 
     if mask_len == 0 {
         return;
@@ -3045,7 +3027,7 @@ fn test_build_delta_sparse_path() {
     );
 
     assert_eq!(batch.num_rows, 1);
-    // Each row: mask_len state entries + 1 theta entry.
+    // Each row: the mask entries outside the lag region + 1 theta entry.
     assert_eq!(batch.col_indices.len(), mask_len + 1);
 }
 
@@ -3195,24 +3177,23 @@ mod dcs_forward {
     const X_HAT: f64 = 2.0;
 
     /// Cut-free base template for the N=1, L=0 state layout:
-    /// cols `[storage_out=0, z_inflow=1, storage_in=2, theta=3]`. Row 0 is the
-    /// z-inflow definition row (`z_inflow[0]` = rhs); row 1 is the coupling
+    /// cols `[storage_out=0, storage_in=1, theta=2]`. Row 0 is the coupling
     /// row `storage_out - storage_in = 0`. Minimise theta. The incoming
-    /// state (col 2) is pinned to `x_hat` by the patch; the coupling row ties
+    /// state (col 1) is pinned to `x_hat` by the patch; the coupling row ties
     /// col0 to it; cuts constrain theta against col0.
     fn fwd_core_template() -> StageTemplate {
         StageTemplate {
-            num_cols: 4,
-            num_rows: 2,
-            num_nz: 3,
-            col_starts: vec![0_i32, 1, 2, 3, 3],
-            row_indices: vec![1_i32, 0, 1],
-            values: vec![1.0, 1.0, -1.0],
-            col_lower: vec![0.0, f64::NEG_INFINITY, 0.0, -1.0e6],
-            col_upper: vec![f64::INFINITY, f64::INFINITY, f64::INFINITY, 1.0e6],
-            objective: vec![0.0, 0.0, 0.0, 1.0],
-            row_lower: vec![0.0, 0.0],
-            row_upper: vec![0.0, 0.0],
+            num_cols: 3,
+            num_rows: 1,
+            num_nz: 2,
+            col_starts: vec![0_i32, 1, 2, 2],
+            row_indices: vec![0_i32, 0],
+            values: vec![1.0, -1.0],
+            col_lower: vec![0.0, 0.0, -1.0e6],
+            col_upper: vec![f64::INFINITY, f64::INFINITY, 1.0e6],
+            objective: vec![0.0, 0.0, 1.0],
+            row_lower: vec![0.0],
+            row_upper: vec![0.0],
             n_state: 1,
             col_scale: Vec::new(),
             row_scale: Vec::new(),
@@ -3220,30 +3201,28 @@ mod dcs_forward {
     }
 
     /// All-cuts frozen template: the cut-free base plus the three pool cuts
-    /// frozen as structural rows (rows 2..5), in pool slot order:
+    /// frozen as structural rows (rows 1..4), in pool slot order:
     ///   slot 0: -0*col0 + theta >= 1 ; slot 1: -2*col0 + theta >= 0 ;
     ///   slot 2: -0*col0 + theta >= 3.
-    /// Row 0 is the z-inflow definition row; row 1 is the coupling row.
-    /// `num_rows = 5 = 1 (z) + template_num_rows(1) + 3 cuts`.
+    /// Row 0 is the coupling row.
+    /// `num_rows = 4 = template_num_rows(1) + 3 cuts`.
     fn fwd_all_cuts_frozen() -> StageTemplate {
-        // CSC by column. col0 entries: coupling (row1,+1), slot1 cut (row3,-2).
-        // col1 (z_inflow): row0,+1. col2: coupling (row1,-1).
-        // col3 (theta): rows 2,3,4 each +1.
+        // CSC by column. col0 entries: coupling (row0,+1), slot1 cut (row2,-2).
+        // col1: coupling (row0,-1).
+        // col2 (theta): rows 1,2,3 each +1.
         StageTemplate {
-            num_cols: 4,
-            num_rows: 5,
-            num_nz: 7,
-            // col0: rows [1,3] vals [1,-2]; col1: row[0] val[1];
-            // col2: row[1] val[-1]; col3: rows [2,3,4] vals [1,1,1].
-            col_starts: vec![0_i32, 2, 3, 4, 7],
-            row_indices: vec![1_i32, 3, 0, 1, 2, 3, 4],
-            values: vec![1.0, -2.0, 1.0, -1.0, 1.0, 1.0, 1.0],
-            col_lower: vec![0.0, f64::NEG_INFINITY, 0.0, -1.0e6],
-            col_upper: vec![f64::INFINITY, f64::INFINITY, f64::INFINITY, 1.0e6],
-            objective: vec![0.0, 0.0, 0.0, 1.0],
-            // row0 z-inflow (=rhs); row1 coupling (=0); rows2..4 cuts (>= intercept).
-            row_lower: vec![0.0, 0.0, 1.0, 0.0, 3.0],
-            row_upper: vec![0.0, 0.0, f64::INFINITY, f64::INFINITY, f64::INFINITY],
+            num_cols: 3,
+            num_rows: 4,
+            num_nz: 6,
+            col_starts: vec![0_i32, 2, 3, 6],
+            row_indices: vec![0_i32, 2, 0, 1, 2, 3],
+            values: vec![1.0, -2.0, -1.0, 1.0, 1.0, 1.0],
+            col_lower: vec![0.0, 0.0, -1.0e6],
+            col_upper: vec![f64::INFINITY, f64::INFINITY, 1.0e6],
+            objective: vec![0.0, 0.0, 1.0],
+            // row0 coupling (=0); rows1..3 cuts (>= intercept).
+            row_lower: vec![0.0, 1.0, 0.0, 3.0],
+            row_upper: vec![0.0, f64::INFINITY, f64::INFINITY, f64::INFINITY],
             n_state: 1,
             col_scale: Vec::new(),
             row_scale: Vec::new(),
@@ -3253,20 +3232,20 @@ mod dcs_forward {
     /// Frozen template carrying a single DOMINATING spurious cut
     /// (`-5*col0 + theta >= 0`, floor 10 at `x_hat = 2`, NOT in the pool),
     /// used to prove the DCS path loads the cut-free base and ignores this
-    /// row. Row 0 is the z-inflow definition row; row 1 is the coupling row.
+    /// row. Row 0 is the coupling row.
     fn fwd_frozen_dominating_cut() -> StageTemplate {
         StageTemplate {
-            num_cols: 4,
-            num_rows: 3,
-            num_nz: 5,
-            col_starts: vec![0_i32, 2, 3, 4, 5],
-            row_indices: vec![1_i32, 2, 0, 1, 2],
-            values: vec![1.0, -5.0, 1.0, -1.0, 1.0],
-            col_lower: vec![0.0, f64::NEG_INFINITY, 0.0, -1.0e6],
-            col_upper: vec![f64::INFINITY, f64::INFINITY, f64::INFINITY, 1.0e6],
-            objective: vec![0.0, 0.0, 0.0, 1.0],
-            row_lower: vec![0.0, 0.0, 0.0],
-            row_upper: vec![0.0, 0.0, f64::INFINITY],
+            num_cols: 3,
+            num_rows: 2,
+            num_nz: 4,
+            col_starts: vec![0_i32, 2, 3, 4],
+            row_indices: vec![0_i32, 1, 0, 1],
+            values: vec![1.0, -5.0, -1.0, 1.0],
+            col_lower: vec![0.0, 0.0, -1.0e6],
+            col_upper: vec![f64::INFINITY, f64::INFINITY, 1.0e6],
+            objective: vec![0.0, 0.0, 1.0],
+            row_lower: vec![0.0, 0.0],
+            row_upper: vec![0.0, f64::INFINITY],
             n_state: 1,
             col_scale: Vec::new(),
             row_scale: Vec::new(),
@@ -3404,6 +3383,7 @@ mod dcs_forward {
         ];
         let geometry = equipment_free_geometry(&[1usize, 1]);
         let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry)
+            .without_inflow_entries(1)
             .discount_factors(&discount_factors);
         let ctx = fixture.ctx();
         let study_dims = test_support::study_dims();
@@ -3439,6 +3419,7 @@ mod dcs_forward {
         }
 
         let mut records = vec![TrajectoryRecord::default()];
+        records[0].frozen_brackets.reserve(frozen.num_rows);
         let raw_noise = vec![0.0; stochastic.dim()];
         let key = StageKey {
             t: StageIdx(0),
@@ -3605,11 +3586,12 @@ mod dcs_forward {
 // Exercises `run_forward_stage` over a bucket-aware state layout (storage +
 // one AR lag + one travel-time bucket + one anticipated-thermal slot) with a
 // `MockSolver` returning a fixed primal, proving the bucket state rides the
-// state-assembly plain copy: the lag-shift overwrite lands on index 1 and the
-// anticipated-shift overwrite lands on index 3, never on the bucket index 2.
+// state-assembly plain copy: the lag-shift overwrite lands on state index 1,
+// never on the bucket (2) or anticipated-slot (3) indices.
 mod transit_bucket_copy_gap {
     use novomodelo_core::scenario::SamplingScheme;
     use novomodelo_solver::{LpSolution, SolverInterface, StageTemplate};
+    use novomodelo_stochastic::evaluate_par_conditional_mean_batch;
 
     use super::super::{StageKey, run_forward_stage};
     use super::MockSolver;
@@ -3625,21 +3607,22 @@ mod transit_bucket_copy_gap {
     use crate::trajectory::TrajectoryRecord;
     use crate::workspace::{BasisStore, NoisePreallocation, SolverWorkspace, WorkspaceSizing};
 
-    /// Column layout for `N=1, L=1, B=1, A=1, K_max=1`:
-    /// `[storage(0), lag0(1), bucket_out(2), ant_slot0(3), z_inflow(4),
-    /// storage_in(5), bucket_in(6), ant_state_in(7), theta(8)]`.
-    /// `n_state = 4` (storage, lag0, `bucket_out`, `ant_slot0`) — the state
-    /// region is the LP's first `n_state` columns by construction. With
-    /// `k_max = 1`, `ant_slot0` is both the ring's only slot and its newest
-    /// (`k_i - 1 = 0`), so it resolves by identity like `bucket_out` — no
-    /// separate decision-aliased column exists anymore.
-    const NUM_COLS: usize = 9;
-    const TRANSIT_BUCKET_COL: usize = 2;
+    /// LP column layout for `N=1, L=1, B=1, A=1, K_max=1`; the lag region has
+    /// no column: `[storage(0), bucket_out(1), ant_slot0(2), storage_in(3),
+    /// bucket_in(4), ant_state_in(5), theta(6)]`. The state vector is
+    /// `[storage(0), lag0(1), bucket_out(2), ant_slot0(3)]`, `n_state = 4`.
+    /// With `k_max = 1`, `ant_slot0` is both the ring's only slot and its
+    /// newest (`k_i - 1 = 0`), so it resolves by identity like `bucket_out` —
+    /// no separate decision-aliased column exists anymore.
+    const NUM_COLS: usize = 7;
+    const TRANSIT_BUCKET_COL: usize = 1;
     const TRANSIT_BUCKET_VALUE: f64 = 777.0;
-    const ANTICIPATED_SLOT_COL: usize = 3;
+    const ANTICIPATED_SLOT_COL: usize = 2;
     const ANTICIPATED_SLOT_VALUE: f64 = 400.0;
-    const Z_INFLOW_COL: usize = 4;
-    const Z_INFLOW_VALUE: f64 = 55.0;
+    const LAG0_DIM: usize = 1;
+    const TRANSIT_BUCKET_DIM: usize = 2;
+    const ANTICIPATED_SLOT_DIM: usize = 3;
+    const INCOMING_LAG0: f64 = 20.0;
 
     fn transit_bucket_template() -> StageTemplate {
         StageTemplate {
@@ -3660,17 +3643,14 @@ mod transit_bucket_copy_gap {
         }
     }
 
-    /// Canned primal: `storage=100`, `lag0=200` (pre-overwrite), `bucket_out=777`,
-    /// `ant_slot0=400`, `z_inflow=55`, `storage_in=0`, `bucket_in=0`,
-    /// `ant_state_in=0`, `theta=0`. The `MockSolver` returns this verbatim
-    /// regardless of the bounds `run_forward_stage` patches.
+    /// Canned primal: `storage=100`, `bucket_out=777`, `ant_slot0=400`, every
+    /// other column 0. The `MockSolver` returns this verbatim regardless of
+    /// the bounds `run_forward_stage` patches.
     fn transit_bucket_solution() -> LpSolution {
         let mut primal = vec![0.0_f64; NUM_COLS];
         primal[0] = 100.0;
-        primal[1] = 200.0;
         primal[TRANSIT_BUCKET_COL] = TRANSIT_BUCKET_VALUE;
         primal[ANTICIPATED_SLOT_COL] = ANTICIPATED_SLOT_VALUE;
-        primal[Z_INFLOW_COL] = Z_INFLOW_VALUE;
         LpSolution {
             objective: 0.0,
             primal,
@@ -3750,7 +3730,7 @@ mod transit_bucket_copy_gap {
         let mut ws = transit_bucket_workspace();
         ws.current_state.clear();
         ws.current_state
-            .extend_from_slice(&[10.0, 20.0, 30.0, 40.0]);
+            .extend_from_slice(&[10.0, INCOMING_LAG0, 30.0, 40.0]);
 
         let geometry_per_stage = test_support::equipment_free_geometry(&[1]);
         let state_boxes = vec![StateBox {
@@ -3758,7 +3738,8 @@ mod transit_bucket_copy_gap {
             upper: vec![f64::INFINITY; state.n_state],
         }];
 
-        let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry_per_stage);
+        let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry_per_stage)
+            .without_inflow_entries(1);
         let ctx = fixture.ctx();
         let study_dims = test_support::study_dims();
         let training_ctx = TrainingContext {
@@ -3820,18 +3801,28 @@ mod transit_bucket_copy_gap {
     fn transit_bucket_state_survives_lag_and_anticipated_overwrites() {
         let advanced = run_transit_bucket_forward_stage();
         assert_eq!(
-            advanced[TRANSIT_BUCKET_COL], TRANSIT_BUCKET_VALUE,
+            advanced[TRANSIT_BUCKET_DIM], TRANSIT_BUCKET_VALUE,
             "bucket state must equal the LP primal's bucket_out column"
         );
         assert_eq!(
-            advanced[ANTICIPATED_SLOT_COL], ANTICIPATED_SLOT_VALUE,
+            advanced[ANTICIPATED_SLOT_DIM], ANTICIPATED_SLOT_VALUE,
             "anticipated-ring slot must equal the LP primal's ant_slot0 column, \
              identity-resolved like the bucket"
         );
-        // The lag overwrite genuinely ran (not a vacuous no-op): the lag slot
-        // picks up the accumulated z_inflow value.
+        // The lag overwrite genuinely ran (not a vacuous no-op): lag 0 picks up
+        // the realized inflow, the PAR mean at the incoming lag for zero noise.
+        let stochastic = super::make_stochastic_context_1_hydro(1, false);
+        let mut par_mean = [0.0_f64];
+        if stochastic.par().n_stages() > 0 {
+            evaluate_par_conditional_mean_batch(
+                stochastic.par(),
+                0,
+                &[INCOMING_LAG0],
+                &mut par_mean,
+            );
+        }
         assert_eq!(
-            advanced[1], Z_INFLOW_VALUE,
+            advanced[LAG0_DIM], par_mean[0],
             "lag0 must be overwritten by the lag shift"
         );
     }

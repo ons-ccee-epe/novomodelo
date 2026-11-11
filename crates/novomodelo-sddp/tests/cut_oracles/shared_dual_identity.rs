@@ -17,20 +17,20 @@ use novomodelo_sddp::{
 };
 use novomodelo_solver::{ActiveSolver, LpSolution, RowBatch, SolverInterface};
 
-use super::expander_cut_rows::LAG_STUDY;
 use crate::common::expanded_solve::{
     CutRowSet, ExpandedSolve, assemble_expanded_solve, coupled_dual_magnitudes, coupled_duals,
     lag_dims, load_expanded, record_expanded_evidence,
     stages_whose_producer_drops_a_state_dimension, stored_incoming_states,
 };
+use crate::common::in_code_studies::FPHA_LAG_STUDY_KEY as LAG_STUDY;
 use crate::common::in_code_studies::{FphaLagOptions, fpha_lag_study, fpha_lag_study_with};
 use crate::common::oracle_tolerance::{UnscaledTolerance, assert_first_try};
 use crate::common::power_guards::{DualFamily, Guard, PowerEvidence};
 use crate::common::row_families::{RowClass, classify_expanded_rows};
 use crate::common::stored_cut_oracles::apply_oracle_config;
 use crate::common::{
-    Emission, build_setup_in_code_with_models_as, fresh_setup_with, fresh_system_and_setup_as,
-    fresh_system_and_setup_with_emission, stochastic_in_code, train_storing_trial_states,
+    build_setup_in_code_with_models, fresh_system_and_setup_with, stochastic_in_code,
+    train_storing_trial_states,
 };
 use crate::{D19_DIR, D43_DIR};
 
@@ -38,7 +38,7 @@ const WIDENED_LAG_DEPTH: u32 = 4;
 const BOUNDARY_INTERCEPT: f64 = 5.0;
 const DEEP_LAG_SLOPE: f64 = 0.5;
 
-pub(super) fn dual_family(class: RowClass) -> Option<DualFamily> {
+pub fn dual_family(class: RowClass) -> Option<DualFamily> {
     match class {
         RowClass::Base(RowFamily::Fpha) => Some(DualFamily::Fpha),
         RowClass::Base(RowFamily::Evaporation) => Some(DualFamily::Evaporation),
@@ -51,22 +51,57 @@ fn offset(index: i32) -> usize {
     usize::try_from(index).expect("CSC and CSR offsets and indices are >= 0")
 }
 
-fn csr_column(cut_rows: &RowBatch, col: usize) -> impl Iterator<Item = (usize, f64)> + '_ {
-    (0..cut_rows.num_rows).flat_map(move |k| {
-        (offset(cut_rows.row_starts[k])..offset(cut_rows.row_starts[k + 1]))
-            .filter(move |&p| offset(cut_rows.col_indices[p]) == col)
-            .map(move |p| (k, cut_rows.values[p]))
-    })
+/// The cut rows by column: each column's `(k, value)` entries in increasing row `k`, the order a
+/// row-by-row scan of the batch visits them.
+struct CutColumns {
+    starts: Vec<usize>,
+    entries: Vec<(usize, f64)>,
+}
+
+impl CutColumns {
+    fn new(cut_rows: &RowBatch, num_cols: usize) -> Self {
+        let positions =
+            |k: usize| offset(cut_rows.row_starts[k])..offset(cut_rows.row_starts[k + 1]);
+        let mut starts = vec![0; num_cols + 1];
+        for p in (0..cut_rows.num_rows).flat_map(positions) {
+            starts[offset(cut_rows.col_indices[p]) + 1] += 1;
+        }
+        for col in 0..num_cols {
+            starts[col + 1] += starts[col];
+        }
+        let mut next = starts.clone();
+        let mut entries = vec![(0, 0.0); starts[num_cols]];
+        for k in 0..cut_rows.num_rows {
+            for p in positions(k) {
+                let slot = &mut next[offset(cut_rows.col_indices[p])];
+                entries[*slot] = (k, cut_rows.values[p]);
+                *slot += 1;
+            }
+        }
+        Self { starts, entries }
+    }
+
+    fn column(&self, col: usize) -> &[(usize, f64)] {
+        &self.entries[self.starts[col]..self.starts[col + 1]]
+    }
 }
 
 /// `(ρ_j, Σ|terms|)` of column `col` in unscaled units, from the scaled expanded LP's own
 /// entries and the reported duals `dual`: `(c̃ − Σ Ã·π̃) / col_scale`.
-fn reduced_cost_of(solve: &ExpandedSolve, dual: &[f64], col: usize) -> (f64, f64) {
+fn reduced_cost_of(
+    solve: &ExpandedSolve,
+    cut_columns: &CutColumns,
+    dual: &[f64],
+    col: usize,
+) -> (f64, f64) {
     let template = &solve.template;
     let mut rho = template.objective[col];
     let mut abs_sum = rho.abs();
     let base = column_entries(template, col).map(|(row, a)| a * dual[row]);
-    let cuts = csr_column(&solve.cut_rows, col).map(|(k, a)| a * dual[template.num_rows + k]);
+    let cuts = cut_columns
+        .column(col)
+        .iter()
+        .map(|&(k, a)| a * dual[template.num_rows + k]);
     for product in base.chain(cuts) {
         rho -= product;
         abs_sum += product.abs();
@@ -187,12 +222,13 @@ fn check_lag_pairs(
     solve: &ExpandedSolve,
     solution: &LpSolution,
     kernel: &KernelCut,
+    lag_dims: &[Option<(usize, usize)>],
 ) -> (usize, bool) {
     let layout = &expanded.layout;
     let space = compact.stage_state();
     let (n, depth) = (space.hydro_count, space.max_par_order);
     let extracted = &compact.training_ctx().cut_state_layouts[stage - 1];
-    let lag_dims = lag_dims(layout);
+    let cut_columns = CutColumns::new(&solve.cut_rows, solve.template.num_cols);
     let mut lag_slot = vec![None; n * depth];
     for j in 0..extracted.n_slots() {
         let d = extracted.global_state_index(CutSlot::new(j));
@@ -223,7 +259,8 @@ fn check_lag_pairs(
     let mut deep_nonzero = false;
     for h in 0..n {
         let hydro = HydroSys::new(h);
-        let z_costs = legs.map(|(duals, _)| reduced_cost_of(solve, duals, layout.z_col(hydro)));
+        let z_costs =
+            legs.map(|(duals, _)| reduced_cost_of(solve, &cut_columns, duals, layout.z_col(hydro)));
         // Longest rounding chain over both sides. Recomputation: two template scalings, one
         // product, `m_h + K` column-sum adds, one division by the column scale, one `ψ·ρ_z`
         // and the final add. Kernel: the two scalings and `m_h` adds of (Gᵀπ)_h, `K`
@@ -234,7 +271,7 @@ fn check_lag_pairs(
         let gamma = order_u / (1.0 - order_u);
         for l in 0..depth {
             let col = layout.incoming_lag_col(hydro, l);
-            let a_costs = legs.map(|(duals, _)| reduced_cost_of(solve, duals, col));
+            let a_costs = legs.map(|(duals, _)| reduced_cost_of(solve, &cut_columns, duals, col));
             let beta = kernel.coefficients[lag_slot[l * n + h].expect("every lag has a slot")];
             let psi = par.psi_slice(stage, h).get(l).copied().unwrap_or(0.0);
             let kernel_abs =
@@ -273,14 +310,13 @@ struct SharedDualRun {
     solves_per_stage: Vec<(usize, usize)>,
 }
 
-fn check_shared_dual_identity(
+fn check_shared_dual_identity_on(
     label: &str,
     system: &System,
-    logical: &mut StudySetup,
     compact: &StudySetup,
 ) -> SharedDualRun {
-    train_storing_trial_states(label, logical);
     let expanded = expand_stage_templates(system, compact);
+    let lag_dims = lag_dims(&expanded.layout);
     let state = compact.stage_state();
     let (n, depth) = (state.hydro_count, state.max_par_order);
     assert!(n >= 1, "{label}: no hydro, so no coupling dual can bind");
@@ -291,11 +327,11 @@ fn check_shared_dual_identity(
     let training_ctx = compact.training_ctx();
     let tree = training_ctx.stochastic.tree_view();
 
-    for stage in 1..logical.fcf.pools.len() {
-        if logical.fcf.active_cuts(stage).next().is_none() {
+    for stage in 1..compact.fcf.pools.len() {
+        if compact.fcf.active_cuts(stage).next().is_none() {
             continue;
         }
-        let Some(states) = stored_incoming_states(logical, stage) else {
+        let Some(states) = stored_incoming_states(compact, stage) else {
             skipped_stages.push(stage);
             continue;
         };
@@ -306,8 +342,8 @@ fn check_shared_dual_identity(
                 let solve = assemble_expanded_solve(
                     compact,
                     &expanded,
-                    &logical.fcf,
-                    &CutRowSet::active(&logical.fcf, stage, stage - 1),
+                    &compact.fcf,
+                    &CutRowSet::active(&compact.fcf, stage, stage - 1),
                     stage,
                     x_hat,
                     raw_noise,
@@ -316,14 +352,15 @@ fn check_shared_dual_identity(
                 let kernel = kernel_cut(
                     compact,
                     &expanded,
-                    &logical.fcf.pools[stage],
+                    &compact.fcf.pools[stage],
                     stage,
                     x_hat,
                     &solve,
                     &solution,
                 );
-                let (checked, stage_deep_nonzero) =
-                    check_lag_pairs(label, compact, &expanded, stage, &solve, &solution, &kernel);
+                let (checked, stage_deep_nonzero) = check_lag_pairs(
+                    label, compact, &expanded, stage, &solve, &solution, &kernel, &lag_dims,
+                );
                 deep_nonzero |= stage_deep_nonzero;
                 assert_eq!(
                     checked,
@@ -370,6 +407,15 @@ fn check_shared_dual_identity(
     }
 }
 
+fn check_shared_dual_identity(
+    label: &str,
+    system: &System,
+    compact: &mut StudySetup,
+) -> SharedDualRun {
+    train_storing_trial_states(label, compact);
+    check_shared_dual_identity_on(label, system, compact)
+}
+
 const SCALE_GUARDS: [Guard; 4] = [
     Guard::NonUnitZScale,
     Guard::NonUnitLagScale,
@@ -391,14 +437,14 @@ const D43_UNMET_SCALE_GUARDS: &[(Guard, &str)] = &[(
 /// `guards` and each scale guard not in `unmet`, and that every guard of `unmet` is still unmet.
 fn assert_run(
     label: &str,
-    logical: &StudySetup,
+    compact: &StudySetup,
     run: &SharedDualRun,
     guards: &[Guard],
     unmet: &[(Guard, &str)],
 ) {
     assert_eq!(
         run.skipped_stages,
-        stages_whose_producer_drops_a_state_dimension(logical),
+        stages_whose_producer_drops_a_state_dimension(compact),
         "{label}: the skipped stages must be the stages whose producer pool drops a state dimension"
     );
     assert!(
@@ -420,23 +466,19 @@ fn assert_run(
 
 #[test]
 fn the_shared_dual_identity_holds_on_the_fpha_lag_study() {
-    let build = |emission| {
-        let (system, mut config, hydro_models) = fpha_lag_study();
-        apply_oracle_config(&mut config);
-        build_setup_in_code_with_models_as(system, &config, hydro_models, emission)
-    };
-    let mut logical = build(Emission::Logical);
-    let compact = build(Emission::Compact);
+    let (system, mut config, hydro_models) = fpha_lag_study();
+    apply_oracle_config(&mut config);
+    let mut compact = build_setup_in_code_with_models(system, &config, hydro_models);
     let (system, _, _) = fpha_lag_study();
 
-    let run = check_shared_dual_identity(LAG_STUDY, &system, &mut logical, &compact);
+    let run = check_shared_dual_identity(LAG_STUDY, &system, &mut compact);
     assert!(
         run.skipped_stages.is_empty(),
         "{LAG_STUDY}: a stage's producer pool drops a state dimension"
     );
     assert_run(
         LAG_STUDY,
-        &logical,
+        &compact,
         &run,
         &[
             Guard::FamilyDual(DualFamily::Fpha),
@@ -457,18 +499,14 @@ fn the_shared_dual_identity_holds_at_every_opening_of_a_three_opening_lag_study(
         openings: OPENINGS,
         ..FphaLagOptions::default()
     };
-    let build = |emission| {
-        let (system, mut config, hydro_models) = fpha_lag_study_with(options);
-        apply_oracle_config(&mut config);
-        build_setup_in_code_with_models_as(system, &config, hydro_models, emission)
-    };
-    let mut logical = build(Emission::Logical);
-    let compact = build(Emission::Compact);
+    let (system, mut config, hydro_models) = fpha_lag_study_with(options);
+    apply_oracle_config(&mut config);
+    let mut compact = build_setup_in_code_with_models(system, &config, hydro_models);
     let (system, _, _) = fpha_lag_study_with(options);
 
     let training_ctx = compact.training_ctx();
     let tree = training_ctx.stochastic.tree_view();
-    for stage in 1..logical.fcf.pools.len() - 1 {
+    for stage in 1..compact.fcf.pools.len() - 1 {
         assert_eq!(
             tree.n_openings(stage),
             OPENINGS,
@@ -486,13 +524,13 @@ fn the_shared_dual_identity_holds_at_every_opening_of_a_three_opening_lag_study(
     }
 
     let label = "three-opening lag study";
-    let run = check_shared_dual_identity(label, &system, &mut logical, &compact);
+    let run = check_shared_dual_identity(label, &system, &mut compact);
     assert!(
         run.skipped_stages.is_empty(),
         "{label}: a stage's producer pool drops a state dimension"
     );
     for &(stage, solves) in &run.solves_per_stage {
-        let states = stored_incoming_states(&logical, stage).expect("a checked stage has states");
+        let states = stored_incoming_states(&compact, stage).expect("a checked stage has states");
         assert_eq!(
             solves,
             states.len() * OPENINGS,
@@ -501,7 +539,7 @@ fn the_shared_dual_identity_holds_at_every_opening_of_a_three_opening_lag_study(
     }
     assert_run(
         label,
-        &logical,
+        &compact,
         &run,
         &[
             Guard::FamilyDual(DualFamily::Fpha),
@@ -517,12 +555,12 @@ fn the_shared_dual_identity_holds_at_every_opening_of_a_three_opening_lag_study(
 
 #[test]
 fn the_shared_dual_identity_holds_on_d19() {
-    let (system, compact) = fresh_system_and_setup_as(Path::new(D19_DIR), Emission::Compact);
-    let mut logical = fresh_setup_with(Path::new(D19_DIR), apply_oracle_config);
+    let (system, mut compact) =
+        fresh_system_and_setup_with(Path::new(D19_DIR), apply_oracle_config);
     let depth = compact.stage_state().max_par_order;
     println!("d19 lag depth: {depth}");
 
-    let run = check_shared_dual_identity("d19", &system, &mut logical, &compact);
+    let run = check_shared_dual_identity("d19", &system, &mut compact);
     assert!(
         run.skipped_stages.is_empty(),
         "d19: a stage's producer pool drops a state dimension"
@@ -531,19 +569,15 @@ fn the_shared_dual_identity_holds_on_d19() {
     if depth >= 2 {
         guards.push(Guard::BindingShiftedLagCut);
     }
-    assert_run("d19", &logical, &run, &guards, D19_UNMET_SCALE_GUARDS);
+    assert_run("d19", &compact, &run, &guards, D19_UNMET_SCALE_GUARDS);
 }
 
 #[test]
 fn the_shared_dual_identity_holds_on_d43_outside_its_lag_dropping_stage() {
-    let (system, compact) = fresh_system_and_setup_with_emission(
-        Path::new(D43_DIR),
-        apply_oracle_config,
-        Emission::Compact,
-    );
-    let mut logical = fresh_setup_with(Path::new(D43_DIR), apply_oracle_config);
+    let (system, mut compact) =
+        fresh_system_and_setup_with(Path::new(D43_DIR), apply_oracle_config);
 
-    let run = check_shared_dual_identity("d43", &system, &mut logical, &compact);
+    let run = check_shared_dual_identity("d43", &system, &mut compact);
     assert!(
         !run.skipped_stages.is_empty(),
         "d43: no stage reads the reduced pool"
@@ -554,7 +588,7 @@ fn the_shared_dual_identity_holds_on_d43_outside_its_lag_dropping_stage() {
     );
     assert_run(
         "d43",
-        &logical,
+        &compact,
         &run,
         &[Guard::CouplingDualEveryHydro],
         D43_UNMET_SCALE_GUARDS,
@@ -563,38 +597,29 @@ fn the_shared_dual_identity_holds_on_d43_outside_its_lag_dropping_stage() {
 
 /// The lag study with its lag state widened to `WIDENED_LAG_DEPTH` by a boundary requirement,
 /// and a one-cut boundary whose slope on every lag at or past the PAR order is
-/// `DEEP_LAG_SLOPE` injected into the logical form's terminal pool.
-fn widened_lag_study(boundary_dir: &Path) -> (System, StudySetup, StudySetup) {
-    let build = |emission| {
-        let (system, mut config, hydro_models) = fpha_lag_study();
-        apply_oracle_config(&mut config);
-        let sentinel = Path::new("config.json");
-        let training_source = config
-            .training_scenario_source(sentinel)
-            .expect("training_scenario_source must parse");
-        let simulation_source = config
-            .simulation_scenario_source(sentinel)
-            .expect("simulation_scenario_source must parse");
-        let mut params = StudyParams::from_config(&config, Vec::new())
-            .expect("StudyParams::from_config must succeed");
-        params.boundary = BoundaryStateRequirements::present(WIDENED_LAG_DEPTH);
-        let construct = match emission {
-            Emission::Logical => StudySetup::from_broadcast_params,
-            Emission::Compact => StudySetup::from_broadcast_params_compact,
-        };
-        let setup = construct(
-            &system,
-            stochastic_in_code(&system),
-            params,
-            hydro_models,
-            &training_source,
-            &simulation_source,
-        )
-        .expect("the widened-lag study must build");
-        (system, setup)
-    };
-    let (_, mut logical) = build(Emission::Logical);
-    let (system, compact) = build(Emission::Compact);
+/// `DEEP_LAG_SLOPE` injected into the compact form's terminal pool.
+fn widened_lag_study(boundary_dir: &Path) -> (System, StudySetup) {
+    let (system, mut config, hydro_models) = fpha_lag_study();
+    apply_oracle_config(&mut config);
+    let sentinel = Path::new("config.json");
+    let training_source = config
+        .training_scenario_source(sentinel)
+        .expect("training_scenario_source must parse");
+    let simulation_source = config
+        .simulation_scenario_source(sentinel)
+        .expect("simulation_scenario_source must parse");
+    let mut params = StudyParams::from_config(&config, Vec::new())
+        .expect("StudyParams::from_config must succeed");
+    params.boundary = BoundaryStateRequirements::present(WIDENED_LAG_DEPTH);
+    let mut compact = StudySetup::from_broadcast_params(
+        &system,
+        stochastic_in_code(&system),
+        params,
+        hydro_models,
+        &training_source,
+        &simulation_source,
+    )
+    .expect("the widened-lag study must build");
 
     let par_order = compact.training_ctx().stochastic.par().max_order();
     let coefficients: Vec<f64> = lag_dims(&expand_stage_templates(&system, &compact).layout)
@@ -604,10 +629,10 @@ fn widened_lag_study(boundary_dir: &Path) -> (System, StudySetup, StudySetup) {
             _ => 0.0,
         })
         .collect();
-    let state_dimension = u32::try_from(logical.fcf.state_dimension).expect("fits u32");
+    let state_dimension = u32::try_from(compact.fcf.state_dimension).expect("fits u32");
     assert_eq!(
         coefficients.len(),
-        logical.fcf.state_dimension,
+        compact.fcf.state_dimension,
         "the boundary's slopes must cover the whole state"
     );
     let date = fixture_priced_date(ymd(2030, 1, 1), 0);
@@ -626,14 +651,14 @@ fn widened_lag_study(boundary_dir: &Path) -> (System, StudySetup, StudySetup) {
         1.0,
     ))
     .expect("the boundary cut must load");
-    inject_boundary_cuts(&mut logical, &boundary).expect("the boundary cut must inject");
-    (system, logical, compact)
+    inject_boundary_cuts(&mut compact, &boundary).expect("the boundary cut must inject");
+    (system, compact)
 }
 
 #[test]
 fn the_shared_dual_identity_holds_on_a_lag_state_deeper_than_the_par_order() {
     let boundary_dir = tempfile::tempdir().expect("tempdir");
-    let (system, mut logical, compact) = widened_lag_study(boundary_dir.path());
+    let (system, mut compact) = widened_lag_study(boundary_dir.path());
     let par_order = compact.training_ctx().stochastic.par().max_order();
     let depth = compact.stage_state().max_par_order;
     assert!(
@@ -641,14 +666,14 @@ fn the_shared_dual_identity_holds_on_a_lag_state_deeper_than_the_par_order() {
         "the lag state ({depth}) must be deeper than the PAR order ({par_order})"
     );
 
-    let run = check_shared_dual_identity("widened lag", &system, &mut logical, &compact);
+    let run = check_shared_dual_identity("widened lag", &system, &mut compact);
     assert!(
         run.skipped_stages.is_empty(),
         "widened lag: a stage's producer pool drops a state dimension"
     );
     assert_run(
         "widened lag",
-        &logical,
+        &compact,
         &run,
         &[
             Guard::CouplingDualEveryHydro,

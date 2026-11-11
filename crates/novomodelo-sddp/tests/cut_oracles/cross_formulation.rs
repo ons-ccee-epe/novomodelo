@@ -6,16 +6,16 @@ use novomodelo_sddp::test_support::stage_state_box_bounds;
 use novomodelo_sddp::{RiskMeasure, StudySetup};
 use novomodelo_solver::{ActiveSolver, SolverError, SolverInterface};
 
-use super::expander_cut_rows::LAG_STUDY;
 use crate::common::expanded_solve::{
     CutRowSet, assemble_expanded_solve, lag_dims, load_expanded,
     stages_whose_producer_drops_a_state_dimension, stored_incoming_states,
 };
+use crate::common::in_code_studies::FPHA_LAG_STUDY_KEY as LAG_STUDY;
 use crate::common::in_code_studies::{FphaLagOptions, fpha_lag_study_with};
 use crate::common::oracle_tolerance::{assert_first_try, value_tolerance};
 use crate::common::stored_cut_oracles::apply_oracle_config;
 use crate::common::{
-    Emission, build_setup_in_code_with_models_as, fresh_system_and_setup_with_emission, is_chain,
+    build_setup_in_code_with_models, fresh_system_and_setup_with, is_chain,
     train_storing_trial_states,
 };
 
@@ -524,8 +524,7 @@ fn cold_solves_and_cuts_agree_across_the_formulations() {
     };
     let (system, mut config, hydro_models) = fpha_lag_study_with(options);
     apply_oracle_config(&mut config);
-    let mut compact =
-        build_setup_in_code_with_models_as(system, &config, hydro_models, Emission::Compact);
+    let mut compact = build_setup_in_code_with_models(system, &config, hydro_models);
     train_storing_trial_states(LAG_STUDY, &mut compact);
     let (system, _, _) = fpha_lag_study_with(options);
     let expanded = expand_stage_templates(&system, &compact);
@@ -556,8 +555,7 @@ fn cold_solves_and_cuts_agree_across_the_formulations_on_every_lag_deck() {
         if SLOW_DECKS.contains(&deck.key.as_str()) {
             continue;
         }
-        let (system, mut compact) =
-            fresh_system_and_setup_with_emission(&deck.dir, apply_oracle_config, Emission::Compact);
+        let (system, mut compact) = fresh_system_and_setup_with(&deck.dir, apply_oracle_config);
         if compact.stage_state().max_par_order == 0 {
             continue;
         }

@@ -3,7 +3,7 @@ use novomodelo_core::{BlockMode, Stage};
 
 use crate::hydro_models::EvaporationModel;
 use crate::indexer::{
-    BlockIdx, BusSys, EvapLocal, FillingTargetLocal, FloorLocal, HydroCell, HydroSys, InflowForm,
+    BlockIdx, BusSys, EvapLocal, FillingTargetLocal, FloorLocal, HydroCell, HydroSys,
     PlantCapLocal, PlantFloorLocal,
 };
 
@@ -56,12 +56,6 @@ pub(super) fn fill_stage_rows(
     fill_anticipated_fishing_rows(layout, &mut row_lower, &mut row_upper);
     fill_anticipated_state_out_def_rows(layout, &mut row_lower, &mut row_upper);
     fill_anticipated_slot_definition_rows(layout, &mut row_lower, &mut row_upper);
-    match layout.state.inflow_form {
-        InflowForm::Logical => {
-            fill_z_inflow_rows(ctx, stage_idx, layout, &mut row_lower, &mut row_upper);
-        }
-        InflowForm::Compact => {}
-    }
 
     (row_lower, row_upper)
 }
@@ -413,31 +407,6 @@ fn fill_evaporation_rows(
                 );
             }
         }
-    }
-}
-
-/// Fill z-inflow definition row bounds: equality with RHS = `base_h` (m3/s).
-///
-/// The base is the deterministic PAR base inflow (before noise), NOT multiplied
-/// by ζ and NOT reduced by withdrawal. The noise component (sigma · eta) is added
-/// at solve time via [`super::PatchBuffer::fill_z_inflow_patches`].
-fn fill_z_inflow_rows(
-    ctx: &TemplateBuildCtx<'_>,
-    stage_idx: usize,
-    layout: &StageLayout,
-    row_lower: &mut [f64],
-    row_upper: &mut [f64],
-) {
-    let has_par = ctx.par_lp.n_stages() > 0;
-    for h_idx in 0..layout.state.hydro_count {
-        let row = layout.z_inflow_row(HydroSys::new(h_idx));
-        let base = if has_par {
-            ctx.par_lp.deterministic_base(stage_idx, h_idx)
-        } else {
-            0.0
-        };
-        row_lower[row] = base;
-        row_upper[row] = base;
     }
 }
 

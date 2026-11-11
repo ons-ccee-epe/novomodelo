@@ -1359,7 +1359,8 @@ mod tests {
         let mut fx = ForwardFixture::new();
         let state_boxes = permissive_state_boxes(fx.state.n_state, fx.n_stages);
         let geometry = equipment_free_geometry(&vec![0; fx.templates.len()]);
-        let fixture = StageContextFixture::new(&fx.templates, &state_boxes, &geometry);
+        let fixture = StageContextFixture::new(&fx.templates, &state_boxes, &geometry)
+            .without_inflow_entries(1);
         let ctx = fixture.ctx();
         let study_dims = study_dims();
         let training_ctx = TrainingContext {
@@ -1431,7 +1432,8 @@ mod tests {
             .collect();
         let state_boxes = permissive_state_boxes(fx.state.n_state, fx.n_stages);
         let geometry = equipment_free_geometry(&vec![0; fx.templates.len()]);
-        let fixture = StageContextFixture::new(&fx.templates, &state_boxes, &geometry);
+        let fixture = StageContextFixture::new(&fx.templates, &state_boxes, &geometry)
+            .without_inflow_entries(1);
         let ctx = fixture.ctx();
         let study_dims = study_dims();
         let training_ctx = TrainingContext {
@@ -1493,7 +1495,8 @@ mod tests {
         let mut fx = ForwardFixture::new();
         let state_boxes = permissive_state_boxes(fx.state.n_state, fx.n_stages);
         let geometry = equipment_free_geometry(&vec![0; fx.templates.len()]);
-        let fixture = StageContextFixture::new(&fx.templates, &state_boxes, &geometry);
+        let fixture = StageContextFixture::new(&fx.templates, &state_boxes, &geometry)
+            .without_inflow_entries(1);
         let ctx = fixture.ctx();
         let study_dims = study_dims();
         let training_ctx = TrainingContext {
@@ -1567,7 +1570,8 @@ mod tests {
         let fx = ForwardFixture::new();
         let state_boxes = permissive_state_boxes(fx.state.n_state, fx.n_stages);
         let geometry = equipment_free_geometry(&vec![0; fx.templates.len()]);
-        let fixture = StageContextFixture::new(&fx.templates, &state_boxes, &geometry);
+        let fixture = StageContextFixture::new(&fx.templates, &state_boxes, &geometry)
+            .without_inflow_entries(1);
         let ctx = fixture.ctx();
         let study_dims = study_dims();
         let training_ctx = TrainingContext {
@@ -1672,7 +1676,8 @@ mod tests {
         let mut fx = ForwardFixture::new();
         let state_boxes = permissive_state_boxes(fx.state.n_state, fx.n_stages);
         let geometry = equipment_free_geometry(&vec![0; fx.templates.len()]);
-        let fixture = StageContextFixture::new(&fx.templates, &state_boxes, &geometry);
+        let fixture = StageContextFixture::new(&fx.templates, &state_boxes, &geometry)
+            .without_inflow_entries(1);
         let ctx = fixture.ctx();
         let study_dims = study_dims();
         let training_ctx = TrainingContext {
@@ -1785,7 +1790,8 @@ mod tests {
         let mut fx = ForwardFixture::new();
         let state_boxes = permissive_state_boxes(fx.state.n_state, fx.n_stages);
         let geometry = equipment_free_geometry(&vec![0; fx.templates.len()]);
-        let fixture = StageContextFixture::new(&fx.templates, &state_boxes, &geometry);
+        let fixture = StageContextFixture::new(&fx.templates, &state_boxes, &geometry)
+            .without_inflow_entries(1);
         let ctx = fixture.ctx();
         let study_dims = study_dims();
         let training_ctx = TrainingContext {
@@ -2056,7 +2062,8 @@ mod tests {
 
         let state_boxes = permissive_state_boxes(state.n_state, 1);
         let geometry = equipment_free_geometry(&vec![0; templates.len()]);
-        let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+        let fixture =
+            StageContextFixture::new(&templates, &state_boxes, &geometry).without_inflow_entries(2);
         let ctx = fixture.ctx();
         let study_dims = study_dims();
         let lag_accum_seed = [0.0_f64, 0.0_f64];
@@ -2319,7 +2326,8 @@ mod tests {
         let horizon = HorizonMode::Finite { num_stages: 2 };
         let state_boxes = permissive_state_boxes(state.n_state, 2);
         let geometry = equipment_free_geometry(&vec![0; templates.len()]);
-        let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+        let fixture =
+            StageContextFixture::new(&templates, &state_boxes, &geometry).without_inflow_entries(1);
         let ctx = fixture.ctx();
         let study_dims = study_dims();
         let stages = make_stages_2();
@@ -2563,7 +2571,8 @@ mod tests {
         let fx = ForwardFixture::new();
         let state_boxes = permissive_state_boxes(fx.state.n_state, fx.n_stages);
         let geometry = equipment_free_geometry(&vec![0; fx.templates.len()]);
-        let fixture = StageContextFixture::new(&fx.templates, &state_boxes, &geometry);
+        let fixture = StageContextFixture::new(&fx.templates, &state_boxes, &geometry)
+            .without_inflow_entries(1);
         let ctx = fixture.ctx();
         let study_dims = study_dims();
         let node_graph = crate::test_support::chain_node_graph(&fx.stochastic);

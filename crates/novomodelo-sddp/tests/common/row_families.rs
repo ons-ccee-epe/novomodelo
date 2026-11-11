@@ -1,5 +1,5 @@
 //! The row classes of a loaded stage LP, read from the builder's row-family record: every
-//! structural row of the logical, compact or expanded LP gets the family the builder allocated it
+//! structural row of the stage or expanded LP gets the family the builder allocated it
 //! to, and every row loaded past the structural rows is a cut. Positions come from the record and
 //! the expander's index maps only, so a row that no family places fails loudly.
 
@@ -14,13 +14,14 @@ use novomodelo_sddp::test_support::expander::ExpandedLayout;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RowClass {
     Base(RowFamily),
+    ExpandedInflowDefinition,
     Cut,
 }
 
 /// The snake-case name of `class`.
 pub fn name(class: RowClass) -> &'static str {
     match class {
-        RowClass::Base(RowFamily::ZInflow) => "z_inflow",
+        RowClass::ExpandedInflowDefinition => "expanded_inflow_definition",
         RowClass::Base(RowFamily::WaterBalance) => "water_balance",
         RowClass::Base(RowFamily::TransitBucketDefinition) => "transit_bucket_definition",
         RowClass::Base(RowFamily::LoadBalance) => "load_balance",
@@ -74,7 +75,7 @@ fn with_cut_rows(
     classes
 }
 
-/// The class of each of the `num_rows_loaded` rows of `stage`'s logical or compact LP: rows below
+/// The class of each of the `num_rows_loaded` rows of `stage`'s LP: rows below
 /// the stage template's own row count by the builder's record, the rest cuts.
 pub fn classify_stage_rows(
     setup: &StudySetup,
@@ -97,8 +98,7 @@ pub fn classify_stage_rows(
 }
 
 /// The class of each of the `num_rows_loaded` rows of `stage`'s expanded LP: the z rows and the
-/// compact rows' classes at their expanded positions, the rest cuts. `compact` must be the compact
-/// form.
+/// compact rows' classes at their expanded positions, the rest cuts.
 pub fn classify_expanded_rows(
     compact: &StudySetup,
     layout: &ExpandedLayout,
@@ -118,14 +118,10 @@ pub fn classify_expanded_rows(
             &mut placed,
             stage,
             layout.z_row(HydroSys::new(h)),
-            RowClass::Base(RowFamily::ZInflow),
+            RowClass::ExpandedInflowDefinition,
         );
     }
     for (family, range) in &templates.row_families()[stage] {
-        assert!(
-            *family != RowFamily::ZInflow || range.is_empty(),
-            "stage {stage}: the compact z-inflow rows are {range:?}, so this is not the compact form"
-        );
         for row in range.clone() {
             place(&mut placed, stage, layout.row(row), RowClass::Base(*family));
         }

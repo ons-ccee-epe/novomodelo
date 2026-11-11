@@ -738,93 +738,16 @@ mod tests {
 
     use super::*;
     use novomodelo_comm::LocalBackend;
-    use novomodelo_core::temporal::StageStateConfig;
-    use novomodelo_solver::{ActiveSolver, SolutionView};
+    use novomodelo_solver::ActiveSolver;
 
     use crate::{
-        indexer::{CutStateProjection, InflowForm, StateSpace},
-        lead_time::AnticipatedResolution,
+        indexer::{CutSlot, CutStateProjection},
         setup::{StudySetup, node_graph::Traversal},
         solver_phase::Phase,
         test_support,
-        training::{
-            backward::extract_state_duals_only,
-            forward::{build_sampler_from_ctx, node_solve::capture_fused_terminal_slice},
-        },
+        training::forward::build_sampler_from_ctx,
         workspace::WorkspacePool,
     };
-
-    /// An eligible node's captured `(objective, duals)` equals a direct
-    /// [`extract_state_duals_only`] call on the same `view`/`cut_state`/`col_scale` —
-    /// [`capture_fused_terminal_slice`]'s "reuse verbatim" contract, proved by
-    /// construction rather than by re-deriving the `rc`/`col_scale` math a second time.
-    #[test]
-    fn capture_fused_terminal_slice_matches_extract_state_duals_only() {
-        let state = StateSpace::new(
-            2,
-            1,
-            Vec::new(),
-            vec![],
-            AnticipatedResolution::default(),
-            &[1, 1],
-        );
-        let cut_state = CutStateProjection::new(
-            &state,
-            StageStateConfig {
-                storage: true,
-                inflow_lags: true,
-            },
-        );
-        // A lag slot's incoming column (`inflow_lags` block) lands past
-        // `state.n_state`, so this must exceed the largest incoming column
-        // `cut_state` resolves, not just `[0, n_state)`.
-        let n_cols = 64;
-        let reduced_costs: Vec<f64> = (0..n_cols).map(|c| c as f64 + 1.0).collect();
-        let col_scale: Vec<f64> = vec![2.0; n_cols];
-        let view = SolutionView {
-            objective: 42.0,
-            primal: &[],
-            dual: &[],
-            reduced_costs: &reduced_costs,
-            iterations: 0,
-            solve_time_seconds: 0.0,
-        };
-
-        let mut expected_duals = Vec::new();
-        let expected_objective =
-            extract_state_duals_only(&view, &cut_state, &col_scale, &mut expected_duals);
-
-        let mut fused_out = FusedTerminalSlice::default();
-        capture_fused_terminal_slice(&view, &col_scale, Some(&cut_state), &mut fused_out);
-
-        assert!(fused_out.captured);
-        assert_eq!(fused_out.objective, expected_objective);
-        assert_eq!(fused_out.subgradient, expected_duals);
-    }
-
-    /// A `None` `cut_state` (the non-eligible-node signal) resets an
-    /// already-populated `fused_out` to uncaptured, not merely leaves it as
-    /// constructed — catching a "only ever sets true" regression.
-    #[test]
-    fn capture_fused_terminal_slice_none_when_ineligible() {
-        let view = SolutionView {
-            objective: 7.0,
-            primal: &[],
-            dual: &[],
-            reduced_costs: &[],
-            iterations: 0,
-            solve_time_seconds: 0.0,
-        };
-        let mut fused_out = FusedTerminalSlice {
-            captured: true,
-            objective: 99.0,
-            subgradient: vec![1.0, 2.0],
-        };
-
-        capture_fused_terminal_slice(&view, &[], None, &mut fused_out);
-
-        assert!(!fused_out.captured);
-    }
 
     /// Fresh, unpopulated scaffolding for one [`run_enumerated_forward`] call
     /// over `setup`'s whole graph: a single-worker pool, an empty
@@ -913,8 +836,10 @@ mod tests {
     }
 
     /// An External, single-opening terminal leaf is captured; the interior
-    /// External root is not; the eligible leaves' basis is still captured into
-    /// [`BasisStore`] and a second iteration (warm-started from it) succeeds.
+    /// External root is not, on the first iteration and on the next, whose
+    /// reused capture slots still hold the leaves' captured slice; the eligible
+    /// leaves' basis is still captured into [`BasisStore`] and a second
+    /// iteration (warm-started from it) succeeds.
     #[test]
     fn enumerated_forward_captures_fused_slice_only_for_eligible_external_terminal_leaves() {
         let setup = test_support::external_distinct_fan_setup(2, 1);
@@ -984,6 +909,12 @@ mod tests {
             None,
         );
 
+        for &node in &ineligible {
+            assert!(
+                scratch.fused_terminal_slice(node).is_none(),
+                "non-eligible node {node:?} must not be captured from a reused capture slot"
+            );
+        }
         for &node in &eligible {
             assert!(
                 scratch.fused_terminal_slice(node).is_some(),
@@ -1089,13 +1020,11 @@ mod tests {
         )
     }
 
-    /// On the compact LP the captured slice spans the cut-generating PARENT's
-    /// projection, which here differs in size from the leaf's own pool.
+    /// The captured slice spans the cut-generating PARENT's projection, which
+    /// here differs in size from the leaf's own pool.
     #[test]
     fn enumerated_forward_compact_fused_slice_spans_the_parent_projection() {
-        let (_, setup) =
-            test_support::external_distinct_fan_setup_heterogeneous_cut_state_in_both_forms(2, 1);
-        assert_eq!(setup.stage_state().inflow_form, InflowForm::Compact);
+        let setup = test_support::external_distinct_fan_setup_heterogeneous_cut_state(2, 1);
         let eligible = eligible_external_terminal_leaves(&setup);
         assert_eq!(eligible.len(), 2, "both leaves of the fan are eligible");
         for &node in &eligible {
@@ -1141,13 +1070,11 @@ mod tests {
         }
     }
 
-    /// A parent that projects a lag slot is the case a storage-only read of the
-    /// compact LP cannot serve: the incoming lag column does not exist there.
+    /// A parent that projects a lag slot is the case a storage-only read cannot
+    /// serve: the lag region has no LP column.
     #[test]
     fn enumerated_forward_compact_fused_slice_reads_a_lagged_parent() {
-        let (_, setup) =
-            test_support::external_distinct_fan_setup_lagged_parent_in_both_forms(2, 1);
-        assert_eq!(setup.stage_state().inflow_form, InflowForm::Compact);
+        let setup = test_support::external_distinct_fan_setup_lagged_parent(2, 1);
         let eligible = eligible_external_terminal_leaves(&setup);
         assert_eq!(eligible.len(), 2, "both leaves of the fan are eligible");
         for &node in &eligible {
@@ -1180,12 +1107,112 @@ mod tests {
         }
     }
 
+    /// The parent projects the lag slot alone while each leaf's own pool keeps storage, so the
+    /// two differ in columned dimensions. The reference re-solves each leaf on a fresh workspace.
+    #[test]
+    fn enumerated_forward_compact_fused_slice_carries_no_storage_under_a_storage_free_leaf_stage() {
+        let setup = test_support::external_distinct_fan_setup_storage_free_leaf(2, 1);
+        let storage = setup.stage_state().state_dim_storage_range();
+        let columned_dims = |projection: &CutStateProjection| {
+            projection
+                .incoming_pairs()
+                .map(|(slot, _)| projection.global_state_index(slot))
+                .collect::<Vec<_>>()
+        };
+        let eligible = eligible_external_terminal_leaves(&setup);
+        assert_eq!(eligible.len(), 2, "both leaves of the fan are eligible");
+        for &node in &eligible {
+            let (leaf, parent) = leaf_and_parent_projections(&setup, node);
+            assert_ne!(
+                columned_dims(leaf),
+                columned_dims(parent),
+                "power check: the two projections differ in columned dimensions"
+            );
+            assert!(
+                (0..parent.n_slots())
+                    .all(|j| !storage.contains(&parent.global_state_index(CutSlot::new(j)).get())),
+                "power check: the parent projects no storage dimension"
+            );
+            assert!(
+                parent.has_lag_slots(),
+                "power check: the parent's lag slot keeps the slice non-empty"
+            );
+        }
+
+        let (mut pool, mut basis_store, mut records) = fresh_rig(&setup);
+        let mut scratch = EnumeratedForwardScratch::default();
+        run_iteration(
+            &setup,
+            &mut scratch,
+            &mut pool.workspaces,
+            &mut basis_store,
+            &mut records,
+            1,
+            None,
+        );
+
+        let node_graph = &setup.inputs.node_graph;
+        let stage_ctx = setup.stage_ctx();
+        let training_ctx = setup.training_ctx();
+        let (mut reference_pool, _, _) = fresh_rig(&setup);
+        let ws = &mut reference_pool.workspaces[0];
+        let mut reference = test_support::ProbeCut::new(&training_ctx);
+        let bits = |values: &[f64]| values.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+        for &node in &eligible {
+            let (_, parent) = leaf_and_parent_projections(&setup, node);
+            let parent_node = node_graph.node_parent(node).expect("checked above");
+            let stage = node_graph.nodes[node].stage;
+            let leaf_pool = node_graph.nodes[node].pool_id;
+            let template = stage_ctx.template(stage);
+            ws.solver.reset_solver_state();
+            ws.solver.load_model(template);
+            test_support::opening_cut_for_probe(
+                ws,
+                &stage_ctx,
+                &training_ctx,
+                &test_support::ProbeOpening {
+                    stage,
+                    pinned_state: scratch.out_state(parent_node),
+                    raw_noise: &test_support::node_opening_noise(&setup, node, 0),
+                    cuts: test_support::ProbeCuts {
+                        pool: &setup.fcf.pools[leaf_pool],
+                        pool_id: leaf_pool,
+                        slots: &[],
+                    },
+                    extracted_pool_id: node_graph.nodes[parent_node].pool_id,
+                    inflow_slack_bounds: None,
+                },
+                &mut reference,
+            )
+            .expect("the leaf LP solves");
+
+            let mut expected = vec![0.0; parent.n_slots()];
+            let lag = parent.lag_point().full();
+            expected[lag.clone()].copy_from_slice(&reference.coefficients[lag]);
+            for (slot, col) in parent.incoming_pairs() {
+                let col = col.get();
+                expected[slot.get()] = reference.reduced_costs[col]
+                    / template.col_scale.get(col).copied().unwrap_or(1.0);
+            }
+
+            let (objective, subgradient) = scratch
+                .fused_terminal_slice(node)
+                .unwrap_or_else(|| panic!("eligible leaf {node:?} must be captured"));
+            assert_eq!(
+                objective.to_bits(),
+                reference.objective.to_bits(),
+                "power check: the reference solves the leaf's own LP"
+            );
+            assert_eq!(subgradient.len(), parent.n_slots());
+            assert_eq!(bits(subgradient), bits(&expected));
+        }
+    }
+
     /// The compact terminal leaf stores a basis in the compact layout and the
     /// next iteration offers it back 1:1, never through reconstruction.
     #[test]
     fn enumerated_forward_compact_terminal_leaf_warm_starts_one_to_one() {
-        let (logical, setup) =
-            test_support::external_distinct_fan_setup_lagged_parent_in_both_forms(2, 1);
+        let setup = test_support::external_distinct_fan_setup_lagged_parent(2, 1);
         let node_graph = &setup.inputs.node_graph;
         let eligible = eligible_external_terminal_leaves(&setup);
         assert_eq!(eligible.len(), 2, "both leaves of the fan are eligible");
@@ -1208,11 +1235,6 @@ mod tests {
 
         let terminal = StageIdx(setup.num_stages() - 1);
         let compact_template = setup.stage_ctx().template(terminal).clone();
-        let logical_cols = logical.stage_ctx().template(terminal).num_cols;
-        assert!(
-            compact_template.num_cols < logical_cols,
-            "power check: the compact template has fewer columns than its logical twin"
-        );
         for &node in &eligible {
             let stored = basis_store
                 .get(scratch.m_rep[node], node)

@@ -7,7 +7,6 @@ use std::collections::HashMap;
 use std::ops::Range;
 
 use chrono::NaiveDate;
-use novomodelo_core::scenario::InflowModel;
 use novomodelo_core::{
     Block, BlockMode, BoundsCountsSpec, BoundsDefaults, Bus, CascadeTopology, ConstraintExpression,
     ContractBlockBounds, ContractType, EnergyContract, EntityId, FillingConfig, GenericConstraint,
@@ -17,13 +16,12 @@ use novomodelo_core::{
     Stage, StageRiskConfig, StageStateConfig, Thermal, ThermalBlockBounds, ThermalStageBounds,
     VariableRef,
 };
-use novomodelo_stochastic::par::precompute::PrecomputedPar;
 
 use crate::hydro_models::{EvaporationModelSet, ProductionModelSet};
 use crate::indexer::{
     AnticipatedLocal, BlockIdx, BlockRowFamily, Boundary, BusSys, CutStateProjection, EvapLocal,
     FillingTargetLocal, FloorLocal, FphaCellLocal, FphaLocal, HydroCell, HydroCellIndex, HydroSys,
-    InflowForm, NcsSys, PumpingSys, StateDim, StateRegion, ThermalSys, anticipated_resolution_for,
+    NcsSys, PumpingSys, StateDim, StateRegion, ThermalSys, anticipated_resolution_for,
 };
 use crate::lead_time::{AnticipatedResolution, DeliveryAxis, LeadTime, PointResolution};
 use crate::resolved_parameters::ResolvedParameters;
@@ -36,7 +34,7 @@ use crate::test_support::{
 use crate::time_value::{PostStudyResolved, TimeValue};
 
 use super::super::DeliveryRing;
-use super::super::entries::build_stage_matrix_entries_with_inflow_coupling;
+use super::super::entries::build_stage_inflow_coupling;
 use super::super::test_support::zero_hydro_penalties;
 use super::{
     RangeCursor, StageLayout, StateSpace, TemplateBuildCtx, build_anticipated_decision_row_pos,
@@ -312,7 +310,7 @@ fn stage_layout_zero_anticipated_matches_pre_anticipated_offsets() {
     assert_eq!(layout.state.n_anticipated, 0, "n_anticipated");
     assert_eq!(layout.state.k_max, 0, "k_max");
 
-    let idx = state_layout(ctx.hydros.len(), ctx.par_lp.max_order());
+    let idx = state_layout(ctx.hydros.len(), ctx.state.max_par_order);
     assert_eq!(
         layout.geometry.turbine.start,
         idx.theta + 1,
@@ -1103,31 +1101,27 @@ fn chronological_water_balance_row_count() {
 }
 
 /// In parallel mode `push_local_inflow_coupling` loops
-/// `0..water_balance.rows_per_entity(n_blks) == 1`, so `z_h`'s column carries
-/// exactly one WATER-ROW entry per target hydro regardless of `n_blks` — a
-/// `Σ_k` per-block loop would inflate the routed-entry count instead. `z_h`
-/// also carries a second entry on its own z-inflow definition row
-/// ([`super::super::entries::fill_z_inflow_entries`]), which this test does
-/// not count.
+/// `0..water_balance.rows_per_entity(n_blks) == 1`, so each hydro's inflow coupling
+/// carries exactly one water-row entry per target hydro regardless of `n_blks` — a
+/// `Σ_k` per-block loop would inflate the routed-entry count instead.
 #[test]
-fn parallel_z_inflow_column_enters_each_target_water_row_once() {
+fn parallel_inflow_coupling_enters_each_target_water_row_once() {
     let mut fixtures = TwoHydroFixtures::new();
     let ctx = fixtures.make_ctx();
     let stage = stage_with_blocks(BlockMode::Parallel, 3);
     let layout = StageLayout::new(&ctx, &stage, 0);
 
-    let col_entries = build_stage_matrix_entries_with_inflow_coupling(&ctx, &stage, 0, &layout);
+    let coupling = build_stage_inflow_coupling(&ctx, &stage, 0, &layout);
     let water_rows = layout.geometry.water_balance.range();
 
     for h in 0..ctx.hydros.len() {
-        let z_h = layout.state.z_inflow.start + h;
-        let water_row_entries = col_entries[z_h]
-            .iter()
-            .filter(|&&(row, _)| water_rows.contains(&row))
+        let water_row_entries = coupling
+            .hydro_entries(HydroSys::new(h))
+            .filter(|&(row, _)| water_rows.contains(&row))
             .count();
         assert_eq!(
             water_row_entries, 1,
-            "hydro {h}'s z-inflow column must carry exactly one water-row entry in parallel mode"
+            "hydro {h}'s inflow coupling must carry exactly one water-row entry in parallel mode"
         );
     }
 }
@@ -2097,12 +2091,12 @@ fn anticipated_fishing_row_count_grows_with_stage() {
 }
 
 /// `num_rows` does not include state-fixing rows; the LP row layout starts
-/// directly with `z_inflow_rows` at row 0.
+/// directly with the water-balance rows at row 0.
 ///
 /// State pinning uses column bounds, so there is no `[0, n_state)` row
-/// prefix. `num_rows` equals the count of structural rows only (`z_inflow`,
-/// water balance, load balance, FPHA, evap, operational, fishing,
-/// `anticipated_state_out_def`, generic).
+/// prefix. `num_rows` equals the count of structural rows only (water balance,
+/// load balance, FPHA, evap, operational, fishing, `anticipated_state_out_def`,
+/// generic).
 ///
 /// `AntFixturesWithNStages`, not the study-stage-count-0 `ZeroEntityFixtures`:
 /// `build_anticipated_fishing_row_pos`'s in-study guard reads the fixture's
@@ -2118,7 +2112,7 @@ fn num_rows_drops_by_n_state_with_anticipated_thermals() {
     let layout = StageLayout::new(&ctx, &stage, 0);
 
     // n_state for this fixture: N*(1+L) + A*K = 0 + 2*3 = 6.
-    let n_state = ctx.hydros.len() * (1 + ctx.par_lp.max_order()) + n_anticipated * k_max;
+    let n_state = ctx.hydros.len() * (1 + ctx.state.max_par_order) + n_anticipated * k_max;
     assert_eq!(n_state, 6);
 
     // num_rows for this zero-hydro fixture: only the anticipated_fishing
@@ -2136,12 +2130,11 @@ fn num_rows_drops_by_n_state_with_anticipated_thermals() {
         num_rows_if_state_rows_existed, 8,
         "observed + n_state is 8 for this fixture"
     );
-    // Structural invariant proving the reduction: row_water_balance_start
-    // equals ctx.hydros.len() (no n_state offset). With state-fixing rows it
-    // would be n_state + ctx.hydros.len().
+    // Structural invariant proving the reduction: with state-fixing rows the
+    // water balance would start at n_state.
     assert_eq!(
         layout.geometry.water_balance.start(),
-        ctx.hydros.len(),
+        0,
         "row_water_balance_start does not include the n_state offset"
     );
 }
@@ -2515,10 +2508,15 @@ fn mixed_lead_nonzero_mask_covers_every_slot_the_lp_latches() {
             inflow_lags: true,
         },
     );
+    let lag_dims = state.state_dim_lag_range();
     assert_eq!(
         projection.render_len(),
-        state.nonzero_state_indices.len(),
-        "an all-enabled projection must render exactly the global mask"
+        state
+            .nonzero_state_indices
+            .iter()
+            .filter(|dim| !lag_dims.contains(&dim.get()))
+            .count(),
+        "an all-enabled projection must render exactly the global mask outside the lag region"
     );
 }
 
@@ -2621,8 +2619,8 @@ impl AntFixturesWithNStages {
 }
 
 /// The ring's own out-block start (`StateSpace::commit_out.start`) is sourced
-/// from the state-region position immediately after `transit_buckets_out`
-/// (before `z_inflow`), `col_line_fwd_start` follows `anticipated_decision`
+/// from the state-region position immediately after `transit_buckets_out`,
+/// `col_line_fwd_start` follows `anticipated_decision`
 /// directly, and [`super::AnticipatedLayout::state_out_def_rows`] counts both active
 /// plants at stage 0.
 ///
@@ -2829,7 +2827,7 @@ fn pumping_layout_inert_when_no_stations() {
 
     // Pre-existing column starts for the zero-entity, single-block layout:
     // theta == 0, every equipment/slack/NCS region empty starting at theta+1.
-    let idx = state_layout(ctx.hydros.len(), ctx.par_lp.max_order());
+    let idx = state_layout(ctx.hydros.len(), ctx.state.max_par_order);
     let expected_start = idx.theta + 1;
     assert_eq!(layout.geometry.turbine.start, expected_start);
     assert_eq!(layout.geometry.thermal.start, expected_start);
@@ -3782,174 +3780,6 @@ fn column_address_pins_cover_every_family() {
     );
     assert!(totals.ncs_generation > 0, "ncs_generation never compared");
     assert!(totals.pumping_flow > 0, "pumping_flow never compared");
-}
-
-fn compact_shift_fixtures(inflow_form: InflowForm) -> FillingMembershipFixtures {
-    let hydro_ids = [EntityId(1), EntityId(2)];
-    let inflow_model = |hydro_id, stage_id| InflowModel {
-        hydro_id,
-        stage_id,
-        mean_m3s: 50.0,
-        std_m3s: 1.0,
-        ar_coefficients: vec![0.6],
-        residual_std_ratio: 1.0,
-        annual: None,
-    };
-    let inflow_models: Vec<InflowModel> = hydro_ids
-        .iter()
-        .flat_map(|&id| [inflow_model(id, 0), inflow_model(id, -1)])
-        .collect();
-    let mut fixtures = FillingMembershipFixtures::new();
-    fixtures.base.par_lp = PrecomputedPar::build(
-        &inflow_models,
-        std::slice::from_ref(&minimal_stage()),
-        &hydro_ids,
-        None,
-    )
-    .unwrap();
-    fixtures.base.inflow_form = inflow_form;
-    fixtures.base.inflow_method = crate::InflowNonNegativityMethod::Penalty;
-    fixtures.base.anticipated_plants = anticipated_plants_at(&[0]);
-    fixtures.base.anticipated_lead_stages = vec![1];
-    fixtures
-}
-
-fn column_family_starts(layout: &StageLayout) -> Vec<(&'static str, usize)> {
-    let g = &layout.geometry;
-    let mut starts = vec![
-        ("storage_internal", g.storage_internal_start),
-        ("turbine", g.turbine.start),
-        ("spillage", g.spillage.start),
-        ("diversion", g.diversion.start),
-        ("thermal", g.thermal.start),
-        ("anticipated_decision", g.anticipated_decision.start),
-        ("line_fwd", g.line_fwd.start),
-        ("line_rev", g.line_rev.start),
-        ("deficit", g.deficit.start),
-        ("excess", g.excess.start),
-        ("generation", g.generation.start),
-        ("inflow_slack", g.inflow_slack.start),
-        ("withdrawal_slack_neg", g.withdrawal_slack_neg.start),
-        ("withdrawal_slack_pos", g.withdrawal_slack_pos.start),
-        ("outflow_below_slack", g.outflow_below_slack.start),
-        ("outflow_above_slack", g.outflow_above_slack.start),
-        ("turbine_below_slack", g.turbine_below_slack.start),
-        ("generation_below_slack", g.generation_below_slack.start),
-        (
-            "plant_turbine_below_slack",
-            g.plant_turbine_below_slack.start,
-        ),
-        (
-            "plant_generation_below_slack",
-            g.plant_generation_below_slack.start,
-        ),
-        ("ncs_generation", g.ncs_generation.start),
-        ("pumping_flow", g.pumping_flow.start),
-        ("contract_import", g.contract_import.start),
-        ("contract_export", g.contract_export.start),
-        ("filling_target_col", g.filling_target_col.start),
-        (
-            "filled_min_storage_floor_col",
-            g.filled_min_storage_floor_col.start,
-        ),
-    ];
-    if let Some(evap) = g.evap_indices.first() {
-        starts.extend([
-            ("evaporation_flow_col", evap.evaporation_flow_col),
-            ("f_evap_plus_col", evap.f_evap_plus_col),
-            ("f_evap_minus_col", evap.f_evap_minus_col),
-        ]);
-    }
-    starts
-}
-
-fn row_family_starts(layout: &StageLayout) -> Vec<(&'static str, usize)> {
-    let g = &layout.geometry;
-    let oper = &layout.oper_violation;
-    let anticipated = &layout.anticipated;
-    let mut starts = vec![
-        ("water_balance", g.water_balance.start()),
-        (
-            "transit_bucket_definition",
-            layout.rows.transit_bucket_definition.start,
-        ),
-        ("load_balance", g.load_balance.start()),
-        ("fpha", g.fpha.start),
-        ("min_outflow", oper.min_outflow.start),
-        ("max_outflow", oper.max_outflow.start),
-        ("min_turbine", oper.min_turbine.start),
-        ("min_generation", oper.min_generation.start),
-        ("plant_min_turbine", oper.plant_min_turbine.start),
-        ("plant_min_generation", oper.plant_min_generation.start),
-        ("plant_max_turbine", g.plant_max_turbine.start),
-        ("plant_max_generation", g.plant_max_generation.start),
-        ("filling_target", g.filling_target.start),
-        ("filled_min_storage_floor", g.filled_min_storage_floor.start),
-        ("fishing_rows", anticipated.fishing_rows.start),
-        ("state_out_def_rows", anticipated.state_out_def_rows.start),
-        (
-            "slot_definition_rows",
-            anticipated.slot_definition_rows.start,
-        ),
-        ("row_generic_start", layout.rows.row_generic_start),
-    ];
-    if let Some(evap) = g.evap_indices.first() {
-        starts.push(("evap_row", evap.evap_row));
-    }
-    starts
-}
-
-#[test]
-fn compact_layout_shifts_every_family_by_the_removed_blocks() {
-    let (n, l) = (2, 1);
-    let removed_cols = n * (l + 1);
-    let removed_rows = n;
-
-    for stage_id in [1, 3] {
-        let stage = stage_with_id(stage_id);
-        let mut logical_fixtures = compact_shift_fixtures(InflowForm::Logical);
-        let mut compact_fixtures = compact_shift_fixtures(InflowForm::Compact);
-        let logical_ctx = logical_fixtures.make_ctx();
-        let compact_ctx = compact_fixtures.make_ctx();
-        assert_eq!(
-            (
-                logical_ctx.state.hydro_count,
-                logical_ctx.state.max_par_order
-            ),
-            (n, l)
-        );
-        let logical = StageLayout::new(&logical_ctx, &stage, 0);
-        let compact = StageLayout::new(&compact_ctx, &stage, 0);
-
-        for (families, removed, logical_starts, compact_starts) in [
-            (
-                "column",
-                removed_cols,
-                column_family_starts(&logical),
-                column_family_starts(&compact),
-            ),
-            (
-                "row",
-                removed_rows,
-                row_family_starts(&logical),
-                row_family_starts(&compact),
-            ),
-        ] {
-            assert_eq!(logical_starts.len(), compact_starts.len());
-            for ((name, logical_start), (compact_name, compact_start)) in
-                logical_starts.into_iter().zip(compact_starts)
-            {
-                assert_eq!(name, compact_name);
-                assert_eq!(
-                    compact_start + removed,
-                    logical_start,
-                    "stage {stage_id}: {families} family {name}"
-                );
-            }
-        }
-        assert_eq!(compact.num_cols + removed_cols, logical.num_cols);
-        assert_eq!(compact.rows.num_rows + removed_rows, logical.rows.num_rows);
-    }
 }
 
 /// Pins the travel-time bucket ring's own addressing against `StateSpace`'s

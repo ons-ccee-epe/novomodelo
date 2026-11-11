@@ -836,7 +836,8 @@ mod lb_conformance {
         let stochastic = wrap_opening_tree(opening_tree);
 
         let geometry = equipment_free_geometry(&[1]);
-        let fixture = StageContextFixture::new(&templates, &[], &geometry);
+        let fixture = StageContextFixture::new(&templates, &[], &geometry)
+            .without_inflow_entries(state_layout.hydro_count);
         let ctx = fixture.ctx();
         let horizon = HorizonMode::Finite { num_stages: 2 };
         let study_dims = StudyDimensions::default();

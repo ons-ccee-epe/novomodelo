@@ -978,13 +978,6 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
          lazy-selection solve; 0 when that solve path is not used. A \
          sub-component of the forward/backward phases.",
     ),
-    (
-        "iteration_timing",
-        "bwd_aggregation_ms",
-        "Time the backward pass spends combining each stage's opening results \
-         into new rows after its parallel solves. A sub-component of the \
-         backward phase.",
-    ),
     ("row_selection", "iteration", "Iteration number (1-based)"),
     ("row_selection", "pool_id", "Row-pool id (0-based)"),
     (
@@ -3026,8 +3019,8 @@ mod tests {
 
         let row_count = rdr.records().count();
         assert_eq!(
-            row_count, 254,
-            "variables.csv must have exactly 254 data rows (one per column across all schemas)"
+            row_count, 253,
+            "variables.csv must have exactly 253 data rows (one per column across all schemas)"
         );
     }
 

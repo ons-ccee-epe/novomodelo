@@ -15,7 +15,7 @@ use super::inflow_coupling::{InflowCoupling, InflowCouplingSink};
 use super::layout::RowFamily;
 use super::layout::{ResolvedTables, StageGeometry, StageLayout, TemplateBuildCtx};
 use super::{GenericConstraintRowEntry, LpBuildInputs, StateBox, columns, entries, rows, scaling};
-use crate::lp::indexer::{InflowForm, StateSpace};
+use crate::lp::indexer::StateSpace;
 
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) mod canonical;
@@ -200,12 +200,6 @@ pub(super) fn build_single_stage_template(
     );
 
     let inflow_coupling = inflow_sink.finish(&row_lower, &row_upper);
-    match layout.state.inflow_form {
-        InflowForm::Logical => {
-            entries::fill_z_inflow_coupling_entries(&inflow_coupling, &layout, &mut col_entries);
-        }
-        InflowForm::Compact => {}
-    }
 
     finalize_stage_objective(ctx, stage_idx, &layout, &mut objective);
 
@@ -411,7 +405,6 @@ pub(crate) fn build_stage_templates(
 
     let ctx = build_template_build_ctx(
         system,
-        par_lp,
         production_models,
         evaporation_models,
         state_layout,
@@ -439,7 +432,6 @@ pub(crate) fn build_stage_templates(
 /// `system`'s slices and the fields it borrows from `inputs`.
 fn build_template_build_ctx<'a>(
     system: &'a System,
-    par_lp: &'a PrecomputedPar,
     production_models: &'a ProductionModelSet,
     evaporation_models: &'a EvaporationModelSet,
     state: &'a StateSpace,
@@ -465,7 +457,6 @@ fn build_template_build_ctx<'a>(
             resolved_generic_coefficients: inputs.resolved_generic_coefficients,
         },
         positions: &inputs.positions,
-        par_lp,
         production_models,
         evaporation_models,
         generic_constraints: system.generic_constraints(),

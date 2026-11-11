@@ -8,7 +8,6 @@ use novomodelo_solver::SolverInterface;
 use crate::{
     context::{StageContext, TrainingContext},
     error::SddpError,
-    indexer::InflowForm,
     solve::StageOpeningSolver,
     trajectory::TrajectoryRecord,
     workspace::{BasisStoreSliceMut, SolverWorkspace},
@@ -95,9 +94,7 @@ pub(crate) fn run_forward_stage<S: SolverInterface + Send>(
     rec.node_id = node_id;
     rec.state.clear();
     rec.state.extend_from_slice(&ws.current_state);
-    if training_ctx.state.inflow_form == InflowForm::Compact
-        && matches!(opening_solver, StageOpeningSolver::Frozen)
-    {
+    if matches!(opening_solver, StageOpeningSolver::Frozen) {
         rec.frozen_brackets
             .write(iteration, node_id, &ws.scratch.cut_bracket_buf);
     }

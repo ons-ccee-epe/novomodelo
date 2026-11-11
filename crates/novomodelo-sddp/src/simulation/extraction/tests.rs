@@ -205,14 +205,14 @@ fn extract_reads_binding_filling_target_slack() {
         ..base
     };
 
-    let mut primal = make_primal_2_1([100.0, 200.0], [50.0, 60.0], [90.0, 180.0], 0.0);
+    let mut primal = make_primal_2_1([100.0, 200.0], [90.0, 180.0], 0.0);
     primal.resize(n_cols, 0.0);
     primal.push(sigma_fill);
     let objective_coeffs = vec![0.0; primal.len()];
     let dual = vec![0.0; geometry_row_capacity(&geom)];
     let row_lower = vec![0.0; geometry_row_capacity(&geom)];
 
-    let inflow_m3s_per_hydro = test_support::inflow_m3s_per_hydro_from_primal(&state, &primal, 2);
+    let inflow_m3s_per_hydro = [0.0; 2];
     let result = extract_stage_result(
         &SolutionView {
             primal: &primal,
@@ -228,7 +228,7 @@ fn extract_reads_binding_filling_target_slack() {
             state: &state,
             entity_counts: &make_entity_counts_2_hydros(),
             inflow_m3s_per_hydro: &inflow_m3s_per_hydro,
-            incoming_lags: &[],
+            incoming_lags: &zero_lags(&state),
             block_hours: &[100.0],
             generic_constraint_entries: &[],
             ncs_col_upper: &[],
@@ -297,7 +297,7 @@ fn extract_reads_binding_filled_min_storage_floor_slack_per_block_branch() {
         ..base
     };
 
-    let mut primal = make_primal_2_1([100.0, 200.0], [50.0, 60.0], [90.0, 180.0], 0.0);
+    let mut primal = make_primal_2_1([100.0, 200.0], [90.0, 180.0], 0.0);
     primal.resize(n_cols, 0.0);
     primal[geom.turbine.start] = 1.0; // turbine h0 b0
     primal[geom.turbine.start + 1] = 2.0; // turbine h1 b0
@@ -306,7 +306,7 @@ fn extract_reads_binding_filled_min_storage_floor_slack_per_block_branch() {
     let dual = vec![0.0; geometry_row_capacity(&geom)];
     let row_lower = vec![0.0; geometry_row_capacity(&geom)];
 
-    let inflow_m3s_per_hydro = test_support::inflow_m3s_per_hydro_from_primal(&state, &primal, 2);
+    let inflow_m3s_per_hydro = [0.0; 2];
     let result = extract_stage_result(
         &SolutionView {
             primal: &primal,
@@ -322,7 +322,7 @@ fn extract_reads_binding_filled_min_storage_floor_slack_per_block_branch() {
             state: &state,
             entity_counts: &make_entity_counts_2_hydros(),
             inflow_m3s_per_hydro: &inflow_m3s_per_hydro,
-            incoming_lags: &[],
+            incoming_lags: &zero_lags(&state),
             block_hours: &[100.0],
             generic_constraint_entries: &[],
             ncs_col_upper: &[],
@@ -439,6 +439,10 @@ fn assign_scenarios_sum_equals_n_scenarios() {
 // extract_stage_result
 // -------------------------------------------------------------------------
 
+fn zero_lags(state: &StateSpace) -> Vec<f64> {
+    vec![0.0; state.state_dim_lag_range().len()]
+}
+
 /// Build a zero-valued [`crate::energy_conversion::EnergyConversionSet`] for tests
 /// that do not assert on energy fields.
 fn zero_energy_conversion(n_hydros: usize, n_stages: usize) -> EnergyConversionSet {
@@ -469,25 +473,10 @@ fn make_entity_counts_2_hydros() -> EntityCounts {
     }
 }
 
-/// Build a primal vector for a stage geometry with `hydro_count=2`, `max_par_order=1`.
-fn make_primal_2_1(
-    storage: [f64; 2],
-    lags: [f64; 2],
-    storage_in: [f64; 2],
-    theta: f64,
-) -> Vec<f64> {
-    // Layout: storage(2), lags(2), z_inflow(2), storage_in(2), theta(1)
-    vec![
-        storage[0],
-        storage[1],
-        lags[0],
-        lags[1],
-        0.0, // z_inflow[0]
-        0.0, // z_inflow[1]
-        storage_in[0],
-        storage_in[1],
-        theta,
-    ]
+/// Build a primal vector for a stage geometry with `hydro_count=2`.
+fn make_primal_2_1(storage: [f64; 2], storage_in: [f64; 2], theta: f64) -> Vec<f64> {
+    // Layout: storage(2), storage_in(2), theta(1)
+    vec![storage[0], storage[1], storage_in[0], storage_in[1], theta]
 }
 
 /// Row-vector length covering every row family `extract_stage_result` reads
@@ -508,7 +497,7 @@ fn extract_costs_has_one_entry_matching_stage_id() {
         withdrawal_slack_pos: ws_start + 2..ws_start + 4,
         ..test_support::equipment_free_geometry(&[0]).remove(0)
     };
-    let mut primal = make_primal_2_1([100.0, 200.0], [50.0, 60.0], [90.0, 180.0], 999.5);
+    let mut primal = make_primal_2_1([100.0, 200.0], [90.0, 180.0], 999.5);
     primal.resize(indexer.withdrawal_slack_pos.end, 0.0);
     // theta's coefficient must stay 1.0 (the `objective_coeffs.get(theta)`
     // default an empty slice used to give) for `future_cost` below to still
@@ -518,7 +507,7 @@ fn extract_costs_has_one_entry_matching_stage_id() {
     let dual = vec![0.0; 4];
     let ec = zero_energy_conversion(2, 1);
 
-    let inflow_m3s_per_hydro = test_support::inflow_m3s_per_hydro_from_primal(&state, &primal, 2);
+    let inflow_m3s_per_hydro = [0.0; 2];
     let result = extract_stage_result(
         &SolutionView {
             primal: &primal,
@@ -534,7 +523,7 @@ fn extract_costs_has_one_entry_matching_stage_id() {
             state: &state,
             entity_counts: &make_entity_counts_2_hydros(),
             inflow_m3s_per_hydro: &inflow_m3s_per_hydro,
-            incoming_lags: &[],
+            incoming_lags: &zero_lags(&state),
             block_hours: &[],
             generic_constraint_entries: &[],
             ncs_col_upper: &[],
@@ -576,7 +565,7 @@ fn extract_cost_splits_objective_correctly() {
     };
     let theta_val = 300.0;
     let objective = 800.0;
-    let mut primal = make_primal_2_1([0.0; 2], [0.0; 2], [0.0; 2], theta_val);
+    let mut primal = make_primal_2_1([0.0; 2], [0.0; 2], theta_val);
     primal.resize(indexer.withdrawal_slack_pos.end, 0.0);
     // theta's coefficient must stay 1.0 (the `objective_coeffs.get(theta)`
     // default an empty slice used to give) so objective still splits into
@@ -586,7 +575,7 @@ fn extract_cost_splits_objective_correctly() {
     let dual = vec![0.0; 4];
     let ec = zero_energy_conversion(2, 1);
 
-    let inflow_m3s_per_hydro = test_support::inflow_m3s_per_hydro_from_primal(&state, &primal, 2);
+    let inflow_m3s_per_hydro = [0.0; 2];
     let result = extract_stage_result(
         &SolutionView {
             primal: &primal,
@@ -602,7 +591,7 @@ fn extract_cost_splits_objective_correctly() {
             state: &state,
             entity_counts: &make_entity_counts_2_hydros(),
             inflow_m3s_per_hydro: &inflow_m3s_per_hydro,
-            incoming_lags: &[],
+            incoming_lags: &zero_lags(&state),
             block_hours: &[],
             generic_constraint_entries: &[],
             ncs_col_upper: &[],
@@ -652,14 +641,14 @@ fn extract_hydro_storage_values_from_primal() {
     let indexer = test_support::geometry(&dims, vec![], &[], vec![]);
     let study_dims = test_support::study_dims();
     let state = test_support::state_layout(2, 1);
-    let mut primal = make_primal_2_1([100.0, 200.0], [50.0, 60.0], [90.0, 180.0], 999.5);
+    let mut primal = make_primal_2_1([100.0, 200.0], [90.0, 180.0], 999.5);
     primal.resize(indexer.generation_below_slack.end, 0.0);
     let objective_coeffs = vec![0.0; primal.len()];
     let dual = vec![0.0; geometry_row_capacity(&indexer)];
     let row_lower = vec![0.0; geometry_row_capacity(&indexer)];
     let ec = zero_energy_conversion(2, 1);
 
-    let inflow_m3s_per_hydro = test_support::inflow_m3s_per_hydro_from_primal(&state, &primal, 2);
+    let inflow_m3s_per_hydro = [0.0; 2];
     let result = extract_stage_result(
         &SolutionView {
             primal: &primal,
@@ -675,7 +664,7 @@ fn extract_hydro_storage_values_from_primal() {
             state: &state,
             entity_counts: &make_entity_counts_2_hydros(),
             inflow_m3s_per_hydro: &inflow_m3s_per_hydro,
-            incoming_lags: &[],
+            incoming_lags: &zero_lags(&state),
             block_hours: &[100.0],
             generic_constraint_entries: &[],
             ncs_col_upper: &[],
@@ -726,7 +715,7 @@ fn hydro_rows_report_the_incremental_inflow_as_inflow_m3s() {
     let indexer = test_support::geometry(&dims, vec![], &[], vec![]);
     let study_dims = test_support::study_dims();
     let state = test_support::state_layout(2, 1);
-    let mut primal = make_primal_2_1([100.0, 200.0], [50.0, 60.0], [90.0, 180.0], 999.5);
+    let mut primal = make_primal_2_1([100.0, 200.0], [90.0, 180.0], 999.5);
     primal.resize(indexer.generation_below_slack.end, 0.0);
     let objective_coeffs = vec![0.0; primal.len()];
     let dual = vec![0.0; geometry_row_capacity(&indexer)];
@@ -749,7 +738,7 @@ fn hydro_rows_report_the_incremental_inflow_as_inflow_m3s() {
             state: &state,
             entity_counts: &make_entity_counts_2_hydros(),
             inflow_m3s_per_hydro: &inflow_m3s_per_hydro,
-            incoming_lags: &[],
+            incoming_lags: &zero_lags(&state),
             block_hours: &[100.0],
             generic_constraint_entries: &[],
             ncs_col_upper: &[],
@@ -785,8 +774,8 @@ fn hydro_rows_report_the_incremental_inflow_as_inflow_m3s() {
 }
 
 #[test]
-fn extract_inflow_lag_values_from_primal() {
-    // inflow_lags[2]=50.0 for hydro 0 lag 0, [3]=60.0 for hydro 1 lag 0
+fn extract_inflow_lag_values_from_the_incoming_lags() {
+    // incoming_lags[0]=50.0 for hydro 0 lag 0, [1]=60.0 for hydro 1 lag 0
     let study_dims = test_support::study_dims();
     let state = test_support::state_layout(2, 1);
     let ws_start = state.control_region_start();
@@ -795,13 +784,13 @@ fn extract_inflow_lag_values_from_primal() {
         withdrawal_slack_pos: ws_start + 2..ws_start + 4,
         ..test_support::equipment_free_geometry(&[0]).remove(0)
     };
-    let mut primal = make_primal_2_1([100.0, 200.0], [50.0, 60.0], [90.0, 180.0], 999.5);
+    let mut primal = make_primal_2_1([100.0, 200.0], [90.0, 180.0], 999.5);
     primal.resize(indexer.withdrawal_slack_pos.end, 0.0);
     let objective_coeffs = vec![0.0; primal.len()];
     let dual = vec![0.0; 4];
     let ec = zero_energy_conversion(2, 1);
 
-    let inflow_m3s_per_hydro = test_support::inflow_m3s_per_hydro_from_primal(&state, &primal, 2);
+    let inflow_m3s_per_hydro = [0.0; 2];
     let result = extract_stage_result(
         &SolutionView {
             primal: &primal,
@@ -817,7 +806,7 @@ fn extract_inflow_lag_values_from_primal() {
             state: &state,
             entity_counts: &make_entity_counts_2_hydros(),
             inflow_m3s_per_hydro: &inflow_m3s_per_hydro,
-            incoming_lags: &[],
+            incoming_lags: &[50.0, 60.0],
             block_hours: &[],
             generic_constraint_entries: &[],
             ncs_col_upper: &[],
@@ -841,11 +830,11 @@ fn extract_inflow_lag_values_from_primal() {
     );
 
     assert_eq!(result.inflow_lags.len(), 2); // 2 hydros × 1 lag each
-    // Hydro 10, lag 0 → primal[2] = 50.0
+    // Hydro 10, lag 0 → incoming_lags[0] = 50.0
     assert_eq!(result.inflow_lags[0].hydro_id, 10);
     assert_eq!(result.inflow_lags[0].lag_index, 0);
     assert_eq!(result.inflow_lags[0].inflow_m3s, 50.0);
-    // Hydro 20, lag 0 → primal[3] = 60.0
+    // Hydro 20, lag 0 → incoming_lags[1] = 60.0
     assert_eq!(result.inflow_lags[1].hydro_id, 20);
     assert_eq!(result.inflow_lags[1].lag_index, 0);
     assert_eq!(result.inflow_lags[1].inflow_m3s, 60.0);
@@ -870,8 +859,8 @@ fn extract_no_lags_when_max_par_order_zero() {
     let indexer = test_support::geometry(&dims, vec![], &[], vec![]);
     let study_dims = test_support::study_dims();
     let state = test_support::state_layout(2, 0);
-    // Layout: storage[0..2], z_inflow[2..4], storage_in[4..6], theta=6
-    let mut primal = vec![100.0, 200.0, 0.0, 0.0, 90.0, 180.0, 500.0];
+    // Layout: storage[0..2], storage_in[2..4], theta=4
+    let mut primal = vec![100.0, 200.0, 90.0, 180.0, 500.0];
     primal.resize(indexer.generation_below_slack.end, 0.0);
     let objective_coeffs = vec![0.0; primal.len()];
     let dual = vec![0.0; geometry_row_capacity(&indexer)];
@@ -902,7 +891,7 @@ fn extract_no_lags_when_max_par_order_zero() {
             state: &state,
             entity_counts: &counts,
             inflow_m3s_per_hydro: &[0.0; 2],
-            incoming_lags: &[],
+            incoming_lags: &zero_lags(&state),
             block_hours: &[],
             generic_constraint_entries: &[],
             ncs_col_upper: &[],
@@ -939,14 +928,14 @@ fn extract_stage_id_propagates_to_all_results() {
         withdrawal_slack_pos: ws_start + 2..ws_start + 4,
         ..test_support::equipment_free_geometry(&[0]).remove(0)
     };
-    let mut primal = make_primal_2_1([100.0, 200.0], [50.0, 60.0], [90.0, 180.0], 10.0);
+    let mut primal = make_primal_2_1([100.0, 200.0], [90.0, 180.0], 10.0);
     primal.resize(indexer.withdrawal_slack_pos.end, 0.0);
     let objective_coeffs = vec![0.0; primal.len()];
     let dual = vec![0.0; 4];
     let stage_id = 7_u32;
     let ec = zero_energy_conversion(2, 1);
 
-    let inflow_m3s_per_hydro = test_support::inflow_m3s_per_hydro_from_primal(&state, &primal, 2);
+    let inflow_m3s_per_hydro = [0.0; 2];
     let result = extract_stage_result(
         &SolutionView {
             primal: &primal,
@@ -962,7 +951,7 @@ fn extract_stage_id_propagates_to_all_results() {
             state: &state,
             entity_counts: &make_entity_counts_2_hydros(),
             inflow_m3s_per_hydro: &inflow_m3s_per_hydro,
-            incoming_lags: &[],
+            incoming_lags: &zero_lags(&state),
             block_hours: &[],
             generic_constraint_entries: &[],
             ncs_col_upper: &[],
@@ -1012,14 +1001,14 @@ fn extract_equipment_zero_when_indexer_has_no_equipment_ranges() {
     let indexer = test_support::geometry(&dims, vec![], &[], vec![]);
     let study_dims = test_support::study_dims();
     let state = test_support::state_layout(2, 1);
-    let mut primal = make_primal_2_1([0.0; 2], [0.0; 2], [0.0; 2], 0.0);
+    let mut primal = make_primal_2_1([0.0; 2], [0.0; 2], 0.0);
     primal.resize(indexer.generation_below_slack.end, 0.0);
     let objective_coeffs = vec![0.0; primal.len()];
     let dual = vec![0.0; geometry_row_capacity(&indexer)];
     let row_lower = vec![0.0; geometry_row_capacity(&indexer)];
     let ec = zero_energy_conversion(2, 1);
 
-    let inflow_m3s_per_hydro = test_support::inflow_m3s_per_hydro_from_primal(&state, &primal, 2);
+    let inflow_m3s_per_hydro = [0.0; 2];
     let result = extract_stage_result(
         &SolutionView {
             primal: &primal,
@@ -1035,7 +1024,7 @@ fn extract_equipment_zero_when_indexer_has_no_equipment_ranges() {
             state: &state,
             entity_counts: &make_entity_counts_2_hydros(),
             inflow_m3s_per_hydro: &inflow_m3s_per_hydro,
-            incoming_lags: &[],
+            incoming_lags: &zero_lags(&state),
             block_hours: &[100.0],
             generic_constraint_entries: &[],
             ncs_col_upper: &[],
@@ -1079,18 +1068,19 @@ fn extract_equipment_zero_when_indexer_has_no_equipment_ranges() {
 /// Verify that equipment columns are read from the primal vector when the
 /// indexer was built via `with_equipment`.
 ///
-/// Column layout for N=2 hydros, L=1 lag, T=1 thermal, Ln=1 line, B=1 bus, K=1 block:
+/// Column layout for N=2 hydros, L=1 lag, T=1 thermal, Ln=1 line, B=1 bus, K=1 block
+/// (the lag region has no LP column):
 ///
 /// ```text
-/// theta = N*(3+L) = 2*(3+1) = 8
-/// turbine:   [9, 11)   h0→9, h1→10
-/// spillage:  [11, 13)  h0→11, h1→12
-/// diversion: [13, 15)  h0→13, h1→14
-/// thermal:   [15, 16)  t0→15
-/// line_fwd:  [16, 17)  l0→16
-/// line_rev:  [17, 18)  l0→17
-/// deficit:   [18, 19)  b0→18
-/// excess:    [19, 20)  b0→19
+/// theta = 2*N = 4
+/// turbine:   [5, 7)    h0→5, h1→6
+/// spillage:  [7, 9)    h0→7, h1→8
+/// diversion: [9, 11)   h0→9, h1→10
+/// thermal:   [11, 12)  t0→11
+/// line_fwd:  [12, 13)  l0→12
+/// line_rev:  [13, 14)  l0→13
+/// deficit:   [14, 15)  b0→14
+/// excess:    [15, 16)  b0→15
 /// ```
 #[test]
 fn extract_equipment_reads_primal_when_with_equipment() {
@@ -1110,53 +1100,45 @@ fn extract_equipment_reads_primal_when_with_equipment() {
     let indexer = test_support::geometry(&eq_counts, vec![], &[], vec![]);
     let study_dims = test_support::study_dims_for(&eq_counts);
     let state = test_support::state_layout_full(2, 1, vec![]);
-    // theta = 8, equipment starts at 9
-    assert_eq!(state.theta, 8);
-    assert_eq!(indexer.turbine, 9..11);
-    assert_eq!(indexer.spillage, 11..13);
-    assert_eq!(indexer.diversion, 13..15);
-    assert_eq!(indexer.thermal, 15..16);
-    assert_eq!(indexer.line_fwd, 16..17);
-    assert_eq!(indexer.line_rev, 17..18);
-    assert_eq!(indexer.deficit, 18..19);
-    assert_eq!(indexer.excess, 19..20);
+    assert_eq!(state.theta, 4);
+    assert_eq!(indexer.turbine, 5..7);
+    assert_eq!(indexer.spillage, 7..9);
+    assert_eq!(indexer.diversion, 9..11);
+    assert_eq!(indexer.thermal, 11..12);
+    assert_eq!(indexer.line_fwd, 12..13);
+    assert_eq!(indexer.line_rev, 13..14);
+    assert_eq!(indexer.deficit, 14..15);
+    assert_eq!(indexer.excess, 15..16);
 
-    // Build a primal vector sized to include withdrawal_slack columns.
-    // storage[0..2]=100,200  inflow_lags[2..4]=50,60  z_inflow[4..6]=0,0
-    // storage_in[6..8]=90,180  theta[8]=500
-    // turbine[9..11]=30.0,40.0   spillage[11..13]=5.0,0.0
-    // diversion[13..15]=0.0,0.0
-    // thermal[15]=80.0   line_fwd[16]=15.0   line_rev[17]=0.0
-    // deficit[18]=10.0   excess[19]=2.0   withdrawal_slack[20..22]=0.0,0.0
+    // storage[0..2]=100,200  storage_in[2..4]=90,180  theta[4]=500
+    // turbine[5..7]=30.0,40.0   spillage[7..9]=5.0,0.0
+    // thermal[11]=80.0   line_fwd[12]=15.0   line_rev[13]=0.0
+    // deficit[14]=10.0   excess[15]=2.0
     let n_cols = indexer.generation_below_slack.end;
     let mut primal = vec![0.0_f64; n_cols];
     primal[0] = 100.0; // storage h0
     primal[1] = 200.0; // storage h1
-    primal[2] = 50.0; // lag h0
-    primal[3] = 60.0; // lag h1
-    // primal[4..6] = z_inflow (zeros)
-    primal[6] = 90.0; // storage_in h0
-    primal[7] = 180.0; // storage_in h1
-    primal[8] = 500.0; // theta
-    primal[9] = 30.0; // turbine h0 b0
-    primal[10] = 40.0; // turbine h1 b0
-    primal[11] = 5.0; // spillage h0 b0
-    primal[12] = 0.0; // spillage h1 b0
-    // primal[13..15] = diversion (zeros)
-    primal[15] = 80.0; // thermal t0 b0
-    primal[16] = 15.0; // line_fwd l0 b0
-    primal[17] = 0.0; // line_rev l0 b0
-    primal[18] = 10.0; // deficit b0 b0
-    primal[19] = 2.0; // excess b0 b0
+    primal[2] = 90.0; // storage_in h0
+    primal[3] = 180.0; // storage_in h1
+    primal[4] = 500.0; // theta
+    primal[5] = 30.0; // turbine h0 b0
+    primal[6] = 40.0; // turbine h1 b0
+    primal[7] = 5.0; // spillage h0 b0
+    primal[8] = 0.0; // spillage h1 b0
+    primal[11] = 80.0; // thermal t0 b0
+    primal[12] = 15.0; // line_fwd l0 b0
+    primal[13] = 0.0; // line_rev l0 b0
+    primal[14] = 10.0; // deficit b0 b0
+    primal[15] = 2.0; // excess b0 b0
 
     // Objective coefficients: thermal cost=50/MWh, spillage cost=0.1, deficit=1000, excess=50
     let mut obj = vec![0.0_f64; n_cols];
-    obj[8] = 1.0; // theta (objective = 1)
-    obj[11] = 0.1; // spillage h0 penalty
-    obj[15] = 50.0; // thermal cost per MW
-    obj[16] = 5.0; // line_fwd cost per MW
-    obj[18] = 1000.0; // deficit cost per MW
-    obj[19] = 50.0; // excess cost per MW
+    obj[4] = 1.0; // theta (objective = 1)
+    obj[7] = 0.1; // spillage h0 penalty
+    obj[11] = 50.0; // thermal cost per MW
+    obj[12] = 5.0; // line_fwd cost per MW
+    obj[14] = 1000.0; // deficit cost per MW
+    obj[15] = 50.0; // excess cost per MW
 
     let counts = EntityCounts {
         hydro_ids: vec![10, 20],
@@ -1170,18 +1152,18 @@ fn extract_equipment_reads_primal_when_with_equipment() {
     };
     // Dual vector: water_value reads from dual[water_balance.start() + h],
     // load balance from dual[load_balance.start() + b*K + blk].
-    // N=2, L=1: z_inflow rows [0,2), water_balance=[2,4), load_balance=[4,5).
-    let mut dual = vec![0.0_f64; 5];
-    dual[2] = -120.0; // water value h0 ($/hm³) — at water_balance.start()+0
-    dual[3] = -95.0; // water value h1 ($/hm³) — at water_balance.start()+1
-    dual[4] = 108_000.0; // raw load balance dual ($/MW); 150 $/MWh × 720 h
+    // N=2: water_balance=[0,2), load_balance=[2,3).
+    let mut dual = vec![0.0_f64; 3];
+    dual[0] = -120.0; // water value h0 ($/hm³) — at water_balance.start()+0
+    dual[1] = -95.0; // water value h1 ($/hm³) — at water_balance.start()+1
+    dual[2] = 108_000.0; // raw load balance dual ($/MW); 150 $/MWh × 720 h
 
-    // Build row_lower for the load balance row. load_balance.start()=4, K=1, B=1.
-    let mut row_lower = vec![0.0_f64; 5]; // must be >= load_balance.end = 5
-    row_lower[4] = 75.0; // load = 75 MW for bus 100
+    // Build row_lower for the load balance row. load_balance.start()=2, K=1, B=1.
+    let mut row_lower = vec![0.0_f64; 3]; // must be >= load_balance.end = 3
+    row_lower[2] = 75.0; // load = 75 MW for bus 100
     let block_hours = [720.0_f64]; // one block, 30-day month
     let ec = zero_energy_conversion(2, 1);
-    let inflow_m3s_per_hydro = test_support::inflow_m3s_per_hydro_from_primal(&state, &primal, 2);
+    let inflow_m3s_per_hydro = [0.0; 2];
     let result = extract_stage_result(
         &SolutionView {
             primal: &primal,
@@ -1197,7 +1179,7 @@ fn extract_equipment_reads_primal_when_with_equipment() {
             state: &state,
             entity_counts: &counts,
             inflow_m3s_per_hydro: &inflow_m3s_per_hydro,
-            incoming_lags: &[],
+            incoming_lags: &zero_lags(&state),
             block_hours: &block_hours,
             generic_constraint_entries: &[],
             ncs_col_upper: &[],
@@ -1345,7 +1327,7 @@ fn extract_thermals_marks_anticipated_thermals_when_indices_nonempty() {
             state: &state,
             entity_counts: &counts,
             inflow_m3s_per_hydro: &[],
-            incoming_lags: &[],
+            incoming_lags: &zero_lags(&state),
             block_hours: &[1.0],
             generic_constraint_entries: &[],
             ncs_col_upper: &[],
@@ -1468,7 +1450,7 @@ fn extract_anticipated_lanes_reads_ring_decision_and_slot_for_post_study_decisio
         hydro_cell_index: &hydro_cell_index,
         entity_counts: &counts,
         inflow_m3s_per_hydro: &[],
-        incoming_lags: &[],
+        incoming_lags: &zero_lags(&state),
         block_hours: &[],
         generic_constraint_entries: &[],
         ncs_col_upper: &[],
@@ -1565,7 +1547,7 @@ fn extract_thermals_marks_no_thermals_anticipated_when_indices_empty() {
             state: &state,
             entity_counts: &counts,
             inflow_m3s_per_hydro: &[],
-            incoming_lags: &[],
+            incoming_lags: &zero_lags(&state),
             block_hours: &[1.0],
             generic_constraint_entries: &[],
             ncs_col_upper: &[],
@@ -1678,7 +1660,7 @@ fn extract_thermals_reads_anticipated_decision_when_in_horizon() {
             state: &state,
             entity_counts: &counts,
             inflow_m3s_per_hydro: &[],
-            incoming_lags: &[],
+            incoming_lags: &zero_lags(&state),
             block_hours: &[1.0],
             generic_constraint_entries: &[],
             ncs_col_upper: &[],
@@ -1751,7 +1733,7 @@ fn extract_thermals_emits_none_at_horizon_boundary() {
             state: &state,
             entity_counts: &counts,
             inflow_m3s_per_hydro: &[],
-            incoming_lags: &[],
+            incoming_lags: &zero_lags(&state),
             block_hours: &[1.0],
             generic_constraint_entries: &[],
             ncs_col_upper: &[],
@@ -1822,7 +1804,7 @@ fn extract_thermals_emits_none_one_past_horizon_boundary() {
             state: &state,
             entity_counts: &counts,
             inflow_m3s_per_hydro: &[],
-            incoming_lags: &[],
+            incoming_lags: &zero_lags(&state),
             block_hours: &[1.0],
             generic_constraint_entries: &[],
             ncs_col_upper: &[],
@@ -1911,7 +1893,7 @@ fn extract_thermals_emits_none_for_non_anticipated_thermals() {
             state: &state,
             entity_counts: &counts,
             inflow_m3s_per_hydro: &[],
-            incoming_lags: &[],
+            incoming_lags: &zero_lags(&state),
             block_hours: &[1.0],
             generic_constraint_entries: &[],
             ncs_col_upper: &[],
@@ -2000,7 +1982,7 @@ fn extract_thermals_anticipated_decision_is_per_block_invariant() {
             state: &state,
             entity_counts: &counts,
             inflow_m3s_per_hydro: &[],
-            incoming_lags: &[],
+            incoming_lags: &zero_lags(&state),
             block_hours: &[1.0, 1.0, 1.0, 1.0],
             generic_constraint_entries: &[],
             ncs_col_upper: &[],
@@ -2114,7 +2096,7 @@ fn extract_thermals_decision_uses_attached_resolution_delivery_stage() {
             state: &state,
             entity_counts: &counts,
             inflow_m3s_per_hydro: &[],
-            incoming_lags: &[],
+            incoming_lags: &zero_lags(&state),
             block_hours: &[1.0],
             generic_constraint_entries: &[],
             ncs_col_upper: &[],
@@ -2239,7 +2221,7 @@ fn extract_thermals_per_block_committed_at_delivery_stage() {
             non_controllable_ids: vec![],
         },
         inflow_m3s_per_hydro: &[],
-        incoming_lags: &[],
+        incoming_lags: &zero_lags(&state),
         block_hours: &[1.0, 1.0, 1.0],
         generic_constraint_entries: &[],
         ncs_col_upper: &[],
@@ -2336,7 +2318,7 @@ fn extract_thermals_per_block_committed_reads_stage_maturing_slot_when_seed_zero
             state: &state,
             entity_counts: &counts,
             inflow_m3s_per_hydro: &[],
-            incoming_lags: &[],
+            incoming_lags: &zero_lags(&state),
             block_hours: &[1.0, 1.0, 1.0],
             generic_constraint_entries: &[],
             ncs_col_upper: &[],
@@ -2410,7 +2392,7 @@ fn extract_thermals_per_block_committed_at_first_delivery_boundary() {
             state: &state,
             entity_counts: &counts,
             inflow_m3s_per_hydro: &[],
-            incoming_lags: &[],
+            incoming_lags: &zero_lags(&state),
             block_hours: &[1.0, 1.0, 1.0],
             generic_constraint_entries: &[],
             ncs_col_upper: &[],
@@ -2502,7 +2484,7 @@ fn extract_thermals_per_block_committed_none_for_non_anticipated() {
             state: &state,
             entity_counts: &counts,
             inflow_m3s_per_hydro: &[],
-            incoming_lags: &[],
+            incoming_lags: &zero_lags(&state),
             block_hours: &[1.0, 1.0, 1.0],
             generic_constraint_entries: &[],
             ncs_col_upper: &[],
@@ -2582,7 +2564,7 @@ fn extract_thermals_committed_at_delivery_is_zero_when_slot0_seeded() {
             non_controllable_ids: vec![],
         },
         inflow_m3s_per_hydro: &[],
-        incoming_lags: &[],
+        incoming_lags: &zero_lags(&state),
         block_hours: &[],
         generic_constraint_entries: &[],
         ncs_col_upper: &[],
@@ -2698,7 +2680,7 @@ fn extract_thermals_committed_reads_slot0_when_seed_zero() {
             state: &state,
             entity_counts: &counts,
             inflow_m3s_per_hydro: &[],
-            incoming_lags: &[],
+            incoming_lags: &zero_lags(&state),
             block_hours: &[],
             generic_constraint_entries: &[],
             ncs_col_upper: &[],
@@ -2796,7 +2778,7 @@ fn extract_stage_result_prebuilt_lookup_matches_standard_path() {
         state: &state,
         entity_counts: &counts,
         inflow_m3s_per_hydro: &[],
-        incoming_lags: &[],
+        incoming_lags: &zero_lags(&state),
         block_hours: &[1.0, 1.0],
         generic_constraint_entries: &[],
         ncs_col_upper: &[],
@@ -2872,7 +2854,7 @@ fn extract_optional_entity_types_are_empty_when_absent() {
         withdrawal_slack_pos: ws_start + 1..ws_start + 2,
         ..test_support::equipment_free_geometry(&[0]).remove(0)
     };
-    let mut primal = vec![50.0, 0.0, 40.0, 200.0]; // storage, z_inflow, storage_in, theta
+    let mut primal = vec![50.0, 40.0, 200.0]; // storage, storage_in, theta
     primal.resize(indexer.withdrawal_slack_pos.end, 0.0);
     let objective_coeffs = vec![0.0; primal.len()];
     let dual = vec![];
@@ -2903,7 +2885,7 @@ fn extract_optional_entity_types_are_empty_when_absent() {
             state: &state,
             entity_counts: &counts,
             inflow_m3s_per_hydro: &[0.0; 1],
-            incoming_lags: &[],
+            incoming_lags: &zero_lags(&state),
             block_hours: &[],
             generic_constraint_entries: &[],
             ncs_col_upper: &[],
@@ -3161,7 +3143,7 @@ fn test_slack_extraction_with_penalty_active() {
     };
 
     let ec = zero_energy_conversion(2, 1);
-    let inflow_m3s_per_hydro = test_support::inflow_m3s_per_hydro_from_primal(&state, &primal, 2);
+    let inflow_m3s_per_hydro = [0.0; 2];
     let result = extract_stage_result(
         &SolutionView {
             primal: &primal,
@@ -3177,7 +3159,7 @@ fn test_slack_extraction_with_penalty_active() {
             state: &state,
             entity_counts: &counts,
             inflow_m3s_per_hydro: &inflow_m3s_per_hydro,
-            incoming_lags: &[],
+            incoming_lags: &zero_lags(&state),
             block_hours: &[100.0],
             generic_constraint_entries: &[],
             ncs_col_upper: &[],
@@ -3261,7 +3243,7 @@ fn test_slack_extraction_without_penalty_is_zero() {
     };
 
     let ec = zero_energy_conversion(2, 1);
-    let inflow_m3s_per_hydro = test_support::inflow_m3s_per_hydro_from_primal(&state, &primal, 2);
+    let inflow_m3s_per_hydro = [0.0; 2];
     let result = extract_stage_result(
         &SolutionView {
             primal: &primal,
@@ -3277,7 +3259,7 @@ fn test_slack_extraction_without_penalty_is_zero() {
             state: &state,
             entity_counts: &counts,
             inflow_m3s_per_hydro: &inflow_m3s_per_hydro,
-            incoming_lags: &[],
+            incoming_lags: &zero_lags(&state),
             block_hours: &[100.0],
             generic_constraint_entries: &[],
             ncs_col_upper: &[],
@@ -3316,11 +3298,11 @@ fn test_slack_extraction_without_penalty_is_zero() {
 /// Column layout:
 /// ```text
 /// N=2, L=0, T=0, Ln=0, B=0, K=1, penalty=false, fpha=[0], planes=[2]
-/// theta = N*(3+L) = 2*(3+0) = 6
-/// turbine:    [7, 9)    h0→7, h1→8
-/// spillage:   [9, 11)   h0→9, h1→10
-/// diversion: [11, 13)   h0→11, h1→12
-/// generation:[13, 14)   fpha h0 b0 → 13
+/// theta = 2*N = 4
+/// turbine:    [5, 7)    h0→5, h1→6
+/// spillage:   [7, 9)    h0→7, h1→8
+/// diversion:  [9, 11)   h0→9, h1→10
+/// generation:[11, 12)   fpha h0 b0 → 11
 /// ```
 /// The `GeometryDims` both [`make_indexer_2h_1fpha_1blk`] and the matching
 /// `study_dims` derive from, keeping the role-(b) geometry and the non-state
@@ -3345,25 +3327,22 @@ fn fpha_generation_read_from_lp_column() {
     let indexer = make_indexer_2h_1fpha_1blk();
     let study_dims = test_support::study_dims_for(&counts_2h_1fpha_1blk());
     let state = test_support::state_layout(2, 0);
-    // generation.start should be after turbine(7..9) + spillage(9..11) + diversion(11..13) = 13
-    // generation[0] = generation.start + 0 * 1 + 0 = 13
-    assert_eq!(indexer.generation.start, 13, "generation starts at 13");
+    // generation.start follows turbine(5..7) + spillage(7..9) + diversion(9..11)
+    assert_eq!(indexer.generation.start, 11, "generation starts at 11");
     assert_eq!(indexer.fpha_hydro_indices, vec![HydroSys::new(0)]);
 
     let n_cols = indexer.generation_below_slack.end;
     let mut primal = vec![0.0_f64; n_cols];
     primal[0] = 50.0; // storage h0
     primal[1] = 80.0; // storage h1
-    // primal[2..4] = z_inflow (zeros)
-    primal[4] = 45.0; // storage_in h0
-    primal[5] = 75.0; // storage_in h1
-    primal[6] = 0.0; // theta
-    primal[7] = 20.0; // turbine h0 b0 (not used for FPHA gen)
-    primal[8] = 30.0; // turbine h1 b0
-    primal[9] = 0.0; // spillage h0 b0
-    primal[10] = 0.0; // spillage h1 b0
-    // primal[11..13] = diversion (zeros)
-    primal[13] = 75.0; // FPHA generation h0 b0 — acceptance criterion value
+    primal[2] = 45.0; // storage_in h0
+    primal[3] = 75.0; // storage_in h1
+    primal[4] = 0.0; // theta
+    primal[5] = 20.0; // turbine h0 b0 (not used for FPHA gen)
+    primal[6] = 30.0; // turbine h1 b0
+    primal[7] = 0.0; // spillage h0 b0
+    primal[8] = 0.0; // spillage h1 b0
+    primal[11] = 75.0; // FPHA generation h0 b0 — acceptance criterion value
 
     let obj = vec![0.0_f64; n_cols];
     let dual = vec![0.0_f64; geometry_row_capacity(&indexer)];
@@ -3396,7 +3375,7 @@ fn fpha_generation_read_from_lp_column() {
             state: &state,
             entity_counts: &counts,
             inflow_m3s_per_hydro: &[0.0; 2],
-            incoming_lags: &[],
+            incoming_lags: &zero_lags(&state),
             block_hours: &[],
             generic_constraint_entries: &[],
             ncs_col_upper: &[],
@@ -3422,7 +3401,7 @@ fn fpha_generation_read_from_lp_column() {
     // 2 hydros × 1 block = 2 entries
     assert_eq!(result.hydros.len(), 2);
 
-    // FPHA hydro (h0, block 0): generation from LP column 13 = 75.0
+    // FPHA hydro (h0, block 0): generation from LP column 11 = 75.0
     assert!(
         (result.hydros[0].generation_mw - 75.0).abs() < 1e-12,
         "FPHA generation_mw should be 75.0, got {}",
@@ -3430,7 +3409,7 @@ fn fpha_generation_read_from_lp_column() {
     );
 
     // Constant-productivity hydro (h1, block 0): generation = turbined * productivity
-    // turbine h1 b0 = primal[8] = 30.0, productivity = 1.5 → 45.0
+    // turbine h1 b0 = primal[6] = 30.0, productivity = 1.5 → 45.0
     assert!(
         (result.hydros[1].generation_mw - 45.0).abs() < 1e-12,
         "constant-productivity generation_mw should be 45.0, got {}",
@@ -3480,7 +3459,7 @@ fn fpha_productivity_placeholder_zero() {
             state: &state,
             entity_counts: &counts,
             inflow_m3s_per_hydro: &[0.0; 2],
-            incoming_lags: &[],
+            incoming_lags: &zero_lags(&state),
             block_hours: &[],
             generic_constraint_entries: &[],
             ncs_col_upper: &[],
@@ -3519,11 +3498,11 @@ fn fpha_productivity_placeholder_zero() {
 /// Column layout:
 /// ```text
 /// N=1, L=0, T=0, Ln=0, B=0, K=1, penalty=false, fpha=[], evap=[0]
-/// theta = 1*(3+0) = 3
-/// turbine:    [4, 5)   h0→4
-/// spillage:   [5, 6)   h0→5
-/// diversion:  [6, 7)   h0→6
-/// evap:       [7, 10)  evaporation_flow→7, f_plus→8, f_minus→9
+/// theta = 2*N = 2
+/// turbine:    [3, 4)   h0→3
+/// spillage:   [4, 5)   h0→4
+/// diversion:  [5, 6)   h0→5
+/// evap:       [6, 9)   evaporation_flow→6, f_plus→7, f_minus→8
 /// ```
 /// The `GeometryDims` both [`make_indexer_1h_evap_1blk`] and the matching
 /// `study_dims` derive from, keeping the role-(b) geometry and the non-state
@@ -3548,20 +3527,18 @@ fn evaporation_read_from_lp_column() {
     let state = test_support::state_layout(1, 0);
     assert_eq!(indexer.evap_hydro_indices, vec![HydroSys::new(0)]);
     let ei = &indexer.evap_indices[0];
-    assert_eq!(ei.evaporation_flow_col, 7);
-    assert_eq!(ei.f_evap_plus_col, 8);
-    assert_eq!(ei.f_evap_minus_col, 9);
+    assert_eq!(ei.evaporation_flow_col, 6);
+    assert_eq!(ei.f_evap_plus_col, 7);
+    assert_eq!(ei.f_evap_minus_col, 8);
 
     let n_cols = indexer.generation_below_slack.end;
     let mut primal = vec![0.0_f64; n_cols];
     primal[0] = 200.0; // storage h0
-    // primal[1] = z_inflow h0 (zero)
-    primal[2] = 190.0; // storage_in h0
-    primal[3] = 0.0; // theta
-    primal[4] = 10.0; // turbine h0 b0
-    primal[5] = 0.0; // spillage h0 b0
-    // primal[6] = diversion h0 b0 (zero)
-    primal[7] = 3.5; // evaporation outflow — acceptance criterion value
+    primal[1] = 190.0; // storage_in h0
+    primal[2] = 0.0; // theta
+    primal[3] = 10.0; // turbine h0 b0
+    primal[4] = 0.0; // spillage h0 b0
+    primal[6] = 3.5; // evaporation outflow — acceptance criterion value
 
     let obj = vec![0.0_f64; n_cols];
     let dual = vec![0.0_f64; geometry_row_capacity(&indexer)];
@@ -3594,7 +3571,7 @@ fn evaporation_read_from_lp_column() {
             state: &state,
             entity_counts: &counts,
             inflow_m3s_per_hydro: &[0.0; 1],
-            incoming_lags: &[],
+            incoming_lags: &zero_lags(&state),
             block_hours: &[],
             generic_constraint_entries: &[],
             ncs_col_upper: &[],
@@ -3640,13 +3617,10 @@ fn evaporation_violation_is_sum_of_slacks() {
     let n_cols = indexer.generation_below_slack.end;
     let mut primal = vec![0.0_f64; n_cols];
     primal[0] = 200.0;
-    // primal[1] = z_inflow h0 (zero)
-    primal[2] = 190.0; // storage_in h0
-    // primal[3] = theta = 0
-    // primal[6] = diversion h0 b0 (zero)
-    primal[7] = 2.0; // evaporation outflow
-    primal[8] = 0.5; // f_evap_plus (under-evaporation -> neg)
-    primal[9] = 0.0; // f_evap_minus (over-evaporation -> pos)
+    primal[1] = 190.0; // storage_in h0
+    primal[6] = 2.0; // evaporation outflow
+    primal[7] = 0.5; // f_evap_plus (under-evaporation -> neg)
+    primal[8] = 0.0; // f_evap_minus (over-evaporation -> pos)
 
     let obj = vec![0.0_f64; n_cols];
     let dual = vec![0.0_f64; geometry_row_capacity(&indexer)];
@@ -3679,7 +3653,7 @@ fn evaporation_violation_is_sum_of_slacks() {
             state: &state,
             entity_counts: &counts,
             inflow_m3s_per_hydro: &[0.0; 1],
-            incoming_lags: &[],
+            incoming_lags: &zero_lags(&state),
             block_hours: &[],
             generic_constraint_entries: &[],
             ncs_col_upper: &[],
@@ -3727,18 +3701,18 @@ fn turbined_cost_in_compute_cost_result() {
     let indexer = make_indexer_2h_1fpha_1blk();
     let study_dims = test_support::study_dims_for(&counts_2h_1fpha_1blk());
     let state = test_support::state_layout(2, 0);
-    // turbine.start = 7 (h0 b0)
+    // turbine.start = 5 (h0 b0)
     let n_cols = indexer.generation_below_slack.end;
     let mut primal = vec![0.0_f64; n_cols];
-    primal[6] = 500.0; // theta (at N*(3+L) = 2*3 = 6)
+    primal[4] = 500.0; // theta (at 2*N = 4)
 
-    // h0 turbine column 7: primal=30.0
-    primal[7] = 30.0;
+    // h0 turbine column 5: primal=30.0
+    primal[5] = 30.0;
 
     let mut obj = vec![0.0_f64; n_cols];
-    obj[6] = 1.0; // theta coefficient (undiscounted)
-    // h0 turbine column 7: objective_coeff=0.01
-    obj[7] = 0.01;
+    obj[4] = 1.0; // theta coefficient (undiscounted)
+    // h0 turbine column 5: objective_coeff=0.01
+    obj[5] = 0.01;
 
     let dual = vec![0.0_f64; geometry_row_capacity(&indexer)];
     let row_lower = vec![0.0_f64; geometry_row_capacity(&indexer)];
@@ -3770,7 +3744,7 @@ fn turbined_cost_in_compute_cost_result() {
             state: &state,
             entity_counts: &counts,
             inflow_m3s_per_hydro: &[0.0; 2],
-            incoming_lags: &[],
+            incoming_lags: &zero_lags(&state),
             block_hours: &[],
             generic_constraint_entries: &[],
             ncs_col_upper: &[],
@@ -3804,7 +3778,7 @@ fn turbined_cost_in_compute_cost_result() {
 /// Verify that per-component cost breakdown sums to `immediate_cost` under
 /// identity `col_scale`.
 ///
-/// Setup: 2 hydros, 1 block. h0 turbine col 7: primal=30, `obj_coeff`=0.01.
+/// Setup: 2 hydros, 1 block. h0 turbine col 5: primal=30, `obj_coeff`=0.01.
 /// Objective = `theta_scaled` + `turbine_scaled` = 500 + (30 * 0.01) = 500.3.
 /// `immediate_cost` = (500.3 - 500) * `1_000_000` = `300_000`.
 /// Per-component sum = `turbined_cost` = 30 * 0.01 * `1_000_000` = `300_000` (matches).
@@ -3815,12 +3789,12 @@ fn cost_breakdown_sums_to_immediate_identity_scale() {
     let state = test_support::state_layout(2, 0);
     let n_cols = indexer.generation_below_slack.end;
     let mut primal = vec![0.0_f64; n_cols];
-    primal[6] = 500.0; // theta
-    primal[7] = 30.0; // h0 turbine column
+    primal[4] = 500.0; // theta
+    primal[5] = 30.0; // h0 turbine column
 
     let mut obj = vec![0.0_f64; n_cols];
-    obj[6] = 1.0; // theta coefficient (undiscounted)
-    obj[7] = 0.01; // turbined cost (scaled)
+    obj[4] = 1.0; // theta coefficient (undiscounted)
+    obj[5] = 0.01; // turbined cost (scaled)
     // objective in scaled space = theta_coeff * theta + turbine_coeff * turbine
     //                           = 1.0 * 500 + 0.01 * 30 = 500.3
     let objective_val = 500.3_f64;
@@ -3855,7 +3829,7 @@ fn cost_breakdown_sums_to_immediate_identity_scale() {
             state: &state,
             entity_counts: &counts,
             inflow_m3s_per_hydro: &[0.0; 2],
-            incoming_lags: &[],
+            incoming_lags: &zero_lags(&state),
             block_hours: &[],
             generic_constraint_entries: &[],
             ncs_col_upper: &[],
@@ -3966,7 +3940,7 @@ fn contract_cost_active_import_equals_price_power_hours_via_cost_result() {
             state: &state,
             entity_counts: &counts,
             inflow_m3s_per_hydro: &[0.0; 2],
-            incoming_lags: &[],
+            incoming_lags: &zero_lags(&state),
             block_hours: &[],
             generic_constraint_entries: &[],
             ncs_col_upper: &[],
@@ -4057,7 +4031,7 @@ fn cost_breakdown_sums_to_immediate_with_active_export_contract_via_cost_result(
             state: &state,
             entity_counts: &counts,
             inflow_m3s_per_hydro: &[0.0; 2],
-            incoming_lags: &[],
+            incoming_lags: &zero_lags(&state),
             block_hours: &[],
             generic_constraint_entries: &[],
             ncs_col_upper: &[],
@@ -4119,17 +4093,17 @@ fn cost_unscaled_by_col_scale() {
     let state = test_support::state_layout(2, 0);
     let n_cols = indexer.generation_below_slack.end;
     let mut primal = vec![0.0_f64; n_cols];
-    primal[6] = 500.0; // theta
-    primal[7] = 30.0; // h0 turbine column
+    primal[4] = 500.0; // theta
+    primal[5] = 30.0; // h0 turbine column
 
     let mut obj = vec![0.0_f64; n_cols];
-    obj[6] = 1.0; // theta coefficient (undiscounted)
+    obj[4] = 1.0; // theta coefficient (undiscounted)
     // c_orig / K = 0.005.  With col_scale = 2.0: obj_coeff = 0.005 * 2.0 = 0.01.
-    obj[7] = 0.01;
+    obj[5] = 0.01;
 
-    // Build col_scale: all 1.0 except column 7 = 2.0.
+    // Build col_scale: all 1.0 except column 5 = 2.0.
     let mut col_scale = vec![1.0_f64; n_cols];
-    col_scale[7] = 2.0;
+    col_scale[5] = 2.0;
 
     let dual = vec![0.0_f64; geometry_row_capacity(&indexer)];
     let row_lower = vec![0.0_f64; geometry_row_capacity(&indexer)];
@@ -4161,7 +4135,7 @@ fn cost_unscaled_by_col_scale() {
             state: &state,
             entity_counts: &counts,
             inflow_m3s_per_hydro: &[0.0; 2],
-            incoming_lags: &[],
+            incoming_lags: &zero_lags(&state),
             block_hours: &[],
             generic_constraint_entries: &[],
             ncs_col_upper: &[],
@@ -4202,18 +4176,18 @@ fn hydro_violation_cost_decomposition() {
     let study_dims = test_support::study_dims_for(&counts_2h_1fpha_1blk());
     let state = test_support::state_layout(2, 0);
     // Layout (see make_indexer_2h_1fpha_1blk):
-    //   withdrawal_slack_neg:   14..16
-    //   withdrawal_slack_pos:   16..18
-    //   outflow_below_slack:    18..20
-    //   outflow_above_slack:    20..22
-    //   turbine_below_slack:    22..24
-    //   generation_below_slack: 24..26
-    assert_eq!(indexer.withdrawal_slack_neg, 14..16);
-    assert_eq!(indexer.withdrawal_slack_pos, 16..18);
-    assert_eq!(indexer.outflow_below_slack, 18..20);
-    assert_eq!(indexer.outflow_above_slack, 20..22);
-    assert_eq!(indexer.turbine_below_slack, 22..24);
-    assert_eq!(indexer.generation_below_slack, 24..26);
+    //   withdrawal_slack_neg:   12..14
+    //   withdrawal_slack_pos:   14..16
+    //   outflow_below_slack:    16..18
+    //   outflow_above_slack:    18..20
+    //   turbine_below_slack:    20..22
+    //   generation_below_slack: 22..24
+    assert_eq!(indexer.withdrawal_slack_neg, 12..14);
+    assert_eq!(indexer.withdrawal_slack_pos, 14..16);
+    assert_eq!(indexer.outflow_below_slack, 16..18);
+    assert_eq!(indexer.outflow_above_slack, 18..20);
+    assert_eq!(indexer.turbine_below_slack, 20..22);
+    assert_eq!(indexer.generation_below_slack, 22..24);
 
     let n_cols = indexer.generation_below_slack.end;
     let mut primal = vec![0.0_f64; n_cols];
@@ -4227,30 +4201,30 @@ fn hydro_violation_cost_decomposition() {
     // COST_SCALE_FACTOR = 1_000_000.0 is applied inside the extraction.
 
     // outflow_below: h0=2.0 * 10.0, h1=3.0 * 10.0  => (20+30) * 1_000_000 = 50_000_000
-    primal[18] = 2.0;
-    obj[18] = 10.0;
-    primal[19] = 3.0;
-    obj[19] = 10.0;
+    primal[16] = 2.0;
+    obj[16] = 10.0;
+    primal[17] = 3.0;
+    obj[17] = 10.0;
 
     // outflow_above: h0=1.0 * 5.0, h1=0.0  => 5 * 1_000_000 = 5_000_000
-    primal[20] = 1.0;
-    obj[20] = 5.0;
+    primal[18] = 1.0;
+    obj[18] = 5.0;
 
     // turbine_below: h0=4.0 * 8.0, h1=0.0  => 32 * 1_000_000 = 32_000_000
-    primal[22] = 4.0;
-    obj[22] = 8.0;
+    primal[20] = 4.0;
+    obj[20] = 8.0;
 
     // generation_below: h0=0.0, h1=6.0 * 3.0  => 18 * 1_000_000 = 18_000_000
-    primal[25] = 6.0;
-    obj[25] = 3.0;
+    primal[23] = 6.0;
+    obj[23] = 3.0;
 
     // withdrawal (neg): h0=0.5 * 20.0, h1=0.0  => 10 * 1_000_000 = 10_000_000
-    primal[14] = 0.5;
-    obj[14] = 20.0;
+    primal[12] = 0.5;
+    obj[12] = 20.0;
 
     // withdrawal (pos): h0=0.0, h1=0.3 * 15.0  => 4.5 * 1_000_000 = 4_500_000
-    primal[17] = 0.3;
-    obj[17] = 15.0;
+    primal[15] = 0.3;
+    obj[15] = 15.0;
 
     // Total objective for the LP (sum of primal * obj):
     let total_obj: f64 = primal.iter().zip(obj.iter()).map(|(p, o)| p * o).sum();
@@ -4285,7 +4259,7 @@ fn hydro_violation_cost_decomposition() {
             state: &state,
             entity_counts: &counts,
             inflow_m3s_per_hydro: &[0.0; 2],
-            incoming_lags: &[],
+            incoming_lags: &zero_lags(&state),
             block_hours: &[],
             generic_constraint_entries: &[],
             ncs_col_upper: &[],
@@ -4393,10 +4367,10 @@ fn make_entity_counts_1_hydro() -> EntityCounts {
     }
 }
 
-/// Build a primal vector for the N=1, L=1 state layout:
-/// `[storage, lag, z_inflow, storage_in, theta]` (length 5).
+/// Build a primal vector for the N=1 state layout:
+/// `[storage, storage_in, theta]` (length 3).
 fn make_primal_1_1(storage: f64, storage_in: f64, theta: f64) -> Vec<f64> {
-    vec![storage, 0.0, 0.0, storage_in, theta]
+    vec![storage, storage_in, theta]
 }
 
 #[test]
@@ -4428,7 +4402,7 @@ fn stored_energy_initial_uses_v_min_offset() {
     let row_lower = vec![0.0; geometry_row_capacity(&indexer)];
     let ec = one_hydro_energy_set(0.9, 4.0);
 
-    let inflow_m3s_per_hydro = test_support::inflow_m3s_per_hydro_from_primal(&state, &primal, 1);
+    let inflow_m3s_per_hydro = [0.0; 1];
     let result = extract_stage_result(
         &SolutionView {
             primal: &primal,
@@ -4444,7 +4418,7 @@ fn stored_energy_initial_uses_v_min_offset() {
             state: &state,
             entity_counts: &make_entity_counts_1_hydro(),
             inflow_m3s_per_hydro: &inflow_m3s_per_hydro,
-            incoming_lags: &[],
+            incoming_lags: &zero_lags(&state),
             block_hours: &[100.0],
             generic_constraint_entries: &[],
             ncs_col_upper: &[],
@@ -4531,7 +4505,7 @@ fn incremental_inflow_energy_uses_rho_acum() {
             state: &state,
             entity_counts: &make_entity_counts_1_hydro(),
             inflow_m3s_per_hydro: &[50.0],
-            incoming_lags: &[],
+            incoming_lags: &zero_lags(&state),
             block_hours: &[100.0],
             generic_constraint_entries: &[],
             ncs_col_upper: &[],
@@ -4613,7 +4587,7 @@ fn stored_energy_rides_integrated_grid_distinct_from_reference_point() {
             state: &state,
             entity_counts: &make_entity_counts_1_hydro(),
             inflow_m3s_per_hydro: &[incremental_inflow],
-            incoming_lags: &[],
+            incoming_lags: &zero_lags(&state),
             block_hours: &[100.0],
             generic_constraint_entries: &[],
             ncs_col_upper: &[],
@@ -4670,7 +4644,7 @@ fn stored_energy_rides_integrated_grid_distinct_from_reference_point() {
     let n_cols = geom.generation_below_slack.end;
     let mut pb_primal = vec![0.0_f64; n_cols];
     pb_primal[0] = 120.0; // Sᴷ (outgoing)
-    pb_primal[2] = 110.0; // S⁰ (incoming)
+    pb_primal[1] = 110.0; // S⁰ (incoming)
     let pb_dual = vec![0.0_f64; 4];
 
     let pb_spec = StageExtractionSpec {
@@ -4680,7 +4654,7 @@ fn stored_energy_rides_integrated_grid_distinct_from_reference_point() {
         state: &pb_state,
         entity_counts: &entity_counts_1_hydro(),
         inflow_m3s_per_hydro: &[incremental_inflow],
-        incoming_lags: &[],
+        incoming_lags: &zero_lags(&pb_state),
         block_hours: &[100.0],
         generic_constraint_entries: &[],
         ncs_col_upper: &[],
@@ -4784,7 +4758,7 @@ fn stored_energy_mw_divides_by_stage_total_hours() {
             state: &state,
             entity_counts: &make_entity_counts_1_hydro(),
             inflow_m3s_per_hydro: &[0.0],
-            incoming_lags: &[],
+            incoming_lags: &zero_lags(&state),
             block_hours: &block_hours,
             generic_constraint_entries: &[],
             ncs_col_upper: &[],
@@ -4829,7 +4803,7 @@ fn stored_energy_mw_divides_by_stage_total_hours() {
     let n_cols = geom.generation_below_slack.end;
     let mut pb_primal = vec![0.0_f64; n_cols];
     pb_primal[0] = storage_final; // Sᴷ (outgoing)
-    pb_primal[2] = storage_initial; // S⁰ (incoming)
+    pb_primal[1] = storage_initial; // S⁰ (incoming)
     let pb_dual = vec![0.0_f64; 4];
 
     let pb_spec = StageExtractionSpec {
@@ -4839,7 +4813,7 @@ fn stored_energy_mw_divides_by_stage_total_hours() {
         state: &pb_state,
         entity_counts: &entity_counts_1_hydro(),
         inflow_m3s_per_hydro: &[0.0],
-        incoming_lags: &[],
+        incoming_lags: &zero_lags(&pb_state),
         block_hours: &block_hours,
         generic_constraint_entries: &[],
         ncs_col_upper: &[],
@@ -4925,7 +4899,7 @@ fn stage_path_propagates_productivity_values() {
             state: &state,
             entity_counts: &make_entity_counts_1_hydro(),
             inflow_m3s_per_hydro: &[10.0],
-            incoming_lags: &[],
+            incoming_lags: &zero_lags(&state),
             block_hours: &[100.0],
             generic_constraint_entries: &[],
             ncs_col_upper: &[],
@@ -5024,7 +4998,7 @@ fn integrated_productivity_columns_read_the_mean_evaluator_on_both_branches() {
             state: &state,
             entity_counts: &make_entity_counts_1_hydro(),
             inflow_m3s_per_hydro: &[10.0],
-            incoming_lags: &[],
+            incoming_lags: &zero_lags(&state),
             block_hours: &[100.0],
             generic_constraint_entries: &[],
             ncs_col_upper: &[],
@@ -5070,7 +5044,7 @@ fn integrated_productivity_columns_read_the_mean_evaluator_on_both_branches() {
             state: &state,
             entity_counts: &make_entity_counts_1_hydro(),
             inflow_m3s_per_hydro: &[10.0],
-            incoming_lags: &[],
+            incoming_lags: &zero_lags(&state),
             block_hours: &[720.0],
             generic_constraint_entries: &[],
             ncs_col_upper: &[],
@@ -5717,11 +5691,11 @@ fn one_hydro_lag_records(state: &StateSpace, primal: &[f64]) -> Vec<SimulationIn
     extract_stub_collections(&view, &spec, 0).0
 }
 
-/// A compact layout has no incoming-lag columns, so each `inflow_lags` record
-/// reads the pinned state's lag slice.
+/// The layout has no incoming-lag columns, so each `inflow_lags` record reads the
+/// pinned state's lag slice.
 #[test]
-fn extract_stub_collections_reads_the_incoming_lags_under_the_compact_form() {
-    let state = StateSpace::new_compact(
+fn extract_stub_collections_reads_the_incoming_lags_from_the_pinned_state() {
+    let state = StateSpace::new(
         1,
         2,
         Vec::new(),
@@ -5740,29 +5714,12 @@ fn extract_stub_collections_reads_the_incoming_lags_under_the_compact_form() {
     }
 }
 
-/// A logical layout reads the incoming-lag columns and ignores `incoming_lags`.
-#[test]
-fn extract_stub_collections_reads_the_lag_columns_under_the_logical_form() {
-    let state = test_support::state_layout(1, 2);
-    let mut primal = vec![0.0; state.theta + 1];
-    primal[state.lag_incoming_col(0, HydroSys::new(0)).get()] = 5.0;
-    primal[state.lag_incoming_col(1, HydroSys::new(0)).get()] = 6.0;
-
-    let records = one_hydro_lag_records(&state, &primal);
-
-    assert_eq!(records.len(), 2);
-    for (l, want) in [5.0_f64, 6.0].into_iter().enumerate() {
-        assert_eq!(records[l].lag_index as usize, l);
-        assert_eq!(records[l].inflow_m3s.to_bits(), want.to_bits());
-    }
-}
-
 // -------------------------------------------------------------------------
 // Per-block chronological storage and evaporation
 // -------------------------------------------------------------------------
 
 /// One evaporating hydro, one operating block, `state_layout(1, 0)` gives
-/// `storage_in.start == 2` and `storage.start == 0`.
+/// `storage_in.start == 1` and `storage.start == 0`.
 fn entity_counts_1_hydro() -> EntityCounts {
     EntityCounts {
         hydro_ids: vec![7],
@@ -5778,19 +5735,19 @@ fn entity_counts_1_hydro() -> EntityCounts {
 
 /// Build a single-hydro `K`-block `StageGeometry` in the given mode.
 ///
-/// Control-region layout for `state_layout(1, 0)` (`control_region_start == 4`):
-/// interior storage `S¹ … Sᴷ⁻¹` at `[4, 4 + (K−1))`, then turbine `[t0, t0 + K)`,
+/// Control-region layout for `state_layout(1, 0)` (`control_region_start == 3`):
+/// interior storage `S¹ … Sᴷ⁻¹` at `[3, 3 + (K−1))`, then turbine `[t0, t0 + K)`,
 /// spillage `[t0 + K, t0 + 2K)`, then `evaporation_slot_count(block_mode, k)`
 /// evaporation triples, then one withdrawal-slack column pair, then the four
 /// `K`-wide operational-violation slack families. In parallel mode the
-/// interior family is empty and turbine begins at 4.
+/// interior family is empty and turbine begins at 3.
 fn single_hydro_block_geometry(block_mode: BlockMode, k: usize) -> StageGeometry {
     use crate::lp::indexer::EvaporationIndices;
     let n_interior = match block_mode {
         BlockMode::Chronological => k - 1,
         BlockMode::Parallel => 0,
     };
-    let storage_internal_start = 4;
+    let storage_internal_start = 3;
     let turbine_start = storage_internal_start + n_interior;
     let spillage_start = turbine_start + k;
     let evap_start = spillage_start + k;
@@ -5843,14 +5800,14 @@ fn extract_chronological_per_block_storage() {
     let state = test_support::state_layout(1, 0);
     let ec = zero_energy_conversion(1, 1);
 
-    // Boundary values: S⁰=10 (storage_in col 2), S¹=20 (col 4), S²=30 (col 5),
-    // S³=Sᴷ=40 (storage col 0). Turbine cols [6,9), evap triples at [12, ...).
+    // Boundary values: S⁰=10 (storage_in col 1), S¹=20 (col 3), S²=30 (col 4),
+    // S³=Sᴷ=40 (storage col 0). Turbine cols [5,8), evap triples at [11, ...).
     let n_cols = geom.generation_below_slack.end;
     let mut primal = vec![0.0_f64; n_cols];
     primal[0] = 40.0; // Sᴷ (outgoing state)
-    primal[2] = 10.0; // S⁰ (incoming state)
-    primal[4] = 20.0; // S¹ (interior)
-    primal[5] = 30.0; // S² (interior)
+    primal[1] = 10.0; // S⁰ (incoming state)
+    primal[3] = 20.0; // S¹ (interior)
+    primal[4] = 30.0; // S² (interior)
     let dual = vec![0.0_f64; 4];
 
     let spec = StageExtractionSpec {
@@ -5860,7 +5817,7 @@ fn extract_chronological_per_block_storage() {
         state: &state,
         entity_counts: &entity_counts_1_hydro(),
         inflow_m3s_per_hydro: &[0.0; 1],
-        incoming_lags: &[],
+        incoming_lags: &zero_lags(&state),
         block_hours: &[100.0, 100.0, 100.0],
         generic_constraint_entries: &[],
         ncs_col_upper: &[],
@@ -5930,7 +5887,7 @@ fn extract_parallel_per_block_storage_byte_identical() {
     let n_cols = geom.generation_below_slack.end;
     let mut primal = vec![0.0_f64; n_cols];
     primal[0] = 40.0; // Sᴷ (outgoing state)
-    primal[2] = 10.0; // S⁰ (incoming state)
+    primal[1] = 10.0; // S⁰ (incoming state)
     let dual = vec![0.0_f64; 4];
 
     let spec = StageExtractionSpec {
@@ -5940,7 +5897,7 @@ fn extract_parallel_per_block_storage_byte_identical() {
         state: &state,
         entity_counts: &entity_counts_1_hydro(),
         inflow_m3s_per_hydro: &[0.0; 1],
-        incoming_lags: &[],
+        incoming_lags: &zero_lags(&state),
         block_hours: &[100.0, 100.0, 100.0],
         generic_constraint_entries: &[],
         ncs_col_upper: &[],
@@ -6002,7 +5959,7 @@ fn extract_chronological_water_value_reads_each_block_row() {
         state: &state,
         entity_counts: &entity_counts_1_hydro(),
         inflow_m3s_per_hydro: &[0.0; 1],
-        incoming_lags: &[],
+        incoming_lags: &zero_lags(&state),
         block_hours: &[100.0, 100.0, 100.0],
         generic_constraint_entries: &[],
         ncs_col_upper: &[],
@@ -6065,7 +6022,7 @@ fn extract_parallel_water_value_repeats_the_stage_row() {
         state: &state,
         entity_counts: &entity_counts_1_hydro(),
         inflow_m3s_per_hydro: &[0.0; 1],
-        incoming_lags: &[],
+        incoming_lags: &zero_lags(&state),
         block_hours: &[100.0, 100.0, 100.0],
         generic_constraint_entries: &[],
         ncs_col_upper: &[],
@@ -6130,9 +6087,9 @@ fn extract_chronological_per_block_stored_energy() {
     let n_cols = geom.generation_below_slack.end;
     let mut primal = vec![0.0_f64; n_cols];
     primal[0] = 40.0; // Sᴷ
-    primal[2] = 10.0; // S⁰
-    primal[4] = 20.0; // S¹
-    primal[5] = 30.0; // S²
+    primal[1] = 10.0; // S⁰
+    primal[3] = 20.0; // S¹
+    primal[4] = 30.0; // S²
     let dual = vec![0.0_f64; 4];
 
     let spec = StageExtractionSpec {
@@ -6142,7 +6099,7 @@ fn extract_chronological_per_block_stored_energy() {
         state: &state,
         entity_counts: &entity_counts_1_hydro(),
         inflow_m3s_per_hydro: &[0.0; 1],
-        incoming_lags: &[],
+        incoming_lags: &zero_lags(&state),
         block_hours: &[100.0, 100.0, 100.0],
         generic_constraint_entries: &[],
         ncs_col_upper: &[],
@@ -6195,9 +6152,9 @@ fn extract_chronological_per_block_evaporation() {
     let n_cols = geom.generation_below_slack.end;
     let mut primal = vec![0.0_f64; n_cols];
     primal[0] = 40.0;
-    primal[2] = 10.0;
-    primal[4] = 20.0;
-    primal[5] = 30.0;
+    primal[1] = 10.0;
+    primal[3] = 20.0;
+    primal[4] = 30.0;
     // Distinct evaporation values per block: block b flow = 1.0 + b, neg = 0.1 + b,
     // pos = 0.2 + b, laid out block-major at evap_indices[b].
     for b in 0..k {
@@ -6215,7 +6172,7 @@ fn extract_chronological_per_block_evaporation() {
         state: &state,
         entity_counts: &entity_counts_1_hydro(),
         inflow_m3s_per_hydro: &[0.0; 1],
-        incoming_lags: &[],
+        incoming_lags: &zero_lags(&state),
         block_hours: &[100.0, 100.0, 100.0],
         generic_constraint_entries: &[],
         ncs_col_upper: &[],
@@ -6276,7 +6233,7 @@ fn extract_parallel_per_block_evaporation_byte_identical() {
     let n_cols = geom.generation_below_slack.end;
     let mut primal = vec![0.0_f64; n_cols];
     primal[0] = 40.0;
-    primal[2] = 10.0;
+    primal[1] = 10.0;
     let ei = &geom.evap_indices[0];
     primal[ei.evaporation_flow_col] = 1.0;
     primal[ei.f_evap_plus_col] = 0.1;
@@ -6290,7 +6247,7 @@ fn extract_parallel_per_block_evaporation_byte_identical() {
         state: &state,
         entity_counts: &entity_counts_1_hydro(),
         inflow_m3s_per_hydro: &[0.0; 1],
-        incoming_lags: &[],
+        incoming_lags: &zero_lags(&state),
         block_hours: &[100.0, 100.0, 100.0],
         generic_constraint_entries: &[],
         ncs_col_upper: &[],
@@ -6335,25 +6292,23 @@ fn extract_parallel_per_block_evaporation_byte_identical() {
 // -------------------------------------------------------------------------
 
 /// Primal for a (`hydro_count = 2`, `max_par_order = 1`) bucketed layout with
-/// `transit_buckets_out.len()` buckets. Layout: `storage`[0,2) `lags`[2,4)
-/// `transit_buckets_out`[4,4+B) `z_inflow`[4+B,6+B) `storage_in`[6+B,8+B)
-/// `transit_buckets_in`[8+B,8+2B) `theta`=8+2B.
+/// `transit_buckets_out.len()` buckets. Layout: `storage`[0,2)
+/// `transit_buckets_out`[2,2+B) `storage_in`[2+B,4+B) `transit_buckets_in`[4+B,4+2B)
+/// `theta`=4+2B.
 fn make_transit_bucket_primal(transit_buckets_out: &[f64], transit_buckets_in: &[f64]) -> Vec<f64> {
     assert_eq!(transit_buckets_out.len(), transit_buckets_in.len());
     let b = transit_buckets_out.len();
-    let theta = 8 + 2 * b;
+    let theta = 4 + 2 * b;
     let mut p = vec![0.0_f64; theta + 1];
     p[0] = 100.0;
     p[1] = 200.0;
-    p[2] = 50.0;
-    p[3] = 60.0;
     for (i, &v) in transit_buckets_out.iter().enumerate() {
-        p[4 + i] = v;
+        p[2 + i] = v;
     }
-    p[6 + b] = 90.0;
-    p[7 + b] = 180.0;
+    p[2 + b] = 90.0;
+    p[3 + b] = 180.0;
     for (i, &v) in transit_buckets_in.iter().enumerate() {
-        p[8 + b + i] = v;
+        p[4 + b + i] = v;
     }
     p[theta] = 999.5;
     p
@@ -6383,7 +6338,7 @@ fn extract_transit_buckets_shape_canonical_order_and_delayed_arrival() {
     let objective_coeffs = vec![0.0; primal.len()];
     let dual = vec![0.0; 4];
     let ec = zero_energy_conversion(2, 1);
-    let inflow_m3s_per_hydro = test_support::inflow_m3s_per_hydro_from_primal(&state, &primal, 2);
+    let inflow_m3s_per_hydro = [0.0; 2];
 
     let result = extract_stage_result(
         &SolutionView {
@@ -6400,7 +6355,7 @@ fn extract_transit_buckets_shape_canonical_order_and_delayed_arrival() {
             state: &state,
             entity_counts: &make_entity_counts_2_hydros(),
             inflow_m3s_per_hydro: &inflow_m3s_per_hydro,
-            incoming_lags: &[],
+            incoming_lags: &zero_lags(&state),
             block_hours: &[],
             generic_constraint_entries: &[],
             ncs_col_upper: &[],
@@ -6451,13 +6406,13 @@ fn extract_transit_buckets_absent_when_n_buckets_zero() {
         withdrawal_slack_pos: ws_start + 2..ws_start + 4,
         ..test_support::equipment_free_geometry(&[0]).remove(0)
     };
-    let mut primal = make_primal_2_1([100.0, 200.0], [50.0, 60.0], [90.0, 180.0], 999.5);
+    let mut primal = make_primal_2_1([100.0, 200.0], [90.0, 180.0], 999.5);
     primal.resize(geometry.withdrawal_slack_pos.end, 0.0);
     let objective_coeffs = vec![0.0; primal.len()];
     let dual = vec![0.0; 4];
     let ec = zero_energy_conversion(2, 1);
 
-    let inflow_m3s_per_hydro = test_support::inflow_m3s_per_hydro_from_primal(&state, &primal, 2);
+    let inflow_m3s_per_hydro = [0.0; 2];
     let result = extract_stage_result(
         &SolutionView {
             primal: &primal,
@@ -6473,7 +6428,7 @@ fn extract_transit_buckets_absent_when_n_buckets_zero() {
             state: &state,
             entity_counts: &make_entity_counts_2_hydros(),
             inflow_m3s_per_hydro: &inflow_m3s_per_hydro,
-            incoming_lags: &[],
+            incoming_lags: &zero_lags(&state),
             block_hours: &[],
             generic_constraint_entries: &[],
             ncs_col_upper: &[],
@@ -6529,7 +6484,7 @@ fn extract_transit_buckets_rows_follow_canonical_column_order() {
     let objective_coeffs = vec![0.0; primal.len()];
     let dual = vec![0.0; 4];
     let ec = zero_energy_conversion(2, 1);
-    let inflow_m3s_per_hydro = test_support::inflow_m3s_per_hydro_from_primal(&state, &primal, 2);
+    let inflow_m3s_per_hydro = [0.0; 2];
 
     let result = extract_stage_result(
         &SolutionView {
@@ -6546,7 +6501,7 @@ fn extract_transit_buckets_rows_follow_canonical_column_order() {
             state: &state,
             entity_counts: &make_entity_counts_2_hydros(),
             inflow_m3s_per_hydro: &inflow_m3s_per_hydro,
-            incoming_lags: &[],
+            incoming_lags: &zero_lags(&state),
             block_hours: &[],
             generic_constraint_entries: &[],
             ncs_col_upper: &[],
@@ -6694,7 +6649,7 @@ fn extract_hydro_turbined_and_generation_sum_over_a_split_plants_cells() {
                 non_controllable_ids: vec![],
             },
             inflow_m3s_per_hydro: &[0.0, 0.0],
-            incoming_lags: &[],
+            incoming_lags: &zero_lags(&state),
             block_hours: &[100.0, 100.0],
             generic_constraint_entries: &[],
             ncs_col_upper: &[],
@@ -6805,7 +6760,7 @@ fn extract_hydro_power_slacks_add_the_plant_residual_onto_its_cells() {
                 non_controllable_ids: vec![],
             },
             inflow_m3s_per_hydro: &[0.0, 0.0],
-            incoming_lags: &[],
+            incoming_lags: &zero_lags(&state),
             block_hours: &[100.0, 100.0],
             generic_constraint_entries: &[],
             ncs_col_upper: &[],
@@ -6988,7 +6943,7 @@ fn extract_hydro_bus_generation_emits_one_row_per_cell_per_block() {
                 non_controllable_ids: vec![],
             },
             inflow_m3s_per_hydro: &[0.0, 0.0, 0.0],
-            incoming_lags: &[],
+            incoming_lags: &zero_lags(&state),
             block_hours: &[100.0, 100.0],
             generic_constraint_entries: &[],
             ncs_col_upper: &[],
@@ -7083,7 +7038,7 @@ fn extract_hydro_bus_generation_constant_productivity_uses_own_hydro_productivit
                 non_controllable_ids: vec![],
             },
             inflow_m3s_per_hydro: &[0.0, 0.0, 0.0],
-            incoming_lags: &[],
+            incoming_lags: &zero_lags(&state),
             block_hours: &[100.0, 100.0],
             generic_constraint_entries: &[],
             ncs_col_upper: &[],
@@ -7245,7 +7200,7 @@ fn hydro_bus_rows_sum_bit_exactly_to_the_plant_turbined_row() {
                 non_controllable_ids: vec![],
             },
             inflow_m3s_per_hydro: &[0.0, 0.0],
-            incoming_lags: &[],
+            incoming_lags: &zero_lags(&state),
             block_hours: &[100.0],
             generic_constraint_entries: &[],
             ncs_col_upper: &[],
@@ -7340,7 +7295,7 @@ fn extract_hydro_bus_generation_maps_fpha_cells_by_plant_relative_offset() {
                 non_controllable_ids: vec![],
             },
             inflow_m3s_per_hydro: &[0.0, 0.0],
-            incoming_lags: &[],
+            incoming_lags: &zero_lags(&state),
             block_hours: &[100.0, 100.0],
             generic_constraint_entries: &[],
             ncs_col_upper: &[],

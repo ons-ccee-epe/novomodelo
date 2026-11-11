@@ -638,6 +638,25 @@ mod tests {
     }
 
     #[test]
+    fn padding_lag_coefficient_carries_the_sign_of_zero_times_g() {
+        let pair = Pair::new((1, 3), (ALL, ALL), &[], par_with_psi(1, &[0.5, 0.25]));
+        let deepest_lag_coefficient = |coupled: f64| {
+            let coupled_duals = [coupled];
+            let opening = OpeningDuals {
+                objective: 0.0,
+                state_duals: &[0.0],
+                coupled_duals: &coupled_duals,
+                cut_duals: &[],
+            };
+            let (coefficients, _) = pair.run(&opening, &[0.0; 4]);
+            coefficients[3]
+        };
+
+        assert_eq!(deepest_lag_coefficient(2.0).to_bits(), (-0.0_f64).to_bits());
+        assert_eq!(deepest_lag_coefficient(-2.0).to_bits(), 0.0_f64.to_bits());
+    }
+
+    #[test]
     fn orderless_par_never_reads_psi() {
         let pair = Pair::new((1, 1), (ALL, ALL), &[], PrecomputedPar::default());
         let opening = OpeningDuals {

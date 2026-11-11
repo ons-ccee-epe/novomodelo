@@ -40,7 +40,6 @@ use crate::{
     cut_sync::CutSyncBuffers,
     forward::{ForwardBound, ForwardResult, SyncResult, sync_forward},
     forward_pass_state::{ForwardPassInputs, ForwardPassState},
-    indexer::InflowForm,
     lower_bound::LbEvalScratchBundle,
     lower_bound::evaluate_lower_bound,
     policy::orchestration::CheckpointState,
@@ -260,7 +259,12 @@ where
         // is shared per worker, not per pool, so it must cover the LARGEST pool
         // a worker's sweep may touch (same `max_pool_capacity` the per-slot
         // backward buffers size from).
-        fwd_pool.reserve_backward_scratch(training_ctx, sizing, max_pool_capacity);
+        fwd_pool.reserve_backward_scratch(
+            training_ctx,
+            sizing,
+            max_pool_capacity,
+            &solver_profiles.backward_scheduler,
+        );
 
         // Sized for max local forward passes so scenario indices stay stable
         // across iterations, which leaves spare rows on a rank holding fewer:
@@ -1336,9 +1340,8 @@ where
     /// flag, never a `pool_stage`-derived early return baked into the loop bounds,
     /// so the priming call still bakes the terminal pool.
     ///
-    /// On the compact form each frozen pool also reserves its frozen row count on
-    /// every trajectory record of its stage, the only sizing of the forward's
-    /// bracket write.
+    /// Each frozen pool also reserves its frozen row count on every trajectory
+    /// record of its stage, the only sizing of the forward's bracket write.
     ///
     /// Deliberately left unoptimized: the refreeze is quadratic in the active-cut
     /// count only in the no-cut-selection default, which production never runs at
@@ -1350,7 +1353,6 @@ where
         let node_graph = self.training_ctx.node_graph;
         let num_stages = self.training_ctx.horizon.num_stages();
         let terminal_stage = (num_stages > 0).then(|| StageIdx(num_stages - 1));
-        let reserves_brackets = state.inflow_form == InflowForm::Compact && num_stages > 0;
         for p in 0..node_graph.n_pools {
             let t = node_graph.pool_stage[p];
             if skip_static_terminal && terminal_stage == Some(t) {
@@ -1368,7 +1370,7 @@ where
             {
                 total_rows_frozen += self.scratch.freeze_row_batches[p].num_rows as u64;
             }
-            if reserves_brackets {
+            if num_stages > 0 {
                 let rows = self.scratch.freeze_row_batches[p].num_rows;
                 for rec in self
                     .scratch
@@ -1630,7 +1632,7 @@ mod tests {
         horizon_mode::HorizonMode,
         inflow_method::InflowNonNegativityMethod,
         lp::builder::{StageGeometry, StateBox},
-        lp::indexer::{CutStateProjection, InflowForm, StateSpace, StudyDimensions},
+        lp::indexer::{CutStateProjection, StateSpace, StudyDimensions},
         risk_measure::RiskMeasure,
         setup::node_graph::StageIdx,
         setup::{
@@ -1638,8 +1640,8 @@ mod tests {
         },
         solver_stats::WORKER_STATS_ENTRY_STRIDE,
         test_support::{
-            self, LagFold, StageContextFixture, dual_folding_setup_in_both_forms,
-            equipment_free_geometry, permissive_state_boxes,
+            self, LagFold, StageContextFixture, dual_folding_setup, equipment_free_geometry,
+            permissive_state_boxes,
         },
     };
 
@@ -2097,6 +2099,7 @@ mod tests {
         state_boxes: &'a [StateBox],
     ) -> StageContextFixture<'a> {
         StageContextFixture::new(templates, state_boxes, geometry_per_stage)
+            .without_inflow_entries(1)
     }
 
     fn make_training_ctx<'a>(
@@ -3774,10 +3777,9 @@ mod tests {
 
     #[test]
     fn the_bracket_slab_grows_only_when_the_templates_are_frozen() {
-        let (_, mut setup) = dual_folding_setup_in_both_forms(LagFold::Unfolded, 2, 4);
+        let mut setup = dual_folding_setup(LagFold::Unfolded, 2, 4);
         let stage_ctx = setup.inputs.stage_ctx();
         let training_ctx = setup.inputs.training_ctx();
-        assert_eq!(training_ctx.state.inflow_form, InflowForm::Compact);
         let n_stages = training_ctx.horizon.num_stages();
         let node_graph = training_ctx.node_graph;
         let root = node_graph.frontier_node(StageIdx(0)).unwrap();

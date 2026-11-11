@@ -1,14 +1,11 @@
-//! Per-opening outcome, binding-count, and basis-capture accumulators for the
-//! backward pass: write the per-opening stats delta and aggregated outcome, bump
+//! Binding-count and basis-capture accumulators for the backward pass: bump
 //! binding-cut slot increments from (slot, y) pairs, and capture the
 //! first-solved opening's basis.
 
-use novomodelo_solver::{SolverInterface, SolverStatistics};
+use novomodelo_solver::SolverInterface;
 
 use crate::{
     forward::write_capture_metadata,
-    indexer::CutStateProjection,
-    solver_stats::SolverStatsDelta,
     workspace::{BasisStoreSliceMut, CapturedBasis, SolverWorkspace},
 };
 
@@ -56,32 +53,6 @@ pub(crate) fn fold_slot_increments_into_sync(
             metadata_sync_contribution[slot] += increment;
         }
     }
-}
-
-/// Write one opening's stats delta and outcome (coefficients + intercept) into
-/// the workspace accumulators, without touching binding-count metadata. The
-/// gradient and intercept come from the state duals alone.
-pub(crate) fn write_opening_outcome<S: SolverInterface + Send>(
-    ws: &mut SolverWorkspace<S>,
-    cut_state: &CutStateProjection,
-    omega: usize,
-    objective: f64,
-    x_hat: &[f64],
-    stats_before: &SolverStatistics,
-    stats_after: &SolverStatistics,
-) {
-    let opening_delta = SolverStatsDelta::from_snapshots(stats_before, stats_after);
-    SolverStatsDelta::accumulate_into(
-        &mut ws.backward_accum.per_opening_stats[omega],
-        &opening_delta,
-    );
-
-    let out = &mut ws.backward_accum.outcomes[omega];
-    out.coefficients
-        .copy_from_slice(&ws.backward_accum.state_duals_buf);
-    out.objective_value = objective;
-    // Intercept and coefficients are in scaled cost units (LP duals inherit cost scaling).
-    out.intercept = objective - cut_state.dot_trial_state(&out.coefficients, x_hat);
 }
 
 /// Capture the post-solve basis at the first-solved opening into

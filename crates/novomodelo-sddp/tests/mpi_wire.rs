@@ -1003,17 +1003,17 @@ mod by_node_scheduler_determinism {
     }
 
     /// Defense-in-depth capacity check paired with the threads=4 leg below:
-    /// the opening-block scratch arena's capacity (the no-alloc property `by_node_scratch`'s
+    /// the opening-block record-location table's capacity (the no-alloc property `by_node_scratch`'s
     /// `by_node_scratch_capacity_stable_across_training` primarily pins) is
     /// reproduced identically across two independent direct-drive runs of the
     /// same fixture.
     fn assert_by_node_scratch_capacity_invariant() {
         const N_OPENINGS: usize = 4;
-        let capacity_a = run_by_node_one_iteration(N_OPENINGS).by_node_scratch_arena_capacity();
-        let capacity_b = run_by_node_one_iteration(N_OPENINGS).by_node_scratch_arena_capacity();
+        let capacity_a = run_by_node_one_iteration(N_OPENINGS).by_node_scratch_location_capacity();
+        let capacity_b = run_by_node_one_iteration(N_OPENINGS).by_node_scratch_location_capacity();
         assert_eq!(
             capacity_a, capacity_b,
-            "opening-block scratch arena capacity must be reproducible across independent direct-drive runs"
+            "opening-block record-location capacity must be reproducible across independent direct-drive runs"
         );
     }
 
@@ -1588,11 +1588,10 @@ mod by_node_scratch {
         );
         state.set_scheduler(BackwardScheduler::ByScenario {});
         assert_eq!(
-            state.by_node_scratch_arena_capacity(),
+            state.by_node_scratch_location_capacity(),
             0,
-            "the default by_scenario scheduler must keep the opening-block scratch arena empty"
+            "the default by_scenario scheduler must keep the opening-block scratch empty"
         );
-        assert!(state.by_node_scratch_arena().is_empty());
         assert!(state.block_pivot_means().is_empty());
     }
 
@@ -1613,11 +1612,9 @@ mod by_node_scratch {
 
         state.set_scheduler(BackwardScheduler::ByNode { block_size: None });
 
-        let arena = state.by_node_scratch_arena();
-        assert_eq!(
-            arena.len(),
-            max_local_fwd * bwd_max_openings,
-            "arena must hold max_local_fwd * bwd_max_openings outcomes"
+        assert!(
+            state.by_node_scratch_location_capacity() >= max_local_fwd * bwd_max_openings,
+            "the location table must be reserved for max_local_fwd * bwd_max_openings records"
         );
         let pivots = state.block_pivot_means();
         assert_eq!(
@@ -1632,12 +1629,6 @@ mod by_node_scratch {
         assert!(
             pivots.iter().flatten().all(Option::is_none),
             "a freshly sized accumulator must hold no populated entries"
-        );
-        assert!(
-            arena
-                .iter()
-                .all(|outcome| outcome.coefficients.len() == n_state),
-            "every outcome's coefficients must be pre-sized to n_state"
         );
     }
 
@@ -1676,7 +1667,8 @@ mod by_node_scratch {
         let mut cut_batches = empty_cut_batches(n_stages);
         let state_boxes = permissive_state_boxes(n_state, n_stages);
         let geometry = equipment_free_geometry(&[0, 0]);
-        let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+        let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry)
+            .without_inflow_entries(state_layout_fixture.hydro_count);
         let ctx = fixture.ctx();
         let study_dims_fixture = study_dims();
         let training_ctx = TrainingContext {
@@ -1725,7 +1717,7 @@ mod by_node_scratch {
         state.set_scheduler(BackwardScheduler::ByNode {
             block_size: NonZeroUsize::new(1),
         });
-        let capacity_after_set_scheduler = state.by_node_scratch_arena_capacity();
+        let capacity_after_set_scheduler = state.by_node_scratch_location_capacity();
         assert!(
             capacity_after_set_scheduler > 0,
             "ByNode must size the opening-block scratch arena at set_scheduler time"
@@ -1760,7 +1752,7 @@ mod by_node_scratch {
                 .run(&mut inputs)
                 .expect("backward pass must not error");
             assert_eq!(
-                state.by_node_scratch_arena_capacity(),
+                state.by_node_scratch_location_capacity(),
                 capacity_after_set_scheduler,
                 "opening-block scratch arena must not reallocate across repeated backward-pass runs \
                  (iteration {iteration})"
@@ -1772,7 +1764,7 @@ mod by_node_scratch {
     /// `ByNode` (block size 1, so every opening is its own block), run
     /// exactly one backward-pass iteration, and return the resulting
     /// [`BackwardPassState`] for the caller to inspect (e.g. via
-    /// `block_pivot_means` or `by_node_scratch_arena_capacity`). `pub(crate)`:
+    /// `block_pivot_means` or `by_node_scratch_location_capacity`). `pub(crate)`:
     /// also reused by `by_node_scheduler_determinism`'s capacity-invariance check.
     pub(crate) fn run_by_node_one_iteration(n_openings: usize) -> BackwardPassState {
         let n_stages = 2_usize;
@@ -1799,7 +1791,8 @@ mod by_node_scratch {
         let mut cut_batches = empty_cut_batches(n_stages);
         let state_boxes = permissive_state_boxes(n_state, n_stages);
         let geometry = equipment_free_geometry(&[0, 0]);
-        let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+        let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry)
+            .without_inflow_entries(state_layout_fixture.hydro_count);
         let ctx = fixture.ctx();
         let study_dims_fixture = study_dims();
         let training_ctx = TrainingContext {
@@ -4188,15 +4181,14 @@ mod compact_fold_determinism {
     use novomodelo_io::config::{BackwardScheduler, StoppingRuleConfig, TrainingSelection};
     use novomodelo_sddp::indexer::CutStateProjection;
     use novomodelo_sddp::setup::NodePos;
-    use novomodelo_sddp::test_support::external_distinct_fan_setup_heterogeneous_cut_state_in_both_forms;
+    use novomodelo_sddp::test_support::external_distinct_fan_setup_heterogeneous_cut_state;
     use novomodelo_sddp::{RiskMeasure, StudySetup, TrainingResult};
     use novomodelo_solver::ActiveSolver;
 
     use crate::common::in_code_studies::{FphaLagOptions, fpha_lag_study_with};
     use crate::common::selection_fingerprint::SelectionFingerprint;
     use crate::common::{
-        Emission, Rank0Of2, StubComm, build_setup_in_code_with_models_as,
-        fresh_setup_with_openings_as,
+        Rank0Of2, StubComm, build_setup_in_code_with_models, fresh_setup_with_openings,
     };
 
     const LAG_STUDY: &str = "lag study";
@@ -4237,20 +4229,17 @@ mod compact_fold_determinism {
             ..FphaLagOptions::default()
         });
         sample(&mut config, forward_passes, iterations);
-        build_setup_in_code_with_models_as(system, &config, hydro_models, Emission::Compact)
+        build_setup_in_code_with_models(system, &config, hydro_models)
     }
 
     fn d43(forward_passes: u32, iterations: u32) -> StudySetup {
-        fresh_setup_with_openings_as(
-            Path::new(D43_CASE),
-            D43_OPENINGS,
-            |config| sample(config, forward_passes, iterations),
-            Emission::Compact,
-        )
+        fresh_setup_with_openings(Path::new(D43_CASE), D43_OPENINGS, |config| {
+            sample(config, forward_passes, iterations);
+        })
     }
 
     fn fan() -> StudySetup {
-        external_distinct_fan_setup_heterogeneous_cut_state_in_both_forms(2, FAN_ITERATIONS).1
+        external_distinct_fan_setup_heterogeneous_cut_state(2, FAN_ITERATIONS)
     }
 
     fn by_node_cvar(mut setup: StudySetup) -> StudySetup {
@@ -4679,11 +4668,10 @@ mod compact_fold_determinism {
         let world =
             create_communicator(BackendKind::Auto).expect("communicator construction must succeed");
         let build = || {
-            let mut setup = external_distinct_fan_setup_heterogeneous_cut_state_in_both_forms(
+            let mut setup = external_distinct_fan_setup_heterogeneous_cut_state(
                 WORLD_FAN_LEAVES,
                 FAN_ITERATIONS,
-            )
-            .1;
+            );
             setup.set_scheduler(BY_NODE);
             assert_fused_slice_is_heterogeneous(FAN, &setup);
             setup

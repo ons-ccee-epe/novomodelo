@@ -140,17 +140,13 @@ pub fn water_row_owners(
     owners
 }
 
-/// Every row family [`StageGeometry`] holds, plus the z-inflow rows
-/// [`StateSpace::z_inflow_rows`] leads every stage with. One entry per
-/// family: `water_balance`, `load_balance`, `fpha`, `filling_target`,
-/// `filled_min_storage_floor`, `evaporation` (every
+/// Every row family [`StageGeometry`] holds. One entry per family:
+/// `water_balance`, `load_balance`, `fpha`, `filling_target`,
+/// `filled_min_storage_floor` and `evaporation` (every
 /// [`EvaporationIndices`](crate::lp::indexer::EvaporationIndices)'s
-/// `evap_row`), and `z_inflow`.
+/// `evap_row`).
 #[must_use]
-pub fn geometry_row_families(
-    geom: &StageGeometry,
-    state: &StateSpace,
-) -> Vec<(&'static str, Vec<usize>)> {
+pub fn geometry_row_families(geom: &StageGeometry) -> Vec<(&'static str, Vec<usize>)> {
     vec![
         ("water_balance", geom.water_balance.range().collect()),
         ("load_balance", geom.load_balance.range().collect()),
@@ -164,7 +160,6 @@ pub fn geometry_row_families(
             "evaporation",
             geom.evap_indices.iter().map(|e| e.evap_row).collect(),
         ),
-        ("z_inflow", state.z_inflow_rows().collect()),
     ]
 }
 
@@ -265,7 +260,7 @@ pub fn state_lag_dims(state: &StateSpace) -> Range<usize> {
     state.state_dim_lag_range()
 }
 
-/// Decoded owner of a water-balance, load-balance or z-inflow row.
+/// Decoded owner of a water-balance or load-balance row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RowOwner {
     /// A water-balance row: hydro `hydro`'s row for block `blk`.
@@ -282,23 +277,13 @@ pub enum RowOwner {
         /// The row's block.
         blk: BlockIdx,
     },
-    /// Hydro `hydro`'s z-inflow definition row.
-    ZInflow {
-        /// The row's owning hydro.
-        hydro: HydroSys,
-    },
 }
 
-/// Inverts [`StageGeometry::water_balance_row`], [`StageGeometry::load_balance_row`]
-/// and [`StateSpace::z_inflow_row`] over the `System`'s own entity counts and
-/// `0..family.rows_per_entity(geom.n_blks)`. The z-inflow rows are the ones
-/// [`StateSpace::z_inflow_rows`] lists, so a compact `StateSpace` has none.
+/// Inverts [`StageGeometry::water_balance_row`] and
+/// [`StageGeometry::load_balance_row`] over the `System`'s own entity counts and
+/// `0..family.rows_per_entity(geom.n_blks)`.
 #[must_use]
-pub fn row_owners(
-    system: &System,
-    geom: &StageGeometry,
-    state: &StateSpace,
-) -> HashMap<usize, RowOwner> {
+pub fn row_owners(system: &System, geom: &StageGeometry) -> HashMap<usize, RowOwner> {
     let mut owners = HashMap::new();
     for h in 0..system.hydros().len() {
         let hydro = HydroSys::new(h);
@@ -317,21 +302,10 @@ pub fn row_owners(
             owners.insert(geom.load_balance_row(bus, blk), RowOwner::Load { bus, blk });
         }
     }
-    for h in 0..state.z_inflow_rows().len() {
-        let hydro = HydroSys::new(h);
-        owners.insert(state.z_inflow_row(hydro), RowOwner::ZInflow { hydro });
-    }
     owners
 }
 
-/// Pass-through to [`StateSpace::z_inflow_col`], so no decoder re-derives
-/// the z-inflow column's address itself.
-#[must_use]
-pub fn z_inflow_column(state: &StateSpace, h: HydroSys) -> usize {
-    state.z_inflow_col(h).get()
-}
-
-/// Decoded owner of a column that can enter a water, load or z-inflow row.
+/// Decoded owner of a column that can enter a water or load row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColOwner {
     /// A storage-boundary column for hydro `hydro` at `boundary`.
@@ -340,16 +314,6 @@ pub enum ColOwner {
         hydro: HydroSys,
         /// The storage boundary this column addresses.
         boundary: Boundary,
-    },
-    /// Hydro `hydro`'s realized-inflow column.
-    ZInflow {
-        /// The column's owning hydro.
-        hydro: HydroSys,
-    },
-    /// An AR inflow-lag column for hydro `hydro` (any lag depth).
-    InflowLag {
-        /// The column's owning hydro.
-        hydro: HydroSys,
     },
     /// A water-transit-bucket ring column for plant `plant`, ring slot `slot`.
     Bucket {
@@ -482,7 +446,7 @@ pub enum ColOwner {
     },
 }
 
-/// Inverts every column family that can enter a water, load or z-inflow row.
+/// Inverts every column family that can enter a water or load row.
 /// [`storage_column_owners`] and [`ring_lanes`] supply the state-ring
 /// families; every other family is read through its own [`StageGeometry`]
 /// accessor, never `start + i`. `HydroCellIndex` is built once, here, and
@@ -511,20 +475,6 @@ pub fn column_owners(
 
     for (&col, &(hydro, boundary)) in &storage_column_owners(geom, state) {
         owners.insert(col, ColOwner::Storage { hydro, boundary });
-    }
-
-    for h in 0..state.hydro_count {
-        let hydro = HydroSys::new(h);
-        owners.insert(z_inflow_column(state, hydro), ColOwner::ZInflow { hydro });
-    }
-    for lag in 0..state.max_par_order {
-        for h in 0..state.hydro_count {
-            let hydro = HydroSys::new(h);
-            owners.insert(
-                state.lag_incoming_col(lag, hydro).get(),
-                ColOwner::InflowLag { hydro },
-            );
-        }
     }
 
     for lane in ring_lanes(state, geom) {
@@ -734,16 +684,6 @@ pub enum ColKey {
         /// The storage boundary this column addresses.
         boundary: Boundary,
     },
-    /// Hydro `hydro`'s realized-inflow column.
-    ZInflow {
-        /// The column's owning hydro.
-        hydro: HydroSys,
-    },
-    /// An AR inflow-lag column for hydro `hydro` (any lag depth).
-    InflowLag {
-        /// The column's owning hydro.
-        hydro: HydroSys,
-    },
     /// A water-transit-bucket ring column for plant `plant`, ring slot `slot`.
     Bucket {
         /// The bucket ring's owning plant.
@@ -876,8 +816,6 @@ impl From<ColOwner> for ColKey {
     fn from(owner: ColOwner) -> Self {
         match owner {
             ColOwner::Storage { hydro, boundary } => ColKey::Storage { hydro, boundary },
-            ColOwner::ZInflow { hydro } => ColKey::ZInflow { hydro },
-            ColOwner::InflowLag { hydro } => ColKey::InflowLag { hydro },
             ColOwner::Bucket {
                 plant,
                 slot,
@@ -951,7 +889,7 @@ pub fn row_by_owner(
     for &(c, v) in m.row(r) {
         #[expect(
             clippy::panic,
-            reason = "an undecoded column on a water/load/z/FPHA row is a gap in column_owners's coverage, not a runtime condition to recover from"
+            reason = "an undecoded column on a water/load/FPHA row is a gap in column_owners's coverage, not a runtime condition to recover from"
         )]
         let owner = *cols
             .get(&c)

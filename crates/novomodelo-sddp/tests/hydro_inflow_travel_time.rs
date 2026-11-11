@@ -46,8 +46,8 @@ use novomodelo_solver::StageTemplate;
 
 mod common;
 
+use common::build_setup_in_code;
 use common::builders::{BusSpec, HydroSpec, StageSpec, make_bus, make_hydro, make_stage};
-use common::{Emission, build_setup_in_code_as};
 
 const BUS_ID: i32 = 1;
 const UPSTREAM_ID: i32 = 1;
@@ -817,7 +817,6 @@ fn assert_generic_row_columns_are_closed(tpl: &StageTemplate, row: usize, allowe
 /// (the closed-set contract), and so must the sink entry of every other plant.
 fn assert_hydro_inflow_matches_water_balance(
     setup: &StudySetup,
-    emission: Emission,
     stage: usize,
     downstream_cell: usize,
     z_plants: &[usize],
@@ -854,7 +853,7 @@ fn assert_hydro_inflow_matches_water_balance(
         let scale = 1.0_f64.max(w_entry.abs());
         assert!(
             (lhs - rhs).abs() <= 1e-9 * scale,
-            "{emission:?} stage {stage} column {c}: hydro_inflow sum={lhs} does not match \
+            "stage {stage} column {c}: hydro_inflow sum={lhs} does not match \
              -water_balance[{w_row}, {c}]={rhs} (tol {})",
             1e-9 * scale
         );
@@ -869,20 +868,19 @@ fn assert_hydro_inflow_matches_water_balance(
         let scale = 1.0_f64.max(w_entry.abs());
         assert!(
             (lhs - rhs).abs() <= 1e-9 * scale,
-            "{emission:?} stage {stage} plant {p}: hydro_inflow sink sum={lhs} does not match \
+            "stage {stage} plant {p}: hydro_inflow sink sum={lhs} does not match \
              -sink[{w_row}]={rhs} (tol {})",
             1e-9 * scale
         );
     }
 
-    let mut covered = columns;
-    covered.extend(state_space.z_inflow.clone());
+    let covered = columns;
     for b in 0..n_blks {
         assert_generic_row_columns_are_closed(tpl, g_row(b), &covered);
         for h in 0..state_space.hydro_count {
             assert!(
                 sink_entry(setup, stage, h, g_row(b)) == 0.0 || z_plants.contains(&h),
-                "{emission:?} stage {stage} block {b}: hydro {h} has a sink entry on generic \
+                "stage {stage} block {b}: hydro {h} has a sink entry on generic \
                  row {} but is not among the checked plants {z_plants:?}",
                 g_row(b)
             );
@@ -898,7 +896,6 @@ fn assert_hydro_inflow_matches_water_balance(
 /// contract), and so must the sink entry of every other plant.
 fn assert_hydro_inflow_matches_each_chronological_water_balance_row(
     setup: &StudySetup,
-    emission: Emission,
     stage: usize,
     downstream_cell: usize,
     z_plants: &[usize],
@@ -921,8 +918,7 @@ fn assert_hydro_inflow_matches_each_chronological_water_balance_row(
             .clone()
             .filter(|&c| (0..n_blks).any(|b| matrix_entry(tpl, w_row(b), c) != 0.0)),
     );
-    let mut covered = columns.clone();
-    covered.extend(state_space.z_inflow.clone());
+    let covered = columns.clone();
 
     for b in 0..n_blks {
         let row_w = w_row(b);
@@ -936,7 +932,7 @@ fn assert_hydro_inflow_matches_each_chronological_water_balance_row(
             let scale = 1.0_f64.max(w_entry.abs());
             assert!(
                 (lhs - rhs).abs() <= 1e-9 * scale,
-                "{emission:?} stage {stage} block {b} column {c}: hydro_inflow={lhs} does not \
+                "stage {stage} block {b} column {c}: hydro_inflow={lhs} does not \
                  match -water_balance[{row_w}, {c}]={rhs} (tol {})",
                 1e-9 * scale
             );
@@ -949,7 +945,7 @@ fn assert_hydro_inflow_matches_each_chronological_water_balance_row(
             let scale = 1.0_f64.max(w_entry.abs());
             assert!(
                 (lhs - rhs).abs() <= 1e-9 * scale,
-                "{emission:?} stage {stage} block {b} plant {p}: hydro_inflow sink \
+                "stage {stage} block {b} plant {p}: hydro_inflow sink \
                  entry={lhs} does not match -sink[{row_w}]={rhs} (tol {})",
                 1e-9 * scale
             );
@@ -959,7 +955,7 @@ fn assert_hydro_inflow_matches_each_chronological_water_balance_row(
         for h in 0..state_space.hydro_count {
             assert!(
                 sink_entry(setup, stage, h, row_g) == 0.0 || z_plants.contains(&h),
-                "{emission:?} stage {stage} block {b}: hydro {h} has a sink entry on generic \
+                "stage {stage} block {b}: hydro {h} has a sink entry on generic \
                  row {row_g} but is not among the checked plants {z_plants:?}"
             );
         }
@@ -968,65 +964,57 @@ fn assert_hydro_inflow_matches_each_chronological_water_balance_row(
 
 #[test]
 fn hydro_inflow_rows_match_the_water_balance_inflow_side_without_travel_time() {
-    for emission in [Emission::Logical, Emission::Compact] {
-        let setup =
-            build_setup_in_code_as(build_system(None, BlockMode::Parallel), &config(), emission);
-        let geom = &setup.inputs.stage_data.stage_templates.geometry_per_stage[1];
-        let columns = inflow_columns(geom, &[UPSTREAM_POS], &[UPSTREAM_POS], &[]);
-        assert_hydro_inflow_matches_water_balance(
-            &setup,
-            emission,
-            1,
-            DOWNSTREAM_POS,
-            &[DOWNSTREAM_POS],
-            &columns,
-        );
-    }
+    let setup = build_setup_in_code(build_system(None, BlockMode::Parallel), &config());
+    let geom = &setup.inputs.stage_data.stage_templates.geometry_per_stage[1];
+    let columns = inflow_columns(geom, &[UPSTREAM_POS], &[UPSTREAM_POS], &[]);
+    assert_hydro_inflow_matches_water_balance(
+        &setup,
+        1,
+        DOWNSTREAM_POS,
+        &[DOWNSTREAM_POS],
+        &columns,
+    );
 }
 
 #[test]
 fn hydro_inflow_rows_match_the_water_balance_inflow_side_with_travel_time() {
-    for emission in [Emission::Logical, Emission::Compact] {
-        let setup = build_setup_in_code_as(
-            build_system(Some(TRAVEL_TIME_HOURS), BlockMode::Parallel),
-            &config(),
-            emission,
-        );
-        let templates = &setup.inputs.stage_data.stage_templates;
-        let tpl = &templates.templates[1];
-        let geom = &templates.geometry_per_stage[1];
-        let state = setup.stage_state();
-        let w_row = geom.water_balance_row(HydroSys::new(DOWNSTREAM_POS), BlockIdx::new(0));
+    let setup = build_setup_in_code(
+        build_system(Some(TRAVEL_TIME_HOURS), BlockMode::Parallel),
+        &config(),
+    );
+    let templates = &setup.inputs.stage_data.stage_templates;
+    let tpl = &templates.templates[1];
+    let geom = &templates.geometry_per_stage[1];
+    let state = setup.stage_state();
+    let w_row = geom.water_balance_row(HydroSys::new(DOWNSTREAM_POS), BlockIdx::new(0));
 
-        let has_bucket_contribution = state
-            .transit_buckets_in
-            .clone()
-            .any(|c| matrix_entry(tpl, w_row, c) != 0.0);
-        assert!(
-            has_bucket_contribution,
-            "{emission:?} power guard: the water-balance row must carry a nonzero \
-             transit_buckets_in entry, or the arc never routes water through a bucket"
-        );
+    let has_bucket_contribution = state
+        .transit_buckets_in
+        .clone()
+        .any(|c| matrix_entry(tpl, w_row, c) != 0.0);
+    assert!(
+        has_bucket_contribution,
+        "power guard: the water-balance row must carry a nonzero \
+         transit_buckets_in entry, or the arc never routes water through a bucket"
+    );
 
-        let tau_0 = matrix_entry(tpl, w_row, turbine_cols(geom, &[DOWNSTREAM_POS], 0)[0]);
-        let same_stage_share =
-            -matrix_entry(tpl, w_row, turbine_cols(geom, &[UPSTREAM_POS], 0)[0]) / tau_0;
-        assert!(
-            same_stage_share > 0.0 && same_stage_share < 1.0,
-            "{emission:?} power guard: hydro 1's block-0 same-stage share must be a genuine \
-             split (0, 1), got {same_stage_share}"
-        );
+    let tau_0 = matrix_entry(tpl, w_row, turbine_cols(geom, &[DOWNSTREAM_POS], 0)[0]);
+    let same_stage_share =
+        -matrix_entry(tpl, w_row, turbine_cols(geom, &[UPSTREAM_POS], 0)[0]) / tau_0;
+    assert!(
+        same_stage_share > 0.0 && same_stage_share < 1.0,
+        "power guard: hydro 1's block-0 same-stage share must be a genuine \
+         split (0, 1), got {same_stage_share}"
+    );
 
-        let columns = inflow_columns(geom, &[UPSTREAM_POS], &[UPSTREAM_POS], &[]);
-        assert_hydro_inflow_matches_water_balance(
-            &setup,
-            emission,
-            1,
-            DOWNSTREAM_POS,
-            &[DOWNSTREAM_POS],
-            &columns,
-        );
-    }
+    let columns = inflow_columns(geom, &[UPSTREAM_POS], &[UPSTREAM_POS], &[]);
+    assert_hydro_inflow_matches_water_balance(
+        &setup,
+        1,
+        DOWNSTREAM_POS,
+        &[DOWNSTREAM_POS],
+        &columns,
+    );
 }
 
 /// A release in block 0 (0-300h) arrives at 372-672h, all of it within the
@@ -1036,227 +1024,205 @@ fn hydro_inflow_rows_match_the_water_balance_inflow_side_with_travel_time() {
 /// per-block arrival density on the receiving side.
 #[test]
 fn hydro_inflow_rows_match_each_chronological_water_balance_row_with_travel_time() {
-    for emission in [Emission::Logical, Emission::Compact] {
-        let setup = build_setup_in_code_as(
-            build_system(Some(TRAVEL_TIME_HOURS), BlockMode::Chronological),
-            &config(),
-            emission,
-        );
-        let templates = &setup.inputs.stage_data.stage_templates;
-        let tpl = &templates.templates[1];
-        let geom = &templates.geometry_per_stage[1];
-        let state = setup.stage_state();
+    let setup = build_setup_in_code(
+        build_system(Some(TRAVEL_TIME_HOURS), BlockMode::Chronological),
+        &config(),
+    );
+    let templates = &setup.inputs.stage_data.stage_templates;
+    let tpl = &templates.templates[1];
+    let geom = &templates.geometry_per_stage[1];
+    let state = setup.stage_state();
 
-        let w_row_1 = geom.water_balance_row(HydroSys::new(DOWNSTREAM_POS), BlockIdx::new(1));
-        assert!(
-            matrix_entry(tpl, w_row_1, turbine_cols(geom, &[UPSTREAM_POS], 0)[0]) != 0.0,
-            "{emission:?} power guard: hydro 1's block-0 turbine column must have a nonzero \
-             entry on downstream balance row 1"
-        );
+    let w_row_1 = geom.water_balance_row(HydroSys::new(DOWNSTREAM_POS), BlockIdx::new(1));
+    assert!(
+        matrix_entry(tpl, w_row_1, turbine_cols(geom, &[UPSTREAM_POS], 0)[0]) != 0.0,
+        "power guard: hydro 1's block-0 turbine column must have a nonzero \
+         entry on downstream balance row 1"
+    );
 
-        let has_bucket_contribution = (0..geom.n_blks).any(|b| {
-            let w_row = geom.water_balance_row(HydroSys::new(DOWNSTREAM_POS), BlockIdx::new(b));
-            state
-                .transit_buckets_in
-                .clone()
-                .any(|c| matrix_entry(tpl, w_row, c) != 0.0)
-        });
-        assert!(
-            has_bucket_contribution,
-            "{emission:?} power guard: some transit_buckets_in column must be nonzero on \
-             some downstream balance row"
-        );
+    let has_bucket_contribution = (0..geom.n_blks).any(|b| {
+        let w_row = geom.water_balance_row(HydroSys::new(DOWNSTREAM_POS), BlockIdx::new(b));
+        state
+            .transit_buckets_in
+            .clone()
+            .any(|c| matrix_entry(tpl, w_row, c) != 0.0)
+    });
+    assert!(
+        has_bucket_contribution,
+        "power guard: some transit_buckets_in column must be nonzero on \
+         some downstream balance row"
+    );
 
-        let columns = inflow_columns(geom, &[UPSTREAM_POS], &[UPSTREAM_POS], &[]);
-        assert_hydro_inflow_matches_each_chronological_water_balance_row(
-            &setup,
-            emission,
-            1,
-            DOWNSTREAM_POS,
-            &[DOWNSTREAM_POS],
-            &columns,
-        );
-    }
+    let columns = inflow_columns(geom, &[UPSTREAM_POS], &[UPSTREAM_POS], &[]);
+    assert_hydro_inflow_matches_each_chronological_water_balance_row(
+        &setup,
+        1,
+        DOWNSTREAM_POS,
+        &[DOWNSTREAM_POS],
+        &columns,
+    );
 }
 
 #[test]
 fn hydro_inflow_rows_count_a_prefilling_upstream_plants_water_on_a_parallel_stage() {
-    for emission in [Emission::Logical, Emission::Compact] {
-        let setup = build_setup_in_code_as(
-            build_prefilling_system(false, Some(TRAVEL_TIME_HOURS), BlockMode::Parallel),
-            &config(),
-            emission,
-        );
-        let templates = &setup.inputs.stage_data.stage_templates;
-        let tpl = &templates.templates[1];
-        let geom = &templates.geometry_per_stage[1];
-        let w_row = geom.water_balance_row(HydroSys::new(DOWNSTREAM_POS), BlockIdx::new(0));
+    let setup = build_setup_in_code(
+        build_prefilling_system(false, Some(TRAVEL_TIME_HOURS), BlockMode::Parallel),
+        &config(),
+    );
+    let templates = &setup.inputs.stage_data.stage_templates;
+    let tpl = &templates.templates[1];
+    let geom = &templates.geometry_per_stage[1];
+    let w_row = geom.water_balance_row(HydroSys::new(DOWNSTREAM_POS), BlockIdx::new(0));
 
-        assert!(
-            sink_entry(&setup, 1, PREFILLING_UPSTREAM_A_POS, w_row) != 0.0,
-            "{emission:?} power guard: the pre-filling upstream plant's short-circuit route \
-             to hydro 2 must be live"
-        );
-        let tau_0 = matrix_entry(tpl, w_row, turbine_cols(geom, &[DOWNSTREAM_POS], 0)[0]);
-        assert!(
-            (matrix_entry(tpl, w_row, turbine_cols(geom, &[UPSTREAM_POS], 0)[0]) + tau_0).abs()
-                < 1e-9,
-            "{emission:?} power guard: the source plant's block-0 release must reach hydro 2 \
-             whole, in its own block"
-        );
+    assert!(
+        sink_entry(&setup, 1, PREFILLING_UPSTREAM_A_POS, w_row) != 0.0,
+        "power guard: the pre-filling upstream plant's short-circuit route \
+         to hydro 2 must be live"
+    );
+    let tau_0 = matrix_entry(tpl, w_row, turbine_cols(geom, &[DOWNSTREAM_POS], 0)[0]);
+    assert!(
+        (matrix_entry(tpl, w_row, turbine_cols(geom, &[UPSTREAM_POS], 0)[0]) + tau_0).abs() < 1e-9,
+        "power guard: the source plant's block-0 release must reach hydro 2 \
+         whole, in its own block"
+    );
 
-        let columns = inflow_columns(
-            geom,
-            &[PREFILLING_UPSTREAM_A_POS, UPSTREAM_POS],
-            &[PREFILLING_UPSTREAM_A_POS, UPSTREAM_POS],
-            &[DIVERSION_SOURCE_POS_NO_CHAIN],
-        );
-        assert_hydro_inflow_matches_water_balance(
-            &setup,
-            emission,
-            1,
-            DOWNSTREAM_POS,
-            &[DOWNSTREAM_POS, PREFILLING_UPSTREAM_A_POS],
-            &columns,
-        );
-    }
+    let columns = inflow_columns(
+        geom,
+        &[PREFILLING_UPSTREAM_A_POS, UPSTREAM_POS],
+        &[PREFILLING_UPSTREAM_A_POS, UPSTREAM_POS],
+        &[DIVERSION_SOURCE_POS_NO_CHAIN],
+    );
+    assert_hydro_inflow_matches_water_balance(
+        &setup,
+        1,
+        DOWNSTREAM_POS,
+        &[DOWNSTREAM_POS, PREFILLING_UPSTREAM_A_POS],
+        &columns,
+    );
 }
 
 #[test]
 fn hydro_inflow_rows_count_a_prefilling_upstream_plants_water_on_each_chronological_block() {
-    for emission in [Emission::Logical, Emission::Compact] {
-        let setup = build_setup_in_code_as(
-            build_prefilling_system(false, Some(TRAVEL_TIME_HOURS), BlockMode::Chronological),
-            &config(),
-            emission,
-        );
-        let templates = &setup.inputs.stage_data.stage_templates;
-        let tpl = &templates.templates[1];
-        let geom = &templates.geometry_per_stage[1];
-        let w_row = geom.water_balance_row(HydroSys::new(DOWNSTREAM_POS), BlockIdx::new(0));
+    let setup = build_setup_in_code(
+        build_prefilling_system(false, Some(TRAVEL_TIME_HOURS), BlockMode::Chronological),
+        &config(),
+    );
+    let templates = &setup.inputs.stage_data.stage_templates;
+    let tpl = &templates.templates[1];
+    let geom = &templates.geometry_per_stage[1];
+    let w_row = geom.water_balance_row(HydroSys::new(DOWNSTREAM_POS), BlockIdx::new(0));
 
-        assert!(
-            sink_entry(&setup, 1, PREFILLING_UPSTREAM_A_POS, w_row) != 0.0,
-            "{emission:?} power guard: the pre-filling upstream plant's short-circuit route \
-             to hydro 2 must be live"
-        );
-        let tau_0 = matrix_entry(tpl, w_row, turbine_cols(geom, &[DOWNSTREAM_POS], 0)[0]);
-        assert!(
-            (matrix_entry(tpl, w_row, turbine_cols(geom, &[UPSTREAM_POS], 0)[0]) + tau_0).abs()
-                < 1e-9,
-            "{emission:?} power guard: the source plant's block-0 release must reach hydro 2 \
-             whole, in its own block"
-        );
+    assert!(
+        sink_entry(&setup, 1, PREFILLING_UPSTREAM_A_POS, w_row) != 0.0,
+        "power guard: the pre-filling upstream plant's short-circuit route \
+         to hydro 2 must be live"
+    );
+    let tau_0 = matrix_entry(tpl, w_row, turbine_cols(geom, &[DOWNSTREAM_POS], 0)[0]);
+    assert!(
+        (matrix_entry(tpl, w_row, turbine_cols(geom, &[UPSTREAM_POS], 0)[0]) + tau_0).abs() < 1e-9,
+        "power guard: the source plant's block-0 release must reach hydro 2 \
+         whole, in its own block"
+    );
 
-        let columns = inflow_columns(
-            geom,
-            &[PREFILLING_UPSTREAM_A_POS, UPSTREAM_POS],
-            &[PREFILLING_UPSTREAM_A_POS, UPSTREAM_POS],
-            &[DIVERSION_SOURCE_POS_NO_CHAIN],
-        );
-        assert_hydro_inflow_matches_each_chronological_water_balance_row(
-            &setup,
-            emission,
-            1,
-            DOWNSTREAM_POS,
-            &[DOWNSTREAM_POS, PREFILLING_UPSTREAM_A_POS],
-            &columns,
-        );
-    }
+    let columns = inflow_columns(
+        geom,
+        &[PREFILLING_UPSTREAM_A_POS, UPSTREAM_POS],
+        &[PREFILLING_UPSTREAM_A_POS, UPSTREAM_POS],
+        &[DIVERSION_SOURCE_POS_NO_CHAIN],
+    );
+    assert_hydro_inflow_matches_each_chronological_water_balance_row(
+        &setup,
+        1,
+        DOWNSTREAM_POS,
+        &[DOWNSTREAM_POS, PREFILLING_UPSTREAM_A_POS],
+        &columns,
+    );
 }
 
 #[test]
 fn hydro_inflow_rows_count_a_two_plant_prefilling_chain_on_a_parallel_stage() {
-    for emission in [Emission::Logical, Emission::Compact] {
-        let setup = build_setup_in_code_as(
-            build_prefilling_system(true, None, BlockMode::Parallel),
-            &config(),
-            emission,
-        );
-        let templates = &setup.inputs.stage_data.stage_templates;
-        let tpl = &templates.templates[1];
-        let geom = &templates.geometry_per_stage[1];
-        let w_row = geom.water_balance_row(HydroSys::new(DOWNSTREAM_POS), BlockIdx::new(0));
+    let setup = build_setup_in_code(
+        build_prefilling_system(true, None, BlockMode::Parallel),
+        &config(),
+    );
+    let templates = &setup.inputs.stage_data.stage_templates;
+    let tpl = &templates.templates[1];
+    let geom = &templates.geometry_per_stage[1];
+    let w_row = geom.water_balance_row(HydroSys::new(DOWNSTREAM_POS), BlockIdx::new(0));
 
-        assert!(
-            sink_entry(&setup, 1, PREFILLING_UPSTREAM_A_POS, w_row) != 0.0,
-            "{emission:?} power guard: the pre-filling upstream plant's short-circuit route \
-             to hydro 2 must be live"
-        );
-        let tau_0 = matrix_entry(tpl, w_row, turbine_cols(geom, &[DOWNSTREAM_POS], 0)[0]);
-        assert!(
-            (matrix_entry(tpl, w_row, turbine_cols(geom, &[UPSTREAM_POS], 0)[0]) + tau_0).abs()
-                < 1e-9,
-            "{emission:?} power guard: the source plant's block-0 release must reach hydro 2 \
-             whole, in its own block"
-        );
+    assert!(
+        sink_entry(&setup, 1, PREFILLING_UPSTREAM_A_POS, w_row) != 0.0,
+        "power guard: the pre-filling upstream plant's short-circuit route \
+         to hydro 2 must be live"
+    );
+    let tau_0 = matrix_entry(tpl, w_row, turbine_cols(geom, &[DOWNSTREAM_POS], 0)[0]);
+    assert!(
+        (matrix_entry(tpl, w_row, turbine_cols(geom, &[UPSTREAM_POS], 0)[0]) + tau_0).abs() < 1e-9,
+        "power guard: the source plant's block-0 release must reach hydro 2 \
+         whole, in its own block"
+    );
 
-        let columns = inflow_columns(
-            geom,
-            &[
-                PREFILLING_UPSTREAM_B_POS,
-                PREFILLING_UPSTREAM_A_POS,
-                UPSTREAM_POS,
-            ],
-            &[
-                PREFILLING_UPSTREAM_B_POS,
-                PREFILLING_UPSTREAM_A_POS,
-                UPSTREAM_POS,
-            ],
-            &[DIVERSION_SOURCE_POS_CHAIN],
-        );
-        assert_hydro_inflow_matches_water_balance(
-            &setup,
-            emission,
-            1,
+    let columns = inflow_columns(
+        geom,
+        &[
+            PREFILLING_UPSTREAM_B_POS,
+            PREFILLING_UPSTREAM_A_POS,
+            UPSTREAM_POS,
+        ],
+        &[
+            PREFILLING_UPSTREAM_B_POS,
+            PREFILLING_UPSTREAM_A_POS,
+            UPSTREAM_POS,
+        ],
+        &[DIVERSION_SOURCE_POS_CHAIN],
+    );
+    assert_hydro_inflow_matches_water_balance(
+        &setup,
+        1,
+        DOWNSTREAM_POS,
+        &[
             DOWNSTREAM_POS,
-            &[
-                DOWNSTREAM_POS,
-                PREFILLING_UPSTREAM_A_POS,
-                PREFILLING_UPSTREAM_B_POS,
-            ],
-            &columns,
-        );
-    }
+            PREFILLING_UPSTREAM_A_POS,
+            PREFILLING_UPSTREAM_B_POS,
+        ],
+        &columns,
+    );
 }
 
 #[test]
 fn hydro_inflow_rows_count_an_exited_plants_maturing_transit_water_on_a_parallel_stage() {
-    for emission in [Emission::Logical, Emission::Compact] {
-        let setup = build_setup_in_code_as(build_exited_plant_system(), &config(), emission);
-        let templates = &setup.inputs.stage_data.stage_templates;
-        let tpl = &templates.templates[1];
-        let geom = &templates.geometry_per_stage[1];
-        let state = setup.stage_state();
-        let w_row = geom.water_balance_row(HydroSys::new(DOWNSTREAM_POS), BlockIdx::new(0));
+    let setup = build_setup_in_code(build_exited_plant_system(), &config());
+    let templates = &setup.inputs.stage_data.stage_templates;
+    let tpl = &templates.templates[1];
+    let geom = &templates.geometry_per_stage[1];
+    let state = setup.stage_state();
+    let w_row = geom.water_balance_row(HydroSys::new(DOWNSTREAM_POS), BlockIdx::new(0));
 
-        assert_eq!(
-            state.transit_buckets_in.len(),
-            1,
-            "{emission:?} power guard: one depth-1 arc into the exited plant gives one \
-             bucket column"
-        );
-        assert!(
-            (matrix_entry(tpl, w_row, state.transit_buckets_in.start) + 1.0).abs() < 1e-9,
-            "{emission:?} power guard: the exited plant's maturing bucket must reach hydro \
-             2's water row at -1.0"
-        );
+    assert_eq!(
+        state.transit_buckets_in.len(),
+        1,
+        "power guard: one depth-1 arc into the exited plant gives one \
+         bucket column"
+    );
+    assert!(
+        (matrix_entry(tpl, w_row, state.transit_buckets_in.start) + 1.0).abs() < 1e-9,
+        "power guard: the exited plant's maturing bucket must reach hydro \
+         2's water row at -1.0"
+    );
 
-        let columns = inflow_columns(
-            geom,
-            &[EXITED_PLANT_POS, UPSTREAM_POS],
-            &[EXITED_PLANT_POS, UPSTREAM_POS],
-            &[],
-        );
-        assert_hydro_inflow_matches_water_balance(
-            &setup,
-            emission,
-            1,
-            DOWNSTREAM_POS,
-            &[DOWNSTREAM_POS, EXITED_PLANT_POS],
-            &columns,
-        );
-    }
+    let columns = inflow_columns(
+        geom,
+        &[EXITED_PLANT_POS, UPSTREAM_POS],
+        &[EXITED_PLANT_POS, UPSTREAM_POS],
+        &[],
+    );
+    assert_hydro_inflow_matches_water_balance(
+        &setup,
+        1,
+        DOWNSTREAM_POS,
+        &[DOWNSTREAM_POS, EXITED_PLANT_POS],
+        &columns,
+    );
 }
 
 /// A travel time deeper than one stage (`DEEP_TRAVEL_TIME_HOURS`, 1.5
@@ -1264,51 +1230,47 @@ fn hydro_inflow_rows_count_an_exited_plants_maturing_transit_water_on_a_parallel
 /// `k`-weighted identity still holds over every bucket slot.
 #[test]
 fn hydro_inflow_rows_match_the_water_balance_inflow_side_with_a_two_stage_travel_time() {
-    for emission in [Emission::Logical, Emission::Compact] {
-        let setup = build_setup_in_code_as(
-            build_system(Some(DEEP_TRAVEL_TIME_HOURS), BlockMode::Parallel),
-            &config(),
-            emission,
-        );
-        let state = setup.stage_state();
-        assert_eq!(
-            state.transit_bucket_column_order.len(),
-            2,
-            "{emission:?} power guard: a travel time of 1.5 stages must widen the bucket ring \
-             to depth 2"
-        );
+    let setup = build_setup_in_code(
+        build_system(Some(DEEP_TRAVEL_TIME_HOURS), BlockMode::Parallel),
+        &config(),
+    );
+    let state = setup.stage_state();
+    assert_eq!(
+        state.transit_bucket_column_order.len(),
+        2,
+        "power guard: a travel time of 1.5 stages must widen the bucket ring \
+         to depth 2"
+    );
 
-        let templates = &setup.inputs.stage_data.stage_templates;
-        let tpl = &templates.templates[1];
-        let geom = &templates.geometry_per_stage[1];
-        let w_row = geom.water_balance_row(HydroSys::new(DOWNSTREAM_POS), BlockIdx::new(0));
-        let bucket_cols: Vec<usize> = state.transit_buckets_in.clone().collect();
-        assert_eq!(
-            bucket_cols.len(),
-            2,
-            "{emission:?} power guard: one arc at depth 2 must yield exactly 2 bucket columns"
-        );
-        assert!(
-            matrix_entry(tpl, w_row, bucket_cols[0]) != 0.0,
-            "{emission:?} power guard: the maturing (slot-0) bucket column must carry the \
-             water-balance entry, not a deeper, not-yet-mature slot"
-        );
-        assert!(
-            matrix_entry(tpl, w_row, bucket_cols[1]) == 0.0,
-            "{emission:?} power guard: the not-yet-mature (slot-1) bucket column must carry \
-             no water-balance entry"
-        );
+    let templates = &setup.inputs.stage_data.stage_templates;
+    let tpl = &templates.templates[1];
+    let geom = &templates.geometry_per_stage[1];
+    let w_row = geom.water_balance_row(HydroSys::new(DOWNSTREAM_POS), BlockIdx::new(0));
+    let bucket_cols: Vec<usize> = state.transit_buckets_in.clone().collect();
+    assert_eq!(
+        bucket_cols.len(),
+        2,
+        "power guard: one arc at depth 2 must yield exactly 2 bucket columns"
+    );
+    assert!(
+        matrix_entry(tpl, w_row, bucket_cols[0]) != 0.0,
+        "power guard: the maturing (slot-0) bucket column must carry the \
+         water-balance entry, not a deeper, not-yet-mature slot"
+    );
+    assert!(
+        matrix_entry(tpl, w_row, bucket_cols[1]) == 0.0,
+        "power guard: the not-yet-mature (slot-1) bucket column must carry \
+         no water-balance entry"
+    );
 
-        let columns = inflow_columns(geom, &[UPSTREAM_POS], &[UPSTREAM_POS], &[]);
-        assert_hydro_inflow_matches_water_balance(
-            &setup,
-            emission,
-            1,
-            DOWNSTREAM_POS,
-            &[DOWNSTREAM_POS],
-            &columns,
-        );
-    }
+    let columns = inflow_columns(geom, &[UPSTREAM_POS], &[UPSTREAM_POS], &[]);
+    assert_hydro_inflow_matches_water_balance(
+        &setup,
+        1,
+        DOWNSTREAM_POS,
+        &[DOWNSTREAM_POS],
+        &columns,
+    );
 }
 
 /// A multi-cell upstream plant (`build_two_cell_system`): each of its two
@@ -1317,34 +1279,31 @@ fn hydro_inflow_rows_match_the_water_balance_inflow_side_with_a_two_stage_travel
 /// weight is replicated onto every cell, never apportioned).
 #[test]
 fn hydro_inflow_rows_match_the_water_balance_inflow_side_with_a_two_cell_upstream_plant() {
-    for emission in [Emission::Logical, Emission::Compact] {
-        let system = build_two_cell_system(BlockMode::Parallel);
-        let cell_index = HydroCellIndex::build(system.hydros());
-        let upstream_cells: Vec<usize> = cell_index.cells_of(HydroSys::new(UPSTREAM_POS)).collect();
-        let downstream_cell = cell_index
-            .cells_of(HydroSys::new(DOWNSTREAM_POS))
-            .next()
-            .expect("power guard: the downstream plant must have a cell");
-        assert_eq!(
-            upstream_cells.len(),
-            2,
-            "{emission:?} power guard: the upstream plant must have two turbine columns per \
-             block (split across two buses)"
-        );
+    let system = build_two_cell_system(BlockMode::Parallel);
+    let cell_index = HydroCellIndex::build(system.hydros());
+    let upstream_cells: Vec<usize> = cell_index.cells_of(HydroSys::new(UPSTREAM_POS)).collect();
+    let downstream_cell = cell_index
+        .cells_of(HydroSys::new(DOWNSTREAM_POS))
+        .next()
+        .expect("power guard: the downstream plant must have a cell");
+    assert_eq!(
+        upstream_cells.len(),
+        2,
+        "power guard: the upstream plant must have two turbine columns per \
+         block (split across two buses)"
+    );
 
-        let setup = build_setup_in_code_as(system, &config(), emission);
-        let geom = &setup.inputs.stage_data.stage_templates.geometry_per_stage[1];
+    let setup = build_setup_in_code(system, &config());
+    let geom = &setup.inputs.stage_data.stage_templates.geometry_per_stage[1];
 
-        let columns = inflow_columns(geom, &upstream_cells, &[UPSTREAM_POS], &[]);
-        assert_hydro_inflow_matches_water_balance(
-            &setup,
-            emission,
-            1,
-            downstream_cell,
-            &[DOWNSTREAM_POS],
-            &columns,
-        );
-    }
+    let columns = inflow_columns(geom, &upstream_cells, &[UPSTREAM_POS], &[]);
+    assert_hydro_inflow_matches_water_balance(
+        &setup,
+        1,
+        downstream_cell,
+        &[DOWNSTREAM_POS],
+        &columns,
+    );
 }
 
 /// The generic `hydro_inflow` term counts the inflow-slack column of the plant and
@@ -1353,74 +1312,68 @@ fn hydro_inflow_rows_match_the_water_balance_inflow_side_with_a_two_cell_upstrea
 /// enters it although it sits on the water-balance row.
 #[test]
 fn hydro_inflow_counts_the_truncation_correction_only_under_truncation_methods() {
-    for emission in [Emission::Logical, Emission::Compact] {
-        for mode in [BlockMode::Parallel, BlockMode::Chronological] {
-            for method in [
-                InflowNonNegativityMethod::Penalty,
-                InflowNonNegativityMethod::Truncation,
-                InflowNonNegativityMethod::TruncationWithPenalty,
-            ] {
-                let setup = build_setup_in_code_as(
-                    build_prefilling_system(false, Some(TRAVEL_TIME_HOURS), mode),
-                    &config_with(method),
-                    emission,
-                );
-                let templates = &setup.inputs.stage_data.stage_templates;
-                let tpl = &templates.templates[1];
-                let geom = &templates.geometry_per_stage[1];
-                let mut columns = inflow_columns(
-                    geom,
-                    &[PREFILLING_UPSTREAM_A_POS, UPSTREAM_POS],
-                    &[PREFILLING_UPSTREAM_A_POS, UPSTREAM_POS],
-                    &[DIVERSION_SOURCE_POS_NO_CHAIN],
-                );
-                let slacks = [
-                    geom.inflow_slack_col(HydroSys::new(DOWNSTREAM_POS)),
-                    geom.inflow_slack_col(HydroSys::new(PREFILLING_UPSTREAM_A_POS)),
-                ];
-                if method == InflowNonNegativityMethod::Penalty {
-                    let g_row_start = generic_row_start(templates, 1);
-                    for b in 0..geom.n_blks {
-                        for &slack in &slacks {
-                            assert!(
-                                matrix_entry(tpl, g_row_start + b, slack) == 0.0,
-                                "{emission:?} {mode:?} {method:?}: the penalty slack {slack} \
-                                 stays out of hydro_inflow (block {b})"
-                            );
-                        }
+    for mode in [BlockMode::Parallel, BlockMode::Chronological] {
+        for method in [
+            InflowNonNegativityMethod::Penalty,
+            InflowNonNegativityMethod::Truncation,
+            InflowNonNegativityMethod::TruncationWithPenalty,
+        ] {
+            let setup = build_setup_in_code(
+                build_prefilling_system(false, Some(TRAVEL_TIME_HOURS), mode),
+                &config_with(method),
+            );
+            let templates = &setup.inputs.stage_data.stage_templates;
+            let tpl = &templates.templates[1];
+            let geom = &templates.geometry_per_stage[1];
+            let mut columns = inflow_columns(
+                geom,
+                &[PREFILLING_UPSTREAM_A_POS, UPSTREAM_POS],
+                &[PREFILLING_UPSTREAM_A_POS, UPSTREAM_POS],
+                &[DIVERSION_SOURCE_POS_NO_CHAIN],
+            );
+            let slacks = [
+                geom.inflow_slack_col(HydroSys::new(DOWNSTREAM_POS)),
+                geom.inflow_slack_col(HydroSys::new(PREFILLING_UPSTREAM_A_POS)),
+            ];
+            if method == InflowNonNegativityMethod::Penalty {
+                let g_row_start = generic_row_start(templates, 1);
+                for b in 0..geom.n_blks {
+                    for &slack in &slacks {
+                        assert!(
+                            matrix_entry(tpl, g_row_start + b, slack) == 0.0,
+                            "{mode:?} {method:?}: the penalty slack {slack} \
+                             stays out of hydro_inflow (block {b})"
+                        );
                     }
-                    let w_row =
-                        geom.water_balance_row(HydroSys::new(DOWNSTREAM_POS), BlockIdx::new(0));
-                    assert!(
-                        matrix_entry(tpl, w_row, slacks[0]) != 0.0,
-                        "{emission:?} {mode:?} {method:?}: the downstream slack sits on its \
-                         water-balance row"
-                    );
-                } else {
-                    columns.extend(slacks);
                 }
-                let z_plants = [DOWNSTREAM_POS, PREFILLING_UPSTREAM_A_POS];
-                match mode {
-                    BlockMode::Parallel => {
-                        assert_hydro_inflow_matches_water_balance(
-                            &setup,
-                            emission,
-                            1,
-                            DOWNSTREAM_POS,
-                            &z_plants,
-                            &columns,
-                        );
-                    }
-                    BlockMode::Chronological => {
-                        assert_hydro_inflow_matches_each_chronological_water_balance_row(
-                            &setup,
-                            emission,
-                            1,
-                            DOWNSTREAM_POS,
-                            &z_plants,
-                            &columns,
-                        );
-                    }
+                let w_row = geom.water_balance_row(HydroSys::new(DOWNSTREAM_POS), BlockIdx::new(0));
+                assert!(
+                    matrix_entry(tpl, w_row, slacks[0]) != 0.0,
+                    "{mode:?} {method:?}: the downstream slack sits on its \
+                     water-balance row"
+                );
+            } else {
+                columns.extend(slacks);
+            }
+            let z_plants = [DOWNSTREAM_POS, PREFILLING_UPSTREAM_A_POS];
+            match mode {
+                BlockMode::Parallel => {
+                    assert_hydro_inflow_matches_water_balance(
+                        &setup,
+                        1,
+                        DOWNSTREAM_POS,
+                        &z_plants,
+                        &columns,
+                    );
+                }
+                BlockMode::Chronological => {
+                    assert_hydro_inflow_matches_each_chronological_water_balance_row(
+                        &setup,
+                        1,
+                        DOWNSTREAM_POS,
+                        &z_plants,
+                        &columns,
+                    );
                 }
             }
         }

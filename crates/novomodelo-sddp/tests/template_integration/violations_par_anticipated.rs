@@ -9,7 +9,9 @@ use novomodelo_io::config::{SimulationConfig as IoSimulationConfig, SimulationSe
 use novomodelo_sddp::test_support::template_structure::{
     RingLaneKind, RowOwner, UnscaledMatrix, geometry_row_families, ring_lanes, row_owners,
 };
-use novomodelo_sddp::test_support::{constant_lead_resolution, equipment_free_geometry};
+use novomodelo_sddp::test_support::{
+    constant_lead_resolution, equipment_free_geometry, inflow_coupling_with_entries,
+};
 
 #[test]
 fn min_outflow_active_col_bounds() {
@@ -228,13 +230,10 @@ fn max_par_order_classical_unchanged() {
     );
 }
 
-/// When `max_par_order == 12`, the z-inflow definition row for hydro 0
-/// has exactly 12 nonzero lag-column entries (one per lag in 0..12).
-///
-/// The `+1.0` entry on `col_z_inflow_start + 0` is excluded from the count.
-#[allow(clippy::cast_sign_loss)]
+/// A PAR order of 12 widens the state vector by twelve lags per hydro and adds no LP
+/// column or row: the lag region has no LP address.
 #[test]
-fn max_par_order_z_inflow_row_has_twelve_lag_entries() {
+fn the_lag_region_of_a_twelve_lag_state_adds_no_lp_column_or_row() {
     use novomodelo_core::scenario::{AnnualComponent, InflowModel};
 
     let ar_coeffs: Vec<f64> = vec![0.3, 0.2];
@@ -290,33 +289,30 @@ fn max_par_order_z_inflow_row_has_twelve_lag_entries() {
         "precondition: the PAR order must be 12, so n_state == N*(1+12)"
     );
 
-    let row_z_inflow_h0 = 0_usize; // z_inflow rows start at 0
-
-    // z_inflow column for hydro 0: col_z_inflow_start = N*(1+L) = 2*13 = 26.
-    let col_z_inflow_h0 = n_h * (1 + l); // = 26
-    let mut lag_entry_count = 0usize;
-    for col in 0..t.num_cols {
-        let start = t.col_starts[col] as usize;
-        let end = t.col_starts[col + 1] as usize;
-        for pos in start..end {
-            if t.row_indices[pos] as usize == row_z_inflow_h0 && col != col_z_inflow_h0 {
-                lag_entry_count += 1;
-            }
-        }
-    }
+    let lag_free = build_stage_templates_resolving_layout(
+        &system,
+        no_penalty_config(),
+        &PrecomputedPar::default(),
+        &PrecomputedNormal::default(),
+        &default_production(&system),
+        &default_evaporation(&system),
+        &ResolvedParameters::default(),
+    )
+    .expect("build_stage_templates_resolving_layout ok");
+    let b = &lag_free.templates[0];
 
     assert_eq!(
-        lag_entry_count, 12,
-        "z-inflow definition row for hydro 0 must have exactly 12 lag-column entries \
-         when max_par_order == 12, got {lag_entry_count}"
+        (t.num_cols, t.num_rows),
+        (b.num_cols, b.num_rows),
+        "twelve lags per hydro must add no LP column or row"
     );
 }
 
 /// Regression guard: [`PatchBuffer`] must never grow to include generic-constraint rows.
 ///
-/// The only row categories `PatchBuffer` mutates at solve time are AR dynamics /
-/// noise, load-balance, and z-inflow definition; incoming state is pinned via
-/// column bounds, not patched rows. Generic-constraint coefficients are immutable
+/// The only row categories `PatchBuffer` mutates at solve time are load-balance and
+/// the rows the inflow coupling touches; incoming state is pinned via column
+/// bounds, not patched rows. Generic-constraint coefficients are immutable
 /// after construction.
 #[test]
 #[allow(clippy::cast_precision_loss)] // fixture values are small integers; no precision is lost
@@ -345,7 +341,14 @@ fn parameter_coefficient_persists_across_stage_template_uses() {
     );
 
     let capacity_formula = m * b_max + n;
-    let mut buf = PatchBuffer::new(&state, &load_bus_indices, &geometry_per_stage, &[]);
+    let coupling =
+        inflow_coupling_with_entries(n, &(0..n).map(|h| (h, 300 + h)).collect::<Vec<_>>());
+    let mut buf = PatchBuffer::new(
+        &state,
+        &load_bus_indices,
+        &geometry_per_stage,
+        std::slice::from_ref(&coupling),
+    );
 
     assert_eq!(
         buf.indices.len(),
@@ -370,8 +373,8 @@ fn parameter_coefficient_persists_across_stage_template_uses() {
         &[],
     );
 
-    let z_inflow_rhs: Vec<f64> = (0..n).map(|h| 80.0 + h as f64).collect();
-    buf.fill_z_inflow_patches(&state, &z_inflow_rhs, &[]);
+    let z_hat: Vec<f64> = (0..n).map(|h| 80.0 + h as f64).collect();
+    buf.fill_inflow_shift_patches(&coupling, &z_hat, &[]);
 
     // The count uses b_active, not B_max: any generic-constraint patching would push
     // it past the M*B_max + N capacity into an out-of-bounds write.
@@ -998,8 +1001,7 @@ fn test_anticipated_state_columns_unconstrained() {
 /// One anticipated thermal with K=2, n_stages=4: the incoming state is
 /// pinned by column bounds, so no row pins it — the decision column's one
 /// structural entry is its own deposit row in the delivery ring, never a
-/// row addressing `commit_in`/`storage_in`/`transit_buckets_in`/
-/// `inflow_lags` by equality.
+/// row addressing `commit_in`/`storage_in`/`transit_buckets_in` by equality.
 #[test]
 fn test_anticipated_decision_write_to_state_out_def_row() {
     let system = one_anticipated_thermal_system(4, 2, 0.0, 100.0);
@@ -1021,17 +1023,16 @@ fn test_anticipated_decision_write_to_state_out_def_row() {
     let state = StateSpace::new(0, 0, Vec::new(), lead_stages, resolution, &[]);
     let geom = &result.geometry_per_stage[0];
     let matrix = UnscaledMatrix::of(t);
-    let owners = row_owners(&system, geom, &state);
+    let owners = row_owners(&system, geom);
 
-    for (family, rows) in geometry_row_families(geom, &state) {
+    for (family, rows) in geometry_row_families(geom) {
         for row in rows {
             let entries = matrix.row(row);
             if entries.len() == 1 {
                 let (col, _) = entries[0];
                 let pinned = state.commit_in.contains(&col)
                     || state.storage_in.contains(&col)
-                    || state.transit_buckets_in.contains(&col)
-                    || state.inflow_lags.contains(&col);
+                    || state.transit_buckets_in.contains(&col);
                 assert!(
                     !(pinned && t.row_lower[row] == t.row_upper[row]),
                     "stage 0, active plant K=2: {family} row {row}: incoming \
@@ -1083,8 +1084,8 @@ fn test_anticipated_decision_write_to_state_out_def_row() {
 /// At an inactive stage (K=2, n_stages=4, stage 3: 3+2=5 > 4) the incoming
 /// state is pinned by column bounds, so no row pins it: the
 /// anticipated-decision column has no entry on any row addressing
-/// `commit_in`/`storage_in`/`transit_buckets_in`/`inflow_lags`, nor on any
-/// row outside its own bus's load-balance rows.
+/// `commit_in`/`storage_in`/`transit_buckets_in`, nor on any row outside its
+/// own bus's load-balance rows.
 #[test]
 fn test_anticipated_decision_inactive_no_state_write() {
     let system = one_anticipated_thermal_system(4, 2, 0.0, 100.0);
@@ -1106,17 +1107,16 @@ fn test_anticipated_decision_inactive_no_state_write() {
     let state = StateSpace::new(0, 0, Vec::new(), lead_stages, resolution, &[]);
     let geom = &result.geometry_per_stage[3];
     let matrix = UnscaledMatrix::of(t);
-    let owners = row_owners(&system, geom, &state);
+    let owners = row_owners(&system, geom);
 
-    for (family, rows) in geometry_row_families(geom, &state) {
+    for (family, rows) in geometry_row_families(geom) {
         for row in rows {
             let entries = matrix.row(row);
             if entries.len() == 1 {
                 let (col, _) = entries[0];
                 let pinned = state.commit_in.contains(&col)
                     || state.storage_in.contains(&col)
-                    || state.transit_buckets_in.contains(&col)
-                    || state.inflow_lags.contains(&col);
+                    || state.transit_buckets_in.contains(&col);
                 assert!(
                     !(pinned && t.row_lower[row] == t.row_upper[row]),
                     "stage 3, inactive plant K=2: {family} row {row}: incoming \
@@ -1196,9 +1196,9 @@ fn test_anticipated_thermals_lp_roundtrip_k1() {
     .expect("K=1 build ok");
 
     let col_ant_state = rt_col_ant_state_incoming_start(k); // fishing couples the INCOMING slot
-    let col_ant_dec = rt_col_ant_dec_start(k); // 13
-    let col_thermal = rt_col_thermal_start(k); // 11
-    let row_fish_start = rt_row_ant_fishing_start(k); // 12
+    let col_ant_dec = rt_col_ant_dec_start(k);
+    let col_thermal = rt_col_thermal_start(k);
+    let row_fish_start = rt_row_ant_fishing_start(k);
 
     // ── n_state ─────────────────────────────────────────────────────
     for t in 0..n_stages {
@@ -1361,9 +1361,9 @@ fn test_anticipated_thermals_lp_roundtrip_k2() {
     .expect("K=2 build ok");
 
     let col_ant_state = rt_col_ant_state_incoming_start(k); // fishing couples the INCOMING slot
-    let col_ant_dec = rt_col_ant_dec_start(k); // 14
-    let col_thermal = rt_col_thermal_start(k); // 12
-    let row_fish_start = rt_row_ant_fishing_start(k); // 12
+    let col_ant_dec = rt_col_ant_dec_start(k);
+    let col_thermal = rt_col_thermal_start(k);
+    let row_fish_start = rt_row_ant_fishing_start(k);
 
     // ── n_state ─────────────────────────────────────────────────────
     for t in 0..n_stages {
@@ -1549,9 +1549,9 @@ fn test_anticipated_thermals_lp_roundtrip_k3() {
     .expect("K=3 build ok");
 
     let col_ant_state = rt_col_ant_state_incoming_start(k); // fishing couples the INCOMING slot
-    let col_ant_dec = rt_col_ant_dec_start(k); // 15
-    let col_thermal = rt_col_thermal_start(k); // 13
-    let row_fish_start = rt_row_ant_fishing_start(k); // 12 (K-independent)
+    let col_ant_dec = rt_col_ant_dec_start(k);
+    let col_thermal = rt_col_thermal_start(k);
+    let row_fish_start = rt_row_ant_fishing_start(k);
 
     // ── n_state ─────────────────────────────────────────────────────
     for t in 0..n_stages {
@@ -1808,15 +1808,15 @@ fn test_anticipated_thermals_lp_roundtrip_k0_baseline_parity() {
         result_baseline.templates[0].n_state, 1,
         "K=0 baseline: n_state must be 1 (no anticipated state)"
     );
-    // num_cols = 26: the anticipated geometry's 28+K drops both K-only columns
+    // num_cols = 25: the anticipated geometry's 27+K drops both K-only columns
     // (1 commitment-hold slot + 1 anticipated_decision) when K=0.
     assert_eq!(
-        result_baseline.templates[0].num_cols, 26,
-        "K=0 baseline: num_cols must be 26 (no anticipated state or decision columns)"
+        result_baseline.templates[0].num_cols, 25,
+        "K=0 baseline: num_cols must be 25 (no anticipated state or decision columns)"
     );
     assert_eq!(
-        result_baseline.templates[0].num_rows, 12,
-        "K=0 baseline: num_rows must be 12 (no rows pin incoming state)"
+        result_baseline.templates[0].num_rows, 11,
+        "K=0 baseline: num_rows must be 11 (no rows pin incoming state)"
     );
 }
 
@@ -1843,7 +1843,7 @@ fn test_anticipated_thermals_lp_roundtrip_k2_with_discount_rate() {
     )
     .expect("K=2 discount build ok");
 
-    let col_ant_dec = rt_col_ant_dec_start(k); // 14
+    let col_ant_dec = rt_col_ant_dec_start(k);
 
     // cumulative_discount_factors[delivery=2], computed from 31-day stages.
     let dt_days = 31.0_f64;

@@ -7,17 +7,18 @@
 use std::ops::Range;
 
 use novomodelo_core::WorkerPhaseTimings;
+use novomodelo_io::config::BackwardScheduler;
 use novomodelo_solver::{Basis, BasisStatus, ProfiledSolver, SolverInterface, SolverStatistics};
 
 use crate::SddpError;
 use crate::SddpError::Validation;
-use crate::backward::{OpeningOutcome, StagedCut};
+use crate::backward::StagedCut;
 use crate::context::{StageContext, TrainingContext};
 use crate::cut::chain_rule::{AggregateScratch, ChainRuleScratch, ChildOpenings, OpeningDuals};
 use crate::dcs::DcsSolveScratch;
-use crate::indexer::{ChainRuleSlots, CutStateProjection};
+use crate::indexer::CutStateProjection;
 use crate::lp::builder::{PatchBuffer, StageGeometry};
-use crate::risk_measure::{BackwardOutcome, RiskMeasureScratch};
+use crate::risk_measure::RiskMeasureScratch;
 use crate::setup::{NodeId, NodePos};
 use crate::solve::partition;
 use crate::solver_stats::SolverStatsDelta;
@@ -335,7 +336,7 @@ impl CapturedBasis {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct WorkspaceSizing {
     /// Maximum openings across all successor stages; pre-sizes
-    /// `BackwardAccumulators::outcomes`.
+    /// `BackwardAccumulators::successor_aggregate`.
     pub max_openings: usize,
     /// Initial cut pool capacity; pre-sizes
     /// `BackwardAccumulators::slot_increments`.
@@ -374,8 +375,6 @@ pub enum NoisePreallocation {
 /// the binding count reads the switch.
 #[derive(Default)]
 pub(crate) struct BackwardAccumulators {
-    /// Per-opening backward outcomes, grown to the maximum `n_openings` seen.
-    pub(crate) outcomes: Vec<BackwardOutcome>,
     /// Per-slot binding count over the node's successor pool regions, concatenated
     /// per child (`SuccessorChild::metadata_offset + slot`), so a fan's distinct
     /// sibling pools never collide on a shared slot index. Filled only while
@@ -428,15 +427,6 @@ pub(crate) struct BackwardAccumulators {
     /// Per-worker staging buffer for cuts produced within one stage; drained at
     /// the rayon closure boundary so ownership can cross the closure return.
     pub(crate) staged_cuts_buf: Vec<StagedCut>,
-    /// Per-worker by-node scheduler out-buffer (`process_stage_backward_by_node`'s
-    /// claim loop). Starts empty — zero footprint under the default `ByScenario`
-    /// scheduler, which never touches it. The outer `Vec` grows once, per worker,
-    /// to a stage's claimed-unit high-water mark (indexed by a per-stage count,
-    /// never `clear`ed/`drain`ed); each slot's `coefficients` resizes to the
-    /// CURRENT stage's `cut_n_state` before every write, so capacity — not
-    /// length — is the no-reallocation invariant once every `cut_n_state` value
-    /// in the run has been visited (trivially within iteration 1).
-    pub(crate) opening_outcomes_buf: Vec<OpeningOutcome>,
     /// Scratch for `CVaR` weight computation; the internal `Vec`s grow to
     /// `n_openings` on the first `CVaR` call. Never accessed under
     /// `RiskMeasure::Expectation`.
@@ -457,10 +447,10 @@ pub(crate) struct BackwardAccumulators {
     pub(crate) coupled_duals_buf: Vec<f64>,
     /// Per-opening chain-rule accumulators, shaped by the layout's (N, L).
     pub(crate) chain_scratch: ChainRuleScratch,
-    /// Folded openings this worker solved, read by the aggregate-first cut.
-    pub(crate) folded_records: OpeningRecords,
+    /// Openings this worker solved, read by the aggregate-first cut.
+    pub(crate) opening_records: OpeningRecords,
     /// Reusable state of one aggregate-first call.
-    pub(crate) folded_aggregate: FoldedAggregateScratch,
+    pub(crate) successor_aggregate: SuccessorAggregateScratch,
 }
 
 impl BackwardAccumulators {
@@ -474,17 +464,9 @@ impl BackwardAccumulators {
         n_hydros: usize,
         lag_depth: usize,
     ) -> Self {
-        let outcomes = (0..max_openings)
-            .map(|_| BackwardOutcome {
-                intercept: 0.0,
-                coefficients: vec![0.0_f64; n_state],
-                objective_value: 0.0,
-            })
-            .collect();
         let mut dcs_solve = DcsSolveScratch::default();
         dcs_solve.reserve(n_state, initial_pool_capacity);
         Self {
-            outcomes,
             slot_increments: vec![0u64; initial_pool_capacity],
             agg_coefficients: vec![0.0_f64; n_state],
             agg_arena: Vec::new(),
@@ -496,7 +478,6 @@ impl BackwardAccumulators {
             cut_dual_slots: Vec::new(),
             external_noise_buf: Vec::new(),
             staged_cuts_buf: Vec::new(),
-            opening_outcomes_buf: Vec::new(),
             risk_scratch: RiskMeasureScratch::new(),
             dcs_solve,
             dcs_initial_resident: Vec::with_capacity(initial_pool_capacity),
@@ -504,27 +485,15 @@ impl BackwardAccumulators {
             stats_after_buf: SolverStatistics::default(),
             coupled_duals_buf: vec![0.0; n_hydros],
             chain_scratch: ChainRuleScratch::new(n_hydros, lag_depth),
-            folded_records: OpeningRecords::default(),
-            folded_aggregate: FoldedAggregateScratch::new(n_hydros, lag_depth, max_openings),
+            opening_records: OpeningRecords::default(),
+            successor_aggregate: SuccessorAggregateScratch::new(n_hydros, lag_depth, max_openings),
         }
-    }
-
-    /// Appends the opening just solved at `outcomes[omega]` to
-    /// [`Self::folded_records`] under `(trial_pos, omega)`.
-    pub(crate) fn record_folded_opening(&mut self, trial_pos: usize, omega: usize) {
-        self.folded_records.push(
-            (trial_pos, omega),
-            self.outcomes[omega].objective_value,
-            &self.state_duals_buf,
-            &self.coupled_duals_buf,
-            &self.cut_dual_slots,
-        );
     }
 }
 
 /// Grows `buf` to `target` capacity, growth-only: `additional` is computed from
 /// `len()`, which `Vec::reserve` counts from.
-fn reserve_to<T>(buf: &mut Vec<T>, target: usize) {
+pub(crate) fn reserve_to<T>(buf: &mut Vec<T>, target: usize) {
     if buf.capacity() < target {
         buf.reserve(target - buf.len());
     }
@@ -537,7 +506,7 @@ pub(crate) fn recycle<T, U>(mut v: Vec<T>) -> Vec<U> {
     v.into_iter().map(|_| unreachable!("cleared")).collect()
 }
 
-/// Packed folded openings of one worker. A record holds its `(trial position, ω)` key,
+/// Packed openings of one worker. A record holds its `(trial position, ω)` key,
 /// Q, `state_len` lag-free state duals, N coupled duals and a range of the shared
 /// zero-free `(slot, y)` pair buffer.
 ///
@@ -643,26 +612,24 @@ impl OpeningRecords {
 }
 
 /// Reusable state of one aggregate-first cut: the kernel scratch, the flattened
-/// opening costs, the per-child slot pairs, and the view vectors recycled across
-/// lifetimes so the call allocates nothing after its first use.
-pub(crate) struct FoldedAggregateScratch {
+/// opening costs, and the view vectors recycled across lifetimes so the call
+/// allocates nothing after its first use.
+pub(crate) struct SuccessorAggregateScratch {
     pub(crate) aggregate: AggregateScratch,
     pub(crate) costs: Vec<f64>,
-    pub(crate) slots: Vec<ChainRuleSlots>,
     pub(crate) views: Vec<OpeningDuals<'static>>,
     pub(crate) children: Vec<ChildOpenings<'static>>,
     /// Record index of each canonical ω within one by-scenario unit.
     pub(crate) location: Vec<usize>,
 }
 
-impl FoldedAggregateScratch {
+impl SuccessorAggregateScratch {
     /// Scratch for a layout of `n_hydros` and `lag_depth`, holding up to `max_openings`
     /// openings per call.
     pub(crate) fn new(n_hydros: usize, lag_depth: usize, max_openings: usize) -> Self {
         Self {
             aggregate: AggregateScratch::new(n_hydros, lag_depth),
             costs: Vec::with_capacity(max_openings),
-            slots: Vec::with_capacity(max_openings),
             views: Vec::with_capacity(max_openings),
             children: Vec::with_capacity(max_openings),
             location: Vec::with_capacity(max_openings),
@@ -676,7 +643,7 @@ impl FoldedAggregateScratch {
     }
 }
 
-impl Default for FoldedAggregateScratch {
+impl Default for SuccessorAggregateScratch {
     fn default() -> Self {
         Self::new(0, 0, 0)
     }
@@ -698,25 +665,32 @@ pub(crate) fn record_dims(layouts: &[CutStateProjection]) -> (usize, usize) {
 // ByNodeScratch
 // ---------------------------------------------------------------------------
 
-/// How the by-node scheduler stores an opening's outcome until
-/// `by_node_finish` aggregates it.
-#[derive(Clone, Copy, Debug)]
-pub(crate) enum ByNodeOutcomeShape {
-    /// A dense `(m, ω)` arena of `n_state`-length per-opening cuts.
-    Dense { n_state: usize },
-    /// The workers' packed [`OpeningRecords`], located by a `(m, ω)` table.
-    Folded {
-        n_state: usize,
-        n_hydros: usize,
-        lag_depth: usize,
-    },
+/// What one chunk of `by_node_finish`'s position loop reuses across its positions.
+pub(crate) struct ByNodeFinishScratch {
+    /// Aggregate-first scratch of `aggregate_successor_cut`.
+    pub(crate) aggregate: SuccessorAggregateScratch,
+    /// `CVaR` weight-computation scratch.
+    pub(crate) risk_scratch: RiskMeasureScratch,
+    /// Aggregated cut coefficients; starts at `n_state` length, resized (within reserved
+    /// capacity) to each stage's `cut_n_state`.
+    pub(crate) coeffs_buf: Vec<f64>,
+}
+
+impl ByNodeFinishScratch {
+    fn sized(n_state: usize, n_hydros: usize, lag_depth: usize, bwd_max_openings: usize) -> Self {
+        Self {
+            aggregate: SuccessorAggregateScratch::new(n_hydros, lag_depth, bwd_max_openings),
+            risk_scratch: RiskMeasureScratch::new(),
+            coeffs_buf: vec![0.0_f64; n_state],
+        }
+    }
 }
 
 /// Rank-level pre-allocated scratch for the by-node scheduler
 /// (`training.parallelism.backward_scheduler`), held on `BackwardPassState`
 /// and reused across every backward stage for the lifetime of a training run.
 ///
-/// Empty (`arena` and `location` capacity `0`) unless `ByNode` could be the
+/// Empty (`location` capacity `0`) unless `ByNode` could be the
 /// scheduler a run actually dispatches to: sized by
 /// `BackwardPassState::resize_by_node_scratch` (called from `set_scheduler`)
 /// whenever the configured scheduler is literally `ByNode`. Untouched by the
@@ -726,33 +700,16 @@ pub(crate) enum ByNodeOutcomeShape {
 /// scheduler is warm-start-only").
 #[derive(Default)]
 pub(crate) struct ByNodeScratch {
-    /// Per-`(m, ω)` outcome arena of the [`ByNodeOutcomeShape::Dense`] shape,
-    /// addressed `arena[m * n_openings + omega]` for
-    /// the CURRENT stage's `n_openings` — a prefix of the full
-    /// `max_local_fwd * bwd_max_openings`-outcome allocation; a stage with fewer
-    /// openings than the run's max simply uses less of it. Mirrors
-    /// `BackwardAccumulators::agg_arena`'s grow-once/overwrite-before-read
-    /// discipline: every `(m, ω)` in the active region is written by
-    /// `by_node_finish`'s scatter before the aggregation loop reads it, so no clear
-    /// pass is required between stages. Each entry's `coefficients` starts at
-    /// `n_state` length but is resized (never reallocated — capacity is the
-    /// invariant) to the CURRENT stage's `cut_n_state` during that scatter, a
-    /// stage whose successor disables a state group projecting to fewer slots.
-    pub(crate) arena: Vec<BackwardOutcome>,
-    /// `(worker, record)` of each `(m, ω)` under the [`ByNodeOutcomeShape::Folded`]
-    /// shape, addressed like [`Self::arena`].
+    /// `(worker, record)` of each `(m, ω)`, addressed `location[m * n_openings + omega]`
+    /// for the CURRENT stage's `n_openings`.
     pub(crate) location: Vec<(usize, usize)>,
-    /// Aggregate-first scratch of `aggregate_folded_cut` under the `Folded` shape.
-    pub(crate) aggregate: FoldedAggregateScratch,
     /// Outcome count each worker recorded in the stage, in worker order.
     pub(crate) worker_counts: Vec<usize>,
-    /// `CVaR` weight-computation scratch for `by_node_finish`'s per-trial-point
-    /// aggregation loop.
-    pub(crate) risk_scratch: RiskMeasureScratch,
-    /// Aggregated cut coefficients buffer for `by_node_finish`'s per-trial-point
-    /// aggregation loop; starts at `n_state` length, resized (within reserved
-    /// capacity) to each stage's `cut_n_state` — see [`Self::arena`].
-    pub(crate) coeffs_buf: Vec<f64>,
+    /// Each worker's [`OpeningRecords`] as `by_node_finish` borrows them, recycled across
+    /// lifetimes, so its parallel loop captures no `SolverWorkspace`.
+    pub(crate) worker_records: Vec<&'static OpeningRecords>,
+    /// One scratch per chunk of `by_node_finish`'s position loop, `n_workers.max(1)` entries.
+    pub(crate) finish: Vec<ByNodeFinishScratch>,
     /// The stage's aggregated cuts, one `cut_n_state` row and one intercept per
     /// routed position, held until `by_node_finish` commits them: the aggregation
     /// reads the successor pools, which the commit mutates.
@@ -794,10 +751,9 @@ pub(crate) struct ByNodeScratch {
 }
 
 impl ByNodeScratch {
-    /// Allocate the outcome storage and aggregation scratch for `ByNode`: under
-    /// `Dense`, `arena` holds `max_local_fwd * bwd_max_openings` outcomes, each with
-    /// an `n_state`-length coefficient vector; under `Folded`, no arena, and
-    /// `location` is reserved for as many entries. `block_pivots` and
+    /// Allocate the record-location table and aggregation scratch for `ByNode`:
+    /// `location` is reserved for `max_local_fwd * bwd_max_openings` entries.
+    /// `block_pivots` and
     /// `block_pivots_prev` each hold `row_axis_len * bwd_max_openings`
     /// accumulator cells, `row_axis_len` an upper bound on the GENERATING
     /// node count (see [`Self::block_pivots`] — never a stage count, though
@@ -808,51 +764,34 @@ impl ByNodeScratch {
     pub(crate) fn sized(
         max_local_fwd: usize,
         bwd_max_openings: usize,
-        shape: ByNodeOutcomeShape,
+        n_state: usize,
+        n_hydros: usize,
+        lag_depth: usize,
         row_axis_len: usize,
         n_workers: usize,
     ) -> Self {
         let outcomes = max_local_fwd * bwd_max_openings;
-        let (n_state, arena, location, aggregate) = match shape {
-            ByNodeOutcomeShape::Dense { n_state } => {
-                let arena = (0..outcomes)
-                    .map(|_| BackwardOutcome {
-                        intercept: 0.0,
-                        coefficients: vec![0.0_f64; n_state],
-                        objective_value: 0.0,
-                    })
-                    .collect();
-                (
-                    n_state,
-                    arena,
-                    Vec::new(),
-                    FoldedAggregateScratch::default(),
-                )
-            }
-            ByNodeOutcomeShape::Folded {
-                n_state,
-                n_hydros,
-                lag_depth,
-            } => (
-                n_state,
-                Vec::new(),
-                Vec::with_capacity(outcomes),
-                FoldedAggregateScratch::new(n_hydros, lag_depth, bwd_max_openings),
-            ),
-        };
         Self {
-            arena,
-            location,
-            aggregate,
+            location: Vec::with_capacity(outcomes),
             worker_counts: Vec::with_capacity(n_workers),
-            risk_scratch: RiskMeasureScratch::new(),
-            coeffs_buf: vec![0.0_f64; n_state],
+            worker_records: Vec::with_capacity(n_workers),
+            finish: (0..n_workers.max(1))
+                .map(|_| ByNodeFinishScratch::sized(n_state, n_hydros, lag_depth, bwd_max_openings))
+                .collect(),
             cut_arena: vec![0.0_f64; max_local_fwd * n_state],
             cut_intercepts: vec![0.0_f64; max_local_fwd],
             block_pivots: vec![(0u64, 0u64); row_axis_len * bwd_max_openings],
             block_pivots_prev: vec![(0u64, 0u64); row_axis_len * bwd_max_openings],
             n_blocks_max: bwd_max_openings,
             block_order: vec![0u32; bwd_max_openings],
+        }
+    }
+
+    /// Grows every finish entry's aggregate scratch to `pool_capacity` pool slots and
+    /// `pair_hint` pairs, never shrinking.
+    pub(crate) fn reserve_aggregate(&mut self, pool_capacity: usize, pair_hint: usize) {
+        for finish in &mut self.finish {
+            finish.aggregate.reserve(pool_capacity, pair_hint);
         }
     }
 
@@ -875,7 +814,6 @@ impl ByNodeScratch {
 /// through [`ScratchBuffers::new`] rather than construct or mutate one field-by-field.
 #[allow(clippy::struct_field_names)]
 pub struct ScratchBuffers {
-    pub(crate) inflow_m3s_buf: Vec<f64>,
     pub(crate) incoming_lags_buf: Vec<f64>,
     pub(crate) realized_inflow_buf: Vec<f64>,
     /// p, the PAR conditional mean at the pinned lags, per hydro.
@@ -919,7 +857,7 @@ pub struct ScratchBuffers {
     // directly because extraction indexes by active-local column.
     pub(crate) ncs_col_upper_extract_buf: Vec<f64>,
     /// Per-hydro inflow-slack bounds in physical m³/s, written by
-    /// `transform_inflow_noise` under the truncation methods; the patch divides
+    /// `realize_inflow` under the truncation methods; the patch divides
     /// them by `col_scale` into the `_scaled` buffers.
     pub(crate) inflow_slack_lower_buf: Vec<f64>,
     pub(crate) inflow_slack_upper_buf: Vec<f64>,
@@ -932,7 +870,6 @@ pub struct ScratchBuffers {
     pub(crate) last_inflow_slack_col_start: usize,
     pub(crate) load_rhs_buf: Vec<f64>,
     pub(crate) row_lower_buf: Vec<f64>,
-    pub(crate) z_inflow_rhs_buf: Vec<f64>,
     pub(crate) unscaled_primal: Vec<f64>,
     pub(crate) unscaled_dual: Vec<f64>,
     pub(crate) lag_accumulator: Vec<f64>,
@@ -1079,7 +1016,6 @@ impl ScratchBuffers {
             NoisePreallocation::OnDemand => 0,
         };
         Self {
-            inflow_m3s_buf: Vec::with_capacity(hydro_count),
             incoming_lags_buf: Vec::with_capacity(max_par_order * hydro_count),
             realized_inflow_buf: Vec::with_capacity(hydro_count),
             par_mean_buf: vec![0.0; hydro_count],
@@ -1104,7 +1040,6 @@ impl ScratchBuffers {
             last_inflow_slack_col_start: usize::MAX,
             load_rhs_buf: Vec::with_capacity(load_row_capacity),
             row_lower_buf: Vec::new(),
-            z_inflow_rhs_buf: Vec::with_capacity(hydro_count),
             unscaled_primal: Vec::new(),
             unscaled_dual: Vec::new(),
             lag_accumulator: vec![0.0_f64; hydro_count],
@@ -1267,7 +1202,7 @@ impl<S: SolverInterface> WorkspacePool<S> {
         for ws in &mut self.workspaces {
             ws.backward_accum.dcs_solve.reserve(n_state, pool_capacity);
             ws.backward_accum
-                .folded_aggregate
+                .successor_aggregate
                 .reserve(pool_capacity, pair_hint);
             reserve_to(&mut ws.scratch.cut_slots_buf, pool_capacity);
             reserve_to(&mut ws.scratch.cut_bracket_buf, pool_capacity);
@@ -1286,7 +1221,7 @@ impl<S: SolverInterface> WorkspacePool<S> {
     ) {
         for ws in &mut self.workspaces {
             let n_hydros = ws.backward_accum.coupled_duals_buf.len();
-            ws.backward_accum.folded_records.reserve(
+            ws.backward_accum.opening_records.reserve(
                 records,
                 state_len,
                 n_hydros,
@@ -1314,14 +1249,15 @@ impl<S: SolverInterface> WorkspacePool<S> {
     }
 
     /// Reserves everything a backward sweep of `sizing`'s shape pushes into: the
-    /// pool-sized scratch through [`Self::reserve_pool_scratch`], the by-node record
-    /// bound, `max_local_fwd * max_openings`, which covers the by-scenario one, and
-    /// each worker's per-opening dual buffers. Once, at construction.
+    /// pool-sized scratch through [`Self::reserve_pool_scratch`], the opening records
+    /// of every trial point `scheduler` keeps a worker holding, and each worker's
+    /// per-opening dual buffers. Once, at construction.
     pub(crate) fn reserve_backward_scratch(
         &mut self,
         training_ctx: &TrainingContext<'_>,
         sizing: WorkspaceSizing,
         pool_capacity: usize,
+        scheduler: &BackwardScheduler,
     ) {
         let (state_len, bound) = record_dims(training_ctx.cut_state_layouts);
         let max_slots = training_ctx
@@ -1331,7 +1267,11 @@ impl<S: SolverInterface> WorkspacePool<S> {
             .max()
             .unwrap_or(0);
         self.reserve_pool_scratch(training_ctx, sizing, pool_capacity);
-        self.reserve_opening_records(sizing.max_local_fwd * sizing.max_openings, state_len, bound);
+        let trial_points_held = match scheduler {
+            BackwardScheduler::ByScenario {} => sizing.max_local_fwd.min(1),
+            BackwardScheduler::ByNode { .. } => sizing.max_local_fwd,
+        };
+        self.reserve_opening_records(trial_points_held * sizing.max_openings, state_len, bound);
         for ws in &mut self.workspaces {
             reserve_to(&mut ws.backward_accum.state_duals_buf, max_slots);
             reserve_to(&mut ws.backward_accum.cut_dual_slots, bound);
@@ -1535,7 +1475,6 @@ impl ScratchBuffers {
     #[must_use]
     pub(crate) fn for_test(hydro_count: usize) -> Self {
         Self {
-            inflow_m3s_buf: Vec::with_capacity(hydro_count),
             incoming_lags_buf: Vec::new(),
             realized_inflow_buf: Vec::with_capacity(hydro_count),
             par_mean_buf: vec![0.0; hydro_count],
@@ -1559,7 +1498,6 @@ impl ScratchBuffers {
             last_inflow_slack_col_start: usize::MAX,
             load_rhs_buf: Vec::new(),
             row_lower_buf: Vec::new(),
-            z_inflow_rhs_buf: Vec::with_capacity(hydro_count),
             unscaled_primal: Vec::new(),
             unscaled_dual: Vec::new(),
             lag_accumulator: Vec::new(),
@@ -1582,15 +1520,15 @@ mod tests {
     #[cfg(feature = "highs")]
     use super::PatchBuffer;
     use super::{
-        BasisStore, BasisStoreSliceMut, ByNodeOutcomeShape, ByNodeScratch, CapturedBasis, NodeId,
-        NodePos, OpeningRecords, ScratchBuffers, SolverWorkspace, WorkspacePool, WorkspaceSizing,
-        recycle,
+        BasisStore, BasisStoreSliceMut, ByNodeScratch, CapturedBasis, NodeId, NodePos,
+        OpeningRecords, ScratchBuffers, SolverWorkspace, WorkspacePool, WorkspaceSizing, recycle,
     };
     use crate::context::StageContext;
     use crate::lead_time::AnticipatedResolution;
     use crate::lp::indexer::StateSpace;
     use crate::solve::partition;
     use crate::test_support::{TrainingContextFixture, inflow_coupling_with_entries, state_layout};
+    use novomodelo_io::config::BackwardScheduler;
     use novomodelo_solver::{
         Basis, BasisStatus, SolutionView, SolverError, SolverInterface, SolverStatistics,
         types::{RowBatch, StageTemplate},
@@ -1679,14 +1617,19 @@ mod tests {
 
     #[test]
     fn test_workspace_buffer_dimensions() {
-        // N=3, L=2, M=0, B=0 → patch_buf length = M*B + N = 0 + 3 = 3
+        // M=0, B=0, three rows shifted by the coupling → patch_buf length 3
         // n_state=9 → current_state capacity = 9
         let ctx = TrainingContextFixture::new(state_layout(3, 2));
+        let couplings = [inflow_coupling_with_entries(3, &[(0, 0), (1, 1), (2, 2)])];
+        let stage_ctx = StageContext {
+            inflow_coupling: &couplings,
+            ..empty_stage_ctx()
+        };
         let pool = WorkspacePool::new(
             0,
             4,
             &ctx.training_ctx(),
-            &empty_stage_ctx(),
+            &stage_ctx,
             WorkspaceSizing::default(),
             || MockSolver,
         );
@@ -1855,15 +1798,7 @@ mod tests {
             inflow_coupling: &couplings,
             ..empty_stage_ctx()
         };
-        let compact = StateSpace::new_compact(
-            2,
-            1,
-            Vec::new(),
-            Vec::new(),
-            AnticipatedResolution::default(),
-            &[1, 1],
-        );
-        let logical = StateSpace::new(
+        let state = StateSpace::new(
             2,
             1,
             Vec::new(),
@@ -1872,20 +1807,18 @@ mod tests {
             &[1, 1],
         );
 
-        for (state, expected_len) in [(compact, 3), (logical, 2)] {
-            let ctx = TrainingContextFixture::new(state);
-            let pool = WorkspacePool::new(
-                0,
-                2,
-                &ctx.training_ctx(),
-                &stage_ctx,
-                WorkspaceSizing::default(),
-                || MockSolver,
-            );
-            assert_eq!(pool.workspaces.len(), 2);
-            for ws in &pool.workspaces {
-                assert_eq!(ws.patch_buf.indices.len(), expected_len);
-            }
+        let ctx = TrainingContextFixture::new(state);
+        let pool = WorkspacePool::new(
+            0,
+            2,
+            &ctx.training_ctx(),
+            &stage_ctx,
+            WorkspaceSizing::default(),
+            || MockSolver,
+        );
+        assert_eq!(pool.workspaces.len(), 2);
+        for ws in &pool.workspaces {
+            assert_eq!(ws.patch_buf.indices.len(), 3);
         }
     }
 
@@ -1933,30 +1866,6 @@ mod tests {
             || MockSolver,
         );
         assert_eq!(pool.workspaces.len(), n);
-    }
-
-    #[test]
-    fn test_backward_accumulators_opening_outcomes_buf_starts_empty() {
-        // A nonzero max_openings must not eagerly build opening_outcomes_buf —
-        // the default ByScenario scheduler never touches it (zero opening-block footprint).
-        let ctx = TrainingContextFixture::new(state_layout(3, 2));
-        let pool = WorkspacePool::new(
-            0,
-            2,
-            &ctx.training_ctx(),
-            &empty_stage_ctx(),
-            WorkspaceSizing {
-                max_openings: 5,
-                ..WorkspaceSizing::default()
-            },
-            || MockSolver,
-        );
-        for ws in &pool.workspaces {
-            assert!(
-                ws.backward_accum.opening_outcomes_buf.is_empty(),
-                "opening_outcomes_buf must start empty regardless of max_openings"
-            );
-        }
     }
 
     #[test]
@@ -2049,9 +1958,12 @@ mod tests {
     #[test]
     fn backward_by_node_scratch_default_is_empty() {
         let scratch = ByNodeScratch::default();
-        assert_eq!(scratch.arena.capacity(), 0, "arena must start capacity 0");
-        assert!(scratch.arena.is_empty());
-        assert!(scratch.coeffs_buf.is_empty());
+        assert_eq!(
+            scratch.location.capacity(),
+            0,
+            "location must start capacity 0"
+        );
+        assert!(scratch.finish.is_empty());
         assert!(scratch.block_pivots.is_empty());
         assert!(scratch.block_pivots_prev.is_empty());
         assert_eq!(scratch.n_blocks_max, 0);
@@ -2068,24 +1980,25 @@ mod tests {
         let scratch = ByNodeScratch::sized(
             max_local_fwd,
             bwd_max_openings,
-            ByNodeOutcomeShape::Dense { n_state },
+            n_state,
+            0,
+            0,
             num_stages,
             2,
         );
 
-        assert_eq!(
-            scratch.arena.len(),
-            max_local_fwd * bwd_max_openings,
-            "arena must hold max_local_fwd * bwd_max_openings outcomes"
+        assert!(
+            scratch.location.capacity() >= max_local_fwd * bwd_max_openings,
+            "location must reserve one entry per (trial point, opening)"
         );
+        assert_eq!(scratch.finish.len(), 2, "one finish scratch per worker");
         assert!(
             scratch
-                .arena
+                .finish
                 .iter()
-                .all(|outcome| outcome.coefficients.len() == n_state),
-            "every outcome's coefficients must be pre-sized to n_state"
+                .all(|finish| finish.coeffs_buf.len() == n_state),
+            "every finish entry's coeffs_buf must be pre-sized to n_state"
         );
-        assert_eq!(scratch.coeffs_buf.len(), n_state);
         assert_eq!(scratch.cut_arena.len(), max_local_fwd * n_state);
         assert_eq!(scratch.cut_intercepts.len(), max_local_fwd);
         assert_eq!(
@@ -2121,35 +2034,31 @@ mod tests {
     }
 
     #[test]
-    fn backward_by_node_scratch_sized_zero_dims_yields_empty_arena() {
-        let scratch = ByNodeScratch::sized(0, 0, ByNodeOutcomeShape::Dense { n_state: 0 }, 0, 0);
-        assert!(scratch.arena.is_empty());
-        assert!(scratch.coeffs_buf.is_empty());
+    fn backward_by_node_scratch_sized_zero_dims_yields_empty_locations() {
+        let scratch = ByNodeScratch::sized(0, 0, 0, 0, 0, 0, 0);
+        assert_eq!(scratch.location.capacity(), 0);
+        assert_eq!(
+            scratch.finish.len(),
+            1,
+            "a zero-worker scratch still holds one finish entry"
+        );
+        assert!(scratch.finish[0].coeffs_buf.is_empty());
         assert!(scratch.block_pivots.is_empty());
         assert!(scratch.block_pivots_prev.is_empty());
         assert!(scratch.block_order.is_empty());
     }
 
     #[test]
-    fn folded_by_node_scratch_reserves_locations_and_no_arena() {
-        let scratch = ByNodeScratch::sized(
-            3,
-            4,
-            ByNodeOutcomeShape::Folded {
-                n_state: 5,
-                n_hydros: 2,
-                lag_depth: 3,
-            },
-            6,
-            2,
-        );
-        assert_eq!(scratch.arena.capacity(), 0, "no dense arena");
+    fn by_node_scratch_reserves_the_aggregate_children_of_each_worker() {
+        let scratch = ByNodeScratch::sized(3, 4, 5, 2, 3, 6, 2);
         assert!(scratch.location.capacity() >= 12);
-        assert_eq!(scratch.coeffs_buf.len(), 5);
+        assert_eq!(scratch.finish.len(), 2);
+        for finish in &scratch.finish {
+            assert_eq!(finish.coeffs_buf.len(), 5);
+            assert!(finish.aggregate.children.capacity() >= 4);
+        }
         assert_eq!(scratch.block_pivots.len(), 6 * 4);
         assert!(scratch.worker_counts.capacity() >= 2);
-        assert!(scratch.aggregate.slots.capacity() >= 4);
-        assert!(scratch.aggregate.children.capacity() >= 4);
     }
 
     #[test]
@@ -2196,6 +2105,76 @@ mod tests {
         );
         let views: Vec<super::OpeningDuals<'static>> = recycle(reborrowed);
         assert_eq!((views.as_ptr(), views.capacity()), (ptr, capacity));
+    }
+
+    #[test]
+    fn a_record_with_more_pairs_than_reserved_keeps_every_pair() {
+        let wide = [
+            (1_usize, 0.5_f64),
+            (3, -0.0),
+            (4, 2.25),
+            (6, -7.0),
+            (8, 1e-3),
+            (11, 4.0),
+            (12, -0.75),
+        ];
+        let narrow = [(0_usize, -2.0_f64), (5, 3.5)];
+        let mut records = OpeningRecords::default();
+        records.clear(1, 1);
+        records.reserve(2, 1, 1, 1);
+        let (_, reserved_pairs) = records.buffer_identity()[5];
+        assert!(reserved_pairs < wide.len());
+
+        records.push((0, 0), 1.0, &[0.0], &[0.0], &wide);
+        records.push((0, 1), 2.0, &[0.0], &[0.0], &narrow);
+
+        let bits = |pairs: &[(usize, f64)]| {
+            pairs
+                .iter()
+                .map(|&(slot, y)| (slot, y.to_bits()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(bits(records.view(0).cut_duals), bits(&wide));
+        assert_eq!(bits(records.view(1).cut_duals), bits(&narrow));
+    }
+
+    #[test]
+    fn opening_records_are_sized_by_scheduler() {
+        const MAX_OPENINGS: usize = 5;
+        const MAX_LOCAL_FWD: usize = 4;
+        let ctx = TrainingContextFixture::new(state_layout(3, 2));
+        let reserved_slots = |scheduler: BackwardScheduler, max_local_fwd: usize| {
+            let sizing = WorkspaceSizing {
+                max_openings: MAX_OPENINGS,
+                max_local_fwd,
+                ..WorkspaceSizing::default()
+            };
+            let mut pool = WorkspacePool::new(
+                0,
+                1,
+                &ctx.training_ctx(),
+                &empty_stage_ctx(),
+                sizing,
+                || MockSolver,
+            );
+            pool.reserve_backward_scratch(&ctx.training_ctx(), sizing, 0, &scheduler);
+            pool.workspaces[0]
+                .backward_accum
+                .opening_records
+                .buffer_identity()[0]
+                .1
+        };
+        let by_scenario = BackwardScheduler::ByScenario {};
+        let by_node = BackwardScheduler::ByNode { block_size: None };
+
+        let by_scenario_slots = reserved_slots(by_scenario, MAX_LOCAL_FWD);
+        assert!(
+            (MAX_OPENINGS..MAX_LOCAL_FWD * MAX_OPENINGS).contains(&by_scenario_slots),
+            "by-scenario reserved {by_scenario_slots} record slots"
+        );
+        assert!(reserved_slots(by_node, MAX_LOCAL_FWD) >= MAX_LOCAL_FWD * MAX_OPENINGS);
+        assert_eq!(reserved_slots(by_scenario, 0), 0);
+        assert_eq!(reserved_slots(by_node, 0), 0);
     }
 
     // ---------------------------------------------------------------------------
@@ -3353,7 +3332,7 @@ mod tests {
         // Anticipated layout sketch: N=2, L=1, A=2, k_max=2.
         //   n_state             = N*(1+L) + A*k_max = 2*2 + 2*2 = 8.
         //   col_status models a relocated-layout LP whose column count grew by
-        //   A=2 relative to the no-anticipated layout (z_inflow onward shifted).
+        //   A=2 relative to the no-anticipated layout (every later column shifted).
         // Two full BasisStatus cycles (7 variants each) so a within-cycle
         // positional mix-up (e.g. cut row written onto a state column) shows as
         // a diff; a shift by exactly 7 is the one class this fixture cannot

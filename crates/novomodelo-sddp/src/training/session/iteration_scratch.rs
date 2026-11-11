@@ -186,13 +186,19 @@ mod tests {
     use novomodelo_solver::StageTemplate;
 
     use super::IterationScratch;
-    use crate::lp::builder::StageGeometry;
+    use crate::lp::builder::{InflowCoupling, StageGeometry};
     use crate::lp::indexer::HydroSys;
     use crate::setup::node_graph::StageIdx;
     use crate::test_support::{
-        StageContextFixture, TrainingContextFixture, equipment_free_geometry, state_layout,
-        state_layout_full, state_layout_with_transit_buckets,
+        StageContextFixture, TrainingContextFixture, equipment_free_geometry,
+        inflow_coupling_with_entries, state_layout, state_layout_full,
+        state_layout_with_transit_buckets,
     };
+
+    fn one_row_per_hydro_couplings(n_hydros: usize, num_stages: usize) -> Vec<InflowCoupling> {
+        let entries: Vec<(usize, usize)> = (0..n_hydros).map(|h| (h, h)).collect();
+        vec![inflow_coupling_with_entries(n_hydros, &entries); num_stages]
+    }
 
     fn minimal_template() -> StageTemplate {
         StageTemplate {
@@ -217,7 +223,7 @@ mod tests {
         templates: &'a [StageTemplate],
         geometry_per_stage: &'a [StageGeometry],
     ) -> StageContextFixture<'a> {
-        StageContextFixture::new(templates, &[], geometry_per_stage)
+        StageContextFixture::new(templates, &[], geometry_per_stage).without_inflow_entries(1)
     }
 
     #[test]
@@ -378,7 +384,9 @@ mod tests {
 
         let templates = vec![minimal_template(); num_stages];
         let geometry = equipment_free_geometry(&vec![0; num_stages]);
-        let fixture = make_stage_ctx(&templates, &geometry);
+        let couplings = one_row_per_hydro_couplings(hydro_count, num_stages);
+        let fixture =
+            StageContextFixture::new(&templates, &[], &geometry).inflow_coupling(&couplings);
         let stage_ctx = fixture.ctx();
         let state = state_layout_full(hydro_count, max_par_order, vec![k_max; n_anticipated]);
         assert_eq!(
@@ -397,28 +405,27 @@ mod tests {
             &stage_ctx,
         );
 
-        // Forward-pass layout capacity:
-        //   M*B + N
-        // with M = 0 and B = 0 in the LB patch buffer (no load patches); the A*K
-        // anticipated-state slots size the column region only, never this row region.
+        // Row-patch capacity: M*B + the most rows any stage's inflow coupling
+        // shifts, with M = 0 and B = 0 in the LB patch buffer (no load patches);
+        // the A*K anticipated-state slots size the column region only.
         let expected_capacity = hydro_count;
         assert_eq!(
             scratch.patch_buf.indices.len(),
             expected_capacity,
-            "patch_buf indices length must equal M*B + N regardless of A*K",
+            "patch_buf indices length must equal M*B + shifted rows regardless of A*K",
         );
         assert_eq!(
             scratch.patch_buf.lower.len(),
             expected_capacity,
-            "patch_buf lower length must equal M*B + N regardless of A*K",
+            "patch_buf lower length must equal M*B + shifted rows regardless of A*K",
         );
         assert_eq!(
             scratch.patch_buf.upper.len(),
             expected_capacity,
-            "patch_buf upper length must equal M*B + N regardless of A*K",
+            "patch_buf upper length must equal M*B + shifted rows regardless of A*K",
         );
 
-        // forward_patch_count is 0 before any load or z-inflow patch has been filled.
+        // forward_patch_count is 0 before any load or inflow-shift patch has been filled.
         assert_eq!(
             scratch.patch_buf.forward_patch_count(),
             0,
@@ -439,7 +446,9 @@ mod tests {
 
         let templates = vec![minimal_template(); num_stages];
         let geometry = equipment_free_geometry(&vec![0; num_stages]);
-        let fixture = make_stage_ctx(&templates, &geometry);
+        let couplings = one_row_per_hydro_couplings(hydro_count, num_stages);
+        let fixture =
+            StageContextFixture::new(&templates, &[], &geometry).inflow_coupling(&couplings);
         let stage_ctx = fixture.ctx();
         let training_fixture =
             TrainingContextFixture::new(state_layout(hydro_count, max_par_order))
@@ -455,7 +464,7 @@ mod tests {
             &stage_ctx,
         );
 
-        // With A=0 and K=0, row capacity is still M*B + N = 0 + N = N.
+        // With A=0 and K=0, row capacity is still M*B + shifted rows = 0 + N.
         let expected_capacity = hydro_count;
         assert_eq!(
             scratch.patch_buf.indices.len(),
@@ -496,10 +505,11 @@ mod tests {
             &stage_ctx,
         );
 
-        // Column-bound region: N*(1+L) + n_buckets + A*K + W = 2*2 + 3 + 0 + 0 = 7.
+        // Column-bound region: storage N + n_buckets (the lag region has no LP
+        // column) + A*K + W = 2 + 3 + 0 + 0 = 5.
         assert_eq!(
             scratch.patch_buf.state_col_patch_count(),
-            hydro_count * (1 + max_par_order) + n_buckets,
+            hydro_count + n_buckets,
             "patch_buf column region must include n_buckets bucket slots",
         );
     }

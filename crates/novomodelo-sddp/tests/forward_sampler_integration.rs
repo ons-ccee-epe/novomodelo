@@ -2704,8 +2704,7 @@ mod compact_forward_routing {
     };
     use novomodelo_solver::{ActiveSolver, StageTemplate};
 
-    use super::common::oracle_tolerance::value_tolerance;
-    use super::common::{StubComm, for_each_study_in_both_forms};
+    use super::common::{StubComm, for_each_study};
 
     const PASSES: usize = 2;
     const ITERATIONS: [u64; 2] = [1, 2];
@@ -2801,37 +2800,23 @@ mod compact_forward_routing {
     }
 
     #[test]
-    fn compact_forward_matches_the_logical_root_cost_and_carries_the_lags() {
+    fn compact_forward_carries_the_lags() {
         let mut visited = 0;
         let mut saw_lags = false;
-        for_each_study_in_both_forms(|key, _, logical, compact| {
-            if !has_cut_free_frozen_templates(logical) || !has_cut_free_frozen_templates(compact) {
+        for_each_study(|key, _, compact| {
+            if !has_cut_free_frozen_templates(compact) {
                 return;
             }
             visited += 1;
             saw_lags |= compact.stage_state().max_par_order > 0;
-            let num_stages = compact.num_stages();
-            let logical_runs = run_forward(logical, &ITERATIONS);
-            let compact_runs = run_forward(compact, &ITERATIONS);
-            for (iteration, (logical_records, compact_records)) in ITERATIONS
-                .iter()
-                .zip(logical_runs.iter().zip(&compact_runs))
-            {
-                for record in compact_records {
+            for (iteration, records) in ITERATIONS.iter().zip(run_forward(compact, &ITERATIONS)) {
+                for record in &records {
                     assert!(
                         record.stage_cost.is_finite(),
                         "{key}: iteration {iteration}: compact stage cost must be finite"
                     );
                 }
-                for m in 0..PASSES {
-                    let a = logical_records[m * num_stages].stage_cost;
-                    let b = compact_records[m * num_stages].stage_cost;
-                    assert!(
-                        (a - b).abs() <= value_tolerance(a, b),
-                        "{key}: iteration {iteration} pass {m}: stage-0 cost logical {a} vs compact {b}"
-                    );
-                }
-                assert_lags_carried(key, compact, compact_records);
+                assert_lags_carried(key, compact, &records);
             }
         });
         assert!(visited >= 1, "no study was visited");
@@ -2841,7 +2826,7 @@ mod compact_forward_routing {
     #[test]
     fn compact_forward_is_reproducible_across_fresh_pools() {
         let mut visited = 0;
-        for_each_study_in_both_forms(|key, _, _, compact| {
+        for_each_study(|key, _, compact| {
             if !has_cut_free_frozen_templates(compact) {
                 return;
             }

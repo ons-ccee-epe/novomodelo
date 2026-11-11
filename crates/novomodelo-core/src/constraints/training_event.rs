@@ -45,11 +45,11 @@ pub enum WorkerTimingPhase {
     Backward,
 }
 
-/// Slot count of the `novomodelo_io::WorkerTimingRecord` `[u64; 17]` writer record.
+/// Slot count of the `novomodelo_io::WorkerTimingRecord` `[u64; 16]` writer record.
 ///
 /// The `WORKER_TIMING_SLOT_*` constants are the canonical bridge between the
 /// named [`WorkerPhaseTimings`] fields and the writer-record slot positions.
-pub const WORKER_TIMING_SLOT_COUNT: usize = 17;
+pub const WORKER_TIMING_SLOT_COUNT: usize = 16;
 
 /// Writer-record slot index for `forward_wall_ms`.
 pub const WORKER_TIMING_SLOT_FWD_WALL: usize = 0;

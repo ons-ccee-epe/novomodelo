@@ -334,8 +334,8 @@ mod folded_solve {
     use novomodelo_sddp::indexer::ChainRuleSlots;
     use novomodelo_sddp::setup::{NodePos, StageIdx};
     use novomodelo_sddp::test_support::{
-        FoldedProbeCut, FoldedProbeCuts, FoldedProbeOpening, bits, cut_rows_for_slots_into,
-        empty_row_batch, folded_opening_cut_for_probe, node_opening_noise,
+        ProbeCut, ProbeCuts, ProbeOpening, bits, cut_rows_for_slots_into, empty_row_batch,
+        node_opening_noise, opening_cut_for_probe,
     };
     use novomodelo_sddp::{SddpError, StudySetup};
     use novomodelo_solver::{ActiveSolver, SolverInterface};
@@ -344,9 +344,7 @@ mod folded_solve {
     use crate::common::expanded_solve::{CutRowSet, stored_incoming_states};
     use crate::common::in_code_studies::{FphaLagOptions, fpha_lag_study_with};
     use crate::common::stored_cut_oracles::apply_oracle_config;
-    use crate::common::{
-        Emission, StubComm, build_setup_in_code_with_models_as, train_storing_trial_states,
-    };
+    use crate::common::{StubComm, build_setup_in_code_with_models, train_storing_trial_states};
 
     const STAGE: usize = 1;
     const RESIDENT_POOL: usize = 1;
@@ -359,8 +357,7 @@ mod folded_solve {
             ..FphaLagOptions::default()
         });
         apply_oracle_config(&mut config);
-        let mut setup =
-            build_setup_in_code_with_models_as(system, &config, hydro_models, Emission::Compact);
+        let mut setup = build_setup_in_code_with_models(system, &config, hydro_models);
         train_storing_trial_states("folded no-alloc lag study", &mut setup);
         setup
     }
@@ -401,8 +398,7 @@ mod folded_solve {
         let states: [&[f64]; 2] = [&stored[0], &stored[1]];
         let noise: [Vec<f64>; OPENINGS] =
             std::array::from_fn(|w| node_opening_noise(&setup, NodePos(STAGE), w));
-        let mut outs: [FoldedProbeCut; OPENINGS] =
-            std::array::from_fn(|_| FoldedProbeCut::new(&training_ctx));
+        let mut outs: [ProbeCut; OPENINGS] = std::array::from_fn(|_| ProbeCut::new(&training_ctx));
 
         let chain_slots = ChainRuleSlots::compose(
             training_ctx.state,
@@ -418,22 +414,23 @@ mod folded_solve {
         let weights = [1.0 / 3.0; OPENINGS];
 
         let mut round =
-            |outs: &mut [FoldedProbeCut; OPENINGS], x_hat: &[f64]| -> Result<f64, SddpError> {
+            |outs: &mut [ProbeCut; OPENINGS], x_hat: &[f64]| -> Result<f64, SddpError> {
                 for (out, raw_noise) in outs.iter_mut().zip(&noise) {
-                    folded_opening_cut_for_probe(
+                    opening_cut_for_probe(
                         ws,
                         &ctx,
                         &training_ctx,
-                        &FoldedProbeOpening {
+                        &ProbeOpening {
                             stage: StageIdx(STAGE),
                             pinned_state: x_hat,
                             raw_noise,
-                            cuts: FoldedProbeCuts {
+                            cuts: ProbeCuts {
                                 pool,
                                 pool_id: RESIDENT_POOL,
                                 slots: &slots,
                             },
                             extracted_pool_id: EXTRACTED_POOL,
+                            inflow_slack_bounds: None,
                         },
                         out,
                     )?;

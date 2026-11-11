@@ -29,7 +29,6 @@ use tempfile::TempDir;
 
 pub mod anticipated_structural_assertions;
 pub mod builders;
-pub mod compact_map;
 pub mod expanded_solve;
 pub mod in_code_studies;
 pub mod oracle_tolerance;
@@ -204,13 +203,6 @@ pub fn boundary_requirements(case_dir: &Path, config: &Config) -> BoundaryStateR
         .unwrap_or_else(|_| BoundaryStateRequirements::present(0))
 }
 
-/// The inflow emission a test setup is built with.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Emission {
-    Logical,
-    Compact,
-}
-
 /// Build a [`StudySetup`] for a case directory.
 ///
 /// The caller's `prepare_hydro_models` has already folded the productivity
@@ -225,25 +217,6 @@ pub fn build_setup_for_case(
     system: &System,
     stochastic: StochasticContext,
     hydro_models: PrepareHydroModelsResult,
-) -> StudySetup {
-    build_setup_for_case_as(
-        case_dir,
-        config,
-        system,
-        stochastic,
-        hydro_models,
-        Emission::Logical,
-    )
-}
-
-/// [`build_setup_for_case`] building the chosen inflow `emission`.
-pub fn build_setup_for_case_as(
-    case_dir: &Path,
-    config: &Config,
-    system: &System,
-    stochastic: StochasticContext,
-    hydro_models: PrepareHydroModelsResult,
-    emission: Emission,
 ) -> StudySetup {
     let sentinel = Path::new("config.json");
     let training_source = config
@@ -261,11 +234,7 @@ pub fn build_setup_for_case_as(
         .artifacts
         .scalar_parameters;
 
-    let build = match emission {
-        Emission::Logical => StudySetup::from_broadcast_params,
-        Emission::Compact => StudySetup::from_broadcast_params_compact,
-    };
-    build(
+    StudySetup::from_broadcast_params(
         system,
         stochastic,
         construction,
@@ -284,20 +253,6 @@ pub fn build_setup_for_case_as(
 pub fn fresh_system_and_setup_with(
     case_dir: &Path,
     mutate: impl FnOnce(&mut Config),
-) -> (System, StudySetup) {
-    fresh_system_and_setup_with_emission(case_dir, mutate, Emission::Logical)
-}
-
-/// [`fresh_system_and_setup_with`] with no config mutation, building the
-/// chosen inflow `emission`.
-pub fn fresh_system_and_setup_as(case_dir: &Path, emission: Emission) -> (System, StudySetup) {
-    fresh_system_and_setup_with_emission(case_dir, |_| {}, emission)
-}
-
-pub fn fresh_system_and_setup_with_emission(
-    case_dir: &Path,
-    mutate: impl FnOnce(&mut Config),
-    emission: Emission,
 ) -> (System, StudySetup) {
     let config_path = case_dir.join("config.json");
     let mut config = novomodelo_io::parse_config(&config_path).expect("config must parse");
@@ -323,14 +278,7 @@ pub fn fresh_system_and_setup_with_emission(
     let hydro_models =
         prepare_hydro_models(&system, case_dir, false).expect("prepare_hydro_models must succeed");
 
-    let setup = build_setup_for_case_as(
-        case_dir,
-        &config,
-        &system,
-        stochastic,
-        hydro_models,
-        emission,
-    );
+    let setup = build_setup_for_case(case_dir, &config, &system, stochastic, hydro_models);
     (system, setup)
 }
 
@@ -359,19 +307,9 @@ pub fn fresh_setup_with_openings(
     num_openings: u32,
     mutate: impl FnOnce(&mut Config),
 ) -> StudySetup {
-    fresh_setup_with_openings_as(case_dir, num_openings, mutate, Emission::Logical)
-}
-
-/// [`fresh_setup_with_openings`] building the chosen inflow `emission`.
-pub fn fresh_setup_with_openings_as(
-    case_dir: &Path,
-    num_openings: u32,
-    mutate: impl FnOnce(&mut Config),
-    emission: Emission,
-) -> StudySetup {
     let tmp =
         copy_case_with_stage_field(case_dir, "num_openings", &serde_json::json!(num_openings));
-    fresh_system_and_setup_with_emission(tmp.path(), mutate, emission).1
+    fresh_system_and_setup_with(tmp.path(), mutate).1
 }
 
 pub fn copy_toy_case(src: &Path, dst: &Path) {
@@ -600,30 +538,6 @@ pub fn for_each_study(mut visit: impl FnMut(&str, &System, &StudySetup)) -> usiz
     count
 }
 
-/// [`for_each_study`] building every study in both inflow emissions and visiting
-/// `(key, system, logical, compact)`; returns the visit count.
-pub fn for_each_study_in_both_forms(
-    mut visit: impl FnMut(&str, &System, &StudySetup, &StudySetup),
-) -> usize {
-    let mut count = 0;
-    for deck in swept_decks() {
-        let (system, logical) = fresh_system_and_setup_as(&deck.dir, Emission::Logical);
-        let (_, compact) = fresh_system_and_setup_as(&deck.dir, Emission::Compact);
-        visit(&deck.key, &system, &logical, &compact);
-        count += 1;
-    }
-    let logical_studies = in_code_studies::structural_studies_as(Emission::Logical);
-    let compact_studies = in_code_studies::structural_studies_as(Emission::Compact);
-    for ((key, system, logical), (compact_key, _, compact)) in
-        logical_studies.into_iter().zip(compact_studies)
-    {
-        assert_eq!(key, compact_key, "structural studies must pair by key");
-        visit(&key, &system, &logical, &compact);
-        count += 1;
-    }
-    count
-}
-
 /// [`for_each_study`]'s visit count, for a caller confirming its sweep saw
 /// every study: every committed deck minus its [`SLOW_DECKS`] skips, plus
 /// every [`in_code_studies::structural_studies`] entry.
@@ -661,8 +575,7 @@ pub fn stochastic_in_code(system: &System) -> StochasticContext {
     .expect("build_stochastic_context")
 }
 
-/// Fallible core of every in-code `StudySetup` constructor below: selects
-/// `StudySetup::new` or `StudySetup::new_compact` by `emission`.
+/// Fallible core of every in-code `StudySetup` constructor below.
 #[expect(
     clippy::needless_pass_by_value,
     reason = "callers pass an owned System inline; the body only borrows it"
@@ -671,14 +584,9 @@ fn try_build_setup_in_code_with_models(
     system: System,
     config: &Config,
     hydro_models: PrepareHydroModelsResult,
-    emission: Emission,
 ) -> Result<StudySetup, SddpError> {
     let stochastic = stochastic_in_code(&system);
-    let build = match emission {
-        Emission::Logical => StudySetup::new,
-        Emission::Compact => StudySetup::new_compact,
-    };
-    build(&system, config, stochastic, hydro_models, Vec::new())
+    StudySetup::new(&system, config, stochastic, hydro_models, Vec::new())
 }
 
 /// Construct a [`StudySetup`] in-process from an explicit `hydro_models`
@@ -692,17 +600,7 @@ pub fn build_setup_in_code_with_models(
     config: &Config,
     hydro_models: PrepareHydroModelsResult,
 ) -> StudySetup {
-    build_setup_in_code_with_models_as(system, config, hydro_models, Emission::Logical)
-}
-
-/// [`build_setup_in_code_with_models`] building the chosen inflow `emission`.
-pub fn build_setup_in_code_with_models_as(
-    system: System,
-    config: &Config,
-    hydro_models: PrepareHydroModelsResult,
-    emission: Emission,
-) -> StudySetup {
-    try_build_setup_in_code_with_models(system, config, hydro_models, emission)
+    try_build_setup_in_code_with_models(system, config, hydro_models)
         .expect("in-code StudySetup must build")
 }
 
@@ -712,13 +610,8 @@ pub fn build_setup_in_code_with_models_as(
 // binding; the body only borrows it.
 #[allow(clippy::needless_pass_by_value)]
 pub fn build_setup_in_code(system: System, config: &Config) -> StudySetup {
-    build_setup_in_code_as(system, config, Emission::Logical)
-}
-
-/// [`build_setup_in_code`] building the chosen inflow `emission`.
-pub fn build_setup_in_code_as(system: System, config: &Config, emission: Emission) -> StudySetup {
     let hydro_models = PrepareHydroModelsResult::default_from_system(&system);
-    build_setup_in_code_with_models_as(system, config, hydro_models, emission)
+    build_setup_in_code_with_models(system, config, hydro_models)
 }
 
 /// Fallible sibling of [`build_setup_in_code`]: returns `StudySetup::new`'s
@@ -727,7 +620,7 @@ pub fn build_setup_in_code_as(system: System, config: &Config, emission: Emissio
 #[allow(clippy::needless_pass_by_value)]
 pub fn try_build_setup_in_code(system: System, config: &Config) -> Result<StudySetup, SddpError> {
     let hydro_models = PrepareHydroModelsResult::default_from_system(&system);
-    try_build_setup_in_code_with_models(system, config, hydro_models, Emission::Logical)
+    try_build_setup_in_code_with_models(system, config, hydro_models)
 }
 
 /// Replaces the terminal pool with one zero-coefficient cut per intercept, at slots `0..intercepts.len()`.

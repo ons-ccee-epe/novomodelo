@@ -1,6 +1,5 @@
-//! LP load and bound-patch seam for the backward pass: reset the stage LP to its
-//! structural template, append delta cuts, and patch the noise-dependent
-//! row/column bounds for one opening.
+//! LP load and pin seam for the backward pass: reset the stage LP to its
+//! structural template, append delta cuts, and pin the trial state.
 
 use novomodelo_solver::SolverInterface;
 use novomodelo_stochastic::{ClassDimensions, ExternalScenarioLibrary};
@@ -8,11 +7,8 @@ use novomodelo_stochastic::{ClassDimensions, ExternalScenarioLibrary};
 use crate::{
     context::{StageContext, TrainingContext},
     error::SddpError,
-    indexer::InflowForm,
     setup::{NodeId, NodeOpenings, NodePos, OpeningSource, StageIdx},
-    training::stage_solve_prep::{
-        BracketSource, FoldedCutRows, StageSolvePrep, StageSolvePrepParams, StateSource,
-    },
+    training::stage_solve_prep::{BracketSource, LoadedCutRows, StageSolvePrep, StateSource},
     workspace::{BasisStoreSliceMut, CapturedBasis, SolverWorkspace},
 };
 
@@ -33,40 +29,13 @@ pub(crate) fn load_backward_lp<S: SolverInterface + Send>(
     }
 }
 
-/// Transform opening noise and patch LP bounds for one backward opening.
-///
-/// The LP structure is already loaded by [`load_backward_lp`]; this delegates to
-/// [`StageSolvePrep::run`], pinning `x_hat` as the incoming state.
-pub(crate) fn patch_opening_bounds<S: SolverInterface + Send>(
-    ws: &mut SolverWorkspace<S>,
-    ctx: &StageContext<'_>,
-    training_ctx: &TrainingContext<'_>,
-    raw_noise: &[f64],
-    x_hat: &[f64],
-    s: StageIdx,
-) {
-    let prep_params = StageSolvePrepParams {
-        state_source: StateSource(x_hat),
-        raw_noise,
-    };
-    StageSolvePrep::run(
-        &mut ws.solver,
-        &mut ws.patch_buf,
-        &mut ws.scratch,
-        ctx,
-        training_ctx,
-        s,
-        &prep_params,
-    );
-}
-
 /// The cut rows of `child`'s loaded compact LP, in the row order of `slots`.
-pub(crate) fn folded_cut_rows<'a>(
+pub(crate) fn child_cut_rows<'a>(
     training_ctx: &'a TrainingContext<'_>,
     child: &SuccessorChild<'a>,
     slots: &'a [usize],
-) -> FoldedCutRows<'a> {
-    FoldedCutRows {
+) -> LoadedCutRows<'a> {
+    LoadedCutRows {
         pool: child.successor_pool,
         projection: &training_ctx.cut_state_layouts[child.pool_id],
         slots,
@@ -77,9 +46,8 @@ pub(crate) fn folded_cut_rows<'a>(
 /// Pins `x_hat` on `child`'s loaded compact LP and computes the brackets of its
 /// cut rows.
 ///
-/// Runs once per child LP load, after [`load_backward_lp`]; it leaves the child's
-/// active-slot list in `cut_slots_buf` for that load's openings.
-pub(crate) fn pin_folded_child_lp<S: SolverInterface + Send>(
+/// Runs once per child LP load, after [`load_backward_lp`].
+pub(crate) fn pin_child_lp<S: SolverInterface + Send>(
     ws: &mut SolverWorkspace<S>,
     ctx: &StageContext<'_>,
     training_ctx: &TrainingContext<'_>,
@@ -88,20 +56,12 @@ pub(crate) fn pin_folded_child_lp<S: SolverInterface + Send>(
     s: StageIdx,
     source: BracketSource<'_>,
 ) {
-    debug_assert_eq!(
-        training_ctx.state.inflow_form,
-        InflowForm::Compact,
-        "the folded pin runs on a compact layout only"
-    );
-    debug_assert_eq!(
+    assert_eq!(
         child.successor_active_slots.len(),
         child.num_cuts_at_successor,
         "the active-slot list must cover every cut row of the loaded LP"
     );
-    let mut slots = std::mem::take(&mut ws.scratch.cut_slots_buf);
-    slots.clear();
-    slots.extend_from_slice(child.successor_active_slots);
-    StageSolvePrep::pin_folded(
+    StageSolvePrep::pin_and_bracket(
         &mut ws.solver,
         &mut ws.patch_buf,
         &mut ws.scratch,
@@ -109,10 +69,9 @@ pub(crate) fn pin_folded_child_lp<S: SolverInterface + Send>(
         training_ctx,
         s,
         StateSource(x_hat),
-        &folded_cut_rows(training_ctx, child, &slots),
+        &child_cut_rows(training_ctx, child, child.successor_active_slots),
         source,
     );
-    ws.scratch.cut_slots_buf = slots;
 }
 
 /// Assemble the `[hydro | load-bus | NCS]` opening-noise vector for an

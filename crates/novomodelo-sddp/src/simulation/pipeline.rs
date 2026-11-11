@@ -22,7 +22,7 @@ use crate::error::SddpError::Infeasible;
 use crate::error::SddpError::Solver;
 use crate::lp::builder::{GenericConstraintRowEntry, StageGeometry};
 use crate::lp::indexer::{
-    AnticipatedPlants, BlockIdx, BlockRowFamily, CutStateProjection, InflowForm, StudyDimensions,
+    AnticipatedPlants, BlockIdx, BlockRowFamily, CutStateProjection, StudyDimensions,
 };
 use crate::noise::{DownstreamAccumState, LagAccumState};
 use crate::simulation::state::{SimulationInputs, SimulationState};
@@ -48,9 +48,7 @@ use crate::{
     },
     solve::{LazyInputs, StageOpeningSolver},
     solver_stats::SolverStatsDelta,
-    training::stage_solve_prep::{
-        FoldedSolvePrepParams, StageSolvePrep, StageSolvePrepParams, StateSource,
-    },
+    training::stage_solve_prep::{SingleSolvePrepParams, StageSolvePrep, StateSource},
     workspace::{CapturedBasis, ScratchBuffers, SolverWorkspace},
 };
 
@@ -382,39 +380,22 @@ fn prepare_simulation_stage<S: SolverInterface>(
     cut_set: CutSet,
     opening_solver: &StageOpeningSolver,
 ) {
-    match training_ctx.state.inflow_form {
-        InflowForm::Logical => {
-            let prep_params = StageSolvePrepParams {
-                state_source: StateSource(&ws.current_state),
-                raw_noise,
-            };
-            StageSolvePrep::run(
-                &mut ws.solver,
-                &mut ws.patch_buf,
-                &mut ws.scratch,
-                ctx,
-                training_ctx,
-                t,
-                &prep_params,
-            );
-        }
-        InflowForm::Compact => StageSolvePrep::prepare_folded_single(
-            &mut ws.solver,
-            &mut ws.patch_buf,
-            &mut ws.scratch,
-            ctx,
-            training_ctx,
-            t,
-            &FoldedSolvePrepParams {
-                state_source: StateSource(&ws.current_state),
-                raw_noise,
-                pool,
-                projection: resident,
-                opening_solver,
-            },
-            pool.cuts_in(cut_set).map(|(slot, _, _)| slot),
-        ),
-    }
+    StageSolvePrep::prepare_single(
+        &mut ws.solver,
+        &mut ws.patch_buf,
+        &mut ws.scratch,
+        ctx,
+        training_ctx,
+        t,
+        &SingleSolvePrepParams {
+            state_source: StateSource(&ws.current_state),
+            raw_noise,
+            pool,
+            projection: resident,
+            opening_solver,
+        },
+        pool.cuts_in(cut_set).map(|(slot, _, _)| slot),
+    );
 }
 
 /// Solve one stage for one simulation scenario, updating workspace in-place.
@@ -484,7 +465,7 @@ pub(crate) fn solve_simulation_stage<S: SolverInterface>(
     let row_scale = &ctx.template(t).row_scale;
 
     if !opening_solver.captures_basis() {
-        debug_assert_eq!(
+        assert_eq!(
             pool.count_in(load_spec.cut_set),
             pool.active_count(),
             "the lazy solve reads the active cuts, so the chosen set must equal them; \
@@ -611,7 +592,6 @@ pub(crate) fn extract_sim_stage_result(
     lookups: &SimLookups,
 ) -> (f64, SimulationStageResult) {
     let ScratchBuffers {
-        inflow_m3s_buf,
         row_lower_buf,
         load_rhs_buf,
         ncs_col_upper_buf,
@@ -638,18 +618,7 @@ pub(crate) fn extract_sim_stage_result(
         let theta_contribution = unscaled_primal[training_ctx.state.theta] * theta_obj_coeff;
         (view_objective - theta_contribution) * ctx.cost_scale_factor
     };
-    let inflow_m3s_per_hydro: &[f64] = match training_ctx.state.inflow_form {
-        InflowForm::Logical => {
-            // Realized inflow Z_t from the z_h primal: the incremental (local) inflow, the
-            // raw PAR value (lag included), gross of withdrawal and of the non-negativity slack.
-            inflow_m3s_buf.clear();
-            inflow_m3s_buf.extend_from_slice(&unscaled_primal[training_ctx.state.z_inflow.clone()]);
-            inflow_m3s_buf
-        }
-        // ẑ from the opening phase, the value the coupled rows were shifted by.
-        InflowForm::Compact => realized_inflow_buf,
-    };
-    debug_assert_eq!(inflow_m3s_per_hydro.len(), training_ctx.state.hydro_count);
+    debug_assert_eq!(realized_inflow_buf.len(), training_ctx.state.hydro_count);
     let (load_rows, load_n_blks) = resolve_load_rows(ctx, t);
     let row_lower_ref = build_row_lower_unscaled(
         &ctx.template(t).row_lower,
@@ -712,7 +681,7 @@ pub(crate) fn extract_sim_stage_result(
         geometry,
         hydro_cell_index: output.hydro_cell_index,
         entity_counts: output.entity_counts,
-        inflow_m3s_per_hydro,
+        inflow_m3s_per_hydro: realized_inflow_buf,
         incoming_lags: incoming_lags_buf,
         block_hours: output.block_hours_per_stage[t.0].as_slice(),
         generic_constraint_entries: &output.generic_constraint_row_entries[t.0],

@@ -7,7 +7,7 @@ use crate::SddpError;
 use crate::block_clock::M3S_TO_HM3;
 use crate::hydro_models::{PrepareHydroModelsResult, ProductionModelSet, ResolvedProductionModel};
 use crate::lp::builder::StageGeometry;
-use crate::lp::indexer::{AnticipatedPlants, ChainRuleSlots, InflowForm, StateSpace, ThermalSys};
+use crate::lp::indexer::{AnticipatedPlants, ChainRuleSlots, StateSpace, ThermalSys};
 use crate::test_support;
 use crate::time_value::DeliveryCalendar;
 use novomodelo_io::test_support::owned_piece_defaults;
@@ -2639,7 +2639,7 @@ fn build_initial_state_populates_lags_from_derived_values() {
 
     // State layout: storage(0..2), lags(2..6) in lag-major order.
     // Lag-major: slot = s + lag * N + h, where N = 2.
-    let s = layout.inflow_lags.start;
+    let s = layout.state_dim_lag_range().start;
     assert!(
         (state[s] - 600.0).abs() < 1e-10,
         "lag0 hydro 0: expected 600.0, got {}",
@@ -2682,7 +2682,7 @@ fn build_initial_state_zero_derived_lag_values_leaves_zero_lags() {
         &derived_lag_values,
     );
 
-    let s = layout.inflow_lags.start;
+    let s = layout.state_dim_lag_range().start;
     for l in 0..3 {
         assert!(
             state[s + l].abs() < 1e-10,
@@ -2760,7 +2760,7 @@ fn build_initial_state_derived_lags_match_positional_seed() {
     );
 
     // Lag-major: slot = s + lag * N + h, with h1=[600, 500] and h2=[200, 100].
-    let s = layout.inflow_lags.start;
+    let s = layout.state_dim_lag_range().start;
     assert!(
         (state[s] - 600.0).abs() < 1e-10,
         "lag0 hydro 0: expected 600.0, got {}",
@@ -3096,7 +3096,7 @@ fn test_initial_state_seeds_correctly_under_staggered_commissioning_dates() {
     );
 
     // Lag block: lag-major layout, slot = lag_start + lag * N + idx.
-    let s = layout.inflow_lags.start;
+    let s = layout.state_dim_lag_range().start;
     assert!(
         (state[s] - h2_past[0]).abs() < 1e-10,
         "hydro id=2 lag0 should be its own derived value {}, got {}",
@@ -3510,7 +3510,7 @@ fn build_initial_state_mixed_operating_and_filling_seeds() {
 
     // Lag block, identical to the operating-only case (lag-major: slot = s +
     // lag * N + h, N = 2).
-    let s = layout.inflow_lags.start;
+    let s = layout.state_dim_lag_range().start;
     assert!(
         (state[s] - 600.0).abs() < 1e-10,
         "lag0 hydro 0: expected 600.0, got {}",
@@ -3634,7 +3634,7 @@ fn build_initial_state_no_lags_state_is_storage_only() {
     // n_state = N*(1+L) = 1*(1+0) = 1
     assert_eq!(layout.n_state, 1);
     assert!(
-        layout.inflow_lags.is_empty(),
+        layout.state_dim_lag_range().is_empty(),
         "inflow_lags range should be empty for L=0"
     );
 
@@ -7402,16 +7402,13 @@ fn assert_state_layout_finalized(state: &StateSpace) {
         state.state_to_lp_column_map, reference.state_to_lp_column_map,
         "state_to_lp_column_map must match a fresh StateSpace::new"
     );
-    assert_eq!(
-        state.inflow_form, reference.inflow_form,
-        "inflow_form must match a fresh StateSpace::new"
-    );
     assert_eq!(state.n_state, reference.n_state, "n_state must match");
     assert_eq!(state.theta, reference.theta, "theta column must match");
     assert_eq!(state.storage, reference.storage, "storage range must match");
     assert_eq!(
-        state.inflow_lags, reference.inflow_lags,
-        "inflow_lags range must match"
+        state.state_dim_lag_range(),
+        reference.state_dim_lag_range(),
+        "lag range must match"
     );
     assert_eq!(
         state.transit_buckets_out, reference.transit_buckets_out,
@@ -7424,10 +7421,6 @@ fn assert_state_layout_finalized(state: &StateSpace) {
     assert_eq!(
         state.commit_out, reference.commit_out,
         "commit_out range must match"
-    );
-    assert_eq!(
-        state.z_inflow, reference.z_inflow,
-        "z_inflow range must match"
     );
     assert_eq!(
         state.storage_in, reference.storage_in,
@@ -7499,7 +7492,6 @@ fn state_space_build_matches_the_loose_constructor() {
         &topology,
         leads.clone(),
         resolution.clone(),
-        InflowForm::Logical,
     );
     let loose = StateSpace::new(
         system.hydros().len(),
@@ -7542,136 +7534,6 @@ fn stage_data_state_matches_indexer_role_a_uniform() {
     .expect("setup");
 
     assert_state_layout_finalized(&setup.inputs.stage_data.state);
-}
-
-#[test]
-fn inflow_form_defaults_to_logical_and_the_test_support_constructor_selects_compact() {
-    use super::StudyParams;
-
-    let system = minimal_system(3);
-    let config = minimal_config(2, 10);
-    let sentinel = std::path::Path::new("config.json");
-    let training_source = config
-        .training_scenario_source(sentinel)
-        .expect("training source");
-    let simulation_source = config
-        .simulation_scenario_source(sentinel)
-        .expect("simulation source");
-    let stochastic = || {
-        build_stochastic_context(
-            &system,
-            42,
-            None,
-            &[],
-            &[],
-            OpeningTreeInputs::default(),
-            ClassSchemes {
-                inflow: Some(SamplingScheme::InSample),
-                load: Some(SamplingScheme::InSample),
-                ncs: Some(SamplingScheme::InSample),
-            },
-        )
-        .expect("stochastic context")
-    };
-    let params = || StudyParams::from_config(&config, Vec::new()).expect("from_config");
-
-    let logical = StudySetup::from_broadcast_params(
-        &system,
-        stochastic(),
-        params(),
-        PrepareHydroModelsResult::default_from_system(&system),
-        &training_source,
-        &simulation_source,
-    )
-    .expect("logical setup");
-    let compact = StudySetup::from_broadcast_params_compact(
-        &system,
-        stochastic(),
-        params(),
-        PrepareHydroModelsResult::default_from_system(&system),
-        &training_source,
-        &simulation_source,
-    )
-    .expect("compact setup");
-
-    assert_eq!(
-        logical.inputs.stage_data.state.inflow_form,
-        InflowForm::Logical
-    );
-    assert_eq!(
-        compact.inputs.stage_data.state.inflow_form,
-        InflowForm::Compact
-    );
-}
-
-#[test]
-fn compact_and_logical_setups_share_one_construction_chain() {
-    let system = minimal_system(3);
-    let without_boundary = minimal_config(2, 10);
-    let mut with_boundary = minimal_config(2, 10);
-    with_boundary.policy.boundary = Some(novomodelo_io::BoundaryPolicy {
-        path: "unused-boundary-checkpoint".to_string(),
-        strict: false,
-    });
-    let stochastic = || {
-        build_stochastic_context(
-            &system,
-            42,
-            None,
-            &[],
-            &[],
-            OpeningTreeInputs::default(),
-            ClassSchemes {
-                inflow: Some(SamplingScheme::InSample),
-                load: Some(SamplingScheme::InSample),
-                ncs: Some(SamplingScheme::InSample),
-            },
-        )
-        .expect("stochastic context")
-    };
-    let both_forms = |config: &Config| {
-        let logical = StudySetup::new(
-            &system,
-            config,
-            stochastic(),
-            PrepareHydroModelsResult::default_from_system(&system),
-            Vec::new(),
-        )
-        .expect("logical setup");
-        let compact = StudySetup::new_compact(
-            &system,
-            config,
-            stochastic(),
-            PrepareHydroModelsResult::default_from_system(&system),
-            Vec::new(),
-        )
-        .expect("compact setup");
-        (logical, compact)
-    };
-    let absent = both_forms(&without_boundary);
-    let set = both_forms(&with_boundary);
-
-    assert!(set.0.boundary_requirements.is_present());
-    assert!(!absent.0.boundary_requirements.is_present());
-
-    for (logical, compact) in [&absent, &set] {
-        assert_eq!(
-            logical.boundary_requirements.is_present(),
-            compact.boundary_requirements.is_present()
-        );
-        assert_eq!(
-            logical.boundary_requirements.inflow_lag_depth(),
-            compact.boundary_requirements.inflow_lag_depth()
-        );
-        assert_eq!(
-            logical.inputs.stage_data.state.inflow_form,
-            InflowForm::Logical
-        );
-        assert_eq!(
-            compact.inputs.stage_data.state.inflow_form,
-            InflowForm::Compact
-        );
-    }
 }
 
 /// Given a boundary-inferred depth (24) greater than the fitted AR order
@@ -7721,7 +7583,7 @@ fn resolve_state_layout_widens_dense_stride_and_mask_to_declared_depth() {
     let lag_active_count = state
         .nonzero_state_indices
         .iter()
-        .filter(|d| state.inflow_lags.contains(&d.get()))
+        .filter(|d| state.state_dim_lag_range().contains(&d.get()))
         .count();
     assert_eq!(
         lag_active_count,
@@ -7773,7 +7635,7 @@ fn resolve_state_layout_floors_declared_depth_at_ar_order() {
     let lag_active_count = state
         .nonzero_state_indices
         .iter()
-        .filter(|d| state.inflow_lags.contains(&d.get()))
+        .filter(|d| state.state_dim_lag_range().contains(&d.get()))
         .count();
     assert_eq!(
         lag_active_count,

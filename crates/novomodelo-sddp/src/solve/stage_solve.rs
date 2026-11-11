@@ -15,8 +15,8 @@ use crate::{
     cut::pool::CutPool,
     error::SddpError,
     lp::builder::StateBox,
-    lp::indexer::{InflowForm, REGION_ORDER, StateRegion, StateSpace},
-    noise::{DownstreamAccumState, LagAccumState, accumulate_and_shift_lag_state},
+    lp::indexer::{REGION_ORDER, StateRegion, StateSpace},
+    noise::{DownstreamAccumState, LagAccumState},
     setup::{NodeId, StageIdx},
     workspace::{CapturedBasis, SolverWorkspace},
 };
@@ -284,8 +284,7 @@ pub(crate) fn fill_unscaled_dual(out: &mut Vec<f64>, scaled: &[f64], row_scale: 
 /// simulation output) reads this same canonical vector; there is no second
 /// canonicalization point at LP pin time.
 ///
-/// `realized_inflow` is ẑ, the stage's realized inflow: the compact layout feeds
-/// lag 0 from it, and the logical layout from its inflow columns.
+/// `realized_inflow` is ẑ, the stage's realized inflow, which feeds lag 0.
 #[allow(clippy::float_cmp)]
 pub(crate) fn assemble_outgoing_state(
     current_state: &mut Vec<f64>,
@@ -300,39 +299,26 @@ pub(crate) fn assemble_outgoing_state(
 ) {
     current_state.clear();
     for region in REGION_ORDER {
-        if layout.has_lp_columns(region) {
+        if region.has_lp_columns() {
             current_state.extend_from_slice(&unscaled_primal[layout.outgoing_block_range(region)]);
         } else {
             debug_assert_eq!(incoming_lags.len(), layout.state_dim_lag_range().len());
             current_state.extend_from_slice(incoming_lags);
         }
     }
-    match layout.inflow_form {
-        InflowForm::Logical => accumulate_and_shift_lag_state(
-            current_state,
-            incoming_lags,
-            unscaled_primal,
-            layout,
-            &stage_lag,
-            lag,
-            ds,
-        ),
-        InflowForm::Compact => {
-            debug_assert_eq!(realized_inflow.len(), layout.hydro_count);
-            advance_lag_chain(
-                LagMajor {
-                    entity_count: layout.hydro_count,
-                    max_order: layout.max_par_order,
-                },
-                &mut current_state[layout.state_dim_lag_range().start..],
-                incoming_lags,
-                realized_inflow,
-                &stage_lag,
-                lag,
-                ds,
-            );
-        }
-    }
+    debug_assert_eq!(realized_inflow.len(), layout.hydro_count);
+    advance_lag_chain(
+        LagMajor {
+            entity_count: layout.hydro_count,
+            max_order: layout.max_par_order,
+        },
+        &mut current_state[layout.state_dim_lag_range().start..],
+        incoming_lags,
+        realized_inflow,
+        &stage_lag,
+        lag,
+        ds,
+    );
     debug_assert_bucket_copy_gap_intact(current_state.as_slice(), unscaled_primal, layout);
 
     for (j, value) in current_state.iter_mut().take(layout.n_state).enumerate() {
@@ -394,6 +380,7 @@ mod tests {
         ActiveSolver, Basis, RowBatch, SolutionView, SolverError, SolverInterface,
         SolverStatistics, StageTemplate,
     };
+    use novomodelo_stochastic::par::{LagMajor, advance_lag_chain};
 
     use super::{
         REGION_ORDER, StageInputs, StateRegion, assemble_outgoing_state, run_stage_solve,
@@ -404,7 +391,7 @@ mod tests {
         cut::pool::CutPool,
         lp::builder::{PatchBuffer, StageGeometry, StateBox},
         lp::indexer::{HydroSys, StateSpace},
-        noise::{DownstreamAccumState, LagAccumState, accumulate_and_shift_lag_state},
+        noise::{DownstreamAccumState, LagAccumState},
         setup::{NodeId, StageIdx},
         test_support::{
             StageContextFixture, TrainingContextFixture, bits, constant_lead_resolution,
@@ -492,7 +479,7 @@ mod tests {
         templates: &'a [StageTemplate],
         geometry_per_stage: &'a [StageGeometry],
     ) -> StageContextFixture<'a> {
-        StageContextFixture::new(templates, &[], geometry_per_stage)
+        StageContextFixture::new(templates, &[], geometry_per_stage).without_inflow_entries(1)
     }
 
     /// Build an empty `CutPool` (no active cuts, `populated_count = 0`).
@@ -1272,11 +1259,10 @@ mod tests {
         }
     }
 
-    /// `unscaled_primal` for `seam_layout`'s 9-column LP: `[storage, lag0,
-    /// bucket_out, commit_out, z_inflow, storage_in, bucket_in, commit_in,
-    /// theta]`.
+    /// `unscaled_primal` for `seam_layout`'s 7-column LP: `[storage,
+    /// bucket_out, commit_out, storage_in, bucket_in, commit_in, theta]`.
     fn seam_primal(storage: f64, bucket: f64, commit: f64) -> Vec<f64> {
-        vec![storage, 0.0, bucket, commit, 5.0, 0.0, 0.0, 0.0, 0.0]
+        vec![storage, bucket, commit, 0.0, 0.0, 0.0, 0.0]
     }
 
     #[test]
@@ -1290,10 +1276,14 @@ mod tests {
             upper: vec![100.0, f64::INFINITY, 100.0, 50.0],
         };
 
-        // Reference: the pre-seam copy + lag accumulation, with no clamp step.
+        // Reference: the outgoing-block copy + lag advance, with no clamp step.
         let mut expected = Vec::new();
         for region in REGION_ORDER {
-            expected.extend_from_slice(&unscaled_primal[layout.outgoing_block_range(region)]);
+            if region.has_lp_columns() {
+                expected.extend_from_slice(&unscaled_primal[layout.outgoing_block_range(region)]);
+            } else {
+                expected.extend_from_slice(&incoming_lags);
+            }
         }
         let mut exp_lag_accumulator = vec![0.0_f64; 1];
         let mut exp_lag_weight_accum = vec![0.0_f64; 1];
@@ -1301,11 +1291,14 @@ mod tests {
         let mut exp_ds_weight = 0.0_f64;
         let mut exp_ds_completed: Vec<f64> = vec![];
         let mut exp_ds_n_completed = 0_usize;
-        accumulate_and_shift_lag_state(
-            &mut expected,
+        advance_lag_chain(
+            LagMajor {
+                entity_count: layout.hydro_count,
+                max_order: layout.max_par_order,
+            },
+            &mut expected[layout.state_dim_lag_range().start..],
             &incoming_lags,
-            &unscaled_primal,
-            &layout,
+            &[5.0],
             &stage_lag,
             &mut LagAccumState {
                 accumulator: &mut exp_lag_accumulator,
@@ -1331,7 +1324,7 @@ mod tests {
             &mut current_state,
             &unscaled_primal,
             &incoming_lags,
-            &[],
+            &[5.0],
             &layout,
             &state_box,
             stage_lag,
@@ -1358,9 +1351,10 @@ mod tests {
     #[allow(clippy::float_cmp)]
     fn assemble_outgoing_state_clamps_out_of_box() {
         let layout = seam_layout();
-        let commit_j = layout.commit_out.start;
+        let commit_col = layout.commit_out.start;
+        let commit_dim = layout.state_dim_commitment_hold_range().start;
         let mut unscaled_primal = seam_primal(10.0, 30.0, 20.0);
-        unscaled_primal[commit_j] = -0.5; // 0.5 below the box lower of 0.0
+        unscaled_primal[commit_col] = -0.5; // 0.5 below the box lower of 0.0
         let incoming_lags = vec![2.0_f64];
         let stage_lag = identity_stage_lag();
         let state_box = StateBox {
@@ -1379,7 +1373,7 @@ mod tests {
             &mut current_state,
             &unscaled_primal,
             &incoming_lags,
-            &[],
+            &[5.0],
             &layout,
             &state_box,
             stage_lag,
@@ -1396,7 +1390,10 @@ mod tests {
             },
         );
 
-        assert_eq!(current_state[commit_j], 0.0, "must equal the clamped bound");
+        assert_eq!(
+            current_state[commit_dim], 0.0,
+            "must equal the clamped bound"
+        );
     }
 
     #[test]
@@ -1424,7 +1421,7 @@ mod tests {
             &mut current_state,
             &unscaled_primal,
             &[2.0_f64],
-            &[],
+            &[5.0],
             &layout,
             &state_box,
             identity_stage_lag(),
@@ -1472,7 +1469,7 @@ mod tests {
         incoming_lags: &[f64],
         stage_lag: StageLagTransition,
     ) -> CompactAssembly {
-        let layout = StateSpace::new_compact(
+        let layout = StateSpace::new(
             2,
             max_order,
             Vec::new(),

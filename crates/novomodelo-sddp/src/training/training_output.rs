@@ -47,7 +47,6 @@ struct PartialRecord {
     cut_batch_build_ms: u64,
     bwd_load_imbalance_ms: u64,
     bwd_scheduling_overhead_ms: u64,
-    bwd_aggregation_ms: u64,
     lower_bound_eval_ms: u64,
     fwd_load_imbalance_ms: u64,
     fwd_scheduling_overhead_ms: u64,
@@ -133,7 +132,6 @@ fn accumulate_partial_records(events: &[TrainingEvent]) -> (BTreeMap<u64, Partia
                 row_batch_build_time_ms,
                 load_imbalance_ms,
                 scheduling_overhead_ms,
-                aggregation_time_ms,
                 ..
             } => {
                 let record = partials.entry(*iteration).or_default();
@@ -142,7 +140,6 @@ fn accumulate_partial_records(events: &[TrainingEvent]) -> (BTreeMap<u64, Partia
                 record.cut_batch_build_ms = *row_batch_build_time_ms;
                 record.bwd_load_imbalance_ms = *load_imbalance_ms;
                 record.bwd_scheduling_overhead_ms = *scheduling_overhead_ms;
-                record.bwd_aggregation_ms = *aggregation_time_ms;
             }
 
             TrainingEvent::PolicySyncComplete {
@@ -245,7 +242,6 @@ fn partial_to_iteration_record(iter: u64, partial: &PartialRecord) -> IterationR
         time_cut_batch_build_ms: partial.cut_batch_build_ms,
         time_bwd_load_imbalance_ms: partial.bwd_load_imbalance_ms,
         time_bwd_scheduling_overhead_ms: partial.bwd_scheduling_overhead_ms,
-        time_bwd_aggregation_ms: partial.bwd_aggregation_ms,
         time_fwd_load_imbalance_ms: partial.fwd_load_imbalance_ms,
         time_fwd_scheduling_overhead_ms: partial.fwd_scheduling_overhead_ms,
         time_overhead_ms: overhead_ms,
@@ -547,7 +543,6 @@ fn build_worker_timing_records(
         timings[12] = record.time_fwd_load_imbalance_ms;
         timings[13] = record.time_fwd_scheduling_overhead_ms;
         timings[14] = record.time_overhead_ms;
-        timings[16] = record.time_bwd_aggregation_ms;
         out.push(WorkerTimingRecord {
             iteration: record.iteration,
             rank: 0,
@@ -571,7 +566,7 @@ fn build_worker_timing_records(
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic, clippy::doc_markdown)]
 mod tests {
-    use novomodelo_core::{PoolRowCounts, TrainingEvent, WorkerPhaseTimings, WorkerTimingPhase};
+    use novomodelo_core::{PoolRowCounts, TrainingEvent};
     use novomodelo_io::{IterationRecord, RunStatus};
 
     use super::{
@@ -1436,7 +1431,6 @@ mod tests {
             time_cut_batch_build_ms: 0,
             time_bwd_load_imbalance_ms: 0,
             time_bwd_scheduling_overhead_ms: 0,
-            time_bwd_aggregation_ms: 0,
             time_fwd_load_imbalance_ms: 0,
             time_fwd_scheduling_overhead_ms: 0,
             time_overhead_ms: 0,
@@ -1533,47 +1527,5 @@ mod tests {
             .map(|record| record.lazy_round_cap_hits)
             .collect();
         assert_eq!(hits, [2, 0]);
-    }
-
-    #[test]
-    fn backward_aggregation_time_reaches_the_timing_record() {
-        let result = make_result("iteration_limit", 100.0, 110.0, 0.1, 1);
-        let events = [
-            make_iteration_summary(1, 100.0, 110.0, 0.1),
-            TrainingEvent::BackwardPassComplete {
-                iteration: 1,
-                rows_generated: 12,
-                stages_processed: 3,
-                elapsed_ms: 80,
-                state_exchange_time_ms: 0,
-                row_batch_build_time_ms: 0,
-                setup_time_ms: 0,
-                load_imbalance_ms: 0,
-                scheduling_overhead_ms: 0,
-                aggregation_time_ms: 37,
-            },
-            TrainingEvent::WorkerTiming {
-                rank: 0,
-                worker_id: 0,
-                iteration: 1,
-                phase: WorkerTimingPhase::Backward,
-                timings: WorkerPhaseTimings {
-                    backward_wall_ms: 55.0,
-                    ..WorkerPhaseTimings::default()
-                },
-            },
-        ];
-
-        let output = build_training_output(&result, &events, &make_empty_fcf(), false);
-
-        assert_eq!(output.convergence_records[0].time_bwd_aggregation_ms, 37);
-        let (rank_rows, worker_rows): (Vec<_>, Vec<_>) = output
-            .worker_timing_records
-            .iter()
-            .partition(|row| row.worker_id.is_none());
-        assert_eq!(rank_rows.len(), 1);
-        assert_eq!(rank_rows[0].timings[16], 37);
-        assert_eq!(worker_rows.len(), 1);
-        assert_eq!(worker_rows[0].timings[16], 0);
     }
 }

@@ -17,7 +17,6 @@ use rayon::iter::{
     IndexedParallelIterator, IntoParallelIterator, IntoParallelRefMutIterator, ParallelIterator,
 };
 
-use crate::risk_measure::BackwardOutcome;
 use crate::setup::node_graph::{EnumeratedPlan, NodeGraph, NodeId, NodePos, StageIdx, Traversal};
 use crate::{
     backward::{
@@ -35,7 +34,7 @@ use crate::{
     error::SddpError,
     forward::EnumeratedForwardScratch,
     horizon_mode::HorizonMode,
-    lp::indexer::{CutStateProjection, InflowForm, StateSpace},
+    lp::indexer::{CutStateProjection, StateSpace},
     rank_reconcile::reconcile_result_with_max,
     risk_measure::RiskMeasure,
     solve::StageOpeningSolver,
@@ -49,7 +48,7 @@ use crate::{
     trajectory::TrajectoryRecord,
     workspace::{
         BasisStore, BasisStoreSliceMut, ByNodeScratch, SolverWorkspace, WorkspacePool,
-        workspace::{ByNodeOutcomeShape, record_dims},
+        workspace::record_dims,
     },
 };
 
@@ -280,28 +279,34 @@ pub struct BackwardPassState {
     solve_cache_bypass: bool,
 
     /// Maximum local forward-pass count across the run; with
-    /// `bwd_max_openings` and `outcome_shape`, sizes [`Self::by_node_scratch`] when
-    /// [`Self::set_scheduler`] resolves `ByNode`.
+    /// `bwd_max_openings`, `n_state`, `n_hydros` and `lag_depth`, sizes
+    /// [`Self::by_node_scratch`] when [`Self::set_scheduler`] resolves `ByNode`.
     max_local_fwd: usize,
 
     /// Maximum opening count across all stages; see [`Self::max_local_fwd`].
     bwd_max_openings: usize,
 
-    /// How the by-node scheduler stores an opening's outcome; see [`Self::max_local_fwd`].
-    outcome_shape: ByNodeOutcomeShape,
+    /// The run's state dimension; see [`Self::max_local_fwd`].
+    n_state: usize,
+
+    /// The run's hydro count; see [`Self::max_local_fwd`].
+    n_hydros: usize,
+
+    /// The run's maximum PAR order; see [`Self::max_local_fwd`].
+    lag_depth: usize,
 
     /// Number of stages in the study; with `bwd_max_openings`, sizes
     /// [`Self::by_node_scratch`]'s per-`(stage, block-index)` pivot accumulator
     /// when [`Self::set_scheduler`] resolves `ByNode`.
     num_stages: usize,
 
-    /// Pre-allocated by-node scheduler scratch (per-`(m, ω)` outcome
-    /// arena + aggregation buffers). Empty until [`Self::set_scheduler`] sizes
+    /// Pre-allocated by-node scheduler scratch (per-`(m, ω)` record
+    /// locations + aggregation buffers). Empty until [`Self::set_scheduler`] sizes
     /// it for `BackwardScheduler::ByNode` (sddp.md "By-node
     /// scheduler is warm-start-only").
     by_node_scratch: ByNodeScratch,
 
-    /// The compact form's per-node σ·η and cut-row W tables, refilled at each node.
+    /// The per-node σ·η and cut-row W tables, refilled at each node.
     stage_noise: StageNoiseTable,
 
     /// Per-level node-compute results, reused across levels (mem-swapped out in
@@ -406,15 +411,6 @@ impl BackwardPassState {
         state: &StateSpace,
         horizon: &HorizonMode,
     ) -> Self {
-        let n_state = state.n_state;
-        let outcome_shape = match state.inflow_form {
-            InflowForm::Logical => ByNodeOutcomeShape::Dense { n_state },
-            InflowForm::Compact => ByNodeOutcomeShape::Folded {
-                n_state,
-                n_hydros: state.hydro_count,
-                lag_depth: state.max_par_order,
-            },
-        };
         let num_stages = horizon.num_stages();
         let send_stride = n_workers_local * bwd_max_openings * WORKER_STATS_ENTRY_STRIDE;
         Self {
@@ -445,7 +441,9 @@ impl BackwardPassState {
             solve_cache_bypass: false,
             max_local_fwd,
             bwd_max_openings,
-            outcome_shape,
+            n_state: state.n_state,
+            n_hydros: state.hydro_count,
+            lag_depth: state.max_par_order,
             num_stages,
             by_node_scratch: ByNodeScratch::default(),
             stage_noise: StageNoiseTable::default(),
@@ -490,7 +488,9 @@ impl BackwardPassState {
             ByNodeScratch::sized(
                 self.max_local_fwd,
                 self.bwd_max_openings,
-                self.outcome_shape,
+                self.n_state,
+                self.n_hydros,
+                self.lag_depth,
                 self.num_stages,
                 self.stage_worker_stats_buf.n_workers(),
             )
@@ -500,31 +500,29 @@ impl BackwardPassState {
     }
 
     /// Grows the by-node aggregation scratch to `pool_capacity` pool slots and the pair
-    /// bound of `layouts`, never shrinking; a no-op unless the by-node scheduler holds the
-    /// compact form. Call it wherever the resident pools grow.
+    /// bound of `layouts`, never shrinking; a no-op unless the scheduler is by-node. Call it
+    /// wherever the resident pools grow.
     pub(crate) fn reserve_by_node_aggregate(
         &mut self,
         layouts: &[CutStateProjection],
         pool_capacity: usize,
     ) {
-        if matches!(self.scheduler, BackwardScheduler::ByNode { .. })
-            && matches!(self.outcome_shape, ByNodeOutcomeShape::Folded { .. })
-        {
+        if matches!(self.scheduler, BackwardScheduler::ByNode { .. }) {
             let (_, pair_bound) = record_dims(layouts);
             self.by_node_scratch
-                .aggregate
-                .reserve(pool_capacity, self.bwd_max_openings * pair_bound);
+                .reserve_aggregate(pool_capacity, self.bwd_max_openings * pair_bound);
         }
     }
 
     /// Grows the per-node noise tables to `pool_capacity` cut rows over the widest outcome
-    /// set, never shrinking; a no-op on the logical form. Call it wherever the resident pools
-    /// grow.
+    /// set, never shrinking. Call it wherever the resident pools grow.
     pub(crate) fn reserve_stage_noise(&mut self, noise_dim: usize, pool_capacity: usize) {
-        if let ByNodeOutcomeShape::Folded { n_hydros, .. } = self.outcome_shape {
-            self.stage_noise
-                .reserve(self.bwd_max_openings, n_hydros, pool_capacity, noise_dim);
-        }
+        self.stage_noise.reserve(
+            self.bwd_max_openings,
+            self.n_hydros,
+            pool_capacity,
+            noise_dim,
+        );
     }
 
     #[cfg(test)]
@@ -1249,19 +1247,12 @@ impl BackwardPassState {
 /// from production hot-path code.
 #[cfg(any(test, feature = "test-support"))]
 impl BackwardPassState {
-    /// `.capacity()` of the opening-block scratch arena — `0` unless `ByNode`
-    /// could be dispatched, else the `max_local_fwd * bwd_max_openings` shape
-    /// `ByNodeScratch::sized` allocated by [`Self::resize_by_node_scratch`].
+    /// `.capacity()` of the opening-block record-location table — `0` unless
+    /// `ByNode` could be dispatched, else the `max_local_fwd * bwd_max_openings`
+    /// shape `ByNodeScratch::sized` allocated by [`Self::resize_by_node_scratch`].
     #[must_use]
-    pub fn by_node_scratch_arena_capacity(&self) -> usize {
-        self.by_node_scratch.arena.capacity()
-    }
-
-    /// Read-only view of the opening-block scratch arena, for sizing assertions
-    /// (`.len()`, each entry's `coefficients.len()`).
-    #[must_use]
-    pub fn by_node_scratch_arena(&self) -> &[BackwardOutcome] {
-        &self.by_node_scratch.arena
+    pub fn by_node_scratch_location_capacity(&self) -> usize {
+        self.by_node_scratch.location.capacity()
     }
 
     /// Per-`(generating node, block-index)` mean `simplex_iterations` pivot from
@@ -1958,9 +1949,10 @@ fn compute_one_backward_node<S: SolverInterface + Send, C: Communicator>(
         n_openings,
         "the reified successor outcome set must have as many outcomes as flattened weights"
     );
-    let stage_noise_table = training_ctx.state.inflow_form == InflowForm::Compact;
     #[cfg(any(test, feature = "test-support"))]
-    let stage_noise_table = stage_noise_table && !state.solve_cache_bypass;
+    let stage_noise_table = !state.solve_cache_bypass;
+    #[cfg(not(any(test, feature = "test-support")))]
+    let stage_noise_table = true;
     if stage_noise_table {
         state
             .stage_noise
@@ -2209,7 +2201,7 @@ pub(crate) fn process_stage_backward<S: SolverInterface + Send>(
     // Per-stage cut dimension (pool `t`'s `CutStateProjection`). Buffers reused
     // across stages are resized to EXACTLY this each stage, never grown to a
     // per-worker max: a reduced stage after a full one must shrink, or
-    // `write_opening_outcome`'s `copy_from_slice` reads stale full-length data.
+    // `copy_from_slice` into the arena slot reads stale full-length data.
     let cut_n_state = succ.cut_state.n_slots();
     // Sum over every child's populated pool: each child's binding increments land in its
     // own region, so sibling pools never collide.
@@ -2228,16 +2220,6 @@ pub(crate) fn process_stage_backward<S: SolverInterface + Send>(
             // Pre-allocate per-stage buffers. This touches only `ws.backward_accum`,
             // never `ws.solver`: each child's LP load is issued inside
             // `process_by_scenario_backward`, not here.
-            while ws.backward_accum.outcomes.len() < n_openings {
-                ws.backward_accum.outcomes.push(BackwardOutcome {
-                    intercept: 0.0,
-                    coefficients: vec![0.0_f64; cut_n_state],
-                    objective_value: 0.0,
-                });
-            }
-            for outcome in &mut ws.backward_accum.outcomes[..n_openings] {
-                outcome.coefficients.resize(cut_n_state, 0.0_f64);
-            }
             ws.backward_accum
                 .agg_coefficients
                 .resize(cut_n_state, 0.0_f64);
@@ -2541,7 +2523,7 @@ mod tests {
         }
     }
 
-    // row 0: z-inflow definition (z_inflow[0] = rhs), the only row; col 1 is the free z column.
+    // Columns: storage_out (0), storage_in (1), theta (2); one row.
     fn minimal_template_1_0() -> StageTemplate {
         StageTemplate {
             num_cols: 3,
@@ -2550,7 +2532,7 @@ mod tests {
             col_starts: vec![0_i32, 0, 1, 1],
             row_indices: vec![0_i32],
             values: vec![1.0],
-            col_lower: vec![0.0, f64::NEG_INFINITY, 0.0],
+            col_lower: vec![0.0, 0.0, 0.0],
             col_upper: vec![f64::INFINITY; 3],
             objective: vec![0.0, 0.0, 1.0],
             row_lower: vec![0.0],
@@ -2610,7 +2592,7 @@ mod tests {
                 &[],
             ),
             current_state: Vec::with_capacity(n_state),
-            scratch: ScratchBuffers::for_test(0),
+            scratch: ScratchBuffers::for_test(hydro_count),
             scratch_basis: Basis::new(0, 0),
             backward_accum: BackwardAccumulators::default(),
             worker_timing_buf: WorkerPhaseTimings::default(),
@@ -3188,7 +3170,8 @@ mod tests {
         let mut cut_batches = empty_cut_batches(n_stages);
         let state_boxes = permissive_state_boxes(n_state, n_stages);
         let geometry = equipment_free_geometry(&vec![0; templates.len()]);
-        let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+        let fixture =
+            StageContextFixture::new(&templates, &state_boxes, &geometry).without_inflow_entries(1);
         let ctx = fixture.ctx();
         let study_dims = study_dims();
         let training_ctx = TrainingContext {
@@ -3335,7 +3318,8 @@ mod tests {
         let mut cut_batches = empty_cut_batches(n_stages);
         let state_boxes = permissive_state_boxes(n_state, n_stages);
         let geometry = equipment_free_geometry(&vec![0; templates.len()]);
-        let fixture = StageContextFixture::new(templates, &state_boxes, &geometry);
+        let fixture =
+            StageContextFixture::new(templates, &state_boxes, &geometry).without_inflow_entries(1);
         let ctx = fixture.ctx();
         let study_dims = study_dims();
         let training_ctx = TrainingContext {
@@ -3711,7 +3695,8 @@ mod tests {
         let mut cut_batches = empty_cut_batches(node_graph.n_pools);
         let state_boxes = permissive_state_boxes(n_state, n_stages);
         let geometry = equipment_free_geometry(&vec![0; templates.len()]);
-        let fixture = StageContextFixture::new(templates, &state_boxes, &geometry);
+        let fixture =
+            StageContextFixture::new(templates, &state_boxes, &geometry).without_inflow_entries(1);
         let ctx = fixture.ctx();
         let study_dims = study_dims();
         let training_ctx = TrainingContext {
@@ -3931,7 +3916,8 @@ mod tests {
         let mut cut_batches = empty_cut_batches(node_graph.n_pools);
         let state_boxes = permissive_state_boxes(n_state, n_stages);
         let geometry = equipment_free_geometry(&vec![0; templates.len()]);
-        let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+        let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry)
+            .without_inflow_entries(n_hydros);
         let ctx = fixture.ctx();
         let study_dims = study_dims();
         let training_ctx = TrainingContext {
@@ -4423,7 +4409,8 @@ mod tests {
         let mut cut_batches = empty_cut_batches(n_stages);
         let state_boxes = permissive_state_boxes(n_state, n_stages);
         let geometry = equipment_free_geometry(&vec![0; templates.len()]);
-        let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+        let fixture =
+            StageContextFixture::new(&templates, &state_boxes, &geometry).without_inflow_entries(1);
         let ctx = fixture.ctx();
         let study_dims = study_dims();
         let training_ctx = TrainingContext {
@@ -4549,7 +4536,8 @@ mod tests {
         let mut cut_batches = empty_cut_batches(n_stages);
         let state_boxes = permissive_state_boxes(n_state, n_stages);
         let geometry = equipment_free_geometry(&vec![0; templates.len()]);
-        let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+        let fixture =
+            StageContextFixture::new(&templates, &state_boxes, &geometry).without_inflow_entries(1);
         let ctx = fixture.ctx();
         let study_dims = study_dims();
         let training_ctx = TrainingContext {
@@ -5017,18 +5005,18 @@ mod tests {
 
         // No scheduler set ⇒ empty (the pre-existing ByScenario/sampled default).
         let baseline = BackwardPassState::new(1, 1, 4, 2, &state, &horizon);
-        assert_eq!(baseline.by_node_scratch_arena_capacity(), 0);
+        assert_eq!(baseline.by_node_scratch_location_capacity(), 0);
 
         // set_scheduler(ByNode) sizes it.
         let mut by_node_only = BackwardPassState::new(3, 1, 4, 2, &state, &horizon);
         by_node_only.set_scheduler(BackwardScheduler::ByNode { block_size: None });
-        assert!(by_node_only.by_node_scratch_arena_capacity() > 0);
+        assert!(by_node_only.by_node_scratch_location_capacity() > 0);
         assert!(by_node_only.by_node_scratch.worker_counts.capacity() >= 3);
 
         // set_scheduler(ByScenario) keeps it empty.
         let mut by_scenario_only = BackwardPassState::new(1, 1, 4, 2, &state, &horizon);
         by_scenario_only.set_scheduler(BackwardScheduler::ByScenario {});
-        assert_eq!(by_scenario_only.by_node_scratch_arena_capacity(), 0);
+        assert_eq!(by_scenario_only.by_node_scratch_location_capacity(), 0);
     }
 
     // ── per-node basis isolation + chain byte-address ──────────────────

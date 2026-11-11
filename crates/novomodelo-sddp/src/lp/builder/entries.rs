@@ -5,14 +5,16 @@ use super::generic_constraints::resolve_variable_ref;
 use crate::hydro_models::EvaporationModel;
 use crate::indexer::{
     AnticipatedLocal, BlockIdx, Boundary, BusSys, EvapLocal, FillingTargetLocal, FloorLocal,
-    FphaCellLocal, HydroCell, HydroSys, InflowForm, LineSys, NcsSys, PlantCapLocal,
-    PlantFloorLocal, PumpingSys, ThermalSys, for_each_ring_residue,
+    FphaCellLocal, HydroCell, HydroSys, LineSys, NcsSys, PlantCapLocal, PlantFloorLocal,
+    PumpingSys, ThermalSys, for_each_ring_residue,
 };
 
 use super::delivery_ring::{DeliveryRing, maturing_bucket_in_col, resolve_bucket_arrival_density};
 use super::fpha_cursor::for_each_fpha_plane;
 use super::hydro_state::{MaxCap, MinFloor, hydro_phase, resolve_shortcircuit_target};
-use super::inflow_coupling::{InflowCoupling, InflowCouplingSink};
+#[cfg(test)]
+use super::inflow_coupling::InflowCoupling;
+use super::inflow_coupling::InflowCouplingSink;
 use super::layout::{StageLayout, StageProductionRole, TemplateBuildCtx, contract_family_slot};
 
 /// Fishing (consumption) coupling: for every anticipated plant whose
@@ -421,7 +423,6 @@ fn fill_arc_release_block_entries(
 /// chained rows (block-major `row_water + h·K + (k−1)`), each the parallel row per block
 /// with `τ_k` replacing the stage total `ζ` EVERYWHERE. A stray `ζ` double-applies
 /// (`Σ_k τ_k = ζ`) and breaks the telescoping identity that recovers the parallel row.
-/// The inflow STATE (`z_inflow` and its definition row) stays stage-level.
 ///
 /// A `PreFilling` hydro emits `K` per-block frozen identities `Sᵏ − Sᵏ⁻¹ = 0` (any
 /// coupling left on a frozen row makes `β_h` stale-nonzero — a wrong cut that compiles),
@@ -1278,51 +1279,6 @@ pub(super) fn fill_ncs_load_balance_entries(
     }
 }
 
-/// Fill the z-inflow definition row per hydro `z_h − Σ_l ψ_l·lag_in[h,l] = base_h + σ_h·η_h`:
-/// `+1.0` on `z_h`, `−ψ_l` on each nonzero lag column, addressed via
-/// [`StateSpace::lag_incoming_col`](crate::indexer::StateSpace::lag_incoming_col).
-pub(super) fn fill_z_inflow_entries(
-    ctx: &TemplateBuildCtx<'_>,
-    stage_idx: usize,
-    layout: &StageLayout,
-    col_entries: &mut [Vec<(usize, f64)>],
-) {
-    let n_h = layout.state.hydro_count;
-    let lag_order = layout.state.max_par_order;
-
-    for h_idx in 0..n_h {
-        let row = layout.z_inflow_row(HydroSys::new(h_idx));
-
-        let col_z = layout.state.z_inflow_col(HydroSys::new(h_idx)).get();
-        col_entries[col_z].push((row, 1.0));
-
-        if ctx.par_lp.n_stages() > 0 {
-            let psi = ctx.par_lp.psi_slice(stage_idx, h_idx);
-            for (lag, &psi_val) in psi.iter().enumerate() {
-                if psi_val != 0.0 && lag < lag_order {
-                    let col = layout
-                        .state
-                        .lag_incoming_col(lag, HydroSys::new(h_idx))
-                        .get();
-                    col_entries[col].push((row, -psi_val));
-                }
-            }
-        }
-    }
-}
-
-pub(super) fn fill_z_inflow_coupling_entries(
-    coupling: &InflowCoupling,
-    layout: &StageLayout,
-    col_entries: &mut [Vec<(usize, f64)>],
-) {
-    for h_idx in 0..coupling.n_hydros() {
-        let hydro = HydroSys::new(h_idx);
-        let z_h = layout.state.z_inflow_col(hydro).get();
-        col_entries[z_h].extend(coupling.hydro_entries(hydro));
-    }
-}
-
 /// Fill entries for the 6 operational-violation families, linking decision
 /// variables to their slack columns:
 ///
@@ -1518,8 +1474,7 @@ fn fill_plant_cap_entries(
 /// in insertion order. The caller must sort by row index before assembling (see
 /// `build_single_stage_template`; `assemble_csc` asserts the sort).
 ///
-/// The realized-inflow coupling goes to `sink`, not to the z columns; the caller fills
-/// them with [`fill_z_inflow_coupling_entries`] once the sink is finished.
+/// The realized-inflow coupling goes to `sink`, not to any column.
 pub(super) fn build_stage_matrix_entries(
     ctx: &TemplateBuildCtx<'_>,
     stage: &Stage,
@@ -1539,10 +1494,6 @@ pub(super) fn build_stage_matrix_entries(
     fill_ncs_load_balance_entries(ctx, layout, &mut col_entries);
     fill_fpha_entries(ctx, stage, stage_idx, layout, &mut col_entries);
     fill_evaporation_entries(ctx, stage, stage_idx, layout, &mut col_entries);
-    match layout.state.inflow_form {
-        InflowForm::Logical => fill_z_inflow_entries(ctx, stage_idx, layout, &mut col_entries),
-        InflowForm::Compact => {}
-    }
     fill_operational_violation_entries(ctx, stage_idx, layout, &mut col_entries);
     fill_plant_cap_entries(ctx, stage_idx, layout, &mut col_entries);
     fill_anticipated_fishing_entries(ctx, stage, stage_idx, layout, &mut col_entries);
@@ -1558,14 +1509,20 @@ pub(super) fn build_stage_matrix_entries_with_inflow_coupling(
     layout: &StageLayout,
 ) -> Vec<Vec<(usize, f64)>> {
     let mut sink = InflowCouplingSink::new(layout.state.hydro_count);
-    let mut col_entries = build_stage_matrix_entries(ctx, stage, stage_idx, layout, &mut sink);
+    build_stage_matrix_entries(ctx, stage, stage_idx, layout, &mut sink)
+}
+
+#[cfg(test)]
+pub(super) fn build_stage_inflow_coupling(
+    ctx: &TemplateBuildCtx<'_>,
+    stage: &Stage,
+    stage_idx: usize,
+    layout: &StageLayout,
+) -> InflowCoupling {
+    let mut sink = InflowCouplingSink::new(layout.state.hydro_count);
+    build_stage_matrix_entries(ctx, stage, stage_idx, layout, &mut sink);
     let (row_lower, row_upper) = super::rows::fill_stage_rows(ctx, stage, stage_idx, layout);
-    let coupling = sink.finish(&row_lower, &row_upper);
-    match layout.state.inflow_form {
-        InflowForm::Logical => fill_z_inflow_coupling_entries(&coupling, layout, &mut col_entries),
-        InflowForm::Compact => {}
-    }
-    col_entries
+    sink.finish(&row_lower, &row_upper)
 }
 
 #[cfg(test)]
@@ -3393,12 +3350,10 @@ mod zero_cost_tests {
             }
         }
 
-        // Storage-fixing and lag-fixing diagonal absence assertions. With
-        // n_hydros = 0 in this fixture these loops execute zero iterations,
-        // but the structure documents intent and the same assertion shape
-        // catches a regression in any future fixture with non-zero hydros.
+        // With n_hydros = 0 in this fixture the loop executes zero iterations,
+        // but the same assertion shape catches a regression in any future
+        // fixture with non-zero hydros.
         let n_h = ctx.hydros.len();
-        let lag_order = ctx.par_lp.max_order();
         for h in 0..n_h {
             let col = layout.state.storage_in.start + h;
             let has_diag = col_entries[col]
@@ -3408,20 +3363,6 @@ mod zero_cost_tests {
                 !has_diag,
                 "storage-fixing diagonal (row={h}, val=1.0) must be absent from col {col}"
             );
-        }
-        for lag in 0..lag_order {
-            for h in 0..n_h {
-                let col = layout.state.inflow_lags.start + lag * n_h + h;
-                let diag_row = n_h + lag * n_h + h;
-                let has_diag = col_entries[col]
-                    .iter()
-                    .any(|&(r, v)| r == diag_row && (v - 1.0).abs() < 1e-15);
-                assert!(
-                    !has_diag,
-                    "lag-fixing diagonal (row={diag_row}, val=1.0) must be absent from col {col} \
-                     (lag={lag}, h={h})"
-                );
-            }
         }
     }
 }
@@ -3455,7 +3396,7 @@ mod pumping_water_tests {
     };
     use crate::indexer::{
         AnticipatedPlants, BlockIdx, Boundary, BusSys, EvapLocal, FphaCellLocal, HydroCell,
-        HydroCellIndex, HydroSys, InflowForm, LineSys, PlantCapLocal, PlantFloorLocal, StateDim,
+        HydroCellIndex, HydroSys, LineSys, PlantCapLocal, PlantFloorLocal, StateDim,
     };
     use crate::lead_time::{SpreadResolution, resolve_spread};
 
@@ -3467,19 +3408,19 @@ mod pumping_water_tests {
     use super::super::columns::{fill_pumping_columns, fill_stage_columns};
     use super::super::delivery_ring::ColumnBufs;
     use super::super::hydro_state::{MaxCap, MinFloor, warn_on_inert_plant_floor_overrides};
-    use super::super::inflow_coupling::{InflowCoupling, InflowCouplingSink};
+    use super::super::inflow_coupling::InflowCoupling;
     use super::super::layout::{StageLayout, TemplateBuildCtx};
     use super::super::rows::fill_stage_rows;
     use super::super::test_support::{
         BLOCK_HOURS, three_block_stage, two_block_stage, zero_hydro_penalties,
     };
     use super::{
-        GenericConstraintFill, assemble_csc, build_stage_matrix_entries,
+        GenericConstraintFill, assemble_csc, build_stage_inflow_coupling,
         build_stage_matrix_entries_with_inflow_coupling, fill_fpha_entries,
         fill_generic_constraints_for_test, fill_load_balance_entries,
         fill_operational_violation_entries, fill_pumping_water_entries,
-        fill_transit_bucket_definition_entries, fill_z_inflow_coupling_entries,
-        resolve_bucket_arrival_density, resolve_variable_ref,
+        fill_transit_bucket_definition_entries, resolve_bucket_arrival_density,
+        resolve_variable_ref,
     };
 
     const N_STAGES: usize = 1;
@@ -3909,10 +3850,8 @@ mod pumping_water_tests {
             self
         }
 
-        /// Inject a `PrecomputedPar`, whose order (read via `ctx.par_lp.max_order()`)
-        /// sizes the inflow-lag columns so the `−ζ·ψ` AR-lag water term fires. The
-        /// default fixture carries `PrecomputedPar::default()` (order 0), under
-        /// which the AR-lag term is dormant.
+        /// Inject a `PrecomputedPar`, whose order sizes the state vector's lag
+        /// region. The default fixture carries `PrecomputedPar::default()` (order 0).
         fn with_par_lp(mut self, par_lp: PrecomputedPar) -> Self {
             self.base.par_lp = par_lp;
             self
@@ -4741,7 +4680,6 @@ mod pumping_water_tests {
 
             let entries = build_stage_matrix_entries_with_inflow_coupling(&ctx, &stage, 0, &layout);
             let mut fill = fill_generic_constraints_for_test(&ctx, 0, &layout, entries);
-            fill_z_inflow_coupling_entries(&fill.coupling, &layout, &mut fill.col_entries);
 
             // Mirror the production per-column row-sort (see
             // build_single_stage_template) before assembling the CSC.
@@ -4946,7 +4884,7 @@ mod pumping_water_tests {
 
     /// Pin the two structural water-row coefficients `fill_state_and_water_entries`
     /// writes for a two-reservoir cascade: the cascade-upstream `−tau_h` and the
-    /// `z`-inflow coupling `−ζ`. Both are the weakest-backstopped coefficients in
+    /// inflow coupling `−ζ`. Both are the weakest-backstopped coefficients in
     /// the water row — a sign flip on either silently mis-routes water and produces
     /// wrong bounds, yet outside this test they are exercised only by a slow parity
     /// D-case whose hash-mismatch failure mode does not localize to the water row.
@@ -4960,7 +4898,7 @@ mod pumping_water_tests {
     /// `M3S_TO_HM3` (never a literal) so the assertion cannot drift from the
     /// production constant.
     #[test]
-    fn cascade_upstream_tau_and_z_inflow_land_on_downstream_water_row() {
+    fn cascade_upstream_tau_and_the_inflow_coupling_land_on_downstream_water_row() {
         use novomodelo_core::scenario::InflowModel;
 
         // Assemble the production water-row fill into a CSC. The generic-constraint
@@ -5054,9 +4992,9 @@ mod pumping_water_tests {
             );
         }
 
-        // z-inflow coupling: self-contained block. An AR(1) PrecomputedPar carrying
-        // a nonzero psi for the downstream hydro proves the water row carries no
-        // lag entry EVEN when a PAR model is present (the default fixture has
+        // Inflow coupling: self-contained block. An AR(1) PrecomputedPar carrying
+        // a nonzero psi for the downstream hydro proves the coupling carries no
+        // lag term EVEN when a PAR model is present (the default fixture has
         // psi == 0, which would leave the absence vacuous). psi[0] for the
         // downstream hydro is constructed to equal phi exactly:
         // the classical conversion psi = phi * s_m / s_lag collapses to phi when
@@ -5122,37 +5060,14 @@ mod pumping_water_tests {
         let ar_ctx = ar_fixtures.make_ctx();
         let ar_stage = two_block_stage(0, [300.0, 444.0]);
         let ar_layout = StageLayout::new(&ar_ctx, &ar_stage, 0);
-        let ar_csc = {
-            let mut entries =
-                build_stage_matrix_entries_with_inflow_coupling(&ar_ctx, &ar_stage, 0, &ar_layout);
-            for col in &mut entries {
-                col.sort_unstable_by_key(|&(row, _)| row);
-            }
-            assemble_csc(&entries)
-        };
-        let ar_coeff_at = |col: usize, row: i32| -> f64 {
-            let start = usize::try_from(ar_csc.0[col]).unwrap();
-            let end = usize::try_from(ar_csc.0[col + 1]).unwrap();
-            ar_csc.1[start..end]
-                .iter()
-                .zip(&ar_csc.2[start..end])
-                .filter(|&(&r, _)| r == row)
-                .map(|(_, &v)| v)
-                .sum()
-        };
-        // Lag column for (lag 0, downstream hydro): inflow_lags.start + 0*n_h + h.
-        let lag_col = ar_layout.state.inflow_lags.start + down_idx;
-        let ar_row = i32::try_from(ar_layout.geometry.water_balance.start() + down_idx).unwrap();
+        let ar_row = ar_layout.geometry.water_balance.start() + down_idx;
+        let coupling = build_stage_inflow_coupling(&ar_ctx, &ar_stage, 0, &ar_layout);
+        let down_coupling: Vec<(usize, f64)> =
+            coupling.hydro_entries(HydroSys::new(down_idx)).collect();
         assert_eq!(
-            ar_coeff_at(lag_col, ar_row),
-            0.0,
-            "downstream inflow-lag column must carry no entry on its water row"
-        );
-        let z_col = ar_layout.state.z_inflow.start + down_idx;
-        assert_eq!(
-            ar_coeff_at(z_col, ar_row),
-            -ar_layout.clock.zeta(),
-            "downstream z-inflow column must carry -zeta on its own water row"
+            down_coupling,
+            [(ar_row, -ar_layout.clock.zeta())],
+            "the downstream inflow must couple at -zeta on its own water row alone"
         );
     }
 
@@ -8808,20 +8723,12 @@ mod pumping_water_tests {
 
     struct PfuOffsets {
         zeta: f64,
-        z_u: usize,
+        u: HydroSys,
         water_row_u: usize,
         water_row_d: usize,
-        z_inflow_row_u: usize,
         filling_target_row_d: usize,
         n_target_rows: usize,
         storage_in_u: usize,
-    }
-
-    /// Count the nonzero entries stored in CSC column `col`.
-    fn csc_col_nnz(csc: &(Vec<i32>, Vec<i32>, Vec<f64>), col: usize) -> usize {
-        let start = usize::try_from(csc.0[col]).unwrap();
-        let end = usize::try_from(csc.0[col + 1]).unwrap();
-        csc.2[start..end].iter().filter(|&&v| v != 0.0).count()
     }
 
     /// Build `U(H1) → D(H2)` where BOTH are filling but the upstream U commissions
@@ -8832,7 +8739,8 @@ mod pumping_water_tests {
         clippy::type_complexity,
         reason = "each case returns the raw build tuple its assertions destructure"
     )]
-    fn build_prefilling_upstream_of_filling_case() -> ((Vec<i32>, Vec<i32>, Vec<f64>), PfuOffsets) {
+    fn build_prefilling_upstream_of_filling_case()
+    -> ((Vec<i32>, Vec<i32>, Vec<f64>), InflowCoupling, PfuOffsets) {
         let stage_id = 2;
         let mut fixtures = PumpFixtures::new(
             vec![
@@ -8855,6 +8763,7 @@ mod pumping_water_tests {
             }
             assemble_csc(&entries)
         };
+        let coupling = build_stage_inflow_coupling(&ctx, &stage, 0, &layout);
         // D is the only Filling hydro at this stage, so its σ_fill target row is the
         // single `filling_target` row — used below to prove routed inflow does NOT
         // land on it.
@@ -8866,69 +8775,44 @@ mod pumping_water_tests {
             .expect("D is Filling, so it carries a σ_fill target row");
         let offsets = PfuOffsets {
             zeta: layout.clock.zeta(),
-            z_u: layout.state.z_inflow.start + u_idx,
+            u: HydroSys::new(u_idx),
             water_row_u: layout.geometry.water_balance.start() + u_idx,
             water_row_d: layout.geometry.water_balance.start() + d_idx,
-            z_inflow_row_u: layout.z_inflow_row(HydroSys::new(u_idx)),
             filling_target_row_d: layout.geometry.filling_target.start + d_target_local,
             n_target_rows: layout.geometry.filling_target_hydro_indices.len(),
             storage_in_u: layout.state.storage_in.start + u_idx,
         };
-        (csc, offsets)
+        (csc, coupling, offsets)
     }
 
     /// Regression: when a `PreFilling` hydro U is the direct upstream of a Filling
-    /// hydro D at the same stage, U's routed natural inflow (`z_U` at `−ζ`) lands on
+    /// hydro D at the same stage, U's routed natural inflow (at `−ζ`) lands on
     /// D's water-balance row and on NO OTHER constraint row. Filling is uncapped in
     /// the volume-target model — there is no impound-cap row — so the routed inflow
     /// has only the balance row to receive it. The forbidden alternative (the v1
-    /// cap-row port) routed a SECOND `z_U` push onto a retention row; removing the
-    /// balance-row push instead would strand U's water (a correctness regression), so
-    /// this test pins both: routed onto the balance row, and onto no other row.
+    /// cap-row port) routed a SECOND push of U's inflow onto a retention row;
+    /// removing the balance-row push instead would strand U's water (a correctness
+    /// regression), so this test pins both: routed onto the balance row, and onto
+    /// no other row.
     ///
-    /// The `z_U` column carries exactly TWO nonzero entries: its `+1.0` on U's own
-    /// z-inflow DEFINITION row (untouched by the short-circuit) and the routed `−ζ`
-    /// on D's water-balance row. A cap-row port would add a third entry.
+    /// U's inflow coupling holds exactly ONE entry, the routed `−ζ` on D's
+    /// water-balance row. A cap-row port would add a second.
     #[test]
     fn prefilling_upstream_inflow_lands_on_balance_row_only() {
-        let (csc, off) = build_prefilling_upstream_of_filling_case();
+        let (csc, coupling, off) = build_prefilling_upstream_of_filling_case();
         assert_eq!(
             off.n_target_rows, 1,
             "exactly one σ_fill target row (only D is Filling)"
         );
 
-        // U's realized inflow z_U is routed onto D's standard water-balance row at −ζ.
         assert_eq!(
-            csc_at(&csc, off.z_u, off.water_row_d),
-            -off.zeta,
-            "z_U is routed onto D's water-balance row at −ζ (short-circuit target)"
+            inflow_entry_bits(&coupling, off.u),
+            vec![(off.water_row_d, (-off.zeta).to_bits())],
+            "U's inflow is routed onto D's water-balance row at −ζ and onto no other row \
+             (not D's σ_fill target row, not U's frozen-identity water-balance row)"
         );
-        // …and on NO OTHER constraint row beyond its own z-inflow definition row:
-        // exactly two nonzero entries (def row +1.0, routed balance-row −ζ). A
-        // retention/cap-row port would push a third entry here.
-        assert_eq!(
-            csc_at(&csc, off.z_u, off.z_inflow_row_u),
-            1.0,
-            "z_U keeps its +1.0 on U's own z-inflow definition row"
-        );
-        assert_eq!(
-            csc_col_nnz(&csc, off.z_u),
-            2,
-            "z_U has exactly two nonzero CSC entries (def row + balance-row push, no cap-row port)"
-        );
-        // Specifically, z_U is absent from D's σ_fill target row (the σ_fill row
-        // couples v_h + slack, never the routed inflow) and from U's own frozen
-        // water-balance row.
-        assert_eq!(
-            csc_at(&csc, off.z_u, off.filling_target_row_d),
-            0.0,
-            "z_U does not land on D's σ_fill target row"
-        );
-        assert_eq!(
-            csc_at(&csc, off.z_u, off.water_row_u),
-            0.0,
-            "z_U is relocated off U's frozen-identity water-balance row (PreFilling)"
-        );
+        assert_ne!(off.water_row_u, off.water_row_d);
+        assert_ne!(off.filling_target_row_d, off.water_row_d);
         assert_eq!(
             csc_at(&csc, off.storage_in_u, off.water_row_u),
             -1.0,
@@ -8936,10 +8820,9 @@ mod pumping_water_tests {
         );
     }
 
-    /// A slack method's inflow-slack column carries exactly `z_h`'s water-row entries
-    /// (`z_h`'s own definition row aside), on the short-circuit target's rows for a
-    /// `PreFilling` hydro and on no row at a sink; a method without the family
-    /// allocates none.
+    /// A slack method's inflow-slack column carries exactly the hydro's inflow
+    /// coupling entries, on the short-circuit target's rows for a `PreFilling`
+    /// hydro and on no row at a sink; a method without the family allocates none.
     #[test]
     fn inflow_slack_follows_z_routing_for_prefilling() {
         type Topology = fn() -> Vec<Hydro>;
@@ -8990,15 +8873,10 @@ mod pumping_water_tests {
                         );
                         continue;
                     }
+                    let coupling = build_stage_inflow_coupling(&ctx, &stage, 0, &layout);
                     for h in 0..ctx.hydros.len() {
                         let hydro = HydroSys::new(h);
-                        let z_row = layout.z_inflow_row(hydro);
-                        let z_entries: Vec<(usize, u64)> = entries
-                            [layout.state.z_inflow_col(hydro).get()]
-                        .iter()
-                        .filter(|(r, _)| *r != z_row)
-                        .map(|&(r, v)| (r, v.to_bits()))
-                        .collect();
+                        let z_entries = inflow_entry_bits(&coupling, hydro);
                         let slack_entries: Vec<(usize, u64)> = entries
                             [layout.geometry.inflow_slack_col(hydro)]
                         .iter()
@@ -9006,7 +8884,7 @@ mod pumping_water_tests {
                         .collect();
                         assert_eq!(
                             slack_entries, z_entries,
-                            "{case}: hydro {h}'s slack carries exactly z's water-row entries"
+                            "{case}: hydro {h}'s slack carries exactly its inflow coupling entries"
                         );
                         if name == "sink" {
                             assert!(
@@ -9034,15 +8912,23 @@ mod pumping_water_tests {
         }
     }
 
-    fn build_inflow_coupling(
+    fn inflow_entries(
         ctx: &TemplateBuildCtx<'_>,
         stage: &Stage,
         layout: &StageLayout,
-    ) -> InflowCoupling {
-        let mut sink = InflowCouplingSink::new(layout.state.hydro_count);
-        build_stage_matrix_entries(ctx, stage, 0, layout, &mut sink);
-        let (row_lower, row_upper) = fill_stage_rows(ctx, stage, 0, layout);
-        sink.finish(&row_lower, &row_upper)
+        hydro_idx: usize,
+    ) -> Vec<(usize, f64)> {
+        build_stage_inflow_coupling(ctx, stage, 0, layout)
+            .hydro_entries(HydroSys::new(hydro_idx))
+            .collect()
+    }
+
+    fn entry_at(entries: &[(usize, f64)], row: usize) -> f64 {
+        entries
+            .iter()
+            .filter(|(r, _)| *r == row)
+            .map(|&(_, v)| v)
+            .sum()
     }
 
     fn inflow_entry_bits(coupling: &InflowCoupling, hydro: HydroSys) -> Vec<(usize, u64)> {
@@ -9058,7 +8944,7 @@ mod pumping_water_tests {
         let ctx = fixtures.make_ctx();
         let stage = two_block_stage(0, [300.0, 444.0]);
         let layout = StageLayout::new(&ctx, &stage, 0);
-        let coupling = build_inflow_coupling(&ctx, &stage, &layout);
+        let coupling = build_stage_inflow_coupling(&ctx, &stage, 0, &layout);
 
         let hydro = HydroSys::new(0);
         let zeta = stage.blocks.iter().map(|b| b.duration_hours).sum::<f64>() * M3S_TO_HM3;
@@ -9076,7 +8962,7 @@ mod pumping_water_tests {
         let mut stage = two_block_stage(0, [300.0, 444.0]);
         stage.block_mode = BlockMode::Chronological;
         let layout = StageLayout::new(&ctx, &stage, 0);
-        let coupling = build_inflow_coupling(&ctx, &stage, &layout);
+        let coupling = build_stage_inflow_coupling(&ctx, &stage, 0, &layout);
 
         let hydro = HydroSys::new(0);
         let expected: Vec<(usize, u64)> = (0..stage.blocks.len())
@@ -9107,7 +8993,7 @@ mod pumping_water_tests {
                 two_block_stage(usize::try_from(RET_PREFILLING_ID).unwrap(), [300.0, 444.0]);
             stage.block_mode = block_mode;
             let layout = StageLayout::new(&ctx, &stage, 0);
-            let coupling = build_inflow_coupling(&ctx, &stage, &layout);
+            let coupling = build_stage_inflow_coupling(&ctx, &stage, 0, &layout);
 
             let coefficients: Vec<f64> = match block_mode {
                 BlockMode::Parallel => {
@@ -9140,7 +9026,7 @@ mod pumping_water_tests {
         }
     }
 
-    fn two_hydro_ar1_fixtures(inflow_form: InflowForm) -> PumpFixtures {
+    fn two_hydro_ar1_fixtures() -> PumpFixtures {
         use novomodelo_core::scenario::InflowModel;
 
         let stage = two_block_stage(0, [300.0, 444.0]);
@@ -9165,124 +9051,62 @@ mod pumping_water_tests {
             None,
         )
         .expect("AR(1) PrecomputedPar build must succeed");
-        let mut fixtures = PumpFixtures::new(vec![fixture_hydro(1), fixture_hydro(2)], Vec::new())
+        PumpFixtures::new(vec![fixture_hydro(1), fixture_hydro(2)], Vec::new())
             .with_resolved_penalties()
-            .with_par_lp(par_lp);
-        fixtures.base.inflow_form = inflow_form;
-        fixtures
-    }
-
-    #[test]
-    fn compact_template_drops_lag_and_z_entities() {
-        let stage = two_block_stage(0, [300.0, 444.0]);
-        let build = |inflow_form: InflowForm| {
-            let mut fixtures = two_hydro_ar1_fixtures(inflow_form);
-            let ctx = fixtures.make_ctx();
-            let layout = StageLayout::new(&ctx, &stage, 0);
-            let dropped: Vec<usize> = layout
-                .state
-                .inflow_lags
-                .clone()
-                .chain(layout.state.z_inflow.clone())
-                .collect();
-            let template =
-                super::super::template::build_single_stage_template(&ctx, &stage, 0).template;
-            (
-                template,
-                dropped,
-                layout.state.hydro_count,
-                ctx.par_lp.max_order(),
-            )
-        };
-        let (logical, logical_dropped, n_hydros, lag_order) = build(InflowForm::Logical);
-        let (compact, compact_dropped, ..) = build(InflowForm::Compact);
-
-        assert_eq!((n_hydros, lag_order), (2, 1));
-        assert_eq!(logical_dropped.len(), n_hydros * (lag_order + 1));
-        assert!(compact_dropped.is_empty());
-        assert_eq!(
-            compact.num_cols + n_hydros * (lag_order + 1),
-            logical.num_cols
-        );
-        assert_eq!(compact.num_rows + n_hydros, logical.num_rows);
-
-        let num_rows = i32::try_from(compact.num_rows).unwrap();
-        assert!(compact.row_indices.iter().all(|&row| row < num_rows));
-
-        let col_span = |col: usize| {
-            usize::try_from(logical.col_starts[col]).unwrap()
-                ..usize::try_from(logical.col_starts[col + 1]).unwrap()
-        };
-        let dropped_entries: usize = logical_dropped.iter().map(|&col| col_span(col).len()).sum();
-        assert!(dropped_entries > 0);
-        assert_eq!(compact.num_nz, logical.num_nz - dropped_entries);
-
-        let z_rows = i32::try_from(n_hydros).unwrap();
-        let z_row_entries_outside_dropped = (0..logical.num_cols)
-            .filter(|col| !logical_dropped.contains(col))
-            .flat_map(|col| logical.row_indices[col_span(col)].iter().copied())
-            .filter(|&row| row < z_rows)
-            .count();
-        assert_eq!(z_row_entries_outside_dropped, 0);
+            .with_par_lp(par_lp)
     }
 
     #[test]
     fn compact_template_inflow_coupling_equals_logical_shifted_by_the_z_rows() {
         let stage = two_block_stage(0, [300.0, 444.0]);
-        let coupling_bits = |inflow_form: InflowForm| {
-            let mut fixtures = two_hydro_ar1_fixtures(inflow_form);
-            let ctx = fixtures.make_ctx();
-            let layout = StageLayout::new(&ctx, &stage, 0);
-            let coupling = build_inflow_coupling(&ctx, &stage, &layout);
-            (0..layout.state.hydro_count)
-                .map(|h| inflow_entry_bits(&coupling, HydroSys::new(h)))
-                .collect::<Vec<_>>()
-        };
-        let logical = coupling_bits(InflowForm::Logical);
-        let compact = coupling_bits(InflowForm::Compact);
+        let mut fixtures = two_hydro_ar1_fixtures();
+        let ctx = fixtures.make_ctx();
+        let layout = StageLayout::new(&ctx, &stage, 0);
+        let coupling = build_stage_inflow_coupling(&ctx, &stage, 0, &layout);
 
-        let n_hydros = logical.len();
-        assert_eq!(n_hydros, 2);
-        for (h, (logical_h, compact_h)) in logical.iter().zip(&compact).enumerate() {
-            assert!(!logical_h.is_empty(), "hydro {h}");
-            let shifted: Vec<(usize, u64)> = logical_h
-                .iter()
-                .map(|&(row, bits)| (row - n_hydros, bits))
-                .collect();
-            assert_eq!(compact_h, &shifted, "hydro {h}");
+        assert_eq!(layout.state.hydro_count, 2);
+        let zeta = layout.clock.zeta();
+        for h in 0..layout.state.hydro_count {
+            let hydro = HydroSys::new(h);
+            let water_row = layout.geometry.water_balance_row(hydro, BlockIdx::new(0));
+            assert_eq!(
+                inflow_entry_bits(&coupling, hydro),
+                vec![(water_row, (-zeta).to_bits())],
+                "hydro {h}"
+            );
         }
     }
 
     #[test]
     fn compact_inflow_coupling_keeps_the_logical_touched_row_bounds() {
         let stage = two_block_stage(0, [300.0, 444.0]);
-        let touched = |inflow_form: InflowForm| {
-            let mut fixtures = two_hydro_ar1_fixtures(inflow_form);
-            let ctx = fixtures.make_ctx();
-            let layout = StageLayout::new(&ctx, &stage, 0);
-            let coupling = build_inflow_coupling(&ctx, &stage, &layout);
-            let bits = |values: &[f64]| values.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
-            (
-                layout.state.hydro_count,
-                coupling.touched_rows().to_vec(),
-                bits(coupling.touched_row_lower()),
-                bits(coupling.touched_row_upper()),
-            )
-        };
-        let (n_hydros, logical_rows, logical_lower, logical_upper) = touched(InflowForm::Logical);
-        let (_, compact_rows, compact_lower, compact_upper) = touched(InflowForm::Compact);
+        let mut fixtures = two_hydro_ar1_fixtures();
+        let ctx = fixtures.make_ctx();
+        let layout = StageLayout::new(&ctx, &stage, 0);
+        let coupling = build_stage_inflow_coupling(&ctx, &stage, 0, &layout);
+        let (row_lower, row_upper) = fill_stage_rows(&ctx, &stage, 0, &layout);
 
-        let z_rows = u32::try_from(n_hydros).unwrap();
-        assert!(!logical_rows.is_empty());
-        assert_eq!(
-            compact_rows,
-            logical_rows
+        let touched: Vec<usize> = coupling
+            .touched_rows()
+            .iter()
+            .map(|&row| row as usize)
+            .collect();
+        assert!(!touched.is_empty());
+        let bits = |values: &[f64]| values.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+        let template_bits = |bounds: &[f64]| {
+            touched
                 .iter()
-                .map(|&row| row - z_rows)
+                .map(|&row| bounds[row].to_bits())
                 .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            bits(coupling.touched_row_lower()),
+            template_bits(&row_lower)
         );
-        assert_eq!(compact_lower, logical_lower);
-        assert_eq!(compact_upper, logical_upper);
+        assert_eq!(
+            bits(coupling.touched_row_upper()),
+            template_bits(&row_upper)
+        );
     }
 
     // ── σ_fill terminal target row + column ──────────────────────────────────
@@ -9819,7 +9643,7 @@ mod pumping_water_tests {
         water_row_h2: usize,
         water_row_h3: usize,
         col_storage_in_h2: usize,
-        z_h2: usize,
+        inflow_h2: Vec<(usize, f64)>,
         h1_turbine: Vec<usize>,
         h1_spillage: Vec<usize>,
         h2_turbine: Vec<usize>,
@@ -9880,7 +9704,7 @@ mod pumping_water_tests {
             water_row_h2: layout.geometry.water_balance.start() + h2_idx,
             water_row_h3: layout.geometry.water_balance.start() + h3_idx,
             col_storage_in_h2: layout.state.storage_in.start + h2_idx,
-            z_h2: layout.state.z_inflow.start + h2_idx,
+            inflow_h2: inflow_entries(&ctx, &stage, &layout, h2_idx),
             h1_turbine: (0..layout.clock.n_blks())
                 .map(|blk| {
                     layout
@@ -9930,14 +9754,14 @@ mod pumping_water_tests {
         // (1) Incremental inflow: z_{H2} carries −ζ on H3's row (relocated), and
         // NOTHING on H2's own frozen row.
         assert_eq!(
-            csc_at(&csc, off.z_h2, row_d),
+            entry_at(&off.inflow_h2, row_d),
             -off.zeta,
-            "z_{{H2}} carries −ζ on H3's water row (incremental inflow re-routed)"
+            "inflow_{{H2}} carries −ζ on H3's water row (incremental inflow re-routed)"
         );
         assert_eq!(
-            csc_at(&csc, off.z_h2, row_h),
+            entry_at(&off.inflow_h2, row_h),
             0.0,
-            "z_{{H2}} carries nothing on H2's own frozen-identity row"
+            "inflow_{{H2}} carries nothing on H2's own frozen-identity row"
         );
 
         // (2) Upstream H1 releases re-routed upstream(H2)→H3 with −τ_h per block.
@@ -10018,9 +9842,9 @@ mod pumping_water_tests {
             );
         }
         assert_eq!(
-            csc_at(&csc, off.z_h2, row_h),
+            entry_at(&off.inflow_h2, row_h),
             0.0,
-            "z_{{H2}} absent from the frozen row"
+            "inflow_{{H2}} absent from the frozen row"
         );
 
         // RHS is exactly 0 (NOT ζ·(base − withdrawal)).
@@ -10061,7 +9885,7 @@ mod pumping_water_tests {
             assemble_csc(&entries)
         };
         let row_h = layout.geometry.water_balance.start() + h2_idx;
-        let z_h2 = layout.state.z_inflow.start + h2_idx;
+        let inflow_h2 = inflow_entries(&ctx, &stage, &layout, h2_idx);
 
         // Frozen identity intact on H2's own row.
         assert_eq!(csc_at(&csc, h2_idx, row_h), 1.0, "v_{{H2}} +1.0");
@@ -10081,9 +9905,9 @@ mod pumping_water_tests {
         for h in 0..layout.state.hydro_count {
             let r = layout.geometry.water_balance.start() + h;
             assert_eq!(
-                csc_at(&csc, z_h2, r),
+                entry_at(&inflow_h2, r),
                 0.0,
-                "z_{{H2}} must not land on any water row in the sink case (row {r})"
+                "inflow_{{H2}} must not land on any water row in the sink case (row {r})"
             );
         }
         let row_h1 = layout.geometry.water_balance.start() + h1_idx;
@@ -10315,7 +10139,7 @@ mod pumping_water_tests {
             water_row_h2: layout.geometry.water_balance.start() + h2_idx,
             water_row_h3: layout.geometry.water_balance.start() + h3_idx,
             col_storage_in_h2: layout.state.storage_in.start + h2_idx,
-            z_h2: layout.state.z_inflow.start + h2_idx,
+            inflow_h2: inflow_entries(&ctx, &stage, &layout, h2_idx),
             h1_turbine: (0..layout.clock.n_blks())
                 .map(|blk| {
                     layout
@@ -10376,14 +10200,14 @@ mod pumping_water_tests {
 
         // z_{H2} routed onto H3's balance row at −ζ, and absent from H2's frozen row.
         assert_eq!(
-            csc_at(&csc, off.z_h2, row_d),
+            entry_at(&off.inflow_h2, row_d),
             -off.zeta,
-            "z_{{H2}} routed onto H3's water row at −ζ (river flows past the un-built dam)"
+            "inflow_{{H2}} routed onto H3's water row at −ζ (river flows past the un-built dam)"
         );
         assert_eq!(
-            csc_at(&csc, off.z_h2, row_h),
+            entry_at(&off.inflow_h2, row_h),
             0.0,
-            "z_{{H2}} absent from H2's frozen-identity row (not trapped)"
+            "inflow_{{H2}} absent from H2's frozen-identity row (not trapped)"
         );
     }
 
@@ -10418,7 +10242,7 @@ mod pumping_water_tests {
             assemble_csc(&entries)
         };
         let row_h = layout.geometry.water_balance.start() + h2_idx;
-        let z_h2 = layout.state.z_inflow.start + h2_idx;
+        let inflow_h2 = inflow_entries(&ctx, &stage, &layout, h2_idx);
 
         assert_eq!(csc_at(&csc, h2_idx, row_h), 1.0, "v_{{H2}} +1.0");
         assert_eq!(
@@ -10431,9 +10255,9 @@ mod pumping_water_tests {
         for h in 0..layout.state.hydro_count {
             let r = layout.geometry.water_balance.start() + h;
             assert_eq!(
-                csc_at(&csc, z_h2, r),
+                entry_at(&inflow_h2, r),
                 0.0,
-                "z_{{H2}} on no water row in the sink case (row {r})"
+                "inflow_{{H2}} on no water row in the sink case (row {r})"
             );
         }
     }
@@ -10458,9 +10282,9 @@ mod pumping_water_tests {
         }
         // No short-circuit: z_{H2} is NOT routed onto H3's row.
         assert_eq!(
-            csc_at(&csc, off.z_h2, row_d),
+            entry_at(&off.inflow_h2, row_d),
             0.0,
-            "z_{{H2}} not routed downstream when Operating"
+            "inflow_{{H2}} not routed downstream when Operating"
         );
         // Standard equality row, not the frozen identity (lower == upper, base 0).
         assert_eq!(row_lower[row_h], row_upper[row_h], "H2 row is an equality");
@@ -10477,8 +10301,8 @@ mod pumping_water_tests {
         water_row_h3: usize,
         col_storage_in_h1: usize,
         col_storage_in_h2: usize,
-        z_h1: usize,
-        z_h2: usize,
+        inflow_h1: Vec<(usize, f64)>,
+        inflow_h2: Vec<(usize, f64)>,
     }
 
     /// Build the cascade `H1(id 1, filling) → H2(id 2, filling) → H3(id 3,
@@ -10543,8 +10367,8 @@ mod pumping_water_tests {
             water_row_h3: layout.geometry.water_balance.start() + h3_idx,
             col_storage_in_h1: layout.state.storage_in.start + h1_idx,
             col_storage_in_h2: layout.state.storage_in.start + h2_idx,
-            z_h1: layout.state.z_inflow.start + h1_idx,
-            z_h2: layout.state.z_inflow.start + h2_idx,
+            inflow_h1: inflow_entries(&ctx, &stage, &layout, h1_idx),
+            inflow_h2: inflow_entries(&ctx, &stage, &layout, h2_idx),
         };
         (csc, row_lower, row_upper, offsets)
     }
@@ -10557,38 +10381,38 @@ mod pumping_water_tests {
     #[test]
     fn chained_prefilling_routes_both_links_to_first_operating_downstream() {
         let (w_h1, w_h2) = (11.0_f64, 23.0_f64);
-        let (csc, _rl, row_upper, off) =
+        let (_csc, _rl, row_upper, off) =
             build_chained_shortcircuit_case(RET_PREFILLING_ID, w_h1, w_h2);
 
         // (1) Incremental inflow of BOTH links lands on H3's row (−ζ each), and on
         // NO frozen row. H1 routing THROUGH H2 is the chained behaviour: routing to
         // the immediate downstream H2 would corrupt H2's frozen identity.
         assert_eq!(
-            csc_at(&csc, off.z_h1, off.water_row_h3),
+            entry_at(&off.inflow_h1, off.water_row_h3),
             -off.zeta,
-            "z_{{H1}} carries −ζ on H3's row (H1 cascades THROUGH the PreFilling H2)"
+            "inflow_{{H1}} carries −ζ on H3's row (H1 cascades THROUGH the PreFilling H2)"
         );
         assert_eq!(
-            csc_at(&csc, off.z_h2, off.water_row_h3),
+            entry_at(&off.inflow_h2, off.water_row_h3),
             -off.zeta,
-            "z_{{H2}} carries −ζ on H3's row (first non-PreFilling downstream)"
+            "inflow_{{H2}} carries −ζ on H3's row (first non-PreFilling downstream)"
         );
         // Neither z column touches H2's frozen-identity row.
         assert_eq!(
-            csc_at(&csc, off.z_h1, off.water_row_h2),
+            entry_at(&off.inflow_h1, off.water_row_h2),
             0.0,
-            "z_{{H1}} must NOT land on H2's frozen row (the corruption this guards against)"
+            "inflow_{{H1}} must NOT land on H2's frozen row (the corruption this guards against)"
         );
         assert_eq!(
-            csc_at(&csc, off.z_h2, off.water_row_h2),
+            entry_at(&off.inflow_h2, off.water_row_h2),
             0.0,
-            "z_{{H2}} must NOT land on H2's own frozen row"
+            "inflow_{{H2}} must NOT land on H2's own frozen row"
         );
         // Nor H1's frozen row.
         assert_eq!(
-            csc_at(&csc, off.z_h1, off.water_row_h1),
+            entry_at(&off.inflow_h1, off.water_row_h1),
             0.0,
-            "z_{{H1}} must NOT land on H1's own frozen row"
+            "inflow_{{H1}} must NOT land on H1's own frozen row"
         );
 
         // (2) Withdrawal demand of BOTH links lands on H3's RHS: H3's row_upper
@@ -10693,22 +10517,22 @@ mod pumping_water_tests {
             }
             assemble_csc(&entries)
         };
-        let z_h1 = layout.state.z_inflow.start + h1_idx;
-        let z_h2 = layout.state.z_inflow.start + h2_idx;
+        let inflow_h1 = inflow_entries(&ctx, &stage, &layout, h1_idx);
+        let inflow_h2 = inflow_entries(&ctx, &stage, &layout, h2_idx);
 
         // Both links' inflow exits the system: neither z column lands on ANY water
         // row (no non-PreFilling downstream exists to receive it).
         for h in 0..layout.state.hydro_count {
             let r = layout.geometry.water_balance.start() + h;
             assert_eq!(
-                csc_at(&csc, z_h1, r),
+                entry_at(&inflow_h1, r),
                 0.0,
-                "z_{{H1}} must not land on any water row in the all-PreFilling sink (row {r})"
+                "inflow_{{H1}} must not land on any water row in the all-PreFilling sink (row {r})"
             );
             assert_eq!(
-                csc_at(&csc, z_h2, r),
+                entry_at(&inflow_h2, r),
                 0.0,
-                "z_{{H2}} must not land on any water row in the all-PreFilling sink (row {r})"
+                "inflow_{{H2}} must not land on any water row in the all-PreFilling sink (row {r})"
             );
         }
 
@@ -10738,7 +10562,7 @@ mod pumping_water_tests {
         n_blks: usize,
         h2_idx: usize,
         d_idx: usize,
-        z_h2: usize,
+        inflow_h2: Vec<(usize, f64)>,
         col_storage_in_h2: usize,
         h1_turbine: Vec<usize>,
         h1_spillage: Vec<usize>,
@@ -10798,7 +10622,7 @@ mod pumping_water_tests {
             n_blks: layout.clock.n_blks(),
             h2_idx,
             d_idx,
-            z_h2: layout.state.z_inflow.start + h2_idx,
+            inflow_h2: inflow_entries(ctx, stage, &layout, h2_idx),
             col_storage_in_h2: layout.state.storage_in.start + h2_idx,
             h1_turbine: (0..layout.clock.n_blks())
                 .map(|blk| {
@@ -10884,14 +10708,14 @@ mod pumping_water_tests {
             let row_h = layout.geometry.water_balance.start() + off.h2_idx * n_blks + blk;
 
             assert_eq!(
-                csc_at(&csc, off.z_h2, row_d),
+                entry_at(&off.inflow_h2, row_d),
                 -tau_k,
-                "block {k}: z_{{H2}} carries −τ_k on H3's block row (re-routed inflow)"
+                "block {k}: inflow_{{H2}} carries −τ_k on H3's block row (re-routed inflow)"
             );
             assert_eq!(
-                csc_at(&csc, off.z_h2, row_h),
+                entry_at(&off.inflow_h2, row_h),
                 0.0,
-                "block {k}: z_{{H2}} carries nothing on H2's own frozen block row"
+                "block {k}: inflow_{{H2}} carries nothing on H2's own frozen block row"
             );
             assert_eq!(
                 csc_at(&csc, off.h1_turbine[blk], row_d),

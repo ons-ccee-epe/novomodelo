@@ -5,18 +5,18 @@ use novomodelo_sddp::StudySetup;
 use novomodelo_sddp::test_support::decks::committed_decks;
 use novomodelo_sddp::test_support::expander::expand_stage_templates;
 
-use super::expander_cut_rows::LAG_STUDY;
 use crate::D43_DIR;
 use crate::common::expanded_solve::{
     CutRowSet, assemble_expanded_solve, record_expanded_evidence, solve_from_mapped_basis,
     stages_whose_producer_drops_a_state_dimension, stored_incoming_states,
 };
+use crate::common::in_code_studies::FPHA_LAG_STUDY_KEY as LAG_STUDY;
 use crate::common::in_code_studies::fpha_lag_study;
 use crate::common::power_guards::{Guard, PowerEvidence};
 use crate::common::stored_cut_oracles::apply_oracle_config;
 use crate::common::{
-    Emission, build_setup_in_code_with_models_as, fresh_setup_with, fresh_system_and_setup_as,
-    fresh_system_and_setup_with_emission, is_chain, train_storing_trial_states,
+    build_setup_in_code_with_models, fresh_system_and_setup_with, is_chain,
+    train_storing_trial_states,
 };
 
 const SCALE_GUARDS: [Guard; 4] = [
@@ -39,23 +39,22 @@ struct WarmStartCounts {
 fn warm_start_every_stage(
     label: &str,
     system: &System,
-    logical: &mut StudySetup,
-    compact: &StudySetup,
+    compact: &mut StudySetup,
     evidence: &mut PowerEvidence,
 ) -> WarmStartCounts {
-    train_storing_trial_states(label, logical);
     let expanded = expand_stage_templates(system, compact);
+    train_storing_trial_states(label, compact);
     let mut counts = WarmStartCounts {
         skipped_stages: Vec::new(),
         solves_per_stage: Vec::new(),
     };
     let training_ctx = compact.training_ctx();
     let tree = training_ctx.stochastic.tree_view();
-    for stage in 1..logical.fcf.pools.len() {
-        if logical.fcf.active_cuts(stage).next().is_none() {
+    for stage in 1..compact.fcf.pools.len() {
+        if compact.fcf.active_cuts(stage).next().is_none() {
             continue;
         }
-        let Some(states) = stored_incoming_states(logical, stage) else {
+        let Some(states) = stored_incoming_states(compact, stage) else {
             counts.skipped_stages.push(stage);
             continue;
         };
@@ -66,8 +65,8 @@ fn warm_start_every_stage(
                 let solve = assemble_expanded_solve(
                     compact,
                     &expanded,
-                    &logical.fcf,
-                    &CutRowSet::active(&logical.fcf, stage, stage - 1),
+                    &compact.fcf,
+                    &CutRowSet::active(&compact.fcf, stage, stage - 1),
                     stage,
                     x_hat,
                     raw_noise,
@@ -86,7 +85,7 @@ fn warm_start_every_stage(
 /// `guards` and each scale guard not in `unmet`, and that every guard of `unmet` is still unmet.
 fn assert_run(
     label: &str,
-    logical: &StudySetup,
+    compact: &StudySetup,
     counts: &WarmStartCounts,
     evidence: &PowerEvidence,
     guards: &[Guard],
@@ -94,7 +93,7 @@ fn assert_run(
 ) {
     assert_eq!(
         counts.skipped_stages,
-        stages_whose_producer_drops_a_state_dimension(logical),
+        stages_whose_producer_drops_a_state_dimension(compact),
         "{label}: the skipped stages must be the stages whose producer pool drops a state dimension"
     );
     assert!(
@@ -116,18 +115,14 @@ fn assert_run(
 
 #[test]
 fn the_mapped_compact_basis_is_optimal_on_the_expanded_lp() {
-    let build = |emission| {
-        let (system, mut config, hydro_models) = fpha_lag_study();
-        apply_oracle_config(&mut config);
-        build_setup_in_code_with_models_as(system, &config, hydro_models, emission)
-    };
-    let mut logical = build(Emission::Logical);
-    let compact = build(Emission::Compact);
+    let (system, mut config, hydro_models) = fpha_lag_study();
+    apply_oracle_config(&mut config);
+    let mut compact = build_setup_in_code_with_models(system, &config, hydro_models);
     let (system, _, _) = fpha_lag_study();
     let state = compact.stage_state();
     let mut evidence = PowerEvidence::new(state.hydro_count, state.max_par_order);
 
-    let counts = warm_start_every_stage(LAG_STUDY, &system, &mut logical, &compact, &mut evidence);
+    let counts = warm_start_every_stage(LAG_STUDY, &system, &mut compact, &mut evidence);
 
     assert!(
         counts.skipped_stages.is_empty(),
@@ -135,7 +130,7 @@ fn the_mapped_compact_basis_is_optimal_on_the_expanded_lp() {
     );
     assert_run(
         LAG_STUDY,
-        &logical,
+        &compact,
         &counts,
         &evidence,
         &[Guard::BindingLagCut, Guard::BindingShiftedLagCut],
@@ -145,16 +140,12 @@ fn the_mapped_compact_basis_is_optimal_on_the_expanded_lp() {
 
 #[test]
 fn the_mapped_compact_basis_is_optimal_on_d43_outside_its_lag_dropping_stage() {
-    let (system, compact) = fresh_system_and_setup_with_emission(
-        Path::new(D43_DIR),
-        apply_oracle_config,
-        Emission::Compact,
-    );
-    let mut logical = fresh_setup_with(Path::new(D43_DIR), apply_oracle_config);
+    let (system, mut compact) =
+        fresh_system_and_setup_with(Path::new(D43_DIR), apply_oracle_config);
     let state = compact.stage_state();
     let mut evidence = PowerEvidence::new(state.hydro_count, state.max_par_order);
 
-    let counts = warm_start_every_stage("d43", &system, &mut logical, &compact, &mut evidence);
+    let counts = warm_start_every_stage("d43", &system, &mut compact, &mut evidence);
 
     assert!(
         !counts.skipped_stages.is_empty(),
@@ -166,7 +157,7 @@ fn the_mapped_compact_basis_is_optimal_on_d43_outside_its_lag_dropping_stage() {
     );
     assert_run(
         "d43",
-        &logical,
+        &compact,
         &counts,
         &evidence,
         &[Guard::CouplingDualEveryHydro],
@@ -180,22 +171,20 @@ fn every_lag_deck_warm_starts_from_the_mapped_basis() {
     let mut skipped_by_deck: Vec<(String, Vec<usize>)> = Vec::new();
     let (mut solves, mut non_chain_decks, mut binding_lag_cut_decks) = (0, 0, 0);
     for deck in committed_decks() {
-        let mut logical = fresh_setup_with(&deck.dir, apply_oracle_config);
-        if logical.stage_state().max_par_order == 0 {
+        let (system, mut compact) = fresh_system_and_setup_with(&deck.dir, apply_oracle_config);
+        if compact.stage_state().max_par_order == 0 {
             continue;
         }
-        if !is_chain(&logical) {
+        if !is_chain(&compact) {
             non_chain_decks += 1;
             continue;
         }
-        let (system, compact) = fresh_system_and_setup_as(&deck.dir, Emission::Compact);
         let state = compact.stage_state();
         let mut evidence = PowerEvidence::new(state.hydro_count, state.max_par_order);
-        let counts =
-            warm_start_every_stage(&deck.key, &system, &mut logical, &compact, &mut evidence);
+        let counts = warm_start_every_stage(&deck.key, &system, &mut compact, &mut evidence);
         assert_eq!(
             counts.skipped_stages,
-            stages_whose_producer_drops_a_state_dimension(&logical),
+            stages_whose_producer_drops_a_state_dimension(&compact),
             "{}: the skipped stages must be the stages whose producer pool drops a state dimension",
             deck.key
         );

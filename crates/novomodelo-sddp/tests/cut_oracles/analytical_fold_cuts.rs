@@ -39,8 +39,8 @@ use novomodelo_sddp::indexer::{CutSlot, CutStateProjection, HydroSys, StateDim};
 use novomodelo_sddp::setup::{NodePos, StageIdx};
 use novomodelo_sddp::test_support::template_structure::state_lag_dims;
 use novomodelo_sddp::test_support::{
-    FoldedProbeCut, FoldedProbeCuts, FoldedProbeOpening, empty_row_batch,
-    folded_opening_cut_for_probe, inflow_slack_bounds_for_probe, oracle_initial_state,
+    ProbeCut, ProbeCuts, ProbeOpening, empty_row_batch, inflow_slack_bounds_for_probe,
+    opening_cut_for_probe, oracle_initial_state,
 };
 use novomodelo_sddp::{DEFAULT_COST_SCALE_FACTOR, StudySetup, build_cut_row_batch_into};
 use novomodelo_solver::{ActiveSolver, SolverInterface};
@@ -53,9 +53,7 @@ use crate::common::in_code_studies::{
     chronological_noise_hydro_models, chronological_noise_study, negative_draw_water_value_spec,
 };
 use crate::common::oracle_tolerance::{UnscaledTolerance, assert_first_try};
-use crate::common::{
-    Emission, StubComm, build_setup_in_code_with_models_as, fresh_system_and_setup_as,
-};
+use crate::common::{StubComm, build_setup_in_code_with_models, fresh_system_and_setup_with};
 
 const M3S_TO_HM3: f64 = 3_600.0 / 1_000_000.0;
 const BUS_ID: EntityId = EntityId(10);
@@ -534,8 +532,7 @@ fn compact_study(case: &StudyCase, stage: usize) -> (StudySetup, f64) {
         .map(|block| block.duration_hours)
         .sum();
     let models = fixture_hydro_models(case, &system);
-    let setup =
-        build_setup_in_code_with_models_as(system, &fixture_config(), models, Emission::Compact);
+    let setup = build_setup_in_code_with_models(system, &fixture_config(), models);
     (setup, stage_hours * M3S_TO_HM3)
 }
 
@@ -566,7 +563,7 @@ fn compact_cut(
     noise: &[f64],
     pool_slots: &[usize],
     label: &str,
-) -> FoldedProbeCut {
+) -> ProbeCut {
     let ctx = setup.stage_ctx();
     let training_ctx = setup.training_ctx();
     let template = &setup.inputs.stage_data.stage_templates.templates[stage];
@@ -591,22 +588,23 @@ fn compact_cut(
     ws.solver.load_model(template);
     ws.solver.add_rows(&cut_rows);
 
-    let mut cut = FoldedProbeCut::new(&training_ctx);
+    let mut cut = ProbeCut::new(&training_ctx);
     let before = ws.solver.statistics();
-    folded_opening_cut_for_probe(
+    opening_cut_for_probe(
         ws,
         &ctx,
         &training_ctx,
-        &FoldedProbeOpening {
+        &ProbeOpening {
             stage: StageIdx(stage),
             pinned_state: x_hat,
             raw_noise: noise,
-            cuts: FoldedProbeCuts {
+            cuts: ProbeCuts {
                 pool: &setup.fcf.pools[stage],
                 pool_id: stage,
                 slots: pool_slots,
             },
             extracted_pool_id: stage - 1,
+            inflow_slack_bounds: None,
         },
         &mut cut,
     )
@@ -946,6 +944,99 @@ fn an_injected_binding_cut_adds_its_next_lag_coefficient_to_the_producer_cut_wit
     assert_injected_cut_chain_rule([second, first]);
 }
 
+fn distinct_trial_lags_case() -> StudyCase {
+    StudyCase {
+        name: "PAR(2) with one injected cut at distinct trial lags",
+        hydros: vec![HydroCase::sole(PAR2_PHI.to_vec())],
+        ..injected_cut_case()
+    }
+}
+
+/// derived: the injected cut binds, so θ is its row's right-hand side `α + β₀·ẑ + β₁·â₀` with
+/// `ẑ = μ + φ₁(â₀ − μ) + φ₂(â₁ − μ) + σ·η` at the trial lags `â = (120, 80)`, and the hydro empties
+/// into the marginal thermal, so `Q = c·(L·T − ρ·(v + κ·ẑ)/M)/K + θ`. A cut row whose shifted
+/// slot reads `â₁` for `â₀` moves Q by `β₁·(â₁ − â₀)`.
+#[test]
+fn an_injected_binding_cut_is_evaluated_at_the_trial_lag_one_step_back() {
+    const STAGE: usize = 2;
+    const TRIAL_LAGS_M3S: [f64; 2] = [120.0, 80.0];
+    let case = distinct_trial_lags_case();
+    let fixture = case.name;
+    let (mut setup, kappa) = compact_study(&case, STAGE);
+    let resident_lags = {
+        let resident = &setup.training_ctx().cut_state_layouts[STAGE];
+        [lag_slot(resident, 1, 0, 0), lag_slot(resident, 1, 0, 1)]
+    };
+    let pool_slots = inject_cut(
+        &mut setup,
+        STAGE,
+        &[
+            (resident_lags[0], INJECTED_LAG_SLOPES[0]),
+            (resident_lags[1], INJECTED_LAG_SLOPES[1]),
+        ],
+    );
+    let mut x_hat = oracle_initial_state(&setup);
+    for (l, lag) in TRIAL_LAGS_M3S.into_iter().enumerate() {
+        x_hat[lag_dim(&setup, 0, l)] = lag;
+    }
+    let noise = opening_noise(&setup, STAGE);
+    let cut = compact_cut(&setup, STAGE, &x_hat, &noise, &pool_slots, fixture);
+
+    let [near, far] = TRIAL_LAGS_M3S;
+    let [beta_now, beta_shifted] = INJECTED_LAG_SLOPES;
+    assert_non_degenerate(fixture, "trial lag â₀", near);
+    assert_non_degenerate(fixture, "trial lag â₁", far);
+    assert!(
+        beta_now != 0.0 && beta_shifted != 0.0,
+        "{fixture}: the injected lag slopes {INJECTED_LAG_SLOPES:?} must be non-zero"
+    );
+    assert!(
+        (beta_shifted * (far - near)).abs() > SEPARATION_FLOOR,
+        "{fixture}: β₁·(â₁ − â₀) is within {SEPARATION_FLOOR:e} of zero, which hides a lag offset"
+    );
+    let [(slot, y)] = cut.cut_dual_slots[..] else {
+        panic!(
+            "{fixture}: exactly the injected cut must bind, got {:?}",
+            cut.cut_dual_slots
+        );
+    };
+    assert!(
+        slot == pool_slots[0] && y > 0.0,
+        "{fixture}: the injected cut at slot {} must bind, got y = {y} at slot {slot}",
+        pool_slots[0]
+    );
+
+    let z_hat = INFLOW_MEAN_M3S
+        + PAR2_PHI[0] * (near - INFLOW_MEAN_M3S)
+        + PAR2_PHI[1] * (far - INFLOW_MEAN_M3S)
+        + INFLOW_STD_M3S * noise[0];
+    let theta = INJECTED_INTERCEPT + beta_now * z_hat + beta_shifted * near;
+    let turbined_mwh = PRODUCTIVITY * (INITIAL_STORAGE_HM3 + kappa * z_hat) / M3S_TO_HM3;
+    let z_abs = INFLOW_MEAN_M3S
+        + PAR2_PHI[0] * (near - INFLOW_MEAN_M3S).abs()
+        + PAR2_PHI[1] * (far - INFLOW_MEAN_M3S).abs()
+        + INFLOW_STD_M3S * noise[0].abs();
+    let turbined_abs = PRODUCTIVITY * (INITIAL_STORAGE_HM3 + kappa * z_abs) / M3S_TO_HM3;
+    let theta_abs = INJECTED_INTERCEPT + beta_now.abs() * z_abs + beta_shifted.abs() * near;
+    // n = 45: ẑ (8), κ (2), the turbined energy (4), the thermal cost (3), θ (4), their sum and
+    // ÷ K derive it; the solver's sums of cost × primal over the stage's columns solve it; no
+    // reported dual enters.
+    ClosedForm {
+        fixture,
+        quantity: "objective",
+        slot: None,
+        want: THERMAL_COST_PER_MWH * (LOAD_MW * MONTH_HOURS - turbined_mwh)
+            / DEFAULT_COST_SCALE_FACTOR
+            + theta,
+        n: 45,
+        abs_sum: THERMAL_COST_PER_MWH * (LOAD_MW * MONTH_HOURS + turbined_abs)
+            / DEFAULT_COST_SCALE_FACTOR
+            + theta_abs,
+        added: 0.0,
+    }
+    .assert_solved(cut.objective);
+}
+
 fn prefilling_case(upstream_productivity: f64, target_productivity: f64) -> StudyCase {
     StudyCase {
         name: "PreFilling upstream to target",
@@ -1136,7 +1227,7 @@ fn assert_range_row_lag_price(range: InflowRange, solves: [(RangeSide, f64); 2])
     let psi = psi_at(&setup, RANGE_STAGE, 0)[0];
     let row = range_row(&setup, RANGE_STAGE, range);
     let row_scale = setup.inputs.stage_data.stage_templates.templates[RANGE_STAGE].row_scale[row];
-    let outcomes: Vec<(RangeSide, f64, f64, FoldedProbeCut)> = solves
+    let outcomes: Vec<(RangeSide, f64, f64, ProbeCut)> = solves
         .iter()
         .map(|&(side, z_target)| {
             let lag_value = (z_target - base - innovation) / psi;
@@ -1370,7 +1461,7 @@ fn assert_truncated_draw_lag_price(draw: Draw) {
     let spec = negative_draw_water_value_spec(CfgInflowMethod::Truncation);
     let (system, config) = chronological_noise_study(&spec);
     let models = chronological_noise_hydro_models(&spec, &system);
-    let setup = build_setup_in_code_with_models_as(system, &config, models, Emission::Compact);
+    let setup = build_setup_in_code_with_models(system, &config, models);
     let training_ctx = setup.training_ctx();
     let n_hydros = training_ctx.state.hydro_count;
     let noise = opening_noise(&setup, STAGE);
@@ -1501,7 +1592,7 @@ fn assert_weekly_lag_alias(stage: usize, finalizes: bool) {
     } else {
         "weekly PAR within its month"
     };
-    let (_, mut setup) = fresh_system_and_setup_as(&weekly_par_deck(), Emission::Compact);
+    let (_, mut setup) = fresh_system_and_setup_with(&weekly_par_deck(), |_| {});
     assert_eq!(
         setup.stage_ctx().stage_lag(StageIdx(stage)).finalize_period,
         finalizes,

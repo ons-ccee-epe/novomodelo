@@ -2,15 +2,15 @@ use novomodelo_sddp::StudySetup;
 use novomodelo_sddp::test_support::decks::{SLOW_DECKS, committed_decks};
 use novomodelo_sddp::test_support::expander::expand_stage_templates;
 
-use super::expander_cut_rows::LAG_STUDY;
 use crate::common::expanded_solve::{
     PinnedStateRun, stages_whose_producer_drops_a_state_dimension, stored_incoming_states,
 };
+use crate::common::in_code_studies::FPHA_LAG_STUDY_KEY as LAG_STUDY;
 use crate::common::in_code_studies::{FphaLagOptions, fpha_lag_study_with};
 use crate::common::stored_cut_oracles::apply_oracle_config;
 use crate::common::{
-    Emission, build_setup_in_code_with_models_as, fresh_setup_with,
-    fresh_system_and_setup_with_emission, is_chain, train_storing_trial_states,
+    build_setup_in_code_with_models, fresh_system_and_setup_with, is_chain,
+    train_storing_trial_states,
 };
 
 const FIXTURE_LABEL: &str = LAG_STUDY;
@@ -31,20 +31,16 @@ fn compact_and_expanded_agree_at_identical_pinned_states() {
         openings: OPENINGS,
         ..FphaLagOptions::default()
     };
-    let build = |emission| {
-        let (system, mut config, hydro_models) = fpha_lag_study_with(options);
-        apply_oracle_config(&mut config);
-        build_setup_in_code_with_models_as(system, &config, hydro_models, emission)
-    };
-    let mut logical = build(Emission::Logical);
-    let compact = build(Emission::Compact);
-    train_storing_trial_states(FIXTURE_LABEL, &mut logical);
+    let (system, mut config, hydro_models) = fpha_lag_study_with(options);
+    apply_oracle_config(&mut config);
+    let mut compact = build_setup_in_code_with_models(system, &config, hydro_models);
     let (system, _, _) = fpha_lag_study_with(options);
     let expanded = expand_stage_templates(&system, &compact);
+    train_storing_trial_states(FIXTURE_LABEL, &mut compact);
 
-    let mut run = PinnedStateRun::new(FIXTURE_LABEL, &logical, &compact, &expanded);
-    for stage in stages_with_an_active_cut(&logical) {
-        let states = stored_incoming_states(&logical, stage).unwrap_or_else(|| {
+    let mut run = PinnedStateRun::new(FIXTURE_LABEL, &compact, &expanded);
+    for stage in stages_with_an_active_cut(&compact) {
+        let states = stored_incoming_states(&compact, stage).unwrap_or_else(|| {
             panic!("{FIXTURE_LABEL} stage {stage}: the producer pool drops a state dimension")
         });
         run.check_stage(stage, &states);
@@ -67,23 +63,21 @@ fn compact_and_expanded_agree_at_identical_pinned_states_on_every_lag_deck() {
         if SLOW_DECKS.contains(&deck.key.as_str()) {
             continue;
         }
-        let mut logical = fresh_setup_with(&deck.dir, apply_oracle_config);
-        if logical.stage_state().max_par_order == 0 {
+        let (system, mut compact) = fresh_system_and_setup_with(&deck.dir, apply_oracle_config);
+        if compact.stage_state().max_par_order == 0 {
             continue;
         }
-        if !is_chain(&logical) {
+        if !is_chain(&compact) {
             not_chain.push(deck.key);
             continue;
         }
-        let (system, compact) =
-            fresh_system_and_setup_with_emission(&deck.dir, apply_oracle_config, Emission::Compact);
-        train_storing_trial_states(&deck.key, &mut logical);
         let expanded = expand_stage_templates(&system, &compact);
+        train_storing_trial_states(&deck.key, &mut compact);
 
-        let mut run = PinnedStateRun::new(&deck.key, &logical, &compact, &expanded);
+        let mut run = PinnedStateRun::new(&deck.key, &compact, &expanded);
         let mut skipped = Vec::new();
-        for stage in stages_with_an_active_cut(&logical) {
-            match stored_incoming_states(&logical, stage) {
+        for stage in stages_with_an_active_cut(&compact) {
+            match stored_incoming_states(&compact, stage) {
                 Some(states) => {
                     run.check_stage(stage, &states[..1]);
                 }
@@ -92,7 +86,7 @@ fn compact_and_expanded_agree_at_identical_pinned_states_on_every_lag_deck() {
         }
         assert_eq!(
             skipped,
-            stages_whose_producer_drops_a_state_dimension(&logical),
+            stages_whose_producer_drops_a_state_dimension(&compact),
             "{}: stages skipped vs stages whose producer drops a state dimension",
             deck.key
         );

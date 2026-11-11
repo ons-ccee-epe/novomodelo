@@ -9,21 +9,20 @@ use novomodelo_sddp::test_support::expander::{
 };
 use novomodelo_solver::{ActiveSolver, SolverInterface};
 
-use super::expander_cut_rows::LAG_STUDY;
 use crate::common::expanded_solve::{
     CutRowSet, ExpandedSolve, assemble_expanded_solve, check_lifted_compact_solution,
     load_expanded, record_expanded_evidence, solve_from_mapped_basis, stored_incoming_states,
 };
+use crate::common::in_code_studies::FPHA_LAG_STUDY_KEY as LAG_STUDY;
 use crate::common::in_code_studies::fpha_lag_study;
 use crate::common::oracle_tolerance::assert_first_try;
 use crate::common::power_guards::{Guard, PowerEvidence};
 use crate::common::stored_cut_oracles::apply_oracle_config;
-use crate::common::{Emission, build_setup_in_code_with_models_as, train_storing_trial_states};
+use crate::common::{build_setup_in_code_with_models, train_storing_trial_states};
 
 const STAGE: usize = 1;
 
 struct Case {
-    logical: StudySetup,
     compact: StudySetup,
     expanded: ExpandedStudy,
     incoming_state: Vec<f64>,
@@ -32,18 +31,14 @@ struct Case {
 
 impl Case {
     fn new() -> Self {
-        let build = |emission| {
-            let (system, mut config, hydro_models) = fpha_lag_study();
-            apply_oracle_config(&mut config);
-            config.modeling.inflow_non_negativity.method = InflowNonNegativityMethod::Truncation;
-            build_setup_in_code_with_models_as(system, &config, hydro_models, emission)
-        };
-        let mut logical = build(Emission::Logical);
-        let compact = build(Emission::Compact);
-        train_storing_trial_states(LAG_STUDY, &mut logical);
+        let (system, mut config, hydro_models) = fpha_lag_study();
+        apply_oracle_config(&mut config);
+        config.modeling.inflow_non_negativity.method = InflowNonNegativityMethod::Truncation;
+        let mut compact = build_setup_in_code_with_models(system, &config, hydro_models);
+        train_storing_trial_states(LAG_STUDY, &mut compact);
         let (system, _, _) = fpha_lag_study();
         let expanded = expand_stage_templates(&system, &compact);
-        let incoming_state = stored_incoming_states(&logical, STAGE)
+        let incoming_state = stored_incoming_states(&compact, STAGE)
             .expect("the lag study's pools project every state dimension")
             .into_iter()
             .next()
@@ -55,7 +50,6 @@ impl Case {
             .opening(STAGE, 0)
             .to_vec();
         Self {
-            logical,
             compact,
             expanded,
             incoming_state,
@@ -67,8 +61,8 @@ impl Case {
         assemble_expanded_solve(
             &self.compact,
             &self.expanded,
-            &self.logical.fcf,
-            &CutRowSet::active(&self.logical.fcf, STAGE, STAGE - 1),
+            &self.compact.fcf,
+            &CutRowSet::active(&self.compact.fcf, STAGE, STAGE - 1),
             STAGE,
             &self.incoming_state,
             &self.raw_noise,
@@ -341,14 +335,10 @@ fn the_assembled_expanded_lp_solves_on_the_first_attempt() {
 
 #[test]
 fn the_lifted_compact_solution_meets_every_expanded_row() {
-    let build = |emission| {
-        let (system, mut config, hydro_models) = fpha_lag_study();
-        apply_oracle_config(&mut config);
-        build_setup_in_code_with_models_as(system, &config, hydro_models, emission)
-    };
-    let mut logical = build(Emission::Logical);
-    let compact = build(Emission::Compact);
-    train_storing_trial_states(LAG_STUDY, &mut logical);
+    let (system, mut config, hydro_models) = fpha_lag_study();
+    apply_oracle_config(&mut config);
+    let mut compact = build_setup_in_code_with_models(system, &config, hydro_models);
+    train_storing_trial_states(LAG_STUDY, &mut compact);
     let (system, _, _) = fpha_lag_study();
     let expanded = expand_stage_templates(&system, &compact);
     let state = compact.stage_state();
@@ -357,11 +347,11 @@ fn the_lifted_compact_solution_meets_every_expanded_row() {
     let tree = training_ctx.stochastic.tree_view();
 
     let (mut rows, mut cut_rows, mut binding_with_dual, mut slack) = (0, 0, 0, 0);
-    for stage in 1..logical.fcf.pools.len() {
-        if logical.fcf.active_cuts(stage).next().is_none() {
+    for stage in 1..compact.fcf.pools.len() {
+        if compact.fcf.active_cuts(stage).next().is_none() {
             continue;
         }
-        let states = stored_incoming_states(&logical, stage)
+        let states = stored_incoming_states(&compact, stage)
             .expect("the lag study's pools project every state dimension");
         for opening in 0..tree.n_openings(stage) {
             let raw_noise = tree.opening(stage, opening);
@@ -369,8 +359,8 @@ fn the_lifted_compact_solution_meets_every_expanded_row() {
                 let solve = assemble_expanded_solve(
                     &compact,
                     &expanded,
-                    &logical.fcf,
-                    &CutRowSet::active(&logical.fcf, stage, stage - 1),
+                    &compact.fcf,
+                    &CutRowSet::active(&compact.fcf, stage, stage - 1),
                     stage,
                     x_hat,
                     raw_noise,

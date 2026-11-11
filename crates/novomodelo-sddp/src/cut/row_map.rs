@@ -34,13 +34,18 @@
 
 /// Slot-to-row map for the append-only lower-bound LP.
 ///
-/// Supports O(1) slot-to-row lookup. All storage is pre-allocated at
-/// construction time.
+/// Supports O(1) slot-to-row lookup. All storage, the resident-slot list
+/// included, is reserved to the pool capacity at construction time, so
+/// [`insert`](CutRowMap::insert) never reallocates.
 #[derive(Debug, Clone)]
 pub struct CutRowMap {
     /// `slot_to_row[slot] = Some(lp_row)` when the cut at `slot` has been
     /// inserted into the LP, or `None` otherwise.
     slot_to_row: Vec<Option<usize>>,
+
+    /// Inserted slots in LP-row order: `resident_slots[r]` holds row
+    /// `base_row_offset + r`.
+    resident_slots: Vec<usize>,
 
     /// The LP row index where cut rows begin. Equal to the number of template
     /// (structural) rows in the LP.
@@ -74,6 +79,7 @@ impl CutRowMap {
     pub fn new(pool_capacity: usize, base_row_offset: usize) -> Self {
         Self {
             slot_to_row: vec![None; pool_capacity],
+            resident_slots: Vec::with_capacity(pool_capacity),
             base_row_offset,
             next_row: base_row_offset,
         }
@@ -85,7 +91,8 @@ impl CutRowMap {
     ///
     /// # Panics (debug builds only)
     ///
-    /// Panics if `slot >= pool_capacity` or if `slot` is already mapped.
+    /// Panics if `slot >= pool_capacity`, if `slot` is already mapped, or if the
+    /// resident-slot list is full.
     ///
     /// # Example
     ///
@@ -108,9 +115,15 @@ impl CutRowMap {
             "CutRowMap::insert: slot {slot} is already mapped to LP row {:?}",
             self.slot_to_row[slot]
         );
+        debug_assert!(
+            self.resident_slots.len() < self.resident_slots.capacity(),
+            "CutRowMap::insert: resident-slot list is full at {} slots",
+            self.resident_slots.capacity()
+        );
 
         let lp_row = self.next_row;
         self.slot_to_row[slot] = Some(lp_row);
+        self.resident_slots.push(slot);
         self.next_row += 1;
         lp_row
     }
@@ -123,6 +136,14 @@ impl CutRowMap {
     #[inline]
     pub fn lp_row_for_slot(&self, slot: usize) -> Option<usize> {
         self.slot_to_row.get(slot).copied().flatten()
+    }
+
+    /// Inserted slots in LP-row order: the slot at index `r` holds row
+    /// `base_row_offset() + r`.
+    #[must_use]
+    #[inline]
+    pub fn resident_slots(&self) -> &[usize] {
+        &self.resident_slots
     }
 
     /// Return the number of LP rows currently assigned to cuts.
@@ -148,19 +169,24 @@ impl CutRowMap {
 
     /// Reset the map for reuse across solves without reallocating.
     ///
-    /// Grows `slot_to_row` to `pool_capacity` if needed (growth-only, never
-    /// shrinks), clears every entry to `None`, and rewinds `next_row` to
-    /// `base_row_offset`. After `reset` the map is equivalent to
-    /// `CutRowMap::new(pool_capacity, base_row_offset)` but retains its
-    /// allocation. The lazy solve of the `dynamic` method holds one map in
-    /// per-worker scratch and resets it per (stage, solve) instead of allocating
-    /// a fresh map each call; it also relies on the map persisting (un-reset)
-    /// across a backward trial point's openings.
+    /// Clears the entry of every resident slot, so the cost is the resident
+    /// count, not the capacity; grows `slot_to_row` and reserves the resident
+    /// list to `pool_capacity` if needed (growth-only, never shrinks); and
+    /// rewinds `next_row` to `base_row_offset`. After `reset` the map is
+    /// equivalent to `CutRowMap::new(pool_capacity, base_row_offset)` but
+    /// retains its allocation. The lazy solve of the `dynamic` method holds one
+    /// map in per-worker scratch and resets it per (stage, solve) instead of
+    /// allocating a fresh map each call; it also relies on the map persisting
+    /// (un-reset) across a backward trial point's openings.
     pub fn reset(&mut self, pool_capacity: usize, base_row_offset: usize) {
+        for &slot in &self.resident_slots {
+            self.slot_to_row[slot] = None;
+        }
+        self.resident_slots.clear();
         if self.slot_to_row.len() < pool_capacity {
             self.slot_to_row.resize(pool_capacity, None);
         }
-        self.slot_to_row.fill(None);
+        self.resident_slots.reserve(pool_capacity);
         self.base_row_offset = base_row_offset;
         self.next_row = base_row_offset;
     }
@@ -247,6 +273,41 @@ mod tests {
         let mut map = CutRowMap::new(100, 50);
         map.insert(0);
         map.insert(0); // should panic
+    }
+
+    #[test]
+    fn resident_slots_follow_insertion_order_and_reset_clears_them() {
+        let mut map = CutRowMap::new(10, 4);
+        for slot in [5, 2, 9] {
+            map.insert(slot);
+        }
+
+        assert_eq!(map.resident_slots(), [5, 2, 9]);
+        for (offset, &slot) in map.resident_slots().iter().enumerate() {
+            assert_eq!(map.lp_row_for_slot(slot), Some(4 + offset));
+        }
+
+        map.reset(10, 7);
+
+        assert!(map.resident_slots().is_empty());
+        for slot in [5, 2, 9] {
+            assert_eq!(map.lp_row_for_slot(slot), None);
+        }
+        assert_eq!(map.insert(2), 7);
+        assert_eq!(map.resident_slots(), [2]);
+    }
+
+    #[test]
+    fn a_growing_reset_reserves_the_resident_list_to_the_new_capacity() {
+        let mut map = CutRowMap::new(0, 0);
+        map.reset(6, 0);
+        let reserved = map.resident_slots.capacity();
+        assert!(reserved >= 6);
+
+        for slot in 0..6 {
+            map.insert(slot);
+        }
+        assert_eq!(map.resident_slots.capacity(), reserved);
     }
 
     #[test]

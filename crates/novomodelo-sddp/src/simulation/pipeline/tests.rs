@@ -479,7 +479,7 @@ fn single_workspace_with_load_buses(
             &[],
         ),
         current_state: Vec::with_capacity(1),
-        scratch: ScratchBuffers::for_test(0),
+        scratch: ScratchBuffers::for_test(1),
         scratch_basis: Basis::new(0, 0),
         backward_accum: BackwardAccumulators::default(),
         worker_timing_buf: WorkerPhaseTimings::default(),
@@ -497,7 +497,7 @@ fn single_workspace(solver: MockSolver) -> Vec<SolverWorkspace<MockSolver>> {
         solver: ProfiledSolver::new(solver),
         patch_buf: PatchBuffer::new(&test_support::state_layout(1, 0), &[], &[], &[]), // N=1, L=0
         current_state: Vec::with_capacity(1),
-        scratch: ScratchBuffers::for_test(0),
+        scratch: ScratchBuffers::for_test(1),
         scratch_basis: Basis::new(0, 0),
         backward_accum: BackwardAccumulators::default(),
         worker_timing_buf: WorkerPhaseTimings::default(),
@@ -701,6 +701,7 @@ fn simulation_load_patches_applied() {
     run_simulate(
         &mut workspaces,
         &StageContextFixture::new(&templates, &state_boxes, &geometry_per_stage)
+            .without_inflow_entries(1)
             .load_bus_indices(&load_bus_indices)
             .ctx(),
         &fcf,
@@ -791,28 +792,28 @@ fn simulation_load_patches_applied() {
         "patch_buf upper at load slot must equal load_rhs_buf[0] (equality constraint)"
     );
 
-    // row_lower_buf[2] is the load balance row (row index 2).
+    let load_row = test_support::hydro_only_bus_geometry().load_balance.start();
     assert!(
         !workspaces[0].scratch.row_lower_buf.is_empty(),
         "row_lower_buf must be populated for extraction"
     );
     assert_eq!(
-        workspaces[0].scratch.row_lower_buf[2], d_observed,
+        workspaces[0].scratch.row_lower_buf[load_row], d_observed,
         "extraction row_lower_buf must contain stochastic load, not template mean"
     );
     assert!(
-        (workspaces[0].scratch.row_lower_buf[2] - mean_mw_val).abs() > 1e-6,
+        (workspaces[0].scratch.row_lower_buf[load_row] - mean_mw_val).abs() > 1e-6,
         "extracted load_mw must differ from template mean {mean_mw_val}: got {}",
-        workspaces[0].scratch.row_lower_buf[2]
+        workspaces[0].scratch.row_lower_buf[load_row]
     );
 }
 
 /// when `n_load_buses == 0`,
 /// `load_rhs_buf` remains empty and `forward_patch_count` equals the number of
-/// z-inflow patches filled.
+/// rows the inflow coupling shifts.
 ///
-/// With one hydro, `fill_z_inflow_patches` fills exactly one z-inflow patch, so
-/// `forward_patch_count` equals `state.hydro_count`.
+/// With one hydro coupled to one row, `fill_inflow_shift_patches` fills exactly
+/// one patch.
 #[test]
 fn simulation_no_load_buses_unchanged() {
     let n_stages = 1;
@@ -841,7 +842,9 @@ fn simulation_no_load_buses_unchanged() {
 
     let hprod = hydro_productivities_1hydro(n_stages);
     let ec = zero_energy_conversion(1, n_stages);
+    let inflow_coupling = vec![test_support::inflow_coupling_with_entries(1, &[(0, 0)]); n_stages];
     let mut workspaces = single_workspace(solver);
+    workspaces[0].patch_buf = PatchBuffer::new(&state, &[], &[], &inflow_coupling);
 
     let state_boxes = permissive_state_boxes(state.n_state, templates.len());
     run_simulate(
@@ -851,6 +854,7 @@ fn simulation_no_load_buses_unchanged() {
             &state_boxes,
             &[test_support::hydro_only_bus_geometry()],
         )
+        .inflow_coupling(&inflow_coupling)
         .ctx(),
         &fcf,
         &TrainingContext {
@@ -907,8 +911,8 @@ fn simulation_no_load_buses_unchanged() {
     );
     assert_eq!(
         workspaces[0].patch_buf.forward_patch_count(),
-        state.hydro_count,
-        "forward_patch_count must equal the z-inflow patches filled, got {}",
+        inflow_coupling[0].touched_rows().len(),
+        "forward_patch_count must equal the rows the inflow coupling shifts, got {}",
         workspaces[0].patch_buf.forward_patch_count()
     );
 }
@@ -968,6 +972,7 @@ fn simulation_state_set_profile_reaches_current_profile_after_run() {
             &state_boxes,
             &[test_support::hydro_only_bus_geometry()],
         )
+        .without_inflow_entries(1)
         .ctx(),
         &fcf,
         &TrainingContext {
@@ -1056,7 +1061,8 @@ fn loaded_template(
     let mut workspaces = single_workspace(solver);
     let state_boxes = permissive_state_boxes(state.n_state, templates.len());
     let geometry = [test_support::hydro_only_bus_geometry()];
-    let stage_ctx = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let stage_ctx =
+        StageContextFixture::new(&templates, &state_boxes, &geometry).without_inflow_entries(1);
     SimulationState::new(n_stages)
         .run(&mut SimulationInputs {
             workspaces: &mut workspaces,
@@ -1163,14 +1169,8 @@ fn simulation_builds_its_templates_from_the_chosen_cut_set() {
     );
 }
 
-/// When load noise is present,
-/// `z_inflow_rhs_buf` still contains only inflow values (not contaminated by
-/// load noise).
-///
-/// `z_inflow_rhs_buf` contains inflow realizations for the `n_hydros` hydros.
-/// After simulate runs with `n_hydros=1` and `n_load_buses=1`,
-/// `z_inflow_rhs_buf` must have exactly 1 entry (inflow), while
-/// `load_rhs_buf` has 1 entry (load).  The two buffers must not overlap.
+/// With load noise present, `realized_inflow_buf` holds only inflow values:
+/// one entry for the one hydro, while `load_rhs_buf` holds the one load entry.
 #[test]
 fn simulation_inflow_extraction_unaffected() {
     let n_stages = 1;
@@ -1209,6 +1209,7 @@ fn simulation_inflow_extraction_unaffected() {
     run_simulate(
         &mut workspaces,
         &StageContextFixture::new(&templates, &state_boxes, &geometry_per_stage)
+            .without_inflow_entries(1)
             .load_bus_indices(&load_bus_indices)
             .ctx(),
         &fcf,
@@ -1261,23 +1262,22 @@ fn simulation_inflow_extraction_unaffected() {
     .unwrap();
 
     assert_eq!(
-        workspaces[0].scratch.z_inflow_rhs_buf.len(),
+        workspaces[0].scratch.realized_inflow_buf.len(),
         1,
-        "z_inflow_rhs_buf must have 1 entry (1 hydro), not contaminated by load noise: len={}",
-        workspaces[0].scratch.z_inflow_rhs_buf.len()
+        "realized_inflow_buf must have 1 entry (1 hydro), not contaminated by load noise: len={}",
+        workspaces[0].scratch.realized_inflow_buf.len()
     );
-    // The inflow noise must be a reasonable value near the model's mean_m3s=100.0,
-    // sigma=20.0: z_inflow_rhs_buf[0] = 100.0 + 20.0 * eta_inflow.
+    // mean_m3s = 100.0, sigma = 20.0: realized inflow = 100.0 + 20.0 * eta_inflow.
     assert!(
-        workspaces[0].scratch.z_inflow_rhs_buf[0] > 0.0
-            && workspaces[0].scratch.z_inflow_rhs_buf[0] < 200.0,
-        "z_inflow_rhs_buf[0] must be a reasonable inflow value near 100.0, got {}",
-        workspaces[0].scratch.z_inflow_rhs_buf[0]
+        workspaces[0].scratch.realized_inflow_buf[0] > 0.0
+            && workspaces[0].scratch.realized_inflow_buf[0] < 200.0,
+        "realized_inflow_buf[0] must be a reasonable inflow value near 100.0, got {}",
+        workspaces[0].scratch.realized_inflow_buf[0]
     );
     assert_eq!(
         workspaces[0].scratch.load_rhs_buf.len(),
         n_load_buses,
-        "load_rhs_buf must have 1 entry alongside z_inflow_rhs_buf"
+        "load_rhs_buf must have 1 entry alongside realized_inflow_buf"
     );
 }
 
@@ -1476,6 +1476,7 @@ fn simulation_truncation_keeps_the_raw_rhs_and_fixes_the_slack_bounds() {
             &state_boxes,
             &[test_support::hydro_only_bus_geometry()],
         )
+        .without_inflow_entries(1)
         .ctx(),
         &fcf,
         &TrainingContext {
@@ -1528,12 +1529,12 @@ fn simulation_truncation_keeps_the_raw_rhs_and_fixes_the_slack_bounds() {
 
     let scratch = &workspaces[0].scratch;
     assert_eq!(
-        scratch.z_inflow_rhs_buf.len(),
+        scratch.realized_inflow_buf.len(),
         1,
-        "z_inflow_rhs_buf must have exactly 1 entry for 1 hydro"
+        "realized_inflow_buf must have exactly 1 entry for 1 hydro"
     );
-    let z = scratch.z_inflow_rhs_buf[0];
-    assert!(z < 0.0, "the z RHS stays raw, got {z}");
+    let z = scratch.realized_inflow_buf[0];
+    assert!(z < 0.0, "the realized inflow stays raw, got {z}");
     assert_eq!(
         scratch.inflow_slack_lower_buf[0].to_bits(),
         (-z).to_bits(),
@@ -1550,7 +1551,7 @@ fn simulation_truncation_keeps_the_raw_rhs_and_fixes_the_slack_bounds() {
 /// raw (potentially negative) noise values.
 ///
 /// With `mean_m3s = -1000.0` and `std_m3s = 1.0`, the PAR inflow is always
-/// deeply negative.  The `None` path must NOT clamp eta, so the z-inflow
+/// deeply negative.  The `None` path must NOT clamp eta, so the realized-inflow
 /// buffer value must be negative (`mean` + `sigma` \* `raw_eta` << 0).
 #[test]
 fn simulation_none_method_produces_raw_negative_noise() {
@@ -1592,6 +1593,7 @@ fn simulation_none_method_produces_raw_negative_noise() {
             &state_boxes,
             &[test_support::hydro_only_bus_geometry()],
         )
+        .without_inflow_entries(1)
         .ctx(),
         &fcf,
         &TrainingContext {
@@ -1643,16 +1645,16 @@ fn simulation_none_method_produces_raw_negative_noise() {
     .unwrap();
 
     assert_eq!(
-        workspaces[0].scratch.z_inflow_rhs_buf.len(),
+        workspaces[0].scratch.realized_inflow_buf.len(),
         1,
-        "z_inflow_rhs_buf must have exactly 1 entry for 1 hydro"
+        "realized_inflow_buf must have exactly 1 entry for 1 hydro"
     );
     // With None, no clamping occurs.  mean=-1000 and sigma=1, so
-    // z_inflow_rhs_buf[0] = -1000 + 1 * eta.  For |eta| < 5 this remains << 0.
+    // realized_inflow_buf[0] = -1000 + 1 * eta.  For |eta| < 5 this remains << 0.
     assert!(
-        workspaces[0].scratch.z_inflow_rhs_buf[0] < 0.0,
-        "with None method, z_inflow_rhs_buf[0] must be negative (raw eta applied), got {}",
-        workspaces[0].scratch.z_inflow_rhs_buf[0]
+        workspaces[0].scratch.realized_inflow_buf[0] < 0.0,
+        "with None method, realized_inflow_buf[0] must be negative (raw eta applied), got {}",
+        workspaces[0].scratch.realized_inflow_buf[0]
     );
 }
 
@@ -1699,126 +1701,83 @@ mod dcs_simulation {
 
     const X_HAT: f64 = 2.0;
 
-    /// Cut-free base: cols `[storage_out=0, z_inflow=1, storage_in=2,
-    /// theta=3]`, row 0 the z-inflow definition `z_inflow = rhs` (mirrors
-    /// production's `fill_z_inflow_patches` row, keeping `z_inflow` a defined
-    /// column rather than a free one, and matching every built template's own
-    /// invariant that the z-inflow rows lead the row space), row 1 the
-    /// coupling row `storage_out - storage_in = 0`, doubling as the water-balance
-    /// row `run_one_sim_stage`'s geometry addresses, minimise `theta`.
-    /// `storage_in` is pinned to `x_hat`; cuts constrain `theta` against
-    /// `storage_out` (col 0). Cols 4-11 (turbine, spillage, withdrawal-slack,
-    /// and the four operational-violation slack families) are decoupled
-    /// padding — zero cost, zero NZ — so per-block hydro extraction addresses
-    /// real columns without perturbing the solved LP.
-    fn sim_core_template() -> StageTemplate {
+    /// Template over cols `[storage_out=0, storage_in=1, theta=2]` followed by
+    /// eight decoupled padding cols 3-10 (turbine, spillage, withdrawal-slack,
+    /// and the four operational-violation slack families): zero cost, zero NZ,
+    /// so per-block hydro extraction addresses real columns without perturbing
+    /// the solved LP. `head_col_starts`, `row_indices` and `values` describe
+    /// the three leading columns; row 0 is always the coupling row
+    /// `storage_out - storage_in = 0`, doubling as the water-balance row
+    /// `run_one_sim_stage`'s geometry addresses.
+    fn sim_template(
+        head_col_starts: [i32; 4],
+        row_indices: Vec<i32>,
+        values: Vec<f64>,
+        row_lower: Vec<f64>,
+        row_upper: Vec<f64>,
+    ) -> StageTemplate {
+        let num_nz = values.len();
+        let mut col_starts = head_col_starts.to_vec();
+        col_starts.extend([head_col_starts[3]; 8]);
+        let mut col_lower = vec![0.0, 0.0, -1.0e6];
+        col_lower.extend([0.0; 8]);
+        let mut col_upper = vec![f64::INFINITY, f64::INFINITY, 1.0e6];
+        col_upper.extend([f64::INFINITY; 8]);
+        let mut objective = vec![0.0, 0.0, 1.0];
+        objective.extend([0.0; 8]);
         StageTemplate {
-            num_cols: 12,
-            num_rows: 2,
-            num_nz: 3,
-            col_starts: vec![0_i32, 1, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3],
-            row_indices: vec![1_i32, 0, 1],
-            values: vec![1.0, 1.0, -1.0],
-            col_lower: vec![
-                0.0, 0.0, 0.0, -1.0e6, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-            ],
-            col_upper: vec![
-                f64::INFINITY,
-                f64::INFINITY,
-                f64::INFINITY,
-                1.0e6,
-                f64::INFINITY,
-                f64::INFINITY,
-                f64::INFINITY,
-                f64::INFINITY,
-                f64::INFINITY,
-                f64::INFINITY,
-                f64::INFINITY,
-                f64::INFINITY,
-            ],
-            objective: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-            row_lower: vec![0.0, 0.0],
-            row_upper: vec![0.0, 0.0],
+            num_cols: 11,
+            num_rows: row_lower.len(),
+            num_nz,
+            col_starts,
+            row_indices,
+            values,
+            col_lower,
+            col_upper,
+            objective,
+            row_lower,
+            row_upper,
             n_state: 1,
             col_scale: Vec::new(),
             row_scale: Vec::new(),
         }
+    }
+
+    /// Cut-free base: row 0 the coupling row `storage_out - storage_in = 0`,
+    /// minimise `theta`. `storage_in` is pinned to `x_hat`; cuts constrain
+    /// `theta` against `storage_out` (col 0).
+    fn sim_core_template() -> StageTemplate {
+        sim_template(
+            [0, 1, 2, 2],
+            vec![0, 0],
+            vec![1.0, -1.0],
+            vec![0.0],
+            vec![0.0],
+        )
     }
 
     /// All-cuts frozen template: cut-free base + the three pool cuts frozen as
-    /// structural rows 2..5 (slot order), with the z-inflow definition row
-    /// shifted to row 0 like every other fixture here. `num_rows = 5`. Cols
-    /// 4-11 are the same decoupled padding as `sim_core_template`.
+    /// structural rows 1..4 (slot order). `num_rows = 4`.
     fn sim_all_cuts_frozen() -> StageTemplate {
-        StageTemplate {
-            num_cols: 12,
-            num_rows: 5,
-            num_nz: 7,
-            col_starts: vec![0_i32, 2, 3, 4, 7, 7, 7, 7, 7, 7, 7, 7, 7],
-            row_indices: vec![1_i32, 3, 0, 1, 2, 3, 4],
-            values: vec![1.0, -2.0, 1.0, -1.0, 1.0, 1.0, 1.0],
-            col_lower: vec![
-                0.0, 0.0, 0.0, -1.0e6, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-            ],
-            col_upper: vec![
-                f64::INFINITY,
-                f64::INFINITY,
-                f64::INFINITY,
-                1.0e6,
-                f64::INFINITY,
-                f64::INFINITY,
-                f64::INFINITY,
-                f64::INFINITY,
-                f64::INFINITY,
-                f64::INFINITY,
-                f64::INFINITY,
-                f64::INFINITY,
-            ],
-            objective: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-            row_lower: vec![0.0, 0.0, 1.0, 0.0, 3.0],
-            row_upper: vec![0.0, 0.0, f64::INFINITY, f64::INFINITY, f64::INFINITY],
-            n_state: 1,
-            col_scale: Vec::new(),
-            row_scale: Vec::new(),
-        }
+        sim_template(
+            [0, 2, 3, 6],
+            vec![0, 2, 0, 1, 2, 3],
+            vec![1.0, -2.0, -1.0, 1.0, 1.0, 1.0],
+            vec![0.0, 1.0, 0.0, 3.0],
+            vec![0.0, f64::INFINITY, f64::INFINITY, f64::INFINITY],
+        )
     }
 
     /// Frozen template carrying a single DOMINATING spurious cut
-    /// (`-5*col0 + theta >= 0`, floor 10 at `x_hat = 2`, NOT in the pool), plus
-    /// the same leading z-inflow definition row as the other fixtures. Cols
-    /// 4-11 are the same decoupled padding as `sim_core_template`.
+    /// (`-5*col0 + theta >= 0`, floor 10 at `x_hat = 2`, NOT in the pool).
     fn sim_frozen_dominating_cut() -> StageTemplate {
-        StageTemplate {
-            num_cols: 12,
-            num_rows: 3,
-            num_nz: 5,
-            col_starts: vec![0_i32, 2, 3, 4, 5, 5, 5, 5, 5, 5, 5, 5, 5],
-            row_indices: vec![1_i32, 2, 0, 1, 2],
-            values: vec![1.0, -5.0, 1.0, -1.0, 1.0],
-            col_lower: vec![
-                0.0, 0.0, 0.0, -1.0e6, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-            ],
-            col_upper: vec![
-                f64::INFINITY,
-                f64::INFINITY,
-                f64::INFINITY,
-                1.0e6,
-                f64::INFINITY,
-                f64::INFINITY,
-                f64::INFINITY,
-                f64::INFINITY,
-                f64::INFINITY,
-                f64::INFINITY,
-                f64::INFINITY,
-                f64::INFINITY,
-            ],
-            objective: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-            row_lower: vec![0.0, 0.0, 0.0],
-            row_upper: vec![0.0, 0.0, f64::INFINITY],
-            n_state: 1,
-            col_scale: Vec::new(),
-            row_scale: Vec::new(),
-        }
+        sim_template(
+            [0, 2, 3, 4],
+            vec![0, 1, 0, 1],
+            vec![1.0, -5.0, -1.0, 1.0],
+            vec![0.0, 0.0],
+            vec![0.0, f64::INFINITY],
+        )
     }
 
     /// Pool of three cuts on incoming storage; seeded so the DCS initial set
@@ -1910,19 +1869,19 @@ mod dcs_simulation {
         let state = test_support::state_layout(1, 0);
         let core = sim_core_template();
         // turbine/spillage/withdrawal-slack/the four operational-violation
-        // families address the decoupled padding cols the templates above
-        // append; water_balance reuses the coupling row every fixture already
-        // carries at row 1 (see `sim_core_template`).
+        // families address the decoupled padding cols `sim_template`
+        // appends; water_balance reuses the coupling row every fixture already
+        // carries at row 0.
         let geometry_per_stage = vec![StageGeometry {
-            turbine: 4..5,
-            spillage: 5..6,
-            withdrawal_slack_neg: 6..7,
-            withdrawal_slack_pos: 7..8,
-            outflow_below_slack: 8..9,
-            outflow_above_slack: 9..10,
-            turbine_below_slack: 10..11,
-            generation_below_slack: 11..12,
-            water_balance: BlockRowFamily::one_per_entity(1..2),
+            turbine: 3..4,
+            spillage: 4..5,
+            withdrawal_slack_neg: 5..6,
+            withdrawal_slack_pos: 6..7,
+            outflow_below_slack: 7..8,
+            outflow_above_slack: 8..9,
+            turbine_below_slack: 9..10,
+            generation_below_slack: 10..11,
+            water_balance: BlockRowFamily::one_per_entity(0..1),
             ..test_support::equipment_free_geometry(&[1])[0].clone()
         }];
         let templates = vec![core];
@@ -1947,16 +1906,16 @@ mod dcs_simulation {
         ws.current_state.clear();
         ws.current_state.push(X_HAT);
         ws.scratch.load_rhs_buf.clear();
-        ws.scratch.z_inflow_rhs_buf.clear();
         ws.scratch.ncs_col_upper_buf.clear();
-        ws.scratch.inflow_m3s_buf.clear();
-        ws.scratch.inflow_m3s_buf.push(0.0);
+        ws.scratch.realized_inflow_buf.clear();
+        ws.scratch.realized_inflow_buf.push(0.0);
 
         let state_boxes = vec![StateBox {
             lower: vec![f64::NEG_INFINITY; state.n_state],
             upper: vec![f64::INFINITY; state.n_state],
         }];
-        let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry_per_stage);
+        let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry_per_stage)
+            .without_inflow_entries(1);
         let ctx = fixture.ctx();
         let study_dims = test_support::study_dims();
         let training_ctx = TrainingContext {
@@ -2144,7 +2103,7 @@ mod dcs_simulation {
 ///
 /// `run_forward_stage` and `solve_simulation_stage` each drive their own
 /// workspace through the identical three-stage solution sequence; both share
-/// `debug_assert_bucket_copy_gap_intact` and `accumulate_and_shift_lag_state`,
+/// `debug_assert_bucket_copy_gap_intact` and `advance_lag_chain`,
 /// so a residual shift reintroduced in either path diverges the captured
 /// trajectories or trips that assert.
 mod anticipated_ring_matches_forward_propagation {
@@ -2381,9 +2340,8 @@ mod anticipated_ring_matches_forward_propagation {
         ws.current_state.clear();
         ws.current_state.extend_from_slice(&[10.0, 20.0]);
         ws.scratch.load_rhs_buf.clear();
-        ws.scratch.z_inflow_rhs_buf.clear();
         ws.scratch.ncs_col_upper_buf.clear();
-        ws.scratch.inflow_m3s_buf.clear();
+        ws.scratch.realized_inflow_buf.clear();
 
         let entity_counts = EntityCounts {
             hydro_ids: Vec::new(),
@@ -2492,7 +2450,8 @@ mod anticipated_ring_matches_forward_propagation {
             N_STAGES
         ];
         let geometry = equipment_free_geometry(&[1, 1, 1]);
-        let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+        let fixture =
+            StageContextFixture::new(&templates, &state_boxes, &geometry).without_inflow_entries(0);
         let ctx = fixture.ctx();
         let training_ctx = TrainingContext {
             node_graph: &crate::test_support::chain_node_graph(&stochastic),

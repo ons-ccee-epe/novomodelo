@@ -70,7 +70,8 @@ pub(crate) fn build_state_box(
 }
 
 /// The box is indexed by state dimension and reads the template at the
-/// outgoing column; the two indices coincide only on the logical layout.
+/// outgoing column; the two indices coincide only when the layout has no lag
+/// region.
 fn fill_identity_box(
     lower: &mut [f64],
     upper: &mut [f64],
@@ -223,7 +224,7 @@ mod tests {
 
     #[test]
     fn compact_state_box_indexes_state_dimensions_not_columns() {
-        let layout = StateSpace::new_compact(
+        let layout = StateSpace::new(
             1,
             1,
             vec![(HydroSys::new(0), 1), (HydroSys::new(0), 2)],
@@ -278,7 +279,7 @@ mod tests {
             &time_value,
         );
 
-        let lag_j = layout.inflow_lags.start;
+        let lag_j = layout.state_dim_lag_range().start;
         assert_eq!(state_box.lower[lag_j], f64::NEG_INFINITY);
         assert_eq!(state_box.upper[lag_j], f64::INFINITY);
     }

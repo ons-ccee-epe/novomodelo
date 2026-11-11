@@ -524,10 +524,10 @@ mod cut_subgradient_parity {
 
     /// Indices into the column/row layout documented in the module doc; the
     /// closed-form KKT reference and the post-solve assertions both depend on these.
-    const COL_STORAGE_IN: usize = 2;
-    const ROW_WATER_BALANCE: usize = 1;
-    const ROW_FPHA: usize = 3;
-    const ROW_EVAP: usize = 4;
+    const COL_STORAGE_IN: usize = 1;
+    const ROW_WATER_BALANCE: usize = 0;
+    const ROW_FPHA: usize = 2;
+    const ROW_EVAP: usize = 3;
 
     /// Build a minimal 1-FPHA-hydro, 1-bus system with linearized evaporation.
     ///
@@ -778,7 +778,7 @@ mod cut_subgradient_parity {
 
         let template = &result.templates[0];
 
-        // Guards the hardcoded COL_STORAGE_IN: storage_in.start = N*(2+L) + A*K = 2.
+        // Guards the hardcoded COL_STORAGE_IN: storage_in.start = N + B + S = 1.
         assert_eq!(
             template.n_state, 1,
             "N=1, L=0: n_state must be 1 (storage only, no lags)"
@@ -5495,8 +5495,7 @@ mod solve_cache_equivalence {
     use super::common::in_code_studies::fpha_lag_study;
     use super::common::stored_cut_oracles::apply_oracle_config;
     use super::common::{
-        Emission, StubComm, build_setup_in_code_with_models_as, fresh_system_and_setup_with,
-        fresh_system_and_setup_with_emission, is_chain,
+        StubComm, build_setup_in_code_with_models, fresh_system_and_setup_with, is_chain,
     };
 
     type Run = (StudySetup, TrainingOutcome);
@@ -5583,12 +5582,7 @@ mod solve_cache_equivalence {
             let leg = |bypass_solve_caches| {
                 let (system, mut config, hydro_models) = fpha_lag_study();
                 apply_oracle_config(&mut config);
-                let setup = build_setup_in_code_with_models_as(
-                    system,
-                    &config,
-                    hydro_models,
-                    Emission::Compact,
-                );
+                let setup = build_setup_in_code_with_models(system, &config, hydro_models);
                 train(
                     setup,
                     SolverProfiles {
@@ -5643,14 +5637,7 @@ mod solve_cache_equivalence {
         let mut selected: Vec<String> = Vec::new();
         let mut powered_decks = 0;
         for deck in committed_decks() {
-            let build = || {
-                fresh_system_and_setup_with_emission(
-                    &deck.dir,
-                    apply_oracle_config,
-                    Emission::Compact,
-                )
-                .1
-            };
+            let build = || fresh_system_and_setup_with(&deck.dir, apply_oracle_config).1;
             let setup = build();
             if setup.stage_state().max_par_order == 0 {
                 continue;

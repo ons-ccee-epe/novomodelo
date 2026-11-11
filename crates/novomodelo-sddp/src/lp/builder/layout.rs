@@ -8,7 +8,6 @@ use novomodelo_core::{
     ResolvedBounds, ResolvedGenericConstraintBounds, ResolvedLoadFactors, ResolvedNcsBounds,
     ResolvedNcsFactors, ResolvedPenalties, SlackConfig, Stage, Thermal, VariableRef,
 };
-use novomodelo_stochastic::par::precompute::PrecomputedPar;
 
 use crate::bucket_topology::TransitBucketTopology;
 use crate::hydro_models::{
@@ -74,7 +73,6 @@ pub(crate) struct TemplateBuildCtx<'a> {
     /// Declaration-order bit-determinism (`csc_byte_identical_under_permuted_multi_entity_order`)
     /// depends on every fill iterating a slice, never this map.
     pub(crate) positions: &'a EntityPositions,
-    pub(crate) par_lp: &'a PrecomputedPar,
     /// Resolved production models for all (hydro, stage) pairs.
     pub(crate) production_models: &'a ProductionModelSet,
     /// Resolved evaporation models for all hydro plants.
@@ -1385,10 +1383,7 @@ impl<'a> StageLayout<'a> {
         geometry.inflow_slack = col.alloc(if has_inflow_slack_columns { n_h } else { 0 });
 
         // ── Role-(b) constraint row ranges ───────────────────────────────────
-        // The builder's own rows start immediately after `StateSpace::z_inflow_rows()`,
-        // the sole owner of that leading row range. `row` allocates every family
-        // through `RangeCursor::alloc`, mirroring `col` above.
-        let mut row = RangeCursor::new(state_layout.z_inflow_rows().end);
+        let mut row = RangeCursor::new(0);
         geometry.water_balance =
             allocate_water_balance_rows(&mut row, stage.block_mode, n_h, n_blks);
         // Sized from this stage's reachable count, not the stage-invariant
@@ -1711,8 +1706,6 @@ pub(crate) fn contract_family_slot(
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RowFamily {
-    /// Hydro z-inflow definition rows; empty on the compact form.
-    ZInflow,
     /// Water-balance rows.
     WaterBalance,
     /// Transit-bucket definition rows.
@@ -1863,13 +1856,6 @@ impl StageLayout<'_> {
         )
     }
 
-    /// Hydro `h`'s z-inflow definition row.
-    #[inline]
-    #[must_use]
-    pub(crate) fn z_inflow_row(&self, h: HydroSys) -> usize {
-        self.state.z_inflow_row(h)
-    }
-
     /// Every structural row family with its range, in allocation order; empty
     /// families stay in the list.
     #[cfg(any(test, feature = "test-support"))]
@@ -1878,7 +1864,6 @@ impl StageLayout<'_> {
         let evap_start = self.row_evap_start();
         let generic_start = self.rows.row_generic_start;
         vec![
-            (RowFamily::ZInflow, self.state.z_inflow_rows()),
             (RowFamily::WaterBalance, self.geometry.water_balance.range()),
             (
                 RowFamily::TransitBucketDefinition,

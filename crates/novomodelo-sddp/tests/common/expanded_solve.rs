@@ -14,13 +14,13 @@ use novomodelo_sddp::test_support::expander::{
 };
 use novomodelo_sddp::test_support::template_structure::column_entries;
 use novomodelo_sddp::test_support::{
-    FoldedProbeCut, FoldedProbeCuts, FoldedProbeOpening, cut_rows_for_slots_into, empty_row_batch,
-    folded_opening_cut_for_probe,
+    ProbeCut, ProbeCuts, ProbeOpening, cut_rows_for_slots_into, empty_row_batch,
+    opening_cut_for_probe,
 };
 use novomodelo_sddp::{CutPool, FutureCostFunction, StudySetup};
 use novomodelo_solver::{
-    ActiveSolver, Basis, BasisStatus, FreezeScratch, LpSolution, ProfiledSolver, RowBatch,
-    SolverInterface, StageTemplate, freeze_rows_into_template,
+    ActiveSolver, Basis, BasisStatus, FreezeScratch, LpSolution, RowBatch, SolverInterface,
+    StageTemplate, freeze_rows_into_template,
 };
 
 use super::StubComm;
@@ -54,6 +54,20 @@ impl CutRowSet {
             frozen: 0,
         }
     }
+
+    /// Every populated slot of `resident_pool`, active or not, in slot order.
+    pub fn populated(
+        fcf: &FutureCostFunction,
+        resident_pool: usize,
+        extracted_pool: usize,
+    ) -> Self {
+        Self {
+            resident_pool,
+            extracted_pool,
+            slots: (0..fcf.pools[resident_pool].populated()).collect(),
+            frozen: 0,
+        }
+    }
 }
 
 /// The compact solve and the expanded LP assembled from it.
@@ -63,7 +77,7 @@ pub struct ExpandedSolve {
     /// The compact LP's optimal basis.
     pub compact_basis: Basis,
     /// The compact solution and the cut the fold extracts from it.
-    pub compact_cut: FoldedProbeCut,
+    pub compact_cut: ProbeCut,
     /// The cut rows of both LPs.
     pub rows: CutRowSet,
     /// The scaled expanded template with every per-solve bound applied.
@@ -74,7 +88,7 @@ pub struct ExpandedSolve {
     pub lag_coefficients: Vec<f64>,
 }
 
-fn scale_at(scale: &[f64], index: usize) -> f64 {
+pub fn scale_at(scale: &[f64], index: usize) -> f64 {
     if scale.is_empty() { 1.0 } else { scale[index] }
 }
 
@@ -234,8 +248,8 @@ fn carry_compact_bounds(
 
 /// Loads the compact template into `solver` with the first `rows.frozen` cut rows frozen into it
 /// and the rest appended.
-fn load_compact_cut_rows(
-    solver: &mut ProfiledSolver<BoundRecordingSolver<ActiveSolver>>,
+pub fn load_compact_cut_rows<S: SolverInterface>(
+    solver: &mut S,
     compact: &StudySetup,
     compact_template: &StageTemplate,
     cut_pool: &CutPool,
@@ -316,22 +330,23 @@ pub fn assemble_expanded_solve(
         rows,
     );
 
-    let mut compact_cut = FoldedProbeCut::new(&training_ctx);
+    let mut compact_cut = ProbeCut::new(&training_ctx);
     let before = ws.solver.statistics();
-    let solved = folded_opening_cut_for_probe(
+    let solved = opening_cut_for_probe(
         ws,
         &ctx,
         &training_ctx,
-        &FoldedProbeOpening {
+        &ProbeOpening {
             stage: StageIdx(stage),
             pinned_state: incoming_state,
             raw_noise,
-            cuts: FoldedProbeCuts {
+            cuts: ProbeCuts {
                 pool: cut_pool,
                 pool_id: pool,
                 slots,
             },
             extracted_pool_id: rows.extracted_pool,
+            inflow_slack_bounds: None,
         },
         &mut compact_cut,
     );
@@ -703,7 +718,7 @@ fn csr_offset(index: i32) -> usize {
     usize::try_from(index).expect("CSR offsets and indices are >= 0")
 }
 
-fn rounding_factor(n: usize) -> f64 {
+pub fn rounding_factor(n: usize) -> f64 {
     let n_u = f64::from(u32::try_from(n).expect("n fits u32")) * (f64::EPSILON / 2.0);
     n_u / (1.0 - n_u)
 }
@@ -1571,7 +1586,6 @@ pub fn check_compact_shifted_base_rows(
 /// The cross-formulation checks of one trained study at identical pinned states, with their totals.
 pub struct PinnedStateRun<'a> {
     label: &'a str,
-    logical: &'a StudySetup,
     compact: &'a StudySetup,
     expanded: &'a ExpandedStudy,
     evidence: PowerEvidence,
@@ -1587,17 +1601,11 @@ pub struct PinnedStateRun<'a> {
 }
 
 impl<'a> PinnedStateRun<'a> {
-    /// A run over `logical`'s trained cuts and trial states, solved in `compact` and `expanded`.
-    pub fn new(
-        label: &'a str,
-        logical: &'a StudySetup,
-        compact: &'a StudySetup,
-        expanded: &'a ExpandedStudy,
-    ) -> Self {
+    /// A run over `compact`'s trained cuts and trial states, solved in `compact` and `expanded`.
+    pub fn new(label: &'a str, compact: &'a StudySetup, expanded: &'a ExpandedStudy) -> Self {
         let state = compact.stage_state();
         Self {
             label,
-            logical,
             compact,
             expanded,
             evidence: PowerEvidence::new(state.hydro_count, state.max_par_order),
@@ -1622,7 +1630,7 @@ impl<'a> PinnedStateRun<'a> {
             .stochastic
             .class_dimensions()
             .hydro_range();
-        let rows = CutRowSet::active(&self.logical.fcf, stage, stage - 1);
+        let rows = CutRowSet::active(&self.compact.fcf, stage, stage - 1);
         let n_openings = tree.n_openings(stage);
         let mut stage_rhs = CutRhsReport::default();
         let mut stage_shifted = ShiftedBaseRowReport::default();
@@ -1633,7 +1641,7 @@ impl<'a> PinnedStateRun<'a> {
                 let solve = assemble_expanded_solve(
                     self.compact,
                     self.expanded,
-                    &self.logical.fcf,
+                    &self.compact.fcf,
                     &rows,
                     stage,
                     x_hat,
@@ -1642,7 +1650,7 @@ impl<'a> PinnedStateRun<'a> {
                 stage_rhs.absorb(check_compact_cut_rhs(
                     self.label,
                     self.expanded,
-                    &self.logical.fcf,
+                    &self.compact.fcf,
                     &training_ctx.cut_state_layouts[rows.resident_pool],
                     stage,
                     &solve,

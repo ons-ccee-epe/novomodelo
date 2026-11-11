@@ -10,7 +10,7 @@
 //!
 //! The stage-invariant state-vector column ranges (storage, AR lags,
 //! travel-time buckets, the anticipated ring's outgoing and incoming blocks,
-//! `z_inflow`, `theta`) are owned entirely by [`StateSpace`] — see its own
+//! `theta`) are owned entirely by [`StateSpace`] — see its own
 //! module doc for the authoritative diagram; this file does not re-derive it,
 //! to avoid the two copies drifting apart.
 //!
@@ -33,8 +33,7 @@
 //! ## Row layout (Solver Abstraction SS2.2)
 //!
 //! State pinning uses column bounds (`set_col_bounds`) on the incoming-state
-//! columns, so the LP has no state-fixing row range. z-inflow rows start at
-//! row 0.
+//! columns, so the LP has no state-fixing row range.
 //!
 //! The per-solve patch sequence layered on top of this geometry is documented in
 //! [`crate::lp::builder`].
@@ -126,6 +125,6 @@ pub use index::{BlockIdx, Boundary, CutSlot, InCol, OutCol, StateDim};
 pub use layout::EvaporationIndices;
 pub(crate) use range_cursor::RangeCursor;
 pub use state_space::StateSpace;
-pub(crate) use state_space::{InflowForm, REGION_ORDER, StateRegion};
+pub(crate) use state_space::{REGION_ORDER, StateRegion};
 pub use storage_boundary_grid::StorageBoundaryGrid;
 pub use study_dimensions::StudyDimensions;

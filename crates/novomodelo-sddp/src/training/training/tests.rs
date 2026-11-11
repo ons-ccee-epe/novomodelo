@@ -52,28 +52,21 @@ use crate::{
 
 /// Minimal LP for N=1 hydro, L=0 PAR order.
 ///
-/// Column layout (N=1, L=0):
-/// - col 0: `storage_out` (no NZ in structural rows)
-/// - col 1: `z_inflow` (1 NZ: row 0, z-inflow definition row)
-/// - col 2: `storage_in` (1 NZ: row 1, this mock's pin row)
-/// - col 3: `theta` (no NZ)
-///
-/// Row layout:
-/// - row 0: `z_inflow` definition row
-/// - row 1: this mock's pin row (`storage_in` at +1.0, not `storage_out`)
+/// Columns: `storage_out` (0), `storage_in` (1, one NZ at row 0, this mock's
+/// pin row), `theta` (2). One row.
 fn minimal_template(_n_state: usize) -> StageTemplate {
     StageTemplate {
-        num_cols: 4,
-        num_rows: 2,
-        num_nz: 2,
-        col_starts: vec![0_i32, 0, 1, 2, 2],
-        row_indices: vec![0_i32, 1],
-        values: vec![1.0, 1.0],
-        col_lower: vec![0.0, f64::NEG_INFINITY, 0.0, 0.0],
-        col_upper: vec![f64::INFINITY; 4],
-        objective: vec![0.0, 0.0, 0.0, 1.0],
-        row_lower: vec![0.0, 0.0],
-        row_upper: vec![0.0, 0.0],
+        num_cols: 3,
+        num_rows: 1,
+        num_nz: 1,
+        col_starts: vec![0_i32, 0, 1, 1],
+        row_indices: vec![0_i32],
+        values: vec![1.0],
+        col_lower: vec![0.0, 0.0, 0.0],
+        col_upper: vec![f64::INFINITY; 3],
+        objective: vec![0.0, 0.0, 1.0],
+        row_lower: vec![0.0],
+        row_upper: vec![0.0],
         n_state: 1,
         col_scale: Vec::new(),
         row_scale: Vec::new(),
@@ -133,12 +126,12 @@ impl SolverInterface for MockSolver {
             return Err(SolverError::Infeasible);
         }
         let obj = self.objectives[call % self.objectives.len()];
-        // Return primal[3] = 0.0 so forward computes stage_cost = objective - primal[theta] = obj.
+        // Return primal[theta] = 0.0 so forward computes stage_cost = objective - primal[theta] = obj.
         Ok(novomodelo_solver::SolutionView {
             objective: obj,
-            primal: &[0.0, 0.0, 0.0, 0.0],
-            dual: &[0.0, 0.0],
-            reduced_costs: &[0.0, 0.0, 0.0, 0.0],
+            primal: &[0.0, 0.0, 0.0],
+            dual: &[0.0],
+            reduced_costs: &[0.0, 0.0, 0.0],
             iterations: 0,
             solve_time_seconds: 0.0,
         })
@@ -442,7 +435,8 @@ fn ac_train_completes_with_iteration_limit() {
 
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = equipment_free_geometry(&[1usize, 1]);
-    let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let fixture =
+        StageContextFixture::new(&templates, &state_boxes, &geometry).without_inflow_entries(1);
     let stage_ctx = fixture.ctx();
     let result = train(
         &mut solver,
@@ -524,7 +518,8 @@ fn ac_train_returns_partial_on_infeasible() {
 
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = equipment_free_geometry(&[1usize, 1]);
-    let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let fixture =
+        StageContextFixture::new(&templates, &state_boxes, &geometry).without_inflow_entries(1);
     let stage_ctx = fixture.ctx();
     let result = train(
         &mut solver,
@@ -619,7 +614,8 @@ fn ac_train_emits_correct_event_sequence() {
 
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = equipment_free_geometry(&[1usize, 1]);
-    let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let fixture =
+        StageContextFixture::new(&templates, &state_boxes, &geometry).without_inflow_entries(1);
     let stage_ctx = fixture.ctx();
     train(
         &mut solver,
@@ -798,7 +794,8 @@ fn ac_worker_timing_per_worker_event_count_and_setup_invariant() {
 
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = equipment_free_geometry(&[1usize, 1]);
-    let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let fixture =
+        StageContextFixture::new(&templates, &state_boxes, &geometry).without_inflow_entries(1);
     let stage_ctx = fixture.ctx();
     train(
         &mut solver,
@@ -948,7 +945,8 @@ fn ac_train_result_fields_populated() {
 
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = equipment_free_geometry(&[1usize, 1]);
-    let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let fixture =
+        StageContextFixture::new(&templates, &state_boxes, &geometry).without_inflow_entries(1);
     let stage_ctx = fixture.ctx();
     let result = train(
         &mut solver,
@@ -1037,7 +1035,8 @@ fn ac_train_with_no_event_sender() {
 
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = equipment_free_geometry(&[1usize, 1]);
-    let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let fixture =
+        StageContextFixture::new(&templates, &state_boxes, &geometry).without_inflow_entries(1);
     let stage_ctx = fixture.ctx();
     let result = train(
         &mut solver,
@@ -1116,7 +1115,8 @@ fn ac_total_time_ms_is_non_negative() {
 
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = equipment_free_geometry(&[1usize, 1]);
-    let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let fixture =
+        StageContextFixture::new(&templates, &state_boxes, &geometry).without_inflow_entries(1);
     let stage_ctx = fixture.ctx();
     let result = train(
         &mut solver,
@@ -1203,7 +1203,8 @@ fn cut_selection_none_skips_step() {
 
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = equipment_free_geometry(&[1usize, 1]);
-    let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let fixture =
+        StageContextFixture::new(&templates, &state_boxes, &geometry).without_inflow_entries(1);
     let stage_ctx = fixture.ctx();
     train(
         &mut solver,
@@ -1292,7 +1293,8 @@ fn existing_train_tests_pass_with_none() {
 
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = equipment_free_geometry(&[1usize, 1]);
-    let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let fixture =
+        StageContextFixture::new(&templates, &state_boxes, &geometry).without_inflow_entries(1);
     let stage_ctx = fixture.ctx();
     let result = train(
         &mut solver,
@@ -1380,7 +1382,8 @@ fn ac_train_partial_result_on_mid_iteration_failure() {
 
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = equipment_free_geometry(&[1usize, 1]);
-    let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let fixture =
+        StageContextFixture::new(&templates, &state_boxes, &geometry).without_inflow_entries(1);
     let stage_ctx = fixture.ctx();
     let outcome = train(
         &mut solver,
@@ -1485,7 +1488,8 @@ fn start_iteration_resumes_from_offset() {
 
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = equipment_free_geometry(&[1usize, 1]);
-    let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let fixture =
+        StageContextFixture::new(&templates, &state_boxes, &geometry).without_inflow_entries(1);
     let stage_ctx = fixture.ctx();
     let outcome = train(
         &mut solver,
@@ -1569,7 +1573,8 @@ fn start_iteration_at_or_beyond_max_runs_zero_iterations() {
 
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = equipment_free_geometry(&[1usize, 1]);
-    let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let fixture =
+        StageContextFixture::new(&templates, &state_boxes, &geometry).without_inflow_entries(1);
     let stage_ctx = fixture.ctx();
     let outcome = train(
         &mut solver,
@@ -2307,7 +2312,8 @@ fn template_freeze_event_emitted() {
 
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = equipment_free_geometry(&[1usize, 1]);
-    let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let fixture =
+        StageContextFixture::new(&templates, &state_boxes, &geometry).without_inflow_entries(1);
     let stage_ctx = fixture.ctx();
 
     train(
@@ -2900,7 +2906,8 @@ fn backward_aggregation_time_lies_within_the_backward_pass() {
     };
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = equipment_free_geometry(&[1usize, 1]);
-    let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let fixture =
+        StageContextFixture::new(&templates, &state_boxes, &geometry).without_inflow_entries(1);
     let stage_ctx = fixture.ctx();
 
     for backward_scheduler in [

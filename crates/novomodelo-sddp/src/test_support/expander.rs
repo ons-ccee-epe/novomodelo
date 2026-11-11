@@ -1,7 +1,7 @@
-//! Rebuilds today's LP, with its incoming-lag columns, z columns and z rows,
+//! Rebuilds the LP that carries the incoming-lag columns, z columns and z rows
 //! from the compact template, the unscaled inflow coupling and
 //! `PrecomputedPar`, addressing the lag columns through its own alias, and
-//! renders a pool's cuts as rows of it.
+//! renders a pool's cuts as rows of it. It is the oracle for the compact LP.
 
 use std::ops::Range;
 
@@ -10,7 +10,7 @@ use novomodelo_solver::{RowBatch, StageTemplate};
 use novomodelo_stochastic::par::precompute::PrecomputedPar;
 
 use crate::cut::CutPool;
-use crate::indexer::{CutSlot, CutStateProjection, HydroSys, InflowForm, StateDim, StateSpace};
+use crate::indexer::{CutSlot, CutStateProjection, HydroSys, StateDim, StateSpace};
 use crate::lp::builder::{InflowCoupling, StageTemplates, assemble_csc};
 use crate::setup::StudySetup;
 use crate::setup::template_postprocess::postprocess_templates;
@@ -33,16 +33,8 @@ fn shifted(range: &Range<usize>, by: usize) -> Range<usize> {
 
 impl ExpandedLayout {
     /// Moves every region of a compact [`StateSpace`] after the lag block to its expanded column.
-    ///
-    /// # Panics
-    ///
-    /// Panics unless `compact` is laid out for the compact inflow form.
     #[must_use]
     pub fn of(compact: &StateSpace) -> Self {
-        assert!(
-            matches!(compact.inflow_form, InflowForm::Compact),
-            "ExpandedLayout::of needs a compact-form StateSpace"
-        );
         let n = compact.hydro_count;
         let lags = n * compact.max_par_order;
         let storage_in_start = compact.storage_in.start;

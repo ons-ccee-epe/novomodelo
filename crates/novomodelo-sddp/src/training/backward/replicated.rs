@@ -26,25 +26,19 @@ use crate::{
     cut::chain_rule::{ChainRuleInputs, OpeningDuals, per_opening_cut_into},
     cut_sync::OutcomeExchangeScratch,
     forward::EnumeratedForwardScratch,
-    indexer::{ChainRuleSlots, InflowForm},
     risk_measure::{BackwardOutcome, RiskMeasure},
     solve::{StageOpeningSolver, partition},
     stage_solve::{StageInputs, run_stage_solve},
     training::stage_solve_prep::{
-        BracketSource, FoldedCutRows, NoiseTermSource, StageSolvePrep, StateSource,
+        BracketSource, LoadedCutRows, NoiseTermSource, StageSolvePrep, StateSource,
     },
     workspace::SolverWorkspace,
 };
 
 use super::{
     SuccessorChild, SuccessorOutcomes, SuccessorSpec,
-    duals_extraction::{
-        FoldedDuals, FoldedExtraction, extract_folded_duals, extract_state_duals_only,
-    },
-    lp_setup::{
-        OpeningNoise, folded_cut_rows, load_backward_lp, patch_opening_bounds,
-        resolve_opening_noise,
-    },
+    duals_extraction::{DualExtractionSpec, OpeningDualBuffers, extract_opening_duals},
+    lp_setup::{OpeningNoise, child_cut_rows, load_backward_lp, resolve_opening_noise},
 };
 
 /// Per-rank scratch for [`run_backward_node_replicated`]: the local
@@ -61,6 +55,8 @@ pub(crate) struct ReplicatedScratch {
     outcome_counts: Vec<usize>,
     /// Reused allgather scratch (`OutcomeExchangeScratch::allgather_outcomes`).
     exchange: OutcomeExchangeScratch,
+    /// The gathered outcomes, grown to the largest node's outcome count.
+    gathered: Vec<BackwardOutcome>,
 }
 
 /// Per-outcome payload width in [`solve_replicated_outcome_slice`]'s output:
@@ -75,7 +71,7 @@ pub(crate) fn outcome_stride(n_state: usize) -> usize {
 /// index space `child.outcome_range`'s offset addresses into the node's joint
 /// arena) at the shared incoming state `x_hat`, appending each opening's
 /// `objective ‖ subgradient` (`1 + cut_state.n_slots()` doubles) to `out`. The
-/// child's LP loads once, and on the compact LP `x_hat` is pinned once with it;
+/// child's LP loads once, and `x_hat` is pinned once with it;
 /// an `External` child (`openings.len == 1`) reads its declared column via
 /// [`resolve_opening_noise`] instead of the generated opening tree.
 ///
@@ -107,26 +103,24 @@ pub(crate) fn solve_replicated_outcome_slice<S: SolverInterface + Send>(
     ws.solver.reset_solver_state();
     load_backward_lp(ws, child);
 
-    let rows = folded_cut_rows(training_ctx, child, child.successor_active_slots);
-    if training_ctx.state.inflow_form == InflowForm::Compact {
-        StageSolvePrep::pin_folded(
-            &mut ws.solver,
-            &mut ws.patch_buf,
-            &mut ws.scratch,
-            ctx,
-            training_ctx,
-            s,
-            StateSource(x_hat),
-            &rows,
-            BracketSource::Computed,
-        );
-    }
+    let rows = child_cut_rows(training_ctx, child, child.successor_active_slots);
+    StageSolvePrep::pin_and_bracket(
+        &mut ws.solver,
+        &mut ws.patch_buf,
+        &mut ws.scratch,
+        ctx,
+        training_ctx,
+        s,
+        StateSource(x_hat),
+        &rows,
+        BracketSource::Computed,
+    );
 
     let mut state_duals = std::mem::take(&mut ws.backward_accum.state_duals_buf);
     let mut coupled_duals = std::mem::take(&mut ws.backward_accum.coupled_duals_buf);
     let mut cut_dual_slots = std::mem::take(&mut ws.backward_accum.cut_dual_slots);
     let mut buf = std::mem::take(&mut ws.backward_accum.external_noise_buf);
-    let mut duals = FoldedDuals {
+    let mut duals = OpeningDualBuffers {
         state_duals: &mut state_duals,
         coupled_duals: &mut coupled_duals,
         cut_dual_slots: &mut cut_dual_slots,
@@ -201,9 +195,9 @@ pub(crate) fn solve_replicated_outcome_slice<S: SolverInterface + Send>(
 }
 
 /// Solves one opening of `child`'s loaded LP at `x_hat` and appends its
-/// `objective ‖ subgradient` to `out`; on the compact LP the subgradient is the
-/// opening's chain-rule coefficients, which the successor intercept dots at the
-/// same `x_hat`.
+/// `objective ‖ subgradient` to `out`; the subgradient is the opening's
+/// chain-rule coefficients, which the successor intercept dots at the same
+/// `x_hat`.
 ///
 /// # Errors
 ///
@@ -219,84 +213,64 @@ fn solve_replicated_opening<S: SolverInterface + Send>(
     training_ctx: &TrainingContext<'_>,
     succ: &SuccessorSpec<'_>,
     child: &SuccessorChild<'_>,
-    rows: &FoldedCutRows<'_>,
+    rows: &LoadedCutRows<'_>,
     x_hat: &[f64],
     raw_noise: &[f64],
     inputs: &StageInputs<'_>,
-    duals: &mut FoldedDuals<'_>,
+    duals: &mut OpeningDualBuffers<'_>,
     out: &mut Vec<f64>,
 ) -> Result<(), SddpError> {
     let ctx = inputs.stage_context;
     let s = inputs.stage_index;
     let n_state = succ.cut_state.n_slots();
-    match training_ctx.state.inflow_form {
-        InflowForm::Logical => {
-            patch_opening_bounds(ws, ctx, training_ctx, raw_noise, x_hat, s);
-            let view = run_stage_solve(ws, inputs)?;
-            let objective = extract_state_duals_only(
-                &view,
-                succ.cut_state,
-                &ctx.template(s).col_scale,
-                duals.state_duals,
-            );
-            out.push(objective);
-            out.extend_from_slice(&duals.state_duals[..n_state]);
-        }
-        InflowForm::Compact => {
-            StageSolvePrep::open_folded(
-                &mut ws.solver,
-                &mut ws.patch_buf,
-                &mut ws.scratch,
-                ctx,
-                training_ctx,
-                s,
-                raw_noise,
-                rows,
-                NoiseTermSource::OnTheFly,
-                &StageOpeningSolver::Frozen,
-            );
-            let view = run_stage_solve(ws, inputs)?;
-            let template = ctx.template(s);
-            let objective = extract_folded_duals(
-                &view,
-                &FoldedExtraction {
-                    extracted: succ.cut_state,
-                    col_scale: &template.col_scale,
-                    row_scale: &template.row_scale,
-                    coupling: &ctx.inflow_coupling[s.0],
-                    first_cut_row: child.template_num_rows,
-                    cut_row_slots: child.successor_active_slots,
-                    read_cut_duals: rows.projection.has_lag_slots(),
-                },
-                duals,
-            );
-            out.push(objective);
-            let start = out.len();
-            out.resize(start + n_state, 0.0);
-            per_opening_cut_into(
-                &ChainRuleInputs {
-                    slots: &ChainRuleSlots::compose(
-                        training_ctx.state,
-                        rows.projection,
-                        succ.cut_state,
-                    ),
-                    resident_pool: child.successor_pool,
-                    extracted: succ.cut_state,
-                    par: training_ctx.stochastic.par(),
-                    stage: s.0,
-                },
-                &OpeningDuals {
-                    objective,
-                    state_duals: duals.state_duals,
-                    coupled_duals: duals.coupled_duals,
-                    cut_duals: duals.cut_dual_slots,
-                },
-                x_hat,
-                &mut ws.backward_accum.chain_scratch,
-                &mut out[start..],
-            );
-        }
-    }
+    StageSolvePrep::patch_opening(
+        &mut ws.solver,
+        &mut ws.patch_buf,
+        &mut ws.scratch,
+        ctx,
+        training_ctx,
+        s,
+        raw_noise,
+        rows,
+        NoiseTermSource::OnTheFly,
+        &StageOpeningSolver::Frozen,
+    );
+    let view = run_stage_solve(ws, inputs)?;
+    let template = ctx.template(s);
+    let objective = extract_opening_duals(
+        &view,
+        &DualExtractionSpec {
+            extracted: succ.cut_state,
+            col_scale: &template.col_scale,
+            row_scale: &template.row_scale,
+            coupling: &ctx.inflow_coupling[s.0],
+            first_cut_row: child.template_num_rows,
+            cut_row_slots: child.successor_active_slots,
+            read_cut_duals: rows.projection.has_lag_slots(),
+        },
+        duals,
+    );
+    out.push(objective);
+    let start = out.len();
+    out.resize(start + n_state, 0.0);
+    per_opening_cut_into(
+        &ChainRuleInputs {
+            slots: child.chain_rule_slots,
+            resident_pool: child.successor_pool,
+            extracted: succ.cut_state,
+            par: training_ctx.stochastic.par(),
+            stage: s.0,
+        },
+        &OpeningDuals {
+            objective,
+            state_duals: duals.state_duals,
+            coupled_duals: duals.coupled_duals,
+            cut_duals: duals.cut_dual_slots,
+        },
+        x_hat,
+        &mut ws.backward_accum.chain_scratch,
+        &mut out[start..],
+    );
     Ok(())
 }
 
@@ -431,18 +405,15 @@ pub(crate) fn run_backward_node_replicated<S: SolverInterface + Send, C: Communi
         comm,
     )?;
 
-    while ws.backward_accum.outcomes.len() < n_openings {
-        ws.backward_accum.outcomes.push(BackwardOutcome {
+    while scratch.gathered.len() < n_openings {
+        scratch.gathered.push(BackwardOutcome {
             intercept: 0.0,
             coefficients: vec![0.0_f64; n_state],
             objective_value: 0.0,
         });
     }
     let stride = outcome_stride(n_state);
-    for (o, out) in ws.backward_accum.outcomes[..n_openings]
-        .iter_mut()
-        .enumerate()
-    {
+    for (o, out) in scratch.gathered[..n_openings].iter_mut().enumerate() {
         let base = o * stride;
         let objective = full[base];
         let coefficients = &full[base + 1..base + 1 + n_state];
@@ -455,7 +426,7 @@ pub(crate) fn run_backward_node_replicated<S: SolverInterface + Send, C: Communi
     ws.backward_accum.agg_coefficients.resize(n_state, 0.0);
     let mut intercept = 0.0_f64;
     risk_measure.aggregate_cut_into(
-        &ws.backward_accum.outcomes[..n_openings],
+        &scratch.gathered[..n_openings],
         probabilities,
         &mut intercept,
         &mut ws.backward_accum.agg_coefficients,

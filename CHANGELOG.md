@@ -9,11 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
+### Changed
 
-- `bwd_aggregation_ms` in `training/timing/iterations.parquet`: the time the
-  backward pass spends combining each stage's opening results into cuts
-  after its parallel solves.
+- Training and simulation results change: each stage LP solves the same model
+  with fewer rows and columns.
 
 ## [0.20.0] - 2026-11-03
 
