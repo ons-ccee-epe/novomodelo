@@ -23,7 +23,7 @@ pub use block_bounds::{
 };
 pub use bounds::{
     BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, HydroBlockBounds, HydroStageBounds,
-    LineBlockBounds, PumpingBlockBounds, ResolvedBounds, ThermalBlockBounds, ThermalStageBounds,
+    LineBlockBounds, PumpingBlockBounds, ResolvedBounds, ThermalBlockBounds,
 };
 pub use factors::{ResolvedLoadFactors, ResolvedNcsBounds, ResolvedNcsFactors};
 pub use generic::{GenericConstraintBoundEntry, ResolvedGenericConstraintBounds};

@@ -305,7 +305,7 @@ mod tests {
     use novomodelo_core::{
         BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, EntityId, FillingConfig, Hydro,
         HydroBlockBounds, HydroGenerationModel, HydroPenalties, HydroStageBounds, LineBlockBounds,
-        PumpingBlockBounds, ResolvedBounds, ThermalBlockBounds, ThermalStageBounds,
+        PumpingBlockBounds, ResolvedBounds, ThermalBlockBounds,
     };
 
     use super::build_filling_v_target;
@@ -411,10 +411,10 @@ mod tests {
             &BoundsDefaults {
                 hydro: default_hydro_bounds(),
                 hydro_block: default_hydro_block_bounds(),
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,

@@ -858,7 +858,6 @@ fn test_lead_time_single_decider_on_disk_load() {
     // makes to the padded thermal-bounds axis pads no region a real study
     // ever reads.
     for stage in 0..system.n_stages() {
-        let b = system.bounds().thermal_bounds(THERMAL_IDX_ANT, stage);
         let bb = system.bounds().thermal_block_base(THERMAL_IDX_ANT, stage);
         assert!(
             (bb.min_generation_mw - 0.0).abs() < f64::EPSILON,
@@ -871,9 +870,9 @@ fn test_lead_time_single_decider_on_disk_load() {
             bb.max_generation_mw
         );
         assert!(
-            (b.cost_per_mwh - 10.0).abs() < f64::EPSILON,
+            (bb.cost_per_mwh - 10.0).abs() < f64::EPSILON,
             "stage {stage}: cost_per_mwh mismatch, got {}",
-            b.cost_per_mwh
+            bb.cost_per_mwh
         );
     }
 }

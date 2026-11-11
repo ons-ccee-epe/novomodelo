@@ -1531,7 +1531,7 @@ mod transit_seed_output {
         EntityId, HydroBlockBounds, HydroPastDefluence, HydroPenalties, HydroStageBounds,
         HydroStorage, InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
         PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
-        ResolvedPenalties, System, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
+        ResolvedPenalties, System, SystemBuilder, ThermalBlockBounds,
     };
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
@@ -1694,12 +1694,10 @@ mod transit_seed_output {
                     max_generation_mw: 500.0,
                     ..Default::default()
                 },
-                thermal: ThermalStageBounds {
-                    cost_per_mwh: 500.0,
-                },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
+                    cost_per_mwh: 500.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -1925,7 +1923,7 @@ mod transit_seed_round_trip {
         EntityId, HydroBlockBounds, HydroPastDefluence, HydroPenalties, HydroStageBounds,
         HydroStorage, InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
         PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
-        ResolvedPenalties, System, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
+        ResolvedPenalties, System, SystemBuilder, ThermalBlockBounds,
     };
     use novomodelo_io::config::{
         BoundaryPolicy, Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
@@ -2111,12 +2109,10 @@ mod transit_seed_round_trip {
                     max_generation_mw: 1_000.0,
                     ..Default::default()
                 },
-                thermal: ThermalStageBounds {
-                    cost_per_mwh: 500.0,
-                },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
+                    cost_per_mwh: 500.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -2495,7 +2491,7 @@ mod diversion_outflow_bounds {
         EntityId, HydroBlockBounds, HydroPenalties, HydroStageBounds, HydroStorage,
         InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
         PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
-        ResolvedPenalties, System, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
+        ResolvedPenalties, System, SystemBuilder, ThermalBlockBounds,
     };
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
@@ -2693,12 +2689,10 @@ mod diversion_outflow_bounds {
                     max_generation_mw: 500.0,
                     ..Default::default()
                 },
-                thermal: ThermalStageBounds {
-                    cost_per_mwh: 500.0,
-                },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
+                    cost_per_mwh: 500.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -3008,7 +3002,7 @@ mod water_arc_and_post_study_anticipated_coexist_on_extended_layout {
         BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, EntityId, HydroBlockBounds,
         HydroPastDefluence, HydroStageBounds, HydroStorage, InitialConditions, LineBlockBounds,
         PostStudyStage, PostStudyStages, PostStudyThermalBound, PumpingBlockBounds, ResolvedBounds,
-        System, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
+        System, SystemBuilder, ThermalBlockBounds,
     };
     use novomodelo_io::config::{
         BoundaryPolicy, Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
@@ -3157,10 +3151,10 @@ mod water_arc_and_post_study_anticipated_coexist_on_extended_layout {
                     max_generation_mw: 500.0,
                     ..Default::default()
                 },
-                thermal: ThermalStageBounds { cost_per_mwh: 1.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
+                    cost_per_mwh: 1.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -3809,7 +3803,7 @@ mod generic_slack_penalty_basis {
         LineStagePenalties, LinearTerm, NcsStagePenalties, ParameterKind, PenaltiesCountsSpec,
         PenaltiesDefaults, PenaltyBasis, PumpingBlockBounds, ResolvedBounds,
         ResolvedGenericConstraintBounds, ResolvedPenalties, ScalarExpr, ScalarParameter,
-        SlackConfig, System, SystemBuilder, ThermalBlockBounds, ThermalStageBounds, VariableRef,
+        SlackConfig, System, SystemBuilder, ThermalBlockBounds, VariableRef,
     };
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
@@ -4041,10 +4035,10 @@ mod generic_slack_penalty_basis {
                     max_generation_mw: 100.0,
                     ..Default::default()
                 },
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,

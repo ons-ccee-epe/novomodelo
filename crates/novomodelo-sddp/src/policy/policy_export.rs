@@ -781,7 +781,7 @@ mod tests {
         resolved::{
             BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, HydroBlockBounds,
             HydroStageBounds, LineBlockBounds, PumpingBlockBounds, ResolvedBounds,
-            ThermalBlockBounds, ThermalStageBounds,
+            ThermalBlockBounds,
         },
     };
     use novomodelo_io::{ENTITY_SLOT_DATE_SENTINEL, encode_slot_date};
@@ -829,10 +829,10 @@ mod tests {
                 max_generation_mw: 45.0,
                 ..Default::default()
             },
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 500.0,

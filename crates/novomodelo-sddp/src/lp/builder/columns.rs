@@ -319,9 +319,8 @@ fn fill_diversion_columns(
 /// gate; the shifted gate (decision priced `K` stages early) lives on the decision column
 /// in `fill_anticipated_columns`, not here.
 ///
-/// The generation bound is read per block
-/// ([`thermal_bounds_at_block`](novomodelo_core::ResolvedBounds::thermal_bounds_at_block)); the
-/// cost stays stage-level (`thermal_bounds`) — `ThermalBlockOverride` has no cost field.
+/// The generation bounds and the cost are read per block
+/// ([`thermal_bounds_at_block`](novomodelo_core::ResolvedBounds::thermal_bounds_at_block)).
 pub(super) fn fill_thermal_columns(
     ctx: &TemplateBuildCtx<'_>,
     stage: &Stage,
@@ -331,11 +330,6 @@ pub(super) fn fill_thermal_columns(
 ) {
     for (t_idx, thermal) in ctx.thermals.iter().enumerate() {
         let active = commissioning_active(thermal.entry_stage_id, thermal.exit_stage_id, stage.id);
-        let marginal_cost_per_mwh = ctx
-            .resolved
-            .bounds
-            .thermal_bounds(t_idx, stage_idx)
-            .cost_per_mwh;
         // `build_anticipated_fishing_row_pos` returns an empty vec whenever
         // `k_max == 0`, regardless of `n_anticipated`.
         let is_anticipated = ctx
@@ -368,7 +362,7 @@ pub(super) fn fill_thermal_columns(
             }
             if !is_anticipated {
                 let block_hours = stage.blocks[blk].duration_hours;
-                bufs.objective[col] = marginal_cost_per_mwh * block_hours;
+                bufs.objective[col] = tb.cost_per_mwh * block_hours;
             }
         }
     }
@@ -380,7 +374,7 @@ pub(super) fn fill_thermal_columns(
 /// The decision column is bound/costed at ITS OWN delivery stage — never the
 /// decision stage `stage_idx`, never `stage_idx + constant` — split on
 /// `delivery_stage < n_stages`. In study, `thermal_block_base` supplies
-/// `[min, max]` and `thermal_bounds` supplies `cost_per_mwh`. Post study,
+/// `[min, max]` and `cost_per_mwh`. Post study,
 /// `ctx.time_value.post_study().anticipated_bound` supplies `(cost, min_mw,
 /// max_mw)` from the post-study table ALONE — no intersection with a second
 /// declaration, since `post_study_stages.json` is the sole post-horizon bound
@@ -466,12 +460,11 @@ pub(super) fn fill_anticipated_columns(
                     .resolved
                     .bounds
                     .thermal_block_base(thermal_idx.get(), delivery_stage);
-                let cost = ctx
-                    .resolved
-                    .bounds
-                    .thermal_bounds(thermal_idx.get(), delivery_stage)
-                    .cost_per_mwh;
-                Some((cap.min_generation_mw, cap.max_generation_mw, cost))
+                Some((
+                    cap.min_generation_mw,
+                    cap.max_generation_mw,
+                    cap.cost_per_mwh,
+                ))
             } else {
                 ctx.time_value
                     .post_study()
@@ -1118,7 +1111,6 @@ mod interior_storage_bound_tests {
         LineBlockBounds, LineStagePenalties, NcsStagePenalties, NoiseMethod, PenaltiesCountsSpec,
         PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds, ResolvedPenalties,
         ScenarioSourceConfig, Stage, StageRiskConfig, StageStateConfig, ThermalBlockBounds,
-        ThermalStageBounds,
     };
 
     use super::{ColumnBufs, StageLayout, TemplateBuildCtx, fill_storage_columns};
@@ -1196,10 +1188,10 @@ mod interior_storage_bound_tests {
                     max_generation_mw: 250.0,
                     ..Default::default()
                 },
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -1541,7 +1533,6 @@ mod diversion_bound_tests {
         EntityId, Hydro, HydroBlockBounds, HydroPenalties, HydroStageBounds, LineBlockBounds,
         LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec, PenaltiesDefaults,
         PumpingBlockBounds, ResolvedBounds, ResolvedPenalties, ThermalBlockBounds,
-        ThermalStageBounds,
     };
 
     use crate::hydro_models::{
@@ -1624,10 +1615,10 @@ mod diversion_bound_tests {
                     max_generation_mw: 250.0,
                     ..Default::default()
                 },
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -1883,7 +1874,7 @@ mod filling_phase_gating_tests {
         CascadeTopology, ContractBlockBounds, EntityId, Hydro, HydroBlockBounds, HydroPenalties,
         HydroStageBounds, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
         PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBlockBounds,
-        ResolvedBounds, ResolvedPenalties, Stage, ThermalBlockBounds, ThermalStageBounds,
+        ResolvedBounds, ResolvedPenalties, Stage, ThermalBlockBounds,
     };
 
     use crate::hydro_models::{
@@ -1981,10 +1972,10 @@ mod filling_phase_gating_tests {
                     max_diversion_m3s: Some(MAX_DIVERSION_M3S),
                     ..Default::default()
                 },
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -2967,7 +2958,6 @@ mod anticipated_objective_tests {
         BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, EntityId, HorizonGraph,
         HydroBlockBounds, HydroStageBounds, LineBlockBounds, PostStudyStage, PostStudyStages,
         PostStudyThermalBound, PumpingBlockBounds, ResolvedBounds, Thermal, ThermalBlockBounds,
-        ThermalStageBounds,
     };
 
     use novomodelo_stochastic::season_cast::post_study_calendar_stages;
@@ -3030,9 +3020,9 @@ mod anticipated_objective_tests {
             let anticipated_plants = AnticipatedPlants::build(&thermals);
             let mut bounds = bounds_two_thermals();
             for stage in 0..N_STAGES {
-                bounds.thermal_bounds_mut(0, stage).cost_per_mwh = DELIVERY_COST_PER_MWH;
+                bounds.thermal_block_base_mut(0, stage).cost_per_mwh = DELIVERY_COST_PER_MWH;
                 bounds.thermal_block_base_mut(0, stage).max_generation_mw = MAX_GEN_MW;
-                bounds.thermal_bounds_mut(1, stage).cost_per_mwh = STD_COST_PER_MWH;
+                bounds.thermal_block_base_mut(1, stage).cost_per_mwh = STD_COST_PER_MWH;
                 bounds.thermal_block_base_mut(1, stage).max_generation_mw = MAX_GEN_MW;
             }
             Self {
@@ -3080,10 +3070,10 @@ mod anticipated_objective_tests {
                 hydro_block: HydroBlockBounds {
                     ..Default::default()
                 },
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -3161,7 +3151,7 @@ mod anticipated_objective_tests {
 
     /// Borrow-target owner for a one-anticipated-plant delivery-anchoring
     /// preservation `TemplateBuildCtx`. `per_stage[s] == (min_gen, max_gen,
-    /// cost)` is the plant's stage-`s` `thermal_bounds`; the discount factor is
+    /// cost)` is the plant's stage-`s` `ThermalBlockBounds`; the discount factor is
     /// stage-varying (`0.9^s`) too. Both are deliberately stage-varying so a
     /// DECISION-anchored read (the forbidden alternative) yields a provably
     /// different column than the shipped DELIVERY-anchored read.
@@ -3209,10 +3199,10 @@ mod anticipated_objective_tests {
                     hydro_block: HydroBlockBounds {
                         ..Default::default()
                     },
-                    thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                     thermal_block: ThermalBlockBounds {
                         min_generation_mw: 0.0,
                         max_generation_mw: 0.0,
+                        cost_per_mwh: 0.0,
                     },
                     line_block: LineBlockBounds {
                         direct_mw: 0.0,
@@ -3233,7 +3223,7 @@ mod anticipated_objective_tests {
                 let tbb = bounds.thermal_block_base_mut(0, stage);
                 tbb.min_generation_mw = min_g;
                 tbb.max_generation_mw = max_g;
-                bounds.thermal_bounds_mut(0, stage).cost_per_mwh = cost;
+                bounds.thermal_block_base_mut(0, stage).cost_per_mwh = cost;
             }
             let mut discount = Vec::with_capacity(n_stages);
             let mut d = 1.0_f64;
@@ -3268,11 +3258,12 @@ mod anticipated_objective_tests {
     /// Delivery-anchoring preservation contract: the anticipated decision
     /// column is bounded/costed at ITS OWN delivery stage `m`, never the
     /// decision stage —
-    /// `col_upper == thermal_bounds(m).max_generation_mw`,
-    /// `col_lower == thermal_bounds(m).min_generation_mw`,
-    /// `objective == cost(m) * hours(m) * discount(m)`. STAGE-VARYING delivery
-    /// bounds/cost so a decision-anchored read gives a provably different
-    /// value (constant-across-lead bounds would make the test vacuous).
+    /// `col_upper == thermal_block_base(t, m).max_generation_mw`,
+    /// `col_lower == thermal_block_base(t, m).min_generation_mw`,
+    /// `objective == thermal_block_base(t, m).cost_per_mwh * hours(m) *
+    /// discount(m)`. STAGE-VARYING delivery bounds/cost so a decision-anchored
+    /// read gives a provably different value (constant-across-lead bounds
+    /// would make the test vacuous).
     ///
     /// Load-bearing verified by MUTATION: changing the production read at
     /// `fill_anticipated_columns` from `thermal_block_base(thermal_idx,
@@ -3382,10 +3373,10 @@ mod anticipated_objective_tests {
                 hydro_block: HydroBlockBounds {
                     ..Default::default()
                 },
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -3406,7 +3397,7 @@ mod anticipated_objective_tests {
             let tbb = bounds.thermal_block_base_mut(0, stage);
             tbb.min_generation_mw = min_g;
             tbb.max_generation_mw = max_g;
-            bounds.thermal_bounds_mut(0, stage).cost_per_mwh = cost;
+            bounds.thermal_block_base_mut(0, stage).cost_per_mwh = cost;
         }
         bounds
     }
@@ -3674,7 +3665,6 @@ mod block_family_slack_tests {
         EntityId, Hydro, HydroBlockBounds, HydroPenalties, HydroStageBounds, LineBlockBounds,
         LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec, PenaltiesDefaults,
         PumpingBlockBounds, ResolvedBounds, ResolvedPenalties, ThermalBlockBounds,
-        ThermalStageBounds,
     };
 
     use crate::hydro_models::{
@@ -3870,10 +3860,10 @@ mod block_family_slack_tests {
             &BoundsDefaults {
                 hydro: zero_hydro_stage_bounds(),
                 hydro_block: zero_hydro_block_bounds(),
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -4131,7 +4121,6 @@ mod evaporation_slack_objective_tests {
         LineBlockBounds, LineStagePenalties, NcsStagePenalties, NoiseMethod, PenaltiesCountsSpec,
         PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds, ResolvedPenalties,
         ScenarioSourceConfig, Stage, StageRiskConfig, StageStateConfig, ThermalBlockBounds,
-        ThermalStageBounds,
     };
 
     use crate::hydro_models::{
@@ -4206,10 +4195,10 @@ mod evaporation_slack_objective_tests {
                     max_generation_mw: 45.0,
                     ..Default::default()
                 },
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -4463,7 +4452,6 @@ mod contract_column_tests {
     use novomodelo_core::{
         BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, EntityId, HydroBlockBounds,
         HydroStageBounds, LineBlockBounds, PumpingBlockBounds, ResolvedBounds, ThermalBlockBounds,
-        ThermalStageBounds,
     };
 
     use super::{ColumnBufs, StageLayout, TemplateBuildCtx, fill_contract_columns};
@@ -4513,10 +4501,10 @@ mod contract_column_tests {
                 hydro_block: HydroBlockBounds {
                     ..Default::default()
                 },
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -4679,7 +4667,7 @@ mod thermal_block_bound_tests {
     use novomodelo_core::{
         BlockBoundsCountsSpec, BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, EntityId,
         HydroBlockBounds, HydroStageBounds, LineBlockBounds, PumpingBlockBounds,
-        ResolvedBlockBounds, ResolvedBounds, Thermal, ThermalBlockBounds, ThermalStageBounds,
+        ResolvedBlockBounds, ResolvedBounds, Thermal, ThermalBlockBounds,
     };
 
     use crate::indexer::AnticipatedPlants;
@@ -4728,10 +4716,10 @@ mod thermal_block_bound_tests {
                 hydro_block: HydroBlockBounds {
                     ..Default::default()
                 },
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -4789,7 +4777,7 @@ mod thermal_block_bound_tests {
             cell.max_generation_mw = max_mw;
             self.base
                 .bounds
-                .thermal_bounds_mut(t_idx, stage_idx)
+                .thermal_block_base_mut(t_idx, stage_idx)
                 .cost_per_mwh = cost;
         }
 
@@ -5019,7 +5007,7 @@ mod line_contract_pumping_block_bound_tests {
         HydroStageBounds, Line, LineBlockBounds, LineBlockOverride, LineStagePenalties,
         NcsStagePenalties, PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds,
         PumpingBlockOverride, PumpingStation, ResolvedBlockBounds, ResolvedBounds,
-        ResolvedPenalties, ThermalBlockBounds, ThermalStageBounds,
+        ResolvedPenalties, ThermalBlockBounds,
     };
 
     use crate::time_value::TimeValue;
@@ -5105,10 +5093,10 @@ mod line_contract_pumping_block_bound_tests {
                 hydro_block: HydroBlockBounds {
                     ..Default::default()
                 },
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -5642,7 +5630,6 @@ mod hydro_block_bound_tests {
         HydroUnitGroupOverride, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
         PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBlockBounds,
         ResolvedBounds, ResolvedHydroUnitGroupBounds, ResolvedPenalties, ThermalBlockBounds,
-        ThermalStageBounds,
     };
 
     use crate::hydro_models::{
@@ -5773,10 +5760,10 @@ mod hydro_block_bound_tests {
                     water_withdrawal_m3s: 0.0,
                 },
                 hydro_block: hydro_block_bounds(0.0, 0.0, 0.0, None, 0.0, 0.0, None),
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -6632,7 +6619,7 @@ mod cell_column_bound_tests {
         HydroUnitGroupBoundsCountsSpec, HydroUnitGroupOverride, LineBlockBounds,
         LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec, PenaltiesDefaults,
         PumpingBlockBounds, ResolvedBlockBounds, ResolvedBounds, ResolvedHydroUnitGroupBounds,
-        ResolvedPenalties, ThermalBlockBounds, ThermalStageBounds,
+        ResolvedPenalties, ThermalBlockBounds,
     };
 
     use crate::hydro_models::{
@@ -6833,10 +6820,10 @@ mod cell_column_bound_tests {
                     water_withdrawal_m3s: 0.0,
                 },
                 hydro_block: hydro_block_bounds(0.0, 0.0),
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,

@@ -2036,7 +2036,7 @@ mod tests {
             LineStagePenalties, NcsStagePenalties, NoiseMethod, PenaltiesCountsSpec,
             PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds, ResolvedPenalties,
             ScenarioSourceConfig, Stage, StageRiskConfig, StageStateConfig, SystemBuilder,
-            ThermalBlockBounds, ThermalStageBounds,
+            ThermalBlockBounds,
         };
         use novomodelo_stochastic::par::precompute::PrecomputedPar;
 
@@ -2210,10 +2210,10 @@ mod tests {
             &BoundsDefaults {
                 hydro: default_hydro_bounds(),
                 hydro_block: default_hydro_block_bounds(),
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 100.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,

@@ -27,7 +27,7 @@ use novomodelo_core::{
     BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, EntityId, HydroBlockBounds,
     HydroStageBounds, InitialConditions, LineBlockBounds, PostStudyStage, PostStudyStages,
     PostStudyThermalBound, PumpingBlockBounds, ResolvedBounds, System, SystemBuilder,
-    ThermalBlockBounds, ThermalStageBounds,
+    ThermalBlockBounds,
 };
 use novomodelo_io::config::SimulationSelection;
 use novomodelo_io::output::simulation_writer::{ScenarioWritePayload, SimulationParquetWriter};
@@ -141,10 +141,10 @@ fn bounds() -> ResolvedBounds {
                 water_withdrawal_m3s: 0.0,
             },
             hydro_block: HydroBlockBounds::default(),
-            thermal: ThermalStageBounds { cost_per_mwh: 1.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 1.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,

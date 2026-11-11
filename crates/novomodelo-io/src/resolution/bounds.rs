@@ -13,7 +13,6 @@ use novomodelo_core::{
         ContractBlockBounds, ContractBlockOverride, HydroBlockBounds, HydroBlockOverride,
         HydroStageBounds, LineBlockBounds, LineBlockOverride, PumpingBlockBounds,
         PumpingBlockOverride, ResolvedBounds, ThermalBlockBounds, ThermalBlockOverride,
-        ThermalStageBounds,
     },
 };
 
@@ -266,23 +265,16 @@ pub fn resolve_bounds(
         .hydros
         .first()
         .map_or(zero_hydro_block_bounds(), hydro_base_block_bounds);
-    let thermal_default =
-        entities
-            .thermals
-            .first()
-            .map_or(ThermalStageBounds { cost_per_mwh: 0.0 }, |t| {
-                ThermalStageBounds {
-                    cost_per_mwh: t.cost_per_mwh,
-                }
-            });
     let thermal_block_default = entities.thermals.first().map_or(
         ThermalBlockBounds {
             min_generation_mw: 0.0,
             max_generation_mw: 0.0,
+            cost_per_mwh: 0.0,
         },
         |t| ThermalBlockBounds {
             min_generation_mw: t.min_generation_mw,
             max_generation_mw: t.max_generation_mw,
+            cost_per_mwh: t.cost_per_mwh,
         },
     );
     let line_default = entities.lines.first().map_or(
@@ -335,7 +327,6 @@ pub fn resolve_bounds(
         &novomodelo_core::BoundsDefaults {
             hydro: hydro_default,
             hydro_block: hydro_block_default,
-            thermal: thermal_default,
             thermal_block: thermal_block_default,
             line_block: line_default,
             pumping_block: pumping_default,
@@ -360,15 +351,12 @@ pub fn resolve_bounds(
     // so LP lookups at delivery stage t + K_i (anticipated thermals) stay in range.
     let thermal_axis = n_stages + k_max;
     for (entity_idx, thermal) in entities.thermals.iter().enumerate() {
-        let base_stage = ThermalStageBounds {
-            cost_per_mwh: thermal.cost_per_mwh,
-        };
         let base_block = ThermalBlockBounds {
             min_generation_mw: thermal.min_generation_mw,
             max_generation_mw: thermal.max_generation_mw,
+            cost_per_mwh: thermal.cost_per_mwh,
         };
         for stage_idx in 0..thermal_axis {
-            *table.thermal_bounds_mut(entity_idx, stage_idx) = base_stage;
             *table.thermal_block_base_mut(entity_idx, stage_idx) = base_block;
         }
     }
@@ -506,7 +494,9 @@ pub fn resolve_bounds(
             continue;
         };
         if let Some(v) = row.cost_per_mwh {
-            table.thermal_bounds_mut(entity_idx, stage_idx).cost_per_mwh = v;
+            table
+                .thermal_block_base_mut(entity_idx, stage_idx)
+                .cost_per_mwh = v;
         }
         if let Some(v) = row.min_generation_mw {
             table
@@ -1748,14 +1738,14 @@ mod tests {
         );
 
         assert!(
-            (result.thermal_bounds(0, 0).cost_per_mwh - 50.0).abs() < f64::EPSILON,
+            (result.thermal_block_base(0, 0).cost_per_mwh - 50.0).abs() < f64::EPSILON,
             "expected cost_per_mwh=50.0 at stage 0, got {}",
-            result.thermal_bounds(0, 0).cost_per_mwh
+            result.thermal_block_base(0, 0).cost_per_mwh
         );
         assert!(
-            (result.thermal_bounds(0, 1).cost_per_mwh - 100.0).abs() < f64::EPSILON,
+            (result.thermal_block_base(0, 1).cost_per_mwh - 100.0).abs() < f64::EPSILON,
             "expected cost_per_mwh=100.0 at stage 1, got {}",
-            result.thermal_bounds(0, 1).cost_per_mwh
+            result.thermal_block_base(0, 1).cost_per_mwh
         );
     }
 
@@ -1783,7 +1773,7 @@ mod tests {
 
         for stage in 0..3 {
             assert!(
-                (result.thermal_bounds(0, stage).cost_per_mwh - 50.0).abs() < f64::EPSILON,
+                (result.thermal_block_base(0, stage).cost_per_mwh - 50.0).abs() < f64::EPSILON,
                 "expected base cost_per_mwh=50.0 at stage {stage}"
             );
         }
@@ -1821,9 +1811,9 @@ mod tests {
         );
 
         assert!(
-            (result.thermal_bounds(0, 0).cost_per_mwh - 50.0).abs() < f64::EPSILON,
+            (result.thermal_block_base(0, 0).cost_per_mwh - 50.0).abs() < f64::EPSILON,
             "a block row's cost_per_mwh must remain ignored; expected 50.0, got {}",
-            result.thermal_bounds(0, 0).cost_per_mwh
+            result.thermal_block_base(0, 0).cost_per_mwh
         );
     }
 
@@ -1861,7 +1851,7 @@ mod tests {
 
         for stage in 0..2 {
             assert!(
-                result.thermal_bounds(0, stage).cost_per_mwh.abs() < f64::EPSILON,
+                result.thermal_block_base(0, stage).cost_per_mwh.abs() < f64::EPSILON,
                 "expected cost_per_mwh=0.0 at stage {stage}"
             );
         }
@@ -1902,11 +1892,11 @@ mod tests {
             let b0 = result.thermal_block_base(0, stage);
             assert!((b0.min_generation_mw - 0.0).abs() < f64::EPSILON);
             assert!((b0.max_generation_mw - 100.0).abs() < f64::EPSILON);
-            assert!((result.thermal_bounds(0, stage).cost_per_mwh - 50.0).abs() < f64::EPSILON);
+            assert!((result.thermal_block_base(0, stage).cost_per_mwh - 50.0).abs() < f64::EPSILON);
             let b1 = result.thermal_block_base(1, stage);
             assert!((b1.min_generation_mw - 10.0).abs() < f64::EPSILON);
             assert!((b1.max_generation_mw - 200.0).abs() < f64::EPSILON);
-            assert!((result.thermal_bounds(1, stage).cost_per_mwh - 80.0).abs() < f64::EPSILON);
+            assert!((result.thermal_block_base(1, stage).cost_per_mwh - 80.0).abs() < f64::EPSILON);
         }
 
         // Padded cells [3, 5): each thermal still carries its own base values.
@@ -1914,11 +1904,11 @@ mod tests {
             let b0 = result.thermal_block_base(0, stage);
             assert!((b0.min_generation_mw - 0.0).abs() < f64::EPSILON);
             assert!((b0.max_generation_mw - 100.0).abs() < f64::EPSILON);
-            assert!((result.thermal_bounds(0, stage).cost_per_mwh - 50.0).abs() < f64::EPSILON);
+            assert!((result.thermal_block_base(0, stage).cost_per_mwh - 50.0).abs() < f64::EPSILON);
             let b1 = result.thermal_block_base(1, stage);
             assert!((b1.min_generation_mw - 10.0).abs() < f64::EPSILON);
             assert!((b1.max_generation_mw - 200.0).abs() < f64::EPSILON);
-            assert!((result.thermal_bounds(1, stage).cost_per_mwh - 80.0).abs() < f64::EPSILON);
+            assert!((result.thermal_block_base(1, stage).cost_per_mwh - 80.0).abs() < f64::EPSILON);
         }
     }
 
@@ -1951,7 +1941,7 @@ mod tests {
             let b = result.thermal_block_base(0, stage);
             assert!((b.min_generation_mw - 0.0).abs() < f64::EPSILON);
             assert!((b.max_generation_mw - 100.0).abs() < f64::EPSILON);
-            assert!((result.thermal_bounds(0, stage).cost_per_mwh - 50.0).abs() < f64::EPSILON);
+            assert!((result.thermal_block_base(0, stage).cost_per_mwh - 50.0).abs() < f64::EPSILON);
         }
     }
 
@@ -2004,19 +1994,19 @@ mod tests {
         let b0_last_study = result.thermal_block_base(0, 3);
         assert!((b0_last_study.min_generation_mw - 0.0).abs() < f64::EPSILON);
         assert!((b0_last_study.max_generation_mw - 100.0).abs() < f64::EPSILON);
-        assert!((result.thermal_bounds(0, 3).cost_per_mwh - 50.0).abs() < f64::EPSILON);
+        assert!((result.thermal_block_base(0, 3).cost_per_mwh - 50.0).abs() < f64::EPSILON);
 
         // First padded stage (T == 4): thermal 0 base.
         let b0_first_pad = result.thermal_block_base(0, 4);
         assert!((b0_first_pad.min_generation_mw - 0.0).abs() < f64::EPSILON);
         assert!((b0_first_pad.max_generation_mw - 100.0).abs() < f64::EPSILON);
-        assert!((result.thermal_bounds(0, 4).cost_per_mwh - 50.0).abs() < f64::EPSILON);
+        assert!((result.thermal_block_base(0, 4).cost_per_mwh - 50.0).abs() < f64::EPSILON);
 
         // Last padded stage (T + K - 1 == 5): thermal 0 base.
         let b0_last_pad = result.thermal_block_base(0, 5);
         assert!((b0_last_pad.min_generation_mw - 0.0).abs() < f64::EPSILON);
         assert!((b0_last_pad.max_generation_mw - 100.0).abs() < f64::EPSILON);
-        assert!((result.thermal_bounds(0, 5).cost_per_mwh - 50.0).abs() < f64::EPSILON);
+        assert!((result.thermal_block_base(0, 5).cost_per_mwh - 50.0).abs() < f64::EPSILON);
 
         // First padded stage for thermal 1 must NOT pick up thermal 0's base.
         let b1_first_pad = result.thermal_block_base(1, 4);
@@ -2025,7 +2015,7 @@ mod tests {
             "thermal 1 padded min must be 10.0, not 0.0 (thermal 0) or 0.0 (uniform default)"
         );
         assert!((b1_first_pad.max_generation_mw - 200.0).abs() < f64::EPSILON);
-        assert!((result.thermal_bounds(1, 4).cost_per_mwh - 80.0).abs() < f64::EPSILON);
+        assert!((result.thermal_block_base(1, 4).cost_per_mwh - 80.0).abs() < f64::EPSILON);
     }
 
     /// One thermal, `n_stages = 4`, `k_max = 2`, override row at the *last*
@@ -2104,11 +2094,11 @@ mod tests {
         #[cfg(debug_assertions)]
         {
             let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let _ = result.thermal_bounds(0, 3);
+                let _ = result.thermal_block_base(0, 3);
             }));
             assert!(
                 panic_result.is_err(),
-                "thermal_bounds(0, 3) must panic in debug builds when n_stages=3, k_max=0"
+                "thermal_block_base(0, 3) must panic in debug builds when n_stages=3, k_max=0"
             );
         }
     }
@@ -2373,7 +2363,7 @@ mod tests {
         let b = result.thermal_bounds_at_block(0, 0, 1);
         assert!((b.max_generation_mw - 999.0).abs() < f64::EPSILON);
         assert!((b.min_generation_mw - 10.0).abs() < f64::EPSILON);
-        assert!((result.thermal_bounds(0, 0).cost_per_mwh - 50.0).abs() < f64::EPSILON);
+        assert!((result.thermal_block_base(0, 0).cost_per_mwh - 50.0).abs() < f64::EPSILON);
     }
 
     /// A `block_id` of `7` on a stage declaring 3 blocks, and separately a

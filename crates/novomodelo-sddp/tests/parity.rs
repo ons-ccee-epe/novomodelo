@@ -1919,7 +1919,7 @@ mod water_travel_time_no_arc_byte_identity {
         EntityId, HydroBlockBounds, HydroGenerationModel, HydroPenalties, HydroStageBounds,
         HydroStorage, InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
         PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
-        ResolvedPenalties, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
+        ResolvedPenalties, SystemBuilder, ThermalBlockBounds,
     };
     use novomodelo_sddp::{
         StudySetup,
@@ -2059,12 +2059,10 @@ mod water_travel_time_no_arc_byte_identity {
             &BoundsDefaults {
                 hydro: default_hydro_bounds(),
                 hydro_block: default_hydro_bounds_block(),
-                thermal: ThermalStageBounds {
-                    cost_per_mwh: 100.0,
-                },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 400.0,
+                    cost_per_mwh: 100.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,

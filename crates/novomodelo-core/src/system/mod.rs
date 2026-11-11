@@ -2246,8 +2246,7 @@ mod tests {
             HydroPastDefluence, HydroPenalties, HydroStageBounds, HydroStorage, LineBlockBounds,
             LineStagePenalties, LinearTerm, NcsStagePenalties, PenaltiesCountsSpec,
             PenaltiesDefaults, PenaltyBasis, PolicyGraphType, PumpingBlockBounds,
-            RecentObservation, SlackConfig, ThermalBlockBounds, ThermalStageBounds, Transition,
-            VariableRef,
+            RecentObservation, SlackConfig, ThermalBlockBounds, Transition, VariableRef,
         };
 
         let bus1 = {
@@ -2462,10 +2461,10 @@ mod tests {
                     max_diversion_m3s: Some(20.0),
                     ..Default::default()
                 },
-                thermal: ThermalStageBounds { cost_per_mwh: 85.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 10.0,
                     max_generation_mw: 150.0,
+                    cost_per_mwh: 85.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 300.0,

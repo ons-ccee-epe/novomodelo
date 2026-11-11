@@ -2086,7 +2086,7 @@ mod tests {
             BlockBoundsCountsSpec, BoundsCountsSpec, BoundsDefaults, ContractBlockBounds,
             HydroBlockBounds, HydroStageBounds, HydroUnitGroupBoundsCountsSpec, LineBlockBounds,
             PumpingBlockBounds, ResolvedBlockBounds, ResolvedBounds, ResolvedHydroUnitGroupBounds,
-            ThermalBlockBounds, ThermalStageBounds,
+            ThermalBlockBounds,
         },
     };
 
@@ -2225,10 +2225,10 @@ mod tests {
         let stage = make_stage(0);
 
         let hydro_bounds_default = hydro_stage_bounds(0.0, 100.0);
-        let thermal_bounds_default = ThermalStageBounds { cost_per_mwh: 0.0 };
         let thermal_block_default = ThermalBlockBounds {
             min_generation_mw: 0.0,
             max_generation_mw: 100.0,
+            cost_per_mwh: 0.0,
         };
         let line_default = LineBlockBounds {
             direct_mw: 500.0,
@@ -2256,7 +2256,6 @@ mod tests {
             &BoundsDefaults {
                 hydro: hydro_bounds_default,
                 hydro_block: hydro_block_bounds_default(),
-                thermal: thermal_bounds_default,
                 thermal_block: thermal_block_default,
                 line_block: line_default,
                 pumping_block: pumping_default,
@@ -2282,10 +2281,10 @@ mod tests {
         let stage1 = make_stage(1);
 
         let hydro_bounds_default = hydro_stage_bounds(min_storage, max_storage);
-        let thermal_default = ThermalStageBounds { cost_per_mwh: 0.0 };
         let thermal_block_default = ThermalBlockBounds {
             min_generation_mw: 0.0,
             max_generation_mw: 100.0,
+            cost_per_mwh: 0.0,
         };
         let line_default = LineBlockBounds {
             direct_mw: 500.0,
@@ -2313,7 +2312,6 @@ mod tests {
             &BoundsDefaults {
                 hydro: hydro_bounds_default,
                 hydro_block: hydro_block_bounds_default(),
-                thermal: thermal_default,
                 thermal_block: thermal_block_default,
                 line_block: line_default,
                 pumping_block: pumping_default,
@@ -2370,10 +2368,10 @@ mod tests {
         let stage1 = make_stage_with_blocks(1, 2);
 
         let hydro_bounds_default = hydro_stage_bounds(0.0, 100.0);
-        let thermal_bounds_default = ThermalStageBounds { cost_per_mwh: 0.0 };
         let thermal_block_default = ThermalBlockBounds {
             min_generation_mw: 0.0,
             max_generation_mw: 100.0,
+            cost_per_mwh: 0.0,
         };
         let line_default = LineBlockBounds {
             direct_mw: 500.0,
@@ -2401,7 +2399,6 @@ mod tests {
             &BoundsDefaults {
                 hydro: hydro_bounds_default,
                 hydro_block: hydro_block_bounds_default(),
-                thermal: thermal_bounds_default,
                 thermal_block: thermal_block_default,
                 line_block: line_default,
                 pumping_block: pumping_default,
@@ -2520,10 +2517,10 @@ mod tests {
         let stage1 = make_stage_with_blocks(1, 2);
 
         let hydro_bounds_default = hydro_stage_bounds(0.0, 100.0);
-        let thermal_bounds_default = ThermalStageBounds { cost_per_mwh: 0.0 };
         let thermal_block_default = ThermalBlockBounds {
             min_generation_mw: 0.0,
             max_generation_mw: 0.0,
+            cost_per_mwh: 0.0,
         };
         let line_default = LineBlockBounds {
             direct_mw: 500.0,
@@ -2551,7 +2548,6 @@ mod tests {
             &BoundsDefaults {
                 hydro: hydro_bounds_default,
                 hydro_block: hydro_block_bounds_default(),
-                thermal: thermal_bounds_default,
                 thermal_block: thermal_block_default,
                 line_block: line_default,
                 pumping_block: pumping_default,
@@ -2796,10 +2792,10 @@ mod tests {
             &BoundsDefaults {
                 hydro: hydro_stage_bounds(0.0, 100.0),
                 hydro_block: hydro_block_bounds_default(),
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 100.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 500.0,
@@ -2897,10 +2893,10 @@ mod tests {
             &BoundsDefaults {
                 hydro: hydro_stage_bounds(0.0, 100.0),
                 hydro_block: hydro_block_bounds_default(),
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 100.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 500.0,
@@ -3637,10 +3633,10 @@ mod tests {
             &BoundsDefaults {
                 hydro: hydro_stage_bounds(0.0, 100.0),
                 hydro_block: hydro_block_bounds_default(),
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 100.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 500.0,

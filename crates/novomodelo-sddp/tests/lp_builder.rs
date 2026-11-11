@@ -803,7 +803,7 @@ mod cell_partition_gates {
         DeficitSegment, EntityId, HydroBlockBounds, HydroPenalties, HydroStageBounds,
         HydroUnitGroup, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
         PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
-        ResolvedPenalties, System, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
+        ResolvedPenalties, System, SystemBuilder, ThermalBlockBounds,
     };
     use novomodelo_sddp::hydro_models::{
         EvaporationModelSet, FphaPlane, PrepareHydroModelsResult, ProductionModelSet,
@@ -992,10 +992,10 @@ mod cell_partition_gates {
                     max_generation_mw: 100_000.0,
                     ..Default::default()
                 },
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,

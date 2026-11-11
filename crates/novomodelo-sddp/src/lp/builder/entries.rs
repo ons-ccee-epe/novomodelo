@@ -1606,7 +1606,7 @@ mod parameter_resolution_tests {
         HydroPenalties, HydroStageBounds, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
         ParameterKind, PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
         ResolvedGenericConstraintBounds, ResolvedPenalties, ScalarExpr, ScalarParameter, StageId,
-        SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
+        SystemBuilder, ThermalBlockBounds,
     };
     use novomodelo_core::{LinearTerm, VariableRef};
     use novomodelo_stochastic::normal::precompute::PrecomputedNormal;
@@ -1763,10 +1763,10 @@ mod parameter_resolution_tests {
             &BoundsDefaults {
                 hydro: default_hydro_bounds(),
                 hydro_block: default_hydro_block_bounds(),
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 100.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -2107,7 +2107,7 @@ mod zero_cost_tests {
     use novomodelo_core::{
         BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, EntityId, HydroBlockBounds,
         HydroStageBounds, LineBlockBounds, PumpingBlockBounds, ResolvedBounds, Stage, Thermal,
-        ThermalBlockBounds, ThermalStageBounds,
+        ThermalBlockBounds,
     };
 
     use crate::indexer::BlockIdx;
@@ -2163,7 +2163,7 @@ mod zero_cost_tests {
         /// accesses falls within `[0, n_stages + k_max)` (callers whose
         /// deliveries all fall strictly inside `[0, n_stages)` pass `0`).
         /// `n_thermals` sizes the thermal slot axis: tests that read or mutate
-        /// `thermal_bounds(t_idx, …)` for an active anticipated plant must size it
+        /// `thermal_block_base(t_idx, …)` for an active anticipated plant must size it
         /// to cover every `t_idx` they touch; pure state-out/row tests pass `0`.
         fn bounds_with_n_stages(
             n_stages: usize,
@@ -2188,10 +2188,10 @@ mod zero_cost_tests {
                         water_withdrawal_m3s: 0.0,
                     },
                     hydro_block: HydroBlockBounds::default(),
-                    thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                     thermal_block: ThermalBlockBounds {
                         min_generation_mw: 0.0,
                         max_generation_mw: 0.0,
+                        cost_per_mwh: 0.0,
                     },
                     line_block: LineBlockBounds {
                         direct_mw: 0.0,
@@ -2295,7 +2295,7 @@ mod zero_cost_tests {
             fixtures
                 .base
                 .bounds
-                .thermal_bounds_mut(0, stage)
+                .thermal_block_base_mut(0, stage)
                 .cost_per_mwh = ANT_COST;
             fixtures
                 .base
@@ -2305,7 +2305,7 @@ mod zero_cost_tests {
             fixtures
                 .base
                 .bounds
-                .thermal_bounds_mut(1, stage)
+                .thermal_block_base_mut(1, stage)
                 .cost_per_mwh = STD_COST;
             fixtures
                 .base
@@ -3341,7 +3341,7 @@ mod pumping_water_tests {
         LineBlockBounds, LineStagePenalties, LinearTerm, NcsStagePenalties, PenaltiesCountsSpec,
         PenaltiesDefaults, PenaltyBasis, PumpingBlockBounds, PumpingStation, ResolvedBlockBounds,
         ResolvedBounds, ResolvedGenericConstraintBounds, ResolvedPenalties, SlackConfig, Stage,
-        Thermal, ThermalBlockBounds, ThermalStageBounds, VariableRef,
+        Thermal, ThermalBlockBounds, VariableRef,
     };
     use novomodelo_io::validation::semantic::envelope_tolerance;
     use novomodelo_stochastic::par::precompute::PrecomputedPar;
@@ -3434,10 +3434,10 @@ mod pumping_water_tests {
                 max_generation_mw: 45.0,
                 ..Default::default()
             },
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -3693,12 +3693,10 @@ mod pumping_water_tests {
             // which column would change the resolved bounds.
             for (t_idx, t) in thermals.iter().enumerate() {
                 for stage_idx in 0..N_STAGES {
-                    *bounds.thermal_bounds_mut(t_idx, stage_idx) = ThermalStageBounds {
-                        cost_per_mwh: t.cost_per_mwh,
-                    };
                     *bounds.thermal_block_base_mut(t_idx, stage_idx) = ThermalBlockBounds {
                         min_generation_mw: t.min_generation_mw,
                         max_generation_mw: t.max_generation_mw,
+                        cost_per_mwh: t.cost_per_mwh,
                     };
                 }
             }

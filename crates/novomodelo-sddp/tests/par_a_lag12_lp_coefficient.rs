@@ -41,7 +41,6 @@ use novomodelo_core::{
     EntityId, HydroBlockBounds, HydroPenalties, HydroStageBounds, LineBlockBounds,
     LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec, PenaltiesDefaults,
     PumpingBlockBounds, ResolvedBounds, ResolvedPenalties, SystemBuilder, ThermalBlockBounds,
-    ThermalStageBounds,
     entities::hydro::{Hydro, HydroGenerationModel},
     scenario::{AnnualComponent, InflowModel, LoadModel},
     temporal::{
@@ -267,10 +266,10 @@ fn build_par_a_fixture_core(
         &BoundsDefaults {
             hydro: hydro_bounds_default,
             hydro_block: hydro_bounds_default_block,
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
