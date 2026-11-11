@@ -276,16 +276,18 @@ fn copy_case_dir(src: &Path) -> tempfile::TempDir {
     tmp
 }
 
-/// Writes `constraints/thermal_bounds.parquet` at `dest` with a single
-/// stage-wide (`block_id = NULL`) row overriding `max_generation_mw` for
-/// `thermal_id` at `stage_id` — the hours-weighted-fold configuration (one
-/// value applied to every block of the stage), as opposed to a per-block row.
-fn write_stage_wide_thermal_bound(
-    dest: &Path,
+/// One `constraints/thermal_bounds.parquet` row; `block_id = None` is a
+/// stage-wide row.
+struct ThermalBoundRow {
     thermal_id: i32,
     stage_id: i32,
-    max_generation_mw: f64,
-) {
+    block_id: Option<i32>,
+    max_generation_mw: Option<f64>,
+    cost_per_mwh: Option<f64>,
+}
+
+/// Writes `constraints/thermal_bounds.parquet` at `dest` holding exactly `rows`.
+fn write_thermal_bound_rows(dest: &Path, rows: &[ThermalBoundRow]) {
     use arrow::array::{Float64Array, Int32Array};
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
@@ -295,20 +297,34 @@ fn write_stage_wide_thermal_bound(
     let schema = Arc::new(Schema::new(vec![
         Field::new("thermal_id", DataType::Int32, false),
         Field::new("stage_id", DataType::Int32, false),
-        Field::new("max_generation_mw", DataType::Float64, true),
         Field::new("block_id", DataType::Int32, true),
+        Field::new("max_generation_mw", DataType::Float64, true),
+        Field::new("cost_per_mwh", DataType::Float64, true),
     ]));
 
     let batch = RecordBatch::try_new(
         Arc::clone(&schema),
         vec![
-            Arc::new(Int32Array::from(vec![thermal_id])),
-            Arc::new(Int32Array::from(vec![stage_id])),
-            Arc::new(Float64Array::from(vec![max_generation_mw])),
-            Arc::new(Int32Array::from(vec![None::<i32>])),
+            Arc::new(Int32Array::from_iter_values(
+                rows.iter().map(|r| r.thermal_id),
+            )),
+            Arc::new(Int32Array::from_iter_values(
+                rows.iter().map(|r| r.stage_id),
+            )),
+            Arc::new(rows.iter().map(|r| r.block_id).collect::<Int32Array>()),
+            Arc::new(
+                rows.iter()
+                    .map(|r| r.max_generation_mw)
+                    .collect::<Float64Array>(),
+            ),
+            Arc::new(
+                rows.iter()
+                    .map(|r| r.cost_per_mwh)
+                    .collect::<Float64Array>(),
+            ),
         ],
     )
-    .expect("valid RecordBatch for stage-wide thermal bound override");
+    .expect("valid RecordBatch for thermal bound rows");
 
     let file = std::fs::File::create(dest).expect("create thermal_bounds.parquet override");
     let mut writer = ArrowWriter::try_new(file, schema, None).expect("ArrowWriter for override");
@@ -5687,13 +5703,17 @@ fn d52_hours_weighted_fold_delta_matches_hand_derivation() {
     );
 
     let folded_case = copy_case_dir(case_dir);
-    write_stage_wide_thermal_bound(
+    write_thermal_bound_rows(
         &folded_case
             .path()
             .join("constraints/thermal_bounds.parquet"),
-        0,
-        0,
-        fold_cap_mw,
+        &[ThermalBoundRow {
+            thermal_id: 0,
+            stage_id: 0,
+            block_id: None,
+            max_generation_mw: Some(fold_cap_mw),
+            cost_per_mwh: None,
+        }],
     );
     let folded_result = run_deterministic(folded_case.path());
     assert!(
@@ -5723,6 +5743,640 @@ fn d52_hours_weighted_fold_delta_matches_hand_derivation() {
         D52_SUBSTITUTE_COST_PER_MWH - D52_CHEAP_COST_PER_MWH,
         D52_PEAK_HOURS
     );
+}
+
+// Costs are $/MWh and equal the committed d61 deck's values.
+const D61_CASE: &str = "../../examples/deterministic/d61-per-block-thermal-cost";
+const D61_STAGES: f64 = 2.0;
+const D61_LOAD_MW: f64 = 100.0;
+const D61_PEAK_HOURS: f64 = 100.0;
+const D61_OFFPEAK_HOURS: f64 = 300.0;
+const D61_A_STAGE_COST: f64 = 200.0;
+const D61_A_PEAK_COST: f64 = 500.0;
+const D61_A_OFFPEAK_COST: f64 = 100.0;
+const D61_A_REGISTRY_COST: f64 = 400.0;
+const D61_B_COST: f64 = 300.0;
+const D61_UNCAPPED_MW: f64 = 1000.0;
+const D61_INTERACTION_PEAK_COST: f64 = 250.0;
+const D61_INTERACTION_PEAK_CAP_MW: f64 = 60.0;
+const D61_CAP_MW: f64 = 60.0;
+const D61_PRODUCTIVITY_MW_PER_M3S: f64 = 0.36;
+const D61_INFLOW_M3S: f64 = 5.0;
+const D61_INITIAL_STORAGE_HM3: f64 = 12.0;
+const D61_MAX_STORAGE_HM3: f64 = 100.0;
+const D61_MAX_TURBINED_M3S: f64 = 200.0;
+const D61_DEFICIT_COST: f64 = 1000.0;
+/// hm³ moved by 1 m³/s over 1 hour.
+const D61_M3S_TO_HM3: f64 = 3_600.0 / 1_000_000.0;
+
+/// A copy of the d61 deck with both thermals uncapped above load and the
+/// reservoir drained, so thermal generation alone serves the load.
+/// `block_rows` are T-A block rows `(block_id, max_generation_mw,
+/// cost_per_mwh)`, each written in both stages after T-A's stage-wide cost row.
+fn d61_thermal_only_case(block_rows: &[(i32, Option<f64>, Option<f64>)]) -> tempfile::TempDir {
+    use crate::common::parquet_fixtures::write_seasonal_stats;
+
+    let case = copy_case_dir(Path::new(D61_CASE));
+    edit_json(&case.path().join("system/thermals.json"), |thermals| {
+        for thermal in thermals["thermals"].as_array_mut().expect("thermals array") {
+            thermal["generation"]["max_mw"] = serde_json::json!(D61_UNCAPPED_MW);
+        }
+    });
+    edit_json(&case.path().join("initial_conditions.json"), |conditions| {
+        conditions["storage"][0]["value_hm3"] = serde_json::json!(0.0);
+    });
+    write_seasonal_stats(
+        &case.path().join("scenarios/inflow_seasonal_stats.parquet"),
+        "hydro_id",
+        "mean_m3s",
+        "std_m3s",
+        &[(0, 0, 0.0, 0.0), (0, 1, 0.0, 0.0)],
+    );
+
+    let mut rows = Vec::new();
+    for stage_id in 0..D61_STAGES as i32 {
+        rows.push(ThermalBoundRow {
+            thermal_id: 0,
+            stage_id,
+            block_id: None,
+            max_generation_mw: None,
+            cost_per_mwh: Some(D61_A_STAGE_COST),
+        });
+        for &(block_id, max_generation_mw, cost_per_mwh) in block_rows {
+            rows.push(ThermalBoundRow {
+                thermal_id: 0,
+                stage_id,
+                block_id: Some(block_id),
+                max_generation_mw,
+                cost_per_mwh,
+            });
+        }
+    }
+    write_thermal_bound_rows(
+        &case.path().join("constraints/thermal_bounds.parquet"),
+        &rows,
+    );
+    case
+}
+
+/// derived: D61_STAGES · L · (h_P · min(c_A^P, c_B) + h_O · min(c_A^O, c_B))
+///
+/// With the reservoir drained and both caps above load, each block is served
+/// entirely by its cheaper thermal.
+fn d61_uncapped_objective(a_peak_cost: f64, a_offpeak_cost: f64) -> f64 {
+    D61_STAGES
+        * D61_LOAD_MW
+        * (D61_PEAK_HOURS * a_peak_cost.min(D61_B_COST)
+            + D61_OFFPEAK_HOURS * a_offpeak_cost.min(D61_B_COST))
+}
+
+/// D61: a block-row `cost_per_mwh` prices its own block's thermal generation:
+/// the dispatch follows the per-block merit order and the objective differs
+/// from the stage-cost fold of the same costs by a closed-form amount.
+///
+/// Per-block, PEAK is served by T-B (`c_B < c_A^P`) and OFFPEAK by T-A
+/// (`c_A^O < c_B`); the total is `d61_uncapped_objective(c_A^P, c_A^O)`. The
+/// fold configuration keeps only T-A's stage cost `c_A^S`, which equals the
+/// hours-weighted mean of the block costs (asserted below), and its total is
+/// `d61_uncapped_objective(c_A^S, c_A^S)`.
+///
+/// derived: `z_fold − z_per_block = D61_STAGES · L · h_P · (c_A^P − c_B)`.
+/// Per stage `z_fold − z = L·h_P·(c_A^S − c_B) + L·h_O·(c_A^S − c_A^O)`, and
+/// `L·(h_P + h_O)·c_A^S = L·(h_P·c_A^P + h_O·c_A^O)` reduces it to
+/// `L·h_P·(c_A^P − c_B)`.
+#[test]
+fn d61_per_block_cost_dispatch_and_fold_delta_match_hand_derivation() {
+    let per_block_case = d61_thermal_only_case(&[
+        (0, None, Some(D61_A_PEAK_COST)),
+        (1, None, Some(D61_A_OFFPEAK_COST)),
+    ]);
+    let (per_block, scenario_results, _summary) = run_with_simulation(per_block_case.path());
+    assert!(
+        per_block.final_gap.abs() < 1e-6,
+        "D61 per-block: gap={:.2e}",
+        per_block.final_gap
+    );
+    assert!(
+        (per_block.final_lb - per_block.final_ub).abs() < 1e-6,
+        "D61 per-block: LB ({}) must equal UB ({}) to tolerance",
+        per_block.final_lb,
+        per_block.final_ub
+    );
+    let per_block_expected = d61_uncapped_objective(D61_A_PEAK_COST, D61_A_OFFPEAK_COST);
+    assert!(
+        (per_block.final_lb - per_block_expected).abs() < 1e-6,
+        "D61 per-block: LB {} must equal the derived {per_block_expected}",
+        per_block.final_lb
+    );
+
+    let stages = &scenario_results[0].stages;
+    assert_eq!(
+        stages.len() as f64,
+        D61_STAGES,
+        "D61: both stages simulated"
+    );
+    for stage in stages {
+        let generation_mw = |thermal_id: i32, block_id: u32| {
+            stage
+                .thermals
+                .iter()
+                .find(|t| t.thermal_id == thermal_id && t.block_id == Some(block_id))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "D61: thermal {thermal_id} row at (stage {}, block {block_id}) must exist",
+                        stage.stage_id
+                    )
+                })
+                .generation_mw
+        };
+        for (label, thermal_id, block_id, expected_mw) in [
+            ("PEAK T-A", 0, 0, 0.0),
+            ("PEAK T-B", 1, 0, D61_LOAD_MW),
+            ("OFFPEAK T-A", 0, 1, D61_LOAD_MW),
+            ("OFFPEAK T-B", 1, 1, 0.0),
+        ] {
+            let actual_mw = generation_mw(thermal_id, block_id);
+            assert!(
+                (actual_mw - expected_mw).abs() < 1e-6,
+                "D61 stage {}: {label} generation must be {expected_mw} MW, got {actual_mw}",
+                stage.stage_id
+            );
+        }
+    }
+
+    let weighted_mean_cost = (D61_PEAK_HOURS * D61_A_PEAK_COST
+        + D61_OFFPEAK_HOURS * D61_A_OFFPEAK_COST)
+        / (D61_PEAK_HOURS + D61_OFFPEAK_HOURS);
+    assert_eq!(
+        weighted_mean_cost, D61_A_STAGE_COST,
+        "D61: the stage cost must equal the hours-weighted mean of the block costs; the fold \
+         delta below assumes it"
+    );
+
+    let fold_case = d61_thermal_only_case(&[]);
+    let fold = run_deterministic(fold_case.path());
+    assert!(
+        fold.final_gap.abs() < 1e-6,
+        "D61 fold: gap={:.2e}",
+        fold.final_gap
+    );
+    assert!(
+        (fold.final_lb - fold.final_ub).abs() < 1e-6,
+        "D61 fold: LB ({}) must equal UB ({}) to tolerance",
+        fold.final_lb,
+        fold.final_ub
+    );
+    let fold_expected = d61_uncapped_objective(D61_A_STAGE_COST, D61_A_STAGE_COST);
+    assert!(
+        (fold.final_lb - fold_expected).abs() < 1e-6,
+        "D61 fold: LB {} must equal the derived {fold_expected}",
+        fold.final_lb
+    );
+
+    let expected_delta = D61_STAGES * D61_LOAD_MW * D61_PEAK_HOURS * (D61_A_PEAK_COST - D61_B_COST);
+    let actual_delta = fold.final_lb - per_block.final_lb;
+    assert!(
+        (actual_delta - expected_delta).abs() < 1e-6,
+        "D61: fold LB ({}) minus per-block LB ({}) = {actual_delta}, expected the derived \
+         {expected_delta}",
+        fold.final_lb,
+        per_block.final_lb
+    );
+}
+
+/// D61: block rows that repeat the stage cost build the same stage LPs as the
+/// stage cost alone, and the per-block costs do not (the comparison has power).
+///
+/// The twin trains to the derived total of the stage-cost-only deck, which
+/// differs from the per-block total of the other test.
+///
+/// derived: `d61_uncapped_objective(c_A^S, c_A^S)`
+#[test]
+fn d61_equal_cost_block_rows_build_the_stage_cost_only_template() {
+    use novomodelo_sddp::test_support::{
+        assert_all_templates_byte_identical, template_fact_groups,
+    };
+
+    let twin_case = d61_thermal_only_case(&[
+        (0, None, Some(D61_A_STAGE_COST)),
+        (1, None, Some(D61_A_STAGE_COST)),
+    ]);
+    let fold_case = d61_thermal_only_case(&[]);
+    let per_block_case = d61_thermal_only_case(&[
+        (0, None, Some(D61_A_PEAK_COST)),
+        (1, None, Some(D61_A_OFFPEAK_COST)),
+    ]);
+    let twin = fresh_setup_with(twin_case.path(), |_| {});
+    let fold = fresh_setup_with(fold_case.path(), |_| {});
+    let per_block = fresh_setup_with(per_block_case.path(), |_| {});
+
+    assert_all_templates_byte_identical(
+        &twin.inputs.stage_data.stage_templates.templates,
+        &fold.inputs.stage_data.stage_templates.templates,
+        "D61 equal-cost block rows vs stage cost only",
+    );
+    assert!(
+        template_fact_groups(&per_block) != template_fact_groups(&fold),
+        "D61: per-block costs must build different stage LPs than the stage cost only"
+    );
+
+    let twin_result = run_deterministic(twin_case.path());
+    assert!(
+        twin_result.final_gap.abs() < 1e-6,
+        "D61 twin: gap={:.2e}",
+        twin_result.final_gap
+    );
+    assert!(
+        (twin_result.final_lb - twin_result.final_ub).abs() < 1e-6,
+        "D61 twin: LB ({}) must equal UB ({}) to tolerance",
+        twin_result.final_lb,
+        twin_result.final_ub
+    );
+    let twin_expected = d61_uncapped_objective(D61_A_STAGE_COST, D61_A_STAGE_COST);
+    assert!(
+        (twin_result.final_lb - twin_expected).abs() < 1e-6,
+        "D61 twin: LB {} must equal the derived {twin_expected}",
+        twin_result.final_lb
+    );
+    let per_block_expected = d61_uncapped_objective(D61_A_PEAK_COST, D61_A_OFFPEAK_COST);
+    assert!(
+        (twin_expected - per_block_expected).abs() > 1.0,
+        "D61: the twin's derived value ({twin_expected}) must differ from the per-block one \
+         ({per_block_expected})"
+    );
+}
+
+/// D61: a null block-row cost falls through to the stage cost, per column,
+/// inside a row that is present.
+///
+/// OFFPEAK carries a row that sets `max_generation_mw` to the registry cap
+/// and leaves the cost null, so T-A's OFFPEAK cost is the stage cost
+/// (`c_A^S < c_B`) and T-A serves OFFPEAK; PEAK keeps its block cost.
+///
+/// derived: `d61_uncapped_objective(c_A^P, c_A^S)`; a fall-through to the
+/// registry cost would give `d61_uncapped_objective(c_A^P, c_A^R)`.
+#[test]
+fn d61_null_block_cost_falls_through_to_the_stage_cost() {
+    let case = d61_thermal_only_case(&[
+        (0, None, Some(D61_A_PEAK_COST)),
+        (1, Some(D61_UNCAPPED_MW), None),
+    ]);
+    let (result, scenario_results, _summary) = run_with_simulation(case.path());
+    assert!(
+        result.final_gap.abs() < 1e-6,
+        "D61 null cost: gap={:.2e}",
+        result.final_gap
+    );
+    assert!(
+        (result.final_lb - result.final_ub).abs() < 1e-6,
+        "D61 null cost: LB ({}) must equal UB ({}) to tolerance",
+        result.final_lb,
+        result.final_ub
+    );
+    let expected = d61_uncapped_objective(D61_A_PEAK_COST, D61_A_STAGE_COST);
+    assert!(
+        (result.final_lb - expected).abs() < 1e-6,
+        "D61 null cost: LB {} must equal the derived {expected}",
+        result.final_lb
+    );
+
+    let registry_fall_through = d61_uncapped_objective(D61_A_PEAK_COST, D61_A_REGISTRY_COST);
+    assert!(
+        (registry_fall_through - expected).abs() > 1.0,
+        "D61: a registry fall-through ({registry_fall_through}) must differ from the stage \
+         fall-through ({expected})"
+    );
+
+    let stages = &scenario_results[0].stages;
+    assert_eq!(
+        stages.len() as f64,
+        D61_STAGES,
+        "D61: both stages simulated"
+    );
+    for stage in stages {
+        for (label, thermal_id, expected_mw) in [("T-A", 0, D61_LOAD_MW), ("T-B", 1, 0.0)] {
+            let actual_mw = stage
+                .thermals
+                .iter()
+                .find(|t| t.thermal_id == thermal_id && t.block_id == Some(1))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "D61: thermal {thermal_id} row at (stage {}, block 1) must exist",
+                        stage.stage_id
+                    )
+                })
+                .generation_mw;
+            assert!(
+                (actual_mw - expected_mw).abs() < 1e-6,
+                "D61 stage {}: OFFPEAK {label} generation must be {expected_mw} MW, got \
+                 {actual_mw}",
+                stage.stage_id
+            );
+        }
+    }
+}
+
+/// D61: a block-row cost and a block-row cap on the same row act together in
+/// the PEAK block.
+///
+/// T-A's PEAK row prices it at `c_int < c_B` and caps it at `cap < L`, so T-A
+/// runs at its cap and T-B covers the rest. OFFPEAK keeps the cheaper T-A.
+///
+/// derived: `z_P = cap·h_P·c_int + (L − cap)·h_P·c_B` per stage, and the total
+/// is `D61_STAGES · (z_P + L·h_O·min(c_A^O, c_B))`.
+#[test]
+fn d61_block_cost_and_block_cap_interact_in_peak() {
+    let case = d61_thermal_only_case(&[
+        (
+            0,
+            Some(D61_INTERACTION_PEAK_CAP_MW),
+            Some(D61_INTERACTION_PEAK_COST),
+        ),
+        (1, None, Some(D61_A_OFFPEAK_COST)),
+    ]);
+    let (result, scenario_results, _summary) = run_with_simulation(case.path());
+    assert!(
+        result.final_gap.abs() < 1e-6,
+        "D61 interaction: gap={:.2e}",
+        result.final_gap
+    );
+    assert!(
+        (result.final_lb - result.final_ub).abs() < 1e-6,
+        "D61 interaction: LB ({}) must equal UB ({}) to tolerance",
+        result.final_lb,
+        result.final_ub
+    );
+
+    let peak_cost = D61_INTERACTION_PEAK_CAP_MW * D61_PEAK_HOURS * D61_INTERACTION_PEAK_COST
+        + (D61_LOAD_MW - D61_INTERACTION_PEAK_CAP_MW) * D61_PEAK_HOURS * D61_B_COST;
+    let total = D61_STAGES
+        * (peak_cost + D61_LOAD_MW * D61_OFFPEAK_HOURS * D61_A_OFFPEAK_COST.min(D61_B_COST));
+    assert!(
+        (result.final_lb - total).abs() < 1e-6,
+        "D61 interaction: LB {} must equal the derived {total}",
+        result.final_lb
+    );
+
+    let cap_only_cost = D61_LOAD_MW * D61_PEAK_HOURS * D61_A_PEAK_COST.min(D61_B_COST);
+    let cost_only_cost = D61_LOAD_MW * D61_PEAK_HOURS * D61_INTERACTION_PEAK_COST.min(D61_B_COST);
+    assert!(
+        (peak_cost - cap_only_cost).abs() > 1.0 && (peak_cost - cost_only_cost).abs() > 1.0,
+        "D61: the PEAK cost ({peak_cost}) must differ from the cap-only ({cap_only_cost}) and \
+         cost-only ({cost_only_cost}) values"
+    );
+
+    let stages = &scenario_results[0].stages;
+    assert_eq!(
+        stages.len() as f64,
+        D61_STAGES,
+        "D61: both stages simulated"
+    );
+    for stage in stages {
+        let peak_row = |thermal_id: i32| {
+            stage
+                .thermals
+                .iter()
+                .find(|t| t.thermal_id == thermal_id && t.block_id == Some(0))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "D61: thermal {thermal_id} row at (stage {}, block 0) must exist",
+                        stage.stage_id
+                    )
+                })
+        };
+        let (peak_a, peak_b) = (peak_row(0), peak_row(1));
+        assert!(
+            (peak_a.generation_mw - D61_INTERACTION_PEAK_CAP_MW).abs() < 1e-6,
+            "D61 stage {}: PEAK T-A must run at its cap ({} MW), got {}",
+            stage.stage_id,
+            D61_INTERACTION_PEAK_CAP_MW,
+            peak_a.generation_mw
+        );
+        assert!(
+            (peak_b.generation_mw - (D61_LOAD_MW - D61_INTERACTION_PEAK_CAP_MW)).abs() < 1e-6,
+            "D61 stage {}: PEAK T-B must cover the {} MW remainder, got {}",
+            stage.stage_id,
+            D61_LOAD_MW - D61_INTERACTION_PEAK_CAP_MW,
+            peak_b.generation_mw
+        );
+        let reported_peak_cost = peak_a.generation_cost + peak_b.generation_cost;
+        assert!(
+            (reported_peak_cost - peak_cost).abs() < 1e-6,
+            "D61 stage {}: reported PEAK generation cost {reported_peak_cost} must equal the \
+             derived {peak_cost}",
+            stage.stage_id
+        );
+    }
+}
+
+/// `(slot, slope)` in $/hm³ of every active cut of the pool stage 0 reads, on
+/// the study's single storage state. The stored coefficient is the raw `∂Q/∂v`
+/// divided by the cost scale factor, so it is multiplied back here; more stored
+/// water lowers future cost, so the slope is negative.
+fn d61_storage_cut_slopes(setup: &StudySetup) -> Vec<(usize, f64)> {
+    let state = setup.stage_state();
+    assert_eq!(
+        state.storage.len(),
+        1,
+        "D61: exactly one storage state (H0)"
+    );
+    let pool0 = &setup.fcf.pools[0];
+    assert!(
+        pool0.active_count() > 0,
+        "D61: pool 0 must hold at least one trained cut to inspect"
+    );
+    let cost_scale_factor = setup.inputs.stage_data.stage_templates.cost_scale_factor;
+    pool0
+        .active_cuts()
+        .map(|(slot, _intercept, coefficients)| {
+            (slot, coefficients[state.storage.start] * cost_scale_factor)
+        })
+        .collect()
+}
+
+/// D61: with the PEAK plant priced per block, the stored-water slope equals
+/// that plant's block cost, and the lower bound credits the scarce water at it.
+///
+/// derived: water-to-energy `ρ / M3S_TO_HM3` MWh per hm³. One hm³ turbined in
+/// block `k` is `1/τ_k` m³/s for `h_k` hours, i.e. `ρ·h_k/τ_k = ρ/M3S_TO_HM3`
+/// MWh, independent of the block.
+///
+/// derived: stored slope `−c_A^P · ρ / M3S_TO_HM3` $/hm³. The water displaces
+/// T-A's PEAK generation, the marginal plant, whose block cost is `c_A^P`.
+///
+/// derived: total water energy
+/// `E = (V0 + D61_STAGES · I · ζ) · ρ / M3S_TO_HM3` MWh, with
+/// `ζ = (h_P + h_O) · M3S_TO_HM3`.
+///
+/// derived: per-block LB
+/// `D61_STAGES · [h_P·(cap·c_B + (L − cap)·c_A^P) + h_O·(cap·c_A^O + (L − cap)·c_B)] − E · c_A^P`.
+///
+/// Not asserted: the hydro dispatch, the storage trajectory, or any dual other
+/// than the cut slope. Water has the same value in both stages, so the stage-0
+/// end storage is a tie; the slope is unique at every storage the run visits,
+/// because stage 1's value is linear on `[0, V0 + I·ζ]`.
+#[test]
+#[allow(clippy::assertions_on_constants)]
+fn d61_stored_water_value_is_the_peak_block_cost() {
+    let zeta = (D61_PEAK_HOURS + D61_OFFPEAK_HOURS) * D61_M3S_TO_HM3;
+    let mwh_per_hm3 = D61_PRODUCTIVITY_MW_PER_M3S / D61_M3S_TO_HM3;
+    let total_water_hm3 = D61_INITIAL_STORAGE_HM3 + D61_STAGES * D61_INFLOW_M3S * zeta;
+    let water_mwh = total_water_hm3 * mwh_per_hm3;
+
+    assert!(
+        D61_CAP_MW < D61_LOAD_MW,
+        "D61: a cap at or above the load lets one thermal serve every block alone, so the \
+         slope and both lower-bound oracles lose the cap split"
+    );
+    assert!(
+        2.0 * D61_CAP_MW >= D61_LOAD_MW,
+        "D61: two caps below the load force deficit, so the slope would be the deficit cost"
+    );
+    assert!(
+        D61_DEFICIT_COST > D61_A_PEAK_COST
+            && D61_A_PEAK_COST > D61_B_COST
+            && D61_B_COST > D61_A_STAGE_COST
+            && D61_A_STAGE_COST > D61_A_OFFPEAK_COST,
+        "D61: the strict cost order deficit > A-peak > B > A-stage > A-offpeak fixes the \
+         merit order every slope and lower-bound oracle assumes"
+    );
+    assert!(
+        water_mwh < (D61_LOAD_MW - D61_CAP_MW) * D61_PEAK_HOURS,
+        "D61: water ({water_mwh} MWh) must stay below the PEAK shortfall so the displaced \
+         PEAK plant is interior in every stage, else the slope drops below its block cost"
+    );
+    assert!(
+        total_water_hm3 / (D61_PEAK_HOURS * D61_M3S_TO_HM3) < D61_MAX_TURBINED_M3S,
+        "D61: a binding turbine cap would put the water value off the PEAK cost"
+    );
+    assert!(
+        D61_INITIAL_STORAGE_HM3 + D61_INFLOW_M3S * zeta < D61_MAX_STORAGE_HM3,
+        "D61: a full reservoir would make the stored-water value zero"
+    );
+    assert!(
+        ((D61_PEAK_HOURS * D61_A_PEAK_COST + D61_OFFPEAK_HOURS * D61_A_OFFPEAK_COST)
+            / (D61_PEAK_HOURS + D61_OFFPEAK_HOURS)
+            - D61_A_STAGE_COST)
+            .abs()
+            < 1e-9,
+        "D61: the fold cost must be the hours-weighted mean of the block costs, so the \
+         per-block and fold lower bounds differ only through the merit order"
+    );
+
+    let expected_slope = -D61_A_PEAK_COST * mwh_per_hm3;
+    let per_block_lb = D61_STAGES
+        * (D61_PEAK_HOURS
+            * (D61_CAP_MW * D61_B_COST + (D61_LOAD_MW - D61_CAP_MW) * D61_A_PEAK_COST)
+            + D61_OFFPEAK_HOURS
+                * (D61_CAP_MW * D61_A_OFFPEAK_COST + (D61_LOAD_MW - D61_CAP_MW) * D61_B_COST))
+        - water_mwh * D61_A_PEAK_COST;
+
+    let (setup, _system, result) = run_deterministic_with_setup(Path::new(D61_CASE));
+    assert!(
+        result.final_gap.abs() < 1e-6,
+        "D61 per-block: gap={:.2e}",
+        result.final_gap
+    );
+    assert!(
+        (result.final_lb - result.final_ub).abs() < 1e-6,
+        "D61 per-block: LB ({}) must equal UB ({}) to tolerance",
+        result.final_lb,
+        result.final_ub
+    );
+    assert!(
+        (result.final_lb - per_block_lb).abs() < 1e-6,
+        "D61 per-block: LB {} must equal the derived {per_block_lb}",
+        result.final_lb
+    );
+
+    for (slot, slope) in d61_storage_cut_slopes(&setup) {
+        assert!(
+            slope < 0.0,
+            "D61 per-block: more stored water must lower future cost; pool-0 slot {slot} \
+             slope {slope}"
+        );
+        assert!(
+            (slope - expected_slope).abs() < 1e-6,
+            "D61 per-block: pool-0 slot {slot} slope {slope} must equal the PEAK block cost \
+             value {expected_slope} $/hm3"
+        );
+    }
+}
+
+/// D61: the non-degeneracy twin of the stored-water oracle. With only T-A's
+/// stage cost, the same water displaces the substitute plant T-B, so the slope
+/// takes a different, separately derived value.
+///
+/// derived: stored slope `−c_B · ρ / M3S_TO_HM3` $/hm³, with `ρ / M3S_TO_HM3`
+/// and `E` as in `d61_stored_water_value_is_the_peak_block_cost`. Under the
+/// fold T-A costs `c_A^S < c_B` in every block, so T-A covers its cap and T-B
+/// the remainder; the water displaces T-B.
+///
+/// derived: fold LB
+/// `D61_STAGES · (h_P + h_O) · (cap·c_A^S + (L − cap)·c_B) − E · c_B`.
+///
+/// Not asserted: the PEAK/OFFPEAK split of the water, a tie under the fold.
+#[test]
+fn d61_stored_water_value_under_the_stage_cost_fold_is_the_substitute_cost() {
+    let zeta = (D61_PEAK_HOURS + D61_OFFPEAK_HOURS) * D61_M3S_TO_HM3;
+    let mwh_per_hm3 = D61_PRODUCTIVITY_MW_PER_M3S / D61_M3S_TO_HM3;
+    let water_mwh = (D61_INITIAL_STORAGE_HM3 + D61_STAGES * D61_INFLOW_M3S * zeta) * mwh_per_hm3;
+    let expected_slope = -D61_B_COST * mwh_per_hm3;
+    let per_block_slope = -D61_A_PEAK_COST * mwh_per_hm3;
+    let fold_lb = D61_STAGES
+        * (D61_PEAK_HOURS + D61_OFFPEAK_HOURS)
+        * (D61_CAP_MW * D61_A_STAGE_COST + (D61_LOAD_MW - D61_CAP_MW) * D61_B_COST)
+        - water_mwh * D61_B_COST;
+    assert!(
+        (expected_slope - per_block_slope).abs() > 1.0,
+        "D61: the fold slope ({expected_slope}) must differ from the per-block slope \
+         ({per_block_slope}) for the twin to discriminate"
+    );
+
+    let case = copy_case_dir(Path::new(D61_CASE));
+    let rows: Vec<ThermalBoundRow> = (0..D61_STAGES as i32)
+        .map(|stage_id| ThermalBoundRow {
+            thermal_id: 0,
+            stage_id,
+            block_id: None,
+            max_generation_mw: None,
+            cost_per_mwh: Some(D61_A_STAGE_COST),
+        })
+        .collect();
+    write_thermal_bound_rows(
+        &case.path().join("constraints/thermal_bounds.parquet"),
+        &rows,
+    );
+
+    let (setup, _system, result) = run_deterministic_with_setup(case.path());
+    assert!(
+        result.final_gap.abs() < 1e-6,
+        "D61 fold: gap={:.2e}",
+        result.final_gap
+    );
+    assert!(
+        (result.final_lb - result.final_ub).abs() < 1e-6,
+        "D61 fold: LB ({}) must equal UB ({}) to tolerance",
+        result.final_lb,
+        result.final_ub
+    );
+    assert!(
+        (result.final_lb - fold_lb).abs() < 1e-6,
+        "D61 fold: LB {} must equal the derived {fold_lb}",
+        result.final_lb
+    );
+
+    for (slot, slope) in d61_storage_cut_slopes(&setup) {
+        assert!(
+            slope < 0.0,
+            "D61 fold: more stored water must lower future cost; pool-0 slot {slot} slope {slope}"
+        );
+        assert!(
+            (slope - expected_slope).abs() < 1e-6,
+            "D61 fold: pool-0 slot {slot} slope {slope} must equal the substitute cost value \
+             {expected_slope} $/hm3"
+        );
+    }
 }
 
 /// D53: a per-cell min-turbine floor genuinely BINDS under water starvation —
