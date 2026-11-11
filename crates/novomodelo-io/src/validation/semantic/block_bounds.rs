@@ -532,13 +532,10 @@ fn check_row_columns(
 /// One bound column with no per-block LP variable, and the reason to surface
 /// in its rejection message.
 ///
-/// Hand-synced against `novomodelo_core::resolved::HydroBlockOverride` /
-/// `ThermalBlockOverride`'s excluded fields, which mirror
-/// [`crate::constraints::bounds`]'s `## Block eligibility` table — the struct
-/// field sets are the actual eligibility check; this table is not derived
-/// from them at compile time. Never add `price_per_mwh` here: contract price
-/// is deliberately block-eligible (`ContractBlockOverride::price_per_mwh`),
-/// asymmetric with thermal `cost_per_mwh` below.
+/// Hand-synced against `novomodelo_core::resolved::HydroBlockOverride`'s
+/// excluded fields, which mirror [`crate::constraints::bounds`]'s
+/// `## Block eligibility` table — the struct field set is the actual
+/// eligibility check; this table is not derived from it at compile time.
 struct IneligibleColumn {
     name: &'static str,
     reason: &'static str,
@@ -563,15 +560,9 @@ const INELIGIBLE_HYDRO_COLUMNS: [IneligibleColumn; 4] = [
     },
 ];
 
-const INELIGIBLE_THERMAL_COLUMNS: [IneligibleColumn; 1] = [IneligibleColumn {
-    name: "cost_per_mwh",
-    reason: "per-block thermal cost is out of scope; thermal cost is stage-level, \
-             unlike contract price, which is block-eligible",
-}];
-
-/// Rule 37: rejects a `block_id` on a hydro or thermal bound column with no per-block
+/// Rule 37: rejects a `block_id` on a hydro bound column with no per-block
 /// LP variable: [`resolve_bounds`] never reads the column for a block row at
-/// all (`HydroBlockOverride`/`ThermalBlockOverride` carry no field for it), so
+/// all (`HydroBlockOverride` carries no field for it), so
 /// today the value is dropped without a diagnostic; this rule turns that into
 /// a hard error. A row mixing an ineligible column with an eligible one under
 /// the same `block_id` is rejected — one finding per ineligible column
@@ -590,23 +581,6 @@ pub(super) fn check_block_id_on_ineligible_column(data: &ParsedData, ctx: &mut V
         for (column, value) in INELIGIBLE_HYDRO_COLUMNS.iter().zip(values) {
             if value.is_some() {
                 emit_ineligible_column_error(&HYDRO, row.hydro_id.0, row.stage_id, b, column, ctx);
-            }
-        }
-    }
-
-    for row in &data.thermal_bounds {
-        let Some(b) = row.block_id else { continue };
-        let values = [row.cost_per_mwh];
-        for (column, value) in INELIGIBLE_THERMAL_COLUMNS.iter().zip(values) {
-            if value.is_some() {
-                emit_ineligible_column_error(
-                    &THERMAL,
-                    row.thermal_id.0,
-                    row.stage_id,
-                    b,
-                    column,
-                    ctx,
-                );
             }
         }
     }
@@ -674,7 +648,7 @@ pub(super) fn check_block_id_on_anticipated_thermal(
         let entity_str = format!("thermal_id={thermal_id}, stage_id={stage_id}");
         ctx.emit(
             &rules::SEMANTIC_BOUND_ROW_BLOCK_ON_ANTICIPATED_THERMAL,
-            "constraints/thermal_bounds.parquet",
+            THERMAL.file,
             Some(entity_str),
             format!(
                 "Thermal {thermal_id}: thermal_bounds row at stage_id={stage_id} \
@@ -1971,7 +1945,7 @@ mod tests {
     }
 
     #[test]
-    fn test_thermal_cost_rejected_while_contract_price_accepted() {
+    fn test_thermal_cost_and_contract_price_accept_block_id() {
         let mut data = make_data(
             vec![],
             vec![],
@@ -1991,25 +1965,10 @@ mod tests {
 
         let mut ctx = ValidationContext::new();
         validate_semantic_hydro_thermal(&data, &mut ctx);
-        let errors = ctx.errors();
-
-        let cost_errors: Vec<_> = errors
-            .iter()
-            .filter(|e| e.message.contains("cost_per_mwh"))
-            .collect();
-        assert_eq!(
-            cost_errors.len(),
-            1,
-            "expected exactly one error naming cost_per_mwh, got: {errors:?}"
-        );
-        let msg = &cost_errors[0].message;
         assert!(
-            msg.contains("thermal") || msg.contains("Thermal"),
-            "message must name thermal specifically: {msg}"
-        );
-        assert!(
-            !errors.iter().any(|e| e.message.contains("price_per_mwh")),
-            "no error may name price_per_mwh (the block-eligible contract column): {errors:?}"
+            !ctx.has_errors(),
+            "thermal cost and contract price accept a block_id, got: {:?}",
+            ctx.errors()
         );
     }
 
@@ -2063,6 +2022,10 @@ mod tests {
             ThermalBoundsRow {
                 max_generation_mw: Some(2.0),
                 ..thermal_row(1, 1, Some(0))
+            },
+            ThermalBoundsRow {
+                cost_per_mwh: Some(3.0),
+                ..thermal_row(1, 1, Some(1))
             },
         ];
         data.line_bounds = vec![
@@ -2176,6 +2139,54 @@ mod tests {
         assert!(
             !errors.iter().any(|e| e.message.contains("Thermal 2")),
             "no error may name Thermal 2 (the plain thermal): {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_cost_only_block_row_rejected_on_anticipated_thermal() {
+        let anticipated_thermal = Thermal {
+            anticipated_config: Some(AnticipatedConfig::LeadStages(1)),
+            ..make_thermal(1, 0.0, 500.0)
+        };
+        let mut data = make_data(
+            vec![],
+            vec![anticipated_thermal],
+            vec![],
+            two_stage_study_stages(),
+            vec![],
+            vec![],
+        );
+        data.initial_conditions.past_anticipated_commitments = vec![AnticipatedCommitmentHistory {
+            thermal_id: EntityId::from(1),
+            start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
+            end_date: NaiveDate::from_ymd_opt(2024, 1, 31).unwrap(),
+            value_mw: 0.0,
+        }];
+        data.thermal_bounds = vec![ThermalBoundsRow {
+            cost_per_mwh: Some(500.0),
+            ..thermal_row(1, 0, Some(0))
+        }];
+
+        let mut ctx = ValidationContext::new();
+        validate_semantic_hydro_thermal(&data, &mut ctx);
+        let errors = ctx.errors();
+        assert_eq!(
+            errors.len(),
+            1,
+            "expected exactly one error, got: {errors:?}"
+        );
+        let msg = &errors[0].message;
+        assert!(
+            msg.contains("Thermal 1")
+                && msg.contains("stage_id=0")
+                && msg.contains("anticipated_config"),
+            "expected the anticipated-thermal error naming Thermal 1 at stage_id=0: {msg}"
+        );
+        assert!(
+            !errors
+                .iter()
+                .any(|e| e.message.contains("no per-block variable")),
+            "the ineligible-column rule must not fire on a cost-only row: {errors:?}"
         );
     }
 

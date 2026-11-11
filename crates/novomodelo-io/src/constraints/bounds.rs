@@ -14,8 +14,8 @@
 //! | `stage_id`         | INT32  | Yes      | Stage ID                                             |
 //! | `min_generation_mw`| DOUBLE | No       | Minimum generation (MW)                              |
 //! | `max_generation_mw`| DOUBLE | No       | Maximum generation (MW)                              |
-//! | `cost_per_mwh`     | DOUBLE | No       | Dispatch cost override (`$/MWh`); rejected at validation if `block_id` is also non-null |
-//! | `block_id`         | INT32 (null) | No | 0-based block index within the stage (matches `Block::index`) selecting one block's `min_generation_mw`/`max_generation_mw` override; a value outside `[0, n_blocks)` for the referenced stage, a non-null `cost_per_mwh` on the same row, or any `block_id` on a thermal declaring `anticipated_config` is rejected at validation |
+//! | `cost_per_mwh`     | DOUBLE | No       | Variable cost override (`$/MWh`); with a null `block_id` it applies to the stage, with a `block_id` to that block |
+//! | `block_id`         | INT32 (null) | No | 0-based block index within the stage (matches `Block::index`) selecting one block's `min_generation_mw`/`max_generation_mw`/`cost_per_mwh` override; a value outside `[0, n_blocks)` for the referenced stage, or any `block_id` on a thermal declaring `anticipated_config`, is rejected at validation |
 //!
 //! ### `hydro_bounds`
 //!
@@ -99,12 +99,12 @@
 //! | hydro    | `water_withdrawal_m3s` | no             | stage-level only                                                                                 |
 //! | thermal  | `min_generation_mw`    | yes            | —                                                                                                |
 //! | thermal  | `max_generation_mw`    | yes            | —                                                                                                |
-//! | thermal  | `cost_per_mwh`         | no             | per-block thermal cost is out of scope; deliberately asymmetric with `contract_bounds.price_per_mwh` below |
+//! | thermal  | `cost_per_mwh`         | yes            | —                                                                                                |
 //! | line     | `direct_mw`            | yes            | —                                                                                                |
 //! | line     | `reverse_mw`           | yes            | —                                                                                                |
 //! | contract | `min_mw`               | yes            | —                                                                                                |
 //! | contract | `max_mw`               | yes            | —                                                                                                |
-//! | contract | `price_per_mwh`        | yes            | deliberately asymmetric with `thermal_bounds.cost_per_mwh` above, which is NOT block-eligible    |
+//! | contract | `price_per_mwh`        | yes            | —                                                                                                |
 //! | pumping  | `min_m3s`              | yes            | —                                                                                                |
 //! | pumping  | `max_m3s`              | yes            | —                                                                                                |
 //!
@@ -188,18 +188,15 @@ pub struct ThermalBoundsRow {
     pub min_generation_mw: Option<f64>,
     /// Maximum generation override (MW).
     pub max_generation_mw: Option<f64>,
-    /// Dispatch cost override (`$/MWh`). Overrides `Thermal.cost_per_mwh` when `Some` and
-    /// `block_id` is `None`. Rejected at validation when `block_id` is also `Some`
-    /// (see the `block_id` field).
+    /// Variable cost override (`$/MWh`) of `Thermal.cost_per_mwh`: for the stage
+    /// when `block_id` is `None`, for that block when `Some`.
     pub cost_per_mwh: Option<f64>,
     /// Selects one block within the stage for `min_generation_mw` /
-    /// `max_generation_mw`; `None` applies the row at the stage level. A
-    /// 0-based index matching `Block::index`; a value outside `[0, n_blocks)`
-    /// for the referenced stage is rejected at validation. Does not create a
-    /// per-block cost — a row with a non-null `block_id` and a non-null
-    /// `cost_per_mwh` is rejected at validation (see the `cost_per_mwh` field),
-    /// as is any `block_id` on a thermal declaring `anticipated_config`
-    /// (commitment is stage-level).
+    /// `max_generation_mw` / `cost_per_mwh`; `None` applies the row at the stage
+    /// level. A 0-based index matching `Block::index`; a value outside
+    /// `[0, n_blocks)` for the referenced stage is rejected at validation, as is
+    /// any `block_id` on a thermal declaring `anticipated_config` (commitment is
+    /// stage-level).
     pub block_id: Option<i32>,
 }
 
@@ -413,8 +410,7 @@ pub struct ContractBoundsRow {
     /// Override for contract price (USD/`MWh`). `None` means use base value.
     pub price_per_mwh: Option<f64>,
     /// `None` applies at the stage level; `Some(b)` applies to block `b` only and is
-    /// valid on `min_mw`, `max_mw`, and `price_per_mwh` — block-eligible here, asymmetric
-    /// with `ThermalBoundsRow.cost_per_mwh`, which stays stage-level.
+    /// valid on `min_mw`, `max_mw`, and `price_per_mwh`.
     pub block_id: Option<i32>,
 }
 
@@ -1096,35 +1092,66 @@ mod tests {
         assert!(rows.is_empty());
     }
 
-    /// AC: scrambled input order -> output sorted by (thermal_id, stage_id).
+    /// AC: scrambled input order -> output sorted by (thermal_id, stage_id, block_id).
     #[test]
     fn test_thermal_declaration_order_invariance() {
-        let batch_asc = make_thermal_batch(
-            &[1, 1, 5, 5],
-            &[0, 1, 0, 1],
-            vec![Some(10.0), Some(11.0), Some(50.0), Some(51.0)],
-            vec![Some(100.0), Some(110.0), Some(500.0), Some(510.0)],
-        );
-        let batch_desc = make_thermal_batch(
-            &[5, 5, 1, 1],
-            &[1, 0, 1, 0],
-            vec![Some(51.0), Some(50.0), Some(11.0), Some(10.0)],
-            vec![Some(510.0), Some(500.0), Some(110.0), Some(100.0)],
-        );
-        let tmp_asc = write_parquet(&batch_asc);
-        let tmp_desc = write_parquet(&batch_desc);
-        let rows_asc = parse_thermal_bounds(tmp_asc.path()).unwrap();
-        let rows_desc = parse_thermal_bounds(tmp_desc.path()).unwrap();
+        // (thermal_id, stage_id, block_id, min_generation_mw, cost_per_mwh)
+        type Input = (i32, i32, Option<i32>, Option<f64>, Option<f64>);
 
-        let keys_asc: Vec<(i32, i32)> = rows_asc
-            .iter()
-            .map(|r| (r.thermal_id.0, r.stage_id))
-            .collect();
-        let keys_desc: Vec<(i32, i32)> = rows_desc
-            .iter()
-            .map(|r| (r.thermal_id.0, r.stage_id))
-            .collect();
-        assert_eq!(keys_asc, keys_desc);
+        let ascending: [Input; 5] = [
+            (1, 0, None, None, Some(80.0)),
+            (1, 0, Some(0), None, Some(300.0)),
+            (1, 0, Some(2), None, Some(0.0)),
+            (1, 1, Some(2), None, Some(150.0)),
+            (5, 0, None, Some(10.0), None),
+        ];
+        let scrambled: [Input; 5] = [
+            ascending[3],
+            ascending[0],
+            ascending[4],
+            ascending[2],
+            ascending[1],
+        ];
+
+        let parse = |rows: &[Input]| {
+            let schema = Arc::new(Schema::new(vec![
+                Field::new("thermal_id", DataType::Int32, false),
+                Field::new("stage_id", DataType::Int32, false),
+                Field::new("min_generation_mw", DataType::Float64, true),
+                Field::new("max_generation_mw", DataType::Float64, true),
+                Field::new("cost_per_mwh", DataType::Float64, true),
+                Field::new("block_id", DataType::Int32, true),
+            ]));
+            let batch = RecordBatch::try_new(
+                schema,
+                vec![
+                    Arc::new(Int32Array::from_iter_values(rows.iter().map(|r| r.0))),
+                    Arc::new(Int32Array::from_iter_values(rows.iter().map(|r| r.1))),
+                    Arc::new(rows.iter().map(|r| r.3).collect::<Float64Array>()),
+                    Arc::new(Float64Array::from(vec![None::<f64>; rows.len()])),
+                    Arc::new(rows.iter().map(|r| r.4).collect::<Float64Array>()),
+                    Arc::new(rows.iter().map(|r| r.2).collect::<Int32Array>()),
+                ],
+            )
+            .unwrap();
+            let tmp = write_parquet(&batch);
+            let parsed = parse_thermal_bounds(tmp.path()).unwrap();
+            parsed
+                .iter()
+                .map(|r| {
+                    (
+                        r.thermal_id.0,
+                        r.stage_id,
+                        r.block_id,
+                        r.min_generation_mw.map(f64::to_bits),
+                        r.max_generation_mw.map(f64::to_bits),
+                        r.cost_per_mwh.map(f64::to_bits),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(parse(&ascending), parse(&scrambled));
     }
 
     /// AC: load_thermal_bounds(None) returns Ok(Vec::new()).

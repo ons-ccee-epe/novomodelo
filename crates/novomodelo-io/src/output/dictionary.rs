@@ -1523,8 +1523,8 @@ fn description_for(schema: &str, column: &str) -> &'static str {
 /// `block_id` row for each (entity, stage, block, `bound_type`) a per-block
 /// override resolved. Only the ten coded `bound_type`s (`write_codes_json`) are
 /// reported at either row class; `LineBlockOverride::reverse_mw`,
-/// `ContractBlockOverride::price_per_mwh`, and
-/// `HydroBlockOverride::max_diversion_m3s` resolve into the LP but have no
+/// `ContractBlockOverride::price_per_mwh`, `ThermalBlockOverride::cost_per_mwh`,
+/// and `HydroBlockOverride::max_diversion_m3s` resolve into the LP but have no
 /// `bound_type` code and are not emitted here.
 ///
 /// `hydro_id` is populated only for a hydro-unit-group row
@@ -3266,6 +3266,48 @@ mod tests {
             assert!(
                 block_id_col.is_null(row),
                 "block_id must be null at row {row} when the overlay is empty"
+            );
+        }
+    }
+
+    #[test]
+    fn bounds_parquet_emits_no_row_for_thermal_block_cost_override() {
+        let mut overlay = ResolvedBlockBounds::new(&BlockBoundsCountsSpec {
+            n_hydros: 2,
+            n_thermals: 2,
+            n_lines: 0,
+            n_pumping: 0,
+            n_contracts: 0,
+            n_stages: 2,
+            max_blocks: 3,
+        });
+        overlay
+            .thermal_override_mut(0, 0, 1)
+            .expect("cell must exist for a fixture-sized overlay")
+            .cost_per_mwh = Some(123.0);
+        overlay
+            .thermal_override_mut(1, 1, 0)
+            .expect("cell must exist for a fixture-sized overlay")
+            .cost_per_mwh = Some(0.0);
+        let system = make_system_2h_2t_blocks(overlay);
+        let tmp = tempfile::tempdir().unwrap();
+
+        write_bounds_parquet(tmp.path(), &system).expect("write_bounds_parquet must succeed");
+
+        let batch = read_first_batch(&tmp.path().join("bounds.parquet"));
+
+        let expected_rows = 2 * 2 * 7 + 2 * 2 * 2 + 2 * 2 * 4;
+        assert_eq!(
+            batch.num_rows(),
+            expected_rows,
+            "a cost-only thermal override must add no row"
+        );
+
+        let block_id_col = batch.column_by_name("block_id").unwrap();
+        for row in 0..batch.num_rows() {
+            assert!(
+                block_id_col.is_null(row),
+                "block_id must be null at row {row} for a cost-only thermal override"
             );
         }
     }

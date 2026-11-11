@@ -983,9 +983,6 @@ pub(super) fn fill_pumping_columns(
 /// both families and regardless of commissioning — the stored price sign carries
 /// direction (import `> 0` cost, export `< 0` revenue) and the prescaling pass owns
 /// `col_scale`.
-///
-/// `price_per_mwh` IS block-eligible, unlike [`fill_thermal_columns`]'s
-/// `cost_per_mwh` — ratified, not an oversight.
 fn fill_contract_columns(
     ctx: &TemplateBuildCtx<'_>,
     stage: &Stage,
@@ -4775,10 +4772,7 @@ mod thermal_block_bound_tests {
             let cell = self.base.bounds.thermal_block_base_mut(t_idx, stage_idx);
             cell.min_generation_mw = min_mw;
             cell.max_generation_mw = max_mw;
-            self.base
-                .bounds
-                .thermal_block_base_mut(t_idx, stage_idx)
-                .cost_per_mwh = cost;
+            cell.cost_per_mwh = cost;
         }
 
         fn install_block_overlay(&mut self) {
@@ -4811,6 +4805,21 @@ mod thermal_block_bound_tests {
                 .expect("overlay cell must exist for a fixture-sized overlay");
             over.min_generation_mw = min_mw;
             over.max_generation_mw = max_mw;
+        }
+
+        fn set_block_cost(
+            &mut self,
+            t_idx: usize,
+            stage_idx: usize,
+            block_idx: usize,
+            cost: Option<f64>,
+        ) {
+            self.base
+                .bounds
+                .block_overlay_mut()
+                .thermal_override_mut(t_idx, stage_idx, block_idx)
+                .expect("overlay cell must exist for a fixture-sized overlay")
+                .cost_per_mwh = cost;
         }
 
         fn make_ctx(&mut self) -> TemplateBuildCtx<'_> {
@@ -4990,7 +4999,117 @@ mod thermal_block_bound_tests {
             assert_eq!(
                 objective[thermal_start + blk],
                 45.0 * BLOCK_HOURS[blk],
-                "objective reads the stage-level (not per-block) cost, blk {blk}"
+                "a bound-only override leaves the objective at the stage cost, blk {blk}"
+            );
+        }
+    }
+
+    /// One thermal at stage cost 30.0 with block 0 overridden to 10.0 and block 2
+    /// to 70.0; block 1 falls through to the stage cost.
+    ///
+    /// derived: `10 * 200`, `30 * 300`, `70 * 244` from `BLOCK_HOURS = [200, 300, 244]`.
+    #[test]
+    fn test_thermal_objective_prices_each_block_with_its_resolved_cost() {
+        let mut fixtures = ThermalFixtures::new(vec![thermal(1, None, 30.0)]);
+        fixtures.set_stage_bounds(0, STAGE_IDX, 0.0, 500.0, 30.0);
+        fixtures.install_block_overlay();
+        fixtures.set_block_cost(0, STAGE_IDX, 0, Some(10.0));
+        fixtures.set_block_cost(0, STAGE_IDX, 2, Some(70.0));
+
+        let (_col_lower, _col_upper, objective, thermal_start) = run_fill(&mut fixtures, STAGE_IDX);
+
+        let expected = [2000.0_f64, 9000.0, 17080.0];
+        for blk in 0..N_BLKS {
+            assert_eq!(
+                objective[thermal_start + blk].to_bits(),
+                expected[blk].to_bits(),
+                "objective prices the resolved block cost, blk {blk}"
+            );
+        }
+    }
+
+    /// A cost override at (thermal 1, block 2) changes that one objective entry; every
+    /// other objective entry and both bound vectors stay bit-identical to the run
+    /// without it.
+    ///
+    /// derived: the changed entry is `99 * 244 = 24156`.
+    #[test]
+    fn test_thermal_block_cost_override_changes_exactly_one_objective_entry() {
+        let run = |override_cost: Option<f64>| {
+            let mut fixtures =
+                ThermalFixtures::new(vec![thermal(1, None, 30.0), thermal(2, None, 45.0)]);
+            fixtures.set_stage_bounds(0, STAGE_IDX, 0.0, 200.0, 30.0);
+            fixtures.set_stage_bounds(1, STAGE_IDX, 0.0, 150.0, 45.0);
+            fixtures.install_block_overlay();
+            if override_cost.is_some() {
+                fixtures.set_block_cost(1, STAGE_IDX, 2, override_cost);
+            }
+            run_fill(&mut fixtures, STAGE_IDX)
+        };
+
+        let (lower_a, upper_a, objective_a, thermal_start) = run(None);
+        let (lower_b, upper_b, objective_b, _) = run(Some(99.0));
+
+        let changed = thermal_start + N_BLKS + 2;
+        assert_eq!(objective_a.len(), objective_b.len());
+        for col in 0..objective_a.len() {
+            if col == changed {
+                assert_eq!(
+                    objective_b[col].to_bits(),
+                    24156.0_f64.to_bits(),
+                    "overridden entry prices 99.0 over block 2's hours"
+                );
+                assert_ne!(
+                    objective_a[col].to_bits(),
+                    objective_b[col].to_bits(),
+                    "overridden entry differs from the run without it"
+                );
+            } else {
+                assert_eq!(
+                    objective_a[col].to_bits(),
+                    objective_b[col].to_bits(),
+                    "objective entry {col} is untouched"
+                );
+            }
+            assert_eq!(
+                lower_a[col].to_bits(),
+                lower_b[col].to_bits(),
+                "col_lower {col} is untouched"
+            );
+            assert_eq!(
+                upper_a[col].to_bits(),
+                upper_b[col].to_bits(),
+                "col_upper {col} is untouched"
+            );
+        }
+    }
+
+    /// A block-1 cap of 100.0 and a block-1 cost of 70.0 on one thermal (stage bounds
+    /// `(0, 500, 20)`) apply independently: the cap leaves the cost at 70.0 and the
+    /// cost leaves the cap at 100.0.
+    ///
+    /// derived: `20 * 200`, `70 * 300`, `20 * 244` from `BLOCK_HOURS = [200, 300, 244]`.
+    #[test]
+    fn test_thermal_block_cost_and_block_bound_apply_together() {
+        let mut fixtures = ThermalFixtures::new(vec![thermal(1, None, 20.0)]);
+        fixtures.set_stage_bounds(0, STAGE_IDX, 0.0, 500.0, 20.0);
+        fixtures.install_block_overlay();
+        fixtures.set_block_override(0, STAGE_IDX, 1, None, Some(100.0));
+        fixtures.set_block_cost(0, STAGE_IDX, 1, Some(70.0));
+
+        let (_col_lower, col_upper, objective, thermal_start) = run_fill(&mut fixtures, STAGE_IDX);
+
+        assert_eq!(
+            col_upper[thermal_start..thermal_start + N_BLKS],
+            [500.0, 100.0, 500.0],
+            "the block cost leaves the other blocks' caps alone"
+        );
+        let expected = [4000.0_f64, 21000.0, 4880.0];
+        for blk in 0..N_BLKS {
+            assert_eq!(
+                objective[thermal_start + blk].to_bits(),
+                expected[blk].to_bits(),
+                "the block cap leaves the cost at the resolved value, blk {blk}"
             );
         }
     }

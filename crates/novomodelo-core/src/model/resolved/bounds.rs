@@ -168,8 +168,8 @@ pub struct ThermalBlockBounds {
     pub min_generation_mw: f64,
     /// Maximum generation capacity \[MW\]. Hard upper bound.
     pub max_generation_mw: f64,
-    /// Dispatch cost override (`$/MWh`). Resolved from `Thermal.cost_per_mwh` with optional
-    /// per-stage override from `constraints/thermal_bounds.parquet` (null `block_id` rows only).
+    /// Effective dispatch cost \[$/`MWh`\]. May differ from base when a block override
+    /// supplies a per-block cost.
     pub cost_per_mwh: f64,
 }
 
@@ -700,8 +700,9 @@ impl ResolvedBounds {
 
     /// Return the resolved thermal bounds and cost for a specific block; see
     /// [`hydro_bounds_at_block`](Self::hydro_bounds_at_block) for the overlay
-    /// contract. The generation bounds take the overlay's value when `Some`;
-    /// the cost is the block-base value.
+    /// contract. Every column (minimum generation, maximum generation and cost)
+    /// takes the overlay's value when `Some` and otherwise falls through to the
+    /// base value, independently of the other columns.
     ///
     /// Thermals have no stage-level accessor — there is no `thermal_bounds`
     /// accessor to call. Read bounds and cost through this accessor or
@@ -769,7 +770,7 @@ impl ResolvedBounds {
         ThermalBlockBounds {
             min_generation_mw: over.min_generation_mw.unwrap_or(cell.min_generation_mw),
             max_generation_mw: over.max_generation_mw.unwrap_or(cell.max_generation_mw),
-            cost_per_mwh: cell.cost_per_mwh,
+            cost_per_mwh: over.cost_per_mwh.unwrap_or(cell.cost_per_mwh),
         }
     }
 
@@ -917,9 +918,7 @@ impl ResolvedBounds {
 
     /// Return the resolved contract bounds for a specific block; see
     /// [`hydro_bounds_at_block`](Self::hydro_bounds_at_block) for the overlay
-    /// contract. `price_per_mwh` IS block-eligible, deliberately asymmetric
-    /// with [`thermal_bounds_at_block`](Self::thermal_bounds_at_block)'s
-    /// `cost_per_mwh`.
+    /// contract.
     ///
     /// Contracts have no stage-level bound column — there is no
     /// `contract_bounds` accessor to call. Read all three columns through this
@@ -2193,6 +2192,101 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_thermal_bounds_at_block_cost_precedence() {
+        let tbb = ThermalBlockBounds {
+            min_generation_mw: 10.0,
+            max_generation_mw: 50.0,
+            cost_per_mwh: 120.0,
+        };
+        let mut table = ResolvedBounds::new(
+            &BoundsCountsSpec {
+                n_hydros: 0,
+                n_thermals: 1,
+                n_lines: 0,
+                n_pumping: 0,
+                n_contracts: 0,
+                n_stages: 2,
+                k_max: 0,
+            },
+            &BoundsDefaults {
+                thermal_block: tbb,
+                ..zero_defaults()
+            },
+        );
+
+        let mut block = ResolvedBlockBounds::new(&BlockBoundsCountsSpec {
+            n_hydros: 0,
+            n_thermals: 1,
+            n_lines: 0,
+            n_pumping: 0,
+            n_contracts: 0,
+            n_stages: 2,
+            max_blocks: 3,
+        });
+        block
+            .thermal_override_mut(0, 1, 0)
+            .expect("in-range override cell")
+            .cost_per_mwh = Some(300.0);
+        block
+            .thermal_override_mut(0, 1, 2)
+            .expect("in-range override cell")
+            .cost_per_mwh = Some(0.0);
+        table.set_block_overlay(block);
+
+        assert_eq!(
+            table
+                .thermal_bounds_at_block(0, 1, 0)
+                .cost_per_mwh
+                .to_bits(),
+            300.0_f64.to_bits(),
+            "a Some override replaces the base cost"
+        );
+        assert_eq!(
+            table
+                .thermal_bounds_at_block(0, 1, 1)
+                .cost_per_mwh
+                .to_bits(),
+            tbb.cost_per_mwh.to_bits(),
+            "a block with no override falls through to the base cost"
+        );
+        let zero_override = table.thermal_bounds_at_block(0, 1, 2).cost_per_mwh;
+        assert_eq!(
+            zero_override.to_bits(),
+            0.0_f64.to_bits(),
+            "an explicit Some(0.0) is a value, not an absence"
+        );
+        assert_ne!(zero_override.to_bits(), tbb.cost_per_mwh.to_bits());
+
+        for b in 0..3 {
+            let at_block = table.thermal_bounds_at_block(0, 1, b);
+            assert_eq!(
+                at_block.min_generation_mw.to_bits(),
+                tbb.min_generation_mw.to_bits(),
+                "a cost override must not move min_generation_mw (block {b})"
+            );
+            assert_eq!(
+                at_block.max_generation_mw.to_bits(),
+                tbb.max_generation_mw.to_bits(),
+                "a cost override must not move max_generation_mw (block {b})"
+            );
+        }
+
+        assert_eq!(
+            table.thermal_block_base(0, 1).cost_per_mwh.to_bits(),
+            tbb.cost_per_mwh.to_bits(),
+            "base must ignore the overlay"
+        );
+        assert_eq!(
+            table
+                .thermal_bounds_at_block(0, 0, 0)
+                .cost_per_mwh
+                .to_bits(),
+            tbb.cost_per_mwh.to_bits(),
+            "an override at one stage must not leak into another"
+        );
+    }
+
     /// Mirrors `test_thermal_block_base_ignores_the_overlay` for line: the
     /// at-block read carries the override, the base read is the unoverridden
     /// stage-wide value, compared under `f64::to_bits`.
@@ -2695,6 +2789,10 @@ mod tests {
             .thermal_override_mut(0, 0, 0)
             .expect("in-range override cell")
             .max_generation_mw = Some(75.0);
+        block
+            .thermal_override_mut(0, 0, 1)
+            .expect("in-range override cell")
+            .cost_per_mwh = Some(42.5);
         original.set_block_overlay(block);
 
         let json = serde_json::to_string(&original).expect("serialize json");
@@ -2705,6 +2803,13 @@ mod tests {
         let restored_postcard: ResolvedBounds =
             postcard::from_bytes(&bytes).expect("deserialize postcard");
         assert_eq!(original, restored_postcard);
+        assert_eq!(
+            restored_postcard
+                .thermal_bounds_at_block(0, 0, 1)
+                .cost_per_mwh
+                .to_bits(),
+            42.5_f64.to_bits()
+        );
     }
 
     #[cfg(feature = "serde")]
