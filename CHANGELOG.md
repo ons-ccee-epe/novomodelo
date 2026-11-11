@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `constraints/thermal_bounds.parquet` accepts `cost_per_mwh` on a row with a
+  `block_id`, pricing that block's generation. Such rows on a thermal with
+  `anticipated_config` are still refused.
+
 ## [0.20.0] - 2026-11-03
 
 ### Added
