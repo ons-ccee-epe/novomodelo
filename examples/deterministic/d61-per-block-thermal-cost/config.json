@@ -13,7 +13,7 @@
     ]
   },
   "simulation": {
-    "enabled": false
+    "enabled": true
   },
   "modeling": {
     "inflow_non_negativity": {
