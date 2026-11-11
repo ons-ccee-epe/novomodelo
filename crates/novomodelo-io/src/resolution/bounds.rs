@@ -271,11 +271,7 @@ pub fn resolve_bounds(
             max_generation_mw: 0.0,
             cost_per_mwh: 0.0,
         },
-        |t| ThermalBlockBounds {
-            min_generation_mw: t.min_generation_mw,
-            max_generation_mw: t.max_generation_mw,
-            cost_per_mwh: t.cost_per_mwh,
-        },
+        thermal_base_block_bounds,
     );
     let line_default = entities.lines.first().map_or(
         LineBlockBounds {
@@ -351,11 +347,7 @@ pub fn resolve_bounds(
     // so LP lookups at delivery stage t + K_i (anticipated thermals) stay in range.
     let thermal_axis = n_stages + k_max;
     for (entity_idx, thermal) in entities.thermals.iter().enumerate() {
-        let base_block = ThermalBlockBounds {
-            min_generation_mw: thermal.min_generation_mw,
-            max_generation_mw: thermal.max_generation_mw,
-            cost_per_mwh: thermal.cost_per_mwh,
-        };
+        let base_block = thermal_base_block_bounds(thermal);
         for stage_idx in 0..thermal_axis {
             *table.thermal_block_base_mut(entity_idx, stage_idx) = base_block;
         }
@@ -787,6 +779,14 @@ fn hydro_base_block_bounds(hydro: &Hydro) -> HydroBlockBounds {
             .map_or(Some(0.0), |d| d.max_flow_m3s),
         min_spillage_m3s: None,
         max_spillage_m3s: None,
+    }
+}
+
+fn thermal_base_block_bounds(thermal: &Thermal) -> ThermalBlockBounds {
+    ThermalBlockBounds {
+        min_generation_mw: thermal.min_generation_mw,
+        max_generation_mw: thermal.max_generation_mw,
+        cost_per_mwh: thermal.cost_per_mwh,
     }
 }
 
@@ -1965,7 +1965,7 @@ mod tests {
     /// Two thermals with distinct `(min, max, cost)` bases, `n_stages = 4`,
     /// `k_max = 2`, no overrides. The last study stage and both padded stages
     /// must return each thermal's *own* base values — never the uniform
-    /// `BoundsDefaults.thermal` fallback and never thermal 0's values
+    /// `BoundsDefaults.thermal_block` fallback and never thermal 0's values
     /// overwriting thermal 1's.
     #[test]
     fn test_resolve_bounds_thermal_padded_uses_plant_base() {

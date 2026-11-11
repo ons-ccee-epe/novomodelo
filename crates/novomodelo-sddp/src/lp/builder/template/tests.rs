@@ -1668,7 +1668,7 @@ fn build_template_build_ctx_zero_anticipated_when_none() {
 /// - `id=3`: standard thermal (no anticipation), max=200 MW, cost=500 $/MWh
 ///
 /// `ResolvedBounds` is populated with per-thermal stage costs/limits matching
-/// the per-thermal declarations (the default `BoundsDefaults::thermal` is uniform,
+/// the per-thermal declarations (the default `BoundsDefaults::thermal_block` is uniform,
 /// so a probe that relied on defaults would be trivial — distinct per-thermal
 /// stage data is required to expose any latent order-dependence in the LP fill).
 ///

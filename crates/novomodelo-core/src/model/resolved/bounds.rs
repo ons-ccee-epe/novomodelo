@@ -1405,7 +1405,7 @@ mod tests {
 
     // ─── Thermal-bounds padding boundary tests ───────────────────────────────
     //
-    // This module verifies only the uniform `BoundsDefaults.thermal` fill; the
+    // This module verifies only the uniform `BoundsDefaults.thermal_block` fill; the
     // per-thermal base-fill semantics are owned by `novomodelo-io`'s resolution tests,
     // which construct `Thermal` entities.
 
@@ -1471,10 +1471,7 @@ mod tests {
         assert!(
             (padded.max_generation_mw - T_BLOCK_DEFAULT.max_generation_mw).abs() < f64::EPSILON
         );
-        assert!(
-            (table.thermal_block_base(0, 5).cost_per_mwh - T_BLOCK_DEFAULT.cost_per_mwh).abs()
-                < f64::EPSILON
-        );
+        assert!((padded.cost_per_mwh - T_BLOCK_DEFAULT.cost_per_mwh).abs() < f64::EPSILON);
     }
 
     /// `T + K_max - 1`: the last padded stage must still return the uniform
@@ -1489,10 +1486,7 @@ mod tests {
         assert!(
             (padded.max_generation_mw - T_BLOCK_DEFAULT.max_generation_mw).abs() < f64::EPSILON
         );
-        assert!(
-            (table.thermal_block_base(0, 7).cost_per_mwh - T_BLOCK_DEFAULT.cost_per_mwh).abs()
-                < f64::EPSILON
-        );
+        assert!((padded.cost_per_mwh - T_BLOCK_DEFAULT.cost_per_mwh).abs() < f64::EPSILON);
     }
 
     /// `T + K_max`: one past the padding region must panic in debug builds.
@@ -2597,7 +2591,7 @@ mod tests {
             written_block.max_generation_mw.to_bits()
         );
         assert_eq!(
-            table.thermal_block_base(0, 6).cost_per_mwh.to_bits(),
+            base.cost_per_mwh.to_bits(),
             written_block.cost_per_mwh.to_bits()
         );
 

@@ -3220,7 +3220,7 @@ mod anticipated_objective_tests {
                 let tbb = bounds.thermal_block_base_mut(0, stage);
                 tbb.min_generation_mw = min_g;
                 tbb.max_generation_mw = max_g;
-                bounds.thermal_block_base_mut(0, stage).cost_per_mwh = cost;
+                tbb.cost_per_mwh = cost;
             }
             let mut discount = Vec::with_capacity(n_stages);
             let mut d = 1.0_f64;
@@ -3394,7 +3394,7 @@ mod anticipated_objective_tests {
             let tbb = bounds.thermal_block_base_mut(0, stage);
             tbb.min_generation_mw = min_g;
             tbb.max_generation_mw = max_g;
-            bounds.thermal_block_base_mut(0, stage).cost_per_mwh = cost;
+            tbb.cost_per_mwh = cost;
         }
         bounds
     }
