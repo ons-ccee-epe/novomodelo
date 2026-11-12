@@ -385,9 +385,7 @@ mod tests {
             &stage_ctx,
         );
 
-        // Row-patch capacity: M*B + the most rows any stage's inflow coupling
-        // shifts, with M = 0 and B = 0 in the LB patch buffer (no load patches);
-        // the A*K anticipated-state slots size the column region only.
+        // M = 0 and B = 0 in the LB patch buffer (no load patches).
         let expected_capacity = hydro_count;
         assert_eq!(
             scratch.patch_buf.indices.len(),
@@ -485,8 +483,6 @@ mod tests {
             &stage_ctx,
         );
 
-        // Column-bound region: storage N + n_buckets (the lag region has no LP
-        // column) + A*K + W = 2 + 3 + 0 + 0 = 5.
         assert_eq!(
             scratch.patch_buf.state_col_patch_count(),
             hydro_count + n_buckets,

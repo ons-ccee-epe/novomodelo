@@ -793,8 +793,6 @@ mod tests {
         .unwrap()
     }
 
-    // ── realize_inflow: None method ──────────────────────────────────────────
-
     /// None method: raw eta applied directly without clamping.
     #[test]
     fn test_realize_inflow_none_method() {
@@ -837,8 +835,6 @@ mod tests {
         assert_eq!(scratch.realized_inflow_buf.len(), 1);
         assert!((scratch.realized_inflow_buf[0] - (-3.0)).abs() < 1e-12);
     }
-
-    // ── realize_inflow: Truncation ───────────────────────────────────────────
 
     /// Truncation keeps the realized inflow raw and fixes the slack at the truncation amount: PAR(0)
     /// with base 0 and σ 1, so `r = η`; η = -5 gives `[5, 5]`.

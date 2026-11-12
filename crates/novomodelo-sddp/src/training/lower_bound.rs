@@ -175,8 +175,7 @@ fn lb_cut_slots_into(map: Option<&CutRowMap>, pool: &CutPool, out: &mut Vec<usiz
 }
 
 /// Solves the stage-0 LP once per root opening, writing each objective into
-/// `scratch.lb_scratch.objectives_buf`. Pins once and opens per opening through
-/// the folded phases, every cut row at its own bracket.
+/// `scratch.lb_scratch.objectives_buf`.
 ///
 /// # Errors
 ///
@@ -2559,14 +2558,8 @@ mod tests {
             geom4.filled_min_storage_floor
         );
 
-        // PreFilling inflow routing: H_B is PreFilling at stage 0 (id 0 <
-        // start 2), so its inflow coupling reaches no water row — the
-        // frozen-storage-identity freeze (the PreFilling row-pinning contract)
-        // the lower bound inherits via the loaded template. Neither hydro
-        // declares a downstream, so H_B's coupling routes nowhere (a sink),
-        // never onto H_A's row. H_A is Filling at stage 0 (not PreFilling), so
-        // its OWN coupling carries `-zeta` on its own water row — the contrast
-        // that makes the routing check non-vacuous.
+        // H_B (PreFilling at stage 0, no downstream) routes no inflow to any
+        // water row; H_A (Filling) carries `-zeta` on its own row.
         let coupling = &templates.inflow_coupling_per_stage[0];
         let water_row_a = geom0.water_balance_row(HydroSys::new(h_a), BlockIdx::new(0));
         assert_eq!(

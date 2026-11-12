@@ -18,13 +18,7 @@ use crate::lp::indexer::{
 /// equality constraints each entry's lower == upper.
 ///
 /// [`fill_col_state_patches`](Self::fill_col_state_patches) is the single owner
-/// of the column-bound region: it iterates
-/// [`StateSpace::state_to_lp_incoming_column`] over every state dimension with
-/// an LP column, region by region, so storage, buckets, and anticipated
-/// state all resolve through one call site rather than parallel hardcoded
-/// offsets. Every call writes the whole region, so
-/// [`active_state_col_patch_count`](Self::active_state_col_patch_count) is its
-/// length once the buffer has been filled.
+/// of the column-bound region.
 #[derive(Debug, Clone)]
 pub struct PatchBuffer {
     /// Row indices to patch.
@@ -86,18 +80,6 @@ impl PatchBuffer {
     /// `fill_col_state_patches`. Pass `&[]` for `load_bus_indices` when there is no
     /// stochastic load and `&[]` for `geometry_per_stage` when there is no
     /// stochastic load or the caller has no geometry to size from.
-    /// `shift_region_holds_the_most_touched_rows_of_any_stage` (this module's
-    /// `tests`) pins `R`.
-    ///
-    /// # Examples
-    ///
-    /// A 3-hydro AR(2) system with no stochastic load, no buckets, and no
-    /// anticipated thermals has column capacity `N = 3`: the lag slice has no LP
-    /// column. Anticipated thermals (`A*K`) and travel-time buckets (`n_buckets`)
-    /// widen only the column region, and row capacity depends on the coupling
-    /// alone, never on `N` or `L`. `patch_buffer_new_sizes_from_its_owners` (this
-    /// module's `tests`) is the runnable form of these cases, and
-    /// `fill_col_state_patches_skips_the_lag_region` of the lag slice.
     ///
     /// [`fill_load_patches`]: PatchBuffer::fill_load_patches
     /// [`fill_inflow_shift_patches`]: PatchBuffer::fill_inflow_shift_patches
@@ -149,10 +131,9 @@ impl PatchBuffer {
     /// every bucket incoming column unpinned.
     ///
     /// Pins are written region by region and compacted: the lag region has no LP
+    /// Pins are written region by region and compacted: the lag region has no LP
     /// column and is skipped, so the pins after it sit at lower slots than their
-    /// state indices. The pins fill the column-bound region exactly
-    /// ([`Self::active_state_col_patch_count`] equals
-    /// [`Self::state_col_patch_count`]).
+    /// state indices.
     ///
     /// Enforces `x == v` by setting `lb = ub = v / col_scale[col]` in the scaled LP
     /// — **divided**, contrast with the row-equality path that **multiplies** by

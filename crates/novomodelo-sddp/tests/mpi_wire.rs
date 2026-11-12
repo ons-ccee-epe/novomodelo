@@ -721,6 +721,7 @@ mod derived_inflow_seeds_rank_invariance {
     use std::path::Path;
 
     use novomodelo_comm::Communicator;
+    use novomodelo_sddp::test_support::bits;
     use novomodelo_solver::ActiveSolver;
 
     use crate::common::{Rank0Of2, StubComm};
@@ -736,12 +737,7 @@ mod derived_inflow_seeds_rank_invariance {
     /// `(state_bits, final_lb_bits)`.
     fn run_shape(case_dir: &Path, comm: &impl Communicator) -> (Vec<u64>, u64) {
         let mut setup = crate::common::fresh_setup_with(case_dir, |_| {});
-        let state_bits: Vec<u64> = setup
-            .training_ctx()
-            .initial_state
-            .iter()
-            .map(|v| v.to_bits())
-            .collect();
+        let state_bits = bits(setup.training_ctx().initial_state);
 
         let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
         let outcome = setup
@@ -4101,34 +4097,10 @@ mod compact_fold_determinism {
     //! counters, and the reported bounds) is bit-identical to the first shape's.
     //! Compact runs are compared with compact runs only.
     //!
-    //! - The by-node `CVaR` gates compare threads 4, a threads-4 repeat, 2 and 1,
-    //!   and the `Rank0Of2` stub with a single rank, both at threads 4.
-    //! - The opening-order gate compares threads 4 with threads 1 and a repeat
-    //!   under the default scheduler, then the stub with a single rank.
-    //! - The fan gate compares threads 1, 2 and 4 under each scheduler.
-    //! - The world gates compare each rank of the MPI world with a single rank,
-    //!   both at threads 1, by node: the lag study and d43 under `CVaR`, the fan
-    //!   with four leaves.
-    //!
-    //! The lag study is the uniform fixture: three small PAR(2) stages whose
-    //! pools all project the same lag-bearing state. `d43-storage-only-cut`
-    //! drops the lags of one stage, so its pools project different cut-state
-    //! dimensions; it trains with five openings, as shipped it has one. The
-    //! heterogeneous fan fuses the terminal slice: its leaf pool projects
-    //! storage and lag, its root pool storage only.
-    //!
-    //! Every run asserts that an earlier iteration's cut is active in a later
-    //! iteration. The lag study and d43 record binding under a budget that
-    //! evicts nothing, and each of their runs asserts that a binding cut carries
-    //! a nonzero lag coefficient. No cut of the fan carries one, because its only
-    //! lag-bearing pool is the terminal leaf pool, which receives no cut, so its
-    //! power is the projection heterogeneity of the fused terminal slice. The
-    //! thread legs of the lag study and d43 assert that the shapes split the
-    //! forward passes differently, the world legs that every rank holds a trial
-    //! and, on two or more ranks, fewer than all of them, and the stub legs that
-    //! they train the one forward pass at which the stub is faithful. No stub leg
-    //! runs on the fan: its backward level has several nodes, where the stub
-    //! leaves the per-pool count buffer stale.
+    //! The fan's power is the projection heterogeneity of its fused terminal
+    //! slice: its leaf pool projects storage and lag but receives no cut, its root
+    //! pool storage only. No stub leg runs on the fan: its backward level has
+    //! several nodes, where the stub leaves the per-pool count buffer stale.
 
     use std::collections::BTreeSet;
     use std::path::Path;

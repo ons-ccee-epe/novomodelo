@@ -1066,8 +1066,6 @@ mod tests {
         }
     }
 
-    // ── Lag region tests ────────────────────────────────────────────────────
-
     /// N = 2, L = 2, two buckets and one anticipated plant.
     fn lagged_state_space() -> StateSpace {
         let buckets = vec![(HydroSys::new(0), 1), (HydroSys::new(1), 1)];

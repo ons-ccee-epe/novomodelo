@@ -1032,8 +1032,7 @@ mod tests {
 
     // All scoring tests use n_state = 2 (StateSpace::new(2, 0, [], [], default, …)):
     //   - state columns 0, 1 (identity state_to_lp_column for j < hydro_count)
-    //   - theta column 4 (= 2 * n with n = 2, no lag region)
-    // So `primal` must be at least length 5.
+    //   - theta sits at THETA_COL (2 * n, no lag region); `primal` is PRIMAL_LEN long.
     const N_STATE: usize = 2;
     const THETA_COL: usize = 4;
     const PRIMAL_LEN: usize = THETA_COL + 1;
@@ -1318,7 +1317,7 @@ mod tests {
         let mut primal = vec![0.0_f64; PRIMAL_LEN];
         primal[0] = 2.0; // scaled x[0]
         primal[THETA_COL] = 1.0; // scaled theta
-        // col_scale must cover all columns up to theta (index 4).
+        // col_scale must cover every column up to theta.
         let mut col_scale = vec![1.0_f64; PRIMAL_LEN];
         col_scale[0] = 0.5; // state column 0 scale
         col_scale[THETA_COL] = 2.0; // theta scale

@@ -25,7 +25,7 @@ use crate::common::expanded_solve::{
 use crate::common::in_code_studies::FPHA_LAG_STUDY_KEY as LAG_STUDY;
 use crate::common::in_code_studies::{FphaLagOptions, fpha_lag_study, fpha_lag_study_with};
 use crate::common::oracle_tolerance::{UnscaledTolerance, assert_first_try};
-use crate::common::power_guards::{DualFamily, Guard, PowerEvidence};
+use crate::common::power_guards::{D43_UNMET_SCALE_GUARDS, DualFamily, Guard, PowerEvidence};
 use crate::common::row_families::{RowClass, classify_expanded_rows};
 use crate::common::stored_cut_oracles::apply_oracle_config;
 use crate::common::{
@@ -474,21 +474,9 @@ fn check_shared_dual_identity(
     check_shared_dual_identity_on(label, system, compact, Leg::Expanded)
 }
 
-const SCALE_GUARDS: [Guard; 4] = [
-    Guard::NonUnitZScale,
-    Guard::NonUnitLagScale,
-    Guard::RescaledCoupledRowWithDual,
-    Guard::NonUnitCompactCoupledRowScaleWithDual,
-];
-
 const D19_UNMET_SCALE_GUARDS: &[(Guard, &str)] = &[(
     Guard::RescaledCoupledRowWithDual,
     "the coupled rows are water-balance rows, whose compact and expanded scales are bit-identical; only a generic-constraint inflow row is rescaled",
-)];
-
-const D43_UNMET_SCALE_GUARDS: &[(Guard, &str)] = &[(
-    Guard::RescaledCoupledRowWithDual,
-    "the coupled row is a water-balance row, whose compact and expanded scales are bit-identical; only a generic-constraint inflow row is rescaled",
 )];
 
 const FPHA_LAG_STUDY_GUARDS: [Guard; 6] = [
@@ -518,17 +506,7 @@ fn assert_run(
         !run.solves_per_stage.is_empty(),
         "{label}: no stage was checked"
     );
-    let reached = SCALE_GUARDS
-        .into_iter()
-        .filter(|guard| unmet.iter().all(|(listed, _)| listed != guard));
-    let asserted: Vec<Guard> = guards.iter().copied().chain(reached).collect();
-    run.evidence.assert_holds(label, &asserted);
-    for (guard, reason) in unmet {
-        assert!(
-            !run.evidence.holds(*guard),
-            "{label}: {guard:?} now holds, so assert it instead of listing it (listed because: {reason})"
-        );
-    }
+    run.evidence.assert_scale_guards(label, guards, unmet);
 }
 
 #[test]

@@ -275,15 +275,12 @@ pub(crate) fn fill_unscaled_dual(out: &mut Vec<f64>, scaled: &[f64], row_scale: 
     }
 }
 
-/// Canonicalize the outgoing state vector: copy each region's outgoing block
-/// of the LP primal, run the lag accumulation/shift, verify the
-/// bucket/commitment-hold copy-gap invariant, then clamp every dimension onto
-/// its admissible box.
-/// The clamp is the identity for an in-box value — a solve whose state stays
-/// in box is byte-for-byte unaffected by it. Every consumer of the outgoing
-/// state (the trajectory, the backward pass's `x_hat`, the cut intercept, the
-/// simulation output) reads this same canonical vector; there is no second
-/// canonicalization point at LP pin time.
+/// Canonicalize the outgoing state vector, clamping every dimension onto its
+/// admissible box. The clamp is the identity for an in-box value — a solve
+/// whose state stays in box is byte-for-byte unaffected by it. Every consumer
+/// of the outgoing state (the trajectory, the backward pass's `x_hat`, the cut
+/// intercept, the simulation output) reads this same canonical vector; there is
+/// no second canonicalization point at LP pin time.
 ///
 /// `realized_inflow` is ẑ, the stage's realized inflow, which feeds lag 0.
 #[allow(clippy::float_cmp)]
@@ -1599,8 +1596,6 @@ mod tests {
         );
     }
 
-    // Convenience helper: build a no-op DownstreamLagAccum for tests that
-    // exercise only primary accumulation (uniform-resolution path).
     fn noop_ds<'a>(
         accumulator: &'a mut Vec<f64>,
         weight_accum: &'a mut f64,
@@ -1783,8 +1778,6 @@ mod tests {
         );
     }
 
-    // ── downstream accumulation tests ────────────────────────────────────────
-
     /// Build a `StageLagTransition` for a standard monthly stage that also
     /// accumulates into the downstream (quarterly) ring buffer.
     ///
@@ -1834,17 +1827,10 @@ mod tests {
         (100_u32..).map(f64::from).take(layout.theta + 1).collect()
     }
 
-    /// Test 1: PAR(1) downstream accumulation with a 3-stage quarterly window.
-    ///
-    /// 3 monthly stages (each weight=1/3, no primary finalize, no primary
-    /// spillover, `downstream_finalize` on last month) populate the downstream
-    /// ring buffer.  After all 3 stages, `downstream_completed_lags[0]` must
-    /// equal `(90.0 + 100.0 + 110.0) / 3.0 = 100.0`.  Then calling with
-    /// `rebuild_from_downstream = true` on the first quarterly stage overwrites
-    /// `state[lag_start]` with `100.0`.
+    /// Three monthly stages fill the downstream ring buffer with the quarterly
+    /// average, and the rebuild at the first quarterly stage seeds the lag from it.
     #[test]
     fn test_downstream_par1_accumulation_and_rebuild() {
-        // N=1 hydro, L=1 lag (primary monthly PAR(1) order).
         let layout = state_layout(1, 1);
         let lag_start = layout.state_dim_lag_range().start;
 
@@ -1882,7 +1868,6 @@ mod tests {
             );
         }
 
-        // After 3 monthly stages the ring buffer should hold the quarterly average.
         let expected_avg = (90.0 + 100.0 + 110.0) / 3.0;
         assert!(
             (ds_completed[0] - expected_avg).abs() < 1e-12,
@@ -1891,8 +1876,6 @@ mod tests {
         );
         assert_eq!(ds_n, 1, "n_completed must be 1 after one quarter");
 
-        // Now simulate the transition stage (first quarterly stage).
-        // rebuild_from_downstream=true; primary accumulation is quarterly.
         let rebuild_lag = rebuild_stage_lag();
         assemble_stage(
             &mut state,
@@ -1913,13 +1896,11 @@ mod tests {
             },
         );
 
-        // lag[0] must be rebuilt to the quarterly average.
         assert!(
             (state[lag_start] - expected_avg).abs() < 1e-12,
             "state[lag_start] must be rebuilt to {expected_avg}, got {}",
             state[lag_start]
         );
-        // Downstream state must be fully reset.
         assert_eq!(ds_n, 0, "n_completed must reset to 0 after rebuild");
         assert_eq!(
             ds_completed[0], 0.0,
@@ -1928,12 +1909,8 @@ mod tests {
         assert_eq!(ds_w, 0.0, "downstream weight must reset after rebuild");
     }
 
-    /// Test 2: PAR(2) downstream accumulation with two consecutive quarters.
-    ///
-    /// 6 monthly stages (Q3: stages 0-2, Q4: stages 3-5) with `downstream_par_order=2`.
-    /// After Q3, `completed_lags[slot=0] == avg(60,70,80) == 70.0`, `n_completed==1`.
-    /// After Q4, `completed_lags[slot=1] == avg(90,100,110) == 100.0`, `n_completed==2`.
-    /// At rebuild: `state[lag_start] == 100.0` (newest Q4), `state[lag_start+1] == 70.0` (Q3).
+    /// Two consecutive quarters at PAR(2): the rebuild puts the newest quarter at
+    /// lag 0 and the previous one at lag 1.
     #[test]
     #[allow(clippy::too_many_lines)]
     fn test_downstream_par2_two_quarters() {
@@ -1950,7 +1927,6 @@ mod tests {
         let mut ds_completed = vec![0.0_f64; 2];
         let mut ds_n = 0_usize;
 
-        // Q3: z_inflows 60, 70, 80 — no primary finalize, downstream finalize on month 3.
         let q3_vals = [60.0_f64, 70.0, 80.0];
         for (i, &z) in q3_vals.iter().enumerate() {
             let stage_lag = monthly_with_downstream(false, i == 2);
@@ -1981,7 +1957,6 @@ mod tests {
         );
         assert_eq!(ds_n, 1);
 
-        // Q4: z_inflows 90, 100, 110 — downstream finalize on month 3.
         let q4_vals = [90.0_f64, 100.0, 110.0];
         for (i, &z) in q4_vals.iter().enumerate() {
             let stage_lag = monthly_with_downstream(false, i == 2);
@@ -2012,7 +1987,6 @@ mod tests {
         );
         assert_eq!(ds_n, 2);
 
-        // Rebuild stage: lag[0] <- newest (Q4), lag[1] <- second-newest (Q3).
         let rebuild_lag = rebuild_stage_lag();
         assemble_stage(
             &mut state,
@@ -2033,7 +2007,6 @@ mod tests {
             },
         );
 
-        // lag[0] = newest = Q4 avg; lag[1] = Q3 avg.
         assert!(
             (state[lag_start] - q4_avg).abs() < 1e-12,
             "lag[0] should be newest Q4 avg {q4_avg}, got {}",
@@ -2046,11 +2019,8 @@ mod tests {
         );
     }
 
-    /// Test 3: Uniform monthly study — empty downstream buffers, zero overhead.
-    ///
-    /// Runs with empty downstream buffers (`par_order = 0`) against the same stages with a no-op downstream.
-    /// The function must produce exactly the same result,
-    /// with no downstream fields accessed.
+    /// Empty downstream buffers (`par_order = 0`) give exactly the state of the
+    /// no-op downstream.
     #[test]
     fn test_no_downstream_for_uniform_monthly() {
         let layout = state_layout(1, 1);
@@ -2077,7 +2047,6 @@ mod tests {
                 rebuild_from_downstream: false,
             };
 
-            // Reference: empty downstream (noop path).
             let mut ds_accum_ref: Vec<f64> = vec![];
             let mut ds_weight_ref = 0.0_f64;
             let mut ds_completed_ref: Vec<f64> = vec![];
@@ -2100,7 +2069,6 @@ mod tests {
                 ),
             );
 
-            // Test: inline empty downstream (par_order=0).
             let mut ds_accum_ds: Vec<f64> = vec![];
             let mut ds_weight_ds = 0.0_f64;
             let mut ds_completed_ds: Vec<f64> = vec![];
@@ -2131,10 +2099,6 @@ mod tests {
         );
     }
 
-    /// Test 4: `rebuild_from_downstream` resets all downstream state.
-    ///
-    /// After rebuild, `n_completed == 0`, `completed_lags` all zero, and
-    /// `downstream_weight_accum == 0.0`.
     #[test]
     fn test_rebuild_resets_downstream_state() {
         let layout = state_layout(1, 1);
@@ -2183,11 +2147,8 @@ mod tests {
         );
     }
 
-    /// Test 5: Downstream spillover seeds the next quarterly accumulation.
-    ///
-    /// A monthly stage with `downstream_spillover_weight = 0.1` and
-    /// `downstream_finalize = true` should: (a) finalize the current quarter,
-    /// (b) seed the next quarter's accumulator with the realized inflow * 0.1.
+    /// Finalizing a quarter with spillover seeds the next accumulator with the
+    /// realized inflow times the spillover weight.
     #[test]
     fn test_downstream_spillover_seeds_next_quarter() {
         let layout = state_layout(1, 1);
@@ -2199,7 +2160,6 @@ mod tests {
         let mut ds_completed = vec![0.0_f64; 1];
         let mut ds_n = 0_usize;
 
-        // Single monthly stage that finalizes the quarter with spillover.
         // Pre-load the accumulator to simulate prior months already accumulated.
         ds_acc[0] = 200.0; // months 1+2 already accumulated
         let mut ds_w = 2.0 / 3.0_f64; // two months of weight 1/3 each
@@ -2236,9 +2196,7 @@ mod tests {
             },
         );
 
-        // Quarter should be finalized and the ring buffer filled.
         assert_eq!(ds_n, 1, "one quarter must be finalized");
-        // Downstream accumulator must be seeded with z * spillover_weight.
         let expected_seed = z * spillover_weight;
         assert!(
             (ds_acc[0] - expected_seed).abs() < 1e-12,
@@ -2251,14 +2209,9 @@ mod tests {
         );
     }
 
-    /// Test 6: Multi-hydro downstream — 2 hydros, PAR(1).
-    ///
-    /// Each hydro has its own realized inflow values.  After 3 monthly stages,
-    /// `downstream_completed_lags[0]` (hydro 0) and `[1]` (hydro 1) must
-    /// each equal the independently computed quarterly average for that hydro.
+    /// Each hydro's quarterly average and rebuilt lag come from its own inflows.
     #[test]
     fn test_downstream_multi_hydro() {
-        // N=2 hydros, L=1 lag order.
         let layout = state_layout(2, 1);
         let lag_start = layout.state_dim_lag_range().start;
 
@@ -2272,7 +2225,6 @@ mod tests {
         let mut ds_completed = vec![0.0_f64; 2];
         let mut ds_n = 0_usize;
 
-        // 3 monthly stages: hydro 0 inflows [10, 20, 30], hydro 1 inflows [40, 50, 60].
         let h0_vals = [10.0_f64, 20.0, 30.0];
         let h1_vals = [40.0_f64, 50.0, 60.0];
 
@@ -2312,7 +2264,6 @@ mod tests {
         );
         assert_eq!(ds_n, 1);
 
-        // Rebuild: both hydros rebuilt independently.
         let rebuild_lag = rebuild_stage_lag();
         assemble_stage(
             &mut state,
@@ -2333,7 +2284,6 @@ mod tests {
             },
         );
 
-        // lag[0] for hydro 0 and hydro 1 must be rebuilt independently.
         assert!(
             (state[lag_start] - expected_h0).abs() < 1e-12,
             "rebuilt lag[0] hydro 0 should be {expected_h0}, got {}",

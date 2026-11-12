@@ -3204,8 +3204,7 @@ mod anticipated_forward_pass {
 
         // Forward pass outgoing state of stage 0. HOLD geometry: the
         // delivery-1 seed (50.0) is HELD at slot 1 (its modular slot, carried
-        // because delivery-1 does not mature until stage 1) — under the retired
-        // shift geometry it would instead move to slot 0. Slot 0 is the deposit
+        // because delivery-1 does not mature until stage 1). Slot 0 is the deposit
         // slot for the fresh decision d_0 (delivery-2, slot `2 mod 2 = 0`), so it
         // carries the LP decision d_0 ∈ [0, 100].
         let s0 = forward_states[0].as_slice();
@@ -3242,8 +3241,7 @@ mod anticipated_forward_pass {
         // HOLD (carry, not shift): consecutive forward outgoing states hold the
         // non-maturing slot UNCHANGED. The slot NOT maturing at the newer forward
         // stage `t - 1` is `t mod 2`, and it must carry the previous stage's SAME
-        // slot verbatim. Under the retired shift geometry this comparison read
-        // `s_curr[slot 0] == s_prev[slot 1]` instead.
+        // slot verbatim.
         for t in 2..5_usize {
             let s_curr = forward_states[t - 1].as_slice();
             let s_prev = forward_states[t - 2].as_slice();

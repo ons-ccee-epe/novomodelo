@@ -28,8 +28,9 @@ use novomodelo_sddp::setup::{NodePos, StageIdx};
 use novomodelo_sddp::test_support::decks::{Deck, SLOW_DECKS, committed_decks};
 use novomodelo_sddp::test_support::template_structure::state_lag_dims;
 use novomodelo_sddp::test_support::{
-    capture_patched_node_template, capture_patched_node_template_at, lower_bound_root_templates,
-    node_opening_noise, oracle_initial_state, stage_state_box_bounds, state_space,
+    bits, capture_patched_node_template, capture_patched_node_template_at,
+    lower_bound_root_templates, node_opening_noise, oracle_initial_state, stage_state_box_bounds,
+    state_space,
 };
 use novomodelo_sddp::{InflowNonNegativityMethod, StudySetup};
 use novomodelo_solver::{ActiveSolver, StageTemplate};
@@ -52,10 +53,10 @@ fn capture_at_initial_state_matches_node_capture() {
         let at = capture_patched_node_template_at(&setup, pos, &zero_noise, &initial_state);
         let node = capture_patched_node_template(&setup, pos);
 
-        assert_eq!(to_bits(&at.row_lower), to_bits(&node.row_lower));
-        assert_eq!(to_bits(&at.row_upper), to_bits(&node.row_upper));
-        assert_eq!(to_bits(&at.col_lower), to_bits(&node.col_lower));
-        assert_eq!(to_bits(&at.col_upper), to_bits(&node.col_upper));
+        assert_eq!(bits(&at.row_lower), bits(&node.row_lower));
+        assert_eq!(bits(&at.row_upper), bits(&node.row_upper));
+        assert_eq!(bits(&at.col_lower), bits(&node.col_lower));
+        assert_eq!(bits(&at.col_upper), bits(&node.col_upper));
     }
 }
 
@@ -71,10 +72,6 @@ fn node_opening_noise_has_the_raw_noise_length() {
             assert_eq!(node_opening_noise(&setup, pos, opening).len(), expected_len);
         }
     }
-}
-
-fn to_bits(v: &[f64]) -> Vec<u64> {
-    v.iter().map(|x| x.to_bits()).collect()
 }
 
 // ── One-hot patch-ownership sweep ────────────────────────────────────────────
@@ -672,7 +669,7 @@ fn truncation_slack_bounds_are_identical_across_solve_sites() {
 
         let (mut checked, mut moved_by_the_lag) = (0usize, 0usize);
         for x in &stored_trial_states(&setup, NodePos(0)) {
-            if to_bits(x) == to_bits(&initial_state) {
+            if bits(x) == bits(&initial_state) {
                 continue;
             }
             for o in 0..n_openings {

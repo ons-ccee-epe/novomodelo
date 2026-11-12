@@ -36,6 +36,20 @@ pub enum Guard {
     CouplingDualEveryHydro,
 }
 
+/// The guards that prove a fixture's compact and expanded scales differ and are not all 1.0.
+pub const SCALE_GUARDS: [Guard; 4] = [
+    Guard::NonUnitZScale,
+    Guard::NonUnitLagScale,
+    Guard::RescaledCoupledRowWithDual,
+    Guard::NonUnitCompactCoupledRowScaleWithDual,
+];
+
+/// The scale guard d43 leaves unmet.
+pub const D43_UNMET_SCALE_GUARDS: &[(Guard, &str)] = &[(
+    Guard::RescaledCoupledRowWithDual,
+    "the coupled row is a water-balance row, whose compact and expanded scales are bit-identical; only a generic-constraint inflow row is rescaled",
+)];
+
 /// Flags and per-hydro booleans only, so recording allocates nothing after [`PowerEvidence::new`].
 // Rationale (struct_excessive_bools): one independent flag per `Guard` variant; a bitset would
 // need a variant-to-bit map that the flags make unnecessary.
@@ -152,5 +166,23 @@ impl PowerEvidence {
             unmet.is_empty(),
             "{label}: the fixture lacks power: unmet guards {unmet:?}"
         );
+    }
+
+    /// Fails unless `guards` and every [`SCALE_GUARDS`] entry hold, except the ones listed in
+    /// `unmet`, and unless each listed guard is still unmet.
+    pub fn assert_scale_guards(&self, label: &str, guards: &[Guard], unmet: &[(Guard, &str)]) {
+        let asserted: Vec<Guard> = guards
+            .iter()
+            .copied()
+            .chain(SCALE_GUARDS)
+            .filter(|guard| unmet.iter().all(|(listed, _)| listed != guard))
+            .collect();
+        self.assert_holds(label, &asserted);
+        for (guard, reason) in unmet {
+            assert!(
+                !self.holds(*guard),
+                "{label}: {guard:?} now holds, so assert it instead of listing it (listed because: {reason})"
+            );
+        }
     }
 }

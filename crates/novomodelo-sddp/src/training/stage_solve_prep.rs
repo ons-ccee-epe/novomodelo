@@ -116,10 +116,10 @@ impl StageSolvePrep {
         );
     }
 
-    /// Pin phase: runs once per unit (a trial point on a loaded LP). Pins
-    /// the columned state regions, then computes p and the cut-row brackets B from
-    /// the raw `trial_state`, never from the scaled pin. Allocates nothing
-    /// once the scratch buffers are sized.
+    /// Pin phase: runs once per unit (a trial point on a loaded LP). Pins the
+    /// columned state and computes p and the cut-row brackets B from the raw
+    /// `trial_state`, never the scaled pin. Allocates nothing once the scratch
+    /// buffers are sized.
     pub(crate) fn pin_and_bracket<S>(
         solver: &mut S,
         patch_buf: &mut PatchBuffer,
@@ -176,12 +176,8 @@ impl StageSolvePrep {
         );
     }
 
-    /// Opening phase: runs once per solve, after the pin phase of the
-    /// unit. Pushes the shifted and load rows in one set, then the NCS and
-    /// inflow-slack column bounds, then fills every cut row's `B + W` and hands
-    /// it to `opening_solver`, which pushes it as one range (frozen) or leaves
-    /// it for the lazy solve. Allocates nothing once the scratch buffers are
-    /// sized.
+    /// Opening phase: runs once per solve, after the pin phase of the unit.
+    /// Allocates nothing once the scratch buffers are sized.
     // Rationale (too_many_arguments): solver, patch_buf, and scratch are three
     // disjoint mutable borrows of the workspace that must stay separate
     // parameters — a bundling struct would reborrow the whole workspace and

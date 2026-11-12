@@ -3608,8 +3608,7 @@ mod transit_bucket_copy_gap {
     /// bucket_in(4), ant_state_in(5), theta(6)]`. The state vector is
     /// `[storage(0), lag0(1), bucket_out(2), ant_slot0(3)]`, `n_state = 4`.
     /// With `k_max = 1`, `ant_slot0` is both the ring's only slot and its
-    /// newest (`k_i - 1 = 0`), so it resolves by identity like `bucket_out` —
-    /// no separate decision-aliased column exists anymore.
+    /// newest (`k_i - 1 = 0`), so it resolves by identity like `bucket_out`.
     const NUM_COLS: usize = 7;
     const TRANSIT_BUCKET_COL: usize = 1;
     const TRANSIT_BUCKET_VALUE: f64 = 777.0;

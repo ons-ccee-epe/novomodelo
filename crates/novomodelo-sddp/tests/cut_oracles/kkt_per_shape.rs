@@ -17,7 +17,7 @@ use crate::common::expanded_solve::{
 };
 use crate::common::in_code_studies::{FphaLagOptions, fpha_lag_study_with};
 use crate::common::oracle_tolerance::{UnscaledTolerance, rounding_factor};
-use crate::common::power_guards::{Guard, PowerEvidence};
+use crate::common::power_guards::{Guard, PowerEvidence, SCALE_GUARDS};
 use crate::common::stored_cut_oracles::{apply_oracle_config, apply_oracle_config_with_selection};
 use crate::common::{
     build_setup_in_code_with_models, is_chain, positive, train_storing_trial_states,
@@ -25,14 +25,6 @@ use crate::common::{
 };
 
 const OPENINGS: usize = 3;
-
-const SCALE_GUARDS: [Guard; 5] = [
-    Guard::BindingLagCut,
-    Guard::NonUnitZScale,
-    Guard::NonUnitLagScale,
-    Guard::RescaledCoupledRowWithDual,
-    Guard::NonUnitCompactCoupledRowScaleWithDual,
-];
 
 const LOWER_BOUND_MAP_UNMET_GUARDS: &[(Guard, &str)] = &[(
     Guard::RescaledCoupledRowWithDual,
@@ -627,20 +619,6 @@ fn run_config(config: &KktConfig, trained: &Trained) -> KktRun {
     run
 }
 
-fn assert_guards(label: &str, evidence: &PowerEvidence, unmet: &[(Guard, &str)]) {
-    let reached: Vec<Guard> = SCALE_GUARDS
-        .into_iter()
-        .filter(|guard| unmet.iter().all(|(listed, _)| listed != guard))
-        .collect();
-    evidence.assert_holds(label, &reached);
-    for (guard, reason) in unmet {
-        assert!(
-            !evidence.holds(*guard),
-            "{label}: {guard:?} now holds, so assert it instead of listing it (listed because: {reason})"
-        );
-    }
-}
-
 #[test]
 fn the_fold_meets_the_expanded_kkt_conditions_at_every_cut_row_shape() {
     let mut shapes: Vec<CutRowShape> = Vec::new();
@@ -671,11 +649,13 @@ fn the_fold_meets_the_expanded_kkt_conditions_at_every_cut_row_shape() {
             run.nonzero_betas > 0,
             "{label}: no extracted slot has a nonzero beta"
         );
-        let measured_unmet: Vec<Guard> = SCALE_GUARDS
+        let measured_unmet: Vec<Guard> = [Guard::BindingLagCut]
             .into_iter()
+            .chain(SCALE_GUARDS)
             .filter(|&guard| !run.evidence.holds(guard))
             .collect();
         eprintln!("{label}: unmet guards {measured_unmet:?}");
-        assert_guards(label, &run.evidence, config.unmet);
+        run.evidence
+            .assert_scale_guards(label, &[Guard::BindingLagCut], config.unmet);
     }
 }

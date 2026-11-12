@@ -583,21 +583,18 @@ fn case_basic_rows_report_a_zero_dual_across_warm_bound_pushes<S: SolverInterfac
         exactly_one_twin_basic |= is_basic(twin_rows[0]) != is_basic(twin_rows[1]);
     }
 
-    assert!(
-        support_row_basic,
-        "P_a: no solve reported a support row Basic"
-    );
+    assert!(support_row_basic, "no solve reported a support row Basic");
     assert!(
         ever_nonzero.iter().filter(|&&nonzero| nonzero).count() >= 2,
-        "P_b: fewer than two distinct support rows carried a non-zero dual"
+        "fewer than two distinct support rows carried a non-zero dual"
     );
     assert!(
         warm_basic_on_cold_nonzero,
-        "P_c: no warm solve reported Basic a support row that was non-zero at the cold solve"
+        "no warm solve reported Basic a support row that was non-zero at the cold solve"
     );
     assert!(
         exactly_one_twin_basic,
-        "P_d: no solve reported exactly one of the duplicate support rows Basic"
+        "no solve reported exactly one of the duplicate support rows Basic"
     );
     largest_iterations
 }
@@ -629,7 +626,7 @@ fn clp_basic_rows_report_a_zero_dual_at_a_short_factorization_frequency() {
     let largest_iterations = case_basic_rows_report_a_zero_dual_across_warm_bound_pushes(solver);
     assert!(
         largest_iterations > 2,
-        "P_f: no solve exceeded the factorization frequency, largest iteration count {largest_iterations}"
+        "no solve exceeded the factorization frequency, largest iteration count {largest_iterations}"
     );
 }
 

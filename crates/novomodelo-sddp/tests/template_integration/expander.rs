@@ -1,5 +1,3 @@
-//! `expander` section tests.
-
 use novomodelo_sddp::indexer::HydroSys;
 use novomodelo_sddp::test_support::expander::expand_stage_templates;
 

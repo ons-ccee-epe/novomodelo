@@ -220,7 +220,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "index out of bounds")]
+    #[should_panic(expected = "index out of bounds: the len is 3 but the index is 3")]
     fn resident_cut_dual_pairs_index_the_dual_slice_directly() {
         let mut pool = CutPool::new(8, 1, 8, 0);
         for forward_pass_index in 0..4 {

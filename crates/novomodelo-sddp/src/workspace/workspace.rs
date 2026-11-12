@@ -706,14 +706,10 @@ impl ByNodeFinishScratch {
 /// (`training.parallelism.backward_scheduler`), held on `BackwardPassState`
 /// and reused across every backward stage for the lifetime of a training run.
 ///
-/// Empty (`location` capacity `0`) unless `ByNode` could be the
-/// scheduler a run actually dispatches to: sized by
-/// `BackwardPassState::resize_by_node_scratch` (called from `set_scheduler`)
-/// whenever the configured scheduler is literally `ByNode`. Untouched by the
-/// enumerated traversal — its per-node solve
-/// (`BackwardPassState::run_enumerated_backward`) never dispatches through the
-/// by-node scheduler at all. Never resized on the hot path (sddp.md "By-node
-/// scheduler is warm-start-only").
+/// Empty (`location` capacity `0`) unless the configured scheduler is `ByNode`:
+/// sized by `BackwardPassState::resize_by_node_scratch` (called from
+/// `set_scheduler`), never resized on the hot path (sddp.md "By-node scheduler
+/// is warm-start-only").
 #[derive(Default)]
 pub(crate) struct ByNodeScratch {
     /// `(worker, record)` of each `(m, ω)`, addressed `location[m * n_openings + omega]`
@@ -767,15 +763,9 @@ pub(crate) struct ByNodeScratch {
 }
 
 impl ByNodeScratch {
-    /// Allocate the record-location table and aggregation scratch for `ByNode`:
-    /// `location` is reserved for `max_local_fwd * bwd_max_openings` entries.
-    /// `block_pivots` and
-    /// `block_pivots_prev` each hold `row_axis_len * bwd_max_openings`
-    /// accumulator cells, `row_axis_len` an upper bound on the GENERATING
-    /// node count (see [`Self::block_pivots`] — never a stage count, though
-    /// it coincides with one on a chain); `block_order` holds
-    /// `bwd_max_openings` claim-order scratch slots; `worker_counts` holds one
-    /// count per each of `n_workers` workers.
+    /// Reserves each buffer to its per-stage bound (see the field docs);
+    /// `row_axis_len` is an upper bound on the GENERATING node count, never a
+    /// stage count.
     #[must_use]
     pub(crate) fn sized(
         max_local_fwd: usize,
@@ -2865,10 +2855,6 @@ mod tests {
             "node_id must round-trip through the wire (version 2)"
         );
     }
-
-    // ---------------------------------------------------------------------------
-    // Payload layout test
-    // ---------------------------------------------------------------------------
 
     /// The header words sit at fixed offsets, followed by `col_status`, `row_status`
     /// and `cut_row_slots`, in that order.

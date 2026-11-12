@@ -3295,7 +3295,6 @@ mod tests {
             0,
             "stage 1 (last stage) must have no cuts"
         );
-        // The stage statistics must be non-empty (populated for stage 0).
         assert!(
             state.stage_stats().next().is_some(),
             "stage_stats must be non-empty after a successful backward pass"

@@ -13,24 +13,12 @@ use crate::common::expanded_solve::{
 };
 use crate::common::in_code_studies::FPHA_LAG_STUDY_KEY as LAG_STUDY;
 use crate::common::in_code_studies::fpha_lag_study;
-use crate::common::power_guards::{Guard, PowerEvidence};
+use crate::common::power_guards::{D43_UNMET_SCALE_GUARDS, Guard, PowerEvidence};
 use crate::common::stored_cut_oracles::apply_oracle_config;
 use crate::common::{
     build_setup_in_code_with_models, fresh_system_and_setup_with, is_chain,
     train_storing_trial_states, try_stored_trial_states,
 };
-
-const SCALE_GUARDS: [Guard; 4] = [
-    Guard::NonUnitZScale,
-    Guard::NonUnitLagScale,
-    Guard::RescaledCoupledRowWithDual,
-    Guard::NonUnitCompactCoupledRowScaleWithDual,
-];
-
-const D43_UNMET_SCALE_GUARDS: &[(Guard, &str)] = &[(
-    Guard::RescaledCoupledRowWithDual,
-    "the coupled row is a water-balance row, whose compact and expanded scales are bit-identical; only a generic-constraint inflow row is rescaled",
-)];
 
 struct WarmStartCounts {
     skipped_stages: Vec<usize>,
@@ -101,17 +89,7 @@ fn assert_run(
         !counts.solves_per_stage.is_empty(),
         "{label}: no warm solve ran"
     );
-    let reached = SCALE_GUARDS
-        .into_iter()
-        .filter(|guard| unmet.iter().all(|(listed, _)| listed != guard));
-    let asserted: Vec<Guard> = guards.iter().copied().chain(reached).collect();
-    evidence.assert_holds(label, &asserted);
-    for (guard, reason) in unmet {
-        assert!(
-            !evidence.holds(*guard),
-            "{label}: {guard:?} now holds, so assert it instead of listing it (listed because: {reason})"
-        );
-    }
+    evidence.assert_scale_guards(label, guards, unmet);
 }
 
 #[test]

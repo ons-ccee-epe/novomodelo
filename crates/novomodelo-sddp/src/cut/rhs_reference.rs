@@ -17,19 +17,6 @@ pub fn cut_bracket(
     conditional_mean: &[f64],
 ) -> f64 {
     let (lag0, shifted) = (lag_point.lag0(), lag_point.shifted());
-    debug_assert!(
-        conditional_mean.len() >= lag0.len(),
-        "cut_bracket: conditional_mean shorter than the lag-0 range"
-    );
-    debug_assert!(
-        lag_state.len() >= shifted.len(),
-        "cut_bracket: lag_state shorter than the shifted range"
-    );
-    debug_assert!(
-        coefficients.len() >= shifted.end.max(lag0.end),
-        "cut_bracket: coefficients shorter than the lag slots"
-    );
-
     let shifted_dot = ascending_dot(&coefficients[shifted.clone()], &lag_state[..shifted.len()]);
     let mean_dot = ascending_dot(&coefficients[lag0.clone()], &conditional_mean[..lag0.len()]);
     (intercept + shifted_dot) + mean_dot
@@ -39,10 +26,6 @@ pub fn cut_bracket(
 #[must_use]
 pub fn cut_noise_term(coefficients: &[f64], lag_point: &CutLagPoint, noise_term: &[f64]) -> f64 {
     let (lag0, shifted) = (lag_point.lag0(), lag_point.shifted());
-    debug_assert!(
-        noise_term.len() >= lag0.len(),
-        "cut_noise_term: noise_term shorter than the lag-0 range"
-    );
     debug_assert!(
         coefficients.len() >= shifted.end.max(lag0.end),
         "cut_noise_term: coefficients shorter than the lag slots"

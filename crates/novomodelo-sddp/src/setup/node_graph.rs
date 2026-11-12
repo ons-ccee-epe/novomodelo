@@ -2847,8 +2847,6 @@ mod tests {
         );
     }
 
-    // ── backward_cut_levels_into: reverse-topological level decomposition ───
-
     fn chain_graph(n_stages: usize) -> NodeGraph {
         let stochastic = stochastic_context(n_stages, 1, 3);
         let study_stage_ids: Vec<i32> = (0..n_stages as i32).collect();

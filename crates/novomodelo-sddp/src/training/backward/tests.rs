@@ -3405,14 +3405,8 @@ fn binding_is_recorded_only_when_tracking_is_on() {
             .iter()
             .map(|pool| {
                 (
-                    pool.intercepts_prefix()
-                        .iter()
-                        .map(|v| v.to_bits())
-                        .collect(),
-                    pool.coefficients_prefix()
-                        .iter()
-                        .map(|v| v.to_bits())
-                        .collect(),
+                    bits(pool.intercepts_prefix()),
+                    bits(pool.coefficients_prefix()),
                 )
             })
             .collect()
@@ -5132,6 +5126,7 @@ fn cut_coefficient_sign_convention_slot_zero_k2() {
 use crate::cut_selection::{CutMetadata, CutSelectionStrategy};
 use crate::dcs::{DcsConfig, DcsParams};
 use crate::solver_phase::Phase;
+use crate::test_support::bits;
 use crate::workspace::{NoisePreallocation, WorkspacePool, WorkspaceSizing};
 use novomodelo_solver::ActiveSolver;
 
@@ -6657,16 +6652,16 @@ fn compact_forward_stage_writes_the_brackets_of_its_frozen_rows() {
             records.swap_remove(1)
         };
 
-        let expected = to_bits(&compact_slab_reference(&case, &COMPACT_X_HAT));
+        let expected = bits(&compact_slab_reference(&case, &COMPACT_X_HAT));
         assert_eq!(expected.len(), 2);
-        assert_ne!(expected, to_bits(&BARE_INTERCEPTS));
+        assert_ne!(expected, bits(&BARE_INTERCEPTS));
 
         let frozen = forward_record(None);
         let written = frozen
             .frozen_brackets
             .read(ITERATION, node_id, expected.len())
             .expect("a frozen compact stage writes its brackets");
-        assert_eq!(to_bits(written), expected);
+        assert_eq!(bits(written), expected);
         assert_eq!(
             frozen
                 .frozen_brackets
@@ -6718,10 +6713,6 @@ fn range_pushes_per_solve(solves: &[RecordedSolve]) -> Vec<Vec<(usize, usize)>> 
         .collect()
 }
 
-fn to_bits(values: &[f64]) -> Vec<u64> {
-    values.iter().map(|v| v.to_bits()).collect()
-}
-
 #[test]
 fn compact_by_node_pins_once_per_claimed_block() {
     let case = CompactBackwardCase::new(&[0.5, 0.5]);
@@ -6753,11 +6744,8 @@ fn compact_by_node_pins_once_per_claimed_block() {
 
     assert!(by_scenario.intercepts.iter().any(|v| v.abs() > 0.0));
     for pass in [&one_claim, &two_claims] {
-        assert_eq!(to_bits(&pass.intercepts), to_bits(&by_scenario.intercepts));
-        assert_eq!(
-            to_bits(&pass.coefficients),
-            to_bits(&by_scenario.coefficients)
-        );
+        assert_eq!(bits(&pass.intercepts), bits(&by_scenario.intercepts));
+        assert_eq!(bits(&pass.coefficients), bits(&by_scenario.coefficients));
     }
 }
 
@@ -6862,7 +6850,7 @@ fn row_lower_range_bits(solves: &[RecordedSolve]) -> Vec<Vec<u64>> {
                 .writes
                 .iter()
                 .flat_map(|write| match write {
-                    BoundWrite::RowLowerRange { lower, .. } => to_bits(lower),
+                    BoundWrite::RowLowerRange { lower, .. } => bits(lower),
                     _ => Vec::new(),
                 })
                 .collect()
@@ -6877,13 +6865,13 @@ fn assert_same_cut_bits(pass: &CompactPass, unwritten: &CompactPass, what: &str)
         "{what}: pushed rhs"
     );
     assert_eq!(
-        to_bits(&pass.intercepts),
-        to_bits(&unwritten.intercepts),
+        bits(&pass.intercepts),
+        bits(&unwritten.intercepts),
         "{what}: intercepts"
     );
     assert_eq!(
-        to_bits(&pass.coefficients),
-        to_bits(&unwritten.coefficients),
+        bits(&pass.coefficients),
+        bits(&unwritten.coefficients),
         "{what}: coefficients"
     );
 }
@@ -7078,8 +7066,8 @@ fn a_slab_read_with_another_row_count_is_a_miss() {
     slab.write(ITERATION, node_id, &brackets);
 
     assert_eq!(
-        slab.read(ITERATION, node_id, rows).map(to_bits),
-        Some(to_bits(&brackets))
+        slab.read(ITERATION, node_id, rows).map(bits),
+        Some(bits(&brackets))
     );
     assert_eq!(slab.read(ITERATION, node_id, rows - 1), None);
     assert_eq!(slab.read(ITERATION, node_id, rows + 1), None);
@@ -7091,7 +7079,7 @@ fn row_and_col_bound_bits(solves: &[RecordedSolve]) -> Vec<Vec<Vec<u64>>> {
             .iter()
             .map(|&index| u64::try_from(index).expect("index fits u64"))
             .collect();
-        [vec![kind], indices, to_bits(lower), to_bits(upper)].concat()
+        [vec![kind], indices, bits(lower), bits(upper)].concat()
     };
     solves
         .iter()
@@ -7187,8 +7175,8 @@ fn compact_aggregate_first_cut_is_scheduler_and_worker_independent() {
     assert!(reference.intercepts.iter().any(|v| v.abs() > 0.0));
     let expectation = run(by_scenario, 1, true, RiskMeasure::Expectation);
     assert_ne!(
-        to_bits(&expectation.coefficients),
-        to_bits(&reference.coefficients),
+        bits(&expectation.coefficients),
+        bits(&reference.coefficients),
         "the openings must differ in cost for the CVaR weights to differ from the probabilities"
     );
     for (scheduler, workers, hardest_first) in [
@@ -7199,13 +7187,13 @@ fn compact_aggregate_first_cut_is_scheduler_and_worker_independent() {
     ] {
         let pass = run(scheduler, workers, hardest_first, COMPACT_CVAR);
         assert_eq!(
-            to_bits(&pass.intercepts),
-            to_bits(&reference.intercepts),
+            bits(&pass.intercepts),
+            bits(&reference.intercepts),
             "{scheduler:?} x {workers} workers, hardest-first {hardest_first}"
         );
         assert_eq!(
-            to_bits(&pass.coefficients),
-            to_bits(&reference.coefficients),
+            bits(&pass.coefficients),
+            bits(&reference.coefficients),
             "{scheduler:?} x {workers} workers, hardest-first {hardest_first}"
         );
     }
@@ -7386,9 +7374,9 @@ const COMPACT_ACTIVE_SLOTS: [usize; 2] = [0, 2];
 fn stage_noise_bits(table: &StageNoiseTable, n_outcomes: usize, rows: usize) -> Vec<u64> {
     (0..n_outcomes)
         .flat_map(|omega| {
-            to_bits(table.noise_term(omega))
+            bits(table.noise_term(omega))
                 .into_iter()
-                .chain(to_bits(table.cut_noise(omega, rows)))
+                .chain(bits(table.cut_noise(omega, rows)))
         })
         .collect()
 }
@@ -7414,9 +7402,9 @@ fn bound_write_bits(solves: &[RecordedSolve]) -> Vec<Vec<u64>> {
                 .flat_map(|write| match write {
                     BoundWrite::RowBounds { lower, upper, .. }
                     | BoundWrite::ColBounds { lower, upper, .. } => {
-                        [to_bits(lower), to_bits(upper)].concat()
+                        [bits(lower), bits(upper)].concat()
                     }
-                    BoundWrite::RowLowerRange { lower, .. } => to_bits(lower),
+                    BoundWrite::RowLowerRange { lower, .. } => bits(lower),
                     BoundWrite::AddRows { .. } => Vec::new(),
                 })
                 .collect()
@@ -7449,10 +7437,10 @@ fn compact_stage_noise_table_holds_each_opening_noise_term_and_cut_noise() {
                 })
                 .to_vec();
 
-            assert_eq!(to_bits(table.noise_term(omega)), to_bits(&noise_term));
+            assert_eq!(bits(table.noise_term(omega)), bits(&noise_term));
             assert_eq!(
-                to_bits(table.cut_noise(omega, COMPACT_ACTIVE_SLOTS.len())),
-                to_bits(&cut_noise)
+                bits(table.cut_noise(omega, COMPACT_ACTIVE_SLOTS.len())),
+                bits(&cut_noise)
             );
         }
     });
@@ -7494,17 +7482,17 @@ fn compact_stage_noise_table_prices_each_child_with_its_own_slots() {
     for local_omega in 0..n_openings {
         let noise_term = table.noise_term(local_omega).to_vec();
         assert_eq!(
-            to_bits(&noise_term),
-            to_bits(table.noise_term(n_openings + local_omega)),
+            bits(&noise_term),
+            bits(table.noise_term(n_openings + local_omega)),
             "both children draw the same opening tree"
         );
         assert_eq!(
-            to_bits(table.cut_noise(local_omega, 2)),
-            to_bits(&[cut_noise(0, &noise_term), cut_noise(2, &noise_term)])
+            bits(table.cut_noise(local_omega, 2)),
+            bits(&[cut_noise(0, &noise_term), cut_noise(2, &noise_term)])
         );
         assert_eq!(
-            to_bits(table.cut_noise(n_openings + local_omega, 1)),
-            to_bits(&[cut_noise(2, &noise_term)])
+            bits(table.cut_noise(n_openings + local_omega, 1)),
+            bits(&[cut_noise(2, &noise_term)])
         );
     }
 }
@@ -7651,10 +7639,7 @@ fn compact_stage_noise_unit_matches_the_on_the_fly_unit() {
         assert_eq!(staged_solve.writes, on_the_fly_solve.writes);
     }
     assert_eq!(staged.intercept.to_bits(), on_the_fly.intercept.to_bits());
-    assert_eq!(
-        to_bits(&staged.coefficients),
-        to_bits(&on_the_fly.coefficients)
-    );
+    assert_eq!(bits(&staged.coefficients), bits(&on_the_fly.coefficients));
 }
 
 #[test]

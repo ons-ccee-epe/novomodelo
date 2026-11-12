@@ -132,19 +132,6 @@ fn conditional_mean_at(
     p_h
 }
 
-/// The single definition of `sigma * eta`, so the standalone noise term and the
-/// realised-value addition read the same product bits.
-#[inline]
-fn noise_term_at(par_lp: &PrecomputedPar, stage: usize, h: usize, eta: f64) -> f64 {
-    par_lp.sigma(stage, h) * eta
-}
-
-/// The single definition of the conditional-mean-plus-noise-term add.
-#[inline]
-fn add_noise_term_at(conditional_mean: f64, noise_term: f64) -> f64 {
-    conditional_mean + noise_term
-}
-
 /// Evaluate the PAR(p) model equation for all series elements at `stage`, writing
 /// into `output` without allocating (values may be negative).
 ///
@@ -211,10 +198,8 @@ pub fn evaluate_par_batch(
     );
 
     for h in 0..n_series {
-        output[h] = add_noise_term_at(
-            conditional_mean_at(par_lp, stage, h, lag_matrix, n_series),
-            noise_term_at(par_lp, stage, h, noise[h]),
-        );
+        output[h] = conditional_mean_at(par_lp, stage, h, lag_matrix, n_series)
+            + par_lp.sigma(stage, h) * noise[h];
     }
 }
 
@@ -256,7 +241,7 @@ pub fn evaluate_par_noise_term_batch(
     debug_assert_eq!(output.len(), n_series, "output.len() must equal n_series");
 
     for h in 0..n_series {
-        output[h] = noise_term_at(par_lp, stage, h, noise[h]);
+        output[h] = par_lp.sigma(stage, h) * noise[h];
     }
 }
 
@@ -278,7 +263,7 @@ pub fn add_noise_term_batch(conditional_mean: &[f64], noise_term: &[f64], output
     );
 
     for ((out, &mean), &term) in output.iter_mut().zip(conditional_mean).zip(noise_term) {
-        *out = add_noise_term_at(mean, term);
+        *out = mean + term;
     }
 }
 

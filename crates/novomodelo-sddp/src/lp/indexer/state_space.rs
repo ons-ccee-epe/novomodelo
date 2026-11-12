@@ -1840,9 +1840,6 @@ mod tests {
         }
     }
 
-    /// The builder's exact storage column spellings — the migration pin for
-    /// routing them through [`StateSpace`]'s own accessors instead of hand
-    /// address arithmetic. The lag state has no column to spell.
     #[test]
     fn builder_state_column_spellings_match_the_state_space() {
         for idx in [
