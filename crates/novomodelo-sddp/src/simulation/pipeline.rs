@@ -24,10 +24,9 @@ use crate::lp::builder::{GenericConstraintRowEntry, StageGeometry};
 use crate::lp::indexer::{
     AnticipatedPlants, BlockIdx, BlockRowFamily, CutStateProjection, StudyDimensions,
 };
-use crate::noise::{DownstreamAccumState, LagAccumState};
 use crate::simulation::state::{SimulationInputs, SimulationState};
 use crate::stage_solve::StageInputs;
-use crate::stage_solve::assemble_outgoing_state;
+use crate::stage_solve::advance_worker_state;
 use crate::stage_solve::fill_unscaled;
 use crate::stage_solve::fill_unscaled_dual;
 use crate::{
@@ -514,11 +513,13 @@ pub(crate) fn solve_simulation_stage<S: SolverInterface>(
     let include_terminal_theta =
         training_ctx.horizon.is_terminal(t.next().0) && pool.has_prefix_cuts();
 
-    // Snapshot incoming lags before state is overwritten below.
-    ws.scratch.incoming_lags_buf.clear();
-    ws.scratch
-        .incoming_lags_buf
-        .extend_from_slice(&ws.current_state[state.state_dim_lag_range()]);
+    advance_worker_state(
+        ws,
+        state,
+        ctx.state_box(t),
+        ctx.stage_lag(t),
+        study_dims.downstream_par_order,
+    );
 
     let (immediate_cost, result) = extract_sim_stage_result(
         &mut ws.scratch,
@@ -531,30 +532,6 @@ pub(crate) fn solve_simulation_stage<S: SolverInterface>(
         stage_id,
         n_stochastic_ncs,
         lookups,
-    );
-
-    // Pass unscaled_primal as a separate borrow so the borrow checker sees it is
-    // disjoint from the &mut ws.scratch.lag_* fields passed alongside it.
-    let unscaled_primal_ref: &[f64] = &ws.scratch.unscaled_primal;
-    assemble_outgoing_state(
-        &mut ws.current_state,
-        unscaled_primal_ref,
-        &ws.scratch.incoming_lags_buf,
-        &ws.scratch.realized_inflow_buf,
-        state,
-        ctx.state_box(t),
-        ctx.stage_lag(t),
-        &mut LagAccumState {
-            accumulator: &mut ws.scratch.lag_accumulator,
-            weight_accum: &mut ws.scratch.lag_weight_accum,
-        },
-        &mut DownstreamAccumState {
-            accumulator: &mut ws.scratch.downstream_accumulator,
-            weight_accum: &mut ws.scratch.downstream_weight_accum,
-            completed_lags: &mut ws.scratch.downstream_completed_lags,
-            n_completed: &mut ws.scratch.downstream_n_completed,
-            par_order: study_dims.downstream_par_order,
-        },
     );
 
     Ok((immediate_cost, result))

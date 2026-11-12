@@ -43,6 +43,7 @@ use novomodelo_sddp::{
     lead_time::AnticipatedResolution,
     lp::builder::PatchBuffer,
     resolved_parameters::ResolvedParameters,
+    resolved_state_layout,
 };
 
 mod common;

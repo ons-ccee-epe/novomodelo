@@ -32,9 +32,7 @@ use crate::inflow_method::InflowNonNegativityMethod;
 use crate::lead_time::AnticipatedResolution;
 use crate::policy::resolved_generic_coefficients::ResolvedGenericCoefficients;
 use crate::resolved_parameters::ResolvedParameters;
-use crate::test_support::{
-    assert_templates_byte_identical, resolve_anticipated_commitments, state_layout_full,
-};
+use crate::test_support::{assert_templates_byte_identical, resolve_anticipated_commitments};
 use crate::time_value::{
     DeliveryCalendar, PostStudyResolved, TimeValue, compute_cumulative_discount_factors,
     compute_per_stage_discount_factors, resolve_post_study_artifacts,
@@ -2241,7 +2239,7 @@ fn state_boxes_read_before_postprocess_panics() {
     let mut unfilled = super::StageTemplates::empty(DEFAULT_COST_SCALE_FACTOR);
     unfilled
         .templates
-        .push(crate::test_support::transit_bucket_only_template(1, 1));
+        .push(crate::test_support::transit_bucket_only_template(1));
 
     let _ = unfilled.state_boxes();
 }
@@ -2253,7 +2251,7 @@ fn set_state_boxes_rejects_a_box_count_other_than_the_stage_count() {
     let mut templates = super::StageTemplates::empty(DEFAULT_COST_SCALE_FACTOR);
     templates
         .templates
-        .push(crate::test_support::transit_bucket_only_template(1, 1));
+        .push(crate::test_support::transit_bucket_only_template(1));
 
     templates.set_state_boxes(Vec::new());
 }
@@ -3936,37 +3934,17 @@ fn chronological_k1_byte_identical_to_parallel() {
     assert_templates_byte_identical(&parallel, &chronological, "parallel vs chronological");
 }
 
-/// `theta` and `n_state` are pure functions of `(N, L, A, k_max)` and are
-/// `n_blks`-free by construction (`StateSpace::new` never sees `block_mode` or
-/// `n_blks`): per-block storage lives strictly in the control region, never in
-/// the state region. Building a chronological `K ≥ 2` stage therefore
-/// changes neither — only the control-region column count grows, by exactly
-/// `n_h * (n_blks − 1)` interior storage columns.
+/// Per-block storage lives strictly in the control region, never in the state
+/// region, so building a chronological `K ≥ 2` stage changes only the
+/// control-region column count, by exactly `n_h * (n_blks − 1)` interior storage
+/// columns.
 #[test]
-fn theta_and_n_state_invariant_to_block_mode() {
+fn chronological_stage_adds_only_interior_storage_columns() {
     let hydro_count = 1_usize;
-    let max_par_order = 0_usize;
     let n_blks = 3_usize;
-
-    let state = state_layout_full(hydro_count, max_par_order, vec![]);
-    let parallel_theta = state.theta;
-    let parallel_n_state = state.n_state;
 
     let parallel = block_template(BlockMode::Parallel, n_blks);
     let chronological = block_template(BlockMode::Chronological, n_blks);
-
-    assert_eq!(
-        parallel.n_state, parallel_n_state,
-        "parallel template n_state must equal StateSpace n_state"
-    );
-    assert_eq!(
-        chronological.n_state, parallel_n_state,
-        "chronological build must not change n_state"
-    );
-    assert_eq!(
-        parallel_theta, state.theta,
-        "building chronological must not change theta"
-    );
 
     assert_eq!(
         chronological.num_cols,

@@ -161,22 +161,13 @@ fn max_par_order_uses_par_lp_when_annual_present() {
     let par_lp =
         PrecomputedPar::build(&inflow_models, &stages, &hydro_ids, None).expect("par build ok");
 
-    let result = build_stage_templates_resolving_layout(
-        &system,
-        no_penalty_config(),
-        &par_lp,
-        &PrecomputedNormal::default(),
-        &default_production(&system),
-        &default_evaporation(&system),
-        &ResolvedParameters::default(),
-    )
-    .expect("build_stage_templates_resolving_layout ok");
+    let state = resolved_state_layout(&system, &par_lp).expect("resolved_state_layout ok");
 
     assert_eq!(
-        result.templates[0].n_state,
+        state.n_state,
         2 * (1 + 12),
         "annual component must widen the PAR order to 12, so n_state == N*(1+12); got {}",
-        result.templates[0].n_state
+        state.n_state
     );
 }
 
@@ -191,22 +182,13 @@ fn max_par_order_classical_unchanged() {
     let par_lp =
         PrecomputedPar::build(&inflow_models, &stages, &hydro_ids, None).expect("par build ok");
 
-    let result = build_stage_templates_resolving_layout(
-        &system,
-        no_penalty_config(),
-        &par_lp,
-        &PrecomputedNormal::default(),
-        &default_production(&system),
-        &default_evaporation(&system),
-        &ResolvedParameters::default(),
-    )
-    .expect("build_stage_templates_resolving_layout ok");
+    let state = resolved_state_layout(&system, &par_lp).expect("resolved_state_layout ok");
 
     assert_eq!(
-        result.templates[0].n_state,
+        state.n_state,
         2 * (1 + 3),
         "classical PAR order must remain 3, so n_state == N*(1+3); got {}",
-        result.templates[0].n_state
+        state.n_state
     );
 }
 
@@ -237,7 +219,9 @@ fn the_lag_region_of_a_twelve_lag_state_adds_no_lp_column_or_row() {
     let n_h = 2_usize;
     let l = 12_usize;
     assert_eq!(
-        t.n_state,
+        resolved_state_layout(&system, &par_lp)
+            .expect("resolved_state_layout ok")
+            .n_state,
         n_h * (1 + l),
         "precondition: the PAR order must be 12, so n_state == N*(1+12)"
     );
@@ -1095,26 +1079,16 @@ fn test_anticipated_decision_inactive_no_state_write() {
 #[test]
 fn test_n_state_includes_n_ant_state() {
     let system = one_hydro_one_ant_system(4);
-    let result = build_stage_templates_resolving_layout(
-        &system,
-        no_penalty_config(),
-        &PrecomputedPar::default(),
-        &PrecomputedNormal::default(),
-        &default_production(&system),
-        &default_evaporation(&system),
-        &ResolvedParameters::default(),
-    )
-    .expect("build ok");
-
-    let t = &result.templates[0];
+    let n_state = resolved_state_layout(&system, &PrecomputedPar::default())
+        .expect("resolved_state_layout ok")
+        .n_state;
     // n_hydros=1, max_par_order=1 → N*(1+L) = 1*(1+1) = 2.
     // n_anticipated=1, k_max=2 → n_ant_state = 2.
     // Expected n_state = N*(1+L) + n_ant_state = 2 + 2 = 4.
     let expected_n_state = 4_usize;
     assert_eq!(
-        t.n_state, expected_n_state,
-        "n_state must equal N*(1+L) + n_ant_state = {expected_n_state}, got {}",
-        t.n_state
+        n_state, expected_n_state,
+        "n_state must equal N*(1+L) + n_ant_state = {expected_n_state}, got {n_state}"
     );
 }
 
@@ -1154,15 +1128,15 @@ fn test_anticipated_thermals_lp_roundtrip_k1() {
     let row_fish_start = rt_row_ant_fishing_start(k);
 
     // ── n_state ─────────────────────────────────────────────────────
-    for t in 0..n_stages {
-        assert_eq!(
-            result.templates[t].n_state,
-            1 + k,
-            "K=1, stage {t}: n_state must be {} (1 hydro + 1 ant-slot), got {}",
-            1 + k,
-            result.templates[t].n_state
-        );
-    }
+    let n_state = resolved_state_layout(&system, &PrecomputedPar::default())
+        .expect("resolved_state_layout ok")
+        .n_state;
+    assert_eq!(
+        n_state,
+        1 + k,
+        "K=1: n_state must be {} (1 hydro + 1 ant-slot), got {n_state}",
+        1 + k
+    );
 
     // ── num_cols ────────────────────────────────────────────────────
     let expected_cols = rt_expected_num_cols(k);
@@ -1319,15 +1293,15 @@ fn test_anticipated_thermals_lp_roundtrip_k2() {
     let row_fish_start = rt_row_ant_fishing_start(k);
 
     // ── n_state ─────────────────────────────────────────────────────
-    for t in 0..n_stages {
-        assert_eq!(
-            result.templates[t].n_state,
-            1 + k,
-            "K=2, stage {t}: n_state must be {}, got {}",
-            1 + k,
-            result.templates[t].n_state
-        );
-    }
+    let n_state = resolved_state_layout(&system, &PrecomputedPar::default())
+        .expect("resolved_state_layout ok")
+        .n_state;
+    assert_eq!(
+        n_state,
+        1 + k,
+        "K=2: n_state must be {}, got {n_state}",
+        1 + k
+    );
 
     // ── num_cols / num_rows ─────────────────────────────────────────
     let expected_cols = rt_expected_num_cols(k);
@@ -1449,11 +1423,11 @@ fn test_anticipated_thermals_lp_roundtrip_k2() {
     // at its modular slot `1 mod k_max = 1`). Its carry row pins
     // `out(slot 1) - in(slot 1) = 0` — the SAME slot on both columns; the retired
     // shift geometry instead targeted `in(slot + 1)`. The outgoing anticipated
-    // block is `[n_state - k, n_state)` (storage occupies `[0, n_hydros)` first);
+    // block is `[n_hydros, n_hydros + k)` (storage occupies `[0, n_hydros)` first);
     // the incoming block starts at `rt_col_ant_state_incoming_start(k)`.
     {
         let t0 = &result.templates[0];
-        let out_slot1 = (t0.n_state - k) + 1; // outgoing slot 1
+        let out_slot1 = 1 + 1; // outgoing slot 1: one hydro's storage precedes the block
         let in_slot1 = col_ant_state + 1; // incoming slot 1
         let in_slot0 = col_ant_state; // incoming slot 0 (the retired shift target)
         let carry_row = (0..t0.num_rows)
@@ -1507,15 +1481,15 @@ fn test_anticipated_thermals_lp_roundtrip_k3() {
     let row_fish_start = rt_row_ant_fishing_start(k);
 
     // ── n_state ─────────────────────────────────────────────────────
-    for t in 0..n_stages {
-        assert_eq!(
-            result.templates[t].n_state,
-            1 + k,
-            "K=3, stage {t}: n_state must be {}, got {}",
-            1 + k,
-            result.templates[t].n_state
-        );
-    }
+    let n_state = resolved_state_layout(&system, &PrecomputedPar::default())
+        .expect("resolved_state_layout ok")
+        .n_state;
+    assert_eq!(
+        n_state,
+        1 + k,
+        "K=3: n_state must be {}, got {n_state}",
+        1 + k
+    );
 
     // ── num_cols / num_rows ─────────────────────────────────────────
     let expected_cols = rt_expected_num_cols(k);
@@ -1649,11 +1623,11 @@ fn test_anticipated_thermals_lp_roundtrip_k3() {
     // `1 mod 3 = 1`) and delivery-2 (slot `2 mod 3 = 2`); delivery-3 is the fresh
     // decision (deposit slot `3 mod 3 = 0`, not a carry). Each carry row pins
     // `out(slot) - in(slot) = 0` on the SAME slot. The outgoing anticipated block
-    // is `[n_state - k, n_state)`; the incoming block starts at
+    // is `[n_hydros, n_hydros + k)`; the incoming block starts at
     // `rt_col_ant_state_incoming_start(k)`.
     {
         let t0 = &result.templates[0];
-        let out_start = t0.n_state - k; // outgoing anticipated block start
+        let out_start = 1_usize; // outgoing anticipated block start: one hydro's storage precedes it
         for slot in [1_usize, 2] {
             let out_col = out_start + slot;
             let in_col = col_ant_state + slot;
@@ -1718,11 +1692,6 @@ fn test_anticipated_thermals_lp_roundtrip_k0_baseline_parity() {
             ta.num_rows, tb.num_rows
         );
         assert_eq!(
-            ta.n_state, tb.n_state,
-            "parity: stage {s} n_state must match ({} vs {})",
-            ta.n_state, tb.n_state
-        );
-        assert_eq!(
             ta.col_starts, tb.col_starts,
             "parity: stage {s} col_starts differ between two builds"
         );
@@ -1758,7 +1727,10 @@ fn test_anticipated_thermals_lp_roundtrip_k0_baseline_parity() {
 
     // n_state = N*(1+L) = 1 (no anticipated term).
     assert_eq!(
-        result_baseline.templates[0].n_state, 1,
+        resolved_state_layout(&system_baseline, &PrecomputedPar::default())
+            .expect("resolved_state_layout ok")
+            .n_state,
+        1,
         "K=0 baseline: n_state must be 1 (no anticipated state)"
     );
     // num_cols = 25: the anticipated geometry's 27+K drops both K-only columns

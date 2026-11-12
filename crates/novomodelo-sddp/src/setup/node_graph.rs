@@ -367,9 +367,40 @@ pub struct NodeGraph {
     /// by a pool ordinal used as a stage: on a branching graph
     /// `pool_id != stage`. On a chain `pool_stage[t] == StageIdx(t)`.
     pub pool_stage: Vec<StageIdx>,
+    cut_levels: CutLevels,
+}
+
+/// CSR of the reverse-topological cut-sharing levels: level `i` is
+/// `nodes[offsets[i]..offsets[i + 1]]`.
+#[derive(Debug, Clone, Default)]
+struct CutLevels {
+    nodes: Vec<NodePos>,
+    offsets: Vec<usize>,
 }
 
 impl NodeGraph {
+    /// Assembles a graph and derives its backward cut levels from `nodes[].stage` and
+    /// `successors`, which must not change afterwards.
+    #[must_use]
+    pub fn new(
+        node_ids: TypedVec<NodePos, NodeId>,
+        nodes: TypedVec<NodePos, NodeRuntime>,
+        successors: TypedVec<NodePos, Vec<NodeSuccessor>>,
+        n_pools: usize,
+        pool_stage: Vec<StageIdx>,
+    ) -> Self {
+        let mut graph = Self {
+            node_ids,
+            nodes,
+            successors,
+            n_pools,
+            pool_stage,
+            cut_levels: CutLevels::default(),
+        };
+        graph.cut_levels = graph.derive_cut_levels();
+        graph
+    }
+
     /// Node → pool map, one entry per canonical node position
     /// (`nodes[i].pool_id`). The load-path basis reconstruction
     /// ([`build_basis_cache_from_checkpoint`](crate::build_basis_cache_from_checkpoint))
@@ -510,13 +541,13 @@ fn build_chain_node_graph(
         reason = "stage counts are far below i32::MAX"
     )]
     let node_ids: TypedVec<NodePos, NodeId> = (0..n_stages as i32).map(NodeId).collect();
-    NodeGraph {
+    NodeGraph::new(
         node_ids,
         nodes,
         successors,
-        n_pools: n_stages,
-        pool_stage: (0..n_stages).map(StageIdx).collect(),
-    }
+        n_stages,
+        (0..n_stages).map(StageIdx).collect(),
+    )
 }
 
 /// The chain dialect's departing-edge probability for stage index `t`, read
@@ -716,13 +747,9 @@ fn build_declared_node_graph(
         }
     }
 
-    Ok(NodeGraph {
-        node_ids,
-        nodes,
-        successors,
-        n_pools,
-        pool_stage,
-    })
+    Ok(NodeGraph::new(
+        node_ids, nodes, successors, n_pools, pool_stage,
+    ))
 }
 
 /// Flatten `successors` into `out`, canonical (ascending child node id) order,
@@ -787,24 +814,22 @@ impl NodeGraph {
             .unwrap_or(0)
     }
 
-    /// Reverse-topological cut-sharing levels as a CSR pair, both cleared first: level
-    /// `i` is `nodes[offsets[i]..offsets[i + 1]]`, so `offsets` holds one entry per level
-    /// plus a trailing bound. A level is the cut-generating nodes (those with at least one
-    /// successor — a leaf produces no cut) of one stage, levels descending by stage and
-    /// nodes ascending by canonical node position. Sibling subtrees at one level are
-    /// independent (nested per-node risk), so a level is one cut-sharing barrier. Absent
-    /// `nodes[]` every stage carries one such node, so each level holds exactly one node
-    /// (== that stage) and the sweep reduces to the reversed stage loop. A graph has no
-    /// more levels than nodes, so buffers reserved to `nodes.len()` and `nodes.len() + 1`
-    /// never grow.
-    pub(crate) fn backward_cut_levels_into(
-        &self,
-        nodes: &mut Vec<NodePos>,
-        offsets: &mut Vec<usize>,
-    ) {
-        nodes.clear();
-        offsets.clear();
-        offsets.push(0);
+    /// Reverse-topological cut-sharing levels. A level is the cut-generating nodes (those
+    /// with at least one successor — a leaf produces no cut) of one stage, levels
+    /// descending by stage and nodes ascending by canonical node position. Sibling subtrees
+    /// at one level are independent (nested per-node risk), so a level is one cut-sharing
+    /// barrier. Absent `nodes[]` every stage carries one such node, so each level holds
+    /// exactly one node (== that stage) and the sweep reduces to the reversed stage loop.
+    pub(crate) fn backward_cut_levels(&self) -> impl Iterator<Item = &[NodePos]> {
+        let CutLevels { nodes, offsets } = &self.cut_levels;
+        offsets.windows(2).map(|w| &nodes[w[0]..w[1]])
+    }
+
+    fn derive_cut_levels(&self) -> CutLevels {
+        let mut levels = CutLevels {
+            nodes: Vec::new(),
+            offsets: vec![0],
+        };
         let cut_generating = |pos: NodePos| !self.successors[pos].is_empty();
         let Some(max_stage) = self
             .nodes
@@ -813,21 +838,22 @@ impl NodeGraph {
             .map(|(_, n)| n.stage)
             .max()
         else {
-            return;
+            return levels;
         };
 
         for stage in (0..=max_stage.0).rev().map(StageIdx) {
-            let level_start = nodes.len();
-            nodes.extend(
+            let level_start = levels.nodes.len();
+            levels.nodes.extend(
                 self.nodes
                     .iter_indexed()
                     .filter(|&(pos, n)| n.stage == stage && cut_generating(pos))
                     .map(|(pos, _)| pos),
             );
-            if nodes.len() > level_start {
-                offsets.push(nodes.len());
+            if levels.nodes.len() > level_start {
+                levels.offsets.push(levels.nodes.len());
             }
         }
+        levels
     }
 }
 
@@ -2864,24 +2890,23 @@ mod tests {
     fn backward_cut_levels_chain_is_one_node_per_level_descending_stage() {
         let ng = chain_graph(4);
 
-        let (mut nodes, mut offsets) = (Vec::new(), Vec::new());
-        ng.backward_cut_levels_into(&mut nodes, &mut offsets);
         // The terminal leaf (stage 3) generates no cut; stages 2,1,0 each hold
         // exactly one cut-generating node, descending.
-        assert_eq!(nodes, [NodePos(2), NodePos(1), NodePos(0)]);
-        assert_eq!(offsets, [0, 1, 2, 3]);
+        let levels: Vec<&[NodePos]> = ng.backward_cut_levels().collect();
+        assert_eq!(
+            levels,
+            [&[NodePos(2)][..], &[NodePos(1)][..], &[NodePos(0)][..]]
+        );
     }
 
     #[test]
     fn backward_cut_levels_multi_node_level_is_ascending_node_id_descending_stage() {
         let ng = interior_fan_graph();
 
-        let (mut nodes, mut offsets) = (Vec::new(), Vec::new());
-        ng.backward_cut_levels_into(&mut nodes, &mut offsets);
         // Stage 1 (both interior nodes, ascending position) before stage 0.
-        assert_eq!(nodes, [NodePos(1), NodePos(2), NodePos(0)]);
-        assert_eq!(offsets, [0, 2, 3]);
-        for level in offsets.windows(2).map(|w| &nodes[w[0]..w[1]]) {
+        let levels: Vec<&[NodePos]> = ng.backward_cut_levels().collect();
+        assert_eq!(levels, [&[NodePos(1), NodePos(2)][..], &[NodePos(0)][..]]);
+        for level in levels {
             assert!(
                 level.windows(2).all(|w| w[0] < w[1]),
                 "each level's node positions must be strictly ascending"
@@ -2895,36 +2920,8 @@ mod tests {
     }
 
     #[test]
-    fn backward_cut_levels_into_refills_its_buffers_in_place() {
-        let fan = interior_fan_graph();
-        let allocation = |nodes: &Vec<NodePos>, offsets: &Vec<usize>| {
-            [
-                (nodes.as_ptr().addr(), nodes.capacity()),
-                (offsets.as_ptr().addr(), offsets.capacity()),
-            ]
-        };
-
-        let (mut nodes, mut offsets) = (Vec::new(), Vec::new());
-        fan.backward_cut_levels_into(&mut nodes, &mut offsets);
-        let (first_nodes, first_offsets) = (nodes.clone(), offsets.clone());
-        let first_allocation = allocation(&nodes, &offsets);
-        fan.backward_cut_levels_into(&mut nodes, &mut offsets);
-        assert_eq!(allocation(&nodes, &offsets), first_allocation);
-        assert_eq!((&nodes, &offsets), (&first_nodes, &first_offsets));
-
-        let (mut nodes, mut offsets) = (Vec::new(), Vec::new());
-        chain_graph(4).backward_cut_levels_into(&mut nodes, &mut offsets);
-        assert_eq!(offsets.len(), 4);
-        fan.backward_cut_levels_into(&mut nodes, &mut offsets);
-        assert_eq!((&nodes, &offsets), (&first_nodes, &first_offsets));
-    }
-
-    #[test]
-    fn backward_cut_levels_into_a_graph_without_a_cut_generating_node_is_empty() {
-        let (mut nodes, mut offsets) = (vec![NodePos(0)], vec![0, 1]);
-        chain_graph(1).backward_cut_levels_into(&mut nodes, &mut offsets);
-        assert!(nodes.is_empty());
-        assert_eq!(offsets, [0]);
+    fn backward_cut_levels_of_a_graph_without_a_cut_generating_node_is_empty() {
+        assert_eq!(chain_graph(1).backward_cut_levels().count(), 0);
     }
 
     /// `Σ_leaf π(leaf)·|Ω_leaf| == enumerated_scenario_count(graph)` — the
@@ -3145,8 +3142,8 @@ mod tests {
             child: NodePos(child),
             probability: 0.5,
         };
-        let ng = NodeGraph {
-            node_ids: vec![
+        let ng = NodeGraph::new(
+            vec![
                 NodeId(10),
                 NodeId(20),
                 NodeId(21),
@@ -3155,7 +3152,7 @@ mod tests {
                 NodeId(32),
             ]
             .into(),
-            nodes: vec![
+            vec![
                 node(0, 2),
                 node(1, 0),
                 node(1, 1),
@@ -3164,7 +3161,7 @@ mod tests {
                 node(2, 3),
             ]
             .into(),
-            successors: vec![
+            vec![
                 vec![edge(1), edge(2)],
                 vec![edge(3), edge(4)],
                 vec![edge(5)],
@@ -3173,9 +3170,9 @@ mod tests {
                 Vec::new(),
             ]
             .into(),
-            n_pools: 4,
-            pool_stage: vec![StageIdx(1), StageIdx(1), StageIdx(0), StageIdx(2)],
-        };
+            4,
+            vec![StageIdx(1), StageIdx(1), StageIdx(0), StageIdx(2)],
+        );
 
         assert_eq!(ng.sole_pool_owner(0), Some(NodeId(20)));
         assert_eq!(ng.sole_pool_owner(1), Some(NodeId(21)));

@@ -124,7 +124,6 @@ pub(crate) fn encode_lp_facts(templates: &[StageTemplate], groups: &mut FactGrou
             objective,
             row_lower,
             row_upper,
-            n_state,
             col_scale,
             row_scale,
         } = template;
@@ -133,7 +132,6 @@ pub(crate) fn encode_lp_facts(templates: &[StageTemplate], groups: &mut FactGrou
         put_usize(dims, stage);
         put_usize(dims, *num_cols);
         put_usize(dims, *num_rows);
-        put_usize(dims, *n_state);
 
         let sparsity = group(groups, "lp.sparsity");
         put_usize(sparsity, stage);

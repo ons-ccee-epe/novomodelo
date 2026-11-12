@@ -2734,8 +2734,8 @@ mod tests {
             child: NodePos(child),
             probability: 0.5,
         };
-        NodeGraph {
-            node_ids: vec![
+        NodeGraph::new(
+            vec![
                 NodeId(0),
                 NodeId(1),
                 NodeId(2),
@@ -2745,7 +2745,7 @@ mod tests {
                 NodeId(6),
             ]
             .into(),
-            nodes: vec![
+            vec![
                 node(0, 0),
                 node(1, 1),
                 node(1, 2),
@@ -2755,7 +2755,7 @@ mod tests {
                 node(2, 3),
             ]
             .into(),
-            successors: vec![
+            vec![
                 vec![edge(1), edge(2)],
                 vec![edge(3), edge(4)],
                 vec![edge(5), edge(6)],
@@ -2765,9 +2765,9 @@ mod tests {
                 Vec::new(),
             ]
             .into(),
-            n_pools: 4,
-            pool_stage: vec![StageIdx(0), StageIdx(1), StageIdx(1), StageIdx(2)],
-        }
+            4,
+            vec![StageIdx(0), StageIdx(1), StageIdx(1), StageIdx(2)],
+        )
     }
 
     /// A degenerate one-node-per-stage chain: `pool_stage[t] == StageIdx(t)`.
@@ -2778,16 +2778,16 @@ mod tests {
             len: 1,
             q: 1.0,
         };
-        NodeGraph {
-            node_ids: (0..n_stages as i32).map(NodeId).collect(),
-            nodes: (0..n_stages)
+        NodeGraph::new(
+            (0..n_stages as i32).map(NodeId).collect(),
+            (0..n_stages)
                 .map(|t| NodeRuntime {
                     stage: StageIdx(t),
                     pool_id: t,
                     openings: opening,
                 })
                 .collect(),
-            successors: (0..n_stages)
+            (0..n_stages)
                 .map(|t| {
                     if t + 1 < n_stages {
                         vec![NodeSuccessor {
@@ -2799,9 +2799,9 @@ mod tests {
                     }
                 })
                 .collect(),
-            n_pools: n_stages,
-            pool_stage: (0..n_stages).map(StageIdx).collect(),
-        }
+            n_stages,
+            (0..n_stages).map(StageIdx).collect(),
+        )
     }
 
     /// A one-slot manifest tagging `pool_id` into `entity_id`, so a payload's
@@ -3221,9 +3221,9 @@ mod tests {
         };
         use crate::cut::FutureCostFunction;
 
-        let node_graph = NodeGraph {
-            node_ids: vec![NodeId(0)].into(),
-            nodes: vec![NodeRuntime {
+        let node_graph = NodeGraph::new(
+            vec![NodeId(0)].into(),
+            vec![NodeRuntime {
                 stage: StageIdx(5),
                 pool_id: 0,
                 openings: NodeOpenings {
@@ -3234,10 +3234,10 @@ mod tests {
                 },
             }]
             .into(),
-            successors: vec![Vec::new()].into(),
-            n_pools: 1,
-            pool_stage: vec![StageIdx(5)],
-        };
+            vec![Vec::new()].into(),
+            1,
+            vec![StageIdx(5)],
+        );
         let fcf = FutureCostFunction::new(1, 1, 1, 10, &[0]);
         let stage_records = build_stage_cut_records(&fcf, BindingCounters::Omitted).unwrap();
         let stage_manifests: Vec<Vec<EntitySlot>> = vec![Vec::new(); 1];

@@ -21,12 +21,9 @@
 //!
 //! ## Patch sequence
 //!
-//! Each forward-pass solve writes the row buffer (load balance when
-//! `n_load_buses > 0`, the realized-inflow shift) via `fill_load_patches` /
-//! `fill_inflow_shift_patches`, and the column buffer (incoming storage,
-//! travel-time buckets, anticipated state) via `fill_col_state_patches`.
-//! The backward pass writes only the column buffer; noise comes from the fixed
-//! opening tree through `fill_inflow_shift_patches` with the opening-specific vector.
+//! Every solve writes the row buffer (`fill_load_patches`, then
+//! `fill_inflow_shift_patches`) in `StageSolvePrep::patch_opening` and the column
+//! buffer (`fill_col_state_patches`) in `StageSolvePrep::pin_and_bracket`.
 //!
 //! ## Commissioning window
 //!

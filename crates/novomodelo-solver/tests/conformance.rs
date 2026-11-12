@@ -44,7 +44,6 @@ fn make_fixture_stage_template() -> StageTemplate {
         objective: vec![0.0, 1.0, 50.0],
         row_lower: vec![6.0, 14.0],
         row_upper: vec![6.0, 14.0],
-        n_state: 1,
         col_scale: Vec::new(),
         row_scale: Vec::new(),
     }
@@ -146,7 +145,6 @@ fn test_fixture_stage_template_data() {
     assert_eq!(t.objective, vec![0.0, 1.0, 50.0]);
     assert_eq!(t.row_lower, vec![6.0, 14.0]);
     assert_eq!(t.row_upper, vec![6.0, 14.0]);
-    assert_eq!(t.n_state, 1);
 }
 
 #[test]
@@ -287,7 +285,6 @@ fn make_range_push_template() -> StageTemplate {
         objective: vec![-1.0, 1.0, 1.0],
         row_lower: vec![1.0, 1.0, 1.0],
         row_upper: vec![2.0, f64::INFINITY, f64::INFINITY],
-        n_state: 0,
         col_scale: Vec::new(),
         row_scale: Vec::new(),
     }
@@ -500,7 +497,6 @@ fn make_warm_push_template() -> StageTemplate {
         objective: vec![0.3, 1.7, 0.9, 1.0],
         row_lower,
         row_upper,
-        n_state: 0,
         col_scale: Vec::new(),
         row_scale: Vec::new(),
     }
@@ -1097,7 +1093,6 @@ fn test_solver_highs_solve_infeasible() {
         objective: vec![1.0],
         row_lower: vec![],
         row_upper: vec![],
-        n_state: 1,
         col_scale: Vec::new(),
         row_scale: Vec::new(),
     };
@@ -1151,7 +1146,6 @@ fn test_solver_highs_solve_unbounded() {
         objective: vec![-1.0],
         row_lower: vec![],
         row_upper: vec![],
-        n_state: 1,
         col_scale: Vec::new(),
         row_scale: Vec::new(),
     };
@@ -1211,7 +1205,6 @@ fn make_larger_lp_template() -> StageTemplate {
         objective: vec![1.0, 1.0, 1.0, 1.0, 1.0],
         row_lower: vec![10.0, 8.0, 6.0, 4.0],
         row_upper: vec![f64::INFINITY, f64::INFINITY, f64::INFINITY, f64::INFINITY],
-        n_state: 1,
         col_scale: Vec::new(),
         row_scale: Vec::new(),
     }
@@ -1360,7 +1353,6 @@ fn test_solver_highs_infeasible_with_rows() {
         objective: vec![1.0, 1.0],
         row_lower: vec![10.0, f64::NEG_INFINITY],
         row_upper: vec![f64::INFINITY, 5.0],
-        n_state: 1,
         col_scale: Vec::new(),
         row_scale: Vec::new(),
     };
@@ -1396,7 +1388,6 @@ fn test_solver_highs_infeasible_with_presolve() {
         objective: vec![1.0, 1.0],
         row_lower: vec![10.0, f64::NEG_INFINITY],
         row_upper: vec![f64::INFINITY, 5.0],
-        n_state: 1,
         col_scale: Vec::new(),
         row_scale: Vec::new(),
     };
@@ -1443,7 +1434,6 @@ fn test_solver_highs_unbounded_with_primal_ray() {
         objective: vec![0.0, -1.0],
         row_lower: vec![f64::NEG_INFINITY],
         row_upper: vec![10.0],
-        n_state: 1,
         col_scale: Vec::new(),
         row_scale: Vec::new(),
     };
@@ -1489,7 +1479,6 @@ fn test_solver_highs_unbounded_or_infeasible() {
         objective: vec![0.0, -1.0],
         row_lower: vec![10.0, f64::NEG_INFINITY],
         row_upper: vec![f64::INFINITY, 5.0],
-        n_state: 1,
         col_scale: Vec::new(),
         row_scale: Vec::new(),
     };

@@ -46,7 +46,6 @@ mod tests {
             objective: vec![1.0, 1.0],
             row_lower: vec![],
             row_upper: vec![],
-            n_state: 0,
             col_scale: vec![],
             row_scale: vec![],
         }

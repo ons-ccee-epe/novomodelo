@@ -1169,7 +1169,6 @@ mod determinism {
             objective,
             row_lower: vec![0.0; num_rows],
             row_upper: vec![0.0; num_rows],
-            n_state: 3,
             col_scale: Vec::new(),
             row_scale: Vec::new(),
         }

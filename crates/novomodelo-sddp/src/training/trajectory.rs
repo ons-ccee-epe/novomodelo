@@ -16,7 +16,7 @@
 //!
 //! [`FutureCostFunction`]: crate::cut::fcf::FutureCostFunction
 
-use crate::setup::NodeId;
+use crate::{setup::NodeId, workspace::workspace::reserve_to};
 
 /// One local trial's stage cost, visited node and end-of-stage state at one stage.
 #[derive(Debug, Clone, Default)]
@@ -46,7 +46,7 @@ pub(crate) struct FrozenBrackets {
 impl FrozenBrackets {
     /// Grows capacity to `rows`; never shrinks it. Runs at freeze, off the hot path.
     pub(crate) fn reserve(&mut self, rows: usize) {
-        self.values.reserve(rows.saturating_sub(self.values.len()));
+        reserve_to(&mut self.values, rows);
     }
 
     /// Overwrites the slab with `brackets`; allocation-free within the reserved capacity.

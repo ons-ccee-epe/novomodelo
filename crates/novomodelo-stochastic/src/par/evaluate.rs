@@ -151,8 +151,8 @@ fn add_noise_term_at(conditional_mean: f64, noise_term: f64) -> f64 {
 /// `lag_matrix` is flat, length `max_order * n_series`, indexed as
 /// `[lag * n_series + element]` (lag 0 = lag-1 value, contiguous across elements).
 ///
-/// Bit-identical to [`evaluate_par_conditional_mean_batch`] followed by
-/// [`add_par_noise_batch`].
+/// Bit-identical to [`evaluate_par_conditional_mean_batch`] and
+/// [`evaluate_par_noise_term_batch`] followed by [`add_noise_term_batch`].
 ///
 /// # Examples
 ///
@@ -244,7 +244,7 @@ pub fn evaluate_par_conditional_mean_batch(
 
 /// Evaluate the PAR(p) noise term `w_h = sigma_h * eta_h` for all series elements
 /// at `stage`, writing into `output` without allocating. The product is rounded
-/// once and is the same value [`add_par_noise_batch`] adds.
+/// once and is the same value [`evaluate_par_batch`] adds.
 pub fn evaluate_par_noise_term_batch(
     par_lp: &PrecomputedPar,
     stage: usize,
@@ -260,44 +260,13 @@ pub fn evaluate_par_noise_term_batch(
     }
 }
 
-/// Add the PAR(p) noise term to a conditional mean for all series elements at
-/// `stage`, writing `z_h = conditional_mean[h] + sigma_h * eta_h` into `output`
-/// without allocating.
-///
-/// With `conditional_mean` from [`evaluate_par_conditional_mean_batch`], `output`
-/// equals [`evaluate_par_batch`] bit for bit. The product `sigma_h * eta_h` is
-/// rounded before the addition, exactly as in [`evaluate_par_noise_term_batch`].
-pub fn add_par_noise_batch(
-    par_lp: &PrecomputedPar,
-    stage: usize,
-    conditional_mean: &[f64],
-    noise: &[f64],
-    output: &mut [f64],
-) {
-    let n_series = par_lp.n_hydros();
-    debug_assert_eq!(
-        conditional_mean.len(),
-        n_series,
-        "conditional_mean.len() must equal n_series"
-    );
-    debug_assert_eq!(noise.len(), n_series, "noise.len() must equal n_series");
-    debug_assert_eq!(output.len(), n_series, "output.len() must equal n_series");
-
-    for h in 0..n_series {
-        output[h] = add_noise_term_at(
-            conditional_mean[h],
-            noise_term_at(par_lp, stage, h, noise[h]),
-        );
-    }
-}
-
 /// Add a noise term to a conditional mean element-wise, writing
 /// `output[h] = conditional_mean[h] + noise_term[h]` without allocating. Each
 /// element is one rounded addition (no fused multiply-add).
 ///
 /// With `conditional_mean` from [`evaluate_par_conditional_mean_batch`] and
 /// `noise_term` from [`evaluate_par_noise_term_batch`], `output` equals
-/// [`add_par_noise_batch`] bit for bit.
+/// [`evaluate_par_batch`] bit for bit.
 ///
 /// # Panics
 ///
@@ -458,7 +427,7 @@ mod tests {
     use rand::RngExt;
 
     use super::{
-        add_noise_term_batch, add_par_noise_batch, evaluate_par, evaluate_par_batch,
+        add_noise_term_batch, evaluate_par, evaluate_par_batch,
         evaluate_par_conditional_mean_batch, evaluate_par_inflow, evaluate_par_inflows,
         evaluate_par_noise_term_batch, solve_par_noise,
     };
@@ -991,7 +960,7 @@ mod tests {
         let mut z = [f64::NAN; 2];
         evaluate_par_conditional_mean_batch(par_lp, 0, lags, &mut p);
         evaluate_par_noise_term_batch(par_lp, 0, noise, &mut w);
-        add_par_noise_batch(par_lp, 0, &p, noise, &mut z);
+        add_noise_term_batch(&p, &w, &mut z);
         [p, w, z]
     }
 
@@ -1116,7 +1085,7 @@ mod tests {
             evaluate_par_conditional_mean_batch(&par_lp, 0, &lags, &mut mean);
             evaluate_par_noise_term_batch(&par_lp, 0, &noise, &mut term);
             add_noise_term_batch(&mean, &term, &mut added);
-            add_par_noise_batch(&par_lp, 0, &mean, &noise, &mut fused);
+            evaluate_par_batch(&par_lp, 0, &lags, &noise, &mut fused);
 
             assert_eq!(bits(&added), bits(&fused), "draw {draw}");
         }

@@ -74,7 +74,7 @@ mod test_mpi_basis_broadcast_large_len {
     fn comm_error_invalid_buffer_size_roundtrip() {
         let actual = (i32::MAX as usize) + 1;
         let expected = i32::MAX as usize;
-        let operation = "broadcast_basis_cache_i32";
+        let operation = "broadcast_basis_cache";
 
         let comm_err = CommError::InvalidBufferSize {
             operation,
@@ -99,10 +99,7 @@ mod test_mpi_basis_broadcast_large_len {
                     i32::MAX as usize,
                     "expected must equal i32::MAX as usize"
                 );
-                assert_eq!(
-                    op, "broadcast_basis_cache_i32",
-                    "operation string must match"
-                );
+                assert_eq!(op, "broadcast_basis_cache", "operation string must match");
             }
             other => panic!(
                 "expected SddpError::Communication(CommError::InvalidBufferSize {{ .. }}), got: \
@@ -117,7 +114,7 @@ mod test_mpi_basis_broadcast_large_len {
         let expected = i32::MAX as usize;
 
         let err = CommError::InvalidBufferSize {
-            operation: "broadcast_basis_cache_i32",
+            operation: "broadcast_basis_cache",
             expected,
             actual,
         };
@@ -1414,7 +1411,6 @@ mod by_node_scratch {
             objective: vec![0.0, 0.0, 0.0, 1.0],
             row_lower: vec![0.0, 0.0],
             row_upper: vec![0.0, 0.0],
-            n_state: 1,
             col_scale: Vec::new(),
             row_scale: Vec::new(),
         }

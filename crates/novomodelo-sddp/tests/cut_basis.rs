@@ -778,12 +778,6 @@ mod cut_subgradient_parity {
 
         let template = &result.templates[0];
 
-        // Guards the hardcoded COL_STORAGE_IN: storage_in.start = N + B + S = 1.
-        assert_eq!(
-            template.n_state, 1,
-            "N=1, L=0: n_state must be 1 (storage only, no lags)"
-        );
-
         let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
         solver.load_model(template);
 

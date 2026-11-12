@@ -158,7 +158,6 @@ fn minimal_template() -> StageTemplate {
         objective: vec![1.0],
         row_lower: vec![],
         row_upper: vec![],
-        n_state: 0,
         col_scale: Vec::new(),
         row_scale: Vec::new(),
     }

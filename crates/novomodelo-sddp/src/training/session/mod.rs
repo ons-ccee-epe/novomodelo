@@ -40,8 +40,7 @@ use crate::{
     cut_sync::CutSyncBuffers,
     forward::{ForwardBound, ForwardResult, SyncResult, sync_forward},
     forward_pass_state::{ForwardPassInputs, ForwardPassState},
-    lower_bound::LbEvalScratchBundle,
-    lower_bound::evaluate_lower_bound,
+    lower_bound::{LbEvalScratchBundle, evaluate_lower_bound, lb_root_pool},
     policy::orchestration::CheckpointState,
     rank_reconcile::{StopInputs, agree_stop_inputs, reconcile_error_flag, reconcile_result},
     risk_measure::{RiskMeasure, uniform_effective_measure},
@@ -255,20 +254,15 @@ where
             .unwrap_or(0);
         fwd_pool.resize_scratch_bases(max_cols, max_rows);
 
-        // The per-worker cut scratch (the DCS scratch and the cut-row buffers)
-        // is shared per worker, not per pool, so it must cover the LARGEST pool
-        // a worker's sweep may touch (same `max_pool_capacity` the per-slot
-        // backward buffers size from).
         fwd_pool.reserve_backward_scratch(
             training_ctx,
             sizing,
-            max_pool_capacity,
             &solver_profiles.backward_scheduler,
         );
 
         // Sized for max local forward passes so scenario indices stay stable
         // across iterations, which leaves spare rows on a rank holding fewer:
-        // the passes split only `my_actual_fwd` of them (`split_workers_mut`).
+        // the passes split only `my_actual_fwd` of them (`split_workers_into`).
         // The second axis is the node count (== num_stages on the chain) so the
         // backward warm-start keys by successor node position.
         let basis_store = BasisStore::new(ranks.max_local_fwd, training_ctx.node_graph.nodes.len());
@@ -346,7 +340,7 @@ where
 
         let mut results = TrainingResults::new(config.loop_config.start_iteration);
 
-        let scratch = IterationScratch::new(
+        let mut scratch = IterationScratch::new(
             ranks.max_local_fwd,
             &training_ctx.node_graph.pool_stage,
             fcf.pools[lb_root_pool(training_ctx.node_graph)?].capacity,
@@ -410,16 +404,18 @@ where
         bwd_state.set_binding_tracking(config.cut_management.tracks_binding_activity());
         #[cfg(any(test, feature = "test-support"))]
         bwd_state.set_solve_cache_bypass(solver_profiles.bypass_solve_caches);
-        bwd_state.reserve_by_node_aggregate(training_ctx.cut_state_layouts, max_pool_capacity);
-        bwd_state.reserve_stage_noise(
-            training_ctx.stochastic.class_dimensions().total(),
-            max_pool_capacity,
-        );
+        reserve_for_pool_capacity(
+            &mut fwd_pool,
+            &mut bwd_state,
+            &mut scratch,
+            training_ctx,
+            sizing,
+            fcf,
+        )?;
         bwd_state.reserve_stage_stats(training_ctx.node_graph);
-        bwd_state.reserve_cut_levels(training_ctx.node_graph);
         results
             .solver_stats_log
-            .reserve(num_stages + bwd_state.stage_stats_entry_bound() + 1);
+            .reserve(iteration_stats_entries(num_stages, &bwd_state));
 
         Ok(Self {
             solver,
@@ -698,21 +694,15 @@ where
             self.training_ctx.node_graph,
             self.training_ctx.horizon.num_stages(),
         );
-        // Growth-only: a pool `grow_pools_for_next_iteration` just grew may now
-        // exceed what the per-worker cut scratch covers; re-reserve before the
-        // next sweep touches it (never inside the sweep itself).
-        let max_pool_capacity = self.fcf.pools.iter().map(|p| p.capacity).max().unwrap_or(0);
-        self.fwd_pool
-            .reserve_pool_scratch(self.training_ctx, self.sizing, max_pool_capacity);
-        self.bwd_state
-            .reserve_by_node_aggregate(self.training_ctx.cut_state_layouts, max_pool_capacity);
-        self.bwd_state.reserve_stage_noise(
-            self.training_ctx.stochastic.class_dimensions().total(),
-            max_pool_capacity,
-        );
-        self.scratch.reserve_lb_cut_scratch(
-            self.fcf.pools[lb_root_pool(self.training_ctx.node_graph)?].capacity,
-        );
+        // Never inside the sweep itself: re-reserve before the next sweep touches it.
+        reserve_for_pool_capacity(
+            &mut self.fwd_pool,
+            &mut self.bwd_state,
+            &mut self.scratch,
+            self.training_ctx,
+            self.sizing,
+            self.fcf,
+        )?;
         let node_graph = self.training_ctx.node_graph;
         let (stage_ctx, pools) = (self.stage_ctx, &self.fcf.pools);
         let forward_passes = self.config.loop_config.forward_passes;
@@ -739,7 +729,7 @@ where
         self.bwd_state.reserve_successor_slots(successor_slots);
         // This iteration's lower-bound entry is still to come, then one full iteration.
         let next_iteration =
-            self.training_ctx.horizon.num_stages() + self.bwd_state.stage_stats_entry_bound() + 1;
+            iteration_stats_entries(self.training_ctx.horizon.num_stages(), &self.bwd_state);
         self.results.solver_stats_log.reserve(1 + next_iteration);
         Ok(())
     }
@@ -1603,14 +1593,40 @@ pub(crate) fn interior_cut_nodes(node_graph: &NodeGraph) -> Vec<NodePos> {
         .collect()
 }
 
-/// The pool of the lower bound's LP, the root's stage-0 node. Resolved by STAGE,
-/// never by array position: `nodes[0]` is the smallest-id node, not necessarily
-/// the root, so `fcf.pools[0]` could under-size the root's buffers.
-fn lb_root_pool(node_graph: &NodeGraph) -> Result<usize, SddpError> {
-    let root = node_graph.frontier_node(StageIdx(0)).ok_or_else(|| {
-        SddpError::Validation("training session: stage 0 carries no alive node".to_string())
-    })?;
-    Ok(node_graph.nodes[root].pool_id)
+/// Solver-statistics log entries one iteration appends: a forward entry per stage, the
+/// backward stage statistics at their bound, and the lower bound's.
+fn iteration_stats_entries(num_stages: usize, bwd_state: &BackwardPassState) -> usize {
+    num_stages + bwd_state.stage_stats_entry_bound() + 1
+}
+
+/// Grows every buffer sized from the resident pools' capacity, growth-only: the per-worker
+/// cut scratch and the per-node aggregate and noise tables, which cover the LARGEST pool a
+/// sweep may touch (a worker's scratch is shared across pools, not per pool), and the lower
+/// bound's cut rows, which cover the root's pool. The one owner of these reservations: the
+/// session calls it at construction and again after the pools grow.
+///
+/// # Errors
+///
+/// Propagates the [`lb_root_pool`] error.
+fn reserve_for_pool_capacity<S: SolverInterface + Send>(
+    fwd_pool: &mut WorkspacePool<S>,
+    bwd_state: &mut BackwardPassState,
+    scratch: &mut IterationScratch,
+    training_ctx: &TrainingContext<'_>,
+    sizing: WorkspaceSizing,
+    fcf: &FutureCostFunction,
+) -> Result<(), SddpError> {
+    let max_pool_capacity = fcf.pools.iter().map(|p| p.capacity).max().unwrap_or(0);
+    fwd_pool.reserve_pool_scratch(training_ctx, sizing, max_pool_capacity);
+    bwd_state.reserve_by_node_aggregate(training_ctx.cut_state_layouts, max_pool_capacity);
+    bwd_state.reserve_stage_noise(
+        training_ctx.stochastic.class_dimensions().total(),
+        max_pool_capacity,
+    );
+    scratch
+        .lb_noise_scratch
+        .reserve_cut_rows(fcf.pools[lb_root_pool(training_ctx.node_graph)?].capacity);
+    Ok(())
 }
 
 /// The study's root when it generates cuts: stage 0 with a successor.
@@ -1766,7 +1782,7 @@ mod tests {
 
     // ── Shared helpers (mirrors training.rs test helpers) ──────────────────
 
-    fn minimal_template(_n_state: usize) -> StageTemplate {
+    fn minimal_template() -> StageTemplate {
         StageTemplate {
             num_cols: 4,
             num_rows: 2,
@@ -1779,7 +1795,6 @@ mod tests {
             objective: vec![0.0, 0.0, 0.0, 1.0],
             row_lower: vec![0.0, 0.0],
             row_upper: vec![0.0, 0.0],
-            n_state: 1,
             col_scale: Vec::new(),
             row_scale: Vec::new(),
         }
@@ -2262,7 +2277,7 @@ mod tests {
     fn training_session_new_preallocates_all_buffers() {
         let n_stages = 2;
         let state = test_support::state_layout(1, 0);
-        let templates = vec![minimal_template(state.n_state); n_stages];
+        let templates = vec![minimal_template(); n_stages];
         let initial_state = vec![0.0_f64; state.n_state];
         let stochastic = make_stochastic_context(n_stages, 1);
         let stages = make_stages(n_stages);
@@ -2274,7 +2289,7 @@ mod tests {
         let mut solver = MockSolver::with_fixed(100.0);
         let comm = StubComm;
         let block_counts = vec![1usize; n_stages];
-        let state_boxes = permissive_state_boxes(templates[0].n_state, n_stages);
+        let state_boxes = permissive_state_boxes(state.n_state, n_stages);
         let geometry = equipment_free_geometry(&block_counts);
         let fixture = make_stage_ctx(&templates, &geometry, &state_boxes);
         let stage_ctx = fixture.ctx();
@@ -2342,7 +2357,7 @@ mod tests {
     fn per_iteration_freeze_skips_terminal_pool_but_rebakes_others() {
         let n_stages = 2;
         let state = test_support::state_layout(1, 0);
-        let templates = vec![minimal_template(state.n_state); n_stages];
+        let templates = vec![minimal_template(); n_stages];
         let initial_state = vec![0.0_f64; state.n_state];
         let stochastic = make_stochastic_context(n_stages, 1);
         let stages = make_stages(n_stages);
@@ -2357,7 +2372,7 @@ mod tests {
         let mut solver = MockSolver::with_fixed(100.0);
         let comm = StubComm;
         let block_counts = vec![1usize; n_stages];
-        let state_boxes = permissive_state_boxes(templates[0].n_state, n_stages);
+        let state_boxes = permissive_state_boxes(state.n_state, n_stages);
         let geometry = equipment_free_geometry(&block_counts);
         let fixture = make_stage_ctx(&templates, &geometry, &state_boxes);
         let stage_ctx = fixture.ctx();
@@ -2433,7 +2448,7 @@ mod tests {
     fn budget_caps_only_interior_pools_and_templates_match_their_pools() {
         let n_stages = 3;
         let state = test_support::state_layout(1, 0);
-        let templates = vec![minimal_template(state.n_state); n_stages];
+        let templates = vec![minimal_template(); n_stages];
         let initial_state = vec![0.0_f64; state.n_state];
         let stochastic = make_stochastic_context(n_stages, 1);
         let stages = make_stages(n_stages);
@@ -2463,7 +2478,7 @@ mod tests {
         let mut solver = MockSolver::with_fixed(100.0);
         let comm = StubComm;
         let block_counts = vec![1usize; n_stages];
-        let state_boxes = permissive_state_boxes(templates[0].n_state, n_stages);
+        let state_boxes = permissive_state_boxes(state.n_state, n_stages);
         let geometry = equipment_free_geometry(&block_counts);
         let fixture = make_stage_ctx(&templates, &geometry, &state_boxes);
         let stage_ctx = fixture.ctx();
@@ -2523,7 +2538,7 @@ mod tests {
         const CAP: u32 = 1;
         let n_stages = 3;
         let state = test_support::state_layout(1, 0);
-        let templates = vec![minimal_template(state.n_state); n_stages];
+        let templates = vec![minimal_template(); n_stages];
         let initial_state = vec![0.0_f64; state.n_state];
         let stochastic = make_stochastic_context(n_stages, 1);
         let stages = make_stages(n_stages);
@@ -2555,7 +2570,7 @@ mod tests {
         let mut solver = MockSolver::with_fixed(100.0);
         let comm = StubComm;
         let block_counts = vec![1usize; n_stages];
-        let state_boxes = permissive_state_boxes(templates[0].n_state, n_stages);
+        let state_boxes = permissive_state_boxes(state.n_state, n_stages);
         let geometry = equipment_free_geometry(&block_counts);
         let fixture = make_stage_ctx(&templates, &geometry, &state_boxes);
         let stage_ctx = fixture.ctx();
@@ -2636,7 +2651,7 @@ mod tests {
     fn training_session_finalize_emits_training_finished() {
         let n_stages = 2;
         let state = test_support::state_layout(1, 0);
-        let templates = vec![minimal_template(state.n_state); n_stages];
+        let templates = vec![minimal_template(); n_stages];
         let initial_state = vec![0.0_f64; state.n_state];
         let stochastic = make_stochastic_context(n_stages, 1);
         let stages = make_stages(n_stages);
@@ -2652,7 +2667,7 @@ mod tests {
         let mut solver = MockSolver::with_fixed(100.0);
         let comm = StubComm;
         let block_counts = vec![1usize; n_stages];
-        let state_boxes = permissive_state_boxes(templates[0].n_state, n_stages);
+        let state_boxes = permissive_state_boxes(state.n_state, n_stages);
         let geometry = equipment_free_geometry(&block_counts);
         let fixture = make_stage_ctx(&templates, &geometry, &state_boxes);
         let stage_ctx = fixture.ctx();
@@ -2704,7 +2719,7 @@ mod tests {
     fn training_session_finalize_with_error_emits_training_finished_with_error_reason() {
         let n_stages = 2;
         let state = test_support::state_layout(1, 0);
-        let templates = vec![minimal_template(state.n_state); n_stages];
+        let templates = vec![minimal_template(); n_stages];
         let initial_state = vec![0.0_f64; state.n_state];
         let stochastic = make_stochastic_context(n_stages, 1);
         let stages = make_stages(n_stages);
@@ -2720,7 +2735,7 @@ mod tests {
         let mut solver = MockSolver::with_fixed(100.0);
         let comm = StubComm;
         let block_counts = vec![1usize; n_stages];
-        let state_boxes = permissive_state_boxes(templates[0].n_state, n_stages);
+        let state_boxes = permissive_state_boxes(state.n_state, n_stages);
         let geometry = equipment_free_geometry(&block_counts);
         let fixture = make_stage_ctx(&templates, &geometry, &state_boxes);
         let stage_ctx = fixture.ctx();
@@ -2775,7 +2790,7 @@ mod tests {
     fn training_session_run_iteration_returns_continue_when_not_converged() {
         let n_stages = 2;
         let state = test_support::state_layout(1, 0);
-        let templates = vec![minimal_template(state.n_state); n_stages];
+        let templates = vec![minimal_template(); n_stages];
         let initial_state = vec![0.0_f64; state.n_state];
         let stochastic = make_stochastic_context(n_stages, 1);
         let stages = make_stages(n_stages);
@@ -2789,7 +2804,7 @@ mod tests {
         let mut solver = MockSolver::with_fixed(100.0);
         let comm = StubComm;
         let block_counts = vec![1usize; n_stages];
-        let state_boxes = permissive_state_boxes(templates[0].n_state, n_stages);
+        let state_boxes = permissive_state_boxes(state.n_state, n_stages);
         let geometry = equipment_free_geometry(&block_counts);
         let fixture = make_stage_ctx(&templates, &geometry, &state_boxes);
         let stage_ctx = fixture.ctx();
@@ -2835,7 +2850,7 @@ mod tests {
     fn training_session_run_iteration_returns_converged_when_gap_closes() {
         let n_stages = 2;
         let state = test_support::state_layout(1, 0);
-        let templates = vec![minimal_template(state.n_state); n_stages];
+        let templates = vec![minimal_template(); n_stages];
         let initial_state = vec![0.0_f64; state.n_state];
         let stochastic = make_stochastic_context(n_stages, 1);
         let stages = make_stages(n_stages);
@@ -2849,7 +2864,7 @@ mod tests {
         let mut solver = MockSolver::with_fixed(100.0);
         let comm = StubComm;
         let block_counts = vec![1usize; n_stages];
-        let state_boxes = permissive_state_boxes(templates[0].n_state, n_stages);
+        let state_boxes = permissive_state_boxes(state.n_state, n_stages);
         let geometry = equipment_free_geometry(&block_counts);
         let fixture = make_stage_ctx(&templates, &geometry, &state_boxes);
         let stage_ctx = fixture.ctx();
@@ -2910,7 +2925,7 @@ mod tests {
     fn training_session_run_iteration_emits_correct_event_sequence() {
         let n_stages = 2;
         let state = test_support::state_layout(1, 0);
-        let templates = vec![minimal_template(state.n_state); n_stages];
+        let templates = vec![minimal_template(); n_stages];
         let initial_state = vec![0.0_f64; state.n_state];
         let stochastic = make_stochastic_context(n_stages, 1);
         let stages = make_stages(n_stages);
@@ -2926,7 +2941,7 @@ mod tests {
         let mut solver = MockSolver::with_fixed(100.0);
         let comm = StubComm;
         let block_counts = vec![1usize; n_stages];
-        let state_boxes = permissive_state_boxes(templates[0].n_state, n_stages);
+        let state_boxes = permissive_state_boxes(state.n_state, n_stages);
         let geometry = equipment_free_geometry(&block_counts);
         let fixture = make_stage_ctx(&templates, &geometry, &state_boxes);
         let stage_ctx = fixture.ctx();
@@ -3189,10 +3204,10 @@ mod tests {
             child,
             probability: 1.0,
         };
-        let node_graph = NodeGraph {
-            node_ids: vec![NodeId(1), NodeId(2), NodeId(3), NodeId(7), NodeId(10)].into(),
-            nodes: vec![leaf(3), leaf(3), fan(0), fan(1), root].into(),
-            successors: vec![
+        let node_graph = NodeGraph::new(
+            vec![NodeId(1), NodeId(2), NodeId(3), NodeId(7), NodeId(10)].into(),
+            vec![leaf(3), leaf(3), fan(0), fan(1), root].into(),
+            vec![
                 Vec::new(),
                 Vec::new(),
                 vec![succ(NodePos(0))],
@@ -3200,11 +3215,11 @@ mod tests {
                 vec![succ(NodePos(2)), succ(NodePos(3))],
             ]
             .into(),
-            n_pools: 4,
-            pool_stage: vec![StageIdx(1), StageIdx(1), StageIdx(0), StageIdx(2)],
-        };
+            4,
+            vec![StageIdx(1), StageIdx(1), StageIdx(0), StageIdx(2)],
+        );
         let state = test_support::state_layout(1, 0);
-        let templates = vec![minimal_template(state.n_state); n_stages];
+        let templates = vec![minimal_template(); n_stages];
         let initial_state = vec![0.0_f64; state.n_state];
         let stochastic = make_stochastic_context(n_stages, 1);
         let stages = make_stages(n_stages);
@@ -3231,7 +3246,7 @@ mod tests {
         let mut solver = MockSolver::with_fixed(100.0);
         let comm = StubComm;
         let block_counts = vec![1usize; n_stages];
-        let state_boxes = permissive_state_boxes(templates[0].n_state, n_stages);
+        let state_boxes = permissive_state_boxes(state.n_state, n_stages);
         let geometry = equipment_free_geometry(&block_counts);
         let fixture = make_stage_ctx(&templates, &geometry, &state_boxes);
         let stage_ctx = fixture.ctx();
@@ -3308,7 +3323,7 @@ mod tests {
     fn seeded_rows<C: Communicator>(comm: &C, loaded: &LoadedPolicy) -> Vec<Vec<Option<Vec<u32>>>> {
         let n_stages = 2;
         let state = test_support::state_layout(1, 0);
-        let templates = vec![minimal_template(state.n_state); n_stages];
+        let templates = vec![minimal_template(); n_stages];
         let initial_state = vec![0.0_f64; state.n_state];
         let stochastic = make_stochastic_context(n_stages, 1);
         let stages = make_stages(n_stages);
@@ -3319,7 +3334,7 @@ mod tests {
         let config = make_config(3, 10, 1, n_stages);
         let mut solver = MockSolver::with_fixed(100.0);
         let block_counts = vec![1usize; n_stages];
-        let state_boxes = permissive_state_boxes(templates[0].n_state, n_stages);
+        let state_boxes = permissive_state_boxes(state.n_state, n_stages);
         let geometry = equipment_free_geometry(&block_counts);
         let fixture = make_stage_ctx(&templates, &geometry, &state_boxes);
         let stage_ctx = fixture.ctx();
@@ -3510,7 +3525,7 @@ mod tests {
     fn finalize_on(comm: &RecordingRank) -> Result<crate::TrainingOutcome, SddpError> {
         let n_stages = 2;
         let state = test_support::state_layout(1, 0);
-        let templates = vec![minimal_template(state.n_state); n_stages];
+        let templates = vec![minimal_template(); n_stages];
         let initial_state = vec![0.0_f64; state.n_state];
         let stochastic = make_stochastic_context(n_stages, 1);
         let stages = make_stages(n_stages);
@@ -3521,7 +3536,7 @@ mod tests {
         let config = make_config(3, 10, 1, n_stages);
         let mut solver = MockSolver::with_fixed(100.0);
         let block_counts = vec![1usize; n_stages];
-        let state_boxes = permissive_state_boxes(templates[0].n_state, n_stages);
+        let state_boxes = permissive_state_boxes(state.n_state, n_stages);
         let geometry = equipment_free_geometry(&block_counts);
         let fixture = make_stage_ctx(&templates, &geometry, &state_boxes);
         let stage_ctx = fixture.ctx();
@@ -3623,10 +3638,10 @@ mod tests {
             pool_id: 0,
             openings: gen_openings(),
         };
-        NodeGraph {
-            node_ids: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3), NodeId(4)].into(),
-            nodes: vec![root, branch(1), branch(2), leaf(3), leaf(3)].into(),
-            successors: vec![
+        NodeGraph::new(
+            vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3), NodeId(4)].into(),
+            vec![root, branch(1), branch(2), leaf(3), leaf(3)].into(),
+            vec![
                 vec![
                     NodeSuccessor {
                         child: NodePos(1),
@@ -3649,9 +3664,9 @@ mod tests {
                 Vec::new(),
             ]
             .into(),
-            n_pools: 4,
-            pool_stage: vec![StageIdx(0), StageIdx(1), StageIdx(1), StageIdx(2)],
-        }
+            4,
+            vec![StageIdx(0), StageIdx(1), StageIdx(1), StageIdx(2)],
+        )
     }
 
     /// Root → trunk → three leaves: every non-leaf node (root, trunk) lies on
@@ -3676,10 +3691,10 @@ mod tests {
             child,
             probability: 1.0 / 3.0,
         };
-        NodeGraph {
-            node_ids: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3), NodeId(4)].into(),
-            nodes: vec![root, trunk, leaf(), leaf(), leaf()].into(),
-            successors: vec![
+        NodeGraph::new(
+            vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3), NodeId(4)].into(),
+            vec![root, trunk, leaf(), leaf(), leaf()].into(),
+            vec![
                 vec![NodeSuccessor {
                     child: NodePos(1),
                     probability: 1.0,
@@ -3690,9 +3705,9 @@ mod tests {
                 Vec::new(),
             ]
             .into(),
-            n_pools: 3,
-            pool_stage: vec![StageIdx(0), StageIdx(1), StageIdx(2)],
-        }
+            3,
+            vec![StageIdx(0), StageIdx(1), StageIdx(2)],
+        )
     }
 
     /// World >= 2 enumerated training over an interior-branching graph is a
@@ -3703,7 +3718,7 @@ mod tests {
         let n_stages = 3;
         let node_graph = interior_branching_node_graph();
         let state = test_support::state_layout(1, 0);
-        let templates = vec![minimal_template(state.n_state); n_stages];
+        let templates = vec![minimal_template(); n_stages];
         let initial_state = vec![0.0_f64; state.n_state];
         let stochastic = make_stochastic_context(n_stages, 1);
         let stages = make_stages(n_stages);
@@ -3722,7 +3737,7 @@ mod tests {
         let mut solver = MockSolver::with_fixed(100.0);
         let comm = RankStub::of_two(0);
         let block_counts = vec![1usize; n_stages];
-        let state_boxes = permissive_state_boxes(templates[0].n_state, n_stages);
+        let state_boxes = permissive_state_boxes(state.n_state, n_stages);
         let geometry = equipment_free_geometry(&block_counts);
         let fixture = make_stage_ctx(&templates, &geometry, &state_boxes);
         let stage_ctx = fixture.ctx();
@@ -3782,7 +3797,7 @@ mod tests {
         let n_stages = 3;
         let node_graph = interior_branching_node_graph();
         let state = test_support::state_layout(1, 0);
-        let templates = vec![minimal_template(state.n_state); n_stages];
+        let templates = vec![minimal_template(); n_stages];
         let initial_state = vec![0.0_f64; state.n_state];
         let stochastic = make_stochastic_context(n_stages, 1);
         let stages = make_stages(n_stages);
@@ -3801,7 +3816,7 @@ mod tests {
         let mut solver = MockSolver::with_fixed(100.0);
         let comm = StubComm;
         let block_counts = vec![1usize; n_stages];
-        let state_boxes = permissive_state_boxes(templates[0].n_state, n_stages);
+        let state_boxes = permissive_state_boxes(state.n_state, n_stages);
         let geometry = equipment_free_geometry(&block_counts);
         let fixture = make_stage_ctx(&templates, &geometry, &state_boxes);
         let stage_ctx = fixture.ctx();
@@ -3840,7 +3855,7 @@ mod tests {
         let n_stages = 3;
         let node_graph = trunk_terminal_fan_node_graph();
         let state = test_support::state_layout(1, 0);
-        let templates = vec![minimal_template(state.n_state); n_stages];
+        let templates = vec![minimal_template(); n_stages];
         let initial_state = vec![0.0_f64; state.n_state];
         let stochastic = make_stochastic_context(n_stages, 1);
         let stages = make_stages(n_stages);
@@ -3859,7 +3874,7 @@ mod tests {
         let mut solver = MockSolver::with_fixed(100.0);
         let comm = RankStub::of_two(0);
         let block_counts = vec![1usize; n_stages];
-        let state_boxes = permissive_state_boxes(templates[0].n_state, n_stages);
+        let state_boxes = permissive_state_boxes(state.n_state, n_stages);
         let geometry = equipment_free_geometry(&block_counts);
         let fixture = make_stage_ctx(&templates, &geometry, &state_boxes);
         let stage_ctx = fixture.ctx();
@@ -4304,55 +4319,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    #[test]
-    fn the_backward_cut_levels_keep_their_buffers() {
-        let mut setup = test_support::k_fan_setup(2, 4, 4).setup;
-        let stage_ctx = setup.inputs.stage_ctx();
-        let training_ctx = setup.inputs.training_ctx();
-        let n_stages = training_ctx.horizon.num_stages();
-        let config = make_config(setup.loop_params.forward_passes, 4, 4, n_stages);
-        let mut solver = ActiveSolver::new().unwrap();
-        let mut session = TrainingSession::new(
-            &mut solver,
-            config,
-            &mut setup.fcf,
-            &stage_ctx,
-            &training_ctx,
-            &StubComm,
-            ActiveSolver::new,
-            Vec::new(),
-            SolverProfiles::default(),
-        )
-        .unwrap();
-        session.prime_frozen_templates();
-
-        let allocations = |session: &TrainingSession<'_, ActiveSolver, StubComm>| {
-            let (nodes, offsets) = session.bwd_state.cut_levels();
-            [vec_allocation(nodes), vec_allocation(offsets)]
-        };
-        let sized_at_construction = allocations(&session);
-        let _ = session.run_iteration(1).unwrap();
-        assert_eq!(
-            allocations(&session),
-            sized_at_construction,
-            "the first iteration moved a cut-level buffer sized at construction"
-        );
-        let _ = session.run_forward_phase(2).unwrap();
-
-        let before = allocations(&session);
-        let _ = session.run_backward_phase(2).unwrap();
-        assert_eq!(
-            allocations(&session),
-            before,
-            "the backward phase moved a cut-level buffer"
-        );
-        let (_, offsets) = session.bwd_state.cut_levels();
-        assert!(
-            offsets.windows(2).any(|w| w[1] - w[0] == 2),
-            "no level holds two nodes, so the multi-node level did not run through the buffers"
-        );
     }
 
     fn cut_count_buffer_allocations(

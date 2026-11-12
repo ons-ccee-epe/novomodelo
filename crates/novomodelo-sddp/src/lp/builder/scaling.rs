@@ -232,7 +232,6 @@ mod tests {
             row_upper,
             col_scale: Vec::new(),
             row_scale: Vec::new(),
-            n_state: 0,
         }
     }
 

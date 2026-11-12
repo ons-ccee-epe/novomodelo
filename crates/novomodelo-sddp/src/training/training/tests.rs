@@ -53,7 +53,7 @@ use crate::{
 ///
 /// Columns: `storage_out` (0), `storage_in` (1, one NZ at row 0, this mock's
 /// pin row), `theta` (2). One row.
-fn minimal_template(_n_state: usize) -> StageTemplate {
+fn minimal_template() -> StageTemplate {
     StageTemplate {
         num_cols: 3,
         num_rows: 1,
@@ -66,7 +66,6 @@ fn minimal_template(_n_state: usize) -> StageTemplate {
         objective: vec![0.0, 0.0, 1.0],
         row_lower: vec![0.0],
         row_upper: vec![0.0],
-        n_state: 1,
         col_scale: Vec::new(),
         row_scale: Vec::new(),
     }
@@ -396,7 +395,7 @@ fn iteration_limit_rules(limit: u64) -> StoppingRuleSet {
 fn ac_train_completes_with_iteration_limit() {
     let n_stages = 2;
     let state = test_support::state_layout(1, 0);
-    let templates = vec![minimal_template(state.n_state); n_stages];
+    let templates = vec![minimal_template(); n_stages];
     let initial_state = vec![0.0_f64; state.n_state];
     let stochastic = make_stochastic_context(n_stages, 1);
     let stages = make_stages(n_stages);
@@ -479,7 +478,7 @@ fn ac_train_completes_with_iteration_limit() {
 fn ac_train_returns_partial_on_infeasible() {
     let n_stages = 2;
     let state = test_support::state_layout(1, 0);
-    let templates = vec![minimal_template(state.n_state); n_stages];
+    let templates = vec![minimal_template(); n_stages];
     let initial_state = vec![0.0_f64; state.n_state];
     let stochastic = make_stochastic_context(n_stages, 1);
     let stages = make_stages(n_stages);
@@ -573,7 +572,7 @@ fn ac_train_returns_partial_on_infeasible() {
 fn ac_train_emits_correct_event_sequence() {
     let n_stages = 2;
     let state = test_support::state_layout(1, 0);
-    let templates = vec![minimal_template(state.n_state); n_stages];
+    let templates = vec![minimal_template(); n_stages];
     let initial_state = vec![0.0_f64; state.n_state];
     let stochastic = make_stochastic_context(n_stages, 1);
     let stages = make_stages(n_stages);
@@ -753,7 +752,7 @@ fn ac_train_emits_correct_event_sequence() {
 fn ac_worker_timing_per_worker_event_count_and_setup_invariant() {
     let n_stages = 2;
     let state = test_support::state_layout(1, 0);
-    let templates = vec![minimal_template(state.n_state); n_stages];
+    let templates = vec![minimal_template(); n_stages];
     let initial_state = vec![0.0_f64; state.n_state];
     let stochastic = make_stochastic_context(n_stages, 1);
     let stages = make_stages(n_stages);
@@ -906,7 +905,7 @@ fn ac_worker_timing_per_worker_event_count_and_setup_invariant() {
 fn ac_train_result_fields_populated() {
     let n_stages = 2;
     let state = test_support::state_layout(1, 0);
-    let templates = vec![minimal_template(state.n_state); n_stages];
+    let templates = vec![minimal_template(); n_stages];
     let initial_state = vec![0.0_f64; state.n_state];
     let stochastic = make_stochastic_context(n_stages, 1);
     let stages = make_stages(n_stages);
@@ -996,7 +995,7 @@ fn ac_train_result_fields_populated() {
 fn ac_train_with_no_event_sender() {
     let n_stages = 2;
     let state = test_support::state_layout(1, 0);
-    let templates = vec![minimal_template(state.n_state); n_stages];
+    let templates = vec![minimal_template(); n_stages];
     let initial_state = vec![0.0_f64; state.n_state];
     let stochastic = make_stochastic_context(n_stages, 1);
     let stages = make_stages(n_stages);
@@ -1076,7 +1075,7 @@ fn ac_train_with_no_event_sender() {
 fn ac_total_time_ms_is_non_negative() {
     let n_stages = 2;
     let state = test_support::state_layout(1, 0);
-    let templates = vec![minimal_template(state.n_state); n_stages];
+    let templates = vec![minimal_template(); n_stages];
     let initial_state = vec![0.0_f64; state.n_state];
     let stochastic = make_stochastic_context(n_stages, 1);
     let stages = make_stages(n_stages);
@@ -1162,7 +1161,7 @@ fn ac_total_time_ms_is_non_negative() {
 fn cut_selection_none_skips_step() {
     let n_stages = 2;
     let state = test_support::state_layout(1, 0);
-    let templates = vec![minimal_template(state.n_state); n_stages];
+    let templates = vec![minimal_template(); n_stages];
     let initial_state = vec![0.0_f64; state.n_state];
     let stochastic = make_stochastic_context(n_stages, 1);
     let stages = make_stages(n_stages);
@@ -1254,7 +1253,7 @@ fn cut_selection_none_skips_step() {
 fn existing_train_tests_pass_with_none() {
     let n_stages = 2;
     let state = test_support::state_layout(1, 0);
-    let templates = vec![minimal_template(state.n_state); n_stages];
+    let templates = vec![minimal_template(); n_stages];
     let initial_state = vec![0.0_f64; state.n_state];
     let stochastic = make_stochastic_context(n_stages, 1);
     let stages = make_stages(n_stages);
@@ -1337,7 +1336,7 @@ fn existing_train_tests_pass_with_none() {
 fn ac_train_partial_result_on_mid_iteration_failure() {
     let n_stages = 2;
     let state = test_support::state_layout(1, 0);
-    let templates = vec![minimal_template(state.n_state); n_stages];
+    let templates = vec![minimal_template(); n_stages];
     let initial_state = vec![0.0_f64; state.n_state];
     let stochastic = make_stochastic_context(n_stages, 1);
     let stages = make_stages(n_stages);
@@ -1449,7 +1448,7 @@ fn ac_train_partial_result_on_mid_iteration_failure() {
 fn start_iteration_resumes_from_offset() {
     let n_stages = 2;
     let state = test_support::state_layout(1, 0);
-    let templates = vec![minimal_template(state.n_state); n_stages];
+    let templates = vec![minimal_template(); n_stages];
     let initial_state = vec![0.0_f64; state.n_state];
     let stochastic = make_stochastic_context(n_stages, 1);
     let stages = make_stages(n_stages);
@@ -1534,7 +1533,7 @@ fn start_iteration_resumes_from_offset() {
 fn start_iteration_at_or_beyond_max_runs_zero_iterations() {
     let n_stages = 2;
     let state = test_support::state_layout(1, 0);
-    let templates = vec![minimal_template(state.n_state); n_stages];
+    let templates = vec![minimal_template(); n_stages];
     let initial_state = vec![0.0_f64; state.n_state];
     let stochastic = make_stochastic_context(n_stages, 1);
     let stages = make_stages(n_stages);
@@ -2096,7 +2095,7 @@ fn broadcast_basis_cache_rejects_oversized_i32_payload() {
     use super::checked_mpi_count;
 
     let oversized: usize = (i32::MAX as usize) + 1;
-    let result = checked_mpi_count(oversized, "broadcast_basis_cache_i32");
+    let result = checked_mpi_count(oversized, "broadcast_basis_cache");
 
     match result {
         Err(SddpError::Communication(CommError::InvalidBufferSize {
@@ -2111,8 +2110,8 @@ fn broadcast_basis_cache_rejects_oversized_i32_payload() {
                 "expected must equal i32::MAX as usize"
             );
             assert_eq!(
-                operation, "broadcast_basis_cache_i32",
-                "operation string must be 'broadcast_basis_cache_i32'"
+                operation, "broadcast_basis_cache",
+                "operation string must be 'broadcast_basis_cache'"
             );
         }
         other => panic!(
@@ -2125,7 +2124,7 @@ fn broadcast_basis_cache_rejects_oversized_i32_payload() {
 fn template_freeze_event_emitted() {
     let n_stages = 2;
     let state = test_support::state_layout(1, 0);
-    let templates = vec![minimal_template(state.n_state); n_stages];
+    let templates = vec![minimal_template(); n_stages];
     let initial_state = vec![0.0_f64; state.n_state];
     let stochastic = make_stochastic_context(n_stages, 1);
     let stages = make_stages(n_stages);
@@ -2596,9 +2595,9 @@ fn a_payload_length_that_does_not_fit_an_i32_count_fails_naming_its_rank() {
 
     let (mut counts, mut displs) = (vec![0_usize; 2], vec![0_usize; 2]);
     let err = segment_layout(
-        [5_i32, -1].iter(),
+        &[5_i32, -1],
         4,
-        "gather_basis_store_i32",
+        "gather_basis_store",
         &mut counts,
         &mut displs,
     )
@@ -2687,7 +2686,7 @@ fn an_oversized_payload_fails_every_rank_after_the_same_broadcast() {
 
     let oversized = (i32::MAX as usize) + 1;
     let root = LengthBroadcast::new(0, 0);
-    let err = broadcast_len(&root, oversized, "broadcast_basis_cache_i32")
+    let err = broadcast_len(&root, oversized, "broadcast_basis_cache")
         .expect_err("a length past the i32 count limit is refused");
     assert!(
         matches!(
@@ -2700,7 +2699,7 @@ fn an_oversized_payload_fails_every_rank_after_the_same_broadcast() {
     assert_eq!(root.broadcasts(), 1, "rank 0 broadcasts before it fails");
 
     let peer = LengthBroadcast::new(1, -1);
-    let err = broadcast_len(&peer, 0, "broadcast_basis_cache_i32")
+    let err = broadcast_len(&peer, 0, "broadcast_basis_cache")
         .expect_err("the peer reads the refusal rank 0 broadcast");
     assert!(
         matches!(&err, SddpError::Validation(msg) if msg.contains("does not fit an i32 count")),

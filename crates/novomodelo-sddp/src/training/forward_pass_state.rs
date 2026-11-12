@@ -38,7 +38,7 @@ use crate::{
     solver_phase::Phase,
     solver_stats::SolverStatsDelta,
     trajectory::TrajectoryRecord,
-    workspace::{BasisStore, BasisStoreSliceMut, SolverWorkspace},
+    workspace::{BasisStore, BasisStoreSliceMut, SolverWorkspace, workspace::recycle},
 };
 
 /// Per-iteration argument bundle for [`ForwardPassState::run`].
@@ -182,6 +182,10 @@ pub(crate) struct ForwardPassState {
     /// Per-worker, per-stage solver-stats accumulators (`n_workers × num_stages`).
     worker_stage_stats: Vec<Vec<SolverStatsDelta>>,
 
+    /// The workers' basis-store views, kept across passes by recycling their
+    /// lifetime; empty between passes.
+    worker_basis_slices: Vec<BasisStoreSliceMut<'static>>,
+
     /// Per-worker solver statistics snapshot taken **before** the parallel region.
     worker_stats_before: Vec<SolverStatistics>,
 
@@ -254,6 +258,7 @@ impl ForwardPassState {
             .collect();
         Self {
             worker_stage_stats,
+            worker_basis_slices: Vec::with_capacity(n_workers),
             worker_stats_before: Vec::with_capacity(n_workers),
             worker_stats_after: Vec::with_capacity(n_workers),
             worker_deltas: Vec::with_capacity(n_workers),
@@ -419,9 +424,11 @@ impl ForwardPassState {
 
         let root_node = Self::resolve_root_node(training_ctx)?;
 
-        let basis_slices = inputs
+        let mut basis_slices: Vec<BasisStoreSliceMut<'_>> =
+            recycle(std::mem::take(&mut self.worker_basis_slices));
+        inputs
             .basis_store
-            .split_workers_mut(forward_passes, n_workers);
+            .split_workers_into(forward_passes, n_workers, &mut basis_slices);
         let mut remaining: &mut [TrajectoryRecord] = inputs.records;
         let mut record_slices: Vec<&mut [TrajectoryRecord]> = Vec::with_capacity(n_workers);
         for basis_slice in &basis_slices {
@@ -494,20 +501,21 @@ impl ForwardPassState {
             .workspaces
             .par_iter_mut()
             .zip(record_slices.par_iter_mut())
-            .zip(basis_slices.into_par_iter())
+            .zip(basis_slices.par_iter_mut())
             .zip(worker_stage_stats_for_par.into_par_iter())
             .map(
-                |(((ws, worker_records), mut basis_slice), mut per_stage_stats)| {
+                |(((ws, worker_records), basis_slice), mut per_stage_stats)| {
                     run_forward_worker(
                         ws,
                         worker_records,
-                        &mut basis_slice,
+                        basis_slice,
                         &mut per_stage_stats,
                         &params,
                     )
                 },
             )
             .collect();
+        self.worker_basis_slices = recycle(basis_slices);
 
         #[allow(clippy::cast_possible_truncation)]
         let parallel_wall_ms = parallel_start.elapsed().as_millis() as u64;
@@ -1091,7 +1099,6 @@ mod tests {
             objective: vec![0.0, 0.0, 0.0, 1.0],
             row_lower: vec![0.0],
             row_upper: vec![0.0],
-            n_state: 1,
             col_scale: Vec::new(),
             row_scale: Vec::new(),
         }
@@ -1632,7 +1639,8 @@ mod tests {
         // Mutable per-call state: independent allocations, not borrows of fx.
         let mut ws = single_workspace(MockSolver::always_ok(fixed_solution_1_0()), &fx.state);
         let mut basis_store = BasisStore::new(fx.n_scenarios, fx.n_stages);
-        let mut basis_slices = basis_store.split_workers_mut(fx.n_scenarios, 1);
+        let mut basis_slices = Vec::new();
+        basis_store.split_workers_into(fx.n_scenarios, 1, &mut basis_slices);
         let mut basis_slice = basis_slices.remove(0);
         let mut records: Vec<TrajectoryRecord> = (0..fx.n_scenarios * fx.n_stages)
             .map(|_| TrajectoryRecord::default())
@@ -1886,7 +1894,6 @@ mod tests {
             objective: vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
             row_lower: vec![0.0, 0.0],
             row_upper: vec![0.0, 0.0],
-            n_state: 2,
             col_scale: Vec::new(),
             row_scale: Vec::new(),
         }
@@ -2128,7 +2135,8 @@ mod tests {
         };
         let mut ws = single_workspace(MockSolver::always_ok(solution), &state);
         let mut basis_store = BasisStore::new(1, 1);
-        let mut basis_slices = basis_store.split_workers_mut(1, 1);
+        let mut basis_slices = Vec::new();
+        basis_store.split_workers_into(1, 1, &mut basis_slices);
         let mut basis_slice = basis_slices.remove(0);
         let mut records: Vec<TrajectoryRecord> = vec![TrajectoryRecord::default()];
         let mut per_stage_stats = vec![SolverStatsDelta::default()];
@@ -2391,7 +2399,8 @@ mod tests {
         // Basis store axis is NODE: the K-fan visits leaf nodes at positions
         // beyond `num_stages`, so the store must span every node, not the stages.
         let mut basis_store = BasisStore::new(forward_passes, node_graph.nodes.len());
-        let mut basis_slices = basis_store.split_workers_mut(forward_passes, 1);
+        let mut basis_slices = Vec::new();
+        basis_store.split_workers_into(forward_passes, 1, &mut basis_slices);
         let mut basis_slice = basis_slices.remove(0);
         let mut records: Vec<TrajectoryRecord> = (0..forward_passes * 2)
             .map(|_| TrajectoryRecord::default())

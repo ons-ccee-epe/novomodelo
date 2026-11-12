@@ -1079,6 +1079,13 @@ impl ScratchBuffers {
             current_node_buf: Vec::with_capacity(max_local_fwd),
         }
     }
+
+    /// Grows the three cut-row buffers to `capacity`, never shrinking.
+    pub(crate) fn reserve_cut_rows(&mut self, capacity: usize) {
+        reserve_to(&mut self.cut_slots_buf, capacity);
+        reserve_to(&mut self.cut_bracket_buf, capacity);
+        reserve_to(&mut self.cut_rhs_buf, capacity);
+    }
 }
 
 /// A pool of [`SolverWorkspace`] instances, one per worker thread.
@@ -1222,9 +1229,7 @@ impl<S: SolverInterface> WorkspacePool<S> {
             ws.backward_accum
                 .successor_aggregate
                 .reserve(pool_capacity, pair_hint);
-            reserve_to(&mut ws.scratch.cut_slots_buf, pool_capacity);
-            reserve_to(&mut ws.scratch.cut_bracket_buf, pool_capacity);
-            reserve_to(&mut ws.scratch.cut_rhs_buf, pool_capacity);
+            ws.scratch.reserve_cut_rows(pool_capacity);
         }
     }
 
@@ -1248,10 +1253,10 @@ impl<S: SolverInterface> WorkspacePool<S> {
         }
     }
 
-    /// Re-reserves the scratch whose size follows `pool_capacity`: the cut scratch of
-    /// [`Self::reserve_cut_scratch`] with the study's pair bound. Growth-only, for the
-    /// point where the pools have just grown; [`Self::reserve_backward_scratch`] fixes
-    /// everything else at construction.
+    /// Reserves the scratch whose size follows `pool_capacity`: the cut scratch of
+    /// [`Self::reserve_cut_scratch`] with the study's pair bound. Growth-only, so it
+    /// serves the construction and every point where the pools have grown;
+    /// [`Self::reserve_backward_scratch`] fixes everything else at construction.
     pub(crate) fn reserve_pool_scratch(
         &mut self,
         training_ctx: &TrainingContext<'_>,
@@ -1262,15 +1267,13 @@ impl<S: SolverInterface> WorkspacePool<S> {
         self.reserve_cut_scratch(columned_len, pool_capacity, sizing.max_openings * bound);
     }
 
-    /// Reserves everything a backward sweep of `sizing`'s shape pushes into: the
-    /// pool-sized scratch through [`Self::reserve_pool_scratch`], the opening records
-    /// of every trial point `scheduler` keeps a worker holding, and each worker's
-    /// per-opening dual buffers. Once, at construction.
+    /// Reserves what a backward sweep of `sizing`'s shape pushes into, whatever the pools'
+    /// capacity: the opening records of every trial point `scheduler` keeps a worker
+    /// holding, and each worker's per-opening dual buffers. Once, at construction.
     pub(crate) fn reserve_backward_scratch(
         &mut self,
         training_ctx: &TrainingContext<'_>,
         sizing: WorkspaceSizing,
-        pool_capacity: usize,
         scheduler: &BackwardScheduler,
     ) {
         let (state_len, bound) = record_dims(training_ctx.cut_state_layouts);
@@ -1280,7 +1283,6 @@ impl<S: SolverInterface> WorkspacePool<S> {
             .map(CutStateProjection::n_slots)
             .max()
             .unwrap_or(0);
-        self.reserve_pool_scratch(training_ctx, sizing, pool_capacity);
         let trial_points_held = match scheduler {
             BackwardScheduler::ByScenario {} => sizing.max_local_fwd.min(1),
             BackwardScheduler::ByNode { .. } => sizing.max_local_fwd,
@@ -1387,9 +1389,10 @@ impl BasisStore {
         }
     }
 
-    /// Split the first `n_active` scenarios into `n_workers` disjoint mutable
-    /// sub-views, worker `w` receiving `partition(n_active, n_workers, w)` — the
-    /// same windows the caller's per-worker trajectory records use.
+    /// Clears `out` and fills it with `n_workers` disjoint mutable sub-views of the
+    /// first `n_active` scenarios, worker `w` receiving `partition(n_active,
+    /// n_workers, w)` — the same windows the caller's per-worker trajectory records
+    /// use. A vector kept across calls keeps its allocation.
     ///
     /// The store is sized for the largest per-rank share, so a rank holding fewer
     /// scenarios must pass its own count: splitting the full store instead shifts
@@ -1400,23 +1403,6 @@ impl BasisStore {
     ///
     /// Panics if `n_active > num_scenarios()`, and in debug builds if
     /// `n_workers == 0`.
-    #[must_use]
-    pub fn split_workers_mut(
-        &mut self,
-        n_active: usize,
-        n_workers: usize,
-    ) -> Vec<BasisStoreSliceMut<'_>> {
-        let mut slices = Vec::with_capacity(n_workers);
-        self.split_workers_into(n_active, n_workers, &mut slices);
-        slices
-    }
-
-    /// Clears `out` and pushes the slices [`Self::split_workers_mut`] returns, so a
-    /// vector kept across calls keeps its allocation.
-    ///
-    /// # Panics
-    ///
-    /// Panics as [`Self::split_workers_mut`] does.
     pub(crate) fn split_workers_into<'a>(
         &'a mut self,
         n_active: usize,
@@ -1450,7 +1436,7 @@ impl BasisStore {
 /// A mutable sub-view of a [`BasisStore`] covering a contiguous range of
 /// scenarios.
 ///
-/// Produced by [`BasisStore::split_workers_mut`]. Each slice is exclusive
+/// Produced by [`BasisStore::split_workers_into`]. Each slice is exclusive
 /// to one worker thread; multiple slices can coexist because they cover
 /// disjoint memory regions.
 pub struct BasisStoreSliceMut<'a> {
@@ -2199,7 +2185,7 @@ mod tests {
                 sizing,
                 || MockSolver,
             );
-            pool.reserve_backward_scratch(&ctx.training_ctx(), sizing, 0, &scheduler);
+            pool.reserve_backward_scratch(&ctx.training_ctx(), sizing, &scheduler);
             pool.workspaces[0]
                 .backward_accum
                 .opening_records
@@ -2262,11 +2248,12 @@ mod tests {
     }
 
     #[test]
-    fn basis_store_split_workers_mut_disjoint_writes() {
+    fn basis_store_split_workers_into_disjoint_writes() {
         // 4 scenarios, 3 stages, 2 workers.
         // Worker 0 covers scenarios 0..2; worker 1 covers scenarios 2..4.
         let mut store = BasisStore::new(4, 3);
-        let mut slices = store.split_workers_mut(4, 2);
+        let mut slices = Vec::new();
+        store.split_workers_into(4, 2, &mut slices);
 
         // Worker 0 writes to scenario 0 stage 1.
         *slices[0].get_mut(0, NodePos(1)) = Some(CapturedBasis::new(2, 1, 0, 0, NodeId(0)));
@@ -2291,7 +2278,8 @@ mod tests {
     #[test]
     fn basis_store_split_single_worker() {
         let mut store = BasisStore::new(3, 2);
-        let mut slices = store.split_workers_mut(3, 1);
+        let mut slices = Vec::new();
+        store.split_workers_into(3, 1, &mut slices);
         *slices[0].get_mut(2, NodePos(1)) = Some(CapturedBasis::new(1, 0, 0, 0, NodeId(0)));
         drop(slices);
         assert!(store.get(2, NodePos(1)).is_some());
@@ -2301,7 +2289,8 @@ mod tests {
     fn basis_store_split_more_workers_than_scenarios() {
         // 2 scenarios, 4 workers → workers 2 and 3 receive empty slices.
         let mut store = BasisStore::new(2, 3);
-        let slices = store.split_workers_mut(2, 4);
+        let mut slices = Vec::new();
+        store.split_workers_into(2, 4, &mut slices);
         assert_eq!(slices.len(), 4);
         // Workers 0 and 1 cover 1 scenario each; workers 2 and 3 cover 0.
         assert_eq!(slices[0].bases.len(), 3); // 1 scenario × 3 stages
@@ -2314,7 +2303,8 @@ mod tests {
     fn basis_store_slice_offset_correct() {
         // 6 scenarios, 2 stages, 3 workers → 2 scenarios each.
         let mut store = BasisStore::new(6, 2);
-        let mut slices = store.split_workers_mut(6, 3);
+        let mut slices = Vec::new();
+        store.split_workers_into(6, 3, &mut slices);
 
         // Worker 1 covers absolute scenarios 2..4.
         *slices[1].get_mut(2, NodePos(0)) = Some(CapturedBasis::new(1, 0, 0, 0, NodeId(0)));
@@ -2332,7 +2322,8 @@ mod tests {
         // A rank with 5 of a 6-scenario store's scenarios: the windows must be
         // the record windows `partition(5, 4, w)`, not `partition(6, 4, w)`.
         let mut store = BasisStore::new(6, 2);
-        let mut slices = store.split_workers_mut(5, 4);
+        let mut slices = Vec::new();
+        store.split_workers_into(5, 4, &mut slices);
         let windows: Vec<(usize, usize)> = slices
             .iter()
             .map(BasisStoreSliceMut::scenario_window)
@@ -2355,15 +2346,13 @@ mod tests {
     }
 
     #[test]
-    fn split_workers_into_reuses_the_vector_and_gives_the_same_windows() {
+    fn split_workers_into_reuses_the_vector_and_gives_the_partition_windows() {
         let mut store = BasisStore::new(6, 2);
         let mut kept: Vec<BasisStoreSliceMut<'static>> = Vec::with_capacity(4);
         let allocation = (kept.as_ptr().addr(), kept.capacity());
         for (n_active, n_workers) in [(6, 3), (5, 4), (0, 2), (6, 4)] {
-            let expected: Vec<(usize, usize)> = store
-                .split_workers_mut(n_active, n_workers)
-                .iter()
-                .map(BasisStoreSliceMut::scenario_window)
+            let expected: Vec<(usize, usize)> = (0..n_workers)
+                .map(|w| partition(n_active, n_workers, w))
                 .collect();
             let mut slices: Vec<BasisStoreSliceMut<'_>> = recycle(std::mem::take(&mut kept));
             store.split_workers_into(n_active, n_workers, &mut slices);
@@ -2384,7 +2373,8 @@ mod tests {
     #[test]
     fn basis_store_split_with_no_active_scenarios_yields_empty_windows() {
         let mut store = BasisStore::new(3, 2);
-        let slices = store.split_workers_mut(0, 2);
+        let mut slices = Vec::new();
+        store.split_workers_into(0, 2, &mut slices);
         assert!(
             slices
                 .iter()
@@ -2396,7 +2386,7 @@ mod tests {
     #[should_panic(expected = "4 active scenarios exceed the store's 3")]
     fn basis_store_split_rejects_more_active_scenarios_than_slots() {
         let mut store = BasisStore::new(3, 2);
-        let _ = store.split_workers_mut(4, 2);
+        store.split_workers_into(4, 2, &mut Vec::new());
     }
 
     #[test]

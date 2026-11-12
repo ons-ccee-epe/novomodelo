@@ -72,10 +72,7 @@ impl NodeVisit {
     fn with_state_capacity(n_state: usize) -> Self {
         Self {
             out_state: Vec::with_capacity(n_state),
-            fused: FusedTerminalSlice {
-                subgradient: Vec::with_capacity(n_state),
-                ..FusedTerminalSlice::default()
-            },
+            fused: FusedTerminalSlice::with_capacity(n_state),
             ..Self::default()
         }
     }
@@ -135,11 +132,7 @@ impl EnumeratedForwardScratch {
                 out_state: vec![0.0; n_state],
                 accum: AccumSnapshot::default(),
                 basis: None,
-                fused: FusedTerminalSlice {
-                    captured: false,
-                    objective: 0.0,
-                    subgradient: Vec::with_capacity(n_state),
-                },
+                fused: FusedTerminalSlice::with_capacity(n_state),
             })
             .collect();
         self.solved = vec![false; n_nodes].into();

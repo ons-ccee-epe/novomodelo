@@ -145,22 +145,13 @@ pub(crate) enum StateRegion {
     CommitmentHold,
 }
 
-impl StateRegion {
-    /// Whether this region's state dimensions occupy LP columns.
-    #[inline]
-    #[must_use]
-    pub(crate) const fn has_lp_columns(self) -> bool {
-        !matches!(self, Self::Lag)
-    }
-}
-
 /// The single owner of the `storage → lag → buckets → commitment hold`
 /// state-region walk order. [`StateSpace::state_to_lp_column`],
 /// [`StateSpace::state_to_lp_incoming_column`],
 /// [`StateSpace::set_nonzero_mask`], and [`super::CutStateProjection::new`]
 /// all dispatch over this array via [`StateSpace::state_dim_range`]; a
-/// variant added to [`StateRegion`] fails to compile at any of those sites
-/// (each matches it exhaustively, no `_` catch-all) until handled.
+/// variant added to [`StateRegion`] fails to compile at the exhaustive matches
+/// they reach (no `_` catch-all) until handled.
 pub(crate) const REGION_ORDER: [StateRegion; 4] = [
     StateRegion::Storage,
     StateRegion::Lag,
@@ -169,6 +160,13 @@ pub(crate) const REGION_ORDER: [StateRegion; 4] = [
 ];
 
 impl StateRegion {
+    /// Whether this region's state dimensions occupy LP columns.
+    #[inline]
+    #[must_use]
+    pub(crate) const fn has_lp_columns(self) -> bool {
+        !matches!(self, Self::Lag)
+    }
+
     /// Whether `region`'s state dimensions are cut-enabled under `config`: storage
     /// and lag are config-gated; buckets and the merged commitment-hold region
     /// are always included, regardless of `config` — every declared in-study or
@@ -465,14 +463,9 @@ impl StateSpace {
         (region, j - self.state_dim_range(region).start)
     }
 
-    /// Map a state-vector index to the LP column it references in a cut.
-    ///
-    /// Classifies `j` into its `StateRegion` via `REGION_ORDER` before any
-    /// lag arithmetic runs, then resolves through an exhaustive match:
-    /// storage, `transit_buckets_out`, and `commit_out` map to
-    /// `outgoing_block_start(region) + offset`. Classifying first — rather
-    /// than falling through an `if`/`else` chain — is what keeps
-    /// buckets/commitment-hold from ever reaching the lag arm.
+    /// Map a state-vector index to the LP column it references in a cut:
+    /// `outgoing_block_start(region) + offset` for the region [`Self::classify`]
+    /// finds, which walks `REGION_ORDER` exhaustively.
     ///
     /// # Panics
     ///
@@ -504,13 +497,7 @@ impl StateSpace {
     #[must_use]
     pub fn state_to_lp_column(&self, j: StateDim) -> OutCol {
         let (region, offset) = self.classify(j);
-
-        OutCol::new(match region {
-            StateRegion::Storage | StateRegion::Buckets | StateRegion::CommitmentHold => {
-                self.outgoing_block_start(region) + offset
-            }
-            StateRegion::Lag => unreachable!("lag dimensions have no LP column"),
-        })
+        OutCol::new(self.outgoing_block_start(region) + offset)
     }
 
     /// Fill [`Self::state_to_lp_column_map`] by calling
@@ -555,7 +542,7 @@ impl StateSpace {
     /// [`fill_col_state_patches`](crate::lp::builder::PatchBuffer::fill_col_state_patches)
     /// writes, in state-vector order; the backward pass reads
     /// `view.reduced_costs[col]` at them for the cut subgradient, one per
-    /// component `j ∈ [0, n_state)`.
+    /// columned state dimension.
     ///
     /// Contrast [`state_to_lp_column`], which returns the **outgoing** column
     /// for forward-pass cut-row construction: for storage it returns `j`
@@ -573,9 +560,6 @@ impl StateSpace {
     #[must_use]
     pub fn state_to_lp_incoming_column(&self, j: StateDim) -> InCol {
         let (region, offset) = self.classify(j);
-        if !region.has_lp_columns() {
-            unreachable!("lag dimensions have no LP column");
-        }
         InCol::new(self.incoming_block_start(region) + offset)
     }
 
@@ -1915,7 +1899,7 @@ mod tests {
         assert_eq!(idx.state_dim_lag_range().len(), n * l);
     }
 
-    fn compact_with_buckets_and_one_plant() -> StateSpace {
+    fn with_buckets_and_one_plant() -> StateSpace {
         let lead_stages = vec![1];
         StateSpace::new(
             2,
@@ -1928,8 +1912,8 @@ mod tests {
     }
 
     #[test]
-    fn compact_state_columns_resolve_through_the_outgoing_block() {
-        let idx = compact_with_buckets_and_one_plant();
+    fn state_columns_resolve_through_the_outgoing_block() {
+        let idx = with_buckets_and_one_plant();
         let lag_block = idx.hydro_count * idx.max_par_order;
         let families = [
             (StateRegion::Storage, idx.storage.clone(), 0),
@@ -1977,25 +1961,39 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "Lag has no incoming LP block")]
-    fn compact_lag_region_has_no_incoming_lp_block() {
-        let idx = compact_with_buckets_and_one_plant();
+    fn lag_region_has_no_incoming_lp_block() {
+        let idx = with_buckets_and_one_plant();
         assert!(!StateRegion::Lag.has_lp_columns());
         let _ = idx.incoming_block_start(StateRegion::Lag);
     }
 
     #[test]
     #[should_panic(expected = "Lag has no outgoing LP block")]
-    fn compact_lag_region_has_no_outgoing_lp_block() {
-        let idx = compact_with_buckets_and_one_plant();
+    fn lag_region_has_no_outgoing_lp_block() {
+        let idx = with_buckets_and_one_plant();
         assert!(!StateRegion::Lag.has_lp_columns());
         let _ = idx.outgoing_block_start(StateRegion::Lag);
     }
 
     #[test]
     #[should_panic(expected = "lag dimensions have no LP column")]
-    fn compact_state_lag_dimension_has_no_lp_column() {
-        let idx = compact_with_buckets_and_one_plant();
+    fn lag_state_dimension_has_no_lp_column() {
+        let idx = with_buckets_and_one_plant();
         let _ = idx.lp_column_for_state(idx.lag_state_dim(0, HydroSys::new(0)));
+    }
+
+    #[test]
+    #[should_panic(expected = "Lag has no outgoing LP block")]
+    fn state_to_lp_column_of_a_lag_dimension_panics() {
+        let idx = with_buckets_and_one_plant();
+        let _ = idx.state_to_lp_column(idx.lag_state_dim(0, HydroSys::new(0)));
+    }
+
+    #[test]
+    #[should_panic(expected = "Lag has no incoming LP block")]
+    fn state_to_lp_incoming_column_of_a_lag_dimension_panics() {
+        let idx = with_buckets_and_one_plant();
+        let _ = idx.state_to_lp_incoming_column(idx.lag_state_dim(0, HydroSys::new(0)));
     }
 
     /// The two commitment-hold column resolvers resolve to the exact columns the

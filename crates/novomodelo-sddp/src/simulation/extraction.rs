@@ -631,7 +631,7 @@ fn water_value_per_hm3(
 /// stage. For uniform-block studies the per-stage and stage-0 reads coincide.
 pub struct StageExtractionSpec<'a> {
     /// Role-(a) state layout: source of the state-region column reads (`storage`,
-    /// `storage_in`, `inflow_lags`, `commit_in`, `max_par_order`).
+    /// `storage_in`, `commit_in`, `max_par_order`).
     pub state: &'a StateSpace,
     /// Single owner of the study-invariant, non-state LP shape (entity counts and
     /// optional-column presence flags).
@@ -649,8 +649,8 @@ pub struct StageExtractionSpec<'a> {
     pub entity_counts: &'a EntityCounts,
     /// Volumetric inflow per hydro (m³/s), one entry per hydro plant.
     pub inflow_m3s_per_hydro: &'a [f64],
-    /// Incoming lag slice of the pinned state in state-vector order, read by the
-    /// `inflow_lags` output when the LP has no incoming-lag columns.
+    /// Incoming lag slice of the pinned state, in state-vector order; the source of the
+    /// `inflow_lags` output.
     pub incoming_lags: &'a [f64],
     /// Block hours per dispatch block, used to convert duals to spot prices.
     pub block_hours: &'a [f64],

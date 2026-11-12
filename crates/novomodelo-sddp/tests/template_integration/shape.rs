@@ -168,32 +168,6 @@ fn num_rows_formula_one_hydro_lag_two() {
 }
 
 #[test]
-fn n_state_matches_indexer() {
-    let system = one_hydro_system(1, 2);
-    let result = build_stage_templates_resolving_layout(
-        &system,
-        no_penalty_config(),
-        &PrecomputedPar::default(),
-        &PrecomputedNormal::default(),
-        &default_production(&system),
-        &default_evaporation(&system),
-        &ResolvedParameters::default(),
-    )
-    .expect("constant productivity ok");
-    let t = &result.templates[0];
-    let expected = StateSpace::new(
-        1,
-        2,
-        Vec::new(),
-        vec![],
-        AnticipatedResolution::default(),
-        &[2; 1],
-    )
-    .n_state;
-    assert_eq!(t.n_state, expected, "n_state must match StateSpace");
-}
-
-#[test]
 fn csc_col_starts_monotone_nondecreasing() {
     let system = one_hydro_system(1, 1);
     let result = build_stage_templates_resolving_layout(

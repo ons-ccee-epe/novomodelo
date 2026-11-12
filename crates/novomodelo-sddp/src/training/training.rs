@@ -322,7 +322,7 @@ pub(crate) fn broadcast_basis_cache<C: Communicator>(
         }
     }
 
-    let total_len = broadcast_len(comm, buf.len(), "broadcast_basis_cache_i32")?;
+    let total_len = broadcast_len(comm, buf.len(), "broadcast_basis_cache")?;
     buf.resize(total_len, 0_i32);
     comm.broadcast(&mut buf, 0)?;
 
@@ -361,12 +361,13 @@ pub(crate) fn gather_basis_store<C: Communicator>(
     let is_root = comm.rank() == 0;
     let rank_passes = per_rank_counts(ranks.num_total_forward_passes, num_ranks);
 
-    let mut int_send: Vec<i32> = Vec::new();
-    let mut int_recv: Vec<i32> = Vec::new();
+    let mut payload_send: Vec<i32> = Vec::new();
+    let mut payload_recv: Vec<i32> = Vec::new();
     let mut lengths = vec![0_i32; num_ranks];
     let length_counts = vec![1_usize; num_ranks];
     let length_displs: Vec<usize> = (0..num_ranks).collect();
-    let (mut int_counts, mut int_displs) = (vec![0_usize; num_ranks], vec![0_usize; num_ranks]);
+    let (mut payload_counts, mut payload_displs) =
+        (vec![0_usize; num_ranks], vec![0_usize; num_ranks]);
 
     let mut gathered = CheckpointBasisStore {
         nodes: Vec::with_capacity(if is_root { num_nodes } else { 0 }),
@@ -375,27 +376,32 @@ pub(crate) fn gather_basis_store<C: Communicator>(
     let mut decode_error = None;
 
     for node in 0..num_nodes {
-        int_send.clear();
+        payload_send.clear();
         for m in 0..ranks.my_actual_fwd {
             match basis_store.get(m, NodePos(node)) {
-                None => int_send.push(0_i32),
-                Some(captured) => captured.to_broadcast_payload(&mut int_send),
+                None => payload_send.push(0_i32),
+                Some(captured) => captured.to_broadcast_payload(&mut payload_send),
             }
         }
         // A length past `i32::MAX` travels as -1, so every rank fails at this node.
-        let own_length = [i32::try_from(int_send.len()).unwrap_or(-1)];
+        let own_length = [i32::try_from(payload_send.len()).unwrap_or(-1)];
         lengths.fill(0);
         comm.allgatherv(&own_length, &mut lengths, &length_counts, &length_displs)?;
 
-        let int_total = segment_layout(
-            lengths.iter(),
+        let payload_total = segment_layout(
+            &lengths,
             node,
-            "gather_basis_store_i32",
-            &mut int_counts,
-            &mut int_displs,
+            "gather_basis_store",
+            &mut payload_counts,
+            &mut payload_displs,
         )?;
-        int_recv.resize(int_total, 0_i32);
-        comm.allgatherv(&int_send, &mut int_recv, &int_counts, &int_displs)?;
+        payload_recv.resize(payload_total, 0_i32);
+        comm.allgatherv(
+            &payload_send,
+            &mut payload_recv,
+            &payload_counts,
+            &payload_displs,
+        )?;
 
         if !is_root || decode_error.is_some() {
             continue;
@@ -407,7 +413,8 @@ pub(crate) fn gather_basis_store<C: Communicator>(
                 decode_rank_segment(
                     node,
                     rank,
-                    &int_recv[int_displs[rank]..int_displs[rank] + int_counts[rank]],
+                    &payload_recv
+                        [payload_displs[rank]..payload_displs[rank] + payload_counts[rank]],
                     first_scenario,
                     passes,
                     &mut entries,
@@ -436,8 +443,8 @@ pub(crate) fn gather_basis_store<C: Communicator>(
 /// `SddpError::Validation` naming the rank whose length is negative (it did
 /// not fit an `i32`), `SddpError::Communication` when the total exceeds
 /// `i32::MAX`.
-fn segment_layout<'a>(
-    lengths: impl Iterator<Item = &'a i32>,
+fn segment_layout(
+    lengths: &[i32],
     node: usize,
     operation: &'static str,
     counts: &mut [usize],
@@ -472,21 +479,20 @@ fn segment_layout<'a>(
 fn decode_rank_segment(
     node: usize,
     rank: usize,
-    i32_segment: &[i32],
+    segment: &[i32],
     first_scenario: usize,
     passes: usize,
     entries: &mut Vec<(u32, CapturedBasis)>,
 ) -> Result<(), SddpError> {
-    let mut i32_pos = 0_usize;
+    let mut pos = 0_usize;
     let mut row = 0_usize;
-    while i32_pos < i32_segment.len() {
+    while pos < segment.len() {
         if row == passes {
             return Err(SddpError::Validation(format!(
                 "gather_basis_store: rank {rank} sent more than its {passes} rows at node {node}"
             )));
         }
-        if let Some(captured) =
-            CapturedBasis::try_from_broadcast_payload(node, i32_segment, &mut i32_pos)?
+        if let Some(captured) = CapturedBasis::try_from_broadcast_payload(node, segment, &mut pos)?
         {
             entries.push((global_scenario(first_scenario, row), captured));
         }

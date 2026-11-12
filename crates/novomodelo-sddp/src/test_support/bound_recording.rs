@@ -503,7 +503,6 @@ mod tests {
             objective: vec![1.0, 1.0],
             row_lower: vec![0.0],
             row_upper: vec![f64::INFINITY],
-            n_state: 0,
             col_scale: Vec::new(),
             row_scale: Vec::new(),
         }
@@ -541,7 +540,6 @@ mod tests {
             objective: vec![1.0, 1.0],
             row_lower: vec![1.0, 2.0, 3.0],
             row_upper: vec![f64::INFINITY; 3],
-            n_state: 0,
             col_scale: Vec::new(),
             row_scale: Vec::new(),
         }

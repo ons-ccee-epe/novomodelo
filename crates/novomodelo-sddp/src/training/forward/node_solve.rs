@@ -8,11 +8,10 @@ use crate::{
     cut::{CutPool, chain_rule::ChainRuleScratch},
     error::SddpError,
     indexer::{ChainRuleSlots, CutStateProjection},
-    noise::{DownstreamAccumState, LagAccumState},
     setup::node_graph::{NodePos, StageIdx},
     solve::{LazyInputs, StageOpeningSolver},
     stage_solve::{
-        StageInputs, assemble_outgoing_state, fill_unscaled, run_stage_solve_terminal_static,
+        StageInputs, advance_worker_state, fill_unscaled, run_stage_solve_terminal_static,
     },
     training::{
         backward::{
@@ -33,6 +32,16 @@ pub(super) struct FusedTerminalSlice {
     pub(super) objective: f64,
     /// The opening's cut coefficients in the parent projection: the chain-rule result.
     pub(super) subgradient: Vec<f64>,
+}
+
+impl FusedTerminalSlice {
+    /// An uncaptured slice whose subgradient never grows past `n_state` entries.
+    pub(super) fn with_capacity(n_state: usize) -> Self {
+        Self {
+            subgradient: Vec::with_capacity(n_state),
+            ..Self::default()
+        }
+    }
 }
 
 /// How a frozen solve applies its stored basis. `TerminalOneToOne` is the sole
@@ -201,32 +210,14 @@ pub(super) fn solve_forward_node_core<S: SolverInterface + Send>(
         (None, _) => {}
     }
 
-    ws.scratch.incoming_lags_buf.clear();
-    ws.scratch
-        .incoming_lags_buf
-        .extend_from_slice(&ws.current_state[state.state_dim_lag_range()]);
-
-    assemble_outgoing_state(
-        &mut ws.current_state,
-        &unscaled_primal,
-        &ws.scratch.incoming_lags_buf,
-        &ws.scratch.realized_inflow_buf,
+    ws.scratch.unscaled_primal = unscaled_primal;
+    advance_worker_state(
+        ws,
         state,
         ctx.state_box(t),
         ctx.stage_lag(t),
-        &mut LagAccumState {
-            accumulator: &mut ws.scratch.lag_accumulator,
-            weight_accum: &mut ws.scratch.lag_weight_accum,
-        },
-        &mut DownstreamAccumState {
-            accumulator: &mut ws.scratch.downstream_accumulator,
-            weight_accum: &mut ws.scratch.downstream_weight_accum,
-            completed_lags: &mut ws.scratch.downstream_completed_lags,
-            n_completed: &mut ws.scratch.downstream_n_completed,
-            par_order: training_ctx.study_dims.downstream_par_order,
-        },
+        training_ctx.study_dims.downstream_par_order,
     );
-    ws.scratch.unscaled_primal = unscaled_primal;
 
     Ok(stage_cost)
 }

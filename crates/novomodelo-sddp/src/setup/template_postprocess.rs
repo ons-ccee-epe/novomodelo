@@ -24,7 +24,7 @@ pub(crate) fn postprocess_templates(
     // Commitment-hold resolution context the box builder's one hand-written
     // special case needs — resolved once here and threaded through every
     // stage's `build_state_box` call. Runs BEFORE column scaling below: the
-    // storage/transit-bucket identity families read `template.col_lower`/
+    // storage and transit-bucket boxes read `template.col_lower`/
     // `col_upper` verbatim, which must still be the PHYSICAL bounds
     // `apply_col_scale` has not yet divided in place — the same physical units
     // as the unscaled trial state (`fill_unscaled` in
@@ -147,7 +147,6 @@ mod tests {
             objective: vec![0.0; 4],
             row_lower: vec![0.0, 0.0],
             row_upper: vec![0.0, 0.0],
-            n_state: 1,
             col_scale: Vec::new(),
             row_scale: Vec::new(),
         }
@@ -188,7 +187,7 @@ mod tests {
 
     /// Regression: `state_boxes`'s storage bound must be the PHYSICAL
     /// `col_upper` the template started with, never `col_upper / col_scale` —
-    /// `build_state_box` must read the identity families before
+    /// `build_state_box` must read the storage and transit-bucket columns before
     /// `apply_col_scale` divides them in place.
     #[test]
     fn postprocess_templates_storage_box_is_physical_not_scaled() {

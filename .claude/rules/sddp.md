@@ -452,9 +452,9 @@ Read: `lp/indexer/state_space.rs` (`StateSpace::incoming_block_start`,
 `REGION_ORDER`), `lp/builder/patch.rs` (`fill_col_state_patches`),
 `solve/stage_solve.rs` (`assemble_outgoing_state`), and
 `crates/novomodelo-stochastic/src/par/lag_kernel.rs` (`advance_lag_chain`).
-Pinned by `compact_lag_region_has_no_incoming_lp_block` and
-`compact_lag_region_has_no_outgoing_lp_block` (`lp/indexer/state_space.rs`),
-`fill_col_state_patches_skips_the_lag_region_of_a_compact_layout`
+Pinned by `lag_region_has_no_incoming_lp_block` and
+`lag_region_has_no_outgoing_lp_block` (`lp/indexer/state_space.rs`),
+`fill_col_state_patches_skips_the_lag_region`
 (`lp/builder/patch.rs`),
 `assemble_outgoing_state_seeds_the_compact_lag_slice_from_the_incoming_lags` and
 `assemble_outgoing_state_shifts_the_compact_lag_slice_onto_the_realized_inflow`
@@ -595,7 +595,7 @@ Read: `stochastic/noise.rs` (`realize_inflow`, `apply_inflow_slack_col_bounds`),
 `lp/builder/generic_constraints.rs` (`push_local_inflow_rate`),
 `stochastic/inflow_method.rs` (`truncates`, `slack_is_priced`),
 `solve/stage_solve.rs` (`assemble_outgoing_state`). Pinned by
-`test_realize_inflow_truncation_writes_the_raw_rhs_and_fixes_the_correction`
+`test_realize_inflow_truncation_keeps_the_raw_inflow_and_fixes_the_correction`
 (`ẑ` is never clamped; bounds `[l*, l*]` — forbids clamping η),
 `test_realize_inflow_truncation_with_penalty_caps_the_correction`
 (bounds `[0, l*]` — forbids an unbounded slack),
@@ -1865,7 +1865,7 @@ a number of routed trials other than the level's real trial count
 
 Every rank enters the collective under the same condition and with the same
 length. The condition is `level.len() > 1`, and the level list is
-`NodeGraph::backward_cut_levels_into` of the graph every rank builds from the same
+`NodeGraph::backward_cut_levels` of the graph every rank builds from the same
 broadcast system (`StudySetup::from_broadcast_params`). The length is
 `max_local_fwd`, which `RankDistribution::new` computes from the forward-pass
 count and the rank count; a rank with no real trial sends `max_local_fwd`
@@ -1896,7 +1896,7 @@ Read: `training/backward_pass_state.rs` (`compute_node_visit_offsets`,
 `check_visit_bound`, `build_trial_routing`, `NO_TRIAL`,
 `BackwardPassState::new`), `training/state_exchange.rs` (`ExchangeBuffers`),
 `training/session/rank_distribution.rs` (`RankDistribution::new`),
-`setup/node_graph.rs` (`NodeGraph::backward_cut_levels_into`),
+`setup/node_graph.rs` (`NodeGraph::backward_cut_levels`),
 `training/backward/by_scenario.rs` (`process_by_scenario_backward`),
 `training/backward/by_node.rs` (`by_node_finish`). Pinned by, in
 `training/backward_pass_state.rs`:

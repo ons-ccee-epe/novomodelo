@@ -49,6 +49,7 @@ use novomodelo_io::{
     write_policy_checkpoint,
 };
 use novomodelo_stochastic::par::precompute::PrecomputedPar;
+use novomodelo_stochastic::par::{DownstreamLagAccum, PrimaryLagAccum};
 use novomodelo_stochastic::{
     ClassSchemes, OpeningTreeInputs, StochasticContext, build_stochastic_context,
     evaluate_par_conditional_mean_batch,
@@ -79,9 +80,7 @@ use crate::lp::indexer::{
     AnticipatedPlants, BlockRowFamily, ChainRuleSlots, CutStateProjection, EntityPositions,
     HydroCellIndex, HydroSys, REGION_ORDER, StateDim, StateSpace, StudyDimensions,
 };
-use crate::noise::{
-    DownstreamAccumState, LagAccumState, apply_inflow_slack_col_bounds, realize_inflow,
-};
+use crate::noise::{apply_inflow_slack_col_bounds, realize_inflow};
 use crate::policy::policy_load::{
     FullFcf, PolicyLoadProof, PolicyStageManifest, validate_policy_load,
 };
@@ -916,7 +915,6 @@ pub fn hydro_only_bus_template() -> StageTemplate {
         objective,
         row_lower: vec![0.0; num_rows],
         row_upper: vec![0.0; num_rows],
-        n_state: 1,
         col_scale: Vec::new(),
         row_scale: Vec::new(),
     }
@@ -1303,7 +1301,7 @@ pub fn state_layout_with_transit_buckets_and_resolution(
 
 /// Bucket-only [`StageTemplate`]: `num_cols` free columns, zero rows.
 #[must_use]
-pub fn transit_bucket_only_template(num_cols: usize, n_state: usize) -> StageTemplate {
+pub fn transit_bucket_only_template(num_cols: usize) -> StageTemplate {
     StageTemplate {
         num_cols,
         num_rows: 0,
@@ -1316,7 +1314,6 @@ pub fn transit_bucket_only_template(num_cols: usize, n_state: usize) -> StageTem
         objective: vec![0.0; num_cols],
         row_lower: Vec::new(),
         row_upper: Vec::new(),
-        n_state,
         col_scale: Vec::new(),
         row_scale: Vec::new(),
     }
@@ -2159,11 +2156,11 @@ fn canonical_outgoing_state_for_probe(
         layout,
         ctx.state_box(producer_stage),
         ctx.stage_lag(producer_stage),
-        &mut LagAccumState {
+        &mut PrimaryLagAccum {
             accumulator: &mut lag_accumulator,
             weight_accum: &mut lag_weight_accum,
         },
-        &mut DownstreamAccumState {
+        &mut DownstreamLagAccum {
             accumulator: &mut ds_accumulator,
             weight_accum: &mut ds_weight_accum,
             completed_lags: &mut ds_completed_lags,
@@ -3047,7 +3044,7 @@ pub struct KFanFixture {
 /// non-uniform transition weights, each with its own deterministic leaf (stage
 /// [`K_FAN_LEAF_STAGE_ID`]) — `num_nodes (2k+1) > n_pools (k+2)` via leaf
 /// sharing, and a genuine `k`-node reverse-topological backward level at
-/// [`K_FAN_BRANCH_STAGE_ID`] (`backward_cut_levels_into`). Configured `sampled`
+/// [`K_FAN_BRANCH_STAGE_ID`] (`backward_cut_levels`). Configured `sampled`
 /// (never `enumerated`) with a fixed seed, `forward_passes` trajectories per
 /// iteration, `max_iterations` iterations.
 ///
@@ -5110,7 +5107,6 @@ pub fn extensive_form_optimum(setup: &StudySetup) -> f64 {
         objective,
         row_lower,
         row_upper,
-        n_state: 0,
         col_scale: Vec::new(),
         row_scale: Vec::new(),
     };
@@ -5597,14 +5593,12 @@ pub fn assert_templates_byte_identical(a: &StageTemplate, b: &StageTemplate, lab
         objective,
         row_lower,
         row_upper,
-        n_state,
         col_scale,
         row_scale,
     } = a;
     assert_eq!(*num_cols, b.num_cols, "{label}: num_cols");
     assert_eq!(*num_rows, b.num_rows, "{label}: num_rows");
     assert_eq!(*num_nz, b.num_nz, "{label}: num_nz");
-    assert_eq!(*n_state, b.n_state, "{label}: n_state");
     assert_eq!(*col_starts, b.col_starts, "{label}: col_starts");
     assert_eq!(*row_indices, b.row_indices, "{label}: row_indices");
     let bits = |xs: &[f64]| xs.iter().map(|v| v.to_bits()).collect::<Vec<u64>>();
@@ -5658,7 +5652,6 @@ mod byte_identity_tests {
             objective: vec![],
             row_lower: vec![],
             row_upper: vec![],
-            n_state: 0,
             col_scale: vec![0.0],
             row_scale: vec![],
         };
@@ -5792,7 +5785,7 @@ mod stage_context_fixture_tests {
     #[test]
     fn stage_context_fixture_derives_counts_from_owners() {
         let state = state_layout(2, 0);
-        let templates = vec![transit_bucket_only_template(1, state.n_state); 2];
+        let templates = vec![transit_bucket_only_template(1); 2];
         let state_boxes = permissive_state_boxes(state.n_state, 2);
         let geometry_per_stage = vec![geometry_with_load_balance(0, 1, 3); 2];
         let load_bus_indices = vec![0_usize];
@@ -5808,7 +5801,7 @@ mod stage_context_fixture_tests {
     #[should_panic(expected = "every stage must have one geometry")]
     fn stage_context_fixture_rejects_a_geometry_per_stage_length_mismatch() {
         let state = state_layout(1, 0);
-        let templates = vec![transit_bucket_only_template(1, state.n_state); 2];
+        let templates = vec![transit_bucket_only_template(1); 2];
         let state_boxes = permissive_state_boxes(state.n_state, 2);
         let geometry_per_stage = equipment_free_geometry(&[0]);
         let _ = StageContextFixture::new(&templates, &state_boxes, &geometry_per_stage);

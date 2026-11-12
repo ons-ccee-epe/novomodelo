@@ -222,7 +222,6 @@ pub(super) fn build_single_stage_template(
         objective,
         row_lower,
         row_upper,
-        n_state: layout.n_state(),
         col_scale: Vec::new(),
         row_scale: Vec::new(),
     };
@@ -323,7 +322,6 @@ pub(crate) fn models_from_normal<M>(
 ///
 /// - `num_cols` and `num_rows` are computed by `layout::StageLayout` —
 ///   see `layout.rs` for the authoritative column and row counts
-/// - `n_state  = N*(1+L)`
 ///
 /// ## Objective coefficients
 ///

@@ -75,7 +75,7 @@ impl PatchBuffer {
     /// Construct a [`PatchBuffer`] sized to `M*B + R` row patches and one column
     /// patch per state dimension that has an LP column
     /// ([`StateRegion::has_lp_columns`]), zero-initialised, from its owners:
-    /// `N`, `L`, `n_buckets`, `A`, and `K` come from `state`; `M` is
+    /// `N`, `n_buckets`, `A`, and `K` come from `state`; `M` is
     /// `load_bus_indices.len()`; `B` is [`StageGeometry::max_blocks`] over
     /// `geometry_per_stage`; `R` is the most distinct rows any one stage's
     /// coupling touches, and `0` for `&[]`.
@@ -86,8 +86,8 @@ impl PatchBuffer {
     /// `fill_col_state_patches`. Pass `&[]` for `load_bus_indices` when there is no
     /// stochastic load and `&[]` for `geometry_per_stage` when there is no
     /// stochastic load or the caller has no geometry to size from.
-    /// `compact_shift_region_holds_the_most_touched_rows_of_any_stage` (this
-    /// module's `tests`) pins `R`.
+    /// `shift_region_holds_the_most_touched_rows_of_any_stage` (this module's
+    /// `tests`) pins `R`.
     ///
     /// # Examples
     ///
@@ -97,7 +97,7 @@ impl PatchBuffer {
     /// widen only the column region, and row capacity depends on the coupling
     /// alone, never on `N` or `L`. `patch_buffer_new_sizes_from_its_owners` (this
     /// module's `tests`) is the runnable form of these cases, and
-    /// `fill_col_state_patches_skips_the_lag_region_of_a_compact_layout` of the lag slice.
+    /// `fill_col_state_patches_skips_the_lag_region` of the lag slice.
     ///
     /// [`fill_load_patches`]: PatchBuffer::fill_load_patches
     /// [`fill_inflow_shift_patches`]: PatchBuffer::fill_inflow_shift_patches
@@ -571,14 +571,14 @@ mod tests {
     }
 
     #[test]
-    fn compact_shift_region_holds_the_most_touched_rows_of_any_stage() {
+    fn shift_region_holds_the_most_touched_rows_of_any_stage() {
         let couplings = [
             inflow_coupling_with_entries(2, &[(0, 1)]),
             inflow_coupling_with_entries(2, &[(0, 2), (1, 2), (0, 5), (1, 7)]),
             inflow_coupling_with_entries(2, &[(0, 3), (1, 4)]),
         ];
         let geometry = equipment_free_geometry(&[2, 1, 2]);
-        let state = compact_state(2);
+        let state = par1_state(2);
         let row_lens = |buf: &PatchBuffer| [buf.indices.len(), buf.lower.len(), buf.upper.len()];
 
         assert_eq!(
@@ -591,7 +591,7 @@ mod tests {
         );
     }
 
-    fn compact_state(n_hydros: usize) -> StateSpace {
+    fn par1_state(n_hydros: usize) -> StateSpace {
         StateSpace::new(
             n_hydros,
             1,
@@ -609,7 +609,7 @@ mod tests {
         row_scale: &[f64],
     ) -> PatchBuffer {
         let mut buf = PatchBuffer::new(
-            &compact_state(n_hydros),
+            &par1_state(n_hydros),
             &[],
             &[],
             std::slice::from_ref(coupling),
@@ -672,7 +672,7 @@ mod tests {
 
     #[test]
     fn inflow_shift_region_follows_the_load_patches() {
-        let state = compact_state(2);
+        let state = par1_state(2);
         let coupling = inflow_coupling_with_entries(2, &[(0, 3), (1, 5)]);
         let mut buf = PatchBuffer::new(
             &state,
@@ -1237,11 +1237,11 @@ mod tests {
         );
     }
 
-    /// A compact layout has no lag columns: the pins are the non-lag dimensions in
+    /// The lag region has no columns: the pins are the non-lag dimensions in
     /// ascending order packed from slot 0, so the bucket and anticipated pins sit
     /// `N*L` slots below their state indices.
     #[test]
-    fn fill_col_state_patches_skips_the_lag_region_of_a_compact_layout() {
+    fn fill_col_state_patches_skips_the_lag_region() {
         let lead_stages = vec![1];
         let layout = StateSpace::new(
             2,

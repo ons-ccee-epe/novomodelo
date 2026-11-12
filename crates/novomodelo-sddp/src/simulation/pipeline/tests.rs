@@ -1737,7 +1737,6 @@ mod dcs_simulation {
             objective,
             row_lower,
             row_upper,
-            n_state: 1,
             col_scale: Vec::new(),
             row_scale: Vec::new(),
         }
@@ -2235,7 +2234,7 @@ mod anticipated_ring_matches_forward_propagation {
         ]
     }
 
-    fn ring_template(num_cols: usize, n_state: usize) -> StageTemplate {
+    fn ring_template(num_cols: usize) -> StageTemplate {
         StageTemplate {
             num_cols,
             num_rows: 0,
@@ -2248,7 +2247,6 @@ mod anticipated_ring_matches_forward_propagation {
             objective: vec![0.0; num_cols],
             row_lower: Vec::new(),
             row_upper: Vec::new(),
-            n_state,
             col_scale: Vec::new(),
             row_scale: Vec::new(),
         }
@@ -2286,7 +2284,8 @@ mod anticipated_ring_matches_forward_propagation {
         ws.current_state.extend_from_slice(&[10.0, 20.0]);
 
         let mut basis_store = BasisStore::new(1, N_STAGES);
-        let mut slices = basis_store.split_workers_mut(basis_store.num_scenarios(), 1);
+        let mut slices = Vec::new();
+        basis_store.split_workers_into(basis_store.num_scenarios(), 1, &mut slices);
         let mut records: Vec<TrajectoryRecord> =
             (0..N_STAGES).map(|_| TrajectoryRecord::default()).collect();
 
@@ -2432,7 +2431,7 @@ mod anticipated_ring_matches_forward_propagation {
             resolution,
         );
         let num_cols = state.theta + 1;
-        let template = ring_template(num_cols, state.n_state);
+        let template = ring_template(num_cols);
         let templates = vec![template.clone(), template.clone(), template];
         let stochastic = test_support::hydro_free_stochastic_context(N_STAGES, 1);
         let horizon = HorizonMode::Finite {
@@ -2535,10 +2534,10 @@ fn simulation_node_pin_is_none_for_generated_and_declared_column_for_external() 
             q: 1.0 / 3.0,
         },
     };
-    let ng = NodeGraph {
-        node_ids: vec![NodeId(0), NodeId(1)].into(),
-        nodes: vec![external, generated].into(),
-        successors: vec![
+    let ng = NodeGraph::new(
+        vec![NodeId(0), NodeId(1)].into(),
+        vec![external, generated].into(),
+        vec![
             vec![NodeSuccessor {
                 child: NodePos(1),
                 probability: 1.0,
@@ -2546,9 +2545,9 @@ fn simulation_node_pin_is_none_for_generated_and_declared_column_for_external() 
             Vec::new(),
         ]
         .into(),
-        n_pools: 2,
-        pool_stage: vec![StageIdx(0), StageIdx(1)],
-    };
+        2,
+        vec![StageIdx(0), StageIdx(1)],
+    );
 
     assert_eq!(ng.node_pinned_scenario(NodePos(0)), Some(5));
     assert_eq!(ng.node_pinned_scenario(NodePos(1)), None);

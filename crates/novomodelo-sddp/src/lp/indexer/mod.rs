@@ -8,7 +8,7 @@
 //!
 //! ## Column layout (Solver Abstraction SS2.1)
 //!
-//! The stage-invariant state-vector column ranges (storage, AR lags,
+//! The stage-invariant state-vector column ranges (storage,
 //! travel-time buckets, the anticipated ring's outgoing and incoming blocks,
 //! `theta`) are owned entirely by [`StateSpace`] — see its own
 //! module doc for the authoritative diagram; this file does not re-derive it,

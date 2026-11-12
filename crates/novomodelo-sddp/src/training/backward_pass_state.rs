@@ -350,15 +350,6 @@ pub struct BackwardPassState {
     /// trailing bound (`offsets[i]..offsets[i + 1]` bounds level node `i`).
     routed_offsets_scratch: Vec<usize>,
 
-    /// The graph's reverse-topological cut-sharing levels, CSR values: `cut_level_nodes[
-    /// cut_level_offsets[i]..cut_level_offsets[i + 1]]` are level `i`'s cut-generating
-    /// nodes, in processing order. Refilled by each backward run from the node graph.
-    cut_level_nodes: Vec<NodePos>,
-
-    /// CSR offsets into `cut_level_nodes`: one entry per level plus a trailing bound
-    /// (`offsets[i]..offsets[i + 1]` bounds level `i`).
-    cut_level_offsets: Vec<usize>,
-
     /// Per-level list of every cut-generating node's successor pool regions (one
     /// entry per child), reused across levels. Each [`NodeCompute::pool_regions`]
     /// range indexes into it so the level's metadata sync targets each child's OWN
@@ -488,8 +479,6 @@ impl BackwardPassState {
             level_pools_scratch: Vec::new(),
             routed_trials_scratch: Vec::new(),
             routed_offsets_scratch: Vec::new(),
-            cut_level_nodes: Vec::new(),
-            cut_level_offsets: Vec::new(),
             node_visit_offsets: Vec::new(),
             trial_node_send: vec![NO_TRIAL; max_local_fwd],
             trial_node_recv: vec![NO_TRIAL; n_ranks * max_local_fwd],
@@ -614,13 +603,6 @@ impl BackwardPassState {
             .reserve_exact(cut_generating.max(self.num_stages));
     }
 
-    /// Reserves the cut-level buffers for the largest level list `node_graph` allows: a graph has no
-    /// more levels than nodes. Call it once at construction.
-    pub(crate) fn reserve_cut_levels(&mut self, node_graph: &NodeGraph) {
-        reserve_to(&mut self.cut_level_nodes, node_graph.nodes.len());
-        reserve_to(&mut self.cut_level_offsets, node_graph.nodes.len() + 1);
-    }
-
     /// Upper bound on the entries one backward run records.
     pub(crate) fn stage_stats_entry_bound(&self) -> usize {
         self.stage_stats_entry_bound
@@ -638,11 +620,6 @@ impl BackwardPassState {
     #[cfg(test)]
     pub(crate) fn stage_noise(&self) -> &StageNoiseTable {
         &self.stage_noise
-    }
-
-    #[cfg(test)]
-    pub(crate) fn cut_levels(&self) -> (&Vec<NodePos>, &Vec<usize>) {
-        (&self.cut_level_nodes, &self.cut_level_offsets)
     }
 
     /// Overrides whether the by-node scheduler claims work
@@ -818,13 +795,7 @@ impl BackwardPassState {
         // within a level processed independently (nested per-node risk makes
         // siblings barrier-free). Absent `nodes[]` every level is one node
         // (== stage), reducing to the reversed stage loop byte-for-byte.
-        let mut level_nodes = std::mem::take(&mut self.cut_level_nodes);
-        let mut level_offsets = std::mem::take(&mut self.cut_level_offsets);
-        training_ctx
-            .node_graph
-            .backward_cut_levels_into(&mut level_nodes, &mut level_offsets);
-        for bounds in level_offsets.windows(2) {
-            let level = &level_nodes[bounds[0]..bounds[1]];
+        for level in training_ctx.node_graph.backward_cut_levels() {
             let out = run_one_backward_level(self, inputs, level, &params)?;
             cuts_generated += out.cuts_generated;
             state_exchange_ms += out.state_exchange_ms;
@@ -835,8 +806,6 @@ impl BackwardPassState {
             scheduling_ms += out.scheduling_ms;
             cut_sync_ms += out.cut_sync_ms;
         }
-        self.cut_level_nodes = level_nodes;
-        self.cut_level_offsets = level_offsets;
 
         if let Some(sender) = inputs.event_sender {
             for ws in inputs.workspaces.iter() {
@@ -871,7 +840,7 @@ impl BackwardPassState {
         })
     }
 
-    /// The enumerated-traversal backward driver: walks `NodeGraph::backward_cut_levels_into`
+    /// The enumerated-traversal backward driver: walks `NodeGraph::backward_cut_levels`
     /// (already node-native, non-leaf reverse-topological) and, for each
     /// cut-generating node, reads its own persisted outgoing state
     /// (`inputs.enumerated_state`, populated by the enumerated forward — the
@@ -931,12 +900,9 @@ impl BackwardPassState {
             delta.reset_in_place();
         }
 
-        let mut level_nodes = std::mem::take(&mut self.cut_level_nodes);
-        let mut level_offsets = std::mem::take(&mut self.cut_level_offsets);
-        node_graph.backward_cut_levels_into(&mut level_nodes, &mut level_offsets);
         let mut cuts_generated: usize = 0;
-        for bounds in level_offsets.windows(2) {
-            for &node_pos in &level_nodes[bounds[0]..bounds[1]] {
+        for level in node_graph.backward_cut_levels() {
+            for &node_pos in level {
                 let node_id = node_graph.node_ids[node_pos];
                 let pool_id = node_graph.nodes[node_pos].pool_id;
                 let node_stage = node_graph.nodes[node_pos].stage;
@@ -1045,8 +1011,6 @@ impl BackwardPassState {
                 cuts_generated += 1;
             }
         }
-        self.cut_level_nodes = level_nodes;
-        self.cut_level_offsets = level_offsets;
 
         let worker_id = ws0.worker_id;
 
@@ -2626,7 +2590,6 @@ mod tests {
             objective: vec![0.0, 0.0, 1.0],
             row_lower: vec![0.0],
             row_upper: vec![0.0],
-            n_state: 1,
             col_scale: Vec::new(),
             row_scale: Vec::new(),
         }
@@ -2647,7 +2610,6 @@ mod tests {
             objective: vec![1.0],
             row_lower: vec![],
             row_upper: vec![],
-            n_state: 0,
             col_scale: Vec::new(),
             row_scale: Vec::new(),
         }
@@ -3703,7 +3665,9 @@ mod tests {
         // every child against child 0's basis key would leave the siblings' slots
         // empty — the reified per-child solve populates them all.
         {
-            let slice = basis_store.split_workers_mut(local_count, 1).remove(0);
+            let mut slices = Vec::new();
+            basis_store.split_workers_into(local_count, 1, &mut slices);
+            let slice = slices.remove(0);
             for succ in &node_graph.successors[NodePos(0)] {
                 assert!(
                     slice.get(0, succ.child).is_some(),
@@ -3944,7 +3908,7 @@ mod tests {
     }
 
     /// `n_workers` `MockSolver` workspaces, worker ids `0..n_workers`, for the
-    /// multi-worker routing regression (`split_workers_mut` splits the basis store
+    /// multi-worker routing regression (`split_workers_into` splits the basis store
     /// across exactly these).
     fn workspaces_n(count: usize, n_state: usize) -> Vec<SolverWorkspace<MockSolver>> {
         (0..count)
@@ -5017,9 +4981,9 @@ mod tests {
     /// probabilities: child `1` carries 2 openings at `P(0→1) = 0.25`, child
     /// `2` carries 2 openings at `P(0→2) = 0.75`.
     fn k_fan_node_graph() -> NodeGraph {
-        NodeGraph {
-            node_ids: vec![NodeId(0), NodeId(1), NodeId(2)].into(),
-            nodes: vec![
+        NodeGraph::new(
+            vec![NodeId(0), NodeId(1), NodeId(2)].into(),
+            vec![
                 NodeRuntime {
                     stage: StageIdx(0),
                     pool_id: 0,
@@ -5052,7 +5016,7 @@ mod tests {
                 },
             ]
             .into(),
-            successors: vec![
+            vec![
                 vec![
                     NodeSuccessor {
                         child: NodePos(1),
@@ -5067,9 +5031,9 @@ mod tests {
                 Vec::new(),
             ]
             .into(),
-            n_pools: 3,
-            pool_stage: vec![StageIdx(0), StageIdx(1), StageIdx(1)],
-        }
+            3,
+            vec![StageIdx(0), StageIdx(1), StageIdx(1)],
+        )
     }
 
     #[test]
@@ -5086,9 +5050,9 @@ mod tests {
     fn assemble_successor_outcome_weights_chain_degenerate_reduces_to_pinned_uniform_bit_pattern() {
         let n = 7_usize;
         let q = 1.0_f64 / (n as f64);
-        let node_graph = NodeGraph {
-            node_ids: vec![NodeId(0), NodeId(1)].into(),
-            nodes: vec![
+        let node_graph = NodeGraph::new(
+            vec![NodeId(0), NodeId(1)].into(),
+            vec![
                 NodeRuntime {
                     stage: StageIdx(0),
                     pool_id: 0,
@@ -5111,7 +5075,7 @@ mod tests {
                 },
             ]
             .into(),
-            successors: vec![
+            vec![
                 vec![NodeSuccessor {
                     child: NodePos(1),
                     probability: 1.0,
@@ -5119,9 +5083,9 @@ mod tests {
                 Vec::new(),
             ]
             .into(),
-            n_pools: 2,
-            pool_stage: vec![StageIdx(0), StageIdx(1)],
-        };
+            2,
+            vec![StageIdx(0), StageIdx(1)],
+        );
         let mut buf = Vec::new();
         assemble_successor_outcome_weights(&node_graph, NodePos(0), &mut buf);
         assert_eq!(buf.len(), n);
@@ -5204,9 +5168,9 @@ mod tests {
     /// way and produce a different intercept.
     #[test]
     fn cvar_aggregation_tie_break_follows_canonical_child_order() {
-        let node_graph = NodeGraph {
-            node_ids: vec![NodeId(0), NodeId(1), NodeId(2)].into(),
-            nodes: vec![
+        let node_graph = NodeGraph::new(
+            vec![NodeId(0), NodeId(1), NodeId(2)].into(),
+            vec![
                 NodeRuntime {
                     stage: StageIdx(0),
                     pool_id: 0,
@@ -5239,7 +5203,7 @@ mod tests {
                 },
             ]
             .into(),
-            successors: vec![
+            vec![
                 vec![
                     NodeSuccessor {
                         child: NodePos(1),
@@ -5254,9 +5218,9 @@ mod tests {
                 Vec::new(),
             ]
             .into(),
-            n_pools: 3,
-            pool_stage: vec![StageIdx(0), StageIdx(1), StageIdx(1)],
-        };
+            3,
+            vec![StageIdx(0), StageIdx(1), StageIdx(1)],
+        );
         let mut probabilities = Vec::new();
         assemble_successor_outcome_weights(&node_graph, NodePos(0), &mut probabilities);
         assert_eq!(probabilities, vec![0.3, 0.7]);
@@ -5355,7 +5319,8 @@ mod tests {
 
         let mut store = BasisStore::new(1, ng.nodes.len());
         {
-            let mut slices = store.split_workers_mut(1, 1);
+            let mut slices = Vec::new();
+            store.split_workers_into(1, 1, &mut slices);
             let slice = &mut slices[0];
             *slice.get_mut(0, node_a) = Some(CapturedBasis::new(2, 1, 0, 0, ng.node_ids[node_a]));
             assert!(

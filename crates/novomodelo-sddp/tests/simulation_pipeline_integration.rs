@@ -2711,9 +2711,9 @@ fn two_leaf_fan_node_graph() -> NodeGraph {
         len: 1,
         q: 1.0,
     };
-    NodeGraph {
-        node_ids: vec![NodeId(0), NodeId(1), NodeId(2)].into(),
-        nodes: vec![
+    NodeGraph::new(
+        vec![NodeId(0), NodeId(1), NodeId(2)].into(),
+        vec![
             NodeRuntime {
                 stage: StageIdx(0),
                 pool_id: 0,
@@ -2731,7 +2731,7 @@ fn two_leaf_fan_node_graph() -> NodeGraph {
             },
         ]
         .into(),
-        successors: vec![
+        vec![
             vec![
                 NodeSuccessor {
                     child: NodePos(1),
@@ -2746,9 +2746,9 @@ fn two_leaf_fan_node_graph() -> NodeGraph {
             Vec::new(),
         ]
         .into(),
-        n_pools: 2,
-        pool_stage: vec![StageIdx(0), StageIdx(1)],
-    }
+        2,
+        vec![StageIdx(0), StageIdx(1)],
+    )
 }
 
 /// A `CapturedBasis` warm-startable against a template shaped `num_cols=4`,

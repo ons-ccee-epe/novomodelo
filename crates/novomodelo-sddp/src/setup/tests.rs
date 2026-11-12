@@ -7742,283 +7742,6 @@ fn stage_id_resolver_agrees_with_study_stage_ids() {
     }
 }
 
-/// 2-hydro cascade: hydro 2 (upstream) declares a travel-time arc into hydro 1
-/// (downstream), so `bucket_topology.n_buckets() > 0`.
-#[expect(
-    clippy::too_many_lines,
-    clippy::items_after_statements,
-    reason = "the fixture spells out one complete study inline so each assertion traces to a literal, and fixture-local helper items sit beside the entities that use them"
-)]
-fn system_with_travel_time_arc(n_stages: usize) -> novomodelo_core::System {
-    use chrono::NaiveDate;
-
-    let bus = Bus {
-        id: EntityId(1),
-        name: "B1".to_string(),
-        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        deficit_segments: vec![DeficitSegment {
-            depth_mw: None,
-            cost_per_mwh: 500.0,
-        }],
-        excess_cost: 0.0,
-    };
-
-    let thermal = Thermal {
-        id: EntityId(3),
-        name: "T1".to_string(),
-        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        bus_id: EntityId(1),
-        min_generation_mw: 0.0,
-        max_generation_mw: 100.0,
-        cost_per_mwh: 50.0,
-        anticipated_config: None,
-        entry_stage_id: None,
-        exit_stage_id: None,
-    };
-
-    let make_hydro =
-        |id: i32, name: &str, downstream_id: Option<i32>, travel_time_hours: Option<f64>| {
-            let mut hydro = Hydro {
-                unit_groups: Vec::new(),
-                id: EntityId(id),
-                name: name.to_string(),
-                operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-                downstream_id: downstream_id.map(EntityId),
-                travel_time_hours,
-                entry_stage_id: None,
-                exit_stage_id: None,
-                min_storage_hm3: 0.0,
-                max_storage_hm3: 200.0,
-                min_outflow_m3s: 0.0,
-                max_outflow_m3s: None,
-                generation_model: HydroGenerationModel::ConstantProductivity,
-                min_turbined_m3s: 0.0,
-                max_turbined_m3s: 100.0,
-                specific_productivity_mw_per_m3s_per_m: None,
-                min_generation_mw: 0.0,
-                max_generation_mw: 250.0,
-                tailrace: None,
-                hydraulic_losses: None,
-                efficiency: None,
-                evaporation_coefficients_mm: None,
-                evaporation_reference_volumes_hm3: None,
-                diversion: None,
-                filling: None,
-                penalties: HydroPenalties {
-                    spillage_cost: 0.01,
-                    diversion_cost: 0.0,
-                    turbined_cost: 0.0,
-                    storage_violation_below_cost: 0.0,
-                    filling_target_violation_cost: 0.0,
-                    turbined_violation_below_cost: 0.0,
-                    outflow_violation_below_cost: 0.0,
-                    outflow_violation_above_cost: 0.0,
-                    generation_violation_below_cost: 0.0,
-                    evaporation_violation_cost: 0.0,
-                    water_withdrawal_violation_cost: 0.0,
-                    water_withdrawal_violation_pos_cost: 0.0,
-                    water_withdrawal_violation_neg_cost: 0.0,
-                    evaporation_violation_pos_cost: 0.0,
-                    evaporation_violation_neg_cost: 0.0,
-                    inflow_nonnegativity_cost: 1000.0,
-                },
-            };
-            hydro.declare_mirror_unit_group(EntityId(1));
-            hydro
-        };
-
-    // One 31-day calendar month per stage: `StageCalendar::new` (the
-    // travel-time seed's resolver) requires chronologically ordered,
-    // non-overlapping stage dates — a fixed date range shared by every stage
-    // (the pre-StageCalendar fixture) violates that precondition.
-    let mut stage_cursor = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
-    let stages: Vec<Stage> = (0..n_stages)
-        .map(|i| {
-            let start_date = stage_cursor;
-            let end_date = start_date + chrono::Duration::days(31);
-            stage_cursor = end_date;
-            Stage {
-                index: i,
-                id: i as i32,
-                start_date,
-                end_date,
-                season_id: None,
-                blocks: vec![Block {
-                    index: 0,
-                    name: "S".to_string(),
-                    duration_hours: 744.0,
-                }],
-                block_mode: BlockMode::Parallel,
-                state_config: StageStateConfig {
-                    storage: true,
-                    inflow_lags: false,
-                },
-                risk_config: StageRiskConfig::Expectation,
-                scenario_config: ScenarioSourceConfig {
-                    branching_factor: 1,
-                    noise_method: NoiseMethod::Saa,
-                },
-            }
-        })
-        .collect();
-
-    let inflow_models: Vec<InflowModel> = [1_i32, 2]
-        .into_iter()
-        .flat_map(|hid| {
-            (0..n_stages).map(move |i| InflowModel {
-                hydro_id: EntityId(hid),
-                stage_id: i as i32,
-                mean_m3s: 80.0,
-                std_m3s: 20.0,
-                ar_coefficients: vec![],
-                residual_std_ratio: 1.0,
-                annual: None,
-            })
-        })
-        .collect();
-
-    let load_models: Vec<LoadModel> = (0..n_stages)
-        .map(|i| LoadModel {
-            bus_id: EntityId(1),
-            stage_id: i as i32,
-            mean_mw: 100.0,
-            std_mw: 0.0,
-        })
-        .collect();
-
-    let n_st = n_stages.max(1);
-
-    fn default_hydro_bounds() -> HydroStageBounds {
-        HydroStageBounds {
-            min_storage_hm3: 0.0,
-            max_storage_hm3: 200.0,
-            filling_min_rate_m3s: 0.0,
-            water_withdrawal_m3s: 0.0,
-        }
-    }
-
-    fn default_hydro_block_bounds() -> HydroBlockBounds {
-        HydroBlockBounds {
-            max_turbined_m3s: 100.0,
-            max_generation_mw: 250.0,
-            ..Default::default()
-        }
-    }
-
-    fn default_hydro_penalties() -> HydroPenalties {
-        HydroPenalties {
-            spillage_cost: 0.01,
-            diversion_cost: 0.0,
-            turbined_cost: 0.0,
-            storage_violation_below_cost: 500.0,
-            filling_target_violation_cost: 0.0,
-            turbined_violation_below_cost: 0.0,
-            outflow_violation_below_cost: 0.0,
-            outflow_violation_above_cost: 0.0,
-            generation_violation_below_cost: 0.0,
-            evaporation_violation_cost: 0.0,
-            water_withdrawal_violation_cost: 0.0,
-            water_withdrawal_violation_pos_cost: 0.0,
-            water_withdrawal_violation_neg_cost: 0.0,
-            evaporation_violation_pos_cost: 0.0,
-            evaporation_violation_neg_cost: 0.0,
-            inflow_nonnegativity_cost: 1000.0,
-        }
-    }
-
-    let bounds = ResolvedBounds::new(
-        &BoundsCountsSpec {
-            n_hydros: 2,
-            n_thermals: 1,
-            n_lines: 0,
-            n_pumping: 0,
-            n_contracts: 0,
-            n_stages: n_st,
-            k_max: 0,
-        },
-        &BoundsDefaults {
-            hydro: default_hydro_bounds(),
-            hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
-            thermal_block: ThermalBlockBounds {
-                min_generation_mw: 0.0,
-                max_generation_mw: 100.0,
-            },
-            line_block: LineBlockBounds {
-                direct_mw: 0.0,
-                reverse_mw: 0.0,
-            },
-            pumping_block: PumpingBlockBounds {
-                min_flow_m3s: 0.0,
-                max_flow_m3s: 0.0,
-            },
-            contract_block: ContractBlockBounds {
-                min_mw: 0.0,
-                max_mw: 0.0,
-                price_per_mwh: 0.0,
-            },
-        },
-    );
-
-    let penalties = ResolvedPenalties::new(
-        &PenaltiesCountsSpec {
-            n_hydros: 2,
-            n_buses: 1,
-            n_lines: 0,
-            n_ncs: 0,
-            n_stages: n_st,
-        },
-        &PenaltiesDefaults {
-            hydro: default_hydro_penalties(),
-            bus: BusStagePenalties { excess_cost: 0.0 },
-            line: LineStagePenalties { exchange_cost: 0.0 },
-            ncs: NcsStagePenalties {
-                curtailment_cost: 0.0,
-            },
-        },
-    );
-
-    SystemBuilder::new()
-        .buses(vec![bus])
-        .thermals(vec![thermal])
-        .hydros(vec![
-            make_hydro(1, "H1_downstream", None, None),
-            make_hydro(2, "H2_upstream", Some(1), Some(2000.0)),
-        ])
-        .stages(stages)
-        .inflow_models(inflow_models)
-        .load_models(load_models)
-        .bounds(bounds)
-        .penalties(penalties)
-        .initial_conditions(InitialConditions {
-            storage: vec![],
-            filling_storage: vec![],
-            past_anticipated_commitments: vec![],
-            recent_observations: vec![],
-            past_defluences: vec![],
-        })
-        .build()
-        .expect("system_with_travel_time_arc: valid")
-}
-
-/// A declared arc (`n_buckets > 0`) sizes `StageData.state` and the LP
-/// template's `n_state` to the same value — both read the one threaded instance.
-#[test]
-fn setup_state_and_stage_template_agree_on_n_state_with_declared_arc() {
-    let system = system_with_travel_time_arc(6);
-    let setup = setup_from_system(&system);
-
-    assert!(
-        setup.inputs.stage_data.state.n_buckets > 0,
-        "fixture must declare a real travel-time arc"
-    );
-    assert_eq!(
-        setup.inputs.stage_data.stage_templates.templates[0].n_state,
-        setup.inputs.stage_data.state.n_state,
-        "the template's n_state must agree with StageData.state.n_state"
-    );
-}
-
 /// Geometry byte-identity (the role-(b) analogue of
 /// `assert_state_layout_finalized`): the production stage-0 `StageGeometry` is
 /// byte-identical to an independent `test_support::geometry` build; a divergence
@@ -10039,36 +9762,36 @@ fn ng_edge(child: usize) -> super::NodeSuccessor {
 /// path-product-sum is 2·3·5 + 2·7 = 44. Asymmetric so the test cannot pass a
 /// uniform-fan tautology.
 fn asymmetric_fan_node_graph() -> super::NodeGraph {
-    super::NodeGraph {
-        node_ids: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)].into(),
-        nodes: vec![ng_node(0, 2), ng_node(1, 3), ng_node(2, 5), ng_node(1, 7)].into(),
-        successors: vec![
+    super::NodeGraph::new(
+        vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)].into(),
+        vec![ng_node(0, 2), ng_node(1, 3), ng_node(2, 5), ng_node(1, 7)].into(),
+        vec![
             vec![ng_edge(1), ng_edge(3)],
             vec![ng_edge(2)],
             vec![],
             vec![],
         ]
         .into(),
-        n_pools: 1,
-        pool_stage: vec![super::node_graph::StageIdx(0)],
-    }
+        1,
+        vec![super::node_graph::StageIdx(0)],
+    )
 }
 
 /// A 3-node chain whose per-node |Ω| = 6·10⁹ makes the path product overflow
 /// `u64` (`u64::MAX ≈ 1.8·10¹⁹`, so the first multiply already overflows).
 fn overflowing_chain_node_graph() -> super::NodeGraph {
-    super::NodeGraph {
-        node_ids: vec![NodeId(0), NodeId(1), NodeId(2)].into(),
-        nodes: vec![
+    super::NodeGraph::new(
+        vec![NodeId(0), NodeId(1), NodeId(2)].into(),
+        vec![
             ng_node(0, 6_000_000_000),
             ng_node(1, 6_000_000_000),
             ng_node(2, 6_000_000_000),
         ]
         .into(),
-        successors: vec![vec![ng_edge(1)], vec![ng_edge(2)], vec![]].into(),
-        n_pools: 1,
-        pool_stage: vec![super::node_graph::StageIdx(0)],
-    }
+        vec![vec![ng_edge(1)], vec![ng_edge(2)], vec![]].into(),
+        1,
+        vec![super::node_graph::StageIdx(0)],
+    )
 }
 
 fn rules_with_gap() -> crate::stopping_rule::StoppingRuleSet {
@@ -10334,19 +10057,19 @@ fn enumeration_asymmetry_symmetric_declarations_do_not_warn() {
 /// `resolve_enumerated_simulation_count` must admit now that the derived-≥-1
 /// census gate is open.
 fn terminal_fan_tree_node_graph() -> super::NodeGraph {
-    super::NodeGraph {
-        node_ids: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)].into(),
-        nodes: vec![ng_node(0, 1), ng_node(1, 1), ng_node(1, 1), ng_node(1, 1)].into(),
-        successors: vec![
+    super::NodeGraph::new(
+        vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)].into(),
+        vec![ng_node(0, 1), ng_node(1, 1), ng_node(1, 1), ng_node(1, 1)].into(),
+        vec![
             vec![ng_edge(1), ng_edge(2), ng_edge(3)],
             vec![],
             vec![],
             vec![],
         ]
         .into(),
-        n_pools: 1,
-        pool_stage: vec![super::node_graph::StageIdx(0)],
-    }
+        1,
+        vec![super::node_graph::StageIdx(0)],
+    )
 }
 
 /// A `K = 3` branching tree is admitted for TRAINING through the shared
@@ -10385,13 +10108,13 @@ fn resolve_enumerated_simulation_count_propagates_kt_overflow_guard() {
 /// predecessor of its one child), so `reject_within_node_opening_enumeration`
 /// is the guard that fires, not `reject_recombining_node_enumeration`.
 fn within_node_multi_opening_node_graph() -> super::NodeGraph {
-    super::NodeGraph {
-        node_ids: vec![NodeId(0), NodeId(1)].into(),
-        nodes: vec![ng_node(0, 2), ng_node(1, 1)].into(),
-        successors: vec![vec![ng_edge(1)], vec![]].into(),
-        n_pools: 1,
-        pool_stage: vec![super::node_graph::StageIdx(0)],
-    }
+    super::NodeGraph::new(
+        vec![NodeId(0), NodeId(1)].into(),
+        vec![ng_node(0, 2), ng_node(1, 1)].into(),
+        vec![vec![ng_edge(1)], vec![]].into(),
+        1,
+        vec![super::node_graph::StageIdx(0)],
+    )
 }
 
 /// A within-node multi-opening node (`|Ω| > 1`) under enumerated SIMULATION is
@@ -10417,19 +10140,19 @@ fn resolve_enumerated_simulation_count_rejects_within_node_multi_opening() {
 /// opening set, so the within-node-opening rejection passes and the
 /// recombination guard is what fires.
 fn recombining_tree_node_graph() -> super::NodeGraph {
-    super::NodeGraph {
-        node_ids: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)].into(),
-        nodes: vec![ng_node(0, 1), ng_node(1, 1), ng_node(1, 1), ng_node(2, 1)].into(),
-        successors: vec![
+    super::NodeGraph::new(
+        vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)].into(),
+        vec![ng_node(0, 1), ng_node(1, 1), ng_node(1, 1), ng_node(2, 1)].into(),
+        vec![
             vec![ng_edge(1), ng_edge(2)],
             vec![ng_edge(3)],
             vec![ng_edge(3)],
             vec![],
         ]
         .into(),
-        n_pools: 1,
-        pool_stage: vec![super::node_graph::StageIdx(0)],
-    }
+        1,
+        vec![super::node_graph::StageIdx(0)],
+    )
 }
 
 /// A recombining node (in-degree ≥ 2) under enumerated TRAINING is a named
@@ -10521,16 +10244,16 @@ fn ng_external_node(stage: usize, offset: usize) -> super::NodeRuntime {
 /// column 2, node id 9): the child's `scenario_id` surfaces as an `External`
 /// opening, the shape the sampled-selection guard rejects.
 fn external_pointer_node_graph() -> super::NodeGraph {
-    super::NodeGraph {
-        node_ids: vec![NodeId(7), NodeId(9)].into(),
-        nodes: vec![ng_node(0, 3), ng_external_node(1, 2)].into(),
-        successors: vec![vec![ng_edge(1)], vec![]].into(),
-        n_pools: 2,
-        pool_stage: vec![
+    super::NodeGraph::new(
+        vec![NodeId(7), NodeId(9)].into(),
+        vec![ng_node(0, 3), ng_external_node(1, 2)].into(),
+        vec![vec![ng_edge(1)], vec![]].into(),
+        2,
+        vec![
             super::node_graph::StageIdx(0),
             super::node_graph::StageIdx(1),
         ],
-    }
+    )
 }
 
 /// A node carrying a scenario pointer (`External` opening) under sampled forward

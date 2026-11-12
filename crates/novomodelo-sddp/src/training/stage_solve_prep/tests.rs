@@ -219,7 +219,6 @@ fn minimal_forward_template() -> StageTemplate {
         objective: vec![0.0, 0.0, 1.0],
         row_lower: vec![0.0],
         row_upper: vec![0.0],
-        n_state: 1,
         col_scale: Vec::new(),
         row_scale: Vec::new(),
     }
@@ -516,7 +515,6 @@ fn the_prep_wires_the_ncs_patch_matching_the_direct_sequence() {
         objective: vec![0.0],
         row_lower: vec![],
         row_upper: vec![],
-        n_state: 0,
         col_scale: Vec::new(),
         row_scale: Vec::new(),
     }];
@@ -634,7 +632,6 @@ fn the_prep_pins_the_state_columns_before_any_row_bound() {
         objective: vec![0.0],
         row_lower: vec![],
         row_upper: vec![],
-        n_state: 0,
         col_scale: Vec::new(),
         row_scale: Vec::new(),
     }];
@@ -912,7 +909,7 @@ impl CompactCase {
             row_upper: vec![0.0],
             col_scale: vec![2.0; num_cols],
             row_scale: vec![4.0],
-            ..transit_bucket_only_template(num_cols, state.n_state)
+            ..transit_bucket_only_template(num_cols)
         }];
         let geometry = vec![StageGeometry {
             inflow_slack: state.theta + 1..state.theta + 2,

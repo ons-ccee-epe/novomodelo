@@ -8,7 +8,7 @@
 //! skeleton implementation.
 //!
 //! [`StateSpace`] remains the sole owner of the
-//! out/in state-index ranges: a [`DeliveryRing`] borrows them for one
+//! outgoing and incoming column blocks: a [`DeliveryRing`] borrows them for one
 //! construction and never re-derives or persists an independent copy. The
 //! block-mode-coupled per-lag deposit fill stays at each ring's own call
 //! site; this module owns only the shared skeleton, plus the column-bound

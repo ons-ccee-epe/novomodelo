@@ -1502,7 +1502,7 @@ pub(super) fn build_stage_matrix_entries(
 }
 
 #[cfg(test)]
-pub(super) fn build_stage_matrix_entries_with_inflow_coupling(
+pub(super) fn build_stage_matrix_entries_for_test(
     ctx: &TemplateBuildCtx<'_>,
     stage: &Stage,
     stage_idx: usize,
@@ -1519,9 +1519,25 @@ pub(super) fn build_stage_inflow_coupling(
     stage_idx: usize,
     layout: &StageLayout,
 ) -> InflowCoupling {
+    let mut col_upper = vec![f64::INFINITY; layout.num_cols];
+    let mut objective = vec![0.0_f64; layout.num_cols];
+    let (mut row_lower, mut row_upper) =
+        super::rows::fill_stage_rows(ctx, stage, stage_idx, layout);
     let mut sink = InflowCouplingSink::new(layout.state.hydro_count);
-    build_stage_matrix_entries(ctx, stage, stage_idx, layout, &mut sink);
-    let (row_lower, row_upper) = super::rows::fill_stage_rows(ctx, stage, stage_idx, layout);
+    let mut col_entries = build_stage_matrix_entries(ctx, stage, stage_idx, layout, &mut sink);
+    fill_generic_constraint_entries(
+        ctx,
+        stage_idx,
+        layout,
+        &mut LpMatrixBuffers {
+            col_entries: &mut col_entries,
+            col_upper: &mut col_upper,
+            objective: &mut objective,
+            row_lower: &mut row_lower,
+            row_upper: &mut row_upper,
+        },
+        &mut sink,
+    );
     sink.finish(&row_lower, &row_upper)
 }
 
@@ -2183,9 +2199,8 @@ mod zero_cost_tests {
     };
     use super::super::test_support::two_block_stage;
     use super::{
-        DeliveryRing, build_stage_matrix_entries_with_inflow_coupling,
-        fill_anticipated_fishing_entries, fill_anticipated_slot_definition_entries,
-        fill_anticipated_state_out_def_entries,
+        DeliveryRing, build_stage_matrix_entries_for_test, fill_anticipated_fishing_entries,
+        fill_anticipated_slot_definition_entries, fill_anticipated_state_out_def_entries,
     };
 
     /// Placeholder thermal at position `idx`, inert past its `id`:
@@ -2790,7 +2805,7 @@ mod zero_cost_tests {
 
         let (col_lower, col_upper, _objective) = fill_stage_columns(&ctx, &stage, 4, &layout);
         let (row_lower, row_upper) = fill_stage_rows(&ctx, &stage, 4, &layout);
-        let col_entries = build_stage_matrix_entries_with_inflow_coupling(&ctx, &stage, 4, &layout);
+        let col_entries = build_stage_matrix_entries_for_test(&ctx, &stage, 4, &layout);
 
         let base = layout.state.commit_out.start;
         let row_start = layout.anticipated.slot_definition_rows.start;
@@ -3328,7 +3343,7 @@ mod zero_cost_tests {
         );
 
         let layout = StageLayout::new(&ctx, &stage, 0);
-        let col_entries = build_stage_matrix_entries_with_inflow_coupling(&ctx, &stage, 0, &layout);
+        let col_entries = build_stage_matrix_entries_for_test(&ctx, &stage, 0, &layout);
 
         let a = ctx.study_dims.anticipated_plants.len();
         let k = ctx
@@ -3416,9 +3431,8 @@ mod pumping_water_tests {
     };
     use super::{
         GenericConstraintFill, assemble_csc, build_stage_inflow_coupling,
-        build_stage_matrix_entries_with_inflow_coupling, fill_fpha_entries,
-        fill_generic_constraints_for_test, fill_load_balance_entries,
-        fill_operational_violation_entries, fill_pumping_water_entries,
+        build_stage_matrix_entries_for_test, fill_fpha_entries, fill_generic_constraints_for_test,
+        fill_load_balance_entries, fill_operational_violation_entries, fill_pumping_water_entries,
         fill_transit_bucket_definition_entries, resolve_bucket_arrival_density,
         resolve_variable_ref,
     };
@@ -4487,7 +4501,7 @@ mod pumping_water_tests {
         // fill_generic_constraint_entries (the resolved ContractImport arm). Under
         // debug_assertions every debug_assert! is live; reaching the assertion below
         // proves none fired.
-        let col_entries = build_stage_matrix_entries_with_inflow_coupling(&ctx, &stage, 0, &layout);
+        let col_entries = build_stage_matrix_entries_for_test(&ctx, &stage, 0, &layout);
         assert_eq!(col_entries.len(), layout.num_cols);
     }
 
@@ -4575,8 +4589,7 @@ mod pumping_water_tests {
             let ctx = fixtures.make_ctx();
             let stage = two_block_stage(0, [300.0, 444.0]);
             let layout = StageLayout::new(&ctx, &stage, 0);
-            let mut entries =
-                build_stage_matrix_entries_with_inflow_coupling(&ctx, &stage, 0, &layout);
+            let mut entries = build_stage_matrix_entries_for_test(&ctx, &stage, 0, &layout);
             // Mirror the production per-column row-sort (see build_single_stage_template).
             for col in &mut entries {
                 col.sort_unstable_by_key(|&(row, _)| row);
@@ -4678,7 +4691,7 @@ mod pumping_water_tests {
             let stage = two_block_stage(0, [300.0, 444.0]);
             let layout = StageLayout::new(&ctx, &stage, 0);
 
-            let entries = build_stage_matrix_entries_with_inflow_coupling(&ctx, &stage, 0, &layout);
+            let entries = build_stage_matrix_entries_for_test(&ctx, &stage, 0, &layout);
             let mut fill = fill_generic_constraints_for_test(&ctx, 0, &layout, entries);
 
             // Mirror the production per-column row-sort (see
@@ -4852,8 +4865,7 @@ mod pumping_water_tests {
             let (row_lower, row_upper) =
                 super::super::rows::fill_stage_rows(&ctx, &stage, 0, &layout);
             let csc = {
-                let mut entries =
-                    build_stage_matrix_entries_with_inflow_coupling(&ctx, &stage, 0, &layout);
+                let mut entries = build_stage_matrix_entries_for_test(&ctx, &stage, 0, &layout);
                 for col in &mut entries {
                     col.sort_unstable_by_key(|&(row, _)| row);
                 }
@@ -4925,8 +4937,7 @@ mod pumping_water_tests {
         let stage = two_block_stage(0, [300.0, 444.0]);
         let layout = StageLayout::new(&ctx, &stage, 0);
         let csc = {
-            let mut entries =
-                build_stage_matrix_entries_with_inflow_coupling(&ctx, &stage, 0, &layout);
+            let mut entries = build_stage_matrix_entries_for_test(&ctx, &stage, 0, &layout);
             // Mirror the production per-column row-sort (see
             // build_single_stage_template) before assembling the CSC.
             for col in &mut entries {
@@ -5152,7 +5163,7 @@ mod pumping_water_tests {
         let ctx = fixtures.make_ctx();
         let stage = three_block_stage(0);
         let layout = StageLayout::new(&ctx, &stage, 0);
-        let entries = build_stage_matrix_entries_with_inflow_coupling(&ctx, &stage, 0, &layout);
+        let entries = build_stage_matrix_entries_for_test(&ctx, &stage, 0, &layout);
 
         let plant1_idx = 1;
         let row0_u = layout.geometry.water_balance.start();
@@ -6082,7 +6093,7 @@ mod pumping_water_tests {
         layout: &StageLayout,
         h: HydroSys,
     ) {
-        let entries = build_stage_matrix_entries_with_inflow_coupling(ctx, stage, 0, layout);
+        let entries = build_stage_matrix_entries_for_test(ctx, stage, 0, layout);
         let local = PlantFloorLocal::new(
             layout
                 .geometry
@@ -6257,8 +6268,7 @@ mod pumping_water_tests {
         stage_idx: usize,
         layout: &StageLayout,
     ) -> (Vec<i32>, Vec<i32>, Vec<f64>) {
-        let mut entries =
-            build_stage_matrix_entries_with_inflow_coupling(ctx, stage, stage_idx, layout);
+        let mut entries = build_stage_matrix_entries_for_test(ctx, stage, stage_idx, layout);
         for col in &mut entries {
             col.sort_unstable_by_key(|&(row, _)| row);
         }
@@ -6497,7 +6507,7 @@ mod pumping_water_tests {
         layout: &StageLayout,
         h: HydroSys,
     ) {
-        let entries = build_stage_matrix_entries_with_inflow_coupling(ctx, stage, 0, layout);
+        let entries = build_stage_matrix_entries_for_test(ctx, stage, 0, layout);
         let local = PlantCapLocal::new(
             layout
                 .geometry
@@ -7624,7 +7634,7 @@ mod pumping_water_tests {
         let stage = two_block_stage(0, [300.0, 444.0]);
         let layout = StageLayout::new(&ctx, &stage, 0);
 
-        let _ = build_stage_matrix_entries_with_inflow_coupling(&ctx, &stage, 0, &layout);
+        let _ = build_stage_matrix_entries_for_test(&ctx, &stage, 0, &layout);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -7903,7 +7913,7 @@ mod pumping_water_tests {
         let stage = chronological_stage(0, &[720.0]);
         let layout = StageLayout::new(&ctx, &stage, 0);
 
-        let _ = build_stage_matrix_entries_with_inflow_coupling(&ctx, &stage, 0, &layout);
+        let _ = build_stage_matrix_entries_for_test(&ctx, &stage, 0, &layout);
     }
 
     /// The `Σ_b w_b·χ_{b,d} == k_d` shared-density consistency (row 9) fires
@@ -7946,7 +7956,7 @@ mod pumping_water_tests {
         let stage = chronological_stage(0, &[720.0]);
         let layout = StageLayout::new(&ctx, &stage, 0);
 
-        let _ = build_stage_matrix_entries_with_inflow_coupling(&ctx, &stage, 0, &layout);
+        let _ = build_stage_matrix_entries_for_test(&ctx, &stage, 0, &layout);
     }
 
     /// `resolve_bucket_arrival_density` returns the precomputed arrival-frame
@@ -8140,7 +8150,7 @@ mod pumping_water_tests {
         let stage = chronological_stage(0, &[300.0, 420.0]);
         let layout = StageLayout::new(&ctx, &stage, 0);
 
-        let _ = build_stage_matrix_entries_with_inflow_coupling(&ctx, &stage, 0, &layout);
+        let _ = build_stage_matrix_entries_for_test(&ctx, &stage, 0, &layout);
     }
 
     /// End-to-end: a generic constraint referencing `pumping_flow` and
@@ -8756,8 +8766,7 @@ mod pumping_water_tests {
         let stage = two_block_stage(stage_index, [300.0, 444.0]);
         let layout = StageLayout::new(&ctx, &stage, 0);
         let csc = {
-            let mut entries =
-                build_stage_matrix_entries_with_inflow_coupling(&ctx, &stage, 0, &layout);
+            let mut entries = build_stage_matrix_entries_for_test(&ctx, &stage, 0, &layout);
             for col in &mut entries {
                 col.sort_unstable_by_key(|&(row, _)| row);
             }
@@ -8860,8 +8869,7 @@ mod pumping_water_tests {
                     let mut stage = two_block_stage(stage_index, [300.0, 444.0]);
                     stage.block_mode = block_mode;
                     let layout = StageLayout::new(&ctx, &stage, 0);
-                    let mut entries =
-                        build_stage_matrix_entries_with_inflow_coupling(&ctx, &stage, 0, &layout);
+                    let mut entries = build_stage_matrix_entries_for_test(&ctx, &stage, 0, &layout);
                     for col in &mut entries {
                         col.sort_unstable_by_key(|&(row, _)| row);
                     }
@@ -9057,7 +9065,7 @@ mod pumping_water_tests {
     }
 
     #[test]
-    fn compact_template_inflow_coupling_equals_logical_shifted_by_the_z_rows() {
+    fn inflow_coupling_records_minus_zeta_on_each_hydros_water_row() {
         let stage = two_block_stage(0, [300.0, 444.0]);
         let mut fixtures = two_hydro_ar1_fixtures();
         let ctx = fixtures.make_ctx();
@@ -9078,7 +9086,7 @@ mod pumping_water_tests {
     }
 
     #[test]
-    fn compact_inflow_coupling_keeps_the_logical_touched_row_bounds() {
+    fn inflow_coupling_keeps_the_unscaled_bounds_of_its_touched_rows() {
         let stage = two_block_stage(0, [300.0, 444.0]);
         let mut fixtures = two_hydro_ar1_fixtures();
         let ctx = fixtures.make_ctx();
@@ -9160,8 +9168,7 @@ mod pumping_water_tests {
         let layout = StageLayout::new(&ctx, &stage, 0);
         let (row_lower, row_upper) = super::super::rows::fill_stage_rows(&ctx, &stage, 0, &layout);
         let csc = {
-            let mut entries =
-                build_stage_matrix_entries_with_inflow_coupling(&ctx, &stage, 0, &layout);
+            let mut entries = build_stage_matrix_entries_for_test(&ctx, &stage, 0, &layout);
             for col in &mut entries {
                 col.sort_unstable_by_key(|&(row, _)| row);
             }
@@ -9474,8 +9481,7 @@ mod pumping_water_tests {
         let layout = StageLayout::new(&ctx, &stage, 0);
         let (row_lower, row_upper) = super::super::rows::fill_stage_rows(&ctx, &stage, 0, &layout);
         let csc = {
-            let mut entries =
-                build_stage_matrix_entries_with_inflow_coupling(&ctx, &stage, 0, &layout);
+            let mut entries = build_stage_matrix_entries_for_test(&ctx, &stage, 0, &layout);
             for col in &mut entries {
                 col.sort_unstable_by_key(|&(row, _)| row);
             }
@@ -9690,8 +9696,7 @@ mod pumping_water_tests {
         let layout = StageLayout::new(&ctx, &stage, 0);
         let (row_lower, row_upper) = super::super::rows::fill_stage_rows(&ctx, &stage, 0, &layout);
         let csc = {
-            let mut entries =
-                build_stage_matrix_entries_with_inflow_coupling(&ctx, &stage, 0, &layout);
+            let mut entries = build_stage_matrix_entries_for_test(&ctx, &stage, 0, &layout);
             for col in &mut entries {
                 col.sort_unstable_by_key(|&(row, _)| row);
             }
@@ -9877,8 +9882,7 @@ mod pumping_water_tests {
         let layout = StageLayout::new(&ctx, &stage, 0);
         let (row_lower, row_upper) = super::super::rows::fill_stage_rows(&ctx, &stage, 0, &layout);
         let csc = {
-            let mut entries =
-                build_stage_matrix_entries_with_inflow_coupling(&ctx, &stage, 0, &layout);
+            let mut entries = build_stage_matrix_entries_for_test(&ctx, &stage, 0, &layout);
             for col in &mut entries {
                 col.sort_unstable_by_key(|&(row, _)| row);
             }
@@ -10024,8 +10028,7 @@ mod pumping_water_tests {
         let layout = StageLayout::new(&ctx, &stage, 0);
         let (rl_c, ru_c) = super::super::rows::fill_stage_rows(&ctx, &stage, 0, &layout);
         let csc_c = {
-            let mut entries =
-                build_stage_matrix_entries_with_inflow_coupling(&ctx, &stage, 0, &layout);
+            let mut entries = build_stage_matrix_entries_for_test(&ctx, &stage, 0, &layout);
             for col in &mut entries {
                 col.sort_unstable_by_key(|&(row, _)| row);
             }
@@ -10125,8 +10128,7 @@ mod pumping_water_tests {
         let layout = StageLayout::new(&ctx, &stage, 0);
         let (row_lower, row_upper) = super::super::rows::fill_stage_rows(&ctx, &stage, 0, &layout);
         let csc = {
-            let mut entries =
-                build_stage_matrix_entries_with_inflow_coupling(&ctx, &stage, 0, &layout);
+            let mut entries = build_stage_matrix_entries_for_test(&ctx, &stage, 0, &layout);
             for col in &mut entries {
                 col.sort_unstable_by_key(|&(row, _)| row);
             }
@@ -10234,8 +10236,7 @@ mod pumping_water_tests {
         let layout = StageLayout::new(&ctx, &stage, 0);
         let (row_lower, row_upper) = super::super::rows::fill_stage_rows(&ctx, &stage, 0, &layout);
         let csc = {
-            let mut entries =
-                build_stage_matrix_entries_with_inflow_coupling(&ctx, &stage, 0, &layout);
+            let mut entries = build_stage_matrix_entries_for_test(&ctx, &stage, 0, &layout);
             for col in &mut entries {
                 col.sort_unstable_by_key(|&(row, _)| row);
             }
@@ -10351,8 +10352,7 @@ mod pumping_water_tests {
         let layout = StageLayout::new(&ctx, &stage, 0);
         let (row_lower, row_upper) = super::super::rows::fill_stage_rows(&ctx, &stage, 0, &layout);
         let csc = {
-            let mut entries =
-                build_stage_matrix_entries_with_inflow_coupling(&ctx, &stage, 0, &layout);
+            let mut entries = build_stage_matrix_entries_for_test(&ctx, &stage, 0, &layout);
             for col in &mut entries {
                 col.sort_unstable_by_key(|&(row, _)| row);
             }
@@ -10510,8 +10510,7 @@ mod pumping_water_tests {
         let layout = StageLayout::new(&ctx, &stage, 0);
         let (row_lower, row_upper) = super::super::rows::fill_stage_rows(&ctx, &stage, 0, &layout);
         let csc = {
-            let mut entries =
-                build_stage_matrix_entries_with_inflow_coupling(&ctx, &stage, 0, &layout);
+            let mut entries = build_stage_matrix_entries_for_test(&ctx, &stage, 0, &layout);
             for col in &mut entries {
                 col.sort_unstable_by_key(|&(row, _)| row);
             }
@@ -10611,8 +10610,7 @@ mod pumping_water_tests {
         let layout = StageLayout::new(ctx, stage, 0);
         let (row_lower, row_upper) = super::super::rows::fill_stage_rows(ctx, stage, 0, &layout);
         let csc = {
-            let mut entries =
-                build_stage_matrix_entries_with_inflow_coupling(ctx, stage, 0, &layout);
+            let mut entries = build_stage_matrix_entries_for_test(ctx, stage, 0, &layout);
             for col in &mut entries {
                 col.sort_unstable_by_key(|&(row, _)| row);
             }
@@ -10786,8 +10784,7 @@ mod pumping_water_tests {
             let layout = StageLayout::new(&ctx, &stage, 0);
             let (rl, ru) = super::super::rows::fill_stage_rows(&ctx, &stage, 0, &layout);
             let csc = {
-                let mut entries =
-                    build_stage_matrix_entries_with_inflow_coupling(&ctx, &stage, 0, &layout);
+                let mut entries = build_stage_matrix_entries_for_test(&ctx, &stage, 0, &layout);
                 for col in &mut entries {
                     col.sort_unstable_by_key(|&(row, _)| row);
                 }
@@ -11001,8 +10998,7 @@ mod pumping_water_tests {
         let (row_lower, row_upper) = super::super::rows::fill_stage_rows(ctx, stage, 0, &layout);
         let cols = super::super::columns::fill_stage_columns(ctx, stage, 0, &layout);
         let csc = {
-            let mut entries =
-                build_stage_matrix_entries_with_inflow_coupling(ctx, stage, 0, &layout);
+            let mut entries = build_stage_matrix_entries_for_test(ctx, stage, 0, &layout);
             for col in &mut entries {
                 col.sort_unstable_by_key(|&(row, _)| row);
             }

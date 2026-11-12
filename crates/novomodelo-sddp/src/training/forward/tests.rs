@@ -179,7 +179,6 @@ fn minimal_template_1_0() -> StageTemplate {
         objective: vec![0.0, 0.0, 1.0],
         row_lower: vec![0.0],
         row_upper: vec![0.0],
-        n_state: 1,
         col_scale: Vec::new(),
         row_scale: Vec::new(),
     }
@@ -3194,7 +3193,6 @@ mod dcs_forward {
             objective: vec![0.0, 0.0, 1.0],
             row_lower: vec![0.0],
             row_upper: vec![0.0],
-            n_state: 1,
             col_scale: Vec::new(),
             row_scale: Vec::new(),
         }
@@ -3223,7 +3221,6 @@ mod dcs_forward {
             // row0 coupling (=0); rows1..3 cuts (>= intercept).
             row_lower: vec![0.0, 1.0, 0.0, 3.0],
             row_upper: vec![0.0, f64::INFINITY, f64::INFINITY, f64::INFINITY],
-            n_state: 1,
             col_scale: Vec::new(),
             row_scale: Vec::new(),
         }
@@ -3246,7 +3243,6 @@ mod dcs_forward {
             objective: vec![0.0, 0.0, 1.0],
             row_lower: vec![0.0, 0.0],
             row_upper: vec![0.0, f64::INFINITY],
-            n_state: 1,
             col_scale: Vec::new(),
             row_scale: Vec::new(),
         }
@@ -3431,7 +3427,8 @@ mod dcs_forward {
             dcs,
             node: NodePos(0),
         };
-        let mut slices = basis_store.split_workers_mut(basis_store.num_scenarios(), 1);
+        let mut slices = Vec::new();
+        basis_store.split_workers_into(basis_store.num_scenarios(), 1, &mut slices);
         let stage_cost = run_forward_stage(
             &mut ws,
             &mut slices[0],
@@ -3636,7 +3633,6 @@ mod transit_bucket_copy_gap {
             objective: vec![0.0; NUM_COLS],
             row_lower: Vec::new(),
             row_upper: Vec::new(),
-            n_state: 4,
             col_scale: Vec::new(),
             row_scale: Vec::new(),
         }
@@ -3778,7 +3774,8 @@ mod transit_bucket_copy_gap {
             dcs: None,
             node: NodePos(0),
         };
-        let mut slices = basis_store.split_workers_mut(basis_store.num_scenarios(), 1);
+        let mut slices = Vec::new();
+        basis_store.split_workers_into(basis_store.num_scenarios(), 1, &mut slices);
         run_forward_stage(
             &mut ws,
             &mut slices[0],

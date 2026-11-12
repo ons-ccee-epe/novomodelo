@@ -107,30 +107,16 @@ pub(crate) fn lower_bound_patch_buffer(
 }
 
 /// Rank-0 setup: run the append-only LP load. Only called on rank 0.
-///
-/// # Errors
-///
-/// Returns [`SddpError::Validation`] if stage 0 carries no alive node.
 fn lb_init_rank0<S: SolverInterface>(
     solver: &mut S,
     fcf: &FutureCostFunction,
     ctx: &StageContext<'_>,
     training_ctx: &TrainingContext<'_>,
+    root: NodePos,
     lb_cut_batch: &mut RowBatch,
     lb_cut_row_map: Option<&mut CutRowMap>,
-) -> Result<(), SddpError> {
+) {
     let state_layout = training_ctx.state;
-    // Root pool resolved by STAGE (the sole stage-0 node), never by array
-    // position: build_declared_node_graph sorts nodes by ascending id, so
-    // nodes[0] is the smallest-id node, not necessarily the root — reading
-    // nodes[0].pool_id would inject a sibling's cuts onto the root's stage-0 LP.
-    // On a chain the root IS nodes[0] (pool 0).
-    let root = training_ctx
-        .node_graph
-        .frontier_node(StageIdx(0))
-        .ok_or_else(|| {
-            SddpError::Validation("lower bound: stage 0 carries no alive node".to_string())
-        })?;
     let pool_id = training_ctx.node_graph.nodes[root].pool_id;
     let cut_state = &training_ctx.cut_state_layouts[pool_id];
     let template = ctx.template(StageIdx(0));
@@ -165,7 +151,6 @@ fn lb_init_rank0<S: SolverInterface>(
             solver.add_rows(lb_cut_batch);
         }
     }
-    Ok(())
 }
 
 /// The pool slot of each cut row of the lower-bound LP, in LP row order,
@@ -202,6 +187,7 @@ fn lb_evaluate_stage_0<S: SolverInterface>(
     fcf: &FutureCostFunction,
     ctx: &StageContext<'_>,
     training_ctx: &TrainingContext<'_>,
+    root_pos: NodePos,
     scratch: &mut LbEvalScratchBundle<'_>,
 ) -> Result<(), SddpError> {
     let LbEvalScratchBundle {
@@ -217,7 +203,6 @@ fn lb_evaluate_stage_0<S: SolverInterface>(
     // root pins a single scenario column its external library carries, which the
     // generated tree does not know. Reading the generated tree there evaluates the
     // wrong stage-0 realization and mis-prices the bound.
-    let root_pos = find_root_position(training_ctx.node_graph)?;
     let root_openings = training_ctx.node_graph.nodes[root_pos].openings;
     let root_node_id = training_ctx.node_graph.node_ids[root_pos];
     let n_openings = root_openings.len;
@@ -299,7 +284,8 @@ fn lb_evaluate_stage_0<S: SolverInterface>(
 /// Find the node graph's implicit root: the unique node at stage 0 (root
 /// implicit for a single-node stage 0). A stage 0 covered by anything
 /// but exactly one node has no way to resolve `P(root→n)` across siblings
-/// without the reserved root source, not yet built.
+/// without the reserved root source, not yet built. Resolved by stage, never by
+/// array position: `nodes[0]` is the smallest-id node, not necessarily the root.
 ///
 /// # Errors
 ///
@@ -325,26 +311,27 @@ fn find_root_position(node_graph: &NodeGraph) -> Result<NodePos, SddpError> {
     Ok(root_pos)
 }
 
+/// The pool of the lower bound's LP: the root's pool, sizing the cut scratch and
+/// naming the rows [`evaluate_lower_bound`] loads.
+///
+/// # Errors
+///
+/// Returns whatever [`find_root_position`] returns.
+pub(crate) fn lb_root_pool(node_graph: &NodeGraph) -> Result<usize, SddpError> {
+    Ok(node_graph.nodes[find_root_position(node_graph)?].pool_id)
+}
+
 /// Assemble the root's successor outcome set `O(root) = {(n, ω) : n ∈ root⁺,
 /// ω ∈ Ω_n}` into `out`. Root is implicit for a single-node stage 0
 /// (`P(root→n) = 1`): the single child's own `q` — the pinned `1.0/(n as f64)`
 /// bit pattern — is what this reduces to, replicated over its openings, so a
 /// chain's lower bound stays bit-identical to today's.
-///
-/// # Errors
-///
-/// Returns whatever [`find_root_position`] returns.
-fn assemble_root_outcome_weights(
-    node_graph: &NodeGraph,
-    out: &mut Vec<f64>,
-) -> Result<(), SddpError> {
-    let root_pos = find_root_position(node_graph)?;
+fn assemble_root_outcome_weights(node_graph: &NodeGraph, root: NodePos, out: &mut Vec<f64>) {
     let root_successors = [NodeSuccessor {
-        child: root_pos,
+        child: root,
         probability: 1.0,
     }];
     assemble_outcome_weights(node_graph, &root_successors, out);
-    Ok(())
 }
 
 /// Apply `risk_measure` to `objectives` under `weights` (the root's product
@@ -413,21 +400,23 @@ pub fn evaluate_lower_bound<S: SolverInterface, C: Communicator>(
             "evaluate_lower_bound: stage 0 must have at least one opening"
         );
 
-        let rank0_result = lb_init_rank0(
-            solver,
-            fcf,
-            ctx,
-            training_ctx,
-            scratch.lb_cut_batch,
-            scratch.lb_cut_row_map.as_deref_mut(),
-        )
-        .and_then(|()| {
+        let rank0_result = find_root_position(training_ctx.node_graph).and_then(|root| {
+            lb_init_rank0(
+                solver,
+                fcf,
+                ctx,
+                training_ctx,
+                root,
+                scratch.lb_cut_batch,
+                scratch.lb_cut_row_map.as_deref_mut(),
+            );
             assemble_root_outcome_weights(
                 training_ctx.node_graph,
+                root,
                 &mut scratch.lb_scratch.weights_buf,
-            )
-        })
-        .and_then(|()| lb_evaluate_stage_0(solver, fcf, ctx, training_ctx, scratch));
+            );
+            lb_evaluate_stage_0(solver, fcf, ctx, training_ctx, root, scratch)
+        });
         // Reconcile rank 0's root-weight assembly and stage-0 solve across ranks
         // BEFORE the broadcast pair (mirrors the forward-phase precedent): a
         // rank-0 failure makes every rank return Err here rather than let a
@@ -521,7 +510,6 @@ mod tests {
             objective: vec![0.0, 0.0, 1.0], // minimise theta
             row_lower: vec![0.0],
             row_upper: vec![0.0],
-            n_state: 1,
             col_scale: Vec::new(),
             row_scale: Vec::new(),
         }
@@ -1853,7 +1841,6 @@ mod tests {
             objective: vec![0.0],
             row_lower: vec![],
             row_upper: vec![],
-            n_state: 0,
             col_scale: Vec::new(),
             row_scale: Vec::new(),
         };
@@ -1929,7 +1916,16 @@ mod tests {
         let mut solver =
             MockSolver::with_objectives(vec![10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0]);
 
-        lb_evaluate_stage_0(&mut solver, &fcf, &ctx, &training_ctx, &mut bundle).unwrap();
+        let root_pos = find_root_position(training_ctx.node_graph).unwrap();
+        lb_evaluate_stage_0(
+            &mut solver,
+            &fcf,
+            &ctx,
+            &training_ctx,
+            root_pos,
+            &mut bundle,
+        )
+        .unwrap();
 
         assert_eq!(
             solver.set_col_bounds_calls,
@@ -2767,7 +2763,7 @@ mod tests {
         );
         assert_eq!(state.n_state, 2);
 
-        let template = test_support::transit_bucket_only_template(state.theta + 1, state.n_state);
+        let template = test_support::transit_bucket_only_template(state.theta + 1);
         let templates = vec![template];
         let fcf = make_fcf(1, state.n_state);
         let initial_state = vec![7.0_f64, 11.0];
@@ -2882,10 +2878,10 @@ mod tests {
                 q: 1.0,
             },
         };
-        NodeGraph {
-            node_ids: vec![NodeId(0), NodeId(1), NodeId(2)].into(),
-            nodes: vec![root, child_a, child_b].into(),
-            successors: vec![
+        NodeGraph::new(
+            vec![NodeId(0), NodeId(1), NodeId(2)].into(),
+            vec![root, child_a, child_b].into(),
+            vec![
                 vec![
                     NodeSuccessor {
                         child: NodePos(1),
@@ -2900,9 +2896,9 @@ mod tests {
                 Vec::new(),
             ]
             .into(),
-            n_pools: 3,
-            pool_stage: vec![StageIdx(1), StageIdx(1), StageIdx(0)],
-        }
+            3,
+            vec![StageIdx(1), StageIdx(1), StageIdx(0)],
+        )
     }
 
     /// AC1: a multi-node root successor set with distinct edge (`0.25`/`0.75`)
@@ -2988,7 +2984,8 @@ mod tests {
         let node_graph = test_support::chain_node_graph(&stochastic);
 
         let mut weights = Vec::new();
-        assemble_root_outcome_weights(&node_graph, &mut weights).unwrap();
+        let root = find_root_position(&node_graph).unwrap();
+        assemble_root_outcome_weights(&node_graph, root, &mut weights);
 
         let expected_q = 1.0_f64 / 5.0_f64;
         assert_eq!(weights.len(), 5);
@@ -3007,7 +3004,7 @@ mod tests {
     /// (defensive; structural validation of `nodes[]` happens upstream, not
     /// here).
     #[test]
-    fn assemble_root_outcome_weights_multi_node_stage_0_is_validation_error() {
+    fn find_root_position_multi_node_stage_0_is_validation_error() {
         let node_a = NodeRuntime {
             stage: StageIdx(0),
             pool_id: 0,
@@ -3028,16 +3025,15 @@ mod tests {
                 q: 0.5,
             },
         };
-        let ng = NodeGraph {
-            node_ids: vec![NodeId(0), NodeId(1)].into(),
-            nodes: vec![node_a, node_b].into(),
-            successors: vec![Vec::new(), Vec::new()].into(),
-            n_pools: 2,
-            pool_stage: vec![StageIdx(0), StageIdx(0)],
-        };
+        let ng = NodeGraph::new(
+            vec![NodeId(0), NodeId(1)].into(),
+            vec![node_a, node_b].into(),
+            vec![Vec::new(), Vec::new()].into(),
+            2,
+            vec![StageIdx(0), StageIdx(0)],
+        );
 
-        let mut weights = Vec::new();
-        let result = assemble_root_outcome_weights(&ng, &mut weights);
+        let result = find_root_position(&ng);
 
         match result {
             Err(SddpError::Validation(msg)) => {
@@ -3092,10 +3088,10 @@ mod tests {
                 q: 1.0,
             },
         };
-        fixture.node_graph = NodeGraph {
-            node_ids: vec![NodeId(1), NodeId(2), NodeId(3)].into(),
-            nodes: vec![leaf(1), leaf(1), root].into(),
-            successors: vec![
+        fixture.node_graph = NodeGraph::new(
+            vec![NodeId(1), NodeId(2), NodeId(3)].into(),
+            vec![leaf(1), leaf(1), root].into(),
+            vec![
                 Vec::new(),
                 Vec::new(),
                 vec![
@@ -3110,9 +3106,9 @@ mod tests {
                 ],
             ]
             .into(),
-            n_pools: 2,
-            pool_stage: vec![StageIdx(0), StageIdx(1)],
-        };
+            2,
+            vec![StageIdx(0), StageIdx(1)],
+        );
 
         // Power precondition: the buggy nodes[0] read and the stage-resolved root
         // genuinely disagree on which pool is the root's.
@@ -3150,10 +3146,10 @@ mod tests {
             &fcf,
             &ctx,
             &training_ctx,
+            root_pos,
             &mut lb_cut_batch,
             None,
-        )
-        .expect("fixture's stage 0 carries a single alive node");
+        );
 
         assert_eq!(
             lb_cut_batch.num_rows,

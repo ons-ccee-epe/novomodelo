@@ -2155,7 +2155,6 @@ mod tests {
             objective,
             row_lower: Vec::new(),
             row_upper: Vec::new(),
-            n_state: idx.n_state,
             col_scale: Vec::new(),
             row_scale: Vec::new(),
         }
@@ -2364,7 +2363,6 @@ mod tests {
             objective: vec![0.0, 0.0, 1.0], // minimize theta
             row_lower: Vec::new(),
             row_upper: Vec::new(),
-            n_state: 1,
             col_scale: Vec::new(),
             row_scale: Vec::new(),
         }

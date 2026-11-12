@@ -125,7 +125,7 @@ impl IterationScratch {
         let lb_noise_scratch =
             ScratchBuffers::new(training_ctx, stage_ctx, WorkspaceSizing::default());
 
-        let mut scratch = Self {
+        Self {
             patch_buf,
             records,
             cut_batches,
@@ -142,24 +142,7 @@ impl IterationScratch {
             fwd_stats_pack_local: Vec::new(),
             fwd_stats_pack_global: Vec::new(),
             fwd_stats_unpacked: Vec::new(),
-        };
-        scratch.reserve_lb_cut_scratch(lb_root_pool_capacity);
-        scratch
-    }
-
-    /// Grows the lower bound's three cut-row buffers to the root pool's
-    /// capacity, the size `lb_cut_row_map` is built from. Growth-only.
-    pub(crate) fn reserve_lb_cut_scratch(&mut self, lb_root_pool_capacity: usize) {
-        let scratch = &mut self.lb_noise_scratch;
-        scratch
-            .cut_slots_buf
-            .reserve(lb_root_pool_capacity.saturating_sub(scratch.cut_slots_buf.len()));
-        scratch
-            .cut_bracket_buf
-            .reserve(lb_root_pool_capacity.saturating_sub(scratch.cut_bracket_buf.len()));
-        scratch
-            .cut_rhs_buf
-            .reserve(lb_root_pool_capacity.saturating_sub(scratch.cut_rhs_buf.len()));
+        }
     }
 }
 
@@ -210,7 +193,6 @@ mod tests {
             objective: vec![0.0, 0.0, 0.0, 1.0],
             row_lower: vec![0.0, 0.0],
             row_upper: vec![0.0, 0.0],
-            n_state: 1,
             col_scale: Vec::new(),
             row_scale: Vec::new(),
         }
@@ -276,7 +258,7 @@ mod tests {
     }
 
     #[test]
-    fn reserve_lb_cut_scratch_grows_the_root_buffers_only_upward() {
+    fn reserve_cut_rows_grows_the_lb_buffers_only_upward() {
         let num_stages = 2;
         let templates = vec![minimal_template(); num_stages];
         let geometry = equipment_free_geometry(&vec![0; num_stages]);
@@ -294,6 +276,7 @@ mod tests {
             &training_ctx,
             &stage_ctx,
         );
+        scratch.lb_noise_scratch.reserve_cut_rows(10);
         let buffers = |s: &IterationScratch| {
             let n = &s.lb_noise_scratch;
             [
@@ -317,13 +300,13 @@ mod tests {
         }
 
         scratch.lb_noise_scratch.cut_rhs_buf.resize(12, 1.0);
-        scratch.reserve_lb_cut_scratch(5);
+        scratch.lb_noise_scratch.reserve_cut_rows(5);
         let rhs = &scratch.lb_noise_scratch.cut_rhs_buf;
         assert!(rhs.capacity() >= 12, "a smaller reserve must not shrink");
         assert_eq!(rhs.len(), 12, "a smaller reserve must keep the contents");
         assert!(rhs.iter().all(|v| v.to_bits() == 1.0_f64.to_bits()));
 
-        scratch.reserve_lb_cut_scratch(20);
+        scratch.lb_noise_scratch.reserve_cut_rows(20);
         for (name, _, capacity) in buffers(&scratch) {
             assert!(capacity >= 20, "{name} must reserve 20, got {capacity}");
         }

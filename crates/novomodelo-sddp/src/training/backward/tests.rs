@@ -564,7 +564,6 @@ fn minimal_template_1_0() -> StageTemplate {
         objective: vec![0.0, 0.0, 1.0],
         row_lower: vec![0.0],
         row_upper: vec![0.0],
-        n_state: 1,
         col_scale: Vec::new(),
         row_scale: Vec::new(),
     }
@@ -2696,7 +2695,6 @@ fn backward_pass_load_patches_applied() {
         objective: vec![0.0, 0.0, 1.0],
         row_lower: vec![50.0, 100.0],
         row_upper: vec![50.0, 100.0],
-        n_state: 1,
         col_scale: Vec::new(),
         row_scale: Vec::new(),
     };
@@ -2826,7 +2824,6 @@ fn backward_pass_no_load_buses_unchanged() {
         objective: vec![0.0, 0.0, 1.0],
         row_lower: vec![50.0, 100.0],
         row_upper: vec![50.0, 100.0],
-        n_state: 1,
         col_scale: Vec::new(),
         row_scale: Vec::new(),
     };
@@ -2955,7 +2952,6 @@ fn backward_pass_cut_coefficients_unaffected() {
         objective: vec![0.0, 0.0, 1.0],
         row_lower: vec![50.0, 100.0],
         row_upper: vec![50.0, 100.0],
-        n_state: 1,
         col_scale: Vec::new(),
         row_scale: Vec::new(),
     };
@@ -4361,7 +4357,8 @@ fn run_one_trial_state_with_stores(
     let child0 = outcomes.child(0);
 
     // Derive a single-worker BasisStoreSliceMut covering all scenarios.
-    let mut basis_slices = basis_store.split_workers_mut(basis_store.num_scenarios(), 1);
+    let mut basis_slices = Vec::new();
+    basis_store.split_workers_into(basis_store.num_scenarios(), 1, &mut basis_slices);
     let mut basis_slice = basis_slices.remove(0);
 
     let ws = &mut workspaces[0];
@@ -4413,7 +4410,7 @@ fn pin_folded_pins_transit_bucket_incoming_columns_per_stage_visit() {
     assert_eq!(state.n_state, 2);
 
     let stochastic = test_support::hydro_free_stochastic_context(1, 1);
-    let template = test_support::transit_bucket_only_template(state.theta + 1, state.n_state);
+    let template = test_support::transit_bucket_only_template(state.theta + 1);
 
     let templates = vec![template];
     let state_boxes = permissive_state_boxes(state.n_state, 1);
@@ -4630,7 +4627,8 @@ fn per_child_backward_isolates_column_basis_and_pool_metadata() {
 
     // Basis node axis covers the child node positions (1, 2), not just n_stages.
     let mut basis_store = BasisStore::new(exchange.local_count(), 3);
-    let mut basis_slices = basis_store.split_workers_mut(basis_store.num_scenarios(), 1);
+    let mut basis_slices = Vec::new();
+    basis_store.split_workers_into(basis_store.num_scenarios(), 1, &mut basis_slices);
 
     let mut workspaces = single_workspace(PerChildProbeSolver::new(1.0), n_state);
     let ws = &mut workspaces[0];
@@ -4720,7 +4718,8 @@ fn resolve_backward_basis_returns_some_when_slot_is_populated() {
     let mut store = BasisStore::new(1, 2);
     *store.get_mut(0, NodePos(1)) = Some(b);
 
-    let slices = store.split_workers_mut(store.num_scenarios(), 1);
+    let mut slices = Vec::new();
+    store.split_workers_into(store.num_scenarios(), 1, &mut slices);
     let slice = &slices[0];
     let basis_ref = super::resolve_backward_basis(slice, 0, NodePos(1));
 
@@ -4730,7 +4729,8 @@ fn resolve_backward_basis_returns_some_when_slot_is_populated() {
 #[test]
 fn resolve_backward_basis_returns_none_when_slot_is_empty() {
     let mut store = BasisStore::new(1, 2);
-    let slices = store.split_workers_mut(store.num_scenarios(), 1);
+    let mut slices = Vec::new();
+    store.split_workers_into(store.num_scenarios(), 1, &mut slices);
     let slice = &slices[0];
     let basis_ref = super::resolve_backward_basis(slice, 0, NodePos(1));
 
@@ -5159,7 +5159,6 @@ fn dcs_core_template() -> StageTemplate {
         // Coupling equality: storage_out - storage_in = 0.
         row_lower: vec![0.0],
         row_upper: vec![0.0],
-        n_state: 1,
         col_scale: Vec::new(),
         row_scale: Vec::new(),
     }
@@ -5354,7 +5353,8 @@ fn run_dcs_backward_trial_state_at(
     let outcomes = single.outcomes(&fcf.pools, template_num_rows, Some(0.0));
     let child0 = outcomes.child(0);
 
-    let mut basis_slices = basis_store.split_workers_mut(basis_store.num_scenarios(), 1);
+    let mut basis_slices = Vec::new();
+    basis_store.split_workers_into(basis_store.num_scenarios(), 1, &mut basis_slices);
     let ws = &mut workspaces[0];
     // Choose the opening-solve strategy exactly as the driver does, then issue
     // the per-child prepare/load (mirrors process_by_scenario_backward's per-child
@@ -5716,7 +5716,6 @@ fn dcs_frozen_template_with_one_cut() -> StageTemplate {
         // -5*col0 + theta >= 0 (NOT a DCS pool cut).
         row_lower: vec![0.0, 0.0],
         row_upper: vec![0.0, f64::INFINITY],
-        n_state: 1,
         col_scale: Vec::new(),
         row_scale: Vec::new(),
     }
@@ -5850,7 +5849,8 @@ fn backward_dcs_frozen_cuts_present_no_duplicate_rows() {
     let outcomes = single.outcomes(&fcf.pools, template_num_rows, Some(0.0));
     let child0 = outcomes.child(0);
 
-    let mut basis_slices = basis_store.split_workers_mut(basis_store.num_scenarios(), 1);
+    let mut basis_slices = Vec::new();
+    basis_store.split_workers_into(basis_store.num_scenarios(), 1, &mut basis_slices);
     let ws = &mut workspaces[0];
     // Choose the opening-solve strategy as the driver does, then issue the
     // per-child prepare/load (mirrors process_by_scenario_backward's per-child
@@ -6105,7 +6105,7 @@ impl CompactBackwardCase {
             row_upper: vec![0.0],
             col_scale: vec![2.0; num_cols],
             row_scale: vec![4.0],
-            ..test_support::transit_bucket_only_template(num_cols, state.n_state)
+            ..test_support::transit_bucket_only_template(num_cols)
         };
         let frozen_rows = COMPACT_TEMPLATE_ROWS + 2;
         let frozen = StageTemplate {
@@ -6235,7 +6235,8 @@ impl CompactBackwardCase {
                 sizing,
             )],
         };
-        pool.reserve_backward_scratch(training_ctx, sizing, self.pools[1].populated(), &scheduler);
+        pool.reserve_pool_scratch(training_ctx, sizing, self.pools[1].populated());
+        pool.reserve_backward_scratch(training_ctx, sizing, &scheduler);
         pool.workspaces.remove(0)
     }
 
@@ -6434,7 +6435,8 @@ impl CompactBackwardCase {
             };
             let exchange = exchange_with_states(self.state.n_state, vec![COMPACT_X_HAT.to_vec()]);
             let mut basis_store = empty_basis_store(1, 2);
-            let mut basis_slices = basis_store.split_workers_mut(1, 1);
+            let mut basis_slices = Vec::new();
+            basis_store.split_workers_into(1, 1, &mut basis_slices);
 
             let params = super::BackwardNodeParams {
                 trial_points: &[0],
@@ -6628,7 +6630,8 @@ fn compact_forward_stage_writes_the_brackets_of_its_frozen_rows() {
             ws.current_state.clear();
             ws.current_state.extend_from_slice(&COMPACT_X_HAT);
             let mut basis_store = empty_basis_store(1, 2);
-            let mut slices = basis_store.split_workers_mut(1, 1);
+            let mut slices = Vec::new();
+            basis_store.split_workers_into(1, 1, &mut slices);
             let mut records = vec![TrajectoryRecord::default(); 2];
             records[1].frozen_brackets.reserve(2);
             let key = StageKey {

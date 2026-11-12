@@ -221,7 +221,6 @@ fn expand_template(
         objective,
         row_lower,
         row_upper,
-        n_state: compact.n_state,
         col_scale: Vec::new(),
         row_scale: Vec::new(),
     }

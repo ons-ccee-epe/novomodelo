@@ -1804,13 +1804,6 @@ impl StageLayout<'_> {
         self.state.theta
     }
 
-    /// Column-side state dimension; reads `self.state.n_state`.
-    #[inline]
-    #[must_use]
-    pub(crate) fn n_state(&self) -> usize {
-        self.state.n_state
-    }
-
     // ── Role-(b) accessors (read StageLayout's own fields) ───────────────────────
 
     /// Start of evaporation constraint rows, one per `(evap hydro, slot)`; see

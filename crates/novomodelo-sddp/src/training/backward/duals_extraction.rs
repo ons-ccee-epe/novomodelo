@@ -550,7 +550,6 @@ mod tests {
             objective,
             row_lower: cuts.iter().map(|&(alpha, _)| alpha).collect(),
             row_upper: vec![f64::INFINITY; cuts.len()],
-            n_state: 0,
             col_scale: Vec::new(),
             row_scale: Vec::new(),
         }

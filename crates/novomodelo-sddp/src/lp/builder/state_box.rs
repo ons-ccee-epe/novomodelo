@@ -41,14 +41,14 @@ pub(crate) fn build_state_box(
     let mut lower = vec![f64::NEG_INFINITY; layout.n_state];
     let mut upper = vec![f64::INFINITY; layout.n_state];
 
-    fill_identity_box(
+    fill_box_from_outgoing_columns(
         &mut lower,
         &mut upper,
         template,
         layout,
         StateRegion::Storage,
     );
-    fill_identity_box(
+    fill_box_from_outgoing_columns(
         &mut lower,
         &mut upper,
         template,
@@ -69,10 +69,8 @@ pub(crate) fn build_state_box(
     StateBox { lower, upper }
 }
 
-/// The box is indexed by state dimension and reads the template at the
-/// outgoing column; the two indices coincide only when the layout has no lag
-/// region.
-fn fill_identity_box(
+/// Indexed by state dimension, read at the outgoing column.
+fn fill_box_from_outgoing_columns(
     lower: &mut [f64],
     upper: &mut [f64],
     template: &StageTemplate,
@@ -200,7 +198,7 @@ mod tests {
     #[test]
     fn state_box_storage_takes_the_outgoing_column_bounds() {
         let layout = state_layout_full(1, 0, Vec::new());
-        let mut template = transit_bucket_only_template(layout.n_state, layout.n_state);
+        let mut template = transit_bucket_only_template(layout.n_state);
         let storage_j = layout.storage.start;
         template.col_lower[storage_j] = 0.0;
         template.col_upper[storage_j] = 50.0;
@@ -221,7 +219,7 @@ mod tests {
     }
 
     #[test]
-    fn compact_state_box_indexes_state_dimensions_not_columns() {
+    fn state_box_indexes_state_dimensions_not_columns() {
         let layout = StateSpace::new(
             1,
             1,
@@ -230,7 +228,7 @@ mod tests {
             constant_lead_resolution(&[], 2),
             &[1],
         );
-        let mut template = transit_bucket_only_template(layout.theta + 1, layout.n_state);
+        let mut template = transit_bucket_only_template(layout.theta + 1);
         for (c, lower) in (0_u8..).zip(template.col_lower.iter_mut()) {
             *lower = f64::from(c);
         }
@@ -264,7 +262,7 @@ mod tests {
     #[test]
     fn state_box_inflow_lag_is_unbounded() {
         let layout = state_layout_full(1, 1, Vec::new());
-        let template = transit_bucket_only_template(layout.n_state, layout.n_state);
+        let template = transit_bucket_only_template(layout.n_state);
         let (bounds, time_value) = empty_bounds_and_time_value();
 
         let state_box = build_state_box(
@@ -292,7 +290,7 @@ mod tests {
             vec![(HydroSys::new(0), 0), (HydroSys::new(0), 1)],
             Vec::new(),
         );
-        let mut template = transit_bucket_only_template(layout.n_state, layout.n_state);
+        let mut template = transit_bucket_only_template(layout.n_state);
         let reachable_j = layout.transit_buckets_out.start;
         let frozen_j = layout.transit_buckets_out.start + 1;
         template.col_lower[reachable_j] = 0.0;

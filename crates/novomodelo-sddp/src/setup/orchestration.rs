@@ -279,7 +279,10 @@ impl StudySetup {
         )
     }
 
-    /// Create a [`WorkspacePool`] of `n_threads` workspaces sized for this study.
+    /// Create a [`WorkspacePool`] of `n_threads` workspaces sized for this study, with the
+    /// backward sweep's scratch reserved for the widest resident pool. It serves simulation and
+    /// any caller that sweeps backward outside a training session; it holds no forward-trial
+    /// scratch.
     ///
     /// # Errors
     ///
@@ -306,7 +309,6 @@ impl StudySetup {
                 .max()
                 .unwrap_or(0),
             initial_pool_capacity: 0,
-            // Simulation-only pool: forward-worker scratch fields unused.
             max_local_fwd: 0,
             noise: NoisePreallocation::OnDemand,
         };
@@ -325,12 +327,8 @@ impl StudySetup {
         let max_rows = templates.iter().map(|t| t.num_rows).max().unwrap_or(0);
         pool.resize_scratch_bases(max_cols, max_rows);
         let max_pool_capacity = self.fcf.pools.iter().map(|p| p.capacity).max().unwrap_or(0);
-        pool.reserve_backward_scratch(
-            &self.training_ctx(),
-            sizing,
-            max_pool_capacity,
-            &self.backward_scheduler,
-        );
+        pool.reserve_pool_scratch(&self.training_ctx(), sizing, max_pool_capacity);
+        pool.reserve_backward_scratch(&self.training_ctx(), sizing, &self.backward_scheduler);
         Ok(pool)
     }
 }
