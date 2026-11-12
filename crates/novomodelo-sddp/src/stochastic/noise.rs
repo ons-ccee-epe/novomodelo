@@ -6,7 +6,7 @@
 use novomodelo_core::commissioning::commissioning_active;
 use novomodelo_solver::SolverInterface;
 use novomodelo_stochastic::{
-    StochasticContext, add_par_noise_batch, evaluate_par_noise_term_batch,
+    StochasticContext, add_noise_term_batch, evaluate_par_noise_term_batch,
 };
 
 use crate::indexer::{BlockIdx, HydroSys, NcsSys};
@@ -35,31 +35,23 @@ pub(crate) fn realize_inflow(
     scratch.realized_inflow_buf.resize(dims.n_hydros, 0.0);
     match (par_lp.n_stages() > 0, noise_term) {
         (true, None) => {
-            add_par_noise_batch(
-                par_lp,
-                stage.0,
-                &scratch.par_mean_buf,
-                hydro_noise,
-                &mut scratch.realized_inflow_buf,
-            );
             evaluate_par_noise_term_batch(
                 par_lp,
                 stage.0,
                 hydro_noise,
                 &mut scratch.par_noise_term_buf,
             );
+            add_noise_term_batch(
+                &scratch.par_mean_buf,
+                &scratch.par_noise_term_buf,
+                &mut scratch.realized_inflow_buf,
+            );
         }
-        (true, Some(noise_term)) => {
-            debug_assert_eq!(noise_term.len(), dims.n_hydros, "one noise term per hydro");
-            for ((z, &mean), &term) in scratch
-                .realized_inflow_buf
-                .iter_mut()
-                .zip(&scratch.par_mean_buf)
-                .zip(noise_term)
-            {
-                *z = mean + term;
-            }
-        }
+        (true, Some(noise_term)) => add_noise_term_batch(
+            &scratch.par_mean_buf,
+            noise_term,
+            &mut scratch.realized_inflow_buf,
+        ),
         (false, None) => scratch.par_noise_term_buf.fill(0.0),
         (false, Some(_)) => {}
     }
@@ -365,7 +357,7 @@ pub(crate) fn apply_ncs_col_bounds<S: SolverInterface>(
 }
 
 /// Patch this solve's inflow-slack column bounds (physical
-/// `scratch.inflow_slack_{lower,upper}_buf`, written by [`transform_inflow_noise`])
+/// `scratch.inflow_slack_{lower,upper}_buf`, written by [`realize_inflow`])
 /// in one `set_col_bounds`. Bounds are divided by `col_scale[col]` (empty =
 /// identity), never written unscaled as [`apply_ncs_col_bounds`] does: the slack's
 /// water-row entries are `−ζ`/`−τ_k`, so its column scale is not 1.
@@ -858,7 +850,7 @@ mod tests {
     /// Truncation keeps z raw and fixes the slack at the truncation amount: PAR(0)
     /// with base 0 and σ 1, so `r = η`; η = -5 gives `[5, 5]`.
     #[test]
-    fn test_transform_inflow_noise_truncation_writes_the_raw_rhs_and_fixes_the_correction() {
+    fn test_realize_inflow_truncation_writes_the_raw_rhs_and_fixes_the_correction() {
         let stochastic = make_one_hydro_stochastic(1);
         // 1 hydro, 0 PAR lags
         let state = test_support::state_layout(1, 0);
@@ -906,7 +898,7 @@ mod tests {
     /// TwP keeps z raw and caps the slack at the truncation amount: PAR(0) with
     /// base 0 and σ 1, so `r = η`.
     #[test]
-    fn test_transform_inflow_noise_truncation_with_penalty_caps_the_correction() {
+    fn test_realize_inflow_truncation_with_penalty_caps_the_correction() {
         let stochastic = make_one_hydro_stochastic(1);
         let state = test_support::state_layout(1, 0);
         let current_state = vec![0.0; state.n_state];

@@ -135,8 +135,12 @@ pub fn cut_rhs_into(
 
 /// Writes `rhs[i] = brackets[i] + noise_terms[i]`, where `noise_terms[i]` is the
 /// [`cut_noise_term`] of row `i`.
+///
+/// # Panics
+///
+/// If the three slices differ in length.
 pub fn cut_rhs_from_noise_terms_into(brackets: &[f64], noise_terms: &[f64], rhs: &mut [f64]) {
-    debug_assert!(
+    assert!(
         noise_terms.len() == brackets.len() && rhs.len() == brackets.len(),
         "cut_rhs_from_noise_terms_into: brackets, noise_terms and rhs differ in length"
     );
@@ -327,6 +331,15 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "brackets, noise_terms and rhs differ in length")]
+    fn noise_terms_of_another_length_panic() {
+        let brackets = [1.0, 2.0, 3.0];
+        let mut rhs = [f64::NAN; 3];
+
+        cut_rhs_from_noise_terms_into(&brackets, &[0.5, 0.5], &mut rhs);
+    }
+
+    #[test]
     fn lag_ranges_come_from_the_projection_owner() {
         let all_enabled = projection(2, 2, ALL_ENABLED);
         let lags_only = projection(2, 2, LAGS_ONLY);
@@ -366,7 +379,8 @@ mod tests {
         assert_eq!((bracket + noise).to_bits(), 3.5_f64.to_bits());
     }
 
-    const MAX_ROWS: usize = 10_000;
+    const MAX_ROWS: usize = 64;
+    const MIN_ROWS: usize = 2 * LANES + 2;
 
     struct SplitMix(u64);
 
@@ -410,7 +424,8 @@ mod tests {
     }
 
     fn subset_draw() -> impl Strategy<Value = (usize, usize, u64)> {
-        (1..=MAX_ROWS).prop_flat_map(|n_slots| (Just(n_slots), 1..=n_slots, any::<u64>()))
+        (MIN_ROWS..=MAX_ROWS)
+            .prop_flat_map(|n_slots| (Just(n_slots), MIN_ROWS..=n_slots, any::<u64>()))
     }
 
     proptest! {

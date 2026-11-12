@@ -209,10 +209,6 @@ pub enum TrainingEvent {
         /// Scheduling and synchronisation overhead not attributable to solve
         /// work or load imbalance, in milliseconds.
         scheduling_overhead_ms: u64,
-        /// This rank's wall time, summed across stages, of the serial step after
-        /// each stage's parallel solves that combines the openings' outcomes
-        /// into new rows, in milliseconds.
-        aggregation_time_ms: u64,
     },
 
     /// Policy row synchronization (allgatherv) completed: new rows from all ranks
@@ -501,7 +497,6 @@ mod tests {
                 setup_time_ms: 0,
                 load_imbalance_ms: 0,
                 scheduling_overhead_ms: 0,
-                aggregation_time_ms: 0,
             },
             TrainingEvent::PolicySyncComplete {
                 iteration: 1,

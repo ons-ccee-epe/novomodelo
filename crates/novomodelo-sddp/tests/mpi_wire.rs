@@ -868,22 +868,16 @@ mod by_node_scheduler_determinism {
 
     use novomodelo_comm::Communicator;
     use novomodelo_core::{TrainingEvent, WorkerTimingPhase};
-    use novomodelo_io::Config;
     use novomodelo_io::config::{BackwardScheduler, SelectionMethod, StoppingRuleConfig};
+    use novomodelo_sddp::test_support::opening_block_count;
     use novomodelo_sddp::{RiskMeasure, StudySetup};
     use novomodelo_solver::ActiveSolver;
 
     use crate::by_node_scratch::run_by_node_one_iteration;
-    use crate::common::{Rank0Of2, StubComm, positive};
+    use crate::common::{Rank0Of2, StubComm, fresh_setup_with, positive};
 
     fn fixture_case_dir() -> &'static Path {
         Path::new("../../examples/1dtoy")
-    }
-
-    /// Delegates to [`crate::common::fresh_setup_with`] — see its doc for the
-    /// construction pipeline.
-    fn fresh_setup_with(case_dir: &Path, mutate: impl FnOnce(&mut Config)) -> StudySetup {
-        crate::common::fresh_setup_with(case_dir, mutate)
     }
 
     /// Build a fresh [`StudySetup`] with
@@ -975,15 +969,6 @@ mod by_node_scheduler_determinism {
         rows_generated[0]
     }
 
-    /// Resolved opening-block count for `n_openings` under the default
-    /// (unconfigured) block size — mirrors `by_node::resolve_block_size`
-    /// / `by_node::by_node_block_count` (both `pub(crate)`, unreachable
-    /// from this external test crate).
-    fn resolved_block_count(n_openings: usize) -> usize {
-        let block_size = n_openings.div_ceil(2).min(n_openings);
-        n_openings.div_ceil(block_size.max(1))
-    }
-
     /// Powerless-gate self-check: a fixture whose every stage resolves to a
     /// single opening-block gives the opening-block scheduler nothing to distinguish from the trial-point path (see
     /// `by_node_degenerates_on_single_opening`), so at least one
@@ -992,7 +977,7 @@ mod by_node_scheduler_determinism {
         let probe = fresh_setup(case_dir, BackwardScheduler::ByNode { block_size: None });
         let tree_view = probe.inputs.stochastic.tree_view();
         let has_multi_block_stage = (0..probe.num_stages())
-            .any(|stage| resolved_block_count(tree_view.n_openings(stage)) >= 2);
+            .any(|stage| opening_block_count(tree_view.n_openings(stage), None) >= 2);
         assert!(
             has_multi_block_stage,
             "by_node_scheduler_determinism: fixture {} has no stage whose resolved \
@@ -4181,7 +4166,9 @@ mod compact_fold_determinism {
     use novomodelo_io::config::{BackwardScheduler, StoppingRuleConfig, TrainingSelection};
     use novomodelo_sddp::indexer::CutStateProjection;
     use novomodelo_sddp::setup::NodePos;
-    use novomodelo_sddp::test_support::external_distinct_fan_setup_heterogeneous_cut_state;
+    use novomodelo_sddp::test_support::{
+        external_distinct_fan_setup_heterogeneous_cut_state, opening_block_count,
+    };
     use novomodelo_sddp::{RiskMeasure, StudySetup, TrainingResult};
     use novomodelo_solver::ActiveSolver;
 
@@ -4360,12 +4347,6 @@ mod compact_fold_determinism {
         );
     }
 
-    /// `by_node::resolve_block_size` under no configured block size, then the block count.
-    fn resolved_block_count(n_openings: usize) -> usize {
-        let block_size = n_openings.div_ceil(2).min(n_openings);
-        n_openings.div_ceil(block_size.max(1))
-    }
-
     fn openings_per_stage(setup: &StudySetup) -> Vec<usize> {
         let tree = setup.inputs.stochastic.tree_view();
         (0..setup.num_stages())
@@ -4376,7 +4357,7 @@ mod compact_fold_determinism {
     fn assert_has_multi_block_stage(fixture: &str, setup: &StudySetup) {
         let blocks: Vec<usize> = openings_per_stage(setup)
             .into_iter()
-            .map(resolved_block_count)
+            .map(|n_openings| opening_block_count(n_openings, None))
             .collect();
         assert!(
             blocks.iter().any(|&count| count >= 2),

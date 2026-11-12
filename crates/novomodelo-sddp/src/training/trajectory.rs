@@ -35,7 +35,8 @@ pub struct TrajectoryRecord {
 
 /// The cut-RHS brackets B of one node's frozen rows in `active_cuts()` order,
 /// tagged by the forward visit that wrote them. Never persisted or exchanged;
-/// a read at any other `(iteration, node)` misses, and a default slab never hits.
+/// a read at any other `(iteration, node)` or row count misses, and a default
+/// slab never hits.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct FrozenBrackets {
     tag: Option<(u64, NodeId)>,
@@ -59,8 +60,9 @@ impl FrozenBrackets {
         self.tag = Some((iteration, node_id));
     }
 
-    pub(crate) fn read(&self, iteration: u64, node_id: NodeId) -> Option<&[f64]> {
-        (self.tag == Some((iteration, node_id))).then_some(self.values.as_slice())
+    pub(crate) fn read(&self, iteration: u64, node_id: NodeId, rows: usize) -> Option<&[f64]> {
+        (self.tag == Some((iteration, node_id)) && self.values.len() == rows)
+            .then_some(self.values.as_slice())
     }
 
     /// The buffer's address and capacity, to tell where it grows.
@@ -154,8 +156,8 @@ mod tests {
     fn a_default_slab_misses_at_every_tag() {
         let slab = FrozenBrackets::default();
 
-        assert_eq!(slab.read(0, NodeId(0)), None);
-        assert_eq!(slab.read(1, NodeId(0)), None);
+        assert_eq!(slab.read(0, NodeId(0), 0), None);
+        assert_eq!(slab.read(1, NodeId(0), 0), None);
     }
 
     #[test]
@@ -165,9 +167,9 @@ mod tests {
 
         slab.write(3, NodeId(7), &[1.5, 2.5]);
 
-        assert_eq!(slab.read(3, NodeId(7)), Some(&[1.5, 2.5][..]));
-        assert_eq!(slab.read(4, NodeId(7)), None);
-        assert_eq!(slab.read(3, NodeId(8)), None);
+        assert_eq!(slab.read(3, NodeId(7), 2), Some(&[1.5, 2.5][..]));
+        assert_eq!(slab.read(4, NodeId(7), 2), None);
+        assert_eq!(slab.read(3, NodeId(8), 2), None);
     }
 
     #[test]

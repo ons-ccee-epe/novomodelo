@@ -1,4 +1,5 @@
 use novomodelo_core::System;
+use novomodelo_core::temporal::StageRiskConfig;
 use novomodelo_sddp::indexer::{CutSlot, StateDim};
 use novomodelo_sddp::test_support::decks::{SLOW_DECKS, committed_decks};
 use novomodelo_sddp::test_support::expander::{ExpandedStudy, expand_stage_templates};
@@ -160,6 +161,8 @@ struct Totals {
     folded_pool: Margin,
     expected_pair_checks: usize,
     expected_pool_checks: usize,
+    expectation_stages: usize,
+    cvar_pair_checks: usize,
     compact_lag_cuts: usize,
     pool_lag_cuts: usize,
 }
@@ -403,12 +406,6 @@ fn check_folded_pool(
 
 fn check_stage(fx: &Fixture, t: usize, states_per_stage: Option<usize>, totals: &mut Totals) {
     let s = t + 1;
-    assert!(
-        matches!(fx.risk_measures[s], RiskMeasure::Expectation),
-        "{}: stage {s}: risk measure {:?} is not Expectation",
-        fx.label,
-        fx.risk_measures[s]
-    );
     let Some(mut states) = stored_incoming_states(fx.compact, s) else {
         totals.dropped_stages.push(s);
         return;
@@ -435,12 +432,19 @@ fn check_stage(fx: &Fixture, t: usize, states_per_stage: Option<usize>, totals: 
         cold.push(per_opening);
     }
     check_cross_validity(fx, s, &states, &cold, totals);
-    check_folded_pool(fx, t, &rows, &states, &cold, totals);
+    let pair_checks = states.len() * (states.len() - 1) * n_openings;
+    match fx.risk_measures[s] {
+        RiskMeasure::Expectation => {
+            check_folded_pool(fx, t, &rows, &states, &cold, totals);
+            totals.expectation_stages += 1;
+        }
+        RiskMeasure::CVaR { .. } => totals.cvar_pair_checks += pair_checks,
+    }
 
     totals.stages += 1;
     totals.states += states.len();
     totals.solves += states.len() * n_openings;
-    totals.expected_pair_checks += states.len() * (states.len() - 1) * n_openings;
+    totals.expected_pair_checks += pair_checks;
     totals.widest_stage_states = totals.widest_stage_states.max(states.len());
 }
 
@@ -489,39 +493,43 @@ fn check_fixture(fx: &Fixture, states_per_stage: Option<usize>) -> Totals {
         totals.widest_stage_states >= 2,
         "{label}: no checked stage has two or more stored states"
     );
-    assert!(!totals.pools.is_empty(), "{label}: no pool was checked");
-    for (name, ran, expected) in [
-        ("cold objective", totals.objectives.count, totals.solves),
+    assert!(
+        totals.expectation_stages == 0 || !totals.pools.is_empty(),
+        "{label}: no pool was checked"
+    );
+    for (name, ran, expected, required) in [
+        (
+            "cold objective",
+            totals.objectives.count,
+            totals.solves,
+            true,
+        ),
         (
             "compact cut validity",
             totals.compact_validity.count,
             totals.expected_pair_checks,
+            true,
         ),
         (
             "expanded cut validity",
             totals.expanded_validity.count,
             totals.expected_pair_checks,
+            true,
         ),
         (
             "folded pool",
             totals.folded_pool.count,
             totals.expected_pool_checks,
+            totals.expectation_stages >= 1,
         ),
     ] {
-        assert!(ran >= 1, "{label}: no {name} check ran");
+        assert!(ran >= 1 || !required, "{label}: no {name} check ran");
         assert_eq!(ran, expected, "{label}: {name} checks run vs expected");
     }
     totals
 }
 
-/// Independent cold solves of the compact and the expanded LP reach one objective, and each
-/// formulation's cuts, the stored folded pools included, stay below the other formulation's value.
-#[test]
-fn cold_solves_and_cuts_agree_across_the_formulations() {
-    let options = FphaLagOptions {
-        openings: OPENINGS,
-        ..FphaLagOptions::default()
-    };
+fn check_lag_study(options: FphaLagOptions) -> Totals {
     let (system, mut config, hydro_models) = fpha_lag_study_with(options);
     apply_oracle_config(&mut config);
     let mut compact = build_setup_in_code_with_models(system, &config, hydro_models);
@@ -529,7 +537,17 @@ fn cold_solves_and_cuts_agree_across_the_formulations() {
     let (system, _, _) = fpha_lag_study_with(options);
     let expanded = expand_stage_templates(&system, &compact);
 
-    let totals = check_fixture(&Fixture::new(LAG_STUDY, &system, &compact, &expanded), None);
+    check_fixture(&Fixture::new(LAG_STUDY, &system, &compact, &expanded), None)
+}
+
+/// Independent cold solves of the compact and the expanded LP reach one objective, and each
+/// formulation's cuts, the stored folded pools included, stay below the other formulation's value.
+#[test]
+fn cold_solves_and_cuts_agree_across_the_formulations() {
+    let totals = check_lag_study(FphaLagOptions {
+        openings: OPENINGS,
+        ..FphaLagOptions::default()
+    });
     assert!(
         totals.compact_lag_cuts >= 1,
         "{LAG_STUDY}: no checked compact cut has a non-zero lag coefficient"
@@ -540,16 +558,35 @@ fn cold_solves_and_cuts_agree_across_the_formulations() {
     );
 }
 
+#[test]
+fn cold_solves_and_cuts_agree_across_the_formulations_under_cvar() {
+    let totals = check_lag_study(FphaLagOptions {
+        openings: OPENINGS,
+        risk_config: StageRiskConfig::CVaR {
+            alpha: 0.5,
+            lambda: 0.5,
+        },
+        ..FphaLagOptions::default()
+    });
+    assert!(
+        totals.cvar_pair_checks >= 1,
+        "{LAG_STUDY}: no per-opening comparison ran at a CVaR stage"
+    );
+    assert!(
+        totals.compact_lag_cuts >= 1,
+        "{LAG_STUDY}: no checked compact cut has a non-zero lag coefficient"
+    );
+}
+
 /// The same agreement on the first two stored states of every stage of every committed deck with
-/// inflow-lag state and a risk-neutral objective.
+/// inflow-lag state.
 #[test]
 #[cfg_attr(
     not(feature = "slow-tests"),
     ignore = "trains every committed deck with inflow lags"
 )]
 fn cold_solves_and_cuts_agree_across_the_formulations_on_every_lag_deck() {
-    let (mut visited, mut checked) = (Vec::new(), Vec::new());
-    let (mut not_chain, mut not_risk_neutral) = (Vec::new(), Vec::new());
+    let (mut visited, mut not_chain) = (Vec::new(), Vec::new());
     let (mut compact_lag_cuts, mut pool_lag_cuts) = (0, 0);
     for deck in committed_decks() {
         if SLOW_DECKS.contains(&deck.key.as_str()) {
@@ -563,15 +600,6 @@ fn cold_solves_and_cuts_agree_across_the_formulations_on_every_lag_deck() {
             not_chain.push(deck.key);
             continue;
         }
-        visited.push(deck.key.clone());
-        if !stage_risk_measures(&system)
-            .iter()
-            .all(|risk| matches!(risk, RiskMeasure::Expectation))
-        {
-            eprintln!("{}: skipped, its risk measure is not Expectation", deck.key);
-            not_risk_neutral.push(deck.key);
-            continue;
-        }
         train_storing_trial_states(&deck.key, &mut compact);
         let expanded = expand_stage_templates(&system, &compact);
         let totals = check_fixture(
@@ -580,11 +608,10 @@ fn cold_solves_and_cuts_agree_across_the_formulations_on_every_lag_deck() {
         );
         compact_lag_cuts += totals.compact_lag_cuts;
         pool_lag_cuts += totals.pool_lag_cuts;
-        checked.push(deck.key);
+        visited.push(deck.key);
     }
     eprintln!(
-        "visited {} lag decks: {visited:?}; not chains: {not_chain:?}; not risk-neutral: \
-         {not_risk_neutral:?}; checked: {checked:?}",
+        "visited {} lag decks: {visited:?}; not chains: {not_chain:?}",
         visited.len()
     );
     assert!(
@@ -592,12 +619,8 @@ fn cold_solves_and_cuts_agree_across_the_formulations_on_every_lag_deck() {
         "fewer than two committed lag decks were visited: {visited:?}"
     );
     assert!(
-        !checked.is_empty(),
-        "every visited lag deck was skipped for its risk measure: {not_risk_neutral:?}"
-    );
-    assert!(
         compact_lag_cuts >= 1 && pool_lag_cuts >= 1,
         "no checked cut has a non-zero lag coefficient ({compact_lag_cuts} compact cuts, \
-         {pool_lag_cuts} pool cuts) on {checked:?}"
+         {pool_lag_cuts} pool cuts) on {visited:?}"
     );
 }

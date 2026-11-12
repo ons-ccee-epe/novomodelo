@@ -55,6 +55,7 @@
 use novomodelo_solver::{RowBatch, StageTemplate};
 
 use crate::{
+    SddpError,
     context::{StageContext, TrainingContext},
     cut::{FutureCostFunction, pool::CutPool},
     forward::build_delta_cut_row_batch_into,
@@ -84,7 +85,9 @@ pub(crate) use by_node::{
     merge_block_pivots, process_stage_backward_by_node, resolve_block_size,
 };
 pub(crate) use by_scenario::{by_scenario_finish, process_by_scenario_backward};
-pub(crate) use duals_extraction::{DualExtractionSpec, OpeningDualBuffers, extract_opening_duals};
+pub(crate) use duals_extraction::{
+    ChainRuleStageInputs, DualExtractionSpec, OpeningDualBuffers, extract_opening_cut,
+};
 pub(crate) use lp_setup::{OpeningNoise, resolve_opening_noise};
 pub(crate) use replicated::{ReplicatedScratch, run_backward_node_replicated};
 pub(crate) use stage_noise::StageNoiseTable;
@@ -96,15 +99,14 @@ pub(crate) use lp_setup::fill_external_opening_noise;
 pub(crate) use lp_setup::{load_backward_lp, resolve_backward_basis};
 
 /// Per-`(rank, worker_id, opening)` solver delta collected during a single
-/// backward stage, as returned inside [`BackwardResult::stage_stats`].
+/// backward stage, as yielded by `BackwardPassState::stage_stats`.
 ///
 /// Layout: `(rank, worker_id, opening_index, delta)`.
 pub type StageWorkerOpeningDelta = (i32, i32, usize, SolverStatsDelta);
 
 /// Result produced by the backward pass on a single rank.
 ///
-/// The per-worker timing data carried inside `stage_stats` is keyed
-/// by the `WORKER_TIMING_SLOT_*` constants exported from
+/// The per-worker timing data is keyed by the `WORKER_TIMING_SLOT_*` constants exported from
 /// `novomodelo-core`. New per-worker timing slots should be added to
 /// that constant set (and the `WORKER_TIMING_SLOT_COUNT` updated)
 /// rather than as standalone fields on this struct, so the parquet
@@ -120,19 +122,6 @@ pub struct BackwardResult {
 
     /// LP solves performed.
     pub lp_solves: u64,
-
-    /// Per-stage, per-`(rank, worker_id, opening)` solver statistics deltas.
-    ///
-    /// Each outer entry is `(successor_stage_index, per_worker_opening_deltas)`;
-    /// the inner `Vec` element is `(rank, worker_id, omega, delta)`. The sampled
-    /// path gathers one entry per `(MPI rank, rayon worker, opening)` triple via
-    /// `allgatherv`, filtered to `omega < n_openings(successor)` and
-    /// `delta.lp_solves > 0 || omega == 0` (the omega=0 "stage visited"
-    /// sentinel), in reverse stage order. The enumerated path has no
-    /// per-worker/per-opening breakdown: one `(rank, worker_id, 0, delta)` entry
-    /// per visited successor stage (`delta.lp_solves > 0`), in ascending stage
-    /// order.
-    pub stage_stats: Vec<(usize, Vec<StageWorkerOpeningDelta>)>,
 
     /// State exchange time, accumulated across all stages (milliseconds).
     pub state_exchange_time_ms: u64,
@@ -158,11 +147,6 @@ pub struct BackwardResult {
 
     /// Per-stage cut synchronization time, accumulated across all stages (milliseconds).
     pub cut_sync_time_ms: u64,
-
-    /// This rank's serial aggregation time after each stage's parallel solves,
-    /// accumulated across all stages (milliseconds). Summed as a `Duration` and
-    /// converted once per pass.
-    pub aggregation_time_ms: u64,
 }
 
 /// Per-thread staging buffer for one aggregated cut produced at a single trial
@@ -190,6 +174,24 @@ pub(crate) struct StagedCut {
     /// Global forward-pass index (`fwd_offset + m`), stored as `u32` for the
     /// FCF slot formula.
     pub(crate) forward_pass_index: u32,
+}
+
+/// Takes every worker's fan-out error, in worker order, and returns the first.
+///
+/// Every slot is taken whatever it holds, so a stale error never surfaces at a
+/// later node.
+///
+/// # Errors
+/// Returns the first failing worker's [`SddpError`].
+pub(crate) fn take_first_error<'a>(
+    slots: impl Iterator<Item = &'a mut Option<SddpError>>,
+) -> Result<(), SddpError> {
+    let mut first = None;
+    for slot in slots {
+        let error = slot.take();
+        first = first.or(error);
+    }
+    first.map_or(Ok(()), Err)
 }
 
 /// Node-level backward-pass arguments at one cut-generating node, shared across
@@ -222,8 +224,8 @@ pub(crate) struct SuccessorSpec<'a> {
 }
 
 impl<'a> SuccessorSpec<'a> {
-    /// The pin source for trial `m`'s pin of the child `successor_node_id`.
-    pub(crate) fn bracket_source(&self, m: usize, successor_node_id: NodeId) -> BracketSource<'a> {
+    /// The pin source for trial `m`'s pin of `child`.
+    pub(crate) fn bracket_source(&self, m: usize, child: &SuccessorChild<'_>) -> BracketSource<'a> {
         match self.slab {
             SlabLookup::Unavailable => BracketSource::Computed,
             #[cfg(any(test, feature = "test-support"))]
@@ -235,7 +237,7 @@ impl<'a> SuccessorSpec<'a> {
             } => BracketSource::Slab(
                 records[m * n_stages + self.successor.0]
                     .frozen_brackets
-                    .read(iteration, successor_node_id),
+                    .read(iteration, child.successor_node_id, child.frozen_rows()),
             ),
         }
     }
@@ -327,6 +329,12 @@ pub(crate) struct SuccessorChild<'a> {
     pub(crate) outcome_range: Range<usize>,
     /// Chain-rule slot ranges of this child's pool against the generating node's pool.
     pub(crate) chain_rule_slots: &'a ChainRuleSlots,
+}
+
+impl SuccessorChild<'_> {
+    pub(crate) fn frozen_rows(&self) -> usize {
+        self.num_cuts_at_successor - self.cut_batch.num_rows
+    }
 }
 
 /// The current node's reified successor outcome set: one [`SuccessorEntry`] per

@@ -1137,17 +1137,10 @@ mod terminal_fusion {
     const ANALYTICAL_ORACLE_ITERATIONS: u32 = 1;
 
     /// Trains `setup` single-rank/single-thread with an attached event
-    /// channel, returning `(final_lb, final_ub, backward_lp_solves)`.
-    /// `solver_stats_log`'s own `"backward"` phase stays empty for enumerated
-    /// training — `BackwardResult::stage_stats` is unconditionally
-    /// `Vec::new()` off the sampled/by-node path
-    /// (`BackwardPassState::run_enumerated_backward`) — so the real backward
-    /// solve count is recovered by subtracting this iteration's logged
-    /// `"forward"` + `"lower_bound"` total from
-    /// `TrainingEvent::IterationSummary::lp_solves`, which sums all three
-    /// phases for that iteration. Filtering `solver_stats_log` by
-    /// `phase == "backward"` here would silently read zero regardless of
-    /// fusion — the wrong-but-compiling shortcut this helper exists to avoid.
+    /// channel, returning `(final_lb, final_ub, backward_lp_solves)`. The backward
+    /// solve count is `TrainingEvent::IterationSummary::lp_solves`, which sums
+    /// the forward, backward and lower-bound phases of an iteration, minus that
+    /// iteration's logged `"forward"` + `"lower_bound"` total.
     fn train_enumerated_backward_lp_solves(setup: &mut StudySetup) -> (f64, f64, u64) {
         let comm = StubComm;
         let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");

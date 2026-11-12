@@ -5,10 +5,14 @@
 //! (sddp.md "Benders cut sign & subgradient extraction").
 
 use novomodelo_solver::SolutionView;
+use novomodelo_stochastic::par::precompute::PrecomputedPar;
 
 use crate::{
-    cut::{CutPool, CutRowMap},
-    indexer::{CutStateProjection, HydroSys, InCol},
+    cut::{
+        CutPool, CutRowMap,
+        chain_rule::{ChainRuleInputs, ChainRuleScratch, OpeningDuals, per_opening_cut_into},
+    },
+    indexer::{ChainRuleSlots, CutStateProjection, HydroSys, InCol},
     lp::builder::InflowCoupling,
 };
 
@@ -62,6 +66,15 @@ pub(crate) struct OpeningDualBuffers<'a> {
     pub(crate) state_duals: &'a mut Vec<f64>,
     pub(crate) coupled_duals: &'a mut Vec<f64>,
     pub(crate) cut_dual_slots: &'a mut Vec<(usize, f64)>,
+}
+
+/// The chain-rule inputs of one opening other than the extracted projection, which
+/// [`DualExtractionSpec`] carries.
+pub(crate) struct ChainRuleStageInputs<'a> {
+    pub(crate) slots: &'a ChainRuleSlots,
+    pub(crate) resident_pool: &'a CutPool,
+    pub(crate) par: &'a PrecomputedPar,
+    pub(crate) stage: usize,
 }
 
 /// Fills `out` from a solved compact opening and returns its objective Q.
@@ -120,6 +133,40 @@ pub(crate) fn extract_opening_duals(
     }
 
     view.objective
+}
+
+/// [`extract_opening_duals`], then [`per_opening_cut_into`] on the same
+/// `spec.extracted`: writes the opening's cut coefficients into `coefficients`, whose
+/// length is `spec.extracted.n_slots()`, and returns the objective and the intercept.
+pub(crate) fn extract_opening_cut(
+    view: &SolutionView<'_>,
+    spec: &DualExtractionSpec<'_>,
+    chain: &ChainRuleStageInputs<'_>,
+    x_hat: &[f64],
+    duals: &mut OpeningDualBuffers<'_>,
+    scratch: &mut ChainRuleScratch,
+    coefficients: &mut [f64],
+) -> (f64, f64) {
+    let objective = extract_opening_duals(view, spec, duals);
+    let intercept = per_opening_cut_into(
+        &ChainRuleInputs {
+            slots: chain.slots,
+            resident_pool: chain.resident_pool,
+            extracted: spec.extracted,
+            par: chain.par,
+            stage: chain.stage,
+        },
+        &OpeningDuals {
+            objective,
+            state_duals: duals.state_duals,
+            coupled_duals: duals.coupled_duals,
+            cut_duals: duals.cut_dual_slots,
+        },
+        x_hat,
+        scratch,
+        coefficients,
+    );
+    (objective, intercept)
 }
 
 /// Fills `out` with (pool slot, raw cut-row dual) pairs for the lazy solve's

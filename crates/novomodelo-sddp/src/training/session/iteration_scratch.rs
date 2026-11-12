@@ -43,10 +43,7 @@ pub(crate) struct IterationScratch {
     pub lb_cut_row_map: CutRowMap,
     /// Per-evaluation scratch buffers for lower-bound evaluation.
     pub lb_scratch: LbEvalScratch,
-    /// Noise/NCS-transform scratch for the lower-bound path, the same shape
-    /// [`StageSolvePrep::run`] reads on every other solve site.
-    ///
-    /// [`StageSolvePrep::run`]: crate::training::stage_solve_prep::StageSolvePrep::run
+    /// Noise/NCS-transform scratch for the lower-bound path.
     pub lb_noise_scratch: ScratchBuffers,
     /// Scratch buffers for `freeze_rows_into_template` (count/emit-pass temporaries).
     pub(crate) freeze_scratch: FreezeScratch,

@@ -108,6 +108,13 @@ impl CapturedBasis {
         }
     }
 
+    /// Grows the buffers to `rows` row statuses and `cut_rows` cut-row slots, never shrinking and
+    /// changing no length.
+    pub(crate) fn reserve_cut_rows(&mut self, rows: usize, cut_rows: usize) {
+        reserve_to(&mut self.basis.row_status, rows);
+        reserve_to(&mut self.cut_row_slots, cut_rows);
+    }
+
     /// Retains capacity. Does not touch `basis` (next `get_basis` overwrites it).
     pub fn clear(&mut self) {
         self.cut_row_slots.clear();
@@ -401,9 +408,10 @@ pub(crate) struct BackwardAccumulators {
     /// once per stage (not per trial point); each pool's own region slice is merged
     /// into `metadata_sync_buf` and synced separately.
     pub(crate) metadata_sync_contribution: Vec<u64>,
-    /// Per-worker per-opening solver-statistics accumulator (length
-    /// `n_openings`). Re-initialised once per stage; merged into the per-stage
-    /// `Vec<SolverStatsDelta>` in `BackwardResult::stage_stats`.
+    /// Per-worker per-opening solver-statistics accumulator, at least
+    /// `n_openings` long and read within `[..n_openings]`. Re-initialised once
+    /// per stage by [`Self::reset_per_opening_stats`]; gathered into the entries
+    /// `BackwardPassState::stage_stats` yields.
     pub(crate) per_opening_stats: Vec<SolverStatsDelta>,
     /// Per-block `simplex_iterations` sum for the by-node
     /// scheduler's pivot accumulator, index `b` in `[0, n_blocks)` for
@@ -424,9 +432,12 @@ pub(crate) struct BackwardAccumulators {
     /// successor node, assembled from the external libraries at the node's
     /// column. Empty and never touched on the generated/sampled path.
     pub(crate) external_noise_buf: Vec<f64>,
-    /// Per-worker staging buffer for cuts produced within one stage; drained at
-    /// the rayon closure boundary so ownership can cross the closure return.
+    /// Per-worker staging buffer for the cuts one stage's fan-out produces; the
+    /// by-scenario finish drains the workers' buffers in worker order.
     pub(crate) staged_cuts_buf: Vec<StagedCut>,
+    /// The error that ended this worker's share of the stage's fan-out, taken in
+    /// worker order by `take_first_error` before the finish reads the workers.
+    pub(crate) fan_out_error: Option<SddpError>,
     /// Scratch for `CVaR` weight computation; the internal `Vec`s grow to
     /// `n_openings` on the first `CVaR` call. Never accessed under
     /// `RiskMeasure::Expectation`.
@@ -443,6 +454,12 @@ pub(crate) struct BackwardAccumulators {
     /// Per-opening after-solve statistics snapshot; counterpart to
     /// `stats_before_buf`.
     pub(crate) stats_after_buf: SolverStatistics,
+    /// Per-opening solver-statistics delta, written from the two snapshots and
+    /// accumulated into `per_opening_stats`.
+    pub(crate) opening_delta_buf: SolverStatsDelta,
+    /// Length of the backend's `retry_level_histogram`, learned from the
+    /// worker's solver when the workspace is built.
+    pub(crate) retry_histogram_len: usize,
     /// (Gᵀπ)_h per hydro for the current opening, in unscaled cost units.
     pub(crate) coupled_duals_buf: Vec<f64>,
     /// Per-opening chain-rule accumulators, shaped by the layout's (N, L).
@@ -471,22 +488,55 @@ impl BackwardAccumulators {
             agg_coefficients: vec![0.0_f64; n_state],
             agg_arena: Vec::new(),
             metadata_sync_contribution: vec![0u64; initial_pool_capacity],
-            per_opening_stats: Vec::new(),
+            per_opening_stats: vec![SolverStatsDelta::default(); max_openings],
             block_pivot_sum: Vec::new(),
             block_pivot_count: Vec::new(),
             state_duals_buf: Vec::new(),
             cut_dual_slots: Vec::new(),
             external_noise_buf: Vec::new(),
             staged_cuts_buf: Vec::new(),
+            fan_out_error: None,
             risk_scratch: RiskMeasureScratch::new(),
             dcs_solve,
             dcs_initial_resident: Vec::with_capacity(initial_pool_capacity),
             stats_before_buf: SolverStatistics::default(),
             stats_after_buf: SolverStatistics::default(),
+            opening_delta_buf: SolverStatsDelta::default(),
+            retry_histogram_len: 0,
             coupled_duals_buf: vec![0.0; n_hydros],
             chain_scratch: ChainRuleScratch::new(n_hydros, lag_depth),
             opening_records: OpeningRecords::default(),
             successor_aggregate: SuccessorAggregateScratch::new(n_hydros, lag_depth, max_openings),
+        }
+    }
+
+    /// Reserves `histogram_len` entries in every statistics histogram this
+    /// accumulator owns, so no first use allocates whichever opening a worker
+    /// claims first. Changes no length.
+    pub(crate) fn reserve_statistics_histograms(&mut self, histogram_len: usize) {
+        self.retry_histogram_len = histogram_len;
+        let deltas = self
+            .per_opening_stats
+            .iter_mut()
+            .chain([&mut self.opening_delta_buf]);
+        for delta in deltas {
+            delta.retry_level_histogram.reserve_exact(histogram_len);
+        }
+        for stats in [&mut self.stats_before_buf, &mut self.stats_after_buf] {
+            stats.retry_level_histogram.reserve_exact(histogram_len);
+        }
+    }
+
+    /// Zeroes the first `n_openings` per-opening accumulators in place. The
+    /// vector only grows, so a stage with fewer openings leaves the later
+    /// slots' histograms allocated for the stage that follows.
+    pub(crate) fn reset_per_opening_stats(&mut self, n_openings: usize) {
+        if self.per_opening_stats.len() < n_openings {
+            self.per_opening_stats
+                .resize_with(n_openings, SolverStatsDelta::default);
+        }
+        for slot in &mut self.per_opening_stats[..n_openings] {
+            slot.reset_in_place();
         }
     }
 }
@@ -970,6 +1020,15 @@ impl<S: SolverInterface> SolverWorkspace<S> {
         stage_ctx: &StageContext<'_>,
         sizing: WorkspaceSizing,
     ) -> Self {
+        let mut backward_accum = BackwardAccumulators::new(
+            sizing.max_openings,
+            sizing.initial_pool_capacity,
+            training_ctx.state.n_state,
+            training_ctx.state.hydro_count,
+            training_ctx.state.max_par_order,
+        );
+        backward_accum
+            .reserve_statistics_histograms(solver.statistics().retry_level_histogram.len());
         Self {
             rank,
             worker_id,
@@ -978,13 +1037,7 @@ impl<S: SolverInterface> SolverWorkspace<S> {
             current_state: Vec::with_capacity(training_ctx.state.n_state),
             scratch: ScratchBuffers::new(training_ctx, stage_ctx, sizing),
             scratch_basis: Basis::new(0, 0),
-            backward_accum: BackwardAccumulators::new(
-                sizing.max_openings,
-                sizing.initial_pool_capacity,
-                training_ctx.state.n_state,
-                training_ctx.state.hydro_count,
-                training_ctx.state.max_par_order,
-            ),
+            backward_accum,
             worker_timing_buf: WorkerPhaseTimings::default(),
         }
     }
@@ -1362,6 +1415,17 @@ impl BasisStore {
         &mut self.bases[scenario * self.num_nodes + node.0]
     }
 
+    /// Grows every stored basis to its node's `(rows, cut_rows)` bound, never shrinking and
+    /// changing no length. Call it wherever the resident pools grow.
+    pub(crate) fn reserve_cut_rows(&mut self, bound: impl Fn(NodePos) -> (usize, usize)) {
+        for (i, slot) in self.bases.iter_mut().enumerate() {
+            if let Some(captured) = slot {
+                let (rows, cut_rows) = bound(NodePos(i % self.num_nodes));
+                captured.reserve_cut_rows(rows, cut_rows);
+            }
+        }
+    }
+
     /// Split the first `n_active` scenarios into `n_workers` disjoint mutable
     /// sub-views, worker `w` receiving `partition(n_active, n_workers, w)` — the
     /// same windows the caller's per-worker trajectory records use.
@@ -1381,13 +1445,30 @@ impl BasisStore {
         n_active: usize,
         n_workers: usize,
     ) -> Vec<BasisStoreSliceMut<'_>> {
+        let mut slices = Vec::with_capacity(n_workers);
+        self.split_workers_into(n_active, n_workers, &mut slices);
+        slices
+    }
+
+    /// Clears `out` and pushes the slices [`Self::split_workers_mut`] returns, so a
+    /// vector kept across calls keeps its allocation.
+    ///
+    /// # Panics
+    ///
+    /// Panics as [`Self::split_workers_mut`] does.
+    pub(crate) fn split_workers_into<'a>(
+        &'a mut self,
+        n_active: usize,
+        n_workers: usize,
+        out: &mut Vec<BasisStoreSliceMut<'a>>,
+    ) {
         debug_assert!(n_workers > 0, "n_workers must be > 0");
         assert!(
             n_active <= self.num_scenarios(),
-            "split_workers_mut: {n_active} active scenarios exceed the store's {}",
+            "split_workers_into: {n_active} active scenarios exceed the store's {}",
             self.num_scenarios()
         );
-        let mut slices = Vec::with_capacity(n_workers);
+        out.clear();
         let mut bases_rem = self.bases.as_mut_slice();
 
         for w in 0..n_workers {
@@ -1395,14 +1476,13 @@ impl BasisStore {
             let chunk = (end - start) * self.num_nodes;
             let (bases_left, bases_rest) = bases_rem.split_at_mut(chunk);
             bases_rem = bases_rest;
-            slices.push(BasisStoreSliceMut {
+            out.push(BasisStoreSliceMut {
                 bases: bases_left,
                 scenario_offset: start,
                 scenario_end: end,
                 num_nodes: self.num_nodes,
             });
         }
-        slices
     }
 }
 
@@ -2310,6 +2390,33 @@ mod tests {
 
         assert!((0..5).all(|m| store.get(m, NodePos(1)).is_some()));
         assert!(store.get(5, NodePos(1)).is_none());
+    }
+
+    #[test]
+    fn split_workers_into_reuses_the_vector_and_gives_the_same_windows() {
+        let mut store = BasisStore::new(6, 2);
+        let mut kept: Vec<BasisStoreSliceMut<'static>> = Vec::with_capacity(4);
+        let allocation = (kept.as_ptr().addr(), kept.capacity());
+        for (n_active, n_workers) in [(6, 3), (5, 4), (0, 2), (6, 4)] {
+            let expected: Vec<(usize, usize)> = store
+                .split_workers_mut(n_active, n_workers)
+                .iter()
+                .map(BasisStoreSliceMut::scenario_window)
+                .collect();
+            let mut slices: Vec<BasisStoreSliceMut<'_>> = recycle(std::mem::take(&mut kept));
+            store.split_workers_into(n_active, n_workers, &mut slices);
+            let windows: Vec<(usize, usize)> = slices
+                .iter()
+                .map(BasisStoreSliceMut::scenario_window)
+                .collect();
+            assert_eq!(windows, expected, "{n_active} active, {n_workers} workers");
+            kept = recycle(slices);
+            assert_eq!(
+                (kept.as_ptr().addr(), kept.capacity()),
+                allocation,
+                "{n_active} active, {n_workers} workers"
+            );
+        }
     }
 
     #[test]

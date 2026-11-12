@@ -142,12 +142,17 @@ pub(super) fn solve_backward_opening<S: SolverInterface + Send>(
     let mut stats_after = std::mem::take(&mut ws.backward_accum.stats_after_buf);
     ws.solver.statistics_into(&mut stats_after);
 
-    // Counters are monotonically increasing (mirrors `SolverStatsDelta::from_snapshots`).
-    let simplex_iterations = stats_after.total_iterations - stats_before.total_iterations;
-
     let accum = &mut ws.backward_accum;
-    let opening_delta = SolverStatsDelta::from_snapshots(&stats_before, &stats_after);
-    SolverStatsDelta::accumulate_into(&mut accum.per_opening_stats[omega], &opening_delta);
+    SolverStatsDelta::from_snapshots_into(
+        &mut accum.opening_delta_buf,
+        &stats_before,
+        &stats_after,
+    );
+    let simplex_iterations = accum.opening_delta_buf.simplex_iterations;
+    SolverStatsDelta::accumulate_into(
+        &mut accum.per_opening_stats[omega],
+        &accum.opening_delta_buf,
+    );
     accum.opening_records.push(
         (trial_pos, omega),
         objective,

@@ -12,7 +12,7 @@
 #![deny(clippy::allow_attributes, clippy::allow_attributes_without_reason)]
 
 use std::collections::BTreeMap;
-use std::num::NonZeroU32;
+use std::num::{NonZeroU32, NonZeroUsize};
 use std::path::{Path, PathBuf};
 
 use chrono::NaiveDate;
@@ -32,11 +32,12 @@ use novomodelo_core::{
 };
 use novomodelo_io::StageIdResolver;
 use novomodelo_io::config::{
-    Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig, InflowNonNegativityMethod,
-    ModelingConfig, ParallelismConfig, PolicyConfig, RawClassConfigEntry, RawSamplingScheme,
-    RawScenarioSourceConfig, RowSelectionConfig, SelectionMethod,
-    SimulationConfig as IoSimulationConfig, SimulationSelection, StoppingMode, StoppingRuleConfig,
-    TrainingConfig, TrainingSelection, TrainingSolverConfig, UpperBoundEvaluationConfig,
+    BackwardScheduler, Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
+    InflowNonNegativityMethod, ModelingConfig, ParallelismConfig, PolicyConfig,
+    RawClassConfigEntry, RawSamplingScheme, RawScenarioSourceConfig, RowSelectionConfig,
+    SelectionMethod, SimulationConfig as IoSimulationConfig, SimulationSelection, StoppingMode,
+    StoppingRuleConfig, TrainingConfig, TrainingSelection, TrainingSolverConfig,
+    UpperBoundEvaluationConfig,
 };
 use novomodelo_io::test_support::{
     checkpoint_manifest_defaults, piece_defaults, producer_block_defaults,
@@ -58,9 +59,7 @@ use crate::StudySetup;
 #[cfg(test)]
 use crate::bucket_topology::{TransitBucketTopology, build_transit_bucket_topology};
 use crate::context::{StageContext, TrainingContext};
-use crate::cut::chain_rule::{
-    ChainRuleInputs, ChainRuleScratch, OpeningDuals, per_opening_cut_into,
-};
+use crate::cut::chain_rule::ChainRuleScratch;
 use crate::cut::pool::CutPool;
 use crate::cut::row::fill_cut_rows;
 use crate::error::SddpError;
@@ -95,13 +94,16 @@ use crate::setup::unresolved_boundary_requirements;
 #[cfg(test)]
 use crate::setup::{ResolvedStateLayout, resolve_state_layout};
 use crate::solve::StageOpeningSolver;
+use crate::solve::solver_phase::SolverProfiles;
 use crate::solve::stage_solve::assemble_outgoing_state;
 #[cfg(test)]
 use crate::time_value::DeliveryCalendar;
 use crate::time_value::{PostStudyResolved, TimeValue};
 use crate::training::backward::{
-    DualExtractionSpec, OpeningDualBuffers, extract_opening_duals, fill_external_opening_noise,
+    ChainRuleStageInputs, DualExtractionSpec, OpeningDualBuffers, by_node_block_count,
+    extract_opening_cut, fill_external_opening_noise, resolve_block_size,
 };
+use crate::training::session::TrainingSession;
 use crate::training::stage_solve_prep::{SingleSolvePrepParams, StageSolvePrep, StateSource};
 use crate::trajectory::TrajectoryRecord;
 use crate::workspace::{ScratchBuffers, SolverWorkspace, WorkspaceSizing};
@@ -173,6 +175,12 @@ impl Default for GeometryDims {
 #[must_use]
 pub fn bits(values: &[f64]) -> Vec<u64> {
     values.iter().copied().map(f64::to_bits).collect()
+}
+
+/// The opening-block count the by-node backward pass splits a stage of `n_openings` into.
+#[must_use]
+pub fn opening_block_count(n_openings: usize, node_block_size: Option<NonZeroUsize>) -> usize {
+    by_node_block_count(n_openings, resolve_block_size(n_openings, node_block_size))
 }
 
 /// The well-formed empty [`RowBatch`]: `row_starts` has length `num_rows + 1`.
@@ -1907,7 +1915,7 @@ impl ProbeCut {
 }
 
 /// Solve one compact opening and build its cut through the production extraction and chain
-/// rule, [`extract_opening_duals`] and [`per_opening_cut_into`].
+/// rule, [`extract_opening_cut`].
 ///
 /// The caller loads the compact template and appends the rows of `opening.cuts.slots`, in that
 /// order, first. A repeat call at the same stage and row count allocates nothing in `out`.
@@ -1991,7 +1999,9 @@ pub fn opening_cut_for_probe<S: SolverInterface + Send>(
 
     let resident = &training_ctx.cut_state_layouts[cuts.pool_id];
     let extracted = &training_ctx.cut_state_layouts[opening.extracted_pool_id];
-    out.objective = extract_opening_duals(
+    out.coefficients.clear();
+    out.coefficients.resize(extracted.n_slots(), 0.0);
+    (out.objective, out.intercept) = extract_opening_cut(
         &view,
         &DualExtractionSpec {
             extracted,
@@ -2002,34 +2012,103 @@ pub fn opening_cut_for_probe<S: SolverInterface + Send>(
             cut_row_slots: cuts.slots,
             read_cut_duals: resident.has_lag_slots(),
         },
+        &ChainRuleStageInputs {
+            slots: &ChainRuleSlots::compose(training_ctx.state, resident, extracted),
+            resident_pool: cuts.pool,
+            par: training_ctx.stochastic.par(),
+            stage: stage.0,
+        },
+        opening.pinned_state,
         &mut OpeningDualBuffers {
             state_duals: &mut out.state_duals,
             coupled_duals: &mut out.coupled_duals,
             cut_dual_slots: &mut out.cut_dual_slots,
         },
-    );
-
-    out.coefficients.clear();
-    out.coefficients.resize(extracted.n_slots(), 0.0);
-    out.intercept = per_opening_cut_into(
-        &ChainRuleInputs {
-            slots: &ChainRuleSlots::compose(training_ctx.state, resident, extracted),
-            resident_pool: cuts.pool,
-            extracted,
-            par: training_ctx.stochastic.par(),
-            stage: stage.0,
-        },
-        &OpeningDuals {
-            objective: out.objective,
-            state_duals: &out.state_duals,
-            coupled_duals: &out.coupled_duals,
-            cut_duals: &out.cut_dual_slots,
-        },
-        opening.pinned_state,
         &mut out.chain_scratch,
         &mut out.coefficients,
     );
     Ok(())
+}
+
+/// A training session whose iteration phases run one at a time, so a test can arm a counter around the backward phase alone.
+pub struct BackwardPhaseProbe<'a, C: Communicator> {
+    session: TrainingSession<'a, ActiveSolver, C>,
+}
+
+impl<C: Communicator> BackwardPhaseProbe<'_, C> {
+    /// Runs the whole iteration, whatever stop it decides.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the iteration's [`SddpError`].
+    pub fn run_iteration(&mut self, iteration: u64) -> Result<(), SddpError> {
+        self.session.run_iteration(iteration).map(|_| ())
+    }
+
+    /// Runs the forward pass and its synchronisation.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the pass's [`SddpError`].
+    pub fn run_forward_phase(&mut self, iteration: u64) -> Result<(), SddpError> {
+        self.session.run_forward_phase(iteration).map(|_| ())
+    }
+
+    /// Runs the backward pass and its cut synchronisation.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the pass's [`SddpError`].
+    pub fn run_backward_phase(&mut self, iteration: u64) -> Result<(), SddpError> {
+        self.session.run_backward_phase(iteration).map(|_| ())
+    }
+
+    /// Runs the periodic cut selection, the budget and the template refreeze.
+    pub fn run_cut_management(&mut self, iteration: u64) {
+        self.session.run_cut_management(iteration);
+    }
+
+    /// Frozen pins so far that found no slab and recomputed their brackets.
+    #[must_use]
+    pub fn slab_misses(&self) -> u64 {
+        self.session.slab_miss_local_total()
+    }
+
+    /// Cut rows last frozen into the templates of the pools past stage 0, the rows a backward pin reads from the slab.
+    #[must_use]
+    pub fn frozen_rows_past_root(&self) -> usize {
+        self.session.frozen_rows_past_root()
+    }
+}
+
+/// Runs `f` on a [`BackwardPhaseProbe`] over a fresh training session of `setup` on one rank, with
+/// no event sender and no output writer.
+///
+/// # Errors
+///
+/// Returns [`SddpError::Solver`] when a solver cannot be built, or the session's own
+/// [`SddpError`].
+pub fn with_backward_phase_probe<C: Communicator, R>(
+    setup: &mut StudySetup,
+    comm: &C,
+    n_threads: usize,
+    backward_scheduler: BackwardScheduler,
+    f: impl FnOnce(BackwardPhaseProbe<'_, C>) -> R,
+) -> Result<R, SddpError> {
+    let mut solver = ActiveSolver::new().map_err(SddpError::Solver)?;
+    setup.with_training_session(
+        &mut solver,
+        comm,
+        n_threads,
+        ActiveSolver::new,
+        None,
+        None,
+        SolverProfiles {
+            backward_scheduler,
+            ..SolverProfiles::default()
+        },
+        |session| Ok(f(BackwardPhaseProbe { session })),
+    )
 }
 
 /// The three observations [`write_backward_opening_outcome_for_probe`] returns.
@@ -2175,7 +2254,7 @@ pub fn write_backward_opening_outcome_for_probe<S: SolverInterface + Send>(
 /// already-canonical state `x̂`.
 ///
 /// That canonical value is the single `x_hat` threaded into BOTH the pin
-/// ([`prep_for_probe`]) and the intercept ([`per_opening_cut_into`]),
+/// ([`prep_for_probe`]) and the intercept ([`extract_opening_cut`]),
 /// mirroring the backward opening loop. The state the LP was pinned at is
 /// recovered separately from the solved primal — an independent data path — so
 /// [`CanonicalCutProbe::pinned_x_hat`] cross-checks the pin against the cut
@@ -2973,7 +3052,7 @@ pub struct KFanFixture {
 /// non-uniform transition weights, each with its own deterministic leaf (stage
 /// [`K_FAN_LEAF_STAGE_ID`]) — `num_nodes (2k+1) > n_pools (k+2)` via leaf
 /// sharing, and a genuine `k`-node reverse-topological backward level at
-/// [`K_FAN_BRANCH_STAGE_ID`] (`backward_cut_levels`). Configured `sampled`
+/// [`K_FAN_BRANCH_STAGE_ID`] (`backward_cut_levels_into`). Configured `sampled`
 /// (never `enumerated`) with a fixed seed, `forward_passes` trajectories per
 /// iteration, `max_iterations` iterations.
 ///

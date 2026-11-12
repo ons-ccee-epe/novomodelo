@@ -1802,7 +1802,6 @@ fn test_solver_clp_solve_dual_values() {
 
 /// Mirrors `test_solver_highs_add_rows_tightens`: load SS1.1, `add_rows(SS1.2)`,
 /// `solve(None)`, assert objective `162.0` and primals `(6.0, 62.0, 2.0)`.
-/// This is the end-to-end CSR→CSC merge cross-validation.
 #[cfg(feature = "clp")]
 #[test]
 fn test_solver_clp_add_rows_then_solve() {

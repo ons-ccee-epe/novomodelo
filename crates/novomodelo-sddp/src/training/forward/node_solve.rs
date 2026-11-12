@@ -1,14 +1,11 @@
 //! The forward node-solve both forward drivers run: prep, solve, stage cost,
 //! outgoing state.
 
-use novomodelo_solver::{SolutionView, SolverInterface};
+use novomodelo_solver::SolverInterface;
 
 use crate::{
     context::{StageContext, TrainingContext},
-    cut::{
-        CutPool,
-        chain_rule::{ChainRuleInputs, OpeningDuals, per_opening_cut_into},
-    },
+    cut::CutPool,
     error::SddpError,
     indexer::{ChainRuleSlots, CutStateProjection},
     noise::{DownstreamAccumState, LagAccumState},
@@ -18,7 +15,9 @@ use crate::{
         StageInputs, assemble_outgoing_state, fill_unscaled, run_stage_solve_terminal_static,
     },
     training::{
-        backward::{DualExtractionSpec, OpeningDualBuffers, extract_opening_duals},
+        backward::{
+            ChainRuleStageInputs, DualExtractionSpec, OpeningDualBuffers, extract_opening_cut,
+        },
         stage_solve_prep::{SingleSolvePrepParams, StageSolvePrep, StateSource},
     },
     workspace::{CapturedBasis, SolverWorkspace},
@@ -123,6 +122,14 @@ pub(super) fn solve_forward_node_core<S: SolverInterface + Send>(
         coupled_duals: &mut coupled_duals,
         cut_dual_slots: &mut cut_dual_slots,
     };
+    let (mut chain_scratch, x_hat) = if fuses {
+        (
+            std::mem::take(&mut ws.backward_accum.chain_scratch),
+            std::mem::take(&mut ws.current_state),
+        )
+    } else {
+        Default::default()
+    };
 
     opening_solver.seed_resident_set(ws, pool, iteration);
     let inputs = StageInputs {
@@ -159,27 +166,37 @@ pub(super) fn solve_forward_node_core<S: SolverInterface + Send>(
             * ctx.cost_scale_factor
     };
 
-    // x̂ is `ws.current_state` until `assemble_outgoing_state` overwrites it.
     match (fused_out, fusion_cut_state) {
         (Some(out), Some(parent)) => {
-            out.objective = extract_fused_slice(
+            let template = ctx.template(t);
+            out.subgradient.resize(parent.n_slots(), 0.0);
+            // `resident` is the solved leaf's own projection and `parent` the extracted one;
+            // swapping them compiles.
+            (out.objective, _) = extract_opening_cut(
                 &view,
-                ctx,
-                t,
-                parent,
-                resident,
-                &cut_row_slots,
+                &DualExtractionSpec {
+                    extracted: parent,
+                    col_scale: &template.col_scale,
+                    row_scale: &template.row_scale,
+                    coupling: &ctx.inflow_coupling[t.0],
+                    first_cut_row: template.num_rows,
+                    cut_row_slots: &cut_row_slots,
+                    read_cut_duals: resident.has_lag_slots(),
+                },
+                &ChainRuleStageInputs {
+                    slots: &ChainRuleSlots::compose(training_ctx.state, resident, parent),
+                    resident_pool: pool,
+                    par: training_ctx.stochastic.par(),
+                    stage: t.0,
+                },
+                &x_hat,
                 &mut opening_duals,
+                &mut chain_scratch,
+                &mut out.subgradient,
             );
-            chain_rule_fused_slice(
-                ws,
-                training_ctx,
-                solve,
-                parent,
-                resident,
-                &opening_duals,
-                out,
-            );
+            out.captured = true;
+            ws.backward_accum.chain_scratch = chain_scratch;
+            ws.current_state = x_hat;
             ws.scratch.cut_slots_buf = cut_row_slots;
             ws.backward_accum.state_duals_buf = state_duals;
             ws.backward_accum.coupled_duals_buf = coupled_duals;
@@ -249,62 +266,4 @@ fn prepare_stage_solve<S: SolverInterface + Send>(
         },
         pool.active_cuts().map(|(slot, _, _)| slot),
     );
-}
-
-fn extract_fused_slice(
-    view: &SolutionView<'_>,
-    ctx: &StageContext<'_>,
-    t: StageIdx,
-    parent: &CutStateProjection,
-    resident: &CutStateProjection,
-    cut_row_slots: &[usize],
-    duals: &mut OpeningDualBuffers<'_>,
-) -> f64 {
-    let template = ctx.template(t);
-    extract_opening_duals(
-        view,
-        &DualExtractionSpec {
-            extracted: parent,
-            col_scale: &template.col_scale,
-            row_scale: &template.row_scale,
-            coupling: &ctx.inflow_coupling[t.0],
-            first_cut_row: template.num_rows,
-            cut_row_slots,
-            read_cut_duals: resident.has_lag_slots(),
-        },
-        duals,
-    )
-}
-
-/// The solved leaf's own projection is the resident one and the parent's the
-/// extracted one; swapping them compiles.
-fn chain_rule_fused_slice<S: SolverInterface + Send>(
-    ws: &mut SolverWorkspace<S>,
-    training_ctx: &TrainingContext<'_>,
-    solve: &ForwardNodeSolve<'_>,
-    parent: &CutStateProjection,
-    resident: &CutStateProjection,
-    duals: &OpeningDualBuffers<'_>,
-    out: &mut FusedTerminalSlice,
-) {
-    out.subgradient.resize(parent.n_slots(), 0.0);
-    per_opening_cut_into(
-        &ChainRuleInputs {
-            slots: &ChainRuleSlots::compose(training_ctx.state, resident, parent),
-            resident_pool: solve.pool,
-            extracted: parent,
-            par: training_ctx.stochastic.par(),
-            stage: solve.t.0,
-        },
-        &OpeningDuals {
-            objective: out.objective,
-            state_duals: duals.state_duals,
-            coupled_duals: duals.coupled_duals,
-            cut_duals: duals.cut_dual_slots,
-        },
-        &ws.current_state,
-        &mut ws.backward_accum.chain_scratch,
-        &mut out.subgradient,
-    );
-    out.captured = true;
 }

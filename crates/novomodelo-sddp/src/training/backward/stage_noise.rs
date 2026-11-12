@@ -135,7 +135,7 @@ impl StageNoiseTable {
 
     /// W of the first `rows` cut rows of outcome `omega`'s child, in its LP cut-row order.
     pub(crate) fn cut_noise(&self, omega: usize, rows: usize) -> &[f64] {
-        debug_assert!(rows <= self.stride, "more cut rows than the table's stride");
+        assert!(rows <= self.stride, "more cut rows than the table's stride");
         &self.cut_noise[omega * self.stride..][..rows]
     }
 
@@ -152,5 +152,23 @@ impl StageNoiseTable {
                 self.external_noise.capacity(),
             ),
         ]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::StageNoiseTable;
+
+    #[test]
+    #[should_panic(expected = "more cut rows than the table's stride")]
+    fn more_cut_rows_than_the_stride_panics() {
+        let stride = 3;
+        let table = StageNoiseTable {
+            cut_noise: vec![0.0; 2 * stride],
+            stride,
+            ..StageNoiseTable::default()
+        };
+
+        let _ = table.cut_noise(0, stride + 1);
     }
 }

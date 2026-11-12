@@ -1071,7 +1071,6 @@ mod tests {
                 setup_time_ms: 0,
                 load_imbalance_ms: 0,
                 scheduling_overhead_ms: 0,
-                aggregation_time_ms: 0,
             },
             sync_event(1, 24),
             pool_summary_of_21_active_rows(1),

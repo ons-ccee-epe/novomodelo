@@ -23,6 +23,27 @@ where
     run_backward_pass_inspected(inputs, configure, |_| {})
 }
 
+/// [`run_backward_pass`] returning a copy of the stage statistics the run recorded.
+fn run_backward_pass_stage_stats<S, C: Communicator>(
+    inputs: &mut BackwardPassInputs<'_, S, C>,
+) -> Result<Vec<(usize, Vec<StageWorkerOpeningDelta>)>, SddpError>
+where
+    S: SolverInterface<Profile = novomodelo_solver::ActiveProfile> + Send,
+{
+    let mut stage_stats = Vec::new();
+    let _ = run_backward_pass_inspected(
+        inputs,
+        |_| {},
+        |state| {
+            stage_stats = state
+                .stage_stats()
+                .map(|(stage, entries)| (stage, entries.to_vec()))
+                .collect();
+        },
+    )?;
+    Ok(stage_stats)
+}
+
 /// [`run_backward_pass_configured`] with `inspect` applied to the state after `configure` and
 /// again after the run.
 fn run_backward_pass_inspected<S, C: Communicator>(
@@ -70,7 +91,10 @@ use novomodelo_core::{StageStateConfig, WorkerPhaseTimings};
 use novomodelo_io::config::BackwardScheduler;
 use novomodelo_stochastic::{StochasticContext, evaluate_par_noise_term_batch};
 
-use super::{BackwardResult, StageNoiseTable, by_scenario::prepare_child_lp};
+use super::{
+    BackwardResult, StageNoiseTable, StageWorkerOpeningDelta, by_scenario::prepare_child_lp,
+    take_first_error,
+};
 use crate::{
     backward_pass_state::{BackwardPassInputs, BackwardPassState},
     build_cut_row_batch_into,
@@ -103,7 +127,7 @@ use crate::{
         empty_row_batch, equipment_free_geometry, permissive_state_boxes,
     },
     training::stage_solve_prep::{BracketSource, LoadedCutRows, StageSolvePrep, StateSource},
-    trajectory::TrajectoryRecord,
+    trajectory::{FrozenBrackets, TrajectoryRecord},
     workspace::{BackwardAccumulators, BasisStore, CapturedBasis, ScratchBuffers, SolverWorkspace},
 };
 
@@ -881,25 +905,21 @@ fn backward_result_fields_accessible() {
         cuts_generated: 6,
         elapsed_ms: 42,
         lp_solves: 0,
-        stage_stats: Vec::new(),
         state_exchange_time_ms: 0,
         cut_batch_build_time_ms: 0,
         setup_time_ms: 0,
         load_imbalance_ms: 0,
         scheduling_overhead_ms: 0,
         cut_sync_time_ms: 0,
-        aggregation_time_ms: 0,
     };
     assert_eq!(r.cuts_generated, 6);
     assert_eq!(r.elapsed_ms, 42);
-    assert!(r.stage_stats.is_empty());
     assert_eq!(r.state_exchange_time_ms, 0);
     assert_eq!(r.cut_batch_build_time_ms, 0);
     assert_eq!(r.setup_time_ms, 0);
     assert_eq!(r.load_imbalance_ms, 0);
     assert_eq!(r.scheduling_overhead_ms, 0);
     assert_eq!(r.cut_sync_time_ms, 0);
-    assert_eq!(r.aggregation_time_ms, 0);
 }
 
 #[test]
@@ -908,14 +928,12 @@ fn backward_result_clone_and_debug() {
         cuts_generated: 3,
         elapsed_ms: 100,
         lp_solves: 0,
-        stage_stats: Vec::new(),
         state_exchange_time_ms: 0,
         cut_batch_build_time_ms: 0,
         setup_time_ms: 0,
         load_imbalance_ms: 0,
         scheduling_overhead_ms: 0,
         cut_sync_time_ms: 0,
-        aggregation_time_ms: 0,
     };
     let c = r.clone();
     assert_eq!(c.cuts_generated, 3);
@@ -3934,7 +3952,7 @@ fn decompose_scheduling_clamped_when_worker_exceeds_wall() {
 ///
 /// Constructs a 2-worker `StageWorkerStatsBuffer::new(2, 4)` and uses
 /// `StubComm` (which echoes send→recv, simulating `LocalBackend` np=1).
-/// After one backward iteration, `BackwardResult::stage_stats` must
+/// After one backward iteration, the recorded stage statistics must
 /// contain 2 entries per non-zero opening (`worker_id` 0 and `worker_id` 1),
 /// both with `rank = 0`.
 #[test]
@@ -3982,7 +4000,7 @@ fn allgatherv_single_rank_two_workers_stage_stats_has_per_worker_entries() {
     let mut csb = CutSyncBuffers::new(n_state, local_work, 1);
     let state_boxes = permissive_state_boxes(n_state, n_stages);
 
-    let result = run_backward_pass(&mut BackwardPassInputs {
+    let stage_stats = run_backward_pass_stage_stats(&mut BackwardPassInputs {
         workspaces: &mut workspaces,
         basis_store: &mut basis_store,
         ctx: &StageContextFixture::new(
@@ -4035,11 +4053,11 @@ fn allgatherv_single_rank_two_workers_stage_stats_has_per_worker_entries() {
     // The 2-stage system has 1 backward stage (t=0, successor=1).
     // stage_stats must contain exactly 1 entry (one successor).
     assert_eq!(
-        result.stage_stats.len(),
+        stage_stats.len(),
         1,
         "expected 1 backward stage entry (successor=1)"
     );
-    let (successor, entries) = &result.stage_stats[0];
+    let (successor, entries) = &stage_stats[0];
     assert_eq!(*successor, 1_usize, "successor index must be 1");
 
     // Every entry must have rank=0 (np=1 StubComm).
@@ -4165,7 +4183,7 @@ fn allgatherv_dual_rank_stub_stage_stats_contains_both_ranks() {
     let mut csb = CutSyncBuffers::new(n_state, local_work, 1);
     let state_boxes = permissive_state_boxes(n_state, n_stages);
 
-    let result = run_backward_pass(&mut BackwardPassInputs {
+    let stage_stats = run_backward_pass_stage_stats(&mut BackwardPassInputs {
         workspaces: &mut workspaces,
         basis_store: &mut basis_store,
         ctx: &StageContextFixture::new(
@@ -4218,8 +4236,8 @@ fn allgatherv_dual_rank_stub_stage_stats_contains_both_ranks() {
     // With np=2, stage_stats for successor=1 must contain entries from
     // both rank=0 and rank=1 (DualRankStubComm copies the rank-0 block
     // into the rank-1 slot, so both appear in the unpacked output).
-    assert_eq!(result.stage_stats.len(), 1);
-    let (_, entries) = &result.stage_stats[0];
+    assert_eq!(stage_stats.len(), 1);
+    let (_, entries) = &stage_stats[0];
 
     let ranks_seen: Vec<i32> = entries
         .iter()
@@ -4349,12 +4367,7 @@ fn run_one_trial_state_with_stores(
 
     let ws = &mut workspaces[0];
     super::load_backward_lp(ws, &child0);
-    ws.backward_accum
-        .per_opening_stats
-        .resize_with(n_openings, SolverStatsDelta::default);
-    for slot in &mut ws.backward_accum.per_opening_stats[..n_openings] {
-        *slot = SolverStatsDelta::default();
-    }
+    ws.backward_accum.reset_per_opening_stats(n_openings);
     ws.backward_accum.slot_increments.resize(1, 0);
     ws.backward_accum.slot_increments[..1].fill(0);
     // Size the coefficient arena for the single trial point (offset 0).
@@ -5367,12 +5380,7 @@ fn run_dcs_backward_trial_state_at(
         ws.backward_accum.metadata_sync_contribution.resize(pop, 0);
     }
     ws.backward_accum.metadata_sync_contribution[..pop].fill(0);
-    ws.backward_accum
-        .per_opening_stats
-        .resize_with(n_openings, SolverStatsDelta::default);
-    for slot in &mut ws.backward_accum.per_opening_stats[..n_openings] {
-        *slot = SolverStatsDelta::default();
-    }
+    ws.backward_accum.reset_per_opening_stats(n_openings);
 
     let cut = super::process_by_scenario_backward(
         ws,
@@ -5866,12 +5874,7 @@ fn backward_dcs_frozen_cuts_present_no_duplicate_rows() {
         ws.backward_accum.metadata_sync_contribution.resize(pop, 0);
     }
     ws.backward_accum.metadata_sync_contribution[..pop].fill(0);
-    ws.backward_accum
-        .per_opening_stats
-        .resize_with(n_openings, SolverStatsDelta::default);
-    for slot in &mut ws.backward_accum.per_opening_stats[..n_openings] {
-        *slot = SolverStatsDelta::default();
-    }
+    ws.backward_accum.reset_per_opening_stats(n_openings);
 
     let dcs_cut = super::process_by_scenario_backward(
         ws,
@@ -6646,15 +6649,24 @@ fn compact_forward_stage_writes_the_brackets_of_its_frozen_rows() {
         let frozen = forward_record(None);
         let written = frozen
             .frozen_brackets
-            .read(ITERATION, node_id)
+            .read(ITERATION, node_id, expected.len())
             .expect("a frozen compact stage writes its brackets");
         assert_eq!(to_bits(written), expected);
-        assert_eq!(frozen.frozen_brackets.read(ITERATION + 1, node_id), None);
+        assert_eq!(
+            frozen
+                .frozen_brackets
+                .read(ITERATION + 1, node_id, expected.len()),
+            None
+        );
 
         let start = ITERATION - 1;
         assert!(dcs_params(start).is_active(ITERATION));
         let lazy = forward_record(Some(dcs_params(start)));
-        assert_eq!(lazy.frozen_brackets.read(ITERATION, node_id), None);
+        assert_eq!(
+            lazy.frozen_brackets
+                .read(ITERATION, node_id, expected.len()),
+            None
+        );
     });
 }
 
@@ -7001,27 +7013,62 @@ fn compact_slab_lookup_maps_to_the_pin_source() {
         n_stages: 2,
         iteration,
     };
+    let successor = case.successor();
+    let outcomes = successor.outcomes(&case.pools, COMPACT_TEMPLATE_ROWS, None);
+    let child = outcomes.child(0);
+    assert_eq!(child.successor_node_id, node_id);
+    assert_eq!(child.frozen_rows(), values.len());
+    let other_node = super::SuccessorChild {
+        successor_node_id: NodeId(99),
+        ..outcomes.child(0)
+    };
+    let other_rows = super::SuccessorChild {
+        num_cuts_at_successor: child.num_cuts_at_successor + 1,
+        ..outcomes.child(0)
+    };
 
     assert_eq!(
-        spec(super::SlabLookup::Unavailable).bracket_source(1, node_id),
+        spec(super::SlabLookup::Unavailable).bracket_source(1, &child),
         BracketSource::Computed
     );
     assert_eq!(
-        spec(frozen(7)).bracket_source(1, node_id),
+        spec(frozen(7)).bracket_source(1, &child),
         BracketSource::Slab(Some(values.as_slice()))
     );
     assert_eq!(
-        spec(frozen(6)).bracket_source(1, node_id),
+        spec(frozen(6)).bracket_source(1, &child),
         BracketSource::Slab(None)
     );
     assert_eq!(
-        spec(frozen(7)).bracket_source(1, NodeId(99)),
+        spec(frozen(7)).bracket_source(1, &other_node),
         BracketSource::Slab(None)
     );
     assert_eq!(
-        spec(frozen(7)).bracket_source(0, node_id),
+        spec(frozen(7)).bracket_source(0, &child),
         BracketSource::Slab(None)
     );
+    assert_eq!(
+        spec(frozen(7)).bracket_source(1, &other_rows),
+        BracketSource::Slab(None)
+    );
+}
+
+#[test]
+fn a_slab_read_with_another_row_count_is_a_miss() {
+    const ITERATION: u64 = 4;
+    let node_id = NodeId(2);
+    let brackets = [1.5, -2.5, 0.25];
+    let rows = brackets.len();
+    let mut slab = FrozenBrackets::default();
+    slab.reserve(rows);
+    slab.write(ITERATION, node_id, &brackets);
+
+    assert_eq!(
+        slab.read(ITERATION, node_id, rows).map(to_bits),
+        Some(to_bits(&brackets))
+    );
+    assert_eq!(slab.read(ITERATION, node_id, rows - 1), None);
+    assert_eq!(slab.read(ITERATION, node_id, rows + 1), None);
 }
 
 fn row_and_col_bound_bits(solves: &[RecordedSolve]) -> Vec<Vec<Vec<u64>>> {
@@ -7594,4 +7641,19 @@ fn compact_stage_noise_unit_matches_the_on_the_fly_unit() {
         to_bits(&staged.coefficients),
         to_bits(&on_the_fly.coefficients)
     );
+}
+
+#[test]
+fn take_first_error_returns_the_first_worker_error_and_clears_every_slot() {
+    let mut slots = [
+        None,
+        Some(SddpError::Validation("first".to_string())),
+        Some(SddpError::Validation("second".to_string())),
+    ];
+
+    let first = take_first_error(slots.iter_mut());
+
+    assert!(matches!(first, Err(SddpError::Validation(message)) if message == "first"));
+    assert!(slots.iter().all(Option::is_none));
+    assert!(take_first_error(slots.iter_mut()).is_ok());
 }

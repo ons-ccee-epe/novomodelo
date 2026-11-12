@@ -39,7 +39,7 @@ const LOWER_BOUND_MAP_UNMET_GUARDS: &[(Guard, &str)] = &[(
      scales are bit-identical, and the fixture's only rescaled coupled row is at stage 1",
 )];
 
-const DIFFERING_PROJECTION_UNMET_GUARDS: &[(Guard, &str)] = &[(
+const STORAGE_ONLY_RESIDENT_UNMET_GUARDS: &[(Guard, &str)] = &[(
     Guard::BindingLagCut,
     "the resident pool has no lag slot, so no cut row carries a lag coefficient",
 )];
@@ -314,7 +314,8 @@ impl KktRun {
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum Fixture {
     SharedProjections,
-    DifferingProjections,
+    StorageOnlyResident,
+    LagOnlyResident,
 }
 
 impl Fixture {
@@ -324,9 +325,14 @@ impl Fixture {
                 openings: OPENINGS,
                 ..FphaLagOptions::default()
             },
-            Fixture::DifferingProjections => FphaLagOptions {
+            Fixture::StorageOnlyResident => FphaLagOptions {
                 openings: OPENINGS,
                 last_stage_inflow_lags: false,
+                ..FphaLagOptions::default()
+            },
+            Fixture::LagOnlyResident => FphaLagOptions {
+                openings: OPENINGS,
+                last_stage_storage: false,
                 ..FphaLagOptions::default()
             },
         }
@@ -418,15 +424,25 @@ fn kkt_config(shape: CutRowShape) -> KktConfig {
     }
 }
 
-fn differing_projection_config() -> KktConfig {
-    KktConfig {
-        label: "differing projections, frozen rows plus delta rows",
-        fixture: Fixture::DifferingProjections,
-        selection: Selection::Off,
-        stages: StageRule::Stage(1),
-        rows: CutRowShape::FrozenPlusDelta,
-        unmet: DIFFERING_PROJECTION_UNMET_GUARDS,
-    }
+fn differing_projection_configs() -> [KktConfig; 2] {
+    [
+        KktConfig {
+            label: "storage-only resident pool, frozen rows plus delta rows",
+            fixture: Fixture::StorageOnlyResident,
+            selection: Selection::Off,
+            stages: StageRule::Stage(1),
+            rows: CutRowShape::FrozenPlusDelta,
+            unmet: STORAGE_ONLY_RESIDENT_UNMET_GUARDS,
+        },
+        KktConfig {
+            label: "lag-only resident pool, frozen rows plus delta rows",
+            fixture: Fixture::LagOnlyResident,
+            selection: Selection::Off,
+            stages: StageRule::Stage(1),
+            rows: CutRowShape::FrozenPlusDelta,
+            unmet: &[],
+        },
+    ]
 }
 
 struct Trained {
@@ -591,7 +607,7 @@ fn run_config(config: &KktConfig, trained: &Trained) -> KktRun {
                 extracted.n_slots(),
                 "{label} stage {stage}: the projections must agree in slot count"
             ),
-            Fixture::DifferingProjections => assert_ne!(
+            Fixture::StorageOnlyResident | Fixture::LagOnlyResident => assert_ne!(
                 resident.n_slots(),
                 extracted.n_slots(),
                 "{label} stage {stage}: the projections must differ in slot count"
@@ -634,7 +650,7 @@ fn the_fold_meets_the_expanded_kkt_conditions_at_every_cut_row_shape() {
         }
     }
     let mut configs: Vec<KktConfig> = shapes.into_iter().map(kkt_config).collect();
-    configs.push(differing_projection_config());
+    configs.extend(differing_projection_configs());
 
     let mut trainings: HashMap<(Fixture, Selection), Trained> = HashMap::new();
     for config in &configs {

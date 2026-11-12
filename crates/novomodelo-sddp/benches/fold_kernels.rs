@@ -10,8 +10,8 @@
 //! - `chain_rule`: one chain rule per opening against the aggregate-first form, warm and cold.
 //!   Its per-row cost sizes the out-of-LP estimate.
 //! - `chain_rule_walk`: the production row-major walk against a 256-wide j-tile nest, at the
-//!   touched-slot p99 and at the disjoint worst case; run on a performance core and on an
-//!   efficiency core.
+//!   touched-slot p99 and at the disjoint worst case; run under `taskset` on a performance core
+//!   and on an efficiency core.
 //! - `y_bar_formation`: ȳ formed with the touched bitmap against a dense scan of the pool.
 //! - `by_node_finish`: the serial per-position finish of the backward against a loop over
 //!   positions on scoped threads.

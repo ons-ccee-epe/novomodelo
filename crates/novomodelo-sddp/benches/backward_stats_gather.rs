@@ -60,15 +60,13 @@ fn bench_gather(c: &mut Criterion) {
     let n_workers = 10;
     let n_openings = 20;
     let mut buf = StageWorkerStatsBuffer::new(n_workers, n_openings);
-    let deltas: Vec<SolverStatsDelta> = (0..n_workers * n_openings)
-        .map(|_| SolverStatsDelta::default())
-        .collect();
+    let deltas = vec![SolverStatsDelta::default(); n_workers * n_openings];
     c.bench_function("backward_stats_gather 10x20", |b| {
         b.iter(|| {
             buf.reset();
             for w in 0..n_workers {
                 for k in 0..n_openings {
-                    buf.set(w, k, black_box(deltas[w * n_openings + k].clone()));
+                    buf.set(w, k, black_box(&deltas[w * n_openings + k]));
                 }
             }
             black_box(buf.as_slice().len());

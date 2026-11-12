@@ -5487,23 +5487,53 @@ mod simulation_cut_set {
 }
 
 mod solve_cache_equivalence {
-    use novomodelo_io::config::BackwardScheduler;
+    use novomodelo_comm::{BackendKind, Communicator, LocalBackend, create_communicator};
+    use novomodelo_io::config::{
+        BackwardScheduler, SelectionMethod, StoppingRuleConfig, TrainingSelection,
+    };
     use novomodelo_sddp::test_support::decks::committed_decks;
-    use novomodelo_sddp::{SolverProfiles, StudySetup, TrainingOutcome};
+    use novomodelo_sddp::{SolverProfiles, SolverStatsDelta, StudySetup, TrainingOutcome};
     use novomodelo_solver::ActiveSolver;
 
-    use super::common::in_code_studies::fpha_lag_study;
+    use super::common::in_code_studies::{FphaLagOptions, fpha_lag_study_with};
     use super::common::stored_cut_oracles::apply_oracle_config;
     use super::common::{
-        StubComm, build_setup_in_code_with_models, fresh_system_and_setup_with, is_chain,
+        StubComm, build_setup_in_code_with_models, fresh_system_and_setup_with, is_chain, positive,
     };
 
     type Run = (StudySetup, TrainingOutcome);
 
-    fn train(mut setup: StudySetup, profiles: SolverProfiles) -> Run {
+    const BY_SCENARIO: BackwardScheduler = BackwardScheduler::ByScenario {};
+    const BY_NODE: BackwardScheduler = BackwardScheduler::ByNode { block_size: None };
+    const FORWARD_PASSES: u32 = 2;
+    const ITERATIONS: u32 = 5;
+    const FULL_LANE_GROUP_ROWS: usize = 8;
+    const WORLD_OPENINGS: usize = 3;
+    const WORLD_FORWARD_PASSES: u32 = 8;
+    const WORLD_ITERATIONS: u32 = 2;
+
+    fn lag_study(
+        openings: usize,
+        forward_passes: u32,
+        iterations: u32,
+        selection: Option<SelectionMethod>,
+    ) -> StudySetup {
+        let (system, mut config, hydro_models) = fpha_lag_study_with(FphaLagOptions {
+            openings,
+            ..FphaLagOptions::default()
+        });
+        config.training.selection = Some(TrainingSelection::Sampled { forward_passes });
+        config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit {
+            limit: iterations,
+        }]);
+        config.training.cut_selection.selection = selection;
+        build_setup_in_code_with_models(system, &config, hydro_models)
+    }
+
+    fn train(mut setup: StudySetup, comm: &impl Communicator, profiles: SolverProfiles) -> Run {
         let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
         let outcome = setup
-            .train_with_solver_profiles(&mut solver, &StubComm, 2, ActiveSolver::new, profiles)
+            .train_with_solver_profiles(&mut solver, comm, 2, ActiveSolver::new, profiles)
             .expect("train_with_solver_profiles must return Ok");
         assert!(
             outcome.error.is_none(),
@@ -5573,32 +5603,60 @@ mod solve_cache_equivalence {
         })
     }
 
+    fn train_cached_and_bypassed(
+        build: impl Fn() -> StudySetup,
+        comm: &impl Communicator,
+        backward_scheduler: BackwardScheduler,
+    ) -> (Run, Run) {
+        let leg = |bypass_solve_caches| {
+            let profiles = SolverProfiles {
+                backward_scheduler,
+                bypass_solve_caches,
+                ..SolverProfiles::default()
+            };
+            train(build(), comm, profiles)
+        };
+        (leg(false), leg(true))
+    }
+
+    fn largest_frozen_pin(setup: &StudySetup, last_iteration: u64) -> usize {
+        setup
+            .fcf
+            .pools
+            .iter()
+            .skip(1)
+            .map(|pool| {
+                (0..pool.populated())
+                    .filter(|&slot| {
+                        pool.is_active(slot)
+                            && pool.metadata(slot).iteration_generated < last_iteration
+                    })
+                    .count()
+            })
+            .max()
+            .expect("a chain has pools")
+    }
+
     #[test]
     fn fpha_lag_study_trains_to_the_same_bits_with_the_solve_caches_bypassed() {
-        for backward_scheduler in [
-            BackwardScheduler::ByScenario {},
-            BackwardScheduler::ByNode { block_size: None },
-        ] {
-            let leg = |bypass_solve_caches| {
-                let (system, mut config, hydro_models) = fpha_lag_study();
-                apply_oracle_config(&mut config);
-                let setup = build_setup_in_code_with_models(system, &config, hydro_models);
-                train(
-                    setup,
-                    SolverProfiles {
-                        backward_scheduler,
-                        bypass_solve_caches,
-                        ..SolverProfiles::default()
-                    },
-                )
-            };
-            let (cached, bypassed) = (leg(false), leg(true));
+        for backward_scheduler in [BY_SCENARIO, BY_NODE] {
+            let (cached, bypassed) = train_cached_and_bypassed(
+                || lag_study(1, FORWARD_PASSES, ITERATIONS, None),
+                &StubComm,
+                backward_scheduler,
+            );
             let label = format!("{backward_scheduler:?}");
 
             assert!(is_chain(&cached.0), "{label}: the study must be a chain");
             assert!(
                 stores_a_lag_cut(&cached.0),
                 "{label}: no stored cut has a nonzero lag-0 coefficient"
+            );
+            let frozen_rows = largest_frozen_pin(&cached.0, cached.1.result.iterations);
+            assert!(
+                frozen_rows >= FULL_LANE_GROUP_ROWS,
+                "{label}: the largest backward pin holds {frozen_rows} frozen rows, below the \
+                 {FULL_LANE_GROUP_ROWS} of a full lane group"
             );
             assert_same_bits(&label, &cached, &bypassed);
             assert_eq!(cached.1.slab_misses, 0, "{label}: cached slab misses");
@@ -5607,6 +5665,79 @@ mod solve_cache_equivalence {
                 "{label}: the bypass recomputed no bracket"
             );
         }
+    }
+
+    #[test]
+    fn fpha_lag_study_trains_to_the_same_bits_with_the_solve_caches_bypassed_under_dynamic_cut_selection()
+     {
+        let selection_start = ITERATIONS - 1;
+        let selection = SelectionMethod::Dynamic {
+            start_iteration: positive(selection_start),
+            seed_window: 5,
+            candidate_recency: None,
+            max_added_per_round: positive(10),
+            violation_tolerance: None,
+        };
+        for backward_scheduler in [BY_SCENARIO, BY_NODE] {
+            let (cached, bypassed) = train_cached_and_bypassed(
+                || lag_study(1, FORWARD_PASSES, ITERATIONS, Some(selection.clone())),
+                &StubComm,
+                backward_scheduler,
+            );
+            let label = format!("{backward_scheduler:?}");
+
+            let backward = SolverStatsDelta::aggregate(
+                cached
+                    .1
+                    .result
+                    .solver_stats_log
+                    .iter()
+                    .filter(|entry| {
+                        entry.phase == "backward" && entry.iteration >= u64::from(selection_start)
+                    })
+                    .map(|entry| &entry.delta),
+            );
+            assert!(
+                backward.lp_solves > 0 && backward.basis_offered == 0,
+                "{label}: selection was inactive from iteration {selection_start}: the backward \
+                 offered {} bases over {} solves",
+                backward.basis_offered,
+                backward.lp_solves
+            );
+            assert_same_bits(&label, &cached, &bypassed);
+        }
+    }
+
+    #[test]
+    #[cfg_attr(not(feature = "slow-tests"), ignore = "slow: trains on the MPI world")]
+    fn fpha_lag_study_trains_to_the_same_bits_with_the_solve_caches_bypassed_on_the_world() {
+        let world =
+            create_communicator(BackendKind::Auto).expect("communicator construction must succeed");
+        assert!(
+            2 * world.size() <= usize::try_from(WORLD_FORWARD_PASSES).unwrap(),
+            "{WORLD_FORWARD_PASSES} forward passes leave a rank of {} without trials",
+            world.size()
+        );
+        let label = format!("rank {} of {}", world.rank(), world.size());
+        let build = || lag_study(WORLD_OPENINGS, WORLD_FORWARD_PASSES, WORLD_ITERATIONS, None);
+
+        let (cached, bypassed) = train_cached_and_bypassed(build, &world, BY_NODE);
+        let reference = train(
+            build(),
+            &LocalBackend,
+            SolverProfiles {
+                backward_scheduler: BY_NODE,
+                ..SolverProfiles::default()
+            },
+        );
+
+        assert_same_bits(&label, &cached, &bypassed);
+        assert_same_bits(&label, &cached, &reference);
+        assert_eq!(cached.1.slab_misses, 0, "{label}: cached slab misses");
+        assert!(
+            bypassed.1.slab_misses > 0,
+            "{label}: the bypass recomputed no bracket"
+        );
     }
 
     #[test]
@@ -5619,7 +5750,7 @@ mod solve_cache_equivalence {
             })
             .expect("some committed deck has no inflow lags");
 
-        let (trained, _) = train(setup, SolverProfiles::default());
+        let (trained, _) = train(setup, &StubComm, SolverProfiles::default());
 
         assert!(
             trained.fcf.pools.iter().any(|pool| pool.populated() > 0),
@@ -5642,9 +5773,10 @@ mod solve_cache_equivalence {
             if setup.stage_state().max_par_order == 0 {
                 continue;
             }
-            let cached = train(setup, SolverProfiles::default());
+            let cached = train(setup, &StubComm, SolverProfiles::default());
             let bypassed = train(
                 build(),
+                &StubComm,
                 SolverProfiles {
                     bypass_solve_caches: true,
                     ..SolverProfiles::default()

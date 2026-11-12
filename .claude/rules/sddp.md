@@ -257,8 +257,7 @@ Pinned by `every_solve_site_patches_every_resident_cut_row_at_every_solve`
 (`tests/cut_basis/cut_row_push_coverage.rs`: every solve of every solve-site
 kind and cut-row shape records no stale cut row), its committed-deck sweep
 `every_committed_deck_patches_every_resident_cut_row_at_every_solve` (under
-`slow-tests`), `every_solve_site_kind_is_reached_by_each_dispatch_enum`
-(`test_support/solve_sites.rs`) and
+`slow-tests`) and
 `lb_cut_slots_follow_lp_row_order_and_keep_deactivated_rows`
 (`training/lower_bound.rs`).
 
@@ -278,9 +277,10 @@ A bracket the forward pass wrote is read only at the visit it was written for.
 A trajectory record's `FrozenBrackets` slab carries the tag
 `(iteration, NodeId)` of the forward visit that wrote it, and the backward pin
 of trial `m` at successor stage `s` reads record `m·n_stages + s`
-(`SuccessorSpec::bracket_source`), so the trial state is the record's own; a
-tag mismatch is a miss that recomputes the brackets, and a default slab never
-hits.
+(`SuccessorSpec::bracket_source`), so the trial state is the record's own. The
+read compares `(iteration, NodeId)` and the written row count against the
+child's frozen row count (`SuccessorChild::frozen_rows`); a mismatch of either
+is a miss that recomputes the brackets, and a default slab never hits.
 
 The wrong-but-compiling alternatives:
 
@@ -305,6 +305,7 @@ Read: `lp/indexer/cut_state_projection.rs` (`CutStateProjection::lag_point`,
 `a_written_slab_hits_only_at_its_own_iteration_and_node` and
 `reserve_never_shrinks_and_a_write_within_capacity_keeps_the_buffer`
 (`training/trajectory.rs`); in `training/backward/tests.rs`,
+`a_slab_read_with_another_row_count_is_a_miss`,
 `compact_slab_lookup_maps_to_the_pin_source`,
 `compact_slab_is_read_at_each_trials_own_record`,
 `compact_slab_hit_reads_without_a_miss_and_matches_the_unwritten_run`,
@@ -340,6 +341,22 @@ The RHS reaches the solver through `StageOpeningSolver::push_cut_rhs` on a
 frozen LP, and through the rows a lazy solve makes resident from
 `ActiveCutRhs`.
 
+The slab is positional: entry `i` is the bracket of LP cut row `i` of the
+node's frozen template, in `active_cuts()` order, and the read compares the row
+count, not the rows. A hit is right only because the backward loads the same
+rows in the same order: `load_backward_lp` loads the frozen template and then
+appends the delta rows, and `successor_active_slots` lists the pool's active
+cuts in that row order. That holds because the pool is append-only and
+`TrainingSession::run_iteration` runs the forward, then the backward, then
+selection, budget and refreeze, so the forward and the backward of one
+iteration see one frozen template, and the backward loads those rows first,
+then the delta appended since.
+`fpha_lag_study_trains_to_the_same_bits_with_the_solve_caches_bypassed`
+(`tests/cut_basis.rs`) pins it: a slab hit gives the bits of the brackets
+recomputed on the loaded rows. `StageNoiseTable::cut_noise` against its stride
+and `cut_rhs_from_noise_terms_into` across its three slices assert their
+lengths in every build.
+
 The wrong-but-compiling alternatives:
 
 - one dot over `ẑ`: `fl(p + σ·η)` rounds before the products, so the RHS loses
@@ -350,12 +367,22 @@ The wrong-but-compiling alternatives:
   longer runs in ascending slot order;
 - a cache value computed another way (a `σ·η` product formed inline, a `W`
   from another fold): the cached solve and the uncached one differ in their
-  last bits, and the run's results follow whether the cache was hit.
+  last bits, and the run's results follow whether the cache was hit;
+- a deactivation or a reorder of the active cuts between the forward and the
+  backward of one iteration, with or without a refreeze (selection or budget
+  moved there): without a refreeze `successor_active_slots` stops matching the
+  loaded rows, and with one the slab holds the brackets of the rows the
+  template had. A changed row count is caught, by a slab miss or by the length
+  assertion in `pin_child_lp`; the same count at other cuts is not, and one
+  cut's bracket or `W` lands on another cut's row.
 
 Read: `cut/rhs.rs` (the module documentation, `cut_brackets_into`,
 `cut_noise_term`, `cut_rhs_into`, `cut_rhs_from_noise_terms_into`),
 `cut/rhs_reference.rs`, `training/backward/stage_noise.rs` (`StageNoiseTable`),
-`training/trajectory.rs` (`FrozenBrackets`), `training/stage_solve_prep.rs`
+`training/trajectory.rs` (`FrozenBrackets`), `training/backward/lp_setup.rs`
+(`load_backward_lp`, `pin_child_lp`), `training/backward/mod.rs`
+(`reify_successor_outcomes`), `training/session/mod.rs`
+(`TrainingSession::run_iteration`), `training/stage_solve_prep.rs`
 (`StageSolvePrep::patch_opening`, `NoiseTermSource`), `solve/opening_solver.rs`
 (`StageOpeningSolver::push_cut_rhs`). Pinned by, in `cut/rhs.rs`,
 `bracket_accumulators_start_at_positive_zero`,
@@ -554,9 +581,9 @@ Read: `stochastic/noise.rs` (`realize_inflow`, `apply_inflow_slack_col_bounds`),
 `lp/builder/generic_constraints.rs` (`push_local_inflow_rate`),
 `stochastic/inflow_method.rs` (`truncates`, `slack_is_priced`),
 `solve/stage_solve.rs` (`assemble_outgoing_state`). Pinned by
-`test_transform_inflow_noise_truncation_writes_the_raw_rhs_and_fixes_the_correction`
+`test_realize_inflow_truncation_writes_the_raw_rhs_and_fixes_the_correction`
 (`ẑ` is never clamped; bounds `[l*, l*]` — forbids clamping η),
-`test_transform_inflow_noise_truncation_with_penalty_caps_the_correction`
+`test_realize_inflow_truncation_with_penalty_caps_the_correction`
 (bounds `[0, l*]` — forbids an unbounded slack),
 `truncation_slack_bound_is_divided_by_col_scale` (forbids an unscaled bound
 write) and `inflow_slack_index_buffer_rebuilds_on_start_change_at_equal_length`
@@ -1824,7 +1851,7 @@ a number of routed trials other than the level's real trial count
 
 Every rank enters the collective under the same condition and with the same
 length. The condition is `level.len() > 1`, and the level list is
-`NodeGraph::backward_cut_levels` of the graph every rank builds from the same
+`NodeGraph::backward_cut_levels_into` of the graph every rank builds from the same
 broadcast system (`StudySetup::from_broadcast_params`). The length is
 `max_local_fwd`, which `RankDistribution::new` computes from the forward-pass
 count and the rank count; a rank with no real trial sends `max_local_fwd`
@@ -1855,7 +1882,7 @@ Read: `training/backward_pass_state.rs` (`compute_node_visit_offsets`,
 `check_visit_bound`, `build_trial_routing`, `NO_TRIAL`,
 `BackwardPassState::new`), `training/state_exchange.rs` (`ExchangeBuffers`),
 `training/session/rank_distribution.rs` (`RankDistribution::new`),
-`setup/node_graph.rs` (`NodeGraph::backward_cut_levels`),
+`setup/node_graph.rs` (`NodeGraph::backward_cut_levels_into`),
 `training/backward/by_scenario.rs` (`process_by_scenario_backward`),
 `training/backward/by_node.rs` (`by_node_finish`). Pinned by, in
 `training/backward_pass_state.rs`:
@@ -3309,27 +3336,33 @@ Generated fan is never fused and solves every leaf every iteration), all in
 `tests/branching_value_oracle.rs`.
 
 On a pool with lag slots the fused slice runs the chain rule from the leaf's
-own pool to the parent pool by global dimension. `extract_fused_slice`
-extracts the leaf solve's duals with the parent pool's projection as the
-extracted projection, the cut rows starting at the leaf template's row count,
-and reads the cut-row duals when the leaf's own projection has lag slots;
-`chain_rule_fused_slice` composes the slots with `ChainRuleSlots::compose`,
-the parent pool's projection as the extracted one and the leaf's own as the
-resident one, and builds the cut with `per_opening_cut_into`. Swapping the two
-projections in `extract_fused_slice` compiles and changes nothing while both
-pools project the same columned slots, until the leaf stage declares
-`storage: false`. The parent pool then drops the storage slots, and the slice
-takes the leaf pool's columned duals, storage first: a debug build stops at the
-state-dual length check of `per_opening_cut_into`, and a release build writes
-the leading ones over the parent's bucket and commitment-hold slots, or, on a
-parent with neither, leaves the slice unchanged. Swapping them in
-`ChainRuleSlots::compose` takes the slot ranges from the leaf pool, which
-projects every state dimension and is wider whenever the two pools differ:
+own pool to the parent pool by global dimension. `solve_forward_node_core`
+makes one `extract_opening_cut` call per fused leaf. Its `DualExtractionSpec`
+carries the parent pool's projection as `extracted`, the cut rows starting at
+the leaf template's row count, and `read_cut_duals` set when the leaf's own
+projection has lag slots; its `ChainRuleStageInputs` carries the slots from
+`ChainRuleSlots::compose`, with the leaf's own projection as the resident one
+and the parent pool's as the extracted one, and the leaf's own pool as the
+resident pool. `extract_opening_cut` takes `extracted` once, from the spec, for
+both the dual extraction and `per_opening_cut_into`, and writes a parent-sized
+slice. The leaf's own pool projects every state dimension, so it is wider than
+the parent pool whenever the two differ. Swapping the two projections in the
+spec (`extracted` and the source of `read_cut_duals`) compiles, and the leaf's
+projection then reaches `per_opening_cut_into` as `extracted` too: a debug
+build stops at its coefficient-length check, the leaf's `n_slots` against the
+parent-sized slice, and a release build changes nothing while both pools
+project the same columned slots, until the leaf stage declares `storage: false`.
+The parent pool then drops the storage slots, and the slice takes the leaf
+pool's columned duals, storage first: a release build writes the leading ones
+over the parent's bucket and commitment-hold slots, or, on a parent with
+neither, leaves the slice unchanged. Swapping them in `ChainRuleSlots::compose`
+takes the slot ranges from the leaf pool, which is wider:
 `per_opening_cut_into` then indexes past the parent-sized coefficients or state
-duals and panics, in a debug build at the same length check when the columned
-slots differ.
-Read: `training/forward/node_solve.rs` (`extract_fused_slice`,
-`chain_rule_fused_slice`), `lp/indexer/cut_state_projection.rs`
+duals and panics, in a debug build at the state-dual length check when the
+columned slots differ.
+Read: `training/forward/node_solve.rs` (`solve_forward_node_core`),
+`training/backward/duals_extraction.rs` (`extract_opening_cut`,
+`ChainRuleStageInputs`), `lp/indexer/cut_state_projection.rs`
 (`ChainRuleSlots::compose`), `cut/chain_rule.rs` (`per_opening_cut_into`).
 Pinned by
 `enumerated_forward_compact_fused_slice_carries_no_storage_under_a_storage_free_leaf_stage`

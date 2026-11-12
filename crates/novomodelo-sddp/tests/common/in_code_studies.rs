@@ -2238,7 +2238,7 @@ fn fpha_lag_hydro_penalties() -> HydroPenalties {
     }
 }
 
-fn fpha_lag_stages(openings: usize, last_stage_inflow_lags: bool) -> Vec<Stage> {
+fn fpha_lag_stages(options: FphaLagOptions) -> Vec<Stage> {
     let blocks: Vec<Block> = FPHA_LAG_BLOCK_HOURS
         .iter()
         .enumerate()
@@ -2263,12 +2263,12 @@ fn fpha_lag_stages(openings: usize, last_stage_inflow_lags: bool) -> Vec<Stage> 
                         BlockMode::Parallel
                     },
                     state_config: StageStateConfig {
-                        storage: true,
-                        inflow_lags: i + 1 < FPHA_LAG_N_STAGES || last_stage_inflow_lags,
+                        storage: i + 1 < FPHA_LAG_N_STAGES || options.last_stage_storage,
+                        inflow_lags: i + 1 < FPHA_LAG_N_STAGES || options.last_stage_inflow_lags,
                     },
-                    risk_config: StageRiskConfig::Expectation,
+                    risk_config: options.risk_config,
                     scenario_config: ScenarioSourceConfig {
-                        branching_factor: openings,
+                        branching_factor: options.openings,
                         noise_method: NoiseMethod::Saa,
                     },
                 },
@@ -2584,10 +2584,7 @@ fn build_fpha_lag_system(options: FphaLagOptions) -> novomodelo_core::System {
         .buses(vec![bus])
         .hydros(declared("hydro", fpha_lag_hydros(), reverse))
         .thermals(declared("thermal", fpha_lag_thermals(), reverse))
-        .stages(fpha_lag_stages(
-            options.openings,
-            options.last_stage_inflow_lags,
-        ))
+        .stages(fpha_lag_stages(options))
         .inflow_models(fpha_lag_inflow_models())
         .load_models(load_models)
         .bounds(fpha_lag_bounds())
@@ -2653,6 +2650,8 @@ pub struct FphaLagOptions {
     pub openings: usize,
     /// Whether the last stage keeps inflow lags in its state; `false` leaves the pool before it storage-only.
     pub last_stage_inflow_lags: bool,
+    pub last_stage_storage: bool,
+    pub risk_config: StageRiskConfig,
     /// Declares the hydros, thermals, recent observations and initial storages in reverse order.
     pub reverse_declaration_order: bool,
 }
@@ -2662,6 +2661,8 @@ impl Default for FphaLagOptions {
         Self {
             openings: 1,
             last_stage_inflow_lags: true,
+            last_stage_storage: true,
+            risk_config: StageRiskConfig::Expectation,
             reverse_declaration_order: false,
         }
     }

@@ -3419,7 +3419,6 @@ mod dcs_forward {
         }
 
         let mut records = vec![TrajectoryRecord::default()];
-        records[0].frozen_brackets.reserve(frozen.num_rows);
         let raw_noise = vec![0.0; stochastic.dim()];
         let key = StageKey {
             t: StageIdx(0),

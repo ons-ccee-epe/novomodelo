@@ -185,9 +185,8 @@ pub(crate) fn process_by_scenario_backward<S: SolverInterface + Send>(
     let scenario = fwd_offset + m;
     let s = succ.successor;
 
-    debug_assert_eq!(
-        ws.backward_accum.per_opening_stats.len(),
-        succ.probabilities.len(),
+    debug_assert!(
+        ws.backward_accum.per_opening_stats.len() >= succ.probabilities.len(),
         "per_opening_stats must be initialised to n_openings before each stage's trial-point loop"
     );
     debug_assert_eq!(
@@ -215,7 +214,7 @@ pub(crate) fn process_by_scenario_backward<S: SolverInterface + Send>(
         // One child ⟹ once per trial point ⟹ chain byte-parity.
         ws.solver.reset_solver_state();
         prepare_child_lp(opening_solver, ws, ctx, succ, &child, iteration);
-        let source = succ.bracket_source(m, child.successor_node_id);
+        let source = succ.bracket_source(m, &child);
         pin_child_lp(ws, ctx, training_ctx, &child, x_hat, s, source);
 
         // Resolved per child, never once from child 0: each child's External
@@ -346,22 +345,17 @@ pub(crate) fn process_by_scenario_backward<S: SolverInterface + Send>(
     })
 }
 
-/// Merge each worker's staged cuts into `staged_cuts_buf`, order them by trial
-/// state, and commit one cut per trial point to the FCF. `trial_state_idx` is
-/// globally unique across workers, so the committed order — and thus the cut
-/// set — is independent of worker count and completion order. `staged_cuts_buf`
-/// is the caller-owned scratch (`BackwardPassState::staged_cuts_buf`), cleared
-/// and reused, never reallocated on the hot path.
+/// Drains each worker's staged cuts, in worker order, into `staged_cuts_buf`, orders them
+/// by trial state, and commits one cut per trial point to the FCF, returning the count.
+/// `trial_state_idx` is globally unique across workers, so the committed order, and thus
+/// the cut set, is independent of worker count and completion order. `staged_cuts_buf` is
+/// the caller-owned scratch (`BackwardPassState::staged_cuts_buf`), cleared and reused,
+/// never reallocated on the hot path.
 ///
-/// # Errors
-/// Returns the first failing worker's [`SddpError`]; on error no cut is committed.
-// Rationale: disjoint borrows (worker_staged, workspaces, fcf, the staged-cut
-// scratch) plus the node/pool/iteration commit scalars; a struct would add
-// indirection without reducing the caller's borrow count.
-#[allow(clippy::too_many_arguments)]
+/// The caller runs it only after [`super::take_first_error`] returned `Ok` over the same
+/// workspaces, so a worker's error commits no cut.
 pub(crate) fn by_scenario_finish<S: SolverInterface>(
-    worker_staged: Vec<Result<(usize, Vec<StagedCut>), SddpError>>,
-    workspaces: &[SolverWorkspace<S>],
+    workspaces: &mut [SolverWorkspace<S>],
     trial_points: &[usize],
     cut_n_state: usize,
     fcf: &mut FutureCostFunction,
@@ -369,16 +363,20 @@ pub(crate) fn by_scenario_finish<S: SolverInterface>(
     pool: usize,
     iteration: u64,
     staged_cuts_buf: &mut Vec<(usize, StagedCut)>,
-) -> Result<usize, SddpError> {
+) -> usize {
     staged_cuts_buf.clear();
-    for worker_result in worker_staged {
-        let (w, cuts) = worker_result?;
-        staged_cuts_buf.extend(cuts.into_iter().map(|cut| (w, cut)));
+    for (w, ws) in workspaces.iter_mut().enumerate() {
+        staged_cuts_buf.extend(
+            ws.backward_accum
+                .staged_cuts_buf
+                .drain(..)
+                .map(|cut| (w, cut)),
+        );
     }
     // `trial_state_idx` is the SOLE sort key: globally unique across workers
     // (disjoint contiguous partitions), so the merge order is identical regardless
     // of worker index.
-    staged_cuts_buf.sort_by_key(|(_, cut)| cut.trial_state_idx);
+    staged_cuts_buf.sort_unstable_by_key(|(_, cut)| cut.trial_state_idx);
     debug_assert_eq!(staged_cuts_buf.len(), trial_points.len());
     for (w, cut) in &*staged_cuts_buf {
         let range = cut.coefficients_range.clone();
@@ -396,5 +394,5 @@ pub(crate) fn by_scenario_finish<S: SolverInterface>(
             &arena[range],
         );
     }
-    Ok(staged_cuts_buf.len())
+    staged_cuts_buf.len()
 }

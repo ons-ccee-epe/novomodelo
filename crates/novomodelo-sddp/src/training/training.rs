@@ -21,7 +21,7 @@ use crate::{
     setup::NodePos,
     solver_stats::SolverStatsLogEntry,
     stopping_rule::StopDecision,
-    training_session::{IterationOutcome, TrainingSession},
+    training_session::TrainingSession,
     workspace::{BasisStore, CapturedBasis},
 };
 
@@ -630,13 +630,13 @@ pub fn train<S, C: Communicator>(
     training_ctx: &TrainingContext<'_>,
     comm: &C,
     solver_factory: impl Fn() -> Result<S, SolverError>,
-    mut loaded: LoadedPolicy,
+    loaded: LoadedPolicy,
     solver_profiles: SolverProfiles,
 ) -> Result<TrainingOutcome, SddpError>
 where
     S: SolverInterface<Profile = ActiveProfile> + Send,
 {
-    let mut session = TrainingSession::new(
+    TrainingSession::start(
         solver,
         config,
         fcf,
@@ -644,21 +644,10 @@ where
         training_ctx,
         comm,
         solver_factory,
-        std::mem::take(&mut loaded.trial_states),
+        loaded,
         solver_profiles,
-    )?;
-    // Must seed the basis store before `prime_frozen_templates` freezes the loaded
-    // cuts into the templates.
-    session.seed_basis_store(&loaded);
-    session.prime_frozen_templates();
-    for iteration in session.iteration_range() {
-        match session.run_iteration(iteration) {
-            Ok(IterationOutcome::Continue) => {}
-            Ok(IterationOutcome::Converged | IterationOutcome::Shutdown) => break,
-            Err(e) => return Ok(session.finalize_with_error(e)),
-        }
-    }
-    session.finalize()
+    )?
+    .run_to_completion()
 }
 
 #[cfg(test)]

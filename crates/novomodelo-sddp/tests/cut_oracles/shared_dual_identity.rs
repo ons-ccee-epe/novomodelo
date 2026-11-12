@@ -19,7 +19,7 @@ use novomodelo_solver::{ActiveSolver, LpSolution, RowBatch, SolverInterface};
 
 use crate::common::expanded_solve::{
     CutRowSet, ExpandedSolve, assemble_expanded_solve, coupled_dual_magnitudes, coupled_duals,
-    lag_dims, load_expanded, record_expanded_evidence,
+    lag_dims, load_expanded, record_expanded_evidence, solve_from_mapped_basis,
     stages_whose_producer_drops_a_state_dimension, stored_incoming_states,
 };
 use crate::common::in_code_studies::FPHA_LAG_STUDY_KEY as LAG_STUDY;
@@ -134,6 +134,67 @@ struct KernelCut {
     w_abs: Vec<f64>,
 }
 
+fn nonzero_cut_duals(solve: &ExpandedSolve, solution: &LpSolution) -> Vec<(usize, f64)> {
+    solve
+        .rows
+        .slots
+        .iter()
+        .enumerate()
+        .filter_map(|(k, &slot)| {
+            let y = solution.dual[solve.template.num_rows + k];
+            (y != 0.0).then_some((slot, y))
+        })
+        .collect()
+}
+
+/// `(g_abs, w_abs)` of a [`KernelCut`] for the duals `solution` of the expanded LP.
+fn term_magnitudes(
+    compact: &StudySetup,
+    expanded: &ExpandedStudy,
+    stage: usize,
+    solve: &ExpandedSolve,
+    solution: &LpSolution,
+) -> (Vec<f64>, Vec<f64>) {
+    let training_ctx = compact.training_ctx();
+    let space = compact.stage_state();
+    let slots = ChainRuleSlots::compose(
+        space,
+        &training_ctx.cut_state_layouts[stage],
+        &training_ctx.cut_state_layouts[stage - 1],
+    );
+    let resident_pool = &compact.fcf.pools[stage];
+    let mut g_abs = coupled_dual_magnitudes(compact, expanded, stage, &solution.dual);
+    let mut w_abs = vec![0.0; space.hydro_count * space.max_par_order.saturating_sub(1)];
+    let (lag0, shifted) = (slots.resident_lag0(), slots.resident_shifted());
+    for (slot, y) in nonzero_cut_duals(solve, solution) {
+        let row = resident_pool.coefficient_row(slot);
+        for (acc, &beta) in g_abs.iter_mut().zip(&row[lag0.clone()]) {
+            *acc += (y * beta).abs();
+        }
+        for (acc, &beta) in w_abs.iter_mut().zip(&row[shifted.clone()]) {
+            *acc += (y * beta).abs();
+        }
+    }
+    (g_abs, w_abs)
+}
+
+/// The production compact extraction's cut, with the term magnitudes of the expanded LP's duals
+/// at the compact vertex.
+fn compact_cut(
+    compact: &StudySetup,
+    expanded: &ExpandedStudy,
+    stage: usize,
+    solve: &ExpandedSolve,
+    solution: &LpSolution,
+) -> KernelCut {
+    let (g_abs, w_abs) = term_magnitudes(compact, expanded, stage, solve, solution);
+    KernelCut {
+        coefficients: solve.compact_cut.coefficients.clone(),
+        g_abs,
+        w_abs,
+    }
+}
+
 /// The kernel's cut, from the duals of the expanded LP itself.
 fn kernel_cut(
     compact: &StudySetup,
@@ -160,31 +221,11 @@ fn kernel_cut(
         })
         .collect();
     let coupled = coupled_duals(compact, expanded, stage, &solution.dual);
-    let cut_duals: Vec<(usize, f64)> = solve
-        .rows
-        .slots
-        .iter()
-        .enumerate()
-        .filter_map(|(k, &slot)| {
-            let y = solution.dual[solve.template.num_rows + k];
-            (y != 0.0).then_some((slot, y))
-        })
-        .collect();
+    let cut_duals = nonzero_cut_duals(solve, solution);
 
     let space = compact.stage_state();
     let slots = ChainRuleSlots::compose(space, resident, extracted);
-    let mut g_abs = coupled_dual_magnitudes(compact, expanded, stage, &solution.dual);
-    let mut w_abs = vec![0.0; space.hydro_count * space.max_par_order.saturating_sub(1)];
-    let (lag0, shifted) = (slots.resident_lag0(), slots.resident_shifted());
-    for &(slot, y) in &cut_duals {
-        let row = resident_pool.coefficient_row(slot);
-        for (acc, &beta) in g_abs.iter_mut().zip(&row[lag0.clone()]) {
-            *acc += (y * beta).abs();
-        }
-        for (acc, &beta) in w_abs.iter_mut().zip(&row[shifted.clone()]) {
-            *acc += (y * beta).abs();
-        }
-    }
+    let (g_abs, w_abs) = term_magnitudes(compact, expanded, stage, solve, solution);
     let mut coefficients = vec![0.0; extracted.n_slots()];
     per_opening_cut_into(
         &ChainRuleInputs {
@@ -304,6 +345,12 @@ fn check_lag_pairs(
     (checked, deep_nonzero)
 }
 
+#[derive(Clone, Copy)]
+enum Leg {
+    Expanded,
+    Compact,
+}
+
 struct SharedDualRun {
     evidence: PowerEvidence,
     skipped_stages: Vec<usize>,
@@ -314,6 +361,7 @@ fn check_shared_dual_identity_on(
     label: &str,
     system: &System,
     compact: &StudySetup,
+    leg: Leg,
 ) -> SharedDualRun {
     let expanded = expand_stage_templates(system, compact);
     let lag_dims = lag_dims(&expanded.layout);
@@ -348,16 +396,26 @@ fn check_shared_dual_identity_on(
                     x_hat,
                     raw_noise,
                 );
-                let solution = solve_cold(label, &solve);
-                let kernel = kernel_cut(
-                    compact,
-                    &expanded,
-                    &compact.fcf.pools[stage],
-                    stage,
-                    x_hat,
-                    &solve,
-                    &solution,
-                );
+                let (solution, kernel) = match leg {
+                    Leg::Expanded => {
+                        let solution = solve_cold(label, &solve);
+                        let kernel = kernel_cut(
+                            compact,
+                            &expanded,
+                            &compact.fcf.pools[stage],
+                            stage,
+                            x_hat,
+                            &solve,
+                            &solution,
+                        );
+                        (solution, kernel)
+                    }
+                    Leg::Compact => {
+                        let solution = solve_from_mapped_basis(label, &expanded, &solve);
+                        let kernel = compact_cut(compact, &expanded, stage, &solve, &solution);
+                        (solution, kernel)
+                    }
+                };
                 let (checked, stage_deep_nonzero) = check_lag_pairs(
                     label, compact, &expanded, stage, &solve, &solution, &kernel, &lag_dims,
                 );
@@ -413,7 +471,7 @@ fn check_shared_dual_identity(
     compact: &mut StudySetup,
 ) -> SharedDualRun {
     train_storing_trial_states(label, compact);
-    check_shared_dual_identity_on(label, system, compact)
+    check_shared_dual_identity_on(label, system, compact, Leg::Expanded)
 }
 
 const SCALE_GUARDS: [Guard; 4] = [
@@ -432,6 +490,15 @@ const D43_UNMET_SCALE_GUARDS: &[(Guard, &str)] = &[(
     Guard::RescaledCoupledRowWithDual,
     "the coupled row is a water-balance row, whose compact and expanded scales are bit-identical; only a generic-constraint inflow row is rescaled",
 )];
+
+const FPHA_LAG_STUDY_GUARDS: [Guard; 6] = [
+    Guard::FamilyDual(DualFamily::Fpha),
+    Guard::FamilyDual(DualFamily::Evaporation),
+    Guard::FamilyDual(DualFamily::Generic),
+    Guard::CouplingDualEveryHydro,
+    Guard::BindingLagCut,
+    Guard::BindingShiftedLagCut,
+];
 
 /// Asserts the skipped stages are the reduced producers' successors and a stage was checked, then
 /// `guards` and each scale guard not in `unmet`, and that every guard of `unmet` is still unmet.
@@ -476,20 +543,23 @@ fn the_shared_dual_identity_holds_on_the_fpha_lag_study() {
         run.skipped_stages.is_empty(),
         "{LAG_STUDY}: a stage's producer pool drops a state dimension"
     );
-    assert_run(
-        LAG_STUDY,
-        &compact,
-        &run,
-        &[
-            Guard::FamilyDual(DualFamily::Fpha),
-            Guard::FamilyDual(DualFamily::Evaporation),
-            Guard::FamilyDual(DualFamily::Generic),
-            Guard::CouplingDualEveryHydro,
-            Guard::BindingLagCut,
-            Guard::BindingShiftedLagCut,
-        ],
-        &[],
+    assert_run(LAG_STUDY, &compact, &run, &FPHA_LAG_STUDY_GUARDS, &[]);
+}
+
+#[test]
+fn the_compact_extraction_meets_the_shared_dual_identity_on_the_fpha_lag_study() {
+    let (system, mut config, hydro_models) = fpha_lag_study();
+    apply_oracle_config(&mut config);
+    let mut compact = build_setup_in_code_with_models(system, &config, hydro_models);
+    let (system, _, _) = fpha_lag_study();
+
+    train_storing_trial_states(LAG_STUDY, &mut compact);
+    let run = check_shared_dual_identity_on(LAG_STUDY, &system, &compact, Leg::Compact);
+    assert!(
+        run.skipped_stages.is_empty(),
+        "{LAG_STUDY}: a stage's producer pool drops a state dimension"
     );
+    assert_run(LAG_STUDY, &compact, &run, &FPHA_LAG_STUDY_GUARDS, &[]);
 }
 
 #[test]
@@ -537,20 +607,7 @@ fn the_shared_dual_identity_holds_at_every_opening_of_a_three_opening_lag_study(
             "{label} stage {stage}: one solve per incoming state and opening"
         );
     }
-    assert_run(
-        label,
-        &compact,
-        &run,
-        &[
-            Guard::FamilyDual(DualFamily::Fpha),
-            Guard::FamilyDual(DualFamily::Evaporation),
-            Guard::FamilyDual(DualFamily::Generic),
-            Guard::CouplingDualEveryHydro,
-            Guard::BindingLagCut,
-            Guard::BindingShiftedLagCut,
-        ],
-        &[],
-    );
+    assert_run(label, &compact, &run, &FPHA_LAG_STUDY_GUARDS, &[]);
 }
 
 #[test]

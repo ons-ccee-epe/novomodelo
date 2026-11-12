@@ -29,7 +29,7 @@ use novomodelo_core::{PoolRowCounts, TrainingEvent};
 use novomodelo_solver::SolverInterface;
 
 use crate::{
-    SddpError, SolverProfiles, TrainingConfig,
+    CutPool, SddpError, SolverProfiles, TrainingConfig,
     backward::BackwardResult,
     backward_pass_state::{BackwardPassInputs, BackwardPassState},
     context::{StageContext, TrainingContext},
@@ -183,7 +183,7 @@ where
     // Rationale: allocates and wires every per-run scratch buffer in one place;
     // splitting it would thread each field through a helper for no clarity gain.
     #[allow(clippy::too_many_lines)]
-    pub(crate) fn new(
+    fn new(
         solver: &'a mut S,
         mut config: TrainingConfig,
         fcf: &'a mut FutureCostFunction,
@@ -344,7 +344,7 @@ where
 
         let runtime = RuntimeHandles::new(event_sender, shutdown_flag, periodic_checkpoint);
 
-        let results = TrainingResults::new(config.loop_config.start_iteration);
+        let mut results = TrainingResults::new(config.loop_config.start_iteration);
 
         let scratch = IterationScratch::new(
             ranks.max_local_fwd,
@@ -398,6 +398,12 @@ where
             state,
             horizon,
         );
+        bwd_state.reserve_statistics_histograms(
+            fwd_pool
+                .workspaces
+                .first()
+                .map_or(0, |ws| ws.backward_accum.retry_histogram_len),
+        );
         bwd_state.set_profile(solver_profiles.backward);
         bwd_state.set_scheduler(solver_profiles.backward_scheduler);
         bwd_state.set_hardest_first_claim_order(solver_profiles.hardest_first_claim_order);
@@ -409,6 +415,11 @@ where
             training_ctx.stochastic.class_dimensions().total(),
             max_pool_capacity,
         );
+        bwd_state.reserve_stage_stats(training_ctx.node_graph);
+        bwd_state.reserve_cut_levels(training_ctx.node_graph);
+        results
+            .solver_stats_log
+            .reserve(num_stages + bwd_state.stage_stats_entry_bound() + 1);
 
         Ok(Self {
             solver,
@@ -431,6 +442,58 @@ where
             bwd_state,
             results,
         })
+    }
+
+    /// Builds the session, seeds its basis store from `loaded`, and freezes the loaded cuts into
+    /// the stage templates.
+    ///
+    /// # Errors
+    ///
+    /// Returns what [`Self::new`] returns.
+    pub(crate) fn start(
+        solver: &'a mut S,
+        config: TrainingConfig,
+        fcf: &'a mut FutureCostFunction,
+        stage_ctx: &'a StageContext<'a>,
+        training_ctx: &'a TrainingContext<'a>,
+        comm: &'a C,
+        solver_factory: impl Fn() -> Result<S, SolverError>,
+        mut loaded: LoadedPolicy,
+        solver_profiles: SolverProfiles,
+    ) -> Result<Self, SddpError> {
+        let mut session = Self::new(
+            solver,
+            config,
+            fcf,
+            stage_ctx,
+            training_ctx,
+            comm,
+            solver_factory,
+            std::mem::take(&mut loaded.trial_states),
+            solver_profiles,
+        )?;
+        // Must seed the basis store before `prime_frozen_templates` freezes the loaded
+        // cuts into the templates.
+        session.seed_basis_store(&loaded);
+        session.prime_frozen_templates();
+        Ok(session)
+    }
+
+    /// Runs every iteration of the range and finalizes the session.
+    ///
+    /// # Errors
+    ///
+    /// Returns what [`Self::finalize`] returns. An iteration error is carried in the returned
+    /// outcome by [`Self::finalize_with_error`].
+    pub(crate) fn run_to_completion(mut self) -> Result<TrainingOutcome, SddpError> {
+        for iteration in self.iteration_range() {
+            match self.run_iteration(iteration) {
+                Ok(IterationOutcome::Continue) => {}
+                Ok(IterationOutcome::Converged | IterationOutcome::Shutdown) => break,
+                Err(e) => return Ok(self.finalize_with_error(e)),
+            }
+        }
+        self.finalize()
     }
 
     /// Returns the range of iteration indices this session should run.
@@ -457,11 +520,21 @@ where
 
     /// Frozen pins that recomputed B across this rank's workspaces.
     #[cfg(any(test, feature = "test-support"))]
-    fn slab_miss_local_total(&self) -> u64 {
+    pub(crate) fn slab_miss_local_total(&self) -> u64 {
         self.fwd_pool
             .workspaces
             .iter()
             .map(|w| w.scratch.slab_misses)
+            .sum()
+    }
+
+    /// Cut rows last frozen into the templates of the pools past stage 0, the rows a backward pin reads from the slab.
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn frozen_rows_past_root(&self) -> usize {
+        let node_graph = self.training_ctx.node_graph;
+        (0..node_graph.n_pools)
+            .filter(|&p| node_graph.pool_stage[p] >= StageIdx(1))
+            .map(|p| self.scratch.freeze_row_batches[p].num_rows)
             .sum()
     }
 
@@ -517,27 +590,7 @@ where
 
         self.run_cut_management(iteration);
 
-        grow_pools_for_next_iteration(
-            self.fcf,
-            u64::from(self.config.loop_config.forward_passes),
-            self.training_ctx.node_graph,
-            self.training_ctx.horizon.num_stages(),
-        );
-        // Growth-only: a pool `grow_pools_for_next_iteration` just grew may now
-        // exceed what the per-worker cut scratch covers; re-reserve before the
-        // next sweep touches it (never inside the sweep itself).
-        let max_pool_capacity = self.fcf.pools.iter().map(|p| p.capacity).max().unwrap_or(0);
-        self.fwd_pool
-            .reserve_pool_scratch(self.training_ctx, self.sizing, max_pool_capacity);
-        self.bwd_state
-            .reserve_by_node_aggregate(self.training_ctx.cut_state_layouts, max_pool_capacity);
-        self.bwd_state.reserve_stage_noise(
-            self.training_ctx.stochastic.class_dimensions().total(),
-            max_pool_capacity,
-        );
-        self.scratch.reserve_lb_cut_scratch(
-            self.fcf.pools[lb_root_pool(self.training_ctx.node_graph)?].capacity,
-        );
+        self.prepare_next_iteration()?;
 
         let (lb, lb_lp_solves, lb_wall_ms, lb_solve_time_ms) = self.run_lower_bound(iteration)?;
 
@@ -630,6 +683,65 @@ where
         self.write_periodic_checkpoint(iteration)?;
 
         Ok(IterationOutcome::Continue)
+    }
+
+    /// Grows the pools and every buffer sized from them, and reserves the solver-statistics log
+    /// for the rest of this iteration and one more, so the next sweeps never grow it.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the [`lb_root_pool`] error.
+    fn prepare_next_iteration(&mut self) -> Result<(), SddpError> {
+        grow_pools_for_next_iteration(
+            self.fcf,
+            u64::from(self.config.loop_config.forward_passes),
+            self.training_ctx.node_graph,
+            self.training_ctx.horizon.num_stages(),
+        );
+        // Growth-only: a pool `grow_pools_for_next_iteration` just grew may now
+        // exceed what the per-worker cut scratch covers; re-reserve before the
+        // next sweep touches it (never inside the sweep itself).
+        let max_pool_capacity = self.fcf.pools.iter().map(|p| p.capacity).max().unwrap_or(0);
+        self.fwd_pool
+            .reserve_pool_scratch(self.training_ctx, self.sizing, max_pool_capacity);
+        self.bwd_state
+            .reserve_by_node_aggregate(self.training_ctx.cut_state_layouts, max_pool_capacity);
+        self.bwd_state.reserve_stage_noise(
+            self.training_ctx.stochastic.class_dimensions().total(),
+            max_pool_capacity,
+        );
+        self.scratch.reserve_lb_cut_scratch(
+            self.fcf.pools[lb_root_pool(self.training_ctx.node_graph)?].capacity,
+        );
+        let node_graph = self.training_ctx.node_graph;
+        let (stage_ctx, pools) = (self.stage_ctx, &self.fcf.pools);
+        let forward_passes = self.config.loop_config.forward_passes;
+        let cut_bound = |pool_id: usize| next_iteration_cut_bound(&pools[pool_id], forward_passes);
+        self.basis_store.reserve_cut_rows(|node| {
+            let runtime = &node_graph.nodes[node];
+            let cut_rows = cut_bound(runtime.pool_id);
+            (
+                stage_ctx.template(runtime.stage).num_rows + cut_rows,
+                cut_rows,
+            )
+        });
+        let successor_slots = node_graph
+            .successors
+            .iter()
+            .map(|edges| {
+                edges
+                    .iter()
+                    .map(|edge| cut_bound(node_graph.nodes[edge.child].pool_id))
+                    .sum()
+            })
+            .max()
+            .unwrap_or(0);
+        self.bwd_state.reserve_successor_slots(successor_slots);
+        // This iteration's lower-bound entry is still to come, then one full iteration.
+        let next_iteration =
+            self.training_ctx.horizon.num_stages() + self.bwd_state.stage_stats_entry_bound() + 1;
+        self.results.solver_stats_log.reserve(1 + next_iteration);
+        Ok(())
     }
 
     /// When the schedule fires at `iteration`, every rank gathers the basis store
@@ -856,7 +968,7 @@ where
     // ── Private phase helpers ──────────────────────────────────────────────
 
     /// Run the forward pass and forward synchronisation for one iteration.
-    fn run_forward_phase(
+    pub(crate) fn run_forward_phase(
         &mut self,
         iteration: u64,
     ) -> Result<(ForwardResult, SyncResult, f64), SddpError> {
@@ -1066,7 +1178,10 @@ where
     // Rationale: the `i32::try_from(*omega).expect(...)` cannot fire — opening
     // indices derive from `branching_factor: u16` and stay well below `i32::MAX`.
     #[allow(clippy::expect_used)]
-    fn run_backward_phase(&mut self, iteration: u64) -> Result<(BackwardResult, f64), SddpError> {
+    pub(crate) fn run_backward_phase(
+        &mut self,
+        iteration: u64,
+    ) -> Result<(BackwardResult, f64), SddpError> {
         // Borrow bwd_state and each disjoint `self.scratch` sub-field separately
         // so they can be co-borrowed mutably without a whole-struct conflict.
         let bwd = &mut self.bwd_state;
@@ -1093,13 +1208,12 @@ where
 
         let bwd_solve_time_ms = {
             let agg = SolverStatsDelta::aggregate(
-                backward_result
-                    .stage_stats
-                    .iter()
+                self.bwd_state
+                    .stage_stats()
                     .flat_map(|(_, entries)| entries.iter().map(|(_, _, _, d)| d)),
             );
             #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
-            for (stage_idx, entries) in &backward_result.stage_stats {
+            for (stage_idx, entries) in self.bwd_state.stage_stats() {
                 for (rank, worker_id, omega, delta) in entries {
                     let mut entry = SolverStatsDelta::default();
                     delta.clone_into_reuse(&mut entry);
@@ -1108,7 +1222,7 @@ where
                         .push(SolverStatsLogEntry::from_raw(
                             iteration,
                             "backward",
-                            self.stage_ctx.study_stage_ids.get(*stage_idx).copied(),
+                            self.stage_ctx.study_stage_ids.get(stage_idx).copied(),
                             i32::try_from(*omega)
                                 .expect("opening index is bounded well below i32::MAX"),
                             *rank,
@@ -1133,7 +1247,6 @@ where
                 setup_time_ms: backward_result.setup_time_ms,
                 load_imbalance_ms: backward_result.load_imbalance_ms,
                 scheduling_overhead_ms: backward_result.scheduling_overhead_ms,
-                aggregation_time_ms: backward_result.aggregation_time_ms,
             },
         );
 
@@ -1153,7 +1266,7 @@ where
 
     /// Run the periodic cut selection, the budget, and the template refreeze,
     /// then report every pool's row counts.
-    fn run_cut_management(&mut self, iteration: u64) {
+    pub(crate) fn run_cut_management(&mut self, iteration: u64) {
         let reports_pools = self.config.cut_management.cut_selection.is_some()
             || self.config.cut_management.budget.is_some();
         let mut pools = if reports_pools {
@@ -1370,7 +1483,7 @@ where
             {
                 total_rows_frozen += self.scratch.freeze_row_batches[p].num_rows as u64;
             }
-            if num_stages > 0 {
+            if num_stages > 0 && t.0 > 0 {
                 let rows = self.scratch.freeze_row_batches[p].num_rows;
                 for rec in self
                     .scratch
@@ -1397,7 +1510,7 @@ where
     /// takes [`LoadedPolicy::seed_basis`] of global scenario `fwd_offset + m`.
     /// The padding rows `my_actual_fwd..max_local_fwd` stay empty, and so does
     /// every row for a fresh start.
-    pub(crate) fn seed_basis_store(&mut self, loaded: &LoadedPolicy) {
+    fn seed_basis_store(&mut self, loaded: &LoadedPolicy) {
         for node in 0..self.basis_store.num_nodes() {
             for m in 0..self.ranks.my_actual_fwd {
                 let scenario = global_scenario(self.ranks.my_fwd_offset, m);
@@ -1414,7 +1527,7 @@ where
     /// 1's passes read `scratch.frozen_templates` before `run_cut_management`
     /// refreezes; without this, the first post-resume iteration would solve a
     /// cut-less, myopic policy. No-op for a fresh start (no active cuts).
-    pub(crate) fn prime_frozen_templates(&mut self) {
+    fn prime_frozen_templates(&mut self) {
         if self.fcf.total_active_cuts() > 0 {
             let _ = self.freeze_active_cuts_into_templates(false);
         }
@@ -1571,6 +1684,11 @@ fn grow_pools_for_next_iteration(
     }
 }
 
+/// Active cuts plus one iteration's appends: the bound `grow_pools_for_next_iteration` shares.
+fn next_iteration_cut_bound(pool: &CutPool, forward_passes: u32) -> usize {
+    pool.active_count() + forward_passes as usize
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1607,6 +1725,7 @@ mod tests {
         },
     };
     use novomodelo_io::OwnedPolicyCutRecord;
+    use novomodelo_io::config::BackwardScheduler;
     use novomodelo_io::test_support::owned_piece_defaults;
     use novomodelo_solver::{
         ActiveSolver, Basis, RowBatch, SolverError, SolverInterface, SolverStatistics,
@@ -1618,7 +1737,7 @@ mod tests {
 
     use super::{
         IterationOutcome, LazySolveTotals, TrainingSession, grow_pools_for_next_iteration,
-        lb_root_pool, reduce_lazy_totals_delta,
+        reduce_lazy_totals_delta,
     };
     use crate::training::training::MissingScenarioBasis;
     use crate::workspace::CapturedBasis;
@@ -3784,9 +3903,11 @@ mod tests {
         let node_graph = training_ctx.node_graph;
         let root = node_graph.frontier_node(StageIdx(0)).unwrap();
         let root_node_id = node_graph.node_ids[root];
+        let read_node = node_graph.frontier_node(StageIdx(1)).unwrap();
+        let read_node_id = node_graph.node_ids[read_node];
         assert!(
-            training_ctx.cut_state_layouts[node_graph.nodes[root].pool_id].has_lag_slots(),
-            "the root pool has no lag slots, so its cut rows carry no bracket"
+            training_ctx.cut_state_layouts[node_graph.nodes[read_node].pool_id].has_lag_slots(),
+            "the stage-1 pool has no lag slots, so its cut rows carry no bracket"
         );
         let config = make_config(setup.loop_params.forward_passes, 4, 4, n_stages);
         let mut solver = ActiveSolver::new().unwrap();
@@ -3827,16 +3948,43 @@ mod tests {
         let mut freeze_moved_a_capacity = false;
         for iteration in 1..=4_u64 {
             let before = allocations(&session.scratch.records);
+            let read_rows =
+                session.scratch.freeze_row_batches[node_graph.nodes[read_node].pool_id].num_rows;
+            let root_rows =
+                session.scratch.freeze_row_batches[node_graph.nodes[root].pool_id].num_rows;
             let _ = session.run_forward_phase(iteration).unwrap();
             assert_unmoved(iteration, "forward", &before, &session.scratch.records);
             if iteration >= 2 {
-                for (pass, record) in session.scratch.records.iter().step_by(n_stages).enumerate() {
-                    let brackets = record.frozen_brackets.read(iteration, root_node_id);
+                for (pass, record) in session
+                    .scratch
+                    .records
+                    .iter()
+                    .skip(1)
+                    .step_by(n_stages)
+                    .enumerate()
+                {
+                    let brackets = record
+                        .frozen_brackets
+                        .read(iteration, read_node_id, read_rows);
                     assert!(
                         brackets.is_some_and(|b| !b.is_empty()),
-                        "iteration {iteration}: the forward wrote no root bracket on pass {pass}"
+                        "iteration {iteration}: the forward wrote no stage-1 bracket on pass {pass}"
                     );
                 }
+            }
+            for record in session.scratch.records.iter().step_by(n_stages) {
+                assert_eq!(
+                    record.frozen_brackets.allocation().1,
+                    0,
+                    "iteration {iteration}: a stage-0 slab holds capacity"
+                );
+                assert!(
+                    record
+                        .frozen_brackets
+                        .read(iteration, root_node_id, root_rows)
+                        .is_none(),
+                    "iteration {iteration}: the forward wrote a stage-0 bracket"
+                );
             }
 
             let _ = session.run_backward_phase(iteration).unwrap();
@@ -3848,39 +3996,484 @@ mod tests {
                 .zip(allocations(&session.scratch.records))
                 .any(|(b, a)| b.1 != a.1);
 
-            grow_pools_for_next_iteration(
-                session.fcf,
-                u64::from(session.config.loop_config.forward_passes),
-                session.training_ctx.node_graph,
-                session.training_ctx.horizon.num_stages(),
-            );
-            let max_pool_capacity = session
-                .fcf
-                .pools
-                .iter()
-                .map(|p| p.capacity)
-                .max()
-                .unwrap_or(0);
-            session.fwd_pool.reserve_pool_scratch(
-                session.training_ctx,
-                session.sizing,
-                max_pool_capacity,
-            );
-            session.bwd_state.reserve_by_node_aggregate(
-                session.training_ctx.cut_state_layouts,
-                max_pool_capacity,
-            );
-            session.bwd_state.reserve_stage_noise(
-                session.training_ctx.stochastic.class_dimensions().total(),
-                max_pool_capacity,
-            );
-            session.scratch.reserve_lb_cut_scratch(
-                session.fcf.pools[lb_root_pool(session.training_ctx.node_graph).unwrap()].capacity,
-            );
+            session.prepare_next_iteration().unwrap();
         }
         assert!(
             freeze_moved_a_capacity,
             "no cut management moved a slab capacity, so the snapshots compare nothing the freeze moves"
+        );
+    }
+
+    fn vec_allocation<T>(vec: &Vec<T>) -> (usize, usize) {
+        (vec.as_ptr().addr(), vec.capacity())
+    }
+
+    fn statistics_buffer_allocations(
+        session: &TrainingSession<'_, ActiveSolver, StubComm>,
+    ) -> Vec<(String, (usize, usize))> {
+        let mut records = Vec::new();
+        let mut record =
+            |name: String, allocation: (usize, usize)| records.push((name, allocation));
+        for (w, ws) in session.fwd_pool.workspaces.iter().enumerate() {
+            let accum = &ws.backward_accum;
+            record(
+                format!("worker {w} per_opening_stats"),
+                vec_allocation(&accum.per_opening_stats),
+            );
+            for (k, slot) in accum.per_opening_stats.iter().enumerate() {
+                record(
+                    format!("worker {w} per_opening_stats[{k}] histogram"),
+                    vec_allocation(&slot.retry_level_histogram),
+                );
+            }
+            record(
+                format!("worker {w} opening_delta_buf histogram"),
+                vec_allocation(&accum.opening_delta_buf.retry_level_histogram),
+            );
+            record(
+                format!("worker {w} stats_before_buf histogram"),
+                vec_allocation(&accum.stats_before_buf.retry_level_histogram),
+            );
+            record(
+                format!("worker {w} stats_after_buf histogram"),
+                vec_allocation(&accum.stats_after_buf.retry_level_histogram),
+            );
+        }
+        let state = &session.bwd_state;
+        record(
+            "worker_stats_before".to_string(),
+            vec_allocation(&state.worker_stats_before),
+        );
+        for (w, stats) in state.worker_stats_before.iter().enumerate() {
+            record(
+                format!("worker_stats_before[{w}] histogram"),
+                vec_allocation(&stats.retry_level_histogram),
+            );
+        }
+        record(
+            "worker_stats_after".to_string(),
+            vec_allocation(&state.worker_stats_after),
+        );
+        for (w, stats) in state.worker_stats_after.iter().enumerate() {
+            record(
+                format!("worker_stats_after[{w}] histogram"),
+                vec_allocation(&stats.retry_level_histogram),
+            );
+        }
+        record(
+            "worker_deltas".to_string(),
+            vec_allocation(&state.worker_deltas),
+        );
+        for (w, delta) in state.worker_deltas.iter().enumerate() {
+            record(
+                format!("worker_deltas[{w}] histogram"),
+                vec_allocation(&delta.retry_level_histogram),
+            );
+        }
+        for (i, slot) in state.stage_worker_stats_buf.as_slice().iter().enumerate() {
+            record(
+                format!("stage_worker_stats_buf[{i}] histogram"),
+                vec_allocation(&slot.retry_level_histogram),
+            );
+        }
+        records
+    }
+
+    #[test]
+    fn a_warm_backward_phase_reuses_its_solver_statistics_buffers() {
+        for backward_scheduler in [
+            BackwardScheduler::ByScenario {},
+            BackwardScheduler::ByNode { block_size: None },
+        ] {
+            let mut setup = dual_folding_setup(LagFold::Unfolded, 2, 4);
+            let stage_ctx = setup.inputs.stage_ctx();
+            let training_ctx = setup.inputs.training_ctx();
+            let n_stages = training_ctx.horizon.num_stages();
+            let mut config = make_config(setup.loop_params.forward_passes, 4, 4, n_stages);
+            config.loop_config.n_fwd_threads = 2;
+            let mut solver = ActiveSolver::new().unwrap();
+            let mut session = TrainingSession::new(
+                &mut solver,
+                config,
+                &mut setup.fcf,
+                &stage_ctx,
+                &training_ctx,
+                &StubComm,
+                ActiveSolver::new,
+                Vec::new(),
+                SolverProfiles {
+                    backward_scheduler,
+                    ..SolverProfiles::default()
+                },
+            )
+            .unwrap();
+            session.prime_frozen_templates();
+            let _ = session.run_iteration(1).unwrap();
+            let _ = session.run_forward_phase(2).unwrap();
+
+            let before = statistics_buffer_allocations(&session);
+            let _ = session.run_backward_phase(2).unwrap();
+            let after = statistics_buffer_allocations(&session);
+
+            assert_eq!(
+                before.len(),
+                after.len(),
+                "{backward_scheduler:?}: the backward phase changed the number of statistics buffers"
+            );
+            if let Some(((name, was), (_, now))) =
+                before.iter().zip(&after).find(|(b, a)| b.1 != a.1)
+            {
+                panic!(
+                    "{backward_scheduler:?}: the backward phase moved {name} from {was:?} to {now:?}"
+                );
+            }
+            assert!(
+                !cfg!(feature = "highs")
+                    || before
+                        .iter()
+                        .any(|(name, (_, capacity))| name.ends_with("histogram") && *capacity > 0),
+                "{backward_scheduler:?}: no statistics histogram holds capacity, so the snapshots compare nothing"
+            );
+        }
+    }
+
+    #[test]
+    fn the_backward_stage_statistics_and_the_log_keep_their_buffers() {
+        for backward_scheduler in [
+            BackwardScheduler::ByScenario {},
+            BackwardScheduler::ByNode { block_size: None },
+        ] {
+            let mut setup = dual_folding_setup(LagFold::Unfolded, 2, 4);
+            let stage_ctx = setup.inputs.stage_ctx();
+            let training_ctx = setup.inputs.training_ctx();
+            let n_stages = training_ctx.horizon.num_stages();
+            let mut config = make_config(setup.loop_params.forward_passes, 4, 4, n_stages);
+            config.loop_config.n_fwd_threads = 2;
+            let mut solver = ActiveSolver::new().unwrap();
+            let mut session = TrainingSession::new(
+                &mut solver,
+                config,
+                &mut setup.fcf,
+                &stage_ctx,
+                &training_ctx,
+                &StubComm,
+                ActiveSolver::new,
+                Vec::new(),
+                SolverProfiles {
+                    backward_scheduler,
+                    ..SolverProfiles::default()
+                },
+            )
+            .unwrap();
+            session.prime_frozen_templates();
+
+            let allocations = |session: &TrainingSession<'_, ActiveSolver, StubComm>| {
+                [
+                    (
+                        "stage_stats_entries",
+                        vec_allocation(&session.bwd_state.stage_stats_entries),
+                    ),
+                    (
+                        "stage_stats_spans",
+                        vec_allocation(&session.bwd_state.stage_stats_spans),
+                    ),
+                    (
+                        "solver_stats_log",
+                        vec_allocation(&session.results.solver_stats_log),
+                    ),
+                ]
+            };
+            let reserved = allocations(&session);
+            let _ = session.run_iteration(1).unwrap();
+            let mut first_log_capacity = None;
+            for iteration in 2..=5_u64 {
+                let _ = session.run_forward_phase(iteration).unwrap();
+                let before = allocations(&session);
+                first_log_capacity.get_or_insert(before[2].1.1);
+                let log_len = session.results.solver_stats_log.len();
+
+                let _ = session.run_backward_phase(iteration).unwrap();
+                let after = allocations(&session);
+
+                if let Some(((name, was), (_, now))) =
+                    before.iter().zip(&after).find(|(b, a)| b.1 != a.1)
+                {
+                    panic!(
+                        "{backward_scheduler:?} iteration {iteration}: the backward phase moved {name} from {was:?} to {now:?}"
+                    );
+                }
+                assert!(
+                    session.results.solver_stats_log.len() > log_len,
+                    "{backward_scheduler:?} iteration {iteration}: the backward phase logged nothing"
+                );
+
+                session.run_cut_management(iteration);
+                session.prepare_next_iteration().unwrap();
+            }
+            assert_eq!(
+                allocations(&session)[..2],
+                reserved[..2],
+                "{backward_scheduler:?}: the stage statistics buffers left their reserved allocation"
+            );
+            assert!(
+                first_log_capacity.is_some_and(|c| session.results.solver_stats_log.len() > c),
+                "{backward_scheduler:?}: the log never outgrew its first capacity, so no boundary reserve was exercised"
+            );
+        }
+    }
+
+    fn fan_out_container_allocations(
+        session: &TrainingSession<'_, ActiveSolver, StubComm>,
+    ) -> Vec<(String, (usize, usize))> {
+        let mut records = vec![
+            (
+                "worker_basis_slices".to_string(),
+                vec_allocation(&session.bwd_state.worker_basis_slices),
+            ),
+            (
+                "staged_cuts_buf".to_string(),
+                vec_allocation(&session.bwd_state.staged_cuts_buf),
+            ),
+        ];
+        for (w, ws) in session.fwd_pool.workspaces.iter().enumerate() {
+            records.push((
+                format!("worker {w} staged_cuts_buf"),
+                vec_allocation(&ws.backward_accum.staged_cuts_buf),
+            ));
+        }
+        records
+    }
+
+    #[test]
+    fn the_backward_worker_fan_out_reuses_its_containers() {
+        for backward_scheduler in [
+            BackwardScheduler::ByScenario {},
+            BackwardScheduler::ByNode { block_size: None },
+        ] {
+            let mut setup = dual_folding_setup(LagFold::Unfolded, 2, 4);
+            let stage_ctx = setup.inputs.stage_ctx();
+            let training_ctx = setup.inputs.training_ctx();
+            let n_stages = training_ctx.horizon.num_stages();
+            let mut config = make_config(setup.loop_params.forward_passes, 4, 4, n_stages);
+            config.loop_config.n_fwd_threads = 2;
+            let mut solver = ActiveSolver::new().unwrap();
+            let mut session = TrainingSession::new(
+                &mut solver,
+                config,
+                &mut setup.fcf,
+                &stage_ctx,
+                &training_ctx,
+                &StubComm,
+                ActiveSolver::new,
+                Vec::new(),
+                SolverProfiles {
+                    backward_scheduler,
+                    ..SolverProfiles::default()
+                },
+            )
+            .unwrap();
+            session.prime_frozen_templates();
+            let sized_at_construction = fan_out_container_allocations(&session)[..2].to_vec();
+            let _ = session.run_iteration(1).unwrap();
+            assert_eq!(
+                fan_out_container_allocations(&session)[..2],
+                sized_at_construction,
+                "{backward_scheduler:?}: the first iteration moved a container sized at construction"
+            );
+            let _ = session.run_forward_phase(2).unwrap();
+
+            let before = fan_out_container_allocations(&session);
+            let _ = session.run_backward_phase(2).unwrap();
+            let after = fan_out_container_allocations(&session);
+
+            assert_eq!(
+                before.len(),
+                after.len(),
+                "{backward_scheduler:?}: the backward phase changed the number of containers"
+            );
+            if let Some(((name, was), (_, now))) =
+                before.iter().zip(&after).find(|(b, a)| b.1 != a.1)
+            {
+                panic!(
+                    "{backward_scheduler:?}: the backward phase moved {name} from {was:?} to {now:?}"
+                );
+            }
+            if matches!(backward_scheduler, BackwardScheduler::ByScenario {}) {
+                let (_, (_, slice_capacity)) = before[0];
+                let (_, (_, staged_capacity)) = before[1];
+                assert!(
+                    slice_capacity >= 2 && staged_capacity > 0,
+                    "{backward_scheduler:?}: the slice scratch holds {slice_capacity} and the staged cuts {staged_capacity}, so the snapshots compare nothing"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_backward_cut_levels_keep_their_buffers() {
+        let mut setup = test_support::k_fan_setup(2, 4, 4).setup;
+        let stage_ctx = setup.inputs.stage_ctx();
+        let training_ctx = setup.inputs.training_ctx();
+        let n_stages = training_ctx.horizon.num_stages();
+        let config = make_config(setup.loop_params.forward_passes, 4, 4, n_stages);
+        let mut solver = ActiveSolver::new().unwrap();
+        let mut session = TrainingSession::new(
+            &mut solver,
+            config,
+            &mut setup.fcf,
+            &stage_ctx,
+            &training_ctx,
+            &StubComm,
+            ActiveSolver::new,
+            Vec::new(),
+            SolverProfiles::default(),
+        )
+        .unwrap();
+        session.prime_frozen_templates();
+
+        let allocations = |session: &TrainingSession<'_, ActiveSolver, StubComm>| {
+            let (nodes, offsets) = session.bwd_state.cut_levels();
+            [vec_allocation(nodes), vec_allocation(offsets)]
+        };
+        let sized_at_construction = allocations(&session);
+        let _ = session.run_iteration(1).unwrap();
+        assert_eq!(
+            allocations(&session),
+            sized_at_construction,
+            "the first iteration moved a cut-level buffer sized at construction"
+        );
+        let _ = session.run_forward_phase(2).unwrap();
+
+        let before = allocations(&session);
+        let _ = session.run_backward_phase(2).unwrap();
+        assert_eq!(
+            allocations(&session),
+            before,
+            "the backward phase moved a cut-level buffer"
+        );
+        let (_, offsets) = session.bwd_state.cut_levels();
+        assert!(
+            offsets.windows(2).any(|w| w[1] - w[0] == 2),
+            "no level holds two nodes, so the multi-node level did not run through the buffers"
+        );
+    }
+
+    fn cut_count_buffer_allocations(
+        session: &TrainingSession<'_, ActiveSolver, StubComm>,
+    ) -> Vec<(String, (usize, usize))> {
+        let store = &session.basis_store;
+        let mut records = Vec::new();
+        for scenario in 0..store.num_scenarios() {
+            for node in 0..store.num_nodes() {
+                if let Some(captured) = store.get(scenario, NodePos(node)) {
+                    records.push((
+                        format!("scenario {scenario} node {node} cut_row_slots"),
+                        vec_allocation(&captured.cut_row_slots),
+                    ));
+                    records.push((
+                        format!("scenario {scenario} node {node} row_status"),
+                        vec_allocation(&captured.basis.row_status),
+                    ));
+                }
+            }
+        }
+        records.push((
+            "successor_active_slots_buf".to_string(),
+            vec_allocation(&session.bwd_state.successor_active_slots_buf),
+        ));
+        records
+    }
+
+    fn cut_count_buffer_lengths(
+        session: &TrainingSession<'_, ActiveSolver, StubComm>,
+    ) -> Vec<usize> {
+        let store = &session.basis_store;
+        let mut lengths: Vec<usize> = (0..store.num_scenarios())
+            .flat_map(|scenario| (0..store.num_nodes()).map(move |node| (scenario, node)))
+            .filter_map(|(scenario, node)| store.get(scenario, NodePos(node)))
+            .flat_map(|captured| {
+                [
+                    captured.cut_row_slots.len(),
+                    captured.basis.row_status.len(),
+                ]
+            })
+            .collect();
+        lengths.push(session.bwd_state.successor_active_slots_buf.len());
+        lengths
+    }
+
+    #[test]
+    fn the_cut_count_buffers_keep_their_capacity_as_the_pool_grows() {
+        let mut setup = dual_folding_setup(LagFold::Unfolded, 2, 6);
+        let stage_ctx = setup.inputs.stage_ctx();
+        let training_ctx = setup.inputs.training_ctx();
+        let n_stages = training_ctx.horizon.num_stages();
+        let mut config = make_config(setup.loop_params.forward_passes, 6, 6, n_stages);
+        config.loop_config.n_fwd_threads = 2;
+        let mut solver = ActiveSolver::new().unwrap();
+        let mut session = TrainingSession::new(
+            &mut solver,
+            config,
+            &mut setup.fcf,
+            &stage_ctx,
+            &training_ctx,
+            &StubComm,
+            ActiveSolver::new,
+            Vec::new(),
+            SolverProfiles {
+                backward_scheduler: BackwardScheduler::ByScenario {},
+                ..SolverProfiles::default()
+            },
+        )
+        .unwrap();
+        session.prime_frozen_templates();
+        let _ = session.run_iteration(1).unwrap();
+
+        let mut first_capacities = Vec::new();
+        for iteration in 2..=6_u64 {
+            let _ = session.run_forward_phase(iteration).unwrap();
+            let before = cut_count_buffer_allocations(&session);
+            if iteration == 2 {
+                first_capacities = before
+                    .iter()
+                    .filter(|(name, _)| name.ends_with("cut_row_slots"))
+                    .map(|(_, (_, capacity))| *capacity)
+                    .collect();
+            }
+
+            let _ = session.run_backward_phase(iteration).unwrap();
+            let after = cut_count_buffer_allocations(&session);
+
+            assert_eq!(
+                before.len(),
+                after.len(),
+                "iteration {iteration}: the backward phase created a basis"
+            );
+            if let Some(((name, was), (_, now))) =
+                before.iter().zip(&after).find(|(b, a)| b.1 != a.1)
+            {
+                panic!(
+                    "iteration {iteration}: the backward phase moved {name} from {was:?} to {now:?}"
+                );
+            }
+
+            session.run_cut_management(iteration);
+            let lengths = cut_count_buffer_lengths(&session);
+            session.prepare_next_iteration().unwrap();
+            assert_eq!(
+                cut_count_buffer_lengths(&session),
+                lengths,
+                "iteration {iteration}: the boundary reserves changed a length"
+            );
+        }
+
+        let final_cut_rows = cut_count_buffer_lengths(&session);
+        assert!(
+            first_capacities
+                .iter()
+                .zip(final_cut_rows.iter().step_by(2))
+                .any(|(capacity, len)| len > capacity),
+            "no basis outgrew its first cut-row capacity, so the pin never crossed a doubling"
         );
     }
 }

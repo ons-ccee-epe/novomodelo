@@ -18,6 +18,7 @@ use crate::{
     },
     solve::solver_phase::SolverProfiles,
     training::{TrainingOutcome, TrainingResult},
+    training_session::TrainingSession,
     workspace::{
         CapturedBasis, NoisePreallocation, SolverWorkspace, WorkspacePool, WorkspaceSizing,
     },
@@ -28,7 +29,6 @@ use super::{SimulationEnumeratedRequest, StudySetup, Traversal};
 use crate::build_training_output;
 use crate::simulation::pipeline::run_simulation;
 use crate::simulation::state::SimulationInputs;
-use crate::train;
 
 impl StudySetup {
     /// Execute the training loop. Mutates `self.fcf` to store generated cuts.
@@ -37,6 +37,10 @@ impl StudySetup {
     ///
     /// Returns `SddpError::Infeasible`, `SddpError::Solver`, or
     /// `SddpError::Communication` on LP, solver, or MPI failure.
+    #[expect(
+        clippy::redundant_closure_for_method_calls,
+        reason = "the method path does not infer the session lifetime as higher-ranked"
+    )]
     pub fn train<S, C: Communicator>(
         &mut self,
         solver: &mut S,
@@ -57,7 +61,7 @@ impl StudySetup {
             #[cfg(any(test, feature = "test-support"))]
             bypass_solve_caches: false,
         };
-        self.train_inner(
+        self.with_training_session(
             solver,
             comm,
             n_threads,
@@ -65,6 +69,7 @@ impl StudySetup {
             event_sender,
             shutdown_flag,
             solver_profiles,
+            |session| session.run_to_completion(),
         )
     }
 
@@ -79,6 +84,10 @@ impl StudySetup {
     /// Returns `SddpError::Infeasible`, `SddpError::Solver`, or
     /// `SddpError::Communication` on LP, solver, or MPI failure.
     #[cfg(any(test, feature = "test-support"))]
+    #[expect(
+        clippy::redundant_closure_for_method_calls,
+        reason = "the method path does not infer the session lifetime as higher-ranked"
+    )]
     pub fn train_with_solver_profiles<S, C: Communicator>(
         &mut self,
         solver: &mut S,
@@ -90,7 +99,7 @@ impl StudySetup {
     where
         S: SolverInterface<Profile = ActiveProfile> + Send,
     {
-        self.train_inner(
+        self.with_training_session(
             solver,
             comm,
             n_threads,
@@ -98,10 +107,16 @@ impl StudySetup {
             None,
             None,
             solver_profiles,
+            |session| session.run_to_completion(),
         )
     }
 
-    fn train_inner<S, C: Communicator>(
+    /// Starts a [`TrainingSession`] over this setup and hands it to `run`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the session start's error, or `run`'s.
+    pub(crate) fn with_training_session<S, C: Communicator, R>(
         &mut self,
         solver: &mut S,
         comm: &C,
@@ -110,7 +125,8 @@ impl StudySetup {
         event_sender: Option<Sender<TrainingEvent>>,
         shutdown_flag: Option<&Arc<AtomicUsize>>,
         solver_profiles: SolverProfiles,
-    ) -> Result<TrainingOutcome, SddpError>
+        run: impl FnOnce(TrainingSession<'_, S, C>) -> Result<R, SddpError>,
+    ) -> Result<R, SddpError>
     where
         S: SolverInterface<Profile = ActiveProfile> + Send,
     {
@@ -141,7 +157,7 @@ impl StudySetup {
         let stage_ctx = self.inputs.stage_ctx();
         let training_ctx = self.inputs.training_ctx();
 
-        train(
+        let session = TrainingSession::start(
             solver,
             training_config,
             &mut self.fcf,
@@ -151,7 +167,8 @@ impl StudySetup {
             solver_factory,
             std::mem::take(&mut self.loaded),
             solver_profiles,
-        )
+        )?;
+        run(session)
     }
 
     /// Run simulation using the trained future cost function.

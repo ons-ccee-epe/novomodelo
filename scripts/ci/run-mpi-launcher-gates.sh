@@ -47,6 +47,7 @@ readonly GATES=(
     "mpi_wire compact_fold_determinism::compact_lag_study_is_world_size_invariant"
     "mpi_wire compact_fold_determinism::compact_d43_is_world_size_invariant"
     "mpi_wire compact_fold_determinism::compact_fused_slice_is_world_size_invariant"
+    "cut_basis solve_cache_equivalence::fpha_lag_study_trains_to_the_same_bits_with_the_solve_caches_bypassed_on_the_world"
 )
 readonly RANK_COUNTS=(2 4)
 readonly OVERSIZED_GATE="${GATES[0]}"

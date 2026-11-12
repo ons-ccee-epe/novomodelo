@@ -139,6 +139,12 @@ fn noise_term_at(par_lp: &PrecomputedPar, stage: usize, h: usize, eta: f64) -> f
     par_lp.sigma(stage, h) * eta
 }
 
+/// The single definition of the conditional-mean-plus-noise-term add.
+#[inline]
+fn add_noise_term_at(conditional_mean: f64, noise_term: f64) -> f64 {
+    conditional_mean + noise_term
+}
+
 /// Evaluate the PAR(p) model equation for all series elements at `stage`, writing
 /// into `output` without allocating (values may be negative).
 ///
@@ -205,8 +211,10 @@ pub fn evaluate_par_batch(
     );
 
     for h in 0..n_series {
-        output[h] = conditional_mean_at(par_lp, stage, h, lag_matrix, n_series)
-            + noise_term_at(par_lp, stage, h, noise[h]);
+        output[h] = add_noise_term_at(
+            conditional_mean_at(par_lp, stage, h, lag_matrix, n_series),
+            noise_term_at(par_lp, stage, h, noise[h]),
+        );
     }
 }
 
@@ -276,7 +284,32 @@ pub fn add_par_noise_batch(
     debug_assert_eq!(output.len(), n_series, "output.len() must equal n_series");
 
     for h in 0..n_series {
-        output[h] = conditional_mean[h] + noise_term_at(par_lp, stage, h, noise[h]);
+        output[h] = add_noise_term_at(
+            conditional_mean[h],
+            noise_term_at(par_lp, stage, h, noise[h]),
+        );
+    }
+}
+
+/// Add a noise term to a conditional mean element-wise, writing
+/// `output[h] = conditional_mean[h] + noise_term[h]` without allocating. Each
+/// element is one rounded addition (no fused multiply-add).
+///
+/// With `conditional_mean` from [`evaluate_par_conditional_mean_batch`] and
+/// `noise_term` from [`evaluate_par_noise_term_batch`], `output` equals
+/// [`add_par_noise_batch`] bit for bit.
+///
+/// # Panics
+///
+/// Panics if the three slices differ in length.
+pub fn add_noise_term_batch(conditional_mean: &[f64], noise_term: &[f64], output: &mut [f64]) {
+    assert!(
+        conditional_mean.len() == noise_term.len() && noise_term.len() == output.len(),
+        "conditional_mean, noise_term and output must have equal lengths"
+    );
+
+    for ((out, &mean), &term) in output.iter_mut().zip(conditional_mean).zip(noise_term) {
+        *out = add_noise_term_at(mean, term);
     }
 }
 
@@ -422,10 +455,14 @@ mod tests {
         test_support::{StageSpec, single_block},
     };
 
+    use rand::RngExt;
+
     use super::{
-        add_par_noise_batch, evaluate_par, evaluate_par_batch, evaluate_par_conditional_mean_batch,
-        evaluate_par_inflow, evaluate_par_inflows, evaluate_par_noise_term_batch, solve_par_noise,
+        add_noise_term_batch, add_par_noise_batch, evaluate_par, evaluate_par_batch,
+        evaluate_par_conditional_mean_batch, evaluate_par_inflow, evaluate_par_inflows,
+        evaluate_par_noise_term_batch, solve_par_noise,
     };
+    use crate::noise::rng::rng_from_seed;
     use crate::par::precompute::PrecomputedPar;
     use crate::test_support::InflowModelSpec;
 
@@ -1025,6 +1062,63 @@ mod tests {
                 p[0].to_bits(),
                 "{name}: canonical h=1 differs from permuted h=0"
             );
+        }
+    }
+
+    fn make_orders_0_to_2_par() -> PrecomputedPar {
+        let stages = vec![make_stage(0, 0, Some(0))];
+        let models = vec![
+            make_model(3, -2, 80.0, 20.0, vec![], 1.0),
+            make_model(3, -1, 90.0, 25.0, vec![], 1.0),
+            make_model(5, -2, 55.0, 14.0, vec![], 1.0),
+            make_model(5, -1, 60.0, 15.0, vec![], 1.0),
+            make_model(7, -2, 40.0, 9.0, vec![], 1.0),
+            make_model(7, -1, 45.0, 11.0, vec![], 1.0),
+            make_model(3, 0, 100.0, 30.0, vec![0.4, 0.2], 0.93),
+            make_model(5, 0, 70.0, 18.0, vec![0.5], 0.87),
+            make_model(7, 0, 50.0, 12.0, vec![], 1.0),
+        ];
+        PrecomputedPar::build(
+            &models,
+            &stages,
+            &[EntityId(3), EntityId(5), EntityId(7)],
+            None,
+        )
+        .unwrap()
+    }
+
+    fn bits(values: &[f64]) -> Vec<u64> {
+        values.iter().map(|v| v.to_bits()).collect()
+    }
+
+    #[test]
+    fn adding_the_noise_term_equals_the_fused_add_bit_for_bit() {
+        let par_lp = make_orders_0_to_2_par();
+        let n = par_lp.n_hydros();
+        assert_eq!(n, 3);
+        assert_eq!(par_lp.max_order(), 2);
+
+        let mut rng = rng_from_seed(0x5eed_0073);
+        for draw in 0..512 {
+            let lags: Vec<f64> = (0..par_lp.max_order() * n)
+                .map(|_| 20.0 + 180.0 * rng.random::<f64>())
+                .collect();
+            let noise: Vec<f64> = match draw {
+                0 => vec![0.0, -0.0, 0.0],
+                1 => vec![-0.0, 0.0, -0.0],
+                _ => (0..n).map(|_| 8.0 * rng.random::<f64>() - 4.0).collect(),
+            };
+
+            let mut mean = vec![f64::NAN; n];
+            let mut term = vec![f64::NAN; n];
+            let mut added = vec![f64::NAN; n];
+            let mut fused = vec![f64::NAN; n];
+            evaluate_par_conditional_mean_batch(&par_lp, 0, &lags, &mut mean);
+            evaluate_par_noise_term_batch(&par_lp, 0, &noise, &mut term);
+            add_noise_term_batch(&mean, &term, &mut added);
+            add_par_noise_batch(&par_lp, 0, &mean, &noise, &mut fused);
+
+            assert_eq!(bits(&added), bits(&fused), "draw {draw}");
         }
     }
 }

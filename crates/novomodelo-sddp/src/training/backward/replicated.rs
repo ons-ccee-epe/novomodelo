@@ -23,7 +23,6 @@ use novomodelo_solver::SolverInterface;
 use crate::{
     SddpError,
     context::{StageContext, TrainingContext},
-    cut::chain_rule::{ChainRuleInputs, OpeningDuals, per_opening_cut_into},
     cut_sync::OutcomeExchangeScratch,
     forward::EnumeratedForwardScratch,
     risk_measure::{BackwardOutcome, RiskMeasure},
@@ -37,7 +36,9 @@ use crate::{
 
 use super::{
     SuccessorChild, SuccessorOutcomes, SuccessorSpec,
-    duals_extraction::{DualExtractionSpec, OpeningDualBuffers, extract_opening_duals},
+    duals_extraction::{
+        ChainRuleStageInputs, DualExtractionSpec, OpeningDualBuffers, extract_opening_cut,
+    },
     lp_setup::{OpeningNoise, child_cut_rows, load_backward_lp, resolve_opening_noise},
 };
 
@@ -235,9 +236,12 @@ fn solve_replicated_opening<S: SolverInterface + Send>(
         NoiseTermSource::OnTheFly,
         &StageOpeningSolver::Frozen,
     );
+    let mut chain_scratch = std::mem::take(&mut ws.backward_accum.chain_scratch);
     let view = run_stage_solve(ws, inputs)?;
     let template = ctx.template(s);
-    let objective = extract_opening_duals(
+    let start = out.len();
+    out.resize(start + outcome_stride(n_state), 0.0);
+    let (objective, _) = extract_opening_cut(
         &view,
         &DualExtractionSpec {
             extracted: succ.cut_state,
@@ -248,29 +252,19 @@ fn solve_replicated_opening<S: SolverInterface + Send>(
             cut_row_slots: child.successor_active_slots,
             read_cut_duals: rows.projection.has_lag_slots(),
         },
-        duals,
-    );
-    out.push(objective);
-    let start = out.len();
-    out.resize(start + n_state, 0.0);
-    per_opening_cut_into(
-        &ChainRuleInputs {
+        &ChainRuleStageInputs {
             slots: child.chain_rule_slots,
             resident_pool: child.successor_pool,
-            extracted: succ.cut_state,
             par: training_ctx.stochastic.par(),
             stage: s.0,
         },
-        &OpeningDuals {
-            objective,
-            state_duals: duals.state_duals,
-            coupled_duals: duals.coupled_duals,
-            cut_duals: duals.cut_dual_slots,
-        },
         x_hat,
-        &mut ws.backward_accum.chain_scratch,
-        &mut out[start..],
+        duals,
+        &mut chain_scratch,
+        &mut out[start + 1..],
     );
+    out[start] = objective;
+    ws.backward_accum.chain_scratch = chain_scratch;
     Ok(())
 }
 
