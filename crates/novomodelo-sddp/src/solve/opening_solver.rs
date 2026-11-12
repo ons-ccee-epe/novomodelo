@@ -6,7 +6,8 @@ use novomodelo_solver::{SolutionView, SolverInterface};
 use crate::{
     cut::CutPool,
     dcs::{
-        ActiveCutRhs, DcsParams, DcsSolveContext, build_initial_resident_set, lazy_solve_preloaded,
+        ActiveCutRhs, DcsCutView, DcsParams, DcsSolveContext, build_initial_resident_set,
+        lazy_solve_preloaded,
     },
     error::SddpError,
     lp::indexer::{CutStateProjection, StateSpace},
@@ -110,10 +111,12 @@ impl StageOpeningSolver {
                 lazy_solve_preloaded(
                     &mut ws.solver,
                     core,
-                    inputs.pool,
-                    lazy.state,
-                    lazy.cut_layout,
-                    &core.col_scale,
+                    DcsCutView {
+                        pool: inputs.pool,
+                        state: lazy.state,
+                        cut_state: lazy.cut_layout,
+                        col_scale: &core.col_scale,
+                    },
                     None,
                     &ws.backward_accum.dcs_initial_resident,
                     cut_rhs,

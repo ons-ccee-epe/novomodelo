@@ -1,7 +1,7 @@
 //! Benders cut-row construction for the SDDP LP.
 //!
 //! Owns the cut-sign convention: `push_scaled_coefficient` negates the stored
-//! raw subgradient so each row reads `−∇·x + θ ≥ intercept`, the Benders cut
+//! raw subgradient so each row reads `−∇·x + θ ≥ row_lower`, the Benders cut
 //! `θ ≥ Q(x̂) + π'(x − x̂)`. The subgradient-extraction side lives in
 //! `training::backward::duals_extraction::extract_opening_duals`.
 //!
@@ -48,12 +48,13 @@ fn push_scaled_coefficient(batch: &mut RowBatch, col: OutCol, coeff: f64, col_sc
 ///
 /// `coefficients` has length `cut_state.n_slots()` (the pool's enabled cut-state
 /// dimensions); the row places each enabled non-padding coefficient onto the
-/// outgoing column [`CutStateProjection::render_pairs`] yields. `theta` is the global
-/// scalar column (stage-invariant).
+/// outgoing column [`CutStateProjection::render_pairs`] yields. `row_lower` is the
+/// row's lower bound: the cut's intercept, or the right-hand side its lag terms are
+/// folded into. `theta` is the global scalar column (stage-invariant).
 #[inline]
 pub(crate) fn push_cut_row(
     batch: &mut RowBatch,
-    intercept: f64,
+    row_lower: f64,
     coefficients: &[f64],
     cut_state: &CutStateProjection,
     theta_col: usize,
@@ -76,7 +77,7 @@ pub(crate) fn push_cut_row(
     };
     batch.values.push(d_theta);
 
-    batch.row_lower.push(intercept);
+    batch.row_lower.push(row_lower);
     batch.row_upper.push(f64::INFINITY);
 }
 

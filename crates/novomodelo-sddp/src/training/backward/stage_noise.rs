@@ -10,8 +10,8 @@ use rayon::{
 
 use super::{OpeningNoise, SuccessorOutcomes, resolve_opening_noise};
 use crate::{
-    SddpError, context::TrainingContext, cut::rhs::cut_noise_term, setup::node_graph::StageIdx,
-    workspace::workspace::reserve_to,
+    SddpError, context::TrainingContext, cut::rhs::cut_noise_terms_into,
+    setup::node_graph::StageIdx, workspace::workspace::reserve_to,
 };
 
 #[derive(Debug, Default)]
@@ -117,13 +117,14 @@ impl StageNoiseTable {
                 let child = outcomes.child_of_outcome(omega);
                 let lag_point = layouts[child.pool_id].lag_point();
                 let noise_term = &noise_terms[omega * n_hydros..][..n_hydros];
-                for (w, &slot) in row.iter_mut().zip(child.successor_active_slots) {
-                    *w = cut_noise_term(
-                        child.successor_pool.coefficient_row(slot),
-                        lag_point,
-                        noise_term,
-                    );
-                }
+                let slots = child.successor_active_slots;
+                cut_noise_terms_into(
+                    child.successor_pool,
+                    slots,
+                    lag_point,
+                    noise_term,
+                    &mut row[..slots.len()],
+                );
             });
         Ok(())
     }

@@ -6,7 +6,8 @@
 //! - `rhs_kernel_all_cores`: the same variants with every core running the whole pass over one
 //!   shared pool, timed as the slowest thread's pass. It is the gate of the batched form: at
 //!   least 1.3x faster than the plain loop with every core busy.
-//! - `noise_term_pass`: the per-stage noise-term pass as two steps against the fused RHS form.
+//! - `noise_term_pass`: the per-stage noise-term pass as the plain row loop and as the batched form,
+//!   each in two steps, against the fused RHS form.
 //! - `chain_rule`: one chain rule per opening against the aggregate-first form, warm and cold.
 //!   Its per-row cost sizes the out-of-LP estimate.
 //! - `chain_rule_walk`: the production row-major walk against a 256-wide j-tile nest, at the
@@ -54,9 +55,9 @@ use novomodelo_sddp::cut::chain_rule::{
     aggregate_first_cut_into, per_opening_cut_into,
 };
 use novomodelo_sddp::cut::rhs::{
-    cut_brackets_into, cut_noise_term, cut_rhs_from_noise_terms_into, cut_rhs_into,
+    cut_brackets_into, cut_noise_terms_into, cut_rhs_from_noise_terms_into, cut_rhs_into,
 };
-use novomodelo_sddp::cut::rhs_reference::cut_brackets_reference_into;
+use novomodelo_sddp::cut::rhs_reference::{cut_brackets_reference_into, cut_noise_term};
 use novomodelo_sddp::indexer::{ChainRuleSlots, CutLagPoint, CutSlot, CutStateProjection};
 use novomodelo_sddp::setup::NodeId;
 use novomodelo_sddp::test_support::state_layout;
@@ -533,20 +534,36 @@ fn bench_noise_term_pass(c: &mut Criterion) {
         let noise = rng.vec(lag_point.lag0().len());
         let mut brackets = vec![0.0; rows];
         cut_brackets_into(&pool, &slots, lag_point, &state, &mean, &mut brackets);
-        let (mut noise_terms, mut rhs, mut fused) =
-            (vec![0.0; rows], vec![0.0; rows], vec![0.0; rows]);
+        let (mut noise_terms, mut rhs, mut plain_rhs, mut fused) = (
+            vec![0.0; rows],
+            vec![0.0; rows],
+            vec![0.0; rows],
+            vec![0.0; rows],
+        );
 
-        let two_step = |noise_terms: &mut [f64], rhs: &mut [f64]| {
+        let plain_two_step = |noise_terms: &mut [f64], rhs: &mut [f64]| {
             for (w, &slot) in noise_terms.iter_mut().zip(&slots) {
                 *w = cut_noise_term(pool.coefficient_row(slot), lag_point, &noise);
             }
             cut_rhs_from_noise_terms_into(&brackets, noise_terms, rhs);
         };
+        let two_step = |noise_terms: &mut [f64], rhs: &mut [f64]| {
+            cut_noise_terms_into(&pool, &slots, lag_point, &noise, noise_terms);
+            cut_rhs_from_noise_terms_into(&brackets, noise_terms, rhs);
+        };
+        plain_two_step(&mut noise_terms, &mut plain_rhs);
         two_step(&mut noise_terms, &mut rhs);
         cut_rhs_into(&pool, &slots, lag_point, &noise, &brackets, &mut fused);
+        assert_bits("noise_term_pass", "plain_two_step", &plain_rhs, &fused);
         assert_bits("noise_term_pass", "two_step", &rhs, &fused);
 
         group.throughput(Throughput::Elements(rows as u64));
+        group.bench_function(BenchmarkId::new("plain_two_step", rows), |b| {
+            b.iter(|| {
+                plain_two_step(&mut noise_terms, &mut plain_rhs);
+                black_box(&plain_rhs);
+            });
+        });
         group.bench_function(BenchmarkId::new("two_step", rows), |b| {
             b.iter(|| {
                 two_step(&mut noise_terms, &mut rhs);

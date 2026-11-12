@@ -50,9 +50,6 @@ pub struct CutRowMap {
     /// The LP row index where cut rows begin. Equal to the number of template
     /// (structural) rows in the LP.
     base_row_offset: usize,
-
-    /// The next LP row index to assign when a new cut is appended.
-    next_row: usize,
 }
 
 impl CutRowMap {
@@ -81,7 +78,6 @@ impl CutRowMap {
             slot_to_row: vec![None; pool_capacity],
             resident_slots: Vec::with_capacity(pool_capacity),
             base_row_offset,
-            next_row: base_row_offset,
         }
     }
 
@@ -121,10 +117,9 @@ impl CutRowMap {
             self.resident_slots.capacity()
         );
 
-        let lp_row = self.next_row;
+        let lp_row = self.next_row();
         self.slot_to_row[slot] = Some(lp_row);
         self.resident_slots.push(slot);
-        self.next_row += 1;
         lp_row
     }
 
@@ -150,7 +145,7 @@ impl CutRowMap {
     #[must_use]
     #[inline]
     pub fn total_cut_rows(&self) -> usize {
-        self.next_row - self.base_row_offset
+        self.resident_slots.len()
     }
 
     /// Return the base row offset (template row count).
@@ -164,7 +159,7 @@ impl CutRowMap {
     #[must_use]
     #[inline]
     pub fn next_row(&self) -> usize {
-        self.next_row
+        self.base_row_offset + self.resident_slots.len()
     }
 
     /// Reset the map for reuse across solves without reallocating.
@@ -172,7 +167,7 @@ impl CutRowMap {
     /// Clears the entry of every resident slot, so the cost is the resident
     /// count, not the capacity; grows `slot_to_row` and reserves the resident
     /// list to `pool_capacity` if needed (growth-only, never shrinks); and
-    /// rewinds `next_row` to `base_row_offset`. After `reset` the map is
+    /// restarts row assignment at `base_row_offset`. After `reset` the map is
     /// equivalent to `CutRowMap::new(pool_capacity, base_row_offset)` but
     /// retains its allocation. The lazy solve of the `dynamic` method holds one
     /// map in per-worker scratch and resets it per (stage, solve) instead of
@@ -188,7 +183,6 @@ impl CutRowMap {
         }
         self.resident_slots.reserve(pool_capacity);
         self.base_row_offset = base_row_offset;
-        self.next_row = base_row_offset;
     }
 }
 

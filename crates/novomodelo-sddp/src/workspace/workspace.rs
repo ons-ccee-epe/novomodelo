@@ -443,11 +443,12 @@ impl BackwardAccumulators {
         max_openings: usize,
         initial_pool_capacity: usize,
         n_state: usize,
+        columned_len: usize,
         n_hydros: usize,
         lag_depth: usize,
     ) -> Self {
         let mut dcs_solve = DcsSolveScratch::default();
-        dcs_solve.reserve(n_state, initial_pool_capacity);
+        dcs_solve.reserve(columned_len, initial_pool_capacity);
         Self {
             slot_increments: vec![0u64; initial_pool_capacity],
             agg_coefficients: vec![0.0_f64; n_state],
@@ -989,6 +990,7 @@ impl<S: SolverInterface> SolverWorkspace<S> {
             sizing.max_openings,
             sizing.initial_pool_capacity,
             training_ctx.state.n_state,
+            record_dims(training_ctx.cut_state_layouts).0,
             training_ctx.state.hydro_count,
             training_ctx.state.max_par_order,
         );
@@ -1209,12 +1211,14 @@ impl<S: SolverInterface> WorkspacePool<S> {
     /// pool under-covers every other pool that worker also solves against.
     pub(crate) fn reserve_cut_scratch(
         &mut self,
-        n_state: usize,
+        columned_len: usize,
         pool_capacity: usize,
         pair_hint: usize,
     ) {
         for ws in &mut self.workspaces {
-            ws.backward_accum.dcs_solve.reserve(n_state, pool_capacity);
+            ws.backward_accum
+                .dcs_solve
+                .reserve(columned_len, pool_capacity);
             ws.backward_accum
                 .successor_aggregate
                 .reserve(pool_capacity, pair_hint);
@@ -1254,12 +1258,8 @@ impl<S: SolverInterface> WorkspacePool<S> {
         sizing: WorkspaceSizing,
         pool_capacity: usize,
     ) {
-        let (_, bound) = record_dims(training_ctx.cut_state_layouts);
-        self.reserve_cut_scratch(
-            training_ctx.state.n_state,
-            pool_capacity,
-            sizing.max_openings * bound,
-        );
+        let (columned_len, bound) = record_dims(training_ctx.cut_state_layouts);
+        self.reserve_cut_scratch(columned_len, pool_capacity, sizing.max_openings * bound);
     }
 
     /// Reserves everything a backward sweep of `sizing`'s shape pushes into: the
@@ -1562,7 +1562,8 @@ mod tests {
     use super::PatchBuffer;
     use super::{
         BasisStore, BasisStoreSliceMut, ByNodeScratch, CapturedBasis, NodeId, NodePos,
-        OpeningRecords, ScratchBuffers, SolverWorkspace, WorkspacePool, WorkspaceSizing, recycle,
+        OpeningRecords, ScratchBuffers, SolverWorkspace, WorkspacePool, WorkspaceSizing,
+        record_dims, recycle,
     };
     use crate::context::StageContext;
     use crate::lead_time::AnticipatedResolution;
@@ -1752,7 +1753,7 @@ mod tests {
     #[test]
     fn reserve_cut_scratch_grows_the_cut_row_buffers_only_upward() {
         let ctx = TrainingContextFixture::new(state_layout(2, 1));
-        let n_state = ctx.training_ctx().state.n_state;
+        let columned_len = record_dims(ctx.training_ctx().cut_state_layouts).0;
         let mut pool = WorkspacePool::new(
             0,
             2,
@@ -1777,7 +1778,7 @@ mod tests {
             ]
         };
 
-        pool.reserve_cut_scratch(n_state, 5, 0);
+        pool.reserve_cut_scratch(columned_len, 5, 0);
         for (i, ws) in pool.workspaces.iter().enumerate() {
             for (name, len, capacity) in cut_row_buffers(&ws.scratch) {
                 assert_eq!(len, 0, "workspace {i}: {name} must stay empty");
@@ -1789,7 +1790,7 @@ mod tests {
         }
 
         pool.workspaces[0].scratch.cut_bracket_buf.resize(5, 1.0);
-        pool.reserve_cut_scratch(n_state, 3, 0);
+        pool.reserve_cut_scratch(columned_len, 3, 0);
         for (i, ws) in pool.workspaces.iter().enumerate() {
             for (name, _, capacity) in cut_row_buffers(&ws.scratch) {
                 assert!(
@@ -1818,7 +1819,7 @@ mod tests {
                 "{name}: the case needs a capacity below the target, got {capacity}"
             );
         }
-        pool.reserve_cut_scratch(n_state, 12, 0);
+        pool.reserve_cut_scratch(columned_len, 12, 0);
         for (name, len, capacity) in cut_row_buffers(&pool.workspaces[1].scratch) {
             assert_eq!(len, 2, "{name} must keep its contents");
             assert!(

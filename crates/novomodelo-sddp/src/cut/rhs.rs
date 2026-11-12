@@ -4,8 +4,9 @@
 //! against σ·η. Not one dot over ẑ = fl(p + σ·η), not the blocked GEMM kernel for S, not a dot
 //! started from an iterator sum's −0.0, no fused multiply-add.
 //!
-//! `cut_brackets_into` takes `LANES` rows at a time, lanes across rows only, each row ascending
-//! from +0.0; `rhs_reference` is the scalar statement it equals bit for bit.
+//! `cut_brackets_into` and `cut_noise_terms_into` take `LANES` rows at a time, lanes across rows
+//! only, each row ascending from +0.0; `rhs_reference` is the scalar statement they equal bit for
+//! bit.
 
 use std::array;
 
@@ -16,6 +17,7 @@ const LANES: usize = 8;
 const CHUNK: usize = 256;
 
 type BracketLanes = fn(&CutPool, &[usize], &CutLagPoint, &[f64], &[f64], &mut [f64]);
+type NoiseLanes = fn(&CutPool, &[usize], &CutLagPoint, &[f64], &mut [f64]);
 
 const BRACKET_LANES: [BracketLanes; LANES] = [
     bracket_lanes::<1>,
@@ -28,6 +30,17 @@ const BRACKET_LANES: [BracketLanes; LANES] = [
     bracket_lanes::<LANES>,
 ];
 
+const NOISE_LANES: [NoiseLanes; LANES] = [
+    noise_lanes::<1>,
+    noise_lanes::<2>,
+    noise_lanes::<3>,
+    noise_lanes::<4>,
+    noise_lanes::<5>,
+    noise_lanes::<6>,
+    noise_lanes::<7>,
+    noise_lanes::<LANES>,
+];
+
 pub(crate) fn ascending_dot(coefficients: &[f64], values: &[f64]) -> f64 {
     coefficients
         .iter()
@@ -35,20 +48,23 @@ pub(crate) fn ascending_dot(coefficients: &[f64], values: &[f64]) -> f64 {
         .fold(0.0, |acc, (&b, &v)| acc + b * v)
 }
 
-/// W of one cut row; the RHS is `fl(bracket + W)`.
-#[must_use]
-pub fn cut_noise_term(coefficients: &[f64], lag_point: &CutLagPoint, noise_term: &[f64]) -> f64 {
-    let (lag0, shifted) = (lag_point.lag0(), lag_point.shifted());
+/// Writes `noise_terms[i]`, the W of the cut at `slots[i]`, reading each row in place from `pool`;
+/// the RHS is `fl(bracket + W)`.
+pub fn cut_noise_terms_into(
+    pool: &CutPool,
+    slots: &[usize],
+    lag_point: &CutLagPoint,
+    noise_term: &[f64],
+    noise_terms: &mut [f64],
+) {
     debug_assert!(
-        noise_term.len() >= lag0.len(),
-        "cut_noise_term: noise_term shorter than the lag-0 range"
-    );
-    debug_assert!(
-        coefficients.len() >= shifted.end.max(lag0.end),
-        "cut_noise_term: coefficients shorter than the lag slots"
+        noise_terms.len() == slots.len(),
+        "cut_noise_terms_into: noise_terms and slots differ in length"
     );
 
-    ascending_dot(&coefficients[lag0.clone()], &noise_term[..lag0.len()])
+    for (group, out) in slots.chunks(LANES).zip(noise_terms.chunks_mut(LANES)) {
+        NOISE_LANES[group.len() - 1](pool, group, lag_point, noise_term, out);
+    }
 }
 
 /// Writes `brackets[i]` for the cut at `slots[i]`, reading each row in place from `pool`.
@@ -93,6 +109,18 @@ fn bracket_lanes<const R: usize>(
     }
 }
 
+fn noise_lanes<const R: usize>(
+    pool: &CutPool,
+    group: &[usize],
+    lag_point: &CutLagPoint,
+    noise_term: &[f64],
+    noise_terms: &mut [f64],
+) {
+    let lag0 = lag_point.lag0();
+    let rows: [&[f64]; R] = array::from_fn(|r| &pool.coefficient_row(group[r])[lag0.clone()]);
+    noise_terms.copy_from_slice(&ascending_dots(rows, &noise_term[..lag0.len()]));
+}
+
 // A chunk only blocks the loads: each lane's accumulator runs across chunks, never one partial
 // per chunk.
 fn ascending_dots<const R: usize>(rows: [&[f64]; R], values: &[f64]) -> [f64; R] {
@@ -128,13 +156,14 @@ pub fn cut_rhs_into(
         "cut_rhs_into: rhs and slots differ in length"
     );
 
-    for (i, &slot) in slots.iter().enumerate() {
-        rhs[i] = brackets[i] + cut_noise_term(pool.coefficient_row(slot), lag_point, noise_term);
+    cut_noise_terms_into(pool, slots, lag_point, noise_term, rhs);
+    for (out, &bracket) in rhs.iter_mut().zip(brackets) {
+        *out += bracket;
     }
 }
 
-/// Writes `rhs[i] = brackets[i] + noise_terms[i]`, where `noise_terms[i]` is the
-/// [`cut_noise_term`] of row `i`.
+/// Writes `rhs[i] = brackets[i] + noise_terms[i]`, where `noise_terms[i]` is the W of row `i`
+/// that [`cut_noise_terms_into`] wrote.
 ///
 /// # Panics
 ///
@@ -157,10 +186,10 @@ mod tests {
     use proptest::test_runner::RngSeed;
 
     use super::{
-        LANES, cut_brackets_into, cut_noise_term, cut_rhs_from_noise_terms_into, cut_rhs_into,
+        LANES, cut_brackets_into, cut_noise_terms_into, cut_rhs_from_noise_terms_into, cut_rhs_into,
     };
     use crate::cut::CutPool;
-    use crate::cut::rhs_reference::{cut_bracket, cut_brackets_reference_into};
+    use crate::cut::rhs_reference::{cut_bracket, cut_brackets_reference_into, cut_noise_term};
     use crate::indexer::{CutStateProjection, StateSpace};
     use crate::lead_time::AnticipatedResolution;
     use crate::setup::NodeId;
@@ -265,6 +294,26 @@ mod tests {
                 brackets
                     .iter()
                     .all(|bracket| bracket.to_bits() == 0.0_f64.to_bits()),
+                "{rows} rows"
+            );
+        }
+    }
+
+    #[test]
+    fn noise_term_accumulators_start_at_positive_zero() {
+        let projection = projection(1, 2, LAGS_ONLY);
+        let lag_point = projection.lag_point();
+        let coefficients = [-1.0, -1.0];
+        let mut pool = CutPool::new(LANES, projection.n_slots(), 1, 0);
+        for k in 0..LANES as u64 {
+            pool.add_cut(NodeId(0), k, 0, -0.0, &coefficients);
+        }
+        for rows in [1, LANES] {
+            let slots: Vec<usize> = (0..rows).collect();
+            let mut noise_terms = vec![f64::NAN; rows];
+            cut_noise_terms_into(&pool, &slots, lag_point, &[0.0], &mut noise_terms);
+            assert!(
+                noise_terms.iter().all(|w| w.to_bits() == 0.0_f64.to_bits()),
                 "{rows} rows"
             );
         }
@@ -423,6 +472,15 @@ mod tests {
         }
     }
 
+    fn random_pool(rng: &mut SplitMix, n_slots: usize, state_dimension: usize) -> CutPool {
+        let mut pool = CutPool::new(n_slots, state_dimension, 1, 0);
+        for k in 0..n_slots as u64 {
+            let (intercept, row) = (rng.value(), rng.values(state_dimension));
+            pool.add_cut(NodeId(0), k, 0, intercept, &row);
+        }
+        pool
+    }
+
     fn subset_draw() -> impl Strategy<Value = (usize, usize, u64)> {
         (MIN_ROWS..=MAX_ROWS)
             .prop_flat_map(|n_slots| (Just(n_slots), MIN_ROWS..=n_slots, any::<u64>()))
@@ -444,11 +502,7 @@ mod tests {
             prop_assert_eq!((lag_point.shifted().len(), lag_point.lag0().len()), (1_848, 168));
 
             let mut rng = SplitMix(seed);
-            let mut pool = CutPool::new(n_slots, projection.n_slots(), 1, 0);
-            for k in 0..n_slots as u64 {
-                let (intercept, row) = (rng.value(), rng.values(projection.n_slots()));
-                pool.add_cut(NodeId(0), k, 0, intercept, &row);
-            }
+            let pool = random_pool(&mut rng, n_slots, projection.n_slots());
             let (lag_state, mean) = (rng.values(1_848), rng.values(168));
             let slots = rng.subset(n_slots, n_rows);
             let mut reference = vec![f64::NAN; n_rows];
@@ -458,6 +512,35 @@ mod tests {
             for len in (1..=2 * LANES + 1).filter(|&len| len < n_rows).chain([n_rows]) {
                 batched[..len].fill(f64::NAN);
                 cut_brackets_into(&pool, &slots[..len], lag_point, &lag_state, &mean, &mut batched[..len]);
+                let mismatch = batched[..len]
+                    .iter()
+                    .zip(&reference)
+                    .position(|(got, want)| got.to_bits() != want.to_bits());
+                prop_assert_eq!(mismatch, None, "{} rows", len);
+            }
+        }
+
+        #[test]
+        fn batched_noise_terms_equal_the_scalar_reference_bit_for_bit(
+            (n_slots, n_rows, seed) in subset_draw(),
+        ) {
+            let projection = projection(168, 12, LAGS_ONLY);
+            let lag_point = projection.lag_point();
+            prop_assert_eq!(lag_point.lag0().len(), 168);
+
+            let mut rng = SplitMix(seed);
+            let pool = random_pool(&mut rng, n_slots, projection.n_slots());
+            let noise = rng.values(168);
+            let slots = rng.subset(n_slots, n_rows);
+            let reference: Vec<f64> = slots
+                .iter()
+                .map(|&slot| cut_noise_term(pool.coefficient_row(slot), lag_point, &noise))
+                .collect();
+
+            let mut batched = vec![f64::NAN; n_rows];
+            for len in (1..=2 * LANES + 1).filter(|&len| len < n_rows).chain([n_rows]) {
+                batched[..len].fill(f64::NAN);
+                cut_noise_terms_into(&pool, &slots[..len], lag_point, &noise, &mut batched[..len]);
                 let mismatch = batched[..len]
                     .iter()
                     .zip(&reference)

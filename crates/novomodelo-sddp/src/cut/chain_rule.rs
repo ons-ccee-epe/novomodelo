@@ -273,7 +273,7 @@ pub fn aggregate_first_cut_into(
                 }
             }
         }
-        if lag.is_empty() {
+        if lag.is_empty() || child_weights.iter().all(|&mu| mu == 0.0) {
             continue;
         }
 
@@ -1025,6 +1025,31 @@ mod tests {
 
         assert_eq!(bits(&coefficients), bits(&expected));
         assert_eq!(alpha.to_bits(), expected_alpha.to_bits());
+    }
+
+    #[test]
+    fn a_child_whose_openings_all_have_zero_weight_changes_no_bit() {
+        let pair = Pair::new((1, 1), (ALL, ALL), &[&[0.0, 1.0]], par_with_psi(1, &[-0.5]));
+        let openings = [OpeningDuals {
+            objective: 30.0,
+            state_duals: &[2.0],
+            coupled_duals: &[-4.0],
+            cut_duals: &[(0, 5.0)],
+        }];
+        let children = [ChildOpenings {
+            inputs: pair.inputs(),
+            openings: &openings,
+        }];
+
+        let (coefficients, alpha) = aggregate(
+            &children,
+            &[0.0],
+            &[-1.0, -1.0],
+            &mut reserved_scratch(&[&pair]),
+        );
+
+        assert_eq!(bits(&coefficients), bits(&[-0.0, -0.0]));
+        assert_eq!(alpha.to_bits(), (-0.0_f64).to_bits());
     }
 
     #[cfg(debug_assertions)]

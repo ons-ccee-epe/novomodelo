@@ -150,9 +150,10 @@ the lag sums `w` of `lag_coefficients_into`, and `aggregate_first_cut_into`'s Q�
 zero cut dual, of either sign, is skipped, never multiplied in.
 `aggregate_first_cut_into` likewise skips an opening whose weight is exactly 0.0
 before any of its adds, so a zero-weight opening, such as a pure-CVaR opening
-outside the tail, changes no bit. −0.0 is the
-identity of IEEE-754 addition: `-0.0 + x` has the bits of `x` for every `x`,
-`x = −0.0` included. So the aggregate of one opening at weight 1.0 returns
+outside the tail, changes no bit; a successor child whose openings all weigh
+exactly 0.0 reaches neither `lag_coefficients_into` nor the coefficient add.
+−0.0 is the identity of IEEE-754 addition: `-0.0 + x` has the bits of `x` for
+every `x`, `x = −0.0` included. So the aggregate of one opening at weight 1.0 returns
 `per_opening_cut_into`'s bits, and an empty sum keeps a −0.0 coefficient's
 sign.
 
@@ -163,9 +164,9 @@ when `g > 0`, and a shallower lag past the order gets `0·g + w`.
 
 The canonical cut-RHS dots of `cut/rhs.rs` start at +0.0: S, P and W are
 ascending-slot dots from +0.0. `cut_brackets_into` is the production owner of S
-and P, a batched form with lanes across rows only, and
-`rhs_reference::cut_bracket` is their scalar statement; `cut_noise_term` owns W,
-which `cut_rhs_into` calls per row. The aggregate's ȳ slots
+and P, and `cut_noise_terms_into` of W, each a batched form with lanes across
+rows only; `rhs_reference::cut_bracket` and `rhs_reference::cut_noise_term` are
+their scalar statements, and `cut_rhs_into` adds W to the brackets. The aggregate's ȳ slots
 also start at +0.0 (`AggregateScratch` holds every one at 0.0 between calls).
 Every writer of the canonical cut-row RHS must produce the same bits, so a
 writer that recomputes an RHS calls the canonical function, never a re-derived
@@ -191,18 +192,19 @@ The wrong-but-compiling alternatives:
   (a negative coefficient times a zero value), then returns −0.0 where the
   canonical function returns +0.0, so that writer's RHS no longer has the bits
   of every writer that calls the canonical function;
-- a reassociated row in the batched form of `cut_brackets_into`: each chunk of
-  the shifted range summed into its own partial and the partials added, or a
-  lane taken across one row's slots. The row's dot is no longer the ascending
-  fold from +0.0, so its bracket no longer has the bits of
-  `rhs_reference::cut_bracket`.
+- a reassociated row in the batched form of `cut_brackets_into` or
+  `cut_noise_terms_into`: each chunk of the range summed into its own partial
+  and the partials added, or a lane taken across one row's slots. The row's dot
+  is no longer the ascending fold from +0.0, so its bracket or W no longer has
+  the bits of `rhs_reference::cut_bracket` or `rhs_reference::cut_noise_term`.
 
 Each compiles and breaks a bitwise identity between a cut and its per-opening
 form, between a cut and its model, or between two writers of one cut's RHS.
 Read: `cut/chain_rule.rs` (`per_opening_cut_into`, `lag_coefficients_into`,
 `aggregate_first_cut_into`, `AggregateScratch`), `cut/rhs.rs` (the module
-documentation, `cut_brackets_into`, the batched form, `cut_noise_term`),
-`cut/rhs_reference.rs` (`rhs_reference::cut_bracket`, the scalar statement).
+documentation, `cut_brackets_into`, `cut_noise_terms_into`, the batched form),
+`cut/rhs_reference.rs` (`rhs_reference::cut_bracket` and
+`rhs_reference::cut_noise_term`, the scalar statements).
 Pinned by
 `zero_cut_duals_leave_the_bits_unchanged` (padding the cut duals with +0.0 and
 −0.0 entries over infinite pool rows changes no bit),
@@ -216,6 +218,9 @@ opening at weight 1.0, with a −0.0 state dual, returns the per-opening
 coefficients and intercept bit for bit),
 `a_zero_weight_opening_changes_no_bit` (a zero-weight opening whose products
 would flip each −0.0 accumulator changes no bit of the cut or its intercept),
+`a_child_whose_openings_all_have_zero_weight_changes_no_bit` (a child whose
+openings all weigh 0.0, under a negative ψ, leaves a −0.0 lag coefficient and
+the intercept as they were),
 `padding_lag_coefficient_carries_the_sign_of_zero_times_g` (the deepest lag
 past the PAR order is −0.0 for a negative `g` and +0.0 for a positive one; a
 +0.0 written where ψ is zero fails it),
@@ -223,10 +228,13 @@ past the PAR order is −0.0 for a negative `g` and +0.0 for a positive one; a
 `orderless_par_never_reads_psi`, all in `cut/chain_rule.rs`; and, in
 `cut/rhs.rs`, `bracket_accumulators_start_at_positive_zero` (a bracket whose
 every product is −0.0 is +0.0 over one row and over a full group of lanes,
-where a fold from −0.0 gives −0.0) and
+where a fold from −0.0 gives −0.0),
+`noise_term_accumulators_start_at_positive_zero` (the same for W),
 `batched_brackets_equal_the_scalar_reference_bit_for_bit` (every bracket of the
 batched form equals `rhs_reference::cut_bracket` bit for bit over random row
-subsets, every remainder of a group included; a chunk-summed row fails it).
+subsets, every remainder of a group included; a chunk-summed row fails it) and
+`batched_noise_terms_equal_the_scalar_reference_bit_for_bit` (the same for W
+against `rhs_reference::cut_noise_term`).
 
 ## Every resident cut row's RHS is written at every solve
 
@@ -332,14 +340,15 @@ conditional mean `p(â)`, and `W` its lag-0 slots with the noise term `σ·η`
 (the chain-rule subsection above) with no fused multiply-add, and
 `ẑ = p + σ·η` is never dotted in one piece. The bracket `B = fl(fl(α + S) + P)`
 is written by `cut_brackets_into`, with lanes across rows only, and
-`rhs_reference::cut_bracket` is its scalar statement; `cut_noise_term` owns
-`W`; `cut_rhs_into` and `cut_rhs_from_noise_terms_into` write `fl(B + W)`. The
+`rhs_reference::cut_bracket` is its scalar statement; `cut_noise_terms_into`
+writes `W` the same way, with `rhs_reference::cut_noise_term` as its scalar
+statement; `cut_rhs_into` and `cut_rhs_from_noise_terms_into` write `fl(B + W)`. The
 value of a row therefore does not depend on the batch it is computed in.
 
 A cache holds only values these functions produced: a trajectory record's
 `FrozenBrackets` slab holds the brackets `cut_brackets_into` wrote for the
 node's frozen rows, and `StageNoiseTable` holds the `σ·η` that
-`evaluate_par_noise_term_batch` wrote and the `W` that `cut_noise_term` wrote
+`evaluate_par_noise_term_batch` wrote and the `W` that `cut_noise_terms_into` wrote
 for each outcome. A solve with a cache gives the bits of the solve without it.
 The RHS reaches the solver through `StageOpeningSolver::push_cut_rhs` on a
 frozen LP, and through the rows a lazy solve makes resident from
@@ -381,7 +390,7 @@ The wrong-but-compiling alternatives:
   cut's bracket or `W` lands on another cut's row.
 
 Read: `cut/rhs.rs` (the module documentation, `cut_brackets_into`,
-`cut_noise_term`, `cut_rhs_into`, `cut_rhs_from_noise_terms_into`),
+`cut_noise_terms_into`, `cut_rhs_into`, `cut_rhs_from_noise_terms_into`),
 `cut/rhs_reference.rs`, `training/backward/stage_noise.rs` (`StageNoiseTable`),
 `training/trajectory.rs` (`FrozenBrackets`), `training/backward/lp_setup.rs`
 (`load_backward_lp`, `pin_child_lp`), `training/backward/mod.rs`
@@ -390,7 +399,9 @@ Read: `cut/rhs.rs` (the module documentation, `cut_brackets_into`,
 (`StageSolvePrep::patch_opening`, `NoiseTermSource`), `solve/opening_solver.rs`
 (`StageOpeningSolver::push_cut_rhs`). Pinned by, in `cut/rhs.rs`,
 `bracket_accumulators_start_at_positive_zero`,
+`noise_term_accumulators_start_at_positive_zero`,
 `batched_brackets_equal_the_scalar_reference_bit_for_bit`,
+`batched_noise_terms_equal_the_scalar_reference_bit_for_bit`,
 `bracket_adds_the_lag_shift_before_the_conditional_mean`,
 `rhs_adds_the_noise_term_last_not_one_dot_over_z`,
 `row_loops_equal_the_scalar_function_on_a_slot_subset`,

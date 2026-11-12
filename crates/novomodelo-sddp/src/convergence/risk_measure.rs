@@ -219,11 +219,11 @@ impl RiskMeasure {
         debug_assert_eq!(
             costs.len(),
             probabilities.len(),
-            "evaluate_risk: costs and probabilities must have the same length"
+            "opening_weights_into: costs and probabilities must have the same length"
         );
         debug_assert!(
             !costs.is_empty(),
-            "evaluate_risk: at least one cost required"
+            "opening_weights_into: at least one cost required"
         );
 
         match self {

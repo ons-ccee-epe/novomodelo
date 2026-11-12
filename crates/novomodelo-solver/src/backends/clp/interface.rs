@@ -285,8 +285,15 @@ impl SolverInterface for ClpSolver {
 
         let t0 = Instant::now();
         self.row_lower[first_row..end].copy_from_slice(lower);
-        self.row_upper[first_row..end].fill(f64::INFINITY);
-        self.push_row_bounds_to_clp();
+        if self.row_upper[first_row..end]
+            .iter()
+            .all(|&upper| upper == f64::INFINITY)
+        {
+            self.push_row_lower_to_clp();
+        } else {
+            self.row_upper[first_row..end].fill(f64::INFINITY);
+            self.push_row_bounds_to_clp();
+        }
         self.stats.total_set_bounds_time_seconds += t0.elapsed().as_secs_f64();
     }
 
@@ -564,16 +571,27 @@ impl SolverInterface for ClpSolver {
 
 impl ClpSolver {
     fn push_row_bounds_to_clp(&mut self) {
+        self.push_row_lower_to_clp();
+        self.push_row_upper_to_clp();
+    }
+
+    fn push_row_lower_to_clp(&mut self) {
         // SAFETY:
         // - `self.handle` is a valid, non-null CLP pointer with a model loaded.
-        // - `self.row_lower`/`self.row_upper` each have exactly `self.num_rows`
-        //   entries (maintained by `load_model`/`add_rows`), matching the model's
-        //   current row count that the C wrapper queries to size its translation.
-        // - The pointers reference owned `Vec` data alive for the call.
+        // - `self.row_lower` has exactly `self.num_rows` entries (maintained by
+        //   `load_model`/`add_rows`), matching the model's current row count that
+        //   the C wrapper queries to size its translation.
+        // - The pointer references owned `Vec` data alive for the call.
         // - Bounds are forwarded verbatim; the C wrapper owns the
         //   ±IEEE-inf → ±DBL_MAX translation.
         unsafe {
             clp_ffi::novomodelo_clp_chg_row_lower(self.handle, self.row_lower.as_ptr());
+        }
+    }
+
+    fn push_row_upper_to_clp(&mut self) {
+        // SAFETY: as for `push_row_lower_to_clp`, with `self.row_upper`.
+        unsafe {
             clp_ffi::novomodelo_clp_chg_row_upper(self.handle, self.row_upper.as_ptr());
         }
     }

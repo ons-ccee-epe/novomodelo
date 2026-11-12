@@ -30,8 +30,8 @@ use crate::{
     context::{StageContext, TrainingContext},
     cut::{
         CutPool,
-        rhs::{cut_noise_term, cut_rhs_into},
-        rhs_reference::cut_bracket,
+        rhs::cut_rhs_into,
+        rhs_reference::{cut_bracket, cut_noise_term},
     },
     dcs::DcsParams,
     horizon_mode::HorizonMode,

@@ -102,7 +102,7 @@ use crate::{
     cut::{
         CutPool, FutureCostFunction,
         chain_rule::{ChainRuleInputs, ChainRuleScratch, OpeningDuals, per_opening_cut_into},
-        rhs::cut_noise_term,
+        rhs_reference::cut_noise_term,
         row::build_cut_row_batch,
     },
     cut_sync::CutSyncBuffers,

@@ -1,5 +1,6 @@
-//! Scalar statement of the cut-row bracket B = fl(fl(α + S) + P), for tests and benches to compare
-//! [`cut_brackets_into`](crate::cut::rhs::cut_brackets_into) against bit for bit, as
+//! Scalar statement of the cut-row bracket B = fl(fl(α + S) + P) and of the noise term W, for tests
+//! and benches to compare [`cut_brackets_into`](crate::cut::rhs::cut_brackets_into) and
+//! [`cut_noise_terms_into`](crate::cut::rhs::cut_noise_terms_into) against bit for bit, as
 //! `selection_reference` is for cut selection. One row at a time, one accumulator per dot from +0.0,
 //! slots ascending.
 
@@ -33,6 +34,22 @@ pub fn cut_bracket(
     let shifted_dot = ascending_dot(&coefficients[shifted.clone()], &lag_state[..shifted.len()]);
     let mean_dot = ascending_dot(&coefficients[lag0.clone()], &conditional_mean[..lag0.len()]);
     (intercept + shifted_dot) + mean_dot
+}
+
+/// W of one cut row; the RHS is `fl(bracket + W)`.
+#[must_use]
+pub fn cut_noise_term(coefficients: &[f64], lag_point: &CutLagPoint, noise_term: &[f64]) -> f64 {
+    let (lag0, shifted) = (lag_point.lag0(), lag_point.shifted());
+    debug_assert!(
+        noise_term.len() >= lag0.len(),
+        "cut_noise_term: noise_term shorter than the lag-0 range"
+    );
+    debug_assert!(
+        coefficients.len() >= shifted.end.max(lag0.end),
+        "cut_noise_term: coefficients shorter than the lag slots"
+    );
+
+    ascending_dot(&coefficients[lag0.clone()], &noise_term[..lag0.len()])
 }
 
 /// Writes `brackets[i]` for the cut at `slots[i]` as the plain loop of [`cut_bracket`].

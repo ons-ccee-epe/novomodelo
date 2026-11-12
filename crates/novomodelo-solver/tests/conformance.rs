@@ -319,6 +319,19 @@ fn case_range_push_at_nonzero_first_row_changes_only_its_rows<S: SolverInterface
     assert_optimum(&mut solver, [2.0, 1.0, 3.0], 2.0);
 }
 
+fn case_range_push_over_mixed_uppers_drops_the_finite_one<S: SolverInterface>(mut solver: S) {
+    solver.load_model(&make_range_push_template());
+    solver.set_row_lower_bounds_range(0, &[0.5, 4.0, 5.0]);
+    assert_optimum(&mut solver, [10.0, 4.0, 5.0], -1.0);
+}
+
+fn case_repeated_range_push_keeps_the_dropped_upper<S: SolverInterface>(mut solver: S) {
+    solver.load_model(&make_range_push_template());
+    solver.set_row_lower_bounds_range(0, &[0.5]);
+    solver.set_row_lower_bounds_range(0, &[0.5, 2.0]);
+    assert_optimum(&mut solver, [10.0, 2.0, 1.0], -7.0);
+}
+
 fn case_range_push_empty_is_noop<S: SolverInterface>(mut solver: S) {
     solver.load_model(&make_range_push_template());
     solver.set_row_lower_bounds_range(3, &[]);
@@ -356,6 +369,22 @@ fn highs_range_push_at_nonzero_first_row_changes_only_its_rows() {
 
 #[cfg(feature = "highs")]
 #[test]
+fn highs_range_push_over_mixed_uppers_drops_the_finite_one() {
+    case_range_push_over_mixed_uppers_drops_the_finite_one(
+        HighsSolver::new().expect("HighsSolver::new() must succeed"),
+    );
+}
+
+#[cfg(feature = "highs")]
+#[test]
+fn highs_repeated_range_push_keeps_the_dropped_upper() {
+    case_repeated_range_push_keeps_the_dropped_upper(
+        HighsSolver::new().expect("HighsSolver::new() must succeed"),
+    );
+}
+
+#[cfg(feature = "highs")]
+#[test]
 fn highs_range_push_empty_is_noop() {
     case_range_push_empty_is_noop(HighsSolver::new().expect("HighsSolver::new() must succeed"));
 }
@@ -384,6 +413,22 @@ fn clp_range_push_drops_finite_upper() {
 #[test]
 fn clp_range_push_at_nonzero_first_row_changes_only_its_rows() {
     case_range_push_at_nonzero_first_row_changes_only_its_rows(
+        ClpSolver::new().expect("ClpSolver::new() must succeed"),
+    );
+}
+
+#[cfg(feature = "clp")]
+#[test]
+fn clp_range_push_over_mixed_uppers_drops_the_finite_one() {
+    case_range_push_over_mixed_uppers_drops_the_finite_one(
+        ClpSolver::new().expect("ClpSolver::new() must succeed"),
+    );
+}
+
+#[cfg(feature = "clp")]
+#[test]
+fn clp_repeated_range_push_keeps_the_dropped_upper() {
+    case_repeated_range_push_keeps_the_dropped_upper(
         ClpSolver::new().expect("ClpSolver::new() must succeed"),
     );
 }
