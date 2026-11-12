@@ -4336,8 +4336,8 @@ fn run_one_trial_state_with_stores(
     );
     let template_num_rows = frozen_template.num_rows;
     let succ_spec = super::SuccessorSpec {
-        t: StageIdx(0),
         successor: StageIdx(1),
+        iteration,
         my_rank: 0,
         probabilities: &succ_probabilities,
         cut_state: &cut_state_projection,
@@ -4374,17 +4374,20 @@ fn run_one_trial_state_with_stores(
         ws.backward_accum.agg_arena.resize(n_state, 0.0_f64);
     }
 
+    let params = super::BackwardNodeParams {
+        trial_points: &[0],
+        exchange: &exchange,
+        fwd_offset,
+        node_visit_offset: fwd_offset,
+        risk_measure: &risk_measures[0],
+        succ: &succ_spec,
+        outcomes: &outcomes,
+    };
     super::process_by_scenario_backward(
         ws,
         &ctx,
         &training_ctx,
-        &exchange,
-        fwd_offset,
-        fwd_offset,
-        iteration,
-        &risk_measures,
-        &succ_spec,
-        &outcomes,
+        &params,
         &mut basis_slice,
         &StageOpeningSolver::Frozen,
         0,
@@ -4602,8 +4605,8 @@ fn per_child_backward_isolates_column_basis_and_pool_metadata() {
         },
     );
     let succ_spec = super::SuccessorSpec {
-        t: StageIdx(0),
         successor: StageIdx(1),
+        iteration: 1,
         my_rank: 0,
         probabilities: &[0.5_f64, 0.5],
         cut_state: &cut_state_projection,
@@ -4645,17 +4648,20 @@ fn per_child_backward_isolates_column_basis_and_pool_metadata() {
     ws.backward_accum.agg_arena.resize(n_state, 0.0);
 
     let risk_measures = vec![RiskMeasure::Expectation; n_stages];
+    let params = super::BackwardNodeParams {
+        trial_points: &[0],
+        exchange: &exchange,
+        fwd_offset: 0,
+        node_visit_offset: 0,
+        risk_measure: &risk_measures[0],
+        succ: &succ_spec,
+        outcomes: &outcomes,
+    };
     super::process_by_scenario_backward(
         ws,
         &ctx,
         &training_ctx,
-        &exchange,
-        0,
-        0,
-        1,
-        &risk_measures,
-        &succ_spec,
-        &outcomes,
+        &params,
         &mut basis_slices[0],
         &StageOpeningSolver::Frozen,
         0,
@@ -5268,7 +5274,7 @@ fn run_dcs_backward_trial_state_at(
     let templates = vec![core.clone(), core.clone()];
     let stochastic = make_stochastic_context(2, 1);
     let horizon = HorizonMode::Finite { num_stages: 2 };
-    let risk_measures = vec![RiskMeasure::Expectation; 2];
+    let risk_measure = RiskMeasure::Expectation;
 
     let fcf = dcs_two_stage_fcf();
     // All-cuts batch for the frozen path (delta == all cuts here).
@@ -5324,8 +5330,8 @@ fn run_dcs_backward_trial_state_at(
     );
     let template_num_rows = core.num_rows;
     let succ = super::SuccessorSpec {
-        t: StageIdx(0),
         successor: StageIdx(1),
+        iteration,
         my_rank: 0,
         probabilities: &probabilities,
         cut_state: &cut_state_projection,
@@ -5357,7 +5363,7 @@ fn run_dcs_backward_trial_state_at(
     // builds the metadata seed.
     let opening_solver =
         StageOpeningSolver::from_dcs_params(dcs.filter(|params| params.is_active(iteration)));
-    prepare_child_lp(&opening_solver, ws, &ctx, &succ, &child0, iteration);
+    prepare_child_lp(&opening_solver, ws, &ctx, &succ, &child0);
     // Initialise the per-opening accumulator buffers the trial-point helper
     // expects (mirrors process_stage_backward's per-stage setup).
     let n_openings = succ.probabilities.len();
@@ -5379,17 +5385,20 @@ fn run_dcs_backward_trial_state_at(
     ws.backward_accum.metadata_sync_contribution[..pop].fill(0);
     ws.backward_accum.reset_per_opening_stats(n_openings);
 
+    let params = super::BackwardNodeParams {
+        trial_points: &[0],
+        exchange: &exchange,
+        fwd_offset: 0,
+        node_visit_offset: 0,
+        risk_measure: &risk_measure,
+        succ: &succ,
+        outcomes: &outcomes,
+    };
     let cut = super::process_by_scenario_backward(
         ws,
         &ctx,
         &training_ctx,
-        &exchange,
-        0,
-        0,
-        iteration,
-        &risk_measures,
-        &succ,
-        &outcomes,
+        &params,
         &mut basis_slices[0],
         &opening_solver,
         0,
@@ -5749,7 +5758,7 @@ fn backward_dcs_frozen_cuts_present_no_duplicate_rows() {
     let templates = vec![base.clone(), base.clone()];
     let stochastic = make_stochastic_context(2, 1);
     let horizon = HorizonMode::Finite { num_stages: 2 };
-    let risk_measures = vec![RiskMeasure::Expectation; 2];
+    let risk_measure = RiskMeasure::Expectation;
 
     let fcf = dcs_two_stage_fcf();
     // All-cuts batch (delta) for the frozen path; with frozen carrying the
@@ -5817,8 +5826,8 @@ fn backward_dcs_frozen_cuts_present_no_duplicate_rows() {
     );
     let template_num_rows = base.num_rows;
     let succ = super::SuccessorSpec {
-        t: StageIdx(0),
         successor: StageIdx(1),
+        iteration,
         my_rank: 0,
         probabilities: &probabilities,
         cut_state: &cut_state_projection,
@@ -5853,7 +5862,7 @@ fn backward_dcs_frozen_cuts_present_no_duplicate_rows() {
             .map(|config| config.resolve(Phase::Backward.profile().primal_feasibility_tolerance))
             .filter(|params| params.is_active(iteration)),
     );
-    prepare_child_lp(&opening_solver, ws, &ctx, &succ, &child0, iteration);
+    prepare_child_lp(&opening_solver, ws, &ctx, &succ, &child0);
     let n_openings = succ.probabilities.len();
     let pop = child0.populated_count;
     if ws.backward_accum.slot_increments.len() < pop {
@@ -5873,17 +5882,20 @@ fn backward_dcs_frozen_cuts_present_no_duplicate_rows() {
     ws.backward_accum.metadata_sync_contribution[..pop].fill(0);
     ws.backward_accum.reset_per_opening_stats(n_openings);
 
+    let params = super::BackwardNodeParams {
+        trial_points: &[0],
+        exchange: &exchange,
+        fwd_offset: 0,
+        node_visit_offset: 0,
+        risk_measure: &risk_measure,
+        succ: &succ,
+        outcomes: &outcomes,
+    };
     let dcs_cut = super::process_by_scenario_backward(
         ws,
         &ctx,
         &training_ctx,
-        &exchange,
-        0,
-        0,
-        iteration,
-        &risk_measures,
-        &succ,
-        &outcomes,
+        &params,
         &mut basis_slices[0],
         &opening_solver,
         0,
@@ -6412,8 +6424,8 @@ impl CompactBackwardCase {
                     .expect("generated openings need no library");
             }
             let spec = super::SuccessorSpec {
-                t: StageIdx(0),
                 successor: StageIdx(1),
+                iteration: 1,
                 my_rank: 0,
                 probabilities: &self.probabilities,
                 cut_state: &self.layouts[0],
@@ -6424,17 +6436,20 @@ impl CompactBackwardCase {
             let mut basis_store = empty_basis_store(1, 2);
             let mut basis_slices = basis_store.split_workers_mut(1, 1);
 
+            let params = super::BackwardNodeParams {
+                trial_points: &[0],
+                exchange: &exchange,
+                fwd_offset: 0,
+                node_visit_offset: 0,
+                risk_measure: &risk_measure,
+                succ: &spec,
+                outcomes: &outcomes,
+            };
             let staged = super::process_by_scenario_backward(
                 &mut ws,
                 ctx,
                 training_ctx,
-                &exchange,
-                0,
-                0,
-                1,
-                &[risk_measure; 2],
-                &spec,
-                &outcomes,
+                &params,
                 &mut basis_slices[0],
                 &StageOpeningSolver::Frozen,
                 0,
@@ -6996,19 +7011,18 @@ fn compact_slab_lookup_maps_to_the_pin_source() {
     let values = [1.5, -2.5];
     let mut records = vec![TrajectoryRecord::default(); 4];
     write_compact_slab(3, 7, node_id, &values)(&mut records);
-    let spec = |slab| super::SuccessorSpec {
-        t: StageIdx(0),
+    let spec = |slab, iteration| super::SuccessorSpec {
         successor: StageIdx(1),
+        iteration,
         my_rank: 0,
         probabilities: &case.probabilities,
         cut_state: &case.layouts[0],
         slab,
         stage_noise: None,
     };
-    let frozen = |iteration| super::SlabLookup::Frozen {
+    let frozen = super::SlabLookup::Frozen {
         records: &records,
         n_stages: 2,
-        iteration,
     };
     let successor = case.successor();
     let outcomes = successor.outcomes(&case.pools, COMPACT_TEMPLATE_ROWS, None);
@@ -7025,27 +7039,27 @@ fn compact_slab_lookup_maps_to_the_pin_source() {
     };
 
     assert_eq!(
-        spec(super::SlabLookup::Unavailable).bracket_source(1, &child),
+        spec(super::SlabLookup::Unavailable, 7).bracket_source(1, &child),
         BracketSource::Computed
     );
     assert_eq!(
-        spec(frozen(7)).bracket_source(1, &child),
+        spec(frozen, 7).bracket_source(1, &child),
         BracketSource::Slab(Some(values.as_slice()))
     );
     assert_eq!(
-        spec(frozen(6)).bracket_source(1, &child),
+        spec(frozen, 6).bracket_source(1, &child),
         BracketSource::Slab(None)
     );
     assert_eq!(
-        spec(frozen(7)).bracket_source(1, &other_node),
+        spec(frozen, 7).bracket_source(1, &other_node),
         BracketSource::Slab(None)
     );
     assert_eq!(
-        spec(frozen(7)).bracket_source(0, &child),
+        spec(frozen, 7).bracket_source(0, &child),
         BracketSource::Slab(None)
     );
     assert_eq!(
-        spec(frozen(7)).bracket_source(1, &other_rows),
+        spec(frozen, 7).bracket_source(1, &other_rows),
         BracketSource::Slab(None)
     );
 }

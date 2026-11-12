@@ -5,7 +5,7 @@ use novomodelo_solver::SolverInterface;
 
 use crate::{
     context::{StageContext, TrainingContext},
-    cut::CutPool,
+    cut::{CutPool, chain_rule::ChainRuleScratch},
     error::SddpError,
     indexer::{ChainRuleSlots, CutStateProjection},
     noise::{DownstreamAccumState, LagAccumState},
@@ -122,13 +122,10 @@ pub(super) fn solve_forward_node_core<S: SolverInterface + Send>(
         coupled_duals: &mut coupled_duals,
         cut_dual_slots: &mut cut_dual_slots,
     };
-    let (mut chain_scratch, x_hat) = if fuses {
-        (
-            std::mem::take(&mut ws.backward_accum.chain_scratch),
-            std::mem::take(&mut ws.current_state),
-        )
+    let mut chain_scratch = if fuses {
+        std::mem::take(&mut ws.backward_accum.chain_scratch)
     } else {
-        Default::default()
+        ChainRuleScratch::default()
     };
 
     opening_solver.seed_resident_set(ws, pool, iteration);
@@ -172,7 +169,7 @@ pub(super) fn solve_forward_node_core<S: SolverInterface + Send>(
             out.subgradient.resize(parent.n_slots(), 0.0);
             // `resident` is the solved leaf's own projection and `parent` the extracted one;
             // swapping them compiles.
-            (out.objective, _) = extract_opening_cut(
+            out.objective = extract_opening_cut(
                 &view,
                 &DualExtractionSpec {
                     extracted: parent,
@@ -189,14 +186,12 @@ pub(super) fn solve_forward_node_core<S: SolverInterface + Send>(
                     par: training_ctx.stochastic.par(),
                     stage: t.0,
                 },
-                &x_hat,
                 &mut opening_duals,
                 &mut chain_scratch,
                 &mut out.subgradient,
             );
             out.captured = true;
             ws.backward_accum.chain_scratch = chain_scratch;
-            ws.current_state = x_hat;
             ws.scratch.cut_slots_buf = cut_row_slots;
             ws.backward_accum.state_duals_buf = state_duals;
             ws.backward_accum.coupled_duals_buf = coupled_duals;

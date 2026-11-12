@@ -5,7 +5,6 @@ use novomodelo_solver::SolverInterface;
 use crate::{
     SddpError,
     context::{StageContext, TrainingContext},
-    setup::node_graph::StageIdx,
     solve::{LazyInputs, StageOpeningSolver},
     solver_stats::SolverStatsDelta,
     stage_solve::StageInputs,
@@ -15,29 +14,34 @@ use crate::{
 
 use super::{
     SuccessorChild, SuccessorSpec,
-    duals_extraction::{
-        DualExtractionSpec, OpeningDualBuffers, extract_opening_duals, fill_resident_cut_dual_slots,
-    },
+    binding_count::count_binding_slots,
+    duals_extraction::{DualExtractionSpec, OpeningDualBuffers, extract_opening_duals},
     lp_setup::child_cut_rows,
-    outcome_aggregation::count_binding_slots,
 };
 
-/// Solves one opening of `child`'s already-loaded LP, which the caller has run
+/// What one opening of a child's solve is: its noise, its warm-start inputs and the
+/// keys its outcome is recorded under.
+pub(super) struct OpeningRequest<'a> {
+    /// Warm-starts a frozen solve; basis capture stays with the caller (sddp.md
+    /// "By-node scheduler is warm-start-only"). A lazy solve ignores it.
+    pub(super) stored_basis: Option<&'a CapturedBasis>,
+    pub(super) raw_noise: &'a [f64],
+    pub(super) scenario: usize,
+    /// The record key's routed-position half.
+    pub(super) trial_pos: usize,
+    /// The canonical ω the outcome is recorded under.
+    pub(super) omega: usize,
+    /// Whether a lazy solve carries the previous opening's LP: `!is_first` (sddp.md
+    /// "Backward opening order is warm-start-only").
+    pub(super) continue_carry: bool,
+}
+
+/// Solves `request`'s opening of `child`'s already-loaded LP, which the caller has run
 /// `pin_child_lp` on, extracts its duals, records the opening under
-/// `(trial_pos, omega)` and returns its simplex-iteration delta.
-///
-/// `stored_basis` warm-starts a frozen solve; basis capture stays with the caller
-/// (sddp.md "By-node scheduler is warm-start-only"). A lazy solve ignores it and
-/// carries the previous opening's LP when `continue_carry` is `true`, which is
-/// `!is_first` (sddp.md "Backward opening order is warm-start-only").
+/// `(request.trial_pos, request.omega)` and returns its simplex-iteration delta.
 ///
 /// A lazy solve reads its cut-row duals through the row map of its resident set,
 /// since its cut rows are not in the order of the frozen LP's.
-// Rationale: the args are disjoint borrows (ws, ctx, training_ctx, succ, child,
-// stored_basis, opening_solver) and per-opening scalars (raw_noise, s,
-// scenario, iteration, trial_pos, omega, continue_carry); no natural grouping
-// reduces caller-side borrows.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn solve_backward_opening<S: SolverInterface + Send>(
     opening_solver: &StageOpeningSolver,
     ws: &mut SolverWorkspace<S>,
@@ -45,15 +49,17 @@ pub(super) fn solve_backward_opening<S: SolverInterface + Send>(
     training_ctx: &TrainingContext<'_>,
     succ: &SuccessorSpec<'_>,
     child: &SuccessorChild<'_>,
-    stored_basis: Option<&CapturedBasis>,
-    raw_noise: &[f64],
-    s: StageIdx,
-    scenario: usize,
-    iteration: u64,
-    trial_pos: usize,
-    omega: usize,
-    continue_carry: bool,
+    request: &OpeningRequest<'_>,
 ) -> Result<u64, SddpError> {
+    let OpeningRequest {
+        stored_basis,
+        raw_noise,
+        scenario,
+        trial_pos,
+        omega,
+        continue_carry,
+    } = *request;
+    let s = succ.successor;
     let noise = match succ.stage_noise {
         Some(table) => NoiseTermSource::Stage {
             noise_term: table.noise_term(omega),
@@ -69,7 +75,7 @@ pub(super) fn solve_backward_opening<S: SolverInterface + Send>(
         training_ctx,
         s,
         raw_noise,
-        &child_cut_rows(training_ctx, child, child.successor_active_slots),
+        &child_cut_rows(training_ctx, child),
         noise,
         opening_solver,
     );
@@ -89,7 +95,7 @@ pub(super) fn solve_backward_opening<S: SolverInterface + Send>(
         stored_basis,
         stage_index: s,
         scenario_index: scenario,
-        iteration: Some(iteration),
+        iteration: Some(succ.iteration),
         node_id: child.successor_node_id,
     };
 
@@ -106,7 +112,6 @@ pub(super) fn solve_backward_opening<S: SolverInterface + Send>(
     let template = ctx.template(s);
     let read_cut_duals = training_ctx.cut_state_layouts[child.pool_id].has_lag_slots()
         || child.cut_activity_tolerance.is_some();
-    let frozen = matches!(opening_solver, StageOpeningSolver::Frozen);
     let objective = extract_opening_duals(
         &view,
         &DualExtractionSpec {
@@ -116,7 +121,7 @@ pub(super) fn solve_backward_opening<S: SolverInterface + Send>(
             coupling: &ctx.inflow_coupling[s.0],
             first_cut_row: child.template_num_rows,
             cut_row_slots: child.successor_active_slots,
-            read_cut_duals: read_cut_duals && frozen,
+            read_cut_duals: read_cut_duals && opening_solver.solves_frozen_rows(),
         },
         &mut OpeningDualBuffers {
             state_duals: &mut state_duals,
@@ -124,14 +129,8 @@ pub(super) fn solve_backward_opening<S: SolverInterface + Send>(
             cut_dual_slots: &mut cut_dual_slots,
         },
     );
-    if read_cut_duals && !frozen {
-        let dcs_solve = &ws.backward_accum.dcs_solve;
-        fill_resident_cut_dual_slots(
-            dcs_solve.result_view().dual,
-            &dcs_solve.row_map,
-            child.successor_pool,
-            &mut cut_dual_slots,
-        );
+    if read_cut_duals {
+        opening_solver.read_resident_cut_duals(ws, child.successor_pool, &mut cut_dual_slots);
     }
 
     ws.backward_accum.state_duals_buf = state_duals;

@@ -28,8 +28,9 @@ use crate::{
     SddpError,
     claim_scatter::{ClaimCursor, canonical_scatter},
     context::{StageContext, TrainingContext},
+    cut::FutureCostFunction,
     risk_measure::RiskMeasure,
-    setup::node_graph::NodePos,
+    setup::node_graph::{NodeId, NodePos},
     solve::StageOpeningSolver,
     state_exchange::ExchangeBuffers,
     workspace::{
@@ -39,11 +40,11 @@ use crate::{
 };
 
 use super::{
-    SuccessorOutcomes, SuccessorSpec,
-    by_scenario::aggregate_successor_cut,
-    lp_setup::{OpeningNoise, load_backward_lp, pin_child_lp, resolve_opening_noise},
-    opening_solve::solve_backward_opening,
-    outcome_aggregation::fold_slot_increments_into_sync,
+    BackwardNodeParams, SuccessorOutcomes, SuccessorSpec,
+    binding_count::fold_slot_increments_into_sync,
+    lp_setup::{load_backward_lp, pin_child_lp, resolve_opening_noise},
+    opening_solve::{OpeningRequest, solve_backward_opening},
+    successor_cut::aggregate_successor_cut,
 };
 
 /// Resolves the per-stage opening-block size `B_s`. Never a function of worker
@@ -118,25 +119,23 @@ pub(crate) fn hardest_first_block_order(
 /// `ws.backward_accum.opening_records`, which [`by_node_finish`] resolves back through
 /// `workspaces[worker_index]`, and the error that aborted its claim loop, if any, in its
 /// `fan_out_error`.
-// Rationale: mirrors `process_by_scenario_backward`'s disjoint-borrow argument list;
-// too_many_lines is the claim loop's single sequential region (LP load, warm-chain
-// solve, dual extraction, pivot accumulation, outcome recording) — splitting it
-// would scatter state the next step in the same loop iteration reads.
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub(crate) fn process_stage_backward_by_node<S: SolverInterface + Send>(
     workspaces: &mut [SolverWorkspace<S>],
     ctx: &StageContext<'_>,
     training_ctx: &TrainingContext<'_>,
-    trial_points: &[usize],
-    exchange: &ExchangeBuffers,
-    fwd_offset: usize,
-    iteration: u64,
-    succ: &SuccessorSpec<'_>,
-    outcomes: &SuccessorOutcomes<'_>,
+    params: &BackwardNodeParams<'_>,
     basis_store: &BasisStore,
     block_size: usize,
     block_order: &[u32],
 ) {
+    let BackwardNodeParams {
+        trial_points,
+        exchange,
+        fwd_offset,
+        succ,
+        outcomes,
+        ..
+    } = *params;
     let n_openings = succ.probabilities.len();
     // Sum over every child's populated pool: each child's binding increments land
     // in ITS OWN region (`metadata_offset + slot`), so a fan's sibling pools never
@@ -164,9 +163,7 @@ pub(crate) fn process_stage_backward_by_node<S: SolverInterface + Send>(
     );
     let n_trial = trial_points.len();
     let cursor = ClaimCursor::new(n_trial * n_blocks);
-    let tree_view = training_ctx.stochastic.tree_view();
     let s = succ.successor;
-    let solve_order = tree_view.solve_order_data(s.0);
 
     let run_share = |ws: &mut SolverWorkspace<S>| -> Result<(), SddpError> {
         if tracks_binding {
@@ -233,28 +230,29 @@ pub(crate) fn process_stage_backward_by_node<S: SolverInterface + Send>(
                 )?;
 
                 for (run_local_idx, pp) in (run_lo..run_hi).enumerate() {
-                    let sp = pp - child.outcome_range.start;
-                    let (omega, raw_noise): (usize, &[f64]) = match &noise {
-                        OpeningNoise::External(column) => (child.outcome_range.start, column),
-                        OpeningNoise::Generated => {
-                            // sddp.md "Backward opening order is warm-start-only".
-                            let local_omega = solve_order[sp] as usize;
-                            (
-                                child.outcome_range.start + local_omega,
-                                tree_view.opening(s.0, local_omega),
-                            )
-                        }
-                    };
+                    let (omega, raw_noise) = noise.solved_opening(
+                        training_ctx,
+                        s,
+                        &child,
+                        pp - child.outcome_range.start,
+                    );
                     // Only each child run's first-solved outcome warm-starts from
                     // the captured `(m, child node)` basis; later outcomes of the
                     // SAME child warm-continue its retained factorization. A child
                     // boundary starts a new run: a different LP is loaded, so
                     // continuing the prior factorization is invalid, not merely
                     // suboptimal.
-                    let stored = if run_local_idx == 0 {
-                        basis_store.get(m, child.successor_node)
-                    } else {
-                        None
+                    let request = OpeningRequest {
+                        stored_basis: if run_local_idx == 0 {
+                            basis_store.get(m, child.successor_node)
+                        } else {
+                            None
+                        },
+                        raw_noise,
+                        scenario,
+                        trial_pos: pos,
+                        omega,
+                        continue_carry: false,
                     };
                     let opening_simplex_iters = solve_backward_opening(
                         &StageOpeningSolver::Frozen,
@@ -263,14 +261,7 @@ pub(crate) fn process_stage_backward_by_node<S: SolverInterface + Send>(
                         training_ctx,
                         succ,
                         &child,
-                        stored,
-                        raw_noise,
-                        s,
-                        scenario,
-                        iteration,
-                        pos,
-                        omega,
-                        false,
+                        &request,
                     )?;
                     ws.backward_accum.block_pivot_sum[b] =
                         ws.backward_accum.block_pivot_sum[b].saturating_add(opening_simplex_iters);
@@ -425,6 +416,41 @@ pub(crate) fn by_node_finish<S: SolverInterface>(
     *worker_records = recycle(records);
 }
 
+/// Commits the cuts [`by_node_finish`] staged in `scratch`, one per routed position, in
+/// ascending position, and returns how many it added.
+///
+/// The cut's slot tag is the node-relative position `node_visit_offset + pos` (the
+/// by-scenario path's `compacted` tag), never `fwd_offset + pos`, which overshoots
+/// the pool's `visit_bound` stride across ranks on a fan.
+pub(crate) fn commit_by_node_cuts(
+    scratch: &ByNodeScratch,
+    n_trial: usize,
+    cut_n_state: usize,
+    fcf: &mut FutureCostFunction,
+    node_id: NodeId,
+    pool: usize,
+    iteration: u64,
+    node_visit_offset: usize,
+) -> usize {
+    for pos in 0..n_trial {
+        let node_relative_index = node_visit_offset + pos;
+        debug_assert!(
+            u32::try_from(node_relative_index).is_ok(),
+            "node-relative forward-pass index overflows u32"
+        );
+        #[allow(clippy::cast_possible_truncation)]
+        fcf.add_cut(
+            node_id,
+            pool,
+            iteration,
+            node_relative_index as u32,
+            scratch.cut_intercepts[pos],
+            &scratch.cut_arena[pos * cut_n_state..(pos + 1) * cut_n_state],
+        );
+    }
+    n_trial
+}
+
 /// Merge each worker's per-block `(simplex_iterations sum, count)` — filled
 /// during [`process_stage_backward_by_node`]'s claim loop, aggregated over every
 /// trial point `m` a worker claimed for a block by construction — into
@@ -433,8 +459,8 @@ pub(crate) fn by_node_finish<S: SolverInterface>(
 /// distinct rows, so each computes its hardest-first order from its own history
 /// (on a chain, one node per stage, the row is byte-identical to a stage key).
 /// Telemetry-only: touches no cut-generation state, so it is cut-neutral by
-/// construction (disjoint from `by_node_finish`'s per-`(m, ω)` arena and FCF
-/// insertion).
+/// construction (disjoint from `by_node_finish`'s `(m, ω)` record-location table and
+/// the FCF commit).
 ///
 /// `per_worker` yields each worker's `(sums, counts)` slices, both indexed
 /// `[0, n_blocks)`; `n_blocks <= scratch.n_blocks_max` is the caller's
@@ -541,7 +567,7 @@ mod tests {
     }
 
     /// Two sibling nodes at one level (distinct `node_key`s) merge into distinct
-    /// rows — the CA5 re-key: their per-block pivot histories never mix, so each
+    /// rows: their per-block pivot histories never mix, so each
     /// node's hardest-first order is computed from its own claims. On a chain (one
     /// node per stage) the row a node writes is byte-identical to a stage key.
     #[test]

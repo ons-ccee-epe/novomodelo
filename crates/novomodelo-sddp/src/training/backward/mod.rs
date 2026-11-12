@@ -2,9 +2,9 @@
 //!
 //! Sweeps stages in reverse, evaluating the cost-to-go at each trial point
 //! assigned to this rank, extracting LP duals into Benders cut coefficients, and
-//! aggregating per-opening outcomes via
-//! [`RiskMeasure::aggregate_cut`](crate::RiskMeasure::aggregate_cut) into one cut
-//! per trial point per stage inserted into the [`crate::FutureCostFunction`].
+//! aggregating the openings of the node's successor set into one cut per trial
+//! point per stage (`aggregate_successor_cut`), inserted into the
+//! [`crate::FutureCostFunction`].
 //!
 //! Each rank processes only its own forward-pass assignments to avoid generating
 //! duplicate cuts; cut synchronization (`allgatherv`) distributes them to all
@@ -18,11 +18,13 @@
 //!
 //! ## Cut coefficient formula
 //!
-//! `coefficients = reduced_cost` (raw, no sign flip at extraction); the LP cut row
-//! negates it in `cut::row::build_cut_row_batch_into`. The full subgradient
-//! contract (`pi[i] = reduced_cost[col_i] / col_scale[col_i]`, divided not
-//! multiplied) lives in `duals_extraction` and sddp.md "Benders cut sign &
-//! subgradient extraction".
+//! A slot with an incoming-state column takes that column's reduced cost, raw (no
+//! sign flip at extraction; the LP cut row negates it in
+//! `cut::row::build_cut_row_batch_into`); a lag slot has no column and takes its
+//! chain-rule coefficient. The subgradient contract (`pi[i] = reduced_cost[col_i] /
+//! col_scale[col_i]`, divided not multiplied) lives in `duals_extraction`, the chain
+//! rule in `cut::chain_rule`, and both in sddp.md "Benders cut sign & subgradient
+//! extraction".
 //!
 //! ### Anticipated-ring cut gradient flow
 //!
@@ -60,29 +62,32 @@ use crate::{
     cut::{FutureCostFunction, pool::CutPool},
     forward::build_delta_cut_row_batch_into,
     indexer::{ChainRuleSlots, CutStateProjection},
+    risk_measure::RiskMeasure,
     setup::node_graph::{NodeId, NodeOpenings, NodePos, StageIdx},
     solver_stats::SolverStatsDelta,
+    state_exchange::ExchangeBuffers,
     training::stage_solve_prep::BracketSource,
     trajectory::TrajectoryRecord,
 };
 
 use std::ops::Range;
 
+mod binding_count;
 mod by_node;
 mod by_scenario;
 mod duals_extraction;
 mod lp_setup;
 mod opening_solve;
-mod outcome_aggregation;
 mod replicated;
 mod stage_noise;
+mod successor_cut;
 
 #[cfg(test)]
 mod tests;
 
 pub(crate) use by_node::{
-    by_node_block_count, by_node_finish, hardest_first_block_order, identity_block_order,
-    merge_block_pivots, process_stage_backward_by_node, resolve_block_size,
+    by_node_block_count, by_node_finish, commit_by_node_cuts, hardest_first_block_order,
+    identity_block_order, merge_block_pivots, process_stage_backward_by_node, resolve_block_size,
 };
 pub(crate) use by_scenario::{by_scenario_finish, process_by_scenario_backward};
 pub(crate) use duals_extraction::{
@@ -161,7 +166,7 @@ pub(crate) struct StagedCut {
     /// merge ordering after the parallel region.
     pub(crate) trial_state_idx: usize,
 
-    /// Aggregated cut intercept (result of `RiskMeasure::aggregate_cut`).
+    /// Aggregated cut intercept (result of `aggregate_successor_cut`).
     pub(crate) intercept: f64,
 
     /// Range into the producing worker's `agg_arena` holding this cut's
@@ -198,12 +203,12 @@ pub(crate) fn take_first_error<'a>(
 /// every successor child. The per-child successor data lives in
 /// [`SuccessorOutcomes`]; a child is priced against ITS OWN LP, never child 0's.
 pub(crate) struct SuccessorSpec<'a> {
-    /// Stage index being cut (the stage whose cost-to-go we are computing).
-    pub(crate) t: StageIdx,
     /// Successor stage index (`t + 1`), where the LPs are solved. Every child of
     /// the node sits at this one stage (`t -> t+1`, no stage-skipping — validation
     /// rule 39), so it is node-level, not per-child.
     pub(crate) successor: StageIdx,
+    /// The training iteration the node's cuts are generated at.
+    pub(crate) iteration: u64,
     /// This rank's MPI rank index (used to address exchange buffer state).
     pub(crate) my_rank: usize,
     /// Product weights `P(n→m) · q_{m,ψ}` over the current node's successor
@@ -230,14 +235,10 @@ impl<'a> SuccessorSpec<'a> {
             SlabLookup::Unavailable => BracketSource::Computed,
             #[cfg(any(test, feature = "test-support"))]
             SlabLookup::ForcedMiss => BracketSource::Slab(None),
-            SlabLookup::Frozen {
-                records,
-                n_stages,
-                iteration,
-            } => BracketSource::Slab(
+            SlabLookup::Frozen { records, n_stages } => BracketSource::Slab(
                 records[m * n_stages + self.successor.0]
                     .frozen_brackets
-                    .read(iteration, child.successor_node_id, child.frozen_rows()),
+                    .read(self.iteration, child.successor_node_id, child.frozen_rows()),
             ),
         }
     }
@@ -255,8 +256,23 @@ pub(crate) enum SlabLookup<'a> {
     Frozen {
         records: &'a [TrajectoryRecord],
         n_stages: usize,
-        iteration: u64,
     },
+}
+
+/// The read-only captures of one cut-generating node's sampled backward solve, shared by every
+/// worker of either scheduler.
+pub(crate) struct BackwardNodeParams<'a> {
+    /// The trial-point indices routed to the node.
+    pub(crate) trial_points: &'a [usize],
+    pub(crate) exchange: &'a ExchangeBuffers,
+    /// Global forward-pass offset of this rank's first trial point.
+    pub(crate) fwd_offset: usize,
+    /// The node's visits from strictly-lower ranks.
+    pub(crate) node_visit_offset: usize,
+    /// The risk measure of the node's stage.
+    pub(crate) risk_measure: &'a RiskMeasure,
+    pub(crate) succ: &'a SuccessorSpec<'a>,
+    pub(crate) outcomes: &'a SuccessorOutcomes<'a>,
 }
 
 /// Owned per-child metadata for one successor outcome. Borrow-free so it lives in a

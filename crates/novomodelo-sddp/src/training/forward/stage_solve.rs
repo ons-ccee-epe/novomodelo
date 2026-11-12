@@ -94,7 +94,7 @@ pub(crate) fn run_forward_stage<S: SolverInterface + Send>(
     rec.node_id = node_id;
     rec.state.clear();
     rec.state.extend_from_slice(&ws.current_state);
-    if t.0 > 0 && matches!(opening_solver, StageOpeningSolver::Frozen) {
+    if t.0 > 0 && opening_solver.solves_frozen_rows() {
         rec.frozen_brackets
             .write(iteration, node_id, &ws.scratch.cut_bracket_buf);
     }

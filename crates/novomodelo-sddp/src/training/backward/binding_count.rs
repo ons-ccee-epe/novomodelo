@@ -1,15 +1,5 @@
-//! Binding-count and basis-capture accumulators for the backward pass: bump
-//! binding-cut slot increments from (slot, y) pairs, and capture the
-//! first-solved opening's basis.
-
-use novomodelo_solver::SolverInterface;
-
-use crate::{
-    forward::write_capture_metadata,
-    workspace::{BasisStoreSliceMut, CapturedBasis, SolverWorkspace},
-};
-
-use super::SuccessorChild;
+//! Binding-cut counting for the backward pass: bump slot increments from (slot, y) pairs and
+//! fold them into the stage's metadata contribution.
 
 /// Bumps `slot_increments[metadata_offset + slot]` for each (slot, y) pair whose
 /// raw cut-row dual exceeds `threshold`.
@@ -53,43 +43,6 @@ pub(crate) fn fold_slot_increments_into_sync(
             metadata_sync_contribution[slot] += increment;
         }
     }
-}
-
-/// Capture the post-solve basis at the first-solved opening into
-/// `basis_slice[m, successor_node]`.
-///
-/// Only the first-solved opening (`solve_order[0]`, = canonical ω=0 under the
-/// identity order) may capture: a later capture would store a basis whose retained
-/// LU factorization has been overwritten by subsequent opening solves, leaving it
-/// stale and potentially infeasible when reloaded.
-pub(crate) fn save_basis_at_omega_zero<S: SolverInterface + Send>(
-    ws: &mut SolverWorkspace<S>,
-    succ: &SuccessorChild<'_>,
-    basis_slice: &mut BasisStoreSliceMut<'_>,
-    m: usize,
-) {
-    let successor_node = succ.successor_node;
-    let base_row_count = succ.template_num_rows;
-    let cut_row_count = succ.num_cuts_at_successor;
-    let captured = basis_slice
-        .get_mut(m, successor_node)
-        .get_or_insert_with(|| {
-            CapturedBasis::new(
-                succ.frozen_template.num_cols,
-                base_row_count + cut_row_count,
-                base_row_count,
-                cut_row_count,
-                succ.successor_node_id,
-            )
-        });
-    ws.solver.get_basis(&mut captured.basis);
-    write_capture_metadata(
-        captured,
-        succ.successor_pool,
-        base_row_count,
-        cut_row_count,
-        succ.successor_node_id,
-    );
 }
 
 #[cfg(test)]

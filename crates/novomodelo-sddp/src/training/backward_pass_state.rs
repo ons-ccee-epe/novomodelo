@@ -17,15 +17,15 @@ use rayon::iter::{
     IndexedParallelIterator, IntoParallelRefMutIterator, ParallelDrainRange, ParallelIterator,
 };
 
-use crate::setup::node_graph::{EnumeratedPlan, NodeGraph, NodeId, NodePos, StageIdx, Traversal};
+use crate::setup::node_graph::{EnumeratedPlan, NodeGraph, NodePos, StageIdx, Traversal};
 use crate::{
     backward::{
-        BackwardResult, ReplicatedScratch, SlabLookup, StageNoiseTable, StageWorkerOpeningDelta,
-        StagedCut, SuccessorEntry, SuccessorOutcomes, SuccessorSpec, by_node_block_count,
-        by_node_finish, by_scenario_finish, hardest_first_block_order, identity_block_order,
-        merge_block_pivots, process_by_scenario_backward, process_stage_backward_by_node,
-        reify_successor_outcomes, resolve_block_size, run_backward_node_replicated,
-        take_first_error,
+        BackwardNodeParams, BackwardResult, ReplicatedScratch, SlabLookup, StageNoiseTable,
+        StageWorkerOpeningDelta, StagedCut, SuccessorEntry, SuccessorOutcomes, SuccessorSpec,
+        by_node_block_count, by_node_finish, by_scenario_finish, commit_by_node_cuts,
+        hardest_first_block_order, identity_block_order, merge_block_pivots,
+        process_by_scenario_backward, process_stage_backward_by_node, reify_successor_outcomes,
+        resolve_block_size, run_backward_node_replicated, take_first_error,
     },
     config::CutManagementConfig,
     context::{StageContext, TrainingContext},
@@ -745,7 +745,7 @@ impl BackwardPassState {
             ws.worker_timing_buf = WorkerPhaseTimings::default();
         }
         // The opening-block scheduler's per-(generating node, block-index) pivot
-        // accumulator is keyed by node position (CA5), so its row count follows the
+        // accumulator is keyed by node position, so its row count follows the
         // node axis. `set_scheduler` pre-sizes a stage-count floor before the graph is
         // known; grow it to the node count once here (a branching graph has more nodes
         // than stages). Chain: `num_nodes == num_stages`, so this never grows and stays
@@ -994,8 +994,8 @@ impl BackwardPassState {
                 );
 
                 let succ_spec = SuccessorSpec {
-                    t: node_stage,
                     successor: successor_stage,
+                    iteration: inputs.iteration,
                     my_rank,
                     probabilities: &self.probabilities_buf,
                     cut_state: &training_ctx.cut_state_layouts[pool_id],
@@ -1018,7 +1018,6 @@ impl BackwardPassState {
                     &outcomes,
                     x_hat,
                     pool_id,
-                    inputs.iteration,
                     inputs.enumerated_state,
                 )?;
                 ws0.solver.statistics_into(stats_after);
@@ -1393,7 +1392,7 @@ impl BackwardPassState {
     }
 
     /// Per-`(generating node, block-index)` mean `simplex_iterations` pivot from
-    /// the by-node scheduler's rank-local accumulator (CA5). Outer index is the
+    /// the by-node scheduler's rank-local accumulator. Outer index is the
     /// generating node's canonical position (on a chain, equal to the backward
     /// pass's successor stage `t + 1`); inner index is the block index. `None`
     /// where no opening was solved this iteration (count == 0); empty under
@@ -2059,6 +2058,7 @@ fn compute_one_backward_node<S: SolverInterface + Send, C: Communicator>(
         });
     }
     let pool_regions = pool_regions_start..state.level_pool_regions_scratch.len();
+    let cut_batch_build = batch_start.elapsed();
 
     let outcomes = SuccessorOutcomes::new(
         &state.successor_meta_buf,
@@ -2087,7 +2087,6 @@ fn compute_one_backward_node<S: SolverInterface + Send, C: Communicator>(
     } else {
         Ok(())
     };
-    let cut_batch_build = batch_start.elapsed();
 
     let dcs_params = training_ctx
         .dcs
@@ -2097,7 +2096,6 @@ fn compute_one_backward_node<S: SolverInterface + Send, C: Communicator>(
         SlabLookup::Frozen {
             records: inputs.records,
             n_stages: training_ctx.horizon.num_stages(),
-            iteration: inputs.iteration,
         }
     } else {
         SlabLookup::Unavailable
@@ -2108,13 +2106,22 @@ fn compute_one_backward_node<S: SolverInterface + Send, C: Communicator>(
         other => other,
     };
     let succ_spec = SuccessorSpec {
-        t: node_stage,
         successor: successor_stage,
+        iteration: inputs.iteration,
         my_rank: params.my_rank,
         probabilities: &state.probabilities_buf,
         cut_state: cut_state_projection,
         slab,
         stage_noise: stage_noise_table.then_some(&state.stage_noise),
+    };
+    let node_params = BackwardNodeParams {
+        trial_points,
+        exchange: inputs.exchange,
+        fwd_offset: inputs.fwd_offset,
+        node_visit_offset,
+        risk_measure: &inputs.risk_measures[node_stage.0],
+        succ: &succ_spec,
+        outcomes: &outcomes,
     };
 
     // `resolve_backward_scheduler` owns the DCS fallback: its cut-free lazy
@@ -2138,7 +2145,7 @@ fn compute_one_backward_node<S: SolverInterface + Send, C: Communicator>(
             let block_size = resolve_block_size(n_openings, configured_block_size);
             let n_blocks = by_node_block_count(n_openings, block_size);
             if state.hardest_first_claim_order {
-                // Hardest-first order keyed by the GENERATING node (CA5), so sibling fan
+                // Hardest-first order keyed by the GENERATING node, so sibling fan
                 // nodes at one level each read their own history — never a shared
                 // successor-stage row. Chain: one node per stage, byte-identical.
                 let row = state.by_node_scratch.block_pivot_row(node_pos, n_blocks);
@@ -2158,19 +2165,14 @@ fn compute_one_backward_node<S: SolverInterface + Send, C: Communicator>(
                 inputs.workspaces,
                 ctx,
                 training_ctx,
-                trial_points,
-                inputs.exchange,
-                inputs.fwd_offset,
-                inputs.iteration,
-                &succ_spec,
-                &outcomes,
+                &node_params,
                 &*inputs.basis_store,
                 block_size,
                 &state.by_node_scratch.block_order[..n_blocks],
             );
             let elapsed_ms = ms_elapsed(process_start);
             // Telemetry-only merge (sddp.md "by-node scheduler is
-            // warm-start-only" — disjoint from the per-`(m, ω)` arena scatter and
+            // warm-start-only" — disjoint from the `(m, ω)` record location and
             // ascending-m aggregation `by_node_finish` performs below); keyed by the
             // generating node so multi-node siblings never share a hardest-first row.
             merge_block_pivots(
@@ -2227,15 +2229,8 @@ fn compute_one_backward_node<S: SolverInterface + Send, C: Communicator>(
                 inputs.workspaces,
                 ctx,
                 training_ctx,
-                trial_points,
-                inputs.exchange,
-                inputs.fwd_offset,
-                node_visit_offset,
-                inputs.iteration,
+                &node_params,
                 dcs_params,
-                inputs.risk_measures,
-                &succ_spec,
-                &outcomes,
                 &mut basis_slices,
             );
             let elapsed_ms = ms_elapsed(process_start);
@@ -2286,67 +2281,23 @@ fn compute_one_backward_node<S: SolverInterface + Send, C: Communicator>(
     })
 }
 
-/// Commits the cuts `by_node_finish` staged in `scratch`, one per routed position, in
-/// ascending position, and returns how many it added.
-fn commit_by_node_cuts(
-    scratch: &ByNodeScratch,
-    n_trial: usize,
-    cut_n_state: usize,
-    fcf: &mut FutureCostFunction,
-    node_id: NodeId,
-    pool: usize,
-    iteration: u64,
-    node_visit_offset: usize,
-) -> usize {
-    for pos in 0..n_trial {
-        // The FCF slot addresses the pool's per-iteration block at stride
-        // `visit_bound[pool]` (this node's routed visit count), so the tag is the
-        // NODE-RELATIVE position `node_visit_offset + pos`: `pos` is the compacted
-        // index and `node_visit_offset` is this node's visits from strictly-lower
-        // ranks, keeping the slot globally unique once a multi-rank fan makes the
-        // by-node path multi-branching. `fwd_offset + pos` (the global forward-pass
-        // offset) is the wrong-but-compiling alternative — it overshoots the smaller
-        // `visit_bound` stride across ranks on a fan; mirrors the by-scenario path.
-        let node_relative_index = node_visit_offset + pos;
-        debug_assert!(
-            u32::try_from(node_relative_index).is_ok(),
-            "node-relative forward-pass index overflows u32"
-        );
-        #[allow(clippy::cast_possible_truncation)]
-        fcf.add_cut(
-            node_id,
-            pool,
-            iteration,
-            node_relative_index as u32,
-            scratch.cut_intercepts[pos],
-            &scratch.cut_arena[pos * cut_n_state..(pos + 1) * cut_n_state],
-        );
-    }
-    n_trial
-}
-
 /// Evaluate this node's routed `trial_points` for a single backward stage. Each worker
 /// leaves its cuts (one per trial point it owns) in its `staged_cuts_buf` and the error
 /// that ended its share, if any, in its `fan_out_error`.
-// RATIONALE: the args are individually-borrowed slices passed through the rayon closure
-// boundary. Bundling them into a struct would require either cloning or an `Arc`, both of
-// which conflict with the zero-allocation HPC constraint for backward-pass hot code.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn process_stage_backward<S: SolverInterface + Send>(
     workspaces: &mut [SolverWorkspace<S>],
     ctx: &StageContext<'_>,
     training_ctx: &TrainingContext<'_>,
-    trial_points: &[usize],
-    exchange: &ExchangeBuffers,
-    fwd_offset: usize,
-    node_visit_offset: usize,
-    iteration: u64,
+    params: &BackwardNodeParams<'_>,
     dcs_params: Option<DcsParams>,
-    risk_measures: &[RiskMeasure],
-    succ: &SuccessorSpec<'_>,
-    outcomes: &SuccessorOutcomes<'_>,
     basis_slices: &mut Vec<BasisStoreSliceMut<'_>>,
 ) {
+    let BackwardNodeParams {
+        trial_points,
+        succ,
+        outcomes,
+        ..
+    } = *params;
     let n_openings = succ.probabilities.len();
     // Per-stage cut dimension (pool `t`'s `CutStateProjection`). Buffers reused
     // across stages are resized to EXACTLY this each stage, never grown to a
@@ -2434,13 +2385,7 @@ pub(crate) fn process_stage_backward<S: SolverInterface + Send>(
                 ws,
                 ctx,
                 training_ctx,
-                exchange,
-                fwd_offset,
-                node_visit_offset,
-                iteration,
-                risk_measures,
-                succ,
-                outcomes,
+                params,
                 basis_slice,
                 &opening_solver,
                 m,
@@ -2498,7 +2443,7 @@ mod tests {
         inflow_method::InflowNonNegativityMethod,
         lp::indexer::StateSpace,
         risk_measure::{BackwardOutcome, RiskMeasure},
-        setup::node_graph::{NodeOpenings, NodeRuntime, NodeSuccessor, OpeningSource},
+        setup::node_graph::{NodeId, NodeOpenings, NodeRuntime, NodeSuccessor, OpeningSource},
         solver_stats::WORKER_STATS_ENTRY_STRIDE,
         state_exchange::ExchangeBuffers,
         test_support::{

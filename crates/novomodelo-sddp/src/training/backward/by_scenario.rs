@@ -10,27 +10,22 @@ use novomodelo_solver::SolverInterface;
 use crate::{
     SddpError,
     context::{StageContext, TrainingContext},
-    cut::{
-        FutureCostFunction,
-        chain_rule::{ChainRuleInputs, ChildOpenings, OpeningDuals, aggregate_first_cut_into},
-    },
-    risk_measure::{RiskMeasure, RiskMeasureScratch},
+    cut::FutureCostFunction,
+    risk_measure::RiskMeasure,
     setup::node_graph::NodeId,
     solve::StageOpeningSolver,
-    state_exchange::ExchangeBuffers,
-    workspace::{
-        BasisStoreSliceMut, SolverWorkspace,
-        workspace::{SuccessorAggregateScratch, recycle},
-    },
+    workspace::{BasisStoreSliceMut, SolverWorkspace},
 };
 
 use super::{
-    StagedCut, SuccessorChild, SuccessorOutcomes, SuccessorSpec,
+    BackwardNodeParams, StagedCut, SuccessorChild, SuccessorOutcomes, SuccessorSpec,
+    binding_count::fold_slot_increments_into_sync,
     lp_setup::{
-        OpeningNoise, load_backward_lp, pin_child_lp, resolve_backward_basis, resolve_opening_noise,
+        load_backward_lp, pin_child_lp, resolve_backward_basis, resolve_opening_noise,
+        save_basis_at_omega_zero,
     },
-    opening_solve::solve_backward_opening,
-    outcome_aggregation::{fold_slot_increments_into_sync, save_basis_at_omega_zero},
+    opening_solve::{OpeningRequest, solve_backward_opening},
+    successor_cut::aggregate_successor_cut,
 };
 
 /// Per-CHILD LP load, issued once after `reset_solver_state()` and before that
@@ -45,66 +40,14 @@ pub(super) fn prepare_child_lp<S: SolverInterface + Send>(
     ctx: &StageContext<'_>,
     succ: &SuccessorSpec<'_>,
     child: &SuccessorChild<'_>,
-    iteration: u64,
 ) {
     match opening_solver {
         StageOpeningSolver::Frozen => load_backward_lp(ws, child),
         StageOpeningSolver::Lazy(_) => {
             ws.solver.load_model(ctx.template(succ.successor));
-            opening_solver.seed_resident_set(ws, child.successor_pool, iteration);
+            opening_solver.seed_resident_set(ws, child.successor_pool, succ.iteration);
         }
     }
-}
-
-/// Writes the aggregate-first cut over `succ`'s whole opening set into `coefficients` and returns
-/// its intercept: one joint weight call over the canonical-ω costs, then one
-/// [`aggregate_first_cut_into`] over the children. `view_of` maps a canonical ω to its duals.
-pub(super) fn aggregate_successor_cut<'r>(
-    training_ctx: &TrainingContext<'_>,
-    succ: &SuccessorSpec<'_>,
-    outcomes: &SuccessorOutcomes<'_>,
-    risk_measure: &RiskMeasure,
-    x_hat: &[f64],
-    view_of: impl Fn(usize) -> OpeningDuals<'r>,
-    scratch: &mut SuccessorAggregateScratch,
-    risk_scratch: &mut RiskMeasureScratch,
-    coefficients: &mut [f64],
-) -> f64 {
-    let SuccessorAggregateScratch {
-        aggregate,
-        costs,
-        views,
-        children,
-        ..
-    } = scratch;
-    let n_openings = succ.probabilities.len();
-    let mut opening_views: Vec<OpeningDuals<'r>> = recycle(std::mem::take(views));
-    costs.clear();
-    for omega in 0..n_openings {
-        let view = view_of(omega);
-        costs.push(view.objective);
-        opening_views.push(view);
-    }
-    let weights = risk_measure.opening_weights_into(costs, succ.probabilities, risk_scratch);
-
-    let mut child_list: Vec<ChildOpenings<'_>> = recycle(std::mem::take(children));
-    for ci in 0..outcomes.n_children() {
-        let child = outcomes.child(ci);
-        child_list.push(ChildOpenings {
-            inputs: ChainRuleInputs {
-                slots: child.chain_rule_slots,
-                resident_pool: child.successor_pool,
-                extracted: succ.cut_state,
-                par: training_ctx.stochastic.par(),
-                stage: succ.successor.0,
-            },
-            openings: &opening_views[child.outcome_range.clone()],
-        });
-    }
-    let intercept = aggregate_first_cut_into(&child_list, weights, x_hat, aggregate, coefficients);
-    *children = recycle(child_list);
-    *views = recycle(opening_views);
-    intercept
 }
 
 /// The unit's cut: the unit's records located by canonical ω, then
@@ -153,34 +96,33 @@ fn aggregate_unit_records<S: SolverInterface + Send>(
 /// External column) and solves its own openings, so pricing every child against
 /// child 0's LP — the child-0 collapse, which silently misprices a non-interchangeable
 /// fan — is unrepresentable. A chain is the one-element case: one child, one LP load
-/// per trial point, byte-identical. The single joint `aggregate_cut_into` over the
-/// flattened outcome arena is unchanged (joint risk applied once, not nested).
+/// per trial point, byte-identical. The node's cut is one joint
+/// [`aggregate_successor_cut`] over the flattened outcome set (joint risk applied once,
+/// not nested).
 ///
 /// On the frozen path the post-solve basis is written into `basis_slice` only at each
 /// child's first-solved opening; later writes are forbidden (retained-LU corruption).
 /// The lazy mode skips capture (see [`StageOpeningSolver::captures_basis`]).
-// RATIONALE: each parameter is a disjoint borrow (ws, ctx, training_ctx, exchange, succ,
-// outcomes, basis_slice, opening_solver), a risk slice, or a plain scalar. Merging them into a
-// struct would add indirection without reducing the caller's borrow count.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn process_by_scenario_backward<S: SolverInterface + Send>(
     ws: &mut SolverWorkspace<S>,
     ctx: &StageContext<'_>,
     training_ctx: &TrainingContext<'_>,
-    exchange: &ExchangeBuffers,
-    fwd_offset: usize,
-    node_visit_offset: usize,
-    iteration: u64,
-    risk_measures: &[RiskMeasure],
-    succ: &SuccessorSpec<'_>,
-    outcomes: &SuccessorOutcomes<'_>,
+    params: &BackwardNodeParams<'_>,
     basis_slice: &mut BasisStoreSliceMut<'_>,
     opening_solver: &StageOpeningSolver,
     m: usize,
     compacted: usize,
     arena_offset: usize,
 ) -> Result<StagedCut, SddpError> {
-    let tree_view = training_ctx.stochastic.tree_view();
+    let BackwardNodeParams {
+        exchange,
+        fwd_offset,
+        node_visit_offset,
+        risk_measure,
+        succ,
+        outcomes,
+        ..
+    } = *params;
     let x_hat = exchange.state_at(succ.my_rank, m);
     let scenario = fwd_offset + m;
     let s = succ.successor;
@@ -200,7 +142,6 @@ pub(crate) fn process_by_scenario_backward<S: SolverInterface + Send>(
     // child's `outcome_range` offset plus the local ω), so the generated cut is
     // bit-identical regardless of solve order: the reorder changes only the
     // warm-start chain, never which cuts are produced.
-    let solve_order = tree_view.solve_order_data(s.0);
     let captures_basis = opening_solver.captures_basis();
     ws.backward_accum.opening_records.clear(
         succ.cut_state.columned_len(),
@@ -213,85 +154,49 @@ pub(crate) fn process_by_scenario_backward<S: SolverInterface + Send>(
         // warm-start chain across its own openings starts clean (CLP determinism).
         // One child ⟹ once per trial point ⟹ chain byte-parity.
         ws.solver.reset_solver_state();
-        prepare_child_lp(opening_solver, ws, ctx, succ, &child, iteration);
+        prepare_child_lp(opening_solver, ws, ctx, succ, &child);
         let source = succ.bracket_source(m, &child);
         pin_child_lp(ws, ctx, training_ctx, &child, x_hat, s, source);
 
         // Resolved per child, never once from child 0: each child's External
         // column is its own.
         let mut buf = std::mem::take(&mut ws.backward_accum.external_noise_buf);
-        match resolve_opening_noise(
+        let noise = resolve_opening_noise(
             training_ctx,
             s,
             &child.openings,
             child.successor_node_id,
             &mut buf,
-        )? {
-            OpeningNoise::External(noise) => {
-                let omega = child.outcome_range.start;
-                let stored = if captures_basis {
+        )?;
+        for solve_pos in 0..child.outcome_range.len() {
+            let (omega, raw_noise) = noise.solved_opening(training_ctx, s, &child, solve_pos);
+            // First-solved opening of THIS child: owns the per-(m, child node)
+            // basis load/capture and the fresh (non-warm-carry) solve.
+            let is_first = solve_pos == 0;
+            let captures_here = is_first && captures_basis;
+            let request = OpeningRequest {
+                stored_basis: if captures_here {
                     resolve_backward_basis(basis_slice, m, child.successor_node)
                 } else {
                     None
-                };
-                solve_backward_opening(
-                    opening_solver,
-                    ws,
-                    ctx,
-                    training_ctx,
-                    succ,
-                    &child,
-                    stored,
-                    noise,
-                    s,
-                    scenario,
-                    iteration,
-                    0,
-                    omega,
-                    false,
-                )?;
-                if captures_basis {
-                    save_basis_at_omega_zero(ws, &child, basis_slice, m);
-                }
-            }
-            OpeningNoise::Generated => {
-                debug_assert_eq!(
-                    solve_order.len(),
-                    child.openings.len,
-                    "a Generated child's opening count must equal stage {s}'s own opening count"
-                );
-                for (solve_pos, &local_omega_u32) in solve_order.iter().enumerate() {
-                    let local_omega = local_omega_u32 as usize;
-                    let raw_noise = tree_view.opening(s.0, local_omega);
-                    let omega = child.outcome_range.start + local_omega;
-                    // First-solved opening of THIS child: owns the per-(m, child node)
-                    // basis load/capture and the fresh (non-warm-carry) solve.
-                    let is_first = solve_pos == 0;
-                    let stored = if is_first && captures_basis {
-                        resolve_backward_basis(basis_slice, m, child.successor_node)
-                    } else {
-                        None
-                    };
-                    solve_backward_opening(
-                        opening_solver,
-                        ws,
-                        ctx,
-                        training_ctx,
-                        succ,
-                        &child,
-                        stored,
-                        raw_noise,
-                        s,
-                        scenario,
-                        iteration,
-                        0,
-                        omega,
-                        !is_first,
-                    )?;
-                    if is_first && captures_basis {
-                        save_basis_at_omega_zero(ws, &child, basis_slice, m);
-                    }
-                }
+                },
+                raw_noise,
+                scenario,
+                trial_pos: 0,
+                omega,
+                continue_carry: !is_first,
+            };
+            solve_backward_opening(
+                opening_solver,
+                ws,
+                ctx,
+                training_ctx,
+                succ,
+                &child,
+                &request,
+            )?;
+            if captures_here {
+                save_basis_at_omega_zero(ws, &child, basis_slice, m);
             }
         }
         ws.backward_accum.external_noise_buf = buf;
@@ -299,7 +204,6 @@ pub(crate) fn process_by_scenario_backward<S: SolverInterface + Send>(
 
     // Aggregate into `agg_coefficients`, then copy into this trial point's arena
     // slot so the bytes outlive the parallel closure without a per-cut allocation.
-    let risk_measure = &risk_measures[succ.t.0];
     let agg_intercept =
         aggregate_unit_records(ws, training_ctx, succ, outcomes, risk_measure, x_hat);
     let n_state = ws.backward_accum.agg_coefficients.len();

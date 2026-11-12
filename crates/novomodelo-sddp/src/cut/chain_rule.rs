@@ -120,10 +120,10 @@ fn lag_coefficients_into(
     }
 }
 
-/// Writes the new cut for one opening into `coefficients` and returns its intercept α.
+/// Writes the new cut's coefficients for one opening into `coefficients`.
 ///
 /// The non-lag slots copy `state_duals` and the `extracted_lag` slots hold ψ·g + w, as in the
-/// module formula. α is Q minus the extracted projection's trial-state dot of the result.
+/// module formula.
 ///
 /// # Panics
 ///
@@ -131,13 +131,12 @@ fn lag_coefficients_into(
 /// not lag-free (its length is not `extracted.n_slots()` minus the lag width), if
 /// `coupled_duals.len() != N`, if the slots of `cut_duals` do not strictly ascend, if a PAR order
 /// is deeper than the lag depth, or if `scratch` was built for another pair.
-pub fn per_opening_cut_into(
+pub fn per_opening_coefficients_into(
     inputs: &ChainRuleInputs<'_>,
     opening: &OpeningDuals<'_>,
-    x_hat: &[f64],
     scratch: &mut ChainRuleScratch,
     coefficients: &mut [f64],
-) -> f64 {
+) {
     debug_assert_eq!(coefficients.len(), inputs.extracted.n_slots());
     debug_assert_eq!(opening.state_duals.len(), inputs.slots.non_lag()[1].1.end);
     debug_assert_eq!(opening.coupled_duals.len(), inputs.slots.n_hydros());
@@ -152,6 +151,22 @@ pub fn per_opening_cut_into(
         }
         lag_coefficients_into(inputs, opening.cut_duals, scratch, &mut coefficients[lag]);
     }
+}
+
+/// [`per_opening_coefficients_into`], returning the cut's intercept α: Q minus the extracted
+/// projection's trial-state dot of the coefficients.
+///
+/// # Panics
+///
+/// As [`per_opening_coefficients_into`].
+pub fn per_opening_cut_into(
+    inputs: &ChainRuleInputs<'_>,
+    opening: &OpeningDuals<'_>,
+    x_hat: &[f64],
+    scratch: &mut ChainRuleScratch,
+    coefficients: &mut [f64],
+) -> f64 {
+    per_opening_coefficients_into(inputs, opening, scratch, coefficients);
     opening.objective - inputs.extracted.dot_trial_state(coefficients, x_hat)
 }
 

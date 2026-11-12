@@ -1,5 +1,6 @@
-//! LP load and pin seam for the backward pass: reset the stage LP to its
-//! structural template, append delta cuts, and pin the trial state.
+//! LP load, pin and basis seam for the backward pass: reset the stage LP to its
+//! structural template, append delta cuts, pin the trial state, and read and write the
+//! warm-start basis.
 
 use novomodelo_solver::SolverInterface;
 use novomodelo_stochastic::{ClassDimensions, ExternalScenarioLibrary};
@@ -7,6 +8,7 @@ use novomodelo_stochastic::{ClassDimensions, ExternalScenarioLibrary};
 use crate::{
     context::{StageContext, TrainingContext},
     error::SddpError,
+    forward::write_capture_metadata,
     setup::{NodeId, NodeOpenings, NodePos, OpeningSource, StageIdx},
     training::stage_solve_prep::{BracketSource, LoadedCutRows, StageSolvePrep, StateSource},
     workspace::{BasisStoreSliceMut, CapturedBasis, SolverWorkspace},
@@ -29,16 +31,15 @@ pub(crate) fn load_backward_lp<S: SolverInterface + Send>(
     }
 }
 
-/// The cut rows of `child`'s loaded compact LP, in the row order of `slots`.
+/// The cut rows of `child`'s loaded compact LP, in the row order of its active-slot list.
 pub(crate) fn child_cut_rows<'a>(
     training_ctx: &'a TrainingContext<'_>,
     child: &SuccessorChild<'a>,
-    slots: &'a [usize],
 ) -> LoadedCutRows<'a> {
     LoadedCutRows {
         pool: child.successor_pool,
         projection: &training_ctx.cut_state_layouts[child.pool_id],
-        slots,
+        slots: child.successor_active_slots,
         first_row: child.template_num_rows,
     }
 }
@@ -69,7 +70,7 @@ pub(crate) fn pin_child_lp<S: SolverInterface + Send>(
         training_ctx,
         s,
         StateSource(x_hat),
-        &child_cut_rows(training_ctx, child, child.successor_active_slots),
+        &child_cut_rows(training_ctx, child),
         source,
     );
 }
@@ -115,6 +116,38 @@ pub(crate) fn fill_external_opening_noise(
 pub(crate) enum OpeningNoise<'b> {
     External(&'b [f64]),
     Generated,
+}
+
+impl OpeningNoise<'_> {
+    /// The canonical ω and raw noise of the `solve_pos`-th opening `child`'s warm-start
+    /// chain solves at `stage`: the child's one column when `External`, else the
+    /// generated opening `solve_order[solve_pos]` (sddp.md "Backward opening order is
+    /// warm-start-only").
+    pub(crate) fn solved_opening<'t>(
+        &'t self,
+        training_ctx: &'t TrainingContext<'_>,
+        stage: StageIdx,
+        child: &SuccessorChild<'_>,
+        solve_pos: usize,
+    ) -> (usize, &'t [f64]) {
+        match self {
+            OpeningNoise::External(column) => (child.outcome_range.start, column),
+            OpeningNoise::Generated => {
+                let tree_view = training_ctx.stochastic.tree_view();
+                let solve_order = tree_view.solve_order_data(stage.0);
+                debug_assert_eq!(
+                    solve_order.len(),
+                    child.openings.len,
+                    "a Generated child's opening count must equal stage {stage}'s own opening count"
+                );
+                let local_omega = solve_order[solve_pos] as usize;
+                (
+                    child.outcome_range.start + local_omega,
+                    tree_view.opening_data(stage.0, local_omega),
+                )
+            }
+        }
+    }
 }
 
 /// Resolves a node's opening noise, assembling an `External` node's column into `buf`.
@@ -207,6 +240,43 @@ pub(crate) fn resolve_backward_basis<'a>(
     successor_node: NodePos,
 ) -> Option<&'a CapturedBasis> {
     basis_slice.get(m, successor_node)
+}
+
+/// Capture the post-solve basis at the first-solved opening into
+/// `basis_slice[m, successor_node]`.
+///
+/// Only the first-solved opening (`solve_order[0]`, = canonical ω=0 under the
+/// identity order) may capture: a later capture would store a basis whose retained
+/// LU factorization has been overwritten by subsequent opening solves, leaving it
+/// stale and potentially infeasible when reloaded.
+pub(crate) fn save_basis_at_omega_zero<S: SolverInterface + Send>(
+    ws: &mut SolverWorkspace<S>,
+    child: &SuccessorChild<'_>,
+    basis_slice: &mut BasisStoreSliceMut<'_>,
+    m: usize,
+) {
+    let successor_node = child.successor_node;
+    let base_row_count = child.template_num_rows;
+    let cut_row_count = child.num_cuts_at_successor;
+    let captured = basis_slice
+        .get_mut(m, successor_node)
+        .get_or_insert_with(|| {
+            CapturedBasis::new(
+                child.frozen_template.num_cols,
+                base_row_count + cut_row_count,
+                base_row_count,
+                cut_row_count,
+                child.successor_node_id,
+            )
+        });
+    ws.solver.get_basis(&mut captured.basis);
+    write_capture_metadata(
+        captured,
+        child.successor_pool,
+        base_row_count,
+        cut_row_count,
+        child.successor_node_id,
+    );
 }
 
 #[cfg(test)]

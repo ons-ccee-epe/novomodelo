@@ -1908,7 +1908,8 @@ impl ProbeCut {
 }
 
 /// Solve one compact opening and build its cut through the production extraction and chain
-/// rule, [`extract_opening_cut`].
+/// rule, [`extract_opening_cut`]; the intercept is Q minus the extracted projection's
+/// trial-state dot of the coefficients at `opening.pinned_state`.
 ///
 /// The caller loads the compact template and appends the rows of `opening.cuts.slots`, in that
 /// order, first. A repeat call at the same stage and row count allocates nothing in `out`.
@@ -1994,7 +1995,7 @@ pub fn opening_cut_for_probe<S: SolverInterface + Send>(
     let extracted = &training_ctx.cut_state_layouts[opening.extracted_pool_id];
     out.coefficients.clear();
     out.coefficients.resize(extracted.n_slots(), 0.0);
-    (out.objective, out.intercept) = extract_opening_cut(
+    out.objective = extract_opening_cut(
         &view,
         &DualExtractionSpec {
             extracted,
@@ -2011,7 +2012,6 @@ pub fn opening_cut_for_probe<S: SolverInterface + Send>(
             par: training_ctx.stochastic.par(),
             stage: stage.0,
         },
-        opening.pinned_state,
         &mut OpeningDualBuffers {
             state_duals: &mut out.state_duals,
             coupled_duals: &mut out.coupled_duals,
@@ -2020,6 +2020,8 @@ pub fn opening_cut_for_probe<S: SolverInterface + Send>(
         &mut out.chain_scratch,
         &mut out.coefficients,
     );
+    out.intercept =
+        out.objective - extracted.dot_trial_state(&out.coefficients, opening.pinned_state);
     Ok(())
 }
 
@@ -2247,7 +2249,7 @@ pub fn write_backward_opening_outcome_for_probe<S: SolverInterface + Send>(
 /// already-canonical state `x̂`.
 ///
 /// That canonical value is the single `x_hat` threaded into BOTH the pin
-/// ([`prep_for_probe`]) and the intercept ([`extract_opening_cut`]),
+/// ([`prep_for_probe`]) and the intercept ([`opening_cut_for_probe`]),
 /// mirroring the backward opening loop. The state the LP was pinned at is
 /// recovered separately from the solved primal — an independent data path — so
 /// [`CanonicalCutProbe::pinned_x_hat`] cross-checks the pin against the cut

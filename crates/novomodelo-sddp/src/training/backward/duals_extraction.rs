@@ -9,8 +9,10 @@ use novomodelo_stochastic::par::precompute::PrecomputedPar;
 
 use crate::{
     cut::{
-        CutPool, CutRowMap,
-        chain_rule::{ChainRuleInputs, ChainRuleScratch, OpeningDuals, per_opening_cut_into},
+        CutPool,
+        chain_rule::{
+            ChainRuleInputs, ChainRuleScratch, OpeningDuals, per_opening_coefficients_into,
+        },
     },
     indexer::{ChainRuleSlots, CutStateProjection, HydroSys, InCol},
     lp::builder::InflowCoupling,
@@ -135,20 +137,19 @@ pub(crate) fn extract_opening_duals(
     view.objective
 }
 
-/// [`extract_opening_duals`], then [`per_opening_cut_into`] on the same
+/// [`extract_opening_duals`], then [`per_opening_coefficients_into`] on the same
 /// `spec.extracted`: writes the opening's cut coefficients into `coefficients`, whose
-/// length is `spec.extracted.n_slots()`, and returns the objective and the intercept.
+/// length is `spec.extracted.n_slots()`, and returns the objective.
 pub(crate) fn extract_opening_cut(
     view: &SolutionView<'_>,
     spec: &DualExtractionSpec<'_>,
     chain: &ChainRuleStageInputs<'_>,
-    x_hat: &[f64],
     duals: &mut OpeningDualBuffers<'_>,
     scratch: &mut ChainRuleScratch,
     coefficients: &mut [f64],
-) -> (f64, f64) {
+) -> f64 {
     let objective = extract_opening_duals(view, spec, duals);
-    let intercept = per_opening_cut_into(
+    per_opening_coefficients_into(
         &ChainRuleInputs {
             slots: chain.slots,
             resident_pool: chain.resident_pool,
@@ -162,38 +163,10 @@ pub(crate) fn extract_opening_cut(
             coupled_duals: duals.coupled_duals,
             cut_duals: duals.cut_dual_slots,
         },
-        x_hat,
         scratch,
         coefficients,
     );
-    (objective, intercept)
-}
-
-/// Fills `out` with (pool slot, raw cut-row dual) pairs for the lazy solve's
-/// resident cuts, in ascending slot order.
-///
-/// Under a lazy solve the resident rows are a row-map-ordered subset, not the
-/// frozen cut-row order, so a resident slot's dual is
-/// `dual[row_map.lp_row_for_slot(slot)]`. A non-resident slot did not bind (by
-/// exactness; else the lazy loop would have added it), so leaving it out is
-/// correct.
-///
-/// A zero dual (either sign) yields no pair.
-///
-/// `dual` must be the FINAL all-satisfied solve's dual vector and `row_map` the
-/// residency that produced it.
-pub(crate) fn fill_resident_cut_dual_slots(
-    dual: &[f64],
-    row_map: &CutRowMap,
-    pool: &CutPool,
-    out: &mut Vec<(usize, f64)>,
-) {
-    out.clear();
-    out.extend((0..pool.populated()).filter_map(|slot| {
-        let lp_row = row_map.lp_row_for_slot(slot)?;
-        let y = dual[lp_row];
-        (y != 0.0).then_some((slot, y))
-    }));
+    objective
 }
 
 #[cfg(test)]
@@ -202,15 +175,12 @@ mod tests {
     use novomodelo_solver::{ActiveSolver, SolutionView, SolverInterface, StageTemplate};
 
     use super::{
-        DualExtractionSpec, OpeningDualBuffers, extract_opening_duals,
-        fill_resident_cut_dual_slots, push_nonzero_cut_row_duals,
+        DualExtractionSpec, OpeningDualBuffers, extract_opening_duals, push_nonzero_cut_row_duals,
     };
-    use crate::cut::{CutPool, CutRowMap};
     use crate::indexer::{CutSlot, CutStateProjection, HydroSys, StateDim, StateSpace};
     use crate::lead_time::AnticipatedResolution;
     use crate::lp::builder::{InflowCoupling, inflow_coupling::InflowCouplingSink};
-    use crate::setup::NodeId;
-    use crate::training::backward::outcome_aggregation::count_binding_slots;
+    use crate::training::backward::binding_count::count_binding_slots;
     use novomodelo_core::temporal::StageStateConfig;
 
     const ALL_ENABLED: StageStateConfig = StageStateConfig {
@@ -222,18 +192,6 @@ mod tests {
         inflow_lags: false,
     };
     const OBJECTIVE: f64 = 12.5;
-
-    fn state_layout(hydro_count: usize, max_par_order: usize) -> StateSpace {
-        let lag_counts = vec![max_par_order; hydro_count];
-        StateSpace::new(
-            hydro_count,
-            max_par_order,
-            Vec::new(),
-            vec![],
-            AnticipatedResolution::default(),
-            &lag_counts,
-        )
-    }
 
     /// Build a `SolutionView` whose `reduced_costs[col]` equals `col as f64`, so
     /// an extracted subgradient at LP column `col` is exactly `col as f64`
@@ -249,7 +207,7 @@ mod tests {
         }
     }
 
-    fn compact_layout(
+    fn layout(
         hydro_count: usize,
         max_par_order: usize,
         buckets: Vec<(HydroSys, usize)>,
@@ -305,7 +263,7 @@ mod tests {
     /// subgradient reading exactly the storage columns `[0, N)`, no lag entries.
     #[test]
     fn storage_only_yields_n_length_subgradient_with_storage_columns() {
-        let global = state_layout(3, 2);
+        let global = layout(3, 2, Vec::new());
         let cut_state = CutStateProjection::new(&global, STORAGE_ONLY);
         assert_eq!(cut_state.n_slots(), 3);
 
@@ -336,41 +294,6 @@ mod tests {
         }
     }
 
-    /// Slots 3 then 1 are resident, so the row map's order (3, 1) is not slot
-    /// order; the pairs follow ascending slot and slot 1's zero dual yields no pair.
-    #[test]
-    fn fill_resident_cut_dual_slots_skips_non_resident_slots() {
-        let mut pool = CutPool::new(8, 1, 8, 0);
-        for forward_pass_index in 0..4 {
-            pool.add_cut(NodeId(0), 0, forward_pass_index, 0.0, &[0.0]);
-        }
-        let mut row_map = CutRowMap::new(8, 2);
-        row_map.insert(3);
-        row_map.insert(1);
-        let dual = [9.0, 9.0, 0.5, 0.0];
-        let mut out = vec![(99, 99.0)];
-
-        fill_resident_cut_dual_slots(&dual, &row_map, &pool, &mut out);
-
-        assert_eq!(out, [(3, 0.5)]);
-    }
-
-    #[test]
-    #[should_panic(expected = "index out of bounds")]
-    fn resident_cut_dual_pairs_index_the_dual_slice_directly() {
-        let mut pool = CutPool::new(8, 1, 8, 0);
-        for forward_pass_index in 0..4 {
-            pool.add_cut(NodeId(0), 0, forward_pass_index, 0.0, &[0.0]);
-        }
-        let mut row_map = CutRowMap::new(8, 2);
-        row_map.insert(3);
-        row_map.insert(1);
-        let dual = [9.0, 9.0, 0.5];
-        let mut out = Vec::new();
-
-        fill_resident_cut_dual_slots(&dual, &row_map, &pool, &mut out);
-    }
-
     #[test]
     fn frozen_cut_dual_pairs_skip_zero_duals_of_either_sign() {
         let dual = [7.0, 7.0, 0.0, -0.0, 2.5, -1e-12];
@@ -397,7 +320,7 @@ mod tests {
 
     #[test]
     fn folded_state_duals_hold_only_the_columned_slots() {
-        let global = compact_layout(2, 2, vec![(HydroSys::new(0), 1), (HydroSys::new(1), 1)]);
+        let global = layout(2, 2, vec![(HydroSys::new(0), 1), (HydroSys::new(1), 1)]);
         let projection = CutStateProjection::new(&global, ALL_ENABLED);
         let lag = projection.lag_point().full();
         assert_eq!(lag.len(), 4);
@@ -438,7 +361,7 @@ mod tests {
 
     #[test]
     fn folded_coupled_duals_sum_unscaled_base_row_duals_in_entry_order() {
-        let global = compact_layout(2, 1, Vec::new());
+        let global = layout(2, 1, Vec::new());
         let projection = CutStateProjection::new(&global, STORAGE_ONLY);
         let mut sink = InflowCouplingSink::new(2);
         sink.record(HydroSys::new(0), 3, 0.5);
@@ -479,7 +402,7 @@ mod tests {
 
     #[test]
     fn folded_cut_pairs_skip_zero_duals_and_follow_lp_row_order() {
-        let global = compact_layout(2, 1, Vec::new());
+        let global = layout(2, 1, Vec::new());
         let projection = CutStateProjection::new(&global, STORAGE_ONLY);
         let coupling = empty_coupling(2);
         let rc = vec![0.0; global.theta + 1];
@@ -508,7 +431,7 @@ mod tests {
 
     #[test]
     fn folded_extraction_reads_no_cut_duals_when_not_asked() {
-        let global = compact_layout(2, 1, Vec::new());
+        let global = layout(2, 1, Vec::new());
         let projection = CutStateProjection::new(&global, STORAGE_ONLY);
         let coupling = empty_coupling(2);
         let rc = vec![0.0; global.theta + 1];
@@ -536,7 +459,7 @@ mod tests {
 
     #[test]
     fn folded_extraction_reuses_its_buffers() {
-        let global = compact_layout(2, 2, Vec::new());
+        let global = layout(2, 2, Vec::new());
         let projection = CutStateProjection::new(&global, ALL_ENABLED);
         let mut sink = InflowCouplingSink::new(2);
         sink.record(HydroSys::new(0), 0, 1.0);
@@ -635,7 +558,7 @@ mod tests {
 
     #[test]
     fn folded_pair_count_stays_within_the_structural_bound() {
-        let global = compact_layout(1, 1, Vec::new());
+        let global = layout(1, 1, Vec::new());
         let projection = CutStateProjection::new(&global, ALL_ENABLED);
         assert_eq!(projection.structural_dual_bound(), 2);
         let x_col = global

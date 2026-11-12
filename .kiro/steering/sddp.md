@@ -44,8 +44,9 @@ The wrong-but-compiling alternatives:
 - reading `(Gᵀπ)(h)` from the scaled row duals without `row_scale`: every lag
   coefficient is off by the scales of its hydro's coupled rows.
 
-Read: `training/backward/duals_extraction.rs` (`extract_opening_duals`,
-`fill_resident_cut_dual_slots`), `cut/chain_rule.rs` (`per_opening_cut_into`,
+Read: `training/backward/duals_extraction.rs` (`extract_opening_duals`),
+`solve/opening_solver.rs` (`StageOpeningSolver::read_resident_cut_duals`),
+`cut/chain_rule.rs` (`per_opening_coefficients_into`,
 `lag_coefficients_into`), `cut/fcf.rs`, `lp/indexer/cut_state_projection.rs`
 (`CutStateProjection::incoming_pairs`, `CutStateProjection::render_pairs`), and
 `cut::row::push_scaled_coefficient`, where `batch.values.push(-coeff * d)`
@@ -91,12 +92,14 @@ over the canonical-ω costs of the flattened successor×opening vector, and
 `aggregate_first_cut_into` takes each child's ȳ and Gᵀπ partial sums under
 those joint weights, never renormalised per child, with `β̄` the sum over the
 children. `CutStateProjection::dot_trial_state` is the single owner, and every
-backward intercept site routes through it: `cut/chain_rule.rs`'s
-`per_opening_cut_into`, called per opening by the replicated backward
-(`backward/replicated.rs`, which recomputes each gathered opening's intercept
-the same way after the outcome exchange) and by the forward node solve's fused
-slice (`forward/node_solve.rs`); and `aggregate_first_cut_into`, called by both
-schedulers through `backward/by_scenario.rs`'s `aggregate_successor_cut`.
+backward intercept site routes through it: `aggregate_first_cut_into`, called by
+both schedulers through `backward/successor_cut.rs`'s `aggregate_successor_cut`;
+the replicated backward (`backward/replicated.rs`), which recomputes each
+gathered opening's intercept the same way after the outcome exchange; and
+`cut/chain_rule.rs`'s `per_opening_cut_into`, the per-opening reference the
+oracles and benches compare against. `extract_opening_cut`, which the replicated
+backward and the forward node solve's fused slice call, returns only the opening's
+objective and coefficients, so it computes no intercept.
 
 The wrong-but-compiling alternatives:
 
@@ -120,7 +123,7 @@ The wrong-but-compiling alternatives:
 
 Read: `lp/indexer/cut_state_projection.rs` (`dot_trial_state`,
 `global_state_index`), `training/backward/replicated.rs`,
-`training/backward/by_scenario.rs` (`aggregate_successor_cut`),
+`training/backward/successor_cut.rs` (`aggregate_successor_cut`),
 `cut/chain_rule.rs` (`per_opening_cut_into`, `aggregate_first_cut_into`),
 `training/forward/node_solve.rs`. Pinned by
 `dot_trial_state_gathers_reduced_projection_not_positional` (the gather picks
@@ -145,7 +148,7 @@ on a fan the joint weights differ from any per-child normalisation); and
 The chain-rule kernel in `cut/chain_rule.rs` starts its accumulators at −0.0:
 the lag sums `w` of `lag_coefficients_into`, and `aggregate_first_cut_into`'s Q̄
 (`q_bar`), its coefficient vector and its Gᵀπ sums (`chain.g`).
-`per_opening_cut_into` starts each `g` at `−(Gᵀπ)(h)`, the bits of
+`per_opening_coefficients_into` starts each `g` at `−(Gᵀπ)(h)`, the bits of
 `−0.0 − (Gᵀπ)(h)`, and adds the cut-dual terms into that same accumulator; a
 zero cut dual, of either sign, is skipped, never multiplied in.
 `aggregate_first_cut_into` likewise skips an opening whose weight is exactly 0.0
@@ -200,8 +203,8 @@ The wrong-but-compiling alternatives:
 
 Each compiles and breaks a bitwise identity between a cut and its per-opening
 form, between a cut and its model, or between two writers of one cut's RHS.
-Read: `cut/chain_rule.rs` (`per_opening_cut_into`, `lag_coefficients_into`,
-`aggregate_first_cut_into`, `AggregateScratch`), `cut/rhs.rs` (the module
+Read: `cut/chain_rule.rs` (`per_opening_coefficients_into`, `per_opening_cut_into`,
+`lag_coefficients_into`, `aggregate_first_cut_into`, `AggregateScratch`), `cut/rhs.rs` (the module
 documentation, `cut_brackets_into`, `cut_noise_terms_into`, the batched form),
 `cut/rhs_reference.rs` (`rhs_reference::cut_bracket` and
 `rhs_reference::cut_noise_term`, the scalar statements).
@@ -2645,7 +2648,7 @@ them wherever the successor pool's cut-state projection has lag slots
 (`CutStateProjection::has_lag_slots`). `solve_backward_opening` reads them when
 the projection has lag slots or a threshold is set, whatever the switch: the
 frozen arm through `extract_opening_duals`, the lazy arm through
-`fill_resident_cut_dual_slots`. Both arms give one zero-free (slot, y)
+`StageOpeningSolver::read_resident_cut_duals`. Both arms give one zero-free (slot, y)
 extraction, which keeps a pair only when `y != 0.0`, never a bit test and never
 a tolerance, so a +0.0 and a −0.0 dual are both dropped; the frozen arm's pairs
 follow LP row order. `count_binding_slots` then counts a pair when
@@ -2700,10 +2703,10 @@ Read: `config.rs` (`CutManagementConfig::tracks_binding_activity`),
 `run_one_backward_level`, `compute_one_backward_node`,
 `process_stage_backward`, `sync_stage_metadata`), `training/backward/mod.rs`
 (`SuccessorOutcomes`, `SuccessorChild`),
-`training/backward/duals_extraction.rs` (`extract_opening_duals`,
-`fill_resident_cut_dual_slots`),
+`training/backward/duals_extraction.rs` (`extract_opening_duals`),
+`solve/opening_solver.rs` (`StageOpeningSolver::read_resident_cut_duals`),
 `training/backward/opening_solve.rs` (`solve_backward_opening`),
-`training/backward/outcome_aggregation.rs` (`count_binding_slots`,
+`training/backward/binding_count.rs` (`count_binding_slots`,
 `fold_slot_increments_into_sync`),
 `training/backward/by_scenario.rs` (`process_by_scenario_backward`),
 `training/backward/by_node.rs` (`process_stage_backward_by_node`),
@@ -2739,7 +2742,7 @@ reads its cut-row pairs, and the stored cut carries their `Σ y·β` terms);
 (`workspace/workspace.rs`: a record with more pairs than the reservation keeps
 every pair, in order; a cap at the reservation fails it);
 `count_binding_slots_bumps_only_strictly_binding_pairs_in_the_child_region`
-(`training/backward/outcome_aggregation.rs`); and
+(`training/backward/binding_count.rs`); and
 `binding_activity_is_recorded_only_for_a_reader`
 (`tests/cut_basis.rs`: a `level1` run without a budget records nothing, a
 budget-only run and a `dynamic` run record, and a budget that evicts nothing
@@ -2828,10 +2831,11 @@ cut-free core.
 Read: `training/backward/by_node.rs`
 (`process_stage_backward_by_node`'s claim loop, `by_node_finish`),
 `workspace/workspace.rs` (`OpeningRecords`, `ByNodeFinishScratch`),
-`claim_scatter.rs` (`canonical_scatter`), `training/backward/by_scenario.rs`
+`claim_scatter.rs` (`canonical_scatter`), `training/backward/successor_cut.rs`
 (`aggregate_successor_cut`), `training/backward_pass_state.rs`
 (`compute_one_backward_node`'s scheduler dispatch via
-`resolve_backward_scheduler`, `commit_by_node_cuts`). The claim-order
+`resolve_backward_scheduler`), `training/backward/by_node.rs`
+(`commit_by_node_cuts`). The claim-order
 independence is pinned by
 `compact_aggregate_first_cut_is_scheduler_and_worker_independent`
 (`training/backward/tests.rs`: on a stub solver whose solution depends on the
@@ -2903,7 +2907,7 @@ two-opening fan; only three or more openings with `0 < λ < 1`, where the floor 
 discriminate. Switching one consumer without the others opens a spurious LB/UB gap.
 
 Read: `convergence/risk_measure.rs` (the kernel and its two entry points),
-`training/backward/by_scenario.rs` (`aggregate_successor_cut`),
+`training/backward/successor_cut.rs` (`aggregate_successor_cut`),
 `training/lower_bound.rs` (`lb_aggregate_and_broadcast`),
 `training/forward/stats_aggregation.rs` (`nested_ub_recursion`). Pinned by
 `cvar_weights_match_analytic_table` (equiprobable `10/20/30/40` at `α = λ = 0.5`
@@ -2943,8 +2947,9 @@ aggregate is the same nested form.
 Read: `convergence/risk_measure.rs` (`RiskMeasure::aggregate_cut_into`,
 `RiskMeasure::opening_weights_into`), `setup/node_graph.rs`
 (`assemble_outcome_weights` — the canonical product-weight fill),
-`training/backward/by_scenario.rs` (`process_by_scenario_backward`,
-`aggregate_successor_cut`), `cut/chain_rule.rs` (`aggregate_first_cut_into`),
+`training/backward/by_scenario.rs` (`process_by_scenario_backward`),
+`training/backward/successor_cut.rs` (`aggregate_successor_cut`),
+`cut/chain_rule.rs` (`aggregate_first_cut_into`),
 `training/backward/by_node.rs` (`by_node_finish`), `training/backward/replicated.rs`
 (the replicated path applies the same single aggregation over the same flattened
 vector). Pinned by `joint_cvar_differs_from_nested_per_child_then_average` in
@@ -3359,11 +3364,11 @@ projection has lag slots; its `ChainRuleStageInputs` carries the slots from
 `ChainRuleSlots::compose`, with the leaf's own projection as the resident one
 and the parent pool's as the extracted one, and the leaf's own pool as the
 resident pool. `extract_opening_cut` takes `extracted` once, from the spec, for
-both the dual extraction and `per_opening_cut_into`, and writes a parent-sized
+both the dual extraction and `per_opening_coefficients_into`, and writes a parent-sized
 slice. The leaf's own pool projects every state dimension, so it is wider than
 the parent pool whenever the two differ. Swapping the two projections in the
 spec (`extracted` and the source of `read_cut_duals`) compiles, and the leaf's
-projection then reaches `per_opening_cut_into` as `extracted` too: a debug
+projection then reaches `per_opening_coefficients_into` as `extracted` too: a debug
 build stops at its coefficient-length check, the leaf's `n_slots` against the
 parent-sized slice, and a release build changes nothing while both pools
 project the same columned slots, until the leaf stage declares `storage: false`.
@@ -3372,13 +3377,13 @@ pool's columned duals, storage first: a release build writes the leading ones
 over the parent's bucket and commitment-hold slots, or, on a parent with
 neither, leaves the slice unchanged. Swapping them in `ChainRuleSlots::compose`
 takes the slot ranges from the leaf pool, which is wider:
-`per_opening_cut_into` then indexes past the parent-sized coefficients or state
+`per_opening_coefficients_into` then indexes past the parent-sized coefficients or state
 duals and panics, in a debug build at the state-dual length check when the
 columned slots differ.
 Read: `training/forward/node_solve.rs` (`solve_forward_node_core`),
 `training/backward/duals_extraction.rs` (`extract_opening_cut`,
 `ChainRuleStageInputs`), `lp/indexer/cut_state_projection.rs`
-(`ChainRuleSlots::compose`), `cut/chain_rule.rs` (`per_opening_cut_into`).
+(`ChainRuleSlots::compose`), `cut/chain_rule.rs` (`per_opening_coefficients_into`).
 Pinned by
 `enumerated_forward_compact_fused_slice_carries_no_storage_under_a_storage_free_leaf_stage`
 (each slice against a reference solve of the leaf; it fails under either

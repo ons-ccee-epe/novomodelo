@@ -28,9 +28,7 @@ use crate::{
     risk_measure::{BackwardOutcome, RiskMeasure},
     solve::{StageOpeningSolver, partition},
     stage_solve::{StageInputs, run_stage_solve},
-    training::stage_solve_prep::{
-        BracketSource, LoadedCutRows, NoiseTermSource, StageSolvePrep, StateSource,
-    },
+    training::stage_solve_prep::{BracketSource, LoadedCutRows, NoiseTermSource, StageSolvePrep},
     workspace::SolverWorkspace,
 };
 
@@ -39,7 +37,9 @@ use super::{
     duals_extraction::{
         ChainRuleStageInputs, DualExtractionSpec, OpeningDualBuffers, extract_opening_cut,
     },
-    lp_setup::{OpeningNoise, child_cut_rows, load_backward_lp, resolve_opening_noise},
+    lp_setup::{
+        OpeningNoise, child_cut_rows, load_backward_lp, pin_child_lp, resolve_opening_noise,
+    },
 };
 
 /// Per-rank scratch for [`run_backward_node_replicated`]: the local
@@ -95,7 +95,6 @@ pub(crate) fn solve_replicated_outcome_slice<S: SolverInterface + Send>(
     local_start: usize,
     local_end: usize,
     scenario_base: usize,
-    iteration: u64,
     out: &mut Vec<f64>,
 ) -> Result<(), SddpError> {
     let s = succ.successor;
@@ -104,18 +103,16 @@ pub(crate) fn solve_replicated_outcome_slice<S: SolverInterface + Send>(
     ws.solver.reset_solver_state();
     load_backward_lp(ws, child);
 
-    let rows = child_cut_rows(training_ctx, child, child.successor_active_slots);
-    StageSolvePrep::pin_and_bracket(
-        &mut ws.solver,
-        &mut ws.patch_buf,
-        &mut ws.scratch,
+    pin_child_lp(
+        ws,
         ctx,
         training_ctx,
+        child,
+        x_hat,
         s,
-        StateSource(x_hat),
-        &rows,
         BracketSource::Computed,
     );
+    let rows = child_cut_rows(training_ctx, child);
 
     let mut state_duals = std::mem::take(&mut ws.backward_accum.state_duals_buf);
     let mut coupled_duals = std::mem::take(&mut ws.backward_accum.coupled_duals_buf);
@@ -146,7 +143,7 @@ pub(crate) fn solve_replicated_outcome_slice<S: SolverInterface + Send>(
                 stored_basis: None,
                 stage_index: s,
                 scenario_index: scenario_base,
-                iteration: Some(iteration),
+                iteration: Some(succ.iteration),
                 node_id: child.successor_node_id,
             };
             solve_replicated_opening(
@@ -155,7 +152,6 @@ pub(crate) fn solve_replicated_outcome_slice<S: SolverInterface + Send>(
                 succ,
                 child,
                 &rows,
-                x_hat,
                 noise,
                 &inputs,
                 &mut duals,
@@ -170,7 +166,7 @@ pub(crate) fn solve_replicated_outcome_slice<S: SolverInterface + Send>(
                     stored_basis: None,
                     stage_index: s,
                     scenario_index: scenario_base + local_omega,
-                    iteration: Some(iteration),
+                    iteration: Some(succ.iteration),
                     node_id: child.successor_node_id,
                 };
                 solve_replicated_opening(
@@ -179,7 +175,6 @@ pub(crate) fn solve_replicated_outcome_slice<S: SolverInterface + Send>(
                     succ,
                     child,
                     &rows,
-                    x_hat,
                     tree_view.opening(s.0, local_omega),
                     &inputs,
                     &mut duals,
@@ -195,27 +190,19 @@ pub(crate) fn solve_replicated_outcome_slice<S: SolverInterface + Send>(
     Ok(())
 }
 
-/// Solves one opening of `child`'s loaded LP at `x_hat` and appends its
-/// `objective ‖ subgradient` to `out`; the subgradient is the opening's
-/// chain-rule coefficients, which the successor intercept dots at the same
-/// `x_hat`.
+/// Solves one opening of `child`'s loaded LP and appends its `objective ‖ subgradient`
+/// to `out`; the subgradient is the opening's chain-rule coefficients, which the
+/// successor intercept dots at the pinned state.
 ///
 /// # Errors
 ///
 /// Propagates `SddpError::Infeasible`/`SddpError::Solver` from the solve.
-// RATIONALE: the per-opening solve inputs (workspace, training context,
-// successor+child specs, the child's cut rows, trial state, noise, solve inputs,
-// dual buffers, output buffer) are threaded positionally like
-// `solve_replicated_outcome_slice`'s; bundling them here alone would desync that
-// shape without cutting the real coupling.
-#[allow(clippy::too_many_arguments)]
 fn solve_replicated_opening<S: SolverInterface + Send>(
     ws: &mut SolverWorkspace<S>,
     training_ctx: &TrainingContext<'_>,
     succ: &SuccessorSpec<'_>,
     child: &SuccessorChild<'_>,
     rows: &LoadedCutRows<'_>,
-    x_hat: &[f64],
     raw_noise: &[f64],
     inputs: &StageInputs<'_>,
     duals: &mut OpeningDualBuffers<'_>,
@@ -241,7 +228,7 @@ fn solve_replicated_opening<S: SolverInterface + Send>(
     let template = ctx.template(s);
     let start = out.len();
     out.resize(start + outcome_stride(n_state), 0.0);
-    let (objective, _) = extract_opening_cut(
+    let objective = extract_opening_cut(
         &view,
         &DualExtractionSpec {
             extracted: succ.cut_state,
@@ -258,7 +245,6 @@ fn solve_replicated_opening<S: SolverInterface + Send>(
             par: training_ctx.stochastic.par(),
             stage: s.0,
         },
-        x_hat,
         duals,
         &mut chain_scratch,
         &mut out[start + 1..],
@@ -301,7 +287,7 @@ fn solve_replicated_opening<S: SolverInterface + Send>(
 /// `allgatherv`.
 // RATIONALE: one per-node replicated solve threading disjoint scratch (the
 // reused ReplicatedScratch, the solver workspace) and per-node scalars
-// (x_hat, pool_id, iteration); splitting further would pass the whole bundle
+// (x_hat, pool_id); splitting further would pass the whole bundle
 // for no gain or re-introduce the argument count.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_backward_node_replicated<S: SolverInterface + Send, C: Communicator>(
@@ -316,7 +302,6 @@ pub(crate) fn run_backward_node_replicated<S: SolverInterface + Send, C: Communi
     outcomes: &SuccessorOutcomes<'_>,
     x_hat: &[f64],
     pool_id: usize,
-    iteration: u64,
     enumerated_state: &EnumeratedForwardScratch,
 ) -> Result<f64, SddpError> {
     let n_state = succ.cut_state.n_slots();
@@ -382,7 +367,6 @@ pub(crate) fn run_backward_node_replicated<S: SolverInterface + Send, C: Communi
             lo - child.outcome_range.start,
             hi - child.outcome_range.start,
             pool_id,
-            iteration,
             &mut scratch.local_slice,
         )?;
     }
