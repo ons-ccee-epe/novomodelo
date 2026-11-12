@@ -5,7 +5,6 @@
 //! slots ascending.
 
 use crate::cut::CutPool;
-use crate::cut::rhs::ascending_dot;
 use crate::indexer::CutLagPoint;
 
 /// B = fl(fl(α + S) + P) of one cut row. Reads `lag_state[..shifted.len()]` only.
@@ -75,4 +74,11 @@ pub fn cut_brackets_reference_into(
             conditional_mean,
         );
     }
+}
+
+fn ascending_dot(coefficients: &[f64], values: &[f64]) -> f64 {
+    coefficients
+        .iter()
+        .zip(values)
+        .fold(0.0, |acc, (&b, &v)| acc + b * v)
 }

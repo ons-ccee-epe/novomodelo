@@ -41,13 +41,6 @@ const NOISE_LANES: [NoiseLanes; LANES] = [
     noise_lanes::<LANES>,
 ];
 
-pub(crate) fn ascending_dot(coefficients: &[f64], values: &[f64]) -> f64 {
-    coefficients
-        .iter()
-        .zip(values)
-        .fold(0.0, |acc, (&b, &v)| acc + b * v)
-}
-
 /// Writes `noise_terms[i]`, the W of the cut at `slots[i]`, reading each row in place from `pool`;
 /// the RHS is `fl(bracket + W)`.
 pub fn cut_noise_terms_into(
