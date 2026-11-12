@@ -17,7 +17,7 @@ use novomodelo_io::{Config, OwnedPolicyCutRecord};
 use novomodelo_sddp::{
     BoundaryStateRequirements, CutPool, SddpError, SimulationScenarioResult, StudySetup,
     hydro_models::{PrepareHydroModelsResult, prepare_hydro_models},
-    indexer::CutSlot,
+    indexer::{CutSlot, CutStateProjection},
     setup::{NodePos, StageIdx, StudyParams, prepare_stochastic},
     test_support::decks::{Deck, SLOW_DECKS, committed_decks},
 };
@@ -651,33 +651,52 @@ pub fn inject_constant_terminal_boundary_cuts(
         CutPool::new_with_warm_start(state_dim, setup.fcf.forward_passes, 0, &records);
 }
 
-/// The trial states the pool of `node` stored, in slot order, at the global state
-/// dimension; panics unless the pool stores states and projects every dimension.
-pub fn stored_trial_states(setup: &StudySetup, node: NodePos) -> Vec<Vec<f64>> {
+/// A state a pool stored, at its projected dimensions, as a vector over the global state: the
+/// dimensions the pool drops come from `fill`.
+pub fn lift_to_global_state(layout: &CutStateProjection, row: &[f64], fill: &[f64]) -> Vec<f64> {
+    let mut state = fill.to_vec();
+    for (j, &value) in row.iter().enumerate() {
+        state[layout.global_state_index(CutSlot::new(j)).get()] = value;
+    }
+    state
+}
+
+/// The trial states the pool of `node` stored, in slot order, as whole states; `None` when the
+/// pool's projection drops a state dimension, so a stored row is not a whole state.
+///
+/// # Panics
+///
+/// Panics if the pool stores no trial state.
+pub fn try_stored_trial_states(setup: &StudySetup, node: NodePos) -> Option<Vec<Vec<f64>>> {
     let pool_id = setup.inputs.node_graph.nodes[node].pool_id;
     let pool = &setup.fcf.pools[pool_id];
+    let training_ctx = setup.training_ctx();
+    let n_state = training_ctx.state.n_state;
+    let layout = &training_ctx.cut_state_layouts[pool_id];
+    if layout.n_slots() != n_state {
+        return None;
+    }
     assert!(
         pool.stores_trial_states(),
         "pool {pool_id} stores no trial state"
     );
-    let training_ctx = setup.training_ctx();
-    let n_state = training_ctx.state.n_state;
-    let layout = &training_ctx.cut_state_layouts[pool_id];
-    assert_eq!(
-        layout.n_slots(),
-        n_state,
-        "pool {pool_id} must project every state dimension"
-    );
-    (0..pool.populated())
-        .filter_map(|slot| pool.trial_state(slot))
-        .map(|row| {
-            let mut state = vec![0.0; n_state];
-            for (j, &value) in row.iter().enumerate() {
-                state[layout.global_state_index(CutSlot::new(j)).get()] = value;
-            }
-            state
-        })
-        .collect()
+    let fill = vec![0.0; n_state];
+    Some(
+        (0..pool.populated())
+            .filter_map(|slot| pool.trial_state(slot))
+            .map(|row| lift_to_global_state(layout, row, &fill))
+            .collect(),
+    )
+}
+
+/// [`try_stored_trial_states`] for a pool that must project every state dimension.
+///
+/// # Panics
+///
+/// Panics if the pool drops a state dimension or stores no trial state.
+pub fn stored_trial_states(setup: &StudySetup, node: NodePos) -> Vec<Vec<f64>> {
+    try_stored_trial_states(setup, node)
+        .unwrap_or_else(|| panic!("the pool of node {node} must project every state dimension"))
 }
 
 /// Train `iterations`, then run the one-scenario simulation and return the drained

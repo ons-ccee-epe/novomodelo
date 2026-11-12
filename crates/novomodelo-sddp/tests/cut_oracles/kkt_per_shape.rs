@@ -5,6 +5,7 @@ use novomodelo_io::Config;
 use novomodelo_io::config::SelectionMethod;
 use novomodelo_sddp::dcs::build_initial_resident_set;
 use novomodelo_sddp::indexer::{CutSlot, HydroSys};
+use novomodelo_sddp::setup::NodePos;
 use novomodelo_sddp::test_support::expander::{ExpandedStudy, expand_stage_templates};
 use novomodelo_sddp::test_support::solve_sites::{CutRowShape, SolveSiteKind};
 use novomodelo_sddp::{FutureCostFunction, StudySetup};
@@ -12,15 +13,15 @@ use novomodelo_solver::LpSolution;
 
 use crate::common::expanded_solve::{
     CutRowSet, ExpandedSolve, assemble_expanded_solve, check_lifted_compact_solution, lag_dims,
-    record_expanded_evidence, rounding_factor, scale_at, solve_from_mapped_basis,
-    stored_incoming_states,
+    record_expanded_evidence, scale_at, solve_from_mapped_basis,
 };
 use crate::common::in_code_studies::{FphaLagOptions, fpha_lag_study_with};
-use crate::common::oracle_tolerance::UnscaledTolerance;
+use crate::common::oracle_tolerance::{UnscaledTolerance, rounding_factor};
 use crate::common::power_guards::{Guard, PowerEvidence};
 use crate::common::stored_cut_oracles::{apply_oracle_config, apply_oracle_config_with_selection};
 use crate::common::{
     build_setup_in_code_with_models, is_chain, positive, train_storing_trial_states,
+    try_stored_trial_states,
 };
 
 const OPENINGS: usize = 3;
@@ -573,7 +574,7 @@ fn run_config(config: &KktConfig, trained: &Trained) -> KktRun {
     let layouts = training_ctx.cut_state_layouts;
     let mut fcf = compact.fcf.clone();
     let stored = |stage: usize| {
-        stored_incoming_states(compact, stage).unwrap_or_else(|| {
+        try_stored_trial_states(compact, NodePos(stage - 1)).unwrap_or_else(|| {
             panic!(
                 "{label} stage {stage}: pool {} drops a state dimension",
                 stage - 1

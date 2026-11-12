@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use novomodelo_core::System;
 use novomodelo_io::config::StoppingRuleConfig;
-use novomodelo_sddp::setup::StageIdx;
+use novomodelo_sddp::setup::{NodePos, StageIdx};
 use novomodelo_sddp::test_support::decks::{SLOW_DECKS, committed_decks};
 use novomodelo_sddp::test_support::{
     ProbeCut, ProbeCuts, ProbeOpening, cut_rows_for_slots_into, empty_row_batch,
@@ -11,14 +11,12 @@ use novomodelo_sddp::test_support::{
 use novomodelo_sddp::{RiskMeasure, StudySetup};
 use novomodelo_solver::{ActiveSolver, SolverInterface};
 
-use crate::common::expanded_solve::{
-    CutRowSet, stages_whose_producer_drops_a_state_dimension, stored_incoming_states,
-};
+use crate::common::expanded_solve::{CutRowSet, stages_whose_producer_drops_a_state_dimension};
 use crate::common::in_code_studies::{FphaLagOptions, fpha_lag_study_with};
 use crate::common::stored_cut_oracles::apply_oracle_config;
 use crate::common::{
     StubComm, build_setup_in_code_with_models, fresh_system_and_setup_with, is_chain,
-    train_storing_trial_states,
+    train_storing_trial_states, try_stored_trial_states,
 };
 
 const LAG_STUDY_LABEL: &str = "fpha lag study";
@@ -90,7 +88,7 @@ fn record_cut_dual_counts(
         let states = if t == 0 {
             vec![training_ctx.initial_state.to_vec()]
         } else {
-            let Some(stored) = stored_incoming_states(setup, t) else {
+            let Some(stored) = try_stored_trial_states(setup, NodePos(t - 1)) else {
                 println!("{label}: stage {t} dropped: its producer pool drops a state dimension");
                 dropped.push(t);
                 continue;

@@ -2,13 +2,14 @@ use std::path::Path;
 
 use novomodelo_core::System;
 use novomodelo_sddp::StudySetup;
+use novomodelo_sddp::setup::NodePos;
 use novomodelo_sddp::test_support::decks::committed_decks;
 use novomodelo_sddp::test_support::expander::expand_stage_templates;
 
 use crate::D43_DIR;
 use crate::common::expanded_solve::{
     CutRowSet, assemble_expanded_solve, record_expanded_evidence, solve_from_mapped_basis,
-    stages_whose_producer_drops_a_state_dimension, stored_incoming_states,
+    stages_whose_producer_drops_a_state_dimension,
 };
 use crate::common::in_code_studies::FPHA_LAG_STUDY_KEY as LAG_STUDY;
 use crate::common::in_code_studies::fpha_lag_study;
@@ -16,7 +17,7 @@ use crate::common::power_guards::{Guard, PowerEvidence};
 use crate::common::stored_cut_oracles::apply_oracle_config;
 use crate::common::{
     build_setup_in_code_with_models, fresh_system_and_setup_with, is_chain,
-    train_storing_trial_states,
+    train_storing_trial_states, try_stored_trial_states,
 };
 
 const SCALE_GUARDS: [Guard; 4] = [
@@ -54,7 +55,7 @@ fn warm_start_every_stage(
         if compact.fcf.active_cuts(stage).next().is_none() {
             continue;
         }
-        let Some(states) = stored_incoming_states(compact, stage) else {
+        let Some(states) = try_stored_trial_states(compact, NodePos(stage - 1)) else {
             counts.skipped_stages.push(stage);
             continue;
         };

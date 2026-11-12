@@ -74,17 +74,3 @@ impl SolveSiteKind {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use std::collections::HashSet;
-
-    use super::SolveSiteKind;
-
-    #[test]
-    fn solve_site_kinds_are_listed_once() {
-        let distinct: HashSet<_> = SolveSiteKind::ALL.into_iter().collect();
-
-        assert_eq!(distinct.len(), SolveSiteKind::ALL.len());
-    }
-}

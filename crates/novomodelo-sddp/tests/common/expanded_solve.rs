@@ -24,7 +24,9 @@ use novomodelo_solver::{
 };
 
 use super::StubComm;
-use super::oracle_tolerance::{UnscaledTolerance, assert_first_try, value_tolerance};
+use super::oracle_tolerance::{
+    UnscaledTolerance, assert_first_try, rounding_factor, value_tolerance,
+};
 use super::power_guards::{Guard, PowerEvidence};
 use super::row_families::{self, classify_expanded_rows};
 
@@ -107,42 +109,9 @@ pub fn lag_dims(layout: &ExpandedLayout) -> Vec<Option<(usize, usize)>> {
         .collect()
 }
 
-/// Every trial state stored in pool `stage - 1`, in slot order, as a whole state; `None` when that
-/// pool's projection drops a state dimension.
-pub fn stored_incoming_states(trained: &StudySetup, stage: usize) -> Option<Vec<Vec<f64>>> {
-    assert!(
-        stage >= 1,
-        "stored_incoming_states: stage 0 has no producer pool"
-    );
-    let producer = stage - 1;
-    let n_state = trained.stage_state().n_state;
-    let training_ctx = trained.training_ctx();
-    let projection = &training_ctx.cut_state_layouts[producer];
-    if projection.n_slots() != n_state {
-        return None;
-    }
-    let pool = &trained.fcf.pools[producer];
-    assert!(
-        pool.stores_trial_states(),
-        "pool {producer} stores no trial state"
-    );
-    Some(
-        (0..pool.populated())
-            .filter_map(|slot| pool.trial_state(slot))
-            .map(|row| {
-                let mut whole = vec![0.0; n_state];
-                for (j, &value) in row.iter().enumerate() {
-                    whole[projection.global_state_index(CutSlot::new(j)).get()] = value;
-                }
-                whole
-            })
-            .collect(),
-    )
-}
-
 /// The stages `s >= 1` with an active cut whose producer pool `s - 1` stores fewer dimensions than
-/// the whole state, so [`stored_incoming_states`] has no whole incoming state for them. Reads the
-/// pool's own dimension, not the projection [`stored_incoming_states`] tests.
+/// the whole state, so [`super::try_stored_trial_states`] has no whole incoming state for them. Reads
+/// the pool's own dimension, not the projection [`super::try_stored_trial_states`] tests.
 pub fn stages_whose_producer_drops_a_state_dimension(trained: &StudySetup) -> Vec<usize> {
     let n_state = trained.stage_state().n_state;
     (1..trained.fcf.pools.len())
@@ -716,11 +685,6 @@ impl RowSum {
 
 fn csr_offset(index: i32) -> usize {
     usize::try_from(index).expect("CSR offsets and indices are >= 0")
-}
-
-pub fn rounding_factor(n: usize) -> f64 {
-    let n_u = f64::from(u32::try_from(n).expect("n fits u32")) * (f64::EPSILON / 2.0);
-    n_u / (1.0 - n_u)
 }
 
 fn lifted_primal(

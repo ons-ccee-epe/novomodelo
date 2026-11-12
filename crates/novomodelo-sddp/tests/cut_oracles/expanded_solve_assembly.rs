@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use novomodelo_io::config::InflowNonNegativityMethod;
 use novomodelo_sddp::StudySetup;
+use novomodelo_sddp::setup::NodePos;
 use novomodelo_sddp::test_support::bits;
 use novomodelo_sddp::test_support::bound_recording::BoundWrite;
 use novomodelo_sddp::test_support::expander::{
@@ -11,14 +12,16 @@ use novomodelo_solver::{ActiveSolver, SolverInterface};
 
 use crate::common::expanded_solve::{
     CutRowSet, ExpandedSolve, assemble_expanded_solve, check_lifted_compact_solution,
-    load_expanded, record_expanded_evidence, solve_from_mapped_basis, stored_incoming_states,
+    load_expanded, record_expanded_evidence, solve_from_mapped_basis,
 };
 use crate::common::in_code_studies::FPHA_LAG_STUDY_KEY as LAG_STUDY;
 use crate::common::in_code_studies::fpha_lag_study;
 use crate::common::oracle_tolerance::assert_first_try;
 use crate::common::power_guards::{Guard, PowerEvidence};
 use crate::common::stored_cut_oracles::apply_oracle_config;
-use crate::common::{build_setup_in_code_with_models, train_storing_trial_states};
+use crate::common::{
+    build_setup_in_code_with_models, train_storing_trial_states, try_stored_trial_states,
+};
 
 const STAGE: usize = 1;
 
@@ -38,7 +41,7 @@ impl Case {
         train_storing_trial_states(LAG_STUDY, &mut compact);
         let (system, _, _) = fpha_lag_study();
         let expanded = expand_stage_templates(&system, &compact);
-        let incoming_state = stored_incoming_states(&compact, STAGE)
+        let incoming_state = try_stored_trial_states(&compact, NodePos(STAGE - 1))
             .expect("the lag study's pools project every state dimension")
             .into_iter()
             .next()
@@ -351,7 +354,7 @@ fn the_lifted_compact_solution_meets_every_expanded_row() {
         if compact.fcf.active_cuts(stage).next().is_none() {
             continue;
         }
-        let states = stored_incoming_states(&compact, stage)
+        let states = try_stored_trial_states(&compact, NodePos(stage - 1))
             .expect("the lag study's pools project every state dimension");
         for opening in 0..tree.n_openings(stage) {
             let raw_noise = tree.opening(stage, opening);

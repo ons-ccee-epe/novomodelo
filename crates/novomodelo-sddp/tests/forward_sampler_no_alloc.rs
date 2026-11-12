@@ -341,10 +341,13 @@ mod folded_solve {
     use novomodelo_solver::{ActiveSolver, SolverInterface};
 
     use super::{alloc_count, reset_alloc_count};
-    use crate::common::expanded_solve::{CutRowSet, stored_incoming_states};
+    use crate::common::expanded_solve::CutRowSet;
     use crate::common::in_code_studies::{FphaLagOptions, fpha_lag_study_with};
     use crate::common::stored_cut_oracles::apply_oracle_config;
-    use crate::common::{StubComm, build_setup_in_code_with_models, train_storing_trial_states};
+    use crate::common::{
+        StubComm, build_setup_in_code_with_models, train_storing_trial_states,
+        try_stored_trial_states,
+    };
 
     const STAGE: usize = 1;
     const RESIDENT_POOL: usize = 1;
@@ -388,8 +391,8 @@ mod folded_solve {
         ws.solver.load_model(template);
         ws.solver.add_rows(&cut_rows);
 
-        let stored =
-            stored_incoming_states(&setup, STAGE).expect("pool 0 projects every state dimension");
+        let stored = try_stored_trial_states(&setup, NodePos(STAGE - 1))
+            .expect("pool 0 projects every state dimension");
         assert!(
             stored.len() >= 2,
             "pool 0 stores {} trial states, two are needed",

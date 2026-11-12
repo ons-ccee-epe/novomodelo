@@ -7,7 +7,7 @@ use novomodelo_io::config::{
 };
 use novomodelo_sddp::setup::StageIdx;
 use novomodelo_sddp::test_support::bound_recording::{
-    AppendedCutRowBound, BoundRecordingSolver, CutRowPushLog, CutRowPushRecord,
+    AppendedCutRowBound, CutRowPushLog, CutRowPushRecord, CutRowPushRecorder,
 };
 use novomodelo_sddp::test_support::decks::{SLOW_DECKS, committed_decks};
 use novomodelo_sddp::test_support::external_distinct_fan_setup_heterogeneous_cut_state;
@@ -189,9 +189,8 @@ fn record_run(
     let worker_log = CutRowPushLog::new();
     let simulation_log = CutRowPushLog::new();
     let recording = |log: &CutRowPushLog, appended_bound| {
-        ActiveSolver::new().map(|solver| {
-            BoundRecordingSolver::logging_cut_row_pushes(solver, theta, log.clone(), appended_bound)
-        })
+        ActiveSolver::new()
+            .map(|solver| CutRowPushRecorder::new(solver, theta, log.clone(), appended_bound))
     };
 
     let mut solver = recording(&lower_bound_log, AppendedCutRowBound::Patched)

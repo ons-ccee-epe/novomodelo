@@ -19,9 +19,9 @@ use novomodelo_sddp::{FutureCostFunction, SddpError, StudySetup};
 use novomodelo_solver::{ActiveSolver, SolverInterface};
 use novomodelo_stochastic::OpeningTreeView;
 
-use super::StubComm;
 use super::expanded_solve::{CutRowSet, load_compact_cut_rows};
 use super::oracle_tolerance::value_tolerance;
+use super::{StubComm, lift_to_global_state};
 
 const ORACLE_ITERATIONS: u32 = 3;
 const ORACLE_RANDOM_POINTS: usize = 5;
@@ -167,10 +167,9 @@ struct OracleCtx<'a> {
     reactivated_by_final_pass: &'a [u32],
 }
 
-/// The three observations [`evaluate_point`] gathers from one sample point's
-/// probe solves, aggregated across every opening of the successor stage.
+/// What [`evaluate_point`] gathers from one sample point's probe solves,
+/// aggregated across every opening of the successor stage.
 struct PointEval {
-    canonical_x: Vec<f64>,
     q_hat: f64,
     per_opening_coeffs: Vec<Vec<f64>>,
 }
@@ -344,7 +343,6 @@ fn evaluate_point(
     }
 
     Ok(PointEval {
-        canonical_x: x.to_vec(),
         q_hat,
         per_opening_coeffs,
     })
@@ -573,9 +571,7 @@ fn check_pool(
                 }
 
                 let proj: Vec<f64> = (0..cut_state_t.n_slots())
-                    .map(|j| {
-                        eval.canonical_x[cut_state_t.global_state_index(CutSlot::new(j)).get()]
-                    })
+                    .map(|j| x[cut_state_t.global_state_index(CutSlot::new(j)).get()])
                     .collect();
 
                 let validity_q_hat = match &validity_rows {
@@ -591,7 +587,7 @@ fn check_pool(
                             .q_hat
                     }
                 };
-                let point_signature = slack_signature(occ, ws, s, &eval.canonical_x);
+                let point_signature = slack_signature(occ, ws, s, x);
                 let frozen_values: Vec<f64> = cut_signatures
                     .distinct
                     .iter()
@@ -607,7 +603,7 @@ fn check_pool(
                                 validity_rows.as_ref().unwrap_or(&active_rows),
                                 t,
                                 s,
-                                &eval.canonical_x,
+                                x,
                                 signature,
                             );
                             if value == f64::INFINITY {
@@ -683,16 +679,6 @@ fn check_pool(
     report.min_feasible_points = report.min_feasible_points.min(feasible_count);
 }
 
-/// A state stored in a pool, at its projected dimension, as a vector over the
-/// global state: the dimensions the pool drops come from `fill`.
-fn global_state(layout: &CutStateProjection, row: &[f64], fill: &[f64]) -> Vec<f64> {
-    let mut state = fill.to_vec();
-    for (j, &value) in row.iter().enumerate() {
-        state[layout.global_state_index(CutSlot::new(j)).get()] = value;
-    }
-    state
-}
-
 /// The values of the global dimensions pool `t` drops, as a state over the global
 /// state (zeros for a pool that projects every dimension).
 ///
@@ -741,7 +727,7 @@ fn recover_cut_trial_states(
             let row = pool
                 .trial_state(j)
                 .unwrap_or_else(|| panic!("{label}: pool {t}: slot {j} has no stored state"));
-            (j, global_state(layout, row, fill))
+            (j, lift_to_global_state(layout, row, fill))
         })
         .collect()
 }
@@ -773,11 +759,11 @@ fn final_trial_points(
     );
     let points: Vec<Vec<f64>> = stored[stored.len() - forward_passes..]
         .iter()
-        .map(|row| global_state(layout, row, fill))
+        .map(|row| lift_to_global_state(layout, row, fill))
         .collect();
     if layout.n_slots() < fill.len() {
         assert!(
-            bits_eq(&global_state(layout, stored[0], fill), fill),
+            bits_eq(&lift_to_global_state(layout, stored[0], fill), fill),
             "{label}: pool {t}: the first stored state is not the state the first iteration's forward pass ended the stage in"
         );
     }

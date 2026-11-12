@@ -1,6 +1,7 @@
 use novomodelo_core::System;
 use novomodelo_core::temporal::StageRiskConfig;
 use novomodelo_sddp::indexer::{CutSlot, StateDim};
+use novomodelo_sddp::setup::NodePos;
 use novomodelo_sddp::test_support::decks::{SLOW_DECKS, committed_decks};
 use novomodelo_sddp::test_support::expander::{ExpandedStudy, expand_stage_templates};
 use novomodelo_sddp::test_support::stage_state_box_bounds;
@@ -9,15 +10,15 @@ use novomodelo_solver::{ActiveSolver, SolverError, SolverInterface};
 
 use crate::common::expanded_solve::{
     CutRowSet, assemble_expanded_solve, lag_dims, load_expanded,
-    stages_whose_producer_drops_a_state_dimension, stored_incoming_states,
+    stages_whose_producer_drops_a_state_dimension,
 };
 use crate::common::in_code_studies::FPHA_LAG_STUDY_KEY as LAG_STUDY;
 use crate::common::in_code_studies::{FphaLagOptions, fpha_lag_study_with};
-use crate::common::oracle_tolerance::{assert_first_try, value_tolerance};
+use crate::common::oracle_tolerance::{assert_first_try, rounding_factor, value_tolerance};
 use crate::common::stored_cut_oracles::apply_oracle_config;
 use crate::common::{
     build_setup_in_code_with_models, fresh_system_and_setup_with, is_chain,
-    train_storing_trial_states,
+    train_storing_trial_states, try_stored_trial_states,
 };
 
 const OPENINGS: usize = 3;
@@ -26,12 +27,6 @@ const MIN_FEASIBLE_POINTS: usize = 3;
 /// A cut value of `m` terms rounds at most `m + 2` times along one term: its difference and its
 /// product, the `m - 1` adds of the dot, and the closing add of the value it starts from.
 const ROUNDINGS_BEYOND_THE_TERMS: usize = 2;
-
-fn rounding_bound(terms: usize) -> f64 {
-    let n = terms + ROUNDINGS_BEYOND_THE_TERMS;
-    let n_u = f64::from(u32::try_from(n).expect("n fits u32")) * (f64::EPSILON / 2.0);
-    n_u / (1.0 - n_u)
-}
 
 fn as_f64(count: usize) -> f64 {
     f64::from(u32::try_from(count).expect("count fits u32"))
@@ -257,7 +252,7 @@ fn assert_below(
 ) {
     let (value, magnitude) = cut.at(anchor, at);
     let tolerance = value_tolerance(value, ceiling);
-    let rounding = 2.0 * rounding_bound(cut.slopes.len()) * magnitude;
+    let rounding = 2.0 * rounding_factor(cut.slopes.len() + ROUNDINGS_BEYOND_THE_TERMS) * magnitude;
     let bound = tolerance + rounding;
     margin.record(value - ceiling, bound);
     assert!(
@@ -404,7 +399,7 @@ fn check_folded_pool(
 
 fn check_stage(fx: &Fixture, t: usize, states_per_stage: Option<usize>, totals: &mut Totals) {
     let s = t + 1;
-    let Some(mut states) = stored_incoming_states(fx.compact, s) else {
+    let Some(mut states) = try_stored_trial_states(fx.compact, NodePos(s - 1)) else {
         totals.dropped_stages.push(s);
         return;
     };

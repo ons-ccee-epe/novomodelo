@@ -7,7 +7,7 @@ use novomodelo_sddp::cut::chain_rule::{
 };
 use novomodelo_sddp::indexer::{ChainRuleSlots, CutSlot, HydroSys};
 use novomodelo_sddp::lp::builder::RowFamily;
-use novomodelo_sddp::setup::StudyParams;
+use novomodelo_sddp::setup::{NodePos, StudyParams};
 use novomodelo_sddp::test_support::expander::{ExpandedStudy, expand_stage_templates};
 use novomodelo_sddp::test_support::template_structure::column_entries;
 use novomodelo_sddp::test_support::{bits, fixture_priced_date, write_synthetic_boundary, ymd};
@@ -20,7 +20,7 @@ use novomodelo_solver::{ActiveSolver, LpSolution, RowBatch, SolverInterface};
 use crate::common::expanded_solve::{
     CutRowSet, ExpandedSolve, assemble_expanded_solve, coupled_dual_magnitudes, coupled_duals,
     lag_dims, load_expanded, record_expanded_evidence, solve_from_mapped_basis,
-    stages_whose_producer_drops_a_state_dimension, stored_incoming_states,
+    stages_whose_producer_drops_a_state_dimension,
 };
 use crate::common::in_code_studies::FPHA_LAG_STUDY_KEY as LAG_STUDY;
 use crate::common::in_code_studies::{FphaLagOptions, fpha_lag_study, fpha_lag_study_with};
@@ -30,7 +30,7 @@ use crate::common::row_families::{RowClass, classify_expanded_rows};
 use crate::common::stored_cut_oracles::apply_oracle_config;
 use crate::common::{
     build_setup_in_code_with_models, fresh_system_and_setup_with, stochastic_in_code,
-    train_storing_trial_states,
+    train_storing_trial_states, try_stored_trial_states,
 };
 use crate::{D19_DIR, D43_DIR};
 
@@ -379,7 +379,7 @@ fn check_shared_dual_identity_on(
         if compact.fcf.active_cuts(stage).next().is_none() {
             continue;
         }
-        let Some(states) = stored_incoming_states(compact, stage) else {
+        let Some(states) = try_stored_trial_states(compact, NodePos(stage - 1)) else {
             skipped_stages.push(stage);
             continue;
         };
@@ -600,7 +600,8 @@ fn the_shared_dual_identity_holds_at_every_opening_of_a_three_opening_lag_study(
         "{label}: a stage's producer pool drops a state dimension"
     );
     for &(stage, solves) in &run.solves_per_stage {
-        let states = stored_incoming_states(&compact, stage).expect("a checked stage has states");
+        let states = try_stored_trial_states(&compact, NodePos(stage - 1))
+            .expect("a checked stage has states");
         assert_eq!(
             solves,
             states.len() * OPENINGS,

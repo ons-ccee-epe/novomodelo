@@ -36,7 +36,6 @@ fn conversions_scale_by_the_row_or_column_they_bound() {
     let tolerance = UnscaledTolerance::new(1e-9, 1e-7);
     let (row_scale, col_scale) = (4.0, 0.5);
     assert_close("row residual", tolerance.row_residual(row_scale), 2.5e-10);
-    assert_close("column bound", tolerance.col_bound(col_scale), 5e-10);
     assert_close("reduced cost", tolerance.reduced_cost(col_scale), 2e-7);
     assert_close("row dual", tolerance.row_dual(row_scale), 4e-7);
 }

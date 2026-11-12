@@ -16,7 +16,7 @@ use crate::setup::StudySetup;
 use crate::setup::template_postprocess::postprocess_templates;
 use crate::test_support::template_structure::column_entries;
 
-/// Index maps from a compact stage LP to its expanded (today's) shape.
+/// Index maps from a compact stage LP to its expanded shape.
 #[derive(Debug)]
 pub struct ExpandedLayout {
     state: StateSpace,
@@ -141,7 +141,7 @@ impl ExpandedLayout {
     }
 }
 
-/// Today's stage templates rebuilt from a compact setup, unscaled and scaled.
+/// The expanded stage templates rebuilt from a compact setup, unscaled and scaled.
 #[derive(Debug)]
 pub struct ExpandedStudy {
     /// The index maps the templates follow.
@@ -226,11 +226,7 @@ fn expand_template(
     }
 }
 
-/// Rebuilds today's unscaled and scaled stage templates from a compact setup.
-///
-/// # Panics
-///
-/// Panics unless `compact` was built in the compact inflow form.
+/// Rebuilds the unscaled and scaled expanded stage templates from a compact setup.
 #[must_use]
 pub fn expand_stage_templates(system: &System, compact: &StudySetup) -> ExpandedStudy {
     let layout = ExpandedLayout::of(compact.stage_state());

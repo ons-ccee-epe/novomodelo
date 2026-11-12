@@ -52,7 +52,7 @@ use crate::common::in_code_studies::{
     CHRONOLOGICAL_NOISE_BLOCK_HOURS, CHRONOLOGICAL_NOISE_RELEASE_COST,
     chronological_noise_hydro_models, chronological_noise_study, negative_draw_water_value_spec,
 };
-use crate::common::oracle_tolerance::{UnscaledTolerance, assert_first_try};
+use crate::common::oracle_tolerance::{UnscaledTolerance, assert_first_try, rounding_factor};
 use crate::common::{StubComm, build_setup_in_code_with_models, fresh_system_and_setup_with};
 
 const M3S_TO_HM3: f64 = 3_600.0 / 1_000_000.0;
@@ -711,25 +711,20 @@ fn assert_non_degenerate(fixture: &str, quantity: &str, value: f64) {
     );
 }
 
-fn gamma(n: u32) -> f64 {
-    let order_u = f64::from(n) * (f64::EPSILON / 2.0);
-    order_u / (1.0 - order_u)
-}
-
 /// A derived value, compared within `2γ_n·S + added`; `slot` is `None` for the objective.
 struct ClosedForm<'a> {
     fixture: &'a str,
     quantity: &'a str,
     slot: Option<usize>,
     want: f64,
-    n: u32,
+    n: usize,
     abs_sum: f64,
     added: f64,
 }
 
 impl ClosedForm<'_> {
     fn assert_solved(&self, got: f64) {
-        let bound = 2.0 * gamma(self.n) * self.abs_sum + self.added;
+        let bound = 2.0 * rounding_factor(self.n) * self.abs_sum + self.added;
         let gap = (got - self.want).abs();
         let at = self
             .slot

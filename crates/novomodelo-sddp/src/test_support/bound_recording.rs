@@ -1,4 +1,5 @@
-//! Recording wrapper over a real solver, for tests that assert on the LP a solve saw.
+//! Recording wrappers over a real solver, for tests that assert on the LP a solve saw and on the
+//! cut-row writes between solves.
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -126,15 +127,6 @@ pub struct BoundRecordingSolver<S: SolverInterface> {
     appended: RowBatch,
     writes: Vec<BoundWrite>,
     recorded: Vec<RecordedSolve>,
-    log: Option<CutRowPushLog>,
-    theta_col: usize,
-    appended_bound: AppendedCutRowBound,
-    first_cut_row: usize,
-    fresh: Vec<bool>,
-    written: Vec<bool>,
-    credit_from: usize,
-    structural_window: bool,
-    added_in_window: usize,
 }
 
 impl<S: SolverInterface> BoundRecordingSolver<S> {
@@ -148,45 +140,6 @@ impl<S: SolverInterface> BoundRecordingSolver<S> {
             appended: empty_row_batch(),
             writes: Vec::new(),
             recorded: Vec::new(),
-            log: None,
-            theta_col: 0,
-            appended_bound: AppendedCutRowBound::Patched,
-            first_cut_row: 0,
-            fresh: Vec::new(),
-            written: Vec::new(),
-            credit_from: 0,
-            structural_window: false,
-            added_in_window: 0,
-        }
-    }
-
-    /// Wraps `inner` so that each `solve` pushes one [`CutRowPushRecord`] to `log` and keeps no
-    /// [`RecordedSolve`].
-    ///
-    /// A cut row is a row with an entry on `theta_col`; the loaded template's cut rows are its
-    /// last rows and every appended row is one. A cut row's RHS must be written after the last
-    /// change of pinned state or noise, which is a write to a structural row or to a column bound.
-    /// After such a write every cut row must be written again before the next solve; between two
-    /// solves without one, the rows already fresh stay fresh and only the rows appended since need
-    /// a write. Under [`AppendedCutRowBound::Patched`] an appended row's own bound is not a write;
-    /// under [`AppendedCutRowBound::Final`] a row appended after the window's last structural write
-    /// counts as written in that window.
-    ///
-    /// `Patched` is the production append-then-patch rule; `Final` models an append whose bound is
-    /// its RHS and needs no later write. `load_model` and `add_rows` panic on a template or an
-    /// appended row that breaks the cut-row shape.
-    #[must_use]
-    pub fn logging_cut_row_pushes(
-        inner: S,
-        theta_col: usize,
-        log: CutRowPushLog,
-        appended_bound: AppendedCutRowBound,
-    ) -> Self {
-        Self {
-            log: Some(log),
-            theta_col,
-            appended_bound,
-            ..Self::new(inner)
         }
     }
 
@@ -201,100 +154,6 @@ impl<S: SolverInterface> BoundRecordingSolver<S> {
     pub fn into_recorded(self) -> Vec<RecordedSolve> {
         self.recorded
     }
-
-    fn open_window(&mut self, template: &StageTemplate) {
-        if self.log.is_none() {
-            return;
-        }
-        let mut theta_rows: Vec<usize> = column_entries(template, self.theta_col)
-            .map(|(row, _)| row)
-            .collect();
-        theta_rows.sort_unstable();
-        self.first_cut_row = theta_rows.first().copied().unwrap_or(template.num_rows);
-        for (k, row) in (self.first_cut_row..template.num_rows).enumerate() {
-            assert_eq!(
-                theta_rows.get(k),
-                Some(&row),
-                "BoundRecordingSolver: template row {row} follows a cut row and has no theta entry"
-            );
-        }
-        let cut_rows = template.num_rows - self.first_cut_row;
-        self.fresh.clear();
-        self.fresh.resize(cut_rows, false);
-        self.written.clear();
-        self.written.resize(cut_rows, false);
-        self.credit_from = cut_rows;
-        self.structural_window = false;
-        self.added_in_window = 0;
-    }
-
-    fn note_structural_write(&mut self) {
-        self.structural_window = true;
-        self.credit_from = self.fresh.len();
-    }
-
-    fn note_added_rows(&mut self, rows: &RowBatch) {
-        if self.log.is_none() {
-            return;
-        }
-        let first_row = self.base_rows + self.appended.num_rows;
-        for k in 0..rows.num_rows {
-            assert!(
-                row_has_column(rows, k, self.theta_col),
-                "BoundRecordingSolver: appended row {} has no theta entry",
-                first_row + k
-            );
-        }
-        self.fresh.resize(self.fresh.len() + rows.num_rows, false);
-        self.written
-            .resize(self.written.len() + rows.num_rows, false);
-        self.added_in_window += rows.num_rows;
-    }
-
-    fn note_row_write(&mut self, row: usize) {
-        if self.log.is_none() {
-            return;
-        }
-        match row.checked_sub(self.first_cut_row) {
-            Some(cut) => self.written[cut] = true,
-            None => self.note_structural_write(),
-        }
-    }
-
-    fn close_window(&mut self) -> CutRowPushRecord {
-        let structural_window = self.structural_window;
-        let credited_from = match self.appended_bound {
-            AppendedCutRowBound::Patched => self.fresh.len(),
-            AppendedCutRowBound::Final => self.credit_from,
-        };
-        for (cut, (fresh, &written)) in self.fresh.iter_mut().zip(&self.written).enumerate() {
-            *fresh = written || cut >= credited_from || (*fresh && !structural_window);
-        }
-        let first_stale = self.fresh.iter().position(|&fresh| !fresh);
-        let record = CutRowPushRecord {
-            first_cut_row: self.first_cut_row,
-            frozen_rows: self.base_rows - self.first_cut_row,
-            appended_rows: self.appended.num_rows,
-            added_in_window: self.added_in_window,
-            structural_window,
-            stale_rows: self.fresh.iter().filter(|&&fresh| !fresh).count(),
-            first_stale_row: first_stale.map(|cut| self.first_cut_row + cut),
-        };
-        self.written.fill(false);
-        self.credit_from = self.fresh.len();
-        self.structural_window = false;
-        self.added_in_window = 0;
-        record
-    }
-}
-
-#[expect(
-    clippy::cast_sign_loss,
-    reason = "CSR row_starts and col_indices are non-negative by construction"
-)]
-fn row_has_column(rows: &RowBatch, row: usize, col: usize) -> bool {
-    let span = rows.row_starts[row] as usize..rows.row_starts[row + 1] as usize;
-    rows.col_indices[span].iter().any(|&c| c as usize == col)
 }
 
 impl<S: SolverInterface> SolverInterface for BoundRecordingSolver<S> {
@@ -310,12 +169,10 @@ impl<S: SolverInterface> SolverInterface for BoundRecordingSolver<S> {
         self.appended.clear();
         self.appended.row_starts.push(0);
         self.writes.clear();
-        self.open_window(template);
         self.inner.load_model(template);
     }
 
     fn add_rows(&mut self, rows: &RowBatch) {
-        self.note_added_rows(rows);
         let appended = &mut self.appended;
         let offset = appended.row_starts[appended.num_rows];
         self.writes.push(BoundWrite::AddRows {
@@ -355,9 +212,6 @@ impl<S: SolverInterface> SolverInterface for BoundRecordingSolver<S> {
                 self.appended.row_upper[i - self.base_rows] = upper[k];
             }
         }
-        for &i in indices {
-            self.note_row_write(i);
-        }
         self.writes.push(BoundWrite::RowBounds {
             indices: indices.to_vec(),
             lower: lower.to_vec(),
@@ -385,9 +239,6 @@ impl<S: SolverInterface> SolverInterface for BoundRecordingSolver<S> {
                 self.appended.row_upper[row - self.base_rows] = f64::INFINITY;
             }
         }
-        for row in first_row..first_row + lower.len() {
-            self.note_row_write(row);
-        }
         self.writes.push(BoundWrite::RowLowerRange {
             first_row,
             lower: lower.to_vec(),
@@ -408,9 +259,6 @@ impl<S: SolverInterface> SolverInterface for BoundRecordingSolver<S> {
             t.col_lower[i] = lower[k];
             t.col_upper[i] = upper[k];
         }
-        if self.log.is_some() {
-            self.note_structural_write();
-        }
         self.writes.push(BoundWrite::ColBounds {
             indices: indices.to_vec(),
             lower: lower.to_vec(),
@@ -424,24 +272,235 @@ impl<S: SolverInterface> SolverInterface for BoundRecordingSolver<S> {
         reason = "every caller invokes load_model before solve, so current is always Some"
     )]
     fn solve(&mut self, basis: Option<&Basis>) -> Result<SolutionView<'_>, SolverError> {
-        if self.log.is_none() {
-            let template = self
-                .current
-                .clone()
-                .expect("BoundRecordingSolver: load_model precedes solve");
-            self.recorded.push(RecordedSolve {
-                template,
-                base_rows: self.base_rows,
-                appended: self.appended.clone(),
-                writes: std::mem::take(&mut self.writes),
-            });
-        } else {
-            self.writes.clear();
+        let template = self
+            .current
+            .clone()
+            .expect("BoundRecordingSolver: load_model precedes solve");
+        self.recorded.push(RecordedSolve {
+            template,
+            base_rows: self.base_rows,
+            appended: self.appended.clone(),
+            writes: std::mem::take(&mut self.writes),
+        });
+        self.inner.solve(basis)
+    }
+
+    fn warm_starts(&self) -> bool {
+        self.inner.warm_starts()
+    }
+
+    fn get_basis(&mut self, out: &mut Basis) {
+        self.inner.get_basis(out);
+    }
+
+    fn statistics(&self) -> SolverStatistics {
+        self.inner.statistics()
+    }
+
+    fn statistics_into(&self, out: &mut SolverStatistics) {
+        self.inner.statistics_into(out);
+    }
+
+    fn name(&self) -> &'static str {
+        self.inner.name()
+    }
+
+    fn solver_name_version(&self) -> String {
+        self.inner.solver_name_version()
+    }
+
+    fn record_reconstruction_stats(&mut self) {
+        self.inner.record_reconstruction_stats();
+    }
+
+    fn reset_solver_state(&mut self) {
+        self.inner.reset_solver_state();
+    }
+}
+
+/// [`SolverInterface`] wrapper that forwards every call to `inner` and pushes one
+/// [`CutRowPushRecord`] to its [`CutRowPushLog`] per `solve`.
+///
+/// A cut row is a row with an entry on `theta_col`; the loaded template's cut rows are its
+/// last rows and every appended row is one. A cut row's RHS must be written after the last
+/// change of pinned state or noise, which is a write to a structural row or to a column bound.
+/// After such a write every cut row must be written again before the next solve; between two
+/// solves without one, the rows already fresh stay fresh and only the rows appended since need
+/// a write. Under [`AppendedCutRowBound::Patched`] an appended row's own bound is not a write;
+/// under [`AppendedCutRowBound::Final`] a row appended after the window's last structural write
+/// counts as written in that window.
+///
+/// `Patched` is the production append-then-patch rule; `Final` models an append whose bound is
+/// its RHS and needs no later write. `load_model` and `add_rows` panic on a template or an
+/// appended row that breaks the cut-row shape.
+pub struct CutRowPushRecorder<S: SolverInterface> {
+    inner: S,
+    log: CutRowPushLog,
+    theta_col: usize,
+    appended_bound: AppendedCutRowBound,
+    base_rows: usize,
+    appended_rows: usize,
+    first_cut_row: usize,
+    fresh: Vec<bool>,
+    written: Vec<bool>,
+    credit_from: usize,
+    structural_window: bool,
+    added_in_window: usize,
+}
+
+impl<S: SolverInterface> CutRowPushRecorder<S> {
+    /// Wraps `inner` with nothing loaded; each `solve` pushes its record to `log`.
+    #[must_use]
+    pub fn new(
+        inner: S,
+        theta_col: usize,
+        log: CutRowPushLog,
+        appended_bound: AppendedCutRowBound,
+    ) -> Self {
+        Self {
+            inner,
+            log,
+            theta_col,
+            appended_bound,
+            base_rows: 0,
+            appended_rows: 0,
+            first_cut_row: 0,
+            fresh: Vec::new(),
+            written: Vec::new(),
+            credit_from: 0,
+            structural_window: false,
+            added_in_window: 0,
         }
-        let record = self.log.is_some().then(|| self.close_window());
-        if let Some((log, record)) = self.log.as_ref().zip(record) {
-            log.push(record);
+    }
+
+    fn open_window(&mut self, template: &StageTemplate) {
+        let mut theta_rows: Vec<usize> = column_entries(template, self.theta_col)
+            .map(|(row, _)| row)
+            .collect();
+        theta_rows.sort_unstable();
+        self.first_cut_row = theta_rows.first().copied().unwrap_or(template.num_rows);
+        for (k, row) in (self.first_cut_row..template.num_rows).enumerate() {
+            assert_eq!(
+                theta_rows.get(k),
+                Some(&row),
+                "CutRowPushRecorder: template row {row} follows a cut row and has no theta entry"
+            );
         }
+        let cut_rows = template.num_rows - self.first_cut_row;
+        self.fresh.clear();
+        self.fresh.resize(cut_rows, false);
+        self.written.clear();
+        self.written.resize(cut_rows, false);
+        self.credit_from = cut_rows;
+        self.structural_window = false;
+        self.added_in_window = 0;
+    }
+
+    fn note_structural_write(&mut self) {
+        self.structural_window = true;
+        self.credit_from = self.fresh.len();
+    }
+
+    fn note_added_rows(&mut self, rows: &RowBatch) {
+        let first_row = self.base_rows + self.appended_rows;
+        for k in 0..rows.num_rows {
+            assert!(
+                row_has_column(rows, k, self.theta_col),
+                "CutRowPushRecorder: appended row {} has no theta entry",
+                first_row + k
+            );
+        }
+        self.fresh.resize(self.fresh.len() + rows.num_rows, false);
+        self.written
+            .resize(self.written.len() + rows.num_rows, false);
+        self.added_in_window += rows.num_rows;
+        self.appended_rows += rows.num_rows;
+    }
+
+    fn note_row_write(&mut self, row: usize) {
+        match row.checked_sub(self.first_cut_row) {
+            Some(cut) => self.written[cut] = true,
+            None => self.note_structural_write(),
+        }
+    }
+
+    fn close_window(&mut self) -> CutRowPushRecord {
+        let structural_window = self.structural_window;
+        let credited_from = match self.appended_bound {
+            AppendedCutRowBound::Patched => self.fresh.len(),
+            AppendedCutRowBound::Final => self.credit_from,
+        };
+        for (cut, (fresh, &written)) in self.fresh.iter_mut().zip(&self.written).enumerate() {
+            *fresh = written || cut >= credited_from || (*fresh && !structural_window);
+        }
+        let first_stale = self.fresh.iter().position(|&fresh| !fresh);
+        let record = CutRowPushRecord {
+            first_cut_row: self.first_cut_row,
+            frozen_rows: self.base_rows - self.first_cut_row,
+            appended_rows: self.appended_rows,
+            added_in_window: self.added_in_window,
+            structural_window,
+            stale_rows: self.fresh.iter().filter(|&&fresh| !fresh).count(),
+            first_stale_row: first_stale.map(|cut| self.first_cut_row + cut),
+        };
+        self.written.fill(false);
+        self.credit_from = self.fresh.len();
+        self.structural_window = false;
+        self.added_in_window = 0;
+        record
+    }
+}
+
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "CSR row_starts and col_indices are non-negative by construction"
+)]
+fn row_has_column(rows: &RowBatch, row: usize, col: usize) -> bool {
+    let span = rows.row_starts[row] as usize..rows.row_starts[row + 1] as usize;
+    rows.col_indices[span].iter().any(|&c| c as usize == col)
+}
+
+impl<S: SolverInterface> SolverInterface for CutRowPushRecorder<S> {
+    type Profile = S::Profile;
+
+    fn apply_profile(&mut self, profile: &Self::Profile) {
+        self.inner.apply_profile(profile);
+    }
+
+    fn load_model(&mut self, template: &StageTemplate) {
+        self.base_rows = template.num_rows;
+        self.appended_rows = 0;
+        self.open_window(template);
+        self.inner.load_model(template);
+    }
+
+    fn add_rows(&mut self, rows: &RowBatch) {
+        self.note_added_rows(rows);
+        self.inner.add_rows(rows);
+    }
+
+    fn set_row_bounds(&mut self, indices: &[usize], lower: &[f64], upper: &[f64]) {
+        for &i in indices {
+            self.note_row_write(i);
+        }
+        self.inner.set_row_bounds(indices, lower, upper);
+    }
+
+    fn set_row_lower_bounds_range(&mut self, first_row: usize, lower: &[f64]) {
+        for row in first_row..first_row + lower.len() {
+            self.note_row_write(row);
+        }
+        self.inner.set_row_lower_bounds_range(first_row, lower);
+    }
+
+    fn set_col_bounds(&mut self, indices: &[usize], lower: &[f64], upper: &[f64]) {
+        self.note_structural_write();
+        self.inner.set_col_bounds(indices, lower, upper);
+    }
+
+    fn solve(&mut self, basis: Option<&Basis>) -> Result<SolutionView<'_>, SolverError> {
+        let record = self.close_window();
+        self.log.push(record);
         self.inner.solve(basis)
     }
 
@@ -486,6 +545,7 @@ mod tests {
 
     use super::{
         AppendedCutRowBound, BoundRecordingSolver, BoundWrite, CutRowPushLog, CutRowPushRecord,
+        CutRowPushRecorder,
     };
 
     const THETA_COL: usize = 1;
@@ -549,23 +609,18 @@ mod tests {
         row_on(1)
     }
 
-    fn logging_recorder(log: &CutRowPushLog) -> BoundRecordingSolver<ActiveSolver> {
+    fn logging_recorder(log: &CutRowPushLog) -> CutRowPushRecorder<ActiveSolver> {
         recorder_with(log, AppendedCutRowBound::Patched)
     }
 
     fn recorder_with(
         log: &CutRowPushLog,
         appended_bound: AppendedCutRowBound,
-    ) -> BoundRecordingSolver<ActiveSolver> {
-        BoundRecordingSolver::logging_cut_row_pushes(
-            solver(),
-            THETA_COL,
-            log.clone(),
-            appended_bound,
-        )
+    ) -> CutRowPushRecorder<ActiveSolver> {
+        CutRowPushRecorder::new(solver(), THETA_COL, log.clone(), appended_bound)
     }
 
-    fn write_structural_row(rec: &mut BoundRecordingSolver<ActiveSolver>) {
+    fn write_structural_row(rec: &mut CutRowPushRecorder<ActiveSolver>) {
         rec.set_row_bounds(&[0], &[1.0], &[f64::INFINITY]);
     }
 
@@ -813,17 +868,6 @@ mod tests {
                 first_stale_row: Some(1),
             }
         );
-    }
-
-    #[test]
-    fn the_log_mode_keeps_no_solves() {
-        let log = CutRowPushLog::new();
-        let mut rec = logging_recorder(&log);
-        rec.load_model(&theta_template());
-        rec.solve(None).expect("the LP is feasible");
-
-        assert!(rec.recorded().is_empty());
-        assert_eq!(log.records().len(), 1);
     }
 
     #[test]

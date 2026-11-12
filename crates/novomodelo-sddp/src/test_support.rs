@@ -1747,7 +1747,7 @@ pub fn cut_rows_for_slots_into(
     );
 }
 
-/// The cut rows of the LP a [`prep_for_probe`] call prepares.
+/// The cut rows of the LP an [`opening_cut_for_probe`] call solves.
 pub struct ProbeCuts<'a> {
     /// The resident pool the cut rows come from.
     pub pool: &'a CutPool,
@@ -1759,7 +1759,7 @@ pub struct ProbeCuts<'a> {
 
 /// Prepare one stage-LP solve through its production owner,
 /// [`StageSolvePrep::prepare_single`], with the frozen opening solver.
-pub fn prep_for_probe<S: SolverInterface + Send>(
+fn prep_for_probe<S: SolverInterface + Send>(
     ws: &mut SolverWorkspace<S>,
     ctx: &StageContext<'_>,
     training_ctx: &TrainingContext<'_>,
@@ -1786,9 +1786,9 @@ pub fn prep_for_probe<S: SolverInterface + Send>(
     );
 }
 
-/// [`prep_for_probe`] for a deliberate counterfactual pin that lies outside its producer's
-/// admissible box on purpose (an LP-sensitivity probe measuring the response to a value the seam
-/// would never itself produce).
+/// Prepares one stage-LP solve as [`opening_cut_for_probe`] does, for a deliberate counterfactual
+/// pin that lies outside its producer's admissible box on purpose (an LP-sensitivity probe
+/// measuring the response to a value the seam would never itself produce).
 ///
 /// The prep runs at `pinned_state` clamped into the box, then the LP-column pin is rewritten at
 /// `pinned_state` itself, so the counterfactual may differ from the clamp on LP-column dimensions
@@ -2055,11 +2055,6 @@ impl<C: Communicator> BackwardPhaseProbe<'_, C> {
         self.session.run_backward_phase(iteration).map(|_| ())
     }
 
-    /// Runs the periodic cut selection, the budget and the template refreeze.
-    pub fn run_cut_management(&mut self, iteration: u64) {
-        self.session.run_cut_management(iteration);
-    }
-
     /// Frozen pins so far that found no slab and recomputed their brackets.
     #[must_use]
     pub fn slab_misses(&self) -> u64 {
@@ -2174,10 +2169,16 @@ fn canonical_outgoing_state_for_probe(
 /// Canonicalize a RAW producer-stage state exactly as the forward/simulation
 /// read-back seam does (`raw_producer_state`, possibly outside the producer's
 /// admissible box; [`assemble_outgoing_state`] performs the clamp; the lag
-/// region is unbounded and passes through), then
-/// delegate to [`write_backward_opening_outcome_at_canonical_state_for_probe`]
-/// with the resulting canonical `x_hat`; `pool_id` selects the cut pool and its
-/// projection.
+/// region is unbounded and passes through), then drive the real opening solve
+/// and cut extraction for one opening at the resulting canonical `x_hat`;
+/// `pool_id` selects the cut pool and its projection.
+///
+/// That canonical value is the single `x_hat` threaded into BOTH the pin
+/// (the stage-LP prep) and the intercept ([`opening_cut_for_probe`]),
+/// mirroring the backward opening loop. The state the LP was pinned at is
+/// recovered separately from the solved primal — an independent data path — so
+/// [`CanonicalCutProbe::pinned_x_hat`] cross-checks the pin against the cut
+/// instead of re-deriving the intercept's own formula.
 ///
 /// # Panics
 ///
@@ -2228,53 +2229,7 @@ pub fn write_backward_opening_outcome_for_probe<S: SolverInterface + Send>(
         &realized_inflow,
     );
     let mut canonical_x_hat = canonical_state[..layout.n_state].to_vec();
-    canonical_x_hat[lag_range].copy_from_slice(raw_lags);
-
-    write_backward_opening_outcome_at_canonical_state_for_probe(
-        ws,
-        ctx,
-        training_ctx,
-        cut_pool,
-        pool_id,
-        stage,
-        &canonical_x_hat,
-        raw_noise,
-    )
-}
-
-/// Drive the real opening solve and cut extraction for one opening at an
-/// already-canonical state `x̂`.
-///
-/// That canonical value is the single `x_hat` threaded into BOTH the pin
-/// ([`prep_for_probe`]) and the intercept ([`opening_cut_for_probe`]),
-/// mirroring the backward opening loop. The state the LP was pinned at is
-/// recovered separately from the solved primal — an independent data path — so
-/// [`CanonicalCutProbe::pinned_x_hat`] cross-checks the pin against the cut
-/// instead of re-deriving the intercept's own formula.
-///
-/// # Panics
-///
-/// Panics if `canonical_x_hat.len() != StateSpace::n_state`.
-///
-/// # Errors
-///
-/// Propagates [`SddpError`] from the stage solve.
-pub fn write_backward_opening_outcome_at_canonical_state_for_probe<S: SolverInterface + Send>(
-    ws: &mut SolverWorkspace<S>,
-    ctx: &StageContext<'_>,
-    training_ctx: &TrainingContext<'_>,
-    cut_pool: &CutPool,
-    pool_id: usize,
-    stage: StageIdx,
-    canonical_x_hat: &[f64],
-    raw_noise: &[f64],
-) -> Result<CanonicalCutProbe, SddpError> {
-    let layout = training_ctx.state;
-    assert_eq!(
-        canonical_x_hat.len(),
-        layout.n_state,
-        "canonical_x_hat must have one entry per state dimension"
-    );
+    canonical_x_hat[lag_range.clone()].copy_from_slice(raw_lags);
 
     let template = ctx.template(stage);
     ws.solver.reset_solver_state();
@@ -2286,7 +2241,7 @@ pub fn write_backward_opening_outcome_at_canonical_state_for_probe<S: SolverInte
         training_ctx,
         &ProbeOpening {
             stage,
-            pinned_state: canonical_x_hat,
+            pinned_state: &canonical_x_hat,
             raw_noise,
             cuts: ProbeCuts {
                 pool: cut_pool,
@@ -2299,7 +2254,6 @@ pub fn write_backward_opening_outcome_at_canonical_state_for_probe<S: SolverInte
         &mut cut,
     )?;
 
-    let lag_range = layout.state_dim_lag_range();
     let pinned_x_hat: Vec<f64> = (0..layout.n_state)
         .map(|j| {
             if lag_range.contains(&j) {
@@ -2316,7 +2270,7 @@ pub fn write_backward_opening_outcome_at_canonical_state_for_probe<S: SolverInte
             coefficients: cut.coefficients,
             objective_value: cut.objective,
         },
-        canonical_x_hat: canonical_x_hat.to_vec(),
+        canonical_x_hat,
         pinned_x_hat,
     })
 }
@@ -5166,9 +5120,9 @@ pub fn extensive_form_optimum(setup: &StudySetup) -> f64 {
 
 // ── Dual-folding trunk+fan fixture ────────────────────────────────────────────
 
-/// PAR(1) coefficient `ψ` for the dual-folding trunk — nonzero so the incoming
-/// inflow-lag column carries a genuine subgradient (`∂Q/∂lag ≠ 0`); a zero `ψ`
-/// makes the lag inert and the fold vacuous.
+/// PAR(1) coefficient `ψ` for the dual-folding trunk — nonzero so the inflow lag
+/// carries a genuine subgradient (`ψ·g_h`, the chain rule's lag term, `∂Q/∂lag ≠ 0`);
+/// a zero `ψ` makes the lag inert and the fold vacuous.
 const DUAL_FOLDING_PSI: f64 = 0.5;
 /// Near-zero inflow std for the dual-folding trunk (mirrors
 /// `d16_par1_lag_shift`'s `1e-10`): the series is deterministic yet non-degenerate,
@@ -5193,14 +5147,13 @@ const DUAL_FOLDING_STORAGE: StorageSpec = StorageSpec {
 
 /// Which inflow-lag representation a dual-folding build carries on its
 /// deterministic trunk. Both variants share one [`System`] and one
-/// the boundary-inferred inflow-lag depth; they differ ONLY in the per-stage
-/// `StageStateConfig.inflow_lags` toggle, so the LP columns (and the PAR
-/// dynamics) are identical and only the trunk cut PROJECTION changes.
+/// boundary-inferred inflow-lag depth; they differ ONLY in the per-stage
+/// `StageStateConfig.inflow_lags` toggle, so the LP and the PAR dynamics are
+/// identical and only the trunk cut PROJECTION changes.
 #[derive(Debug, Clone, Copy)]
 pub enum LagFold {
-    /// Bound-fixed lag: trunk cuts project storage only. The incoming lag column
-    /// is still pinned, but its reduced cost is not projected into the cut — the
-    /// lag is priced through the (storage-only) boundary future cost.
+    /// Trunk cuts project storage only: the lag is not a cut-state dimension, so
+    /// no cut carries a lag coefficient.
     Folded,
     /// Lag-state-enabled: trunk cuts carry the inflow lag as an explicit cut-state
     /// dimension alongside storage.
