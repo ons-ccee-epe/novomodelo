@@ -337,8 +337,8 @@ pub(crate) fn assemble_outgoing_state(
 
 /// Advances the worker's `current_state` through [`assemble_outgoing_state`] from the
 /// primal in `scratch.unscaled_primal` and the realized inflow in
-/// `scratch.realized_inflow_buf`, leaving the state it advanced from in
-/// `scratch.incoming_lags_buf` for the caller.
+/// `scratch.realized_inflow_buf`, leaving the incoming lag slice of the state it advanced
+/// from in `scratch.incoming_lags_buf` for the caller.
 pub(crate) fn advance_worker_state<S: SolverInterface>(
     ws: &mut SolverWorkspace<S>,
     layout: &StateSpace,
