@@ -2438,7 +2438,7 @@ fn simulate_with_captured_basis_preserves_row_statuses() {
     // node_id must match the chain's node_ids[0] == 0 (n_stages = 1 below) or the
     // new node-tag check drops this basis to cold, breaking the warm-start
     // assertions this test exists to pin.
-    let mut cb = CapturedBasis::new(14, 9, 6, 3, 1, NodeId(0));
+    let mut cb = CapturedBasis::new(14, 9, 6, 3, NodeId(0));
     cb.basis.row_status = vec![
         BASE_STATUS,
         BASE_STATUS,
@@ -2452,7 +2452,6 @@ fn simulate_with_captured_basis_preserves_row_statuses() {
     ];
     cb.basis.col_status = vec![BasisStatus::Basic; 14];
     cb.cut_row_slots.extend_from_slice(&[10u32, 11, 12]);
-    cb.state_at_capture.push(1.0);
 
     let stage_bases: Vec<Option<CapturedBasis>> = vec![Some(cb)];
 
@@ -2758,10 +2757,9 @@ fn two_leaf_fan_node_graph() -> NodeGraph {
 /// requirement, mirroring `run_stage_solve_warm_start_frozen_path_succeeds`'s
 /// fixture.
 fn warm_basis_for_node(node_id: NodeId) -> CapturedBasis {
-    let mut cb = CapturedBasis::new(4, 2, 2, 0, 1, node_id);
+    let mut cb = CapturedBasis::new(4, 2, 2, 0, node_id);
     cb.basis.col_status[0] = BasisStatus::Basic;
     cb.basis.col_status[1] = BasisStatus::Basic;
-    cb.state_at_capture.push(0.0);
     cb
 }
 

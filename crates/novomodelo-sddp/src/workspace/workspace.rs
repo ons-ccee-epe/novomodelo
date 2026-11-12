@@ -52,9 +52,6 @@ pub struct CapturedBasis {
     /// Cut pool slot for each cut row in `basis.row_status[base_row_count..]`;
     /// length equals `basis.row_status.len() - base_row_count` when populated.
     pub cut_row_slots: Vec<u32>,
-    /// State vector `x_hat` at capture, the operating point for evaluating newly
-    /// added cuts on the backward warm-start.
-    pub state_at_capture: Vec<f64>,
     /// Node this basis was captured at (`NodeGraph::node_ids[node]`).
     pub node_id: NodeId,
 }
@@ -67,13 +64,8 @@ pub struct CapturedBasis {
 ///
 /// `cut_row_slots` is the load-bearing reconstruction key —
 /// `build_slot_lookup` binds stored cut-row statuses to target-LP cut rows by
-/// slot id. `state_at_capture` is not read by any current reconstruction
-/// reader; it is retained for diagnostics and to allow re-introducing a
-/// state-dependent reuse policy without a wire-format change. The DCS arm
-/// captures no basis by design (a captured basis would describe the frozen
-/// layout, not the DCS resident subset — see `StageOpeningSolver::captures_basis`),
-/// so there the field is never part of a consumed warm-start.
-pub const BASIS_BROADCAST_FORMAT_TAG: i32 = 2;
+/// slot id. The payload is a single `i32` buffer.
+pub const BASIS_BROADCAST_FORMAT_TAG: i32 = 3;
 
 /// Converts via [`BasisStatus::to_discriminant_code`], the single owner of the numeric
 /// mapping (injective for round-trip). Payload byte layout owned by the
@@ -89,21 +81,19 @@ fn basis_status_from_wire_code(code: i32) -> BasisStatus {
 }
 
 impl CapturedBasis {
-    /// Pre-sizes `cut_row_slots` and `state_at_capture` but leaves them empty (length 0).
+    /// Pre-sizes `cut_row_slots` but leaves it empty (length 0).
     #[must_use]
     pub fn new(
         num_cols: usize,
         num_rows: usize,
         base_row_count: usize,
         cut_slot_capacity: usize,
-        n_state: usize,
         node_id: NodeId,
     ) -> Self {
         Self {
             basis: Basis::new(num_cols, num_rows),
             base_row_count,
             cut_row_slots: Vec::with_capacity(cut_slot_capacity),
-            state_at_capture: Vec::with_capacity(n_state),
             node_id,
         }
     }
@@ -118,10 +108,9 @@ impl CapturedBasis {
     /// Retains capacity. Does not touch `basis` (next `get_basis` overwrites it).
     pub fn clear(&mut self) {
         self.cut_row_slots.clear();
-        self.state_at_capture.clear();
     }
 
-    /// Append this basis's wire-format payload to the output buffers.
+    /// Append this basis's wire-format payload to the output buffer.
     ///
     /// Single owner of the wire format; any change must update both this method and
     /// [`CapturedBasis::try_from_broadcast_payload`] together.
@@ -134,17 +123,14 @@ impl CapturedBasis {
     /// - `row_status.len()` as `i32`
     /// - `base_row_count` as `i32`
     /// - `cut_row_slots.len()` as `i32`
-    /// - `state_at_capture.len()` as `i32`
     /// - `col_status[..]` mapped through `basis_status_to_wire_code`
     /// - `row_status[..]` mapped through `basis_status_to_wire_code`
     /// - `cut_row_slots[..]` cast to `i32`
     ///
-    /// Pushes `state_at_capture[..]` into `f64_buf`.
-    ///
     /// Callers write the `0_i32` "no basis" sentinel when
     /// `Option<CapturedBasis>` is `None`.
     #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-    pub fn to_broadcast_payload(&self, i32_buf: &mut Vec<i32>, f64_buf: &mut Vec<f64>) {
+    pub fn to_broadcast_payload(&self, i32_buf: &mut Vec<i32>) {
         i32_buf.push(1_i32);
         i32_buf.push(BASIS_BROADCAST_FORMAT_TAG);
         i32_buf.push(self.node_id.0);
@@ -152,7 +138,6 @@ impl CapturedBasis {
         i32_buf.push(self.basis.row_status.len() as i32);
         i32_buf.push(self.base_row_count as i32);
         i32_buf.push(self.cut_row_slots.len() as i32);
-        i32_buf.push(self.state_at_capture.len() as i32);
         for &status in &self.basis.col_status {
             i32_buf.push(basis_status_to_wire_code(status));
         }
@@ -164,11 +149,10 @@ impl CapturedBasis {
         for &slot in &self.cut_row_slots {
             i32_buf.push(slot as i32);
         }
-        f64_buf.extend_from_slice(&self.state_at_capture);
     }
 
-    /// Deserialise one stage's payload from the two wire-format
-    /// buffers, advancing the cursors past the consumed bytes.
+    /// Deserialise one stage's payload from the wire-format buffer,
+    /// advancing the cursor past the consumed bytes.
     ///
     /// Returns `Ok(None)` when the sentinel read is `0` (no basis
     /// for this stage). Returns `Ok(Some(captured))` when the
@@ -186,19 +170,15 @@ impl CapturedBasis {
     /// - `row_status.len()` as `i32`
     /// - `base_row_count` as `i32`
     /// - `cut_row_slots.len()` as `i32`
-    /// - `state_at_capture.len()` as `i32`
     /// - `col_status[..]` decoded through `basis_status_from_wire_code`
     /// - `row_status[..]` decoded through `basis_status_from_wire_code`
     /// - `cut_row_slots[..]` (stored as `i32`, cast back to `u32`)
     ///
-    /// Reads `state_at_capture[..]` from `f64_buf`.
-    ///
     /// # Errors
     ///
-    /// Returns `SddpError::Validation` if the `i32_buf` or
-    /// `f64_buf` is truncated at any of the bounded reads
-    /// (sentinel, format tag, `node_id` + five length fields, `col_status`,
-    /// `row_status`, `cut_row_slots`, `state_at_capture`), or if the format-tag
+    /// Returns `SddpError::Validation` if the `i32_buf` is truncated at any of
+    /// the bounded reads (sentinel, format tag, `node_id` + four length fields,
+    /// `col_status`, `row_status`, `cut_row_slots`), or if the format-tag
     /// field does not match [`BASIS_BROADCAST_FORMAT_TAG`]. The error message
     /// names the affected stage and the expected vs. available byte count.
     #[allow(
@@ -210,8 +190,6 @@ impl CapturedBasis {
         stage: usize,
         i32_buf: &[i32],
         i32_cursor: &mut usize,
-        f64_buf: &[f64],
-        f64_cursor: &mut usize,
     ) -> Result<Option<Self>, SddpError> {
         if *i32_cursor >= i32_buf.len() {
             return Err(Validation(format!(
@@ -243,7 +221,7 @@ impl CapturedBasis {
             )));
         }
 
-        if *i32_cursor + 6 > i32_buf.len() {
+        if *i32_cursor + 5 > i32_buf.len() {
             return Err(Validation(format!(
                 "try_from_broadcast_payload: buffer truncated reading node_id + lengths at stage \
                  {stage}"
@@ -258,8 +236,6 @@ impl CapturedBasis {
         let base_row_count = i32_buf[*i32_cursor] as usize;
         *i32_cursor += 1;
         let cut_slot_count = i32_buf[*i32_cursor] as usize;
-        *i32_cursor += 1;
-        let state_len = i32_buf[*i32_cursor] as usize;
         *i32_cursor += 1;
 
         if *i32_cursor + col_len > i32_buf.len() {
@@ -303,16 +279,6 @@ impl CapturedBasis {
             .collect();
         *i32_cursor += cut_slot_count;
 
-        if *f64_cursor + state_len > f64_buf.len() {
-            return Err(Validation(format!(
-                "try_from_broadcast_payload: f64 buffer truncated reading state_at_capture at \
-                 stage {stage} (need {state_len}, have {})",
-                f64_buf.len() - *f64_cursor
-            )));
-        }
-        let state_at_capture = f64_buf[*f64_cursor..*f64_cursor + state_len].to_vec();
-        *f64_cursor += state_len;
-
         Ok(Some(Self {
             basis: Basis {
                 col_status,
@@ -320,7 +286,6 @@ impl CapturedBasis {
             },
             base_row_count,
             cut_row_slots,
-            state_at_capture,
             node_id,
         }))
     }
@@ -1103,11 +1068,7 @@ impl ScratchBuffers {
                 Vec::new()
             },
             downstream_weight_accum: 0.0,
-            downstream_completed_lags: if downstream_par_order > 0 {
-                vec![0.0_f64; hydro_count * downstream_par_order]
-            } else {
-                Vec::new()
-            },
+            downstream_completed_lags: vec![0.0_f64; hydro_count * downstream_par_order],
             downstream_n_completed: 0,
             recon_slot_lookup: vec![None; initial_pool_capacity],
             trajectory_costs_buf: Vec::with_capacity(max_local_fwd),
@@ -2279,7 +2240,7 @@ mod tests {
     #[test]
     fn basis_store_get_mut_set_and_retrieve() {
         let mut store = BasisStore::new(2, 3);
-        *store.get_mut(1, NodePos(2)) = Some(CapturedBasis::new(4, 2, 0, 0, 0, NodeId(0)));
+        *store.get_mut(1, NodePos(2)) = Some(CapturedBasis::new(4, 2, 0, 0, NodeId(0)));
         assert!(store.get(1, NodePos(2)).is_some());
         assert!(store.get(0, NodePos(0)).is_none());
         assert!(store.get(1, NodePos(0)).is_none());
@@ -2307,9 +2268,9 @@ mod tests {
         let mut slices = store.split_workers_mut(4, 2);
 
         // Worker 0 writes to scenario 0 stage 1.
-        *slices[0].get_mut(0, NodePos(1)) = Some(CapturedBasis::new(2, 1, 0, 0, 0, NodeId(0)));
+        *slices[0].get_mut(0, NodePos(1)) = Some(CapturedBasis::new(2, 1, 0, 0, NodeId(0)));
         // Worker 1 writes to scenario 3 stage 2.
-        *slices[1].get_mut(3, NodePos(2)) = Some(CapturedBasis::new(2, 1, 0, 0, 0, NodeId(0)));
+        *slices[1].get_mut(3, NodePos(2)) = Some(CapturedBasis::new(2, 1, 0, 0, NodeId(0)));
 
         // Drop slices to release the borrow on store.
         drop(slices);
@@ -2330,7 +2291,7 @@ mod tests {
     fn basis_store_split_single_worker() {
         let mut store = BasisStore::new(3, 2);
         let mut slices = store.split_workers_mut(3, 1);
-        *slices[0].get_mut(2, NodePos(1)) = Some(CapturedBasis::new(1, 0, 0, 0, 0, NodeId(0)));
+        *slices[0].get_mut(2, NodePos(1)) = Some(CapturedBasis::new(1, 0, 0, 0, NodeId(0)));
         drop(slices);
         assert!(store.get(2, NodePos(1)).is_some());
     }
@@ -2355,8 +2316,8 @@ mod tests {
         let mut slices = store.split_workers_mut(6, 3);
 
         // Worker 1 covers absolute scenarios 2..4.
-        *slices[1].get_mut(2, NodePos(0)) = Some(CapturedBasis::new(1, 0, 0, 0, 0, NodeId(0)));
-        *slices[1].get_mut(3, NodePos(1)) = Some(CapturedBasis::new(1, 0, 0, 0, 0, NodeId(0)));
+        *slices[1].get_mut(2, NodePos(0)) = Some(CapturedBasis::new(1, 0, 0, 0, NodeId(0)));
+        *slices[1].get_mut(3, NodePos(1)) = Some(CapturedBasis::new(1, 0, 0, 0, NodeId(0)));
         drop(slices);
 
         assert!(store.get(2, NodePos(0)).is_some());
@@ -2383,7 +2344,7 @@ mod tests {
         for slice in &mut slices {
             let (start, end) = slice.scenario_window();
             for m in start..end {
-                *slice.get_mut(m, NodePos(1)) = Some(CapturedBasis::new(1, 0, 0, 0, 0, NodeId(0)));
+                *slice.get_mut(m, NodePos(1)) = Some(CapturedBasis::new(1, 0, 0, 0, NodeId(0)));
             }
         }
         drop(slices);
@@ -2439,7 +2400,7 @@ mod tests {
 
     #[test]
     fn test_captured_basis_new_capacities() {
-        let cb = CapturedBasis::new(4, 6, 3, 10, 2, NodeId(9));
+        let cb = CapturedBasis::new(4, 6, 3, 10, NodeId(9));
         assert_eq!(cb.basis.row_status.len(), 6, "row_status length");
         assert_eq!(cb.base_row_count, 3, "base_row_count");
         assert_eq!(cb.node_id, NodeId(9), "node_id");
@@ -2449,16 +2410,6 @@ mod tests {
             cb.cut_row_slots.capacity()
         );
         assert_eq!(cb.cut_row_slots.len(), 0, "cut_row_slots starts empty");
-        assert!(
-            cb.state_at_capture.capacity() >= 2,
-            "state_at_capture capacity must be >= 2 (got {})",
-            cb.state_at_capture.capacity()
-        );
-        assert_eq!(
-            cb.state_at_capture.len(),
-            0,
-            "state_at_capture starts empty"
-        );
     }
 
     #[test]
@@ -2474,7 +2425,7 @@ mod tests {
             }
         }
         // Write a CapturedBasis at [1][3]; read it back.
-        *store.get_mut(1, NodePos(3)) = Some(CapturedBasis::new(4, 6, 3, 10, 2, NodeId(0)));
+        *store.get_mut(1, NodePos(3)) = Some(CapturedBasis::new(4, 6, 3, 10, NodeId(0)));
         let retrieved = store.get(1, NodePos(3));
         assert!(retrieved.is_some(), "slot [1][3] must be Some after write");
         let cb = retrieved.expect("just checked is_some");
@@ -2573,24 +2524,15 @@ mod tests {
             },
             base_row_count: 1,
             cut_row_slots: vec![10_u32, 20],
-            state_at_capture: vec![1.5_f64, 2.5, 3.5],
             node_id: NodeId(0),
         };
 
         let mut i32_buf: Vec<i32> = Vec::new();
-        let mut f64_buf: Vec<f64> = Vec::new();
-        original.to_broadcast_payload(&mut i32_buf, &mut f64_buf);
+        original.to_broadcast_payload(&mut i32_buf);
 
         let mut i32_cursor = 0_usize;
-        let mut f64_cursor = 0_usize;
-        let result = CapturedBasis::try_from_broadcast_payload(
-            0,
-            &i32_buf,
-            &mut i32_cursor,
-            &f64_buf,
-            &mut f64_cursor,
-        )
-        .expect("round-trip must not fail");
+        let result = CapturedBasis::try_from_broadcast_payload(0, &i32_buf, &mut i32_cursor)
+            .expect("round-trip must not fail");
         let recovered = result.expect("sentinel is 1; must return Some");
 
         assert_eq!(
@@ -2609,17 +2551,11 @@ mod tests {
             recovered.cut_row_slots, original.cut_row_slots,
             "cut_row_slots"
         );
-        assert_eq!(
-            recovered.state_at_capture, original.state_at_capture,
-            "state_at_capture"
-        );
         // Cursors must have advanced past the full payload.
         assert_eq!(i32_cursor, i32_buf.len(), "i32_cursor must be at end");
-        assert_eq!(f64_cursor, f64_buf.len(), "f64_cursor must be at end");
     }
 
-    /// Round-trip test: single stage with empty `cut_row_slots` and
-    /// empty `state_at_capture`.
+    /// Round-trip test: single stage with empty `cut_row_slots`.
     #[test]
     fn test_captured_basis_round_trip_empty_metadata() {
         let original = CapturedBasis {
@@ -2629,24 +2565,15 @@ mod tests {
             },
             base_row_count: 1,
             cut_row_slots: vec![],
-            state_at_capture: vec![],
             node_id: NodeId(0),
         };
 
         let mut i32_buf: Vec<i32> = Vec::new();
-        let mut f64_buf: Vec<f64> = Vec::new();
-        original.to_broadcast_payload(&mut i32_buf, &mut f64_buf);
+        original.to_broadcast_payload(&mut i32_buf);
 
         let mut i32_cursor = 0_usize;
-        let mut f64_cursor = 0_usize;
-        let result = CapturedBasis::try_from_broadcast_payload(
-            0,
-            &i32_buf,
-            &mut i32_cursor,
-            &f64_buf,
-            &mut f64_cursor,
-        )
-        .expect("round-trip must not fail");
+        let result = CapturedBasis::try_from_broadcast_payload(0, &i32_buf, &mut i32_cursor)
+            .expect("round-trip must not fail");
         let recovered = result.expect("sentinel is 1; must return Some");
 
         assert_eq!(recovered.basis.col_status, original.basis.col_status);
@@ -2656,12 +2583,7 @@ mod tests {
             recovered.cut_row_slots.is_empty(),
             "cut_row_slots must be empty"
         );
-        assert!(
-            recovered.state_at_capture.is_empty(),
-            "state_at_capture must be empty"
-        );
         assert_eq!(i32_cursor, i32_buf.len(), "i32_cursor must be at end");
-        assert_eq!(f64_cursor, f64_buf.len(), "f64_cursor must be at end");
     }
 
     /// Multi-stage round-trip: one `Some` stage followed by one `None` stage.
@@ -2682,58 +2604,37 @@ mod tests {
             },
             base_row_count: 2,
             cut_row_slots: vec![100_u32, 200, 300],
-            state_at_capture: vec![0.1_f64, 0.2],
             node_id: NodeId(0),
         };
 
         let mut i32_buf: Vec<i32> = Vec::new();
-        let mut f64_buf: Vec<f64> = Vec::new();
 
         // Stage 0: Some — pack via method.
-        populated.to_broadcast_payload(&mut i32_buf, &mut f64_buf);
+        populated.to_broadcast_payload(&mut i32_buf);
         // Stage 1: None — caller writes the 0 sentinel directly.
         i32_buf.push(0_i32);
 
         let mut i32_cursor = 0_usize;
-        let mut f64_cursor = 0_usize;
 
         // Unpack stage 0.
-        let stage0 = CapturedBasis::try_from_broadcast_payload(
-            0,
-            &i32_buf,
-            &mut i32_cursor,
-            &f64_buf,
-            &mut f64_cursor,
-        )
-        .expect("stage 0 must not fail")
-        .expect("stage 0 sentinel is 1; must return Some");
+        let stage0 = CapturedBasis::try_from_broadcast_payload(0, &i32_buf, &mut i32_cursor)
+            .expect("stage 0 must not fail")
+            .expect("stage 0 sentinel is 1; must return Some");
 
         assert_eq!(stage0.basis.col_status, populated.basis.col_status);
         assert_eq!(stage0.basis.row_status, populated.basis.row_status);
         assert_eq!(stage0.base_row_count, populated.base_row_count);
         assert_eq!(stage0.cut_row_slots, populated.cut_row_slots);
-        assert_eq!(stage0.state_at_capture, populated.state_at_capture);
 
         // Unpack stage 1 — must return None, advancing cursor by 1.
-        let stage1 = CapturedBasis::try_from_broadcast_payload(
-            1,
-            &i32_buf,
-            &mut i32_cursor,
-            &f64_buf,
-            &mut f64_cursor,
-        )
-        .expect("stage 1 must not fail");
+        let stage1 = CapturedBasis::try_from_broadcast_payload(1, &i32_buf, &mut i32_cursor)
+            .expect("stage 1 must not fail");
         assert!(stage1.is_none(), "stage 1 sentinel is 0; must return None");
 
         assert_eq!(
             i32_cursor,
             i32_buf.len(),
             "i32_cursor must be at end after both stages"
-        );
-        assert_eq!(
-            f64_cursor,
-            f64_buf.len(),
-            "f64_cursor must be at end after both stages"
         );
     }
 
@@ -2751,27 +2652,18 @@ mod tests {
             },
             base_row_count: 1,
             cut_row_slots: vec![5_u32],
-            state_at_capture: vec![9.9_f64],
             node_id: NodeId(0),
         };
 
         let mut i32_buf: Vec<i32> = Vec::new();
-        let mut f64_buf: Vec<f64> = Vec::new();
-        cb.to_broadcast_payload(&mut i32_buf, &mut f64_buf);
+        cb.to_broadcast_payload(&mut i32_buf);
 
         // Truncate i32 buffer by 1.
         i32_buf.pop();
 
         let mut i32_cursor = 0_usize;
-        let mut f64_cursor = 0_usize;
-        let err = CapturedBasis::try_from_broadcast_payload(
-            7,
-            &i32_buf,
-            &mut i32_cursor,
-            &f64_buf,
-            &mut f64_cursor,
-        )
-        .expect_err("truncated buffer must return Err");
+        let err = CapturedBasis::try_from_broadcast_payload(7, &i32_buf, &mut i32_cursor)
+            .expect_err("truncated buffer must return Err");
 
         match err {
             SddpError::Validation(ref msg) => {
@@ -2782,57 +2674,6 @@ mod tests {
                 assert!(
                     msg.contains('7'),
                     "error message must contain stage index 7, got: {msg}"
-                );
-            }
-            other => panic!("expected SddpError::Validation, got {other:?}"),
-        }
-    }
-
-    /// Truncated f64 buffer: pack a basis with non-empty `state_at_capture`,
-    /// truncate the f64 buffer by 1, assert `Err(SddpError::Validation(msg))`
-    /// where `msg` mentions `state_at_capture` and the stage index.
-    #[test]
-    fn test_captured_basis_truncated_f64_buffer() {
-        use crate::SddpError;
-
-        let cb = CapturedBasis {
-            basis: Basis {
-                col_status: vec![BasisStatus::Lower],
-                row_status: vec![BasisStatus::Basic],
-            },
-            base_row_count: 1,
-            cut_row_slots: vec![],
-            state_at_capture: vec![1.0_f64, 2.0, 3.0],
-            node_id: NodeId(0),
-        };
-
-        let mut i32_buf: Vec<i32> = Vec::new();
-        let mut f64_buf: Vec<f64> = Vec::new();
-        cb.to_broadcast_payload(&mut i32_buf, &mut f64_buf);
-
-        // Truncate f64 buffer by 1.
-        f64_buf.pop();
-
-        let mut i32_cursor = 0_usize;
-        let mut f64_cursor = 0_usize;
-        let err = CapturedBasis::try_from_broadcast_payload(
-            3,
-            &i32_buf,
-            &mut i32_cursor,
-            &f64_buf,
-            &mut f64_cursor,
-        )
-        .expect_err("truncated f64 buffer must return Err");
-
-        match err {
-            SddpError::Validation(ref msg) => {
-                assert!(
-                    msg.contains("state_at_capture"),
-                    "error message must contain 'state_at_capture', got: {msg}"
-                );
-                assert!(
-                    msg.contains('3'),
-                    "error message must contain stage index 3, got: {msg}"
                 );
             }
             other => panic!("expected SddpError::Validation, got {other:?}"),
@@ -2867,13 +2708,11 @@ mod tests {
             },
             base_row_count: 2,
             cut_row_slots: vec![10_u32, 20],
-            state_at_capture: vec![0.5_f64, 1.5],
             node_id: NodeId(0),
         };
 
         let mut i32_buf: Vec<i32> = Vec::new();
-        let mut f64_buf: Vec<f64> = Vec::new();
-        original.to_broadcast_payload(&mut i32_buf, &mut f64_buf);
+        original.to_broadcast_payload(&mut i32_buf);
 
         // Offset 0 is the presence sentinel (1_i32).
         assert_eq!(i32_buf[0], 1_i32, "offset 0 must be the presence sentinel");
@@ -2885,24 +2724,15 @@ mod tests {
 
         // Full round-trip must return a bit-equal CapturedBasis.
         let mut i32_cursor = 0_usize;
-        let mut f64_cursor = 0_usize;
-        let recovered = CapturedBasis::try_from_broadcast_payload(
-            0,
-            &i32_buf,
-            &mut i32_cursor,
-            &f64_buf,
-            &mut f64_cursor,
-        )
-        .expect("round-trip must not fail")
-        .expect("sentinel is 1; must return Some");
+        let recovered = CapturedBasis::try_from_broadcast_payload(0, &i32_buf, &mut i32_cursor)
+            .expect("round-trip must not fail")
+            .expect("sentinel is 1; must return Some");
 
         assert_eq!(recovered.basis.col_status, original.basis.col_status);
         assert_eq!(recovered.basis.row_status, original.basis.row_status);
         assert_eq!(recovered.base_row_count, original.base_row_count);
         assert_eq!(recovered.cut_row_slots, original.cut_row_slots);
-        assert_eq!(recovered.state_at_capture, original.state_at_capture);
         assert_eq!(i32_cursor, i32_buf.len(), "i32_cursor must be at end");
-        assert_eq!(f64_cursor, f64_buf.len(), "f64_cursor must be at end");
     }
 
     /// Manually overwrite the version field (offset 1) to `1_i32` (the removed
@@ -2930,28 +2760,19 @@ mod tests {
             },
             base_row_count: 2,
             cut_row_slots: vec![10_u32, 20],
-            state_at_capture: vec![0.5_f64, 1.5],
             node_id: NodeId(0),
         };
 
         let mut i32_buf: Vec<i32> = Vec::new();
-        let mut f64_buf: Vec<f64> = Vec::new();
-        cb.to_broadcast_payload(&mut i32_buf, &mut f64_buf);
+        cb.to_broadcast_payload(&mut i32_buf);
 
         // Corrupt the version field (offset 1) to the removed v1 to simulate a
         // stale-version peer.
         i32_buf[1] = 1_i32;
 
         let mut i32_cursor = 0_usize;
-        let mut f64_cursor = 0_usize;
-        let err = CapturedBasis::try_from_broadcast_payload(
-            0,
-            &i32_buf,
-            &mut i32_cursor,
-            &f64_buf,
-            &mut f64_cursor,
-        )
-        .expect_err("mismatched version must return Err");
+        let err = CapturedBasis::try_from_broadcast_payload(0, &i32_buf, &mut i32_cursor)
+            .expect_err("mismatched version must return Err");
 
         match err {
             SddpError::Validation(ref msg) => {
@@ -2978,29 +2799,20 @@ mod tests {
             },
             base_row_count: 1,
             cut_row_slots: vec![],
-            state_at_capture: vec![],
             node_id: NodeId(0),
         };
 
         let mut i32_buf: Vec<i32> = Vec::new();
-        let mut f64_buf: Vec<f64> = Vec::new();
         // Stage 0: None sentinel.
         i32_buf.push(0_i32);
         // Stage 1: Some.
-        populated.to_broadcast_payload(&mut i32_buf, &mut f64_buf);
+        populated.to_broadcast_payload(&mut i32_buf);
 
         let mut i32_cursor = 0_usize;
-        let mut f64_cursor = 0_usize;
 
         // Unpack stage 0 — must return None.
-        let stage0 = CapturedBasis::try_from_broadcast_payload(
-            0,
-            &i32_buf,
-            &mut i32_cursor,
-            &f64_buf,
-            &mut f64_cursor,
-        )
-        .expect("stage 0 must not fail");
+        let stage0 = CapturedBasis::try_from_broadcast_payload(0, &i32_buf, &mut i32_cursor)
+            .expect("stage 0 must not fail");
         assert!(stage0.is_none(), "stage 0 sentinel is 0; must return None");
         // Only the sentinel was consumed (1 element).
         assert_eq!(
@@ -3009,19 +2821,12 @@ mod tests {
         );
 
         // Unpack stage 1 — must still succeed (version byte is intact).
-        let stage1 = CapturedBasis::try_from_broadcast_payload(
-            1,
-            &i32_buf,
-            &mut i32_cursor,
-            &f64_buf,
-            &mut f64_cursor,
-        )
-        .expect("stage 1 must not fail")
-        .expect("stage 1 sentinel is 1; must return Some");
+        let stage1 = CapturedBasis::try_from_broadcast_payload(1, &i32_buf, &mut i32_cursor)
+            .expect("stage 1 must not fail")
+            .expect("stage 1 sentinel is 1; must return Some");
         assert_eq!(stage1.basis.col_status, populated.basis.col_status);
         assert_eq!(stage1.basis.row_status, populated.basis.row_status);
         assert_eq!(i32_cursor, i32_buf.len(), "i32_cursor must be at end");
-        assert_eq!(f64_cursor, f64_buf.len(), "f64_cursor must be at end");
     }
 
     /// `node_id` rides the wire (version 2): it is written at a fixed header
@@ -3037,20 +2842,17 @@ mod tests {
             },
             base_row_count: 1,
             cut_row_slots: vec![],
-            state_at_capture: vec![],
             node_id: NodeId(77),
         };
 
         let mut i32_buf: Vec<i32> = Vec::new();
-        let mut f64_buf: Vec<f64> = Vec::new();
-        original.to_broadcast_payload(&mut i32_buf, &mut f64_buf);
+        original.to_broadcast_payload(&mut i32_buf);
         let bytes_with_node_id = i32_buf.len();
 
         let mut other = original.clone();
         other.node_id = NodeId(-1);
         let mut i32_buf2: Vec<i32> = Vec::new();
-        let mut f64_buf2: Vec<f64> = Vec::new();
-        other.to_broadcast_payload(&mut i32_buf2, &mut f64_buf2);
+        other.to_broadcast_payload(&mut i32_buf2);
 
         assert_ne!(
             i32_buf, i32_buf2,
@@ -3063,16 +2865,9 @@ mod tests {
         );
 
         let mut i32_cursor = 0_usize;
-        let mut f64_cursor = 0_usize;
-        let recovered = CapturedBasis::try_from_broadcast_payload(
-            0,
-            &i32_buf,
-            &mut i32_cursor,
-            &f64_buf,
-            &mut f64_cursor,
-        )
-        .expect("round-trip must not fail")
-        .expect("sentinel is 1; must return Some");
+        let recovered = CapturedBasis::try_from_broadcast_payload(0, &i32_buf, &mut i32_cursor)
+            .expect("round-trip must not fail")
+            .expect("sentinel is 1; must return Some");
 
         assert_eq!(
             recovered.node_id, original.node_id,
@@ -3081,278 +2876,73 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------------
-    // Anticipated-state roundtrip tests
+    // Payload layout test
     // ---------------------------------------------------------------------------
 
-    /// Roundtrip a basis whose `state_at_capture` has the
-    /// `N*(1+L) + n_anticipated*k_max` layout introduced by the
-    /// anticipated-thermals feature, with numerically distinct regions.
+    /// The header words sit at fixed offsets, followed by `col_status`, `row_status`
+    /// and `cut_row_slots`, in that order.
     #[test]
-    fn test_captured_basis_round_trip_includes_anticipated_state() {
-        // Layout: N=2 hydros, L=1 PAR lag, n_anticipated=1, k_max=2.
-        // n_state = 2 * (1 + 1) + 1 * 2 = 6.
-        //
-        // Region populations (numerically distinct so truncation shows up):
-        //   storage      [0..2)  = [1.0, 2.0]
-        //   lags         [2..4)  = [100.0, 200.0]
-        //   anticipated  [4..6)  = [1000.0, 2000.0]
-        let state_at_capture = vec![1.0_f64, 2.0, 100.0, 200.0, 1000.0, 2000.0];
+    fn test_captured_basis_payload_layout_is_header_then_statuses_then_slots() {
+        use super::{BASIS_BROADCAST_FORMAT_TAG, basis_status_to_wire_code};
 
-        let original = CapturedBasis {
+        let cb = CapturedBasis {
             basis: Basis {
-                col_status: vec![
-                    BasisStatus::Lower,
-                    BasisStatus::Basic,
-                    BasisStatus::Upper,
-                    BasisStatus::Zero,
-                ],
-                row_status: vec![
-                    BasisStatus::Nonbasic,
-                    BasisStatus::Superbasic,
-                    BasisStatus::Fixed,
-                ],
-            },
-            base_row_count: 2,
-            cut_row_slots: vec![10_u32, 20],
-            state_at_capture: state_at_capture.clone(),
-            node_id: NodeId(0),
-        };
-
-        let mut i32_buf: Vec<i32> = Vec::new();
-        let mut f64_buf: Vec<f64> = Vec::new();
-        original.to_broadcast_payload(&mut i32_buf, &mut f64_buf);
-
-        let mut i32_cursor = 0_usize;
-        let mut f64_cursor = 0_usize;
-        let recovered = CapturedBasis::try_from_broadcast_payload(
-            0,
-            &i32_buf,
-            &mut i32_cursor,
-            &f64_buf,
-            &mut f64_cursor,
-        )
-        .expect("round-trip must not fail")
-        .expect("sentinel is 1; must return Some");
-
-        assert_eq!(
-            recovered.state_at_capture, state_at_capture,
-            "full state must roundtrip bit-exactly"
-        );
-        assert_eq!(
-            &recovered.state_at_capture[4..6],
-            &[1000.0, 2000.0],
-            "anticipated slice must roundtrip bit-exactly"
-        );
-        assert_eq!(
-            &recovered.state_at_capture[2..4],
-            &[100.0, 200.0],
-            "lag slice must roundtrip bit-exactly"
-        );
-        assert_eq!(
-            &recovered.state_at_capture[0..2],
-            &[1.0, 2.0],
-            "storage slice must roundtrip bit-exactly"
-        );
-
-        assert_eq!(i32_cursor, i32_buf.len(), "i32_cursor at end");
-        assert_eq!(f64_cursor, f64_buf.len(), "f64_cursor at end");
-    }
-
-    /// Explicit length-field inspection: verify that the recorded
-    /// `state_at_capture` length field in the wire payload equals `n_state`
-    /// for three layouts (`n_anticipated=0` baseline, `n_anticipated` > 0 small,
-    /// and a larger realistic layout).
-    #[test]
-    fn test_captured_basis_state_at_capture_length_is_recorded_correctly() {
-        // Layout 1: small with anticipated.
-        // n_state = 2 * (1+1) + 1 * 2 = 6.
-        let small = CapturedBasis {
-            basis: Basis {
-                col_status: vec![BasisStatus::Basic; 4],
-                row_status: vec![BasisStatus::Basic; 3],
-            },
-            base_row_count: 2,
-            cut_row_slots: vec![],
-            state_at_capture: vec![0.0_f64; 6],
-            node_id: NodeId(0),
-        };
-        let mut i32_buf: Vec<i32> = Vec::new();
-        let mut f64_buf: Vec<f64> = Vec::new();
-        small.to_broadcast_payload(&mut i32_buf, &mut f64_buf);
-        // i32_buf layout (Some path):
-        //   [0] = 1 (sentinel)
-        //   [1] = BASIS_BROADCAST_FORMAT_TAG = 2
-        //   [2] = node_id = 0
-        //   [3] = col_len = 4
-        //   [4] = row_len = 3
-        //   [5] = base_row_count = 2
-        //   [6] = cut_slot_count = 0
-        //   [7] = state_len = 6
-        assert_eq!(
-            i32_buf[7], 6_i32,
-            "state_at_capture length field must be 6 for N=2 L=1 A=1 K=2"
-        );
-
-        // Layout 2: n_state == 0 boundary case.
-        let empty_state = CapturedBasis {
-            basis: Basis {
-                col_status: vec![BasisStatus::Basic],
-                row_status: vec![BasisStatus::Basic],
+                col_status: vec![BasisStatus::Lower, BasisStatus::Basic],
+                row_status: vec![BasisStatus::Upper, BasisStatus::Zero, BasisStatus::Fixed],
             },
             base_row_count: 1,
-            cut_row_slots: vec![],
-            state_at_capture: vec![],
-            node_id: NodeId(0),
+            cut_row_slots: vec![11_u32, 22],
+            node_id: NodeId(5),
         };
-        let mut i32_buf2: Vec<i32> = Vec::new();
-        let mut f64_buf2: Vec<f64> = Vec::new();
-        empty_state.to_broadcast_payload(&mut i32_buf2, &mut f64_buf2);
-        assert_eq!(
-            i32_buf2[7], 0_i32,
-            "state_at_capture length field must be 0 for empty state"
-        );
+        let mut i32_buf: Vec<i32> = Vec::new();
+        cb.to_broadcast_payload(&mut i32_buf);
 
-        // Layout 3: larger realistic layout N=3 L=2 A=2 K_max=3.
-        // n_state = 3 * (1+2) + 2 * 3 = 9 + 6 = 15.
-        let large_state: Vec<f64> = (0..15).map(|i| f64::from(i) * 10.0).collect();
-        let large = CapturedBasis {
-            basis: Basis {
-                col_status: vec![BasisStatus::Basic; 5],
-                row_status: vec![BasisStatus::Basic; 5],
-            },
-            base_row_count: 3,
-            cut_row_slots: vec![1_u32, 2],
-            state_at_capture: large_state.clone(),
-            node_id: NodeId(0),
-        };
-        let mut i32_buf3: Vec<i32> = Vec::new();
-        let mut f64_buf3: Vec<f64> = Vec::new();
-        large.to_broadcast_payload(&mut i32_buf3, &mut f64_buf3);
-        assert_eq!(
-            i32_buf3[7], 15_i32,
-            "state_at_capture length field must be 15 for N=3 L=2 A=2 K=3"
-        );
-
-        let mut i32_cursor = 0_usize;
-        let mut f64_cursor = 0_usize;
-        let recovered = CapturedBasis::try_from_broadcast_payload(
-            0,
-            &i32_buf3,
-            &mut i32_cursor,
-            &f64_buf3,
-            &mut f64_cursor,
-        )
-        .expect("round-trip must not fail")
-        .expect("sentinel is 1; must return Some");
-        assert_eq!(
-            &recovered.state_at_capture[9..15],
-            &large_state[9..15],
-            "anticipated slice (last 6 entries) must roundtrip bit-exactly"
-        );
-    }
-
-    /// Pre-horizon seeding roundtrip: slot 0 carries sentinel 12345.5.
-    #[test]
-    fn test_captured_basis_round_trip_with_pre_horizon_seed_in_slot_zero() {
-        let state_at_capture = vec![1.0_f64, 2.0, 100.0, 200.0, 12345.5, 0.0];
-        let original = CapturedBasis {
-            basis: Basis {
-                col_status: vec![
-                    BasisStatus::Lower,
-                    BasisStatus::Basic,
-                    BasisStatus::Upper,
-                    BasisStatus::Zero,
-                ],
-                row_status: vec![
-                    BasisStatus::Nonbasic,
-                    BasisStatus::Superbasic,
-                    BasisStatus::Fixed,
-                    BasisStatus::Lower,
-                ],
-            },
-            base_row_count: 3,
-            cut_row_slots: vec![10_u32, 20],
-            state_at_capture: state_at_capture.clone(),
-            node_id: NodeId(0),
-        };
-
-        let mut i32_buf = Vec::new();
-        let mut f64_buf = Vec::new();
-        original.to_broadcast_payload(&mut i32_buf, &mut f64_buf);
-
-        let mut i32_cursor = 0;
-        let mut f64_cursor = 0;
-        let recovered = CapturedBasis::try_from_broadcast_payload(
-            0,
-            &i32_buf,
-            &mut i32_cursor,
-            &f64_buf,
-            &mut f64_cursor,
-        )
-        .expect("round-trip must not fail")
-        .expect("sentinel is 1; must return Some");
-
-        assert_eq!(recovered.state_at_capture[4], 12345.5);
-        assert_eq!(recovered.basis.row_status.len(), 4);
-        assert_eq!(recovered.state_at_capture, state_at_capture);
-        assert_eq!(i32_cursor, i32_buf.len());
-        assert_eq!(f64_cursor, f64_buf.len());
+        let code = basis_status_to_wire_code;
+        let expected = vec![
+            1,
+            BASIS_BROADCAST_FORMAT_TAG,
+            5,
+            2,
+            3,
+            1,
+            2,
+            code(BasisStatus::Lower),
+            code(BasisStatus::Basic),
+            code(BasisStatus::Upper),
+            code(BasisStatus::Zero),
+            code(BasisStatus::Fixed),
+            11,
+            22,
+        ];
+        assert_eq!(i32_buf, expected);
     }
 
     // ---------------------------------------------------------------------------
     // Layout-invariance tests
     // ---------------------------------------------------------------------------
 
-    /// Locks `state_at_capture.len() == n_state`: the anticipated ring's
-    /// outgoing/incoming blocks live inside `n_state`, so widening the ring
-    /// does not change `state_at_capture`'s length contract.
+    /// A basis whose columns include the anticipated-ring slots round-trips its
+    /// column count and `cut_row_slots`.
     #[test]
-    fn test_state_at_capture_length_equals_n_state_after_layout_change() {
-        // Layout: N=2 hydros, L=1 PAR lag, n_anticipated=1, k_max=2.
-        // n_state = 2*(1+1) + 1*2 = 6.
-        //
-        // col_status length includes the anticipated-ring column slots;
-        // those slots live outside the n_state prefix and must not affect
-        // state_at_capture recovery.
-        let state_at_capture = vec![1.0_f64, 2.0, 100.0, 200.0, 1000.0, 2000.0];
+    fn test_captured_basis_column_count_round_trips_with_anticipated_ring_columns() {
         let original = CapturedBasis {
             basis: Basis {
-                // col_status length includes the anticipated-ring columns.
-                // 12 is a representative LP num_cols.
                 col_status: vec![BasisStatus::Basic; 12],
                 row_status: vec![BasisStatus::Nonbasic; 8],
             },
             base_row_count: 6,
             cut_row_slots: vec![10_u32, 20],
-            state_at_capture: state_at_capture.clone(),
             node_id: NodeId(0),
         };
 
         let mut i32_buf: Vec<i32> = Vec::new();
-        let mut f64_buf: Vec<f64> = Vec::new();
-        original.to_broadcast_payload(&mut i32_buf, &mut f64_buf);
+        original.to_broadcast_payload(&mut i32_buf);
 
         let mut i32_cursor = 0_usize;
-        let mut f64_cursor = 0_usize;
-        let recovered = CapturedBasis::try_from_broadcast_payload(
-            0,
-            &i32_buf,
-            &mut i32_cursor,
-            &f64_buf,
-            &mut f64_cursor,
-        )
-        .expect("round-trip must not fail")
-        .expect("sentinel is 1; must return Some");
+        let recovered = CapturedBasis::try_from_broadcast_payload(0, &i32_buf, &mut i32_cursor)
+            .expect("round-trip must not fail")
+            .expect("sentinel is 1; must return Some");
 
-        assert_eq!(
-            recovered.state_at_capture.len(),
-            6,
-            "state_at_capture.len() must equal n_state regardless of new LP columns"
-        );
-        assert_eq!(
-            recovered.state_at_capture, state_at_capture,
-            "state_at_capture round-trips bit-identically"
-        );
         assert_eq!(
             recovered.basis.col_status.len(),
             12,
@@ -3364,7 +2954,7 @@ mod tests {
         );
     }
 
-    /// Locks `BASIS_BROADCAST_FORMAT_TAG` at 2: widening the anticipated
+    /// Locks `BASIS_BROADCAST_FORMAT_TAG` at 3: widening the anticipated
     /// ring does not bump the wire version.
     #[test]
     fn test_basis_broadcast_wire_version_stays_stable_with_state_out_column() {
@@ -3379,13 +2969,11 @@ mod tests {
             },
             base_row_count: 8,
             cut_row_slots: vec![],
-            state_at_capture: vec![0.0_f64; 6],
             node_id: NodeId(0),
         };
 
         let mut i32_buf: Vec<i32> = Vec::new();
-        let mut f64_buf: Vec<f64> = Vec::new();
-        original.to_broadcast_payload(&mut i32_buf, &mut f64_buf);
+        original.to_broadcast_payload(&mut i32_buf);
 
         // i32_buf layout per workspace.rs to_broadcast_payload:
         //   [0]: sentinel (1)
@@ -3395,36 +2983,27 @@ mod tests {
         //   [4]: row_status.len()
         //   [5]: base_row_count
         //   [6]: cut_row_slots.len()
-        //   [7]: state_at_capture.len()
-        //   [8..]: col_status elements, then row_status, then cut_row_slots
+        //   [7..]: col_status elements, then row_status, then cut_row_slots
         assert_eq!(i32_buf[0], 1, "sentinel must be 1");
         assert_eq!(
             i32_buf[1], BASIS_BROADCAST_FORMAT_TAG,
-            "wire version field must equal BASIS_BROADCAST_FORMAT_TAG (= 2)"
+            "wire version field must equal BASIS_BROADCAST_FORMAT_TAG (= 3)"
         );
         assert_eq!(
-            BASIS_BROADCAST_FORMAT_TAG, 2,
+            BASIS_BROADCAST_FORMAT_TAG, 3,
             "broadcast wire-format version constant must remain stable across releases"
         );
 
         // Full round-trip confirms no data drift.
         let mut i32_cursor = 0_usize;
-        let mut f64_cursor = 0_usize;
-        let recovered = CapturedBasis::try_from_broadcast_payload(
-            0,
-            &i32_buf,
-            &mut i32_cursor,
-            &f64_buf,
-            &mut f64_cursor,
-        )
-        .expect("round-trip must not fail")
-        .expect("sentinel is 1; must return Some");
+        let recovered = CapturedBasis::try_from_broadcast_payload(0, &i32_buf, &mut i32_cursor)
+            .expect("round-trip must not fail")
+            .expect("sentinel is 1; must return Some");
 
         assert_eq!(recovered.basis.col_status, original.basis.col_status);
         assert_eq!(recovered.basis.row_status, original.basis.row_status);
         assert_eq!(recovered.base_row_count, original.base_row_count);
         assert_eq!(recovered.cut_row_slots, original.cut_row_slots);
-        assert_eq!(recovered.state_at_capture, original.state_at_capture);
     }
 
     /// Full-`Basis` round-trip on a wide-anticipated-ring solve: the
@@ -3469,8 +3048,6 @@ mod tests {
             BasisStatus::Basic,
             BasisStatus::Zero,
         ];
-        let state_at_capture = vec![1.0_f64, 2.0, 100.0, 200.0, 1000.0, 2000.0, 3000.0, 4000.0];
-
         let original = CapturedBasis {
             basis: Basis {
                 col_status: col_status.clone(),
@@ -3478,25 +3055,16 @@ mod tests {
             },
             base_row_count: 6,
             cut_row_slots: vec![7_u32, 42],
-            state_at_capture: state_at_capture.clone(),
             node_id: NodeId(0),
         };
 
         let mut i32_buf: Vec<i32> = Vec::new();
-        let mut f64_buf: Vec<f64> = Vec::new();
-        original.to_broadcast_payload(&mut i32_buf, &mut f64_buf);
+        original.to_broadcast_payload(&mut i32_buf);
 
         let mut i32_cursor = 0_usize;
-        let mut f64_cursor = 0_usize;
-        let recovered = CapturedBasis::try_from_broadcast_payload(
-            0,
-            &i32_buf,
-            &mut i32_cursor,
-            &f64_buf,
-            &mut f64_cursor,
-        )
-        .expect("round-trip must not fail")
-        .expect("sentinel is 1; must return Some");
+        let recovered = CapturedBasis::try_from_broadcast_payload(0, &i32_buf, &mut i32_cursor)
+            .expect("round-trip must not fail")
+            .expect("sentinel is 1; must return Some");
 
         // The wider column block (incl. the anticipated-ring columns) round-trips
         // byte-for-byte.
@@ -3514,12 +3082,7 @@ mod tests {
             vec![7_u32, 42],
             "cut_row_slots (the slot-identity key) must round-trip bit-identically"
         );
-        assert_eq!(
-            recovered.state_at_capture, state_at_capture,
-            "state_at_capture must round-trip bit-identically"
-        );
         assert_eq!(i32_cursor, i32_buf.len(), "i32_cursor must be at end");
-        assert_eq!(f64_cursor, f64_buf.len(), "f64_cursor must be at end");
     }
 
     // ---------------------------------------------------------------------------

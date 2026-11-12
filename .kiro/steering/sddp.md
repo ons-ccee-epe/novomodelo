@@ -3432,13 +3432,13 @@ row `m`, and the global scenario of that row is `fwd_offset + m`
 sent. `gather_basis_store` (`training/training.rs`) assembles the store on rank
 0: per canonical node, each rank packs its rows `0..my_actual_fwd` with
 `CapturedBasis::to_broadcast_payload`, the sole owner of the bytes (`0_i32` for a
-row with no basis), and the node issues one `allgatherv` of the two payload
-lengths of every rank, then one `allgatherv` each of the `i32` and the `f64`
-payloads at the displacements those lengths give. Rank 0 decodes each rank's
-segment with `CapturedBasis::try_from_broadcast_payload`, numbers its rows from
-the rank's first scenario (the ranks' scenarios are contiguous blocks in rank
-order, so no scenario index travels), drops `state_at_capture`, and keeps the
-rows that hold a basis, in a `CheckpointBasisStore` marked `complete`. The
+row with no basis), and the node issues one `allgatherv` of every rank's payload
+length, then one `allgatherv` of the payloads at the displacements those lengths
+give. Rank 0 decodes each rank's segment with
+`CapturedBasis::try_from_broadcast_payload`, numbers its rows from the rank's
+first scenario (the ranks' scenarios are contiguous blocks in rank order, so no
+scenario index travels), and keeps the rows that hold a basis, in a
+`CheckpointBasisStore` marked `complete`. The
 writer (`build_basis_store_entries`) writes one entry per kept row, and the
 manifest's `basis_store_complete` is the store's `complete`.
 `TrainingResult::basis_cache` and `broadcast_basis_cache` keep their own job:
@@ -4933,8 +4933,8 @@ contributing to `n_state`) and a separate incoming block
 (`StateSpace::commit_in`, pinned via `state_to_lp_incoming_column`) — never one
 dual-purpose range shifted out-of-LP.
 There is no Rust-side shift step: the ring transition is resolved entirely by the
-definition rows below, and `current_state`/`state_at_capture` read the outgoing
-block by the same plain copy already used for storage and travel-time buckets.
+definition rows below, and `current_state` reads the outgoing block by the same
+plain copy already used for storage and travel-time buckets.
 Slots are keyed by DELIVERY-TARGET RESIDUE, not by distance to maturity: delivery
 target `m`'s slot is `ring_index(m) mod k_max` — `m mod k_max` where the index
 is already a ring-axis index (The ring axis subsection above) —

@@ -166,6 +166,10 @@ fn the_mapped_compact_basis_is_optimal_on_d43_outside_its_lag_dropping_stage() {
 }
 
 #[test]
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "trains every committed deck with inflow lags"
+)]
 fn every_lag_deck_warm_starts_from_the_mapped_basis() {
     let mut selected: Vec<String> = Vec::new();
     let mut skipped_by_deck: Vec<(String, Vec<usize>)> = Vec::new();

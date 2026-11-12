@@ -117,10 +117,8 @@ fn fill_commitment_hold_box(
     time_value: &TimeValue,
 ) {
     let hold = layout.state_dim_commitment_hold_range();
-    for j in hold.clone() {
-        lower[j] = 0.0;
-        upper[j] = 0.0;
-    }
+    lower[hold.clone()].fill(0.0);
+    upper[hold.clone()].fill(0.0);
     if layout.n_anticipated == 0 || layout.k_max == 0 {
         return;
     }

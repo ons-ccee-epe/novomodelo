@@ -6,6 +6,7 @@ use novomodelo_solver::{
     Basis, RowBatch, SolutionView, SolverError, SolverInterface, SolverStatistics, StageTemplate,
 };
 
+use crate::test_support::empty_row_batch;
 use crate::test_support::template_structure::column_entries;
 
 /// One bound-affecting call a solve site made, in the form it received it.
@@ -144,14 +145,7 @@ impl<S: SolverInterface> BoundRecordingSolver<S> {
             inner,
             current: None,
             base_rows: 0,
-            appended: RowBatch {
-                num_rows: 0,
-                row_starts: vec![0],
-                col_indices: Vec::new(),
-                values: Vec::new(),
-                row_lower: Vec::new(),
-                row_upper: Vec::new(),
-            },
+            appended: empty_row_batch(),
             writes: Vec::new(),
             recorded: Vec::new(),
             log: None,

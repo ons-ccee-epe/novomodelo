@@ -67,7 +67,6 @@ pub(crate) fn save_basis_at_omega_zero<S: SolverInterface + Send>(
     succ: &SuccessorChild<'_>,
     basis_slice: &mut BasisStoreSliceMut<'_>,
     m: usize,
-    x_hat: &[f64],
 ) {
     let successor_node = succ.successor_node;
     let base_row_count = succ.template_num_rows;
@@ -80,7 +79,6 @@ pub(crate) fn save_basis_at_omega_zero<S: SolverInterface + Send>(
                 base_row_count + cut_row_count,
                 base_row_count,
                 cut_row_count,
-                x_hat.len(),
                 succ.successor_node_id,
             )
         });
@@ -90,7 +88,6 @@ pub(crate) fn save_basis_at_omega_zero<S: SolverInterface + Send>(
         succ.successor_pool,
         base_row_count,
         cut_row_count,
-        x_hat,
         succ.successor_node_id,
     );
 }

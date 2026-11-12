@@ -59,13 +59,11 @@ impl Default for Margin {
 impl Margin {
     fn record(&mut self, gap: f64, bound: f64) {
         self.count += 1;
-        if gap / bound > self.fraction {
-            *self = Self {
-                count: self.count,
-                fraction: gap / bound,
-                gap,
-                bound,
-            };
+        let fraction = gap / bound;
+        if fraction > self.fraction {
+            self.fraction = fraction;
+            self.gap = gap;
+            self.bound = bound;
         }
     }
 

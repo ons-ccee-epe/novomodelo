@@ -678,7 +678,6 @@ fn basis_store_with_one(
         basis,
         base_row_count,
         cut_row_slots: Vec::new(),
-        state_at_capture: Vec::new(),
         node_id,
     });
     store
@@ -4711,7 +4710,7 @@ fn per_child_backward_isolates_column_basis_and_pool_metadata() {
 fn resolve_backward_basis_returns_some_when_slot_is_populated() {
     use crate::workspace::{BasisStore, CapturedBasis};
 
-    let b = CapturedBasis::new(2, 2, 0, 0, 0, NodeId(0));
+    let b = CapturedBasis::new(2, 2, 0, 0, NodeId(0));
     let mut store = BasisStore::new(1, 2);
     *store.get_mut(0, NodePos(1)) = Some(b);
 
@@ -4747,9 +4746,8 @@ fn backward_write_populates_basis_store_at_omega_zero() {
     );
     let captured = basis_store.get(0, NodePos(1)).unwrap();
     assert_eq!(
-        captured.state_at_capture,
-        vec![5.0_f64],
-        "state_at_capture must equal x_hat"
+        captured.base_row_count, 1,
+        "the written basis must carry the successor template's row count"
     );
     assert_eq!(
         workspaces[0].solver.inner().call_count,
@@ -4764,15 +4762,14 @@ fn backward_write_preserves_slot_on_infeasibility_at_omega_zero() {
 
     use crate::workspace::{BasisStore, CapturedBasis};
 
-    // Pre-populate slot [0, 1] with a sentinel basis. `state_at_capture =
-    // [42.0]` is the sentinel that the reuse-path overwrite must
-    // replace. The remaining fields satisfy the `CapturedBasis`
+    // Pre-populate slot [0, 1] with a sentinel basis. `base_row_count = 2`
+    // differs from the successor template's row count, so the reuse-path
+    // overwrite must replace it. The fields satisfy the `CapturedBasis`
     // invariant `row_status.len() == base_row_count + cut_row_slots.len()`.
     let pre_existing = CapturedBasis {
         basis: Basis::new(2, 2),
         base_row_count: 2,
         cut_row_slots: Vec::new(),
-        state_at_capture: vec![42.0],
         // Matches the chain's node_ids[1] == 1 so the pre-existing slot is
         // still eligible as a warm-start input, not silently dropped cold by
         // the node-tag check this fixture is not exercising.
@@ -4782,8 +4779,8 @@ fn backward_write_preserves_slot_on_infeasibility_at_omega_zero() {
     *basis_store.get_mut(0, NodePos(1)) = Some(pre_existing);
 
     assert_eq!(
-        basis_store.get(0, NodePos(1)).unwrap().state_at_capture,
-        vec![42.0_f64],
+        basis_store.get(0, NodePos(1)).unwrap().base_row_count,
+        2,
         "sentinel must be in place before the infeasible solve"
     );
 
@@ -4804,9 +4801,9 @@ fn backward_write_preserves_slot_on_infeasibility_at_omega_zero() {
         "BasisStore[0, 1] must not be None after successful reuse-path write at ω=0"
     );
     assert_eq!(
-        basis_store.get(0, NodePos(1)).unwrap().state_at_capture,
-        vec![5.0_f64],
-        "state_at_capture must be updated to x_hat by the reuse path"
+        basis_store.get(0, NodePos(1)).unwrap().base_row_count,
+        1,
+        "the reuse path must overwrite the sentinel with the successor template's row count"
     );
 }
 

@@ -252,7 +252,7 @@ fn make_sync_result(global_ub_mean: f64) -> SyncResult {
     }
 }
 
-fn make_fcf(n_stages: usize, state_dimension: usize) -> novomodelo_sddp::FutureCostFunction {
+fn make_fcf(n_stages: usize, state_dimension: usize) -> FutureCostFunction {
     FutureCostFunction::new(n_stages, state_dimension, 2, 100, &vec![0; n_stages])
 }
 

@@ -3380,7 +3380,6 @@ mod tests {
                     },
                     base_row_count: 0,
                     cut_row_slots: vec![scenario],
-                    state_at_capture: Vec::new(),
                     node_id: NodeId(node),
                 },
             )
@@ -3558,16 +3557,14 @@ mod tests {
             },
             base_row_count: 0,
             cut_row_slots: Vec::new(),
-            state_at_capture: Vec::new(),
             node_id: NodeId(0),
         });
 
         session.finalize()
     }
 
-    /// Per node, one `allgatherv` of the payload lengths and one each of the two
-    /// payloads.
-    const GATHERS_OF_TWO_NODES: usize = 6;
+    /// Per node, one `allgatherv` of the payload lengths and one of the payloads.
+    const GATHERS_OF_TWO_NODES: usize = 4;
 
     #[test]
     fn a_gather_failure_on_rank_zero_does_not_leave_a_peer_in_the_broadcast() {
@@ -3601,7 +3598,7 @@ mod tests {
         let mut expected = vec!["allreduce"];
         expected.extend(["allgatherv"; GATHERS_OF_TWO_NODES]);
         expected.push("allreduce");
-        expected.extend(["broadcast"; 4]);
+        expected.extend(["broadcast"; 2]);
         assert_eq!(root.issued(), expected);
     }
 

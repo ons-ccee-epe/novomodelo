@@ -26,15 +26,12 @@ pub(crate) fn write_capture_metadata(
     pool: &CutPool,
     base_row_count: usize,
     cut_row_count: usize,
-    current_state: &[f64],
     node_id: NodeId,
 ) {
     captured.cut_row_slots.clear();
     for (slot, _intercept, _coeffs) in pool.active_cuts().take(cut_row_count) {
         captured.cut_row_slots.push(slot as u32);
     }
-    captured.state_at_capture.clear();
-    captured.state_at_capture.extend_from_slice(current_state);
     captured.base_row_count = base_row_count;
     captured.node_id = node_id;
     captured
@@ -47,15 +44,13 @@ pub(crate) fn write_capture_metadata(
 /// present. Called only for a frozen solve: a lazy solve's basis describes the
 /// resident subset, not the frozen layout (`StageOpeningSolver::captures_basis`).
 ///
-/// `outgoing_state` is the state the stage left (`[..n_state]` of
-/// `ws.current_state`) and `basis_row_capacity` the frozen template's row count.
+/// `basis_row_capacity` is the frozen template's row count.
 pub(crate) fn capture_forward_basis<S: SolverInterface>(
     solver: &mut S,
     slot: &mut Option<CapturedBasis>,
     template: &StageTemplate,
     basis_row_capacity: usize,
     pool: &CutPool,
-    outgoing_state: &[f64],
     node_id: NodeId,
 ) {
     let cut_row_count = basis_row_capacity.saturating_sub(template.num_rows);
@@ -65,17 +60,9 @@ pub(crate) fn capture_forward_basis<S: SolverInterface>(
             basis_row_capacity,
             template.num_rows,
             cut_row_count,
-            outgoing_state.len(),
             node_id,
         )
     });
     solver.get_basis(&mut captured.basis);
-    write_capture_metadata(
-        captured,
-        pool,
-        template.num_rows,
-        cut_row_count,
-        outgoing_state,
-        node_id,
-    );
+    write_capture_metadata(captured, pool, template.num_rows, cut_row_count, node_id);
 }

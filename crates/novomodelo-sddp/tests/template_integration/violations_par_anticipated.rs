@@ -4,6 +4,7 @@ use super::*;
 
 use super::common::in_code_studies::{discounted_anticipated_study, mixed_lead_anticipated_study};
 use super::common::{build_setup_in_code, run_simulation};
+use novomodelo_core::scenario::{AnnualComponent, InflowModel};
 use novomodelo_io::Config;
 use novomodelo_io::config::{SimulationConfig as IoSimulationConfig, SimulationSelection};
 use novomodelo_sddp::test_support::template_structure::{
@@ -12,6 +13,34 @@ use novomodelo_sddp::test_support::template_structure::{
 use novomodelo_sddp::test_support::{
     constant_lead_resolution, equipment_free_geometry, inflow_coupling_with_entries,
 };
+
+fn two_hydro_inflow_models(ar_coefficients: &[f64], annual_on_first: bool) -> Vec<InflowModel> {
+    let annual = annual_on_first.then_some(AnnualComponent {
+        coefficient: 0.5,
+        mean_m3s: 80.0,
+        std_m3s: 20.0,
+    });
+    vec![
+        InflowModel {
+            hydro_id: EntityId(2),
+            stage_id: 0,
+            mean_m3s: 80.0,
+            std_m3s: 20.0,
+            ar_coefficients: ar_coefficients.to_vec(),
+            residual_std_ratio: 1.0,
+            annual,
+        },
+        InflowModel {
+            hydro_id: EntityId(3),
+            stage_id: 0,
+            mean_m3s: 60.0,
+            std_m3s: 15.0,
+            ar_coefficients: ar_coefficients.to_vec(),
+            residual_std_ratio: 1.0,
+            annual: None,
+        },
+    ]
+}
 
 #[test]
 fn min_outflow_active_col_bounds() {
@@ -124,34 +153,7 @@ fn turbine_column_lower_bound_is_zero() {
 /// regardless of the classical AR order.
 #[test]
 fn max_par_order_uses_par_lp_when_annual_present() {
-    use novomodelo_core::scenario::{AnnualComponent, InflowModel};
-
-    let ar_coeffs: Vec<f64> = vec![0.3, 0.2];
-    let ann = AnnualComponent {
-        coefficient: 0.5,
-        mean_m3s: 80.0,
-        std_m3s: 20.0,
-    };
-    let inflow_models = vec![
-        InflowModel {
-            hydro_id: EntityId(2),
-            stage_id: 0,
-            mean_m3s: 80.0,
-            std_m3s: 20.0,
-            ar_coefficients: ar_coeffs.clone(),
-            residual_std_ratio: 1.0,
-            annual: Some(ann),
-        },
-        InflowModel {
-            hydro_id: EntityId(3),
-            stage_id: 0,
-            mean_m3s: 60.0,
-            std_m3s: 15.0,
-            ar_coefficients: ar_coeffs.clone(),
-            residual_std_ratio: 1.0,
-            annual: None,
-        },
-    ];
+    let inflow_models = two_hydro_inflow_models(&[0.3, 0.2], true);
 
     let system = two_hydro_par_system(2, inflow_models.clone());
     let stages = system.stages().to_vec();
@@ -181,29 +183,7 @@ fn max_par_order_uses_par_lp_when_annual_present() {
 /// Classical PAR systems are unaffected: `max_par_order` equals the AR order.
 #[test]
 fn max_par_order_classical_unchanged() {
-    use novomodelo_core::scenario::InflowModel;
-
-    let ar_coeffs: Vec<f64> = vec![0.3, 0.2, 0.1];
-    let inflow_models = vec![
-        InflowModel {
-            hydro_id: EntityId(2),
-            stage_id: 0,
-            mean_m3s: 80.0,
-            std_m3s: 20.0,
-            ar_coefficients: ar_coeffs.clone(),
-            residual_std_ratio: 1.0,
-            annual: None,
-        },
-        InflowModel {
-            hydro_id: EntityId(3),
-            stage_id: 0,
-            mean_m3s: 60.0,
-            std_m3s: 15.0,
-            ar_coefficients: ar_coeffs.clone(),
-            residual_std_ratio: 1.0,
-            annual: None,
-        },
-    ];
+    let inflow_models = two_hydro_inflow_models(&[0.3, 0.2, 0.1], false);
 
     let system = two_hydro_par_system(3, inflow_models.clone());
     let stages = system.stages().to_vec();
@@ -234,34 +214,7 @@ fn max_par_order_classical_unchanged() {
 /// column or row: the lag region has no LP address.
 #[test]
 fn the_lag_region_of_a_twelve_lag_state_adds_no_lp_column_or_row() {
-    use novomodelo_core::scenario::{AnnualComponent, InflowModel};
-
-    let ar_coeffs: Vec<f64> = vec![0.3, 0.2];
-    let ann = AnnualComponent {
-        coefficient: 0.5,
-        mean_m3s: 80.0,
-        std_m3s: 20.0,
-    };
-    let inflow_models = vec![
-        InflowModel {
-            hydro_id: EntityId(2),
-            stage_id: 0,
-            mean_m3s: 80.0,
-            std_m3s: 20.0,
-            ar_coefficients: ar_coeffs.clone(),
-            residual_std_ratio: 1.0,
-            annual: Some(ann),
-        },
-        InflowModel {
-            hydro_id: EntityId(3),
-            stage_id: 0,
-            mean_m3s: 60.0,
-            std_m3s: 15.0,
-            ar_coefficients: ar_coeffs.clone(),
-            residual_std_ratio: 1.0,
-            annual: None,
-        },
-    ];
+    let inflow_models = two_hydro_inflow_models(&[0.3, 0.2], true);
 
     let system = two_hydro_par_system(2, inflow_models.clone());
     let stages = system.stages().to_vec();

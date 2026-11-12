@@ -104,7 +104,6 @@ pub(super) fn solve_backward_opening<S: SolverInterface + Send>(
     let view = opening_solver.solve_over(ws, &inputs, child.successor_pool.active_cuts(), lazy)?;
 
     let template = ctx.template(s);
-    let col_scale = &template.col_scale;
     let read_cut_duals = training_ctx.cut_state_layouts[child.pool_id].has_lag_slots()
         || child.cut_activity_tolerance.is_some();
     let frozen = matches!(opening_solver, StageOpeningSolver::Frozen);
@@ -112,7 +111,7 @@ pub(super) fn solve_backward_opening<S: SolverInterface + Send>(
         &view,
         &DualExtractionSpec {
             extracted: succ.cut_state,
-            col_scale,
+            col_scale: &template.col_scale,
             row_scale: &template.row_scale,
             coupling: &ctx.inflow_coupling[s.0],
             first_cut_row: child.template_num_rows,

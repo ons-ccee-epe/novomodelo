@@ -86,6 +86,17 @@ fn hydro_penalties() -> HydroPenalties {
     }
 }
 
+fn finite_horizon_graph(annual_discount_rate: f64) -> HorizonGraph {
+    HorizonGraph {
+        stage_discount_rate_overrides: std::collections::BTreeMap::new(),
+        graph_type: PolicyGraphType::FiniteHorizon,
+        annual_discount_rate,
+        transitions: vec![],
+        nodes: Vec::new(),
+        season_map: None,
+    }
+}
+
 // Rationale: the entity/bounds/penalties construction is one sequential
 // fixture; splitting it into helper fns would fragment the declared shape
 // across call sites with no reuse benefit.
@@ -293,14 +304,7 @@ fn build_system() -> novomodelo_core::System {
         past_defluences: vec![],
     };
 
-    let policy_graph = HorizonGraph {
-        stage_discount_rate_overrides: std::collections::BTreeMap::new(),
-        graph_type: PolicyGraphType::FiniteHorizon,
-        annual_discount_rate: 0.06,
-        transitions: vec![],
-        nodes: Vec::new(),
-        season_map: None,
-    };
+    let policy_graph = finite_horizon_graph(0.06);
 
     SystemBuilder::new()
         .buses(vec![bus])
@@ -604,14 +608,7 @@ fn build_mixed_lead_system(reversed: bool) -> novomodelo_core::System {
         past_defluences: vec![],
     };
 
-    let policy_graph = HorizonGraph {
-        stage_discount_rate_overrides: std::collections::BTreeMap::new(),
-        graph_type: PolicyGraphType::FiniteHorizon,
-        annual_discount_rate: 0.06,
-        transitions: vec![],
-        nodes: Vec::new(),
-        season_map: None,
-    };
+    let policy_graph = finite_horizon_graph(0.06);
 
     // Post-study calendar covering the long lead's post-horizon deliveries
     // (decision stages 2-4 deliver at stages 5-7, i.e. post-study indices
@@ -908,14 +905,7 @@ fn build_delivery_oracle_system(annual_discount_rate: f64) -> novomodelo_core::S
         recent_observations: vec![],
         past_defluences: vec![],
     };
-    let policy_graph = HorizonGraph {
-        stage_discount_rate_overrides: std::collections::BTreeMap::new(),
-        graph_type: PolicyGraphType::FiniteHorizon,
-        annual_discount_rate,
-        transitions: vec![],
-        nodes: Vec::new(),
-        season_map: None,
-    };
+    let policy_graph = finite_horizon_graph(annual_discount_rate);
 
     SystemBuilder::new()
         .buses(vec![bus])
@@ -1144,14 +1134,7 @@ fn build_parallel_evap_system() -> novomodelo_core::System {
         past_defluences: vec![],
     };
 
-    let policy_graph = HorizonGraph {
-        stage_discount_rate_overrides: std::collections::BTreeMap::new(),
-        graph_type: PolicyGraphType::FiniteHorizon,
-        annual_discount_rate: 0.0,
-        transitions: vec![],
-        nodes: Vec::new(),
-        season_map: None,
-    };
+    let policy_graph = finite_horizon_graph(0.0);
 
     SystemBuilder::new()
         .buses(vec![bus])
@@ -1393,14 +1376,7 @@ fn build_stochastic_parallel_system() -> novomodelo_core::System {
         past_defluences: vec![],
     };
 
-    let policy_graph = HorizonGraph {
-        stage_discount_rate_overrides: std::collections::BTreeMap::new(),
-        graph_type: PolicyGraphType::FiniteHorizon,
-        annual_discount_rate: 0.0,
-        transitions: vec![],
-        nodes: Vec::new(),
-        season_map: None,
-    };
+    let policy_graph = finite_horizon_graph(0.0);
 
     SystemBuilder::new()
         .buses(vec![bus])
@@ -2104,14 +2080,7 @@ fn build_two_hydro_evap_system() -> novomodelo_core::System {
         past_defluences: vec![],
     };
 
-    let policy_graph = HorizonGraph {
-        stage_discount_rate_overrides: std::collections::BTreeMap::new(),
-        graph_type: PolicyGraphType::FiniteHorizon,
-        annual_discount_rate: 0.0,
-        transitions: vec![],
-        nodes: Vec::new(),
-        season_map: None,
-    };
+    let policy_graph = finite_horizon_graph(0.0);
 
     SystemBuilder::new()
         .buses(vec![bus])

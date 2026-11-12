@@ -688,11 +688,7 @@ impl ForwardPassState {
         };
 
         let fwd_imbalance_ms = (max_worker_ms - avg_worker_ms).max(0.0);
-        #[allow(
-            clippy::cast_precision_loss,
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss
-        )]
+        #[allow(clippy::cast_precision_loss)]
         let fwd_scheduling_ms = (parallel_wall_ms as f64 - max_worker_ms).max(0.0);
 
         for (ws, delta) in inputs.workspaces.iter_mut().zip(&self.worker_deltas) {
@@ -717,10 +713,8 @@ impl ForwardPassState {
         let mut scenario_costs = std::mem::take(&mut self.scenario_costs);
         scenario_costs.clear();
 
-        if self.stage_stats.len() != num_stages {
-            self.stage_stats
-                .resize_with(num_stages, SolverStatsDelta::default);
-        }
+        self.stage_stats
+            .resize_with(num_stages, SolverStatsDelta::default);
         for d in &mut self.stage_stats {
             d.reset_in_place();
         }

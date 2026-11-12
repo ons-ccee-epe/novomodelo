@@ -1053,7 +1053,7 @@ The Kiro mirror is regenerated in the same commit
 
 ### 8.3 Other documents
 
-- **This spec** lives at `docs/design/par-folding.md` with status Proposal. If the
+- **This spec** lives at `docs/design/par-folding.md` with status Implemented. If the
   branch merges, its durable content moves into `sddp.md` and `lp-builder-contract.md`
   and this file is deleted, per `docs/design/README.md`.
 - **CHANGELOG:** one `[Unreleased]` entry under Changed stating that results change,

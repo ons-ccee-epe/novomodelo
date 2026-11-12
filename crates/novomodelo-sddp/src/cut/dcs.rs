@@ -786,7 +786,7 @@ pub fn lazy_solve_preloaded<S: SolverInterface>(
             current_iteration,
             &mut scratch.scoring,
             &mut scratch.out_selected,
-            &scratch.rhs_by_slot,
+            row_lower_by_slot,
         );
         scratch.scoring_time_seconds += t0.elapsed().as_secs_f64();
 
@@ -2669,7 +2669,7 @@ mod tests {
     /// `enforce_basic_count_invariant` surfaces `SddpError::BasisShapeMismatch`
     /// if it is ever attempted.
     fn make_deficit_basis(node_id: NodeId) -> CapturedBasis {
-        CapturedBasis::new(3, 1, 1, 0, 0, node_id)
+        CapturedBasis::new(3, 1, 1, 0, node_id)
     }
 
     /// A node-id mismatch on `stored_basis` must drop to the cold path before
@@ -3448,8 +3448,7 @@ mod tests {
         let mut solver = ProfiledSolver::new(mock);
         let mut scratch = DcsSolveScratch::default();
         let params = lazy_params(10, 50);
-        let stored =
-            CapturedBasis::new(core.num_cols, core.num_rows, core.num_rows, 0, 0, NodeId(0));
+        let stored = CapturedBasis::new(core.num_cols, core.num_rows, core.num_rows, 0, NodeId(0));
 
         solver.load_model(&core);
         lazy_solve_preloaded(

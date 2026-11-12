@@ -302,7 +302,6 @@ fn solve_forward_node<S: SolverInterface + Send>(
             ctx.template(t),
             params.frozen[pool_id].num_rows,
             pool,
-            &ws.current_state[..training_ctx.state.n_state],
             node_graph.node_ids[node],
         );
     }

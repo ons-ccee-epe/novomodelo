@@ -550,7 +550,6 @@ mod tests {
             template.num_rows,
             template.num_rows,
             0,
-            1,
             NodeId(5), // node_id — matches inputs.node_id below (the match/warm case)
         );
         captured.basis.col_status.clear();
@@ -560,7 +559,6 @@ mod tests {
         captured.basis.row_status.clear();
         captured.basis.row_status.push(L); // row 0 at bound
         captured.basis.row_status.push(L); // row 1 at bound
-        captured.state_at_capture.push(6.0); // captured at state = [6.0]
 
         let inputs = StageInputs {
             stage_context: &ctx,
@@ -658,7 +656,6 @@ mod tests {
             template.num_rows,
             template.num_rows,
             0,
-            1,
             NodeId(9), // node_id — matches inputs.node_id below (the match/warm case)
         );
 
@@ -715,7 +712,6 @@ mod tests {
             template.num_rows,
             template.num_rows,
             0,
-            1,
             NodeId(1), // node A
         );
 
@@ -761,13 +757,11 @@ mod tests {
             template.num_rows + 1,
             template.num_rows,
             1,
-            1,
             NodeId(5),
         );
         captured.basis.col_status.fill(B);
         captured.basis.row_status.fill(L);
         captured.cut_row_slots.push(0);
-        captured.state_at_capture.push(6.0);
 
         let inputs = StageInputs {
             stage_context: &ctx,
@@ -814,7 +808,6 @@ mod tests {
             template.num_rows,
             template.num_rows,
             0,
-            1,
             NodeId(5),
         );
         captured.basis.col_status.clear();
@@ -824,7 +817,6 @@ mod tests {
         captured.basis.row_status.clear();
         captured.basis.row_status.push(L);
         captured.basis.row_status.push(L);
-        captured.state_at_capture.push(6.0);
 
         let inputs = StageInputs {
             stage_context: &ctx,
@@ -891,7 +883,6 @@ mod tests {
             template.num_rows,
             template.num_rows,
             0,
-            1,
             NodeId(5),
         );
         captured.basis.col_status.clear();
@@ -901,7 +892,6 @@ mod tests {
         captured.basis.row_status.clear();
         captured.basis.row_status.push(L);
         captured.basis.row_status.push(L);
-        captured.state_at_capture.push(6.0);
 
         let inputs = StageInputs {
             stage_context: &ctx,
@@ -1000,14 +990,12 @@ mod tests {
             template.num_rows,
             template.num_rows,
             0,
-            1,
             node_id,
         );
         captured.basis.col_status.clear();
         captured.basis.col_status.extend_from_slice(&[B, B, L]);
         captured.basis.row_status.clear();
         captured.basis.row_status.extend_from_slice(&[L, L]);
-        captured.state_at_capture.push(6.0);
         captured
     }
 
@@ -1094,7 +1082,6 @@ mod tests {
             template.num_rows,
             template.num_rows,
             0,
-            1,
             NodeId(1),
         );
 
@@ -1138,7 +1125,6 @@ mod tests {
             template.num_rows,
             template.num_rows,
             0,
-            1,
             NodeId(5),
         );
 

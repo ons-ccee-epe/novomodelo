@@ -572,10 +572,11 @@ fn check_pool(
                     check_mask(label, t, idx, &off_mask, coeffs, &mut report.mask);
                 }
 
-                let mut proj = vec![0.0; cut_state_t.n_slots()];
-                for (j, slot) in proj.iter_mut().enumerate() {
-                    *slot = eval.canonical_x[cut_state_t.global_state_index(CutSlot::new(j)).get()];
-                }
+                let proj: Vec<f64> = (0..cut_state_t.n_slots())
+                    .map(|j| {
+                        eval.canonical_x[cut_state_t.global_state_index(CutSlot::new(j)).get()]
+                    })
+                    .collect();
 
                 let validity_q_hat = match &validity_rows {
                     None => eval.q_hat,
@@ -696,22 +697,21 @@ fn global_state(layout: &CutStateProjection, row: &[f64], fill: &[f64]) -> Vec<f
 /// state (zeros for a pool that projects every dimension).
 ///
 /// A pool stores the projected dimensions of its states only, and the run keeps
-/// the whole state of one trial: the one `captured`, the basis the final iteration
-/// captured at the successor. That state stands for every trial of the pool when
-/// the dropped dimensions do not differ between trials, which holds with one
+/// the whole state of one trial: `forward_state`, the state the first iteration's
+/// forward pass ended stage `t` in. That state stands for every trial of the pool
+/// when the dropped dimensions do not differ between trials, which holds with one
 /// forward pass and one opening in every stage up to `t`.
 ///
 /// # Panics
 ///
-/// Panics if a pool that drops dimensions has several trials or openings, or no
-/// captured state.
+/// Panics if a pool that drops dimensions has several trials or openings.
 fn dropped_dimension_fill(
     label: &str,
     t: usize,
     layout: &CutStateProjection,
     n_state: usize,
     single_trial: bool,
-    captured: Option<&[f64]>,
+    forward_state: &[f64],
 ) -> Vec<f64> {
     if layout.n_slots() == n_state {
         return vec![0.0; n_state];
@@ -720,9 +720,7 @@ fn dropped_dimension_fill(
         single_trial,
         "{label}: pool {t} drops state dimensions, which the run keeps for one trial only"
     );
-    captured
-        .unwrap_or_else(|| panic!("{label}: pool {t}: the successor captured no basis"))
-        .to_vec()
+    forward_state.to_vec()
 }
 
 /// Pairs every active cut slot `j` of pool `t` with the state it was generated at:
@@ -749,13 +747,14 @@ fn recover_cut_trial_states(
 }
 
 /// The final iteration's `forward_passes` trial states of pool `t`, its dropped
-/// dimensions from `fill`. When the pool drops some, `fill` is the captured state
-/// and the stored dimensions of the one trial must equal it bit for bit.
+/// dimensions from `fill`. When the pool drops some, `fill` is the state the first
+/// iteration's forward pass ended the stage in, and the pool's first stored state
+/// must equal it in the dimensions the pool keeps, bit for bit.
 ///
 /// # Panics
 ///
-/// Panics if the pool stores fewer states than `forward_passes`, or stores a state
-/// other than the captured one.
+/// Panics if the pool stores fewer states than `forward_passes`, or its first
+/// stored state is not the forward one.
 fn final_trial_points(
     label: &str,
     t: usize,
@@ -778,8 +777,8 @@ fn final_trial_points(
         .collect();
     if layout.n_slots() < fill.len() {
         assert!(
-            bits_eq(&points[0], fill),
-            "{label}: pool {t}: the stored state is not the state the final iteration captured"
+            bits_eq(&global_state(layout, stored[0], fill), fill),
+            "{label}: pool {t}: the first stored state is not the state the first iteration's forward pass ended the stage in"
         );
     }
     points
@@ -814,6 +813,7 @@ pub fn run_cut_oracles(label: &str, mut setup: StudySetup) -> CutOracleReport {
     }
 
     setup.set_export_states(true);
+    let first_forward_states = super::forward_replay::first_iteration_forward_states(&setup);
     let comm = StubComm;
     let mut solver = ActiveSolver::new().expect("run_cut_oracles: ActiveSolver::new must succeed");
     let (event_sender, events) = mpsc::channel();
@@ -861,7 +861,6 @@ pub fn run_cut_oracles(label: &str, mut setup: StudySetup) -> CutOracleReport {
         Some(_) => {}
     }
 
-    let basis_cache = outcome.result.basis_cache;
     let forward_passes = setup.fcf.forward_passes as usize;
 
     let mut workspace_pool = setup
@@ -877,7 +876,11 @@ pub fn run_cut_oracles(label: &str, mut setup: StudySetup) -> CutOracleReport {
 
     let mut report = CutOracleReport::default();
 
-    for t in 0..n_stages.saturating_sub(1) {
+    for (t, forward_state) in first_forward_states
+        .iter()
+        .enumerate()
+        .take(n_stages.saturating_sub(1))
+    {
         if setup.fcf.pools[t].populated() == 0 {
             continue;
         }
@@ -893,9 +896,7 @@ pub fn run_cut_oracles(label: &str, mut setup: StudySetup) -> CutOracleReport {
             layout_t,
             n_state,
             forward_passes == 1 && (0..=t).all(|stage| occ.tree_view.n_openings(stage) == 1),
-            basis_cache[s]
-                .as_ref()
-                .map(|basis| basis.state_at_capture.as_slice()),
+            forward_state,
         );
         let trial_points = final_trial_points(label, t, pool_t, layout_t, forward_passes, &fill);
 

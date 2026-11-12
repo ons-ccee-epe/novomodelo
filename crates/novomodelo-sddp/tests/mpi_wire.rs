@@ -158,14 +158,12 @@ mod test_mpi_wire_format_version {
         let num_rows = 3;
         let base_row_count = 1;
         let cut_slot_capacity = 2;
-        let n_state = 1;
 
         let mut original = CapturedBasis::new(
             num_cols,
             num_rows,
             base_row_count,
             cut_slot_capacity,
-            n_state,
             NodeId(0),
         );
         // Minimal valid data so the Some-path sentinel (i32_buf[0] == 1) is written.
@@ -180,11 +178,9 @@ mod test_mpi_wire_format_version {
         ]);
         original.cut_row_slots.push(0_u32);
         original.cut_row_slots.push(1_u32);
-        original.state_at_capture.push(42.0_f64);
 
         let mut i32_buf: Vec<i32> = Vec::new();
-        let mut f64_buf: Vec<f64> = Vec::new();
-        original.to_broadcast_payload(&mut i32_buf, &mut f64_buf);
+        original.to_broadcast_payload(&mut i32_buf);
 
         // i32_buf layout (owned by to_broadcast_payload): [sentinel, version, ...] —
         // the version field is at index 1, which this test corrupts below.
@@ -197,14 +193,7 @@ mod test_mpi_wire_format_version {
         i32_buf[1] = 1;
 
         let mut i32_cursor = 0_usize;
-        let mut f64_cursor = 0_usize;
-        let result = CapturedBasis::try_from_broadcast_payload(
-            0,
-            &i32_buf,
-            &mut i32_cursor,
-            &f64_buf,
-            &mut f64_cursor,
-        );
+        let result = CapturedBasis::try_from_broadcast_payload(0, &i32_buf, &mut i32_cursor);
 
         match result {
             Err(SddpError::Validation(ref msg)) => {
@@ -289,14 +278,12 @@ mod test_mpi_4rank_basis_broadcast_round_trip {
         let num_rows = 6_usize;
         let base_row_count = 2_usize;
         let cut_slot_capacity = 4_usize;
-        let n_state = 3_usize;
 
         let mut cb = CapturedBasis::new(
             num_cols,
             num_rows,
             base_row_count,
             cut_slot_capacity,
-            n_state,
             // Distinct per basis so the wire-carried node_id is exercised
             // (negative to also pin signedness).
             NodeId(-(seed as i32)),
@@ -312,9 +299,6 @@ mod test_mpi_4rank_basis_broadcast_round_trip {
         }
         for i in 0..cut_slot_capacity {
             cb.cut_row_slots.push(seed + i as u32);
-        }
-        for i in 0..n_state {
-            cb.state_at_capture.push(f64::from(seed) + (i as f64) * 0.5);
         }
 
         cb
@@ -337,10 +321,6 @@ mod test_mpi_4rank_basis_broadcast_round_trip {
             a.cut_row_slots, b.cut_row_slots,
             "{label}: cut_row_slots mismatch"
         );
-        assert_eq!(
-            a.state_at_capture, b.state_at_capture,
-            "{label}: state_at_capture mismatch"
-        );
         assert_eq!(a.node_id, b.node_id, "{label}: node_id mismatch");
     }
 
@@ -357,17 +337,16 @@ mod test_mpi_4rank_basis_broadcast_round_trip {
         let stage2_basis = make_captured_basis(20);
 
         let mut i32_buf: Vec<i32> = Vec::new();
-        let mut f64_buf: Vec<f64> = Vec::new();
 
-        stage0_basis.to_broadcast_payload(&mut i32_buf, &mut f64_buf);
+        stage0_basis.to_broadcast_payload(&mut i32_buf);
 
         // None is encoded as the bare `0_i32` sentinel, not by absence.
         i32_buf.push(0_i32);
 
-        stage2_basis.to_broadcast_payload(&mut i32_buf, &mut f64_buf);
+        stage2_basis.to_broadcast_payload(&mut i32_buf);
 
         // A Some stage's i32 layout: [1 (sentinel), VERSION, node_id, col_len,
-        // row_len, base_row_count, cut_slot_count, state_len, ...].
+        // row_len, base_row_count, cut_slot_count, ...].
         assert_eq!(i32_buf[0], 1, "stage 0 sentinel must be 1");
         assert_eq!(
             i32_buf[1], BASIS_BROADCAST_FORMAT_TAG,
@@ -377,15 +356,12 @@ mod test_mpi_4rank_basis_broadcast_round_trip {
         // Each rank reads independently from the same shared buffers.
         let unpack_all_stages = |rank: usize| -> Vec<Option<CapturedBasis>> {
             let mut i32_cursor = 0_usize;
-            let mut f64_cursor = 0_usize;
             let mut stages = Vec::with_capacity(NUM_STAGES);
             for stage in 0..NUM_STAGES {
                 let result = CapturedBasis::try_from_broadcast_payload(
                     stage,
                     &i32_buf,
                     &mut i32_cursor,
-                    &f64_buf,
-                    &mut f64_cursor,
                 )
                 .unwrap_or_else(|e| {
                     panic!(

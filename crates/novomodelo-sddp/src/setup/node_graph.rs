@@ -1598,7 +1598,7 @@ mod tests {
     use novomodelo_stochastic::{ClassSchemes, OpeningTreeInputs, build_stochastic_context};
 
     fn cb(node_id: i32, marker: u32) -> CapturedBasis {
-        let mut c = CapturedBasis::new(0, 0, 0, 1, 0, NodeId(node_id));
+        let mut c = CapturedBasis::new(0, 0, 0, 1, NodeId(node_id));
         c.cut_row_slots.push(marker);
         c
     }

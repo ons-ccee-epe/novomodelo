@@ -3,7 +3,7 @@
 //! positions are in reverse (non-slot) order, matching the runtime caller's
 //! `load_bus_indices`.
 
-#![allow(missing_docs, clippy::unwrap_used, clippy::expect_used)]
+#![allow(missing_docs)]
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use novomodelo_sddp::indexer::{BlockGrid, BlockRowFamily, StateSpace};

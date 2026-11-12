@@ -5412,8 +5412,7 @@ mod tests {
         {
             let mut slices = store.split_workers_mut(1, 1);
             let slice = &mut slices[0];
-            *slice.get_mut(0, node_a) =
-                Some(CapturedBasis::new(2, 1, 0, 0, 0, ng.node_ids[node_a]));
+            *slice.get_mut(0, node_a) = Some(CapturedBasis::new(2, 1, 0, 0, ng.node_ids[node_a]));
             assert!(
                 slice.get(0, node_a).is_some(),
                 "basis saved at successor node A resolves at node A"

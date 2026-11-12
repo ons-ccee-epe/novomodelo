@@ -106,7 +106,6 @@ pub(crate) fn run_forward_stage<S: SolverInterface + Send>(
             template,
             basis_row_capacity,
             pool,
-            &ws.current_state[..training_ctx.state.n_state],
             node_id,
         );
     }

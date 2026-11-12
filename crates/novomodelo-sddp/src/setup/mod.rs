@@ -829,11 +829,10 @@ fn build_ncs_entity_data(
     // Bridge each slot to its dense column via entity id (not a direct index) so the
     // map stays correct when only a subset of NCS are stochastic or the orders
     // diverge. Keyed on the id-sorted slot order, not entity declaration order.
-    let mut stochastic_dense_col: Vec<usize> = Vec::with_capacity(stoch_ncs_ids.len());
-    let mut stochastic_windows: Vec<(Option<i32>, Option<i32>)> =
-        Vec::with_capacity(stoch_ncs_ids.len());
-    let mut max_gen: Vec<f64> = Vec::with_capacity(stoch_ncs_ids.len());
-    let mut allow_curtailment: Vec<bool> = Vec::with_capacity(stoch_ncs_ids.len());
+    let mut stochastic_dense_col = Vec::with_capacity(stoch_ncs_ids.len());
+    let mut stochastic_windows = Vec::with_capacity(stoch_ncs_ids.len());
+    let mut max_gen = Vec::with_capacity(stoch_ncs_ids.len());
+    let mut allow_curtailment = Vec::with_capacity(stoch_ncs_ids.len());
     for slot_id in stoch_ncs_ids {
         let not_found = || {
             SddpError::Validation(format!(
@@ -1425,10 +1424,8 @@ pub(crate) fn resolve_anticipated_commitments_core(
     calendar: &DeliveryCalendar,
     anticipated_plants: &AnticipatedPlants,
 ) -> (AnticipatedResolution, Vec<usize>) {
-    let anticipated_thermals: Vec<&Thermal> = anticipated_plants
-        .thermals()
-        .map(|t| &system.thermals()[t.get()])
-        .collect();
+    let anticipated_thermals: Vec<&Thermal> =
+        anticipated_plants.thermals_in(system.thermals()).collect();
     let leads: Vec<LeadTime> = anticipated_thermals
         .iter()
         .filter_map(|t| t.anticipated_config.as_ref())
@@ -1489,10 +1486,8 @@ pub(crate) fn resolve_anticipated_commitments(
 ) -> (AnticipatedResolution, Vec<usize>) {
     let (resolution, lead_stages) =
         resolve_anticipated_commitments_core(system, calendar, anticipated_plants);
-    let anticipated_thermals: Vec<&Thermal> = anticipated_plants
-        .thermals()
-        .map(|t| &system.thermals()[t.get()])
-        .collect();
+    let anticipated_thermals: Vec<&Thermal> =
+        anticipated_plants.thermals_in(system.thermals()).collect();
     warn_on_sub_stage_lead(&anticipated_thermals, &resolution);
     (resolution, lead_stages)
 }
@@ -1555,15 +1550,15 @@ fn warn_on_boundary_absent_post_study_delivery(
         })
     };
     let affected: Vec<String> = anticipated_plants
-        .thermals()
+        .thermals_in(thermals)
         .zip(&resolution.per_plant)
-        .filter(|&(t, point)| {
+        .filter(|&(thermal, point)| {
             let class3 = point.decider.get(n_stages..).is_some_and(|post_study| {
                 post_study.iter().any(|c| c.is_some_and(|t| t < n_stages))
             });
-            class3 || has_nonzero_fixed(thermals[t.get()].id.0)
+            class3 || has_nonzero_fixed(thermal.id.0)
         })
-        .map(|(t, _)| format!("{} ({})", thermals[t.get()].id, thermals[t.get()].name))
+        .map(|(thermal, _)| format!("{} ({})", thermal.id, thermal.name))
         .collect();
     if affected.is_empty() {
         return;

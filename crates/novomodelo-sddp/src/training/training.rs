@@ -25,10 +25,6 @@ use crate::{
     workspace::{BasisStore, CapturedBasis},
 };
 
-// ---------------------------------------------------------------------------
-// TrainingResult
-// ---------------------------------------------------------------------------
-
 /// Result of a training run that always carries partial results.
 ///
 /// On normal completion `error` is `None` and `result` holds the full
@@ -146,8 +142,7 @@ impl TrainingResult {
     }
 }
 
-/// The solver bases a checkpoint holds: one per global scenario and node, each
-/// with an empty `state_at_capture`.
+/// The solver bases a checkpoint holds: one per global scenario and node.
 #[derive(Debug, Clone, Default)]
 pub struct CheckpointBasisStore {
     /// Per canonical node, `(global scenario, basis)` ascending by scenario.
@@ -171,7 +166,6 @@ impl CheckpointBasisStore {
                                     basis: captured.basis.clone(),
                                     base_row_count: captured.base_row_count,
                                     cut_row_slots: captured.cut_row_slots.clone(),
-                                    state_at_capture: Vec::new(),
                                     node_id: captured.node_id,
                                 },
                             )
@@ -232,10 +226,6 @@ impl LoadedPolicy {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
-
 /// Convert a buffer length to `i32` for use as an MPI count.
 ///
 /// # Errors
@@ -267,7 +257,7 @@ fn broadcast_len<C: Communicator>(
 ) -> Result<usize, SddpError> {
     let own = checked_mpi_count(len, operation);
     let mut buf = [own.as_ref().map_or(-1, |&count| count)];
-    comm.broadcast(&mut buf, 0).map_err(SddpError::from)?;
+    comm.broadcast(&mut buf, 0)?;
     own?;
     usize::try_from(buf[0]).map_err(|_| {
         SddpError::Validation(format!(
@@ -277,8 +267,8 @@ fn broadcast_len<C: Communicator>(
 }
 
 /// This rank's local scenario-0 basis at every node, metadata included
-/// (`cut_row_slots`, `state_at_capture`, `base_row_count`), so a reconstruction
-/// from it keeps full slot identity. On rank 0 it is what
+/// (`cut_row_slots`, `base_row_count`), so a reconstruction from it keeps full
+/// slot identity. On rank 0 it is what
 /// [`broadcast_basis_cache`] delivers to every rank.
 fn rank_local_basis_cache(basis_store: &BasisStore) -> Vec<Option<CapturedBasis>> {
     (0..basis_store.num_nodes())
@@ -294,13 +284,12 @@ fn rank_local_basis_cache(basis_store: &BasisStore) -> Vec<Option<CapturedBasis>
 /// realisation and would yield divergent bases, whereas rank 0's local
 /// scenario 0 is always global scenario 0 (`my_fwd_offset == 0`).
 ///
-/// The two-buffer wire layout is owned by
+/// The wire layout is owned by
 /// [`CapturedBasis::to_broadcast_payload`](crate::workspace::CapturedBasis::to_broadcast_payload)
 /// /
 /// [`try_from_broadcast_payload`](crate::workspace::CapturedBasis::try_from_broadcast_payload);
-/// this function only sequences the four MPI broadcasts (length then payload,
-/// for the i32 and f64 buffers). Single-rank runs skip the broadcast and return
-/// [`rank_local_basis_cache`].
+/// this function only sequences the two MPI broadcasts (length, then payload).
+/// Single-rank runs skip the broadcast and return [`rank_local_basis_cache`].
 ///
 /// The cache is sized and keyed by `basis_store.num_nodes()` (one slot per
 /// canonical node), so a branching graph's leaf nodes are broadcast too, never
@@ -324,36 +313,25 @@ pub(crate) fn broadcast_basis_cache<C: Communicator>(
     }
 
     let mut buf: Vec<i32> = Vec::new();
-    let mut f64_buf: Vec<f64> = Vec::new();
     if comm.rank() == 0 {
         for t in 0..num_nodes {
             match basis_store.get(0, NodePos(t)) {
                 None => buf.push(0_i32),
-                Some(captured) => captured.to_broadcast_payload(&mut buf, &mut f64_buf),
+                Some(captured) => captured.to_broadcast_payload(&mut buf),
             }
         }
     }
 
     let total_len = broadcast_len(comm, buf.len(), "broadcast_basis_cache_i32")?;
     buf.resize(total_len, 0_i32);
-    comm.broadcast(&mut buf, 0).map_err(SddpError::from)?;
-
-    let f64_total_len = broadcast_len(comm, f64_buf.len(), "broadcast_basis_cache_f64")?;
-    f64_buf.resize(f64_total_len, 0.0_f64);
-    comm.broadcast(&mut f64_buf, 0).map_err(SddpError::from)?;
+    comm.broadcast(&mut buf, 0)?;
 
     let mut cache: Vec<Option<CapturedBasis>> = Vec::with_capacity(num_nodes);
     let mut pos = 0_usize;
-    let mut f64_pos = 0_usize;
     for node in 0..num_nodes {
-        let captured = CapturedBasis::try_from_broadcast_payload(
-            node,
-            &buf,
-            &mut pos,
-            &f64_buf,
-            &mut f64_pos,
-        )?;
-        cache.push(captured);
+        cache.push(CapturedBasis::try_from_broadcast_payload(
+            node, &buf, &mut pos,
+        )?);
     }
 
     Ok(cache)
@@ -361,8 +339,8 @@ pub(crate) fn broadcast_basis_cache<C: Communicator>(
 
 /// Gather every rank's stored bases to rank 0, keyed by global scenario
 /// (`fwd_offset + m` for local row `m`). Every rank calls it under the same
-/// condition; per canonical node it issues one `allgatherv` of the two payload
-/// lengths and one each of the `i32` and `f64` payloads, whose layout
+/// condition; per canonical node it issues one `allgatherv` of the payload
+/// lengths and one of the payloads, whose layout
 /// [`CapturedBasis::to_broadcast_payload`] owns. Rank 0 returns the complete
 /// store, every other rank `None`.
 ///
@@ -384,14 +362,11 @@ pub(crate) fn gather_basis_store<C: Communicator>(
     let rank_passes = per_rank_counts(ranks.num_total_forward_passes, num_ranks);
 
     let mut int_send: Vec<i32> = Vec::new();
-    let mut float_send: Vec<f64> = Vec::new();
     let mut int_recv: Vec<i32> = Vec::new();
-    let mut float_recv: Vec<f64> = Vec::new();
-    let mut lengths = vec![0_i32; 2 * num_ranks];
-    let length_counts = vec![2_usize; num_ranks];
-    let length_displs: Vec<usize> = (0..num_ranks).map(|r| 2 * r).collect();
+    let mut lengths = vec![0_i32; num_ranks];
+    let length_counts = vec![1_usize; num_ranks];
+    let length_displs: Vec<usize> = (0..num_ranks).collect();
     let (mut int_counts, mut int_displs) = (vec![0_usize; num_ranks], vec![0_usize; num_ranks]);
-    let (mut float_counts, mut float_displs) = (vec![0_usize; num_ranks], vec![0_usize; num_ranks]);
 
     let mut gathered = CheckpointBasisStore {
         nodes: Vec::with_capacity(if is_root { num_nodes } else { 0 }),
@@ -401,42 +376,26 @@ pub(crate) fn gather_basis_store<C: Communicator>(
 
     for node in 0..num_nodes {
         int_send.clear();
-        float_send.clear();
         for m in 0..ranks.my_actual_fwd {
             match basis_store.get(m, NodePos(node)) {
                 None => int_send.push(0_i32),
-                Some(captured) => captured.to_broadcast_payload(&mut int_send, &mut float_send),
+                Some(captured) => captured.to_broadcast_payload(&mut int_send),
             }
         }
         // A length past `i32::MAX` travels as -1, so every rank fails at this node.
-        let own_lengths = [
-            i32::try_from(int_send.len()).unwrap_or(-1),
-            i32::try_from(float_send.len()).unwrap_or(-1),
-        ];
+        let own_length = [i32::try_from(int_send.len()).unwrap_or(-1)];
         lengths.fill(0);
-        comm.allgatherv(&own_lengths, &mut lengths, &length_counts, &length_displs)
-            .map_err(SddpError::from)?;
+        comm.allgatherv(&own_length, &mut lengths, &length_counts, &length_displs)?;
 
         let int_total = segment_layout(
-            lengths.iter().step_by(2),
+            lengths.iter(),
             node,
             "gather_basis_store_i32",
             &mut int_counts,
             &mut int_displs,
         )?;
-        let float_total = segment_layout(
-            lengths.iter().skip(1).step_by(2),
-            node,
-            "gather_basis_store_f64",
-            &mut float_counts,
-            &mut float_displs,
-        )?;
         int_recv.resize(int_total, 0_i32);
-        float_recv.resize(float_total, 0.0_f64);
-        comm.allgatherv(&int_send, &mut int_recv, &int_counts, &int_displs)
-            .map_err(SddpError::from)?;
-        comm.allgatherv(&float_send, &mut float_recv, &float_counts, &float_displs)
-            .map_err(SddpError::from)?;
+        comm.allgatherv(&int_send, &mut int_recv, &int_counts, &int_displs)?;
 
         if !is_root || decode_error.is_some() {
             continue;
@@ -449,7 +408,6 @@ pub(crate) fn gather_basis_store<C: Communicator>(
                     node,
                     rank,
                     &int_recv[int_displs[rank]..int_displs[rank] + int_counts[rank]],
-                    &float_recv[float_displs[rank]..float_displs[rank] + float_counts[rank]],
                     first_scenario,
                     passes,
                     &mut entries,
@@ -470,7 +428,7 @@ pub(crate) fn gather_basis_store<C: Communicator>(
     Ok(is_root.then_some(gathered))
 }
 
-/// Fill one payload buffer's per-rank counts and displacements from the
+/// Fill the payload buffer's per-rank counts and displacements from the
 /// gathered lengths, returning the buffer's total length.
 ///
 /// # Errors
@@ -510,18 +468,16 @@ fn segment_layout<'a>(
 /// # Errors
 ///
 /// `SddpError::Validation` when the segment holds more rows than the rank's
-/// `passes`, leaves `f64` values unread, or fails
-/// [`CapturedBasis::try_from_broadcast_payload`].
+/// `passes` or fails [`CapturedBasis::try_from_broadcast_payload`].
 fn decode_rank_segment(
     node: usize,
     rank: usize,
     i32_segment: &[i32],
-    f64_segment: &[f64],
     first_scenario: usize,
     passes: usize,
     entries: &mut Vec<(u32, CapturedBasis)>,
 ) -> Result<(), SddpError> {
-    let (mut i32_pos, mut f64_pos) = (0_usize, 0_usize);
+    let mut i32_pos = 0_usize;
     let mut row = 0_usize;
     while i32_pos < i32_segment.len() {
         if row == passes {
@@ -529,23 +485,12 @@ fn decode_rank_segment(
                 "gather_basis_store: rank {rank} sent more than its {passes} rows at node {node}"
             )));
         }
-        if let Some(mut captured) = CapturedBasis::try_from_broadcast_payload(
-            node,
-            i32_segment,
-            &mut i32_pos,
-            f64_segment,
-            &mut f64_pos,
-        )? {
-            captured.state_at_capture = Vec::new();
+        if let Some(captured) =
+            CapturedBasis::try_from_broadcast_payload(node, i32_segment, &mut i32_pos)?
+        {
             entries.push((global_scenario(first_scenario, row), captured));
         }
         row += 1;
-    }
-    if f64_pos != f64_segment.len() {
-        return Err(SddpError::Validation(format!(
-            "gather_basis_store: rank {rank} sent {} f64 values its rows at node {node} do not read",
-            f64_segment.len() - f64_pos
-        )));
     }
     Ok(())
 }
@@ -555,10 +500,6 @@ fn decode_rank_segment(
 pub(crate) fn global_scenario(first_scenario: usize, row: usize) -> u32 {
     (first_scenario + row) as u32
 }
-
-// ---------------------------------------------------------------------------
-// train
-// ---------------------------------------------------------------------------
 
 /// Execute the SDDP training loop.
 ///

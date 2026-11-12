@@ -109,11 +109,8 @@ pub fn build_stage_entity_manifest(
 ) -> Vec<EntitySlot> {
     let n = global_layout.hydro_count;
     let hydros = system.hydros();
-    let thermals = system.thermals();
-    let anticipated_thermals: Vec<&Thermal> = anticipated_plants
-        .thermals()
-        .map(|t| &thermals[t.get()])
-        .collect();
+    let anticipated_thermals: Vec<&Thermal> =
+        anticipated_plants.thermals_in(system.thermals()).collect();
     // Only `slot_lane_at`'s reverse decomposition is read here — the manifest
     // never emits ring rows/columns.
     let anticipated_ring = DeliveryRing::anticipated(global_layout);
@@ -328,8 +325,6 @@ pub fn reserve_boundary_inflow_lag_slots<S: std::hash::BuildHasher>(
         })
         .collect();
 
-    // Same lag-major order as `reserved_slots` above, matching
-    // `build_stage_entity_manifest`'s `StateRegion::Lag` arm.
     let reserved_cut_coefficients: Vec<Vec<f64>> = cut_inflow_lag_coefficients
         .iter()
         .map(|keyed| {
@@ -2890,7 +2885,6 @@ mod tests {
             },
             base_row_count,
             cut_row_slots: (0..cut_rows as u32).collect(),
-            state_at_capture: Vec::new(),
             node_id: NodeId(0),
         };
         let mut bases = CheckpointBasisStore {

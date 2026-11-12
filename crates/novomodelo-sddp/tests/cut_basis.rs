@@ -3047,31 +3047,22 @@ mod hybrid_reconstruction {
         num_cols: usize,
         slots: &[u32],
         cut_statuses: &[novomodelo_solver::BasisStatus],
-        state_at_capture: &[f64],
     ) -> CapturedBasis {
         assert_eq!(slots.len(), cut_statuses.len());
         let total_rows = base_rows + cut_statuses.len();
-        let mut cb = CapturedBasis::new(
-            num_cols,
-            total_rows,
-            base_rows,
-            slots.len(),
-            state_at_capture.len(),
-            NodeId(0),
-        );
+        let mut cb = CapturedBasis::new(num_cols, total_rows, base_rows, slots.len(), NodeId(0));
         cb.basis.row_status.clear();
         cb.basis.row_status.resize(base_rows, B);
         cb.basis.row_status.extend_from_slice(cut_statuses);
         cb.basis.col_status.clear();
         cb.basis.col_status.resize(num_cols, B);
         cb.cut_row_slots.extend_from_slice(slots);
-        cb.state_at_capture.extend_from_slice(state_at_capture);
         cb
     }
 
     #[test]
     fn mixed_case_5_rows() {
-        let stored = make_stored(2, 3, &[10, 20, 30, 40], &[L, B, L, B], &[1.0, 2.0]);
+        let stored = make_stored(2, 3, &[10, 20, 30, 40], &[L, B, L, B]);
         let cuts: Vec<(usize, f64, Vec<f64>)> = vec![
             (10, 0.0, vec![0.0, 0.0]),
             (25, 0.0, vec![0.0, 0.0]),
@@ -3113,7 +3104,7 @@ mod hybrid_reconstruction {
 
     #[test]
     fn all_preserved() {
-        let stored = make_stored(1, 2, &[10, 20, 30], &[L, B, L], &[1.0]);
+        let stored = make_stored(1, 2, &[10, 20, 30], &[L, B, L]);
         let cuts: Vec<(usize, f64, Vec<f64>)> = vec![
             (10, 0.0, vec![0.0]),
             (20, 0.0, vec![0.0]),
@@ -3146,7 +3137,7 @@ mod hybrid_reconstruction {
 
     #[test]
     fn all_new() {
-        let stored = make_stored(1, 2, &[], &[], &[1.0]);
+        let stored = make_stored(1, 2, &[], &[]);
         let cuts: Vec<(usize, f64, Vec<f64>)> = vec![
             (5, 0.0, vec![0.0]),
             (6, 0.0, vec![0.0]),

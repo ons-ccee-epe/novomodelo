@@ -2838,6 +2838,7 @@ mod anticipated_forward_pass {
     use super::common::builders::{
         BusSpec, HydroSpec, StageSpec, ThermalSpec, make_bus, make_hydro, make_stage, make_thermal,
     };
+    use super::common::forward_replay::{final_forward_states, first_iteration_forward_states};
 
     // ---------------------------------------------------------------------------
     // System builder
@@ -3158,20 +3159,20 @@ mod anticipated_forward_pass {
     /// 100 MW at slot `0 mod 2 = 0` (matures/is fished at stage 0), delivery-1 =
     /// 50 MW at slot `1 mod 2 = 1` (held through stage 0, matures at stage 1).
     ///
-    /// `state_at_capture` is filled by two paths:
-    /// - **Stage 0**: forward pass writes the outgoing state of stage 0.
-    /// - **Stages 1..=4**: backward pass stores the forward outgoing of stage `t-1`
-    ///   as its trial point `x_hat` — so `basis_cache[1]` (trial point of stage 1)
-    ///   equals `basis_cache[0]` (forward outgoing of stage 0).
+    /// The forward outgoing states come from a replay of the first iteration,
+    /// which the single trained iteration repeats. The backward pass stores the
+    /// forward outgoing of stage `t` as the trial point of pool `t`, so the
+    /// stored state of pool 0 equals the forward outgoing of stage 0.
     #[test]
     fn five_stage_k2_anticipated_state_ring_buffer_evolution() {
         let system = build_system();
         let config = build_config();
         let mut setup = build_setup_in_code(system, &config);
+        setup.set_export_states(true);
+        let forward_states = first_iteration_forward_states(&setup);
         let comm = StubComm;
         let mut solver = ActiveSolver::new().expect("ActiveSolver::new");
 
-        // One iteration populates basis_cache for every stage.
         let outcome = setup
             .train(&mut solver, &comm, 1, ActiveSolver::new, None, None)
             .expect("train must not return Err");
@@ -3195,24 +3196,19 @@ mod anticipated_forward_pass {
 
         let ant_start = state.commit_out.start;
 
-        let basis_cache = &outcome.result.basis_cache;
         assert_eq!(
-            basis_cache.len(),
+            outcome.result.basis_cache.len(),
             5,
             "basis_cache must have one entry per study stage"
         );
 
-        // Forward pass stores the outgoing state of stage 0. HOLD geometry: the
+        // Forward pass outgoing state of stage 0. HOLD geometry: the
         // delivery-1 seed (50.0) is HELD at slot 1 (its modular slot, carried
         // because delivery-1 does not mature until stage 1) — under the retired
         // shift geometry it would instead move to slot 0. Slot 0 is the deposit
         // slot for the fresh decision d_0 (delivery-2, slot `2 mod 2 = 0`), so it
         // carries the LP decision d_0 ∈ [0, 100].
-        let s0 = basis_cache[0]
-            .as_ref()
-            .expect("stage 0 basis must be captured")
-            .state_at_capture
-            .as_slice();
+        let s0 = forward_states[0].as_slice();
         assert!(
             (s0[ant_start + 1] - 50.0).abs() < 1e-9,
             "stage 0 slot 1 must HOLD the delivery-1 seed 50.0 (carry, not shift); got {}",
@@ -3225,12 +3221,9 @@ mod anticipated_forward_pass {
         );
 
         // Backward pass for stage 1 stores the forward outgoing of stage 0 as its
-        // trial point x_hat, so basis_cache[1] equals basis_cache[0].
-        let s1 = basis_cache[1]
-            .as_ref()
-            .expect("stage 1 basis must be captured")
-            .state_at_capture
-            .as_slice();
+        // trial point x_hat, the state pool 0 holds.
+        let stored_states = final_forward_states(&setup);
+        let s1 = stored_states[0].as_slice();
         assert!(
             (s1[ant_start] - s0[ant_start]).abs() < 1e-9,
             "stage 1 slot 0 ({}) must equal stage 0 slot 0 ({}) — both carry \
@@ -3247,22 +3240,13 @@ mod anticipated_forward_pass {
         );
 
         // HOLD (carry, not shift): consecutive forward outgoing states hold the
-        // non-maturing slot UNCHANGED. `basis_cache[t]` holds forward outgoing of
-        // stage `t-1` (with `basis_cache[1] == basis_cache[0]`); the slot NOT
-        // maturing at the newer forward stage is `t mod 2`, and it must carry the
-        // previous stage's SAME slot verbatim. Under the retired shift geometry
-        // this comparison read `s_curr[slot 0] == s_prev[slot 1]` instead.
+        // non-maturing slot UNCHANGED. The slot NOT maturing at the newer forward
+        // stage `t - 1` is `t mod 2`, and it must carry the previous stage's SAME
+        // slot verbatim. Under the retired shift geometry this comparison read
+        // `s_curr[slot 0] == s_prev[slot 1]` instead.
         for t in 2..5_usize {
-            let s_curr = basis_cache[t]
-                .as_ref()
-                .unwrap_or_else(|| panic!("stage {t} basis must be captured"))
-                .state_at_capture
-                .as_slice();
-            let s_prev = basis_cache[t - 1]
-                .as_ref()
-                .unwrap_or_else(|| panic!("stage {} basis must be captured", t - 1))
-                .state_at_capture
-                .as_slice();
+            let s_curr = forward_states[t - 1].as_slice();
+            let s_prev = forward_states[t - 2].as_slice();
 
             let carried = ant_start + (t % 2);
             assert!(
@@ -3275,14 +3259,9 @@ mod anticipated_forward_pass {
             );
         }
 
-        // Every captured commitment-hold value stays within the decision/seed
+        // Every forward commitment-hold value stays within the decision/seed
         // bound [0, 100] (decisions d_t, the 50 MW seed, or a frozen 0).
-        for t in 0..5_usize {
-            let s_t = basis_cache[t]
-                .as_ref()
-                .unwrap_or_else(|| panic!("stage {t} basis must be captured"))
-                .state_at_capture
-                .as_slice();
+        for (t, s_t) in forward_states[..4].iter().enumerate() {
             for slot in 0..2_usize {
                 let v = s_t[ant_start + slot];
                 assert!(

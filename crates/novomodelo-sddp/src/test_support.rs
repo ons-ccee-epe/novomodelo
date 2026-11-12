@@ -295,18 +295,11 @@ pub fn anticipated_plants_at(positions: &[usize]) -> AnticipatedPlants {
     let n = positions.last().map_or(0, |&p| p + 1);
     let thermals: Vec<Thermal> = (0..n)
         .map(|idx| Thermal {
-            id: EntityId(i32::try_from(idx).unwrap_or(i32::MAX)),
-            name: String::new(),
             operational_start_date: ymd(2024, 1, 1),
-            bus_id: EntityId(0),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            cost_per_mwh: 0.0,
-            min_generation_mw: 0.0,
-            max_generation_mw: 0.0,
             anticipated_config: positions
                 .contains(&idx)
                 .then_some(AnticipatedConfig::LeadStages(1)),
+            ..geometry_thermal(idx)
         })
         .collect();
     AnticipatedPlants::build(&thermals)

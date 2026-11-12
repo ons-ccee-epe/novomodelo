@@ -30,6 +30,7 @@ use tempfile::TempDir;
 pub mod anticipated_structural_assertions;
 pub mod builders;
 pub mod expanded_solve;
+pub mod forward_replay;
 pub mod in_code_studies;
 pub mod oracle_tolerance;
 pub mod parity_hash;

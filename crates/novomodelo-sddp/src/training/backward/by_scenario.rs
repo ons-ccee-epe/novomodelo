@@ -251,7 +251,7 @@ pub(crate) fn process_by_scenario_backward<S: SolverInterface + Send>(
                     false,
                 )?;
                 if captures_basis {
-                    save_basis_at_omega_zero(ws, &child, basis_slice, m, x_hat);
+                    save_basis_at_omega_zero(ws, &child, basis_slice, m);
                 }
             }
             OpeningNoise::Generated => {
@@ -289,7 +289,7 @@ pub(crate) fn process_by_scenario_backward<S: SolverInterface + Send>(
                         !is_first,
                     )?;
                     if is_first && captures_basis {
-                        save_basis_at_omega_zero(ws, &child, basis_slice, m, x_hat);
+                        save_basis_at_omega_zero(ws, &child, basis_slice, m);
                     }
                 }
             }
