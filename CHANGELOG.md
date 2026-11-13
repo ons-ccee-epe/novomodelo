@@ -13,10 +13,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Training and simulation results change: each stage LP solves the same model
   with fewer rows and columns.
+- `system/lines.json` and `system/thermals.json` are optional: a case without
+  them validates and runs as a study with no lines or no thermals.
 - `curtailment_cost` accepts 0 in `penalties.json`,
-  `system/non_controllable_sources.json` and `penalty_overrides_ncs.parquet`,
-  and `turbined_cost` accepts 0 in `penalty_overrides_hydro.parquet`. A negative
-  `curtailment_cost` in `system/non_controllable_sources.json` is now refused.
+  `system/non_controllable_sources.json` and
+  `constraints/penalty_overrides_ncs.parquet`, and `turbined_cost` accepts 0 in
+  `constraints/penalty_overrides_hydro.parquet`.
+- **BREAKING:** a negative `curtailment_cost` in
+  `system/non_controllable_sources.json` is now refused; set it to 0 or more.
 
 ## [0.20.0] - 2026-11-03
 
