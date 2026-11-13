@@ -1,0 +1,63 @@
+# DEBT register
+
+Ids are zero-padded: `DEBT-001`, `DEBT-002`, and so on. Allocate the next id
+by scanning this register for the highest id present and taking `max+1`. An id
+is unique within this register and is never reused, because a `DEBT(` breadcrumb
+in source cites it permanently.
+
+An entry's state is the section it sits in. Paying an entry moves it verbatim
+from `## Open` to `## Paid` with its `paid:` line appended. An entry is never
+deleted and never renumbered.
+
+## Entry Format
+
+```
+### DEBT-<nnn>
+what:      one-line description of the shortcut/smell and where (file:symbol)
+why-now:   the deliberate-prudent reason it was taken (or "inadvertent — found")
+quadrant:  deliberate|inadvertent x prudent|reckless
+interest:  what it slows / risks, and whether it compounds
+payoff:    the concrete remediation
+trigger:   the event that forces payoff
+owner:     who closes this entry
+blast:     files & consumers affected; tests that must pass
+origin:    the plan and ticket that minted this entry
+paid:      the ticket that paid it off (written only on retirement)
+```
+
+## Open
+
+### DEBT-001
+what:      crates/novomodelo-sddp/src/lp/builder/layout/tests.rs:useful_volume_fold_unresolvable_hydro_id_fires_debug_assert is a #[should_panic] test of a debug_assert! with no debug-only gate, so it fails under `cargo test --release`
+why-now:   inadvertent — found while gating the sibling debug_assert! tests in lp/builder/entries.rs
+quadrant:  inadvertent x prudent
+interest:  a release-profile test run reports a false failure, which hides real release-only regressions; it compounds with every new ungated should_panic test of a debug_assert!
+payoff:    gate the test on debug assertions (#[cfg(debug_assertions)], or #[cfg_attr(not(debug_assertions), ignore = "...")]), as the entries.rs tests are gated
+trigger:   adding a release-profile test job to CI, or the next edit to lp/builder/layout/tests.rs
+owner:     novomodelo-sddp maintainers
+blast:     crates/novomodelo-sddp/src/lp/builder/layout/tests.rs only; `cargo test -p novomodelo-sddp --lib` must pass in debug and in release
+origin:    found on branch feat/generic-constraint-stage-volume while adding the stage-volume builder guard; not introduced by that work
+
+### DEBT-002
+what:      novomodelo-sddp integration tests hold test-local generic_constraint_bounds.parquet writers beside the shared tests/common/parquet_fixtures.rs:write_generic_constraint_bounds — tests/deterministic.rs (the inline writers and the module-local write_generic_constraint_bounds), tests/cut_basis.rs:write_generic_constraint_bounds_parquet, tests/anticipated_scenarios.rs:write_constraint_bounds_parquet — and tests/template_integration/generic_constraints.rs restates the GenericBoundsRow tuple alias
+why-now:   deliberate — the stage-volume work adds the shared writer for its own decks and leaves the pre-existing copies, to keep the change to the stated capability
+quadrant:  deliberate x prudent
+interest:  a change to the bounds parquet schema (a new column, a type change) must be repeated in every copy; a missed copy writes a file the loader refuses or reads differently, and each new test that copies a local writer adds one more
+payoff:    replace each test-local writer with a call to common::parquet_fixtures::write_generic_constraint_bounds and delete the local copies, in a structure-only change
+trigger:   the next change to the generic_constraint_bounds.parquet schema, or the next edit to one of the listed writers
+owner:     novomodelo-sddp maintainers
+blast:     crates/novomodelo-sddp/tests/{deterministic.rs,cut_basis.rs,anticipated_scenarios.rs,template_integration/generic_constraints.rs}; the deterministic, cut_basis, anticipated_scenarios and template_integration test binaries must pass with --features test-support, slow-tests included
+origin:    recorded on branch feat/generic-constraint-stage-volume when the shared bounds writer was planned; the local copies predate that work
+
+### DEBT-003
+what:      crates/novomodelo-sddp/src/lp/builder/entries.rs:fill_generic_constraint_entries guards a stage-volume term (hydro_outflow_volume, hydro_diversion_volume, pumping_volume) on a per-block generic row with a debug_assert! only, so a System built through SystemBuilder in a release build gets per-block rows, each carrying the whole-stage volume, with no error
+why-now:   deliberate — novomodelo-io refuses every input that would split a volume row (build_variable_ref, check_stage_volume_constraints), so no case loaded by the CLI or the Python bindings reaches the builder with one; the work kept the builder change to the stated capability
+quadrant:  deliberate x prudent
+interest:  a library caller that builds a System by hand and splits a volume row per block gets a model that counts the stage volume once per block, silently; it compounds only as SystemBuilder callers outside novomodelo-io appear
+payoff:    refuse the composition in SystemBuilder::build in every build profile (or force a row with a volume term to stage level in the layout), with a test that pins the refusal
+trigger:   a SystemBuilder caller outside novomodelo-io that builds generic constraints, or the next change to the stage-level collapse rule (constraint_collapses_to_stage_level)
+owner:     novomodelo-sddp maintainers
+blast:     crates/novomodelo-core (SystemBuilder::build), crates/novomodelo-sddp/src/lp/builder/{entries.rs,layout.rs}; the novomodelo-io stage-volume validation tests and the template_integration generic-constraint tests must pass
+origin:    recorded on branch feat/generic-constraint-stage-volume from the review of its stage-volume builder guard
+
+## Paid

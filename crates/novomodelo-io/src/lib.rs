@@ -142,9 +142,9 @@ pub use scenarios::{
 pub use stage_resolve::StageIdResolver;
 pub use stages::{StagesData, parse_stages};
 pub use system::{
-    load_energy_contracts, load_non_controllable_sources, load_pumping_stations, parse_buses,
-    parse_energy_contracts, parse_hydros, parse_lines, parse_non_controllable_sources,
-    parse_pumping_stations, parse_thermals,
+    load_energy_contracts, load_lines, load_non_controllable_sources, load_pumping_stations,
+    load_thermals, parse_buses, parse_energy_contracts, parse_hydros, parse_lines,
+    parse_non_controllable_sources, parse_pumping_stations, parse_thermals,
 };
 pub use validation::scalar_parameters::validate_scalar_parameters;
 pub use validation::semantic::seed_lag_state_depth;

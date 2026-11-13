@@ -728,15 +728,15 @@ fn anticipated_thermal_deck_does_not_warn_on_thermal_stages() {
 fn legacy_format_rule_is_a_registered_warning() {
     let rule = RULES
         .iter()
-        .find(|rule| rule.id == "semantic.5a.56")
-        .expect("semantic.5a.56 is listed");
+        .find(|rule| rule.id == "semantic.5a.59")
+        .expect("semantic.5a.59 is listed");
     assert_eq!(rule.severity, Severity::Warning);
     assert_eq!(rule.kind, ErrorKind::ModelQuality);
 }
 
 #[test]
 fn unused_calendar_rules_are_registered_warnings() {
-    for id in ["semantic.5a.61", "semantic.5a.62"] {
+    for id in ["semantic.5a.64", "semantic.5a.65"] {
         let rule = RULES
             .iter()
             .find(|rule| rule.id == id)
@@ -749,10 +749,10 @@ fn unused_calendar_rules_are_registered_warnings() {
 #[test]
 fn post_study_format_rules_are_registered_errors() {
     for id in [
-        "semantic.5a.57",
-        "semantic.5a.58",
-        "semantic.5a.59",
         "semantic.5a.60",
+        "semantic.5a.61",
+        "semantic.5a.62",
+        "semantic.5a.63",
     ] {
         let rule = RULES
             .iter()
