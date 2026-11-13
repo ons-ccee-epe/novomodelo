@@ -14,6 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Training and simulation results change: each stage LP solves the same model
   with fewer rows and columns.
 
+### Fixed
+
+- `storage_violation_cost` and `filling_target_cost` in `simulation/costs`
+  were always 0. They now report the cost of a filling plant's soft
+  minimum-storage and filling-target slacks.
+
 ## [0.20.0] - 2026-11-03
 
 ### Added

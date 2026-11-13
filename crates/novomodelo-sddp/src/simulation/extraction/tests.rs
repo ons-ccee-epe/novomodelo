@@ -3881,6 +3881,133 @@ fn cost_breakdown_sums_to_immediate_identity_scale() {
     );
 }
 
+/// The filling slacks are booked as `primal × objective coefficient ×
+/// cost_scale_factor` (derived oracle; no hours, no discount factor), and the
+/// macro categories keep summing to `immediate_cost`. The twins hold both slack
+/// primals at 0.0, and leave both families empty.
+#[test]
+fn filling_slack_families_are_booked_in_cost_breakdown() {
+    let study_dims = test_support::study_dims();
+    let state = test_support::state_layout(2, 1);
+    let ec = zero_energy_conversion(2, 1);
+    let dims = test_support::GeometryDims {
+        hydro_count: 2,
+        max_par_order: 1,
+        n_thermals: 1,
+        n_lines: 1,
+        n_buses: 1,
+        n_blks: 1,
+        has_inflow_penalty: false,
+        max_deficit_segments: 1,
+        n_anticipated: 0,
+        lead_stages: 0,
+        anticipated_plants: AnticipatedPlants::default(),
+    };
+    let base = test_support::geometry(&dims, vec![], &[], vec![]);
+    let n_cols = base.generation_below_slack.end;
+    let filling = StageGeometry {
+        filled_min_storage_floor_hydro_indices: vec![HydroSys::new(0)],
+        filled_min_storage_floor_col: n_cols..n_cols + 1,
+        filling_target_hydro_indices: vec![HydroSys::new(1)],
+        filling_target_col: n_cols + 1..n_cols + 2,
+        ..base.clone()
+    };
+
+    let book = |geometry: &StageGeometry, slack_primal: &[f64], slack_coeff: &[f64]| {
+        let mut primal = make_primal_2_1([100.0, 200.0], [90.0, 180.0], 0.0);
+        primal.resize(n_cols, 0.0);
+        primal.extend_from_slice(slack_primal);
+        let mut objective_coeffs = vec![0.0; n_cols];
+        objective_coeffs.extend_from_slice(slack_coeff);
+        let objective = slack_primal
+            .iter()
+            .zip(slack_coeff)
+            .map(|(p, c)| p * c)
+            .sum::<f64>();
+        let dual = vec![0.0; geometry_row_capacity(geometry)];
+        let row_lower = vec![0.0; geometry_row_capacity(geometry)];
+        let mut result = extract_stage_result(
+            &SolutionView {
+                primal: &primal,
+                dual: &dual,
+                objective,
+                objective_coeffs: &objective_coeffs,
+                row_lower: &row_lower,
+            },
+            &StageExtractionSpec {
+                study_dims: &study_dims,
+                geometry,
+                hydro_cell_index: &test_support::identity_hydro_cell_index(256),
+                state: &state,
+                entity_counts: &make_entity_counts_2_hydros(),
+                inflow_m3s_per_hydro: &[0.0; 2],
+                incoming_lags: &zero_lags(&state),
+                block_hours: &[100.0],
+                generic_constraint_entries: &[],
+                ncs_col_upper: &[],
+                pumping_consumption_mw_per_m3s: &[],
+                contract_prices: &[],
+                contract_slots: &[],
+                diversion_upstream: &HashMap::new(),
+                hydro_productivities: &[1.0, 1.0],
+                col_scale: &[],
+                row_scale: &[],
+                cumulative_discount_factor: 1.0,
+                cost_scale_factor: 1_000_000.0,
+                energy_conversion: &ec,
+                hydro_min_storage_hm3: &[0.0; 2],
+                stage_index: 0,
+                horizon: &HorizonMode::Finite { num_stages: 1 },
+                anticipated_windows: &[],
+                study_stage_ids: &[],
+            },
+            0,
+        );
+        result.costs.remove(0)
+    };
+    let close = |got: f64, want: f64| (got - want).abs() <= 1e-9 * want.abs();
+
+    let cost = book(&filling, &[3.5, 2.25], &[0.02, 0.0005]);
+    assert!(
+        close(cost.storage_violation_cost, 70_000.0),
+        "storage_violation_cost should be 70_000.0, got {}",
+        cost.storage_violation_cost
+    );
+    assert!(
+        close(cost.filling_target_cost, 1_125.0),
+        "filling_target_cost should be 1_125.0, got {}",
+        cost.filling_target_cost
+    );
+    assert!(
+        close(cost.immediate_cost, 71_125.0),
+        "immediate_cost should be 71_125.0, got {}",
+        cost.immediate_cost
+    );
+    let mut accum = zero_accum();
+    accumulate_category_costs(&cost, &mut accum);
+    let macro_sum = accum.resource_cost
+        + accum.recourse_cost
+        + accum.violation_cost
+        + accum.regularization_cost
+        + accum.imputed_cost;
+    assert!(
+        close(macro_sum, cost.immediate_cost),
+        "Σ(macro categories) ({macro_sum}) must equal immediate_cost ({})",
+        cost.immediate_cost
+    );
+
+    for (twin, cost) in [
+        (
+            "slack primals at 0.0",
+            book(&filling, &[0.0, 0.0], &[0.02, 0.0005]),
+        ),
+        ("both families empty", book(&base, &[], &[])),
+    ] {
+        assert_eq!(cost.storage_violation_cost, 0.0, "{twin}");
+        assert_eq!(cost.filling_target_cost, 0.0, "{twin}");
+    }
+}
+
 /// `contract_cost` for an active import contract equals `price * power * hours`.
 /// The scaled LP objective coeff is `price * hours / COST_SCALE_FACTOR`; the
 /// extractor recovers the original-unit cost. Exercises the geometry-range

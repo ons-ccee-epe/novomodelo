@@ -1537,6 +1537,8 @@ fn compute_cost_result(
     let turbined_cost = family_cost(&equipment.turbine);
     let inflow_penalty_cost = family_cost(&equipment.inflow_slack);
     let diversion_cost = family_cost(&equipment.diversion);
+    let storage_violation_cost = family_cost(&equipment.filled_min_storage_floor_col);
+    let filling_target_cost = family_cost(&equipment.filling_target_col);
 
     let hv = compute_hydro_violation_costs(equipment, col_cost, range_sum, cost_scale_factor);
 
@@ -1552,8 +1554,8 @@ fn compute_cost_result(
         contract_cost,
         deficit_cost,
         excess_cost,
-        storage_violation_cost: 0.0,
-        filling_target_cost: 0.0,
+        storage_violation_cost,
+        filling_target_cost,
         hydro_violation_cost: hv.total(),
         outflow_violation_below_cost: hv.outflow_below,
         outflow_violation_above_cost: hv.outflow_above,

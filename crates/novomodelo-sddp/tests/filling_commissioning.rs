@@ -3053,3 +3053,184 @@ mod exited_plant_transit {
         );
     }
 }
+
+mod d39_filling_cost_reconciliation {
+    //! The parity hash does not hash the filling slacks, so this test checks that the
+    //! simulated cost breakdown prices them. hybrid: per stage,
+    //! `storage_violation_cost` and `filling_target_cost` equal `Σ_h slack_hm3 × price`,
+    //! with the slacks from the simulated LP and the prices from the resolved penalties,
+    //! per hm³ with no hours factor and no discount. `D_down` (id 0) is Filling at
+    //! stages 1–3 and Operating at 4–5, `U_up` (id 1) Filling at 3–4 and Operating at 5;
+    //! both are PreFilling at stage 0, where both slack families are empty and both
+    //! costs are exactly zero.
+
+    use std::path::Path;
+
+    use novomodelo_io::config::{SimulationConfig, SimulationSelection};
+    use novomodelo_sddp::ScenarioCategoryCosts;
+    use novomodelo_sddp::simulation::accumulate_category_costs;
+
+    use super::common::{fresh_system_and_setup_with, run_simulation};
+
+    const D_DOWN_ID: i32 = 0;
+    const U_UP_ID: i32 = 1;
+    const STORAGE_VIOLATION_BELOW_COST: f64 = 20_000.0;
+    const FILLING_TARGET_VIOLATION_COST: f64 = 500.0;
+    const ORACLE_REL_TOL: f64 = 1e-9;
+    const CATEGORY_REL_TOL: f64 = 1e-6;
+    const BINDING_SLACK_HM3: f64 = 1e-6;
+
+    #[test]
+    fn filling_slack_costs_reconcile_on_d39() {
+        let case_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("the crate directory has a parent")
+            .parent()
+            .expect("the crates directory has a parent")
+            .join("examples/deterministic/d39-prefilling-upstream-of-filling");
+        let (system, mut setup) = fresh_system_and_setup_with(&case_dir, |config| {
+            config.simulation = SimulationConfig {
+                enabled: true,
+                io_channel_capacity: 8,
+                selection: Some(SimulationSelection::Sampled { num_scenarios: 1 }),
+                ..SimulationConfig::default()
+            };
+        });
+        let scenarios = run_simulation(&mut setup, 1);
+        assert_eq!(scenarios.len(), 1, "one sampled simulation scenario");
+        let scenario = &scenarios[0];
+        assert_eq!(scenario.stages.len(), 6, "d39 simulates six stages");
+
+        let hydros = system.hydros();
+        let penalties = system.penalties();
+        let pinned = [D_DOWN_ID, U_UP_ID].map(|id| {
+            let h_idx = hydros
+                .iter()
+                .position(|h| h.id.0 == id)
+                .expect("D_down and U_up must be in the canonical hydro order");
+            (id, h_idx)
+        });
+
+        let mut slack_sums_hm3 = Vec::with_capacity(scenario.stages.len());
+        for (stage_index, stage) in scenario.stages.iter().enumerate() {
+            let cost = &stage.costs[0];
+
+            for (id, h_idx) in pinned {
+                let prices = penalties.hydro_penalties(h_idx, stage_index);
+                assert_eq!(
+                    prices.storage_violation_below_cost, STORAGE_VIOLATION_BELOW_COST,
+                    "hydro {id} stage {stage_index}: storage_violation_below_cost must be \
+                     d39's penalties.json value"
+                );
+                assert_eq!(
+                    prices.filling_target_violation_cost, FILLING_TARGET_VIOLATION_COST,
+                    "hydro {id} stage {stage_index}: filling_target_violation_cost must be \
+                     d39's penalties.json value"
+                );
+            }
+
+            let mut floor_hm3 = 0.0;
+            let mut fill_hm3 = 0.0;
+            let mut floor_oracle = 0.0;
+            let mut fill_oracle = 0.0;
+            for (h_idx, hydro) in hydros.iter().enumerate() {
+                let row = stage
+                    .hydros
+                    .iter()
+                    .find(|r| r.hydro_id == hydro.id.0)
+                    .expect("every hydro must have a row at every stage");
+                let prices = penalties.hydro_penalties(h_idx, stage_index);
+                floor_hm3 += row.storage_violation_below_hm3;
+                fill_hm3 += row.filling_target_violation_hm3;
+                floor_oracle +=
+                    row.storage_violation_below_hm3 * prices.storage_violation_below_cost;
+                fill_oracle +=
+                    row.filling_target_violation_hm3 * prices.filling_target_violation_cost;
+            }
+
+            let floor_err = (cost.storage_violation_cost - floor_oracle).abs();
+            assert!(
+                floor_err <= ORACLE_REL_TOL * floor_oracle.abs().max(1.0),
+                "stage {stage_index}: storage_violation_cost {} must equal Σ_h σ^{{v-}} × price \
+                 {floor_oracle} (diff {floor_err})",
+                cost.storage_violation_cost
+            );
+            let fill_err = (cost.filling_target_cost - fill_oracle).abs();
+            assert!(
+                fill_err <= ORACLE_REL_TOL * fill_oracle.abs().max(1.0),
+                "stage {stage_index}: filling_target_cost {} must equal Σ_h σ_fill × price \
+                 {fill_oracle} (diff {fill_err})",
+                cost.filling_target_cost
+            );
+
+            let mut categories = ScenarioCategoryCosts {
+                resource_cost: 0.0,
+                recourse_cost: 0.0,
+                violation_cost: 0.0,
+                regularization_cost: 0.0,
+                imputed_cost: 0.0,
+            };
+            accumulate_category_costs(cost, &mut categories);
+            let category_sum = categories.resource_cost
+                + categories.recourse_cost
+                + categories.violation_cost
+                + categories.regularization_cost
+                + categories.imputed_cost;
+            let category_err = (category_sum - cost.immediate_cost).abs();
+            assert!(
+                category_err <= CATEGORY_REL_TOL * cost.immediate_cost.abs().max(1.0),
+                "stage {stage_index}: the five cost categories sum to {category_sum}, not \
+                 immediate_cost {} (abs err {category_err})",
+                cost.immediate_cost
+            );
+
+            if floor_hm3 > BINDING_SLACK_HM3 {
+                assert!(
+                    cost.storage_violation_cost > 0.0,
+                    "stage {stage_index}: σ^{{v-}} binds ({floor_hm3} hm³) but \
+                     storage_violation_cost is {}",
+                    cost.storage_violation_cost
+                );
+            }
+            if fill_hm3 > BINDING_SLACK_HM3 {
+                assert!(
+                    cost.filling_target_cost > 0.0,
+                    "stage {stage_index}: σ_fill binds ({fill_hm3} hm³) but filling_target_cost \
+                     is {}",
+                    cost.filling_target_cost
+                );
+            }
+            slack_sums_hm3.push((stage.stage_id, floor_hm3, fill_hm3));
+        }
+
+        assert!(
+            slack_sums_hm3
+                .iter()
+                .any(|&(_, floor, _)| floor > BINDING_SLACK_HM3),
+            "power guard: no stage binds σ^{{v-}}; (stage_id, Σ_h σ^{{v-}}, Σ_h σ_fill) hm³: \
+             {slack_sums_hm3:?}"
+        );
+        assert!(
+            slack_sums_hm3
+                .iter()
+                .any(|&(_, _, fill)| fill > BINDING_SLACK_HM3),
+            "power guard: no stage binds σ_fill; (stage_id, Σ_h σ^{{v-}}, Σ_h σ_fill) hm³: \
+             {slack_sums_hm3:?}"
+        );
+
+        let stage0_cost = &scenario
+            .stages
+            .iter()
+            .find(|s| s.stage_id == 0)
+            .expect("stage id 0 must be simulated")
+            .costs[0];
+        assert_eq!(
+            stage0_cost.storage_violation_cost, 0.0,
+            "stage 0: both filling plants are PreFilling, so σ^{{v-}} has no column"
+        );
+        assert_eq!(
+            stage0_cost.filling_target_cost, 0.0,
+            "stage 0: both filling plants are PreFilling, so σ_fill has no column"
+        );
+    }
+}

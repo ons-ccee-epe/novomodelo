@@ -355,12 +355,12 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
     (
         "costs",
         "storage_violation_cost",
-        "Total storage violation penalty",
+        "Soft minimum-storage floor slack cost of filling plants, counted in the violation category",
     ),
     (
         "costs",
         "filling_target_cost",
-        "Total filling-target violation cost",
+        "Filling-target slack cost of filling plants, counted in the violation category",
     ),
     (
         "costs",
