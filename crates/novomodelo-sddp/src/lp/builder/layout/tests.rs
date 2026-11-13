@@ -1375,6 +1375,7 @@ impl FillingMembershipFixtures {
         let production_models = ProductionModelSet::new(models, &hydros, 1);
         Self {
             base: CtxFixture {
+                bounds: bounds_with_entities(hydros.len(), 0, 1),
                 hydros,
                 cascade,
                 hydro_cell_index,

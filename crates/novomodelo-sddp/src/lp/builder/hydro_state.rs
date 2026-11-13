@@ -97,6 +97,44 @@ pub(super) fn resolve_shortcircuit_target(
     None
 }
 
+/// Per-hydro effective withdrawal `T_eff[d] = T[d] + Σ T[h]` (m³/s, signed), over the
+/// `PreFilling` hydros `h` that [`resolve_shortcircuit_target`] routes onto `d`, summed
+/// in ascending system index; `0.0` for a `PreFilling` hydro, whose demand moves to its
+/// target. The sole owner of where a `PreFilling` hydro's withdrawal demand lands: the
+/// water-row RHS and the matrix routing agree because both resolve the same target.
+///
+/// A hydro with no feeder keeps its own `T` bit for bit: the sum starts from `T`, never
+/// from `0.0`, which would turn `T = -0.0` into `+0.0`. Summing feeders through the
+/// cascade's upstream lists instead of ascending system index makes the bits depend on
+/// declaration order.
+pub(super) fn effective_withdrawals(
+    hydros: &[Hydro],
+    cascade: &CascadeTopology,
+    positions: &EntityPositions,
+    stage_id: i32,
+    own_withdrawal_m3s: impl Fn(usize) -> f64,
+) -> Vec<f64> {
+    let mut effective: Vec<f64> = hydros
+        .iter()
+        .enumerate()
+        .map(|(h_idx, hydro)| {
+            if matches!(hydro_phase(hydro, stage_id), Phase::PreFilling) {
+                0.0
+            } else {
+                own_withdrawal_m3s(h_idx)
+            }
+        })
+        .collect();
+    for h_idx in 0..hydros.len() {
+        if let Some(d_idx) =
+            resolve_shortcircuit_target(hydros, cascade, positions, stage_id, h_idx)
+        {
+            effective[d_idx] += own_withdrawal_m3s(h_idx);
+        }
+    }
+    effective
+}
+
 /// Bundles the resolved group-bounds table with the three indices that are
 /// constant across a cell's member groups, so `cell_max_turbined`/
 /// `cell_max_generation` take one bundled parameter instead of four loose
@@ -517,7 +555,7 @@ mod tests {
 
     use crate::indexer::EntityPositions;
 
-    use super::resolve_shortcircuit_target;
+    use super::{effective_withdrawals, resolve_shortcircuit_target};
 
     const STAGE_ID: i32 = 0;
     const FUTURE_ENTRY: i32 = 1;
@@ -601,6 +639,87 @@ mod tests {
             resolve_shortcircuit_target(&sink_hydros, &sink_cascade, &sink_positions, STAGE_ID, 0),
             None,
             "C is a PreFilling sink: the chain never reaches a non-PreFilling target"
+        );
+    }
+
+    /// Derived: each feeder's `T` is added to the target's own `T` in ascending index,
+    /// `(0.07 + 0.2) + 0.5`; both `PreFilling` plants end at `0.0`.
+    #[test]
+    fn effective_withdrawals_sum_a_prefilling_chain_into_its_target() {
+        let hydros = vec![
+            chain_hydro(1, Some(2), Some(FUTURE_ENTRY)),
+            chain_hydro(2, Some(3), Some(FUTURE_ENTRY)),
+            chain_hydro(3, None, None),
+        ];
+        let cascade = CascadeTopology::build(&hydros);
+        let positions = positions_of(&hydros);
+        let own = [0.2, 0.5, 0.07];
+
+        let effective = effective_withdrawals(&hydros, &cascade, &positions, STAGE_ID, |h| own[h]);
+
+        let bits: Vec<u64> = effective.iter().map(|t| t.to_bits()).collect();
+        assert_eq!(
+            bits,
+            [0.0_f64, 0.0, (0.07 + 0.2) + 0.5].map(f64::to_bits),
+            "feeders add to C in ascending index; A and B end at 0.0"
+        );
+    }
+
+    /// Derived: a `PreFilling` chain with no non-`PreFilling` target sums into nothing;
+    /// its plants read `0.0` and the unrelated plant D keeps its own `T`.
+    #[test]
+    fn effective_withdrawals_drop_a_sink_chain_and_touch_no_other_entry() {
+        let hydros = vec![
+            chain_hydro(1, Some(2), Some(FUTURE_ENTRY)),
+            chain_hydro(2, None, Some(FUTURE_ENTRY)),
+            chain_hydro(3, None, None),
+        ];
+        let cascade = CascadeTopology::build(&hydros);
+        let positions = positions_of(&hydros);
+        let own = [0.2, 0.5, 0.3];
+
+        let effective = effective_withdrawals(&hydros, &cascade, &positions, STAGE_ID, |h| own[h]);
+
+        let bits: Vec<u64> = effective.iter().map(|t| t.to_bits()).collect();
+        assert_eq!(bits, [0.0_f64, 0.0, 0.3].map(f64::to_bits));
+    }
+
+    /// Derived: with no feeder the entry is the plant's own `T` bit for bit, `-0.0` and
+    /// a negative return included; a sum started from `0.0` turns `-0.0` into `+0.0`.
+    #[test]
+    fn effective_withdrawals_keep_the_own_bits_of_a_plant_with_no_feeder() {
+        let hydros = vec![chain_hydro(1, Some(2), None), chain_hydro(2, None, None)];
+        let cascade = CascadeTopology::build(&hydros);
+        let positions = positions_of(&hydros);
+        let own = [-0.0, -3.5];
+
+        let effective = effective_withdrawals(&hydros, &cascade, &positions, STAGE_ID, |h| own[h]);
+
+        let bits: Vec<u64> = effective.iter().map(|t| t.to_bits()).collect();
+        assert_eq!(bits, own.map(f64::to_bits));
+    }
+
+    /// Derived: two `PreFilling` feeders at indices 1 and 2 into target 0 add in index
+    /// order, `(0.1 + 0.2) + 0.3`, which differs from `0.1 + (0.2 + 0.3)` in the last bit.
+    #[test]
+    fn effective_withdrawals_add_feeders_in_ascending_index() {
+        let hydros = vec![
+            chain_hydro(1, None, None),
+            chain_hydro(2, Some(1), Some(FUTURE_ENTRY)),
+            chain_hydro(3, Some(1), Some(FUTURE_ENTRY)),
+        ];
+        let cascade = CascadeTopology::build(&hydros);
+        let positions = positions_of(&hydros);
+        let own = [0.1, 0.2, 0.3];
+
+        let effective = effective_withdrawals(&hydros, &cascade, &positions, STAGE_ID, |h| own[h]);
+
+        let bits: Vec<u64> = effective.iter().map(|t| t.to_bits()).collect();
+        assert_eq!(bits, [(0.1 + 0.2) + 0.3, 0.0, 0.0].map(f64::to_bits));
+        assert_ne!(
+            effective[0].to_bits(),
+            (0.1 + (0.2 + 0.3_f64)).to_bits(),
+            "the oracle must tell ascending-index order from a feeders-first sum"
         );
     }
 }

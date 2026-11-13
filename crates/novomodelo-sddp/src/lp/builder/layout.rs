@@ -24,7 +24,8 @@ use crate::indexer::{
 use crate::time_value::TimeValue;
 
 use super::hydro_state::{
-    GroupBoundLookup, MaxCap, MinFloor, PlantFloor, hydro_phase, is_suspended, plant_cap_rhs,
+    GroupBoundLookup, MaxCap, MinFloor, PlantFloor, effective_withdrawals, hydro_phase,
+    is_suspended, plant_cap_rhs,
 };
 use super::{
     EVAP_COLS_PER_HYDRO, EVAP_F_MINUS_OFFSET, EVAP_F_PLUS_OFFSET, EVAP_FLOW_OFFSET,
@@ -450,6 +451,9 @@ pub(crate) struct StageLayout<'a> {
     /// of [`evaporation_slot_count`] (`1` on a parallel stage, `n_blks` on a
     /// chronological one) — the stride every evaporation column/row family uses.
     pub(crate) n_evap_slots: usize,
+    /// Per-hydro effective withdrawal (m³/s, length `n_h`), the owner of what the
+    /// water-balance RHS reads; see [`effective_withdrawals`].
+    pub(crate) effective_withdrawal_m3s: Vec<f64>,
     /// Per-row metadata for active generic constraint rows, one per active
     /// `(constraint, block)` pair in constraint-index-major order.
     pub(crate) generic_constraint_rows: Vec<GenericConstraintRowEntry>,
@@ -1340,6 +1344,13 @@ impl<'a> StageLayout<'a> {
         let (fpha_local_index, fpha_cell_local_start, n_fpha_cells, total_fpha_rows) =
             fpha_cell_offsets(ctx, &fpha_hydro_indices, stage_idx, n_h);
         let n_evap_slots = evaporation_slot_count(stage.block_mode, n_blks);
+        let effective_withdrawal_m3s =
+            effective_withdrawals(ctx.hydros, ctx.cascade, ctx.positions, stage.id, |h_idx| {
+                ctx.resolved
+                    .bounds
+                    .hydro_bounds(h_idx, stage_idx)
+                    .water_withdrawal_m3s
+            });
 
         let mut geometry = StageGeometry::unallocated(stage.block_mode, n_blks);
         geometry.fpha_hydro_indices = fpha_hydro_indices;
@@ -1480,6 +1491,7 @@ impl<'a> StageLayout<'a> {
             fpha_local_index,
             fpha_cell_local_start,
             n_evap_slots,
+            effective_withdrawal_m3s,
             generic_constraint_rows: generic.generic_constraint_rows,
         }
     }

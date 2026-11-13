@@ -726,7 +726,7 @@ pub fn geometry(
     let delivery_axis_len = anticipated_lead_stages.iter().copied().max().unwrap_or(0) + 2;
     let bounds = ResolvedBounds::new(
         &BoundsCountsSpec {
-            n_hydros: 0,
+            n_hydros: dims.hydro_count,
             n_thermals: 0,
             n_lines: 0,
             n_pumping: 0,
