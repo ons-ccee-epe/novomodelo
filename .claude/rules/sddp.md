@@ -796,7 +796,8 @@ amount, which is how a block-dependent flow term would split it.
 `fill_generic_constraint_entries` backs the refusal with a `debug_assert!`. A
 `SystemBuilder` caller that bypasses `novomodelo-io` in a release build gets
 per-block rows, each carrying the whole-stage volume, with no error. That path
-is a gap recorded here and covered by no test, not a guarantee.
+is a gap, registered as DEBT-003 in `DEBT.md` and covered by no test, not a
+guarantee.
 
 Each volume reads the same columns as its flow counterpart, so commissioning
 needs no special case: a `PreFilling` plant's outflow volume is zero (turbine

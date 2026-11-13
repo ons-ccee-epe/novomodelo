@@ -53,8 +53,8 @@ use crate::{
     },
     stages::{StagesData, parse_stages},
     system::{
-        load_energy_contracts, load_non_controllable_sources, load_pumping_stations, parse_buses,
-        parse_hydros, parse_lines, parse_thermals,
+        load_energy_contracts, load_lines, load_non_controllable_sources, load_pumping_stations,
+        load_thermals, parse_buses, parse_hydros,
     },
     validation::{
         ValidationContext, rules,
@@ -275,8 +275,10 @@ pub(crate) fn validate_schema(
         ctx,
     );
 
-    let lines = parse_or_error(
-        parse_lines(&case_root.join("system/lines.json"), &sentinel),
+    let lines = optional_or_error(
+        manifest.present(InputFile::SystemLinesJson),
+        || load_lines(Some(&case_root.join("system/lines.json")), &sentinel),
+        Vec::new,
         "system/lines.json",
         ctx,
     );
@@ -287,8 +289,10 @@ pub(crate) fn validate_schema(
         ctx,
     );
 
-    let thermals = parse_or_error(
-        parse_thermals(&case_root.join("system/thermals.json")),
+    let thermals = optional_or_error(
+        manifest.present(InputFile::SystemThermalsJson),
+        || load_thermals(Some(&case_root.join("system/thermals.json"))),
+        Vec::new,
         "system/thermals.json",
         ctx,
     );
@@ -554,7 +558,7 @@ pub(crate) fn validate_schema(
     let (generic_constraints, generic_constraint_named_sources) = optional_or_error(
         manifest.present(InputFile::ConstraintsGenericConstraintsJson),
         || {
-            let line_pair_index = build_line_bus_pair_index(lines.as_deref().unwrap_or(&[]))?;
+            let line_pair_index = build_line_bus_pair_index(&lines)?;
             parse_generic_constraints_with_provenance(
                 &case_root.join("constraints/generic_constraints.json"),
                 &scalar_name_to_id,
@@ -656,9 +660,7 @@ pub(crate) fn validate_schema(
     let stages = stages?;
     let initial_conditions = initial_conditions?;
     let buses = buses?;
-    let lines = lines?;
     let hydros = hydros?;
-    let thermals = thermals?;
 
     Some(ParsedData {
         config,
@@ -799,7 +801,7 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
-    /// Given a case directory with all 8 required files containing valid JSON,
+    /// Given a case directory with all required files containing valid JSON,
     /// `validate_schema` returns `Some(ParsedData)` with all required fields
     /// populated and `ctx.has_errors()` is `false`.
     #[test]
@@ -961,6 +963,32 @@ mod tests {
         assert!(
             data.unwrap().correlation.is_none(),
             "correlation should be None when file absent"
+        );
+    }
+
+    #[test]
+    fn test_absent_lines_and_thermals_yield_empty_registries() {
+        let dir = TempDir::new().unwrap();
+        make_minimal_case(&dir);
+        fs::remove_file(dir.path().join("system/lines.json")).unwrap();
+        fs::remove_file(dir.path().join("system/thermals.json")).unwrap();
+
+        let mut ctx = ValidationContext::new();
+        let manifest = validate_structure(dir.path(), &mut ctx);
+        assert!(!ctx.has_errors(), "structural validation should pass");
+
+        let data = validate_schema(dir.path(), &manifest, &mut ctx)
+            .expect("validate_schema should return Some(ParsedData)");
+
+        assert!(
+            !ctx.has_errors(),
+            "no error should be added for absent lines/thermals, got: {:?}",
+            ctx.errors()
+        );
+        assert!(data.lines.is_empty(), "lines should be empty when absent");
+        assert!(
+            data.thermals.is_empty(),
+            "thermals should be empty when absent"
         );
     }
 

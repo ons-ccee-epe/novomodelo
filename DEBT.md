@@ -49,4 +49,15 @@ owner:     novomodelo-sddp maintainers
 blast:     crates/novomodelo-sddp/tests/{deterministic.rs,cut_basis.rs,anticipated_scenarios.rs,template_integration/generic_constraints.rs}; the deterministic, cut_basis, anticipated_scenarios and template_integration test binaries must pass with --features test-support, slow-tests included
 origin:    recorded on branch feat/generic-constraint-stage-volume when the shared bounds writer was planned; the local copies predate that work
 
+### DEBT-003
+what:      crates/novomodelo-sddp/src/lp/builder/entries.rs:fill_generic_constraint_entries guards a stage-volume term (hydro_outflow_volume, hydro_diversion_volume, pumping_volume) on a per-block generic row with a debug_assert! only, so a System built through SystemBuilder in a release build gets per-block rows, each carrying the whole-stage volume, with no error
+why-now:   deliberate — novomodelo-io refuses every input that would split a volume row (build_variable_ref, check_stage_volume_constraints), so no case loaded by the CLI or the Python bindings reaches the builder with one; the work kept the builder change to the stated capability
+quadrant:  deliberate x prudent
+interest:  a library caller that builds a System by hand and splits a volume row per block gets a model that counts the stage volume once per block, silently; it compounds only as SystemBuilder callers outside novomodelo-io appear
+payoff:    refuse the composition in SystemBuilder::build in every build profile (or force a row with a volume term to stage level in the layout), with a test that pins the refusal
+trigger:   a SystemBuilder caller outside novomodelo-io that builds generic constraints, or the next change to the stage-level collapse rule (constraint_collapses_to_stage_level)
+owner:     novomodelo-sddp maintainers
+blast:     crates/novomodelo-core (SystemBuilder::build), crates/novomodelo-sddp/src/lp/builder/{entries.rs,layout.rs}; the novomodelo-io stage-volume validation tests and the template_integration generic-constraint tests must pass
+origin:    recorded on branch feat/generic-constraint-stage-volume from the review of its stage-volume builder guard
+
 ## Paid
