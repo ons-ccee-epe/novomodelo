@@ -1,7 +1,7 @@
 //! `deficit_and_withdrawal` section tests.
 
 use super::*;
-use novomodelo_sddp::indexer::HydroSys;
+use novomodelo_sddp::indexer::{BlockIdx, Boundary, BusSys, HydroCell, HydroSys};
 
 #[test]
 #[allow(clippy::too_many_lines)]
@@ -863,7 +863,6 @@ fn three_hydro_num_cols_includes_three_withdrawal_slacks() {
         },
     );
 
-    #[allow(clippy::cast_possible_wrap)]
     let stages = vec![make_stage(
         0,
         StageSpec {
@@ -1438,4 +1437,190 @@ fn prefilling_withdrawal_moves_slack_bound_to_target() {
         (-(-0.5_f64 + 0.2)).to_bits()
     );
     assert_eq!(template.num_cols, baseline.templates[0].num_cols);
+}
+
+const ZETA_744H: f64 = 744.0 * 3_600.0 / 1_000_000.0;
+
+fn empty_storage_stage0(
+    system: &novomodelo_core::System,
+    production: &ProductionModelSet,
+) -> (
+    novomodelo_sddp::StageTemplates,
+    novomodelo_solver::ActiveSolver,
+) {
+    use novomodelo_solver::SolverInterface;
+
+    let result = build_stage_templates_resolving_layout(
+        system,
+        no_penalty_config(),
+        &PrecomputedPar::default(),
+        &PrecomputedNormal::default(),
+        production,
+        &default_evaporation(system),
+        &ResolvedParameters::default(),
+    )
+    .expect("build ok");
+    let n_h = system.hydros().len();
+    let state = novomodelo_sddp::test_support::state_layout(n_h, 0);
+    let grid = result.geometry_per_stage[0].storage_boundary_grid();
+    let incoming: Vec<usize> = (0..n_h)
+        .map(|h| grid.col(&state, HydroSys::new(h), Boundary::Incoming))
+        .collect();
+    let mut solver = load_template_with_no_cuts(&result.templates[0]);
+    solver.set_col_bounds(&incoming, &vec![0.0; n_h], &vec![0.0; n_h]);
+    (result, solver)
+}
+
+/// derived: with `v_in = 0`, `v_out ≥ 0` and no inflow, `D`'s water row forces
+/// `neg − pos − s − q − v_out/ζ = T_eff = 0.07 + 0.2`, and `neg ≤ T_eff` leaves the rest at 0.
+#[test]
+fn prefilling_withdrawal_closes_through_target_slack() {
+    use novomodelo_solver::SolverInterface;
+
+    let (feeder_t, target_t) = (0.2, 0.07);
+    let system = prefilling_pair_system(feeder_t, target_t);
+    let (result, mut solver) = empty_storage_stage0(&system, &production_set(&[1.0, 1.0], 2));
+    let g = &result.geometry_per_stage[0];
+    let (d, p) = (HydroSys::new(0), HydroSys::new(1));
+    let view = solver
+        .solve(None)
+        .expect("the feeder's withdrawal must close through D's neg slack");
+
+    let neg_d = view.primal[g.withdrawal_slack_neg_col(d)];
+    assert!(
+        (neg_d - (target_t + feeder_t)).abs() < 1e-9,
+        "neg_D must carry T_eff, got {neg_d}"
+    );
+    for (name, col) in [
+        ("pos_D", g.withdrawal_slack_pos_col(d)),
+        ("s_D", g.spillage_col(d, BlockIdx::new(0))),
+        ("q_D", g.turbine_col(HydroCell::new(0), BlockIdx::new(0))),
+    ] {
+        assert!(
+            view.primal[col] <= 1e-9,
+            "{name} must be 0, got {}",
+            view.primal[col]
+        );
+    }
+    for (name, col) in [
+        ("neg_P", g.withdrawal_slack_neg_col(p)),
+        ("pos_P", g.withdrawal_slack_pos_col(p)),
+    ] {
+        assert!(
+            view.primal[col].abs() < 1e-12,
+            "{name} must be 0, got {}",
+            view.primal[col]
+        );
+    }
+}
+
+/// derived: twin with no feeder withdrawal, `T_eff = 0.07 + 0.0`, so `neg_D` covers only `D`'s own.
+#[test]
+fn prefilling_withdrawal_closes_target_only_without_feeder_withdrawal() {
+    use novomodelo_solver::SolverInterface;
+
+    let target_t = 0.07;
+    let system = prefilling_pair_system(0.0, target_t);
+    let (result, mut solver) = empty_storage_stage0(&system, &production_set(&[1.0, 1.0], 2));
+    let g = &result.geometry_per_stage[0];
+    let view = solver
+        .solve(None)
+        .expect("D's own withdrawal must close through its neg slack");
+
+    let neg_d = view.primal[g.withdrawal_slack_neg_col(HydroSys::new(0))];
+    assert!(
+        (neg_d - target_t).abs() < 1e-9,
+        "neg_D must carry D's own T only, got {neg_d}"
+    );
+}
+
+/// derived: twin with 1 m³/s injected into `D`'s row, `q + s + pos − neg + v_out/ζ = 1 − T_eff`;
+/// turbining saves 500 $/MWh at `ρ = 1`, above the 0.01 spillage cost and below the 5000
+/// slack price, so `q_D = 1 − (0.07 + 0.2)` and both slacks stay at 0.
+#[test]
+fn prefilling_withdrawal_closes_through_turbine_with_inflow() {
+    use novomodelo_solver::SolverInterface;
+
+    let (feeder_t, target_t, inflow) = (0.2, 0.07, 1.0);
+    let system = prefilling_pair_system(feeder_t, target_t);
+    let (result, mut solver) = empty_storage_stage0(&system, &production_set(&[1.0, 1.0], 2));
+    let g = &result.geometry_per_stage[0];
+    let d = HydroSys::new(0);
+    let row = g.water_balance_row(d, BlockIdx::new(0));
+    let rhs = result.templates[0].row_lower[row] + ZETA_744H * inflow;
+    solver.set_row_bounds(&[row], &[rhs], &[rhs]);
+    let view = solver
+        .solve(None)
+        .expect("D must turbine the injected inflow net of T_eff");
+
+    for (name, col) in [
+        ("neg_D", g.withdrawal_slack_neg_col(d)),
+        ("pos_D", g.withdrawal_slack_pos_col(d)),
+    ] {
+        assert!(
+            view.primal[col] <= 1e-9,
+            "{name} must be 0, got {}",
+            view.primal[col]
+        );
+    }
+    let q_d = view.primal[g.turbine_col(HydroCell::new(0), BlockIdx::new(0))];
+    assert!(
+        (q_d - (inflow - (target_t + feeder_t))).abs() < 1e-9,
+        "q_D must turbine the inflow net of T_eff, got {q_d}"
+    );
+}
+
+/// derived: `T = −5` pins `neg ∈ [0, 0]`, so the row `v_out/ζ + q + s + pos = −T` with
+/// `v_in = 0` turbines `q = 5` at 500 $/MWh and the deficit is `100 − ρ·q`. Power guard:
+/// `q` and the deficit are basic, so `ζ·y_w = −ρ·500·744/K` and
+/// `rc_neg = 744·c/K + ζ·y_w = (744/K)·(c − 500·ρ) = −0.371256 < 0`: the `[0, 0]` bound binds.
+#[test]
+fn negative_withdrawal_cannot_create_water() {
+    use novomodelo_solver::SolverInterface;
+
+    let (withdrawal_m3s, slack_price, rho, load_mw, deficit_price) = (-5.0, 1.0, 1.0, 100.0, 500.0);
+    let system = one_hydro_system_with_withdrawal(1, 0, withdrawal_m3s, slack_price);
+    let (result, mut solver) = empty_storage_stage0(&system, &production_set(&[rho], 1));
+    let template = &result.templates[0];
+    let geometry = &result.geometry_per_stage[0];
+    let hydro = HydroSys::new(0);
+    let col_neg = geometry.withdrawal_slack_neg_col(hydro);
+    let col_deficit = geometry.deficit_col(BusSys::new(0), 0, BlockIdx::new(0), 1);
+    let water_row = geometry.water_balance_row(hydro, BlockIdx::new(0));
+    let view = solver
+        .solve(None)
+        .expect("the returned water must close the balance without neg");
+
+    let neg = view.primal[col_neg];
+    assert!(neg.abs() < 1e-12, "neg must be 0, got {neg}");
+    let pos = view.primal[geometry.withdrawal_slack_pos_col(hydro)];
+    assert!(pos <= 1e-9, "pos must be 0, got {pos}");
+    let turbined = view.primal[geometry.turbine_col(HydroCell::new(0), BlockIdx::new(0))];
+    assert!(
+        (turbined - (-withdrawal_m3s)).abs() < 1e-9,
+        "q must turbine only the returned water, got {turbined}"
+    );
+    let deficit = view.primal[col_deficit];
+    assert!(
+        (deficit - (load_mw - rho * (-withdrawal_m3s))).abs() < 1e-9,
+        "deficit must be the load net of the returned water's generation, got {deficit}"
+    );
+
+    let rc_neg = view.reduced_costs[col_neg];
+    let y_w = view.dual[water_row];
+    let kkt = template.objective[col_neg] - (-ZETA_744H) * y_w;
+    assert!(
+        (rc_neg - kkt).abs() < 1e-9,
+        "KKT: rc_neg = {rc_neg}, c_neg + ζ·y_w = {kkt}"
+    );
+    assert!(
+        rc_neg < 0.0,
+        "neg's [0, 0] bound must bind, rc_neg = {rc_neg}"
+    );
+    let closed_form = (744.0 / COST_SCALE_FACTOR) * (slack_price - deficit_price * rho);
+    assert!(
+        (rc_neg - closed_form).abs() <= 1e-9 * closed_form.abs(),
+        "rc_neg = {rc_neg}, closed form = {closed_form}, deficit objective = {}",
+        template.objective[col_deficit]
+    );
 }
