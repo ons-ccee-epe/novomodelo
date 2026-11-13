@@ -1768,6 +1768,35 @@ mod tests {
         assert_eq!(rebind, vec![RebindOp::FillFromStorage(0)]);
     }
 
+    /// Given a source that prices hydro 1's bucket and both hydros' storage,
+    /// and a target with a bucket for each hydro over the same post-boundary
+    /// week, when `build_rebind` runs, then hydro 1's bucket blends its source
+    /// bucket and hydro 2's fills from hydro 2's storage: the fill follows the
+    /// receiver's own source miss, not a source that holds no bucket at all.
+    #[test]
+    fn transit_bucket_fill_triggers_per_receiver_not_per_source() {
+        let week = |id| {
+            transit_bucket_slot_over(
+                id,
+                1,
+                encode_slot_date(ymd(2026, 4, 1)),
+                encode_slot_date(ymd(2026, 4, 8)),
+            )
+        };
+        let source = vec![storage_slot(1), storage_slot(2), week(1)];
+        let target = vec![week(1), week(2)];
+
+        let rebind = rebind_via_index(&source, &target, ymd(2026, 4, 1)).unwrap();
+
+        assert_eq!(
+            rebind,
+            vec![
+                RebindOp::Blend(vec![(2, 1.0)]),
+                RebindOp::FillFromStorage(1)
+            ]
+        );
+    }
+
     /// Given a source that prices a storage slot with the same entity id as a
     /// post-boundary anticipated target, when `build_rebind` runs, then the
     /// anticipated source miss resolves to `Zero`: only a transit bucket fills

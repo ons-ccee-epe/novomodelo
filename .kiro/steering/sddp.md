@@ -4203,7 +4203,15 @@ as `Blend(vec![(p, 1.0)])` or `Copy(p)` (misreports the tally); filling a bucket
 whose hydro has source intervals, none overlapping (below); applying it in
 `build_boundary_fold` or before `rescale_cut_records_for_load`; averaging
 storage coefficients across cuts; filling an `AnticipatedThermalState` miss
-from a same-id storage slot.
+from a same-id storage slot; deciding the miss for the whole source (filling
+only when it holds no live bucket for any hydro), which leaves a receiver the
+source has no bucket for at 0.0 as soon as another receiver has one.
+
+Because the miss is the receiver's own, a receiver the source prices only in
+part keeps `Zero` past its source buckets. A source study that declares one of
+two arcs into a receiver is the case: the target buckets its arc's buckets do
+not overlap price the other arc's arriving water at 0.0. This is a documented
+boundary approximation, like the arrival delay above.
 
 Only a live anticipated target slot whose interval reaches past
 `boundary_date` fans out. A live target slot whose `interval_end` is at or
@@ -4363,6 +4371,7 @@ round trip `load_boundary_cuts_matching_transit_bucket_arrival_interval_round_tr
 `transit_bucket_source_miss_without_receiver_storage_stays_zero`,
 `transit_bucket_in_study_target_stays_zero_when_receiver_storage_is_priced`,
 `transit_bucket_all_sentinel_source_transit_fills_from_storage`,
+`transit_bucket_fill_triggers_per_receiver_not_per_source`,
 `anticipated_source_miss_never_fills_from_a_same_id_storage_slot` and
 `transit_bucket_fill_is_declaration_order_invariant` (`policy/reconcile.rs`),
 by `boundary_injection_transit_bucket_fills_from_receiver_storage` and
