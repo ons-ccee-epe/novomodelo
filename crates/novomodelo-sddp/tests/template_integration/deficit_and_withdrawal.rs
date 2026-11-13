@@ -558,46 +558,6 @@ fn withdrawal_slack_objective_zero_when_cost_is_zero() {
 }
 
 #[test]
-fn withdrawal_slack_bounds_are_sign_aware_positive_target() {
-    let system = one_hydro_system_with_withdrawal(1, 0, 10.0, 5_000.0);
-    let result = build_stage_templates_resolving_layout(
-        &system,
-        no_penalty_config(),
-        &PrecomputedPar::default(),
-        &PrecomputedNormal::default(),
-        &default_production(&system),
-        &default_evaporation(&system),
-        &ResolvedParameters::default(),
-    )
-    .expect("build ok");
-
-    let t = &result.templates[0];
-    let g = &result.geometry_per_stage[0];
-    let col_neg = g.withdrawal_slack_neg_col(HydroSys::new(0));
-    let col_pos = g.withdrawal_slack_pos_col(HydroSys::new(0));
-    assert!(
-        (t.col_lower[col_neg] - 0.0).abs() < 1e-15,
-        "neg slack lower bound must be 0.0, got {}",
-        t.col_lower[col_neg]
-    );
-    assert!(
-        (t.col_upper[col_neg] - 10.0).abs() < 1e-15,
-        "neg slack upper bound must be |T| = 10.0 for T > 0, got {}",
-        t.col_upper[col_neg]
-    );
-    assert!(
-        (t.col_lower[col_pos] - 0.0).abs() < 1e-15,
-        "pos slack lower bound must be 0.0, got {}",
-        t.col_lower[col_pos]
-    );
-    assert!(
-        t.col_upper[col_pos].is_infinite() && t.col_upper[col_pos] > 0.0,
-        "pos slack upper bound must be +inf for T > 0 (over-withdrawal latitude), got {}",
-        t.col_upper[col_pos]
-    );
-}
-
-#[test]
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_possible_wrap,
@@ -1173,4 +1133,309 @@ fn three_hydro_num_cols_includes_three_withdrawal_slacks() {
             "withdrawal slack pos column for hydro {h} should be unbounded above (T > 0)"
         );
     }
+}
+
+/// Hydro `D` (id 2, canonical position 0) is the target. Hydro `P` (id 3, position 1) is
+/// `PreFilling` at stage 0 and routes onto `D`. `D` prices its withdrawal slacks at 5000
+/// and `P` at 7000, so the price of a transferred withdrawal shows which plant's slacks
+/// carry it.
+fn prefilling_pair_system(
+    prefilling_withdrawal_m3s: f64,
+    target_withdrawal_m3s: f64,
+) -> novomodelo_core::System {
+    use chrono::NaiveDate;
+    use novomodelo_core::entities::hydro::HydroGenerationModel;
+    use novomodelo_core::scenario::LoadModel;
+    use novomodelo_core::temporal::{
+        Block, BlockMode, NoiseMethod, ScenarioSourceConfig, StageRiskConfig, StageStateConfig,
+    };
+
+    const N_STAGES: usize = 2;
+    const HYDRO_IDS: [i32; 2] = [2, 3];
+
+    let withdrawal_penalties = |cost: f64| HydroPenalties {
+        spillage_cost: 0.01,
+        diversion_cost: 0.0,
+        turbined_cost: 0.0,
+        storage_violation_below_cost: 0.0,
+        filling_target_violation_cost: 0.0,
+        turbined_violation_below_cost: 0.0,
+        outflow_violation_below_cost: 0.0,
+        outflow_violation_above_cost: 0.0,
+        generation_violation_below_cost: 0.0,
+        evaporation_violation_cost: 0.0,
+        water_withdrawal_violation_cost: cost,
+        water_withdrawal_violation_pos_cost: cost,
+        water_withdrawal_violation_neg_cost: cost,
+        evaporation_violation_pos_cost: 0.0,
+        evaporation_violation_neg_cost: 0.0,
+        inflow_nonnegativity_cost: 1000.0,
+    };
+    let target_penalties = withdrawal_penalties(5_000.0);
+    let prefilling_penalties = withdrawal_penalties(7_000.0);
+
+    let bus = make_bus(
+        EntityId(1),
+        BusSpec {
+            name: "B1".to_string(),
+            deficit_segments: vec![DeficitSegment {
+                depth_mw: None,
+                cost_per_mwh: 500.0,
+            }],
+            ..Default::default()
+        },
+    );
+
+    let hydros = HYDRO_IDS
+        .iter()
+        .map(|&id| {
+            let is_target = id == HYDRO_IDS[0];
+            make_hydro(
+                EntityId(id),
+                HydroSpec {
+                    name: format!("H{id}"),
+                    bus_id: EntityId(1),
+                    downstream_id: (!is_target).then_some(EntityId(HYDRO_IDS[0])),
+                    entry_stage_id: (!is_target).then_some(1),
+                    max_storage_hm3: 200.0,
+                    generation_model: HydroGenerationModel::ConstantProductivity,
+                    max_turbined_m3s: 100.0,
+                    max_generation_mw: 250.0,
+                    penalties: if is_target {
+                        target_penalties
+                    } else {
+                        prefilling_penalties
+                    },
+                    ..Default::default()
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+
+    let stages = (0..N_STAGES)
+        .map(|i| {
+            let month = i as u32 + 1;
+            make_stage(
+                i,
+                StageSpec {
+                    start_date: NaiveDate::from_ymd_opt(2024, month, 1).unwrap(),
+                    end_date: NaiveDate::from_ymd_opt(2024, month + 1, 1).unwrap(),
+                    season_id: None,
+                    blocks: vec![Block {
+                        index: 0,
+                        name: "S".to_string(),
+                        duration_hours: 744.0,
+                    }],
+                    block_mode: BlockMode::Parallel,
+                    state_config: StageStateConfig {
+                        storage: true,
+                        inflow_lags: false,
+                    },
+                    risk_config: StageRiskConfig::Expectation,
+                    scenario_config: ScenarioSourceConfig {
+                        branching_factor: 1,
+                        noise_method: NoiseMethod::Saa,
+                    },
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+
+    let inflow_models = HYDRO_IDS
+        .iter()
+        .flat_map(|&id| {
+            (0..N_STAGES).map(move |i| InflowModel {
+                hydro_id: EntityId(id),
+                stage_id: i as i32,
+                mean_m3s: 50.0,
+                std_m3s: 10.0,
+                ar_coefficients: vec![],
+                residual_std_ratio: 1.0,
+                annual: None,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let load_models = (0..N_STAGES)
+        .map(|i| LoadModel {
+            bus_id: EntityId(1),
+            stage_id: i as i32,
+            mean_mw: 100.0,
+            std_mw: 0.0,
+        })
+        .collect::<Vec<_>>();
+
+    let mut bounds = ResolvedBounds::new(
+        &BoundsCountsSpec {
+            n_hydros: HYDRO_IDS.len(),
+            n_thermals: 0,
+            n_lines: 0,
+            n_pumping: 0,
+            n_contracts: 0,
+            n_stages: N_STAGES,
+            k_max: 0,
+        },
+        &BoundsDefaults {
+            hydro: HydroStageBounds {
+                min_storage_hm3: 0.0,
+                max_storage_hm3: 200.0,
+                filling_min_rate_m3s: 0.0,
+                water_withdrawal_m3s: 0.0,
+            },
+            hydro_block: HydroBlockBounds {
+                max_turbined_m3s: 100.0,
+                max_generation_mw: 250.0,
+                ..Default::default()
+            },
+            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
+            thermal_block: ThermalBlockBounds {
+                min_generation_mw: 0.0,
+                max_generation_mw: 0.0,
+            },
+            line_block: LineBlockBounds {
+                direct_mw: 0.0,
+                reverse_mw: 0.0,
+            },
+            pumping_block: PumpingBlockBounds {
+                min_flow_m3s: 0.0,
+                max_flow_m3s: 0.0,
+            },
+            contract_block: ContractBlockBounds {
+                min_mw: 0.0,
+                max_mw: 0.0,
+                price_per_mwh: 0.0,
+            },
+        },
+    );
+    let mut penalties = ResolvedPenalties::new(
+        &PenaltiesCountsSpec {
+            n_hydros: HYDRO_IDS.len(),
+            n_buses: 1,
+            n_lines: 0,
+            n_ncs: 0,
+            n_stages: N_STAGES,
+        },
+        &PenaltiesDefaults {
+            hydro: target_penalties,
+            bus: BusStagePenalties { excess_cost: 0.0 },
+            line: LineStagePenalties { exchange_cost: 0.0 },
+            ncs: NcsStagePenalties {
+                curtailment_cost: 0.0,
+            },
+        },
+    );
+    for stage in 0..N_STAGES {
+        bounds.hydro_bounds_mut(0, stage).water_withdrawal_m3s = target_withdrawal_m3s;
+        bounds.hydro_bounds_mut(1, stage).water_withdrawal_m3s = prefilling_withdrawal_m3s;
+        *penalties.hydro_penalties_mut(1, stage) = prefilling_penalties;
+    }
+
+    SystemBuilder::new()
+        .buses(vec![bus])
+        .hydros(hydros)
+        .stages(stages)
+        .inflow_models(inflow_models)
+        .load_models(load_models)
+        .bounds(bounds)
+        .penalties(penalties)
+        .build()
+        .expect("prefilling_pair_system: valid")
+}
+
+/// derived: `neg ∈ [0, T]` and `pos ∈ [0, ∞)` for `T > 0`; `neg ∈ [0, 0]` and
+/// `pos ∈ [0, -T]` for `T < 0`; both `[0, 0]` at `T = 0`.
+#[test]
+fn withdrawal_slack_bounds_follow_effective_withdrawal_sign() {
+    for (t, neg_upper, pos_upper) in [
+        (10.0, 10.0, f64::INFINITY),
+        (-5.0, 0.0, 5.0),
+        (0.0, 0.0, 0.0),
+    ] {
+        let system = one_hydro_system_with_withdrawal(1, 0, t, 5_000.0);
+        let result = build_stage_templates_resolving_layout(
+            &system,
+            no_penalty_config(),
+            &PrecomputedPar::default(),
+            &PrecomputedNormal::default(),
+            &default_production(&system),
+            &default_evaporation(&system),
+            &ResolvedParameters::default(),
+        )
+        .expect("build ok");
+
+        let template = &result.templates[0];
+        let geometry = &result.geometry_per_stage[0];
+        let col_neg = geometry.withdrawal_slack_neg_col(HydroSys::new(0));
+        let col_pos = geometry.withdrawal_slack_pos_col(HydroSys::new(0));
+        assert_eq!(template.col_lower[col_neg], 0.0, "T = {t}: neg lower");
+        assert_eq!(template.col_upper[col_neg], neg_upper, "T = {t}: neg upper");
+        assert_eq!(template.col_lower[col_pos], 0.0, "T = {t}: pos lower");
+        assert_eq!(template.col_upper[col_pos], pos_upper, "T = {t}: pos upper");
+    }
+}
+
+/// derived: `T_eff[D] = T[D] + T[P]` and `T_eff[P] = 0`, so `D` carries the bounds of the
+/// sign table at `T_eff` and `P`'s own slacks are `[0, 0]`; a transferred withdrawal is
+/// priced at `D`'s cost, `5000 * 744 / COST_SCALE_FACTOR`, never `P`'s.
+#[test]
+fn prefilling_withdrawal_moves_slack_bound_to_target() {
+    let build = |prefilling_withdrawal_m3s: f64, target_withdrawal_m3s: f64| {
+        let system = prefilling_pair_system(prefilling_withdrawal_m3s, target_withdrawal_m3s);
+        build_stage_templates_resolving_layout(
+            &system,
+            no_penalty_config(),
+            &PrecomputedPar::default(),
+            &PrecomputedNormal::default(),
+            &default_production(&system),
+            &default_evaporation(&system),
+            &ResolvedParameters::default(),
+        )
+        .expect("build ok")
+    };
+    let baseline = build(0.0, 0.0);
+
+    let to_surplus = build(0.2, 0.07);
+    let template = &to_surplus.templates[0];
+    let geometry = &to_surplus.geometry_per_stage[0];
+    let (d, p) = (HydroSys::new(0), HydroSys::new(1));
+    assert_eq!(
+        template.col_upper[geometry.withdrawal_slack_neg_col(d)].to_bits(),
+        (0.07_f64 + 0.2).to_bits()
+    );
+    assert_eq!(
+        template.col_upper[geometry.withdrawal_slack_pos_col(d)],
+        f64::INFINITY
+    );
+    assert_eq!(
+        template.col_upper[geometry.withdrawal_slack_neg_col(p)].to_bits(),
+        0.0_f64.to_bits()
+    );
+    assert_eq!(
+        template.col_upper[geometry.withdrawal_slack_pos_col(p)].to_bits(),
+        0.0_f64.to_bits()
+    );
+    let target_cost = 5_000.0 * 744.0 / COST_SCALE_FACTOR;
+    assert!(
+        (template.objective[geometry.withdrawal_slack_neg_col(d)] - target_cost).abs() < 1e-12,
+        "D's neg objective must be priced at D's own cost"
+    );
+    let prefilling_cost = 7_000.0 * 744.0 / COST_SCALE_FACTOR;
+    assert!(
+        (template.objective[geometry.withdrawal_slack_neg_col(p)] - prefilling_cost).abs() < 1e-12,
+        "P's own neg objective must stay priced at P's cost"
+    );
+    assert_eq!(template.num_cols, baseline.templates[0].num_cols);
+
+    let to_return = build(0.2, -0.5);
+    let template = &to_return.templates[0];
+    let geometry = &to_return.geometry_per_stage[0];
+    assert_eq!(
+        template.col_upper[geometry.withdrawal_slack_neg_col(d)].to_bits(),
+        0.0_f64.to_bits()
+    );
+    assert_eq!(
+        template.col_upper[geometry.withdrawal_slack_pos_col(d)].to_bits(),
+        (-(-0.5_f64 + 0.2)).to_bits()
+    );
+    assert_eq!(template.num_cols, baseline.templates[0].num_cols);
 }

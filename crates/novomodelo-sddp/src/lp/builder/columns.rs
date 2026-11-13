@@ -702,16 +702,13 @@ fn fill_evaporation_columns(
     }
 }
 
-/// Withdrawal violation slack columns — neg (under-withdrawal) and pos
+/// Withdrawal violation slack columns, `neg` (under-withdrawal) and `pos`
 /// (over-withdrawal), one stage-level column per hydro per direction.
 ///
-/// Realized withdrawal is `R = T - neg + pos`, `T = water_withdrawal_m3s` (signed:
-/// `T > 0` removal, `T < 0` inter-basin return). `R` must NOT flip sign, so the
-/// *under-delivery* direction (the one dragging `R` toward zero) is capped at `|T|`
-/// while *over-delivery* is left `+∞`:
-/// - `T > 0`: cap `neg ≤ |T|` (floors `R ≥ 0`); `pos` is `+∞`.
-/// - `T < 0`: cap `pos ≤ |T|` (floors `R ≤ 0`); `neg` is `+∞`.
-/// - `T = 0`: both `0` (presolve-eliminated).
+/// The realized withdrawal `R = T_eff - neg + pos` never changes sign: `T_eff > 0`
+/// bounds `neg ≤ T_eff` with `pos` unbounded, `T_eff < 0` bounds `pos ≤ -T_eff`
+/// with `neg = 0`, and `T_eff = 0` pins both to 0. `T_eff` is owned by
+/// [`StageLayout::effective_withdrawal_m3s`].
 fn fill_withdrawal_slack_columns(
     ctx: &TemplateBuildCtx<'_>,
     stage_idx: usize,
@@ -720,20 +717,13 @@ fn fill_withdrawal_slack_columns(
     bufs: &mut ColumnBufs<'_>,
 ) {
     for h_idx in 0..layout.state.hydro_count {
-        let hb = ctx.resolved.bounds.hydro_bounds(h_idx, stage_idx);
         let hp = ctx.resolved.penalties.hydro_penalties(h_idx, stage_idx);
-        let t = hb.water_withdrawal_m3s;
+        let t = layout.effective_withdrawal_m3s[h_idx];
 
         let neg_col = layout
             .geometry
             .withdrawal_slack_neg_col(HydroSys::new(h_idx));
-        bufs.col_upper[neg_col] = if t > 0.0 {
-            t
-        } else if t < 0.0 {
-            f64::INFINITY
-        } else {
-            0.0
-        };
+        bufs.col_upper[neg_col] = if t > 0.0 { t } else { 0.0 };
         bufs.objective[neg_col] = hp.water_withdrawal_violation_neg_cost * total_stage_hours;
 
         let pos_col = layout
