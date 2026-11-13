@@ -1,6 +1,6 @@
-//! LP load and bound-patch seam for the backward pass: reset the stage LP to its
-//! structural template, append delta cuts, and patch the noise-dependent
-//! row/column bounds for one opening.
+//! LP load, pin and basis seam for the backward pass: reset the stage LP to its
+//! structural template, append delta cuts, pin the trial state, and read and write the
+//! warm-start basis.
 
 use novomodelo_solver::SolverInterface;
 use novomodelo_stochastic::{ClassDimensions, ExternalScenarioLibrary};
@@ -8,8 +8,9 @@ use novomodelo_stochastic::{ClassDimensions, ExternalScenarioLibrary};
 use crate::{
     context::{StageContext, TrainingContext},
     error::SddpError,
-    setup::{NodeId, NodePos, StageIdx},
-    training::stage_solve_prep::{StageSolvePrep, StageSolvePrepParams, StateSource},
+    forward::write_capture_metadata,
+    setup::{NodeId, NodeOpenings, NodePos, OpeningSource, StageIdx},
+    training::stage_solve_prep::{BracketSource, LoadedCutRows, StageSolvePrep, StateSource},
     workspace::{BasisStoreSliceMut, CapturedBasis, SolverWorkspace},
 };
 
@@ -30,30 +31,47 @@ pub(crate) fn load_backward_lp<S: SolverInterface + Send>(
     }
 }
 
-/// Transform opening noise and patch LP bounds for one backward opening.
+/// The cut rows of `child`'s loaded compact LP, in the row order of its active-slot list.
+pub(crate) fn child_cut_rows<'a>(
+    training_ctx: &'a TrainingContext<'_>,
+    child: &SuccessorChild<'a>,
+) -> LoadedCutRows<'a> {
+    LoadedCutRows {
+        pool: child.successor_pool,
+        projection: &training_ctx.cut_state_layouts[child.pool_id],
+        slots: child.successor_active_slots,
+        first_row: child.template_num_rows,
+    }
+}
+
+/// Pins `x_hat` on `child`'s loaded compact LP and computes the brackets of its
+/// cut rows.
 ///
-/// The LP structure is already loaded by [`load_backward_lp`]; this delegates to
-/// [`StageSolvePrep::run`], pinning `x_hat` as the incoming state.
-pub(crate) fn patch_opening_bounds<S: SolverInterface + Send>(
+/// Runs once per child LP load, after [`load_backward_lp`].
+pub(crate) fn pin_child_lp<S: SolverInterface + Send>(
     ws: &mut SolverWorkspace<S>,
     ctx: &StageContext<'_>,
     training_ctx: &TrainingContext<'_>,
-    raw_noise: &[f64],
+    child: &SuccessorChild<'_>,
     x_hat: &[f64],
     s: StageIdx,
+    source: BracketSource<'_>,
 ) {
-    let prep_params = StageSolvePrepParams {
-        state_source: StateSource(x_hat),
-        raw_noise,
-    };
-    StageSolvePrep::run(
+    assert_eq!(
+        child.successor_active_slots.len(),
+        child.num_cuts_at_successor,
+        "the active-slot list must cover every cut row of the loaded LP"
+    );
+    StageSolvePrep::pin_and_bracket(
         &mut ws.solver,
         &mut ws.patch_buf,
         &mut ws.scratch,
         ctx,
         training_ctx,
         s,
-        &prep_params,
+        StateSource(x_hat),
+        &child_cut_rows(training_ctx, child),
+        source,
     );
 }
 
@@ -71,7 +89,7 @@ pub(crate) fn patch_opening_bounds<S: SolverInterface + Send>(
 ///
 /// [`SddpError::Validation`] when a class has a nonempty noise segment but no
 /// external library — a genuine setup defect, never a silent fallback to the
-/// generated opening tree (which is exactly the inert-hash bug this removes).
+/// generated opening tree.
 pub(crate) fn fill_external_opening_noise(
     training_ctx: &TrainingContext<'_>,
     stage: StageIdx,
@@ -79,9 +97,8 @@ pub(crate) fn fill_external_opening_noise(
     node_id: NodeId,
     buf: &mut Vec<f64>,
 ) -> Result<(), SddpError> {
-    let stochastic = training_ctx.stochastic;
     assemble_external_opening_noise(
-        stochastic.class_dimensions(),
+        training_ctx.stochastic.class_dimensions(),
         [
             training_ctx.external_inflow_library,
             training_ctx.external_load_library,
@@ -92,6 +109,67 @@ pub(crate) fn fill_external_opening_noise(
         node_id,
         buf,
     )
+}
+
+/// A node's opening noise: its single assembled `External` column, or the
+/// generated tree, which each site indexes with its own opening index.
+pub(crate) enum OpeningNoise<'b> {
+    External(&'b [f64]),
+    Generated,
+}
+
+impl OpeningNoise<'_> {
+    /// The canonical ω and raw noise of the `solve_pos`-th opening `child`'s warm-start
+    /// chain solves at `stage`: the child's one column when `External`, else the
+    /// generated opening `solve_order[solve_pos]` (sddp.md "Backward opening order is
+    /// warm-start-only").
+    pub(crate) fn solved_opening<'t>(
+        &'t self,
+        training_ctx: &'t TrainingContext<'_>,
+        stage: StageIdx,
+        child: &SuccessorChild<'_>,
+        solve_pos: usize,
+    ) -> (usize, &'t [f64]) {
+        match self {
+            OpeningNoise::External(column) => (child.outcome_range.start, column),
+            OpeningNoise::Generated => {
+                let tree_view = training_ctx.stochastic.tree_view();
+                let solve_order = tree_view.solve_order_data(stage.0);
+                debug_assert_eq!(
+                    solve_order.len(),
+                    child.openings.len,
+                    "a Generated child's opening count must equal stage {stage}'s own opening count"
+                );
+                let local_omega = solve_order[solve_pos] as usize;
+                (
+                    child.outcome_range.start + local_omega,
+                    tree_view.opening_data(stage.0, local_omega),
+                )
+            }
+        }
+    }
+}
+
+/// Resolves a node's opening noise, assembling an `External` node's column into `buf`.
+///
+/// # Errors
+///
+/// [`SddpError::Validation`] from [`fill_external_opening_noise`].
+pub(crate) fn resolve_opening_noise<'b>(
+    training_ctx: &TrainingContext<'_>,
+    stage: StageIdx,
+    openings: &NodeOpenings,
+    node_id: NodeId,
+    buf: &'b mut Vec<f64>,
+) -> Result<OpeningNoise<'b>, SddpError> {
+    match openings.source {
+        OpeningSource::External => {
+            debug_assert_eq!(openings.len, 1, "an External node has exactly one opening");
+            fill_external_opening_noise(training_ctx, stage, openings.offset, node_id, buf)?;
+            Ok(OpeningNoise::External(buf.as_slice()))
+        }
+        OpeningSource::Generated => Ok(OpeningNoise::Generated),
+    }
 }
 
 /// Per-class order the assembled noise vector and its dims/libraries follow —
@@ -162,6 +240,43 @@ pub(crate) fn resolve_backward_basis<'a>(
     successor_node: NodePos,
 ) -> Option<&'a CapturedBasis> {
     basis_slice.get(m, successor_node)
+}
+
+/// Capture the post-solve basis at the first-solved opening into
+/// `basis_slice[m, successor_node]`.
+///
+/// Only the first-solved opening (`solve_order[0]`, = canonical ω=0 under the
+/// identity order) may capture: a later capture would store a basis whose retained
+/// LU factorization has been overwritten by subsequent opening solves, leaving it
+/// stale and potentially infeasible when reloaded.
+pub(crate) fn save_basis_at_omega_zero<S: SolverInterface + Send>(
+    ws: &mut SolverWorkspace<S>,
+    child: &SuccessorChild<'_>,
+    basis_slice: &mut BasisStoreSliceMut<'_>,
+    m: usize,
+) {
+    let successor_node = child.successor_node;
+    let base_row_count = child.template_num_rows;
+    let cut_row_count = child.num_cuts_at_successor;
+    let captured = basis_slice
+        .get_mut(m, successor_node)
+        .get_or_insert_with(|| {
+            CapturedBasis::new(
+                child.frozen_template.num_cols,
+                base_row_count + cut_row_count,
+                base_row_count,
+                cut_row_count,
+                child.successor_node_id,
+            )
+        });
+    ws.solver.get_basis(&mut captured.basis);
+    write_capture_metadata(
+        captured,
+        child.successor_pool,
+        base_row_count,
+        cut_row_count,
+        child.successor_node_id,
+    );
 }
 
 #[cfg(test)]

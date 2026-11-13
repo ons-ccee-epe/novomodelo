@@ -657,7 +657,6 @@ fn build_basis_cache_for_nodes(
                     },
                     base_row_count: template_rows,
                     cut_row_slots,
-                    state_at_capture: Vec::new(),
                     node_id: node_ids[node],
                 },
             ));
@@ -4170,7 +4169,6 @@ mod tests {
             },
             base_row_count: row_status.len(),
             cut_row_slots: Vec::new(),
-            state_at_capture: Vec::new(),
             node_id: NodeId(0),
         };
         let bases = CheckpointBasisStore {

@@ -9,46 +9,43 @@
 //! chain is self-contained (head anchored on the forward capture at `(m, s)`,
 //! warm-continue inside the block), so results are independent of the worker
 //! count and of the claim/block order, by construction. Outcomes are
-//! accumulated worker-locally and scattered into a per-`(m, ω)` arena after the
-//! parallel region; cut aggregation runs canonically over ω per trial point, in
-//! ascending m (sddp.md "By-node scheduler is warm-start-only").
+//! accumulated worker-locally and, after the parallel region, located by
+//! `(m, ω)` through the workers' packed opening records. Cut aggregation runs
+//! canonically over ω per trial point, in ascending m (sddp.md "By-node scheduler
+//! is warm-start-only").
 
 use std::cmp;
 use std::num::NonZeroUsize;
 use std::time::Instant;
 
 use novomodelo_solver::SolverInterface;
-use rayon::iter::{IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator};
+use rayon::{
+    iter::{IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator},
+    slice::ParallelSliceMut,
+};
 
 use crate::{
     SddpError,
     claim_scatter::{ClaimCursor, canonical_scatter},
     context::{StageContext, TrainingContext},
     cut::FutureCostFunction,
-    risk_measure::{BackwardOutcome, RiskMeasure},
-    setup::node_graph::{NodeId, NodePos, OpeningSource},
-    solver_stats::SolverStatsDelta,
-    stage_solve::{StageInputs, run_stage_solve},
+    risk_measure::RiskMeasure,
+    setup::node_graph::{NodeId, NodePos},
+    solve::StageOpeningSolver,
     state_exchange::ExchangeBuffers,
-    workspace::{BasisStore, ByNodeScratch, SolverWorkspace},
+    workspace::{
+        BasisStore, ByNodeScratch, SolverWorkspace,
+        workspace::{ByNodeFinishScratch, OpeningRecords, recycle},
+    },
 };
 
 use super::{
-    SuccessorOutcomes, SuccessorSpec,
-    duals_extraction::extract_duals_from_view,
-    lp_setup::{fill_external_opening_noise, load_backward_lp, patch_opening_bounds},
-    outcome_aggregation::{accumulate_opening_outcome, fold_slot_increments_into_sync},
+    BackwardNodeParams, SuccessorOutcomes, SuccessorSpec,
+    binding_count::fold_slot_increments_into_sync,
+    lp_setup::{load_backward_lp, pin_child_lp, resolve_opening_noise},
+    opening_solve::{OpeningRequest, solve_backward_opening},
+    successor_cut::aggregate_successor_cut,
 };
-
-/// One solved (trial point, opening) outcome produced by an opening-block unit.
-pub(crate) struct OpeningOutcome {
-    /// Position of the trial point within this node's routed set (the arena row),
-    /// NOT the rank-local trial-point index — the two coincide only on a
-    /// single-node level, where routing is the identity `0..local_work`.
-    pub(crate) trial_pos: usize,
-    pub(crate) omega: usize,
-    pub(crate) outcome: BackwardOutcome,
-}
 
 /// Resolves the per-stage opening-block size `B_s`. Never a function of worker
 /// or rank count — by-node determinism (sddp.md) requires the block boundaries
@@ -118,32 +115,28 @@ pub(crate) fn hardest_first_block_order(
     });
 }
 
-/// Solve one backward stage opening-block-style; returns, per worker, either the error
-/// that aborted its claim loop or `(worker_index, outcome_count)` — the count
-/// of entries this worker recorded into its own
-/// `ws.backward_accum.opening_outcomes_buf[..outcome_count]`, which
-/// [`by_node_finish`] resolves back through `workspaces[worker_index]`.
-// Rationale: mirrors `process_by_scenario_backward`'s disjoint-borrow argument list;
-// too_many_lines is the claim loop's single sequential region (LP load, warm-chain
-// solve, dual extraction, pivot accumulation, outcome recording) — splitting it
-// would scatter state the next step in the same loop iteration reads.
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+/// Solve one backward stage opening-block-style. Each worker leaves its outcomes in its own
+/// `ws.backward_accum.opening_records`, which [`by_node_finish`] resolves back through
+/// `workspaces[worker_index]`, and the error that aborted its claim loop, if any, in its
+/// `fan_out_error`.
 pub(crate) fn process_stage_backward_by_node<S: SolverInterface + Send>(
     workspaces: &mut [SolverWorkspace<S>],
     ctx: &StageContext<'_>,
     training_ctx: &TrainingContext<'_>,
-    trial_points: &[usize],
-    exchange: &ExchangeBuffers,
-    fwd_offset: usize,
-    iteration: u64,
-    succ: &SuccessorSpec<'_>,
-    outcomes: &SuccessorOutcomes<'_>,
+    params: &BackwardNodeParams<'_>,
     basis_store: &BasisStore,
     block_size: usize,
     block_order: &[u32],
-) -> Vec<Result<(usize, usize), SddpError>> {
+) {
+    let BackwardNodeParams {
+        trial_points,
+        exchange,
+        fwd_offset,
+        succ,
+        outcomes,
+        ..
+    } = *params;
     let n_openings = succ.probabilities.len();
-    let cut_n_state = succ.cut_state.n_slots();
     // Sum over every child's populated pool: each child's binding increments land
     // in ITS OWN region (`metadata_offset + slot`), so a fan's sibling pools never
     // collide — the same total the by-scenario path sizes.
@@ -170,313 +163,276 @@ pub(crate) fn process_stage_backward_by_node<S: SolverInterface + Send>(
     );
     let n_trial = trial_points.len();
     let cursor = ClaimCursor::new(n_trial * n_blocks);
-    let tree_view = training_ctx.stochastic.tree_view();
     let s = succ.successor;
-    let solve_order = tree_view.solve_order_data(s.0);
 
-    workspaces
-        .par_iter_mut()
-        .enumerate()
-        .map(|(w, ws)| {
-            while ws.backward_accum.outcomes.len() < n_openings {
-                ws.backward_accum.outcomes.push(BackwardOutcome {
-                    intercept: 0.0,
-                    coefficients: vec![0.0_f64; cut_n_state],
-                    objective_value: 0.0,
-                });
+    let run_share = |ws: &mut SolverWorkspace<S>| -> Result<(), SddpError> {
+        if tracks_binding {
+            if ws.backward_accum.slot_increments.len() < pop {
+                ws.backward_accum.slot_increments.resize(pop, 0u64);
             }
-            for outcome in &mut ws.backward_accum.outcomes[..n_openings] {
-                outcome.coefficients.resize(cut_n_state, 0.0_f64);
+            if ws.backward_accum.metadata_sync_contribution.len() < pop {
+                ws.backward_accum
+                    .metadata_sync_contribution
+                    .resize(pop, 0u64);
             }
-            if tracks_binding {
-                if ws.backward_accum.slot_increments.len() < pop {
-                    ws.backward_accum.slot_increments.resize(pop, 0u64);
+            ws.backward_accum.metadata_sync_contribution[..pop].fill(0);
+            ws.backward_accum.slot_increments[..pop].fill(0);
+        }
+        ws.backward_accum.reset_per_opening_stats(n_openings);
+        if ws.backward_accum.block_pivot_sum.len() < n_blocks {
+            ws.backward_accum.block_pivot_sum.resize(n_blocks, 0u64);
+            ws.backward_accum.block_pivot_count.resize(n_blocks, 0u64);
+        }
+        ws.backward_accum.block_pivot_sum[..n_blocks].fill(0);
+        ws.backward_accum.block_pivot_count[..n_blocks].fill(0);
+
+        ws.backward_accum.opening_records.clear(
+            succ.cut_state.columned_len(),
+            training_ctx.state.hydro_count,
+        );
+
+        let worker_stage_wall_start = Instant::now();
+
+        while let Some(u) = cursor.claim() {
+            let pos = u % n_trial;
+            let b = block_order[u / n_trial] as usize;
+            let m = trial_points[pos];
+            let x_hat = exchange.state_at(succ.my_rank, m);
+            let scenario = fwd_offset + m;
+
+            let block_lo = b * block_size;
+            let block_hi = (block_lo + block_size).min(n_openings);
+
+            // Canonical child order (sddp.md "The branching backward integrates
+            // every successor exhaustively"): each run loads THAT child's LP, never
+            // child 0's.
+            for ci in 0..outcomes.n_children() {
+                let child = outcomes.child(ci);
+                let run_lo = child.outcome_range.start.max(block_lo);
+                let run_hi = child.outcome_range.end.min(block_hi);
+                if run_lo >= run_hi {
+                    continue;
                 }
-                if ws.backward_accum.metadata_sync_contribution.len() < pop {
-                    ws.backward_accum
-                        .metadata_sync_contribution
-                        .resize(pop, 0u64);
-                }
-                ws.backward_accum.metadata_sync_contribution[..pop].fill(0);
-                ws.backward_accum.slot_increments[..pop].fill(0);
-            }
-            ws.backward_accum
-                .per_opening_stats
-                .resize_with(n_openings, SolverStatsDelta::default);
-            for slot in &mut ws.backward_accum.per_opening_stats[..n_openings] {
-                *slot = SolverStatsDelta::default();
-            }
-            if ws.backward_accum.block_pivot_sum.len() < n_blocks {
-                ws.backward_accum.block_pivot_sum.resize(n_blocks, 0u64);
-                ws.backward_accum.block_pivot_count.resize(n_blocks, 0u64);
-            }
-            ws.backward_accum.block_pivot_sum[..n_blocks].fill(0);
-            ws.backward_accum.block_pivot_count[..n_blocks].fill(0);
 
-            let worker_stage_wall_start = Instant::now();
-            let mut count = 0usize;
+                ws.solver.reset_solver_state();
+                load_backward_lp(ws, &child);
+                let source = succ.bracket_source(m, &child);
+                pin_child_lp(ws, ctx, training_ctx, &child, x_hat, s, source);
 
-            while let Some(u) = cursor.claim() {
-                let pos = u % n_trial;
-                let b = block_order[u / n_trial] as usize;
-                let m = trial_points[pos];
-                let x_hat = exchange.state_at(succ.my_rank, m);
-                let scenario = fwd_offset + m;
+                // take/fill/restore reuses `external_noise_buf`: no hot-path allocation.
+                let mut buf = std::mem::take(&mut ws.backward_accum.external_noise_buf);
+                let noise = resolve_opening_noise(
+                    training_ctx,
+                    s,
+                    &child.openings,
+                    child.successor_node_id,
+                    &mut buf,
+                )?;
 
-                let block_lo = b * block_size;
-                let block_hi = (block_lo + block_size).min(n_openings);
-
-                // Canonical child order (sddp.md "The branching backward integrates
-                // every successor exhaustively"): each run loads THAT child's LP, never
-                // child 0's.
-                for ci in 0..outcomes.n_children() {
-                    let child = outcomes.child(ci);
-                    let run_lo = child.outcome_range.start.max(block_lo);
-                    let run_hi = child.outcome_range.end.min(block_hi);
-                    if run_lo >= run_hi {
-                        continue;
-                    }
-
-                    ws.solver.reset_solver_state();
-                    load_backward_lp(ws, &child);
-
-                    // take/fill/restore reuses `external_noise_buf`: no hot-path allocation.
-                    let mut external_noise: Option<Vec<f64>> = None;
-                    if child.openings.source == OpeningSource::External {
-                        let mut buf = std::mem::take(&mut ws.backward_accum.external_noise_buf);
-                        fill_external_opening_noise(
-                            training_ctx,
-                            s,
-                            child.openings.offset,
-                            child.successor_node_id,
-                            &mut buf,
-                        )?;
-                        external_noise = Some(buf);
-                    }
-
-                    for (run_local_idx, pp) in (run_lo..run_hi).enumerate() {
-                        let sp = pp - child.outcome_range.start;
-                        let (omega, raw_noise): (usize, &[f64]) = if let Some(buf) = &external_noise
-                        {
-                            debug_assert_eq!(
-                                child.openings.len, 1,
-                                "an External child has exactly one opening"
-                            );
-                            (child.outcome_range.start, buf.as_slice())
-                        } else {
-                            // sddp.md "Backward opening order is warm-start-only".
-                            let local_omega = solve_order[sp] as usize;
-                            (
-                                child.outcome_range.start + local_omega,
-                                tree_view.opening(s.0, local_omega),
-                            )
-                        };
-                        patch_opening_bounds(ws, ctx, training_ctx, raw_noise, x_hat, s);
-
-                        let mut state_duals =
-                            std::mem::take(&mut ws.backward_accum.state_duals_buf);
-                        let mut cut_duals = std::mem::take(&mut ws.backward_accum.cut_duals_buf);
-                        let mut stats_before =
-                            std::mem::take(&mut ws.backward_accum.stats_before_buf);
-                        ws.solver.statistics_into(&mut stats_before);
-
-                        // Only each child run's first-solved outcome warm-starts from
-                        // the captured `(m, child node)` basis; later outcomes of the
-                        // SAME child warm-continue its retained factorization. A child
-                        // boundary starts a new run: a different LP is loaded, so
-                        // continuing the prior factorization is invalid, not merely
-                        // suboptimal.
-                        let stored = if run_local_idx == 0 {
+                for (run_local_idx, pp) in (run_lo..run_hi).enumerate() {
+                    let (omega, raw_noise) = noise.solved_opening(
+                        training_ctx,
+                        s,
+                        &child,
+                        pp - child.outcome_range.start,
+                    );
+                    // Only each child run's first-solved outcome warm-starts from
+                    // the captured `(m, child node)` basis; later outcomes of the
+                    // SAME child warm-continue its retained factorization. A child
+                    // boundary starts a new run: a different LP is loaded, so
+                    // continuing the prior factorization is invalid, not merely
+                    // suboptimal.
+                    let request = OpeningRequest {
+                        stored_basis: if run_local_idx == 0 {
                             basis_store.get(m, child.successor_node)
                         } else {
                             None
-                        };
-                        let inputs = StageInputs {
-                            stage_context: ctx,
-                            pool: child.successor_pool,
-                            stored_basis: stored,
-                            stage_index: s,
-                            scenario_index: scenario,
-                            iteration: Some(iteration),
-                            node_id: child.successor_node_id,
-                        };
-                        let view = run_stage_solve(ws, &inputs)?;
-                        let objective = extract_duals_from_view(
-                            &view,
-                            succ.cut_state,
-                            &ctx.template(s).col_scale,
-                            &child,
-                            &mut state_duals,
-                            &mut cut_duals,
-                        );
-                        let _ = view;
-                        ws.backward_accum.state_duals_buf = state_duals;
-                        ws.backward_accum.cut_duals_buf = cut_duals;
-
-                        let mut stats_after =
-                            std::mem::take(&mut ws.backward_accum.stats_after_buf);
-                        ws.solver.statistics_into(&mut stats_after);
-                        // Counters are monotonically increasing (mirrors
-                        // `SolverStatsDelta::from_snapshots`); the running sum below
-                        // saturates against overflow across many iterations.
-                        let opening_simplex_iters =
-                            stats_after.total_iterations - stats_before.total_iterations;
-                        ws.backward_accum.block_pivot_sum[b] = ws.backward_accum.block_pivot_sum[b]
-                            .saturating_add(opening_simplex_iters);
-                        ws.backward_accum.block_pivot_count[b] =
-                            ws.backward_accum.block_pivot_count[b].saturating_add(1);
-                        accumulate_opening_outcome(
-                            ws,
-                            &child,
-                            succ.cut_state,
-                            omega,
-                            objective,
-                            x_hat,
-                            &stats_before,
-                            &stats_after,
-                        );
-                        ws.backward_accum.stats_before_buf = stats_before;
-                        ws.backward_accum.stats_after_buf = stats_after;
-
-                        // A reused slot's `coefficients` may carry a DIFFERENT prior
-                        // stage's `cut_n_state` (a successor disabling a state group
-                        // shrinks it, a later stage regrows it), so it is resized to
-                        // THIS stage's `cut_n_state` before every write — otherwise
-                        // `copy_from_slice` panics on a length mismatch.
-                        if ws.backward_accum.opening_outcomes_buf.len() <= count {
-                            ws.backward_accum.opening_outcomes_buf.push(OpeningOutcome {
-                                trial_pos: 0,
-                                omega: 0,
-                                outcome: BackwardOutcome {
-                                    intercept: 0.0,
-                                    coefficients: vec![0.0_f64; cut_n_state],
-                                    objective_value: 0.0,
-                                },
-                            });
-                        }
-                        let recorded = &mut ws.backward_accum.opening_outcomes_buf[count];
-                        recorded.outcome.coefficients.resize(cut_n_state, 0.0_f64);
-                        recorded.trial_pos = pos;
-                        recorded.omega = omega;
-                        recorded
-                            .outcome
-                            .coefficients
-                            .copy_from_slice(&ws.backward_accum.outcomes[omega].coefficients);
-                        recorded.outcome.intercept = ws.backward_accum.outcomes[omega].intercept;
-                        recorded.outcome.objective_value =
-                            ws.backward_accum.outcomes[omega].objective_value;
-                        count += 1;
-                    }
-
-                    if let Some(buf) = external_noise {
-                        ws.backward_accum.external_noise_buf = buf;
-                    }
+                        },
+                        raw_noise,
+                        scenario,
+                        trial_pos: pos,
+                        omega,
+                        continue_carry: false,
+                    };
+                    let opening_simplex_iters = solve_backward_opening(
+                        &StageOpeningSolver::Frozen,
+                        ws,
+                        ctx,
+                        training_ctx,
+                        succ,
+                        &child,
+                        &request,
+                    )?;
+                    ws.backward_accum.block_pivot_sum[b] =
+                        ws.backward_accum.block_pivot_sum[b].saturating_add(opening_simplex_iters);
+                    ws.backward_accum.block_pivot_count[b] =
+                        ws.backward_accum.block_pivot_count[b].saturating_add(1);
                 }
+
+                ws.backward_accum.external_noise_buf = buf;
             }
+        }
 
-            if tracks_binding {
-                fold_slot_increments_into_sync(
-                    &ws.backward_accum.slot_increments,
-                    &mut ws.backward_accum.metadata_sync_contribution,
-                    pop,
-                );
-            }
+        if tracks_binding {
+            fold_slot_increments_into_sync(
+                &ws.backward_accum.slot_increments,
+                &mut ws.backward_accum.metadata_sync_contribution,
+                pop,
+            );
+        }
 
-            ws.worker_timing_buf.backward_wall_ms +=
-                worker_stage_wall_start.elapsed().as_secs_f64() * 1_000.0;
+        ws.worker_timing_buf.backward_wall_ms +=
+            worker_stage_wall_start.elapsed().as_secs_f64() * 1_000.0;
 
-            Ok((w, count))
-        })
-        .collect()
+        Ok(())
+    };
+    workspaces.par_iter_mut().for_each(|ws| {
+        ws.backward_accum.fan_out_error = run_share(ws).err();
+    });
 }
 
-/// Scatter worker outcomes into the pre-allocated per-`(routed position, ω)`
-/// arena, aggregate each routed trial point's cut canonically over ω, and insert
-/// into the FCF in ascending routed position — which is ascending trial-point
-/// index (sddp.md "By-node scheduler is warm-start-only" — never claim order).
+/// Locate worker outcomes by `(routed position, ω)` and aggregate each routed trial
+/// point's cut canonically over ω (sddp.md "By-node scheduler is warm-start-only" —
+/// never claim order). The positions are split into one contiguous range per
+/// `scratch.finish` entry and finished in parallel, or serially when the pool has no
+/// cut-state slots. The cuts are staged in
+/// `scratch.cut_arena` and `scratch.cut_intercepts`, one per routed position, for the
+/// caller to commit in ascending position: the aggregation reads the successor pools
+/// through `outcomes`, which the commit mutates.
 ///
-/// `scratch` is `BackwardPassState::by_node_scratch`, sized once by `set_scheduler`;
-/// the scatter overwrites `arena[0..trial_points.len() * n_openings]` in full before
-/// the aggregation loop reads it, so no clear pass is required between stages. Each
-/// touched slot's `coefficients` (and `coeffs_buf`) resize to THIS pool's
-/// `cut_n_state`, which may differ from a prior pool's — always within the
-/// capacity `ByNodeScratch::sized` reserved at the run's global `n_state`, so
-/// this never reallocates on the hot path.
-// Rationale: mirrors the staged-cut merge's disjoint-borrow argument list.
-#[allow(clippy::too_many_arguments)]
+/// `scratch` is `BackwardPassState::by_node_scratch`, sized once by `set_scheduler`.
+/// Each finish entry's `coeffs_buf` resizes to THIS pool's `cut_n_state`, which may
+/// differ from a prior pool's — always within the capacity `ByNodeScratch::sized`
+/// reserved at the run's global `n_state`, so this never reallocates on the hot path.
+/// `location` is filled for every `(position, ω)` before aggregating.
 pub(crate) fn by_node_finish<S: SolverInterface>(
-    worker_out: Vec<Result<(usize, usize), SddpError>>,
     workspaces: &[SolverWorkspace<S>],
     trial_points: &[usize],
-    n_openings: usize,
-    cut_n_state: usize,
-    probabilities: &[f64],
+    training_ctx: &TrainingContext<'_>,
+    succ: &SuccessorSpec<'_>,
+    outcomes: &SuccessorOutcomes<'_>,
+    exchange: &ExchangeBuffers,
     risk_measure: &RiskMeasure,
+    scratch: &mut ByNodeScratch,
+) {
+    let n_trial = trial_points.len();
+    let n_openings = succ.probabilities.len();
+    let cut_n_state = succ.cut_state.n_slots();
+    let ByNodeScratch {
+        cut_arena,
+        cut_intercepts,
+        location,
+        finish,
+        worker_counts,
+        worker_records,
+        ..
+    } = scratch;
+    debug_assert!(
+        finish
+            .iter()
+            .all(|chunk| cut_n_state <= chunk.coeffs_buf.capacity()),
+        "cut_n_state ({cut_n_state}) exceeds a ByNodeScratch::finish coeffs_buf's reserved \
+         capacity — resizing must never reallocate on the opening-block hot path"
+    );
+    debug_assert!(
+        n_trial * cut_n_state <= cut_arena.len() && n_trial <= cut_intercepts.len(),
+        "the staged-cut arena must cover one cut per routed trial point"
+    );
+    worker_counts.clear();
+    worker_counts.extend(
+        workspaces
+            .iter()
+            .map(|ws| ws.backward_accum.opening_records.len()),
+    );
+    location.clear();
+    location.resize(n_trial * n_openings, (usize::MAX, usize::MAX));
+    for (w, i) in canonical_scatter(worker_counts) {
+        let (trial_pos, omega) = workspaces[w].backward_accum.opening_records.key(i);
+        let entry = &mut location[trial_pos * n_openings + omega];
+        debug_assert_eq!(
+            *entry,
+            (usize::MAX, usize::MAX),
+            "an opening is recorded exactly once"
+        );
+        *entry = (w, i);
+    }
+    if n_trial == 0 {
+        return;
+    }
+    for chunk in finish.iter_mut() {
+        chunk.coeffs_buf.resize(cut_n_state, 0.0_f64);
+    }
+    let mut records: Vec<&OpeningRecords> = recycle(std::mem::take(worker_records));
+    records.extend(
+        workspaces
+            .iter()
+            .map(|ws| &ws.backward_accum.opening_records),
+    );
+    let finish_position = |pos: usize, chunk: &mut ByNodeFinishScratch| -> f64 {
+        let located = &location[pos * n_openings..(pos + 1) * n_openings];
+        aggregate_successor_cut(
+            training_ctx,
+            succ,
+            outcomes,
+            risk_measure,
+            exchange.state_at(succ.my_rank, trial_points[pos]),
+            |omega| {
+                let (w, i) = located[omega];
+                records[w].view(i)
+            },
+            &mut chunk.aggregate,
+            &mut chunk.risk_scratch,
+            &mut chunk.coeffs_buf,
+        )
+    };
+    // One thread finishes a whole position and no value is reduced across chunks, so the
+    // staged cuts are claim/worker-count independent; the commit inserts them in
+    // ascending position == ascending trial-point index (`trial_points` is built
+    // ascending), sddp.md "By-node scheduler is warm-start-only".
+    if cut_n_state == 0 {
+        // `par_chunks_mut(0)` panics and an empty arena yields no chunk to carry the intercepts.
+        for (pos, intercept_slot) in cut_intercepts[..n_trial].iter_mut().enumerate() {
+            *intercept_slot = finish_position(pos, &mut finish[0]);
+        }
+    } else {
+        let n_chunks = finish.len().min(n_trial);
+        let per_chunk = n_trial.div_ceil(n_chunks);
+        cut_arena[..n_trial * cut_n_state]
+            .par_chunks_mut(per_chunk * cut_n_state)
+            .zip(cut_intercepts[..n_trial].par_chunks_mut(per_chunk))
+            .zip(finish.par_iter_mut())
+            .enumerate()
+            .for_each(|(c, ((cuts, intercepts), chunk))| {
+                for (local, (cut, intercept_slot)) in cuts
+                    .chunks_exact_mut(cut_n_state)
+                    .zip(intercepts.iter_mut())
+                    .enumerate()
+                {
+                    *intercept_slot = finish_position(c * per_chunk + local, chunk);
+                    cut.copy_from_slice(&chunk.coeffs_buf);
+                }
+            });
+    }
+    *worker_records = recycle(records);
+}
+
+/// Commits the cuts [`by_node_finish`] staged in `scratch`, one per routed position, in
+/// ascending position, and returns how many it added.
+///
+/// The cut's slot tag is the node-relative position `node_visit_offset + pos` (the
+/// by-scenario path's `compacted` tag), never `fwd_offset + pos`, which overshoots
+/// the pool's `visit_bound` stride across ranks on a fan.
+pub(crate) fn commit_by_node_cuts(
+    scratch: &ByNodeScratch,
+    n_trial: usize,
+    cut_n_state: usize,
     fcf: &mut FutureCostFunction,
     node_id: NodeId,
     pool: usize,
     iteration: u64,
     node_visit_offset: usize,
-    scratch: &mut ByNodeScratch,
-) -> Result<usize, SddpError> {
-    let n_trial = trial_points.len();
-    let arena_len = n_trial * n_openings;
-    debug_assert!(
-        scratch.arena.len() >= arena_len,
-        "ByNodeScratch arena must already cover trial_points.len() * n_openings ({arena_len}); got \
-         arena len = {}",
-        scratch.arena.len(),
-    );
-    debug_assert!(
-        cut_n_state <= scratch.coeffs_buf.capacity(),
-        "cut_n_state ({cut_n_state}) exceeds ByNodeScratch::coeffs_buf's reserved capacity \
-         ({}) — resizing must never reallocate on the opening-block hot path",
-        scratch.coeffs_buf.capacity()
-    );
-    scratch.coeffs_buf.resize(cut_n_state, 0.0_f64);
-    let counts: Vec<usize> = worker_out
-        .into_iter()
-        .map(|res| res.map(|(_, c)| c))
-        .collect::<Result<_, SddpError>>()?;
-    for (w, i) in canonical_scatter(&counts) {
-        let recorded = &workspaces[w].backward_accum.opening_outcomes_buf[i];
-        let slot = &mut scratch.arena[recorded.trial_pos * n_openings + recorded.omega];
-        debug_assert!(
-            cut_n_state <= slot.coefficients.capacity(),
-            "cut_n_state ({cut_n_state}) exceeds this arena slot's reserved capacity ({}) — \
-             resizing must never reallocate on the opening-block hot path",
-            slot.coefficients.capacity()
-        );
-        slot.coefficients.resize(cut_n_state, 0.0_f64);
-        slot.coefficients
-            .copy_from_slice(&recorded.outcome.coefficients);
-        slot.intercept = recorded.outcome.intercept;
-        slot.objective_value = recorded.outcome.objective_value;
-    }
-    let mut cuts_added = 0usize;
-    // Ascending routed position == ascending trial-point index (`trial_points`
-    // is built ascending), so the cut set is claim/worker-count independent
-    // (sddp.md "By-node scheduler is warm-start-only").
+) -> usize {
     for pos in 0..n_trial {
-        let mut intercept = 0.0_f64;
-        risk_measure.aggregate_cut_into(
-            &scratch.arena[pos * n_openings..(pos + 1) * n_openings],
-            probabilities,
-            &mut intercept,
-            &mut scratch.coeffs_buf,
-            &mut scratch.risk_scratch,
-        );
-        // The FCF slot addresses the pool's per-iteration block at stride
-        // `visit_bound[pool]` (this node's routed visit count), so the tag is the
-        // NODE-RELATIVE position `node_visit_offset + pos`: `pos` is the compacted
-        // index (the arena is keyed by routed position) and `node_visit_offset` is
-        // this node's visits from strictly-lower ranks, keeping the slot globally
-        // unique once a multi-rank fan makes the by-node path multi-branching. On a
-        // single-node level `node_visit_offset == fwd_offset` and on a single rank it
-        // is `0`, both reducing to the pre-change value. `fwd_offset + pos` (the global
-        // forward-pass offset) is the wrong-but-compiling alternative — it overshoots
-        // the smaller `visit_bound` stride across ranks on a fan; mirrors the
-        // by-scenario path.
         let node_relative_index = node_visit_offset + pos;
         debug_assert!(
             u32::try_from(node_relative_index).is_ok(),
@@ -488,16 +444,11 @@ pub(crate) fn by_node_finish<S: SolverInterface>(
             pool,
             iteration,
             node_relative_index as u32,
-            intercept,
-            &scratch.coeffs_buf,
+            scratch.cut_intercepts[pos],
+            &scratch.cut_arena[pos * cut_n_state..(pos + 1) * cut_n_state],
         );
-        cuts_added += 1;
     }
-    debug_assert_eq!(
-        cuts_added, n_trial,
-        "by_node_finish must add exactly one cut per routed trial point"
-    );
-    Ok(cuts_added)
+    n_trial
 }
 
 /// Merge each worker's per-block `(simplex_iterations sum, count)` — filled
@@ -508,8 +459,8 @@ pub(crate) fn by_node_finish<S: SolverInterface>(
 /// distinct rows, so each computes its hardest-first order from its own history
 /// (on a chain, one node per stage, the row is byte-identical to a stage key).
 /// Telemetry-only: touches no cut-generation state, so it is cut-neutral by
-/// construction (disjoint from `by_node_finish`'s per-`(m, ω)` arena and FCF
-/// insertion).
+/// construction (disjoint from `by_node_finish`'s `(m, ω)` record-location table and
+/// the FCF commit).
 ///
 /// `per_worker` yields each worker's `(sums, counts)` slices, both indexed
 /// `[0, n_blocks)`; `n_blocks <= scratch.n_blocks_max` is the caller's
@@ -581,7 +532,7 @@ mod tests {
         let n_blocks = 2_usize;
         let bwd_max_openings = 4_usize;
         let num_stages = 3_usize;
-        let mut scratch = ByNodeScratch::sized(1, bwd_max_openings, 1, num_stages);
+        let mut scratch = ByNodeScratch::sized(1, bwd_max_openings, 1, 0, 0, num_stages, 1);
         let node_key = NodePos(1);
 
         let worker0_sum = [10_u64, 0];
@@ -616,7 +567,7 @@ mod tests {
     }
 
     /// Two sibling nodes at one level (distinct `node_key`s) merge into distinct
-    /// rows — the CA5 re-key: their per-block pivot histories never mix, so each
+    /// rows: their per-block pivot histories never mix, so each
     /// node's hardest-first order is computed from its own claims. On a chain (one
     /// node per stage) the row a node writes is byte-identical to a stage key.
     #[test]
@@ -626,7 +577,7 @@ mod tests {
         // Row count follows the node axis: a fan level carries more nodes than
         // stages, so the grid is sized to the (larger) node count.
         let num_nodes = 5_usize;
-        let mut scratch = ByNodeScratch::sized(1, bwd_max_openings, 1, num_nodes);
+        let mut scratch = ByNodeScratch::sized(1, bwd_max_openings, 1, 0, 0, num_nodes, 1);
 
         let three_sum = [7_u64];
         let three_count = [1_u64];

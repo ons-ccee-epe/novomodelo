@@ -37,7 +37,6 @@ fn fixed_column_reduced_cost_matches_equality_row_dual() {
         objective: vec![5.0, 2.0, 3.0],
         row_lower: vec![4.0, 7.0],
         row_upper: vec![f64::INFINITY, 7.0],
-        n_state: 0,
         col_scale: Vec::new(),
         row_scale: Vec::new(),
     };
@@ -71,7 +70,6 @@ fn fixed_column_reduced_cost_matches_equality_row_dual() {
         objective: vec![5.0, 2.0, 3.0],
         row_lower: vec![4.0],
         row_upper: vec![f64::INFINITY],
-        n_state: 0,
         col_scale: Vec::new(),
         row_scale: Vec::new(),
     };

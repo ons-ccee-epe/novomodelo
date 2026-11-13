@@ -15,8 +15,11 @@
     clippy::too_many_lines
 )]
 
-use novomodelo_io::config::{SimulationSelection, StoppingRuleConfig};
+use novomodelo_io::config::{
+    BackwardScheduler, Config, SelectionMethod, SimulationSelection, StoppingRuleConfig,
+};
 use novomodelo_io::test_support::{producer_block_defaults, stage_cuts_payload_defaults};
+use std::num::NonZeroU32;
 use std::path::Path;
 use std::sync::mpsc;
 
@@ -45,8 +48,24 @@ fn train_deterministic_case(
     novomodelo_sddp::TrainingResult,
     ActiveSolver,
 ) {
+    train_case_with(case_dir, |_| {}, |_| {})
+}
+
+/// [`train_deterministic_case`] with `edit_config` applied to the parsed config
+/// before the setup is built and `configure` applied to the setup before training.
+fn train_case_with(
+    case_dir: &Path,
+    edit_config: impl FnOnce(&mut Config),
+    configure: impl FnOnce(&mut StudySetup),
+) -> (
+    StudySetup,
+    novomodelo_core::System,
+    novomodelo_sddp::TrainingResult,
+    ActiveSolver,
+) {
     let config_path = case_dir.join("config.json");
-    let config = novomodelo_io::parse_config(&config_path).expect("config must parse");
+    let mut config = novomodelo_io::parse_config(&config_path).expect("config must parse");
+    edit_config(&mut config);
 
     let system = novomodelo_io::load_case(case_dir).expect("load_case must succeed");
 
@@ -62,6 +81,7 @@ fn train_deterministic_case(
         prepare_hydro_models(&system, case_dir, false).expect("prepare_hydro_models must succeed");
 
     let mut setup = build_setup_for_case(case_dir, &config, &system, stochastic, hydro_models);
+    configure(&mut setup);
 
     let comm = StubComm;
     let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
@@ -2085,6 +2105,8 @@ fn d18_ncs_commissioning_window() {
     );
 }
 
+const D16_EXPECTED_COST: f64 = 7_759_078.749_993_78;
+
 /// D16: PAR(1) lag-shift deterministic test.
 ///
 /// ## System
@@ -2131,7 +2153,24 @@ fn d16_par1_lag_shift() {
     // producing higher deficits than the no-shift bug (Z = 150 at every stage).
     // Pinned value adds the universal `turbined_cost` regularization (`≈ 2_828.75 $`)
     // to the deficit-only cost `7_756_250.0`.
-    assert_cost(result.final_lb, 7_759_078.749_993_78, 1.0, "D16");
+    assert_cost(result.final_lb, D16_EXPECTED_COST, 1.0, "D16");
+}
+
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: run with --features slow-tests"
+)]
+#[test]
+fn d16_par1_lag_shift_by_node() {
+    let case_dir = Path::new("../../examples/deterministic/d16-par1-lag-shift");
+    let (_, _, result, _) = train_case_with(
+        case_dir,
+        |_| {},
+        |setup| {
+            setup.set_scheduler(BackwardScheduler::ByNode { block_size: None });
+        },
+    );
+    assert_cost(result.final_lb, D16_EXPECTED_COST, 1.0, "D16 by_node");
 }
 
 /// Regression guard for the model-persistence optimization.
@@ -3167,6 +3206,57 @@ fn d26_estimated_par2() {
     assert!(
         result.iterations <= 100,
         "D26: must converge within 100 iterations, got {}",
+        result.iterations
+    );
+}
+
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: run with --features slow-tests"
+)]
+#[test]
+fn d26_estimated_par2_by_node() {
+    let case_dir = Path::new("../../examples/deterministic/d26-estimated-par2");
+    let (_, _, result, _) = train_case_with(
+        case_dir,
+        |_| {},
+        |setup| {
+            setup.set_scheduler(BackwardScheduler::ByNode { block_size: None });
+        },
+    );
+    assert_cost(result.final_lb, D26_EXPECTED_COST, 1.0, "D26 by_node");
+    assert!(
+        result.iterations <= 100,
+        "D26 by_node: must converge within 100 iterations, got {}",
+        result.iterations
+    );
+}
+
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: run with --features slow-tests"
+)]
+#[test]
+fn d26_estimated_par2_under_dynamic_selection() {
+    let case_dir = Path::new("../../examples/deterministic/d26-estimated-par2");
+    let positive = |n| NonZeroU32::new(n).expect("a positive count");
+    let (_, _, result, _) = train_case_with(
+        case_dir,
+        |config| {
+            config.training.cut_selection.selection = Some(SelectionMethod::Dynamic {
+                start_iteration: positive(2),
+                seed_window: 5,
+                candidate_recency: None,
+                max_added_per_round: positive(10),
+                violation_tolerance: None,
+            });
+        },
+        |_| {},
+    );
+    assert_cost(result.final_lb, D26_EXPECTED_COST, 1.0, "D26 dynamic");
+    assert!(
+        result.iterations <= 100,
+        "D26 dynamic: must converge within 100 iterations, got {}",
         result.iterations
     );
 }
@@ -10770,14 +10860,12 @@ mod water_terminal_fcf_valuation {
 
     use chrono::NaiveDate;
     use novomodelo_core::EntityId;
-    use novomodelo_core::temporal::StageStateConfig;
     use novomodelo_io::BoundaryPolicy;
-    use novomodelo_sddp::indexer::CutStateProjection;
-    use novomodelo_sddp::setup::{NodeId, StageIdx};
-    use novomodelo_sddp::test_support::{patch_backward_opening_for_probe, solve_stage_for_probe};
+    use novomodelo_sddp::setup::StageIdx;
+    use novomodelo_sddp::test_support::{ProbeCuts, prep_for_counterfactual_probe};
     use novomodelo_sddp::workspace::SolverWorkspace;
     use novomodelo_sddp::{
-        BoundaryLoadRequest, CutPool, StudySetup, build_cut_row_batch_into, inject_boundary_cuts,
+        BoundaryLoadRequest, StudySetup, build_cut_row_batch_into, inject_boundary_cuts,
         load_boundary_cuts,
     };
     use novomodelo_solver::{
@@ -10903,14 +10991,6 @@ mod water_terminal_fcf_valuation {
         let ctx = setup.stage_ctx();
         let base = &ctx.templates[terminal_stage];
 
-        let cut_state = CutStateProjection::new(
-            state,
-            StageStateConfig {
-                storage: true,
-                inflow_lags: true,
-            },
-        );
-
         let mut batch = RowBatch {
             num_rows: 0,
             row_starts: Vec::new(),
@@ -10924,7 +11004,7 @@ mod water_terminal_fcf_valuation {
             &setup.fcf,
             pool_id,
             state,
-            &cut_state,
+            &setup.training_ctx().cut_state_layouts[pool_id],
             &base.col_scale,
         );
 
@@ -10946,8 +11026,7 @@ mod water_terminal_fcf_valuation {
     fn terminal_theta(
         setup: &StudySetup,
         template: &StageTemplate,
-        pool: &CutPool,
-        node_id: NodeId,
+        pool_id: usize,
         pinned_state: &[f64],
         priced_col: usize,
     ) -> (f64, f64) {
@@ -10962,21 +11041,32 @@ mod water_terminal_fcf_valuation {
         let terminal_stage = setup.num_stages() - 1;
 
         let raw_noise = vec![0.0_f64; training_ctx.stochastic.dim()];
+        let slots: Vec<usize> = setup
+            .fcf
+            .active_cuts(pool_id)
+            .map(|(slot, _, _)| slot)
+            .collect();
 
         ws.solver.reset_solver_state();
         ws.solver.load_model(template);
-        patch_backward_opening_for_probe(
+        prep_for_counterfactual_probe(
             ws,
             &ctx,
             &training_ctx,
             StageIdx(terminal_stage),
             pinned_state,
             &raw_noise,
+            &ProbeCuts {
+                pool: &setup.fcf.pools[pool_id],
+                pool_id,
+                slots: &slots,
+            },
         );
 
-        let view =
-            solve_stage_for_probe(ws, &ctx, pool, None, StageIdx(terminal_stage), 0, node_id)
-                .expect("terminal stage solve must not error");
+        let view = ws
+            .solver
+            .solve(None)
+            .expect("terminal stage solve must not error");
         (view.primal[theta_col], view.primal[priced_col])
     }
 
@@ -11120,24 +11210,20 @@ mod water_terminal_fcf_valuation {
             .terminal_pool(setup.num_stages())
             .unwrap();
         let template = freeze_terminal_template(&setup, terminal_pool_id);
-        let pool = &setup.fcf.pools[terminal_pool_id];
-        let terminal_node = NodeId(i32::try_from(setup.num_stages() - 1).expect("fits i32"));
 
         let x0 = 0.0;
         let x1 = 2.0;
         let (theta0, outgoing0) = terminal_theta(
             &setup,
             &template,
-            pool,
-            terminal_node,
+            terminal_pool_id,
             &bucket_pin(&setup, pin_col, x0),
             bucket_col,
         );
         let (theta1, outgoing1) = terminal_theta(
             &setup,
             &template,
-            pool,
-            terminal_node,
+            terminal_pool_id,
             &bucket_pin(&setup, pin_col, x1),
             bucket_col,
         );

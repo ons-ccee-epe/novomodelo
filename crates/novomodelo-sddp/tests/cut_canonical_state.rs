@@ -11,7 +11,7 @@
 //! `test_support::write_backward_opening_outcome_for_probe` (they are
 //! `pub(crate)`, unreachable from this integration binary). The test supplies
 //! only the RAW pre-clamp input and reads back three observations; it never
-//! recomputes `write_opening_outcome`'s formula, and it evaluates the cut at a
+//! recomputes the cut's intercept formula, and it evaluates the cut at a
 //! value production produced, not one it threaded in.
 
 #![allow(
@@ -22,7 +22,7 @@
 )]
 
 use novomodelo_sddp::indexer::{CutSlot, CutStateProjection};
-use novomodelo_sddp::setup::{NodeId, StageIdx};
+use novomodelo_sddp::setup::StageIdx;
 use novomodelo_sddp::test_support::{
     CanonicalCutProbe, TrunkFanFixture, stage_state_box_bounds, trunk_fan_setup_enumerated,
     write_backward_opening_outcome_for_probe,
@@ -37,8 +37,6 @@ use common::StubComm;
 /// `t_trunk = 2, k = 2` (`trunk_fan_setup_enumerated`'s smallest valid shape).
 const STAGE: StageIdx = StageIdx(1);
 const PRODUCER_STAGE: usize = 0;
-/// `trunk_fan_policy_graph` gives every trunk node the same id as its stage.
-const NODE_ID: NodeId = NodeId(1);
 
 /// Storage state dimension of the single-hydro trunk+fan fixture.
 const STORAGE_DIM: usize = 0;
@@ -86,9 +84,8 @@ fn cut_evaluated_at_canonical_state_equals_lp_objective() {
         &ctx,
         &training_ctx,
         cut_pool,
-        cut_state,
+        STAGE.0,
         STAGE,
-        NODE_ID,
         &raw_producer_state,
         raw_noise,
     )
@@ -112,7 +109,7 @@ fn cut_evaluated_at_canonical_state_equals_lp_objective() {
 
     // cut(pinned) == objective: the intercept was built at the same state the LP
     // was solved at. `pinned_x_hat` is the solved-primal readback, NOT the value
-    // threaded into write_opening_outcome, so the equality is not an identity.
+    // threaded into the probe, so the equality is not an identity.
     let cut_at_pin =
         outcome.intercept + dot_via_projection(cut_state, &outcome.coefficients, &pinned_x_hat);
     assert!(
@@ -153,9 +150,8 @@ fn cut_from_drifted_seed_is_not_weakened_by_the_clamp() {
         &ctx,
         &training_ctx,
         cut_pool,
-        cut_state,
+        STAGE.0,
         STAGE,
-        NODE_ID,
         &raw_producer_state,
         raw_noise,
     )

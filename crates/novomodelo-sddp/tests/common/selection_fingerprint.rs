@@ -12,6 +12,7 @@ use std::ops::RangeInclusive;
 use novomodelo_core::TrainingEvent;
 use novomodelo_sddp::cut::{CutPool, SlotOrigin, SlotRole};
 use novomodelo_sddp::setup::StageIdx;
+use novomodelo_sddp::test_support::bits;
 use novomodelo_sddp::{StudySetup, TrainingResult};
 
 /// One pool's cuts, one entry per populated slot in slot order.
@@ -114,7 +115,7 @@ impl SelectionFingerprint {
             });
             ownership.push(PoolOwnership {
                 roles: slots().map(|s| pool.role(s)).collect(),
-                trial_state_bits: slots().map(|s| pool.trial_state(s).map(bits_of)).collect(),
+                trial_state_bits: slots().map(|s| pool.trial_state(s).map(bits)).collect(),
                 best_value_bits: slots()
                     .map(|s| pool.state_best_value(s).map(f64::to_bits))
                     .collect(),
@@ -262,10 +263,6 @@ impl SelectionFingerprint {
         };
         (0..self.cuts.len()).find_map(in_pool)
     }
-}
-
-fn bits_of(values: &[f64]) -> Vec<u64> {
-    values.iter().map(|value| value.to_bits()).collect()
 }
 
 fn mismatch<T: PartialEq + Debug>(field: &str, ours: &[T], theirs: &[T]) -> Option<String> {
@@ -445,7 +442,7 @@ fn value_and_rounding_bound(pool: &CutPool, slot: usize, state: &[f64]) -> (f64,
 
 fn same_cut_bits(pool: &CutPool, a: usize, b: usize) -> bool {
     pool.intercept(a).to_bits() == pool.intercept(b).to_bits()
-        && bits_of(pool.coefficient_row(a)) == bits_of(pool.coefficient_row(b))
+        && bits(pool.coefficient_row(a)) == bits(pool.coefficient_row(b))
 }
 
 /// Asserts, on every interior pool of a run whose last iteration ran selection,
@@ -571,9 +568,9 @@ pub fn assert_identical_cuts_keep_their_lowest_slot(setup: &StudySetup, run: &st
         let mut lowest_slot_of: BTreeMap<Vec<u64>, usize> = BTreeMap::new();
         let mut duplicates = 0_usize;
         for slot in (0..pool.populated()).filter(|&slot| pool.role(slot).scored) {
-            let mut bits = bits_of(pool.coefficient_row(slot));
-            bits.push(pool.intercept(slot).to_bits());
-            let lowest = *lowest_slot_of.entry(bits).or_insert(slot);
+            let mut key = bits(pool.coefficient_row(slot));
+            key.push(pool.intercept(slot).to_bits());
+            let lowest = *lowest_slot_of.entry(key).or_insert(slot);
             if lowest != slot {
                 duplicates += 1;
                 assert!(

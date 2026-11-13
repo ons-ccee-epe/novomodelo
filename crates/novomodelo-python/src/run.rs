@@ -2292,9 +2292,9 @@ mod tests {
             NodeGraph, NodeId, NodeOpenings, NodeRuntime, OpeningSource, StageIdx, Traversal,
         };
 
-        let ng = NodeGraph {
-            node_ids: vec![NodeId(0)].into(),
-            nodes: vec![NodeRuntime {
+        let ng = NodeGraph::new(
+            vec![NodeId(0)].into(),
+            vec![NodeRuntime {
                 stage: StageIdx(0),
                 pool_id: 0,
                 openings: NodeOpenings {
@@ -2305,10 +2305,10 @@ mod tests {
                 },
             }]
             .into(),
-            successors: vec![Vec::new()].into(),
-            n_pools: 1,
-            pool_stage: vec![StageIdx(0)],
-        };
+            vec![Vec::new()].into(),
+            1,
+            vec![StageIdx(0)],
+        );
 
         let sampled = Traversal::resolve(&ng, false, 10);
         assert!(matches!(

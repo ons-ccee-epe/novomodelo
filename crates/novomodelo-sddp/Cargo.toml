@@ -114,6 +114,11 @@ name = "patch_fill"
 harness = false
 required-features = ["test-support"]
 
+[[bench]]
+name = "fold_kernels"
+harness = false
+required-features = ["test-support"]
+
 # Override unsafe_code to "allow" for this crate because it has two unsafe
 # surfaces, each isolated behind a safe wrapper: (1) the cut-selection kernel
 # calls `matrixmultiply::dgemm` (a `pub unsafe fn`) via `src/gemm.rs`, and

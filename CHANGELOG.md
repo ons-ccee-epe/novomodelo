@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Training and simulation results change: each stage LP solves the same model
+  with fewer rows and columns.
+
 ## [0.20.0] - 2026-11-03
 
 ### Added

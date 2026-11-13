@@ -84,6 +84,17 @@ int32_t novomodelo_highs_change_rows_bounds_by_set(
     const double*   upper
 );
 
+/** Change bounds of the contiguous row range [from_row, to_row] (inclusive).
+ *  Wraps Highs_changeRowsBoundsByRange().
+ *  Returns a kHighsStatus constant. */
+int32_t novomodelo_highs_change_rows_bounds_by_range(
+    void*           highs,
+    int32_t         from_row,
+    int32_t         to_row,
+    const double*   lower,
+    const double*   upper
+);
+
 /** Change bounds of columns identified by an index set.
  *  Wraps Highs_changeColsBoundsBySet().
  *  Returns a kHighsStatus constant. */
