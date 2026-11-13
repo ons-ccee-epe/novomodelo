@@ -57,9 +57,9 @@ workspace and builds into a separate `target/` directory of its own under
 
 [`docs/profiling.md`](docs/profiling.md) walks through CPU profiling (`perf`,
 flamegraphs, Callgrind), heap profiling (DHAT, heaptrack) and Valgrind Memcheck
-on Ubuntu 24.04. Build the binaries you profile with
-`scripts/build-profiling.sh`, not a plain `cargo build --profile profiling`;
-the guide explains why.
+on Ubuntu 24.04 on x86_64. Build the binaries you profile with
+`scripts/build-profiling.sh` (x86_64 Linux only), not a plain
+`cargo build --profile profiling`; the guide explains why.
 
 ### Solver Backend Selection
 
