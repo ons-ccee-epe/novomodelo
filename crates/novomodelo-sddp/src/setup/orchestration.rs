@@ -18,6 +18,7 @@ use crate::{
     },
     solve::solver_phase::SolverProfiles,
     training::{TrainingOutcome, TrainingResult},
+    training_session::TrainingSession,
     workspace::{
         CapturedBasis, NoisePreallocation, SolverWorkspace, WorkspacePool, WorkspaceSizing,
     },
@@ -28,7 +29,6 @@ use super::{SimulationEnumeratedRequest, StudySetup, Traversal};
 use crate::build_training_output;
 use crate::simulation::pipeline::run_simulation;
 use crate::simulation::state::SimulationInputs;
-use crate::train;
 
 impl StudySetup {
     /// Execute the training loop. Mutates `self.fcf` to store generated cuts.
@@ -37,6 +37,10 @@ impl StudySetup {
     ///
     /// Returns `SddpError::Infeasible`, `SddpError::Solver`, or
     /// `SddpError::Communication` on LP, solver, or MPI failure.
+    #[expect(
+        clippy::redundant_closure_for_method_calls,
+        reason = "the method path does not infer the session lifetime as higher-ranked"
+    )]
     pub fn train<S, C: Communicator>(
         &mut self,
         solver: &mut S,
@@ -54,8 +58,10 @@ impl StudySetup {
             backward: self.backward_profile,
             backward_scheduler: self.backward_scheduler,
             hardest_first_claim_order: self.hardest_first_claim_order,
+            #[cfg(any(test, feature = "test-support"))]
+            bypass_solve_caches: false,
         };
-        self.train_inner(
+        self.with_training_session(
             solver,
             comm,
             n_threads,
@@ -63,6 +69,7 @@ impl StudySetup {
             event_sender,
             shutdown_flag,
             solver_profiles,
+            |session| session.run_to_completion(),
         )
     }
 
@@ -77,6 +84,10 @@ impl StudySetup {
     /// Returns `SddpError::Infeasible`, `SddpError::Solver`, or
     /// `SddpError::Communication` on LP, solver, or MPI failure.
     #[cfg(any(test, feature = "test-support"))]
+    #[expect(
+        clippy::redundant_closure_for_method_calls,
+        reason = "the method path does not infer the session lifetime as higher-ranked"
+    )]
     pub fn train_with_solver_profiles<S, C: Communicator>(
         &mut self,
         solver: &mut S,
@@ -88,7 +99,7 @@ impl StudySetup {
     where
         S: SolverInterface<Profile = ActiveProfile> + Send,
     {
-        self.train_inner(
+        self.with_training_session(
             solver,
             comm,
             n_threads,
@@ -96,10 +107,16 @@ impl StudySetup {
             None,
             None,
             solver_profiles,
+            |session| session.run_to_completion(),
         )
     }
 
-    fn train_inner<S, C: Communicator>(
+    /// Starts a [`TrainingSession`] over this setup and hands it to `run`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the session start's error, or `run`'s.
+    pub(crate) fn with_training_session<S, C: Communicator, R>(
         &mut self,
         solver: &mut S,
         comm: &C,
@@ -108,7 +125,8 @@ impl StudySetup {
         event_sender: Option<Sender<TrainingEvent>>,
         shutdown_flag: Option<&Arc<AtomicUsize>>,
         solver_profiles: SolverProfiles,
-    ) -> Result<TrainingOutcome, SddpError>
+        run: impl FnOnce(TrainingSession<'_, S, C>) -> Result<R, SddpError>,
+    ) -> Result<R, SddpError>
     where
         S: SolverInterface<Profile = ActiveProfile> + Send,
     {
@@ -139,7 +157,7 @@ impl StudySetup {
         let stage_ctx = self.inputs.stage_ctx();
         let training_ctx = self.inputs.training_ctx();
 
-        train(
+        let session = TrainingSession::start(
             solver,
             training_config,
             &mut self.fcf,
@@ -149,7 +167,8 @@ impl StudySetup {
             solver_factory,
             std::mem::take(&mut self.loaded),
             solver_profiles,
-        )
+        )?;
+        run(session)
     }
 
     /// Run simulation using the trained future cost function.
@@ -260,7 +279,10 @@ impl StudySetup {
         )
     }
 
-    /// Create a [`WorkspacePool`] of `n_threads` workspaces sized for this study.
+    /// Create a [`WorkspacePool`] of `n_threads` workspaces sized for this study, with the
+    /// backward sweep's scratch reserved for the widest resident pool. It serves simulation and
+    /// any caller that sweeps backward outside a training session; it holds no forward-trial
+    /// scratch.
     ///
     /// # Errors
     ///
@@ -281,21 +303,21 @@ impl StudySetup {
         solver_factory: impl Fn() -> Result<S, SolverError>,
     ) -> Result<WorkspacePool<S>, SolverError> {
         let rank = i32::try_from(comm.rank()).expect("MPI rank fits in i32");
+        let sizing = WorkspaceSizing {
+            max_openings: (0..self.inputs.stage_data.stage_templates.templates.len())
+                .map(|t| self.inputs.stochastic.opening_tree().n_openings(t))
+                .max()
+                .unwrap_or(0),
+            initial_pool_capacity: 0,
+            max_local_fwd: 0,
+            noise: NoisePreallocation::OnDemand,
+        };
         let mut pool = WorkspacePool::try_new(
             rank,
             n_threads,
             &self.training_ctx(),
             &self.stage_ctx(),
-            WorkspaceSizing {
-                max_openings: (0..self.inputs.stage_data.stage_templates.templates.len())
-                    .map(|t| self.inputs.stochastic.opening_tree().n_openings(t))
-                    .max()
-                    .unwrap_or(0),
-                initial_pool_capacity: 0,
-                // Simulation-only pool: forward-worker scratch fields unused.
-                max_local_fwd: 0,
-                noise: NoisePreallocation::OnDemand,
-            },
+            sizing,
             solver_factory,
         )?;
         // Always pre-size scratch bases — basis reconstruction runs
@@ -304,6 +326,9 @@ impl StudySetup {
         let max_cols = templates.iter().map(|t| t.num_cols).max().unwrap_or(0);
         let max_rows = templates.iter().map(|t| t.num_rows).max().unwrap_or(0);
         pool.resize_scratch_bases(max_cols, max_rows);
+        let max_pool_capacity = self.fcf.pools.iter().map(|p| p.capacity).max().unwrap_or(0);
+        pool.reserve_pool_scratch(&self.training_ctx(), sizing, max_pool_capacity);
+        pool.reserve_backward_scratch(&self.training_ctx(), sizing, &self.backward_scheduler);
         Ok(pool)
     }
 }

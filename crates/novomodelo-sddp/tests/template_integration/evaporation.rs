@@ -229,21 +229,20 @@ fn evap_csc_entries_one_hydro_correct_coefficients() {
     let n_h = system.hydros().len();
 
     // Column layout for 1-hydro system (N=1, L=0, T=0, B=1, K=1):
-    //   col 0 = v (storage_out)  col 1 = z_inflow  col 2 = v_in  col 3 = theta
-    //   col 4 = turbine  col 5 = spillage  col 6 = diversion
-    //   col 7 = deficit  col 8 = excess
+    //   col 0 = v (storage_out)  col 1 = v_in  col 2 = theta
+    //   col 3 = turbine  col 4 = spillage  col 5 = diversion
+    //   col 6 = deficit  col 7 = excess
     // Row layout for N=1, L=0, B=1, K=1, no FPHA (no state-fixing rows):
-    //   row 0: z_inflow definition
-    //   row 1: water balance (row_water_balance_start = N = 1)
-    //   row 2: load balance
-    //   row 3: evaporation constraint
-    //   rows 4-7: operational violation rows
+    //   row 0: water balance
+    //   row 1: load balance
+    //   row 2: evaporation constraint
+    //   rows 3-6: operational violation rows
     // Evaporation columns come before withdrawal slack + 4*N operational slacks.
     let col_evaporation_flow = t.num_cols - 4 - 5 * n_h;
     let col_f_plus = t.num_cols - 3 - 5 * n_h;
     let col_f_minus = t.num_cols - 2 - 5 * n_h;
     let evap_row = t.num_rows - 1 - 4 * n_h;
-    let water_balance_row = 1_usize; // row_water_balance_start = N = 1
+    let water_balance_row = 0_usize;
 
     // Entries are sorted by row ascending: [0] = water balance, [1] = evap constraint.
     let zeta = 744.0 * (3_600.0 / 1_000_000.0);
@@ -316,8 +315,7 @@ fn evap_csc_entries_one_hydro_correct_coefficients() {
         entry_v.1
     );
 
-    // v_in column: storage_in.start for 1-hydro (L=0) = N*(2+L) = 2; col_v_in = 2 + h_idx = 2.
-    let col_v_in = 2;
+    let col_v_in = 1;
     let entry_v_in = entries_for_col(t, col_v_in)
         .into_iter()
         .find(|&(r, _)| r == evap_row)
@@ -361,8 +359,7 @@ fn evap_csc_entries_coefficient_scaling() {
         entry_v.1
     );
 
-    // storage_in.start for 1-hydro (L=0): N*(2+L) = 2; col_v_in = 2 + h_idx = 2.
-    let col_v_in = 2;
+    let col_v_in = 1;
     let entry_v_in = entries_for_col(t, col_v_in)
         .into_iter()
         .find(|&(r, _)| r == evap_row)
@@ -512,8 +509,7 @@ fn evap_csc_entries_zero_volume_slope_produces_zero_volume_coefficients() {
         entry_v.1
     );
 
-    // storage_in.start for 1-hydro (L=0): N*(2+L) = 2; col_v_in = 2 + h_idx = 2.
-    let col_v_in = 2;
+    let col_v_in = 1;
     let entry_v_in = entries_for_col(t, col_v_in)
         .into_iter()
         .find(|&(r, _)| r == evap_row)
@@ -545,7 +541,7 @@ fn evap_water_balance_one_hydro_coefficient_is_zeta() {
     let t = &result.templates[0];
     let n_h = system.hydros().len();
 
-    let water_balance_row = 1_usize; // row_water_balance_start = N = 1
+    let water_balance_row = 0_usize;
 
     // evap outflow is the first of 3 evaporation columns; before withdrawal + 4*N op slacks.
     let col_evaporation_flow = t.num_cols - 4 - 5 * n_h;
@@ -786,9 +782,8 @@ fn evap_water_balance_only_second_hydro_has_evap() {
     let t = &result.templates[0];
     let n_h = system.hydros().len();
 
-    // row_water_balance_start = N = 2 (z_inflow rows [0,2)); hydro 0 row 2, hydro 1 row 3.
-    let water_balance_row_h0 = 2_usize;
-    let water_balance_row_h1 = 3_usize;
+    let water_balance_row_h0 = 0_usize;
+    let water_balance_row_h1 = 1_usize;
 
     // evaporation outflow for hydro 1 (local_idx=0, since only hydro 1 is evap): col_evap_start + 0*3.
     // N=2 withdrawal + 4*N operational slack columns follow evap.
@@ -946,7 +941,7 @@ fn evap_lp_solvable_and_outflow_positive_coefficients() {
     let mut solver = load_template_with_no_cuts(template);
 
     // Fix v_in = 1000 hm3 via column bounds on storage_in.
-    let col_storage_in = 2_usize; // col 0 = storage_out, col 1 = z_inflow, col 2 = storage_in
+    let col_storage_in = 1_usize; // col 0 = storage_out, col 1 = storage_in
     let v_in = 1_000.0_f64;
     solver.set_col_bounds(&[col_storage_in], &[v_in], &[v_in]);
 
@@ -1045,8 +1040,8 @@ fn evap_incoming_storage_reduced_cost_differs_from_no_evaporation() {
     )
     .expect("baseline system template build must succeed");
 
-    // Storage is pinned via column bounds: col 0 = storage_out, 1 = z_inflow, 2 = storage_in.
-    let col_storage_in = 2_usize;
+    // Storage is pinned via column bounds: col 0 = storage_out, 1 = storage_in.
+    let col_storage_in = 1_usize;
     let solve_and_get_storage_reduced_cost = |template: &novomodelo_solver::StageTemplate| -> f64 {
         let mut solver = load_template_with_no_cuts(template);
         let v_in = 1_000.0_f64;
@@ -1090,12 +1085,12 @@ fn evap_bound_prevents_dump_valve() {
     let n_h = system.hydros().len();
     let mut solver = load_template_with_no_cuts(template);
 
-    // col 0 = storage_out, col 1 = z_inflow, col 2 = storage_in (N=1, L=0).
-    let col_storage_in = 2_usize;
+    // col 0 = storage_out, col 1 = storage_in (N=1, L=0).
+    let col_storage_in = 1_usize;
     let v_in = 2_000.0_f64;
     solver.set_col_bounds(&[col_storage_in], &[v_in], &[v_in]);
 
-    // Inject large inflow via water-balance RHS (row 1; row 0 = z_inflow[0]).
+    // Inject large inflow via water-balance RHS (row 0).
     // Water balance: v + zeta*(turbine + spill + div) - v_in + zeta*evaporation outflow = RHS.
     // The template RHS = zeta * base = 2.628 * 50 = 131.4.
     // Set RHS to zeta * 500 = 1314 to simulate a 500 m3/s inflow.
@@ -1103,8 +1098,7 @@ fn evap_bound_prevents_dump_valve() {
     // With v <= 2000 and max turbine = 262.8 hm3, surplus > 1000 hm3 must spill.
     let zeta = 730.0 * 3600.0 / 1e6;
     let high_inflow_rhs = zeta * 500.0;
-    // Water balance row index: N + h = 1 + 0 = 1 for N=1, L=0, h=0.
-    let water_balance_row = 1_usize;
+    let water_balance_row = 0_usize;
     solver.set_row_bounds(&[water_balance_row], &[high_inflow_rhs], &[high_inflow_rhs]);
 
     let view = solver
@@ -1112,11 +1106,11 @@ fn evap_bound_prevents_dump_valve() {
         .expect("evap dump valve LP must be feasible and optimal");
 
     // Column layout: N=1, L=0, K=1.
-    // col 0: v, col 1: z_inflow, col 2: v_in, col 3: theta,
-    // col 4: turbine, col 5: spillage, col 6: diversion,
-    // col 7: deficit, col 8: excess.
+    // col 0: v, col 1: v_in, col 2: theta,
+    // col 3: turbine, col 4: spillage, col 5: diversion,
+    // col 6: deficit, col 7: excess.
     // Evaporation columns: evaporation outflow, f_plus, f_minus, then withdrawal + 4*N operational slacks.
-    let col_spillage = 5;
+    let col_spillage = 4;
     let col_evaporation_flow = template.num_cols - 4 - 5 * n_h;
     let col_f_minus = template.num_cols - 2 - 5 * n_h;
 

@@ -106,6 +106,7 @@ impl SolverInterface for MockSolver {
     fn load_model(&mut self, _template: &StageTemplate) {}
     fn add_rows(&mut self, _cuts: &RowBatch) {}
     fn set_row_bounds(&mut self, _indices: &[usize], _lower: &[f64], _upper: &[f64]) {}
+    fn set_row_lower_bounds_range(&mut self, _first_row: usize, _lower: &[f64]) {}
     fn set_col_bounds(&mut self, _indices: &[usize], _lower: &[f64], _upper: &[f64]) {}
 
     fn solve(
@@ -157,7 +158,6 @@ fn minimal_template() -> StageTemplate {
         objective: vec![1.0],
         row_lower: vec![],
         row_upper: vec![],
-        n_state: 0,
         col_scale: Vec::new(),
         row_scale: Vec::new(),
     }
@@ -251,7 +251,7 @@ fn make_sync_result(global_ub_mean: f64) -> SyncResult {
     }
 }
 
-fn make_fcf(n_stages: usize, state_dimension: usize) -> novomodelo_sddp::FutureCostFunction {
+fn make_fcf(n_stages: usize, state_dimension: usize) -> FutureCostFunction {
     FutureCostFunction::new(n_stages, state_dimension, 2, 100, &vec![0; n_stages])
 }
 
@@ -828,14 +828,15 @@ mod lb_conformance {
         let templates = vec![template];
         let fcf = make_fcf(2, state_layout.n_state);
         let initial_state = vec![0.0_f64; state_layout.n_state];
-        let mut patch_buf = PatchBuffer::new(&state_layout, &[], &[]);
+        let mut patch_buf = PatchBuffer::new(&state_layout, &[], &[], &[]);
         let opening_tree = simple_opening_tree(2);
         let rm = RiskMeasure::Expectation;
         let comm = LocalComm;
         let stochastic = wrap_opening_tree(opening_tree);
 
         let geometry = equipment_free_geometry(&[1]);
-        let fixture = StageContextFixture::new(&templates, &[], &geometry);
+        let fixture = StageContextFixture::new(&templates, &[], &geometry)
+            .without_inflow_entries(state_layout.hydro_count);
         let ctx = fixture.ctx();
         let horizon = HorizonMode::Finite { num_stages: 2 };
         let study_dims = StudyDimensions::default();

@@ -11,10 +11,10 @@
 use novomodelo_comm::Communicator;
 use novomodelo_solver::{RowBatch, SolverError, SolverInterface};
 
-use crate::cut::CutRowMap;
 use crate::cut::row::append_new_cuts_to_lp;
+use crate::cut::{CutPool, CutRowMap};
 use crate::{
-    backward::fill_external_opening_noise,
+    backward::{OpeningNoise, resolve_opening_noise},
     context::{StageContext, TrainingContext},
     cut::FutureCostFunction,
     cut::row::build_cut_row_batch_into,
@@ -24,10 +24,13 @@ use crate::{
     rank_reconcile::reconcile_error_flag,
     risk_measure::{RiskMeasure, RiskMeasureScratch},
     setup::{
-        NodeGraph, NodeSuccessor, OpeningSource,
+        NodeGraph, NodeSuccessor,
         node_graph::{NodePos, StageIdx, assemble_outcome_weights},
     },
-    training::stage_solve_prep::{StageSolvePrep, StageSolvePrepParams, StateSource},
+    solve::StageOpeningSolver,
+    training::stage_solve_prep::{
+        BracketSource, LoadedCutRows, NoiseTermSource, StageSolvePrep, StateSource,
+    },
     workspace::ScratchBuffers,
 };
 
@@ -87,8 +90,9 @@ impl<'a> LbEvalScratchBundle<'a> {
 }
 
 /// The lower bound patches the root stage's own load rows, so the load region
-/// is sized for `stage_ctx`'s root-stage (`StageIdx(0)`) block count, never the
-/// global max. Bucket and anticipated capacity MUST match `n_buckets` /
+/// is sized for `stage_ctx`'s root-stage (`StageIdx(0)`) block count, and its
+/// inflow region for the root-stage inflow coupling, never the global max.
+/// Bucket and anticipated capacity MUST match `n_buckets` /
 /// `n_anticipated * k_max` — undersizing panics in `fill_col_state_patches`.
 pub(crate) fn lower_bound_patch_buffer(
     state: &StateSpace,
@@ -98,34 +102,21 @@ pub(crate) fn lower_bound_patch_buffer(
         state,
         stage_ctx.load_bus_indices,
         stage_ctx.geometry_per_stage.get(..1).unwrap_or_default(),
+        stage_ctx.inflow_coupling.get(..1).unwrap_or_default(),
     )
 }
 
 /// Rank-0 setup: run the append-only LP load. Only called on rank 0.
-///
-/// # Errors
-///
-/// Returns [`SddpError::Validation`] if stage 0 carries no alive node.
 fn lb_init_rank0<S: SolverInterface>(
     solver: &mut S,
     fcf: &FutureCostFunction,
     ctx: &StageContext<'_>,
     training_ctx: &TrainingContext<'_>,
+    root: NodePos,
     lb_cut_batch: &mut RowBatch,
     lb_cut_row_map: Option<&mut CutRowMap>,
-) -> Result<(), SddpError> {
+) {
     let state_layout = training_ctx.state;
-    // Root pool resolved by STAGE (the sole stage-0 node), never by array
-    // position: build_declared_node_graph sorts nodes by ascending id, so
-    // nodes[0] is the smallest-id node, not necessarily the root — reading
-    // nodes[0].pool_id would inject a sibling's cuts onto the root's stage-0 LP.
-    // On a chain the root IS nodes[0] (pool 0).
-    let root = training_ctx
-        .node_graph
-        .frontier_node(StageIdx(0))
-        .ok_or_else(|| {
-            SddpError::Validation("lower bound: stage 0 carries no alive node".to_string())
-        })?;
     let pool_id = training_ctx.node_graph.nodes[root].pool_id;
     let cut_state = &training_ctx.cut_state_layouts[pool_id];
     let template = ctx.template(StageIdx(0));
@@ -160,11 +151,31 @@ fn lb_init_rank0<S: SolverInterface>(
             solver.add_rows(lb_cut_batch);
         }
     }
-    Ok(())
 }
 
-/// Solves the stage-0 LP once per root opening through [`StageSolvePrep::run`],
-/// writing each objective into `objectives_buf`.
+/// The pool slot of each cut row of the lower-bound LP, in LP row order,
+/// including rows whose slot the pool has since deactivated.
+fn lb_cut_slots_into(map: Option<&CutRowMap>, pool: &CutPool, out: &mut Vec<usize>) {
+    out.clear();
+    match map {
+        Some(map) => {
+            out.resize(map.total_cut_rows(), usize::MAX);
+            for slot in 0..pool.populated() {
+                if let Some(row) = map.lp_row_for_slot(slot) {
+                    out[row - map.base_row_offset()] = slot;
+                }
+            }
+            debug_assert!(
+                !out.contains(&usize::MAX),
+                "lb_cut_slots_into: a mapped cut row has no populated slot"
+            );
+        }
+        None => out.extend(pool.active_cuts().map(|(slot, _, _)| slot)),
+    }
+}
+
+/// Solves the stage-0 LP once per root opening, writing each objective into
+/// `scratch.lb_scratch.objectives_buf`.
 ///
 /// # Errors
 ///
@@ -172,58 +183,85 @@ fn lb_init_rank0<S: SolverInterface>(
 /// [`SddpError::Solver`] for other LP solve failures.
 fn lb_evaluate_stage_0<S: SolverInterface>(
     solver: &mut S,
+    fcf: &FutureCostFunction,
     ctx: &StageContext<'_>,
     training_ctx: &TrainingContext<'_>,
-    patch_buf: &mut PatchBuffer,
-    scratch: &mut ScratchBuffers,
-    objectives_buf: &mut Vec<f64>,
+    root_pos: NodePos,
+    scratch: &mut LbEvalScratchBundle<'_>,
 ) -> Result<(), SddpError> {
+    let LbEvalScratchBundle {
+        patch_buf,
+        lb_cut_row_map,
+        noise_scratch,
+        lb_scratch,
+        ..
+    } = scratch;
     let initial_state = training_ctx.initial_state;
     let opening_tree = training_ctx.stochastic.opening_tree();
     // Enumerate the ROOT NODE's own Ω, not the stage-0 generated tree: an External
     // root pins a single scenario column its external library carries, which the
     // generated tree does not know. Reading the generated tree there evaluates the
     // wrong stage-0 realization and mis-prices the bound.
-    let root_pos = find_root_position(training_ctx.node_graph)?;
     let root_openings = training_ctx.node_graph.nodes[root_pos].openings;
     let root_node_id = training_ctx.node_graph.node_ids[root_pos];
     let n_openings = root_openings.len;
 
-    // An External root reads its pinned column (assembled once, `len == 1`); a
-    // Generated root reads the generated tree opening-by-opening. `raw_noise_buf`
-    // holds the External column across the loop without a per-iteration allocation.
-    let mut ext_buf = std::mem::take(&mut scratch.raw_noise_buf);
-    if root_openings.source == OpeningSource::External {
-        fill_external_opening_noise(
-            training_ctx,
-            StageIdx(0),
-            root_openings.offset,
-            root_node_id,
-            &mut ext_buf,
-        )?;
-    }
+    // `raw_noise_buf` holds the External column across the loop without a per-iteration allocation.
+    let mut ext_buf = std::mem::take(&mut noise_scratch.raw_noise_buf);
+    let noise = resolve_opening_noise(
+        training_ctx,
+        StageIdx(0),
+        &root_openings,
+        root_node_id,
+        &mut ext_buf,
+    )?;
 
+    let mut slots = std::mem::take(&mut noise_scratch.cut_slots_buf);
+    let pool_id = training_ctx.node_graph.nodes[root_pos].pool_id;
+    let pool = &fcf.pools[pool_id];
+    lb_cut_slots_into(lb_cut_row_map.as_deref(), pool, &mut slots);
+    let first_row = lb_cut_row_map.as_deref().map_or(
+        ctx.template(StageIdx(0)).num_rows,
+        CutRowMap::base_row_offset,
+    );
+    let rows = LoadedCutRows {
+        pool,
+        projection: &training_ctx.cut_state_layouts[pool_id],
+        slots: &slots,
+        first_row,
+    };
+    StageSolvePrep::pin_and_bracket(
+        solver,
+        patch_buf,
+        noise_scratch,
+        ctx,
+        training_ctx,
+        StageIdx(0),
+        StateSource(initial_state),
+        &rows,
+        BracketSource::Computed,
+    );
+
+    let objectives_buf = &mut lb_scratch.objectives_buf;
     objectives_buf.clear();
 
     for opening_idx in 0..n_openings {
-        let raw_noise: &[f64] = if root_openings.source == OpeningSource::External {
-            &ext_buf
-        } else {
-            opening_tree.opening(0, root_openings.offset + opening_idx)
+        let raw_noise: &[f64] = match &noise {
+            OpeningNoise::External(column) => column,
+            OpeningNoise::Generated => opening_tree.opening(0, root_openings.offset + opening_idx),
         };
 
-        let prep_params = StageSolvePrepParams {
-            state_source: StateSource(initial_state),
-            raw_noise,
-        };
-        StageSolvePrep::run(
+        StageSolvePrep::patch_opening(
             solver,
             patch_buf,
-            scratch,
+            noise_scratch,
             ctx,
             training_ctx,
             StageIdx(0),
-            &prep_params,
+            raw_noise,
+            &rows,
+            NoiseTermSource::OnTheFly,
+            &StageOpeningSolver::Frozen,
         );
 
         let view = solver.solve(None).map_err(|e| match e {
@@ -237,14 +275,16 @@ fn lb_evaluate_stage_0<S: SolverInterface>(
         objectives_buf.push(view.objective);
     }
 
-    scratch.raw_noise_buf = ext_buf;
+    noise_scratch.raw_noise_buf = ext_buf;
+    noise_scratch.cut_slots_buf = slots;
     Ok(())
 }
 
 /// Find the node graph's implicit root: the unique node at stage 0 (root
 /// implicit for a single-node stage 0). A stage 0 covered by anything
 /// but exactly one node has no way to resolve `P(root→n)` across siblings
-/// without the reserved root source, not yet built.
+/// without the reserved root source, not yet built. Resolved by stage, never by
+/// array position: `nodes[0]` is the smallest-id node, not necessarily the root.
 ///
 /// # Errors
 ///
@@ -270,26 +310,27 @@ fn find_root_position(node_graph: &NodeGraph) -> Result<NodePos, SddpError> {
     Ok(root_pos)
 }
 
+/// The pool of the lower bound's LP: the root's pool, sizing the cut scratch and
+/// naming the rows [`evaluate_lower_bound`] loads.
+///
+/// # Errors
+///
+/// Returns whatever [`find_root_position`] returns.
+pub(crate) fn lb_root_pool(node_graph: &NodeGraph) -> Result<usize, SddpError> {
+    Ok(node_graph.nodes[find_root_position(node_graph)?].pool_id)
+}
+
 /// Assemble the root's successor outcome set `O(root) = {(n, ω) : n ∈ root⁺,
 /// ω ∈ Ω_n}` into `out`. Root is implicit for a single-node stage 0
 /// (`P(root→n) = 1`): the single child's own `q` — the pinned `1.0/(n as f64)`
 /// bit pattern — is what this reduces to, replicated over its openings, so a
 /// chain's lower bound stays bit-identical to today's.
-///
-/// # Errors
-///
-/// Returns whatever [`find_root_position`] returns.
-fn assemble_root_outcome_weights(
-    node_graph: &NodeGraph,
-    out: &mut Vec<f64>,
-) -> Result<(), SddpError> {
-    let root_pos = find_root_position(node_graph)?;
+fn assemble_root_outcome_weights(node_graph: &NodeGraph, root: NodePos, out: &mut Vec<f64>) {
     let root_successors = [NodeSuccessor {
-        child: root_pos,
+        child: root,
         probability: 1.0,
     }];
     assemble_outcome_weights(node_graph, &root_successors, out);
-    Ok(())
 }
 
 /// Apply `risk_measure` to `objectives` under `weights` (the root's product
@@ -358,29 +399,22 @@ pub fn evaluate_lower_bound<S: SolverInterface, C: Communicator>(
             "evaluate_lower_bound: stage 0 must have at least one opening"
         );
 
-        let rank0_result = lb_init_rank0(
-            solver,
-            fcf,
-            ctx,
-            training_ctx,
-            scratch.lb_cut_batch,
-            scratch.lb_cut_row_map.as_deref_mut(),
-        )
-        .and_then(|()| {
-            assemble_root_outcome_weights(
-                training_ctx.node_graph,
-                &mut scratch.lb_scratch.weights_buf,
-            )
-        })
-        .and_then(|()| {
-            lb_evaluate_stage_0(
+        let rank0_result = find_root_position(training_ctx.node_graph).and_then(|root| {
+            lb_init_rank0(
                 solver,
+                fcf,
                 ctx,
                 training_ctx,
-                scratch.patch_buf,
-                scratch.noise_scratch,
-                &mut scratch.lb_scratch.objectives_buf,
-            )
+                root,
+                scratch.lb_cut_batch,
+                scratch.lb_cut_row_map.as_deref_mut(),
+            );
+            assemble_root_outcome_weights(
+                training_ctx.node_graph,
+                root,
+                &mut scratch.lb_scratch.weights_buf,
+            );
+            lb_evaluate_stage_0(solver, fcf, ctx, training_ctx, root, scratch)
         });
         // Reconcile rank 0's root-weight assembly and stage-0 solve across ranks
         // BEFORE the broadcast pair (mirrors the forward-phase precedent): a
@@ -416,16 +450,18 @@ mod tests {
     use super::{
         LbEvalScratch, LbEvalScratchBundle, assemble_outcome_weights,
         assemble_root_outcome_weights, evaluate_lower_bound, find_root_position,
-        lb_aggregate_and_broadcast, lb_evaluate_stage_0, lb_init_rank0,
+        lb_aggregate_and_broadcast, lb_cut_slots_into, lb_evaluate_stage_0, lb_init_rank0,
+        lower_bound_patch_buffer,
     };
     use crate::{
         PrepareHydroModelsResult, ResolvedParameters, StageTemplates,
         build_stage_templates_resolving_layout,
         context::TrainingContext,
-        cut::FutureCostFunction,
+        cut::{CutPool, CutRowMap, FutureCostFunction},
         error::SddpError,
         horizon_mode::HorizonMode,
         inflow_method::InflowNonNegativityMethod,
+        lead_time::AnticipatedResolution,
         lp::builder::{PatchBuffer, StageGeometry, StateBox},
         lp::indexer::{BlockIdx, CutStateProjection, HydroSys, StateSpace, StudyDimensions},
         risk_measure::{RiskMeasure, RiskMeasureScratch},
@@ -434,7 +470,8 @@ mod tests {
             NodeGraph, NodeId, NodeOpenings, NodePos, NodeRuntime, NodeSuccessor, OpeningSource,
         },
         test_support::{
-            self, StageContextFixture, equipment_free_geometry, permissive_state_boxes,
+            self, StageContextFixture, empty_row_batch, equipment_free_geometry,
+            inflow_coupling_with_entries, permissive_state_boxes,
         },
         workspace::{ScratchBuffers, WorkspaceSizing},
     };
@@ -451,17 +488,6 @@ mod tests {
         build_stochastic_context, generate_opening_tree,
     };
 
-    fn empty_row_batch() -> RowBatch {
-        RowBatch {
-            num_rows: 0,
-            row_starts: Vec::new(),
-            col_indices: Vec::new(),
-            values: Vec::new(),
-            row_lower: Vec::new(),
-            row_upper: Vec::new(),
-        }
-    }
-
     /// Return the owned locals needed to build an [`LbEvalScratchBundle`] for tests.
     fn make_lb_locals() -> (RowBatch, LbEvalScratch) {
         (empty_row_batch(), LbEvalScratch::new())
@@ -469,22 +495,20 @@ mod tests {
 
     /// Minimal stage template for N=1 hydro, L=0 PAR order.
     ///
-    /// Column layout: [storage (0), `z_inflow` (1), theta (2)]
-    /// Row layout: [z-inflow definition (0)]
+    /// Column layout: [`storage_out` (0), `storage_in` (1), theta (2)]; one row.
     fn minimal_template() -> StageTemplate {
         StageTemplate {
             num_cols: 3,
             num_rows: 1,
             num_nz: 1,
-            col_starts: vec![0_i32, 0, 1, 1], // col 1 (z_inflow) has NZ at row 0
+            col_starts: vec![0_i32, 0, 1, 1], // col 1 (storage_in) has NZ at row 0
             row_indices: vec![0_i32],
             values: vec![1.0],
-            col_lower: vec![0.0, f64::NEG_INFINITY, 0.0],
+            col_lower: vec![0.0, 0.0, 0.0],
             col_upper: vec![f64::INFINITY, f64::INFINITY, f64::INFINITY],
             objective: vec![0.0, 0.0, 1.0], // minimise theta
             row_lower: vec![0.0],
             row_upper: vec![0.0],
-            n_state: 1,
             col_scale: Vec::new(),
             row_scale: Vec::new(),
         }
@@ -834,6 +858,7 @@ mod tests {
         fn load_model(&mut self, _template: &StageTemplate) {}
         fn add_rows(&mut self, _cuts: &RowBatch) {}
         fn set_row_bounds(&mut self, _indices: &[usize], _lower: &[f64], _upper: &[f64]) {}
+        fn set_row_lower_bounds_range(&mut self, _first_row: usize, _lower: &[f64]) {}
         fn set_col_bounds(&mut self, _indices: &[usize], _lower: &[f64], _upper: &[f64]) {
             self.set_col_bounds_calls += 1;
         }
@@ -932,6 +957,7 @@ mod tests {
 
         fn ctx(&self) -> StageContextFixture<'_> {
             StageContextFixture::new(&self.templates, &self.state_boxes, &self.geometry_per_stage)
+                .without_inflow_entries(1)
         }
 
         fn training_ctx(&self) -> TrainingContext<'_> {
@@ -972,7 +998,7 @@ mod tests {
             vec![0.0_f64],
         );
         let fcf = make_fcf(2, fixture.state.n_state);
-        let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[]);
+        let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[], &[]);
         let rm = RiskMeasure::Expectation;
         let comm = LocalComm;
         let mut solver = MockSolver::with_objectives(vec![100.0]);
@@ -1018,7 +1044,7 @@ mod tests {
             vec![0.0_f64],
         );
         let fcf = make_fcf(2, fixture.state.n_state);
-        let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[]);
+        let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[], &[]);
         let rm = RiskMeasure::Expectation;
         let comm = LocalComm;
         let mut solver = MockSolver::with_objectives(vec![60.0, 80.0, 100.0]);
@@ -1065,7 +1091,7 @@ mod tests {
             vec![0.0_f64],
         );
         let fcf = make_fcf(2, fixture.state.n_state);
-        let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[]);
+        let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[], &[]);
         // CVaR(alpha=0.5, lambda=1.0): pure CVaR; upper bound per scenario =
         // p / alpha = 0.5 / 0.5 = 1.0. With 2 equal-probability scenarios the
         // greedy allocation places all mass on the worst scenario.
@@ -1119,7 +1145,7 @@ mod tests {
             vec![0.0_f64],
         );
         let fcf = make_fcf(2, fixture.state.n_state);
-        let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[]);
+        let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[], &[]);
         let rm = RiskMeasure::CVaR {
             alpha: 1.0,
             lambda: 1.0,
@@ -1209,7 +1235,7 @@ mod tests {
             vec![0.0_f64],
         );
         let fcf = make_fcf(2, fixture.state.n_state);
-        let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[]);
+        let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[], &[]);
         let rm = RiskMeasure::Expectation;
         let comm = LocalComm;
         let mut solver = MockSolver::infeasible_on_first();
@@ -1254,7 +1280,7 @@ mod tests {
             vec![0.0_f64],
         );
         let fcf = make_fcf(2, fixture.state.n_state);
-        let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[]);
+        let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[], &[]);
         let rm = RiskMeasure::Expectation;
         let comm = FailingBcastComm;
         let mut solver = MockSolver::with_objectives(vec![100.0]);
@@ -1306,7 +1332,7 @@ mod tests {
                 vec![0.0_f64],
             );
             let fcf = make_fcf(2, fixture.state.n_state);
-            let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[]);
+            let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[], &[]);
             let rm = RiskMeasure::Expectation;
             let comm = LbReconcileStub {
                 rank: 0,
@@ -1353,7 +1379,7 @@ mod tests {
                 vec![0.0_f64],
             );
             let fcf = make_fcf(2, fixture.state.n_state);
-            let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[]);
+            let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[], &[]);
             let rm = RiskMeasure::Expectation;
             let comm = LbReconcileStub {
                 rank: 1,
@@ -1395,8 +1421,8 @@ mod tests {
     /// Integration: full round-trip with `LocalComm` and 2 openings.
     ///
     /// Verifies that the function correctly integrates with `build_cut_row_batch`
-    /// (`cut_batch` with 0 cuts still produces the right result), `fill_z_inflow_patches`,
-    /// and `RiskMeasure::Expectation`.
+    /// (`cut_batch` with 0 cuts still produces the right result), the per-opening
+    /// inflow patch and `RiskMeasure::Expectation`.
     #[test]
     fn integration_two_openings_local_backend_expectation() {
         let fixture = SimpleLbFixture::new(
@@ -1408,7 +1434,7 @@ mod tests {
         );
         // Start with 0 cuts (empty FCF).
         let fcf = make_fcf(2, fixture.state.n_state);
-        let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[]);
+        let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[], &[]);
         let rm = RiskMeasure::Expectation;
         let comm = LocalComm;
         let mut solver = MockSolver::with_objectives(vec![200.0, 300.0]);
@@ -1459,7 +1485,7 @@ mod tests {
             vec![0.0_f64],
         );
         let fcf = make_fcf(2, fixture.state.n_state);
-        let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[]);
+        let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[], &[]);
         let rm = RiskMeasure::Expectation;
         let comm = LocalComm;
 
@@ -1534,7 +1560,7 @@ mod tests {
             vec![0.0_f64],
         );
         let fcf = make_fcf(2, fixture.state.n_state);
-        let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[]);
+        let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[], &[]);
         let rm = RiskMeasure::Expectation;
         let comm = LocalComm;
         let mut solver = MockSolver::with_objectives(vec![60.0, 80.0]);
@@ -1581,7 +1607,7 @@ mod tests {
             vec![0.0_f64],
         );
         let fcf = make_fcf(2, fixture.state.n_state);
-        let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[]);
+        let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[], &[]);
         let rm = RiskMeasure::Expectation;
         let comm = LocalComm;
         let mut solver = MockSolver::with_objectives(vec![100.0]);
@@ -1626,7 +1652,7 @@ mod tests {
             vec![0.0_f64],
         );
         let fcf = make_fcf(2, fixture.state.n_state);
-        let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[]);
+        let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[], &[]);
         let rm = RiskMeasure::Expectation;
         let comm = LocalComm;
         let mut solver = MockSolver::with_objectives(vec![100.0]);
@@ -1814,7 +1840,6 @@ mod tests {
             objective: vec![0.0],
             row_lower: vec![],
             row_upper: vec![],
-            n_state: 0,
             col_scale: Vec::new(),
             row_scale: Vec::new(),
         };
@@ -1836,6 +1861,7 @@ mod tests {
             ..test_support::equipment_free_geometry(&[block_count]).remove(0)
         }];
         let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry)
+            .without_inflow_entries(0)
             .ncs_stochastic_dense_col(&ncs_stochastic_dense_col)
             .ncs_stochastic_windows(&ncs_stochastic_windows)
             .ncs_max_gen(&ncs_max_gen)
@@ -1869,33 +1895,75 @@ mod tests {
             dcs: None,
         };
 
-        let mut patch_buf = PatchBuffer::new(&state, ctx.load_bus_indices, ctx.geometry_per_stage);
+        let mut patch_buf = PatchBuffer::new(
+            &state,
+            ctx.load_bus_indices,
+            ctx.geometry_per_stage,
+            ctx.inflow_coupling,
+        );
         let mut scratch = ScratchBuffers::new(&training_ctx, &ctx, WorkspaceSizing::default());
-        let mut objectives_buf = Vec::new();
+        let fcf = make_fcf(1, state.n_state);
+        let (mut row_batch, mut lb_scratch) = make_lb_locals();
+        let mut bundle = LbEvalScratchBundle::from_scratch_fields(
+            &mut patch_buf,
+            &mut row_batch,
+            None,
+            &mut scratch,
+            &mut lb_scratch,
+        );
         let actual_n_openings = stoch.opening_tree().n_openings(0);
         let mut solver =
             MockSolver::with_objectives(vec![10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0]);
 
+        let root_pos = find_root_position(training_ctx.node_graph).unwrap();
         lb_evaluate_stage_0(
             &mut solver,
+            &fcf,
             &ctx,
             &training_ctx,
-            &mut patch_buf,
-            &mut scratch,
-            &mut objectives_buf,
+            root_pos,
+            &mut bundle,
         )
         .unwrap();
 
         assert_eq!(
             solver.set_col_bounds_calls,
-            2 * actual_n_openings,
-            "set_col_bounds must be called twice per opening ({actual_n_openings} openings), \
-             got {} calls — NCS bounds are not being patched per opening",
+            1 + actual_n_openings,
+            "set_col_bounds must be called once for the state pin and once per opening \
+             ({actual_n_openings} openings), got {} calls — NCS bounds are not being patched per opening",
             solver.set_col_bounds_calls
         );
         assert!(
             actual_n_openings > 0,
             "opening tree must have at least one opening at stage 0"
+        );
+    }
+
+    #[test]
+    fn lb_cut_slots_follow_lp_row_order_and_keep_deactivated_rows() {
+        let mut pool = CutPool::new(4, 1, 1, 0);
+        for (k, intercept) in [1.0, 2.0, 3.0].into_iter().enumerate() {
+            pool.add_cut(NodeId(0), k as u64, 0, intercept, &[0.0]);
+        }
+        let mut map = CutRowMap::new(4, 10);
+        for slot in [1, 2, 0] {
+            map.insert(slot);
+        }
+        pool.set_active(2, false);
+
+        let mut out = Vec::new();
+        lb_cut_slots_into(Some(&map), &pool, &mut out);
+        assert_eq!(
+            out,
+            [1, 2, 0],
+            "slots in LP row order, deactivated row kept"
+        );
+
+        lb_cut_slots_into(None, &pool, &mut out);
+        assert_eq!(
+            out,
+            [0, 1],
+            "map-less rows are the active cuts in slot order"
         );
     }
 
@@ -1905,13 +1973,13 @@ mod tests {
     /// [`evaluate_lower_bound`] calls.
     ///
     /// Calls `evaluate_lower_bound` twice on the same `noise_scratch` and
-    /// verifies that `z_inflow_rhs_buf.capacity()` does not decrease on the
+    /// verifies that `realized_inflow_buf.capacity()` does not decrease on the
     /// second call (i.e., no reallocation occurred). This guards against
     /// regressions that would re-introduce per-iteration heap allocation on
     /// the lower-bound hot path.
     #[test]
     fn lb_eval_scratch_reuses_buffers_across_calls() {
-        // Use n_hydros = 1 so that z_inflow_rhs_buf gets populated (capacity
+        // Use n_hydros = 1 so that realized_inflow_buf gets populated (capacity
         // grows to 1 after the first call).
         let fixture = SimpleLbFixture::new(
             minimal_template(),
@@ -1921,12 +1989,11 @@ mod tests {
             vec![0.0_f64],
         );
         let fcf = make_fcf(2, fixture.state.n_state);
-        let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[]);
+        let mut patch_buf = PatchBuffer::new(&fixture.state, &[], &[], &[]);
         let rm = RiskMeasure::Expectation;
         let comm = LocalComm;
 
-        let mut row_batch = empty_row_batch();
-        let mut lb_scratch = LbEvalScratch::new();
+        let (mut row_batch, mut lb_scratch) = make_lb_locals();
         let mut noise_scratch = ScratchBuffers::new(
             &fixture.training_ctx(),
             &fixture.ctx().ctx(),
@@ -1954,10 +2021,10 @@ mod tests {
             .unwrap();
         }
 
-        let cap_after_first = noise_scratch.z_inflow_rhs_buf.capacity();
+        let cap_after_first = noise_scratch.realized_inflow_buf.capacity();
         assert!(
             cap_after_first > 0,
-            "z_inflow_rhs_buf must have nonzero capacity after first call (n_hydros = 1)"
+            "realized_inflow_buf must have nonzero capacity after first call (n_hydros = 1)"
         );
 
         let mut solver2 = MockSolver::with_objectives(vec![20.0]);
@@ -1981,10 +2048,10 @@ mod tests {
             .unwrap();
         }
 
-        let cap_after_second = noise_scratch.z_inflow_rhs_buf.capacity();
+        let cap_after_second = noise_scratch.realized_inflow_buf.capacity();
         assert_eq!(
             cap_after_second, cap_after_first,
-            "z_inflow_rhs_buf capacity must be stable across calls (first={cap_after_first}, second={cap_after_second}); \
+            "realized_inflow_buf capacity must be stable across calls (first={cap_after_first}, second={cap_after_second}); \
              a decrease indicates reallocation on the lower-bound hot path"
         );
     }
@@ -2006,10 +2073,10 @@ mod tests {
     /// cascade), on a single bus:
     /// - `H_A` (id 3): `start_stage_id = 0`, `entry_stage_id = 1`. At stage 0 it is
     ///   in the terminal `Filling` stage (`entry − 1 == 0`), so stage 0 carries the
-    ///   `filling_target`/`σ_fill` row+column family. Its own z-inflow coupling is
+    ///   `filling_target`/`σ_fill` row+column family. Its own inflow coupling is
     ///   NOT routed away (Filling keeps PAR noise).
     /// - `H_B` (id 4): `start_stage_id = 2`, `entry_stage_id = 4`. At stage 0
-    ///   (`id 0 < start 2`) it is `PreFilling`, so its z-inflow column carries no
+    ///   (`id 0 < start 2`) it is `PreFilling`, so its inflow coupling carries no
     ///   entry on any water row (a sink: neither hydro declares a downstream).
     ///
     /// Returns the built [`StageTemplates`] plus the system indices of the two
@@ -2143,7 +2210,7 @@ mod tests {
             .collect();
 
         // White-noise inflow models (non-zero std so the Operating/Filling
-        // z-inflow coupling is real where the PreFilling routing is the contrast).
+        // inflow coupling is real where the PreFilling routing is the contrast).
         let inflow_models: Vec<InflowModel> = [EntityId(3), EntityId(4)]
             .into_iter()
             .flat_map(|hid| {
@@ -2392,7 +2459,7 @@ mod tests {
     /// per-stage `filling_target`/`σ_fill` family at EVERY Filling stage (the
     /// per-stage widening, not only the terminal `entry − 1` stage) and the renamed
     /// `filled_min_storage_floor`/`σ^{v-}` operating-floor family — and the
-    /// `PreFilling` hydro's own z-inflow column carries no water-row entry.
+    /// `PreFilling` hydro's inflow coupling reaches no water row.
     ///
     /// The lower bound's `StageContext.templates[0]` is bound to
     /// `stage_ctx.templates[0]` — the SAME object the forward/backward passes
@@ -2491,41 +2558,26 @@ mod tests {
             geom4.filled_min_storage_floor
         );
 
-        // PreFilling z-inflow routing: H_B is PreFilling at stage 0 (id 0 <
-        // start 2), so its own z-inflow column carries no entry on any water
-        // row — the frozen-storage-identity freeze (the PreFilling row-pinning
-        // contract) the lower bound inherits via the loaded template. Neither
-        // hydro declares a downstream, so H_B's coupling routes nowhere (a
-        // sink), never onto H_A's row. H_A is Filling at stage 0 (not
-        // PreFilling), so its OWN z-inflow column carries `-zeta` on its own
-        // water row — the contrast that makes the routing check non-vacuous.
-        let state = test_support::state_layout(n_hydros, 0);
-        let raw_at = |col: usize, row: usize| -> f64 {
-            let start = usize::try_from(tpl0.col_starts[col]).unwrap();
-            let end = usize::try_from(tpl0.col_starts[col + 1]).unwrap();
-            tpl0.row_indices[start..end]
-                .iter()
-                .zip(&tpl0.values[start..end])
-                .filter(|&(&r, _)| usize::try_from(r).unwrap() == row)
-                .map(|(_, &v)| v)
-                .sum()
-        };
-        let z_col_a = state.z_inflow.start + h_a;
-        let z_col_b = state.z_inflow.start + h_b;
+        // H_B (PreFilling at stage 0, no downstream) routes no inflow to any
+        // water row; H_A (Filling) carries `-zeta` on its own row.
+        let coupling = &templates.inflow_coupling_per_stage[0];
         let water_row_a = geom0.water_balance_row(HydroSys::new(h_a), BlockIdx::new(0));
         assert_eq!(
-            raw_at(z_col_a, water_row_a),
-            -templates.block_hours_per_stage[0].iter().sum::<f64>()
-                * crate::block_clock::M3S_TO_HM3,
-            "Filling hydro H_A's own z-inflow column must carry -zeta on its own water row"
+            coupling
+                .hydro_entries(HydroSys::new(h_a))
+                .collect::<Vec<_>>(),
+            vec![(
+                water_row_a,
+                -templates.block_hours_per_stage[0].iter().sum::<f64>()
+                    * crate::block_clock::M3S_TO_HM3
+            )],
+            "Filling hydro H_A's own inflow coupling must be -zeta on its own water row"
         );
-        for row in geom0.water_balance.range() {
-            assert_eq!(
-                raw_at(z_col_b, row),
-                0.0,
-                "PreFilling hydro H_B's z-inflow column must carry no entry on water row {row}"
-            );
-        }
+        assert_eq!(
+            coupling.hydro_entries(HydroSys::new(h_b)).count(),
+            0,
+            "PreFilling hydro H_B's inflow coupling must reach no water row"
+        );
     }
 
     /// AC2: the lower-bound evaluation code references NO filling-specific symbol —
@@ -2548,7 +2600,7 @@ mod tests {
         // `σ_fill`/`filling_target` family and the renamed `filled_min_storage_floor`
         // (`σ^{v-}`) operating-floor family. There is no `filling_retention` needle:
         // the retention family was removed (the Filling phase keeps PAR noise via
-        // its own z-inflow coupling, not a retention row), so referencing it would
+        // its own inflow coupling, not a retention row), so referencing it would
         // itself be a stale symbol — the rename/removal is mirrored here so the
         // guard cannot rot back to the abandoned family name.
         let needles: [String; 4] = [
@@ -2609,8 +2661,8 @@ mod tests {
             "σ_fill slack column must be a real column of templates[0]"
         );
 
-        // The per-opening z-inflow patch reads the loaded template's own z-inflow
-        // coupling — H_B's PreFilling row carries none — exactly as the
+        // The per-opening inflow shift patch reads the stage's own inflow coupling
+        // — H_B's PreFilling hydro carries no entry — exactly as the
         // forward/backward passes do, so the bound sees the same stage-0
         // constraints.
         let mut solver = ActiveSolver::new().expect("ActiveSolver::new");
@@ -2620,17 +2672,18 @@ mod tests {
         let state = test_support::state_layout(2, 0);
         let fcf = make_fcf(templates.templates.len(), state.n_state);
         let initial_state = vec![0.0_f64; state.n_state];
-        let mut patch_buf = PatchBuffer::new(&state, &[], &[]);
+        let mut patch_buf = PatchBuffer::new(
+            &state,
+            &[],
+            &templates.geometry_per_stage,
+            &templates.inflow_coupling_per_stage,
+        );
         let opening_tree = filling_opening_tree(1);
         let rm = RiskMeasure::Expectation;
         let stochastic = wrap_opening_tree(state.hydro_count, opening_tree);
         let state_boxes = permissive_state_boxes(state.n_state, templates.templates.len());
 
-        let fixture = StageContextFixture::new(
-            &templates.templates,
-            &state_boxes,
-            &templates.geometry_per_stage,
-        );
+        let fixture = StageContextFixture::from_stage_templates(&templates, &state_boxes);
         let ctx = fixture.ctx();
         let horizon = HorizonMode::Finite {
             num_stages: templates.templates.len(),
@@ -2703,11 +2756,11 @@ mod tests {
         );
         assert_eq!(state.n_state, 2);
 
-        let template = test_support::transit_bucket_only_template(state.theta + 1, state.n_state);
+        let template = test_support::transit_bucket_only_template(state.theta + 1);
         let templates = vec![template];
         let fcf = make_fcf(1, state.n_state);
         let initial_state = vec![7.0_f64, 11.0];
-        let mut patch_buf = PatchBuffer::new(&state, &[], &[]);
+        let mut patch_buf = PatchBuffer::new(&state, &[], &[], &[]);
         let opening_tree = simple_opening_tree(1);
         let rm = RiskMeasure::Expectation;
         let comm = LocalComm;
@@ -2716,7 +2769,8 @@ mod tests {
         let state_boxes = permissive_state_boxes(state.n_state, 1);
 
         let geometry = equipment_free_geometry(&[0]);
-        let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+        let fixture =
+            StageContextFixture::new(&templates, &state_boxes, &geometry).without_inflow_entries(0);
         let ctx = fixture.ctx();
         let horizon = HorizonMode::Finite { num_stages: 1 };
         let study_dims = test_support::study_dims();
@@ -2817,10 +2871,10 @@ mod tests {
                 q: 1.0,
             },
         };
-        NodeGraph {
-            node_ids: vec![NodeId(0), NodeId(1), NodeId(2)].into(),
-            nodes: vec![root, child_a, child_b].into(),
-            successors: vec![
+        NodeGraph::new(
+            vec![NodeId(0), NodeId(1), NodeId(2)].into(),
+            vec![root, child_a, child_b].into(),
+            vec![
                 vec![
                     NodeSuccessor {
                         child: NodePos(1),
@@ -2835,9 +2889,9 @@ mod tests {
                 Vec::new(),
             ]
             .into(),
-            n_pools: 3,
-            pool_stage: vec![StageIdx(1), StageIdx(1), StageIdx(0)],
-        }
+            3,
+            vec![StageIdx(1), StageIdx(1), StageIdx(0)],
+        )
     }
 
     /// AC1: a multi-node root successor set with distinct edge (`0.25`/`0.75`)
@@ -2923,7 +2977,8 @@ mod tests {
         let node_graph = test_support::chain_node_graph(&stochastic);
 
         let mut weights = Vec::new();
-        assemble_root_outcome_weights(&node_graph, &mut weights).unwrap();
+        let root = find_root_position(&node_graph).unwrap();
+        assemble_root_outcome_weights(&node_graph, root, &mut weights);
 
         let expected_q = 1.0_f64 / 5.0_f64;
         assert_eq!(weights.len(), 5);
@@ -2942,7 +2997,7 @@ mod tests {
     /// (defensive; structural validation of `nodes[]` happens upstream, not
     /// here).
     #[test]
-    fn assemble_root_outcome_weights_multi_node_stage_0_is_validation_error() {
+    fn find_root_position_multi_node_stage_0_is_validation_error() {
         let node_a = NodeRuntime {
             stage: StageIdx(0),
             pool_id: 0,
@@ -2963,16 +3018,15 @@ mod tests {
                 q: 0.5,
             },
         };
-        let ng = NodeGraph {
-            node_ids: vec![NodeId(0), NodeId(1)].into(),
-            nodes: vec![node_a, node_b].into(),
-            successors: vec![Vec::new(), Vec::new()].into(),
-            n_pools: 2,
-            pool_stage: vec![StageIdx(0), StageIdx(0)],
-        };
+        let ng = NodeGraph::new(
+            vec![NodeId(0), NodeId(1)].into(),
+            vec![node_a, node_b].into(),
+            vec![Vec::new(), Vec::new()].into(),
+            2,
+            vec![StageIdx(0), StageIdx(0)],
+        );
 
-        let mut weights = Vec::new();
-        let result = assemble_root_outcome_weights(&ng, &mut weights);
+        let result = find_root_position(&ng);
 
         match result {
             Err(SddpError::Validation(msg)) => {
@@ -3027,10 +3081,10 @@ mod tests {
                 q: 1.0,
             },
         };
-        fixture.node_graph = NodeGraph {
-            node_ids: vec![NodeId(1), NodeId(2), NodeId(3)].into(),
-            nodes: vec![leaf(1), leaf(1), root].into(),
-            successors: vec![
+        fixture.node_graph = NodeGraph::new(
+            vec![NodeId(1), NodeId(2), NodeId(3)].into(),
+            vec![leaf(1), leaf(1), root].into(),
+            vec![
                 Vec::new(),
                 Vec::new(),
                 vec![
@@ -3045,9 +3099,9 @@ mod tests {
                 ],
             ]
             .into(),
-            n_pools: 2,
-            pool_stage: vec![StageIdx(0), StageIdx(1)],
-        };
+            2,
+            vec![StageIdx(0), StageIdx(1)],
+        );
 
         // Power precondition: the buggy nodes[0] read and the stage-resolved root
         // genuinely disagree on which pool is the root's.
@@ -3085,10 +3139,10 @@ mod tests {
             &fcf,
             &ctx,
             &training_ctx,
+            root_pos,
             &mut lb_cut_batch,
             None,
-        )
-        .expect("fixture's stage 0 carries a single alive node");
+        );
 
         assert_eq!(
             lb_cut_batch.num_rows,
@@ -3127,5 +3181,26 @@ mod tests {
             "lower-bound production code must contain no uniform-probability \
              fill; offending fragments: {offenders:?}"
         );
+    }
+
+    #[test]
+    fn lower_bound_shift_region_follows_the_root_stage_coupling() {
+        let couplings = [
+            inflow_coupling_with_entries(2, &[(0, 1)]),
+            inflow_coupling_with_entries(2, &[(0, 2), (1, 2), (0, 5), (1, 7)]),
+            inflow_coupling_with_entries(2, &[(0, 3), (1, 4)]),
+        ];
+        let fixture = StageContextFixture::new(&[], &[], &[]).inflow_coupling(&couplings);
+        let ctx = fixture.ctx();
+        let state = StateSpace::new(
+            2,
+            1,
+            Vec::new(),
+            Vec::new(),
+            AnticipatedResolution::default(),
+            &[1, 1],
+        );
+
+        assert_eq!(lower_bound_patch_buffer(&state, &ctx).indices.len(), 1);
     }
 }

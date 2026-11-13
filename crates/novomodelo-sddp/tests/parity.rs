@@ -519,23 +519,23 @@ mod b6a_hydro_inflow_parity {
     //!
     //! ## What this file proves (and what it deliberately does not)
     //!
-    //! `hydro_inflow(h[,blk])` resolves to the **total** inflow column set:
-    //! `z_inflow(h)` plus, for each immediately-upstream plant `i`, the turbine and
-    //! spillage columns at the referenced block (plus any diversion-into columns),
-    //! each with coefficient `+1.0`. The exhaustive **resolver-level** assertion of
-    //! that full column set — that the row references `z_inflow` AND each upstream
-    //! plant's turbine+spillage (and diversion-into) at `+1.0`, NOT merely that
-    //! `z_inflow` appears — is a crate-internal property of `resolve_variable_ref`,
-    //! which is `pub(crate)` to `novomodelo-sddp` and therefore unreachable from an
+    //! `hydro_inflow(h[,blk])` resolves to the **total** inflow: the hydro's own
+    //! realized-inflow term plus, for each immediately-upstream plant `i`, the
+    //! turbine and spillage columns at the referenced block (plus any diversion-into
+    //! columns), each with coefficient `+1.0`. The exhaustive **resolver-level**
+    //! assertion — that the row carries the realized-inflow term AND each upstream
+    //! plant's turbine+spillage (and diversion-into) at `+1.0` — is a crate-internal
+    //! property of `resolve_variable_ref`, which is `pub(crate)` to `novomodelo-sddp`
+    //! and therefore unreachable from an
     //! integration test under `tests/`. That assertion lives in the crate-internal
     //! unit tests in `lp::builder::generic_constraints` (e.g.
     //! `hydro_inflow_two_upstream_canonical_order`,
     //! `hydro_inflow_diversion_into_appends_diversion_column`,
-    //! `hydro_inflow_headwater_resolves_to_z_inflow_only`,
-    //! `hydro_inflow_is_block_dependent`), which assert the exact `(col, +1.0)`
-    //! pair list for a multi-upstream cascade. This file relies on that coverage and
-    //! proves the complementary, genuinely-integration property the unit tests
-    //! cannot: the full public `load → train → simulate` pipeline materializes the
+    //! `hydro_inflow_headwater_resolves_to_its_own_inflow_only`,
+    //! `hydro_inflow_is_block_dependent`), which assert the exact inflow pair and
+    //! `(col, +1.0)` pair list for a multi-upstream cascade. This file relies on that
+    //! coverage and proves the complementary, genuinely-integration property the
+    //! unit tests cannot: the full public `load → train → simulate` pipeline materializes the
     //! cascade `hydro_inflow` row and **solves** it on HiGHS and on CLP.
     //!
     //! ## Fixture
@@ -852,26 +852,24 @@ mod determinism {
     //
     // Column layout for the N=3, L=0 state vector:
     //   storage      = 0..3
-    //   inflow_lags  = 3..3  (empty, L=0)
-    //   z_inflow     = 3..6
-    //   storage_in   = 6..9
-    //   theta        = 9
+    //   storage_in   = 3..6  (the lag region has no LP column)
+    //   theta        = 6
     //   then the decoupled hydro+bus equipment padding `test_support::geometry`
-    //   addresses for N=3 hydros, 1 bus, 1 block (cols 10-38), so per-block
+    //   addresses for N=3 hydros, 1 bus, 1 block (cols 7-35), so per-block
     //   hydro/bus extraction addresses real columns instead of an empty family.
-    //   num_cols     = 39
+    //   num_cols     = 36
     //
-    // The primal must have 39 entries so simulation's per-block extraction can
-    // address every equipment column. The dual must have at least 7 entries
+    // The primal must have 36 entries so simulation's per-block extraction can
+    // address every equipment column. The dual must have at least 4 entries
     // to cover the widened geometry's water-balance/load-balance row family.
     // ===========================================================================
 
-    const PRIMAL_3H: &[f64] = &[0.0; 39];
+    const PRIMAL_3H: &[f64] = &[0.0; 36];
     // The dual must cover the widened row family plus max cuts per stage
     // (10 iterations × 1 pass = 10). Use 64 to cover any reasonable iteration
     // count without tight sizing.
     const DUAL_3H: &[f64] = &[0.0; 64];
-    const REDUCED_COSTS_3H: &[f64] = &[0.0; 39];
+    const REDUCED_COSTS_3H: &[f64] = &[0.0; 36];
 
     /// Mock solver returning a fixed objective on every solve, so any output
     /// variation across thread counts comes from the orchestration layer alone.
@@ -895,6 +893,7 @@ mod determinism {
         fn load_model(&mut self, _template: &StageTemplate) {}
         fn add_rows(&mut self, _cuts: &RowBatch) {}
         fn set_row_bounds(&mut self, _indices: &[usize], _lower: &[f64], _upper: &[f64]) {}
+        fn set_row_lower_bounds_range(&mut self, _first_row: usize, _lower: &[f64]) {}
         fn set_col_bounds(&mut self, _indices: &[usize], _lower: &[f64], _upper: &[f64]) {}
 
         fn solve(
@@ -1122,64 +1121,54 @@ mod determinism {
     /// Column layout (N=3, L=0):
     /// ```text
     /// 0..3   storage_out  (outgoing storage, N=3)
-    /// 3..6   z_inflow     (realized inflow variables, N=3, free)
-    /// 6..9   storage_in   (incoming storage, N=3, L=0 → no lag cols)
-    /// 9      theta
-    /// 10..39 decoupled hydro+bus equipment padding `test_support::geometry`
+    /// 3..6   storage_in   (incoming storage, N=3, L=0 → no lag cols)
+    /// 6      theta
+    /// 7..36  decoupled hydro+bus equipment padding `test_support::geometry`
     ///        addresses for N=3 hydros, 1 bus, 1 block (zero cost, zero NZ):
     ///        `MockSolver3H` never reads the coefficients.
     /// ```
     ///
     /// Row layout (N=3, L=0):
     /// ```text
-    /// 0..3  z_inflow rows        (one per hydro, at StateSpace::z_inflow_rows())
-    /// 3..6  storage_in pin rows (one per hydro)
-    /// 6     the widened geometry's load-balance row (unused, no NZ)
+    /// 0..3  water-balance rows (one per hydro)
+    /// 3     the widened geometry's load-balance row (unused, no NZ)
     /// ```
     ///
-    /// The matrix has one nonzero per z_inflow row (column = `z_inflow[h]`) and one
-    /// per storage_in pin row (column = `storage_in[h]`), each coefficient 1.0, so
-    /// the patch buffer has something to patch.
+    /// The matrix has one nonzero per water-balance row (column = `storage_in[h]`),
+    /// coefficient 1.0, so the patch buffer has something to patch.
     fn template_3h() -> StageTemplate {
-        let num_cols = 39;
-        let num_rows = 7;
-        // CSC col_starts: 39 columns + 1 sentinel; z_inflow and storage_in cols
-        // each carry one NZ, cols 9 (theta) onward carry none.
+        let num_cols = 36;
+        let num_rows = 4;
+        // CSC col_starts: 36 columns + 1 sentinel; storage_in cols each carry one
+        // NZ, cols 6 (theta) onward carry none.
         let col_starts = {
-            let mut v = vec![6_i32; num_cols + 1];
+            let mut v = vec![3_i32; num_cols + 1];
             v[0] = 0; // col 0 (storage_out[0])
             v[1] = 0; // col 1 (storage_out[1])
             v[2] = 0; // col 2 (storage_out[2])
-            v[3] = 0; // col 3 (z_inflow[0]) — NZ starts here
-            v[4] = 1; // col 4 (z_inflow[1])
-            v[5] = 2; // col 5 (z_inflow[2])
-            v[6] = 3; // col 6 (storage_in[0])
-            v[7] = 4; // col 7 (storage_in[1])
-            v[8] = 5; // col 8 (storage_in[2])
+            v[3] = 0; // col 3 (storage_in[0]) — NZ starts here
+            v[4] = 1; // col 4 (storage_in[1])
+            v[5] = 2; // col 5 (storage_in[2])
             v
         };
-        let row_indices = vec![0_i32, 1, 2, 3, 4, 5];
-        let values = vec![1.0_f64, 1.0, 1.0, 1.0, 1.0, 1.0];
+        let row_indices = vec![0_i32, 1, 2];
+        let values = vec![1.0_f64, 1.0, 1.0];
 
         let mut objective = vec![0.0_f64; num_cols];
-        objective[9] = 1.0; // theta at col 9
-
-        let mut col_lower = vec![0.0_f64; num_cols];
-        col_lower[3..6].fill(f64::NEG_INFINITY); // z_inflow cols are free
+        objective[6] = 1.0; // theta at col 6
 
         StageTemplate {
             num_cols,
             num_rows,
-            num_nz: 6,
+            num_nz: 3,
             col_starts,
             row_indices,
             values,
-            col_lower,
+            col_lower: vec![0.0_f64; num_cols],
             col_upper: vec![f64::INFINITY; num_cols],
             objective,
             row_lower: vec![0.0; num_rows],
             row_upper: vec![0.0; num_rows],
-            n_state: 3,
             col_scale: Vec::new(),
             row_scale: Vec::new(),
         }
@@ -1292,7 +1281,8 @@ mod determinism {
 
         let state_boxes = permissive_state_boxes(fx.state.n_state, fx.n_stages);
         let geometry = vec![three_hydro_one_bus_geometry(); fx.n_stages];
-        let stage_ctx_fixture = StageContextFixture::new(&fx.templates, &state_boxes, &geometry);
+        let stage_ctx_fixture = StageContextFixture::new(&fx.templates, &state_boxes, &geometry)
+            .without_inflow_entries(fx.state.hydro_count);
         let stage_ctx = stage_ctx_fixture.ctx();
         let result = pool
             .install(|| {
@@ -1400,14 +1390,15 @@ mod determinism {
         };
         let state_boxes = permissive_state_boxes(fx.state.n_state, fx.n_stages);
         let geometry = vec![three_hydro_one_bus_geometry(); fx.n_stages];
-        let stage_ctx_fixture = StageContextFixture::new(&fx.templates, &state_boxes, &geometry);
+        let stage_ctx_fixture = StageContextFixture::new(&fx.templates, &state_boxes, &geometry)
+            .without_inflow_entries(fx.state.hydro_count);
         let mut workspaces: Vec<SolverWorkspace<MockSolver3H>> = (0..n_workspaces)
             .map(|idx| {
                 SolverWorkspace::new(
                     0,
                     i32::try_from(idx).expect("worker_id fits in i32"),
                     MockSolver3H::new(100.0),
-                    PatchBuffer::new(&fx.state, &[], &[]),
+                    PatchBuffer::new(&fx.state, &[], &[], &[]),
                     &sim_training_ctx,
                     &stage_ctx_fixture.ctx(),
                     WorkspaceSizing::default(),

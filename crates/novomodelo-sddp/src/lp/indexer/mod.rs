@@ -8,9 +8,9 @@
 //!
 //! ## Column layout (Solver Abstraction SS2.1)
 //!
-//! The stage-invariant state-vector column ranges (storage, AR lags,
+//! The stage-invariant state-vector column ranges (storage,
 //! travel-time buckets, the anticipated ring's outgoing and incoming blocks,
-//! `z_inflow`, `theta`) are owned entirely by [`StateSpace`] — see its own
+//! `theta`) are owned entirely by [`StateSpace`] — see its own
 //! module doc for the authoritative diagram; this file does not re-derive it,
 //! to avoid the two copies drifting apart.
 //!
@@ -33,8 +33,7 @@
 //! ## Row layout (Solver Abstraction SS2.2)
 //!
 //! State pinning uses column bounds (`set_col_bounds`) on the incoming-state
-//! columns, so the LP has no state-fixing row range. z-inflow rows start at
-//! row 0.
+//! columns, so the LP has no state-fixing row range.
 //!
 //! The per-solve patch sequence layered on top of this geometry is documented in
 //! [`crate::lp::builder`].
@@ -80,7 +79,9 @@
 //! - `cut_state_projection` — the [`CutStateProjection`] type, a storage-scoped
 //!   projection of [`StateSpace`] exposing only the cut-state dimensions a
 //!   stage's `StageStateConfig` enables (anticipated state always included),
-//!   delegating each column to [`StateSpace::state_to_lp_incoming_column`].
+//!   delegating each column to [`StateSpace::state_to_lp_incoming_column`],
+//!   the [`CutLagPoint`] slot ranges of its lag region, and the
+//!   [`ChainRuleSlots`] pair view of two pools' lag ranges.
 //! - `entity_index` — entity system/local index vocabulary
 //!   ([`HydroSys`]/[`ThermalSys`]/[`LineSys`]/[`BusSys`]/[`NcsSys`]/
 //!   [`PumpingSys`], [`FphaLocal`]/[`EvapLocal`]/[`FillingTargetLocal`]/
@@ -113,7 +114,7 @@ pub(crate) use anticipated_gate::{
 pub use anticipated_plants::AnticipatedPlants;
 pub use block_grid::BlockGrid;
 pub use block_row_family::BlockRowFamily;
-pub use cut_state_projection::CutStateProjection;
+pub use cut_state_projection::{ChainRuleSlots, CutLagPoint, CutStateProjection};
 pub use entity_index::{
     AnticipatedLocal, BusSys, EvapLocal, FillingTargetLocal, FloorLocal, FphaCellLocal, FphaLocal,
     HydroCell, HydroSys, LineSys, NcsSys, PlantCapLocal, PlantFloorLocal, PumpingSys, ThermalSys,

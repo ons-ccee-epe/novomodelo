@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+#[cfg(any(test, feature = "test-support"))]
+use std::ops::Range;
 
 use novomodelo_core::{EntityId, Stage, System};
 use novomodelo_solver::StageTemplate;
@@ -8,6 +10,9 @@ use novomodelo_stochastic::par::precompute::PrecomputedPar;
 use crate::bucket_topology::TransitBucketTopology;
 use crate::hydro_models::{EvaporationModelSet, ProductionModelSet};
 
+use super::inflow_coupling::{InflowCoupling, InflowCouplingSink};
+#[cfg(any(test, feature = "test-support"))]
+use super::layout::RowFamily;
 use super::layout::{ResolvedTables, StageGeometry, StageLayout, TemplateBuildCtx};
 use super::{GenericConstraintRowEntry, LpBuildInputs, StateBox, columns, entries, rows, scaling};
 use crate::lp::indexer::StateSpace;
@@ -26,6 +31,12 @@ pub struct StageTemplates {
     /// `postprocess_templates` from the physical column bounds before column
     /// scaling. Empty until then; read it through `state_boxes()`.
     state_boxes: Vec<StateBox>,
+    /// `templates` as built, before `postprocess_templates` scaled them.
+    #[cfg(any(test, feature = "test-support"))]
+    pre_scaling_templates: Vec<StageTemplate>,
+    /// Per-stage structural row families, in allocation order.
+    #[cfg(any(test, feature = "test-support"))]
+    row_families: Vec<Vec<(RowFamily, Range<usize>)>>,
     /// Per-stage block durations in hours (`block_hours_per_stage[stage]` is length
     /// `n_blocks`). Converts load-balance duals $/MW → $/`MWh`:
     /// `spot_price = dual / block_hours`.
@@ -53,6 +64,8 @@ pub struct StageTemplates {
     /// `StageExtractionSpec` so the simulation read-path addresses the columns the
     /// solved primal occupies at the stage being extracted.
     pub geometry_per_stage: Vec<StageGeometry>,
+    /// Per-stage realized-inflow coupling; length equals `templates.len()`.
+    pub inflow_coupling_per_stage: Vec<InflowCoupling>,
     /// Mapping from target hydro ID to source hydro indices that divert to it.
     ///
     /// Used by the simulation extraction pipeline to compute `diverted_inflow_m3s`.
@@ -74,11 +87,16 @@ impl StageTemplates {
         Self {
             templates: Vec::new(),
             state_boxes: Vec::new(),
+            #[cfg(any(test, feature = "test-support"))]
+            pre_scaling_templates: Vec::new(),
+            #[cfg(any(test, feature = "test-support"))]
+            row_families: Vec::new(),
             block_hours_per_stage: Vec::new(),
             cost_scale_factor,
             load_bus_indices: Vec::new(),
             generic_constraint_row_entries: Vec::new(),
             geometry_per_stage: Vec::new(),
+            inflow_coupling_per_stage: Vec::new(),
             diversion_upstream: HashMap::new(),
             hydro_productivities_per_stage: Vec::new(),
         }
@@ -114,6 +132,26 @@ impl StageTemplates {
         );
         self.state_boxes = state_boxes;
     }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn record_pre_scaling(&mut self) {
+        self.pre_scaling_templates.clone_from(&self.templates);
+    }
+
+    /// The templates as built, before `postprocess_templates` scaled them;
+    /// empty until it runs.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn pre_scaling_templates(&self) -> &[StageTemplate] {
+        &self.pre_scaling_templates
+    }
+
+    /// Per-stage structural row families, in allocation order.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn row_families(&self) -> &[Vec<(RowFamily, Range<usize>)>] {
+        &self.row_families
+    }
 }
 
 /// Per-stage outputs of [`build_single_stage_template`], transposed by
@@ -126,6 +164,9 @@ pub(super) struct StageBuildOutput {
     /// Stage-correct equipment column ranges for simulation extraction, computed
     /// from this stage's [`StageLayout`].
     pub equipment_geometry: StageGeometry,
+    pub inflow_coupling: InflowCoupling,
+    #[cfg(any(test, feature = "test-support"))]
+    pub row_families: Vec<(RowFamily, Range<usize>)>,
 }
 
 /// Construct the [`StageBuildOutput`] for a single study stage.
@@ -139,7 +180,9 @@ pub(super) fn build_single_stage_template(
     let (col_lower, mut col_upper, mut objective) =
         columns::fill_stage_columns(ctx, stage, stage_idx, &layout);
     let (mut row_lower, mut row_upper) = rows::fill_stage_rows(ctx, stage, stage_idx, &layout);
-    let mut col_entries = entries::build_stage_matrix_entries(ctx, stage, stage_idx, &layout);
+    let mut inflow_sink = InflowCouplingSink::new(layout.state.hydro_count);
+    let mut col_entries =
+        entries::build_stage_matrix_entries(ctx, stage, stage_idx, &layout, &mut inflow_sink);
 
     let mut buffers = entries::LpMatrixBuffers {
         col_entries: &mut col_entries,
@@ -148,7 +191,15 @@ pub(super) fn build_single_stage_template(
         row_lower: &mut row_lower,
         row_upper: &mut row_upper,
     };
-    entries::fill_generic_constraint_entries(ctx, stage_idx, &layout, &mut buffers);
+    entries::fill_generic_constraint_entries(
+        ctx,
+        stage_idx,
+        &layout,
+        &mut buffers,
+        &mut inflow_sink,
+    );
+
+    let inflow_coupling = inflow_sink.finish(&row_lower, &row_upper);
 
     finalize_stage_objective(ctx, stage_idx, &layout, &mut objective);
 
@@ -171,15 +222,20 @@ pub(super) fn build_single_stage_template(
         objective,
         row_lower,
         row_upper,
-        n_state: layout.n_state(),
         col_scale: Vec::new(),
         row_scale: Vec::new(),
     };
+
+    #[cfg(any(test, feature = "test-support"))]
+    let row_families = layout.row_families();
 
     StageBuildOutput {
         template,
         gc_entries: layout.generic_constraint_rows,
         equipment_geometry: layout.geometry,
+        inflow_coupling,
+        #[cfg(any(test, feature = "test-support"))]
+        row_families,
     }
 }
 
@@ -266,7 +322,6 @@ pub(crate) fn models_from_normal<M>(
 ///
 /// - `num_cols` and `num_rows` are computed by `layout::StageLayout` —
 ///   see `layout.rs` for the authoritative column and row counts
-/// - `n_state  = N*(1+L)`
 ///
 /// ## Objective coefficients
 ///
@@ -348,7 +403,6 @@ pub(crate) fn build_stage_templates(
 
     let ctx = build_template_build_ctx(
         system,
-        par_lp,
         production_models,
         evaporation_models,
         state_layout,
@@ -376,7 +430,6 @@ pub(crate) fn build_stage_templates(
 /// `system`'s slices and the fields it borrows from `inputs`.
 fn build_template_build_ctx<'a>(
     system: &'a System,
-    par_lp: &'a PrecomputedPar,
     production_models: &'a ProductionModelSet,
     evaporation_models: &'a EvaporationModelSet,
     state: &'a StateSpace,
@@ -402,7 +455,6 @@ fn build_template_build_ctx<'a>(
             resolved_generic_coefficients: inputs.resolved_generic_coefficients,
         },
         positions: &inputs.positions,
-        par_lp,
         production_models,
         evaporation_models,
         generic_constraints: system.generic_constraints(),
@@ -433,10 +485,16 @@ fn assemble_stage_templates_output(
     let mut templates = Vec::with_capacity(n_study);
     let mut generic_constraint_row_entries = Vec::with_capacity(n_study);
     let mut geometry_per_stage = Vec::with_capacity(n_study);
+    let mut inflow_coupling_per_stage = Vec::with_capacity(n_study);
+    #[cfg(any(test, feature = "test-support"))]
+    let mut row_families = Vec::with_capacity(n_study);
     for out in stage_outputs {
         templates.push(out.template);
         generic_constraint_row_entries.push(out.gc_entries);
         geometry_per_stage.push(out.equipment_geometry);
+        inflow_coupling_per_stage.push(out.inflow_coupling);
+        #[cfg(any(test, feature = "test-support"))]
+        row_families.push(out.row_families);
     }
 
     let block_hours_per_stage = scaling::compute_stage_hours(study_stages);
@@ -444,11 +502,16 @@ fn assemble_stage_templates_output(
     StageTemplates {
         templates,
         state_boxes: Vec::new(),
+        #[cfg(any(test, feature = "test-support"))]
+        pre_scaling_templates: Vec::new(),
+        #[cfg(any(test, feature = "test-support"))]
+        row_families,
         block_hours_per_stage,
         cost_scale_factor,
         load_bus_indices,
         generic_constraint_row_entries,
         geometry_per_stage,
+        inflow_coupling_per_stage,
         diversion_upstream,
         hydro_productivities_per_stage,
     }

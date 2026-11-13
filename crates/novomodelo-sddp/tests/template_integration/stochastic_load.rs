@@ -45,14 +45,13 @@ fn stage_templates_load_balance_family_starts_after_the_water_rows() {
         "geometry_per_stage length must match templates length"
     );
 
-    // N=2 hydros, L=0: row_water_balance_start = n_hydros (z_inflow occupies rows
-    // [0, n_hydros)); row_load_balance_start = row_water_balance_start + n_hydros.
-    let n_hydros = system.hydros().len();
-    let expected_row_start = n_hydros + n_hydros;
+    // N=2 hydros, L=0: the water-balance rows occupy [0, n_hydros), so the load
+    // balance family starts at n_hydros.
+    let expected_row_start = system.hydros().len();
     assert_eq!(
         result.geometry_per_stage[0].load_balance.start(),
         expected_row_start,
-        "geometry_per_stage[0].load_balance must start at row_water_balance_start + n_hydros"
+        "geometry_per_stage[0].load_balance must start right after the n_hydros water-balance rows"
     );
     assert_eq!(
         result.geometry_per_stage[0].load_balance.start(),

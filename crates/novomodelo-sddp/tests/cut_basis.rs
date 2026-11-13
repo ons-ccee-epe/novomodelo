@@ -523,10 +523,10 @@ mod cut_subgradient_parity {
 
     /// Indices into the column/row layout documented in the module doc; the
     /// closed-form KKT reference and the post-solve assertions both depend on these.
-    const COL_STORAGE_IN: usize = 2;
-    const ROW_WATER_BALANCE: usize = 1;
-    const ROW_FPHA: usize = 3;
-    const ROW_EVAP: usize = 4;
+    const COL_STORAGE_IN: usize = 1;
+    const ROW_WATER_BALANCE: usize = 0;
+    const ROW_FPHA: usize = 2;
+    const ROW_EVAP: usize = 3;
 
     /// Build a minimal 1-FPHA-hydro, 1-bus system with linearized evaporation.
     ///
@@ -776,12 +776,6 @@ mod cut_subgradient_parity {
         .expect("FPHA+evap template must build");
 
         let template = &result.templates[0];
-
-        // Guards the hardcoded COL_STORAGE_IN: storage_in.start = N*(2+L) + A*K = 2.
-        assert_eq!(
-            template.n_state, 1,
-            "N=1, L=0: n_state must be 1 (storage only, no lags)"
-        );
 
         let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
         solver.load_model(template);
@@ -1416,6 +1410,7 @@ mod selection_in_a_training_run {
     use novomodelo_io::config::{
         SelectionMethod, SimulationSelection, StoppingRuleConfig, TrainingSelection,
     };
+    use novomodelo_sddp::test_support::bits;
     use novomodelo_sddp::{
         FutureCostFunction, StudySetup, TrainingResult, build_training_output,
         cut::{CutPool, CutSet, SlotOrigin, SlotRole},
@@ -2630,10 +2625,6 @@ mod selection_in_a_training_run {
         }
     }
 
-    fn bits(values: &[f64]) -> Vec<u64> {
-        values.iter().map(|value| value.to_bits()).collect()
-    }
-
     /// The pool's roles and stored states, with the ownership record a rebuild
     /// computes from them.
     fn ownership_after_a_rebuild(pool: &CutPool) -> PoolOwnership {
@@ -3049,31 +3040,22 @@ mod hybrid_reconstruction {
         num_cols: usize,
         slots: &[u32],
         cut_statuses: &[novomodelo_solver::BasisStatus],
-        state_at_capture: &[f64],
     ) -> CapturedBasis {
         assert_eq!(slots.len(), cut_statuses.len());
         let total_rows = base_rows + cut_statuses.len();
-        let mut cb = CapturedBasis::new(
-            num_cols,
-            total_rows,
-            base_rows,
-            slots.len(),
-            state_at_capture.len(),
-            NodeId(0),
-        );
+        let mut cb = CapturedBasis::new(num_cols, total_rows, base_rows, slots.len(), NodeId(0));
         cb.basis.row_status.clear();
         cb.basis.row_status.resize(base_rows, B);
         cb.basis.row_status.extend_from_slice(cut_statuses);
         cb.basis.col_status.clear();
         cb.basis.col_status.resize(num_cols, B);
         cb.cut_row_slots.extend_from_slice(slots);
-        cb.state_at_capture.extend_from_slice(state_at_capture);
         cb
     }
 
     #[test]
     fn mixed_case_5_rows() {
-        let stored = make_stored(2, 3, &[10, 20, 30, 40], &[L, B, L, B], &[1.0, 2.0]);
+        let stored = make_stored(2, 3, &[10, 20, 30, 40], &[L, B, L, B]);
         let cuts: Vec<(usize, f64, Vec<f64>)> = vec![
             (10, 0.0, vec![0.0, 0.0]),
             (25, 0.0, vec![0.0, 0.0]),
@@ -3115,7 +3097,7 @@ mod hybrid_reconstruction {
 
     #[test]
     fn all_preserved() {
-        let stored = make_stored(1, 2, &[10, 20, 30], &[L, B, L], &[1.0]);
+        let stored = make_stored(1, 2, &[10, 20, 30], &[L, B, L]);
         let cuts: Vec<(usize, f64, Vec<f64>)> = vec![
             (10, 0.0, vec![0.0]),
             (20, 0.0, vec![0.0]),
@@ -3148,7 +3130,7 @@ mod hybrid_reconstruction {
 
     #[test]
     fn all_new() {
-        let stored = make_stored(1, 2, &[], &[], &[1.0]);
+        let stored = make_stored(1, 2, &[], &[]);
         let cuts: Vec<(usize, f64, Vec<f64>)> = vec![
             (5, 0.0, vec![0.0]),
             (6, 0.0, vec![0.0]),
@@ -5487,3 +5469,330 @@ mod simulation_cut_set {
         }
     }
 }
+
+mod solve_cache_equivalence {
+    use novomodelo_comm::{BackendKind, Communicator, LocalBackend, create_communicator};
+    use novomodelo_io::config::{
+        BackwardScheduler, SelectionMethod, StoppingRuleConfig, TrainingSelection,
+    };
+    use novomodelo_sddp::test_support::decks::committed_decks;
+    use novomodelo_sddp::{SolverProfiles, SolverStatsDelta, StudySetup, TrainingOutcome};
+    use novomodelo_solver::ActiveSolver;
+
+    use super::common::in_code_studies::{FphaLagOptions, fpha_lag_study_with};
+    use super::common::stored_cut_oracles::apply_oracle_config;
+    use super::common::{
+        StubComm, build_setup_in_code_with_models, fresh_system_and_setup_with, is_chain, positive,
+    };
+
+    type Run = (StudySetup, TrainingOutcome);
+
+    const BY_SCENARIO: BackwardScheduler = BackwardScheduler::ByScenario {};
+    const BY_NODE: BackwardScheduler = BackwardScheduler::ByNode { block_size: None };
+    const FORWARD_PASSES: u32 = 2;
+    const ITERATIONS: u32 = 5;
+    const FULL_LANE_GROUP_ROWS: usize = 8;
+    const WORLD_OPENINGS: usize = 3;
+    const WORLD_FORWARD_PASSES: u32 = 8;
+    const WORLD_ITERATIONS: u32 = 2;
+
+    fn lag_study(
+        openings: usize,
+        forward_passes: u32,
+        iterations: u32,
+        selection: Option<SelectionMethod>,
+    ) -> StudySetup {
+        let (system, mut config, hydro_models) = fpha_lag_study_with(FphaLagOptions {
+            openings,
+            ..FphaLagOptions::default()
+        });
+        config.training.selection = Some(TrainingSelection::Sampled { forward_passes });
+        config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit {
+            limit: iterations,
+        }]);
+        config.training.cut_selection.selection = selection;
+        build_setup_in_code_with_models(system, &config, hydro_models)
+    }
+
+    fn train(mut setup: StudySetup, comm: &impl Communicator, profiles: SolverProfiles) -> Run {
+        let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
+        let outcome = setup
+            .train_with_solver_profiles(&mut solver, comm, 2, ActiveSolver::new, profiles)
+            .expect("train_with_solver_profiles must return Ok");
+        assert!(
+            outcome.error.is_none(),
+            "expected no training error, got: {:?}",
+            outcome.error
+        );
+        (setup, outcome)
+    }
+
+    fn assert_same_bits(label: &str, cached: &Run, bypassed: &Run) {
+        let bits = |values: &[f64]| values.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+        let (cached_result, bypassed_result) = (&cached.1.result, &bypassed.1.result);
+        assert_eq!(
+            cached_result.final_lb.to_bits(),
+            bypassed_result.final_lb.to_bits(),
+            "{label}: final_lb"
+        );
+        assert_eq!(
+            cached_result.iterations, bypassed_result.iterations,
+            "{label}: iterations"
+        );
+        assert_eq!(
+            bits(&cached_result.lower_bound_history),
+            bits(&bypassed_result.lower_bound_history),
+            "{label}: lower_bound_history"
+        );
+        assert_eq!(
+            cached.0.fcf.pools.len(),
+            bypassed.0.fcf.pools.len(),
+            "{label}: pool count"
+        );
+        for (pool_id, (cached_pool, bypassed_pool)) in cached
+            .0
+            .fcf
+            .pools
+            .iter()
+            .zip(&bypassed.0.fcf.pools)
+            .enumerate()
+        {
+            assert_eq!(
+                cached_pool.populated(),
+                bypassed_pool.populated(),
+                "{label}: pool {pool_id} populated"
+            );
+            assert_eq!(
+                bits(cached_pool.intercepts_prefix()),
+                bits(bypassed_pool.intercepts_prefix()),
+                "{label}: pool {pool_id} intercepts"
+            );
+            assert_eq!(
+                bits(cached_pool.coefficients_prefix()),
+                bits(bypassed_pool.coefficients_prefix()),
+                "{label}: pool {pool_id} coefficients"
+            );
+        }
+    }
+
+    fn stores_a_lag_cut(setup: &StudySetup) -> bool {
+        let training_ctx = setup.training_ctx();
+        setup.fcf.pools.iter().enumerate().any(|(pool_id, pool)| {
+            let lag0 = training_ctx.cut_state_layouts[pool_id].lag_point().lag0();
+            (0..pool.populated()).any(|slot| {
+                pool.coefficient_row(slot)[lag0.clone()]
+                    .iter()
+                    .any(|&c| c != 0.0)
+            })
+        })
+    }
+
+    fn train_cached_and_bypassed(
+        build: impl Fn() -> StudySetup,
+        comm: &impl Communicator,
+        backward_scheduler: BackwardScheduler,
+    ) -> (Run, Run) {
+        let leg = |bypass_solve_caches| {
+            let profiles = SolverProfiles {
+                backward_scheduler,
+                bypass_solve_caches,
+                ..SolverProfiles::default()
+            };
+            train(build(), comm, profiles)
+        };
+        (leg(false), leg(true))
+    }
+
+    fn largest_frozen_pin(setup: &StudySetup, last_iteration: u64) -> usize {
+        setup
+            .fcf
+            .pools
+            .iter()
+            .skip(1)
+            .map(|pool| {
+                (0..pool.populated())
+                    .filter(|&slot| {
+                        pool.is_active(slot)
+                            && pool.metadata(slot).iteration_generated < last_iteration
+                    })
+                    .count()
+            })
+            .max()
+            .expect("a chain has pools")
+    }
+
+    #[test]
+    fn fpha_lag_study_trains_to_the_same_bits_with_the_solve_caches_bypassed() {
+        for backward_scheduler in [BY_SCENARIO, BY_NODE] {
+            let (cached, bypassed) = train_cached_and_bypassed(
+                || lag_study(1, FORWARD_PASSES, ITERATIONS, None),
+                &StubComm,
+                backward_scheduler,
+            );
+            let label = format!("{backward_scheduler:?}");
+
+            assert!(is_chain(&cached.0), "{label}: the study must be a chain");
+            assert!(
+                stores_a_lag_cut(&cached.0),
+                "{label}: no stored cut has a nonzero lag-0 coefficient"
+            );
+            let frozen_rows = largest_frozen_pin(&cached.0, cached.1.result.iterations);
+            assert!(
+                frozen_rows >= FULL_LANE_GROUP_ROWS,
+                "{label}: the largest backward pin holds {frozen_rows} frozen rows, below the \
+                 {FULL_LANE_GROUP_ROWS} of a full lane group"
+            );
+            assert_same_bits(&label, &cached, &bypassed);
+            assert_eq!(cached.1.slab_misses, 0, "{label}: cached slab misses");
+            assert!(
+                bypassed.1.slab_misses > 0,
+                "{label}: the bypass recomputed no bracket"
+            );
+        }
+    }
+
+    #[test]
+    fn fpha_lag_study_trains_to_the_same_bits_with_the_solve_caches_bypassed_under_dynamic_cut_selection()
+     {
+        let selection_start = ITERATIONS - 1;
+        let selection = SelectionMethod::Dynamic {
+            start_iteration: positive(selection_start),
+            seed_window: 5,
+            candidate_recency: None,
+            max_added_per_round: positive(10),
+            violation_tolerance: None,
+        };
+        for backward_scheduler in [BY_SCENARIO, BY_NODE] {
+            let (cached, bypassed) = train_cached_and_bypassed(
+                || lag_study(1, FORWARD_PASSES, ITERATIONS, Some(selection.clone())),
+                &StubComm,
+                backward_scheduler,
+            );
+            let label = format!("{backward_scheduler:?}");
+
+            let backward = SolverStatsDelta::aggregate(
+                cached
+                    .1
+                    .result
+                    .solver_stats_log
+                    .iter()
+                    .filter(|entry| {
+                        entry.phase == "backward" && entry.iteration >= u64::from(selection_start)
+                    })
+                    .map(|entry| &entry.delta),
+            );
+            assert!(
+                backward.lp_solves > 0 && backward.basis_offered == 0,
+                "{label}: selection was inactive from iteration {selection_start}: the backward \
+                 offered {} bases over {} solves",
+                backward.basis_offered,
+                backward.lp_solves
+            );
+            assert_same_bits(&label, &cached, &bypassed);
+        }
+    }
+
+    #[test]
+    #[cfg_attr(not(feature = "slow-tests"), ignore = "slow: trains on the MPI world")]
+    fn fpha_lag_study_trains_to_the_same_bits_with_the_solve_caches_bypassed_on_the_world() {
+        let world =
+            create_communicator(BackendKind::Auto).expect("communicator construction must succeed");
+        assert!(
+            2 * world.size() <= usize::try_from(WORLD_FORWARD_PASSES).unwrap(),
+            "{WORLD_FORWARD_PASSES} forward passes leave a rank of {} without trials",
+            world.size()
+        );
+        let label = format!("rank {} of {}", world.rank(), world.size());
+        let build = || lag_study(WORLD_OPENINGS, WORLD_FORWARD_PASSES, WORLD_ITERATIONS, None);
+
+        let (cached, bypassed) = train_cached_and_bypassed(build, &world, BY_NODE);
+        let reference = train(
+            build(),
+            &LocalBackend,
+            SolverProfiles {
+                backward_scheduler: BY_NODE,
+                ..SolverProfiles::default()
+            },
+        );
+
+        assert_same_bits(&label, &cached, &bypassed);
+        assert_same_bits(&label, &cached, &reference);
+        assert_eq!(cached.1.slab_misses, 0, "{label}: cached slab misses");
+        assert!(
+            bypassed.1.slab_misses > 0,
+            "{label}: the bypass recomputed no bracket"
+        );
+    }
+
+    #[test]
+    fn lag_cut_guard_is_false_without_inflow_lags() {
+        let setup = committed_decks()
+            .into_iter()
+            .find_map(|deck| {
+                let (_, setup) = fresh_system_and_setup_with(&deck.dir, apply_oracle_config);
+                (setup.stage_state().max_par_order == 0).then_some(setup)
+            })
+            .expect("some committed deck has no inflow lags");
+
+        let (trained, _) = train(setup, &StubComm, SolverProfiles::default());
+
+        assert!(
+            trained.fcf.pools.iter().any(|pool| pool.populated() > 0),
+            "the de-powered deck stored no cut"
+        );
+        assert!(!stores_a_lag_cut(&trained));
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "slow-tests"),
+        ignore = "trains every committed deck with inflow lags twice"
+    )]
+    fn every_lagged_deck_trains_to_the_same_bits_with_the_solve_caches_bypassed() {
+        let mut selected: Vec<String> = Vec::new();
+        let mut powered_decks = 0;
+        for deck in committed_decks() {
+            let build = || fresh_system_and_setup_with(&deck.dir, apply_oracle_config).1;
+            let setup = build();
+            if setup.stage_state().max_par_order == 0 {
+                continue;
+            }
+            let cached = train(setup, &StubComm, SolverProfiles::default());
+            let bypassed = train(
+                build(),
+                &StubComm,
+                SolverProfiles {
+                    bypass_solve_caches: true,
+                    ..SolverProfiles::default()
+                },
+            );
+
+            assert_same_bits(&deck.key, &cached, &bypassed);
+            if is_chain(&cached.0) {
+                assert_eq!(cached.1.slab_misses, 0, "{}: cached slab misses", deck.key);
+            }
+            assert!(
+                bypassed.1.slab_misses >= cached.1.slab_misses,
+                "{}: the bypass missed less than the cache",
+                deck.key
+            );
+            powered_decks += usize::from(stores_a_lag_cut(&cached.0) && bypassed.1.slab_misses > 0);
+            selected.push(deck.key.clone());
+        }
+        eprintln!(
+            "selected {} decks: {selected:?}; powered={powered_decks}",
+            selected.len()
+        );
+        assert!(
+            !selected.is_empty(),
+            "no committed deck has inflow-lag state"
+        );
+        assert!(
+            powered_decks > 0,
+            "no deck stored a lag cut and recomputed a bracket under the bypass"
+        );
+    }
+}
+
+#[path = "cut_basis/cut_row_push_coverage.rs"]
+mod cut_row_push_coverage;

@@ -892,13 +892,17 @@ mod multi_resolution_integration {
     }
 
     /// Under `truncation`, the PAR value computed out of the LP at a trial state's
-    /// lags and an opening's noise equals the solved z primal at that state and
-    /// noise, on monthly and quarterly stages.
+    /// lags and an opening's noise equals the realized inflow the solve's coupled
+    /// rows shift by at that state and noise, on monthly and quarterly stages.
     #[test]
-    fn truncation_out_of_lp_par_value_matches_the_z_row() {
+    fn truncation_out_of_lp_par_value_matches_the_realized_inflow() {
         use novomodelo_sddp::setup::{NodePos, StageIdx};
-        use novomodelo_sddp::test_support::{node_opening_noise, z_inflow_primal_for_probe};
-        use novomodelo_sddp::workspace::StageContext;
+        use novomodelo_sddp::test_support::template_structure::state_lag_dims;
+        use novomodelo_sddp::test_support::{
+            ProbeCut, ProbeCuts, ProbeOpening, cut_rows_for_slots_into, empty_row_batch,
+            node_opening_noise, opening_cut_for_probe,
+        };
+        use novomodelo_solver::SolverInterface;
         use novomodelo_stochastic::evaluate_par_batch;
 
         let case_dir = d30_case_dir();
@@ -928,16 +932,12 @@ mod multi_resolution_integration {
             "training error: {:?}",
             outcome.error
         );
-        let frozen = outcome.result.frozen_templates.expect("frozen templates");
         let mut pool = setup
             .create_workspace_pool(&comm, 1, ActiveSolver::new)
             .expect("workspace pool");
         let ws = &mut pool.workspaces[0];
         let training_ctx = setup.training_ctx();
-        let stage_ctx = StageContext {
-            templates: &frozen,
-            ..setup.stage_ctx()
-        };
+        let stage_ctx = setup.stage_ctx();
         let state = training_ctx.state;
         let par = setup.inputs.stochastic.par();
         let tree = training_ctx.stochastic.tree_view();
@@ -957,24 +957,47 @@ mod multi_resolution_integration {
         let (mut max_rel, mut checked, mut quarterly_checked) = (0.0_f64, 0usize, 0usize);
         let (mut strong_lag, mut negative) = (0usize, 0usize);
         let mut r = vec![0.0; n_h];
+        let mut cut = ProbeCut::new(&training_ctx);
         for (t, &is_quarterly) in quarterly.iter().enumerate().skip(1) {
-            let node_id = setup.inputs.node_graph.node_ids[NodePos(t)];
+            let slots: Vec<usize> = setup.fcf.active_cuts(t).map(|(slot, _, _)| slot).collect();
+            let template = stage_ctx.template(StageIdx(t));
+            let mut cut_rows = empty_row_batch();
+            cut_rows_for_slots_into(
+                &mut cut_rows,
+                &setup.fcf.pools[t],
+                &slots,
+                state,
+                &training_ctx.cut_state_layouts[t],
+                &template.col_scale,
+            );
             for x in &stored_trial_states(&setup, NodePos(t - 1)) {
-                let lags = &x[state.inflow_lags.clone()];
+                let lags = &x[state_lag_dims(state)];
                 for o in 0..tree.n_openings(t) {
                     let noise = node_opening_noise(&setup, NodePos(t), o);
                     evaluate_par_batch(par, t, lags, &noise[..n_h], &mut r);
-                    let z = z_inflow_primal_for_probe(
+                    ws.solver.reset_solver_state();
+                    ws.solver.load_model(template);
+                    ws.solver.add_rows(&cut_rows);
+                    opening_cut_for_probe(
                         ws,
                         &stage_ctx,
                         &training_ctx,
-                        &setup.fcf.pools[t],
-                        StageIdx(t),
-                        node_id,
-                        x,
-                        &noise,
+                        &ProbeOpening {
+                            stage: StageIdx(t),
+                            pinned_state: x,
+                            raw_noise: &noise,
+                            cuts: ProbeCuts {
+                                pool: &setup.fcf.pools[t],
+                                pool_id: t,
+                                slots: &slots,
+                            },
+                            extracted_pool_id: t,
+                            inflow_slack_bounds: None,
+                        },
+                        &mut cut,
                     )
                     .expect("probe solve");
+                    let z = &cut.realized_inflow;
                     for h in 0..n_h {
                         let rel = (r[h] - z[h]).abs() / r[h].abs().max(1.0);
                         max_rel = max_rel.max(rel);
@@ -990,7 +1013,7 @@ mod multi_resolution_integration {
                         strong_lag += usize::from(lag_term.abs() > 1.0);
                         assert!(
                             rel <= 1e-9,
-                            "stage {t} opening {o} hydro {h}: out-of-LP r = {} vs solved z = {}",
+                            "stage {t} opening {o} hydro {h}: out-of-LP r = {} vs realized inflow = {}",
                             r[h],
                             z[h]
                         );
@@ -1015,9 +1038,10 @@ mod multi_resolution_integration {
 
 mod sparse_dense {
     //! `build_cut_row_batch_into` emits one `(lp_column, coefficient)` pair per
-    //! nonzero-state-mask entry in ascending order, then the theta column. For a
-    //! proper-subset mask (mixed AR orders), the emitted columns and values must
-    //! equal the remapped LP columns and the negated coefficients.
+    //! nonzero-state-mask entry that has an LP column, in ascending order, then
+    //! the theta column. For a proper-subset mask (mixed AR orders), the emitted
+    //! columns and values must equal the remapped LP columns and the negated
+    //! coefficients; a lag slot has no LP column and emits nothing.
 
     use novomodelo_sddp::FutureCostFunction;
     use novomodelo_sddp::build_cut_row_batch_into;
@@ -1025,6 +1049,7 @@ mod sparse_dense {
     use novomodelo_sddp::lead_time::AnticipatedResolution;
     use novomodelo_sddp::setup::NodeId;
     use novomodelo_sddp::test_support::cut_state_projection;
+    use novomodelo_sddp::test_support::template_structure::state_lag_dims;
     use novomodelo_solver::RowBatch;
 
     #[test]
@@ -1070,9 +1095,14 @@ mod sparse_dense {
 
         assert_eq!(batch.num_rows, 1);
         let theta_col = state.theta;
-        let expected_cols: Vec<i32> = mask
+        let lag_dims = state_lag_dims(&state);
+        let lp_dims: Vec<_> = mask
             .iter()
-            .map(|&j| state.state_to_lp_column(j).get() as i32)
+            .filter(|j| !lag_dims.contains(&j.get()))
+            .collect();
+        let expected_cols: Vec<i32> = lp_dims
+            .iter()
+            .map(|&&j| state.state_to_lp_column(j).get() as i32)
             .chain(std::iter::once(theta_col as i32))
             .collect();
         assert_eq!(
@@ -1080,9 +1110,9 @@ mod sparse_dense {
             "sparse col_indices mismatch"
         );
 
-        let expected_values: Vec<f64> = mask
+        let expected_values: Vec<f64> = lp_dims
             .iter()
-            .map(|&j| -coeffs[j.get()])
+            .map(|&&j| -coeffs[j.get()])
             .chain(std::iter::once(1.0))
             .collect();
         for (i, (actual, expected)) in batch.values.iter().zip(expected_values.iter()).enumerate() {
@@ -3010,9 +3040,9 @@ mod water_arc_and_post_study_anticipated_coexist_on_extended_layout {
         RowSelectionConfig, SimulationConfig, StoppingMode, StoppingRuleConfig, TrainingConfig,
         TrainingSelection, TrainingSolverConfig, UpperBoundEvaluationConfig,
     };
-    use novomodelo_sddp::indexer::{CutStateProjection, StateDim};
-    use novomodelo_sddp::setup::{NodeId, StageIdx};
-    use novomodelo_sddp::test_support::{patch_backward_opening_for_probe, solve_stage_for_probe};
+    use novomodelo_sddp::indexer::StateDim;
+    use novomodelo_sddp::setup::StageIdx;
+    use novomodelo_sddp::test_support::{ProbeCuts, prep_for_counterfactual_probe};
     use novomodelo_sddp::workspace::SolverWorkspace;
     use novomodelo_sddp::{
         BoundaryLoadRequest, SolverStatsDelta, inject_boundary_cuts, load_boundary_cuts,
@@ -3458,14 +3488,6 @@ mod water_arc_and_post_study_anticipated_coexist_on_extended_layout {
         let ctx = setup.stage_ctx();
         let base = &ctx.templates[terminal_stage];
 
-        let cut_state = CutStateProjection::new(
-            state,
-            novomodelo_core::temporal::StageStateConfig {
-                storage: true,
-                inflow_lags: true,
-            },
-        );
-
         let mut batch = RowBatch {
             num_rows: 0,
             row_starts: Vec::new(),
@@ -3479,7 +3501,7 @@ mod water_arc_and_post_study_anticipated_coexist_on_extended_layout {
             &setup.fcf,
             pool_id,
             state,
-            &cut_state,
+            &setup.training_ctx().cut_state_layouts[pool_id],
             &base.col_scale,
         );
 
@@ -3489,16 +3511,15 @@ mod water_arc_and_post_study_anticipated_coexist_on_extended_layout {
         frozen
     }
 
-    /// Solve the terminal stage's frozen `template` against `pool` with the
-    /// state vector pinned to `pinned_state`, returning `theta`'s primal
+    /// Solve the terminal stage's frozen `template` against pool `pool_id` with
+    /// the state vector pinned to `pinned_state`, returning `theta`'s primal
     /// value. `raw_noise` is zeroed per hydro (deterministic mean inflow):
     /// the probe's pinned state alone drives `theta`, independent of the
     /// realized noise draw.
     fn terminal_theta(
         setup: &novomodelo_sddp::StudySetup,
         template: &StageTemplate,
-        pool: &novomodelo_sddp::CutPool,
-        node_id: NodeId,
+        pool_id: usize,
         pinned_state: &[f64],
     ) -> f64 {
         let comm = super::common::StubComm;
@@ -3510,22 +3531,33 @@ mod water_arc_and_post_study_anticipated_coexist_on_extended_layout {
         let training_ctx = setup.training_ctx();
         let theta_col = setup.stage_state().theta;
         let terminal_stage = setup.num_stages() - 1;
-        let raw_noise = vec![0.0_f64; setup.stage_state().hydro_count];
+        let raw_noise = vec![0.0_f64; training_ctx.stochastic.dim()];
+        let slots: Vec<usize> = setup
+            .fcf
+            .active_cuts(pool_id)
+            .map(|(slot, _, _)| slot)
+            .collect();
 
         ws.solver.reset_solver_state();
         ws.solver.load_model(template);
-        patch_backward_opening_for_probe(
+        prep_for_counterfactual_probe(
             ws,
             &ctx,
             &training_ctx,
             StageIdx(terminal_stage),
             pinned_state,
             &raw_noise,
+            &ProbeCuts {
+                pool: &setup.fcf.pools[pool_id],
+                pool_id,
+                slots: &slots,
+            },
         );
 
-        let view =
-            solve_stage_for_probe(ws, &ctx, pool, None, StageIdx(terminal_stage), 0, node_id)
-                .expect("terminal stage solve must not error");
+        let view = ws
+            .solver
+            .solve(None)
+            .expect("terminal stage solve must not error");
         view.primal[theta_col]
     }
 
@@ -3637,33 +3669,28 @@ mod water_arc_and_post_study_anticipated_coexist_on_extended_layout {
             .terminal_pool(setup.num_stages())
             .unwrap();
         let template = freeze_terminal_template(&setup, terminal_pool_id);
-        let pool = &setup.fcf.pools[terminal_pool_id];
-        let node_id = NodeId(i32::try_from(setup.num_stages() - 1).unwrap_or(0));
 
         let x_water = 4.0;
         let x_ant = 6.0;
 
         let theta_baseline =
-            terminal_theta(&setup, &template, pool, node_id, &pin_state(&setup, &[]));
+            terminal_theta(&setup, &template, terminal_pool_id, &pin_state(&setup, &[]));
         let theta_water = terminal_theta(
             &setup,
             &template,
-            pool,
-            node_id,
+            terminal_pool_id,
             &pin_state(&setup, &[(water_pin, x_water)]),
         );
         let theta_ant = terminal_theta(
             &setup,
             &template,
-            pool,
-            node_id,
+            terminal_pool_id,
             &pin_state(&setup, &[(ant_slot, x_ant)]),
         );
         let theta_both = terminal_theta(
             &setup,
             &template,
-            pool,
-            node_id,
+            terminal_pool_id,
             &pin_state(&setup, &[(water_pin, x_water), (ant_slot, x_ant)]),
         );
 

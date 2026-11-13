@@ -2694,3 +2694,161 @@ fn opening_tree_historical_standardization_ring_aware_eta_requires_derived_downs
         );
     }
 }
+
+mod compact_forward_routing {
+    use novomodelo_sddp::{
+        StudySetup, TrajectoryRecord,
+        forward::{ForwardPassBatch, run_forward_pass},
+        setup::StageIdx,
+        workspace::BasisStore,
+    };
+    use novomodelo_solver::{ActiveSolver, StageTemplate};
+
+    use super::common::{StubComm, for_each_study};
+
+    const PASSES: usize = 2;
+    const ITERATIONS: [u64; 2] = [1, 2];
+
+    fn has_cut_free_frozen_templates(setup: &StudySetup) -> bool {
+        setup.training_ctx().dcs.is_none() && setup.fcf.total_active_cuts() == 0
+    }
+
+    fn run_forward(setup: &StudySetup, iterations: &[u64]) -> Vec<Vec<TrajectoryRecord>> {
+        let mut pool = setup
+            .create_workspace_pool(&StubComm, 1, ActiveSolver::new)
+            .expect("workspace pool");
+        let stage_ctx = setup.stage_ctx();
+        let training_ctx = setup.training_ctx();
+        let num_stages = setup.num_stages();
+        let frozen: Vec<StageTemplate> = training_ctx
+            .node_graph
+            .pool_stage
+            .iter()
+            .map(|s| stage_ctx.templates[s.0].clone())
+            .collect();
+        let mut basis_store = BasisStore::new(PASSES, training_ctx.node_graph.nodes.len());
+        let mut records: Vec<TrajectoryRecord> = (0..PASSES * num_stages)
+            .map(|_| TrajectoryRecord::default())
+            .collect();
+        iterations
+            .iter()
+            .map(|&iteration| {
+                let batch = ForwardPassBatch {
+                    local_forward_passes: PASSES,
+                    total_forward_passes: PASSES,
+                    iteration,
+                    fwd_offset: 0,
+                    event_sender: None,
+                };
+                let _ = run_forward_pass(
+                    &mut pool.workspaces,
+                    &mut basis_store,
+                    &stage_ctx,
+                    &frozen,
+                    &setup.fcf,
+                    &training_ctx,
+                    &batch,
+                    &mut records,
+                )
+                .expect("forward pass");
+                records.clone()
+            })
+            .collect()
+    }
+
+    fn assert_lags_carried(key: &str, compact: &StudySetup, records: &[TrajectoryRecord]) {
+        let state = compact.stage_state();
+        let (n, max_order) = (state.hydro_count, state.max_par_order);
+        let lags = n..n * (1 + max_order);
+        let stage_ctx = compact.stage_ctx();
+        let training_ctx = compact.training_ctx();
+        let num_stages = compact.num_stages();
+        for m in 0..PASSES {
+            for t in 0..num_stages {
+                let transition = stage_ctx.stage_lag(StageIdx(t));
+                if transition.rebuild_from_downstream {
+                    continue;
+                }
+                let incoming = if t == 0 {
+                    training_ctx.initial_state
+                } else {
+                    &records[m * num_stages + t - 1].state
+                };
+                let incoming = &incoming[lags.clone()];
+                let outgoing = &records[m * num_stages + t].state[lags.clone()];
+                if transition.finalize_period {
+                    for lag in 1..max_order {
+                        for h in 0..n {
+                            assert_eq!(
+                                outgoing[lag * n + h].to_bits(),
+                                incoming[(lag - 1) * n + h].to_bits(),
+                                "{key}: pass {m} stage {t} lag {lag} hydro {h} must age one lag"
+                            );
+                        }
+                    }
+                } else {
+                    for (j, (out, inc)) in outgoing.iter().zip(incoming).enumerate() {
+                        assert_eq!(
+                            out.to_bits(),
+                            inc.to_bits(),
+                            "{key}: pass {m} stage {t} lag slot {j} must be carried"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn compact_forward_carries_the_lags() {
+        let mut visited = 0;
+        let mut saw_lags = false;
+        for_each_study(|key, _, compact| {
+            if !has_cut_free_frozen_templates(compact) {
+                return;
+            }
+            visited += 1;
+            saw_lags |= compact.stage_state().max_par_order > 0;
+            for (iteration, records) in ITERATIONS.iter().zip(run_forward(compact, &ITERATIONS)) {
+                for record in &records {
+                    assert!(
+                        record.stage_cost.is_finite(),
+                        "{key}: iteration {iteration}: compact stage cost must be finite"
+                    );
+                }
+                assert_lags_carried(key, compact, &records);
+            }
+        });
+        assert!(visited >= 1, "no study was visited");
+        assert!(saw_lags, "no visited study has a PAR lag");
+    }
+
+    #[test]
+    fn compact_forward_is_reproducible_across_fresh_pools() {
+        let mut visited = 0;
+        for_each_study(|key, _, compact| {
+            if !has_cut_free_frozen_templates(compact) {
+                return;
+            }
+            visited += 1;
+            let first = run_forward(compact, &ITERATIONS);
+            let second = run_forward(compact, &ITERATIONS);
+            for (iteration, (a_records, b_records)) in first.iter().zip(&second).enumerate() {
+                for (i, (a, b)) in a_records.iter().zip(b_records).enumerate() {
+                    assert_eq!(
+                        a.stage_cost.to_bits(),
+                        b.stage_cost.to_bits(),
+                        "{key}: iteration index {iteration} record {i}: stage cost"
+                    );
+                    let a_state: Vec<u64> = a.state.iter().map(|v| v.to_bits()).collect();
+                    let b_state: Vec<u64> = b.state.iter().map(|v| v.to_bits()).collect();
+                    assert_eq!(
+                        a_state, b_state,
+                        "{key}: iteration index {iteration} record {i}: state"
+                    );
+                }
+            }
+        });
+        assert!(visited >= 1, "no study was visited");
+    }
+}

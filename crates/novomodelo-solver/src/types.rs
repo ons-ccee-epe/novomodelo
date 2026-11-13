@@ -271,9 +271,6 @@ pub struct StageTemplate {
     /// Row upper bounds (length: `num_rows`; set equal to `row_lower` for equality).
     pub row_upper: Vec<f64>,
 
-    /// Number of state variables (contiguous prefix of columns).
-    pub n_state: usize,
-
     /// Per-column scaling factors for numerical conditioning.
     ///
     /// When non-empty (length `num_cols`), the constraint matrix, objective
@@ -365,7 +362,6 @@ impl StageTemplate {
             objective: Vec::new(),
             row_lower: Vec::new(),
             row_upper: Vec::new(),
-            n_state: 0,
             col_scale: Vec::new(),
             row_scale: Vec::new(),
         }
@@ -723,7 +719,6 @@ mod tests {
             objective: vec![0.0, 1.0, 50.0],
             row_lower: vec![6.0, 14.0],
             row_upper: vec![6.0, 14.0],
-            n_state: 1,
             col_scale: Vec::new(),
             row_scale: Vec::new(),
         }
@@ -748,8 +743,6 @@ mod tests {
         assert_eq!(tmpl.objective, vec![0.0, 1.0, 50.0]);
         assert_eq!(tmpl.row_lower, vec![6.0, 14.0]);
         assert_eq!(tmpl.row_upper, vec![6.0, 14.0]);
-
-        assert_eq!(tmpl.n_state, 1);
     }
 
     #[test]

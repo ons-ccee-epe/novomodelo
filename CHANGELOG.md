@@ -15,6 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `block_id`, pricing that block's generation. Such rows on a thermal with
   `anticipated_config` are still refused.
 
+### Changed
+
+- Training and simulation results change: each stage LP solves the same model
+  with fewer rows and columns.
+
 ## [0.20.0] - 2026-11-03
 
 ### Added

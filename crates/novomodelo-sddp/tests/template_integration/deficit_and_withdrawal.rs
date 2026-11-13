@@ -384,7 +384,7 @@ fn test_multi_segment_deficit_load_balance_coefficients() {
 }
 
 /// Water balance RHS = -(ζ * `water_withdrawal_m3s`); the realized inflow
-/// couples through the z-inflow column rather than a template RHS term. For
+/// enters through the per-solve row-bound patch rather than a template RHS term. For
 /// withdrawal=10 the RHS is `-(744 * 3600/1_000_000 * 10) = -2.6784`.
 #[test]
 fn withdrawal_rhs_subtracted_from_water_balance() {
@@ -402,7 +402,7 @@ fn withdrawal_rhs_subtracted_from_water_balance() {
     .expect("build ok");
 
     let t = &result.templates[0];
-    let row_water = 1_usize; // row_water_balance_start = N = 1
+    let row_water = 0_usize; // the water-balance rows start at row 0
     let total_hours = 744.0_f64;
     let zeta = total_hours * 3_600.0 / 1_000_000.0;
     let expected_rhs = -(zeta * withdrawal);
@@ -451,8 +451,8 @@ fn withdrawal_zero_leaves_rhs_unchanged_from_base() {
     let t_zero = &result_zero.templates[0];
     let t_base = &result_base.templates[0];
 
-    // N=1, L=0: row_water_balance_start = 1.
-    let row_water = 1_usize;
+    // N=1, L=0: the water-balance rows start at row 0.
+    let row_water = 0_usize;
     assert!(
         (t_zero.row_lower[row_water] - t_base.row_lower[row_water]).abs() < 1e-15,
         "zero-withdrawal row_lower must equal base: {} vs {}",
@@ -485,7 +485,7 @@ fn withdrawal_slack_matrix_entry_coefficient_is_minus_zeta() {
     let n_h = system.hydros().len();
     // Withdrawal slack neg column: followed by N pos cols and 4*N operational violation slack columns.
     let col_neg = t.num_cols - 1 - 4 * n_h - n_h;
-    let row_water = 1_usize; // water balance for hydro 0 = N + h = 1 + 0
+    let row_water = 0_usize; // water balance for hydro 0
 
     let total_hours = 744.0_f64;
     let zeta = total_hours * 3_600.0 / 1_000_000.0;
@@ -852,15 +852,15 @@ fn two_hydro_withdrawal_slack_entries_per_hydro() {
     let t = &result.templates[0];
     let n_h = system.hydros().len();
 
-    // N=2, L=0: state+aux = N*(3+L)+1 = 7.
-    // col_withdrawal_neg_start = 15, col_withdrawal_pos_start = 17,
-    // operational violation slacks = 4*2 = 8, num_cols = 27.
-    // Withdrawal neg columns: num_cols - 6*N = 27 - 12 = 15.
+    // N=2, L=0: state+aux = N*2+1 = 5.
+    // col_withdrawal_neg_start = 13, col_withdrawal_pos_start = 15,
+    // operational violation slacks = 4*2 = 8, num_cols = 25.
+    // Withdrawal neg columns: num_cols - 6*N = 25 - 12 = 13.
     let col_w0 = t.num_cols - 6 * n_h;
     let col_w1 = t.num_cols - 6 * n_h + 1;
 
-    let row_w0 = 2_usize; // water balance for hydro 0 (row_water_balance_start = N = 2)
-    let row_w1 = 3_usize; // water balance for hydro 1
+    let row_w0 = 0_usize; // water balance for hydro 0
+    let row_w1 = 1_usize; // water balance for hydro 1
 
     let total_hours = 744.0_f64;
     let zeta = total_hours * 3_600.0 / 1_000_000.0;
@@ -1155,15 +1155,15 @@ fn three_hydro_num_cols_includes_three_withdrawal_slacks() {
     let t = &result.templates[0];
 
     // N=3, L=0, 1 block, no thermals/lines/evap/inflow-penalty:
-    // state+aux: 3 storage + 3 z_inflow + 3 storage_in + 1 theta = 10
+    // state+aux: 3 storage + 3 storage_in + 1 theta = 7
     // turbine: 3, spillage: 3, diversion: 3
     // deficit: 1, excess: 1
     // inflow slack: 0 (no penalty config)
     // evap: 0
     // withdrawal slacks: 3 neg + 3 pos = 6
     // operational violation slacks: 4*3 = 12
-    // Total = 10 + 3 + 3 + 3 + 1 + 1 + 6 + 12 = 39
-    let expected_cols = 39_usize;
+    // Total = 7 + 3 + 3 + 3 + 1 + 1 + 6 + 12 = 36
+    let expected_cols = 36_usize;
     assert_eq!(
         t.num_cols, expected_cols,
         "3-hydro system: num_cols should be {expected_cols}, got {}",

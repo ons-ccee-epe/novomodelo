@@ -13,7 +13,7 @@ use crate::{
     forward::NestedUbScratch,
     lower_bound::LbEvalScratch,
     lp::builder::PatchBuffer,
-    setup::{NodeId, node_graph::StageIdx},
+    setup::node_graph::StageIdx,
     solver_stats::SolverStatsDelta,
     trajectory::TrajectoryRecord,
     workspace::{ScratchBuffers, WorkspaceSizing},
@@ -43,10 +43,7 @@ pub(crate) struct IterationScratch {
     pub lb_cut_row_map: CutRowMap,
     /// Per-evaluation scratch buffers for lower-bound evaluation.
     pub lb_scratch: LbEvalScratch,
-    /// Noise/NCS-transform scratch for the lower-bound path, the same shape
-    /// [`StageSolvePrep::run`] reads on every other solve site.
-    ///
-    /// [`StageSolvePrep::run`]: crate::training::stage_solve_prep::StageSolvePrep::run
+    /// Noise/NCS-transform scratch for the lower-bound path.
     pub lb_noise_scratch: ScratchBuffers,
     /// Scratch buffers for `freeze_rows_into_template` (count/emit-pass temporaries).
     pub(crate) freeze_scratch: FreezeScratch,
@@ -87,11 +84,8 @@ impl IterationScratch {
         let num_stages = training_ctx.horizon.num_stages();
         let records: Vec<TrajectoryRecord> = (0..max_local_fwd * num_stages)
             .map(|_| TrajectoryRecord {
-                primal: Vec::new(),
-                dual: Vec::new(),
-                stage_cost: 0.0,
-                node_id: NodeId(0),
                 state: vec![0.0; n_state],
+                ..TrajectoryRecord::default()
             })
             .collect();
 
@@ -172,13 +166,19 @@ mod tests {
     use novomodelo_solver::StageTemplate;
 
     use super::IterationScratch;
-    use crate::lp::builder::StageGeometry;
+    use crate::lp::builder::{InflowCoupling, StageGeometry};
     use crate::lp::indexer::HydroSys;
     use crate::setup::node_graph::StageIdx;
     use crate::test_support::{
-        StageContextFixture, TrainingContextFixture, equipment_free_geometry, state_layout,
-        state_layout_full, state_layout_with_transit_buckets,
+        StageContextFixture, TrainingContextFixture, equipment_free_geometry,
+        inflow_coupling_with_entries, state_layout, state_layout_full,
+        state_layout_with_transit_buckets,
     };
+
+    fn one_row_per_hydro_couplings(n_hydros: usize, num_stages: usize) -> Vec<InflowCoupling> {
+        let entries: Vec<(usize, usize)> = (0..n_hydros).map(|h| (h, h)).collect();
+        vec![inflow_coupling_with_entries(n_hydros, &entries); num_stages]
+    }
 
     fn minimal_template() -> StageTemplate {
         StageTemplate {
@@ -193,7 +193,6 @@ mod tests {
             objective: vec![0.0, 0.0, 0.0, 1.0],
             row_lower: vec![0.0, 0.0],
             row_upper: vec![0.0, 0.0],
-            n_state: 1,
             col_scale: Vec::new(),
             row_scale: Vec::new(),
         }
@@ -203,7 +202,7 @@ mod tests {
         templates: &'a [StageTemplate],
         geometry_per_stage: &'a [StageGeometry],
     ) -> StageContextFixture<'a> {
-        StageContextFixture::new(templates, &[], geometry_per_stage)
+        StageContextFixture::new(templates, &[], geometry_per_stage).without_inflow_entries(1)
     }
 
     #[test]
@@ -259,6 +258,61 @@ mod tests {
     }
 
     #[test]
+    fn reserve_cut_rows_grows_the_lb_buffers_only_upward() {
+        let num_stages = 2;
+        let templates = vec![minimal_template(); num_stages];
+        let geometry = equipment_free_geometry(&vec![0; num_stages]);
+        let fixture = make_stage_ctx(&templates, &geometry);
+        let stage_ctx = fixture.ctx();
+        let training_fixture =
+            TrainingContextFixture::new(state_layout(1, 1)).num_stages(num_stages);
+        let training_ctx = training_fixture.training_ctx();
+
+        let mut scratch = IterationScratch::new(
+            1,
+            &(0..num_stages).map(StageIdx).collect::<Vec<StageIdx>>(),
+            10,
+            5,
+            &training_ctx,
+            &stage_ctx,
+        );
+        scratch.lb_noise_scratch.reserve_cut_rows(10);
+        let buffers = |s: &IterationScratch| {
+            let n = &s.lb_noise_scratch;
+            [
+                (
+                    "cut_slots_buf",
+                    n.cut_slots_buf.len(),
+                    n.cut_slots_buf.capacity(),
+                ),
+                (
+                    "cut_bracket_buf",
+                    n.cut_bracket_buf.len(),
+                    n.cut_bracket_buf.capacity(),
+                ),
+                ("cut_rhs_buf", n.cut_rhs_buf.len(), n.cut_rhs_buf.capacity()),
+            ]
+        };
+
+        for (name, len, capacity) in buffers(&scratch) {
+            assert_eq!(len, 0, "{name} must start empty");
+            assert!(capacity >= 10, "{name} must reserve 10, got {capacity}");
+        }
+
+        scratch.lb_noise_scratch.cut_rhs_buf.resize(12, 1.0);
+        scratch.lb_noise_scratch.reserve_cut_rows(5);
+        let rhs = &scratch.lb_noise_scratch.cut_rhs_buf;
+        assert!(rhs.capacity() >= 12, "a smaller reserve must not shrink");
+        assert_eq!(rhs.len(), 12, "a smaller reserve must keep the contents");
+        assert!(rhs.iter().all(|v| v.to_bits() == 1.0_f64.to_bits()));
+
+        scratch.lb_noise_scratch.reserve_cut_rows(20);
+        for (name, _, capacity) in buffers(&scratch) {
+            assert!(capacity >= 20, "{name} must reserve 20, got {capacity}");
+        }
+    }
+
+    #[test]
     fn iteration_scratch_new_pre_freezes_templates() {
         let max_local_fwd = 2;
         let num_stages = 3;
@@ -310,7 +364,9 @@ mod tests {
 
         let templates = vec![minimal_template(); num_stages];
         let geometry = equipment_free_geometry(&vec![0; num_stages]);
-        let fixture = make_stage_ctx(&templates, &geometry);
+        let couplings = one_row_per_hydro_couplings(hydro_count, num_stages);
+        let fixture =
+            StageContextFixture::new(&templates, &[], &geometry).inflow_coupling(&couplings);
         let stage_ctx = fixture.ctx();
         let state = state_layout_full(hydro_count, max_par_order, vec![k_max; n_anticipated]);
         assert_eq!(
@@ -329,28 +385,25 @@ mod tests {
             &stage_ctx,
         );
 
-        // Forward-pass layout capacity:
-        //   M*B + N
-        // with M = 0 and B = 0 in the LB patch buffer (no load patches); the A*K
-        // anticipated-state slots size the column region only, never this row region.
+        // M = 0 and B = 0 in the LB patch buffer (no load patches).
         let expected_capacity = hydro_count;
         assert_eq!(
             scratch.patch_buf.indices.len(),
             expected_capacity,
-            "patch_buf indices length must equal M*B + N regardless of A*K",
+            "patch_buf indices length must equal M*B + shifted rows regardless of A*K",
         );
         assert_eq!(
             scratch.patch_buf.lower.len(),
             expected_capacity,
-            "patch_buf lower length must equal M*B + N regardless of A*K",
+            "patch_buf lower length must equal M*B + shifted rows regardless of A*K",
         );
         assert_eq!(
             scratch.patch_buf.upper.len(),
             expected_capacity,
-            "patch_buf upper length must equal M*B + N regardless of A*K",
+            "patch_buf upper length must equal M*B + shifted rows regardless of A*K",
         );
 
-        // forward_patch_count is 0 before any load or z-inflow patch has been filled.
+        // forward_patch_count is 0 before any load or inflow-shift patch has been filled.
         assert_eq!(
             scratch.patch_buf.forward_patch_count(),
             0,
@@ -371,7 +424,9 @@ mod tests {
 
         let templates = vec![minimal_template(); num_stages];
         let geometry = equipment_free_geometry(&vec![0; num_stages]);
-        let fixture = make_stage_ctx(&templates, &geometry);
+        let couplings = one_row_per_hydro_couplings(hydro_count, num_stages);
+        let fixture =
+            StageContextFixture::new(&templates, &[], &geometry).inflow_coupling(&couplings);
         let stage_ctx = fixture.ctx();
         let training_fixture =
             TrainingContextFixture::new(state_layout(hydro_count, max_par_order))
@@ -387,7 +442,7 @@ mod tests {
             &stage_ctx,
         );
 
-        // With A=0 and K=0, row capacity is still M*B + N = 0 + N = N.
+        // With A=0 and K=0, row capacity is still M*B + shifted rows = 0 + N.
         let expected_capacity = hydro_count;
         assert_eq!(
             scratch.patch_buf.indices.len(),
@@ -428,10 +483,9 @@ mod tests {
             &stage_ctx,
         );
 
-        // Column-bound region: N*(1+L) + n_buckets + A*K + W = 2*2 + 3 + 0 + 0 = 7.
         assert_eq!(
             scratch.patch_buf.state_col_patch_count(),
-            hydro_count * (1 + max_par_order) + n_buckets,
+            hydro_count + n_buckets,
             "patch_buf column region must include n_buckets bucket slots",
         );
     }

@@ -3,7 +3,7 @@
 use novomodelo_solver::RowBatch;
 
 use crate::cut::FutureCostFunction;
-use crate::cut::row::push_scaled_coefficient;
+use crate::cut::row::push_cut_row;
 use crate::indexer::{CutStateProjection, StateSpace};
 
 /// Fill a pre-allocated [`RowBatch`] with only the Benders cut rows generated
@@ -58,25 +58,14 @@ pub fn build_delta_cut_row_batch_into(
         #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
         batch.row_starts.push(nz_offset as i32);
 
-        for (j, lp_col) in cut_state.render_pairs() {
-            push_scaled_coefficient(batch, lp_col, coefficients[j.get()], col_scale);
-        }
-
-        debug_assert!(
-            i32::try_from(theta_col).is_ok(),
-            "theta_col={theta_col} exceeds i32::MAX"
+        push_cut_row(
+            batch,
+            intercept,
+            coefficients,
+            cut_state,
+            theta_col,
+            col_scale,
         );
-        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-        batch.col_indices.push(theta_col as i32);
-        let d_theta = if col_scale.is_empty() {
-            1.0
-        } else {
-            col_scale[theta_col]
-        };
-        batch.values.push(d_theta);
-
-        batch.row_lower.push(intercept);
-        batch.row_upper.push(f64::INFINITY);
 
         nz_offset += nnz_per_cut;
     }

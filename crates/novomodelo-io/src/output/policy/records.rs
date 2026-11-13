@@ -200,7 +200,8 @@ impl EntitySlot {
 /// [`StageCutsPayload::cost_scale_factor`] names.
 #[derive(Debug, Clone)]
 pub struct PolicyCutRecord<'a> {
-    /// LP row position (required for artifact reproducibility).
+    /// Pool slot of this piece. Required for artifact reproducibility and
+    /// basis warm-starting.
     pub slot_index: u32,
     /// Training iteration that generated this piece.
     pub iteration: u32,
@@ -637,7 +638,8 @@ pub struct CheckpointManifest {
 /// input buffer.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct OwnedPolicyCutRecord {
-    /// LP row position (required for artifact reproducibility).
+    /// Pool slot of this piece. Required for artifact reproducibility and
+    /// basis warm-starting.
     pub slot_index: u32,
     /// Training iteration that generated this piece.
     pub iteration: u32,

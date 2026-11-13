@@ -54,7 +54,7 @@ use novomodelo_sddp::{
     setup::node_graph::Traversal,
     simulate,
     simulation::{EntityCounts, SimulationConfig, SimulationOutputSpec},
-    test_support::permissive_state_boxes,
+    test_support::{permissive_state_boxes, template_structure::state_lag_dims},
     train,
     workspace::{SolverWorkspace, WorkspaceSizing},
 };
@@ -456,7 +456,7 @@ fn build_fixture_from(spec: &FixtureSpec, inflow_method: InflowNonNegativityMeth
 
     let state = state_layout_for(n_h, max_par_order);
     let mut initial_state = vec![0.0_f64; state.n_state];
-    initial_state[state.inflow_lags.clone()].fill(spec.initial_lag_m3s);
+    initial_state[state_lag_dims(&state)].fill(spec.initial_lag_m3s);
     initial_state[state.storage.clone()].fill(spec.initial_storage_hm3);
     let horizon = HorizonMode::Finite {
         num_stages: n_stages,
@@ -627,7 +627,12 @@ fn simulate_fixture(
         0,
         0,
         ActiveSolver::new().expect("ActiveSolver::new must succeed"),
-        PatchBuffer::new(&fx.state, &[], &[]),
+        PatchBuffer::new(
+            &fx.state,
+            &[],
+            &[],
+            &fx.stage_templates.inflow_coupling_per_stage,
+        ),
         &sim_training_ctx,
         &stage_ctx_sim,
         WorkspaceSizing::default(),

@@ -681,9 +681,9 @@ mod tests {
     /// A single-node, single-leaf graph — enough to resolve a `Traversal` in
     /// either axis without a full `StudySetup`.
     fn one_node_graph() -> NodeGraph {
-        NodeGraph {
-            node_ids: vec![NodeId(0)].into(),
-            nodes: vec![NodeRuntime {
+        NodeGraph::new(
+            vec![NodeId(0)].into(),
+            vec![NodeRuntime {
                 stage: StageIdx(0),
                 pool_id: 0,
                 openings: NodeOpenings {
@@ -694,10 +694,10 @@ mod tests {
                 },
             }]
             .into(),
-            successors: vec![Vec::new()].into(),
-            n_pools: 1,
-            pool_stage: vec![StageIdx(0)],
-        }
+            vec![Vec::new()].into(),
+            1,
+            vec![StageIdx(0)],
+        )
     }
 
     /// The CLI derives its simulation weighting from the resolved `Traversal`,
