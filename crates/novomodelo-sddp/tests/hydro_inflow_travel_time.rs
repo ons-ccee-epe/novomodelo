@@ -31,7 +31,7 @@ use novomodelo_core::{
     InitialConditions, LineBlockBounds, LineStagePenalties, LinearTerm, NcsStagePenalties,
     PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
     ResolvedGenericConstraintBounds, ResolvedPenalties, System, SystemBuilder, ThermalBlockBounds,
-    ThermalStageBounds, VariableRef,
+    VariableRef,
 };
 use novomodelo_io::config::{
     Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig, InflowNonNegativityMethod,
@@ -159,12 +159,10 @@ fn resolved_bounds(n_stages: usize, n_hydros: usize) -> ResolvedBounds {
                 max_generation_mw: 1_000.0,
                 ..HydroBlockBounds::default()
             },
-            thermal: ThermalStageBounds {
-                cost_per_mwh: 500.0,
-            },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 500.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,

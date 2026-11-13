@@ -22,7 +22,7 @@ use novomodelo_core::{
     HydroStageBounds, HydroStorage, InitialConditions, LineBlockBounds, LineStagePenalties,
     LinearTerm, NcsStagePenalties, PenaltiesCountsSpec, PenaltiesDefaults, PenaltyBasis,
     PumpingBlockBounds, ResolvedBounds, ResolvedGenericConstraintBounds, ResolvedPenalties,
-    SlackConfig, System, SystemBuilder, ThermalBlockBounds, ThermalStageBounds, VariableRef,
+    SlackConfig, System, SystemBuilder, ThermalBlockBounds, VariableRef,
 };
 use novomodelo_io::Config;
 use novomodelo_io::config::{
@@ -290,12 +290,10 @@ fn fixture_bounds(case: &StudyCase) -> ResolvedBounds {
                 max_generation_mw: MAX_GENERATION_MW,
                 ..Default::default()
             },
-            thermal: ThermalStageBounds {
-                cost_per_mwh: THERMAL_COST_PER_MWH,
-            },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: THERMAL_MAX_MW,
+                cost_per_mwh: THERMAL_COST_PER_MWH,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,

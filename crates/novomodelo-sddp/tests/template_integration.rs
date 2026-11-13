@@ -27,7 +27,7 @@ use novomodelo_core::{
     ContractBlockBounds, DeficitSegment, EntityId, HydroBlockBounds, HydroPenalties,
     HydroStageBounds, LineBlockBounds, LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec,
     PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds, ResolvedPenalties, SystemBuilder,
-    ThermalBlockBounds, ThermalStageBounds, scenario::InflowModel,
+    ThermalBlockBounds, scenario::InflowModel,
 };
 use novomodelo_stochastic::normal::precompute::PrecomputedNormal;
 use novomodelo_stochastic::par::precompute::PrecomputedPar;
@@ -200,10 +200,10 @@ fn one_bus_system(n_stages: usize) -> novomodelo_core::System {
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -390,10 +390,10 @@ fn one_hydro_system(n_stages: usize, lag_order: usize) -> novomodelo_core::Syste
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -594,10 +594,10 @@ fn fpha_system_with_turbined_cost(
                 max_generation_mw: 300.0,
                 ..Default::default()
             },
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -851,10 +851,10 @@ fn two_bus_system_with_stochastic_load(
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -1055,10 +1055,10 @@ fn one_fpha_hydro_system(n_planes: usize) -> (novomodelo_core::System, Productio
                 max_generation_mw: 300.0,
                 ..Default::default()
             },
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -1348,10 +1348,10 @@ fn four_hydro_mixed_system() -> (novomodelo_core::System, ProductionModelSet) {
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -1678,10 +1678,10 @@ fn evap_hydro_system_with_violation_cost(
                 max_generation_mw: 250.0,
                 ..Default::default()
             },
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -1806,10 +1806,10 @@ fn multi_segment_system(buses: Vec<Bus>, block_hours: f64) -> novomodelo_core::S
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -2013,10 +2013,10 @@ fn one_hydro_system_with_withdrawal(
                 max_generation_mw: 250.0,
                 ..Default::default()
             },
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -2161,10 +2161,10 @@ fn one_bus_system_n_blks(n_blks: usize) -> novomodelo_core::System {
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -2349,10 +2349,10 @@ fn one_bus_system_n_blks_with_generic(
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -2508,10 +2508,10 @@ fn one_bus_one_thermal_system(
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -2724,10 +2724,10 @@ fn one_hydro_active_violations(n_stages: usize) -> novomodelo_core::System {
                 max_generation_mw: 250.0,
                 ..Default::default()
             },
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -2885,10 +2885,10 @@ fn two_hydro_par_system(
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -3149,10 +3149,10 @@ fn one_anticipated_thermal_system(
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 50.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw,
                 max_generation_mw,
+                cost_per_mwh: 50.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -3340,10 +3340,10 @@ fn two_thermal_one_anticipated_system(
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 50.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 50.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -3524,10 +3524,10 @@ fn two_anticipated_thermal_system(n_stages: usize) -> novomodelo_core::System {
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 50.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 50.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -3738,10 +3738,10 @@ fn one_hydro_one_ant_system(n_stages: usize) -> novomodelo_core::System {
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 50.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 50.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -4012,10 +4012,10 @@ fn build_hydro_one_ant_system(
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 50.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 50.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -4250,10 +4250,10 @@ fn build_k0_baseline_system() -> novomodelo_core::System {
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 50.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 50.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,

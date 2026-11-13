@@ -28,7 +28,7 @@ use novomodelo_core::{
     InitialConditions, Line, LineBlockBounds, LineStagePenalties, NcsStagePenalties, NoiseMethod,
     PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds, ResolvedPenalties,
     ScenarioSourceConfig, Stage, StageRiskConfig, StageStateConfig, System, SystemBuilder, Thermal,
-    ThermalBlockBounds, ThermalStageBounds,
+    ThermalBlockBounds,
 };
 use novomodelo_io::StageIdResolver;
 use novomodelo_io::config::{
@@ -745,10 +745,10 @@ pub fn geometry(
                 water_withdrawal_m3s: 0.0,
             },
             hydro_block: HydroBlockBounds::default(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -2862,10 +2862,10 @@ fn fan_or_chain_system_builder(
                 max_generation_mw: 250.0,
                 ..Default::default()
             },
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,

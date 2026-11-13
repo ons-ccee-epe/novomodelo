@@ -33,7 +33,7 @@ use novomodelo_core::{
     ContractBlockBounds, EntityId, HydroBlockBounds, HydroPenalties, HydroStageBounds,
     HydroStorage, InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
     PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds, ResolvedPenalties,
-    SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
+    SystemBuilder, ThermalBlockBounds,
 };
 use novomodelo_io::config::{
     Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
@@ -281,10 +281,10 @@ fn build_system_and_bounds() -> (novomodelo_core::System, ResolvedBounds) {
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,

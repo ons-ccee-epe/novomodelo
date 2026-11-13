@@ -37,7 +37,7 @@ use novomodelo_core::{
     NonControllableSource, PenaltiesCountsSpec, PenaltiesDefaults, PenaltyBasis, PostStudyStage,
     PostStudyStages, PostStudyThermalBound, PumpingBlockBounds, PumpingStation, RecentObservation,
     ResolvedBounds, ResolvedGenericConstraintBounds, ResolvedPenalties, SlackConfig, SystemBuilder,
-    Thermal, ThermalBlockBounds, ThermalStageBounds, VariableRef, WaterBucketStages,
+    Thermal, ThermalBlockBounds, VariableRef, WaterBucketStages,
 };
 use novomodelo_io::config::{
     Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
@@ -231,10 +231,10 @@ fn build_system() -> novomodelo_core::System {
                 max_generation_mw: 250.0,
                 ..Default::default()
             },
-            thermal: ThermalStageBounds { cost_per_mwh: 50.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 50.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -256,10 +256,10 @@ fn build_system() -> novomodelo_core::System {
     // cost and capacity; a delivery past the horizon is priced from the
     // post-study calendar, not from this axis.
     for s in 0..thermal_axis {
-        *bounds.thermal_bounds_mut(0, s) = ThermalStageBounds { cost_per_mwh: 50.0 };
         *bounds.thermal_block_base_mut(0, s) = ThermalBlockBounds {
             min_generation_mw: 0.0,
             max_generation_mw: 100.0,
+            cost_per_mwh: 50.0,
         };
     }
 
@@ -526,10 +526,10 @@ fn build_mixed_lead_system(reversed: bool) -> novomodelo_core::System {
                 max_generation_mw: 250.0,
                 ..Default::default()
             },
-            thermal: ThermalStageBounds { cost_per_mwh: 50.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 50.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -553,10 +553,10 @@ fn build_mixed_lead_system(reversed: bool) -> novomodelo_core::System {
     // post-study calendar below, not from this axis.
     for thermal_idx in 0..2 {
         for s in 0..thermal_axis {
-            *bounds.thermal_bounds_mut(thermal_idx, s) = ThermalStageBounds { cost_per_mwh: 50.0 };
             *bounds.thermal_block_base_mut(thermal_idx, s) = ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 50.0,
             };
         }
     }
@@ -764,6 +764,7 @@ fn delivery_oracle_bounds() -> ResolvedBounds {
     let backup_capacity = ThermalBlockBounds {
         min_generation_mw: 0.0,
         max_generation_mw: DELIVERY_ORACLE_BACKUP_CAP_MW,
+        cost_per_mwh: DELIVERY_ORACLE_BACKUP_COST,
     };
     let mut bounds = ResolvedBounds::new(
         &BoundsCountsSpec {
@@ -783,9 +784,6 @@ fn delivery_oracle_bounds() -> ResolvedBounds {
                 water_withdrawal_m3s: 0.0,
             },
             hydro_block: HydroBlockBounds::default(),
-            thermal: ThermalStageBounds {
-                cost_per_mwh: DELIVERY_ORACLE_BACKUP_COST,
-            },
             thermal_block: backup_capacity,
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -803,12 +801,10 @@ fn delivery_oracle_bounds() -> ResolvedBounds {
         },
     );
     for axis in 0..=DELIVERY_ORACLE_N_STAGES {
-        *bounds.thermal_bounds_mut(0, axis) = ThermalStageBounds {
-            cost_per_mwh: DELIVERY_ORACLE_ANTICIPATED_COST[axis.min(DELIVERY_ORACLE_N_STAGES - 1)],
-        };
         *bounds.thermal_block_base_mut(0, axis) = ThermalBlockBounds {
             min_generation_mw: 0.0,
             max_generation_mw: DELIVERY_ORACLE_ANTICIPATED_CAP_MW,
+            cost_per_mwh: DELIVERY_ORACLE_ANTICIPATED_COST[axis.min(DELIVERY_ORACLE_N_STAGES - 1)],
         };
     }
     bounds
@@ -1086,10 +1082,10 @@ fn build_parallel_evap_system() -> novomodelo_core::System {
                 max_generation_mw: 250.0,
                 ..Default::default()
             },
-            thermal: ThermalStageBounds { cost_per_mwh: 50.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 50.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -1328,10 +1324,10 @@ fn build_stochastic_parallel_system() -> novomodelo_core::System {
                 max_generation_mw: 250.0,
                 ..Default::default()
             },
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -1654,12 +1650,10 @@ fn build_chronological_noise_system(spec: &ChronologicalNoiseSpec) -> novomodelo
                 max_generation_mw: 250.0,
                 ..Default::default()
             },
-            thermal: ThermalStageBounds {
-                cost_per_mwh: 100.0,
-            },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 400.0,
+                cost_per_mwh: 100.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -2026,10 +2020,10 @@ fn build_two_hydro_evap_system() -> novomodelo_core::System {
                 max_generation_mw: 250.0,
                 ..Default::default()
             },
-            thermal: ThermalStageBounds { cost_per_mwh: 50.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 50.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -2388,12 +2382,10 @@ fn fpha_lag_bounds() -> ResolvedBounds {
                 max_generation_mw: FPHA_LAG_UPSTREAM_MAX_GENERATION_MW,
                 ..Default::default()
             },
-            thermal: ThermalStageBounds {
-                cost_per_mwh: FPHA_LAG_THERMAL_COST_PER_MWH,
-            },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: FPHA_LAG_THERMAL_CAPACITY_MW,
+                cost_per_mwh: FPHA_LAG_THERMAL_COST_PER_MWH,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -2419,12 +2411,10 @@ fn fpha_lag_bounds() -> ResolvedBounds {
         block.max_generation_mw = FPHA_LAG_DOWNSTREAM_MAX_GENERATION_MW;
     }
     for s in 0..FPHA_LAG_N_STAGES + k_max {
-        *bounds.thermal_bounds_mut(FPHA_LAG_ANTICIPATED_THERMAL_POS, s) = ThermalStageBounds {
-            cost_per_mwh: FPHA_LAG_THERMAL_COST_PER_MWH,
-        };
         *bounds.thermal_block_base_mut(FPHA_LAG_ANTICIPATED_THERMAL_POS, s) = ThermalBlockBounds {
             min_generation_mw: 0.0,
             max_generation_mw: FPHA_LAG_ANTICIPATED_CAPACITY_MW,
+            cost_per_mwh: FPHA_LAG_THERMAL_COST_PER_MWH,
         };
     }
     bounds

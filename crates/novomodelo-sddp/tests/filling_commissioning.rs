@@ -1321,7 +1321,7 @@ mod filling_cut_validity {
         HydroBlockBounds, HydroPenalties, HydroStageBounds, HydroStorage, InitialConditions,
         LineBlockBounds, LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec,
         PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds, ResolvedPenalties, SystemBuilder,
-        ThermalBlockBounds, ThermalStageBounds, TrainingEvent,
+        ThermalBlockBounds, TrainingEvent,
     };
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
@@ -1585,12 +1585,10 @@ mod filling_cut_validity {
             &BoundsDefaults {
                 hydro: default_hydro_bounds(),
                 hydro_block: default_hydro_block_bounds(),
-                thermal: ThermalStageBounds {
-                    cost_per_mwh: 500.0,
-                },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 400.0,
+                    cost_per_mwh: 500.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,

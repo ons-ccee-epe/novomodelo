@@ -5540,11 +5540,10 @@ Every anticipated plant's decision column is bounded, costed, and
 commissioning-gated at ITS OWN delivery stage `m` (its
 `genuine_decisions_at(t)` target, when one exists), never the decision stage
 `t`. `fill_anticipated_columns` reads `thermal_block_base(thermal_idx,
-delivery_stage)` for the column's `[min, max]` bounds (the overlay-ignoring
-base is safe here only because a load-time rule rejects a `block_id` bound row
-on an anticipated thermal — see `novomodelo-io`'s
+delivery_stage)` for the column's `[min, max]` bounds and its `cost_per_mwh`
+(the overlay-ignoring base is safe here only because a load-time rule rejects a
+`block_id` bound row on an anticipated thermal — see `novomodelo-io`'s
 `check_block_id_on_anticipated_thermal`),
-`thermal_bounds(thermal_idx, delivery_stage).cost_per_mwh` for its cost,
 `TimeValue::delivery_total_hours(delivery_stage)` for its hours,
 `TimeValue::relative_delivery_discount(stage_idx, delivery_stage)` (the delivery
 stage's cumulative discount over the decision stage's, `D(m)/D(t)`, one

@@ -40,7 +40,7 @@ use novomodelo_core::{
     AnticipatedCommitmentHistory, BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, EntityId,
     HydroBlockBounds, HydroStageBounds, InitialConditions, LineBlockBounds, PostStudyStage,
     PostStudyStages, PostStudyThermalBound, PumpingBlockBounds, ResolvedBounds, System,
-    SystemBuilder, ThermalBlockBounds, ThermalStageBounds, WaterBucketStages,
+    SystemBuilder, ThermalBlockBounds, WaterBucketStages,
 };
 use novomodelo_sddp::setup::StageIdx;
 use novomodelo_sddp::test_support::{ProbeCuts, prep_for_counterfactual_probe};
@@ -174,10 +174,10 @@ fn bounds(thermal_block_max_mw: f64) -> ResolvedBounds {
                 water_withdrawal_m3s: 0.0,
             },
             hydro_block: HydroBlockBounds::default(),
-            thermal: ThermalStageBounds { cost_per_mwh: 1.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: thermal_block_max_mw,
+                cost_per_mwh: 1.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,

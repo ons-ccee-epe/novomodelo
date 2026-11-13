@@ -19,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   On a deck with a travel-time arc, a file without `stages` must declare
   `water_bucket_stages`, which is used without padding; validation refuses a
   missing key or incomplete coverage.
+- `constraints/thermal_bounds.parquet` accepts `cost_per_mwh` on a row with a
+  `block_id`, pricing that block's generation. Such rows on a thermal with
+  `anticipated_config` are still refused.
 
 ### Changed
 

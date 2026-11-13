@@ -26,7 +26,7 @@ use novomodelo_core::{
     EntityId, HydroBlockBounds, HydroPenalties, HydroStageBounds, LineBlockBounds,
     LineStagePenalties, NcsStagePenalties, NonControllableSource, PenaltiesCountsSpec,
     PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds, ResolvedPenalties, ScenarioSource,
-    SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
+    SystemBuilder, ThermalBlockBounds,
     entities::hydro::HydroGenerationModel,
     scenario::{
         CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile, ExternalLoadRow,
@@ -115,10 +115,10 @@ fn build_resolved_bounds(n_hydros: usize, n_stages: usize) -> ResolvedBounds {
         &BoundsDefaults {
             hydro: hydro_stage_bounds(),
             hydro_block: hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,

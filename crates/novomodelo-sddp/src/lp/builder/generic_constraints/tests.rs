@@ -31,7 +31,7 @@ use novomodelo_core::{
     EntityId, GenericConstraint, Hydro, HydroBlockBounds, HydroStageBounds, Line, LineBlockBounds,
     LinearTerm, NoiseMethod, PumpingBlockBounds, PumpingStation, ResolvedBounds,
     ResolvedGenericConstraintBounds, ScenarioSourceConfig, Stage, StageRiskConfig,
-    StageStateConfig, Thermal, ThermalBlockBounds, ThermalStageBounds, VariableRef,
+    StageStateConfig, Thermal, ThermalBlockBounds, VariableRef,
 };
 
 // ── Test helpers ──────────────────────────────────────────────────────────
@@ -123,10 +123,10 @@ impl ResolverFixture {
                     water_withdrawal_m3s: 0.0,
                 },
                 hydro_block: HydroBlockBounds::default(),
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,

@@ -858,7 +858,6 @@ fn test_lead_time_single_decider_on_disk_load() {
     // makes to the padded thermal-bounds axis pads no region a real study
     // ever reads.
     for stage in 0..system.n_stages() {
-        let b = system.bounds().thermal_bounds(THERMAL_IDX_ANT, stage);
         let bb = system.bounds().thermal_block_base(THERMAL_IDX_ANT, stage);
         assert!(
             (bb.min_generation_mw - 0.0).abs() < f64::EPSILON,
@@ -871,9 +870,9 @@ fn test_lead_time_single_decider_on_disk_load() {
             bb.max_generation_mw
         );
         assert!(
-            (b.cost_per_mwh - 10.0).abs() < f64::EPSILON,
+            (bb.cost_per_mwh - 10.0).abs() < f64::EPSILON,
             "stage {stage}: cost_per_mwh mismatch, got {}",
-            b.cost_per_mwh
+            bb.cost_per_mwh
         );
     }
 }
@@ -1577,9 +1576,9 @@ fn test_thermal_bounds_duplicate_row_rejected_by_load_case() {
     }
 }
 
-/// `block_id` on stage-level-only `cost_per_mwh` column is rejected naming the entity and stage.
+/// A block-level `cost_per_mwh` row loads and reaches the resolved block cost, leaving the stage cost untouched.
 #[test]
-fn test_thermal_bounds_block_id_on_stage_level_cost_column_rejected_by_load_case() {
+fn test_thermal_bounds_block_row_cost_accepted_by_load_case() {
     let dir = TempDir::new().unwrap();
     helpers::make_multi_entity_case(&dir);
 
@@ -1595,26 +1594,33 @@ fn test_thermal_bounds_block_id_on_stage_level_cost_column_rejected_by_load_case
         }],
     );
 
-    match load_case(dir.path()) {
-        Err(err) => {
-            let display = err.to_string();
-            assert!(
-                display.contains("thermal_id=1"),
-                "message must name the entity: {display}"
-            );
-            assert!(
-                display.contains("stage_id=0"),
-                "message must name the stage: {display}"
-            );
-            assert!(
-                display.contains("cost_per_mwh"),
-                "message must name the offending stage-level-only column: {display}"
-            );
-        }
-        Ok(_) => panic!(
-            "expected Err for a block_id on the stage-level-only cost_per_mwh column, got Ok"
-        ),
-    }
+    let system = load_case(dir.path()).unwrap_or_else(|e| {
+        panic!("load_case must accept a block-level thermal cost row, got: {e}")
+    });
+    let idx = system
+        .thermals()
+        .iter()
+        .position(|t| t.id == EntityId::from(1))
+        .unwrap_or_else(|| panic!("thermal 1 is declared by the case"));
+
+    assert_eq!(
+        system
+            .bounds()
+            .thermal_bounds_at_block(idx, 0, 0)
+            .cost_per_mwh
+            .to_bits(),
+        999.0_f64.to_bits(),
+        "block 0 must carry the row's cost"
+    );
+    assert_eq!(
+        system
+            .bounds()
+            .thermal_block_base(idx, 0)
+            .cost_per_mwh
+            .to_bits(),
+        80.0_f64.to_bits(),
+        "the stage-level cost must stay the registry value"
+    );
 }
 
 /// Recursively copies `src` into `dst`, skipping `output` directories.

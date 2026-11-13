@@ -96,7 +96,7 @@ pub use model::resolved::{
     PenaltiesDefaults, PumpingBlockBounds, PumpingBlockOverride, ResolvedBlockBounds,
     ResolvedBounds, ResolvedGenericConstraintBounds, ResolvedHydroUnitGroupBounds,
     ResolvedLoadFactors, ResolvedNcsBounds, ResolvedNcsFactors, ResolvedPenalties,
-    ThermalBlockBounds, ThermalBlockOverride, ThermalStageBounds,
+    ThermalBlockBounds, ThermalBlockOverride,
 };
 pub use model::scalar_expr::{ScalarExpr, is_exact_zero};
 pub use model::scenario::{

@@ -110,7 +110,7 @@ mod anticipated_backward_cut {
         ContractBlockBounds, EntityId, HydroBlockBounds, HydroPenalties, HydroStageBounds,
         InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
         PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
-        ResolvedPenalties, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
+        ResolvedPenalties, SystemBuilder, ThermalBlockBounds,
     };
     use novomodelo_io::config::TrainingSelection;
     use novomodelo_io::config::{
@@ -341,10 +341,10 @@ mod anticipated_backward_cut {
                     water_withdrawal_m3s: 0.0,
                 },
                 hydro_block: HydroBlockBounds::default(),
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -366,19 +366,15 @@ mod anticipated_backward_cut {
         // stage_idx + K_i, so overrides must cover the n_stages + k_max range.
         let thermal_axis = fixture.n_stages + fixture.k_max;
         for s in 0..thermal_axis {
-            *bounds.thermal_bounds_mut(THERMAL_IDX_REG, s) = ThermalStageBounds {
-                cost_per_mwh: C_REG,
-            };
             *bounds.thermal_block_base_mut(THERMAL_IDX_REG, s) = ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: fixture.max_gen_reg,
-            };
-            *bounds.thermal_bounds_mut(THERMAL_IDX_ANT, s) = ThermalStageBounds {
-                cost_per_mwh: C_ANT,
+                cost_per_mwh: C_REG,
             };
             *bounds.thermal_block_base_mut(THERMAL_IDX_ANT, s) = ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: fixture.max_gen_ant,
+                cost_per_mwh: C_ANT,
             };
         }
 
@@ -853,7 +849,7 @@ mod hm_distribute_conservation {
         ContractBlockBounds, EntityId, HydroBlockBounds, HydroPenalties, HydroStageBounds,
         InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
         PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
-        ResolvedPenalties, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
+        ResolvedPenalties, SystemBuilder, ThermalBlockBounds,
     };
     use novomodelo_io::config::TrainingSelection;
     use novomodelo_io::config::{
@@ -1052,10 +1048,10 @@ mod hm_distribute_conservation {
                     water_withdrawal_m3s: 0.0,
                 },
                 hydro_block: HydroBlockBounds::default(),
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -1079,19 +1075,15 @@ mod hm_distribute_conservation {
         // thermal_idx 0 with T_reg and 1 with T_ant.
         const THERMAL_AXIS: usize = 2 + 1;
         for s in 0..THERMAL_AXIS {
-            *bounds.thermal_bounds_mut(0, s) = ThermalStageBounds {
-                cost_per_mwh: C_REG,
-            };
             *bounds.thermal_block_base_mut(0, s) = ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: MAX_GEN_REG,
-            };
-            *bounds.thermal_bounds_mut(1, s) = ThermalStageBounds {
-                cost_per_mwh: C_ANT,
+                cost_per_mwh: C_REG,
             };
             *bounds.thermal_block_base_mut(1, s) = ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: MAX_GEN_ANT,
+                cost_per_mwh: C_ANT,
             };
         }
 
@@ -1302,7 +1294,7 @@ mod anticipated_pre_horizon_seed_delivery {
         ContractBlockBounds, EntityId, HydroBlockBounds, HydroPenalties, HydroStageBounds,
         HydroStorage, InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
         PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
-        ResolvedPenalties, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
+        ResolvedPenalties, SystemBuilder, ThermalBlockBounds,
     };
 
     use super::common::build_setup_in_code;
@@ -1573,10 +1565,10 @@ mod anticipated_pre_horizon_seed_delivery {
             &BoundsDefaults {
                 hydro: default_hydro_bounds(),
                 hydro_block: default_hydro_block_bounds(),
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 200.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -1598,9 +1590,9 @@ mod anticipated_pre_horizon_seed_delivery {
         // anticipated capacity and decision_at(t) collapses to zero, masking the
         // regression.
         for s in 0..thermal_axis {
-            bounds.thermal_bounds_mut(0, s).cost_per_mwh = 10.0;
+            bounds.thermal_block_base_mut(0, s).cost_per_mwh = 10.0;
             bounds.thermal_block_base_mut(0, s).max_generation_mw = 200.0;
-            bounds.thermal_bounds_mut(1, s).cost_per_mwh = 5000.0;
+            bounds.thermal_block_base_mut(1, s).cost_per_mwh = 5000.0;
             bounds.thermal_block_base_mut(1, s).max_generation_mw = 500.0;
         }
 
@@ -2241,7 +2233,7 @@ mod anticipated_d_t_saturation {
         ContractBlockBounds, EntityId, HydroBlockBounds, HydroPenalties, HydroStageBounds,
         HydroStorage, InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
         PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
-        ResolvedPenalties, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
+        ResolvedPenalties, SystemBuilder, ThermalBlockBounds,
     };
 
     use super::common::build_setup_in_code;
@@ -2505,10 +2497,10 @@ mod anticipated_d_t_saturation {
             &BoundsDefaults {
                 hydro: default_hydro_bounds(),
                 hydro_block: default_hydro_block_bounds(),
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 200.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -2526,9 +2518,9 @@ mod anticipated_d_t_saturation {
             },
         );
         for s in 0..thermal_axis {
-            bounds.thermal_bounds_mut(0, s).cost_per_mwh = 10.0; // index 0 = anticipated (cheap)
+            bounds.thermal_block_base_mut(0, s).cost_per_mwh = 10.0; // index 0 = anticipated (cheap)
             bounds.thermal_block_base_mut(0, s).max_generation_mw = 200.0;
-            bounds.thermal_bounds_mut(1, s).cost_per_mwh = 5000.0; // index 1 = backup (expensive)
+            bounds.thermal_block_base_mut(1, s).cost_per_mwh = 5000.0; // index 1 = backup (expensive)
             bounds.thermal_block_base_mut(1, s).max_generation_mw = 500.0;
         }
 
@@ -2822,7 +2814,7 @@ mod anticipated_forward_pass {
         ContractBlockBounds, EntityId, HydroBlockBounds, HydroPenalties, HydroStageBounds,
         HydroStorage, InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
         PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
-        ResolvedPenalties, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
+        ResolvedPenalties, SystemBuilder, ThermalBlockBounds,
     };
     use novomodelo_io::config::TrainingSelection;
     use novomodelo_io::config::{
@@ -3035,10 +3027,10 @@ mod anticipated_forward_pass {
             &BoundsDefaults {
                 hydro: default_hydro_bounds(),
                 hydro_block: default_hydro_block_bounds(),
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 100.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -3432,7 +3424,7 @@ mod anticipated_closed_form_lb_k1_single_thermal {
         ContractBlockBounds, EntityId, HydroBlockBounds, HydroPenalties, HydroStageBounds,
         InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
         PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
-        ResolvedPenalties, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
+        ResolvedPenalties, SystemBuilder, ThermalBlockBounds,
     };
     use novomodelo_io::config::TrainingSelection;
     use novomodelo_io::config::{
@@ -3611,10 +3603,10 @@ mod anticipated_closed_form_lb_k1_single_thermal {
                     water_withdrawal_m3s: 0.0,
                 },
                 hydro_block: HydroBlockBounds::default(),
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -3634,17 +3626,15 @@ mod anticipated_closed_form_lb_k1_single_thermal {
 
         let thermal_axis = N_STAGES + K_MAX;
         for s in 0..thermal_axis {
-            *bounds.thermal_bounds_mut(THERMAL_IDX_ANT, s) =
-                ThermalStageBounds { cost_per_mwh: C_A };
             *bounds.thermal_block_base_mut(THERMAL_IDX_ANT, s) = ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: M_ANT,
+                cost_per_mwh: C_A,
             };
-            *bounds.thermal_bounds_mut(THERMAL_IDX_BACKUP, s) =
-                ThermalStageBounds { cost_per_mwh: C_B };
             *bounds.thermal_block_base_mut(THERMAL_IDX_BACKUP, s) = ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: B_BACK,
+                cost_per_mwh: C_B,
             };
         }
 
@@ -3927,7 +3917,7 @@ mod lead_time_single_decider_end_to_end {
         ContractBlockBounds, EntityId, HydroBlockBounds, HydroPenalties, HydroStageBounds,
         InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
         PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
-        ResolvedPenalties, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
+        ResolvedPenalties, SystemBuilder, ThermalBlockBounds,
     };
     use novomodelo_io::config::TrainingSelection;
     use novomodelo_io::config::{
@@ -4082,10 +4072,10 @@ mod lead_time_single_decider_end_to_end {
                     water_withdrawal_m3s: 0.0,
                 },
                 hydro_block: HydroBlockBounds::default(),
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -4105,17 +4095,15 @@ mod lead_time_single_decider_end_to_end {
 
         let thermal_axis = N_STAGES + K_MAX;
         for s in 0..thermal_axis {
-            *bounds.thermal_bounds_mut(THERMAL_IDX_ANT, s) =
-                ThermalStageBounds { cost_per_mwh: C_A };
             *bounds.thermal_block_base_mut(THERMAL_IDX_ANT, s) = ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: M_ANT,
+                cost_per_mwh: C_A,
             };
-            *bounds.thermal_bounds_mut(THERMAL_IDX_BACKUP, s) =
-                ThermalStageBounds { cost_per_mwh: C_B };
             *bounds.thermal_block_base_mut(THERMAL_IDX_BACKUP, s) = ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: B_BACK,
+                cost_per_mwh: C_B,
             };
         }
 
@@ -4319,7 +4307,7 @@ mod anticipated_numerical_reconciliation_k2 {
         ContractBlockBounds, EntityId, HydroBlockBounds, HydroPenalties, HydroStageBounds,
         HydroStorage, InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
         PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
-        ResolvedPenalties, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
+        ResolvedPenalties, SystemBuilder, ThermalBlockBounds,
     };
 
     use super::common::build_setup_in_code;
@@ -4549,10 +4537,10 @@ mod anticipated_numerical_reconciliation_k2 {
             &BoundsDefaults {
                 hydro: default_hydro_bounds(),
                 hydro_block: default_hydro_block_bounds(),
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 200.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -4572,9 +4560,9 @@ mod anticipated_numerical_reconciliation_k2 {
         // SystemBuilder sorts by EntityId: index 0 = anticipated (id=5), index 1 =
         // backup (id=6).
         for s in 0..thermal_axis {
-            bounds.thermal_bounds_mut(0, s).cost_per_mwh = 10.0;
+            bounds.thermal_block_base_mut(0, s).cost_per_mwh = 10.0;
             bounds.thermal_block_base_mut(0, s).max_generation_mw = 200.0;
-            bounds.thermal_bounds_mut(1, s).cost_per_mwh = 5000.0;
+            bounds.thermal_block_base_mut(1, s).cost_per_mwh = 5000.0;
             bounds.thermal_block_base_mut(1, s).max_generation_mw = 500.0;
         }
 
@@ -4794,7 +4782,7 @@ mod anticipated_bridge_st_cruz_nova_k1 {
         ContractBlockBounds, EntityId, HydroBlockBounds, HydroPenalties, HydroStageBounds,
         HydroStorage, InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
         PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
-        ResolvedPenalties, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
+        ResolvedPenalties, SystemBuilder, ThermalBlockBounds,
     };
 
     use super::common::build_setup_in_code;
@@ -5020,10 +5008,10 @@ mod anticipated_bridge_st_cruz_nova_k1 {
             &BoundsDefaults {
                 hydro: default_hydro_bounds(),
                 hydro_block: default_hydro_block_bounds(),
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 350.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -5045,9 +5033,9 @@ mod anticipated_bridge_st_cruz_nova_k1 {
         // incentive to commit anticipated capacity, so decision_at(t) collapses to
         // zero and masks the regression assertion.
         for s in 0..thermal_axis {
-            bounds.thermal_bounds_mut(0, s).cost_per_mwh = 10.0;
+            bounds.thermal_block_base_mut(0, s).cost_per_mwh = 10.0;
             bounds.thermal_block_base_mut(0, s).max_generation_mw = 350.0;
-            bounds.thermal_bounds_mut(1, s).cost_per_mwh = 5000.0;
+            bounds.thermal_block_base_mut(1, s).cost_per_mwh = 5000.0;
             bounds.thermal_block_base_mut(1, s).max_generation_mw = 500.0;
         }
 
@@ -5262,7 +5250,7 @@ mod anticipated_convergence_slow {
         ContractBlockBounds, EntityId, HydroBlockBounds, HydroPenalties, HydroStageBounds,
         HydroStorage, InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
         PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
-        ResolvedPenalties, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
+        ResolvedPenalties, SystemBuilder, ThermalBlockBounds,
     };
     use novomodelo_sddp::{
         InflowNonNegativityMethod, StoppingMode, StoppingRule, StoppingRuleSet, StudySetup,
@@ -5472,10 +5460,10 @@ mod anticipated_convergence_slow {
             &BoundsDefaults {
                 hydro: default_hydro_bounds(),
                 hydro_block: default_hydro_block_bounds(),
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 100.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -5725,7 +5713,7 @@ mod a1b_value_cut_identity_anchor {
         ContractBlockBounds, EntityId, HydroBlockBounds, HydroPenalties, HydroStageBounds,
         InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
         PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
-        ResolvedPenalties, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
+        ResolvedPenalties, SystemBuilder, ThermalBlockBounds,
     };
     use novomodelo_sddp::{SimulationScenarioResult, StudySetup};
     use novomodelo_solver::ActiveSolver;
@@ -5876,10 +5864,10 @@ mod a1b_value_cut_identity_anchor {
                     water_withdrawal_m3s: 0.0,
                 },
                 hydro_block: HydroBlockBounds::default(),
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -5901,19 +5889,15 @@ mod a1b_value_cut_identity_anchor {
         // per-thermal bounds must cover the full `[0, N_STAGES + K_MAX)` axis. The
         // backup is constant; the anticipated plant carries the stage-varying caps.
         for s in 0..THERMAL_AXIS {
-            *bounds.thermal_bounds_mut(THERMAL_IDX_BACKUP, s) = ThermalStageBounds {
-                cost_per_mwh: BACKUP_COST,
-            };
             *bounds.thermal_block_base_mut(THERMAL_IDX_BACKUP, s) = ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: BACKUP_CAP,
-            };
-            *bounds.thermal_bounds_mut(THERMAL_IDX_ANT, s) = ThermalStageBounds {
-                cost_per_mwh: ANT_COST,
+                cost_per_mwh: BACKUP_COST,
             };
             *bounds.thermal_block_base_mut(THERMAL_IDX_ANT, s) = ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: DELIVERY_CAP[s],
+                cost_per_mwh: ANT_COST,
             };
         }
 
@@ -6227,7 +6211,7 @@ mod a1c_stage_count_mode_anchor {
         ContractBlockBounds, EntityId, HydroBlockBounds, HydroPenalties, HydroStageBounds,
         InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
         PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
-        ResolvedPenalties, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
+        ResolvedPenalties, SystemBuilder, ThermalBlockBounds,
     };
     use novomodelo_io::config::TrainingSelection;
     use novomodelo_io::config::{
@@ -6526,10 +6510,10 @@ mod a1c_stage_count_mode_anchor {
                     water_withdrawal_m3s: 0.0,
                 },
                 hydro_block: HydroBlockBounds::default(),
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -6552,17 +6536,15 @@ mod a1c_stage_count_mode_anchor {
         // well-defined.
         let thermal_axis = N_STAGES + K_MAX;
         for s in 0..thermal_axis {
-            *bounds.thermal_bounds_mut(THERMAL_IDX_ANT, s) =
-                ThermalStageBounds { cost_per_mwh: C_A };
             *bounds.thermal_block_base_mut(THERMAL_IDX_ANT, s) = ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: M_ANT,
+                cost_per_mwh: C_A,
             };
-            *bounds.thermal_bounds_mut(THERMAL_IDX_BACKUP, s) =
-                ThermalStageBounds { cost_per_mwh: C_B };
             *bounds.thermal_block_base_mut(THERMAL_IDX_BACKUP, s) = ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: B_BACK,
+                cost_per_mwh: C_B,
             };
         }
 
@@ -6751,7 +6733,7 @@ mod anticipated_ring_axis_regressions {
         InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
         PenaltiesCountsSpec, PenaltiesDefaults, PostStudyStage, PostStudyStages,
         PostStudyThermalBound, PumpingBlockBounds, ResolvedBounds, ResolvedPenalties,
-        SystemBuilder, ThermalBlockBounds, ThermalStageBounds, WaterBucketStages,
+        SystemBuilder, ThermalBlockBounds, WaterBucketStages,
     };
     use novomodelo_sddp::lead_time::{
         AnticipatedResolution, DeliveryAxis, LeadTime, PointResolution,
@@ -6920,10 +6902,10 @@ mod anticipated_ring_axis_regressions {
                     water_withdrawal_m3s: 0.0,
                 },
                 hydro_block: HydroBlockBounds::default(),
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -6941,19 +6923,15 @@ mod anticipated_ring_axis_regressions {
             },
         );
         for s in 0..(N_STUDY_STAGES + k_max) {
-            *b.thermal_bounds_mut(THERMAL_IDX_ANTICIPATED, s) = ThermalStageBounds {
-                cost_per_mwh: ANTICIPATED_COST,
-            };
             *b.thermal_block_base_mut(THERMAL_IDX_ANTICIPATED, s) = ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: ANTICIPATED_MAX_MW,
-            };
-            *b.thermal_bounds_mut(THERMAL_IDX_BACKUP, s) = ThermalStageBounds {
-                cost_per_mwh: BACKUP_COST,
+                cost_per_mwh: ANTICIPATED_COST,
             };
             *b.thermal_block_base_mut(THERMAL_IDX_BACKUP, s) = ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: BACKUP_MAX_MW,
+                cost_per_mwh: BACKUP_COST,
             };
         }
         b
@@ -7748,7 +7726,7 @@ mod anticipated_no_boundary_fixed_value_inertness {
         ContractBlockBounds, EntityId, HydroBlockBounds, HydroPenalties, HydroStageBounds,
         InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
         PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
-        ResolvedPenalties, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
+        ResolvedPenalties, SystemBuilder, ThermalBlockBounds,
     };
     use novomodelo_io::config::TrainingSelection;
     use novomodelo_io::config::{
@@ -7887,10 +7865,10 @@ mod anticipated_no_boundary_fixed_value_inertness {
                     water_withdrawal_m3s: 0.0,
                 },
                 hydro_block: HydroBlockBounds::default(),
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -7916,19 +7894,10 @@ mod anticipated_no_boundary_fixed_value_inertness {
         // always-active fishing row regardless of its bounds.
         let thermal_axis = N_STAGES + K_MAX;
         for s in 0..thermal_axis {
-            *bounds.thermal_bounds_mut(THERMAL_IDX_ANT, s) =
-                ThermalStageBounds { cost_per_mwh: C_A };
-            *bounds.thermal_block_base_mut(THERMAL_IDX_ANT, s) = if s == DELIVERY_STAGE {
-                ThermalBlockBounds {
-                    min_generation_mw: REPLAY_MW,
-                    max_generation_mw: REPLAY_MW,
-                }
-            } else {
-                ThermalBlockBounds {
-                    min_generation_mw: 0.0,
-                    max_generation_mw: REPLAY_MW,
-                }
-            };
+            let cell = bounds.thermal_block_base_mut(THERMAL_IDX_ANT, s);
+            cell.cost_per_mwh = C_A;
+            cell.min_generation_mw = if s == DELIVERY_STAGE { REPLAY_MW } else { 0.0 };
+            cell.max_generation_mw = REPLAY_MW;
         }
 
         let penalties = ResolvedPenalties::new(
@@ -8088,7 +8057,7 @@ mod fixed_delivery_output {
         ContractBlockBounds, EntityId, HydroBlockBounds, HydroPenalties, HydroStageBounds,
         InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
         PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
-        ResolvedPenalties, System, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
+        ResolvedPenalties, System, SystemBuilder, ThermalBlockBounds,
     };
     use novomodelo_io::config::TrainingSelection;
     use novomodelo_io::config::{
@@ -8254,10 +8223,10 @@ mod fixed_delivery_output {
                     water_withdrawal_m3s: 0.0,
                 },
                 hydro_block: HydroBlockBounds::default(),
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -8278,10 +8247,10 @@ mod fixed_delivery_output {
         let thermal_axis = N_STAGES + K_MAX;
         for idx in 0..n_thermals {
             for s in 0..thermal_axis {
-                *bounds.thermal_bounds_mut(idx, s) = ThermalStageBounds { cost_per_mwh: 10.0 };
                 *bounds.thermal_block_base_mut(idx, s) = ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 10.0,
+                    cost_per_mwh: 10.0,
                 };
             }
         }

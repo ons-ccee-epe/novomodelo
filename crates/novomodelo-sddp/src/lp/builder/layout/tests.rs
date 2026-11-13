@@ -13,8 +13,7 @@ use novomodelo_core::{
     Hydro, HydroBlockBounds, HydroGenerationModel, HydroStageBounds, LineBlockBounds, LinearTerm,
     NoiseMethod, NonControllableSource, PenaltyBasis, PumpingBlockBounds, PumpingStation,
     ResolvedBounds, ResolvedGenericConstraintBounds, ScalarExpr, ScenarioSourceConfig, SlackConfig,
-    Stage, StageRiskConfig, StageStateConfig, Thermal, ThermalBlockBounds, ThermalStageBounds,
-    VariableRef,
+    Stage, StageRiskConfig, StageStateConfig, Thermal, ThermalBlockBounds, VariableRef,
 };
 
 use crate::hydro_models::{EvaporationModelSet, ProductionModelSet};
@@ -2717,10 +2716,10 @@ fn bounds_with_entities(n_hydros: usize, n_pumping: usize, n_stages: usize) -> R
                 water_withdrawal_m3s: 0.0,
             },
             hydro_block: HydroBlockBounds::default(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,

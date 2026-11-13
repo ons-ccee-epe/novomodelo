@@ -49,7 +49,7 @@ use novomodelo_core::{
     ContractBlockBounds, EntityId, HydroBlockBounds, HydroPastDefluence, HydroPenalties,
     HydroStageBounds, HydroStorage, InitialConditions, LineBlockBounds, LineStagePenalties,
     NcsStagePenalties, PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
-    ResolvedPenalties, System, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
+    ResolvedPenalties, System, SystemBuilder, ThermalBlockBounds,
 };
 use novomodelo_io::config::{
     Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig, InflowNonNegativityMethod,
@@ -290,10 +290,10 @@ fn build_commitment_system(
                 water_withdrawal_m3s: 0.0,
             },
             hydro_block: HydroBlockBounds::default(),
-            thermal: ThermalStageBounds { cost_per_mwh: 10.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: floor_mw,
                 max_generation_mw: cap_mw,
+                cost_per_mwh: 10.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -311,10 +311,9 @@ fn build_commitment_system(
         },
     );
     if let Some((stage_idx, min_mw, max_mw)) = stage_override {
-        *bounds.thermal_block_base_mut(0, stage_idx) = ThermalBlockBounds {
-            min_generation_mw: min_mw,
-            max_generation_mw: max_mw,
-        };
+        let cell = bounds.thermal_block_base_mut(0, stage_idx);
+        cell.min_generation_mw = min_mw;
+        cell.max_generation_mw = max_mw;
     }
 
     let penalties = zero_penalties(0, n_stages);
@@ -508,10 +507,10 @@ fn build_transit_bucket_system(n_stages: usize, travel_time_hours: f64, seed_m3s
                 max_generation_mw: 1_000.0,
                 ..HydroBlockBounds::default()
             },
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -690,10 +689,10 @@ fn build_storage_system_with(
                 max_generation_mw: 100.0,
                 ..HydroBlockBounds::default()
             },
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,

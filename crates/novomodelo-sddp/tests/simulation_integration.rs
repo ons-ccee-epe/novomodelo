@@ -1011,7 +1011,7 @@ fn make_min_outflow_system() -> novomodelo_core::System {
         BoundsCountsSpec, BoundsDefaults, BusStagePenalties, ContractBlockBounds, HydroBlockBounds,
         HydroPenalties, HydroStageBounds, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
         PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
-        ResolvedPenalties, ThermalBlockBounds, ThermalStageBounds,
+        ResolvedPenalties, ThermalBlockBounds,
     };
 
     let bus = default_bus();
@@ -1138,10 +1138,10 @@ fn make_min_outflow_system() -> novomodelo_core::System {
                 max_generation_mw: 100.0,
                 ..Default::default()
             },
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
