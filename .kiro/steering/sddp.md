@@ -4792,7 +4792,9 @@ the frozen digest. Four invariants hold across the two paths:
   with and without a loaded boundary: a covering calendar already holds every
   travel-time window, so the pad is never read. This is what makes the declared
   path a format change, not a results change, for a deck whose migrated water
-  calendar covers its arcs. Pinned by the
+  calendar covers its arcs. `scripts/migrate/post_study_stages.py` writes such a
+  calendar: the legacy one extended with copies of its last stage, the periods the
+  pad reads. Pinned by the
   `declared_and_padded_bases_agree_on_covering_water_calendars` property test
   and `declared_and_padded_bases_agree_at_equality_coverage`
   (`bucket_topology/neutrality_tests.rs`).

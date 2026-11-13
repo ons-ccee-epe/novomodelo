@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -112,10 +113,8 @@ def migrated_doc(deck: Path) -> dict[str, Any]:
     return doc
 
 
-def last_stage(start: str, end: str, hours: float) -> pss.LastStage:
-    return pss.LastStage(
-        date.fromisoformat(start), date.fromisoformat(end), float(hours)
-    )
+def last_stage(end: str, hours: float) -> pss.LastStage:
+    return pss.LastStage(date.fromisoformat(end), float(hours))
 
 
 def water(*stages: tuple[str, float]) -> list[dict[str, Any]]:
@@ -142,8 +141,10 @@ def test_classify_file_distinguishes_the_four_formats(
     assert pss.classify_file(doc) is expected
 
 
-def test_infer_water_stages_week_stage_steps_168_hours_from_the_study_end() -> None:
-    got = pss.infer_water_stages(last_stage("2024-02-14", "2024-02-21", 168), 360.0)
+def test_water_stages_without_a_seed_repeats_the_last_study_stage_from_the_study_end() -> (
+    None
+):
+    got = pss.water_stages([], last_stage("2024-02-21", 168), 360.0)
     assert got == water(
         ("2024-02-21", 168.0), ("2024-02-28", 168.0), ("2024-03-06", 168.0)
     )
@@ -153,93 +154,110 @@ def test_infer_water_stages_week_stage_steps_168_hours_from_the_study_end() -> N
     ("last", "deepest", "expected"),
     [
         (
-            ("2024-03-01", "2024-04-01", 720),
+            ("2024-04-01", 720),
             1080.0,
-            water(("2024-04-01", 720.0), ("2024-05-01", 744.0)),
+            water(("2024-04-01", 720.0), ("2024-05-01", 720.0)),
         ),
         (
-            ("2024-03-01", "2024-04-01", 730),
+            ("2024-04-01", 730),
             1460.0,
-            water(("2024-04-01", 720.0), ("2024-05-01", 744.0)),
+            water(("2024-04-01", 730.0), ("2024-05-01", 730.0)),
         ),
         (
-            ("2024-01-01", "2024-02-01", 744),
+            ("2024-02-01", 744),
             1000.0,
-            water(("2024-02-01", 696.0), ("2024-03-01", 744.0)),
+            water(("2024-02-01", 744.0), ("2024-03-03", 744.0)),
         ),
         (
-            ("2024-11-01", "2024-12-01", 720),
-            1400.0,
-            water(("2024-12-01", 744.0), ("2025-01-01", 744.0)),
+            ("2024-02-14", 700),
+            1000.0,
+            water(("2024-02-14", 700.0), ("2024-03-14", 700.0)),
         ),
         (
-            ("2024-02-01", "2024-03-01", 720),
-            360.0,
-            water(("2024-03-01", 744.0)),
+            ("2024-01-01", 60),
+            100.0,
+            water(("2024-01-01", 60.0), ("2024-01-04", 60.0)),
         ),
     ],
     ids=[
-        "apr-may",
-        "month-with-730h-blocks",
-        "leap-february",
-        "year-end",
-        "single-month",
+        "720h-month-is-not-a-calendar-month",
+        "730h-blocks",
+        "744h-copy-runs-past-february",
+        "non-whole-day-length",
+        "half-day-rounds-up",
     ],
 )
-def test_infer_water_stages_month_stage_steps_by_calendar_months(
-    last: tuple[str, str, float], deepest: float, expected: list[dict[str, Any]]
+def test_water_stages_without_a_seed_repeats_the_block_hours_rounded_to_whole_days(
+    last: tuple[str, float], deepest: float, expected: list[dict[str, Any]]
 ) -> None:
-    assert pss.infer_water_stages(last_stage(*last), deepest) == expected
+    assert pss.water_stages([], last_stage(*last), deepest) == expected
+
+
+_MONTHLY_SEED = water(("2024-01-15", 744.0), ("2024-02-15", 696.0))
 
 
 @pytest.mark.parametrize(
-    ("last", "deepest", "expected"),
+    ("deepest", "expected"),
     [
-        (
-            ("2024-01-15", "2024-02-14", 720),
-            200.0,
-            water(("2024-02-14", 720.0)),
-        ),
-        (
-            ("2024-01-15", "2024-02-14", 720),
-            1000.0,
-            water(("2024-02-14", 720.0), ("2024-03-15", 720.0)),
-        ),
-        (
-            ("2024-01-01", "2024-01-04", 72),
-            100.0,
-            water(("2024-01-04", 72.0), ("2024-01-07", 72.0)),
-        ),
-        (
-            ("2024-01-01", "2024-03-01", 1440),
-            100.0,
-            water(("2024-03-01", 1440.0)),
-        ),
+        (360.0, _MONTHLY_SEED),
+        (1440.0, _MONTHLY_SEED),
+        (1500.0, [*_MONTHLY_SEED, *water(("2024-03-15", 696.0))]),
     ],
-    ids=["one-repeat", "two-repeats", "three-days", "two-months-from-the-first"],
+    ids=["seed-covers", "seed-covers-at-equality", "seed-extended"],
 )
-def test_infer_water_stages_other_whole_day_length_repeats_its_exact_length(
-    last: tuple[str, str, float], deepest: float, expected: list[dict[str, Any]]
+def test_water_stages_keeps_the_seed_and_extends_it_with_its_last_length(
+    deepest: float, expected: list[dict[str, Any]]
 ) -> None:
-    assert pss.infer_water_stages(last_stage(*last), deepest) == expected
+    assert pss.water_stages(_MONTHLY_SEED, last_stage("2024-01-15", 168), deepest) == (
+        expected
+    )
 
 
 @pytest.mark.parametrize(
     ("deepest", "count"), [(336.0, 2), (336.5, 3), (168.0, 1), (0.5, 1)]
 )
-def test_infer_water_stages_stops_once_the_total_reaches_the_deepest_arc(
+def test_water_stages_stops_once_the_total_reaches_the_deepest_arc(
     deepest: float, count: int
 ) -> None:
-    got = pss.infer_water_stages(last_stage("2024-01-08", "2024-01-15", 168), deepest)
+    got = pss.water_stages([], last_stage("2024-01-15", 168), deepest)
     assert len(got) == count
 
 
-@pytest.mark.parametrize("hours", [700, 0, -24])
-def test_infer_water_stages_refuses_a_length_that_is_not_a_whole_number_of_days(
-    hours: float,
+def test_water_stages_refuses_only_a_copy_that_rounds_to_no_whole_day() -> None:
+    short = last_stage("2024-01-15", 11)
+    with pytest.raises(pss.Refusal, match="under the whole day"):
+        pss.water_stages([], short, 100.0)
+    assert pss.water_stages(_MONTHLY_SEED, short, 100.0) == _MONTHLY_SEED
+
+
+def test_legacy_water_seed_orders_the_stages_by_start_date() -> None:
+    assert pss.legacy_water_seed(list(reversed(_MONTHLY_SEED))) == _MONTHLY_SEED
+
+
+@pytest.mark.parametrize(
+    ("stages", "message"),
+    [
+        ({"start_date": "2024-01-15"}, "list of objects"),
+        ([{"duration_hours": 744.0}], r"stages\[0\]\.start_date"),
+        ([{"start_date": "2024-13-01", "duration_hours": 744.0}], "start_date"),
+        ([{"start_date": "2024-01-15", "duration_hours": 0}], "duration_hours"),
+        ([{"start_date": "2024-01-15", "duration_hours": "744"}], "duration_hours"),
+        ([{"start_date": "2024-01-15", "duration_hours": True}], "duration_hours"),
+    ],
+    ids=[
+        "not-a-list",
+        "no-start",
+        "bad-date",
+        "zero-hours",
+        "string-hours",
+        "bool-hours",
+    ],
+)
+def test_legacy_water_seed_refuses_a_malformed_stage(
+    stages: object, message: str
 ) -> None:
-    with pytest.raises(pss.Refusal, match="whole number of days"):
-        pss.infer_water_stages(last_stage("2024-01-15", "2024-02-14", hours), 100.0)
+    with pytest.raises(pss.Refusal, match=message):
+        pss.legacy_water_seed(stages)
 
 
 def test_main_arc_deck_without_a_file_gets_only_water_bucket_stages(
@@ -258,7 +276,11 @@ def test_main_arc_deck_without_a_file_gets_only_water_bucket_stages(
 def test_main_arc_deck_with_an_anticipated_thermal_writes_the_layout_bytes(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    legacy = {**_LEGACY, "thermal_bounds": []}
+    legacy = {
+        "$schema": _SCHEMA,
+        "stages": water(("2024-01-15", 168.0)),
+        "thermal_bounds": [],
+    }
     deck = make_deck(
         tmp_path,
         stages=_WEEKLY,
@@ -275,8 +297,8 @@ def test_main_arc_deck_with_an_anticipated_thermal_writes_the_layout_bytes(
         '  "$schema": "schema-uri",\n'
         '  "thermal_stages": [\n'
         "    {\n"
-        '      "start_date": "2024-03-01",\n'
-        '      "duration_hours": 744.0\n'
+        '      "start_date": "2024-01-15",\n'
+        '      "duration_hours": 168.0\n'
         "    }\n"
         "  ],\n"
         '  "thermal_bounds": [],\n'
@@ -318,6 +340,33 @@ def test_main_arc_deck_keeps_the_thermal_pair_verbatim_in_key_order(
     assert doc["thermal_stages"] == _LEGACY["stages"]
     assert doc["thermal_bounds"] == _BOUNDS
     assert doc["water_bucket_stages"] == water(("2024-03-01", 744.0))
+
+
+@pytest.mark.parametrize(
+    ("travel_time_hours", "expected"),
+    [
+        (360.0, _MONTHLY_SEED),
+        (1500.0, [*_MONTHLY_SEED, *water(("2024-03-15", 696.0))]),
+    ],
+    ids=["legacy-stages-cover", "legacy-stages-extended"],
+)
+def test_main_weekly_study_with_monthly_legacy_stages_keeps_them_as_the_water_calendar(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    travel_time_hours: float,
+    expected: list[dict[str, Any]],
+) -> None:
+    deck = make_deck(
+        tmp_path,
+        stages=_WEEKLY,
+        travel_time_hours=travel_time_hours,
+        post_study={"stages": _MONTHLY_SEED, "thermal_bounds": []},
+    )
+
+    code, out, _ = run(capsys, deck)
+
+    assert (code, out) == (0, f"{deck}: migrated\n")
+    assert migrated_doc(deck) == {"water_bucket_stages": expected}
 
 
 def test_main_no_arc_legacy_deck_with_an_anticipated_thermal_is_renamed_only(
@@ -467,14 +516,30 @@ def test_main_mixed_file_is_refused_and_nothing_is_written(
     assert snapshot(deck) == before
 
 
-def test_main_non_whole_day_last_stage_with_an_arc_is_refused(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+@pytest.mark.parametrize(
+    ("stages", "post_study", "reason"),
+    [
+        ([stage(0, "2024-01-15", "2024-01-16", 11)], None, "under the whole day"),
+        (
+            _MONTHLY,
+            {
+                "stages": [{"start_date": "March", "duration_hours": 744.0}],
+                "thermal_bounds": [],
+            },
+            r"`stages\[0\]\.start_date` is malformed",
+        ),
+    ],
+    ids=["copy-under-half-a-day", "malformed-legacy-stage"],
+)
+def test_main_arc_deck_whose_water_calendar_cannot_be_built_is_refused(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    stages: list[dict[str, Any]],
+    post_study: dict[str, Any] | None,
+    reason: str,
 ) -> None:
     deck = make_deck(
-        tmp_path,
-        stages=[stage(0, "2024-01-15", "2024-02-14", 700)],
-        travel_time_hours=360.0,
-        post_study=_LEGACY,
+        tmp_path, stages=stages, travel_time_hours=360.0, post_study=post_study
     )
     before = snapshot(deck)
 
@@ -482,7 +547,7 @@ def test_main_non_whole_day_last_stage_with_an_arc_is_refused(
 
     assert (code, out) == (1, "")
     assert err.startswith(f"{deck}: ")
-    assert "whole number of days" in err
+    assert re.search(reason, err)
     assert snapshot(deck) == before
 
 
@@ -643,15 +708,15 @@ def study_end(deck: Path) -> str:
 @pytest.mark.parametrize(
     ("name", "expected"),
     [
-        ("d44-travel-time-substage", water(("2024-03-01", 744.0))),
+        ("d44-travel-time-substage", water(("2024-03-01", 720.0))),
         (
             "d45-travel-time-mixed-calendar",
             water(("2024-02-21", 168.0), ("2024-02-28", 168.0), ("2024-03-06", 168.0)),
         ),
-        ("d46-travel-time-chronological", water(("2024-03-01", 744.0))),
+        ("d46-travel-time-chronological", water(("2024-03-01", 720.0))),
         (
             "d47-travel-time-confluence",
-            water(("2024-04-01", 720.0), ("2024-05-01", 744.0)),
+            water(("2024-04-01", 720.0), ("2024-05-01", 720.0)),
         ),
         (
             "d48-travel-time-ic-seed",
