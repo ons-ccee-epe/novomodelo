@@ -1151,6 +1151,11 @@ fn boundary_json_mode_emits_parseable_object_with_tallies() {
     assert_eq!(value["configured"], serde_json::json!(true));
     assert_eq!(value["boundary_date"], serde_json::json!("2024-03-01"));
     assert_eq!(value["report"]["storage"]["copy"], serde_json::json!(1));
+    assert!(value["report"]["filled_from_storage_slots"].is_array());
+    assert_eq!(
+        value["report"]["transit_bucket"]["filled_from_storage"],
+        serde_json::json!(0)
+    );
 }
 
 /// `--json` with no `policy.boundary` configured emits the explicit

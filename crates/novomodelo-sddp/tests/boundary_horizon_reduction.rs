@@ -588,12 +588,20 @@ fn horizon_reduction_selects_the_pool_priced_at_the_boundary_date() {
         copy,
         fan_out,
         straddling,
+        filled_from_storage,
         default_zero,
         dropped_source,
     } = report.other_identity;
     assert_eq!(
-        (copy, fan_out, straddling, default_zero, dropped_source),
-        (0, 0, 0, 0, 0),
+        (
+            copy,
+            fan_out,
+            straddling,
+            filled_from_storage,
+            default_zero,
+            dropped_source
+        ),
+        (0, 0, 0, 0, 0, 0),
         "other_identity must be entirely zero (this fixture declares no entity outside the \
          four modeled families), found tally {:?}",
         report.other_identity

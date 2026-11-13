@@ -46,7 +46,10 @@ const COVERAGE_TOLERANCE_HOURS: f64 = 1e-6;
 pub(crate) enum RebindOp {
     /// Take the source coefficient at this position verbatim.
     Copy(usize),
-    /// No source counterpart contributes; the coefficient is `0.0`.
+    /// Take the receiving hydro's source storage coefficient at this position verbatim.
+    FillFromStorage(usize),
+    /// No source coefficient applies (no counterpart, a structural pad, or an
+    /// in-study delivery); the coefficient is `0.0`.
     Zero,
     /// An hours-weighted blend of source positions: [`rebind_cut`] applies
     /// `Σ cut.coefficients[p] · w` over the `(source_position, weight)`
@@ -276,7 +279,17 @@ fn resolve_target_slot(
         Some(family @ (StateFamily::HydroTransitBucket | StateFamily::AnticipatedThermalState)) => {
             match quantity_class(family) {
                 Some(class) => {
-                    resolve_by_interval_overlap(slot, boundary_date, source_index, class)
+                    let on_source_miss = match family {
+                        StateFamily::HydroTransitBucket => receiver_storage_fill(slot, by_identity),
+                        _ => RebindOp::Zero,
+                    };
+                    resolve_by_interval_overlap(
+                        slot,
+                        boundary_date,
+                        source_index,
+                        class,
+                        on_source_miss,
+                    )
                 }
                 None => resolve_by_identity(i, slot, by_identity),
             }
@@ -324,6 +337,14 @@ fn resolve_storage(slot: &EntitySlot, by_identity: &HashMap<SlotKey, usize>) -> 
             ),
         },
     }
+}
+
+/// The receiving hydro's own source `HydroStorage` coefficient, for a transit
+/// bucket the source never priced; `Zero` when the source lacks that storage.
+fn receiver_storage_fill(slot: &EntitySlot, by_identity: &HashMap<SlotKey, usize>) -> RebindOp {
+    by_identity
+        .get(&slot_key(&EntitySlot::storage(slot.entity_id, true)))
+        .map_or(RebindOp::Zero, |&pos| RebindOp::FillFromStorage(pos))
 }
 
 /// `HydroInflowLag` resolution, by `(entity_type, entity_id, subindex)`
@@ -418,10 +439,10 @@ fn render_reference_date(raw: i32) -> String {
 /// surfaces.
 ///
 /// Such an interval fans out against `source_index`'s same-family intervals:
-/// no covered interval yields `Zero` — the expected outcome for a
-/// `HydroTransitBucket` target against a NEWAVE-shaped source carrying no
-/// transit arcs at all, an expected boundary shape rather than an
-/// incompatibility; full coverage yields [`RebindOp::Blend`]; partial
+/// an entity with no source interval at all returns `on_source_miss` — the
+/// receiving hydro's storage coefficient for a transit bucket, `Zero`
+/// otherwise; an entity whose source intervals overlap none of the slot yields
+/// `Zero`; full coverage yields [`RebindOp::Blend`]; partial
 /// coverage (a boundary-edge slot straddling into unpriced time) yields
 /// [`RebindOp::Renormalize`], extending the covered intervals over the full
 /// slot instead of an implicit `0.0` deflation term. The weight follows
@@ -433,6 +454,7 @@ fn resolve_by_interval_overlap(
     boundary_date: NaiveDate,
     source_index: &HashMap<SourceKey, Vec<SourceInterval>>,
     class: QuantityClass,
+    on_source_miss: RebindOp,
 ) -> RebindOp {
     if slot.interval_start == ENTITY_SLOT_DATE_SENTINEL {
         return RebindOp::Zero;
@@ -470,7 +492,7 @@ fn resolve_by_interval_overlap(
         return RebindOp::Zero;
     }
     let Some(intervals) = source_index.get(&(slot.entity_type, slot.entity_id)) else {
-        return RebindOp::Zero;
+        return on_source_miss;
     };
 
     let mut terms = Vec::new();
@@ -553,7 +575,7 @@ pub(crate) fn rebind_cut(cut: &OwnedPolicyCutRecord, rebind: &[RebindOp]) -> Vec
     rebind
         .iter()
         .map(|op| match op {
-            RebindOp::Copy(pos) => cut.coefficients[*pos],
+            RebindOp::Copy(pos) | RebindOp::FillFromStorage(pos) => cut.coefficients[*pos],
             RebindOp::Zero => 0.0,
             RebindOp::Blend(terms) | RebindOp::Renormalize(terms) => terms
                 .iter()
@@ -576,7 +598,7 @@ fn dropped_source_positions(source: &[EntitySlot], rebind: &[RebindOp]) -> Vec<u
     let mut referenced = vec![false; len];
     for op in rebind {
         match op {
-            RebindOp::Copy(pos) => {
+            RebindOp::Copy(pos) | RebindOp::FillFromStorage(pos) => {
                 if *pos < len {
                     referenced[*pos] = true;
                 }
@@ -622,6 +644,8 @@ pub struct FamilyTally {
     pub fan_out: usize,
     /// The [`RebindOp::Renormalize`] subset of `fan_out`.
     pub straddling: usize,
+    /// Target slots resolved by [`RebindOp::FillFromStorage`].
+    pub filled_from_storage: usize,
     /// Target-only [`RebindOp::Zero`] slots (excludes a sentinel-anticipated pad).
     pub default_zero: usize,
     /// This family's source positions no op references.
@@ -636,8 +660,9 @@ pub struct AnticipatedCoverage {
 }
 
 /// One [`EntitySlot`]'s identity and dating, as rendered into
-/// [`BoundaryReconciliationReport::dropped_source_slots`] and
-/// [`BoundaryReconciliationReport::straddling_slots`].
+/// [`BoundaryReconciliationReport::dropped_source_slots`],
+/// [`BoundaryReconciliationReport::straddling_slots`] and
+/// [`BoundaryReconciliationReport::filled_from_storage_slots`].
 #[derive(Debug, Clone, Serialize)]
 pub struct SlotDetail {
     /// This slot's state family, via [`family_label`].
@@ -704,6 +729,9 @@ pub struct BoundaryReconciliationReport {
     /// Every straddling ([`RebindOp::Renormalize`]) target slot's own
     /// identity and dating, in ascending target position.
     pub straddling_slots: Vec<SlotDetail>,
+    /// Every [`RebindOp::FillFromStorage`] target slot's own identity and
+    /// dating, in ascending target position.
+    pub filled_from_storage_slots: Vec<SlotDetail>,
 }
 
 impl BoundaryReconciliationReport {
@@ -736,16 +764,19 @@ impl BoundaryReconciliationReport {
         ]
     }
 
-    /// The four aggregate tallies (copy, fan-out, default-zero, dropped-source)
-    /// summed across every family, shared with the CLI's own rendering.
+    /// Every [`FamilyTally`] field summed across the families, shared with the
+    /// CLI's own rendering.
     #[must_use]
-    pub fn tally_totals(&self) -> (usize, usize, usize, usize) {
+    pub fn tally_totals(&self) -> FamilyTally {
         let families = self.families();
-        let copy: usize = families.iter().map(|(_, t)| t.copy).sum();
-        let fan_out: usize = families.iter().map(|(_, t)| t.fan_out).sum();
-        let default_zero: usize = families.iter().map(|(_, t)| t.default_zero).sum();
-        let dropped: usize = families.iter().map(|(_, t)| t.dropped_source).sum();
-        (copy, fan_out, default_zero, dropped)
+        FamilyTally {
+            copy: families.iter().map(|(_, t)| t.copy).sum(),
+            fan_out: families.iter().map(|(_, t)| t.fan_out).sum(),
+            straddling: families.iter().map(|(_, t)| t.straddling).sum(),
+            filled_from_storage: families.iter().map(|(_, t)| t.filled_from_storage).sum(),
+            default_zero: families.iter().map(|(_, t)| t.default_zero).sum(),
+            dropped_source: families.iter().map(|(_, t)| t.dropped_source).sum(),
+        }
     }
 
     /// One-line reconciliation summary: the dimension-only notice on the skip
@@ -757,10 +788,15 @@ impl BoundaryReconciliationReport {
                     per-family fan-out tally"
                 .to_string();
         }
-        let (total_copy, total_fan_out, total_default_zero, total_dropped) = self.tally_totals();
+        let totals = self.tally_totals();
         format!(
-            "boundary reconciliation: {total_copy} copied, {total_fan_out} fanned out, \
-             {total_default_zero} defaulted to 0.0, {total_dropped} source slots dropped"
+            "boundary reconciliation: {} copied, {} fanned out, {} filled from storage, {} \
+             defaulted to 0.0, {} source slots dropped",
+            totals.copy,
+            totals.fan_out,
+            totals.filled_from_storage,
+            totals.default_zero,
+            totals.dropped_source
         )
     }
 
@@ -787,7 +823,7 @@ impl BoundaryReconciliationReport {
     }
 
     /// Per-family reconciliation breakdown, the anticipated coverage line,
-    /// then the capped `dropped:`/`straddling:` slot lines — the verbose
+    /// then the capped `dropped:`/`straddling:`/`filled:` slot lines — the verbose
     /// detail behind [`Self::summary_line`]. Empty on the dimension-only skip
     /// path.
     #[must_use]
@@ -796,11 +832,15 @@ impl BoundaryReconciliationReport {
             return Vec::new();
         }
         let families = self.families();
-        let mut lines = Vec::with_capacity(families.len() + 1 + 2 * (DETAIL_LINES_SLOT_CAP + 1));
+        let mut lines = Vec::with_capacity(families.len() + 1 + 3 * (DETAIL_LINES_SLOT_CAP + 1));
         for (name, tally) in families {
             lines.push(format!(
-                "{name}: COPY={}, FAN-OUT={}, DEFAULT-0.0={}, DROP={}",
-                tally.copy, tally.fan_out, tally.default_zero, tally.dropped_source
+                "{name}: COPY={}, FAN-OUT={}, FILLED={}, DEFAULT-0.0={}, DROP={}",
+                tally.copy,
+                tally.fan_out,
+                tally.filled_from_storage,
+                tally.default_zero,
+                tally.dropped_source
             ));
         }
         lines.push(format!(
@@ -813,13 +853,14 @@ impl BoundaryReconciliationReport {
         ));
         push_capped_slot_lines(&mut lines, "dropped", &self.dropped_source_slots);
         push_capped_slot_lines(&mut lines, "straddling", &self.straddling_slots);
+        push_capped_slot_lines(&mut lines, "filled", &self.filled_from_storage_slots);
         lines
     }
 }
 
 /// [`BoundaryReconciliationReport::detail_lines`]'s per-list rendering cap for
-/// `dropped_source_slots`/`straddling_slots` — a terminal-rendering concern
-/// only; the report's own vectors stay uncapped.
+/// `dropped_source_slots`/`straddling_slots`/`filled_from_storage_slots` — a
+/// terminal-rendering concern only; the report's own vectors stay uncapped.
 const DETAIL_LINES_SLOT_CAP: usize = 5;
 
 /// Renders `details`' first [`DETAIL_LINES_SLOT_CAP`] entries, appending a
@@ -861,6 +902,7 @@ fn is_structural_pad(slot: &EntitySlot) -> bool {
 fn classify_op(op: &RebindOp, slot: &EntitySlot, tally: &mut FamilyTally) {
     match op {
         RebindOp::Copy(_) => tally.copy += 1,
+        RebindOp::FillFromStorage(_) => tally.filled_from_storage += 1,
         RebindOp::Blend(_) => tally.fan_out += 1,
         RebindOp::Renormalize(_) => {
             tally.fan_out += 1;
@@ -881,8 +923,9 @@ fn classify_op(op: &RebindOp, slot: &EntitySlot, tally: &mut FamilyTally) {
 /// Build a [`BoundaryReconciliationReport`] over one `load_boundary_cuts`
 /// reconciliation: a pure pass over the aligned `target`/`rebind` vectors,
 /// against the same [`build_source_interval_index`] output [`build_rebind`]
-/// resolved against. The two slot-detail vectors are filled in ascending
-/// source and target position respectively — positional orders, never sorted.
+/// resolved against. The slot-detail vectors are filled in ascending source
+/// position (`dropped_source_slots`) or target position (`straddling_slots`,
+/// `filled_from_storage_slots`) — positional orders, never sorted.
 ///
 /// # Panics
 ///
@@ -901,8 +944,12 @@ pub(crate) fn build_reconciliation_report(
 
     for (slot, op) in target.iter().zip(rebind) {
         let family = slot.family();
-        if matches!(op, RebindOp::Renormalize(_)) {
-            report.straddling_slots.push(slot_detail(slot));
+        match op {
+            RebindOp::Renormalize(_) => report.straddling_slots.push(slot_detail(slot)),
+            RebindOp::FillFromStorage(_) => {
+                report.filled_from_storage_slots.push(slot_detail(slot));
+            }
+            _ => {}
         }
         classify_op(op, slot, report.tally_mut(family));
     }
@@ -1264,14 +1311,15 @@ mod tests {
         assert_eq!(dropped, vec![1]);
     }
 
-    /// Given a target transit-bucket slot at the sentinel `interval_start`,
-    /// when `build_rebind` runs, then it resolves to `Zero` even when the
-    /// source carries the same `(entity_id, subindex)` transit slot at the
-    /// same sentinel — transit no longer resolves by identity, so a
-    /// same-identity match with no arrival interval never copies.
+    /// Given a target transit-bucket slot at the sentinel `interval_start` and
+    /// a source that prices the receiver's storage, when `build_rebind` runs,
+    /// then it resolves to `Zero` even when the source carries the same
+    /// `(entity_id, subindex)` transit slot at the same sentinel — transit
+    /// does not resolve by identity, so a same-identity match with no arrival
+    /// interval never copies, and the priced storage is never filled in.
     #[test]
     fn build_rebind_sentinel_transit_bucket_target_is_always_zero() {
-        let source = vec![storage_slot(1), transit_bucket_slot(2, 1)];
+        let source = vec![storage_slot(1), storage_slot(2), transit_bucket_slot(2, 1)];
         let matching_target = vec![storage_slot(1), transit_bucket_slot(2, 1)];
 
         let rebind =
@@ -1582,16 +1630,21 @@ mod tests {
     }
 
     /// Given a target transit-bucket slot whose arrival interval does not
-    /// overlap the source's, when `build_rebind` runs, then it resolves to
-    /// `Zero` — no covered interval, nothing to reconcile to.
+    /// overlap the source's, and a source that prices the receiver's storage,
+    /// when `build_rebind` runs, then it resolves to `Zero` — the source has
+    /// transit intervals for the receiver, so this is not a source miss and
+    /// the priced storage is never filled in.
     #[test]
     fn transit_bucket_non_overlapping_arrival_interval_zeroes() {
-        let source = vec![transit_bucket_slot_over(
-            2,
-            1,
-            encode_slot_date(ymd(2026, 4, 1)),
-            encode_slot_date(ymd(2026, 5, 1)),
-        )];
+        let source = vec![
+            transit_bucket_slot_over(
+                2,
+                1,
+                encode_slot_date(ymd(2026, 4, 1)),
+                encode_slot_date(ymd(2026, 5, 1)),
+            ),
+            storage_slot(2),
+        ];
         let boundary_date = ymd(2026, 4, 1);
         let target = vec![transit_bucket_slot_over(
             2,
@@ -1603,6 +1656,221 @@ mod tests {
         let rebind = rebind_via_index(&source, &target, boundary_date).unwrap();
 
         assert_eq!(rebind, vec![RebindOp::Zero]);
+    }
+
+    /// Given a live post-boundary transit-bucket target whose receiver has no
+    /// source transit interval but whose storage the source prices, when
+    /// `build_rebind` runs, then it resolves to `FillFromStorage` at the
+    /// storage position and `rebind_cut` carries that coefficient bit-for-bit.
+    #[test]
+    fn transit_bucket_source_miss_fills_from_receiver_storage() {
+        let source = vec![storage_slot(2)];
+        let target = vec![transit_bucket_slot_over(
+            2,
+            1,
+            encode_slot_date(ymd(2026, 4, 8)),
+            encode_slot_date(ymd(2026, 4, 15)),
+        )];
+
+        let rebind = rebind_via_index(&source, &target, ymd(2026, 4, 1)).unwrap();
+
+        assert_eq!(rebind, vec![RebindOp::FillFromStorage(0)]);
+        let coefficients = rebind_cut(&owned_cut(vec![-37.25]), &rebind);
+        assert_eq!(coefficients[0].to_bits(), (-37.25_f64).to_bits());
+    }
+
+    /// Given a source pricing storage for hydros 1 and 2 and a target with
+    /// hydro 1's storage plus a source-miss transit bucket of hydro 2, when the
+    /// rebind is reported, then the fill consumes hydro 2's storage position,
+    /// so none is dropped, and the slot tallies as `filled_from_storage`
+    /// rather than `default_zero`.
+    #[test]
+    fn transit_bucket_fill_consumes_the_receiver_storage_position() {
+        let source = vec![storage_slot(1), storage_slot(2)];
+        let target = vec![
+            storage_slot(1),
+            transit_bucket_slot_over(
+                2,
+                1,
+                encode_slot_date(ymd(2026, 4, 8)),
+                encode_slot_date(ymd(2026, 4, 15)),
+            ),
+        ];
+
+        let rebind = rebind_via_index(&source, &target, ymd(2026, 4, 1)).unwrap();
+
+        assert!(dropped_source_positions(&source, &rebind).is_empty());
+        let report = report_via_index(&source, &target, &rebind);
+        assert_eq!(report.transit_bucket.filled_from_storage, 1);
+        assert_eq!(report.transit_bucket.default_zero, 0);
+    }
+
+    /// Given a live post-boundary transit-bucket target whose receiver has no
+    /// source transit interval and whose storage the source does not price,
+    /// when the rebind is reported, then the slot stays `Zero` and tallies as
+    /// `default_zero`, never `filled_from_storage`.
+    #[test]
+    fn transit_bucket_source_miss_without_receiver_storage_stays_zero() {
+        let source = vec![storage_slot(1)];
+        let target = vec![
+            storage_slot(1),
+            transit_bucket_slot_over(
+                2,
+                1,
+                encode_slot_date(ymd(2026, 4, 8)),
+                encode_slot_date(ymd(2026, 4, 15)),
+            ),
+        ];
+
+        let rebind = rebind_via_index(&source, &target, ymd(2026, 4, 1)).unwrap();
+
+        assert_eq!(rebind, vec![RebindOp::Copy(0), RebindOp::Zero]);
+        let report = report_via_index(&source, &target, &rebind);
+        assert_eq!(report.transit_bucket.default_zero, 1);
+        assert_eq!(report.transit_bucket.filled_from_storage, 0);
+    }
+
+    /// Given an in-study transit-bucket target (its arrival interval ends at
+    /// the boundary date) whose receiver's storage the source prices, when
+    /// `build_rebind` runs, then it resolves to `Zero`: only a post-boundary
+    /// slot fills.
+    #[test]
+    fn transit_bucket_in_study_target_stays_zero_when_receiver_storage_is_priced() {
+        let source = vec![storage_slot(2)];
+        let target = vec![transit_bucket_slot_over(
+            2,
+            1,
+            encode_slot_date(ymd(2026, 3, 1)),
+            encode_slot_date(ymd(2026, 4, 1)),
+        )];
+
+        let rebind = rebind_via_index(&source, &target, ymd(2026, 4, 1)).unwrap();
+
+        assert_eq!(rebind, vec![RebindOp::Zero]);
+    }
+
+    /// Given a source whose only transit slot for the receiver is a sentinel
+    /// structural pad, plus the receiver's storage, when `build_rebind` runs on
+    /// a live post-boundary transit target, then it is the same source miss as
+    /// a source with no transit slot and resolves to `FillFromStorage`.
+    #[test]
+    fn transit_bucket_all_sentinel_source_transit_fills_from_storage() {
+        let source = vec![storage_slot(2), transit_bucket_slot(2, 1)];
+        let target = vec![transit_bucket_slot_over(
+            2,
+            1,
+            encode_slot_date(ymd(2026, 4, 8)),
+            encode_slot_date(ymd(2026, 4, 15)),
+        )];
+
+        let rebind = rebind_via_index(&source, &target, ymd(2026, 4, 1)).unwrap();
+
+        assert_eq!(rebind, vec![RebindOp::FillFromStorage(0)]);
+    }
+
+    /// Given a source that prices hydro 1's bucket and both hydros' storage,
+    /// and a target with a bucket for each hydro over the same post-boundary
+    /// week, when `build_rebind` runs, then hydro 1's bucket blends its source
+    /// bucket and hydro 2's fills from hydro 2's storage: the fill follows the
+    /// receiver's own source miss, not a source that holds no bucket at all.
+    #[test]
+    fn transit_bucket_fill_triggers_per_receiver_not_per_source() {
+        let week = |id| {
+            transit_bucket_slot_over(
+                id,
+                1,
+                encode_slot_date(ymd(2026, 4, 1)),
+                encode_slot_date(ymd(2026, 4, 8)),
+            )
+        };
+        let source = vec![storage_slot(1), storage_slot(2), week(1)];
+        let target = vec![week(1), week(2)];
+
+        let rebind = rebind_via_index(&source, &target, ymd(2026, 4, 1)).unwrap();
+
+        assert_eq!(
+            rebind,
+            vec![
+                RebindOp::Blend(vec![(2, 1.0)]),
+                RebindOp::FillFromStorage(1)
+            ]
+        );
+    }
+
+    /// Given a source that prices a storage slot with the same entity id as a
+    /// post-boundary anticipated target, when `build_rebind` runs, then the
+    /// anticipated source miss resolves to `Zero`: only a transit bucket fills
+    /// from storage.
+    #[test]
+    fn anticipated_source_miss_never_fills_from_a_same_id_storage_slot() {
+        let source = vec![storage_slot(9)];
+        let target = vec![anticipated_slot_over(
+            9,
+            0,
+            encode_slot_date(ymd(2026, 5, 1)),
+            encode_slot_date(ymd(2026, 6, 1)),
+        )];
+
+        let rebind = rebind_via_index(&source, &target, ymd(2026, 4, 1)).unwrap();
+
+        assert_eq!(rebind, vec![RebindOp::Zero]);
+    }
+
+    /// Given two hydros' source-miss transit buckets and sources and targets
+    /// each declared in both orders, when each pair is rebound and applied to
+    /// the source's own cut, then hydro 1's bucket carries `-11.0` and hydro
+    /// 2's carries `-22.0`, bit-for-bit, in all four pairings.
+    #[test]
+    fn transit_bucket_fill_is_declaration_order_invariant() {
+        let transit = |id| {
+            transit_bucket_slot_over(
+                id,
+                1,
+                encode_slot_date(ymd(2026, 4, 8)),
+                encode_slot_date(ymd(2026, 4, 15)),
+            )
+        };
+        let sources = [
+            (vec![storage_slot(1), storage_slot(2)], vec![-11.0, -22.0]),
+            (vec![storage_slot(2), storage_slot(1)], vec![-22.0, -11.0]),
+        ];
+        let targets = [vec![transit(1), transit(2)], vec![transit(2), transit(1)]];
+
+        for (source, coefficients) in &sources {
+            for target in &targets {
+                let rebind = rebind_via_index(source, target, ymd(2026, 4, 1)).unwrap();
+
+                let rebound = rebind_cut(&owned_cut(coefficients.clone()), &rebind);
+
+                for (slot, coefficient) in target.iter().zip(&rebound) {
+                    let expected = if slot.entity_id == 1 {
+                        -11.0_f64
+                    } else {
+                        -22.0
+                    };
+                    assert_eq!(coefficient.to_bits(), expected.to_bits());
+                }
+            }
+        }
+    }
+
+    /// Given a source whose receiver storage slot was inactive at the source
+    /// boundary (`was_active = false`), when `build_rebind` runs on a live
+    /// post-boundary transit target, then it still resolves to
+    /// `FillFromStorage` at that slot: the identity key ignores `was_active`.
+    #[test]
+    fn transit_bucket_fill_reads_an_inactive_source_storage_slot() {
+        let source = vec![EntitySlot::storage(2, false)];
+        let target = vec![transit_bucket_slot_over(
+            2,
+            1,
+            encode_slot_date(ymd(2026, 4, 8)),
+            encode_slot_date(ymd(2026, 4, 15)),
+        )];
+
+        let rebind = rebind_via_index(&source, &target, ymd(2026, 4, 1)).unwrap();
+
+        assert_eq!(rebind, vec![RebindOp::FillFromStorage(0)]);
     }
 
     /// Given a target manifest with two transit buckets for one downstream
@@ -2299,6 +2567,31 @@ mod tests {
         );
     }
 
+    /// Given a source pricing hydro 2's storage and a target holding hydro
+    /// 2's post-boundary transit bucket, when `build_reconciliation_report`
+    /// runs, then `filled_from_storage_slots` carries that TARGET bucket's own
+    /// arrival interval.
+    #[test]
+    fn filled_slot_detail_carries_the_target_bucket_interval() {
+        let source = vec![storage_slot(2)];
+        let target = vec![transit_bucket_slot_over(
+            2,
+            1,
+            encode_slot_date(ymd(2026, 4, 8)),
+            encode_slot_date(ymd(2026, 4, 15)),
+        )];
+        let rebind = rebind_via_index(&source, &target, ymd(2026, 4, 1)).unwrap();
+        assert_eq!(rebind, vec![RebindOp::FillFromStorage(0)]);
+
+        let report = report_via_index(&source, &target, &rebind);
+
+        assert_eq!(report.filled_from_storage_slots.len(), 1);
+        let detail = &report.filled_from_storage_slots[0];
+        assert_eq!(detail.family, "transit-bucket");
+        assert_eq!(detail.entity_id, 2);
+        assert_eq!(detail.interval, Some((ymd(2026, 4, 8), ymd(2026, 4, 15))));
+    }
+
     /// A source manifest's two dropped slots (a transit bucket and an
     /// anticipated slot the target models neither of) are declared in one
     /// order; a second manifest declares the SAME two slots at swapped
@@ -2397,6 +2690,47 @@ mod tests {
         );
     }
 
+    /// Given a report with seven filled slots, when `detail_lines` renders,
+    /// then it emits five `filled:` lines and one `... and 2 more` line, and
+    /// the transit-bucket family line carries the count.
+    #[test]
+    fn detail_lines_caps_filled_entries_at_five_with_a_remainder_line() {
+        let filled_from_storage_slots: Vec<SlotDetail> = (0..7)
+            .map(|i| SlotDetail {
+                family: "transit-bucket",
+                entity_id: i,
+                subindex: 0,
+                interval: None,
+                reference_date: None,
+            })
+            .collect();
+        let report = BoundaryReconciliationReport {
+            reconciled: true,
+            transit_bucket: FamilyTally {
+                filled_from_storage: 7,
+                ..FamilyTally::default()
+            },
+            filled_from_storage_slots,
+            ..BoundaryReconciliationReport::default()
+        };
+
+        let lines = report.detail_lines();
+
+        let filled_lines: Vec<&String> =
+            lines.iter().filter(|l| l.starts_with("filled: ")).collect();
+        assert_eq!(filled_lines.len(), 5, "cap at five filled lines: {lines:?}");
+        assert!(
+            lines.iter().any(|l| l == "... and 2 more"),
+            "must state the remainder count: {lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.starts_with("transit-bucket:") && l.contains("FILLED=7")),
+            "the family line must carry the filled count: {lines:?}"
+        );
+    }
+
     /// The default report (the shape `load_boundary_cuts` stores on its
     /// empty-manifest / dimension-only skip path) is `reconciled == false`,
     /// renders a dimension-only summary line, and carries no per-family detail.
@@ -2427,15 +2761,16 @@ mod tests {
                 ..FamilyTally::default()
             },
             inflow_lag: FamilyTally {
-                fan_out: 1,
+                fan_out: 7,
                 ..FamilyTally::default()
             },
             transit_bucket: FamilyTally {
+                filled_from_storage: 3,
                 dropped_source: 2,
                 ..FamilyTally::default()
             },
             anticipated: FamilyTally {
-                default_zero: 1,
+                default_zero: 5,
                 ..FamilyTally::default()
             },
             ..BoundaryReconciliationReport::default()
@@ -2443,9 +2778,42 @@ mod tests {
 
         assert_eq!(
             report.summary_line(),
-            "boundary reconciliation: 2184 copied, 1 fanned out, 1 defaulted to 0.0, 2 source \
-             slots dropped"
+            "boundary reconciliation: 2184 copied, 7 fanned out, 3 filled from storage, 5 \
+             defaulted to 0.0, 2 source slots dropped"
         );
+    }
+
+    /// Given five families whose every `FamilyTally` field is distinct and
+    /// non-zero, when `tally_totals` runs, then each field is the sum of that
+    /// field alone across the families.
+    #[test]
+    fn tally_totals_sums_every_field_across_families() {
+        let scaled = |k: usize| FamilyTally {
+            copy: k,
+            fan_out: 2 * k,
+            straddling: 3 * k,
+            filled_from_storage: 4 * k,
+            default_zero: 5 * k,
+            dropped_source: 6 * k,
+        };
+        let report = BoundaryReconciliationReport {
+            reconciled: true,
+            storage: scaled(1),
+            inflow_lag: scaled(10),
+            transit_bucket: scaled(100),
+            anticipated: scaled(1000),
+            other_identity: scaled(10_000),
+            ..BoundaryReconciliationReport::default()
+        };
+
+        let totals = report.tally_totals();
+
+        assert_eq!(totals.copy, 11_111);
+        assert_eq!(totals.fan_out, 22_222);
+        assert_eq!(totals.straddling, 33_333);
+        assert_eq!(totals.filled_from_storage, 44_444);
+        assert_eq!(totals.default_zero, 55_555);
+        assert_eq!(totals.dropped_source, 66_666);
     }
 
     /// Given a report whose `storage.dropped_source` is 2 and whose
