@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hm3. Their constraints may add only volume and storage terms, with no block
   argument, `per_stage_block` parameter or bounds row with a `block_id`.
 
+### Changed
+
+- Training and simulation results change: each stage LP solves the same model
+  with fewer rows and columns.
+
 ## [0.20.0] - 2026-11-03
 
 ### Added

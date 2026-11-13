@@ -8,7 +8,6 @@ use novomodelo_core::{
     ResolvedBounds, ResolvedGenericConstraintBounds, ResolvedLoadFactors, ResolvedNcsBounds,
     ResolvedNcsFactors, ResolvedPenalties, SlackConfig, Stage, Thermal, VariableRef,
 };
-use novomodelo_stochastic::par::precompute::PrecomputedPar;
 
 use crate::bucket_topology::TransitBucketTopology;
 use crate::hydro_models::{
@@ -74,7 +73,6 @@ pub(crate) struct TemplateBuildCtx<'a> {
     /// Declaration-order bit-determinism (`csc_byte_identical_under_permuted_multi_entity_order`)
     /// depends on every fill iterating a slice, never this map.
     pub(crate) positions: &'a EntityPositions,
-    pub(crate) par_lp: &'a PrecomputedPar,
     /// Resolved production models for all (hydro, stage) pairs.
     pub(crate) production_models: &'a ProductionModelSet,
     /// Resolved evaporation models for all hydro plants.
@@ -703,20 +701,16 @@ fn identify_fpha_hydros(
     stage_idx: usize,
     stage_id: i32,
 ) -> Vec<HydroSys> {
-    let mut fpha_hydro_indices: Vec<HydroSys> = Vec::new();
-    for h_idx in 0..ctx.hydros.len() {
-        let hydro = &ctx.hydros[h_idx];
-        if is_suspended(hydro, stage_id) {
-            continue;
-        }
-        if matches!(
-            ctx.production_models.model(h_idx, stage_idx),
-            ResolvedProductionModel::Fpha { .. }
-        ) {
-            fpha_hydro_indices.push(HydroSys::new(h_idx));
-        }
-    }
-    fpha_hydro_indices
+    (0..ctx.hydros.len())
+        .filter(|&h_idx| {
+            !is_suspended(&ctx.hydros[h_idx], stage_id)
+                && matches!(
+                    ctx.production_models.model(h_idx, stage_idx),
+                    ResolvedProductionModel::Fpha { .. }
+                )
+        })
+        .map(HydroSys::new)
+        .collect()
 }
 
 /// Collect the indices of hydros with linearized evaporation at this stage.
@@ -1395,10 +1389,7 @@ impl<'a> StageLayout<'a> {
         geometry.inflow_slack = col.alloc(if has_inflow_slack_columns { n_h } else { 0 });
 
         // ── Role-(b) constraint row ranges ───────────────────────────────────
-        // The builder's own rows start immediately after `StateSpace::z_inflow_rows()`,
-        // the sole owner of that leading row range. `row` allocates every family
-        // through `RangeCursor::alloc`, mirroring `col` above.
-        let mut row = RangeCursor::new(state_layout.z_inflow_rows().end);
+        let mut row = RangeCursor::new(0);
         geometry.water_balance =
             allocate_water_balance_rows(&mut row, stage.block_mode, n_h, n_blks);
         // Sized from this stage's reachable count, not the stage-invariant
@@ -1717,6 +1708,50 @@ pub(crate) fn contract_family_slot(
     (contract_type, family_slot)
 }
 
+/// The structural row families of a stage LP, in the order the builder allocates them.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RowFamily {
+    /// Water-balance rows.
+    WaterBalance,
+    /// Transit-bucket definition rows.
+    TransitBucketDefinition,
+    /// Load-balance rows.
+    LoadBalance,
+    /// FPHA plane rows.
+    Fpha,
+    /// Evaporation equality rows.
+    Evaporation,
+    /// Below-minimum-outflow rows.
+    MinOutflow,
+    /// Above-maximum-outflow rows.
+    MaxOutflow,
+    /// Per-cell minimum-turbine rows.
+    MinTurbine,
+    /// Per-cell minimum-generation rows.
+    MinGeneration,
+    /// Plant residual minimum-turbine rows.
+    PlantMinTurbine,
+    /// Plant residual minimum-generation rows.
+    PlantMinGeneration,
+    /// Plant maximum-turbine cap rows.
+    PlantMaxTurbine,
+    /// Plant maximum-generation cap rows.
+    PlantMaxGeneration,
+    /// Filling-target rows.
+    FillingTarget,
+    /// Filled minimum-storage floor rows.
+    FilledMinStorageFloor,
+    /// Anticipated commitment-maturity rows.
+    AnticipatedFishing,
+    /// Anticipated state-out definition rows.
+    AnticipatedStateOutDef,
+    /// Anticipated future-slot carry rows.
+    AnticipatedSlotDefinition,
+    /// Generic-constraint rows.
+    GenericConstraint,
+}
+
 impl StageLayout<'_> {
     /// Base column of the `(evap hydro local_idx, slot)` triple, slot-major
     /// (`(local_idx * n_evap_slots + slot) * EVAP_COLS_PER_HYDRO`). Single owner of
@@ -1775,13 +1810,6 @@ impl StageLayout<'_> {
         self.state.theta
     }
 
-    /// Column-side state dimension; reads `self.state.n_state`.
-    #[inline]
-    #[must_use]
-    pub(crate) fn n_state(&self) -> usize {
-        self.state.n_state
-    }
-
     // ── Role-(b) accessors (read StageLayout's own fields) ───────────────────────
 
     /// Start of evaporation constraint rows, one per `(evap hydro, slot)`; see
@@ -1827,11 +1855,82 @@ impl StageLayout<'_> {
         )
     }
 
-    /// Hydro `h`'s z-inflow definition row.
-    #[inline]
+    /// Every structural row family with its range, in allocation order; empty
+    /// families stay in the list.
+    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
-    pub(crate) fn z_inflow_row(&self, h: HydroSys) -> usize {
-        self.state.z_inflow_row(h)
+    pub(crate) fn row_families(&self) -> Vec<(RowFamily, Range<usize>)> {
+        let evap_start = self.row_evap_start();
+        let generic_start = self.rows.row_generic_start;
+        vec![
+            (RowFamily::WaterBalance, self.geometry.water_balance.range()),
+            (
+                RowFamily::TransitBucketDefinition,
+                self.rows.transit_bucket_definition.clone(),
+            ),
+            (RowFamily::LoadBalance, self.geometry.load_balance.range()),
+            (RowFamily::Fpha, self.geometry.fpha.clone()),
+            (
+                RowFamily::Evaporation,
+                evap_start..evap_start + self.geometry.evap_indices.len(),
+            ),
+            (
+                RowFamily::MinOutflow,
+                self.oper_violation.min_outflow.clone(),
+            ),
+            (
+                RowFamily::MaxOutflow,
+                self.oper_violation.max_outflow.clone(),
+            ),
+            (
+                RowFamily::MinTurbine,
+                self.oper_violation.min_turbine.clone(),
+            ),
+            (
+                RowFamily::MinGeneration,
+                self.oper_violation.min_generation.clone(),
+            ),
+            (
+                RowFamily::PlantMinTurbine,
+                self.oper_violation.plant_min_turbine.clone(),
+            ),
+            (
+                RowFamily::PlantMinGeneration,
+                self.oper_violation.plant_min_generation.clone(),
+            ),
+            (
+                RowFamily::PlantMaxTurbine,
+                self.geometry.plant_max_turbine.clone(),
+            ),
+            (
+                RowFamily::PlantMaxGeneration,
+                self.geometry.plant_max_generation.clone(),
+            ),
+            (
+                RowFamily::FillingTarget,
+                self.geometry.filling_target.clone(),
+            ),
+            (
+                RowFamily::FilledMinStorageFloor,
+                self.geometry.filled_min_storage_floor.clone(),
+            ),
+            (
+                RowFamily::AnticipatedFishing,
+                self.anticipated.fishing_rows.clone(),
+            ),
+            (
+                RowFamily::AnticipatedStateOutDef,
+                self.anticipated.state_out_def_rows.clone(),
+            ),
+            (
+                RowFamily::AnticipatedSlotDefinition,
+                self.anticipated.slot_definition_rows.clone(),
+            ),
+            (
+                RowFamily::GenericConstraint,
+                generic_start..generic_start + self.rows.n_generic_rows,
+            ),
+        ]
     }
 }
 

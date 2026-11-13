@@ -1359,9 +1359,9 @@ fn generic_constraint_two_hydros_sum_csc_entries() {
     // with multiplier = productivity; the generic constraint row is the last row.
     let generic_row = t.num_rows - 1;
 
-    // N=2: storage=[0..2], z_inflow=[2..4], storage_in=[4..6], theta=6, turbine_start=7.
-    let turbine_h1_col = 7_usize;
-    let turbine_h2_col = 8_usize;
+    // N=2: storage=[0..2], storage_in=[2..4], theta=4, turbine_start=5.
+    let turbine_h1_col = 5_usize;
+    let turbine_h2_col = 6_usize;
 
     let entries_h1 = csc_entries_at(t, turbine_h1_col, generic_row);
     assert!(
@@ -1437,7 +1437,7 @@ impl Default for HydroStudy {
 /// Build a single-hydro, one-bus, `n_blks`-block, one-stage system under
 /// `block_mode` with `storage` state on, optionally carrying `constraint` +
 /// `bounds`. Column layout (N=1, no thermal/FPHA/evap): storage=[0,1),
-/// z_inflow=[1,2), storage_in=[2,3), theta=3, control region from col 4.
+/// storage_in=[1,2), theta=2, control region from col 3.
 fn one_hydro_system(
     n_blks: usize,
     block_mode: novomodelo_core::BlockMode,
@@ -1679,17 +1679,17 @@ fn generic_constraint_chronological_stage_net_storage_one_row() {
         "stage net storage (block_id=None) collapses to exactly one row"
     );
 
-    // S⁰ = storage_in.start + 0 = 2; Sᴷ = storage.start + 0 = 0.
+    // S⁰ = storage_in.start + 0 = 1; Sᴷ = storage.start + 0 = 0.
     let generic_row = baseline_rows;
     let final_total: f64 = csc_entries_at(t, 0, generic_row).iter().sum();
     assert!(
         (final_total - 1.0).abs() < f64::EPSILON,
         "expected +1.0 on stage-final Sᴷ (col 0), got {final_total}"
     );
-    let initial_total: f64 = csc_entries_at(t, 2, generic_row).iter().sum();
+    let initial_total: f64 = csc_entries_at(t, 1, generic_row).iter().sum();
     assert!(
         (initial_total + 1.0).abs() < f64::EPSILON,
-        "expected -1.0 on stage-initial S⁰ (col 2), got {initial_total}"
+        "expected -1.0 on stage-initial S⁰ (col 1), got {initial_total}"
     );
 }
 
@@ -1765,17 +1765,17 @@ fn generic_constraint_chronological_specific_block_ramp_one_row() {
         "block_id = Some(b) ramp must produce exactly one row"
     );
 
-    // block 1 boundaries: initial k=1 = S¹ = 4, final k=2 = S² = 5.
+    // block 1 boundaries: initial k=1 = S¹ = 3, final k=2 = S² = 4.
     let generic_row = baseline_rows;
-    let final_total: f64 = csc_entries_at(t, 5, generic_row).iter().sum();
+    let final_total: f64 = csc_entries_at(t, 4, generic_row).iter().sum();
     assert!(
         (final_total - 1.0).abs() < f64::EPSILON,
-        "expected +1.0 on S² (col 5), got {final_total}"
+        "expected +1.0 on S² (col 4), got {final_total}"
     );
-    let initial_total: f64 = csc_entries_at(t, 4, generic_row).iter().sum();
+    let initial_total: f64 = csc_entries_at(t, 3, generic_row).iter().sum();
     assert!(
         (initial_total + 1.0).abs() < f64::EPSILON,
-        "expected -1.0 on S¹ (col 4), got {initial_total}"
+        "expected -1.0 on S¹ (col 3), got {initial_total}"
     );
 }
 
@@ -1882,10 +1882,10 @@ struct FlowColumns {
     diversion: usize,
 }
 
-/// derived: the control region starts at `3N + 1` after storage, z-inflow, incoming
-/// storage and θ; a chronological stage first reserves `N * (n_blks - 1)` interior
-/// storage columns; turbine, spillage and diversion then take `N * n_blks` each, plant
-/// `p` block `k` at `start + p * n_blks + k`.
+/// derived: the control region starts at `2N + 1` after storage, incoming storage and
+/// θ; a chronological stage first reserves `N * (n_blks - 1)` interior storage
+/// columns; turbine, spillage and diversion then take `N * n_blks` each, plant `p`
+/// block `k` at `start + p * n_blks + k`.
 fn flow_columns(
     n_hydros: usize,
     n_blks: usize,
@@ -1898,7 +1898,7 @@ fn flow_columns(
         BlockMode::Chronological => n_hydros * (n_blks - 1),
     };
     let family = n_hydros * n_blks;
-    let turbine = 3 * n_hydros + 1 + interior;
+    let turbine = 2 * n_hydros + 1 + interior;
     FlowColumns {
         turbine,
         spillage: turbine + family,
@@ -2273,9 +2273,9 @@ fn stage_volume_matrix_rows_read_their_own_plants_columns() {
         );
     }
 
-    let (n_hydros, d_position) = (2, 1);
+    let d_position = 1;
     assert!(
-        !csc_entries_at(t, tu0, n_hydros + d_position).is_empty(),
+        !csc_entries_at(t, tu0, d_position).is_empty(),
         "the upstream turbine column enters the downstream water row"
     );
 }
@@ -2427,8 +2427,8 @@ fn stage_volume_neighbour_rows_are_unchanged_by_the_volume_row() {
 
 const MAX_DIVERSION: f64 = 25.0;
 const PUMP_MAX: f64 = 40.0;
-const WATER_ROW_5: usize = 2;
-const WATER_ROW_10: usize = 3;
+const WATER_ROW_5: usize = 0;
+const WATER_ROW_10: usize = 1;
 
 fn diversion_pumping_study(
     constraints_json: &str,

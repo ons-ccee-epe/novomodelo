@@ -11,24 +11,21 @@ use novomodelo_sddp::cut::CutPool;
 use novomodelo_sddp::indexer::{CutSlot, CutStateProjection};
 use novomodelo_sddp::setup::{NodePos, StageIdx};
 use novomodelo_sddp::test_support::{
-    inflow_slack_bounds_for_probe, stage_state_box_bounds,
-    write_backward_opening_outcome_at_canonical_state_for_probe,
-    write_backward_opening_outcome_with_inflow_slack_bounds_for_probe,
+    ProbeCut, ProbeCuts, ProbeOpening, inflow_slack_bounds_for_probe, opening_cut_for_probe,
+    stage_state_box_bounds,
 };
-use novomodelo_sddp::workspace::StageContext;
-use novomodelo_sddp::{SddpError, StudySetup, build_cut_row_batch_into};
-use novomodelo_solver::{
-    ActiveSolver, FreezeScratch, RowBatch, StageTemplate, freeze_rows_into_template,
-};
+use novomodelo_sddp::workspace::SolverWorkspace;
+use novomodelo_sddp::{FutureCostFunction, SddpError, StudySetup};
+use novomodelo_solver::{ActiveSolver, SolverInterface};
 use novomodelo_stochastic::OpeningTreeView;
 
-use super::StubComm;
+use super::expanded_solve::{CutRowSet, load_compact_cut_rows};
+use super::oracle_tolerance::value_tolerance;
+use super::{StubComm, lift_to_global_state};
 
 const ORACLE_ITERATIONS: u32 = 3;
 const ORACLE_RANDOM_POINTS: usize = 5;
 const ORACLE_SEED: u64 = 0x5EED_C0BE_5EED_C0BE;
-const ORACLE_ABS_TOL: f64 = 1e-6;
-const ORACLE_REL_TOL: f64 = 1e-7;
 const MASK_ABS_TOL: f64 = 1e-9;
 const MASK_REL_TOL: f64 = 1e-9;
 const ORACLE_MIN_FEASIBLE_POINTS: usize = 3;
@@ -164,23 +161,15 @@ impl CutOracleReport {
 struct OracleCtx<'a> {
     setup: &'a StudySetup,
     tree_view: OpeningTreeView<'a>,
-    /// One per pool (`pool_id == stage` on a chain), each its base template
-    /// plus that pool's own active cuts as rows — unlike the setup's own
-    /// `StageContext::templates`, which carries no cuts and would leave a
-    /// successor's theta unconstrained if loaded directly.
-    frozen_templates: &'a [StageTemplate],
-    /// [`populated_cut_templates`]'s result.
-    populated_templates: Option<&'a [StageTemplate]>,
     /// Per pool, how many cuts the final iteration's selection pass reactivated:
-    /// such a cut is a row of `frozen_templates` that the final backward solve did
-    /// not have, so under-tightness against that template is no invariant there.
+    /// such a cut is an active row that the final backward solve did not have, so
+    /// under-tightness against the active rows is no invariant there.
     reactivated_by_final_pass: &'a [u32],
 }
 
-/// The three observations [`evaluate_point`] gathers from one sample point's
-/// probe solves, aggregated across every opening of the successor stage.
+/// What [`evaluate_point`] gathers from one sample point's probe solves,
+/// aggregated across every opening of the successor stage.
 struct PointEval {
-    canonical_x: Vec<f64>,
     q_hat: f64,
     per_opening_coeffs: Vec<Vec<f64>>,
 }
@@ -242,10 +231,6 @@ fn max_abs(v: &[f64]) -> f64 {
     v.iter().fold(0.0_f64, |acc, &x| acc.max(x.abs()))
 }
 
-fn q_tol(a: f64, b: f64) -> f64 {
-    ORACLE_ABS_TOL + ORACLE_REL_TOL * a.abs().max(b.abs())
-}
-
 fn check_mask(
     label: &str,
     t: usize,
@@ -265,61 +250,99 @@ fn check_mask(
     }
 }
 
-/// Probe every opening of stage `s = t + 1` at sample point `x` (stage `t`'s
+/// Solves one opening of the successor stage, whose LP is the compact template plus `rows`,
+/// cold: the LP is reloaded first, so the solve depends neither on the order of the points nor
+/// on an earlier call's slack override.
+///
+/// # Errors
+///
+/// Returns the folded probe's [`SddpError`].
+pub fn solve_successor_opening(
+    setup: &StudySetup,
+    ws: &mut SolverWorkspace<ActiveSolver>,
+    rows: &CutRowSet,
+    x: &[f64],
+    raw_noise: &[f64],
+    inflow_slack_bounds: Option<(&[f64], &[f64])>,
+    out: &mut ProbeCut,
+) -> Result<(), SddpError> {
+    let stage_ctx = setup.stage_ctx();
+    let training_ctx = setup.training_ctx();
+    let s = rows.resident_pool;
+    let pool = &setup.fcf.pools[s];
+    ws.solver.reset_solver_state();
+    load_compact_cut_rows(
+        &mut ws.solver,
+        setup,
+        stage_ctx.template(StageIdx(s)),
+        pool,
+        &training_ctx.cut_state_layouts[s],
+        rows,
+    );
+    opening_cut_for_probe(
+        ws,
+        &stage_ctx,
+        &training_ctx,
+        &ProbeOpening {
+            stage: StageIdx(s),
+            pinned_state: x,
+            raw_noise,
+            cuts: ProbeCuts {
+                pool,
+                pool_id: s,
+                slots: &rows.slots,
+            },
+            extracted_pool_id: rows.extracted_pool,
+            inflow_slack_bounds,
+        },
+        out,
+    )
+}
+
+/// Solve every opening of stage `s = t + 1` at sample point `x` (stage `t`'s
 /// outgoing state), aggregating the equal-weighted successor value `Q̂(x̃)` and
 /// collecting each opening's raw (unaggregated) cut coefficients for the mask
 /// child-side check.
 fn evaluate_point(
     label: &str,
     occ: &OracleCtx<'_>,
-    templates: &[StageTemplate],
-    ws: &mut novomodelo_sddp::workspace::SolverWorkspace<ActiveSolver>,
+    ws: &mut SolverWorkspace<ActiveSolver>,
+    rows: &CutRowSet,
     t: usize,
     s: usize,
     x: &[f64],
 ) -> Result<PointEval, SddpError> {
-    let stage_ctx = StageContext {
-        templates,
-        ..occ.setup.stage_ctx()
-    };
-    let training_ctx = occ.setup.training_ctx();
-    let successor_pool = &occ.setup.fcf.pools[s];
-    let cut_state = &training_ctx.cut_state_layouts[t];
-    let node_id = occ.setup.inputs.node_graph.node_ids[NodePos(s)];
     let n_openings = occ.tree_view.n_openings(s);
+    assert!(
+        n_openings >= 1,
+        "{label}: evaluate_point: n_openings must be >= 1"
+    );
 
-    let mut canonical_x: Option<Vec<f64>> = None;
     let mut q_hat = 0.0_f64;
     let weight = 1.0 / n_openings as f64;
     let mut per_opening_coeffs = Vec::with_capacity(n_openings);
+    let mut cut = ProbeCut::new(&occ.setup.training_ctx());
 
     for o in 0..n_openings {
-        let raw_noise = occ.tree_view.opening(s, o);
-        let probe = write_backward_opening_outcome_at_canonical_state_for_probe(
+        solve_successor_opening(
+            occ.setup,
             ws,
-            &stage_ctx,
-            &training_ctx,
-            successor_pool,
-            cut_state,
-            StageIdx(s),
-            node_id,
+            rows,
             x,
-            raw_noise,
+            occ.tree_view.opening(s, o),
+            None,
+            &mut cut,
         )?;
         assert_eq!(
-            probe.outcome.coefficients.len(),
+            cut.coefficients.len(),
             occ.setup.fcf.pools[t].state_dimension,
             "{label}: pool {t} coefficient length does not match cut_state_layouts[{t}]'s pairing"
         );
-        if canonical_x.is_none() {
-            canonical_x = Some(probe.canonical_x_hat.clone());
-        }
-        q_hat += weight * probe.outcome.objective_value;
-        per_opening_coeffs.push(probe.outcome.coefficients);
+        q_hat += weight * cut.objective;
+        per_opening_coeffs.push(cut.coefficients.clone());
     }
 
     Ok(PointEval {
-        canonical_x: canonical_x.expect("evaluate_point: n_openings must be >= 1"),
         q_hat,
         per_opening_coeffs,
     })
@@ -331,7 +354,7 @@ type SlackSignature = Vec<(Vec<f64>, Vec<f64>)>;
 
 fn slack_signature(
     occ: &OracleCtx<'_>,
-    ws: &mut novomodelo_sddp::workspace::SolverWorkspace<ActiveSolver>,
+    ws: &mut SolverWorkspace<ActiveSolver>,
     s: usize,
     x: &[f64],
 ) -> SlackSignature {
@@ -362,45 +385,34 @@ fn signature_eq(a: &SlackSignature, b: &SlackSignature) -> bool {
 
 /// The successor value at `x` with every opening's slack bounds frozen at
 /// `signature`, or `+∞` when an opening is infeasible there.
-// Rationale (too_many_arguments): `templates` selects the successor cut rows per
+// Rationale (too_many_arguments): `rows` selects the successor cut rows per
 // call, so it cannot ride on the per-run `OracleCtx` with the other borrows.
 #[allow(clippy::too_many_arguments)]
 fn frozen_q_hat(
     label: &str,
     occ: &OracleCtx<'_>,
-    templates: &[StageTemplate],
-    ws: &mut novomodelo_sddp::workspace::SolverWorkspace<ActiveSolver>,
+    ws: &mut SolverWorkspace<ActiveSolver>,
+    rows: &CutRowSet,
     t: usize,
     s: usize,
     x: &[f64],
     signature: &SlackSignature,
 ) -> f64 {
-    let stage_ctx = StageContext {
-        templates,
-        ..occ.setup.stage_ctx()
-    };
-    let training_ctx = occ.setup.training_ctx();
-    let successor_pool = &occ.setup.fcf.pools[s];
-    let cut_state = &training_ctx.cut_state_layouts[t];
-    let node_id = occ.setup.inputs.node_graph.node_ids[NodePos(s)];
     let n_openings = occ.tree_view.n_openings(s);
     let weight = 1.0 / n_openings as f64;
     let mut q_hat = 0.0_f64;
+    let mut cut = ProbeCut::new(&occ.setup.training_ctx());
     for (o, (lower, upper)) in signature.iter().enumerate() {
-        match write_backward_opening_outcome_with_inflow_slack_bounds_for_probe(
+        match solve_successor_opening(
+            occ.setup,
             ws,
-            &stage_ctx,
-            &training_ctx,
-            successor_pool,
-            cut_state,
-            StageIdx(s),
-            node_id,
+            rows,
             x,
             occ.tree_view.opening(s, o),
-            lower,
-            upper,
+            Some((lower, upper)),
+            &mut cut,
         ) {
-            Ok((probe, _)) => q_hat += weight * probe.outcome.objective_value,
+            Ok(()) => q_hat += weight * cut.objective,
             Err(SddpError::Infeasible { .. }) => return f64::INFINITY,
             Err(other) => {
                 panic!("{label}: pool {t} frozen-correction probe failed unexpectedly: {other}")
@@ -419,7 +431,7 @@ struct CutSignatures {
 
 fn cut_signatures_at_trial_states(
     occ: &OracleCtx<'_>,
-    ws: &mut novomodelo_sddp::workspace::SolverWorkspace<ActiveSolver>,
+    ws: &mut SolverWorkspace<ActiveSolver>,
     s: usize,
     cut_trial_states: &[(usize, Vec<f64>)],
 ) -> CutSignatures {
@@ -449,7 +461,7 @@ fn cut_signatures_at_trial_states(
 fn state_free_cut_signatures(
     label: &str,
     occ: &OracleCtx<'_>,
-    ws: &mut novomodelo_sddp::workspace::SolverWorkspace<ActiveSolver>,
+    ws: &mut SolverWorkspace<ActiveSolver>,
     t: usize,
     s: usize,
     probe_state: &[f64],
@@ -475,63 +487,24 @@ fn state_free_cut_signatures(
     }
 }
 
-/// A copy of `frozen` in which each pool holding an inactive cut carries one row
-/// per populated cut, active or not; `None` when no pool holds an inactive cut.
+/// Every populated cut of pool `s`, active or not, as the cut rows of stage `s`'s LP, whose
+/// cuts are written in pool `t`'s projection.
 ///
-/// Validity is compared against these, never against `frozen` alone: the pool is
-/// append-only, so every successor row a cut's backward solve had is still
-/// populated, but selection may have deactivated one since, and the cut may then
-/// lie above the successor value built on the active rows only.
+/// Validity is compared against these, never against the active rows alone: the pool is
+/// append-only, so every successor row a cut's backward solve had is still populated, but
+/// selection may have deactivated one since, and the cut may then lie above the successor value
+/// built on the active rows only.
 ///
 /// # Panics
 ///
-/// Panics if a pool holding an inactive cut has a never-written slot.
-fn populated_cut_templates(
-    label: &str,
-    setup: &StudySetup,
-    frozen: &[StageTemplate],
-) -> Option<Vec<StageTemplate>> {
-    let holds_inactive_cut = |pool: &CutPool| pool.active_count() < pool.populated();
-    if !setup.fcf.pools.iter().any(holds_inactive_cut) {
-        return None;
-    }
-    let training_ctx = setup.training_ctx();
-    let base_templates = &setup.inputs.stage_data.stage_templates.templates;
-    let mut fcf = setup.fcf.clone();
-    let mut templates = frozen.to_vec();
-    let mut batch = RowBatch {
-        num_rows: 0,
-        row_starts: Vec::new(),
-        col_indices: Vec::new(),
-        values: Vec::new(),
-        row_lower: Vec::new(),
-        row_upper: Vec::new(),
-    };
-    let mut scratch = FreezeScratch::new();
-    for p in 0..fcf.pools.len() {
-        if !holds_inactive_cut(&fcf.pools[p]) {
-            continue;
-        }
-        let populated = fcf.pools[p].populated();
-        assert_eq!(
-            populated,
-            fcf.pools[p].generated(),
-            "{label}: pool {p} has a never-written slot"
-        );
-        for slot in 0..u32::try_from(populated).expect("slot count fits u32") {
-            fcf.set_active(p, slot, true);
-        }
-        build_cut_row_batch_into(
-            &mut batch,
-            &fcf,
-            p,
-            training_ctx.state,
-            &training_ctx.cut_state_layouts[p],
-            &base_templates[p].col_scale,
-        );
-        freeze_rows_into_template(&base_templates[p], &batch, &mut templates[p], &mut scratch);
-    }
-    Some(templates)
+/// Panics if pool `s` has a never-written slot.
+fn populated_rows(label: &str, fcf: &FutureCostFunction, s: usize, t: usize) -> CutRowSet {
+    assert_eq!(
+        fcf.pools[s].populated(),
+        fcf.pools[s].generated(),
+        "{label}: pool {s} has a never-written slot"
+    );
+    CutRowSet::populated(fcf, s, t)
 }
 
 // Rationale (too_many_arguments): bundles the per-run oracle context, this
@@ -547,7 +520,7 @@ fn check_pool(
     trial_points: &[Vec<f64>],
     box_points: &[Vec<f64>],
     cut_signatures: &CutSignatures,
-    ws: &mut novomodelo_sddp::workspace::SolverWorkspace<ActiveSolver>,
+    ws: &mut SolverWorkspace<ActiveSolver>,
     report: &mut CutOracleReport,
 ) {
     let pool_t = &occ.setup.fcf.pools[t];
@@ -559,10 +532,10 @@ fn check_pool(
         .iter()
         .filter(|(slot, _)| !pool_t.is_active(*slot))
         .count();
-    let validity_templates = occ
-        .populated_templates
-        .filter(|_| pool_s.active_count() < pool_s.populated());
-    report.pools_with_inactive_successor_cuts += usize::from(validity_templates.is_some());
+    let active_rows = CutRowSet::active(&occ.setup.fcf, s, t);
+    let validity_rows = (pool_s.active_count() < pool_s.populated())
+        .then(|| populated_rows(label, &occ.setup.fcf, s, t));
+    report.pools_with_inactive_successor_cuts += usize::from(validity_rows.is_some());
     let reactivated = occ.reactivated_by_final_pass[s];
     if reactivated > 0 {
         eprintln!(
@@ -588,7 +561,7 @@ fn check_pool(
 
     for (idx, x) in trial_points.iter().chain(box_points).enumerate() {
         let is_trial = idx < n_trial;
-        match evaluate_point(label, occ, occ.frozen_templates, ws, t, s, x) {
+        match evaluate_point(label, occ, ws, &active_rows, t, s, x) {
             Ok(eval) => {
                 feasible_count += 1;
                 report.points_checked += 1;
@@ -597,15 +570,14 @@ fn check_pool(
                     check_mask(label, t, idx, &off_mask, coeffs, &mut report.mask);
                 }
 
-                let mut proj = vec![0.0; cut_state_t.n_slots()];
-                for (j, slot) in proj.iter_mut().enumerate() {
-                    *slot = eval.canonical_x[cut_state_t.global_state_index(CutSlot::new(j)).get()];
-                }
+                let proj: Vec<f64> = (0..cut_state_t.n_slots())
+                    .map(|j| x[cut_state_t.global_state_index(CutSlot::new(j)).get()])
+                    .collect();
 
-                let validity_q_hat = match validity_templates {
+                let validity_q_hat = match &validity_rows {
                     None => eval.q_hat,
-                    Some(templates) => {
-                        evaluate_point(label, occ, templates, ws, t, s, x)
+                    Some(rows) => {
+                        evaluate_point(label, occ, ws, rows, t, s, x)
                             .unwrap_or_else(|e| {
                                 panic!(
                                     "{label}: pool {t} point {idx} populated-cut probe failed \
@@ -615,7 +587,7 @@ fn check_pool(
                             .q_hat
                     }
                 };
-                let point_signature = slack_signature(occ, ws, s, &eval.canonical_x);
+                let point_signature = slack_signature(occ, ws, s, x);
                 let frozen_values: Vec<f64> = cut_signatures
                     .distinct
                     .iter()
@@ -627,11 +599,11 @@ fn check_pool(
                             let value = frozen_q_hat(
                                 label,
                                 occ,
-                                validity_templates.unwrap_or(occ.frozen_templates),
                                 ws,
+                                validity_rows.as_ref().unwrap_or(&active_rows),
                                 t,
                                 s,
-                                &eval.canonical_x,
+                                x,
                                 signature,
                             );
                             if value == f64::INFINITY {
@@ -648,7 +620,7 @@ fn check_pool(
                         continue;
                     }
                     let lhs = pool_t.intercept(slot) + dot(pool_t.coefficient_row(slot), &proj);
-                    let bound = q_tol(q_frozen, lhs);
+                    let bound = value_tolerance(q_frozen, lhs);
                     if lhs > q_frozen + bound {
                         report.validity.push(format!(
                             "{label}: pool {t} point {idx} slot {slot} (active={}): cut value \
@@ -665,7 +637,7 @@ fn check_pool(
                 if is_trial && reactivated == 0 {
                     report.under_tightness_points_checked += 1;
                     let evaluated = pool_t.evaluate_at_state(&proj);
-                    let bound = q_tol(evaluated, eval.q_hat);
+                    let bound = value_tolerance(evaluated, eval.q_hat);
                     if evaluated < eval.q_hat - bound {
                         report.tightness.push(format!(
                             "{label}: pool {t} trial point {idx}: evaluate_at_state={evaluated} \
@@ -707,36 +679,25 @@ fn check_pool(
     report.min_feasible_points = report.min_feasible_points.min(feasible_count);
 }
 
-/// A state stored in a pool, at its projected dimension, as a vector over the
-/// global state: the dimensions the pool drops come from `fill`.
-fn global_state(layout: &CutStateProjection, row: &[f64], fill: &[f64]) -> Vec<f64> {
-    let mut state = fill.to_vec();
-    for (j, &value) in row.iter().enumerate() {
-        state[layout.global_state_index(CutSlot::new(j)).get()] = value;
-    }
-    state
-}
-
 /// The values of the global dimensions pool `t` drops, as a state over the global
 /// state (zeros for a pool that projects every dimension).
 ///
 /// A pool stores the projected dimensions of its states only, and the run keeps
-/// the whole state of one trial: the one `captured`, the basis the final iteration
-/// captured at the successor. That state stands for every trial of the pool when
-/// the dropped dimensions do not differ between trials, which holds with one
+/// the whole state of one trial: `forward_state`, the state the first iteration's
+/// forward pass ended stage `t` in. That state stands for every trial of the pool
+/// when the dropped dimensions do not differ between trials, which holds with one
 /// forward pass and one opening in every stage up to `t`.
 ///
 /// # Panics
 ///
-/// Panics if a pool that drops dimensions has several trials or openings, or no
-/// captured state.
+/// Panics if a pool that drops dimensions has several trials or openings.
 fn dropped_dimension_fill(
     label: &str,
     t: usize,
     layout: &CutStateProjection,
     n_state: usize,
     single_trial: bool,
-    captured: Option<&[f64]>,
+    forward_state: &[f64],
 ) -> Vec<f64> {
     if layout.n_slots() == n_state {
         return vec![0.0; n_state];
@@ -745,9 +706,7 @@ fn dropped_dimension_fill(
         single_trial,
         "{label}: pool {t} drops state dimensions, which the run keeps for one trial only"
     );
-    captured
-        .unwrap_or_else(|| panic!("{label}: pool {t}: the successor captured no basis"))
-        .to_vec()
+    forward_state.to_vec()
 }
 
 /// Pairs every active cut slot `j` of pool `t` with the state it was generated at:
@@ -768,19 +727,20 @@ fn recover_cut_trial_states(
             let row = pool
                 .trial_state(j)
                 .unwrap_or_else(|| panic!("{label}: pool {t}: slot {j} has no stored state"));
-            (j, global_state(layout, row, fill))
+            (j, lift_to_global_state(layout, row, fill))
         })
         .collect()
 }
 
 /// The final iteration's `forward_passes` trial states of pool `t`, its dropped
-/// dimensions from `fill`. When the pool drops some, `fill` is the captured state
-/// and the stored dimensions of the one trial must equal it bit for bit.
+/// dimensions from `fill`. When the pool drops some, `fill` is the state the first
+/// iteration's forward pass ended the stage in, and the pool's first stored state
+/// must equal it in the dimensions the pool keeps, bit for bit.
 ///
 /// # Panics
 ///
-/// Panics if the pool stores fewer states than `forward_passes`, or stores a state
-/// other than the captured one.
+/// Panics if the pool stores fewer states than `forward_passes`, or its first
+/// stored state is not the forward one.
 fn final_trial_points(
     label: &str,
     t: usize,
@@ -799,20 +759,21 @@ fn final_trial_points(
     );
     let points: Vec<Vec<f64>> = stored[stored.len() - forward_passes..]
         .iter()
-        .map(|row| global_state(layout, row, fill))
+        .map(|row| lift_to_global_state(layout, row, fill))
         .collect();
     if layout.n_slots() < fill.len() {
         assert!(
-            bits_eq(&points[0], fill),
-            "{label}: pool {t}: the stored state is not the state the final iteration captured"
+            bits_eq(&lift_to_global_state(layout, stored[0], fill), fill),
+            "{label}: pool {t}: the first stored state is not the state the first iteration's forward pass ended the stage in"
         );
     }
     points
 }
 
-/// Trains `setup` with `HiGHS` on a single rank/thread, then gates every stored
+/// Trains the compact `setup` with `HiGHS` on a single rank/thread, then gates every stored
 /// cut, active or not, on the validity, under-tightness, and mask-soundness
 /// oracles over each producer stage `t` whose pool has at least one populated cut.
+/// The successor value is the folded solve of stage `t + 1`.
 /// Validity compares each cut with the successor value whose inflow-slack bounds
 /// are frozen at that cut's own trial state, read from the pool's per-slot store.
 ///
@@ -838,6 +799,7 @@ pub fn run_cut_oracles(label: &str, mut setup: StudySetup) -> CutOracleReport {
     }
 
     setup.set_export_states(true);
+    let first_forward_states = super::forward_replay::first_iteration_forward_states(&setup);
     let comm = StubComm;
     let mut solver = ActiveSolver::new().expect("run_cut_oracles: ActiveSolver::new must succeed");
     let (event_sender, events) = mpsc::channel();
@@ -885,11 +847,6 @@ pub fn run_cut_oracles(label: &str, mut setup: StudySetup) -> CutOracleReport {
         Some(_) => {}
     }
 
-    let frozen_templates = outcome
-        .result
-        .frozen_templates
-        .expect("run_cut_oracles: training must populate frozen_templates");
-    let basis_cache = outcome.result.basis_cache;
     let forward_passes = setup.fcf.forward_passes as usize;
 
     let mut workspace_pool = setup
@@ -897,18 +854,19 @@ pub fn run_cut_oracles(label: &str, mut setup: StudySetup) -> CutOracleReport {
         .expect("run_cut_oracles: create_workspace_pool must succeed");
     let ws = &mut workspace_pool.workspaces[0];
 
-    let populated_templates = populated_cut_templates(label, &setup, &frozen_templates);
     let occ = OracleCtx {
         setup: &setup,
         tree_view: setup.training_ctx().stochastic.tree_view(),
-        frozen_templates: &frozen_templates,
-        populated_templates: populated_templates.as_deref(),
         reactivated_by_final_pass: &reactivated_by_final_pass,
     };
 
     let mut report = CutOracleReport::default();
 
-    for t in 0..n_stages.saturating_sub(1) {
+    for (t, forward_state) in first_forward_states
+        .iter()
+        .enumerate()
+        .take(n_stages.saturating_sub(1))
+    {
         if setup.fcf.pools[t].populated() == 0 {
             continue;
         }
@@ -924,9 +882,7 @@ pub fn run_cut_oracles(label: &str, mut setup: StudySetup) -> CutOracleReport {
             layout_t,
             n_state,
             forward_passes == 1 && (0..=t).all(|stage| occ.tree_view.n_openings(stage) == 1),
-            basis_cache[s]
-                .as_ref()
-                .map(|basis| basis.state_at_capture.as_slice()),
+            forward_state,
         );
         let trial_points = final_trial_points(label, t, pool_t, layout_t, forward_passes, &fill);
 

@@ -680,16 +680,16 @@ mod tests {
             len: 1,
             q: 1.0,
         };
-        crate::setup::NodeGraph {
-            node_ids: (0..4).map(NodeId).collect(),
-            nodes: (0..4)
+        crate::setup::NodeGraph::new(
+            (0..4).map(NodeId).collect(),
+            (0..4)
                 .map(|t| NodeRuntime {
                     stage: StageIdx(t),
                     pool_id: t,
                     openings,
                 })
                 .collect(),
-            successors: (0..4)
+            (0..4)
                 .map(|t| {
                     if t < 3 {
                         vec![NodeSuccessor {
@@ -701,9 +701,9 @@ mod tests {
                     }
                 })
                 .collect(),
-            n_pools: 4,
-            pool_stage: (0..4).map(StageIdx).collect(),
-        }
+            4,
+            (0..4).map(StageIdx).collect(),
+        )
     }
 
     /// The manifest's history is read from the interior pools only: none

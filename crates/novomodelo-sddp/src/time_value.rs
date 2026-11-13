@@ -453,8 +453,8 @@ impl TimeValue {
     ) -> Self {
         let study_stages: Vec<&Stage> = system.stages().iter().filter(|s| s.id >= 0).collect();
         let anticipated_thermal_ids: Vec<EntityId> = anticipated_plants
-            .thermals()
-            .map(|t| system.thermals()[t.get()].id)
+            .thermals_in(system.thermals())
+            .map(|t| t.id)
             .collect();
         Self::resolve(
             &study_stages,

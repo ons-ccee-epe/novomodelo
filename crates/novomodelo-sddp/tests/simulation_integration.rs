@@ -186,6 +186,7 @@ impl SolverInterface for MockSolver {
     fn load_model(&mut self, _template: &StageTemplate) {}
     fn add_rows(&mut self, _cuts: &RowBatch) {}
     fn set_row_bounds(&mut self, _indices: &[usize], _lower: &[f64], _upper: &[f64]) {}
+    fn set_row_lower_bounds_range(&mut self, _first_row: usize, _lower: &[f64]) {}
     fn set_col_bounds(&mut self, _indices: &[usize], _lower: &[f64], _upper: &[f64]) {}
     fn solve(
         &mut self,
@@ -374,7 +375,6 @@ fn minimal_template() -> StageTemplate {
         objective,
         row_lower: vec![0.0; num_rows],
         row_upper: vec![0.0; num_rows],
-        n_state: 1,
         col_scale: Vec::new(),
         row_scale: Vec::new(),
     }
@@ -638,7 +638,8 @@ fn train_simulate_write_cycle() {
 
     let geometry = vec![hydro_only_bus_geometry(); fx.n_stages];
     let state_boxes = permissive_state_boxes(fx.state.n_state, fx.n_stages);
-    let stage_ctx_fixture = StageContextFixture::new(&fx.templates, &state_boxes, &geometry);
+    let stage_ctx_fixture = StageContextFixture::new(&fx.templates, &state_boxes, &geometry)
+        .without_inflow_entries(fx.state.hydro_count);
     let stage_ctx = stage_ctx_fixture.ctx();
     let cut_state_layouts = all_enabled_cut_state_layouts(&fx.state, fx.n_stages);
     let study_dims = study_dims_for(false);
@@ -776,7 +777,7 @@ fn train_simulate_write_cycle() {
         0,
         0,
         sim_solver,
-        PatchBuffer::new(&fx.state, &[], &[]),
+        PatchBuffer::new(&fx.state, &[], &[], &[]),
         &training_context,
         &stage_ctx,
         WorkspaceSizing::default(),
@@ -968,6 +969,7 @@ impl SolverInterface for SizedMockSolver {
     }
 
     fn set_row_bounds(&mut self, _indices: &[usize], _lower: &[f64], _upper: &[f64]) {}
+    fn set_row_lower_bounds_range(&mut self, _first_row: usize, _lower: &[f64]) {}
     fn set_col_bounds(&mut self, _indices: &[usize], _lower: &[f64], _upper: &[f64]) {}
     fn solve(
         &mut self,
@@ -1277,7 +1279,8 @@ fn simulation_min_outflow_slack_extracted_from_primal() {
     let mut fcf = make_fcf(n_stages);
 
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
-    let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &equipment_geometry);
+    let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &equipment_geometry)
+        .without_inflow_entries(state.hydro_count);
     let stage_ctx = stage_ctx_fixture.ctx();
 
     let training_config = TrainingConfig {
@@ -1362,7 +1365,7 @@ fn simulation_min_outflow_slack_extracted_from_primal() {
         0,
         0,
         sim_solver,
-        PatchBuffer::new(&state, &[], &[]),
+        PatchBuffer::new(&state, &[], &[], &[]),
         &training_context,
         &stage_ctx,
         WorkspaceSizing::default(),
@@ -1465,7 +1468,8 @@ fn enumerated_census_k1_matches_sampled_single_scenario() {
     // `minimal_template`'s N=1 hydro, 1 bus, 1-block layout.
     let geometry: Vec<StageGeometry> = vec![hydro_only_bus_geometry(); fx.n_stages];
     let state_boxes = permissive_state_boxes(fx.state.n_state, fx.n_stages);
-    let stage_ctx_fixture = StageContextFixture::new(&fx.templates, &state_boxes, &geometry);
+    let stage_ctx_fixture = StageContextFixture::new(&fx.templates, &state_boxes, &geometry)
+        .without_inflow_entries(fx.state.hydro_count);
     let stage_ctx = stage_ctx_fixture.ctx();
     let cut_state_layouts = all_enabled_cut_state_layouts(&fx.state, fx.n_stages);
     let study_dims = study_dims_for(false);
@@ -1530,7 +1534,7 @@ fn enumerated_census_k1_matches_sampled_single_scenario() {
                 0,
                 0,
                 sim_solver,
-                PatchBuffer::new(&fx.state, &[], &[]),
+                PatchBuffer::new(&fx.state, &[], &[], &[]),
                 &training_context,
                 &stage_ctx,
                 WorkspaceSizing::default(),
@@ -2465,4 +2469,208 @@ fn warm_4ree_solves_meet_every_row() {
         violations.values().all(|&count| count == 0),
         "every solve must meet its rows; row violations by phase: {violations:?}"
     );
+}
+
+mod compact_simulation_outputs {
+    use std::sync::mpsc;
+
+    use novomodelo_io::Config;
+    use novomodelo_io::config::{
+        RawClassConfigEntry, RawSamplingScheme, RawScenarioSourceConfig, SimulationConfig,
+        SimulationRowSet, SimulationSelection,
+    };
+    use novomodelo_sddp::StudySetup;
+    use novomodelo_sddp::indexer::CutSlot;
+    use novomodelo_sddp::simulation::{SimulationScenarioResult, SimulationStageResult};
+    use novomodelo_sddp::test_support::template_structure::state_lag_dims;
+    use novomodelo_solver::ActiveSolver;
+
+    use crate::common::in_code_studies::fpha_lag_study;
+    use crate::common::stored_cut_oracles::apply_oracle_config;
+    use crate::common::{StubComm, build_setup_in_code_with_models};
+
+    const LAG_REL_TOL: f64 = 1e-12;
+    const NUM_SCENARIOS: u32 = 4;
+    const SIMULATION_SEED: i64 = 7;
+
+    pub(super) fn simulate_sampled(setup: &StudySetup) -> Vec<SimulationScenarioResult> {
+        let mut pool = setup
+            .create_workspace_pool(&StubComm, 1, ActiveSolver::new)
+            .expect("workspace pool");
+        let (result_tx, result_rx) = mpsc::sync_channel(NUM_SCENARIOS as usize);
+        setup
+            .simulate(&mut pool.workspaces, &StubComm, &result_tx, None, None, &[])
+            .expect("simulate must succeed");
+        drop(result_tx);
+        let mut results: Vec<SimulationScenarioResult> = result_rx.into_iter().collect();
+        results.sort_by_key(|r| r.scenario_id);
+        results
+    }
+
+    fn pool_zero_lag_cuts(setup: &StudySetup) -> usize {
+        let layout = &setup.training_ctx().cut_state_layouts[0];
+        let lag_dims = state_lag_dims(setup.stage_state());
+        setup
+            .fcf
+            .active_cuts(0)
+            .filter(|(_, _, coefficients)| {
+                coefficients.iter().enumerate().any(|(j, &c)| {
+                    c != 0.0 && lag_dims.contains(&layout.global_state_index(CutSlot::new(j)).get())
+                })
+            })
+            .count()
+    }
+
+    fn assert_every_stage_has_lags(results: &[SimulationScenarioResult]) {
+        for result in results {
+            for stage in &result.stages {
+                assert!(
+                    !stage.inflow_lags.is_empty(),
+                    "scenario {} stage {}: no inflow_lags record, so no lag output is read",
+                    result.scenario_id,
+                    stage.stage_id
+                );
+            }
+        }
+    }
+
+    pub(super) fn trained(edit: impl FnOnce(&mut Config)) -> StudySetup {
+        let (system, mut config, hydro_models) = fpha_lag_study();
+        apply_oracle_config(&mut config);
+        config.simulation = SimulationConfig {
+            enabled: true,
+            io_channel_capacity: 64,
+            scenario_source: Some(RawScenarioSourceConfig {
+                seed: Some(SIMULATION_SEED),
+                inflow: Some(RawClassConfigEntry {
+                    scheme: RawSamplingScheme::OutOfSample,
+                }),
+                ..RawScenarioSourceConfig::default()
+            }),
+            solver: None,
+            selection: Some(SimulationSelection::Sampled {
+                num_scenarios: NUM_SCENARIOS,
+            }),
+            cut_set: SimulationRowSet::All,
+        };
+        edit(&mut config);
+        let mut setup = build_setup_in_code_with_models(system, &config, hydro_models);
+        let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
+        let outcome = setup
+            .train(&mut solver, &StubComm, 1, ActiveSolver::new, None, None)
+            .expect("training must return Ok");
+        assert!(
+            outcome.error.is_none(),
+            "training must not error: {:?}",
+            outcome.error
+        );
+        assert!(
+            pool_zero_lag_cuts(&setup) > 0,
+            "pool 0 holds no active cut with a nonzero lag coefficient, so a missing lag pin goes unseen"
+        );
+        setup
+    }
+
+    fn simulated() -> (StudySetup, Vec<SimulationScenarioResult>) {
+        let setup = trained(|_| {});
+        let results = simulate_sampled(&setup);
+        assert_eq!(results.len(), NUM_SCENARIOS as usize);
+        assert_every_stage_has_lags(&results);
+        let first_stage_inflows: Vec<Vec<u64>> = results
+            .iter()
+            .map(|r| {
+                r.stages[0]
+                    .hydros
+                    .iter()
+                    .map(|h| h.incremental_inflow_m3s.to_bits())
+                    .collect()
+            })
+            .collect();
+        assert!(
+            first_stage_inflows.windows(2).any(|w| w[0] != w[1]),
+            "every scenario draws the same first-stage inflow, so the noise never moves the realized inflow"
+        );
+        (setup, results)
+    }
+
+    #[test]
+    fn lag_outputs_carry_the_previous_stage_inflow() {
+        let (_, results) = simulated();
+        for result in &results {
+            for t in 1..result.stages.len() {
+                let (previous, stage) = (&result.stages[t - 1], &result.stages[t]);
+                for hydro in &previous.hydros {
+                    let lags = |stage: &SimulationStageResult| {
+                        let mut lags: Vec<_> = stage
+                            .inflow_lags
+                            .iter()
+                            .filter(|r| r.hydro_id == hydro.hydro_id)
+                            .collect();
+                        lags.sort_by_key(|r| r.lag_index);
+                        lags.into_iter().map(|r| r.inflow_m3s).collect::<Vec<f64>>()
+                    };
+                    let (now, before) = (lags(stage), lags(previous));
+                    for (l, &got) in now.iter().enumerate() {
+                        let want = if l == 0 {
+                            hydro.incremental_inflow_m3s
+                        } else {
+                            before[l - 1]
+                        };
+                        assert!(
+                            (got - want).abs() <= LAG_REL_TOL * want.abs().max(1.0),
+                            "scenario {} stage {t} hydro {} lag {l}: got {got:?}, want {want:?}",
+                            result.scenario_id,
+                            hydro.hydro_id
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn compact_simulation_is_reproducible() {
+        let (setup, results) = simulated();
+        let again = simulate_sampled(&setup);
+        assert_eq!(
+            serde_json::to_vec(&results).expect("results serialize"),
+            serde_json::to_vec(&again).expect("results serialize"),
+            "a second compact simulation on a fresh pool moved a result"
+        );
+    }
+}
+
+mod compact_dcs_simulation {
+    use std::num::NonZeroU32;
+
+    use novomodelo_io::config::{SelectionMethod, SimulationRowSet};
+
+    use super::compact_simulation_outputs::{simulate_sampled, trained};
+
+    #[test]
+    fn compact_dcs_simulation_is_reproducible() {
+        let compact = trained(|config| {
+            config.training.cut_selection.selection = Some(SelectionMethod::Dynamic {
+                start_iteration: NonZeroU32::MIN,
+                seed_window: 2,
+                candidate_recency: None,
+                max_added_per_round: NonZeroU32::MIN,
+                violation_tolerance: None,
+            });
+            config.simulation.cut_set = SimulationRowSet::Active;
+        });
+        assert!(
+            compact.training_ctx().dcs.is_some(),
+            "the compact form has no dynamic cut selection, so no lazy solve runs"
+        );
+        assert!(
+            compact.fcf.active_cuts(0).nth(1).is_some(),
+            "pool 0 holds fewer than two active cuts, so the one-per-round limit never forces a second round"
+        );
+        assert_eq!(
+            serde_json::to_vec(&simulate_sampled(&compact)).expect("results serialize"),
+            serde_json::to_vec(&simulate_sampled(&compact)).expect("results serialize"),
+            "a second compact simulation on a fresh pool moved a result"
+        );
+    }
 }

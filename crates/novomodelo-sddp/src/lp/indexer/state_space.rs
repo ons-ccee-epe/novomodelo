@@ -28,22 +28,22 @@ use novomodelo_core::temporal::StageStateConfig;
 ///
 /// ```text
 /// [0, N)                                     storage               — outgoing storage volumes (N = hydro_count)
-/// [N, N*(1+L))                               inflow_lags           — AR lag variables (L lags per hydro)
-/// [N*(1+L), N*(1+L) + B)                     transit_buckets_out   — travel-time bucket state (outgoing, identity)
-/// [N*(1+L) + B, N*(1+L) + B + S)             commit_out            — commitment-hold outgoing slots (outgoing, identity)
-/// [… + S, … + N)                             z_inflow              — realized inflow (auxiliary, not state)
-/// [… + N, … + 2*N)                           storage_in            — incoming storage volumes
-/// [… + 2*N, … + 2*N + B)                     transit_buckets_in    — incoming travel-time bucket volumes (pinned)
-/// [… + B, … + B + S)                         commit_in             — incoming commitment-hold slots (pinned)
-/// … + S                                       theta                 — future cost variable (scalar)
+/// [N, N + B)                                 transit_buckets_out   — travel-time bucket state (outgoing)
+/// [N + B, N + B + S)                         commit_out            — commitment-hold outgoing slots (outgoing)
+/// [N + B + S, 2*N + B + S)                   storage_in            — incoming storage volumes
+/// [2*N + B + S, 2*N + 2*B + S)               transit_buckets_in    — incoming travel-time bucket volumes (pinned)
+/// [2*N + 2*B + S, 2*N + 2*B + 2*S)           commit_in             — incoming commitment-hold slots (pinned)
+/// 2*N + 2*B + 2*S                            theta                 — future cost variable (scalar)
 /// ```
+///
+/// The AR lag state ([`Self::state_dim_lag_range`]) has no LP column.
 ///
 /// `S = A*k_max`: the commitment-hold region is the in-study anticipated-ring
 /// slots in one contiguous out/in pair — an outgoing block
-/// ([`Self::commit_out`], identity-resolved, contributing to
-/// [`Self::n_state`]) and a separate incoming block ([`Self::commit_in`],
-/// pinned via [`Self::state_to_lp_incoming_column`]) — never one
-/// dual-purpose range shifted out-of-LP. Slots are slot-major/plant-minor,
+/// ([`Self::commit_out`], resolved through `outgoing_block_start`,
+/// contributing to [`Self::n_state`]) and a separate incoming block
+/// ([`Self::commit_in`], pinned via [`Self::state_to_lp_incoming_column`]) —
+/// never one dual-purpose range shifted out-of-LP. Slots are slot-major/plant-minor,
 /// keyed ring-axis-modular (delivery target `m`'s slot is `r(m) mod k_max`,
 /// see [`Self::commitment_hold_in_study_offset`]). Like the bucket block,
 /// the whole region is always cut-enabled,
@@ -53,20 +53,16 @@ pub struct StateSpace {
     /// Outgoing storage volumes.
     pub storage: Range<usize>,
 
-    /// AR lag variables, lag-major: all hydros for lag 0, then lag 1, …. Hydro
-    /// `h` at lag `l` is at `inflow_lags.start + l * hydro_count + h`.
-    pub inflow_lags: Range<usize>,
-
     /// Travel-time in-transit bucket state. Outgoing bucket state maps to its
-    /// LP column by identity — the `storage` convention, not the `z_inflow`
-    /// lag remap.
+    /// LP column through `outgoing_block_start` — the `storage`
+    /// convention.
     pub transit_buckets_out: Range<usize>,
 
     /// Commitment-hold OUTGOING slots: the `n_anticipated * k_max` in-study
     /// anticipated-ring slots, slot-major/plant-minor (slot `k` for plant `i`
     /// at `commit_out.start + k * n_anticipated + i` —
     /// [`Self::commitment_hold_in_study_offset`]). Every slot is a genuine LP
-    /// column resolved by identity (the `transit_buckets_out` convention) and
+    /// column resolved through `outgoing_block_start` and
     /// defined by an in-LP definition row — never resolved out-of-LP. A slot
     /// `k >= k_i` for a plant whose own reachable depth is smaller is
     /// padding, frozen `[0, 0]`.
@@ -79,9 +75,6 @@ pub struct StateSpace {
     /// Incoming travel-time bucket volumes, pinned via
     /// [`StateSpace::state_to_lp_incoming_column`].
     pub transit_buckets_in: Range<usize>,
-
-    /// Realized-inflow variables `z_h`, one per hydro.
-    pub z_inflow: Range<usize>,
 
     /// Commitment-hold INCOMING slots, the same layout as [`Self::commit_out`],
     /// pinned via [`StateSpace::state_to_lp_incoming_column`]. The slot
@@ -133,8 +126,8 @@ pub struct StateSpace {
     pub nonzero_state_indices: Vec<StateDim>,
 
     /// Precomputed `state_to_lp_column(j)` for every `j ∈ [0, n_state)` (cut-row
-    /// hot path).
-    pub state_to_lp_column_map: Vec<OutCol>,
+    /// hot path); `None` for a dimension with no LP column.
+    pub state_to_lp_column_map: Vec<Option<OutCol>>,
 }
 
 /// One of the four stage-invariant state-vector regions, in the canonical walk
@@ -157,8 +150,8 @@ pub(crate) enum StateRegion {
 /// [`StateSpace::state_to_lp_incoming_column`],
 /// [`StateSpace::set_nonzero_mask`], and [`super::CutStateProjection::new`]
 /// all dispatch over this array via [`StateSpace::state_dim_range`]; a
-/// variant added to [`StateRegion`] fails to compile at any of those sites
-/// (each matches it exhaustively, no `_` catch-all) until handled.
+/// variant added to [`StateRegion`] fails to compile at the exhaustive matches
+/// they reach (no `_` catch-all) until handled.
 pub(crate) const REGION_ORDER: [StateRegion; 4] = [
     StateRegion::Storage,
     StateRegion::Lag,
@@ -167,6 +160,13 @@ pub(crate) const REGION_ORDER: [StateRegion; 4] = [
 ];
 
 impl StateRegion {
+    /// Whether this region's state dimensions occupy LP columns.
+    #[inline]
+    #[must_use]
+    pub(crate) const fn has_lp_columns(self) -> bool {
+        !matches!(self, Self::Lag)
+    }
+
     /// Whether `region`'s state dimensions are cut-enabled under `config`: storage
     /// and lag are config-gated; buckets and the merged commitment-hold region
     /// are always included, regardless of `config` — every declared in-study or
@@ -297,10 +297,8 @@ impl StateSpace {
 
         let mut cursor = RangeCursor::new(0);
         let storage = cursor.alloc(n);
-        let inflow_lags = cursor.alloc(n * l);
         let transit_buckets_out = alloc_or_empty(&mut cursor, n_buckets);
         let commit_out = alloc_or_empty(&mut cursor, n_ant_state);
-        let z_inflow = cursor.alloc(n);
         let storage_in = cursor.alloc(n);
         let transit_buckets_in = alloc_or_empty(&mut cursor, n_buckets);
         let commit_in = alloc_or_empty(&mut cursor, n_ant_state);
@@ -323,12 +321,10 @@ impl StateSpace {
 
         let mut layout = Self {
             storage,
-            inflow_lags,
             transit_buckets_out,
             commit_out,
             storage_in,
             transit_buckets_in,
-            z_inflow,
             commit_in,
             theta,
             n_state,
@@ -408,15 +404,43 @@ impl StateSpace {
 
     /// `region`'s incoming pinned-block start column — the single owner of
     /// which block [`Self::state_to_lp_incoming_column`] pins.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `region` has no LP columns ([`StateRegion::has_lp_columns`]).
     #[inline]
     #[must_use]
     pub(crate) fn incoming_block_start(&self, region: StateRegion) -> usize {
         match region {
             StateRegion::Storage => self.storage_in.start,
-            StateRegion::Lag => self.inflow_lags.start,
+            StateRegion::Lag => unreachable!("{region:?} has no incoming LP block"),
             StateRegion::Buckets => self.transit_buckets_in.start,
             StateRegion::CommitmentHold => self.commit_in.start,
         }
+    }
+
+    /// The single owner of where `region`'s outgoing values sit in the primal.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `region` has no LP columns ([`StateRegion::has_lp_columns`]).
+    #[inline]
+    #[must_use]
+    pub(crate) fn outgoing_block_start(&self, region: StateRegion) -> usize {
+        match region {
+            StateRegion::Storage => self.storage.start,
+            StateRegion::Lag => unreachable!("{region:?} has no outgoing LP block"),
+            StateRegion::Buckets => self.transit_buckets_out.start,
+            StateRegion::CommitmentHold => self.commit_out.start,
+        }
+    }
+
+    /// `region`'s outgoing block as a primal column range.
+    #[inline]
+    #[must_use]
+    pub(crate) fn outgoing_block_range(&self, region: StateRegion) -> Range<usize> {
+        let start = self.outgoing_block_start(region);
+        start..start + self.state_dim_range(region).len()
     }
 
     /// Classify `j` into its [`StateRegion`] and its offset within that
@@ -439,16 +463,13 @@ impl StateSpace {
         (region, j - self.state_dim_range(region).start)
     }
 
-    /// Map a state-vector index to the LP column it references in a cut.
+    /// Map a state-vector index to the LP column it references in a cut:
+    /// `outgoing_block_start(region) + offset` for the region [`Self::classify`]
+    /// finds, which walks `REGION_ORDER` exhaustively.
     ///
-    /// Classifies `j` into its `StateRegion` via `REGION_ORDER` before any
-    /// lag arithmetic runs, then resolves through an exhaustive match:
-    /// storage, `transit_buckets_out`, and `commit_out` map by identity. Lag
-    /// indices remap to the outgoing state after `shift_lag_state`: lag 0 is
-    /// realised inflow → [`Self::z_inflow_col`]; lag `l ≥ 1` is the previous
-    /// stage's lag `l − 1` → [`Self::lag_incoming_col`]. Classifying
-    /// first — rather than falling through an `if`/`else` chain — is what
-    /// keeps buckets/commitment-hold from ever reaching the lag decode.
+    /// # Panics
+    ///
+    /// Panics if `j` is a lag dimension, which has no LP column.
     ///
     /// A bare `usize` cannot skip the [`StateDim`] wrap at this resolver
     /// boundary:
@@ -476,20 +497,7 @@ impl StateSpace {
     #[must_use]
     pub fn state_to_lp_column(&self, j: StateDim) -> OutCol {
         let (region, offset) = self.classify(j);
-
-        OutCol::new(match region {
-            StateRegion::Storage | StateRegion::Buckets | StateRegion::CommitmentHold => j.get(),
-            StateRegion::Lag => {
-                let n = self.hydro_count;
-                let h = offset % n;
-                let lag = offset / n;
-                if lag == 0 {
-                    self.z_inflow_col(HydroSys::new(h)).get()
-                } else {
-                    self.lag_incoming_col(lag - 1, HydroSys::new(h)).get()
-                }
-            }
-        })
+        OutCol::new(self.outgoing_block_start(region) + offset)
     }
 
     /// Fill [`Self::state_to_lp_column_map`] by calling
@@ -499,8 +507,10 @@ impl StateSpace {
         self.state_to_lp_column_map.clear();
         self.state_to_lp_column_map.reserve(self.n_state);
         for j in 0..self.n_state {
+            let j = StateDim::new(j);
+            let (region, _) = self.classify(j);
             self.state_to_lp_column_map
-                .push(self.state_to_lp_column(StateDim::new(j)));
+                .push(region.has_lp_columns().then(|| self.state_to_lp_column(j)));
         }
         debug_assert_eq!(self.state_to_lp_column_map.len(), self.n_state);
     }
@@ -509,6 +519,10 @@ impl StateSpace {
     /// [`Self::state_to_lp_column_map`], which [`Self::build`] always
     /// finalizes to `n_state` length (indexed read is in range for
     /// `j ∈ [0, n_state)`).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `j` is a lag dimension, which has no LP column.
     #[inline]
     #[must_use]
     pub fn lp_column_for_state(&self, j: StateDim) -> OutCol {
@@ -518,6 +532,7 @@ impl StateSpace {
             "state_to_lp_column_map must be finalized to n_state length"
         );
         self.state_to_lp_column_map[j.get()]
+            .unwrap_or_else(|| unreachable!("lag dimensions have no LP column"))
     }
 
     /// Map a state-vector index to its **incoming-state** LP column — the column
@@ -527,10 +542,7 @@ impl StateSpace {
     /// [`fill_col_state_patches`](crate::lp::builder::PatchBuffer::fill_col_state_patches)
     /// writes, in state-vector order; the backward pass reads
     /// `view.reduced_costs[col]` at them for the cut subgradient, one per
-    /// component `j ∈ [0, n_state)`.
-    ///
-    /// The travel-time bucket range resolves through an explicit
-    /// `transit_buckets_in` arm, not the trailing anticipated-state catch-all.
+    /// columned state dimension.
     ///
     /// Contrast [`state_to_lp_column`], which returns the **outgoing** column
     /// for forward-pass cut-row construction: for storage it returns `j`
@@ -539,31 +551,16 @@ impl StateSpace {
     /// column's reduced cost equals the dual a row-based state-fixing
     /// formulation would produce, which is why column-bound pinning is exact.
     ///
+    /// # Panics
+    ///
+    /// Panics if `j` is a lag dimension, which has no LP column.
+    ///
     /// [`state_to_lp_column`]: Self::state_to_lp_column
     #[inline]
     #[must_use]
     pub fn state_to_lp_incoming_column(&self, j: StateDim) -> InCol {
         let (region, offset) = self.classify(j);
         InCol::new(self.incoming_block_start(region) + offset)
-    }
-
-    /// `region`'s incoming pinned-block column range.
-    fn incoming_block_range(&self, region: StateRegion) -> Range<usize> {
-        let start = self.incoming_block_start(region);
-        start..start + self.state_dim_range(region).len()
-    }
-
-    /// Inverse of [`Self::state_to_lp_incoming_column`]: the region and
-    /// in-region offset owning pinned column `c`. Total for the same reason
-    /// as [`Self::classify`].
-    #[must_use]
-    pub(crate) fn classify_incoming_column(&self, c: InCol) -> (StateRegion, usize) {
-        let c = c.get();
-        let region = REGION_ORDER
-            .into_iter()
-            .find(|&region| self.incoming_block_range(region).contains(&c))
-            .unwrap_or(StateRegion::CommitmentHold);
-        (region, c - self.incoming_block_start(region))
     }
 
     /// Encode an in-study commitment-hold position: anticipated-local plant
@@ -630,14 +627,6 @@ impl StateSpace {
         StateDim::new(self.state_dim_lag_range().start + lag * self.hydro_count + h.get())
     }
 
-    /// Incoming pinned lag column of hydro `h` at `lag` (lag-major block).
-    #[inline]
-    #[must_use]
-    pub(crate) fn lag_incoming_col(&self, lag: usize, h: HydroSys) -> InCol {
-        debug_assert!(lag < self.max_par_order && h.get() < self.hydro_count);
-        self.state_to_lp_incoming_column(self.lag_state_dim(lag, h))
-    }
-
     /// Incoming pinned bucket column of bucket `b`
     /// ([`Self::transit_bucket_column_order`] order).
     #[must_use]
@@ -688,7 +677,7 @@ impl StateSpace {
             })
     }
 
-    fn commitment_hold_state_dim(&self, plant: usize, m: usize) -> StateDim {
+    pub(crate) fn commitment_hold_state_dim(&self, plant: usize, m: usize) -> StateDim {
         StateDim::new(
             self.state_dim_commitment_hold_range().start
                 + self.commitment_hold_in_study_offset(plant, m),
@@ -808,30 +797,6 @@ impl StateSpace {
 
         self.nonzero_state_indices = mask;
     }
-
-    /// The z-inflow definition rows: one per hydro, leading every stage's row
-    /// space.
-    #[inline]
-    #[must_use]
-    pub fn z_inflow_rows(&self) -> Range<usize> {
-        0..self.hydro_count
-    }
-
-    /// Hydro `h`'s z-inflow definition row.
-    #[inline]
-    #[must_use]
-    pub fn z_inflow_row(&self, h: HydroSys) -> usize {
-        debug_assert!(h.get() < self.hydro_count);
-        self.z_inflow_rows().start + h.get()
-    }
-
-    /// Hydro `h`'s z-inflow column — the outgoing lag-0 state column.
-    #[inline]
-    #[must_use]
-    pub(crate) fn z_inflow_col(&self, h: HydroSys) -> OutCol {
-        debug_assert!(h.get() < self.hydro_count);
-        OutCol::new(self.z_inflow.start + h.get())
-    }
 }
 
 #[cfg(test)]
@@ -839,7 +804,7 @@ mod tests {
     use std::ops::Range;
 
     use super::{
-        AnticipatedResolution, HydroSys, InCol, OutCol, StateDim, StateSpace,
+        AnticipatedResolution, HydroSys, InCol, OutCol, StateDim, StateRegion, StateSpace,
         for_each_live_commitment_slot,
     };
     use crate::lead_time::{DeliveryAxis, LeadTime, PointResolution};
@@ -942,14 +907,16 @@ mod tests {
 
     /// A finalized layout carrying storage + AR lags + anticipated thermals
     /// (every `state_to_lp_column` branch) must have
-    /// `lp_column_for_state(j) == state_to_lp_column(j)` for every state index.
+    /// `lp_column_for_state(j) == state_to_lp_column(j)` for every state index
+    /// that has an LP column.
     #[test]
     fn lp_column_map_matches_resolver_with_lags_and_anticipated() {
         // hydro_count=3, max_par_order=2, n_anticipated=2 (K = [1, 2], k_max=2).
         let idx = finalized_resolved(3, 2, vec![1, 2]);
 
         assert_eq!(idx.state_to_lp_column_map.len(), idx.n_state);
-        for j in 0..idx.n_state {
+        let lag = idx.state_dim_lag_range();
+        for j in (0..idx.n_state).filter(|j| !lag.contains(j)) {
             assert_eq!(
                 idx.lp_column_for_state(StateDim::new(j)),
                 idx.state_to_lp_column(StateDim::new(j)),
@@ -982,11 +949,12 @@ mod tests {
                 idx.n_state,
                 "constructor must finalize the column map to n_state length"
             );
+            let lag = idx.state_dim_lag_range();
             for j in 0..idx.n_state {
-                assert_eq!(
-                    idx.lp_column_for_state(StateDim::new(j)),
-                    idx.state_to_lp_column_map[j]
-                );
+                match idx.state_to_lp_column_map[j] {
+                    Some(column) => assert_eq!(idx.lp_column_for_state(StateDim::new(j)), column),
+                    None => assert!(lag.contains(&j), "only a lag dimension has no column"),
+                }
             }
         }
     }
@@ -1030,45 +998,20 @@ mod tests {
         assert_eq!(idx.state_to_lp_column(StateDim::new(2)), OutCol::new(2));
     }
 
-    /// `commit_out` indices resolve by identity when
-    /// `max_par_order > 0 && n_anticipated > 0`, and the lag-remap branch for
-    /// non-anticipated indices is unaffected. Fixture: N=1, L=1,
+    /// `commit_out` slots resolve through the outgoing block when
+    /// `max_par_order > 0 && n_anticipated > 0`: the lag dimension sits between
+    /// storage and the ring in the state vector and has no LP column, so the
+    /// ring columns start right after storage. Fixture: N=1, L=1,
     /// `n_anticipated=1`, `k_max=2`, `anticipated_lead_stages=[2]`.
     #[test]
-    fn state_to_lp_column_commit_out_is_identity_with_lag() {
-        // N=1, L=1, n_anticipated=1, k_max=2, anticipated_lead_stages=[2].
-        // n_state = 1*(1+1) + 1*2 = 4.
-        // Layout: j=0 storage, j=1 lag-0, j=2 ant slot-0, j=3 ant slot-1.
+    fn state_to_lp_column_commit_out_resolves_past_the_lag_dimension() {
+        // n_state = 1*(1+1) + 1*2 = 4: j=0 storage, j=1 lag-0, j=2..4 ring slots.
         let idx = finalized_resolved(1, 1, vec![2]);
-        assert_eq!(idx.commit_out, 2..4);
-        // Storage: identity.
+        assert_eq!(idx.commit_out, 1..3);
         assert_eq!(idx.state_to_lp_column(StateDim::new(0)), OutCol::new(0));
-        // Lag block: remapped (unaffected by the anticipated-ring change).
-        // j=1: offset=0, h=0, lag=0 → z_inflow.start + 0.
-        assert_eq!(
-            idx.state_to_lp_column(StateDim::new(1)),
-            OutCol::new(idx.z_inflow.start)
-        );
-        // Both ring slots: identity.
-        assert_eq!(idx.state_to_lp_column(StateDim::new(2)), OutCol::new(2));
-        assert_eq!(idx.state_to_lp_column(StateDim::new(3)), OutCol::new(3));
-    }
-
-    /// Lag-remap branch is preserved when `n_anticipated == 0` and
-    /// `max_par_order > 0`.  The anticipated-state guard must not fire
-    /// when there are no anticipated thermals.
-    #[test]
-    fn state_to_lp_column_lag_remap_preserved_no_anticipated() {
-        // N=1, L=1, n_anticipated=0 — classic PAR(p) case.
-        // n_state = 1*(1+1) = 2. Layout: j=0 storage, j=1 lag-0.
-        let idx = finalized(1, 1, vec![]);
-        assert_eq!(idx.n_anticipated, 0);
-        // Storage: identity.
-        assert_eq!(idx.state_to_lp_column(StateDim::new(0)), OutCol::new(0));
-        // Lag block j=1: offset=0, h=0, lag=0 → z_inflow.start + 0.
-        // For N=1, L=0 anticipated: z_inflow = N*(1+L)..N*(2+L) = 2..3.
-        assert_eq!(idx.z_inflow.start, 2);
-        assert_eq!(idx.state_to_lp_column(StateDim::new(1)), OutCol::new(2));
+        assert_eq!(idx.state_to_lp_column_map[1], None);
+        assert_eq!(idx.state_to_lp_column(StateDim::new(2)), OutCol::new(1));
+        assert_eq!(idx.state_to_lp_column(StateDim::new(3)), OutCol::new(2));
     }
 
     /// Every anticipated ring slot resolves by identity, regardless of which
@@ -1093,16 +1036,19 @@ mod tests {
         }
     }
 
-    /// The anticipated-ring identity resolution lands inside the **state
-    /// region**: `commit_out` sits strictly between
-    /// `transit_buckets_out` and `theta`, never inside the control region.
+    /// The anticipated-ring resolution lands inside the **state region**:
+    /// `commit_out` sits strictly between `transit_buckets_out` and `theta`,
+    /// never inside the control region.
     #[test]
     fn state_to_lp_column_commit_out_resolves_into_state_region() {
         // N=3, L=2, A=2, k_max=3, uniform K_p = 3.
         let idx = finalized_resolved(3, 2, vec![3, 3]);
-        for j in idx.commit_out.clone() {
+        for j in idx.state_dim_commitment_hold_range() {
             let col = idx.state_to_lp_column(StateDim::new(j)).get();
-            assert_eq!(col, j, "identity resolution");
+            assert!(
+                idx.commit_out.contains(&col),
+                "ring slot {j} -> column {col}"
+            );
             assert!(
                 col >= idx.transit_buckets_out.end,
                 "resolved column {col} must be >= transit_buckets_out.end {}",
@@ -1123,9 +1069,9 @@ mod tests {
     /// `storage_in.start + j`.
     #[test]
     fn state_to_lp_incoming_column_storage_range() {
-        // N=3, L=2: storage_in.start = N*(2+L) = 3*4 = 12.
+        // N=3, L=2: the lag state has no column, so storage_in.start = N = 3.
         let idx = finalized(3, 2, vec![]);
-        assert_eq!(idx.storage_in.start, 12);
+        assert_eq!(idx.storage_in.start, 3);
         for j in 0..3_usize {
             assert_eq!(
                 idx.state_to_lp_incoming_column(StateDim::new(j)),
@@ -1135,30 +1081,12 @@ mod tests {
         }
     }
 
-    /// AR lag range: for a layout with `N=3, L=2, A=0`,
-    /// `state_to_lp_incoming_column(j)` for `j ∈ [N, N*(1+L))` returns
-    /// `inflow_lags.start + (j − N)`.
-    #[test]
-    fn state_to_lp_incoming_column_lag_range() {
-        // N=3, L=2: inflow_lags = 3..9.
-        let idx = finalized(3, 2, vec![]);
-        assert_eq!(idx.inflow_lags.start, 3);
-        for j in 3..9_usize {
-            assert_eq!(
-                idx.state_to_lp_incoming_column(StateDim::new(j)),
-                InCol::new(idx.inflow_lags.start + (j - 3)),
-                "j={j}: expected inflow_lags.start + {}",
-                j - 3
-            );
-        }
-    }
-
     /// Commitment-hold range: for a layout with `N=0, L=0, A=1, K=2`,
     /// `state_to_lp_incoming_column(j)` for `j ∈ [0, n_state)` returns
     /// `commit_in.start + j` (since `lag_end` = N*(1+L) = 0). With `N=0`
     /// every non-commitment-hold block collapses to `0..0`, so `commit_in`
-    /// (the relocated incoming block, after `commit_out`/`z_inflow`/
-    /// `storage_in`/`transit_buckets_in`) starts at `commit_out`'s own
+    /// (the incoming block, after `commit_out`/`storage_in`/
+    /// `transit_buckets_in`) starts at `commit_out`'s own
     /// width (`A*K = 2`), not `0`.
     #[test]
     fn state_to_lp_incoming_column_anticipated_range() {
@@ -1176,19 +1104,17 @@ mod tests {
     }
 
     /// Combined boundary-case test: `N=3, L=2, A=1, K=2`.
-    /// Checks j = 0, 2, 3, 8, 9, 10 (the boundary points from the spec).
+    /// Checks j = 0, 2, 9, 10 (the columned boundary points; j = 3..9 are lags).
     #[test]
     fn state_to_lp_incoming_column_combined_layout() {
         // N=3, L=2, A=1, K=2:
         //   n_state = N*(1+L) + A*K = 3*3 + 1*2 = 11.
-        //   inflow_lags.start = N = 3.
-        //   storage_in.start = N*(1+L) + A*K + N = 3*3 + 1*2 + 3 = 14
-        //     (storage + inflow_lags + commit_out + z_inflow).
-        //   commit_in.start = storage_in.start + N = 17 (transit_buckets_in
-        //     is empty; the relocated incoming block follows storage_in directly).
-        //   lag_end = N*(1+L) = 9.
+        //   storage 0..3, commit_out 3..5, storage_in 5..8, commit_in 8..10,
+        //   theta = 10 (the lag state has no column).
         let idx = finalized_resolved(3, 2, vec![2]);
         assert_eq!(idx.n_state, 11);
+        assert_eq!(idx.storage_in, 5..8);
+        assert_eq!(idx.commit_in, 8..10);
         // j=0: storage range → storage_in.start + 0.
         assert_eq!(
             idx.state_to_lp_incoming_column(StateDim::new(0)),
@@ -1200,18 +1126,6 @@ mod tests {
             idx.state_to_lp_incoming_column(StateDim::new(2)),
             InCol::new(idx.storage_in.start + 2),
             "j=2"
-        );
-        // j=3: first lag → inflow_lags.start + 0.
-        assert_eq!(
-            idx.state_to_lp_incoming_column(StateDim::new(3)),
-            InCol::new(idx.inflow_lags.start),
-            "j=3"
-        );
-        // j=8: last lag → inflow_lags.start + 5.
-        assert_eq!(
-            idx.state_to_lp_incoming_column(StateDim::new(8)),
-            InCol::new(idx.inflow_lags.start + 5),
-            "j=8"
         );
         // j=9: first anticipated-state → commit_in.start + 0.
         assert_eq!(
@@ -1226,7 +1140,8 @@ mod tests {
             "j=10"
         );
         // All returned columns must be within the LP's column range.
-        for j in 0..idx.n_state {
+        let lag = idx.state_dim_lag_range();
+        for j in (0..idx.n_state).filter(|j| !lag.contains(j)) {
             let col = idx.state_to_lp_incoming_column(StateDim::new(j)).get();
             assert!(
                 col < idx.theta + 1,
@@ -1236,58 +1151,25 @@ mod tests {
         }
     }
 
-    /// For the lag range, `state_to_lp_incoming_column` and `state_to_lp_column`
-    /// return different values (the former returns the incoming-lag column, the
-    /// latter returns the `z_inflow` or lag-out column). For the storage range
-    /// the results differ because `storage_in.start > 0` while
-    /// `state_to_lp_column` returns `j` (outgoing, which starts at column 0).
+    /// For the storage range the incoming and outgoing columns differ because
+    /// `storage_in.start > 0` while `state_to_lp_column` returns `j` (outgoing,
+    /// which starts at column 0).
     #[test]
-    fn state_to_lp_incoming_column_differs_from_state_to_lp_column_for_lag() {
-        // N=2, L=1: storage_in.start = N*(2+L) = 2*3 = 6.
-        // state_to_lp_column(0) = 0 (outgoing storage).
-        // state_to_lp_incoming_column(0) = storage_in.start + 0 = 6.
+    fn state_to_lp_incoming_column_differs_from_state_to_lp_column_for_storage() {
+        // N=2, L=1: storage_in.start = N = 2.
         let idx = finalized(2, 1, vec![]);
-        // Storage range: incoming ≠ outgoing.
-        assert_ne!(
-            idx.state_to_lp_incoming_column(StateDim::new(0)).get(),
-            idx.state_to_lp_column(StateDim::new(0)).get(),
-            "storage range should differ: incoming={} outgoing={}",
-            idx.state_to_lp_incoming_column(StateDim::new(0)).get(),
-            idx.state_to_lp_column(StateDim::new(0)).get()
-        );
-        // j=0: incoming returns storage_in.start, outgoing returns 0.
+        for j in 0..2 {
+            assert_ne!(
+                idx.state_to_lp_incoming_column(StateDim::new(j)).get(),
+                idx.state_to_lp_column(StateDim::new(j)).get(),
+                "storage range should differ at j={j}"
+            );
+        }
         assert_eq!(
             idx.state_to_lp_incoming_column(StateDim::new(0)),
             InCol::new(idx.storage_in.start)
         );
         assert_eq!(idx.state_to_lp_column(StateDim::new(0)), OutCol::new(0));
-
-        // Lag range (j=2, j=3): incoming returns inflow_lags column;
-        // outgoing returns z_inflow (lag=0) or lag-out (lag>=1) column.
-        // j=2: lag 0, hydro 0. incoming = inflow_lags.start + 0.
-        //                       outgoing = z_inflow.start + 0.
-        assert_eq!(
-            idx.state_to_lp_incoming_column(StateDim::new(2)),
-            InCol::new(idx.inflow_lags.start),
-            "j=2 incoming should be inflow_lags.start"
-        );
-        assert_eq!(
-            idx.state_to_lp_column(StateDim::new(2)),
-            OutCol::new(idx.z_inflow.start),
-            "j=2 outgoing should be z_inflow.start"
-        );
-        assert_ne!(
-            idx.state_to_lp_incoming_column(StateDim::new(2)).get(),
-            idx.state_to_lp_column(StateDim::new(2)).get(),
-            "lag range should differ for j=2"
-        );
-        // j=3: lag 0, hydro 1. incoming = inflow_lags.start + 1.
-        //                       outgoing = z_inflow.start + 1.
-        assert_ne!(
-            idx.state_to_lp_incoming_column(StateDim::new(3)).get(),
-            idx.state_to_lp_column(StateDim::new(3)).get(),
-            "lag range should differ for j=3"
-        );
     }
 
     // ── Nonzero state mask tests ───────────────────────────────────────────
@@ -1295,8 +1177,7 @@ mod tests {
     #[test]
     fn nonzero_mask_mixed_ar_orders() {
         // 4 hydros (N=4), max_par_order=6 (L=6), ar_orders=[0, 1, 3, 6]
-        // inflow_lags.start = N = 4
-        // Lag-major layout: slot = 4 + lag * N + h
+        // Lag-major lag state after storage: slot = 4 + lag * N + h
         let mut idx = finalized(4, 6, vec![]);
         idx.set_nonzero_mask(&[0, 1, 3, 6]);
 
@@ -1380,7 +1261,7 @@ mod tests {
         assert_eq!(&idx.nonzero_state_indices[..2], &[0, 1].map(StateDim::new));
 
         // Hydro 0 (lag_count = 4): expect lag slots at indices
-        //   inflow_lags.start + lag * hydro_count + h = 2 + lag*2 + 0 for lag in 0..4
+        //   hydro_count + lag * hydro_count + h = 2 + lag*2 + 0 for lag in 0..4
         // → {2, 4, 6, 8}.
         // Hydro 1 (lag_count = 12): expect lag slots at indices
         //   2 + lag*2 + 1 for lag in 0..12 → {3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25}.
@@ -1518,11 +1399,11 @@ mod tests {
     // ── Bucket block tests ─────────────────────────────────────────────────
 
     /// Bucket-arm resolution for `state_to_lp_column`: outgoing bucket state
-    /// maps to its LP column by identity (the `storage` convention), not the
-    /// lag remap — verified with lags present so the bucket check must
-    /// correctly intercept before the modular lag decode.
+    /// maps to its LP column through the outgoing bucket block — verified with
+    /// lags present so the bucket check must intercept before the lag region,
+    /// which has no column.
     #[test]
-    fn state_to_lp_column_transit_bucket_arm_is_identity() {
+    fn state_to_lp_column_transit_bucket_arm_resolves_through_the_outgoing_block() {
         // N=2, L=2 (lags present), B=3, no anticipated.
         let idx = finalized_with_transit_buckets(
             2,
@@ -1535,18 +1416,19 @@ mod tests {
             vec![],
         );
 
-        assert_eq!(idx.transit_buckets_out, 6..9);
-        for j in idx.transit_buckets_out.clone() {
+        assert_eq!(idx.transit_buckets_out, 2..5);
+        let buckets = idx.state_dim_bucket_range();
+        assert_eq!(buckets, 6..9);
+        for j in buckets.clone() {
             assert_eq!(
                 idx.state_to_lp_column(StateDim::new(j)),
-                OutCol::new(j),
-                "bucket state index {j} must map to its LP column by identity"
+                OutCol::new(idx.transit_buckets_out.start + j - buckets.start),
+                "bucket state index {j} must map to its LP column"
             );
         }
-        // The last lag index (j=5, just below the bucket block) still resolves
-        // via the lag remap, proving the bucket check does not swallow lag
-        // indices.
-        assert_eq!(idx.state_to_lp_column(StateDim::new(5)), OutCol::new(3));
+        // The last lag index (j=5, just below the bucket block) has no column,
+        // proving the bucket check does not swallow lag indices.
+        assert_eq!(idx.state_to_lp_column_map[5], None);
     }
 
     /// Bucket-arm resolution for `state_to_lp_incoming_column`: bucket indices
@@ -1563,8 +1445,8 @@ mod tests {
             vec![2],
         );
 
-        assert_eq!(idx.transit_buckets_in, 12..14);
-        assert_eq!(idx.commit_in.start, 14);
+        assert_eq!(idx.transit_buckets_in, 8..10);
+        assert_eq!(idx.commit_in.start, 10);
 
         // Bucket state indices: j=4, j=5 (lag_end = N*(1+L) = 4).
         assert_eq!(
@@ -1633,7 +1515,7 @@ mod tests {
 
         idx.set_nonzero_mask(&[1, 2]);
 
-        assert_eq!(idx.transit_buckets_out, 6..8);
+        assert_eq!(idx.state_dim_bucket_range(), 6..8);
         assert_eq!(
             idx.nonzero_state_indices,
             [0, 1, 2, 3, 5, 6, 7].map(StateDim::new),
@@ -1660,12 +1542,10 @@ mod tests {
         assert_eq!(idx.transit_buckets_in, 0..0);
 
         assert_eq!(idx.storage, 0..3);
-        assert_eq!(idx.inflow_lags, 3..9);
-        assert_eq!(idx.commit_out, 9..13);
-        assert_eq!(idx.z_inflow, 13..16);
-        assert_eq!(idx.storage_in, 16..19);
-        assert_eq!(idx.commit_in, 19..23);
-        assert_eq!(idx.theta, 23);
+        assert_eq!(idx.commit_out, 3..7);
+        assert_eq!(idx.storage_in, 7..10);
+        assert_eq!(idx.commit_in, 10..14);
+        assert_eq!(idx.theta, 14);
         assert_eq!(idx.n_state, 13);
     }
 
@@ -1687,15 +1567,14 @@ mod tests {
         assert_eq!(idx.commit_in, 0..0);
 
         assert_eq!(idx.storage, 0..3);
-        assert_eq!(idx.inflow_lags, 3..9);
-        assert_eq!(idx.transit_buckets_out, 9..11);
-        assert_eq!(idx.z_inflow, 11..14);
-        assert_eq!(idx.storage_in, 14..17);
-        assert_eq!(idx.transit_buckets_in, 17..19);
-        assert_eq!(idx.theta, 19);
+        assert_eq!(idx.transit_buckets_out, 3..5);
+        assert_eq!(idx.storage_in, 5..8);
+        assert_eq!(idx.transit_buckets_in, 8..10);
+        assert_eq!(idx.theta, 10);
         assert_eq!(idx.n_state, 11);
 
-        for j in 0..idx.n_state {
+        let lag = idx.state_dim_lag_range();
+        for j in (0..idx.n_state).filter(|j| !lag.contains(j)) {
             assert_eq!(
                 idx.lp_column_for_state(StateDim::new(j)),
                 idx.state_to_lp_column(StateDim::new(j)),
@@ -1915,29 +1794,6 @@ mod tests {
         );
     }
 
-    /// [`StateSpace::classify_incoming_column`] must invert
-    /// [`StateSpace::state_to_lp_incoming_column`] for every state dimension,
-    /// with every region non-empty.
-    #[test]
-    fn classify_incoming_column_inverts_incoming_resolver() {
-        let idx = finalized_with_transit_buckets_resolved(
-            3,
-            2,
-            vec![(HydroSys::new(0), 1), (HydroSys::new(0), 2)],
-            vec![1, 2],
-        );
-        for j in 0..idx.n_state {
-            let dim = StateDim::new(j);
-            let (region, offset) =
-                idx.classify_incoming_column(idx.state_to_lp_incoming_column(dim));
-            assert_eq!(
-                idx.state_dim_range(region).start + offset,
-                j,
-                "incoming classification must round-trip state dim {j}"
-            );
-        }
-    }
-
     /// `lag_state_dim` is lag-major, right after the storage region.
     #[test]
     fn lag_state_dim_is_lag_major_after_storage() {
@@ -1971,12 +1827,6 @@ mod tests {
                 idx.storage_outgoing_col(HydroSys::new(h)).get(),
                 idx.storage.start + h
             );
-            for lag in 0..idx.max_par_order {
-                assert_eq!(
-                    idx.lag_incoming_col(lag, HydroSys::new(h)).get(),
-                    idx.inflow_lags.start + lag * idx.hydro_count + h
-                );
-            }
         }
         for b in 0..idx.n_buckets {
             assert_eq!(
@@ -1990,45 +1840,6 @@ mod tests {
         }
     }
 
-    /// Number of pinned addresses compared per family: `storage` covers both
-    /// storage accessors and the z-inflow lag-0 arm, one per hydro; `lag`
-    /// covers the lag ≥ 1 arm compared against `lag_incoming_col`. A
-    /// degenerate fixture (`hydro_count == 0`) cannot pass the calling test's
-    /// assertions vacuously.
-    fn count_pinned_state_columns(idx: &StateSpace) -> (usize, usize) {
-        let mut storage = 0;
-        let mut lag = 0;
-        for h in 0..idx.hydro_count {
-            assert_eq!(idx.storage_outgoing_col(HydroSys::new(h)).get(), h);
-            assert_eq!(
-                idx.storage_incoming_col(HydroSys::new(h)).get(),
-                idx.storage_in.start + h
-            );
-            assert_eq!(
-                idx.state_to_lp_column(idx.lag_state_dim(0, HydroSys::new(h)))
-                    .get(),
-                idx.z_inflow.start + h
-            );
-            assert_eq!(
-                idx.z_inflow_col(HydroSys::new(h)).get(),
-                idx.z_inflow.start + h
-            );
-            storage += 1;
-            for l in 1..idx.max_par_order {
-                assert_eq!(
-                    idx.state_to_lp_column(idx.lag_state_dim(l, HydroSys::new(h)))
-                        .get(),
-                    idx.lag_incoming_col(l - 1, HydroSys::new(h)).get()
-                );
-                lag += 1;
-            }
-        }
-        (storage, lag)
-    }
-
-    /// The builder's exact storage/z-inflow/AR-lag column spellings — the
-    /// migration pin for routing them through [`StateSpace`]'s own accessors
-    /// instead of hand address arithmetic.
     #[test]
     fn builder_state_column_spellings_match_the_state_space() {
         for idx in [
@@ -2040,23 +1851,146 @@ mod tests {
                 vec![1, 2],
             ),
         ] {
-            let (storage, lag) = count_pinned_state_columns(&idx);
-            assert!(storage > 0 && lag > 0);
-            assert_eq!(
-                idx.inflow_lags,
-                idx.inflow_lags.start..idx.inflow_lags.start + idx.max_par_order * idx.hydro_count
-            );
-            assert_eq!(idx.z_inflow.len(), idx.hydro_count);
+            assert!(idx.hydro_count > 0);
+            for h in 0..idx.hydro_count {
+                let h = HydroSys::new(h);
+                assert_eq!(idx.storage_outgoing_col(h).get(), h.get());
+                assert_eq!(
+                    idx.storage_incoming_col(h).get(),
+                    idx.storage_in.start + h.get()
+                );
+                assert_eq!(
+                    idx.state_to_lp_column(idx.storage_state_dim(h)).get(),
+                    h.get()
+                );
+            }
         }
     }
 
     #[test]
-    fn z_inflow_rows_lead_the_row_space_one_per_hydro() {
-        let idx = finalized(5, 2, vec![]);
-        assert_eq!(idx.z_inflow_rows(), 0..idx.hydro_count);
-        for h in 0..idx.hydro_count {
-            assert_eq!(idx.z_inflow_row(HydroSys::new(h)), h);
+    fn the_lag_state_has_no_block_and_the_columned_blocks_start_after_storage() {
+        let (n, l) = (2, 2);
+        let buckets = vec![(HydroSys::new(0), 1)];
+        let lead_stages = vec![1];
+        let idx = StateSpace::new(
+            n,
+            l,
+            buckets,
+            lead_stages.clone(),
+            constant_lead_resolution(&lead_stages, 3),
+            &[l; 2],
+        );
+
+        assert_eq!(
+            idx.n_state,
+            n * (1 + l) + idx.n_buckets + idx.commit_out.len()
+        );
+        assert_eq!(idx.storage, 0..n);
+        assert_eq!(idx.transit_buckets_out.start, n);
+        assert_eq!(idx.commit_out.start, idx.transit_buckets_out.end);
+        assert_eq!(idx.storage_in.start, idx.commit_out.end);
+        assert_eq!(idx.transit_buckets_in.start, idx.storage_in.end);
+        assert_eq!(idx.commit_in.start, idx.transit_buckets_in.end);
+        assert_eq!(idx.theta, idx.commit_in.end);
+        assert!(!idx.transit_buckets_out.is_empty() && !idx.commit_out.is_empty());
+        assert_eq!(idx.state_dim_lag_range().len(), n * l);
+    }
+
+    fn with_buckets_and_one_plant() -> StateSpace {
+        let lead_stages = vec![1];
+        StateSpace::new(
+            2,
+            1,
+            vec![(HydroSys::new(0), 1), (HydroSys::new(0), 2)],
+            lead_stages.clone(),
+            constant_lead_resolution(&lead_stages, 3),
+            &[1; 2],
+        )
+    }
+
+    #[test]
+    fn state_columns_resolve_through_the_outgoing_block() {
+        let idx = with_buckets_and_one_plant();
+        let lag_block = idx.hydro_count * idx.max_par_order;
+        let families = [
+            (StateRegion::Storage, idx.storage.clone(), 0),
+            (
+                StateRegion::Buckets,
+                idx.transit_buckets_out.clone(),
+                lag_block,
+            ),
+            (
+                StateRegion::CommitmentHold,
+                idx.commit_out.clone(),
+                lag_block,
+            ),
+        ];
+
+        for (region, family, shift) in families {
+            let dims = idx.state_dim_range(region);
+            assert!(!dims.is_empty(), "{region:?} must be non-empty");
+            for j in dims.clone() {
+                let column = OutCol::new(idx.outgoing_block_start(region) + j - dims.start);
+                assert!(family.contains(&column.get()), "{region:?} dim {j}");
+                assert_eq!(column.get() + shift, j, "{region:?} dim {j}");
+                assert_eq!(idx.state_to_lp_column(StateDim::new(j)), column);
+                assert_eq!(idx.state_to_lp_column_map[j], Some(column));
+                assert_eq!(idx.lp_column_for_state(StateDim::new(j)), column);
+            }
         }
+
+        let lag_dims = idx.state_dim_lag_range();
+        assert_eq!(lag_dims.len(), lag_block);
+        for j in lag_dims {
+            assert_eq!(idx.state_to_lp_column_map[j], None, "lag dim {j}");
+        }
+        assert!(!StateRegion::Lag.has_lp_columns());
+        assert!(
+            [
+                StateRegion::Storage,
+                StateRegion::Buckets,
+                StateRegion::CommitmentHold
+            ]
+            .into_iter()
+            .all(StateRegion::has_lp_columns)
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Lag has no incoming LP block")]
+    fn lag_region_has_no_incoming_lp_block() {
+        let idx = with_buckets_and_one_plant();
+        assert!(!StateRegion::Lag.has_lp_columns());
+        let _ = idx.incoming_block_start(StateRegion::Lag);
+    }
+
+    #[test]
+    #[should_panic(expected = "Lag has no outgoing LP block")]
+    fn lag_region_has_no_outgoing_lp_block() {
+        let idx = with_buckets_and_one_plant();
+        assert!(!StateRegion::Lag.has_lp_columns());
+        let _ = idx.outgoing_block_start(StateRegion::Lag);
+    }
+
+    #[test]
+    #[should_panic(expected = "lag dimensions have no LP column")]
+    fn lag_state_dimension_has_no_lp_column() {
+        let idx = with_buckets_and_one_plant();
+        let _ = idx.lp_column_for_state(idx.lag_state_dim(0, HydroSys::new(0)));
+    }
+
+    #[test]
+    #[should_panic(expected = "Lag has no outgoing LP block")]
+    fn state_to_lp_column_of_a_lag_dimension_panics() {
+        let idx = with_buckets_and_one_plant();
+        let _ = idx.state_to_lp_column(idx.lag_state_dim(0, HydroSys::new(0)));
+    }
+
+    #[test]
+    #[should_panic(expected = "Lag has no incoming LP block")]
+    fn state_to_lp_incoming_column_of_a_lag_dimension_panics() {
+        let idx = with_buckets_and_one_plant();
+        let _ = idx.state_to_lp_incoming_column(idx.lag_state_dim(0, HydroSys::new(0)));
     }
 
     /// The two commitment-hold column resolvers resolve to the exact columns the

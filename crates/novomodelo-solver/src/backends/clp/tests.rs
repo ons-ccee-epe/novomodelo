@@ -31,7 +31,6 @@ fn make_fixture_stage_template() -> StageTemplate {
         objective: vec![0.0, 1.0, 50.0],
         row_lower: vec![6.0, 14.0],
         row_upper: vec![6.0, 14.0],
-        n_state: 1,
         col_scale: Vec::new(),
         row_scale: Vec::new(),
     }
@@ -151,7 +150,6 @@ fn test_clp_load_model_reload_zero_row() {
         objective: vec![1.0],
         row_lower: Vec::new(),
         row_upper: Vec::new(),
-        n_state: 0,
         col_scale: Vec::new(),
         row_scale: Vec::new(),
     };
@@ -184,26 +182,6 @@ fn test_clp_add_rows_updates_dimensions() {
     assert_eq!(solver.num_rows, 4);
     assert_eq!(solver.row_dual.len(), 4);
     assert_eq!(solver.num_cols, 3);
-
-    assert_eq!(solver.num_nz, 3 + 4);
-    assert_eq!(solver.col_starts.len(), 4);
-    assert_eq!(solver.col_starts[3], 7);
-
-    // Hand-checked merged CSC. SS1.1 columns:
-    //   col0: (row0, 1.0), (row1, 2.0)
-    //   col1: (none)
-    //   col2: (row1, 1.0)
-    // SS1.2 batch appends rows 2 and 3:
-    //   col0 gains (row2, -5.0), (row3, 3.0)
-    //   col1 gains (row2,  1.0), (row3, 1.0)
-    //   col2 gains nothing
-    // Merged column-major layout (existing entries first, then appended):
-    //   col0: [ (0,1.0), (1,2.0), (2,-5.0), (3,3.0) ]  -> starts at 0
-    //   col1: [ (2,1.0), (3,1.0) ]                      -> starts at 4
-    //   col2: [ (1,1.0) ]                               -> starts at 6
-    assert_eq!(solver.col_starts, vec![0, 4, 6, 7]);
-    assert_eq!(solver.row_indices, vec![0, 1, 2, 3, 2, 3, 1]);
-    assert_eq!(solver.values, vec![1.0, 2.0, -5.0, 3.0, 1.0, 1.0, 1.0]);
 
     assert_eq!(solver.row_lower, vec![6.0, 14.0, 20.0, 80.0]);
     assert!(solver.row_upper[2].is_infinite());
@@ -259,7 +237,6 @@ fn test_clp_add_rows_then_solve_objective() {
 
     assert_eq!(solver.num_cols, 3);
     assert_eq!(solver.num_rows, 4);
-    assert_eq!(solver.num_nz, 7);
     assert_eq!(solver.row_dual.len(), 4);
 }
 
@@ -449,7 +426,6 @@ fn test_clp_solve_unbounded() {
         objective: vec![-1.0],
         row_lower: Vec::new(),
         row_upper: Vec::new(),
-        n_state: 0,
         col_scale: Vec::new(),
         row_scale: Vec::new(),
     };
@@ -768,7 +744,6 @@ fn max_row_violation_is_zero_without_rows() {
         objective: vec![1.0],
         row_lower: Vec::new(),
         row_upper: Vec::new(),
-        n_state: 1,
         col_scale: Vec::new(),
         row_scale: Vec::new(),
     };

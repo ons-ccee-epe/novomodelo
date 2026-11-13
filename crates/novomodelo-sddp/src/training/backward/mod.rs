@@ -2,9 +2,9 @@
 //!
 //! Sweeps stages in reverse, evaluating the cost-to-go at each trial point
 //! assigned to this rank, extracting LP duals into Benders cut coefficients, and
-//! aggregating per-opening outcomes via
-//! [`RiskMeasure::aggregate_cut`](crate::RiskMeasure::aggregate_cut) into one cut
-//! per trial point per stage inserted into the [`crate::FutureCostFunction`].
+//! aggregating the openings of the node's successor set into one cut per trial
+//! point per stage (`aggregate_successor_cut`), inserted into the
+//! [`crate::FutureCostFunction`].
 //!
 //! Each rank processes only its own forward-pass assignments to avoid generating
 //! duplicate cuts; cut synchronization (`allgatherv`) distributes them to all
@@ -18,11 +18,13 @@
 //!
 //! ## Cut coefficient formula
 //!
-//! `coefficients = reduced_cost` (raw, no sign flip at extraction); the LP cut row
-//! negates it in `cut::row::build_cut_row_batch_into`. The full subgradient
-//! contract (`pi[i] = reduced_cost[col_i] / col_scale[col_i]`, divided not
-//! multiplied) lives in `duals_extraction` and sddp.md "Benders cut sign &
-//! subgradient extraction".
+//! A slot with an incoming-state column takes that column's reduced cost, raw (no
+//! sign flip at extraction; the LP cut row negates it in
+//! `cut::row::build_cut_row_batch_into`); a lag slot has no column and takes its
+//! chain-rule coefficient. The subgradient contract (`pi[i] = reduced_cost[col_i] /
+//! col_scale[col_i]`, divided not multiplied) lives in `duals_extraction`, the chain
+//! rule in `cut::chain_rule`, and both in sddp.md "Benders cut sign & subgradient
+//! extraction".
 //!
 //! ### Anticipated-ring cut gradient flow
 //!
@@ -55,56 +57,61 @@
 use novomodelo_solver::{RowBatch, StageTemplate};
 
 use crate::{
+    SddpError,
     context::{StageContext, TrainingContext},
     cut::{FutureCostFunction, pool::CutPool},
     forward::build_delta_cut_row_batch_into,
-    indexer::CutStateProjection,
+    indexer::{ChainRuleSlots, CutStateProjection},
+    risk_measure::RiskMeasure,
     setup::node_graph::{NodeId, NodeOpenings, NodePos, StageIdx},
     solver_stats::SolverStatsDelta,
+    state_exchange::ExchangeBuffers,
+    training::stage_solve_prep::BracketSource,
+    trajectory::TrajectoryRecord,
 };
 
 use std::ops::Range;
 
+mod binding_count;
 mod by_node;
 mod by_scenario;
 mod duals_extraction;
 mod lp_setup;
-mod outcome_aggregation;
+mod opening_solve;
 mod replicated;
+mod stage_noise;
+mod successor_cut;
 
 #[cfg(test)]
 mod tests;
 
 pub(crate) use by_node::{
-    OpeningOutcome, by_node_block_count, by_node_finish, hardest_first_block_order,
+    by_node_block_count, by_node_finish, commit_by_node_cuts, hardest_first_block_order,
     identity_block_order, merge_block_pivots, process_stage_backward_by_node, resolve_block_size,
 };
-pub(crate) use by_scenario::{
-    StageOpeningSolver, by_scenario_finish, process_by_scenario_backward,
+pub(crate) use by_scenario::{by_scenario_finish, process_by_scenario_backward};
+pub(crate) use duals_extraction::{
+    ChainRuleStageInputs, DualExtractionSpec, OpeningDualBuffers, extract_opening_cut,
 };
-pub(crate) use duals_extraction::extract_state_duals_only;
-pub(crate) use lp_setup::fill_external_opening_noise;
+pub(crate) use lp_setup::{OpeningNoise, resolve_opening_noise};
 pub(crate) use replicated::{ReplicatedScratch, run_backward_node_replicated};
+pub(crate) use stage_noise::StageNoiseTable;
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) use lp_setup::fill_external_opening_noise;
 
 #[cfg(test)]
-pub(crate) use lp_setup::{load_backward_lp, patch_opening_bounds, resolve_backward_basis};
-
-/// `any(test, feature = "test-support")`, not the bare `#[cfg(test)]` above:
-/// an external `tests/` binary drives this through `test_support` under
-/// `--features test-support`, which never sets `cfg(test)` on this library.
-#[cfg(any(test, feature = "test-support"))]
-pub(crate) use outcome_aggregation::write_opening_outcome;
+pub(crate) use lp_setup::{load_backward_lp, resolve_backward_basis};
 
 /// Per-`(rank, worker_id, opening)` solver delta collected during a single
-/// backward stage, as returned inside [`BackwardResult::stage_stats`].
+/// backward stage, as yielded by `BackwardPassState::stage_stats`.
 ///
 /// Layout: `(rank, worker_id, opening_index, delta)`.
 pub type StageWorkerOpeningDelta = (i32, i32, usize, SolverStatsDelta);
 
 /// Result produced by the backward pass on a single rank.
 ///
-/// The per-worker timing data carried inside `stage_stats` is keyed
-/// by the `WORKER_TIMING_SLOT_*` constants exported from
+/// The per-worker timing data is keyed by the `WORKER_TIMING_SLOT_*` constants exported from
 /// `novomodelo-core`. New per-worker timing slots should be added to
 /// that constant set (and the `WORKER_TIMING_SLOT_COUNT` updated)
 /// rather than as standalone fields on this struct, so the parquet
@@ -120,19 +127,6 @@ pub struct BackwardResult {
 
     /// LP solves performed.
     pub lp_solves: u64,
-
-    /// Per-stage, per-`(rank, worker_id, opening)` solver statistics deltas.
-    ///
-    /// Each outer entry is `(successor_stage_index, per_worker_opening_deltas)`;
-    /// the inner `Vec` element is `(rank, worker_id, omega, delta)`. The sampled
-    /// path gathers one entry per `(MPI rank, rayon worker, opening)` triple via
-    /// `allgatherv`, filtered to `omega < n_openings(successor)` and
-    /// `delta.lp_solves > 0 || omega == 0` (the omega=0 "stage visited"
-    /// sentinel), in reverse stage order. The enumerated path has no
-    /// per-worker/per-opening breakdown: one `(rank, worker_id, 0, delta)` entry
-    /// per visited successor stage (`delta.lp_solves > 0`), in ascending stage
-    /// order.
-    pub stage_stats: Vec<(usize, Vec<StageWorkerOpeningDelta>)>,
 
     /// State exchange time, accumulated across all stages (milliseconds).
     pub state_exchange_time_ms: u64,
@@ -172,7 +166,7 @@ pub(crate) struct StagedCut {
     /// merge ordering after the parallel region.
     pub(crate) trial_state_idx: usize,
 
-    /// Aggregated cut intercept (result of `RiskMeasure::aggregate_cut`).
+    /// Aggregated cut intercept (result of `aggregate_successor_cut`).
     pub(crate) intercept: f64,
 
     /// Range into the producing worker's `agg_arena` holding this cut's
@@ -187,16 +181,34 @@ pub(crate) struct StagedCut {
     pub(crate) forward_pass_index: u32,
 }
 
+/// Takes every worker's fan-out error, in worker order, and returns the first.
+///
+/// Every slot is taken whatever it holds, so a stale error never surfaces at a
+/// later node.
+///
+/// # Errors
+/// Returns the first failing worker's [`SddpError`].
+pub(crate) fn take_first_error<'a>(
+    slots: impl Iterator<Item = &'a mut Option<SddpError>>,
+) -> Result<(), SddpError> {
+    let mut first = None;
+    for slot in slots {
+        let error = slot.take();
+        first = first.or(error);
+    }
+    first.map_or(Ok(()), Err)
+}
+
 /// Node-level backward-pass arguments at one cut-generating node, shared across
 /// every successor child. The per-child successor data lives in
 /// [`SuccessorOutcomes`]; a child is priced against ITS OWN LP, never child 0's.
 pub(crate) struct SuccessorSpec<'a> {
-    /// Stage index being cut (the stage whose cost-to-go we are computing).
-    pub(crate) t: StageIdx,
     /// Successor stage index (`t + 1`), where the LPs are solved. Every child of
     /// the node sits at this one stage (`t -> t+1`, no stage-skipping — validation
     /// rule 39), so it is node-level, not per-child.
     pub(crate) successor: StageIdx,
+    /// The training iteration the node's cuts are generated at.
+    pub(crate) iteration: u64,
     /// This rank's MPI rank index (used to address exchange buffer state).
     pub(crate) my_rank: usize,
     /// Product weights `P(n→m) · q_{m,ψ}` over the current node's successor
@@ -210,6 +222,57 @@ pub(crate) struct SuccessorSpec<'a> {
     /// columns dual extraction reads. `n_slots()` equals every successor pool's
     /// `state_dimension` (all children share one stage and `state_config`).
     pub(crate) cut_state: &'a CutStateProjection,
+    /// Where each child's pin phase takes the frozen-row brackets from.
+    pub(crate) slab: SlabLookup<'a>,
+    /// The node's σ·η and cut-row W tables, or `None` where each opening computes its own.
+    pub(crate) stage_noise: Option<&'a StageNoiseTable>,
+}
+
+impl<'a> SuccessorSpec<'a> {
+    /// The pin source for trial `m`'s pin of `child`.
+    pub(crate) fn bracket_source(&self, m: usize, child: &SuccessorChild<'_>) -> BracketSource<'a> {
+        match self.slab {
+            SlabLookup::Unavailable => BracketSource::Computed,
+            #[cfg(any(test, feature = "test-support"))]
+            SlabLookup::ForcedMiss => BracketSource::Slab(None),
+            SlabLookup::Frozen { records, n_stages } => BracketSource::Slab(
+                records[m * n_stages + self.successor.0]
+                    .frozen_brackets
+                    .read(self.iteration, child.successor_node_id, child.frozen_rows()),
+            ),
+        }
+    }
+}
+
+/// Where a backward node's pins find the brackets the forward wrote.
+#[derive(Clone, Copy)]
+pub(crate) enum SlabLookup<'a> {
+    /// The loaded LP is not the frozen template the forward pinned: every pin computes its brackets.
+    Unavailable,
+    /// Every pin counts a slab miss and computes its brackets, whatever tag the slab carries.
+    #[cfg(any(test, feature = "test-support"))]
+    ForcedMiss,
+    /// The iteration's records, read at the successor stage's slab of each local trial.
+    Frozen {
+        records: &'a [TrajectoryRecord],
+        n_stages: usize,
+    },
+}
+
+/// The read-only captures of one cut-generating node's sampled backward solve, shared by every
+/// worker of either scheduler.
+pub(crate) struct BackwardNodeParams<'a> {
+    /// The trial-point indices routed to the node.
+    pub(crate) trial_points: &'a [usize],
+    pub(crate) exchange: &'a ExchangeBuffers,
+    /// Global forward-pass offset of this rank's first trial point.
+    pub(crate) fwd_offset: usize,
+    /// The node's visits from strictly-lower ranks.
+    pub(crate) node_visit_offset: usize,
+    /// The risk measure of the node's stage.
+    pub(crate) risk_measure: &'a RiskMeasure,
+    pub(crate) succ: &'a SuccessorSpec<'a>,
+    pub(crate) outcomes: &'a SuccessorOutcomes<'a>,
 }
 
 /// Owned per-child metadata for one successor outcome. Borrow-free so it lives in a
@@ -242,6 +305,8 @@ pub(crate) struct SuccessorEntry {
     pub(crate) openings: NodeOpenings,
     /// This child's contiguous slice of the flattened outcome/weight vector.
     pub(crate) outcome_range: Range<usize>,
+    /// Chain-rule slot ranges: the child's pool resident, the generating node's pool extracted.
+    pub(crate) chain_rule_slots: ChainRuleSlots,
 }
 
 /// A fully-resolved successor child: [`SuccessorEntry`] metadata plus the
@@ -278,6 +343,14 @@ pub(crate) struct SuccessorChild<'a> {
     pub(crate) openings: NodeOpenings,
     /// This child's contiguous slice of the flattened outcome/weight vector.
     pub(crate) outcome_range: Range<usize>,
+    /// Chain-rule slot ranges of this child's pool against the generating node's pool.
+    pub(crate) chain_rule_slots: &'a ChainRuleSlots,
+}
+
+impl SuccessorChild<'_> {
+    pub(crate) fn frozen_rows(&self) -> usize {
+        self.num_cuts_at_successor - self.cut_batch.num_rows
+    }
 }
 
 /// The current node's reified successor outcome set: one [`SuccessorEntry`] per
@@ -336,6 +409,14 @@ impl<'a> SuccessorOutcomes<'a> {
         self.entries.iter().map(|e| e.populated_count).sum()
     }
 
+    /// The child whose `outcome_range` holds outcome `omega`.
+    pub(crate) fn child_of_outcome(&self, omega: usize) -> SuccessorChild<'a> {
+        self.child(
+            self.entries
+                .partition_point(|entry| entry.outcome_range.end <= omega),
+        )
+    }
+
     /// Resolve child `i`'s full LP bundle from the pool-indexed arrays.
     pub(crate) fn child(&self, i: usize) -> SuccessorChild<'a> {
         let e = &self.entries[i];
@@ -354,6 +435,7 @@ impl<'a> SuccessorOutcomes<'a> {
             successor_pool: &self.pools[e.pool_id],
             openings: e.openings,
             outcome_range: e.outcome_range.clone(),
+            chain_rule_slots: &e.chain_rule_slots,
         }
     }
 }
@@ -382,6 +464,7 @@ pub(crate) fn reify_successor_outcomes(
     let successor_stage = node_graph.nodes[node_pos].stage.next();
     let template_num_rows = ctx.template(successor_stage).num_rows;
     let cut_state = training_ctx.state;
+    let generating_layout = &training_ctx.cut_state_layouts[node_graph.nodes[node_pos].pool_id];
 
     meta_buf.clear();
     active_slots_buf.clear();
@@ -418,6 +501,11 @@ pub(crate) fn reify_successor_outcomes(
             metadata_offset,
             openings: child_openings,
             outcome_range: outcome_offset..outcome_offset + outcome_len,
+            chain_rule_slots: ChainRuleSlots::compose(
+                cut_state,
+                child_cut_layout,
+                generating_layout,
+            ),
         });
         outcome_offset += outcome_len;
         metadata_offset += populated_count;

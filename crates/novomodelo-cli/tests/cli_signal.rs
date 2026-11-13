@@ -41,7 +41,7 @@ const STOP_CONFIG: &str = r#"{
 
 const SLOW_ITERATION_CONFIG: &str = r#"{
   "training": {
-    "selection": { "method": "sampled", "forward_passes": 32 },
+    "selection": { "method": "sampled", "forward_passes": 152 },
     "stopping_rules": [{ "type": "iteration_limit", "limit": 1000 }],
     "scenario_source": {
       "seed": 42,
@@ -86,7 +86,7 @@ const THREE_ITERATION_CONFIG: &str = r#"{
 
 const SLOW_THREE_ITERATION_CONFIG: &str = r#"{
   "training": {
-    "selection": { "method": "sampled", "forward_passes": 32 },
+    "selection": { "method": "sampled", "forward_passes": 232 },
     "stopping_rules": [{ "type": "iteration_limit", "limit": 3 }],
     "scenario_source": {
       "seed": 42,
@@ -131,7 +131,6 @@ fn output_with_a_stale_simulation_partition() -> TempDir {
     out
 }
 
-/// Returns the child with its stdout and stderr line receivers.
 fn spawn_run(
     launcher: Option<&Path>,
     case: &Path,
@@ -410,7 +409,6 @@ fn sigterm_during_the_training_writes_never_completes_the_simulation() {
 
     let out = out.path();
     if status.signal().is_none() {
-        println!("branch a");
         assert_eq!(status.code(), Some(5), "{status}");
         let training = read_json(&out.join("training/metadata.json"));
         assert_eq!(training["status"], "complete");
@@ -423,7 +421,6 @@ fn sigterm_during_the_training_writes_never_completes_the_simulation() {
         assert_eq!(simulation["scenarios"]["completed"], 0);
         assert!(out.join("simulation/_SUCCESS").is_file());
     } else {
-        println!("branch b");
         assert_eq!(status.signal(), Some(SIGTERM), "{status}");
         assert!(!out.join("simulation/_SUCCESS").exists());
     }

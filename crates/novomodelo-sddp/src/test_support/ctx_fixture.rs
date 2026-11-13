@@ -232,7 +232,6 @@ impl CtxFixture {
                 resolved_generic_coefficients: &self.resolved_generic_coefficients,
             },
             positions: &self.positions,
-            par_lp: &self.par_lp,
             production_models: &self.production_models,
             evaporation_models: &self.evaporation_models,
             generic_constraints: &self.generic_constraints,

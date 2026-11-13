@@ -265,6 +265,16 @@ pub struct StudySetup {
     pub(crate) boundary_requirements: BoundaryStateRequirements,
 }
 
+/// No case directory is available to read the source checkpoint, so the depth is
+/// unresolved; presence still follows the config.
+pub(crate) fn unresolved_boundary_requirements(config: &Config) -> BoundaryStateRequirements {
+    if config.policy.boundary.is_some() {
+        BoundaryStateRequirements::present(0)
+    } else {
+        BoundaryStateRequirements::none()
+    }
+}
+
 impl StudySetup {
     /// Build all precomputed study state from a validated system and config.
     ///
@@ -283,20 +293,12 @@ impl StudySetup {
         hydro_models: PrepareHydroModelsResult,
         scalar_parameters: Vec<ScalarParameter>,
     ) -> Result<Self, SddpError> {
-        // No case dir to read the source checkpoint, so the depth is unresolved
-        // (None); presence still follows the config, matching the boundary-mask
-        // gate an entry point resolves via `resolve_boundary_state_requirements`.
-        let boundary = if config.policy.boundary.is_some() {
-            BoundaryStateRequirements::present(0)
-        } else {
-            BoundaryStateRequirements::none()
-        };
         Self::new_with_boundary_requirements(
             system,
             config,
             stochastic,
             hydro_models,
-            boundary,
+            unresolved_boundary_requirements(config),
             scalar_parameters,
         )
     }
@@ -325,8 +327,9 @@ impl StudySetup {
         Self::new_from_params(system, config, stochastic, hydro_models, boundary, params)
     }
 
-    /// [`Self::new_with_boundary_requirements`] from parameters the caller has
-    /// already extracted from `config`, so `StudyParams::from_config` runs once.
+    /// [`Self::new_with_boundary_requirements`] from parameters the
+    /// caller has already extracted from `config`, so `StudyParams::from_config`
+    /// runs once.
     pub(crate) fn new_from_params(
         system: &System,
         config: &Config,
@@ -826,11 +829,10 @@ fn build_ncs_entity_data(
     // Bridge each slot to its dense column via entity id (not a direct index) so the
     // map stays correct when only a subset of NCS are stochastic or the orders
     // diverge. Keyed on the id-sorted slot order, not entity declaration order.
-    let mut stochastic_dense_col: Vec<usize> = Vec::with_capacity(stoch_ncs_ids.len());
-    let mut stochastic_windows: Vec<(Option<i32>, Option<i32>)> =
-        Vec::with_capacity(stoch_ncs_ids.len());
-    let mut max_gen: Vec<f64> = Vec::with_capacity(stoch_ncs_ids.len());
-    let mut allow_curtailment: Vec<bool> = Vec::with_capacity(stoch_ncs_ids.len());
+    let mut stochastic_dense_col = Vec::with_capacity(stoch_ncs_ids.len());
+    let mut stochastic_windows = Vec::with_capacity(stoch_ncs_ids.len());
+    let mut max_gen = Vec::with_capacity(stoch_ncs_ids.len());
+    let mut allow_curtailment = Vec::with_capacity(stoch_ncs_ids.len());
     for slot_id in stoch_ncs_ids {
         let not_found = || {
             SddpError::Validation(format!(
@@ -1422,10 +1424,8 @@ pub(crate) fn resolve_anticipated_commitments_core(
     calendar: &DeliveryCalendar,
     anticipated_plants: &AnticipatedPlants,
 ) -> (AnticipatedResolution, Vec<usize>) {
-    let anticipated_thermals: Vec<&Thermal> = anticipated_plants
-        .thermals()
-        .map(|t| &system.thermals()[t.get()])
-        .collect();
+    let anticipated_thermals: Vec<&Thermal> =
+        anticipated_plants.thermals_in(system.thermals()).collect();
     let leads: Vec<LeadTime> = anticipated_thermals
         .iter()
         .filter_map(|t| t.anticipated_config.as_ref())
@@ -1486,10 +1486,8 @@ pub(crate) fn resolve_anticipated_commitments(
 ) -> (AnticipatedResolution, Vec<usize>) {
     let (resolution, lead_stages) =
         resolve_anticipated_commitments_core(system, calendar, anticipated_plants);
-    let anticipated_thermals: Vec<&Thermal> = anticipated_plants
-        .thermals()
-        .map(|t| &system.thermals()[t.get()])
-        .collect();
+    let anticipated_thermals: Vec<&Thermal> =
+        anticipated_plants.thermals_in(system.thermals()).collect();
     warn_on_sub_stage_lead(&anticipated_thermals, &resolution);
     (resolution, lead_stages)
 }
@@ -1552,15 +1550,15 @@ fn warn_on_boundary_absent_post_study_delivery(
         })
     };
     let affected: Vec<String> = anticipated_plants
-        .thermals()
+        .thermals_in(thermals)
         .zip(&resolution.per_plant)
-        .filter(|&(t, point)| {
+        .filter(|&(thermal, point)| {
             let class3 = point.decider.get(n_stages..).is_some_and(|post_study| {
                 post_study.iter().any(|c| c.is_some_and(|t| t < n_stages))
             });
-            class3 || has_nonzero_fixed(thermals[t.get()].id.0)
+            class3 || has_nonzero_fixed(thermal.id.0)
         })
-        .map(|(t, _)| format!("{} ({})", thermals[t.get()].id, thermals[t.get()].name))
+        .map(|(thermal, _)| format!("{} ({})", thermal.id, thermal.name))
         .collect();
     if affected.is_empty() {
         return;
@@ -2818,7 +2816,7 @@ fn canonicalize_initial_state(
         }
     }
     if let Some(stage0_box) = stage0_box {
-        for j in layout.transit_buckets_out.clone() {
+        for j in layout.state_dim_bucket_range() {
             state[j] = state[j].clamp(stage0_box.lower[j], stage0_box.upper[j]);
         }
     }
@@ -2904,8 +2902,7 @@ fn build_initial_state(
             for (slot, fraction) in calendar.coverage(&window).into_iter().enumerate() {
                 if fraction == 1.0 {
                     if slot < k_i {
-                        let off = layout.commit_out.start
-                            + layout.commitment_hold_in_study_offset(local_idx, slot);
+                        let j = layout.commitment_hold_state_dim(local_idx, slot).get();
                         // Project the seed onto its delivery stage's generation
                         // bound — the setup-time analog of the read-back seam's
                         // clamp — so a sub-tolerance input overshoot cannot drive
@@ -2916,7 +2913,7 @@ fn build_initial_state(
                         // residue-0 slot bounds a later delivery than the seed held
                         // here.
                         let cap = system.bounds().thermal_block_base(global_idx, slot);
-                        state[off] = history
+                        state[j] = history
                             .value_mw
                             .clamp(cap.min_generation_mw, cap.max_generation_mw);
                     } else {
@@ -2933,10 +2930,9 @@ fn build_initial_state(
                 reason = "padding slots must be exactly 0.0, because a non-zero value corrupts the ring buffer and makes the LP infeasible"
             )]
             for slot in k_i..layout.k_max {
-                let off = layout.commit_out.start
-                    + layout.commitment_hold_in_study_offset(local_idx, slot);
+                let j = layout.commitment_hold_state_dim(local_idx, slot).get();
                 debug_assert_eq!(
-                    state[off], 0.0,
+                    state[j], 0.0,
                     "padding slot must be zero: plant local_idx={local_idx}, slot={slot}, K_i={k_i}, k_max={}",
                     layout.k_max
                 );
@@ -3043,10 +3039,10 @@ fn hours_between(later: NaiveDate, earlier: NaiveDate) -> f64 {
     (later - earlier).num_hours() as f64
 }
 
-/// Write the travel-time bucket seed into `state`'s declared `transit_buckets_out`
-/// slots — the same index space [`StateSpace::state_to_lp_incoming_column`]
-/// remaps to the pinned `transit_buckets_in` LP column, so no separate pin wiring is
-/// needed beyond this splice.
+/// Write the travel-time bucket seed into `state`'s bucket dimensions — the
+/// same index space [`StateSpace::state_to_lp_incoming_column`] remaps to the
+/// pinned `transit_buckets_in` LP column, so no separate pin wiring is needed
+/// beyond this splice.
 fn splice_transit_bucket_seed(
     state: &mut [f64],
     layout: &StateSpace,
@@ -3054,7 +3050,7 @@ fn splice_transit_bucket_seed(
     topology: &bucket_topology::TransitBucketTopology,
 ) {
     let seed = build_initial_transit_bucket_state(system, topology, layout);
-    state[layout.transit_buckets_out.clone()].copy_from_slice(&seed);
+    state[layout.state_dim_bucket_range()].copy_from_slice(&seed);
 }
 
 // ---------------------------------------------------------------------------

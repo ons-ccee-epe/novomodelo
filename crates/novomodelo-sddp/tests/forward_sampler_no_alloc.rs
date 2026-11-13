@@ -2,6 +2,10 @@
 //! per-iteration noise tables are built and its buffers have warmed up, for
 //! the Sobol, Halton and Latin-hypercube point methods and for a correlation
 //! group wider than `apply_groups_for_class`'s stack-allocated fast path.
+//!
+//! It also pins one folded stage solve and its cut, single-threaded after
+//! warm-up, to zero Rust heap allocation. Allocations inside the linked C++
+//! solver are not counted.
 
 #![allow(
     clippy::unwrap_used,
@@ -321,4 +325,201 @@ fn out_of_sample_forward_draw_allocates_nothing() {
         observed, 0,
         "out-of-sample forward draw allocated {observed} times across the measured draws"
     );
+}
+
+mod folded_solve {
+    use novomodelo_sddp::cut::chain_rule::{
+        AggregateScratch, ChainRuleInputs, ChildOpenings, OpeningDuals, aggregate_first_cut_into,
+    };
+    use novomodelo_sddp::indexer::ChainRuleSlots;
+    use novomodelo_sddp::setup::{NodePos, StageIdx};
+    use novomodelo_sddp::test_support::{
+        ProbeCut, ProbeCuts, ProbeOpening, bits, cut_rows_for_slots_into, empty_row_batch,
+        node_opening_noise, opening_cut_for_probe,
+    };
+    use novomodelo_sddp::{SddpError, StudySetup};
+    use novomodelo_solver::{ActiveSolver, SolverInterface};
+
+    use super::{alloc_count, reset_alloc_count};
+    use crate::common::expanded_solve::CutRowSet;
+    use crate::common::in_code_studies::{FphaLagOptions, fpha_lag_study_with};
+    use crate::common::stored_cut_oracles::apply_oracle_config;
+    use crate::common::{
+        StubComm, build_setup_in_code_with_models, train_storing_trial_states,
+        try_stored_trial_states,
+    };
+
+    const STAGE: usize = 1;
+    const RESIDENT_POOL: usize = 1;
+    const EXTRACTED_POOL: usize = 0;
+    const OPENINGS: usize = 3;
+
+    fn trained_lag_study() -> StudySetup {
+        let (system, mut config, hydro_models) = fpha_lag_study_with(FphaLagOptions {
+            openings: OPENINGS,
+            ..FphaLagOptions::default()
+        });
+        apply_oracle_config(&mut config);
+        let mut setup = build_setup_in_code_with_models(system, &config, hydro_models);
+        train_storing_trial_states("folded no-alloc lag study", &mut setup);
+        setup
+    }
+
+    #[test]
+    fn a_folded_solve_and_its_cut_allocate_nothing_after_warm_up() {
+        let setup = trained_lag_study();
+        let ctx = setup.stage_ctx();
+        let training_ctx = setup.training_ctx();
+        let layouts = &training_ctx.cut_state_layouts;
+        let pool = &setup.fcf.pools[RESIDENT_POOL];
+        let template = &setup.inputs.stage_data.stage_templates.templates[STAGE];
+
+        let slots = CutRowSet::active(&setup.fcf, RESIDENT_POOL, EXTRACTED_POOL).slots;
+        let mut cut_rows = empty_row_batch();
+        cut_rows_for_slots_into(
+            &mut cut_rows,
+            pool,
+            &slots,
+            setup.stage_state(),
+            &layouts[RESIDENT_POOL],
+            &template.col_scale,
+        );
+        let mut workspaces = setup
+            .create_workspace_pool(&StubComm, 1, ActiveSolver::new)
+            .expect("the workspace pool must build");
+        let ws = &mut workspaces.workspaces[0];
+        ws.solver.load_model(template);
+        ws.solver.add_rows(&cut_rows);
+
+        let stored = try_stored_trial_states(&setup, NodePos(STAGE - 1))
+            .expect("pool 0 projects every state dimension");
+        assert!(
+            stored.len() >= 2,
+            "pool 0 stores {} trial states, two are needed",
+            stored.len()
+        );
+        let states: [&[f64]; 2] = [&stored[0], &stored[1]];
+        let noise: [Vec<f64>; OPENINGS] =
+            std::array::from_fn(|w| node_opening_noise(&setup, NodePos(STAGE), w));
+        let mut outs: [ProbeCut; OPENINGS] = std::array::from_fn(|_| ProbeCut::new(&training_ctx));
+
+        let chain_slots = ChainRuleSlots::compose(
+            training_ctx.state,
+            &layouts[RESIDENT_POOL],
+            &layouts[EXTRACTED_POOL],
+        );
+        let mut scratch = AggregateScratch::new(
+            training_ctx.state.hydro_count,
+            training_ctx.state.max_par_order,
+        );
+        scratch.reserve(pool.capacity, OPENINGS * slots.len());
+        let mut coefficients = vec![0.0; layouts[EXTRACTED_POOL].n_slots()];
+        let weights = [1.0 / 3.0; OPENINGS];
+
+        let mut round =
+            |outs: &mut [ProbeCut; OPENINGS], x_hat: &[f64]| -> Result<f64, SddpError> {
+                for (out, raw_noise) in outs.iter_mut().zip(&noise) {
+                    opening_cut_for_probe(
+                        ws,
+                        &ctx,
+                        &training_ctx,
+                        &ProbeOpening {
+                            stage: StageIdx(STAGE),
+                            pinned_state: x_hat,
+                            raw_noise,
+                            cuts: ProbeCuts {
+                                pool,
+                                pool_id: RESIDENT_POOL,
+                                slots: &slots,
+                            },
+                            extracted_pool_id: EXTRACTED_POOL,
+                            inflow_slack_bounds: None,
+                        },
+                        out,
+                    )?;
+                }
+                let duals: [OpeningDuals<'_>; OPENINGS] = std::array::from_fn(|w| OpeningDuals {
+                    objective: outs[w].objective,
+                    state_duals: &outs[w].state_duals,
+                    coupled_duals: &outs[w].coupled_duals,
+                    cut_duals: &outs[w].cut_dual_slots,
+                });
+                let children = [ChildOpenings {
+                    inputs: ChainRuleInputs {
+                        slots: &chain_slots,
+                        resident_pool: pool,
+                        extracted: &layouts[EXTRACTED_POOL],
+                        par: training_ctx.stochastic.par(),
+                        stage: STAGE,
+                    },
+                    openings: &duals,
+                }];
+                Ok(aggregate_first_cut_into(
+                    &children,
+                    &weights,
+                    x_hat,
+                    &mut scratch,
+                    &mut coefficients,
+                ))
+            };
+
+        let mut warm_up = Vec::new();
+        let mut cut_dual_seen = false;
+        for x_hat in states {
+            warm_up.push(round(&mut outs, x_hat));
+            cut_dual_seen |= outs
+                .iter()
+                .flat_map(|out| &out.cut_dual_slots)
+                .any(|&(_, y)| y != 0.0);
+        }
+
+        assert!(
+            !slots.is_empty(),
+            "stage {STAGE}'s LP has no cut rows, so the cut-row passes do not run"
+        );
+        assert!(
+            layouts[RESIDENT_POOL].has_lag_slots(),
+            "pool {RESIDENT_POOL} has no lag slots, so the cut-row duals are not extracted"
+        );
+        assert!(
+            cut_dual_seen,
+            "no warm-up opening has a non-zero cut-row dual, so the chain rule's cut-dual sum does not run"
+        );
+        assert_ne!(
+            bits(states[0]),
+            bits(states[1]),
+            "the two pinned states are bit-identical"
+        );
+        for a in 0..OPENINGS {
+            for b in a + 1..OPENINGS {
+                assert_ne!(
+                    bits(&noise[a]),
+                    bits(&noise[b]),
+                    "openings {a} and {b} have bit-identical noise"
+                );
+            }
+        }
+        assert!(
+            warm_up.iter().all(Result::is_ok),
+            "a warm-up round failed: {warm_up:?}"
+        );
+
+        reset_alloc_count();
+        let measured = [
+            round(&mut outs, states[0]),
+            round(&mut outs, states[1]),
+            round(&mut outs, states[0]),
+        ];
+        let observed = alloc_count();
+
+        assert!(
+            measured.iter().all(Result::is_ok),
+            "a measured round failed: {measured:?}"
+        );
+        assert_eq!(
+            observed, 0,
+            "a folded solve round allocated {observed} times across the measured rounds \
+             (state 0, state 1, state 0 again)"
+        );
+    }
 }
