@@ -1869,6 +1869,263 @@ pub fn chronological_pumping_pair() -> (
     )
 }
 
+const PREFILLING_ROUTE_N_STAGES: usize = 2;
+const PREFILLING_ROUTE_BUS_ID: i32 = 10;
+const PREFILLING_ROUTE_TARGET_ID: i32 = 1;
+const PREFILLING_ROUTE_HYDRO_IDS: [i32; 3] = [PREFILLING_ROUTE_TARGET_ID, 2, 3];
+const PREFILLING_ROUTE_ENTRY_STAGE_ID: i32 = 2;
+const PREFILLING_ROUTE_TARGET_WITHDRAWAL_M3S: f64 = 0.3;
+const PREFILLING_ROUTE_MAX_STORAGE_HM3: f64 = 200.0;
+
+// Rationale: the entity/bounds/penalties construction is one sequential
+// fixture; splitting it into helper fns would fragment the declared shape
+// across call sites with no reuse benefit.
+#[allow(clippy::too_many_lines)]
+fn build_prefilling_withdrawal_route_system(
+    reverse_declaration_order: bool,
+    prefilling_withdrawals_m3s: [f64; 2],
+) -> novomodelo_core::System {
+    let start =
+        NaiveDate::from_ymd_opt(2024, 1, 1).expect("prefilling_withdrawal_route_study: valid date");
+
+    let bus = make_bus(
+        EntityId(PREFILLING_ROUTE_BUS_ID),
+        BusSpec {
+            name: "B".to_string(),
+            operational_start_date: start,
+            deficit_segments: vec![DeficitSegment {
+                depth_mw: None,
+                cost_per_mwh: 500.0,
+            }],
+            excess_cost: 0.0,
+        },
+    );
+
+    let mut hydros: Vec<_> = PREFILLING_ROUTE_HYDRO_IDS
+        .iter()
+        .map(|&id| {
+            let routed_to_target = id != PREFILLING_ROUTE_TARGET_ID;
+            make_hydro(
+                EntityId(id),
+                HydroSpec {
+                    name: format!("H{id}"),
+                    operational_start_date: start,
+                    bus_id: EntityId(PREFILLING_ROUTE_BUS_ID),
+                    downstream_id: routed_to_target.then_some(EntityId(PREFILLING_ROUTE_TARGET_ID)),
+                    entry_stage_id: routed_to_target.then_some(PREFILLING_ROUTE_ENTRY_STAGE_ID),
+                    min_storage_hm3: 0.0,
+                    max_storage_hm3: PREFILLING_ROUTE_MAX_STORAGE_HM3,
+                    max_turbined_m3s: 100.0,
+                    generation_model: HydroGenerationModel::ConstantProductivity,
+                    specific_productivity_mw_per_m3s_per_m: Some(0.5),
+                    max_generation_mw: 250.0,
+                    penalties: chronological_noise_hydro_penalties(0.0),
+                    ..Default::default()
+                },
+            )
+        })
+        .collect();
+
+    let blocks: Vec<Block> = CHRONOLOGICAL_NOISE_BLOCK_HOURS
+        .iter()
+        .enumerate()
+        .map(|(index, &duration_hours)| Block {
+            index,
+            name: format!("B{index}"),
+            duration_hours,
+        })
+        .collect();
+
+    let block_modes = [BlockMode::Parallel, BlockMode::Chronological];
+    let stages: Vec<Stage> = (0..PREFILLING_ROUTE_N_STAGES)
+        .map(|i| {
+            make_stage(
+                i,
+                StageSpec {
+                    start_date: stage_date(i),
+                    end_date: stage_date(i + 1),
+                    season_id: Some(0),
+                    blocks: blocks.clone(),
+                    block_mode: block_modes[i],
+                    state_config: StageStateConfig {
+                        storage: true,
+                        inflow_lags: false,
+                    },
+                    risk_config: StageRiskConfig::Expectation,
+                    scenario_config: ScenarioSourceConfig {
+                        branching_factor: 1,
+                        noise_method: NoiseMethod::Saa,
+                    },
+                },
+            )
+        })
+        .collect();
+
+    let inflow_models = PREFILLING_ROUTE_HYDRO_IDS
+        .iter()
+        .flat_map(|&id| {
+            (0..PREFILLING_ROUTE_N_STAGES).map(move |i| InflowModel {
+                hydro_id: EntityId(id),
+                stage_id: i32::try_from(i).expect("stage index fits i32"),
+                mean_m3s: CHRONOLOGICAL_NOISE_INFLOW_MEAN_M3S,
+                std_m3s: 10.0,
+                ar_coefficients: Vec::new(),
+                residual_std_ratio: 1.0,
+                annual: None,
+            })
+        })
+        .collect();
+
+    let load_models = (0..PREFILLING_ROUTE_N_STAGES)
+        .map(|i| LoadModel {
+            bus_id: EntityId(PREFILLING_ROUTE_BUS_ID),
+            stage_id: i32::try_from(i).expect("stage index fits i32"),
+            mean_mw: 0.0,
+            std_mw: 0.0,
+        })
+        .collect();
+
+    let mut bounds = ResolvedBounds::new(
+        &BoundsCountsSpec {
+            n_hydros: PREFILLING_ROUTE_HYDRO_IDS.len(),
+            n_thermals: 1,
+            n_lines: 0,
+            n_pumping: 0,
+            n_contracts: 0,
+            n_stages: PREFILLING_ROUTE_N_STAGES,
+            k_max: 0,
+        },
+        &BoundsDefaults {
+            hydro: HydroStageBounds {
+                min_storage_hm3: 0.0,
+                max_storage_hm3: PREFILLING_ROUTE_MAX_STORAGE_HM3,
+                filling_min_rate_m3s: 0.0,
+                water_withdrawal_m3s: 0.0,
+            },
+            hydro_block: HydroBlockBounds {
+                max_turbined_m3s: 100.0,
+                max_generation_mw: 250.0,
+                ..Default::default()
+            },
+            thermal: ThermalStageBounds {
+                cost_per_mwh: 100.0,
+            },
+            thermal_block: ThermalBlockBounds {
+                min_generation_mw: 0.0,
+                max_generation_mw: 400.0,
+            },
+            line_block: LineBlockBounds {
+                direct_mw: 0.0,
+                reverse_mw: 0.0,
+            },
+            pumping_block: PumpingBlockBounds {
+                min_flow_m3s: 0.0,
+                max_flow_m3s: 0.0,
+            },
+            contract_block: ContractBlockBounds {
+                min_mw: 0.0,
+                max_mw: 0.0,
+                price_per_mwh: 0.0,
+            },
+        },
+    );
+    // Canonical (id-sorted) positions, never declaration positions: the target is 0.
+    let withdrawals_m3s = [
+        PREFILLING_ROUTE_TARGET_WITHDRAWAL_M3S,
+        prefilling_withdrawals_m3s[0],
+        prefilling_withdrawals_m3s[1],
+    ];
+    for stage in 0..PREFILLING_ROUTE_N_STAGES {
+        for (position, withdrawal_m3s) in withdrawals_m3s.into_iter().enumerate() {
+            bounds
+                .hydro_bounds_mut(position, stage)
+                .water_withdrawal_m3s = withdrawal_m3s;
+        }
+    }
+
+    let penalties = ResolvedPenalties::new(
+        &PenaltiesCountsSpec {
+            n_hydros: PREFILLING_ROUTE_HYDRO_IDS.len(),
+            n_buses: 1,
+            n_lines: 0,
+            n_ncs: 0,
+            n_stages: PREFILLING_ROUTE_N_STAGES,
+        },
+        &PenaltiesDefaults {
+            hydro: chronological_noise_hydro_penalties(0.0),
+            bus: BusStagePenalties { excess_cost: 0.0 },
+            line: LineStagePenalties { exchange_cost: 0.0 },
+            ncs: NcsStagePenalties {
+                curtailment_cost: 0.0,
+            },
+        },
+    );
+
+    let initial_conditions = InitialConditions {
+        storage: PREFILLING_ROUTE_HYDRO_IDS
+            .iter()
+            .map(|&id| HydroStorage {
+                hydro_id: EntityId(id),
+                value_hm3: PREFILLING_ROUTE_MAX_STORAGE_HM3 / 2.0,
+            })
+            .collect(),
+        filling_storage: vec![],
+        past_anticipated_commitments: vec![],
+        recent_observations: vec![],
+        past_defluences: vec![],
+    };
+
+    let mut buses = vec![bus];
+    let mut thermals = vec![make_thermal(
+        EntityId(20),
+        ThermalSpec {
+            name: "T".to_string(),
+            operational_start_date: start,
+            bus_id: EntityId(PREFILLING_ROUTE_BUS_ID),
+            cost_per_mwh: 100.0,
+            min_generation_mw: 0.0,
+            max_generation_mw: 400.0,
+            anticipated_config: None,
+            ..Default::default()
+        },
+    )];
+    if reverse_declaration_order {
+        buses.reverse();
+        hydros.reverse();
+        thermals.reverse();
+    }
+
+    SystemBuilder::new()
+        .buses(buses)
+        .thermals(thermals)
+        .hydros(hydros)
+        .stages(stages)
+        .inflow_models(inflow_models)
+        .load_models(load_models)
+        .bounds(bounds)
+        .penalties(penalties)
+        .initial_conditions(initial_conditions)
+        .build()
+        .expect(
+            "prefilling_withdrawal_route_study: one target and two PreFilling plants routed to it",
+        )
+}
+
+/// Two `PreFilling` withdrawals summed onto one target, with values whose sum depends on the order.
+#[must_use]
+pub fn prefilling_withdrawal_route_study(
+    reverse_declaration_order: bool,
+    prefilling_withdrawals_m3s: [f64; 2],
+) -> (novomodelo_core::System, Config) {
+    (
+        build_prefilling_withdrawal_route_system(
+            reverse_declaration_order,
+            prefilling_withdrawals_m3s,
+        ),
+        build_config(),
+    )
+}
+
 const TWO_HYDRO_EVAP_N_STAGES: usize = 2;
 const TWO_HYDRO_EVAP_BUS_ID: EntityId = EntityId(1);
 const TWO_HYDRO_EVAP_HYDRO0_ID: EntityId = EntityId(2);
