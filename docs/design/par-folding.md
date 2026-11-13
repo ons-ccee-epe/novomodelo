@@ -1,14 +1,15 @@
 # PAR folding
 
-> **Status**: Implemented (retained pending fold into the live spec) on the long-lived branch `folding`. This is
+> **Status**: Implemented (retained pending fold into the live spec). This is
 > the design for removing the PAR(p) inflow model from the stage LP: the
 > builder no longer emits the lag columns, the z columns and the z rows, and their
 > effect enters as right-hand-side constants computed outside the solver. The compact
-> LP has replaced today's LP outright (no runtime switch, no cargo feature), and
-> *today* in this document means main, the LP the branch replaced. Where the text
+> LP has replaced today's LP outright (no runtime switch, no cargo feature).
+> *Today* and *main* in this document mean main at v0.20.0, the LP the fold replaced,
+> and `folding` means the build with the fold. Where the text
 > records the transition (§4.7, §9.9), the symbols it names may no longer exist in the
-> tree: check the tree before relying on one. The branch is evaluated against main in
-> production before any merge is considered. Figures quoted here are calibration-time
+> tree: check the tree before relying on one. The fold was merged into main before the
+> production A/B of §11, which is still to run. Figures quoted here are calibration-time
 > estimates for the converted NEWAVE PMO deck, not standing claims; a figure that a
 > committed bench reproduces names its §9.7 group, and a figure from a one-time probe
 > that no committed bench reproduces says so where it appears.
