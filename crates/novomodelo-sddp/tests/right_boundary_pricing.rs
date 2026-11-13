@@ -16,7 +16,7 @@
 //! non-degenerately (`k_max == 2`, avoiding the untested `k_max == 0` path)
 //! and the terminal's own carried slot is a pure CARRY (`out = in`), never a
 //! fresh deposit — pinning the incoming ring column via
-//! `patch_backward_opening_for_probe` controls the terminal's priced
+//! `prep_for_counterfactual_probe` controls the terminal's priced
 //! committed MW directly. With `hydro_count = 0` and `max_par_order = 0`, the
 //! state vector is exactly the two-slot ring (`n_state == 2`), so a boundary
 //! priced ONLY on the post-study-targeted slot isolates the pricing
@@ -39,18 +39,16 @@ use std::path::Path;
 
 use chrono::NaiveDate;
 use novomodelo_core::entities::thermal::AnticipatedConfig;
-use novomodelo_core::temporal::{
-    Node as PolicyNode, PolicyGraphType, StageStateConfig, Transition,
-};
+use novomodelo_core::temporal::{Node as PolicyNode, PolicyGraphType, Transition};
 use novomodelo_core::{
     AnticipatedCommitmentHistory, BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, EntityId,
     HorizonGraph, HydroBlockBounds, HydroStageBounds, InitialConditions, LineBlockBounds,
     PostStudyStage, PostStudyStages, PostStudyThermalBound, PumpingBlockBounds, ResolvedBounds,
     System, SystemBuilder, ThermalBlockBounds, ThermalStageBounds, WaterBucketStages,
 };
-use novomodelo_sddp::indexer::{CutStateProjection, StateDim};
-use novomodelo_sddp::setup::{NodeGraph, NodeId, NodePos, StageIdx};
-use novomodelo_sddp::test_support::{patch_backward_opening_for_probe, solve_stage_for_probe};
+use novomodelo_sddp::indexer::StateDim;
+use novomodelo_sddp::setup::{NodeGraph, NodePos, StageIdx};
+use novomodelo_sddp::test_support::{ProbeCuts, prep_for_counterfactual_probe};
 use novomodelo_sddp::workspace::SolverWorkspace;
 use novomodelo_sddp::{BoundaryLoadRequest, inject_boundary_cuts, load_boundary_cuts};
 use novomodelo_solver::{
@@ -396,25 +394,14 @@ fn inject_ring_boundary(setup: &mut novomodelo_sddp::StudySetup, dir: &Path) {
 
 /// Build the terminal pool's FROZEN LP template: the base structural template
 /// plus one literal row per active cut in the pool, exactly as production
-/// freezes a pool once per iteration (`freeze_rows_into_template`).
-/// `solve_stage_for_probe`'s `pool` argument only drives basis reconstruction
-/// on a stored warm start — it never appends cut rows to a cold solve, so
-/// pricing an injected cut requires freezing it into the loaded model first.
+/// freezes a pool once per iteration (`freeze_rows_into_template`). The folded
+/// prep patches the loaded model and never appends cut rows, so pricing an
+/// injected cut requires freezing it into the loaded model first.
 fn freeze_terminal_template(setup: &novomodelo_sddp::StudySetup, pool_id: usize) -> StageTemplate {
     let state = setup.stage_state();
     let terminal_stage = setup.num_stages() - 1;
     let ctx = setup.stage_ctx();
     let base = &ctx.templates[terminal_stage];
-
-    // The terminal pool projects the full global state, so the all-enabled
-    // projection reproduces exactly the coefficients the boundary cut carries.
-    let cut_state = CutStateProjection::new(
-        state,
-        StageStateConfig {
-            storage: true,
-            inflow_lags: true,
-        },
-    );
 
     let mut batch = RowBatch {
         num_rows: 0,
@@ -429,7 +416,7 @@ fn freeze_terminal_template(setup: &novomodelo_sddp::StudySetup, pool_id: usize)
         &setup.fcf,
         pool_id,
         state,
-        &cut_state,
+        &setup.training_ctx().cut_state_layouts[pool_id],
         &base.col_scale,
     );
 
@@ -439,15 +426,14 @@ fn freeze_terminal_template(setup: &novomodelo_sddp::StudySetup, pool_id: usize)
     frozen
 }
 
-/// Solve the terminal stage's frozen `template` against `pool` with the state
+/// Solve the terminal stage's frozen `template` against pool `pool_id` with the state
 /// vector pinned to `pinned_state` (length `n_state`), returning `θ`'s primal
 /// value. `raw_noise = &[]`: `hydro_count == 0`, so the noise transform has no
 /// dimension to iterate.
 fn terminal_theta(
     setup: &novomodelo_sddp::StudySetup,
     template: &StageTemplate,
-    pool: &novomodelo_sddp::CutPool,
-    node_id: NodeId,
+    pool_id: usize,
     pinned_state: &[f64],
 ) -> f64 {
     let comm = StubComm;
@@ -460,18 +446,31 @@ fn terminal_theta(
     let theta_col = setup.stage_state().theta;
     let terminal_stage = setup.num_stages() - 1;
 
+    let slots: Vec<usize> = setup
+        .fcf
+        .active_cuts(pool_id)
+        .map(|(slot, _, _)| slot)
+        .collect();
+
     ws.solver.reset_solver_state();
     ws.solver.load_model(template);
-    patch_backward_opening_for_probe(
+    prep_for_counterfactual_probe(
         ws,
         &ctx,
         &training_ctx,
         StageIdx(terminal_stage),
         pinned_state,
         &[],
+        &ProbeCuts {
+            pool: &setup.fcf.pools[pool_id],
+            pool_id,
+            slots: &slots,
+        },
     );
 
-    let view = solve_stage_for_probe(ws, &ctx, pool, None, StageIdx(terminal_stage), 0, node_id)
+    let view = ws
+        .solver
+        .solve(None)
         .expect("terminal stage solve must not error");
     view.primal[theta_col]
 }
@@ -520,12 +519,11 @@ fn boundary_cut_prices_the_committed_mw_by_beta_times_x() {
         .terminal_pool(setup.num_stages())
         .unwrap();
     let template = freeze_terminal_template(&setup, terminal_pool_id);
-    let pool = &setup.fcf.pools[terminal_pool_id];
 
     let x0 = 0.0;
     let x1 = 2.0;
-    let theta0 = terminal_theta(&setup, &template, pool, NodeId(1), &ring_pin(&setup, x0));
-    let theta1 = terminal_theta(&setup, &template, pool, NodeId(1), &ring_pin(&setup, x1));
+    let theta0 = terminal_theta(&setup, &template, terminal_pool_id, &ring_pin(&setup, x0));
+    let theta1 = terminal_theta(&setup, &template, terminal_pool_id, &ring_pin(&setup, x1));
 
     assert!(
         theta0 > 0.0 && theta1 > 0.0,
@@ -548,7 +546,7 @@ fn boundary_cut_prices_the_committed_mw_by_beta_times_x() {
         ALPHA + BETA * x1
     );
 
-    let theta1_again = terminal_theta(&setup, &template, pool, NodeId(1), &ring_pin(&setup, x1));
+    let theta1_again = terminal_theta(&setup, &template, terminal_pool_id, &ring_pin(&setup, x1));
     assert_eq!(
         theta1.to_bits(),
         theta1_again.to_bits(),
@@ -712,15 +710,13 @@ fn shared_boundary_prices_each_fanned_leaf_by_its_own_ring_state() {
     let theta_leaf1 = terminal_theta(
         &setup,
         &template,
-        pool,
-        NodeId(1),
+        shared_pool_id,
         &ring_pin(&setup, x_leaf1),
     );
     let theta_leaf2 = terminal_theta(
         &setup,
         &template,
-        pool,
-        NodeId(2),
+        shared_pool_id,
         &ring_pin(&setup, x_leaf2),
     );
 
@@ -765,7 +761,7 @@ fn no_boundary_leaves_theta_zero_with_ring_columns_present() {
     assert_eq!(pool.populated(), 0, "no boundary cut must be loaded");
 
     let template = freeze_terminal_template(&setup, terminal_pool_id);
-    let theta = terminal_theta(&setup, &template, pool, NodeId(1), &ring_pin(&setup, 2.0));
+    let theta = terminal_theta(&setup, &template, terminal_pool_id, &ring_pin(&setup, 2.0));
     assert!(
         theta.abs() < 1e-9,
         "with no boundary cut, theta must be 0 regardless of the committed MW: got {theta}"

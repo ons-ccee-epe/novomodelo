@@ -206,6 +206,7 @@ impl SolverInterface for MockSolver {
         self.add_rows_count += 1;
     }
     fn set_row_bounds(&mut self, _indices: &[usize], _lower: &[f64], _upper: &[f64]) {}
+    fn set_row_lower_bounds_range(&mut self, _first_row: usize, _lower: &[f64]) {}
     fn set_col_bounds(&mut self, _indices: &[usize], _lower: &[f64], _upper: &[f64]) {}
     fn solve(
         &mut self,
@@ -474,7 +475,7 @@ fn single_workspace(solver: MockSolver) -> Vec<SolverWorkspace<MockSolver>> {
         0,
         0,
         solver,
-        PatchBuffer::new(&state, &[], &[]),
+        PatchBuffer::new(&state, &[], &[], &[]),
         &training_ctx,
         &StageContextFixture::new(&[], &[], &[]).ctx(),
         WorkspaceSizing::default(),
@@ -516,7 +517,8 @@ fn simulate_single_rank_4_scenarios_produces_4_results() {
     let mut workspaces = single_workspace(solver);
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = vec![hydro_only_bus_geometry(); n_stages];
-    let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry)
+        .without_inflow_entries(state.hydro_count);
     let result = novomodelo_sddp::simulate(
         &mut workspaces,
         &stage_ctx_fixture.ctx(),
@@ -625,7 +627,8 @@ fn simulate_infeasible_returns_lp_infeasible_error() {
     let mut workspaces = single_workspace(solver);
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = vec![hydro_only_bus_geometry(); n_stages];
-    let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry)
+        .without_inflow_entries(state.hydro_count);
     let result = novomodelo_sddp::simulate(
         &mut workspaces,
         &stage_ctx_fixture.ctx(),
@@ -725,7 +728,8 @@ fn simulate_infeasible_at_scenario2_stage3() {
     let mut workspaces = single_workspace(solver);
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = vec![hydro_only_bus_geometry(); n_stages];
-    let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry)
+        .without_inflow_entries(state.hydro_count);
     let result = novomodelo_sddp::simulate(
         &mut workspaces,
         &stage_ctx_fixture.ctx(),
@@ -824,7 +828,8 @@ fn simulate_channel_closed_returns_error() {
     let mut workspaces = single_workspace(solver);
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = vec![hydro_only_bus_geometry(); n_stages];
-    let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry)
+        .without_inflow_entries(state.hydro_count);
     let result = novomodelo_sddp::simulate(
         &mut workspaces,
         &stage_ctx_fixture.ctx(),
@@ -923,7 +928,8 @@ fn simulate_total_cost_equals_sum_of_stage_costs() {
     let mut workspaces = single_workspace(solver);
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = vec![hydro_only_bus_geometry(); n_stages];
-    let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry)
+        .without_inflow_entries(state.hydro_count);
     let run_result = novomodelo_sddp::simulate(
         &mut workspaces,
         &stage_ctx_fixture.ctx(),
@@ -1020,7 +1026,8 @@ fn simulate_cost_buffer_scenario_ids_match_assigned_range() {
     let mut workspaces = single_workspace(solver);
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = vec![hydro_only_bus_geometry(); n_stages];
-    let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry)
+        .without_inflow_entries(state.hydro_count);
     let run_result = novomodelo_sddp::simulate(
         &mut workspaces,
         &stage_ctx_fixture.ctx(),
@@ -1118,7 +1125,8 @@ fn simulate_channel_receives_results_in_scenario_order() {
     let mut workspaces = single_workspace(solver);
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = vec![hydro_only_bus_geometry(); n_stages];
-    let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry)
+        .without_inflow_entries(state.hydro_count);
     novomodelo_sddp::simulate(
         &mut workspaces,
         &stage_ctx_fixture.ctx(),
@@ -1212,7 +1220,8 @@ fn test_simulation_parallel_cost_determinism() {
     let mut workspaces_1 = single_workspace(MockSolver::always_ok(solution.clone()));
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = vec![hydro_only_bus_geometry(); n_stages];
-    let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry)
+        .without_inflow_entries(state.hydro_count);
     let result_1 = novomodelo_sddp::simulate(
         &mut workspaces_1,
         &stage_ctx_fixture.ctx(),
@@ -1293,7 +1302,7 @@ fn test_simulation_parallel_cost_determinism() {
                 0,
                 idx,
                 MockSolver::always_ok(solution.clone()),
-                PatchBuffer::new(&state, &[], &[]),
+                PatchBuffer::new(&state, &[], &[], &[]),
                 &workspace_4_training_ctx,
                 &stage_ctx_fixture.ctx(),
                 WorkspaceSizing::default(),
@@ -1302,7 +1311,8 @@ fn test_simulation_parallel_cost_determinism() {
         .collect();
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = vec![hydro_only_bus_geometry(); n_stages];
-    let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry)
+        .without_inflow_entries(state.hydro_count);
     let result_4 = novomodelo_sddp::simulate(
         &mut workspaces_4,
         &stage_ctx_fixture.ctx(),
@@ -1425,7 +1435,8 @@ fn simulate_emits_progress_events() {
     let mut workspaces = single_workspace(solver);
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = vec![hydro_only_bus_geometry(); n_stages];
-    let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry)
+        .without_inflow_entries(state.hydro_count);
     let result = novomodelo_sddp::simulate(
         &mut workspaces,
         &stage_ctx_fixture.ctx(),
@@ -1544,7 +1555,8 @@ fn simulate_no_events_when_sender_is_none() {
     let mut workspaces = single_workspace(solver);
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = vec![hydro_only_bus_geometry(); n_stages];
-    let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry)
+        .without_inflow_entries(state.hydro_count);
     let result = novomodelo_sddp::simulate(
         &mut workspaces,
         &stage_ctx_fixture.ctx(),
@@ -1648,7 +1660,8 @@ fn simulate_progress_events_received_before_return() {
     let mut workspaces = single_workspace(solver);
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = vec![hydro_only_bus_geometry(); n_stages];
-    let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry)
+        .without_inflow_entries(state.hydro_count);
     novomodelo_sddp::simulate(
         &mut workspaces,
         &stage_ctx_fixture.ctx(),
@@ -1763,7 +1776,8 @@ fn simulate_progress_scenario_cost_equals_total_cost() {
     let mut workspaces = single_workspace(solver);
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = vec![hydro_only_bus_geometry(); n_stages];
-    let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry)
+        .without_inflow_entries(state.hydro_count);
     novomodelo_sddp::simulate(
         &mut workspaces,
         &stage_ctx_fixture.ctx(),
@@ -1876,7 +1890,8 @@ fn simulate_emits_simulation_finished_as_last_event() {
     let mut workspaces = single_workspace(solver);
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = vec![hydro_only_bus_geometry(); n_stages];
-    let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry)
+        .without_inflow_entries(state.hydro_count);
     novomodelo_sddp::simulate(
         &mut workspaces,
         &stage_ctx_fixture.ctx(),
@@ -2000,7 +2015,8 @@ fn simulate_progress_scenario_cost_is_finite() {
     let mut workspaces = single_workspace(solver);
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = vec![hydro_only_bus_geometry(); n_stages];
-    let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry)
+        .without_inflow_entries(state.hydro_count);
     novomodelo_sddp::simulate(
         &mut workspaces,
         &stage_ctx_fixture.ctx(),
@@ -2108,7 +2124,8 @@ fn simulate_frozen_path_issues_zero_add_rows() {
     let mut workspaces = single_workspace(solver);
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = vec![hydro_only_bus_geometry(); n_stages];
-    let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry)
+        .without_inflow_entries(state.hydro_count);
     let result = novomodelo_sddp::simulate(
         &mut workspaces,
         &stage_ctx_fixture.ctx(),
@@ -2209,7 +2226,8 @@ fn simulate_fallback_path_issues_expected_add_rows() {
     let mut workspaces = single_workspace(solver);
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = vec![hydro_only_bus_geometry(); n_stages];
-    let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry)
+        .without_inflow_entries(state.hydro_count);
     let result = novomodelo_sddp::simulate(
         &mut workspaces,
         &stage_ctx_fixture.ctx(),
@@ -2313,7 +2331,8 @@ fn simulate_frozen_length_mismatch_returns_error() {
     let mut workspaces = single_workspace(solver);
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = vec![hydro_only_bus_geometry(); n_stages];
-    let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry)
+        .without_inflow_entries(state.hydro_count);
     let result = novomodelo_sddp::simulate(
         &mut workspaces,
         &stage_ctx_fixture.ctx(),
@@ -2419,9 +2438,8 @@ fn simulate_with_captured_basis_preserves_row_statuses() {
     // node_id must match the chain's node_ids[0] == 0 (n_stages = 1 below) or the
     // new node-tag check drops this basis to cold, breaking the warm-start
     // assertions this test exists to pin.
-    let mut cb = CapturedBasis::new(15, 10, 7, 3, 1, NodeId(0));
+    let mut cb = CapturedBasis::new(14, 9, 6, 3, NodeId(0));
     cb.basis.row_status = vec![
-        BASE_STATUS,
         BASE_STATUS,
         BASE_STATUS,
         BASE_STATUS,
@@ -2432,9 +2450,8 @@ fn simulate_with_captured_basis_preserves_row_statuses() {
         CUT_STATUS_1,
         CUT_STATUS_2,
     ];
-    cb.basis.col_status = vec![BasisStatus::Basic; 15];
+    cb.basis.col_status = vec![BasisStatus::Basic; 14];
     cb.cut_row_slots.extend_from_slice(&[10u32, 11, 12]);
-    cb.state_at_capture.push(1.0);
 
     let stage_bases: Vec<Option<CapturedBasis>> = vec![Some(cb)];
 
@@ -2461,7 +2478,8 @@ fn simulate_with_captured_basis_preserves_row_statuses() {
     let mut workspaces = single_workspace(solver);
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = vec![hydro_only_bus_geometry(); n_stages];
-    let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry)
+        .without_inflow_entries(state.hydro_count);
     let result = novomodelo_sddp::simulate(
         &mut workspaces,
         &stage_ctx_fixture.ctx(),
@@ -2540,17 +2558,17 @@ fn simulate_with_captured_basis_preserves_row_statuses() {
     let active_count = fcf.pools[0].active_count();
     assert_eq!(
         recorded.row_status.len(),
-        7 + active_count,
-        "reconstructed basis row_status must have length base_row_count(7) + \
+        6 + active_count,
+        "reconstructed basis row_status must have length base_row_count(6) + \
          active_count({active_count}) = {}, got {}",
-        7 + active_count,
+        6 + active_count,
         recorded.row_status.len()
     );
 
     // Active cuts are iterated in slot order (10, 11, 12), so slot 10 lands at
-    // active-cuts position 0 — LP row 7 (after the 7 base rows) — and the stored
+    // active-cuts position 0 — LP row 6 (after the 6 base rows) — and the stored
     // statuses must reappear there verbatim.
-    let preserved_offset = 7;
+    let preserved_offset = 6;
     assert_eq!(
         recorded.row_status[preserved_offset], CUT_STATUS_0,
         "slot 10 must preserve its stored cut status"
@@ -2603,7 +2621,8 @@ fn simulate_with_empty_stage_bases_cold_starts() {
     let mut workspaces = single_workspace(solver);
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = vec![hydro_only_bus_geometry(); n_stages];
-    let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry)
+        .without_inflow_entries(state.hydro_count);
     let result = novomodelo_sddp::simulate(
         &mut workspaces,
         &stage_ctx_fixture.ctx(),
@@ -2692,9 +2711,9 @@ fn two_leaf_fan_node_graph() -> NodeGraph {
         len: 1,
         q: 1.0,
     };
-    NodeGraph {
-        node_ids: vec![NodeId(0), NodeId(1), NodeId(2)].into(),
-        nodes: vec![
+    NodeGraph::new(
+        vec![NodeId(0), NodeId(1), NodeId(2)].into(),
+        vec![
             NodeRuntime {
                 stage: StageIdx(0),
                 pool_id: 0,
@@ -2712,7 +2731,7 @@ fn two_leaf_fan_node_graph() -> NodeGraph {
             },
         ]
         .into(),
-        successors: vec![
+        vec![
             vec![
                 NodeSuccessor {
                     child: NodePos(1),
@@ -2727,9 +2746,9 @@ fn two_leaf_fan_node_graph() -> NodeGraph {
             Vec::new(),
         ]
         .into(),
-        n_pools: 2,
-        pool_stage: vec![StageIdx(0), StageIdx(1)],
-    }
+        2,
+        vec![StageIdx(0), StageIdx(1)],
+    )
 }
 
 /// A `CapturedBasis` warm-startable against a template shaped `num_cols=4`,
@@ -2738,10 +2757,9 @@ fn two_leaf_fan_node_graph() -> NodeGraph {
 /// requirement, mirroring `run_stage_solve_warm_start_frozen_path_succeeds`'s
 /// fixture.
 fn warm_basis_for_node(node_id: NodeId) -> CapturedBasis {
-    let mut cb = CapturedBasis::new(4, 2, 2, 0, 1, node_id);
+    let mut cb = CapturedBasis::new(4, 2, 2, 0, node_id);
     cb.basis.col_status[0] = BasisStatus::Basic;
     cb.basis.col_status[1] = BasisStatus::Basic;
-    cb.state_at_capture.push(0.0);
     cb
 }
 
@@ -2809,7 +2827,8 @@ fn simulate_branching_k_fan_warm_starts_from_visited_node_basis() {
     let mut workspaces = single_workspace(solver);
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = vec![hydro_only_bus_geometry(); n_stages];
-    let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry)
+        .without_inflow_entries(state.hydro_count);
     let result = novomodelo_sddp::simulate(
         &mut workspaces,
         &stage_ctx_fixture.ctx(),

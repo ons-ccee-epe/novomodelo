@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Training and simulation results change: each stage LP solves the same model
+  with fewer rows and columns.
 - For a migrated deck with a travel-time arc, the transit-bucket slots in
   `policy/cuts/*.bin` past the study horizon are now dated, so a later study
   loading that policy as a boundary reads them.

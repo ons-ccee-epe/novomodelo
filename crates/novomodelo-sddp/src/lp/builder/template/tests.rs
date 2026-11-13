@@ -33,9 +33,7 @@ use crate::inflow_method::InflowNonNegativityMethod;
 use crate::lead_time::AnticipatedResolution;
 use crate::policy::resolved_generic_coefficients::ResolvedGenericCoefficients;
 use crate::resolved_parameters::ResolvedParameters;
-use crate::test_support::{
-    assert_templates_byte_identical, resolve_anticipated_commitments, state_layout_full,
-};
+use crate::test_support::{assert_templates_byte_identical, resolve_anticipated_commitments};
 use crate::time_value::{
     DeliveryCalendar, PostStudyResolved, TimeValue, compute_cumulative_discount_factors,
     compute_per_stage_discount_factors, resolve_post_study_artifacts,
@@ -496,7 +494,6 @@ fn build_template_build_ctx_pumping_stations_id_sorted_and_pos_mapped() {
     );
     let ctx = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,
@@ -557,7 +554,6 @@ fn build_template_build_ctx_n_pumping_matches_slice_and_bounds() {
     );
     let ctx = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,
@@ -637,7 +633,6 @@ fn build_stage_templates_records_the_layout_pumping_flow_range_per_stage() {
     );
     let ctx = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,
@@ -891,7 +886,6 @@ fn geometry_ncs_family_matches_the_stage_layout() {
     );
     let ctx = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,
@@ -1181,7 +1175,6 @@ fn build_template_build_ctx_contracts_counted_and_pos_mapped() {
     );
     let ctx = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,
@@ -1256,7 +1249,6 @@ fn stage_layout_geometry_populates_contract_ranges() {
     );
     let ctx = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,
@@ -1315,7 +1307,6 @@ fn stage_layout_geometry_empty_contracts_are_pumping_end_anchored() {
     );
     let ctx = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,
@@ -1463,7 +1454,6 @@ fn build_template_build_ctx_contract_count_divergence_panics() {
     );
     let _ = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,
@@ -1544,7 +1534,6 @@ fn build_template_build_ctx_populates_anticipated_metadata() {
     );
     let ctx = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,
@@ -1632,7 +1621,6 @@ fn build_template_build_ctx_zero_anticipated_when_none() {
     );
     let ctx = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,
@@ -2045,7 +2033,6 @@ fn lp_template_invariant_under_anticipated_index_permutation() {
     );
     let ctx_a = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,
@@ -2139,7 +2126,6 @@ fn lp_template_invariant_under_anticipated_index_permutation() {
     );
     let ctx_b = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &ctx_b_state,
@@ -2254,7 +2240,7 @@ fn state_boxes_read_before_postprocess_panics() {
     let mut unfilled = super::StageTemplates::empty(DEFAULT_COST_SCALE_FACTOR);
     unfilled
         .templates
-        .push(crate::test_support::transit_bucket_only_template(1, 1));
+        .push(crate::test_support::transit_bucket_only_template(1));
 
     let _ = unfilled.state_boxes();
 }
@@ -2266,7 +2252,7 @@ fn set_state_boxes_rejects_a_box_count_other_than_the_stage_count() {
     let mut templates = super::StageTemplates::empty(DEFAULT_COST_SCALE_FACTOR);
     templates
         .templates
-        .push(crate::test_support::transit_bucket_only_template(1, 1));
+        .push(crate::test_support::transit_bucket_only_template(1));
 
     templates.set_state_boxes(Vec::new());
 }
@@ -2628,7 +2614,6 @@ fn delivery_stage_ids_equals_study_stage_ids_with_no_post_study() {
     );
     let ctx = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,
@@ -2677,7 +2662,6 @@ fn delivery_stage_ids_continue_the_horizon_with_synthetic_ids() {
     );
     let ctx = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,
@@ -2734,7 +2718,6 @@ fn delivery_vectors_read_the_post_study_element_at_its_delivery_index() {
     );
     let ctx = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,
@@ -2786,7 +2769,6 @@ fn delivery_cumulative_discount_matches_recomputed_extended_horizon() {
     );
     let ctx = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,
@@ -3008,7 +2990,6 @@ fn build_post_study_resolved_for(
     );
     let ctx = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,
@@ -3157,11 +3138,12 @@ fn anticipated_bounds_table_shape_is_two_plants_by_three_stages() {
 
 // ── Operational-violation RHS & matrix-coefficient verification ──────────
 
-use super::super::layout::StageLayout;
+use super::super::layout::{RowFamily, StageLayout};
 use crate::DEFAULT_COST_SCALE_FACTOR;
 use crate::hydro_models::{ProductionModelSet, ResolvedProductionModel};
 use novomodelo_core::System;
 use novomodelo_solver::StageTemplate;
+use std::ops::Range;
 
 /// One-hydro system with all operational-violation bounds active (min/max
 /// outflow, min turbine, min generation > 0), two blocks per stage, and
@@ -3432,7 +3414,6 @@ fn build_active_violations_layout_and_template() -> (StageLayout<'static>, Stage
     )));
     let ctx = super::build_template_build_ctx(
         system,
-        par_lp,
         production,
         &hydro_models.evaporation,
         &resolved.state,
@@ -3933,7 +3914,6 @@ fn block_template(block_mode: BlockMode, n_blks: usize) -> StageTemplate {
     );
     let ctx = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &production,
         &hydro_models.evaporation,
         &resolved.state,
@@ -3957,37 +3937,17 @@ fn chronological_k1_byte_identical_to_parallel() {
     assert_templates_byte_identical(&parallel, &chronological, "parallel vs chronological");
 }
 
-/// `theta` and `n_state` are pure functions of `(N, L, A, k_max)` and are
-/// `n_blks`-free by construction (`StateSpace::new` never sees `block_mode` or
-/// `n_blks`): per-block storage lives strictly in the control region, never in
-/// the state region. Building a chronological `K ≥ 2` stage therefore
-/// changes neither — only the control-region column count grows, by exactly
-/// `n_h * (n_blks − 1)` interior storage columns.
+/// Per-block storage lives strictly in the control region, never in the state
+/// region, so building a chronological `K ≥ 2` stage changes only the
+/// control-region column count, by exactly `n_h * (n_blks − 1)` interior storage
+/// columns.
 #[test]
-fn theta_and_n_state_invariant_to_block_mode() {
+fn chronological_stage_adds_only_interior_storage_columns() {
     let hydro_count = 1_usize;
-    let max_par_order = 0_usize;
     let n_blks = 3_usize;
-
-    let state = state_layout_full(hydro_count, max_par_order, vec![]);
-    let parallel_theta = state.theta;
-    let parallel_n_state = state.n_state;
 
     let parallel = block_template(BlockMode::Parallel, n_blks);
     let chronological = block_template(BlockMode::Chronological, n_blks);
-
-    assert_eq!(
-        parallel.n_state, parallel_n_state,
-        "parallel template n_state must equal StateSpace n_state"
-    );
-    assert_eq!(
-        chronological.n_state, parallel_n_state,
-        "chronological build must not change n_state"
-    );
-    assert_eq!(
-        parallel_theta, state.theta,
-        "building chronological must not change theta"
-    );
 
     assert_eq!(
         chronological.num_cols,
@@ -4049,7 +4009,6 @@ fn block_layout_and_template(
     )));
     let ctx = super::build_template_build_ctx(
         system,
-        par_lp,
         production,
         &hydro_models.evaporation,
         &resolved.state,
@@ -4623,7 +4582,6 @@ fn stage_geometry_rerouted_ranges_match_layout_source_at_every_stage() {
     );
     let ctx = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,
@@ -4714,6 +4672,107 @@ fn stage_geometry_rerouted_ranges_match_layout_source_at_every_stage() {
     assert!(
         saw_empty_filled_floor,
         "fixture must exercise a non-Operating stage"
+    );
+}
+
+/// The non-empty row families of every stage tile `0..num_rows` exactly: each
+/// row has one family, and the families follow the allocation order. The union
+/// assertion guards the test's power, so a fixture that stops reaching a family
+/// fails here rather than passing on empty ranges.
+#[test]
+fn row_families_partition_every_stage_row() {
+    let check_partition = |fixture: &str,
+                           stage: usize,
+                           families: &[(RowFamily, Range<usize>)],
+                           num_rows: usize|
+     -> Vec<RowFamily> {
+        let mut owner: Vec<Option<RowFamily>> = vec![None; num_rows];
+        let mut previous_start = 0;
+        let mut placed = Vec::new();
+        for (family, range) in families.iter().filter(|(_, range)| !range.is_empty()) {
+            assert!(
+                range.start >= previous_start,
+                "{fixture} stage {stage}: {family:?} starts at row {} before the previous family's start {previous_start}",
+                range.start
+            );
+            previous_start = range.start;
+            assert!(
+                range.end <= num_rows,
+                "{fixture} stage {stage}: {family:?} ends at row {} past num_rows {num_rows}",
+                range.end
+            );
+            for row in range.clone() {
+                assert!(
+                    owner[row].is_none(),
+                    "{fixture} stage {stage}: row {row} is in both {:?} and {family:?}",
+                    owner[row]
+                );
+                owner[row] = Some(*family);
+            }
+            placed.push(*family);
+        }
+        if let Some(row) = owner.iter().position(Option::is_none) {
+            panic!("{fixture} stage {stage}: row {row} is in no family");
+        }
+        placed
+    };
+
+    let mut union: Vec<RowFamily> = Vec::new();
+
+    let (layout, template) = build_active_violations_layout_and_template();
+    union.extend(check_partition(
+        "active violations",
+        0,
+        &layout.row_families(),
+        template.num_rows,
+    ));
+
+    let system = system_with_contracts_filling_and_anticipated();
+    let hydro_result = PrepareHydroModelsResult::default_from_system(&system);
+    let templates = crate::build_stage_templates_resolving_layout(
+        &system,
+        InflowNonNegativityMethod::None,
+        &PrecomputedPar::default(),
+        &PrecomputedNormal::default(),
+        &hydro_result.production,
+        &hydro_result.evaporation,
+        &empty_resolved_params(),
+    )
+    .expect("build_stage_templates: valid system");
+    assert_eq!(
+        templates.row_families().len(),
+        templates.templates.len(),
+        "one row-family record per stage"
+    );
+    for (stage, families) in templates.row_families().iter().enumerate() {
+        union.extend(check_partition(
+            "contracts, filling and anticipated",
+            stage,
+            families,
+            templates.templates[stage].num_rows,
+        ));
+    }
+
+    for required in [
+        RowFamily::WaterBalance,
+        RowFamily::LoadBalance,
+        RowFamily::MinOutflow,
+        RowFamily::FillingTarget,
+    ] {
+        assert!(
+            union.contains(&required),
+            "no fixture reaches {required:?}; reached {union:?}"
+        );
+    }
+    assert!(
+        [
+            RowFamily::AnticipatedFishing,
+            RowFamily::AnticipatedStateOutDef,
+            RowFamily::AnticipatedSlotDefinition,
+        ]
+        .iter()
+        .any(|family| union.contains(family)),
+        "no fixture reaches an anticipated family; reached {union:?}"
     );
 }
 
@@ -5070,7 +5129,6 @@ fn filling_block_layout_and_template(
     )));
     let ctx = super::build_template_build_ctx(
         system,
-        par_lp,
         production,
         &hydro_models.evaporation,
         &resolved.state,
@@ -5403,7 +5461,6 @@ fn template_anticipated_resolution_matches_setup_lead_time() {
     );
     let ctx = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,
@@ -5492,7 +5549,6 @@ fn template_leadstages_byte_identical_to_setup_and_fallback() {
     );
     let ctx = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,

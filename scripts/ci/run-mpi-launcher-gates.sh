@@ -44,9 +44,14 @@ readonly GATES=(
     "mpi_wire by_node_k_fan_branching::by_node_k_fan_final_lb_bitwise_invariant_across_world_size"
     "test_mpi_sync_cuts_invariant k_fan_branching_rank_invariance::k_fan_final_lb_bitwise_invariant_across_world_size"
     "periodic_checkpoint a_failed_periodic_write_on_the_world_leaves_the_last_whole_checkpoint_and_a_partial_beside_it"
+    "mpi_wire compact_fold_determinism::compact_lag_study_is_world_size_invariant"
+    "mpi_wire compact_fold_determinism::compact_d43_is_world_size_invariant"
+    "mpi_wire compact_fold_determinism::compact_fused_slice_is_world_size_invariant"
+    "cut_basis solve_cache_equivalence::fpha_lag_study_trains_to_the_same_bits_with_the_solve_caches_bypassed_on_the_world"
 )
 readonly RANK_COUNTS=(2 4)
 readonly OVERSIZED_GATE="${GATES[0]}"
+readonly OVERSIZED_TEST="${OVERSIZED_GATE#* }"
 readonly OVERSIZED_RANKS=9
 readonly OVERSIZED_REFUSAL="leaves a rank without a trial"
 readonly LAUNCH_TIMEOUT_S=600
@@ -70,7 +75,7 @@ case "${1:-}" in
     "") ;;
     --list)
         printf '%s\n' "${GATES[@]}"
-        printf '%s on %d ranks must be refused: %s\n' "${OVERSIZED_GATE#* }" "$OVERSIZED_RANKS" "$OVERSIZED_REFUSAL"
+        printf '%s on %d ranks must be refused: %s\n' "$OVERSIZED_TEST" "$OVERSIZED_RANKS" "$OVERSIZED_REFUSAL"
         exit 0
         ;;
     *) refuse "unknown argument '$1' (usage: TEST_FEATURES=... $0 | $0 --list)" ;;
@@ -165,9 +170,9 @@ for gate in "${GATES[@]}"; do
     done
 done
 
-launch "${OVERSIZED_GATE%% *}" "${OVERSIZED_GATE#* }" "$OVERSIZED_RANKS"
-[[ $status -ne 0 ]] || fail "${OVERSIZED_GATE#* } passed on $OVERSIZED_RANKS ranks, a world larger than its forward passes"
+launch "${OVERSIZED_GATE%% *}" "$OVERSIZED_TEST" "$OVERSIZED_RANKS"
+[[ $status -ne 0 ]] || fail "$OVERSIZED_TEST passed on $OVERSIZED_RANKS ranks, a world larger than its forward passes"
 refused="$(count_rank_logs_matching "$OVERSIZED_REFUSAL")"
 [[ "$refused" -eq "$OVERSIZED_RANKS" ]] \
-    || fail "${OVERSIZED_GATE#* } on $OVERSIZED_RANKS ranks: $refused ranks reported '$OVERSIZED_REFUSAL', expected every rank"
-report "${OVERSIZED_GATE#* } refused" "$OVERSIZED_RANKS"
+    || fail "$OVERSIZED_TEST on $OVERSIZED_RANKS ranks: $refused ranks reported '$OVERSIZED_REFUSAL', expected every rank"
+report "$OVERSIZED_TEST refused" "$OVERSIZED_RANKS"

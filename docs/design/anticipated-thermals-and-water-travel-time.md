@@ -47,18 +47,18 @@ delivery rings sit inside it:
 
 ```text
 [0, N)                     storage             — outgoing storage volumes (N = hydro count)
-[N, N*(1+L))               inflow_lags         — AR lag variables (L lags per hydro)
-[N*(1+L), N*(1+L)+B)       transit_buckets_out — WATER ring, outgoing (identity-resolved)
-[N*(1+L)+B, …+S)           commit_out          — ANTICIPATED ring, outgoing
-[…+S, …+N)                 z_inflow            — realized inflow (auxiliary, not state)
-[…+N, …+2N)                storage_in          — incoming storage (pinned)
-[…+2N, …+2N+B)             transit_buckets_in  — WATER ring, incoming (pinned)
-[…+B, …+B+S)               commit_in           — ANTICIPATED ring, incoming (pinned)
-…+S                        theta               — future-cost variable
+[N, N+B)                   transit_buckets_out — WATER ring, outgoing (identity-resolved)
+[N+B, N+B+S)               commit_out          — ANTICIPATED ring, outgoing
+[N+B+S, 2N+B+S)            storage_in          — incoming storage (pinned)
+[2N+B+S, 2N+2B+S)          transit_buckets_in  — WATER ring, incoming (pinned)
+[2N+2B+S, 2N+2B+2S)        commit_in           — ANTICIPATED ring, incoming (pinned)
+2N+2B+2S                   theta               — future-cost variable
 ```
 
 with `B = n_buckets` (water) and `S = A·k_max` (anticipated: `A =
-n_anticipated`, `k_max` = ring depth). The
+n_anticipated`, `k_max` = ring depth). The AR lag region sits in the state
+vector between storage and the buckets, but it has no LP column, so the block
+above carries no lag or realized-inflow rows. The
 region walk order — `Storage → Lag → Buckets → CommitmentHold` — is owned once by
 `REGION_ORDER`; every consumer dispatches over it exhaustively, so a new region
 fails to compile until handled.
@@ -103,15 +103,16 @@ coefficients do the work, never the bounds.
 ### 1.3 State → LP column, and duals
 
 - **Outgoing** state (storage, buckets, commitment-hold) maps to its LP column by
-  **identity** in `state_to_lp_column`; only the inflow-lag region remaps (lag 0 →
-  `z_inflow`, lag ℓ → previous lag). This is why a cut row's coefficient on a ring
-  slot lands on the right outgoing column.
+  **identity** in `state_to_lp_column`. The inflow-lag region has no LP column: its
+  outgoing values come from the accumulator (`advance_lag_chain`), not from a
+  primal. This is why a cut row's coefficient on a ring slot lands on the right
+  outgoing column.
 - **Incoming** state resolves through `state_to_lp_incoming_column`, dispatched by
   region to the matching pinned block start (`incoming_block_start`). The water
   arm (`transit_buckets_in`) and the anticipated arm (`commit_in`) are **explicit**
   — a bucket index must not fall through to the commitment-hold catch-all.
 - **Dual sign convention (identical to storage):** the incoming column's reduced
-  cost is **divided** by `col_scale` on extraction (`extract_duals_from_view`); the
+  cost is **divided** by `col_scale` on extraction (`extract_opening_duals`); the
   outgoing column's cut coefficient is **multiplied** back on render
   (`push_scaled_coefficient`). Divided on extract, multiplied on render.
 

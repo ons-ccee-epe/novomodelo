@@ -22,6 +22,7 @@ use novomodelo_sddp::indexer::{
     BlockIdx, Boundary, BusSys, FphaCellLocal, HydroCellIndex, HydroSys,
 };
 use novomodelo_sddp::lp::StageGeometry;
+use novomodelo_sddp::lp::builder::InflowCoupling;
 use novomodelo_sddp::test_support::template_structure::{
     ColKey, ColOwner, RingLane, RingLaneKind, RowOwner, UnscaledMatrix, column_owners,
     generation_column_owners, hours_to_hm3, ring_lanes, row_by_owner, row_owners,
@@ -489,9 +490,7 @@ fn water_row_ok(
         | ColOwner::Generation { .. }
         | ColOwner::Contract { .. } => false,
         ColOwner::Storage { .. }
-        | ColOwner::ZInflow { .. }
         | ColOwner::InflowSlack { .. }
-        | ColOwner::InflowLag { .. }
         | ColOwner::Bucket { .. }
         | ColOwner::AnticipatedIn { .. } => true,
     }
@@ -535,24 +534,11 @@ fn load_row_ok(
         | ColOwner::Spillage { .. }
         | ColOwner::Diversion { .. }
         | ColOwner::Evaporation { .. }
-        | ColOwner::ZInflow { .. }
-        | ColOwner::InflowLag { .. }
         | ColOwner::Bucket { .. } => false,
         ColOwner::InflowSlack { .. }
         | ColOwner::WithdrawalNeg { .. }
         | ColOwner::WithdrawalPos { .. }
         | ColOwner::AnticipatedIn { .. } => true,
-    }
-}
-
-/// `true` when `owner`'s column may legitimately enter hydro `h`'s z-inflow
-/// row: only its own z-inflow, inflow-lag or inflow-slack column.
-fn z_row_ok(h: HydroSys, owner: ColOwner) -> bool {
-    match owner {
-        ColOwner::ZInflow { hydro }
-        | ColOwner::InflowLag { hydro }
-        | ColOwner::InflowSlack { hydro } => hydro == h,
-        _ => false,
     }
 }
 
@@ -653,7 +639,7 @@ fn every_study_places_each_column_only_on_its_entitys_block_rows() {
 
         for (s, t) in templates.templates.iter().enumerate() {
             let geom = &templates.geometry_per_stage[s];
-            let row_own = row_owners(system, geom, state);
+            let row_own = row_owners(system, geom);
             let col_own = column_owners(system, geom, state);
             let matrix = UnscaledMatrix::of(t);
 
@@ -714,13 +700,6 @@ fn every_study_places_each_column_only_on_its_entitys_block_rows() {
                             {
                                 saw_turbine_on_load_split_plant = true;
                             }
-                        }
-                        RowOwner::ZInflow { hydro: h } => {
-                            assert!(
-                                z_row_ok(h, owner),
-                                "{key} stage {s}: z row {r} (hydro {h:?}) carries column {c} \
-                                 ({owner:?}), which does not own the z-inflow row"
-                            );
                         }
                     }
                 }
@@ -1046,51 +1025,27 @@ fn assert_fpha_row_identity(
     }
 }
 
-/// The z-inflow identity for hydro `h`: the z row agrees key by key in both
-/// modes, and so do its bounds.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "one per-build (template, matrix, cols, row index) quadruple, times two builds, plus the shared identity/label context"
-)]
-fn assert_z_row_identity(
+/// The inflow-coupling identity for hydro `h`: the entries the chronological
+/// stage couples `h`'s inflow into its block rows sum to the parallel stage's
+/// entries.
+fn assert_coupling_sum_identity(
     key: &str,
     s: usize,
     h: HydroSys,
-    chrono_row_idx: usize,
-    chrono_template: &StageTemplate,
-    chrono_matrix: &UnscaledMatrix,
-    chrono_cols: &HashMap<usize, ColOwner>,
-    parallel_row_idx: usize,
-    parallel_template: &StageTemplate,
-    parallel_matrix: &UnscaledMatrix,
-    parallel_cols: &HashMap<usize, ColOwner>,
+    chrono: &InflowCoupling,
+    parallel: &InflowCoupling,
 ) {
-    let chrono_row = row_by_owner(chrono_matrix, chrono_cols, chrono_row_idx);
-    let parallel_row = row_by_owner(parallel_matrix, parallel_cols, parallel_row_idx);
-    assert_keyed_rows_equal(
-        &format!("{key} stage {s}: z row hydro {h:?}"),
-        &chrono_row,
-        &parallel_row,
-        false,
-    );
+    let chrono_sum: f64 = chrono.hydro_entries(h).map(|(_, c)| c).sum();
+    let parallel_sum: f64 = parallel.hydro_entries(h).map(|(_, c)| c).sum();
     assert!(
-        sum_approx_eq(
-            unscaled_row_bound(chrono_template, chrono_row_idx, true),
-            unscaled_row_bound(parallel_template, parallel_row_idx, true)
-        ),
-        "{key} stage {s}: z row hydro {h:?} lower bound differs"
-    );
-    assert!(
-        sum_approx_eq(
-            unscaled_row_bound(chrono_template, chrono_row_idx, false),
-            unscaled_row_bound(parallel_template, parallel_row_idx, false)
-        ),
-        "{key} stage {s}: z row hydro {h:?} upper bound differs"
+        sum_approx_eq(chrono_sum, parallel_sum),
+        "{key} stage {s}: hydro {h:?} inflow coupling sums to {chrono_sum} chronologically and \
+         {parallel_sum} in parallel"
     );
 }
 
 /// Compares `chrono` and `parallel`'s builds of the same deck (`key`): for
-/// every stage with `n_blks > 1`, runs the water, load, z and FPHA
+/// every stage with `n_blks > 1`, runs the water, load, inflow-coupling and FPHA
 /// identities and updates `coverage`.
 fn compare_block_mode_pair(
     key: &str,
@@ -1169,18 +1124,12 @@ fn compare_block_mode_pair(
 
         for h in 0..chrono_state.hydro_count {
             let hydro = HydroSys::new(h);
-            assert_z_row_identity(
+            assert_coupling_sum_identity(
                 key,
                 s,
                 hydro,
-                chrono_state.z_inflow_row(hydro),
-                chrono_template,
-                &chrono_matrix,
-                &chrono_cols,
-                parallel_state.z_inflow_row(hydro),
-                parallel_template,
-                &parallel_matrix,
-                &parallel_cols,
+                &chrono_templates.inflow_coupling_per_stage[s],
+                &parallel_templates.inflow_coupling_per_stage[s],
             );
         }
 

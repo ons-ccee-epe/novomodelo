@@ -812,7 +812,9 @@ mod cell_partition_gates {
     use novomodelo_sddp::inflow_method::InflowNonNegativityMethod;
     use novomodelo_sddp::resolved_parameters::ResolvedParameters;
     use novomodelo_sddp::test_support::{assert_templates_byte_identical, make_unit_group};
-    use novomodelo_sddp::{StageTemplates, build_stage_templates_resolving_layout};
+    use novomodelo_sddp::{
+        StageTemplates, build_stage_templates_resolving_layout, resolved_state_layout,
+    };
     use novomodelo_solver::StageTemplate;
     use novomodelo_stochastic::normal::precompute::PrecomputedNormal;
     use novomodelo_stochastic::par::precompute::PrecomputedPar;
@@ -1469,28 +1471,31 @@ mod cell_partition_gates {
     // ---- State-space invariance --------------------------------------------
 
     /// Declaring groups (including the two-bus variant, which DOES add
-    /// columns) never moves `n_state`, and an independently-built
+    /// columns) never moves the resolved `n_state`, and an independently-built
     /// `StateSpace` (unrelated to `unit_groups` at all) agrees. Checkpoint
     /// bytes and the terminal entity manifest are a separate artifact-level
     /// concern this test does not assert.
     #[test]
     fn test_declaring_groups_does_not_move_the_state_space() {
-        let tmpl_a = build_template(groups_three_same_bus());
         let tmpl_b = build_template(groups_single_mirror());
         let tmpl_c = build_template(groups_two_buses());
-
-        for (label, t) in [("A", &tmpl_a), ("B", &tmpl_b), ("C", &tmpl_c)] {
-            assert_eq!(t.n_state, tmpl_b.n_state, "{label}: n_state");
-        }
 
         // Independent cross-check via a totally separate code path: a
         // StateSpace built directly from (hydro_count, max_par_order) alone
         // -- unit_groups plays no role in state-layout resolution at all.
         let independent = novomodelo_sddp::test_support::state_layout(2, 0);
-        assert_eq!(
-            independent.n_state, tmpl_b.n_state,
-            "an independently-built StateSpace must agree with the template's n_state"
-        );
+        for (label, groups) in [
+            ("A", groups_three_same_bus()),
+            ("B", groups_single_mirror()),
+            ("C", groups_two_buses()),
+        ] {
+            let resolved = resolved_state_layout(&build_system(groups), &PrecomputedPar::default())
+                .expect("resolved_state_layout ok");
+            assert_eq!(
+                resolved.n_state, independent.n_state,
+                "{label}: the resolved n_state must equal an independently-built StateSpace's"
+            );
+        }
 
         // Variant C is the load-bearing case: splitting a plant across two buses
         // adds an extra turbine and an extra FPHA generation column, and this is
