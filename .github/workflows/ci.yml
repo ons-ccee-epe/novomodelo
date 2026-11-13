@@ -323,10 +323,11 @@ jobs:
         run: python3 scripts/ci/check_doc_voice.py
       - name: Check for leftovers of the rename
         run: python3 scripts/rebrand/rebrand.py check
-      - name: Test the rename tool
+      - name: Test the rename and migration tools
         run: |
           python3 -m pip install --quiet pytest
           python3 -m pytest -q -p no:cacheprovider scripts/rebrand
+          python3 -m pytest -q -p no:cacheprovider scripts/migrate
       - name: Advisory — code-quality hotspot report
         # ADVISORY: always exits 0. Prints a ranked "where to act first" table
         # (churn x size x suppression density x in-body banners) to the job log.

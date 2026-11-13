@@ -29,7 +29,7 @@ use crate::lp::indexer::{
     for_each_live_commitment_slot,
 };
 use crate::setup::{NodeGraph, extended_delivery_stages};
-use crate::time_value::post_study_delivery_calendar;
+use crate::time_value::{DeliveryCalendar, WaterDeliveryBasis};
 use crate::training::training::CheckpointBasisStore;
 use crate::workspace::CapturedBasis;
 
@@ -84,10 +84,12 @@ fn lag_reference_anchor(all_stages: &[Stage], pool_pos_in_all: Option<usize>, la
 /// `YYYYMMDD` anchors of the physical delivery it holds at the pool's own
 /// stage — live exactly when [`for_each_live_commitment_slot`] visits it
 /// (the LP's own latch set: carry plus deposit), over `study_stages` extended
-/// by [`post_study_delivery_calendar`]. A slot the sweep does not latch this
-/// stage, or whose target lands past that calendar, carries the sentinel for
-/// both fields. With no post-study stages the walk is byte-identical to a
-/// study-only one.
+/// by the thermal post-study calendar (`DeliveryCalendar::thermal`); a
+/// transit-bucket slot's arrival dates over the same study stages extended by
+/// the water calendar (`DeliveryCalendar::water`). A slot the sweep does not
+/// latch this stage, or whose target lands past its calendar, carries the
+/// sentinel for both fields. With no post-study stages the walk is
+/// byte-identical to a study-only one.
 ///
 /// An inflow-lag slot's `reference_date` is the referenced past stage's own
 /// full `start_date`, [`encode_slot_date`]-encoded, via
@@ -107,6 +109,31 @@ pub fn build_stage_entity_manifest(
     projection: &CutStateProjection,
     stage_id: i32,
 ) -> Vec<EntitySlot> {
+    let thermal = DeliveryCalendar::thermal(system);
+    let water = DeliveryCalendar::water(system, WaterDeliveryBasis::of(system));
+    build_stage_entity_manifest_dated(
+        system,
+        global_layout,
+        anticipated_plants,
+        projection,
+        stage_id,
+        thermal.post_study_stages(),
+        water.post_study_stages(),
+    )
+}
+
+/// [`build_stage_entity_manifest`] over explicit per-kind post-study calendars:
+/// ring slots date over `study ++ thermal_post_study`, bucket arrivals over
+/// `study ++ water_post_study`.
+pub(crate) fn build_stage_entity_manifest_dated(
+    system: &System,
+    global_layout: &StateSpace,
+    anticipated_plants: &AnticipatedPlants,
+    projection: &CutStateProjection,
+    stage_id: i32,
+    thermal_post_study: &[Stage],
+    water_post_study: &[Stage],
+) -> Vec<EntitySlot> {
     let n = global_layout.hydro_count;
     let hydros = system.hydros();
     let anticipated_thermals: Vec<&Thermal> =
@@ -123,11 +150,11 @@ pub fn build_stage_entity_manifest(
     // `lag_reference_anchor` walks, since a deep lag can reach into the
     // pre-study window `study_stages` excludes.
     let pool_pos_in_all = system.stages().iter().position(|s| s.id == stage_id);
-    let post_study_calendar = post_study_delivery_calendar(system);
-    let delivery_stages = extended_delivery_stages(&study_stages, &post_study_calendar);
+    let ring_stages = extended_delivery_stages(&study_stages, thermal_post_study);
+    let arrival_stages = extended_delivery_stages(&study_stages, water_post_study);
     // `b_d^out(t)` arrives at stage `t + d`, never `t + 1 + d`.
     let bucket_arrival_stage =
-        |lag: usize| current_stage_idx.and_then(|t| delivery_stages.get(t + lag).copied());
+        |lag: usize| current_stage_idx.and_then(|t| arrival_stages.get(t + lag).copied());
 
     let n_anticipated = global_layout.n_anticipated;
     let mut live_target = vec![None; n_anticipated * global_layout.k_max];
@@ -141,7 +168,7 @@ pub fn build_stage_entity_manifest(
         let (slot_idx, plant_pos) = anticipated_ring.slot_lane_at(offset);
         let plant = anticipated_thermals[plant_pos];
         let resolved_stage = live_target[slot_idx * n_anticipated + plant_pos]
-            .and_then(|m| delivery_stages.get(m).copied());
+            .and_then(|m| ring_stages.get(m).copied());
         let (interval_start, interval_end) = slot_interval(resolved_stage);
         EntitySlot::anticipated(
             plant.id.0,
@@ -757,7 +784,8 @@ pub fn build_pool_states_payloads<'a>(
 mod tests {
     use super::{
         EntitySlot, HashMap, STAGE_STATES_NODE_ID_SENTINEL, StateFamily,
-        build_stage_entity_manifest, reserve_boundary_inflow_lag_slots,
+        build_stage_entity_manifest, build_stage_entity_manifest_dated,
+        reserve_boundary_inflow_lag_slots,
     };
     use crate::lead_time::{AnticipatedResolution, DeliveryAxis, LeadTime};
     use crate::lp::indexer::{AnticipatedPlants, CutStateProjection, HydroSys, StateSpace};
@@ -766,13 +794,14 @@ mod tests {
         StageIdx, extended_delivery_stages, year_month_day_anchor,
     };
     use crate::test_support::{self, anticipated_slot};
-    use crate::time_value::post_study_delivery_calendar;
+    use crate::time_value::DeliveryCalendar;
     use novomodelo_core::commissioning::hydro_operating_active;
     use novomodelo_core::temporal::StageStateConfig;
     use novomodelo_core::{
         AnticipatedConfig, Block, BlockMode, Bus, DeficitSegment, EntityId, Hydro,
         HydroGenerationModel, HydroPenalties, NoiseMethod, PostStudyStage, PostStudyStages,
         ScenarioSourceConfig, Stage, StageRiskConfig, System, SystemBuilder, Thermal,
+        WaterBucketStages,
         resolved::{
             BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, HydroBlockBounds,
             HydroStageBounds, LineBlockBounds, PumpingBlockBounds, ResolvedBounds,
@@ -780,6 +809,7 @@ mod tests {
         },
     };
     use novomodelo_io::{ENTITY_SLOT_DATE_SENTINEL, encode_slot_date};
+    use novomodelo_stochastic::season_cast::post_study_calendar_stages;
 
     const ALL_ENABLED: StageStateConfig = StageStateConfig {
         storage: true,
@@ -972,11 +1002,12 @@ mod tests {
     /// post-study delivery target on the anticipated ring.
     fn post_study_stages_from(start_date: chrono::NaiveDate) -> PostStudyStages {
         PostStudyStages {
-            stages: vec![PostStudyStage {
+            thermal_stages: vec![PostStudyStage {
                 start_date,
                 duration_hours: 720.0,
             }],
             thermal_bounds: Vec::new(),
+            water_bucket_stages: WaterBucketStages::FromThermalStages,
         }
     }
 
@@ -1158,7 +1189,7 @@ mod tests {
             &projection,
             0,
         );
-        let post_study_end = post_study_delivery_calendar(&system)[0].end_date;
+        let post_study_end = DeliveryCalendar::thermal(&system).post_study_stages()[0].end_date;
 
         assert_eq!(
             manifest[6].entity_type,
@@ -1185,6 +1216,81 @@ mod tests {
                 "lag 2 lands past the extended calendar, so {name} must stay sentinel"
             );
         }
+    }
+
+    /// The ring half needs a layout whose resolution reaches a post-study
+    /// delivery: `layout_2h_2buckets_1ant`'s has none, so it holds no live ring
+    /// slot. Liveness there comes from the layout's lead of 1, not the
+    /// system's.
+    #[test]
+    fn manifest_dates_ring_slots_from_thermal_and_buckets_from_water_calendar() {
+        let thermal_post_study =
+            post_study_calendar_stages(&post_study_stages_from_months(&[(2024, 3)]).thermal_stages);
+        let water_post_study =
+            post_study_calendar_stages(&post_study_stages_from_months(&[(2024, 5)]).thermal_stages);
+        let system = system_2h_1ant((None, None), (None, None), None);
+        let plants = AnticipatedPlants::build(system.thermals());
+
+        let bucket_layout = layout_2h_2buckets_1ant();
+        let bucket_manifest = build_stage_entity_manifest_dated(
+            &system,
+            &bucket_layout,
+            &plants,
+            &CutStateProjection::new(&bucket_layout, ALL_ENABLED),
+            0,
+            &thermal_post_study,
+            &water_post_study,
+        );
+        assert_eq!(
+            bucket_manifest[6].entity_type,
+            StateFamily::HydroTransitBucket.code()
+        );
+        assert_eq!(
+            bucket_manifest[6].interval_start,
+            encode_slot_date(water_post_study[0].start_date),
+            "a post-horizon bucket arrival dates onto the water calendar"
+        );
+        assert_eq!(
+            bucket_manifest[6].interval_end,
+            encode_slot_date(water_post_study[0].end_date)
+        );
+
+        let ring_layout = test_support::state_layout_with_transit_buckets_and_resolution(
+            2,
+            2,
+            Vec::new(),
+            vec![1],
+            AnticipatedResolution::resolve(
+                &[LeadTime::Stages(1)],
+                DeliveryAxis {
+                    study_stage_hours: &[720.0],
+                    post_study_stage_hours: &[720.0],
+                },
+            ),
+        );
+        let ring_manifest = build_stage_entity_manifest_dated(
+            &system,
+            &ring_layout,
+            &plants,
+            &CutStateProjection::new(&ring_layout, ALL_ENABLED),
+            0,
+            &thermal_post_study,
+            &water_post_study,
+        );
+        let ring_slot = &ring_manifest[6];
+        assert_eq!(
+            ring_slot.entity_type,
+            StateFamily::AnticipatedThermalState.code()
+        );
+        assert_eq!(
+            ring_slot.interval_start,
+            encode_slot_date(thermal_post_study[0].start_date),
+            "a live post-study ring slot dates onto the thermal calendar"
+        );
+        assert_eq!(
+            ring_slot.interval_end,
+            encode_slot_date(thermal_post_study[0].end_date)
+        );
     }
 
     /// Storage-only projection (`inflow_lags: false`): the lag block is dropped, so
@@ -1644,7 +1750,7 @@ mod tests {
     /// A post-study calendar of consecutive `(year, month)` monthly stages.
     fn post_study_stages_from_months(months: &[(i32, u32)]) -> PostStudyStages {
         PostStudyStages {
-            stages: months
+            thermal_stages: months
                 .iter()
                 .map(|&(year, month)| PostStudyStage {
                     start_date: chrono::NaiveDate::from_ymd_opt(year, month, 1).unwrap(),
@@ -1652,6 +1758,7 @@ mod tests {
                 })
                 .collect(),
             thermal_bounds: Vec::new(),
+            water_bucket_stages: WaterBucketStages::FromThermalStages,
         }
     }
 
@@ -2482,8 +2589,8 @@ mod tests {
         );
         let projection = CutStateProjection::new(&global, ALL_ENABLED);
         let study_stages: Vec<&Stage> = system.stages().iter().filter(|s| s.id >= 0).collect();
-        let post_study_calendar = post_study_delivery_calendar(&system);
-        let delivery_stages = extended_delivery_stages(&study_stages, &post_study_calendar);
+        let thermal = DeliveryCalendar::thermal(&system);
+        let delivery_stages = extended_delivery_stages(&study_stages, thermal.post_study_stages());
         let n_delivery = global.n_delivery();
         let resolution = &global.anticipated_resolution.per_plant[0];
 
@@ -2658,8 +2765,8 @@ mod tests {
             3,
         );
         let study_stages: Vec<&Stage> = system.stages().iter().filter(|s| s.id >= 0).collect();
-        let post_study_calendar = post_study_delivery_calendar(&system);
-        let delivery_stages = extended_delivery_stages(&study_stages, &post_study_calendar);
+        let thermal = DeliveryCalendar::thermal(&system);
+        let delivery_stages = extended_delivery_stages(&study_stages, thermal.post_study_stages());
 
         // Layout N=1, L=1, A=1, k_max=4: storage j=0, lag j=1, anticipated j=2..6.
         assert_eq!(manifest.len(), 6);

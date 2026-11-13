@@ -589,12 +589,12 @@ fn boundary_injection_transit_bucket_blends_on_identical_arrival_interval() {
 /// mismatched-calendar transit boundary, unlike
 /// `boundary_injection_transit_bucket_blends_on_identical_arrival_interval`'s
 /// matching-interval case — when the `BoundaryInjection` load runs, then the
-/// loaded coefficient equals the source coefficient scaled by the target's
-/// own span over the source's own span: the target draws the source's
-/// density over its own overlapping hours. The report still tallies the
-/// slot as a fully-covered `fan_out`, never `straddling`.
+/// loaded coefficient equals the source coefficient: a held volume takes its
+/// `overlap / H_target` share, `1.0` for a target inside one source bucket.
+/// The report still tallies the slot as a fully-covered `fan_out`, never
+/// `straddling`.
 #[test]
-fn boundary_injection_transit_bucket_blends_at_fractional_source_hours() {
+fn boundary_injection_transit_bucket_takes_its_target_hours_share() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let source_start = ymd(2026, 4, 1);
     let source_end = ymd(2026, 5, 1);
@@ -626,14 +626,11 @@ fn boundary_injection_transit_bucket_blends_at_fractional_source_hours() {
 
     assert_eq!(cuts.len(), 1);
 
-    let source_span_hours = (source_end - source_start).num_days() as f64 * 24.0;
-    let target_span_hours = (target_end - target_start).num_days() as f64 * 24.0;
-    let expected = source_coeff * target_span_hours / source_span_hours;
+    let expected = source_coeff;
     let actual = cuts[0].coefficients[0];
     assert!(
         (actual - expected).abs() < expected.abs() * 1e-9,
-        "coefficient {actual} != expected {expected} (source_coeff * target_span_hours / \
-         source_span_hours)"
+        "coefficient {actual} != expected {expected} (source_coeff, the full target-hours share)"
     );
 
     let report = cuts.report();
@@ -644,6 +641,85 @@ fn boundary_injection_transit_bucket_blends_at_fractional_source_hours() {
     assert_eq!(
         report.transit_bucket.straddling, 0,
         "full coverage by one source interval is never straddling"
+    );
+}
+
+/// Given a checkpoint with a storage slot and two transit buckets of unequal
+/// width (`[Apr 1, Apr 8)`, `[Apr 8, Apr 22)`) and a current manifest whose
+/// two 10 d buckets straddle them unevenly, when the `BoundaryInjection` load
+/// runs, then storage copies and each bucket takes `overlap / H_target` of
+/// every source bucket it overlaps: `-10·7/10 - 40·3/10` and `-40·10/10`.
+/// `overlap / H_source` would give a different value for both.
+#[test]
+fn boundary_injection_uneven_bucket_straddle_takes_target_hours_shares() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let manifest = vec![
+        storage_slot(1),
+        transit_bucket_slot_over(
+            2,
+            1,
+            encode_slot_date(ymd(2026, 4, 1)),
+            encode_slot_date(ymd(2026, 4, 8)),
+        ),
+        transit_bucket_slot_over(
+            2,
+            2,
+            encode_slot_date(ymd(2026, 4, 8)),
+            encode_slot_date(ymd(2026, 4, 22)),
+        ),
+    ];
+    write_checkpoint(tmp.path(), &manifest, &[5.0, -10.0, -40.0]);
+
+    let current = vec![
+        storage_slot(1),
+        transit_bucket_slot_over(
+            2,
+            1,
+            encode_slot_date(ymd(2026, 4, 1)),
+            encode_slot_date(ymd(2026, 4, 11)),
+        ),
+        transit_bucket_slot_over(
+            2,
+            2,
+            encode_slot_date(ymd(2026, 4, 11)),
+            encode_slot_date(ymd(2026, 4, 21)),
+        ),
+    ];
+    let cuts = load_boundary_cuts(&BoundaryLoadRequest::new(
+        tmp.path(),
+        fixture_priced_date(0),
+        3,
+        &current,
+        1.0,
+    ))
+    .expect("an uneven fully-covered transit-bucket straddle must load");
+
+    assert_eq!(cuts.len(), 1);
+    assert_eq!(cuts[0].coefficients[0], 5.0, "storage copies by identity");
+
+    let expected = [-10.0 * 7.0 / 10.0 - 40.0 * 3.0 / 10.0, -40.0];
+    let source_hours = [-10.0 - 40.0 * 3.0 / 14.0, -40.0 * 10.0 / 14.0];
+    for (bucket, ((&actual, want), wrong)) in cuts[0].coefficients[1..]
+        .iter()
+        .zip(expected)
+        .zip(source_hours)
+        .enumerate()
+    {
+        assert!(
+            (actual - want).abs() < want.abs() * 1e-12,
+            "target bucket {bucket}: {actual} != {want}"
+        );
+        assert!(
+            (want - wrong).abs() > want.abs() * 1e-3,
+            "target bucket {bucket} cannot tell target- from source-hours weighting"
+        );
+    }
+
+    let report = cuts.report();
+    assert_eq!(report.transit_bucket.fan_out, 2);
+    assert_eq!(
+        report.transit_bucket.straddling, 0,
+        "both targets lie inside the source span, so neither straddles unpriced time"
     );
 }
 

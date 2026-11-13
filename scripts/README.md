@@ -11,6 +11,16 @@ Helper scripts for Novomodelo, grouped by role.
 - **`rebrand/`** — the fork's rename tool. `rebrand.py paths|tokens|check`
   moves paths, rewrites contents and guards against leftovers, all driven by
   the one name map `map.toml`; `test_rebrand.py` covers it.
+- **`migrate/`** — one-time deck migrations. `post_study_stages.py DECK_DIR [DECK_DIR ...]`
+  rewrites each deck's `post_study_stages.json` from the deprecated `stages` format:
+  `stages` becomes `thermal_stages` (kept with `thermal_bounds` only when a thermal is
+  anticipated, dropped otherwise). On a deck with a travel-time arc, `water_bucket_stages`
+  is the calendar the deprecated format resolves to: the legacy `stages`, extended with
+  copies of the last stage until they cover the deepest travel time, so migrating does
+  not change results. All decks are planned before any file is
+  written, so one refused deck writes nothing (exit 1; usage errors exit 2), and a second
+  run changes nothing. `test_post_study_stages.py` covers it; its `validate` cases need
+  `NOVOMODELO_BIN` to point at a built `novomodelo` binary and skip without it.
 - **`pre-commit`** — the git pre-commit hook. Install with
   `ln -sf ../../scripts/pre-commit .git/hooks/pre-commit`.
 - **`build-profiling.sh`** — builds with the `profiling` profile into
@@ -25,6 +35,9 @@ Helper scripts for Novomodelo, grouped by role.
   with all states and with state windows, and a simulation of all cuts against
   active cuts, on a case, and reports lower bound, simulated cost, wall time and
   peak memory.
+- **`measure_run_wallclock.py`** — reporting tool (not a CI gate): compares
+  training and simulation wall-clock of two `novomodelo` binaries on given
+  cases.
 
 ## `ci/` — quality gates
 

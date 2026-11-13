@@ -55,6 +55,7 @@ use crate::indexer::{
 pub(super) fn resolve_variable_ref(
     var_ref: &VariableRef,
     block_idx: usize,
+    stage_id: i32,
     stage_idx: usize,
     ctx: &TemplateBuildCtx<'_>,
     layout: &StageLayout<'_>,
@@ -78,9 +79,15 @@ pub(super) fn resolve_variable_ref(
             resolve_hydro_evaporation(*hydro_id, *block_id, ctx, layout)
         }
 
-        VariableRef::HydroInflow { hydro_id, block_id } => {
-            resolve_hydro_inflow(*hydro_id, at(*block_id), stage_idx, ctx, layout, inflow_out)
-        }
+        VariableRef::HydroInflow { hydro_id, block_id } => resolve_hydro_inflow(
+            *hydro_id,
+            at(*block_id),
+            stage_id,
+            stage_idx,
+            ctx,
+            layout,
+            inflow_out,
+        ),
 
         VariableRef::HydroTurbined {
             hydro_id,
@@ -300,6 +307,7 @@ fn resolve_hydro_storage_boundary(
 fn resolve_hydro_inflow(
     hydro_id: EntityId,
     blk: BlockIdx,
+    stage_id: i32,
     stage_idx: usize,
     ctx: &TemplateBuildCtx<'_>,
     layout: &StageLayout<'_>,
@@ -330,7 +338,6 @@ fn resolve_hydro_inflow(
 
     push_maturing_bucket_rate(pos_h, blk, stage_idx, ctx, layout, &mut result);
 
-    let stage_id = ctx.time_value.delivery_stage_ids()[stage_idx];
     for u_idx in 0..ctx.hydros.len() {
         if resolve_shortcircuit_target(ctx.hydros, ctx.cascade, ctx.positions, stage_id, u_idx)
             != Some(pos_h)

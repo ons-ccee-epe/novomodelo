@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `hydro_diversion_volume(h)` and `pumping_volume(station)`, stage volumes in
   hm3. Their constraints may add only volume and storage terms, with no block
   argument, `per_stage_block` parameter or bounds row with a `block_id`.
+- `post_study_stages.json` accepts `thermal_stages` and `water_bucket_stages`.
+  On a deck with a travel-time arc, a file without `stages` must declare
+  `water_bucket_stages`, which is used without padding; validation refuses a
+  missing key or incomplete coverage.
 
 ### Changed
 
@@ -28,6 +32,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `constraints/penalty_overrides_hydro.parquet`.
 - **BREAKING:** a negative `curtailment_cost` in
   `system/non_controllable_sources.json` is now refused; set it to 0 or more.
+- For a migrated deck with a travel-time arc, the transit-bucket slots in
+  `policy/cuts/*.bin` past the study horizon are now dated, so a later study
+  loading that policy as a boundary reads them.
+- Boundary cuts read on a different bucket calendar than they were trained on
+  price in-transit water by the target bucket's hours. Results change for such
+  runs.
+- `post_study_stages.json` `stages`, and a deck with a travel-time arc but no
+  `post_study_stages.json`, are deprecated. Such a deck keeps running, and
+  `novomodelo validate` warns; run
+  `python3 scripts/migrate/post_study_stages.py <deck-dir>` to migrate it.
 
 ## [0.20.0] - 2026-11-03
 

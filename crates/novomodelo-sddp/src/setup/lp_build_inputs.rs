@@ -30,9 +30,9 @@ use crate::lp::indexer::StateSpace;
 use crate::lp::indexer::{EntityPositions, HydroCellIndex, StudyDimensions};
 use crate::policy::resolved_generic_coefficients::ResolvedGenericCoefficients;
 use crate::resolved_parameters::ResolvedParameters;
-#[cfg(any(test, feature = "test-support"))]
-use crate::time_value::DeliveryCalendar;
 use crate::time_value::TimeValue;
+#[cfg(any(test, feature = "test-support"))]
+use crate::time_value::{DeliveryCalendar, WaterDeliveryBasis};
 
 /// Precompute the per-stage minimum target-storage trajectory `V_target[t]` for
 /// every filling hydro, keyed `(hydro_idx, stage_id) → V_target` \[hm³\].
@@ -242,9 +242,11 @@ pub fn build_stage_templates_resolving_layout(
     evaporation_models: &EvaporationModelSet,
     resolved_parameters: &ResolvedParameters,
 ) -> Result<StageTemplates, SddpError> {
-    let calendar = DeliveryCalendar::from_system(system);
+    let thermal = DeliveryCalendar::thermal(system);
+    let basis = WaterDeliveryBasis::of(system);
+    let water = DeliveryCalendar::water(system, basis);
     let (topology, layout) =
-        super::resolve_state_and_topology(system, &calendar, par_lp, None, false)?;
+        super::resolve_state_and_topology(system, &thermal, &water, basis, par_lp, None, false)?;
     let hydro_cell_index = HydroCellIndex::build(system.hydros());
     let stages: Vec<Stage> = system
         .stages()
@@ -263,7 +265,7 @@ pub fn build_stage_templates_resolving_layout(
         layout.anticipated_plants.clone(),
         downstream_par_order,
     );
-    let time_value = TimeValue::from_system(system, &study_dims.anticipated_plants, calendar);
+    let time_value = TimeValue::from_system(system, &study_dims.anticipated_plants, thermal);
     let study_stage_ids: Vec<StageId> = stages.iter().map(|s| StageId(s.id)).collect();
     let stage_block_counts: Vec<usize> = stages.iter().map(|s| s.blocks.len()).collect();
     let resolved_generic_coefficients = ResolvedGenericCoefficients::build(
@@ -310,8 +312,11 @@ pub fn resolved_state_layout(
     system: &System,
     par_lp: &PrecomputedPar,
 ) -> Result<StateSpace, SddpError> {
-    let calendar = DeliveryCalendar::from_system(system);
-    let (_, layout) = super::resolve_state_and_topology(system, &calendar, par_lp, None, false)?;
+    let thermal = DeliveryCalendar::thermal(system);
+    let basis = WaterDeliveryBasis::of(system);
+    let water = DeliveryCalendar::water(system, basis);
+    let (_, layout) =
+        super::resolve_state_and_topology(system, &thermal, &water, basis, par_lp, None, false)?;
     Ok(layout.state)
 }
 

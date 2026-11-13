@@ -7814,7 +7814,7 @@ mod transit_arrival_interval_checkpoint_round_trip {
         HydroStorage, InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
         PenaltiesCountsSpec, PenaltiesDefaults, PostStudyStage, PostStudyStages,
         PumpingBlockBounds, ResolvedBounds, ResolvedPenalties, SystemBuilder, ThermalBlockBounds,
-        ThermalStageBounds,
+        ThermalStageBounds, WaterBucketStages,
     };
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
@@ -8033,11 +8033,12 @@ mod transit_arrival_interval_checkpoint_round_trip {
         };
 
         let post_study_stages = PostStudyStages {
-            stages: vec![PostStudyStage {
+            thermal_stages: vec![PostStudyStage {
                 start_date: NaiveDate::from_ymd_opt(2024, 4, 1).unwrap(),
                 duration_hours: 720.0,
             }],
             thermal_bounds: Vec::new(),
+            water_bucket_stages: WaterBucketStages::FromThermalStages,
         };
 
         SystemBuilder::new()

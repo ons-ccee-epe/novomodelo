@@ -273,10 +273,37 @@ fn resolve_target_slot(
     match slot.family() {
         Some(StateFamily::HydroStorage) => resolve_storage(slot, by_identity),
         Some(StateFamily::HydroInflowLag) => resolve_inflow_lag(slot, source, by_identity),
-        Some(StateFamily::HydroTransitBucket | StateFamily::AnticipatedThermalState) => {
-            resolve_by_interval_overlap(slot, boundary_date, source_index)
+        Some(family @ (StateFamily::HydroTransitBucket | StateFamily::AnticipatedThermalState)) => {
+            match quantity_class(family) {
+                Some(class) => {
+                    resolve_by_interval_overlap(slot, boundary_date, source_index, class)
+                }
+                None => resolve_by_identity(i, slot, by_identity),
+            }
         }
         None => resolve_by_identity(i, slot, by_identity),
+    }
+}
+
+/// How a dated forward-family coefficient splits across a target slot that
+/// covers only part of a source interval, or spans several.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum QuantityClass {
+    /// A density (MW): the target inherits the source interval's per-hour
+    /// value, weighted `overlap / H_source`.
+    Rate,
+    /// A held quantity (hm3): the target's coefficient is the hours-average
+    /// of the source values it overlaps, weighted `overlap / H_target`.
+    Volume,
+}
+
+/// The [`QuantityClass`] of a dated forward family; `None` for a family that
+/// never joins by interval.
+fn quantity_class(family: StateFamily) -> Option<QuantityClass> {
+    match family {
+        StateFamily::AnticipatedThermalState => Some(QuantityClass::Rate),
+        StateFamily::HydroTransitBucket => Some(QuantityClass::Volume),
+        StateFamily::HydroStorage | StateFamily::HydroInflowLag => None,
     }
 }
 
@@ -394,15 +421,18 @@ fn render_reference_date(raw: i32) -> String {
 /// no covered interval yields `Zero` — the expected outcome for a
 /// `HydroTransitBucket` target against a NEWAVE-shaped source carrying no
 /// transit arcs at all, an expected boundary shape rather than an
-/// incompatibility; full coverage yields [`RebindOp::Blend`] (`weight =
-/// overlap(w, m) / H_m`, the `÷H_m` distribute); partial coverage (a
-/// boundary-edge slot straddling into unpriced time) yields
-/// [`RebindOp::Renormalize`], scaling the covered intervals' density up to
-/// the full slot instead of an implicit `0.0` deflation term.
+/// incompatibility; full coverage yields [`RebindOp::Blend`]; partial
+/// coverage (a boundary-edge slot straddling into unpriced time) yields
+/// [`RebindOp::Renormalize`], extending the covered intervals over the full
+/// slot instead of an implicit `0.0` deflation term. The weight follows
+/// [`QuantityClass`]: `Rate` is
+/// `overlap / H_source` (renormalized by `H_w / covered`), `Volume` is
+/// `overlap / H_w` (renormalized to `overlap / covered`).
 fn resolve_by_interval_overlap(
     slot: &EntitySlot,
     boundary_date: NaiveDate,
     source_index: &HashMap<SourceKey, Vec<SourceInterval>>,
+    class: QuantityClass,
 ) -> RebindOp {
     if slot.interval_start == ENTITY_SLOT_DATE_SENTINEL {
         return RebindOp::Zero;
@@ -456,21 +486,35 @@ fn resolve_by_interval_overlap(
         return RebindOp::Zero;
     }
 
-    if (h_w - covered).abs() <= COVERAGE_TOLERANCE_HOURS {
-        RebindOp::Blend(
+    let fully_covered = (h_w - covered).abs() <= COVERAGE_TOLERANCE_HOURS;
+    match (class, fully_covered) {
+        (QuantityClass::Rate, true) => RebindOp::Blend(
             terms
                 .into_iter()
                 .map(|(pos, overlap, hours)| (pos, overlap / hours))
                 .collect(),
-        )
-    } else {
-        let scale = h_w / covered;
-        RebindOp::Renormalize(
+        ),
+        (QuantityClass::Rate, false) => {
+            let scale = h_w / covered;
+            RebindOp::Renormalize(
+                terms
+                    .into_iter()
+                    .map(|(pos, overlap, hours)| (pos, (overlap / hours) * scale))
+                    .collect(),
+            )
+        }
+        (QuantityClass::Volume, true) => RebindOp::Blend(
             terms
                 .into_iter()
-                .map(|(pos, overlap, hours)| (pos, (overlap / hours) * scale))
+                .map(|(pos, overlap, _)| (pos, overlap / h_w))
                 .collect(),
-        )
+        ),
+        (QuantityClass::Volume, false) => RebindOp::Renormalize(
+            terms
+                .into_iter()
+                .map(|(pos, overlap, _)| (pos, overlap / covered))
+                .collect(),
+        ),
     }
 }
 
@@ -886,18 +930,19 @@ mod tests {
     use chrono::NaiveDate;
 
     use super::{
-        BoundaryReconciliationReport, FamilyTally, RebindOp, SlotDetail, build_boundary_fold,
-        build_identity_index, build_rebind, build_reconciliation_report,
-        build_source_interval_index, dropped_source_positions, rebind_cut, slot_detail,
+        BoundaryReconciliationReport, FamilyTally, QuantityClass, RebindOp, SlotDetail,
+        build_boundary_fold, build_identity_index, build_rebind, build_reconciliation_report,
+        build_source_interval_index, dropped_source_positions, quantity_class, rebind_cut,
+        slot_detail,
     };
     use crate::SddpError;
     use crate::test_support::{
-        anticipated_slot, anticipated_slot_at, inflow_lag_slot, storage_slot, transit_bucket_slot,
-        transit_bucket_slot_over, ymd,
+        anticipated_slot, anticipated_slot_at, anticipated_slot_over, inflow_lag_slot,
+        storage_slot, transit_bucket_slot, transit_bucket_slot_over, ymd,
     };
     use novomodelo_core::{AnticipatedCommitmentHistory, EntityId};
     use novomodelo_io::test_support::owned_piece_defaults;
-    use novomodelo_io::{EntitySlot, OwnedPolicyCutRecord, encode_slot_date};
+    use novomodelo_io::{EntitySlot, OwnedPolicyCutRecord, StateFamily, encode_slot_date};
 
     /// The two-step index-then-rebind call `load_boundary_cuts` performs,
     /// collapsed into one.
@@ -1273,13 +1318,10 @@ mod tests {
     /// Given a target transit-bucket slot whose arrival interval is fully
     /// inside the ONE wider source interval covering it, when `build_rebind`
     /// runs, then it resolves to `Blend` (full coverage, never
-    /// `Renormalize`) with the `÷H_m`-conserving weight — a target narrower
-    /// than its covering source interval draws a fractional share, not the
-    /// source's own coefficient verbatim, exactly as
-    /// `build_rebind_anticipated_partial_month_yields_blend_fractional_weight`
-    /// establishes for the anticipated family this resolver is shared with.
+    /// `Renormalize`) at the `overlap / H_target` volume weight — `1.0`
+    /// here, the source's $/hm3 value carried to every hm3 the target holds.
     #[test]
-    fn transit_bucket_target_inside_one_source_interval_blends_at_fractional_source_hours() {
+    fn transit_bucket_target_inside_one_source_interval_takes_its_target_hours_share() {
         let source = vec![transit_bucket_slot_over(
             2,
             1,
@@ -1300,7 +1342,7 @@ mod tests {
             RebindOp::Blend(terms) => {
                 assert_eq!(terms.len(), 1);
                 assert_eq!(terms[0].0, 0);
-                let expected_weight = (7.0 * 24.0) / (30.0 * 24.0);
+                let expected_weight = 1.0;
                 assert!(
                     (terms[0].1 - expected_weight).abs() < expected_weight * 1e-9,
                     "weight {} != expected {expected_weight}",
@@ -1309,6 +1351,234 @@ mod tests {
             }
             other => panic!("expected Blend, got {other:?}"),
         }
+    }
+
+    /// Given one anticipated source interval `[Jan 1, Feb 1)` with
+    /// `beta = -30` split into target slots `[Jan 1, Jan 15)` and
+    /// `[Jan 15, Feb 1)`, when the cut is rebound, then each slot keeps the
+    /// `overlap / H_source` rate weight (`-13.548`, `-16.452`) and 60 MW
+    /// committed across both prices `-1,800`, the unsplit term.
+    #[test]
+    fn anticipated_lane_target_inside_one_source_interval_keeps_source_hours_weight() {
+        let source = vec![anticipated_slot_over(
+            9,
+            0,
+            encode_slot_date(ymd(2027, 1, 1)),
+            encode_slot_date(ymd(2027, 2, 1)),
+        )];
+        let target = vec![
+            anticipated_slot_over(
+                9,
+                0,
+                encode_slot_date(ymd(2027, 1, 1)),
+                encode_slot_date(ymd(2027, 1, 15)),
+            ),
+            anticipated_slot_over(
+                9,
+                1,
+                encode_slot_date(ymd(2027, 1, 15)),
+                encode_slot_date(ymd(2027, 2, 1)),
+            ),
+        ];
+
+        let rebind = rebind_via_index(&source, &target, ymd(2027, 1, 1)).unwrap();
+        let coefficients = rebind_cut(&owned_cut(vec![-30.0]), &rebind);
+
+        let expected = [-30.0 * 14.0 / 31.0, -30.0 * 17.0 / 31.0];
+        for (got, want) in coefficients.iter().zip(expected) {
+            assert!(
+                ((got - want) / want).abs() < 1e-9,
+                "coefficient {got} != {want}"
+            );
+        }
+        assert!((coefficients[0] - (-13.548)).abs() < 5e-4);
+        assert!((coefficients[1] - (-16.452)).abs() < 5e-4);
+
+        let term = 60.0 * (coefficients[0] + coefficients[1]);
+        assert!(
+            ((term - (-1_800.0)) / -1_800.0).abs() < 1e-9,
+            "split term {term} != unsplit -1800"
+        );
+    }
+
+    /// Given one transit source interval `[Jan 1, Jan 21)` with
+    /// `beta = -50` $/hm3 and target buckets `[Jan 1, Jan 6)`,
+    /// `[Jan 6, Jan 11)`, `[Jan 11, Jan 21)` holding 43.2, 43.2 and
+    /// 86.4 hm3, when the cut is rebound, then every bucket carries `-50`
+    /// and the held volume prices `-8,640`, the unsplit term — the
+    /// source-hours weight would give `-3,240`.
+    #[test]
+    fn transit_bucket_volume_golden_matches_unsplit_term() {
+        let source = vec![transit_bucket_slot_over(
+            2,
+            1,
+            encode_slot_date(ymd(2027, 1, 1)),
+            encode_slot_date(ymd(2027, 1, 21)),
+        )];
+        let target = vec![
+            transit_bucket_slot_over(
+                2,
+                1,
+                encode_slot_date(ymd(2027, 1, 1)),
+                encode_slot_date(ymd(2027, 1, 6)),
+            ),
+            transit_bucket_slot_over(
+                2,
+                2,
+                encode_slot_date(ymd(2027, 1, 6)),
+                encode_slot_date(ymd(2027, 1, 11)),
+            ),
+            transit_bucket_slot_over(
+                2,
+                3,
+                encode_slot_date(ymd(2027, 1, 11)),
+                encode_slot_date(ymd(2027, 1, 21)),
+            ),
+        ];
+
+        let rebind = rebind_via_index(&source, &target, ymd(2027, 1, 1)).unwrap();
+        let coefficients = rebind_cut(&owned_cut(vec![-50.0]), &rebind);
+
+        let volumes_hm3 = [43.2, 43.2, 86.4];
+        let term: f64 = coefficients
+            .iter()
+            .zip(volumes_hm3)
+            .map(|(beta, v)| beta * v)
+            .sum();
+        assert!(
+            ((term - (-8_640.0)) / -8_640.0).abs() < 1e-9,
+            "split term {term} != unsplit -8640"
+        );
+    }
+
+    /// Given a weekly-dated source bucket index read by a monthly-dated
+    /// target slot — the shape any deck, legacy included, has when it loads
+    /// a boundary policy on a foreign bucket grid — when `build_rebind`
+    /// runs, then the target takes `overlap / H_target` volume weights:
+    /// full coverage blends to an hours-average, and a target reaching past
+    /// the last source week renormalizes to `overlap / covered`.
+    #[test]
+    fn mismatched_bucket_grid_uses_target_hours_for_every_deck() {
+        let weeks = [
+            (ymd(2027, 2, 1), ymd(2027, 2, 8)),
+            (ymd(2027, 2, 8), ymd(2027, 2, 15)),
+            (ymd(2027, 2, 15), ymd(2027, 2, 22)),
+            (ymd(2027, 2, 22), ymd(2027, 3, 1)),
+        ];
+        let source: Vec<EntitySlot> = weeks
+            .iter()
+            .zip(1_u32..)
+            .map(|(&(s, e), lag)| {
+                transit_bucket_slot_over(2, lag, encode_slot_date(s), encode_slot_date(e))
+            })
+            .collect();
+        let target = vec![
+            transit_bucket_slot_over(
+                2,
+                1,
+                encode_slot_date(ymd(2027, 2, 1)),
+                encode_slot_date(ymd(2027, 3, 1)),
+            ),
+            transit_bucket_slot_over(
+                2,
+                2,
+                encode_slot_date(ymd(2027, 2, 15)),
+                encode_slot_date(ymd(2027, 3, 15)),
+            ),
+        ];
+
+        let rebind = rebind_via_index(&source, &target, ymd(2027, 2, 1)).unwrap();
+
+        assert_eq!(
+            rebind[0],
+            RebindOp::Blend(vec![(0, 0.25), (1, 0.25), (2, 0.25), (3, 0.25)]),
+            "a 28-day target over four 7-day source weeks takes 7/28 of each"
+        );
+        assert_eq!(
+            rebind[1],
+            RebindOp::Renormalize(vec![(2, 0.5), (3, 0.5)]),
+            "a target covering two source weeks of its 28 days takes 7/14 of each"
+        );
+
+        let coefficients = rebind_cut(&owned_cut(vec![-10.0, -20.0, -30.0, -40.0]), &rebind);
+        assert!((coefficients[0] - (-25.0)).abs() < 25.0 * 1e-9);
+        assert!((coefficients[1] - (-35.0)).abs() < 35.0 * 1e-9);
+    }
+
+    /// Given source buckets of unequal width (7 d, 14 d) read by two 10 d
+    /// target buckets, the first straddling the source edge 7 d / 3 d, when
+    /// the cut is rebound, then every non-zero term is weighted
+    /// `overlap / H_target`: `-10·7/10 - 40·3/10 = -19` and `-40·10/10 = -40`.
+    /// `overlap / H_source` would give `-10 - 40·3/14` and `-40·10/14`, so
+    /// each term tells the two weightings apart.
+    #[test]
+    fn uneven_bucket_straddle_weights_every_nonzero_term_by_target_hours() {
+        let source = vec![
+            transit_bucket_slot_over(
+                2,
+                1,
+                encode_slot_date(ymd(2027, 1, 1)),
+                encode_slot_date(ymd(2027, 1, 8)),
+            ),
+            transit_bucket_slot_over(
+                2,
+                2,
+                encode_slot_date(ymd(2027, 1, 8)),
+                encode_slot_date(ymd(2027, 1, 22)),
+            ),
+        ];
+        let target = vec![
+            transit_bucket_slot_over(
+                2,
+                1,
+                encode_slot_date(ymd(2027, 1, 1)),
+                encode_slot_date(ymd(2027, 1, 11)),
+            ),
+            transit_bucket_slot_over(
+                2,
+                2,
+                encode_slot_date(ymd(2027, 1, 11)),
+                encode_slot_date(ymd(2027, 1, 21)),
+            ),
+        ];
+
+        let rebind = rebind_via_index(&source, &target, ymd(2027, 1, 1)).unwrap();
+        let coefficients = rebind_cut(&owned_cut(vec![-10.0, -40.0]), &rebind);
+
+        let expected = [-10.0 * 7.0 / 10.0 - 40.0 * 3.0 / 10.0, -40.0];
+        let source_hours = [-10.0 - 40.0 * 3.0 / 14.0, -40.0 * 10.0 / 14.0];
+        for (slot, ((&actual, want), wrong)) in coefficients
+            .iter()
+            .zip(expected)
+            .zip(source_hours)
+            .enumerate()
+        {
+            assert!(
+                (actual - want).abs() < want.abs() * 1e-12,
+                "target bucket {slot}: {actual} != {want}"
+            );
+            assert!(
+                (want - wrong).abs() > want.abs() * 1e-3,
+                "target bucket {slot} cannot tell target- from source-hours weighting"
+            );
+        }
+    }
+
+    /// Given every `StateFamily`, when it is classified, then the anticipated
+    /// lane is a `Rate`, the transit bucket a `Volume`, and the two
+    /// identity-joined families have no class.
+    #[test]
+    fn quantity_class_covers_every_state_family() {
+        assert_eq!(
+            quantity_class(StateFamily::AnticipatedThermalState),
+            Some(QuantityClass::Rate)
+        );
+        assert_eq!(
+            quantity_class(StateFamily::HydroTransitBucket),
+            Some(QuantityClass::Volume)
+        );
+        assert_eq!(quantity_class(StateFamily::HydroStorage), None);
+        assert_eq!(quantity_class(StateFamily::HydroInflowLag), None);
     }
 
     /// Given a target transit-bucket slot whose arrival interval does not

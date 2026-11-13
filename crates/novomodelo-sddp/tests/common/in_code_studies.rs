@@ -37,7 +37,7 @@ use novomodelo_core::{
     NonControllableSource, PenaltiesCountsSpec, PenaltiesDefaults, PenaltyBasis, PostStudyStage,
     PostStudyStages, PostStudyThermalBound, PumpingBlockBounds, PumpingStation, RecentObservation,
     ResolvedBounds, ResolvedGenericConstraintBounds, ResolvedPenalties, SlackConfig, SystemBuilder,
-    Thermal, ThermalBlockBounds, ThermalStageBounds, VariableRef,
+    Thermal, ThermalBlockBounds, ThermalStageBounds, VariableRef, WaterBucketStages,
 };
 use novomodelo_io::config::{
     Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
@@ -621,7 +621,7 @@ fn build_mixed_lead_system(reversed: bool) -> novomodelo_core::System {
         })
         .collect();
     let post_study = PostStudyStages {
-        stages: post_study_stages,
+        thermal_stages: post_study_stages,
         thermal_bounds: vec![
             PostStudyThermalBound {
                 thermal_id: MIXED_LEAD_SHORT_THERMAL_ID,
@@ -652,6 +652,7 @@ fn build_mixed_lead_system(reversed: bool) -> novomodelo_core::System {
                 max_mw: 100.0,
             },
         ],
+        water_bucket_stages: WaterBucketStages::FromThermalStages,
     };
 
     let mut buses = vec![bus];
@@ -815,7 +816,7 @@ fn delivery_oracle_bounds() -> ResolvedBounds {
 
 fn delivery_oracle_post_study(study_end: NaiveDate) -> PostStudyStages {
     PostStudyStages {
-        stages: vec![PostStudyStage {
+        thermal_stages: vec![PostStudyStage {
             start_date: study_end,
             duration_hours: DELIVERY_ORACLE_POST_STUDY_HOURS,
         }],
@@ -826,6 +827,7 @@ fn delivery_oracle_post_study(study_end: NaiveDate) -> PostStudyStages {
             min_mw: DELIVERY_ORACLE_POST_STUDY_MIN_MW,
             max_mw: DELIVERY_ORACLE_ANTICIPATED_CAP_MW,
         }],
+        water_bucket_stages: WaterBucketStages::FromThermalStages,
     }
 }
 

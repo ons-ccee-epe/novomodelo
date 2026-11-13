@@ -6751,7 +6751,7 @@ mod anticipated_ring_axis_regressions {
         InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
         PenaltiesCountsSpec, PenaltiesDefaults, PostStudyStage, PostStudyStages,
         PostStudyThermalBound, PumpingBlockBounds, ResolvedBounds, ResolvedPenalties,
-        SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
+        SystemBuilder, ThermalBlockBounds, ThermalStageBounds, WaterBucketStages,
     };
     use novomodelo_sddp::lead_time::{
         AnticipatedResolution, DeliveryAxis, LeadTime, PointResolution,
@@ -7072,8 +7072,9 @@ mod anticipated_ring_axis_regressions {
             })
             .collect();
         PostStudyStages {
-            stages,
+            thermal_stages: stages,
             thermal_bounds,
+            water_bucket_stages: WaterBucketStages::FromThermalStages,
         }
     }
 
@@ -7211,11 +7212,12 @@ mod anticipated_ring_axis_regressions {
 
     fn build_closure_system() -> novomodelo_core::System {
         let post_study = PostStudyStages {
-            stages: vec![PostStudyStage {
+            thermal_stages: vec![PostStudyStage {
                 start_date: date(2026, 5, 1),
                 duration_hours: CLOSURE_POST_DUR,
             }],
             thermal_bounds: vec![],
+            water_bucket_stages: WaterBucketStages::FromThermalStages,
         };
         SystemBuilder::new()
             .buses(vec![bus()])
@@ -7460,7 +7462,7 @@ mod anticipated_ring_axis_regressions {
 
     fn bn_with_post_study_system() -> novomodelo_core::System {
         let post_study = PostStudyStages {
-            stages: vec![
+            thermal_stages: vec![
                 PostStudyStage {
                     start_date: date(2026, 4, 11),
                     duration_hours: BN_STAGE_DUR_H,
@@ -7471,6 +7473,7 @@ mod anticipated_ring_axis_regressions {
                 },
             ],
             thermal_bounds: vec![],
+            water_bucket_stages: WaterBucketStages::FromThermalStages,
         };
         SystemBuilder::new()
             .buses(vec![bus()])

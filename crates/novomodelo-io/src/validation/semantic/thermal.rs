@@ -5,21 +5,20 @@
 
 use std::collections::{HashMap, HashSet};
 
-use chrono::{NaiveDate, TimeDelta};
+use chrono::NaiveDate;
 use novomodelo_core::commissioning::commissioning_active;
-use novomodelo_core::temporal::{
-    Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig, StageStateConfig,
-};
+use novomodelo_core::temporal::Stage;
 use novomodelo_core::{
-    AnticipatedCommitmentHistory, AnticipatedConfig, EntityId, PostStudyStages, ResolvedBounds,
-    Thermal, VariableRef,
+    AnticipatedCommitmentHistory, AnticipatedConfig, EntityId, ResolvedBounds, Thermal, VariableRef,
 };
 use novomodelo_stochastic::season_cast::{DatedWindow, StageCalendar};
 
 use super::super::{ValidationContext, rules, schema::ParsedData};
 use super::envelope_tolerance;
+use super::post_study_calendar::build_post_study_calendar;
 use super::travel_time::study_stage_durations;
 use crate::StageIdResolver;
+use crate::post_study_stages::PostStudyFormat;
 use crate::resolution::{BoundsEntitySlices, BoundsOverrides, resolve_bounds};
 
 /// Rule 13: `min_generation_mw <= max_generation_mw` for a thermal.
@@ -178,7 +177,7 @@ pub(super) fn check_anticipated_thermals(data: &ParsedData, ctx: &mut Validation
     let bounds = (!windows_by_id.is_empty())
         .then(|| build_thermal_delivery_bounds(data, study_stages, n_stages, &study_stage_ids));
 
-    let anticipated_thermal_ids: HashSet<EntityId> = collect_anticipated_thermal_ids(data);
+    let anticipated_thermal_ids = collect_anticipated_thermal_ids(data);
 
     for (thermal_pos, thermal) in data.thermals.iter().enumerate() {
         let Some(cfg) = thermal.anticipated_config else {
@@ -469,12 +468,12 @@ fn build_extended_delivery_axis(data: &ParsedData) -> Option<ExtendedDeliveryAxi
     let durations: Vec<f64> = study_durations
         .iter()
         .copied()
-        .chain(post_study.stages.iter().map(|s| s.duration_hours))
+        .chain(post_study.thermal_stages.iter().map(|s| s.duration_hours))
         .collect();
     let stage_ids: Vec<i32> = study_ids
         .into_iter()
         .chain(
-            (0..post_study.stages.len())
+            (0..post_study.thermal_stages.len())
                 .map(|j| max_study_id + 1 + i32::try_from(j).unwrap_or(i32::MAX)),
         )
         .collect();
@@ -1019,7 +1018,7 @@ pub(super) fn check_anticipated_decision_target_is_anticipated(
     data: &ParsedData,
     ctx: &mut ValidationContext,
 ) {
-    let anticipated_ids: HashSet<EntityId> = collect_anticipated_thermal_ids(data);
+    let anticipated_ids = collect_anticipated_thermal_ids(data);
 
     for constraint in &data.generic_constraints {
         for term in &constraint.expression.terms {
@@ -1055,7 +1054,7 @@ pub(super) fn warn_thermal_generation_on_anticipated_thermal(
     data: &ParsedData,
     ctx: &mut ValidationContext,
 ) {
-    let anticipated_ids: HashSet<EntityId> = collect_anticipated_thermal_ids(data);
+    let anticipated_ids = collect_anticipated_thermal_ids(data);
 
     if anticipated_ids.is_empty() {
         return;
@@ -1145,7 +1144,12 @@ pub(super) fn check_post_study_stages(data: &ParsedData, ctx: &mut ValidationCon
         .rfind(|s| s.id >= 0)
         .map(|s| s.end_date);
 
-    let (calendar_stages, well_formed) = build_post_study_calendar(post_study, study_end, ctx);
+    let calendar_key = match data.post_study_format {
+        Some(PostStudyFormat::Current { .. }) => "thermal_stages",
+        _ => "stages",
+    };
+    let (calendar_stages, well_formed) =
+        build_post_study_calendar(&post_study.thermal_stages, calendar_key, study_end, ctx);
     if !well_formed || calendar_stages.is_empty() {
         return;
     }
@@ -1346,134 +1350,6 @@ fn check_post_study_window_excludes_unreachable_stages(
     }
 }
 
-/// Build the post-study calendar as `Stage`s (each `end_date` = `start_date`
-/// advanced by `duration_hours` rounded to whole days — the whole-day alignment
-/// [`StageCalendar`] coverage needs, mirroring the pre-study duration→days round
-/// in `travel_time`), enforcing invariant (a). Returns the stages and whether
-/// they are well-formed; a non-well-formed calendar suppresses the coverage pass
-/// so its errors are not noise on a broken calendar.
-fn build_post_study_calendar(
-    post_study: &PostStudyStages,
-    study_end: Option<NaiveDate>,
-    ctx: &mut ValidationContext,
-) -> (Vec<Stage>, bool) {
-    let mut calendar_stages: Vec<Stage> = Vec::with_capacity(post_study.stages.len());
-    let mut well_formed = true;
-
-    for (i, stage) in post_study.stages.iter().enumerate() {
-        match post_study_end_date(stage.start_date, stage.duration_hours) {
-            Some(end_date) if end_date > stage.start_date => {
-                calendar_stages.push(make_calendar_stage(
-                    i,
-                    stage.start_date,
-                    end_date,
-                    stage.duration_hours,
-                ));
-            }
-            _ => {
-                ctx.emit(
-                    &rules::POST_STUDY_BOUNDARY_INCONSISTENT,
-                    "post_study_stages.json",
-                    Some(format!("stages[{i}]")),
-                    format!(
-                        "post-study stage starting {} has duration_hours {} that rounds to a \
-                         non-positive whole-day span; declare a duration of at least a day.",
-                        stage.start_date, stage.duration_hours
-                    ),
-                );
-                well_formed = false;
-            }
-        }
-    }
-
-    match (calendar_stages.first(), study_end) {
-        (Some(first), Some(end)) if first.start_date != end => {
-            ctx.emit(
-                &rules::POST_STUDY_BOUNDARY_INCONSISTENT,
-                "post_study_stages.json",
-                Some("stages[0].start_date"),
-                format!(
-                    "first post-study stage starts {} but the study horizon ends {}; the \
-                     post-study calendar must begin exactly at the study horizon end.",
-                    first.start_date, end
-                ),
-            );
-            well_formed = false;
-        }
-        (Some(_), None) => {
-            ctx.emit(
-                &rules::POST_STUDY_BOUNDARY_INCONSISTENT,
-                "post_study_stages.json",
-                Some("stages"),
-                "post_study_stages.json is declared but the study has no study stages to anchor \
-                 the post-study calendar against."
-                    .to_string(),
-            );
-            well_formed = false;
-        }
-        _ => {}
-    }
-
-    for pair in calendar_stages.windows(2) {
-        if pair[0].end_date != pair[1].start_date {
-            ctx.emit(
-                &rules::POST_STUDY_BOUNDARY_INCONSISTENT,
-                "post_study_stages.json",
-                Some(format!("stages start_date={}", pair[1].start_date)),
-                format!(
-                    "post-study stages are not date-contiguous: the stage starting {} ends {} \
-                     but the next stage starts {}; each stage must end exactly where the next \
-                     begins.",
-                    pair[0].start_date, pair[0].end_date, pair[1].start_date
-                ),
-            );
-            well_formed = false;
-        }
-    }
-
-    (calendar_stages, well_formed)
-}
-
-/// Post-study stage end date: `start_date` advanced by `duration_hours` rounded
-/// to whole days. `None` only on calendar overflow.
-#[allow(clippy::cast_possible_truncation)] // a validated finite positive duration yields a small non-negative day count
-fn post_study_end_date(start_date: NaiveDate, duration_hours: f64) -> Option<NaiveDate> {
-    let days = (duration_hours / 24.0).round() as i64;
-    start_date.checked_add_signed(TimeDelta::days(days))
-}
-
-/// Synthesize a `Stage` carrying only the fields [`StageCalendar`] reads
-/// (`start_date`, `end_date`, `blocks`); the rest are inert placeholders.
-fn make_calendar_stage(
-    index: usize,
-    start_date: NaiveDate,
-    end_date: NaiveDate,
-    duration_hours: f64,
-) -> Stage {
-    Stage {
-        index,
-        id: i32::try_from(index).unwrap_or(i32::MAX),
-        start_date,
-        end_date,
-        season_id: None,
-        blocks: vec![Block {
-            index: 0,
-            name: "post_study".to_string(),
-            duration_hours,
-        }],
-        block_mode: BlockMode::Parallel,
-        state_config: StageStateConfig {
-            storage: true,
-            inflow_lags: false,
-        },
-        risk_config: StageRiskConfig::Expectation,
-        scenario_config: ScenarioSourceConfig {
-            branching_factor: 1,
-            noise_method: NoiseMethod::Saa,
-        },
-    }
-}
-
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
@@ -1488,7 +1364,7 @@ mod tests {
     use novomodelo_core::temporal::{Block, PolicyGraphType, Stage};
     use novomodelo_core::{
         AnticipatedCommitmentHistory, AnticipatedConfig, EntityId, HorizonGraph, PostStudyStage,
-        PostStudyStages, PostStudyThermalBound, Thermal,
+        PostStudyStages, PostStudyThermalBound, Thermal, WaterBucketStages,
     };
 
     use chrono::{NaiveDate, TimeDelta};
@@ -1684,8 +1560,9 @@ mod tests {
             })
             .collect();
         PostStudyStages {
-            stages,
+            thermal_stages: stages,
             thermal_bounds,
+            water_bucket_stages: WaterBucketStages::FromThermalStages,
         }
     }
 
@@ -1930,8 +1807,8 @@ mod tests {
         let mut commitments = commitments_on(1, &[0.0, 0.0], &study_durations);
         commitments.push(AnticipatedCommitmentHistory {
             thermal_id: EntityId::from(1),
-            start_date: post_study.stages[0].start_date,
-            end_date: post_study.stages[0].start_date + TimeDelta::days(30),
+            start_date: post_study.thermal_stages[0].start_date,
+            end_date: post_study.thermal_stages[0].start_date + TimeDelta::days(30),
             value_mw: 0.0,
         });
         let data = data_with_post_study(vec![thermal], &study_durations, commitments, post_study);
@@ -2790,7 +2667,7 @@ mod tests {
         let durations = [168.0, 168.0, 168.0, 168.0, 720.0, 720.0];
         let mut post_study = post_study_from(&durations, &[1440.0], &[(1, 0, 0.0, 500.0)]);
         // Shift the anchor a day past the study horizon end.
-        post_study.stages[0].start_date += TimeDelta::days(1);
+        post_study.thermal_stages[0].start_date += TimeDelta::days(1);
         let data = data_with_post_study(
             vec![thermal],
             &durations,
