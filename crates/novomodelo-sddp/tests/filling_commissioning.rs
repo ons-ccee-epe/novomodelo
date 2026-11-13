@@ -3051,3 +3051,283 @@ mod exited_plant_transit {
         );
     }
 }
+
+mod stage_volume_commissioning {
+    use std::collections::BTreeSet;
+    use std::path::{Path, PathBuf};
+
+    use novomodelo_sddp::StudySetup;
+    use tempfile::TempDir;
+
+    use super::common::parquet_fixtures::{GenericBoundsRow, write_generic_constraint_bounds};
+    use super::common::{copy_toy_case, fresh_setup_with};
+
+    const FILLING_DECK: &str = "d38-dead-volume-filling";
+    const PUMPING_DECK: &str = "d35-pumping-commissioning";
+    const NEVER_BINDING_UPPER: f64 = 1.0e6;
+
+    fn base_deck(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("examples/deterministic")
+            .join(name)
+    }
+
+    fn constraint_rows(setup: &StudySetup, stage: usize, constraint_id: i32) -> Vec<usize> {
+        let stage_templates = &setup.inputs.stage_data.stage_templates;
+        let entries = &stage_templates.generic_constraint_row_entries[stage];
+        let base = stage_templates.templates[stage].num_rows - entries.len();
+        entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| entry.entity_id == constraint_id)
+            .map(|(position, _)| base + position)
+            .collect()
+    }
+
+    fn row_columns(setup: &StudySetup, stage: usize, rows: &[usize]) -> BTreeSet<usize> {
+        let template = &setup.inputs.stage_data.stage_templates.templates[stage];
+        let mut columns = BTreeSet::new();
+        for (col, span) in template.col_starts.windows(2).enumerate() {
+            let first = usize::try_from(span[0]).expect("col_starts entry is non-negative");
+            let end = usize::try_from(span[1]).expect("col_starts entry is non-negative");
+            for nz in first..end {
+                let row = usize::try_from(template.row_indices[nz])
+                    .expect("row_indices entry is non-negative");
+                if template.values[nz] != 0.0 && rows.contains(&row) {
+                    columns.insert(col);
+                }
+            }
+        }
+        columns
+    }
+
+    fn pinned(setup: &StudySetup, stage: usize, cols: &BTreeSet<usize>) -> bool {
+        let template = &setup.inputs.stage_data.stage_templates.templates[stage];
+        cols.iter()
+            .all(|&col| template.col_lower[col] == 0.0 && template.col_upper[col] == 0.0)
+    }
+
+    fn filling_fixture() -> TempDir {
+        let case = TempDir::new().expect("tempdir");
+        copy_toy_case(&base_deck(FILLING_DECK), case.path());
+
+        let hydros_file = case.path().join("system/hydros.json");
+        let mut hydros: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&hydros_file).expect("read hydros"))
+                .expect("parse hydros");
+        hydros["hydros"][1]["diversion"] =
+            serde_json::json!({ "downstream_id": 3, "max_flow_m3s": 50.0 });
+        std::fs::write(&hydros_file, hydros.to_string()).expect("write hydros");
+
+        let expressions = [
+            "hydro_outflow_volume(1)",
+            "hydro_outflow(1)",
+            "hydro_turbined(1)",
+            "hydro_diversion_volume(1)",
+            "hydro_diversion(1)",
+            "hydro_diversion_volume(3)",
+            "hydro_diversion(3)",
+        ];
+        let constraints: Vec<serde_json::Value> = expressions
+            .iter()
+            .zip(1_i32..)
+            .map(|(expression, id)| {
+                serde_json::json!({
+                    "id": id,
+                    "name": format!("volume_probe_{id}"),
+                    "expression": expression,
+                    "slack": { "enabled": false },
+                })
+            })
+            .collect();
+        std::fs::create_dir_all(case.path().join("constraints")).expect("create constraints dir");
+        std::fs::write(
+            case.path().join("constraints/generic_constraints.json"),
+            serde_json::json!({ "constraints": constraints }).to_string(),
+        )
+        .expect("write generic constraints");
+
+        let bounds: Vec<GenericBoundsRow> = (1..=7)
+            .flat_map(|id| {
+                (0..6).map(move |stage| (id, stage, None, None, Some(NEVER_BINDING_UPPER)))
+            })
+            .collect();
+        write_generic_constraint_bounds(
+            &case
+                .path()
+                .join("constraints/generic_constraint_bounds.parquet"),
+            &bounds,
+        );
+        case
+    }
+
+    fn pumping_fixture() -> TempDir {
+        let case = TempDir::new().expect("tempdir");
+        copy_toy_case(&base_deck(PUMPING_DECK), case.path());
+
+        let expressions = ["pumping_volume(0)", "pumping_flow(0)"];
+        let constraints: Vec<serde_json::Value> = expressions
+            .iter()
+            .zip(1_i32..)
+            .map(|(expression, id)| {
+                serde_json::json!({
+                    "id": id,
+                    "name": format!("volume_probe_{id}"),
+                    "expression": expression,
+                    "slack": { "enabled": false },
+                })
+            })
+            .collect();
+        std::fs::create_dir_all(case.path().join("constraints")).expect("create constraints dir");
+        std::fs::write(
+            case.path().join("constraints/generic_constraints.json"),
+            serde_json::json!({ "constraints": constraints }).to_string(),
+        )
+        .expect("write generic constraints");
+
+        let bounds: Vec<GenericBoundsRow> = (1..=2)
+            .flat_map(|id| {
+                (0..3).map(move |stage| (id, stage, None, None, Some(NEVER_BINDING_UPPER)))
+            })
+            .collect();
+        write_generic_constraint_bounds(
+            &case
+                .path()
+                .join("constraints/generic_constraint_bounds.parquet"),
+            &bounds,
+        );
+        case
+    }
+
+    /// derived: a PreFilling hydro's outflow volume is 0 and a Filling hydro's is its spillage only, because the volume row reads the same pinned turbine columns as `hydro_outflow`.
+    #[test]
+    fn stage_volume_outflow_reads_the_frozen_turbines_of_a_filling_plant() {
+        let case = filling_fixture();
+        let setup = fresh_setup_with(case.path(), |_| {});
+        let templates = &setup.inputs.stage_data.stage_templates.templates;
+
+        for stage in 0..6 {
+            let vol = row_columns(&setup, stage, &constraint_rows(&setup, stage, 1));
+            let flow = row_columns(&setup, stage, &constraint_rows(&setup, stage, 2));
+            let turb = row_columns(&setup, stage, &constraint_rows(&setup, stage, 3));
+            assert_eq!(
+                vol, flow,
+                "stage {stage}: hydro_outflow_volume(1) and hydro_outflow(1) columns"
+            );
+            assert!(
+                !vol.is_empty(),
+                "stage {stage}: outflow volume row is empty"
+            );
+            assert!(!turb.is_empty(), "stage {stage}: turbine row is empty");
+
+            match stage {
+                0 | 1 => assert!(
+                    pinned(&setup, stage, &vol),
+                    "stage {stage}: PreFilling outflow volume columns {vol:?} must be pinned"
+                ),
+                2 | 3 => {
+                    assert!(
+                        pinned(&setup, stage, &turb),
+                        "stage {stage}: Filling turbine columns {turb:?} must be pinned"
+                    );
+                    let spillage: BTreeSet<usize> = vol.difference(&turb).copied().collect();
+                    assert!(
+                        !spillage.is_empty(),
+                        "stage {stage}: Filling outflow volume has no spillage column"
+                    );
+                    assert!(
+                        spillage
+                            .iter()
+                            .all(|&col| templates[stage].col_upper[col] > 0.0),
+                        "stage {stage}: Filling spillage columns {spillage:?} must stay open"
+                    );
+                }
+                4 | 5 => assert!(
+                    turb.iter()
+                        .all(|&col| templates[stage].col_upper[col] > 0.0),
+                    "stage {stage}: Operating turbine columns {turb:?} must be open"
+                ),
+                _ => unreachable!("stage {stage} is outside the fixture"),
+            }
+        }
+    }
+
+    /// derived: diversion volume is 0 for H2 while it is PreFilling or Filling and for the non-diverting H4 at every stage, because both read pinned diversion columns.
+    #[test]
+    fn stage_volume_diversion_reads_the_pinned_diversion_columns() {
+        let case = filling_fixture();
+        let setup = fresh_setup_with(case.path(), |_| {});
+
+        for (volume_id, flow_id, stages) in [(4, 5, 4), (6, 7, 6)] {
+            for stage in 0..stages {
+                let vol = row_columns(&setup, stage, &constraint_rows(&setup, stage, volume_id));
+                let flow = row_columns(&setup, stage, &constraint_rows(&setup, stage, flow_id));
+                assert_eq!(
+                    vol, flow,
+                    "stage {stage}: constraints {volume_id} and {flow_id} columns"
+                );
+                assert!(
+                    !vol.is_empty(),
+                    "stage {stage}: constraint {volume_id} row is empty"
+                );
+                assert!(
+                    pinned(&setup, stage, &vol),
+                    "stage {stage}: constraint {volume_id} columns {vol:?} must be pinned"
+                );
+            }
+        }
+    }
+
+    /// derived: pumping volume is 0 at stages 0 and 2, outside the station's [1, 2) commissioning window, because the volume row reads the pinned station flow column.
+    #[test]
+    fn stage_volume_pumping_reads_the_station_flow_outside_its_window() {
+        let case = pumping_fixture();
+        let setup = fresh_setup_with(case.path(), |_| {});
+        let templates = &setup.inputs.stage_data.stage_templates.templates;
+
+        for stage in 0..3 {
+            let vol = row_columns(&setup, stage, &constraint_rows(&setup, stage, 1));
+            let flow = row_columns(&setup, stage, &constraint_rows(&setup, stage, 2));
+            assert_eq!(
+                vol, flow,
+                "stage {stage}: pumping_volume(0) and pumping_flow(0) columns"
+            );
+            assert!(
+                !vol.is_empty(),
+                "stage {stage}: pumping volume row is empty"
+            );
+
+            match stage {
+                0 | 2 => assert!(
+                    pinned(&setup, stage, &vol),
+                    "stage {stage}: inactive station columns {vol:?} must be pinned"
+                ),
+                1 => assert!(
+                    vol.iter().all(|&col| templates[stage].col_upper[col] > 0.0),
+                    "stage {stage}: active station columns {vol:?} must be open"
+                ),
+                _ => unreachable!("stage {stage} is outside the fixture"),
+            }
+        }
+    }
+
+    /// derived: each fixture adds no validation warning, so its count equals its base deck's.
+    #[test]
+    fn stage_volume_fixtures_add_no_validation_warning() {
+        let filling = filling_fixture();
+        let pumping = pumping_fixture();
+        for (fixture, deck) in [(&filling, FILLING_DECK), (&pumping, PUMPING_DECK)] {
+            let (_, base) = novomodelo_io::validate_case(&base_deck(deck)).expect("base deck");
+            let (_, report) = novomodelo_io::validate_case(fixture.path()).expect("fixture");
+            assert_eq!(report.error_count, 0, "{deck} fixture errors");
+            assert_eq!(
+                report.warning_count, base.warning_count,
+                "{deck} fixture warnings"
+            );
+        }
+    }
+}

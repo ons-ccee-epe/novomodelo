@@ -1930,6 +1930,200 @@ fn d15_non_controllable_source() {
     );
 }
 
+/// Builds a D15 variant with two NCS sources priced at zero curtailment cost at
+/// all three levels: `penalties.json` (NCS1 falls back to it), the entity-level
+/// `curtailment_cost` (NCS0), and a `penalty_overrides_ncs.parquet` row (NCS1,
+/// stage 1). Load is 40 MW against 100 MW of availability, so 60 MW must be
+/// curtailed and the thermal never dispatches. `reverse_declaration` lists the
+/// sources in descending `id` order.
+fn d15_zero_curtailment_case(reverse_declaration: bool) -> tempfile::TempDir {
+    use crate::common::parquet_fixtures::write_seasonal_stats;
+    use arrow::array::{Float64Array, Int32Array};
+    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::record_batch::RecordBatch;
+    use parquet::arrow::ArrowWriter;
+    use std::sync::Arc;
+
+    let tmp = copy_case_dir(Path::new(
+        "../../examples/deterministic/d15-non-controllable-source",
+    ));
+    let case = tmp.path();
+
+    edit_json(&case.join("penalties.json"), |v| {
+        v["non_controllable_source"]["curtailment_cost"] = serde_json::json!(0.0);
+    });
+    let ncs = |id: i32, curtailment_cost: Option<f64>| {
+        let mut source = serde_json::json!({
+            "id": id,
+            "name": format!("NCS{id}"),
+            "operational_start_date": "2020-01-01",
+            "bus_id": 0,
+            "max_generation_mw": 100.0,
+        });
+        if let Some(cost) = curtailment_cost {
+            source["curtailment_cost"] = serde_json::json!(cost);
+        }
+        source
+    };
+    let mut sources = vec![ncs(0, Some(0.0)), ncs(1, None)];
+    if reverse_declaration {
+        sources.reverse();
+    }
+    edit_json(&case.join("system/non_controllable_sources.json"), |v| {
+        v["non_controllable_sources"] = serde_json::Value::Array(sources);
+    });
+
+    let scenarios = case.join("scenarios");
+    write_seasonal_stats(
+        &scenarios.join("load_seasonal_stats.parquet"),
+        "bus_id",
+        "mean_mw",
+        "std_mw",
+        &[(0, 0, 40.0, 0.0), (0, 1, 40.0, 0.0)],
+    );
+    write_seasonal_stats(
+        &scenarios.join("inflow_seasonal_stats.parquet"),
+        "hydro_id",
+        "mean_m3s",
+        "std_m3s",
+        &[],
+    );
+    write_seasonal_stats(
+        &scenarios.join("non_controllable_stats.parquet"),
+        "ncs_id",
+        "mean",
+        "std",
+        &[
+            (0, 0, 0.5, 0.0),
+            (0, 1, 0.5, 0.0),
+            (1, 0, 0.5, 0.0),
+            (1, 1, 0.5, 0.0),
+        ],
+    );
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("ncs_id", DataType::Int32, false),
+        Field::new("stage_id", DataType::Int32, false),
+        Field::new("curtailment_cost", DataType::Float64, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1])),
+            Arc::new(Int32Array::from(vec![1])),
+            Arc::new(Float64Array::from(vec![Some(0.0)])),
+        ],
+    )
+    .expect("valid RecordBatch for penalty_overrides_ncs");
+    std::fs::create_dir_all(case.join("constraints")).expect("create constraints dir");
+    let file = std::fs::File::create(case.join("constraints/penalty_overrides_ncs.parquet"))
+        .expect("create penalty_overrides_ncs.parquet");
+    let mut writer = ArrowWriter::try_new(file, schema, None).expect("ArrowWriter for override");
+    writer.write(&batch).expect("write override batch");
+    writer.close().expect("close override writer");
+
+    tmp
+}
+
+/// Per-NCS `(stage_id, ncs_id, generation bits, curtailment bits)`, sorted.
+fn ncs_dispatch_bits(
+    scenario: &novomodelo_sddp::SimulationScenarioResult,
+) -> Vec<(u32, i32, u64, u64)> {
+    let mut rows: Vec<_> = scenario
+        .stages
+        .iter()
+        .flat_map(|stage| &stage.non_controllables)
+        .map(|n| {
+            (
+                n.stage_id,
+                n.non_controllable_id,
+                n.generation_mw.to_bits(),
+                n.curtailment_mw.to_bits(),
+            )
+        })
+        .collect();
+    rows.sort_unstable();
+    rows
+}
+
+/// Zero curtailment cost at the global, entity and per-stage-override levels.
+///
+/// ## Expected behaviour
+///
+/// Every cost term is zero at the optimum: the 40 MW load is met by NCS
+/// generation, the 60 MW surplus is curtailed for free (excess costs
+/// $0.01/MWh), and the $10/MWh thermal stays off. Lower bound = **0**.
+///
+/// Generation and curtailment tie between the two sources, so the split is not
+/// unique; it must still be bit-for-bit identical across runs and across
+/// declaration orders.
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: run with --features slow-tests"
+)]
+#[test]
+fn d15_zero_curtailment_cost() {
+    const TOL: f64 = 1e-6;
+
+    let case = d15_zero_curtailment_case(false);
+    let (result, scenarios, _summary) = run_with_simulation(case.path());
+    assert_cost(result.final_lb, 0.0, TOL, "D15-zero");
+    assert_eq!(scenarios.len(), 1);
+    let scenario = &scenarios[0];
+    assert_eq!(scenario.stages.len(), 2);
+
+    for stage in &scenario.stages {
+        let s = stage.stage_id;
+        let generation: f64 = stage
+            .non_controllables
+            .iter()
+            .map(|n| n.generation_mw)
+            .sum();
+        let curtailment: f64 = stage
+            .non_controllables
+            .iter()
+            .map(|n| n.curtailment_mw)
+            .sum();
+        let thermal: f64 = stage.thermals.iter().map(|t| t.generation_mw).sum();
+        let excess: f64 = stage.buses.iter().map(|b| b.excess_mw).sum();
+        assert!(
+            (generation - 40.0).abs() < TOL,
+            "stage {s}: NCS generation {generation}"
+        );
+        assert!(
+            (curtailment - 60.0).abs() < TOL,
+            "stage {s}: curtailment {curtailment}"
+        );
+        assert!(thermal.abs() < TOL, "stage {s}: thermal {thermal}");
+        assert!(excess.abs() < TOL, "stage {s}: excess {excess}");
+        for n in &stage.non_controllables {
+            assert_eq!(
+                n.curtailment_cost, 0.0,
+                "stage {s} NCS{}",
+                n.non_controllable_id
+            );
+        }
+    }
+
+    let baseline = ncs_dispatch_bits(scenario);
+
+    let rerun = d15_zero_curtailment_case(false);
+    let (_, rerun_scenarios, _) = run_with_simulation(rerun.path());
+    assert_eq!(
+        ncs_dispatch_bits(&rerun_scenarios[0]),
+        baseline,
+        "run-to-run reproducibility"
+    );
+
+    let reversed = d15_zero_curtailment_case(true);
+    let (_, reversed_scenarios, _) = run_with_simulation(reversed.path());
+    assert_eq!(
+        ncs_dispatch_bits(&reversed_scenarios[0]),
+        baseline,
+        "declaration-order invariance"
+    );
+}
+
 /// D18 per-stage NCS commissioning dormancy varies across the window.
 ///
 /// The fixture declares two NCS sources on a 3-stage horizon: NCS0 with
@@ -13620,6 +13814,652 @@ mod d58_stored_energy_bound_composition {
                 lhs >= bound - 1e-6 * bound,
                 "D58 stage {stage_idx}: stored energy plus slack {lhs} below the derived bound {bound}"
             );
+        }
+    }
+}
+
+mod stage_outflow_volume_cap {
+    use std::path::Path;
+
+    use novomodelo_io::GenericConstraintEchoRow;
+    use novomodelo_sddp::build_generic_constraint_echo_rows;
+    use novomodelo_sddp::test_support::assert_all_templates_byte_identical;
+
+    use crate::common::fresh_system_and_setup_with;
+    use crate::common::parquet_fixtures::write_generic_constraint_bounds;
+
+    use super::{assert_cost, copy_case_dir, edit_json, run_with_simulation};
+
+    const CASE_DIR: &str = "../../examples/deterministic/d60-stage-outflow-volume-cap";
+
+    const HOURS: [f64; 2] = [100.0, 300.0];
+    const TAU: [f64; 2] = [
+        HOURS[0] * (3_600.0 / 1_000_000.0),
+        HOURS[1] * (3_600.0 / 1_000_000.0),
+    ];
+    const LOAD_MW: f64 = 125.0;
+    const LOAD_FACTOR: [f64; 2] = [1.2, 0.8];
+    const Q_MAX: f64 = 40.0;
+    const CHEAP_COST: f64 = 10.0;
+    const CHEAP_MAX_MW: f64 = 100.0;
+    const SUB_COST: f64 = 300.0;
+    const PENALTY: f64 = 10_000.0;
+    const SPILL_COST: f64 = 0.01;
+    const V_INIT: f64 = 900.0;
+    const EQUALITY_HM3: f64 = 36.0;
+    const CEILING_HM3: f64 = 10.8;
+    const FLOOR_HM3: f64 = 64.8;
+    const EQUAL_HOURS: f64 = 200.0;
+    const TAU_EQUAL: f64 = EQUAL_HOURS * (3_600.0 / 1_000_000.0);
+    const TWIN_RATE_M3S: f64 = 25.0;
+
+    /// derived: a PEAK hm³ displaces `SUB_COST · HOURS[0] / TAU[0]` $ of T-SUB and an OFFPEAK hm³ `CHEAP_COST · HOURS[1] / TAU[1]` $ of T-CHEAP, so PEAK runs at `Q_MAX` and stage 0 gives OFFPEAK `(EQUALITY_HM3 − TAU[0] · Q_MAX) / TAU[1]`, stage 1 releases only PEAK, and stages 2 and 3 run both blocks at `Q_MAX`; water never binds.
+    const D60_TURBINED_M3S: [[f64; 2]; 4] = [
+        [Q_MAX, (EQUALITY_HM3 - TAU[0] * Q_MAX) / TAU[1]],
+        [Q_MAX, 0.0],
+        [Q_MAX, Q_MAX],
+        [Q_MAX, Q_MAX],
+    ];
+    /// derived: stage 1's PEAK release `TAU[0] · Q_MAX` exceeds `CEILING_HM3` by the slack, since a PEAK hm³ is worth more than `PENALTY`; stages 0 and 2 meet their bound.
+    const D60_SLACK_HM3: [f64; 3] = [0.0, TAU[0] * Q_MAX - CEILING_HM3, 0.0];
+    /// derived: stage 2's `FLOOR_HM3` exceeds the `(TAU[0] + TAU[1]) · Q_MAX` both blocks turbine, and spilling the gap costs `SPILL_COST · 10⁶ / 3600` per hm³ against `PENALTY` per hm³ of slack.
+    const D60_SPILL_HM3: f64 = FLOOR_HM3 - (TAU[0] + TAU[1]) * Q_MAX;
+
+    /// derived: `Σ_k hours[k] · (CHEAP_COST · min(L_k − q_k, CHEAP_MAX_MW) + SUB_COST · max(L_k − q_k − CHEAP_MAX_MW, 0))` with `L_k = LOAD_MW · LOAD_FACTOR[k]`.
+    const fn thermal_cost(hours: [f64; 2], turbined_m3s: [f64; 2]) -> f64 {
+        let mut cost = 0.0;
+        let mut block = 0;
+        while block < 2 {
+            let net_mw = LOAD_MW * LOAD_FACTOR[block] - turbined_m3s[block];
+            cost += hours[block]
+                * (CHEAP_COST * net_mw.min(CHEAP_MAX_MW)
+                    + SUB_COST * (net_mw - CHEAP_MAX_MW).max(0.0));
+            block += 1;
+        }
+        cost
+    }
+
+    /// derived: `thermal_cost(HOURS, q)` at each stage's closed-form dispatch.
+    const D60_THERMAL_COST: [f64; 4] = [
+        thermal_cost(HOURS, D60_TURBINED_M3S[0]),
+        thermal_cost(HOURS, D60_TURBINED_M3S[1]),
+        thermal_cost(HOURS, D60_TURBINED_M3S[2]),
+        thermal_cost(HOURS, D60_TURBINED_M3S[3]),
+    ];
+    /// derived: `PENALTY · slack`, a `per_unit` price carrying no stage hours; stage 3 has no bounds row.
+    const D60_VIOLATION_COST: [f64; 4] = [
+        PENALTY * D60_SLACK_HM3[0],
+        PENALTY * D60_SLACK_HM3[1],
+        PENALTY * D60_SLACK_HM3[2],
+        0.0,
+    ];
+    /// derived: `SPILL_COST · spill · 10⁶ / 3600`, block-independent, at stage 2 only.
+    const D60_SPILLAGE_COST: [f64; 4] = [
+        0.0,
+        0.0,
+        SPILL_COST * D60_SPILL_HM3 * (1_000_000.0 / 3_600.0),
+        0.0,
+    ];
+    /// derived: thermal plus violation plus spillage cost per stage.
+    const D60_IMMEDIATE_COST: [f64; 4] = [
+        D60_THERMAL_COST[0] + D60_VIOLATION_COST[0] + D60_SPILLAGE_COST[0],
+        D60_THERMAL_COST[1] + D60_VIOLATION_COST[1] + D60_SPILLAGE_COST[1],
+        D60_THERMAL_COST[2] + D60_VIOLATION_COST[2] + D60_SPILLAGE_COST[2],
+        D60_THERMAL_COST[3] + D60_VIOLATION_COST[3] + D60_SPILLAGE_COST[3],
+    ];
+    /// derived: the stages' immediate costs summed, with no discount.
+    const D60_TOTAL_COST: f64 = D60_IMMEDIATE_COST[0]
+        + D60_IMMEDIATE_COST[1]
+        + D60_IMMEDIATE_COST[2]
+        + D60_IMMEDIATE_COST[3];
+    /// derived: `Σ_k TAU[k] · q_k` plus the stage-2 spill.
+    const D60_OUTFLOW_VOLUME_HM3: [f64; 4] = [
+        TAU[0] * D60_TURBINED_M3S[0][0] + TAU[1] * D60_TURBINED_M3S[0][1],
+        TAU[0] * D60_TURBINED_M3S[1][0] + TAU[1] * D60_TURBINED_M3S[1][1],
+        TAU[0] * D60_TURBINED_M3S[2][0] + TAU[1] * D60_TURBINED_M3S[2][1] + D60_SPILL_HM3,
+        TAU[0] * D60_TURBINED_M3S[3][0] + TAU[1] * D60_TURBINED_M3S[3][1],
+    ];
+    /// derived: `V_INIT` less the stages' outflow volumes so far, with no inflow.
+    const D60_STORAGE_FINAL_HM3: [f64; 4] = [
+        V_INIT - D60_OUTFLOW_VOLUME_HM3[0],
+        V_INIT - D60_OUTFLOW_VOLUME_HM3[0] - D60_OUTFLOW_VOLUME_HM3[1],
+        V_INIT - D60_OUTFLOW_VOLUME_HM3[0] - D60_OUTFLOW_VOLUME_HM3[1] - D60_OUTFLOW_VOLUME_HM3[2],
+        V_INIT
+            - D60_OUTFLOW_VOLUME_HM3[0]
+            - D60_OUTFLOW_VOLUME_HM3[1]
+            - D60_OUTFLOW_VOLUME_HM3[2]
+            - D60_OUTFLOW_VOLUME_HM3[3],
+    ];
+
+    /// derived: with `EQUAL_HOURS` blocks the stage-0 equality gives `(Q_MAX, (EQUALITY_HM3 − TAU_EQUAL · Q_MAX) / TAU_EQUAL)`.
+    const D60_EQUAL_HOURS_STAGE0_TURBINED_M3S: [f64; 2] =
+        [Q_MAX, (EQUALITY_HM3 - TAU_EQUAL * Q_MAX) / TAU_EQUAL];
+    /// derived: `thermal_cost` of the equal-hours stage-0 dispatch, with no slack or spill at stage 0.
+    const D60_EQUAL_HOURS_STAGE0_COST: f64 =
+        thermal_cost([EQUAL_HOURS; 2], D60_EQUAL_HOURS_STAGE0_TURBINED_M3S);
+    /// derived: the four equal-hours stage costs summed, where stage 1 adds the ceiling slack `PENALTY · (TAU_EQUAL · Q_MAX − CEILING_HM3)` to its thermal cost and stage 2 adds the spill `SPILL_COST · (FLOOR_HM3 − 2 · TAU_EQUAL · Q_MAX) · 10⁶ / 3600`.
+    const D60_EQUAL_HOURS_TOTAL_COST: f64 = D60_EQUAL_HOURS_STAGE0_COST
+        + thermal_cost([EQUAL_HOURS; 2], [Q_MAX, 0.0])
+        + PENALTY * (TAU_EQUAL * Q_MAX - CEILING_HM3)
+        + thermal_cost([EQUAL_HOURS; 2], [Q_MAX, Q_MAX])
+        + SPILL_COST * (FLOOR_HM3 - 2.0 * TAU_EQUAL * Q_MAX) * (1_000_000.0 / 3_600.0)
+        + thermal_cost([EQUAL_HOURS; 2], [Q_MAX, Q_MAX]);
+
+    /// derived: `EQUALITY_HM3` spread as one uniform rate, `EQUALITY_HM3 / (TAU[0] + TAU[1])` m³/s in both blocks, the rate `TWIN_RATE_M3S` sets on the twin.
+    const D60_PER_BLOCK_RATE_M3S: f64 = EQUALITY_HM3 / (TAU[0] + TAU[1]);
+    /// derived: `thermal_cost` of the uniform-rate dispatch at stage 0.
+    const D60_PER_BLOCK_STAGE0_COST: f64 = thermal_cost(HOURS, [D60_PER_BLOCK_RATE_M3S; 2]);
+    /// derived: stage 0 plus three stages with no bounds row, each at `thermal_cost(HOURS, (Q_MAX, Q_MAX))`.
+    const D60_PER_BLOCK_TOTAL_COST: f64 =
+        D60_PER_BLOCK_STAGE0_COST + 3.0 * thermal_cost(HOURS, [Q_MAX, Q_MAX]);
+
+    fn case_dir() -> &'static Path {
+        Path::new(CASE_DIR)
+    }
+
+    fn echo_rows(case_dir: &Path) -> Vec<GenericConstraintEchoRow> {
+        let (system, setup) = fresh_system_and_setup_with(case_dir, |_| {});
+        build_generic_constraint_echo_rows(&setup, &system)
+    }
+
+    fn cost_tolerance(expected: f64) -> f64 {
+        if expected == 0.0 {
+            1e-6
+        } else {
+            1e-6 * expected.abs()
+        }
+    }
+
+    fn assert_close(actual: f64, expected: f64, label: &str) {
+        assert!(
+            (actual - expected).abs() < 1e-6,
+            "{label}: expected {expected}, got {actual}"
+        );
+    }
+
+    fn equal_hours_twin(case_dir: &Path) -> tempfile::TempDir {
+        let twin = copy_case_dir(case_dir);
+        edit_json(&twin.path().join("stages.json"), |stages| {
+            for stage in stages["stages"]
+                .as_array_mut()
+                .expect("stages.json has a stages array")
+            {
+                for block in stage["blocks"]
+                    .as_array_mut()
+                    .expect("each stage has a blocks array")
+                {
+                    block["hours"] = serde_json::Value::from(EQUAL_HOURS);
+                }
+            }
+        });
+        twin
+    }
+
+    fn per_block_rate_twin(case_dir: &Path) -> tempfile::TempDir {
+        let twin = copy_case_dir(case_dir);
+        edit_json(
+            &twin.path().join("constraints/generic_constraints.json"),
+            |constraints| {
+                let constraint = &mut constraints["constraints"][0];
+                constraint["expression"] = serde_json::Value::from("hydro_outflow(0)");
+                constraint["slack"] = serde_json::json!({ "enabled": false });
+            },
+        );
+        write_generic_constraint_bounds(
+            &twin
+                .path()
+                .join("constraints/generic_constraint_bounds.parquet"),
+            &[(1, 0, None, Some(TWIN_RATE_M3S), Some(TWIN_RATE_M3S))],
+        );
+        twin
+    }
+
+    fn without_bounds_file(case_dir: &Path) -> tempfile::TempDir {
+        let twin = copy_case_dir(case_dir);
+        std::fs::remove_file(
+            twin.path()
+                .join("constraints/generic_constraint_bounds.parquet"),
+        )
+        .expect("the d60 deck carries a bounds file to remove");
+        twin
+    }
+
+    fn with_empty_bounds_file(case_dir: &Path) -> tempfile::TempDir {
+        let twin = copy_case_dir(case_dir);
+        write_generic_constraint_bounds(
+            &twin
+                .path()
+                .join("constraints/generic_constraint_bounds.parquet"),
+            &[],
+        );
+        twin
+    }
+
+    fn without_the_constraint(case_dir: &Path) -> tempfile::TempDir {
+        let twin = copy_case_dir(case_dir);
+        for file in [
+            "constraints/generic_constraints.json",
+            "constraints/generic_constraint_bounds.parquet",
+        ] {
+            std::fs::remove_file(twin.path().join(file))
+                .expect("the d60 deck carries both constraint files");
+        }
+        twin
+    }
+
+    #[cfg_attr(
+        not(feature = "slow-tests"),
+        ignore = "slow: run with --features slow-tests"
+    )]
+    #[test]
+    fn d60_outflow_volume_band_matches_closed_form() {
+        let (result, scenario_results, summary) = run_with_simulation(case_dir());
+
+        assert_cost(
+            result.final_lb,
+            D60_TOTAL_COST,
+            1e-6 * D60_TOTAL_COST,
+            "D60",
+        );
+        assert_cost(
+            summary.mean_cost,
+            D60_TOTAL_COST,
+            1e-6 * D60_TOTAL_COST,
+            "D60-sim",
+        );
+
+        assert_eq!(
+            scenario_results.len(),
+            1,
+            "D60: simulation must produce exactly 1 scenario"
+        );
+        let stages = &scenario_results[0].stages;
+        assert_eq!(stages.len(), 4, "D60: expected 4 stages");
+        for (stage, stage_result) in stages.iter().enumerate() {
+            assert_eq!(
+                stage_result.costs.len(),
+                1,
+                "D60 stage {stage}: one stage-level cost row"
+            );
+            let costs = &stage_result.costs[0];
+            for (name, actual, expected) in [
+                (
+                    "immediate_cost",
+                    costs.immediate_cost,
+                    D60_IMMEDIATE_COST[stage],
+                ),
+                ("thermal_cost", costs.thermal_cost, D60_THERMAL_COST[stage]),
+                (
+                    "generic_violation_cost",
+                    costs.generic_violation_cost,
+                    D60_VIOLATION_COST[stage],
+                ),
+                (
+                    "spillage_cost",
+                    costs.spillage_cost,
+                    D60_SPILLAGE_COST[stage],
+                ),
+            ] {
+                assert_cost(
+                    actual,
+                    expected,
+                    cost_tolerance(expected),
+                    &format!("D60 stage {stage} {name}"),
+                );
+            }
+
+            let hydros: Vec<_> = stage_result
+                .hydros
+                .iter()
+                .filter(|h| h.hydro_id == 0)
+                .collect();
+            assert_eq!(
+                hydros.iter().map(|h| h.block_id).collect::<Vec<_>>(),
+                [Some(0), Some(1)],
+                "D60 stage {stage}: H0 block ids"
+            );
+            let mut outflow_volume = 0.0;
+            for (block, hydro) in hydros.iter().enumerate() {
+                assert_close(
+                    hydro.turbined_m3s,
+                    D60_TURBINED_M3S[stage][block],
+                    &format!("D60 stage {stage} block {block}: turbined_m3s"),
+                );
+                if stage != 2 {
+                    assert_close(
+                        hydro.spillage_m3s,
+                        0.0,
+                        &format!("D60 stage {stage} block {block}: spillage_m3s"),
+                    );
+                }
+                outflow_volume += TAU[block] * (hydro.turbined_m3s + hydro.spillage_m3s);
+            }
+            assert_close(
+                outflow_volume,
+                D60_OUTFLOW_VOLUME_HM3[stage],
+                &format!("D60 stage {stage}: outflow volume"),
+            );
+            assert_close(
+                hydros[0].storage_final_hm3,
+                D60_STORAGE_FINAL_HM3[stage],
+                &format!("D60 stage {stage}: storage_final_hm3"),
+            );
+
+            let violations = &stage_result.generic_violations;
+            if let Some(&slack) = D60_SLACK_HM3.get(stage) {
+                assert_eq!(
+                    violations.len(),
+                    1,
+                    "D60 stage {stage}: exactly one generic violation record"
+                );
+                let violation = &violations[0];
+                assert_eq!(
+                    violation.constraint_id, 1,
+                    "D60 stage {stage}: violation constraint id"
+                );
+                assert_eq!(
+                    violation.block_id, None,
+                    "D60 stage {stage}: violation block id"
+                );
+                assert_close(
+                    violation.slack_value,
+                    slack,
+                    &format!("D60 stage {stage}: slack_value"),
+                );
+                assert_cost(
+                    violation.slack_cost,
+                    PENALTY * violation.slack_value,
+                    1e-6 * PENALTY,
+                    &format!("D60 stage {stage}: slack_cost"),
+                );
+            } else {
+                assert!(
+                    violations.is_empty(),
+                    "D60 stage {stage}: a stage without a bounds row has no violation record"
+                );
+            }
+        }
+    }
+
+    #[cfg_attr(
+        not(feature = "slow-tests"),
+        ignore = "slow: run with --features slow-tests"
+    )]
+    #[test]
+    fn d60_equal_hours_twin_matches_its_own_closed_form() {
+        let twin = equal_hours_twin(case_dir());
+        let (result, scenario_results, summary) = run_with_simulation(twin.path());
+
+        assert_cost(
+            result.final_lb,
+            D60_EQUAL_HOURS_TOTAL_COST,
+            1e-6 * D60_EQUAL_HOURS_TOTAL_COST,
+            "D60 equal hours",
+        );
+        assert_cost(
+            summary.mean_cost,
+            D60_EQUAL_HOURS_TOTAL_COST,
+            1e-6 * D60_EQUAL_HOURS_TOTAL_COST,
+            "D60 equal hours-sim",
+        );
+
+        let stage_zero = &scenario_results[0].stages[0];
+        let turbined: Vec<f64> = stage_zero
+            .hydros
+            .iter()
+            .filter(|h| h.hydro_id == 0)
+            .map(|h| h.turbined_m3s)
+            .collect();
+        assert_eq!(turbined.len(), 2, "D60 equal hours: two H0 block rows");
+        for (block, q) in turbined.iter().enumerate() {
+            assert_close(
+                *q,
+                D60_EQUAL_HOURS_STAGE0_TURBINED_M3S[block],
+                &format!("D60 equal hours stage 0 block {block}: turbined_m3s"),
+            );
+        }
+        assert_cost(
+            stage_zero.costs[0].immediate_cost,
+            D60_EQUAL_HOURS_STAGE0_COST,
+            cost_tolerance(D60_EQUAL_HOURS_STAGE0_COST),
+            "D60 equal hours stage 0 immediate_cost",
+        );
+    }
+
+    #[cfg_attr(
+        not(feature = "slow-tests"),
+        ignore = "slow: run with --features slow-tests"
+    )]
+    #[test]
+    fn d60_per_block_rate_twin_matches_its_own_closed_form() {
+        let twin = per_block_rate_twin(case_dir());
+        let (result, scenario_results, summary) = run_with_simulation(twin.path());
+
+        assert_cost(
+            result.final_lb,
+            D60_PER_BLOCK_TOTAL_COST,
+            1e-6 * D60_PER_BLOCK_TOTAL_COST,
+            "D60 per-block",
+        );
+        assert_cost(
+            summary.mean_cost,
+            D60_PER_BLOCK_TOTAL_COST,
+            1e-6 * D60_PER_BLOCK_TOTAL_COST,
+            "D60 per-block-sim",
+        );
+
+        let stage_zero = &scenario_results[0].stages[0];
+        let turbined: Vec<f64> = stage_zero
+            .hydros
+            .iter()
+            .filter(|h| h.hydro_id == 0)
+            .map(|h| h.turbined_m3s)
+            .collect();
+        assert_eq!(turbined.len(), 2, "D60 per-block: two H0 block rows");
+        for (block, q) in turbined.iter().enumerate() {
+            assert_close(
+                *q,
+                D60_PER_BLOCK_RATE_M3S,
+                &format!("D60 per-block stage 0 block {block}: turbined_m3s"),
+            );
+        }
+        assert_cost(
+            stage_zero.costs[0].immediate_cost,
+            D60_PER_BLOCK_STAGE0_COST,
+            cost_tolerance(D60_PER_BLOCK_STAGE0_COST),
+            "D60 per-block stage 0 immediate_cost",
+        );
+    }
+
+    #[test]
+    fn d60_echo_carries_the_declared_coefficient_and_shapes() {
+        let rows = echo_rows(case_dir());
+        let expected_bounds = [
+            (Some(EQUALITY_HM3), Some(EQUALITY_HM3)),
+            (None, Some(CEILING_HM3)),
+            (Some(FLOOR_HM3), None),
+        ];
+        let expected_shapes = ["equality", "cap", "floor"];
+
+        assert_eq!(
+            rows.len(),
+            3,
+            "D60 echo: one row per stage with a bounds row"
+        );
+        for (stage, row) in rows.iter().enumerate() {
+            assert_eq!(
+                row.stage_id,
+                i32::try_from(stage).expect("stage index fits i32"),
+                "D60 echo stage {stage}: stage id"
+            );
+            assert_eq!(
+                row.constraint_id, 1,
+                "D60 echo stage {stage}: constraint id"
+            );
+            assert_eq!(
+                row.constraint_name, "outflow_volume_band",
+                "D60 echo stage {stage}: constraint name"
+            );
+            assert_eq!(row.block_id, None, "D60 echo stage {stage}: block id");
+            assert_eq!(
+                row.term_index,
+                Some(0),
+                "D60 echo stage {stage}: term index"
+            );
+            assert_eq!(
+                row.variable_kind.as_deref(),
+                Some("hydro_outflow_volume"),
+                "D60 echo stage {stage}: variable kind"
+            );
+            assert_eq!(
+                row.variable.as_deref(),
+                Some("hydro_outflow_volume(id=0)"),
+                "D60 echo stage {stage}: variable label"
+            );
+            assert_eq!(
+                row.coefficient.map(f64::to_bits),
+                Some(1.0_f64.to_bits()),
+                "D60 echo stage {stage}: coefficient is the declared 1.0, never tau-scaled"
+            );
+            assert_eq!(
+                row.bound_lower.map(f64::to_bits),
+                expected_bounds[stage].0.map(f64::to_bits),
+                "D60 echo stage {stage}: bound_lower"
+            );
+            assert_eq!(
+                row.bound_upper.map(f64::to_bits),
+                expected_bounds[stage].1.map(f64::to_bits),
+                "D60 echo stage {stage}: bound_upper"
+            );
+            assert_eq!(
+                row.derived_shape, expected_shapes[stage],
+                "D60 echo stage {stage}: derived shape"
+            );
+            assert!(
+                row.slack_enabled,
+                "D60 echo stage {stage}: slack must be enabled"
+            );
+            assert_eq!(
+                row.slack_penalty,
+                Some(PENALTY),
+                "D60 echo stage {stage}: slack penalty"
+            );
+            assert_eq!(
+                row.slack_penalty_basis.as_deref(),
+                Some("per_unit"),
+                "D60 echo stage {stage}: slack penalty basis"
+            );
+        }
+    }
+
+    #[test]
+    fn d60_unbounded_volume_constraint_without_a_bounds_file_builds_the_unconstrained_templates() {
+        let unbounded = without_bounds_file(case_dir());
+        let bare = without_the_constraint(case_dir());
+        let (unbounded_system, unbounded_setup) =
+            fresh_system_and_setup_with(unbounded.path(), |_| {});
+        let (bare_system, bare_setup) = fresh_system_and_setup_with(bare.path(), |_| {});
+
+        assert_eq!(
+            unbounded_system.generic_constraints().len(),
+            1,
+            "D60 without a bounds file: the constraint is loaded"
+        );
+        assert_eq!(
+            bare_system.generic_constraints().len(),
+            0,
+            "D60 without the constraint: no constraint is loaded"
+        );
+        for (stage, entries) in unbounded_setup
+            .inputs
+            .stage_data
+            .stage_templates
+            .generic_constraint_row_entries
+            .iter()
+            .enumerate()
+        {
+            assert!(
+                entries.is_empty(),
+                "D60 without a bounds file, stage {stage}: no generic row entry"
+            );
+        }
+        assert_all_templates_byte_identical(
+            &unbounded_setup.inputs.stage_data.stage_templates.templates,
+            &bare_setup.inputs.stage_data.stage_templates.templates,
+            "d60 volume constraint without a bounds file",
+        );
+    }
+
+    #[test]
+    fn d60_unbounded_volume_constraint_with_an_empty_bounds_file_builds_the_unconstrained_templates()
+     {
+        let unbounded = with_empty_bounds_file(case_dir());
+        let bare = without_the_constraint(case_dir());
+        let (unbounded_system, unbounded_setup) =
+            fresh_system_and_setup_with(unbounded.path(), |_| {});
+        let (bare_system, bare_setup) = fresh_system_and_setup_with(bare.path(), |_| {});
+
+        assert_eq!(
+            unbounded_system.generic_constraints().len(),
+            1,
+            "D60 with an empty bounds file: the constraint is loaded"
+        );
+        assert_eq!(
+            bare_system.generic_constraints().len(),
+            0,
+            "D60 without the constraint: no constraint is loaded"
+        );
+        for (stage, entries) in unbounded_setup
+            .inputs
+            .stage_data
+            .stage_templates
+            .generic_constraint_row_entries
+            .iter()
+            .enumerate()
+        {
+            assert!(
+                entries.is_empty(),
+                "D60 with an empty bounds file, stage {stage}: no generic row entry"
+            );
+        }
+        assert_all_templates_byte_identical(
+            &unbounded_setup.inputs.stage_data.stage_templates.templates,
+            &bare_setup.inputs.stage_data.stage_templates.templates,
+            "d60 volume constraint with an empty bounds file",
+        );
+    }
+
+    #[test]
+    fn d60_bounded_volume_constraint_adds_one_stage_level_row_per_bounded_stage() {
+        const ADDED_ROWS: [usize; 4] = [1, 1, 1, 0];
+        let bare = without_the_constraint(case_dir());
+        let (_, bounded_setup) = fresh_system_and_setup_with(case_dir(), |_| {});
+        let (_, bare_setup) = fresh_system_and_setup_with(bare.path(), |_| {});
+        let bounded = &bounded_setup.inputs.stage_data.stage_templates;
+        let unconstrained = &bare_setup.inputs.stage_data.stage_templates;
+
+        for (stage, added) in ADDED_ROWS.into_iter().enumerate() {
+            assert_eq!(
+                bounded.templates[stage].num_rows,
+                unconstrained.templates[stage].num_rows + added,
+                "D60 stage {stage}: rows the bounded constraint adds"
+            );
+            let entries = &bounded.generic_constraint_row_entries[stage];
+            assert_eq!(
+                entries.len(),
+                added,
+                "D60 stage {stage}: generic row entry count"
+            );
+            for entry in entries {
+                assert_eq!(
+                    entry.entity_id, 1,
+                    "D60 stage {stage}: row entry constraint id"
+                );
+                assert!(
+                    entry.is_stage_level,
+                    "D60 stage {stage}: row entry must be stage-level"
+                );
+            }
         }
     }
 }

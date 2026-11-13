@@ -82,11 +82,75 @@ def _duplicate_january_season(case: pathlib.Path) -> None:
     _edit_json(case / "stages.json", edit)
 
 
-def _repeat_generic_constraint_block_argument(case: pathlib.Path) -> None:
+def _set_constraint_expression(case: pathlib.Path, expression: str) -> None:
     def edit(constraints: Any) -> None:
-        constraints["constraints"][0]["expression"] = "thermal_generation(0, 0, 0)"
+        constraints["constraints"][0]["expression"] = expression
 
     _edit_json(case / "constraints" / "generic_constraints.json", edit)
+
+
+def _repeat_generic_constraint_block_argument(case: pathlib.Path) -> None:
+    _set_constraint_expression(case, "thermal_generation(0, 0, 0)")
+
+
+def _stage_volume_term_with_a_block_argument(case: pathlib.Path) -> None:
+    _set_constraint_expression(case, "hydro_outflow_volume(0, 0)")
+
+
+def _stage_volume_term_beside_a_per_block_term(case: pathlib.Path) -> None:
+    _set_constraint_expression(case, "hydro_outflow_volume(0) + thermal_generation(0)")
+
+
+def _stage_volume_constraint_with_a_per_block_parameter(case: pathlib.Path) -> None:
+    (case / "constraints" / "generic_parameters.json").write_text(
+        json.dumps(
+            {
+                "scalar_parameters": [
+                    {
+                        "id": 1,
+                        "name": "block_weight",
+                        "kind": "per_stage_block",
+                        "block_values": [
+                            [stage, block, 1.0]
+                            for stage in range(4)
+                            for block in range(2)
+                        ],
+                    }
+                ]
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    _set_constraint_expression(case, "@block_weight * hydro_outflow_volume(0)")
+
+
+def _stage_volume_constraint_with_a_block_bounds_row(case: pathlib.Path) -> None:
+    schema = pa.schema(
+        [
+            pa.field("constraint_id", pa.int32(), nullable=False),
+            pa.field("stage_id", pa.int32(), nullable=False),
+            pa.field("block_id", pa.int32()),
+            pa.field("bound_lower", pa.float64()),
+            pa.field("bound_upper", pa.float64()),
+        ]
+    )
+    table = pa.table(
+        {
+            "constraint_id": [1, 1, 1],
+            "stage_id": [0, 1, 2],
+            "block_id": [0, None, None],
+            "bound_lower": [36.0, None, 64.8],
+            "bound_upper": [36.0, 10.8, None],
+        },
+        schema=schema,
+    )
+    pq.write_table(
+        table,
+        case / "constraints" / "generic_constraint_bounds.parquet",
+        compression="none",
+    )
 
 
 def _set_policy_path(case: pathlib.Path, policy_path: str) -> None:
@@ -509,6 +573,42 @@ ROWS = [
         outcome="BracketedRefusal",
         kind="SchemaViolation",
         fragment="repeated block argument in variable",
+        error_class_name="ValidationError",
+    ),
+    _row(
+        name="stage_volume_term_with_a_block_argument",
+        base_case="deterministic/d60-stage-outflow-volume-cap",
+        mutate=_stage_volume_term_with_a_block_argument,
+        outcome="BracketedRefusal",
+        kind="SchemaViolation",
+        fragment="does not accept a block argument",
+        error_class_name="ValidationError",
+    ),
+    _row(
+        name="stage_volume_term_beside_a_per_block_term",
+        base_case="deterministic/d60-stage-outflow-volume-cap",
+        mutate=_stage_volume_term_beside_a_per_block_term,
+        outcome="BracketedRefusal",
+        kind="BusinessRuleViolation",
+        fragment="cannot appear beside a stage-volume term",
+        error_class_name="ValidationError",
+    ),
+    _row(
+        name="stage_volume_constraint_with_a_per_block_parameter",
+        base_case="deterministic/d60-stage-outflow-volume-cap",
+        mutate=_stage_volume_constraint_with_a_per_block_parameter,
+        outcome="BracketedRefusal",
+        kind="BusinessRuleViolation",
+        fragment="takes no coefficient or bound that varies by block",
+        error_class_name="ValidationError",
+    ),
+    _row(
+        name="stage_volume_constraint_with_a_block_bounds_row",
+        base_case="deterministic/d60-stage-outflow-volume-cap",
+        mutate=_stage_volume_constraint_with_a_block_bounds_row,
+        outcome="BracketedRefusal",
+        kind="BusinessRuleViolation",
+        fragment="takes one row per stage with a null block_id",
         error_class_name="ValidationError",
     ),
     _row(

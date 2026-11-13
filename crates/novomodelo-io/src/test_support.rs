@@ -457,9 +457,8 @@ pub fn write_file(root: &Path, relative: &str, content: &str) {
     fs::write(&full, content).expect("write fixture file");
 }
 
-/// Populate `dir` with the eight required JSON files for a minimal valid
-/// case: 1 bus, 0 lines/hydros/thermals, 1 finite-horizon stage with no
-/// transitions.
+/// Populate `dir` with a minimal valid case: 1 bus, 0 lines/hydros/thermals,
+/// 1 finite-horizon stage with no transitions.
 ///
 /// # Panics
 ///
@@ -739,6 +738,7 @@ pub(crate) fn base_parsed_data(stages: StagesData, buses: Vec<Bus>) -> ParsedDat
         pumping_bounds: vec![],
         contract_bounds: vec![],
         generic_constraints: vec![],
+        generic_constraint_named_sources: std::collections::BTreeMap::new(),
         generic_constraint_bounds: vec![],
         penalty_overrides_bus: vec![],
         penalty_overrides_line: vec![],

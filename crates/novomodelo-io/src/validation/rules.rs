@@ -328,6 +328,15 @@ declare_rules! {
     SEMANTIC_INITIAL_STORAGE_OUTSIDE_FIRST_STAGE_BOUNDS = "semantic.5a.55",
         Semantic, ModelQuality, Warning,
         "A hydro's initial storage lies outside the storage bounds at the end of its first operating stage";
+    SEMANTIC_GENERIC_STAGE_VOLUME_NON_AMOUNT_TERM = "semantic.5a.56",
+        Semantic, BusinessRuleViolation, Error,
+        "A generic constraint with a stage-volume term also has a term that is not a block-free stage amount";
+    SEMANTIC_GENERIC_STAGE_VOLUME_PER_BLOCK_PARAMETER = "semantic.5a.57",
+        Semantic, BusinessRuleViolation, Error,
+        "A generic constraint with a stage-volume term reads a per_stage_block parameter in a coefficient or bound";
+    SEMANTIC_GENERIC_STAGE_VOLUME_BLOCK_BOUND_ROW = "semantic.5a.58",
+        Semantic, BusinessRuleViolation, Error,
+        "A generic_constraint_bounds.parquet row gives a block_id to a constraint with a stage-volume term";
     TRAVEL_TIME_INVALID = "travel_time.1",
         Semantic, InvalidValue, Error,
         "A hydro's travel_time_hours is negative or not finite";
