@@ -9,6 +9,7 @@
 //! overrides are handled by `novomodelo-io` and are not implemented here.
 
 use crate::entities::{DeficitSegment, HydroPenalties};
+use crate::model::temporal::M3S_TO_HM3;
 
 /// Global default penalty values for all entity types.
 ///
@@ -84,6 +85,7 @@ pub struct HydroPenaltyOverrides {
 /// ```
 /// use novomodelo_core::penalty::{GlobalPenaltyDefaults, resolve_bus_deficit_segments};
 /// use novomodelo_core::entities::{DeficitSegment, HydroPenalties};
+/// use novomodelo_core::volume_cost_from_flow_cost;
 ///
 /// let global = GlobalPenaltyDefaults {
 ///     bus_deficit_segments: vec![DeficitSegment { depth_mw: None, cost_per_mwh: 500.0 }],
@@ -93,7 +95,10 @@ pub struct HydroPenaltyOverrides {
 ///         spillage_cost: 0.01, diversion_cost: 0.02, turbined_cost: 0.03,
 ///         storage_violation_below_cost: 1.0, filling_target_violation_cost: 2.0,
 ///         turbined_violation_below_cost: 3.0, outflow_violation_below_cost: 4.0,
-///         outflow_violation_above_cost: 5.0, generation_violation_below_cost: 6.0,
+///         outflow_violation_above_cost: 5.0,
+///         outflow_volume_violation_below_cost: volume_cost_from_flow_cost(4.0),
+///         outflow_volume_violation_above_cost: volume_cost_from_flow_cost(5.0),
+///         generation_violation_below_cost: 6.0,
 ///         evaporation_violation_cost: 7.0, water_withdrawal_violation_cost: 8.0,
 ///         water_withdrawal_violation_pos_cost: 8.0, water_withdrawal_violation_neg_cost: 8.0,
 ///         evaporation_violation_pos_cost: 7.0, evaporation_violation_neg_cost: 7.0,
@@ -124,6 +129,7 @@ pub fn resolve_bus_deficit_segments(
 /// ```
 /// use novomodelo_core::penalty::{GlobalPenaltyDefaults, resolve_bus_excess_cost};
 /// use novomodelo_core::entities::{DeficitSegment, HydroPenalties};
+/// use novomodelo_core::volume_cost_from_flow_cost;
 ///
 /// let global = GlobalPenaltyDefaults {
 ///     bus_deficit_segments: vec![DeficitSegment { depth_mw: None, cost_per_mwh: 500.0 }],
@@ -133,7 +139,10 @@ pub fn resolve_bus_deficit_segments(
 ///         spillage_cost: 0.01, diversion_cost: 0.02, turbined_cost: 0.03,
 ///         storage_violation_below_cost: 1.0, filling_target_violation_cost: 2.0,
 ///         turbined_violation_below_cost: 3.0, outflow_violation_below_cost: 4.0,
-///         outflow_violation_above_cost: 5.0, generation_violation_below_cost: 6.0,
+///         outflow_violation_above_cost: 5.0,
+///         outflow_volume_violation_below_cost: volume_cost_from_flow_cost(4.0),
+///         outflow_volume_violation_above_cost: volume_cost_from_flow_cost(5.0),
+///         generation_violation_below_cost: 6.0,
 ///         evaporation_violation_cost: 7.0, water_withdrawal_violation_cost: 8.0,
 ///         water_withdrawal_violation_pos_cost: 8.0, water_withdrawal_violation_neg_cost: 8.0,
 ///         evaporation_violation_pos_cost: 7.0, evaporation_violation_neg_cost: 7.0,
@@ -160,6 +169,7 @@ pub fn resolve_bus_excess_cost(
 /// ```
 /// use novomodelo_core::penalty::{GlobalPenaltyDefaults, resolve_line_exchange_cost};
 /// use novomodelo_core::entities::{DeficitSegment, HydroPenalties};
+/// use novomodelo_core::volume_cost_from_flow_cost;
 ///
 /// let global = GlobalPenaltyDefaults {
 ///     bus_deficit_segments: vec![DeficitSegment { depth_mw: None, cost_per_mwh: 500.0 }],
@@ -169,7 +179,10 @@ pub fn resolve_bus_excess_cost(
 ///         spillage_cost: 0.01, diversion_cost: 0.02, turbined_cost: 0.03,
 ///         storage_violation_below_cost: 1.0, filling_target_violation_cost: 2.0,
 ///         turbined_violation_below_cost: 3.0, outflow_violation_below_cost: 4.0,
-///         outflow_violation_above_cost: 5.0, generation_violation_below_cost: 6.0,
+///         outflow_violation_above_cost: 5.0,
+///         outflow_volume_violation_below_cost: volume_cost_from_flow_cost(4.0),
+///         outflow_volume_violation_above_cost: volume_cost_from_flow_cost(5.0),
+///         generation_violation_below_cost: 6.0,
 ///         evaporation_violation_cost: 7.0, water_withdrawal_violation_cost: 8.0,
 ///         water_withdrawal_violation_pos_cost: 8.0, water_withdrawal_violation_neg_cost: 8.0,
 ///         evaporation_violation_pos_cost: 7.0, evaporation_violation_neg_cost: 7.0,
@@ -204,12 +217,16 @@ pub fn resolve_line_exchange_cost(
 ///     GlobalPenaltyDefaults, HydroPenaltyOverrides, resolve_hydro_penalties,
 /// };
 /// use novomodelo_core::entities::{DeficitSegment, HydroPenalties};
+/// use novomodelo_core::volume_cost_from_flow_cost;
 ///
 /// let global_hydro = HydroPenalties {
 ///     spillage_cost: 0.01, diversion_cost: 0.02, turbined_cost: 0.03,
 ///     storage_violation_below_cost: 1.0, filling_target_violation_cost: 2.0,
 ///     turbined_violation_below_cost: 3.0, outflow_violation_below_cost: 4.0,
-///     outflow_violation_above_cost: 5.0, generation_violation_below_cost: 6.0,
+///     outflow_violation_above_cost: 5.0,
+///     outflow_volume_violation_below_cost: volume_cost_from_flow_cost(4.0),
+///     outflow_volume_violation_above_cost: volume_cost_from_flow_cost(5.0),
+///     generation_violation_below_cost: 6.0,
 ///     evaporation_violation_cost: 7.0, water_withdrawal_violation_cost: 8.0,
 ///     water_withdrawal_violation_pos_cost: 8.0, water_withdrawal_violation_neg_cost: 8.0,
 ///     evaporation_violation_pos_cost: 7.0, evaporation_violation_neg_cost: 7.0,
@@ -264,6 +281,8 @@ pub fn resolve_hydro_penalties(
                 outflow_violation_above_cost: ov
                     .outflow_violation_above_cost
                     .unwrap_or(g.outflow_violation_above_cost),
+                outflow_volume_violation_below_cost: g.outflow_volume_violation_below_cost,
+                outflow_volume_violation_above_cost: g.outflow_volume_violation_above_cost,
                 generation_violation_below_cost: ov
                     .generation_violation_below_cost
                     .unwrap_or(g.generation_violation_below_cost),
@@ -307,6 +326,7 @@ pub fn resolve_hydro_penalties(
 /// ```
 /// use novomodelo_core::penalty::{GlobalPenaltyDefaults, resolve_ncs_curtailment_cost};
 /// use novomodelo_core::entities::{DeficitSegment, HydroPenalties};
+/// use novomodelo_core::volume_cost_from_flow_cost;
 ///
 /// let global = GlobalPenaltyDefaults {
 ///     bus_deficit_segments: vec![],
@@ -316,7 +336,10 @@ pub fn resolve_hydro_penalties(
 ///         spillage_cost: 0.01, diversion_cost: 0.02, turbined_cost: 0.03,
 ///         storage_violation_below_cost: 1.0, filling_target_violation_cost: 2.0,
 ///         turbined_violation_below_cost: 3.0, outflow_violation_below_cost: 4.0,
-///         outflow_violation_above_cost: 5.0, generation_violation_below_cost: 6.0,
+///         outflow_violation_above_cost: 5.0,
+///         outflow_volume_violation_below_cost: volume_cost_from_flow_cost(4.0),
+///         outflow_volume_violation_above_cost: volume_cost_from_flow_cost(5.0),
+///         generation_violation_below_cost: 6.0,
 ///         evaporation_violation_cost: 7.0, water_withdrawal_violation_cost: 8.0,
 ///         water_withdrawal_violation_pos_cost: 8.0, water_withdrawal_violation_neg_cost: 8.0,
 ///         evaporation_violation_pos_cost: 7.0, evaporation_violation_neg_cost: 7.0,
@@ -336,9 +359,17 @@ pub fn resolve_ncs_curtailment_cost(
     entity_curtailment_cost.unwrap_or(global.ncs_curtailment_cost)
 }
 
+/// The $/hm³ price equal to `cost_per_m3s_hour` $/(m³/s·h).
+#[must_use]
+pub const fn volume_cost_from_flow_cost(cost_per_m3s_hour: f64) -> f64 {
+    cost_per_m3s_hour / M3S_TO_HM3
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const _: f64 = volume_cost_from_flow_cost(1.0);
 
     fn make_global() -> GlobalPenaltyDefaults {
         GlobalPenaltyDefaults {
@@ -363,6 +394,8 @@ mod tests {
                 turbined_violation_below_cost: 3.0,
                 outflow_violation_below_cost: 4.0,
                 outflow_violation_above_cost: 5.0,
+                outflow_volume_violation_below_cost: volume_cost_from_flow_cost(4.0),
+                outflow_volume_violation_above_cost: volume_cost_from_flow_cost(5.0),
                 generation_violation_below_cost: 6.0,
                 evaporation_violation_cost: 7.0,
                 water_withdrawal_violation_cost: 8.0,
@@ -644,5 +677,24 @@ mod tests {
         assert!((result.water_withdrawal_violation_neg_cost - 999.0).abs() < f64::EPSILON);
         assert!((result.evaporation_violation_pos_cost - 555.0).abs() < f64::EPSILON);
         assert!((result.evaporation_violation_neg_cost - 6666.0).abs() < f64::EPSILON);
+    }
+
+    /// derived: 36 $/(m³/s·h) ÷ 0.0036 hm³/(m³/s·h) = 10000 $/hm³
+    #[test]
+    fn volume_cost_from_flow_cost_divides_by_the_hourly_conversion() {
+        let c36 = volume_cost_from_flow_cost(36.0);
+        assert_eq!(
+            c36.to_bits(),
+            (36.0_f64 / (3_600.0 / 1_000_000.0)).to_bits()
+        );
+        assert!((c36 - 10_000.0).abs() < 1e-9);
+
+        let c72 = volume_cost_from_flow_cost(72.0);
+        assert!((c72 - 2.0 * c36).abs() < 1e-9);
+        assert!((c72 - c36).abs() > 1e-9);
+
+        let c7 = volume_cost_from_flow_cost(7.0);
+        assert_eq!(c7.to_bits(), (7.0_f64 / (3_600.0 / 1_000_000.0)).to_bits());
+        assert_ne!(c7.to_bits(), (7.0_f64 * 1_000_000.0 / 3_600.0).to_bits());
     }
 }

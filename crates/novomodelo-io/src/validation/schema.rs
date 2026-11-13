@@ -752,7 +752,10 @@ where
 /// Build a minimal valid [`GlobalPenaltyDefaults`] sentinel used when
 /// `penalties.json` failed to parse.
 fn sentinel_penalties() -> GlobalPenaltyDefaults {
-    use novomodelo_core::entities::{DeficitSegment, HydroPenalties};
+    use novomodelo_core::{
+        entities::{DeficitSegment, HydroPenalties},
+        volume_cost_from_flow_cost,
+    };
     GlobalPenaltyDefaults {
         bus_deficit_segments: vec![DeficitSegment {
             depth_mw: None,
@@ -769,6 +772,8 @@ fn sentinel_penalties() -> GlobalPenaltyDefaults {
             turbined_violation_below_cost: 1.0,
             outflow_violation_below_cost: 1.0,
             outflow_violation_above_cost: 1.0,
+            outflow_volume_violation_below_cost: volume_cost_from_flow_cost(1.0),
+            outflow_volume_violation_above_cost: volume_cost_from_flow_cost(1.0),
             generation_violation_below_cost: 1.0,
             evaporation_violation_cost: 1.0,
             water_withdrawal_violation_cost: 1.0,

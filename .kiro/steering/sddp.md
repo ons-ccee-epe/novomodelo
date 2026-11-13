@@ -287,8 +287,9 @@ the total stage hours, never a block's hours).
 A stage-volume term (`hydro_outflow_volume`, `hydro_diversion_volume`,
 `pumping_volume`) is the stage volume in hm³: `Σ_k τ_k · flow_k` over every
 block of the stage, in ascending block order, on parallel and chronological
-stages alike. τ_k comes only from `BlockClock::tau`
-(`duration_hours * M3S_TO_HM3`). `resolve_stage_volume` multiplies the flow
+stages alike. τ_k comes only from `Block::tau` in `novomodelo-core`
+(`duration_hours * M3S_TO_HM3`), reached in the builder through
+`BlockClock::tau`, which delegates. `resolve_stage_volume` multiplies the flow
 counterpart's columns by that τ, so the flow resolvers stay the single owners
 of which columns a flow reads, and no column or row family is added.
 
@@ -337,11 +338,11 @@ The wrong-but-compiling alternatives, and the tests that pin them:
   `d60_equal_hours_twin_matches_its_own_closed_form` are controls, not pins:
   they pass under the uniform split by design.
 - **A second τ derivation** (hours times a locally restated conversion, or a
-  split of ζ). `BlockClock::tau` is the only owner. A derivation that rounds
-  differently fails the bit-exact `*_weights_each_block_by_its_own_hours`
-  comparisons (`lp/builder/generic_constraints/tests.rs`). Some second
-  derivations round identically and pass, which is why the single-owner rule is
-  the contract.
+  split of ζ). `Block::tau` (novomodelo-core) is the only owner;
+  `BlockClock::tau` delegates to it. A derivation that rounds differently fails
+  the bit-exact `*_weights_each_block_by_its_own_hours` comparisons
+  (`lp/builder/generic_constraints/tests.rs`). Some second derivations round
+  identically and pass, which is why the single-owner rule is the contract.
 - **Reading one block only** (a truncated block loop, or the row's
   `block_idx`). The row then holds one block's volume, not the stage's. Pinned
   by `stage_volume_resolution_ignores_the_block_argument_and_the_block_mode`
@@ -388,7 +389,8 @@ The wrong-but-compiling alternatives, and the tests that pin them:
   `d60_echo_carries_the_declared_coefficient_and_shapes`
   (`tests/deterministic.rs`).
 
-Read: `crates/novomodelo-sddp/src/block_clock.rs` (`BlockClock::tau`),
+Read: `crates/novomodelo-core/src/model/temporal.rs` (`Block::tau`,
+`M3S_TO_HM3`), `crates/novomodelo-sddp/src/block_clock.rs` (`BlockClock::tau`),
 `lp/builder/generic_constraints.rs` (`resolve_stage_volume`),
 `lp/builder/layout.rs` (`variable_ref_is_block_independent`),
 `lp/builder/entries.rs` (`fill_generic_constraint_entries`),

@@ -1,13 +1,8 @@
 //! Single owner of the stage block-hours facts derived from `Stage::blocks`.
 
-use novomodelo_core::{Block, Stage};
+use novomodelo_core::{Block, M3S_TO_HM3, Stage};
 
 use crate::indexer::BlockIdx;
-
-/// Per-hour conversion factor from m³/s to hm³:
-/// `seconds_per_hour / m³_per_hm³ = 3600 / 1_000_000`. Callers multiply by
-/// `Block::duration_hours`: `volume_hm3 = flow_m3s * M3S_TO_HM3 * duration_hours`.
-pub(crate) const M3S_TO_HM3: f64 = 3_600.0 / 1_000_000.0;
 
 /// zeta is the summed block hours times [`M3S_TO_HM3`], never the sum of the
 /// per-block `tau` factors.
@@ -38,7 +33,7 @@ impl<'a> BlockClock<'a> {
     }
 
     pub(crate) fn tau(self, blk: BlockIdx) -> f64 {
-        self.blocks[blk.get()].duration_hours * M3S_TO_HM3
+        self.blocks[blk.get()].tau()
     }
 
     pub(crate) fn hours(self, blk: BlockIdx) -> f64 {
@@ -50,11 +45,11 @@ impl<'a> BlockClock<'a> {
 mod tests {
     use chrono::NaiveDate;
     use novomodelo_core::{
-        Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
+        Block, BlockMode, M3S_TO_HM3, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
         StageStateConfig,
     };
 
-    use super::{BlockClock, M3S_TO_HM3};
+    use super::BlockClock;
     use crate::indexer::BlockIdx;
 
     fn stage_with_hours(hours: [f64; 3]) -> Stage {

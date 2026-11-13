@@ -1598,21 +1598,9 @@ mod transit_seed_output {
     fn hydro_penalties() -> HydroPenalties {
         HydroPenalties {
             spillage_cost: 0.01,
-            diversion_cost: 0.0,
-            turbined_cost: 0.0,
             storage_violation_below_cost: 500.0,
-            filling_target_violation_cost: 0.0,
-            turbined_violation_below_cost: 0.0,
-            outflow_violation_below_cost: 0.0,
-            outflow_violation_above_cost: 0.0,
-            generation_violation_below_cost: 0.0,
-            evaporation_violation_cost: 0.0,
-            water_withdrawal_violation_cost: 0.0,
-            water_withdrawal_violation_pos_cost: 0.0,
-            water_withdrawal_violation_neg_cost: 0.0,
-            evaporation_violation_pos_cost: 0.0,
-            evaporation_violation_neg_cost: 0.0,
             inflow_nonnegativity_cost: 1000.0,
+            ..HydroPenalties::uniform(0.0)
         }
     }
 
@@ -1999,27 +1987,6 @@ mod transit_seed_round_trip {
             .collect()
     }
 
-    fn zero_hydro_stage_penalties() -> HydroPenalties {
-        HydroPenalties {
-            spillage_cost: 0.0,
-            diversion_cost: 0.0,
-            turbined_cost: 0.0,
-            storage_violation_below_cost: 0.0,
-            filling_target_violation_cost: 0.0,
-            turbined_violation_below_cost: 0.0,
-            outflow_violation_below_cost: 0.0,
-            outflow_violation_above_cost: 0.0,
-            generation_violation_below_cost: 0.0,
-            evaporation_violation_cost: 0.0,
-            water_withdrawal_violation_cost: 0.0,
-            water_withdrawal_violation_pos_cost: 0.0,
-            water_withdrawal_violation_neg_cost: 0.0,
-            evaporation_violation_pos_cost: 0.0,
-            evaporation_violation_neg_cost: 0.0,
-            inflow_nonnegativity_cost: 0.0,
-        }
-    }
-
     /// A minimal upstream `U` -> downstream `J` cascade declaring a travel-time
     /// arc of `travel_time_hours`, its study starting at `base`, seeded from
     /// `past_defluences`. Both hydros' storage is pinned constant
@@ -2143,7 +2110,7 @@ mod transit_seed_round_trip {
                 n_stages,
             },
             &PenaltiesDefaults {
-                hydro: zero_hydro_stage_penalties(),
+                hydro: HydroPenalties::uniform(0.0),
                 bus: BusStagePenalties { excess_cost: 0.0 },
                 line: LineStagePenalties { exchange_cost: 0.0 },
                 ncs: NcsStagePenalties {
@@ -2590,20 +2557,10 @@ mod diversion_outflow_bounds {
         HydroPenalties {
             spillage_cost,
             diversion_cost,
-            turbined_cost: 0.0,
-            storage_violation_below_cost: 0.0,
-            filling_target_violation_cost: 0.0,
-            turbined_violation_below_cost: 0.0,
             outflow_violation_below_cost: 1000.0,
             outflow_violation_above_cost: 1000.0,
-            generation_violation_below_cost: 0.0,
-            evaporation_violation_cost: 0.0,
-            water_withdrawal_violation_cost: 0.0,
-            water_withdrawal_violation_pos_cost: 0.0,
-            water_withdrawal_violation_neg_cost: 0.0,
-            evaporation_violation_pos_cost: 0.0,
-            evaporation_violation_neg_cost: 0.0,
             inflow_nonnegativity_cost: 1000.0,
+            ..HydroPenalties::uniform(0.0)
         }
     }
 
@@ -3196,21 +3153,9 @@ mod water_arc_and_post_study_anticipated_coexist_on_extended_layout {
             &PenaltiesDefaults {
                 hydro: HydroPenalties {
                     spillage_cost: 0.01,
-                    diversion_cost: 0.0,
-                    turbined_cost: 0.0,
                     storage_violation_below_cost: 500.0,
-                    filling_target_violation_cost: 0.0,
-                    turbined_violation_below_cost: 0.0,
-                    outflow_violation_below_cost: 0.0,
-                    outflow_violation_above_cost: 0.0,
-                    generation_violation_below_cost: 0.0,
-                    evaporation_violation_cost: 0.0,
-                    water_withdrawal_violation_cost: 0.0,
-                    water_withdrawal_violation_pos_cost: 0.0,
-                    water_withdrawal_violation_neg_cost: 0.0,
-                    evaporation_violation_pos_cost: 0.0,
-                    evaporation_violation_neg_cost: 0.0,
                     inflow_nonnegativity_cost: 1_000.0,
+                    ..HydroPenalties::uniform(0.0)
                 },
                 bus: BusStagePenalties { excess_cost: 0.0 },
                 line: LineStagePenalties { exchange_cost: 0.0 },

@@ -142,21 +142,9 @@ fn build_system_from(spec: &FixtureSpec) -> novomodelo_core::System {
 
     let zero_entity_penalties = HydroPenalties {
         spillage_cost: spec.release_cost,
-        diversion_cost: 0.0,
         turbined_cost: spec.release_cost,
-        storage_violation_below_cost: 0.0,
-        filling_target_violation_cost: 0.0,
-        turbined_violation_below_cost: 0.0,
-        outflow_violation_below_cost: 0.0,
-        outflow_violation_above_cost: 0.0,
-        generation_violation_below_cost: 0.0,
-        evaporation_violation_cost: 0.0,
-        water_withdrawal_violation_cost: 0.0,
-        water_withdrawal_violation_pos_cost: 0.0,
-        water_withdrawal_violation_neg_cost: 0.0,
-        evaporation_violation_pos_cost: 0.0,
-        evaporation_violation_neg_cost: 0.0,
         inflow_nonnegativity_cost: spec.inflow_nonnegativity_cost,
+        ..HydroPenalties::uniform(0.0)
     };
 
     let bus = make_bus(
@@ -325,21 +313,9 @@ fn build_system_from(spec: &FixtureSpec) -> novomodelo_core::System {
 
     let hydro_penalties_default = HydroPenalties {
         spillage_cost: spec.release_cost,
-        diversion_cost: 0.0,
         turbined_cost: spec.release_cost,
-        storage_violation_below_cost: 0.0,
-        filling_target_violation_cost: 0.0,
-        turbined_violation_below_cost: 0.0,
-        outflow_violation_below_cost: 0.0,
-        outflow_violation_above_cost: 0.0,
-        generation_violation_below_cost: 0.0,
-        evaporation_violation_cost: 0.0,
-        water_withdrawal_violation_cost: 0.0,
-        water_withdrawal_violation_pos_cost: 0.0,
-        water_withdrawal_violation_neg_cost: 0.0,
-        evaporation_violation_pos_cost: 0.0,
-        evaporation_violation_neg_cost: 0.0,
         inflow_nonnegativity_cost: spec.inflow_nonnegativity_cost,
+        ..HydroPenalties::uniform(0.0)
     };
     let resolved_penalties = ResolvedPenalties::new(
         &PenaltiesCountsSpec {
@@ -799,22 +775,8 @@ fn truncation_with_penalty_training_completes() {
 /// H2 = 5000 $/(m³/s·h).
 fn per_plant_penalty_system() -> novomodelo_core::System {
     let hydro_penalties_default = HydroPenalties {
-        spillage_cost: 0.0,
-        diversion_cost: 0.0,
-        turbined_cost: 0.0,
-        storage_violation_below_cost: 0.0,
-        filling_target_violation_cost: 0.0,
-        turbined_violation_below_cost: 0.0,
-        outflow_violation_below_cost: 0.0,
-        outflow_violation_above_cost: 0.0,
-        generation_violation_below_cost: 0.0,
-        evaporation_violation_cost: 0.0,
-        water_withdrawal_violation_cost: 0.0,
-        water_withdrawal_violation_pos_cost: 0.0,
-        water_withdrawal_violation_neg_cost: 0.0,
-        evaporation_violation_pos_cost: 0.0,
-        evaporation_violation_neg_cost: 0.0,
         inflow_nonnegativity_cost: 100.0,
+        ..HydroPenalties::uniform(0.0)
     };
     let mut resolved_penalties = ResolvedPenalties::new(
         &PenaltiesCountsSpec {
@@ -1590,7 +1552,7 @@ mod water_balance_closure {
 
     use arrow::array::{Array, Float64Array, Int32Array};
     use arrow::record_batch::RecordBatch;
-    use novomodelo_core::BlockMode;
+    use novomodelo_core::{BlockMode, M3S_TO_HM3};
     use novomodelo_io::config::{
         InflowNonNegativityMethod as CfgInflowMethod, PhaseSolverProfileConfig, SimulationSelection,
     };
@@ -1603,8 +1565,6 @@ mod water_balance_closure {
     };
     use super::common::{build_setup_in_code_with_models, run_simulation};
 
-    /// hm³ per m³/s per hour.
-    const M3S_TO_HM3: f64 = 3_600.0 / 1_000_000.0;
     const SIMULATION_SCENARIOS: u32 = 20;
     const TRAINING_ITERATIONS: usize = 3;
     /// With a unit productivity, a 400 MW load and 600 hm³ of initial storage the

@@ -305,11 +305,10 @@ mod tests {
     use novomodelo_core::{
         BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, EntityId, FillingConfig, Hydro,
         HydroBlockBounds, HydroGenerationModel, HydroPenalties, HydroStageBounds, LineBlockBounds,
-        PumpingBlockBounds, ResolvedBounds, ThermalBlockBounds, ThermalStageBounds,
+        M3S_TO_HM3, PumpingBlockBounds, ResolvedBounds, ThermalBlockBounds, ThermalStageBounds,
     };
 
     use super::build_filling_v_target;
-    use crate::block_clock::M3S_TO_HM3;
 
     fn default_hydro_bounds() -> HydroStageBounds {
         HydroStageBounds {
@@ -325,28 +324,6 @@ mod tests {
             max_turbined_m3s: 100.0,
             max_generation_mw: 250.0,
             ..Default::default()
-        }
-    }
-
-    /// All-zero per-plant [`HydroPenalties`] for fixture hydros.
-    fn hydro_penalties_zero() -> HydroPenalties {
-        HydroPenalties {
-            spillage_cost: 0.0,
-            diversion_cost: 0.0,
-            turbined_cost: 0.0,
-            storage_violation_below_cost: 0.0,
-            filling_target_violation_cost: 0.0,
-            turbined_violation_below_cost: 0.0,
-            outflow_violation_below_cost: 0.0,
-            outflow_violation_above_cost: 0.0,
-            generation_violation_below_cost: 0.0,
-            evaporation_violation_cost: 0.0,
-            water_withdrawal_violation_cost: 0.0,
-            water_withdrawal_violation_pos_cost: 0.0,
-            water_withdrawal_violation_neg_cost: 0.0,
-            evaporation_violation_pos_cost: 0.0,
-            evaporation_violation_neg_cost: 0.0,
-            inflow_nonnegativity_cost: 0.0,
         }
     }
 
@@ -389,7 +366,7 @@ mod tests {
                 start_stage_id: start,
                 filling_min_rate_m3s: 0.0,
             }),
-            penalties: hydro_penalties_zero(),
+            penalties: HydroPenalties::uniform(0.0),
         };
         hydro.declare_mirror_unit_group(EntityId(1));
         hydro

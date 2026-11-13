@@ -88,8 +88,8 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use novomodelo_core::{
-    AnticipatedConfig, EntityId, Hydro, HydroPastDefluence, ScalarParameter, Stage, StageId,
-    System, Thermal,
+    AnticipatedConfig, EntityId, Hydro, HydroPastDefluence, M3S_TO_HM3, ScalarParameter, Stage,
+    StageId, System, Thermal,
     scenario::{SamplingScheme, ScenarioSource},
 };
 use novomodelo_io::StageIdResolver;
@@ -101,7 +101,6 @@ use novomodelo_stochastic::{
 
 use crate::{
     InflowNonNegativityMethod,
-    block_clock::M3S_TO_HM3,
     config::{CutManagementConfig, EventParams, ShutdownSource},
     cut::{CutSet, FutureCostFunction},
     cut_selection::CutSelectionStrategy,
@@ -3091,27 +3090,6 @@ mod transit_seed_round_trip_tests {
         NaiveDate::from_ymd_opt(y, m, d).unwrap_or_else(|| unreachable!("hardcoded date is valid"))
     }
 
-    fn zero_penalties() -> HydroPenalties {
-        HydroPenalties {
-            spillage_cost: 0.0,
-            diversion_cost: 0.0,
-            turbined_cost: 0.0,
-            storage_violation_below_cost: 0.0,
-            filling_target_violation_cost: 0.0,
-            turbined_violation_below_cost: 0.0,
-            outflow_violation_below_cost: 0.0,
-            outflow_violation_above_cost: 0.0,
-            generation_violation_below_cost: 0.0,
-            evaporation_violation_cost: 0.0,
-            water_withdrawal_violation_cost: 0.0,
-            water_withdrawal_violation_pos_cost: 0.0,
-            water_withdrawal_violation_neg_cost: 0.0,
-            evaporation_violation_pos_cost: 0.0,
-            evaporation_violation_neg_cost: 0.0,
-            inflow_nonnegativity_cost: 0.0,
-        }
-    }
-
     fn hydro(id: i32, downstream_id: Option<i32>, travel_time_hours: Option<f64>) -> Hydro {
         let mut h = Hydro {
             unit_groups: Vec::new(),
@@ -3139,7 +3117,7 @@ mod transit_seed_round_trip_tests {
             evaporation_reference_volumes_hm3: None,
             diversion: None,
             filling: None,
-            penalties: zero_penalties(),
+            penalties: HydroPenalties::uniform(0.0),
         };
         h.declare_mirror_unit_group(EntityId(1));
         h

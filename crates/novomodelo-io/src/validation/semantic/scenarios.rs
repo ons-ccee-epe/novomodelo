@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
 use novomodelo_core::scenario::SamplingScheme;
-use novomodelo_core::{EntityId, Hydro};
+use novomodelo_core::{EntityId, Hydro, M3S_TO_HM3};
 use novomodelo_stochastic::derive_external_sample_moments;
 use novomodelo_stochastic::par::{
     AnnualParams, ClosureRejection, check_stationarity, check_stationarity_annual,
@@ -1056,11 +1056,6 @@ pub(super) fn check_estimation_prerequisites(data: &ParsedData, ctx: &mut Valida
 }
 
 // ── Filling-schedule sufficiency ──────────────────────────────────────────────
-
-/// m³/s → hm³ per stage-hour: `3600 s/h ÷ 1e6 m³/hm³`. Duplicated from the
-/// solver-side copy on purpose — a shared dependency would break novomodelo-io's
-/// infrastructure-genericity rule; this is redundancy-with-purpose, not drift.
-const M3S_TO_HM3: f64 = 3_600.0 / 1_000_000.0;
 
 /// Rule 33: checks that each filling hydro's minimum accumulation schedule can reach its
 /// dead volume before the entry stage:

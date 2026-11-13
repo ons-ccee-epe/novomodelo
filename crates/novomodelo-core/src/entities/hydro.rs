@@ -74,6 +74,10 @@ pub struct HydroPenalties {
     pub outflow_violation_below_cost: f64,
     /// Penalty on non-diverted outflow above maximum bound ($/(m³/s·h)).
     pub outflow_violation_above_cost: f64,
+    /// Outflow-volume below-minimum violation penalty ($/hm³).
+    pub outflow_volume_violation_below_cost: f64,
+    /// Outflow-volume above-maximum violation penalty ($/hm³).
+    pub outflow_volume_violation_above_cost: f64,
     /// Penalty per `MWh` of generation below minimum bound ($/`MWh`).
     pub generation_violation_below_cost: f64,
     /// Symmetric evaporation violation penalty, the default of both directional
@@ -110,6 +114,8 @@ impl HydroPenalties {
             turbined_violation_below_cost: v,
             outflow_violation_below_cost: v,
             outflow_violation_above_cost: v,
+            outflow_volume_violation_below_cost: v,
+            outflow_volume_violation_above_cost: v,
             generation_violation_below_cost: v,
             evaporation_violation_cost: v,
             water_withdrawal_violation_cost: v,
@@ -336,6 +342,7 @@ impl Hydro {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::volume_cost_from_flow_cost;
 
     fn penalties_all(v: f64) -> HydroPenalties {
         HydroPenalties {
@@ -548,6 +555,8 @@ mod tests {
             turbined_violation_below_cost: 6.0,
             outflow_violation_below_cost: 7.0,
             outflow_violation_above_cost: 8.0,
+            outflow_volume_violation_below_cost: volume_cost_from_flow_cost(7.0),
+            outflow_volume_violation_above_cost: volume_cost_from_flow_cost(8.0),
             generation_violation_below_cost: 9.0,
             evaporation_violation_cost: 10.0,
             water_withdrawal_violation_cost: 11.0,
@@ -569,6 +578,17 @@ mod tests {
         assert!((p.generation_violation_below_cost - 9.0).abs() < f64::EPSILON);
         assert!((p.evaporation_violation_cost - 10.0).abs() < f64::EPSILON);
         assert!((p.water_withdrawal_violation_cost - 11.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn uniform_sets_the_outflow_volume_costs() {
+        let seven = HydroPenalties::uniform(7.0);
+        assert!((seven.outflow_volume_violation_below_cost - 7.0).abs() < f64::EPSILON);
+        assert!((seven.outflow_volume_violation_above_cost - 7.0).abs() < f64::EPSILON);
+
+        let eight = HydroPenalties::uniform(8.0);
+        assert!((eight.outflow_volume_violation_below_cost - 7.0).abs() > f64::EPSILON);
+        assert!((eight.outflow_volume_violation_above_cost - 7.0).abs() > f64::EPSILON);
     }
 
     #[test]
@@ -633,6 +653,8 @@ mod tests {
                 turbined_violation_below_cost: 3.0,
                 outflow_violation_below_cost: 4.0,
                 outflow_violation_above_cost: 5.0,
+                outflow_volume_violation_below_cost: volume_cost_from_flow_cost(4.0),
+                outflow_volume_violation_above_cost: volume_cost_from_flow_cost(5.0),
                 generation_violation_below_cost: 6.0,
                 evaporation_violation_cost: 7.0,
                 water_withdrawal_violation_cost: 8.0,

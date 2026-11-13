@@ -211,27 +211,6 @@ mod tests {
     use super::{HydroCell, HydroCellIndex, HydroSys};
     use crate::test_support::{geometry_hydro, make_unit_group};
 
-    fn zero_penalties() -> HydroPenalties {
-        HydroPenalties {
-            spillage_cost: 0.0,
-            diversion_cost: 0.0,
-            turbined_cost: 0.0,
-            storage_violation_below_cost: 0.0,
-            filling_target_violation_cost: 0.0,
-            turbined_violation_below_cost: 0.0,
-            outflow_violation_below_cost: 0.0,
-            outflow_violation_above_cost: 0.0,
-            generation_violation_below_cost: 0.0,
-            evaporation_violation_cost: 0.0,
-            water_withdrawal_violation_cost: 0.0,
-            water_withdrawal_violation_pos_cost: 0.0,
-            water_withdrawal_violation_neg_cost: 0.0,
-            evaporation_violation_pos_cost: 0.0,
-            evaporation_violation_neg_cost: 0.0,
-            inflow_nonnegativity_cost: 0.0,
-        }
-    }
-
     /// A minimal constant-productivity hydro at `id`/`unit_groups` the caller
     /// chooses; every other field is an inert default. `unit_groups` passes
     /// through unmodified — a caller needing a mirror group or canonical id
@@ -264,7 +243,7 @@ mod tests {
             evaporation_reference_volumes_hm3: None,
             diversion: None,
             filling: None,
-            penalties: zero_penalties(),
+            penalties: HydroPenalties::uniform(0.0),
         }
     }
 

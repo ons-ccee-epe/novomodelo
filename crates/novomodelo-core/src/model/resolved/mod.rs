@@ -12,6 +12,7 @@
 
 mod block_bounds;
 mod bounds;
+mod effective;
 mod factors;
 mod generic;
 mod group_bounds;
@@ -25,6 +26,7 @@ pub use bounds::{
     BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, HydroBlockBounds, HydroStageBounds,
     LineBlockBounds, PumpingBlockBounds, ResolvedBounds, ThermalBlockBounds, ThermalStageBounds,
 };
+pub use effective::{effective_diversion_m3s, effective_pumping_m3s};
 pub use factors::{ResolvedLoadFactors, ResolvedNcsBounds, ResolvedNcsFactors};
 pub use generic::{GenericConstraintBoundEntry, ResolvedGenericConstraintBounds};
 pub use group_bounds::{

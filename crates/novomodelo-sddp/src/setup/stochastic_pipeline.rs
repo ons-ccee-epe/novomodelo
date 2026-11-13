@@ -552,10 +552,6 @@ mod tests {
     /// The one-hydro, one-bus `System` shell shared by every ring fixture:
     /// `stages` supplies its calendar, `inflow_models`/`inflow_history` its PAR
     /// and window-discovery data, `season_map` its policy-graph season map.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the fixture spells out one complete study inline so each assertion traces to a literal"
-    )]
     fn ring_system(
         stages: &[Stage],
         inflow_models: Vec<InflowModel>,
@@ -613,21 +609,8 @@ mod tests {
             filling: None,
             penalties: HydroPenalties {
                 spillage_cost: 0.01,
-                diversion_cost: 0.0,
-                turbined_cost: 0.0,
-                storage_violation_below_cost: 0.0,
-                filling_target_violation_cost: 0.0,
-                turbined_violation_below_cost: 0.0,
-                outflow_violation_below_cost: 0.0,
-                outflow_violation_above_cost: 0.0,
-                generation_violation_below_cost: 0.0,
-                evaporation_violation_cost: 0.0,
-                water_withdrawal_violation_cost: 0.0,
-                water_withdrawal_violation_pos_cost: 0.0,
-                water_withdrawal_violation_neg_cost: 0.0,
-                evaporation_violation_pos_cost: 0.0,
-                evaporation_violation_neg_cost: 0.0,
                 inflow_nonnegativity_cost: 1000.0,
+                ..HydroPenalties::uniform(0.0)
             },
         };
         hydro.declare_mirror_unit_group(RING_BUS_ID);
@@ -685,21 +668,9 @@ mod tests {
             &PenaltiesDefaults {
                 hydro: HydroPenalties {
                     spillage_cost: 0.01,
-                    diversion_cost: 0.0,
-                    turbined_cost: 0.0,
                     storage_violation_below_cost: 500.0,
-                    filling_target_violation_cost: 0.0,
-                    turbined_violation_below_cost: 0.0,
-                    outflow_violation_below_cost: 0.0,
-                    outflow_violation_above_cost: 0.0,
-                    generation_violation_below_cost: 0.0,
-                    evaporation_violation_cost: 0.0,
-                    water_withdrawal_violation_cost: 0.0,
-                    water_withdrawal_violation_pos_cost: 0.0,
-                    water_withdrawal_violation_neg_cost: 0.0,
-                    evaporation_violation_pos_cost: 0.0,
-                    evaporation_violation_neg_cost: 0.0,
                     inflow_nonnegativity_cost: 1000.0,
+                    ..HydroPenalties::uniform(0.0)
                 },
                 bus: BusStagePenalties { excess_cost: 0.0 },
                 line: LineStagePenalties { exchange_cost: 0.0 },
@@ -1626,21 +1597,8 @@ mod tests {
             filling: None,
             penalties: HydroPenalties {
                 spillage_cost: 0.01,
-                diversion_cost: 0.0,
-                turbined_cost: 0.0,
-                storage_violation_below_cost: 0.0,
-                filling_target_violation_cost: 0.0,
-                turbined_violation_below_cost: 0.0,
-                outflow_violation_below_cost: 0.0,
-                outflow_violation_above_cost: 0.0,
-                generation_violation_below_cost: 0.0,
-                evaporation_violation_cost: 0.0,
-                water_withdrawal_violation_cost: 0.0,
-                water_withdrawal_violation_pos_cost: 0.0,
-                water_withdrawal_violation_neg_cost: 0.0,
-                evaporation_violation_pos_cost: 0.0,
-                evaporation_violation_neg_cost: 0.0,
                 inflow_nonnegativity_cost: 1000.0,
+                ..HydroPenalties::uniform(0.0)
             },
         };
         hydro.declare_mirror_unit_group(bus_id);
@@ -1698,21 +1656,9 @@ mod tests {
             &PenaltiesDefaults {
                 hydro: HydroPenalties {
                     spillage_cost: 0.01,
-                    diversion_cost: 0.0,
-                    turbined_cost: 0.0,
                     storage_violation_below_cost: 500.0,
-                    filling_target_violation_cost: 0.0,
-                    turbined_violation_below_cost: 0.0,
-                    outflow_violation_below_cost: 0.0,
-                    outflow_violation_above_cost: 0.0,
-                    generation_violation_below_cost: 0.0,
-                    evaporation_violation_cost: 0.0,
-                    water_withdrawal_violation_cost: 0.0,
-                    water_withdrawal_violation_pos_cost: 0.0,
-                    water_withdrawal_violation_neg_cost: 0.0,
-                    evaporation_violation_pos_cost: 0.0,
-                    evaporation_violation_neg_cost: 0.0,
                     inflow_nonnegativity_cost: 1000.0,
+                    ..HydroPenalties::uniform(0.0)
                 },
                 bus: BusStagePenalties { excess_cost: 0.0 },
                 line: LineStagePenalties { exchange_cost: 0.0 },
@@ -2042,21 +1988,8 @@ mod tests {
             filling: None,
             penalties: HydroPenalties {
                 spillage_cost: 0.01,
-                diversion_cost: 0.0,
-                turbined_cost: 0.0,
-                storage_violation_below_cost: 0.0,
-                filling_target_violation_cost: 0.0,
-                turbined_violation_below_cost: 0.0,
-                outflow_violation_below_cost: 0.0,
-                outflow_violation_above_cost: 0.0,
-                generation_violation_below_cost: 0.0,
-                evaporation_violation_cost: 0.0,
-                water_withdrawal_violation_cost: 0.0,
-                water_withdrawal_violation_pos_cost: 0.0,
-                water_withdrawal_violation_neg_cost: 0.0,
-                evaporation_violation_pos_cost: 0.0,
-                evaporation_violation_neg_cost: 0.0,
                 inflow_nonnegativity_cost: 1000.0,
+                ..HydroPenalties::uniform(0.0)
             },
         };
         hydro.declare_mirror_unit_group(bus_id);
@@ -2114,21 +2047,9 @@ mod tests {
             &PenaltiesDefaults {
                 hydro: HydroPenalties {
                     spillage_cost: 0.01,
-                    diversion_cost: 0.0,
-                    turbined_cost: 0.0,
                     storage_violation_below_cost: 500.0,
-                    filling_target_violation_cost: 0.0,
-                    turbined_violation_below_cost: 0.0,
-                    outflow_violation_below_cost: 0.0,
-                    outflow_violation_above_cost: 0.0,
-                    generation_violation_below_cost: 0.0,
-                    evaporation_violation_cost: 0.0,
-                    water_withdrawal_violation_cost: 0.0,
-                    water_withdrawal_violation_pos_cost: 0.0,
-                    water_withdrawal_violation_neg_cost: 0.0,
-                    evaporation_violation_pos_cost: 0.0,
-                    evaporation_violation_neg_cost: 0.0,
                     inflow_nonnegativity_cost: 1000.0,
+                    ..HydroPenalties::uniform(0.0)
                 },
                 bus: BusStagePenalties { excess_cost: 0.0 },
                 line: LineStagePenalties { exchange_cost: 0.0 },

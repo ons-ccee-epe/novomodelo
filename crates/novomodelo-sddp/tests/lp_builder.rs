@@ -801,7 +801,7 @@ mod cell_partition_gates {
     use novomodelo_core::{
         BoundsCountsSpec, BoundsDefaults, Bus, BusStagePenalties, ContractBlockBounds,
         DeficitSegment, EntityId, HydroBlockBounds, HydroPenalties, HydroStageBounds,
-        HydroUnitGroup, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
+        HydroUnitGroup, LineBlockBounds, LineStagePenalties, M3S_TO_HM3, NcsStagePenalties,
         PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
         ResolvedPenalties, System, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
     };
@@ -859,7 +859,6 @@ mod cell_partition_gates {
     const PLANT_MAX_GENERATION_MW: f64 = 12_000.0;
 
     const BLOCK_HOURS: f64 = 730.0;
-    const M3S_TO_HM3: f64 = 3_600.0 / 1_000_000.0;
 
     fn neutral_date() -> chrono::NaiveDate {
         chrono::NaiveDate::from_ymd_opt(2024, 1, 1).expect("2024-01-01 is valid")
@@ -1020,24 +1019,7 @@ mod cell_partition_gates {
         ResolvedPenalties::new(
             counts,
             &PenaltiesDefaults {
-                hydro: HydroPenalties {
-                    spillage_cost: 0.0,
-                    diversion_cost: 0.0,
-                    turbined_cost: 0.0,
-                    storage_violation_below_cost: 0.0,
-                    filling_target_violation_cost: 0.0,
-                    turbined_violation_below_cost: 0.0,
-                    outflow_violation_below_cost: 0.0,
-                    outflow_violation_above_cost: 0.0,
-                    generation_violation_below_cost: 0.0,
-                    evaporation_violation_cost: 0.0,
-                    water_withdrawal_violation_cost: 0.0,
-                    water_withdrawal_violation_pos_cost: 0.0,
-                    water_withdrawal_violation_neg_cost: 0.0,
-                    evaporation_violation_pos_cost: 0.0,
-                    evaporation_violation_neg_cost: 0.0,
-                    inflow_nonnegativity_cost: 0.0,
-                },
+                hydro: HydroPenalties::uniform(0.0),
                 bus: BusStagePenalties { excess_cost: 0.0 },
                 line: LineStagePenalties { exchange_cost: 0.0 },
                 ncs: NcsStagePenalties {

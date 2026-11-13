@@ -11,6 +11,7 @@ use novomodelo_core::{
     EntityId, HydroPenalties,
     entities::{Bus, Hydro, Line, NonControllableSource},
     resolved::{BusStagePenalties, LineStagePenalties, NcsStagePenalties, ResolvedPenalties},
+    volume_cost_from_flow_cost,
 };
 
 use crate::constraints::{
@@ -60,6 +61,7 @@ pub struct PenaltiesOverrides<'a> {
 /// use novomodelo_core::entities::{Bus, DeficitSegment, Hydro, HydroPenalties, HydroGenerationModel, Line, NonControllableSource};
 /// use novomodelo_io::constraints::HydroPenaltyOverrideRow;
 /// use novomodelo_io::resolution::{resolve_penalties, PenaltiesEntitySlices, PenaltiesOverrides};
+/// use novomodelo_core::volume_cost_from_flow_cost;
 ///
 /// // Two hydros with the same entity-level spillage_cost.
 /// let penalties = HydroPenalties {
@@ -71,6 +73,8 @@ pub struct PenaltiesOverrides<'a> {
 ///     turbined_violation_below_cost: 500.0,
 ///     outflow_violation_below_cost: 500.0,
 ///     outflow_violation_above_cost: 500.0,
+///     outflow_volume_violation_below_cost: volume_cost_from_flow_cost(500.0),
+///     outflow_volume_violation_above_cost: volume_cost_from_flow_cost(500.0),
 ///     generation_violation_below_cost: 500.0,
 ///     evaporation_violation_cost: 500.0,
 ///     water_withdrawal_violation_cost: 500.0,
@@ -199,6 +203,8 @@ pub fn resolve_penalties(
             turbined_violation_below_cost: 0.0,
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
+            outflow_volume_violation_below_cost: volume_cost_from_flow_cost(0.0),
+            outflow_volume_violation_above_cost: volume_cost_from_flow_cost(0.0),
             generation_violation_below_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
@@ -494,6 +500,8 @@ mod tests {
                 turbined_violation_below_cost: penalty_value,
                 outflow_violation_below_cost: penalty_value,
                 outflow_violation_above_cost: penalty_value,
+                outflow_volume_violation_below_cost: volume_cost_from_flow_cost(penalty_value),
+                outflow_volume_violation_above_cost: volume_cost_from_flow_cost(penalty_value),
                 generation_violation_below_cost: penalty_value,
                 evaporation_violation_cost: penalty_value,
                 water_withdrawal_violation_cost: penalty_value,
@@ -543,6 +551,8 @@ mod tests {
                 turbined_violation_below_cost: 500.0,
                 outflow_violation_below_cost: 400.0,
                 outflow_violation_above_cost: 300.0,
+                outflow_volume_violation_below_cost: volume_cost_from_flow_cost(400.0),
+                outflow_volume_violation_above_cost: volume_cost_from_flow_cost(300.0),
                 generation_violation_below_cost: 200.0,
                 evaporation_violation_cost: 150.0,
                 water_withdrawal_violation_cost: 100.0,

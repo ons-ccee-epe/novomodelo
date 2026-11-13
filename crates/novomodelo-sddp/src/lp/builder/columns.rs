@@ -1,5 +1,7 @@
 use novomodelo_core::commissioning::{Phase, commissioning_active};
-use novomodelo_core::{BlockMode, ContractType, Stage};
+use novomodelo_core::{
+    BlockMode, ContractType, Stage, effective_diversion_m3s, effective_pumping_m3s,
+};
 
 use crate::hydro_models::EvaporationModel;
 use crate::indexer::{
@@ -259,11 +261,8 @@ fn fill_spillage_columns(
 /// Diversion columns per hydro per block (dense; a hydro without a channel resolves
 /// `[0, 0]` and is presolve-eliminated; an unlimited channel is open above).
 ///
-/// A dormant hydro (`hydro.filling.is_some()` OR suspended) forces BOTH bounds to
-/// `[0, 0]`: both must drop, or a positive `min_diversion_m3s` floor leaves the
-/// infeasible `[min > 0, 0]`. The gate is `is_some()`, NOT the `Phase`, alone —
-/// phase-gating would wrongly re-enable diversion at `Operating`, but a filling
-/// hydro never diverts.
+/// Bounds come from [`effective_diversion_m3s`]; the column is priced only when it
+/// can carry flow (`max > 0`).
 fn fill_diversion_columns(
     ctx: &TemplateBuildCtx<'_>,
     stage: &Stage,
@@ -273,24 +272,15 @@ fn fill_diversion_columns(
 ) {
     for (h_idx, hydro) in ctx.hydros.iter().enumerate() {
         let hp = ctx.resolved.penalties.hydro_penalties(h_idx, stage_idx);
-        let suspended = is_suspended(hydro, stage.id);
-        let dormant = hydro.filling.is_some() || suspended;
         for blk in 0..layout.clock.n_blks() {
-            // CONTRACT: read the per-stage RESOLVED bounds, NOT the declaration-time
-            // `hydro.diversion.max_flow_m3s` — the entity read silently drops any wired
-            // per-stage (or per-block) override (mirrors every sibling column family).
-            let (min_div, max_div) = if dormant {
-                (0.0, 0.0)
-            } else {
-                let hb = ctx
-                    .resolved
-                    .bounds
-                    .hydro_bounds_at_block(h_idx, stage_idx, blk);
-                (
-                    hb.min_diversion_m3s.unwrap_or(0.0),
-                    hb.max_diversion_m3s.unwrap_or(f64::INFINITY),
-                )
-            };
+            let (min_div, max_div) = effective_diversion_m3s(
+                ctx.resolved.bounds,
+                hydro,
+                h_idx,
+                stage_idx,
+                stage.id,
+                blk,
+            );
             let col = layout
                 .geometry
                 .diversion_col(HydroSys::new(h_idx), BlockIdx::new(blk));
@@ -946,10 +936,7 @@ fn fill_ncs_columns(
 
 /// Pumping-flow columns: one per station per block, dense and system-indexed.
 /// Objective is zero — pumping's electrical cost enters through the bus load balance,
-/// not here.
-///
-/// A commissioning-dormant station (`commissioning_active == false`) forces BOTH bounds
-/// to `[0, 0]`: zeroing only `max` leaves the infeasible `[min > 0, 0]`.
+/// not here. Bounds come from [`effective_pumping_m3s`].
 pub(super) fn fill_pumping_columns(
     ctx: &TemplateBuildCtx<'_>,
     stage: &Stage,
@@ -958,22 +945,20 @@ pub(super) fn fill_pumping_columns(
     bufs: &mut ColumnBufs<'_>,
 ) {
     for (p_sys, station) in ctx.pumping_stations.iter().enumerate() {
-        let active = commissioning_active(station.entry_stage_id, station.exit_stage_id, stage.id);
         for blk in (0..layout.clock.n_blks()).map(BlockIdx::new) {
-            let pb = ctx
-                .resolved
-                .bounds
-                .pumping_bounds_at_block(p_sys, stage_idx, blk.get());
+            let (lo, hi) = effective_pumping_m3s(
+                ctx.resolved.bounds,
+                station,
+                p_sys,
+                stage_idx,
+                stage.id,
+                blk.get(),
+            );
             let col = layout
                 .geometry
                 .pumping_flow_col(PumpingSys::new(p_sys), blk);
-            if active {
-                bufs.col_lower[col] = pb.min_flow_m3s;
-                bufs.col_upper[col] = pb.max_flow_m3s;
-            } else {
-                bufs.col_lower[col] = 0.0;
-                bufs.col_upper[col] = 0.0;
-            }
+            bufs.col_lower[col] = lo;
+            bufs.col_upper[col] = hi;
         }
     }
 }
@@ -1165,7 +1150,7 @@ mod interior_storage_bound_tests {
             evaporation_reference_volumes_hm3: None,
             diversion: None,
             filling: None,
-            penalties: super::super::test_support::zero_hydro_penalties(),
+            penalties: HydroPenalties::uniform(0.0),
         };
         hydro.declare_mirror_unit_group(EntityId(1));
         hydro
@@ -1231,24 +1216,7 @@ mod interior_storage_bound_tests {
                 n_stages: N_STAGES,
             },
             &PenaltiesDefaults {
-                hydro: HydroPenalties {
-                    spillage_cost: 0.0,
-                    diversion_cost: 0.0,
-                    turbined_cost: 0.0,
-                    storage_violation_below_cost: 0.0,
-                    filling_target_violation_cost: 0.0,
-                    turbined_violation_below_cost: 0.0,
-                    outflow_violation_below_cost: 0.0,
-                    outflow_violation_above_cost: 0.0,
-                    generation_violation_below_cost: 0.0,
-                    evaporation_violation_cost: 0.0,
-                    water_withdrawal_violation_cost: 0.0,
-                    water_withdrawal_violation_pos_cost: 0.0,
-                    water_withdrawal_violation_neg_cost: 0.0,
-                    evaporation_violation_pos_cost: 0.0,
-                    evaporation_violation_neg_cost: 0.0,
-                    inflow_nonnegativity_cost: 0.0,
-                },
+                hydro: HydroPenalties::uniform(0.0),
                 bus: BusStagePenalties { excess_cost: 0.0 },
                 line: LineStagePenalties { exchange_cost: 0.0 },
                 ncs: NcsStagePenalties {
@@ -1549,7 +1517,7 @@ mod diversion_bound_tests {
     };
     use crate::indexer::HydroCellIndex;
 
-    use super::super::test_support::{two_block_stage, zero_hydro_penalties};
+    use super::super::test_support::two_block_stage;
     use super::{ColumnBufs, StageLayout, TemplateBuildCtx, fill_diversion_columns};
 
     // Declaration-time diversion capacity on the entity. The test makes the
@@ -1592,7 +1560,7 @@ mod diversion_bound_tests {
                 max_flow_m3s: Some(DECLARATION_MAX_FLOW_M3S),
             }),
             filling: None,
-            penalties: zero_hydro_penalties(),
+            penalties: HydroPenalties::uniform(0.0),
         };
         hydro.declare_mirror_unit_group(EntityId(1));
         hydro
@@ -1656,24 +1624,7 @@ mod diversion_bound_tests {
                 n_stages: N_STAGES,
             },
             &PenaltiesDefaults {
-                hydro: HydroPenalties {
-                    spillage_cost: 0.0,
-                    diversion_cost: 0.0,
-                    turbined_cost: 0.0,
-                    storage_violation_below_cost: 0.0,
-                    filling_target_violation_cost: 0.0,
-                    turbined_violation_below_cost: 0.0,
-                    outflow_violation_below_cost: 0.0,
-                    outflow_violation_above_cost: 0.0,
-                    generation_violation_below_cost: 0.0,
-                    evaporation_violation_cost: 0.0,
-                    water_withdrawal_violation_cost: 0.0,
-                    water_withdrawal_violation_pos_cost: 0.0,
-                    water_withdrawal_violation_neg_cost: 0.0,
-                    evaporation_violation_pos_cost: 0.0,
-                    evaporation_violation_neg_cost: 0.0,
-                    inflow_nonnegativity_cost: 0.0,
-                },
+                hydro: HydroPenalties::uniform(0.0),
                 bus: BusStagePenalties { excess_cost: 0.0 },
                 line: LineStagePenalties { exchange_cost: 0.0 },
                 ncs: NcsStagePenalties {
@@ -1892,7 +1843,7 @@ mod filling_phase_gating_tests {
     };
     use crate::indexer::{BlockIdx, FphaCellLocal, HydroCell, HydroCellIndex};
 
-    use super::super::test_support::{three_block_stage, two_block_stage, zero_hydro_penalties};
+    use super::super::test_support::{three_block_stage, two_block_stage};
     use super::{
         ColumnBufs, StageLayout, TemplateBuildCtx, fill_diversion_columns,
         fill_fpha_generation_columns, fill_spillage_columns, fill_turbine_columns,
@@ -1951,7 +1902,7 @@ mod filling_phase_gating_tests {
             evaporation_reference_volumes_hm3: None,
             diversion: None,
             filling,
-            penalties: zero_hydro_penalties(),
+            penalties: HydroPenalties::uniform(0.0),
         };
         hydro.declare_mirror_unit_group(EntityId(1));
         hydro
@@ -2019,7 +1970,7 @@ mod filling_phase_gating_tests {
                 n_stages: N_STAGES,
             },
             &PenaltiesDefaults {
-                hydro: zero_hydro_stage_penalties(),
+                hydro: HydroPenalties::uniform(0.0),
                 bus: BusStagePenalties { excess_cost: 0.0 },
                 line: LineStagePenalties { exchange_cost: 0.0 },
                 ncs: NcsStagePenalties {
@@ -2027,29 +1978,6 @@ mod filling_phase_gating_tests {
                 },
             },
         )
-    }
-
-    /// All-zero `HydroPenalties` — the per-stage resolved analogue of
-    /// `zero_hydro_penalties` (which produces a declaration-time `HydroPenalties`).
-    fn zero_hydro_stage_penalties() -> HydroPenalties {
-        HydroPenalties {
-            spillage_cost: 0.0,
-            diversion_cost: 0.0,
-            turbined_cost: 0.0,
-            storage_violation_below_cost: 0.0,
-            filling_target_violation_cost: 0.0,
-            turbined_violation_below_cost: 0.0,
-            outflow_violation_below_cost: 0.0,
-            outflow_violation_above_cost: 0.0,
-            generation_violation_below_cost: 0.0,
-            evaporation_violation_cost: 0.0,
-            water_withdrawal_violation_cost: 0.0,
-            water_withdrawal_violation_pos_cost: 0.0,
-            water_withdrawal_violation_neg_cost: 0.0,
-            evaporation_violation_pos_cost: 0.0,
-            evaporation_violation_neg_cost: 0.0,
-            inflow_nonnegativity_cost: 0.0,
-        }
     }
 
     /// Owns the borrow targets for a one-hydro `TemplateBuildCtx`.
@@ -3685,7 +3613,7 @@ mod block_family_slack_tests {
     use crate::time_value::TimeValue;
 
     use super::super::layout::StageGeometry;
-    use super::super::test_support::{two_block_stage, zero_hydro_penalties};
+    use super::super::test_support::two_block_stage;
     use super::{ColumnBufs, StageLayout, TemplateBuildCtx, fill_operational_slack_columns};
 
     const N_STAGES: usize = 1;
@@ -3809,7 +3737,7 @@ mod block_family_slack_tests {
             evaporation_reference_volumes_hm3: None,
             diversion: None,
             filling: None,
-            penalties: zero_hydro_penalties(),
+            penalties: HydroPenalties::uniform(0.0),
         };
         hydro.declare_mirror_unit_group(EntityId(1));
         hydro
@@ -3829,27 +3757,6 @@ mod block_family_slack_tests {
             max_turbined_m3s: 50.0,
             max_generation_mw: 45.0,
             ..Default::default()
-        }
-    }
-
-    fn zero_hydro_stage_penalties() -> HydroPenalties {
-        HydroPenalties {
-            spillage_cost: 0.0,
-            diversion_cost: 0.0,
-            turbined_cost: 0.0,
-            storage_violation_below_cost: 0.0,
-            filling_target_violation_cost: 0.0,
-            turbined_violation_below_cost: 0.0,
-            outflow_violation_below_cost: 0.0,
-            outflow_violation_above_cost: 0.0,
-            generation_violation_below_cost: 0.0,
-            evaporation_violation_cost: 0.0,
-            water_withdrawal_violation_cost: 0.0,
-            water_withdrawal_violation_pos_cost: 0.0,
-            water_withdrawal_violation_neg_cost: 0.0,
-            evaporation_violation_pos_cost: 0.0,
-            evaporation_violation_neg_cost: 0.0,
-            inflow_nonnegativity_cost: 0.0,
         }
     }
 
@@ -3899,7 +3806,7 @@ mod block_family_slack_tests {
                 n_stages: N_STAGES,
             },
             &PenaltiesDefaults {
-                hydro: zero_hydro_stage_penalties(),
+                hydro: HydroPenalties::uniform(0.0),
                 bus: BusStagePenalties { excess_cost: 0.0 },
                 line: LineStagePenalties { exchange_cost: 0.0 },
                 ncs: NcsStagePenalties {
@@ -4140,7 +4047,6 @@ mod evaporation_slack_objective_tests {
     };
     use crate::indexer::{BlockIdx, EvapLocal, HydroCellIndex};
 
-    use super::super::test_support::zero_hydro_penalties;
     use super::{ColumnBufs, StageLayout, TemplateBuildCtx, fill_evaporation_columns};
 
     const N_STAGES: usize = 1;
@@ -4177,7 +4083,7 @@ mod evaporation_slack_objective_tests {
             evaporation_reference_volumes_hm3: None,
             diversion: None,
             filling: None,
-            penalties: zero_hydro_penalties(),
+            penalties: HydroPenalties::uniform(0.0),
         };
         hydro.declare_mirror_unit_group(EntityId(1));
         hydro
@@ -4240,24 +4146,7 @@ mod evaporation_slack_objective_tests {
                 n_stages: N_STAGES,
             },
             &PenaltiesDefaults {
-                hydro: HydroPenalties {
-                    spillage_cost: 0.0,
-                    diversion_cost: 0.0,
-                    turbined_cost: 0.0,
-                    storage_violation_below_cost: 0.0,
-                    filling_target_violation_cost: 0.0,
-                    turbined_violation_below_cost: 0.0,
-                    outflow_violation_below_cost: 0.0,
-                    outflow_violation_above_cost: 0.0,
-                    generation_violation_below_cost: 0.0,
-                    evaporation_violation_cost: 0.0,
-                    water_withdrawal_violation_cost: 0.0,
-                    water_withdrawal_violation_pos_cost: 0.0,
-                    water_withdrawal_violation_neg_cost: 0.0,
-                    evaporation_violation_pos_cost: 0.0,
-                    evaporation_violation_neg_cost: 0.0,
-                    inflow_nonnegativity_cost: 0.0,
-                },
+                hydro: HydroPenalties::uniform(0.0),
                 bus: BusStagePenalties { excess_cost: 0.0 },
                 line: LineStagePenalties { exchange_cost: 0.0 },
                 ncs: NcsStagePenalties {
@@ -5137,24 +5026,7 @@ mod line_contract_pumping_block_bound_tests {
                 n_stages: N_STAGES,
             },
             &PenaltiesDefaults {
-                hydro: HydroPenalties {
-                    spillage_cost: 0.0,
-                    diversion_cost: 0.0,
-                    turbined_cost: 0.0,
-                    storage_violation_below_cost: 0.0,
-                    filling_target_violation_cost: 0.0,
-                    turbined_violation_below_cost: 0.0,
-                    outflow_violation_below_cost: 0.0,
-                    outflow_violation_above_cost: 0.0,
-                    generation_violation_below_cost: 0.0,
-                    evaporation_violation_cost: 0.0,
-                    water_withdrawal_violation_cost: 0.0,
-                    water_withdrawal_violation_pos_cost: 0.0,
-                    water_withdrawal_violation_neg_cost: 0.0,
-                    evaporation_violation_pos_cost: 0.0,
-                    evaporation_violation_neg_cost: 0.0,
-                    inflow_nonnegativity_cost: 0.0,
-                },
+                hydro: HydroPenalties::uniform(0.0),
                 bus: BusStagePenalties { excess_cost: 0.0 },
                 line: LineStagePenalties { exchange_cost: 0.0 },
                 ncs: NcsStagePenalties {
@@ -5654,9 +5526,7 @@ mod hydro_block_bound_tests {
     use crate::time_value::TimeValue;
 
     use super::super::rows::fill_operational_violation_rows;
-    use super::super::test_support::{
-        BLOCK_HOURS, N_BLKS, three_block_stage, zero_hydro_penalties,
-    };
+    use super::super::test_support::{BLOCK_HOURS, N_BLKS, three_block_stage};
     use super::{
         ColumnBufs, StageLayout, TemplateBuildCtx, fill_diversion_columns,
         fill_fpha_generation_columns, fill_operational_slack_columns, fill_turbine_columns,
@@ -5699,7 +5569,7 @@ mod hydro_block_bound_tests {
             evaporation_reference_volumes_hm3: None,
             diversion: None,
             filling: None,
-            penalties: zero_hydro_penalties(),
+            penalties: HydroPenalties::uniform(0.0),
         };
         hydro.declare_mirror_unit_group(EntityId(1));
         hydro
@@ -5735,22 +5605,13 @@ mod hydro_block_bound_tests {
         generation_violation_below_cost: f64,
     ) -> HydroPenalties {
         HydroPenalties {
-            spillage_cost: 0.0,
             diversion_cost,
             turbined_cost,
-            storage_violation_below_cost: 0.0,
-            filling_target_violation_cost: 0.0,
             turbined_violation_below_cost,
             outflow_violation_below_cost,
             outflow_violation_above_cost,
             generation_violation_below_cost,
-            evaporation_violation_cost: 0.0,
-            water_withdrawal_violation_cost: 0.0,
-            water_withdrawal_violation_pos_cost: 0.0,
-            water_withdrawal_violation_neg_cost: 0.0,
-            evaporation_violation_pos_cost: 0.0,
-            evaporation_violation_neg_cost: 0.0,
-            inflow_nonnegativity_cost: 0.0,
+            ..HydroPenalties::uniform(0.0)
         }
     }
 
@@ -6645,7 +6506,7 @@ mod cell_column_bound_tests {
     use crate::time_value::TimeValue;
 
     use super::super::hydro_state::{cell_min_generation, cell_min_turbined};
-    use super::super::test_support::{BLOCK_HOURS, three_block_stage, zero_hydro_penalties};
+    use super::super::test_support::{BLOCK_HOURS, three_block_stage};
     use super::{
         ColumnBufs, GroupBoundLookup, StageLayout, TemplateBuildCtx, fill_fpha_generation_columns,
         fill_turbine_columns,
@@ -6690,7 +6551,7 @@ mod cell_column_bound_tests {
             evaporation_reference_volumes_hm3: None,
             diversion: None,
             filling: None,
-            penalties: zero_hydro_penalties(),
+            penalties: HydroPenalties::uniform(0.0),
         };
         hydro.declare_mirror_unit_group(EntityId(40));
         hydro
@@ -6732,7 +6593,7 @@ mod cell_column_bound_tests {
             evaporation_reference_volumes_hm3: None,
             diversion: None,
             filling,
-            penalties: zero_hydro_penalties(),
+            penalties: HydroPenalties::uniform(0.0),
         };
         hydro.declare_mirror_unit_group(EntityId(99));
         hydro
@@ -6776,7 +6637,7 @@ mod cell_column_bound_tests {
             evaporation_reference_volumes_hm3: None,
             diversion: None,
             filling: None,
-            penalties: zero_hydro_penalties(),
+            penalties: HydroPenalties::uniform(0.0),
         };
         hydro.declare_mirror_unit_group(bus_id);
         hydro
@@ -6790,27 +6651,6 @@ mod cell_column_bound_tests {
             max_turbined_m3s,
             max_generation_mw,
             ..Default::default()
-        }
-    }
-
-    fn zero_hydro_stage_penalties() -> HydroPenalties {
-        HydroPenalties {
-            spillage_cost: 0.0,
-            diversion_cost: 0.0,
-            turbined_cost: 0.0,
-            storage_violation_below_cost: 0.0,
-            filling_target_violation_cost: 0.0,
-            turbined_violation_below_cost: 0.0,
-            outflow_violation_below_cost: 0.0,
-            outflow_violation_above_cost: 0.0,
-            generation_violation_below_cost: 0.0,
-            evaporation_violation_cost: 0.0,
-            water_withdrawal_violation_cost: 0.0,
-            water_withdrawal_violation_pos_cost: 0.0,
-            water_withdrawal_violation_neg_cost: 0.0,
-            evaporation_violation_pos_cost: 0.0,
-            evaporation_violation_neg_cost: 0.0,
-            inflow_nonnegativity_cost: 0.0,
         }
     }
 
@@ -6865,7 +6705,7 @@ mod cell_column_bound_tests {
                 n_stages,
             },
             &PenaltiesDefaults {
-                hydro: zero_hydro_stage_penalties(),
+                hydro: HydroPenalties::uniform(0.0),
                 bus: BusStagePenalties { excess_cost: 0.0 },
                 line: LineStagePenalties { exchange_cost: 0.0 },
                 ncs: NcsStagePenalties {
@@ -7851,24 +7691,7 @@ mod ncs_objective_tests {
                 n_stages: N_STAGES,
             },
             &PenaltiesDefaults {
-                hydro: HydroPenalties {
-                    spillage_cost: 0.0,
-                    diversion_cost: 0.0,
-                    turbined_cost: 0.0,
-                    storage_violation_below_cost: 0.0,
-                    filling_target_violation_cost: 0.0,
-                    turbined_violation_below_cost: 0.0,
-                    outflow_violation_below_cost: 0.0,
-                    outflow_violation_above_cost: 0.0,
-                    generation_violation_below_cost: 0.0,
-                    evaporation_violation_cost: 0.0,
-                    water_withdrawal_violation_cost: 0.0,
-                    water_withdrawal_violation_pos_cost: 0.0,
-                    water_withdrawal_violation_neg_cost: 0.0,
-                    evaporation_violation_pos_cost: 0.0,
-                    evaporation_violation_neg_cost: 0.0,
-                    inflow_nonnegativity_cost: 0.0,
-                },
+                hydro: HydroPenalties::uniform(0.0),
                 bus: BusStagePenalties { excess_cost: 0.0 },
                 line: LineStagePenalties { exchange_cost: 0.0 },
                 ncs: NcsStagePenalties {

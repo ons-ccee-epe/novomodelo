@@ -119,21 +119,9 @@ fn calendar_bounds() -> [NaiveDate; 5] {
 fn hydro_penalties() -> HydroPenalties {
     HydroPenalties {
         spillage_cost: 0.01,
-        diversion_cost: 0.0,
-        turbined_cost: 0.0,
         storage_violation_below_cost: 500.0,
-        filling_target_violation_cost: 0.0,
-        turbined_violation_below_cost: 0.0,
-        outflow_violation_below_cost: 0.0,
-        outflow_violation_above_cost: 0.0,
-        generation_violation_below_cost: 0.0,
-        evaporation_violation_cost: 0.0,
-        water_withdrawal_violation_cost: 0.0,
-        water_withdrawal_violation_pos_cost: 0.0,
-        water_withdrawal_violation_neg_cost: 0.0,
-        evaporation_violation_pos_cost: 0.0,
-        evaporation_violation_neg_cost: 0.0,
         inflow_nonnegativity_cost: 1_000.0,
+        ..HydroPenalties::uniform(0.0)
     }
 }
 

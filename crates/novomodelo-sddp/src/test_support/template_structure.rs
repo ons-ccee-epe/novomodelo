@@ -7,7 +7,7 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
 
-use novomodelo_core::{BlockMode, ContractType, System};
+use novomodelo_core::{BlockMode, ContractType, M3S_TO_HM3, System};
 use novomodelo_solver::StageTemplate;
 
 use crate::indexer::{
@@ -236,7 +236,7 @@ pub fn ring_lanes(state: &StateSpace, geom: &StageGeometry) -> Vec<RingLane> {
 /// `hours * M3S_TO_HM3`, so no test declares the conversion constant again.
 #[must_use]
 pub fn hours_to_hm3(hours: f64) -> f64 {
-    hours * crate::block_clock::M3S_TO_HM3
+    hours * M3S_TO_HM3
 }
 
 /// Decoded owner of a water-balance, load-balance or z-inflow row.

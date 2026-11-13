@@ -82,7 +82,7 @@ pub use model::parameters::{
 pub use model::penalty::{
     GlobalPenaltyDefaults, HydroPenaltyOverrides, resolve_bus_deficit_segments,
     resolve_bus_excess_cost, resolve_hydro_penalties, resolve_line_exchange_cost,
-    resolve_ncs_curtailment_cost,
+    resolve_ncs_curtailment_cost, volume_cost_from_flow_cost,
 };
 pub use model::post_study::{PostStudyStage, PostStudyStages, PostStudyThermalBound};
 pub use model::resolved::{
@@ -93,7 +93,8 @@ pub use model::resolved::{
     PenaltiesDefaults, PumpingBlockBounds, PumpingBlockOverride, ResolvedBlockBounds,
     ResolvedBounds, ResolvedGenericConstraintBounds, ResolvedHydroUnitGroupBounds,
     ResolvedLoadFactors, ResolvedNcsBounds, ResolvedNcsFactors, ResolvedPenalties,
-    ThermalBlockBounds, ThermalBlockOverride, ThermalStageBounds,
+    ThermalBlockBounds, ThermalBlockOverride, ThermalStageBounds, effective_diversion_m3s,
+    effective_pumping_m3s,
 };
 pub use model::scalar_expr::{ScalarExpr, is_exact_zero};
 pub use model::scenario::{
@@ -103,9 +104,9 @@ pub use model::scenario::{
     ScenarioSource,
 };
 pub use model::temporal::{
-    Block, BlockMode, CalendarMonth, Node, NoiseMethod, PolicyGraphType, ScenarioSourceConfig,
-    SeasonCycleType, SeasonDefinition, SeasonMap, Stage, StageId, StageRiskConfig,
-    StageStateConfig, StudyPos, Transition, month_of, window_period_overlaps,
+    Block, BlockMode, CalendarMonth, M3S_TO_HM3, Node, NoiseMethod, PolicyGraphType,
+    ScenarioSourceConfig, SeasonCycleType, SeasonDefinition, SeasonMap, Stage, StageId,
+    StageRiskConfig, StageStateConfig, StudyPos, Transition, month_of, window_period_overlaps,
     window_period_reach_depth, window_reaches_any_period,
 };
 pub use stats::welford::WelfordAccumulator;

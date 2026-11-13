@@ -97,6 +97,7 @@ pub struct BoundsOverrides<'a> {
 /// ```
 /// use chrono::NaiveDate;
 /// use novomodelo_core::EntityId;
+/// use novomodelo_core::volume_cost_from_flow_cost;
 /// use novomodelo_core::entities::{
 ///     EnergyContract, ContractType, Hydro, HydroGenerationModel, HydroPenalties,
 ///     Line, PumpingStation, Thermal,
@@ -113,6 +114,8 @@ pub struct BoundsOverrides<'a> {
 ///     turbined_violation_below_cost: 500.0,
 ///     outflow_violation_below_cost: 500.0,
 ///     outflow_violation_above_cost: 500.0,
+///     outflow_volume_violation_below_cost: volume_cost_from_flow_cost(500.0),
+///     outflow_volume_violation_above_cost: volume_cost_from_flow_cost(500.0),
 ///     generation_violation_below_cost: 500.0,
 ///     evaporation_violation_cost: 500.0,
 ///     water_withdrawal_violation_cost: 500.0,
@@ -906,17 +909,8 @@ mod tests {
             turbined_cost: 0.03,
             storage_violation_below_cost: 1000.0,
             filling_target_violation_cost: 5000.0,
-            turbined_violation_below_cost: 500.0,
-            outflow_violation_below_cost: 500.0,
-            outflow_violation_above_cost: 500.0,
-            generation_violation_below_cost: 500.0,
-            evaporation_violation_cost: 500.0,
-            water_withdrawal_violation_cost: 500.0,
-            water_withdrawal_violation_pos_cost: 500.0,
-            water_withdrawal_violation_neg_cost: 500.0,
-            evaporation_violation_pos_cost: 500.0,
-            evaporation_violation_neg_cost: 500.0,
             inflow_nonnegativity_cost: 1000.0,
+            ..HydroPenalties::uniform(500.0)
         }
     }
 

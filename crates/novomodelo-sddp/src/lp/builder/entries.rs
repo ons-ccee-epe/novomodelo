@@ -1670,21 +1670,8 @@ mod parameter_resolution_tests {
     fn default_hydro_penalties() -> HydroPenalties {
         HydroPenalties {
             spillage_cost: 0.01,
-            diversion_cost: 0.0,
-            turbined_cost: 0.0,
-            storage_violation_below_cost: 0.0,
-            filling_target_violation_cost: 0.0,
-            turbined_violation_below_cost: 0.0,
-            outflow_violation_below_cost: 0.0,
-            outflow_violation_above_cost: 0.0,
-            generation_violation_below_cost: 0.0,
-            evaporation_violation_cost: 0.0,
-            water_withdrawal_violation_cost: 0.0,
-            water_withdrawal_violation_pos_cost: 0.0,
-            water_withdrawal_violation_neg_cost: 0.0,
-            evaporation_violation_pos_cost: 0.0,
-            evaporation_violation_neg_cost: 0.0,
             inflow_nonnegativity_cost: 1000.0,
+            ..HydroPenalties::uniform(0.0)
         }
     }
 
@@ -3350,15 +3337,15 @@ mod pumping_water_tests {
         CascadeTopology, ConstraintExpression, ContractBlockBounds, ContractType, DeficitSegment,
         EnergyContract, EntityId, GenericConstraint, Hydro, HydroBlockBounds, HydroBlockOverride,
         HydroGenerationModel, HydroPenalties, HydroStageBounds, HydroUnitGroup, Line,
-        LineBlockBounds, LineStagePenalties, LinearTerm, NcsStagePenalties, PenaltiesCountsSpec,
-        PenaltiesDefaults, PenaltyBasis, PumpingBlockBounds, PumpingStation, ResolvedBlockBounds,
-        ResolvedBounds, ResolvedGenericConstraintBounds, ResolvedPenalties, SlackConfig, Stage,
-        Thermal, ThermalBlockBounds, ThermalStageBounds, VariableRef,
+        LineBlockBounds, LineStagePenalties, LinearTerm, M3S_TO_HM3, NcsStagePenalties,
+        PenaltiesCountsSpec, PenaltiesDefaults, PenaltyBasis, PumpingBlockBounds, PumpingStation,
+        ResolvedBlockBounds, ResolvedBounds, ResolvedGenericConstraintBounds, ResolvedPenalties,
+        SlackConfig, Stage, Thermal, ThermalBlockBounds, ThermalStageBounds, VariableRef,
     };
     use novomodelo_io::validation::semantic::envelope_tolerance;
     use novomodelo_stochastic::par::precompute::PrecomputedPar;
 
-    use crate::block_clock::{BlockClock, M3S_TO_HM3};
+    use crate::block_clock::BlockClock;
     use crate::hydro_models::{
         EvaporationModel, EvaporationModelSet, FphaPlane, ProductionModelSet,
         ResolvedProductionModel,
@@ -3379,9 +3366,7 @@ mod pumping_water_tests {
     use super::super::hydro_state::{MaxCap, MinFloor, warn_on_inert_plant_floor_overrides};
     use super::super::layout::{StageLayout, TemplateBuildCtx};
     use super::super::rows::fill_stage_rows;
-    use super::super::test_support::{
-        BLOCK_HOURS, three_block_stage, two_block_stage, zero_hydro_penalties,
-    };
+    use super::super::test_support::{BLOCK_HOURS, three_block_stage, two_block_stage};
     use super::{
         LpMatrixBuffers, assemble_csc, build_stage_matrix_entries, fill_fpha_entries,
         fill_generic_constraint_entries, fill_load_balance_entries,
@@ -3427,7 +3412,7 @@ mod pumping_water_tests {
             evaporation_reference_volumes_hm3: None,
             diversion: None,
             filling: None,
-            penalties: zero_hydro_penalties(),
+            penalties: HydroPenalties::uniform(0.0),
         };
         hydro.declare_mirror_unit_group(EntityId(1));
         hydro
@@ -3844,21 +3829,7 @@ mod pumping_water_tests {
         fn with_resolved_penalties(mut self) -> Self {
             let hydro = HydroPenalties {
                 spillage_cost: 0.01,
-                diversion_cost: 0.0,
-                turbined_cost: 0.0,
-                storage_violation_below_cost: 0.0,
-                filling_target_violation_cost: 0.0,
-                turbined_violation_below_cost: 0.0,
-                outflow_violation_below_cost: 0.0,
-                outflow_violation_above_cost: 0.0,
-                generation_violation_below_cost: 0.0,
-                evaporation_violation_cost: 0.0,
-                water_withdrawal_violation_cost: 0.0,
-                water_withdrawal_violation_pos_cost: 0.0,
-                water_withdrawal_violation_neg_cost: 0.0,
-                evaporation_violation_pos_cost: 0.0,
-                evaporation_violation_neg_cost: 0.0,
-                inflow_nonnegativity_cost: 0.0,
+                ..HydroPenalties::uniform(0.0)
             };
             self.base.penalties = ResolvedPenalties::new(
                 &PenaltiesCountsSpec {
@@ -3885,22 +3856,9 @@ mod pumping_water_tests {
         /// objectives are observable in the column build.
         fn with_evap_penalties(mut self, neg_cost: f64, pos_cost: f64) -> Self {
             let hydro = HydroPenalties {
-                spillage_cost: 0.0,
-                diversion_cost: 0.0,
-                turbined_cost: 0.0,
-                storage_violation_below_cost: 0.0,
-                filling_target_violation_cost: 0.0,
-                turbined_violation_below_cost: 0.0,
-                outflow_violation_below_cost: 0.0,
-                outflow_violation_above_cost: 0.0,
-                generation_violation_below_cost: 0.0,
-                evaporation_violation_cost: 0.0,
-                water_withdrawal_violation_cost: 0.0,
-                water_withdrawal_violation_pos_cost: 0.0,
-                water_withdrawal_violation_neg_cost: 0.0,
                 evaporation_violation_pos_cost: pos_cost,
                 evaporation_violation_neg_cost: neg_cost,
-                inflow_nonnegativity_cost: 0.0,
+                ..HydroPenalties::uniform(0.0)
             };
             self.base.penalties = ResolvedPenalties::new(
                 &PenaltiesCountsSpec {
@@ -5473,22 +5431,9 @@ mod pumping_water_tests {
             },
             &PenaltiesDefaults {
                 hydro: HydroPenalties {
-                    spillage_cost: 0.0,
-                    diversion_cost: 0.0,
-                    turbined_cost: 0.0,
-                    storage_violation_below_cost: 0.0,
-                    filling_target_violation_cost: 0.0,
                     turbined_violation_below_cost: 7.0,
-                    outflow_violation_below_cost: 0.0,
-                    outflow_violation_above_cost: 0.0,
                     generation_violation_below_cost: 11.0,
-                    evaporation_violation_cost: 0.0,
-                    water_withdrawal_violation_cost: 0.0,
-                    water_withdrawal_violation_pos_cost: 0.0,
-                    water_withdrawal_violation_neg_cost: 0.0,
-                    evaporation_violation_pos_cost: 0.0,
-                    evaporation_violation_neg_cost: 0.0,
-                    inflow_nonnegativity_cost: 0.0,
+                    ..HydroPenalties::uniform(0.0)
                 },
                 bus: BusStagePenalties { excess_cost: 0.0 },
                 line: LineStagePenalties { exchange_cost: 0.0 },
@@ -8705,7 +8650,7 @@ mod pumping_water_tests {
                 start_stage_id: RET_START_STAGE_ID,
                 filling_min_rate_m3s: 0.0,
             }),
-            penalties: zero_hydro_penalties(),
+            penalties: HydroPenalties::uniform(0.0),
         };
         hydro.declare_mirror_unit_group(EntityId(1));
         hydro

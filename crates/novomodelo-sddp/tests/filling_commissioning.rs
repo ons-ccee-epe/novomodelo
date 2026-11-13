@@ -74,8 +74,8 @@ mod d38_dead_volume_filling_simulation {
     use std::path::Path;
     use std::sync::mpsc;
 
-    use novomodelo_core::TrainingEvent;
     use novomodelo_core::scenario::ScenarioSource;
+    use novomodelo_core::{M3S_TO_HM3, TrainingEvent};
     use novomodelo_io::config::SimulationConfig;
     use novomodelo_sddp::{
         SolverStatsDelta, StudySetup, hydro_models::prepare_hydro_models, setup::prepare_stochastic,
@@ -109,9 +109,6 @@ mod d38_dead_volume_filling_simulation {
     /// `H4`'s stage-0 seed (hm³), mirroring `initial_conditions.json`.
     const H4_SEED_HM3: f64 = 100.0;
 
-    /// m³/s → hm³ per hour. Mirrors `crate::lp::builder::M3S_TO_HM3` (a private const
-    /// not exported to integration tests). `ζ = total_stage_hours · M3S_TO_HM3`.
-    const M3S_TO_HM3: f64 = 3_600.0 / 1_000_000.0;
     /// Every stage in `stages.json` totals 720 h, so `ζ` is uniform.
     const STAGE_HOURS: f64 = 720.0;
 
@@ -617,8 +614,8 @@ mod d40_filling_cascade_simulation {
     use std::path::Path;
     use std::sync::mpsc;
 
-    use novomodelo_core::TrainingEvent;
     use novomodelo_core::scenario::ScenarioSource;
+    use novomodelo_core::{M3S_TO_HM3, TrainingEvent};
     use novomodelo_io::config::SimulationConfig;
     use novomodelo_sddp::{
         StudySetup, hydro_models::prepare_hydro_models, setup::prepare_stochastic,
@@ -658,9 +655,6 @@ mod d40_filling_cascade_simulation {
     /// `H_ctrl`'s stage-0 seed (hm³), mirroring `initial_conditions.json`.
     const H_CTRL_SEED_HM3: f64 = 100.0;
 
-    /// m³/s → hm³ per hour. Mirrors `crate::lp::builder::M3S_TO_HM3` (a private const
-    /// not exported to integration tests). `ζ = total_stage_hours · M3S_TO_HM3`.
-    const M3S_TO_HM3: f64 = 3_600.0 / 1_000_000.0;
     /// Every stage in `stages.json` totals 720 h, so `ζ` is uniform.
     const STAGE_HOURS: f64 = 720.0;
 
@@ -1086,8 +1080,8 @@ mod prefilling_spillage_frozen {
     use std::path::Path;
     use std::sync::mpsc;
 
-    use novomodelo_core::TrainingEvent;
     use novomodelo_core::scenario::ScenarioSource;
+    use novomodelo_core::{M3S_TO_HM3, TrainingEvent};
     use novomodelo_io::config::SimulationConfig;
     use novomodelo_sddp::{
         StudySetup, hydro_models::prepare_hydro_models, setup::prepare_stochastic,
@@ -1112,9 +1106,6 @@ mod prefilling_spillage_frozen {
     /// `scenarios/inflow_seasonal_stats.parquet`, hydro 2.
     const H3_INCR_M3S: f64 = 20.0;
 
-    /// m³/s → hm³ per hour. Mirrors `crate::lp::builder::M3S_TO_HM3` (private). Stages
-    /// 0 and 1 are single FLAT blocks totalling 720 h, so `ζ = 720 · M3S_TO_HM3`.
-    const M3S_TO_HM3: f64 = 3_600.0 / 1_000_000.0;
     const STAGE_HOURS: f64 = 720.0;
 
     /// Sum a hydro's release (turbine + spillage, m³/s) across the blocks of one stage.
@@ -1370,21 +1361,9 @@ mod filling_cut_validity {
     fn hydro_penalties() -> HydroPenalties {
         HydroPenalties {
             spillage_cost: 0.01,
-            diversion_cost: 0.0,
-            turbined_cost: 0.0,
             storage_violation_below_cost: 500.0,
-            filling_target_violation_cost: 0.0,
-            turbined_violation_below_cost: 0.0,
-            outflow_violation_below_cost: 0.0,
-            outflow_violation_above_cost: 0.0,
-            generation_violation_below_cost: 0.0,
-            evaporation_violation_cost: 0.0,
-            water_withdrawal_violation_cost: 0.0,
-            water_withdrawal_violation_pos_cost: 0.0,
-            water_withdrawal_violation_neg_cost: 0.0,
-            evaporation_violation_pos_cost: 0.0,
-            evaporation_violation_neg_cost: 0.0,
             inflow_nonnegativity_cost: 1000.0,
+            ..HydroPenalties::uniform(0.0)
         }
     }
 
@@ -1554,21 +1533,9 @@ mod filling_cut_validity {
         fn default_hydro_penalties() -> HydroPenalties {
             HydroPenalties {
                 spillage_cost: 0.01,
-                diversion_cost: 0.0,
-                turbined_cost: 0.0,
                 storage_violation_below_cost: 500.0,
-                filling_target_violation_cost: 0.0,
-                turbined_violation_below_cost: 0.0,
-                outflow_violation_below_cost: 0.0,
-                outflow_violation_above_cost: 0.0,
-                generation_violation_below_cost: 0.0,
-                evaporation_violation_cost: 0.0,
-                water_withdrawal_violation_cost: 0.0,
-                water_withdrawal_violation_pos_cost: 0.0,
-                water_withdrawal_violation_neg_cost: 0.0,
-                evaporation_violation_pos_cost: 0.0,
-                evaporation_violation_neg_cost: 0.0,
                 inflow_nonnegativity_cost: 1000.0,
+                ..HydroPenalties::uniform(0.0)
             }
         }
 
@@ -2373,8 +2340,8 @@ mod d42_nonfilling_hydro_commissioning {
     use std::path::Path;
     use std::sync::mpsc;
 
-    use novomodelo_core::TrainingEvent;
     use novomodelo_core::scenario::ScenarioSource;
+    use novomodelo_core::{M3S_TO_HM3, TrainingEvent};
     use novomodelo_io::config::SimulationConfig;
     use novomodelo_sddp::{
         StudySetup, hydro_models::prepare_hydro_models, setup::prepare_stochastic,
@@ -2402,9 +2369,6 @@ mod d42_nonfilling_hydro_commissioning {
     const H_NEW_SEED_HM3: f64 = 50.0;
     const H_TAIL_SEED_HM3: f64 = 30.0;
 
-    /// m³/s → hm³ per hour. Mirrors `crate::lp::builder::M3S_TO_HM3` (private). `ζ =
-    /// total_stage_hours · M3S_TO_HM3`; every stage totals 720 h.
-    const M3S_TO_HM3: f64 = 3_600.0 / 1_000_000.0;
     const STAGE_HOURS: f64 = 720.0;
 
     /// Per-(stage, hydro) view: single FLAT block per stage, so each scalar reads from

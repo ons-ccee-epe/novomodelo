@@ -591,21 +591,8 @@ fn evap_water_balance_only_second_hydro_has_evap() {
     );
     let hp = HydroPenalties {
         spillage_cost: 0.01,
-        diversion_cost: 0.0,
-        turbined_cost: 0.0,
-        storage_violation_below_cost: 0.0,
-        filling_target_violation_cost: 0.0,
-        turbined_violation_below_cost: 0.0,
-        outflow_violation_below_cost: 0.0,
-        outflow_violation_above_cost: 0.0,
-        generation_violation_below_cost: 0.0,
-        evaporation_violation_cost: 0.0,
-        water_withdrawal_violation_cost: 0.0,
-        water_withdrawal_violation_pos_cost: 0.0,
-        water_withdrawal_violation_neg_cost: 0.0,
-        evaporation_violation_pos_cost: 0.0,
-        evaporation_violation_neg_cost: 0.0,
         inflow_nonnegativity_cost: 1000.0,
+        ..HydroPenalties::uniform(0.0)
     };
     let hydros = vec![
         make_hydro(
@@ -1152,7 +1139,7 @@ fn evap_bound_prevents_dump_valve() {
 /// storage columns.
 #[test]
 fn parallel_multiblock_evaporation_study_has_one_priced_stage_slot() {
-    const M3S_TO_HM3: f64 = 3_600.0 / 1_000_000.0;
+    use novomodelo_core::M3S_TO_HM3;
     use novomodelo_sddp::indexer::Boundary;
     use novomodelo_sddp::indexer::HydroSys;
 

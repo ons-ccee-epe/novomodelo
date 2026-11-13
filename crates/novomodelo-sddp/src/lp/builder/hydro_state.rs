@@ -2,7 +2,7 @@
 
 use std::ops::Range;
 
-use novomodelo_core::commissioning::{Phase, filling_phase};
+use novomodelo_core::commissioning::{Phase, filling_phase, hydro_operating_active};
 use novomodelo_core::{
     CascadeTopology, Hydro, HydroBlockBounds, HydroPenalties, HydroUnitGroup, ResolvedBounds,
     ResolvedHydroUnitGroupBounds, Stage,
@@ -52,12 +52,14 @@ pub(super) fn storage_ceiling(hydro: &Hydro, stage_id: i32, resolved_max_hm3: f6
     }
 }
 
-/// Whether `hydro` is commissioning (`PreFilling`/`Filling`) at `stage_id`, its
-/// turbine columns pinned at zero.
+/// Whether `hydro` is commissioning at `stage_id`, its turbine columns pinned at
+/// zero; [`hydro_operating_active`] owns the decision.
 pub(super) fn is_suspended(hydro: &Hydro, stage_id: i32) -> bool {
-    matches!(
-        hydro_phase(hydro, stage_id),
-        Phase::PreFilling | Phase::Filling
+    !hydro_operating_active(
+        hydro.filling.as_ref(),
+        hydro.entry_stage_id,
+        hydro.exit_stage_id,
+        stage_id,
     )
 }
 

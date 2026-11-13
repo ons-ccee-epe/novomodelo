@@ -530,10 +530,6 @@ mod tests {
         StageRiskConfig, StageStateConfig,
     };
 
-    pub(super) fn zero_penalties() -> HydroPenalties {
-        HydroPenalties::uniform(0.0)
-    }
-
     /// Given two hydros with no declared `unit_groups`, `build()` returns `Err`
     /// with exactly one `MissingUnitGroups` per offending hydro, naming both ids —
     /// proving errors are collected rather than short-circuited on the first.
@@ -547,7 +543,7 @@ mod tests {
             max_generation_mw: 90.0,
             min_turbined_m3s: 5.0,
             max_turbined_m3s: 200.0,
-            penalties: zero_penalties(),
+            penalties: HydroPenalties::uniform(0.0),
             mirror_unit_group: MirrorUnitGroup::None,
             ..Default::default()
         });
@@ -559,7 +555,7 @@ mod tests {
             max_generation_mw: 150.0,
             min_turbined_m3s: 15.0,
             max_turbined_m3s: 300.0,
-            penalties: zero_penalties(),
+            penalties: HydroPenalties::uniform(0.0),
             mirror_unit_group: MirrorUnitGroup::None,
             ..Default::default()
         });
@@ -612,7 +608,7 @@ mod tests {
             max_generation_mw: 90.0,
             min_turbined_m3s: 5.0,
             max_turbined_m3s: 200.0,
-            penalties: zero_penalties(),
+            penalties: HydroPenalties::uniform(0.0),
             mirror_unit_group: MirrorUnitGroup::None,
             ..Default::default()
         });
@@ -625,7 +621,7 @@ mod tests {
             max_generation_mw: 150.0,
             min_turbined_m3s: 15.0,
             max_turbined_m3s: 300.0,
-            penalties: zero_penalties(),
+            penalties: HydroPenalties::uniform(0.0),
             mirror_unit_group: MirrorUnitGroup::None,
             ..Default::default()
         });
@@ -831,7 +827,7 @@ mod proptests {
         make_bus, make_contract, make_hydro, make_line, make_ncs, make_pumping_station, make_stage,
         make_thermal,
     };
-    use crate::{ConstraintExpression, ContractType, DeficitSegment};
+    use crate::{ConstraintExpression, ContractType, DeficitSegment, HydroPenalties};
     use proptest::prelude::*;
 
     fn date_early() -> NaiveDate {
@@ -925,7 +921,7 @@ mod proptests {
                 max_storage_hm3: 1000.0,
                 max_turbined_m3s: 100.0,
                 max_generation_mw: 100.0,
-                penalties: super::tests::zero_penalties(),
+                penalties: HydroPenalties::uniform(0.0),
                 ..Default::default()
             }),
             make_hydro(HydroSpec {
@@ -936,7 +932,7 @@ mod proptests {
                 max_storage_hm3: 1000.0,
                 max_turbined_m3s: 100.0,
                 max_generation_mw: 100.0,
-                penalties: super::tests::zero_penalties(),
+                penalties: HydroPenalties::uniform(0.0),
                 ..Default::default()
             }),
         ]

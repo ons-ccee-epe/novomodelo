@@ -2044,27 +2044,6 @@ mod tests {
         // Five study stages (ids 0..=4) span every filling phase of both hydros.
         let n_stages = 5_usize;
 
-        fn zero_hydro_penalties() -> HydroPenalties {
-            HydroPenalties {
-                spillage_cost: 0.0,
-                diversion_cost: 0.0,
-                turbined_cost: 0.0,
-                storage_violation_below_cost: 0.0,
-                filling_target_violation_cost: 0.0,
-                turbined_violation_below_cost: 0.0,
-                outflow_violation_below_cost: 0.0,
-                outflow_violation_above_cost: 0.0,
-                generation_violation_below_cost: 0.0,
-                evaporation_violation_cost: 0.0,
-                water_withdrawal_violation_cost: 0.0,
-                water_withdrawal_violation_pos_cost: 0.0,
-                water_withdrawal_violation_neg_cost: 0.0,
-                evaporation_violation_pos_cost: 0.0,
-                evaporation_violation_neg_cost: 0.0,
-                inflow_nonnegativity_cost: 0.0,
-            }
-        }
-
         // A filling hydro with the given start/entry stage ids. ConstantProductivity
         // keeps the LP simple (no FPHA rows); the soft-floor/target slacks come from
         // the filling family, not the generation model.
@@ -2098,7 +2077,7 @@ mod tests {
                     start_stage_id,
                     filling_min_rate_m3s: 0.0,
                 }),
-                penalties: zero_hydro_penalties(),
+                penalties: HydroPenalties::uniform(0.0),
             };
             hydro.declare_mirror_unit_group(EntityId(1));
             hydro
@@ -2178,22 +2157,9 @@ mod tests {
 
         fn default_hydro_penalties() -> HydroPenalties {
             HydroPenalties {
-                spillage_cost: 0.0,
-                diversion_cost: 0.0,
-                turbined_cost: 0.0,
                 storage_violation_below_cost: 500.0,
                 filling_target_violation_cost: 100.0,
-                turbined_violation_below_cost: 0.0,
-                outflow_violation_below_cost: 0.0,
-                outflow_violation_above_cost: 0.0,
-                generation_violation_below_cost: 0.0,
-                evaporation_violation_cost: 0.0,
-                water_withdrawal_violation_cost: 0.0,
-                water_withdrawal_violation_pos_cost: 0.0,
-                water_withdrawal_violation_neg_cost: 0.0,
-                evaporation_violation_pos_cost: 0.0,
-                evaporation_violation_neg_cost: 0.0,
-                inflow_nonnegativity_cost: 0.0,
+                ..HydroPenalties::uniform(0.0)
             }
         }
 
@@ -2515,8 +2481,7 @@ mod tests {
         let water_row_a = geom0.water_balance_row(HydroSys::new(h_a), BlockIdx::new(0));
         assert_eq!(
             raw_at(z_col_a, water_row_a),
-            -templates.block_hours_per_stage[0].iter().sum::<f64>()
-                * crate::block_clock::M3S_TO_HM3,
+            -templates.block_hours_per_stage[0].iter().sum::<f64>() * novomodelo_core::M3S_TO_HM3,
             "Filling hydro H_A's own z-inflow column must carry -zeta on its own water row"
         );
         for row in geom0.water_balance.range() {

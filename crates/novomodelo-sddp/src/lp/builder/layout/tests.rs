@@ -10,11 +10,11 @@ use chrono::NaiveDate;
 use novomodelo_core::{
     Block, BlockMode, BoundsCountsSpec, BoundsDefaults, Bus, CascadeTopology, ConstraintExpression,
     ContractBlockBounds, ContractType, EnergyContract, EntityId, FillingConfig, GenericConstraint,
-    Hydro, HydroBlockBounds, HydroGenerationModel, HydroStageBounds, LineBlockBounds, LinearTerm,
-    NoiseMethod, NonControllableSource, PenaltyBasis, PumpingBlockBounds, PumpingStation,
-    ResolvedBounds, ResolvedGenericConstraintBounds, ScalarExpr, ScenarioSourceConfig, SlackConfig,
-    Stage, StageRiskConfig, StageStateConfig, Thermal, ThermalBlockBounds, ThermalStageBounds,
-    VariableRef,
+    Hydro, HydroBlockBounds, HydroGenerationModel, HydroPenalties, HydroStageBounds,
+    LineBlockBounds, LinearTerm, NoiseMethod, NonControllableSource, PenaltyBasis,
+    PumpingBlockBounds, PumpingStation, ResolvedBounds, ResolvedGenericConstraintBounds,
+    ScalarExpr, ScenarioSourceConfig, SlackConfig, Stage, StageRiskConfig, StageStateConfig,
+    Thermal, ThermalBlockBounds, ThermalStageBounds, VariableRef,
 };
 
 use crate::hydro_models::{EvaporationModelSet, ProductionModelSet};
@@ -35,7 +35,6 @@ use crate::time_value::{PostStudyResolved, TimeValue};
 
 use super::super::DeliveryRing;
 use super::super::entries::build_stage_matrix_entries;
-use super::super::test_support::zero_hydro_penalties;
 use super::{
     RangeCursor, StageLayout, StateSpace, TemplateBuildCtx, build_anticipated_decision_row_pos,
     build_anticipated_fishing_row_pos, build_anticipated_slot_row_pos,
@@ -247,7 +246,7 @@ fn membership_hydro(
         evaporation_reference_volumes_hm3: None,
         diversion: None,
         filling,
-        penalties: zero_hydro_penalties(),
+        penalties: HydroPenalties::uniform(0.0),
     };
     hydro.declare_mirror_unit_group(EntityId(1));
     hydro

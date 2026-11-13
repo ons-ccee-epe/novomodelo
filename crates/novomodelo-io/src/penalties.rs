@@ -11,6 +11,7 @@
 use novomodelo_core::{
     entities::{DeficitSegment, HydroPenalties},
     penalty::GlobalPenaltyDefaults,
+    volume_cost_from_flow_cost,
 };
 use serde::Deserialize;
 use std::path::Path;
@@ -336,6 +337,12 @@ fn convert(raw: RawPenalties) -> GlobalPenaltyDefaults {
         turbined_violation_below_cost: raw.hydro.turbined_violation_below_cost,
         outflow_violation_below_cost: raw.hydro.outflow_violation_below_cost,
         outflow_violation_above_cost: raw.hydro.outflow_violation_above_cost,
+        outflow_volume_violation_below_cost: volume_cost_from_flow_cost(
+            raw.hydro.outflow_violation_below_cost,
+        ),
+        outflow_volume_violation_above_cost: volume_cost_from_flow_cost(
+            raw.hydro.outflow_violation_above_cost,
+        ),
         generation_violation_below_cost: raw.hydro.generation_violation_below_cost,
         evaporation_violation_cost: raw.hydro.evaporation_violation_cost,
         water_withdrawal_violation_cost: raw.hydro.water_withdrawal_violation_cost,
@@ -482,6 +489,8 @@ mod tests {
                 turbined_violation_below_cost: 500.0,
                 outflow_violation_below_cost: 500.0,
                 outflow_violation_above_cost: 500.0,
+                outflow_volume_violation_below_cost: volume_cost_from_flow_cost(500.0),
+                outflow_volume_violation_above_cost: volume_cost_from_flow_cost(500.0),
                 generation_violation_below_cost: 1000.0,
                 evaporation_violation_cost: 5000.0,
                 water_withdrawal_violation_cost: 1000.0,

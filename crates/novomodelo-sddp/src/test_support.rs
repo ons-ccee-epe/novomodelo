@@ -381,29 +381,6 @@ pub(crate) use crate::setup::{
     build_study_dimensions, resolve_anticipated_commitments, resolve_lp_build_inputs,
 };
 
-/// All-zero [`HydroPenalties`] for [`geometry_hydro`] — no fixture-side penalty
-/// cost reaches the column/objective arithmetic `StageLayout::new` computes.
-fn geometry_zero_penalties() -> HydroPenalties {
-    HydroPenalties {
-        spillage_cost: 0.0,
-        diversion_cost: 0.0,
-        turbined_cost: 0.0,
-        storage_violation_below_cost: 0.0,
-        filling_target_violation_cost: 0.0,
-        turbined_violation_below_cost: 0.0,
-        outflow_violation_below_cost: 0.0,
-        outflow_violation_above_cost: 0.0,
-        generation_violation_below_cost: 0.0,
-        evaporation_violation_cost: 0.0,
-        water_withdrawal_violation_cost: 0.0,
-        water_withdrawal_violation_pos_cost: 0.0,
-        water_withdrawal_violation_neg_cost: 0.0,
-        evaporation_violation_pos_cost: 0.0,
-        evaporation_violation_neg_cost: 0.0,
-        inflow_nonnegativity_cost: 0.0,
-    }
-}
-
 /// Build a [`HydroUnitGroup`] with the given `id`, `bus_id`, and four bounds —
 /// the shared multi-bus fixture helper (`unit_groups` cannot otherwise be
 /// populated from outside `novomodelo-io`'s `pub(super)` validation-module helper).
@@ -462,7 +439,7 @@ pub(crate) fn geometry_hydro(idx: usize) -> Hydro {
         evaporation_reference_volumes_hm3: None,
         diversion: None,
         filling: None,
-        penalties: geometry_zero_penalties(),
+        penalties: HydroPenalties::uniform(0.0),
     };
     hydro.declare_mirror_unit_group(id);
     hydro
@@ -2599,21 +2576,8 @@ fn fan_or_chain_system_builder(
         filling: None,
         penalties: HydroPenalties {
             spillage_cost: 0.01,
-            diversion_cost: 0.0,
-            turbined_cost: 0.0,
-            storage_violation_below_cost: 0.0,
-            filling_target_violation_cost: 0.0,
-            turbined_violation_below_cost: 0.0,
-            outflow_violation_below_cost: 0.0,
-            outflow_violation_above_cost: 0.0,
-            generation_violation_below_cost: 0.0,
-            evaporation_violation_cost: 0.0,
-            water_withdrawal_violation_cost: 0.0,
-            water_withdrawal_violation_pos_cost: 0.0,
-            water_withdrawal_violation_neg_cost: 0.0,
-            evaporation_violation_pos_cost: 0.0,
-            evaporation_violation_neg_cost: 0.0,
             inflow_nonnegativity_cost: 1000.0,
+            ..HydroPenalties::uniform(0.0)
         },
     };
     hydro.declare_mirror_unit_group(bus_id);
@@ -2728,21 +2692,9 @@ fn fan_or_chain_system_builder(
         &PenaltiesDefaults {
             hydro: HydroPenalties {
                 spillage_cost: 0.01,
-                diversion_cost: 0.0,
-                turbined_cost: 0.0,
                 storage_violation_below_cost: 500.0,
-                filling_target_violation_cost: 0.0,
-                turbined_violation_below_cost: 0.0,
-                outflow_violation_below_cost: 0.0,
-                outflow_violation_above_cost: 0.0,
-                generation_violation_below_cost: 0.0,
-                evaporation_violation_cost: 0.0,
-                water_withdrawal_violation_cost: 0.0,
-                water_withdrawal_violation_pos_cost: 0.0,
-                water_withdrawal_violation_neg_cost: 0.0,
-                evaporation_violation_pos_cost: 0.0,
-                evaporation_violation_neg_cost: 0.0,
                 inflow_nonnegativity_cost: 1000.0,
+                ..HydroPenalties::uniform(0.0)
             },
             bus: BusStagePenalties { excess_cost: 0.0 },
             line: LineStagePenalties { exchange_cost: 0.0 },

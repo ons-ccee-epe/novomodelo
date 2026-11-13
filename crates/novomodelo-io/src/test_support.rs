@@ -487,22 +487,8 @@ pub fn make_minimal_case(dir: &TempDir) {
 #[must_use]
 pub fn penalties_all(v: f64) -> HydroPenalties {
     HydroPenalties {
-        spillage_cost: v,
-        diversion_cost: v,
-        turbined_cost: v,
-        storage_violation_below_cost: v,
-        filling_target_violation_cost: v,
-        turbined_violation_below_cost: v,
-        outflow_violation_below_cost: v,
-        outflow_violation_above_cost: v,
-        generation_violation_below_cost: v,
-        evaporation_violation_cost: v,
-        water_withdrawal_violation_cost: v,
-        water_withdrawal_violation_pos_cost: v,
-        water_withdrawal_violation_neg_cost: v,
-        evaporation_violation_pos_cost: v,
-        evaporation_violation_neg_cost: v,
         inflow_nonnegativity_cost: 1000.0,
+        ..HydroPenalties::uniform(v)
     }
 }
 
@@ -525,21 +511,17 @@ pub fn make_global() -> GlobalPenaltyDefaults {
         line_exchange_cost: 2.0,
         hydro: HydroPenalties {
             spillage_cost: 0.01,
-            turbined_cost: 0.05,
             diversion_cost: 0.1,
+            turbined_cost: 0.05,
             storage_violation_below_cost: 10_000.0,
             filling_target_violation_cost: 50_000.0,
             turbined_violation_below_cost: 500.0,
             outflow_violation_below_cost: 500.0,
             outflow_violation_above_cost: 500.0,
-            generation_violation_below_cost: 1_000.0,
             evaporation_violation_cost: 5_000.0,
-            water_withdrawal_violation_cost: 1_000.0,
-            water_withdrawal_violation_pos_cost: 1_000.0,
-            water_withdrawal_violation_neg_cost: 1_000.0,
             evaporation_violation_pos_cost: 5_000.0,
             evaporation_violation_neg_cost: 5_000.0,
-            inflow_nonnegativity_cost: 1000.0,
+            ..HydroPenalties::uniform(1_000.0)
         },
         ncs_curtailment_cost: 0.005,
     }
@@ -832,22 +814,13 @@ pub(crate) fn make_data_5b(
 pub fn make_hydro_ordered_penalties(id: i32) -> Hydro {
     let mut h = make_hydro(id, None);
     h.penalties = HydroPenalties {
-        filling_target_violation_cost: 1000.0,
-        storage_violation_below_cost: 500.0,
-        turbined_violation_below_cost: 50.0,
-        outflow_violation_below_cost: 50.0,
-        outflow_violation_above_cost: 50.0,
-        generation_violation_below_cost: 50.0,
-        evaporation_violation_cost: 50.0,
-        water_withdrawal_violation_cost: 50.0,
-        water_withdrawal_violation_pos_cost: 50.0,
-        water_withdrawal_violation_neg_cost: 50.0,
-        evaporation_violation_pos_cost: 50.0,
-        evaporation_violation_neg_cost: 50.0,
         spillage_cost: 1.0,
         diversion_cost: 1.0,
         turbined_cost: 2.0,
+        storage_violation_below_cost: 500.0,
+        filling_target_violation_cost: 1000.0,
         inflow_nonnegativity_cost: 1000.0,
+        ..HydroPenalties::uniform(50.0)
     };
     h
 }

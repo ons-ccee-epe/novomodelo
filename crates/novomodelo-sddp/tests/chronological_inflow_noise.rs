@@ -22,6 +22,7 @@
 
 mod common;
 
+use novomodelo_core::M3S_TO_HM3;
 use novomodelo_sddp::StudySetup;
 use novomodelo_sddp::indexer::StateDim;
 use novomodelo_sddp::setup::{NodePos, StageIdx};
@@ -37,8 +38,6 @@ use common::in_code_studies::{
     CHRONOLOGICAL_NOISE_INFLOW_STD_M3S, CHRONOLOGICAL_NOISE_INITIAL_STORAGE_HM3,
     CHRONOLOGICAL_NOISE_RELEASE_COST, ChronologicalNoiseSpec, chronological_noise_study,
 };
-
-const M3S_TO_HM3: f64 = 0.0036;
 
 fn root_node(setup: &StudySetup) -> NodePos {
     let graph = &setup.inputs.node_graph;
@@ -68,7 +67,7 @@ fn end_storage_hm3(setup: &StudySetup, inflow_eta: &[f64]) -> Vec<f64> {
 fn chronological_inflow_noise_moves_only_its_own_hydro() {
     let (system, config) = chronological_noise_study(&ChronologicalNoiseSpec::default());
     let setup = build_setup_in_code(system, &config);
-    let zeta_hm3_per_m3s: f64 = CHRONOLOGICAL_NOISE_BLOCK_HOURS.iter().sum::<f64>() * M3S_TO_HM3;
+    let zeta_hm3_per_m3s = CHRONOLOGICAL_NOISE_BLOCK_HOURS.iter().sum::<f64>() * M3S_TO_HM3;
 
     let baseline = end_storage_hm3(&setup, &[0.0, 0.0]);
     for (h, &storage) in baseline.iter().enumerate() {

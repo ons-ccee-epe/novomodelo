@@ -12,7 +12,7 @@ use novomodelo_core::{
     AnticipatedConfig, Block, BlockMode, BoundsCountsSpec, BoundsDefaults, Bus, BusStagePenalties,
     ContractBlockBounds, ContractType, DeficitSegment, EnergyContract, EntityId, FillingConfig,
     Hydro, HydroBlockBounds, HydroGenerationModel, HydroPenalties, HydroStageBounds,
-    LineBlockBounds, LineStagePenalties, LoadModel, NcsStagePenalties, NoiseMethod,
+    LineBlockBounds, LineStagePenalties, LoadModel, M3S_TO_HM3, NcsStagePenalties, NoiseMethod,
     NonControllableSource, PenaltiesCountsSpec, PenaltiesDefaults, PostStudyStage, PostStudyStages,
     PostStudyThermalBound, PumpingBlockBounds, PumpingStation, ResolvedBounds, ResolvedNcsBounds,
     ResolvedNcsFactors, ResolvedPenalties, ScenarioSourceConfig, Stage, StageRiskConfig,
@@ -22,7 +22,6 @@ use novomodelo_stochastic::PrecomputedNormal;
 use novomodelo_stochastic::par::precompute::PrecomputedPar;
 use novomodelo_stochastic::season_cast::post_study_calendar_stages;
 
-use crate::block_clock::M3S_TO_HM3;
 use crate::hydro_models::PrepareHydroModelsResult;
 use crate::indexer::{
     AnticipatedLocal, AnticipatedPlants, BlockIdx, Boundary, HydroCell, HydroCellIndex, HydroSys,
@@ -74,21 +73,8 @@ fn default_hydro_block_bounds() -> HydroBlockBounds {
 fn default_hydro_penalties() -> HydroPenalties {
     HydroPenalties {
         spillage_cost: 0.01,
-        diversion_cost: 0.0,
-        turbined_cost: 0.0,
-        storage_violation_below_cost: 0.0,
-        filling_target_violation_cost: 0.0,
-        turbined_violation_below_cost: 0.0,
-        outflow_violation_below_cost: 0.0,
-        outflow_violation_above_cost: 0.0,
-        generation_violation_below_cost: 0.0,
-        evaporation_violation_cost: 0.0,
-        water_withdrawal_violation_cost: 0.0,
-        water_withdrawal_violation_pos_cost: 0.0,
-        water_withdrawal_violation_neg_cost: 0.0,
-        evaporation_violation_pos_cost: 0.0,
-        evaporation_violation_neg_cost: 0.0,
         inflow_nonnegativity_cost: 1000.0,
+        ..HydroPenalties::uniform(0.0)
     }
 }
 
@@ -263,28 +249,6 @@ fn empty_resolved_params() -> ResolvedParameters {
     }
 }
 
-/// All-zero per-plant [`HydroPenalties`] for fixture hydros.
-fn hydro_penalties_zero() -> HydroPenalties {
-    HydroPenalties {
-        spillage_cost: 0.0,
-        diversion_cost: 0.0,
-        turbined_cost: 0.0,
-        storage_violation_below_cost: 0.0,
-        filling_target_violation_cost: 0.0,
-        turbined_violation_below_cost: 0.0,
-        outflow_violation_below_cost: 0.0,
-        outflow_violation_above_cost: 0.0,
-        generation_violation_below_cost: 0.0,
-        evaporation_violation_cost: 0.0,
-        water_withdrawal_violation_cost: 0.0,
-        water_withdrawal_violation_pos_cost: 0.0,
-        water_withdrawal_violation_neg_cost: 0.0,
-        evaporation_violation_pos_cost: 0.0,
-        evaporation_violation_neg_cost: 0.0,
-        inflow_nonnegativity_cost: 0.0,
-    }
-}
-
 // Deliberately non-binding, not an install capacity: the mirror group copies
 // this value and every cell column bound sums against it, so a realistic
 // number caps the cells below what `default_hydro_bounds()`-derived resolved
@@ -319,7 +283,7 @@ fn fixture_hydro(id: i32) -> Hydro {
         evaporation_reference_volumes_hm3: None,
         diversion: None,
         filling: None,
-        penalties: hydro_penalties_zero(),
+        penalties: HydroPenalties::uniform(0.0),
     };
     hydro.declare_mirror_unit_group(EntityId(1));
     hydro
@@ -3197,21 +3161,12 @@ fn one_hydro_active_violations(n_stages: usize) -> System {
         filling: None,
         penalties: HydroPenalties {
             spillage_cost: 0.01,
-            diversion_cost: 0.0,
-            turbined_cost: 0.0,
-            storage_violation_below_cost: 0.0,
-            filling_target_violation_cost: 0.0,
             turbined_violation_below_cost: 1000.0,
             outflow_violation_below_cost: 1000.0,
             outflow_violation_above_cost: 1000.0,
             generation_violation_below_cost: 1000.0,
-            evaporation_violation_cost: 0.0,
-            water_withdrawal_violation_cost: 0.0,
-            water_withdrawal_violation_pos_cost: 0.0,
-            water_withdrawal_violation_neg_cost: 0.0,
-            evaporation_violation_pos_cost: 0.0,
-            evaporation_violation_neg_cost: 0.0,
             inflow_nonnegativity_cost: 1000.0,
+            ..HydroPenalties::uniform(0.0)
         },
     };
     hydro.declare_mirror_unit_group(EntityId(1));
@@ -3327,21 +3282,12 @@ fn one_hydro_active_violations(n_stages: usize) -> System {
         &PenaltiesDefaults {
             hydro: HydroPenalties {
                 spillage_cost: 0.01,
-                diversion_cost: 0.0,
-                turbined_cost: 0.0,
-                storage_violation_below_cost: 0.0,
-                filling_target_violation_cost: 0.0,
                 turbined_violation_below_cost: 1000.0,
                 outflow_violation_below_cost: 1000.0,
                 outflow_violation_above_cost: 1000.0,
                 generation_violation_below_cost: 1000.0,
-                evaporation_violation_cost: 0.0,
-                water_withdrawal_violation_cost: 0.0,
-                water_withdrawal_violation_pos_cost: 0.0,
-                water_withdrawal_violation_neg_cost: 0.0,
-                evaporation_violation_pos_cost: 0.0,
-                evaporation_violation_neg_cost: 0.0,
                 inflow_nonnegativity_cost: 1000.0,
+                ..HydroPenalties::uniform(0.0)
             },
             bus: BusStagePenalties { excess_cost: 0.0 },
             line: LineStagePenalties { exchange_cost: 0.0 },
@@ -4463,7 +4409,7 @@ fn system_with_contracts_filling_and_anticipated() -> novomodelo_core::System {
             start_stage_id: 1,
             filling_min_rate_m3s: 0.0,
         }),
-        penalties: hydro_penalties_zero(),
+        penalties: HydroPenalties::uniform(0.0),
     };
     hydro.declare_mirror_unit_group(EntityId(1));
 
@@ -4864,7 +4810,7 @@ fn filling_block_system(block_mode: BlockMode, n_blks: usize) -> System {
                 start_stage_id: start,
                 filling_min_rate_m3s: FILL_RATE_M3S,
             }),
-            penalties: hydro_penalties_zero(),
+            penalties: HydroPenalties::uniform(0.0),
         };
         hydro.declare_mirror_unit_group(EntityId(1));
         hydro

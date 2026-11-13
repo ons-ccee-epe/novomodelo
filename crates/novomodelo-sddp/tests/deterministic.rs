@@ -21,7 +21,7 @@ use std::path::Path;
 use std::sync::mpsc;
 
 use novomodelo_core::scenario::ScenarioSource;
-use novomodelo_core::{BlockMode, EntityId};
+use novomodelo_core::{BlockMode, EntityId, M3S_TO_HM3};
 use novomodelo_io::{
     PolicyCutRecord, STAGE_CUTS_PRICED_STATE_DATE_SENTINEL, StageCutsPayload,
     write_policy_checkpoint,
@@ -3878,7 +3878,6 @@ fn d44_travel_time_substage_transit_bucket_dual() {
     // (mirrors `extraction.rs`'s `water_value = dual * COST_SCALE_FACTOR`).
     const COST_SCALE_FACTOR: f64 = 1_000_000.0;
     const HOURS_PER_STAGE: f64 = 720.0;
-    const M3S_TO_HM3: f64 = 3_600.0 / 1_000_000.0;
     const TOL: f64 = 1e-6;
 
     let case_dir = Path::new("../../examples/deterministic/d44-travel-time-substage");
@@ -4089,7 +4088,6 @@ fn pad_calendar_for_resolution(stage_hours: &[f64], travel_time_hours: f64) -> V
 fn d45_travel_time_mixed_calendar_conservation() {
     const K_TOL: f64 = 1e-9;
     const CONSERVATION_TOL: f64 = 1e-6;
-    const M3S_TO_HM3: f64 = 3_600.0 / 1_000_000.0;
     const TRAVEL_TIME_HOURS: f64 = 360.0;
     const N_STAGES: usize = 4;
 
@@ -4269,7 +4267,6 @@ fn d46_travel_time_chronological_converges() {
 #[test]
 fn d47_travel_time_confluence_aggregation() {
     const TOL: f64 = 1e-6;
-    const M3S_TO_HM3: f64 = 3_600.0 / 1_000_000.0;
     const HOURS_PER_STAGE: f64 = 720.0;
 
     let stage_hours = [720.0, 720.0, 720.0];
@@ -4459,7 +4456,6 @@ fn d47_travel_time_confluence_aggregation() {
 #[test]
 fn d48_travel_time_ic_seed_windowed_defluence_cost() {
     const HOURS_PER_STAGE: f64 = 168.0;
-    const M3S_TO_HM3: f64 = 3_600.0 / 1_000_000.0;
     const T_V: f64 = 336.0;
     const WINDOW_WIDTH: f64 = 336.0;
     const VALUE_M3S: f64 = 100.0;
@@ -4712,7 +4708,6 @@ fn d48_travel_time_ic_seed_windowed_defluence_cost() {
 #[test]
 fn d49_travel_time_chronological_arrival_density() {
     const T_V: f64 = 200.0;
-    const M3S_TO_HM3: f64 = 3_600.0 / 1_000_000.0;
     const N_STAGES: usize = 3;
     const ARRIVAL_STAGE_IDX: usize = 2;
     // Exact-rational precompute cross-check vs the closed-form blend.
@@ -4971,7 +4966,6 @@ fn d49_travel_time_chronological_arrival_density() {
 #[test]
 fn d50_travel_time_plain_tributary_confluence_arrival_density() {
     const T_V: f64 = 200.0;
-    const M3S_TO_HM3: f64 = 3_600.0 / 1_000_000.0;
     const N_STAGES: usize = 3;
     const ARRIVAL_STAGE_IDX: usize = 2;
     const DERIV_TOL: f64 = 1e-9;
@@ -6060,27 +6054,6 @@ mod chronological_telescoping {
     const N_ITERATIONS: u32 = 12;
     const HYDRO_ID: i32 = 1;
 
-    fn zero_hydro_stage_penalties() -> HydroPenalties {
-        HydroPenalties {
-            spillage_cost: 0.0,
-            diversion_cost: 0.0,
-            turbined_cost: 0.0,
-            storage_violation_below_cost: 0.0,
-            filling_target_violation_cost: 0.0,
-            turbined_violation_below_cost: 0.0,
-            outflow_violation_below_cost: 0.0,
-            outflow_violation_above_cost: 0.0,
-            generation_violation_below_cost: 0.0,
-            evaporation_violation_cost: 0.0,
-            water_withdrawal_violation_cost: 0.0,
-            water_withdrawal_violation_pos_cost: 0.0,
-            water_withdrawal_violation_neg_cost: 0.0,
-            evaporation_violation_pos_cost: 0.0,
-            evaporation_violation_neg_cost: 0.0,
-            inflow_nonnegativity_cost: 0.0,
-        }
-    }
-
     /// Two-block, constant-productivity hydro + backup thermal on one bus, built under
     /// `block_mode`. Constant productivity means `γᵥ = 0`; no evaporation coefficients
     /// means no storage-dependent loss; the wide `[0, 500]` storage bounds never bind —
@@ -6113,7 +6086,7 @@ mod chronological_telescoping {
                 generation_model: HydroGenerationModel::ConstantProductivity,
                 specific_productivity_mw_per_m3s_per_m: Some(0.5),
                 max_generation_mw: 250.0,
-                penalties: zero_hydro_stage_penalties(),
+                penalties: HydroPenalties::uniform(0.0),
                 ..Default::default()
             },
         );
@@ -6238,7 +6211,7 @@ mod chronological_telescoping {
                 n_stages: N_STAGES,
             },
             &PenaltiesDefaults {
-                hydro: zero_hydro_stage_penalties(),
+                hydro: HydroPenalties::uniform(0.0),
                 bus: BusStagePenalties { excess_cost: 0.0 },
                 line: LineStagePenalties { exchange_cost: 0.0 },
                 ncs: NcsStagePenalties {
@@ -6805,21 +6778,9 @@ mod season_descriptor_checkpoint_round_trip {
     fn hydro_penalties() -> HydroPenalties {
         HydroPenalties {
             spillage_cost: 0.01,
-            diversion_cost: 0.0,
-            turbined_cost: 0.0,
             storage_violation_below_cost: 500.0,
-            filling_target_violation_cost: 0.0,
-            turbined_violation_below_cost: 0.0,
-            outflow_violation_below_cost: 0.0,
-            outflow_violation_above_cost: 0.0,
-            generation_violation_below_cost: 0.0,
-            evaporation_violation_cost: 0.0,
-            water_withdrawal_violation_cost: 0.0,
-            water_withdrawal_violation_pos_cost: 0.0,
-            water_withdrawal_violation_neg_cost: 0.0,
-            evaporation_violation_pos_cost: 0.0,
-            evaporation_violation_neg_cost: 0.0,
             inflow_nonnegativity_cost: 1000.0,
+            ..HydroPenalties::uniform(0.0)
         }
     }
 
@@ -7196,21 +7157,9 @@ mod boundary_season_gate_round_trip {
     fn hydro_penalties() -> HydroPenalties {
         HydroPenalties {
             spillage_cost: 0.01,
-            diversion_cost: 0.0,
-            turbined_cost: 0.0,
             storage_violation_below_cost: 500.0,
-            filling_target_violation_cost: 0.0,
-            turbined_violation_below_cost: 0.0,
-            outflow_violation_below_cost: 0.0,
-            outflow_violation_above_cost: 0.0,
-            generation_violation_below_cost: 0.0,
-            evaporation_violation_cost: 0.0,
-            water_withdrawal_violation_cost: 0.0,
-            water_withdrawal_violation_pos_cost: 0.0,
-            water_withdrawal_violation_neg_cost: 0.0,
-            evaporation_violation_pos_cost: 0.0,
-            evaporation_violation_neg_cost: 0.0,
             inflow_nonnegativity_cost: 1000.0,
+            ..HydroPenalties::uniform(0.0)
         }
     }
 
@@ -7559,21 +7508,9 @@ mod transit_arrival_interval_checkpoint_round_trip {
     fn hydro_penalties() -> HydroPenalties {
         HydroPenalties {
             spillage_cost: 0.01,
-            diversion_cost: 0.0,
-            turbined_cost: 0.0,
             storage_violation_below_cost: 500.0,
-            filling_target_violation_cost: 0.0,
-            turbined_violation_below_cost: 0.0,
-            outflow_violation_below_cost: 0.0,
-            outflow_violation_above_cost: 0.0,
-            generation_violation_below_cost: 0.0,
-            evaporation_violation_cost: 0.0,
-            water_withdrawal_violation_cost: 0.0,
-            water_withdrawal_violation_pos_cost: 0.0,
-            water_withdrawal_violation_neg_cost: 0.0,
-            evaporation_violation_pos_cost: 0.0,
-            evaporation_violation_neg_cost: 0.0,
             inflow_nonnegativity_cost: 1000.0,
+            ..HydroPenalties::uniform(0.0)
         }
     }
 
@@ -7939,48 +7876,6 @@ mod chronological_attribution {
         }
     }
 
-    fn zero_hydro_penalties() -> HydroPenalties {
-        HydroPenalties {
-            spillage_cost: 0.0,
-            diversion_cost: 0.0,
-            turbined_cost: 0.0,
-            storage_violation_below_cost: 0.0,
-            filling_target_violation_cost: 0.0,
-            turbined_violation_below_cost: 0.0,
-            outflow_violation_below_cost: 0.0,
-            outflow_violation_above_cost: 0.0,
-            generation_violation_below_cost: 0.0,
-            evaporation_violation_cost: 0.0,
-            water_withdrawal_violation_cost: 0.0,
-            water_withdrawal_violation_pos_cost: 0.0,
-            water_withdrawal_violation_neg_cost: 0.0,
-            evaporation_violation_pos_cost: 0.0,
-            evaporation_violation_neg_cost: 0.0,
-            inflow_nonnegativity_cost: 0.0,
-        }
-    }
-
-    fn zero_hydro_stage_penalties() -> HydroPenalties {
-        HydroPenalties {
-            spillage_cost: 0.0,
-            diversion_cost: 0.0,
-            turbined_cost: 0.0,
-            storage_violation_below_cost: 0.0,
-            filling_target_violation_cost: 0.0,
-            turbined_violation_below_cost: 0.0,
-            outflow_violation_below_cost: 0.0,
-            outflow_violation_above_cost: 0.0,
-            generation_violation_below_cost: 0.0,
-            evaporation_violation_cost: 0.0,
-            water_withdrawal_violation_cost: 0.0,
-            water_withdrawal_violation_pos_cost: 0.0,
-            water_withdrawal_violation_neg_cost: 0.0,
-            evaporation_violation_pos_cost: 0.0,
-            evaporation_violation_neg_cost: 0.0,
-            inflow_nonnegativity_cost: 0.0,
-        }
-    }
-
     /// Cascade `U -> J` (`U` declares `travel_time_hours`) on one bus with a
     /// backup thermal, `N_STAGES` stages: stage 0 carries `stage0_blocks` under
     /// `block_mode` (the anchor under test); stage 1 is a single default-length
@@ -8014,7 +7909,7 @@ mod chronological_attribution {
                 max_turbined_m3s: 100.0,
                 generation_model: HydroGenerationModel::ConstantProductivity,
                 max_generation_mw: 10.0,
-                penalties: zero_hydro_penalties(),
+                penalties: HydroPenalties::uniform(0.0),
                 ..Default::default()
             },
         );
@@ -8031,7 +7926,7 @@ mod chronological_attribution {
                 max_turbined_m3s: 100.0,
                 generation_model: HydroGenerationModel::ConstantProductivity,
                 max_generation_mw: 10.0,
-                penalties: zero_hydro_penalties(),
+                penalties: HydroPenalties::uniform(0.0),
                 ..Default::default()
             },
         );
@@ -8143,7 +8038,7 @@ mod chronological_attribution {
                 n_stages: N_STAGES,
             },
             &PenaltiesDefaults {
-                hydro: zero_hydro_stage_penalties(),
+                hydro: HydroPenalties::uniform(0.0),
                 bus: BusStagePenalties { excess_cost: 0.0 },
                 line: LineStagePenalties { exchange_cost: 0.0 },
                 ncs: NcsStagePenalties {
@@ -9889,21 +9784,9 @@ mod enumerated_external {
             &PenaltiesDefaults {
                 hydro: HydroPenalties {
                     spillage_cost: 0.01,
-                    diversion_cost: 0.0,
-                    turbined_cost: 0.0,
                     storage_violation_below_cost: 500.0,
-                    filling_target_violation_cost: 0.0,
-                    turbined_violation_below_cost: 0.0,
-                    outflow_violation_below_cost: 0.0,
-                    outflow_violation_above_cost: 0.0,
-                    generation_violation_below_cost: 0.0,
-                    evaporation_violation_cost: 0.0,
-                    water_withdrawal_violation_cost: 0.0,
-                    water_withdrawal_violation_pos_cost: 0.0,
-                    water_withdrawal_violation_neg_cost: 0.0,
-                    evaporation_violation_pos_cost: 0.0,
-                    evaporation_violation_neg_cost: 0.0,
                     inflow_nonnegativity_cost: 1000.0,
+                    ..HydroPenalties::uniform(0.0)
                 },
                 bus: BusStagePenalties { excess_cost: 0.0 },
                 line: LineStagePenalties { exchange_cost: 0.0 },
@@ -11256,27 +11139,6 @@ mod enumerated_cvar_gap {
         lambda: 0.4,
     };
 
-    fn zero_hydro_penalties() -> HydroPenalties {
-        HydroPenalties {
-            spillage_cost: 0.0,
-            diversion_cost: 0.0,
-            turbined_cost: 0.0,
-            storage_violation_below_cost: 0.0,
-            filling_target_violation_cost: 0.0,
-            turbined_violation_below_cost: 0.0,
-            outflow_violation_below_cost: 0.0,
-            outflow_violation_above_cost: 0.0,
-            generation_violation_below_cost: 0.0,
-            evaporation_violation_cost: 0.0,
-            water_withdrawal_violation_cost: 0.0,
-            water_withdrawal_violation_pos_cost: 0.0,
-            water_withdrawal_violation_neg_cost: 0.0,
-            evaporation_violation_pos_cost: 0.0,
-            evaporation_violation_neg_cost: 0.0,
-            inflow_nonnegativity_cost: 0.0,
-        }
-    }
-
     fn stages() -> Vec<Stage> {
         let start = NaiveDate::from_ymd_opt(2024, 1, 1).expect("valid date");
         (0..N_STAGES)
@@ -11413,7 +11275,7 @@ mod enumerated_cvar_gap {
                 n_stages: N_STAGES,
             },
             &PenaltiesDefaults {
-                hydro: zero_hydro_penalties(),
+                hydro: HydroPenalties::uniform(0.0),
                 bus: BusStagePenalties { excess_cost: 0.0 },
                 line: LineStagePenalties { exchange_cost: 0.0 },
                 ncs: NcsStagePenalties {

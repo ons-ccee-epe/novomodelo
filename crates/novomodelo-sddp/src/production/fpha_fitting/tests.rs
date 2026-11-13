@@ -573,22 +573,8 @@ fn evaluate_acceptance_criterion() {
 /// Build a minimal `Hydro` with the given storage bounds.
 fn make_hydro(min_storage_hm3: f64, max_storage_hm3: f64) -> Hydro {
     let zero_penalties = HydroPenalties {
-        spillage_cost: 0.0,
-        diversion_cost: 0.0,
-        turbined_cost: 0.0,
-        storage_violation_below_cost: 0.0,
-        filling_target_violation_cost: 0.0,
-        turbined_violation_below_cost: 0.0,
-        outflow_violation_below_cost: 0.0,
-        outflow_violation_above_cost: 0.0,
-        generation_violation_below_cost: 0.0,
-        evaporation_violation_cost: 0.0,
-        water_withdrawal_violation_cost: 0.0,
-        water_withdrawal_violation_pos_cost: 0.0,
-        water_withdrawal_violation_neg_cost: 0.0,
-        evaporation_violation_pos_cost: 0.0,
-        evaporation_violation_neg_cost: 0.0,
         inflow_nonnegativity_cost: 1000.0,
+        ..HydroPenalties::uniform(0.0)
     };
     let mut hydro = Hydro {
         unit_groups: Vec::new(),
@@ -1296,22 +1282,8 @@ fn validate_fitted_planes_near_zero_gamma_s_within_tolerance_passes() {
 /// Build a Hydro entity with Sobradinho-style geometry and optional models.
 fn make_sobradinho_hydro() -> Hydro {
     let zero_penalties = HydroPenalties {
-        spillage_cost: 0.0,
-        diversion_cost: 0.0,
-        turbined_cost: 0.0,
-        storage_violation_below_cost: 0.0,
-        filling_target_violation_cost: 0.0,
-        turbined_violation_below_cost: 0.0,
-        outflow_violation_below_cost: 0.0,
-        outflow_violation_above_cost: 0.0,
-        generation_violation_below_cost: 0.0,
-        evaporation_violation_cost: 0.0,
-        water_withdrawal_violation_cost: 0.0,
-        water_withdrawal_violation_pos_cost: 0.0,
-        water_withdrawal_violation_neg_cost: 0.0,
-        evaporation_violation_pos_cost: 0.0,
-        evaporation_violation_neg_cost: 0.0,
         inflow_nonnegativity_cost: 1000.0,
+        ..HydroPenalties::uniform(0.0)
     };
     let mut hydro = Hydro {
         unit_groups: Vec::new(),
@@ -1647,22 +1619,8 @@ fn fit_fpha_planes_linear_function_produces_one_plane() {
         },
     ];
     let zero_penalties = HydroPenalties {
-        spillage_cost: 0.0,
-        diversion_cost: 0.0,
-        turbined_cost: 0.0,
-        storage_violation_below_cost: 0.0,
-        filling_target_violation_cost: 0.0,
-        turbined_violation_below_cost: 0.0,
-        outflow_violation_below_cost: 0.0,
-        outflow_violation_above_cost: 0.0,
-        generation_violation_below_cost: 0.0,
-        evaporation_violation_cost: 0.0,
-        water_withdrawal_violation_cost: 0.0,
-        water_withdrawal_violation_pos_cost: 0.0,
-        water_withdrawal_violation_neg_cost: 0.0,
-        evaporation_violation_pos_cost: 0.0,
-        evaporation_violation_neg_cost: 0.0,
         inflow_nonnegativity_cost: 1000.0,
+        ..HydroPenalties::uniform(0.0)
     };
     let mut hydro = Hydro {
         unit_groups: Vec::new(),

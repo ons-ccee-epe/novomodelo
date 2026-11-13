@@ -129,6 +129,17 @@ pub struct Block {
     pub duration_hours: f64,
 }
 
+/// hm³ per m³/s sustained for one hour.
+pub const M3S_TO_HM3: f64 = 3_600.0 / 1_000_000.0;
+
+impl Block {
+    /// hm³ carried by 1 m³/s over this block.
+    #[must_use]
+    pub fn tau(&self) -> f64 {
+        self.duration_hours * M3S_TO_HM3
+    }
+}
+
 // ---------------------------------------------------------------------------
 // StageStateConfig (SS12.3)
 // ---------------------------------------------------------------------------
@@ -748,6 +759,29 @@ mod tests {
         let copied_chrono = chrono;
         assert_eq!(chrono, BlockMode::Chronological);
         assert_eq!(copied_chrono, BlockMode::Chronological);
+    }
+
+    fn block_of(duration_hours: f64) -> Block {
+        Block {
+            index: 0,
+            name: "SINGLE".to_string(),
+            duration_hours,
+        }
+    }
+
+    #[test]
+    fn block_tau_is_hours_times_the_conversion() {
+        let long = block_of(744.0).tau();
+        assert_eq!(
+            long.to_bits(),
+            (744.0 * (3_600.0 / 1_000_000.0_f64)).to_bits()
+        );
+        assert_ne!(long.to_bits(), block_of(300.0).tau().to_bits());
+    }
+
+    #[test]
+    fn m3s_to_hm3_is_the_hourly_conversion() {
+        assert_eq!(M3S_TO_HM3.to_bits(), 0.0036_f64.to_bits());
     }
 
     #[test]

@@ -943,22 +943,8 @@ mod determinism {
         use novomodelo_core::scenario::InflowModel;
 
         let zero_penalties = || HydroPenalties {
-            spillage_cost: 0.0,
-            diversion_cost: 0.0,
-            turbined_cost: 0.0,
-            storage_violation_below_cost: 0.0,
-            filling_target_violation_cost: 0.0,
-            turbined_violation_below_cost: 0.0,
-            outflow_violation_below_cost: 0.0,
-            outflow_violation_above_cost: 0.0,
-            generation_violation_below_cost: 0.0,
-            evaporation_violation_cost: 0.0,
-            water_withdrawal_violation_cost: 0.0,
-            water_withdrawal_violation_pos_cost: 0.0,
-            water_withdrawal_violation_neg_cost: 0.0,
-            evaporation_violation_pos_cost: 0.0,
-            evaporation_violation_neg_cost: 0.0,
             inflow_nonnegativity_cost: 1000.0,
+            ..HydroPenalties::uniform(0.0)
         };
 
         let bus = make_bus(
@@ -1939,27 +1925,6 @@ mod water_travel_time_no_arc_byte_identity {
     const N_STAGES: usize = 3;
     const HYDRO_ID: i32 = 1;
 
-    fn zero_hydro_penalties() -> HydroPenalties {
-        HydroPenalties {
-            spillage_cost: 0.0,
-            diversion_cost: 0.0,
-            turbined_cost: 0.0,
-            storage_violation_below_cost: 0.0,
-            filling_target_violation_cost: 0.0,
-            turbined_violation_below_cost: 0.0,
-            outflow_violation_below_cost: 0.0,
-            outflow_violation_above_cost: 0.0,
-            generation_violation_below_cost: 0.0,
-            evaporation_violation_cost: 0.0,
-            water_withdrawal_violation_cost: 0.0,
-            water_withdrawal_violation_pos_cost: 0.0,
-            water_withdrawal_violation_neg_cost: 0.0,
-            evaporation_violation_pos_cost: 0.0,
-            evaporation_violation_neg_cost: 0.0,
-            inflow_nonnegativity_cost: 0.0,
-        }
-    }
-
     /// One bus, one standalone hydro (no `downstream_id`/`travel_time_hours` —
     /// no arc declared) with a backup thermal, `N_STAGES` stages each carrying a
     /// single default-length block (`StageSpec::default()`'s block: the `K = 1`
@@ -1992,7 +1957,7 @@ mod water_travel_time_no_arc_byte_identity {
                 generation_model: HydroGenerationModel::ConstantProductivity,
                 specific_productivity_mw_per_m3s_per_m: Some(0.5),
                 max_generation_mw: 250.0,
-                penalties: zero_hydro_penalties(),
+                penalties: HydroPenalties::uniform(0.0),
                 ..Default::default()
             },
         );
@@ -2091,7 +2056,7 @@ mod water_travel_time_no_arc_byte_identity {
                 n_stages: N_STAGES,
             },
             &PenaltiesDefaults {
-                hydro: zero_hydro_penalties(),
+                hydro: HydroPenalties::uniform(0.0),
                 bus: BusStagePenalties { excess_cost: 0.0 },
                 line: LineStagePenalties { exchange_cost: 0.0 },
                 ncs: NcsStagePenalties {
