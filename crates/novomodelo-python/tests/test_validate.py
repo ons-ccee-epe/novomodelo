@@ -135,7 +135,7 @@ def test_validate_emits_penalty_ordering_warning() -> None:
 
 def test_validate_warns_on_legacy_post_study_format() -> None:
     """validate() surfaces the deprecated post-study format as one warning."""
-    import novomodelo.io  # noqa: PLC0415
+    import novomodelo.io
 
     case_dir = copy_case_to_tempdir(
         "examples/deterministic/d55-post-study-anticipated-lanes"
