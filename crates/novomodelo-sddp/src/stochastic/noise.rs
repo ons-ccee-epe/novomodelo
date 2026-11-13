@@ -1,180 +1,90 @@
 //! Shared noise transformation functions for the LP patching hot path.
 //!
-//! Single home for the noise→RHS transforms so a fix to one applies to every
+//! Single home for the noise transforms so a fix to one applies to every
 //! call site (forward, backward, lower-bound).
 
 use novomodelo_core::commissioning::commissioning_active;
-use novomodelo_core::temporal::StageLagTransition;
 use novomodelo_solver::SolverInterface;
-use novomodelo_stochastic::par::lag_kernel::{LagMajor, advance_lag_chain};
-use novomodelo_stochastic::{StochasticContext, evaluate_par_batch};
+use novomodelo_stochastic::{
+    StochasticContext, add_noise_term_batch, evaluate_par_noise_term_batch,
+};
 
-use crate::indexer::{BlockIdx, HydroSys, NcsSys, StateSpace};
+use crate::indexer::{BlockIdx, HydroSys, NcsSys};
 use crate::lp::builder::StageGeometry;
 use crate::{
     InflowNonNegativityMethod, context::TrainingContext, setup::node_graph::StageIdx,
     workspace::ScratchBuffers,
 };
 
-/// Transform raw inflow noise `η` into the z-inflow RHS `b + σ·η` (never clamped)
-/// and, under the truncation methods, the per-hydro physical inflow-slack bounds
-/// from the raw PAR value at this solve's pinned lags.
-// Rationale: clippy::similar_names flags the role-(a) `state` handle (bound from
-// `training_ctx.state`) next to the `stage` index; both are established names, so
-// renaming either to satisfy the heuristic would obscure intent.
-#[allow(clippy::similar_names)]
-pub(crate) fn transform_inflow_noise(
+/// Realized inflow ẑ from the conditional mean in the scratch, the noise term
+/// `σ·η` the cut right-hand sides read, and, under the truncation methods, the
+/// inflow-slack bounds from ẑ. With `noise_term` given, ẑ adds those `σ·η` values
+/// and the scratch's noise term is left unwritten.
+pub(crate) fn realize_inflow(
     raw_noise: &[f64],
     stage: StageIdx,
-    current_state: &[f64],
     training_ctx: &TrainingContext<'_>,
     scratch: &mut ScratchBuffers,
+    noise_term: Option<&[f64]>,
 ) {
-    let inflow_method = training_ctx.inflow_method;
-    let stochastic = training_ctx.stochastic;
-    let dims = stochastic.class_dimensions();
-    let n_hydros = dims.n_hydros;
+    let dims = training_ctx.stochastic.class_dimensions();
     let hydro_noise = &raw_noise[dims.hydro_range()];
-    let state = training_ctx.state;
+    let par_lp = training_ctx.stochastic.par();
 
-    let par_lp = stochastic.par();
-    // Presence only: the PAR shape is validated once at setup (`validate_par_shape`).
-    let has_par = par_lp.n_stages() > 0;
-
-    scratch.z_inflow_rhs_buf.clear();
-    for (h, &eta) in hydro_noise.iter().enumerate() {
-        // Z-inflow RHS in m3/s: no zeta, no withdrawal.
-        if has_par {
-            let base = par_lp.deterministic_base(stage.0, h);
-            let sigma = par_lp.sigma(stage.0, h);
-            scratch.z_inflow_rhs_buf.push(base + sigma * eta);
-        } else {
-            scratch.z_inflow_rhs_buf.push(0.0);
+    scratch.realized_inflow_buf.clear();
+    scratch.realized_inflow_buf.resize(dims.n_hydros, 0.0);
+    match (par_lp.n_stages() > 0, noise_term) {
+        (true, None) => {
+            evaluate_par_noise_term_batch(
+                par_lp,
+                stage.0,
+                hydro_noise,
+                &mut scratch.par_noise_term_buf,
+            );
+            add_noise_term_batch(
+                &scratch.par_mean_buf,
+                &scratch.par_noise_term_buf,
+                &mut scratch.realized_inflow_buf,
+            );
         }
+        (true, Some(noise_term)) => add_noise_term_batch(
+            &scratch.par_mean_buf,
+            noise_term,
+            &mut scratch.realized_inflow_buf,
+        ),
+        (false, None) => scratch.par_noise_term_buf.fill(0.0),
+        (false, Some(_)) => {}
     }
 
     scratch.inflow_slack_lower_buf.clear();
     scratch.inflow_slack_upper_buf.clear();
-    if !inflow_method.truncates() {
-        return;
-    }
-
-    scratch.par_inflow_buf.clear();
-    scratch.par_inflow_buf.resize(n_hydros, 0.0);
-    if has_par {
-        let pinned_lags = &current_state[state.inflow_lags.clone()];
-        debug_assert_eq!(pinned_lags.len(), state.max_par_order * n_hydros);
-        evaluate_par_batch(
-            par_lp,
-            stage.0,
-            pinned_lags,
-            hydro_noise,
-            &mut scratch.par_inflow_buf,
+    if training_ctx.inflow_method.truncates() {
+        fill_inflow_slack_bounds(
+            *training_ctx.inflow_method,
+            &scratch.realized_inflow_buf,
+            &mut scratch.inflow_slack_lower_buf,
+            &mut scratch.inflow_slack_upper_buf,
         );
     }
+}
 
-    let fixes_the_correction = *inflow_method == InflowNonNegativityMethod::Truncation;
-    for &r in &scratch.par_inflow_buf {
+fn fill_inflow_slack_bounds(
+    inflow_method: InflowNonNegativityMethod,
+    realized_inflow: &[f64],
+    lower: &mut Vec<f64>,
+    upper: &mut Vec<f64>,
+) {
+    let fixes_the_correction = inflow_method == InflowNonNegativityMethod::Truncation;
+    for &r in realized_inflow {
         // An explicit branch writes +0.0, never the -0.0 `(-r).max(0.0)` can return.
         let truncation_amount = if r < 0.0 { -r } else { 0.0 };
-        scratch
-            .inflow_slack_lower_buf
-            .push(if fixes_the_correction {
-                truncation_amount
-            } else {
-                0.0
-            });
-        scratch.inflow_slack_upper_buf.push(truncation_amount);
+        lower.push(if fixes_the_correction {
+            truncation_amount
+        } else {
+            0.0
+        });
+        upper.push(truncation_amount);
     }
-}
-
-/// Shift the lag portion of the outgoing state vector using realized inflow,
-/// newest lag set to the realized inflow from the LP primal.
-#[cfg(test)]
-pub(crate) fn shift_lag_state(
-    state: &mut [f64],
-    incoming_lags: &[f64],
-    unscaled_primal: &[f64],
-    layout: &StateSpace,
-) {
-    let n_h = layout.hydro_count;
-    let l_max = layout.max_par_order;
-    if l_max == 0 || n_h == 0 {
-        return;
-    }
-    let lag_start = layout.inflow_lags.start;
-    for h in 0..n_h {
-        let z_t_h = unscaled_primal[layout.z_inflow.start + h];
-        // Read from incoming_lags (lag-major: lag * n_h + h) to avoid aliasing state.
-        for lag in (1..l_max).rev() {
-            state[lag_start + lag * n_h + h] = incoming_lags[(lag - 1) * n_h + h];
-        }
-        state[lag_start + h] = z_t_h;
-    }
-}
-
-// LagAccumState/DownstreamAccumState alias the kernel's own accumulator
-// structs (identical fields) so stage_solve.rs/pipeline.rs and their tests
-// keep constructing them under these names.
-pub(crate) use novomodelo_stochastic::par::lag_kernel::DownstreamLagAccum as DownstreamAccumState;
-pub(crate) use novomodelo_stochastic::par::lag_kernel::PrimaryLagAccum as LagAccumState;
-
-/// Accumulate this stage's inflow and, when a lag period finalizes, shift the
-/// lag state — supporting multi-resolution studies where stages are shorter than
-/// the lag granularity (e.g. weekly stages feeding a monthly lag slot).
-///
-/// For the monthly identity case (`accumulate_weight=1.0, spillover_weight=0.0,
-/// finalize_period=true`) this produces bit-for-bit identical results to
-/// the test-only `shift_lag_state`.
-///
-/// Thin adapter: resolves the LP-`StateSpace` offsets into plain slices, then
-/// delegates the accumulate/finalize/shift/downstream-ring algorithm to
-/// [`advance_lag_chain`].
-///
-/// # Panics (debug only)
-///
-/// Panics in debug builds if `lag.accumulator.len() < layout.hydro_count`.
-///
-/// # Downstream accumulation (multi-resolution studies)
-///
-/// When `ds.accumulator` is non-empty, a coarser-resolution ring buffer is
-/// maintained in parallel; see [`DownstreamAccumState`] for the empty-slice
-/// (uniform-resolution) contract.
-///
-/// # Anticipated-thermal state
-///
-/// Does NOT touch the anticipated ring: it transitions in-LP via
-/// `commit_out`'s definition rows and rides the same
-/// plain-copy-outgoing path as storage and travel-time buckets.
-pub(crate) fn accumulate_and_shift_lag_state(
-    state: &mut [f64],
-    incoming_lags: &[f64],
-    unscaled_primal: &[f64],
-    layout: &StateSpace,
-    stage_lag: &StageLagTransition,
-    lag: &mut LagAccumState<'_>,
-    ds: &mut DownstreamAccumState<'_>,
-) {
-    let lag_start = layout.inflow_lags.start;
-    let n_h = layout.hydro_count;
-    let l_max = layout.max_par_order;
-
-    // LagMajor::index treats offset 0 as this call's lag block, not the state
-    // vector's absolute start — slicing from `lag_start` keeps every kernel
-    // write on the right hydro/lag; slicing from 0 would silently misdirect
-    // every write by `lag_start`.
-    advance_lag_chain(
-        LagMajor {
-            entity_count: n_h,
-            max_order: l_max,
-        },
-        &mut state[lag_start..],
-        incoming_lags,
-        &unscaled_primal[layout.z_inflow.clone()],
-        stage_lag,
-        lag,
-        ds,
-    );
 }
 
 /// Trajectory-carried scratch accumulators captured at a node's outgoing edge
@@ -441,7 +351,7 @@ pub(crate) fn apply_ncs_col_bounds<S: SolverInterface>(
 }
 
 /// Patch this solve's inflow-slack column bounds (physical
-/// `scratch.inflow_slack_{lower,upper}_buf`, written by [`transform_inflow_noise`])
+/// `scratch.inflow_slack_{lower,upper}_buf`, written by [`realize_inflow`])
 /// in one `set_col_bounds`. Bounds are divided by `col_scale[col]` (empty =
 /// identity), never written unscaled as [`apply_ncs_col_bounds`] does: the slack's
 /// water-row entries are `−ζ`/`−τ_k`, so its column scale is not 1.
@@ -520,13 +430,11 @@ mod tests {
     use crate::{
         context::TrainingContext,
         horizon_mode::HorizonMode,
-        indexer::StateSpace,
         inflow_method::InflowNonNegativityMethod,
         lp::builder::StageGeometry,
         noise::{
             apply_inflow_slack_col_bounds, apply_ncs_col_bounds, build_dense_ncs_col_indices,
-            gather_dense_ncs_bounds, shift_lag_state, transform_inflow_noise, transform_load_noise,
-            transform_ncs_noise,
+            gather_dense_ncs_bounds, realize_inflow, transform_load_noise, transform_ncs_noise,
         },
         setup::node_graph::StageIdx,
         test_support,
@@ -554,6 +462,8 @@ mod tests {
         fn add_rows(&mut self, _rows: &RowBatch) {}
 
         fn set_row_bounds(&mut self, _indices: &[usize], _lower: &[f64], _upper: &[f64]) {}
+
+        fn set_row_lower_bounds_range(&mut self, _first_row: usize, _lower: &[f64]) {}
 
         fn set_col_bounds(&mut self, indices: &[usize], lower: &[f64], upper: &[f64]) {
             self.col_bounds_calls
@@ -883,19 +793,16 @@ mod tests {
         .unwrap()
     }
 
-    // ── transform_inflow_noise: None method ──────────────────────────────────
-
     /// None method: raw eta applied directly without clamping.
     #[test]
-    fn test_transform_inflow_noise_none_method() {
+    fn test_realize_inflow_none_method() {
         let stochastic = make_one_hydro_stochastic(1);
         // State layout: 1 hydro, 0 PAR lags → n_state = 1
-        let layout = test_support::state_layout(1, 0);
         let state = test_support::state_layout(1, 0);
-        let current_state = vec![0.0; layout.n_state];
+        let current_state = vec![0.0; state.n_state];
 
         // sigma = 1.0, base = 0.0 (the fixture's AR(0) white-noise model), eta = -3.0
-        // expected z_inflow_rhs: 0.0 + 1.0 * (-3.0) = -3.0
+        // expected realized inflow: 0.0 + 1.0 * (-3.0) = -3.0
         let raw_noise = vec![-3.0_f64];
         let inflow_method = InflowNonNegativityMethod::None;
         let horizon = HorizonMode::Finite { num_stages: 1 };
@@ -923,29 +830,20 @@ mod tests {
         };
         let mut scratch = ScratchBuffers::for_test(1);
 
-        transform_inflow_noise(
-            &raw_noise,
-            StageIdx(0),
-            &current_state,
-            &training_ctx,
-            &mut scratch,
-        );
+        realize_inflow(&raw_noise, StageIdx(0), &training_ctx, &mut scratch, None);
 
-        assert_eq!(scratch.z_inflow_rhs_buf.len(), 1);
-        assert!((scratch.z_inflow_rhs_buf[0] - (-3.0)).abs() < 1e-12);
+        assert_eq!(scratch.realized_inflow_buf.len(), 1);
+        assert!((scratch.realized_inflow_buf[0] - (-3.0)).abs() < 1e-12);
     }
 
-    // ── transform_inflow_noise: Truncation ───────────────────────────────────
-
-    /// Truncation keeps z raw and fixes the slack at the truncation amount: PAR(0)
+    /// Truncation keeps the realized inflow raw and fixes the slack at the truncation amount: PAR(0)
     /// with base 0 and σ 1, so `r = η`; η = -5 gives `[5, 5]`.
     #[test]
-    fn test_transform_inflow_noise_truncation_writes_the_raw_rhs_and_fixes_the_correction() {
+    fn test_realize_inflow_truncation_keeps_the_raw_inflow_and_fixes_the_correction() {
         let stochastic = make_one_hydro_stochastic(1);
         // 1 hydro, 0 PAR lags
-        let layout = test_support::state_layout(1, 0);
         let state = test_support::state_layout(1, 0);
-        let current_state = vec![0.0; layout.n_state];
+        let current_state = vec![0.0; state.n_state];
 
         // Very negative eta guarantees negative inflow (AR(0) with sigma=1).
         let raw_noise = vec![-5.0_f64];
@@ -975,23 +873,21 @@ mod tests {
         };
         let mut scratch = ScratchBuffers::for_test(1);
 
-        transform_inflow_noise(
-            &raw_noise,
-            StageIdx(0),
-            &current_state,
-            &training_ctx,
-            &mut scratch,
-        );
+        realize_inflow(&raw_noise, StageIdx(0), &training_ctx, &mut scratch, None);
 
-        assert_eq!(scratch.z_inflow_rhs_buf, vec![-5.0], "the z RHS stays raw");
+        assert_eq!(
+            scratch.realized_inflow_buf,
+            vec![-5.0],
+            "the realized inflow stays raw"
+        );
         assert_eq!(scratch.inflow_slack_lower_buf, vec![5.0]);
         assert_eq!(scratch.inflow_slack_upper_buf, vec![5.0]);
     }
 
-    /// TwP keeps z raw and caps the slack at the truncation amount: PAR(0) with
+    /// TwP keeps the realized inflow raw and caps the slack at the truncation amount: PAR(0) with
     /// base 0 and σ 1, so `r = η`.
     #[test]
-    fn test_transform_inflow_noise_truncation_with_penalty_caps_the_correction() {
+    fn test_realize_inflow_truncation_with_penalty_caps_the_correction() {
         let stochastic = make_one_hydro_stochastic(1);
         let state = test_support::state_layout(1, 0);
         let current_state = vec![0.0; state.n_state];
@@ -1019,19 +915,13 @@ mod tests {
             lag_weight_seed: &[],
             dcs: None,
         };
-        for (eta, z_rhs, upper) in [(-5.0_f64, -5.0_f64, 5.0_f64), (3.0, 3.0, 0.0)] {
+        for (eta, realized, upper) in [(-5.0_f64, -5.0_f64, 5.0_f64), (3.0, 3.0, 0.0)] {
             let mut scratch = ScratchBuffers::for_test(1);
-            transform_inflow_noise(
-                &[eta],
-                StageIdx(0),
-                &current_state,
-                &training_ctx,
-                &mut scratch,
-            );
+            realize_inflow(&[eta], StageIdx(0), &training_ctx, &mut scratch, None);
             assert_eq!(
-                scratch.z_inflow_rhs_buf,
-                vec![z_rhs],
-                "eta {eta}: raw z RHS"
+                scratch.realized_inflow_buf,
+                vec![realized],
+                "eta {eta}: raw realized inflow"
             );
             assert_eq!(
                 scratch.inflow_slack_lower_buf,
@@ -1051,14 +941,13 @@ mod tests {
         }
     }
 
-    /// Truncation with `r >= 0` (η = 3 and η = 0): the z RHS is raw and the slack
+    /// Truncation with `r >= 0` (η = 3 and η = 0): the realized inflow is raw and the slack
     /// is pinned at `[+0.0, +0.0]`.
     #[test]
-    fn test_transform_inflow_noise_truncation_passthrough() {
+    fn test_realize_inflow_truncation_passthrough() {
         let stochastic = make_one_hydro_stochastic(1);
-        let layout = test_support::state_layout(1, 0);
         let state = test_support::state_layout(1, 0);
-        let current_state = vec![0.0; layout.n_state];
+        let current_state = vec![0.0; state.n_state];
 
         let inflow_method = InflowNonNegativityMethod::Truncation;
         let horizon = HorizonMode::Finite { num_stages: 1 };
@@ -1086,19 +975,13 @@ mod tests {
         };
         for eta in [3.0_f64, 0.0] {
             let mut scratch = ScratchBuffers::for_test(1);
-            transform_inflow_noise(
-                &[eta],
-                StageIdx(0),
-                &current_state,
-                &training_ctx,
-                &mut scratch,
-            );
-            assert_eq!(scratch.z_inflow_rhs_buf.len(), 1);
-            // Expected z_inflow_rhs: 0.0 + 1.0 * eta.
+            realize_inflow(&[eta], StageIdx(0), &training_ctx, &mut scratch, None);
+            assert_eq!(scratch.realized_inflow_buf.len(), 1);
+            // Expected realized inflow: 0.0 + 1.0 * eta.
             assert!(
-                (scratch.z_inflow_rhs_buf[0] - eta).abs() < 1e-12,
+                (scratch.realized_inflow_buf[0] - eta).abs() < 1e-12,
                 "expected {eta}, got {}",
-                scratch.z_inflow_rhs_buf[0]
+                scratch.realized_inflow_buf[0]
             );
             assert_eq!(
                 (
@@ -1161,968 +1044,6 @@ mod tests {
             load_rhs_buf[0].abs() < 1e-12,
             "expected 0.0, got {}",
             load_rhs_buf[0]
-        );
-    }
-
-    // ── shift_lag_state tests ────────────────────────────────────────────────
-
-    #[test]
-    fn shift_lag_state_par0_is_noop() {
-        let _indexer = test_support::equipment_free_geometry(&[0]).remove(0);
-        let layout = test_support::state_layout(2, 0);
-        let mut state = vec![100.0, 200.0]; // storage only, no lags
-        let incoming_lags: Vec<f64> = vec![];
-        let primal = vec![0.0; 10];
-        shift_lag_state(&mut state, &incoming_lags, &primal, &layout);
-        assert_eq!(
-            state,
-            vec![100.0, 200.0],
-            "state must be unchanged for PAR(0)"
-        );
-    }
-
-    #[test]
-    fn shift_lag_state_par1_single_hydro() {
-        // N=1, L=1: state = [v_out, lag0], inflow_lags.start = 1
-        let _indexer = test_support::equipment_free_geometry(&[0]).remove(0);
-        let layout = test_support::state_layout(1, 1);
-        let mut state = vec![500.0, 99.0]; // v_out, stale lag
-        let incoming_lags = vec![42.0]; // lag0 (lag-major: lag * n_h + h = 0*1+0 = 0)
-        // z_inflow.start = N*(1+L) = 1*(1+1) = 2
-        let mut primal = vec![0.0; 10];
-        primal[layout.z_inflow.start] = 77.0; // Z_t for hydro 0
-        shift_lag_state(&mut state, &incoming_lags, &primal, &layout);
-        assert_eq!(state[1], 77.0, "lag[0] must be Z_t = 77.0");
-    }
-
-    #[test]
-    fn shift_lag_state_par3_single_hydro() {
-        // N=1, L=3: state = [v_out, lag0, lag1, lag2]
-        let _indexer = test_support::equipment_free_geometry(&[0]).remove(0);
-        let layout = test_support::state_layout(1, 3);
-        let mut state = vec![500.0, 0.0, 0.0, 0.0];
-        // incoming_lags in lag-major: [lag0, lag1, lag2] = [10.0, 20.0, 30.0]
-        let incoming_lags = vec![10.0, 20.0, 30.0];
-        let mut primal = vec![0.0; 20];
-        primal[layout.z_inflow.start] = 55.0;
-        shift_lag_state(&mut state, &incoming_lags, &primal, &layout);
-        // After shift: lag[0]=Z_t=55, lag[1]=incoming[0]=10, lag[2]=incoming[1]=20
-        assert_eq!(state[1], 55.0, "lag[0] must be Z_t");
-        assert_eq!(state[2], 10.0, "lag[1] must be incoming lag[0]");
-        assert_eq!(state[3], 20.0, "lag[2] must be incoming lag[1]");
-    }
-
-    #[test]
-    fn shift_lag_state_par1_two_hydros() {
-        // N=2, L=1: state = [v0, v1, lag0_h0, lag0_h1]
-        // inflow_lags.start = 2, lag-major: lag0 * 2 + 0 = 0, lag0 * 2 + 1 = 1
-        let _indexer = test_support::equipment_free_geometry(&[0]).remove(0);
-        let layout = test_support::state_layout(2, 1);
-        let mut state = vec![100.0, 200.0, 0.0, 0.0];
-        let incoming_lags = vec![10.0, 20.0]; // lag0_h0=10, lag0_h1=20
-        let mut primal = vec![0.0; 20];
-        primal[layout.z_inflow.start] = 33.0; // Z_t for hydro 0
-        primal[layout.z_inflow.start + 1] = 44.0; // Z_t for hydro 1
-        shift_lag_state(&mut state, &incoming_lags, &primal, &layout);
-        assert_eq!(state[2], 33.0, "lag[0] for h0 must be Z_t_h0");
-        assert_eq!(state[3], 44.0, "lag[0] for h1 must be Z_t_h1");
-    }
-
-    #[test]
-    fn shift_lag_state_preserves_storage() {
-        // Verify storage portion [0..N] is unchanged after shift.
-        let _indexer = test_support::equipment_free_geometry(&[0]).remove(0);
-        let layout = test_support::state_layout(2, 2);
-        let mut state = vec![100.0, 200.0, 0.0, 0.0, 0.0, 0.0];
-        let incoming_lags = vec![1.0, 2.0, 3.0, 4.0];
-        let mut primal = vec![0.0; 20];
-        primal[layout.z_inflow.start] = 50.0;
-        primal[layout.z_inflow.start + 1] = 60.0;
-        shift_lag_state(&mut state, &incoming_lags, &primal, &layout);
-        assert_eq!(state[0], 100.0, "storage[0] must be preserved");
-        assert_eq!(state[1], 200.0, "storage[1] must be preserved");
-    }
-
-    // ── accumulate_and_shift_lag_state tests ─────────────────────────────────
-
-    use novomodelo_core::temporal::StageLagTransition;
-
-    use crate::noise::{DownstreamAccumState, LagAccumState, accumulate_and_shift_lag_state};
-    // Convenience helper: build a no-op DownstreamAccumState for tests that
-    // exercise only primary accumulation (uniform-resolution path).
-    fn noop_ds<'a>(
-        accumulator: &'a mut Vec<f64>,
-        weight_accum: &'a mut f64,
-        completed_lags: &'a mut Vec<f64>,
-        n_completed: &'a mut usize,
-    ) -> DownstreamAccumState<'a> {
-        DownstreamAccumState {
-            accumulator: accumulator.as_mut_slice(),
-            weight_accum,
-            completed_lags: completed_lags.as_mut_slice(),
-            n_completed,
-            par_order: 0,
-        }
-    }
-
-    fn identity_stage_lag() -> StageLagTransition {
-        StageLagTransition {
-            accumulate_weight: 1.0,
-            spillover_weight: 0.0,
-            finalize_period: true,
-            accumulate_downstream: false,
-            downstream_accumulate_weight: 0.0,
-            downstream_spillover_weight: 0.0,
-            downstream_finalize: false,
-            rebuild_from_downstream: false,
-        }
-    }
-
-    fn rebuild_stage_lag() -> StageLagTransition {
-        StageLagTransition {
-            accumulate_weight: 1.0,
-            spillover_weight: 0.0,
-            finalize_period: false,
-            accumulate_downstream: false,
-            downstream_accumulate_weight: 0.0,
-            downstream_spillover_weight: 0.0,
-            downstream_finalize: false,
-            rebuild_from_downstream: true,
-        }
-    }
-
-    /// Monthly identity: `accumulate_weight=1.0`, `spillover_weight=0.0`, `finalize_period=true`.
-    ///
-    /// With a single finalization stage the result must be bit-for-bit
-    /// identical to `shift_lag_state`.
-    #[test]
-    fn test_accumulate_monthly_identity() {
-        // N=1 hydro, L=1 lag order.
-        let _indexer = test_support::equipment_free_geometry(&[0]).remove(0);
-        let layout = test_support::state_layout(1, 1);
-
-        // Reference: shift_lag_state result.
-        let mut state_ref = vec![500.0, 99.0];
-        let incoming_lags = vec![42.0];
-        let mut primal = vec![0.0; 10];
-        primal[layout.z_inflow.start] = 77.0;
-        shift_lag_state(&mut state_ref, &incoming_lags, &primal, &layout);
-
-        // Accumulate: single stage with identity weights.
-        let mut state_acc = vec![500.0, 99.0];
-        let mut lag_accumulator = vec![0.0_f64; 1];
-        let mut lag_weight_accum = vec![0.0_f64; 1];
-        let stage_lag = identity_stage_lag();
-        let mut ds_accum: Vec<f64> = vec![];
-        let mut ds_weight = 0.0_f64;
-        let mut ds_completed: Vec<f64> = vec![];
-        let mut ds_n_completed = 0_usize;
-        accumulate_and_shift_lag_state(
-            &mut state_acc,
-            &incoming_lags,
-            &primal,
-            &layout,
-            &stage_lag,
-            &mut LagAccumState {
-                accumulator: &mut lag_accumulator,
-                weight_accum: &mut lag_weight_accum,
-            },
-            &mut noop_ds(
-                &mut ds_accum,
-                &mut ds_weight,
-                &mut ds_completed,
-                &mut ds_n_completed,
-            ),
-        );
-
-        assert_eq!(
-            state_acc, state_ref,
-            "monthly identity must produce identical result to shift_lag_state"
-        );
-        // Accumulator must be zeroed (clean for next period).
-        assert_eq!(lag_accumulator[0], 0.0);
-        assert_eq!(lag_weight_accum[0], 0.0);
-    }
-
-    /// Four weekly stages each contributing weight=0.25, finalize only on stage 3.
-    ///
-    /// After processing all four stages the lag[0] must equal the weighted
-    /// average: (500 + 480 + 520 + 510) / 4 = 502.5.
-    #[test]
-    fn test_accumulate_four_weeks_then_finalize() {
-        let _indexer = test_support::equipment_free_geometry(&[0]).remove(0);
-        let layout = test_support::state_layout(1, 1);
-        let mut state = vec![500.0, 0.0]; // storage, lag0
-        let incoming_lags = vec![0.0]; // lag-major: lag0 for hydro 0
-        let mut lag_accumulator = vec![0.0_f64; 1];
-        let mut lag_weight_accum = vec![0.0_f64; 1];
-
-        let z_inflows = [500.0_f64, 480.0, 520.0, 510.0];
-        let mut ds_accum: Vec<f64> = vec![];
-        let mut ds_weight = 0.0_f64;
-        let mut ds_completed: Vec<f64> = vec![];
-        let mut ds_n_completed = 0_usize;
-
-        for (week, &z) in z_inflows.iter().enumerate() {
-            let finalize = week == 3;
-            let stage_lag = StageLagTransition {
-                accumulate_weight: 0.25,
-                spillover_weight: 0.0,
-                finalize_period: finalize,
-                accumulate_downstream: false,
-                downstream_accumulate_weight: 0.0,
-                downstream_spillover_weight: 0.0,
-                downstream_finalize: false,
-                rebuild_from_downstream: false,
-            };
-            let mut primal = vec![0.0; 10];
-            primal[layout.z_inflow.start] = z;
-            accumulate_and_shift_lag_state(
-                &mut state,
-                &incoming_lags,
-                &primal,
-                &layout,
-                &stage_lag,
-                &mut LagAccumState {
-                    accumulator: &mut lag_accumulator,
-                    weight_accum: &mut lag_weight_accum,
-                },
-                &mut noop_ds(
-                    &mut ds_accum,
-                    &mut ds_weight,
-                    &mut ds_completed,
-                    &mut ds_n_completed,
-                ),
-            );
-        }
-
-        // lag[0] is at inflow_lags.start = 1 (state index).
-        let expected = (500.0 + 480.0 + 520.0 + 510.0) / 4.0;
-        assert!(
-            (state[layout.inflow_lags.start] - expected).abs() < 1e-12,
-            "lag[0] must equal weighted average {expected}, got {}",
-            state[layout.inflow_lags.start]
-        );
-        // Accumulator reset after finalization.
-        assert_eq!(lag_accumulator[0], 0.0);
-        assert_eq!(lag_weight_accum[0], 0.0);
-    }
-
-    /// Spillover seeds the next lag period with raw `z_inflow` * `spillover_weight`.
-    #[test]
-    fn test_accumulate_spillover_seeds_next_period() {
-        let _indexer = test_support::equipment_free_geometry(&[0]).remove(0);
-        let layout = test_support::state_layout(1, 1);
-        let mut state = vec![0.0, 0.0];
-        let incoming_lags = vec![0.0];
-        let mut lag_accumulator = vec![0.0_f64; 1];
-        let mut lag_weight_accum = vec![0.0_f64; 1];
-        let mut primal = vec![0.0; 10];
-        primal[layout.z_inflow.start] = 200.0;
-
-        let stage_lag = StageLagTransition {
-            accumulate_weight: 0.968, // 1.0 - 0.032 = days in period / days in month
-            spillover_weight: 0.032,
-            finalize_period: true,
-            accumulate_downstream: false,
-            downstream_accumulate_weight: 0.0,
-            downstream_spillover_weight: 0.0,
-            downstream_finalize: false,
-            rebuild_from_downstream: false,
-        };
-        let mut ds_accum: Vec<f64> = vec![];
-        let mut ds_weight = 0.0_f64;
-        let mut ds_completed: Vec<f64> = vec![];
-        let mut ds_n_completed = 0_usize;
-        accumulate_and_shift_lag_state(
-            &mut state,
-            &incoming_lags,
-            &primal,
-            &layout,
-            &stage_lag,
-            &mut LagAccumState {
-                accumulator: &mut lag_accumulator,
-                weight_accum: &mut lag_weight_accum,
-            },
-            &mut noop_ds(
-                &mut ds_accum,
-                &mut ds_weight,
-                &mut ds_completed,
-                &mut ds_n_completed,
-            ),
-        );
-
-        // After finalization, accumulator seeded with raw z_inflow * spillover_weight.
-        let expected_seed = 200.0 * 0.032;
-        assert!(
-            (lag_accumulator[0] - expected_seed).abs() < 1e-12,
-            "accumulator must be seeded with z_inflow * spillover_weight = {expected_seed}, got {}",
-            lag_accumulator[0]
-        );
-        assert!(
-            (lag_weight_accum[0] - 0.032).abs() < 1e-12,
-            "lag_weight_accum must equal spillover_weight = 0.032, got {}",
-            lag_weight_accum[0]
-        );
-    }
-
-    /// `max_par_order == 0`: function must return immediately, nothing modified.
-    #[test]
-    fn test_accumulate_noop_for_par0() {
-        let _indexer = test_support::equipment_free_geometry(&[0]).remove(0); // no lag order
-        let layout = test_support::state_layout(2, 0);
-        let mut state = vec![100.0, 200.0];
-        let incoming_lags: Vec<f64> = vec![];
-        let primal = vec![0.0; 10];
-        let mut lag_accumulator: Vec<f64> = vec![]; // empty — should never be accessed
-        let mut lag_weight_accum: Vec<f64> = vec![]; // empty — should never be accessed
-        let stage_lag = identity_stage_lag();
-        let mut ds_accum: Vec<f64> = vec![];
-        let mut ds_weight = 0.0_f64;
-        let mut ds_completed: Vec<f64> = vec![];
-        let mut ds_n_completed = 0_usize;
-        accumulate_and_shift_lag_state(
-            &mut state,
-            &incoming_lags,
-            &primal,
-            &layout,
-            &stage_lag,
-            &mut LagAccumState {
-                accumulator: &mut lag_accumulator,
-                weight_accum: &mut lag_weight_accum,
-            },
-            &mut noop_ds(
-                &mut ds_accum,
-                &mut ds_weight,
-                &mut ds_completed,
-                &mut ds_n_completed,
-            ),
-        );
-        assert_eq!(
-            state,
-            vec![100.0, 200.0],
-            "state must be unchanged for PAR(0)"
-        );
-        assert_eq!(
-            lag_weight_accum,
-            Vec::<f64>::new(),
-            "weight must be unchanged for PAR(0)"
-        );
-    }
-
-    /// Storage region of state (indices 0..N) must not be touched by the shift.
-    #[test]
-    fn test_accumulate_preserves_storage() {
-        // N=2 hydros, L=2 lag order: state = [v0, v1, lag0_h0, lag0_h1, lag1_h0, lag1_h1]
-        let _indexer = test_support::equipment_free_geometry(&[0]).remove(0);
-        let layout = test_support::state_layout(2, 2);
-        let mut state = vec![100.0, 200.0, 0.0, 0.0, 0.0, 0.0];
-        let incoming_lags = vec![1.0, 2.0, 3.0, 4.0]; // lag-major: lag0 h0,h1; lag1 h0,h1
-        let mut primal = vec![0.0; 20];
-        primal[layout.z_inflow.start] = 50.0;
-        primal[layout.z_inflow.start + 1] = 60.0;
-        let mut lag_accumulator = vec![0.0_f64; 2];
-        let mut lag_weight_accum = vec![0.0_f64; 2];
-        let stage_lag = identity_stage_lag();
-        let mut ds_accum: Vec<f64> = vec![];
-        let mut ds_weight = 0.0_f64;
-        let mut ds_completed: Vec<f64> = vec![];
-        let mut ds_n_completed = 0_usize;
-        accumulate_and_shift_lag_state(
-            &mut state,
-            &incoming_lags,
-            &primal,
-            &layout,
-            &stage_lag,
-            &mut LagAccumState {
-                accumulator: &mut lag_accumulator,
-                weight_accum: &mut lag_weight_accum,
-            },
-            &mut noop_ds(
-                &mut ds_accum,
-                &mut ds_weight,
-                &mut ds_completed,
-                &mut ds_n_completed,
-            ),
-        );
-        assert_eq!(state[0], 100.0, "storage[0] must be preserved");
-        assert_eq!(state[1], 200.0, "storage[1] must be preserved");
-    }
-
-    // ── downstream accumulation tests ────────────────────────────────────────
-
-    /// Build a `StageLagTransition` for a standard monthly stage that also
-    /// accumulates into the downstream (quarterly) ring buffer.
-    ///
-    /// weight = 1/3 per month (3 months per quarter, no spillover).
-    fn monthly_with_downstream(
-        finalize_primary: bool,
-        downstream_finalize: bool,
-    ) -> StageLagTransition {
-        StageLagTransition {
-            accumulate_weight: 1.0 / 3.0,
-            spillover_weight: 0.0,
-            finalize_period: finalize_primary,
-            accumulate_downstream: true,
-            downstream_accumulate_weight: 1.0 / 3.0,
-            downstream_spillover_weight: 0.0,
-            downstream_finalize,
-            rebuild_from_downstream: false,
-        }
-    }
-
-    /// Drive one stage through `accumulate_and_shift_lag_state` with full
-    /// downstream buffers.
-    #[allow(clippy::too_many_arguments)]
-    fn run_stage(
-        state: &mut [f64],
-        incoming_lags: &[f64],
-        z_inflow: f64,
-        layout: &StateSpace,
-        stage_lag: &StageLagTransition,
-        lag: &mut LagAccumState<'_>,
-        ds: &mut DownstreamAccumState<'_>,
-    ) {
-        let mut primal = vec![0.0; layout.z_inflow.start + layout.hydro_count + 4];
-        primal[layout.z_inflow.start] = z_inflow;
-        accumulate_and_shift_lag_state(state, incoming_lags, &primal, layout, stage_lag, lag, ds);
-    }
-
-    /// Drive one stage with two hydros.
-    fn run_stage_2h(
-        state: &mut [f64],
-        incoming_lags: &[f64],
-        z_inflows: [f64; 2],
-        layout: &StateSpace,
-        stage_lag: &StageLagTransition,
-        lag: &mut LagAccumState<'_>,
-        ds: &mut DownstreamAccumState<'_>,
-    ) {
-        let n = layout.z_inflow.start + layout.hydro_count + 4;
-        let mut primal = vec![0.0; n];
-        primal[layout.z_inflow.start] = z_inflows[0];
-        primal[layout.z_inflow.start + 1] = z_inflows[1];
-        accumulate_and_shift_lag_state(state, incoming_lags, &primal, layout, stage_lag, lag, ds);
-    }
-
-    /// Test 1: PAR(1) downstream accumulation with a 3-stage quarterly window.
-    ///
-    /// 3 monthly stages (each weight=1/3, no primary finalize, no primary
-    /// spillover, `downstream_finalize` on last month) populate the downstream
-    /// ring buffer.  After all 3 stages, `downstream_completed_lags[0]` must
-    /// equal `(90.0 + 100.0 + 110.0) / 3.0 = 100.0`.  Then calling with
-    /// `rebuild_from_downstream = true` on the first quarterly stage overwrites
-    /// `state[lag_start]` with `100.0`.
-    #[test]
-    fn test_downstream_par1_accumulation_and_rebuild() {
-        // N=1 hydro, L=1 lag (primary monthly PAR(1) order).
-        let _indexer = test_support::equipment_free_geometry(&[0]).remove(0);
-        let layout = test_support::state_layout(1, 1);
-        let lag_start = layout.inflow_lags.start;
-
-        // Primary state: storage=500, lag0=old_value_to_be_replaced.
-        let mut state = vec![500.0, 42.0];
-        let incoming_lags = vec![0.0];
-        let mut lag_acc = vec![0.0_f64; 1];
-        let mut lag_w = vec![0.0_f64; 1];
-        // downstream: par_order=1, ring buf capacity n_h * 1 = 1.
-        let mut ds_acc = vec![0.0_f64; 1];
-        let mut ds_w = 0.0_f64;
-        let mut ds_completed = vec![0.0_f64; 1];
-        let mut ds_n = 0_usize;
-
-        let z_vals = [90.0_f64, 100.0, 110.0];
-        for (i, &z) in z_vals.iter().enumerate() {
-            let ds_finalize = i == 2; // last month of the quarter
-            let stage_lag = monthly_with_downstream(false, ds_finalize);
-            run_stage(
-                &mut state,
-                &incoming_lags,
-                z,
-                &layout,
-                &stage_lag,
-                &mut LagAccumState {
-                    accumulator: &mut lag_acc,
-                    weight_accum: &mut lag_w,
-                },
-                &mut DownstreamAccumState {
-                    accumulator: &mut ds_acc,
-                    weight_accum: &mut ds_w,
-                    completed_lags: &mut ds_completed,
-                    n_completed: &mut ds_n,
-                    par_order: 1,
-                },
-            );
-        }
-
-        // After 3 monthly stages the ring buffer should hold the quarterly average.
-        let expected_avg = (90.0 + 100.0 + 110.0) / 3.0;
-        assert!(
-            (ds_completed[0] - expected_avg).abs() < 1e-12,
-            "ring buf slot 0 should be {expected_avg}, got {}",
-            ds_completed[0]
-        );
-        assert_eq!(ds_n, 1, "n_completed must be 1 after one quarter");
-
-        // Now simulate the transition stage (first quarterly stage).
-        // rebuild_from_downstream=true; primary accumulation is quarterly.
-        let rebuild_lag = rebuild_stage_lag();
-        run_stage(
-            &mut state,
-            &incoming_lags,
-            999.0, // z_inflow irrelevant — rebuild returns before primary finalize
-            &layout,
-            &rebuild_lag,
-            &mut LagAccumState {
-                accumulator: &mut lag_acc,
-                weight_accum: &mut lag_w,
-            },
-            &mut DownstreamAccumState {
-                accumulator: &mut ds_acc,
-                weight_accum: &mut ds_w,
-                completed_lags: &mut ds_completed,
-                n_completed: &mut ds_n,
-                par_order: 1,
-            },
-        );
-
-        // lag[0] must be rebuilt to the quarterly average.
-        assert!(
-            (state[lag_start] - expected_avg).abs() < 1e-12,
-            "state[lag_start] must be rebuilt to {expected_avg}, got {}",
-            state[lag_start]
-        );
-        // Storage must be untouched.
-        assert_eq!(state[0], 500.0, "storage must be untouched during rebuild");
-        // Downstream state must be fully reset.
-        assert_eq!(ds_n, 0, "n_completed must reset to 0 after rebuild");
-        assert_eq!(
-            ds_completed[0], 0.0,
-            "completed_lags must be zeroed after rebuild"
-        );
-        assert_eq!(ds_w, 0.0, "downstream weight must reset after rebuild");
-    }
-
-    /// Test 2: PAR(2) downstream accumulation with two consecutive quarters.
-    ///
-    /// 6 monthly stages (Q3: stages 0-2, Q4: stages 3-5) with `downstream_par_order=2`.
-    /// After Q3, `completed_lags[slot=0] == avg(60,70,80) == 70.0`, `n_completed==1`.
-    /// After Q4, `completed_lags[slot=1] == avg(90,100,110) == 100.0`, `n_completed==2`.
-    /// At rebuild: `state[lag_start] == 100.0` (newest Q4), `state[lag_start+1] == 70.0` (Q3).
-    #[test]
-    #[allow(clippy::too_many_lines)]
-    fn test_downstream_par2_two_quarters() {
-        let _indexer = test_support::equipment_free_geometry(&[0]).remove(0); // L=2 lag order
-        let layout = test_support::state_layout(1, 2);
-        let lag_start = layout.inflow_lags.start;
-
-        let mut state = vec![0.0; 1 + 2]; // storage + lag0 + lag1
-        let incoming_lags = vec![0.0, 0.0]; // lag-major: lag0 h0, lag1 h0
-        let mut lag_acc = vec![0.0_f64; 1];
-        let mut lag_w = vec![0.0_f64; 1];
-        // par_order=2: ring buf capacity n_h * 2 = 2.
-        let mut ds_acc = vec![0.0_f64; 1];
-        let mut ds_w = 0.0_f64;
-        let mut ds_completed = vec![0.0_f64; 2];
-        let mut ds_n = 0_usize;
-
-        // Q3: z_inflows 60, 70, 80 — no primary finalize, downstream finalize on month 3.
-        let q3_vals = [60.0_f64, 70.0, 80.0];
-        for (i, &z) in q3_vals.iter().enumerate() {
-            let stage_lag = monthly_with_downstream(false, i == 2);
-            run_stage(
-                &mut state,
-                &incoming_lags,
-                z,
-                &layout,
-                &stage_lag,
-                &mut LagAccumState {
-                    accumulator: &mut lag_acc,
-                    weight_accum: &mut lag_w,
-                },
-                &mut DownstreamAccumState {
-                    accumulator: &mut ds_acc,
-                    weight_accum: &mut ds_w,
-                    completed_lags: &mut ds_completed,
-                    n_completed: &mut ds_n,
-                    par_order: 2,
-                },
-            );
-        }
-        let q3_avg = (60.0 + 70.0 + 80.0) / 3.0;
-        assert!(
-            (ds_completed[0] - q3_avg).abs() < 1e-12,
-            "slot 0 should be Q3 avg {q3_avg}, got {}",
-            ds_completed[0]
-        );
-        assert_eq!(ds_n, 1);
-
-        // Q4: z_inflows 90, 100, 110 — downstream finalize on month 3.
-        let q4_vals = [90.0_f64, 100.0, 110.0];
-        for (i, &z) in q4_vals.iter().enumerate() {
-            let stage_lag = monthly_with_downstream(false, i == 2);
-            run_stage(
-                &mut state,
-                &incoming_lags,
-                z,
-                &layout,
-                &stage_lag,
-                &mut LagAccumState {
-                    accumulator: &mut lag_acc,
-                    weight_accum: &mut lag_w,
-                },
-                &mut DownstreamAccumState {
-                    accumulator: &mut ds_acc,
-                    weight_accum: &mut ds_w,
-                    completed_lags: &mut ds_completed,
-                    n_completed: &mut ds_n,
-                    par_order: 2,
-                },
-            );
-        }
-        let q4_avg = (90.0 + 100.0 + 110.0) / 3.0;
-        assert!(
-            (ds_completed[1] - q4_avg).abs() < 1e-12,
-            "slot 1 should be Q4 avg {q4_avg}, got {}",
-            ds_completed[1]
-        );
-        assert_eq!(ds_n, 2);
-
-        // Rebuild stage: lag[0] <- newest (Q4), lag[1] <- second-newest (Q3).
-        let rebuild_lag = rebuild_stage_lag();
-        run_stage(
-            &mut state,
-            &incoming_lags,
-            999.0,
-            &layout,
-            &rebuild_lag,
-            &mut LagAccumState {
-                accumulator: &mut lag_acc,
-                weight_accum: &mut lag_w,
-            },
-            &mut DownstreamAccumState {
-                accumulator: &mut ds_acc,
-                weight_accum: &mut ds_w,
-                completed_lags: &mut ds_completed,
-                n_completed: &mut ds_n,
-                par_order: 2,
-            },
-        );
-
-        // lag[0] = newest = Q4 avg; lag[1] = Q3 avg.
-        assert!(
-            (state[lag_start] - q4_avg).abs() < 1e-12,
-            "lag[0] should be newest Q4 avg {q4_avg}, got {}",
-            state[lag_start]
-        );
-        assert!(
-            (state[lag_start + 1] - q3_avg).abs() < 1e-12,
-            "lag[1] should be Q3 avg {q3_avg}, got {}",
-            state[lag_start + 1]
-        );
-    }
-
-    /// Test 3: Uniform monthly study — empty downstream buffers, zero overhead.
-    ///
-    /// Calls `accumulate_and_shift_lag_state` with `downstream_accumulator = &mut []`.
-    /// The function must produce exactly the same result,
-    /// with no downstream fields accessed.
-    #[test]
-    fn test_no_downstream_for_uniform_monthly() {
-        let _indexer = test_support::equipment_free_geometry(&[0]).remove(0);
-        let layout = test_support::state_layout(1, 1);
-        let mut state_ds = vec![500.0, 0.0]; // with empty downstream
-        let mut state_ref = vec![500.0, 0.0]; // with noop downstream
-        let incoming_lags = vec![0.0];
-        let z_inflows = [100.0_f64, 110.0, 120.0];
-
-        let mut lag_acc_ref = vec![0.0_f64; 1];
-        let mut lag_w_ref = vec![0.0_f64; 1];
-        let mut lag_acc_ds = vec![0.0_f64; 1];
-        let mut lag_w_ds = vec![0.0_f64; 1];
-
-        for (i, &z) in z_inflows.iter().enumerate() {
-            let finalize = i == 2;
-            let stage_lag = StageLagTransition {
-                accumulate_weight: 1.0 / 3.0,
-                spillover_weight: 0.0,
-                finalize_period: finalize,
-                accumulate_downstream: false,
-                downstream_accumulate_weight: 0.0,
-                downstream_spillover_weight: 0.0,
-                downstream_finalize: false,
-                rebuild_from_downstream: false,
-            };
-
-            // Reference: empty downstream (noop path).
-            let mut ds_accum_ref: Vec<f64> = vec![];
-            let mut ds_weight_ref = 0.0_f64;
-            let mut ds_completed_ref: Vec<f64> = vec![];
-            let mut ds_n_completed_ref = 0_usize;
-            run_stage(
-                &mut state_ref,
-                &incoming_lags,
-                z,
-                &layout,
-                &stage_lag,
-                &mut LagAccumState {
-                    accumulator: &mut lag_acc_ref,
-                    weight_accum: &mut lag_w_ref,
-                },
-                &mut noop_ds(
-                    &mut ds_accum_ref,
-                    &mut ds_weight_ref,
-                    &mut ds_completed_ref,
-                    &mut ds_n_completed_ref,
-                ),
-            );
-
-            // Test: inline empty downstream (par_order=0).
-            let mut ds_accum_ds: Vec<f64> = vec![];
-            let mut ds_weight_ds = 0.0_f64;
-            let mut ds_completed_ds: Vec<f64> = vec![];
-            let mut ds_n_completed_ds = 0_usize;
-            run_stage(
-                &mut state_ds,
-                &incoming_lags,
-                z,
-                &layout,
-                &stage_lag,
-                &mut LagAccumState {
-                    accumulator: &mut lag_acc_ds,
-                    weight_accum: &mut lag_w_ds,
-                },
-                &mut DownstreamAccumState {
-                    accumulator: &mut ds_accum_ds,
-                    weight_accum: &mut ds_weight_ds,
-                    completed_lags: &mut ds_completed_ds,
-                    n_completed: &mut ds_n_completed_ds,
-                    par_order: 0,
-                },
-            );
-        }
-
-        assert_eq!(
-            state_ds, state_ref,
-            "uniform monthly study must be identical with or without downstream buffers"
-        );
-    }
-
-    /// Test 4: `rebuild_from_downstream` resets all downstream state.
-    ///
-    /// After rebuild, `n_completed == 0`, `completed_lags` all zero, and
-    /// `downstream_weight_accum == 0.0`.
-    #[test]
-    fn test_rebuild_resets_downstream_state() {
-        let _indexer = test_support::equipment_free_geometry(&[0]).remove(0);
-        let layout = test_support::state_layout(1, 1);
-        let mut state = vec![0.0, 0.0];
-        let incoming_lags = vec![0.0];
-        let mut lag_acc = vec![0.0_f64; 1];
-        let mut lag_w = vec![0.0_f64; 1];
-        let mut ds_acc = vec![0.0_f64; 1];
-        let mut ds_w = 0.5_f64; // non-zero before rebuild
-        let mut ds_completed = vec![77.0_f64; 1]; // non-zero before rebuild
-        let mut ds_n = 1_usize; // pretend one quarter was completed
-
-        let rebuild_lag = rebuild_stage_lag();
-
-        run_stage(
-            &mut state,
-            &incoming_lags,
-            0.0,
-            &layout,
-            &rebuild_lag,
-            &mut LagAccumState {
-                accumulator: &mut lag_acc,
-                weight_accum: &mut lag_w,
-            },
-            &mut DownstreamAccumState {
-                accumulator: &mut ds_acc,
-                weight_accum: &mut ds_w,
-                completed_lags: &mut ds_completed,
-                n_completed: &mut ds_n,
-                par_order: 1,
-            },
-        );
-
-        assert_eq!(ds_n, 0, "n_completed must reset to 0 after rebuild");
-        assert_eq!(
-            ds_completed[0], 0.0,
-            "completed_lags must be zeroed after rebuild"
-        );
-        assert_eq!(
-            ds_w, 0.0,
-            "downstream weight_accum must reset after rebuild"
-        );
-        assert_eq!(
-            ds_acc[0], 0.0,
-            "downstream accumulator must be zeroed after rebuild"
-        );
-    }
-
-    /// Test 5: Downstream spillover seeds the next quarterly accumulation.
-    ///
-    /// A monthly stage with `downstream_spillover_weight = 0.1` and
-    /// `downstream_finalize = true` should: (a) finalize the current quarter,
-    /// (b) seed the next quarter's accumulator with `z_inflow * 0.1`.
-    #[test]
-    fn test_downstream_spillover_seeds_next_quarter() {
-        let _indexer = test_support::equipment_free_geometry(&[0]).remove(0);
-        let layout = test_support::state_layout(1, 1);
-        let mut state = vec![0.0, 0.0];
-        let incoming_lags = vec![0.0];
-        let mut lag_acc = vec![0.0_f64; 1];
-        let mut lag_w = vec![0.0_f64; 1];
-        let mut ds_acc = vec![0.0_f64; 1];
-        let mut ds_completed = vec![0.0_f64; 1];
-        let mut ds_n = 0_usize;
-
-        // Single monthly stage that finalizes the quarter with spillover.
-        // Pre-load the accumulator to simulate prior months already accumulated.
-        ds_acc[0] = 200.0; // months 1+2 already accumulated
-        let mut ds_w = 2.0 / 3.0_f64; // two months of weight 1/3 each
-
-        let spillover_weight = 0.1;
-        let stage_lag = StageLagTransition {
-            accumulate_weight: 1.0 / 3.0,
-            spillover_weight: 0.0,
-            finalize_period: false,
-            accumulate_downstream: true,
-            downstream_accumulate_weight: 1.0 / 3.0,
-            downstream_spillover_weight: spillover_weight,
-            downstream_finalize: true,
-            rebuild_from_downstream: false,
-        };
-
-        let z = 120.0_f64;
-        run_stage(
-            &mut state,
-            &incoming_lags,
-            z,
-            &layout,
-            &stage_lag,
-            &mut LagAccumState {
-                accumulator: &mut lag_acc,
-                weight_accum: &mut lag_w,
-            },
-            &mut DownstreamAccumState {
-                accumulator: &mut ds_acc,
-                weight_accum: &mut ds_w,
-                completed_lags: &mut ds_completed,
-                n_completed: &mut ds_n,
-                par_order: 1,
-            },
-        );
-
-        // Quarter should be finalized and the ring buffer filled.
-        assert_eq!(ds_n, 1, "one quarter must be finalized");
-        // Downstream accumulator must be seeded with z * spillover_weight.
-        let expected_seed = z * spillover_weight;
-        assert!(
-            (ds_acc[0] - expected_seed).abs() < 1e-12,
-            "accumulator should be seeded with {expected_seed}, got {}",
-            ds_acc[0]
-        );
-        assert!(
-            (ds_w - spillover_weight).abs() < 1e-12,
-            "weight_accum should be {spillover_weight}, got {ds_w}"
-        );
-    }
-
-    /// Test 6: Multi-hydro downstream — 2 hydros, PAR(1).
-    ///
-    /// Each hydro has its own `z_inflow` values.  After 3 monthly stages,
-    /// `downstream_completed_lags[0]` (hydro 0) and `[1]` (hydro 1) must
-    /// each equal the independently computed quarterly average for that hydro.
-    #[test]
-    fn test_downstream_multi_hydro() {
-        // N=2 hydros, L=1 lag order.
-        let _indexer = test_support::equipment_free_geometry(&[0]).remove(0);
-        let layout = test_support::state_layout(2, 1);
-        let lag_start = layout.inflow_lags.start;
-
-        let mut state = vec![0.0; 2 + 2]; // 2 storage + 2 lag entries (lag0 h0, lag0 h1)
-        let incoming_lags = vec![0.0, 0.0]; // lag-major: lag0 h0, lag0 h1
-        let mut lag_acc = vec![0.0_f64; 2];
-        let mut lag_w = vec![0.0_f64; 2];
-        // ring buf capacity: n_h * par_order = 2 * 1 = 2
-        let mut ds_acc = vec![0.0_f64; 2];
-        let mut ds_w = 0.0_f64;
-        let mut ds_completed = vec![0.0_f64; 2];
-        let mut ds_n = 0_usize;
-
-        // 3 monthly stages: hydro 0 inflows [10, 20, 30], hydro 1 inflows [40, 50, 60].
-        let h0_vals = [10.0_f64, 20.0, 30.0];
-        let h1_vals = [40.0_f64, 50.0, 60.0];
-
-        for (i, (&z0, &z1)) in h0_vals.iter().zip(h1_vals.iter()).enumerate() {
-            let stage_lag = monthly_with_downstream(false, i == 2);
-            run_stage_2h(
-                &mut state,
-                &incoming_lags,
-                [z0, z1],
-                &layout,
-                &stage_lag,
-                &mut LagAccumState {
-                    accumulator: &mut lag_acc,
-                    weight_accum: &mut lag_w,
-                },
-                &mut DownstreamAccumState {
-                    accumulator: &mut ds_acc,
-                    weight_accum: &mut ds_w,
-                    completed_lags: &mut ds_completed,
-                    n_completed: &mut ds_n,
-                    par_order: 1,
-                },
-            );
-        }
-
-        let expected_h0 = (10.0 + 20.0 + 30.0) / 3.0;
-        let expected_h1 = (40.0 + 50.0 + 60.0) / 3.0;
-        assert!(
-            (ds_completed[0] - expected_h0).abs() < 1e-12,
-            "hydro 0 quarterly avg should be {expected_h0}, got {}",
-            ds_completed[0]
-        );
-        assert!(
-            (ds_completed[1] - expected_h1).abs() < 1e-12,
-            "hydro 1 quarterly avg should be {expected_h1}, got {}",
-            ds_completed[1]
-        );
-        assert_eq!(ds_n, 1);
-
-        // Rebuild: both hydros rebuilt independently.
-        let rebuild_lag = rebuild_stage_lag();
-        run_stage_2h(
-            &mut state,
-            &incoming_lags,
-            [999.0, 888.0],
-            &layout,
-            &rebuild_lag,
-            &mut LagAccumState {
-                accumulator: &mut lag_acc,
-                weight_accum: &mut lag_w,
-            },
-            &mut DownstreamAccumState {
-                accumulator: &mut ds_acc,
-                weight_accum: &mut ds_w,
-                completed_lags: &mut ds_completed,
-                n_completed: &mut ds_n,
-                par_order: 1,
-            },
-        );
-
-        // lag[0] for hydro 0 and hydro 1 must be rebuilt independently.
-        assert!(
-            (state[lag_start] - expected_h0).abs() < 1e-12,
-            "rebuilt lag[0] hydro 0 should be {expected_h0}, got {}",
-            state[lag_start]
-        );
-        assert!(
-            (state[lag_start + 1] - expected_h1).abs() < 1e-12,
-            "rebuilt lag[0] hydro 1 should be {expected_h1}, got {}",
-            state[lag_start + 1]
         );
     }
 

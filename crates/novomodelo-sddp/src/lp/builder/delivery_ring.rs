@@ -1,6 +1,6 @@
 //! Generic lagged-delivery ring primitive shared by the travel-time
 //! water-bucket ring and the anticipated-thermal ring: a borrowed outgoing
-//! block (identity-resolved) and a paired incoming block (pinned) advance one
+//! block and a paired incoming block (pinned) advance one
 //! Markov-1 slot per stage through the same interior shift-row skeleton and
 //! paired row-cap/column-freeze masking. The two rings differ in how each
 //! deposits into its newest slot and in what a masked terminal slot means —
@@ -8,7 +8,7 @@
 //! skeleton implementation.
 //!
 //! [`StateSpace`] remains the sole owner of the
-//! out/in state-index ranges: a [`DeliveryRing`] borrows them for one
+//! outgoing and incoming column blocks: a [`DeliveryRing`] borrows them for one
 //! construction and never re-derives or persists an independent copy. The
 //! block-mode-coupled per-lag deposit fill stays at each ring's own call
 //! site; this module owns only the shared skeleton, plus the column-bound
@@ -39,7 +39,7 @@ pub(super) struct ColumnBufs<'a> {
 /// ranges.
 #[derive(Debug, Clone)]
 pub struct DeliveryRing {
-    /// Outgoing (identity-resolved) column block, size `n_lanes * depth`.
+    /// Outgoing column block, size `n_lanes * depth`.
     out_block: Range<usize>,
     /// Incoming (pinned) column block, size `n_lanes * depth`.
     in_block: Range<usize>,
@@ -131,14 +131,14 @@ impl DeliveryRing {
         Self::transit_buckets(state).find(|bucket| bucket.plant == plant)
     }
 
-    /// Outgoing-block column for ring position `(slot, lane)` — the single
-    /// owner of the ring's addressing arithmetic.
+    /// In-block offset of ring position `(slot, lane)` — the single owner of
+    /// the ring's addressing arithmetic.
     ///
     /// # Panics (debug builds only)
     ///
     /// Panics if `slot >= depth` or `lane >= n_lanes`.
     #[must_use]
-    pub fn out_col(&self, slot: usize, lane: usize) -> usize {
+    pub(crate) fn lane_offset(&self, slot: usize, lane: usize) -> usize {
         debug_assert!(
             slot < self.depth,
             "slot {slot} must be < depth {}",
@@ -149,7 +149,17 @@ impl DeliveryRing {
             "lane {lane} must be < n_lanes {}",
             self.n_lanes
         );
-        self.out_block.start + slot * self.n_lanes + lane
+        slot * self.n_lanes + lane
+    }
+
+    /// Outgoing-block column for ring position `(slot, lane)`.
+    ///
+    /// # Panics (debug builds only)
+    ///
+    /// Panics if `slot >= depth` or `lane >= n_lanes`.
+    #[must_use]
+    pub fn out_col(&self, slot: usize, lane: usize) -> usize {
+        self.out_block.start + self.lane_offset(slot, lane)
     }
 
     /// Incoming-block column for ring position `(slot, lane)`; see
@@ -160,17 +170,7 @@ impl DeliveryRing {
     /// Panics if `slot >= depth` or `lane >= n_lanes`.
     #[must_use]
     pub fn in_col(&self, slot: usize, lane: usize) -> usize {
-        debug_assert!(
-            slot < self.depth,
-            "slot {slot} must be < depth {}",
-            self.depth
-        );
-        debug_assert!(
-            lane < self.n_lanes,
-            "lane {lane} must be < n_lanes {}",
-            self.n_lanes
-        );
-        self.in_block.start + slot * self.n_lanes + lane
+        self.in_block.start + self.lane_offset(slot, lane)
     }
 
     /// Decomposes a flat block-relative offset (`col − out_block.start` or
@@ -344,18 +344,7 @@ impl DeliveryRing {
             lag >= 1,
             "lag must be >= 1; lag 0 is the same-stage share, never a ring slot"
         );
-        let slot = lag - 1;
-        debug_assert!(
-            slot < self.depth,
-            "slot {slot} must be < depth {}",
-            self.depth
-        );
-        debug_assert!(
-            lane < self.n_lanes,
-            "lane {lane} must be < n_lanes {}",
-            self.n_lanes
-        );
-        slot * self.n_lanes + lane
+        self.lane_offset(lag - 1, lane)
     }
 }
 

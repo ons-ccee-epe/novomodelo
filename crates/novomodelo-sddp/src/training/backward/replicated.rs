@@ -26,16 +26,20 @@ use crate::{
     cut_sync::OutcomeExchangeScratch,
     forward::EnumeratedForwardScratch,
     risk_measure::{BackwardOutcome, RiskMeasure},
-    setup::node_graph::OpeningSource,
-    solve::partition,
+    solve::{StageOpeningSolver, partition},
     stage_solve::{StageInputs, run_stage_solve},
+    training::stage_solve_prep::{BracketSource, LoadedCutRows, NoiseTermSource, StageSolvePrep},
     workspace::SolverWorkspace,
 };
 
 use super::{
     SuccessorChild, SuccessorOutcomes, SuccessorSpec,
-    duals_extraction::extract_state_duals_only,
-    lp_setup::{fill_external_opening_noise, patch_opening_bounds},
+    duals_extraction::{
+        ChainRuleStageInputs, DualExtractionSpec, OpeningDualBuffers, extract_opening_cut,
+    },
+    lp_setup::{
+        OpeningNoise, child_cut_rows, load_backward_lp, pin_child_lp, resolve_opening_noise,
+    },
 };
 
 /// Per-rank scratch for [`run_backward_node_replicated`]: the local
@@ -52,6 +56,8 @@ pub(crate) struct ReplicatedScratch {
     outcome_counts: Vec<usize>,
     /// Reused allgather scratch (`OutcomeExchangeScratch::allgather_outcomes`).
     exchange: OutcomeExchangeScratch,
+    /// The gathered outcomes, grown to the largest node's outcome count.
+    gathered: Vec<BackwardOutcome>,
 }
 
 /// Per-outcome payload width in [`solve_replicated_outcome_slice`]'s output:
@@ -66,9 +72,9 @@ pub(crate) fn outcome_stride(n_state: usize) -> usize {
 /// index space `child.outcome_range`'s offset addresses into the node's joint
 /// arena) at the shared incoming state `x_hat`, appending each opening's
 /// `objective ‖ subgradient` (`1 + cut_state.n_slots()` doubles) to `out`. The
-/// child's LP loads once; an `External` child (`openings.len == 1`) reads its
-/// declared column via [`fill_external_opening_noise`] instead of the
-/// generated opening tree.
+/// child's LP loads once, and `x_hat` is pinned once with it;
+/// an `External` child (`openings.len == 1`) reads its declared column via
+/// [`resolve_opening_noise`] instead of the generated opening tree.
 ///
 /// # Errors
 ///
@@ -89,77 +95,162 @@ pub(crate) fn solve_replicated_outcome_slice<S: SolverInterface + Send>(
     local_start: usize,
     local_end: usize,
     scenario_base: usize,
-    iteration: u64,
     out: &mut Vec<f64>,
 ) -> Result<(), SddpError> {
     let s = succ.successor;
-    let n_state = succ.cut_state.n_slots();
     let tree_view = training_ctx.stochastic.tree_view();
 
     ws.solver.reset_solver_state();
-    super::lp_setup::load_backward_lp(ws, child);
+    load_backward_lp(ws, child);
+
+    pin_child_lp(
+        ws,
+        ctx,
+        training_ctx,
+        child,
+        x_hat,
+        s,
+        BracketSource::Computed,
+    );
+    let rows = child_cut_rows(training_ctx, child);
 
     let mut state_duals = std::mem::take(&mut ws.backward_accum.state_duals_buf);
+    let mut coupled_duals = std::mem::take(&mut ws.backward_accum.coupled_duals_buf);
+    let mut cut_dual_slots = std::mem::take(&mut ws.backward_accum.cut_dual_slots);
+    let mut buf = std::mem::take(&mut ws.backward_accum.external_noise_buf);
+    let mut duals = OpeningDualBuffers {
+        state_duals: &mut state_duals,
+        coupled_duals: &mut coupled_duals,
+        cut_dual_slots: &mut cut_dual_slots,
+    };
 
-    if child.openings.source == OpeningSource::External {
-        debug_assert_eq!(
-            (local_start, local_end),
-            (0, 1),
-            "an External child has exactly one opening"
-        );
-        let mut buf = std::mem::take(&mut ws.backward_accum.external_noise_buf);
-        fill_external_opening_noise(
-            training_ctx,
-            s,
-            child.openings.offset,
-            child.successor_node_id,
-            &mut buf,
-        )?;
-        patch_opening_bounds(ws, ctx, training_ctx, &buf, x_hat, s);
-        let inputs = StageInputs {
-            stage_context: ctx,
-            pool: child.successor_pool,
-            stored_basis: None,
-            stage_index: s,
-            scenario_index: scenario_base,
-            iteration: Some(iteration),
-            node_id: child.successor_node_id,
-        };
-        let view = run_stage_solve(ws, &inputs)?;
-        let objective = extract_state_duals_only(
-            &view,
-            succ.cut_state,
-            &ctx.template(s).col_scale,
-            &mut state_duals,
-        );
-        out.push(objective);
-        out.extend_from_slice(&state_duals[..n_state]);
-        ws.backward_accum.external_noise_buf = buf;
-    } else {
-        for local_omega in local_start..local_end {
-            let raw_noise = tree_view.opening(s.0, local_omega);
-            patch_opening_bounds(ws, ctx, training_ctx, raw_noise, x_hat, s);
+    match resolve_opening_noise(
+        training_ctx,
+        s,
+        &child.openings,
+        child.successor_node_id,
+        &mut buf,
+    )? {
+        OpeningNoise::External(noise) => {
+            debug_assert_eq!(
+                (local_start, local_end),
+                (0, 1),
+                "an External child has exactly one opening"
+            );
             let inputs = StageInputs {
                 stage_context: ctx,
                 pool: child.successor_pool,
                 stored_basis: None,
                 stage_index: s,
-                scenario_index: scenario_base + local_omega,
-                iteration: Some(iteration),
+                scenario_index: scenario_base,
+                iteration: Some(succ.iteration),
                 node_id: child.successor_node_id,
             };
-            let view = run_stage_solve(ws, &inputs)?;
-            let objective = extract_state_duals_only(
-                &view,
-                succ.cut_state,
-                &ctx.template(s).col_scale,
-                &mut state_duals,
-            );
-            out.push(objective);
-            out.extend_from_slice(&state_duals[..n_state]);
+            solve_replicated_opening(
+                ws,
+                training_ctx,
+                succ,
+                child,
+                &rows,
+                noise,
+                &inputs,
+                &mut duals,
+                out,
+            )?;
+        }
+        OpeningNoise::Generated => {
+            for local_omega in local_start..local_end {
+                let inputs = StageInputs {
+                    stage_context: ctx,
+                    pool: child.successor_pool,
+                    stored_basis: None,
+                    stage_index: s,
+                    scenario_index: scenario_base + local_omega,
+                    iteration: Some(succ.iteration),
+                    node_id: child.successor_node_id,
+                };
+                solve_replicated_opening(
+                    ws,
+                    training_ctx,
+                    succ,
+                    child,
+                    &rows,
+                    tree_view.opening(s.0, local_omega),
+                    &inputs,
+                    &mut duals,
+                    out,
+                )?;
+            }
         }
     }
+    ws.backward_accum.external_noise_buf = buf;
+    ws.backward_accum.cut_dual_slots = cut_dual_slots;
+    ws.backward_accum.coupled_duals_buf = coupled_duals;
     ws.backward_accum.state_duals_buf = state_duals;
+    Ok(())
+}
+
+/// Solves one opening of `child`'s loaded LP and appends its `objective ‖ subgradient`
+/// to `out`; the subgradient is the opening's chain-rule coefficients, which the
+/// successor intercept dots at the pinned state.
+///
+/// # Errors
+///
+/// Propagates `SddpError::Infeasible`/`SddpError::Solver` from the solve.
+fn solve_replicated_opening<S: SolverInterface + Send>(
+    ws: &mut SolverWorkspace<S>,
+    training_ctx: &TrainingContext<'_>,
+    succ: &SuccessorSpec<'_>,
+    child: &SuccessorChild<'_>,
+    rows: &LoadedCutRows<'_>,
+    raw_noise: &[f64],
+    inputs: &StageInputs<'_>,
+    duals: &mut OpeningDualBuffers<'_>,
+    out: &mut Vec<f64>,
+) -> Result<(), SddpError> {
+    let ctx = inputs.stage_context;
+    let s = inputs.stage_index;
+    let n_state = succ.cut_state.n_slots();
+    StageSolvePrep::patch_opening(
+        &mut ws.solver,
+        &mut ws.patch_buf,
+        &mut ws.scratch,
+        ctx,
+        training_ctx,
+        s,
+        raw_noise,
+        rows,
+        NoiseTermSource::OnTheFly,
+        &StageOpeningSolver::Frozen,
+    );
+    let mut chain_scratch = std::mem::take(&mut ws.backward_accum.chain_scratch);
+    let view = run_stage_solve(ws, inputs)?;
+    let template = ctx.template(s);
+    let start = out.len();
+    out.resize(start + outcome_stride(n_state), 0.0);
+    let objective = extract_opening_cut(
+        &view,
+        &DualExtractionSpec {
+            extracted: succ.cut_state,
+            col_scale: &template.col_scale,
+            row_scale: &template.row_scale,
+            coupling: &ctx.inflow_coupling[s.0],
+            first_cut_row: child.template_num_rows,
+            cut_row_slots: child.successor_active_slots,
+            read_cut_duals: rows.projection.has_lag_slots(),
+        },
+        &ChainRuleStageInputs {
+            slots: child.chain_rule_slots,
+            resident_pool: child.successor_pool,
+            par: training_ctx.stochastic.par(),
+            stage: s.0,
+        },
+        duals,
+        &mut chain_scratch,
+        &mut out[start + 1..],
+    );
+    out[start] = objective;
+    ws.backward_accum.chain_scratch = chain_scratch;
     Ok(())
 }
 
@@ -184,7 +275,7 @@ pub(crate) fn solve_replicated_outcome_slice<S: SolverInterface + Send>(
 /// A Generated terminal leaf or an interior successor is never eligible
 /// (sddp.md "The branching backward integrates every successor
 /// exhaustively") — every non-eligible child still loads and solves its own
-/// LP, exactly as before fusion. A predicate-eligible child whose captured
+/// LP. A predicate-eligible child whose captured
 /// slice is unexpectedly absent falls back to solving it directly instead of
 /// unwrapping — correctness-preserving, logged as an error since the forward
 /// capture should have populated it.
@@ -196,7 +287,7 @@ pub(crate) fn solve_replicated_outcome_slice<S: SolverInterface + Send>(
 /// `allgatherv`.
 // RATIONALE: one per-node replicated solve threading disjoint scratch (the
 // reused ReplicatedScratch, the solver workspace) and per-node scalars
-// (x_hat, pool_id, iteration); splitting further would pass the whole bundle
+// (x_hat, pool_id); splitting further would pass the whole bundle
 // for no gain or re-introduce the argument count.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_backward_node_replicated<S: SolverInterface + Send, C: Communicator>(
@@ -211,7 +302,6 @@ pub(crate) fn run_backward_node_replicated<S: SolverInterface + Send, C: Communi
     outcomes: &SuccessorOutcomes<'_>,
     x_hat: &[f64],
     pool_id: usize,
-    iteration: u64,
     enumerated_state: &EnumeratedForwardScratch,
 ) -> Result<f64, SddpError> {
     let n_state = succ.cut_state.n_slots();
@@ -241,7 +331,7 @@ pub(crate) fn run_backward_node_replicated<S: SolverInterface + Send, C: Communi
         let fused = is_eligible_terminal_leaf
             .then(|| enumerated_state.fused_terminal_slice(child.successor_node))
             .flatten();
-        if let Some((objective, duals)) = fused {
+        if let Some((objective, subgradient)) = fused {
             debug_assert_eq!(
                 (
                     lo - child.outcome_range.start,
@@ -251,12 +341,12 @@ pub(crate) fn run_backward_node_replicated<S: SolverInterface + Send, C: Communi
                 "an External terminal leaf has exactly one opening"
             );
             debug_assert_eq!(
-                duals.len(),
+                subgradient.len(),
                 n_state,
-                "the fused slice's dual length must equal the cut-state dimension"
+                "the fused slice's subgradient length must equal the cut-state dimension"
             );
             scratch.local_slice.push(objective);
-            scratch.local_slice.extend_from_slice(duals);
+            scratch.local_slice.extend_from_slice(subgradient);
             continue;
         }
         if is_eligible_terminal_leaf {
@@ -277,7 +367,6 @@ pub(crate) fn run_backward_node_replicated<S: SolverInterface + Send, C: Communi
             lo - child.outcome_range.start,
             hi - child.outcome_range.start,
             pool_id,
-            iteration,
             &mut scratch.local_slice,
         )?;
     }
@@ -294,18 +383,15 @@ pub(crate) fn run_backward_node_replicated<S: SolverInterface + Send, C: Communi
         comm,
     )?;
 
-    while ws.backward_accum.outcomes.len() < n_openings {
-        ws.backward_accum.outcomes.push(BackwardOutcome {
+    while scratch.gathered.len() < n_openings {
+        scratch.gathered.push(BackwardOutcome {
             intercept: 0.0,
             coefficients: vec![0.0_f64; n_state],
             objective_value: 0.0,
         });
     }
     let stride = outcome_stride(n_state);
-    for (o, out) in ws.backward_accum.outcomes[..n_openings]
-        .iter_mut()
-        .enumerate()
-    {
+    for (o, out) in scratch.gathered[..n_openings].iter_mut().enumerate() {
         let base = o * stride;
         let objective = full[base];
         let coefficients = &full[base + 1..base + 1 + n_state];
@@ -318,7 +404,7 @@ pub(crate) fn run_backward_node_replicated<S: SolverInterface + Send, C: Communi
     ws.backward_accum.agg_coefficients.resize(n_state, 0.0);
     let mut intercept = 0.0_f64;
     risk_measure.aggregate_cut_into(
-        &ws.backward_accum.outcomes[..n_openings],
+        &scratch.gathered[..n_openings],
         probabilities,
         &mut intercept,
         &mut ws.backward_accum.agg_coefficients,

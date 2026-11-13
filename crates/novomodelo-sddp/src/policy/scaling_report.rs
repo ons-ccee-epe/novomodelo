@@ -304,7 +304,6 @@ mod tests {
             objective: vec![0.0, 1.0, 50.0],
             row_lower: vec![0.0; 2],
             row_upper: vec![0.0; 2],
-            n_state: 1,
             col_scale: Vec::new(),
             row_scale: Vec::new(),
         };

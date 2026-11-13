@@ -323,7 +323,7 @@ pub struct RowSelectionRecord {
 ///   `fwd_setup_ms`, `lazy_scoring_ms`). Rank-only slots are `0` on these rows.
 ///
 /// `SUM(col) GROUP BY iteration` across all rows recovers the
-/// single-row-per-iteration value for each of the 16 timing columns.
+/// single-row-per-iteration value for each timing column.
 #[derive(Debug, Clone)]
 pub struct WorkerTimingRecord {
     /// Training iteration (1-based).
@@ -332,10 +332,10 @@ pub struct WorkerTimingRecord {
     pub rank: i32,
     /// Rayon worker index within the rank's pool, or `None` for rank-aggregated rows.
     pub worker_id: Option<i32>,
-    /// Fixed-size timing payload matching the 16 timing columns of
-    /// `iteration_timing_schema()` (positions 3–18, after `iteration`, `rank`,
-    /// `worker_id`). Slot indices correspond to the `WORKER_TIMING_SLOT_*`
-    /// constants defined in `novomodelo-core`.
+    /// Fixed-size timing payload matching the timing columns of
+    /// `iteration_timing_schema()` (after `iteration`, `rank`, `worker_id`).
+    /// Slot indices correspond to the `WORKER_TIMING_SLOT_*` constants defined
+    /// in `novomodelo-core`.
     pub timings: [u64; 16],
 }
 

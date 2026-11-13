@@ -511,7 +511,7 @@ pub(crate) fn convergence_schema() -> Schema {
 /// Row semantics: one row per `(iteration, rank)` for rank-only sequential values
 /// (`worker_id = NULL`), and one row per `(iteration, rank, worker_id)` for
 /// per-worker parallel-region values. `SUM(col) GROUP BY iteration` recovers the
-/// single-row-per-iteration value for each of the 16 timing columns.
+/// single-row-per-iteration value for each timing column.
 ///
 /// Only the top-level non-overlapping phases (`forward_wall_ms`,
 /// `backward_wall_ms`, `cut_selection_ms`, `mpi_allreduce_ms`, `lower_bound_ms`)

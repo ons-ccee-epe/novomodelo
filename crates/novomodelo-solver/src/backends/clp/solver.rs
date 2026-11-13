@@ -16,11 +16,11 @@ use crate::{
 ///
 /// Owns an opaque CLP model handle plus pre-allocated, reusable buffers resized
 /// by `load_model` and reused across solves to avoid per-solve allocation. The
-/// retained CSC arrays and bound vectors are the canonical, declaration-ordered
-/// mirror of the loaded LP: `add_rows`/`set_*_bounds` patch them and reconcile
-/// the change into CLP natively (`novomodelo_clp_add_rows` / `novomodelo_clp_chg_*`)
+/// retained bound vectors are the canonical, declaration-ordered mirror of the
+/// loaded LP's bounds: `add_rows`/`set_*_bounds` patch them and reconcile the
+/// change into CLP natively (`novomodelo_clp_add_rows` / `novomodelo_clp_chg_*`)
 /// without rebuilding the model, preserving CLP's factorization/basis. Bound
-/// vectors are forwarded to CLP verbatim.
+/// vectors are forwarded to CLP verbatim; the constraint matrix lives only in CLP.
 ///
 /// # Example
 ///
@@ -49,12 +49,6 @@ pub struct ClpSolver {
     /// Primal tolerance under which CLP accepted the current solution; captured
     /// on every accepted solve, before any profile re-apply.
     pub(super) accepted_primal_tolerance: f64,
-    /// Retained CSC column-start offsets (length `num_cols + 1`).
-    pub(super) col_starts: Vec<i32>,
-    /// Retained CSC row indices for each non-zero (length `num_nz`).
-    pub(super) row_indices: Vec<i32>,
-    /// Retained CSC non-zero values (length `num_nz`).
-    pub(super) values: Vec<f64>,
     /// Retained column lower bounds (length `num_cols`).
     pub(super) col_lower: Vec<f64>,
     /// Retained column upper bounds (length `num_cols`).
@@ -63,8 +57,6 @@ pub struct ClpSolver {
     pub(super) row_lower: Vec<f64>,
     /// Retained row upper bounds (length `num_rows`).
     pub(super) row_upper: Vec<f64>,
-    /// Retained non-zero count, kept in sync with `values.len()`.
-    pub(super) num_nz: usize,
     /// Current number of LP columns (decision variables).
     pub(super) num_cols: usize,
     /// Current number of LP rows (constraints).
@@ -123,14 +115,10 @@ impl ClpSolver {
             row_activity: Vec::new(),
             row_magnitude: Vec::new(),
             accepted_primal_tolerance: 0.0,
-            col_starts: Vec::new(),
-            row_indices: Vec::new(),
-            values: Vec::new(),
             col_lower: Vec::new(),
             col_upper: Vec::new(),
             row_lower: Vec::new(),
             row_upper: Vec::new(),
-            num_nz: 0,
             num_cols: 0,
             num_rows: 0,
             has_model: false,
@@ -420,19 +408,6 @@ fn row_excess(
             primal_tolerance,
         )
     }
-}
-
-/// Converts a `usize` to `i32`, debug-asserting on overflow.
-///
-/// Each value is bounded by the merged nnz / row count, which `add_rows` asserts
-/// fits in `i32`; this guards the per-entry writes in the CSR→CSC merge.
-#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-pub(super) fn i32_from_usize(v: usize) -> i32 {
-    debug_assert!(
-        i32::try_from(v).is_ok(),
-        "value {v} overflows i32: LP exceeds CLP API limit"
-    );
-    v as i32
 }
 
 impl Drop for ClpSolver {
