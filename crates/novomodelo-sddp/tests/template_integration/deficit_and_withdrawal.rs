@@ -1,6 +1,7 @@
 //! `deficit_and_withdrawal` section tests.
 
 use super::*;
+use novomodelo_sddp::indexer::HydroSys;
 
 #[test]
 #[allow(clippy::too_many_lines)]
@@ -482,9 +483,7 @@ fn withdrawal_slack_matrix_entry_coefficient_is_minus_zeta() {
     .expect("build ok");
 
     let t = &result.templates[0];
-    let n_h = system.hydros().len();
-    // Withdrawal slack neg column: followed by N pos cols and 4*N operational violation slack columns.
-    let col_neg = t.num_cols - 1 - 4 * n_h - n_h;
+    let col_neg = result.geometry_per_stage[0].withdrawal_slack_neg_col(HydroSys::new(0));
     let row_water = 0_usize; // water balance for hydro 0
 
     let total_hours = 744.0_f64;
@@ -526,9 +525,7 @@ fn withdrawal_slack_objective_equals_cost_times_hours() {
     .expect("build ok");
 
     let t = &result.templates[0];
-    let n_h = system.hydros().len();
-    // Withdrawal slack neg: followed by N pos cols and 4*N operational violation slack columns.
-    let col_w = t.num_cols - 1 - 4 * n_h - n_h;
+    let col_w = result.geometry_per_stage[0].withdrawal_slack_neg_col(HydroSys::new(0));
     let expected_obj = violation_cost * total_hours / COST_SCALE_FACTOR;
     assert!(
         (t.objective[col_w] - expected_obj).abs() < 1e-12,
@@ -552,9 +549,7 @@ fn withdrawal_slack_objective_zero_when_cost_is_zero() {
     .expect("build ok");
 
     let t = &result.templates[0];
-    let n_h = system.hydros().len();
-    // Withdrawal slack neg: followed by N pos + 4*N operational violation slack columns.
-    let col_w = t.num_cols - 1 - 5 * n_h;
+    let col_w = result.geometry_per_stage[0].withdrawal_slack_neg_col(HydroSys::new(0));
     assert!(
         t.objective[col_w].abs() < 1e-15,
         "withdrawal slack neg objective must be 0 when cost=0, got {}",
@@ -577,11 +572,9 @@ fn withdrawal_slack_bounds_are_sign_aware_positive_target() {
     .expect("build ok");
 
     let t = &result.templates[0];
-    let n_h = system.hydros().len();
-    // Trailing slack layout per hydro: neg, pos, then 4 operational violation
-    // slacks (5 families after neg). col_neg is the first of the 6 trailing cols.
-    let col_neg = t.num_cols - 1 - 5 * n_h;
-    let col_pos = col_neg + n_h;
+    let g = &result.geometry_per_stage[0];
+    let col_neg = g.withdrawal_slack_neg_col(HydroSys::new(0));
+    let col_pos = g.withdrawal_slack_pos_col(HydroSys::new(0));
     assert!(
         (t.col_lower[col_neg] - 0.0).abs() < 1e-15,
         "neg slack lower bound must be 0.0, got {}",
@@ -850,14 +843,9 @@ fn two_hydro_withdrawal_slack_entries_per_hydro() {
     .expect("build ok");
 
     let t = &result.templates[0];
-    let n_h = system.hydros().len();
-
-    // N=2, L=0: state+aux = N*2+1 = 5.
-    // col_withdrawal_neg_start = 13, col_withdrawal_pos_start = 15,
-    // operational violation slacks = 4*2 = 8, num_cols = 25.
-    // Withdrawal neg columns: num_cols - 6*N = 25 - 12 = 13.
-    let col_w0 = t.num_cols - 6 * n_h;
-    let col_w1 = t.num_cols - 6 * n_h + 1;
+    let g = &result.geometry_per_stage[0];
+    let col_w0 = g.withdrawal_slack_neg_col(HydroSys::new(0));
+    let col_w1 = g.withdrawal_slack_neg_col(HydroSys::new(1));
 
     let row_w0 = 0_usize; // water balance for hydro 0
     let row_w1 = 1_usize; // water balance for hydro 1
@@ -1170,19 +1158,17 @@ fn three_hydro_num_cols_includes_three_withdrawal_slacks() {
         t.num_cols
     );
 
-    // Withdrawal slacks: 2*N withdrawal + 4*N operational = 6*N trailing columns;
-    // withdrawal_neg starts at num_cols - 6*N.
-    let n_h = system.hydros().len();
-    let neg_start = t.num_cols - 6 * n_h;
-    let pos_start = neg_start + n_h;
-    for h in 0..n_h {
+    let g = &result.geometry_per_stage[0];
+    for h in 0..system.hydros().len() {
+        let col_neg = g.withdrawal_slack_neg_col(HydroSys::new(h));
+        let col_pos = g.withdrawal_slack_pos_col(HydroSys::new(h));
         assert!(
-            (t.col_upper[neg_start + h] - 5.0).abs() < 1e-15,
+            (t.col_upper[col_neg] - 5.0).abs() < 1e-15,
             "withdrawal slack neg column for hydro {h} must be capped at |T| = 5.0, got {}",
-            t.col_upper[neg_start + h]
+            t.col_upper[col_neg]
         );
         assert_eq!(
-            t.col_upper[pos_start + h],
+            t.col_upper[col_pos],
             f64::INFINITY,
             "withdrawal slack pos column for hydro {h} should be unbounded above (T > 0)"
         );
