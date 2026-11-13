@@ -39,6 +39,7 @@ mod pumping;
 mod scenarios;
 mod season;
 mod sobol;
+mod stage_volume_bounds;
 mod stages;
 mod thermal;
 mod travel_time;
@@ -78,6 +79,7 @@ pub(crate) fn validate_semantic_hydro_thermal(data: &ParsedData, ctx: &mut Valid
     block_bounds::check_group_bound_raises_declared_capacity(data, ctx);
     pumping::check_pumping_semantics(data, ctx);
     pumping::check_pumping_operating_window(data, ctx);
+    stage_volume_bounds::check_stage_volume_bounds(data, ctx);
     travel_time::validate_travel_time(data, ctx);
     inflow_seeding::validate_inflow_seeding(data, ctx);
 }

@@ -58,6 +58,10 @@ pub struct HydroPenaltyOverrides {
     pub outflow_violation_below_cost: Option<f64>,
     /// Outflow violation above cost ($/(m³/s·h)).
     pub outflow_violation_above_cost: Option<f64>,
+    /// Outflow-volume below-minimum violation penalty ($/hm³).
+    pub outflow_volume_violation_below_cost: Option<f64>,
+    /// Outflow-volume above-maximum violation penalty ($/hm³).
+    pub outflow_volume_violation_above_cost: Option<f64>,
     /// Generation violation below cost ($/`MWh`).
     pub generation_violation_below_cost: Option<f64>,
     /// Evaporation violation cost ($/(m³/s·h)).
@@ -207,8 +211,11 @@ pub fn resolve_line_exchange_cost(
 /// Each field uses the entity override if `Some`, else the `global.hydro` default.
 /// Each directional `*_pos_cost` / `*_neg_cost` field takes the entity's
 /// directional cost, else the entity's symmetric cost, else the global directional
-/// cost, which itself defaults to the global symmetric cost. A `None` or all-`None`
-/// `entity_overrides` yields `global.hydro` exactly.
+/// cost, which itself defaults to the global symmetric cost. Each
+/// `outflow_volume_violation_*_cost` takes the entity's volume cost, else the entity's
+/// own `outflow_violation_*_cost` converted by [`volume_cost_from_flow_cost`], else the
+/// global volume cost. A `None` or all-`None` `entity_overrides` yields `global.hydro`
+/// exactly.
 ///
 /// # Examples
 ///
@@ -281,8 +288,18 @@ pub fn resolve_hydro_penalties(
                 outflow_violation_above_cost: ov
                     .outflow_violation_above_cost
                     .unwrap_or(g.outflow_violation_above_cost),
-                outflow_volume_violation_below_cost: g.outflow_volume_violation_below_cost,
-                outflow_volume_violation_above_cost: g.outflow_volume_violation_above_cost,
+                outflow_volume_violation_below_cost: ov
+                    .outflow_volume_violation_below_cost
+                    .or(ov
+                        .outflow_violation_below_cost
+                        .map(volume_cost_from_flow_cost))
+                    .unwrap_or(g.outflow_volume_violation_below_cost),
+                outflow_volume_violation_above_cost: ov
+                    .outflow_volume_violation_above_cost
+                    .or(ov
+                        .outflow_violation_above_cost
+                        .map(volume_cost_from_flow_cost))
+                    .unwrap_or(g.outflow_volume_violation_above_cost),
                 generation_violation_below_cost: ov
                     .generation_violation_below_cost
                     .unwrap_or(g.generation_violation_below_cost),
@@ -514,6 +531,8 @@ mod tests {
             turbined_violation_below_cost: Some(60.0),
             outflow_violation_below_cost: Some(70.0),
             outflow_violation_above_cost: Some(80.0),
+            outflow_volume_violation_below_cost: None,
+            outflow_volume_violation_above_cost: None,
             generation_violation_below_cost: Some(90.0),
             evaporation_violation_cost: Some(100.0),
             water_withdrawal_violation_cost: Some(110.0),
@@ -677,6 +696,62 @@ mod tests {
         assert!((result.water_withdrawal_violation_neg_cost - 999.0).abs() < f64::EPSILON);
         assert!((result.evaporation_violation_pos_cost - 555.0).abs() < f64::EPSILON);
         assert!((result.evaporation_violation_neg_cost - 6666.0).abs() < f64::EPSILON);
+    }
+
+    fn make_global_with_volume_prices_derived_from_flow_36() -> GlobalPenaltyDefaults {
+        let mut global = make_global();
+        global.hydro.outflow_violation_below_cost = 36.0;
+        global.hydro.outflow_violation_above_cost = 36.0;
+        global.hydro.outflow_volume_violation_below_cost = volume_cost_from_flow_cost(36.0);
+        global.hydro.outflow_volume_violation_above_cost = volume_cost_from_flow_cost(36.0);
+        global
+    }
+
+    #[test]
+    fn entity_flow_override_derives_its_own_volume_price() {
+        let global = make_global_with_volume_prices_derived_from_flow_36();
+        let overrides = HydroPenaltyOverrides {
+            outflow_violation_below_cost: Some(72.0),
+            ..Default::default()
+        };
+        let result = resolve_hydro_penalties(&Some(overrides), &global);
+        assert_eq!(
+            result.outflow_volume_violation_below_cost.to_bits(),
+            volume_cost_from_flow_cost(72.0).to_bits()
+        );
+        assert_eq!(
+            result.outflow_volume_violation_above_cost.to_bits(),
+            global.hydro.outflow_volume_violation_above_cost.to_bits()
+        );
+    }
+
+    #[test]
+    fn entity_volume_override_wins_over_its_flow_override() {
+        let global = make_global_with_volume_prices_derived_from_flow_36();
+        let overrides = HydroPenaltyOverrides {
+            outflow_violation_below_cost: Some(72.0),
+            outflow_volume_violation_below_cost: Some(5.0),
+            ..Default::default()
+        };
+        let result = resolve_hydro_penalties(&Some(overrides), &global);
+        assert_eq!(
+            result.outflow_volume_violation_below_cost.to_bits(),
+            5.0_f64.to_bits()
+        );
+    }
+
+    #[test]
+    fn entity_without_outflow_overrides_inherits_the_global_volume_price() {
+        let global = make_global_with_volume_prices_derived_from_flow_36();
+        let result = resolve_hydro_penalties(&Some(HydroPenaltyOverrides::default()), &global);
+        assert_eq!(
+            result.outflow_volume_violation_below_cost.to_bits(),
+            global.hydro.outflow_volume_violation_below_cost.to_bits()
+        );
+        assert_eq!(
+            result.outflow_volume_violation_above_cost.to_bits(),
+            global.hydro.outflow_volume_violation_above_cost.to_bits()
+        );
     }
 
     /// derived: 36 $/(m³/s·h) ÷ 0.0036 hm³/(m³/s·h) = 10000 $/hm³

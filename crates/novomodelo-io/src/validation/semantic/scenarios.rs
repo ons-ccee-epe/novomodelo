@@ -1356,6 +1356,36 @@ mod tests {
         }
     }
 
+    /// The $/hm³ outflow-volume costs are not among the flow-violation costs.
+    #[test]
+    fn test_5b_penalty_ordering_never_compares_outflow_volume_costs() {
+        let mut hydro = make_hydro_ordered_penalties(7);
+        hydro.penalties.outflow_volume_violation_below_cost = 1e-6;
+        hydro.penalties.outflow_volume_violation_above_cost = 1e-6;
+        let data = make_data_5b(
+            vec![hydro],
+            make_stages_5b(vec![0]),
+            vec![make_bus_with_deficit(1, 60.0)],
+            vec![],
+            vec![],
+            None,
+        );
+        let mut ctx = ValidationContext::new();
+        validate_semantic_stages_penalties_scenarios(&data, &mut ctx);
+        let all = ctx.warnings();
+        let rule9: Vec<_> = all
+            .iter()
+            .filter(|w| {
+                w.message
+                    .starts_with("Penalty ordering violation: min(flow_violation_costs)")
+            })
+            .collect();
+        assert!(
+            rule9.is_empty(),
+            "a $/hm3 cost must not be compared with a resource cost, got: {rule9:?}"
+        );
+    }
+
     /// A non-positive spillage or diversion cost is still flagged.
     #[test]
     fn test_5b_penalty_ordering_warns_on_non_positive_resource_cost() {

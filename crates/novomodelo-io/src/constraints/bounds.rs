@@ -33,6 +33,10 @@
 //! | `max_generation_mw`   | DOUBLE | No       | Max generation (MW)                |
 //! | `min_diversion_m3s`   | DOUBLE | No       | Min diversion flow (m3/s)          |
 //! | `max_diversion_m3s`   | DOUBLE | No       | Max diversion flow (m3/s)          |
+//! | `min_outflow_hm3`     | DOUBLE | No       | Min stage outflow volume (hm³)     |
+//! | `max_outflow_hm3`     | DOUBLE | No       | Max stage outflow volume (hm³)     |
+//! | `min_diversion_hm3`   | DOUBLE | No       | Min stage diversion volume (hm³)   |
+//! | `max_diversion_hm3`   | DOUBLE | No       | Max stage diversion volume (hm³)   |
 //! | `min_spillage_m3s`    | DOUBLE | No       | Min spillage flow (m3/s)           |
 //! | `max_spillage_m3s`    | DOUBLE | No       | Max spillage flow (m3/s)           |
 //! | `filling_min_rate_m3s`| DOUBLE | No       | Filling min-rate override (m3/s)   |
@@ -57,6 +61,8 @@
 //! | `stage_id`           | INT32  | Yes      | Stage ID                           |
 //! | `min_m3s`            | DOUBLE | No       | Minimum pumping flow (m3/s)        |
 //! | `max_m3s`            | DOUBLE | No       | Maximum pumping flow (m3/s)        |
+//! | `min_hm3`            | DOUBLE | No       | Min stage pumped volume (hm³)      |
+//! | `max_hm3`            | DOUBLE | No       | Max stage pumped volume (hm³)      |
 //! | `block_id`           | INT32 (null) | No | 0-based block index within the stage (matches `Block::index`) selecting one block's `min_m3s`/`max_m3s` override; a value outside `[0, n_blocks)` for the referenced stage is rejected at validation |
 //!
 //! ### `contract_bounds`
@@ -95,6 +101,10 @@
 //! | hydro    | `max_spillage_m3s`     | yes            | —                                                                                                |
 //! | hydro    | `min_storage_hm3`      | no             | storage bound; stage-level only                                                                 |
 //! | hydro    | `max_storage_hm3`      | no             | storage bound; stage-level only                                                                 |
+//! | hydro    | `min_outflow_hm3`      | no             | stage-total volume bound; stage-level only                                                      |
+//! | hydro    | `max_outflow_hm3`      | no             | stage-total volume bound; stage-level only                                                      |
+//! | hydro    | `min_diversion_hm3`    | no             | stage-total volume bound; stage-level only                                                      |
+//! | hydro    | `max_diversion_hm3`    | no             | stage-total volume bound; stage-level only                                                      |
 //! | hydro    | `filling_min_rate_m3s` | no             | filling schedule; stage-level only                                                              |
 //! | hydro    | `water_withdrawal_m3s` | no             | stage-level only                                                                                 |
 //! | thermal  | `min_generation_mw`    | yes            | —                                                                                                |
@@ -107,6 +117,8 @@
 //! | contract | `price_per_mwh`        | yes            | deliberately asymmetric with `thermal_bounds.cost_per_mwh` above, which is NOT block-eligible    |
 //! | pumping  | `min_m3s`              | yes            | —                                                                                                |
 //! | pumping  | `max_m3s`              | yes            | —                                                                                                |
+//! | pumping  | `min_hm3`              | no             | stage-total volume bound; stage-level only                                                      |
+//! | pumping  | `max_hm3`              | no             | stage-total volume bound; stage-level only                                                      |
 //!
 //! ## Output ordering
 //!
@@ -122,10 +134,13 @@
 //! - Any provided (non-null) optional Float64 value must be finite — NaN and ±Inf are rejected.
 //! - Some parsers additionally enforce domain constraints on their own values:
 //!   `pumping_bounds` rejects negative flows and `min_m3s > max_m3s` (matching the
-//!   `pumping_stations.json` entity-reader checks); `thermal_bounds` rejects a
+//!   `pumping_stations.json` entity-reader checks), negative `min_hm3` and
+//!   `max_hm3`, and a same-row `min_hm3 > max_hm3`; `thermal_bounds` rejects a
 //!   negative `cost_per_mwh`; `hydro_bounds` rejects negative `min_diversion_m3s`,
-//!   `min_spillage_m3s`, and `max_spillage_m3s`, and a same-row
-//!   `min_spillage_m3s > max_spillage_m3s`.
+//!   `min_spillage_m3s`, `max_spillage_m3s`, `min_outflow_hm3`, `max_outflow_hm3`,
+//!   `min_diversion_hm3`, and `max_diversion_hm3`, and a same-row
+//!   `min_spillage_m3s > max_spillage_m3s`, `min_outflow_hm3 > max_outflow_hm3`,
+//!   or `min_diversion_hm3 > max_diversion_hm3`.
 //!
 //! Deferred validations (not performed here):
 //!
@@ -227,6 +242,10 @@ pub struct ThermalBoundsRow {
 ///     max_generation_mw: None,
 ///     min_diversion_m3s: None,
 ///     max_diversion_m3s: None,
+///     min_outflow_hm3: None,
+///     max_outflow_hm3: None,
+///     min_diversion_hm3: None,
+///     max_diversion_hm3: None,
 ///     min_spillage_m3s: None,
 ///     max_spillage_m3s: None,
 ///     filling_min_rate_m3s: None,
@@ -263,6 +282,14 @@ pub struct HydroBoundsRow {
     pub min_diversion_m3s: Option<f64>,
     /// Maximum diversion override (m³/s).
     pub max_diversion_m3s: Option<f64>,
+    /// Override for the minimum stage total of outflow (hm³). Stage-level only.
+    pub min_outflow_hm3: Option<f64>,
+    /// Override for the maximum stage total of outflow (hm³). Stage-level only.
+    pub max_outflow_hm3: Option<f64>,
+    /// Override for the minimum stage total of diversion (hm³). Stage-level only.
+    pub min_diversion_hm3: Option<f64>,
+    /// Override for the maximum stage total of diversion (hm³). Stage-level only.
+    pub max_diversion_hm3: Option<f64>,
     /// Minimum spillage override (m³/s).
     pub min_spillage_m3s: Option<f64>,
     /// Maximum spillage override (m³/s).
@@ -297,6 +324,10 @@ impl Default for HydroBoundsRow {
             max_generation_mw: None,
             min_diversion_m3s: None,
             max_diversion_m3s: None,
+            min_outflow_hm3: None,
+            max_outflow_hm3: None,
+            min_diversion_hm3: None,
+            max_diversion_hm3: None,
             min_spillage_m3s: None,
             max_spillage_m3s: None,
             filling_min_rate_m3s: None,
@@ -358,6 +389,8 @@ pub struct LineBoundsRow {
 ///     stage_id: 2,
 ///     min_m3s: Some(0.0),
 ///     max_m3s: Some(100.0),
+///     min_hm3: None,
+///     max_hm3: None,
 ///     block_id: None,
 /// };
 /// assert_eq!(row.station_id, EntityId::from(3));
@@ -373,6 +406,10 @@ pub struct PumpingBoundsRow {
     pub min_m3s: Option<f64>,
     /// Override for maximum pumping flow (m³/s). `None` means use base value.
     pub max_m3s: Option<f64>,
+    /// Override for the minimum stage total of pumped volume (hm³). Stage-level only.
+    pub min_hm3: Option<f64>,
+    /// Override for the maximum stage total of pumped volume (hm³). Stage-level only.
+    pub max_hm3: Option<f64>,
     /// `None` applies at the stage level; `Some(b)` applies to block `b` only and is
     /// valid on both `min_m3s` and `max_m3s`.
     pub block_id: Option<i32>,
@@ -604,6 +641,10 @@ pub fn parse_hydro_bounds(path: &Path) -> Result<Vec<HydroBoundsRow>, LoadError>
         let max_gen_col = extract_optional_float64(&batch, "max_generation_mw", path)?;
         let min_diversion_col = extract_optional_float64(&batch, "min_diversion_m3s", path)?;
         let max_diversion_col = extract_optional_float64(&batch, "max_diversion_m3s", path)?;
+        let min_outflow_hm3_col = extract_optional_float64(&batch, "min_outflow_hm3", path)?;
+        let max_outflow_hm3_col = extract_optional_float64(&batch, "max_outflow_hm3", path)?;
+        let min_diversion_hm3_col = extract_optional_float64(&batch, "min_diversion_hm3", path)?;
+        let max_diversion_hm3_col = extract_optional_float64(&batch, "max_diversion_hm3", path)?;
         let min_spillage_col = extract_optional_float64(&batch, "min_spillage_m3s", path)?;
         let max_spillage_col = extract_optional_float64(&batch, "max_spillage_m3s", path)?;
         let filling_min_rate_col = extract_optional_float64(&batch, "filling_min_rate_m3s", path)?;
@@ -630,6 +671,10 @@ pub fn parse_hydro_bounds(path: &Path) -> Result<Vec<HydroBoundsRow>, LoadError>
             let max_generation_mw = optional_f64(max_gen_col, i);
             let min_diversion_m3s = optional_f64(min_diversion_col, i);
             let max_diversion_m3s = optional_f64(max_diversion_col, i);
+            let min_outflow_hm3 = optional_f64(min_outflow_hm3_col, i);
+            let max_outflow_hm3 = optional_f64(max_outflow_hm3_col, i);
+            let min_diversion_hm3 = optional_f64(min_diversion_hm3_col, i);
+            let max_diversion_hm3 = optional_f64(max_diversion_hm3_col, i);
             let min_spillage_m3s = optional_f64(min_spillage_col, i);
             let max_spillage_m3s = optional_f64(max_spillage_col, i);
             let filling_min_rate_m3s = optional_f64(filling_min_rate_col, i);
@@ -647,6 +692,10 @@ pub fn parse_hydro_bounds(path: &Path) -> Result<Vec<HydroBoundsRow>, LoadError>
                 (max_generation_mw, "max_generation_mw"),
                 (min_diversion_m3s, "min_diversion_m3s"),
                 (max_diversion_m3s, "max_diversion_m3s"),
+                (min_outflow_hm3, "min_outflow_hm3"),
+                (max_outflow_hm3, "max_outflow_hm3"),
+                (min_diversion_hm3, "min_diversion_hm3"),
+                (max_diversion_hm3, "max_diversion_hm3"),
                 (min_spillage_m3s, "min_spillage_m3s"),
                 (max_spillage_m3s, "max_spillage_m3s"),
                 (filling_min_rate_m3s, "filling_min_rate_m3s"),
@@ -703,6 +752,35 @@ pub fn parse_hydro_bounds(path: &Path) -> Result<Vec<HydroBoundsRow>, LoadError>
                 });
             }
 
+            for (value, column) in [
+                (min_outflow_hm3, "min_outflow_hm3"),
+                (max_outflow_hm3, "max_outflow_hm3"),
+                (min_diversion_hm3, "min_diversion_hm3"),
+                (max_diversion_hm3, "max_diversion_hm3"),
+            ] {
+                validate_optional_nonneg(value, "hydro_bounds", row_idx, column, path)?;
+            }
+            if let (Some(min), Some(max)) = (min_outflow_hm3, max_outflow_hm3)
+                && min > max
+            {
+                return Err(LoadError::SchemaError {
+                    path: path.to_path_buf(),
+                    field: format!("hydro_bounds[{row_idx}].max_outflow_hm3"),
+                    message: format!("max_outflow_hm3 ({max}) must be >= min_outflow_hm3 ({min})"),
+                });
+            }
+            if let (Some(min), Some(max)) = (min_diversion_hm3, max_diversion_hm3)
+                && min > max
+            {
+                return Err(LoadError::SchemaError {
+                    path: path.to_path_buf(),
+                    field: format!("hydro_bounds[{row_idx}].max_diversion_hm3"),
+                    message: format!(
+                        "max_diversion_hm3 ({max}) must be >= min_diversion_hm3 ({min})"
+                    ),
+                });
+            }
+
             rows.push(HydroBoundsRow {
                 hydro_id,
                 stage_id,
@@ -716,6 +794,10 @@ pub fn parse_hydro_bounds(path: &Path) -> Result<Vec<HydroBoundsRow>, LoadError>
                 max_generation_mw,
                 min_diversion_m3s,
                 max_diversion_m3s,
+                min_outflow_hm3,
+                max_outflow_hm3,
+                min_diversion_hm3,
+                max_diversion_hm3,
                 min_spillage_m3s,
                 max_spillage_m3s,
                 filling_min_rate_m3s,
@@ -834,6 +916,8 @@ pub fn parse_pumping_bounds(path: &Path) -> Result<Vec<PumpingBoundsRow>, LoadEr
 
         let min_col = extract_optional_float64(&batch, "min_m3s", path)?;
         let max_col = extract_optional_float64(&batch, "max_m3s", path)?;
+        let min_hm3_col = extract_optional_float64(&batch, "min_hm3", path)?;
+        let max_hm3_col = extract_optional_float64(&batch, "max_hm3", path)?;
         let block_id_col = extract_optional_int32(&batch, "block_id", path)?;
 
         let n = batch.num_rows();
@@ -848,10 +932,14 @@ pub fn parse_pumping_bounds(path: &Path) -> Result<Vec<PumpingBoundsRow>, LoadEr
 
             let min_m3s = optional_f64(min_col, i);
             let max_m3s = optional_f64(max_col, i);
+            let min_hm3 = optional_f64(min_hm3_col, i);
+            let max_hm3 = optional_f64(max_hm3_col, i);
             let block_id = optional_i32(block_id_col, i);
 
             validate_optional_finite(min_m3s, "pumping_bounds", row_idx, "min_m3s", path)?;
             validate_optional_finite(max_m3s, "pumping_bounds", row_idx, "max_m3s", path)?;
+            validate_optional_finite(min_hm3, "pumping_bounds", row_idx, "min_hm3", path)?;
+            validate_optional_finite(max_hm3, "pumping_bounds", row_idx, "max_hm3", path)?;
 
             // A pumped-flow override is non-negative and `min <= max`; a negative or
             // inverted row otherwise yields an infeasible per-stage bound (the
@@ -869,11 +957,25 @@ pub fn parse_pumping_bounds(path: &Path) -> Result<Vec<PumpingBoundsRow>, LoadEr
                 });
             }
 
+            validate_optional_nonneg(min_hm3, "pumping_bounds", row_idx, "min_hm3", path)?;
+            validate_optional_nonneg(max_hm3, "pumping_bounds", row_idx, "max_hm3", path)?;
+            if let (Some(min), Some(max)) = (min_hm3, max_hm3)
+                && min > max
+            {
+                return Err(LoadError::SchemaError {
+                    path: path.to_path_buf(),
+                    field: format!("pumping_bounds[{row_idx}].max_hm3"),
+                    message: format!("max_hm3 ({max}) must be >= min_hm3 ({min})"),
+                });
+            }
+
             rows.push(PumpingBoundsRow {
                 station_id,
                 stage_id,
                 min_m3s,
                 max_m3s,
+                min_hm3,
+                max_hm3,
                 block_id,
             });
         }
@@ -1654,6 +1756,81 @@ mod tests {
         }
     }
 
+    fn single_row_hydro_bounds(columns: &[(&str, f64)]) -> tempfile::NamedTempFile {
+        let mut fields = vec![
+            Field::new("hydro_id", DataType::Int32, false),
+            Field::new("stage_id", DataType::Int32, false),
+        ];
+        let mut arrays: Vec<Arc<dyn Array>> = vec![
+            Arc::new(Int32Array::from(vec![1_i32])),
+            Arc::new(Int32Array::from(vec![0_i32])),
+        ];
+        for &(name, value) in columns {
+            fields.push(Field::new(name, DataType::Float64, true));
+            arrays.push(Arc::new(Float64Array::from(vec![Some(value)])));
+        }
+        let batch = RecordBatch::try_new(Arc::new(Schema::new(fields)), arrays).unwrap();
+        write_parquet(&batch)
+    }
+
+    fn hydro_bounds_error_field(columns: &[(&str, f64)]) -> String {
+        let tmp = single_row_hydro_bounds(columns);
+        match parse_hydro_bounds(tmp.path()).unwrap_err() {
+            LoadError::SchemaError { field, .. } => field,
+            other => panic!("expected SchemaError, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hydro_stage_volume_columns_are_read() {
+        let tmp = single_row_hydro_bounds(&[
+            ("min_outflow_hm3", 1.5),
+            ("max_outflow_hm3", 2.5),
+            ("min_diversion_hm3", 3.5),
+            ("max_diversion_hm3", 4.5),
+        ]);
+        let rows = parse_hydro_bounds(tmp.path()).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!((rows[0].min_outflow_hm3.unwrap() - 1.5).abs() < f64::EPSILON);
+        assert!((rows[0].max_outflow_hm3.unwrap() - 2.5).abs() < f64::EPSILON);
+        assert!((rows[0].min_diversion_hm3.unwrap() - 3.5).abs() < f64::EPSILON);
+        assert!((rows[0].max_diversion_hm3.unwrap() - 4.5).abs() < f64::EPSILON);
+
+        let tmp = single_row_hydro_bounds(&[("min_outflow_hm3", 1.5)]);
+        let rows = parse_hydro_bounds(tmp.path()).unwrap();
+        assert!((rows[0].min_outflow_hm3.unwrap() - 1.5).abs() < f64::EPSILON);
+        assert!(rows[0].max_outflow_hm3.is_none());
+        assert!(rows[0].min_diversion_hm3.is_none());
+        assert!(rows[0].max_diversion_hm3.is_none());
+    }
+
+    #[test]
+    fn negative_stage_volume_value_is_rejected() {
+        let field = hydro_bounds_error_field(&[("min_outflow_hm3", -1.0)]);
+        assert!(field.ends_with(".min_outflow_hm3"), "got: {field}");
+    }
+
+    #[test]
+    fn inverted_same_row_diversion_volume_is_rejected() {
+        let field =
+            hydro_bounds_error_field(&[("min_diversion_hm3", 10.0), ("max_diversion_hm3", 5.0)]);
+        assert!(field.ends_with(".max_diversion_hm3"), "got: {field}");
+    }
+
+    #[test]
+    fn inverted_same_row_outflow_volume_is_rejected() {
+        let field = hydro_bounds_error_field(&[("min_outflow_hm3", 9.0), ("max_outflow_hm3", 3.0)]);
+        assert!(field.ends_with(".max_outflow_hm3"), "got: {field}");
+    }
+
+    #[test]
+    fn equal_same_row_outflow_volume_is_accepted() {
+        let tmp = single_row_hydro_bounds(&[("min_outflow_hm3", 7.0), ("max_outflow_hm3", 7.0)]);
+        let rows = parse_hydro_bounds(tmp.path()).unwrap();
+        assert!((rows[0].min_outflow_hm3.unwrap() - 7.0).abs() < f64::EPSILON);
+        assert!((rows[0].max_outflow_hm3.unwrap() - 7.0).abs() < f64::EPSILON);
+    }
+
     /// AC: empty file -> Ok(Vec::new()).
     #[test]
     fn test_hydro_empty_parquet() {
@@ -2112,6 +2289,57 @@ mod tests {
             }
             other => panic!("expected SchemaError for inverted bounds, got: {other:?}"),
         }
+    }
+
+    fn single_row_pumping_bounds(columns: &[(&str, f64)]) -> tempfile::NamedTempFile {
+        let mut fields = vec![
+            Field::new("pumping_station_id", DataType::Int32, false),
+            Field::new("stage_id", DataType::Int32, false),
+        ];
+        let mut arrays: Vec<Arc<dyn Array>> = vec![
+            Arc::new(Int32Array::from(vec![1_i32])),
+            Arc::new(Int32Array::from(vec![0_i32])),
+        ];
+        for &(name, value) in columns {
+            fields.push(Field::new(name, DataType::Float64, true));
+            arrays.push(Arc::new(Float64Array::from(vec![Some(value)])));
+        }
+        let batch = RecordBatch::try_new(Arc::new(Schema::new(fields)), arrays).unwrap();
+        write_parquet(&batch)
+    }
+
+    fn pumping_bounds_error_field(columns: &[(&str, f64)]) -> String {
+        let tmp = single_row_pumping_bounds(columns);
+        match parse_pumping_bounds(tmp.path()).unwrap_err() {
+            LoadError::SchemaError { field, .. } => field,
+            other => panic!("expected SchemaError, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pumping_stage_volume_columns_are_read() {
+        let tmp = single_row_pumping_bounds(&[("min_hm3", 1.5), ("max_hm3", 2.5)]);
+        let rows = parse_pumping_bounds(tmp.path()).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!((rows[0].min_hm3.unwrap() - 1.5).abs() < f64::EPSILON);
+        assert!((rows[0].max_hm3.unwrap() - 2.5).abs() < f64::EPSILON);
+
+        let tmp = single_row_pumping_bounds(&[("min_hm3", 1.5)]);
+        let rows = parse_pumping_bounds(tmp.path()).unwrap();
+        assert!((rows[0].min_hm3.unwrap() - 1.5).abs() < f64::EPSILON);
+        assert!(rows[0].max_hm3.is_none());
+    }
+
+    #[test]
+    fn inverted_same_row_pumping_volume_is_rejected() {
+        let field = pumping_bounds_error_field(&[("min_hm3", 4.0), ("max_hm3", 2.0)]);
+        assert!(field.ends_with(".max_hm3"), "got: {field}");
+    }
+
+    #[test]
+    fn negative_pumping_volume_is_rejected() {
+        let field = pumping_bounds_error_field(&[("max_hm3", -0.5)]);
+        assert!(field.ends_with(".max_hm3"), "got: {field}");
     }
 
     /// AC: empty file -> Ok(Vec::new()).

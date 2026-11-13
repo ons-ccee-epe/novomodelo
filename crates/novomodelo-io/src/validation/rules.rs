@@ -303,7 +303,7 @@ declare_rules! {
         "A hydro_unit_group_bounds row raises max_turbined_m3s or max_generation_mw above the unit group's declared value";
     SEMANTIC_HYDRO_DIVERSION_WITHOUT_CHANNEL = "semantic.5a.46",
         Semantic, InvalidValue, Error,
-        "A hydro_bounds row sets a positive min_diversion_m3s or max_diversion_m3s for a hydro that declares no diversion channel";
+        "A hydro without a diversion channel has a positive diversion bound override";
     POST_STUDY_BOUNDARY_INCONSISTENT = "semantic.5a.47",
         Semantic, BusinessRuleViolation, Error,
         "post_study_stages.json is not date-contiguous from the study horizon end, lacks a bound an anticipated lead reaches, or its commitments mis-tile post-study stages or fall outside the commissioning window";
@@ -337,6 +337,15 @@ declare_rules! {
     SEMANTIC_GENERIC_STAGE_VOLUME_BLOCK_BOUND_ROW = "semantic.5a.58",
         Semantic, BusinessRuleViolation, Error,
         "A generic_constraint_bounds.parquet row gives a block_id to a constraint with a stage-volume term";
+    SEMANTIC_STAGE_VOLUME_BOUNDS_INVERTED = "semantic.5a.59",
+        Semantic, InvalidValue, Error,
+        "A resolved stage-volume minimum exceeds its maximum for the same entity and stage";
+    SEMANTIC_STAGE_VOLUME_DIVERSION_CAPACITY = "semantic.5a.60",
+        Semantic, InvalidValue, Error,
+        "A stage diversion volume bound cannot be met by the diversion flow bounds of the stage's blocks";
+    SEMANTIC_STAGE_VOLUME_PUMPING_CAPACITY = "semantic.5a.61",
+        Semantic, InvalidValue, Error,
+        "A stage pumped-volume bound cannot be met by the pumping flow bounds of the stage's blocks";
     TRAVEL_TIME_INVALID = "travel_time.1",
         Semantic, InvalidValue, Error,
         "A hydro's travel_time_hours is negative or not finite";

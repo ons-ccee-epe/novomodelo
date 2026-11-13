@@ -11,9 +11,10 @@ use novomodelo_core::{
     entities::{EnergyContract, Hydro, Line, PumpingStation, Thermal},
     resolved::{
         ContractBlockBounds, ContractBlockOverride, HydroBlockBounds, HydroBlockOverride,
-        HydroStageBounds, LineBlockBounds, LineBlockOverride, PumpingBlockBounds,
-        PumpingBlockOverride, ResolvedBounds, ThermalBlockBounds, ThermalBlockOverride,
-        ThermalStageBounds,
+        HydroStageBounds, HydroStageVolumeBounds, LineBlockBounds, LineBlockOverride,
+        PumpingBlockBounds, PumpingBlockOverride, PumpingStageVolumeBounds, ResolvedBounds,
+        ResolvedStageVolumeBounds, StageVolumeBoundsCountsSpec, ThermalBlockBounds,
+        ThermalBlockOverride, ThermalStageBounds,
     },
 };
 
@@ -65,7 +66,8 @@ pub struct BoundsOverrides<'a> {
 ///
 /// Both override layers are sparse: an absent row falls through to the next
 /// layer, never zero. The law is uniform across all five entity families —
-/// no per-family exception.
+/// no per-family exception. The hm³ columns sit outside the law: they resolve
+/// into the stage-volume overlay from stage rows only, with no base value.
 ///
 /// This function only **populates** the two storages the law reads from — a
 /// dense per-`(entity, stage)` table (layers 2/3, pre-merged: base values fill
@@ -168,6 +170,10 @@ pub struct BoundsOverrides<'a> {
 ///     max_generation_mw: None,
 ///     min_diversion_m3s: None,
 ///     max_diversion_m3s: None,
+///     min_outflow_hm3: None,
+///     max_outflow_hm3: None,
+///     min_diversion_hm3: None,
+///     max_diversion_hm3: None,
 ///     min_spillage_m3s: None,
 ///     max_spillage_m3s: None,
 ///     filling_min_rate_m3s: None,
@@ -660,6 +666,49 @@ pub fn resolve_bounds(
         table.set_block_overlay(overlay);
     }
 
+    let hydro_volume_rows = hydro_overrides.iter().filter(|row| {
+        row.block_id.is_none()
+            && (row.min_outflow_hm3.is_some()
+                || row.max_outflow_hm3.is_some()
+                || row.min_diversion_hm3.is_some()
+                || row.max_diversion_hm3.is_some())
+    });
+    let pumping_volume_rows = pumping_overrides
+        .iter()
+        .filter(|row| row.block_id.is_none() && (row.min_hm3.is_some() || row.max_hm3.is_some()));
+    if hydro_volume_rows.clone().next().is_some() || pumping_volume_rows.clone().next().is_some() {
+        let mut overlay = ResolvedStageVolumeBounds::new(&StageVolumeBoundsCountsSpec {
+            n_hydros: entities.hydros.len(),
+            n_pumping: entities.pumping_stations.len(),
+            n_stages,
+        });
+        for row in hydro_volume_rows {
+            let Some(&entity_idx) = hydro_index.get(&row.hydro_id) else {
+                continue;
+            };
+            let Some(&stage_idx) = stage_index.get(&row.stage_id) else {
+                continue;
+            };
+            let Some(cell) = overlay.hydro_mut(entity_idx, stage_idx) else {
+                continue;
+            };
+            apply_hydro_stage_volume_row(row, cell);
+        }
+        for row in pumping_volume_rows {
+            let Some(&entity_idx) = pumping_index.get(&row.station_id) else {
+                continue;
+            };
+            let Some(&stage_idx) = stage_index.get(&row.stage_id) else {
+                continue;
+            };
+            let Some(cell) = overlay.pumping_mut(entity_idx, stage_idx) else {
+                continue;
+            };
+            apply_pumping_stage_volume_row(row, cell);
+        }
+        table.set_stage_volume_overlay(overlay);
+    }
+
     table
 }
 
@@ -746,6 +795,30 @@ fn apply_pumping_block_row(row: &PumpingBoundsRow, over: &mut PumpingBlockOverri
     }
     if let Some(v) = row.max_m3s {
         over.max_flow_m3s = Some(v);
+    }
+}
+
+fn apply_hydro_stage_volume_row(row: &HydroBoundsRow, cell: &mut HydroStageVolumeBounds) {
+    if let Some(v) = row.min_outflow_hm3 {
+        cell.min_outflow_hm3 = Some(v);
+    }
+    if let Some(v) = row.max_outflow_hm3 {
+        cell.max_outflow_hm3 = Some(v);
+    }
+    if let Some(v) = row.min_diversion_hm3 {
+        cell.min_diversion_hm3 = Some(v);
+    }
+    if let Some(v) = row.max_diversion_hm3 {
+        cell.max_diversion_hm3 = Some(v);
+    }
+}
+
+fn apply_pumping_stage_volume_row(row: &PumpingBoundsRow, cell: &mut PumpingStageVolumeBounds) {
+    if let Some(v) = row.min_hm3 {
+        cell.min_hm3 = Some(v);
+    }
+    if let Some(v) = row.max_hm3 {
+        cell.max_hm3 = Some(v);
     }
 }
 
@@ -848,7 +921,7 @@ mod tests {
             ContractType, DiversionChannel, EnergyContract, FillingConfig, Hydro,
             HydroGenerationModel, HydroPenalties, Line, PumpingStation, Thermal,
         },
-        resolved::ResolvedBounds,
+        resolved::{HydroStageVolumeBounds, PumpingStageVolumeBounds, ResolvedBounds},
     };
 
     use crate::constraints::{
@@ -1341,6 +1414,8 @@ mod tests {
             stage_id: 0,
             min_m3s: None,
             max_m3s: Some(100.0),
+            min_hm3: None,
+            max_hm3: None,
             block_id: None,
         };
 
@@ -2487,6 +2562,8 @@ mod tests {
             stage_id: 0,
             min_m3s: None,
             max_m3s: Some(20.0),
+            min_hm3: None,
+            max_hm3: None,
             block_id: Some(1),
         };
 
@@ -2580,5 +2657,161 @@ mod tests {
         let at_block = result.contract_bounds_at_block(0, 0, 1);
         assert!((at_block.min_mw - 0.0).abs() < f64::EPSILON);
         assert!((at_block.max_mw - 200.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn stage_volume_overlay_is_absent_without_volume_columns() {
+        let hydros = vec![make_hydro(0, 10.0, 100.0, None, None, None)];
+        let pumpings = vec![make_pumping(0, 0.0, 50.0)];
+        let hydro_row = HydroBoundsRow {
+            min_storage_hm3: Some(20.0),
+            min_outflow_m3s: Some(5.0),
+            ..all_none_hydro_row(0, 0)
+        };
+        let pumping_row = PumpingBoundsRow {
+            station_id: EntityId::from(0),
+            stage_id: 0,
+            min_m3s: None,
+            max_m3s: Some(10.0),
+            min_hm3: None,
+            max_hm3: None,
+            block_id: None,
+        };
+
+        let result = resolve_bounds(
+            &hydros,
+            &[],
+            &[],
+            &pumpings,
+            &[],
+            1,
+            0,
+            &[hydro_row],
+            &[],
+            &[],
+            &[pumping_row],
+            &[],
+            &[1],
+        );
+
+        assert!(result.stage_volume_overlay().is_empty());
+    }
+
+    #[test]
+    fn hydro_stage_volume_row_fills_its_stage_cell() {
+        let hydros = vec![
+            make_hydro(3, 10.0, 100.0, None, None, None),
+            make_hydro(2, 10.0, 100.0, None, None, None),
+        ];
+        let row = HydroBoundsRow {
+            max_outflow_hm3: Some(12.0),
+            ..all_none_hydro_row(2, 1)
+        };
+
+        let result = resolve_bounds(
+            &hydros,
+            &[],
+            &[],
+            &[],
+            &[],
+            2,
+            0,
+            &[row],
+            &[],
+            &[],
+            &[],
+            &[],
+            &[1, 1],
+        );
+
+        let overlay = result.stage_volume_overlay();
+        assert_eq!(
+            overlay.hydro(1, 1),
+            HydroStageVolumeBounds {
+                max_outflow_hm3: Some(12.0),
+                ..HydroStageVolumeBounds::default()
+            }
+        );
+        assert_eq!(overlay.hydro(1, 0), HydroStageVolumeBounds::default());
+        assert_eq!(overlay.hydro(0, 1), HydroStageVolumeBounds::default());
+    }
+
+    #[test]
+    fn pumping_stage_volume_row_fills_its_stage_cell() {
+        let pumpings = vec![make_pumping(3, 0.0, 50.0), make_pumping(2, 0.0, 50.0)];
+        let row = PumpingBoundsRow {
+            station_id: EntityId::from(2),
+            stage_id: 1,
+            min_m3s: None,
+            max_m3s: None,
+            min_hm3: Some(1.5),
+            max_hm3: Some(8.0),
+            block_id: None,
+        };
+
+        let result = resolve_bounds(
+            &[],
+            &[],
+            &[],
+            &pumpings,
+            &[],
+            2,
+            0,
+            &[],
+            &[],
+            &[],
+            &[row],
+            &[],
+            &[1, 1],
+        );
+
+        let overlay = result.stage_volume_overlay();
+        assert_eq!(
+            overlay.pumping(1, 1),
+            PumpingStageVolumeBounds {
+                min_hm3: Some(1.5),
+                max_hm3: Some(8.0),
+            }
+        );
+        assert_eq!(overlay.pumping(1, 0), PumpingStageVolumeBounds::default());
+        assert_eq!(overlay.pumping(0, 1), PumpingStageVolumeBounds::default());
+    }
+
+    #[test]
+    fn block_row_volume_value_is_not_resolved() {
+        let hydros = vec![make_hydro(0, 10.0, 100.0, None, None, None)];
+        let pumpings = vec![make_pumping(0, 0.0, 50.0)];
+        let hydro_row = HydroBoundsRow {
+            min_outflow_hm3: Some(3.0),
+            block_id: Some(0),
+            ..all_none_hydro_row(0, 0)
+        };
+        let pumping_row = PumpingBoundsRow {
+            station_id: EntityId::from(0),
+            stage_id: 0,
+            min_m3s: None,
+            max_m3s: None,
+            min_hm3: Some(3.0),
+            max_hm3: None,
+            block_id: Some(0),
+        };
+
+        let result = resolve_bounds(
+            &hydros,
+            &[],
+            &[],
+            &pumpings,
+            &[],
+            1,
+            0,
+            &[hydro_row],
+            &[],
+            &[],
+            &[pumping_row],
+            &[],
+            &[1],
+        );
+
+        assert!(result.stage_volume_overlay().is_empty());
     }
 }

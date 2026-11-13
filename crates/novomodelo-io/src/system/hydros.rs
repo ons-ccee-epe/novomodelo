@@ -399,6 +399,16 @@ pub(crate) struct RawHydroPenaltyOverrides {
     /// Outflow above-maximum violation penalty ($/(m³/s·h)).
     #[serde(default)]
     outflow_violation_above_cost: Option<f64>,
+    /// Outflow-volume below-minimum violation penalty ($/hm³). Defaults to this
+    /// plant's `outflow_violation_below_cost` converted to $/hm³ when set, else to the
+    /// `hydro` section value.
+    #[serde(default)]
+    outflow_volume_violation_below_cost: Option<f64>,
+    /// Outflow-volume above-maximum violation penalty ($/hm³). Defaults to this
+    /// plant's `outflow_violation_above_cost` converted to $/hm³ when set, else to the
+    /// `hydro` section value.
+    #[serde(default)]
+    outflow_volume_violation_above_cost: Option<f64>,
     /// Generation below-minimum violation penalty ($/`MWh`).
     #[serde(default)]
     generation_violation_below_cost: Option<f64>,
@@ -502,6 +512,37 @@ fn validate_raw_hydros(raw: &RawHydroFile, path: &Path) -> Result<(), LoadError>
             )?;
         }
         validate_unit_groups(hydro.unit_groups.as_deref(), i, path)?;
+        if let Some(penalties) = &hydro.penalties {
+            validate_outflow_volume_penalty_overrides(penalties, i, path)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_outflow_volume_penalty_overrides(
+    penalties: &RawHydroPenaltyOverrides,
+    hydro_index: usize,
+    path: &Path,
+) -> Result<(), LoadError> {
+    for (key, value) in [
+        (
+            "outflow_volume_violation_below_cost",
+            penalties.outflow_volume_violation_below_cost,
+        ),
+        (
+            "outflow_volume_violation_above_cost",
+            penalties.outflow_volume_violation_above_cost,
+        ),
+    ] {
+        if let Some(v) = value
+            && !(v.is_finite() && v > 0.0)
+        {
+            return Err(LoadError::SchemaError {
+                path: path.to_path_buf(),
+                field: format!("hydros[{hydro_index}].penalties.{key}"),
+                message: format!("value must be finite and > 0.0, got {v}"),
+            });
+        }
     }
     Ok(())
 }
@@ -921,6 +962,8 @@ fn convert_penalty_overrides(raw: RawHydroPenaltyOverrides) -> HydroPenaltyOverr
         turbined_violation_below_cost: raw.turbined_violation_below_cost,
         outflow_violation_below_cost: raw.outflow_violation_below_cost,
         outflow_violation_above_cost: raw.outflow_violation_above_cost,
+        outflow_volume_violation_below_cost: raw.outflow_volume_violation_below_cost,
+        outflow_volume_violation_above_cost: raw.outflow_volume_violation_above_cost,
         generation_violation_below_cost: raw.generation_violation_below_cost,
         evaporation_violation_cost: raw.evaporation_violation_cost,
         water_withdrawal_violation_cost: raw.water_withdrawal_violation_cost,
@@ -1372,6 +1415,52 @@ mod tests {
         assert!((p.water_withdrawal_violation_neg_cost - 2_000.0).abs() < f64::EPSILON);
         assert!((p.evaporation_violation_pos_cost - 6_000.0).abs() < f64::EPSILON);
         assert!((p.evaporation_violation_neg_cost - 6_000.0).abs() < f64::EPSILON);
+    }
+
+    fn minimal_hydros_json_with_penalties(penalties: &str) -> String {
+        let hydro = MINIMAL_HYDRO_JSON.replacen(
+            r#""unit_groups""#,
+            &format!(r#""penalties": {penalties}, "unit_groups""#),
+            1,
+        );
+        format!(r#"{{ "hydros": [{hydro}] }}"#)
+    }
+
+    #[test]
+    fn entity_outflow_volume_cost_is_read() {
+        let json =
+            minimal_hydros_json_with_penalties(r#"{ "outflow_volume_violation_above_cost": 9.0 }"#);
+        let f = write_json(&json);
+        let global = make_global();
+        let hydros = parse_hydros(f.path(), &global).unwrap();
+
+        let p = &hydros[0].penalties;
+        assert_eq!(
+            p.outflow_volume_violation_above_cost.to_bits(),
+            9.0_f64.to_bits()
+        );
+        assert_eq!(
+            p.outflow_volume_violation_below_cost.to_bits(),
+            global.hydro.outflow_volume_violation_below_cost.to_bits()
+        );
+    }
+
+    #[test]
+    fn non_positive_entity_outflow_volume_cost_is_rejected() {
+        let json =
+            minimal_hydros_json_with_penalties(r#"{ "outflow_volume_violation_below_cost": 0.0 }"#);
+        let f = write_json(&json);
+        let global = make_global();
+        let err = parse_hydros(f.path(), &global).unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                LoadError::SchemaError { field, message, .. }
+                if field == "hydros[0].penalties.outflow_volume_violation_below_cost"
+                    && message == "value must be finite and > 0.0, got 0"
+            ),
+            "got: {err:?}"
+        );
     }
 
     // ── AC: entity-level penalty all-default (no penalties block) ─────────────

@@ -28,7 +28,7 @@
 //! Populated by `novomodelo-io` after base bounds are overlaid with stage-specific
 //! overrides; never modified after construction.
 
-use super::{ResolvedBlockBounds, ResolvedHydroUnitGroupBounds};
+use super::{ResolvedBlockBounds, ResolvedHydroUnitGroupBounds, ResolvedStageVolumeBounds};
 
 /// Stage-level hydro bounds for a given (hydro, stage) pair — the four
 /// stage-boundary-stock columns; [`HydroBlockBounds`] holds the
@@ -352,6 +352,7 @@ pub struct ResolvedBounds {
     contract: Vec<ContractBlockBounds>,
     block: ResolvedBlockBounds,
     group: ResolvedHydroUnitGroupBounds,
+    stage_volume: ResolvedStageVolumeBounds,
 }
 
 /// Deserialization shadow for [`ResolvedBounds`].
@@ -373,6 +374,8 @@ struct ResolvedBoundsWire {
     block: ResolvedBlockBounds,
     #[serde(default)]
     group: ResolvedHydroUnitGroupBounds,
+    #[serde(default)]
+    stage_volume: ResolvedStageVolumeBounds,
 }
 
 #[cfg(feature = "serde")]
@@ -397,6 +400,7 @@ impl TryFrom<ResolvedBoundsWire> for ResolvedBounds {
             contract: wire.contract,
             block: wire.block,
             group: wire.group,
+            stage_volume: wire.stage_volume,
         })
     }
 }
@@ -465,6 +469,7 @@ impl ResolvedBounds {
             contract: Vec::new(),
             block: ResolvedBlockBounds::empty(),
             group: ResolvedHydroUnitGroupBounds::empty(),
+            stage_volume: ResolvedStageVolumeBounds::empty(),
         }
     }
 
@@ -496,6 +501,7 @@ impl ResolvedBounds {
             contract: vec![defaults.contract_block; counts.n_contracts * counts.n_stages],
             block: ResolvedBlockBounds::empty(),
             group: ResolvedHydroUnitGroupBounds::empty(),
+            stage_volume: ResolvedStageVolumeBounds::empty(),
         }
     }
 
@@ -780,6 +786,27 @@ impl ResolvedBounds {
     #[inline]
     pub fn group_overlay_mut(&mut self) -> &mut ResolvedHydroUnitGroupBounds {
         &mut self.group
+    }
+
+    /// Install the stage-total volume overlay.
+    ///
+    /// The overlay stays [`ResolvedStageVolumeBounds::empty`] until this is
+    /// called; no reader here consults it.
+    pub fn set_stage_volume_overlay(&mut self, stage_volume: ResolvedStageVolumeBounds) {
+        self.stage_volume = stage_volume;
+    }
+
+    /// Return the installed stage-total volume overlay.
+    #[inline]
+    #[must_use]
+    pub fn stage_volume_overlay(&self) -> &ResolvedStageVolumeBounds {
+        &self.stage_volume
+    }
+
+    /// Return a mutable handle to the stage-total volume overlay.
+    #[inline]
+    pub fn stage_volume_overlay_mut(&mut self) -> &mut ResolvedStageVolumeBounds {
+        &mut self.stage_volume
     }
 
     /// Return the resolved hydro block-eligible bounds for
@@ -1205,12 +1232,16 @@ mod tests {
     #[cfg(feature = "serde")]
     use super::super::HydroUnitGroupBoundsCountsSpec;
     #[cfg(feature = "serde")]
-    use super::ResolvedHydroUnitGroupBounds;
+    use super::super::{
+        HydroStageVolumeBounds, PumpingStageVolumeBounds, StageVolumeBoundsCountsSpec,
+    };
     use super::{
         BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, HydroBlockBounds, HydroStageBounds,
         LineBlockBounds, PumpingBlockBounds, ResolvedBlockBounds, ResolvedBounds,
         ThermalBlockBounds, ThermalStageBounds,
     };
+    #[cfg(feature = "serde")]
+    use super::{ResolvedHydroUnitGroupBounds, ResolvedStageVolumeBounds};
     use crate::test_support::{f64_bits_eq, opt_f64_bits_eq};
 
     fn make_hydro_bounds() -> HydroStageBounds {
@@ -2863,5 +2894,82 @@ mod tests {
         let restored_without_group: ResolvedBounds =
             serde_json::from_str(absent_group_json).expect("deserialize without group field");
         assert!(restored_without_group.group_overlay().is_empty());
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn resolved_bounds_stage_volume_overlay_round_trips_and_defaults() {
+        let mut original = ResolvedBounds::new(
+            &BoundsCountsSpec {
+                n_hydros: 1,
+                n_thermals: 0,
+                n_lines: 0,
+                n_pumping: 1,
+                n_contracts: 0,
+                n_stages: 2,
+                k_max: 0,
+            },
+            &zero_defaults(),
+        );
+
+        let mut stage_volume = ResolvedStageVolumeBounds::new(&StageVolumeBoundsCountsSpec {
+            n_hydros: 1,
+            n_pumping: 1,
+            n_stages: 2,
+        });
+        *stage_volume.hydro_mut(0, 1).expect("in-range hydro cell") = HydroStageVolumeBounds {
+            min_outflow_hm3: Some(1.5),
+            max_outflow_hm3: Some(2.5),
+            min_diversion_hm3: Some(3.5),
+            max_diversion_hm3: Some(4.5),
+        };
+        *stage_volume
+            .pumping_mut(0, 0)
+            .expect("in-range pumping cell") = PumpingStageVolumeBounds {
+            min_hm3: Some(5.5),
+            max_hm3: Some(6.5),
+        };
+        original.set_stage_volume_overlay(stage_volume);
+
+        let json = serde_json::to_string(&original).expect("serialize json");
+        let restored_json: ResolvedBounds = serde_json::from_str(&json).expect("deserialize json");
+        assert_eq!(original, restored_json);
+
+        let bytes = postcard::to_allocvec(&original).expect("serialize postcard");
+        let restored_postcard: ResolvedBounds =
+            postcard::from_bytes(&bytes).expect("deserialize postcard");
+        assert_eq!(original, restored_postcard);
+        assert_eq!(
+            restored_postcard
+                .stage_volume_overlay()
+                .hydro(0, 1)
+                .max_outflow_hm3,
+            Some(2.5)
+        );
+        assert_eq!(
+            restored_postcard
+                .stage_volume_overlay()
+                .pumping(0, 0)
+                .max_hm3,
+            Some(6.5)
+        );
+
+        let absent_stage_volume_json = r#"{
+            "n_stages": 1,
+            "thermal_stage_axis_len": 1,
+            "hydro": [],
+            "thermal": [],
+            "line": [],
+            "pumping": [],
+            "contract": []
+        }"#;
+        let restored_without_stage_volume: ResolvedBounds =
+            serde_json::from_str(absent_stage_volume_json)
+                .expect("deserialize without stage_volume field");
+        assert!(
+            restored_without_stage_volume
+                .stage_volume_overlay()
+                .is_empty()
+        );
     }
 }

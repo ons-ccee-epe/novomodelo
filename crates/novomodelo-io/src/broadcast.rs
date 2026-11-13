@@ -214,9 +214,12 @@ mod tests {
     use super::*;
     use chrono::NaiveDate;
     use novomodelo_core::{
-        AnticipatedCommitmentHistory, Bus, ComputedParameter, DeficitSegment, EntityId, Hydro,
-        HydroGenerationModel, HydroPenalties, InitialConditions, ParameterKind, ScalarParameter,
-        System, SystemBuilder, Thermal, entities::AnticipatedConfig,
+        AnticipatedCommitmentHistory, BoundsCountsSpec, BoundsDefaults, Bus, ComputedParameter,
+        ContractBlockBounds, DeficitSegment, EntityId, Hydro, HydroBlockBounds,
+        HydroGenerationModel, HydroPenalties, HydroStageBounds, InitialConditions, LineBlockBounds,
+        ParameterKind, PumpingBlockBounds, ResolvedBounds, ResolvedStageVolumeBounds,
+        ScalarParameter, StageVolumeBoundsCountsSpec, System, SystemBuilder, Thermal,
+        ThermalBlockBounds, ThermalStageBounds, entities::AnticipatedConfig,
     };
 
     fn minimal_bus(id: i32) -> Bus {
@@ -287,6 +290,55 @@ mod tests {
         hydro
     }
 
+    fn one_hydro_two_stage_bounds_with_stage_volume() -> ResolvedBounds {
+        let mut bounds = ResolvedBounds::new(
+            &BoundsCountsSpec {
+                n_hydros: 1,
+                n_thermals: 0,
+                n_lines: 0,
+                n_pumping: 0,
+                n_contracts: 0,
+                n_stages: 2,
+                k_max: 0,
+            },
+            &BoundsDefaults {
+                hydro: HydroStageBounds {
+                    min_storage_hm3: 0.0,
+                    max_storage_hm3: 1000.0,
+                    filling_min_rate_m3s: 0.0,
+                    water_withdrawal_m3s: 0.0,
+                },
+                hydro_block: HydroBlockBounds::default(),
+                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
+                thermal_block: ThermalBlockBounds {
+                    min_generation_mw: 0.0,
+                    max_generation_mw: 0.0,
+                },
+                line_block: LineBlockBounds {
+                    direct_mw: 0.0,
+                    reverse_mw: 0.0,
+                },
+                pumping_block: PumpingBlockBounds {
+                    min_flow_m3s: 0.0,
+                    max_flow_m3s: 0.0,
+                },
+                contract_block: ContractBlockBounds {
+                    min_mw: 0.0,
+                    max_mw: 0.0,
+                    price_per_mwh: 0.0,
+                },
+            },
+        );
+        let mut stage_volume = ResolvedStageVolumeBounds::new(&StageVolumeBoundsCountsSpec {
+            n_hydros: 1,
+            n_pumping: 0,
+            n_stages: 2,
+        });
+        stage_volume.hydro_mut(0, 1).unwrap().max_outflow_hm3 = Some(12.5);
+        bounds.set_stage_volume_overlay(stage_volume);
+        bounds
+    }
+
     #[test]
     fn test_round_trip_minimal_system() {
         let bus = minimal_bus(1);
@@ -305,12 +357,18 @@ mod tests {
     fn test_round_trip_populated_system() {
         let buses = vec![minimal_bus(1), minimal_bus(2)];
         let thermals = vec![minimal_thermal(1, 1), minimal_thermal(2, 2)];
-        let hydros = vec![minimal_hydro(1, 1)];
+        let mut hydro = minimal_hydro(1, 1);
+        hydro.penalties = HydroPenalties {
+            outflow_volume_violation_below_cost: 11.0,
+            outflow_volume_violation_above_cost: 13.0,
+            ..zero_hydro_penalties()
+        };
 
         let system = SystemBuilder::new()
             .buses(buses)
             .thermals(thermals)
-            .hydros(hydros)
+            .hydros(vec![hydro])
+            .bounds(one_hydro_two_stage_bounds_with_stage_volume())
             .build()
             .unwrap();
 
@@ -325,7 +383,35 @@ mod tests {
         assert!(restored.bus(EntityId(2)).is_some());
         assert!(restored.thermal(EntityId(1)).is_some());
         assert!(restored.thermal(EntityId(2)).is_some());
-        assert!(restored.hydro(EntityId(1)).is_some());
+        let Some(restored_hydro) = restored.hydro(EntityId(1)) else {
+            panic!("hydro 1 must round-trip");
+        };
+
+        assert_eq!(
+            restored_hydro
+                .penalties
+                .outflow_volume_violation_below_cost
+                .to_bits(),
+            11.0_f64.to_bits(),
+            "outflow_volume_violation_below_cost must survive broadcast round-trip"
+        );
+        assert_eq!(
+            restored_hydro
+                .penalties
+                .outflow_volume_violation_above_cost
+                .to_bits(),
+            13.0_f64.to_bits(),
+            "outflow_volume_violation_above_cost must survive broadcast round-trip"
+        );
+        assert_eq!(
+            restored
+                .bounds()
+                .stage_volume_overlay()
+                .hydro(0, 1)
+                .max_outflow_hm3,
+            Some(12.5),
+            "stage-volume overlay must survive broadcast round-trip"
+        );
 
         assert_eq!(restored, system);
     }

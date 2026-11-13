@@ -458,6 +458,24 @@
             "null"
           ]
         },
+        "outflow_volume_violation_above_cost": {
+          "default": null,
+          "description": "Outflow-volume above-maximum violation penalty ($/hm³). Defaults to this\nplant's `outflow_violation_above_cost` converted to $/hm³ when set, else to the\n`hydro` section value.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "outflow_volume_violation_below_cost": {
+          "default": null,
+          "description": "Outflow-volume below-minimum violation penalty ($/hm³). Defaults to this\nplant's `outflow_violation_below_cost` converted to $/hm³ when set, else to the\n`hydro` section value.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
         "spillage_cost": {
           "default": null,
           "description": "Spillage penalty ($/(m³/s·h)).",

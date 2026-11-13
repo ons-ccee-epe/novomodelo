@@ -88,13 +88,14 @@ pub use model::post_study::{PostStudyStage, PostStudyStages, PostStudyThermalBou
 pub use model::resolved::{
     BlockBoundsCountsSpec, BoundsCountsSpec, BoundsDefaults, BusStagePenalties,
     ContractBlockBounds, ContractBlockOverride, HydroBlockBounds, HydroBlockOverride,
-    HydroStageBounds, HydroUnitGroupBoundsCountsSpec, HydroUnitGroupOverride, LineBlockBounds,
-    LineBlockOverride, LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec,
-    PenaltiesDefaults, PumpingBlockBounds, PumpingBlockOverride, ResolvedBlockBounds,
-    ResolvedBounds, ResolvedGenericConstraintBounds, ResolvedHydroUnitGroupBounds,
-    ResolvedLoadFactors, ResolvedNcsBounds, ResolvedNcsFactors, ResolvedPenalties,
-    ThermalBlockBounds, ThermalBlockOverride, ThermalStageBounds, effective_diversion_m3s,
-    effective_pumping_m3s,
+    HydroStageBounds, HydroStageVolumeBounds, HydroUnitGroupBoundsCountsSpec,
+    HydroUnitGroupOverride, LineBlockBounds, LineBlockOverride, LineStagePenalties,
+    NcsStagePenalties, PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds,
+    PumpingBlockOverride, PumpingStageVolumeBounds, ResolvedBlockBounds, ResolvedBounds,
+    ResolvedGenericConstraintBounds, ResolvedHydroUnitGroupBounds, ResolvedLoadFactors,
+    ResolvedNcsBounds, ResolvedNcsFactors, ResolvedPenalties, ResolvedStageVolumeBounds,
+    StageVolumeBoundsCountsSpec, ThermalBlockBounds, ThermalBlockOverride, ThermalStageBounds,
+    effective_diversion_m3s, effective_pumping_m3s,
 };
 pub use model::scalar_expr::{ScalarExpr, is_exact_zero};
 pub use model::scenario::{

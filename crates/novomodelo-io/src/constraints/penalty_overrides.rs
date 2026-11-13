@@ -39,6 +39,8 @@
 //! | `turbined_violation_below_cost`   | DOUBLE | No       | Turbined below-min violation (USD/(m³/s·h))|
 //! | `outflow_violation_below_cost`    | DOUBLE | No       | Outflow below-min violation (USD/(m³/s·h))|
 //! | `outflow_violation_above_cost`    | DOUBLE | No       | Outflow above-max violation (USD/(m³/s·h))|
+//! | `outflow_volume_violation_below_cost` | DOUBLE | No   | Outflow-volume below-min violation (USD/hm³)|
+//! | `outflow_volume_violation_above_cost` | DOUBLE | No   | Outflow-volume above-max violation (USD/hm³)|
 //! | `generation_violation_below_cost` | DOUBLE | No       | Generation below-min violation (USD/`MWh`)|
 //! | `evaporation_violation_cost`                 | DOUBLE | No       | Evaporation violation (USD/(m³/s·h))             |
 //! | `water_withdrawal_violation_cost`            | DOUBLE | No       | Water withdrawal violation (USD/(m³/s·h))        |
@@ -177,6 +179,8 @@ pub struct LinePenaltyOverrideRow {
 ///     turbined_violation_below_cost: None,
 ///     outflow_violation_below_cost: None,
 ///     outflow_violation_above_cost: None,
+///     outflow_volume_violation_below_cost: None,
+///     outflow_volume_violation_above_cost: None,
 ///     generation_violation_below_cost: None,
 ///     evaporation_violation_cost: None,
 ///     water_withdrawal_violation_cost: None,
@@ -213,6 +217,10 @@ pub struct HydroPenaltyOverrideRow {
     pub outflow_violation_below_cost: Option<f64>,
     /// Outflow above violation override.
     pub outflow_violation_above_cost: Option<f64>,
+    /// Outflow-volume below-minimum violation penalty override ($/hm³).
+    pub outflow_volume_violation_below_cost: Option<f64>,
+    /// Outflow-volume above-maximum violation penalty override ($/hm³).
+    pub outflow_volume_violation_above_cost: Option<f64>,
     /// Generation violation override.
     pub generation_violation_below_cost: Option<f64>,
     /// Evaporation violation override.
@@ -505,6 +513,10 @@ pub fn parse_penalty_overrides_hydro(
             extract_optional_float64(&batch, "outflow_violation_below_cost", path)?;
         let outflow_violation_above_cost_col =
             extract_optional_float64(&batch, "outflow_violation_above_cost", path)?;
+        let outflow_volume_violation_below_cost_col =
+            extract_optional_float64(&batch, "outflow_volume_violation_below_cost", path)?;
+        let outflow_volume_violation_above_cost_col =
+            extract_optional_float64(&batch, "outflow_volume_violation_above_cost", path)?;
         let generation_violation_below_cost_col =
             extract_optional_float64(&batch, "generation_violation_below_cost", path)?;
         let evaporation_violation_cost_col =
@@ -542,6 +554,10 @@ pub fn parse_penalty_overrides_hydro(
                 optional_value(turbined_violation_below_cost_col, i);
             let outflow_violation_below_cost = optional_value(outflow_violation_below_cost_col, i);
             let outflow_violation_above_cost = optional_value(outflow_violation_above_cost_col, i);
+            let outflow_volume_violation_below_cost =
+                optional_value(outflow_volume_violation_below_cost_col, i);
+            let outflow_volume_violation_above_cost =
+                optional_value(outflow_volume_violation_above_cost_col, i);
             let generation_violation_below_cost =
                 optional_value(generation_violation_below_cost_col, i);
             let evaporation_violation_cost = optional_value(evaporation_violation_cost_col, i);
@@ -557,118 +573,64 @@ pub fn parse_penalty_overrides_hydro(
                 optional_value(evaporation_violation_neg_cost_col, i);
             let inflow_nonnegativity_cost = optional_value(inflow_nonnegativity_cost_col, i);
 
-            validate_optional_positive(
-                spillage_cost,
-                "penalty_overrides_hydro",
-                row_idx,
-                "spillage_cost",
-                path,
-            )?;
-            validate_optional_positive(
-                turbined_cost,
-                "penalty_overrides_hydro",
-                row_idx,
-                "turbined_cost",
-                path,
-            )?;
-            validate_optional_positive(
-                diversion_cost,
-                "penalty_overrides_hydro",
-                row_idx,
-                "diversion_cost",
-                path,
-            )?;
-            validate_optional_positive(
-                storage_violation_below_cost,
-                "penalty_overrides_hydro",
-                row_idx,
-                "storage_violation_below_cost",
-                path,
-            )?;
-            validate_optional_positive(
-                filling_target_violation_cost,
-                "penalty_overrides_hydro",
-                row_idx,
-                "filling_target_violation_cost",
-                path,
-            )?;
-            validate_optional_positive(
-                turbined_violation_below_cost,
-                "penalty_overrides_hydro",
-                row_idx,
-                "turbined_violation_below_cost",
-                path,
-            )?;
-            validate_optional_positive(
-                outflow_violation_below_cost,
-                "penalty_overrides_hydro",
-                row_idx,
-                "outflow_violation_below_cost",
-                path,
-            )?;
-            validate_optional_positive(
-                outflow_violation_above_cost,
-                "penalty_overrides_hydro",
-                row_idx,
-                "outflow_violation_above_cost",
-                path,
-            )?;
-            validate_optional_positive(
-                generation_violation_below_cost,
-                "penalty_overrides_hydro",
-                row_idx,
-                "generation_violation_below_cost",
-                path,
-            )?;
-            validate_optional_positive(
-                evaporation_violation_cost,
-                "penalty_overrides_hydro",
-                row_idx,
-                "evaporation_violation_cost",
-                path,
-            )?;
-            validate_optional_positive(
-                water_withdrawal_violation_cost,
-                "penalty_overrides_hydro",
-                row_idx,
-                "water_withdrawal_violation_cost",
-                path,
-            )?;
-            validate_optional_positive(
-                water_withdrawal_violation_pos_cost,
-                "penalty_overrides_hydro",
-                row_idx,
-                "water_withdrawal_violation_pos_cost",
-                path,
-            )?;
-            validate_optional_positive(
-                water_withdrawal_violation_neg_cost,
-                "penalty_overrides_hydro",
-                row_idx,
-                "water_withdrawal_violation_neg_cost",
-                path,
-            )?;
-            validate_optional_positive(
-                evaporation_violation_pos_cost,
-                "penalty_overrides_hydro",
-                row_idx,
-                "evaporation_violation_pos_cost",
-                path,
-            )?;
-            validate_optional_positive(
-                evaporation_violation_neg_cost,
-                "penalty_overrides_hydro",
-                row_idx,
-                "evaporation_violation_neg_cost",
-                path,
-            )?;
-            validate_optional_positive(
-                inflow_nonnegativity_cost,
-                "penalty_overrides_hydro",
-                row_idx,
-                "inflow_nonnegativity_cost",
-                path,
-            )?;
+            for (column, value) in [
+                ("spillage_cost", spillage_cost),
+                ("turbined_cost", turbined_cost),
+                ("diversion_cost", diversion_cost),
+                ("storage_violation_below_cost", storage_violation_below_cost),
+                (
+                    "filling_target_violation_cost",
+                    filling_target_violation_cost,
+                ),
+                (
+                    "turbined_violation_below_cost",
+                    turbined_violation_below_cost,
+                ),
+                ("outflow_violation_below_cost", outflow_violation_below_cost),
+                ("outflow_violation_above_cost", outflow_violation_above_cost),
+                (
+                    "outflow_volume_violation_below_cost",
+                    outflow_volume_violation_below_cost,
+                ),
+                (
+                    "outflow_volume_violation_above_cost",
+                    outflow_volume_violation_above_cost,
+                ),
+                (
+                    "generation_violation_below_cost",
+                    generation_violation_below_cost,
+                ),
+                ("evaporation_violation_cost", evaporation_violation_cost),
+                (
+                    "water_withdrawal_violation_cost",
+                    water_withdrawal_violation_cost,
+                ),
+                (
+                    "water_withdrawal_violation_pos_cost",
+                    water_withdrawal_violation_pos_cost,
+                ),
+                (
+                    "water_withdrawal_violation_neg_cost",
+                    water_withdrawal_violation_neg_cost,
+                ),
+                (
+                    "evaporation_violation_pos_cost",
+                    evaporation_violation_pos_cost,
+                ),
+                (
+                    "evaporation_violation_neg_cost",
+                    evaporation_violation_neg_cost,
+                ),
+                ("inflow_nonnegativity_cost", inflow_nonnegativity_cost),
+            ] {
+                validate_optional_positive(
+                    value,
+                    "penalty_overrides_hydro",
+                    row_idx,
+                    column,
+                    path,
+                )?;
+            }
 
             rows.push(HydroPenaltyOverrideRow {
                 hydro_id,
@@ -681,6 +643,8 @@ pub fn parse_penalty_overrides_hydro(
                 turbined_violation_below_cost,
                 outflow_violation_below_cost,
                 outflow_violation_above_cost,
+                outflow_volume_violation_below_cost,
+                outflow_volume_violation_above_cost,
                 generation_violation_below_cost,
                 evaporation_violation_cost,
                 water_withdrawal_violation_cost,
@@ -1443,6 +1407,40 @@ mod tests {
                 assert!(
                     message.contains("must be > 0.0"),
                     "message should contain 'must be > 0.0', got: {message}"
+                );
+            }
+            other => panic!("expected SchemaError, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn non_positive_stage_outflow_volume_cost_is_rejected() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("hydro_id", DataType::Int32, false),
+            Field::new("stage_id", DataType::Int32, false),
+            Field::new(
+                "outflow_volume_violation_below_cost",
+                DataType::Float64,
+                true,
+            ),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int32Array::from(vec![1_i32])),
+                Arc::new(Int32Array::from(vec![0_i32])),
+                Arc::new(Float64Array::from(vec![Some(0.0_f64)])),
+            ],
+        )
+        .unwrap();
+        let tmp = write_parquet(&batch);
+        let err = parse_penalty_overrides_hydro(tmp.path()).unwrap_err();
+
+        match &err {
+            LoadError::SchemaError { field, .. } => {
+                assert!(
+                    field.ends_with(".outflow_volume_violation_below_cost"),
+                    "got: {field}"
                 );
             }
             other => panic!("expected SchemaError, got: {other:?}"),

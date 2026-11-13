@@ -93,6 +93,12 @@ pub(crate) struct RawHydroPenalties {
     outflow_violation_below_cost: f64,
     /// Outflow above-maximum violation penalty ($/(m³/s·h)).
     outflow_violation_above_cost: f64,
+    /// Outflow-volume below-minimum violation penalty ($/hm³). Defaults to
+    /// `outflow_violation_below_cost` converted to $/hm³.
+    outflow_volume_violation_below_cost: Option<f64>,
+    /// Outflow-volume above-maximum violation penalty ($/hm³). Defaults to
+    /// `outflow_violation_above_cost` converted to $/hm³.
+    outflow_volume_violation_above_cost: Option<f64>,
     /// Generation below-minimum violation penalty ($/`MWh`).
     generation_violation_below_cost: f64,
     /// Symmetric evaporation violation penalty, the default of both directional
@@ -299,6 +305,27 @@ fn validate_hydro(raw: &RawPenalties, path: &Path) -> Result<(), LoadError> {
         }
     }
 
+    for (field, value) in [
+        (
+            "hydro.outflow_volume_violation_below_cost",
+            h.outflow_volume_violation_below_cost,
+        ),
+        (
+            "hydro.outflow_volume_violation_above_cost",
+            h.outflow_volume_violation_above_cost,
+        ),
+    ] {
+        if let Some(v) = value
+            && !(v.is_finite() && v > 0.0)
+        {
+            return Err(LoadError::SchemaError {
+                path: path.to_path_buf(),
+                field: field.to_string(),
+                message: format!("penalty value must be finite and > 0.0, got {v}"),
+            });
+        }
+    }
+
     Ok(())
 }
 
@@ -337,12 +364,18 @@ fn convert(raw: RawPenalties) -> GlobalPenaltyDefaults {
         turbined_violation_below_cost: raw.hydro.turbined_violation_below_cost,
         outflow_violation_below_cost: raw.hydro.outflow_violation_below_cost,
         outflow_violation_above_cost: raw.hydro.outflow_violation_above_cost,
-        outflow_volume_violation_below_cost: volume_cost_from_flow_cost(
-            raw.hydro.outflow_violation_below_cost,
-        ),
-        outflow_volume_violation_above_cost: volume_cost_from_flow_cost(
-            raw.hydro.outflow_violation_above_cost,
-        ),
+        outflow_volume_violation_below_cost: raw
+            .hydro
+            .outflow_volume_violation_below_cost
+            .unwrap_or(volume_cost_from_flow_cost(
+                raw.hydro.outflow_violation_below_cost,
+            )),
+        outflow_volume_violation_above_cost: raw
+            .hydro
+            .outflow_volume_violation_above_cost
+            .unwrap_or(volume_cost_from_flow_cost(
+                raw.hydro.outflow_violation_above_cost,
+            )),
         generation_violation_below_cost: raw.hydro.generation_violation_below_cost,
         evaporation_violation_cost: raw.hydro.evaporation_violation_cost,
         water_withdrawal_violation_cost: raw.hydro.water_withdrawal_violation_cost,
@@ -914,5 +947,68 @@ mod tests {
         assert_eq!(defaults.bus_deficit_segments[0].depth_mw, Some(500.0));
         assert_eq!(defaults.bus_deficit_segments[1].depth_mw, Some(1000.0));
         assert!(defaults.bus_deficit_segments[2].depth_mw.is_none());
+    }
+
+    fn json_with_flow_costs_36_and_72(extra_hydro_fields: &str) -> String {
+        VALID_JSON
+            .replace(
+                r#""outflow_violation_below_cost": 500.0"#,
+                r#""outflow_violation_below_cost": 36.0"#,
+            )
+            .replace(
+                r#""outflow_violation_above_cost": 500.0"#,
+                r#""outflow_violation_above_cost": 72.0"#,
+            )
+            .replace(
+                r#""water_withdrawal_violation_cost": 1000.0"#,
+                &format!(r#""water_withdrawal_violation_cost": 1000.0{extra_hydro_fields}"#),
+            )
+    }
+
+    #[test]
+    fn outflow_volume_costs_default_to_the_converted_flow_costs() {
+        let f = write_json(&json_with_flow_costs_36_and_72(""));
+        let hydro = parse_penalties(f.path()).unwrap().hydro;
+
+        assert_eq!(
+            hydro.outflow_volume_violation_below_cost.to_bits(),
+            volume_cost_from_flow_cost(36.0).to_bits()
+        );
+        assert_eq!(
+            hydro.outflow_volume_violation_above_cost.to_bits(),
+            volume_cost_from_flow_cost(72.0).to_bits()
+        );
+    }
+
+    #[test]
+    fn explicit_outflow_volume_costs_win() {
+        let f = write_json(&json_with_flow_costs_36_and_72(
+            r#", "outflow_volume_violation_below_cost": 5.0"#,
+        ));
+        let hydro = parse_penalties(f.path()).unwrap().hydro;
+
+        assert_eq!(
+            hydro.outflow_volume_violation_below_cost.to_bits(),
+            5.0_f64.to_bits()
+        );
+        assert_eq!(
+            hydro.outflow_volume_violation_above_cost.to_bits(),
+            volume_cost_from_flow_cost(72.0).to_bits()
+        );
+    }
+
+    #[test]
+    fn non_positive_outflow_volume_cost_is_rejected() {
+        for bad in ["0.0", "-1.0"] {
+            let f = write_json(&json_with_flow_costs_36_and_72(&format!(
+                r#", "outflow_volume_violation_below_cost": {bad}"#
+            )));
+            match parse_penalties(f.path()).unwrap_err() {
+                LoadError::SchemaError { field, .. } => {
+                    assert_eq!(field, "hydro.outflow_volume_violation_below_cost");
+                }
+                other => panic!("expected SchemaError for {bad}, got: {other:?}"),
+            }
+        }
     }
 }

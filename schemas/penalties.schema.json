@@ -104,6 +104,22 @@
           "format": "double",
           "type": "number"
         },
+        "outflow_volume_violation_above_cost": {
+          "description": "Outflow-volume above-maximum violation penalty ($/hm³). Defaults to\n`outflow_violation_above_cost` converted to $/hm³.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "outflow_volume_violation_below_cost": {
+          "description": "Outflow-volume below-minimum violation penalty ($/hm³). Defaults to\n`outflow_violation_below_cost` converted to $/hm³.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
         "spillage_cost": {
           "description": "Spillage penalty ($/(m³/s·h)).",
           "format": "double",

@@ -395,6 +395,10 @@ pub(super) fn check_duplicate_bound_rows(data: &ParsedData, ctx: &mut Validation
                 ("max_spillage_m3s", row.max_spillage_m3s),
                 ("filling_min_rate_m3s", row.filling_min_rate_m3s),
                 ("water_withdrawal_m3s", row.water_withdrawal_m3s),
+                ("min_outflow_hm3", row.min_outflow_hm3),
+                ("max_outflow_hm3", row.max_outflow_hm3),
+                ("min_diversion_hm3", row.min_diversion_hm3),
+                ("max_diversion_hm3", row.max_diversion_hm3),
             ],
             &mut hydro_seen,
             ctx,
@@ -423,7 +427,12 @@ pub(super) fn check_duplicate_bound_rows(data: &ParsedData, ctx: &mut Validation
             None,
             row.stage_id,
             row.block_id,
-            &[("min_m3s", row.min_m3s), ("max_m3s", row.max_m3s)],
+            &[
+                ("min_m3s", row.min_m3s),
+                ("max_m3s", row.max_m3s),
+                ("min_hm3", row.min_hm3),
+                ("max_hm3", row.max_hm3),
+            ],
             &mut pumping_seen,
             ctx,
         );
@@ -544,7 +553,10 @@ struct IneligibleColumn {
     reason: &'static str,
 }
 
-const INELIGIBLE_HYDRO_COLUMNS: [IneligibleColumn; 4] = [
+const STAGE_TOTAL_VOLUME_REASON: &str =
+    "stage-total volume bounds are stage-level and have no per-block variable";
+
+const INELIGIBLE_HYDRO_COLUMNS: [IneligibleColumn; 8] = [
     IneligibleColumn {
         name: "min_storage_hm3",
         reason: "storage bounds are stage-level and have no per-block variable",
@@ -561,6 +573,22 @@ const INELIGIBLE_HYDRO_COLUMNS: [IneligibleColumn; 4] = [
         name: "water_withdrawal_m3s",
         reason: "water withdrawal is stage-level and has no per-block variable",
     },
+    IneligibleColumn {
+        name: "min_outflow_hm3",
+        reason: STAGE_TOTAL_VOLUME_REASON,
+    },
+    IneligibleColumn {
+        name: "max_outflow_hm3",
+        reason: STAGE_TOTAL_VOLUME_REASON,
+    },
+    IneligibleColumn {
+        name: "min_diversion_hm3",
+        reason: STAGE_TOTAL_VOLUME_REASON,
+    },
+    IneligibleColumn {
+        name: "max_diversion_hm3",
+        reason: STAGE_TOTAL_VOLUME_REASON,
+    },
 ];
 
 const INELIGIBLE_THERMAL_COLUMNS: [IneligibleColumn; 1] = [IneligibleColumn {
@@ -569,7 +597,18 @@ const INELIGIBLE_THERMAL_COLUMNS: [IneligibleColumn; 1] = [IneligibleColumn {
              unlike contract price, which is block-eligible",
 }];
 
-/// Rule 37: rejects a `block_id` on a hydro or thermal bound column with no per-block
+const INELIGIBLE_PUMPING_COLUMNS: [IneligibleColumn; 2] = [
+    IneligibleColumn {
+        name: "min_hm3",
+        reason: STAGE_TOTAL_VOLUME_REASON,
+    },
+    IneligibleColumn {
+        name: "max_hm3",
+        reason: STAGE_TOTAL_VOLUME_REASON,
+    },
+];
+
+/// Rule 37: rejects a `block_id` on a hydro, thermal or pumping bound column with no per-block
 /// LP variable: [`resolve_bounds`] never reads the column for a block row at
 /// all (`HydroBlockOverride`/`ThermalBlockOverride` carry no field for it), so
 /// today the value is dropped without a diagnostic; this rule turns that into
@@ -580,34 +619,64 @@ const INELIGIBLE_THERMAL_COLUMNS: [IneligibleColumn; 1] = [IneligibleColumn {
 /// [`resolve_bounds`]: crate::resolution::resolve_bounds
 pub(super) fn check_block_id_on_ineligible_column(data: &ParsedData, ctx: &mut ValidationContext) {
     for row in &data.hydro_bounds {
-        let Some(b) = row.block_id else { continue };
-        let values = [
-            row.min_storage_hm3,
-            row.max_storage_hm3,
-            row.filling_min_rate_m3s,
-            row.water_withdrawal_m3s,
-        ];
-        for (column, value) in INELIGIBLE_HYDRO_COLUMNS.iter().zip(values) {
-            if value.is_some() {
-                emit_ineligible_column_error(&HYDRO, row.hydro_id.0, row.stage_id, b, column, ctx);
-            }
-        }
+        check_ineligible_columns(
+            &HYDRO,
+            row.hydro_id.0,
+            row.stage_id,
+            row.block_id,
+            &INELIGIBLE_HYDRO_COLUMNS,
+            &[
+                row.min_storage_hm3,
+                row.max_storage_hm3,
+                row.filling_min_rate_m3s,
+                row.water_withdrawal_m3s,
+                row.min_outflow_hm3,
+                row.max_outflow_hm3,
+                row.min_diversion_hm3,
+                row.max_diversion_hm3,
+            ],
+            ctx,
+        );
     }
 
     for row in &data.thermal_bounds {
-        let Some(b) = row.block_id else { continue };
-        let values = [row.cost_per_mwh];
-        for (column, value) in INELIGIBLE_THERMAL_COLUMNS.iter().zip(values) {
-            if value.is_some() {
-                emit_ineligible_column_error(
-                    &THERMAL,
-                    row.thermal_id.0,
-                    row.stage_id,
-                    b,
-                    column,
-                    ctx,
-                );
-            }
+        check_ineligible_columns(
+            &THERMAL,
+            row.thermal_id.0,
+            row.stage_id,
+            row.block_id,
+            &INELIGIBLE_THERMAL_COLUMNS,
+            &[row.cost_per_mwh],
+            ctx,
+        );
+    }
+
+    for row in &data.pumping_bounds {
+        check_ineligible_columns(
+            &PUMPING,
+            row.station_id.0,
+            row.stage_id,
+            row.block_id,
+            &INELIGIBLE_PUMPING_COLUMNS,
+            &[row.min_hm3, row.max_hm3],
+            ctx,
+        );
+    }
+}
+
+fn check_ineligible_columns(
+    meta: &FamilyMeta,
+    entity_id: i32,
+    stage_id: i32,
+    block_id: Option<i32>,
+    columns: &[IneligibleColumn],
+    values: &[Option<f64>],
+    ctx: &mut ValidationContext,
+) {
+    let Some(b) = block_id else { return };
+    for (column, value) in columns.iter().zip(values) {
+        if value.is_some() {
+            emit_ineligible_column_error(meta, entity_id, stage_id, b, column, ctx);
         }
     }
 }
@@ -972,6 +1041,8 @@ mod tests {
             stage_id,
             min_m3s: None,
             max_m3s: None,
+            min_hm3: None,
+            max_hm3: None,
             block_id,
         }
     }
@@ -1760,6 +1831,102 @@ mod tests {
         );
     }
 
+    #[test]
+    fn duplicate_stage_volume_hydro_column_is_rejected() {
+        let mut data = make_data(
+            vec![],
+            vec![],
+            vec![],
+            two_stage_study_stages(),
+            vec![],
+            vec![],
+        );
+        data.hydro_bounds = vec![
+            HydroBoundsRow {
+                max_outflow_hm3: Some(1.0),
+                ..hydro_row(1, 0, None)
+            },
+            HydroBoundsRow {
+                max_outflow_hm3: Some(2.0),
+                ..hydro_row(1, 0, None)
+            },
+        ];
+
+        let errors = duplicate_errors(&data);
+        assert_eq!(
+            errors.len(),
+            1,
+            "expected exactly one error, got: {errors:?}"
+        );
+        assert!(
+            errors[0].message.contains("max_outflow_hm3"),
+            "message: {}",
+            errors[0].message
+        );
+    }
+
+    #[test]
+    fn different_stage_volume_hydro_columns_are_not_duplicates() {
+        let mut data = make_data(
+            vec![],
+            vec![],
+            vec![],
+            two_stage_study_stages(),
+            vec![],
+            vec![],
+        );
+        data.hydro_bounds = vec![
+            HydroBoundsRow {
+                min_outflow_hm3: Some(1.0),
+                ..hydro_row(1, 0, None)
+            },
+            HydroBoundsRow {
+                max_outflow_hm3: Some(2.0),
+                ..hydro_row(1, 0, None)
+            },
+        ];
+
+        let errors = duplicate_errors(&data);
+        assert!(
+            errors.is_empty(),
+            "rows setting different volume columns must not collide: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn duplicate_pumping_volume_column_is_rejected() {
+        let mut data = make_data(
+            vec![],
+            vec![],
+            vec![],
+            two_stage_study_stages(),
+            vec![],
+            vec![],
+        );
+        data.pumping_bounds = vec![
+            PumpingBoundsRow {
+                min_hm3: Some(1.0),
+                ..pumping_row(1, 0, None)
+            },
+            PumpingBoundsRow {
+                min_hm3: Some(2.0),
+                ..pumping_row(1, 0, None)
+            },
+        ];
+
+        let errors = duplicate_errors(&data);
+        assert_eq!(
+            errors.len(),
+            1,
+            "expected exactly one error, got: {errors:?}"
+        );
+        assert!(
+            errors[0].message.contains("min_hm3"),
+            "message: {}",
+            errors[0].message
+        );
+    }
+
     // ── group family (hydro_unit_group_bounds) ───────────────────────────────
 
     #[test]
@@ -1968,6 +2135,84 @@ mod tests {
                 "expected an error naming {column} on hydro {hydro_id} stage {stage_id}: {errors:?}"
             );
         }
+    }
+
+    #[test]
+    fn block_id_on_hydro_stage_volume_column_is_rejected() {
+        let mut data = make_data(
+            vec![],
+            vec![],
+            vec![],
+            two_stage_study_stages(),
+            vec![],
+            vec![],
+        );
+        data.hydro_bounds = vec![HydroBoundsRow {
+            max_outflow_hm3: Some(5.0),
+            ..hydro_row(1, 0, Some(0))
+        }];
+
+        let errors = bound_range_errors(&data);
+        assert_eq!(
+            errors.len(),
+            1,
+            "expected exactly one error, got: {errors:?}"
+        );
+        assert!(
+            errors[0].message.contains("max_outflow_hm3"),
+            "message: {}",
+            errors[0].message
+        );
+    }
+
+    #[test]
+    fn block_id_on_pumping_stage_volume_column_is_rejected() {
+        let mut data = make_data(
+            vec![],
+            vec![],
+            vec![],
+            two_stage_study_stages(),
+            vec![],
+            vec![],
+        );
+        data.pumping_bounds = vec![PumpingBoundsRow {
+            min_hm3: Some(2.0),
+            ..pumping_row(1, 0, Some(1))
+        }];
+
+        let errors = bound_range_errors(&data);
+        assert_eq!(
+            errors.len(),
+            1,
+            "expected exactly one error, got: {errors:?}"
+        );
+        assert!(
+            errors[0].message.contains("min_hm3"),
+            "message: {}",
+            errors[0].message
+        );
+    }
+
+    #[test]
+    fn stage_row_stage_volume_column_is_accepted() {
+        let mut data = make_data(
+            vec![],
+            vec![],
+            vec![],
+            two_stage_study_stages(),
+            vec![],
+            vec![],
+        );
+        data.hydro_bounds = vec![HydroBoundsRow {
+            max_outflow_hm3: Some(5.0),
+            ..hydro_row(1, 0, None)
+        }];
+
+        let errors = bound_range_errors(&data);
+        assert!(
+            errors.is_empty(),
+            "a stage-level volume row must not be rejected: {errors:?}"
+        );
     }
 
     #[test]

@@ -49,6 +49,8 @@ pub struct PenaltiesOverrides<'a> {
 /// Each field a stage override row sets replaces that cell's entity-level value. A
 /// hydro row's `evaporation_violation_cost` or `water_withdrawal_violation_cost` also
 /// sets the cell's two matching directional costs, except a direction the row sets.
+/// Each `outflow_volume_violation_*_cost` takes the row's volume cost, else the row's own
+/// `outflow_violation_*_cost` converted by [`volume_cost_from_flow_cost`].
 ///
 /// Override rows referencing unknown entity IDs or out-of-range stage IDs are silently
 /// skipped (referential integrity is deferred to validation).
@@ -126,6 +128,8 @@ pub struct PenaltiesOverrides<'a> {
 ///     turbined_violation_below_cost: None,
 ///     outflow_violation_below_cost: None,
 ///     outflow_violation_above_cost: None,
+///     outflow_volume_violation_below_cost: None,
+///     outflow_volume_violation_above_cost: None,
 ///     generation_violation_below_cost: None,
 ///     evaporation_violation_cost: None,
 ///     water_withdrawal_violation_cost: None,
@@ -328,6 +332,16 @@ pub fn resolve_penalties(
         }
         if let Some(v) = row.outflow_violation_above_cost {
             cell.outflow_violation_above_cost = v;
+        }
+        if let Some(v) = row.outflow_volume_violation_below_cost {
+            cell.outflow_volume_violation_below_cost = v;
+        } else if let Some(flow) = row.outflow_violation_below_cost {
+            cell.outflow_volume_violation_below_cost = volume_cost_from_flow_cost(flow);
+        }
+        if let Some(v) = row.outflow_volume_violation_above_cost {
+            cell.outflow_volume_violation_above_cost = v;
+        } else if let Some(flow) = row.outflow_violation_above_cost {
+            cell.outflow_volume_violation_above_cost = volume_cost_from_flow_cost(flow);
         }
         if let Some(v) = row.generation_violation_below_cost {
             cell.generation_violation_below_cost = v;
@@ -629,6 +643,8 @@ mod tests {
             turbined_violation_below_cost: None,
             outflow_violation_below_cost: None,
             outflow_violation_above_cost: None,
+            outflow_volume_violation_below_cost: None,
+            outflow_volume_violation_above_cost: None,
             generation_violation_below_cost: None,
             evaporation_violation_cost: None,
             water_withdrawal_violation_cost: None,
@@ -715,6 +731,8 @@ mod tests {
             turbined_violation_below_cost: Some(66.0),
             outflow_violation_below_cost: Some(77.0),
             outflow_violation_above_cost: Some(88.0),
+            outflow_volume_violation_below_cost: None,
+            outflow_volume_violation_above_cost: None,
             generation_violation_below_cost: Some(99.0),
             evaporation_violation_cost: Some(110.0),
             water_withdrawal_violation_cost: Some(120.0),
@@ -778,6 +796,45 @@ mod tests {
         assert!((cell.generation_violation_below_cost - 200.0).abs() < f64::EPSILON);
         assert!((cell.evaporation_violation_cost - 150.0).abs() < f64::EPSILON);
         assert!((cell.water_withdrawal_violation_cost - 100.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn stage_flow_override_derives_its_own_volume_price() {
+        let hydros = vec![make_hydro(0, 500.0)];
+        let override_row = HydroPenaltyOverrideRow {
+            outflow_violation_below_cost: Some(36.0),
+            ..all_none_hydro_override(0, 1)
+        };
+        let result = resolve_penalties(&hydros, &[], &[], &[], 2, &[override_row], &[], &[], &[]);
+
+        let cell = result.hydro_penalties(0, 1);
+        assert_eq!(
+            cell.outflow_volume_violation_below_cost.to_bits(),
+            volume_cost_from_flow_cost(36.0).to_bits()
+        );
+        assert_eq!(
+            cell.outflow_volume_violation_above_cost.to_bits(),
+            volume_cost_from_flow_cost(500.0).to_bits()
+        );
+    }
+
+    #[test]
+    fn stage_volume_override_wins_over_its_flow_override() {
+        let hydros = vec![make_hydro(0, 500.0)];
+        let override_row = HydroPenaltyOverrideRow {
+            outflow_violation_below_cost: Some(36.0),
+            outflow_volume_violation_below_cost: Some(5.0),
+            ..all_none_hydro_override(0, 1)
+        };
+        let result = resolve_penalties(&hydros, &[], &[], &[], 2, &[override_row], &[], &[], &[]);
+
+        assert_eq!(
+            result
+                .hydro_penalties(0, 1)
+                .outflow_volume_violation_below_cost
+                .to_bits(),
+            5.0_f64.to_bits()
+        );
     }
 
     // ── Test: bus override ─────────────────────────────────────────────────────

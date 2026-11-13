@@ -2,9 +2,11 @@
 //!
 //! The three-tier cascade (global defaults → entity overrides → stage overrides)
 //! is evaluated once during input loading; these containers hold the result.
-//! Penalties resolve in exactly these three tiers; bounds add a per-block
-//! overlay ([`ResolvedBlockBounds`]) that wins over the stage cell. Populated
-//! by `novomodelo-io`; never modified after construction.
+//! Penalties resolve in exactly these three tiers; bounds add three overlays:
+//! a per-block overlay ([`ResolvedBlockBounds`]) that wins over the stage cell,
+//! a hydro unit group overlay ([`ResolvedHydroUnitGroupBounds`]), and a
+//! stage-volume overlay of stage totals ([`ResolvedStageVolumeBounds`]).
+//! Populated by `novomodelo-io`; never modified after construction.
 //!
 //! Every public symbol is re-exported here so both the curated flat surface in
 //! `lib.rs` and the `novomodelo_core::resolved::Symbol` module path resolve to the
@@ -17,6 +19,7 @@ mod factors;
 mod generic;
 mod group_bounds;
 mod penalties;
+mod stage_volume_bounds;
 
 pub use block_bounds::{
     BlockBoundsCountsSpec, ContractBlockOverride, HydroBlockOverride, LineBlockOverride,
@@ -35,4 +38,8 @@ pub use group_bounds::{
 pub use penalties::{
     BusStagePenalties, LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec,
     PenaltiesDefaults, ResolvedPenalties,
+};
+pub use stage_volume_bounds::{
+    HydroStageVolumeBounds, PumpingStageVolumeBounds, ResolvedStageVolumeBounds,
+    StageVolumeBoundsCountsSpec,
 };

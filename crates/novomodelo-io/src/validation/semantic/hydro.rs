@@ -134,8 +134,9 @@ pub(super) fn check_hydro_bounds(data: &ParsedData, ctx: &mut ValidationContext)
     }
 }
 
-/// Rule 46: rejects a positive `min_diversion_m3s` or `max_diversion_m3s` override
-/// on a hydro that declares no `diversion` channel. Without a channel
+/// Rule 46: rejects a positive `min_diversion_m3s`, `max_diversion_m3s`,
+/// `min_diversion_hm3` or `max_diversion_hm3` override on a hydro that
+/// declares no `diversion` channel. Without a channel
 /// [`resolve_bounds`](crate::resolution::resolve_bounds) seeds the diversion column
 /// at `[0, 0]`, and an override replaces that seed: a positive floor is infeasible,
 /// and a positive ceiling diverts water that no plant receives.
@@ -163,6 +164,8 @@ pub(super) fn check_diversion_requires_channel(data: &ParsedData, ctx: &mut Vali
         for (field, value) in [
             ("min_diversion_m3s", row.min_diversion_m3s),
             ("max_diversion_m3s", row.max_diversion_m3s),
+            ("min_diversion_hm3", row.min_diversion_hm3),
+            ("max_diversion_hm3", row.max_diversion_hm3),
         ] {
             let Some(value) = value.filter(|&v| v > 0.0) else {
                 continue;
@@ -1369,6 +1372,56 @@ mod tests {
         assert_eq!(findings.len(), 2, "got: {findings:?}");
         assert!(findings.iter().any(|m| m.contains("min_diversion_m3s")));
         assert!(findings.iter().any(|m| m.contains("max_diversion_m3s")));
+    }
+
+    #[test]
+    fn positive_diversion_volume_without_channel_is_rejected() {
+        let findings = diversion_findings(
+            HydroBoundsRow {
+                hydro_id: EntityId::from(7),
+                stage_id: 0,
+                max_diversion_hm3: Some(30.0),
+                ..Default::default()
+            },
+            None,
+        );
+        assert_eq!(findings.len(), 1, "got: {findings:?}");
+        assert!(
+            findings[0].contains("max_diversion_hm3"),
+            "got: {}",
+            findings[0]
+        );
+    }
+
+    #[test]
+    fn zero_diversion_volume_without_channel_is_accepted() {
+        let findings = diversion_findings(
+            HydroBoundsRow {
+                hydro_id: EntityId::from(7),
+                stage_id: 0,
+                max_diversion_hm3: Some(0.0),
+                ..Default::default()
+            },
+            None,
+        );
+        assert!(findings.is_empty(), "got: {findings:?}");
+    }
+
+    #[test]
+    fn positive_diversion_volume_with_channel_is_accepted() {
+        let findings = diversion_findings(
+            HydroBoundsRow {
+                hydro_id: EntityId::from(7),
+                stage_id: 0,
+                min_diversion_hm3: Some(20.0),
+                ..Default::default()
+            },
+            Some(DiversionChannel {
+                downstream_id: EntityId::from(9),
+                max_flow_m3s: Some(10.0),
+            }),
+        );
+        assert!(findings.is_empty(), "got: {findings:?}");
     }
 
     // ── Lifecycle consistency tests ───────────────────────────────────────────
