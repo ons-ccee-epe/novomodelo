@@ -13,7 +13,7 @@ nothing, and each refusal is one stderr line naming the deck and the reason.
 A deck already in the current format is left untouched, so a second run
 changes nothing. Each deck prints one stdout line, `DECK: OUTCOME`:
 
-  migrated         legacy file, travel-time arc: `water_bucket_stages` is inferred
+  migrated         legacy file, travel-time arc: `water_bucket_stages` starts from `stages`
   created          no file, travel-time arc: a file holding only `water_bucket_stages`
   renamed          legacy file, no arc, an anticipated thermal: `stages` becomes
                    `thermal_stages`, with `thermal_bounds`, verbatim
@@ -24,14 +24,13 @@ changes nothing. Each deck prints one stdout line, `DECK: OUTCOME`:
 
 With an anticipated thermal (an entry of `thermals[]` in `system/thermals.json`
 whose `anticipated_config` is not null) the thermal pair is copied verbatim;
-otherwise it is dropped. The water calendar starts at the study end and steps from
-the last in-study stage (highest `id >= 0`) until it covers the deepest
-`travel_time_hours` of a hydro with a downstream:
-
-  - a 7-day stage steps 168 h;
-  - a stage spanning one whole calendar month steps by successive calendar months;
-  - any other whole-day length (sum of block hours) repeats itself;
-  - a length that is not a whole number of days is refused.
+otherwise it is dropped. The water calendar is the one the deprecated format
+resolves to, so migrating a deck does not change its results: the legacy `stages`
+(none without a file), then copies of the last stage's length until the calendar
+covers the deepest `travel_time_hours` of a hydro with a downstream. Without a
+legacy stage the last stage is the last in-study stage (highest `id >= 0`, sum of
+block hours). Each copy starts where the previous stage ends, its length rounded to
+whole days; a copy shorter than half a day is refused.
 
 Output layout: `$schema` (when present), `thermal_stages`, `thermal_bounds`,
 `water_bucket_stages`; 2-space indentation; trailing newline.
@@ -43,21 +42,21 @@ refused, 2 for a usage error.
 from __future__ import annotations
 
 import argparse
-import calendar
 import json
+import math
 import os
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
+from decimal import ROUND_HALF_UP, Decimal
 from enum import Enum
 from pathlib import Path
 from typing import Any, NoReturn
 
 FILE_NAME = "post_study_stages.json"
 _REQUIRED_FILES = ("stages.json", "system/hydros.json", "system/thermals.json")
-_WEEK_DAYS = 7
-_WEEK_HOURS = 168.0
+_DAY_HOURS = 24
 
 
 class Refusal(Exception):
@@ -73,7 +72,6 @@ class FileFormat(Enum):
 
 @dataclass(frozen=True)
 class LastStage:
-    start: date
     end: date
     hours: float
 
@@ -96,37 +94,72 @@ def classify_file(doc: dict[str, Any] | None) -> FileFormat:
     return FileFormat.LEGACY
 
 
-def _spans_one_month(stage: LastStage) -> bool:
-    days = calendar.monthrange(stage.start.year, stage.start.month)[1]
-    return stage.start.day == 1 and stage.end == stage.start + timedelta(days=days)
+def _whole_days(hours: float) -> int:
+    """`hours` in days rounded half away from zero, as the validator dates a stage end."""
+    return int(Decimal(hours / _DAY_HOURS).to_integral_value(rounding=ROUND_HALF_UP))
 
 
-def _fixed_step_hours(stage: LastStage) -> float:
-    if (stage.end - stage.start).days == _WEEK_DAYS:
-        return _WEEK_HOURS
-    if stage.hours <= 0 or stage.hours % 24:
-        raise Refusal(
-            f"the last in-study stage lasts {stage.hours:g} h, not a positive whole number of days"
-        )
-    return stage.hours
+def legacy_water_seed(stages: object) -> list[dict[str, Any]]:
+    """The legacy `stages` in `start_date` order, the order the runtime reads them in.
 
-
-def infer_water_stages(last: LastStage, deepest_hours: float) -> list[dict[str, Any]]:
-    """Water calendar from the study end, covering `deepest_hours` (equality covers).
-
-    Raises `Refusal` when the last in-study stage has no whole-day length to repeat.
+    Raises `Refusal` when an entry has no ISO `start_date` or no finite positive
+    `duration_hours`.
     """
-    fixed = None if _spans_one_month(last) else _fixed_step_hours(last)
-    stages: list[dict[str, Any]] = []
-    start, covered = last.end, 0.0
-    while covered < deepest_hours:
-        hours = (
-            fixed
-            if fixed is not None
-            else calendar.monthrange(start.year, start.month)[1] * 24.0
+    if not isinstance(stages, list) or not all(isinstance(s, dict) for s in stages):
+        raise Refusal(f"{FILE_NAME}: `stages` must be a list of objects")
+    starts: list[date] = []
+    for i, stage in enumerate(stages):
+        hours = stage.get("duration_hours")
+        try:
+            starts.append(date.fromisoformat(stage["start_date"]))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise Refusal(
+                f"{FILE_NAME}: `stages[{i}].start_date` is malformed ({exc!r})"
+            ) from exc
+        if (
+            isinstance(hours, bool)
+            or not isinstance(hours, int | float)
+            or not math.isfinite(hours)
+            or hours <= 0
+        ):
+            raise Refusal(
+                f"{FILE_NAME}: `stages[{i}].duration_hours` must be a finite number > 0"
+            )
+    return [
+        stage
+        for _, stage in sorted(zip(starts, stages, strict=True), key=lambda p: p[0])
+    ]
+
+
+def water_stages(
+    seed: Sequence[dict[str, Any]], last: LastStage, deepest_hours: float
+) -> list[dict[str, Any]]:
+    """The water calendar the deprecated format resolves to, covering `deepest_hours`.
+
+    `seed` (the legacy `stages`, in `start_date` order) is kept verbatim and extended
+    with copies of its last length, or of `last`'s when it is empty, until the total
+    reaches `deepest_hours` (equality covers).
+
+    Raises `Refusal` when a copy is needed and its length rounds to no whole day.
+    """
+    stages = list(seed)
+    if stages:
+        hours = float(stages[-1]["duration_hours"])
+        start = date.fromisoformat(stages[-1]["start_date"]) + timedelta(
+            days=_whole_days(hours)
         )
+    else:
+        hours, start = last.hours, last.end
+    covered = 0.0
+    for stage in stages:
+        covered += stage["duration_hours"]
+    if covered < deepest_hours and _whole_days(hours) < 1:
+        raise Refusal(
+            f"the last stage lasts {hours:g} h, under the whole day a water stage needs"
+        )
+    while covered < deepest_hours:
         stages.append({"start_date": start.isoformat(), "duration_hours": hours})
-        start += timedelta(hours=hours)
+        start += timedelta(days=_whole_days(hours))
         covered += hours
     return stages
 
@@ -177,7 +210,6 @@ def _last_study_stage(deck: Path) -> LastStage:
     stage = max(in_study, key=lambda s: s["id"])
     try:
         return LastStage(
-            date.fromisoformat(stage["start_date"]),
             date.fromisoformat(stage["end_date"]),
             float(sum(block["hours"] for block in stage["blocks"])),
         )
@@ -239,8 +271,9 @@ def plan_deck(deck: Path) -> DeckPlan:
             "migrated" if has_arc else "renamed" if anticipates_thermal else "cleared"
         )
     if has_arc:
-        migrated["water_bucket_stages"] = infer_water_stages(
-            _last_study_stage(deck), deepest_hours
+        seed = legacy_water_seed(doc["stages"]) if doc is not None else []
+        migrated["water_bucket_stages"] = water_stages(
+            seed, _last_study_stage(deck), deepest_hours
         )
     if outcome == "no change":
         return DeckPlan(deck, outcome, None)

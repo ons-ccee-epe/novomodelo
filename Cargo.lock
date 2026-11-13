@@ -1222,7 +1222,6 @@ dependencies = [
  "rayon",
  "serde",
  "serde_json",
- "sha2",
  "signal-hook",
  "tempfile",
  "terminal_size",

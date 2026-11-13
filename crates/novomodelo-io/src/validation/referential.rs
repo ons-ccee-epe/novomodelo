@@ -1055,7 +1055,9 @@ fn validate_variable_ref_entity(
         | VariableRef::HydroStorageInitial { hydro_id, .. }
         | VariableRef::HydroStorageFinal { hydro_id, .. }
         | VariableRef::HydroUsefulVolumeInitial { hydro_id, .. }
-        | VariableRef::HydroUsefulVolumeFinal { hydro_id, .. } => {
+        | VariableRef::HydroUsefulVolumeFinal { hydro_id, .. }
+        | VariableRef::HydroOutflowVolume { hydro_id, .. }
+        | VariableRef::HydroDiversionVolume { hydro_id, .. } => {
             if !ids.hydro.contains(&hydro_id.0) {
                 ctx.emit(
                     &rules::REFERENTIAL_GENERIC_TERM_UNDECLARED_ENTITY,
@@ -1129,7 +1131,8 @@ fn validate_variable_ref_entity(
             }
         }
         VariableRef::PumpingFlow { station_id, .. }
-        | VariableRef::PumpingPower { station_id, .. } => {
+        | VariableRef::PumpingPower { station_id, .. }
+        | VariableRef::PumpingVolume { station_id, .. } => {
             if !ids.pumping.contains(&station_id.0) {
                 ctx.emit(
                     &rules::REFERENTIAL_GENERIC_TERM_UNDECLARED_ENTITY,
@@ -2963,6 +2966,70 @@ mod tests {
             "error message must name non-existent Hydro 99, got: {}",
             inv[0].message
         );
+    }
+
+    #[test]
+    fn test_stage_volume_unknown_entity_refs() {
+        use novomodelo_core::{ConstraintExpression, GenericConstraint, LinearTerm, VariableRef};
+
+        let dir = TempDir::new().unwrap();
+        make_minimal_case(&dir);
+        let mut data = parse_case(&dir);
+
+        let constraint_on = |var: VariableRef| GenericConstraint {
+            id: EntityId::from(1),
+            name: "test_constraint".to_string(),
+            description: None,
+            expression: ConstraintExpression {
+                terms: vec![LinearTerm::literal(1.0, var)],
+            },
+            slack: None,
+            bound_lower: None,
+            bound_upper: None,
+        };
+
+        for (var, expected) in [
+            (
+                VariableRef::HydroOutflowVolume {
+                    hydro_id: EntityId::from(99),
+                },
+                "non-existent Hydro 99",
+            ),
+            (
+                VariableRef::HydroDiversionVolume {
+                    hydro_id: EntityId::from(99),
+                },
+                "non-existent Hydro 99",
+            ),
+            (
+                VariableRef::PumpingVolume {
+                    station_id: EntityId::from(99),
+                },
+                "non-existent PumpingStation 99",
+            ),
+        ] {
+            let label = format!("{var:?}");
+            data.generic_constraints = vec![constraint_on(var)];
+
+            let mut ctx = ValidationContext::new();
+            validate_referential_integrity(&data, &mut ctx);
+
+            let inv: Vec<_> = ctx
+                .errors()
+                .into_iter()
+                .filter(|e| e.kind == ErrorKind::InvalidReference)
+                .collect();
+            assert_eq!(
+                inv.len(),
+                1,
+                "{label}: expected exactly 1 InvalidReference, got: {inv:?}"
+            );
+            assert!(
+                inv[0].message.contains(expected),
+                "{label}: error message must contain {expected:?}, got: {}",
+                inv[0].message
+            );
+        }
     }
 
     /// A constraint referencing `hydro_storage_initial(99, 0)` where Hydro 99 does

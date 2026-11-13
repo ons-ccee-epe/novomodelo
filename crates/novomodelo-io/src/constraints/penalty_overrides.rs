@@ -66,7 +66,9 @@
 //!
 //! - Required key columns (`*_id`, `stage_id`) must be present with Int32 type.
 //! - Any provided (non-null) optional Float64 value must be finite — NaN and ±Inf are rejected.
-//! - Any provided (non-null) optional Float64 value must be > 0.0 — penalties must be positive.
+//! - Any provided (non-null) optional Float64 value must be > 0.0 — penalties must be positive —
+//!   except `penalty_overrides_hydro.turbined_cost` and `penalty_overrides_ncs.curtailment_cost`,
+//!   which must be >= 0.0, matching their `penalties.json` defaults.
 //!
 //! Deferred validations (not performed here):
 //!
@@ -263,16 +265,33 @@ pub struct NcsPenaltyOverrideRow {
 
 // ── Validation helpers ────────────────────────────────────────────────────────
 
-/// Validate that a present (non-null) optional float value is finite and positive.
-///
-/// Penalties are strictly positive: a value of exactly 0.0 is rejected (`<= 0.0`, not
-/// `< 0.0`).
+fn validate_optional_non_negative(
+    value: Option<f64>,
+    file_label: &str,
+    row_idx: usize,
+    column: &str,
+    path: &Path,
+) -> Result<(), LoadError> {
+    validate_optional_bounded(value, file_label, row_idx, column, path, true)
+}
+
 fn validate_optional_positive(
     value: Option<f64>,
     file_label: &str,
     row_idx: usize,
     column: &str,
     path: &Path,
+) -> Result<(), LoadError> {
+    validate_optional_bounded(value, file_label, row_idx, column, path, false)
+}
+
+fn validate_optional_bounded(
+    value: Option<f64>,
+    file_label: &str,
+    row_idx: usize,
+    column: &str,
+    path: &Path,
+    allow_zero: bool,
 ) -> Result<(), LoadError> {
     if let Some(v) = value {
         if !v.is_finite() {
@@ -282,11 +301,16 @@ fn validate_optional_positive(
                 message: format!("value must be finite, got {v}"),
             });
         }
-        if v <= 0.0 {
+        let (rejected, bound) = if allow_zero {
+            (v < 0.0, ">=")
+        } else {
+            (v <= 0.0, ">")
+        };
+        if rejected {
             return Err(LoadError::SchemaError {
                 path: path.to_path_buf(),
                 field: format!("{file_label}[{row_idx}].{column}"),
-                message: format!("value must be > 0.0, got {v}"),
+                message: format!("value must be {bound} 0.0, got {v}"),
             });
         }
     }
@@ -564,7 +588,7 @@ pub fn parse_penalty_overrides_hydro(
                 "spillage_cost",
                 path,
             )?;
-            validate_optional_positive(
+            validate_optional_non_negative(
                 turbined_cost,
                 "penalty_overrides_hydro",
                 row_idx,
@@ -754,7 +778,7 @@ pub fn parse_penalty_overrides_ncs(path: &Path) -> Result<Vec<NcsPenaltyOverride
 
             let curtailment_cost = optional_value(curtailment_cost_col, i);
 
-            validate_optional_positive(
+            validate_optional_non_negative(
                 curtailment_cost,
                 "penalty_overrides_ncs",
                 row_idx,
@@ -1573,7 +1597,6 @@ mod tests {
         }
     }
 
-    /// AC: negative curtailment_cost -> SchemaError with "must be > 0.0".
     #[test]
     fn test_ncs_negative_curtailment_cost() {
         let batch = make_ncs_batch(&[1], &[0], vec![Some(-1.0)]);
@@ -1587,9 +1610,68 @@ mod tests {
                     "field should contain 'curtailment_cost', got: {field}"
                 );
                 assert!(
-                    message.contains("must be > 0.0"),
-                    "message should contain 'must be > 0.0', got: {message}"
+                    message.contains("must be >= 0.0"),
+                    "message should contain 'must be >= 0.0', got: {message}"
                 );
+            }
+            other => panic!("expected SchemaError, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_ncs_zero_curtailment_cost_accepted() {
+        let batch = make_ncs_batch(&[1], &[0], vec![Some(0.0)]);
+        let tmp = write_parquet(&batch);
+        let rows = parse_penalty_overrides_ncs(tmp.path()).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].curtailment_cost, Some(0.0));
+    }
+
+    fn make_single_hydro_column_batch(column: &str, value: f64) -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("hydro_id", DataType::Int32, false),
+            Field::new("stage_id", DataType::Int32, false),
+            Field::new(column, DataType::Float64, true),
+        ]));
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int32Array::from(vec![1_i32])),
+                Arc::new(Int32Array::from(vec![0_i32])),
+                Arc::new(Float64Array::from(vec![Some(value)])),
+            ],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn test_hydro_zero_turbined_cost_accepted() {
+        let tmp = write_parquet(&make_single_hydro_column_batch("turbined_cost", 0.0));
+        let rows = parse_penalty_overrides_hydro(tmp.path()).unwrap();
+        assert_eq!(rows[0].turbined_cost, Some(0.0));
+    }
+
+    #[test]
+    fn test_hydro_negative_turbined_cost_rejected() {
+        let tmp = write_parquet(&make_single_hydro_column_batch("turbined_cost", -0.01));
+        let err = parse_penalty_overrides_hydro(tmp.path()).unwrap_err();
+        match &err {
+            LoadError::SchemaError { field, message, .. } => {
+                assert!(field.contains("turbined_cost"), "got field: {field}");
+                assert!(message.contains("must be >= 0.0"), "got: {message}");
+            }
+            other => panic!("expected SchemaError, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_hydro_zero_spillage_cost_still_rejected() {
+        let tmp = write_parquet(&make_single_hydro_column_batch("spillage_cost", 0.0));
+        let err = parse_penalty_overrides_hydro(tmp.path()).unwrap_err();
+        match &err {
+            LoadError::SchemaError { field, message, .. } => {
+                assert!(field.contains("spillage_cost"), "got field: {field}");
+                assert!(message.contains("must be > 0.0"), "got: {message}");
             }
             other => panic!("expected SchemaError, got: {other:?}"),
         }

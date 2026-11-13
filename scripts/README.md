@@ -14,13 +14,19 @@ Helper scripts for Novomodelo, grouped by role.
 - **`migrate/`** — one-time deck migrations. `post_study_stages.py DECK_DIR [DECK_DIR ...]`
   rewrites each deck's `post_study_stages.json` from the deprecated `stages` format:
   `stages` becomes `thermal_stages` (kept with `thermal_bounds` only when a thermal is
-  anticipated, dropped otherwise) and `water_bucket_stages` is inferred from the last
-  study stage for decks with a travel-time arc. All decks are planned before any file is
+  anticipated, dropped otherwise). On a deck with a travel-time arc, `water_bucket_stages`
+  is the calendar the deprecated format resolves to: the legacy `stages`, extended with
+  copies of the last stage until they cover the deepest travel time, so migrating does
+  not change results. All decks are planned before any file is
   written, so one refused deck writes nothing (exit 1; usage errors exit 2), and a second
   run changes nothing. `test_post_study_stages.py` covers it; its `validate` cases need
   `NOVOMODELO_BIN` to point at a built `novomodelo` binary and skip without it.
 - **`pre-commit`** — the git pre-commit hook. Install with
   `ln -sf ../../scripts/pre-commit .git/hooks/pre-commit`.
+- **`build-profiling.sh`** — builds with the `profiling` profile into
+  `target/perf/`, linked with GNU `ld` so `perf` can unwind call stacks; x86_64
+  Linux only, runs from anywhere. Usage and the profiling workflow are in
+  `docs/profiling.md`.
 - **`loc-stats.sh`** — refreshable reporting tool (not a CI gate): Rust line
   counts split into production vs test, per crate and global, plus test-function
   counts. `--nextest` adds the runtime test count, `--worktree`/`--csv` vary the

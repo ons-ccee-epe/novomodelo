@@ -115,7 +115,7 @@
           "type": "number"
         },
         "turbined_cost": {
-          "description": "Turbined-flow regularization cost ($/(m³/s·h)).",
+          "description": "Turbined-flow regularization cost ($/(m³/s·h)). Must be >= 0.",
           "format": "double",
           "type": "number"
         },
@@ -181,7 +181,7 @@
       "description": "The `non_controllable_source` section.",
       "properties": {
         "curtailment_cost": {
-          "description": "Curtailment cost ($/`MWh`).",
+          "description": "Curtailment cost ($/`MWh`). Must be >= 0.",
           "format": "double",
           "type": "number"
         }

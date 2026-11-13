@@ -9,12 +9,12 @@ use crate::post_study_stages::PostStudyFormat;
 const WATER_CALENDAR_KEY: &str = "water_bucket_stages";
 const THERMAL_CALENDAR_KEY: &str = "thermal_stages";
 
-/// Rule `semantic.5a.56`: the deprecated `stages` key without a new key, or a deck with a
-/// travel-time arc and no file. Rule `semantic.5a.57`: the deprecated `stages` key together
-/// with `thermal_stages` or `water_bucket_stages`. Rule `semantic.5a.60`: a current file declaring only one of
-/// `thermal_stages` and `thermal_bounds`. Rules `semantic.5a.58` and `semantic.5a.59`: a
+/// Rule `semantic.5a.59`: the deprecated `stages` key without a new key, or a deck with a
+/// travel-time arc and no file. Rule `semantic.5a.60`: the deprecated `stages` key together
+/// with `thermal_stages` or `water_bucket_stages`. Rule `semantic.5a.63`: a current file declaring only one of
+/// `thermal_stages` and `thermal_bounds`. Rules `semantic.5a.61` and `semantic.5a.62`: a
 /// current file that omits the water calendar, or declares one too short, on a deck with a
-/// travel-time arc. Rules `semantic.5a.61` and `semantic.5a.62`: a current file declaring
+/// travel-time arc. Rules `semantic.5a.64` and `semantic.5a.65`: a current file declaring
 /// `water_bucket_stages` on a deck with no travel-time arc, or `thermal_stages` on a deck with
 /// no anticipated thermal.
 pub(super) fn check_post_study_format(data: &ParsedData, ctx: &mut ValidationContext) {

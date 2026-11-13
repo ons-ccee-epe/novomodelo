@@ -154,6 +154,18 @@ pub(super) fn resolve_variable_ref(
             station.consumption_mw_per_m3s
         }),
 
+        VariableRef::HydroOutflowVolume { hydro_id } => resolve_stage_volume(layout, |blk| {
+            resolve_hydro_outflow(*hydro_id, blk, ctx, layout)
+        }),
+
+        VariableRef::HydroDiversionVolume { hydro_id } => resolve_stage_volume(layout, |blk| {
+            resolve_hydro_diversion(*hydro_id, blk, ctx, layout)
+        }),
+
+        VariableRef::PumpingVolume { station_id } => resolve_stage_volume(layout, |blk| {
+            resolve_pumping_column(*station_id, blk, ctx, layout, |_| 1.0)
+        }),
+
         VariableRef::ContractImport {
             contract_id,
             block_id,
@@ -522,6 +534,23 @@ fn resolve_hydro_outflow(
     let mut result = resolve_turbine_cells(hydro_id, None, blk, 1.0, ctx, layout);
     result.push((layout.geometry.spillage_col(HydroSys::new(pos), blk), 1.0));
     result
+}
+
+/// Stage volume (hm³): every block's flow columns from `per_block`, each weighted by
+/// that block's `tau`, in ascending block order.
+fn resolve_stage_volume(
+    layout: &StageLayout<'_>,
+    per_block: impl Fn(BlockIdx) -> Vec<(usize, f64)>,
+) -> Vec<(usize, f64)> {
+    (0..layout.clock.n_blks())
+        .map(BlockIdx::new)
+        .flat_map(|blk| {
+            let tau = layout.clock.tau(blk);
+            per_block(blk)
+                .into_iter()
+                .map(move |(col, m)| (col, m * tau))
+        })
+        .collect()
 }
 
 /// Resolve `HydroGeneration` by dispatching on the production model.

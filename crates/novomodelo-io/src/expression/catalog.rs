@@ -150,23 +150,33 @@ pub(crate) fn build_variable_ref(
     let variable = match name {
         // Stage-only variables (block_id must be None).
         "hydro_storage" => {
-            if block_id.is_some() {
-                return Err(format!(
-                    "variable \"{name}\" does not accept a block argument"
-                ));
-            }
+            reject_block_argument(name, block_id)?;
             Ok(VariableRef::HydroStorage {
                 hydro_id: entity_id,
             })
         }
         "hydro_withdrawal" => {
-            if block_id.is_some() {
-                return Err(format!(
-                    "variable \"{name}\" does not accept a block argument"
-                ));
-            }
+            reject_block_argument(name, block_id)?;
             Ok(VariableRef::HydroWithdrawal {
                 hydro_id: entity_id,
+            })
+        }
+        "hydro_outflow_volume" => {
+            reject_block_argument(name, block_id)?;
+            Ok(VariableRef::HydroOutflowVolume {
+                hydro_id: entity_id,
+            })
+        }
+        "hydro_diversion_volume" => {
+            reject_block_argument(name, block_id)?;
+            Ok(VariableRef::HydroDiversionVolume {
+                hydro_id: entity_id,
+            })
+        }
+        "pumping_volume" => {
+            reject_block_argument(name, block_id)?;
+            Ok(VariableRef::PumpingVolume {
+                station_id: entity_id,
             })
         }
         // Block-capable variables.
@@ -296,6 +306,108 @@ pub(crate) fn build_variable_ref(
     Ok(variable)
 }
 
+fn reject_block_argument(name: &str, block_id: Option<usize>) -> Result<(), String> {
+    if block_id.is_some() {
+        return Err(format!(
+            "variable \"{name}\" does not accept a block argument"
+        ));
+    }
+    Ok(())
+}
+
+/// The call `build_variable_ref` maps back to the same variant.
+pub(crate) fn variable_call(variable: &VariableRef) -> String {
+    let (name, id, block_id, bus_id) = match *variable {
+        VariableRef::HydroStorage { hydro_id } => ("hydro_storage", hydro_id, None, None),
+        VariableRef::HydroWithdrawal { hydro_id } => ("hydro_withdrawal", hydro_id, None, None),
+        VariableRef::HydroEvaporation { hydro_id, block_id } => {
+            ("hydro_evaporation", hydro_id, block_id, None)
+        }
+        VariableRef::HydroInflow { hydro_id, block_id } => {
+            ("hydro_inflow", hydro_id, block_id, None)
+        }
+        VariableRef::HydroStorageInitial { hydro_id, block_id } => {
+            ("hydro_storage_initial", hydro_id, block_id, None)
+        }
+        VariableRef::HydroStorageFinal { hydro_id, block_id } => {
+            ("hydro_storage_final", hydro_id, block_id, None)
+        }
+        VariableRef::HydroUsefulVolumeInitial { hydro_id, block_id } => {
+            ("hydro_useful_volume_initial", hydro_id, block_id, None)
+        }
+        VariableRef::HydroUsefulVolumeFinal { hydro_id, block_id } => {
+            ("hydro_useful_volume_final", hydro_id, block_id, None)
+        }
+        VariableRef::HydroTurbined {
+            hydro_id,
+            block_id,
+            bus_id,
+        } => ("hydro_turbined", hydro_id, block_id, bus_id),
+        VariableRef::HydroSpillage { hydro_id, block_id } => {
+            ("hydro_spillage", hydro_id, block_id, None)
+        }
+        VariableRef::HydroDiversion { hydro_id, block_id } => {
+            ("hydro_diversion", hydro_id, block_id, None)
+        }
+        VariableRef::HydroOutflow { hydro_id, block_id } => {
+            ("hydro_outflow", hydro_id, block_id, None)
+        }
+        VariableRef::HydroGeneration {
+            hydro_id,
+            block_id,
+            bus_id,
+        } => ("hydro_generation", hydro_id, block_id, bus_id),
+        VariableRef::ThermalGeneration {
+            thermal_id,
+            block_id,
+        } => ("thermal_generation", thermal_id, block_id, None),
+        VariableRef::LineDirect { line_id, block_id } => ("line_direct", line_id, block_id, None),
+        VariableRef::LineReverse { line_id, block_id } => ("line_reverse", line_id, block_id, None),
+        VariableRef::LineExchange { line_id, block_id } => {
+            ("line_exchange", line_id, block_id, None)
+        }
+        VariableRef::BusDeficit { bus_id, block_id } => ("bus_deficit", bus_id, block_id, None),
+        VariableRef::BusExcess { bus_id, block_id } => ("bus_excess", bus_id, block_id, None),
+        VariableRef::PumpingFlow {
+            station_id,
+            block_id,
+        } => ("pumping_flow", station_id, block_id, None),
+        VariableRef::PumpingPower {
+            station_id,
+            block_id,
+        } => ("pumping_power", station_id, block_id, None),
+        VariableRef::ContractImport {
+            contract_id,
+            block_id,
+        } => ("contract_import", contract_id, block_id, None),
+        VariableRef::ContractExport {
+            contract_id,
+            block_id,
+        } => ("contract_export", contract_id, block_id, None),
+        VariableRef::NonControllableGeneration {
+            source_id,
+            block_id,
+        } => ("non_controllable_generation", source_id, block_id, None),
+        VariableRef::NonControllableCurtailment {
+            source_id,
+            block_id,
+        } => ("non_controllable_curtailment", source_id, block_id, None),
+        VariableRef::AnticipatedDecision { thermal_id } => {
+            ("anticipated_decision", thermal_id, None, None)
+        }
+        VariableRef::HydroOutflowVolume { hydro_id } => {
+            ("hydro_outflow_volume", hydro_id, None, None)
+        }
+        VariableRef::HydroDiversionVolume { hydro_id } => {
+            ("hydro_diversion_volume", hydro_id, None, None)
+        }
+        VariableRef::PumpingVolume { station_id } => ("pumping_volume", station_id, None, None),
+    };
+    let block = block_id.map_or_else(String::new, |k| format!(", {k}"));
+    let bus = bus_id.map_or_else(String::new, |b| format!(", bus={b}"));
+    format!("{name}({id}{block}{bus})")
+}
+
 /// Resolves a parsed variable call: a positional entity id, an optional positional block and
 /// an optional `bus=` after them, or the `line_exchange(source_bus=, target_bus=)` pair form,
 /// which reads its line and orientation from `line_index`. The direct forms are `Forward`.
@@ -420,6 +532,7 @@ fn line_pair_from_call(
 #[allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use crate::expression::parser::{ExprKind, parse};
 
     /// Build a one-line index: a line `id` connecting `source_bus_id`→`target_bus_id`.
     fn line(id: i32, source: i32, target: i32) -> Line {
@@ -564,6 +677,98 @@ mod tests {
     fn test_build_hydro_useful_volume_bus_selector_rejected() {
         for name in ["hydro_useful_volume_final", "hydro_useful_volume_initial"] {
             assert!(build_variable_ref(name, EntityId(3), None, Some(EntityId(1))).is_err());
+        }
+    }
+
+    #[test]
+    fn stage_volume_names_resolve_without_a_block_or_bus() {
+        let id = EntityId(4);
+        assert_eq!(
+            build_variable_ref("hydro_outflow_volume", id, None, None),
+            Ok(VariableRef::HydroOutflowVolume { hydro_id: id })
+        );
+        assert_eq!(
+            build_variable_ref("hydro_diversion_volume", id, None, None),
+            Ok(VariableRef::HydroDiversionVolume { hydro_id: id })
+        );
+        assert_eq!(
+            build_variable_ref("pumping_volume", id, None, None),
+            Ok(VariableRef::PumpingVolume { station_id: id })
+        );
+        for name in [
+            "hydro_outflow_volume",
+            "hydro_diversion_volume",
+            "pumping_volume",
+        ] {
+            assert_eq!(
+                build_variable_ref(name, id, Some(1), None),
+                Err(format!(
+                    "variable \"{name}\" does not accept a block argument"
+                ))
+            );
+            let err = build_variable_ref(name, id, None, Some(EntityId(1))).unwrap_err();
+            assert!(
+                err.starts_with(&format!(
+                    "variable \"{name}\" does not accept a bus selector"
+                )),
+                "{err}"
+            );
+        }
+    }
+
+    #[test]
+    fn variable_call_round_trips_through_the_parser() {
+        const NAMES: [&str; 29] = [
+            "hydro_storage",
+            "hydro_withdrawal",
+            "hydro_outflow_volume",
+            "hydro_diversion_volume",
+            "pumping_volume",
+            "hydro_evaporation",
+            "hydro_inflow",
+            "hydro_storage_initial",
+            "hydro_storage_final",
+            "hydro_useful_volume_initial",
+            "hydro_useful_volume_final",
+            "hydro_turbined",
+            "hydro_spillage",
+            "hydro_diversion",
+            "hydro_outflow",
+            "hydro_generation",
+            "thermal_generation",
+            "line_direct",
+            "line_reverse",
+            "line_exchange",
+            "bus_deficit",
+            "bus_excess",
+            "pumping_flow",
+            "pumping_power",
+            "contract_import",
+            "contract_export",
+            "non_controllable_generation",
+            "non_controllable_curtailment",
+            "anticipated_decision",
+        ];
+        for name in NAMES {
+            let mut accepted = false;
+            for block in [None, Some(2)] {
+                for bus in [None, Some(EntityId(3))] {
+                    let Ok(variable) = build_variable_ref(name, EntityId(7), block, bus) else {
+                        continue;
+                    };
+                    accepted = true;
+                    let call = variable_call(&variable);
+                    let ExprKind::Variable(parsed) = parse(&call).unwrap().lhs.kind else {
+                        panic!("`{call}` did not parse to a bare variable call");
+                    };
+                    assert_eq!(
+                        variable_from_call(&parsed, &LineBusPairIndex::default()),
+                        Ok((variable, LinePairOrientation::Forward)),
+                        "`{call}` did not resolve back to its variant"
+                    );
+                }
+            }
+            assert!(accepted, "{name}: no block and bus combination is accepted");
         }
     }
 

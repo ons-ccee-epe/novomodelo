@@ -22,8 +22,15 @@ value left) is a decoding error, never a value.
 
 | Variant                             | Enum                         | Postcard discriminant | Guarding test(s)                                                                                                 |
 | ------------------------------------ | ----------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `AnticipatedDecision`                | `VariableRef`                 | `0x14`                  | `test_variable_ref_postcard_discriminant_pin` (pin); `anticipated_decision_postcard_roundtrip` (round-trip)         |
+| `HydroInflow`                        | `VariableRef`                 | `0x15`                  | `test_variable_ref_postcard_discriminant_pin` (pin); `hydro_inflow_postcard_roundtrip` (round-trip)                 |
+| `HydroStorageInitial`                | `VariableRef`                 | `0x16`                  | `test_variable_ref_postcard_discriminant_pin` (pin); `hydro_storage_initial_postcard_roundtrip` (round-trip)        |
+| `HydroStorageFinal`                  | `VariableRef`                 | `0x17`                  | `test_variable_ref_postcard_discriminant_pin` (pin); `hydro_storage_final_postcard_roundtrip` (round-trip)          |
 | `HydroUsefulVolumeInitial`           | `VariableRef`                 | `0x18`                  | `test_variable_ref_postcard_discriminant_pin` (pin); `hydro_useful_volume_initial_postcard_roundtrip` (round-trip)  |
 | `HydroUsefulVolumeFinal`             | `VariableRef`                 | `0x19`                  | `test_variable_ref_postcard_discriminant_pin` (pin); `hydro_useful_volume_final_postcard_roundtrip` (round-trip)    |
+| `HydroOutflowVolume`                 | `VariableRef`                 | `0x1A`                  | `test_variable_ref_postcard_discriminant_pin` (pin); `hydro_outflow_volume_postcard_roundtrip` (round-trip)         |
+| `HydroDiversionVolume`               | `VariableRef`                 | `0x1B`                  | `test_variable_ref_postcard_discriminant_pin` (pin); `hydro_diversion_volume_postcard_roundtrip` (round-trip)       |
+| `PumpingVolume`                      | `VariableRef`                 | `0x1C`                  | `test_variable_ref_postcard_discriminant_pin` (pin); `pumping_volume_postcard_roundtrip` (round-trip)               |
 | `IntegratedEquivalentProductivity`   | `BroadcastComputedParameter`  | `0x07`                  | `broadcast_computed_parameter_postcard_discriminant_pin` (pin); `broadcast_computed_parameter_integrated_tags_round_trip` (round-trip) |
 | `IntegratedAccumulatedProductivity`  | `BroadcastComputedParameter`  | `0x08`                  | `broadcast_computed_parameter_postcard_discriminant_pin` (pin); `broadcast_computed_parameter_integrated_tags_round_trip` (round-trip) |
 | `MaxStoredEnergy`                    | `BroadcastComputedParameter`  | `0x09`                  | `broadcast_computed_parameter_postcard_discriminant_pin` (pin); `broadcast_computed_parameter_max_stored_energy_round_trip` (round-trip) |

@@ -1386,32 +1386,27 @@ fn generic_constraint_two_hydros_sum_csc_entries() {
     );
 }
 
-/// Build a single-hydro, one-bus, `n_blks`-block, one-stage system under
-/// `block_mode` with `storage` state on, optionally carrying `constraint` +
-/// `bounds`. Column layout (N=1, no thermal/FPHA/evap): storage=[0,1),
-/// storage_in=[1,2), theta=2, control region from col 3.
-#[allow(clippy::cast_possible_wrap)]
-fn one_hydro_system(
-    n_blks: usize,
+struct HydroStudy {
+    block_hours: Vec<f64>,
     block_mode: novomodelo_core::BlockMode,
-    constraint: Option<novomodelo_core::GenericConstraint>,
-    bounds: novomodelo_core::ResolvedGenericConstraintBounds,
-) -> novomodelo_core::System {
+    hydros: Vec<novomodelo_core::Hydro>,
+    pumping_stations: Vec<novomodelo_core::PumpingStation>,
+    hydro_block: HydroBlockBounds,
+    constraints: Vec<novomodelo_core::GenericConstraint>,
+    generic_bounds: novomodelo_core::ResolvedGenericConstraintBounds,
+}
+
+fn study_hydro(id: i32, downstream: Option<i32>) -> novomodelo_core::Hydro {
     use chrono::NaiveDate;
     use novomodelo_core::HydroGenerationModel;
-    use novomodelo_core::scenario::{InflowModel, LoadModel};
-    use novomodelo_core::temporal::{
-        Block, NoiseMethod, ScenarioSourceConfig, StageRiskConfig, StageStateConfig,
-    };
 
-    let hydro_id = EntityId(5);
-
-    let hydro = make_hydro(
-        hydro_id,
+    make_hydro(
+        EntityId(id),
         HydroSpec {
-            name: "H1".to_string(),
+            name: format!("H{id}"),
             operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
             bus_id: EntityId(1),
+            downstream_id: downstream.map(EntityId),
             min_storage_hm3: 0.0,
             max_storage_hm3: 200.0,
             max_turbined_m3s: 100.0,
@@ -1419,7 +1414,51 @@ fn one_hydro_system(
             max_generation_mw: 250.0,
             ..Default::default()
         },
-    );
+    )
+}
+
+impl Default for HydroStudy {
+    fn default() -> Self {
+        Self {
+            block_hours: vec![720.0],
+            block_mode: novomodelo_core::BlockMode::Parallel,
+            hydros: vec![study_hydro(5, None)],
+            pumping_stations: Vec::new(),
+            hydro_block: default_hydro_block_bounds(),
+            constraints: Vec::new(),
+            generic_bounds: novomodelo_core::ResolvedGenericConstraintBounds::new(
+                &std::collections::HashMap::new(),
+                std::iter::empty(),
+            ),
+        }
+    }
+}
+
+/// Build a single-hydro, one-bus, `n_blks`-block, one-stage system under
+/// `block_mode` with `storage` state on, optionally carrying `constraint` +
+/// `bounds`. Column layout (N=1, no thermal/FPHA/evap): storage=[0,1),
+/// storage_in=[1,2), theta=2, control region from col 3.
+fn one_hydro_system(
+    n_blks: usize,
+    block_mode: novomodelo_core::BlockMode,
+    constraint: Option<novomodelo_core::GenericConstraint>,
+    bounds: novomodelo_core::ResolvedGenericConstraintBounds,
+) -> novomodelo_core::System {
+    hydro_study_system(HydroStudy {
+        block_hours: vec![720.0; n_blks],
+        block_mode,
+        constraints: constraint.into_iter().collect(),
+        generic_bounds: bounds,
+        ..Default::default()
+    })
+}
+
+fn hydro_study_system(study: HydroStudy) -> novomodelo_core::System {
+    use chrono::NaiveDate;
+    use novomodelo_core::scenario::{InflowModel, LoadModel};
+    use novomodelo_core::temporal::{
+        Block, NoiseMethod, ScenarioSourceConfig, StageRiskConfig, StageStateConfig,
+    };
 
     let bus = make_bus(
         EntityId(1),
@@ -1435,11 +1474,14 @@ fn one_hydro_system(
         },
     );
 
-    let blocks: Vec<Block> = (0..n_blks)
-        .map(|i| Block {
+    let blocks: Vec<Block> = study
+        .block_hours
+        .iter()
+        .enumerate()
+        .map(|(i, &duration_hours)| Block {
             index: i,
             name: format!("BLK{i}"),
-            duration_hours: 720.0,
+            duration_hours,
         })
         .collect();
 
@@ -1450,7 +1492,7 @@ fn one_hydro_system(
             end_date: NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
             season_id: None,
             blocks,
-            block_mode,
+            block_mode: study.block_mode,
             state_config: StageStateConfig {
                 storage: true,
                 inflow_lags: false,
@@ -1464,15 +1506,21 @@ fn one_hydro_system(
         },
     );
 
-    let inflow_models = vec![InflowModel {
-        hydro_id,
-        stage_id: 0,
-        mean_m3s: 50.0,
-        std_m3s: 0.0,
-        ar_coefficients: vec![],
-        residual_std_ratio: 0.0,
-        annual: None,
-    }];
+    let n_hydros = study.hydros.len();
+    let mut hydro_ids: Vec<EntityId> = study.hydros.iter().map(|hydro| hydro.id).collect();
+    hydro_ids.sort_unstable();
+    let inflow_models = hydro_ids
+        .into_iter()
+        .map(|hydro_id| InflowModel {
+            hydro_id,
+            stage_id: 0,
+            mean_m3s: 50.0,
+            std_m3s: 0.0,
+            ar_coefficients: vec![],
+            residual_std_ratio: 0.0,
+            annual: None,
+        })
+        .collect::<Vec<_>>();
 
     let load_models = vec![LoadModel {
         bus_id: EntityId(1),
@@ -1481,19 +1529,19 @@ fn one_hydro_system(
         std_mw: 0.0,
     }];
 
-    let resolved_bounds = ResolvedBounds::new(
+    let mut resolved_bounds = ResolvedBounds::new(
         &BoundsCountsSpec {
-            n_hydros: 1,
+            n_hydros,
             n_thermals: 0,
             n_lines: 0,
-            n_pumping: 0,
+            n_pumping: study.pumping_stations.len(),
             n_contracts: 0,
             n_stages: 1,
             k_max: 0,
         },
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
-            hydro_block: default_hydro_block_bounds(),
+            hydro_block: study.hydro_block,
             thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
@@ -1514,9 +1562,26 @@ fn one_hydro_system(
             },
         },
     );
+    let mut stations: Vec<_> = study.pumping_stations.iter().collect();
+    stations.sort_by_key(|station| station.id);
+    for (p, station) in stations.into_iter().enumerate() {
+        *resolved_bounds.pumping_bounds_mut(p, 0) = PumpingBlockBounds {
+            min_flow_m3s: station.min_flow_m3s,
+            max_flow_m3s: station.max_flow_m3s,
+        };
+    }
+    let mut sorted_hydros: Vec<_> = study.hydros.iter().collect();
+    sorted_hydros.sort_by_key(|hydro| hydro.id);
+    for (pos, hydro) in sorted_hydros.into_iter().enumerate() {
+        if let Some(channel) = &hydro.diversion {
+            resolved_bounds
+                .hydro_block_base_mut(pos, 0)
+                .max_diversion_m3s = channel.max_flow_m3s;
+        }
+    }
     let penalties = ResolvedPenalties::new(
         &PenaltiesCountsSpec {
-            n_hydros: 1,
+            n_hydros,
             n_buses: 1,
             n_lines: 0,
             n_ncs: 0,
@@ -1534,18 +1599,19 @@ fn one_hydro_system(
 
     let mut builder = SystemBuilder::new()
         .buses(vec![bus])
-        .hydros(vec![hydro])
+        .hydros(study.hydros)
+        .pumping_stations(study.pumping_stations)
         .stages(vec![stage])
         .inflow_models(inflow_models)
         .load_models(load_models)
         .bounds(resolved_bounds)
         .penalties(penalties);
-    if let Some(c) = constraint {
+    if !study.constraints.is_empty() {
         builder = builder
-            .generic_constraints(vec![c])
-            .resolved_generic_bounds(bounds);
+            .generic_constraints(study.constraints)
+            .resolved_generic_bounds(study.generic_bounds);
     }
-    builder.build().expect("one_hydro_system: valid")
+    builder.build().expect("hydro_study_system: valid")
 }
 
 #[test]
@@ -1800,6 +1866,734 @@ fn per_unit_storage_slack_price_ignores_stage_hours() {
         assert!(
             (per_hour / per_unit - stage_hours).abs() < 1e-9,
             "the per_hour twin must cost {stage_hours}× the per_unit slack"
+        );
+    }
+}
+
+/// derived: `BlockClock::tau`'s arithmetic, `hours * M3S_TO_HM3`; the parenthesised
+/// constant stays because `hours * 3_600.0 / 1e6` rounds differently.
+fn volume_tau(hours: f64) -> f64 {
+    hours * (3_600.0 / 1_000_000.0)
+}
+
+struct FlowColumns {
+    turbine: usize,
+    spillage: usize,
+    diversion: usize,
+}
+
+/// derived: the control region starts at `2N + 1` after storage, incoming storage and
+/// θ; a chronological stage first reserves `N * (n_blks - 1)` interior storage
+/// columns; turbine, spillage and diversion then take `N * n_blks` each, plant `p`
+/// block `k` at `start + p * n_blks + k`.
+fn flow_columns(
+    n_hydros: usize,
+    n_blks: usize,
+    block_mode: novomodelo_core::BlockMode,
+) -> FlowColumns {
+    use novomodelo_core::BlockMode;
+
+    let interior = match block_mode {
+        BlockMode::Parallel => 0,
+        BlockMode::Chronological => n_hydros * (n_blks - 1),
+    };
+    let family = n_hydros * n_blks;
+    let turbine = 2 * n_hydros + 1 + interior;
+    FlowColumns {
+        turbine,
+        spillage: turbine + family,
+        diversion: turbine + 2 * family,
+    }
+}
+
+fn row_entries(t: &StageTemplate, row: usize) -> Vec<(usize, f64)> {
+    (0..t.num_cols)
+        .flat_map(|col| {
+            csc_entries_at(t, col, row)
+                .into_iter()
+                .map(move |value| (col, value))
+        })
+        .collect()
+}
+
+/// Unequal, so a uniform `ζ / K` split cannot match the per-block `tau`.
+const VOLUME_BLOCK_HOURS: [f64; 2] = [100.0, 300.0];
+
+const VOLUME_CONSTRAINT_JSON: &str = r#"{"constraints":[{"id":100,"name":"vol","expression":"hydro_outflow_volume(5)","slack":{"enabled":false}}]}"#;
+
+/// derived: `hydro_outflow_volume(5)` on a two-block stage is the turbine cell then the
+/// spillage column, each block's column weighted by that block's `volume_tau`.
+fn outflow_volume_row(
+    block_mode: novomodelo_core::BlockMode,
+    block_hours: [f64; 2],
+) -> Vec<(usize, f64)> {
+    let cols = flow_columns(1, 2, block_mode);
+    let [tau0, tau1] = block_hours.map(volume_tau);
+    vec![
+        (cols.turbine, tau0),
+        (cols.turbine + 1, tau1),
+        (cols.spillage, tau0),
+        (cols.spillage + 1, tau1),
+    ]
+}
+
+/// `(constraint_id, stage_id, block_id, lower, upper)`, the row shape
+/// `ResolvedGenericConstraintBounds::new` consumes.
+type GenericBoundsRow = (i32, i32, Option<i32>, Option<f64>, Option<f64>);
+
+/// The study's stage template and the baseline row count: the generic row of
+/// `constraints_json` is at that row index. Constraint ids map to their position.
+fn stage_volume_template(
+    block_hours: &[f64],
+    block_mode: novomodelo_core::BlockMode,
+    constraints_json: &str,
+    bounds_rows: Vec<GenericBoundsRow>,
+) -> (usize, StageTemplate) {
+    stage_volume_template_with(
+        default_hydro_block_bounds(),
+        block_hours,
+        block_mode,
+        constraints_json,
+        bounds_rows,
+    )
+}
+
+fn stage_volume_template_with(
+    hydro_block: HydroBlockBounds,
+    block_hours: &[f64],
+    block_mode: novomodelo_core::BlockMode,
+    constraints_json: &str,
+    bounds_rows: Vec<GenericBoundsRow>,
+) -> (usize, StageTemplate) {
+    use novomodelo_core::ResolvedGenericConstraintBounds;
+
+    let baseline = build_templates_for(&hydro_study_system(HydroStudy {
+        block_hours: block_hours.to_vec(),
+        block_mode,
+        hydro_block,
+        ..Default::default()
+    }));
+    let constraints = parse_generic_from_str(constraints_json);
+    let id_map: std::collections::HashMap<i32, usize> = constraints
+        .iter()
+        .enumerate()
+        .map(|(position, constraint)| (constraint.id.0, position))
+        .collect();
+    let generic_bounds = ResolvedGenericConstraintBounds::new(&id_map, bounds_rows.into_iter());
+    let template = build_templates_for(&hydro_study_system(HydroStudy {
+        block_hours: block_hours.to_vec(),
+        block_mode,
+        hydro_block,
+        constraints,
+        generic_bounds,
+        ..Default::default()
+    }))
+    .into_iter()
+    .next()
+    .expect("one stage template");
+    (baseline[0].num_rows, template)
+}
+
+#[test]
+fn stage_volume_collapse_one_row_carries_tau_on_turbine_and_spillage() {
+    use novomodelo_core::BlockMode;
+
+    for block_mode in [BlockMode::Parallel, BlockMode::Chronological] {
+        let (generic_row, t) = stage_volume_template(
+            &VOLUME_BLOCK_HOURS,
+            block_mode,
+            VOLUME_CONSTRAINT_JSON,
+            vec![(100, 0, None, None, Some(50.0))],
+        );
+        assert_eq!(
+            t.num_rows,
+            generic_row + 1,
+            "{block_mode:?}: one stage-level row"
+        );
+
+        let expected = outflow_volume_row(block_mode, VOLUME_BLOCK_HOURS);
+        assert!(!expected.is_empty());
+        assert_eq!(
+            row_entries(&t, generic_row),
+            expected,
+            "{block_mode:?}: tau per block on turbine and spillage"
+        );
+
+        let diversion = flow_columns(1, 2, block_mode).diversion;
+        assert!(
+            row_entries(&t, generic_row)
+                .iter()
+                .all(|&(col, _)| !(diversion..diversion + 2).contains(&col)),
+            "{block_mode:?}: the diversion column is not read"
+        );
+    }
+}
+
+#[test]
+fn stage_volume_collapse_twin_with_equal_hours_carries_the_uniform_split() {
+    use novomodelo_core::BlockMode;
+
+    let equal_hours = [200.0, 200.0];
+    let (generic_row, t) = stage_volume_template(
+        &equal_hours,
+        BlockMode::Parallel,
+        VOLUME_CONSTRAINT_JSON,
+        vec![(100, 0, None, None, Some(50.0))],
+    );
+
+    let expected = outflow_volume_row(BlockMode::Parallel, equal_hours);
+    assert!(!expected.is_empty());
+    assert_eq!(row_entries(&t, generic_row), expected);
+    assert_ne!(
+        expected,
+        outflow_volume_row(BlockMode::Parallel, VOLUME_BLOCK_HOURS),
+        "the twin must differ from the unequal-hours row"
+    );
+}
+
+#[test]
+fn stage_volume_collapse_row_bounds_follow_the_bounds_row_shape() {
+    use novomodelo_core::BlockMode;
+
+    let (floor, ceiling, equality) = (10.0, 50.0, 30.0);
+    let cases = [
+        ((Some(floor), None), (floor, f64::INFINITY)),
+        ((None, Some(ceiling)), (f64::NEG_INFINITY, ceiling)),
+        ((Some(equality), Some(equality)), (equality, equality)),
+    ];
+    for ((lower, upper), expected) in cases {
+        let (generic_row, t) = stage_volume_template(
+            &VOLUME_BLOCK_HOURS,
+            BlockMode::Parallel,
+            VOLUME_CONSTRAINT_JSON,
+            vec![(100, 0, None, lower, upper)],
+        );
+        assert_eq!(
+            (t.row_lower[generic_row], t.row_upper[generic_row]),
+            expected,
+            "bounds row ({lower:?}, {upper:?})"
+        );
+    }
+}
+
+#[test]
+fn stage_volume_collapse_constraint_without_bounds_row_adds_no_row() {
+    use novomodelo_core::BlockMode;
+
+    let json = r#"{"constraints":[{"id":101,"name":"vol_a","expression":"hydro_outflow_volume(5)","slack":{"enabled":false}},{"id":102,"name":"vol_b","expression":"hydro_outflow_volume(5)","slack":{"enabled":false}}]}"#;
+    let (baseline_rows, t) = stage_volume_template(
+        &VOLUME_BLOCK_HOURS,
+        BlockMode::Parallel,
+        json,
+        vec![(101, 0, None, None, Some(50.0))],
+    );
+    assert_eq!(t.num_rows, baseline_rows + 1);
+}
+
+const VOLUME_SLACK_PENALTY: f64 = 40.0;
+
+/// Objective coefficient of the slack on a soft `hydro_outflow_volume(5)` ceiling row,
+/// on a parallel stage of `block_hours` blocks, under the declared `penalty_basis`.
+fn volume_slack_objective(block_hours: &[f64], penalty_basis: &str) -> f64 {
+    use novomodelo_core::BlockMode;
+
+    let baseline = &build_templates_for(&hydro_study_system(HydroStudy {
+        block_hours: block_hours.to_vec(),
+        ..Default::default()
+    }))[0];
+    let json = format!(
+        r#"{{"constraints":[{{"id":110,"name":"vol_cap","expression":"hydro_outflow_volume(5)","slack":{{"enabled":true,"penalty":{VOLUME_SLACK_PENALTY:?},"penalty_basis":"{penalty_basis}"}}}}]}}"#
+    );
+    let (_, t) = stage_volume_template(
+        block_hours,
+        BlockMode::Parallel,
+        &json,
+        vec![(110, 0, None, None, Some(50.0))],
+    );
+
+    assert_eq!(t.num_cols, baseline.num_cols + 1);
+    assert_eq!(t.num_rows, baseline.num_rows + 1);
+    assert_eq!(
+        csc_entries_at(&t, baseline.num_cols, baseline.num_rows),
+        vec![-1.0],
+        "the ceiling row carries one plus-slack at -1.0"
+    );
+    t.objective[baseline.num_cols]
+}
+
+/// derived: a `per_unit` slack costs `VOLUME_SLACK_PENALTY / COST_SCALE_FACTOR` per hm³
+/// on any stage; its `per_hour` twin costs `VOLUME_SLACK_PENALTY × total_hours /
+/// COST_SCALE_FACTOR`, with `total_hours` the sum of the stage's block hours.
+#[test]
+fn stage_volume_slack_price_follows_the_declared_basis() {
+    let short_stage = VOLUME_BLOCK_HOURS;
+    let long_stage = [300.0, 444.0];
+
+    let [(short_unit, short_hour), (long_unit, long_hour)] =
+        [short_stage, long_stage].map(|block_hours| {
+            let total_hours = block_hours.iter().sum::<f64>();
+
+            let per_unit = volume_slack_objective(&block_hours, "per_unit");
+            let expected_per_unit = VOLUME_SLACK_PENALTY / COST_SCALE_FACTOR;
+            assert!(
+                (per_unit - expected_per_unit).abs() < 1e-12,
+                "{total_hours} h: per_unit slack must cost {expected_per_unit}, got {per_unit}"
+            );
+
+            let per_hour = volume_slack_objective(&block_hours, "per_hour");
+            let expected_per_hour = VOLUME_SLACK_PENALTY * total_hours / COST_SCALE_FACTOR;
+            assert!(
+                (per_hour - expected_per_hour).abs() < 1e-9,
+                "{total_hours} h: per_hour slack must cost {expected_per_hour}, got {per_hour}"
+            );
+            assert!(
+                (per_hour / per_unit - total_hours).abs() < 1e-9,
+                "{total_hours} h: the per_hour twin must cost {total_hours}x the per_unit slack"
+            );
+            (per_unit, per_hour)
+        });
+
+    assert!(
+        (short_unit - long_unit).abs() < 1e-12,
+        "per_unit price must not move with the stage hours: {short_unit} vs {long_unit}"
+    );
+    let hours_gap = long_stage.iter().sum::<f64>() - short_stage.iter().sum::<f64>();
+    assert!(
+        (long_hour - short_hour - VOLUME_SLACK_PENALTY * hours_gap / COST_SCALE_FACTOR).abs()
+            < 1e-9,
+        "per_hour price must move with the stage hours: {short_hour} vs {long_hour}"
+    );
+}
+
+const STAGE_VOLUME_MATRIX_K: f64 = 3.0;
+
+const STAGE_VOLUME_MATRIX_JSON: &str = r#"{"constraints":[
+  {"id":101,"name":"vol_d","expression":"hydro_outflow_volume(10)","slack":{"enabled":false}},
+  {"id":102,"name":"vol_u_less_storage","expression":"hydro_outflow_volume(5) - hydro_storage(5)","slack":{"enabled":false}},
+  {"id":103,"name":"vol_weighted","expression":"@k * hydro_outflow_volume(5) + 2 * hydro_outflow_volume(10)","slack":{"enabled":false}}
+]}"#;
+
+/// The id map pins each constraint id to its sorted position, whatever the JSON or `bounds_ids` order.
+fn stage_volume_matrix_templates(
+    hydros: Vec<novomodelo_core::Hydro>,
+    constraints_json: &str,
+    bounds_ids: [i32; 3],
+) -> Vec<StageTemplate> {
+    use novomodelo_core::{ParameterKind, ResolvedGenericConstraintBounds, ScalarParameter};
+
+    let params = [ScalarParameter {
+        id: EntityId(42),
+        name: "k".to_string(),
+        kind: ParameterKind::Constant {
+            value: STAGE_VOLUME_MATRIX_K,
+        },
+    }];
+    let id_map: std::collections::HashMap<i32, usize> =
+        [(101, 0), (102, 1), (103, 2)].into_iter().collect();
+    let bounds_rows = bounds_ids.map(|id| (id, 0, None, None, Some(500.0)));
+    let system = hydro_study_system(HydroStudy {
+        block_hours: VOLUME_BLOCK_HOURS.to_vec(),
+        hydros,
+        constraints: parse_generic_from_str_with_params(constraints_json, &name_to_id_of(&params)),
+        generic_bounds: ResolvedGenericConstraintBounds::new(&id_map, bounds_rows.into_iter()),
+        ..Default::default()
+    });
+    build_templates_with_params(&system, &resolved_params_single_stage(2, &params))
+}
+
+/// derived: plant `p` block `k` of a flow family sits at `start + 2p + k`, each term is `coefficient * tau`.
+#[test]
+fn stage_volume_matrix_rows_read_their_own_plants_columns() {
+    use novomodelo_core::BlockMode;
+
+    let cascade = || vec![study_hydro(5, Some(10)), study_hydro(10, None)];
+    let first_generic_row = build_templates_for(&hydro_study_system(HydroStudy {
+        block_hours: VOLUME_BLOCK_HOURS.to_vec(),
+        hydros: cascade(),
+        ..Default::default()
+    }))[0]
+        .num_rows;
+    let templates =
+        stage_volume_matrix_templates(cascade(), STAGE_VOLUME_MATRIX_JSON, [101, 102, 103]);
+    let t = &templates[0];
+    assert_eq!(
+        t.num_rows,
+        first_generic_row + 3,
+        "one stage-level row each"
+    );
+
+    let cols = flow_columns(2, 2, BlockMode::Parallel);
+    let [tau_first, tau_second] = VOLUME_BLOCK_HOURS.map(volume_tau);
+    let (tu0, tu1, td0, td1) = (
+        cols.turbine,
+        cols.turbine + 1,
+        cols.turbine + 2,
+        cols.turbine + 3,
+    );
+    let (su0, su1, sd0, sd1) = (
+        cols.spillage,
+        cols.spillage + 1,
+        cols.spillage + 2,
+        cols.spillage + 3,
+    );
+    let u_storage = 0;
+    let k = STAGE_VOLUME_MATRIX_K;
+
+    let expected = [
+        vec![
+            (td0, tau_first),
+            (td1, tau_second),
+            (sd0, tau_first),
+            (sd1, tau_second),
+        ],
+        vec![
+            (u_storage, -1.0),
+            (tu0, tau_first),
+            (tu1, tau_second),
+            (su0, tau_first),
+            (su1, tau_second),
+        ],
+        vec![
+            (tu0, k * tau_first),
+            (tu1, k * tau_second),
+            (td0, 2.0 * tau_first),
+            (td1, 2.0 * tau_second),
+            (su0, k * tau_first),
+            (su1, k * tau_second),
+            (sd0, 2.0 * tau_first),
+            (sd1, 2.0 * tau_second),
+        ],
+    ];
+    for (offset, (label, expected)) in ["A", "B", "C"].into_iter().zip(expected).enumerate() {
+        assert!(!expected.is_empty());
+        assert_eq!(
+            row_entries(t, first_generic_row + offset),
+            expected,
+            "row {label}"
+        );
+    }
+
+    let d_position = 1;
+    assert!(
+        !csc_entries_at(t, tu0, d_position).is_empty(),
+        "the upstream turbine column enters the downstream water row"
+    );
+}
+
+#[test]
+fn stage_volume_matrix_declaration_order_is_invariant() {
+    let permuted_json = r#"{"constraints":[
+  {"id":103,"name":"vol_weighted","expression":"2 * hydro_outflow_volume(10) + @k * hydro_outflow_volume(5)","slack":{"enabled":false}},
+  {"id":102,"name":"vol_u_less_storage","expression":"-hydro_storage(5) + hydro_outflow_volume(5)","slack":{"enabled":false}},
+  {"id":101,"name":"vol_d","expression":"hydro_outflow_volume(10)","slack":{"enabled":false}}
+]}"#;
+
+    let declared = stage_volume_matrix_templates(
+        vec![study_hydro(5, Some(10)), study_hydro(10, None)],
+        STAGE_VOLUME_MATRIX_JSON,
+        [101, 102, 103],
+    );
+    let permuted = stage_volume_matrix_templates(
+        vec![study_hydro(10, None), study_hydro(5, Some(10))],
+        permuted_json,
+        [103, 102, 101],
+    );
+    assert_all_templates_byte_identical(
+        &permuted,
+        &declared,
+        "stage-volume matrix declaration order",
+    );
+}
+
+const MIN_OUTFLOW: f64 = 7.0;
+const MAX_OUTFLOW: f64 = 900.0;
+
+const NEIGHBOUR_JSON: &str = r#"{"constraints":[{"id":201,"name":"vol","expression":"hydro_outflow_volume(5)","slack":{"enabled":false}},{"id":202,"name":"flow","expression":"hydro_outflow(5)","slack":{"enabled":false}}]}"#;
+const NEIGHBOUR_TWIN_JSON: &str = r#"{"constraints":[{"id":202,"name":"flow","expression":"hydro_outflow(5)","slack":{"enabled":false}}]}"#;
+
+fn neighbour_template(with_volume: bool) -> (usize, StageTemplate) {
+    use novomodelo_core::BlockMode;
+
+    let mut bounds_rows: Vec<GenericBoundsRow> = vec![
+        (202, 0, Some(0), None, Some(80.0)),
+        (202, 0, Some(1), None, Some(80.0)),
+    ];
+    let json = if with_volume {
+        bounds_rows.insert(0, (201, 0, None, None, Some(500.0)));
+        NEIGHBOUR_JSON
+    } else {
+        NEIGHBOUR_TWIN_JSON
+    };
+    stage_volume_template_with(
+        HydroBlockBounds {
+            min_outflow_m3s: MIN_OUTFLOW,
+            max_outflow_m3s: Some(MAX_OUTFLOW),
+            ..default_hydro_block_bounds()
+        },
+        &VOLUME_BLOCK_HOURS,
+        BlockMode::Parallel,
+        json,
+        bounds_rows,
+    )
+}
+
+fn rows_with_bounds(t: &StageTemplate, lower: f64, upper: f64) -> Vec<usize> {
+    let rows: Vec<usize> = (0..t.num_rows)
+        .filter(|&row| t.row_lower[row] == lower && t.row_upper[row] == upper)
+        .collect();
+    assert_eq!(
+        rows.len(),
+        VOLUME_BLOCK_HOURS.len(),
+        "bounds ({lower}, {upper}): one row per block"
+    );
+    rows
+}
+
+/// derived: outflow rows are `q_k + s_k` plus one own slack, the block-level row `q_k + s_k`, the volume row each pair at `volume_tau`.
+#[test]
+fn stage_volume_neighbour_rows_keep_their_own_coefficients() {
+    use novomodelo_core::BlockMode;
+
+    let n_blks = VOLUME_BLOCK_HOURS.len();
+    let [tau0, tau1] = VOLUME_BLOCK_HOURS.map(volume_tau);
+    assert_ne!(tau0, tau1);
+    assert_ne!(tau0, 1.0);
+    assert_ne!(tau1, 1.0);
+
+    let (generic_row, t) = neighbour_template(true);
+    let cols = flow_columns(1, n_blks, BlockMode::Parallel);
+    let flow_pair = |k: usize| vec![(cols.turbine + k, 1.0), (cols.spillage + k, 1.0)];
+    assert!(!flow_pair(0).is_empty());
+
+    let volume = outflow_volume_row(BlockMode::Parallel, VOLUME_BLOCK_HOURS);
+    assert!(!volume.is_empty());
+    assert_eq!(row_entries(&t, generic_row), volume, "volume row");
+
+    let min_rows = rows_with_bounds(&t, MIN_OUTFLOW, f64::INFINITY);
+    let max_rows = rows_with_bounds(&t, f64::NEG_INFINITY, MAX_OUTFLOW);
+    for (family, rows) in [("min outflow", min_rows), ("max outflow", max_rows)] {
+        for (k, row) in rows.into_iter().enumerate() {
+            let entries = row_entries(&t, row);
+            assert_eq!(entries.len(), 3, "{family} block {k}: flow pair plus slack");
+            let flow_window: Vec<_> = entries
+                .into_iter()
+                .filter(|&(col, _)| col < cols.diversion + n_blks)
+                .collect();
+            assert_eq!(flow_window, flow_pair(k), "{family} block {k}");
+        }
+    }
+
+    for k in 0..n_blks {
+        assert_eq!(
+            row_entries(&t, generic_row + 1 + k),
+            flow_pair(k),
+            "block-level row {k}"
+        );
+    }
+}
+
+/// derived: constraint 201 appends one stage-level row and no column, so earlier rows keep their entries and the 202 rows move up by one.
+#[test]
+fn stage_volume_neighbour_rows_are_unchanged_by_the_volume_row() {
+    let (generic_row, with_volume) = neighbour_template(true);
+    let (_, twin) = neighbour_template(false);
+    assert_eq!(with_volume.num_rows, twin.num_rows + 1);
+    assert_eq!(with_volume.num_cols, twin.num_cols);
+
+    let families = [
+        (MIN_OUTFLOW, f64::INFINITY),
+        (f64::NEG_INFINITY, MAX_OUTFLOW),
+    ];
+    for (lower, upper) in families {
+        let rows = rows_with_bounds(&with_volume, lower, upper);
+        assert_eq!(rows, rows_with_bounds(&twin, lower, upper));
+        for row in rows {
+            let entries = row_entries(&with_volume, row);
+            assert!(!entries.is_empty());
+            assert_eq!(entries, row_entries(&twin, row), "row {row}");
+        }
+    }
+
+    for k in 0..VOLUME_BLOCK_HOURS.len() {
+        let entries = row_entries(&with_volume, generic_row + 1 + k);
+        assert!(!entries.is_empty());
+        assert_eq!(
+            entries,
+            row_entries(&twin, generic_row + k),
+            "block-level row {k}"
+        );
+    }
+}
+
+const MAX_DIVERSION: f64 = 25.0;
+const PUMP_MAX: f64 = 40.0;
+const WATER_ROW_5: usize = 0;
+const WATER_ROW_10: usize = 1;
+
+fn diversion_pumping_study(
+    constraints_json: &str,
+    bounds_rows: Vec<GenericBoundsRow>,
+    id_map: &std::collections::HashMap<i32, usize>,
+) -> (usize, StageTemplate) {
+    use chrono::NaiveDate;
+    use novomodelo_core::{
+        DiversionChannel, Hydro, PumpingStation, ResolvedGenericConstraintBounds,
+    };
+
+    let study = || HydroStudy {
+        block_hours: VOLUME_BLOCK_HOURS.to_vec(),
+        hydros: vec![
+            Hydro {
+                diversion: Some(DiversionChannel {
+                    downstream_id: EntityId(10),
+                    max_flow_m3s: Some(MAX_DIVERSION),
+                }),
+                ..study_hydro(5, None)
+            },
+            study_hydro(10, None),
+        ],
+        pumping_stations: vec![PumpingStation {
+            id: EntityId(30),
+            name: "P30".to_string(),
+            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
+            bus_id: EntityId(1),
+            source_hydro_id: EntityId(10),
+            destination_hydro_id: EntityId(5),
+            entry_stage_id: None,
+            exit_stage_id: None,
+            consumption_mw_per_m3s: 0.5,
+            min_flow_m3s: 0.0,
+            max_flow_m3s: PUMP_MAX,
+        }],
+        ..Default::default()
+    };
+    let generic_row = build_templates_for(&hydro_study_system(study()))[0].num_rows;
+    let template = build_templates_for(&hydro_study_system(HydroStudy {
+        constraints: parse_generic_from_str(constraints_json),
+        generic_bounds: ResolvedGenericConstraintBounds::new(id_map, bounds_rows.into_iter()),
+        ..study()
+    }))
+    .into_iter()
+    .next()
+    .expect("one stage template");
+    (generic_row, template)
+}
+
+/// derived: one plant's flow family on the two-block stage is its first column then the next, each at that block's `volume_tau`.
+fn two_block_volume_terms(first_column: usize) -> Vec<(usize, f64)> {
+    let [tau0, tau1] = VOLUME_BLOCK_HOURS.map(volume_tau);
+    vec![(first_column, tau0), (first_column + 1, tau1)]
+}
+
+/// derived: `hydro_outflow_volume(5)` is turbine then spillage and `hydro_diversion_volume(5)` the diversion column alone, each block at `volume_tau`; the open diversion enters plant 5's water row at `+tau` and plant 10's at `-tau`.
+#[test]
+fn stage_volume_twin_outflow_volume_excludes_an_open_diversion() {
+    use novomodelo_core::BlockMode;
+
+    let json = r#"{"constraints":[{"id":301,"name":"out","expression":"hydro_outflow_volume(5)","slack":{"enabled":false}},{"id":302,"name":"div","expression":"hydro_diversion_volume(5)","slack":{"enabled":false}}]}"#;
+    let (generic_row, t) = diversion_pumping_study(
+        json,
+        vec![
+            (301, 0, None, None, Some(500.0)),
+            (302, 0, None, None, Some(500.0)),
+        ],
+        &[(301, 0), (302, 1)].into_iter().collect(),
+    );
+    let cols = flow_columns(2, 2, BlockMode::Parallel);
+
+    let outflow: Vec<_> = two_block_volume_terms(cols.turbine)
+        .into_iter()
+        .chain(two_block_volume_terms(cols.spillage))
+        .collect();
+    assert!(!outflow.is_empty());
+    assert_eq!(row_entries(&t, generic_row), outflow, "outflow volume");
+
+    let diversion = two_block_volume_terms(cols.diversion);
+    assert!(!diversion.is_empty());
+    assert_eq!(
+        row_entries(&t, generic_row + 1),
+        diversion,
+        "diversion volume"
+    );
+
+    for (k, (col, tau)) in diversion.into_iter().enumerate() {
+        assert_eq!(t.col_upper[col], MAX_DIVERSION, "block {k}: open");
+        assert_eq!(
+            csc_entries_at(&t, col, WATER_ROW_5),
+            vec![tau],
+            "block {k}: source row"
+        );
+        assert_eq!(
+            csc_entries_at(&t, col, WATER_ROW_10),
+            vec![-tau],
+            "block {k}: target row"
+        );
+    }
+}
+
+/// derived: plant 10 declares no diversion, so its diversion columns are pinned `[0, 0]` and `hydro_diversion_volume(10)` weights them at `volume_tau`, never dropping the term.
+#[test]
+fn stage_volume_twin_diversion_volume_of_a_non_diverter_reads_its_pinned_column() {
+    use novomodelo_core::BlockMode;
+
+    let json = r#"{"constraints":[{"id":303,"name":"div","expression":"hydro_diversion_volume(10)","slack":{"enabled":false}}]}"#;
+    let (generic_row, t) = diversion_pumping_study(
+        json,
+        vec![(303, 0, None, None, Some(500.0))],
+        &[(303, 0)].into_iter().collect(),
+    );
+    let (plant_10_position, n_blks) = (1, VOLUME_BLOCK_HOURS.len());
+    let first_column =
+        flow_columns(2, n_blks, BlockMode::Parallel).diversion + plant_10_position * n_blks;
+
+    let expected = two_block_volume_terms(first_column);
+    assert!(!expected.is_empty());
+    assert_eq!(row_entries(&t, generic_row), expected);
+    for (k, &(col, _)) in expected.iter().enumerate() {
+        assert_eq!(t.col_lower[col], 0.0, "block {k}: lower");
+        assert_eq!(t.col_upper[col], 0.0, "block {k}: upper");
+    }
+}
+
+/// derived: `pumping_flow(30)` is the pump column alone at 1.0 and `pumping_volume(30)` the two pump columns at `volume_tau`, never the power coefficient `consumption_mw_per_m3s`; the pump moves water from plant 10 (`+tau`) to plant 5 (`-tau`), the reverse of the diversion.
+#[test]
+fn stage_volume_twin_pumping_volume_reads_the_pumping_flow_columns() {
+    let json = r#"{"constraints":[{"id":401,"name":"flow","expression":"pumping_flow(30)","slack":{"enabled":false}},{"id":402,"name":"vol","expression":"pumping_volume(30)","slack":{"enabled":false}}]}"#;
+    let (generic_row, t) = diversion_pumping_study(
+        json,
+        vec![
+            (401, 0, Some(0), None, Some(35.0)),
+            (401, 0, Some(1), None, Some(35.0)),
+            (402, 0, None, None, Some(500.0)),
+        ],
+        &[(401, 0), (402, 1)].into_iter().collect(),
+    );
+
+    let columns = [0, 1].map(|k| {
+        let entries = row_entries(&t, generic_row + k);
+        assert_eq!(entries.len(), 1, "block row {k}: one pump column");
+        assert_eq!(entries[0].1, 1.0, "block row {k}: flow, not power");
+        entries[0].0
+    });
+    let [first, second] = columns;
+    assert!(first < second);
+
+    let taus = VOLUME_BLOCK_HOURS.map(volume_tau);
+    let expected: Vec<_> = columns.into_iter().zip(taus).collect();
+    assert!(!expected.is_empty());
+    assert_eq!(row_entries(&t, generic_row + 2), expected, "pumping volume");
+
+    for (k, (col, tau)) in expected.into_iter().enumerate() {
+        assert_eq!(t.col_upper[col], PUMP_MAX, "block {k}: pump bound");
+        assert_eq!(
+            csc_entries_at(&t, col, WATER_ROW_10),
+            vec![tau],
+            "block {k}: source row"
+        );
+        assert_eq!(
+            csc_entries_at(&t, col, WATER_ROW_5),
+            vec![-tau],
+            "block {k}: destination row"
         );
     }
 }

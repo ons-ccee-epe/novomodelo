@@ -131,6 +131,50 @@ fn custom_output_dir_receives_training_artifacts() {
 }
 
 #[test]
+fn case_without_lines_and_thermals_files_exits_0() {
+    let dir = TempDir::new().unwrap();
+    make_valid_case(dir.path(), None, None, None, None);
+    fs::remove_file(dir.path().join("system/lines.json")).unwrap();
+    fs::remove_file(dir.path().join("system/thermals.json")).unwrap();
+    let out = TempDir::new().unwrap();
+
+    novomodelo()
+        .args([
+            "run",
+            dir.path().to_str().unwrap(),
+            "--output",
+            out.path().to_str().unwrap(),
+            "--quiet",
+        ])
+        .assert()
+        .success();
+
+    assert!(out.path().join("training/metadata.json").is_file());
+}
+
+#[test]
+fn one_d_toy_without_thermals_file_runs_as_hydro_only_study() {
+    let dir = TempDir::new().unwrap();
+    copy_dir_recursive(&case_dir("1dtoy"), dir.path());
+    fs::remove_file(dir.path().join("system/thermals.json")).unwrap();
+    fs::remove_file(dir.path().join("system/lines.json")).unwrap();
+    let out = TempDir::new().unwrap();
+
+    novomodelo()
+        .args([
+            "run",
+            dir.path().to_str().unwrap(),
+            "--output",
+            out.path().to_str().unwrap(),
+            "--quiet",
+        ])
+        .assert()
+        .success();
+
+    assert!(out.path().join("training/metadata.json").is_file());
+}
+
+#[test]
 fn missing_required_file_exits_1() {
     let dir = TempDir::new().unwrap();
     make_valid_case(dir.path(), None, None, None, None);

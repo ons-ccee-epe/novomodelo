@@ -9,6 +9,7 @@
 //! bundle holding every parsed output when all files parse cleanly, or `None`
 //! when any parse or schema error is encountered.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use novomodelo_core::{
@@ -26,11 +27,12 @@ use crate::{
         BusPenaltyOverrideRow, ContractBoundsRow, GenericConstraintBoundsRow, HydroBoundsRow,
         HydroPenaltyOverrideRow, HydroUnitGroupBoundsRow, LineBoundsRow, LinePenaltyOverrideRow,
         NcsBoundsRow, NcsPenaltyOverrideRow, PumpingBoundsRow, ThermalBoundsRow,
-        build_line_bus_pair_index, load_contract_bounds, load_generic_constraint_bounds,
-        load_generic_constraints, load_hydro_bounds, load_hydro_unit_group_bounds,
-        load_line_bounds, load_ncs_bounds, load_penalty_overrides_bus,
-        load_penalty_overrides_hydro, load_penalty_overrides_line, load_penalty_overrides_ncs,
-        load_pumping_bounds, load_thermal_bounds,
+        build_line_bus_pair_index,
+        generic::{NamedSourcesByConstraint, parse_generic_constraints_with_provenance},
+        load_contract_bounds, load_generic_constraint_bounds, load_hydro_bounds,
+        load_hydro_unit_group_bounds, load_line_bounds, load_ncs_bounds,
+        load_penalty_overrides_bus, load_penalty_overrides_hydro, load_penalty_overrides_line,
+        load_penalty_overrides_ncs, load_pumping_bounds, load_thermal_bounds,
     },
     extensions::{
         FphaHyperplaneRow, HydroEnergyProductivityRow, HydroGeometryRow, PlaneReductionConfig,
@@ -51,8 +53,8 @@ use crate::{
     },
     stages::{StagesData, parse_stages},
     system::{
-        load_energy_contracts, load_non_controllable_sources, load_pumping_stations, parse_buses,
-        parse_hydros, parse_lines, parse_thermals,
+        load_energy_contracts, load_lines, load_non_controllable_sources, load_pumping_stations,
+        load_thermals, parse_buses, parse_hydros,
     },
     validation::{
         ValidationContext, rules,
@@ -64,9 +66,9 @@ use crate::{
 
 /// All parsed file outputs produced by Layer 2 schema validation.
 ///
-/// One field per input file (the field doc names the file). Required files use
-/// direct types; optional files use `Vec<T>` (Parquet rows) or `Option<T>`
-/// (structured JSON) and are empty or `None` when the file is absent.
+/// One field per input file (the field doc names the file), plus side tables recorded while
+/// parsing. Required files use direct types; optional files use `Vec<T>` (Parquet rows) or
+/// `Option<T>` (structured JSON) and are empty or `None` when the file is absent.
 pub(crate) struct ParsedData {
     /// `config.json`.
     pub(crate) config: Config,
@@ -145,6 +147,8 @@ pub(crate) struct ParsedData {
     pub(crate) contract_bounds: Vec<ContractBoundsRow>,
     /// `constraints/generic_constraints.json`.
     pub(crate) generic_constraints: Vec<GenericConstraint>,
+    /// Recorded while parsing `constraints/generic_constraints.json`.
+    pub(crate) generic_constraint_named_sources: NamedSourcesByConstraint,
     /// `constraints/generic_constraint_bounds.parquet`.
     pub(crate) generic_constraint_bounds: Vec<GenericConstraintBoundsRow>,
     /// `constraints/penalty_overrides_bus.parquet`.
@@ -278,8 +282,10 @@ pub(crate) fn validate_schema(
         ctx,
     );
 
-    let lines = parse_or_error(
-        parse_lines(&case_root.join("system/lines.json"), &sentinel),
+    let lines = optional_or_error(
+        manifest.present(InputFile::SystemLinesJson),
+        || load_lines(Some(&case_root.join("system/lines.json")), &sentinel),
+        Vec::new,
         "system/lines.json",
         ctx,
     );
@@ -290,8 +296,10 @@ pub(crate) fn validate_schema(
         ctx,
     );
 
-    let thermals = parse_or_error(
-        parse_thermals(&case_root.join("system/thermals.json")),
+    let thermals = optional_or_error(
+        manifest.present(InputFile::SystemThermalsJson),
+        || load_thermals(Some(&case_root.join("system/thermals.json"))),
+        Vec::new,
         "system/thermals.json",
         ctx,
     );
@@ -554,17 +562,17 @@ pub(crate) fn validate_schema(
         .map(|p| (p.name.clone(), p.id))
         .collect();
 
-    let generic_constraints = optional_or_error(
+    let (generic_constraints, generic_constraint_named_sources) = optional_or_error(
         manifest.present(InputFile::ConstraintsGenericConstraintsJson),
         || {
-            let line_pair_index = build_line_bus_pair_index(lines.as_deref().unwrap_or(&[]))?;
-            load_generic_constraints(
-                Some(&case_root.join("constraints/generic_constraints.json")),
+            let line_pair_index = build_line_bus_pair_index(&lines)?;
+            parse_generic_constraints_with_provenance(
+                &case_root.join("constraints/generic_constraints.json"),
                 &scalar_name_to_id,
                 &line_pair_index,
             )
         },
-        Vec::new,
+        || (Vec::new(), BTreeMap::new()),
         "constraints/generic_constraints.json",
         ctx,
     );
@@ -659,9 +667,7 @@ pub(crate) fn validate_schema(
     let stages = stages?;
     let initial_conditions = initial_conditions?;
     let buses = buses?;
-    let lines = lines?;
     let hydros = hydros?;
-    let thermals = thermals?;
 
     Some(ParsedData {
         config,
@@ -700,6 +706,7 @@ pub(crate) fn validate_schema(
         pumping_bounds,
         contract_bounds,
         generic_constraints,
+        generic_constraint_named_sources,
         generic_constraint_bounds,
         penalty_overrides_bus,
         penalty_overrides_line,
@@ -802,7 +809,7 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
-    /// Given a case directory with all 8 required files containing valid JSON,
+    /// Given a case directory with all required files containing valid JSON,
     /// `validate_schema` returns `Some(ParsedData)` with all required fields
     /// populated and `ctx.has_errors()` is `false`.
     #[test]
@@ -964,6 +971,32 @@ mod tests {
         assert!(
             data.unwrap().correlation.is_none(),
             "correlation should be None when file absent"
+        );
+    }
+
+    #[test]
+    fn test_absent_lines_and_thermals_yield_empty_registries() {
+        let dir = TempDir::new().unwrap();
+        make_minimal_case(&dir);
+        fs::remove_file(dir.path().join("system/lines.json")).unwrap();
+        fs::remove_file(dir.path().join("system/thermals.json")).unwrap();
+
+        let mut ctx = ValidationContext::new();
+        let manifest = validate_structure(dir.path(), &mut ctx);
+        assert!(!ctx.has_errors(), "structural validation should pass");
+
+        let data = validate_schema(dir.path(), &manifest, &mut ctx)
+            .expect("validate_schema should return Some(ParsedData)");
+
+        assert!(
+            !ctx.has_errors(),
+            "no error should be added for absent lines/thermals, got: {:?}",
+            ctx.errors()
+        );
+        assert!(data.lines.is_empty(), "lines should be empty when absent");
+        assert!(
+            data.thermals.is_empty(),
+            "thermals should be empty when absent"
         );
     }
 

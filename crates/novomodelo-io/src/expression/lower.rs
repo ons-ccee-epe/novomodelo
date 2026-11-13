@@ -50,6 +50,15 @@ struct Declaration {
     body: Expr,
     /// Declaration indices of the body's named references, in source order, repeats kept.
     references: Vec<usize>,
+    /// The variables the body's own terms write, in form order, named references excluded.
+    variables: Vec<VariableRef>,
+}
+
+/// A named expression a constraint reached and the variables its own body writes.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct NamedSource {
+    pub(crate) name: String,
+    pub(crate) variables: Vec<VariableRef>,
 }
 
 impl NamedTable {
@@ -84,6 +93,7 @@ impl NamedTable {
                         name: name.to_owned(),
                         body,
                         references,
+                        variables: Vec::new(),
                     });
                 }
                 Err(fault) => {
@@ -92,24 +102,61 @@ impl NamedTable {
                 }
             }
         }
-        let table = NamedTable {
+        let mut table = NamedTable {
             declarations,
             index,
         };
-        {
+        let variables: Vec<Vec<VariableRef>> = {
             let scope = Scope {
                 params,
                 line_index,
                 named: &table,
             };
             let mut lowering = Lowering::opaque(&scope);
+            let mut variables = Vec::with_capacity(table.declarations.len());
             for (j, declaration) in table.declarations.iter().enumerate() {
-                lowering
+                let form = lowering
                     .form(&declaration.body)
                     .map_err(|fault| (j, fault.into_diagnostic()))?;
+                variables.push(
+                    form.terms
+                        .into_iter()
+                        .map(|(variable, _)| variable)
+                        .collect(),
+                );
             }
+            variables
+        };
+        for (declaration, variables) in table.declarations.iter_mut().zip(variables) {
+            declaration.variables = variables;
         }
         unparsed.map_or(Ok(table), Err)
+    }
+
+    /// The uses of each body, indexed by declaration, over a constraint's two sides and every
+    /// body they reach; a body no side reaches has none.
+    fn use_counts(&self, lhs: &Expr, rhs: Option<&Expr>) -> Vec<usize> {
+        let mut remaining = vec![0; self.declarations.len()];
+        let mut reached = vec![false; self.declarations.len()];
+        let mut uses = Vec::new();
+        collect_named_references(lhs, &self.index, &mut uses);
+        if let Some(rhs) = rhs {
+            collect_named_references(rhs, &self.index, &mut uses);
+        }
+        let mut frontier = Vec::new();
+        while !uses.is_empty() {
+            for j in uses.drain(..) {
+                remaining[j] += 1;
+                if !reached[j] {
+                    reached[j] = true;
+                    frontier.push(j);
+                }
+            }
+            for j in frontier.drain(..) {
+                uses.extend_from_slice(&self.declarations[j].references);
+            }
+        }
+        remaining
     }
 
     /// Each declaration in order with the named references of its body in source order,
@@ -203,6 +250,8 @@ pub(crate) struct LoweredRelation {
     pub(crate) terms: Vec<(VariableRef, ScalarExpr)>,
     pub(crate) lower: Option<ScalarExpr>,
     pub(crate) upper: Option<ScalarExpr>,
+    /// The named expressions the constraint reached, directly or through another, sorted by name.
+    pub(crate) named_sources: Vec<NamedSource>,
 }
 
 /// Parses and lowers a constraint expression. A relation `L op R` moves every right-side
@@ -422,28 +471,7 @@ impl<'a> Lowering<'a> {
         lowering
     }
     fn new(scope: &'a Scope<'a>, lhs: &Expr, rhs: Option<&Expr>) -> Self {
-        let declarations = &scope.named.declarations;
-        let mut remaining = vec![0; declarations.len()];
-        let mut reached = vec![false; declarations.len()];
-        let mut uses = Vec::new();
-        collect_named_references(lhs, &scope.named.index, &mut uses);
-        if let Some(rhs) = rhs {
-            collect_named_references(rhs, &scope.named.index, &mut uses);
-        }
-        let mut frontier = Vec::new();
-        while !uses.is_empty() {
-            for j in uses.drain(..) {
-                remaining[j] += 1;
-                if !reached[j] {
-                    reached[j] = true;
-                    frontier.push(j);
-                }
-            }
-            for j in frontier.drain(..) {
-                uses.extend_from_slice(&declarations[j].references);
-            }
-        }
-        Self::with_remaining(scope, remaining)
+        Self::with_remaining(scope, scope.named.use_counts(lhs, rhs))
     }
 
     fn with_remaining(scope: &'a Scope<'a>, remaining: Vec<usize>) -> Self {
@@ -467,6 +495,7 @@ impl<'a> Lowering<'a> {
         rhs: Option<&(RelOp, Expr)>,
         whole: Range<usize>,
     ) -> Result<LoweredRelation, Fault> {
+        let named_sources = self.named_sources();
         let Some((op, rhs)) = rhs else {
             let form = self.form(lhs)?;
             if form.constant.is_some() {
@@ -482,6 +511,7 @@ impl<'a> Lowering<'a> {
                 terms: form.into_terms(),
                 lower: None,
                 upper: None,
+                named_sources,
             });
         };
 
@@ -517,7 +547,26 @@ impl<'a> Lowering<'a> {
             terms: variables.into_terms(),
             lower,
             upper,
+            named_sources,
         })
+    }
+
+    /// Read before any form leaves the cache, while `remaining` still holds every use.
+    fn named_sources(&self) -> Vec<NamedSource> {
+        let mut sources: Vec<NamedSource> = self
+            .scope
+            .named
+            .declarations
+            .iter()
+            .zip(&self.remaining)
+            .filter(|&(_, &uses)| uses > 0)
+            .map(|(declaration, _)| NamedSource {
+                name: declaration.name.clone(),
+                variables: declaration.variables.clone(),
+            })
+            .collect();
+        sources.sort_by(|a, b| a.name.cmp(&b.name));
+        sources
     }
 
     fn type_of(&self, expr: &Expr) -> Result<Type, Diagnostic> {
