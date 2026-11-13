@@ -257,7 +257,7 @@ fn test_penalty_multi_stage_consistent() {
 // spillage ≥ 0), so the slack is mandatory regardless of turbine level.
 #[test]
 fn test_penalty_slack_absorbs_negative_inflow() {
-    use novomodelo_solver::{ActiveSolver, RowBatch, SolverInterface};
+    use novomodelo_solver::SolverInterface;
 
     let system = one_hydro_system(1, 0);
     let config = penalty_config(1000.0);
@@ -281,18 +281,7 @@ fn test_penalty_slack_absorbs_negative_inflow() {
     let col_storage_in = 1_usize; // storage_in for hydro 0 when N=1, L=0
     let water_balance_row = 0_usize; // water-balance rows start at 0: h = 0
 
-    let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
-    solver.load_model(template);
-
-    let empty_cuts = RowBatch {
-        num_rows: 0,
-        row_starts: vec![0_i32],
-        col_indices: vec![],
-        values: vec![],
-        row_lower: vec![],
-        row_upper: vec![],
-    };
-    solver.add_rows(&empty_cuts);
+    let mut solver = load_template_with_no_cuts(template);
 
     // Incoming storage is pinned via column bounds, not a row-0 equality.
     let initial_storage = 100.0_f64;

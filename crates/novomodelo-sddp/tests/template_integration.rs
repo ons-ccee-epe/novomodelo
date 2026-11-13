@@ -78,6 +78,26 @@ fn production_set(productivities: &[f64], n_stages: usize) -> ProductionModelSet
     )
 }
 
+fn load_template_with_no_cuts(
+    template: &novomodelo_solver::StageTemplate,
+) -> novomodelo_solver::ActiveSolver {
+    use novomodelo_solver::SolverInterface;
+
+    let mut solver =
+        novomodelo_solver::ActiveSolver::new().expect("ActiveSolver::new must succeed");
+    solver.load_model(template);
+    let empty_cuts = novomodelo_solver::RowBatch {
+        num_rows: 0,
+        row_starts: vec![0_i32],
+        col_indices: vec![],
+        values: vec![],
+        row_lower: vec![],
+        row_upper: vec![],
+    };
+    solver.add_rows(&empty_cuts);
+    solver
+}
+
 fn no_penalty_config() -> InflowNonNegativityMethod {
     InflowNonNegativityMethod::None
 }

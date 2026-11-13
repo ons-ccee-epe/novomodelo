@@ -5,26 +5,6 @@ use super::*;
 use super::common::build_setup_in_code_with_models;
 use super::common::in_code_studies::parallel_multiblock_evaporation_study;
 
-fn load_template_with_no_cuts(
-    template: &novomodelo_solver::StageTemplate,
-) -> novomodelo_solver::ActiveSolver {
-    use novomodelo_solver::SolverInterface;
-
-    let mut solver =
-        novomodelo_solver::ActiveSolver::new().expect("ActiveSolver::new must succeed");
-    solver.load_model(template);
-    let empty_cuts = novomodelo_solver::RowBatch {
-        num_rows: 0,
-        row_starts: vec![0_i32],
-        col_indices: vec![],
-        values: vec![],
-        row_lower: vec![],
-        row_upper: vec![],
-    };
-    solver.add_rows(&empty_cuts);
-    solver
-}
-
 #[test]
 fn evap_zero_hydros_layout_unchanged() {
     let system = one_hydro_system(1, 0);
