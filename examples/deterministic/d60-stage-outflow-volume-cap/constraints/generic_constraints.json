@@ -1,0 +1,16 @@
+{
+  "$schema": "https://raw.githubusercontent.com/ons-ccee-epe/novomodelo/refs/heads/main/schemas/generic_constraints.schema.json",
+  "constraints": [
+    {
+      "id": 1,
+      "name": "outflow_volume_band",
+      "description": "Stage outflow volume of H0 held at 36 hm3 at stage 0, capped at 10.8 hm3 at stage 1 and floored at 64.8 hm3 at stage 2, softened by a per-unit slack.",
+      "expression": "hydro_outflow_volume(0)",
+      "slack": {
+        "enabled": true,
+        "penalty": 10000.0,
+        "penalty_basis": "per_unit"
+      }
+    }
+  ]
+}

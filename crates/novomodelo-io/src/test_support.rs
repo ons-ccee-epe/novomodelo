@@ -738,6 +738,7 @@ pub(crate) fn base_parsed_data(stages: StagesData, buses: Vec<Bus>) -> ParsedDat
         pumping_bounds: vec![],
         contract_bounds: vec![],
         generic_constraints: vec![],
+        generic_constraint_named_sources: std::collections::BTreeMap::new(),
         generic_constraint_bounds: vec![],
         penalty_overrides_bus: vec![],
         penalty_overrides_line: vec![],

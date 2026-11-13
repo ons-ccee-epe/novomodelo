@@ -68,6 +68,7 @@ pub(crate) fn validate_semantic_hydro_thermal(data: &ParsedData, ctx: &mut Valid
     thermal::warn_thermal_generation_on_anticipated_thermal(data, ctx);
     constraints::check_per_block_storage_interior_reference(data, ctx);
     constraints::check_productivity_tag_pairing(data, ctx);
+    constraints::check_stage_volume_constraints(data, ctx);
     block_bounds::check_bound_block_id_range(data, ctx);
     block_bounds::check_bound_stage_id_range(data, ctx);
     block_bounds::check_duplicate_bound_rows(data, ctx);
