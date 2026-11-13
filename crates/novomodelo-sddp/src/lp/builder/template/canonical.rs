@@ -124,7 +124,6 @@ pub(crate) fn encode_lp_facts(templates: &[StageTemplate], groups: &mut FactGrou
             objective,
             row_lower,
             row_upper,
-            n_state,
             col_scale,
             row_scale,
         } = template;
@@ -133,7 +132,6 @@ pub(crate) fn encode_lp_facts(templates: &[StageTemplate], groups: &mut FactGrou
         put_usize(dims, stage);
         put_usize(dims, *num_cols);
         put_usize(dims, *num_rows);
-        put_usize(dims, *n_state);
 
         let sparsity = group(groups, "lp.sparsity");
         put_usize(sparsity, stage);
@@ -320,7 +318,6 @@ fn put_geometry(buf: &mut Vec<u8>, geometry: &StageGeometry, state: &StateSpace)
     put_range(buf, plant_max_turbine);
     put_range(buf, plant_max_generation);
 
-    put_usize(buf, state.z_inflow_rows().start);
     put_usize(buf, *n_blks);
 
     put_usize(buf, state.storage_in.start);
@@ -354,11 +351,14 @@ pub(crate) fn encode_stage_templates_facts(
     let StageTemplates {
         templates,
         state_boxes,
+        pre_scaling_templates: _,
+        row_families: _,
         block_hours_per_stage,
         cost_scale_factor,
         load_bus_indices,
         generic_constraint_row_entries,
         geometry_per_stage,
+        inflow_coupling_per_stage,
         diversion_upstream,
         hydro_productivities_per_stage,
     } = templates;
@@ -397,6 +397,27 @@ pub(crate) fn encode_stage_templates_facts(
     for (stage, geometry) in geometry_per_stage.iter().enumerate() {
         put_usize(geometry_buf, stage);
         put_geometry(geometry_buf, geometry, state);
+    }
+
+    let coupling_buf = group(groups, "lp.inflow_coupling");
+    for (stage, coupling) in inflow_coupling_per_stage.iter().enumerate() {
+        put_usize(coupling_buf, stage);
+        for h in 0..coupling.n_hydros() {
+            let entries: Vec<(usize, f64)> = coupling.hydro_entries(HydroSys::new(h)).collect();
+            put_usize(coupling_buf, entries.len());
+            for (row, coefficient) in entries {
+                put_usize(coupling_buf, row);
+                put_f64(coupling_buf, coefficient);
+            }
+        }
+        let touched_rows: Vec<usize> = coupling
+            .touched_rows()
+            .iter()
+            .map(|&r| r as usize)
+            .collect();
+        put_usize_slice(coupling_buf, &touched_rows);
+        put_f64_slice(coupling_buf, coupling.touched_row_lower());
+        put_f64_slice(coupling_buf, coupling.touched_row_upper());
     }
 
     let buf = group(groups, "stochastic.load_buses");
@@ -613,6 +634,7 @@ mod tests {
                 "layout.pumping_cols",
                 "lp.col_bounds",
                 "lp.dims",
+                "lp.inflow_coupling",
                 "lp.objective",
                 "lp.row_bounds",
                 "lp.scaling",

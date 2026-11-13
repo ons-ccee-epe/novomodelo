@@ -1,13 +1,11 @@
 //! Audits the two in-class state families the admissible-box mechanism
 //! analysis flags: inflow lags and the PreFilling frozen storage identity.
 //!
-//! Inflow lags carry an unbounded box. The incoming AR-lag column enters only
-//! the z-inflow definition row (`fill_z_inflow_entries`) and the water-balance
-//! row's own inflow term (`fill_parallel_water_entries` /
-//! `fill_chronological_water_entries`); no row couples it to a bounded
-//! generation column, and the water-balance row's own slack columns absorb
-//! any magnitude on either side, so driving a lag to an extreme value never
-//! produces a false infeasibility.
+//! Inflow lags carry an unbounded box. A lag has no LP column: it enters only
+//! the water-balance rows' right-hand sides through the PAR shift. No row
+//! couples it to a bounded generation column, and the water-balance row's own
+//! slack columns absorb any magnitude on either side, so driving a lag to an
+//! extreme value never produces a false infeasibility.
 //!
 //! The PreFilling frozen identity `v_h - v_h_in = 0` (`hydro_phase`,
 //! `fill_parallel_water_entries`) couples only the outgoing storage column,
@@ -51,11 +49,12 @@ mod inflow_lag_audit {
         RowSelectionConfig, SimulationConfig, StoppingMode, StoppingRuleConfig, TrainingConfig,
         TrainingSelection, TrainingSolverConfig, UpperBoundEvaluationConfig,
     };
-    use novomodelo_sddp::setup::{NodeId, StageIdx};
-    use novomodelo_sddp::test_support::{patch_backward_opening_for_probe, solve_stage_for_probe};
+    use novomodelo_sddp::StudySetup;
+    use novomodelo_sddp::setup::StageIdx;
+    use novomodelo_sddp::test_support::template_structure::state_lag_dims;
+    use novomodelo_sddp::test_support::{ProbeCuts, prep_for_counterfactual_probe};
     use novomodelo_sddp::workspace::SolverWorkspace;
-    use novomodelo_sddp::{SddpError, StudySetup};
-    use novomodelo_solver::{ActiveSolver, SolverInterface};
+    use novomodelo_solver::{ActiveSolver, SolverError, SolverInterface};
 
     use super::common::build_setup_in_code;
     use super::common::builders::{
@@ -291,7 +290,10 @@ mod inflow_lag_audit {
     /// Solve the terminal stage's own structural template (no cuts exist yet
     /// on a freshly built setup) with the incoming state vector pinned to
     /// `pinned_state`.
-    fn solve_terminal_with_pin(setup: &StudySetup, pinned_state: &[f64]) -> Result<(), SddpError> {
+    fn solve_terminal_with_pin(
+        setup: &StudySetup,
+        pinned_state: &[f64],
+    ) -> Result<(), SolverError> {
         let comm = super::common::StubComm;
         let mut workspace_pool = setup
             .create_workspace_pool(&comm, 1, ActiveSolver::new)
@@ -299,30 +301,25 @@ mod inflow_lag_audit {
         let ws: &mut SolverWorkspace<ActiveSolver> = &mut workspace_pool.workspaces[0];
         let ctx = setup.stage_ctx();
         let training_ctx = setup.training_ctx();
-        let raw_noise = vec![0.0_f64; setup.stage_state().hydro_count];
-        let pool = &setup.fcf.pools[TERMINAL_STAGE];
+        let raw_noise = vec![0.0_f64; training_ctx.stochastic.dim()];
 
         ws.solver.reset_solver_state();
         ws.solver.load_model(&ctx.templates[TERMINAL_STAGE]);
-        patch_backward_opening_for_probe(
+        prep_for_counterfactual_probe(
             ws,
             &ctx,
             &training_ctx,
             StageIdx(TERMINAL_STAGE),
             pinned_state,
             &raw_noise,
+            &ProbeCuts {
+                pool: &setup.fcf.pools[TERMINAL_STAGE],
+                pool_id: TERMINAL_STAGE,
+                slots: &[],
+            },
         );
 
-        solve_stage_for_probe(
-            ws,
-            &ctx,
-            pool,
-            None,
-            StageIdx(TERMINAL_STAGE),
-            0,
-            NodeId(TERMINAL_STAGE as i32),
-        )
-        .map(|_| ())
+        ws.solver.solve(None).map(|_| ())
     }
 
     #[test]
@@ -336,7 +333,7 @@ mod inflow_lag_audit {
         assert_eq!(state.hydro_count, 1, "fixture declares exactly one hydro");
 
         let storage_col = state.storage.start;
-        let lag_col = state.inflow_lags.start;
+        let lag_col = state_lag_dims(state).start;
 
         for &extreme in &[EXTREME_LAG_M3S, -EXTREME_LAG_M3S] {
             let mut pinned_state = vec![0.0_f64; state.n_state];

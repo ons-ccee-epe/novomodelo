@@ -155,7 +155,6 @@ pub fn freeze_rows_into_template(
     out.num_cols = num_cols;
     out.num_rows = num_rows;
     out.num_nz = total_nnz;
-    out.n_state = base.n_state;
 
     out.col_lower.extend_from_slice(&base.col_lower);
     out.col_upper.extend_from_slice(&base.col_upper);
@@ -268,7 +267,6 @@ mod tests {
             objective: vec![0.0, 1.0, 50.0],
             row_lower: vec![6.0, 14.0],
             row_upper: vec![6.0, 14.0],
-            n_state: 1,
             col_scale: Vec::new(),
             row_scale: Vec::new(),
         }
@@ -309,7 +307,6 @@ mod tests {
         assert_eq!(out.objective, base.objective);
         assert_eq!(out.row_lower, base.row_lower);
         assert_eq!(out.row_upper, base.row_upper);
-        assert_eq!(out.n_state, base.n_state);
         // empty row_scale stays empty
         assert!(out.row_scale.is_empty());
     }
@@ -418,7 +415,6 @@ mod tests {
             objective: vec![1.0, 1.0],
             row_lower: vec![0.0; 5],
             row_upper: vec![f64::INFINITY; 5],
-            n_state: 0,
             col_scale: Vec::new(),
             row_scale: Vec::new(),
         };
@@ -452,7 +448,6 @@ mod tests {
             objective: vec![1.0, 1.0],
             row_lower: vec![0.0; 4],
             row_upper: vec![f64::INFINITY; 4],
-            n_state: 0,
             col_scale: Vec::new(),
             row_scale: Vec::new(),
         };
@@ -528,7 +523,6 @@ mod tests {
             objective: vec![0.0; 4],
             row_lower: vec![0.0; 3],
             row_upper: vec![f64::INFINITY; 3],
-            n_state: 2,
             col_scale: Vec::new(),
             row_scale: Vec::new(),
         };
@@ -611,6 +605,8 @@ mod tests {
         fn add_rows(&mut self, _rows: &RowBatch) {}
 
         fn set_row_bounds(&mut self, _indices: &[usize], _lower: &[f64], _upper: &[f64]) {}
+
+        fn set_row_lower_bounds_range(&mut self, _first_row: usize, _lower: &[f64]) {}
 
         fn set_col_bounds(&mut self, _indices: &[usize], _lower: &[f64], _upper: &[f64]) {}
 
@@ -719,7 +715,6 @@ mod tests {
             objective: vec![],
             row_lower: vec![],
             row_upper: vec![],
-            n_state: 0,
             col_scale: Vec::new(),
             row_scale: Vec::new(),
         };
@@ -755,7 +750,6 @@ mod tests {
             objective: vec![0.0; 4],
             row_lower: vec![0.0; 3],
             row_upper: vec![f64::INFINITY; 3],
-            n_state: 2,
             col_scale: Vec::new(),
             row_scale: Vec::new(),
         };

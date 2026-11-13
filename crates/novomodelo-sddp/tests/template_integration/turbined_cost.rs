@@ -18,7 +18,7 @@ fn turbined_cost_applied_to_fpha_turbine_column() {
     )
     .expect("fpha system builds ok");
     let t = &result.templates[0];
-    let turbine_col = 4_usize;
+    let turbine_col = 3_usize;
     let expected = 0.5 * 720.0 / COST_SCALE_FACTOR;
     assert!(
         (t.objective[turbine_col] - expected).abs() < 1e-15,
@@ -43,8 +43,8 @@ fn turbined_cost_multi_block_uses_per_block_hours() {
     )
     .expect("fpha multi-block system builds ok");
     let t = &result.templates[0];
-    let col_blk0 = 4_usize;
-    let col_blk1 = 5_usize;
+    let col_blk0 = 3_usize;
+    let col_blk1 = 4_usize;
     assert!(
         (t.objective[col_blk0] - 300.0 / COST_SCALE_FACTOR).abs() < 1e-15,
         "block 0 turbine objective: expected {}, got {}",
@@ -122,10 +122,10 @@ fn turbined_cost_mixed_system_all_hydros_carry_cost() {
     .expect("mixed system builds");
     let t = &result.templates[0];
 
-    // N=4, L=0, K=1: theta=12, decision_start=13
-    // col_turbine_start=13, turbine cols: h0=13, h1=14, h2=15, h3=16
-    // spillage cols: h0=17, h1=18, h2=19, h3=20
-    let col_turbine_start = 13;
+    // N=4, L=0, K=1: theta=8, decision_start=9
+    // col_turbine_start=9, turbine cols: h0=9, h1=10, h2=11, h3=12
+    // spillage cols: h0=13, h1=14, h2=15, h3=16
+    let col_turbine_start = 9;
     let block_hours = 744.0;
 
     let expected = block_hours / COST_SCALE_FACTOR;

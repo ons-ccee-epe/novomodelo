@@ -25,6 +25,8 @@ use crate::inflow_method::InflowNonNegativityMethod;
 use crate::lp::builder::LpBuildInputs;
 #[cfg(any(test, feature = "test-support"))]
 use crate::lp::builder::{StageTemplates, build_stage_templates};
+#[cfg(any(test, feature = "test-support"))]
+use crate::lp::indexer::StateSpace;
 use crate::lp::indexer::{EntityPositions, HydroCellIndex, StudyDimensions};
 use crate::policy::resolved_generic_coefficients::ResolvedGenericCoefficients;
 use crate::resolved_parameters::ResolvedParameters;
@@ -297,6 +299,25 @@ pub fn build_stage_templates_resolving_layout(
         &topology,
         inputs,
     ))
+}
+
+/// The [`StateSpace`] [`build_stage_templates_resolving_layout`] builds its
+/// templates against.
+///
+/// # Errors
+///
+/// As [`build_stage_templates_resolving_layout`].
+#[cfg(any(test, feature = "test-support"))]
+pub fn resolved_state_layout(
+    system: &System,
+    par_lp: &PrecomputedPar,
+) -> Result<StateSpace, SddpError> {
+    let thermal = DeliveryCalendar::thermal(system);
+    let basis = WaterDeliveryBasis::of(system);
+    let water = DeliveryCalendar::water(system, basis);
+    let (_, layout) =
+        super::resolve_state_and_topology(system, &thermal, &water, basis, par_lp, None, false)?;
+    Ok(layout.state)
 }
 
 #[cfg(test)]

@@ -240,6 +240,7 @@ impl SolverInterface for HighsSolver {
         self.row_dual.resize(self.num_rows, 0.0);
         self.row_activity.resize(self.num_rows, 0.0);
         self.row_magnitude.resize(self.num_rows, 0.0);
+        self.row_upper_infinity.resize(self.num_rows, f64::INFINITY);
 
         self.basis_col_i32.resize(self.num_cols, 0);
         self.basis_row_i32.resize(self.num_rows, 0);
@@ -296,6 +297,7 @@ impl SolverInterface for HighsSolver {
         self.row_dual.resize(self.num_rows, 0.0);
         self.row_activity.resize(self.num_rows, 0.0);
         self.row_magnitude.resize(self.num_rows, 0.0);
+        self.row_upper_infinity.resize(self.num_rows, f64::INFINITY);
         self.basis_row_i32.resize(self.num_rows, 0);
     }
 
@@ -340,6 +342,47 @@ impl SolverInterface for HighsSolver {
             status,
             ffi::HIGHS_STATUS_ERROR,
             "novomodelo_highs_change_rows_bounds_by_set failed with status {status}"
+        );
+        self.stats.total_set_bounds_time_seconds += t0.elapsed().as_secs_f64();
+    }
+
+    fn set_row_lower_bounds_range(&mut self, first_row: usize, lower: &[f64]) {
+        if lower.is_empty() {
+            return;
+        }
+        let to_row = first_row + lower.len() - 1;
+        assert!(
+            to_row < self.num_rows,
+            "set_row_lower_bounds_range: rows {first_row}..={to_row} exceed num_rows {}",
+            self.num_rows
+        );
+        assert!(
+            i32::try_from(to_row).is_ok(),
+            "set_row_lower_bounds_range: to_row {to_row} overflows i32"
+        );
+        #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+        let (from_row, to_row) = (first_row as i32, to_row as i32);
+
+        let t0 = Instant::now();
+        // SAFETY:
+        // - `self.handle` is a valid, non-null HiGHS pointer.
+        // - `[from_row, to_row]` is inside `[0, num_rows)` and fits in i32, asserted above.
+        // - `lower` and `self.row_upper_infinity[..lower.len()]` both hold exactly
+        //   `to_row - from_row + 1` entries and are alive for the duration of this call.
+        let status = unsafe {
+            ffi::novomodelo_highs_change_rows_bounds_by_range(
+                self.handle,
+                from_row,
+                to_row,
+                lower.as_ptr(),
+                self.row_upper_infinity[..lower.len()].as_ptr(),
+            )
+        };
+
+        assert_ne!(
+            status,
+            ffi::HIGHS_STATUS_ERROR,
+            "novomodelo_highs_change_rows_bounds_by_range failed with status {status}"
         );
         self.stats.total_set_bounds_time_seconds += t0.elapsed().as_secs_f64();
     }

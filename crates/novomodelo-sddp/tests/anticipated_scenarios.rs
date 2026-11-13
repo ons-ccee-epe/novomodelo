@@ -110,12 +110,13 @@ mod anticipated_5stage_k2_smoke {
     use super::common::StubComm;
     use super::common::anticipated_structural_assertions::{
         assert_anticipated_delivery_slots_populated, assert_basis_cache_fully_populated,
-        assert_training_converged_structurally,
+        assert_forward_states_finite, assert_training_converged_structurally,
     };
     use super::common::build_setup_in_code;
     use super::common::builders::{
         BusSpec, HydroSpec, StageSpec, ThermalSpec, make_bus, make_hydro, make_stage, make_thermal,
     };
+    use super::common::forward_replay::final_forward_states;
 
     // ---------------------------------------------------------------------------
     // System builder
@@ -437,6 +438,7 @@ mod anticipated_5stage_k2_smoke {
         let system = build_system();
         let config = build_config();
         let mut setup = build_setup_in_code(system, &config);
+        setup.set_export_states(true);
         let comm = StubComm;
         let mut solver = ActiveSolver::new().expect("ActiveSolver::new");
 
@@ -457,10 +459,12 @@ mod anticipated_5stage_k2_smoke {
 
         assert_training_converged_structurally(result, &[], 8);
         assert_basis_cache_fully_populated(result, 5);
+        let forward_states = final_forward_states(&setup);
+        assert_forward_states_finite(&forward_states);
         // K=2 strict predicate (t + K < n_stages): decisions at t in {0,1,2} deliver
         // at t+K in {2,3,4}.
         assert_anticipated_delivery_slots_populated(
-            result,
+            &forward_states,
             commit_out_start,
             n_anticipated,
             &[2, 3, 4],
@@ -533,9 +537,8 @@ mod anticipated_two_plants_smoke {
     //! slot (`m mod k_max`) until it matures — the ring never shifts slots. The carry
     //! invariant asserts a not-yet-matured commitment (plant 1's slot-3 delivery, held
     //! across stages 0-2) keeps the SAME slot across the consecutive forward-outgoing
-    //! captures `basis_cache[1]` (stage 0) and `basis_cache[2]` (stage 1). It uses
-    //! stage 0->1, not the trivial `basis_cache[0] == basis_cache[1]` identity, so it
-    //! exercises a genuine forward-to-forward hold advancement.
+    //! states of stage 0 and stage 1, a genuine forward-to-forward hold
+    //! advancement.
 
     use novomodelo_core::entities::{
         bus::DeficitSegment, hydro::HydroGenerationModel, thermal::AnticipatedConfig,
@@ -566,6 +569,7 @@ mod anticipated_two_plants_smoke {
     use super::common::builders::{
         BusSpec, HydroSpec, StageSpec, ThermalSpec, make_bus, make_hydro, make_stage, make_thermal,
     };
+    use super::common::forward_replay::final_forward_states;
 
     // Closed form over 744 h stages: each stage's residual (150 MW load minus its
     // delivered commitments; seeded ones are sunk) at the cheapest source the
@@ -942,6 +946,7 @@ mod anticipated_two_plants_smoke {
         let system = build_system_two_anticipated();
         let config = build_config();
         let mut setup = build_setup_in_code(system, &config);
+        setup.set_export_states(true);
         let comm = StubComm;
         let mut solver = ActiveSolver::new().expect("ActiveSolver::new");
 
@@ -1003,14 +1008,10 @@ mod anticipated_two_plants_smoke {
         let ant_start = state.commit_out.start;
         let ant_block_len = n_anticipated * k_max;
 
-        let basis_cache = &result.basis_cache;
-        assert_eq!(basis_cache.len(), 6);
+        assert_eq!(result.basis_cache.len(), 6);
 
-        let s0 = basis_cache[0]
-            .as_ref()
-            .expect("stage 0 basis must be Some")
-            .state_at_capture
-            .as_slice();
+        let forward_states = final_forward_states(&setup);
+        let s0 = forward_states[0].as_slice();
 
         let ant_slice = &s0[ant_start..ant_start + ant_block_len];
         assert_eq!(ant_slice.len(), 8);
@@ -1018,34 +1019,25 @@ mod anticipated_two_plants_smoke {
             assert!(v.is_finite(), "anticipated state must be finite");
         }
 
-        let s1 = basis_cache[1]
-            .as_ref()
-            .expect("stage 1 basis must be Some")
-            .state_at_capture
-            .as_slice();
-        let s2 = basis_cache[2]
-            .as_ref()
-            .expect("stage 2 basis must be Some")
-            .state_at_capture
-            .as_slice();
+        let s1 = forward_states[1].as_slice();
 
         // Plant 1 (K=4, id 5) holds its delivery-3 commitment in slot `3 mod 4 = 3`
         // across stages 0-2, maturing only at stage 3, so the SAME slot carries the
-        // same value across the consecutive forward-outgoing captures bc[1] (stage
-        // 0) and bc[2] (stage 1).
+        // same value across the consecutive forward-outgoing states of stage 0 and
+        // stage 1.
         let plant1 = 1_usize;
         let slot3_p1 = ant_start + 3 * n_anticipated + plant1;
         assert!(
-            s1[slot3_p1].abs() > 1e-9,
+            s0[slot3_p1].abs() > 1e-9,
             "carry check must exercise a non-zero held commitment; got {}",
-            s1[slot3_p1]
+            s0[slot3_p1]
         );
         assert!(
-            (s1[slot3_p1] - s2[slot3_p1]).abs() < 1e-9,
+            (s0[slot3_p1] - s1[slot3_p1]).abs() < 1e-9,
             "commitment-hold carry violated: plant 1's slot-3 commitment must be held \
-         in place across the forward transition (bc[1]={}, bc[2]={}), not shifted",
-            s1[slot3_p1],
-            s2[slot3_p1]
+         in place across the forward transition (stage 0={}, stage 1={}), not shifted",
+            s0[slot3_p1],
+            s1[slot3_p1]
         );
     }
 }

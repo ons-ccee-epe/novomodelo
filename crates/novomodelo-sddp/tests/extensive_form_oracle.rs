@@ -429,19 +429,19 @@ fn recombination_join_graph() -> NodeGraph {
         child: NodePos(child),
         probability,
     };
-    NodeGraph {
-        node_ids: (0..4_i32).map(NodeId).collect(),
-        nodes: vec![node(0, 0), node(1, 1), node(1, 2), node(2, 3)].into(),
-        successors: vec![
+    NodeGraph::new(
+        (0..4_i32).map(NodeId).collect(),
+        vec![node(0, 0), node(1, 1), node(1, 2), node(2, 3)].into(),
+        vec![
             vec![succ(1, 0.5), succ(2, 0.5)],
             vec![succ(3, 1.0)],
             vec![succ(3, 1.0)],
             vec![],
         ]
         .into(),
-        n_pools: 4,
-        pool_stage: vec![StageIdx(0), StageIdx(1), StageIdx(1), StageIdx(2)],
-    }
+        4,
+        vec![StageIdx(0), StageIdx(1), StageIdx(1), StageIdx(2)],
+    )
 }
 
 #[test]

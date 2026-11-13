@@ -38,7 +38,7 @@ use crate::{
     solver_phase::Phase,
     solver_stats::SolverStatsDelta,
     trajectory::TrajectoryRecord,
-    workspace::{BasisStore, BasisStoreSliceMut, SolverWorkspace},
+    workspace::{BasisStore, BasisStoreSliceMut, SolverWorkspace, workspace::recycle},
 };
 
 /// Per-iteration argument bundle for [`ForwardPassState::run`].
@@ -182,6 +182,10 @@ pub(crate) struct ForwardPassState {
     /// Per-worker, per-stage solver-stats accumulators (`n_workers × num_stages`).
     worker_stage_stats: Vec<Vec<SolverStatsDelta>>,
 
+    /// The workers' basis-store views, kept across passes by recycling their
+    /// lifetime; empty between passes.
+    worker_basis_slices: Vec<BasisStoreSliceMut<'static>>,
+
     /// Per-worker solver statistics snapshot taken **before** the parallel region.
     worker_stats_before: Vec<SolverStatistics>,
 
@@ -254,6 +258,7 @@ impl ForwardPassState {
             .collect();
         Self {
             worker_stage_stats,
+            worker_basis_slices: Vec::with_capacity(n_workers),
             worker_stats_before: Vec::with_capacity(n_workers),
             worker_stats_after: Vec::with_capacity(n_workers),
             worker_deltas: Vec::with_capacity(n_workers),
@@ -419,9 +424,11 @@ impl ForwardPassState {
 
         let root_node = Self::resolve_root_node(training_ctx)?;
 
-        let basis_slices = inputs
+        let mut basis_slices: Vec<BasisStoreSliceMut<'_>> =
+            recycle(std::mem::take(&mut self.worker_basis_slices));
+        inputs
             .basis_store
-            .split_workers_mut(forward_passes, n_workers);
+            .split_workers_into(forward_passes, n_workers, &mut basis_slices);
         let mut remaining: &mut [TrajectoryRecord] = inputs.records;
         let mut record_slices: Vec<&mut [TrajectoryRecord]> = Vec::with_capacity(n_workers);
         for basis_slice in &basis_slices {
@@ -494,20 +501,21 @@ impl ForwardPassState {
             .workspaces
             .par_iter_mut()
             .zip(record_slices.par_iter_mut())
-            .zip(basis_slices.into_par_iter())
+            .zip(basis_slices.par_iter_mut())
             .zip(worker_stage_stats_for_par.into_par_iter())
             .map(
-                |(((ws, worker_records), mut basis_slice), mut per_stage_stats)| {
+                |(((ws, worker_records), basis_slice), mut per_stage_stats)| {
                     run_forward_worker(
                         ws,
                         worker_records,
-                        &mut basis_slice,
+                        basis_slice,
                         &mut per_stage_stats,
                         &params,
                     )
                 },
             )
             .collect();
+        self.worker_basis_slices = recycle(basis_slices);
 
         #[allow(clippy::cast_possible_truncation)]
         let parallel_wall_ms = parallel_start.elapsed().as_millis() as u64;
@@ -688,11 +696,7 @@ impl ForwardPassState {
         };
 
         let fwd_imbalance_ms = (max_worker_ms - avg_worker_ms).max(0.0);
-        #[allow(
-            clippy::cast_precision_loss,
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss
-        )]
+        #[allow(clippy::cast_precision_loss)]
         let fwd_scheduling_ms = (parallel_wall_ms as f64 - max_worker_ms).max(0.0);
 
         for (ws, delta) in inputs.workspaces.iter_mut().zip(&self.worker_deltas) {
@@ -717,10 +721,8 @@ impl ForwardPassState {
         let mut scenario_costs = std::mem::take(&mut self.scenario_costs);
         scenario_costs.clear();
 
-        if self.stage_stats.len() != num_stages {
-            self.stage_stats
-                .resize_with(num_stages, SolverStatsDelta::default);
-        }
+        self.stage_stats
+            .resize_with(num_stages, SolverStatsDelta::default);
         for d in &mut self.stage_stats {
             d.reset_in_place();
         }
@@ -817,11 +819,6 @@ pub(crate) fn run_forward_worker<S: SolverInterface + Send>(
     #[allow(clippy::cast_possible_truncation)]
     let total_scenarios_u32 = params.total_forward_passes as u32;
 
-    // Rationale: `t` indexes several parallel per-stage collections
-    // (params.frozen, params.ctx.cumulative_discount_factors) beyond
-    // `per_stage_stats`, so an iterator over `per_stage_stats` alone would not
-    // eliminate the range index.
-    #[allow(clippy::needless_range_loop)]
     for t in (0..num_stages).map(StageIdx) {
         let cum_d = params
             .ctx
@@ -904,7 +901,7 @@ pub(crate) fn run_forward_worker<S: SolverInterface + Send>(
                 params.sampler.apply_initial_state(
                     &class_req,
                     &mut ws.current_state,
-                    params.training_ctx.state.inflow_lags.start,
+                    params.training_ctx.state.state_dim_lag_range().start,
                 );
             }
             let noise = params.sampler.sample(SampleRequest {
@@ -1009,8 +1006,8 @@ mod tests {
         lp::builder::PatchBuffer,
         lp::indexer::{StateSpace, StudyDimensions},
         test_support::{
-            StageContextFixture, equipment_free_geometry, permissive_state_boxes, state_layout,
-            study_dims,
+            StageContextFixture, all_enabled_cut_state_layouts, equipment_free_geometry,
+            permissive_state_boxes, state_layout, study_dims,
         },
         training::session::rank_distribution::RankDistribution,
         trajectory::TrajectoryRecord,
@@ -1050,6 +1047,7 @@ mod tests {
         fn load_model(&mut self, _template: &StageTemplate) {}
         fn add_rows(&mut self, _rows: &RowBatch) {}
         fn set_row_bounds(&mut self, _i: &[usize], _lo: &[f64], _hi: &[f64]) {}
+        fn set_row_lower_bounds_range(&mut self, _first_row: usize, _lower: &[f64]) {}
         fn set_col_bounds(&mut self, _i: &[usize], _lo: &[f64], _hi: &[f64]) {}
         fn solve(
             &mut self,
@@ -1101,7 +1099,6 @@ mod tests {
             objective: vec![0.0, 0.0, 0.0, 1.0],
             row_lower: vec![0.0],
             row_upper: vec![0.0],
-            n_state: 1,
             col_scale: Vec::new(),
             row_scale: Vec::new(),
         }
@@ -1123,7 +1120,7 @@ mod tests {
             rank: 0,
             worker_id: 0,
             solver: ProfiledSolver::new(solver),
-            patch_buf: PatchBuffer::new(state, &[], &[]),
+            patch_buf: PatchBuffer::new(state, &[], &[], &[]),
             current_state: Vec::with_capacity(state.n_state),
             scratch: ScratchBuffers {
                 lag_accumulator: vec![0.0_f64; state.hydro_count],
@@ -1321,13 +1318,7 @@ mod tests {
             let workspaces = vec![single_workspace(solver, &state)];
             let basis_store = BasisStore::new(n_scenarios, n_stages);
             let records = (0..n_scenarios * n_stages)
-                .map(|_| TrajectoryRecord {
-                    primal: Vec::new(),
-                    dual: Vec::new(),
-                    stage_cost: 0.0,
-                    node_id: NodeId(0),
-                    state: Vec::new(),
-                })
+                .map(|_| TrajectoryRecord::default())
                 .collect();
             Self {
                 n_stages,
@@ -1369,14 +1360,15 @@ mod tests {
         let mut fx = ForwardFixture::new();
         let state_boxes = permissive_state_boxes(fx.state.n_state, fx.n_stages);
         let geometry = equipment_free_geometry(&vec![0; fx.templates.len()]);
-        let fixture = StageContextFixture::new(&fx.templates, &state_boxes, &geometry);
+        let fixture = StageContextFixture::new(&fx.templates, &state_boxes, &geometry)
+            .without_inflow_entries(1);
         let ctx = fixture.ctx();
         let study_dims = study_dims();
         let training_ctx = TrainingContext {
             node_graph: &crate::test_support::chain_node_graph(&fx.stochastic),
             horizon: &fx.horizon,
             state: &fx.state,
-            cut_state_layouts: &[],
+            cut_state_layouts: &all_enabled_cut_state_layouts(&fx.state, fx.n_stages),
             study_dims: &study_dims,
             inflow_method: &InflowNonNegativityMethod::None,
             stochastic: &fx.stochastic,
@@ -1437,24 +1429,19 @@ mod tests {
             .collect();
         fx.basis_store = BasisStore::new(store_rows, fx.n_stages);
         fx.records = (0..local_passes * fx.n_stages)
-            .map(|_| TrajectoryRecord {
-                primal: Vec::new(),
-                dual: Vec::new(),
-                stage_cost: 0.0,
-                node_id: NodeId(0),
-                state: Vec::new(),
-            })
+            .map(|_| TrajectoryRecord::default())
             .collect();
         let state_boxes = permissive_state_boxes(fx.state.n_state, fx.n_stages);
         let geometry = equipment_free_geometry(&vec![0; fx.templates.len()]);
-        let fixture = StageContextFixture::new(&fx.templates, &state_boxes, &geometry);
+        let fixture = StageContextFixture::new(&fx.templates, &state_boxes, &geometry)
+            .without_inflow_entries(1);
         let ctx = fixture.ctx();
         let study_dims = study_dims();
         let training_ctx = TrainingContext {
             node_graph: &crate::test_support::chain_node_graph(&fx.stochastic),
             horizon: &fx.horizon,
             state: &fx.state,
-            cut_state_layouts: &[],
+            cut_state_layouts: &all_enabled_cut_state_layouts(&fx.state, fx.n_stages),
             study_dims: &study_dims,
             inflow_method: &InflowNonNegativityMethod::None,
             stochastic: &fx.stochastic,
@@ -1509,14 +1496,15 @@ mod tests {
         let mut fx = ForwardFixture::new();
         let state_boxes = permissive_state_boxes(fx.state.n_state, fx.n_stages);
         let geometry = equipment_free_geometry(&vec![0; fx.templates.len()]);
-        let fixture = StageContextFixture::new(&fx.templates, &state_boxes, &geometry);
+        let fixture = StageContextFixture::new(&fx.templates, &state_boxes, &geometry)
+            .without_inflow_entries(1);
         let ctx = fixture.ctx();
         let study_dims = study_dims();
         let training_ctx = TrainingContext {
             node_graph: &crate::test_support::chain_node_graph(&fx.stochastic),
             horizon: &fx.horizon,
             state: &fx.state,
-            cut_state_layouts: &[],
+            cut_state_layouts: &all_enabled_cut_state_layouts(&fx.state, fx.n_stages),
             study_dims: &study_dims,
             inflow_method: &InflowNonNegativityMethod::None,
             stochastic: &fx.stochastic,
@@ -1583,14 +1571,15 @@ mod tests {
         let fx = ForwardFixture::new();
         let state_boxes = permissive_state_boxes(fx.state.n_state, fx.n_stages);
         let geometry = equipment_free_geometry(&vec![0; fx.templates.len()]);
-        let fixture = StageContextFixture::new(&fx.templates, &state_boxes, &geometry);
+        let fixture = StageContextFixture::new(&fx.templates, &state_boxes, &geometry)
+            .without_inflow_entries(1);
         let ctx = fixture.ctx();
         let study_dims = study_dims();
         let training_ctx = TrainingContext {
             node_graph: &crate::test_support::chain_node_graph(&fx.stochastic),
             horizon: &fx.horizon,
             state: &fx.state,
-            cut_state_layouts: &[],
+            cut_state_layouts: &all_enabled_cut_state_layouts(&fx.state, fx.n_stages),
             study_dims: &study_dims,
             inflow_method: &InflowNonNegativityMethod::None,
             stochastic: &fx.stochastic,
@@ -1650,16 +1639,11 @@ mod tests {
         // Mutable per-call state: independent allocations, not borrows of fx.
         let mut ws = single_workspace(MockSolver::always_ok(fixed_solution_1_0()), &fx.state);
         let mut basis_store = BasisStore::new(fx.n_scenarios, fx.n_stages);
-        let mut basis_slices = basis_store.split_workers_mut(fx.n_scenarios, 1);
+        let mut basis_slices = Vec::new();
+        basis_store.split_workers_into(fx.n_scenarios, 1, &mut basis_slices);
         let mut basis_slice = basis_slices.remove(0);
         let mut records: Vec<TrajectoryRecord> = (0..fx.n_scenarios * fx.n_stages)
-            .map(|_| TrajectoryRecord {
-                primal: Vec::new(),
-                dual: Vec::new(),
-                stage_cost: 0.0,
-                node_id: NodeId(0),
-                state: Vec::new(),
-            })
+            .map(|_| TrajectoryRecord::default())
             .collect();
         let mut per_stage_stats: Vec<SolverStatsDelta> = (0..fx.n_stages)
             .map(|_| SolverStatsDelta::default())
@@ -1694,14 +1678,15 @@ mod tests {
         let mut fx = ForwardFixture::new();
         let state_boxes = permissive_state_boxes(fx.state.n_state, fx.n_stages);
         let geometry = equipment_free_geometry(&vec![0; fx.templates.len()]);
-        let fixture = StageContextFixture::new(&fx.templates, &state_boxes, &geometry);
+        let fixture = StageContextFixture::new(&fx.templates, &state_boxes, &geometry)
+            .without_inflow_entries(1);
         let ctx = fixture.ctx();
         let study_dims = study_dims();
         let training_ctx = TrainingContext {
             node_graph: &crate::test_support::chain_node_graph(&fx.stochastic),
             horizon: &fx.horizon,
             state: &fx.state,
-            cut_state_layouts: &[],
+            cut_state_layouts: &all_enabled_cut_state_layouts(&fx.state, fx.n_stages),
             study_dims: &study_dims,
             inflow_method: &InflowNonNegativityMethod::None,
             stochastic: &fx.stochastic,
@@ -1807,14 +1792,15 @@ mod tests {
         let mut fx = ForwardFixture::new();
         let state_boxes = permissive_state_boxes(fx.state.n_state, fx.n_stages);
         let geometry = equipment_free_geometry(&vec![0; fx.templates.len()]);
-        let fixture = StageContextFixture::new(&fx.templates, &state_boxes, &geometry);
+        let fixture = StageContextFixture::new(&fx.templates, &state_boxes, &geometry)
+            .without_inflow_entries(1);
         let ctx = fixture.ctx();
         let study_dims = study_dims();
         let training_ctx = TrainingContext {
             node_graph: &crate::test_support::chain_node_graph(&fx.stochastic),
             horizon: &fx.horizon,
             state: &fx.state,
-            cut_state_layouts: &[],
+            cut_state_layouts: &all_enabled_cut_state_layouts(&fx.state, fx.n_stages),
             study_dims: &study_dims,
             inflow_method: &InflowNonNegativityMethod::None,
             stochastic: &fx.stochastic,
@@ -1908,7 +1894,6 @@ mod tests {
             objective: vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
             row_lower: vec![0.0, 0.0],
             row_upper: vec![0.0, 0.0],
-            n_state: 2,
             col_scale: Vec::new(),
             row_scale: Vec::new(),
         }
@@ -2078,7 +2063,8 @@ mod tests {
 
         let state_boxes = permissive_state_boxes(state.n_state, 1);
         let geometry = equipment_free_geometry(&vec![0; templates.len()]);
-        let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+        let fixture =
+            StageContextFixture::new(&templates, &state_boxes, &geometry).without_inflow_entries(2);
         let ctx = fixture.ctx();
         let study_dims = study_dims();
         let lag_accum_seed = [0.0_f64, 0.0_f64];
@@ -2087,7 +2073,7 @@ mod tests {
             node_graph: &crate::test_support::chain_node_graph(&stochastic),
             horizon: &horizon,
             state: &state,
-            cut_state_layouts: &[],
+            cut_state_layouts: &all_enabled_cut_state_layouts(&state, 1),
             study_dims: &study_dims,
             inflow_method: &InflowNonNegativityMethod::None,
             stochastic: &stochastic,
@@ -2149,15 +2135,10 @@ mod tests {
         };
         let mut ws = single_workspace(MockSolver::always_ok(solution), &state);
         let mut basis_store = BasisStore::new(1, 1);
-        let mut basis_slices = basis_store.split_workers_mut(1, 1);
+        let mut basis_slices = Vec::new();
+        basis_store.split_workers_into(1, 1, &mut basis_slices);
         let mut basis_slice = basis_slices.remove(0);
-        let mut records: Vec<TrajectoryRecord> = vec![TrajectoryRecord {
-            primal: Vec::new(),
-            dual: Vec::new(),
-            stage_cost: 0.0,
-            node_id: NodeId(0),
-            state: Vec::new(),
-        }];
+        let mut records: Vec<TrajectoryRecord> = vec![TrajectoryRecord::default()];
         let mut per_stage_stats = vec![SolverStatsDelta::default()];
 
         // Reset happens at trajectory start (t == 0), before any LP solve;
@@ -2252,13 +2233,7 @@ mod tests {
         let root_state = vec![7.0_f64, 8.0_f64];
         let num_stages = 2_usize;
         let mut worker_records: Vec<TrajectoryRecord> = (0..num_stages)
-            .map(|_| TrajectoryRecord {
-                primal: Vec::new(),
-                dual: Vec::new(),
-                stage_cost: 0.0,
-                node_id: NodeId(0),
-                state: Vec::new(),
-            })
+            .map(|_| TrajectoryRecord::default())
             .collect();
         worker_records[0].state = root_state.clone();
         worker_records[0].node_id = node_graph.node_ids[root];
@@ -2353,7 +2328,8 @@ mod tests {
         let horizon = HorizonMode::Finite { num_stages: 2 };
         let state_boxes = permissive_state_boxes(state.n_state, 2);
         let geometry = equipment_free_geometry(&vec![0; templates.len()]);
-        let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+        let fixture =
+            StageContextFixture::new(&templates, &state_boxes, &geometry).without_inflow_entries(1);
         let ctx = fixture.ctx();
         let study_dims = study_dims();
         let stages = make_stages_2();
@@ -2361,7 +2337,7 @@ mod tests {
             node_graph: &node_graph,
             horizon: &horizon,
             state: &state,
-            cut_state_layouts: &[],
+            cut_state_layouts: &all_enabled_cut_state_layouts(&state, node_graph.n_pools),
             study_dims: &study_dims,
             inflow_method: &InflowNonNegativityMethod::None,
             stochastic: &stochastic,
@@ -2423,16 +2399,11 @@ mod tests {
         // Basis store axis is NODE: the K-fan visits leaf nodes at positions
         // beyond `num_stages`, so the store must span every node, not the stages.
         let mut basis_store = BasisStore::new(forward_passes, node_graph.nodes.len());
-        let mut basis_slices = basis_store.split_workers_mut(forward_passes, 1);
+        let mut basis_slices = Vec::new();
+        basis_store.split_workers_into(forward_passes, 1, &mut basis_slices);
         let mut basis_slice = basis_slices.remove(0);
         let mut records: Vec<TrajectoryRecord> = (0..forward_passes * 2)
-            .map(|_| TrajectoryRecord {
-                primal: Vec::new(),
-                dual: Vec::new(),
-                stage_cost: 0.0,
-                node_id: NodeId(0),
-                state: Vec::new(),
-            })
+            .map(|_| TrajectoryRecord::default())
             .collect();
         let mut per_stage_stats = vec![SolverStatsDelta::default(); 2];
 
@@ -2534,6 +2505,7 @@ mod tests {
         stochastic: &'a StochasticContext,
         node_graph: &'a crate::setup::node_graph::NodeGraph,
         state: &'a StateSpace,
+        cut_state_layouts: &'a [crate::lp::indexer::CutStateProjection],
         stages: &'a [Stage],
         study_dims: &'a StudyDimensions,
         initial_state: &'a [f64],
@@ -2542,7 +2514,7 @@ mod tests {
             node_graph,
             horizon: &HorizonMode::Finite { num_stages: 2 },
             state,
-            cut_state_layouts: &[],
+            cut_state_layouts,
             study_dims,
             inflow_method: &InflowNonNegativityMethod::None,
             stochastic,
@@ -2571,12 +2543,14 @@ mod tests {
         let stages = make_stages_2();
         let study_dims = study_dims();
         let initial_state = vec![0.0; state.n_state];
+        let layouts = all_enabled_cut_state_layouts(&state, node_graph.n_pools);
         let training_ctx = TrainingContext {
             horizon: &HorizonMode::Finite { num_stages: 0 },
             ..terminal_boundary_test_ctx(
                 &stochastic,
                 &node_graph,
                 &state,
+                &layouts,
                 &stages,
                 &study_dims,
                 &initial_state,
@@ -2600,14 +2574,17 @@ mod tests {
         let fx = ForwardFixture::new();
         let state_boxes = permissive_state_boxes(fx.state.n_state, fx.n_stages);
         let geometry = equipment_free_geometry(&vec![0; fx.templates.len()]);
-        let fixture = StageContextFixture::new(&fx.templates, &state_boxes, &geometry);
+        let fixture = StageContextFixture::new(&fx.templates, &state_boxes, &geometry)
+            .without_inflow_entries(1);
         let ctx = fixture.ctx();
         let study_dims = study_dims();
         let node_graph = crate::test_support::chain_node_graph(&fx.stochastic);
+        let layouts = all_enabled_cut_state_layouts(&fx.state, fx.n_stages);
         let training_ctx = terminal_boundary_test_ctx(
             &fx.stochastic,
             &node_graph,
             &fx.state,
+            &layouts,
             &fx.stages,
             &study_dims,
             &fx.initial_state,
@@ -2623,13 +2600,7 @@ mod tests {
             .collect();
         let mut basis_store = BasisStore::new(ranks.max_local_fwd, fx.n_stages);
         let mut records: Vec<TrajectoryRecord> = (0..ranks.my_actual_fwd * fx.n_stages)
-            .map(|_| TrajectoryRecord {
-                primal: Vec::new(),
-                dual: Vec::new(),
-                stage_cost: 0.0,
-                node_id: NodeId(0),
-                state: Vec::new(),
-            })
+            .map(|_| TrajectoryRecord::default())
             .collect();
 
         let mut state = ForwardPassState::new(n_workers, fx.n_stages, ranks.max_local_fwd);

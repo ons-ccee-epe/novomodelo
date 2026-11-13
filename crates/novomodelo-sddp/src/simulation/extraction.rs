@@ -2,19 +2,11 @@
 //!
 //! ## Column layout
 //!
-//! The state-region column layout is defined by [`StateSpace`]:
-//!
-//! ```text
-//! [0, N)             storage      — outgoing storage volumes
-//! [N, N*(1+L))       inflow_lags  — AR lag variables (hydro-major order)
-//! [N*(1+L), N*(2+L)) z_inflow     — realized inflow (auxiliary, not state)
-//! [N*(2+L), N*(3+L)) storage_in   — incoming storage volumes (fixed vars)
-//! N*(3+L)            theta        — future cost variable
-//! [theta+1, ...)     equipment    — turbine, spillage, thermal, lines, deficit, excess
-//! ```
-//!
-//! The equipment column layout is defined per stage by `StageLayout`, threaded
-//! into extraction as [`StageGeometry`].
+//! The state-region column layout is defined by [`StateSpace`]; the equipment
+//! column layout is defined per stage by `StageLayout`, threaded into
+//! extraction as [`StageGeometry`]. The AR lag state has no LP column: the
+//! inflow outputs read the realized inflow and the incoming lags from the
+//! solve scratch.
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -602,7 +594,10 @@ pub struct SolutionView<'a> {
     pub objective: f64,
     /// Objective coefficient vector from the stage template.
     pub objective_coeffs: &'a [f64],
-    /// Row lower bounds from the stage template (may be patched for load noise).
+    /// Unscaled template row lower bounds, with the load-balance rows overwritten
+    /// by the realized load. Every other row keeps its template bound, a coupled
+    /// row whose solved bound carries the inflow shift included. Extraction reads
+    /// only the load-balance rows.
     pub row_lower: &'a [f64],
 }
 
@@ -636,7 +631,7 @@ fn water_value_per_hm3(
 /// stage. For uniform-block studies the per-stage and stage-0 reads coincide.
 pub struct StageExtractionSpec<'a> {
     /// Role-(a) state layout: source of the state-region column reads (`storage`,
-    /// `storage_in`, `inflow_lags`, `commit_in`, `max_par_order`).
+    /// `storage_in`, `commit_in`, `max_par_order`).
     pub state: &'a StateSpace,
     /// Single owner of the study-invariant, non-state LP shape (entity counts and
     /// optional-column presence flags).
@@ -654,6 +649,9 @@ pub struct StageExtractionSpec<'a> {
     pub entity_counts: &'a EntityCounts,
     /// Volumetric inflow per hydro (m³/s), one entry per hydro plant.
     pub inflow_m3s_per_hydro: &'a [f64],
+    /// Incoming lag slice of the pinned state, in state-vector order; the source of the
+    /// `inflow_lags` output.
+    pub incoming_lags: &'a [f64],
     /// Block hours per dispatch block, used to convert duals to spot prices.
     pub block_hours: &'a [f64],
     /// Per-row metadata for active generic constraint rows at this stage.
@@ -723,11 +721,9 @@ impl StageExtractionSpec<'_> {
 /// `col_scale[col]` when in range and non-zero; `1.0` otherwise.
 #[inline]
 fn col_scale_factor_at(col_scale: &[f64], col: usize) -> f64 {
-    if col < col_scale.len() {
-        let d = col_scale[col];
-        if d == 0.0 { 1.0 } else { d }
-    } else {
-        1.0
+    match col_scale.get(col) {
+        Some(&d) if d != 0.0 => d,
+        _ => 1.0,
     }
 }
 
@@ -1825,12 +1821,14 @@ fn extract_stub_collections(
     inflow_lags.extend(spec.entity_counts.hydro_ids.iter().enumerate().flat_map(
         |(h, &hydro_id)| {
             (0..state.max_par_order).map(move |l| {
+                let lag_dim = state.lag_state_dim(l, HydroSys::new(h)).get();
+                let inflow_m3s = spec.incoming_lags[lag_dim - state.state_dim_lag_range().start];
                 #[allow(clippy::cast_possible_truncation)]
                 SimulationInflowLagResult {
                     stage_id,
                     hydro_id,
                     lag_index: l as u32,
-                    inflow_m3s: view.primal[state.lag_incoming_col(l, HydroSys::new(h)).get()],
+                    inflow_m3s,
                 }
             })
         },

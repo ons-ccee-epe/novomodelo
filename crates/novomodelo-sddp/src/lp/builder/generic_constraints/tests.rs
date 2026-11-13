@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
-use super::super::entries::{LpMatrixBuffers, fill_generic_constraint_entries};
+use super::super::entries::fill_generic_constraints_for_test;
 use super::super::layout::variable_ref_is_block_independent;
 use super::{contract_family_slot, resolve_variable_ref};
 use crate::hydro_models::{
@@ -244,22 +244,20 @@ fn constant_productivity_models(n_hydros: usize, productivity: f64) -> Productio
 /// Column layout (identical to a real `StageLayout::new` build of these
 /// dims, since that is exactly how this fixture is built):
 ///   storage:   [0, 4)         = 0..4
-///   lags:      [4, 4*(1+0))   = 4..4   (L=0, empty)
-///   z_inflow:  [4*(1+0), 4*(2+0)) = 4..8
-///   storage_in:[4*(2+0), 4*(3+0)) = 8..12
-///   theta = N*(3+L) = 4*(3+0) = 12
-///   decision_start = 13
-///   turbine:    [13, 13+4*3) = 13..25   (4 hydros * 3 blocks)
-///   spillage:   [25, 25+4*3) = 25..37
-///   diversion:  [37, 37+4*3) = 37..49  (4 hydros * 3 blocks)
-///   thermal:    [49, 49+2*3) = 49..55  (2 thermals * 3 blocks)
-///   line_fwd:   [55, 55+1*3) = 55..58  (1 line * 3 blocks)
-///   line_rev:   [58, 58+1*3) = 58..61
-///   deficit:    [61, 61+2*2*3) = 61..73 (2 buses * 2 segs * 3 blocks)
-///   excess:     [73, 73+2*3) = 73..79  (2 buses * 3 blocks)
-///   generation: [79, 79+2*3) = 79..85  (2 FPHA hydros * 3 blocks)
+///   storage_in:[4, 8)         = 4..8
+///   theta = 2*N = 8
+///   decision_start = 9
+///   turbine:    [9, 9+4*3) = 9..21   (4 hydros * 3 blocks)
+///   spillage:   [21, 21+4*3) = 21..33
+///   diversion:  [33, 33+4*3) = 33..45  (4 hydros * 3 blocks)
+///   thermal:    [45, 45+2*3) = 45..51  (2 thermals * 3 blocks)
+///   line_fwd:   [51, 51+1*3) = 51..54  (1 line * 3 blocks)
+///   line_rev:   [54, 54+1*3) = 54..57
+///   deficit:    [57, 57+2*2*3) = 57..69 (2 buses * 2 segs * 3 blocks)
+///   excess:     [69, 69+2*3) = 69..75  (2 buses * 3 blocks)
+///   generation: [75, 75+2*3) = 75..81  (2 FPHA hydros * 3 blocks)
 ///   evap: none
-///   withdrawal_slack_neg: [85, 89)  withdrawal_slack_pos: [89, 93) (4 hydros)
+///   withdrawal_slack_neg: [81, 85)  withdrawal_slack_pos: [85, 89) (4 hydros)
 ///
 /// Later families (slacks, pumping, contracts) are read through the layout
 /// accessors, not hand-derived.
@@ -424,13 +422,29 @@ fn make_production_models() -> ProductionModelSet {
 /// pair `resolve_variable_ref` reads in production. A test that needs a cascade,
 /// pumping/contract set, or production-model set different from the fixture's own
 /// overrides the relevant `ctx` field with struct-update syntax before calling.
+///
+/// [`call_with_inflow`] also returns the realized-inflow `(hydro position,
+/// multiplier)` pairs, which a `HydroInflow` reference writes apart from the column pairs.
 fn call(
     var_ref: VariableRef,
     block_idx: usize,
     ctx: &TemplateBuildCtx<'_>,
     layout: &StageLayout<'_>,
 ) -> Vec<(usize, f64)> {
-    resolve_variable_ref(&var_ref, block_idx, 0, 0, ctx, layout)
+    call_with_inflow(var_ref, block_idx, ctx, layout).1
+}
+
+type Entries = Vec<(usize, f64)>;
+
+fn call_with_inflow(
+    var_ref: VariableRef,
+    block_idx: usize,
+    ctx: &TemplateBuildCtx<'_>,
+    layout: &StageLayout<'_>,
+) -> (Entries, Entries) {
+    let mut inflow = Vec::new();
+    let columns = resolve_variable_ref(&var_ref, block_idx, 0, 0, ctx, layout, &mut inflow);
+    (inflow, columns)
 }
 
 /// An energy contract carrying only the `id`/`bus_id`/`contract_type` the
@@ -479,7 +493,7 @@ fn make_pumping_station(
 /// `ThermalGeneration` column arithmetic across the `block_id`/position axes
 /// the per-arm coverage requires: one `block_id = None`, one `block_id = Some`,
 /// and one `position != 0`. All resolve through `resolve_thermal_generation`
-/// with `layout.geometry.thermal.start = 49`, `n_blks = 3`.
+/// with `layout.geometry.thermal.start = 45`, `n_blks = 3`.
 #[test]
 fn thermal_generation_column_arithmetic() {
     let mut fx = default_fixture();
@@ -488,9 +502,9 @@ fn thermal_generation_column_arithmetic() {
 
     // (case_name, thermal_id, block_id, block_idx, expected_col)
     let cases: [(&str, EntityId, Option<usize>, usize, usize); 3] = [
-        ("none_block_1", EntityId(5), None, 1, 49 + 0 * 3 + 1),
-        ("some_block_2", EntityId(5), Some(2), 2, 49 + 0 * 3 + 2),
-        ("second_thermal", EntityId(6), None, 0, 49 + 1 * 3 + 0),
+        ("none_block_1", EntityId(5), None, 1, 45 + 0 * 3 + 1),
+        ("some_block_2", EntityId(5), Some(2), 2, 45 + 0 * 3 + 2),
+        ("second_thermal", EntityId(6), None, 0, 45 + 1 * 3 + 0),
     ];
 
     for (case_name, thermal_id, block_id, block_idx, expected_col) in cases {
@@ -546,8 +560,8 @@ fn hydro_storage_stage_level_ignores_block() {
 
 // ── HydroOutflow tests ────────────────────────────────────────────────────
 
-/// hydro_pos[EntityId(40)] = 3, block_idx=0, turbine.start = 13, spillage.start = 25,
-/// n_blks = 3 → [(13 + 3*3, 1.0), (25 + 3*3, 1.0)] = [(22, 1.0), (34, 1.0)].
+/// hydro_pos[EntityId(40)] = 3, block_idx=0, turbine.start = 9, spillage.start = 21,
+/// n_blks = 3 → [(9 + 3*3, 1.0), (21 + 3*3, 1.0)] = [(18, 1.0), (30, 1.0)].
 #[test]
 fn hydro_outflow_expands_to_turbine_and_spillage() {
     let mut fx = default_fixture();
@@ -564,8 +578,8 @@ fn hydro_outflow_expands_to_turbine_and_spillage() {
         &layout,
     );
 
-    let turbine_col = 13 + 3 * 3 + 0; // 22
-    let spillage_col = 25 + 3 * 3 + 0; // 34
+    let turbine_col = 9 + 3 * 3 + 0; // 18
+    let spillage_col = 21 + 3 * 3 + 0; // 30
     assert_eq!(result.len(), 2);
     assert_eq!(result[0], (turbine_col, 1.0));
     assert_eq!(result[1], (spillage_col, 1.0));
@@ -587,14 +601,14 @@ fn hydro_outflow_block_id_some_uses_explicit_block() {
         &layout,
     );
 
-    // hydro pos=0, turbine.start=13, spillage.start=25, block=1, n_blks=3
-    assert_eq!(result, vec![(13 + 0 * 3 + 1, 1.0), (25 + 0 * 3 + 1, 1.0)]);
+    // hydro pos=0, turbine.start=9, spillage.start=21, block=1, n_blks=3
+    assert_eq!(result, vec![(9 + 0 * 3 + 1, 1.0), (21 + 0 * 3 + 1, 1.0)]);
 }
 
 // ── HydroGeneration tests ─────────────────────────────────────────────────
 
-/// hydro_pos[EntityId(20)] = 1 → constant productivity 2.5; turbine.start = 13,
-/// n_blks = 3, block_idx = 0 → [(13 + 1*3, 2.5)] = [(16, 2.5)].
+/// hydro_pos[EntityId(20)] = 1 → constant productivity 2.5; turbine.start = 9,
+/// n_blks = 3, block_idx = 0 → [(9 + 1*3, 2.5)] = [(12, 2.5)].
 #[test]
 fn hydro_generation_constant_productivity_maps_to_turbine() {
     let mut fx = default_fixture();
@@ -612,11 +626,11 @@ fn hydro_generation_constant_productivity_maps_to_turbine() {
         &layout,
     );
 
-    assert_eq!(result, vec![(13 + 1 * 3 + 0, 2.5)]);
+    assert_eq!(result, vec![(9 + 1 * 3 + 0, 2.5)]);
 }
 
-/// hydro_pos[EntityId(10)] = 0 → FPHA (local FPHA index 0); generation.start = 79,
-/// n_blks = 3, block_idx = 0 → [(79, 1.0)].
+/// hydro_pos[EntityId(10)] = 0 → FPHA (local FPHA index 0); generation.start = 75,
+/// n_blks = 3, block_idx = 0 → [(75, 1.0)].
 #[test]
 fn hydro_generation_fpha_maps_to_generation_column() {
     let mut fx = default_fixture();
@@ -634,11 +648,11 @@ fn hydro_generation_fpha_maps_to_generation_column() {
         &layout,
     );
 
-    assert_eq!(result, vec![(79 + 0 * 3 + 0, 1.0)]);
+    assert_eq!(result, vec![(75 + 0 * 3 + 0, 1.0)]);
 }
 
-/// hydro_pos[EntityId(30)] = 2 → FPHA (local FPHA index 1); generation.start = 79,
-/// n_blks = 3, block_idx = 2 → [(79 + 1*3 + 2, 1.0)] = [(84, 1.0)].
+/// hydro_pos[EntityId(30)] = 2 → FPHA (local FPHA index 1); generation.start = 75,
+/// n_blks = 3, block_idx = 2 → [(75 + 1*3 + 2, 1.0)] = [(80, 1.0)].
 #[test]
 fn hydro_generation_fpha_second_hydro_block_2() {
     let mut fx = default_fixture();
@@ -656,7 +670,7 @@ fn hydro_generation_fpha_second_hydro_block_2() {
         &layout,
     );
 
-    assert_eq!(result, vec![(79 + 1 * 3 + 2, 1.0)]);
+    assert_eq!(result, vec![(75 + 1 * 3 + 2, 1.0)]);
 }
 
 // ── Bus-selector tests ────────────────────────────────────────────────────
@@ -899,13 +913,13 @@ fn resolve_generation_bus_selector_maps_to_the_cells_fpha_column() {
 
 /// Dedicated evap-hydro geom (evap hydro at pos 0):
 /// N=2, L=0, T=0, Ln=0, B=1, K=1, no penalty, no FPHA.
-/// theta = 2*(3+0) = 6
-/// turbine:    [7, 9)
-/// spillage:   [9, 11)
-/// diversion: [11, 13)
-/// deficit:   [13, 14)
-/// excess:    [14, 15)
-/// evap cols: [15, 18)  → evaporation_flow=15, f_evap_plus=16, f_evap_minus=17
+/// theta = 2*N = 4
+/// turbine:    [5, 7)
+/// spillage:   [7, 9)
+/// diversion:  [9, 11)
+/// deficit:   [11, 12)
+/// excess:    [12, 13)
+/// evap cols: [13, 16)  → evaporation_flow=13, f_evap_plus=14, f_evap_minus=15
 #[test]
 fn hydro_evaporation_maps_to_evaporation_flow_col() {
     let mut fx = evaporation_fixture(1);
@@ -922,7 +936,7 @@ fn hydro_evaporation_maps_to_evaporation_flow_col() {
         &layout,
     );
 
-    assert_eq!(result, vec![(15, 1.0)]);
+    assert_eq!(result, vec![(13, 1.0)]);
 }
 
 #[test]
@@ -1425,8 +1439,8 @@ fn missing_entity_id_returns_empty() {
 
 // ── BusDeficit tests ──────────────────────────────────────────────────────
 
-/// bus_pos[EntityId(100)] = 0, deficit.start = 61, S = 2, n_blks = 3, block_idx = 0 →
-/// [(61 + 0*2*3 + 0*3, 1.0), (61 + 0*2*3 + 1*3, 1.0)] = [(61, 1.0), (64, 1.0)].
+/// bus_pos[EntityId(100)] = 0, deficit.start = 57, S = 2, n_blks = 3, block_idx = 0 →
+/// [(57 + 0*2*3 + 0*3, 1.0), (57 + 0*2*3 + 1*3, 1.0)] = [(57, 1.0), (60, 1.0)].
 #[test]
 fn bus_deficit_returns_one_entry_per_segment() {
     let mut fx = default_fixture();
@@ -1444,12 +1458,12 @@ fn bus_deficit_returns_one_entry_per_segment() {
     );
 
     assert_eq!(result.len(), 2);
-    assert_eq!(result[0], (61, 1.0));
-    assert_eq!(result[1], (64, 1.0));
+    assert_eq!(result[0], (57, 1.0));
+    assert_eq!(result[1], (60, 1.0));
 }
 
-/// bus_pos[EntityId(200)] = 1, deficit.start = 61, S = 2, n_blks = 3, blk = 1:
-/// seg0 = 61 + 1*2*3 + 0*3 + 1 = 68; seg1 = 61 + 1*2*3 + 1*3 + 1 = 71.
+/// bus_pos[EntityId(200)] = 1, deficit.start = 57, S = 2, n_blks = 3, blk = 1:
+/// seg0 = 57 + 1*2*3 + 0*3 + 1 = 64; seg1 = 57 + 1*2*3 + 1*3 + 1 = 67.
 #[test]
 fn bus_deficit_second_bus_block_1() {
     let mut fx = default_fixture();
@@ -1467,14 +1481,14 @@ fn bus_deficit_second_bus_block_1() {
     );
 
     assert_eq!(result.len(), 2);
-    assert_eq!(result[0], (68, 1.0));
-    assert_eq!(result[1], (71, 1.0));
+    assert_eq!(result[0], (64, 1.0));
+    assert_eq!(result[1], (67, 1.0));
 }
 
 // ── BusExcess tests ───────────────────────────────────────────────────────
 
-/// bus_pos[EntityId(100)] = 0, excess.start = 73, n_blks = 3, block = 2 →
-/// [(73 + 0*3 + 2, 1.0)] = [(75, 1.0)].
+/// bus_pos[EntityId(100)] = 0, excess.start = 69, n_blks = 3, block = 2 →
+/// [(69 + 0*3 + 2, 1.0)] = [(71, 1.0)].
 #[test]
 fn bus_excess_maps_to_excess_column() {
     let mut fx = default_fixture();
@@ -1491,13 +1505,13 @@ fn bus_excess_maps_to_excess_column() {
         &layout,
     );
 
-    assert_eq!(result, vec![(73 + 0 * 3 + 2, 1.0)]);
+    assert_eq!(result, vec![(69 + 0 * 3 + 2, 1.0)]);
 }
 
 // ── LineDirect / LineReverse tests ────────────────────────────────────────
 
-/// line_pos[EntityId(50)] = 0, line_fwd.start = 55, n_blks = 3, block = 1 →
-/// [(55 + 0*3 + 1, 1.0)] = [(56, 1.0)].
+/// line_pos[EntityId(50)] = 0, line_fwd.start = 51, n_blks = 3, block = 1 →
+/// [(51 + 0*3 + 1, 1.0)] = [(52, 1.0)].
 #[test]
 fn line_direct_maps_to_fwd_column() {
     let mut fx = default_fixture();
@@ -1514,10 +1528,10 @@ fn line_direct_maps_to_fwd_column() {
         &layout,
     );
 
-    assert_eq!(result, vec![(55 + 0 * 3 + 1, 1.0)]);
+    assert_eq!(result, vec![(51 + 0 * 3 + 1, 1.0)]);
 }
 
-/// line_pos[EntityId(50)] = 0, line_rev.start = 58, n_blks = 3, block = 0 → [(58, 1.0)].
+/// line_pos[EntityId(50)] = 0, line_rev.start = 54, n_blks = 3, block = 0 → [(54, 1.0)].
 #[test]
 fn line_reverse_maps_to_rev_column() {
     let mut fx = default_fixture();
@@ -1534,16 +1548,16 @@ fn line_reverse_maps_to_rev_column() {
         &layout,
     );
 
-    assert_eq!(result, vec![(58, 1.0)]);
+    assert_eq!(result, vec![(54, 1.0)]);
 }
 
 // ── LineExchange tests ──────────────────────────────────────────────────────
 
 /// LineExchange maps to both line_fwd and line_rev columns with opposite signs.
 ///
-/// line_pos[EntityId(50)] = 0, line_fwd.start = 55, line_rev.start = 58,
+/// line_pos[EntityId(50)] = 0, line_fwd.start = 51, line_rev.start = 54,
 /// n_blks = 3, block = 1
-/// Expected: [(55 + 0*3 + 1, 1.0), (58 + 0*3 + 1, -1.0)] = [(56, 1.0), (59, -1.0)]
+/// Expected: [(51 + 0*3 + 1, 1.0), (54 + 0*3 + 1, -1.0)] = [(52, 1.0), (55, -1.0)]
 #[test]
 fn line_exchange_maps_to_fwd_and_rev_columns() {
     let mut fx = default_fixture();
@@ -1560,7 +1574,7 @@ fn line_exchange_maps_to_fwd_and_rev_columns() {
         &layout,
     );
 
-    assert_eq!(result, vec![(56, 1.0), (59, -1.0)]);
+    assert_eq!(result, vec![(52, 1.0), (55, -1.0)]);
 }
 
 /// `line_exchange` and `line_direct` on one line land on the same forward column,
@@ -1615,19 +1629,13 @@ fn generic_row_merges_line_exchange_and_line_direct() {
         "a block-dependent expression expands to one generic row per block"
     );
 
-    let mut col_entries: Vec<Vec<(usize, f64)>> = vec![Vec::new(); layout.num_cols];
-    let mut col_upper = vec![f64::INFINITY; layout.num_cols];
-    let mut objective = vec![0.0_f64; layout.num_cols];
-    let mut row_lower = vec![f64::NEG_INFINITY; layout.rows.num_rows];
-    let mut row_upper = vec![f64::INFINITY; layout.rows.num_rows];
-    let mut buffers = LpMatrixBuffers {
-        col_entries: &mut col_entries,
-        col_upper: &mut col_upper,
-        objective: &mut objective,
-        row_lower: &mut row_lower,
-        row_upper: &mut row_upper,
-    };
-    fill_generic_constraint_entries(&ctx, &fx.stage, 0, &layout, &mut buffers);
+    let fill = fill_generic_constraints_for_test(
+        &ctx,
+        &fx.stage,
+        0,
+        &layout,
+        vec![Vec::new(); layout.num_cols],
+    );
 
     for blk in 0..n_blks {
         let direct = VariableRef::LineDirect {
@@ -1642,7 +1650,7 @@ fn generic_row_merges_line_exchange_and_line_direct() {
         let reverse = call(exchange, blk, &ctx, &layout)[1].0;
         let row = layout.generic_row(blk);
         let at = |col: usize| -> Vec<f64> {
-            col_entries[col]
+            fill.col_entries[col]
                 .iter()
                 .filter(|&&(r, _)| r == row)
                 .map(|&(_, v)| v)
@@ -1656,7 +1664,7 @@ fn generic_row_merges_line_exchange_and_line_direct() {
 /// LineExchange with explicit block_id overrides current block_idx.
 ///
 /// block_idx = 2 but block_id = Some(0)
-/// Expected: [(55, 1.0), (58, -1.0)]
+/// Expected: [(51, 1.0), (54, -1.0)]
 #[test]
 fn line_exchange_with_explicit_block() {
     let mut fx = default_fixture();
@@ -1673,7 +1681,7 @@ fn line_exchange_with_explicit_block() {
         &layout,
     );
 
-    assert_eq!(result, vec![(55, 1.0), (58, -1.0)]);
+    assert_eq!(result, vec![(51, 1.0), (54, -1.0)]);
 }
 
 #[test]
@@ -1879,7 +1887,7 @@ fn hydro_turbined_maps_to_turbine_column() {
     let ctx = fx.base.ctx();
     let layout = StageLayout::new(&ctx, &fx.stage, 0);
 
-    // hydro pos=1 (EntityId 20), turbine.start=13, n_blks=3, block=2
+    // hydro pos=1 (EntityId 20), turbine.start=9, n_blks=3, block=2
     let result = call(
         VariableRef::HydroTurbined {
             hydro_id: EntityId(20),
@@ -1891,7 +1899,7 @@ fn hydro_turbined_maps_to_turbine_column() {
         &layout,
     );
 
-    assert_eq!(result, vec![(13 + 1 * 3 + 2, 1.0)]);
+    assert_eq!(result, vec![(9 + 1 * 3 + 2, 1.0)]);
 }
 
 #[test]
@@ -1900,7 +1908,7 @@ fn hydro_spillage_maps_to_spillage_column() {
     let ctx = fx.base.ctx();
     let layout = StageLayout::new(&ctx, &fx.stage, 0);
 
-    // hydro pos=3 (EntityId 40), spillage.start=25, n_blks=3, block=1
+    // hydro pos=3 (EntityId 40), spillage.start=21, n_blks=3, block=1
     let result = call(
         VariableRef::HydroSpillage {
             hydro_id: EntityId(40),
@@ -1911,11 +1919,11 @@ fn hydro_spillage_maps_to_spillage_column() {
         &layout,
     );
 
-    assert_eq!(result, vec![(25 + 3 * 3 + 1, 1.0)]);
+    assert_eq!(result, vec![(21 + 3 * 3 + 1, 1.0)]);
 }
 
-/// `layout.geometry.diversion.start = 37`. For hydro pos=1 (EntityId 20),
-/// n_blks=3, block=2 the flat block-major address is `37 + 1*3 + 2 = 42` with
+/// `layout.geometry.diversion.start = 33`. For hydro pos=1 (EntityId 20),
+/// n_blks=3, block=2 the flat block-major address is `33 + 1*3 + 2 = 38` with
 /// the unit coefficient.
 #[test]
 fn diversion_maps_to_diversion_column() {
@@ -1933,7 +1941,7 @@ fn diversion_maps_to_diversion_column() {
         &layout,
     );
 
-    assert_eq!(result, vec![(37 + 1 * 3 + 2, 1.0)]);
+    assert_eq!(result, vec![(33 + 1 * 3 + 2, 1.0)]);
 }
 
 // ── HydroInflow tests ──────────────────────────────────────────────────────
@@ -1950,11 +1958,11 @@ fn make_inflow_cascade() -> CascadeTopology {
     ])
 }
 
-/// A two-upstream hydro (no diversion-into) resolves at block `k` to the
-/// incremental `z_inflow` column plus, in canonical upstream order, each
-/// upstream plant's turbine + spillage column, all coefficients `+1.0`.
+/// A two-upstream hydro (no diversion-into) resolves at block `k` to its own
+/// realized-inflow pair plus, in canonical upstream order, each upstream plant's
+/// turbine + spillage column, all coefficients `+1.0`.
 /// Target EntityId(40) at pos_h=3; upstream [10, 20] at pos 0, 1.
-/// z_inflow.start=4 → (7, 1.0); turbine.start=13, spillage.start=25, n_blks=3, k=2.
+/// turbine.start=9, spillage.start=21, n_blks=3, k=2.
 #[test]
 fn hydro_inflow_two_upstream_canonical_order() {
     let mut fx = default_fixture();
@@ -1964,7 +1972,7 @@ fn hydro_inflow_two_upstream_canonical_order() {
     ctx.cascade = &cascade;
 
     let blk = 2;
-    let result = call(
+    let (inflow, columns) = call_with_inflow(
         VariableRef::HydroInflow {
             hydro_id: EntityId(40),
             block_id: Some(blk),
@@ -1974,14 +1982,13 @@ fn hydro_inflow_two_upstream_canonical_order() {
         &layout,
     );
 
-    let z_col = 4 + 3; // z_inflow.start + pos_h
-    let turb = 13; // turbine.start
-    let spill = 25; // spillage.start
+    let turb = 9; // turbine.start
+    let spill = 21; // spillage.start
     let nb = 3; // n_blks
+    assert_eq!(inflow, vec![(3, 1.0)]);
     assert_eq!(
-        result,
+        columns,
         vec![
-            (z_col, 1.0),
             (turb + 0 * nb + blk, 1.0),  // upstream 10 turbine
             (spill + 0 * nb + blk, 1.0), // upstream 10 spillage
             (turb + 1 * nb + blk, 1.0),  // upstream 20 turbine
@@ -2001,7 +2008,7 @@ fn hydro_inflow_none_matches_some_block_idx() {
     ctx.cascade = &cascade;
 
     let blk = 2;
-    let none_result = call(
+    let none_result = call_with_inflow(
         VariableRef::HydroInflow {
             hydro_id: EntityId(40),
             block_id: None,
@@ -2010,7 +2017,7 @@ fn hydro_inflow_none_matches_some_block_idx() {
         &ctx,
         &layout,
     );
-    let some_result = call(
+    let some_result = call_with_inflow(
         VariableRef::HydroInflow {
             hydro_id: EntityId(40),
             block_id: Some(blk),
@@ -2024,10 +2031,9 @@ fn hydro_inflow_none_matches_some_block_idx() {
 }
 
 /// A hydro that also has a plant diverting into it gets the diversion column
-/// appended right after its own `z_inflow` column, before the upstream terms
-/// (both are the hydro's own local inflow rate). `diversion_upstream[40] =
-/// [2]` (system index 2), diversion.start=37, n_blks=3, k=1 →
-/// (37 + 2*3 + 1, 1.0) = (44, 1.0).
+/// ahead of the upstream terms (both are the hydro's own local inflow rate), after
+/// its own realized-inflow pair. `diversion_upstream[40] = [2]` (system index 2),
+/// diversion.start=33, n_blks=3, k=1 → (33 + 2*3 + 1, 1.0) = (40, 1.0).
 #[test]
 fn hydro_inflow_diversion_into_appends_diversion_column() {
     let mut fx = default_fixture();
@@ -2039,7 +2045,7 @@ fn hydro_inflow_diversion_into_appends_diversion_column() {
     ctx.diversion_upstream = &div;
 
     let blk = 1;
-    let result = call(
+    let (inflow, columns) = call_with_inflow(
         VariableRef::HydroInflow {
             hydro_id: EntityId(40),
             block_id: Some(blk),
@@ -2049,15 +2055,14 @@ fn hydro_inflow_diversion_into_appends_diversion_column() {
         &layout,
     );
 
-    let z_col = 4 + 3;
-    let turb = 13; // turbine.start
-    let spill = 25; // spillage.start
-    let div_start = 37; // diversion.start
+    let turb = 9; // turbine.start
+    let spill = 21; // spillage.start
+    let div_start = 33; // diversion.start
     let nb = 3; // n_blks
+    assert_eq!(inflow, vec![(3, 1.0)]);
     assert_eq!(
-        result,
+        columns,
         vec![
-            (z_col, 1.0),
             (div_start + 2 * nb + blk, 1.0), // diversion-into, system index 2
             (turb + 0 * nb + blk, 1.0),
             (spill + 0 * nb + blk, 1.0),
@@ -2067,11 +2072,11 @@ fn hydro_inflow_diversion_into_appends_diversion_column() {
     );
 }
 
-/// A headwater hydro (no upstream, no diversion-into) resolves to exactly the
-/// incremental `z_inflow` column. EntityId(30) at pos=2 is a headwater in
-/// `make_inflow_cascade`; z_inflow.start=4 → (6, 1.0).
+/// A headwater hydro (no upstream, no diversion-into) resolves to exactly its own
+/// realized-inflow pair and no column. EntityId(30) at pos=2 is a headwater in
+/// `make_inflow_cascade`.
 #[test]
-fn hydro_inflow_headwater_resolves_to_z_inflow_only() {
+fn hydro_inflow_headwater_resolves_to_its_own_inflow_only() {
     let mut fx = default_fixture();
     let mut ctx = fx.base.ctx();
     let layout = StageLayout::new(&ctx, &fx.stage, 0);
@@ -2079,7 +2084,7 @@ fn hydro_inflow_headwater_resolves_to_z_inflow_only() {
     ctx.cascade = &cascade;
 
     for block_idx in [0, 1, 2] {
-        let result = call(
+        let (inflow, columns) = call_with_inflow(
             VariableRef::HydroInflow {
                 hydro_id: EntityId(30),
                 block_id: None,
@@ -2088,23 +2093,20 @@ fn hydro_inflow_headwater_resolves_to_z_inflow_only() {
             &ctx,
             &layout,
         );
-        assert_eq!(result, vec![(6, 1.0)], "block_idx={block_idx}");
+        assert_eq!(inflow, vec![(2, 1.0)], "block_idx={block_idx}");
+        assert!(columns.is_empty(), "block_idx={block_idx}");
     }
 }
 
-/// `hydro_count == 0` (empty `z_inflow`) resolves to `vec![]`:
-/// `anticipated_fixture` has no hydros, so `z_inflow` is empty and
-/// `z_inflow.start` is meaningless; the resolver must short-circuit to `[]`.
+/// `hydro_count == 0` resolves to `vec![]`: `anticipated_fixture` has no hydros,
+/// so the resolver must short-circuit to `[]`.
 #[test]
 fn hydro_inflow_empty_when_no_hydros() {
     let mut fx = anticipated_fixture();
     let ctx = fx.base.ctx();
     let layout = StageLayout::new(&ctx, &fx.stage, 0);
 
-    assert!(
-        ctx.state.z_inflow.is_empty(),
-        "z_inflow must be empty with hydro_count == 0"
-    );
+    assert_eq!(ctx.state.hydro_count, 0, "fixture must have no hydros");
 
     let result = call(
         VariableRef::HydroInflow {
@@ -2120,6 +2122,75 @@ fn hydro_inflow_empty_when_no_hydros() {
         result.is_empty(),
         "HydroInflow with hydro_count == 0 must return empty vec, got: {result:?}"
     );
+}
+
+/// Two `HydroInflow` terms on one hydro merge into one inflow-coupling entry on the
+/// row, summed in push order; two terms that cancel exactly leave no entry.
+///
+/// derived: a realized-inflow term enters at unit rate, so each term's multiplier is
+/// its coefficient; `0.1 + 0.2` is not `0.3`, which `to_bits` can tell.
+#[test]
+fn inflow_coupling_merges_generic_hydro_inflow_terms_on_one_hydro() {
+    let hydro_id = EntityId(20);
+    let inflow = |coefficient: f64, block_id: Option<usize>| {
+        LinearTerm::literal(coefficient, VariableRef::HydroInflow { hydro_id, block_id })
+    };
+    let constraint = |id: i32, terms: Vec<LinearTerm>| GenericConstraint {
+        id: EntityId(id),
+        name: format!("inflow_{id}"),
+        description: None,
+        expression: ConstraintExpression { terms },
+        slack: None,
+        bound_lower: None,
+        bound_upper: None,
+    };
+    let (a, b, cancelled) = (0.1_f64, 0.2_f64, 0.7_f64);
+    let unit_rate = 1.0_f64;
+
+    let mut fx = default_fixture();
+    let id_map: HashMap<i32, usize> = [(7, 0), (8, 1)].into_iter().collect();
+    let rows = [
+        (7_i32, 0_i32, Some(0_i32), None::<f64>, Some(100.0_f64)),
+        (8, 0, Some(0), None, Some(100.0)),
+    ];
+    fx.base.resolved_generic_bounds =
+        ResolvedGenericConstraintBounds::new(&id_map, rows.into_iter());
+    fx.base.generic_constraints = vec![
+        constraint(7, vec![inflow(a, None), inflow(b, Some(1))]),
+        constraint(
+            8,
+            vec![inflow(cancelled, None), inflow(-cancelled, Some(1))],
+        ),
+    ];
+    let ctx = fx.base.ctx();
+    let layout = StageLayout::new(&ctx, &fx.stage, 0);
+    assert_eq!(layout.rows.n_generic_rows, 2);
+
+    let coupling = fill_generic_constraints_for_test(
+        &ctx,
+        &fx.stage,
+        0,
+        &layout,
+        vec![Vec::new(); layout.num_cols],
+    )
+    .coupling;
+
+    let target = ctx.positions.hydro(hydro_id).unwrap();
+    for h in 0..layout.state.hydro_count {
+        let entries: Vec<(usize, u64)> = coupling
+            .hydro_entries(HydroSys::new(h))
+            .map(|(row, coefficient)| (row, coefficient.to_bits()))
+            .collect();
+        let expected = if h == target {
+            vec![(
+                layout.generic_row(0),
+                (a * unit_rate + b * unit_rate).to_bits(),
+            )]
+        } else {
+            Vec::new()
+        };
+        assert_eq!(entries, expected, "hydro {h}");
+    }
 }
 
 #[test]

@@ -7,9 +7,11 @@
 //! function reads — [`TemplateBuildCtx`] for entity slices and position maps,
 //! [`StageLayout`] for this stage's column/row ranges and the typed accessors over
 //! them, with all block-stride arithmetic routed through the single-owner
-//! stride primitive those accessors already carry. `HydroStorage`/`HydroInflow`
-//! resolve through `layout.state`'s `StateSpace` handle, so a generic constraint
-//! lands on the same column the cut path reads.
+//! stride primitive those accessors already carry. `HydroStorage` resolves
+//! through `layout.state`'s `StateSpace` handle, so a generic constraint lands on
+//! the same column the cut path reads. `HydroInflow`'s realized-inflow term is not
+//! a column pair: it comes back as a hydro position through `inflow_out`, for the
+//! inflow-coupling sink to place.
 //!
 //! For a block-level variable with `block_id = None`, the resolver returns the
 //! column for the *current* `block_idx`; the caller loops over blocks and calls once
@@ -39,6 +41,10 @@ use crate::indexer::{
 /// ignored for stage-level variables and overridden by `block_id = Some(b)` for
 /// block-level ones.
 ///
+/// Only a `HydroInflow` reference writes `inflow_out`: it appends the hydro-keyed
+/// `(hydro position, multiplier)` realized-inflow pairs, apart from the column pairs
+/// it returns.
+///
 /// # Returns
 ///
 /// An empty vec when the entity ID is absent from the relevant position map
@@ -53,6 +59,7 @@ pub(super) fn resolve_variable_ref(
     stage_idx: usize,
     ctx: &TemplateBuildCtx<'_>,
     layout: &StageLayout<'_>,
+    inflow_out: &mut Vec<(usize, f64)>,
 ) -> Vec<(usize, f64)> {
     let at = |block_id: Option<usize>| BlockIdx::new(block_id.unwrap_or(block_idx));
     match var_ref {
@@ -72,9 +79,15 @@ pub(super) fn resolve_variable_ref(
             resolve_hydro_evaporation(*hydro_id, *block_id, ctx, layout)
         }
 
-        VariableRef::HydroInflow { hydro_id, block_id } => {
-            resolve_hydro_inflow(*hydro_id, at(*block_id), stage_id, stage_idx, ctx, layout)
-        }
+        VariableRef::HydroInflow { hydro_id, block_id } => resolve_hydro_inflow(
+            *hydro_id,
+            at(*block_id),
+            stage_id,
+            stage_idx,
+            ctx,
+            layout,
+            inflow_out,
+        ),
 
         VariableRef::HydroTurbined {
             hydro_id,
@@ -249,17 +262,22 @@ fn resolve_hydro_storage_boundary(
 }
 
 /// Resolve `HydroInflow` to the cascade total-inflow expression at `blk`: the
-/// incremental (local) `z_inflow` column, the same plant's inflow-slack column
+/// incremental (local) realized inflow, the same plant's inflow-slack column
 /// under the truncation methods only ([`push_local_inflow_rate`]), plants
 /// diverting into `h`, each upstream release weighted — for an operating
 /// reservoir — by the share the downstream balance row credits to this block,
 /// and the maturing transit water entering as a rate.
 ///
+/// The realized inflow is the one term that is not a column: it is pushed onto
+/// `inflow_out` as `(hydro position, 1.0)`, and the rest onto the returned column
+/// pairs.
+///
 /// Each hydro `u` whose `PreFilling` short-circuit targets `h`
 /// ([`resolve_shortcircuit_target`]) also adds its own local inflow, diverted
 /// inflow, and upstream releases, each at `1.0` in `blk` — the same whole,
 /// no-lag routing `fill_prefilling_shortcircuit` gives them on the
-/// water-balance row — and its maturing bucket as a rate.
+/// water-balance row — and its maturing bucket as a rate. `u`'s realized inflow
+/// is keyed by `u`, not `h`.
 ///
 /// This is an instantaneous **rate** identity (m³/s), **not** the `−τ`-weighted (hm³)
 /// storage-balance row — the `−τ` sign and `τ` weighting belong to storage balance
@@ -272,9 +290,8 @@ fn resolve_hydro_storage_boundary(
 /// ordered at build time, so emitted pairs are input-ordering-independent with no
 /// extra sort.
 ///
-/// The `layout.state.z_inflow.is_empty()` guard is load-bearing: `z_inflow` is empty
-/// when `hydro_count == 0` (unlike `storage`), so `z_inflow_col` would be
-/// meaningless. Returns an empty vec when `hydro_count == 0` or `hydro_id` is unknown.
+/// Returns an empty vec, leaving `inflow_out` untouched, when `hydro_count == 0` or
+/// `hydro_id` is unknown.
 fn resolve_hydro_inflow(
     hydro_id: EntityId,
     blk: BlockIdx,
@@ -282,8 +299,9 @@ fn resolve_hydro_inflow(
     stage_idx: usize,
     ctx: &TemplateBuildCtx<'_>,
     layout: &StageLayout<'_>,
+    inflow_out: &mut Vec<(usize, f64)>,
 ) -> Vec<(usize, f64)> {
-    if layout.state.z_inflow.is_empty() {
+    if layout.state.hydro_count == 0 {
         return vec![];
     }
     let Some(pos_h) = ctx.positions.hydro(hydro_id) else {
@@ -296,7 +314,7 @@ fn resolve_hydro_inflow(
 
     let mut result = Vec::with_capacity(2 + 2 * upstream.len());
 
-    push_local_inflow_rate(pos_h, blk, ctx, layout, &mut result);
+    push_local_inflow_rate(pos_h, blk, ctx, layout, &mut result, inflow_out);
 
     if has_release_columns {
         for &up_id in upstream {
@@ -314,7 +332,7 @@ fn resolve_hydro_inflow(
         {
             continue;
         }
-        push_local_inflow_rate(u_idx, blk, ctx, layout, &mut result);
+        push_local_inflow_rate(u_idx, blk, ctx, layout, &mut result, inflow_out);
         push_maturing_bucket_rate(u_idx, blk, stage_idx, ctx, layout, &mut result);
         if has_release_columns {
             for &w_id in ctx.cascade.upstream(ctx.hydros[u_idx].id) {
@@ -328,18 +346,20 @@ fn resolve_hydro_inflow(
     result
 }
 
-/// Push plant `plant_idx`'s own local inflow rate onto `out`: `z` at `1.0`, its
-/// inflow-slack column at `1.0` under the truncation methods only (never under
-/// `Penalty`), then each `diversion_upstream` source into it at `1.0`.
+/// Push plant `plant_idx`'s own local inflow rate: its realized inflow onto
+/// `inflow_out` at `1.0`, then onto `out` its inflow-slack column at `1.0` under the
+/// truncation methods only (never under `Penalty`) and each `diversion_upstream`
+/// source into it at `1.0`.
 fn push_local_inflow_rate(
     plant_idx: usize,
     blk: BlockIdx,
     ctx: &TemplateBuildCtx<'_>,
     layout: &StageLayout<'_>,
     out: &mut Vec<(usize, f64)>,
+    inflow_out: &mut Vec<(usize, f64)>,
 ) {
     let plant = HydroSys::new(plant_idx);
-    out.push((layout.state.z_inflow_col(plant).get(), 1.0));
+    inflow_out.push((plant_idx, 1.0));
     if ctx.study_dims.inflow_method.truncates() {
         out.push((layout.geometry.inflow_slack_col(plant), 1.0));
     }

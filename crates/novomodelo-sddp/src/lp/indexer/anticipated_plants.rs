@@ -50,6 +50,15 @@ impl AnticipatedPlants {
         self.thermals.iter().copied()
     }
 
+    /// The set's thermals resolved against `system_thermals`, in
+    /// anticipated-local order.
+    pub(crate) fn thermals_in<'a>(
+        &'a self,
+        system_thermals: &'a [Thermal],
+    ) -> impl Iterator<Item = &'a Thermal> + 'a {
+        self.thermals().map(move |t| &system_thermals[t.get()])
+    }
+
     /// Plant `local`'s system position.
     #[inline]
     #[must_use]

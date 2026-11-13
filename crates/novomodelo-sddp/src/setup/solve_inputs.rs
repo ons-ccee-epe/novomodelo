@@ -54,6 +54,7 @@ impl SolveInputs {
             templates: &self.stage_data.stage_templates.templates,
             state_boxes: self.stage_data.stage_templates.state_boxes(),
             geometry_per_stage: &self.stage_data.stage_templates.geometry_per_stage,
+            inflow_coupling: &self.stage_data.stage_templates.inflow_coupling_per_stage,
             cost_scale_factor: self.stage_data.stage_templates.cost_scale_factor,
             load_bus_indices: &self.stage_data.stage_templates.load_bus_indices,
             ncs_stochastic_dense_col: &self.ncs.stochastic_dense_col,

@@ -33,6 +33,7 @@ impl SolverInterface for BenchStatsMockSolver {
     fn load_model(&mut self, _template: &StageTemplate) {}
     fn add_rows(&mut self, _rows: &RowBatch) {}
     fn set_row_bounds(&mut self, _indices: &[usize], _lower: &[f64], _upper: &[f64]) {}
+    fn set_row_lower_bounds_range(&mut self, _first_row: usize, _lower: &[f64]) {}
     fn set_col_bounds(&mut self, _indices: &[usize], _lower: &[f64], _upper: &[f64]) {}
     fn solve(&mut self, _basis: Option<&Basis>) -> Result<SolutionView<'_>, SolverError> {
         Err(SolverError::InternalError {
@@ -59,15 +60,13 @@ fn bench_gather(c: &mut Criterion) {
     let n_workers = 10;
     let n_openings = 20;
     let mut buf = StageWorkerStatsBuffer::new(n_workers, n_openings);
-    let deltas: Vec<SolverStatsDelta> = (0..n_workers * n_openings)
-        .map(|_| SolverStatsDelta::default())
-        .collect();
+    let deltas = vec![SolverStatsDelta::default(); n_workers * n_openings];
     c.bench_function("backward_stats_gather 10x20", |b| {
         b.iter(|| {
             buf.reset();
             for w in 0..n_workers {
                 for k in 0..n_openings {
-                    buf.set(w, k, black_box(deltas[w * n_openings + k].clone()));
+                    buf.set(w, k, black_box(&deltas[w * n_openings + k]));
                 }
             }
             black_box(buf.as_slice().len());

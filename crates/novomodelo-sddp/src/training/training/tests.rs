@@ -51,29 +51,21 @@ use crate::{
 
 /// Minimal LP for N=1 hydro, L=0 PAR order.
 ///
-/// Column layout (N=1, L=0):
-/// - col 0: `storage_out` (no NZ in structural rows)
-/// - col 1: `z_inflow` (1 NZ: row 0, z-inflow definition row)
-/// - col 2: `storage_in` (1 NZ: row 1, this mock's pin row)
-/// - col 3: `theta` (no NZ)
-///
-/// Row layout:
-/// - row 0: `z_inflow` definition row
-/// - row 1: this mock's pin row (`storage_in` at +1.0, not `storage_out`)
-fn minimal_template(_n_state: usize) -> StageTemplate {
+/// Columns: `storage_out` (0), `storage_in` (1, one NZ at row 0, this mock's
+/// pin row), `theta` (2). One row.
+fn minimal_template() -> StageTemplate {
     StageTemplate {
-        num_cols: 4,
-        num_rows: 2,
-        num_nz: 2,
-        col_starts: vec![0_i32, 0, 1, 2, 2],
-        row_indices: vec![0_i32, 1],
-        values: vec![1.0, 1.0],
-        col_lower: vec![0.0, f64::NEG_INFINITY, 0.0, 0.0],
-        col_upper: vec![f64::INFINITY; 4],
-        objective: vec![0.0, 0.0, 0.0, 1.0],
-        row_lower: vec![0.0, 0.0],
-        row_upper: vec![0.0, 0.0],
-        n_state: 1,
+        num_cols: 3,
+        num_rows: 1,
+        num_nz: 1,
+        col_starts: vec![0_i32, 0, 1, 1],
+        row_indices: vec![0_i32],
+        values: vec![1.0],
+        col_lower: vec![0.0, 0.0, 0.0],
+        col_upper: vec![f64::INFINITY; 3],
+        objective: vec![0.0, 0.0, 1.0],
+        row_lower: vec![0.0],
+        row_upper: vec![0.0],
         col_scale: Vec::new(),
         row_scale: Vec::new(),
     }
@@ -119,6 +111,7 @@ impl SolverInterface for MockSolver {
     fn load_model(&mut self, _t: &StageTemplate) {}
     fn add_rows(&mut self, _r: &RowBatch) {}
     fn set_row_bounds(&mut self, _i: &[usize], _l: &[f64], _u: &[f64]) {}
+    fn set_row_lower_bounds_range(&mut self, _first_row: usize, _lower: &[f64]) {}
     fn set_col_bounds(&mut self, _i: &[usize], _l: &[f64], _u: &[f64]) {}
 
     fn solve(
@@ -131,12 +124,12 @@ impl SolverInterface for MockSolver {
             return Err(SolverError::Infeasible);
         }
         let obj = self.objectives[call % self.objectives.len()];
-        // Return primal[3] = 0.0 so forward computes stage_cost = objective - primal[theta] = obj.
+        // Return primal[theta] = 0.0 so forward computes stage_cost = objective - primal[theta] = obj.
         Ok(novomodelo_solver::SolutionView {
             objective: obj,
-            primal: &[0.0, 0.0, 0.0, 0.0],
-            dual: &[0.0, 0.0],
-            reduced_costs: &[0.0, 0.0, 0.0, 0.0],
+            primal: &[0.0, 0.0, 0.0],
+            dual: &[0.0],
+            reduced_costs: &[0.0, 0.0, 0.0],
             iterations: 0,
             solve_time_seconds: 0.0,
         })
@@ -402,7 +395,7 @@ fn iteration_limit_rules(limit: u64) -> StoppingRuleSet {
 fn ac_train_completes_with_iteration_limit() {
     let n_stages = 2;
     let state = test_support::state_layout(1, 0);
-    let templates = vec![minimal_template(state.n_state); n_stages];
+    let templates = vec![minimal_template(); n_stages];
     let initial_state = vec![0.0_f64; state.n_state];
     let stochastic = make_stochastic_context(n_stages, 1);
     let stages = make_stages(n_stages);
@@ -440,7 +433,8 @@ fn ac_train_completes_with_iteration_limit() {
 
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = equipment_free_geometry(&[1usize, 1]);
-    let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let fixture =
+        StageContextFixture::new(&templates, &state_boxes, &geometry).without_inflow_entries(1);
     let stage_ctx = fixture.ctx();
     let result = train(
         &mut solver,
@@ -484,7 +478,7 @@ fn ac_train_completes_with_iteration_limit() {
 fn ac_train_returns_partial_on_infeasible() {
     let n_stages = 2;
     let state = test_support::state_layout(1, 0);
-    let templates = vec![minimal_template(state.n_state); n_stages];
+    let templates = vec![minimal_template(); n_stages];
     let initial_state = vec![0.0_f64; state.n_state];
     let stochastic = make_stochastic_context(n_stages, 1);
     let stages = make_stages(n_stages);
@@ -522,7 +516,8 @@ fn ac_train_returns_partial_on_infeasible() {
 
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = equipment_free_geometry(&[1usize, 1]);
-    let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let fixture =
+        StageContextFixture::new(&templates, &state_boxes, &geometry).without_inflow_entries(1);
     let stage_ctx = fixture.ctx();
     let result = train(
         &mut solver,
@@ -577,7 +572,7 @@ fn ac_train_returns_partial_on_infeasible() {
 fn ac_train_emits_correct_event_sequence() {
     let n_stages = 2;
     let state = test_support::state_layout(1, 0);
-    let templates = vec![minimal_template(state.n_state); n_stages];
+    let templates = vec![minimal_template(); n_stages];
     let initial_state = vec![0.0_f64; state.n_state];
     let stochastic = make_stochastic_context(n_stages, 1);
     let stages = make_stages(n_stages);
@@ -617,7 +612,8 @@ fn ac_train_emits_correct_event_sequence() {
 
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = equipment_free_geometry(&[1usize, 1]);
-    let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let fixture =
+        StageContextFixture::new(&templates, &state_boxes, &geometry).without_inflow_entries(1);
     let stage_ctx = fixture.ctx();
     train(
         &mut solver,
@@ -756,7 +752,7 @@ fn ac_train_emits_correct_event_sequence() {
 fn ac_worker_timing_per_worker_event_count_and_setup_invariant() {
     let n_stages = 2;
     let state = test_support::state_layout(1, 0);
-    let templates = vec![minimal_template(state.n_state); n_stages];
+    let templates = vec![minimal_template(); n_stages];
     let initial_state = vec![0.0_f64; state.n_state];
     let stochastic = make_stochastic_context(n_stages, 1);
     let stages = make_stages(n_stages);
@@ -796,7 +792,8 @@ fn ac_worker_timing_per_worker_event_count_and_setup_invariant() {
 
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = equipment_free_geometry(&[1usize, 1]);
-    let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let fixture =
+        StageContextFixture::new(&templates, &state_boxes, &geometry).without_inflow_entries(1);
     let stage_ctx = fixture.ctx();
     train(
         &mut solver,
@@ -908,7 +905,7 @@ fn ac_worker_timing_per_worker_event_count_and_setup_invariant() {
 fn ac_train_result_fields_populated() {
     let n_stages = 2;
     let state = test_support::state_layout(1, 0);
-    let templates = vec![minimal_template(state.n_state); n_stages];
+    let templates = vec![minimal_template(); n_stages];
     let initial_state = vec![0.0_f64; state.n_state];
     let stochastic = make_stochastic_context(n_stages, 1);
     let stages = make_stages(n_stages);
@@ -946,7 +943,8 @@ fn ac_train_result_fields_populated() {
 
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = equipment_free_geometry(&[1usize, 1]);
-    let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let fixture =
+        StageContextFixture::new(&templates, &state_boxes, &geometry).without_inflow_entries(1);
     let stage_ctx = fixture.ctx();
     let result = train(
         &mut solver,
@@ -997,7 +995,7 @@ fn ac_train_result_fields_populated() {
 fn ac_train_with_no_event_sender() {
     let n_stages = 2;
     let state = test_support::state_layout(1, 0);
-    let templates = vec![minimal_template(state.n_state); n_stages];
+    let templates = vec![minimal_template(); n_stages];
     let initial_state = vec![0.0_f64; state.n_state];
     let stochastic = make_stochastic_context(n_stages, 1);
     let stages = make_stages(n_stages);
@@ -1035,7 +1033,8 @@ fn ac_train_with_no_event_sender() {
 
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = equipment_free_geometry(&[1usize, 1]);
-    let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let fixture =
+        StageContextFixture::new(&templates, &state_boxes, &geometry).without_inflow_entries(1);
     let stage_ctx = fixture.ctx();
     let result = train(
         &mut solver,
@@ -1076,7 +1075,7 @@ fn ac_train_with_no_event_sender() {
 fn ac_total_time_ms_is_non_negative() {
     let n_stages = 2;
     let state = test_support::state_layout(1, 0);
-    let templates = vec![minimal_template(state.n_state); n_stages];
+    let templates = vec![minimal_template(); n_stages];
     let initial_state = vec![0.0_f64; state.n_state];
     let stochastic = make_stochastic_context(n_stages, 1);
     let stages = make_stages(n_stages);
@@ -1114,7 +1113,8 @@ fn ac_total_time_ms_is_non_negative() {
 
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = equipment_free_geometry(&[1usize, 1]);
-    let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let fixture =
+        StageContextFixture::new(&templates, &state_boxes, &geometry).without_inflow_entries(1);
     let stage_ctx = fixture.ctx();
     let result = train(
         &mut solver,
@@ -1161,7 +1161,7 @@ fn ac_total_time_ms_is_non_negative() {
 fn cut_selection_none_skips_step() {
     let n_stages = 2;
     let state = test_support::state_layout(1, 0);
-    let templates = vec![minimal_template(state.n_state); n_stages];
+    let templates = vec![minimal_template(); n_stages];
     let initial_state = vec![0.0_f64; state.n_state];
     let stochastic = make_stochastic_context(n_stages, 1);
     let stages = make_stages(n_stages);
@@ -1201,7 +1201,8 @@ fn cut_selection_none_skips_step() {
 
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = equipment_free_geometry(&[1usize, 1]);
-    let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let fixture =
+        StageContextFixture::new(&templates, &state_boxes, &geometry).without_inflow_entries(1);
     let stage_ctx = fixture.ctx();
     train(
         &mut solver,
@@ -1252,7 +1253,7 @@ fn cut_selection_none_skips_step() {
 fn existing_train_tests_pass_with_none() {
     let n_stages = 2;
     let state = test_support::state_layout(1, 0);
-    let templates = vec![minimal_template(state.n_state); n_stages];
+    let templates = vec![minimal_template(); n_stages];
     let initial_state = vec![0.0_f64; state.n_state];
     let stochastic = make_stochastic_context(n_stages, 1);
     let stages = make_stages(n_stages);
@@ -1290,7 +1291,8 @@ fn existing_train_tests_pass_with_none() {
 
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = equipment_free_geometry(&[1usize, 1]);
-    let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let fixture =
+        StageContextFixture::new(&templates, &state_boxes, &geometry).without_inflow_entries(1);
     let stage_ctx = fixture.ctx();
     let result = train(
         &mut solver,
@@ -1334,7 +1336,7 @@ fn existing_train_tests_pass_with_none() {
 fn ac_train_partial_result_on_mid_iteration_failure() {
     let n_stages = 2;
     let state = test_support::state_layout(1, 0);
-    let templates = vec![minimal_template(state.n_state); n_stages];
+    let templates = vec![minimal_template(); n_stages];
     let initial_state = vec![0.0_f64; state.n_state];
     let stochastic = make_stochastic_context(n_stages, 1);
     let stages = make_stages(n_stages);
@@ -1378,7 +1380,8 @@ fn ac_train_partial_result_on_mid_iteration_failure() {
 
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = equipment_free_geometry(&[1usize, 1]);
-    let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let fixture =
+        StageContextFixture::new(&templates, &state_boxes, &geometry).without_inflow_entries(1);
     let stage_ctx = fixture.ctx();
     let outcome = train(
         &mut solver,
@@ -1445,7 +1448,7 @@ fn ac_train_partial_result_on_mid_iteration_failure() {
 fn start_iteration_resumes_from_offset() {
     let n_stages = 2;
     let state = test_support::state_layout(1, 0);
-    let templates = vec![minimal_template(state.n_state); n_stages];
+    let templates = vec![minimal_template(); n_stages];
     let initial_state = vec![0.0_f64; state.n_state];
     let stochastic = make_stochastic_context(n_stages, 1);
     let stages = make_stages(n_stages);
@@ -1483,7 +1486,8 @@ fn start_iteration_resumes_from_offset() {
 
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = equipment_free_geometry(&[1usize, 1]);
-    let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let fixture =
+        StageContextFixture::new(&templates, &state_boxes, &geometry).without_inflow_entries(1);
     let stage_ctx = fixture.ctx();
     let outcome = train(
         &mut solver,
@@ -1529,7 +1533,7 @@ fn start_iteration_resumes_from_offset() {
 fn start_iteration_at_or_beyond_max_runs_zero_iterations() {
     let n_stages = 2;
     let state = test_support::state_layout(1, 0);
-    let templates = vec![minimal_template(state.n_state); n_stages];
+    let templates = vec![minimal_template(); n_stages];
     let initial_state = vec![0.0_f64; state.n_state];
     let stochastic = make_stochastic_context(n_stages, 1);
     let stages = make_stages(n_stages);
@@ -1567,7 +1571,8 @@ fn start_iteration_at_or_beyond_max_runs_zero_iterations() {
 
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = equipment_free_geometry(&[1usize, 1]);
-    let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let fixture =
+        StageContextFixture::new(&templates, &state_boxes, &geometry).without_inflow_entries(1);
     let stage_ctx = fixture.ctx();
     let outcome = train(
         &mut solver,
@@ -1643,7 +1648,6 @@ fn ac_broadcast_basis_cache_uses_scenario_0_not_last() {
             },
             base_row_count: 0,
             cut_row_slots: Vec::new(),
-            state_at_capture: Vec::new(),
             node_id: NodeId(0),
         });
     }
@@ -1657,7 +1661,6 @@ fn ac_broadcast_basis_cache_uses_scenario_0_not_last() {
             },
             base_row_count: 0,
             cut_row_slots: Vec::new(),
-            state_at_capture: Vec::new(),
             node_id: NodeId(0),
         });
     }
@@ -1721,7 +1724,6 @@ fn broadcast_basis_cache_single_rank_preserves_metadata() {
         },
         base_row_count: 2,
         cut_row_slots: vec![10_u32, 11_u32, 12_u32],
-        state_at_capture: vec![1.5_f64, 2.5_f64],
         node_id: NodeId(4),
     });
     // Stage 1 left None.
@@ -1738,11 +1740,6 @@ fn broadcast_basis_cache_single_rank_preserves_metadata() {
     );
     assert_eq!(cb.base_row_count, 2, "base_row_count must be preserved");
     assert_eq!(
-        cb.state_at_capture,
-        vec![1.5_f64, 2.5_f64],
-        "state_at_capture must be preserved"
-    );
-    assert_eq!(
         cb.node_id,
         NodeId(4),
         "single-rank path preserves node_id from capture (the multi-rank path \
@@ -1751,33 +1748,21 @@ fn broadcast_basis_cache_single_rank_preserves_metadata() {
     assert!(cache[1].is_none(), "stage 1 must remain None");
 }
 
-/// A discriminated payload stored by `MultiRankMockComm`.
-///
-/// `broadcast_basis_cache` issues exactly four `broadcast` calls:
-/// two `i32` calls (length then payload) and two `f64` calls (length then
-/// payload). We store each call as a typed variant so that rank 1 can
-/// deserialize without any `unsafe` code.
-#[derive(Clone)]
-enum MockPayload {
-    Ints(Vec<i32>),
-    Floats(Vec<f64>),
-}
-
 /// A multi-rank mock communicator that simulates 2-rank broadcasts.
 ///
-/// On rank 0, each `broadcast<T>` call records the outgoing buffer as a
-/// `MockPayload` variant. On rank 1, each `broadcast<T>` call pops the
-/// next recorded entry and copies it into the caller's mutable slice.
+/// `broadcast_basis_cache` issues exactly two `i32` broadcasts: the payload
+/// length, then the payload. On rank 0, each call records the outgoing buffer.
+/// On rank 1, each call pops the next recorded buffer and copies it into the
+/// caller's mutable slice.
 ///
-/// Only `T = i32` and `T = f64` are supported (matching the wire types
-/// used by `broadcast_basis_cache`). `allgatherv` and `allreduce` are not
-/// called by that function and are left as `unreachable!()`.
+/// Only `T = i32` is supported (the wire type). `allgatherv` and `allreduce`
+/// are not called by that function and are left as `unreachable!()`.
 ///
 /// `Mutex` is used instead of `RefCell` to satisfy the `Sync` bound
 /// required by `Communicator`.
 struct MultiRankMockComm {
     rank: usize,
-    queue: std::sync::Mutex<std::collections::VecDeque<MockPayload>>,
+    queue: std::sync::Mutex<std::collections::VecDeque<Vec<i32>>>,
 }
 
 impl MultiRankMockComm {
@@ -1791,7 +1776,7 @@ impl MultiRankMockComm {
     /// Build a rank-1 peer by snapshotting the root's recorded queue.
     ///
     /// Must be called **after** `broadcast_basis_cache` has returned on
-    /// rank 0 so the snapshot contains all four recorded payloads.
+    /// rank 0 so the snapshot contains both recorded buffers.
     fn new_peer(root: &MultiRankMockComm) -> Self {
         Self {
             rank: 1,
@@ -1803,7 +1788,7 @@ impl MultiRankMockComm {
     ///
     /// Used by corruption tests that tamper with the recorded payloads
     /// before replaying them to rank 1.
-    fn new_peer_from_queue(queue: std::collections::VecDeque<MockPayload>) -> Self {
+    fn new_peer_from_queue(queue: std::collections::VecDeque<Vec<i32>>) -> Self {
         Self {
             rank: 1,
             queue: std::sync::Mutex::new(queue),
@@ -1811,7 +1796,7 @@ impl MultiRankMockComm {
     }
 
     /// Extract a snapshot of the recorded queue (for corruption tests).
-    fn snapshot(&self) -> std::collections::VecDeque<MockPayload> {
+    fn snapshot(&self) -> std::collections::VecDeque<Vec<i32>> {
         self.queue.lock().unwrap().clone()
     }
 }
@@ -1864,72 +1849,36 @@ impl MultiRankMockComm {
     fn broadcast_typed<T: CommData>(&self, buf: &mut [T], _root: usize) -> Result<(), CommError> {
         use std::any::Any;
         // T: CommData implies T: 'static + Copy, so Box<T>: Any.
-        // We identify the concrete type by boxing a probe value (Default
-        // if the slice is empty) and downcasting. No raw pointer casts.
+        // We identify the concrete type by boxing a probe value and
+        // downcasting. No raw pointer casts.
         let probe: Box<dyn Any> = Box::new(T::default());
+        assert!(
+            probe.downcast_ref::<i32>().is_some(),
+            "MultiRankMockComm: unsupported broadcast type (expected i32)"
+        );
 
-        if probe.downcast_ref::<i32>().is_some() {
-            if self.rank == 0 {
-                let ints: Vec<i32> = buf
-                    .iter()
-                    .map(|v| {
-                        *Box::<dyn Any>::from(Box::new(*v))
-                            .downcast::<i32>()
-                            .expect("T proved i32 above")
-                    })
-                    .collect();
-                self.queue
-                    .lock()
-                    .unwrap()
-                    .push_back(MockPayload::Ints(ints));
-            } else {
-                let payload = self
-                    .queue
-                    .lock()
-                    .unwrap()
-                    .pop_front()
-                    .expect("MultiRankMockComm: no payload to replay for i32 broadcast");
-                let MockPayload::Ints(src) = payload else {
-                    panic!("MultiRankMockComm: expected Ints payload for i32 broadcast");
-                };
-                assert_eq!(src.len(), buf.len(), "i32 replay length mismatch");
-                for (dst, v) in buf.iter_mut().zip(src.iter()) {
-                    let boxed: Box<dyn Any> = Box::new(*v);
-                    *dst = *boxed.downcast::<T>().expect("T proved i32 above");
-                }
-            }
-        } else if probe.downcast_ref::<f64>().is_some() {
-            if self.rank == 0 {
-                let floats: Vec<f64> = buf
-                    .iter()
-                    .map(|v| {
-                        *Box::<dyn Any>::from(Box::new(*v))
-                            .downcast::<f64>()
-                            .expect("T proved f64 above")
-                    })
-                    .collect();
-                self.queue
-                    .lock()
-                    .unwrap()
-                    .push_back(MockPayload::Floats(floats));
-            } else {
-                let payload = self
-                    .queue
-                    .lock()
-                    .unwrap()
-                    .pop_front()
-                    .expect("MultiRankMockComm: no payload to replay for f64 broadcast");
-                let MockPayload::Floats(src) = payload else {
-                    panic!("MultiRankMockComm: expected Floats payload for f64 broadcast");
-                };
-                assert_eq!(src.len(), buf.len(), "f64 replay length mismatch");
-                for (dst, v) in buf.iter_mut().zip(src.iter()) {
-                    let boxed: Box<dyn Any> = Box::new(*v);
-                    *dst = *boxed.downcast::<T>().expect("T proved f64 above");
-                }
-            }
+        if self.rank == 0 {
+            let ints: Vec<i32> = buf
+                .iter()
+                .map(|v| {
+                    *Box::<dyn Any>::from(Box::new(*v))
+                        .downcast::<i32>()
+                        .expect("T proved i32 above")
+                })
+                .collect();
+            self.queue.lock().unwrap().push_back(ints);
         } else {
-            panic!("MultiRankMockComm: unsupported broadcast type (expected i32 or f64)");
+            let src = self
+                .queue
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("MultiRankMockComm: no payload to replay for i32 broadcast");
+            assert_eq!(src.len(), buf.len(), "i32 replay length mismatch");
+            for (dst, v) in buf.iter_mut().zip(src.iter()) {
+                let boxed: Box<dyn Any> = Box::new(*v);
+                *dst = *boxed.downcast::<T>().expect("T proved i32 above");
+            }
         }
         Ok(())
     }
@@ -1949,7 +1898,6 @@ fn broadcast_basis_cache_multi_rank_round_trips_full_metadata() {
         },
         base_row_count: 4,
         cut_row_slots: vec![10_u32, 11_u32, 12_u32],
-        state_at_capture: vec![1.5_f64, 2.5_f64],
         // node_id rides the wire, so rank 1 must recover THIS captured value.
         node_id: NodeId(3),
     });
@@ -1981,11 +1929,6 @@ fn broadcast_basis_cache_multi_rank_round_trips_full_metadata() {
         cb0.cut_row_slots,
         vec![10_u32, 11_u32, 12_u32],
         "cut_row_slots must round-trip on non-root rank"
-    );
-    assert_eq!(
-        cb0.state_at_capture,
-        vec![1.5_f64, 2.5_f64],
-        "state_at_capture must round-trip on non-root rank"
     );
     assert_eq!(
         cb0.base_row_count, 4,
@@ -2021,7 +1964,6 @@ fn broadcast_basis_cache_branching_round_trips_every_node() {
             },
             base_row_count: 1,
             cut_row_slots: Vec::new(),
-            state_at_capture: vec![node as f64],
             node_id: NodeId(100 + node as i32),
         });
     }
@@ -2047,7 +1989,6 @@ fn broadcast_basis_cache_branching_round_trips_every_node() {
             NodeId(100 + node as i32),
             "node {node} must recover its own node_id across the branching broadcast"
         );
-        assert_eq!(cb.state_at_capture, vec![node as f64]);
     }
 }
 
@@ -2065,7 +2006,6 @@ fn broadcast_basis_cache_empty_cut_slots_round_trips_ok() {
         },
         base_row_count: 1,
         cut_row_slots: vec![], // deliberately empty
-        state_at_capture: vec![3.75_f64],
         node_id: NodeId(0),
     });
 
@@ -2084,22 +2024,15 @@ fn broadcast_basis_cache_empty_cut_slots_round_trips_ok() {
         cb.cut_row_slots.is_empty(),
         "empty cut_row_slots must round-trip without error or panic"
     );
-    assert_eq!(
-        cb.state_at_capture,
-        vec![3.75_f64],
-        "state_at_capture must still round-trip when cut_row_slots is empty"
-    );
     assert_eq!(cb.base_row_count, 1, "base_row_count must round-trip");
 }
 
-/// The queue produced by a successful rank-0 run contains four payloads:
-///   [0] Ints(i32-len-scalar)   — one i32 (the total i32 count)
-///   [1] Ints(i32-payload)      — all the integer data
-///   [2] Ints(f64-len-scalar)   — one i32 (the total f64 count)
-///   [3] Floats(f64-payload)    — all the f64 state data
+/// The queue produced by a successful rank-0 run holds two buffers:
+///   [0] the payload length (one i32)
+///   [1] the payload
 ///
-/// To simulate a truncated i32 payload we replace entry [1] with a
-/// shorter `Ints` vector (missing the last cut slot) and patch entry [0]
+/// To simulate a truncated payload we replace entry [1] with a
+/// shorter vector (missing the last cut slot) and patch entry [0]
 /// to reflect the new count, so that rank 1 allocates the right buffer
 /// size but then fails the `cut_row_slots` bounds check.
 #[test]
@@ -2117,7 +2050,6 @@ fn broadcast_basis_cache_truncated_cut_slots_returns_validation() {
         },
         base_row_count: 1,
         cut_row_slots: vec![10_u32, 11_u32, 12_u32],
-        state_at_capture: vec![0.0_f64],
         node_id: NodeId(0),
     });
 
@@ -2130,18 +2062,12 @@ fn broadcast_basis_cache_truncated_cut_slots_returns_validation() {
     // (the last cut slot) to simulate a truncated buffer. Also patch
     // snapshot[0] (the length scalar) to match the reduced count.
     let truncated_len = {
-        let entry = snapshot.get_mut(1).expect("i32 payload entry must exist");
-        let MockPayload::Ints(ref mut ints) = *entry else {
-            panic!("entry [1] must be Ints");
-        };
+        let ints = snapshot.get_mut(1).expect("i32 payload entry must exist");
         ints.pop(); // remove one cut slot
         ints.len() as i32
     };
     // Patch the length scalar (entry [0]).
-    let len_entry = snapshot.get_mut(0).expect("i32 length entry must exist");
-    let MockPayload::Ints(ref mut len_vec) = *len_entry else {
-        panic!("entry [0] must be Ints");
-    };
+    let len_vec = snapshot.get_mut(0).expect("i32 length entry must exist");
     assert_eq!(len_vec.len(), 1, "length entry must hold a single scalar");
     len_vec[0] = truncated_len;
 
@@ -2164,79 +2090,12 @@ fn broadcast_basis_cache_truncated_cut_slots_returns_validation() {
     }
 }
 
-/// Truncate entry [3] (Floats payload) and patch entry [2] (f64-len
-/// scalar) to match, so rank 1 allocates a shorter f64 buffer and the
-/// `state_at_capture` bounds check fires.
-#[test]
-fn broadcast_basis_cache_truncated_state_returns_validation() {
-    use super::broadcast_basis_cache;
-    use crate::setup::NodePos;
-    use crate::workspace::{BasisStore, CapturedBasis};
-
-    let mut store = BasisStore::new(1, 1);
-    *store.get_mut(0, NodePos(0)) = Some(CapturedBasis {
-        basis: Basis {
-            col_status: vec![BasisStatus::Lower],
-            row_status: vec![BasisStatus::Basic],
-        },
-        base_row_count: 1,
-        cut_row_slots: vec![],
-        state_at_capture: vec![1.0_f64, 2.0_f64, 3.0_f64],
-        node_id: NodeId(0),
-    });
-
-    let root_comm = MultiRankMockComm::new_root();
-    let _ = broadcast_basis_cache(&store, &root_comm).unwrap();
-    let mut snapshot = root_comm.snapshot();
-
-    // snapshot[3] is the Floats(f64-payload) entry with 3 values.
-    // Keep only 1 value so that rank 1's buffer is too short for the
-    // state_len=3 embedded in the i32 payload.
-    let truncated_f64_len = {
-        let entry = snapshot.get_mut(3).expect("f64 payload entry must exist");
-        let MockPayload::Floats(ref mut floats) = *entry else {
-            panic!("entry [3] must be Floats");
-        };
-        floats.truncate(1); // keep only 1 f64
-        floats.len() as i32
-    };
-    // Patch entry [2] (f64 length scalar).
-    let f64_len_entry = snapshot.get_mut(2).expect("f64 length entry must exist");
-    let MockPayload::Ints(ref mut f64_len_vec) = *f64_len_entry else {
-        panic!("entry [2] must be Ints (f64 length is broadcast as i32)");
-    };
-    assert_eq!(
-        f64_len_vec.len(),
-        1,
-        "f64 length entry must hold a single scalar"
-    );
-    f64_len_vec[0] = truncated_f64_len;
-
-    let peer_comm = MultiRankMockComm::new_peer_from_queue(snapshot);
-    let empty_store = BasisStore::new(1, 1);
-    let result = broadcast_basis_cache(&empty_store, &peer_comm);
-
-    match result {
-        Err(SddpError::Validation(msg)) => {
-            assert!(
-                msg.contains("state_at_capture"),
-                "error message must mention 'state_at_capture', got: {msg}"
-            );
-            assert!(
-                msg.contains('0'),
-                "error message must contain stage index 0, got: {msg}"
-            );
-        }
-        other => panic!("expected SddpError::Validation, got: {other:?}"),
-    }
-}
-
 #[test]
 fn broadcast_basis_cache_rejects_oversized_i32_payload() {
     use super::checked_mpi_count;
 
     let oversized: usize = (i32::MAX as usize) + 1;
-    let result = checked_mpi_count(oversized, "broadcast_basis_cache_i32");
+    let result = checked_mpi_count(oversized, "broadcast_basis_cache");
 
     match result {
         Err(SddpError::Communication(CommError::InvalidBufferSize {
@@ -2251,8 +2110,8 @@ fn broadcast_basis_cache_rejects_oversized_i32_payload() {
                 "expected must equal i32::MAX as usize"
             );
             assert_eq!(
-                operation, "broadcast_basis_cache_i32",
-                "operation string must be 'broadcast_basis_cache_i32'"
+                operation, "broadcast_basis_cache",
+                "operation string must be 'broadcast_basis_cache'"
             );
         }
         other => panic!(
@@ -2265,7 +2124,7 @@ fn broadcast_basis_cache_rejects_oversized_i32_payload() {
 fn template_freeze_event_emitted() {
     let n_stages = 2;
     let state = test_support::state_layout(1, 0);
-    let templates = vec![minimal_template(state.n_state); n_stages];
+    let templates = vec![minimal_template(); n_stages];
     let initial_state = vec![0.0_f64; state.n_state];
     let stochastic = make_stochastic_context(n_stages, 1);
     let stages = make_stages(n_stages);
@@ -2305,7 +2164,8 @@ fn template_freeze_event_emitted() {
 
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let geometry = equipment_free_geometry(&[1usize, 1]);
-    let fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let fixture =
+        StageContextFixture::new(&templates, &state_boxes, &geometry).without_inflow_entries(1);
     let stage_ctx = fixture.ctx();
 
     train(
@@ -2403,7 +2263,6 @@ fn ac_training_result_new_assigns_all_fields() {
         },
         base_row_count: 3,
         cut_row_slots: vec![4_u32],
-        state_at_capture: vec![5.0_f64],
         node_id: NodeId(6),
     })];
     let solver_stats_log = vec![SolverStatsLogEntry::from_raw(
@@ -2450,8 +2309,7 @@ fn ac_training_result_new_assigns_all_fields() {
 
 // ── gather_basis_store unit tests ────────────────────────────────────────
 
-/// A basis whose every field depends on `seed`, with a non-empty
-/// `state_at_capture` the gather drops.
+/// A basis whose every field depends on `seed`.
 fn seeded_basis(seed: usize) -> crate::workspace::CapturedBasis {
     const VARIANTS: [BasisStatus; 4] = [
         BasisStatus::Lower,
@@ -2466,7 +2324,6 @@ fn seeded_basis(seed: usize) -> crate::workspace::CapturedBasis {
         },
         base_row_count: 2,
         cut_row_slots: (0..(seed % 3) as u32).map(|s| s + seed as u32).collect(),
-        state_at_capture: vec![seed as f64; 1 + seed % 2],
         node_id: NodeId(seed as i32),
     }
 }
@@ -2486,7 +2343,7 @@ fn store_with(
 }
 
 /// `gathered` holds exactly `(scenario, seed)` at each node, every basis equal
-/// to `seeded_basis(seed)` without its capture state.
+/// to `seeded_basis(seed)`.
 fn assert_gathered(gathered: &super::CheckpointBasisStore, expected: &[&[(u32, usize)]]) {
     assert_eq!(
         gathered.nodes.len(),
@@ -2520,10 +2377,6 @@ fn assert_gathered(gathered: &super::CheckpointBasisStore, expected: &[&[(u32, u
             assert_eq!(
                 got.node_id, expected.node_id,
                 "node {node} scenario {scenario}"
-            );
-            assert!(
-                got.state_at_capture.is_empty(),
-                "node {node} scenario {scenario}: the capture state is dropped"
             );
         }
     }
@@ -2574,7 +2427,7 @@ fn a_rank_zero_of_two_gather_reads_an_empty_peer_segment_as_no_entries() {
 /// collective into the peer segment, in call order.
 struct TwoRankReplay {
     rank: usize,
-    peer_sends: std::sync::Mutex<std::collections::VecDeque<MockPayload>>,
+    peer_sends: std::sync::Mutex<std::collections::VecDeque<Vec<i32>>>,
 }
 
 impl TwoRankReplay {
@@ -2593,37 +2446,23 @@ impl TwoRankReplay {
     }
 }
 
-fn erase_comm_data<T: CommData>(values: &[T]) -> MockPayload {
+fn erase_comm_data<T: CommData>(values: &[T]) -> Vec<i32> {
     use std::any::Any;
-    let probe = T::default();
-    let probe: &dyn Any = &probe;
-    if probe.is::<i32>() {
-        MockPayload::Ints(
-            values
-                .iter()
-                .map(|v| *(v as &dyn Any).downcast_ref::<i32>().unwrap())
-                .collect(),
-        )
-    } else if probe.is::<f64>() {
-        MockPayload::Floats(
-            values
-                .iter()
-                .map(|v| *(v as &dyn Any).downcast_ref::<f64>().unwrap())
-                .collect(),
-        )
-    } else {
-        panic!("TwoRankReplay: unsupported element type (expected i32 or f64)")
-    }
+    values
+        .iter()
+        .map(|v| {
+            *(v as &dyn Any)
+                .downcast_ref::<i32>()
+                .expect("TwoRankReplay: unsupported element type (expected i32)")
+        })
+        .collect()
 }
 
-fn restore_comm_data<T: CommData>(payload: &MockPayload, dst: &mut [T]) {
+fn restore_comm_data<T: CommData>(payload: &[i32], dst: &mut [T]) {
     use std::any::Any;
     for (i, slot) in dst.iter_mut().enumerate() {
         let slot: &mut dyn Any = slot;
-        match payload {
-            MockPayload::Ints(v) => *slot.downcast_mut::<i32>().unwrap() = v[i],
-            MockPayload::Floats(v) => *slot.downcast_mut::<f64>().unwrap() = v[i],
-        }
+        *slot.downcast_mut::<i32>().unwrap() = payload[i];
     }
 }
 
@@ -2729,9 +2568,7 @@ fn a_gather_that_cannot_decode_a_peer_segment_still_issues_every_collective() {
         let mut sends = peer.peer_sends.lock().unwrap();
         // Node 0's `i32` payload is the second collective; its second value is
         // the format tag.
-        let MockPayload::Ints(payload) = &mut sends[1] else {
-            panic!("node 0's second collective carries the i32 payload");
-        };
+        let payload = &mut sends[1];
         assert_eq!(payload[1], BASIS_BROADCAST_FORMAT_TAG);
         payload[1] = BASIS_BROADCAST_FORMAT_TAG + 1;
     }
@@ -2758,9 +2595,9 @@ fn a_payload_length_that_does_not_fit_an_i32_count_fails_naming_its_rank() {
 
     let (mut counts, mut displs) = (vec![0_usize; 2], vec![0_usize; 2]);
     let err = segment_layout(
-        [5_i32, -1].iter(),
+        &[5_i32, -1],
         4,
-        "gather_basis_store_i32",
+        "gather_basis_store",
         &mut counts,
         &mut displs,
     )
@@ -2849,7 +2686,7 @@ fn an_oversized_payload_fails_every_rank_after_the_same_broadcast() {
 
     let oversized = (i32::MAX as usize) + 1;
     let root = LengthBroadcast::new(0, 0);
-    let err = broadcast_len(&root, oversized, "broadcast_basis_cache_i32")
+    let err = broadcast_len(&root, oversized, "broadcast_basis_cache")
         .expect_err("a length past the i32 count limit is refused");
     assert!(
         matches!(
@@ -2862,7 +2699,7 @@ fn an_oversized_payload_fails_every_rank_after_the_same_broadcast() {
     assert_eq!(root.broadcasts(), 1, "rank 0 broadcasts before it fails");
 
     let peer = LengthBroadcast::new(1, -1);
-    let err = broadcast_len(&peer, 0, "broadcast_basis_cache_i32")
+    let err = broadcast_len(&peer, 0, "broadcast_basis_cache")
         .expect_err("the peer reads the refusal rank 0 broadcast");
     assert!(
         matches!(&err, SddpError::Validation(msg) if msg.contains("does not fit an i32 count")),

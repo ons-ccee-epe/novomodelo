@@ -24,7 +24,7 @@ use novomodelo_solver::{Basis, SolverInterface};
 use novomodelo_solver::{HighsSolver, SolutionView, SolverError};
 
 #[cfg(feature = "clp")]
-use novomodelo_solver::{ClpSolver, SolverError};
+use novomodelo_solver::{ClpProfile, ClpSolver, SolverError};
 
 // Gated identically to its only consumers (the HiGHS option-poking tests) so the
 // clp+test-support build does not see an unused import.
@@ -44,7 +44,6 @@ fn make_fixture_stage_template() -> StageTemplate {
         objective: vec![0.0, 1.0, 50.0],
         row_lower: vec![6.0, 14.0],
         row_upper: vec![6.0, 14.0],
-        n_state: 1,
         col_scale: Vec::new(),
         row_scale: Vec::new(),
     }
@@ -146,7 +145,6 @@ fn test_fixture_stage_template_data() {
     assert_eq!(t.objective, vec![0.0, 1.0, 50.0]);
     assert_eq!(t.row_lower, vec![6.0, 14.0]);
     assert_eq!(t.row_upper, vec![6.0, 14.0]);
-    assert_eq!(t.n_state, 1);
 }
 
 #[test]
@@ -266,6 +264,369 @@ fn test_solver_highs_set_row_bounds_state_change() {
         (primals[2] - 6.0).abs() < 1e-8,
         "expected x2 = 6.0, got {}",
         primals[2]
+    );
+}
+
+// ─── Row-bound range push conformance tests ───────────────────────────────────
+
+/// Rows `r_i: x_i` over `x_i ∈ [0, 10]` with costs `[-1, 1, 1]`. Only `r0` has a
+/// finite upper (2), so a range push over `r0` must drop it for `x0` to rise.
+/// Baseline optimum: `x = [2, 1, 1]`, objective `0`.
+fn make_range_push_template() -> StageTemplate {
+    StageTemplate {
+        num_cols: 3,
+        num_rows: 3,
+        num_nz: 3,
+        col_starts: vec![0_i32, 1, 2, 3],
+        row_indices: vec![0_i32, 1, 2],
+        values: vec![1.0, 1.0, 1.0],
+        col_lower: vec![0.0, 0.0, 0.0],
+        col_upper: vec![10.0, 10.0, 10.0],
+        objective: vec![-1.0, 1.0, 1.0],
+        row_lower: vec![1.0, 1.0, 1.0],
+        row_upper: vec![2.0, f64::INFINITY, f64::INFINITY],
+        col_scale: Vec::new(),
+        row_scale: Vec::new(),
+    }
+}
+
+fn assert_optimum<S: SolverInterface>(solver: &mut S, primal: [f64; 3], objective: f64) {
+    let solution = solver
+        .solve(None)
+        .expect("solve() must succeed on feasible LP");
+    assert_eq!(solution.primal, primal);
+    assert_eq!(solution.objective, objective);
+}
+
+fn case_range_push_sets_lower_bounds<S: SolverInterface>(mut solver: S) {
+    solver.load_model(&make_range_push_template());
+    solver.set_row_lower_bounds_range(1, &[4.0, 5.0]);
+    assert_optimum(&mut solver, [2.0, 4.0, 5.0], 7.0);
+}
+
+fn case_range_push_drops_finite_upper<S: SolverInterface>(mut solver: S) {
+    solver.load_model(&make_range_push_template());
+    solver.set_row_lower_bounds_range(0, &[0.5]);
+    assert_optimum(&mut solver, [10.0, 1.0, 1.0], -8.0);
+}
+
+fn case_range_push_at_nonzero_first_row_changes_only_its_rows<S: SolverInterface>(mut solver: S) {
+    solver.load_model(&make_range_push_template());
+    solver.set_row_lower_bounds_range(2, &[3.0]);
+    assert_optimum(&mut solver, [2.0, 1.0, 3.0], 2.0);
+}
+
+fn case_range_push_over_mixed_uppers_drops_the_finite_one<S: SolverInterface>(mut solver: S) {
+    solver.load_model(&make_range_push_template());
+    solver.set_row_lower_bounds_range(0, &[0.5, 4.0, 5.0]);
+    assert_optimum(&mut solver, [10.0, 4.0, 5.0], -1.0);
+}
+
+fn case_repeated_range_push_keeps_the_dropped_upper<S: SolverInterface>(mut solver: S) {
+    solver.load_model(&make_range_push_template());
+    solver.set_row_lower_bounds_range(0, &[0.5]);
+    solver.set_row_lower_bounds_range(0, &[0.5, 2.0]);
+    assert_optimum(&mut solver, [10.0, 2.0, 1.0], -7.0);
+}
+
+fn case_range_push_empty_is_noop<S: SolverInterface>(mut solver: S) {
+    solver.load_model(&make_range_push_template());
+    solver.set_row_lower_bounds_range(3, &[]);
+    solver.set_row_lower_bounds_range(0, &[]);
+    assert_optimum(&mut solver, [2.0, 1.0, 1.0], 0.0);
+}
+
+fn case_set_row_bounds_accepts_infinite_upper<S: SolverInterface>(mut solver: S) {
+    solver.load_model(&make_range_push_template());
+    solver.set_row_bounds(&[0], &[0.5], &[f64::INFINITY]);
+    assert_optimum(&mut solver, [10.0, 1.0, 1.0], -8.0);
+}
+
+#[cfg(feature = "highs")]
+#[test]
+fn highs_range_push_sets_lower_bounds() {
+    case_range_push_sets_lower_bounds(HighsSolver::new().expect("HighsSolver::new() must succeed"));
+}
+
+#[cfg(feature = "highs")]
+#[test]
+fn highs_range_push_drops_finite_upper() {
+    case_range_push_drops_finite_upper(
+        HighsSolver::new().expect("HighsSolver::new() must succeed"),
+    );
+}
+
+#[cfg(feature = "highs")]
+#[test]
+fn highs_range_push_at_nonzero_first_row_changes_only_its_rows() {
+    case_range_push_at_nonzero_first_row_changes_only_its_rows(
+        HighsSolver::new().expect("HighsSolver::new() must succeed"),
+    );
+}
+
+#[cfg(feature = "highs")]
+#[test]
+fn highs_range_push_over_mixed_uppers_drops_the_finite_one() {
+    case_range_push_over_mixed_uppers_drops_the_finite_one(
+        HighsSolver::new().expect("HighsSolver::new() must succeed"),
+    );
+}
+
+#[cfg(feature = "highs")]
+#[test]
+fn highs_repeated_range_push_keeps_the_dropped_upper() {
+    case_repeated_range_push_keeps_the_dropped_upper(
+        HighsSolver::new().expect("HighsSolver::new() must succeed"),
+    );
+}
+
+#[cfg(feature = "highs")]
+#[test]
+fn highs_range_push_empty_is_noop() {
+    case_range_push_empty_is_noop(HighsSolver::new().expect("HighsSolver::new() must succeed"));
+}
+
+#[cfg(feature = "highs")]
+#[test]
+fn highs_set_row_bounds_accepts_infinite_upper() {
+    case_set_row_bounds_accepts_infinite_upper(
+        HighsSolver::new().expect("HighsSolver::new() must succeed"),
+    );
+}
+
+#[cfg(feature = "clp")]
+#[test]
+fn clp_range_push_sets_lower_bounds() {
+    case_range_push_sets_lower_bounds(ClpSolver::new().expect("ClpSolver::new() must succeed"));
+}
+
+#[cfg(feature = "clp")]
+#[test]
+fn clp_range_push_drops_finite_upper() {
+    case_range_push_drops_finite_upper(ClpSolver::new().expect("ClpSolver::new() must succeed"));
+}
+
+#[cfg(feature = "clp")]
+#[test]
+fn clp_range_push_at_nonzero_first_row_changes_only_its_rows() {
+    case_range_push_at_nonzero_first_row_changes_only_its_rows(
+        ClpSolver::new().expect("ClpSolver::new() must succeed"),
+    );
+}
+
+#[cfg(feature = "clp")]
+#[test]
+fn clp_range_push_over_mixed_uppers_drops_the_finite_one() {
+    case_range_push_over_mixed_uppers_drops_the_finite_one(
+        ClpSolver::new().expect("ClpSolver::new() must succeed"),
+    );
+}
+
+#[cfg(feature = "clp")]
+#[test]
+fn clp_repeated_range_push_keeps_the_dropped_upper() {
+    case_repeated_range_push_keeps_the_dropped_upper(
+        ClpSolver::new().expect("ClpSolver::new() must succeed"),
+    );
+}
+
+#[cfg(feature = "clp")]
+#[test]
+fn clp_range_push_empty_is_noop() {
+    case_range_push_empty_is_noop(ClpSolver::new().expect("ClpSolver::new() must succeed"));
+}
+
+#[cfg(feature = "clp")]
+#[test]
+fn clp_set_row_bounds_accepts_infinite_upper() {
+    case_set_row_bounds_accepts_infinite_upper(
+        ClpSolver::new().expect("ClpSolver::new() must succeed"),
+    );
+}
+
+// ─── Basic-row dual conformance tests ─────────────────────────────────────────
+
+/// Minimise `0.3·x0 + 1.7·x1 + 0.9·x2 + t` over `x0, x1, x2 ∈ [0, 10]` and a free
+/// `t`, subject to `r0: x0 + x1 + x2 = 7.3` and ten support rows
+/// `t − b_k·x ≥ a_k` (rows 1–10), the last two identical.
+fn make_warm_push_template() -> StageTemplate {
+    const X_COEFFS: [[f64; 3]; 10] = [
+        [0.1, 0.0, 0.0],
+        [1.0 / 3.0, -0.3, 0.0],
+        [0.7, 0.0, -0.3],
+        [-0.3, 1.0 / 3.0, 0.1],
+        [0.45, -0.1, 1.0 / 3.0],
+        [0.0, 0.7, -1.0 / 3.0],
+        [0.2, 0.2, 0.2],
+        [0.55, -0.2, 0.0],
+        [-0.1, 0.0, 0.7],
+        [-0.1, 0.0, 0.7],
+    ];
+    const SUPPORT_LOWER: [f64; 10] = [1.3, 0.7, -1.1, 2.9, 0.1, 1.5, -0.7, -0.3, 3.7, 3.7];
+
+    let mut dense = vec![[1.0, 1.0, 1.0, 0.0]];
+    dense.extend(X_COEFFS.iter().map(|b| [-b[0], -b[1], -b[2], 1.0]));
+
+    let mut col_starts = vec![0_i32];
+    let mut row_indices = Vec::new();
+    let mut values = Vec::new();
+    for col in 0..4 {
+        for (row, dense_row) in dense.iter().enumerate() {
+            if dense_row[col] != 0.0 {
+                row_indices.push(i32::try_from(row).expect("row index fits i32"));
+                values.push(dense_row[col]);
+            }
+        }
+        col_starts.push(i32::try_from(values.len()).expect("nonzero count fits i32"));
+    }
+
+    let mut row_lower = vec![7.3];
+    row_lower.extend(SUPPORT_LOWER);
+    let mut row_upper = vec![7.3];
+    row_upper.resize(dense.len(), f64::INFINITY);
+
+    StageTemplate {
+        num_cols: 4,
+        num_rows: dense.len(),
+        num_nz: values.len(),
+        col_starts,
+        row_indices,
+        values,
+        col_lower: vec![0.0, 0.0, 0.0, f64::NEG_INFINITY],
+        col_upper: vec![10.0, 10.0, 10.0, f64::INFINITY],
+        objective: vec![0.3, 1.7, 0.9, 1.0],
+        row_lower,
+        row_upper,
+        col_scale: Vec::new(),
+        row_scale: Vec::new(),
+    }
+}
+
+fn case_basic_rows_report_a_zero_dual_across_warm_bound_pushes<S: SolverInterface>(
+    mut solver: S,
+) -> u64 {
+    use novomodelo_solver::BasisStatus;
+
+    const FIRST_SUPPORT_ROW: usize = 1;
+    const PUSHES: usize = 30;
+    const PUSH: f64 = 0.83;
+
+    let template = make_warm_push_template();
+    let csc_index = |v: i32| usize::try_from(v).expect("CSC index is non-negative");
+    let support_cols = template
+        .col_starts
+        .windows(2)
+        .filter(|w| {
+            template.row_indices[csc_index(w[0])..csc_index(w[1])]
+                .iter()
+                .any(|&r| csc_index(r) >= FIRST_SUPPORT_ROW)
+        })
+        .count();
+    assert_eq!(support_cols, 4, "support rows touch every column");
+
+    let mut support_lower = template.row_lower[FIRST_SUPPORT_ROW..].to_vec();
+    let twin = support_lower.len() - 1;
+    let twin_rows = [FIRST_SUPPORT_ROW + twin - 1, FIRST_SUPPORT_ROW + twin];
+
+    solver.load_model(&template);
+    let mut basis = Basis::new(template.num_cols, template.num_rows);
+
+    let mut largest_iterations = 0;
+    let mut support_row_basic = false;
+    let mut ever_nonzero = vec![false; template.num_rows];
+    let mut cold_nonzero = Vec::new();
+    let mut warm_basic_on_cold_nonzero = false;
+    let mut exactly_one_twin_basic = false;
+
+    for solve in 0..=PUSHES {
+        if let Some(push) = solve.checked_sub(1) {
+            let k = push % twin;
+            support_lower[k] += PUSH;
+            if k == twin - 1 {
+                support_lower[twin] = support_lower[k];
+            }
+            solver.set_row_lower_bounds_range(FIRST_SUPPORT_ROW, &support_lower);
+        }
+        let view = solver.solve(None).expect("solve");
+        largest_iterations = largest_iterations.max(view.iterations);
+        let dual = view.dual.to_vec();
+        solver.get_basis(&mut basis);
+
+        for (i, &status) in basis.row_status.iter().enumerate() {
+            if status == BasisStatus::Basic {
+                assert!(
+                    dual[i] == 0.0,
+                    "solve {solve}: row {i} is {status:?} with dual bits {:#018x}",
+                    dual[i].to_bits()
+                );
+            }
+        }
+        let nonzero_supports: Vec<usize> = (FIRST_SUPPORT_ROW..template.num_rows)
+            .filter(|&i| dual[i] != 0.0)
+            .collect();
+        assert!(
+            nonzero_supports.len() <= support_cols,
+            "solve {solve}: {} support rows carry a non-zero dual, columns they touch {support_cols}",
+            nonzero_supports.len()
+        );
+
+        let is_basic = |i: usize| basis.row_status[i] == BasisStatus::Basic;
+        support_row_basic |= (FIRST_SUPPORT_ROW..template.num_rows).any(is_basic);
+        for &i in &nonzero_supports {
+            ever_nonzero[i] = true;
+        }
+        if solve == 0 {
+            cold_nonzero = nonzero_supports;
+        } else {
+            warm_basic_on_cold_nonzero |= cold_nonzero.iter().any(|&i| is_basic(i));
+        }
+        exactly_one_twin_basic |= is_basic(twin_rows[0]) != is_basic(twin_rows[1]);
+    }
+
+    assert!(support_row_basic, "no solve reported a support row Basic");
+    assert!(
+        ever_nonzero.iter().filter(|&&nonzero| nonzero).count() >= 2,
+        "fewer than two distinct support rows carried a non-zero dual"
+    );
+    assert!(
+        warm_basic_on_cold_nonzero,
+        "no warm solve reported Basic a support row that was non-zero at the cold solve"
+    );
+    assert!(
+        exactly_one_twin_basic,
+        "no solve reported exactly one of the duplicate support rows Basic"
+    );
+    largest_iterations
+}
+
+#[cfg(feature = "highs")]
+#[test]
+fn highs_basic_rows_report_a_zero_dual_across_warm_bound_pushes() {
+    case_basic_rows_report_a_zero_dual_across_warm_bound_pushes(
+        HighsSolver::new().expect("HighsSolver::new() must succeed"),
+    );
+}
+
+#[cfg(feature = "clp")]
+#[test]
+fn clp_basic_rows_report_a_zero_dual_across_warm_bound_pushes() {
+    case_basic_rows_report_a_zero_dual_across_warm_bound_pushes(
+        ClpSolver::new().expect("ClpSolver::new() must succeed"),
+    );
+}
+
+#[cfg(feature = "clp")]
+#[test]
+fn clp_basic_rows_report_a_zero_dual_at_a_short_factorization_frequency() {
+    let mut solver = ClpSolver::new().expect("ClpSolver::new() must succeed");
+    solver.apply_profile(&ClpProfile {
+        factorization_frequency: 2,
+        ..ClpProfile::default()
+    });
+    let largest_iterations = case_basic_rows_report_a_zero_dual_across_warm_bound_pushes(solver);
+    assert!(
+        largest_iterations > 2,
+        "no solve exceeded the factorization frequency, largest iteration count {largest_iterations}"
     );
 }
 
@@ -729,7 +1090,6 @@ fn test_solver_highs_solve_infeasible() {
         objective: vec![1.0],
         row_lower: vec![],
         row_upper: vec![],
-        n_state: 1,
         col_scale: Vec::new(),
         row_scale: Vec::new(),
     };
@@ -783,7 +1143,6 @@ fn test_solver_highs_solve_unbounded() {
         objective: vec![-1.0],
         row_lower: vec![],
         row_upper: vec![],
-        n_state: 1,
         col_scale: Vec::new(),
         row_scale: Vec::new(),
     };
@@ -843,7 +1202,6 @@ fn make_larger_lp_template() -> StageTemplate {
         objective: vec![1.0, 1.0, 1.0, 1.0, 1.0],
         row_lower: vec![10.0, 8.0, 6.0, 4.0],
         row_upper: vec![f64::INFINITY, f64::INFINITY, f64::INFINITY, f64::INFINITY],
-        n_state: 1,
         col_scale: Vec::new(),
         row_scale: Vec::new(),
     }
@@ -992,7 +1350,6 @@ fn test_solver_highs_infeasible_with_rows() {
         objective: vec![1.0, 1.0],
         row_lower: vec![10.0, f64::NEG_INFINITY],
         row_upper: vec![f64::INFINITY, 5.0],
-        n_state: 1,
         col_scale: Vec::new(),
         row_scale: Vec::new(),
     };
@@ -1028,7 +1385,6 @@ fn test_solver_highs_infeasible_with_presolve() {
         objective: vec![1.0, 1.0],
         row_lower: vec![10.0, f64::NEG_INFINITY],
         row_upper: vec![f64::INFINITY, 5.0],
-        n_state: 1,
         col_scale: Vec::new(),
         row_scale: Vec::new(),
     };
@@ -1075,7 +1431,6 @@ fn test_solver_highs_unbounded_with_primal_ray() {
         objective: vec![0.0, -1.0],
         row_lower: vec![f64::NEG_INFINITY],
         row_upper: vec![10.0],
-        n_state: 1,
         col_scale: Vec::new(),
         row_scale: Vec::new(),
     };
@@ -1121,7 +1476,6 @@ fn test_solver_highs_unbounded_or_infeasible() {
         objective: vec![0.0, -1.0],
         row_lower: vec![10.0, f64::NEG_INFINITY],
         row_upper: vec![f64::INFINITY, 5.0],
-        n_state: 1,
         col_scale: Vec::new(),
         row_scale: Vec::new(),
     };
@@ -1479,7 +1833,6 @@ fn test_solver_clp_solve_dual_values() {
 
 /// Mirrors `test_solver_highs_add_rows_tightens`: load SS1.1, `add_rows(SS1.2)`,
 /// `solve(None)`, assert objective `162.0` and primals `(6.0, 62.0, 2.0)`.
-/// This is the end-to-end CSR→CSC merge cross-validation.
 #[cfg(feature = "clp")]
 #[test]
 fn test_solver_clp_add_rows_then_solve() {

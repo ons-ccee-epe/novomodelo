@@ -38,7 +38,6 @@ pub(super) fn fill_stage_columns(
     fill_storage_columns(ctx, stage, stage_idx, layout, bufs);
     fill_transit_bucket_columns(layout, bufs);
     fill_anticipated_slot_columns(layout, bufs);
-    fill_ar_lag_columns(layout, bufs);
     fill_anticipated_state_columns(layout, bufs);
     fill_theta_column(layout, bufs);
     fill_turbine_columns(ctx, stage, stage_idx, layout, bufs);
@@ -58,7 +57,6 @@ pub(super) fn fill_stage_columns(
     fill_contract_columns(ctx, stage, stage_idx, layout, bufs);
     fill_filling_target_columns(ctx, stage_idx, layout, bufs);
     fill_filled_min_storage_floor_columns(ctx, stage_idx, layout, bufs);
-    fill_z_inflow_columns(layout, bufs);
 
     (col_lower, col_upper, objective)
 }
@@ -131,14 +129,6 @@ fn fill_anticipated_slot_columns(layout: &StageLayout, bufs: &mut ColumnBufs<'_>
         (f64::NEG_INFINITY, f64::INFINITY),
         bufs,
     );
-}
-
-/// AR lag columns: unconstrained (signed).
-fn fill_ar_lag_columns(layout: &StageLayout, bufs: &mut ColumnBufs<'_>) {
-    for lag_col in layout.state.inflow_lags.clone() {
-        bufs.col_lower[lag_col] = f64::NEG_INFINITY;
-        bufs.col_upper[lag_col] = f64::INFINITY;
-    }
 }
 
 /// Incoming commitment-hold columns (in-study + post-horizon): open
@@ -1092,14 +1082,6 @@ fn fill_filled_min_storage_floor_columns(
         bufs.col_lower[col] = 0.0;
         bufs.col_upper[col] = f64::INFINITY;
         bufs.objective[col] = hp.storage_violation_below_cost;
-    }
-}
-
-/// Z-inflow columns: free variables for realized total inflow per hydro.
-fn fill_z_inflow_columns(layout: &StageLayout, bufs: &mut ColumnBufs<'_>) {
-    for col in layout.state.z_inflow.clone() {
-        bufs.col_lower[col] = f64::NEG_INFINITY;
-        bufs.col_upper[col] = f64::INFINITY;
     }
 }
 
