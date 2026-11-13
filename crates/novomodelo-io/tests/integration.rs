@@ -941,7 +941,7 @@ fn test_full_anticipation_lead_stages_reaching_only_post_study_loads() {
         root,
         "post_study_stages.json",
         r#"{
-    "stages": [ { "start_date": "2024-02-01", "duration_hours": 696.0 } ],
+    "thermal_stages": [ { "start_date": "2024-02-01", "duration_hours": 696.0 } ],
     "thermal_bounds": []
 }"#,
     );

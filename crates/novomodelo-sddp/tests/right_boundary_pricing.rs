@@ -44,7 +44,7 @@ use novomodelo_core::{
     AnticipatedCommitmentHistory, BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, EntityId,
     HorizonGraph, HydroBlockBounds, HydroStageBounds, InitialConditions, LineBlockBounds,
     PostStudyStage, PostStudyStages, PostStudyThermalBound, PumpingBlockBounds, ResolvedBounds,
-    System, SystemBuilder, ThermalBlockBounds,
+    System, SystemBuilder, ThermalBlockBounds, WaterBucketStages,
 };
 use novomodelo_sddp::indexer::StateDim;
 use novomodelo_sddp::setup::{NodeGraph, NodePos, StageIdx};
@@ -133,7 +133,7 @@ fn stages() -> Vec<novomodelo_core::temporal::Stage> {
 /// so `StageCalendar::resolve_window` covers it at destination index 0.
 fn post_study_stages() -> PostStudyStages {
     PostStudyStages {
-        stages: vec![PostStudyStage {
+        thermal_stages: vec![PostStudyStage {
             start_date: study_end(),
             duration_hours: POST_STUDY_HOURS,
         }],
@@ -144,6 +144,7 @@ fn post_study_stages() -> PostStudyStages {
             min_mw: 0.0,
             max_mw: 100.0,
         }],
+        water_bucket_stages: WaterBucketStages::FromThermalStages,
     }
 }
 

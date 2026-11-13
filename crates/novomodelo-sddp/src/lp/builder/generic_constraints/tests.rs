@@ -443,7 +443,7 @@ fn call_with_inflow(
     layout: &StageLayout<'_>,
 ) -> (Entries, Entries) {
     let mut inflow = Vec::new();
-    let columns = resolve_variable_ref(&var_ref, block_idx, 0, ctx, layout, &mut inflow);
+    let columns = resolve_variable_ref(&var_ref, block_idx, 0, 0, ctx, layout, &mut inflow);
     (inflow, columns)
 }
 
@@ -1839,8 +1839,13 @@ fn generic_row_merges_line_exchange_and_line_direct() {
         "a block-dependent expression expands to one generic row per block"
     );
 
-    let fill =
-        fill_generic_constraints_for_test(&ctx, 0, &layout, vec![Vec::new(); layout.num_cols]);
+    let fill = fill_generic_constraints_for_test(
+        &ctx,
+        &fx.stage,
+        0,
+        &layout,
+        vec![Vec::new(); layout.num_cols],
+    );
 
     for blk in 0..n_blks {
         let direct = VariableRef::LineDirect {
@@ -2371,9 +2376,14 @@ fn inflow_coupling_merges_generic_hydro_inflow_terms_on_one_hydro() {
     let layout = StageLayout::new(&ctx, &fx.stage, 0);
     assert_eq!(layout.rows.n_generic_rows, 2);
 
-    let coupling =
-        fill_generic_constraints_for_test(&ctx, 0, &layout, vec![Vec::new(); layout.num_cols])
-            .coupling;
+    let coupling = fill_generic_constraints_for_test(
+        &ctx,
+        &fx.stage,
+        0,
+        &layout,
+        vec![Vec::new(); layout.num_cols],
+    )
+    .coupling;
 
     let target = ctx.positions.hydro(hydro_id).unwrap();
     for h in 0..layout.state.hydro_count {

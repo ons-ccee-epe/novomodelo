@@ -5,9 +5,10 @@
 //! `load_boundary_cuts`.
 //!
 //! Also covers transit-bucket (an identical arrival interval blends at unit
-//! weight, a miss defaults to `0.0`), sentinel-dated-anticipated default-`0.0`,
-//! and the dated-anticipated
-//! date-driven fan-out (`÷H_M` `Blend`, coverage-`Renormalize`) — including a
+//! weight, a miss fills from the receiver's storage coefficient and defaults to
+//! `0.0` without one), sentinel-dated-anticipated default-`0.0`, and the
+//! dated-anticipated date-driven fan-out (`÷H_M` `Blend`,
+//! coverage-`Renormalize`) — including a
 //! ring-sourced post-study slot reconciling bit-identically to the
 //! pre-switchover shape, and an in-study ring slot (its own interval ending
 //! at the boundary date) defaulting to `Zero`.
@@ -318,13 +319,10 @@ fn full_fcf_manifest_check_unaffected_by_boundary_reconcile_wiring() {
     );
 }
 
-/// Given a current terminal manifest with a DATED transit-bucket slot and a
-/// source carrying no transit slots at all (the NEWAVE-shaped case), when the
-/// `BoundaryInjection` load runs, then it succeeds and the transit
-/// coefficient defaults to `0.0` — no source interval exists to overlap —
-/// while the storage slot still loads its identity-matched coefficient.
+/// A receiver whose source has no transit slot fills from its storage
+/// coefficient, and strict admits the load.
 #[test]
-fn boundary_injection_transit_bucket_defaults_to_zero() {
+fn boundary_injection_transit_bucket_fills_from_receiver_storage() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let manifest = vec![storage_slot(1), storage_slot(2)];
     write_checkpoint(tmp.path(), &manifest, &[10.0, 20.0]);
@@ -338,21 +336,53 @@ fn boundary_injection_transit_bucket_defaults_to_zero() {
             encode_slot_date(ymd(2026, 4, 15)),
         ),
     ];
+    let request = BoundaryLoadRequest::new(tmp.path(), fixture_priced_date(0), 2, &current, 1.0);
+
+    for request in [request, request.with_strict(true)] {
+        let cuts = load_boundary_cuts(&request).expect("a filled transit bucket must load");
+
+        assert_eq!(cuts.len(), 1);
+        assert_eq!(cuts[0].coefficients, vec![10.0, 20.0]);
+        let report = cuts.report();
+        assert_eq!(report.transit_bucket.filled_from_storage, 1);
+        assert_eq!(report.transit_bucket.default_zero, 0);
+        assert_eq!(report.storage.dropped_source, 0);
+    }
+}
+
+/// Given a checkpoint rescaled by a loading factor that differs from its own
+/// cost scale (1.0 against 3.0), when a source-miss transit bucket is filled
+/// from its receiver's storage, then every loaded cut carries the storage
+/// slot's rescaled coefficient bit-for-bit in the bucket, and that value is
+/// not the stored `7.0`.
+#[test]
+fn boundary_injection_transit_fill_matches_the_storage_copy_under_cost_rescale() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    write_checkpoint(tmp.path(), &[storage_slot(2)], &[7.0]);
+    let current = vec![
+        storage_slot(2),
+        transit_bucket_slot_over(
+            2,
+            1,
+            encode_slot_date(ymd(2026, 4, 8)),
+            encode_slot_date(ymd(2026, 4, 15)),
+        ),
+    ];
+
     let cuts = load_boundary_cuts(&BoundaryLoadRequest::new(
         tmp.path(),
         fixture_priced_date(0),
         2,
         &current,
-        1.0,
+        3.0,
     ))
-    .expect("a transit-only-target load must succeed via the default-zero arm");
+    .expect("a filled transit bucket must load");
 
     assert_eq!(cuts.len(), 1);
-    assert_eq!(
-        cuts[0].coefficients,
-        vec![10.0, 0.0],
-        "the transit slot must default to 0.0"
-    );
+    for cut in cuts.iter() {
+        assert_eq!(cut.coefficients[1].to_bits(), cut.coefficients[0].to_bits());
+        assert_ne!(cut.coefficients[0], 7.0);
+    }
 }
 
 /// Given a boundary SOURCE that prices a transit-bucket arrival interval for
@@ -543,8 +573,8 @@ fn boundary_injection_target_shaped_source_reconciles_bit_identically() {
 /// Novomodelo-to-Novomodelo boundary with matching transit arcs), when the
 /// `BoundaryInjection` load runs, then the transit coefficient blends at
 /// unit weight from the source verbatim, never zeroed — distinct from
-/// `boundary_injection_transit_bucket_defaults_to_zero`'s no-source-transit
-/// (NEWAVE) case, which still defaults to `0.0` on a miss — and the report
+/// `boundary_injection_transit_bucket_fills_from_receiver_storage`'s
+/// no-source-transit (NEWAVE) case, which fills from storage on a miss — and the report
 /// tallies the slot as `fan_out`, not `copy`: an exact interval match now
 /// routes through the date-driven join.
 #[test]
@@ -589,12 +619,12 @@ fn boundary_injection_transit_bucket_blends_on_identical_arrival_interval() {
 /// mismatched-calendar transit boundary, unlike
 /// `boundary_injection_transit_bucket_blends_on_identical_arrival_interval`'s
 /// matching-interval case — when the `BoundaryInjection` load runs, then the
-/// loaded coefficient equals the source coefficient scaled by the target's
-/// own span over the source's own span: the target draws the source's
-/// density over its own overlapping hours. The report still tallies the
-/// slot as a fully-covered `fan_out`, never `straddling`.
+/// loaded coefficient equals the source coefficient: a held volume takes its
+/// `overlap / H_target` share, `1.0` for a target inside one source bucket.
+/// The report still tallies the slot as a fully-covered `fan_out`, never
+/// `straddling`.
 #[test]
-fn boundary_injection_transit_bucket_blends_at_fractional_source_hours() {
+fn boundary_injection_transit_bucket_takes_its_target_hours_share() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let source_start = ymd(2026, 4, 1);
     let source_end = ymd(2026, 5, 1);
@@ -626,14 +656,11 @@ fn boundary_injection_transit_bucket_blends_at_fractional_source_hours() {
 
     assert_eq!(cuts.len(), 1);
 
-    let source_span_hours = (source_end - source_start).num_days() as f64 * 24.0;
-    let target_span_hours = (target_end - target_start).num_days() as f64 * 24.0;
-    let expected = source_coeff * target_span_hours / source_span_hours;
+    let expected = source_coeff;
     let actual = cuts[0].coefficients[0];
     assert!(
         (actual - expected).abs() < expected.abs() * 1e-9,
-        "coefficient {actual} != expected {expected} (source_coeff * target_span_hours / \
-         source_span_hours)"
+        "coefficient {actual} != expected {expected} (source_coeff, the full target-hours share)"
     );
 
     let report = cuts.report();
@@ -644,6 +671,85 @@ fn boundary_injection_transit_bucket_blends_at_fractional_source_hours() {
     assert_eq!(
         report.transit_bucket.straddling, 0,
         "full coverage by one source interval is never straddling"
+    );
+}
+
+/// Given a checkpoint with a storage slot and two transit buckets of unequal
+/// width (`[Apr 1, Apr 8)`, `[Apr 8, Apr 22)`) and a current manifest whose
+/// two 10 d buckets straddle them unevenly, when the `BoundaryInjection` load
+/// runs, then storage copies and each bucket takes `overlap / H_target` of
+/// every source bucket it overlaps: `-10·7/10 - 40·3/10` and `-40·10/10`.
+/// `overlap / H_source` would give a different value for both.
+#[test]
+fn boundary_injection_uneven_bucket_straddle_takes_target_hours_shares() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let manifest = vec![
+        storage_slot(1),
+        transit_bucket_slot_over(
+            2,
+            1,
+            encode_slot_date(ymd(2026, 4, 1)),
+            encode_slot_date(ymd(2026, 4, 8)),
+        ),
+        transit_bucket_slot_over(
+            2,
+            2,
+            encode_slot_date(ymd(2026, 4, 8)),
+            encode_slot_date(ymd(2026, 4, 22)),
+        ),
+    ];
+    write_checkpoint(tmp.path(), &manifest, &[5.0, -10.0, -40.0]);
+
+    let current = vec![
+        storage_slot(1),
+        transit_bucket_slot_over(
+            2,
+            1,
+            encode_slot_date(ymd(2026, 4, 1)),
+            encode_slot_date(ymd(2026, 4, 11)),
+        ),
+        transit_bucket_slot_over(
+            2,
+            2,
+            encode_slot_date(ymd(2026, 4, 11)),
+            encode_slot_date(ymd(2026, 4, 21)),
+        ),
+    ];
+    let cuts = load_boundary_cuts(&BoundaryLoadRequest::new(
+        tmp.path(),
+        fixture_priced_date(0),
+        3,
+        &current,
+        1.0,
+    ))
+    .expect("an uneven fully-covered transit-bucket straddle must load");
+
+    assert_eq!(cuts.len(), 1);
+    assert_eq!(cuts[0].coefficients[0], 5.0, "storage copies by identity");
+
+    let expected = [-10.0 * 7.0 / 10.0 - 40.0 * 3.0 / 10.0, -40.0];
+    let source_hours = [-10.0 - 40.0 * 3.0 / 14.0, -40.0 * 10.0 / 14.0];
+    for (bucket, ((&actual, want), wrong)) in cuts[0].coefficients[1..]
+        .iter()
+        .zip(expected)
+        .zip(source_hours)
+        .enumerate()
+    {
+        assert!(
+            (actual - want).abs() < want.abs() * 1e-12,
+            "target bucket {bucket}: {actual} != {want}"
+        );
+        assert!(
+            (want - wrong).abs() > want.abs() * 1e-3,
+            "target bucket {bucket} cannot tell target- from source-hours weighting"
+        );
+    }
+
+    let report = cuts.report();
+    assert_eq!(report.transit_bucket.fan_out, 2);
+    assert_eq!(
+        report.transit_bucket.straddling, 0,
+        "both targets lie inside the source span, so neither straddles unpriced time"
     );
 }
 

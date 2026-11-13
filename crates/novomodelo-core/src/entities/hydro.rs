@@ -311,6 +311,13 @@ impl Hydro {
         self.max_turbined_m3s > 1e-9
     }
 
+    /// Whether the plant declares a travel-time arc: `travel_time_hours` above
+    /// `0.0` (`0.0` is undeclared) and a `downstream_id`.
+    #[must_use]
+    pub fn declares_travel_time_arc(&self) -> bool {
+        self.travel_time_hours.is_some_and(|t| t > 0.0) && self.downstream_id.is_some()
+    }
+
     /// Test-only fixture helper: mirrors this plant into a single unit group
     /// when none is declared, matching the construction production code no
     /// longer performs — a production caller is a contract violation, not a
@@ -374,6 +381,25 @@ mod tests {
         };
         hydro.declare_mirror_unit_group(EntityId::from(10));
         hydro
+    }
+
+    #[test]
+    fn declares_travel_time_arc_requires_positive_time_and_a_downstream() {
+        let mut hydro = minimal_hydro(HydroGenerationModel::ConstantProductivity);
+
+        hydro.travel_time_hours = None;
+        hydro.downstream_id = Some(EntityId(3));
+        assert!(!hydro.declares_travel_time_arc());
+
+        hydro.travel_time_hours = Some(0.0);
+        assert!(!hydro.declares_travel_time_arc());
+
+        hydro.travel_time_hours = Some(360.0);
+        hydro.downstream_id = None;
+        assert!(!hydro.declares_travel_time_arc());
+
+        hydro.downstream_id = Some(EntityId(3));
+        assert!(hydro.declares_travel_time_arc());
     }
 
     #[test]

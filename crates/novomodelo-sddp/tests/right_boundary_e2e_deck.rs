@@ -342,7 +342,7 @@ mod anticipated_fanout_readback {
             .map(|post_study| {
                 use chrono::Datelike;
                 post_study
-                    .stages
+                    .thermal_stages
                     .iter()
                     .map(|s| {
                         s.start_date.year() * 10_000

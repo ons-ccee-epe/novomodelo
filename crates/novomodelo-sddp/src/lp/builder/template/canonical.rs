@@ -496,8 +496,13 @@ fn put_option_triple(buf: &mut Vec<u8>, value: Option<(f64, f64, f64)>) {
 /// [`TimeValue::cumulative_discount_factors`] (the prefix accessor), never
 /// recomputed, so it stays the single derivation.
 pub(crate) fn encode_time_value_facts(time_value: &TimeValue, groups: &mut FactGroups) {
-    let (discount_factors, delivery_cumulative_discount_factors, calendar, post_study) =
-        time_value.canonical_fields();
+    let (
+        discount_factors,
+        delivery_cumulative_discount_factors,
+        delivery_stage_ids,
+        calendar,
+        post_study,
+    ) = time_value.canonical_fields();
 
     put_f64_slice(
         group(groups, "time_value.discount_factors"),
@@ -514,12 +519,15 @@ pub(crate) fn encode_time_value_facts(time_value: &TimeValue, groups: &mut FactG
 
     // Dates are not LP facts; their sole LP effect, the post-study discount
     // continuation, is already digested via `post_study` below.
-    let (total_hours, stage_ids, _post_study_stages) = calendar.canonical_fields();
+    let (total_hours, _post_study_stages) = calendar.canonical_fields();
     put_f64_slice(
         group(groups, "time_value.delivery_total_hours"),
         total_hours,
     );
-    put_i32_slice(group(groups, "time_value.delivery_stage_ids"), stage_ids);
+    put_i32_slice(
+        group(groups, "time_value.delivery_stage_ids"),
+        delivery_stage_ids,
+    );
 
     let (
         post_study_cumulative_discount_factors,

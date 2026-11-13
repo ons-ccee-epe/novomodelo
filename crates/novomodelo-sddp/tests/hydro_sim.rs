@@ -3032,7 +3032,7 @@ mod water_arc_and_post_study_anticipated_coexist_on_extended_layout {
         BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, EntityId, HydroBlockBounds,
         HydroPastDefluence, HydroStageBounds, HydroStorage, InitialConditions, LineBlockBounds,
         PostStudyStage, PostStudyStages, PostStudyThermalBound, PumpingBlockBounds, ResolvedBounds,
-        System, SystemBuilder, ThermalBlockBounds,
+        System, SystemBuilder, ThermalBlockBounds, WaterBucketStages,
     };
     use novomodelo_io::config::{
         BoundaryPolicy, Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
@@ -3144,7 +3144,7 @@ mod water_arc_and_post_study_anticipated_coexist_on_extended_layout {
     /// onto, so `StageCalendar::resolve_window` covers it at destination index 0.
     fn post_study_stages() -> PostStudyStages {
         PostStudyStages {
-            stages: vec![PostStudyStage {
+            thermal_stages: vec![PostStudyStage {
                 start_date: study_end(),
                 duration_hours: POST_STUDY_HOURS,
             }],
@@ -3155,6 +3155,7 @@ mod water_arc_and_post_study_anticipated_coexist_on_extended_layout {
                 min_mw: 0.0,
                 max_mw: 100.0,
             }],
+            water_bucket_stages: WaterBucketStages::FromThermalStages,
         }
     }
 

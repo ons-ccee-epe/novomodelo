@@ -96,7 +96,7 @@ use crate::solve::StageOpeningSolver;
 use crate::solve::solver_phase::SolverProfiles;
 use crate::solve::stage_solve::assemble_outgoing_state;
 #[cfg(test)]
-use crate::time_value::DeliveryCalendar;
+use crate::time_value::{DeliveryCalendar, WaterDeliveryBasis};
 use crate::time_value::{PostStudyResolved, TimeValue};
 use crate::training::backward::{
     ChainRuleStageInputs, DualExtractionSpec, OpeningDualBuffers, by_node_block_count,
@@ -115,6 +115,7 @@ use novomodelo_solver::{
 pub mod bound_recording;
 pub mod decks;
 pub mod expander;
+pub mod legacy_inputs;
 pub mod solve_sites;
 pub mod template_structure;
 
@@ -375,9 +376,11 @@ pub(crate) fn resolved_layout_for(
     system: &System,
     par_lp: &PrecomputedPar,
 ) -> (TransitBucketTopology, ResolvedStateLayout) {
-    let calendar = DeliveryCalendar::from_system(system);
-    let topology = build_transit_bucket_topology(system, &calendar, false);
-    let layout = resolve_state_layout(system, &calendar, par_lp, &topology, None)
+    let thermal = DeliveryCalendar::thermal(system);
+    let basis = WaterDeliveryBasis::of(system);
+    let water = DeliveryCalendar::water(system, basis);
+    let topology = build_transit_bucket_topology(system, &water, basis, false);
+    let layout = resolve_state_layout(system, &thermal, par_lp, &topology, None)
         .expect("resolved_layout_for: valid test fixture");
     (topology, layout)
 }

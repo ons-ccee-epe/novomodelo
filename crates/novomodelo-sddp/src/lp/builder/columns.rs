@@ -2937,6 +2937,7 @@ mod anticipated_objective_tests {
         BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, EntityId, HorizonGraph,
         HydroBlockBounds, HydroStageBounds, LineBlockBounds, PostStudyStage, PostStudyStages,
         PostStudyThermalBound, PumpingBlockBounds, ResolvedBounds, Thermal, ThermalBlockBounds,
+        WaterBucketStages,
     };
 
     use novomodelo_stochastic::season_cast::post_study_calendar_stages;
@@ -3395,7 +3396,7 @@ mod anticipated_objective_tests {
             return PostStudyResolved::default();
         }
         let post_study = PostStudyStages {
-            stages: (0..n_post)
+            thermal_stages: (0..n_post)
                 .map(|_| PostStudyStage {
                     start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
                     duration_hours: PSA_STUDY_HOURS,
@@ -3413,8 +3414,9 @@ mod anticipated_objective_tests {
                     },
                 )
                 .collect(),
+            water_bucket_stages: WaterBucketStages::FromThermalStages,
         };
-        let post_study_stages = post_study_calendar_stages(&post_study.stages);
+        let post_study_stages = post_study_calendar_stages(&post_study.thermal_stages);
         resolve_post_study_artifacts(
             Some(&post_study),
             &[PSA_THERMAL_ID],
