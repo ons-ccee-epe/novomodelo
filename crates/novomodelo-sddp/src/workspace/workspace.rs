@@ -18,6 +18,7 @@ use crate::cut::chain_rule::{AggregateScratch, ChainRuleScratch, ChildOpenings, 
 use crate::dcs::DcsSolveScratch;
 use crate::indexer::CutStateProjection;
 use crate::lp::builder::{PatchBuffer, StageGeometry};
+use crate::noise::AccumSnapshot;
 use crate::risk_measure::RiskMeasureScratch;
 use crate::setup::{NodeId, NodePos};
 use crate::solve::partition;
@@ -913,6 +914,12 @@ pub struct ScratchBuffers {
     /// advanced by the transition draw. Resized (never reallocated once at
     /// capacity) at each `run_forward_worker` call.
     pub(crate) current_node_buf: Vec<NodePos>,
+
+    /// `trial_lag_chains[local_m]` is trajectory `local_m`'s own lag chain
+    /// between stages; the `lag_*`/`downstream_*` fields above hold only the
+    /// trajectory being solved. Grown, never shrunk, at each `run_forward_worker`
+    /// call.
+    pub(crate) trial_lag_chains: Vec<AccumSnapshot>,
 }
 
 /// All per-thread mutable resources required for one LP solve sequence.
@@ -1067,6 +1074,7 @@ impl ScratchBuffers {
             raw_noise_buf: Vec::with_capacity(noise_dim),
             corr_scratch: Vec::with_capacity(2 * noise_dim),
             current_node_buf: Vec::with_capacity(max_local_fwd),
+            trial_lag_chains: Vec::with_capacity(max_local_fwd),
         }
     }
 
@@ -1528,6 +1536,7 @@ impl ScratchBuffers {
             raw_noise_buf: Vec::new(),
             corr_scratch: Vec::new(),
             current_node_buf: Vec::new(),
+            trial_lag_chains: Vec::new(),
         }
     }
 }

@@ -34,6 +34,7 @@ use crate::{
         EnumeratedForwardResult, EnumeratedForwardScratch, EnumeratedParams, ForwardResult,
         StageKey, run_enumerated_forward, run_forward_stage,
     },
+    noise::AccumSnapshot,
     setup::node_graph::{EnumeratedPlan, NodePos, StageIdx, Traversal, advance_sampled_node},
     solver_phase::Phase,
     solver_stats::SolverStatsDelta,
@@ -815,6 +816,11 @@ pub(crate) fn run_forward_worker<S: SolverInterface + Send>(
     current_node_buf.clear();
     current_node_buf.resize(n_local, params.root_node);
 
+    let mut trial_lag_chains = std::mem::take(&mut ws.scratch.trial_lag_chains);
+    if trial_lag_chains.len() < n_local {
+        trial_lag_chains.resize_with(n_local, AccumSnapshot::default);
+    }
+
     let local_solve_count_before = ws.solver.statistics().solve_count;
     #[allow(clippy::cast_possible_truncation)]
     let total_scenarios_u32 = params.total_forward_passes as u32;
@@ -878,6 +884,8 @@ pub(crate) fn run_forward_worker<S: SolverInterface + Send>(
                 ws.scratch.downstream_weight_accum = 0.0;
                 ws.scratch.downstream_completed_lags.fill(0.0);
                 ws.scratch.downstream_n_completed = 0;
+            } else {
+                trial_lag_chains[local_m].restore_into(&mut ws.scratch);
             }
 
             let global_scenario = params.fwd_offset + m;
@@ -940,6 +948,7 @@ pub(crate) fn run_forward_worker<S: SolverInterface + Send>(
                 &key,
                 worker_records,
             )?;
+            trial_lag_chains[local_m].capture_from(&ws.scratch);
             let stage_delta =
                 SolverStatsDelta::from_snapshots(&stats_before_stage, &ws.solver.statistics());
             SolverStatsDelta::accumulate_into(&mut per_stage_stats[t.0], &stage_delta);
@@ -956,6 +965,7 @@ pub(crate) fn run_forward_worker<S: SolverInterface + Send>(
     ws.scratch.raw_noise_buf = raw_noise_buf;
     ws.scratch.corr_scratch = corr_scratch;
     ws.scratch.current_node_buf = current_node_buf;
+    ws.scratch.trial_lag_chains = trial_lag_chains;
 
     let local_solves = ws.solver.statistics().solve_count - local_solve_count_before;
     ws.worker_timing_buf.forward_wall_ms += worker_wall_start.elapsed().as_secs_f64() * 1_000.0;

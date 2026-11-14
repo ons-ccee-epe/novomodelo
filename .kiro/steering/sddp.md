@@ -276,6 +276,39 @@ kind and cut-row shape records no stale cut row), its committed-deck sweep
 `lb_cut_slots_follow_lp_row_order_and_keep_deactivated_rows`
 (`training/lower_bound.rs`).
 
+## A sampled forward trial owns its lag chain
+
+A sampled forward trial's inflow lag chain is the primary partial sum and
+weight (`lag_accumulator`, `lag_weight_accum`) plus the downstream accumulator,
+weight, completed ring and count (`downstream_*`). The worker scratch holds one
+chain, so a trial's chain lives in its own `AccumSnapshot`, one per local trial.
+In `run_forward_worker`, every (trial, stage) solve after stage 0 first restores
+the trial's own snapshot into the scratch, and captures it back after the solve,
+once the lag advance in `run_forward_stage` has run. Stage 0 seeds the chain from
+`inflow_seeds`. A trial's trajectory then depends on neither the number
+of trials sharing its worker thread or rank nor their order.
+
+The wrong-but-compiling alternatives:
+
+- one chain per worker, reset only at stage 0: a trial reads the chain another
+  trial left, so the trajectories depend on `--threads` and on the rank count;
+- capturing before `assemble_outgoing_state`: the snapshot predates the lag
+  advance, so the trial's next stage reads a chain that has not advanced;
+- isolating only the primary accumulator: the downstream ring and count still
+  leak between trials at the stages that rebuild the lag from the downstream
+  ring.
+
+Read: `training/forward_pass_state.rs` (`run_forward_worker`),
+`stochastic/noise.rs` (`AccumSnapshot`). Pinned by the gates of
+`trial_isolated_lag_chain` in `tests/mpi_wire.rs`:
+`weekly_closing_month_trains_to_the_same_bits_at_every_thread_count`,
+`monthly_quarterly_rebuild_trains_to_the_same_bits_at_every_thread_count`,
+`weekly_closing_month_is_world_size_invariant` and
+`monthly_quarterly_rebuild_is_world_size_invariant`, the last two registered in
+`scripts/ci/run-mpi-launcher-gates.sh`; and
+`fixture_calendars_have_the_lag_shapes_the_gates_need`, which checks that the
+fixtures keep the lag transitions the gates read.
+
 ## The cut-evaluation lag point has one owner
 
 A cut's lag slots are evaluated at one point `Φ`: for hydro `h`,

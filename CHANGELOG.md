@@ -47,6 +47,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `novomodelo validate` warns; run
   `python3 scripts/migrate/post_study_stages.py <deck-dir>` to migrate it.
 
+### Fixed
+
+- Sampled training on studies whose inflow-lag periods span several stages
+  (weekly stages within a month, a quarter built from months) gave results that
+  depended on `--threads` and on the MPI rank count; results change for those
+  studies.
+
 ## [0.20.0] - 2026-11-03
 
 ### Added
