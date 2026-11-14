@@ -46,9 +46,9 @@ pub struct SeasonalStats {
 /// Classification of a per-(entity, season) historical observation series.
 ///
 /// The degenerate classes force `std = 0`, which drives order 0 on both fitting
-/// paths (PAR(p)-A via the structural-zero short-circuit, classical PAR(p) via
-/// zeroed periodic autocorrelations), so a degenerate bucket cannot inject
-/// spurious AR structure into adjacent months' PACFs.
+/// paths (PAR(p)-A for the season itself and for any season whose lags reach it,
+/// classical PAR(p) via zeroed periodic autocorrelations), so a degenerate bucket
+/// cannot inject spurious AR structure into adjacent months' PACFs.
 #[must_use]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum HistoryClass {

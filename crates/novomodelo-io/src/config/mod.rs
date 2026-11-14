@@ -195,6 +195,7 @@ pub(crate) fn validate_config(config: &Config, path: &Path) -> Result<(), LoadEr
     config.simulation_scenario_source(path)?;
     config.checkpoint_schedule(path)?;
     config.policy.check_path(path)?;
+    config.estimation.check_history_years(path)?;
 
     Ok(())
 }
@@ -1227,6 +1228,32 @@ mod tests {
                     message.contains("residuals") && message.contains("inflows"),
                     "message should name both variants, got: {message}"
                 );
+            }
+            other => panic!("expected SchemaError, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn estimation_history_years_reads_the_range_form_and_defaults_to_every_year() {
+        let cfg = parse_minimal_with_estimation(None).unwrap();
+        assert!(cfg.estimation.history_years.is_none());
+
+        let cfg =
+            parse_minimal_with_estimation(Some(r#"{"history_years": {"from": 1931, "to": 2024}}"#))
+                .unwrap();
+        let years = cfg.estimation.history_years.expect("history_years");
+        assert_eq!((years.from, years.to), (1931, 2024));
+    }
+
+    #[test]
+    fn estimation_history_years_rejects_an_inverted_range() {
+        let err =
+            parse_minimal_with_estimation(Some(r#"{"history_years": {"from": 2024, "to": 1931}}"#))
+                .unwrap_err();
+        match &err {
+            LoadError::SchemaError { field, message, .. } => {
+                assert_eq!(field, "estimation.history_years");
+                assert!(message.contains("must be <= 'to'"), "{message}");
             }
             other => panic!("expected SchemaError, got: {other:?}"),
         }

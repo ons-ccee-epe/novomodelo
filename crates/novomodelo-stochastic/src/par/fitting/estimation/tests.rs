@@ -4,16 +4,24 @@ use chrono::{Datelike, Days, Months, NaiveDate, Weekday};
 use novomodelo_core::test_support::{StageSpec, date, make_stage};
 use novomodelo_core::{EntityId, SeasonMap, Stage};
 
+use novomodelo_core::scenario::AnnualComponent;
+
 use super::{
-    ArEstimationConfig, ContributionReduction, EstimationReport, PacfReductionParams,
-    ReductionReason, estimate_ar_coefficients_with_selection, estimate_ar_with_pacf_annual,
-    has_negative_phi1, iterative_pacf_reduction, validate_order_contributions,
+    AnnualHydroData, ArEstimationConfig, ContributionReduction, EstimationReport,
+    PacfReductionParams, ReductionReason, combined_annual_coefficients,
+    estimate_ar_coefficients_with_selection, estimate_ar_with_pacf_annual, has_negative_phi1,
+    iterative_pacf_reduction, iterative_pacf_reduction_annual, reduce_entity_orders_annual,
+    validate_order_contributions,
 };
 use crate::StochasticError;
+use crate::par::closure::derive_residual_std_ratios;
 use crate::par::fitting::cycle_positions::twin_fixtures::{
     TwinMaps, calendar_history, calendar_stages, permuted_quarterly_twins, sparse_ring_twins,
 };
-use crate::par::fitting::{ArCoefficientEstimate, SeasonalStats};
+use crate::par::fitting::{
+    ArCoefficientEstimate, PeriodicYwAnnualResult, SeasonalStats,
+    estimate_periodic_ar_annual_coefficients,
+};
 use crate::test_support::{
     MonthlyLabels, monthly_season_map, quarterly_season_map, weekly_season_map,
 };
@@ -258,6 +266,16 @@ fn two_season_map() -> SeasonMap {
                 day_end: Some(31),
             },
         ],
+    }
+}
+
+fn pacf_annual_config(max_order: usize) -> ArEstimationConfig<'static> {
+    ArEstimationConfig {
+        max_order,
+        max_coeff_magnitude: None,
+        season_map: None,
+        use_annual_component: true,
+        assembled_stats: None,
     }
 }
 
@@ -1236,6 +1254,7 @@ fn roundtrip_estimation_two_season_par2_recovers_coefficients() {
             max_coeff_magnitude: None,
             season_map: Some(&season_map),
             use_annual_component: false,
+            assembled_stats: None,
         },
     )
     .expect("estimation must succeed");
@@ -1302,9 +1321,7 @@ fn estimate_ar_with_pacf_annual_two_hydros_twelve_seasons() {
         &seasonal_stats,
         &stages,
         &[h1, h2],
-        3,    // max_order
-        None, // season_map
-        None, // max_coeff_magnitude
+        &pacf_annual_config(3),
     )
     .expect("estimate_ar_with_pacf_annual must succeed with 30 years of data");
 
@@ -1374,9 +1391,7 @@ fn estimate_ar_with_pacf_annual_insufficient_observations_errors() {
         &seasonal_stats,
         &stages,
         &[h1],
-        2,    // max_order
-        None, // season_map
-        None, // max_coeff_magnitude
+        &pacf_annual_config(2),
     );
 
     assert!(
@@ -1440,6 +1455,7 @@ fn ar_fit_is_thread_count_invariant() {
                         max_coeff_magnitude: None,
                         season_map: None,
                         use_annual_component: false,
+                        assembled_stats: None,
                     },
                 )
                 .expect("classical estimation must succeed");
@@ -1533,9 +1549,7 @@ fn annual_ar_fit_is_thread_count_and_declaration_order_invariant() {
                     &seasonal_stats,
                     &stages,
                     hydro_ids,
-                    3,    // max_order
-                    None, // season_map
-                    None, // max_coeff_magnitude
+                    &pacf_annual_config(3),
                 )
                 .expect("estimate_ar_with_pacf_annual must succeed with 30 years of data");
                 estimates
@@ -1639,6 +1653,7 @@ fn fit_calendar_history(
             max_coeff_magnitude: None,
             season_map: Some(season_map),
             use_annual_component: false,
+            assembled_stats: None,
         },
     )
     .unwrap()
@@ -1732,8 +1747,8 @@ fn ar_fit_on_an_out_of_calendar_order_map_equals_the_fit_on_its_calendar_ordered
 #[test]
 fn fit_on_a_dense_calendar_ordered_custom_map_is_unchanged() {
     const FIT_BITS: [&[u64]; 4] = [
-        &[4_605_120_269_902_754_618],
-        &[4_596_444_960_825_664_260, 4_603_467_181_103_770_236],
+        &[4_604_888_768_224_172_012],
+        &[4_598_513_797_465_689_831, 4_602_842_188_588_550_407],
         &[4_600_539_182_485_145_474, 4_602_924_096_865_316_619],
         &[4_604_971_852_568_177_276],
     ];
@@ -1783,7 +1798,8 @@ fn population_mean_std(values: &[f64]) -> (f64, f64) {
 
 /// `ρ(position, 1)` pairing each `(position, year)` value with the
 /// `(position − 1 mod n, year − [position == 0])` value, summed in ascending
-/// year, divided by the pair count and clamped as the kernel does.
+/// year, divided by the larger of the two buckets' year counts and clamped as
+/// the kernel does.
 fn reference_lag1_rho(
     values: &BTreeMap<(usize, i32), f64>,
     stats: &[(f64, f64)],
@@ -1794,15 +1810,18 @@ fn reference_lag1_rho(
     let years_back = i32::from(position == 0);
     let (mu_ref, std_ref) = stats[position];
     let (mu_lag, std_lag) = stats[predecessor];
+    let bucket_len = |season: usize| {
+        values
+            .range((season, i32::MIN)..=(season, i32::MAX))
+            .fold(0_u32, |count, _| count + 1)
+    };
     let mut gamma = 0.0_f64;
-    let mut n_pairs = 0_u32;
     for (&(_, year), &value) in values.range((position, i32::MIN)..=(position, i32::MAX)) {
         if let Some(&lagged) = values.get(&(predecessor, year - years_back)) {
             gamma += (value - mu_ref) * (lagged - mu_lag);
-            n_pairs += 1;
         }
     }
-    gamma /= f64::from(n_pairs);
+    gamma /= f64::from(bucket_len(position).max(bucket_len(predecessor)));
     (gamma / (std_ref * std_lag)).clamp(-1.0, 1.0)
 }
 
@@ -1883,6 +1902,7 @@ fn assert_ar1_fit_pairs_each_occurrence_with_its_calendar_predecessor(
             max_coeff_magnitude: None,
             season_map: Some(season_map),
             use_annual_component: false,
+            assembled_stats: None,
         },
     )
     .unwrap();
@@ -1993,4 +2013,452 @@ fn ar_fit_counts_weekly_buckets_by_iso_week_numbering_year() {
             (week0, week0, iso_week.year())
         },
     );
+}
+
+const ANNUAL_TEST_SEASONS: usize = 12;
+
+/// One hydro's PAR-A estimates: `(season, φ, ψ)` for the listed seasons,
+/// no AR term and `ψ = 0` elsewhere; every `σ^A` is 1.
+fn annual_estimates(seasons: &[(usize, Vec<f64>, f64)]) -> Vec<ArCoefficientEstimate> {
+    (0..ANNUAL_TEST_SEASONS)
+        .map(|season_id| {
+            let (coefficients, psi) = seasons
+                .iter()
+                .find(|(s, _, _)| *s == season_id)
+                .map_or((Vec::new(), 0.0), |(_, phi, psi)| (phi.clone(), *psi));
+            ArCoefficientEstimate {
+                hydro_id: EntityId::from(1),
+                season_id,
+                coefficients,
+                annual: Some(AnnualComponent {
+                    coefficient: psi,
+                    mean_m3s: 0.0,
+                    std_m3s: 1.0,
+                }),
+            }
+        })
+        .collect()
+}
+
+struct AnnualReductionRun {
+    /// `(season, ceiling)` of each refit, in call order.
+    refits: Vec<(usize, usize)>,
+    reductions: HashMap<EntityId, Vec<ContributionReduction>>,
+}
+
+fn annual_test_data(fitted_std: f64, assembled_std: f64) -> AnnualHydroData<'static> {
+    AnnualHydroData {
+        hydro_id: EntityId::from(1),
+        n_seasons: ANNUAL_TEST_SEASONS,
+        stats_by_season: vec![(10.0, fitted_std); ANNUAL_TEST_SEASONS],
+        assembled_std_by_season: vec![assembled_std; ANNUAL_TEST_SEASONS],
+        annual_stats_by_season: vec![(10.0, 1.0); ANNUAL_TEST_SEASONS],
+        z_year_starts: vec![0; ANNUAL_TEST_SEASONS],
+        a_year_starts: vec![0; ANNUAL_TEST_SEASONS],
+        obs_refs: vec![&[][..]; ANNUAL_TEST_SEASONS],
+        annual_obs_refs: vec![&[][..]; ANNUAL_TEST_SEASONS],
+    }
+}
+
+fn reduce_annual(
+    estimates: &mut [ArCoefficientEstimate],
+    data: &AnnualHydroData<'_>,
+    refit_result: &PeriodicYwAnnualResult,
+) -> AnnualReductionRun {
+    let indices: Vec<usize> = (0..estimates.len()).collect();
+    let mut refits = Vec::new();
+    let mut reductions = HashMap::new();
+    reduce_entity_orders_annual(
+        estimates,
+        data,
+        &indices,
+        |season, ceiling| {
+            refits.push((season, ceiling));
+            refit_result.clone()
+        },
+        &mut reductions,
+    );
+    AnnualReductionRun { refits, reductions }
+}
+
+fn reduce_annual_with_unit_stds(
+    estimates: &mut [ArCoefficientEstimate],
+    refit_result: &PeriodicYwAnnualResult,
+) -> AnnualReductionRun {
+    reduce_annual(estimates, &annual_test_data(1.0, 1.0), refit_result)
+}
+
+#[test]
+fn combined_annual_coefficients_add_psi_over_twelve_to_every_lag() {
+    let mut estimates = annual_estimates(&[(2, vec![0.5], 0.6)]);
+    estimates[2].annual.as_mut().unwrap().std_m3s = 2.0;
+    let std_by_season: Vec<f64> = (1..=ANNUAL_TEST_SEASONS).map(|s| s as f64).collect();
+    let indices: Vec<usize> = (0..ANNUAL_TEST_SEASONS).collect();
+
+    let combined =
+        combined_annual_coefficients(&estimates, &indices, ANNUAL_TEST_SEASONS, &std_by_season);
+
+    assert_eq!(combined[2].len(), 12);
+    for (lag_index, &value) in combined[2].iter().enumerate() {
+        let lagged_season =
+            (2 + ANNUAL_TEST_SEASONS - (lag_index + 1) % ANNUAL_TEST_SEASONS) % ANNUAL_TEST_SEASONS;
+        let phi = if lag_index == 0 { 0.5 } else { 0.0 };
+        let expected = phi + 0.6 / 12.0 * std_by_season[lagged_season] / 2.0;
+        assert!((value - expected).abs() < 1e-12, "lag {}", lag_index + 1);
+    }
+}
+
+#[test]
+fn annual_reduction_refits_a_month_whose_annual_term_makes_a_lag_negative() {
+    // φ alone gives contributions [0.3, 0.05]; with ψ/12 = -0.1 the lag-2
+    // contribution is -0.05.
+    let mut estimates = annual_estimates(&[(0, vec![0.3, 0.05], -1.2)]);
+    let refit = PeriodicYwAnnualResult {
+        coefficients: vec![0.3],
+        annual_coefficient: -0.5,
+    };
+
+    let AnnualReductionRun { refits, reductions } =
+        reduce_annual_with_unit_stds(&mut estimates, &refit);
+
+    assert_eq!(refits, vec![(0, 1)], "ceiling is the current order minus 1");
+    assert_eq!(estimates[0].coefficients, vec![0.3]);
+    assert_eq!(estimates[0].annual.as_ref().unwrap().coefficient, -0.5);
+    let reduction = &reductions[&EntityId::from(1)][0];
+    assert_eq!(reduction.reason, ReductionReason::NegativeContribution);
+    assert_eq!(reduction.original_order, 2);
+}
+
+#[test]
+fn annual_reduction_keeps_a_month_whose_annual_term_offsets_a_negative_phi_lag() {
+    // φ alone gives a lag-2 contribution of -0.05; with ψ/12 = +0.1 it is +0.05.
+    let mut estimates = annual_estimates(&[(0, vec![0.3, -0.05], 1.2)]);
+    let refit = PeriodicYwAnnualResult {
+        coefficients: Vec::new(),
+        annual_coefficient: 0.0,
+    };
+
+    let AnnualReductionRun { refits, reductions } =
+        reduce_annual_with_unit_stds(&mut estimates, &refit);
+
+    assert!(refits.is_empty());
+    assert!(reductions.is_empty());
+    assert_eq!(estimates[0].coefficients, vec![0.3, -0.05]);
+}
+
+#[test]
+fn annual_reduction_drops_phi_and_psi_of_an_order_one_month_with_negative_combined_lag1() {
+    let mut estimates = annual_estimates(&[(0, vec![0.05], -1.2)]);
+    let refit = PeriodicYwAnnualResult {
+        coefficients: vec![0.9],
+        annual_coefficient: 0.9,
+    };
+
+    let AnnualReductionRun { refits, reductions } =
+        reduce_annual_with_unit_stds(&mut estimates, &refit);
+
+    assert!(refits.is_empty(), "an order-1 failure is not refit");
+    assert!(estimates[0].coefficients.is_empty());
+    assert_eq!(estimates[0].annual.as_ref().unwrap().coefficient, 0.0);
+    let reduction = &reductions[&EntityId::from(1)][0];
+    assert_eq!(reduction.reason, ReductionReason::NegativeContribution);
+    assert_eq!(reduction.reduced_order, 0);
+}
+
+#[test]
+fn annual_reduction_keeps_a_negative_phi1_whose_combined_contributions_are_positive() {
+    // Combined coefficients [0.05, 0.5, 0.2] give contributions [0.05, 0.5, 0.2].
+    let mut estimates = annual_estimates(&[(0, vec![-0.05, 0.4, 0.1], 1.2)]);
+    let data = annual_test_data(1.0, 1.0);
+
+    let reductions = iterative_pacf_reduction_annual(&mut estimates, &[data], 1.96, None);
+
+    assert!(
+        reductions.is_empty(),
+        "no phi_1 sign pre-pass on the PAR-A path"
+    );
+    assert_eq!(estimates[0].coefficients, vec![-0.05, 0.4, 0.1]);
+}
+
+/// Season 1 is constant, season 2 follows season 0 of the same year and season 0
+/// follows season 2 of the year before.
+struct ZeroStdSeasonFixture {
+    obs: Vec<Vec<f64>>,
+    annual_obs: Vec<Vec<f64>>,
+    stats: Vec<(f64, f64)>,
+    annual_stats: Vec<(f64, f64)>,
+}
+
+impl ZeroStdSeasonFixture {
+    const N_SEASONS: usize = 3;
+
+    fn new() -> Self {
+        let mut state: u64 = 0x2545_f491_4f6c_dd1d;
+        let mut noise = move || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (state >> 11) as f64 / (1_u64 << 53) as f64 - 0.5
+        };
+        let mut obs = vec![Vec::new(); Self::N_SEASONS];
+        let mut annual_obs = vec![Vec::new(); Self::N_SEASONS];
+        let (mut prev_s1, mut prev_s2) = (5.0, 0.0);
+        for year in 0..41 {
+            let s0 = 0.8 * prev_s2 + noise();
+            let s2 = 0.9 * s0 + 0.3 * noise();
+            if year > 0 {
+                for (season, value) in [s0, 5.0, s2].into_iter().enumerate() {
+                    obs[season].push(value);
+                }
+                annual_obs[0].push((prev_s1 + prev_s2 + s0) / 3.0);
+                annual_obs[1].push((prev_s2 + s0 + 5.0) / 3.0);
+                annual_obs[2].push((s0 + 5.0 + s2) / 3.0);
+            }
+            (prev_s1, prev_s2) = (5.0, s2);
+        }
+        Self {
+            stats: obs
+                .iter()
+                .map(|values| population_mean_std(values))
+                .collect(),
+            annual_stats: annual_obs
+                .iter()
+                .map(|values| population_mean_std(values))
+                .collect(),
+            obs,
+            annual_obs,
+        }
+    }
+
+    fn data(&self) -> AnnualHydroData<'_> {
+        AnnualHydroData {
+            hydro_id: EntityId::from(1),
+            n_seasons: Self::N_SEASONS,
+            stats_by_season: self.stats.clone(),
+            assembled_std_by_season: self.stats.iter().map(|&(_, std)| std).collect(),
+            annual_stats_by_season: self.annual_stats.clone(),
+            z_year_starts: vec![0; Self::N_SEASONS],
+            a_year_starts: vec![0; Self::N_SEASONS],
+            obs_refs: self.obs.iter().map(Vec::as_slice).collect(),
+            annual_obs_refs: self.annual_obs.iter().map(Vec::as_slice).collect(),
+        }
+    }
+
+    fn solve(&self, season: usize, order: usize) -> PeriodicYwAnnualResult {
+        let data = self.data();
+        estimate_periodic_ar_annual_coefficients(
+            season,
+            order,
+            Self::N_SEASONS,
+            &data.obs_refs,
+            &data.stats_by_season,
+            &data.z_year_starts,
+            &data.annual_obs_refs,
+            &data.annual_stats_by_season,
+            &data.a_year_starts,
+        )
+    }
+}
+
+#[test]
+fn annual_fit_of_a_season_whose_lags_reach_a_zero_std_season_keeps_only_the_solved_psi() {
+    let fixture = ZeroStdSeasonFixture::new();
+    assert_eq!(fixture.stats[1].1, 0.0);
+
+    let result = fixture.data().fit(2, 2, 1.96);
+
+    let solved_at_order_two = fixture.solve(2, 2);
+    assert!(result.coefficients.is_empty());
+    assert_eq!(
+        result.annual_coefficient.to_bits(),
+        solved_at_order_two.annual_coefficient.to_bits()
+    );
+    assert!(
+        (solved_at_order_two.annual_coefficient - fixture.solve(2, 0).annual_coefficient).abs()
+            > 1e-3,
+        "the fixture must tell the order-2 psi from the order-0 psi"
+    );
+}
+
+#[test]
+fn annual_fit_keeps_the_ar_term_when_the_zero_std_season_lies_beyond_the_selected_order() {
+    let fixture = ZeroStdSeasonFixture::new();
+
+    let result = fixture.data().fit(0, 2, 1.96);
+
+    assert_eq!(result.coefficients.len(), 1);
+}
+
+#[test]
+fn annual_reduction_refits_a_month_whose_model_implies_a_negative_residual_variance() {
+    // Between white-noise neighbours r² = 1 − φ₁² − φ₂² = −0.17; every
+    // contribution is positive.
+    let mut estimates = annual_estimates(&[(0, vec![0.9, 0.6], 0.0)]);
+    let refit = PeriodicYwAnnualResult {
+        coefficients: vec![0.9],
+        annual_coefficient: 0.0,
+    };
+
+    let AnnualReductionRun { refits, reductions } =
+        reduce_annual_with_unit_stds(&mut estimates, &refit);
+
+    assert_eq!(refits, vec![(0, 1)]);
+    assert_eq!(estimates[0].coefficients, vec![0.9]);
+    let reduction = &reductions[&EntityId::from(1)][0];
+    assert_eq!(reduction.reason, ReductionReason::NegativeResidualVariance);
+    assert_eq!(reduction.original_order, 2);
+}
+
+#[test]
+fn annual_reduction_drops_the_psi_of_an_order_zero_month_with_a_negative_residual_variance() {
+    // ψ/12 = 1/3 on each of 12 white-noise lags: r² ≈ 1 − 12 · (1/3)² < 0.
+    let mut estimates = annual_estimates(&[(0, Vec::new(), 4.0)]);
+    let refit = PeriodicYwAnnualResult {
+        coefficients: vec![0.9],
+        annual_coefficient: 0.9,
+    };
+
+    let AnnualReductionRun { refits, reductions } =
+        reduce_annual_with_unit_stds(&mut estimates, &refit);
+
+    assert!(refits.is_empty());
+    assert!(estimates[0].coefficients.is_empty());
+    assert_eq!(estimates[0].annual.as_ref().unwrap().coefficient, 0.0);
+    let reduction = &reductions[&EntityId::from(1)][0];
+    assert_eq!(reduction.reason, ReductionReason::NegativeResidualVariance);
+    assert_eq!(reduction.original_order, 0);
+}
+
+#[test]
+fn annual_reduction_checks_the_residual_variance_with_the_assembled_std() {
+    // ψ's share of each lag is ψ/12 · σ_{m−k}/σ^A: 0.05 at the fitted unit std,
+    // 0.5 at an assembled std of 10, where r² < 0.
+    let estimates = annual_estimates(&[(0, vec![0.3], 0.6)]);
+    let refit = PeriodicYwAnnualResult {
+        coefficients: vec![0.9],
+        annual_coefficient: 0.9,
+    };
+    let mut fitted_only = estimates.clone();
+    let fitted_run = reduce_annual(&mut fitted_only, &annual_test_data(1.0, 1.0), &refit);
+    assert!(fitted_run.reductions.is_empty());
+
+    let mut assembled = estimates;
+    let AnnualReductionRun { refits, reductions } =
+        reduce_annual(&mut assembled, &annual_test_data(1.0, 10.0), &refit);
+
+    assert!(refits.is_empty());
+    assert!(assembled[0].coefficients.is_empty());
+    let reduction = &reductions[&EntityId::from(1)][0];
+    assert_eq!(reduction.reason, ReductionReason::NegativeResidualVariance);
+    assert_eq!(reduction.original_order, 1);
+}
+
+/// Seasons cut round-robin from one white-noise series, so they are uncorrelated.
+struct ClassicalWhiteNoiseFixture {
+    group_obs: HashMap<(EntityId, usize), Vec<f64>>,
+    stats: Vec<SeasonalStats>,
+}
+
+impl ClassicalWhiteNoiseFixture {
+    const N_SEASONS: usize = 3;
+    const HYDRO: EntityId = EntityId(1);
+
+    fn new() -> Self {
+        let series = generate_ar_observations(&[], 60 * Self::N_SEASONS);
+        let mut group_obs: HashMap<(EntityId, usize), Vec<f64>> = HashMap::new();
+        let mut stats = Vec::with_capacity(Self::N_SEASONS);
+        for season in 0..Self::N_SEASONS {
+            let obs: Vec<f64> = series
+                .iter()
+                .skip(season)
+                .step_by(Self::N_SEASONS)
+                .copied()
+                .collect();
+            let (mean, std) = population_mean_std(&obs);
+            stats.push(SeasonalStats {
+                entity_id: Self::HYDRO,
+                stage_id: i32::try_from(season).unwrap(),
+                mean,
+                std,
+            });
+            group_obs.insert((Self::HYDRO, season), obs);
+        }
+        Self { group_obs, stats }
+    }
+
+    fn reduce(
+        &self,
+        season_0_coefficients: &[f64],
+    ) -> (
+        Vec<ArCoefficientEstimate>,
+        HashMap<EntityId, Vec<ContributionReduction>>,
+    ) {
+        let mut estimates: Vec<ArCoefficientEstimate> = (0..Self::N_SEASONS)
+            .map(|season| ArCoefficientEstimate {
+                hydro_id: Self::HYDRO,
+                season_id: season,
+                coefficients: if season == 0 {
+                    season_0_coefficients.to_vec()
+                } else {
+                    Vec::new()
+                },
+                annual: None,
+            })
+            .collect();
+        let stats_map: HashMap<(EntityId, usize), &SeasonalStats> = self
+            .stats
+            .iter()
+            .enumerate()
+            .map(|(season, s)| ((Self::HYDRO, season), s))
+            .collect();
+        let reductions = iterative_pacf_reduction(
+            &mut estimates,
+            Self::N_SEASONS,
+            &[Self::HYDRO],
+            &self.group_obs,
+            &HashMap::new(),
+            &stats_map,
+            &PacfReductionParams {
+                initial_max_order: 3,
+                z_alpha: 1.96,
+                max_coeff_magnitude: None,
+            },
+        );
+        (estimates, reductions)
+    }
+}
+
+#[test]
+fn classical_reduction_refits_a_season_whose_model_implies_a_negative_residual_variance() {
+    // Between white-noise neighbours r² = 1 − φ₁² − φ₂² = −0.17; every
+    // contribution is positive.
+    let fixture = ClassicalWhiteNoiseFixture::new();
+
+    let (estimates, reductions) = fixture.reduce(&[0.9, 0.6]);
+
+    assert!(estimates[0].coefficients.len() < 2);
+    let reduction = &reductions[&ClassicalWhiteNoiseFixture::HYDRO][0];
+    assert_eq!(reduction.reason, ReductionReason::NegativeResidualVariance);
+    assert_eq!(reduction.season_id, 0);
+    assert_eq!(reduction.original_order, 2);
+    assert_eq!(reduction.reduced_order, 1);
+    let psi: Vec<Vec<f64>> = estimates.iter().map(|e| e.coefficients.clone()).collect();
+    let orders: Vec<usize> = psi.iter().map(Vec::len).collect();
+    let ratios =
+        derive_residual_std_ratios(&psi, &orders, ClassicalWhiteNoiseFixture::N_SEASONS).unwrap();
+    assert!(ratios.iter().all(|r| r.is_finite()));
+}
+
+#[test]
+fn classical_reduction_drops_an_order_one_season_with_a_negative_residual_variance_to_order_zero() {
+    // r² = 1 − φ₁² = −0.44 between white-noise neighbours.
+    let fixture = ClassicalWhiteNoiseFixture::new();
+
+    let (estimates, reductions) = fixture.reduce(&[1.2]);
+
+    assert!(estimates[0].coefficients.is_empty());
+    let reduction = &reductions[&ClassicalWhiteNoiseFixture::HYDRO][0];
+    assert_eq!(reduction.reason, ReductionReason::NegativeResidualVariance);
+    assert_eq!(reduction.original_order, 1);
+    assert_eq!(reduction.reduced_order, 0);
 }

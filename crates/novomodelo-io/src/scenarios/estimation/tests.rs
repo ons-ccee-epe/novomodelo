@@ -335,6 +335,23 @@ fn test_user_stats_to_rows_empty_system() {
     assert!(rows.is_empty(), "empty system must produce empty rows");
 }
 
+#[test]
+fn assembled_seasonal_stats_keep_the_first_row_of_each_season() {
+    let row = |stage_id, std_m3s| InflowSeasonalStatsRow {
+        hydro_id: EntityId(1),
+        stage_id,
+        mean_m3s: 10.0,
+        std_m3s,
+    };
+    let rows = vec![row(-1, 2.0), row(0, 5.0), row(11, 7.0)];
+    let stage_to_season: HashMap<i32, usize> = [(-1, 11), (0, 0), (11, 11)].into_iter().collect();
+
+    let stats = assembled_seasonal_stats(&rows, &stage_to_season);
+
+    let kept: Vec<(i32, f64)> = stats.iter().map(|s| (s.stage_id, s.std)).collect();
+    assert_eq!(kept, vec![(-1, 2.0), (0, 5.0)]);
+}
+
 /// Observation dates must fall within `make_two_season_stage` stages (map to seasons 0/1).
 fn write_unit_test_inflow_history(path: &std::path::Path, hydro_id: i32, n_years: usize) {
     use arrow::array::{Date32Array, Float64Array, Int32Array};
@@ -397,8 +414,12 @@ fn write_unit_test_inflow_history(path: &std::path::Path, hydro_id: i32, n_years
 }
 
 /// Precondition for `PartialEstimation` path: user stats loaded, no AR coefficients.
-#[allow(clippy::cast_possible_wrap)]
 fn build_system_with_user_stats(n_years: usize) -> System {
+    build_system_with_user_std(n_years, 10.0)
+}
+
+#[allow(clippy::cast_possible_wrap)]
+fn build_system_with_user_std(n_years: usize, std_m3s: f64) -> System {
     use novomodelo_core::scenario::InflowModel;
     use novomodelo_core::{Bus, DeficitSegment, EntityId, SystemBuilder};
 
@@ -434,7 +455,7 @@ fn build_system_with_user_stats(n_years: usize) -> System {
             hydro_id,
             stage_id: s.id,
             mean_m3s: 100.0,
-            std_m3s: 10.0,
+            std_m3s,
             ar_coefficients: vec![],
             residual_std_ratio: 1.0,
             annual: None,
@@ -1043,6 +1064,7 @@ fn default_config() -> Config {
         min_observations_per_season: 2,
         max_coefficient_magnitude: None,
         correlation_target: CorrelationTarget::Residuals,
+        history_years: None,
     };
     cfg
 }
@@ -1126,6 +1148,7 @@ fn test_estimation_report_empty_for_pacf() {
             max_coeff_magnitude: None,
             season_map: None,
             use_annual_component: false,
+            assembled_stats: None,
         },
     )
     .unwrap();
@@ -1603,8 +1626,15 @@ fn write_unit_test_ar_coefficients(
 }
 
 /// System with empty inflow_models (UserArHistoryStats precondition).
-#[allow(clippy::cast_possible_wrap)]
 fn build_system_empty_models(n_years: usize) -> System {
+    build_system_empty_models_with_history(n_years, Vec::new())
+}
+
+#[allow(clippy::cast_possible_wrap)]
+fn build_system_empty_models_with_history(
+    n_years: usize,
+    inflow_history: Vec<InflowHistoryRow>,
+) -> System {
     use novomodelo_core::{Bus, DeficitSegment, EntityId, SystemBuilder};
 
     let hydro_id = EntityId(1);
@@ -1639,6 +1669,7 @@ fn build_system_empty_models(n_years: usize) -> System {
         .buses(vec![bus])
         .hydros(vec![hydro])
         .stages(stages)
+        .inflow_history(inflow_history)
         .build()
         .expect("valid system with empty inflow models")
 }
@@ -1793,6 +1824,59 @@ fn test_user_ar_estimation_estimates_stats_from_history() {
             m.stage_id
         );
     }
+}
+
+#[test]
+fn history_years_limit_the_estimation_and_leave_the_system_history_whole() {
+    use crate::config::HistoricalYearRange;
+    use tempfile::TempDir;
+
+    const N_YEARS: usize = 30;
+    const FIT_YEARS: usize = 20;
+
+    let dir = TempDir::new().unwrap();
+    let case_dir = dir.path();
+    create_required_files(case_dir);
+    let history_path = case_dir.join("scenarios/inflow_history.parquet");
+    write_unit_test_inflow_history(&history_path, 1, N_YEARS);
+    let history = crate::parse_inflow_history(&history_path).unwrap();
+    let system = build_system_empty_models_with_history(N_YEARS, history.clone());
+
+    let mut config = default_config();
+    config.estimation.history_years = Some(HistoricalYearRange {
+        from: 1970,
+        to: 1970 + FIT_YEARS as i32 - 1,
+    });
+
+    let HistoryEstimate {
+        system: updated,
+        path,
+        ..
+    } = estimate_from_history(system, case_dir, &config).unwrap();
+    assert_eq!(path, EstimationPath::FullEstimation);
+
+    let (obs_s0, _) = simulate_two_season_par2(0.7, 0.15, N_YEARS, 99);
+    let mean = |years: &[f64]| {
+        years.iter().sum::<f64>() / f64::from(u32::try_from(years.len()).unwrap()) + 300.0
+    };
+    let window_mean = mean(&obs_s0[..FIT_YEARS]);
+    assert!((window_mean - mean(&obs_s0)).abs() > 1e-6, "fixture sanity");
+
+    let season_0_models: Vec<_> = updated
+        .inflow_models()
+        .iter()
+        .filter(|m| m.stage_id >= 0 && m.stage_id % 2 == 0)
+        .collect();
+    assert!(!season_0_models.is_empty());
+    for m in season_0_models {
+        assert!(
+            (m.mean_m3s - window_mean).abs() < 1e-9,
+            "stage {}: mean {} vs window mean {window_mean}",
+            m.stage_id,
+            m.mean_m3s
+        );
+    }
+    assert_eq!(updated.inflow_history(), history.as_slice());
 }
 
 #[test]
@@ -2459,6 +2543,7 @@ fn estimate_from_history_pacf_annual_populates_annual_field() {
         min_observations_per_season: 2,
         max_coefficient_magnitude: None,
         correlation_target: CorrelationTarget::Residuals,
+        history_years: None,
     };
 
     let HistoryEstimate {
@@ -2510,6 +2595,7 @@ fn estimate_from_history_pacf_classical_keeps_annual_none() {
         min_observations_per_season: 2,
         max_coefficient_magnitude: None,
         correlation_target: CorrelationTarget::Residuals,
+        history_years: None,
     };
 
     let HistoryEstimate {
@@ -2563,6 +2649,7 @@ fn estimate_ar_coefficients_with_selection_classical_path_unchanged() {
             max_coeff_magnitude: None,
             season_map: None,
             use_annual_component: false,
+            assembled_stats: None,
         },
     )
     .expect("classical path must succeed");
@@ -2694,6 +2781,7 @@ fn partial_year_par2_synthesizes_prestudy_lag_models() {
             max_coeff_magnitude: None,
             season_map: Some(&season_map),
             use_annual_component: false,
+            assembled_stats: None,
         },
     )
     .expect("AR(2) fit must succeed");
@@ -3297,5 +3385,41 @@ fn cursor_subslice_matches_filter_collect_across_straddling_occurrences() {
         skipped_partial.get(&hydro_id).copied().unwrap_or(0),
         reference_skip_count,
         "skipped-partial count must match the independent filter-based reference"
+    );
+}
+
+#[test]
+fn partial_annual_estimation_checks_the_residual_variance_with_the_supplied_stds() {
+    use crate::config::OrderSelectionMethod;
+    use novomodelo_stochastic::par::fitting::ReductionReason;
+    use tempfile::TempDir;
+
+    const N_YEARS: usize = 30;
+    let dir = TempDir::new().unwrap();
+    let case_dir = dir.path();
+    setup_partial_estimation_case(case_dir, N_YEARS);
+    // Against a history std near 1.5, a supplied std of 100 widens the annual
+    // term enough that the history-std model and the assembled model disagree.
+    let system = build_system_with_user_std(N_YEARS, 100.0);
+    let mut config = default_config();
+    config.estimation.order_selection = OrderSelectionMethod::PacfAnnual;
+
+    let estimate = estimate_from_history(system, case_dir, &config)
+        .expect("the fit must reduce a season the assembled model would reject");
+
+    let report = estimate.report.expect("partial estimation reports");
+    assert!(
+        report
+            .entries
+            .values()
+            .flat_map(|entry| &entry.contribution_reductions)
+            .any(|reduction| reduction.reason == ReductionReason::NegativeResidualVariance)
+    );
+    assert!(
+        estimate
+            .system
+            .inflow_models()
+            .iter()
+            .all(|model| model.std_m3s == 100.0 && model.residual_std_ratio.is_finite())
     );
 }

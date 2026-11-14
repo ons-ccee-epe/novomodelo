@@ -152,24 +152,12 @@ pub fn select_order_pacf(
     }
 }
 
-/// Select the AR order for a PAR(p)-A model from the conditional FACP, with two
-/// extensions over the classical "largest lag exceeding `z_alpha / sqrt(N)`"
-/// rule for cases the classical rule leaves undefined:
+/// Select the AR order for a PAR(p)-A model from the conditional FACP: the
+/// [`select_order_pacf`] order, raised to 1 whenever at least one lag was
+/// evaluated.
 ///
-/// 1. **Structural-zero short-circuit at lag 1.** `conditional_facp[0] == 0.0`
-///    exactly forces order 0: it marks a degenerate (Z, A) bucket, and the
-///    convention refuses any AR structure on top of it. A structural zero at a
-///    **higher** lag does not short-circuit — lag 1 being non-degenerate keeps
-///    the AR(1) base (e.g. `[+0.37, 0, 0, 0, 0, 0]` -> order 1, not 0).
-/// 2. **Minimum order 1 when lag 1 is non-zero.** Selected order is
-///    `max(1, max_significant_lag)`, so a well-defined lag 1 defaults to AR(1)
-///    even when no lag exceeds the threshold.
-///
-/// The order returned is tentative: the Maceira-Damazio iterative order
-/// reduction runs across the whole periodic cycle and is the caller's
-/// responsibility.
-///
-/// `pacf_values[k]` is the conditional FACP at lag `k+1`.
+/// The order returned is tentative: the zero-std-lag rule and the iterative
+/// order reduction across the periodic cycle are the caller's responsibility.
 ///
 /// # Parameters
 ///
@@ -190,51 +178,24 @@ pub fn select_order_pacf(
 /// let result = select_order_pacf_annual(&[0.5, 0.1], 100, 1.96);
 /// assert_eq!(result.selected_order, 1);
 ///
-/// // Lag 1 is non-zero (just small) -> min-order-1 rule kicks in.
+/// // No lag is significant -> minimum order 1.
 /// let result = select_order_pacf_annual(&[0.05, 0.03], 100, 1.96);
 /// assert_eq!(result.selected_order, 1);
 ///
-/// // Structural zero at lag 1 -> order 0 (degenerate bucket).
+/// // An exact zero at lag 1 does not stop the search for the outer lag.
 /// let result = select_order_pacf_annual(&[0.0, 0.5], 100, 1.96);
-/// assert_eq!(result.selected_order, 0);
+/// assert_eq!(result.selected_order, 2);
 /// ```
 pub fn select_order_pacf_annual(
     conditional_facp: &[f64],
     n_observations: usize,
     z_alpha: f64,
 ) -> PacfSelectionResult {
-    #[allow(clippy::cast_precision_loss)]
-    let threshold = if n_observations > 0 {
-        z_alpha / (n_observations as f64).sqrt()
-    } else {
-        f64::INFINITY
-    };
-
-    if conditional_facp.first().copied() == Some(0.0) {
-        return PacfSelectionResult {
-            selected_order: 0,
-            pacf_values: conditional_facp.to_vec(),
-            threshold,
-        };
+    let mut result = select_order_pacf(conditional_facp, n_observations, z_alpha);
+    if !conditional_facp.is_empty() {
+        result.selected_order = result.selected_order.max(1);
     }
-
-    let max_significant = conditional_facp
-        .iter()
-        .enumerate()
-        .rev()
-        .find(|&(_, p)| p.abs() > threshold)
-        .map_or(0, |(k, _)| k + 1);
-
-    let selected_order = match conditional_facp.first() {
-        Some(&p1) if p1 != 0.0 => max_significant.max(1),
-        _ => max_significant,
-    };
-
-    PacfSelectionResult {
-        selected_order,
-        pacf_values: conditional_facp.to_vec(),
-        threshold,
-    }
+    result
 }
 
 /// Compute the periodic PACF for a given season up to `max_order`, extracting

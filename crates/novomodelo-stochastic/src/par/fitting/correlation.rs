@@ -726,7 +726,7 @@ mod tests {
         ArCoefficientEstimate, ArEstimationConfig, SeasonalStats,
         estimate_ar_coefficients_with_selection, estimate_seasonal_stats_with_season_map,
     };
-    use crate::test_support::sparse_ring_season_map;
+    use crate::test_support::{keep_callsite_interest_dynamic, sparse_ring_season_map};
 
     /// Pre-change oracle: the `HashMap`-intersection + per-pair-sort algorithm
     /// `compute_seasonal_pearson_matrix`'s date-sorted merge-walk replaces.
@@ -900,6 +900,7 @@ mod tests {
                 max_coeff_magnitude: None,
                 season_map: Some(season_map),
                 use_annual_component: false,
+                assembled_stats: None,
             },
         )
         .unwrap();
@@ -1103,6 +1104,7 @@ mod tests {
         )
         .unwrap();
 
+        keep_callsite_interest_dynamic();
         let warned = WarnedSeasons::default();
         tracing::subscriber::with_default(warned.clone(), || {
             estimate_correlation_with_season_map(

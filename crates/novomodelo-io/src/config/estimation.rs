@@ -1,6 +1,11 @@
 //! Time series estimation configuration types for `config.json → estimation`.
 
+use std::path::Path;
+
 use serde::{Deserialize, Deserializer, Serialize};
+
+use crate::LoadError;
+use crate::config::HistoricalYearRange;
 
 /// Order selection criterion for autoregressive model fitting.
 ///
@@ -118,6 +123,13 @@ pub struct EstimationConfig {
     ///
     /// Evaluation option, expected to be removed once evaluated.
     pub correlation_target: CorrelationTarget,
+
+    /// Years of `scenarios/inflow_history.parquet` the inflow model is estimated
+    /// from, as an inclusive `{"from", "to"}` range of the years season
+    /// occurrences start in. Absent: every year. A range reaching outside the
+    /// file's years is refused. The historical scenario scheme and the initial
+    /// conditions still read the whole file.
+    pub history_years: Option<HistoricalYearRange>,
 }
 
 impl Default for EstimationConfig {
@@ -128,6 +140,20 @@ impl Default for EstimationConfig {
             min_observations_per_season: 30,
             max_coefficient_magnitude: None,
             correlation_target: CorrelationTarget::default(),
+            history_years: None,
+        }
+    }
+}
+
+impl EstimationConfig {
+    pub(crate) fn check_history_years(&self, config_path: &Path) -> Result<(), LoadError> {
+        match self.history_years {
+            Some(HistoricalYearRange { from, to }) if from > to => Err(LoadError::SchemaError {
+                path: config_path.to_path_buf(),
+                field: "estimation.history_years".to_string(),
+                message: format!("range 'from' ({from}) must be <= 'to' ({to})"),
+            }),
+            _ => Ok(()),
         }
     }
 }

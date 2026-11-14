@@ -3,6 +3,7 @@
 use std::collections::{HashMap, HashSet};
 
 use super::super::{ValidationContext, rules, schema::ParsedData};
+use crate::scenarios::estimation::estimation_samples;
 
 use novomodelo_core::SeasonMap;
 use novomodelo_core::temporal::SUB_PERIOD_TOLERANCE_DAYS;
@@ -103,7 +104,7 @@ pub(super) fn build_stage_index(
 }
 
 /// Resolves the stage-index position containing `date`, or `None` if outside every window.
-pub(super) fn resolve_stage_position(
+fn resolve_stage_position(
     stage_index: &[(chrono::NaiveDate, chrono::NaiveDate, usize)],
     date: chrono::NaiveDate,
 ) -> Option<usize> {
@@ -121,6 +122,16 @@ fn season_id_for_date(
     date: chrono::NaiveDate,
 ) -> Option<usize> {
     resolve_stage_position(stage_index, date).map(|p| stage_index[p].2)
+}
+
+/// The season estimation fits `date` under, including history outside the study
+/// horizon.
+pub(super) fn estimation_season_for_date(
+    stage_index: &[(chrono::NaiveDate, chrono::NaiveDate, usize)],
+    season_map: &SeasonMap,
+    date: chrono::NaiveDate,
+) -> Option<usize> {
+    season_id_for_date(stage_index, date).or_else(|| season_map.season_for_date(date))
 }
 
 /// Whether PAR estimation runs (must agree with [`crate::scenarios::estimation::EstimationPath::resolve`]).
@@ -147,10 +158,7 @@ pub(super) fn check_observation_season_alignment(data: &ParsedData, ctx: &mut Va
 
     let mut counts: HashMap<(i32, usize, i32), usize> = HashMap::new();
     for row in &data.inflow_history {
-        let season_id = season_id_for_date(&stage_index, row.start_date)
-            .or_else(|| season_map.season_for_date(row.start_date));
-
-        if let Some(sid) = season_id {
+        if let Some(sid) = estimation_season_for_date(&stage_index, season_map, row.start_date) {
             let year = observation_occurrence_year(season_map, sid, row.start_date);
             *counts.entry((row.hydro_id.0, sid, year)).or_insert(0) += 1;
         }
@@ -217,7 +225,8 @@ pub(super) fn check_observation_season_alignment(data: &ParsedData, ctx: &mut Va
     }
 }
 
-/// Rule 28: warns when a season has zero observations and inflow scheme is not External.
+/// Rule 28: warns when a season has none of the samples estimation fits from
+/// ([`estimation_samples`]) and the inflow scheme is not External.
 pub(super) fn check_season_observation_coverage(
     data: &ParsedData,
     season_map: &SeasonMap,
@@ -241,10 +250,19 @@ pub(super) fn check_season_observation_coverage(
     }
 
     let stage_index = build_stage_index(data);
+    // An unaggregatable history fails estimation itself, with its own error.
+    let Ok((samples, _skipped_partial)) = estimation_samples(
+        &data.inflow_history,
+        &data.stages.stages,
+        Some(season_map),
+        data.config.estimation.history_years,
+    ) else {
+        return;
+    };
 
     let mut season_obs_count: HashMap<usize, usize> = HashMap::new();
-    for row in &data.inflow_history {
-        if let Some(sid) = season_id_for_date(&stage_index, row.start_date) {
+    for (_, start_date, _) in samples {
+        if let Some(sid) = estimation_season_for_date(&stage_index, season_map, start_date) {
             *season_obs_count.entry(sid).or_insert(0) += 1;
         }
     }
@@ -311,6 +329,7 @@ mod tests {
     use super::*;
     use crate::test_support::*;
     use crate::{
+        config::HistoricalYearRange,
         scenarios::{InflowArCoefficientRow, InflowHistoryRow, InflowSeasonalStatsRow},
         stages::StagesData,
         validation::{ErrorKind, ValidationContext},
@@ -336,6 +355,31 @@ mod tests {
         }
         let (_, end_date, _) = stage_index[pos - 1];
         (date < end_date).then_some(pos - 1)
+    }
+
+    /// An `InflowHistoryRow` covering all of `month`.
+    fn month_row(year: i32, month: u32) -> InflowHistoryRow {
+        let start_date = chrono::NaiveDate::from_ymd_opt(year, month, 1).unwrap();
+        InflowHistoryRow {
+            hydro_id: EntityId::from(1),
+            start_date,
+            end_date: start_date
+                .checked_add_months(chrono::Months::new(1))
+                .unwrap(),
+            value_m3s: 100.0,
+        }
+    }
+
+    /// Full-month rows for every month of `first_year` and the two years after,
+    /// except the months `skip` rejects.
+    fn three_years_of_month_rows(
+        first_year: i32,
+        skip: impl Fn(usize) -> bool,
+    ) -> Vec<InflowHistoryRow> {
+        (0..36usize)
+            .filter(|&i| !skip(i))
+            .map(|i| month_row(first_year + (i / 12) as i32, (i % 12) as u32 + 1))
+            .collect()
     }
 
     /// Build a windowed `InflowHistoryRow` covering `[date, date + 1 day)`.
@@ -1096,7 +1140,7 @@ mod tests {
     fn test_observation_coverage_all_seasons_have_obs() {
         // 3 years × 12 months = 36 stages; 3 observations per season (one per year).
         let stages = make_stages_with_seasons(36, /*with_season_map=*/ true);
-        let history = make_history_rows(1, 36);
+        let history = three_years_of_month_rows(2000, |_| false);
         let data = make_data_estimation(vec![make_hydro(1, None)], stages, history);
 
         let mut ctx = ValidationContext::new();
@@ -1117,6 +1161,68 @@ mod tests {
         );
     }
 
+    #[test]
+    fn observation_coverage_counts_history_before_the_study() {
+        let stages = make_stages_with_seasons(12, /*with_season_map=*/ true);
+        let history = three_years_of_month_rows(1990, |_| false);
+        let data = make_data_estimation(vec![make_hydro(1, None)], stages, history);
+
+        let mut ctx = ValidationContext::new();
+        check_season_id_consistency(&data, &mut ctx);
+
+        let rule28_warnings: Vec<_> = ctx
+            .warnings()
+            .into_iter()
+            .filter(|w| w.message.contains("has no inflow observations"))
+            .collect();
+        assert!(rule28_warnings.is_empty(), "{rule28_warnings:?}");
+    }
+
+    #[test]
+    fn observation_coverage_counts_only_the_history_years() {
+        let stages = make_stages_with_seasons(36, /*with_season_map=*/ true);
+        let history = three_years_of_month_rows(2000, |i| i % 12 == 5 && i >= 12);
+        let mut data = make_data_estimation(vec![make_hydro(1, None)], stages, history);
+        data.config.estimation.history_years = Some(HistoricalYearRange {
+            from: 2001,
+            to: 2002,
+        });
+
+        let mut ctx = ValidationContext::new();
+        check_season_id_consistency(&data, &mut ctx);
+
+        let rule28_warnings: Vec<_> = ctx
+            .warnings()
+            .into_iter()
+            .filter(|w| w.message.contains("has no inflow observations"))
+            .collect();
+        assert_eq!(rule28_warnings.len(), 1, "{rule28_warnings:?}");
+        assert!(rule28_warnings[0].message.contains("season 5"));
+    }
+
+    #[test]
+    fn observation_coverage_warns_for_a_season_whose_rows_cover_it_only_partly() {
+        use chrono::Datelike;
+
+        let stages = make_stages_with_seasons(36, /*with_season_map=*/ true);
+        let mut history = three_years_of_month_rows(2000, |_| false);
+        for row in history.iter_mut().filter(|row| row.start_date.month() == 6) {
+            row.end_date = row.start_date.with_day(16).unwrap();
+        }
+        let data = make_data_estimation(vec![make_hydro(1, None)], stages, history);
+
+        let mut ctx = ValidationContext::new();
+        check_season_id_consistency(&data, &mut ctx);
+
+        let rule28_warnings: Vec<_> = ctx
+            .warnings()
+            .into_iter()
+            .filter(|w| w.message.contains("has no inflow observations"))
+            .collect();
+        assert_eq!(rule28_warnings.len(), 1, "{rule28_warnings:?}");
+        assert!(rule28_warnings[0].message.contains("season 5"));
+    }
+
     /// Given a study where season 5 has zero observations in inflow_history and
     /// the inflow scheme is InSample (not External), a `ModelQuality` warning is
     /// emitted for season 5 mentioning zero observations.
@@ -1125,20 +1231,7 @@ mod tests {
         // Build 3 years of monthly stages with season_map (seasons 0..11).
         let stages = make_stages_with_seasons(36, /*with_season_map=*/ true);
         // Provide observations for all seasons EXCEPT season 5 (month index 5 = June).
-        let mut history = Vec::new();
-        for i in 0..36usize {
-            let month_index = i % 12;
-            if month_index == 5 {
-                continue; // skip June — season 5 gets no observations
-            }
-            let year = 2000 + (i / 12) as i32;
-            let month = month_index as u32 + 1;
-            history.push(history_row(
-                EntityId::from(1),
-                chrono::NaiveDate::from_ymd_opt(year, month, 15).unwrap(),
-                100.0,
-            ));
-        }
+        let history = three_years_of_month_rows(2000, |i| i % 12 == 5);
         // config defaults to InSample (minimal_config has no scenario_source).
         let data = make_data_estimation(vec![make_hydro(1, None)], stages, history);
 
@@ -1171,20 +1264,7 @@ mod tests {
     fn test_observation_coverage_season_missing_obs_external() {
         let stages = make_stages_with_seasons(36, /*with_season_map=*/ true);
         // Same history as above: no observations for season 5 (June).
-        let mut history = Vec::new();
-        for i in 0..36usize {
-            let month_index = i % 12;
-            if month_index == 5 {
-                continue;
-            }
-            let year = 2000 + (i / 12) as i32;
-            let month = month_index as u32 + 1;
-            history.push(history_row(
-                EntityId::from(1),
-                chrono::NaiveDate::from_ymd_opt(year, month, 15).unwrap(),
-                100.0,
-            ));
-        }
+        let history = three_years_of_month_rows(2000, |i| i % 12 == 5);
         let mut data = make_data_estimation(vec![make_hydro(1, None)], stages, history);
         data.config = config_with_training_external_inflow();
 

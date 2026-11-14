@@ -637,7 +637,8 @@ pub struct FittingReductionEntry {
     pub contributions: Vec<f64>,
     /// The mechanism that triggered this reduction.
     ///
-    /// One of: `"magnitude_bound"`, `"phi1_negative"`, `"negative_contribution"`.
+    /// One of: `"magnitude_bound"`, `"phi1_negative"`, `"negative_contribution"`,
+    /// `"negative_residual_variance"`.
     #[serde(default)]
     pub reason: String,
 }

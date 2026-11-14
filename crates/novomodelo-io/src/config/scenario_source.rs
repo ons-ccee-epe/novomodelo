@@ -164,7 +164,7 @@ pub enum RawHistoricalYearsConfig {
     Range(HistoricalYearRange),
 }
 
-/// Inclusive `{"from", "to"}` range form of `historical_years`.
+/// Inclusive `{"from", "to"}` year range.
 // A named struct, not an inline variant: `deny_unknown_fields` is unenforced
 // on an untagged enum's inline struct variant, and the range form must reject
 // a stray key instead of silently dropping it.
@@ -176,4 +176,12 @@ pub struct HistoricalYearRange {
     pub from: i32,
     /// Last year (inclusive).
     pub to: i32,
+}
+
+impl HistoricalYearRange {
+    /// Whether `year` lies in the range.
+    #[must_use]
+    pub const fn contains(self, year: i32) -> bool {
+        self.from <= year && year <= self.to
+    }
 }
