@@ -30,6 +30,7 @@
 
 use chrono::NaiveDate;
 use novomodelo_core::ContractType;
+use novomodelo_core::commissioning::hard_storage_floor;
 use novomodelo_core::temporal::SeasonCycleType::Monthly;
 use novomodelo_core::temporal::SeasonMap;
 use novomodelo_core::temporal::StageLagTransition;
@@ -112,7 +113,7 @@ use crate::{
     lead_time::{AnticipatedResolution, DeliveryAxis, LeadTime, PointResolution},
     lp::builder::{
         LpBuildInputs, StageGeometry, StateBox, build_stage_templates, contract_family_slot,
-        storage_floor_relaxed, warn_on_inert_plant_floor_overrides,
+        warn_on_inert_plant_floor_overrides,
     },
     lp::indexer::{
         AnticipatedLocal, AnticipatedPlants, CutStateProjection, HydroCellIndex, HydroSys,
@@ -2786,7 +2787,7 @@ fn study_stages_slice(system: &System) -> &[Stage] {
 
 /// Project the stage-0 initial (incoming) state onto what each box-stable family
 /// admits on entry. Storage (and its `PreFilling` seed) takes the hydro's
-/// physical range, its floor lifted to `0` where [`storage_floor_relaxed`] holds
+/// physical range, its floor lifted to `0` where [`hard_storage_floor`] relaxes it
 /// at stage 0 — NEVER the stage-0 box, which is the OUTGOING column's bounds and
 /// carries that stage's end-of-stage storage targets: projecting the incoming
 /// storage onto it creates or removes water before the first solve. Travel-time
@@ -2807,11 +2808,7 @@ fn canonicalize_initial_state(
     if let Some(stage0) = stage0 {
         for (idx, hydro) in system.hydros().iter().enumerate() {
             let j = layout.storage_state_dim(HydroSys::new(idx)).get();
-            let floor = if storage_floor_relaxed(hydro, stage0.id) {
-                0.0
-            } else {
-                hydro.min_storage_hm3
-            };
+            let floor = hard_storage_floor(hydro, stage0.id, hydro.min_storage_hm3);
             state[j] = state[j].clamp(floor, hydro.max_storage_hm3);
         }
     }

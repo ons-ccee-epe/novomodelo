@@ -1,4 +1,4 @@
-use novomodelo_core::commissioning::{Phase, commissioning_active};
+use novomodelo_core::commissioning::{Phase, commissioning_active, hard_storage_floor};
 use novomodelo_core::{BlockMode, ContractType, Stage};
 
 use crate::hydro_models::EvaporationModel;
@@ -12,7 +12,7 @@ use super::EVAPORATION_FLOW_SAFETY_MARGIN;
 use super::delivery_ring::{ColumnBufs, DeliveryRing};
 use super::hydro_state::{
     GroupBoundLookup, MinFloor, cell_max_generation, cell_max_turbined, hydro_phase, is_suspended,
-    storage_ceiling, storage_floor_relaxed,
+    storage_ceiling,
 };
 use super::layout::{
     StageLayout, TemplateBuildCtx, contract_direction_counts, contract_family_slot,
@@ -75,9 +75,8 @@ fn fill_storage_columns(
 ) {
     for h_idx in 0..layout.state.hydro_count {
         let hydro = &ctx.hydros[h_idx];
-        let floor_off = storage_floor_relaxed(hydro, stage.id);
         let hb = ctx.resolved.bounds.hydro_bounds(h_idx, stage_idx);
-        let storage_lower = if floor_off { 0.0 } else { hb.min_storage_hm3 };
+        let storage_lower = hard_storage_floor(hydro, stage.id, hb.min_storage_hm3);
         let storage_upper = storage_ceiling(hydro, stage.id, hb.max_storage_hm3);
         let storage_out_col = layout
             .state
@@ -91,9 +90,9 @@ fn fill_storage_columns(
         bufs.col_upper[storage_out_col] = storage_upper;
         bufs.col_lower[storage_in_col] = f64::NEG_INFINITY;
         bufs.col_upper[storage_in_col] = f64::INFINITY;
-        // Interior Sᵏ reuse the outgoing column's EXACT bounds, floor_off and the
-        // dormant ceiling included: the frozen-identity chain pins each interior to the
-        // inert IC, so a hard bound excluding IC would reject the pin.
+        // Interior Sᵏ reuse the outgoing column's EXACT bounds, the relaxed floor and
+        // the dormant ceiling included: the frozen-identity chain pins each interior to
+        // the inert IC, so a hard bound excluding IC would reject the pin.
         for k in 1..layout.clock.n_blks() {
             let col = layout.block_storage_col(HydroSys::new(h_idx), Boundary::Interior(k));
             bufs.col_lower[col] = storage_lower;
@@ -1136,7 +1135,7 @@ mod interior_storage_bound_tests {
     const MAX_STORAGE_HM3: f64 = 175.0;
 
     /// One Operating run-of-river hydro (`ConstantProductivity`, no filling, no
-    /// commissioning window ⇒ `floor_off == false`), so the endpoint outgoing
+    /// commissioning window ⇒ no relaxed floor), so the endpoint outgoing
     /// storage column takes the hard `[MIN_STORAGE_HM3, MAX_STORAGE_HM3]` floor and
     /// interior == endpoint is the unambiguous expectation. No FPHA/evaporation, so
     /// the layout reserves only the structural storage families.

@@ -71,7 +71,7 @@ pub use template::StageTemplates;
 pub(crate) use build_inputs::LpBuildInputs;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) use entries::assemble_csc;
-pub(crate) use hydro_state::{storage_floor_relaxed, warn_on_inert_plant_floor_overrides};
+pub(crate) use hydro_state::warn_on_inert_plant_floor_overrides;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) use layout::ResolvedTables;
 #[cfg(any(test, feature = "test-support"))]
