@@ -545,6 +545,11 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
     ("hydros", "generation_slack_mw", "Generation minimum slack"),
     (
         "hydros",
+        "fpha_violation_mw",
+        "FPHA plane violation slack, summed over the plant's cells",
+    ),
+    (
+        "hydros",
         "storage_violation_below_hm3",
         "Storage below dead-volume violation",
     ),
@@ -3025,8 +3030,8 @@ mod tests {
 
         let row_count = rdr.records().count();
         assert_eq!(
-            row_count, 254,
-            "variables.csv must have exactly 254 data rows (one per column across all schemas)"
+            row_count, 255,
+            "variables.csv must have exactly 255 data rows (one per column across all schemas)"
         );
     }
 

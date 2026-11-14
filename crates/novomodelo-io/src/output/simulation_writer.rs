@@ -197,6 +197,8 @@ pub struct HydroWriteRecord {
     pub outflow_slack_above_m3s: f64,
     /// Generation capacity violation slack in MW.
     pub generation_slack_mw: f64,
+    /// FPHA plane violation slack in MW, summed over the plant's cells.
+    pub fpha_violation_mw: f64,
     /// Storage below minimum bound violation in hm³.
     pub storage_violation_below_hm3: f64,
     /// Filling target violation in hm³.
@@ -1473,6 +1475,7 @@ struct HydroBuilders {
     outflow_slack_below_m3s: Float64Builder,
     outflow_slack_above_m3s: Float64Builder,
     generation_slack_mw: Float64Builder,
+    fpha_violation_mw: Float64Builder,
     storage_violation_below_hm3: Float64Builder,
     filling_target_violation_hm3: Float64Builder,
     evaporation_violation_pos_m3s: Float64Builder,
@@ -1519,6 +1522,7 @@ impl HydroBuilders {
             outflow_slack_below_m3s: Float64Builder::with_capacity(n),
             outflow_slack_above_m3s: Float64Builder::with_capacity(n),
             generation_slack_mw: Float64Builder::with_capacity(n),
+            fpha_violation_mw: Float64Builder::with_capacity(n),
             storage_violation_below_hm3: Float64Builder::with_capacity(n),
             filling_target_violation_hm3: Float64Builder::with_capacity(n),
             evaporation_violation_pos_m3s: Float64Builder::with_capacity(n),
@@ -1584,6 +1588,7 @@ fn fill_hydro_builders<'a>(
         b.outflow_slack_above_m3s
             .append_value(r.outflow_slack_above_m3s);
         b.generation_slack_mw.append_value(r.generation_slack_mw);
+        b.fpha_violation_mw.append_value(r.fpha_violation_mw);
         b.storage_violation_below_hm3
             .append_value(r.storage_violation_below_hm3);
         b.filling_target_violation_hm3
@@ -1653,6 +1658,7 @@ fn build_hydros_batch<'a>(
             Arc::new(b.outflow_slack_below_m3s.finish()),
             Arc::new(b.outflow_slack_above_m3s.finish()),
             Arc::new(b.generation_slack_mw.finish()),
+            Arc::new(b.fpha_violation_mw.finish()),
             Arc::new(b.storage_violation_below_hm3.finish()),
             Arc::new(b.filling_target_violation_hm3.finish()),
             Arc::new(b.evaporation_violation_pos_m3s.finish()),
@@ -2601,6 +2607,7 @@ mod tests {
             outflow_slack_below_m3s: 0.0,
             outflow_slack_above_m3s: 0.0,
             generation_slack_mw: 0.0,
+            fpha_violation_mw: 0.0,
             storage_violation_below_hm3: 0.0,
             filling_target_violation_hm3: 0.0,
             evaporation_violation_pos_m3s: 0.0,
@@ -2679,13 +2686,14 @@ mod tests {
 
         let mut r0 = make_hydro_record(0, Some(0), 1); // generation_mw = 50.0
         r0.water_withdrawal_violation_pos_m3s = 2.5; // nonzero for round-trip test
+        r0.fpha_violation_mw = 1.25;
         let r1 = make_hydro_record(1, Some(0), 2); // generation_mw = 50.0
         let records = [&r0, &r1];
 
         let batch = build_hydros_batch(records.iter().copied(), 0, &block_durations, records.len())
             .expect("hydros batch must build");
         assert_eq!(batch.num_rows(), 2);
-        assert_eq!(batch.num_columns(), 41, "hydros schema has 41 columns");
+        assert_eq!(batch.num_columns(), hydros_schema().fields().len());
 
         let gen_mwh_col = batch
             .column_by_name("generation_mwh")
@@ -2740,6 +2748,14 @@ mod tests {
             0.0,
             "row 1 withdrawal violation must be 0.0"
         );
+
+        let fpha_arr = batch
+            .column_by_name("fpha_violation_mw")
+            .expect("fpha_violation_mw column must exist")
+            .as_any()
+            .downcast_ref::<arrow::array::Float64Array>()
+            .expect("fpha_violation_mw must be Float64Array");
+        assert_eq!(fpha_arr.values().as_ref(), [1.25, 0.0]);
     }
 
     #[test]
@@ -3457,10 +3473,10 @@ mod tests {
         // both front ends' output identically.
         let schema = batch.schema();
         for (col, expected_index) in [
-            ("integrated_equivalent_productivity_mw_per_m3s", 37),
-            ("integrated_accumulated_productivity_mw_per_m3s", 38),
-            ("stored_energy_initial_mw", 39),
-            ("stored_energy_final_mw", 40),
+            ("integrated_equivalent_productivity_mw_per_m3s", 38),
+            ("integrated_accumulated_productivity_mw_per_m3s", 39),
+            ("stored_energy_initial_mw", 40),
+            ("stored_energy_final_mw", 41),
         ] {
             let field = schema
                 .field_with_name(col)
@@ -3574,16 +3590,6 @@ mod tests {
             hydros_batch.num_rows(),
             6,
             "hydros must have 6 rows (3 stages × 2 hydros)"
-        );
-    }
-
-    #[test]
-    fn hydros_schema_has_forty_one_fields() {
-        let schema = hydros_schema();
-        assert_eq!(
-            schema.fields().len(),
-            41,
-            "hydros_schema must have 41 fields (39 + scenario_id + node_id)"
         );
     }
 

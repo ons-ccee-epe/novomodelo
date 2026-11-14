@@ -1069,6 +1069,7 @@ fn make_hydro_write_record(
         outflow_slack_below_m3s: 0.0,
         outflow_slack_above_m3s: 0.0,
         generation_slack_mw: 0.0,
+        fpha_violation_mw: 0.0,
         storage_violation_below_hm3: 0.0,
         filling_target_violation_hm3: 0.0,
         evaporation_violation_pos_m3s: 0.0,

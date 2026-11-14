@@ -639,11 +639,10 @@ pub struct StageExtractionSpec<'a> {
     /// Stage-correct equipment geometry, resolved per stage from `StageLayout`
     /// (via `StageTemplates::geometry_per_stage`).
     pub geometry: &'a StageGeometry,
-    /// Study-scope hydro-cell partition: a plant's reported `turbined_m3s`,
-    /// FPHA `generation_mw`, `turbined_slack_m3s`, and `generation_slack_mw`
-    /// are each sums over [`HydroCellIndex::cells_of`] — exact because every
-    /// cell of a plant shares that plant's one production model, and, for the
-    /// two slacks, because each cell owns its own min-floor row and column.
+    /// Study-scope hydro-cell partition: every plant-level value the hydros row
+    /// reads from a per-cell column family is a sum over
+    /// [`HydroCellIndex::cells_of`] — exact because a plant's cells share its
+    /// production model.
     pub hydro_cell_index: &'a HydroCellIndex,
     /// Entity ID lists and productivities needed to build result records.
     pub entity_counts: &'a EntityCounts,
@@ -906,6 +905,10 @@ fn extract_hydro_per_block<'a>(
 
     let hydro_entity_id = EntityId(hydro_id);
     let div_sources = spec.diversion_upstream.get(&hydro_entity_id);
+    let fpha_cells = ctx.fpha_local.map(|local| {
+        let start = lookup.fpha_cell_local_start[local.get()];
+        start..start + spec.hydro_cell_index.cells_of(HydroSys::new(h)).len()
+    });
 
     (0..n_blks).map(move |b| {
         let blk = BlockIdx::new(b);
@@ -939,19 +942,18 @@ fn extract_hydro_per_block<'a>(
         // FPHA hydros sum the LP `g_{c,k}` column over the plant's cells (same
         // ascending-order/single-term-under-identity reasoning as `turbined`
         // above); constant-productivity hydros compute it as turbined * productivity.
-        let generation_mw = if let Some(local_fpha_idx) = ctx.fpha_local {
-            let cell_start = lookup.fpha_cell_local_start[local_fpha_idx.get()];
-            let n_cells = spec.hydro_cell_index.cells_of(HydroSys::new(h)).len();
-            (0..n_cells)
-                .map(|i| {
-                    view.primal[spec
-                        .geometry
-                        .generation_col(FphaCellLocal::new(cell_start + i), blk)]
-                })
+        let generation_mw = if let Some(cells) = fpha_cells.clone() {
+            cells
+                .map(|c| view.primal[spec.geometry.generation_col(FphaCellLocal::new(c), blk)])
                 .sum::<f64>()
         } else {
             turbined * spec.hydro_productivities[h]
         };
+        let fpha_violation_mw = fpha_cells.clone().map_or(0.0, |cells| {
+            cells
+                .map(|c| view.primal[spec.geometry.fpha_slack_col(FphaCellLocal::new(c), blk)])
+                .sum()
+        });
 
         let (turbined_slack, outflow_slack_below, outflow_slack_above, generation_slack) =
             hydro_operational_slacks(view, spec, lookup, h, b);
@@ -1044,6 +1046,7 @@ fn extract_hydro_per_block<'a>(
             outflow_slack_below_m3s: outflow_slack_below,
             outflow_slack_above_m3s: outflow_slack_above,
             generation_slack_mw: generation_slack,
+            fpha_violation_mw,
             storage_violation_below_hm3: ctx.storage_violation_below,
             filling_target_violation_hm3: ctx.filling_target_violation,
             evaporation_violation_pos_m3s,
@@ -1991,6 +1994,7 @@ mod transit_seed_tests {
             outflow_slack_below_m3s: 0.0,
             outflow_slack_above_m3s: 0.0,
             generation_slack_mw: 0.0,
+            fpha_violation_mw: 0.0,
             storage_violation_below_hm3: 0.0,
             filling_target_violation_hm3: 0.0,
             evaporation_violation_pos_m3s: 0.0,

@@ -6928,7 +6928,7 @@ fn split_plant_multi_bus_extraction_fixture() -> (StateSpace, StageGeometry, Hyd
         outflow_above_slack: 29..33,
         turbine_below_slack: 33..39,
         generation_below_slack: 39..45,
-        fpha_slack: 45..45,
+        fpha_slack: 45..49,
         ..test_support::equipment_free_geometry(&[2]).remove(0)
     };
     (state, geometry, hydro_cell_index)
@@ -7029,6 +7029,156 @@ fn extract_hydro_turbined_and_generation_sum_over_a_split_plants_cells() {
     assert_eq!(plant1[1].generation_mw, 55.0);
 }
 
+/// A split FPHA plant reports the SUM of its cells' plane slacks per block, read
+/// at FPHA-cell-local indices (a global cell index would read another plant's
+/// column or run off the family). Unequal per-cell values expose a first-cell-only
+/// read; derived: block 0 is 1.5 + 2.5 = 4.0 and block 1 is 0.25 + 4.0 = 4.25.
+#[test]
+fn extract_fpha_violation_mw_sums_a_split_plants_cells() {
+    let (state, geometry, hydro_cell_index) = split_plant_multi_bus_extraction_fixture();
+    let study_dims = test_support::study_dims();
+    let ec = zero_energy_conversion(2, 1);
+
+    let mut primal = vec![0.0_f64; col_count(&geometry)];
+    primal[geometry.fpha_slack.clone()].copy_from_slice(&[
+        1.5, 0.25, // fpha_slack[fpha-cell-local 0 = cell 1], blk 0/1
+        2.5, 4.0, // fpha_slack[fpha-cell-local 1 = cell 2], blk 0/1
+    ]);
+    let dual = vec![0.0; 2];
+    let objective_coeffs = vec![0.0; primal.len()];
+
+    let result = extract_stage_result(
+        &SolutionView {
+            primal: &primal,
+            dual: &dual,
+            objective: 0.0,
+            objective_coeffs: &objective_coeffs,
+            row_lower: &[],
+        },
+        &StageExtractionSpec {
+            study_dims: &study_dims,
+            geometry: &geometry,
+            hydro_cell_index: &hydro_cell_index,
+            state: &state,
+            entity_counts: &EntityCounts {
+                hydro_ids: vec![100, 200],
+                hydro_productivities: vec![0.0; 2],
+                thermal_ids: vec![],
+                line_ids: vec![],
+                bus_ids: vec![],
+                pumping_station_ids: vec![],
+                contract_ids: vec![],
+                non_controllable_ids: vec![],
+            },
+            inflow_m3s_per_hydro: &[0.0, 0.0],
+            incoming_lags: &zero_lags(&state),
+            block_hours: &[100.0, 100.0],
+            generic_constraint_entries: &[],
+            ncs_col_upper: &[],
+            pumping_consumption_mw_per_m3s: &[],
+            contract_prices: &[],
+            contract_slots: &[],
+            diversion_upstream: &HashMap::new(),
+            hydro_productivities: &[2.0, 0.0],
+            col_scale: &[],
+            row_scale: &[],
+            cumulative_discount_factor: 1.0,
+            cost_scale_factor: 1_000_000.0,
+            energy_conversion: &ec,
+            hydro_min_storage_hm3: &[0.0; 2],
+            stage_index: 0,
+            horizon: &HorizonMode::Finite { num_stages: 1 },
+            anticipated_windows: &[],
+            study_stage_ids: &[],
+        },
+        0,
+    );
+
+    let violation = |id: i32| -> Vec<f64> {
+        result
+            .hydros
+            .iter()
+            .filter(|h| h.hydro_id == id)
+            .map(|h| h.fpha_violation_mw)
+            .collect()
+    };
+    assert_eq!(violation(200), vec![4.0, 4.25], "plant 200: both cells");
+    assert!(
+        violation(100)
+            .iter()
+            .all(|v| v.to_bits() == 0.0_f64.to_bits()),
+        "plant 100 is not FPHA"
+    );
+}
+
+/// At a stage with no FPHA plant the slack family is empty, so every hydro row
+/// reports exactly `0.0` whatever the primal holds.
+#[test]
+fn extract_fpha_violation_mw_is_zero_at_a_non_fpha_stage() {
+    let indexer = test_support::geometry(&counts_2h_1fpha_1blk(), vec![], &[], vec![]);
+    let study_dims = test_support::study_dims_for(&counts_2h_1fpha_1blk());
+    let state = test_support::state_layout(2, 0);
+    assert!(indexer.fpha_slack.is_empty());
+
+    let primal = vec![1.0_f64; col_count(&indexer)];
+    let obj = vec![0.0_f64; primal.len()];
+    let dual = vec![0.0_f64; geometry_row_capacity(&indexer)];
+    let row_lower = vec![0.0_f64; geometry_row_capacity(&indexer)];
+    let ec = zero_energy_conversion(2, 1);
+
+    let result = extract_stage_result(
+        &SolutionView {
+            primal: &primal,
+            dual: &dual,
+            objective: 0.0,
+            objective_coeffs: &obj,
+            row_lower: &row_lower,
+        },
+        &StageExtractionSpec {
+            study_dims: &study_dims,
+            geometry: &indexer,
+            hydro_cell_index: &test_support::identity_hydro_cell_index(256),
+            state: &state,
+            entity_counts: &EntityCounts {
+                hydro_ids: vec![1, 2],
+                hydro_productivities: vec![0.0, 1.5],
+                thermal_ids: vec![],
+                line_ids: vec![],
+                bus_ids: vec![],
+                pumping_station_ids: vec![],
+                contract_ids: vec![],
+                non_controllable_ids: vec![],
+            },
+            inflow_m3s_per_hydro: &[0.0; 2],
+            incoming_lags: &zero_lags(&state),
+            block_hours: &[],
+            generic_constraint_entries: &[],
+            ncs_col_upper: &[],
+            pumping_consumption_mw_per_m3s: &[],
+            contract_prices: &[],
+            contract_slots: &[],
+            diversion_upstream: &HashMap::new(),
+            hydro_productivities: &[0.0, 1.5],
+            col_scale: &[],
+            row_scale: &[],
+            cumulative_discount_factor: 1.0,
+            cost_scale_factor: 1_000_000.0,
+            energy_conversion: &ec,
+            hydro_min_storage_hm3: &[0.0; 2],
+            stage_index: 0,
+            horizon: &HorizonMode::Finite { num_stages: 1 },
+            anticipated_windows: &[],
+            study_stage_ids: &[],
+        },
+        0,
+    );
+
+    assert_eq!(result.hydros.len(), 2);
+    for h in &result.hydros {
+        assert_eq!(h.fpha_violation_mw.to_bits(), 0.0_f64.to_bits());
+    }
+}
+
 /// A plant owning a residual floor row reports its whole shortfall: the
 /// residual slack adds onto its cells' slacks in `turbined_slack_m3s` /
 /// `generation_slack_mw` and in both violation costs, while a plant without
@@ -7040,6 +7190,7 @@ fn extract_hydro_power_slacks_add_the_plant_residual_onto_its_cells() {
     let geometry = StageGeometry {
         plant_turbine_below_slack: 45..47,
         plant_generation_below_slack: 47..49,
+        fpha_slack: 49..53,
         plant_floor_hydro_indices: vec![HydroSys::new(1)],
         ..base_geometry
     };
@@ -7057,6 +7208,7 @@ fn extract_hydro_power_slacks_add_the_plant_residual_onto_its_cells() {
         7.0, 8.0, // plant_turbine_below[plant-floor slot 0 = plant 1]
         70.0, 80.0, // plant_generation_below[plant-floor slot 0]
     ]);
+    primal.resize(col_count(&geometry), 0.0);
     let mut objective_coeffs = vec![0.0; primal.len()];
     for col in geometry
         .turbine_below_slack

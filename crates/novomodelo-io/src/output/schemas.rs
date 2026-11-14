@@ -113,6 +113,7 @@ fn build_hydros_schema() -> Schema {
         Field::new("outflow_slack_below_m3s", DataType::Float64, false),
         Field::new("outflow_slack_above_m3s", DataType::Float64, false),
         Field::new("generation_slack_mw", DataType::Float64, false),
+        Field::new("fpha_violation_mw", DataType::Float64, false),
         Field::new("storage_violation_below_hm3", DataType::Float64, false),
         Field::new("filling_target_violation_hm3", DataType::Float64, false),
         Field::new("evaporation_violation_pos_m3s", DataType::Float64, false),
@@ -1071,8 +1072,8 @@ mod tests {
         let schema = hydros_schema();
         assert_eq!(
             schema.fields().len(),
-            41,
-            "hydros schema must have 41 fields"
+            42,
+            "hydros schema must have 42 fields"
         );
         let names = field_names(&schema);
         assert_eq!(
@@ -1108,6 +1109,7 @@ mod tests {
                 "outflow_slack_below_m3s",
                 "outflow_slack_above_m3s",
                 "generation_slack_mw",
+                "fpha_violation_mw",
                 "storage_violation_below_hm3",
                 "filling_target_violation_hm3",
                 "evaporation_violation_pos_m3s",
@@ -1161,6 +1163,7 @@ mod tests {
             "outflow_slack_below_m3s",
             "outflow_slack_above_m3s",
             "generation_slack_mw",
+            "fpha_violation_mw",
             "storage_violation_below_hm3",
             "filling_target_violation_hm3",
             "evaporation_violation_pos_m3s",
@@ -1699,7 +1702,7 @@ mod tests {
             .collect();
         let expected: &[(&str, usize)] = &[
             ("costs", 30),
-            ("hydros", 41),
+            ("hydros", 42),
             ("hydro_bus_generation", 9),
             ("thermals", 12),
             ("exchanges", 13),

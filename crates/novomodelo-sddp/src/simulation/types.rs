@@ -171,6 +171,8 @@ pub struct SimulationHydroResult {
     pub outflow_slack_above_m3s: f64,
     /// Generation capacity violation slack in MW.
     pub generation_slack_mw: f64,
+    /// FPHA plane violation slack in MW, summed over the plant's cells.
+    pub fpha_violation_mw: f64,
     /// Storage below minimum bound violation in hm³.
     pub storage_violation_below_hm3: f64,
     /// Filling target violation in hm³.
@@ -707,6 +709,7 @@ mod tests {
             outflow_slack_below_m3s: 0.0,
             outflow_slack_above_m3s: 0.0,
             generation_slack_mw: 0.0,
+            fpha_violation_mw: 0.0,
             storage_violation_below_hm3: 0.0,
             filling_target_violation_hm3: 0.0,
             evaporation_violation_pos_m3s: 0.0,
@@ -765,6 +768,7 @@ mod tests {
             outflow_slack_below_m3s: 0.0,
             outflow_slack_above_m3s: 0.0,
             generation_slack_mw: 0.0,
+            fpha_violation_mw: 0.0,
             storage_violation_below_hm3: 0.0,
             filling_target_violation_hm3: 0.0,
             evaporation_violation_pos_m3s: 0.0,
