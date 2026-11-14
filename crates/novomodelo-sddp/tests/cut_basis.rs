@@ -498,8 +498,9 @@ mod cut_subgradient_parity {
     use novomodelo_sddp::{
         build_stage_templates_resolving_layout,
         hydro_models::{
-            EvaporationModel, EvaporationModelSet, FphaPlane, LinearizedEvaporation,
-            PrepareHydroModelsResult, ProductionModelSet, ResolvedProductionModel,
+            EvaporationCoefficientSign, EvaporationModel, EvaporationModelSet, FphaPlane,
+            LinearizedEvaporation, PrepareHydroModelsResult, ProductionModelSet,
+            ResolvedProductionModel,
         },
         inflow_method::InflowNonNegativityMethod,
         resolved_parameters::ResolvedParameters,
@@ -748,6 +749,7 @@ mod cut_subgradient_parity {
             coefficients: vec![LinearizedEvaporation {
                 intercept_m3s: INTERCEPT_M3S,
                 volume_slope_m3s_per_hm3: VOLUME_SLOPE_M3S_PER_HM3,
+                coefficient_sign: EvaporationCoefficientSign::Positive,
             }],
             reference_volumes_hm3: vec![100.0],
         }];

@@ -35,8 +35,9 @@ use novomodelo_stochastic::par::precompute::PrecomputedPar;
 use novomodelo_sddp::{
     build_stage_templates_resolving_layout,
     hydro_models::{
-        EvaporationModel, EvaporationModelSet, FphaPlane, LinearizedEvaporation,
-        PrepareHydroModelsResult, ProductionModelSet, ResolvedProductionModel,
+        EvaporationCoefficientSign, EvaporationModel, EvaporationModelSet, FphaPlane,
+        LinearizedEvaporation, PrepareHydroModelsResult, ProductionModelSet,
+        ResolvedProductionModel,
     },
     indexer::{BlockGrid, BlockRowFamily, StateSpace},
     inflow_method::InflowNonNegativityMethod,
@@ -1479,6 +1480,27 @@ fn fpha_solve_system() -> (novomodelo_core::System, ProductionModelSet) {
 
 use novomodelo_solver::StageTemplate;
 
+/// Reference volume (hm³) of the evaporation fixtures below.
+const EVAP_FIXTURE_REFERENCE_VOLUME_HM3: f64 = 100.0;
+
+/// Sign of `intercept + slope · EVAP_FIXTURE_REFERENCE_VOLUME_HM3`: a test
+/// fixture standing in for model preparation, which classifies the month's
+/// `coefficients_mm` instead.
+fn fixture_coefficient_sign(
+    intercept_m3s: f64,
+    volume_slope_m3s_per_hm3: f64,
+) -> EvaporationCoefficientSign {
+    let rate_at_reference =
+        intercept_m3s + volume_slope_m3s_per_hm3 * EVAP_FIXTURE_REFERENCE_VOLUME_HM3;
+    if rate_at_reference > 0.0 {
+        EvaporationCoefficientSign::Positive
+    } else if rate_at_reference < 0.0 {
+        EvaporationCoefficientSign::Negative
+    } else {
+        EvaporationCoefficientSign::Zero
+    }
+}
+
 /// `EvaporationModelSet` giving `None` to every hydro except those in
 /// `evap_indices`, which get `Linearized` from `intercept_per_stage`.
 fn evap_set_for_system(
@@ -1492,17 +1514,21 @@ fn evap_set_for_system(
         .map(|h| {
             if evap_indices.contains(&h) {
                 let coefficients = (0..n_stages)
-                    .map(|s| LinearizedEvaporation {
-                        intercept_m3s: intercept_per_stage
+                    .map(|s| {
+                        let intercept_m3s = intercept_per_stage
                             .get(s)
                             .copied()
-                            .unwrap_or(intercept_per_stage.first().copied().unwrap_or(0.0)),
-                        volume_slope_m3s_per_hm3: 0.0,
+                            .unwrap_or(intercept_per_stage.first().copied().unwrap_or(0.0));
+                        LinearizedEvaporation {
+                            intercept_m3s,
+                            volume_slope_m3s_per_hm3: 0.0,
+                            coefficient_sign: fixture_coefficient_sign(intercept_m3s, 0.0),
+                        }
                     })
                     .collect();
                 EvaporationModel::Linearized {
                     coefficients,
-                    reference_volumes_hm3: vec![100.0; n_stages],
+                    reference_volumes_hm3: vec![EVAP_FIXTURE_REFERENCE_VOLUME_HM3; n_stages],
                 }
             } else {
                 EvaporationModel::None
@@ -1533,11 +1559,15 @@ fn evap_set_with_volume_slope(
                     .map(|_| LinearizedEvaporation {
                         intercept_m3s,
                         volume_slope_m3s_per_hm3,
+                        coefficient_sign: fixture_coefficient_sign(
+                            intercept_m3s,
+                            volume_slope_m3s_per_hm3,
+                        ),
                     })
                     .collect();
                 EvaporationModel::Linearized {
                     coefficients,
-                    reference_volumes_hm3: vec![100.0; n_stages],
+                    reference_volumes_hm3: vec![EVAP_FIXTURE_REFERENCE_VOLUME_HM3; n_stages],
                 }
             } else {
                 EvaporationModel::None

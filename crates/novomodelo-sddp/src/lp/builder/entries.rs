@@ -10989,7 +10989,7 @@ mod pumping_water_tests {
 
     // ── Per-block FPHA & evaporation (block-local average storage) ───────────────
 
-    use crate::hydro_models::LinearizedEvaporation;
+    use crate::hydro_models::{EvaporationCoefficientSign, LinearizedEvaporation};
 
     const FPHA_GAMMA_V: f64 = 0.2;
     const EVAP_SLOPE: f64 = 0.03;
@@ -11033,6 +11033,7 @@ mod pumping_water_tests {
                 coefficients: vec![LinearizedEvaporation {
                     intercept_m3s: EVAP_INTERCEPT,
                     volume_slope_m3s_per_hm3: EVAP_SLOPE,
+                    coefficient_sign: EvaporationCoefficientSign::Positive,
                 }],
                 reference_volumes_hm3: vec![0.0],
             }]);

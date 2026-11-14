@@ -32,8 +32,8 @@ use novomodelo_io::config::{
     TrainingConfig, TrainingSelection, TrainingSolverConfig, UpperBoundEvaluationConfig,
 };
 use novomodelo_sddp::hydro_models::{
-    EvaporationModel, EvaporationModelSet, FphaPlane, LinearizedEvaporation,
-    PrepareHydroModelsResult, ProductionModelSet, ResolvedProductionModel,
+    EvaporationCoefficientSign, EvaporationModel, EvaporationModelSet, FphaPlane,
+    LinearizedEvaporation, PrepareHydroModelsResult, ProductionModelSet, ResolvedProductionModel,
 };
 use novomodelo_sddp::indexer::{
     BlockIdx, BusSys, CutSlot, CutStateProjection, FphaCellLocal, HydroSys, StateDim,
@@ -89,6 +89,7 @@ const INJECTED_LAG_SLOPES: [f64; 2] = [-0.01, -0.004];
 const EVAPORATION: LinearizedEvaporation = LinearizedEvaporation {
     intercept_m3s: 1.0,
     volume_slope_m3s_per_hm3: 0.01,
+    coefficient_sign: EvaporationCoefficientSign::Positive,
 };
 const EVAPORATION_REFERENCE_HM3: f64 = 100.0;
 const INJECTED_INTERCEPT: f64 = 10.0;

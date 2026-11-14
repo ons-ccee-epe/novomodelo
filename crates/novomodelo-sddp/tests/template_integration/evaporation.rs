@@ -395,6 +395,7 @@ fn evap_csc_entries_two_hydros_independent_rows() {
                 LinearizedEvaporation {
                     intercept_m3s: 1.0,
                     volume_slope_m3s_per_hm3: 0.02,
+                    coefficient_sign: EvaporationCoefficientSign::Positive,
                 };
                 n_stages
             ],
@@ -405,6 +406,7 @@ fn evap_csc_entries_two_hydros_independent_rows() {
                 LinearizedEvaporation {
                     intercept_m3s: 2.0,
                     volume_slope_m3s_per_hm3: 0.06,
+                    coefficient_sign: EvaporationCoefficientSign::Positive,
                 };
                 n_stages
             ],

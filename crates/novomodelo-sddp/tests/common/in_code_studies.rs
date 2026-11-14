@@ -47,8 +47,8 @@ use novomodelo_io::config::{
 };
 use novomodelo_sddp::StudySetup;
 use novomodelo_sddp::hydro_models::{
-    EvaporationModel, EvaporationModelSet, FphaPlane, LinearizedEvaporation,
-    PrepareHydroModelsResult, ProductionModelSet, ResolvedProductionModel,
+    EvaporationCoefficientSign, EvaporationModel, EvaporationModelSet, FphaPlane,
+    LinearizedEvaporation, PrepareHydroModelsResult, ProductionModelSet, ResolvedProductionModel,
 };
 
 use super::builders::{
@@ -1159,10 +1159,12 @@ fn parallel_evap_hydro_models(system: &novomodelo_core::System) -> PrepareHydroM
             LinearizedEvaporation {
                 intercept_m3s: 1.0,
                 volume_slope_m3s_per_hm3: 0.01,
+                coefficient_sign: EvaporationCoefficientSign::Positive,
             },
             LinearizedEvaporation {
                 intercept_m3s: 1.0,
                 volume_slope_m3s_per_hm3: 0.01,
+                coefficient_sign: EvaporationCoefficientSign::Positive,
             },
         ],
         reference_volumes_hm3: vec![100.0, 100.0],
@@ -2364,6 +2366,7 @@ fn two_hydro_evap_hydro_models(system: &novomodelo_core::System) -> PrepareHydro
                 LinearizedEvaporation {
                     intercept_m3s: 1.0,
                     volume_slope_m3s_per_hm3: 0.01,
+                    coefficient_sign: EvaporationCoefficientSign::Positive,
                 };
                 TWO_HYDRO_EVAP_N_STAGES
             ],
@@ -2435,6 +2438,7 @@ const FPHA_LAG_PLANES: [FphaPlane; 2] = [
 const FPHA_LAG_EVAPORATION: LinearizedEvaporation = LinearizedEvaporation {
     intercept_m3s: 2.0,
     volume_slope_m3s_per_hm3: 0.02,
+    coefficient_sign: EvaporationCoefficientSign::Positive,
 };
 const FPHA_LAG_EVAPORATION_REFERENCE_HM3: f64 = 50.0;
 const FPHA_LAG_PRE_STUDY_STAGES: usize = 2;

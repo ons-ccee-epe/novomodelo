@@ -4141,8 +4141,8 @@ mod evaporation_slack_objective_tests {
     };
 
     use crate::hydro_models::{
-        EvaporationModel, EvaporationModelSet, LinearizedEvaporation, ProductionModelSet,
-        ResolvedProductionModel,
+        EvaporationCoefficientSign, EvaporationModel, EvaporationModelSet, LinearizedEvaporation,
+        ProductionModelSet, ResolvedProductionModel,
     };
     use crate::indexer::{BlockIdx, EvapLocal, HydroCellIndex};
 
@@ -4325,6 +4325,7 @@ mod evaporation_slack_objective_tests {
                     LinearizedEvaporation {
                         intercept_m3s: 1.0,
                         volume_slope_m3s_per_hm3: 0.0,
+                        coefficient_sign: EvaporationCoefficientSign::Positive,
                     };
                     N_STAGES
                 ],

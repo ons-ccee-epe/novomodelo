@@ -1329,7 +1329,8 @@ impl FillingMembershipFixtures {
 
     fn new() -> Self {
         use crate::hydro_models::{
-            EvaporationModel, FphaPlane, LinearizedEvaporation, ResolvedProductionModel,
+            EvaporationCoefficientSign, EvaporationModel, FphaPlane, LinearizedEvaporation,
+            ResolvedProductionModel,
         };
 
         let filling = || {
@@ -1367,6 +1368,7 @@ impl FillingMembershipFixtures {
                 coefficients: vec![LinearizedEvaporation {
                     intercept_m3s: 0.0,
                     volume_slope_m3s_per_hm3: 0.0,
+                    coefficient_sign: EvaporationCoefficientSign::Zero,
                 }],
                 reference_volumes_hm3: vec![0.0],
             },

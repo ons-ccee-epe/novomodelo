@@ -14,8 +14,8 @@ use novomodelo_io::CaseArtifacts;
 use novomodelo_io::extensions::HydroGeometryRow;
 
 use super::types::{
-    EvaporationModel, EvaporationModelSet, EvaporationReferenceSource, EvaporationSource,
-    LinearizedEvaporation,
+    EvaporationCoefficientSign, EvaporationModel, EvaporationModelSet, EvaporationReferenceSource,
+    EvaporationSource, LinearizedEvaporation,
 };
 use crate::SddpError;
 use crate::block_clock::BlockClock;
@@ -287,6 +287,7 @@ fn resolve_evaporation_core(
             stage_coefficients.push(LinearizedEvaporation {
                 intercept_m3s,
                 volume_slope_m3s_per_hm3,
+                coefficient_sign: coefficient_sign(monthly_evaporation_mm),
             });
             stage_ref_volumes.push(reference_volume);
         }
@@ -304,6 +305,17 @@ fn resolve_evaporation_core(
         provenance,
         reference_provenance,
     ))
+}
+
+/// Only an exact `0.0` is a zero month; no tolerance, since the value is user data.
+fn coefficient_sign(monthly_evaporation_mm: f64) -> EvaporationCoefficientSign {
+    if monthly_evaporation_mm > 0.0 {
+        EvaporationCoefficientSign::Positive
+    } else if monthly_evaporation_mm < 0.0 {
+        EvaporationCoefficientSign::Negative
+    } else {
+        EvaporationCoefficientSign::Zero
+    }
 }
 
 // ── Evaporation geometry helpers ──────────────────────────────────────────────
@@ -843,6 +855,108 @@ mod tests {
             }
             other => panic!("expected Linearized, got {other:?}"),
         }
+    }
+
+    /// Linearize hydro 0 (storage 100..500, so the reference volume is 300) over
+    /// one stage per entry of `months`.
+    fn linearized_coefficients(
+        evap_mm: [f64; 12],
+        volume_area: &[(f64, f64)],
+        months: &[usize],
+    ) -> Vec<LinearizedEvaporation> {
+        let hydro = make_hydro_with_evaporation(0, 100.0, 500.0, Some(evap_mm));
+        let geo_rows = make_geo_rows(volume_area);
+        let geo_refs: Vec<_> = geo_rows.iter().collect();
+        let mut geometry_map: HashMap<EntityId, Vec<&HydroGeometryRow>> = HashMap::new();
+        geometry_map.insert(EntityId::from(0), geo_refs);
+
+        let study_stages: Vec<_> = months
+            .iter()
+            .enumerate()
+            .map(|(id, &month)| make_stage_with_month(i32::try_from(id).unwrap(), month))
+            .collect();
+        let stage_refs: Vec<_> = study_stages.iter().collect();
+
+        let (models, _provenance, _ref_provenance) =
+            super::resolve_evaporation_core(&[hydro], &geometry_map, &stage_refs)
+                .expect("linearization must succeed");
+        match models.model(0) {
+            EvaporationModel::Linearized { coefficients, .. } => coefficients.clone(),
+            other => panic!("expected Linearized, got {other:?}"),
+        }
+    }
+
+    /// January +30 mm, February -40 mm, March 0 mm over a geometry whose area grows
+    /// with volume, one stage per month.
+    fn january_to_march_coefficients() -> Vec<LinearizedEvaporation> {
+        let mut evap_mm = [0.0f64; 12];
+        evap_mm[0] = 30.0;
+        evap_mm[1] = -40.0;
+        linearized_coefficients(
+            evap_mm,
+            &[
+                (100.0, 1.0),
+                (200.0, 1.5),
+                (300.0, 2.0),
+                (400.0, 2.5),
+                (500.0, 3.0),
+            ],
+            &[0, 1, 2],
+        )
+    }
+
+    #[test]
+    fn resolve_evaporation_classifies_a_positive_month() {
+        let coefficients = january_to_march_coefficients();
+        assert_eq!(
+            coefficients[0].coefficient_sign,
+            EvaporationCoefficientSign::Positive
+        );
+    }
+
+    #[test]
+    fn resolve_evaporation_classifies_a_negative_month() {
+        let coefficients = january_to_march_coefficients();
+        assert_eq!(
+            coefficients[1].coefficient_sign,
+            EvaporationCoefficientSign::Negative
+        );
+    }
+
+    #[test]
+    fn resolve_evaporation_classifies_a_zero_month() {
+        let coefficients = january_to_march_coefficients();
+        assert_eq!(
+            coefficients[2].coefficient_sign,
+            EvaporationCoefficientSign::Zero
+        );
+        assert_eq!(coefficients[2].intercept_m3s, 0.0);
+        assert_eq!(coefficients[2].volume_slope_m3s_per_hm3, 0.0);
+    }
+
+    /// A reservoir whose area falls fast below the reference volume has a negative
+    /// intercept in a net-evaporation month, so the sign cannot be read from it.
+    #[test]
+    fn resolve_evaporation_sign_follows_the_month_not_the_intercept() {
+        let mut evap_mm = [0.0f64; 12];
+        evap_mm[0] = 30.0;
+        // At the reference volume 300: A = 2.0 and dA/dV = 0.02, so A < dA/dV * 300.
+        let coefficients = linearized_coefficients(
+            evap_mm,
+            &[
+                (100.0, 1.0),
+                (200.0, 1.5),
+                (300.0, 2.0),
+                (400.0, 4.0),
+                (500.0, 6.0),
+            ],
+            &[0],
+        );
+        assert!(coefficients[0].intercept_m3s < 0.0);
+        assert_eq!(
+            coefficients[0].coefficient_sign,
+            EvaporationCoefficientSign::Positive
+        );
     }
 
     /// A hydro with evaporation coefficients but no geometry rows degrades to
