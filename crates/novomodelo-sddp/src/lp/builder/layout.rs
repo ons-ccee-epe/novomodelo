@@ -1311,6 +1311,7 @@ impl StageGeometry {
             filling_target_col: 0..0,
             filled_min_storage_floor: 0..0,
             filled_min_storage_floor_col: 0..0,
+            fpha_slack: 0..0,
             plant_max_turbine: 0..0,
             plant_max_generation: 0..0,
             n_blks,
@@ -1461,11 +1462,13 @@ impl<'a> StageLayout<'a> {
         let (generic, generic_rows) =
             allocate_generic_constraints(&mut col, &mut row, ctx, stage, stage_idx, n_blks);
 
-        // σ_fill then σ^{v-} are the last two per-stage column families; σ^{v-}
-        // last so its presence cannot shift any other family's start.
+        // σ_fill, σ^{v-}, then `fpha_slack` close the column chain; `fpha_slack` last
+        // (sized by FPHA cell × block, empty without FPHA) so it shifts no other
+        // family's start.
         geometry.filling_target_col = col.alloc(filling_target_hydro_indices.len());
         geometry.filled_min_storage_floor_col =
             col.alloc(filled_min_storage_floor_hydro_indices.len());
+        geometry.fpha_slack = col.alloc(n_fpha_cells * n_blks);
         geometry.filling_target_hydro_indices = filling_target_hydro_indices;
         geometry.filled_min_storage_floor_hydro_indices = filled_min_storage_floor_hydro_indices;
 
@@ -2048,6 +2051,9 @@ pub struct StageGeometry {
     /// stage. Simulation extraction reads the `σ^{v-}` primal at `start + local_idx`,
     /// resolving `local_idx` via `filled_min_storage_floor_hydro_indices`.
     pub filled_min_storage_floor_col: Range<usize>,
+    /// FPHA plane-slack column range (one per FPHA cell per block, the
+    /// `generation` indexing); empty without FPHA.
+    pub fpha_slack: Range<usize>,
     /// Hard plant max-turbined row range (one row per plant-cap hydro per block).
     pub plant_max_turbine: Range<usize>,
     /// Hard plant max-generation row range (one row per plant-cap hydro per block).
@@ -2167,6 +2173,13 @@ impl StageGeometry {
     #[must_use]
     pub fn generation_col(&self, c: FphaCellLocal, blk: BlockIdx) -> usize {
         self.block_flat(&self.generation, c.get(), blk)
+    }
+
+    /// FPHA plane-slack column for FPHA-cell-local index `c`, block `blk`.
+    #[inline]
+    #[must_use]
+    pub fn fpha_slack_col(&self, c: FphaCellLocal, blk: BlockIdx) -> usize {
+        self.block_flat(&self.fpha_slack, c.get(), blk)
     }
 
     /// Thermal-generation column for thermal `t`, block `blk`.

@@ -1537,9 +1537,10 @@ fn filling_target_row_and_col_below_structural_bounds() {
         );
     }
     // At the terminal Filling stage (id 2) no hydro is Operating, so the
-    // sibling σ^{v-} `filled_min_storage_floor` column block (the true last column family)
-    // is empty: its start coincides with num_cols and the σ_fill block is the
-    // last occupied family, so num_cols = col_filling_target_start + n_targets.
+    // sibling σ^{v-} `filled_min_storage_floor` column block is empty: its start
+    // coincides with num_cols because `fpha_slack`, the last family, is empty
+    // without FPHA, and the σ_fill block is the last occupied family, so
+    // num_cols = col_filling_target_start + n_targets.
     assert_eq!(
         layout.geometry.filled_min_storage_floor_col.start, layout.num_cols,
         "σ^{{v-}} column block empty at the terminal Filling stage"
@@ -3578,6 +3579,37 @@ fn test_generation_family_is_sized_by_fpha_cell() {
             col1, col2,
             "block {blk}: plant 2's two FPHA cells must be distinct columns"
         );
+    }
+}
+
+/// `fpha_slack` closes the column chain: it starts where `σ^{v-}` ends, runs to
+/// `num_cols`, and addresses one column per FPHA cell and block, block-striped.
+#[test]
+fn fpha_slack_range_follows_floor_family() {
+    let n_blks = 2;
+    let mut fixtures = FphaMultiBusFixtures::new();
+    let ctx = fixtures.make_ctx();
+    let stage = stage_with_blocks(BlockMode::Parallel, n_blks);
+    let layout = StageLayout::new(&ctx, &stage, 0);
+    let geometry = &layout.geometry;
+
+    assert_eq!(
+        geometry.fpha_slack.start,
+        geometry.filled_min_storage_floor_col.end
+    );
+    assert_eq!(geometry.fpha_slack.end, layout.num_cols);
+    assert_eq!(
+        geometry.fpha_slack.len(),
+        3 * n_blks,
+        "n_fpha_cells == 3, as for the generation family"
+    );
+    for cell in 0..3 {
+        for blk in 0..n_blks {
+            assert_eq!(
+                geometry.fpha_slack_col(FphaCellLocal::new(cell), BlockIdx::new(blk)),
+                geometry.fpha_slack.start + cell * n_blks + blk
+            );
+        }
     }
 }
 

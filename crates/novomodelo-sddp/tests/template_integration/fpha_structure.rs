@@ -1,6 +1,7 @@
 //! `fpha_structure` section tests.
 
 use super::*;
+use novomodelo_sddp::indexer::{BlockIdx, FphaCellLocal};
 use novomodelo_solver::{ActiveSolver, RowBatch, SolverInterface};
 
 fn empty_cut_batch() -> RowBatch {
@@ -45,14 +46,76 @@ fn fpha_ac1_dimensions_one_fpha_hydro_five_planes() {
 
     assert_eq!(
         fpha_tmpl.num_cols,
-        const_tmpl.num_cols + 1,
-        "FPHA adds exactly 1 generation column (1 hydro * 1 block)"
+        const_tmpl.num_cols + 2,
+        "FPHA adds 1 generation and 1 slack column (1 cell * 1 block)"
     );
     assert_eq!(
         fpha_tmpl.num_rows,
         const_tmpl.num_rows + 5,
         "FPHA adds exactly 5 constraint rows (5 planes * 1 block)"
     );
+}
+
+#[test]
+fn fpha_slack_column_structure_one_cell_five_planes() {
+    let n_planes = 5;
+    let (system, production) = one_fpha_hydro_system(n_planes);
+    let result = build_stage_templates_resolving_layout(
+        &system,
+        no_penalty_config(),
+        &PrecomputedPar::default(),
+        &PrecomputedNormal::default(),
+        &production,
+        &default_evaporation(&system),
+        &ResolvedParameters::default(),
+    )
+    .expect("FPHA system ok");
+
+    let tmpl = &result.templates[0];
+    let geometry = &result.geometry_per_stage[0];
+    assert_eq!(geometry.fpha_slack.len(), 1, "1 cell * 1 block");
+    let col = geometry.fpha_slack_col(FphaCellLocal::new(0), BlockIdx::new(0));
+
+    assert_eq!(tmpl.col_lower[col], 0.0);
+    assert_eq!(tmpl.col_upper[col], f64::INFINITY);
+
+    let price = system.penalties().hydro_penalties(0, 0).fpha_violation_cost;
+    let hours = 744.0_f64;
+    assert_eq!(
+        tmpl.objective[col].to_bits(),
+        (price * hours / COST_SCALE_FACTOR).to_bits(),
+        "price times block hours, divided by the cost scale"
+    );
+
+    let entries = entries_for_col(tmpl, col);
+    let expected_rows: Vec<usize> = (geometry.fpha.start..geometry.fpha.start + n_planes).collect();
+    let mut rows: Vec<usize> = entries.iter().map(|&(row, _)| row).collect();
+    rows.sort_unstable();
+    assert_eq!(
+        rows, expected_rows,
+        "one entry in each plane row, none elsewhere"
+    );
+    assert!(
+        entries.iter().all(|&(_, value)| value == -1.0),
+        "every plane row carries -1 on the slack: {entries:?}"
+    );
+}
+
+#[test]
+fn fpha_slack_absent_without_fpha() {
+    let system = one_hydro_system(1, 2);
+    let result = build_stage_templates_resolving_layout(
+        &system,
+        no_penalty_config(),
+        &PrecomputedPar::default(),
+        &PrecomputedNormal::default(),
+        &default_production(&system),
+        &default_evaporation(&system),
+        &ResolvedParameters::default(),
+    )
+    .expect("constant productivity ok");
+
+    assert!(result.geometry_per_stage[0].fpha_slack.is_empty());
 }
 
 #[test]
@@ -186,12 +249,12 @@ fn fpha_ac5_mixed_system_load_balance_uses_generation_col() {
 
     // Base (constant) num_cols = 9 + 4*1*3 (turbine+spillage+diversion per hydro/block)
     // + 1*1*2 = 23; + 2 FPHA generation = 25; + 2*N=8 withdrawal = 33;
-    // + 4*N=16 op-violation slacks = 49.
+    // + 4*N=16 op-violation slacks = 49; + 2 FPHA slack = 51.
     // num_rows (no state-fixing rows) = N water balance(4) + load balance(1)
     // = 5; + 2*3 FPHA = 11; + 4*N=16 op-violation = 27.
     assert_eq!(
-        tmpl.num_cols, 49,
-        "4-hydro mixed system: num_cols should be 49 (includes diversion, 2*4 withdrawal, and operational slacks)"
+        tmpl.num_cols, 51,
+        "4-hydro mixed system: num_cols should be 51 (includes diversion, 2*4 withdrawal, operational slacks and FPHA slacks)"
     );
     assert_eq!(
         tmpl.num_rows, 27,
@@ -266,6 +329,14 @@ fn fpha_solve_one_hydro_optimal() {
     assert!(
         generation > 0.0,
         "FPHA generation must be strictly positive, got {generation}"
+    );
+
+    let col_slack =
+        result.geometry_per_stage[0].fpha_slack_col(FphaCellLocal::new(0), BlockIdx::new(0));
+    let slack = view.primal[col_slack];
+    assert!(
+        slack.abs() < 1e-9,
+        "the FPHA plane slack must be zero while the planes are met, got {slack}"
     );
 }
 

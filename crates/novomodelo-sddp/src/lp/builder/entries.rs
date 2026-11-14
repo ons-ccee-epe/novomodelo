@@ -1004,8 +1004,10 @@ pub(super) fn fill_load_balance_entries(
 }
 
 /// Fill FPHA hyperplane constraint entries, one row per `(FPHA cell, block, plane)`,
-/// implementing `g_c − σ_c·γᵥ/2·v − σ_c·γᵥ/2·v_in − γ_q·q_c − σ_c·γ_s·s ≤ σ_c·γ₀`
-/// (`σ_c·γ₀` in the row upper bound set by `rows::fill_fpha_rows`). `σ_c`
+/// implementing `g_c − ε_c − σ_c·γᵥ/2·v − σ_c·γᵥ/2·v_in − γ_q·q_c − σ_c·γ_s·s ≤ σ_c·γ₀`
+/// (`σ_c·γ₀` in the row upper bound set by `rows::fill_fpha_rows`). `ε_c` is the
+/// cell-and-block plane slack (`StageGeometry::fpha_slack`), `−1` unscaled in
+/// every plane row of that cell and block and in no other row. `σ_c`
 /// apportions the plane's flow-independent part by the cell's share of the plant's
 /// declared turbine capacity; `γ_q` stays unscaled on the cell's own flow `q_c`.
 ///
@@ -1047,6 +1049,7 @@ pub(super) fn fill_fpha_entries(
         let col_q = geom.turbine_col(visit.cell, visit.blk);
         let col_s = geom.spillage_col(visit.plant, visit.blk);
         let col_g = geom.generation_col(visit.cell_local, visit.blk);
+        let col_slack = geom.fpha_slack_col(visit.cell_local, visit.blk);
         // Apportion the plane's flow-independent part by this cell's share of the
         // plant's declared turbine capacity; γ_q stays unscaled on the cell's own
         // flow (only `A ≡ γ₀ + γ_V·V̄ + γ_s·s` fails the homogeneity that makes
@@ -1054,6 +1057,7 @@ pub(super) fn fill_fpha_entries(
         let sigma_c = ctx.hydro_cell_index.share_of(visit.cell);
 
         col_entries[col_g].push((visit.row, 1.0));
+        col_entries[col_slack].push((visit.row, -1.0));
         // Average storage: −γᵥ/2 on BOTH storage columns, not one alone (D06),
         // each apportioned by sigma_c like the other flow-independent terms.
         col_entries[col_v_in].push((visit.row, sigma_c * (-plane.gamma_v / 2.0)));

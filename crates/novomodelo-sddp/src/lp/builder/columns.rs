@@ -57,6 +57,7 @@ pub(super) fn fill_stage_columns(
     fill_contract_columns(ctx, stage, stage_idx, layout, bufs);
     fill_filling_target_columns(ctx, stage_idx, layout, bufs);
     fill_filled_min_storage_floor_columns(ctx, stage_idx, layout, bufs);
+    fill_fpha_slack_columns(ctx, stage, stage_idx, layout, bufs);
 
     (col_lower, col_upper, objective)
 }
@@ -635,6 +636,35 @@ fn fill_fpha_generation_columns(
                 // owner of the cell's soft floor).
                 bufs.col_lower[col] = 0.0;
                 bufs.col_upper[col] = gen_upper;
+            }
+        }
+    }
+}
+
+/// FPHA plane-slack columns: one per FPHA cell per block, `[0, +∞)`, objective
+/// `fpha_violation_cost` times the block's hours, written UNSCALED
+/// (`finalize_stage_objective` divides by the cost scale).
+fn fill_fpha_slack_columns(
+    ctx: &TemplateBuildCtx<'_>,
+    stage: &Stage,
+    stage_idx: usize,
+    layout: &StageLayout,
+    bufs: &mut ColumnBufs<'_>,
+) {
+    for (local_idx, &h) in layout.geometry.fpha_hydro_indices.iter().enumerate() {
+        let fpha_cell_base = layout
+            .fpha_local_first_cell(FphaLocal::new(local_idx))
+            .get();
+        let hp = ctx.resolved.penalties.hydro_penalties(h.get(), stage_idx);
+        for blk in (0..layout.clock.n_blks()).map(BlockIdx::new) {
+            let cost = hp.fpha_violation_cost * stage.blocks[blk.get()].duration_hours;
+            for offset in 0..ctx.hydro_cell_index.cells_of(h).len() {
+                let col = layout
+                    .geometry
+                    .fpha_slack_col(FphaCellLocal::new(fpha_cell_base + offset), blk);
+                bufs.col_lower[col] = 0.0;
+                bufs.col_upper[col] = f64::INFINITY;
+                bufs.objective[col] = cost;
             }
         }
     }

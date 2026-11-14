@@ -818,6 +818,7 @@ mod cell_partition_gates {
     use novomodelo_solver::StageTemplate;
     use novomodelo_stochastic::normal::precompute::PrecomputedNormal;
     use novomodelo_stochastic::par::precompute::PrecomputedPar;
+    use std::ops::Range;
 
     use super::common::builders::{
         BusSpec, HydroSpec, StageSpec, make_bus, make_hydro, make_stage,
@@ -1162,11 +1163,20 @@ mod cell_partition_gates {
     }
 
     fn build_template(fpha_groups: Vec<HydroUnitGroup>) -> StageTemplate {
-        build_stage_templates(fpha_groups)
+        build_template_with_slack(fpha_groups).0
+    }
+
+    fn build_template_with_slack(
+        fpha_groups: Vec<HydroUnitGroup>,
+    ) -> (StageTemplate, Range<usize>) {
+        let built = build_stage_templates(fpha_groups);
+        let slack = built.geometry_per_stage[0].fpha_slack.clone();
+        let template = built
             .templates
             .into_iter()
             .next()
-            .expect("exactly one stage")
+            .expect("exactly one stage");
+        (template, slack)
     }
 
     // ---- CSC probes --------------------------------------------------------
@@ -1517,7 +1527,8 @@ mod cell_partition_gates {
     /// `tau`. `num_cols` grows by one turbine + one FPHA generation column
     /// for the new cell, plus one `turbine_below_slack` + one
     /// `generation_below_slack` column (`OperViolationRanges` sizes both
-    /// power-family slacks per cell, not per hydro — `n_blks = 1` here).
+    /// power-family slacks per cell, not per hydro — `n_blks = 1` here) and
+    /// one `fpha_slack` column (one FPHA cell per block).
     #[test]
     fn test_two_bus_plant_credits_each_bus_and_still_balances_water() {
         let tau_h = BLOCK_HOURS * M3S_TO_HM3;
@@ -1527,9 +1538,9 @@ mod cell_partition_gates {
 
         assert_eq!(
             tmpl_c.num_cols,
-            tmpl_b.num_cols + 4,
+            tmpl_b.num_cols + 5,
             "variant C must add 1 turbine + 1 FPHA generation + 1 turbine_below_slack \
-             + 1 generation_below_slack column over B (n_blks=1)"
+             + 1 generation_below_slack + 1 fpha_slack column over B (n_blks=1)"
         );
 
         let cell_first_gen = find_col_by_upper(&tmpl_c, 7_000.0, 1e-9);
@@ -1717,11 +1728,13 @@ mod cell_partition_gates {
     /// pairing equal coefficients (`v_each` stands for BOTH `V_in` and
     /// `V_out`, so which physical column is which cannot matter here --
     /// `chronological_d06_gamma_v_on_both_block_columns` is the dedicated
-    /// pin for that contract, not this test's job).
+    /// pin for that contract, not this test's job). `slack_cols` are the
+    /// plane slack columns, evaluated at 0.
     fn row_allowance_excluding_generation(
         tmpl: &StageTemplate,
         row: usize,
         gen_cols: &[usize],
+        slack_cols: &Range<usize>,
         turb_q: &[(usize, f64)],
         v_each: f64,
         s: f64,
@@ -1729,7 +1742,7 @@ mod cell_partition_gates {
         let mut non_flow_terms: Vec<f64> = Vec::new();
         let mut q_contribution = 0.0;
         for (col, val) in row_entries(tmpl, row) {
-            if gen_cols.contains(&col) {
+            if gen_cols.contains(&col) || slack_cols.contains(&col) {
                 continue;
             }
             if let Some(&(_, q_c)) = turb_q.iter().find(|&&(tc, _)| tc == col) {
@@ -1763,13 +1776,23 @@ mod cell_partition_gates {
 
     /// The aggregate cap: sum `row_allowance_excluding_generation`
     /// over every one of the plant's (deduplicated) generic-plane rows.
-    fn aggregate_cap(tmpl: &StageTemplate, cells: &[(f64, f64, f64)], v_each: f64, s: f64) -> f64 {
+    fn aggregate_cap(
+        tmpl: &StageTemplate,
+        slack_cols: &Range<usize>,
+        cells: &[(f64, f64, f64)],
+        v_each: f64,
+        s: f64,
+    ) -> f64 {
         let resolved = resolve_cells(tmpl, cells);
         let gen_cols: Vec<usize> = resolved.iter().map(|&(g, _, _)| g).collect();
         let turb_q: Vec<(usize, f64)> = resolved.iter().map(|&(_, t, q)| (t, q)).collect();
         plant_plane_rows(tmpl, &resolved, WhichPlane::Generic)
             .into_iter()
-            .map(|row| row_allowance_excluding_generation(tmpl, row, &gen_cols, &turb_q, v_each, s))
+            .map(|row| {
+                row_allowance_excluding_generation(
+                    tmpl, row, &gen_cols, slack_cols, &turb_q, v_each, s,
+                )
+            })
             .sum()
     }
 
@@ -1792,21 +1815,29 @@ mod cell_partition_gates {
         // ~40 out of ~442 -- a ~9% relative error).
         const REL_TOL: f64 = 1e-9;
 
-        let tmpl_1 = build_template(groups_single_mirror());
-        let tmpl_2 = build_template(groups_two_buses());
-        let tmpl_3 = build_template(groups_three_buses());
+        let (tmpl_1, slack_1) = build_template_with_slack(groups_single_mirror());
+        let (tmpl_2, slack_2) = build_template_with_slack(groups_two_buses());
+        let (tmpl_3, slack_3) = build_template_with_slack(groups_three_buses());
 
         // Same total turbined flow (500.0 m3/s), split differently per
         // partition; (gen_upper, turb_upper) identify each cell.
-        let cap_1 = aggregate_cap(&tmpl_1, &[(12_000.0, 750.0, 500.0)], V_EACH, SPILLAGE);
+        let cap_1 = aggregate_cap(
+            &tmpl_1,
+            &slack_1,
+            &[(12_000.0, 750.0, 500.0)],
+            V_EACH,
+            SPILLAGE,
+        );
         let cap_2 = aggregate_cap(
             &tmpl_2,
+            &slack_2,
             &[(7_000.0, 450.0, 200.0), (5_000.0, 300.0, 300.0)],
             V_EACH,
             SPILLAGE,
         );
         let cap_3 = aggregate_cap(
             &tmpl_3,
+            &slack_3,
             &[
                 (3_000.0, 200.0, 150.0),
                 (4_000.0, 250.0, 200.0),
@@ -1883,6 +1914,7 @@ mod cell_partition_gates {
                 &tmpl_2,
                 row,
                 &gen_cols_2,
+                &slack_2,
                 &[(turb_col, 0.0)],
                 V_EACH,
                 SPILLAGE,

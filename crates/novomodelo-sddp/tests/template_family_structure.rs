@@ -488,6 +488,7 @@ fn water_row_ok(
         | ColOwner::LineFwd { .. }
         | ColOwner::LineRev { .. }
         | ColOwner::Generation { .. }
+        | ColOwner::FphaSlack { .. }
         | ColOwner::Contract { .. } => false,
         ColOwner::Storage { .. }
         | ColOwner::InflowSlack { .. }
@@ -534,6 +535,7 @@ fn load_row_ok(
         | ColOwner::Spillage { .. }
         | ColOwner::Diversion { .. }
         | ColOwner::Evaporation { .. }
+        | ColOwner::FphaSlack { .. }
         | ColOwner::Bucket { .. } => false,
         ColOwner::InflowSlack { .. }
         | ColOwner::WithdrawalNeg { .. }
@@ -614,6 +616,7 @@ fn column_block(owner: ColOwner) -> Option<BlockIdx> {
         | ColOwner::LineFwd { blk, .. }
         | ColOwner::LineRev { blk, .. }
         | ColOwner::Generation { blk, .. }
+        | ColOwner::FphaSlack { blk, .. }
         | ColOwner::Contract { blk, .. } => Some(blk),
         _ => None,
     }

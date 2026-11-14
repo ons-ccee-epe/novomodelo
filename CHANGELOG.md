@@ -32,6 +32,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   could add water through `water_withdrawal_violation_neg_m3s`, and a
   withdrawal set before a plant's `entry_stage_id` could make the stage
   infeasible. Results change.
+- An FPHA plant whose planes could not be met made the stage infeasible.
+  Generation above the planes is now allowed and priced at
+  `hydro.fpha_violation_cost`. Results change where the planes bound.
 
 ## [0.20.0] - 2026-11-03
 
