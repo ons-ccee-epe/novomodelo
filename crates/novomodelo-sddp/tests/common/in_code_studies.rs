@@ -2456,12 +2456,14 @@ const FPHA_LAG_GENERIC_CAP_M3S: f64 = 60.0;
 // Above the thermal cost and below the upstream plane's marginal benefit, so the upstream hydro still releases.
 const FPHA_LAG_GENERIC_SLACK_PENALTY: f64 = 55.0;
 
-fn fpha_lag_hydro_penalties() -> HydroPenalties {
+fn fpha_lag_hydro_penalties(fpha_violation_cost: Option<f64>) -> HydroPenalties {
+    let base = hydro_penalties();
     HydroPenalties {
         spillage_cost: FPHA_LAG_SPILLAGE_COST,
         evaporation_violation_pos_cost: FPHA_LAG_EVAPORATION_VIOLATION_COST,
         evaporation_violation_neg_cost: FPHA_LAG_EVAPORATION_VIOLATION_COST,
-        ..hydro_penalties()
+        fpha_violation_cost: fpha_violation_cost.unwrap_or(base.fpha_violation_cost),
+        ..base
     }
 }
 
@@ -2558,7 +2560,7 @@ fn fpha_lag_recent_observations() -> Vec<RecentObservation> {
         .collect()
 }
 
-fn fpha_lag_hydros() -> Vec<Hydro> {
+fn fpha_lag_hydros(fpha_violation_cost: Option<f64>) -> Vec<Hydro> {
     let hydro = |id, downstream_id, fpha: bool| {
         let (max_storage_hm3, max_turbined_m3s, max_generation_mw) = if fpha {
             (
@@ -2583,7 +2585,7 @@ fn fpha_lag_hydros() -> Vec<Hydro> {
                 max_storage_hm3,
                 max_turbined_m3s,
                 max_generation_mw,
-                penalties: fpha_lag_hydro_penalties(),
+                penalties: fpha_lag_hydro_penalties(fpha_violation_cost),
                 ..Default::default()
             },
         )
@@ -2686,7 +2688,7 @@ fn fpha_lag_bounds() -> ResolvedBounds {
     bounds
 }
 
-fn fpha_lag_penalties() -> ResolvedPenalties {
+fn fpha_lag_penalties(fpha_violation_cost: Option<f64>) -> ResolvedPenalties {
     ResolvedPenalties::new(
         &PenaltiesCountsSpec {
             n_hydros: FPHA_LAG_N_HYDROS,
@@ -2696,7 +2698,7 @@ fn fpha_lag_penalties() -> ResolvedPenalties {
             n_stages: FPHA_LAG_N_STAGES,
         },
         &PenaltiesDefaults {
-            hydro: fpha_lag_hydro_penalties(),
+            hydro: fpha_lag_hydro_penalties(fpha_violation_cost),
             bus: BusStagePenalties { excess_cost: 0.0 },
             line: LineStagePenalties { exchange_cost: 0.0 },
             ncs: NcsStagePenalties {
@@ -2809,13 +2811,17 @@ fn build_fpha_lag_system(options: FphaLagOptions) -> novomodelo_core::System {
 
     SystemBuilder::new()
         .buses(vec![bus])
-        .hydros(declared("hydro", fpha_lag_hydros(), reverse))
+        .hydros(declared(
+            "hydro",
+            fpha_lag_hydros(options.fpha_violation_cost),
+            reverse,
+        ))
         .thermals(declared("thermal", fpha_lag_thermals(), reverse))
         .stages(fpha_lag_stages(options))
         .inflow_models(fpha_lag_inflow_models())
         .load_models(load_models)
         .bounds(fpha_lag_bounds())
-        .penalties(fpha_lag_penalties())
+        .penalties(fpha_lag_penalties(options.fpha_violation_cost))
         .generic_constraints(vec![generic_constraint])
         .resolved_generic_bounds(generic_bounds)
         .initial_conditions(initial_conditions)
@@ -2881,6 +2887,8 @@ pub struct FphaLagOptions {
     pub risk_config: StageRiskConfig,
     /// Declares the hydros, thermals, recent observations and initial storages in reverse order.
     pub reverse_declaration_order: bool,
+    /// Replaces the study's FPHA price, in the hydro entities and the resolved penalties, when set.
+    pub fpha_violation_cost: Option<f64>,
 }
 
 impl Default for FphaLagOptions {
@@ -2891,6 +2899,7 @@ impl Default for FphaLagOptions {
             last_stage_storage: true,
             risk_config: StageRiskConfig::Expectation,
             reverse_declaration_order: false,
+            fpha_violation_cost: None,
         }
     }
 }

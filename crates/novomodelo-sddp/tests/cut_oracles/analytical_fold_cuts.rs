@@ -32,10 +32,12 @@ use novomodelo_io::config::{
     TrainingConfig, TrainingSelection, TrainingSolverConfig, UpperBoundEvaluationConfig,
 };
 use novomodelo_sddp::hydro_models::{
-    EvaporationModel, EvaporationModelSet, LinearizedEvaporation, PrepareHydroModelsResult,
-    ProductionModelSet, ResolvedProductionModel,
+    EvaporationModel, EvaporationModelSet, FphaPlane, LinearizedEvaporation,
+    PrepareHydroModelsResult, ProductionModelSet, ResolvedProductionModel,
 };
-use novomodelo_sddp::indexer::{CutSlot, CutStateProjection, HydroSys, StateDim};
+use novomodelo_sddp::indexer::{
+    BlockIdx, BusSys, CutSlot, CutStateProjection, FphaCellLocal, HydroSys, StateDim,
+};
 use novomodelo_sddp::setup::{NodePos, StageIdx};
 use novomodelo_sddp::test_support::template_structure::state_lag_dims;
 use novomodelo_sddp::test_support::{
@@ -105,6 +107,32 @@ const RANGE_INFLOW_COEFFICIENT: f64 = 1.0;
 /// Relative distance within which an unscaled template bound is read as a fixture bound.
 const BOUND_MATCH_TOLERANCE: f64 = 1e-12;
 
+const FPHA_STAGE: usize = 1;
+const FPHA_PLANE: FphaPlane = FphaPlane {
+    intercept: 0.0,
+    gamma_v: 0.05,
+    gamma_q: 0.5,
+    gamma_s: 0.0,
+};
+/// `σ_c` of the fixture's one cell, which holds the whole plant.
+const FPHA_CELL_SHARE: f64 = 1.0;
+/// Far above the thermal cost, so the thermal, not σ, covers the load the plane leaves.
+const IDLE_FPHA_VIOLATION_COST: f64 = 10.0 * DEFICIT_COST_PER_MWH;
+/// Below the thermal cost, so σ, not the thermal, covers the load the plane leaves.
+const ACTIVE_FPHA_VIOLATION_COST: f64 = 40.0;
+/// Above the thermal and deficit costs and below the floor's penalty.
+const FLOOR_FPHA_VIOLATION_COST: f64 = 800.0;
+const GENERATION_FLOOR_CONSTRAINT_ID: i32 = 31;
+/// The floor row's coefficient on the FPHA generation `g`.
+const GENERATION_FLOOR_COEFFICIENT: f64 = 1.0;
+/// Above the plane's output at the initial state, so σ or the floor's slack covers the rest.
+const GENERATION_FLOOR: GenerationFloor = GenerationFloor {
+    lower_mw: 250.0,
+    penalty_per_hour: 2_000.0,
+};
+/// How many `ClosedForm` bounds the head term must exceed, so a closed form without it fails.
+const HEAD_TERM_MARGIN: f64 = 100.0;
+
 /// The thermal cost [`chronological_noise_study`] writes inline.
 const NEGATIVE_DRAW_THERMAL_COST_PER_MWH: f64 = 100.0;
 /// Per-hydro ẑ targets of the negative-draw study's stage 1, each below zero.
@@ -157,6 +185,22 @@ struct InflowRange {
     penalty_per_hour: f64,
 }
 
+/// A soft generic row `G·g ≥ lower` on the sole hydro's FPHA generation at every stage, with its
+/// slack priced per hour.
+#[derive(Clone, Copy)]
+struct GenerationFloor {
+    lower_mw: f64,
+    penalty_per_hour: f64,
+}
+
+/// The sole hydro produces through `plane` at every stage, its slack σ priced at `violation_cost`.
+#[derive(Clone, Copy)]
+struct FphaCase {
+    plane: FphaPlane,
+    violation_cost: f64,
+    generation_floor: Option<GenerationFloor>,
+}
+
 /// One parallel block per monthly stage; the hydros are declared in ascending id order, so
 /// their declaration order is the system order.
 struct StudyCase {
@@ -169,6 +213,7 @@ struct StudyCase {
     /// storage-only.
     storage_only_stage: Option<usize>,
     inflow_range: Option<InflowRange>,
+    fpha: Option<FphaCase>,
 }
 
 fn stage_date(index: usize) -> NaiveDate {
@@ -214,7 +259,17 @@ fn fixture_penalties() -> HydroPenalties {
     }
 }
 
-fn fixture_hydro(hydro: &HydroCase) -> Hydro {
+fn case_penalties(case: &StudyCase) -> HydroPenalties {
+    match case.fpha {
+        Some(fpha) => HydroPenalties {
+            fpha_violation_cost: fpha.violation_cost,
+            ..fixture_penalties()
+        },
+        None => fixture_penalties(),
+    }
+}
+
+fn fixture_hydro(hydro: &HydroCase, penalties: HydroPenalties) -> Hydro {
     make_hydro(
         hydro.id,
         HydroSpec {
@@ -228,7 +283,7 @@ fn fixture_hydro(hydro: &HydroCase) -> Hydro {
             max_turbined_m3s: MAX_TURBINED_M3S,
             max_generation_mw: MAX_GENERATION_MW,
             generation_model: HydroGenerationModel::ConstantProductivity,
-            penalties: fixture_penalties(),
+            penalties,
             ..Default::default()
         },
     )
@@ -325,7 +380,7 @@ fn fixture_penalty_table(case: &StudyCase) -> ResolvedPenalties {
             n_stages: case.n_stages,
         },
         &PenaltiesDefaults {
-            hydro: fixture_penalties(),
+            hydro: case_penalties(case),
             bus: BusStagePenalties { excess_cost: 0.0 },
             line: LineStagePenalties { exchange_cost: 0.0 },
             ncs: NcsStagePenalties {
@@ -401,7 +456,12 @@ fn build_system(case: &StudyCase) -> System {
     let builder = SystemBuilder::new()
         .buses(vec![bus])
         .thermals(vec![thermal])
-        .hydros(case.hydros.iter().map(fixture_hydro).collect())
+        .hydros(
+            case.hydros
+                .iter()
+                .map(|hydro| fixture_hydro(hydro, case_penalties(case)))
+                .collect(),
+        )
         .stages(fixture_stages(case))
         .inflow_models(inflow_models)
         .load_models(load_models)
@@ -412,23 +472,84 @@ fn build_system(case: &StudyCase) -> System {
             season_map: Some(monthly_season_map()),
             ..HorizonGraph::default()
         });
-    let builder = match case.inflow_range {
-        Some(range) => {
-            let (constraint, bounds) = inflow_range_constraint(range);
-            builder
-                .generic_constraints(vec![constraint])
-                .resolved_generic_bounds(bounds)
-        }
-        None => builder,
+    let (constraints, bounds) = fixture_generic_constraints(case);
+    let builder = if constraints.is_empty() {
+        builder
+    } else {
+        builder
+            .generic_constraints(constraints)
+            .resolved_generic_bounds(bounds)
     };
     builder
         .build()
         .unwrap_or_else(|e| panic!("{}: the system must build: {e:?}", case.name))
 }
 
-fn inflow_range_constraint(
-    range: InflowRange,
-) -> (GenericConstraint, ResolvedGenericConstraintBounds) {
+/// `(constraint id, stage id, block id, lower, upper)`, one resolved generic bound row.
+type GenericBoundRow = (i32, i32, Option<i32>, Option<f64>, Option<f64>);
+
+fn fixture_generic_constraints(
+    case: &StudyCase,
+) -> (Vec<GenericConstraint>, ResolvedGenericConstraintBounds) {
+    let generic = case
+        .inflow_range
+        .map(inflow_range_constraint)
+        .into_iter()
+        .chain(
+            case.fpha
+                .and_then(|fpha| fpha.generation_floor)
+                .map(|floor| generation_floor_constraint(floor, case.n_stages)),
+        );
+    let (constraints, rows): (Vec<GenericConstraint>, Vec<Vec<GenericBoundRow>>) = generic.unzip();
+    let id_map: HashMap<i32, usize> = constraints
+        .iter()
+        .enumerate()
+        .map(|(position, constraint)| (constraint.id.0, position))
+        .collect();
+    let bounds = ResolvedGenericConstraintBounds::new(&id_map, rows.into_iter().flatten());
+    (constraints, bounds)
+}
+
+fn generation_floor_constraint(
+    floor: GenerationFloor,
+    n_stages: usize,
+) -> (GenericConstraint, Vec<GenericBoundRow>) {
+    let constraint = GenericConstraint {
+        id: EntityId(GENERATION_FLOOR_CONSTRAINT_ID),
+        name: "generation_floor".to_string(),
+        description: None,
+        expression: ConstraintExpression {
+            terms: vec![LinearTerm::literal(
+                GENERATION_FLOOR_COEFFICIENT,
+                VariableRef::HydroGeneration {
+                    hydro_id: SOLE_HYDRO_ID,
+                    block_id: None,
+                    bus_id: None,
+                },
+            )],
+        },
+        slack: Some(SlackConfig {
+            penalty: floor.penalty_per_hour,
+            penalty_basis: PenaltyBasis::PerHour,
+        }),
+        bound_lower: None,
+        bound_upper: None,
+    };
+    let rows = (0..n_stages)
+        .map(|stage| {
+            (
+                GENERATION_FLOOR_CONSTRAINT_ID,
+                stage_id(stage),
+                None,
+                Some(floor.lower_mw),
+                None,
+            )
+        })
+        .collect();
+    (constraint, rows)
+}
+
+fn inflow_range_constraint(range: InflowRange) -> (GenericConstraint, Vec<GenericBoundRow>) {
     let constraint = GenericConstraint {
         id: EntityId(RANGE_CONSTRAINT_ID),
         name: "inflow_range".to_string(),
@@ -449,16 +570,14 @@ fn inflow_range_constraint(
         bound_lower: None,
         bound_upper: None,
     };
-    let id_map: HashMap<i32, usize> = [(RANGE_CONSTRAINT_ID, 0)].into_iter().collect();
-    let rows = [(
+    let rows = vec![(
         RANGE_CONSTRAINT_ID,
         stage_id(range.stage),
-        None::<i32>,
+        None,
         Some(range.lower_m3s),
         Some(range.upper_m3s),
     )];
-    let bounds = ResolvedGenericConstraintBounds::new(&id_map, rows.into_iter());
-    (constraint, bounds)
+    (constraint, rows)
 }
 
 fn fixture_config() -> Config {
@@ -491,16 +610,24 @@ fn fixture_config() -> Config {
 
 fn fixture_hydro_models(case: &StudyCase, system: &System) -> PrepareHydroModelsResult {
     let mut models = PrepareHydroModelsResult::default_from_system(system);
+    assert!(
+        case.fpha.is_none() || case.hydros.len() == 1,
+        "{}: an FPHA case has one hydro",
+        case.name
+    );
     models.production = ProductionModelSet::new(
         case.hydros
             .iter()
             .map(|hydro| {
-                vec![
-                    ResolvedProductionModel::ConstantProductivity {
+                let model = match case.fpha {
+                    Some(fpha) => ResolvedProductionModel::Fpha {
+                        planes: vec![fpha.plane],
+                    },
+                    None => ResolvedProductionModel::ConstantProductivity {
                         productivity: hydro.productivity,
-                    };
-                    case.n_stages
-                ]
+                    },
+                };
+                vec![model; case.n_stages]
             })
             .collect(),
         system.hydros(),
@@ -712,7 +839,8 @@ fn assert_non_degenerate(fixture: &str, quantity: &str, value: f64) {
     );
 }
 
-/// A derived value, compared within `2γ_n·S + added`; `slot` is `None` for the objective.
+/// A derived value, compared within `2γ_n·S + added`; `slot` is `None` for a quantity at no cut
+/// slot.
 struct ClosedForm<'a> {
     fixture: &'a str,
     quantity: &'a str,
@@ -724,8 +852,12 @@ struct ClosedForm<'a> {
 }
 
 impl ClosedForm<'_> {
+    fn bound(&self) -> f64 {
+        2.0 * rounding_factor(self.n) * self.abs_sum + self.added
+    }
+
     fn assert_solved(&self, got: f64) {
-        let bound = 2.0 * rounding_factor(self.n) * self.abs_sum + self.added;
+        let bound = self.bound();
         let gap = (got - self.want).abs();
         let at = self
             .slot
@@ -750,6 +882,7 @@ fn terminal_par1_case(psi: f64, block_hours: f64) -> StudyCase {
         hydros: vec![HydroCase::sole(vec![psi])],
         storage_only_stage: None,
         inflow_range: None,
+        fpha: None,
     }
 }
 
@@ -827,6 +960,7 @@ fn injected_cut_case() -> StudyCase {
         }],
         storage_only_stage: None,
         inflow_range: None,
+        fpha: None,
     }
 }
 
@@ -1059,6 +1193,7 @@ fn prefilling_case(upstream_productivity: f64, target_productivity: f64) -> Stud
         ],
         storage_only_stage: None,
         inflow_range: None,
+        fpha: None,
     }
 }
 
@@ -1189,23 +1324,27 @@ fn range_case(range: InflowRange) -> StudyCase {
     }
 }
 
-/// The template row whose unscaled bounds are the fixture's `[L, U]`.
-fn range_row(setup: &StudySetup, stage: usize, range: InflowRange) -> usize {
+/// The template row whose unscaled bounds are the fixture's `[lower, upper]`; an infinite side
+/// matches only itself.
+fn row_with_bounds(setup: &StudySetup, stage: usize, lower: f64, upper: f64) -> usize {
     let template = &setup.inputs.stage_data.stage_templates.templates[stage];
     let matches = |scaled: f64, row_scale: f64, want: f64| {
-        (scaled / row_scale - want).abs() <= BOUND_MATCH_TOLERANCE * want.abs().max(1.0)
+        if want.is_infinite() {
+            scaled == want
+        } else {
+            (scaled / row_scale - want).abs() <= BOUND_MATCH_TOLERANCE * want.abs().max(1.0)
+        }
     };
     let rows: Vec<usize> = (0..template.num_rows)
         .filter(|&row| {
             let row_scale = template.row_scale[row];
-            matches(template.row_lower[row], row_scale, range.lower_m3s)
-                && matches(template.row_upper[row], row_scale, range.upper_m3s)
+            matches(template.row_lower[row], row_scale, lower)
+                && matches(template.row_upper[row], row_scale, upper)
         })
         .collect();
     let [row] = rows[..] else {
         panic!(
-            "stage {stage}: exactly one row must carry the range [{}, {}], got {rows:?}",
-            range.lower_m3s, range.upper_m3s
+            "stage {stage}: exactly one row must carry the bounds [{lower}, {upper}], got {rows:?}"
         );
     };
     row
@@ -1221,7 +1360,7 @@ fn assert_range_row_lag_price(range: InflowRange, solves: [(RangeSide, f64); 2])
     let base = par.deterministic_base(RANGE_STAGE, 0);
     let innovation = par.sigma(RANGE_STAGE, 0) * noise[0];
     let psi = psi_at(&setup, RANGE_STAGE, 0)[0];
-    let row = range_row(&setup, RANGE_STAGE, range);
+    let row = row_with_bounds(&setup, RANGE_STAGE, range.lower_m3s, range.upper_m3s);
     let row_scale = setup.inputs.stage_data.stage_templates.templates[RANGE_STAGE].row_scale[row];
     let outcomes: Vec<(RangeSide, f64, f64, ProbeCut)> = solves
         .iter()
@@ -1679,4 +1818,199 @@ fn a_non_finalizing_stage_keeps_the_lag_alias() {
 #[test]
 fn a_finalizing_stage_keeps_the_lag_alias() {
     assert_weekly_lag_alias(WEEKLY_PAR_FINALIZING_STAGE, true);
+}
+
+/// derived: the hydro empties into the resource priced `price` (the thermal, or σ when σ is
+/// basic), so one more hm³ of `V_in` adds `γ_q/κ` m³/s of turbining and `σ_c·γᵥ/2` MW of head
+/// through the plane, each displacing `price`.
+fn fpha_storage_value(price: f64, plane: &FphaPlane, share: f64, hours: f64) -> f64 {
+    -(price * plane.gamma_q) / (M3S_TO_HM3 * DEFAULT_COST_SCALE_FACTOR)
+        - share * price * hours * plane.gamma_v / (2.0 * DEFAULT_COST_SCALE_FACTOR)
+}
+
+/// [`terminal_par1_case`] with the sole hydro on [`FPHA_PLANE`], σ priced at `violation_cost`.
+fn fpha_case(
+    name: &'static str,
+    violation_cost: f64,
+    generation_floor: Option<GenerationFloor>,
+) -> StudyCase {
+    StudyCase {
+        name,
+        fpha: Some(FphaCase {
+            plane: FPHA_PLANE,
+            violation_cost,
+            generation_floor,
+        }),
+        ..terminal_par1_case(TERMINAL_PSI, MONTH_HOURS)
+    }
+}
+
+/// The compact setup of `case`, the cut opening 0 of [`FPHA_STAGE`] yields at the initial state
+/// with an empty pool, and that solve's unscaled σ in MW.
+fn solve_fpha_case(case: &StudyCase) -> (StudySetup, ProbeCut, f64) {
+    let (setup, _) = compact_study(case, FPHA_STAGE);
+    let x_hat = oracle_initial_state(&setup);
+    let noise = opening_noise(&setup, FPHA_STAGE);
+    let cut = compact_cut(&setup, FPHA_STAGE, &x_hat, &noise, &[], case.name);
+    let col = setup.stage_ctx().geometry_per_stage[FPHA_STAGE]
+        .fpha_slack_col(FphaCellLocal::new(0), BlockIdx::new(0));
+    let col_scale = setup.inputs.stage_data.stage_templates.templates[FPHA_STAGE].col_scale[col];
+    let sigma_mw = cut.primal[col] * col_scale;
+    (setup, cut, sigma_mw)
+}
+
+fn assert_fpha_storage_coefficient(
+    case: &StudyCase,
+    setup: &StudySetup,
+    cut: &ProbeCut,
+    price: f64,
+) {
+    let fixture = case.name;
+    let storage = storage_slot(&setup.training_ctx().cut_state_layouts[FPHA_STAGE - 1], 0);
+    let hours = case.block_hours;
+    let want = fpha_storage_value(price, &FPHA_PLANE, FPHA_CELL_SHARE, hours);
+    let head =
+        FPHA_CELL_SHARE * price * hours * FPHA_PLANE.gamma_v / (2.0 * DEFAULT_COST_SCALE_FACTOR);
+    let tol = UnscaledTolerance::from_active_profile();
+    // n = 10: price·γ_q, M, M·K and ÷ (4), σ_c·price, ·h, ·γᵥ and ÷ (4, 2·K is exact) and their
+    // difference derive it, rc ÷ col_scale solves it; both terms are negative, so |want| is their
+    // absolute sum; added: v_in's rc tolerance.
+    let closed_form = ClosedForm {
+        fixture,
+        quantity: "storage coefficient",
+        slot: Some(storage),
+        want,
+        n: 10,
+        abs_sum: want.abs(),
+        added: tol.reduced_cost(incoming_storage_col_scale(setup, FPHA_STAGE, 0)),
+    };
+    assert!(
+        head > HEAD_TERM_MARGIN * closed_form.bound(),
+        "{fixture}: the head term {head:e} is within {HEAD_TERM_MARGIN} bounds {:e} of the closed \
+         form, so a closed form without it could pass",
+        closed_form.bound()
+    );
+    closed_form.assert_solved(cut.coefficients[storage]);
+}
+
+/// derived: σ is priced far above the thermal, so the thermal covers the load the plane leaves,
+/// σ is 0, the plane dual is `−c·h/K` and the storage coefficient is
+/// `fpha_storage_value(c, ..)`: the water value at `γ_q` plus the head term `σ_c·c·h·γᵥ/(2K)`,
+/// which a plane without `V_in` drops.
+#[test]
+fn an_fpha_storage_coefficient_prices_the_head_at_the_thermal_cost_when_the_slack_is_idle() {
+    let case = fpha_case(
+        "terminal PAR(1) on an FPHA plane, slack idle",
+        IDLE_FPHA_VIOLATION_COST,
+        None,
+    );
+    let (setup, cut, sigma_mw) = solve_fpha_case(&case);
+    assert!(
+        sigma_mw <= POWER_FLOOR,
+        "{}: the FPHA slack {sigma_mw:e} MW must stay within {POWER_FLOOR:e} of zero at the price \
+         {IDLE_FPHA_VIOLATION_COST}",
+        case.name
+    );
+    assert_fpha_storage_coefficient(&case, &setup, &cut, THERMAL_COST_PER_MWH);
+}
+
+/// derived: σ is priced below the thermal, so σ covers the load the plane leaves, the plane dual
+/// is `−p·h/K` and the storage coefficient is `fpha_storage_value(p, ..)`; a plane dual read at
+/// the thermal cost misses it by the head and turbining terms at `c − p`.
+#[test]
+fn an_fpha_storage_coefficient_prices_the_head_at_the_slack_price_when_the_slack_is_active() {
+    let case = fpha_case(
+        "terminal PAR(1) on an FPHA plane, slack active",
+        ACTIVE_FPHA_VIOLATION_COST,
+        None,
+    );
+    let hours = case.block_hours;
+    let idle = fpha_storage_value(THERMAL_COST_PER_MWH, &FPHA_PLANE, FPHA_CELL_SHARE, hours);
+    let active = fpha_storage_value(
+        ACTIVE_FPHA_VIOLATION_COST,
+        &FPHA_PLANE,
+        FPHA_CELL_SHARE,
+        hours,
+    );
+    assert!(
+        (active - idle).abs() > SEPARATION_FLOOR * active.abs().max(idle.abs()),
+        "{}: the idle and active storage values {idle:e} and {active:e} must differ by more than \
+         {SEPARATION_FLOOR:e} relative",
+        case.name
+    );
+    let (setup, cut, sigma_mw) = solve_fpha_case(&case);
+    assert_has_power(case.name, "FPHA slack", sigma_mw);
+    assert_fpha_storage_coefficient(&case, &setup, &cut, ACTIVE_FPHA_VIOLATION_COST);
+}
+
+/// derived: the floor holds `g` above the plane's output, so σ is basic at `p`, above the deficit
+/// cost plus the generation-floor penalty, while the thermal stays marginal. `g` is basic, so its
+/// zero reduced cost gives `|π_plane| = |π_load| + G·|π_floor|` with `|π_load| = c·h/K`, and the
+/// storage coefficient is `fpha_storage_value(p, ..)`.
+#[test]
+fn a_generation_floor_activates_the_fpha_slack_above_the_two_term_sum() {
+    let two_term_sum = DEFICIT_COST_PER_MWH + fixture_penalties().generation_violation_below_cost;
+    assert!(
+        FLOOR_FPHA_VIOLATION_COST > two_term_sum,
+        "the FPHA price {FLOOR_FPHA_VIOLATION_COST} must exceed the deficit cost plus the \
+         generation-floor penalty, {two_term_sum}"
+    );
+    let case = fpha_case(
+        "terminal PAR(1) on an FPHA plane with a generation floor",
+        FLOOR_FPHA_VIOLATION_COST,
+        Some(GENERATION_FLOOR),
+    );
+    let fixture = case.name;
+    let (setup, cut, sigma_mw) = solve_fpha_case(&case);
+    assert_has_power(fixture, "FPHA slack", sigma_mw);
+
+    let geometry = &setup.stage_ctx().geometry_per_stage[FPHA_STAGE];
+    assert_eq!(
+        geometry.fpha.len(),
+        1,
+        "{fixture}: one cell, one block and one plane give one plane row"
+    );
+    let plane_row = geometry.fpha.start;
+    let load_row = geometry.load_balance_row(BusSys::new(0), BlockIdx::new(0));
+    let floor_row = row_with_bounds(&setup, FPHA_STAGE, GENERATION_FLOOR.lower_mw, f64::INFINITY);
+    let row_scale = &setup.inputs.stage_data.stage_templates.templates[FPHA_STAGE].row_scale;
+    let unscaled_dual = |row: usize| cut.dual[row] * row_scale[row];
+    let (plane, load, floor) = (
+        unscaled_dual(plane_row),
+        unscaled_dual(load_row),
+        unscaled_dual(floor_row),
+    );
+    assert_has_power(fixture, "generation-floor dual", floor);
+
+    let tol = UnscaledTolerance::from_active_profile();
+    // n = 3: c·h and ÷ K derive it, d·row_scale solves it; added: the load row's row-dual
+    // tolerance.
+    let load_price = THERMAL_COST_PER_MWH * case.block_hours / DEFAULT_COST_SCALE_FACTOR;
+    ClosedForm {
+        fixture,
+        quantity: "load-balance dual magnitude",
+        slot: None,
+        want: load_price,
+        n: 3,
+        abs_sum: load_price,
+        added: tol.row_dual(row_scale[load_row]),
+    }
+    .assert_solved(load.abs());
+    // n = 5: three d·row_scale, G·|π_floor| and the sum; added: the three rows' row-dual
+    // tolerances, the floor's times G.
+    let through_g = load.abs() + GENERATION_FLOOR_COEFFICIENT * floor.abs();
+    ClosedForm {
+        fixture,
+        quantity: "plane dual magnitude",
+        slot: None,
+        want: through_g,
+        n: 5,
+        abs_sum: through_g,
+        added: tol.row_dual(row_scale[plane_row])
+            + tol.row_dual(row_scale[load_row])
+            + GENERATION_FLOOR_COEFFICIENT * tol.row_dual(row_scale[floor_row]),
+    }
+    .assert_solved(plane.abs());
+
+    assert_fpha_storage_coefficient(&case, &setup, &cut, FLOOR_FPHA_VIOLATION_COST);
 }

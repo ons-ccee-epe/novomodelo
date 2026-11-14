@@ -690,6 +690,64 @@ Read: `lp/builder/entries.rs` (`fill_fpha_entries` — pushes `−γᵥ/2` onto 
 incoming- and outgoing-storage columns), `lp/builder/rows.rs` (`fill_fpha_rows`),
 and `lp/builder/template.rs`.
 
+## The FPHA slack sits only in plane rows
+
+Each FPHA cell has one plane slack `σ` per block: a column in `[0, ∞)` with
+`−1` in every plane row of that cell and block and in no other row. No
+water-balance, load-balance or generic-constraint row holds it, so the inflow
+coupling and the lag fold see no new term. The family is
+`StageGeometry::fpha_slack`, addressed by `fpha_slack_col(FphaCellLocal,
+BlockIdx)` and allocated last, so it shifts no other family's start. Its price
+is the hydro's `fpha_violation_cost` times the block's hours, divided by the
+cost scale like every other objective term.
+
+The cell's generation `g` is basic, so its zero reduced cost makes the plane
+dual, in magnitude, the bus's load-balance dual `λ_bus` plus the dual
+`μ_GHMIN` of the cell's min-generation row plus the duals of the
+generic-constraint rows that hold `g`, each per MWh. `σ` stays 0 only while
+`fpha_violation_cost` exceeds that sum. Once `σ` is basic it sets the plane
+dual, so the storage coefficient prices the head term `σ_c·γᵥ/2` and the
+turbining term `γ_q` at the slack price instead of the marginal resource's
+cost.
+
+`semantic.5b.53` checks only the first two terms: it warns when the price does
+not exceed the largest deficit-segment cost plus `generation_violation_below_cost`.
+A lower-bounded generic constraint on FPHA generation whose slack is priced at
+or above the FPHA price adds a third term, so `σ` can be active at a price that
+passes the check. RE_450 of the DECOMP March 2026 rv2 case is such a
+constraint.
+
+The wrong-but-compiling alternatives:
+
+- `σ` in a row that carries an inflow (a water-balance row): it then moves
+  water as well as MW, and while it is basic that row's dual, which the lag
+  price reads through the coupling, is set by the slack price;
+- `σ` priced at `fpha_violation_cost` per hour without the block hours: a MWh
+  of plane violation then costs the price divided by the block's hours, so `σ`
+  undercuts the thermal and the deficit and the plane no longer binds.
+
+Read: `lp/builder/layout.rs` (`StageGeometry::fpha_slack`, `fpha_slack_col`),
+`lp/builder/columns.rs` (`fill_fpha_slack_columns`), `lp/builder/entries.rs`
+(`fill_fpha_entries`). Pinned by, in
+`tests/cut_oracles/analytical_fold_cuts.rs`, the closed forms
+`an_fpha_storage_coefficient_prices_the_head_at_the_thermal_cost_when_the_slack_is_idle`
+and `an_fpha_storage_coefficient_prices_the_head_at_the_slack_price_when_the_slack_is_active`
+(the storage coefficient's head term is priced at the thermal cost while `σ` is
+0 and at the slack price once `σ` is basic) and
+`a_generation_floor_activates_the_fpha_slack_above_the_two_term_sum` (a priced
+generation floor makes `σ` basic at a price above the two-term sum, with the
+plane dual equal to the load dual plus the floor dual);
+`cold_solves_and_cuts_agree_across_the_formulations_with_an_active_fpha_slack`
+(`tests/cut_oracles/cross_formulation.rs`: with `σ` active in some solve, the
+stage LP and an LP that defines the inflow in a row agree on objectives and
+cuts); `expanded_template_carries_the_fpha_slack_column`
+(`tests/template_integration/expander.rs`: that LP carries each `σ` column with
+its bounds, price and plane-row entries); and
+`fpha_slack_column_structure_one_cell_five_planes` and
+`fpha_slack_absent_without_fpha` (`tests/template_integration/fpha_structure.rs`:
+the bounds, the price and a `−1` in each plane row and nowhere else, and no
+column without FPHA).
+
 ## Parallel evaporation is one stage-level slot
 
 On a parallel stage each evaporating hydro has **one** evaporation slot, on the
