@@ -531,46 +531,25 @@ pub(super) fn check_initial_storage_first_stage_bounds(
     ctx: &mut ValidationContext,
 ) {
     let seed_by_hydro = storage_seed_by_hydro(data);
-    let mut study_stage_ids: Vec<i32> = data
-        .stages
-        .stages
-        .iter()
-        .map(|s| s.id)
-        .filter(|&id| id >= 0)
-        .collect();
-    study_stage_ids.sort_unstable();
-    let mut storage_override: HashMap<(EntityId, i32), (Option<f64>, Option<f64>)> = HashMap::new();
-    for row in data
-        .hydro_bounds
-        .iter()
-        .filter(|row| row.block_id.is_none())
-    {
-        let (min, max) = storage_override
-            .entry((row.hydro_id, row.stage_id))
-            .or_default();
-        *min = row.min_storage_hm3.or(*min);
-        *max = row.max_storage_hm3.or(*max);
-    }
+    let (study_stage_ids, bounds) = resolve_study_hydro_bounds(data);
 
-    for hydro in &data.hydros {
+    for (h_idx, hydro) in data.hydros.iter().enumerate() {
         let Some(&seed) = seed_by_hydro.get(&hydro.id) else {
             continue;
         };
         if hydro.filling.is_some() {
             continue;
         }
-        let Some(&stage_id) = study_stage_ids
+        let Some(t) = study_stage_ids
             .iter()
-            .find(|&&id| commissioning_active(hydro.entry_stage_id, hydro.exit_stage_id, id))
+            .position(|&id| commissioning_active(hydro.entry_stage_id, hydro.exit_stage_id, id))
         else {
             continue;
         };
-        let (min_override, max_override) = storage_override
-            .get(&(hydro.id, stage_id))
-            .copied()
-            .unwrap_or_default();
-        let floor = min_override.unwrap_or(hydro.min_storage_hm3);
-        let ceiling = max_override.unwrap_or(hydro.max_storage_hm3);
+        let stage_id = study_stage_ids[t];
+        let stage_bounds = bounds.hydro_bounds(h_idx, t);
+        let floor = stage_bounds.min_storage_hm3;
+        let ceiling = stage_bounds.max_storage_hm3;
         let gap = if seed < floor - envelope_tolerance(floor) {
             format!(
                 "below the minimum storage ({floor}) at the end of stage {stage_id}, its first \
