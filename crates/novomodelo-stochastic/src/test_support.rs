@@ -4,10 +4,11 @@
 //! `test-support` feature. Compiles only under `cfg(test)` or that feature;
 //! must never be enabled in a production build.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Once};
 
 use novomodelo_core::scenario::AnnualComponent;
 use novomodelo_core::{EntityId, InflowModel, SeasonCycleType, SeasonDefinition, SeasonMap};
+use tracing::subscriber::Interest;
 use tracing::{Event, Level, Metadata, Subscriber, span};
 
 use crate::OpeningTree;
@@ -256,6 +257,48 @@ pub fn make_inflow_model(
     }
 }
 
+/// Installs, once per test binary, a global subscriber that records nothing and
+/// answers [`Interest::sometimes`] for every callsite, so a scoped subscriber
+/// sees every event it enables.
+///
+/// Without it, tracing caches a callsite's interest from the thread that first
+/// reaches it while only one subscriber is registered: a concurrent test with no
+/// subscriber caches the callsite as "never" and a scoped recorder on another
+/// thread then misses its events.
+pub fn keep_callsite_interest_dynamic() {
+    static INSTALL: Once = Once::new();
+    INSTALL.call_once(|| {
+        // Err only when the binary already set a global subscriber; that one stays.
+        let _ = tracing::subscriber::set_global_default(DynamicInterest);
+    });
+}
+
+struct DynamicInterest;
+
+impl Subscriber for DynamicInterest {
+    fn register_callsite(&self, _metadata: &'static Metadata<'static>) -> Interest {
+        Interest::sometimes()
+    }
+
+    fn enabled(&self, _metadata: &Metadata<'_>) -> bool {
+        false
+    }
+
+    fn new_span(&self, _attrs: &span::Attributes<'_>) -> span::Id {
+        span::Id::from_u64(1)
+    }
+
+    fn record(&self, _span: &span::Id, _values: &span::Record<'_>) {}
+
+    fn record_follows_from(&self, _span: &span::Id, _follows: &span::Id) {}
+
+    fn event(&self, _event: &Event<'_>) {}
+
+    fn enter(&self, _span: &span::Id) {}
+
+    fn exit(&self, _span: &span::Id) {}
+}
+
 /// Records the `message` of every WARN event.
 pub struct WarnRecorder {
     messages: Arc<Mutex<Vec<String>>>,
@@ -265,6 +308,7 @@ impl WarnRecorder {
     /// A recorder and the shared list it appends to.
     #[must_use]
     pub fn new() -> (Self, Arc<Mutex<Vec<String>>>) {
+        keep_callsite_interest_dynamic();
         let messages = Arc::new(Mutex::new(Vec::new()));
         (
             Self {
