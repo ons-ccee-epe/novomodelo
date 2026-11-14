@@ -1395,6 +1395,7 @@ struct HydroViolationCosts {
     outflow_above: f64,
     turbined: f64,
     generation: f64,
+    fpha: f64,
 }
 
 impl HydroViolationCosts {
@@ -1405,10 +1406,11 @@ impl HydroViolationCosts {
             + self.outflow_above
             + self.turbined
             + self.generation
+            + self.fpha
     }
 }
 
-/// Compute the 6 per-constraint hydro violation costs from a solution view.
+/// Compute the per-constraint hydro violation costs from a solution view.
 fn compute_hydro_violation_costs(
     equipment: &StageGeometry,
     col_cost: impl Fn(usize) -> f64,
@@ -1428,6 +1430,12 @@ fn compute_hydro_violation_costs(
         (range_sum(equipment.withdrawal_slack_neg.clone())
             + range_sum(equipment.withdrawal_slack_pos.clone()))
             * cost_scale_factor
+    };
+
+    let fpha = if equipment.fpha_slack.is_empty() {
+        0.0
+    } else {
+        range_sum(equipment.fpha_slack.clone()) * cost_scale_factor
     };
 
     let (outflow_below, outflow_above, turbined, generation) =
@@ -1453,6 +1461,7 @@ fn compute_hydro_violation_costs(
         outflow_above,
         turbined,
         generation,
+        fpha,
     }
 }
 
@@ -1563,6 +1572,7 @@ fn compute_cost_result(
         generation_violation_cost: hv.generation,
         evaporation_violation_cost: hv.evaporation,
         withdrawal_violation_cost: hv.withdrawal,
+        fpha_violation_cost: hv.fpha,
         inflow_penalty_cost,
         generic_violation_cost,
         spillage_cost: spillage_cost + diversion_cost,
@@ -1882,6 +1892,7 @@ fn extract_stub_collections(
 ///     generation_violation_cost: 0.0,
 ///     evaporation_violation_cost: 0.0,
 ///     withdrawal_violation_cost: 0.0,
+///     fpha_violation_cost: 0.0,
 ///     inflow_penalty_cost: 3.0,
 ///     generic_violation_cost: 2.0,
 ///     spillage_cost: 1.0,

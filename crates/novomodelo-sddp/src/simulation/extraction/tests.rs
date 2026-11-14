@@ -20,8 +20,8 @@ use crate::horizon_mode::HorizonMode;
 use crate::lead_time::{AnticipatedResolution, PointResolution};
 use crate::lp::builder::{GenericConstraintRowEntry, StageGeometry, evaporation_slot_count};
 use crate::lp::indexer::{
-    AnticipatedPlants, BlockRowFamily, FillingTargetLocal, FloorLocal, FphaLocal, HydroCellIndex,
-    HydroSys, StateSpace, StudyDimensions,
+    AnticipatedPlants, BlockIdx, BlockRowFamily, FillingTargetLocal, FloorLocal, FphaCellLocal,
+    FphaLocal, HydroCellIndex, HydroSys, StateSpace, StudyDimensions,
 };
 use crate::simulation::types::{
     ScenarioCategoryCosts, SimulationCostResult, SimulationInflowLagResult,
@@ -2963,6 +2963,7 @@ fn make_cost(
         generation_violation_cost: 0.0,
         evaporation_violation_cost: 0.0,
         withdrawal_violation_cost: 0.0,
+        fpha_violation_cost: 0.0,
         inflow_penalty_cost: inflow_penalty,
         generic_violation_cost: generic_violation,
         spillage_cost: spillage,
@@ -4300,7 +4301,9 @@ fn cost_unscaled_by_col_scale() {
 }
 
 /// Verify that `compute_cost_result` decomposes `hydro_violation_cost` into
-/// the 6 per-constraint components, and that the sum invariant holds.
+/// the per-constraint components, and that the sum invariant holds.
+///
+/// derived: each component is `Σ primal × objective coefficient × K`, K = 1e6.
 #[test]
 fn hydro_violation_cost_decomposition() {
     let indexer = make_indexer_2h_1fpha_1blk();
@@ -4356,6 +4359,11 @@ fn hydro_violation_cost_decomposition() {
     // withdrawal (pos): h0=0.0, h1=0.3 * 15.0  => 4.5 * 1_000_000 = 4_500_000
     primal[15] = 0.3;
     obj[15] = 15.0;
+
+    // fpha: cell 0, block 0 = 2.0 * 7.0  => 14 * 1_000_000 = 14_000_000
+    let fpha_col = indexer.fpha_slack_col(FphaCellLocal::new(0), BlockIdx::new(0));
+    primal[fpha_col] = 2.0;
+    obj[fpha_col] = 7.0;
 
     // Total objective for the LP (sum of primal * obj):
     let total_obj: f64 = primal.iter().zip(obj.iter()).map(|(p, o)| p * o).sum();
@@ -4422,6 +4430,7 @@ fn hydro_violation_cost_decomposition() {
     let expected_generation = (6.0 * 3.0) * 1_000_000.0;
     let expected_withdrawal = (0.5 * 20.0 + 0.3 * 15.0) * 1_000_000.0;
     let expected_evaporation = 0.0; // no evaporation hydros
+    let expected_fpha = (2.0 * 7.0) * 1_000_000.0;
 
     assert!(
         (cost.outflow_violation_below_cost - expected_outflow_below).abs() < 1e-6,
@@ -4453,18 +4462,214 @@ fn hydro_violation_cost_decomposition() {
         "withdrawal: expected {expected_withdrawal}, got {}",
         cost.withdrawal_violation_cost
     );
+    assert!(
+        (cost.fpha_violation_cost - expected_fpha).abs() < 1e-6,
+        "fpha: expected {expected_fpha}, got {}",
+        cost.fpha_violation_cost
+    );
 
-    // Sum invariant: hydro_violation_cost == sum of all 6 components.
+    // Sum invariant: hydro_violation_cost == sum of all components.
     let component_sum = cost.outflow_violation_below_cost
         + cost.outflow_violation_above_cost
         + cost.turbined_violation_cost
         + cost.generation_violation_cost
         + cost.evaporation_violation_cost
-        + cost.withdrawal_violation_cost;
+        + cost.withdrawal_violation_cost
+        + cost.fpha_violation_cost;
     assert!(
         (cost.hydro_violation_cost - component_sum).abs() < 1e-6,
         "hydro_violation_cost ({}) must equal sum of components ({component_sum})",
         cost.hydro_violation_cost
+    );
+}
+
+/// A stage without FPHA books exactly `+0.0` in `fpha_violation_cost`, and its
+/// hydro violation cost is the withdrawal cost alone.
+///
+/// derived: withdrawal = 0.5 × 20.0 × K = `10_000_000`, K = 1e6.
+#[test]
+fn fpha_violation_cost_is_zero_without_fpha() {
+    let indexer = test_support::geometry(&counts_2h_1fpha_1blk(), vec![], &[], vec![]);
+    assert!(indexer.fpha_slack.is_empty());
+    let study_dims = test_support::study_dims_for(&counts_2h_1fpha_1blk());
+    let state = test_support::state_layout(2, 0);
+
+    let n_cols = col_count(&indexer);
+    let mut primal = vec![0.0_f64; n_cols];
+    let mut obj = vec![0.0_f64; n_cols];
+    let withdrawal_col = indexer.withdrawal_slack_neg.start;
+    primal[withdrawal_col] = 0.5;
+    obj[withdrawal_col] = 20.0;
+    let total_obj: f64 = primal.iter().zip(obj.iter()).map(|(p, o)| p * o).sum();
+
+    let dual = vec![0.0_f64; geometry_row_capacity(&indexer)];
+    let row_lower = vec![0.0_f64; geometry_row_capacity(&indexer)];
+    let counts = EntityCounts {
+        hydro_ids: vec![1, 2],
+        hydro_productivities: vec![0.0, 1.5],
+        thermal_ids: vec![],
+        line_ids: vec![],
+        bus_ids: vec![],
+        pumping_station_ids: vec![],
+        contract_ids: vec![],
+        non_controllable_ids: vec![],
+    };
+
+    let ec = zero_energy_conversion(2, 1);
+    let result = extract_stage_result(
+        &SolutionView {
+            primal: &primal,
+            dual: &dual,
+            objective: total_obj,
+            objective_coeffs: &obj,
+            row_lower: &row_lower,
+        },
+        &StageExtractionSpec {
+            study_dims: &study_dims,
+            geometry: &indexer,
+            hydro_cell_index: &test_support::identity_hydro_cell_index(256),
+            state: &state,
+            entity_counts: &counts,
+            inflow_m3s_per_hydro: &[0.0; 2],
+            incoming_lags: &zero_lags(&state),
+            block_hours: &[],
+            generic_constraint_entries: &[],
+            ncs_col_upper: &[],
+            pumping_consumption_mw_per_m3s: &[],
+            contract_prices: &[],
+            contract_slots: &[],
+            diversion_upstream: &HashMap::new(),
+            hydro_productivities: &[0.0, 1.5],
+            col_scale: &[],
+            row_scale: &[],
+            cumulative_discount_factor: 1.0,
+            cost_scale_factor: 1_000_000.0,
+            energy_conversion: &ec,
+            hydro_min_storage_hm3: &[0.0; 2],
+            stage_index: 0,
+            horizon: &HorizonMode::Finite { num_stages: 1 },
+            anticipated_windows: &[],
+            study_stage_ids: &[],
+        },
+        0,
+    );
+
+    let cost = &result.costs[0];
+    let expected_withdrawal = (0.5 * 20.0) * 1_000_000.0;
+    assert_eq!(
+        cost.fpha_violation_cost.to_bits(),
+        0.0_f64.to_bits(),
+        "no FPHA slack family: fpha_violation_cost must be +0.0, got {}",
+        cost.fpha_violation_cost
+    );
+    assert!(
+        (cost.withdrawal_violation_cost - expected_withdrawal).abs() < 1e-6,
+        "withdrawal: expected {expected_withdrawal}, got {}",
+        cost.withdrawal_violation_cost
+    );
+    assert!(
+        (cost.hydro_violation_cost - expected_withdrawal).abs() < 1e-6,
+        "hydro_violation_cost ({}) must equal the withdrawal cost alone ({expected_withdrawal})",
+        cost.hydro_violation_cost
+    );
+}
+
+/// An active FPHA slack is booked in `fpha_violation_cost`, inside
+/// `hydro_violation_cost`, so the five category totals sum to `immediate_cost`.
+///
+/// derived: `immediate_cost` = (500.06 - 500.0) × K = `60_000` and
+/// `fpha_violation_cost` = 3.0 × 0.02 × K = `60_000`, K = 1e6.
+#[test]
+fn cost_breakdown_sums_to_immediate_with_active_fpha_slack() {
+    let indexer = make_indexer_2h_1fpha_1blk();
+    let study_dims = test_support::study_dims_for(&counts_2h_1fpha_1blk());
+    let state = test_support::state_layout(2, 0);
+    let n_cols = col_count(&indexer);
+    let fpha_col = indexer.fpha_slack_col(FphaCellLocal::new(0), BlockIdx::new(0));
+
+    let mut primal = vec![0.0_f64; n_cols];
+    primal[state.theta] = 500.0;
+    primal[fpha_col] = 3.0;
+    let mut obj = vec![0.0_f64; n_cols];
+    obj[state.theta] = 1.0;
+    obj[fpha_col] = 0.02;
+    let objective_val = 500.06_f64;
+
+    let dual = vec![0.0_f64; geometry_row_capacity(&indexer)];
+    let row_lower = vec![0.0_f64; geometry_row_capacity(&indexer)];
+    let counts = EntityCounts {
+        hydro_ids: vec![1, 2],
+        hydro_productivities: vec![0.0, 1.5],
+        thermal_ids: vec![],
+        line_ids: vec![],
+        bus_ids: vec![],
+        pumping_station_ids: vec![],
+        contract_ids: vec![],
+        non_controllable_ids: vec![],
+    };
+
+    let ec = zero_energy_conversion(2, 1);
+    let result = extract_stage_result(
+        &SolutionView {
+            primal: &primal,
+            dual: &dual,
+            objective: objective_val,
+            objective_coeffs: &obj,
+            row_lower: &row_lower,
+        },
+        &StageExtractionSpec {
+            study_dims: &study_dims,
+            geometry: &indexer,
+            hydro_cell_index: &test_support::identity_hydro_cell_index(256),
+            state: &state,
+            entity_counts: &counts,
+            inflow_m3s_per_hydro: &[0.0; 2],
+            incoming_lags: &zero_lags(&state),
+            block_hours: &[],
+            generic_constraint_entries: &[],
+            ncs_col_upper: &[],
+            pumping_consumption_mw_per_m3s: &[],
+            contract_prices: &[],
+            contract_slots: &[],
+            diversion_upstream: &HashMap::new(),
+            hydro_productivities: &[0.0, 1.5],
+            col_scale: &[],
+            row_scale: &[],
+            cumulative_discount_factor: 1.0,
+            cost_scale_factor: 1_000_000.0,
+            energy_conversion: &ec,
+            hydro_min_storage_hm3: &[0.0; 2],
+            stage_index: 0,
+            horizon: &HorizonMode::Finite { num_stages: 1 },
+            anticipated_windows: &[],
+            study_stage_ids: &[],
+        },
+        0,
+    );
+
+    let cost = &result.costs[0];
+    assert!(
+        (cost.immediate_cost - 60_000.0).abs() < 1.0,
+        "immediate_cost should be 60_000.0, got {}",
+        cost.immediate_cost
+    );
+    assert!(
+        (cost.fpha_violation_cost - 60_000.0).abs() < 1.0,
+        "fpha_violation_cost should be 60_000.0, got {}",
+        cost.fpha_violation_cost
+    );
+
+    let mut accum = zero_accum();
+    accumulate_category_costs(cost, &mut accum);
+    let category_sum = accum.resource_cost
+        + accum.recourse_cost
+        + accum.violation_cost
+        + accum.regularization_cost
+        + accum.imputed_cost;
+    assert!(
+        (category_sum - cost.immediate_cost).abs() < 1.0,
+        "category sum ({category_sum}) must equal immediate_cost ({})",
+        cost.immediate_cost
     );
 }
 

@@ -2603,7 +2603,8 @@ fn d21_min_outflow_regression() {
             + cost.turbined_violation_cost
             + cost.generation_violation_cost
             + cost.evaporation_violation_cost
-            + cost.withdrawal_violation_cost;
+            + cost.withdrawal_violation_cost
+            + cost.fpha_violation_cost;
         assert!(
             (cost.hydro_violation_cost - component_sum).abs() < 1e-6,
             "D21 stage {s}: sum invariant failed: hydro_violation_cost={}, component_sum={}",
@@ -2635,6 +2636,11 @@ fn d21_min_outflow_regression() {
             cost.withdrawal_violation_cost.abs() < 1e-10,
             "D21 stage {s}: withdrawal should be 0, got {}",
             cost.withdrawal_violation_cost
+        );
+        assert!(
+            cost.fpha_violation_cost == 0.0,
+            "D21 stage {s}: fpha should be 0, got {}",
+            cost.fpha_violation_cost
         );
 
         let slack_m3s = stage_result.hydros[0].outflow_slack_below_m3s;

@@ -4712,7 +4712,7 @@ mod anticipated_numerical_reconciliation_k2 {
 
         // The named cost categories must sum to `immediate_cost` at every stage,
         // including the anticipated commitment fuel as `anticipated_thermal_cost`.
-        // `hydro_violation_cost` already aggregates its six sub-components and
+        // `hydro_violation_cost` already aggregates its per-constraint sub-components and
         // `spillage_cost` already includes diversion — sum the aggregates, not the
         // parts, or the total double-counts.
         const RECONCILE_TOLERANCE_USD: f64 = 1.0;

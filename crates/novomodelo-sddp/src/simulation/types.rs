@@ -81,6 +81,8 @@ pub struct SimulationCostResult {
     pub evaporation_violation_cost: f64,
     /// Cost of water withdrawal constraint violations.
     pub withdrawal_violation_cost: f64,
+    /// Cost of FPHA plane violations: the FPHA slacks times their price.
+    pub fpha_violation_cost: f64,
     /// Cost of inflow non-negativity constraint violations.
     pub inflow_penalty_cost: f64,
     /// Cost of generic constraint violations.
@@ -643,6 +645,7 @@ mod tests {
             generation_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             withdrawal_violation_cost: 0.0,
+            fpha_violation_cost: 0.0,
             inflow_penalty_cost: 3.0,
             generic_violation_cost: 2.0,
             spillage_cost: 1.0,

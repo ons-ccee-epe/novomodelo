@@ -54,6 +54,7 @@ fn build_costs_schema() -> Schema {
         Field::new("generation_violation_cost", DataType::Float64, false),
         Field::new("evaporation_violation_cost", DataType::Float64, false),
         Field::new("withdrawal_violation_cost", DataType::Float64, false),
+        Field::new("fpha_violation_cost", DataType::Float64, false),
         Field::new("inflow_penalty_cost", DataType::Float64, false),
         Field::new("generic_violation_cost", DataType::Float64, false),
         Field::new("spillage_cost", DataType::Float64, false),
@@ -972,8 +973,8 @@ mod tests {
         let schema = costs_schema();
         assert_eq!(
             schema.fields().len(),
-            29,
-            "costs schema must have 29 fields"
+            30,
+            "costs schema must have 30 fields"
         );
         let names = field_names(&schema);
         assert_eq!(
@@ -1001,6 +1002,7 @@ mod tests {
                 "generation_violation_cost",
                 "evaporation_violation_cost",
                 "withdrawal_violation_cost",
+                "fpha_violation_cost",
                 "inflow_penalty_cost",
                 "generic_violation_cost",
                 "spillage_cost",
@@ -1043,6 +1045,7 @@ mod tests {
             "generation_violation_cost",
             "evaporation_violation_cost",
             "withdrawal_violation_cost",
+            "fpha_violation_cost",
             "inflow_penalty_cost",
             "generic_violation_cost",
             "spillage_cost",
@@ -1695,7 +1698,7 @@ mod tests {
             .map(|(s, n)| (*n, s.fields().len()))
             .collect();
         let expected: &[(&str, usize)] = &[
-            ("costs", 29),
+            ("costs", 30),
             ("hydros", 41),
             ("hydro_bus_generation", 9),
             ("thermals", 12),

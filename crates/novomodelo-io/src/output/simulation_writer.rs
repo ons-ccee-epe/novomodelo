@@ -119,6 +119,8 @@ pub struct CostWriteRecord {
     pub evaporation_violation_cost: f64,
     /// Cost of water withdrawal constraint violations.
     pub withdrawal_violation_cost: f64,
+    /// Cost of FPHA plane violations: the FPHA slacks times their price.
+    pub fpha_violation_cost: f64,
     /// Inflow non-negativity violation cost.
     pub inflow_penalty_cost: f64,
     /// Generic constraint violation cost.
@@ -1358,6 +1360,7 @@ fn build_costs_batch<'a>(
     let mut generation_violation_cost = Float64Builder::with_capacity(n);
     let mut evaporation_violation_cost = Float64Builder::with_capacity(n);
     let mut withdrawal_violation_cost = Float64Builder::with_capacity(n);
+    let mut fpha_violation_cost = Float64Builder::with_capacity(n);
     let mut inflow_penalty_cost = Float64Builder::with_capacity(n);
     let mut generic_violation_cost = Float64Builder::with_capacity(n);
     let mut spillage_cost = Float64Builder::with_capacity(n);
@@ -1389,6 +1392,7 @@ fn build_costs_batch<'a>(
         generation_violation_cost.append_value(r.generation_violation_cost);
         evaporation_violation_cost.append_value(r.evaporation_violation_cost);
         withdrawal_violation_cost.append_value(r.withdrawal_violation_cost);
+        fpha_violation_cost.append_value(r.fpha_violation_cost);
         inflow_penalty_cost.append_value(r.inflow_penalty_cost);
         generic_violation_cost.append_value(r.generic_violation_cost);
         spillage_cost.append_value(r.spillage_cost);
@@ -1423,6 +1427,7 @@ fn build_costs_batch<'a>(
             Arc::new(generation_violation_cost.finish()),
             Arc::new(evaporation_violation_cost.finish()),
             Arc::new(withdrawal_violation_cost.finish()),
+            Arc::new(fpha_violation_cost.finish()),
             Arc::new(inflow_penalty_cost.finish()),
             Arc::new(generic_violation_cost.finish()),
             Arc::new(spillage_cost.finish()),
@@ -2556,6 +2561,7 @@ mod tests {
             generation_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             withdrawal_violation_cost: 0.0,
+            fpha_violation_cost: 0.0,
             inflow_penalty_cost: 0.0,
             generic_violation_cost: 0.0,
             spillage_cost: 5.0,
@@ -2652,7 +2658,11 @@ mod tests {
             .expect("costs batch must build");
 
         assert_eq!(batch.num_rows(), 2, "must have 2 rows");
-        assert_eq!(batch.num_columns(), 29, "costs schema has 29 columns");
+        assert_eq!(
+            batch.num_columns(),
+            costs_schema().fields().len(),
+            "batch must carry every costs schema column"
+        );
 
         let expected = costs_schema();
         assert_eq!(
@@ -3376,7 +3386,11 @@ mod tests {
             .join("simulation/costs/scenario_id=0000/data.parquet");
         let batch = read_first_batch(&path);
         assert_eq!(batch.num_rows(), 2, "costs parquet must have 2 rows");
-        assert_eq!(batch.num_columns(), 29, "costs schema has 29 columns");
+        assert_eq!(
+            batch.num_columns(),
+            costs_schema().fields().len(),
+            "batch must carry every costs schema column"
+        );
     }
 
     #[test]

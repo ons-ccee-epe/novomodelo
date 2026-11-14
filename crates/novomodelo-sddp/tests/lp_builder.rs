@@ -221,11 +221,11 @@ mod extraction_nonuniform_block_bases {
             let cost = stage.costs.first().expect("one cost record per stage");
 
             // `hydro_violation_cost` is the total of the per-constraint violation
-            // costs (outflow/turbined/generation/evaporation/withdrawal); summing it
-            // here together with the standalone categories covers every priced column
-            // exactly once. `generic_violation_cost` and `curtailment_cost` use a
-            // non-range formula, but D33/D34 declare neither generic constraints nor
-            // NCS, so both are zero and do not perturb the reconciliation.
+            // costs; summing it here together with the standalone categories covers
+            // every priced column exactly once. `generic_violation_cost` and
+            // `curtailment_cost` use a non-range formula, but D33/D34 declare neither
+            // generic constraints nor NCS, so both are zero and do not perturb the
+            // reconciliation.
             let breakdown = cost.thermal_cost
                 + cost.anticipated_thermal_cost
                 + cost.contract_cost

@@ -399,6 +399,11 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
     ),
     (
         "costs",
+        "fpha_violation_cost",
+        "Cost of FPHA plane violations, counted in hydro_violation_cost",
+    ),
+    (
+        "costs",
         "inflow_penalty_cost",
         "Total inflow non-negativity penalty",
     ),
@@ -3020,8 +3025,8 @@ mod tests {
 
         let row_count = rdr.records().count();
         assert_eq!(
-            row_count, 253,
-            "variables.csv must have exactly 253 data rows (one per column across all schemas)"
+            row_count, 254,
+            "variables.csv must have exactly 254 data rows (one per column across all schemas)"
         );
     }
 

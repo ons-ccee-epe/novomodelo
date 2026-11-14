@@ -1154,7 +1154,7 @@ fn indexer_constraint_inventory() {
 /// When a developer adds a new constraint type to the LP builder, they must
 /// also:
 /// 1. Add the corresponding slack column range to `StageGeometry`/`StageLayout`.
-/// 2. Add extraction logic in `accumulate_category_costs`.
+/// 2. Add extraction logic in `compute_hydro_violation_costs`.
 /// 3. Add a new field to `SimulationCostResult`.
 /// 4. Update this guard count.
 #[test]
@@ -1165,7 +1165,7 @@ fn constraint_extraction_regression_guard() {
     let geometry = build_geometry(2, 1, 1, 1, 1, 1, true, 1, vec![HydroSys::new(0)], &[2]);
 
     // The families that feed the hydro violation cost decomposition in
-    // accumulate_category_costs().
+    // compute_hydro_violation_costs().
     let slack_families: Vec<(&str, &Range<usize>)> = vec![
         ("outflow_below_slack", &geometry.outflow_below_slack),
         ("outflow_above_slack", &geometry.outflow_above_slack),
@@ -1181,7 +1181,7 @@ fn constraint_extraction_regression_guard() {
         slack_families.len(),
         8,
         "Expected exactly 8 hydro-related slack column families. \
-         If you added a new constraint type, update: (a) accumulate_category_costs, \
+         If you added a new constraint type, update: (a) compute_hydro_violation_costs, \
          (b) SimulationCostResult, (c) CostWriteRecord + costs_schema, \
          (d) this regression guard."
     );
