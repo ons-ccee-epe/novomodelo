@@ -128,7 +128,8 @@ pub(super) fn evaporation_slot_reachable_storage(
                         ceiling_hm3: storage_ceiling(hydro, id, previous.max_storage_hm3),
                     }
                 }
-                _ => ReachableStorage {
+                (IncomingStorageFloor::InitialStorage | IncomingStorageFloor::PinnedSeed, _)
+                | (IncomingStorageFloor::PredecessorFloor(_), None) => ReachableStorage {
                     tight_floor_hm3: seed_floor,
                     hard_floor_hm3: seed_floor,
                     ceiling_hm3: hydro.max_storage_hm3,
