@@ -29,6 +29,10 @@ use crate::simulation::types::{
 use crate::test_support;
 use crate::test_support::anticipated_plants_at;
 
+fn col_count(geometry: &StageGeometry) -> usize {
+    geometry.fpha_slack.end
+}
+
 // -------------------------------------------------------------------------
 // HydroReverseLookup per-stage membership
 // -------------------------------------------------------------------------
@@ -193,7 +197,7 @@ fn extract_reads_binding_filling_target_slack() {
         anticipated_plants: AnticipatedPlants::default(),
     };
     let base = test_support::geometry(&dims, vec![], &[], vec![]);
-    let n_cols = base.generation_below_slack.end;
+    let n_cols = col_count(&base);
 
     // Hydro 0 is the lone filling hydro at its terminal Filling stage; hydro 1
     // is non-filling. The σ_fill slack column is appended past the base
@@ -285,7 +289,7 @@ fn extract_reads_binding_filled_min_storage_floor_slack_per_block_branch() {
         anticipated_plants: AnticipatedPlants::default(),
     };
     let base = test_support::geometry(&dims, vec![], &[], vec![]);
-    let n_cols = base.generation_below_slack.end;
+    let n_cols = col_count(&base);
 
     // Hydro 1 owns the lone σ^{v-} column at this Operating stage; hydro 0 is
     // absent from the floor family. The slack column is appended past the base
@@ -642,7 +646,7 @@ fn extract_hydro_storage_values_from_primal() {
     let study_dims = test_support::study_dims();
     let state = test_support::state_layout(2, 1);
     let mut primal = make_primal_2_1([100.0, 200.0], [90.0, 180.0], 999.5);
-    primal.resize(indexer.generation_below_slack.end, 0.0);
+    primal.resize(col_count(&indexer), 0.0);
     let objective_coeffs = vec![0.0; primal.len()];
     let dual = vec![0.0; geometry_row_capacity(&indexer)];
     let row_lower = vec![0.0; geometry_row_capacity(&indexer)];
@@ -716,7 +720,7 @@ fn hydro_rows_report_the_incremental_inflow_as_inflow_m3s() {
     let study_dims = test_support::study_dims();
     let state = test_support::state_layout(2, 1);
     let mut primal = make_primal_2_1([100.0, 200.0], [90.0, 180.0], 999.5);
-    primal.resize(indexer.generation_below_slack.end, 0.0);
+    primal.resize(col_count(&indexer), 0.0);
     let objective_coeffs = vec![0.0; primal.len()];
     let dual = vec![0.0; geometry_row_capacity(&indexer)];
     let row_lower = vec![0.0; geometry_row_capacity(&indexer)];
@@ -861,7 +865,7 @@ fn extract_no_lags_when_max_par_order_zero() {
     let state = test_support::state_layout(2, 0);
     // Layout: storage[0..2], storage_in[2..4], theta=4
     let mut primal = vec![100.0, 200.0, 90.0, 180.0, 500.0];
-    primal.resize(indexer.generation_below_slack.end, 0.0);
+    primal.resize(col_count(&indexer), 0.0);
     let objective_coeffs = vec![0.0; primal.len()];
     let dual = vec![0.0; geometry_row_capacity(&indexer)];
     let counts = EntityCounts {
@@ -1002,7 +1006,7 @@ fn extract_equipment_zero_when_indexer_has_no_equipment_ranges() {
     let study_dims = test_support::study_dims();
     let state = test_support::state_layout(2, 1);
     let mut primal = make_primal_2_1([0.0; 2], [0.0; 2], 0.0);
-    primal.resize(indexer.generation_below_slack.end, 0.0);
+    primal.resize(col_count(&indexer), 0.0);
     let objective_coeffs = vec![0.0; primal.len()];
     let dual = vec![0.0; geometry_row_capacity(&indexer)];
     let row_lower = vec![0.0; geometry_row_capacity(&indexer)];
@@ -1114,7 +1118,7 @@ fn extract_equipment_reads_primal_when_with_equipment() {
     // turbine[5..7]=30.0,40.0   spillage[7..9]=5.0,0.0
     // thermal[11]=80.0   line_fwd[12]=15.0   line_rev[13]=0.0
     // deficit[14]=10.0   excess[15]=2.0
-    let n_cols = indexer.generation_below_slack.end;
+    let n_cols = col_count(&indexer);
     let mut primal = vec![0.0_f64; n_cols];
     primal[0] = 100.0; // storage h0
     primal[1] = 200.0; // storage h1
@@ -1516,7 +1520,7 @@ fn extract_thermals_marks_no_thermals_anticipated_when_indices_empty() {
     let study_dims = test_support::study_dims_for(&eq_counts);
     let state = test_support::state_layout_full(0, 0, vec![]);
 
-    let n_cols = indexer.generation_below_slack.end.max(3);
+    let n_cols = col_count(&indexer).max(3);
     let primal = vec![0.0_f64; n_cols];
     let obj = vec![0.0_f64; n_cols];
 
@@ -3112,7 +3116,7 @@ fn test_slack_extraction_with_penalty_active() {
         "inflow_slack must be non-empty"
     );
 
-    let n_cols = indexer.generation_below_slack.end;
+    let n_cols = col_count(&indexer);
     let mut primal = vec![0.0_f64; n_cols];
 
     primal[0] = 100.0; // storage h0
@@ -3225,7 +3229,7 @@ fn test_slack_extraction_without_penalty_is_zero() {
         "inflow_slack must be empty"
     );
 
-    let n_cols = indexer.generation_below_slack.end; // includes withdrawal_slack columns
+    let n_cols = col_count(&indexer); // includes withdrawal_slack columns
     let primal = vec![1.0_f64; n_cols]; // all ones
     let obj = vec![0.0_f64; n_cols];
     let dual = vec![0.0_f64; geometry_row_capacity(&indexer)];
@@ -3331,7 +3335,7 @@ fn fpha_generation_read_from_lp_column() {
     assert_eq!(indexer.generation.start, 11, "generation starts at 11");
     assert_eq!(indexer.fpha_hydro_indices, vec![HydroSys::new(0)]);
 
-    let n_cols = indexer.generation_below_slack.end;
+    let n_cols = col_count(&indexer);
     let mut primal = vec![0.0_f64; n_cols];
     primal[0] = 50.0; // storage h0
     primal[1] = 80.0; // storage h1
@@ -3426,7 +3430,7 @@ fn fpha_productivity_placeholder_zero() {
     let indexer = make_indexer_2h_1fpha_1blk();
     let study_dims = test_support::study_dims_for(&counts_2h_1fpha_1blk());
     let state = test_support::state_layout(2, 0);
-    let n_cols = indexer.generation_below_slack.end;
+    let n_cols = col_count(&indexer);
     let primal = vec![0.0_f64; n_cols];
     let obj = vec![0.0_f64; n_cols];
     let dual = vec![0.0_f64; geometry_row_capacity(&indexer)];
@@ -3531,7 +3535,7 @@ fn evaporation_read_from_lp_column() {
     assert_eq!(ei.f_evap_plus_col, 7);
     assert_eq!(ei.f_evap_minus_col, 8);
 
-    let n_cols = indexer.generation_below_slack.end;
+    let n_cols = col_count(&indexer);
     let mut primal = vec![0.0_f64; n_cols];
     primal[0] = 200.0; // storage h0
     primal[1] = 190.0; // storage_in h0
@@ -3614,7 +3618,7 @@ fn evaporation_violation_is_sum_of_slacks() {
     let indexer = make_indexer_1h_evap_1blk();
     let study_dims = test_support::study_dims_for(&counts_1h_evap_1blk());
     let state = test_support::state_layout(1, 0);
-    let n_cols = indexer.generation_below_slack.end;
+    let n_cols = col_count(&indexer);
     let mut primal = vec![0.0_f64; n_cols];
     primal[0] = 200.0;
     primal[1] = 190.0; // storage_in h0
@@ -3702,7 +3706,7 @@ fn turbined_cost_in_compute_cost_result() {
     let study_dims = test_support::study_dims_for(&counts_2h_1fpha_1blk());
     let state = test_support::state_layout(2, 0);
     // turbine.start = 5 (h0 b0)
-    let n_cols = indexer.generation_below_slack.end;
+    let n_cols = col_count(&indexer);
     let mut primal = vec![0.0_f64; n_cols];
     primal[4] = 500.0; // theta (at 2*N = 4)
 
@@ -3787,7 +3791,7 @@ fn cost_breakdown_sums_to_immediate_identity_scale() {
     let indexer = make_indexer_2h_1fpha_1blk();
     let study_dims = test_support::study_dims_for(&counts_2h_1fpha_1blk());
     let state = test_support::state_layout(2, 0);
-    let n_cols = indexer.generation_below_slack.end;
+    let n_cols = col_count(&indexer);
     let mut primal = vec![0.0_f64; n_cols];
     primal[4] = 500.0; // theta
     primal[5] = 30.0; // h0 turbine column
@@ -3904,7 +3908,7 @@ fn filling_slack_families_are_booked_in_cost_breakdown() {
         anticipated_plants: AnticipatedPlants::default(),
     };
     let base = test_support::geometry(&dims, vec![], &[], vec![]);
-    let n_cols = base.generation_below_slack.end;
+    let n_cols = col_count(&base);
     let filling = StageGeometry {
         filled_min_storage_floor_hydro_indices: vec![HydroSys::new(0)],
         filled_min_storage_floor_col: n_cols..n_cols + 1,
@@ -4019,7 +4023,7 @@ fn contract_cost_active_import_equals_price_power_hours_via_cost_result() {
     let indexer = make_indexer_2h_1fpha_1blk();
     let study_dims = test_support::study_dims_for(&counts_2h_1fpha_1blk());
     let state = test_support::state_layout(2, 0);
-    let contract_col = indexer.generation_below_slack.end;
+    let contract_col = col_count(&indexer);
     let geometry = StageGeometry {
         contract_import: contract_col..contract_col + 1,
         contract_export: contract_col + 1..contract_col + 1,
@@ -4109,7 +4113,7 @@ fn cost_breakdown_sums_to_immediate_with_active_export_contract_via_cost_result(
     let indexer = make_indexer_2h_1fpha_1blk();
     let study_dims = test_support::study_dims_for(&counts_2h_1fpha_1blk());
     let state = test_support::state_layout(2, 0);
-    let export_col = indexer.generation_below_slack.end;
+    let export_col = col_count(&indexer);
     let geometry = StageGeometry {
         contract_import: export_col..export_col,
         contract_export: export_col..export_col + 1,
@@ -4218,7 +4222,7 @@ fn cost_unscaled_by_col_scale() {
     let indexer = make_indexer_2h_1fpha_1blk();
     let study_dims = test_support::study_dims_for(&counts_2h_1fpha_1blk());
     let state = test_support::state_layout(2, 0);
-    let n_cols = indexer.generation_below_slack.end;
+    let n_cols = col_count(&indexer);
     let mut primal = vec![0.0_f64; n_cols];
     primal[4] = 500.0; // theta
     primal[5] = 30.0; // h0 turbine column
@@ -4316,7 +4320,7 @@ fn hydro_violation_cost_decomposition() {
     assert_eq!(indexer.turbine_below_slack, 20..22);
     assert_eq!(indexer.generation_below_slack, 22..24);
 
-    let n_cols = indexer.generation_below_slack.end;
+    let n_cols = col_count(&indexer);
     let mut primal = vec![0.0_f64; n_cols];
     let mut obj = vec![0.0_f64; n_cols];
 
@@ -4523,7 +4527,7 @@ fn stored_energy_initial_uses_v_min_offset() {
     let study_dims = test_support::study_dims();
     let state = test_support::state_layout(1, 1);
     let mut primal = make_primal_1_1(120.0, 110.0, 0.0);
-    primal.resize(indexer.generation_below_slack.end, 0.0);
+    primal.resize(col_count(&indexer), 0.0);
     let objective_coeffs = vec![0.0; primal.len()];
     let dual = vec![0.0; geometry_row_capacity(&indexer)];
     let row_lower = vec![0.0; geometry_row_capacity(&indexer)];
@@ -4611,7 +4615,7 @@ fn incremental_inflow_energy_uses_rho_acum() {
     let study_dims = test_support::study_dims();
     let state = test_support::state_layout(1, 1);
     let mut primal = make_primal_1_1(120.0, 110.0, 0.0);
-    primal.resize(indexer.generation_below_slack.end, 0.0);
+    primal.resize(col_count(&indexer), 0.0);
     let objective_coeffs = vec![0.0; primal.len()];
     let dual = vec![0.0; geometry_row_capacity(&indexer)];
     let row_lower = vec![0.0; geometry_row_capacity(&indexer)];
@@ -4694,7 +4698,7 @@ fn stored_energy_rides_integrated_grid_distinct_from_reference_point() {
     let study_dims = test_support::study_dims();
     let state = test_support::state_layout(1, 1);
     let mut primal = make_primal_1_1(120.0, 110.0, 0.0);
-    primal.resize(indexer.generation_below_slack.end, 0.0);
+    primal.resize(col_count(&indexer), 0.0);
     let objective_coeffs = vec![0.0; primal.len()];
     let dual = vec![0.0; geometry_row_capacity(&indexer)];
     let row_lower = vec![0.0; geometry_row_capacity(&indexer)];
@@ -4768,7 +4772,7 @@ fn stored_energy_rides_integrated_grid_distinct_from_reference_point() {
     let k = 1_usize;
     let geom = single_hydro_block_geometry(BlockMode::Parallel, k);
     let pb_state = test_support::state_layout(1, 0);
-    let n_cols = geom.generation_below_slack.end;
+    let n_cols = col_count(&geom);
     let mut pb_primal = vec![0.0_f64; n_cols];
     pb_primal[0] = 120.0; // Sᴷ (outgoing)
     pb_primal[1] = 110.0; // S⁰ (incoming)
@@ -4865,7 +4869,7 @@ fn stored_energy_mw_divides_by_stage_total_hours() {
     let study_dims = test_support::study_dims();
     let state = test_support::state_layout(1, 1);
     let mut primal = make_primal_1_1(storage_final, storage_initial, 0.0);
-    primal.resize(indexer.generation_below_slack.end, 0.0);
+    primal.resize(col_count(&indexer), 0.0);
     let objective_coeffs = vec![0.0; primal.len()];
     let dual = vec![0.0; geometry_row_capacity(&indexer)];
     let row_lower = vec![0.0; geometry_row_capacity(&indexer)];
@@ -4927,7 +4931,7 @@ fn stored_energy_mw_divides_by_stage_total_hours() {
     let k = 3_usize;
     let geom = single_hydro_block_geometry(BlockMode::Parallel, k);
     let pb_state = test_support::state_layout(1, 0);
-    let n_cols = geom.generation_below_slack.end;
+    let n_cols = col_count(&geom);
     let mut pb_primal = vec![0.0_f64; n_cols];
     pb_primal[0] = storage_final; // Sᴷ (outgoing)
     pb_primal[1] = storage_initial; // S⁰ (incoming)
@@ -5005,7 +5009,7 @@ fn stage_path_propagates_productivity_values() {
     let study_dims = test_support::study_dims();
     let state = test_support::state_layout(1, 1);
     let mut primal = make_primal_1_1(120.0, 110.0, 0.0);
-    primal.resize(indexer.generation_below_slack.end, 0.0);
+    primal.resize(col_count(&indexer), 0.0);
     let objective_coeffs = vec![0.0; primal.len()];
     let dual = vec![0.0; geometry_row_capacity(&indexer)];
     let row_lower = vec![0.0; geometry_row_capacity(&indexer)];
@@ -5108,7 +5112,7 @@ fn integrated_productivity_columns_read_the_mean_evaluator_on_both_branches() {
 
     // First independently-built call: zero turbine primal.
     let mut primal_a = make_primal_1_1(120.0, 110.0, 0.0);
-    primal_a.resize(indexer.generation_below_slack.end, 0.0);
+    primal_a.resize(col_count(&indexer), 0.0);
     let objective_coeffs_a = vec![0.0; primal_a.len()];
     let result_a = extract_stage_result(
         &SolutionView {
@@ -5153,7 +5157,7 @@ fn integrated_productivity_columns_read_the_mean_evaluator_on_both_branches() {
     // Second independently-built call: a non-zero turbine primal and non-empty
     // block_hours, over the same real geometry — must not disagree with the first.
     let mut primal_b = make_primal_1_1(120.0, 110.0, 0.0);
-    primal_b.resize(indexer.generation_below_slack.end, 0.0);
+    primal_b.resize(col_count(&indexer), 0.0);
     primal_b[indexer.turbine.start] = 5.0;
     let objective_coeffs_b = vec![0.0; primal_b.len()];
     let result_b = extract_stage_result(
@@ -5913,6 +5917,7 @@ fn single_hydro_block_geometry(block_mode: BlockMode, k: usize) -> StageGeometry
         outflow_above_slack: ws_end + k..ws_end + 2 * k,
         turbine_below_slack: ws_end + 2 * k..ws_end + 3 * k,
         generation_below_slack: ws_end + 3 * k..ws_end + 4 * k,
+        fpha_slack: ws_end + 4 * k..ws_end + 4 * k,
         ..test_support::equipment_free_geometry(&[k]).remove(0)
     }
 }
@@ -5929,7 +5934,7 @@ fn extract_chronological_per_block_storage() {
 
     // Boundary values: S⁰=10 (storage_in col 1), S¹=20 (col 3), S²=30 (col 4),
     // S³=Sᴷ=40 (storage col 0). Turbine cols [5,8), evap triples at [11, ...).
-    let n_cols = geom.generation_below_slack.end;
+    let n_cols = col_count(&geom);
     let mut primal = vec![0.0_f64; n_cols];
     primal[0] = 40.0; // Sᴷ (outgoing state)
     primal[1] = 10.0; // S⁰ (incoming state)
@@ -6011,7 +6016,7 @@ fn extract_parallel_per_block_storage_byte_identical() {
     let state = test_support::state_layout(1, 0);
     let ec = zero_energy_conversion(1, 1);
 
-    let n_cols = geom.generation_below_slack.end;
+    let n_cols = col_count(&geom);
     let mut primal = vec![0.0_f64; n_cols];
     primal[0] = 40.0; // Sᴷ (outgoing state)
     primal[1] = 10.0; // S⁰ (incoming state)
@@ -6075,7 +6080,7 @@ fn extract_chronological_water_value_reads_each_block_row() {
     let state = test_support::state_layout(1, 0);
     let ec = zero_energy_conversion(1, 1);
 
-    let n_cols = geom.generation_below_slack.end;
+    let n_cols = col_count(&geom);
     let primal = vec![0.0_f64; n_cols];
     let dual = vec![0.0_f64, 10.0, 20.0, 30.0];
 
@@ -6138,7 +6143,7 @@ fn extract_parallel_water_value_repeats_the_stage_row() {
     let state = test_support::state_layout(1, 0);
     let ec = zero_energy_conversion(1, 1);
 
-    let n_cols = geom.generation_below_slack.end;
+    let n_cols = col_count(&geom);
     let primal = vec![0.0_f64; n_cols];
     let dual = vec![0.0_f64, 10.0, 20.0, 30.0];
 
@@ -6211,7 +6216,7 @@ fn extract_chronological_per_block_stored_energy() {
         1,
     );
 
-    let n_cols = geom.generation_below_slack.end;
+    let n_cols = col_count(&geom);
     let mut primal = vec![0.0_f64; n_cols];
     primal[0] = 40.0; // Sᴷ
     primal[1] = 10.0; // S⁰
@@ -6276,7 +6281,7 @@ fn extract_chronological_per_block_evaporation() {
     let state = test_support::state_layout(1, 0);
     let ec = zero_energy_conversion(1, 1);
 
-    let n_cols = geom.generation_below_slack.end;
+    let n_cols = col_count(&geom);
     let mut primal = vec![0.0_f64; n_cols];
     primal[0] = 40.0;
     primal[1] = 10.0;
@@ -6357,7 +6362,7 @@ fn extract_parallel_per_block_evaporation_byte_identical() {
         1,
         "a parallel stage reserves exactly one evaporation slot"
     );
-    let n_cols = geom.generation_below_slack.end;
+    let n_cols = col_count(&geom);
     let mut primal = vec![0.0_f64; n_cols];
     primal[0] = 40.0;
     primal[1] = 10.0;
@@ -6718,6 +6723,7 @@ fn split_plant_multi_bus_extraction_fixture() -> (StateSpace, StageGeometry, Hyd
         outflow_above_slack: 29..33,
         turbine_below_slack: 33..39,
         generation_below_slack: 39..45,
+        fpha_slack: 45..45,
         ..test_support::equipment_free_geometry(&[2]).remove(0)
     };
     (state, geometry, hydro_cell_index)
@@ -6748,7 +6754,7 @@ fn extract_hydro_turbined_and_generation_sum_over_a_split_plants_cells() {
     ]);
     // Pads withdrawal-slack and the four operational-violation slack families
     // (this test asserts none of them) with always-zero columns.
-    primal.resize(geometry.generation_below_slack.end, 0.0);
+    primal.resize(col_count(&geometry), 0.0);
     let dual = vec![0.0; 2];
     let objective_coeffs = vec![0.0; primal.len()];
 
@@ -7281,6 +7287,7 @@ fn order_sensitive_split_plant_fixture() -> (StateSpace, StageGeometry, HydroCel
         outflow_above_slack: 19..21,
         turbine_below_slack: 21..25,
         generation_below_slack: 25..29,
+        fpha_slack: 29..29,
         ..test_support::equipment_free_geometry(&[1]).remove(0)
     };
     // theta = 2*(3+0) = 6, equipment starts at 7 (state_layout(2, 0)).
@@ -7394,7 +7401,7 @@ fn extract_hydro_bus_generation_maps_fpha_cells_by_plant_relative_offset() {
     ]);
     // Pads withdrawal-slack and the four operational-violation slack families
     // (this test asserts none of them) with always-zero columns.
-    primal.resize(geometry.generation_below_slack.end, 0.0);
+    primal.resize(col_count(&geometry), 0.0);
     let dual = vec![0.0; 2];
     let objective_coeffs = vec![0.0; primal.len()];
 
