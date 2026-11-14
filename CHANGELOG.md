@@ -15,7 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with fewer rows and columns.
 - **BREAKING:** `penalties.json` must declare `hydro.fpha_violation_cost`
   ($/MWh, > 0); a `penalties.json` without it is refused. Add the key to
-  existing cases.
+  existing cases. It can also be set per plant in `system/hydros.json` and
+  per stage in `constraints/penalty_overrides_hydro.parquet`.
 
 ### Fixed
 
