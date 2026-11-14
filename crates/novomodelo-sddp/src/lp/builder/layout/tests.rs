@@ -39,7 +39,8 @@ use super::super::test_support::zero_hydro_penalties;
 use super::{
     RangeCursor, StageLayout, StateSpace, TemplateBuildCtx, build_anticipated_decision_row_pos,
     build_anticipated_fishing_row_pos, build_anticipated_slot_row_pos,
-    build_transit_bucket_row_pos, entity_flat, fold_endpoint, variable_ref_is_block_independent,
+    build_transit_bucket_row_pos, entity_flat, evaporation_slot_boundaries, fold_endpoint,
+    variable_ref_is_block_independent,
 };
 
 // ── RangeCursor ──────────────────────────────────────────────────────────
@@ -1777,6 +1778,29 @@ fn non_filling_hydro_membership_bit_identical_across_stages() {
             "non-filling evap_hydro_indices must be stage-invariant (stage_id {stage_id})"
         );
     }
+}
+
+// ── Evaporation slot boundaries ──────────────────────────────────────────
+
+#[test]
+fn evaporation_slot_boundaries_pair_each_slot_with_its_storage_columns() {
+    assert_eq!(
+        evaporation_slot_boundaries(BlockMode::Parallel, 0, 3),
+        (Boundary::Incoming, Boundary::Outgoing),
+        "a parallel stage's one slot spans the stage endpoints"
+    );
+    assert_eq!(
+        evaporation_slot_boundaries(BlockMode::Chronological, 0, 3),
+        (Boundary::Incoming, Boundary::Interior(1))
+    );
+    assert_eq!(
+        evaporation_slot_boundaries(BlockMode::Chronological, 1, 3),
+        (Boundary::Interior(1), Boundary::Interior(2))
+    );
+    assert_eq!(
+        evaporation_slot_boundaries(BlockMode::Chronological, 2, 3),
+        (Boundary::Interior(2), Boundary::Outgoing)
+    );
 }
 
 // ── Operational-violation row ranges ─────────────────────────────────────

@@ -15,7 +15,10 @@ use super::hydro_state::{MaxCap, MinFloor, hydro_phase, resolve_shortcircuit_tar
 #[cfg(test)]
 use super::inflow_coupling::InflowCoupling;
 use super::inflow_coupling::InflowCouplingSink;
-use super::layout::{StageLayout, StageProductionRole, TemplateBuildCtx, contract_family_slot};
+use super::layout::{
+    StageLayout, StageProductionRole, TemplateBuildCtx, contract_family_slot,
+    evaporation_slot_boundaries,
+};
 
 /// Fishing (consumption) coupling: for every anticipated plant whose
 /// delivery matures THIS stage
@@ -1117,16 +1120,9 @@ pub(super) fn fill_evaporation_entries(
 
         let half_slope = coeff.volume_slope_m3s_per_hm3 / 2.0;
         for slot in 0..n_evap_slots {
-            let (col_v_in, col_v) = match stage.block_mode {
-                BlockMode::Parallel => (
-                    layout.block_storage_col(h, Boundary::Incoming),
-                    layout.block_storage_col(h, Boundary::Outgoing),
-                ),
-                BlockMode::Chronological => (
-                    layout.block_storage_col(h, Boundary::from_index(slot, n_blks)),
-                    layout.block_storage_col(h, Boundary::from_index(slot + 1, n_blks)),
-                ),
-            };
+            let (b_in, b_out) = evaporation_slot_boundaries(stage.block_mode, slot, n_blks);
+            let col_v_in = layout.block_storage_col(h, b_in);
+            let col_v = layout.block_storage_col(h, b_out);
             let local = EvapLocal::new(local_idx);
             let col_evaporation_flow = layout.evap_flow_col(local, BlockIdx::new(slot));
             let col_f_plus = layout.evap_f_plus_col(local, BlockIdx::new(slot));

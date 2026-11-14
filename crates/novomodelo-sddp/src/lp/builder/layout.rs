@@ -650,6 +650,22 @@ pub(crate) fn evaporation_slot_count(block_mode: BlockMode, n_blks: usize) -> us
     }
 }
 
+/// The single owner of the two storage boundaries an evaporation slot's row reads.
+#[must_use]
+pub(super) fn evaporation_slot_boundaries(
+    block_mode: BlockMode,
+    slot: usize,
+    n_blks: usize,
+) -> (Boundary, Boundary) {
+    match block_mode {
+        BlockMode::Parallel => (Boundary::Incoming, Boundary::Outgoing),
+        BlockMode::Chronological => (
+            Boundary::from_index(slot, n_blks),
+            Boundary::from_index(slot + 1, n_blks),
+        ),
+    }
+}
+
 /// The slot block `blk` reads, given the stage's slot count.
 pub(crate) fn evaporation_slot(slot_count: usize, blk: BlockIdx) -> BlockIdx {
     if slot_count == 1 {
