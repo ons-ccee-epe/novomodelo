@@ -606,22 +606,22 @@ fn fit_computed_planes_per_stage(
     let mut per_stage: Vec<Vec<FphaPlane>> = Vec::with_capacity(study_stages.len());
 
     for (stage_pos, stage) in study_stages.iter().enumerate() {
-        if config_entry
-            .and_then(|c| c.resolve_stage(stage).model)
+        let resolution = config_entry.map(|c| c.resolve_stage(stage));
+        if resolution
+            .as_ref()
+            .and_then(|r| r.model)
             .is_some_and(|model| model != HydroGenerationModel::Fpha)
         {
             per_stage.push(Vec::new());
             continue;
         }
-        let config = config_entry
-            .and_then(|c| c.resolve_stage(stage).fpha_config)
-            .ok_or_else(|| {
-                SddpError::Validation(format!(
-                    "hydro {} (id={}) has source: \"computed\" but no FphaColumnLayout \
+        let config = resolution.and_then(|r| r.fpha_config).ok_or_else(|| {
+            SddpError::Validation(format!(
+                "hydro {} (id={}) has source: \"computed\" but no FphaColumnLayout \
                      covers stage {} in hydro_production_models.json",
-                    hydro.name, hydro.id.0, stage.id
-                ))
-            })?;
+                hydro.name, hydro.id.0, stage.id
+            ))
+        })?;
 
         let tailrace_source = resolve_tailrace_source(
             hydro,

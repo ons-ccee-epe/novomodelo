@@ -165,7 +165,6 @@ pub(super) fn check_fpha_price_dominance(data: &ParsedData, ctx: &mut Validation
         hydro_id: i32,
         stage_id: i32,
         p: f64,
-        d: f64,
         g: f64,
     }
 
@@ -215,7 +214,6 @@ pub(super) fn check_fpha_price_dominance(data: &ParsedData, ctx: &mut Validation
                     hydro_id: hydro.id.0,
                     stage_id: stage.id,
                     p,
-                    d,
                     g,
                 });
             }
@@ -240,7 +238,6 @@ pub(super) fn check_fpha_price_dominance(data: &ParsedData, ctx: &mut Validation
         hydro_id: id,
         stage_id,
         p,
-        d,
         g,
         ..
     } = *worst;
