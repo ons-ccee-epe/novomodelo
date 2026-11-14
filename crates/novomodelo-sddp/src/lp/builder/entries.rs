@@ -4,15 +4,19 @@ use novomodelo_core::{BlockMode, ContractType, Stage, VariableRef, is_exact_zero
 use super::generic_constraints::resolve_variable_ref;
 use crate::hydro_models::EvaporationModel;
 use crate::indexer::{
-    AnticipatedLocal, BlockIdx, Boundary, BusSys, EvapLocal, FillingTargetLocal, FloorLocal,
-    FphaCellLocal, HydroCell, HydroSys, LineSys, NcsSys, PlantCapLocal, PlantFloorLocal,
-    PumpingSys, ThermalSys, for_each_ring_residue,
+    AnticipatedLocal, BlockIdx, Boundary, BusSys, DiversionVolumeLocal, EvapLocal,
+    FillingTargetLocal, FloorLocal, FphaCellLocal, HydroCell, HydroSys, LineSys, NcsSys,
+    OutflowVolumeLocal, PlantCapLocal, PlantFloorLocal, PumpingSys, PumpingVolumeLocal, ThermalSys,
+    for_each_ring_residue,
 };
 
 use super::delivery_ring::{DeliveryRing, maturing_bucket_in_col, resolve_bucket_arrival_density};
 use super::fpha_cursor::for_each_fpha_plane;
 use super::hydro_state::{MaxCap, MinFloor, hydro_phase, resolve_shortcircuit_target};
 use super::layout::{StageLayout, StageProductionRole, TemplateBuildCtx, contract_family_slot};
+use super::stage_volume::{
+    hydro_diversion_volume_terms, hydro_outflow_volume_terms, pumping_volume_terms,
+};
 
 /// Fishing (consumption) coupling: for every anticipated plant whose
 /// delivery matures THIS stage
@@ -1251,6 +1255,59 @@ fn push_merged_row_entries(
     }
 }
 
+/// Fill the LHS of the soft outflow-volume rows: the shared stage-volume terms, `+1.0`
+/// on the below slack and `-1.0` on the above slack. The bounds are set by
+/// `rows::fill_outflow_volume_rows`.
+fn fill_outflow_volume_entries(
+    ctx: &TemplateBuildCtx<'_>,
+    layout: &StageLayout,
+    col_entries: &mut [Vec<(usize, f64)>],
+) {
+    for (local_idx, &h) in layout
+        .geometry
+        .outflow_volume_hydro_indices
+        .iter()
+        .enumerate()
+    {
+        let local = OutflowVolumeLocal::new(local_idx);
+        let row = layout.outflow_volume_row(local);
+        let mut terms = hydro_outflow_volume_terms(h, ctx, layout);
+        push_merged_row_entries(row, &mut terms, col_entries);
+        col_entries[layout.geometry.outflow_volume_below_slack_col(local)].push((row, 1.0));
+        col_entries[layout.geometry.outflow_volume_above_slack_col(local)].push((row, -1.0));
+    }
+}
+
+/// Fill the LHS of the hard diversion-volume rows: the shared stage-volume terms, with no
+/// slack. The bounds are set by `rows::fill_diversion_volume_rows`.
+fn fill_diversion_volume_entries(layout: &StageLayout, col_entries: &mut [Vec<(usize, f64)>]) {
+    for (local_idx, &h) in layout
+        .geometry
+        .diversion_volume_hydro_indices
+        .iter()
+        .enumerate()
+    {
+        let row = layout.diversion_volume_row(DiversionVolumeLocal::new(local_idx));
+        let mut terms = hydro_diversion_volume_terms(h, layout);
+        push_merged_row_entries(row, &mut terms, col_entries);
+    }
+}
+
+/// Fill the LHS of the hard pumping-volume rows: the shared stage-volume terms, with no
+/// slack. The bounds are set by `rows::fill_pumping_volume_rows`.
+fn fill_pumping_volume_entries(layout: &StageLayout, col_entries: &mut [Vec<(usize, f64)>]) {
+    for (local_idx, &p) in layout
+        .geometry
+        .pumping_volume_station_indices
+        .iter()
+        .enumerate()
+    {
+        let row = layout.pumping_volume_row(PumpingVolumeLocal::new(local_idx));
+        let mut terms = pumping_volume_terms(p, layout);
+        push_merged_row_entries(row, &mut terms, col_entries);
+    }
+}
+
 /// Inject `+1.0` for each NCS at its connected bus's load-balance row, per block. Written
 /// for every NCS: a dormant NCS's generation column is `[0, 0]`.
 pub(super) fn fill_ncs_load_balance_entries(
@@ -1521,6 +1578,9 @@ pub(super) fn build_stage_matrix_entries(
     fill_operational_violation_entries(ctx, stage_idx, layout, &mut col_entries);
     fill_plant_cap_entries(ctx, stage_idx, layout, &mut col_entries);
     fill_anticipated_fishing_entries(ctx, stage, stage_idx, layout, &mut col_entries);
+    fill_outflow_volume_entries(ctx, layout, &mut col_entries);
+    fill_diversion_volume_entries(layout, &mut col_entries);
+    fill_pumping_volume_entries(layout, &mut col_entries);
 
     col_entries
 }

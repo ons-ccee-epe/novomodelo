@@ -26,6 +26,10 @@ use novomodelo_core::{ContractType, EntityId, PumpingStation, VariableRef};
 use super::delivery_ring::{maturing_bucket_in_col, resolve_bucket_arrival_density};
 use super::hydro_state::resolve_shortcircuit_target;
 use super::layout::{StageLayout, TemplateBuildCtx, contract_family_slot, evaporation_slot};
+use super::stage_volume::{
+    hydro_diversion_volume_terms, hydro_outflow_columns, hydro_outflow_volume_terms,
+    pumping_volume_terms,
+};
 use crate::hydro_models::ResolvedProductionModel;
 use crate::indexer::{
     BlockIdx, Boundary, BusSys, EvapLocal, FphaCellLocal, HydroCell, HydroSys, LineSys, PumpingSys,
@@ -140,17 +144,24 @@ pub(super) fn resolve_variable_ref(
             station.consumption_mw_per_m3s
         }),
 
-        VariableRef::HydroOutflowVolume { hydro_id } => resolve_stage_volume(layout, |blk| {
-            resolve_hydro_outflow(*hydro_id, blk, ctx, layout)
-        }),
+        VariableRef::HydroOutflowVolume { hydro_id } => {
+            ctx.positions.hydro(*hydro_id).map_or_else(Vec::new, |pos| {
+                hydro_outflow_volume_terms(HydroSys::new(pos), ctx, layout)
+            })
+        }
 
-        VariableRef::HydroDiversionVolume { hydro_id } => resolve_stage_volume(layout, |blk| {
-            resolve_hydro_diversion(*hydro_id, blk, ctx, layout)
-        }),
+        VariableRef::HydroDiversionVolume { hydro_id } => {
+            ctx.positions.hydro(*hydro_id).map_or_else(Vec::new, |pos| {
+                hydro_diversion_volume_terms(HydroSys::new(pos), layout)
+            })
+        }
 
-        VariableRef::PumpingVolume { station_id } => resolve_stage_volume(layout, |blk| {
-            resolve_pumping_column(*station_id, blk, ctx, layout, |_| 1.0)
-        }),
+        VariableRef::PumpingVolume { station_id } => ctx
+            .positions
+            .pumping(*station_id)
+            .map_or_else(Vec::new, |p| {
+                pumping_volume_terms(PumpingSys::new(p), layout)
+            }),
 
         VariableRef::ContractImport {
             contract_id,
@@ -510,26 +521,7 @@ fn resolve_hydro_outflow(
     let Some(pos) = ctx.positions.hydro(hydro_id) else {
         return vec![];
     };
-    let mut result = resolve_turbine_cells(hydro_id, None, blk, 1.0, ctx, layout);
-    result.push((layout.geometry.spillage_col(HydroSys::new(pos), blk), 1.0));
-    result
-}
-
-/// Stage volume (hm³): every block's flow columns from `per_block`, each weighted by
-/// that block's `tau`, in ascending block order.
-fn resolve_stage_volume(
-    layout: &StageLayout<'_>,
-    per_block: impl Fn(BlockIdx) -> Vec<(usize, f64)>,
-) -> Vec<(usize, f64)> {
-    (0..layout.clock.n_blks())
-        .map(BlockIdx::new)
-        .flat_map(|blk| {
-            let tau = layout.clock.tau(blk);
-            per_block(blk)
-                .into_iter()
-                .map(move |(col, m)| (col, m * tau))
-        })
-        .collect()
+    hydro_outflow_columns(HydroSys::new(pos), blk, ctx, layout)
 }
 
 /// Resolve `HydroGeneration` by dispatching on the production model.

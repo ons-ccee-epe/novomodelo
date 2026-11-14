@@ -1064,6 +1064,11 @@ fn build_geometry(
         filled_min_storage_floor_col: 0..0,
         plant_max_turbine: 0..0,
         plant_max_generation: 0..0,
+        outflow_volume: 0..0,
+        diversion_volume: 0..0,
+        pumping_volume: 0..0,
+        outflow_volume_below_slack: 0..0,
+        outflow_volume_above_slack: 0..0,
         n_blks,
         storage_internal_start: 0,
         block_mode: BlockMode::Parallel,
@@ -1073,6 +1078,9 @@ fn build_geometry(
         filled_min_storage_floor_hydro_indices: Vec::new(),
         plant_floor_hydro_indices: Vec::new(),
         plant_cap_hydro_indices: Vec::new(),
+        outflow_volume_hydro_indices: Vec::new(),
+        diversion_volume_hydro_indices: Vec::new(),
+        pumping_volume_station_indices: Vec::new(),
     }
 }
 

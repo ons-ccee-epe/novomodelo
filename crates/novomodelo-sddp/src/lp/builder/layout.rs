@@ -15,12 +15,12 @@ use crate::hydro_models::{
     EvaporationModel, EvaporationModelSet, ProductionModelSet, ResolvedProductionModel,
 };
 use crate::indexer::{
-    AnticipatedLocal, BlockGrid, BlockIdx, BlockRowFamily, Boundary, BusSys, EntityPositions,
-    EvapLocal, EvaporationIndices, FillingTargetLocal, FloorLocal, FphaCellLocal, FphaLocal,
-    HydroCell, HydroCellIndex, HydroSys, LineSys, NcsSys, PlantCapLocal, PlantFloorLocal,
-    PumpingSys, RangeCursor, StateSpace, StorageBoundaryGrid, StudyDimensions, ThermalSys,
-    anticipated_resolution_for, for_each_live_commitment_slot,
-    is_anticipated_decision_active_for_delivery,
+    AnticipatedLocal, BlockGrid, BlockIdx, BlockRowFamily, Boundary, BusSys, DiversionVolumeLocal,
+    EntityPositions, EvapLocal, EvaporationIndices, FillingTargetLocal, FloorLocal, FphaCellLocal,
+    FphaLocal, HydroCell, HydroCellIndex, HydroSys, LineSys, NcsSys, OutflowVolumeLocal,
+    PlantCapLocal, PlantFloorLocal, PumpingSys, PumpingVolumeLocal, RangeCursor, StateSpace,
+    StorageBoundaryGrid, StudyDimensions, ThermalSys, anticipated_resolution_for,
+    for_each_live_commitment_slot, is_anticipated_decision_active_for_delivery,
 };
 use crate::time_value::TimeValue;
 
@@ -386,8 +386,8 @@ pub(crate) struct ConstraintRows {
 
 impl ConstraintRows {
     /// Pure assembly: every row family is already allocated by the caller.
-    /// `generic_rows` is still last in the row chain, so its `.start`/`.len()`
-    /// are `row_generic_start`/`n_generic_rows`.
+    /// The stage-volume rows follow `generic_rows` in the row chain, so
+    /// `generic_rows`' `.start`/`.len()` are `row_generic_start`/`n_generic_rows`.
     fn new(
         transit: (Vec<Option<usize>>, Range<usize>),
         generic_rows: Range<usize>,
@@ -787,6 +787,57 @@ fn identify_filled_min_storage_floor_hydros(
             matches!(hydro_phase(hydro, stage_id), Phase::Operating) && hydro.filling.is_some()
         })
         .map(HydroSys::new)
+        .collect()
+}
+
+/// Collect the hydros declaring a stage-total outflow-volume bound at `stage_idx`,
+/// in ascending system index. Empty while the overlay is, so a study without
+/// stage-volume values allocates nothing.
+fn identify_outflow_volume_hydros(ctx: &TemplateBuildCtx<'_>, stage_idx: usize) -> Vec<HydroSys> {
+    let overlay = ctx.resolved.bounds.stage_volume_overlay();
+    if overlay.is_empty() {
+        return Vec::new();
+    }
+    (0..ctx.hydros.len())
+        .filter(|&h| {
+            let bounds = overlay.hydro(h, stage_idx);
+            bounds.min_outflow_hm3.is_some() || bounds.max_outflow_hm3.is_some()
+        })
+        .map(HydroSys::new)
+        .collect()
+}
+
+/// [`identify_outflow_volume_hydros`] for the stage-total diversion-volume bounds.
+fn identify_diversion_volume_hydros(ctx: &TemplateBuildCtx<'_>, stage_idx: usize) -> Vec<HydroSys> {
+    let overlay = ctx.resolved.bounds.stage_volume_overlay();
+    if overlay.is_empty() {
+        return Vec::new();
+    }
+    (0..ctx.hydros.len())
+        .filter(|&h| {
+            let bounds = overlay.hydro(h, stage_idx);
+            bounds.min_diversion_hm3.is_some() || bounds.max_diversion_hm3.is_some()
+        })
+        .map(HydroSys::new)
+        .collect()
+}
+
+/// [`identify_outflow_volume_hydros`] for the stage-total pumping-volume bounds,
+/// over the pumping stations.
+fn identify_pumping_volume_stations(
+    ctx: &TemplateBuildCtx<'_>,
+    stage_idx: usize,
+) -> Vec<PumpingSys> {
+    let overlay = ctx.resolved.bounds.stage_volume_overlay();
+    if overlay.is_empty() {
+        return Vec::new();
+    }
+    (0..ctx.pumping_stations.len())
+        .filter(|&p| {
+            let bounds = overlay.pumping(p, stage_idx);
+            bounds.min_hm3.is_some() || bounds.max_hm3.is_some()
+        })
+        .map(PumpingSys::new)
         .collect()
 }
 
@@ -1266,7 +1317,7 @@ fn allocate_evaporation(
 
 /// Read the slack-column start, enumerate the active generic-constraint rows
 /// and their slack columns, then allocate the generic slack columns and the
-/// generic rows — still last in each of their respective cursor chains.
+/// generic rows.
 fn allocate_generic_constraints(
     col: &mut RangeCursor,
     row: &mut RangeCursor,
@@ -1321,6 +1372,11 @@ impl StageGeometry {
             filled_min_storage_floor_col: 0..0,
             plant_max_turbine: 0..0,
             plant_max_generation: 0..0,
+            outflow_volume: 0..0,
+            diversion_volume: 0..0,
+            pumping_volume: 0..0,
+            outflow_volume_below_slack: 0..0,
+            outflow_volume_above_slack: 0..0,
             n_blks,
             storage_internal_start: 0,
             block_mode,
@@ -1330,6 +1386,9 @@ impl StageGeometry {
             filled_min_storage_floor_hydro_indices: Vec::new(),
             plant_floor_hydro_indices: Vec::new(),
             plant_cap_hydro_indices: Vec::new(),
+            outflow_volume_hydro_indices: Vec::new(),
+            diversion_volume_hydro_indices: Vec::new(),
+            pumping_volume_station_indices: Vec::new(),
         }
     }
 }
@@ -1346,6 +1405,9 @@ impl<'a> StageLayout<'a> {
         let filling_target_hydro_indices = identify_filling_target_hydros(ctx, stage.id);
         let filled_min_storage_floor_hydro_indices =
             identify_filled_min_storage_floor_hydros(ctx, stage.id);
+        let outflow_volume_hydro_indices = identify_outflow_volume_hydros(ctx, stage_idx);
+        let diversion_volume_hydro_indices = identify_diversion_volume_hydros(ctx, stage_idx);
+        let pumping_volume_station_indices = identify_pumping_volume_stations(ctx, stage_idx);
 
         // `n_fpha_cells` (the running total) sizes the FPHA generation column
         // family; `total_fpha_rows` sizes its plane rows.
@@ -1465,13 +1527,23 @@ impl<'a> StageLayout<'a> {
         let (generic, generic_rows) =
             allocate_generic_constraints(&mut col, &mut row, ctx, stage, stage_idx, n_blks);
 
-        // σ_fill then σ^{v-} are the last two per-stage column families; σ^{v-}
-        // last so its presence cannot shift any other family's start.
+        geometry.outflow_volume = row.alloc(outflow_volume_hydro_indices.len());
+        geometry.diversion_volume = row.alloc(diversion_volume_hydro_indices.len());
+        geometry.pumping_volume = row.alloc(pumping_volume_station_indices.len());
+
+        // σ_fill, σ^{v-}, then the below/above outflow-volume slacks are the last
+        // per-stage column families; the slacks last so their presence cannot
+        // shift any other family's start.
         geometry.filling_target_col = col.alloc(filling_target_hydro_indices.len());
         geometry.filled_min_storage_floor_col =
             col.alloc(filled_min_storage_floor_hydro_indices.len());
+        geometry.outflow_volume_below_slack = col.alloc(outflow_volume_hydro_indices.len());
+        geometry.outflow_volume_above_slack = col.alloc(outflow_volume_hydro_indices.len());
         geometry.filling_target_hydro_indices = filling_target_hydro_indices;
         geometry.filled_min_storage_floor_hydro_indices = filled_min_storage_floor_hydro_indices;
+        geometry.outflow_volume_hydro_indices = outflow_volume_hydro_indices;
+        geometry.diversion_volume_hydro_indices = diversion_volume_hydro_indices;
+        geometry.pumping_volume_station_indices = pumping_volume_station_indices;
 
         let num_cols = col.pos();
         let num_rows = row.pos();
@@ -1816,6 +1888,30 @@ impl StageLayout<'_> {
         entity_flat(&self.geometry.filled_min_storage_floor, local.get())
     }
 
+    /// Outflow-volume-local `local`'s stage-volume row, over
+    /// [`StageGeometry::outflow_volume`].
+    #[inline]
+    #[must_use]
+    pub(crate) fn outflow_volume_row(&self, local: OutflowVolumeLocal) -> usize {
+        entity_flat(&self.geometry.outflow_volume, local.get())
+    }
+
+    /// Diversion-volume-local `local`'s stage-volume row, over
+    /// [`StageGeometry::diversion_volume`].
+    #[inline]
+    #[must_use]
+    pub(crate) fn diversion_volume_row(&self, local: DiversionVolumeLocal) -> usize {
+        entity_flat(&self.geometry.diversion_volume, local.get())
+    }
+
+    /// Pumping-volume-local `local`'s stage-volume row, over
+    /// [`StageGeometry::pumping_volume`].
+    #[inline]
+    #[must_use]
+    pub(crate) fn pumping_volume_row(&self, local: PumpingVolumeLocal) -> usize {
+        entity_flat(&self.geometry.pumping_volume, local.get())
+    }
+
     /// Generic constraint row `entry_idx`'s row, over
     /// `row_generic_start..row_generic_start + n_generic_rows`.
     #[inline]
@@ -1947,6 +2043,16 @@ pub struct StageGeometry {
     pub plant_max_turbine: Range<usize>,
     /// Hard plant max-generation row range (one row per plant-cap hydro per block).
     pub plant_max_generation: Range<usize>,
+    /// Stage outflow-volume row range, one row per `outflow_volume_hydro_indices` entry.
+    pub outflow_volume: Range<usize>,
+    /// Stage diversion-volume row range, one row per `diversion_volume_hydro_indices` entry.
+    pub diversion_volume: Range<usize>,
+    /// Stage pumping-volume row range, one row per `pumping_volume_station_indices` entry.
+    pub pumping_volume: Range<usize>,
+    /// Below-bound outflow-volume slack columns, one per `outflow_volume_hydro_indices` entry.
+    pub outflow_volume_below_slack: Range<usize>,
+    /// Above-bound outflow-volume slack columns, one per `outflow_volume_hydro_indices` entry.
+    pub outflow_volume_above_slack: Range<usize>,
     /// Number of operating blocks (K) at this stage — the block-major stride for
     /// every equipment family.
     pub n_blks: usize,
@@ -1982,6 +2088,15 @@ pub struct StageGeometry {
     /// System hydro indices owning a pair of plant cap rows at this stage, in slot
     /// order; SPARSE like `filling_target_hydro_indices`.
     pub plant_cap_hydro_indices: Vec<HydroSys>,
+    /// System hydro indices declaring a stage outflow-volume bound at this stage,
+    /// ascending; SPARSE like `filling_target_hydro_indices`.
+    pub outflow_volume_hydro_indices: Vec<HydroSys>,
+    /// System hydro indices declaring a stage diversion-volume bound at this stage,
+    /// ascending; SPARSE like `filling_target_hydro_indices`.
+    pub diversion_volume_hydro_indices: Vec<HydroSys>,
+    /// System pumping-station indices declaring a stage pumping-volume bound at
+    /// this stage, ascending; SPARSE like `filling_target_hydro_indices`.
+    pub pumping_volume_station_indices: Vec<PumpingSys>,
 }
 
 impl StageGeometry {
@@ -2235,6 +2350,20 @@ impl StageGeometry {
     #[must_use]
     pub fn filled_min_storage_floor_slack_col(&self, local: FloorLocal) -> usize {
         entity_flat(&self.filled_min_storage_floor_col, local.get())
+    }
+
+    /// Outflow-volume-local `local`'s below-bound slack column.
+    #[inline]
+    #[must_use]
+    pub fn outflow_volume_below_slack_col(&self, local: OutflowVolumeLocal) -> usize {
+        entity_flat(&self.outflow_volume_below_slack, local.get())
+    }
+
+    /// Outflow-volume-local `local`'s above-bound slack column.
+    #[inline]
+    #[must_use]
+    pub fn outflow_volume_above_slack_col(&self, local: OutflowVolumeLocal) -> usize {
+        entity_flat(&self.outflow_volume_above_slack, local.get())
     }
 }
 

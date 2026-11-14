@@ -52,6 +52,7 @@ mod layout;
 mod patch;
 mod rows;
 mod scaling;
+mod stage_volume;
 pub(crate) mod state_box;
 mod template;
 

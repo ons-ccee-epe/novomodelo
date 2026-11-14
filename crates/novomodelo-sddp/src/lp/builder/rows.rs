@@ -3,8 +3,8 @@ use novomodelo_core::{BlockMode, Stage};
 
 use crate::hydro_models::EvaporationModel;
 use crate::indexer::{
-    BlockIdx, BusSys, EvapLocal, FillingTargetLocal, FloorLocal, HydroCell, HydroSys,
-    PlantCapLocal, PlantFloorLocal,
+    BlockIdx, BusSys, DiversionVolumeLocal, EvapLocal, FillingTargetLocal, FloorLocal, HydroCell,
+    HydroSys, OutflowVolumeLocal, PlantCapLocal, PlantFloorLocal, PumpingVolumeLocal,
 };
 
 use super::fpha_cursor::for_each_fpha_plane;
@@ -34,6 +34,9 @@ pub(super) fn fill_stage_rows(
     fill_transit_bucket_definition_rows(layout, &mut row_lower, &mut row_upper);
     fill_filling_target_rows(ctx, stage.id, layout, &mut row_lower, &mut row_upper);
     fill_filled_min_storage_floor_rows(ctx, stage_idx, layout, &mut row_lower, &mut row_upper);
+    fill_outflow_volume_rows(ctx, stage_idx, layout, &mut row_lower, &mut row_upper);
+    fill_diversion_volume_rows(ctx, stage_idx, layout, &mut row_lower, &mut row_upper);
+    fill_pumping_volume_rows(ctx, stage_idx, layout, &mut row_lower, &mut row_upper);
     fill_load_balance_rows(
         ctx,
         stage,
@@ -315,6 +318,78 @@ fn fill_filled_min_storage_floor_rows(
         let row = layout.filled_min_storage_floor_row(FloorLocal::new(local_idx));
         row_lower[row] = min_storage;
         row_upper[row] = f64::INFINITY;
+    }
+}
+
+/// Fill the soft outflow-volume row bounds, in hm³: an undeclared side is an infinite
+/// row bound, never `0`. LHS coefficients are emitted by
+/// `entries::fill_outflow_volume_entries`.
+fn fill_outflow_volume_rows(
+    ctx: &TemplateBuildCtx<'_>,
+    stage_idx: usize,
+    layout: &StageLayout,
+    row_lower: &mut [f64],
+    row_upper: &mut [f64],
+) {
+    let overlay = ctx.resolved.bounds.stage_volume_overlay();
+    for (local_idx, &h) in layout
+        .geometry
+        .outflow_volume_hydro_indices
+        .iter()
+        .enumerate()
+    {
+        let bounds = overlay.hydro(h.get(), stage_idx);
+        let row = layout.outflow_volume_row(OutflowVolumeLocal::new(local_idx));
+        row_lower[row] = bounds.min_outflow_hm3.unwrap_or(f64::NEG_INFINITY);
+        row_upper[row] = bounds.max_outflow_hm3.unwrap_or(f64::INFINITY);
+    }
+}
+
+/// Fill the hard diversion-volume row bounds, in hm³: an undeclared side is an infinite
+/// row bound, never `0`. LHS coefficients are emitted by
+/// `entries::fill_diversion_volume_entries`.
+fn fill_diversion_volume_rows(
+    ctx: &TemplateBuildCtx<'_>,
+    stage_idx: usize,
+    layout: &StageLayout,
+    row_lower: &mut [f64],
+    row_upper: &mut [f64],
+) {
+    let overlay = ctx.resolved.bounds.stage_volume_overlay();
+    for (local_idx, &h) in layout
+        .geometry
+        .diversion_volume_hydro_indices
+        .iter()
+        .enumerate()
+    {
+        let bounds = overlay.hydro(h.get(), stage_idx);
+        let row = layout.diversion_volume_row(DiversionVolumeLocal::new(local_idx));
+        row_lower[row] = bounds.min_diversion_hm3.unwrap_or(f64::NEG_INFINITY);
+        row_upper[row] = bounds.max_diversion_hm3.unwrap_or(f64::INFINITY);
+    }
+}
+
+/// Fill the hard pumping-volume row bounds, in hm³: an undeclared side is an infinite
+/// row bound, never `0`. LHS coefficients are emitted by
+/// `entries::fill_pumping_volume_entries`.
+fn fill_pumping_volume_rows(
+    ctx: &TemplateBuildCtx<'_>,
+    stage_idx: usize,
+    layout: &StageLayout,
+    row_lower: &mut [f64],
+    row_upper: &mut [f64],
+) {
+    let overlay = ctx.resolved.bounds.stage_volume_overlay();
+    for (local_idx, &p) in layout
+        .geometry
+        .pumping_volume_station_indices
+        .iter()
+        .enumerate()
+    {
+        let bounds = overlay.pumping(p.get(), stage_idx);
+        let row = layout.pumping_volume_row(PumpingVolumeLocal::new(local_idx));
+        row_lower[row] = bounds.min_hm3.unwrap_or(f64::NEG_INFINITY);
+        row_upper[row] = bounds.max_hm3.unwrap_or(f64::INFINITY);
     }
 }
 

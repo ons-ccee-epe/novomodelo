@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use arrow::array::{Float64Array, Int32Array};
+use arrow::array::{Array, Float64Array, Int32Array};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use parquet::arrow::ArrowWriter;
@@ -119,4 +119,115 @@ pub fn write_generic_constraint_bounds(dest: &Path, rows: &[GenericBoundsRow]) {
         ArrowWriter::try_new(file, schema, None).expect("ArrowWriter for constraint bounds");
     writer.write(&batch).expect("write constraint bounds batch");
     writer.close().expect("close constraint bounds writer");
+}
+
+/// Whether a bounds writer emits the stage-volume (hm³) columns.
+#[derive(Clone, Copy)]
+pub enum Hm3Columns {
+    Omit,
+    Write,
+}
+
+pub struct HydroBoundsRow {
+    pub hydro_id: i32,
+    pub stage_id: i32,
+    pub min_outflow_hm3: Option<f64>,
+    pub max_outflow_hm3: Option<f64>,
+    pub min_diversion_hm3: Option<f64>,
+    pub max_diversion_hm3: Option<f64>,
+}
+
+pub struct PumpingBoundsRow {
+    pub pumping_station_id: i32,
+    pub stage_id: i32,
+    pub min_hm3: Option<f64>,
+    pub max_hm3: Option<f64>,
+}
+
+fn write_bounds_batch(dest: &Path, fields: Vec<Field>, columns: Vec<Arc<dyn Array>>) {
+    let schema = Arc::new(Schema::new(fields));
+    let batch =
+        RecordBatch::try_new(Arc::clone(&schema), columns).expect("valid RecordBatch for bounds");
+    let file = std::fs::File::create(dest).expect("create bounds parquet");
+    let mut writer = ArrowWriter::try_new(file, schema, None).expect("ArrowWriter for bounds");
+    writer.write(&batch).expect("write bounds batch");
+    writer.close().expect("close bounds writer");
+}
+
+fn nullable_f64(name: &str, values: Vec<Option<f64>>) -> (Field, Arc<dyn Array>) {
+    (
+        Field::new(name, DataType::Float64, true),
+        Arc::new(Float64Array::from(values)),
+    )
+}
+
+/// Writes a `hydro_bounds.parquet` table: the key columns `(hydro_id, stage_id)`
+/// and, under [`Hm3Columns::Write`], the four stage-volume columns.
+pub fn write_hydro_bounds(dest: &Path, rows: &[HydroBoundsRow], hm3: Hm3Columns) {
+    let mut fields = vec![
+        Field::new("hydro_id", DataType::Int32, false),
+        Field::new("stage_id", DataType::Int32, false),
+    ];
+    let mut columns: Vec<Arc<dyn Array>> = vec![
+        Arc::new(Int32Array::from_iter_values(
+            rows.iter().map(|r| r.hydro_id),
+        )),
+        Arc::new(Int32Array::from_iter_values(
+            rows.iter().map(|r| r.stage_id),
+        )),
+    ];
+    if matches!(hm3, Hm3Columns::Write) {
+        let (f, c): (Vec<_>, Vec<_>) = [
+            nullable_f64(
+                "min_outflow_hm3",
+                rows.iter().map(|r| r.min_outflow_hm3).collect(),
+            ),
+            nullable_f64(
+                "max_outflow_hm3",
+                rows.iter().map(|r| r.max_outflow_hm3).collect(),
+            ),
+            nullable_f64(
+                "min_diversion_hm3",
+                rows.iter().map(|r| r.min_diversion_hm3).collect(),
+            ),
+            nullable_f64(
+                "max_diversion_hm3",
+                rows.iter().map(|r| r.max_diversion_hm3).collect(),
+            ),
+        ]
+        .into_iter()
+        .unzip();
+        fields.extend(f);
+        columns.extend(c);
+    }
+    write_bounds_batch(dest, fields, columns);
+}
+
+/// Writes a `pumping_bounds.parquet` table: the key columns
+/// `(pumping_station_id, stage_id)` and, under [`Hm3Columns::Write`],
+/// `min_hm3` and `max_hm3`.
+pub fn write_pumping_bounds(dest: &Path, rows: &[PumpingBoundsRow], hm3: Hm3Columns) {
+    let mut fields = vec![
+        Field::new("pumping_station_id", DataType::Int32, false),
+        Field::new("stage_id", DataType::Int32, false),
+    ];
+    let mut columns: Vec<Arc<dyn Array>> = vec![
+        Arc::new(Int32Array::from_iter_values(
+            rows.iter().map(|r| r.pumping_station_id),
+        )),
+        Arc::new(Int32Array::from_iter_values(
+            rows.iter().map(|r| r.stage_id),
+        )),
+    ];
+    if matches!(hm3, Hm3Columns::Write) {
+        let (f, c): (Vec<_>, Vec<_>) = [
+            nullable_f64("min_hm3", rows.iter().map(|r| r.min_hm3).collect()),
+            nullable_f64("max_hm3", rows.iter().map(|r| r.max_hm3).collect()),
+        ]
+        .into_iter()
+        .unzip();
+        fields.extend(f);
+        columns.extend(c);
+    }
+    write_bounds_batch(dest, fields, columns);
 }

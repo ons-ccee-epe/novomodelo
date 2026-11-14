@@ -9,7 +9,7 @@ use novomodelo_solver::StageTemplate;
 
 use crate::lp::builder::{GenericConstraintRowEntry, StageGeometry, StateBox};
 use crate::lp::indexer::{
-    BlockRowFamily, EvaporationIndices, HydroSys, StateSpace, StorageBoundaryGrid,
+    BlockRowFamily, EvaporationIndices, HydroSys, PumpingSys, StateSpace, StorageBoundaryGrid,
 };
 use crate::time_value::TimeValue;
 
@@ -186,6 +186,13 @@ fn put_hydro_sys_slice(buf: &mut Vec<u8>, values: &[HydroSys]) {
     }
 }
 
+fn put_pumping_sys_slice(buf: &mut Vec<u8>, values: &[PumpingSys]) {
+    put_usize(buf, values.len());
+    for &v in values {
+        put_usize(buf, v.get());
+    }
+}
+
 fn put_gc_entry(buf: &mut Vec<u8>, entry: &GenericConstraintRowEntry) {
     let GenericConstraintRowEntry {
         constraint_idx,
@@ -271,6 +278,11 @@ fn put_geometry(buf: &mut Vec<u8>, geometry: &StageGeometry, state: &StateSpace)
         filled_min_storage_floor_col,
         plant_max_turbine,
         plant_max_generation,
+        outflow_volume,
+        diversion_volume,
+        pumping_volume,
+        outflow_volume_below_slack,
+        outflow_volume_above_slack,
         n_blks,
         storage_internal_start,
         block_mode,
@@ -280,6 +292,9 @@ fn put_geometry(buf: &mut Vec<u8>, geometry: &StageGeometry, state: &StateSpace)
         filled_min_storage_floor_hydro_indices,
         plant_floor_hydro_indices,
         plant_cap_hydro_indices,
+        outflow_volume_hydro_indices,
+        diversion_volume_hydro_indices,
+        pumping_volume_station_indices,
     } = geometry;
 
     put_usize(buf, state.theta);
@@ -319,6 +334,11 @@ fn put_geometry(buf: &mut Vec<u8>, geometry: &StageGeometry, state: &StateSpace)
     put_range(buf, filled_min_storage_floor_col);
     put_range(buf, plant_max_turbine);
     put_range(buf, plant_max_generation);
+    put_range(buf, outflow_volume);
+    put_range(buf, diversion_volume);
+    put_range(buf, pumping_volume);
+    put_range(buf, outflow_volume_below_slack);
+    put_range(buf, outflow_volume_above_slack);
 
     put_usize(buf, state.z_inflow_rows().start);
     put_usize(buf, *n_blks);
@@ -340,6 +360,9 @@ fn put_geometry(buf: &mut Vec<u8>, geometry: &StageGeometry, state: &StateSpace)
     put_hydro_sys_slice(buf, filled_min_storage_floor_hydro_indices);
     put_hydro_sys_slice(buf, plant_floor_hydro_indices);
     put_hydro_sys_slice(buf, plant_cap_hydro_indices);
+    put_hydro_sys_slice(buf, outflow_volume_hydro_indices);
+    put_hydro_sys_slice(buf, diversion_volume_hydro_indices);
+    put_pumping_sys_slice(buf, pumping_volume_station_indices);
 }
 
 /// Encode every fact of [`StageTemplates`] — the LP templates plus every

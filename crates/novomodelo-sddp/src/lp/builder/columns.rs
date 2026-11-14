@@ -6,8 +6,9 @@ use novomodelo_core::{
 use crate::hydro_models::EvaporationModel;
 use crate::indexer::{
     AnticipatedLocal, BlockIdx, Boundary, BusSys, EvapLocal, FillingTargetLocal, FloorLocal,
-    FphaCellLocal, FphaLocal, HydroCell, HydroSys, LineSys, NcsSys, PlantFloorLocal, PumpingSys,
-    ThermalSys, for_each_ring_residue, is_anticipated_decision_active_for_delivery,
+    FphaCellLocal, FphaLocal, HydroCell, HydroSys, LineSys, NcsSys, OutflowVolumeLocal,
+    PlantFloorLocal, PumpingSys, ThermalSys, for_each_ring_residue,
+    is_anticipated_decision_active_for_delivery,
 };
 
 use super::EVAPORATION_FLOW_SAFETY_MARGIN;
@@ -60,6 +61,7 @@ pub(super) fn fill_stage_columns(
     fill_contract_columns(ctx, stage, stage_idx, layout, bufs);
     fill_filling_target_columns(ctx, stage_idx, layout, bufs);
     fill_filled_min_storage_floor_columns(ctx, stage_idx, layout, bufs);
+    fill_outflow_volume_slack_columns(ctx, stage_idx, layout, bufs);
     fill_z_inflow_columns(layout, bufs);
 
     (col_lower, col_upper, objective)
@@ -1077,6 +1079,45 @@ fn fill_filled_min_storage_floor_columns(
         bufs.col_lower[col] = 0.0;
         bufs.col_upper[col] = f64::INFINITY;
         bufs.objective[col] = hp.storage_violation_below_cost;
+    }
+}
+
+/// Soft outflow-volume slack columns, two per declared hydro: `σ⁻` pairs with the min
+/// side and `σ⁺` with the max side. A side the declaration omits has an infinite row
+/// bound, so its slack is pinned `[0, 0]`. The objective is the RESOLVED $/hm³ violation
+/// cost, written UNSCALED with the same no-hours contract as `fill_filling_target_columns`.
+fn fill_outflow_volume_slack_columns(
+    ctx: &TemplateBuildCtx<'_>,
+    stage_idx: usize,
+    layout: &StageLayout,
+    bufs: &mut ColumnBufs<'_>,
+) {
+    let overlay = ctx.resolved.bounds.stage_volume_overlay();
+    for (local_idx, &h) in layout
+        .geometry
+        .outflow_volume_hydro_indices
+        .iter()
+        .enumerate()
+    {
+        let local = OutflowVolumeLocal::new(local_idx);
+        let bounds = overlay.hydro(h.get(), stage_idx);
+        let hp = ctx.resolved.penalties.hydro_penalties(h.get(), stage_idx);
+        let below = layout.geometry.outflow_volume_below_slack_col(local);
+        let above = layout.geometry.outflow_volume_above_slack_col(local);
+        bufs.col_lower[below] = 0.0;
+        bufs.col_upper[below] = if bounds.min_outflow_hm3.is_some() {
+            f64::INFINITY
+        } else {
+            0.0
+        };
+        bufs.objective[below] = hp.outflow_volume_violation_below_cost;
+        bufs.col_lower[above] = 0.0;
+        bufs.col_upper[above] = if bounds.max_outflow_hm3.is_some() {
+            f64::INFINITY
+        } else {
+            0.0
+        };
+        bufs.objective[above] = hp.outflow_volume_violation_above_cost;
     }
 }
 

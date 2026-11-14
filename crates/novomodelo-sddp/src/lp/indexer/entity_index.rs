@@ -8,8 +8,9 @@
 //! column. [`HydroSys`], [`ThermalSys`], [`LineSys`], [`BusSys`], [`NcsSys`],
 //! and [`PumpingSys`] carry a system position; [`FphaLocal`], [`EvapLocal`],
 //! [`FillingTargetLocal`], [`PlantFloorLocal`], [`PlantCapLocal`],
-//! [`FloorLocal`], and [`AnticipatedLocal`] each carry a position within their
-//! own named local list, and [`FphaCellLocal`] a position within the stage's
+//! [`FloorLocal`], [`OutflowVolumeLocal`], [`DiversionVolumeLocal`],
+//! [`PumpingVolumeLocal`], and [`AnticipatedLocal`] each carry a position within
+//! their own named local list, and [`FphaCellLocal`] a position within the stage's
 //! plant-major FPHA-*cell* sequence (finer than [`FphaLocal`]: a split FPHA plant
 //! spans several). [`HydroCell`] carries neither: it is a position within
 //! the study-scope [`HydroCellIndex`](super::HydroCellIndex) partition, addressed
@@ -382,6 +383,69 @@ impl PlantCapLocal {
     }
 }
 
+/// A hydro's position within a stage's outflow-volume local list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(transparent)]
+pub struct OutflowVolumeLocal(usize);
+
+impl OutflowVolumeLocal {
+    /// Wrap a raw outflow-volume-local index.
+    #[inline]
+    #[must_use]
+    pub fn new(v: usize) -> Self {
+        Self(v)
+    }
+
+    /// Extract the raw outflow-volume-local index.
+    #[inline]
+    #[must_use]
+    pub fn get(self) -> usize {
+        self.0
+    }
+}
+
+/// A hydro's position within a stage's diversion-volume local list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(transparent)]
+pub struct DiversionVolumeLocal(usize);
+
+impl DiversionVolumeLocal {
+    /// Wrap a raw diversion-volume-local index.
+    #[inline]
+    #[must_use]
+    pub fn new(v: usize) -> Self {
+        Self(v)
+    }
+
+    /// Extract the raw diversion-volume-local index.
+    #[inline]
+    #[must_use]
+    pub fn get(self) -> usize {
+        self.0
+    }
+}
+
+/// A pumping station's position within a stage's pumping-volume local list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(transparent)]
+pub struct PumpingVolumeLocal(usize);
+
+impl PumpingVolumeLocal {
+    /// Wrap a raw pumping-volume-local index.
+    #[inline]
+    #[must_use]
+    pub fn new(v: usize) -> Self {
+        Self(v)
+    }
+
+    /// Extract the raw pumping-volume-local index.
+    #[inline]
+    #[must_use]
+    pub fn get(self) -> usize {
+        self.0
+    }
+}
+
 /// A thermal's position within a stage's anticipated-commitment local list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
@@ -406,9 +470,9 @@ impl AnticipatedLocal {
 #[cfg(test)]
 mod tests {
     use super::{
-        AnticipatedLocal, BusSys, EvapLocal, FillingTargetLocal, FloorLocal, FphaCellLocal,
-        FphaLocal, HydroCell, HydroSys, LineSys, NcsSys, PlantCapLocal, PlantFloorLocal,
-        PumpingSys, ThermalSys,
+        AnticipatedLocal, BusSys, DiversionVolumeLocal, EvapLocal, FillingTargetLocal, FloorLocal,
+        FphaCellLocal, FphaLocal, HydroCell, HydroSys, LineSys, NcsSys, OutflowVolumeLocal,
+        PlantCapLocal, PlantFloorLocal, PumpingSys, PumpingVolumeLocal, ThermalSys,
     };
 
     #[test]
@@ -526,6 +590,25 @@ mod tests {
             std::mem::size_of::<usize>()
         );
         assert_eq!(FloorLocal::new(1).get(), 1);
+    }
+
+    #[test]
+    fn stage_volume_locals_are_zero_cost_and_round_trip() {
+        assert_eq!(
+            std::mem::size_of::<OutflowVolumeLocal>(),
+            std::mem::size_of::<usize>()
+        );
+        assert_eq!(OutflowVolumeLocal::new(2).get(), 2);
+        assert_eq!(
+            std::mem::size_of::<DiversionVolumeLocal>(),
+            std::mem::size_of::<usize>()
+        );
+        assert_eq!(DiversionVolumeLocal::new(3).get(), 3);
+        assert_eq!(
+            std::mem::size_of::<PumpingVolumeLocal>(),
+            std::mem::size_of::<usize>()
+        );
+        assert_eq!(PumpingVolumeLocal::new(4).get(), 4);
     }
 
     #[test]

@@ -14,10 +14,10 @@
 //! module doc for the authoritative diagram; this file does not re-derive it,
 //! to avoid the two copies drifting apart.
 //!
-//! The equipment, slack, generic-constraint, and filling-phase column and row
-//! ranges that follow `theta` — allocated in that equipment -> slack ->
-//! generic -> filling family order — are owned entirely by
-//! [`StageLayout`](crate::lp::builder).
+//! The equipment, slack, generic-constraint, filling-phase, and stage-volume
+//! column and row ranges that follow `theta` — allocated in that equipment ->
+//! slack -> generic -> filling -> stage-volume family order — are owned
+//! entirely by [`StageLayout`](crate::lp::builder).
 //!
 //! The `anticipated_decision` block is stage-level (one column per anticipated
 //! plant, NOT per-block) and has length `A = n_anticipated`. The block collapses
@@ -84,7 +84,9 @@
 //! - `entity_index` — entity system/local index vocabulary
 //!   ([`HydroSys`]/[`ThermalSys`]/[`LineSys`]/[`BusSys`]/[`NcsSys`]/
 //!   [`PumpingSys`], [`FphaLocal`]/[`EvapLocal`]/[`FillingTargetLocal`]/
-//!   [`PlantFloorLocal`]/[`PlantCapLocal`]/[`FloorLocal`]/[`AnticipatedLocal`], [`HydroCell`]/[`FphaCellLocal`]).
+//!   [`PlantFloorLocal`]/[`PlantCapLocal`]/[`FloorLocal`]/[`AnticipatedLocal`]/
+//!   [`OutflowVolumeLocal`]/[`DiversionVolumeLocal`]/[`PumpingVolumeLocal`],
+//!   [`HydroCell`]/[`FphaCellLocal`]).
 //! - `hydro_cell` — the [`HydroCellIndex`] partition and [`HydroCell`] type.
 //!
 //! Every public symbol is re-exported here so the `novomodelo_sddp::indexer::Symbol`
@@ -115,8 +117,9 @@ pub use block_grid::BlockGrid;
 pub use block_row_family::BlockRowFamily;
 pub use cut_state_projection::CutStateProjection;
 pub use entity_index::{
-    AnticipatedLocal, BusSys, EvapLocal, FillingTargetLocal, FloorLocal, FphaCellLocal, FphaLocal,
-    HydroCell, HydroSys, LineSys, NcsSys, PlantCapLocal, PlantFloorLocal, PumpingSys, ThermalSys,
+    AnticipatedLocal, BusSys, DiversionVolumeLocal, EvapLocal, FillingTargetLocal, FloorLocal,
+    FphaCellLocal, FphaLocal, HydroCell, HydroSys, LineSys, NcsSys, OutflowVolumeLocal,
+    PlantCapLocal, PlantFloorLocal, PumpingSys, PumpingVolumeLocal, ThermalSys,
 };
 pub(crate) use entity_positions::EntityPositions;
 pub use hydro_cell::HydroCellIndex;

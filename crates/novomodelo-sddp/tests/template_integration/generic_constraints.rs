@@ -9,7 +9,7 @@ use novomodelo_sddp::test_support::assert_all_templates_byte_identical;
 /// CLI uses — into the flat `Vec<GenericConstraint>`. `name_to_id` is empty (these
 /// fixtures carry no `@param` coefficients) and the line topology is empty (no
 /// `line_exchange(source_bus=…, target_bus=…)` form).
-fn parse_generic_from_str(json: &str) -> Vec<novomodelo_core::GenericConstraint> {
+pub(super) fn parse_generic_from_str(json: &str) -> Vec<novomodelo_core::GenericConstraint> {
     parse_generic_from_str_with_params(json, &std::collections::HashMap::new())
 }
 
@@ -1360,14 +1360,17 @@ fn generic_constraint_two_hydros_sum_csc_entries() {
     );
 }
 
-struct HydroStudy {
-    block_hours: Vec<f64>,
-    block_mode: novomodelo_core::BlockMode,
-    hydros: Vec<novomodelo_core::Hydro>,
-    pumping_stations: Vec<novomodelo_core::PumpingStation>,
-    hydro_block: HydroBlockBounds,
-    constraints: Vec<novomodelo_core::GenericConstraint>,
-    generic_bounds: novomodelo_core::ResolvedGenericConstraintBounds,
+pub(super) struct HydroStudy {
+    pub(super) block_hours: Vec<f64>,
+    pub(super) block_mode: novomodelo_core::BlockMode,
+    pub(super) hydros: Vec<novomodelo_core::Hydro>,
+    pub(super) pumping_stations: Vec<novomodelo_core::PumpingStation>,
+    pub(super) hydro_block: HydroBlockBounds,
+    pub(super) block_bounds: novomodelo_core::ResolvedBlockBounds,
+    pub(super) constraints: Vec<novomodelo_core::GenericConstraint>,
+    pub(super) generic_bounds: novomodelo_core::ResolvedGenericConstraintBounds,
+    pub(super) stage_volume: novomodelo_core::ResolvedStageVolumeBounds,
+    pub(super) hydro_penalties: HydroPenalties,
 }
 
 fn study_hydro(id: i32, downstream: Option<i32>) -> novomodelo_core::Hydro {
@@ -1399,11 +1402,14 @@ impl Default for HydroStudy {
             hydros: vec![study_hydro(5, None)],
             pumping_stations: Vec::new(),
             hydro_block: default_hydro_block_bounds(),
+            block_bounds: novomodelo_core::ResolvedBlockBounds::empty(),
             constraints: Vec::new(),
             generic_bounds: novomodelo_core::ResolvedGenericConstraintBounds::new(
                 &std::collections::HashMap::new(),
                 std::iter::empty(),
             ),
+            stage_volume: novomodelo_core::ResolvedStageVolumeBounds::empty(),
+            hydro_penalties: default_hydro_penalties(),
         }
     }
 }
@@ -1427,7 +1433,7 @@ fn one_hydro_system(
     })
 }
 
-fn hydro_study_system(study: HydroStudy) -> novomodelo_core::System {
+pub(super) fn hydro_study_system(study: HydroStudy) -> novomodelo_core::System {
     use chrono::NaiveDate;
     use novomodelo_core::scenario::{InflowModel, LoadModel};
     use novomodelo_core::temporal::{
@@ -1536,6 +1542,8 @@ fn hydro_study_system(study: HydroStudy) -> novomodelo_core::System {
             },
         },
     );
+    resolved_bounds.set_stage_volume_overlay(study.stage_volume);
+    resolved_bounds.set_block_overlay(study.block_bounds);
     let mut stations: Vec<_> = study.pumping_stations.iter().collect();
     stations.sort_by_key(|station| station.id);
     for (p, station) in stations.into_iter().enumerate() {
@@ -1562,7 +1570,7 @@ fn hydro_study_system(study: HydroStudy) -> novomodelo_core::System {
             n_stages: 1,
         },
         &PenaltiesDefaults {
-            hydro: default_hydro_penalties(),
+            hydro: study.hydro_penalties,
             bus: BusStagePenalties { excess_cost: 0.0 },
             line: LineStagePenalties { exchange_cost: 0.0 },
             ncs: NcsStagePenalties {
@@ -1846,21 +1854,21 @@ fn per_unit_storage_slack_price_ignores_stage_hours() {
 
 /// derived: `BlockClock::tau`'s arithmetic, `hours * M3S_TO_HM3`; the parenthesised
 /// constant stays because `hours * 3_600.0 / 1e6` rounds differently.
-fn volume_tau(hours: f64) -> f64 {
+pub(super) fn volume_tau(hours: f64) -> f64 {
     hours * (3_600.0 / 1_000_000.0)
 }
 
-struct FlowColumns {
-    turbine: usize,
-    spillage: usize,
-    diversion: usize,
+pub(super) struct FlowColumns {
+    pub(super) turbine: usize,
+    pub(super) spillage: usize,
+    pub(super) diversion: usize,
 }
 
 /// derived: the control region starts at `3N + 1` after storage, z-inflow, incoming
 /// storage and θ; a chronological stage first reserves `N * (n_blks - 1)` interior
 /// storage columns; turbine, spillage and diversion then take `N * n_blks` each, plant
 /// `p` block `k` at `start + p * n_blks + k`.
-fn flow_columns(
+pub(super) fn flow_columns(
     n_hydros: usize,
     n_blks: usize,
     block_mode: novomodelo_core::BlockMode,
@@ -1880,7 +1888,7 @@ fn flow_columns(
     }
 }
 
-fn row_entries(t: &StageTemplate, row: usize) -> Vec<(usize, f64)> {
+pub(super) fn row_entries(t: &StageTemplate, row: usize) -> Vec<(usize, f64)> {
     (0..t.num_cols)
         .flat_map(|col| {
             csc_entries_at(t, col, row)
@@ -1891,7 +1899,7 @@ fn row_entries(t: &StageTemplate, row: usize) -> Vec<(usize, f64)> {
 }
 
 /// Unequal, so a uniform `ζ / K` split cannot match the per-block `tau`.
-const VOLUME_BLOCK_HOURS: [f64; 2] = [100.0, 300.0];
+pub(super) const VOLUME_BLOCK_HOURS: [f64; 2] = [100.0, 300.0];
 
 const VOLUME_CONSTRAINT_JSON: &str = r#"{"constraints":[{"id":100,"name":"vol","expression":"hydro_outflow_volume(5)","slack":{"enabled":false}}]}"#;
 
@@ -1913,7 +1921,7 @@ fn outflow_volume_row(
 
 /// `(constraint_id, stage_id, block_id, lower, upper)`, the row shape
 /// `ResolvedGenericConstraintBounds::new` consumes.
-type GenericBoundsRow = (i32, i32, Option<i32>, Option<f64>, Option<f64>);
+pub(super) type GenericBoundsRow = (i32, i32, Option<i32>, Option<f64>, Option<f64>);
 
 /// The study's stage template and the baseline row count: the generic row of
 /// `constraints_json` is at that row index. Constraint ids map to their position.
@@ -2400,21 +2408,15 @@ fn stage_volume_neighbour_rows_are_unchanged_by_the_volume_row() {
 }
 
 const MAX_DIVERSION: f64 = 25.0;
-const PUMP_MAX: f64 = 40.0;
-const WATER_ROW_5: usize = 2;
-const WATER_ROW_10: usize = 3;
+pub(super) const PUMP_MAX: f64 = 40.0;
+pub(super) const WATER_ROW_5: usize = 2;
+pub(super) const WATER_ROW_10: usize = 3;
 
-fn diversion_pumping_study(
-    constraints_json: &str,
-    bounds_rows: Vec<GenericBoundsRow>,
-    id_map: &std::collections::HashMap<i32, usize>,
-) -> (usize, StageTemplate) {
+pub(super) fn diversion_pumping_hydro_study() -> HydroStudy {
     use chrono::NaiveDate;
-    use novomodelo_core::{
-        DiversionChannel, Hydro, PumpingStation, ResolvedGenericConstraintBounds,
-    };
+    use novomodelo_core::{DiversionChannel, Hydro, PumpingStation};
 
-    let study = || HydroStudy {
+    HydroStudy {
         block_hours: VOLUME_BLOCK_HOURS.to_vec(),
         hydros: vec![
             Hydro {
@@ -2440,12 +2442,22 @@ fn diversion_pumping_study(
             max_flow_m3s: PUMP_MAX,
         }],
         ..Default::default()
-    };
-    let generic_row = build_templates_for(&hydro_study_system(study()))[0].num_rows;
+    }
+}
+
+fn diversion_pumping_study(
+    constraints_json: &str,
+    bounds_rows: Vec<GenericBoundsRow>,
+    id_map: &std::collections::HashMap<i32, usize>,
+) -> (usize, StageTemplate) {
+    use novomodelo_core::ResolvedGenericConstraintBounds;
+
+    let generic_row =
+        build_templates_for(&hydro_study_system(diversion_pumping_hydro_study()))[0].num_rows;
     let template = build_templates_for(&hydro_study_system(HydroStudy {
         constraints: parse_generic_from_str(constraints_json),
         generic_bounds: ResolvedGenericConstraintBounds::new(id_map, bounds_rows.into_iter()),
-        ..study()
+        ..diversion_pumping_hydro_study()
     }))
     .into_iter()
     .next()
@@ -2454,7 +2466,7 @@ fn diversion_pumping_study(
 }
 
 /// derived: one plant's flow family on the two-block stage is its first column then the next, each at that block's `volume_tau`.
-fn two_block_volume_terms(first_column: usize) -> Vec<(usize, f64)> {
+pub(super) fn two_block_volume_terms(first_column: usize) -> Vec<(usize, f64)> {
     let [tau0, tau1] = VOLUME_BLOCK_HOURS.map(volume_tau);
     vec![(first_column, tau0), (first_column + 1, tau1)]
 }

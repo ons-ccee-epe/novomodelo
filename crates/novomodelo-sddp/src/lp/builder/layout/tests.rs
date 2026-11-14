@@ -13,15 +13,17 @@ use novomodelo_core::{
     Hydro, HydroBlockBounds, HydroGenerationModel, HydroPenalties, HydroStageBounds,
     LineBlockBounds, LinearTerm, NoiseMethod, NonControllableSource, PenaltyBasis,
     PumpingBlockBounds, PumpingStation, ResolvedBounds, ResolvedGenericConstraintBounds,
-    ScalarExpr, ScenarioSourceConfig, SlackConfig, Stage, StageRiskConfig, StageStateConfig,
-    Thermal, ThermalBlockBounds, ThermalStageBounds, VariableRef,
+    ResolvedStageVolumeBounds, ScalarExpr, ScenarioSourceConfig, SlackConfig, Stage,
+    StageRiskConfig, StageStateConfig, StageVolumeBoundsCountsSpec, Thermal, ThermalBlockBounds,
+    ThermalStageBounds, VariableRef,
 };
 
 use crate::hydro_models::{EvaporationModelSet, ProductionModelSet};
 use crate::indexer::{
-    AnticipatedLocal, BlockIdx, BlockRowFamily, Boundary, BusSys, CutStateProjection, EvapLocal,
-    FillingTargetLocal, FloorLocal, FphaCellLocal, FphaLocal, HydroCell, HydroCellIndex, HydroSys,
-    NcsSys, PumpingSys, StateDim, StateRegion, ThermalSys, anticipated_resolution_for,
+    AnticipatedLocal, BlockIdx, BlockRowFamily, Boundary, BusSys, CutStateProjection,
+    DiversionVolumeLocal, EvapLocal, FillingTargetLocal, FloorLocal, FphaCellLocal, FphaLocal,
+    HydroCell, HydroCellIndex, HydroSys, NcsSys, OutflowVolumeLocal, PumpingSys,
+    PumpingVolumeLocal, StateDim, StateRegion, ThermalSys, anticipated_resolution_for,
 };
 use crate::lead_time::{AnticipatedResolution, DeliveryAxis, LeadTime, PointResolution};
 use crate::resolved_parameters::ResolvedParameters;
@@ -36,9 +38,10 @@ use crate::time_value::{PostStudyResolved, TimeValue};
 use super::super::DeliveryRing;
 use super::super::entries::build_stage_matrix_entries;
 use super::{
-    RangeCursor, StageLayout, StateSpace, TemplateBuildCtx, build_anticipated_decision_row_pos,
-    build_anticipated_fishing_row_pos, build_anticipated_slot_row_pos,
-    build_transit_bucket_row_pos, entity_flat, fold_endpoint, variable_ref_is_block_independent,
+    RangeCursor, StageGeometry, StageLayout, StateSpace, TemplateBuildCtx,
+    build_anticipated_decision_row_pos, build_anticipated_fishing_row_pos,
+    build_anticipated_slot_row_pos, build_transit_bucket_row_pos, entity_flat, fold_endpoint,
+    variable_ref_is_block_independent,
 };
 
 // ── RangeCursor ──────────────────────────────────────────────────────────
@@ -1592,9 +1595,10 @@ fn filling_target_row_and_col_below_structural_bounds() {
         );
     }
     // At the terminal Filling stage (id 2) no hydro is Operating, so the
-    // sibling σ^{v-} `filled_min_storage_floor` column block (the true last column family)
-    // is empty: its start coincides with num_cols and the σ_fill block is the
-    // last occupied family, so num_cols = col_filling_target_start + n_targets.
+    // sibling σ^{v-} `filled_min_storage_floor` column block (last family when no
+    // stage-volume slack is declared) is empty: its start coincides with num_cols
+    // and the σ_fill block is the last occupied family, so
+    // num_cols = col_filling_target_start + n_targets.
     assert_eq!(
         layout.geometry.filled_min_storage_floor_col.start, layout.num_cols,
         "σ^{{v-}} column block empty at the terminal Filling stage"
@@ -4323,4 +4327,198 @@ fn two_sided_real_layout_allocates_minus_slack_column() {
         entry.slack_minus_col.is_some(),
         "a two-sided row with slack enabled must allocate a DISTINCT minus-slack column"
     );
+}
+
+// ── Stage-volume row and slack ranges ────────────────────────────────────
+
+/// Three hydros and two stations over two stages, no stage-volume declaration.
+fn stage_volume_fixture() -> CtxFixture {
+    use crate::hydro_models::{EvaporationModel, ResolvedProductionModel};
+
+    let hydros = vec![
+        membership_hydro(1, false, None, None),
+        membership_hydro(2, false, None, None),
+        membership_hydro(3, false, None, None),
+    ];
+    let constant = ResolvedProductionModel::ConstantProductivity { productivity: 0.0 };
+    CtxFixture {
+        bounds: bounds_with_entities(3, 2, 2),
+        cascade: CascadeTopology::build(&hydros),
+        hydro_cell_index: HydroCellIndex::build(&hydros),
+        production_models: ProductionModelSet::new(vec![vec![constant; 2]; 3], &hydros, 2),
+        evaporation_models: EvaporationModelSet::new(vec![EvaporationModel::None; 3]),
+        pumping_stations: vec![make_pumping_station(1), make_pumping_station(2)],
+        time_value: TimeValue::from_parts(
+            vec![],
+            vec![1.0; 2],
+            vec![744.0; 2],
+            vec![0, 1],
+            PostStudyResolved::default(),
+        ),
+        hydros,
+        ..CtxFixture::default()
+    }
+}
+
+fn empty_stage_volume_overlay() -> ResolvedStageVolumeBounds {
+    ResolvedStageVolumeBounds::new(&StageVolumeBoundsCountsSpec {
+        n_hydros: 3,
+        n_pumping: 2,
+        n_stages: 2,
+    })
+}
+
+/// At stage 0: `max_outflow_hm3` on hydros 2 and 0, `min_diversion_hm3` on
+/// hydro 1, `max_hm3` on station 1.
+fn declare_stage_volumes(bounds: &mut ResolvedBounds) {
+    let mut overlay = empty_stage_volume_overlay();
+    overlay
+        .hydro_mut(2, 0)
+        .expect("hydro 2 is in range")
+        .max_outflow_hm3 = Some(5.0);
+    overlay
+        .hydro_mut(0, 0)
+        .expect("hydro 0 is in range")
+        .max_outflow_hm3 = Some(7.0);
+    overlay
+        .hydro_mut(1, 0)
+        .expect("hydro 1 is in range")
+        .min_diversion_hm3 = Some(1.0);
+    overlay
+        .pumping_mut(1, 0)
+        .expect("station 1 is in range")
+        .max_hm3 = Some(2.0);
+    bounds.set_stage_volume_overlay(overlay);
+}
+
+/// The geometry's debug form with every stage-volume field blanked.
+fn without_stage_volume(mut geometry: StageGeometry) -> String {
+    geometry.outflow_volume = 0..0;
+    geometry.diversion_volume = 0..0;
+    geometry.pumping_volume = 0..0;
+    geometry.outflow_volume_below_slack = 0..0;
+    geometry.outflow_volume_above_slack = 0..0;
+    geometry.outflow_volume_hydro_indices.clear();
+    geometry.diversion_volume_hydro_indices.clear();
+    geometry.pumping_volume_station_indices.clear();
+    format!("{geometry:?}")
+}
+
+/// Membership is per `(entity, stage_idx)`, listed in ascending system index
+/// whatever the declaration order, and a stage with no declaration lists nothing.
+#[test]
+fn stage_volume_lists_follow_system_order() {
+    let mut fixture = stage_volume_fixture();
+    declare_stage_volumes(&mut fixture.bounds);
+    let ctx = fixture.ctx();
+
+    let at_declared = StageLayout::new(&ctx, &stage_with_id(0), 0).geometry;
+    assert_eq!(
+        at_declared.outflow_volume_hydro_indices,
+        vec![HydroSys::new(0), HydroSys::new(2)]
+    );
+    assert_eq!(
+        at_declared.diversion_volume_hydro_indices,
+        vec![HydroSys::new(1)]
+    );
+    assert_eq!(
+        at_declared.pumping_volume_station_indices,
+        vec![PumpingSys::new(1)]
+    );
+
+    let at_undeclared = StageLayout::new(&ctx, &stage_with_id(1), 1).geometry;
+    assert!(at_undeclared.outflow_volume_hydro_indices.is_empty());
+    assert!(at_undeclared.diversion_volume_hydro_indices.is_empty());
+    assert!(at_undeclared.pumping_volume_station_indices.is_empty());
+}
+
+/// Every stage-volume row follows every pre-existing row family and every slack
+/// column follows every pre-existing column family, so no existing range moves.
+#[test]
+fn stage_volume_ranges_append_after_every_family() {
+    let stage = stage_with_id(0);
+    let mut baseline_fixture = stage_volume_fixture();
+    let baseline_ctx = baseline_fixture.ctx();
+    let baseline = StageLayout::new(&baseline_ctx, &stage, 0);
+
+    let mut declared_fixture = stage_volume_fixture();
+    declare_stage_volumes(&mut declared_fixture.bounds);
+    let declared_ctx = declared_fixture.ctx();
+    let declared = StageLayout::new(&declared_ctx, &stage, 0);
+    let g = &declared.geometry;
+
+    assert_eq!(g.outflow_volume.start, baseline.rows.num_rows);
+    assert_eq!(g.outflow_volume.len(), 2);
+    assert_eq!(g.diversion_volume.start, g.outflow_volume.end);
+    assert_eq!(g.diversion_volume.len(), 1);
+    assert_eq!(g.pumping_volume.start, g.diversion_volume.end);
+    assert_eq!(g.pumping_volume.len(), 1);
+    assert_eq!(g.pumping_volume.end, declared.rows.num_rows);
+
+    assert_eq!(g.outflow_volume_below_slack.start, baseline.num_cols);
+    assert_eq!(g.outflow_volume_below_slack.len(), 2);
+    assert_eq!(
+        g.outflow_volume_above_slack.start,
+        g.outflow_volume_below_slack.end
+    );
+    assert_eq!(g.outflow_volume_above_slack.len(), 2);
+    assert_eq!(g.outflow_volume_above_slack.end, declared.num_cols);
+
+    assert_eq!(
+        without_stage_volume(declared.geometry.clone()),
+        without_stage_volume(baseline.geometry.clone()),
+        "no pre-existing range moves"
+    );
+
+    assert_eq!(
+        declared.outflow_volume_row(OutflowVolumeLocal::new(1)),
+        g.outflow_volume.start + 1
+    );
+    assert_eq!(
+        declared.diversion_volume_row(DiversionVolumeLocal::new(0)),
+        g.diversion_volume.start
+    );
+    assert_eq!(
+        declared.pumping_volume_row(PumpingVolumeLocal::new(0)),
+        g.pumping_volume.start
+    );
+    assert_eq!(
+        g.outflow_volume_below_slack_col(OutflowVolumeLocal::new(1)),
+        g.outflow_volume_below_slack.start + 1
+    );
+    assert_eq!(
+        g.outflow_volume_above_slack_col(OutflowVolumeLocal::new(1)),
+        g.outflow_volume_above_slack.start + 1
+    );
+}
+
+/// An overlay that grew both families without setting a field allocates nothing:
+/// membership is "either side declared", not "the family exists".
+#[test]
+fn all_none_stage_volume_overlay_allocates_nothing() {
+    let stage = stage_with_id(0);
+    let mut empty_fixture = stage_volume_fixture();
+    let empty_ctx = empty_fixture.ctx();
+    let empty = StageLayout::new(&empty_ctx, &stage, 0);
+
+    let mut overlay = empty_stage_volume_overlay();
+    overlay.hydro_mut(0, 0).expect("hydro 0 is in range");
+    overlay.pumping_mut(0, 0).expect("station 0 is in range");
+    assert!(!overlay.is_empty(), "both families grew to full size");
+    let mut grown_fixture = stage_volume_fixture();
+    grown_fixture.bounds.set_stage_volume_overlay(overlay);
+    let grown_ctx = grown_fixture.ctx();
+    let grown = StageLayout::new(&grown_ctx, &stage, 0);
+
+    assert_eq!(grown.rows.num_rows, empty.rows.num_rows);
+    assert_eq!(grown.num_cols, empty.num_cols);
+    let g = &grown.geometry;
+    assert!(g.outflow_volume.is_empty());
+    assert!(g.diversion_volume.is_empty());
+    assert!(g.pumping_volume.is_empty());
+    assert!(g.outflow_volume_below_slack.is_empty());
+    assert!(g.outflow_volume_above_slack.is_empty());
+    assert!(g.outflow_volume_hydro_indices.is_empty());
+    assert!(g.diversion_volume_hydro_indices.is_empty());
+    assert!(g.pumping_volume_station_indices.is_empty());
 }
