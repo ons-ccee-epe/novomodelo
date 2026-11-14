@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `novomodelo validate` warns when `hydro.fpha_violation_cost` is at or below
+  the largest deficit cost plus `generation_violation_below_cost`.
+
 ### Changed
 
 - Training and simulation results change: each stage LP solves the same model

@@ -487,6 +487,9 @@ declare_rules! {
     SEMANTIC_STAGE_BLOCKS = "semantic.5b.52",
         Semantic, InvalidValue, Error,
         "A study stage declares no block, or a block whose duration_hours is not finite and positive";
+    SEMANTIC_FPHA_PRICE_NOT_ABOVE_DEFICIT_PLUS_GENERATION = "semantic.5b.53",
+        Semantic, ModelQuality, Warning,
+        "An FPHA hydro's fpha_violation_cost does not exceed the maximum deficit-segment cost plus its generation_violation_below_cost (all $/MWh)";
     PRODUCTIVITY_SUPPLIED_TWICE = "productivity_resolution.1",
         ProductivityResolution, SchemaViolation, Error,
         "A hydro's stage productivity is supplied by both hydro_production_models.json and hydro_energy_productivity.parquet";

@@ -4,13 +4,14 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
 use novomodelo_core::scenario::SamplingScheme;
-use novomodelo_core::{EntityId, Hydro};
+use novomodelo_core::{EntityId, Hydro, Stage};
 use novomodelo_stochastic::derive_external_sample_moments;
 use novomodelo_stochastic::par::{
     AnnualParams, ClosureRejection, check_stationarity, check_stationarity_annual,
 };
 use novomodelo_stochastic::season_cast::{RealizedWindow, SeasonPeriodWindow, cast};
 
+use crate::resolution::{PenaltiesEntitySlices, PenaltiesOverrides, resolve_penalties};
 use crate::{LoadError, StageIdResolver};
 
 use super::super::{ValidationContext, rules, schema::ParsedData};
@@ -31,12 +32,7 @@ use super::envelope_tolerance;
 /// Emits one warning per violated ordering check, aggregating
 /// all violating entities into a single warning with the count and worst-case ID.
 pub(super) fn check_penalty_ordering(data: &ParsedData, ctx: &mut ValidationContext) {
-    let max_deficit_cost: f64 = data
-        .buses
-        .iter()
-        .flat_map(|b| b.deficit_segments.iter().map(|s| s.cost_per_mwh))
-        .fold(f64::NEG_INFINITY, f64::max)
-        .max(0.0);
+    let max_deficit_cost = max_bus_deficit_cost(data);
 
     {
         let mut violations: Vec<(i32, f64)> = Vec::new();
@@ -139,6 +135,126 @@ pub(super) fn check_penalty_ordering(data: &ParsedData, ctx: &mut ValidationCont
             );
         }
     }
+}
+
+fn max_bus_deficit_cost(data: &ParsedData) -> f64 {
+    data.buses
+        .iter()
+        .flat_map(|b| b.deficit_segments.iter().map(|s| s.cost_per_mwh))
+        .fold(f64::NEG_INFINITY, f64::max)
+        .max(0.0)
+}
+
+// ── Rule 53: FPHA price dominance ─────────────────────────────────────────────
+
+/// Rule 53: warns when an FPHA hydro's `fpha_violation_cost` is at or below
+/// `max(deficit_segment_costs) + generation_violation_below_cost` (all $/`MWh`),
+/// both prices resolved per stage through [`resolve_penalties`] so the stage
+/// override tier counts.
+///
+/// Only study stages where the hydro's `hydro_production_models.json` entry
+/// selects FPHA ([`uses_fpha_at`](crate::extensions::ProductionModelConfig::uses_fpha_at))
+/// contribute; a hydro with no entry never does.
+///
+/// Every violating `(hydro, stage)` pair aggregates into one warning naming the
+/// smallest-margin pair by `(margin, hydro id, stage id)`; the bridge's
+/// `convert --validate` output relies on that single line.
+pub(super) fn check_fpha_price_dominance(data: &ParsedData, ctx: &mut ValidationContext) {
+    struct Violation {
+        margin: f64,
+        hydro_id: i32,
+        stage_id: i32,
+        p: f64,
+        d: f64,
+        g: f64,
+    }
+
+    if data.production_models.is_empty() {
+        return;
+    }
+    let study_stages: Vec<&Stage> = data.stages.stages.iter().filter(|s| s.id >= 0).collect();
+    let study_stage_ids: Vec<i32> = study_stages.iter().map(|s| s.id).collect();
+    let stage_resolver = StageIdResolver::from_study_stage_ids(&study_stage_ids);
+    let resolved = resolve_penalties(
+        &PenaltiesEntitySlices {
+            hydros: &data.hydros,
+            buses: &data.buses,
+            lines: &data.lines,
+            ncs_sources: &data.non_controllable_sources,
+        },
+        study_stages.len(),
+        stage_resolver.index_map(),
+        &PenaltiesOverrides {
+            hydro: &data.penalty_overrides_hydro,
+            bus: &data.penalty_overrides_bus,
+            line: &data.penalty_overrides_line,
+            ncs: &data.penalty_overrides_ncs,
+        },
+    );
+    let d = max_bus_deficit_cost(data);
+
+    let mut violations: Vec<Violation> = Vec::new();
+    for (hi, hydro) in data.hydros.iter().enumerate() {
+        let Some(config) = data
+            .production_models
+            .iter()
+            .find(|c| c.hydro_id == hydro.id)
+        else {
+            continue;
+        };
+        for (ti, stage) in study_stages.iter().enumerate() {
+            if !config.uses_fpha_at(stage) {
+                continue;
+            }
+            let cell = resolved.hydro_penalties(hi, ti);
+            let p = cell.fpha_violation_cost;
+            let g = cell.generation_violation_below_cost;
+            if p <= d + g {
+                violations.push(Violation {
+                    margin: p - (d + g),
+                    hydro_id: hydro.id.0,
+                    stage_id: stage.id,
+                    p,
+                    d,
+                    g,
+                });
+            }
+        }
+    }
+
+    let Some(worst) = violations.iter().min_by(|a, b| {
+        a.margin
+            .total_cmp(&b.margin)
+            .then(a.hydro_id.cmp(&b.hydro_id))
+            .then(a.stage_id.cmp(&b.stage_id))
+    }) else {
+        return;
+    };
+    let n_pairs = violations.len();
+    let n_hydros = violations
+        .iter()
+        .map(|v| v.hydro_id)
+        .collect::<BTreeSet<_>>()
+        .len();
+    let Violation {
+        hydro_id: id,
+        stage_id,
+        p,
+        d,
+        g,
+        ..
+    } = *worst;
+    ctx.emit(
+        &rules::SEMANTIC_FPHA_PRICE_NOT_ABOVE_DEFICIT_PLUS_GENERATION,
+        "penalties.json",
+        None::<&str>,
+        format!(
+            "FPHA price ordering violation: fpha_violation_cost ({p}) should be > \
+             max(deficit_segment_costs) ({d}) + generation_violation_below_cost ({g}) \
+             (all $/MWh) -- {n_pairs} (hydro, stage) pair(s) at FPHA stages, \
+             {n_hydros} hydro(s) affected, smallest margin: Hydro {id} at stage {stage_id}"
+        ),
+    );
 }
 
 // ── Rule 11: FPHA penalty rule ─────────────────────────────────────────────────
@@ -1162,6 +1278,8 @@ mod tests {
     use super::M3S_TO_HM3;
     use crate::test_support::*;
     use crate::{
+        constraints::HydroPenaltyOverrideRow,
+        extensions::{ProductionModelConfig, SeasonConfig, SelectionMode, StageRange},
         scenarios::{
             BlockFactor, InflowAnnualComponentRow, InflowArCoefficientRow, InflowHistoryRow,
             InflowSeasonalStatsRow, LoadFactorEntry, LoadSeasonalStatsRow,
@@ -1587,6 +1705,208 @@ mod tests {
             "valid FPHA penalty ordering should produce no BusinessRuleViolation, \
              got: {errors:?}"
         );
+    }
+
+    // ── Rule 53: FPHA price dominance ─────────────────────────────────────────
+
+    const FPHA_PRICE_PREFIX: &str = "FPHA price ordering violation:";
+
+    fn fpha_price_warnings(data: &ParsedData) -> Vec<String> {
+        let mut ctx = ValidationContext::new();
+        validate_semantic_stages_penalties_scenarios(data, &mut ctx);
+        ctx.warnings()
+            .iter()
+            .filter(|w| w.message.starts_with(FPHA_PRICE_PREFIX))
+            .map(|w| w.message.clone())
+            .collect()
+    }
+
+    fn fpha_everywhere(hydro_id: i32) -> ProductionModelConfig {
+        ProductionModelConfig {
+            hydro_id: EntityId::from(hydro_id),
+            selection_mode: SelectionMode::StageRanges {
+                ranges: vec![StageRange {
+                    start_stage_id: 0,
+                    end_stage_id: None,
+                    model: HydroGenerationModel::Fpha,
+                    fpha_config: None,
+                    reference_volume: None,
+                    productivity_mw_per_m3s: None,
+                }],
+            },
+        }
+    }
+
+    fn fpha_price_override(hydro_id: i32, stage_id: i32, price: f64) -> HydroPenaltyOverrideRow {
+        HydroPenaltyOverrideRow {
+            hydro_id: EntityId::from(hydro_id),
+            stage_id,
+            spillage_cost: None,
+            turbined_cost: None,
+            diversion_cost: None,
+            storage_violation_below_cost: None,
+            filling_target_violation_cost: None,
+            turbined_violation_below_cost: None,
+            outflow_violation_below_cost: None,
+            outflow_violation_above_cost: None,
+            generation_violation_below_cost: None,
+            fpha_violation_cost: Some(price),
+            evaporation_violation_cost: None,
+            water_withdrawal_violation_cost: None,
+            water_withdrawal_violation_pos_cost: None,
+            water_withdrawal_violation_neg_cost: None,
+            evaporation_violation_pos_cost: None,
+            evaporation_violation_neg_cost: None,
+            inflow_nonnegativity_cost: None,
+        }
+    }
+
+    const DEFICIT_COST: f64 = 500.0;
+    const GENERATION_VIOLATION_COST: f64 = 1000.0;
+    const DEFICIT_PLUS_GENERATION: f64 = DEFICIT_COST + GENERATION_VIOLATION_COST;
+
+    fn priced_fpha_hydro(id: i32, fpha_violation_cost: f64) -> Hydro {
+        let mut hydro = make_hydro_ordered_penalties(id);
+        hydro.penalties.generation_violation_below_cost = GENERATION_VIOLATION_COST;
+        hydro.penalties.fpha_violation_cost = fpha_violation_cost;
+        hydro
+    }
+
+    fn fpha_price_data(hydros: Vec<Hydro>, stage_ids: Vec<i32>) -> ParsedData {
+        let production_models = hydros.iter().map(|h| fpha_everywhere(h.id.0)).collect();
+        ParsedData {
+            production_models,
+            ..make_data_5b(
+                hydros,
+                make_stages_5b(stage_ids),
+                vec![make_bus_with_deficit(1, DEFICIT_COST)],
+                vec![],
+                vec![],
+                None,
+            )
+        }
+    }
+
+    #[test]
+    fn fpha_price_at_sum_warns() {
+        let data = fpha_price_data(vec![priced_fpha_hydro(7, DEFICIT_PLUS_GENERATION)], vec![0]);
+        let warnings = fpha_price_warnings(&data);
+        assert_eq!(warnings.len(), 1, "exactly one warning: {warnings:?}");
+        let msg = &warnings[0];
+        for expected in [
+            "fpha_violation_cost (1500)",
+            "max(deficit_segment_costs) (500)",
+            "generation_violation_below_cost (1000)",
+            "1 (hydro, stage) pair(s) at FPHA stages",
+            "1 hydro(s) affected",
+            "smallest margin: Hydro 7 at stage 0",
+        ] {
+            assert!(msg.contains(expected), "missing {expected:?} in: {msg}");
+        }
+    }
+
+    #[test]
+    fn fpha_price_below_sum_warns() {
+        let data = fpha_price_data(
+            vec![priced_fpha_hydro(7, DEFICIT_PLUS_GENERATION - 1.0)],
+            vec![0],
+        );
+        let warnings = fpha_price_warnings(&data);
+        assert_eq!(warnings.len(), 1, "exactly one warning: {warnings:?}");
+        assert!(
+            warnings[0].contains("fpha_violation_cost (1499)"),
+            "got: {}",
+            warnings[0]
+        );
+    }
+
+    #[test]
+    fn fpha_price_above_sum_is_silent() {
+        let data = fpha_price_data(
+            vec![priced_fpha_hydro(7, DEFICIT_PLUS_GENERATION + 1.0)],
+            vec![0],
+        );
+        let warnings = fpha_price_warnings(&data);
+        assert!(
+            warnings.is_empty(),
+            "no warning expected, got: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn fpha_price_rule_counts_only_fpha_stages() {
+        let mut data = fpha_price_data(
+            vec![priced_fpha_hydro(7, DEFICIT_PLUS_GENERATION - 1.0)],
+            vec![0, 1],
+        );
+        data.stages.stages[0].season_id = Some(1);
+        data.stages.stages[1].season_id = Some(2);
+        data.production_models = vec![ProductionModelConfig {
+            hydro_id: EntityId::from(7),
+            selection_mode: SelectionMode::Seasonal {
+                default_model: HydroGenerationModel::Fpha,
+                seasons: vec![SeasonConfig {
+                    season_id: 1,
+                    model: HydroGenerationModel::ConstantProductivity,
+                    fpha_config: None,
+                    reference_volume: None,
+                    productivity_mw_per_m3s: Some(1.0),
+                }],
+            },
+        }];
+        let warnings = fpha_price_warnings(&data);
+        assert_eq!(warnings.len(), 1, "exactly one warning: {warnings:?}");
+        let msg = &warnings[0];
+        for expected in ["1 (hydro, stage) pair(s)", "at stage 1"] {
+            assert!(msg.contains(expected), "missing {expected:?} in: {msg}");
+        }
+    }
+
+    #[test]
+    fn fpha_price_rule_reads_the_stage_override_tier() {
+        let mut data = fpha_price_data(
+            vec![priced_fpha_hydro(7, DEFICIT_PLUS_GENERATION + 1.0)],
+            vec![0, 1],
+        );
+        data.penalty_overrides_hydro = vec![fpha_price_override(7, 1, 1200.0)];
+        let warnings = fpha_price_warnings(&data);
+        assert_eq!(warnings.len(), 1, "exactly one warning: {warnings:?}");
+        let msg = &warnings[0];
+        for expected in [
+            "fpha_violation_cost (1200)",
+            "1 (hydro, stage) pair(s)",
+            "smallest margin: Hydro 7 at stage 1",
+        ] {
+            assert!(msg.contains(expected), "missing {expected:?} in: {msg}");
+        }
+    }
+
+    #[test]
+    fn fpha_price_rule_aggregates_into_one_warning() {
+        let hydros = vec![
+            priced_fpha_hydro(3, DEFICIT_PLUS_GENERATION - 100.0),
+            priced_fpha_hydro(1, DEFICIT_PLUS_GENERATION - 500.0),
+            priced_fpha_hydro(2, DEFICIT_PLUS_GENERATION - 500.0),
+        ];
+        let message_for = |hydros: Vec<Hydro>| -> String {
+            let mut data = fpha_price_data(hydros, vec![0, 1]);
+            data.penalty_overrides_hydro = vec![fpha_price_override(3, 1, 1300.0)];
+            let warnings = fpha_price_warnings(&data);
+            assert_eq!(warnings.len(), 1, "exactly one warning: {warnings:?}");
+            warnings.into_iter().next().unwrap()
+        };
+
+        let given = message_for(hydros.clone());
+        let reversed = message_for(hydros.into_iter().rev().collect());
+
+        for expected in [
+            "6 (hydro, stage) pair(s)",
+            "3 hydro(s) affected",
+            "smallest margin: Hydro 1 at stage 0",
+        ] {
+            assert!(given.contains(expected), "missing {expected:?} in: {given}");
+        }
+        assert_eq!(given, reversed);
     }
 
     // ── Rule 12: Inflow std_m3s = 0.0 warning ────────────────────────────────

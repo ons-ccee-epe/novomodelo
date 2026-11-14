@@ -1663,7 +1663,7 @@ fn test_d56_ar1_sigma_zero_inflow_rejected_by_validate_case() {
     }
 }
 
-fn collect_penalties_json(dir: &Path, found: &mut Vec<PathBuf>) {
+fn collect_case_dirs(dir: &Path, found: &mut Vec<PathBuf>) {
     let entries =
         std::fs::read_dir(dir).unwrap_or_else(|e| panic!("cannot read {}: {e}", dir.display()));
     for entry in entries {
@@ -1672,28 +1672,34 @@ fn collect_penalties_json(dir: &Path, found: &mut Vec<PathBuf>) {
         let name = name.to_string_lossy();
         if entry.file_type().unwrap().is_dir() {
             if name != "target" && !name.starts_with('.') {
-                collect_penalties_json(&entry.path(), found);
+                collect_case_dirs(&entry.path(), found);
             }
         } else if name == "penalties.json" {
-            found.push(entry.path());
+            found.push(dir.to_path_buf());
         }
     }
 }
 
-#[test]
-fn every_committed_penalties_json_declares_fpha_violation_cost() {
+fn committed_case_dirs() -> Vec<PathBuf> {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let mut files = Vec::new();
+    let mut dirs = Vec::new();
     for root in ["examples", "crates", "tests"] {
-        collect_penalties_json(&repo.join(root), &mut files);
+        collect_case_dirs(&repo.join(root), &mut dirs);
     }
     assert!(
-        !files.is_empty(),
+        !dirs.is_empty(),
         "no penalties.json found under {}",
         repo.display()
     );
-    for file in &files {
-        let text = std::fs::read_to_string(file).unwrap();
+    dirs.sort();
+    dirs
+}
+
+#[test]
+fn every_committed_penalties_json_declares_fpha_violation_cost() {
+    for dir in committed_case_dirs() {
+        let file = dir.join("penalties.json");
+        let text = std::fs::read_to_string(&file).unwrap();
         let json: serde_json::Value = serde_json::from_str(&text)
             .unwrap_or_else(|e| panic!("{} is not JSON: {e}", file.display()));
         let price = json
@@ -1705,4 +1711,37 @@ fn every_committed_penalties_json_declares_fpha_violation_cost() {
             file.display()
         );
     }
+}
+
+#[test]
+fn no_committed_case_raises_the_fpha_price_warning() {
+    let mut fpha_cases = 0_usize;
+    for dir in committed_case_dirs() {
+        let declares_fpha =
+            std::fs::read_to_string(dir.join("system/hydro_production_models.json"))
+                .is_ok_and(|text| text.contains("\"fpha\""));
+        fpha_cases += usize::from(declares_fpha);
+        match validate_case(&dir) {
+            Ok((_, report)) => {
+                let raised: Vec<&str> = report
+                    .warnings
+                    .iter()
+                    .map(|w| w.message.as_str())
+                    .filter(|m| m.contains("FPHA price ordering violation"))
+                    .collect();
+                assert!(raised.is_empty(), "{}: {raised:?}", dir.display());
+            }
+            Err(e) => {
+                assert!(
+                    !declares_fpha,
+                    "{}: an FPHA case must validate, got: {e}",
+                    dir.display()
+                );
+            }
+        }
+    }
+    assert!(
+        fpha_cases > 0,
+        "no committed case declares an FPHA production model"
+    );
 }
