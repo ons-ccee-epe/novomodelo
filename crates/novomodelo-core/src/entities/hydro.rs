@@ -76,6 +76,8 @@ pub struct HydroPenalties {
     pub outflow_violation_above_cost: f64,
     /// Penalty per `MWh` of generation below minimum bound ($/`MWh`).
     pub generation_violation_below_cost: f64,
+    /// FPHA plane violation cost ($/`MWh`).
+    pub fpha_violation_cost: f64,
     /// Symmetric evaporation violation penalty, the default of both directional
     /// evaporation costs ($/(m³/s·h)).
     pub evaporation_violation_cost: f64,
@@ -111,6 +113,7 @@ impl HydroPenalties {
             outflow_violation_below_cost: v,
             outflow_violation_above_cost: v,
             generation_violation_below_cost: v,
+            fpha_violation_cost: v,
             evaporation_violation_cost: v,
             water_withdrawal_violation_cost: v,
             water_withdrawal_violation_pos_cost: v,
@@ -549,6 +552,7 @@ mod tests {
             outflow_violation_below_cost: 7.0,
             outflow_violation_above_cost: 8.0,
             generation_violation_below_cost: 9.0,
+            fpha_violation_cost: 90.0,
             evaporation_violation_cost: 10.0,
             water_withdrawal_violation_cost: 11.0,
             water_withdrawal_violation_pos_cost: 11.0,
@@ -567,6 +571,7 @@ mod tests {
         assert!((p.outflow_violation_below_cost - 7.0).abs() < f64::EPSILON);
         assert!((p.outflow_violation_above_cost - 8.0).abs() < f64::EPSILON);
         assert!((p.generation_violation_below_cost - 9.0).abs() < f64::EPSILON);
+        assert!((p.fpha_violation_cost - 90.0).abs() < f64::EPSILON);
         assert!((p.evaporation_violation_cost - 10.0).abs() < f64::EPSILON);
         assert!((p.water_withdrawal_violation_cost - 11.0).abs() < f64::EPSILON);
     }
@@ -634,6 +639,7 @@ mod tests {
                 outflow_violation_below_cost: 4.0,
                 outflow_violation_above_cost: 5.0,
                 generation_violation_below_cost: 6.0,
+                fpha_violation_cost: 60.0,
                 evaporation_violation_cost: 7.0,
                 water_withdrawal_violation_cost: 8.0,
                 water_withdrawal_violation_pos_cost: 8.0,

@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Training and simulation results change: each stage LP solves the same model
   with fewer rows and columns.
+- **BREAKING:** `penalties.json` must declare `hydro.fpha_violation_cost`
+  ($/MWh, > 0); a `penalties.json` without it is refused. Add the key to
+  existing cases.
 
 ### Fixed
 

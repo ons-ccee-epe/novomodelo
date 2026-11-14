@@ -94,6 +94,7 @@ pub struct HydroPenaltyOverrides {
 ///         storage_violation_below_cost: 1.0, filling_target_violation_cost: 2.0,
 ///         turbined_violation_below_cost: 3.0, outflow_violation_below_cost: 4.0,
 ///         outflow_violation_above_cost: 5.0, generation_violation_below_cost: 6.0,
+///         fpha_violation_cost: 60.0,
 ///         evaporation_violation_cost: 7.0, water_withdrawal_violation_cost: 8.0,
 ///         water_withdrawal_violation_pos_cost: 8.0, water_withdrawal_violation_neg_cost: 8.0,
 ///         evaporation_violation_pos_cost: 7.0, evaporation_violation_neg_cost: 7.0,
@@ -134,6 +135,7 @@ pub fn resolve_bus_deficit_segments(
 ///         storage_violation_below_cost: 1.0, filling_target_violation_cost: 2.0,
 ///         turbined_violation_below_cost: 3.0, outflow_violation_below_cost: 4.0,
 ///         outflow_violation_above_cost: 5.0, generation_violation_below_cost: 6.0,
+///         fpha_violation_cost: 60.0,
 ///         evaporation_violation_cost: 7.0, water_withdrawal_violation_cost: 8.0,
 ///         water_withdrawal_violation_pos_cost: 8.0, water_withdrawal_violation_neg_cost: 8.0,
 ///         evaporation_violation_pos_cost: 7.0, evaporation_violation_neg_cost: 7.0,
@@ -170,6 +172,7 @@ pub fn resolve_bus_excess_cost(
 ///         storage_violation_below_cost: 1.0, filling_target_violation_cost: 2.0,
 ///         turbined_violation_below_cost: 3.0, outflow_violation_below_cost: 4.0,
 ///         outflow_violation_above_cost: 5.0, generation_violation_below_cost: 6.0,
+///         fpha_violation_cost: 60.0,
 ///         evaporation_violation_cost: 7.0, water_withdrawal_violation_cost: 8.0,
 ///         water_withdrawal_violation_pos_cost: 8.0, water_withdrawal_violation_neg_cost: 8.0,
 ///         evaporation_violation_pos_cost: 7.0, evaporation_violation_neg_cost: 7.0,
@@ -210,6 +213,7 @@ pub fn resolve_line_exchange_cost(
 ///     storage_violation_below_cost: 1.0, filling_target_violation_cost: 2.0,
 ///     turbined_violation_below_cost: 3.0, outflow_violation_below_cost: 4.0,
 ///     outflow_violation_above_cost: 5.0, generation_violation_below_cost: 6.0,
+///     fpha_violation_cost: 60.0,
 ///     evaporation_violation_cost: 7.0, water_withdrawal_violation_cost: 8.0,
 ///     water_withdrawal_violation_pos_cost: 8.0, water_withdrawal_violation_neg_cost: 8.0,
 ///     evaporation_violation_pos_cost: 7.0, evaporation_violation_neg_cost: 7.0,
@@ -267,6 +271,7 @@ pub fn resolve_hydro_penalties(
                 generation_violation_below_cost: ov
                     .generation_violation_below_cost
                     .unwrap_or(g.generation_violation_below_cost),
+                fpha_violation_cost: g.fpha_violation_cost,
                 evaporation_violation_cost: ov
                     .evaporation_violation_cost
                     .unwrap_or(g.evaporation_violation_cost),
@@ -317,6 +322,7 @@ pub fn resolve_hydro_penalties(
 ///         storage_violation_below_cost: 1.0, filling_target_violation_cost: 2.0,
 ///         turbined_violation_below_cost: 3.0, outflow_violation_below_cost: 4.0,
 ///         outflow_violation_above_cost: 5.0, generation_violation_below_cost: 6.0,
+///         fpha_violation_cost: 60.0,
 ///         evaporation_violation_cost: 7.0, water_withdrawal_violation_cost: 8.0,
 ///         water_withdrawal_violation_pos_cost: 8.0, water_withdrawal_violation_neg_cost: 8.0,
 ///         evaporation_violation_pos_cost: 7.0, evaporation_violation_neg_cost: 7.0,
@@ -364,6 +370,7 @@ mod tests {
                 outflow_violation_below_cost: 4.0,
                 outflow_violation_above_cost: 5.0,
                 generation_violation_below_cost: 6.0,
+                fpha_violation_cost: 60.0,
                 evaporation_violation_cost: 7.0,
                 water_withdrawal_violation_cost: 8.0,
                 water_withdrawal_violation_pos_cost: 8.0,
@@ -515,6 +522,20 @@ mod tests {
         let global = make_global_with_directional_costs();
         let result = resolve_hydro_penalties(&Some(HydroPenaltyOverrides::default()), &global);
         assert_eq!(result, global.hydro);
+    }
+
+    #[test]
+    fn resolve_hydro_penalties_carries_global_fpha_violation_cost() {
+        let mut global = make_global();
+        global.hydro.fpha_violation_cost = 12345.0;
+        for overrides in [None, Some(HydroPenaltyOverrides::default())] {
+            let result = resolve_hydro_penalties(&overrides, &global);
+            assert_eq!(
+                result.fpha_violation_cost.to_bits(),
+                12345.0_f64.to_bits(),
+                "overrides = {overrides:?}"
+            );
+        }
     }
 
     #[test]

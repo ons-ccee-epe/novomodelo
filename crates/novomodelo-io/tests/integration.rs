@@ -10,7 +10,7 @@
 mod helpers;
 
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use arrow::array::{Array, Int32Array};
 use arrow::record_batch::RecordBatch;
@@ -1660,5 +1660,49 @@ fn test_d56_ar1_sigma_zero_inflow_rejected_by_validate_case() {
             );
         }
         Ok(_) => panic!("expected the AR(1) + sigma=0 external inflow deck to be rejected, got Ok"),
+    }
+}
+
+fn collect_penalties_json(dir: &Path, found: &mut Vec<PathBuf>) {
+    let entries =
+        std::fs::read_dir(dir).unwrap_or_else(|e| panic!("cannot read {}: {e}", dir.display()));
+    for entry in entries {
+        let entry = entry.unwrap();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if entry.file_type().unwrap().is_dir() {
+            if name != "target" && !name.starts_with('.') {
+                collect_penalties_json(&entry.path(), found);
+            }
+        } else if name == "penalties.json" {
+            found.push(entry.path());
+        }
+    }
+}
+
+#[test]
+fn every_committed_penalties_json_declares_fpha_violation_cost() {
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut files = Vec::new();
+    for root in ["examples", "crates", "tests"] {
+        collect_penalties_json(&repo.join(root), &mut files);
+    }
+    assert!(
+        !files.is_empty(),
+        "no penalties.json found under {}",
+        repo.display()
+    );
+    for file in &files {
+        let text = std::fs::read_to_string(file).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&text)
+            .unwrap_or_else(|e| panic!("{} is not JSON: {e}", file.display()));
+        let price = json
+            .pointer("/hydro/fpha_violation_cost")
+            .and_then(serde_json::Value::as_f64);
+        assert!(
+            price.is_some_and(|value| value > 0.0),
+            "{}: hydro.fpha_violation_cost must be a number > 0, got {price:?}",
+            file.display()
+        );
     }
 }

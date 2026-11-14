@@ -2417,6 +2417,7 @@ mod tests {
                     outflow_violation_below_cost: 400.0,
                     outflow_violation_above_cost: 300.0,
                     generation_violation_below_cost: 200.0,
+                    fpha_violation_cost: 2000.0,
                     evaporation_violation_cost: 150.0,
                     water_withdrawal_violation_cost: 100.0,
                     water_withdrawal_violation_pos_cost: 100.0,
