@@ -2,11 +2,16 @@
 
 use std::collections::{HashMap, HashSet};
 
-use novomodelo_core::commissioning::commissioning_active;
-use novomodelo_core::{EntityId, Hydro};
+use novomodelo_core::commissioning::{
+    IncomingStorageFloor, commissioning_active, hard_storage_floor, incoming_storage_floor,
+};
+use novomodelo_core::{EntityId, Hydro, ResolvedBounds};
 
 use super::super::{ValidationContext, rules, schema::ParsedData};
 use super::envelope_tolerance;
+use crate::StageIdResolver;
+use crate::config::InflowNonNegativityMethod;
+use crate::resolution::{BoundsEntitySlices, BoundsOverrides, resolve_bounds};
 
 /// Rule 1: the hydro cascade graph must be acyclic.
 pub(super) fn check_cascade_acyclic(data: &ParsedData, ctx: &mut ValidationContext) {
@@ -595,6 +600,89 @@ fn storage_seed_by_hydro(data: &ParsedData) -> HashMap<EntityId, f64> {
         .iter()
         .map(|s| (s.hydro_id, s.value_hm3))
         .collect()
+}
+
+/// The study stage ids and the hydro-only bounds table, indexed by position in
+/// those ids, not by stage id.
+fn resolve_study_hydro_bounds(data: &ParsedData) -> (Vec<i32>, ResolvedBounds) {
+    let first_study_stage = data
+        .stages
+        .stages
+        .iter()
+        .position(|s| s.id >= 0)
+        .unwrap_or(data.stages.stages.len());
+    let study_stages = &data.stages.stages[first_study_stage..];
+    let ids: Vec<i32> = study_stages.iter().map(|s| s.id).collect();
+    let blocks_per_stage: Vec<usize> = study_stages.iter().map(|s| s.blocks.len()).collect();
+    let bounds = resolve_bounds(
+        &BoundsEntitySlices {
+            hydros: &data.hydros,
+            thermals: &[],
+            lines: &[],
+            pumping_stations: &[],
+            contracts: &[],
+        },
+        ids.len(),
+        0,
+        StageIdResolver::from_study_stage_ids(&ids).index_map(),
+        &BoundsOverrides {
+            hydro: &data.hydro_bounds,
+            thermal: &[],
+            line: &[],
+            pumping: &[],
+            contract: &[],
+        },
+        &blocks_per_stage,
+    );
+    (ids, bounds)
+}
+
+/// Rule 57 (warning): a hydro's hard storage floor rises above the floor of the
+/// storage it receives from the previous study stage. Skipped under `penalty`,
+/// whose unbounded inflow slack always covers the rise; a stage receiving the
+/// seed is rule 55's, which warns under every method.
+pub(super) fn check_rising_hard_storage_floor(data: &ParsedData, ctx: &mut ValidationContext) {
+    if data.config.modeling.inflow_non_negativity.method == InflowNonNegativityMethod::Penalty {
+        return;
+    }
+    let (ids, bounds) = resolve_study_hydro_bounds(data);
+    let mut rises: Vec<(i32, i32, f64, f64)> = Vec::new();
+    for (h_idx, hydro) in data.hydros.iter().enumerate() {
+        for t in 1..ids.len() {
+            let previous_min = bounds.hydro_bounds(h_idx, t - 1).min_storage_hm3;
+            let IncomingStorageFloor::PredecessorFloor(incoming) =
+                incoming_storage_floor(hydro, Some((ids[t - 1], previous_min)))
+            else {
+                continue;
+            };
+            let floor =
+                hard_storage_floor(hydro, ids[t], bounds.hydro_bounds(h_idx, t).min_storage_hm3);
+            if floor > incoming + envelope_tolerance(incoming) {
+                rises.push((hydro.id.0, ids[t], floor, incoming));
+            }
+        }
+    }
+    if rises.is_empty() {
+        return;
+    }
+    rises.sort_by_key(|&(hydro_id, stage_id, _, _)| (hydro_id, stage_id));
+    let pairs = rises
+        .iter()
+        .map(|(hydro_id, stage_id, floor, incoming)| {
+            format!("Hydro {hydro_id} at stage {stage_id} ({floor} > {incoming})")
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    ctx.emit(
+        &rules::SEMANTIC_HARD_STORAGE_FLOOR_RISES,
+        "constraints/hydro_bounds.parquet",
+        None::<String>,
+        format!(
+            "Minimum storage rises above the previous stage's floor at {} (hydro, stage) \
+             pair(s), so a stage whose inflow cannot cover the rise is infeasible: {pairs}",
+            rises.len()
+        ),
+    );
 }
 
 /// Rules 8-10: `hydro_geometry.parquet`'s `volume_hm3` is strictly increasing,
@@ -3290,5 +3378,184 @@ mod tests {
             msgs.len() == 1 && msgs[0].contains("end of stage 2"),
             "got: {msgs:?}"
         );
+    }
+
+    // ── Rising hard storage floor tests ───────────────────────────────────────
+
+    use crate::config::InflowNonNegativityMethod;
+
+    const RISING_FLOOR_PREFIX: &str = "Minimum storage rises above the previous stage's floor";
+
+    /// Validate `hydros` over study stages 0-3 under `method`; return the
+    /// rising-floor warning messages.
+    fn validate_storage_floors(
+        hydros: Vec<Hydro>,
+        hydro_bounds: Vec<HydroBoundsRow>,
+        method: InflowNonNegativityMethod,
+    ) -> Vec<String> {
+        let mut data = make_data(
+            hydros,
+            vec![],
+            vec![],
+            make_stages(vec![0, 1, 2, 3]),
+            vec![],
+            vec![],
+        );
+        data.hydro_bounds = hydro_bounds;
+        data.config.modeling.inflow_non_negativity.method = method;
+        let mut ctx = ValidationContext::new();
+        validate_semantic_hydro_thermal(&data, &mut ctx);
+        ctx.warnings()
+            .into_iter()
+            .filter(|e| e.message.contains("rises above the previous stage's floor"))
+            .map(|e| {
+                assert_eq!(e.kind, ErrorKind::ModelQuality);
+                assert_eq!(e.file.to_string_lossy(), "constraints/hydro_bounds.parquet");
+                assert_eq!(e.entity, None);
+                e.message.clone()
+            })
+            .collect()
+    }
+
+    fn min_storage_row(hydro_id: i32, stage_id: i32, min_storage_hm3: f64) -> HydroBoundsRow {
+        HydroBoundsRow {
+            hydro_id: EntityId::from(hydro_id),
+            stage_id,
+            min_storage_hm3: Some(min_storage_hm3),
+            ..Default::default()
+        }
+    }
+
+    /// Stage-2 minimum 150 and stage-3 minimum 200 over the hydro's own 100.
+    fn rising_rows(hydro_id: i32) -> Vec<HydroBoundsRow> {
+        vec![
+            min_storage_row(hydro_id, 2, 150.0),
+            min_storage_row(hydro_id, 3, 200.0),
+        ]
+    }
+
+    fn rising_floor_message(n_pairs: usize, pairs: &str) -> String {
+        format!(
+            "{RISING_FLOOR_PREFIX} at {n_pairs} (hydro, stage) pair(s), so a stage whose inflow \
+             cannot cover the rise is infeasible: {pairs}"
+        )
+    }
+
+    fn hydro_1_rising_message() -> String {
+        rising_floor_message(
+            2,
+            "Hydro 1 at stage 2 (150 > 100), Hydro 1 at stage 3 (200 > 150)",
+        )
+    }
+
+    #[test]
+    fn rising_storage_floor_warns_once_naming_each_pair() {
+        let msgs = validate_storage_floors(
+            vec![make_ranged_hydro(1)],
+            rising_rows(1),
+            InflowNonNegativityMethod::Truncation,
+        );
+        assert_eq!(msgs, vec![hydro_1_rising_message()]);
+    }
+
+    #[test]
+    fn rising_storage_floor_is_silent_for_a_flat_or_falling_floor() {
+        let flat = validate_storage_floors(
+            vec![make_ranged_hydro(1)],
+            vec![],
+            InflowNonNegativityMethod::Truncation,
+        );
+        assert!(flat.is_empty(), "got: {flat:?}");
+
+        let falling = validate_storage_floors(
+            vec![make_ranged_hydro(1)],
+            vec![
+                min_storage_row(1, 1, 80.0),
+                min_storage_row(1, 2, 60.0),
+                min_storage_row(1, 3, 40.0),
+            ],
+            InflowNonNegativityMethod::Truncation,
+        );
+        assert!(falling.is_empty(), "got: {falling:?}");
+    }
+
+    #[test]
+    fn rising_storage_floor_is_silent_within_the_envelope_tolerance() {
+        let msgs = validate_storage_floors(
+            vec![make_ranged_hydro(1)],
+            vec![min_storage_row(1, 1, 100.0 + 1e-7)],
+            InflowNonNegativityMethod::Truncation,
+        );
+        assert!(msgs.is_empty(), "got: {msgs:?}");
+    }
+
+    #[test]
+    fn rising_storage_floor_is_silent_for_a_filling_plant() {
+        let msgs = validate_storage_floors(
+            vec![make_filling_hydro(1, 0, 2, 50.0)],
+            rising_rows(1),
+            InflowNonNegativityMethod::Truncation,
+        );
+        assert!(msgs.is_empty(), "got: {msgs:?}");
+    }
+
+    #[test]
+    fn rising_storage_floor_leaves_the_entry_seed_to_the_first_stage_check() {
+        let mut hydro = make_ranged_hydro(1);
+        hydro.entry_stage_id = Some(2);
+        let msgs = validate_storage_floors(
+            vec![hydro],
+            rising_rows(1),
+            InflowNonNegativityMethod::Truncation,
+        );
+        assert_eq!(
+            msgs,
+            vec![rising_floor_message(1, "Hydro 1 at stage 3 (200 > 150)")]
+        );
+    }
+
+    #[test]
+    fn rising_storage_floor_is_silent_under_the_penalty_method() {
+        let msgs = validate_storage_floors(
+            vec![make_ranged_hydro(1)],
+            rising_rows(1),
+            InflowNonNegativityMethod::Penalty,
+        );
+        assert!(msgs.is_empty(), "got: {msgs:?}");
+    }
+
+    #[test]
+    fn rising_storage_floor_warns_under_every_other_method() {
+        for method in [
+            InflowNonNegativityMethod::None,
+            InflowNonNegativityMethod::TruncationWithPenalty,
+        ] {
+            let msgs = validate_storage_floors(vec![make_ranged_hydro(1)], rising_rows(1), method);
+            assert_eq!(msgs, vec![hydro_1_rising_message()], "{method:?}");
+        }
+    }
+
+    #[test]
+    fn rising_storage_floor_message_ignores_declaration_order() {
+        let rows = [rising_rows(1), rising_rows(2)].concat();
+        let forward = validate_storage_floors(
+            vec![make_ranged_hydro(1), make_ranged_hydro(2)],
+            rows.clone(),
+            InflowNonNegativityMethod::Truncation,
+        );
+        let reversed = validate_storage_floors(
+            vec![make_ranged_hydro(2), make_ranged_hydro(1)],
+            rows.into_iter().rev().collect(),
+            InflowNonNegativityMethod::Truncation,
+        );
+        assert_eq!(
+            forward,
+            vec![rising_floor_message(
+                4,
+                "Hydro 1 at stage 2 (150 > 100), Hydro 1 at stage 3 (200 > 150), \
+                 Hydro 2 at stage 2 (150 > 100), Hydro 2 at stage 3 (200 > 150)"
+            )]
+        );
+        assert_eq!(forward, reversed);
     }
 }

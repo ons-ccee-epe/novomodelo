@@ -328,6 +328,9 @@ declare_rules! {
     SEMANTIC_INITIAL_STORAGE_OUTSIDE_FIRST_STAGE_BOUNDS = "semantic.5a.55",
         Semantic, ModelQuality, Warning,
         "A hydro's initial storage lies outside the storage bounds at the end of its first operating stage";
+    SEMANTIC_HARD_STORAGE_FLOOR_RISES = "semantic.5a.57",
+        Semantic, ModelQuality, Warning,
+        "A hydro's minimum storage rises above the previous stage's floor, which a stage with too little inflow cannot reach";
     TRAVEL_TIME_INVALID = "travel_time.1",
         Semantic, InvalidValue, Error,
         "A hydro's travel_time_hours is negative or not finite";

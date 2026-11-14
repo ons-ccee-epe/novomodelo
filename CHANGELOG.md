@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `novomodelo validate` warns when `hydro.fpha_violation_cost` is at or below
   the largest deficit cost plus `generation_violation_below_cost`.
+- `novomodelo validate` warns when a hydro's minimum storage in
+  `constraints/hydro_bounds.parquet` rises above the previous stage's, which
+  can make a stage infeasible.
 
 ### Changed
 
