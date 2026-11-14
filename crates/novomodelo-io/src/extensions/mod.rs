@@ -50,8 +50,8 @@ pub use hydro_reference_volumes::{
 };
 pub use production_models::{
     FittingWindow, FphaColumnLayout, PlaneReductionConfig, ProductionModelConfig,
-    ProductionModelFile, ReferenceVolume, SeasonConfig, SelectionMode, StageRange,
-    parse_production_models,
+    ProductionModelFile, ReferenceVolume, SeasonConfig, SelectionEntries, SelectionEntry,
+    SelectionMode, StageProductionResolution, StageRange, parse_production_models,
 };
 pub use scalar_parameters::parse_scalar_parameters_json;
 pub use tailrace_curves::{TailraceCurveRow, parse_tailrace_curves};
