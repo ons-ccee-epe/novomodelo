@@ -11101,7 +11101,7 @@ mod pumping_water_tests {
     /// AC#2: a chronological `K = 2` evaporating hydro emits `K` evaporation rows,
     /// each with `−slope/2` on its own `(Sᵏ⁻¹, Sᵏ)` pair; each block's evaporation
     /// flow appears in that block's water row with `+τ_k`; each block's flow column
-    /// is BOUNDED `[−q_max, +q_max]` (the wrong-bounds bug: leaving the extra
+    /// is BOUNDED `[0, +q_max]` (the wrong-bounds bug: leaving the extra
     /// per-block flow columns unbounded); and each block's directional slack
     /// objective is the cost times THAT block's `duration_hours` (block-scoped like
     /// the flow's `+τ_k` term — not the stage-total hours on every block, which would
@@ -11153,8 +11153,10 @@ mod pumping_water_tests {
                 tau_k,
                 "block {k}: evap flow carries +τ_k on its water row"
             );
-            // Flow column bounded [−q_max, +q_max], NOT the default [0, +∞).
-            assert_eq!(col_lower[flow_col], -q_max, "block {k}: flow lower −q_max");
+            assert_eq!(
+                col_lower[flow_col], 0.0,
+                "block {k}: positive-month flow lower 0"
+            );
             assert_eq!(col_upper[flow_col], q_max, "block {k}: flow upper +q_max");
             // Directional slacks carry nonzero objective, weighted by THIS block's
             // hours (not the stage-total, which would inflate the penalty K-fold).
@@ -11227,7 +11229,7 @@ mod pumping_water_tests {
             "parallel evap flow carries +ζ on the single water row"
         );
         let q_max = (EVAP_INTERCEPT + EVAP_SLOPE * 100.0).abs() * 2.0;
-        assert_eq!(col_lower[flow_col], -q_max);
+        assert_eq!(col_lower[flow_col], 0.0);
         assert_eq!(col_upper[flow_col], q_max);
     }
 

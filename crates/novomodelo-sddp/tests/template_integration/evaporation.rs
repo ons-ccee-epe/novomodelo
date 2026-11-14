@@ -141,14 +141,12 @@ fn evap_col_bounds_and_objective() {
     let col_f_plus = ei.f_evap_plus_col;
     let col_f_minus = ei.f_evap_minus_col;
 
-    // The evaporation-outflow column is free-signed: [-q_max, +q_max] where
-    // q_max = |intercept_m3s + volume_slope_m3s_per_hm3 * v_max| * margin.
-    // intercept_m3s = 1.5, volume_slope_m3s_per_hm3 = 0.0, v_max = 200.0 → q_max = 1.5 * 2.0 = 3.0.
+    // A positive month with a constant target of 1.5 m³/s: the box is [0, q_max] where
+    // q_max = |intercept_m3s + volume_slope_m3s_per_hm3 * v_max| * margin = 1.5 * 2.0 = 3.0.
     let expected_evaporation_flow_bound = 1.5 * EVAPORATION_FLOW_SAFETY_MARGIN;
     assert!(
-        (t.col_lower[col_evaporation_flow] - (-expected_evaporation_flow_bound)).abs() < 1e-12,
-        "evaporation-outflow lower bound must be {}, got {}",
-        -expected_evaporation_flow_bound,
+        t.col_lower[col_evaporation_flow].abs() < 1e-12,
+        "evaporation-outflow lower bound must be 0.0, got {}",
         t.col_lower[col_evaporation_flow]
     );
     assert!(
@@ -179,6 +177,169 @@ fn evap_col_bounds_and_objective() {
             t.objective[col]
         );
     }
+}
+
+/// The `(lower, upper)` bounds of the evaporation-outflow column and of `f_plus`
+/// on a one-hydro system with storage `[0, 200]`.
+fn evap_flow_and_f_plus_bounds(
+    intercept_m3s: f64,
+    volume_slope_m3s_per_hm3: f64,
+) -> ((f64, f64), (f64, f64)) {
+    let system = one_hydro_system(1, 0);
+    let evap = evap_set_with_volume_slope(&system, &[0], intercept_m3s, volume_slope_m3s_per_hm3);
+
+    let result = build_stage_templates_resolving_layout(
+        &system,
+        no_penalty_config(),
+        &PrecomputedPar::default(),
+        &PrecomputedNormal::default(),
+        &default_production(&system),
+        &evap,
+        &ResolvedParameters::default(),
+    )
+    .expect("evaporation system ok");
+
+    let t = &result.templates[0];
+    let ei = result.geometry_per_stage[0].evap_indices[0];
+    (
+        (
+            t.col_lower[ei.evaporation_flow_col],
+            t.col_upper[ei.evaporation_flow_col],
+        ),
+        (
+            t.col_lower[ei.f_evap_plus_col],
+            t.col_upper[ei.f_evap_plus_col],
+        ),
+    )
+}
+
+fn assert_bounds_match(name: &str, actual: (f64, f64), expected: (f64, f64)) {
+    for (side, got, want) in [
+        ("lower", actual.0, expected.0),
+        ("upper", actual.1, expected.1),
+    ] {
+        assert!(
+            got == want || (got - want).abs() < 1e-12,
+            "{name} {side} bound must be {want}, got {got}"
+        );
+    }
+}
+
+/// derived: with storage `[0, 200]` the target `intercept + slope * v` ranges over
+/// `[-0.5, 1.5]`, so the flow's lower bound is the lowest target (`-0.5`) and its
+/// upper bound is `q_max = |1.5| * 2.0 = 3.0`.
+#[test]
+fn evap_positive_month_bounds_the_flow_below_at_the_lowest_reachable_target() {
+    let (flow, f_plus) = evap_flow_and_f_plus_bounds(-0.5, 0.01);
+
+    assert_bounds_match("evaporation flow", flow, (-0.5, 3.0));
+    assert_bounds_match("f_plus", f_plus, (0.0, f64::INFINITY));
+}
+
+/// derived: the target ranges over `[-2.8, 1.2]` (`q_max = 2.8 * 2.0 = 5.6`), so the
+/// flow's upper bound is the highest target (`1.2`) and `f_plus` is capped at the
+/// highest target over the hard storage range, also `1.2`.
+#[test]
+fn evap_negative_month_bounds_the_flow_above_and_caps_under_evaporation() {
+    let (flow, f_plus) = evap_flow_and_f_plus_bounds(1.2, -0.02);
+
+    assert_bounds_match("evaporation flow", flow, (-5.6, 1.2));
+    assert_bounds_match("f_plus", f_plus, (0.0, 1.2));
+}
+
+#[test]
+fn evap_zero_month_keeps_the_symmetric_box() {
+    let (flow, f_plus) = evap_flow_and_f_plus_bounds(0.0, 0.0);
+
+    assert_bounds_match("evaporation flow", flow, (0.0, 0.0));
+    assert_bounds_match("f_plus", f_plus, (0.0, f64::INFINITY));
+}
+
+/// derived: at the first `Operating` stage of a filling plant the tight floor
+/// averages `(0 + 100) / 2 = 50` (incoming storage bounded below by the `Filling`
+/// predecessor's hard floor 0, outgoing at the soft floor 100), so
+/// `e <= max(0, tau(50)) = 0.2`, while `f_plus` is sized from the hard floor 0:
+/// `tau(0) = 1.2`. With both storage columns pinned to 0 the row needs
+/// `e + f_plus >= 1.2`, which `e <= 0.2` alone cannot meet.
+#[test]
+fn evap_negative_month_hard_floor_needs_the_capped_under_evaporation_slack() {
+    use novomodelo_core::FillingConfig;
+    use novomodelo_solver::{SolverError, SolverInterface};
+
+    let base = one_hydro_system(2, 0);
+    let hydro = novomodelo_core::Hydro {
+        min_storage_hm3: 100.0,
+        max_storage_hm3: 200.0,
+        entry_stage_id: Some(1),
+        filling: Some(FillingConfig {
+            start_stage_id: 0,
+            filling_min_rate_m3s: 0.0,
+        }),
+        ..base.hydros()[0].clone()
+    };
+    let mut bounds = base.bounds().clone();
+    for stage_idx in 0..2 {
+        bounds.hydro_bounds_mut(0, stage_idx).min_storage_hm3 = 100.0;
+    }
+    let system = SystemBuilder::new()
+        .buses(base.buses().to_vec())
+        .hydros(vec![hydro])
+        .stages(base.stages().to_vec())
+        .inflow_models(base.inflow_models().to_vec())
+        .load_models(base.load_models().to_vec())
+        .bounds(bounds)
+        .penalties(base.penalties().clone())
+        .build()
+        .expect("filling hydro system");
+    let evap = evap_set_with_volume_slope(&system, &[0], 1.2, -0.02);
+
+    let result = build_stage_templates_resolving_layout(
+        &system,
+        no_penalty_config(),
+        &PrecomputedPar::default(),
+        &PrecomputedNormal::default(),
+        &default_production(&system),
+        &evap,
+        &ResolvedParameters::default(),
+    )
+    .expect("filling evaporation system ok");
+
+    let template = &result.templates[1];
+    let ei = result.geometry_per_stage[1].evap_indices[0];
+    assert_bounds_match(
+        "evaporation flow",
+        (
+            template.col_lower[ei.evaporation_flow_col],
+            template.col_upper[ei.evaporation_flow_col],
+        ),
+        (-5.6, 0.2),
+    );
+    assert_bounds_match(
+        "f_plus",
+        (
+            template.col_lower[ei.f_evap_plus_col],
+            template.col_upper[ei.f_evap_plus_col],
+        ),
+        (0.0, 1.2),
+    );
+
+    // col 0 = storage_out, col 1 = storage_in (N=1, L=0).
+    let mut solver = load_template_with_no_cuts(template);
+    solver.set_col_bounds(&[0, 1], &[0.0, 0.0], &[0.0, 0.0]);
+    let view = solver
+        .solve(None)
+        .expect("a filling plant at its hard floor must stay feasible");
+    assert!(
+        view.primal[ei.f_evap_plus_col] >= 1.0 - 1e-9,
+        "f_plus must cover the rest of the target, got {}",
+        view.primal[ei.f_evap_plus_col]
+    );
+
+    solver.set_col_bounds(&[ei.f_evap_plus_col], &[0.0], &[0.2]);
+    assert!(
+        matches!(solver.solve(None), Err(SolverError::Infeasible)),
+        "a cap sized from the tight floor must make the hard-floor stage infeasible"
+    );
 }
 
 /// With `volume_slope_m3s_per_hm3 = 0.02`, the evaporation constraint row carries

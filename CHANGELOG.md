@@ -36,6 +36,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the excess is priced at `hydro.fpha_violation_cost` and reported as
   `fpha_violation_mw` in `simulation/hydros` and `fpha_violation_cost` (inside
   `hydro_violation_cost`) in `simulation/costs`. Results change where it binds.
+- `evaporation_m3s` in `simulation/hydros` could take the sign opposite to
+  the month's `evaporation.coefficients_mm` in `system/hydros.json`, adding
+  water in a month of net evaporation or removing it in a month of net
+  rainfall. Results change.
 
 ## [0.20.0] - 2026-11-03
 

@@ -24,8 +24,8 @@ use crate::indexer::{
 use crate::time_value::TimeValue;
 
 use super::hydro_state::{
-    GroupBoundLookup, MaxCap, MinFloor, PlantFloor, effective_withdrawals, hydro_phase,
-    is_suspended, plant_cap_rhs,
+    GroupBoundLookup, MaxCap, MinFloor, PlantFloor, effective_withdrawals, has_soft_storage_floor,
+    hydro_phase, is_suspended, plant_cap_rhs,
 };
 use super::{
     EVAP_COLS_PER_HYDRO, EVAP_F_MINUS_OFFSET, EVAP_F_PLUS_OFFSET, EVAP_FLOW_OFFSET,
@@ -796,10 +796,7 @@ fn identify_filled_min_storage_floor_hydros(
     stage_id: i32,
 ) -> Vec<HydroSys> {
     (0..ctx.hydros.len())
-        .filter(|&h_idx| {
-            let hydro = &ctx.hydros[h_idx];
-            matches!(hydro_phase(hydro, stage_id), Phase::Operating) && hydro.filling.is_some()
-        })
+        .filter(|&h_idx| has_soft_storage_floor(&ctx.hydros[h_idx], stage_id))
         .map(HydroSys::new)
         .collect()
 }

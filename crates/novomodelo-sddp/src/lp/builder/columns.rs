@@ -1,7 +1,7 @@
 use novomodelo_core::commissioning::{Phase, commissioning_active, hard_storage_floor};
 use novomodelo_core::{BlockMode, ContractType, Stage};
 
-use crate::hydro_models::EvaporationModel;
+use crate::hydro_models::{EvaporationCoefficientSign, EvaporationModel};
 use crate::indexer::{
     AnticipatedLocal, BlockIdx, Boundary, BusSys, EvapLocal, FillingTargetLocal, FloorLocal,
     FphaCellLocal, FphaLocal, HydroCell, HydroSys, LineSys, NcsSys, PlantFloorLocal, PumpingSys,
@@ -11,11 +11,13 @@ use crate::indexer::{
 use super::EVAPORATION_FLOW_SAFETY_MARGIN;
 use super::delivery_ring::{ColumnBufs, DeliveryRing};
 use super::hydro_state::{
-    GroupBoundLookup, MinFloor, cell_max_generation, cell_max_turbined, hydro_phase, is_suspended,
-    storage_ceiling,
+    GroupBoundLookup, MinFloor, cell_max_generation, cell_max_turbined,
+    evaporation_slot_reachable_storage, evaporation_target, evaporation_target_range, hydro_phase,
+    is_suspended, storage_ceiling,
 };
 use super::layout::{
     StageLayout, TemplateBuildCtx, contract_direction_counts, contract_family_slot,
+    evaporation_slot_boundaries,
 };
 
 /// Fill column lower/upper bounds and objective coefficients for one stage.
@@ -672,9 +674,12 @@ fn fill_fpha_slack_columns(
 /// Evaporation columns: one `EVAP_COLS_PER_HYDRO` triple (evaporation outflow,
 /// `f_evap_plus`, `f_evap_minus`) per evaporation hydro per block.
 ///
-/// The evaporation-outflow column is bounded symmetrically `[-q_max, +q_max]`, zero
-/// objective. `f_evap_plus`/`f_evap_minus` are `[0, +inf)` and carry the directional
-/// violation costs; the pricing hours per block mode are chosen where they are written.
+/// The evaporation-outflow column, zero objective, takes the box of its month's
+/// `coefficient_sign`, always containing 0: a positive month bounds it below at the
+/// lowest reachable target, a negative month above at the highest and caps
+/// `f_evap_plus` at the highest target over the hard floor, a zero month keeps
+/// `[-q_max, +q_max]`. `f_evap_minus` is `[0, +inf)`; both slacks carry the directional
+/// violation costs, priced at the hours chosen where they are written.
 fn fill_evaporation_columns(
     ctx: &TemplateBuildCtx<'_>,
     stage: &Stage,
@@ -682,21 +687,15 @@ fn fill_evaporation_columns(
     layout: &StageLayout,
     bufs: &mut ColumnBufs<'_>,
 ) {
+    let delivery_stage_ids = ctx.time_value.delivery_stage_ids();
     for (local_idx, &h) in layout.geometry.evap_hydro_indices.iter().enumerate() {
         let local_idx = EvapLocal::new(local_idx);
-        let (q_max_abs, hp) = match ctx.evaporation_models.model(h.get()) {
-            EvaporationModel::Linearized { coefficients, .. } => {
-                let coeff = &coefficients[stage_idx];
-                let hb = ctx.resolved.bounds.hydro_bounds(h.get(), stage_idx);
-                let q_max_abs = (coeff.intercept_m3s
-                    + coeff.volume_slope_m3s_per_hm3 * hb.max_storage_hm3)
-                    .abs()
-                    * EVAPORATION_FLOW_SAFETY_MARGIN;
-                (
-                    q_max_abs,
-                    ctx.resolved.penalties.hydro_penalties(h.get(), stage_idx),
-                )
-            }
+        let (coeff, hb, hp) = match ctx.evaporation_models.model(h.get()) {
+            EvaporationModel::Linearized { coefficients, .. } => (
+                &coefficients[stage_idx],
+                ctx.resolved.bounds.hydro_bounds(h.get(), stage_idx),
+                ctx.resolved.penalties.hydro_penalties(h.get(), stage_idx),
+            ),
             EvaporationModel::None => {
                 debug_assert!(
                     false,
@@ -706,15 +705,42 @@ fn fill_evaporation_columns(
                 continue;
             }
         };
+        let q_max_abs =
+            evaporation_target(coeff, hb.max_storage_hm3).abs() * EVAPORATION_FLOW_SAFETY_MARGIN;
+        let predecessor = stage_idx.checked_sub(1).map(|p| {
+            (
+                delivery_stage_ids[p],
+                ctx.resolved.bounds.hydro_bounds(h.get(), p),
+            )
+        });
         for slot in 0..layout.n_evap_slots {
             let col_evaporation_flow = layout.evap_flow_col(local_idx, BlockIdx::new(slot));
             let col_f_plus = layout.evap_f_plus_col(local_idx, BlockIdx::new(slot));
             let col_f_minus = layout.evap_f_minus_col(local_idx, BlockIdx::new(slot));
-            // Signed: a negative outflow reads as net rainfall input (inflow).
-            bufs.col_lower[col_evaporation_flow] = -q_max_abs;
-            bufs.col_upper[col_evaporation_flow] = q_max_abs;
+            let reachable = evaporation_slot_reachable_storage(
+                &ctx.hydros[h.get()],
+                delivery_stage_ids[0],
+                (stage.id, hb),
+                predecessor,
+                evaporation_slot_boundaries(stage.block_mode, slot, layout.clock.n_blks()),
+            );
+            let (tight_min, tight_max) =
+                evaporation_target_range(coeff, reachable.tight_floor_hm3, reachable.ceiling_hm3);
+            let (_, hard_max) =
+                evaporation_target_range(coeff, reachable.hard_floor_hm3, reachable.ceiling_hm3);
+            let (flow_lower, flow_upper, f_plus_upper) = match coeff.coefficient_sign {
+                EvaporationCoefficientSign::Positive => {
+                    (0.0_f64.min(tight_min), q_max_abs, f64::INFINITY)
+                }
+                EvaporationCoefficientSign::Negative => {
+                    (-q_max_abs, 0.0_f64.max(tight_max), 0.0_f64.max(hard_max))
+                }
+                EvaporationCoefficientSign::Zero => (-q_max_abs, q_max_abs, f64::INFINITY),
+            };
+            bufs.col_lower[col_evaporation_flow] = flow_lower;
+            bufs.col_upper[col_evaporation_flow] = flow_upper;
             bufs.col_lower[col_f_plus] = 0.0;
-            bufs.col_upper[col_f_plus] = f64::INFINITY;
+            bufs.col_upper[col_f_plus] = f_plus_upper;
             bufs.col_lower[col_f_minus] = 0.0;
             bufs.col_upper[col_f_minus] = f64::INFINITY;
             // f_evap_plus = under-evaporation, f_evap_minus = over-evaporation. A

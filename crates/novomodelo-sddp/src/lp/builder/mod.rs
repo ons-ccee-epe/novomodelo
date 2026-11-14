@@ -92,11 +92,10 @@ pub(crate) use template::{build_stage_templates, models_from_normal};
 // Shared constants
 // ---------------------------------------------------------------------------
 
-/// Margin on the symmetric magnitude bound `[-q_max, +q_max]` of the evaporation
-/// outflow variable, absorbing linearization error where the area-volume curve
-/// exceeds the linear estimate near `v_max`. Symmetric because that error runs both
-/// directions: a negative evaporation-outflow value is net rainfall input (inflow),
-/// a positive one is evaporative outflow.
+/// Margin on `q_max_abs`, the magnitude bound on the side of the evaporation-outflow
+/// box that the coefficient sign leaves open: the upper bound of a positive month, the
+/// lower bound of a negative one, both sides of a zero month. It absorbs linearization
+/// error where the area-volume curve exceeds the linear estimate near `v_max`.
 pub(crate) const EVAPORATION_FLOW_SAFETY_MARGIN: f64 = 2.0;
 
 /// Number of LP columns per `(evaporating hydro, slot)` triple: evaporation
