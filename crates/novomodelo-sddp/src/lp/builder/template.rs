@@ -193,6 +193,7 @@ pub(super) fn build_single_stage_template(
     };
     entries::fill_generic_constraint_entries(
         ctx,
+        stage,
         stage_idx,
         &layout,
         &mut buffers,

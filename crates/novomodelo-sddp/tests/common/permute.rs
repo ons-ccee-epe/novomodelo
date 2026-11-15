@@ -40,7 +40,8 @@ use tempfile::TempDir;
 /// `novomodelo_io::constraints::generic::convert` sorts `constraints` by `gc.id`;
 /// `novomodelo_io::system::pumping_stations::convert_pumping` sorts
 /// `pumping_stations` by `s.id`; `novomodelo_io::post_study_stages::convert_stages`
-/// sorts `stages` by `start_date` and `convert_thermal_bounds` sorts
+/// rejects a duplicate `start_date` and sorts `stages`, `thermal_stages` and
+/// `water_bucket_stages` by it, and `convert_thermal_bounds` sorts
 /// `thermal_bounds` by `(thermal_id, post_study_stage_index)`.
 const SHUFFLE_WHITELIST: &[(&str, &[&str])] = &[
     ("stages.json", &["stages", "pre_study_stages"]),
@@ -74,7 +75,15 @@ const SHUFFLE_WHITELIST: &[(&str, &[&str])] = &[
         &["scalar_parameters"],
     ),
     ("system/pumping_stations.json", &["pumping_stations"]),
-    ("post_study_stages.json", &["stages", "thermal_bounds"]),
+    (
+        "post_study_stages.json",
+        &[
+            "stages",
+            "thermal_stages",
+            "thermal_bounds",
+            "water_bucket_stages",
+        ],
+    ),
 ];
 
 /// `(case-relative path, top-level keys)` entries whose JSON array order IS

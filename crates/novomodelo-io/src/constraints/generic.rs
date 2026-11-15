@@ -33,13 +33,17 @@ use novomodelo_core::{
     ConstraintExpression, EntityId, GenericConstraint, LinearTerm, PenaltyBasis, SlackConfig,
 };
 use serde::Deserialize;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
 use super::reference_cycles::detect_cycles;
 use crate::LoadError;
 use crate::expression::catalog::LineBusPairIndex;
-use crate::expression::lower::{NamedTable, Scope, lower_relation};
+use crate::expression::lower::{NamedSource, NamedTable, Scope, lower_relation};
+
+/// The named expressions each constraint reached, by constraint id; a constraint that reached
+/// none has no entry.
+pub(crate) type NamedSourcesByConstraint = BTreeMap<EntityId, Vec<NamedSource>>;
 
 // ── Intermediate serde types ──────────────────────────────────────────────────
 
@@ -80,6 +84,11 @@ struct RawConstraint {
     /// To constrain an anticipated thermal's commitment, use `"anticipated_decision(5)"` (stage-level scalar, no block index).
     /// To constrain one bus of a plant split across several buses, use `"hydro_turbined(5, bus=2)"`
     /// or `"hydro_generation(5, bus=2)"` — the only two variables accepting a `bus=` selector.
+    /// For a stage volume in hm³ use `"hydro_outflow_volume(5)"` (turbined plus spilled),
+    /// `"hydro_diversion_volume(5)"` or `"pumping_volume(2)"`: each block's m³/s flow times its
+    /// duration, summed over the stage, so a coefficient multiplies hm³. A constraint with one
+    /// takes only stage volumes, `hydro_storage`, and `hydro_storage_*` or
+    /// `hydro_useful_volume_*` without a block argument; price its slack `"per_unit"`.
     /// An optional inline relational operator (`<=`, `>=`, `==`) moves every variable term to
     /// the left and assigns the remainder to the bound it targets.
     expression: String,
@@ -176,6 +185,17 @@ pub fn parse_generic_constraints(
     name_to_id: &HashMap<String, EntityId>,
     line_index: &LineBusPairIndex,
 ) -> Result<Vec<GenericConstraint>, LoadError> {
+    parse_generic_constraints_with_provenance(path, name_to_id, line_index)
+        .map(|(constraints, _)| constraints)
+}
+
+/// [`parse_generic_constraints`] that also returns, for each constraint that reached a named
+/// expression, the named expressions it reached.
+pub(crate) fn parse_generic_constraints_with_provenance(
+    path: &Path,
+    name_to_id: &HashMap<String, EntityId>,
+    line_index: &LineBusPairIndex,
+) -> Result<(Vec<GenericConstraint>, NamedSourcesByConstraint), LoadError> {
     let raw_text = std::fs::read_to_string(path).map_err(|e| LoadError::io(path, e))?;
 
     let raw: RawGenericConstraintsFile =
@@ -280,20 +300,22 @@ fn resolve_slack(
 
 // ── Conversion ────────────────────────────────────────────────────────────────
 
-/// Convert the validated raw data to `Vec<GenericConstraint>`, sorted by `id`.
+/// Convert the validated raw data to `Vec<GenericConstraint>`, sorted by `id`, and the named
+/// expressions each constraint reached, keyed by constraint `id`.
 fn convert(
     raw: RawGenericConstraintsFile,
     path: &Path,
     name_to_id: &HashMap<String, EntityId>,
     table: &NamedTable,
     line_index: &LineBusPairIndex,
-) -> Result<Vec<GenericConstraint>, LoadError> {
+) -> Result<(Vec<GenericConstraint>, NamedSourcesByConstraint), LoadError> {
     let scope = Scope {
         params: name_to_id,
         line_index,
         named: table,
     };
     let mut result = Vec::with_capacity(raw.constraints.len());
+    let mut named_sources = BTreeMap::new();
 
     for (i, c) in raw.constraints.into_iter().enumerate() {
         let lowered =
@@ -317,8 +339,12 @@ fn convert(
         };
         expression.canonicalize();
 
+        let id = EntityId::from(c.id);
+        if !lowered.named_sources.is_empty() {
+            named_sources.insert(id, lowered.named_sources);
+        }
         result.push(GenericConstraint {
-            id: EntityId::from(c.id),
+            id,
             name: c.name,
             description: c.description,
             expression,
@@ -330,7 +356,7 @@ fn convert(
 
     result.sort_by_key(|gc| gc.id.0);
 
-    Ok(result)
+    Ok((result, named_sources))
 }
 
 // ── Named-expression declarations ───────────────────────────────────────────
@@ -1868,5 +1894,62 @@ mod tests {
             parse_generic_constraints(f.path(), &HashMap::new(), &LineBusPairIndex::default())
                 .unwrap();
         assert_eq!(result[0].expression.terms.len(), 1000);
+    }
+
+    mod provenance {
+        use super::*;
+
+        #[test]
+        fn parse_records_the_named_expressions_each_constraint_reaches() {
+            let json = r#"{
+  "expressions": [
+    { "name": "f", "expression": "hydro_generation(10) + hydro_generation(11)" },
+    { "name": "g", "expression": "2 * @f + thermal_generation(5)" }
+  ],
+  "constraints": [
+    { "id": 0, "name": "c0", "expression": "hydro_generation(0) >= @g", "slack": { "enabled": false } },
+    { "id": 1, "name": "c1", "expression": "hydro_generation(1) <= 5", "slack": { "enabled": false } }
+  ]
+}"#;
+            let file = write_json(json);
+            let (constraints, sources) = parse_generic_constraints_with_provenance(
+                file.path(),
+                &HashMap::new(),
+                &LineBusPairIndex::default(),
+            )
+            .unwrap();
+
+            let hydro = |id: i32| VariableRef::HydroGeneration {
+                hydro_id: EntityId(id),
+                block_id: None,
+                bus_id: None,
+            };
+            let expected = BTreeMap::from([(
+                EntityId(0),
+                vec![
+                    NamedSource {
+                        name: "f".to_owned(),
+                        variables: vec![hydro(10), hydro(11)],
+                    },
+                    NamedSource {
+                        name: "g".to_owned(),
+                        variables: vec![VariableRef::ThermalGeneration {
+                            thermal_id: EntityId(5),
+                            block_id: None,
+                        }],
+                    },
+                ],
+            )]);
+            assert_eq!(sources, expected);
+            assert_eq!(
+                parse_generic_constraints(
+                    file.path(),
+                    &HashMap::new(),
+                    &LineBusPairIndex::default()
+                )
+                .unwrap(),
+                constraints
+            );
+        }
     }
 }

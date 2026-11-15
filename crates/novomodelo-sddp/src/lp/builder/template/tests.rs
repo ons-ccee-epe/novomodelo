@@ -16,7 +16,7 @@ use novomodelo_core::{
     NonControllableSource, PenaltiesCountsSpec, PenaltiesDefaults, PostStudyStage, PostStudyStages,
     PostStudyThermalBound, PumpingBlockBounds, PumpingStation, ResolvedBounds, ResolvedNcsBounds,
     ResolvedNcsFactors, ResolvedPenalties, ScenarioSourceConfig, Stage, StageRiskConfig,
-    StageStateConfig, SystemBuilder, Thermal, ThermalBlockBounds, ThermalStageBounds,
+    StageStateConfig, SystemBuilder, Thermal, ThermalBlockBounds, WaterBucketStages,
 };
 use novomodelo_stochastic::PrecomputedNormal;
 use novomodelo_stochastic::par::precompute::PrecomputedPar;
@@ -46,7 +46,7 @@ fn build_time_value_for(system: &novomodelo_core::System) -> TimeValue {
     TimeValue::from_system(
         system,
         &anticipated_plants,
-        DeliveryCalendar::from_system(system),
+        DeliveryCalendar::thermal(system),
     )
 }
 
@@ -163,10 +163,10 @@ fn system_with_thermals(thermals: Vec<Thermal>) -> novomodelo_core::System {
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -385,10 +385,10 @@ fn system_with_pumping_stations(stations: Vec<PumpingStation>) -> novomodelo_cor
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -786,10 +786,10 @@ fn system_with_non_controllable_sources(
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -1091,10 +1091,10 @@ fn system_with_contracts(contracts: Vec<EnergyContract>, n_blks: usize) -> novom
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -1384,10 +1384,10 @@ fn build_template_build_ctx_contract_count_divergence_panics() {
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -1659,7 +1659,7 @@ fn build_template_build_ctx_zero_anticipated_when_none() {
 /// - `id=3`: standard thermal (no anticipation), max=200 MW, cost=500 $/MWh
 ///
 /// `ResolvedBounds` is populated with per-thermal stage costs/limits matching
-/// the per-thermal declarations (the default `BoundsDefaults::thermal` is uniform,
+/// the per-thermal declarations (the default `BoundsDefaults::thermal_block` is uniform,
 /// so a probe that relied on defaults would be trivial — distinct per-thermal
 /// stage data is required to expose any latent order-dependence in the LP fill).
 ///
@@ -1767,10 +1767,10 @@ fn anticipated_invariance_system() -> novomodelo_core::System {
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -1803,7 +1803,7 @@ fn anticipated_invariance_system() -> novomodelo_core::System {
                 .thermal_block_base_mut(t_idx, s_idx)
                 .max_generation_mw = max_generation_mw;
             resolved_bounds
-                .thermal_bounds_mut(t_idx, s_idx)
+                .thermal_block_base_mut(t_idx, s_idx)
                 .cost_per_mwh = cost_per_mwh;
         }
     }
@@ -2341,10 +2341,10 @@ fn discounted_multi_stage_system_with_post_study(
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 10.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 10.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -2570,7 +2570,7 @@ fn theta_discount_lands_on_the_state_theta_column_with_anticipated_thermals() {
 /// the per-thermal cost/bounds lookup.
 fn two_post_study_stages() -> PostStudyStages {
     PostStudyStages {
-        stages: vec![
+        thermal_stages: vec![
             PostStudyStage {
                 start_date: NaiveDate::from_ymd_opt(2024, 4, 1).unwrap(),
                 duration_hours: 720.0,
@@ -2581,6 +2581,7 @@ fn two_post_study_stages() -> PostStudyStages {
             },
         ],
         thermal_bounds: vec![],
+        water_bucket_stages: WaterBucketStages::FromThermalStages,
     }
 }
 
@@ -2728,7 +2729,7 @@ fn delivery_vectors_read_the_post_study_element_at_its_delivery_index() {
 
     assert_eq!(
         ctx.time_value.delivery_total_hours(3),
-        post_study.stages[0].duration_hours
+        post_study.thermal_stages[0].duration_hours
     );
     assert_eq!(
         ctx.time_value.relative_delivery_discount(0, 3),
@@ -2787,7 +2788,7 @@ fn delivery_cumulative_discount_matches_recomputed_extended_horizon() {
         annual_discount_rate: system.policy_graph().annual_discount_rate,
         ..novomodelo_core::HorizonGraph::default()
     };
-    let calendar_stages = post_study_calendar_stages(&post_study.stages);
+    let calendar_stages = post_study_calendar_stages(&post_study.thermal_stages);
     let calendar_stage_refs: Vec<_> = calendar_stages.iter().collect();
     let per_stage_post = compute_per_stage_discount_factors(&calendar_stage_refs, &rate_graph);
 
@@ -2883,10 +2884,10 @@ fn system_with_anticipated_thermals_and_post_study(
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -2961,8 +2962,9 @@ fn build_post_study_resolved_for(
     let system = system_with_anticipated_thermals_and_post_study(
         two_anticipated_thermals(ids),
         PostStudyStages {
-            stages: three_post_study_stages(),
+            thermal_stages: three_post_study_stages(),
             thermal_bounds,
+            water_bucket_stages: WaterBucketStages::FromThermalStages,
         },
     );
     let hydro_result = PrepareHydroModelsResult::default_from_system(&system);
@@ -3282,10 +3284,10 @@ fn one_hydro_active_violations(n_stages: usize) -> System {
                 max_generation_mw: 250.0,
                 ..Default::default()
             },
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -3821,10 +3823,10 @@ fn one_hydro_block_system(block_mode: BlockMode, n_blks: usize) -> System {
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -4496,10 +4498,10 @@ fn system_with_contracts_filling_and_anticipated() -> novomodelo_core::System {
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -5018,10 +5020,10 @@ fn filling_block_system(block_mode: BlockMode, n_blks: usize) -> System {
                 max_generation_mw: 250.0,
                 ..Default::default()
             },
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -5374,10 +5376,10 @@ fn anticipated_lead_config_system(
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -5498,7 +5500,7 @@ fn template_anticipated_resolution_matches_setup_lead_time() {
 
     let (setup_resolution, setup_lead_stages) = resolve_anticipated_commitments(
         &system,
-        &DeliveryCalendar::from_system(&system),
+        &DeliveryCalendar::thermal(&system),
         &AnticipatedPlants::build(system.thermals()),
     );
     assert_eq!(
@@ -5566,7 +5568,7 @@ fn template_leadstages_byte_identical_to_setup_and_fallback() {
 
     let (setup_resolution, setup_lead_stages) = resolve_anticipated_commitments(
         &system,
-        &DeliveryCalendar::from_system(&system),
+        &DeliveryCalendar::thermal(&system),
         &AnticipatedPlants::build(system.thermals()),
     );
     assert_eq!(setup_lead_stages, ctx.state.anticipated_lead_stages);

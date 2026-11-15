@@ -44,7 +44,7 @@ use novomodelo_core::{
     AnticipatedCommitmentHistory, BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, EntityId,
     HorizonGraph, HydroBlockBounds, HydroStageBounds, InitialConditions, LineBlockBounds,
     PostStudyStage, PostStudyStages, PostStudyThermalBound, PumpingBlockBounds, ResolvedBounds,
-    System, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
+    System, SystemBuilder, ThermalBlockBounds, WaterBucketStages,
 };
 use novomodelo_sddp::indexer::StateDim;
 use novomodelo_sddp::setup::{NodeGraph, NodePos, StageIdx};
@@ -133,7 +133,7 @@ fn stages() -> Vec<novomodelo_core::temporal::Stage> {
 /// so `StageCalendar::resolve_window` covers it at destination index 0.
 fn post_study_stages() -> PostStudyStages {
     PostStudyStages {
-        stages: vec![PostStudyStage {
+        thermal_stages: vec![PostStudyStage {
             start_date: study_end(),
             duration_hours: POST_STUDY_HOURS,
         }],
@@ -144,6 +144,7 @@ fn post_study_stages() -> PostStudyStages {
             min_mw: 0.0,
             max_mw: 100.0,
         }],
+        water_bucket_stages: WaterBucketStages::FromThermalStages,
     }
 }
 
@@ -166,10 +167,10 @@ fn bounds() -> ResolvedBounds {
                 water_withdrawal_m3s: 0.0,
             },
             hydro_block: HydroBlockBounds::default(),
-            thermal: ThermalStageBounds { cost_per_mwh: 1.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 1.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -797,10 +798,10 @@ fn bounds_for(n_thermals: usize) -> ResolvedBounds {
                 water_withdrawal_m3s: 0.0,
             },
             hydro_block: HydroBlockBounds::default(),
-            thermal: ThermalStageBounds { cost_per_mwh: 1.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: CAPABILITY_MAX_MW,
+                cost_per_mwh: 1.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,

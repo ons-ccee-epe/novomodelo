@@ -508,7 +508,7 @@ fn hours_between(later: NaiveDate, earlier: NaiveDate) -> f64 {
     (later - earlier).num_hours() as f64
 }
 
-/// Convert a post-study calendar segment (`PostStudyStages::stages`) into
+/// Convert a post-study calendar segment (a `PostStudyStage` slice) into
 /// [`Stage`]s a [`StageCalendar`] can resolve against.
 ///
 /// `end_date = start_date + round(duration_hours / 24)` days — the whole-day

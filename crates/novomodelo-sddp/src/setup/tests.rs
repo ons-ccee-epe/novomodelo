@@ -9,7 +9,7 @@ use crate::hydro_models::{PrepareHydroModelsResult, ProductionModelSet, Resolved
 use crate::lp::builder::StageGeometry;
 use crate::lp::indexer::{AnticipatedPlants, ChainRuleSlots, StateSpace, ThermalSys};
 use crate::test_support;
-use crate::time_value::DeliveryCalendar;
+use crate::time_value::{DeliveryCalendar, WaterDeliveryBasis};
 use novomodelo_io::test_support::owned_piece_defaults;
 use novomodelo_stochastic::ExternalScenarioLibrary;
 use novomodelo_stochastic::par::precompute::PrecomputedPar;
@@ -21,11 +21,10 @@ use novomodelo_core::{
     ContractBlockBounds, ContractBlockOverride, HydroBlockBounds, HydroPenalties, HydroStageBounds,
     LineBlockBounds, LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec, PenaltiesDefaults,
     PumpingBlockBounds, ResolvedBlockBounds, ResolvedBounds, ResolvedPenalties, ThermalBlockBounds,
-    ThermalStageBounds,
 };
 use novomodelo_core::{
     ContractType, EnergyContract, EntityId, HorizonGraph, HydroPastDefluence, InitialConditions,
-    PostStudyStage, PostStudyStages, System, SystemBuilder,
+    PostStudyStage, PostStudyStages, System, SystemBuilder, WaterBucketStages,
     entities::{
         bus::{Bus, DeficitSegment},
         hydro::{Hydro, HydroGenerationModel},
@@ -239,10 +238,10 @@ fn minimal_system_with_policy_graph(
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -443,10 +442,10 @@ fn minimal_fpha_misconfigured_system(n_stages: usize) -> novomodelo_core::System
                 max_generation_mw: 250.0,
                 ..Default::default()
             },
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -2027,10 +2026,10 @@ fn test_prepare_stochastic_historical_residuals_noise_method() {
                 max_generation_mw: 250.0,
                 ..Default::default()
             },
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -2492,10 +2491,10 @@ fn minimal_system_2_hydros_with_history(
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -2979,10 +2978,10 @@ fn staggered_dates_system_2_hydros(
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -3319,10 +3318,10 @@ fn filling_system_2_hydros(
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -3889,10 +3888,10 @@ fn system_with_anticipated_thermals(
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 500.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -4156,10 +4155,10 @@ fn system_with_two_anticipated_thermals_staggered_dates(
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 500.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -4699,11 +4698,12 @@ fn bug_doc_reproduction_past_commits() -> Vec<novomodelo_core::AnticipatedCommit
 /// pins `resolution.anchored_depth() == 4` and `lead_stages == [4]` for this exact shape.
 fn bug_doc_reproduction_system() -> novomodelo_core::System {
     let post_study = PostStudyStages {
-        stages: vec![PostStudyStage {
+        thermal_stages: vec![PostStudyStage {
             start_date: NaiveDate::from_ymd_opt(2024, 2, 18).unwrap(),
             duration_hours: 648.0,
         }],
         thermal_bounds: Vec::new(),
+        water_bucket_stages: WaterBucketStages::FromThermalStages,
     };
     minimal_system_with_anticipated_and_commitments(
         &[168.0, 168.0, 168.0, 648.0],
@@ -5127,10 +5127,10 @@ fn system_with_historical_inflow(n_stages: usize) -> novomodelo_core::System {
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -5390,10 +5390,10 @@ fn external_inflow_library_built_when_scheme_is_external() {
                 max_generation_mw: 250.0,
                 ..Default::default()
             },
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -5661,10 +5661,10 @@ fn external_load_library_built_when_scheme_is_external() {
                 max_generation_mw: 250.0,
                 ..Default::default()
             },
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -5961,10 +5961,10 @@ fn zero_sigma_external_load_system() -> System {
                 max_generation_mw: 250.0,
                 ..Default::default()
             },
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -6337,10 +6337,10 @@ fn external_ncs_library_built_when_scheme_is_external() {
                 max_generation_mw: 250.0,
                 ..Default::default()
             },
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -6597,10 +6597,10 @@ fn historical_library_fails_when_no_valid_windows() {
                 max_generation_mw: 250.0,
                 ..Default::default()
             },
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -7070,10 +7070,10 @@ fn minimal_system_with_anticipated_and_commitments(
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 500.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -7190,7 +7190,7 @@ fn setup_leadstages_resolution_preserves_k_max_and_state_dimension() {
     let system = minimal_system_with_anticipated_lead_stages(5, 2);
     let (resolution, lead_stages) = super::resolve_anticipated_commitments(
         &system,
-        &DeliveryCalendar::from_system(&system),
+        &DeliveryCalendar::thermal(&system),
         &AnticipatedPlants::build(system.thermals()),
     );
 
@@ -7270,7 +7270,7 @@ fn test_anticipated_resolve_point_pmo_calendar() {
     );
     let (resolution, _) = super::resolve_anticipated_commitments(
         &system,
-        &DeliveryCalendar::from_system(&system),
+        &DeliveryCalendar::thermal(&system),
         &AnticipatedPlants::build(system.thermals()),
     );
     let point = &resolution.per_plant[0];
@@ -7297,7 +7297,7 @@ fn lead_time_three_stage_lead_resolves_a_pre_study_prefix() {
         minimal_system_with_anticipated(&[100.0; 4], AnticipatedConfig::LeadTime(350.0), 1, None);
     let (resolution, _) = super::resolve_anticipated_commitments_core(
         &system,
-        &DeliveryCalendar::from_system(&system),
+        &DeliveryCalendar::thermal(&system),
         &AnticipatedPlants::build(system.thermals()),
     );
     let point = &resolution.per_plant[0];
@@ -7318,7 +7318,7 @@ fn ring_depth_counts_pre_study_occupancy() {
         minimal_system_with_anticipated(&[100.0; 4], AnticipatedConfig::LeadTime(350.0), 1, None);
     let (resolution, _) = super::resolve_anticipated_commitments_core(
         &system,
-        &DeliveryCalendar::from_system(&system),
+        &DeliveryCalendar::thermal(&system),
         &AnticipatedPlants::build(system.thermals()),
     );
 
@@ -7338,7 +7338,7 @@ fn leadstages_ring_depth_covers_full_lead_when_lead_equals_horizon() {
         minimal_system_with_anticipated_lead_stages(n_stages, u32::try_from(n_stages).unwrap());
     let (resolution, lead_stages) = super::resolve_anticipated_commitments_core(
         &system,
-        &DeliveryCalendar::from_system(&system),
+        &DeliveryCalendar::thermal(&system),
         &AnticipatedPlants::build(system.thermals()),
     );
 
@@ -7360,7 +7360,7 @@ fn test_anticipated_resolve_point_fanout_calendar() {
     );
     let (resolution, _) = super::resolve_anticipated_commitments(
         &system,
-        &DeliveryCalendar::from_system(&system),
+        &DeliveryCalendar::thermal(&system),
         &AnticipatedPlants::build(system.thermals()),
     );
     let point = &resolution.per_plant[0];
@@ -7379,11 +7379,12 @@ fn test_anticipated_resolve_point_fanout_calendar() {
 #[test]
 fn resolve_anticipated_commitments_widens_lead_time_plant_lead_to_the_ring_depth() {
     let post_study = PostStudyStages {
-        stages: vec![PostStudyStage {
+        thermal_stages: vec![PostStudyStage {
             start_date: NaiveDate::from_ymd_opt(2024, 2, 18).unwrap(),
             duration_hours: 648.0,
         }],
         thermal_bounds: Vec::new(),
+        water_bucket_stages: WaterBucketStages::FromThermalStages,
     };
     let system = minimal_system_with_anticipated(
         &[168.0, 168.0, 168.0, 648.0],
@@ -7393,7 +7394,7 @@ fn resolve_anticipated_commitments_widens_lead_time_plant_lead_to_the_ring_depth
     );
     let (resolution, lead_stages) = super::resolve_anticipated_commitments_core(
         &system,
-        &DeliveryCalendar::from_system(&system),
+        &DeliveryCalendar::thermal(&system),
         &AnticipatedPlants::build(system.thermals()),
     );
 
@@ -7502,8 +7503,10 @@ fn state_space_build_matches_the_loose_constructor() {
         .build()
         .expect("valid system");
 
-    let calendar = DeliveryCalendar::from_system(&system);
-    let topology = crate::bucket_topology::build_transit_bucket_topology(&system, &calendar, false);
+    let basis = WaterDeliveryBasis::of(&system);
+    let calendar = DeliveryCalendar::water(&system, basis);
+    let topology =
+        crate::bucket_topology::build_transit_bucket_topology(&system, &calendar, basis, false);
     let anticipated_plants = AnticipatedPlants::build(system.thermals());
     let leads = vec![2; anticipated_plants.len()];
     let n_stages = leads.iter().copied().max().unwrap_or(0) + 2;
@@ -8188,10 +8191,10 @@ fn par2_system_with_state_configs(state_configs: &[StageStateConfig]) -> novomod
                 max_generation_mw: 200.0,
                 ..Default::default()
             },
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -8518,7 +8521,7 @@ fn test_anticipated_resolve_point_k0_uniform_calendar() {
     );
     let (resolution, lead_stages) = super::resolve_anticipated_commitments(
         &system,
-        &DeliveryCalendar::from_system(&system),
+        &DeliveryCalendar::thermal(&system),
         &AnticipatedPlants::build(system.thermals()),
     );
     let point = &resolution.per_plant[0];
@@ -8559,7 +8562,7 @@ fn resolve_anticipated_commitments_warns_on_k0_sub_stage_lead() {
     tracing::subscriber::with_default(subscriber, || {
         let _ = super::resolve_anticipated_commitments(
             &system,
-            &DeliveryCalendar::from_system(&system),
+            &DeliveryCalendar::thermal(&system),
             &AnticipatedPlants::build(system.thermals()),
         );
     });
@@ -8596,7 +8599,7 @@ fn resolve_anticipated_commitments_leadstages_never_warns() {
     tracing::subscriber::with_default(subscriber, || {
         let _ = super::resolve_anticipated_commitments(
             &system,
-            &DeliveryCalendar::from_system(&system),
+            &DeliveryCalendar::thermal(&system),
             &AnticipatedPlants::build(system.thermals()),
         );
     });
@@ -8627,7 +8630,7 @@ fn warn_on_sub_stage_lead_emits_once_per_self_delivered_stage() {
     tracing::subscriber::with_default(subscriber, || {
         let _ = super::resolve_anticipated_commitments(
             &system,
-            &DeliveryCalendar::from_system(&system),
+            &DeliveryCalendar::thermal(&system),
             &AnticipatedPlants::build(system.thermals()),
         );
     });
@@ -8666,7 +8669,7 @@ fn warn_on_sub_stage_lead_emits_once_per_self_delivered_stage() {
 #[test]
 fn resolve_anticipated_commitments_core_reports_the_extended_delivery_width() {
     let post_study = PostStudyStages {
-        stages: vec![
+        thermal_stages: vec![
             PostStudyStage {
                 start_date: NaiveDate::from_ymd_opt(2024, 3, 1).unwrap(),
                 duration_hours: 744.0,
@@ -8677,6 +8680,7 @@ fn resolve_anticipated_commitments_core_reports_the_extended_delivery_width() {
             },
         ],
         thermal_bounds: Vec::new(),
+        water_bucket_stages: WaterBucketStages::FromThermalStages,
     };
     let system = minimal_system_with_anticipated(
         &[744.0, 744.0],
@@ -8687,7 +8691,7 @@ fn resolve_anticipated_commitments_core_reports_the_extended_delivery_width() {
 
     let (resolution, _) = super::resolve_anticipated_commitments_core(
         &system,
-        &DeliveryCalendar::from_system(&system),
+        &DeliveryCalendar::thermal(&system),
         &AnticipatedPlants::build(system.thermals()),
     );
 
@@ -8712,7 +8716,7 @@ fn resolve_anticipated_commitments_core_matches_study_only_width_without_post_st
 
     let (resolution, _) = super::resolve_anticipated_commitments_core(
         &system,
-        &DeliveryCalendar::from_system(&system),
+        &DeliveryCalendar::thermal(&system),
         &AnticipatedPlants::build(system.thermals()),
     );
 
@@ -8730,11 +8734,12 @@ fn resolve_anticipated_commitments_core_matches_study_only_width_without_post_st
 #[test]
 fn warn_on_boundary_absent_post_study_delivery_fires_once_when_boundary_absent() {
     let post_study = PostStudyStages {
-        stages: vec![PostStudyStage {
+        thermal_stages: vec![PostStudyStage {
             start_date: NaiveDate::from_ymd_opt(2024, 3, 1).unwrap(),
             duration_hours: 744.0,
         }],
         thermal_bounds: Vec::new(),
+        water_bucket_stages: WaterBucketStages::FromThermalStages,
     };
     let system = minimal_system_with_anticipated(
         &[744.0, 744.0],
@@ -8744,7 +8749,7 @@ fn warn_on_boundary_absent_post_study_delivery_fires_once_when_boundary_absent()
     );
     let (resolution, _) = super::resolve_anticipated_commitments_core(
         &system,
-        &DeliveryCalendar::from_system(&system),
+        &DeliveryCalendar::thermal(&system),
         &AnticipatedPlants::build(system.thermals()),
     );
 
@@ -8752,7 +8757,7 @@ fn warn_on_boundary_absent_post_study_delivery_fires_once_when_boundary_absent()
     tracing::subscriber::with_default(subscriber, || {
         super::warn_on_boundary_absent_post_study_delivery(
             &system,
-            &DeliveryCalendar::from_system(&system),
+            &DeliveryCalendar::thermal(&system),
             &AnticipatedPlants::build(system.thermals()),
             &resolution,
             false,
@@ -8781,11 +8786,12 @@ fn warn_on_boundary_absent_post_study_delivery_fires_once_when_boundary_absent()
 #[test]
 fn warn_on_boundary_absent_post_study_delivery_silent_when_boundary_present() {
     let post_study = PostStudyStages {
-        stages: vec![PostStudyStage {
+        thermal_stages: vec![PostStudyStage {
             start_date: NaiveDate::from_ymd_opt(2024, 3, 1).unwrap(),
             duration_hours: 744.0,
         }],
         thermal_bounds: Vec::new(),
+        water_bucket_stages: WaterBucketStages::FromThermalStages,
     };
     let system = minimal_system_with_anticipated(
         &[744.0, 744.0],
@@ -8795,7 +8801,7 @@ fn warn_on_boundary_absent_post_study_delivery_silent_when_boundary_present() {
     );
     let (resolution, _) = super::resolve_anticipated_commitments_core(
         &system,
-        &DeliveryCalendar::from_system(&system),
+        &DeliveryCalendar::thermal(&system),
         &AnticipatedPlants::build(system.thermals()),
     );
 
@@ -8803,7 +8809,7 @@ fn warn_on_boundary_absent_post_study_delivery_silent_when_boundary_present() {
     tracing::subscriber::with_default(subscriber, || {
         super::warn_on_boundary_absent_post_study_delivery(
             &system,
-            &DeliveryCalendar::from_system(&system),
+            &DeliveryCalendar::thermal(&system),
             &AnticipatedPlants::build(system.thermals()),
             &resolution,
             true,
@@ -8840,7 +8846,7 @@ fn warn_on_boundary_absent_fires_for_nonzero_fixed_value_without_boundary() {
     );
     let (resolution, _) = super::resolve_anticipated_commitments_core(
         &system,
-        &DeliveryCalendar::from_system(&system),
+        &DeliveryCalendar::thermal(&system),
         &AnticipatedPlants::build(system.thermals()),
     );
 
@@ -8848,7 +8854,7 @@ fn warn_on_boundary_absent_fires_for_nonzero_fixed_value_without_boundary() {
     tracing::subscriber::with_default(subscriber, || {
         super::warn_on_boundary_absent_post_study_delivery(
             &system,
-            &DeliveryCalendar::from_system(&system),
+            &DeliveryCalendar::thermal(&system),
             &AnticipatedPlants::build(system.thermals()),
             &resolution,
             false,
@@ -8893,7 +8899,7 @@ fn warn_on_boundary_absent_silent_for_all_zero_stub_without_boundary() {
     );
     let (resolution, _) = super::resolve_anticipated_commitments_core(
         &system,
-        &DeliveryCalendar::from_system(&system),
+        &DeliveryCalendar::thermal(&system),
         &AnticipatedPlants::build(system.thermals()),
     );
 
@@ -8901,7 +8907,7 @@ fn warn_on_boundary_absent_silent_for_all_zero_stub_without_boundary() {
     tracing::subscriber::with_default(subscriber, || {
         super::warn_on_boundary_absent_post_study_delivery(
             &system,
-            &DeliveryCalendar::from_system(&system),
+            &DeliveryCalendar::thermal(&system),
             &AnticipatedPlants::build(system.thermals()),
             &resolution,
             false,
@@ -8924,11 +8930,12 @@ fn warn_on_boundary_absent_names_dual_cause_plant_once() {
     use novomodelo_core::AnticipatedCommitmentHistory;
 
     let post_study = PostStudyStages {
-        stages: vec![PostStudyStage {
+        thermal_stages: vec![PostStudyStage {
             start_date: NaiveDate::from_ymd_opt(2024, 3, 1).unwrap(),
             duration_hours: 744.0,
         }],
         thermal_bounds: Vec::new(),
+        water_bucket_stages: WaterBucketStages::FromThermalStages,
     };
     let system = minimal_system_with_anticipated_and_commitments(
         &[744.0, 744.0],
@@ -8944,7 +8951,7 @@ fn warn_on_boundary_absent_names_dual_cause_plant_once() {
     );
     let (resolution, _) = super::resolve_anticipated_commitments_core(
         &system,
-        &DeliveryCalendar::from_system(&system),
+        &DeliveryCalendar::thermal(&system),
         &AnticipatedPlants::build(system.thermals()),
     );
 
@@ -8952,7 +8959,7 @@ fn warn_on_boundary_absent_names_dual_cause_plant_once() {
     tracing::subscriber::with_default(subscriber, || {
         super::warn_on_boundary_absent_post_study_delivery(
             &system,
-            &DeliveryCalendar::from_system(&system),
+            &DeliveryCalendar::thermal(&system),
             &AnticipatedPlants::build(system.thermals()),
             &resolution,
             false,
@@ -9003,7 +9010,7 @@ fn lead_time_fanout_rejected_at_setup() {
     // Sanity: the fixture genuinely fans out (guards the guard's own fixture).
     let (resolution, _) = super::resolve_anticipated_commitments(
         &system,
-        &DeliveryCalendar::from_system(&system),
+        &DeliveryCalendar::thermal(&system),
         &AnticipatedPlants::build(system.thermals()),
     );
     assert_eq!(
@@ -9161,10 +9168,10 @@ fn system_with_two_thermals_one_fanning() -> novomodelo_core::System {
                 water_withdrawal_m3s: 0.0,
             },
             hydro_block: HydroBlockBounds::default(),
-            thermal: ThermalStageBounds { cost_per_mwh: 50.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 50.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -9183,10 +9190,10 @@ fn system_with_two_thermals_one_fanning() -> novomodelo_core::System {
     );
     for thermal_idx in 0..2 {
         for s in 0..(n_stages + k_max_bounds) {
-            *bounds.thermal_bounds_mut(thermal_idx, s) = ThermalStageBounds { cost_per_mwh: 50.0 };
             *bounds.thermal_block_base_mut(thermal_idx, s) = ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 50.0,
             };
         }
     }
@@ -9385,10 +9392,10 @@ fn system_with_interleaved_anticipated_thermals() -> novomodelo_core::System {
                 water_withdrawal_m3s: 0.0,
             },
             hydro_block: HydroBlockBounds::default(),
-            thermal: ThermalStageBounds { cost_per_mwh: 50.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 50.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -9407,10 +9414,10 @@ fn system_with_interleaved_anticipated_thermals() -> novomodelo_core::System {
     );
     for thermal_idx in 0..3 {
         for s in 0..(n_stages + k_max_bounds) {
-            *bounds.thermal_bounds_mut(thermal_idx, s) = ThermalStageBounds { cost_per_mwh: 50.0 };
             *bounds.thermal_block_base_mut(thermal_idx, s) = ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 50.0,
             };
         }
     }
@@ -9569,10 +9576,10 @@ fn zero_bounds_defaults(contract_price: f64) -> BoundsDefaults {
             water_withdrawal_m3s: 0.0,
         },
         hydro_block: HydroBlockBounds::default(),
-        thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
         thermal_block: ThermalBlockBounds {
             min_generation_mw: 0.0,
             max_generation_mw: 0.0,
+            cost_per_mwh: 0.0,
         },
         line_block: LineBlockBounds {
             direct_mw: 0.0,
@@ -10570,6 +10577,12 @@ fn bucket_seed_build_system(
         .expect("valid system")
 }
 
+fn bucket_seed_water_topology(system: &System) -> crate::bucket_topology::TransitBucketTopology {
+    let basis = WaterDeliveryBasis::of(system);
+    let calendar = DeliveryCalendar::water(system, basis);
+    crate::bucket_topology::build_transit_bucket_topology(system, &calendar, basis, false)
+}
+
 /// `start_0 = 2024-01-01`. A single `past_defluences` window ending
 /// `start_0_minus_hours` before `start_0` and spanning `width_hours`, at rate
 /// `value` m³/s.
@@ -10603,8 +10616,7 @@ fn test_single_arc_unroll_matches_ac1() {
         vec![bucket_seed_defluence_window(2, 0.0, 24.0, 100.0)],
     );
 
-    let calendar = DeliveryCalendar::from_system(&system);
-    let topology = crate::bucket_topology::build_transit_bucket_topology(&system, &calendar, false);
+    let topology = bucket_seed_water_topology(&system);
     let state = crate::test_support::bucket_seed_state(&system, &topology);
     assert_eq!(
         state
@@ -10644,8 +10656,7 @@ fn test_mid_horizon_entrant_zero_history_zero_seeds_stage_0_transit_buckets() {
         vec![bucket_seed_defluence_window(2, 0.0, 24.0, 0.0)],
     );
 
-    let calendar = DeliveryCalendar::from_system(&system);
-    let topology = crate::bucket_topology::build_transit_bucket_topology(&system, &calendar, false);
+    let topology = bucket_seed_water_topology(&system);
     let state = crate::test_support::bucket_seed_state(&system, &topology);
     assert_eq!(
         state
@@ -10681,8 +10692,7 @@ fn test_confluence_aggregates_two_upstreams_into_shared_transit_buckets() {
         ],
     );
 
-    let calendar = DeliveryCalendar::from_system(&system);
-    let topology = crate::bucket_topology::build_transit_bucket_topology(&system, &calendar, false);
+    let topology = bucket_seed_water_topology(&system);
     let state = crate::test_support::bucket_seed_state(&system, &topology);
     assert_eq!(
         state
@@ -10736,12 +10746,8 @@ fn test_seed_is_declaration_order_invariant() {
         defluences,
     );
 
-    let calendar_a = DeliveryCalendar::from_system(&system_a);
-    let calendar_b = DeliveryCalendar::from_system(&system_b);
-    let topology_a =
-        crate::bucket_topology::build_transit_bucket_topology(&system_a, &calendar_a, false);
-    let topology_b =
-        crate::bucket_topology::build_transit_bucket_topology(&system_b, &calendar_b, false);
+    let topology_a = bucket_seed_water_topology(&system_a);
+    let topology_b = bucket_seed_water_topology(&system_b);
     let state_a = crate::test_support::bucket_seed_state(&system_a, &topology_a);
     let state_b = crate::test_support::bucket_seed_state(&system_b, &topology_b);
     let seed_a = super::build_initial_transit_bucket_state(&system_a, &topology_a, &state_a);
@@ -10764,8 +10770,7 @@ fn test_seed_len_matches_n_buckets() {
         bucket_seed_study_stages(4, 12.0),
         vec![bucket_seed_defluence_window(2, 0.0, 24.0, 100.0)],
     );
-    let calendar = DeliveryCalendar::from_system(&system);
-    let topology = crate::bucket_topology::build_transit_bucket_topology(&system, &calendar, false);
+    let topology = bucket_seed_water_topology(&system);
     let state = crate::test_support::bucket_seed_state(&system, &topology);
     let seed = super::build_initial_transit_bucket_state(&system, &topology, &state);
     assert_eq!(seed.len(), topology.n_buckets());
@@ -10776,12 +10781,7 @@ fn test_seed_len_matches_n_buckets() {
         bucket_seed_study_stages(3, 24.0),
         vec![],
     );
-    let no_arc_calendar = DeliveryCalendar::from_system(&no_arc_system);
-    let no_arc_topology = crate::bucket_topology::build_transit_bucket_topology(
-        &no_arc_system,
-        &no_arc_calendar,
-        false,
-    );
+    let no_arc_topology = bucket_seed_water_topology(&no_arc_system);
     assert_eq!(no_arc_topology.n_buckets(), 0);
     let no_arc_state = crate::test_support::bucket_seed_state(&no_arc_system, &no_arc_topology);
     let no_arc_seed =
@@ -10811,9 +10811,7 @@ fn test_gapped_windows_contribute_additively() {
         ],
     );
 
-    let delivery_calendar = DeliveryCalendar::from_system(&system);
-    let topology =
-        crate::bucket_topology::build_transit_bucket_topology(&system, &delivery_calendar, false);
+    let topology = bucket_seed_water_topology(&system);
     let state = crate::test_support::bucket_seed_state(&system, &topology);
     let seed = super::build_initial_transit_bucket_state(&system, &topology, &state);
 
@@ -10844,6 +10842,94 @@ fn test_gapped_windows_contribute_additively() {
             "bucket {idx}: gapped windows must contribute additively, got {got} vs expected {want}"
         );
     }
+}
+
+// ── resolve_state_and_topology: declared water calendar coverage ────────────
+
+const SHORT_POST_STUDY_HOURS: [f64; 2] = [168.0, 167.0];
+
+fn post_study_stage_hours(hours: &[f64]) -> Vec<PostStudyStage> {
+    hours
+        .iter()
+        .zip(0_i64..)
+        .map(|(&duration_hours, week)| PostStudyStage {
+            start_date: bucket_seed_date(2024, 1, 5) + Duration::weeks(week),
+            duration_hours,
+        })
+        .collect()
+}
+
+/// Hydro 2 declares a 336 h arc into hydro 1. The thermal calendar is
+/// [`SHORT_POST_STUDY_HOURS`], one hour short of it; the water calendar is
+/// `declared_water_hours` when given, else the thermal one.
+fn system_with_water_arc(declared_water_hours: Option<&[f64]>) -> System {
+    SystemBuilder::new()
+        .buses(vec![Bus {
+            id: EntityId(1),
+            name: "B1".to_string(),
+            operational_start_date: bucket_seed_date(2024, 1, 1),
+            deficit_segments: vec![DeficitSegment {
+                depth_mw: None,
+                cost_per_mwh: 500.0,
+            }],
+            excess_cost: 0.0,
+        }])
+        .hydros(vec![
+            bucket_seed_hydro(1, None, None),
+            bucket_seed_hydro(2, Some(1), Some(336.0)),
+        ])
+        .stages(bucket_seed_study_stages(4, 168.0))
+        .post_study_stages(Some(PostStudyStages {
+            thermal_stages: post_study_stage_hours(&SHORT_POST_STUDY_HOURS),
+            thermal_bounds: Vec::new(),
+            water_bucket_stages: declared_water_hours
+                .map_or(WaterBucketStages::FromThermalStages, |hours| {
+                    WaterBucketStages::Declared(post_study_stage_hours(hours))
+                }),
+        }))
+        .build()
+        .expect("valid system")
+}
+
+fn resolve_water_arc_system(system: &System) -> Result<(), SddpError> {
+    let basis = WaterDeliveryBasis::of(system);
+    super::resolve_state_and_topology(
+        system,
+        &DeliveryCalendar::thermal(system),
+        &DeliveryCalendar::water(system, basis),
+        basis,
+        &PrecomputedPar::default(),
+        None,
+        false,
+    )
+    .map(|_| ())
+}
+
+#[test]
+fn resolve_state_and_topology_refuses_uncovered_declared_water_calendar() {
+    let system = system_with_water_arc(Some(&SHORT_POST_STUDY_HOURS));
+
+    let result = resolve_water_arc_system(&system);
+    let Err(SddpError::Validation(msg)) = result else {
+        panic!("expected a Validation refusal, got {result:?}");
+    };
+    assert!(msg.contains("hydro 2 "), "{msg}");
+    assert!(msg.contains("336 h"), "{msg}");
+    assert!(msg.contains("335 h"), "{msg}");
+}
+
+#[test]
+fn resolve_state_and_topology_accepts_covering_declared_water_calendar() {
+    let system = system_with_water_arc(Some(&[168.0, 168.0]));
+
+    resolve_water_arc_system(&system).expect("a calendar spanning the travel time resolves");
+}
+
+#[test]
+fn resolve_state_and_topology_pads_a_short_legacy_water_calendar() {
+    let system = system_with_water_arc(None);
+
+    resolve_water_arc_system(&system).expect("the legacy calendar is padded, not refused");
 }
 
 // ── study_horizon_end ───────────────────────────────────────────────────────

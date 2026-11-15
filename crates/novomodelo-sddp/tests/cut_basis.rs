@@ -488,7 +488,6 @@ mod cut_subgradient_parity {
         EntityId, HydroBlockBounds, HydroPenalties, HydroStageBounds, LineBlockBounds,
         LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec, PenaltiesDefaults,
         PumpingBlockBounds, ResolvedBounds, ResolvedPenalties, SystemBuilder, ThermalBlockBounds,
-        ThermalStageBounds,
         entities::hydro::HydroGenerationModel,
         scenario::{InflowModel, LoadModel},
         temporal::{
@@ -662,10 +661,10 @@ mod cut_subgradient_parity {
                     max_generation_mw: 100.0,
                     ..Default::default()
                 },
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -4109,7 +4108,7 @@ mod range_warm_start_determinism {
         HydroPenalties, HydroStageBounds, LineBlockBounds, LineStagePenalties, LinearTerm,
         NcsStagePenalties, PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds,
         ResolvedBounds, ResolvedGenericConstraintBounds, ResolvedPenalties, SystemBuilder,
-        ThermalBlockBounds, ThermalStageBounds, VariableRef,
+        ThermalBlockBounds, VariableRef,
     };
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
@@ -4398,10 +4397,10 @@ mod range_warm_start_determinism {
                     max_generation_mw: 0.0,
                     ..Default::default()
                 },
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 30.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,

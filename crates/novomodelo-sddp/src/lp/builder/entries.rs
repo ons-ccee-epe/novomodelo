@@ -1,5 +1,5 @@
 use novomodelo_core::commissioning::Phase;
-use novomodelo_core::{BlockMode, ContractType, Stage, is_exact_zero};
+use novomodelo_core::{BlockMode, ContractType, Stage, VariableRef, is_exact_zero};
 
 use super::generic_constraints::resolve_variable_ref;
 use crate::hydro_models::EvaporationModel;
@@ -1157,6 +1157,7 @@ pub(super) struct LpMatrixBuffers<'a> {
 /// `sink` under the same merge, one entry per hydro.
 pub(super) fn fill_generic_constraint_entries(
     ctx: &TemplateBuildCtx<'_>,
+    stage: &Stage,
     stage_idx: usize,
     layout: &StageLayout,
     buffers: &mut LpMatrixBuffers<'_>,
@@ -1194,6 +1195,18 @@ pub(super) fn fill_generic_constraint_entries(
         row_entries.clear();
         row_inflow_entries.clear();
         for (term_idx, term) in constraint.expression.terms.iter().enumerate() {
+            // The loader refuses this composition (semantic.5a.56-5a.58); only a SystemBuilder System reaches it.
+            debug_assert!(
+                entry.is_stage_level
+                    || !matches!(
+                        term.variable,
+                        VariableRef::HydroOutflowVolume { .. }
+                            | VariableRef::HydroDiversionVolume { .. }
+                            | VariableRef::PumpingVolume { .. }
+                    ),
+                "generic constraint {}: a stage-volume term reaches a per-block row",
+                constraint.id.0
+            );
             let coefficient = ctx.resolved.resolved_generic_coefficients.term_value(
                 entry.constraint_idx,
                 term_idx,
@@ -1204,6 +1217,7 @@ pub(super) fn fill_generic_constraint_entries(
             let pairs = resolve_variable_ref(
                 &term.variable,
                 entry.block_idx,
+                stage.id,
                 stage_idx,
                 ctx,
                 layout,
@@ -1528,6 +1542,7 @@ pub(super) fn build_stage_inflow_coupling(
     let mut col_entries = build_stage_matrix_entries(ctx, stage, stage_idx, layout, &mut sink);
     fill_generic_constraint_entries(
         ctx,
+        stage,
         stage_idx,
         layout,
         &mut LpMatrixBuffers {
@@ -1555,6 +1570,7 @@ pub(super) struct GenericConstraintFill {
 #[cfg(test)]
 pub(super) fn fill_generic_constraints_for_test(
     ctx: &TemplateBuildCtx<'_>,
+    stage: &Stage,
     stage_idx: usize,
     layout: &StageLayout,
     mut col_entries: Vec<Vec<(usize, f64)>>,
@@ -1566,6 +1582,7 @@ pub(super) fn fill_generic_constraints_for_test(
     let mut sink = InflowCouplingSink::new(layout.state.hydro_count);
     fill_generic_constraint_entries(
         ctx,
+        stage,
         stage_idx,
         layout,
         &mut LpMatrixBuffers {
@@ -1681,7 +1698,7 @@ mod parameter_resolution_tests {
         HydroPenalties, HydroStageBounds, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
         ParameterKind, PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
         ResolvedGenericConstraintBounds, ResolvedPenalties, ScalarExpr, ScalarParameter, StageId,
-        SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
+        SystemBuilder, ThermalBlockBounds,
     };
     use novomodelo_core::{LinearTerm, VariableRef};
     use novomodelo_stochastic::normal::precompute::PrecomputedNormal;
@@ -1839,10 +1856,10 @@ mod parameter_resolution_tests {
             &BoundsDefaults {
                 hydro: default_hydro_bounds(),
                 hydro_block: default_hydro_block_bounds(),
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 100.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -2183,7 +2200,7 @@ mod zero_cost_tests {
     use novomodelo_core::{
         BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, EntityId, HydroBlockBounds,
         HydroStageBounds, LineBlockBounds, PumpingBlockBounds, ResolvedBounds, Stage, Thermal,
-        ThermalBlockBounds, ThermalStageBounds,
+        ThermalBlockBounds,
     };
 
     use crate::indexer::BlockIdx;
@@ -2239,7 +2256,7 @@ mod zero_cost_tests {
         /// accesses falls within `[0, n_stages + k_max)` (callers whose
         /// deliveries all fall strictly inside `[0, n_stages)` pass `0`).
         /// `n_thermals` sizes the thermal slot axis: tests that read or mutate
-        /// `thermal_bounds(t_idx, …)` for an active anticipated plant must size it
+        /// `thermal_block_base(t_idx, …)` for an active anticipated plant must size it
         /// to cover every `t_idx` they touch; pure state-out/row tests pass `0`.
         fn bounds_with_n_stages(
             n_stages: usize,
@@ -2264,10 +2281,10 @@ mod zero_cost_tests {
                         water_withdrawal_m3s: 0.0,
                     },
                     hydro_block: HydroBlockBounds::default(),
-                    thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                     thermal_block: ThermalBlockBounds {
                         min_generation_mw: 0.0,
                         max_generation_mw: 0.0,
+                        cost_per_mwh: 0.0,
                     },
                     line_block: LineBlockBounds {
                         direct_mw: 0.0,
@@ -2371,7 +2388,7 @@ mod zero_cost_tests {
             fixtures
                 .base
                 .bounds
-                .thermal_bounds_mut(0, stage)
+                .thermal_block_base_mut(0, stage)
                 .cost_per_mwh = ANT_COST;
             fixtures
                 .base
@@ -2381,7 +2398,7 @@ mod zero_cost_tests {
             fixtures
                 .base
                 .bounds
-                .thermal_bounds_mut(1, stage)
+                .thermal_block_base_mut(1, stage)
                 .cost_per_mwh = STD_COST;
             fixtures
                 .base
@@ -3401,7 +3418,7 @@ mod pumping_water_tests {
         LineBlockBounds, LineStagePenalties, LinearTerm, NcsStagePenalties, PenaltiesCountsSpec,
         PenaltiesDefaults, PenaltyBasis, PumpingBlockBounds, PumpingStation, ResolvedBlockBounds,
         ResolvedBounds, ResolvedGenericConstraintBounds, ResolvedPenalties, SlackConfig, Stage,
-        Thermal, ThermalBlockBounds, ThermalStageBounds, VariableRef,
+        Thermal, ThermalBlockBounds, VariableRef,
     };
     use novomodelo_io::validation::semantic::envelope_tolerance;
     use novomodelo_stochastic::par::precompute::PrecomputedPar;
@@ -3495,10 +3512,10 @@ mod pumping_water_tests {
                 max_generation_mw: 45.0,
                 ..Default::default()
             },
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -3754,12 +3771,10 @@ mod pumping_water_tests {
             // which column would change the resolved bounds.
             for (t_idx, t) in thermals.iter().enumerate() {
                 for stage_idx in 0..N_STAGES {
-                    *bounds.thermal_bounds_mut(t_idx, stage_idx) = ThermalStageBounds {
-                        cost_per_mwh: t.cost_per_mwh,
-                    };
                     *bounds.thermal_block_base_mut(t_idx, stage_idx) = ThermalBlockBounds {
                         min_generation_mw: t.min_generation_mw,
                         max_generation_mw: t.max_generation_mw,
+                        cost_per_mwh: t.cost_per_mwh,
                     };
                 }
             }
@@ -4696,7 +4711,7 @@ mod pumping_water_tests {
             let layout = StageLayout::new(&ctx, &stage, 0);
 
             let entries = build_stage_matrix_entries_for_test(&ctx, &stage, 0, &layout);
-            let mut fill = fill_generic_constraints_for_test(&ctx, 0, &layout, entries);
+            let mut fill = fill_generic_constraints_for_test(&ctx, &stage, 0, &layout, entries);
 
             // Mirror the production per-column row-sort (see
             // build_single_stage_template) before assembling the CSC.
@@ -7612,6 +7627,7 @@ mod pumping_water_tests {
     /// The conservation `debug_assert` fires when a declared arc's `k` does not
     /// sum to 1.0 — the guard is real, not dead code.
     #[test]
+    #[cfg(debug_assertions)]
     #[should_panic(expected = "stage-clock weights must sum to 1.0")]
     fn declared_arc_non_conserving_k_panics_in_debug() {
         let up = 1;
@@ -7881,6 +7897,7 @@ mod pumping_water_tests {
     /// (`declared_arc_non_conserving_k_panics_in_debug`), closing the gap
     /// where only the chrono-specific identities were fill-time-asserted.
     #[test]
+    #[cfg(debug_assertions)]
     #[should_panic(expected = "stage-clock weights must sum to 1.0")]
     fn row_8_chrono_stage_clock_sum_panics_on_disagreement() {
         let up = 1;
@@ -7925,6 +7942,7 @@ mod pumping_water_tests {
     /// when a hand-built resolution's block deposits disagree with its own
     /// stage-level `stage_weights` — the guard is real, not dead code.
     #[test]
+    #[cfg(debug_assertions)]
     #[should_panic(expected = "block deposits must aggregate to k_d")]
     fn row_9_shared_density_consistency_panics_on_disagreement() {
         let up = 1;
@@ -8127,6 +8145,7 @@ mod pumping_water_tests {
     /// `arc_arrival_density` table entry violates conservation — the guard is
     /// real, not dead code, after the arrival-frame lookup swap.
     #[test]
+    #[cfg(debug_assertions)]
     #[should_panic(expected = "arrival_density must sum to 1.0")]
     fn fill_chronological_water_entries_arrival_density_conservation_panics_on_disagreement() {
         let up = 1;
@@ -8222,7 +8241,13 @@ mod pumping_water_tests {
             row_lower,
             row_upper,
             ..
-        } = fill_generic_constraints_for_test(&ctx, 0, &layout, vec![Vec::new(); layout.num_cols]);
+        } = fill_generic_constraints_for_test(
+            &ctx,
+            &stage,
+            0,
+            &layout,
+            vec![Vec::new(); layout.num_cols],
+        );
 
         // Each generic row `blk` lands on the station's flow column for that block,
         // with the flow (1.0) and power (consumption) terms aliasing the SAME column.
@@ -8293,7 +8318,7 @@ mod pumping_water_tests {
             "block-dependent pumping constraint must expand to one row per block"
         );
 
-        let col_entries = filled_generic_rows(&ctx, &layout);
+        let col_entries = filled_generic_rows(&ctx, &stage, &layout);
 
         (0..n_blks)
             .map(|blk| {
@@ -8357,9 +8382,10 @@ mod pumping_water_tests {
 
     fn filled_generic_rows(
         ctx: &TemplateBuildCtx<'_>,
+        stage: &Stage,
         layout: &StageLayout<'_>,
     ) -> Vec<Vec<(usize, f64)>> {
-        fill_generic_constraints_for_test(ctx, 0, layout, vec![Vec::new(); layout.num_cols])
+        fill_generic_constraints_for_test(ctx, stage, 0, layout, vec![Vec::new(); layout.num_cols])
             .col_entries
     }
 
@@ -8402,17 +8428,17 @@ mod pumping_water_tests {
             .geometry
             .turbine_col(HydroCell::new(0), BlockIdx::new(0));
         assert_eq!(
-            resolve_variable_ref(&turbined, 0, 0, &ctx, &layout, &mut Vec::new()),
+            resolve_variable_ref(&turbined, 0, stage.id, 0, &ctx, &layout, &mut Vec::new()),
             vec![(turbine_col, 1.0)]
         );
         assert_eq!(
-            resolve_variable_ref(&generation, 0, 0, &ctx, &layout, &mut Vec::new()),
+            resolve_variable_ref(&generation, 0, stage.id, 0, &ctx, &layout, &mut Vec::new()),
             vec![(turbine_col, 2.5)],
             "generation must alias the turbine column at the overridden productivity"
         );
         assert_eq!(layout.rows.n_generic_rows, 2, "one generic row per block");
 
-        let col_entries = filled_generic_rows(&ctx, &layout);
+        let col_entries = filled_generic_rows(&ctx, &stage, &layout);
         for (i, row_entry) in layout.generic_constraint_rows.iter().enumerate() {
             let blk = row_entry.block_idx;
             let row = layout.generic_row(i);
@@ -8455,11 +8481,19 @@ mod pumping_water_tests {
 
         let storage_col = layout.state.storage_outgoing_col(HydroSys::new(0)).get();
         assert_eq!(
-            resolve_variable_ref(&storage, 0, 0, &ctx, &layout, &mut Vec::new()),
+            resolve_variable_ref(&storage, 0, stage.id, 0, &ctx, &layout, &mut Vec::new()),
             vec![(storage_col, 1.0)]
         );
         assert_eq!(
-            resolve_variable_ref(&useful_final, 0, 0, &ctx, &layout, &mut Vec::new()),
+            resolve_variable_ref(
+                &useful_final,
+                0,
+                stage.id,
+                0,
+                &ctx,
+                &layout,
+                &mut Vec::new()
+            ),
             vec![(storage_col, 1.0)],
             "useful_volume_final must alias the stage-final storage column"
         );
@@ -8468,7 +8502,7 @@ mod pumping_water_tests {
             "block-independent variables collapse to one stage-level row"
         );
 
-        let col_entries = filled_generic_rows(&ctx, &layout);
+        let col_entries = filled_generic_rows(&ctx, &stage, &layout);
         let row = layout.generic_row(0);
         assert_eq!(
             entry_count_at(&col_entries, storage_col, row),
@@ -8511,7 +8545,7 @@ mod pumping_water_tests {
         let storage_col = layout.state.storage_outgoing_col(HydroSys::new(0)).get();
         for variable in [&storage, &storage_final, &useful_final] {
             assert_eq!(
-                resolve_variable_ref(variable, 0, 0, &ctx, &layout, &mut Vec::new()),
+                resolve_variable_ref(variable, 0, stage.id, 0, &ctx, &layout, &mut Vec::new()),
                 vec![(storage_col, 1.0)],
                 "{variable:?} must alias the stage-final storage column"
             );
@@ -8521,7 +8555,7 @@ mod pumping_water_tests {
             "block-independent variables collapse to one stage-level row"
         );
 
-        let col_entries = filled_generic_rows(&ctx, &layout);
+        let col_entries = filled_generic_rows(&ctx, &stage, &layout);
         let row = layout.generic_row(0);
         assert_eq!(
             entry_count_at(&col_entries, storage_col, row),
@@ -8609,7 +8643,13 @@ mod pumping_water_tests {
             row_lower,
             row_upper,
             ..
-        } = fill_generic_constraints_for_test(&ctx, 0, &layout, vec![Vec::new(); layout.num_cols]);
+        } = fill_generic_constraints_for_test(
+            &ctx,
+            &stage,
+            0,
+            &layout,
+            vec![Vec::new(); layout.num_cols],
+        );
 
         assert_eq!(
             block_hours.len(),
@@ -11410,6 +11450,131 @@ mod pumping_water_tests {
                 entry_count_at(&col_entries, col_slack, row),
                 1,
                 "blk {blk_idx}: exactly one slack entry, no duplicate or leftover var_c term"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "a stage-volume term reaches a per-block row")]
+    fn stage_volume_term_on_a_split_parameter_row_panics_in_debug() {
+        let constraint = GenericConstraint {
+            id: EntityId(7),
+            name: "gc_volume_split".to_string(),
+            description: None,
+            expression: ConstraintExpression {
+                terms: vec![LinearTerm {
+                    coefficient: novomodelo_core::ScalarExpr::param(EntityId(42)),
+                    variable: VariableRef::HydroOutflowVolume {
+                        hydro_id: EntityId(1),
+                    },
+                }],
+            },
+            slack: None,
+            bound_lower: None,
+            bound_upper: None,
+        };
+        let mut fixtures = PumpFixtures::new(vec![fixture_hydro(1)], Vec::new())
+            .with_generic_constraint(constraint, 100.0);
+        fixtures.base.resolved_parameters = crate::resolved_parameters::ResolvedParameters {
+            per_param: vec![vec![vec![1.0, 2.0]]],
+            id_to_slot: vec![(42, 0)],
+            cost_scale_factor: 1_000_000.0,
+        };
+        let ctx = fixtures.make_ctx();
+        let stage = two_block_stage(0, [300.0, 444.0]);
+        let layout = StageLayout::new(&ctx, &stage, 0);
+        assert_eq!(
+            layout.rows.n_generic_rows, 2,
+            "the per-block parameter must split the row, one per block"
+        );
+        assert!(
+            layout
+                .generic_constraint_rows
+                .iter()
+                .all(|r| !r.is_stage_level),
+            "a split row is never stage-level"
+        );
+
+        let _ = filled_generic_rows(&ctx, &stage, &layout);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "a stage-volume term reaches a per-block row")]
+    fn stage_volume_term_on_a_block_bounds_row_panics_in_debug() {
+        let constraint = GenericConstraint {
+            id: EntityId(7),
+            name: "gc_volume_block_row".to_string(),
+            description: None,
+            expression: ConstraintExpression {
+                terms: vec![LinearTerm::literal(
+                    1.0,
+                    VariableRef::HydroOutflowVolume {
+                        hydro_id: EntityId(1),
+                    },
+                )],
+            },
+            slack: None,
+            bound_lower: None,
+            bound_upper: None,
+        };
+        let id_map: HashMap<i32, usize> = [(constraint.id.0, 0)].into_iter().collect();
+        let mut fixtures = PumpFixtures::new(vec![fixture_hydro(1)], Vec::new());
+        fixtures.base.resolved_generic_bounds = ResolvedGenericConstraintBounds::new(
+            &id_map,
+            [(constraint.id.0, 0, Some(1), None, Some(100.0))].into_iter(),
+        );
+        fixtures.base.generic_constraints = vec![constraint];
+        let ctx = fixtures.make_ctx();
+        let stage = two_block_stage(0, [300.0, 444.0]);
+        let layout = StageLayout::new(&ctx, &stage, 0);
+        assert_eq!(layout.rows.n_generic_rows, 1);
+        assert!(
+            !layout.generic_constraint_rows[0].is_stage_level,
+            "a Some(block) bounds row is never stage-level"
+        );
+
+        let _ = filled_generic_rows(&ctx, &stage, &layout);
+    }
+
+    #[test]
+    fn stage_volume_term_on_a_collapsed_row_fills_without_panicking() {
+        let constraint = GenericConstraint {
+            id: EntityId(7),
+            name: "gc_volume_collapsed".to_string(),
+            description: None,
+            expression: ConstraintExpression {
+                terms: vec![LinearTerm::literal(
+                    1.0,
+                    VariableRef::HydroOutflowVolume {
+                        hydro_id: EntityId(1),
+                    },
+                )],
+            },
+            slack: None,
+            bound_lower: None,
+            bound_upper: None,
+        };
+        let mut fixtures = PumpFixtures::new(vec![fixture_hydro(1)], Vec::new())
+            .with_generic_constraint(constraint, 100.0);
+        let ctx = fixtures.make_ctx();
+        let stage = two_block_stage(0, [300.0, 444.0]);
+        let layout = StageLayout::new(&ctx, &stage, 0);
+        assert_eq!(layout.rows.n_generic_rows, 1);
+        assert!(layout.generic_constraint_rows[0].is_stage_level);
+
+        let col_entries = filled_generic_rows(&ctx, &stage, &layout);
+
+        let row = layout.rows.row_generic_start;
+        for blk in 0..layout.clock.n_blks() {
+            let col = layout
+                .geometry
+                .spillage_col(HydroSys::new(0), BlockIdx::new(blk));
+            let on_row = col_entries[col].iter().filter(|&&(r, _)| r == row).count();
+            assert_eq!(
+                on_row, 1,
+                "blk {blk}: the spillage column holds one entry on the stage-level row"
             );
         }
     }

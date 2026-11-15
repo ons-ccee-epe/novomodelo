@@ -71,6 +71,12 @@ __pycache__/
 doc/
 tests/slurm/staging/
 dhat-heap.json
+# Profiler outputs written to the working directory (docs/profiling.md)
+perf.data
+perf.data.old
+flamegraph.svg
+heaptrack.*.zst
+callgrind.out.*
 *.orig
 rust_out
 .specforge/

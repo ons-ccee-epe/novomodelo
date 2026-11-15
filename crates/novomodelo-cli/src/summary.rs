@@ -302,9 +302,14 @@ fn format_boundary_reconciliation_row(report: &BoundaryReconciliationReport) -> 
     if !report.reconciled {
         return "dimension-only load (entity manifest absent)".to_string();
     }
-    let (copy, fan_out, default_zero, dropped) = report.tally_totals();
+    let totals = report.tally_totals();
     format!(
-        "{copy} copied, {fan_out} fanned out, {default_zero} defaulted to 0.0, {dropped} dropped"
+        "{} copied, {} fanned out, {} filled from storage, {} defaulted to 0.0, {} dropped",
+        totals.copy,
+        totals.fan_out,
+        totals.filled_from_storage,
+        totals.default_zero,
+        totals.dropped_source
     )
 }
 
@@ -2186,21 +2191,23 @@ mod tests {
                 ..FamilyTally::default()
             },
             inflow_lag: FamilyTally {
-                fan_out: 1,
+                fan_out: 7,
                 ..FamilyTally::default()
             },
             transit_bucket: FamilyTally {
+                filled_from_storage: 3,
                 dropped_source: 2,
                 ..FamilyTally::default()
             },
             anticipated: FamilyTally {
-                default_zero: 1,
+                default_zero: 5,
                 ..FamilyTally::default()
             },
             anticipated_coverage: AnticipatedCoverage::default(),
             other_identity: FamilyTally::default(),
             dropped_source_slots: Vec::new(),
             straddling_slots: Vec::new(),
+            filled_from_storage_slots: Vec::new(),
         }
     }
 
@@ -2224,7 +2231,10 @@ mod tests {
             "output must contain the aligned 'Source:' row, got: {s}"
         );
         assert!(
-            s.contains("Reconciliation: 2184 copied, 1 fanned out, 1 defaulted to 0.0, 2 dropped"),
+            s.contains(
+                "Reconciliation: 2184 copied, 7 fanned out, 3 filled from storage, 5 defaulted to \
+                 0.0, 2 dropped"
+            ),
             "output must contain the compact reconciliation tally, got: {s}"
         );
     }

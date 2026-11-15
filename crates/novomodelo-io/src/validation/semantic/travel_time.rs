@@ -101,10 +101,10 @@ fn check_recourse_downstream_not_operating(
     ctx: &mut ValidationContext,
 ) {
     for hydro in &data.hydros {
-        let Some(t) = hydro.travel_time_hours.filter(|&t| t > 0.0) else {
+        if !hydro.declares_travel_time_arc() {
             continue;
-        };
-        let Some(downstream_id) = hydro.downstream_id else {
+        }
+        let (Some(downstream_id), Some(t)) = (hydro.downstream_id, hydro.travel_time_hours) else {
             continue;
         };
         let Some(downstream) = data.hydros.iter().find(|h| h.id == downstream_id) else {

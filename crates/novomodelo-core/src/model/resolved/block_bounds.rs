@@ -45,11 +45,8 @@ pub struct HydroBlockOverride {
     pub max_spillage_m3s: Option<f64>,
 }
 
-/// Per-block override for a thermal unit's block-eligible bounds.
-///
-/// Deliberately has no `cost_per_mwh` field: per-block thermal cost is out of
-/// scope, asymmetric with [`ContractBlockOverride::price_per_mwh`], which is
-/// block-eligible.
+/// Per-block override for a thermal unit's block-eligible generation bounds and
+/// variable cost.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ThermalBlockOverride {
@@ -57,6 +54,8 @@ pub struct ThermalBlockOverride {
     pub min_generation_mw: Option<f64>,
     /// Maximum generation capacity override \[MW\].
     pub max_generation_mw: Option<f64>,
+    /// Variable cost override (`$/MWh`).
+    pub cost_per_mwh: Option<f64>,
 }
 
 /// Per-block override for a transmission line's block-eligible bounds.
@@ -69,10 +68,8 @@ pub struct LineBlockOverride {
     pub reverse_mw: Option<f64>,
 }
 
-/// Per-block override for an energy contract's block-eligible bounds.
-///
-/// `price_per_mwh` IS block-eligible — deliberately asymmetric with
-/// [`ThermalBlockOverride`]'s excluded `cost_per_mwh`.
+/// Per-block override for an energy contract's block-eligible usage bounds and
+/// price.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ContractBlockOverride {
@@ -499,7 +496,7 @@ mod tests {
     }
 
     #[test]
-    fn test_block_override_structs_pin_the_cost_price_asymmetry() {
+    fn test_block_override_structs_carry_their_block_eligible_columns() {
         let hydro = HydroBlockOverride {
             min_turbined_m3s: Some(1.0),
             max_turbined_m3s: Some(2.0),
@@ -521,8 +518,10 @@ mod tests {
         let thermal = ThermalBlockOverride {
             min_generation_mw: Some(1.0),
             max_generation_mw: Some(2.0),
+            cost_per_mwh: Some(3.0),
         };
         assert_eq!(thermal.max_generation_mw, Some(2.0));
+        assert_eq!(thermal.cost_per_mwh, Some(3.0));
 
         let contract = ContractBlockOverride {
             min_mw: Some(1.0),

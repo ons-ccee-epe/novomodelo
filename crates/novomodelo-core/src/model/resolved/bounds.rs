@@ -3,9 +3,9 @@
 //! Each block-eligible family exposes up to three accessor kinds:
 //!
 //! - **Stage bounds** (`<family>_bounds`) — the columns with no block
-//!   dimension ([`HydroStageBounds`], [`ThermalStageBounds`]). Lines, pumping
-//!   stations, and contracts have no stage-only columns, so they have no
-//!   `<family>_bounds` accessor.
+//!   dimension ([`HydroStageBounds`]). Thermals, lines, pumping stations, and
+//!   contracts have no stage-only columns, so they have no `<family>_bounds`
+//!   accessor.
 //! - **Block bounds** (`<family>_bounds_at_block`) — the value that applies at
 //!   a named block: the block-base cell with the per-block override overlay
 //!   applied on top. With an empty overlay this is bit-identical to
@@ -144,18 +144,22 @@ struct HydroCell {
     block: HydroBlockBounds,
 }
 
-/// Block-eligible thermal generation bounds for a given (thermal, stage)
-/// pair — the capacity half of the thermal split; [`ThermalStageBounds`]
-/// holds the stage-level cost half.
+/// Block-eligible thermal generation bounds and variable cost for a given
+/// (thermal, stage) pair.
+///
+/// Thermals have no stage-only bound column, so this is thermal's only
+/// per-(thermal, stage) bound type, stored directly. Resolved from
+/// `thermals.json` overlaid with `constraints/thermal_bounds.parquet`.
 ///
 /// # Examples
 ///
 /// ```
 /// use novomodelo_core::resolved::ThermalBlockBounds;
 ///
-/// let b = ThermalBlockBounds { min_generation_mw: 50.0, max_generation_mw: 400.0 };
+/// let b = ThermalBlockBounds { min_generation_mw: 50.0, max_generation_mw: 400.0, cost_per_mwh: 120.0 };
 /// let c = b; // Copy
 /// assert!((c.max_generation_mw - 400.0).abs() < f64::EPSILON);
+/// assert!((c.cost_per_mwh - 120.0).abs() < f64::EPSILON);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -164,39 +168,9 @@ pub struct ThermalBlockBounds {
     pub min_generation_mw: f64,
     /// Maximum generation capacity \[MW\]. Hard upper bound.
     pub max_generation_mw: f64,
-}
-
-/// Thermal cost for a given (thermal, stage) pair; block-eligible generation
-/// capacity lives in [`ThermalBlockBounds`] instead — per-block thermal cost
-/// is out of scope (spec §6).
-///
-/// Resolved from `thermals.json` overlaid with `constraints/thermal_bounds.parquet`.
-///
-/// # Examples
-///
-/// ```
-/// use novomodelo_core::resolved::ThermalStageBounds;
-///
-/// let b = ThermalStageBounds { cost_per_mwh: 120.0 };
-/// let c = b; // Copy
-/// assert!((c.cost_per_mwh - 120.0).abs() < f64::EPSILON);
-/// ```
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct ThermalStageBounds {
-    /// Dispatch cost override (`$/MWh`). Resolved from `Thermal.cost_per_mwh` with optional
-    /// per-stage override from `constraints/thermal_bounds.parquet` (null `block_id` rows only).
+    /// Effective dispatch cost \[$/`MWh`\]. May differ from base when a block override
+    /// supplies a per-block cost.
     pub cost_per_mwh: f64,
-}
-
-/// Dense per-(thermal, stage) cell pairing [`ThermalStageBounds`] and
-/// [`ThermalBlockBounds`] — one stride and one bounds check per thermal
-/// lookup; splitting into two parallel `Vec`s could desync their lengths.
-#[derive(Debug, Clone, Copy, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-struct ThermalCell {
-    stage: ThermalStageBounds,
-    block: ThermalBlockBounds,
 }
 
 /// Block-eligible transmission line bounds for a given (line, stage) pair.
@@ -257,9 +231,7 @@ pub struct PumpingBlockBounds {
 /// including `price_per_mwh`, is block-eligible — so this is contract's only
 /// per-(contract, stage) bound type, stored directly with no stage half to
 /// pair against. Resolved from `energy_contracts.json` overlaid with
-/// `constraints/contract_bounds.parquet`. `price_per_mwh` being block-eligible
-/// is deliberately asymmetric with [`ThermalStageBounds`]'s stage-only
-/// `cost_per_mwh` (spec §7 decision 6 against §6) — do not symmetrize the two.
+/// `constraints/contract_bounds.parquet`.
 ///
 /// # Examples
 ///
@@ -297,7 +269,6 @@ pub struct ContractBlockBounds {
 /// use novomodelo_core::resolved::{
 ///     BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, HydroBlockBounds, HydroStageBounds,
 ///     LineBlockBounds, PumpingBlockBounds, ResolvedBounds, ThermalBlockBounds,
-///     ThermalStageBounds,
 /// };
 ///
 /// let hydro_default = HydroStageBounds {
@@ -311,8 +282,7 @@ pub struct ContractBlockBounds {
 ///     min_diversion_m3s: None, max_diversion_m3s: None,
 ///     min_spillage_m3s: None, max_spillage_m3s: None,
 /// };
-/// let thermal_default = ThermalStageBounds { cost_per_mwh: 50.0 };
-/// let thermal_block_default = ThermalBlockBounds { min_generation_mw: 0.0, max_generation_mw: 100.0 };
+/// let thermal_block_default = ThermalBlockBounds { min_generation_mw: 0.0, max_generation_mw: 100.0, cost_per_mwh: 50.0 };
 /// let line_default = LineBlockBounds { direct_mw: 500.0, reverse_mw: 500.0 };
 /// let pumping_default = PumpingBlockBounds { min_flow_m3s: 0.0, max_flow_m3s: 20.0 };
 /// let contract_default = ContractBlockBounds { min_mw: 0.0, max_mw: 50.0, price_per_mwh: 80.0 };
@@ -321,7 +291,7 @@ pub struct ContractBlockBounds {
 ///     &BoundsCountsSpec { n_hydros: 2, n_thermals: 1, n_lines: 1, n_pumping: 1, n_contracts: 1, n_stages: 3, k_max: 0 },
 ///     &BoundsDefaults {
 ///         hydro: hydro_default, hydro_block: hydro_block_default,
-///         thermal: thermal_default, thermal_block: thermal_block_default,
+///         thermal_block: thermal_block_default,
 ///         line_block: line_default, pumping_block: pumping_default, contract_block: contract_default,
 ///     },
 /// );
@@ -346,7 +316,7 @@ pub struct ResolvedBounds {
     /// is extended by `k_max` cells per thermal: `[0, n_stages)` is the study
     /// horizon, `[n_stages, n_stages + k_max)` the padding for delivery-stage
     /// lookups by anticipated-decision columns.
-    thermal: Vec<ThermalCell>,
+    thermal: Vec<ThermalBlockBounds>,
     line: Vec<LineBlockBounds>,
     pumping: Vec<PumpingBlockBounds>,
     contract: Vec<ContractBlockBounds>,
@@ -365,7 +335,7 @@ struct ResolvedBoundsWire {
     n_stages: usize,
     thermal_stage_axis_len: usize,
     hydro: Vec<HydroCell>,
-    thermal: Vec<ThermalCell>,
+    thermal: Vec<ThermalBlockBounds>,
     line: Vec<LineBlockBounds>,
     pumping: Vec<PumpingBlockBounds>,
     contract: Vec<ContractBlockBounds>,
@@ -428,9 +398,7 @@ pub struct BoundsDefaults {
     pub hydro: HydroStageBounds,
     /// Default block-eligible hydro bounds for all (hydro, stage) cells.
     pub hydro_block: HydroBlockBounds,
-    /// Default thermal cost for all (thermal, stage) cells.
-    pub thermal: ThermalStageBounds,
-    /// Default thermal generation capacity for all (thermal, stage) cells.
+    /// Default thermal generation bounds and cost for all (thermal, stage) cells.
     pub thermal_block: ThermalBlockBounds,
     /// Default line bounds for all (line, stage) cells.
     pub line_block: LineBlockBounds,
@@ -478,10 +446,6 @@ impl ResolvedBounds {
             "ResolvedBounds::new: n_stages must be > 0 (got 0)"
         );
         let thermal_axis = counts.n_stages + counts.k_max;
-        let thermal_cell = ThermalCell {
-            stage: defaults.thermal,
-            block: defaults.thermal_block,
-        };
         let hydro_cell = HydroCell {
             stage: defaults.hydro,
             block: defaults.hydro_block,
@@ -490,7 +454,7 @@ impl ResolvedBounds {
             n_stages: counts.n_stages,
             thermal_stage_axis_len: thermal_axis,
             hydro: vec![hydro_cell; counts.n_hydros * counts.n_stages],
-            thermal: vec![thermal_cell; counts.n_thermals * thermal_axis],
+            thermal: vec![defaults.thermal_block; counts.n_thermals * thermal_axis],
             line: vec![defaults.line_block; counts.n_lines * counts.n_stages],
             pumping: vec![defaults.pumping_block; counts.n_pumping * counts.n_stages],
             contract: vec![defaults.contract_block; counts.n_contracts * counts.n_stages],
@@ -537,7 +501,6 @@ impl ResolvedBounds {
     /// use novomodelo_core::resolved::{
     ///     BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, HydroBlockBounds, HydroStageBounds,
     ///     LineBlockBounds, PumpingBlockBounds, ResolvedBounds, ThermalBlockBounds,
-    ///     ThermalStageBounds,
     /// };
     ///
     /// let bounds = ResolvedBounds::new(
@@ -557,8 +520,7 @@ impl ResolvedBounds {
     ///             min_diversion_m3s: None, max_diversion_m3s: None,
     ///             min_spillage_m3s: None, max_spillage_m3s: None,
     ///         },
-    ///         thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
-    ///         thermal_block: ThermalBlockBounds { min_generation_mw: 0.0, max_generation_mw: 0.0 },
+    ///         thermal_block: ThermalBlockBounds { min_generation_mw: 0.0, max_generation_mw: 0.0, cost_per_mwh: 0.0 },
     ///         line_block: LineBlockBounds { direct_mw: 0.0, reverse_mw: 0.0 },
     ///         pumping_block: PumpingBlockBounds { min_flow_m3s: 0.0, max_flow_m3s: 0.0 },
     ///         contract_block: ContractBlockBounds { min_mw: 0.0, max_mw: 0.0, price_per_mwh: 0.0 },
@@ -583,71 +545,6 @@ impl ResolvedBounds {
             "thermal_stage_axis_len must be > 0 when the thermal table is non-empty"
         );
         thermal_index * self.thermal_stage_axis_len + stage_index
-    }
-
-    /// Return the resolved cost bounds for a thermal unit at a specific stage.
-    ///
-    /// `stage_index` is valid in `[0, thermal_stage_axis_len())`; indices
-    /// `>= n_stages()` access the padded delivery-stage region.
-    ///
-    /// [`ThermalStageBounds`] carries `cost_per_mwh` only; the block-eligible
-    /// generation capacity lives on [`ThermalBlockBounds`], read through
-    /// [`thermal_bounds_at_block`](Self::thermal_bounds_at_block) or
-    /// [`thermal_block_base`](Self::thermal_block_base):
-    ///
-    /// ```compile_fail
-    /// use novomodelo_core::ResolvedBounds;
-    ///
-    /// let bounds = ResolvedBounds::empty();
-    /// let _ = bounds.thermal_bounds(0, 0).max_generation_mw;
-    /// ```
-    ///
-    /// The sibling below differs only in the accessor — it reads the same
-    /// capacity pair through [`thermal_bounds_at_block`](Self::thermal_bounds_at_block)
-    /// and compiles:
-    ///
-    /// ```
-    /// use novomodelo_core::resolved::{
-    ///     BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, HydroBlockBounds, HydroStageBounds,
-    ///     LineBlockBounds, PumpingBlockBounds, ResolvedBounds, ThermalBlockBounds,
-    ///     ThermalStageBounds,
-    /// };
-    ///
-    /// let hydro_default = HydroStageBounds {
-    ///     min_storage_hm3: 0.0, max_storage_hm3: 0.0,
-    ///     filling_min_rate_m3s: 0.0, water_withdrawal_m3s: 0.0,
-    /// };
-    /// let hydro_block_default = HydroBlockBounds {
-    ///     min_turbined_m3s: 0.0, max_turbined_m3s: 0.0,
-    ///     min_outflow_m3s: 0.0, max_outflow_m3s: None,
-    ///     min_generation_mw: 0.0, max_generation_mw: 0.0,
-    ///     min_diversion_m3s: None, max_diversion_m3s: None,
-    ///     min_spillage_m3s: None, max_spillage_m3s: None,
-    /// };
-    ///
-    /// let bounds = ResolvedBounds::new(
-    ///     &BoundsCountsSpec {
-    ///         n_hydros: 0, n_thermals: 1, n_lines: 0, n_pumping: 0, n_contracts: 0,
-    ///         n_stages: 1, k_max: 0,
-    ///     },
-    ///     &BoundsDefaults {
-    ///         hydro: hydro_default,
-    ///         hydro_block: hydro_block_default,
-    ///         thermal: ThermalStageBounds { cost_per_mwh: 50.0 },
-    ///         thermal_block: ThermalBlockBounds { min_generation_mw: 0.0, max_generation_mw: 400.0 },
-    ///         line_block: LineBlockBounds { direct_mw: 0.0, reverse_mw: 0.0 },
-    ///         pumping_block: PumpingBlockBounds { min_flow_m3s: 0.0, max_flow_m3s: 0.0 },
-    ///         contract_block: ContractBlockBounds { min_mw: 0.0, max_mw: 0.0, price_per_mwh: 0.0 },
-    ///     },
-    /// );
-    ///
-    /// let block = bounds.thermal_bounds_at_block(0, 0, 0);
-    /// assert!((block.max_generation_mw - 400.0).abs() < f64::EPSILON);
-    /// ```
-    #[inline]
-    #[must_use]
-    pub fn thermal_bounds(&self, thermal_index: usize, stage_index: usize) -> ThermalStageBounds {
-        self.thermal[self.thermal_cell_index(thermal_index, stage_index)].stage
     }
 
     /// Return a mutable reference to the hydro stage-level bounds cell for
@@ -675,20 +572,6 @@ impl ResolvedBounds {
         &mut self.hydro[idx].block
     }
 
-    /// Return a mutable reference to the thermal cost cell for in-place update.
-    ///
-    /// `stage_index` is valid in `[0, thermal_stage_axis_len())`; indices
-    /// `>= n_stages()` write into the padded delivery-stage region.
-    #[inline]
-    pub fn thermal_bounds_mut(
-        &mut self,
-        thermal_index: usize,
-        stage_index: usize,
-    ) -> &mut ThermalStageBounds {
-        let idx = self.thermal_cell_index(thermal_index, stage_index);
-        &mut self.thermal[idx].stage
-    }
-
     /// Return a mutable reference to the thermal block-base cell for in-place
     /// update; see [`thermal_block_base`](Self::thermal_block_base) for the
     /// overlay-ignoring read this writes through to.
@@ -702,7 +585,7 @@ impl ResolvedBounds {
         stage_index: usize,
     ) -> &mut ThermalBlockBounds {
         let idx = self.thermal_cell_index(thermal_index, stage_index);
-        &mut self.thermal[idx].block
+        &mut self.thermal[idx]
     }
 
     /// Return a mutable reference to the line bounds cell for in-place update.
@@ -815,10 +698,63 @@ impl ResolvedBounds {
         }
     }
 
-    /// Return the resolved thermal generation bounds for a specific block; see
+    /// Return the resolved thermal bounds and cost for a specific block; see
     /// [`hydro_bounds_at_block`](Self::hydro_bounds_at_block) for the overlay
-    /// contract. Thermal cost has no overlay column and no per-block reader —
-    /// read it stage-level via [`thermal_bounds`](Self::thermal_bounds).
+    /// contract. Every column (minimum generation, maximum generation and cost)
+    /// takes the overlay's value when `Some` and otherwise falls through to the
+    /// base value, independently of the other columns.
+    ///
+    /// Thermals have no stage-level accessor — there is no `thermal_bounds`
+    /// accessor to call. Read bounds and cost through this accessor or
+    /// [`thermal_block_base`](Self::thermal_block_base):
+    ///
+    /// ```compile_fail
+    /// use novomodelo_core::ResolvedBounds;
+    ///
+    /// let bounds = ResolvedBounds::empty();
+    /// let _ = bounds.thermal_bounds(0, 0).cost_per_mwh;
+    /// ```
+    ///
+    /// The sibling below differs only in the accessor — it reads the same cost
+    /// through this method and compiles:
+    ///
+    /// ```
+    /// use novomodelo_core::resolved::{
+    ///     BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, HydroBlockBounds, HydroStageBounds,
+    ///     LineBlockBounds, PumpingBlockBounds, ResolvedBounds, ThermalBlockBounds,
+    /// };
+    ///
+    /// let hydro_default = HydroStageBounds {
+    ///     min_storage_hm3: 0.0, max_storage_hm3: 0.0,
+    ///     filling_min_rate_m3s: 0.0, water_withdrawal_m3s: 0.0,
+    /// };
+    /// let hydro_block_default = HydroBlockBounds {
+    ///     min_turbined_m3s: 0.0, max_turbined_m3s: 0.0,
+    ///     min_outflow_m3s: 0.0, max_outflow_m3s: None,
+    ///     min_generation_mw: 0.0, max_generation_mw: 0.0,
+    ///     min_diversion_m3s: None, max_diversion_m3s: None,
+    ///     min_spillage_m3s: None, max_spillage_m3s: None,
+    /// };
+    ///
+    /// let bounds = ResolvedBounds::new(
+    ///     &BoundsCountsSpec {
+    ///         n_hydros: 0, n_thermals: 1, n_lines: 0, n_pumping: 0, n_contracts: 0,
+    ///         n_stages: 1, k_max: 0,
+    ///     },
+    ///     &BoundsDefaults {
+    ///         hydro: hydro_default,
+    ///         hydro_block: hydro_block_default,
+    ///         thermal_block: ThermalBlockBounds { min_generation_mw: 0.0, max_generation_mw: 400.0, cost_per_mwh: 50.0 },
+    ///         line_block: LineBlockBounds { direct_mw: 0.0, reverse_mw: 0.0 },
+    ///         pumping_block: PumpingBlockBounds { min_flow_m3s: 0.0, max_flow_m3s: 0.0 },
+    ///         contract_block: ContractBlockBounds { min_mw: 0.0, max_mw: 0.0, price_per_mwh: 0.0 },
+    ///     },
+    /// );
+    ///
+    /// let block = bounds.thermal_bounds_at_block(0, 0, 0);
+    /// assert!((block.max_generation_mw - 400.0).abs() < f64::EPSILON);
+    /// assert_eq!(block.cost_per_mwh.to_bits(), 50.0_f64.to_bits());
+    /// ```
     #[inline]
     #[must_use]
     pub fn thermal_bounds_at_block(
@@ -827,13 +763,14 @@ impl ResolvedBounds {
         stage_index: usize,
         block_index: usize,
     ) -> ThermalBlockBounds {
-        let cell = self.thermal[self.thermal_cell_index(thermal_index, stage_index)].block;
+        let cell = self.thermal[self.thermal_cell_index(thermal_index, stage_index)];
         let over = self
             .block
             .thermal_override(thermal_index, stage_index, block_index);
         ThermalBlockBounds {
             min_generation_mw: over.min_generation_mw.unwrap_or(cell.min_generation_mw),
             max_generation_mw: over.max_generation_mw.unwrap_or(cell.max_generation_mw),
+            cost_per_mwh: over.cost_per_mwh.unwrap_or(cell.cost_per_mwh),
         }
     }
 
@@ -858,7 +795,6 @@ impl ResolvedBounds {
     /// use novomodelo_core::resolved::{
     ///     BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, HydroBlockBounds, HydroStageBounds,
     ///     LineBlockBounds, PumpingBlockBounds, ResolvedBounds, ThermalBlockBounds,
-    ///     ThermalStageBounds,
     /// };
     ///
     /// let hydro_default = HydroStageBounds {
@@ -881,8 +817,7 @@ impl ResolvedBounds {
     ///     &BoundsDefaults {
     ///         hydro: hydro_default,
     ///         hydro_block: hydro_block_default,
-    ///         thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
-    ///         thermal_block: ThermalBlockBounds { min_generation_mw: 0.0, max_generation_mw: 0.0 },
+    ///         thermal_block: ThermalBlockBounds { min_generation_mw: 0.0, max_generation_mw: 0.0, cost_per_mwh: 0.0 },
     ///         line_block: LineBlockBounds { direct_mw: 1000.0, reverse_mw: 800.0 },
     ///         pumping_block: PumpingBlockBounds { min_flow_m3s: 0.0, max_flow_m3s: 0.0 },
     ///         contract_block: ContractBlockBounds { min_mw: 0.0, max_mw: 0.0, price_per_mwh: 0.0 },
@@ -931,7 +866,6 @@ impl ResolvedBounds {
     /// use novomodelo_core::resolved::{
     ///     BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, HydroBlockBounds, HydroStageBounds,
     ///     LineBlockBounds, PumpingBlockBounds, ResolvedBounds, ThermalBlockBounds,
-    ///     ThermalStageBounds,
     /// };
     ///
     /// let hydro_default = HydroStageBounds {
@@ -954,8 +888,7 @@ impl ResolvedBounds {
     ///     &BoundsDefaults {
     ///         hydro: hydro_default,
     ///         hydro_block: hydro_block_default,
-    ///         thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
-    ///         thermal_block: ThermalBlockBounds { min_generation_mw: 0.0, max_generation_mw: 0.0 },
+    ///         thermal_block: ThermalBlockBounds { min_generation_mw: 0.0, max_generation_mw: 0.0, cost_per_mwh: 0.0 },
     ///         line_block: LineBlockBounds { direct_mw: 0.0, reverse_mw: 0.0 },
     ///         pumping_block: PumpingBlockBounds { min_flow_m3s: 0.0, max_flow_m3s: 50.0 },
     ///         contract_block: ContractBlockBounds { min_mw: 0.0, max_mw: 0.0, price_per_mwh: 0.0 },
@@ -985,9 +918,7 @@ impl ResolvedBounds {
 
     /// Return the resolved contract bounds for a specific block; see
     /// [`hydro_bounds_at_block`](Self::hydro_bounds_at_block) for the overlay
-    /// contract. `price_per_mwh` IS block-eligible, deliberately asymmetric
-    /// with [`thermal_bounds_at_block`](Self::thermal_bounds_at_block)'s
-    /// `cost_per_mwh`.
+    /// contract.
     ///
     /// Contracts have no stage-level bound column — there is no
     /// `contract_bounds` accessor to call. Read all three columns through this
@@ -1007,7 +938,6 @@ impl ResolvedBounds {
     /// use novomodelo_core::resolved::{
     ///     BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, HydroBlockBounds, HydroStageBounds,
     ///     LineBlockBounds, PumpingBlockBounds, ResolvedBounds, ThermalBlockBounds,
-    ///     ThermalStageBounds,
     /// };
     ///
     /// let hydro_default = HydroStageBounds {
@@ -1030,8 +960,7 @@ impl ResolvedBounds {
     ///     &BoundsDefaults {
     ///         hydro: hydro_default,
     ///         hydro_block: hydro_block_default,
-    ///         thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
-    ///         thermal_block: ThermalBlockBounds { min_generation_mw: 0.0, max_generation_mw: 0.0 },
+    ///         thermal_block: ThermalBlockBounds { min_generation_mw: 0.0, max_generation_mw: 0.0, cost_per_mwh: 0.0 },
     ///         line_block: LineBlockBounds { direct_mw: 0.0, reverse_mw: 0.0 },
     ///         pumping_block: PumpingBlockBounds { min_flow_m3s: 0.0, max_flow_m3s: 0.0 },
     ///         contract_block: ContractBlockBounds { min_mw: 0.0, max_mw: 0.0, price_per_mwh: 80.0 },
@@ -1072,7 +1001,7 @@ impl ResolvedBounds {
         self.hydro[self.cell_index(hydro_index, stage_index)].block
     }
 
-    /// Return the block-eligible thermal columns at `(thermal_index,
+    /// Return the block-eligible thermal bounds and cost at `(thermal_index,
     /// stage_index)`, ignoring the per-block overlay. This is **not** the value
     /// that applies at a block — see
     /// [`thermal_bounds_at_block`](Self::thermal_bounds_at_block) for the
@@ -1094,7 +1023,7 @@ impl ResolvedBounds {
         thermal_index: usize,
         stage_index: usize,
     ) -> ThermalBlockBounds {
-        self.thermal[self.thermal_cell_index(thermal_index, stage_index)].block
+        self.thermal[self.thermal_cell_index(thermal_index, stage_index)]
     }
 
     /// Return the block-eligible line columns at `(line_index, stage_index)`,
@@ -1209,7 +1138,7 @@ mod tests {
     use super::{
         BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, HydroBlockBounds, HydroStageBounds,
         LineBlockBounds, PumpingBlockBounds, ResolvedBlockBounds, ResolvedBounds,
-        ThermalBlockBounds, ThermalStageBounds,
+        ThermalBlockBounds,
     };
     use crate::test_support::{f64_bits_eq, opt_f64_bits_eq};
 
@@ -1235,10 +1164,10 @@ mod tests {
     fn test_all_bound_structs_are_copy() {
         let hb = make_hydro_bounds();
         let hydro_block = make_hydro_block_bounds();
-        let cost_bounds = ThermalStageBounds { cost_per_mwh: 50.0 };
         let gen_bounds = ThermalBlockBounds {
             min_generation_mw: 0.0,
             max_generation_mw: 100.0,
+            cost_per_mwh: 50.0,
         };
         let lb = LineBlockBounds {
             direct_mw: 500.0,
@@ -1256,14 +1185,12 @@ mod tests {
 
         let hb2 = hb;
         let hydro_block2 = hydro_block;
-        let cost_bounds_copy = cost_bounds;
         let gen_bounds_copy = gen_bounds;
         let lb2 = lb;
         let pb2 = pb;
         let cb2 = cb;
         assert_eq!(hb, hb2);
         assert_eq!(hydro_block, hydro_block2);
-        assert_eq!(cost_bounds, cost_bounds_copy);
         assert_eq!(gen_bounds, gen_bounds_copy);
         assert_eq!(lb, lb2);
         assert_eq!(pb, pb2);
@@ -1274,10 +1201,10 @@ mod tests {
     fn test_resolved_bounds_construction() {
         let hb = make_hydro_bounds();
         let hbl = make_hydro_block_bounds();
-        let tb = ThermalStageBounds { cost_per_mwh: 0.0 };
         let tbb = ThermalBlockBounds {
             min_generation_mw: 50.0,
             max_generation_mw: 400.0,
+            cost_per_mwh: 0.0,
         };
         let lb = LineBlockBounds {
             direct_mw: 1000.0,
@@ -1306,7 +1233,6 @@ mod tests {
             &BoundsDefaults {
                 hydro: hb,
                 hydro_block: hbl,
-                thermal: tb,
                 thermal_block: tbb,
                 line_block: lb,
                 pumping_block: pb,
@@ -1335,10 +1261,10 @@ mod tests {
     fn test_resolved_bounds_mutable_update() {
         let hb = make_hydro_bounds();
         let hbl = make_hydro_block_bounds();
-        let tb = ThermalStageBounds { cost_per_mwh: 0.0 };
         let tbb = ThermalBlockBounds {
             min_generation_mw: 0.0,
             max_generation_mw: 200.0,
+            cost_per_mwh: 0.0,
         };
         let lb = LineBlockBounds {
             direct_mw: 500.0,
@@ -1367,7 +1293,6 @@ mod tests {
             &BoundsDefaults {
                 hydro: hb,
                 hydro_block: hbl,
-                thermal: tb,
                 thermal_block: tbb,
                 line_block: lb,
                 pumping_block: pb,
@@ -1394,6 +1319,7 @@ mod tests {
         let tbb = ThermalBlockBounds {
             min_generation_mw: 0.0,
             max_generation_mw: 100.0,
+            cost_per_mwh: 0.0,
         };
         let table = ResolvedBounds::new(
             &BoundsCountsSpec {
@@ -1420,6 +1346,7 @@ mod tests {
         let tbb = ThermalBlockBounds {
             min_generation_mw: 0.0,
             max_generation_mw: 50.0,
+            cost_per_mwh: 0.0,
         };
         let table = ResolvedBounds::new(
             &BoundsCountsSpec {
@@ -1478,22 +1405,22 @@ mod tests {
 
     // ─── Thermal-bounds padding boundary tests ───────────────────────────────
     //
-    // This module verifies only the uniform `BoundsDefaults.thermal` fill; the
+    // This module verifies only the uniform `BoundsDefaults.thermal_block` fill; the
     // per-thermal base-fill semantics are owned by `novomodelo-io`'s resolution tests,
     // which construct `Thermal` entities.
 
     /// Sentinel defaults used by the thermal-padding boundary tests. Values are
     /// picked so an off-by-one read returns a value that does not collide with
     /// any plausible production default.
-    const T_DEFAULT: ThermalStageBounds = ThermalStageBounds { cost_per_mwh: 7.7 };
     const T_BLOCK_DEFAULT: ThermalBlockBounds = ThermalBlockBounds {
         min_generation_mw: 7.0,
         max_generation_mw: 77.0,
+        cost_per_mwh: 7.7,
     };
 
     /// Construct a `ResolvedBounds` with one thermal entity, the given
-    /// `n_stages` / `k_max`, and `T_DEFAULT`/`T_BLOCK_DEFAULT` as the thermal
-    /// defaults. Other entity types are zero-sized.
+    /// `n_stages` / `k_max`, and `T_BLOCK_DEFAULT` as the thermal
+    /// default. Other entity types are zero-sized.
     fn make_bounds_for_boundary_tests(n_stages: usize, k_max: usize) -> ResolvedBounds {
         ResolvedBounds::new(
             &BoundsCountsSpec {
@@ -1506,31 +1433,29 @@ mod tests {
                 k_max,
             },
             &BoundsDefaults {
-                thermal: T_DEFAULT,
                 thermal_block: T_BLOCK_DEFAULT,
                 ..zero_defaults()
             },
         )
     }
 
-    /// `T - 1`: writing a distinctive value via `thermal_bounds_mut` at the
-    /// last study stage and reading it back via `thermal_bounds` must return
-    /// the written value — the padding region must not shadow study stages.
+    /// `T - 1`: writing a distinctive value via `thermal_block_base_mut` at the
+    /// last study stage and reading it back via `thermal_block_base` must
+    /// return the written value — the padding region must not shadow study
+    /// stages.
     #[test]
     fn test_thermal_bounds_at_last_study_stage() {
         let mut table = make_bounds_for_boundary_tests(5, 3);
-        let written_stage = ThermalStageBounds { cost_per_mwh: 1.1 };
         let written_block = ThermalBlockBounds {
             min_generation_mw: 11.0,
             max_generation_mw: 111.0,
+            cost_per_mwh: 1.1,
         };
-        *table.thermal_bounds_mut(0, 4) = written_stage;
         *table.thermal_block_base_mut(0, 4) = written_block;
-        let read = table.thermal_bounds(0, 4);
         let read_block = table.thermal_block_base(0, 4);
         assert!((read_block.min_generation_mw - 11.0).abs() < f64::EPSILON);
         assert!((read_block.max_generation_mw - 111.0).abs() < f64::EPSILON);
-        assert!((read.cost_per_mwh - 1.1).abs() < f64::EPSILON);
+        assert!((read_block.cost_per_mwh - 1.1).abs() < f64::EPSILON);
     }
 
     /// `T`: the first padded stage must contain the uniform thermal default
@@ -1546,9 +1471,7 @@ mod tests {
         assert!(
             (padded.max_generation_mw - T_BLOCK_DEFAULT.max_generation_mw).abs() < f64::EPSILON
         );
-        assert!(
-            (table.thermal_bounds(0, 5).cost_per_mwh - T_DEFAULT.cost_per_mwh).abs() < f64::EPSILON
-        );
+        assert!((padded.cost_per_mwh - T_BLOCK_DEFAULT.cost_per_mwh).abs() < f64::EPSILON);
     }
 
     /// `T + K_max - 1`: the last padded stage must still return the uniform
@@ -1563,24 +1486,22 @@ mod tests {
         assert!(
             (padded.max_generation_mw - T_BLOCK_DEFAULT.max_generation_mw).abs() < f64::EPSILON
         );
-        assert!(
-            (table.thermal_bounds(0, 7).cost_per_mwh - T_DEFAULT.cost_per_mwh).abs() < f64::EPSILON
-        );
+        assert!((padded.cost_per_mwh - T_BLOCK_DEFAULT.cost_per_mwh).abs() < f64::EPSILON);
     }
 
     /// `T + K_max`: one past the padding region must panic in debug builds.
     /// Gated by `#[cfg(debug_assertions)]` because release builds may silently
-    /// read adjacent memory via `Vec` indexing (see `thermal_bounds` docs).
+    /// read adjacent memory via `Vec` indexing.
     #[test]
     #[cfg(debug_assertions)]
-    fn test_thermal_bounds_out_of_range_panics_in_debug() {
+    fn test_thermal_block_base_out_of_range_panics_in_debug() {
         let table = make_bounds_for_boundary_tests(5, 3);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _ = table.thermal_bounds(0, 8);
+            let _ = table.thermal_block_base(0, 8);
         }));
         assert!(
             result.is_err(),
-            "thermal_bounds(0, 8) must panic in debug builds when n_stages=5, k_max=3"
+            "thermal_block_base(0, 8) must panic in debug builds when n_stages=5, k_max=3"
         );
     }
 
@@ -1607,8 +1528,7 @@ mod tests {
     /// `(n_stages, k_max, n_thermals)` configurations.
     mod bounds_padding_invariants {
         use super::{
-            BoundsCountsSpec, BoundsDefaults, ResolvedBounds, T_BLOCK_DEFAULT, T_DEFAULT,
-            zero_defaults,
+            BoundsCountsSpec, BoundsDefaults, ResolvedBounds, T_BLOCK_DEFAULT, zero_defaults,
         };
 
         #[test]
@@ -1635,7 +1555,6 @@ mod tests {
                                 k_max,
                             },
                             &BoundsDefaults {
-                                thermal: T_DEFAULT,
                                 thermal_block: T_BLOCK_DEFAULT,
                                 ..zero_defaults()
                             },
@@ -1673,10 +1592,10 @@ mod tests {
                 water_withdrawal_m3s: 0.0,
             },
             hydro_block: HydroBlockBounds::default(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -1738,10 +1657,10 @@ mod tests {
     fn test_resolved_bounds_serde_roundtrip() {
         let hb = make_hydro_bounds();
         let hbl = make_hydro_block_bounds();
-        let tb = ThermalStageBounds { cost_per_mwh: 0.0 };
         let tbb = ThermalBlockBounds {
             min_generation_mw: 0.0,
             max_generation_mw: 100.0,
+            cost_per_mwh: 0.0,
         };
         let lb = LineBlockBounds {
             direct_mw: 500.0,
@@ -1770,7 +1689,6 @@ mod tests {
             &BoundsDefaults {
                 hydro: hb,
                 hydro_block: hbl,
-                thermal: tb,
                 thermal_block: tbb,
                 line_block: lb,
                 pumping_block: pb,
@@ -1792,10 +1710,10 @@ mod tests {
     fn test_resolved_bounds_serde_roundtrip_with_padding() {
         let hb = make_hydro_bounds();
         let hbl = make_hydro_block_bounds();
-        let tb = ThermalStageBounds { cost_per_mwh: 60.0 };
         let tbb = ThermalBlockBounds {
             min_generation_mw: 0.0,
             max_generation_mw: 200.0,
+            cost_per_mwh: 60.0,
         };
         let lb = LineBlockBounds {
             direct_mw: 50.0,
@@ -1824,7 +1742,6 @@ mod tests {
             &BoundsDefaults {
                 hydro: hb,
                 hydro_block: hbl,
-                thermal: tb,
                 thermal_block: tbb,
                 line_block: lb,
                 pumping_block: pb,
@@ -1852,7 +1769,7 @@ mod tests {
         let json = r#"{
             "n_stages": 1,
             "hydro": [],
-            "thermal": [{"stage": {"cost_per_mwh": 50.0}, "block": {"min_generation_mw": 0.0, "max_generation_mw": 100.0}}],
+            "thermal": [{"min_generation_mw": 0.0, "max_generation_mw": 100.0, "cost_per_mwh": 50.0}],
             "line": [],
             "pumping": [],
             "contract": []
@@ -1874,7 +1791,7 @@ mod tests {
             "n_stages": 1,
             "thermal_stage_axis_len": 0,
             "hydro": [],
-            "thermal": [{"stage": {"cost_per_mwh": 50.0}, "block": {"min_generation_mw": 0.0, "max_generation_mw": 100.0}}],
+            "thermal": [{"min_generation_mw": 0.0, "max_generation_mw": 100.0, "cost_per_mwh": 50.0}],
             "line": [],
             "pumping": [],
             "contract": []
@@ -1974,13 +1891,16 @@ mod tests {
         let ThermalBlockBounds {
             min_generation_mw: a_min_generation_mw,
             max_generation_mw: a_max_generation_mw,
+            cost_per_mwh: a_cost_per_mwh,
         } = a;
         let ThermalBlockBounds {
             min_generation_mw: b_min_generation_mw,
             max_generation_mw: b_max_generation_mw,
+            cost_per_mwh: b_cost_per_mwh,
         } = b;
         f64_bits_eq(*a_min_generation_mw, *b_min_generation_mw)
             && f64_bits_eq(*a_max_generation_mw, *b_max_generation_mw)
+            && f64_bits_eq(*a_cost_per_mwh, *b_cost_per_mwh)
     }
 
     fn line_bounds_bits_eq(a: &LineBlockBounds, b: &LineBlockBounds) -> bool {
@@ -2082,12 +2002,10 @@ mod tests {
                         None
                     },
                 };
-                *table.thermal_bounds_mut(e, s) = ThermalStageBounds {
-                    cost_per_mwh: base + 3.0,
-                };
                 *table.thermal_block_base_mut(e, s) = ThermalBlockBounds {
                     min_generation_mw: base + 1.0,
                     max_generation_mw: base + 2.0,
+                    cost_per_mwh: base + 3.0,
                 };
                 *table.line_bounds_mut(e, s) = LineBlockBounds {
                     direct_mw: base + 1.0,
@@ -2163,6 +2081,7 @@ mod tests {
         let tbb = ThermalBlockBounds {
             min_generation_mw: 10.0,
             max_generation_mw: 50.0,
+            cost_per_mwh: 0.0,
         };
         let mut table = ResolvedBounds::new(
             &BoundsCountsSpec {
@@ -2214,6 +2133,7 @@ mod tests {
         let tbb = ThermalBlockBounds {
             min_generation_mw: 10.0,
             max_generation_mw: 50.0,
+            cost_per_mwh: 0.0,
         };
         let mut table = ResolvedBounds::new(
             &BoundsCountsSpec {
@@ -2263,6 +2183,101 @@ mod tests {
             base.max_generation_mw.to_bits(),
             at_block_0.max_generation_mw.to_bits(),
             "base and at-block must diverge once a block override is installed"
+        );
+    }
+
+    #[test]
+    fn test_thermal_bounds_at_block_cost_precedence() {
+        let tbb = ThermalBlockBounds {
+            min_generation_mw: 10.0,
+            max_generation_mw: 50.0,
+            cost_per_mwh: 120.0,
+        };
+        let mut table = ResolvedBounds::new(
+            &BoundsCountsSpec {
+                n_hydros: 0,
+                n_thermals: 1,
+                n_lines: 0,
+                n_pumping: 0,
+                n_contracts: 0,
+                n_stages: 2,
+                k_max: 0,
+            },
+            &BoundsDefaults {
+                thermal_block: tbb,
+                ..zero_defaults()
+            },
+        );
+
+        let mut block = ResolvedBlockBounds::new(&BlockBoundsCountsSpec {
+            n_hydros: 0,
+            n_thermals: 1,
+            n_lines: 0,
+            n_pumping: 0,
+            n_contracts: 0,
+            n_stages: 2,
+            max_blocks: 3,
+        });
+        block
+            .thermal_override_mut(0, 1, 0)
+            .expect("in-range override cell")
+            .cost_per_mwh = Some(300.0);
+        block
+            .thermal_override_mut(0, 1, 2)
+            .expect("in-range override cell")
+            .cost_per_mwh = Some(0.0);
+        table.set_block_overlay(block);
+
+        assert_eq!(
+            table
+                .thermal_bounds_at_block(0, 1, 0)
+                .cost_per_mwh
+                .to_bits(),
+            300.0_f64.to_bits(),
+            "a Some override replaces the base cost"
+        );
+        assert_eq!(
+            table
+                .thermal_bounds_at_block(0, 1, 1)
+                .cost_per_mwh
+                .to_bits(),
+            tbb.cost_per_mwh.to_bits(),
+            "a block with no override falls through to the base cost"
+        );
+        let zero_override = table.thermal_bounds_at_block(0, 1, 2).cost_per_mwh;
+        assert_eq!(
+            zero_override.to_bits(),
+            0.0_f64.to_bits(),
+            "an explicit Some(0.0) is a value, not an absence"
+        );
+        assert_ne!(zero_override.to_bits(), tbb.cost_per_mwh.to_bits());
+
+        for b in 0..3 {
+            let at_block = table.thermal_bounds_at_block(0, 1, b);
+            assert_eq!(
+                at_block.min_generation_mw.to_bits(),
+                tbb.min_generation_mw.to_bits(),
+                "a cost override must not move min_generation_mw (block {b})"
+            );
+            assert_eq!(
+                at_block.max_generation_mw.to_bits(),
+                tbb.max_generation_mw.to_bits(),
+                "a cost override must not move max_generation_mw (block {b})"
+            );
+        }
+
+        assert_eq!(
+            table.thermal_block_base(0, 1).cost_per_mwh.to_bits(),
+            tbb.cost_per_mwh.to_bits(),
+            "base must ignore the overlay"
+        );
+        assert_eq!(
+            table
+                .thermal_bounds_at_block(0, 0, 0)
+                .cost_per_mwh
+                .to_bits(),
+            tbb.cost_per_mwh.to_bits(),
+            "an override at one stage must not leak into another"
         );
     }
 
@@ -2559,12 +2574,11 @@ mod tests {
     #[test]
     fn test_thermal_block_base_reads_padded_delivery_stage() {
         let mut table = make_bounds_for_boundary_tests(5, 3);
-        let written_stage = ThermalStageBounds { cost_per_mwh: 2.1 };
         let written_block = ThermalBlockBounds {
             min_generation_mw: 21.0,
             max_generation_mw: 210.0,
+            cost_per_mwh: 2.1,
         };
-        *table.thermal_bounds_mut(0, 6) = written_stage;
         *table.thermal_block_base_mut(0, 6) = written_block;
 
         let base = table.thermal_block_base(0, 6);
@@ -2577,8 +2591,8 @@ mod tests {
             written_block.max_generation_mw.to_bits()
         );
         assert_eq!(
-            table.thermal_bounds(0, 6).cost_per_mwh.to_bits(),
-            written_stage.cost_per_mwh.to_bits()
+            base.cost_per_mwh.to_bits(),
+            written_block.cost_per_mwh.to_bits()
         );
 
         let neighbor = table.thermal_block_base(0, 5);
@@ -2717,10 +2731,10 @@ mod tests {
     fn test_resolved_bounds_wire_round_trip_with_overlay() {
         let hb = make_hydro_bounds();
         let hbl = make_hydro_block_bounds();
-        let tb = ThermalStageBounds { cost_per_mwh: 20.0 };
         let tbb = ThermalBlockBounds {
             min_generation_mw: 0.0,
             max_generation_mw: 100.0,
+            cost_per_mwh: 20.0,
         };
         let lb = LineBlockBounds {
             direct_mw: 500.0,
@@ -2749,7 +2763,6 @@ mod tests {
             &BoundsDefaults {
                 hydro: hb,
                 hydro_block: hbl,
-                thermal: tb,
                 thermal_block: tbb,
                 line_block: lb,
                 pumping_block: pb,
@@ -2770,6 +2783,10 @@ mod tests {
             .thermal_override_mut(0, 0, 0)
             .expect("in-range override cell")
             .max_generation_mw = Some(75.0);
+        block
+            .thermal_override_mut(0, 0, 1)
+            .expect("in-range override cell")
+            .cost_per_mwh = Some(42.5);
         original.set_block_overlay(block);
 
         let json = serde_json::to_string(&original).expect("serialize json");
@@ -2780,6 +2797,13 @@ mod tests {
         let restored_postcard: ResolvedBounds =
             postcard::from_bytes(&bytes).expect("deserialize postcard");
         assert_eq!(original, restored_postcard);
+        assert_eq!(
+            restored_postcard
+                .thermal_bounds_at_block(0, 0, 1)
+                .cost_per_mwh
+                .to_bits(),
+            42.5_f64.to_bits()
+        );
     }
 
     #[cfg(feature = "serde")]

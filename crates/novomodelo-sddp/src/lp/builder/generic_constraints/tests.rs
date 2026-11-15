@@ -31,7 +31,7 @@ use novomodelo_core::{
     EntityId, GenericConstraint, Hydro, HydroBlockBounds, HydroStageBounds, Line, LineBlockBounds,
     LinearTerm, NoiseMethod, PumpingBlockBounds, PumpingStation, ResolvedBounds,
     ResolvedGenericConstraintBounds, ScenarioSourceConfig, Stage, StageRiskConfig,
-    StageStateConfig, Thermal, ThermalBlockBounds, ThermalStageBounds, VariableRef,
+    StageStateConfig, Thermal, ThermalBlockBounds, VariableRef,
 };
 
 // ── Test helpers ──────────────────────────────────────────────────────────
@@ -123,10 +123,10 @@ impl ResolverFixture {
                     water_withdrawal_m3s: 0.0,
                 },
                 hydro_block: HydroBlockBounds::default(),
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -444,7 +444,7 @@ fn call_with_inflow(
     layout: &StageLayout<'_>,
 ) -> (Entries, Entries) {
     let mut inflow = Vec::new();
-    let columns = resolve_variable_ref(&var_ref, block_idx, 0, ctx, layout, &mut inflow);
+    let columns = resolve_variable_ref(&var_ref, block_idx, 0, 0, ctx, layout, &mut inflow);
     (inflow, columns)
 }
 
@@ -586,6 +586,38 @@ fn hydro_outflow_expands_to_turbine_and_spillage() {
     assert_eq!(result[1], (spillage_col, 1.0));
 }
 
+/// derived: tau = 744 h * 3600 s/h / 1e6 m³/hm³
+#[test]
+fn hydro_outflow_volume_resolves_tau_weighted_turbine_and_spillage_on_every_block() {
+    let mut fx = default_fixture();
+    let ctx = fx.base.ctx();
+    let layout = StageLayout::new(&ctx, &fx.stage, 0);
+    let tau = 744.0 * (3_600.0 / 1_000_000.0);
+    let t0 = layout.geometry.turbine.start + 3 * 3;
+    let s0 = layout.geometry.spillage.start + 3 * 3;
+
+    let result = call(
+        VariableRef::HydroOutflowVolume {
+            hydro_id: EntityId(40),
+        },
+        1, // block_idx, ignored
+        &ctx,
+        &layout,
+    );
+
+    assert_eq!(
+        result,
+        vec![
+            (t0, tau),
+            (s0, tau),
+            (t0 + 1, tau),
+            (s0 + 1, tau),
+            (t0 + 2, tau),
+            (s0 + 2, tau)
+        ]
+    );
+}
+
 #[test]
 fn hydro_outflow_block_id_some_uses_explicit_block() {
     let mut fx = default_fixture();
@@ -604,6 +636,184 @@ fn hydro_outflow_block_id_some_uses_explicit_block() {
 
     // hydro pos=0, turbine.start=9, spillage.start=21, block=1, n_blks=3
     assert_eq!(result, vec![(9 + 0 * 3 + 1, 1.0), (21 + 0 * 3 + 1, 1.0)]);
+}
+
+// ── Stage-volume tests ────────────────────────────────────────────────────
+
+/// Gives the stage's three blocks unequal hours and returns each block's `tau`.
+///
+/// derived: tau_k = h_k * 3600 s/h / 1e6 m³/hm³
+fn set_unequal_block_hours(fx: &mut ResolverFixture) -> [f64; 3] {
+    let hours = [100.0, 300.0, 344.0];
+    for (block, h) in fx.stage.blocks.iter_mut().zip(hours) {
+        block.duration_hours = h;
+    }
+    hours.map(|h| h * (3_600.0 / 1_000_000.0))
+}
+
+#[test]
+fn hydro_outflow_volume_weights_each_block_by_its_own_hours() {
+    let mut fx = default_fixture();
+    let [tau0, tau1, tau2] = set_unequal_block_hours(&mut fx);
+    let ctx = fx.base.ctx();
+    let layout = StageLayout::new(&ctx, &fx.stage, 0);
+    let t0 = layout.geometry.turbine.start + 3 * 3;
+    let s0 = layout.geometry.spillage.start + 3 * 3;
+
+    let result = call(
+        VariableRef::HydroOutflowVolume {
+            hydro_id: EntityId(40),
+        },
+        0,
+        &ctx,
+        &layout,
+    );
+
+    assert_eq!(
+        result,
+        vec![
+            (t0, tau0),
+            (s0, tau0),
+            (t0 + 1, tau1),
+            (s0 + 1, tau1),
+            (t0 + 2, tau2),
+            (s0 + 2, tau2)
+        ]
+    );
+}
+
+#[test]
+fn hydro_diversion_volume_weights_each_block_by_its_own_hours() {
+    let mut fx = default_fixture();
+    let [tau0, tau1, tau2] = set_unequal_block_hours(&mut fx);
+    let ctx = fx.base.ctx();
+    let layout = StageLayout::new(&ctx, &fx.stage, 0);
+    let d0 = layout.geometry.diversion.start + 3;
+
+    let result = call(
+        VariableRef::HydroDiversionVolume {
+            hydro_id: EntityId(20),
+        },
+        0,
+        &ctx,
+        &layout,
+    );
+
+    assert_eq!(result, vec![(d0, tau0), (d0 + 1, tau1), (d0 + 2, tau2)]);
+}
+
+#[test]
+fn pumping_volume_weights_each_block_by_its_own_hours() {
+    let mut fx = default_fixture();
+    let [tau0, tau1, tau2] = set_unequal_block_hours(&mut fx);
+    let ctx = fx.base.ctx();
+    let layout = StageLayout::new(&ctx, &fx.stage, 0);
+    let p0 = layout.geometry.pumping_flow.start;
+
+    let result = call(
+        VariableRef::PumpingVolume {
+            station_id: EntityId(20),
+        },
+        0,
+        &ctx,
+        &layout,
+    );
+
+    assert_eq!(result, vec![(p0 + 3, tau0), (p0 + 4, tau1), (p0 + 5, tau2)]);
+}
+
+/// derived: a chronological stage reserves `n_hydros * (n_blks - 1)` interior
+/// storage-boundary columns ahead of the turbine family, so every flow column sits
+/// that many columns above its parallel counterpart; weights and order are unchanged.
+#[test]
+fn stage_volume_resolution_ignores_the_block_argument_and_the_block_mode() {
+    let mut parallel = default_fixture();
+    set_unequal_block_hours(&mut parallel);
+    let interior_boundary_columns = parallel.base.hydros.len() * (parallel.stage.blocks.len() - 1);
+    let parallel_ctx = parallel.base.ctx();
+    let parallel_layout = StageLayout::new(&parallel_ctx, &parallel.stage, 0);
+
+    let mut chronological = chronological_default_fixture();
+    set_unequal_block_hours(&mut chronological);
+    let chronological_ctx = chronological.base.ctx();
+    let chronological_layout = StageLayout::new(&chronological_ctx, &chronological.stage, 0);
+
+    let variants = [
+        VariableRef::HydroOutflowVolume {
+            hydro_id: EntityId(40),
+        },
+        VariableRef::HydroDiversionVolume {
+            hydro_id: EntityId(20),
+        },
+        VariableRef::PumpingVolume {
+            station_id: EntityId(20),
+        },
+    ];
+    for variant in variants {
+        let at_block_0 = call(variant, 0, &parallel_ctx, &parallel_layout);
+        let at_block_2 = call(variant, 2, &parallel_ctx, &parallel_layout);
+        let chronological_at_0 = call(variant, 0, &chronological_ctx, &chronological_layout);
+        let parallel_shifted: Vec<(usize, f64)> = at_block_0
+            .iter()
+            .map(|&(col, coeff)| (col + interior_boundary_columns, coeff))
+            .collect();
+
+        assert!(!at_block_0.is_empty(), "{variant:?}");
+        assert_eq!(at_block_0, at_block_2, "{variant:?}");
+        assert_eq!(chronological_at_0, parallel_shifted, "{variant:?}");
+    }
+}
+
+#[test]
+fn stage_volume_variants_are_block_independent() {
+    assert!(variable_ref_is_block_independent(
+        &VariableRef::HydroOutflowVolume {
+            hydro_id: EntityId(40),
+        }
+    ));
+    assert!(variable_ref_is_block_independent(
+        &VariableRef::HydroDiversionVolume {
+            hydro_id: EntityId(20),
+        }
+    ));
+    assert!(variable_ref_is_block_independent(
+        &VariableRef::PumpingVolume {
+            station_id: EntityId(20),
+        }
+    ));
+    assert!(!variable_ref_is_block_independent(
+        &VariableRef::HydroOutflow {
+            hydro_id: EntityId(40),
+            block_id: None,
+        }
+    ));
+}
+
+#[test]
+fn stage_volume_of_an_undeclared_entity_resolves_to_no_columns() {
+    let mut fx = default_fixture();
+    let ctx = fx.base.ctx();
+    let layout = StageLayout::new(&ctx, &fx.stage, 0);
+
+    let outflow = call(
+        VariableRef::HydroOutflowVolume {
+            hydro_id: EntityId(99),
+        },
+        0,
+        &ctx,
+        &layout,
+    );
+    let pumping = call(
+        VariableRef::PumpingVolume {
+            station_id: EntityId(99),
+        },
+        0,
+        &ctx,
+        &layout,
+    );
+
+    assert_eq!(outflow, vec![]);
+    assert_eq!(pumping, vec![]);
 }
 
 // ── HydroGeneration tests ─────────────────────────────────────────────────
@@ -1630,8 +1840,13 @@ fn generic_row_merges_line_exchange_and_line_direct() {
         "a block-dependent expression expands to one generic row per block"
     );
 
-    let fill =
-        fill_generic_constraints_for_test(&ctx, 0, &layout, vec![Vec::new(); layout.num_cols]);
+    let fill = fill_generic_constraints_for_test(
+        &ctx,
+        &fx.stage,
+        0,
+        &layout,
+        vec![Vec::new(); layout.num_cols],
+    );
 
     for blk in 0..n_blks {
         let direct = VariableRef::LineDirect {
@@ -2162,9 +2377,14 @@ fn inflow_coupling_merges_generic_hydro_inflow_terms_on_one_hydro() {
     let layout = StageLayout::new(&ctx, &fx.stage, 0);
     assert_eq!(layout.rows.n_generic_rows, 2);
 
-    let coupling =
-        fill_generic_constraints_for_test(&ctx, 0, &layout, vec![Vec::new(); layout.num_cols])
-            .coupling;
+    let coupling = fill_generic_constraints_for_test(
+        &ctx,
+        &fx.stage,
+        0,
+        &layout,
+        vec![Vec::new(); layout.num_cols],
+    )
+    .coupling;
 
     let target = ctx.positions.hydro(hydro_id).unwrap();
     for h in 0..layout.state.hydro_count {

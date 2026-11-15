@@ -860,7 +860,7 @@ Who checks what:
   and sets its upper bound to 0 only when `truncates()`), so it adds any missing
   water. The truncation methods meet (a) through the bounded inflow slack (the
   truncation section above); `none` does not.
-- `semantic.5a.57` (`check_rising_hard_storage_floor`) warns on (c) under
+- `semantic.5a.67` (`check_rising_hard_storage_floor`) warns on (c) under
   `truncation`, `truncation_with_penalty` and `none`. It leaves a seed stage to
   `semantic.5a.55`, which warns on the seed cases under every method.
 - (b), (d) and (e) are derived from the water-balance row, and
@@ -937,7 +937,11 @@ Inferring it from the row's terms is the wrong-but-compiling alternative. An
 amount can be written with flow terms, for example a volume row built from
 hours-weighted turbined and spilled flow. Adding or removing one term would
 then silently change what the penalty means and rescale the slack price by the
-stage hours, which still compiles and still converges.
+stage hours, which still compiles and still converges. The stage-volume terms
+`hydro_outflow_volume`, `hydro_diversion_volume` and `pumping_volume` are
+another way to write an amount. A row built only from them reads as an amount,
+which makes inferring the basis from the terms more tempting, not less; the
+declared basis still prices it.
 
 Read: `crates/novomodelo-core/src/constraints/generic_constraint.rs`
 (`SlackConfig::unit_cost`, `PenaltyBasis`), `lp/builder/entries.rs`
@@ -948,9 +952,131 @@ Read: `crates/novomodelo-core/src/constraints/generic_constraint.rs`
 720 h and 2160 h stages),
 `per_unit_storage_shortfall_costs_the_same_on_a_week_and_a_month` and
 `per_hour_storage_shortfall_cost_scales_with_stage_hours` (`tests/hydro_sim.rs`,
-reported cost on 168 h and 744 h stages), and
+reported cost on 168 h and 744 h stages),
 `generic_constraint_collapsed_slack_priced_by_total_stage_hours` (a stage-level
-`per_hour` row prices at the total stage hours).
+`per_hour` row prices at the total stage hours),
+`stage_volume_slack_price_follows_the_declared_basis`
+(`tests/template_integration/generic_constraints.rs`, a volume row's objective
+coefficient under both bases), and
+`per_unit_diversion_volume_shortfall_costs_the_same_on_two_block_stages` and
+its twin `per_hour_diversion_volume_shortfall_cost_scales_with_total_stage_hours`
+(`tests/hydro_sim.rs`; a `per_hour` volume row on two-block stages is priced at
+the total stage hours, never a block's hours).
+
+## A stage-volume term is the τ-weighted block sum on one stage-level row
+
+A stage-volume term (`hydro_outflow_volume`, `hydro_diversion_volume`,
+`pumping_volume`) is the stage volume in hm³: `Σ_k τ_k · flow_k` over every
+block of the stage, in ascending block order, on parallel and chronological
+stages alike. τ_k comes only from `BlockClock::tau`
+(`duration_hours * M3S_TO_HM3`). `resolve_stage_volume` multiplies the flow
+counterpart's columns by that τ, so the flow resolvers stay the single owners
+of which columns a flow reads, and no column or row family is added.
+
+The outflow volume reads turbine (every cell) plus spillage and excludes
+diversion: the same flow `hydro_outflow` and both outflow rows bind (see "Both
+outflow rows bind the non-diverted river-remnant flow"). The diversion volume
+reads the diversion column alone. The pumping volume reads the pump's flow
+column at unit multiplier, never the power coefficient. Each volume is what the
+plant or station releases in the stage: never the water arriving from upstream
+and never the travel-time delivery columns.
+
+The stage-volume variants are block-independent
+(`variable_ref_is_block_independent`), so a constraint with a volume term
+materialises as one stage-level row per stage, addressed by a bounds row with a
+null `block_id`. `novomodelo-io` refuses each input that would split that row:
+the expression parser (`build_variable_ref`) refuses a block argument on a
+volume term, and `check_stage_volume_constraints` refuses a per-(stage, block)
+parameter, a bounds row with a block id, and any other term that is not a stage
+amount, which is how a block-dependent flow term would split it.
+`fill_generic_constraint_entries` backs the refusal with a `debug_assert!`. A
+`SystemBuilder` caller that bypasses `novomodelo-io` in a release build gets
+per-block rows, each carrying the whole-stage volume, with no error. That path
+is a gap, registered as DEBT-003 in `DEBT.md` and covered by no test, not a
+guarantee.
+
+Each volume reads the same columns as its flow counterpart, so commissioning
+needs no special case: a `PreFilling` plant's outflow volume is zero (turbine
+and spillage pinned), a `Filling` plant's outflow volume is its spillage only,
+the diversion volume is zero while the diversion columns are pinned, and an
+inactive pumping station's volume is zero (see "Spillage is frozen `[0, 0]`
+during PreFilling"). The generic-constraint echo reports the user's
+coefficient, never τ times it.
+
+The wrong-but-compiling alternatives, and the tests that pin them:
+
+- **Weighting every block by ζ, or by the uniform split ζ/K.** ζ counts each
+  block's flow for the whole stage's hours, and ζ/K gives a long block's flow
+  the weight of a short one's. Both equal τ_k only when every block has the
+  same hours, so on unequal blocks the row bounds the wrong volume. Pinned by
+  `hydro_outflow_volume_weights_each_block_by_its_own_hours`
+  (`lp/builder/generic_constraints/tests.rs`),
+  `stage_volume_collapse_one_row_carries_tau_on_turbine_and_spillage`
+  (`tests/template_integration/generic_constraints.rs`) and
+  `d60_outflow_volume_band_matches_closed_form` (`tests/deterministic.rs`; the
+  unequal-hours closed form moves).
+  `stage_volume_collapse_twin_with_equal_hours_carries_the_uniform_split` and
+  `d60_equal_hours_twin_matches_its_own_closed_form` are controls, not pins:
+  they pass under the uniform split by design.
+- **A second τ derivation** (hours times a locally restated conversion, or a
+  split of ζ). `BlockClock::tau` is the only owner. A derivation that rounds
+  differently fails the bit-exact `*_weights_each_block_by_its_own_hours`
+  comparisons (`lp/builder/generic_constraints/tests.rs`). Some second
+  derivations round identically and pass, which is why the single-owner rule is
+  the contract.
+- **Reading one block only** (a truncated block loop, or the row's
+  `block_idx`). The row then holds one block's volume, not the stage's. Pinned
+  by `stage_volume_resolution_ignores_the_block_argument_and_the_block_mode`
+  (`lp/builder/generic_constraints/tests.rs`) and
+  `stage_volume_outflow_reads_the_frozen_turbines_of_a_filling_plant`
+  (`tests/filling_commissioning.rs`, at a multi-block stage).
+- **Per-block replication**: a volume term on per-block rows, each carrying the
+  whole-stage volume. Each block row then bounds the whole stage, so the
+  tightest block bound governs the stage and a `per_unit` violation is charged
+  once per block row. Pinned by `stage_volume_variants_are_block_independent`
+  (`lp/builder/generic_constraints/tests.rs`),
+  `stage_volume_term_on_a_split_parameter_row_panics_in_debug` and
+  `stage_volume_term_on_a_block_bounds_row_panics_in_debug`
+  (`lp/builder/entries.rs`, debug builds only), and
+  `d60_bounded_volume_constraint_adds_one_stage_level_row_per_bounded_stage`
+  (`tests/deterministic.rs`).
+- **Including diversion in the outflow volume.** The volume then counts water
+  routed to another target, so a cap on the plant's outflow volume also limits
+  its diversion and a floor can be met with diverted water. Pinned by
+  `stage_volume_twin_outflow_volume_excludes_an_open_diversion`
+  (`tests/template_integration/generic_constraints.rs`).
+- **Reading another plant's columns or the upstream arrival.** The row then
+  counts water the plant receives, not what it releases. Pinned by
+  `stage_volume_matrix_rows_read_their_own_plants_columns`
+  (`tests/template_integration/generic_constraints.rs`; on a zero-travel-time
+  cascade the upstream turbine enters the downstream water row, and the
+  downstream volume row still reads only its own plant's columns). The
+  travel-time clause holds by construction: `resolve_stage_volume` reads only
+  the flow resolvers' columns.
+- **The pump's power coefficient instead of its flow column.** The row then
+  sums power scaled by τ, not water. Pinned by
+  `stage_volume_twin_pumping_volume_reads_the_pumping_flow_columns`
+  (`tests/template_integration/generic_constraints.rs`).
+- **Special-casing a commissioning phase or an inactive station.** A volume
+  that forces its own value for a phase can disagree with the column pins its
+  flow counterpart reads. Pinned by
+  `stage_volume_diversion_reads_the_pinned_diversion_columns` and
+  `stage_volume_pumping_reads_the_station_flow_outside_its_window`
+  (`tests/filling_commissioning.rs`).
+- **Echoing τ times the coefficient.** The echo then reports a τ-scaled value
+  instead of the coefficient the user declared. Pinned by
+  `stage_volume_row_echoes_the_user_coefficient_not_tau`
+  (`generic_constraint_echo.rs`) and
+  `d60_echo_carries_the_declared_coefficient_and_shapes`
+  (`tests/deterministic.rs`).
+
+Read: `crates/novomodelo-sddp/src/block_clock.rs` (`BlockClock::tau`),
+`lp/builder/generic_constraints.rs` (`resolve_stage_volume`),
+`lp/builder/layout.rs` (`variable_ref_is_block_independent`),
+`lp/builder/entries.rs` (`fill_generic_constraint_entries`),
+`crates/novomodelo-io/src/validation/semantic/constraints.rs`
+(`check_stage_volume_constraints`), and `docs/design/wire-format-evolution.md`
+(the `VariableRef` tail register, which owns the variants' wire encoding).
 
 ## Hydro-cell aggregation assumes one production map per cell
 
@@ -4326,7 +4452,7 @@ and `newave_boundary_injected_decomp_run_converges`
 `reserve_boundary_inflow_lag_slots`-built source stays sentinel-dated and
 must keep loading.
 
-### Dated forward-family fan-out reconciliation is hour-weighted by the SOURCE interval
+### Dated forward-family fan-out reconciliation is hour-weighted by quantity class: rates by the SOURCE interval, volumes by the TARGET interval
 
 A forward-family slot's identity date is its `[interval_start, interval_end)`
 span, never a single anchor — `HydroInflowLag` is the one family keyed on a
@@ -4335,26 +4461,75 @@ single `reference_date` instead (a past stage, not a delivery target).
 The calendar-`subindex` relaxation the parent section reserves for a date family
 IS this fan-out, and it now covers BOTH forward-dated families —
 `AnticipatedThermalState` and `HydroTransitBucket` — inside `load_boundary_cuts`,
-dispatched through the single `resolve_by_interval_overlap` resolver; there is no
-per-family miss-rule parameter, because both families miss to `Zero` for their own
-expected reason (below). A source study prices its anticipated commitments on a
-monthly delivery calendar and its transit-bucket arrivals on their own per-arc
-arrival calendar; the current study may deliver either on a differently-shaped
-calendar (weekly, monthly, or a differing arc topology). `resolve_by_interval_overlap`
+dispatched through the single `resolve_by_interval_overlap` resolver, which takes
+one `on_source_miss` op. `resolve_target_slot` chooses it per family and the
+resolver returns it only on the `source_index` miss: `AnticipatedThermalState`
+passes `Zero`, `HydroTransitBucket` passes `receiver_storage_fill`. A source
+study prices its anticipated commitments on a monthly delivery calendar and its
+transit-bucket arrivals on their own per-arc arrival calendar; the current
+study may deliver either on a differently-shaped calendar (weekly, monthly, or
+a differing arc topology). `resolve_by_interval_overlap`
 reconciles each target slot `w` against the source intervals `M` of the SAME family
-it overlaps **by real calendar date**, not by subindex: full coverage yields
-`RebindOp::Blend` with per-interval weight `overlap_hours(w, M) / H_M` — divided by
-the **source** interval's hours `H_M`, the conservation identity that makes a
-slot's fanned coefficients sum back to the source's (a covered target slot's coeff
-ratio equals `H_w / H_M`). A target slot straddling into unpriced time yields
-`RebindOp::Renormalize`: the same weights additionally scaled by
-`H_w / Σ_covered overlap`, so the covered intervals' price density replicates
-across the uncovered span instead of deflating the boundary FCF with an implicit
-`0.0` term. No covered interval yields `Zero` — for `AnticipatedThermalState` this
-is usually an in-study delivery (below); for `HydroTransitBucket` this is the
-expected outcome when the source is NEWAVE-shaped and carries no transit arcs at
-all, the same "miss is expected, not incompatible" status the identity join used
-to grant it, now reached through the calendar join instead.
+it overlaps **by real calendar date**, not by subindex. The weight depends on
+the family's `QuantityClass` (`quantity_class` in `policy/reconcile.rs`, an
+exhaustive match with no wildcard arm, so a new `StateFamily` variant must declare
+its class before it compiles). The rule applies to every deck, legacy included.
+It moves a legacy deck's results only when that deck loads a boundary policy whose
+source and target bucket grids differ. The old source-hours weight for volumes is
+replaced, not kept behind a flag.
+
+- **`Rate` (`AnticipatedThermalState`, MW).** Full coverage yields
+  `RebindOp::Blend` with per-interval weight `overlap_hours(w, M) / H_M`, divided
+  by the **source** interval's hours `H_M`. This is the conservation identity that
+  makes a slot's fanned coefficients sum back to the source's: a covered target
+  slot's coeff ratio equals `H_w / H_M`. A source `[Jan 1, Feb 1)` at
+  `beta = -30` split into 14- and 17-day slots gives `-13.548` and `-16.452`, so
+  60 MW committed across both prices `-1,800`, the unsplit term. A target slot
+  straddling into unpriced time yields `RebindOp::Renormalize`: the same weights
+  additionally scaled by `H_w / Σ_covered overlap`.
+- **`Volume` (`HydroTransitBucket`, hm3 in transit).** Full coverage yields
+  `Blend` with weight `overlap_hours(w, M) / H_w`, divided by the **target**
+  slot's own hours, so each target takes the hours-average of the source $/hm3
+  values it overlaps. A target inside one source bucket carries the source
+  coefficient verbatim (weight `1.0`). A source `[Jan 1, Jan 21)` at
+  `beta = -50` $/hm3 read by buckets holding 43.2, 43.2 and 86.4 hm3 prices
+  `-8,640`, the unsplit term; the source-hours weight would give `-3,240`. A
+  straddling target yields `Renormalize` with weight `overlap / Σ_covered overlap`.
+
+Under either class, `Renormalize` extends the covered intervals across the
+uncovered span instead of deflating the boundary FCF with an implicit `0.0` term.
+No covered interval yields `Zero` for `AnticipatedThermalState`; that miss is
+usually an in-study delivery (below).
+
+A `HydroTransitBucket` miss is different. A live target with
+`interval_end > boundary_date` whose receiver has no live source transit
+interval (a source whose transit slots for it are all sentinel included)
+resolves to `RebindOp::FillFromStorage(p)`, `p` being the receiver's source
+`HydroStorage` position found by identity (the `EntitySlot::storage` key). A
+receiver with no source storage keeps `Zero`, counted `default_zero`; there is no
+inflow-lag fallback. The receiver's own coefficient is used whatever its
+operating status. `rebind_cut` reads `cut.coefficients[p]` verbatim from the
+post-rescale record, per cut: the intercept is untouched, there is no sign flip,
+and the value is undiscounted. This is the cut-wise composition of the source
+FCF with `v_h <- v_h + sum_d b_{h,d}`, a documented boundary approximation that
+ignores the arrival delay and the receiver's capacity, and stays a lower bound
+where `beta_v(h) <= 0`. The fill is counted in `FamilyTally::filled_from_storage`
+and listed in `filled_from_storage_slots`; the consumed storage position is
+referenced, so it leaves `dropped_source` and cannot trip
+`policy.boundary.strict`. Wrong-but-compiling alternatives: expressing the fill
+as `Blend(vec![(p, 1.0)])` or `Copy(p)` (misreports the tally); filling a bucket
+whose hydro has source intervals, none overlapping (below); applying it in
+`build_boundary_fold` or before `rescale_cut_records_for_load`; averaging
+storage coefficients across cuts; filling an `AnticipatedThermalState` miss
+from a same-id storage slot; deciding the miss for the whole source (filling
+only when it holds no live bucket for any hydro), which leaves a receiver the
+source has no bucket for at 0.0 as soon as another receiver has one.
+
+Because the miss is the receiver's own, a receiver the source prices only in
+part keeps `Zero` past its source buckets. A source study that declares one of
+two arcs into a receiver is the case: the target buckets its arc's buckets do
+not overlap price the other arc's arriving water at 0.0. This is a documented
+boundary approximation, like the arrival delay above.
 
 Only a live anticipated target slot whose interval reaches past
 `boundary_date` fans out. A live target slot whose `interval_end` is at or
@@ -4403,9 +4578,11 @@ delivery against the source's months.
 `rebind_cut` applies both through the identical weighted-sum, so unifying them
 reads like harmless dedup — but only `build_rebind` carries the `Renormalize`
 anti-deflation scale, and dropping it silently understates the boundary FCF on any
-partial-coverage calendar. Two further wrong-but-compiling alternatives: dividing
-by the **target** slot's `H_w` instead of the source `H_M` (breaks the
-`H_w / H_M` conservation ratio), and joining on `subindex` instead of the real
+partial-coverage calendar. Three further wrong-but-compiling alternatives:
+dividing a `Rate` by the **target** slot's `H_w` instead of the source `H_M`
+(breaks the `H_w / H_M` conservation ratio); dividing a `Volume` by the
+**source** `H_M` instead of the target `H_w` (prices a held volume as a density
+and understates it on any mismatched bucket grid); and joining on `subindex` instead of the real
 interval (anticipated delivery is NON-monotone in subindex — the modular
 delivery-target residue of the ring contract above — so a subindex join misaligns
 months to weeks). Source intervals are read from each live source slot's OWN
@@ -4417,8 +4594,9 @@ division is guarded: `resolve_by_interval_overlap` returns `Zero` on
 `terms.is_empty()` before it can divide by a zero covered span.
 
 `HydroTransitBucket` target and source slots reconcile through this EXACT SAME
-`resolve_by_interval_overlap` call and the exact same `÷H_m` math above — there is
-no separate transit resolver. `build_source_interval_index` selects live
+`resolve_by_interval_overlap` call, with the `Volume` weight above — there is
+no separate transit resolver; the class and its `on_source_miss` op are the
+only things that differ. `build_source_interval_index` selects live
 (non-sentinel) source slots of EITHER family into one shared index, keyed
 `(entity_type, entity_id)`; the family byte already in that key is what keeps an
 anticipated and a transit source entry sharing one `entity_id` disjoint, so
@@ -4428,22 +4606,24 @@ above — the identical family-byte discipline). A transit target's `subindex` (
 maturity lag) plays no part in the join, for a reason distinct from anticipated's
 non-monotone-residue one: two buckets of one downstream plant at different lags
 have disjoint arrival intervals (each stamped from its own arrival stage on the
-extended delivery calendar) and are told apart by that alone; re-introducing
+study stages extended by the water calendar — the declared
+`water_bucket_stages`, or the thermal post-study `stages` on the legacy path;
+Water calendar paths below) and are told apart by that alone; re-introducing
 `subindex` into the join would reject a legitimate source whose lag indexing
 differs from the current study's. Under an identical source/current arrival
 interval the overlap is full and the single term's weight is
-`overlap / H_m == 1.0`, reproducing today's coefficient bit-for-bit — but the
+`overlap / H_w == 1.0`, reproducing today's coefficient bit-for-bit — but the
 reconciliation report tallies that slot as `fan_out`, never `copy`: the
 coefficients are unchanged, the JOIN MECHANISM is not, and collapsing a
 full-coverage single term back into `RebindOp::Copy` would hide that the family is
 now date-validated (and would have to apply to the anticipated family's own
 copy-equivalent, fully-inside-one-source-interval case too, silently changing its
-tally as well). A dated transit miss that is NOT the NEWAVE-shaped no-arcs case —
+tally as well). A dated transit miss that is NOT the storage-fill case above —
 both sides declare transit arcs but their intervals do not overlap — still resolves
 `Zero` at the same report tier as any other miss; promoting it to a louder tier is
 diagnostics work this contract does not cover.
 
-The constant intercept fold (`build_boundary_fold`) reuses this SAME
+The constant intercept fold (`build_boundary_fold`) reuses this SAME `Rate`
 `overlap/H_m` source-interval weighting on a different object: a class-4 fixed
 post-horizon window's declared MW is a CONSTANT, not a state dimension, so
 `Σ_m (overlap_hours(w, m) / H_m) · v_w` sums directly into a `(source_pos,
@@ -4463,8 +4643,9 @@ rest of the intercept. Folding after rescale, or reading a rescaled coefficient
 into the fold sum, is the wrong-but-compiling alternative: the transforms are
 not idempotent across that boundary, so a post-rescale fold prices the fixed
 commitment at the wrong scale.
-Read: `policy/reconcile.rs` (`resolve_by_interval_overlap`, `build_rebind`,
-`rebind_cut`, `build_source_interval_index`, `overlap_hours`, `build_boundary_fold`,
+Read: `policy/reconcile.rs` (`QuantityClass`, `quantity_class`,
+`resolve_by_interval_overlap`, `build_rebind`, `FillFromStorage`,
+`receiver_storage_fill`, `rebind_cut`, `build_source_interval_index`, `overlap_hours`, `build_boundary_fold`,
 the `Blend`/`Renormalize` variants), `policy/policy_export.rs`
 (`build_stage_entity_manifest`, intervalling each ring slot at its modular
 delivery stage via `slot_lane_at`), `policy/policy_load.rs` (`load_boundary_cuts` builds one
@@ -4472,7 +4653,12 @@ delivery stage via `slot_lane_at`), `policy/policy_load.rs` (`load_boundary_cuts
 `boundary_date` into `build_rebind`, and applies the fold before rescale).
 Pinned by the `hm_distribute_conservation` fixtures in
 `tests/anticipated_core.rs` (coeff ratio equals `H_w / H_M`, invariant to the
-delivery stage's hours), the `Blend`/`Renormalize` `rebind_cut` unit tests (both
+delivery stage's hours), the two quantity-class goldens
+`anticipated_lane_target_inside_one_source_interval_keeps_source_hours_weight`
+(`-1,800`) and `transit_bucket_volume_golden_matches_unsplit_term` (`-8,640`),
+`mismatched_bucket_grid_uses_target_hours_for_every_deck` (a weekly source
+bucket grid read by a monthly target, the every-deck exception),
+`quantity_class_covers_every_state_family`, the `Blend`/`Renormalize` `rebind_cut` unit tests (both
 apply identical mechanics, distinction is only the weight),
 `tests/boundary_reconcile_defaults.rs` (the fan-out matrix and the superset
 bit-identity `to_bits` pin),
@@ -4488,15 +4674,30 @@ intercept fold's own regressions
 `resolve_by_interval_overlap`/`build_source_interval_index` pins above and is
 additionally pinned by `policy/reconcile.rs`'s own
 `transit_bucket_identical_arrival_interval_blends_at_unit_weight`,
-`transit_bucket_target_inside_one_source_interval_blends_at_fractional_source_hours`,
+`transit_bucket_target_inside_one_source_interval_takes_its_target_hours_share`,
 `transit_bucket_non_overlapping_arrival_interval_zeroes`,
 `transit_bucket_join_ignores_subindex`,
 `transit_bucket_sentinel_interval_is_a_structural_pad`, and
 `unrecognized_entity_type_still_rejects_by_identity`, plus the boundary-load
 round trip `load_boundary_cuts_matching_transit_bucket_arrival_interval_round_trips`
 (`policy/policy_load.rs`) and
-`boundary_injection_transit_bucket_blends_on_identical_arrival_interval`
-(`tests/boundary_reconcile_defaults.rs`).
+`boundary_injection_transit_bucket_blends_on_identical_arrival_interval` and
+`boundary_injection_transit_bucket_takes_its_target_hours_share`
+(`tests/boundary_reconcile_defaults.rs`). The storage fill is pinned by
+`transit_bucket_source_miss_fills_from_receiver_storage`,
+`transit_bucket_fill_consumes_the_receiver_storage_position`,
+`transit_bucket_source_miss_without_receiver_storage_stays_zero`,
+`transit_bucket_in_study_target_stays_zero_when_receiver_storage_is_priced`,
+`transit_bucket_all_sentinel_source_transit_fills_from_storage`,
+`transit_bucket_fill_triggers_per_receiver_not_per_source`,
+`anticipated_source_miss_never_fills_from_a_same_id_storage_slot` and
+`transit_bucket_fill_is_declaration_order_invariant` (`policy/reconcile.rs`),
+by `boundary_injection_transit_bucket_fills_from_receiver_storage` and
+`boundary_injection_transit_fill_matches_the_storage_copy_under_cost_rescale`
+(`tests/boundary_reconcile_defaults.rs`), and by
+`newave_source_reconciles_into_decomp_current` and
+`newave_source_without_receiver_storage_keeps_transit_zero`
+(`tests/boundary_dim_mismatch_reconcile.rs`).
 
 A sentinel-interval forward-family slot is a structural ring pad on BOTH sides
 of reconciliation, not just the target: `dropped_source_positions` excludes it
@@ -4873,11 +5074,23 @@ The bucket state stays a pure function of stage lengths, never of
 `n_blks`/`block_mode`, only because each of the following holds:
 
 - **Depth from stage lengths alone.** Bucket depth and `n_buckets` derive from
-  the per-stage calendar, the declared post-study calendar, and the pre-study
-  anchor alone (`DeliveryCalendar`, `build_transit_bucket_topology`) — never
-  from `n_blks` or `block_mode`. Deriving any part of the depth inside a
-  block-aware code path re-couples the state dimension to how a stage happens
-  to be resolved.
+  the per-stage calendar, the water calendar (`DeliveryCalendar::water`), and
+  the pre-study anchor alone (`DeliveryCalendar`,
+  `build_transit_bucket_topology`) — never from `n_blks` or `block_mode`.
+  Deriving any part of the depth inside a block-aware code path re-couples the
+  state dimension to how a stage happens to be resolved. The water calendar
+  reaches the depth arithmetic through one of two paths (Water calendar paths
+  below): a deck declaring `water_bucket_stages` is resolved on the study
+  stages plus that calendar UNPADDED, and must cover the deepest travel time
+  or setup refuses it; a deck without it (the legacy `stages` key of
+  `post_study_stages.json`, or no file) is resolved on the study stages plus
+  the thermal post-study `stages`, padded by `extend_for_resolution`, which is
+  reachable only through `resolution_base`'s `WaterDeliveryBasis::Legacy` arm.
+  Either way the base is a list of stage lengths, so the property holds on both
+  paths. Pinned by
+  `setup::calendar_cross_wire_tests::water_consumers_ignore_the_thermal_calendar`,
+  `resolution_base_uses_declared_water_calendar_unpadded` and
+  `resolution_base_pads_without_post_study_file` (`bucket_topology.rs`).
 - **Shared arrival density.** A chronological stage's per-block deposit shares
   `block_deposits`/`within_stage_routing` and the stage-level `stage_weights`
   come from the same shared arrival density (`resolve_spread`'s
@@ -4913,6 +5126,72 @@ precomputed `arc_arrival_density` table entry verbatim) is the direct pin for
 the fixed-delivery-density clause itself; the parallel-fill regression (the
 maturing bucket keeps a single `-1.0` regardless of the table's contents)
 pins that `fill_parallel_water_entries` never reads it.
+
+### Water calendar paths
+
+The transit-bucket water calendar has exactly two paths, selected once per study
+by `WaterDeliveryBasis::of` from the core `WaterBucketStages` carried on
+`PostStudyStages`:
+
+- **Declared (`WaterBucketStages::Declared`, the `water_bucket_stages` key of
+  `post_study_stages.json`).** `DeliveryCalendar::water` is the study stages plus
+  the declared water stages, and `resolution_base`'s `Declared` arm borrows it
+  UNPADDED — no padding, no fallback to the thermal calendar.
+- **Legacy (`WaterBucketStages::FromThermalStages`, the core default: the
+  deprecated `stages` key, or no post-study file).** `DeliveryCalendar::water` is
+  `DeliveryCalendar::thermal`, and `resolution_base`'s `Legacy` arm pads it with
+  `extend_for_resolution`. That arm is `extend_for_resolution`'s only production
+  caller; the pad never exists on the declared path. This path is recorded
+  debt: it exists for decks still in the deprecated format and is removed
+  together with that format, not on its own.
+
+The basis is passed by value and never stored on `DeliveryCalendar`, which feeds
+the frozen digest. Four invariants hold across the two paths:
+
+- **Pad-free neutrality.** For any water calendar covering the deepest travel
+  time, the declared-unpadded and the legacy-padded bases build a bit-identical
+  `TransitBucketTopology` — `column_order`, `per_stage_mask`, stage weights, the
+  chronological spreads (`stage_reach` included) and `arc_arrival_density` —
+  with and without a loaded boundary: a covering calendar already holds every
+  travel-time window, so the pad is never read. This is what makes the declared
+  path a format change, not a results change, for a deck whose migrated water
+  calendar covers its arcs. `scripts/migrate/post_study_stages.py` writes such a
+  calendar: the legacy one extended with copies of its last stage, the periods the
+  pad reads. Pinned by the
+  `declared_and_padded_bases_agree_on_covering_water_calendars` property test
+  and `declared_and_padded_bases_agree_at_equality_coverage`
+  (`bucket_topology/neutrality_tests.rs`).
+- **A declared calendar that does not cover is refused, never padded.**
+  `resolve_state_and_topology` calls `deepest_uncovered_travel_time_arc`
+  (core) before building the topology and returns `SddpError::Validation` naming
+  the hydro, its travel time and the declared span. Padding the declared
+  calendar, or falling back to the legacy base, is the wrong-but-compiling
+  alternative: it silently invents water stages the deck did not declare. Pinned
+  by `resolve_state_and_topology_refuses_uncovered_declared_water_calendar` and
+  `resolve_state_and_topology_accepts_covering_declared_water_calendar`
+  (`setup/tests.rs`).
+- **A short legacy calendar is padded, never refused.** The refusal is scoped to
+  the declared path; applying it to a legacy deck rejects decks the deprecated
+  format accepts. Pinned by
+  `resolve_state_and_topology_pads_a_short_legacy_water_calendar`.
+- **Bucket slots are dated from the water calendar, never from the pad.**
+  `build_stage_entity_manifest` dates a `HydroTransitBucket` slot's arrival
+  interval over the study stages extended by `DeliveryCalendar::water`: the
+  declared `water_bucket_stages` on the declared path, with or without a loaded
+  boundary; the thermal post-study stages on the legacy path, as before. A slot
+  whose arrival lands past that calendar carries the sentinel. Anticipated ring
+  slots stay on `DeliveryCalendar::thermal`. Dating a bucket from the thermal
+  calendar on the declared path moves every bucket interval a boundary fan-out
+  joins on. Pinned by
+  `public_manifest_dates_bucket_slots_from_water_bucket_stages`
+  (`tests/water_calendar_differential.rs`) and
+  `transit_bucket_dates_onto_the_post_study_calendar_and_sentinels_past_it`
+  (`policy/policy_export.rs`).
+
+Read: `time_value.rs` (`WaterDeliveryBasis`, `DeliveryCalendar::water`),
+`bucket_topology.rs` (`resolution_base`, `extend_for_resolution`),
+`setup/mod.rs` (`resolve_state_and_topology`), `policy/policy_export.rs`
+(`build_stage_entity_manifest`).
 
 ### Maturing transit into a `PreFilling` plant follows the short-circuit target
 
@@ -5332,11 +5611,12 @@ commitment — in-study or post-study-targeted — is ever discarded at the
 delivery-axis boundary; none is created past it in the first place.
 `is_anticipated_decision_active_for_delivery` gates a decision column's
 existence on the strict clause `stage_idx + K_i < n_delivery`, against the
-EXTENDED delivery calendar (`n_delivery = StateSpace::n_delivery`, the
-study stages plus the `post_study_stages.json` continuation), not merely
-`n_stages`; `PointResolution::decider` has the matching domain
-`m in [0, n_delivery)`, so no code path ever computes a commitment targeting a
-delivery past the extended axis and then truncates it. A post-study-targeted
+EXTENDED thermal calendar (`n_delivery = StateSpace::n_delivery`, the
+study stages plus the thermal calendar's post-study stages,
+`DeliveryCalendar::thermal`), not merely `n_stages`;
+`PointResolution::decider` has the matching domain `m in [0, n_delivery)`, so
+no code path ever computes a commitment targeting a delivery past the extended
+axis and then truncates it. A post-study-targeted
 delivery (`m` in `[n_stages, n_delivery)`) is CREATED and rides the ring, priced
 through the boundary FCF — masking is exact at `n_delivery`, not `n_stages`.
 `build_anticipated_slot_row_pos`'s per-slot `None` (no carry row) and
@@ -5363,8 +5643,9 @@ Read: `lp/indexer/anticipated_gate.rs`
 (`fill_anticipated_slot_columns`). Pinned by
 `is_anticipated_decision_active_for_delivery_strict_extended_bound` (the strict
 `< n_delivery` gate on the extended axis; `<=` would admit a delivery at
-`n_delivery`) and `a1c_lead_stages_is_pure_index_shift`'s
-empty-`decision_sets`-past-the-delivery-bound assertion.
+`n_delivery`), `a1c_lead_stages_is_pure_index_shift`'s
+empty-`decision_sets`-past-the-delivery-bound assertion, and
+`setup::calendar_cross_wire_tests::thermal_consumers_follow_the_thermal_calendar`.
 
 ### In-LP anticipated ring: single-decider deposit & `K = 0` exclusion
 
@@ -5456,11 +5737,10 @@ Every anticipated plant's decision column is bounded, costed, and
 commissioning-gated at ITS OWN delivery stage `m` (its
 `genuine_decisions_at(t)` target, when one exists), never the decision stage
 `t`. `fill_anticipated_columns` reads `thermal_block_base(thermal_idx,
-delivery_stage)` for the column's `[min, max]` bounds (the overlay-ignoring
-base is safe here only because a load-time rule rejects a `block_id` bound row
-on an anticipated thermal — see `novomodelo-io`'s
+delivery_stage)` for the column's `[min, max]` bounds and its `cost_per_mwh`
+(the overlay-ignoring base is safe here only because a load-time rule rejects a
+`block_id` bound row on an anticipated thermal — see `novomodelo-io`'s
 `check_block_id_on_anticipated_thermal`),
-`thermal_bounds(thermal_idx, delivery_stage).cost_per_mwh` for its cost,
 `TimeValue::delivery_total_hours(delivery_stage)` for its hours,
 `TimeValue::relative_delivery_discount(stage_idx, delivery_stage)` (the delivery
 stage's cumulative discount over the decision stage's, `D(m)/D(t)`, one

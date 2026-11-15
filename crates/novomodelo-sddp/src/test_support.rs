@@ -28,7 +28,7 @@ use novomodelo_core::{
     InitialConditions, Line, LineBlockBounds, LineStagePenalties, NcsStagePenalties, NoiseMethod,
     PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds, ResolvedPenalties,
     ScenarioSourceConfig, Stage, StageRiskConfig, StageStateConfig, System, SystemBuilder, Thermal,
-    ThermalBlockBounds, ThermalStageBounds,
+    ThermalBlockBounds,
 };
 use novomodelo_io::StageIdResolver;
 use novomodelo_io::config::{
@@ -96,7 +96,7 @@ use crate::solve::StageOpeningSolver;
 use crate::solve::solver_phase::SolverProfiles;
 use crate::solve::stage_solve::assemble_outgoing_state;
 #[cfg(test)]
-use crate::time_value::DeliveryCalendar;
+use crate::time_value::{DeliveryCalendar, WaterDeliveryBasis};
 use crate::time_value::{PostStudyResolved, TimeValue};
 use crate::training::backward::{
     ChainRuleStageInputs, DualExtractionSpec, OpeningDualBuffers, by_node_block_count,
@@ -115,6 +115,7 @@ use novomodelo_solver::{
 pub mod bound_recording;
 pub mod decks;
 pub mod expander;
+pub mod legacy_inputs;
 pub mod solve_sites;
 pub mod template_structure;
 
@@ -375,9 +376,11 @@ pub(crate) fn resolved_layout_for(
     system: &System,
     par_lp: &PrecomputedPar,
 ) -> (TransitBucketTopology, ResolvedStateLayout) {
-    let calendar = DeliveryCalendar::from_system(system);
-    let topology = build_transit_bucket_topology(system, &calendar, false);
-    let layout = resolve_state_layout(system, &calendar, par_lp, &topology, None)
+    let thermal = DeliveryCalendar::thermal(system);
+    let basis = WaterDeliveryBasis::of(system);
+    let water = DeliveryCalendar::water(system, basis);
+    let topology = build_transit_bucket_topology(system, &water, basis, false);
+    let layout = resolve_state_layout(system, &thermal, par_lp, &topology, None)
         .expect("resolved_layout_for: valid test fixture");
     (topology, layout)
 }
@@ -743,10 +746,10 @@ pub fn geometry(
                 water_withdrawal_m3s: 0.0,
             },
             hydro_block: HydroBlockBounds::default(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -2861,10 +2864,10 @@ fn fan_or_chain_system_builder(
                 max_generation_mw: 250.0,
                 ..Default::default()
             },
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,

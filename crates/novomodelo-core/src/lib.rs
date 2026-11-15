@@ -84,7 +84,10 @@ pub use model::penalty::{
     resolve_bus_excess_cost, resolve_hydro_penalties, resolve_line_exchange_cost,
     resolve_ncs_curtailment_cost,
 };
-pub use model::post_study::{PostStudyStage, PostStudyStages, PostStudyThermalBound};
+pub use model::post_study::{
+    PostStudyStage, PostStudyStages, PostStudyThermalBound, UncoveredArc, WaterBucketStages,
+    deepest_uncovered_travel_time_arc,
+};
 pub use model::resolved::{
     BlockBoundsCountsSpec, BoundsCountsSpec, BoundsDefaults, BusStagePenalties,
     ContractBlockBounds, ContractBlockOverride, HydroBlockBounds, HydroBlockOverride,
@@ -93,7 +96,7 @@ pub use model::resolved::{
     PenaltiesDefaults, PumpingBlockBounds, PumpingBlockOverride, ResolvedBlockBounds,
     ResolvedBounds, ResolvedGenericConstraintBounds, ResolvedHydroUnitGroupBounds,
     ResolvedLoadFactors, ResolvedNcsBounds, ResolvedNcsFactors, ResolvedPenalties,
-    ThermalBlockBounds, ThermalBlockOverride, ThermalStageBounds,
+    ThermalBlockBounds, ThermalBlockOverride,
 };
 pub use model::scalar_expr::{ScalarExpr, is_exact_zero};
 pub use model::scenario::{

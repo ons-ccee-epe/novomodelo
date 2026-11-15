@@ -106,7 +106,7 @@ pub(crate) struct RawNcs {
     /// dispatch LP runs.
     #[serde(default = "default_allow_curtailment")]
     allow_curtailment: bool,
-    /// Optional entity-level curtailment cost override ($/`MWh`).
+    /// Optional entity-level curtailment cost override ($/`MWh`). Must be >= 0.
     /// When absent, falls back to `non_controllable_source.curtailment_cost` in `penalties.json`.
     #[serde(default)]
     curtailment_cost: Option<f64>,
@@ -163,6 +163,7 @@ fn validate_raw_ncs(raw: &RawNcsFile, path: &Path) -> Result<(), LoadError> {
     validate_no_duplicate_ncs_ids(&raw.non_controllable_sources, path)?;
     for (i, ncs) in raw.non_controllable_sources.iter().enumerate() {
         validate_ncs_generation(ncs.max_generation_mw, i, path)?;
+        validate_ncs_curtailment_cost(ncs.curtailment_cost, i, path)?;
     }
     Ok(())
 }
@@ -194,6 +195,21 @@ fn validate_ncs_generation(
         });
     }
     Ok(())
+}
+
+fn validate_ncs_curtailment_cost(
+    curtailment_cost: Option<f64>,
+    ncs_index: usize,
+    path: &Path,
+) -> Result<(), LoadError> {
+    match curtailment_cost {
+        Some(v) if !v.is_finite() || v < 0.0 => Err(LoadError::SchemaError {
+            path: path.to_path_buf(),
+            field: format!("non_controllable_sources[{ncs_index}].curtailment_cost"),
+            message: format!("curtailment_cost must be finite and >= 0.0, got {v}"),
+        }),
+        _ => Ok(()),
+    }
 }
 
 fn convert_ncs(
@@ -388,6 +404,39 @@ mod tests {
                     message.contains(">= 0.0"),
                     "message should mention >= 0.0, got: {message}"
                 );
+            }
+            other => panic!("expected SchemaError, got: {other:?}"),
+        }
+    }
+
+    fn ncs_json_with_curtailment_cost(curtailment_cost: f64) -> String {
+        format!(
+            r#"{{
+          "non_controllable_sources": [
+            {{ "id": 0, "name": "Eolica", "operational_start_date": "2024-01-01", "bus_id": 0,
+               "max_generation_mw": 10.0, "curtailment_cost": {curtailment_cost:?} }}
+          ]
+        }}"#
+        )
+    }
+
+    #[test]
+    fn test_zero_entity_curtailment_cost_accepted() {
+        let f = write_json(&ncs_json_with_curtailment_cost(0.0));
+        let global = make_global();
+        let sources = parse_non_controllable_sources(f.path(), &global).unwrap();
+        assert_eq!(sources[0].curtailment_cost.to_bits(), 0.0_f64.to_bits());
+    }
+
+    #[test]
+    fn test_negative_entity_curtailment_cost_rejected() {
+        let f = write_json(&ncs_json_with_curtailment_cost(-0.0001));
+        let global = make_global();
+        let err = parse_non_controllable_sources(f.path(), &global).unwrap_err();
+        match &err {
+            LoadError::SchemaError { field, message, .. } => {
+                assert_eq!(field, "non_controllable_sources[0].curtailment_cost");
+                assert!(message.contains(">= 0.0"), "got: {message}");
             }
             other => panic!("expected SchemaError, got: {other:?}"),
         }

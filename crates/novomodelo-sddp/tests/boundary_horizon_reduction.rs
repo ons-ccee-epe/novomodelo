@@ -39,7 +39,7 @@ use novomodelo_core::{
     HydroBlockBounds, HydroPastDefluence, HydroPenalties, HydroStageBounds, HydroStorage,
     InitialConditions, LineBlockBounds, PostStudyStage, PostStudyStages, PostStudyThermalBound,
     PumpingBlockBounds, ResolvedBounds, ResolvedPenalties, SeasonCycleType, SeasonDefinition,
-    SeasonMap, System, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
+    SeasonMap, System, SystemBuilder, ThermalBlockBounds, WaterBucketStages,
 };
 use novomodelo_io::config::{
     BoundaryPolicy, Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
@@ -181,7 +181,7 @@ fn truncated_post_study_stages() -> PostStudyStages {
         duration_hours: (bounds[i + 1] - bounds[i]).num_hours() as f64,
     };
     PostStudyStages {
-        stages: vec![stage(2), stage(3)],
+        thermal_stages: vec![stage(2), stage(3)],
         thermal_bounds: vec![
             PostStudyThermalBound {
                 thermal_id: THERMAL_ID,
@@ -198,6 +198,7 @@ fn truncated_post_study_stages() -> PostStudyStages {
                 max_mw: 100.0,
             },
         ],
+        water_bucket_stages: WaterBucketStages::FromThermalStages,
     }
 }
 
@@ -242,10 +243,10 @@ fn bounds(n_stages: usize) -> ResolvedBounds {
                 max_generation_mw: 500.0,
                 ..Default::default()
             },
-            thermal: ThermalStageBounds { cost_per_mwh: 1.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 1.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -588,12 +589,20 @@ fn horizon_reduction_selects_the_pool_priced_at_the_boundary_date() {
         copy,
         fan_out,
         straddling,
+        filled_from_storage,
         default_zero,
         dropped_source,
     } = report.other_identity;
     assert_eq!(
-        (copy, fan_out, straddling, default_zero, dropped_source),
-        (0, 0, 0, 0, 0),
+        (
+            copy,
+            fan_out,
+            straddling,
+            filled_from_storage,
+            default_zero,
+            dropped_source
+        ),
+        (0, 0, 0, 0, 0, 0),
         "other_identity must be entirely zero (this fixture declares no entity outside the \
          four modeled families), found tally {:?}",
         report.other_identity

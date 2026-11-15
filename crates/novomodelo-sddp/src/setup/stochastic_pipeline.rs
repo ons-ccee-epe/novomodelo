@@ -432,7 +432,6 @@ mod tests {
         HydroBlockBounds, HydroPenalties, HydroStageBounds, InitialConditions, LineBlockBounds,
         LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec, PenaltiesDefaults,
         PumpingBlockBounds, ResolvedBounds, ResolvedPenalties, SystemBuilder, ThermalBlockBounds,
-        ThermalStageBounds,
         entities::{
             bus::{Bus, DeficitSegment},
             hydro::{Hydro, HydroGenerationModel},
@@ -655,10 +654,10 @@ mod tests {
                     max_generation_mw: 250.0,
                     ..Default::default()
                 },
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -1670,10 +1669,10 @@ mod tests {
                     max_generation_mw: 250.0,
                     ..Default::default()
                 },
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -1788,12 +1787,14 @@ mod tests {
         let hydro_ids: Vec<EntityId> = system.hydros().iter().map(|h| h.id).collect();
         let par_lp = PrecomputedPar::build(system.inflow_models(), &study_stages, &hydro_ids, None)
             .expect("PrecomputedPar must build");
-        let calendar = crate::time_value::DeliveryCalendar::from_system(&system);
+        let thermal = crate::time_value::DeliveryCalendar::thermal(&system);
+        let basis = crate::time_value::WaterDeliveryBasis::of(&system);
+        let water = crate::time_value::DeliveryCalendar::water(&system, basis);
         let topology =
-            crate::bucket_topology::build_transit_bucket_topology(&system, &calendar, false);
+            crate::bucket_topology::build_transit_bucket_topology(&system, &water, basis, false);
         let layout = crate::setup::resolve_state_layout(
             &system,
-            &calendar,
+            &thermal,
             &par_lp,
             &topology,
             declared_depth,
@@ -2088,10 +2089,10 @@ mod tests {
                     max_generation_mw: 250.0,
                     ..Default::default()
                 },
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,

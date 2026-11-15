@@ -51,9 +51,9 @@ split-debuginfo = "unpacked"
 [profile.release]
 strip = "symbols"
 
-# Opt-in profile for flamegraph/DHAT — keeps line-number debug info so samples
-# resolve to source locations. Use with `cargo build --profile profiling` or
-# `cargo flamegraph --profile profiling`.
+# Opt-in profile for perf/DHAT/Valgrind — keeps line-number debug info so samples
+# resolve to source locations. perf call graphs also need a GNU-ld link, which a
+# profile cannot set: build with `scripts/build-profiling.sh` (docs/profiling.md).
 [profile.profiling]
 inherits = "release"
 debug = 1

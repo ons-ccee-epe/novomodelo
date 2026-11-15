@@ -55,6 +55,7 @@ use crate::indexer::{
 pub(super) fn resolve_variable_ref(
     var_ref: &VariableRef,
     block_idx: usize,
+    stage_id: i32,
     stage_idx: usize,
     ctx: &TemplateBuildCtx<'_>,
     layout: &StageLayout<'_>,
@@ -78,9 +79,15 @@ pub(super) fn resolve_variable_ref(
             resolve_hydro_evaporation(*hydro_id, *block_id, ctx, layout)
         }
 
-        VariableRef::HydroInflow { hydro_id, block_id } => {
-            resolve_hydro_inflow(*hydro_id, at(*block_id), stage_idx, ctx, layout, inflow_out)
-        }
+        VariableRef::HydroInflow { hydro_id, block_id } => resolve_hydro_inflow(
+            *hydro_id,
+            at(*block_id),
+            stage_id,
+            stage_idx,
+            ctx,
+            layout,
+            inflow_out,
+        ),
 
         VariableRef::HydroTurbined {
             hydro_id,
@@ -145,6 +152,18 @@ pub(super) fn resolve_variable_ref(
             block_id,
         } => resolve_pumping_column(*station_id, at(*block_id), ctx, layout, |station| {
             station.consumption_mw_per_m3s
+        }),
+
+        VariableRef::HydroOutflowVolume { hydro_id } => resolve_stage_volume(layout, |blk| {
+            resolve_hydro_outflow(*hydro_id, blk, ctx, layout)
+        }),
+
+        VariableRef::HydroDiversionVolume { hydro_id } => resolve_stage_volume(layout, |blk| {
+            resolve_hydro_diversion(*hydro_id, blk, ctx, layout)
+        }),
+
+        VariableRef::PumpingVolume { station_id } => resolve_stage_volume(layout, |blk| {
+            resolve_pumping_column(*station_id, blk, ctx, layout, |_| 1.0)
         }),
 
         VariableRef::ContractImport {
@@ -288,6 +307,7 @@ fn resolve_hydro_storage_boundary(
 fn resolve_hydro_inflow(
     hydro_id: EntityId,
     blk: BlockIdx,
+    stage_id: i32,
     stage_idx: usize,
     ctx: &TemplateBuildCtx<'_>,
     layout: &StageLayout<'_>,
@@ -318,7 +338,6 @@ fn resolve_hydro_inflow(
 
     push_maturing_bucket_rate(pos_h, blk, stage_idx, ctx, layout, &mut result);
 
-    let stage_id = ctx.time_value.delivery_stage_ids()[stage_idx];
     for u_idx in 0..ctx.hydros.len() {
         if resolve_shortcircuit_target(ctx.hydros, ctx.cascade, ctx.positions, stage_id, u_idx)
             != Some(pos_h)
@@ -515,6 +534,23 @@ fn resolve_hydro_outflow(
     let mut result = resolve_turbine_cells(hydro_id, None, blk, 1.0, ctx, layout);
     result.push((layout.geometry.spillage_col(HydroSys::new(pos), blk), 1.0));
     result
+}
+
+/// Stage volume (hm³): every block's flow columns from `per_block`, each weighted by
+/// that block's `tau`, in ascending block order.
+fn resolve_stage_volume(
+    layout: &StageLayout<'_>,
+    per_block: impl Fn(BlockIdx) -> Vec<(usize, f64)>,
+) -> Vec<(usize, f64)> {
+    (0..layout.clock.n_blks())
+        .map(BlockIdx::new)
+        .flat_map(|blk| {
+            let tau = layout.clock.tau(blk);
+            per_block(blk)
+                .into_iter()
+                .map(move |(col, m)| (col, m * tau))
+        })
+        .collect()
 }
 
 /// Resolve `HydroGeneration` by dispatching on the production model.
