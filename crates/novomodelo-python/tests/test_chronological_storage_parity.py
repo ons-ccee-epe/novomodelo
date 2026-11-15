@@ -97,6 +97,8 @@ HYDROS_SCHEMA_FIELDS = {
     "integrated_accumulated_productivity_mw_per_m3s",
     "stored_energy_initial_mw",
     "stored_energy_final_mw",
+    "outflow_volume_slack_below_hm3",
+    "outflow_volume_slack_above_hm3",
 }
 
 

@@ -119,6 +119,16 @@ HYDRO_SLACK_COLUMNS = {
     "generation_slack_mw",
 }
 
+OUTFLOW_VOLUME_HYDRO_COLUMNS = {
+    "outflow_volume_slack_below_hm3",
+    "outflow_volume_slack_above_hm3",
+}
+
+OUTFLOW_VOLUME_COST_COLUMNS = {
+    "outflow_volume_violation_below_cost",
+    "outflow_volume_violation_above_cost",
+}
+
 
 @pytest.fixture(scope="module")
 def d20_output(tmp_path_factory: pytest.TempPathFactory) -> pathlib.Path:
@@ -193,6 +203,32 @@ def test_hydro_slack_values_nonzero_on_violations(d20_output: pathlib.Path) -> N
         "D20: expected non-zero turbined_slack_m3s in at least one row. "
         "Stage 1 has inflow=10 m3/s but min_turbined=30 m3/s."
     )
+
+
+def test_outflow_volume_columns_are_zero_without_declared_bounds(
+    d20_output: pathlib.Path,
+) -> None:
+    """D20 declares no hm3 bound, so the outflow-volume columns are non-null zeros."""
+    import pyarrow as pa
+
+    for directory, columns in (
+        ("hydros", OUTFLOW_VOLUME_HYDRO_COLUMNS),
+        ("costs", OUTFLOW_VOLUME_COST_COLUMNS),
+    ):
+        parquets = sorted((d20_output / "simulation" / directory).rglob("data.parquet"))
+        assert parquets, f"no data.parquet under simulation/{directory}/"
+        for parquet in parquets:
+            table = pq.read_table(parquet)
+            for name in sorted(columns):
+                assert name in table.column_names, f"{parquet}: missing {name}"
+                column = table.column(name)
+                assert column.type == pa.float64(), (
+                    f"{parquet}: {name} is {column.type}"
+                )
+                assert column.null_count == 0, f"{parquet}: {name} has nulls"
+                assert all(v == 0.0 for v in column.to_pylist()), (
+                    f"{parquet}: {name} has a non-zero value"
+                )
 
 
 # ---------------------------------------------------------------------------

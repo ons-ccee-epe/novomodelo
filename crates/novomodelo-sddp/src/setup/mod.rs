@@ -3237,6 +3237,8 @@ mod transit_seed_round_trip_tests {
                 integrated_accumulated_productivity_mw_per_m3s: 0.0,
                 stored_energy_initial_mw: 0.0,
                 stored_energy_final_mw: 0.0,
+                outflow_volume_slack_below_hm3: 0.0,
+                outflow_volume_slack_above_hm3: 0.0,
             }],
             hydro_bus_generation: vec![],
             thermals: vec![],

@@ -61,6 +61,16 @@ fn build_costs_schema() -> Schema {
         Field::new("curtailment_cost", DataType::Float64, false),
         Field::new("exchange_cost", DataType::Float64, false),
         Field::new("pumping_cost", DataType::Float64, false),
+        Field::new(
+            "outflow_volume_violation_below_cost",
+            DataType::Float64,
+            false,
+        ),
+        Field::new(
+            "outflow_volume_violation_above_cost",
+            DataType::Float64,
+            false,
+        ),
     ]);
     Schema::new(fields)
 }
@@ -139,6 +149,8 @@ fn build_hydros_schema() -> Schema {
         ),
         Field::new("stored_energy_initial_mw", DataType::Float64, false),
         Field::new("stored_energy_final_mw", DataType::Float64, false),
+        Field::new("outflow_volume_slack_below_hm3", DataType::Float64, false),
+        Field::new("outflow_volume_slack_above_hm3", DataType::Float64, false),
     ]);
     Schema::new(fields)
 }
@@ -972,8 +984,8 @@ mod tests {
         let schema = costs_schema();
         assert_eq!(
             schema.fields().len(),
-            29,
-            "costs schema must have 29 fields"
+            31,
+            "costs schema must have 31 fields"
         );
         let names = field_names(&schema);
         assert_eq!(
@@ -1008,6 +1020,8 @@ mod tests {
                 "curtailment_cost",
                 "exchange_cost",
                 "pumping_cost",
+                "outflow_volume_violation_below_cost",
+                "outflow_volume_violation_above_cost",
             ]
         );
     }
@@ -1050,6 +1064,8 @@ mod tests {
             "curtailment_cost",
             "exchange_cost",
             "pumping_cost",
+            "outflow_volume_violation_below_cost",
+            "outflow_volume_violation_above_cost",
         ] {
             assert_eq!(
                 field_type(&schema, col),
@@ -1068,8 +1084,8 @@ mod tests {
         let schema = hydros_schema();
         assert_eq!(
             schema.fields().len(),
-            41,
-            "hydros schema must have 41 fields"
+            43,
+            "hydros schema must have 43 fields"
         );
         let names = field_names(&schema);
         assert_eq!(
@@ -1116,6 +1132,8 @@ mod tests {
                 "integrated_accumulated_productivity_mw_per_m3s",
                 "stored_energy_initial_mw",
                 "stored_energy_final_mw",
+                "outflow_volume_slack_below_hm3",
+                "outflow_volume_slack_above_hm3",
             ]
         );
     }
@@ -1169,6 +1187,8 @@ mod tests {
             "integrated_accumulated_productivity_mw_per_m3s",
             "stored_energy_initial_mw",
             "stored_energy_final_mw",
+            "outflow_volume_slack_below_hm3",
+            "outflow_volume_slack_above_hm3",
         ] {
             assert!(
                 !is_nullable(&schema, col),
@@ -1695,8 +1715,8 @@ mod tests {
             .map(|(s, n)| (*n, s.fields().len()))
             .collect();
         let expected: &[(&str, usize)] = &[
-            ("costs", 29),
-            ("hydros", 41),
+            ("costs", 31),
+            ("hydros", 43),
             ("hydro_bus_generation", 9),
             ("thermals", 12),
             ("exchanges", 13),

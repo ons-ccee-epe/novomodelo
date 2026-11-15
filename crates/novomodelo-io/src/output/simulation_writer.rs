@@ -133,6 +133,10 @@ pub struct CostWriteRecord {
     pub exchange_cost: f64,
     /// Pumping imputed cost.
     pub pumping_cost: f64,
+    /// Cost of stage outflow volume below its minimum.
+    pub outflow_volume_violation_below_cost: f64,
+    /// Cost of stage outflow volume above its maximum.
+    pub outflow_volume_violation_above_cost: f64,
 }
 
 /// Hydro plant result for one (stage, block, hydro) tuple.
@@ -218,6 +222,10 @@ pub struct HydroWriteRecord {
     pub stored_energy_initial_mw: f64,
     /// Stored energy at block end, averaged over the stage's total hours, in MW.
     pub stored_energy_final_mw: f64,
+    /// Stage outflow volume short of its declared minimum, in hm³.
+    pub outflow_volume_slack_below_hm3: f64,
+    /// Stage outflow volume beyond its declared maximum, in hm³.
+    pub outflow_volume_slack_above_hm3: f64,
 }
 
 /// Thermal unit result for one (stage, block, thermal) tuple.
@@ -1365,6 +1373,8 @@ fn build_costs_batch<'a>(
     let mut curtailment_cost = Float64Builder::with_capacity(n);
     let mut exchange_cost = Float64Builder::with_capacity(n);
     let mut pumping_cost = Float64Builder::with_capacity(n);
+    let mut outflow_volume_violation_below_cost = Float64Builder::with_capacity(n);
+    let mut outflow_volume_violation_above_cost = Float64Builder::with_capacity(n);
 
     for r in records {
         scenario_id_col.append_value(scenario_id);
@@ -1396,6 +1406,8 @@ fn build_costs_batch<'a>(
         curtailment_cost.append_value(r.curtailment_cost);
         exchange_cost.append_value(r.exchange_cost);
         pumping_cost.append_value(r.pumping_cost);
+        outflow_volume_violation_below_cost.append_value(r.outflow_volume_violation_below_cost);
+        outflow_volume_violation_above_cost.append_value(r.outflow_volume_violation_above_cost);
     }
 
     RecordBatch::try_new(
@@ -1430,6 +1442,8 @@ fn build_costs_batch<'a>(
             Arc::new(curtailment_cost.finish()),
             Arc::new(exchange_cost.finish()),
             Arc::new(pumping_cost.finish()),
+            Arc::new(outflow_volume_violation_below_cost.finish()),
+            Arc::new(outflow_volume_violation_above_cost.finish()),
         ],
     )
     .map_err(|e| OutputError::serialization("costs", e.to_string()))
@@ -1479,6 +1493,8 @@ struct HydroBuilders {
     integrated_accumulated_productivity_mw_per_m3s: Float64Builder,
     stored_energy_initial_mw: Float64Builder,
     stored_energy_final_mw: Float64Builder,
+    outflow_volume_slack_below_hm3: Float64Builder,
+    outflow_volume_slack_above_hm3: Float64Builder,
 }
 
 impl HydroBuilders {
@@ -1525,6 +1541,8 @@ impl HydroBuilders {
             integrated_accumulated_productivity_mw_per_m3s: Float64Builder::with_capacity(n),
             stored_energy_initial_mw: Float64Builder::with_capacity(n),
             stored_energy_final_mw: Float64Builder::with_capacity(n),
+            outflow_volume_slack_below_hm3: Float64Builder::with_capacity(n),
+            outflow_volume_slack_above_hm3: Float64Builder::with_capacity(n),
         }
     }
 }
@@ -1601,6 +1619,10 @@ fn fill_hydro_builders<'a>(
             .append_value(r.stored_energy_initial_mw);
         b.stored_energy_final_mw
             .append_value(r.stored_energy_final_mw);
+        b.outflow_volume_slack_below_hm3
+            .append_value(r.outflow_volume_slack_below_hm3);
+        b.outflow_volume_slack_above_hm3
+            .append_value(r.outflow_volume_slack_above_hm3);
     }
 }
 
@@ -1659,6 +1681,8 @@ fn build_hydros_batch<'a>(
             Arc::new(b.integrated_accumulated_productivity_mw_per_m3s.finish()),
             Arc::new(b.stored_energy_initial_mw.finish()),
             Arc::new(b.stored_energy_final_mw.finish()),
+            Arc::new(b.outflow_volume_slack_below_hm3.finish()),
+            Arc::new(b.outflow_volume_slack_above_hm3.finish()),
         ],
     )
     .map_err(|e| OutputError::serialization("hydros", e.to_string()))
@@ -2548,6 +2572,8 @@ mod tests {
             curtailment_cost: 0.0,
             exchange_cost: 2.0,
             pumping_cost: 0.0,
+            outflow_volume_violation_below_cost: 4.5,
+            outflow_volume_violation_above_cost: 0.75,
         }
     }
 
@@ -2591,6 +2617,8 @@ mod tests {
             integrated_accumulated_productivity_mw_per_m3s: 6.0,
             stored_energy_initial_mw: 1.7145,
             stored_energy_final_mw: 1.7222,
+            outflow_volume_slack_below_hm3: 6.5,
+            outflow_volume_slack_above_hm3: 0.25,
         }
     }
 
@@ -2637,13 +2665,32 @@ mod tests {
             .expect("costs batch must build");
 
         assert_eq!(batch.num_rows(), 2, "must have 2 rows");
-        assert_eq!(batch.num_columns(), 29, "costs schema has 29 columns");
+        assert_eq!(batch.num_columns(), 31, "costs schema has 31 columns");
 
         let expected = costs_schema();
         assert_eq!(
             batch.schema().fields(),
             expected.fields(),
             "schema must match costs_schema()"
+        );
+
+        let f64_at = |index: usize| {
+            batch
+                .column(index)
+                .as_any()
+                .downcast_ref::<arrow::array::Float64Array>()
+                .expect("cost column must be Float64Array")
+                .value(0)
+        };
+        assert_eq!(
+            f64_at(29),
+            4.5,
+            "outflow_volume_violation_below_cost must be index 29"
+        );
+        assert_eq!(
+            f64_at(30),
+            0.75,
+            "outflow_volume_violation_above_cost must be index 30"
         );
     }
 
@@ -2660,7 +2707,7 @@ mod tests {
         let batch = build_hydros_batch(records.iter().copied(), 0, &block_durations, records.len())
             .expect("hydros batch must build");
         assert_eq!(batch.num_rows(), 2);
-        assert_eq!(batch.num_columns(), 41, "hydros schema has 41 columns");
+        assert_eq!(batch.num_columns(), 43, "hydros schema has 43 columns");
 
         let gen_mwh_col = batch
             .column_by_name("generation_mwh")
@@ -3361,7 +3408,7 @@ mod tests {
             .join("simulation/costs/scenario_id=0000/data.parquet");
         let batch = read_first_batch(&path);
         assert_eq!(batch.num_rows(), 2, "costs parquet must have 2 rows");
-        assert_eq!(batch.num_columns(), 29, "costs schema has 29 columns");
+        assert_eq!(batch.num_columns(), 31, "costs schema has 31 columns");
     }
 
     #[test]
@@ -3421,8 +3468,8 @@ mod tests {
             "generation_mwh at row 3 (stage 1) must equal generation_mw * 744"
         );
 
-        // The four tail-appended integrated-productivity and stored-energy-power
-        // columns round-trip as non-nullable Float64, at their declared tail
+        // The tail-appended integrated-productivity, stored-energy-power and
+        // outflow-volume-slack columns round-trip as non-nullable Float64, at their declared tail
         // positions — CLI and Python write through this one shared writer
         // (python_parity_script_passes), so a reordered column would mislabel
         // both front ends' output identically.
@@ -3432,6 +3479,8 @@ mod tests {
             ("integrated_accumulated_productivity_mw_per_m3s", 38),
             ("stored_energy_initial_mw", 39),
             ("stored_energy_final_mw", 40),
+            ("outflow_volume_slack_below_hm3", 41),
+            ("outflow_volume_slack_above_hm3", 42),
         ] {
             let field = schema
                 .field_with_name(col)
@@ -3476,6 +3525,16 @@ mod tests {
             read_f64("stored_energy_final_mw"),
             1.7222,
             "stored_energy_final_mw must round-trip"
+        );
+        assert_eq!(
+            read_f64("outflow_volume_slack_below_hm3"),
+            6.5,
+            "outflow_volume_slack_below_hm3 must round-trip"
+        );
+        assert_eq!(
+            read_f64("outflow_volume_slack_above_hm3"),
+            0.25,
+            "outflow_volume_slack_above_hm3 must round-trip"
         );
     }
 
@@ -3549,12 +3608,12 @@ mod tests {
     }
 
     #[test]
-    fn hydros_schema_has_forty_one_fields() {
+    fn hydros_schema_has_forty_three_fields() {
         let schema = hydros_schema();
         assert_eq!(
             schema.fields().len(),
-            41,
-            "hydros_schema must have 41 fields (39 + scenario_id + node_id)"
+            43,
+            "hydros_schema must have 43 fields (41 + scenario_id + node_id)"
         );
     }
 

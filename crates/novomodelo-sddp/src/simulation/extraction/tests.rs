@@ -21,7 +21,7 @@ use crate::lead_time::{AnticipatedResolution, PointResolution};
 use crate::lp::builder::{GenericConstraintRowEntry, StageGeometry, evaporation_slot_count};
 use crate::lp::indexer::{
     AnticipatedPlants, BlockRowFamily, FillingTargetLocal, FloorLocal, FphaLocal, HydroCellIndex,
-    HydroSys, StateSpace, StudyDimensions,
+    HydroSys, OutflowVolumeLocal, StateSpace, StudyDimensions,
 };
 use crate::simulation::types::{ScenarioCategoryCosts, SimulationCostResult};
 use crate::test_support;
@@ -360,6 +360,245 @@ fn extract_reads_binding_filled_min_storage_floor_slack_per_block_branch() {
     // No σ_fill column here, so both target fields stay 0.0.
     assert_eq!(hydro0.filling_target_violation_hm3, 0.0);
     assert_eq!(hydro1.filling_target_violation_hm3, 0.0);
+}
+
+#[test]
+fn outflow_volume_reverse_lookup_resolves_sparse_membership() {
+    let geom = StageGeometry {
+        outflow_volume_hydro_indices: vec![HydroSys::new(0), HydroSys::new(2)],
+        outflow_volume_below_slack: 700..702,
+        outflow_volume_above_slack: 710..712,
+        ..test_support::equipment_free_geometry(&[0]).remove(0)
+    };
+
+    let lookup = HydroReverseLookup::build(&geom, &test_support::identity_hydro_cell_index(256), 3);
+
+    assert_eq!(
+        lookup.outflow_volume,
+        [
+            Some(OutflowVolumeLocal::new(0)),
+            None,
+            Some(OutflowVolumeLocal::new(1))
+        ]
+    );
+    let local = lookup.outflow_volume[2].expect("hydro 2 declares an outflow-volume bound");
+    assert_eq!(geom.outflow_volume_below_slack_col(local), 701);
+    assert_eq!(geom.outflow_volume_above_slack_col(local), 711);
+}
+
+#[test]
+fn outflow_volume_slack_primals_present_and_absent() {
+    let primal = vec![0.0, 0.0, 0.5, 1.5, 2.5, 3.5];
+    let geometry = StageGeometry {
+        outflow_volume_below_slack: 2..4,
+        outflow_volume_above_slack: 4..6,
+        ..test_support::equipment_free_geometry(&[0]).remove(0)
+    };
+
+    assert_eq!(
+        super::read_outflow_volume_slack_primals(
+            &primal,
+            &geometry,
+            Some(OutflowVolumeLocal::new(1))
+        ),
+        (1.5, 3.5)
+    );
+    assert_eq!(
+        super::read_outflow_volume_slack_primals(
+            &primal,
+            &geometry,
+            Some(OutflowVolumeLocal::new(0))
+        ),
+        (0.5, 2.5)
+    );
+    assert_eq!(
+        super::read_outflow_volume_slack_primals(&primal, &geometry, None),
+        (0.0, 0.0)
+    );
+}
+
+#[test]
+fn extract_repeats_outflow_volume_slacks_on_every_parallel_block_row() {
+    let study_dims = test_support::study_dims();
+    let state = test_support::state_layout(2, 1);
+    let ec = zero_energy_conversion(2, 1);
+
+    let dims = test_support::GeometryDims {
+        hydro_count: 2,
+        max_par_order: 1,
+        n_thermals: 1,
+        n_lines: 1,
+        n_buses: 1,
+        n_blks: 2,
+        has_inflow_penalty: false,
+        max_deficit_segments: 1,
+        n_anticipated: 0,
+        lead_stages: 0,
+        anticipated_plants: AnticipatedPlants::default(),
+    };
+    let base = test_support::geometry(&dims, vec![], &[], vec![]);
+    let n_cols = base.generation_below_slack.end;
+
+    // The declared hydro sits at system position 1 but local slot 0: reading the
+    // families by system index instead of local slot would miss its columns.
+    let slack_below = 3.5_f64;
+    let slack_above = 1.25_f64;
+    let geom = StageGeometry {
+        outflow_volume_hydro_indices: vec![HydroSys::new(1)],
+        outflow_volume_below_slack: n_cols..n_cols + 1,
+        outflow_volume_above_slack: n_cols + 1..n_cols + 2,
+        ..base
+    };
+
+    let mut primal = make_primal_2_1([100.0, 200.0], [50.0, 60.0], [90.0, 180.0], 0.0);
+    primal.resize(n_cols, 0.0);
+    primal.push(slack_below);
+    primal.push(slack_above);
+    let objective_coeffs = vec![0.0; primal.len()];
+    let dual = vec![0.0; geometry_row_capacity(&geom)];
+    let row_lower = vec![0.0; geometry_row_capacity(&geom)];
+
+    let inflow_m3s_per_hydro = test_support::inflow_m3s_per_hydro_from_primal(&state, &primal, 2);
+    let result = extract_stage_result(
+        &SolutionView {
+            primal: &primal,
+            dual: &dual,
+            objective: 0.0,
+            objective_coeffs: &objective_coeffs,
+            row_lower: &row_lower,
+        },
+        &StageExtractionSpec {
+            study_dims: &study_dims,
+            geometry: &geom,
+            hydro_cell_index: &test_support::identity_hydro_cell_index(256),
+            state: &state,
+            entity_counts: &make_entity_counts_2_hydros(),
+            inflow_m3s_per_hydro: &inflow_m3s_per_hydro,
+            block_hours: &[100.0, 200.0],
+            generic_constraint_entries: &[],
+            ncs_col_upper: &[],
+            pumping_consumption_mw_per_m3s: &[],
+            contract_prices: &[],
+            contract_slots: &[],
+            diversion_upstream: &HashMap::new(),
+            hydro_productivities: &[1.0, 1.0],
+            col_scale: &[],
+            row_scale: &[],
+            cumulative_discount_factor: 1.0,
+            cost_scale_factor: 1_000_000.0,
+            energy_conversion: &ec,
+            hydro_min_storage_hm3: &[0.0; 2],
+            stage_index: 0,
+            horizon: &HorizonMode::Finite { num_stages: 1 },
+            anticipated_windows: &[],
+            study_stage_ids: &[],
+        },
+        0,
+    );
+
+    assert_eq!(result.hydros.len(), 4);
+    let rows_of = |hydro_id: i32| {
+        result
+            .hydros
+            .iter()
+            .filter(move |row| row.hydro_id == hydro_id)
+            .collect::<Vec<_>>()
+    };
+    let declared = rows_of(20);
+    let undeclared = rows_of(10);
+    assert_eq!(declared.len(), 2);
+    assert_eq!(undeclared.len(), 2);
+    for row in declared {
+        assert_eq!(
+            row.outflow_volume_slack_below_hm3.to_bits(),
+            slack_below.to_bits()
+        );
+        assert_eq!(
+            row.outflow_volume_slack_above_hm3.to_bits(),
+            slack_above.to_bits()
+        );
+    }
+    for row in undeclared {
+        assert_eq!(
+            row.outflow_volume_slack_below_hm3.to_bits(),
+            0.0_f64.to_bits()
+        );
+        assert_eq!(
+            row.outflow_volume_slack_above_hm3.to_bits(),
+            0.0_f64.to_bits()
+        );
+    }
+}
+
+#[test]
+fn extract_repeats_outflow_volume_slacks_on_every_chronological_block_row() {
+    let k = 3_usize;
+    let base = single_hydro_block_geometry(BlockMode::Chronological, k);
+    let n_cols = base.generation_below_slack.end;
+    let slack_below = 4.0_f64;
+    let slack_above = 0.75_f64;
+    let geom = StageGeometry {
+        outflow_volume_hydro_indices: vec![HydroSys::new(0)],
+        outflow_volume_below_slack: n_cols..n_cols + 1,
+        outflow_volume_above_slack: n_cols + 1..n_cols + 2,
+        ..base
+    };
+    let study_dims = test_support::study_dims();
+    let state = test_support::state_layout(1, 0);
+    let ec = zero_energy_conversion(1, 1);
+
+    let mut primal = vec![0.0_f64; n_cols];
+    primal.push(slack_below);
+    primal.push(slack_above);
+    let dual = vec![0.0_f64; 4];
+
+    let spec = StageExtractionSpec {
+        study_dims: &study_dims,
+        geometry: &geom,
+        hydro_cell_index: &test_support::identity_hydro_cell_index(256),
+        state: &state,
+        entity_counts: &entity_counts_1_hydro(),
+        inflow_m3s_per_hydro: &[0.0; 1],
+        block_hours: &[100.0, 100.0, 100.0],
+        generic_constraint_entries: &[],
+        ncs_col_upper: &[],
+        pumping_consumption_mw_per_m3s: &[],
+        contract_prices: &[],
+        contract_slots: &[],
+        diversion_upstream: &HashMap::new(),
+        hydro_productivities: &[0.0],
+        col_scale: &[],
+        row_scale: &[],
+        cumulative_discount_factor: 1.0,
+        cost_scale_factor: 1_000_000.0,
+        energy_conversion: &ec,
+        hydro_min_storage_hm3: &[0.0],
+        stage_index: 0,
+        horizon: &HorizonMode::Finite { num_stages: 1 },
+        anticipated_windows: &[],
+        study_stage_ids: &[],
+    };
+    let view = SolutionView {
+        primal: &primal,
+        dual: &dual,
+        objective: 0.0,
+        objective_coeffs: &vec![0.0_f64; primal.len()],
+        row_lower: &[],
+    };
+
+    let result = extract_stage_result(&view, &spec, 0);
+
+    assert_eq!(result.hydros.len(), k);
+    for row in &result.hydros {
+        assert_eq!(
+            row.outflow_volume_slack_below_hm3.to_bits(),
+            slack_below.to_bits()
+        );
+        assert_eq!(
+            row.outflow_volume_slack_above_hm3.to_bits(),
+            slack_above.to_bits()
+        );
+    }
 }
 
 // -------------------------------------------------------------------------
@@ -2954,6 +3193,8 @@ fn make_cost(
         curtailment_cost: curtailment,
         exchange_cost: exchange,
         pumping_cost: pumping,
+        outflow_volume_violation_below_cost: 0.0,
+        outflow_volume_violation_above_cost: 0.0,
     }
 }
 
@@ -4154,7 +4395,7 @@ fn cost_unscaled_by_col_scale() {
 }
 
 /// Verify that `compute_cost_result` decomposes `hydro_violation_cost` into
-/// the 6 per-constraint components, and that the sum invariant holds.
+/// its per-constraint components, and that the sum invariant holds.
 #[test]
 fn hydro_violation_cost_decomposition() {
     let indexer = make_indexer_2h_1fpha_1blk();
@@ -4307,16 +4548,151 @@ fn hydro_violation_cost_decomposition() {
         cost.withdrawal_violation_cost
     );
 
-    // Sum invariant: hydro_violation_cost == sum of all 6 components.
+    assert_eq!(
+        cost.outflow_volume_violation_below_cost.to_bits(),
+        0.0_f64.to_bits()
+    );
+    assert_eq!(
+        cost.outflow_volume_violation_above_cost.to_bits(),
+        0.0_f64.to_bits()
+    );
+
     let component_sum = cost.outflow_violation_below_cost
         + cost.outflow_violation_above_cost
         + cost.turbined_violation_cost
         + cost.generation_violation_cost
         + cost.evaporation_violation_cost
-        + cost.withdrawal_violation_cost;
+        + cost.withdrawal_violation_cost
+        + cost.outflow_volume_violation_below_cost
+        + cost.outflow_volume_violation_above_cost;
     assert!(
         (cost.hydro_violation_cost - component_sum).abs() < 1e-6,
         "hydro_violation_cost ({}) must equal sum of components ({component_sum})",
+        cost.hydro_violation_cost
+    );
+}
+
+#[test]
+fn outflow_volume_violation_costs_are_slack_times_resolved_price() {
+    let base = make_indexer_2h_1fpha_1blk();
+    let study_dims = test_support::study_dims_for(&counts_2h_1fpha_1blk());
+    let state = test_support::state_layout(2, 0);
+    let n_cols = base.generation_below_slack.end;
+    let (below_col, above_col) = (n_cols, n_cols + 1);
+    let geom = StageGeometry {
+        outflow_volume_hydro_indices: vec![HydroSys::new(1)],
+        outflow_volume_below_slack: below_col..below_col + 1,
+        outflow_volume_above_slack: above_col..above_col + 1,
+        ..base
+    };
+
+    let cost_scale_factor = 1_000_000.0_f64;
+    let (slack_below, slack_above) = (2.0_f64, 0.5_f64);
+    let (price_below, price_above) = (1200.0_f64, 300.0_f64);
+
+    let mut col_scale = vec![1.0_f64; above_col + 1];
+    col_scale[below_col] = 4.0;
+    col_scale[above_col] = 0.5;
+
+    let mut primal = vec![0.0_f64; above_col + 1];
+    primal[below_col] = slack_below;
+    primal[above_col] = slack_above;
+    // The coefficient the solver sees: price, column-scaled, then cost-scaled.
+    let mut obj = vec![0.0_f64; above_col + 1];
+    obj[below_col] = price_below * col_scale[below_col] / cost_scale_factor;
+    obj[above_col] = price_above * col_scale[above_col] / cost_scale_factor;
+
+    let dual = vec![0.0_f64; geometry_row_capacity(&geom)];
+    let row_lower = vec![0.0_f64; geometry_row_capacity(&geom)];
+    let counts = EntityCounts {
+        hydro_ids: vec![1, 2],
+        hydro_productivities: vec![0.0, 1.5],
+        thermal_ids: vec![],
+        line_ids: vec![],
+        bus_ids: vec![],
+        pumping_station_ids: vec![],
+        contract_ids: vec![],
+        non_controllable_ids: vec![],
+    };
+
+    let ec = zero_energy_conversion(2, 1);
+    let result = extract_stage_result(
+        &SolutionView {
+            primal: &primal,
+            dual: &dual,
+            objective: 0.0,
+            objective_coeffs: &obj,
+            row_lower: &row_lower,
+        },
+        &StageExtractionSpec {
+            study_dims: &study_dims,
+            geometry: &geom,
+            hydro_cell_index: &test_support::identity_hydro_cell_index(256),
+            state: &state,
+            entity_counts: &counts,
+            inflow_m3s_per_hydro: &[0.0; 2],
+            block_hours: &[],
+            generic_constraint_entries: &[],
+            ncs_col_upper: &[],
+            pumping_consumption_mw_per_m3s: &[],
+            contract_prices: &[],
+            contract_slots: &[],
+            diversion_upstream: &HashMap::new(),
+            hydro_productivities: &[0.0, 1.5],
+            col_scale: &col_scale,
+            row_scale: &[],
+            cumulative_discount_factor: 1.0,
+            cost_scale_factor,
+            energy_conversion: &ec,
+            hydro_min_storage_hm3: &[0.0; 2],
+            stage_index: 0,
+            horizon: &HorizonMode::Finite { num_stages: 1 },
+            anticipated_windows: &[],
+            study_stage_ids: &[],
+        },
+        0,
+    );
+
+    let cost = &result.costs[0];
+    let close = |got: f64, want: f64| (got - want).abs() <= 1e-12 * want.abs();
+
+    let expected_below = slack_below * price_below;
+    let expected_above = slack_above * price_above;
+    assert!(
+        close(cost.outflow_volume_violation_below_cost, expected_below),
+        "below: expected {expected_below}, got {}",
+        cost.outflow_volume_violation_below_cost
+    );
+    assert!(
+        close(cost.outflow_volume_violation_above_cost, expected_above),
+        "above: expected {expected_above}, got {}",
+        cost.outflow_volume_violation_above_cost
+    );
+    assert_ne!(
+        cost.outflow_volume_violation_below_cost.to_bits(),
+        (slack_below * price_below / cost_scale_factor).to_bits()
+    );
+    assert_ne!(
+        cost.outflow_volume_violation_above_cost.to_bits(),
+        (slack_above * price_above / cost_scale_factor).to_bits()
+    );
+
+    let component_sum = cost.outflow_violation_below_cost
+        + cost.outflow_violation_above_cost
+        + cost.turbined_violation_cost
+        + cost.generation_violation_cost
+        + cost.evaporation_violation_cost
+        + cost.withdrawal_violation_cost
+        + cost.outflow_volume_violation_below_cost
+        + cost.outflow_volume_violation_above_cost;
+    assert!(
+        close(cost.hydro_violation_cost, component_sum),
+        "hydro_violation_cost ({}) must equal sum of components ({component_sum})",
+        cost.hydro_violation_cost
+    );
+    assert!(
+        close(cost.hydro_violation_cost, expected_below + expected_above),
+        "hydro_violation_cost ({}) must carry both volume costs",
         cost.hydro_violation_cost
     );
 }

@@ -95,6 +95,11 @@ pub struct SimulationCostResult {
     pub exchange_cost: f64,
     /// Imputed cost for pumping station operation.
     pub pumping_cost: f64,
+    /// Cost of minimum outflow-volume violations: slack times the $/hm³ price, with
+    /// no hours factor. Both outflow-volume costs are in `hydro_violation_cost`.
+    pub outflow_volume_violation_below_cost: f64,
+    /// Cost of maximum outflow-volume violations.
+    pub outflow_volume_violation_above_cost: f64,
 }
 
 /// Hydro plant result for one (stage, block, hydro) tuple.
@@ -198,6 +203,11 @@ pub struct SimulationHydroResult {
     /// Stored energy at the end of the block, averaged over the STAGE's total
     /// hours (`stored_energy_final_mwh / Σ block_hours`) \[MW\].
     pub stored_energy_final_mw: f64,
+    /// Outflow-volume slack below the bound in hm³: the stage value, repeated on
+    /// every block row, `0.0` when the hydro declares no outflow-volume bound at the stage.
+    pub outflow_volume_slack_below_hm3: f64,
+    /// Outflow-volume slack above the bound in hm³.
+    pub outflow_volume_slack_above_hm3: f64,
 }
 
 /// Per-cell hydro dispatch result for one (stage, block, hydro, bus) tuple —
@@ -650,6 +660,8 @@ mod tests {
             curtailment_cost: 7.0,
             exchange_cost: 8.0,
             pumping_cost: 60.0,
+            outflow_volume_violation_below_cost: 0.0,
+            outflow_volume_violation_above_cost: 0.0,
         };
 
         assert_eq!(r.stage_id, 0);
@@ -715,6 +727,8 @@ mod tests {
             integrated_accumulated_productivity_mw_per_m3s: 0.9,
             stored_energy_initial_mw: 25.0,
             stored_energy_final_mw: 24.0,
+            outflow_volume_slack_below_hm3: 0.0,
+            outflow_volume_slack_above_hm3: 0.0,
         };
 
         assert_eq!(r.hydro_id, 5);
@@ -773,6 +787,8 @@ mod tests {
             integrated_accumulated_productivity_mw_per_m3s: 9.0,
             stored_energy_initial_mw: 0.4,
             stored_energy_final_mw: 0.5,
+            outflow_volume_slack_below_hm3: 1.5,
+            outflow_volume_slack_above_hm3: 2.5,
         };
 
         let json = serde_json::to_string(&original).expect("serialize");
@@ -844,6 +860,14 @@ mod tests {
         assert_eq!(
             decoded.stored_energy_final_mw.to_bits(),
             original.stored_energy_final_mw.to_bits()
+        );
+        assert_eq!(
+            decoded.outflow_volume_slack_below_hm3.to_bits(),
+            original.outflow_volume_slack_below_hm3.to_bits()
+        );
+        assert_eq!(
+            decoded.outflow_volume_slack_above_hm3.to_bits(),
+            original.outflow_volume_slack_above_hm3.to_bits()
         );
     }
 

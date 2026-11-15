@@ -424,6 +424,16 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
         "Total exchange regularization cost",
     ),
     ("costs", "pumping_cost", "Total pumping cost"),
+    (
+        "costs",
+        "outflow_volume_violation_below_cost",
+        "Cost of stage outflow volume short of its declared minimum, included in hydro_violation_cost",
+    ),
+    (
+        "costs",
+        "outflow_volume_violation_above_cost",
+        "Cost of stage outflow volume beyond its declared maximum, included in hydro_violation_cost",
+    ),
     ("hydros", "stage_id", "Stage index"),
     ("hydros", "block_id", "Block index within stage (nullable)"),
     ("hydros", "hydro_id", "Hydro plant identifier"),
@@ -511,6 +521,16 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
         "hydros",
         "stored_energy_final_mw",
         "Stored energy at end of block, averaged over the stage's total hours",
+    ),
+    (
+        "hydros",
+        "outflow_volume_slack_below_hm3",
+        "Stage outflow volume short of its declared minimum, repeated on every block row",
+    ),
+    (
+        "hydros",
+        "outflow_volume_slack_above_hm3",
+        "Stage outflow volume beyond its declared maximum, repeated on every block row",
     ),
     ("hydros", "spillage_cost", "Spillage regularization cost"),
     (
@@ -3005,8 +3025,8 @@ mod tests {
 
         let row_count = rdr.records().count();
         assert_eq!(
-            row_count, 253,
-            "variables.csv must have exactly 253 data rows (one per column across all schemas)"
+            row_count, 257,
+            "variables.csv must have exactly 257 data rows (one per column across all schemas)"
         );
     }
 

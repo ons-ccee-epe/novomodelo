@@ -33,7 +33,7 @@ use crate::lp::builder::{
 use crate::lp::indexer::{
     AnticipatedLocal, AnticipatedPlants, BlockIdx, Boundary, BusSys, EvapLocal, FillingTargetLocal,
     FloorLocal, FphaCellLocal, FphaLocal, HydroCell, HydroCellIndex, HydroSys, LineSys, NcsSys,
-    PlantFloorLocal, PumpingSys, StateSpace, StudyDimensions, ThermalSys,
+    OutflowVolumeLocal, PlantFloorLocal, PumpingSys, StateSpace, StudyDimensions, ThermalSys,
     anticipated_resolution_for, is_anticipated_decision_active_for_delivery,
 };
 use crate::setup::NodeId;
@@ -72,6 +72,8 @@ pub(crate) struct HydroReverseLookup {
     pub(crate) filled_min_storage_floor: Vec<Option<FloorLocal>>,
     /// Plant residual floor slot per hydro, `None` if it owns no residual slack columns at this stage.
     pub(crate) plant_floor: Vec<Option<PlantFloorLocal>>,
+    /// Outflow-volume slot per hydro, `None` if it declares no outflow-volume bound at this stage.
+    pub(crate) outflow_volume: Vec<Option<OutflowVolumeLocal>>,
 }
 
 /// Map each system hydro index in `indices` to its local slot via `make`;
@@ -120,6 +122,11 @@ impl HydroReverseLookup {
             &geometry.plant_floor_hydro_indices,
             PlantFloorLocal::new,
         );
+        let outflow_volume = build_reverse_slots(
+            n_hydros,
+            &geometry.outflow_volume_hydro_indices,
+            OutflowVolumeLocal::new,
+        );
         Self {
             fpha,
             fpha_cell_local_start,
@@ -127,6 +134,7 @@ impl HydroReverseLookup {
             filling_target,
             filled_min_storage_floor,
             plant_floor,
+            outflow_volume,
         }
     }
 
@@ -178,6 +186,32 @@ fn read_floor_slack_primal(
         primal.len(),
     );
     primal[col]
+}
+
+/// Read the `(σ⁻, σ⁺)` primals of the sparse outflow-volume slack columns, or
+/// `(0.0, 0.0)` when `local` is `None` (the hydro declares no bound at this stage).
+#[inline]
+fn read_outflow_volume_slack_primals(
+    primal: &[f64],
+    geometry: &StageGeometry,
+    local: Option<OutflowVolumeLocal>,
+) -> (f64, f64) {
+    let Some(local) = local else {
+        return (0.0, 0.0);
+    };
+    let below_col = geometry.outflow_volume_below_slack_col(local);
+    let above_col = geometry.outflow_volume_above_slack_col(local);
+    debug_assert!(
+        below_col < primal.len(),
+        "outflow-volume below-slack col {below_col} out of primal len {}",
+        primal.len(),
+    );
+    debug_assert!(
+        above_col < primal.len(),
+        "outflow-volume above-slack col {above_col} out of primal len {}",
+        primal.len(),
+    );
+    (primal[below_col], primal[above_col])
 }
 
 /// Primal of a thermal's anticipated-decision column, or `None` when the
@@ -812,6 +846,9 @@ struct HydroStageContext {
     filling_target_violation: f64,
     /// `σ^{v-}` operating-floor slack (hm³); read once, repeated across per-block rows.
     storage_violation_below: f64,
+    /// Outflow-volume slacks (hm³); read once, repeated across per-block rows.
+    outflow_volume_slack_below_hm3: f64,
+    outflow_volume_slack_above_hm3: f64,
 }
 
 impl HydroStageContext {
@@ -857,6 +894,8 @@ impl HydroStageContext {
             spec.geometry,
             lookup.filled_min_storage_floor[h],
         );
+        let (outflow_volume_slack_below_hm3, outflow_volume_slack_above_hm3) =
+            read_outflow_volume_slack_primals(view.primal, spec.geometry, lookup.outflow_volume[h]);
         let conv = spec.energy_conversion.conversion(h, spec.stage_index);
         let rho_acum = spec
             .energy_conversion
@@ -891,6 +930,8 @@ impl HydroStageContext {
             evaporation_violation_pos_m3s,
             filling_target_violation,
             storage_violation_below,
+            outflow_volume_slack_below_hm3,
+            outflow_volume_slack_above_hm3,
         }
     }
 }
@@ -1061,6 +1102,8 @@ fn extract_hydro_per_block<'a>(
                 .integrated_accumulated_productivity_mw_per_m3s,
             stored_energy_initial_mw,
             stored_energy_final_mw,
+            outflow_volume_slack_below_hm3: ctx.outflow_volume_slack_below_hm3,
+            outflow_volume_slack_above_hm3: ctx.outflow_volume_slack_above_hm3,
         }
     })
 }
@@ -1399,6 +1442,8 @@ struct HydroViolationCosts {
     outflow_above: f64,
     turbined: f64,
     generation: f64,
+    outflow_volume_below: f64,
+    outflow_volume_above: f64,
 }
 
 impl HydroViolationCosts {
@@ -1409,10 +1454,12 @@ impl HydroViolationCosts {
             + self.outflow_above
             + self.turbined
             + self.generation
+            + self.outflow_volume_below
+            + self.outflow_volume_above
     }
 }
 
-/// Compute the 6 per-constraint hydro violation costs from a solution view.
+/// Compute the per-constraint hydro violation costs from a solution view.
 fn compute_hydro_violation_costs(
     equipment: &StageGeometry,
     col_cost: impl Fn(usize) -> f64,
@@ -1450,6 +1497,17 @@ fn compute_hydro_violation_costs(
             )
         };
 
+    let outflow_volume_below = if equipment.outflow_volume_below_slack.is_empty() {
+        0.0
+    } else {
+        range_sum(equipment.outflow_volume_below_slack.clone()) * cost_scale_factor
+    };
+    let outflow_volume_above = if equipment.outflow_volume_above_slack.is_empty() {
+        0.0
+    } else {
+        range_sum(equipment.outflow_volume_above_slack.clone()) * cost_scale_factor
+    };
+
     HydroViolationCosts {
         evaporation,
         withdrawal,
@@ -1457,6 +1515,8 @@ fn compute_hydro_violation_costs(
         outflow_above,
         turbined,
         generation,
+        outflow_volume_below,
+        outflow_volume_above,
     }
 }
 
@@ -1572,6 +1632,8 @@ fn compute_cost_result(
         curtailment_cost: ncs_curtailment_cost,
         exchange_cost,
         pumping_cost: 0.0,
+        outflow_volume_violation_below_cost: hv.outflow_volume_below,
+        outflow_volume_violation_above_cost: hv.outflow_volume_above,
     }
 }
 
@@ -1889,6 +1951,8 @@ fn extract_stub_collections(
 ///     curtailment_cost: 7.0,
 ///     exchange_cost: 8.0,
 ///     pumping_cost: 60.0,
+///     outflow_volume_violation_below_cost: 0.0,
+///     outflow_volume_violation_above_cost: 0.0,
 /// };
 ///
 /// let mut accum = ScenarioCategoryCosts {
@@ -1991,6 +2055,8 @@ mod transit_seed_tests {
             integrated_accumulated_productivity_mw_per_m3s: 0.0,
             stored_energy_initial_mw: 0.0,
             stored_energy_final_mw: 0.0,
+            outflow_volume_slack_below_hm3: 0.0,
+            outflow_volume_slack_above_hm3: 0.0,
         }
     }
 

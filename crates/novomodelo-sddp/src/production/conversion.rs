@@ -51,6 +51,8 @@ impl IntoWriteRecord for SimulationCostResult {
             curtailment_cost: s.curtailment_cost,
             exchange_cost: s.exchange_cost,
             pumping_cost: s.pumping_cost,
+            outflow_volume_violation_below_cost: s.outflow_volume_violation_below_cost,
+            outflow_volume_violation_above_cost: s.outflow_volume_violation_above_cost,
         }
     }
 }
@@ -100,6 +102,8 @@ impl IntoWriteRecord for SimulationHydroResult {
                 .integrated_accumulated_productivity_mw_per_m3s,
             stored_energy_initial_mw: s.stored_energy_initial_mw,
             stored_energy_final_mw: s.stored_energy_final_mw,
+            outflow_volume_slack_below_hm3: s.outflow_volume_slack_below_hm3,
+            outflow_volume_slack_above_hm3: s.outflow_volume_slack_above_hm3,
         }
     }
 }
@@ -384,6 +388,8 @@ mod tests {
             curtailment_cost: 15.0,
             exchange_cost: 16.0,
             pumping_cost: 17.0,
+            outflow_volume_violation_below_cost: 4.5,
+            outflow_volume_violation_above_cost: 0.75,
         }
     }
 
@@ -426,6 +432,8 @@ mod tests {
             integrated_accumulated_productivity_mw_per_m3s: 0.0,
             stored_energy_initial_mw: 0.0,
             stored_energy_final_mw: 0.0,
+            outflow_volume_slack_below_hm3: 6.5,
+            outflow_volume_slack_above_hm3: 0.25,
         }
     }
 
@@ -604,8 +612,12 @@ mod tests {
         assert_eq!(stage0.stage_id, 0);
         assert_eq!(stage0.costs[0].total_cost, 1.0);
         assert_eq!(stage0.costs[0].discount_factor, 0.95);
+        assert_eq!(stage0.costs[0].outflow_volume_violation_below_cost, 4.5);
+        assert_eq!(stage0.costs[0].outflow_volume_violation_above_cost, 0.75);
         assert_eq!(stage0.hydros[0].turbined_m3s, 100.0);
         assert_eq!(stage0.hydros[0].storage_initial_hm3, 500.0);
+        assert_eq!(stage0.hydros[0].outflow_volume_slack_below_hm3, 6.5);
+        assert_eq!(stage0.hydros[0].outflow_volume_slack_above_hm3, 0.25);
         assert_eq!(stage0.hydro_bus_generation[0].bus_id, 9);
         assert_eq!(stage0.hydro_bus_generation[0].turbined_m3s, 40.0);
         assert_eq!(stage0.thermals[0].generation_mw, 150.0);
