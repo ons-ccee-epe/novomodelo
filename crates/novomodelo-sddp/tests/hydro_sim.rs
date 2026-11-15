@@ -241,14 +241,16 @@ mod d17_signed_evaporation {
     //!   `evaporation_m3s` must be **negative**.
     //! - Stage 3 lands on January where `coefficients_mm` is positive (true
     //!   evaporation loss); the simulated `evaporation_m3s` must be **positive**.
-    //! - In every stage the symmetric `[-q_max, +q_max]` magnitude bound must
-    //!   absorb the linearized target, so neither the positive nor the negative
-    //!   evaporation violation slack should fire.
+    //! - In every stage the linearized target at the stage's average storage must
+    //!   fit the sign-dependent flow bounds, so neither the positive nor the
+    //!   negative evaporation violation slack should fire.
     //!
-    //! The companion `parity_hash_d17` test guards bit-for-bit byte stability of
-    //! the same case; this test guards the **sign semantics** explicitly so a
-    //! future regression that flips the sign convention is caught by an
-    //! actionable assertion rather than an opaque hash diff.
+    //! The flow's box follows the month's coefficient sign: in a positive month it
+    //! never falls below the lowest target over the storage range (or 0), in a
+    //! negative month it never rises above the highest one (or 0), and in a zero
+    //! month it is 0. Under-evaporation in a negative month is capped at the same
+    //! highest target. The row identity `e = tau(v) - f_plus + f_minus` ties the
+    //! reported flow and slacks back to the target.
 
     use novomodelo_io::config::SimulationSelection;
     use std::path::Path;
@@ -257,7 +259,7 @@ mod d17_signed_evaporation {
     use novomodelo_core::scenario::ScenarioSource;
     use novomodelo_sddp::{
         SimulationWeighting, StudySetup, aggregate_simulation,
-        hydro_models::prepare_hydro_models,
+        hydro_models::{EvaporationCoefficientSign, EvaporationModel, prepare_hydro_models},
         setup::{StudyParams, prepare_stochastic},
     };
     use novomodelo_solver::ActiveSolver;
@@ -284,6 +286,7 @@ mod d17_signed_evaporation {
 
         let hydro_models =
             prepare_hydro_models(&system, &dir, false).expect("prepare_hydro_models must succeed");
+        let evaporation = hydro_models.evaporation.clone();
 
         let mut config_with_sim = config.clone();
         config_with_sim.simulation.enabled = true;
@@ -365,6 +368,12 @@ mod d17_signed_evaporation {
             scenario.stages.len()
         );
 
+        let EvaporationModel::Linearized { coefficients, .. } = evaporation.model(0) else {
+            panic!("D17 must model evaporation for its hydro");
+        };
+        let hydro = &system.hydros()[0];
+        let (min_storage_hm3, max_storage_hm3) = (hydro.min_storage_hm3, hydro.max_storage_hm3);
+
         for stage in &scenario.stages {
             assert_eq!(
                 stage.hydros.len(),
@@ -376,6 +385,50 @@ mod d17_signed_evaporation {
             let evap = h
                 .evaporation_m3s
                 .expect("evaporation must be modeled for D17");
+
+            let stage_idx = usize::try_from(stage.stage_id).expect("stage ids are non-negative");
+            let c = &coefficients[stage_idx];
+            let target =
+                |storage_hm3: f64| c.intercept_m3s + c.volume_slope_m3s_per_hm3 * storage_hm3;
+            let tau = target(0.5 * (h.storage_initial_hm3 + h.storage_final_hm3));
+            let (at_min, at_max) = (target(min_storage_hm3), target(max_storage_hm3));
+            let (t_lo, t_hi) = (at_min.min(at_max), at_min.max(at_max));
+
+            assert!(
+                (evap - h.evaporation_violation_pos_m3s + h.evaporation_violation_neg_m3s - tau)
+                    .abs()
+                    <= 1e-6 * (1.0 + tau.abs()),
+                "stage {}: e - f_minus + f_plus must equal the target {tau}, got e={evap}, \
+                 f_minus={}, f_plus={}",
+                stage.stage_id,
+                h.evaporation_violation_pos_m3s,
+                h.evaporation_violation_neg_m3s
+            );
+            match c.coefficient_sign {
+                EvaporationCoefficientSign::Positive => assert!(
+                    evap >= t_lo.min(0.0) - 1e-9,
+                    "stage {}: positive month flow {evap} below the lowest reachable target",
+                    stage.stage_id
+                ),
+                EvaporationCoefficientSign::Negative => {
+                    assert!(
+                        evap <= t_hi.max(0.0) + 1e-9,
+                        "stage {}: negative month flow {evap} above the highest reachable target",
+                        stage.stage_id
+                    );
+                    assert!(
+                        h.evaporation_violation_neg_m3s <= t_hi.max(0.0) + 1e-9,
+                        "stage {}: under-evaporation {} above the highest reachable target",
+                        stage.stage_id,
+                        h.evaporation_violation_neg_m3s
+                    );
+                }
+                EvaporationCoefficientSign::Zero => assert!(
+                    evap.abs() <= 1e-9,
+                    "stage {}: zero month flow must be 0, got {evap}",
+                    stage.stage_id
+                ),
+            }
 
             match stage.stage_id {
                 0..=2 => assert!(
@@ -1636,6 +1689,7 @@ mod transit_seed_output {
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -2038,6 +2092,7 @@ mod transit_seed_round_trip {
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -2623,6 +2678,7 @@ mod diversion_outflow_bounds {
             outflow_violation_below_cost: 1000.0,
             outflow_violation_above_cost: 1000.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -3229,6 +3285,7 @@ mod water_arc_and_post_study_anticipated_coexist_on_extended_layout {
                     outflow_violation_below_cost: 0.0,
                     outflow_violation_above_cost: 0.0,
                     generation_violation_below_cost: 0.0,
+                    fpha_violation_cost: 0.0,
                     evaporation_violation_cost: 0.0,
                     water_withdrawal_violation_cost: 0.0,
                     water_withdrawal_violation_pos_cost: 0.0,

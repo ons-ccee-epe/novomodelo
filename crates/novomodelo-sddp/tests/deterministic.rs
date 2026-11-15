@@ -34,6 +34,7 @@ use novomodelo_sddp::{
     indexer::HydroSys, lead_time::resolve_spread, setup::prepare_stochastic,
 };
 use novomodelo_solver::{ActiveSolver, SolverInterface};
+use novomodelo_stochastic::par::HydroEstimationEntry;
 
 mod common;
 use common::{D03_EXPECTED_COST, StubComm, build_setup_for_case, fresh_setup_with};
@@ -2813,7 +2814,8 @@ fn d21_min_outflow_regression() {
             + cost.turbined_violation_cost
             + cost.generation_violation_cost
             + cost.evaporation_violation_cost
-            + cost.withdrawal_violation_cost;
+            + cost.withdrawal_violation_cost
+            + cost.fpha_violation_cost;
         assert!(
             (cost.hydro_violation_cost - component_sum).abs() < 1e-6,
             "D21 stage {s}: sum invariant failed: hydro_violation_cost={}, component_sum={}",
@@ -2845,6 +2847,11 @@ fn d21_min_outflow_regression() {
             cost.withdrawal_violation_cost.abs() < 1e-10,
             "D21 stage {s}: withdrawal should be 0, got {}",
             cost.withdrawal_violation_cost
+        );
+        assert!(
+            cost.fpha_violation_cost == 0.0,
+            "D21 stage {s}: fpha should be 0, got {}",
+            cost.fpha_violation_cost
         );
 
         let slack_m3s = stage_result.hydros[0].outflow_slack_below_m3s;
@@ -3393,8 +3400,8 @@ fn d25_simulation_discount_factors() {
 
 /// D26 expected lower bound — regression guard that PAR prediction uses the
 /// forward (not backward) lag. Includes the universal `turbined_cost`
-/// regularization (`≈ 17_830.06 $`).
-pub const D26_EXPECTED_COST: f64 = 50_625_314.970_196_81;
+/// regularization.
+pub const D26_EXPECTED_COST: f64 = 46_884_263.302_141_73;
 
 /// D26: PAR(2) estimation from inflow history (regression guard for forward-prediction fix).
 /// Exercises full PAR(p) pipeline with PACF order selection and Yule-Walker fitting.
@@ -3471,13 +3478,7 @@ fn d26_estimated_par2_under_dynamic_selection() {
     );
 }
 
-/// D26: Verify PACF order selection picks AR order 2.
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "slow: run with --features slow-tests"
-)]
-#[test]
-fn d26_estimated_par2_order_selection() {
+fn d26_estimation_entry() -> HydroEstimationEntry {
     let case_dir = Path::new("../../examples/deterministic/d26-estimated-par2");
     let config_path = case_dir.join("config.json");
     let config = novomodelo_io::parse_config(&config_path).expect("config must parse");
@@ -3498,13 +3499,34 @@ fn d26_estimated_par2_order_selection() {
         .expect("estimation report must be Some");
 
     assert_eq!(report.entries.len(), 1, "expected 1 hydro entry");
+    report.entries.into_values().next().expect("entry exists")
+}
 
-    let (hydro_id, entry) = report.entries.iter().next().expect("entry exists");
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: run with --features slow-tests"
+)]
+#[test]
+fn d26_estimated_par2_order_selection() {
+    let entry = d26_estimation_entry();
     assert_eq!(
         entry.selected_order, 2,
-        "expected AR order 2 for hydro {hydro_id}, got {}",
+        "expected AR order 2, got {}",
         entry.selected_order
     );
+}
+
+/// D26: season 1's lag 2 crosses the year boundary, one pair short of its
+/// bucket; dividing by the bucket size, not the pair count, fits it at order 1.
+#[cfg_attr(
+    not(feature = "slow-tests"),
+    ignore = "slow: run with --features slow-tests"
+)]
+#[test]
+fn d26_cross_year_lag_divided_by_the_bucket_size_fits_season_1_at_order_1() {
+    let entry = d26_estimation_entry();
+    let orders: Vec<usize> = entry.coefficients.iter().map(Vec::len).collect();
+    assert_eq!(orders[1], 1, "per-season orders {orders:?}");
 }
 
 // ---------------------------------------------------------------------------
@@ -4046,7 +4068,7 @@ fn d43_storage_only_cut_converges() {
         "D43: LB/UB gap must close (gap={})",
         result.final_gap,
     );
-    assert_cost(result.final_lb, 11_658_487.253_236_46, 1.0, "D43");
+    assert_cost(result.final_lb, 9_874_224.966_726_104, 1.0, "D43");
 
     // The cut(s) stored in the reduced pool carry the reduced length: a cut on a
     // storage-only pool has exactly N coefficients, not the global n_state. This is
@@ -4087,7 +4109,7 @@ fn d43_observation_free_final_lb_is_bit_exact() {
 
     assert_eq!(
         result.final_lb.to_bits(),
-        0x4166_3c9e_e81a_835bu64,
+        0x4162_d566_1eef_6b95u64,
         "D43 final_lb must match its bit-exact HiGHS pin: got {} ({:#018x})",
         result.final_lb,
         result.final_lb.to_bits()
@@ -7009,6 +7031,7 @@ mod chronological_telescoping {
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -7749,6 +7772,7 @@ mod season_descriptor_checkpoint_round_trip {
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -8140,6 +8164,7 @@ mod boundary_season_gate_round_trip {
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -8503,6 +8528,7 @@ mod transit_arrival_interval_checkpoint_round_trip {
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -8887,6 +8913,7 @@ mod chronological_attribution {
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -8908,6 +8935,7 @@ mod chronological_attribution {
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -10834,6 +10862,7 @@ mod enumerated_external {
                     outflow_violation_below_cost: 0.0,
                     outflow_violation_above_cost: 0.0,
                     generation_violation_below_cost: 0.0,
+                    fpha_violation_cost: 0.0,
                     evaporation_violation_cost: 0.0,
                     water_withdrawal_violation_cost: 0.0,
                     water_withdrawal_violation_pos_cost: 0.0,
@@ -12200,6 +12229,7 @@ mod enumerated_cvar_gap {
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -12487,6 +12517,7 @@ mod stored_energy_fixture_json {
     "storage_violation_below_cost": 10000.0, "filling_target_violation_cost": 10000.0,
     "turbined_violation_below_cost": 10000.0, "outflow_violation_below_cost": 10000.0,
     "outflow_violation_above_cost": 10000.0, "generation_violation_below_cost": 10000.0,
+    "fpha_violation_cost": 110000.0,
     "evaporation_violation_cost": 10000.0, "water_withdrawal_violation_cost": 10000.0
   },
   "non_controllable_source": { "curtailment_cost": 0.005 }

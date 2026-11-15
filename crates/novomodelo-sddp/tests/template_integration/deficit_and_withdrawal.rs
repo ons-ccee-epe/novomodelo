@@ -1,6 +1,7 @@
 //! `deficit_and_withdrawal` section tests.
 
 use super::*;
+use novomodelo_sddp::indexer::{BlockIdx, Boundary, BusSys, HydroCell, HydroSys};
 
 #[test]
 #[allow(clippy::too_many_lines)]
@@ -482,9 +483,7 @@ fn withdrawal_slack_matrix_entry_coefficient_is_minus_zeta() {
     .expect("build ok");
 
     let t = &result.templates[0];
-    let n_h = system.hydros().len();
-    // Withdrawal slack neg column: followed by N pos cols and 4*N operational violation slack columns.
-    let col_neg = t.num_cols - 1 - 4 * n_h - n_h;
+    let col_neg = result.geometry_per_stage[0].withdrawal_slack_neg_col(HydroSys::new(0));
     let row_water = 0_usize; // water balance for hydro 0
 
     let total_hours = 744.0_f64;
@@ -526,9 +525,7 @@ fn withdrawal_slack_objective_equals_cost_times_hours() {
     .expect("build ok");
 
     let t = &result.templates[0];
-    let n_h = system.hydros().len();
-    // Withdrawal slack neg: followed by N pos cols and 4*N operational violation slack columns.
-    let col_w = t.num_cols - 1 - 4 * n_h - n_h;
+    let col_w = result.geometry_per_stage[0].withdrawal_slack_neg_col(HydroSys::new(0));
     let expected_obj = violation_cost * total_hours / COST_SCALE_FACTOR;
     assert!(
         (t.objective[col_w] - expected_obj).abs() < 1e-12,
@@ -552,55 +549,11 @@ fn withdrawal_slack_objective_zero_when_cost_is_zero() {
     .expect("build ok");
 
     let t = &result.templates[0];
-    let n_h = system.hydros().len();
-    // Withdrawal slack neg: followed by N pos + 4*N operational violation slack columns.
-    let col_w = t.num_cols - 1 - 5 * n_h;
+    let col_w = result.geometry_per_stage[0].withdrawal_slack_neg_col(HydroSys::new(0));
     assert!(
         t.objective[col_w].abs() < 1e-15,
         "withdrawal slack neg objective must be 0 when cost=0, got {}",
         t.objective[col_w]
-    );
-}
-
-#[test]
-fn withdrawal_slack_bounds_are_sign_aware_positive_target() {
-    let system = one_hydro_system_with_withdrawal(1, 0, 10.0, 5_000.0);
-    let result = build_stage_templates_resolving_layout(
-        &system,
-        no_penalty_config(),
-        &PrecomputedPar::default(),
-        &PrecomputedNormal::default(),
-        &default_production(&system),
-        &default_evaporation(&system),
-        &ResolvedParameters::default(),
-    )
-    .expect("build ok");
-
-    let t = &result.templates[0];
-    let n_h = system.hydros().len();
-    // Trailing slack layout per hydro: neg, pos, then 4 operational violation
-    // slacks (5 families after neg). col_neg is the first of the 6 trailing cols.
-    let col_neg = t.num_cols - 1 - 5 * n_h;
-    let col_pos = col_neg + n_h;
-    assert!(
-        (t.col_lower[col_neg] - 0.0).abs() < 1e-15,
-        "neg slack lower bound must be 0.0, got {}",
-        t.col_lower[col_neg]
-    );
-    assert!(
-        (t.col_upper[col_neg] - 10.0).abs() < 1e-15,
-        "neg slack upper bound must be |T| = 10.0 for T > 0, got {}",
-        t.col_upper[col_neg]
-    );
-    assert!(
-        (t.col_lower[col_pos] - 0.0).abs() < 1e-15,
-        "pos slack lower bound must be 0.0, got {}",
-        t.col_lower[col_pos]
-    );
-    assert!(
-        t.col_upper[col_pos].is_infinite() && t.col_upper[col_pos] > 0.0,
-        "pos slack upper bound must be +inf for T > 0 (over-withdrawal latitude), got {}",
-        t.col_upper[col_pos]
     );
 }
 
@@ -740,6 +693,7 @@ fn two_hydro_withdrawal_slack_entries_per_hydro() {
         outflow_violation_below_cost: 0.0,
         outflow_violation_above_cost: 0.0,
         generation_violation_below_cost: 0.0,
+        fpha_violation_cost: 0.0,
         evaporation_violation_cost: 0.0,
         water_withdrawal_violation_cost: 2_000.0,
         water_withdrawal_violation_pos_cost: 2_000.0,
@@ -788,6 +742,7 @@ fn two_hydro_withdrawal_slack_entries_per_hydro() {
                         outflow_violation_below_cost: 0.0,
                         outflow_violation_above_cost: 0.0,
                         generation_violation_below_cost: 0.0,
+                        fpha_violation_cost: 0.0,
                         evaporation_violation_cost: 0.0,
                         water_withdrawal_violation_cost: 2_000.0,
                         water_withdrawal_violation_pos_cost: 2_000.0,
@@ -818,6 +773,7 @@ fn two_hydro_withdrawal_slack_entries_per_hydro() {
                         outflow_violation_below_cost: 0.0,
                         outflow_violation_above_cost: 0.0,
                         generation_violation_below_cost: 0.0,
+                        fpha_violation_cost: 0.0,
                         evaporation_violation_cost: 0.0,
                         water_withdrawal_violation_cost: 2_000.0,
                         water_withdrawal_violation_pos_cost: 2_000.0,
@@ -850,14 +806,9 @@ fn two_hydro_withdrawal_slack_entries_per_hydro() {
     .expect("build ok");
 
     let t = &result.templates[0];
-    let n_h = system.hydros().len();
-
-    // N=2, L=0: state+aux = N*2+1 = 5.
-    // col_withdrawal_neg_start = 13, col_withdrawal_pos_start = 15,
-    // operational violation slacks = 4*2 = 8, num_cols = 25.
-    // Withdrawal neg columns: num_cols - 6*N = 25 - 12 = 13.
-    let col_w0 = t.num_cols - 6 * n_h;
-    let col_w1 = t.num_cols - 6 * n_h + 1;
+    let g = &result.geometry_per_stage[0];
+    let col_w0 = g.withdrawal_slack_neg_col(HydroSys::new(0));
+    let col_w1 = g.withdrawal_slack_neg_col(HydroSys::new(1));
 
     let row_w0 = 0_usize; // water balance for hydro 0
     let row_w1 = 1_usize; // water balance for hydro 1
@@ -915,7 +866,6 @@ fn three_hydro_num_cols_includes_three_withdrawal_slacks() {
         },
     );
 
-    #[allow(clippy::cast_possible_wrap)]
     let stages = vec![make_stage(
         0,
         StageSpec {
@@ -1023,6 +973,7 @@ fn three_hydro_num_cols_includes_three_withdrawal_slacks() {
                 outflow_violation_below_cost: 0.0,
                 outflow_violation_above_cost: 0.0,
                 generation_violation_below_cost: 0.0,
+                fpha_violation_cost: 0.0,
                 evaporation_violation_cost: 0.0,
                 water_withdrawal_violation_cost: 1_000.0,
                 water_withdrawal_violation_pos_cost: 1_000.0,
@@ -1061,6 +1012,7 @@ fn three_hydro_num_cols_includes_three_withdrawal_slacks() {
                         outflow_violation_below_cost: 0.0,
                         outflow_violation_above_cost: 0.0,
                         generation_violation_below_cost: 0.0,
+                        fpha_violation_cost: 0.0,
                         evaporation_violation_cost: 0.0,
                         water_withdrawal_violation_cost: 1_000.0,
                         water_withdrawal_violation_pos_cost: 1_000.0,
@@ -1091,6 +1043,7 @@ fn three_hydro_num_cols_includes_three_withdrawal_slacks() {
                         outflow_violation_below_cost: 0.0,
                         outflow_violation_above_cost: 0.0,
                         generation_violation_below_cost: 0.0,
+                        fpha_violation_cost: 0.0,
                         evaporation_violation_cost: 0.0,
                         water_withdrawal_violation_cost: 1_000.0,
                         water_withdrawal_violation_pos_cost: 1_000.0,
@@ -1121,6 +1074,7 @@ fn three_hydro_num_cols_includes_three_withdrawal_slacks() {
                         outflow_violation_below_cost: 0.0,
                         outflow_violation_above_cost: 0.0,
                         generation_violation_below_cost: 0.0,
+                        fpha_violation_cost: 0.0,
                         evaporation_violation_cost: 0.0,
                         water_withdrawal_violation_cost: 1_000.0,
                         water_withdrawal_violation_pos_cost: 1_000.0,
@@ -1170,21 +1124,511 @@ fn three_hydro_num_cols_includes_three_withdrawal_slacks() {
         t.num_cols
     );
 
-    // Withdrawal slacks: 2*N withdrawal + 4*N operational = 6*N trailing columns;
-    // withdrawal_neg starts at num_cols - 6*N.
-    let n_h = system.hydros().len();
-    let neg_start = t.num_cols - 6 * n_h;
-    let pos_start = neg_start + n_h;
-    for h in 0..n_h {
+    let g = &result.geometry_per_stage[0];
+    for h in 0..system.hydros().len() {
+        let col_neg = g.withdrawal_slack_neg_col(HydroSys::new(h));
+        let col_pos = g.withdrawal_slack_pos_col(HydroSys::new(h));
         assert!(
-            (t.col_upper[neg_start + h] - 5.0).abs() < 1e-15,
+            (t.col_upper[col_neg] - 5.0).abs() < 1e-15,
             "withdrawal slack neg column for hydro {h} must be capped at |T| = 5.0, got {}",
-            t.col_upper[neg_start + h]
+            t.col_upper[col_neg]
         );
         assert_eq!(
-            t.col_upper[pos_start + h],
+            t.col_upper[col_pos],
             f64::INFINITY,
             "withdrawal slack pos column for hydro {h} should be unbounded above (T > 0)"
         );
     }
+}
+
+/// Hydro `D` (id 2, canonical position 0) is the target. Hydro `P` (id 3, position 1) is
+/// `PreFilling` at stage 0 and routes onto `D`. `D` prices its withdrawal slacks at 5000
+/// and `P` at 7000, so the price of a transferred withdrawal shows which plant's slacks
+/// carry it.
+fn prefilling_pair_system(
+    prefilling_withdrawal_m3s: f64,
+    target_withdrawal_m3s: f64,
+) -> novomodelo_core::System {
+    use chrono::NaiveDate;
+    use novomodelo_core::entities::hydro::HydroGenerationModel;
+    use novomodelo_core::scenario::LoadModel;
+    use novomodelo_core::temporal::{
+        Block, BlockMode, NoiseMethod, ScenarioSourceConfig, StageRiskConfig, StageStateConfig,
+    };
+
+    const N_STAGES: usize = 2;
+    const HYDRO_IDS: [i32; 2] = [2, 3];
+
+    let withdrawal_penalties = |cost: f64| HydroPenalties {
+        spillage_cost: 0.01,
+        diversion_cost: 0.0,
+        turbined_cost: 0.0,
+        storage_violation_below_cost: 0.0,
+        filling_target_violation_cost: 0.0,
+        turbined_violation_below_cost: 0.0,
+        outflow_violation_below_cost: 0.0,
+        outflow_violation_above_cost: 0.0,
+        generation_violation_below_cost: 0.0,
+        fpha_violation_cost: 0.0,
+        evaporation_violation_cost: 0.0,
+        water_withdrawal_violation_cost: cost,
+        water_withdrawal_violation_pos_cost: cost,
+        water_withdrawal_violation_neg_cost: cost,
+        evaporation_violation_pos_cost: 0.0,
+        evaporation_violation_neg_cost: 0.0,
+        inflow_nonnegativity_cost: 1000.0,
+    };
+    let target_penalties = withdrawal_penalties(5_000.0);
+    let prefilling_penalties = withdrawal_penalties(7_000.0);
+
+    let bus = make_bus(
+        EntityId(1),
+        BusSpec {
+            name: "B1".to_string(),
+            deficit_segments: vec![DeficitSegment {
+                depth_mw: None,
+                cost_per_mwh: 500.0,
+            }],
+            ..Default::default()
+        },
+    );
+
+    let hydros = HYDRO_IDS
+        .iter()
+        .map(|&id| {
+            let is_target = id == HYDRO_IDS[0];
+            make_hydro(
+                EntityId(id),
+                HydroSpec {
+                    name: format!("H{id}"),
+                    bus_id: EntityId(1),
+                    downstream_id: (!is_target).then_some(EntityId(HYDRO_IDS[0])),
+                    entry_stage_id: (!is_target).then_some(1),
+                    max_storage_hm3: 200.0,
+                    generation_model: HydroGenerationModel::ConstantProductivity,
+                    max_turbined_m3s: 100.0,
+                    max_generation_mw: 250.0,
+                    penalties: if is_target {
+                        target_penalties
+                    } else {
+                        prefilling_penalties
+                    },
+                    ..Default::default()
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+
+    let stages = (0..N_STAGES)
+        .map(|i| {
+            let month = i as u32 + 1;
+            make_stage(
+                i,
+                StageSpec {
+                    start_date: NaiveDate::from_ymd_opt(2024, month, 1).unwrap(),
+                    end_date: NaiveDate::from_ymd_opt(2024, month + 1, 1).unwrap(),
+                    season_id: None,
+                    blocks: vec![Block {
+                        index: 0,
+                        name: "S".to_string(),
+                        duration_hours: 744.0,
+                    }],
+                    block_mode: BlockMode::Parallel,
+                    state_config: StageStateConfig {
+                        storage: true,
+                        inflow_lags: false,
+                    },
+                    risk_config: StageRiskConfig::Expectation,
+                    scenario_config: ScenarioSourceConfig {
+                        branching_factor: 1,
+                        noise_method: NoiseMethod::Saa,
+                    },
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+
+    let inflow_models = HYDRO_IDS
+        .iter()
+        .flat_map(|&id| {
+            (0..N_STAGES).map(move |i| InflowModel {
+                hydro_id: EntityId(id),
+                stage_id: i as i32,
+                mean_m3s: 50.0,
+                std_m3s: 10.0,
+                ar_coefficients: vec![],
+                residual_std_ratio: 1.0,
+                annual: None,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let load_models = (0..N_STAGES)
+        .map(|i| LoadModel {
+            bus_id: EntityId(1),
+            stage_id: i as i32,
+            mean_mw: 100.0,
+            std_mw: 0.0,
+        })
+        .collect::<Vec<_>>();
+
+    let mut bounds = ResolvedBounds::new(
+        &BoundsCountsSpec {
+            n_hydros: HYDRO_IDS.len(),
+            n_thermals: 0,
+            n_lines: 0,
+            n_pumping: 0,
+            n_contracts: 0,
+            n_stages: N_STAGES,
+            k_max: 0,
+        },
+        &BoundsDefaults {
+            hydro: HydroStageBounds {
+                min_storage_hm3: 0.0,
+                max_storage_hm3: 200.0,
+                filling_min_rate_m3s: 0.0,
+                water_withdrawal_m3s: 0.0,
+            },
+            hydro_block: HydroBlockBounds {
+                max_turbined_m3s: 100.0,
+                max_generation_mw: 250.0,
+                ..Default::default()
+            },
+            thermal_block: ThermalBlockBounds {
+                min_generation_mw: 0.0,
+                max_generation_mw: 0.0,
+                cost_per_mwh: 0.0,
+            },
+            line_block: LineBlockBounds {
+                direct_mw: 0.0,
+                reverse_mw: 0.0,
+            },
+            pumping_block: PumpingBlockBounds {
+                min_flow_m3s: 0.0,
+                max_flow_m3s: 0.0,
+            },
+            contract_block: ContractBlockBounds {
+                min_mw: 0.0,
+                max_mw: 0.0,
+                price_per_mwh: 0.0,
+            },
+        },
+    );
+    let mut penalties = ResolvedPenalties::new(
+        &PenaltiesCountsSpec {
+            n_hydros: HYDRO_IDS.len(),
+            n_buses: 1,
+            n_lines: 0,
+            n_ncs: 0,
+            n_stages: N_STAGES,
+        },
+        &PenaltiesDefaults {
+            hydro: target_penalties,
+            bus: BusStagePenalties { excess_cost: 0.0 },
+            line: LineStagePenalties { exchange_cost: 0.0 },
+            ncs: NcsStagePenalties {
+                curtailment_cost: 0.0,
+            },
+        },
+    );
+    for stage in 0..N_STAGES {
+        bounds.hydro_bounds_mut(0, stage).water_withdrawal_m3s = target_withdrawal_m3s;
+        bounds.hydro_bounds_mut(1, stage).water_withdrawal_m3s = prefilling_withdrawal_m3s;
+        *penalties.hydro_penalties_mut(1, stage) = prefilling_penalties;
+    }
+
+    SystemBuilder::new()
+        .buses(vec![bus])
+        .hydros(hydros)
+        .stages(stages)
+        .inflow_models(inflow_models)
+        .load_models(load_models)
+        .bounds(bounds)
+        .penalties(penalties)
+        .build()
+        .expect("prefilling_pair_system: valid")
+}
+
+/// derived: `neg ∈ [0, T]` and `pos ∈ [0, ∞)` for `T > 0`; `neg ∈ [0, 0]` and
+/// `pos ∈ [0, -T]` for `T < 0`; both `[0, 0]` at `T = 0`.
+#[test]
+fn withdrawal_slack_bounds_follow_effective_withdrawal_sign() {
+    for (t, neg_upper, pos_upper) in [
+        (10.0, 10.0, f64::INFINITY),
+        (-5.0, 0.0, 5.0),
+        (0.0, 0.0, 0.0),
+    ] {
+        let system = one_hydro_system_with_withdrawal(1, 0, t, 5_000.0);
+        let result = build_stage_templates_resolving_layout(
+            &system,
+            no_penalty_config(),
+            &PrecomputedPar::default(),
+            &PrecomputedNormal::default(),
+            &default_production(&system),
+            &default_evaporation(&system),
+            &ResolvedParameters::default(),
+        )
+        .expect("build ok");
+
+        let template = &result.templates[0];
+        let geometry = &result.geometry_per_stage[0];
+        let col_neg = geometry.withdrawal_slack_neg_col(HydroSys::new(0));
+        let col_pos = geometry.withdrawal_slack_pos_col(HydroSys::new(0));
+        assert_eq!(template.col_lower[col_neg], 0.0, "T = {t}: neg lower");
+        assert_eq!(template.col_upper[col_neg], neg_upper, "T = {t}: neg upper");
+        assert_eq!(template.col_lower[col_pos], 0.0, "T = {t}: pos lower");
+        assert_eq!(template.col_upper[col_pos], pos_upper, "T = {t}: pos upper");
+    }
+}
+
+/// derived: `T_eff[D] = T[D] + T[P]` and `T_eff[P] = 0`, so `D` carries the bounds of the
+/// sign table at `T_eff` and `P`'s own slacks are `[0, 0]`; a transferred withdrawal is
+/// priced at `D`'s cost, `5000 * 744 / COST_SCALE_FACTOR`, never `P`'s.
+#[test]
+fn prefilling_withdrawal_moves_slack_bound_to_target() {
+    let build = |prefilling_withdrawal_m3s: f64, target_withdrawal_m3s: f64| {
+        let system = prefilling_pair_system(prefilling_withdrawal_m3s, target_withdrawal_m3s);
+        build_stage_templates_resolving_layout(
+            &system,
+            no_penalty_config(),
+            &PrecomputedPar::default(),
+            &PrecomputedNormal::default(),
+            &default_production(&system),
+            &default_evaporation(&system),
+            &ResolvedParameters::default(),
+        )
+        .expect("build ok")
+    };
+    let baseline = build(0.0, 0.0);
+
+    let to_surplus = build(0.2, 0.07);
+    let template = &to_surplus.templates[0];
+    let geometry = &to_surplus.geometry_per_stage[0];
+    let (d, p) = (HydroSys::new(0), HydroSys::new(1));
+    assert_eq!(
+        template.col_upper[geometry.withdrawal_slack_neg_col(d)].to_bits(),
+        (0.07_f64 + 0.2).to_bits()
+    );
+    assert_eq!(
+        template.col_upper[geometry.withdrawal_slack_pos_col(d)],
+        f64::INFINITY
+    );
+    assert_eq!(
+        template.col_upper[geometry.withdrawal_slack_neg_col(p)].to_bits(),
+        0.0_f64.to_bits()
+    );
+    assert_eq!(
+        template.col_upper[geometry.withdrawal_slack_pos_col(p)].to_bits(),
+        0.0_f64.to_bits()
+    );
+    let target_cost = 5_000.0 * 744.0 / COST_SCALE_FACTOR;
+    assert!(
+        (template.objective[geometry.withdrawal_slack_neg_col(d)] - target_cost).abs() < 1e-12,
+        "D's neg objective must be priced at D's own cost"
+    );
+    let prefilling_cost = 7_000.0 * 744.0 / COST_SCALE_FACTOR;
+    assert!(
+        (template.objective[geometry.withdrawal_slack_neg_col(p)] - prefilling_cost).abs() < 1e-12,
+        "P's own neg objective must stay priced at P's cost"
+    );
+    assert_eq!(template.num_cols, baseline.templates[0].num_cols);
+
+    let to_return = build(0.2, -0.5);
+    let template = &to_return.templates[0];
+    let geometry = &to_return.geometry_per_stage[0];
+    assert_eq!(
+        template.col_upper[geometry.withdrawal_slack_neg_col(d)].to_bits(),
+        0.0_f64.to_bits()
+    );
+    assert_eq!(
+        template.col_upper[geometry.withdrawal_slack_pos_col(d)].to_bits(),
+        (-(-0.5_f64 + 0.2)).to_bits()
+    );
+    assert_eq!(template.num_cols, baseline.templates[0].num_cols);
+}
+
+const ZETA_744H: f64 = 744.0 * 3_600.0 / 1_000_000.0;
+
+fn empty_storage_stage0(
+    system: &novomodelo_core::System,
+    production: &ProductionModelSet,
+) -> (
+    novomodelo_sddp::StageTemplates,
+    novomodelo_solver::ActiveSolver,
+) {
+    use novomodelo_solver::SolverInterface;
+
+    let result = build_stage_templates_resolving_layout(
+        system,
+        no_penalty_config(),
+        &PrecomputedPar::default(),
+        &PrecomputedNormal::default(),
+        production,
+        &default_evaporation(system),
+        &ResolvedParameters::default(),
+    )
+    .expect("build ok");
+    let n_h = system.hydros().len();
+    let state = novomodelo_sddp::test_support::state_layout(n_h, 0);
+    let grid = result.geometry_per_stage[0].storage_boundary_grid();
+    let incoming: Vec<usize> = (0..n_h)
+        .map(|h| grid.col(&state, HydroSys::new(h), Boundary::Incoming))
+        .collect();
+    let mut solver = load_template_with_no_cuts(&result.templates[0]);
+    solver.set_col_bounds(&incoming, &vec![0.0; n_h], &vec![0.0; n_h]);
+    (result, solver)
+}
+
+/// derived: with `v_in = 0`, `v_out ≥ 0` and no inflow, `D`'s water row forces
+/// `neg − pos − s − q − v_out/ζ = T_eff = 0.07 + 0.2`, and `neg ≤ T_eff` leaves the rest at 0.
+#[test]
+fn prefilling_withdrawal_closes_through_target_slack() {
+    use novomodelo_solver::SolverInterface;
+
+    let (feeder_t, target_t) = (0.2, 0.07);
+    let system = prefilling_pair_system(feeder_t, target_t);
+    let (result, mut solver) = empty_storage_stage0(&system, &production_set(&[1.0, 1.0], 2));
+    let g = &result.geometry_per_stage[0];
+    let (d, p) = (HydroSys::new(0), HydroSys::new(1));
+    let view = solver
+        .solve(None)
+        .expect("the feeder's withdrawal must close through D's neg slack");
+
+    let neg_d = view.primal[g.withdrawal_slack_neg_col(d)];
+    assert!(
+        (neg_d - (target_t + feeder_t)).abs() < 1e-9,
+        "neg_D must carry T_eff, got {neg_d}"
+    );
+    for (name, col) in [
+        ("pos_D", g.withdrawal_slack_pos_col(d)),
+        ("s_D", g.spillage_col(d, BlockIdx::new(0))),
+        ("q_D", g.turbine_col(HydroCell::new(0), BlockIdx::new(0))),
+    ] {
+        assert!(
+            view.primal[col] <= 1e-9,
+            "{name} must be 0, got {}",
+            view.primal[col]
+        );
+    }
+    for (name, col) in [
+        ("neg_P", g.withdrawal_slack_neg_col(p)),
+        ("pos_P", g.withdrawal_slack_pos_col(p)),
+    ] {
+        assert!(
+            view.primal[col].abs() < 1e-12,
+            "{name} must be 0, got {}",
+            view.primal[col]
+        );
+    }
+}
+
+/// derived: twin with no feeder withdrawal, `T_eff = 0.07 + 0.0`, so `neg_D` covers only `D`'s own.
+#[test]
+fn prefilling_withdrawal_closes_target_only_without_feeder_withdrawal() {
+    use novomodelo_solver::SolverInterface;
+
+    let target_t = 0.07;
+    let system = prefilling_pair_system(0.0, target_t);
+    let (result, mut solver) = empty_storage_stage0(&system, &production_set(&[1.0, 1.0], 2));
+    let g = &result.geometry_per_stage[0];
+    let view = solver
+        .solve(None)
+        .expect("D's own withdrawal must close through its neg slack");
+
+    let neg_d = view.primal[g.withdrawal_slack_neg_col(HydroSys::new(0))];
+    assert!(
+        (neg_d - target_t).abs() < 1e-9,
+        "neg_D must carry D's own T only, got {neg_d}"
+    );
+}
+
+/// derived: twin with 1 m³/s injected into `D`'s row, `q + s + pos − neg + v_out/ζ = 1 − T_eff`;
+/// turbining saves 500 $/MWh at `ρ = 1`, above the 0.01 spillage cost and below the 5000
+/// slack price, so `q_D = 1 − (0.07 + 0.2)` and both slacks stay at 0.
+#[test]
+fn prefilling_withdrawal_closes_through_turbine_with_inflow() {
+    use novomodelo_solver::SolverInterface;
+
+    let (feeder_t, target_t, inflow) = (0.2, 0.07, 1.0);
+    let system = prefilling_pair_system(feeder_t, target_t);
+    let (result, mut solver) = empty_storage_stage0(&system, &production_set(&[1.0, 1.0], 2));
+    let g = &result.geometry_per_stage[0];
+    let d = HydroSys::new(0);
+    let row = g.water_balance_row(d, BlockIdx::new(0));
+    let rhs = result.templates[0].row_lower[row] + ZETA_744H * inflow;
+    solver.set_row_bounds(&[row], &[rhs], &[rhs]);
+    let view = solver
+        .solve(None)
+        .expect("D must turbine the injected inflow net of T_eff");
+
+    for (name, col) in [
+        ("neg_D", g.withdrawal_slack_neg_col(d)),
+        ("pos_D", g.withdrawal_slack_pos_col(d)),
+    ] {
+        assert!(
+            view.primal[col] <= 1e-9,
+            "{name} must be 0, got {}",
+            view.primal[col]
+        );
+    }
+    let q_d = view.primal[g.turbine_col(HydroCell::new(0), BlockIdx::new(0))];
+    assert!(
+        (q_d - (inflow - (target_t + feeder_t))).abs() < 1e-9,
+        "q_D must turbine the inflow net of T_eff, got {q_d}"
+    );
+}
+
+/// derived: `T = −5` pins `neg ∈ [0, 0]`, so the row `v_out/ζ + q + s + pos = −T` with
+/// `v_in = 0` turbines `q = 5` at 500 $/MWh and the deficit is `100 − ρ·q`. Power guard:
+/// `q` and the deficit are basic, so `ζ·y_w = −ρ·500·744/K` and
+/// `rc_neg = 744·c/K + ζ·y_w = (744/K)·(c − 500·ρ) = −0.371256 < 0`: the `[0, 0]` bound binds.
+#[test]
+fn negative_withdrawal_cannot_create_water() {
+    use novomodelo_solver::SolverInterface;
+
+    let (withdrawal_m3s, slack_price, rho, load_mw, deficit_price) = (-5.0, 1.0, 1.0, 100.0, 500.0);
+    let system = one_hydro_system_with_withdrawal(1, 0, withdrawal_m3s, slack_price);
+    let (result, mut solver) = empty_storage_stage0(&system, &production_set(&[rho], 1));
+    let template = &result.templates[0];
+    let geometry = &result.geometry_per_stage[0];
+    let hydro = HydroSys::new(0);
+    let col_neg = geometry.withdrawal_slack_neg_col(hydro);
+    let col_deficit = geometry.deficit_col(BusSys::new(0), 0, BlockIdx::new(0), 1);
+    let water_row = geometry.water_balance_row(hydro, BlockIdx::new(0));
+    let view = solver
+        .solve(None)
+        .expect("the returned water must close the balance without neg");
+
+    let neg = view.primal[col_neg];
+    assert!(neg.abs() < 1e-12, "neg must be 0, got {neg}");
+    let pos = view.primal[geometry.withdrawal_slack_pos_col(hydro)];
+    assert!(pos <= 1e-9, "pos must be 0, got {pos}");
+    let turbined = view.primal[geometry.turbine_col(HydroCell::new(0), BlockIdx::new(0))];
+    assert!(
+        (turbined - (-withdrawal_m3s)).abs() < 1e-9,
+        "q must turbine only the returned water, got {turbined}"
+    );
+    let deficit = view.primal[col_deficit];
+    assert!(
+        (deficit - (load_mw - rho * (-withdrawal_m3s))).abs() < 1e-9,
+        "deficit must be the load net of the returned water's generation, got {deficit}"
+    );
+
+    let rc_neg = view.reduced_costs[col_neg];
+    let y_w = view.dual[water_row];
+    let kkt = template.objective[col_neg] - (-ZETA_744H) * y_w;
+    assert!(
+        (rc_neg - kkt).abs() < 1e-9,
+        "KKT: rc_neg = {rc_neg}, c_neg + ζ·y_w = {kkt}"
+    );
+    assert!(
+        rc_neg < 0.0,
+        "neg's [0, 0] bound must bind, rc_neg = {rc_neg}"
+    );
+    let closed_form = (744.0 / COST_SCALE_FACTOR) * (slack_price - deficit_price * rho);
+    assert!(
+        (rc_neg - closed_form).abs() <= 1e-9 * closed_form.abs(),
+        "rc_neg = {rc_neg}, closed form = {closed_form}, deficit objective = {}",
+        template.objective[col_deficit]
+    );
 }

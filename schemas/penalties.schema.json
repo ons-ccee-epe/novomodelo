@@ -81,6 +81,11 @@
           "format": "double",
           "type": "number"
         },
+        "fpha_violation_cost": {
+          "description": "FPHA plane violation cost ($/`MWh`): the price of generation above an\nFPHA plane, per MW and hour.",
+          "format": "double",
+          "type": "number"
+        },
         "generation_violation_below_cost": {
           "description": "Generation below-minimum violation penalty ($/`MWh`).",
           "format": "double",
@@ -156,6 +161,7 @@
         "outflow_violation_below_cost",
         "outflow_violation_above_cost",
         "generation_violation_below_cost",
+        "fpha_violation_cost",
         "evaporation_violation_cost",
         "water_withdrawal_violation_cost"
       ],

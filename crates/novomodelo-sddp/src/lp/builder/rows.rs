@@ -8,7 +8,7 @@ use crate::indexer::{
 };
 
 use super::fpha_cursor::for_each_fpha_plane;
-use super::hydro_state::{MaxCap, MinFloor, hydro_phase, resolve_shortcircuit_target};
+use super::hydro_state::{MaxCap, MinFloor, hydro_phase};
 use super::layout::{StageLayout, TemplateBuildCtx, position_table_row};
 
 /// Fill row lower/upper bounds for one stage.
@@ -23,14 +23,7 @@ pub(super) fn fill_stage_rows(
     let mut row_lower = vec![0.0_f64; layout.rows.num_rows];
     let mut row_upper = vec![0.0_f64; layout.rows.num_rows];
 
-    fill_water_balance_rows(
-        ctx,
-        stage,
-        stage_idx,
-        layout,
-        &mut row_lower,
-        &mut row_upper,
-    );
+    fill_water_balance_rows(ctx, stage, layout, &mut row_lower, &mut row_upper);
     fill_transit_bucket_definition_rows(layout, &mut row_lower, &mut row_upper);
     fill_filling_target_rows(ctx, stage.id, layout, &mut row_lower, &mut row_upper);
     fill_filled_min_storage_floor_rows(ctx, stage_idx, layout, &mut row_lower, &mut row_upper);
@@ -60,34 +53,26 @@ pub(super) fn fill_stage_rows(
     (row_lower, row_upper)
 }
 
-/// Fill water-balance row bounds: static RHS = `−(ζ · water_withdrawal_m3s_h)`.
-/// The realized inflow (deterministic base + noise) enters through the water
-/// row's own `z_h` coupling entry (`entries::push_local_inflow_coupling`),
-/// never the RHS.
-///
-/// A `PreFilling` hydro's row is the frozen identity `v_h − v_h_in = 0` (matrix
-/// entries by [`super::entries::fill_state_and_water_entries`]), so its RHS is
-/// `0`: its own row carries no `z_h` coupling (the coupling routes to the
-/// short-circuit target instead), and its withdrawal DEMAND transfers to that
-/// target's RHS below.
+/// Fill water-balance row bounds: static RHS = `−(ζ · T_eff_h)`, `T_eff` read from
+/// [`StageLayout::effective_withdrawal_m3s`]. A `PreFilling` hydro's row is the frozen
+/// identity `v_h − v_h_in = 0` with RHS `0`. The realized inflow enters through the
+/// coupling sink, never the RHS.
 ///
 /// In `BlockMode::Chronological` the single per-hydro RHS splits into `K` per-block
-/// row bounds `−(τ_k·withdrawal)` (block-major, mirroring the entries side);
-/// summing them recovers the parallel `−(ζ·withdrawal)` since `Σ_k τ_k = ζ`.
+/// row bounds `−(τ_k·T_eff)` (block-major, mirroring the entries side).
 fn fill_water_balance_rows(
     ctx: &TemplateBuildCtx<'_>,
     stage: &Stage,
-    stage_idx: usize,
     layout: &StageLayout,
     row_lower: &mut [f64],
     row_upper: &mut [f64],
 ) {
     match stage.block_mode {
         BlockMode::Parallel => {
-            fill_parallel_water_rows(ctx, stage, stage_idx, layout, row_lower, row_upper);
+            fill_parallel_water_rows(ctx, stage, layout, row_lower, row_upper);
         }
         BlockMode::Chronological => {
-            fill_chronological_water_rows(ctx, stage, stage_idx, layout, row_lower, row_upper);
+            fill_chronological_water_rows(ctx, stage, layout, row_lower, row_upper);
         }
     }
 }
@@ -95,7 +80,6 @@ fn fill_water_balance_rows(
 fn fill_parallel_water_rows(
     ctx: &TemplateBuildCtx<'_>,
     stage: &Stage,
-    stage_idx: usize,
     layout: &StageLayout,
     row_lower: &mut [f64],
     row_upper: &mut [f64],
@@ -109,53 +93,19 @@ fn fill_parallel_water_rows(
             row_upper[row] = 0.0;
             continue;
         }
-        let withdrawal = ctx
-            .resolved
-            .bounds
-            .hydro_bounds(h_idx, stage_idx)
-            .water_withdrawal_m3s;
-        let rhs = -(layout.clock.zeta() * withdrawal);
+        let rhs = -(layout.clock.zeta() * layout.effective_withdrawal_m3s[h_idx]);
         row_lower[row] = rhs;
         row_upper[row] = rhs;
-    }
-
-    // Transfer each PreFilling hydro's withdrawal DEMAND (`ζ·withdrawal_h`) to its
-    // short-circuit target `d`'s RHS, absorbed by `d`'s withdrawal slacks. `d` MUST
-    // be the SAME target `fill_prefilling_shortcircuit` routed the matrix terms to,
-    // so the RHS transfer and the matrix coupling agree; routing onto the immediate
-    // `downstream(h)` would land it on a PreFilling downstream's frozen-identity RHS
-    // (which must stay `0`). A second pass, since `d` may be filled before or after
-    // `h` in index order; sink case transfers nothing.
-    for h_idx in 0..layout.state.hydro_count {
-        let Some(d_idx) =
-            resolve_shortcircuit_target(ctx.hydros, ctx.cascade, ctx.positions, stage.id, h_idx)
-        else {
-            continue;
-        };
-        let withdrawal_h = ctx
-            .resolved
-            .bounds
-            .hydro_bounds(h_idx, stage_idx)
-            .water_withdrawal_m3s;
-        let delta = layout.clock.zeta() * withdrawal_h;
-        let row_d = layout
-            .geometry
-            .water_balance_row(HydroSys::new(d_idx), BlockIdx::new(0));
-        row_lower[row_d] -= delta;
-        row_upper[row_d] -= delta;
     }
 }
 
 /// Per-block water-balance RHS for chronological mode: each Operating/Filling hydro
-/// gets `K` rows `−(τ_k·withdrawal)` (block-major `row_water + h·K + (k−1)`), with
-/// `τ_k` replacing `ζ` so `Σ_k` recovers the parallel total. A `PreFilling`
-/// hydro gets `K` frozen-identity rows with RHS `0` (block-major), and its
-/// withdrawal transfers per block (`−τ_k·withdrawal_h`) to the short-circuit
-/// target's block rows, mirroring the entries side.
+/// gets `K` rows `−(τ_k·T_eff)` (block-major `row_water + h·K + (k−1)`), with `τ_k`
+/// replacing `ζ` so `Σ_k` recovers the parallel total. A `PreFilling` hydro gets `K`
+/// frozen-identity rows with RHS `0`.
 fn fill_chronological_water_rows(
     ctx: &TemplateBuildCtx<'_>,
     stage: &Stage,
-    stage_idx: usize,
     layout: &StageLayout,
     row_lower: &mut [f64],
     row_upper: &mut [f64],
@@ -172,11 +122,7 @@ fn fill_chronological_water_rows(
             }
             continue;
         }
-        let withdrawal = ctx
-            .resolved
-            .bounds
-            .hydro_bounds(h_idx, stage_idx)
-            .water_withdrawal_m3s;
+        let withdrawal = layout.effective_withdrawal_m3s[h_idx];
         for blk in 0..n_blks {
             let row = layout
                 .geometry
@@ -185,28 +131,6 @@ fn fill_chronological_water_rows(
             let rhs = -(tau_k * withdrawal);
             row_lower[row] = rhs;
             row_upper[row] = rhs;
-        }
-    }
-
-    for h_idx in 0..layout.state.hydro_count {
-        let Some(d_idx) =
-            resolve_shortcircuit_target(ctx.hydros, ctx.cascade, ctx.positions, stage.id, h_idx)
-        else {
-            continue;
-        };
-        let withdrawal_h = ctx
-            .resolved
-            .bounds
-            .hydro_bounds(h_idx, stage_idx)
-            .water_withdrawal_m3s;
-        for blk in 0..n_blks {
-            let tau_k = layout.clock.tau(BlockIdx::new(blk));
-            let row_d = layout
-                .geometry
-                .water_balance_row(HydroSys::new(d_idx), BlockIdx::new(blk));
-            let delta = tau_k * withdrawal_h;
-            row_lower[row_d] -= delta;
-            row_upper[row_d] -= delta;
         }
     }
 }

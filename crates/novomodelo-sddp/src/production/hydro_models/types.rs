@@ -134,18 +134,30 @@ impl ProductionModelSet {
 
 // ── Linearized evaporation ────────────────────────────────────────────────────
 
+/// Sign of a month's evaporation coefficient (`coefficients_mm`).
+///
+/// Set during model preparation from the coefficient itself, never derived from
+/// the linearization's intercept or slope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvaporationCoefficientSign {
+    /// Net evaporation: the coefficient is greater than zero.
+    Positive,
+    /// Net rain: the coefficient is less than zero.
+    Negative,
+    /// The coefficient is exactly zero.
+    Zero,
+}
+
 /// Linearized evaporation coefficients for one (hydro, stage) pair.
 ///
 /// The stage-averaged evaporation outflow (m³/s) is approximated as:
 ///
 /// ```text
-/// evaporation_outflow = intercept_m3s + volume_slope_m3s_per_hm3 * (V - reference_volume)
+/// evaporation_outflow = intercept_m3s + volume_slope_m3s_per_hm3 · V
 /// ```
 ///
-/// where `V` is the reservoir volume (hm³) and `reference_volume` is the
-/// reference volume for each stage stored in
-/// [`EvaporationModel::Linearized::reference_volumes_hm3`]. The coefficients
-/// absorb the `1 / (3.6 · stage_hours)` factor that converts the
+/// where `V` is the reservoir volume (hm³). The coefficients absorb the
+/// `1 / (3.6 · hours of the stage's calendar month)` factor that converts the
 /// `monthly_evaporation_mm · A(V)` volume per month (mm·km²/month) into the
 /// stage-averaged flow consumed by the water balance row.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -154,6 +166,8 @@ pub struct LinearizedEvaporation {
     pub intercept_m3s: f64,
     /// Volume-dependent slope of the linearized evaporation outflow ((m³/s)/hm³).
     pub volume_slope_m3s_per_hm3: f64,
+    /// Sign of the stage's calendar-month evaporation coefficient.
+    pub coefficient_sign: EvaporationCoefficientSign,
 }
 
 // ── Evaporation model ─────────────────────────────────────────────────────────
@@ -584,6 +598,7 @@ mod tests {
         let coeff = LinearizedEvaporation {
             intercept_m3s: 0.5,
             volume_slope_m3s_per_hm3: 0.01,
+            coefficient_sign: EvaporationCoefficientSign::Positive,
         };
         let coeff2 = coeff;
         assert_eq!(coeff.intercept_m3s, coeff2.intercept_m3s);
@@ -610,6 +625,7 @@ mod tests {
         let coeff = LinearizedEvaporation {
             intercept_m3s: 0.5,
             volume_slope_m3s_per_hm3: 0.01,
+            coefficient_sign: EvaporationCoefficientSign::Positive,
         };
         let _ = format!("{coeff:?}");
 
@@ -797,10 +813,12 @@ mod tests {
                     LinearizedEvaporation {
                         intercept_m3s: 0.5,
                         volume_slope_m3s_per_hm3: 0.01,
+                        coefficient_sign: EvaporationCoefficientSign::Positive,
                     },
                     LinearizedEvaporation {
                         intercept_m3s: 0.6,
                         volume_slope_m3s_per_hm3: 0.02,
+                        coefficient_sign: EvaporationCoefficientSign::Positive,
                     },
                 ],
                 reference_volumes_hm3: vec![200.0, 200.0],
@@ -810,6 +828,7 @@ mod tests {
                 coefficients: vec![LinearizedEvaporation {
                     intercept_m3s: 0.3,
                     volume_slope_m3s_per_hm3: 0.005,
+                    coefficient_sign: EvaporationCoefficientSign::Positive,
                 }],
                 reference_volumes_hm3: vec![50.0],
             },
@@ -840,10 +859,12 @@ mod tests {
         let coeff0 = LinearizedEvaporation {
             intercept_m3s: 1.0,
             volume_slope_m3s_per_hm3: 0.1,
+            coefficient_sign: EvaporationCoefficientSign::Positive,
         };
         let coeff1 = LinearizedEvaporation {
             intercept_m3s: 2.0,
             volume_slope_m3s_per_hm3: 0.2,
+            coefficient_sign: EvaporationCoefficientSign::Positive,
         };
 
         let set = EvaporationModelSet::new(vec![

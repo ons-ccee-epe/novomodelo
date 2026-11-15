@@ -267,6 +267,7 @@ fn put_geometry(buf: &mut Vec<u8>, geometry: &StageGeometry, state: &StateSpace)
         filling_target_col,
         filled_min_storage_floor,
         filled_min_storage_floor_col,
+        fpha_slack,
         plant_max_turbine,
         plant_max_generation,
         n_blks,
@@ -315,6 +316,7 @@ fn put_geometry(buf: &mut Vec<u8>, geometry: &StageGeometry, state: &StateSpace)
     put_range(buf, filling_target_col);
     put_range(buf, filled_min_storage_floor);
     put_range(buf, filled_min_storage_floor_col);
+    put_range(buf, fpha_slack);
     put_range(buf, plant_max_turbine);
     put_range(buf, plant_max_generation);
 

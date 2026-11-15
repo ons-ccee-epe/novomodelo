@@ -2,11 +2,16 @@
 
 use std::collections::{HashMap, HashSet};
 
-use novomodelo_core::commissioning::commissioning_active;
-use novomodelo_core::{EntityId, Hydro};
+use novomodelo_core::commissioning::{
+    IncomingStorageFloor, commissioning_active, hard_storage_floor, incoming_storage_floor,
+};
+use novomodelo_core::{EntityId, Hydro, ResolvedBounds};
 
 use super::super::{ValidationContext, rules, schema::ParsedData};
-use super::envelope_tolerance;
+use super::{envelope_tolerance, range_covers};
+use crate::StageIdResolver;
+use crate::config::InflowNonNegativityMethod;
+use crate::resolution::{BoundsEntitySlices, BoundsOverrides, resolve_bounds};
 
 /// Rule 1: the hydro cascade graph must be acyclic.
 pub(super) fn check_cascade_acyclic(data: &ParsedData, ctx: &mut ValidationContext) {
@@ -526,46 +531,25 @@ pub(super) fn check_initial_storage_first_stage_bounds(
     ctx: &mut ValidationContext,
 ) {
     let seed_by_hydro = storage_seed_by_hydro(data);
-    let mut study_stage_ids: Vec<i32> = data
-        .stages
-        .stages
-        .iter()
-        .map(|s| s.id)
-        .filter(|&id| id >= 0)
-        .collect();
-    study_stage_ids.sort_unstable();
-    let mut storage_override: HashMap<(EntityId, i32), (Option<f64>, Option<f64>)> = HashMap::new();
-    for row in data
-        .hydro_bounds
-        .iter()
-        .filter(|row| row.block_id.is_none())
-    {
-        let (min, max) = storage_override
-            .entry((row.hydro_id, row.stage_id))
-            .or_default();
-        *min = row.min_storage_hm3.or(*min);
-        *max = row.max_storage_hm3.or(*max);
-    }
+    let (study_stage_ids, bounds) = resolve_study_hydro_bounds(data);
 
-    for hydro in &data.hydros {
+    for (h_idx, hydro) in data.hydros.iter().enumerate() {
         let Some(&seed) = seed_by_hydro.get(&hydro.id) else {
             continue;
         };
         if hydro.filling.is_some() {
             continue;
         }
-        let Some(&stage_id) = study_stage_ids
+        let Some(t) = study_stage_ids
             .iter()
-            .find(|&&id| commissioning_active(hydro.entry_stage_id, hydro.exit_stage_id, id))
+            .position(|&id| commissioning_active(hydro.entry_stage_id, hydro.exit_stage_id, id))
         else {
             continue;
         };
-        let (min_override, max_override) = storage_override
-            .get(&(hydro.id, stage_id))
-            .copied()
-            .unwrap_or_default();
-        let floor = min_override.unwrap_or(hydro.min_storage_hm3);
-        let ceiling = max_override.unwrap_or(hydro.max_storage_hm3);
+        let stage_id = study_stage_ids[t];
+        let stage_bounds = bounds.hydro_bounds(h_idx, t);
+        let floor = stage_bounds.min_storage_hm3;
+        let ceiling = stage_bounds.max_storage_hm3;
         let gap = if seed < floor - envelope_tolerance(floor) {
             format!(
                 "below the minimum storage ({floor}) at the end of stage {stage_id}, its first \
@@ -595,6 +579,89 @@ fn storage_seed_by_hydro(data: &ParsedData) -> HashMap<EntityId, f64> {
         .iter()
         .map(|s| (s.hydro_id, s.value_hm3))
         .collect()
+}
+
+/// The study stage ids and the hydro-only bounds table, indexed by position in
+/// those ids, not by stage id.
+fn resolve_study_hydro_bounds(data: &ParsedData) -> (Vec<i32>, ResolvedBounds) {
+    let first_study_stage = data
+        .stages
+        .stages
+        .iter()
+        .position(|s| s.id >= 0)
+        .unwrap_or(data.stages.stages.len());
+    let study_stages = &data.stages.stages[first_study_stage..];
+    let ids: Vec<i32> = study_stages.iter().map(|s| s.id).collect();
+    let blocks_per_stage: Vec<usize> = study_stages.iter().map(|s| s.blocks.len()).collect();
+    let bounds = resolve_bounds(
+        &BoundsEntitySlices {
+            hydros: &data.hydros,
+            thermals: &[],
+            lines: &[],
+            pumping_stations: &[],
+            contracts: &[],
+        },
+        ids.len(),
+        0,
+        StageIdResolver::from_study_stage_ids(&ids).index_map(),
+        &BoundsOverrides {
+            hydro: &data.hydro_bounds,
+            thermal: &[],
+            line: &[],
+            pumping: &[],
+            contract: &[],
+        },
+        &blocks_per_stage,
+    );
+    (ids, bounds)
+}
+
+/// Rule 57 (warning): a hydro's hard storage floor rises above the floor of the
+/// storage it receives from the previous study stage. Skipped under `penalty`,
+/// whose unbounded inflow slack always covers the rise; a stage receiving the
+/// seed is rule 55's, which warns under every method.
+pub(super) fn check_rising_hard_storage_floor(data: &ParsedData, ctx: &mut ValidationContext) {
+    if data.config.modeling.inflow_non_negativity.method == InflowNonNegativityMethod::Penalty {
+        return;
+    }
+    let (ids, bounds) = resolve_study_hydro_bounds(data);
+    let mut rises: Vec<(i32, i32, f64, f64)> = Vec::new();
+    for (h_idx, hydro) in data.hydros.iter().enumerate() {
+        for t in 1..ids.len() {
+            let previous_min = bounds.hydro_bounds(h_idx, t - 1).min_storage_hm3;
+            let IncomingStorageFloor::PredecessorFloor(incoming) =
+                incoming_storage_floor(hydro, Some((ids[t - 1], previous_min)))
+            else {
+                continue;
+            };
+            let floor =
+                hard_storage_floor(hydro, ids[t], bounds.hydro_bounds(h_idx, t).min_storage_hm3);
+            if floor > incoming + envelope_tolerance(incoming) {
+                rises.push((hydro.id.0, ids[t], floor, incoming));
+            }
+        }
+    }
+    if rises.is_empty() {
+        return;
+    }
+    rises.sort_by_key(|&(hydro_id, stage_id, _, _)| (hydro_id, stage_id));
+    let pairs = rises
+        .iter()
+        .map(|(hydro_id, stage_id, floor, incoming)| {
+            format!("Hydro {hydro_id} at stage {stage_id} ({floor} > {incoming})")
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    ctx.emit(
+        &rules::SEMANTIC_HARD_STORAGE_FLOOR_RISES,
+        "constraints/hydro_bounds.parquet",
+        None::<String>,
+        format!(
+            "Minimum storage rises above the previous stage's floor at {} (hydro, stage) \
+             pair(s), so a stage whose inflow cannot cover the rise is infeasible: {pairs}",
+            rises.len()
+        ),
+    );
 }
 
 /// Rules 8-10: `hydro_geometry.parquet`'s `volume_hm3` is strictly increasing,
@@ -689,6 +756,54 @@ pub(super) fn check_evaporation_geometry_coverage(data: &ParsedData, ctx: &mut V
                      in hydro_geometry.parquet; evaporation linearization requires \
                      area-volume curve data",
                     hydro.name, hydro.id.0
+                ),
+            );
+        }
+    }
+}
+
+/// Rule 56: each computed-FPHA hydro's geometry volumes cover its storage range.
+pub(super) fn check_fpha_geometry_coverage(data: &ParsedData, ctx: &mut ValidationContext) {
+    let computed_hydro_ids: HashSet<i32> = data
+        .production_models
+        .iter()
+        .filter(|config| config.uses_computed_fpha())
+        .map(|config| config.hydro_id.0)
+        .collect();
+    if computed_hydro_ids.is_empty() {
+        return;
+    }
+
+    let mut geometry_ranges: HashMap<i32, (f64, f64)> = HashMap::new();
+    for row in &data.hydro_geometry {
+        let (min, max) = geometry_ranges
+            .entry(row.hydro_id.0)
+            .or_insert((row.volume_hm3, row.volume_hm3));
+        *min = min.min(row.volume_hm3);
+        *max = max.max(row.volume_hm3);
+    }
+
+    for hydro in &data.hydros {
+        if !computed_hydro_ids.contains(&hydro.id.0) {
+            continue;
+        }
+        let Some(&(geometry_min, geometry_max)) = geometry_ranges.get(&hydro.id.0) else {
+            continue;
+        };
+        if !range_covers(
+            geometry_min,
+            geometry_max,
+            hydro.min_storage_hm3,
+            hydro.max_storage_hm3,
+        ) {
+            let entity = format!("Hydro {} (id={})", hydro.name, hydro.id.0);
+            ctx.emit(
+                &rules::SEMANTIC_FPHA_GEOMETRY_DOES_NOT_COVER_STORAGE,
+                "system/hydro_geometry.parquet",
+                Some(&entity),
+                format!(
+                    "{entity}: the hydro_geometry.parquet volume range [{geometry_min}, {geometry_max}] hm³ does not cover its storage range [{}, {}] hm³, over which its computed FPHA planes are fitted; extend the geometry to cover it",
+                    hydro.min_storage_hm3, hydro.max_storage_hm3
                 ),
             );
         }
@@ -3289,6 +3404,354 @@ mod tests {
         assert!(
             msgs.len() == 1 && msgs[0].contains("end of stage 2"),
             "got: {msgs:?}"
+        );
+    }
+
+    // ── Rising hard storage floor tests ───────────────────────────────────────
+
+    use crate::config::InflowNonNegativityMethod;
+
+    const RISING_FLOOR_PREFIX: &str = "Minimum storage rises above the previous stage's floor";
+
+    /// Validate `hydros` over study stages 0-3 under `method`; return the
+    /// rising-floor warning messages.
+    fn validate_storage_floors(
+        hydros: Vec<Hydro>,
+        hydro_bounds: Vec<HydroBoundsRow>,
+        method: InflowNonNegativityMethod,
+    ) -> Vec<String> {
+        let mut data = make_data(
+            hydros,
+            vec![],
+            vec![],
+            make_stages(vec![0, 1, 2, 3]),
+            vec![],
+            vec![],
+        );
+        data.hydro_bounds = hydro_bounds;
+        data.config.modeling.inflow_non_negativity.method = method;
+        let mut ctx = ValidationContext::new();
+        validate_semantic_hydro_thermal(&data, &mut ctx);
+        ctx.warnings()
+            .into_iter()
+            .filter(|e| e.message.contains("rises above the previous stage's floor"))
+            .map(|e| {
+                assert_eq!(e.kind, ErrorKind::ModelQuality);
+                assert_eq!(e.file.to_string_lossy(), "constraints/hydro_bounds.parquet");
+                assert_eq!(e.entity, None);
+                e.message.clone()
+            })
+            .collect()
+    }
+
+    fn min_storage_row(hydro_id: i32, stage_id: i32, min_storage_hm3: f64) -> HydroBoundsRow {
+        HydroBoundsRow {
+            hydro_id: EntityId::from(hydro_id),
+            stage_id,
+            min_storage_hm3: Some(min_storage_hm3),
+            ..Default::default()
+        }
+    }
+
+    /// Stage-2 minimum 150 and stage-3 minimum 200 over the hydro's own 100.
+    fn rising_rows(hydro_id: i32) -> Vec<HydroBoundsRow> {
+        vec![
+            min_storage_row(hydro_id, 2, 150.0),
+            min_storage_row(hydro_id, 3, 200.0),
+        ]
+    }
+
+    fn rising_floor_message(n_pairs: usize, pairs: &str) -> String {
+        format!(
+            "{RISING_FLOOR_PREFIX} at {n_pairs} (hydro, stage) pair(s), so a stage whose inflow \
+             cannot cover the rise is infeasible: {pairs}"
+        )
+    }
+
+    fn hydro_1_rising_message() -> String {
+        rising_floor_message(
+            2,
+            "Hydro 1 at stage 2 (150 > 100), Hydro 1 at stage 3 (200 > 150)",
+        )
+    }
+
+    #[test]
+    fn rising_storage_floor_warns_once_naming_each_pair() {
+        let msgs = validate_storage_floors(
+            vec![make_ranged_hydro(1)],
+            rising_rows(1),
+            InflowNonNegativityMethod::Truncation,
+        );
+        assert_eq!(msgs, vec![hydro_1_rising_message()]);
+    }
+
+    #[test]
+    fn rising_storage_floor_is_silent_for_a_flat_or_falling_floor() {
+        let flat = validate_storage_floors(
+            vec![make_ranged_hydro(1)],
+            vec![],
+            InflowNonNegativityMethod::Truncation,
+        );
+        assert!(flat.is_empty(), "got: {flat:?}");
+
+        let falling = validate_storage_floors(
+            vec![make_ranged_hydro(1)],
+            vec![
+                min_storage_row(1, 1, 80.0),
+                min_storage_row(1, 2, 60.0),
+                min_storage_row(1, 3, 40.0),
+            ],
+            InflowNonNegativityMethod::Truncation,
+        );
+        assert!(falling.is_empty(), "got: {falling:?}");
+    }
+
+    #[test]
+    fn rising_storage_floor_is_silent_within_the_envelope_tolerance() {
+        let msgs = validate_storage_floors(
+            vec![make_ranged_hydro(1)],
+            vec![min_storage_row(1, 1, 100.0 + 1e-7)],
+            InflowNonNegativityMethod::Truncation,
+        );
+        assert!(msgs.is_empty(), "got: {msgs:?}");
+    }
+
+    #[test]
+    fn rising_storage_floor_is_silent_for_a_filling_plant() {
+        let msgs = validate_storage_floors(
+            vec![make_filling_hydro(1, 0, 2, 50.0)],
+            rising_rows(1),
+            InflowNonNegativityMethod::Truncation,
+        );
+        assert!(msgs.is_empty(), "got: {msgs:?}");
+    }
+
+    #[test]
+    fn rising_storage_floor_leaves_the_entry_seed_to_the_first_stage_check() {
+        let mut hydro = make_ranged_hydro(1);
+        hydro.entry_stage_id = Some(2);
+        let msgs = validate_storage_floors(
+            vec![hydro],
+            rising_rows(1),
+            InflowNonNegativityMethod::Truncation,
+        );
+        assert_eq!(
+            msgs,
+            vec![rising_floor_message(1, "Hydro 1 at stage 3 (200 > 150)")]
+        );
+    }
+
+    #[test]
+    fn rising_storage_floor_is_silent_under_the_penalty_method() {
+        let msgs = validate_storage_floors(
+            vec![make_ranged_hydro(1)],
+            rising_rows(1),
+            InflowNonNegativityMethod::Penalty,
+        );
+        assert!(msgs.is_empty(), "got: {msgs:?}");
+    }
+
+    #[test]
+    fn rising_storage_floor_warns_under_every_other_method() {
+        for method in [
+            InflowNonNegativityMethod::None,
+            InflowNonNegativityMethod::TruncationWithPenalty,
+        ] {
+            let msgs = validate_storage_floors(vec![make_ranged_hydro(1)], rising_rows(1), method);
+            assert_eq!(msgs, vec![hydro_1_rising_message()], "{method:?}");
+        }
+    }
+
+    #[test]
+    fn rising_storage_floor_message_ignores_declaration_order() {
+        let rows = [rising_rows(1), rising_rows(2)].concat();
+        let forward = validate_storage_floors(
+            vec![make_ranged_hydro(1), make_ranged_hydro(2)],
+            rows.clone(),
+            InflowNonNegativityMethod::Truncation,
+        );
+        let reversed = validate_storage_floors(
+            vec![make_ranged_hydro(2), make_ranged_hydro(1)],
+            rows.into_iter().rev().collect(),
+            InflowNonNegativityMethod::Truncation,
+        );
+        assert_eq!(
+            forward,
+            vec![rising_floor_message(
+                4,
+                "Hydro 1 at stage 2 (150 > 100), Hydro 1 at stage 3 (200 > 150), \
+                 Hydro 2 at stage 2 (150 > 100), Hydro 2 at stage 3 (200 > 150)"
+            )]
+        );
+        assert_eq!(forward, reversed);
+    }
+
+    // ── FPHA geometry coverage tests ──────────────────────────────────────────
+
+    use crate::{
+        FphaColumnLayout, HydroGeometryRow, ProductionModelConfig, SelectionMode, StageRange,
+    };
+    use novomodelo_core::entities::HydroGenerationModel;
+
+    fn validate_fpha_geometry_coverage(
+        hydros: Vec<Hydro>,
+        geometry: Vec<HydroGeometryRow>,
+        production_models: Vec<ProductionModelConfig>,
+    ) -> Vec<ValidationEntry> {
+        let mut data = make_data(
+            hydros,
+            vec![],
+            vec![],
+            make_stages(vec![0]),
+            geometry,
+            vec![],
+        );
+        data.production_models = production_models;
+        let mut ctx = ValidationContext::new();
+        validate_semantic_hydro_thermal(&data, &mut ctx);
+        ctx.errors()
+            .into_iter()
+            .filter(|e| e.message.contains("does not cover its storage range"))
+            .cloned()
+            .collect()
+    }
+
+    fn fpha_config(hydro_id: i32, source: &str) -> ProductionModelConfig {
+        ProductionModelConfig {
+            hydro_id: EntityId::from(hydro_id),
+            selection_mode: SelectionMode::StageRanges {
+                ranges: vec![StageRange {
+                    start_stage_id: 0,
+                    end_stage_id: None,
+                    model: HydroGenerationModel::Fpha,
+                    fpha_config: Some(FphaColumnLayout {
+                        source: source.into(),
+                        volume_discretization_points: None,
+                        turbine_discretization_points: None,
+                        spillage_discretization_points: None,
+                        max_planes_per_hydro: None,
+                        fitting_window: None,
+                        spillage_fit_max_m3s: None,
+                        turbined_fit_max_m3s: None,
+                    }),
+                    reference_volume: None,
+                    productivity_mw_per_m3s: None,
+                }],
+            },
+        }
+    }
+
+    fn geometry_at(hydro_id: i32, volumes_hm3: &[f64]) -> Vec<HydroGeometryRow> {
+        volumes_hm3
+            .iter()
+            .map(|&volume| make_geom_row(hydro_id, volume, 100.0, 10.0))
+            .collect()
+    }
+
+    #[test]
+    fn fpha_geometry_coverage_is_silent_when_geometry_spans_the_storage_range() {
+        let entries = validate_fpha_geometry_coverage(
+            vec![make_hydro(1, None)],
+            geometry_at(1, &[0.0, 500.0, 1000.0]),
+            vec![fpha_config(1, "computed")],
+        );
+        assert!(entries.is_empty(), "got: {entries:?}");
+    }
+
+    #[test]
+    fn fpha_geometry_coverage_refuses_geometry_starting_above_the_minimum() {
+        let entries = validate_fpha_geometry_coverage(
+            vec![make_hydro(1, None)],
+            geometry_at(1, &[10.0, 1000.0]),
+            vec![fpha_config(1, "computed")],
+        );
+        assert_eq!(entries.len(), 1, "got: {entries:?}");
+        let entry = &entries[0];
+        assert_eq!(entry.kind, ErrorKind::BusinessRuleViolation);
+        assert_eq!(
+            entry.file.to_string_lossy(),
+            "system/hydro_geometry.parquet"
+        );
+        assert_eq!(entry.entity.as_deref(), Some("Hydro Hydro 1 (id=1)"));
+        assert!(entry.message.contains("[10, 1000]"), "{}", entry.message);
+        assert!(entry.message.contains("[0, 1000]"), "{}", entry.message);
+    }
+
+    #[test]
+    fn fpha_geometry_coverage_refuses_geometry_ending_below_the_maximum() {
+        let entries = validate_fpha_geometry_coverage(
+            vec![make_hydro(1, None)],
+            geometry_at(1, &[0.0, 900.0]),
+            vec![fpha_config(1, "computed")],
+        );
+        assert_eq!(entries.len(), 1, "got: {entries:?}");
+        assert!(
+            entries[0].message.contains("[0, 900]"),
+            "{}",
+            entries[0].message
+        );
+    }
+
+    #[test]
+    fn fpha_geometry_coverage_admits_geometry_within_the_tolerance() {
+        let entries = validate_fpha_geometry_coverage(
+            vec![make_hydro(1, None)],
+            geometry_at(1, &[0.0, 1000.0 - 1e-7]),
+            vec![fpha_config(1, "computed")],
+        );
+        assert!(entries.is_empty(), "got: {entries:?}");
+    }
+
+    #[test]
+    fn fpha_geometry_coverage_refuses_geometry_just_past_the_tolerance() {
+        let entries = validate_fpha_geometry_coverage(
+            vec![make_hydro(1, None)],
+            geometry_at(1, &[0.0, 1000.0 - 1e-5]),
+            vec![fpha_config(1, "computed")],
+        );
+        assert_eq!(entries.len(), 1, "got: {entries:?}");
+    }
+
+    #[test]
+    fn fpha_geometry_coverage_ignores_precomputed_and_constant_plants() {
+        for (plant, production_models) in [
+            ("precomputed", vec![fpha_config(1, "precomputed")]),
+            ("constant", vec![]),
+        ] {
+            let entries = validate_fpha_geometry_coverage(
+                vec![make_hydro(1, None)],
+                geometry_at(1, &[10.0, 1000.0]),
+                production_models,
+            );
+            assert!(entries.is_empty(), "{plant}: got {entries:?}");
+        }
+    }
+
+    #[test]
+    fn fpha_geometry_coverage_leaves_a_plant_without_geometry_rows_to_the_prerequisite() {
+        let entries = validate_fpha_geometry_coverage(
+            vec![make_hydro(1, None), make_hydro(2, None)],
+            geometry_at(2, &[0.0, 1000.0]),
+            vec![fpha_config(1, "computed"), fpha_config(2, "computed")],
+        );
+        assert!(entries.is_empty(), "got: {entries:?}");
+    }
+
+    #[test]
+    fn fpha_geometry_coverage_reports_each_uncovered_plant_once() {
+        let entries = validate_fpha_geometry_coverage(
+            vec![make_hydro(1, None), make_hydro(2, None)],
+            [
+                geometry_at(1, &[10.0, 1000.0]),
+                geometry_at(2, &[10.0, 1000.0]),
+            ]
+            .concat(),
+            vec![fpha_config(1, "computed"), fpha_config(2, "computed")],
+        );
+        let entities: Vec<Option<&str>> = entries.iter().map(|e| e.entity.as_deref()).collect();
+        assert_eq!(
+            entities,
+            vec![Some("Hydro Hydro 1 (id=1)"), Some("Hydro Hydro 2 (id=2)")]
         );
     }
 }

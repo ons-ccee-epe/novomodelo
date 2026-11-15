@@ -3,14 +3,17 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
+use chrono::Datelike;
 use novomodelo_core::scenario::SamplingScheme;
-use novomodelo_core::{EntityId, Hydro};
+use novomodelo_core::{EntityId, Hydro, Stage};
 use novomodelo_stochastic::derive_external_sample_moments;
 use novomodelo_stochastic::par::{
     AnnualParams, ClosureRejection, check_stationarity, check_stationarity_annual,
 };
-use novomodelo_stochastic::season_cast::{RealizedWindow, SeasonPeriodWindow, cast};
 
+use crate::config::HistoricalYearRange;
+use crate::resolution::{PenaltiesEntitySlices, PenaltiesOverrides, resolve_penalties};
+use crate::scenarios::estimation::estimation_samples;
 use crate::{LoadError, StageIdResolver};
 
 use super::super::{ValidationContext, rules, schema::ParsedData};
@@ -31,12 +34,7 @@ use super::envelope_tolerance;
 /// Emits one warning per violated ordering check, aggregating
 /// all violating entities into a single warning with the count and worst-case ID.
 pub(super) fn check_penalty_ordering(data: &ParsedData, ctx: &mut ValidationContext) {
-    let max_deficit_cost: f64 = data
-        .buses
-        .iter()
-        .flat_map(|b| b.deficit_segments.iter().map(|s| s.cost_per_mwh))
-        .fold(f64::NEG_INFINITY, f64::max)
-        .max(0.0);
+    let max_deficit_cost = max_bus_deficit_cost(data);
 
     {
         let mut violations: Vec<(i32, f64)> = Vec::new();
@@ -139,6 +137,123 @@ pub(super) fn check_penalty_ordering(data: &ParsedData, ctx: &mut ValidationCont
             );
         }
     }
+}
+
+fn max_bus_deficit_cost(data: &ParsedData) -> f64 {
+    data.buses
+        .iter()
+        .flat_map(|b| b.deficit_segments.iter().map(|s| s.cost_per_mwh))
+        .fold(f64::NEG_INFINITY, f64::max)
+        .max(0.0)
+}
+
+// ── Rule 53: FPHA price dominance ─────────────────────────────────────────────
+
+/// Rule 53: warns when an FPHA hydro's `fpha_violation_cost` is at or below
+/// `max(deficit_segment_costs) + generation_violation_below_cost` (all $/`MWh`),
+/// both prices resolved per stage through [`resolve_penalties`] so the stage
+/// override tier counts.
+///
+/// Only study stages where the hydro's `hydro_production_models.json` entry
+/// selects FPHA ([`uses_fpha_at`](crate::extensions::ProductionModelConfig::uses_fpha_at))
+/// contribute; a hydro with no entry never does.
+///
+/// Every violating `(hydro, stage)` pair aggregates into one warning naming the
+/// smallest-margin pair by `(margin, hydro id, stage id)`; the bridge's
+/// `convert --validate` output relies on that single line.
+pub(super) fn check_fpha_price_dominance(data: &ParsedData, ctx: &mut ValidationContext) {
+    struct Violation {
+        margin: f64,
+        hydro_id: i32,
+        stage_id: i32,
+        p: f64,
+        g: f64,
+    }
+
+    if data.production_models.is_empty() {
+        return;
+    }
+    let study_stages: Vec<&Stage> = data.stages.stages.iter().filter(|s| s.id >= 0).collect();
+    let study_stage_ids: Vec<i32> = study_stages.iter().map(|s| s.id).collect();
+    let stage_resolver = StageIdResolver::from_study_stage_ids(&study_stage_ids);
+    let resolved = resolve_penalties(
+        &PenaltiesEntitySlices {
+            hydros: &data.hydros,
+            buses: &data.buses,
+            lines: &data.lines,
+            ncs_sources: &data.non_controllable_sources,
+        },
+        study_stages.len(),
+        stage_resolver.index_map(),
+        &PenaltiesOverrides {
+            hydro: &data.penalty_overrides_hydro,
+            bus: &data.penalty_overrides_bus,
+            line: &data.penalty_overrides_line,
+            ncs: &data.penalty_overrides_ncs,
+        },
+    );
+    let d = max_bus_deficit_cost(data);
+
+    let mut violations: Vec<Violation> = Vec::new();
+    for (hi, hydro) in data.hydros.iter().enumerate() {
+        let Some(config) = data
+            .production_models
+            .iter()
+            .find(|c| c.hydro_id == hydro.id)
+        else {
+            continue;
+        };
+        for (ti, stage) in study_stages.iter().enumerate() {
+            if !config.uses_fpha_at(stage) {
+                continue;
+            }
+            let cell = resolved.hydro_penalties(hi, ti);
+            let p = cell.fpha_violation_cost;
+            let g = cell.generation_violation_below_cost;
+            if p <= d + g {
+                violations.push(Violation {
+                    margin: p - (d + g),
+                    hydro_id: hydro.id.0,
+                    stage_id: stage.id,
+                    p,
+                    g,
+                });
+            }
+        }
+    }
+
+    let Some(worst) = violations.iter().min_by(|a, b| {
+        a.margin
+            .total_cmp(&b.margin)
+            .then(a.hydro_id.cmp(&b.hydro_id))
+            .then(a.stage_id.cmp(&b.stage_id))
+    }) else {
+        return;
+    };
+    let n_pairs = violations.len();
+    let n_hydros = violations
+        .iter()
+        .map(|v| v.hydro_id)
+        .collect::<BTreeSet<_>>()
+        .len();
+    let Violation {
+        hydro_id: id,
+        stage_id,
+        p,
+        g,
+        ..
+    } = *worst;
+    ctx.emit(
+        &rules::SEMANTIC_FPHA_PRICE_NOT_ABOVE_DEFICIT_PLUS_GENERATION,
+        "penalties.json",
+        None::<&str>,
+        format!(
+            "FPHA price ordering violation: fpha_violation_cost ({p}) should be > \
+             max(deficit_segment_costs) ({d}) + generation_violation_below_cost ({g}) \
+             (all $/MWh) -- {n_pairs} (hydro, stage) pair(s) at FPHA stages, \
+             {n_hydros} hydro(s) affected, smallest margin: Hydro {id} at stage {stage_id}"
+        ),
+    );
 }
 
 // ── Rule 11: FPHA penalty rule ─────────────────────────────────────────────────
@@ -928,15 +1043,6 @@ pub(super) fn check_load_factor_consistency(data: &ParsedData, ctx: &mut Validat
 
 // ── Rules 19-21: Estimation prerequisites ─────────────────────────────────────
 
-/// Total hours in `[start, end)`, for constructing a [`SeasonPeriodWindow`]
-/// directly from a study stage's own dates (the stage's dates already are its
-/// occurrence bounds, so no `season_cast` calendar disambiguation is needed).
-fn window_hours(start: chrono::NaiveDate, end: chrono::NaiveDate) -> f64 {
-    let days = u32::try_from((end - start).num_days().max(0))
-        .unwrap_or_else(|_| unreachable!("a study stage's day count always fits in u32"));
-    f64::from(days) * 24.0
-}
-
 /// Validates prerequisites for the history-based PAR(p) estimation path.
 ///
 /// Runs only when `inflow_history.parquet` is present and
@@ -947,7 +1053,8 @@ fn window_hours(start: chrono::NaiveDate, end: chrono::NaiveDate) -> f64 {
 /// observations can be grouped by season.
 ///
 /// Rule 20: Each `(hydro_id, season_id)` group must have at least
-/// `config.estimation.min_observations_per_season` observations.
+/// `config.estimation.min_observations_per_season` of the samples estimation fits
+/// from ([`estimation_samples`]).
 ///
 /// Rule 21: Every hydro in the system must have at least one observation in
 /// `inflow_history.parquet`; missing hydros cannot be estimated.
@@ -989,47 +1096,25 @@ pub(super) fn check_estimation_prerequisites(data: &ParsedData, ctx: &mut Valida
 
     // Skipped when season_map is None: Rule 19 already errored, and running here
     // would cascade a confusing second diagnostic.
-    if data.stages.policy_graph.season_map.is_some() {
+    if let Some(season_map) = &data.stages.policy_graph.season_map {
         let min_obs = data.config.estimation.min_observations_per_season as usize;
 
         let stage_index = super::season::build_stage_index(data);
-
-        // Bucket rows by the study-stage occurrence they fall within, keyed by
-        // (hydro_id, stage_index position): a stage's rows may be split across
-        // several partial windows, and only their combined coverage decides
-        // whether the occurrence counts toward the minimum — a
-        // partial occurrence must not count.
-        let mut rows_by_occurrence: HashMap<(i32, usize), Vec<RealizedWindow>> = HashMap::new();
-        for row in &data.inflow_history {
-            let Some(stage_pos) =
-                super::season::resolve_stage_position(&stage_index, row.start_date)
-            else {
-                continue;
-            };
-            rows_by_occurrence
-                .entry((row.hydro_id.0, stage_pos))
-                .or_default()
-                .push(RealizedWindow {
-                    start_date: row.start_date,
-                    end_date: row.end_date,
-                    value_m3s: row.value_m3s,
-                });
-        }
-
+        // An unaggregatable history fails estimation itself, with its own error.
+        let Ok((samples, _skipped_partial)) = estimation_samples(
+            &data.inflow_history,
+            &data.stages.stages,
+            Some(season_map),
+            data.config.estimation.history_years,
+        ) else {
+            return;
+        };
         let mut counts: HashMap<(i32, usize), usize> = HashMap::new();
-        for (&(hydro_id, stage_pos), rows) in &rows_by_occurrence {
-            let (start_date, end_date, season_id) = stage_index[stage_pos];
-            let period = SeasonPeriodWindow {
-                start: start_date,
-                end: end_date,
-                hours: window_hours(start_date, end_date),
-            };
-            // Exact gate, not a tolerance shortcut: see `resolve_coverage_gated_observations`
-            // in `scenarios/estimation.rs` for why a full-coverage ratio is bit-exact 1.0.
-            #[allow(clippy::float_cmp)]
-            let is_full_coverage = cast(rows, &period).coverage == 1.0;
-            if is_full_coverage {
-                *counts.entry((hydro_id, season_id)).or_insert(0) += 1;
+        for (hydro_id, start_date, _) in samples {
+            if let Some(season_id) =
+                super::season::estimation_season_for_date(&stage_index, season_map, start_date)
+            {
+                *counts.entry((hydro_id.0, season_id)).or_insert(0) += 1;
             }
         }
 
@@ -1052,6 +1137,33 @@ pub(super) fn check_estimation_prerequisites(data: &ParsedData, ctx: &mut Valida
                 ),
             );
         }
+    }
+}
+
+/// Refuses an `estimation.history_years` range reaching outside the start-date
+/// years of `inflow_history.parquet`.
+pub(super) fn check_estimation_history_years(data: &ParsedData, ctx: &mut ValidationContext) {
+    let Some(HistoricalYearRange { from, to }) = data.config.estimation.history_years else {
+        return;
+    };
+    if !super::season::estimation_active(data) {
+        return;
+    }
+    let years = data.inflow_history.iter().map(|row| row.start_date.year());
+    let (Some(first), Some(last)) = (years.clone().min(), years.max()) else {
+        return;
+    };
+    if from < first || to > last {
+        ctx.emit(
+            &rules::SEMANTIC_ESTIMATION_HISTORY_YEARS_OUTSIDE_HISTORY,
+            "config.json",
+            None::<&str>,
+            format!(
+                "estimation.history_years ({from} to {to}) reaches outside the years of \
+                 scenarios/inflow_history.parquet ({first} to {last}); narrow the range to \
+                 those years"
+            ),
+        );
     }
 }
 
@@ -1162,6 +1274,9 @@ mod tests {
     use super::M3S_TO_HM3;
     use crate::test_support::*;
     use crate::{
+        config::HistoricalYearRange,
+        constraints::HydroPenaltyOverrideRow,
+        extensions::{ProductionModelConfig, SeasonConfig, SelectionMode, StageRange},
         scenarios::{
             BlockFactor, InflowAnnualComponentRow, InflowArCoefficientRow, InflowHistoryRow,
             InflowSeasonalStatsRow, LoadFactorEntry, LoadSeasonalStatsRow,
@@ -1587,6 +1702,208 @@ mod tests {
             "valid FPHA penalty ordering should produce no BusinessRuleViolation, \
              got: {errors:?}"
         );
+    }
+
+    // ── Rule 53: FPHA price dominance ─────────────────────────────────────────
+
+    const FPHA_PRICE_PREFIX: &str = "FPHA price ordering violation:";
+
+    fn fpha_price_warnings(data: &ParsedData) -> Vec<String> {
+        let mut ctx = ValidationContext::new();
+        validate_semantic_stages_penalties_scenarios(data, &mut ctx);
+        ctx.warnings()
+            .iter()
+            .filter(|w| w.message.starts_with(FPHA_PRICE_PREFIX))
+            .map(|w| w.message.clone())
+            .collect()
+    }
+
+    fn fpha_everywhere(hydro_id: i32) -> ProductionModelConfig {
+        ProductionModelConfig {
+            hydro_id: EntityId::from(hydro_id),
+            selection_mode: SelectionMode::StageRanges {
+                ranges: vec![StageRange {
+                    start_stage_id: 0,
+                    end_stage_id: None,
+                    model: HydroGenerationModel::Fpha,
+                    fpha_config: None,
+                    reference_volume: None,
+                    productivity_mw_per_m3s: None,
+                }],
+            },
+        }
+    }
+
+    fn fpha_price_override(hydro_id: i32, stage_id: i32, price: f64) -> HydroPenaltyOverrideRow {
+        HydroPenaltyOverrideRow {
+            hydro_id: EntityId::from(hydro_id),
+            stage_id,
+            spillage_cost: None,
+            turbined_cost: None,
+            diversion_cost: None,
+            storage_violation_below_cost: None,
+            filling_target_violation_cost: None,
+            turbined_violation_below_cost: None,
+            outflow_violation_below_cost: None,
+            outflow_violation_above_cost: None,
+            generation_violation_below_cost: None,
+            fpha_violation_cost: Some(price),
+            evaporation_violation_cost: None,
+            water_withdrawal_violation_cost: None,
+            water_withdrawal_violation_pos_cost: None,
+            water_withdrawal_violation_neg_cost: None,
+            evaporation_violation_pos_cost: None,
+            evaporation_violation_neg_cost: None,
+            inflow_nonnegativity_cost: None,
+        }
+    }
+
+    const DEFICIT_COST: f64 = 500.0;
+    const GENERATION_VIOLATION_COST: f64 = 1000.0;
+    const DEFICIT_PLUS_GENERATION: f64 = DEFICIT_COST + GENERATION_VIOLATION_COST;
+
+    fn priced_fpha_hydro(id: i32, fpha_violation_cost: f64) -> Hydro {
+        let mut hydro = make_hydro_ordered_penalties(id);
+        hydro.penalties.generation_violation_below_cost = GENERATION_VIOLATION_COST;
+        hydro.penalties.fpha_violation_cost = fpha_violation_cost;
+        hydro
+    }
+
+    fn fpha_price_data(hydros: Vec<Hydro>, stage_ids: Vec<i32>) -> ParsedData {
+        let production_models = hydros.iter().map(|h| fpha_everywhere(h.id.0)).collect();
+        ParsedData {
+            production_models,
+            ..make_data_5b(
+                hydros,
+                make_stages_5b(stage_ids),
+                vec![make_bus_with_deficit(1, DEFICIT_COST)],
+                vec![],
+                vec![],
+                None,
+            )
+        }
+    }
+
+    #[test]
+    fn fpha_price_at_sum_warns() {
+        let data = fpha_price_data(vec![priced_fpha_hydro(7, DEFICIT_PLUS_GENERATION)], vec![0]);
+        let warnings = fpha_price_warnings(&data);
+        assert_eq!(warnings.len(), 1, "exactly one warning: {warnings:?}");
+        let msg = &warnings[0];
+        for expected in [
+            "fpha_violation_cost (1500)",
+            "max(deficit_segment_costs) (500)",
+            "generation_violation_below_cost (1000)",
+            "1 (hydro, stage) pair(s) at FPHA stages",
+            "1 hydro(s) affected",
+            "smallest margin: Hydro 7 at stage 0",
+        ] {
+            assert!(msg.contains(expected), "missing {expected:?} in: {msg}");
+        }
+    }
+
+    #[test]
+    fn fpha_price_below_sum_warns() {
+        let data = fpha_price_data(
+            vec![priced_fpha_hydro(7, DEFICIT_PLUS_GENERATION - 1.0)],
+            vec![0],
+        );
+        let warnings = fpha_price_warnings(&data);
+        assert_eq!(warnings.len(), 1, "exactly one warning: {warnings:?}");
+        assert!(
+            warnings[0].contains("fpha_violation_cost (1499)"),
+            "got: {}",
+            warnings[0]
+        );
+    }
+
+    #[test]
+    fn fpha_price_above_sum_is_silent() {
+        let data = fpha_price_data(
+            vec![priced_fpha_hydro(7, DEFICIT_PLUS_GENERATION + 1.0)],
+            vec![0],
+        );
+        let warnings = fpha_price_warnings(&data);
+        assert!(
+            warnings.is_empty(),
+            "no warning expected, got: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn fpha_price_rule_counts_only_fpha_stages() {
+        let mut data = fpha_price_data(
+            vec![priced_fpha_hydro(7, DEFICIT_PLUS_GENERATION - 1.0)],
+            vec![0, 1],
+        );
+        data.stages.stages[0].season_id = Some(1);
+        data.stages.stages[1].season_id = Some(2);
+        data.production_models = vec![ProductionModelConfig {
+            hydro_id: EntityId::from(7),
+            selection_mode: SelectionMode::Seasonal {
+                default_model: HydroGenerationModel::Fpha,
+                seasons: vec![SeasonConfig {
+                    season_id: 1,
+                    model: HydroGenerationModel::ConstantProductivity,
+                    fpha_config: None,
+                    reference_volume: None,
+                    productivity_mw_per_m3s: Some(1.0),
+                }],
+            },
+        }];
+        let warnings = fpha_price_warnings(&data);
+        assert_eq!(warnings.len(), 1, "exactly one warning: {warnings:?}");
+        let msg = &warnings[0];
+        for expected in ["1 (hydro, stage) pair(s)", "at stage 1"] {
+            assert!(msg.contains(expected), "missing {expected:?} in: {msg}");
+        }
+    }
+
+    #[test]
+    fn fpha_price_rule_reads_the_stage_override_tier() {
+        let mut data = fpha_price_data(
+            vec![priced_fpha_hydro(7, DEFICIT_PLUS_GENERATION + 1.0)],
+            vec![0, 1],
+        );
+        data.penalty_overrides_hydro = vec![fpha_price_override(7, 1, 1200.0)];
+        let warnings = fpha_price_warnings(&data);
+        assert_eq!(warnings.len(), 1, "exactly one warning: {warnings:?}");
+        let msg = &warnings[0];
+        for expected in [
+            "fpha_violation_cost (1200)",
+            "1 (hydro, stage) pair(s)",
+            "smallest margin: Hydro 7 at stage 1",
+        ] {
+            assert!(msg.contains(expected), "missing {expected:?} in: {msg}");
+        }
+    }
+
+    #[test]
+    fn fpha_price_rule_aggregates_into_one_warning() {
+        let hydros = vec![
+            priced_fpha_hydro(3, DEFICIT_PLUS_GENERATION - 100.0),
+            priced_fpha_hydro(1, DEFICIT_PLUS_GENERATION - 500.0),
+            priced_fpha_hydro(2, DEFICIT_PLUS_GENERATION - 500.0),
+        ];
+        let message_for = |hydros: Vec<Hydro>| -> String {
+            let mut data = fpha_price_data(hydros, vec![0, 1]);
+            data.penalty_overrides_hydro = vec![fpha_price_override(3, 1, 1300.0)];
+            let warnings = fpha_price_warnings(&data);
+            assert_eq!(warnings.len(), 1, "exactly one warning: {warnings:?}");
+            warnings.into_iter().next().unwrap()
+        };
+
+        let given = message_for(hydros.clone());
+        let reversed = message_for(hydros.into_iter().rev().collect());
+
+        for expected in [
+            "6 (hydro, stage) pair(s)",
+            "3 hydro(s) affected",
+            "smallest margin: Hydro 1 at stage 0",
+        ] {
+            assert!(given.contains(expected), "missing {expected:?} in: {given}");
+        }
+        assert_eq!(given, reversed);
     }
 
     // ── Rule 12: Inflow std_m3s = 0.0 warning ────────────────────────────────
@@ -2200,6 +2517,126 @@ mod tests {
             "stats+coefficients present should disable estimation checks; \
              errors: {estimation_errors:?}, warnings: {estimation_warnings:?}"
         );
+    }
+
+    fn history_years_errors(data: &ParsedData) -> Vec<String> {
+        let mut ctx = ValidationContext::new();
+        validate_semantic_stages_penalties_scenarios(data, &mut ctx);
+        ctx.errors()
+            .into_iter()
+            .filter(|e| e.message.contains("estimation.history_years"))
+            .map(|e| e.message.clone())
+            .collect()
+    }
+
+    #[test]
+    fn estimation_history_years_reaching_outside_the_history_is_an_error() {
+        // History covers 2000-2002.
+        for (from, to, refused) in [
+            (2000, 2002, false),
+            (2001, 2001, false),
+            (1999, 2002, true),
+            (2000, 2003, true),
+        ] {
+            let mut data = make_data_estimation(
+                vec![make_hydro(1, None)],
+                make_stages_with_seasons(36, true),
+                make_history_rows(1, 36),
+            );
+            data.config.estimation.history_years = Some(HistoricalYearRange { from, to });
+
+            let errors = history_years_errors(&data);
+            assert_eq!(
+                !errors.is_empty(),
+                refused,
+                "history_years {from}..={to}: {errors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn estimation_history_years_is_not_checked_when_stats_and_coefficients_are_supplied() {
+        let mut data = make_data_estimation(
+            vec![make_hydro(1, None)],
+            make_stages_with_seasons(12, false),
+            make_history_rows(1, 12),
+        );
+        data.inflow_seasonal_stats = vec![InflowSeasonalStatsRow {
+            hydro_id: EntityId::from(1),
+            stage_id: 0,
+            mean_m3s: 500.0,
+            std_m3s: 50.0,
+        }];
+        data.inflow_ar_coefficients = vec![make_ar_row(1, 0, 1)];
+        data.config.estimation.history_years = Some(HistoricalYearRange {
+            from: 1931,
+            to: 2024,
+        });
+
+        let errors = history_years_errors(&data);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    /// Three full-January rows, from `first_year` on.
+    fn january_rows(first_year: i32) -> Vec<InflowHistoryRow> {
+        (0..3)
+            .map(|y| InflowHistoryRow {
+                hydro_id: EntityId::from(1),
+                start_date: chrono::NaiveDate::from_ymd_opt(first_year + y, 1, 1).unwrap(),
+                end_date: chrono::NaiveDate::from_ymd_opt(first_year + y, 2, 1).unwrap(),
+                value_m3s: 100.0,
+            })
+            .collect()
+    }
+
+    fn assert_season_0_count(data: &ParsedData, n: usize) {
+        let mut ctx = ValidationContext::new();
+        validate_semantic_stages_penalties_scenarios(data, &mut ctx);
+        let expected = format!("hydro 1 season 0 has {n} observations");
+        assert!(
+            ctx.warnings().iter().any(|w| w.message.contains(&expected)),
+            "{:?}",
+            ctx.warnings()
+        );
+    }
+
+    #[test]
+    fn estimation_observation_count_covers_only_the_history_years() {
+        let mut data = make_data_estimation(
+            vec![make_hydro(1, None)],
+            make_stages_with_seasons(36, true),
+            january_rows(2000),
+        );
+        data.config.estimation.history_years = Some(HistoricalYearRange {
+            from: 2000,
+            to: 2001,
+        });
+
+        assert_season_0_count(&data, 2);
+    }
+
+    #[test]
+    fn estimation_observation_count_includes_history_before_the_study() {
+        let data = make_data_estimation(
+            vec![make_hydro(1, None)],
+            make_stages_with_seasons(12, true),
+            january_rows(1990),
+        );
+
+        assert_season_0_count(&data, 3);
+    }
+
+    #[test]
+    fn estimation_observation_count_skips_a_partially_covered_occurrence() {
+        let mut history = january_rows(1990);
+        history[0].end_date = chrono::NaiveDate::from_ymd_opt(1990, 1, 20).unwrap();
+        let data = make_data_estimation(
+            vec![make_hydro(1, None)],
+            make_stages_with_seasons(12, true),
+            history,
+        );
+
+        assert_season_0_count(&data, 2);
     }
 
     /// When `inflow_seasonal_stats` is present but `inflow_ar_coefficients`

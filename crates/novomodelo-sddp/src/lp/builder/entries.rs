@@ -15,7 +15,10 @@ use super::hydro_state::{MaxCap, MinFloor, hydro_phase, resolve_shortcircuit_tar
 #[cfg(test)]
 use super::inflow_coupling::InflowCoupling;
 use super::inflow_coupling::InflowCouplingSink;
-use super::layout::{StageLayout, StageProductionRole, TemplateBuildCtx, contract_family_slot};
+use super::layout::{
+    StageLayout, StageProductionRole, TemplateBuildCtx, contract_family_slot,
+    evaporation_slot_boundaries,
+};
 
 /// Fishing (consumption) coupling: for every anticipated plant whose
 /// delivery matures THIS stage
@@ -745,11 +748,12 @@ fn push_maturing_bucket_coupling(
 ///
 /// `z_h`'s own definition row and noise patch are left UNTOUCHED for `h`, so the routed
 /// column is scenario-exact; the deterministic base rides on `z_h` and must NOT also be
-/// added to `d`'s RHS (double-count). `h`'s withdrawal demand transfers via `d`'s RHS
-/// (owned by `super::rows::fill_water_balance_rows`), which MUST resolve the SAME `d` so
-/// matrix and RHS agree. A skipped intermediate `PreFilling` hydro contributes zero
-/// releases, so a chain re-routes each link's inflow to `d` exactly once. Sink case (no
-/// non-`PreFilling` downstream): nothing routed, no panic.
+/// added to `d`'s RHS (double-count). `h`'s withdrawal demand transfers via `d`'s RHS,
+/// owned by `super::hydro_state::effective_withdrawals`, which resolves `d` through the
+/// same [`resolve_shortcircuit_target`] so matrix and RHS agree. A skipped intermediate
+/// `PreFilling` hydro contributes zero releases, so a chain re-routes each link's inflow
+/// to `d` exactly once. Sink case (no non-`PreFilling` downstream): nothing routed, no
+/// panic.
 ///
 /// The `z_h` and maturing-bucket couplings are [`push_local_inflow_coupling`] and
 /// [`push_maturing_bucket_coupling`], shared with both water writers' own-row route.
@@ -1003,8 +1007,10 @@ pub(super) fn fill_load_balance_entries(
 }
 
 /// Fill FPHA hyperplane constraint entries, one row per `(FPHA cell, block, plane)`,
-/// implementing `g_c − σ_c·γᵥ/2·v − σ_c·γᵥ/2·v_in − γ_q·q_c − σ_c·γ_s·s ≤ σ_c·γ₀`
-/// (`σ_c·γ₀` in the row upper bound set by `rows::fill_fpha_rows`). `σ_c`
+/// implementing `g_c − ε_c − σ_c·γᵥ/2·v − σ_c·γᵥ/2·v_in − γ_q·q_c − σ_c·γ_s·s ≤ σ_c·γ₀`
+/// (`σ_c·γ₀` in the row upper bound set by `rows::fill_fpha_rows`). `ε_c` is the
+/// cell-and-block plane slack (`StageGeometry::fpha_slack`), `−1` unscaled in
+/// every plane row of that cell and block and in no other row. `σ_c`
 /// apportions the plane's flow-independent part by the cell's share of the plant's
 /// declared turbine capacity; `γ_q` stays unscaled on the cell's own flow `q_c`.
 ///
@@ -1046,6 +1052,7 @@ pub(super) fn fill_fpha_entries(
         let col_q = geom.turbine_col(visit.cell, visit.blk);
         let col_s = geom.spillage_col(visit.plant, visit.blk);
         let col_g = geom.generation_col(visit.cell_local, visit.blk);
+        let col_slack = geom.fpha_slack_col(visit.cell_local, visit.blk);
         // Apportion the plane's flow-independent part by this cell's share of the
         // plant's declared turbine capacity; γ_q stays unscaled on the cell's own
         // flow (only `A ≡ γ₀ + γ_V·V̄ + γ_s·s` fails the homogeneity that makes
@@ -1053,6 +1060,7 @@ pub(super) fn fill_fpha_entries(
         let sigma_c = ctx.hydro_cell_index.share_of(visit.cell);
 
         col_entries[col_g].push((visit.row, 1.0));
+        col_entries[col_slack].push((visit.row, -1.0));
         // Average storage: −γᵥ/2 on BOTH storage columns, not one alone (D06),
         // each apportioned by sigma_c like the other flow-independent terms.
         col_entries[col_v_in].push((visit.row, sigma_c * (-plane.gamma_v / 2.0)));
@@ -1112,16 +1120,9 @@ pub(super) fn fill_evaporation_entries(
 
         let half_slope = coeff.volume_slope_m3s_per_hm3 / 2.0;
         for slot in 0..n_evap_slots {
-            let (col_v_in, col_v) = match stage.block_mode {
-                BlockMode::Parallel => (
-                    layout.block_storage_col(h, Boundary::Incoming),
-                    layout.block_storage_col(h, Boundary::Outgoing),
-                ),
-                BlockMode::Chronological => (
-                    layout.block_storage_col(h, Boundary::from_index(slot, n_blks)),
-                    layout.block_storage_col(h, Boundary::from_index(slot + 1, n_blks)),
-                ),
-            };
+            let (b_in, b_out) = evaporation_slot_boundaries(stage.block_mode, slot, n_blks);
+            let col_v_in = layout.block_storage_col(h, b_in);
+            let col_v = layout.block_storage_col(h, b_out);
             let local = EvapLocal::new(local_idx);
             let col_evaporation_flow = layout.evap_flow_col(local, BlockIdx::new(slot));
             let col_f_plus = layout.evap_f_plus_col(local, BlockIdx::new(slot));
@@ -1757,6 +1758,7 @@ mod parameter_resolution_tests {
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -3912,6 +3914,7 @@ mod pumping_water_tests {
                 outflow_violation_below_cost: 0.0,
                 outflow_violation_above_cost: 0.0,
                 generation_violation_below_cost: 0.0,
+                fpha_violation_cost: 0.0,
                 evaporation_violation_cost: 0.0,
                 water_withdrawal_violation_cost: 0.0,
                 water_withdrawal_violation_pos_cost: 0.0,
@@ -3954,6 +3957,7 @@ mod pumping_water_tests {
                 outflow_violation_below_cost: 0.0,
                 outflow_violation_above_cost: 0.0,
                 generation_violation_below_cost: 0.0,
+                fpha_violation_cost: 10000.0,
                 evaporation_violation_cost: 0.0,
                 water_withdrawal_violation_cost: 0.0,
                 water_withdrawal_violation_pos_cost: 0.0,
@@ -5509,6 +5513,7 @@ mod pumping_water_tests {
                     outflow_violation_below_cost: 0.0,
                     outflow_violation_above_cost: 0.0,
                     generation_violation_below_cost: 11.0,
+                    fpha_violation_cost: 0.0,
                     evaporation_violation_cost: 0.0,
                     water_withdrawal_violation_cost: 0.0,
                     water_withdrawal_violation_pos_cost: 0.0,
@@ -9697,10 +9702,11 @@ mod pumping_water_tests {
     }
 
     /// Build the cascade `H1(id 1) → H2(id 2, filling) → H3(id 3)` at `stage_id`,
-    /// with H2's resolved per-stage withdrawal set to `withdrawal_h`. Returns the
-    /// assembled CSC, the `(row_lower, row_upper)` vectors, and the offsets the
-    /// short-circuit assertions read. H2 is the mid-cascade filling hydro, so the
-    /// short-circuit routes to a REAL downstream (H3), not a sink.
+    /// with H2's resolved per-stage withdrawal set to `withdrawal_h` and H3's to
+    /// `withdrawal_d`. Returns the assembled CSC, the `(row_lower, row_upper)`
+    /// vectors, and the offsets the short-circuit assertions read. H2 is the
+    /// mid-cascade filling hydro, so the short-circuit routes to a REAL downstream
+    /// (H3), not a sink.
     #[expect(
         clippy::type_complexity,
         reason = "each case returns the raw build tuple its assertions destructure"
@@ -9708,6 +9714,7 @@ mod pumping_water_tests {
     fn build_shortcircuit_case(
         stage_id: i32,
         withdrawal_h: f64,
+        withdrawal_d: f64,
     ) -> (
         (Vec<i32>, Vec<i32>, Vec<f64>),
         Vec<f64>,
@@ -9730,6 +9737,11 @@ mod pumping_water_tests {
             .water_withdrawal_m3s = withdrawal_h;
         let h1_idx = fixtures.hydro_pos[&EntityId(1)];
         let h3_idx = fixtures.hydro_pos[&EntityId(3)];
+        fixtures
+            .base
+            .bounds
+            .hydro_bounds_mut(h3_idx, 0)
+            .water_withdrawal_m3s = withdrawal_d;
         let ctx = fixtures.make_ctx();
         let stage_index = usize::try_from(stage_id).expect("non-negative");
         let stage = two_block_stage(stage_index, [300.0, 444.0]);
@@ -9792,7 +9804,8 @@ mod pumping_water_tests {
     #[test]
     fn prefilling_routes_inflow_upstream_releases_and_withdrawal_to_downstream() {
         let withdrawal_h = 17.5_f64;
-        let (csc, _rl, row_upper, off) = build_shortcircuit_case(RET_PREFILLING_ID, withdrawal_h);
+        let (csc, _rl, row_upper, off) =
+            build_shortcircuit_case(RET_PREFILLING_ID, withdrawal_h, 0.0);
         let row_d = off.water_row_h3;
         let row_h = off.water_row_h2;
 
@@ -9834,7 +9847,7 @@ mod pumping_water_tests {
 
         // (3) Withdrawal demand transferred to H3's RHS: H3's row_upper drops by
         // ζ·withdrawal_h versus a no-withdrawal build (its own withdrawal is 0).
-        let (_csc0, _rl0, row_upper0, off0) = build_shortcircuit_case(RET_PREFILLING_ID, 0.0);
+        let (_csc0, _rl0, row_upper0, off0) = build_shortcircuit_case(RET_PREFILLING_ID, 0.0, 0.0);
         let delta = off.zeta * withdrawal_h;
         assert_eq!(
             row_upper0[off0.water_row_h3] - row_upper[row_d],
@@ -9850,7 +9863,7 @@ mod pumping_water_tests {
     /// is never omitted or relocated — §4 trap 2).
     #[test]
     fn prefilling_h_row_is_frozen_identity_with_dense_storage_column() {
-        let (csc, row_lower, row_upper, off) = build_shortcircuit_case(RET_PREFILLING_ID, 9.0);
+        let (csc, row_lower, row_upper, off) = build_shortcircuit_case(RET_PREFILLING_ID, 9.0, 0.0);
         let row_h = off.water_row_h2;
 
         // Outgoing storage column index == H2's system hydro index (dense, unchanged
@@ -10050,7 +10063,7 @@ mod pumping_water_tests {
     #[test]
     fn non_filling_hydro_water_row_and_num_rows_bit_identical() {
         // Filling build at the PreFilling stage: H2 IS short-circuited.
-        let (csc_f, rl_f, ru_f, off_f) = build_shortcircuit_case(RET_PREFILLING_ID, 0.0);
+        let (csc_f, rl_f, ru_f, off_f) = build_shortcircuit_case(RET_PREFILLING_ID, 0.0, 0.0);
 
         // Control: same topology and stage, but H2 carries no filling ⇒ Operating
         // everywhere ⇒ standard balance row, no short-circuit.
@@ -10455,19 +10468,13 @@ mod pumping_water_tests {
             "inflow_{{H1}} must NOT land on H1's own frozen row"
         );
 
-        // (2) Withdrawal demand of BOTH links lands on H3's RHS: H3's row_upper
-        // drops by ζ·withdrawal_{H1} + ζ·withdrawal_{H2} versus a zero-withdrawal
-        // build. Both transfers resolve to H3 (the same short-circuit target),
-        // NEVER onto H2's frozen RHS. The expected delta mirrors the code's two
-        // independent per-link `-=` subtractions (rows.rs), NOT a single
-        // ζ·(w_h1 + w_h2) product, so the FP rounding matches bit-for-bit.
-        let (_csc0, _rl0, row_upper0, off0) =
-            build_chained_shortcircuit_case(RET_PREFILLING_ID, 0.0, 0.0);
-        let delta = off.zeta * w_h1 + off.zeta * w_h2;
+        // (2) Withdrawal demand of BOTH links lands on H3's RHS, NEVER onto H2's
+        // frozen RHS. Derived: H3's own withdrawal is 0, so T_eff = w_h1 + w_h2 and
+        // the RHS is the single product −(ζ·T_eff).
         assert_eq!(
-            row_upper0[off0.water_row_h3] - row_upper[off.water_row_h3],
-            delta,
-            "H3's RHS drops by ζ·withdrawal_{{H1}} + ζ·withdrawal_{{H2}}"
+            row_upper[off.water_row_h3].to_bits(),
+            (-(off.zeta * (w_h1 + w_h2))).to_bits(),
+            "H3's RHS is −(ζ·(withdrawal_{{H1}} + withdrawal_{{H2}}))"
         );
     }
 
@@ -10609,15 +10616,17 @@ mod pumping_water_tests {
 
     /// Build the cascade `H1(id 1) → H2(id 2, filling) → H3(id 3)` at the canonical
     /// `PreFilling` stage under `BlockMode::Chronological`, with H2's resolved
-    /// per-stage withdrawal set to `withdrawal_h`. Returns the assembled CSC, the
-    /// `(row_lower, row_upper)` vectors, the resolved [`StageLayout`] (block-major
-    /// addressing reads through its accessors), and the offsets the assertions read.
+    /// per-stage withdrawal set to `withdrawal_h` and H3's to `withdrawal_d`. Returns
+    /// the assembled CSC, the `(row_lower, row_upper)` vectors, the resolved
+    /// [`StageLayout`] (block-major addressing reads through its accessors), and the
+    /// offsets the assertions read.
     #[expect(
         clippy::type_complexity,
         reason = "each case returns the raw build tuple its assertions destructure"
     )]
     fn build_chronological_shortcircuit_case(
         withdrawal_h: f64,
+        withdrawal_d: f64,
     ) -> (
         (Vec<i32>, Vec<i32>, Vec<f64>),
         Vec<f64>,
@@ -10641,6 +10650,11 @@ mod pumping_water_tests {
             .water_withdrawal_m3s = withdrawal_h;
         let h1_idx = fixtures.hydro_pos[&EntityId(1)];
         let d_idx = fixtures.hydro_pos[&EntityId(3)];
+        fixtures
+            .base
+            .bounds
+            .hydro_bounds_mut(d_idx, 0)
+            .water_withdrawal_m3s = withdrawal_d;
         let fixtures = Box::leak(Box::new(fixtures));
         let ctx = Box::leak(Box::new(fixtures.make_ctx()));
         let mut stage =
@@ -10688,7 +10702,8 @@ mod pumping_water_tests {
     /// neighbour's block row.
     #[test]
     fn chronological_prefilling_frozen_identity_per_block() {
-        let (csc, row_lower, row_upper, layout, off) = build_chronological_shortcircuit_case(9.0);
+        let (csc, row_lower, row_upper, layout, off) =
+            build_chronological_shortcircuit_case(9.0, 0.0);
         let h = off.h2_idx;
         let n_blks = off.n_blks;
 
@@ -10736,7 +10751,7 @@ mod pumping_water_tests {
     fn chronological_prefilling_shortcircuit_per_block() {
         let withdrawal_h = 17.5_f64;
         let (csc, _rl, row_upper, layout, off) =
-            build_chronological_shortcircuit_case(withdrawal_h);
+            build_chronological_shortcircuit_case(withdrawal_h, 0.0);
         let n_blks = off.n_blks;
 
         for k in 1..=n_blks {
@@ -10779,7 +10794,8 @@ mod pumping_water_tests {
 
         // Withdrawal demand transfers per block: H3's block-`k` row_upper drops by
         // τ_k·withdrawal_h versus a no-withdrawal build (H3's own withdrawal is 0).
-        let (_csc0, _rl0, row_upper0, layout0, off0) = build_chronological_shortcircuit_case(0.0);
+        let (_csc0, _rl0, row_upper0, layout0, off0) =
+            build_chronological_shortcircuit_case(0.0, 0.0);
         for k in 1..=n_blks {
             let blk = k - 1;
             let tau_k = [300.0_f64, 444.0][blk] * M3S_TO_HM3;
@@ -10790,6 +10806,37 @@ mod pumping_water_tests {
                 tau_k * withdrawal_h,
                 "block {k}: H3's block RHS drops by τ_k·withdrawal_{{H2}}"
             );
+        }
+    }
+
+    /// Derived: the target's RHS is `−(ζ·T_eff)` as one product with
+    /// `T_eff = T_H3 + T_H2 = 0.07 + 0.2` (per block `−(τ_k·T_eff)`), and the
+    /// `PreFilling` H2 row stays exactly `0.0`.
+    #[test]
+    fn prefilling_withdrawal_rhs_reads_effective_withdrawal() {
+        let (own_d, withdrawal_h) = (0.07_f64, 0.2_f64);
+        let t_eff = own_d + withdrawal_h;
+        let zero_bits = 0.0_f64.to_bits();
+
+        let (_csc, row_lower, row_upper, off) =
+            build_shortcircuit_case(RET_PREFILLING_ID, withdrawal_h, own_d);
+        let rhs_bits = (-(off.zeta * t_eff)).to_bits();
+        assert_eq!(row_lower[off.water_row_h3].to_bits(), rhs_bits);
+        assert_eq!(row_upper[off.water_row_h3].to_bits(), rhs_bits);
+        assert_eq!(row_lower[off.water_row_h2].to_bits(), zero_bits);
+        assert_eq!(row_upper[off.water_row_h2].to_bits(), zero_bits);
+
+        let (_csc, row_lower, row_upper, layout, off) =
+            build_chronological_shortcircuit_case(withdrawal_h, own_d);
+        for blk in 0..off.n_blks {
+            let tau_k = [300.0_f64, 444.0][blk] * M3S_TO_HM3;
+            let rhs_bits = (-(tau_k * t_eff)).to_bits();
+            let row_d = layout.geometry.water_balance.start() + off.d_idx * off.n_blks + blk;
+            let row_h = layout.geometry.water_balance.start() + off.h2_idx * off.n_blks + blk;
+            assert_eq!(row_lower[row_d].to_bits(), rhs_bits, "block {blk}");
+            assert_eq!(row_upper[row_d].to_bits(), rhs_bits, "block {blk}");
+            assert_eq!(row_lower[row_h].to_bits(), zero_bits, "block {blk}");
+            assert_eq!(row_upper[row_h].to_bits(), zero_bits, "block {blk}");
         }
     }
 
@@ -10978,7 +11025,7 @@ mod pumping_water_tests {
 
     // ── Per-block FPHA & evaporation (block-local average storage) ───────────────
 
-    use crate::hydro_models::LinearizedEvaporation;
+    use crate::hydro_models::{EvaporationCoefficientSign, LinearizedEvaporation};
 
     const FPHA_GAMMA_V: f64 = 0.2;
     const EVAP_SLOPE: f64 = 0.03;
@@ -11022,6 +11069,7 @@ mod pumping_water_tests {
                 coefficients: vec![LinearizedEvaporation {
                     intercept_m3s: EVAP_INTERCEPT,
                     volume_slope_m3s_per_hm3: EVAP_SLOPE,
+                    coefficient_sign: EvaporationCoefficientSign::Positive,
                 }],
                 reference_volumes_hm3: vec![0.0],
             }]);
@@ -11093,7 +11141,7 @@ mod pumping_water_tests {
     /// AC#2: a chronological `K = 2` evaporating hydro emits `K` evaporation rows,
     /// each with `−slope/2` on its own `(Sᵏ⁻¹, Sᵏ)` pair; each block's evaporation
     /// flow appears in that block's water row with `+τ_k`; each block's flow column
-    /// is BOUNDED `[−q_max, +q_max]` (the wrong-bounds bug: leaving the extra
+    /// is BOUNDED `[0, +q_max]` (the wrong-bounds bug: leaving the extra
     /// per-block flow columns unbounded); and each block's directional slack
     /// objective is the cost times THAT block's `duration_hours` (block-scoped like
     /// the flow's `+τ_k` term — not the stage-total hours on every block, which would
@@ -11145,8 +11193,10 @@ mod pumping_water_tests {
                 tau_k,
                 "block {k}: evap flow carries +τ_k on its water row"
             );
-            // Flow column bounded [−q_max, +q_max], NOT the default [0, +∞).
-            assert_eq!(col_lower[flow_col], -q_max, "block {k}: flow lower −q_max");
+            assert_eq!(
+                col_lower[flow_col], 0.0,
+                "block {k}: positive-month flow lower 0"
+            );
             assert_eq!(col_upper[flow_col], q_max, "block {k}: flow upper +q_max");
             // Directional slacks carry nonzero objective, weighted by THIS block's
             // hours (not the stage-total, which would inflate the penalty K-fold).
@@ -11219,7 +11269,7 @@ mod pumping_water_tests {
             "parallel evap flow carries +ζ on the single water row"
         );
         let q_max = (EVAP_INTERCEPT + EVAP_SLOPE * 100.0).abs() * 2.0;
-        assert_eq!(col_lower[flow_col], -q_max);
+        assert_eq!(col_lower[flow_col], 0.0);
         assert_eq!(col_upper[flow_col], q_max);
     }
 

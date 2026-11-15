@@ -1,7 +1,7 @@
-use novomodelo_core::commissioning::{Phase, commissioning_active};
+use novomodelo_core::commissioning::{Phase, commissioning_active, hard_storage_floor};
 use novomodelo_core::{BlockMode, ContractType, Stage};
 
-use crate::hydro_models::EvaporationModel;
+use crate::hydro_models::{EvaporationCoefficientSign, EvaporationModel};
 use crate::indexer::{
     AnticipatedLocal, BlockIdx, Boundary, BusSys, EvapLocal, FillingTargetLocal, FloorLocal,
     FphaCellLocal, FphaLocal, HydroCell, HydroSys, LineSys, NcsSys, PlantFloorLocal, PumpingSys,
@@ -11,11 +11,13 @@ use crate::indexer::{
 use super::EVAPORATION_FLOW_SAFETY_MARGIN;
 use super::delivery_ring::{ColumnBufs, DeliveryRing};
 use super::hydro_state::{
-    GroupBoundLookup, MinFloor, cell_max_generation, cell_max_turbined, hydro_phase, is_suspended,
-    storage_ceiling, storage_floor_relaxed,
+    GroupBoundLookup, MinFloor, cell_max_generation, cell_max_turbined,
+    evaporation_slot_reachable_storage, evaporation_target, evaporation_target_range, hydro_phase,
+    is_suspended, storage_ceiling,
 };
 use super::layout::{
     StageLayout, TemplateBuildCtx, contract_direction_counts, contract_family_slot,
+    evaporation_slot_boundaries,
 };
 
 /// Fill column lower/upper bounds and objective coefficients for one stage.
@@ -57,6 +59,7 @@ pub(super) fn fill_stage_columns(
     fill_contract_columns(ctx, stage, stage_idx, layout, bufs);
     fill_filling_target_columns(ctx, stage_idx, layout, bufs);
     fill_filled_min_storage_floor_columns(ctx, stage_idx, layout, bufs);
+    fill_fpha_slack_columns(ctx, stage, stage_idx, layout, bufs);
 
     (col_lower, col_upper, objective)
 }
@@ -74,9 +77,8 @@ fn fill_storage_columns(
 ) {
     for h_idx in 0..layout.state.hydro_count {
         let hydro = &ctx.hydros[h_idx];
-        let floor_off = storage_floor_relaxed(hydro, stage.id);
         let hb = ctx.resolved.bounds.hydro_bounds(h_idx, stage_idx);
-        let storage_lower = if floor_off { 0.0 } else { hb.min_storage_hm3 };
+        let storage_lower = hard_storage_floor(hydro, stage.id, hb.min_storage_hm3);
         let storage_upper = storage_ceiling(hydro, stage.id, hb.max_storage_hm3);
         let storage_out_col = layout
             .state
@@ -90,9 +92,9 @@ fn fill_storage_columns(
         bufs.col_upper[storage_out_col] = storage_upper;
         bufs.col_lower[storage_in_col] = f64::NEG_INFINITY;
         bufs.col_upper[storage_in_col] = f64::INFINITY;
-        // Interior Sᵏ reuse the outgoing column's EXACT bounds, floor_off and the
-        // dormant ceiling included: the frozen-identity chain pins each interior to the
-        // inert IC, so a hard bound excluding IC would reject the pin.
+        // Interior Sᵏ reuse the outgoing column's EXACT bounds, the relaxed floor and
+        // the dormant ceiling included: the frozen-identity chain pins each interior to
+        // the inert IC, so a hard bound excluding IC would reject the pin.
         for k in 1..layout.clock.n_blks() {
             let col = layout.block_storage_col(HydroSys::new(h_idx), Boundary::Interior(k));
             bufs.col_lower[col] = storage_lower;
@@ -633,12 +635,44 @@ fn fill_fpha_generation_columns(
     }
 }
 
+/// FPHA plane-slack columns: one per FPHA cell per block, `[0, +∞)`, objective
+/// `fpha_violation_cost` times the block's hours, written UNSCALED
+/// (`finalize_stage_objective` divides by the cost scale).
+fn fill_fpha_slack_columns(
+    ctx: &TemplateBuildCtx<'_>,
+    stage: &Stage,
+    stage_idx: usize,
+    layout: &StageLayout,
+    bufs: &mut ColumnBufs<'_>,
+) {
+    for (local_idx, &h) in layout.geometry.fpha_hydro_indices.iter().enumerate() {
+        let fpha_cell_base = layout
+            .fpha_local_first_cell(FphaLocal::new(local_idx))
+            .get();
+        let hp = ctx.resolved.penalties.hydro_penalties(h.get(), stage_idx);
+        for blk in (0..layout.clock.n_blks()).map(BlockIdx::new) {
+            let cost = hp.fpha_violation_cost * stage.blocks[blk.get()].duration_hours;
+            for offset in 0..ctx.hydro_cell_index.cells_of(h).len() {
+                let col = layout
+                    .geometry
+                    .fpha_slack_col(FphaCellLocal::new(fpha_cell_base + offset), blk);
+                bufs.col_lower[col] = 0.0;
+                bufs.col_upper[col] = f64::INFINITY;
+                bufs.objective[col] = cost;
+            }
+        }
+    }
+}
+
 /// Evaporation columns: one `EVAP_COLS_PER_HYDRO` triple (evaporation outflow,
 /// `f_evap_plus`, `f_evap_minus`) per evaporation hydro per block.
 ///
-/// The evaporation-outflow column is bounded symmetrically `[-q_max, +q_max]`, zero
-/// objective. `f_evap_plus`/`f_evap_minus` are `[0, +inf)` and carry the directional
-/// violation costs; the pricing hours per block mode are chosen where they are written.
+/// The evaporation-outflow column, zero objective, takes the box of its month's
+/// `coefficient_sign`, always containing 0: a positive month bounds it below at the
+/// lowest reachable target, a negative month above at the highest and caps
+/// `f_evap_plus` at the highest target over the hard floor, a zero month keeps
+/// `[-q_max, +q_max]`. `f_evap_minus` is `[0, +inf)`; both slacks carry the directional
+/// violation costs, priced at the hours chosen where they are written.
 fn fill_evaporation_columns(
     ctx: &TemplateBuildCtx<'_>,
     stage: &Stage,
@@ -646,21 +680,15 @@ fn fill_evaporation_columns(
     layout: &StageLayout,
     bufs: &mut ColumnBufs<'_>,
 ) {
+    let delivery_stage_ids = ctx.time_value.delivery_stage_ids();
     for (local_idx, &h) in layout.geometry.evap_hydro_indices.iter().enumerate() {
         let local_idx = EvapLocal::new(local_idx);
-        let (q_max_abs, hp) = match ctx.evaporation_models.model(h.get()) {
-            EvaporationModel::Linearized { coefficients, .. } => {
-                let coeff = &coefficients[stage_idx];
-                let hb = ctx.resolved.bounds.hydro_bounds(h.get(), stage_idx);
-                let q_max_abs = (coeff.intercept_m3s
-                    + coeff.volume_slope_m3s_per_hm3 * hb.max_storage_hm3)
-                    .abs()
-                    * EVAPORATION_FLOW_SAFETY_MARGIN;
-                (
-                    q_max_abs,
-                    ctx.resolved.penalties.hydro_penalties(h.get(), stage_idx),
-                )
-            }
+        let (coeff, hb, hp) = match ctx.evaporation_models.model(h.get()) {
+            EvaporationModel::Linearized { coefficients, .. } => (
+                &coefficients[stage_idx],
+                ctx.resolved.bounds.hydro_bounds(h.get(), stage_idx),
+                ctx.resolved.penalties.hydro_penalties(h.get(), stage_idx),
+            ),
             EvaporationModel::None => {
                 debug_assert!(
                     false,
@@ -670,15 +698,42 @@ fn fill_evaporation_columns(
                 continue;
             }
         };
+        let q_max_abs =
+            evaporation_target(coeff, hb.max_storage_hm3).abs() * EVAPORATION_FLOW_SAFETY_MARGIN;
+        let predecessor = stage_idx.checked_sub(1).map(|p| {
+            (
+                delivery_stage_ids[p],
+                ctx.resolved.bounds.hydro_bounds(h.get(), p),
+            )
+        });
         for slot in 0..layout.n_evap_slots {
             let col_evaporation_flow = layout.evap_flow_col(local_idx, BlockIdx::new(slot));
             let col_f_plus = layout.evap_f_plus_col(local_idx, BlockIdx::new(slot));
             let col_f_minus = layout.evap_f_minus_col(local_idx, BlockIdx::new(slot));
-            // Signed: a negative outflow reads as net rainfall input (inflow).
-            bufs.col_lower[col_evaporation_flow] = -q_max_abs;
-            bufs.col_upper[col_evaporation_flow] = q_max_abs;
+            let reachable = evaporation_slot_reachable_storage(
+                &ctx.hydros[h.get()],
+                delivery_stage_ids[0],
+                (stage.id, hb),
+                predecessor,
+                evaporation_slot_boundaries(stage.block_mode, slot, layout.clock.n_blks()),
+            );
+            let (tight_min, tight_max) =
+                evaporation_target_range(coeff, reachable.tight_floor_hm3, reachable.ceiling_hm3);
+            let (_, hard_max) =
+                evaporation_target_range(coeff, reachable.hard_floor_hm3, reachable.ceiling_hm3);
+            let (flow_lower, flow_upper, f_plus_upper) = match coeff.coefficient_sign {
+                EvaporationCoefficientSign::Positive => {
+                    (0.0_f64.min(tight_min), q_max_abs, f64::INFINITY)
+                }
+                EvaporationCoefficientSign::Negative => {
+                    (-q_max_abs, 0.0_f64.max(tight_max), 0.0_f64.max(hard_max))
+                }
+                EvaporationCoefficientSign::Zero => (-q_max_abs, q_max_abs, f64::INFINITY),
+            };
+            bufs.col_lower[col_evaporation_flow] = flow_lower;
+            bufs.col_upper[col_evaporation_flow] = flow_upper;
             bufs.col_lower[col_f_plus] = 0.0;
-            bufs.col_upper[col_f_plus] = f64::INFINITY;
+            bufs.col_upper[col_f_plus] = f_plus_upper;
             bufs.col_lower[col_f_minus] = 0.0;
             bufs.col_upper[col_f_minus] = f64::INFINITY;
             // f_evap_plus = under-evaporation, f_evap_minus = over-evaporation. A
@@ -695,16 +750,13 @@ fn fill_evaporation_columns(
     }
 }
 
-/// Withdrawal violation slack columns — neg (under-withdrawal) and pos
+/// Withdrawal violation slack columns, `neg` (under-withdrawal) and `pos`
 /// (over-withdrawal), one stage-level column per hydro per direction.
 ///
-/// Realized withdrawal is `R = T - neg + pos`, `T = water_withdrawal_m3s` (signed:
-/// `T > 0` removal, `T < 0` inter-basin return). `R` must NOT flip sign, so the
-/// *under-delivery* direction (the one dragging `R` toward zero) is capped at `|T|`
-/// while *over-delivery* is left `+∞`:
-/// - `T > 0`: cap `neg ≤ |T|` (floors `R ≥ 0`); `pos` is `+∞`.
-/// - `T < 0`: cap `pos ≤ |T|` (floors `R ≤ 0`); `neg` is `+∞`.
-/// - `T = 0`: both `0` (presolve-eliminated).
+/// The realized withdrawal `R = T_eff - neg + pos` never changes sign: `T_eff > 0`
+/// bounds `neg ≤ T_eff` with `pos` unbounded, `T_eff < 0` bounds `pos ≤ -T_eff`
+/// with `neg = 0`, and `T_eff = 0` pins both to 0. `T_eff` is owned by
+/// [`StageLayout::effective_withdrawal_m3s`].
 fn fill_withdrawal_slack_columns(
     ctx: &TemplateBuildCtx<'_>,
     stage_idx: usize,
@@ -713,20 +765,13 @@ fn fill_withdrawal_slack_columns(
     bufs: &mut ColumnBufs<'_>,
 ) {
     for h_idx in 0..layout.state.hydro_count {
-        let hb = ctx.resolved.bounds.hydro_bounds(h_idx, stage_idx);
         let hp = ctx.resolved.penalties.hydro_penalties(h_idx, stage_idx);
-        let t = hb.water_withdrawal_m3s;
+        let t = layout.effective_withdrawal_m3s[h_idx];
 
         let neg_col = layout
             .geometry
             .withdrawal_slack_neg_col(HydroSys::new(h_idx));
-        bufs.col_upper[neg_col] = if t > 0.0 {
-            t
-        } else if t < 0.0 {
-            f64::INFINITY
-        } else {
-            0.0
-        };
+        bufs.col_upper[neg_col] = if t > 0.0 { t } else { 0.0 };
         bufs.objective[neg_col] = hp.water_withdrawal_violation_neg_cost * total_stage_hours;
 
         let pos_col = layout
@@ -1105,7 +1150,7 @@ mod interior_storage_bound_tests {
     const MAX_STORAGE_HM3: f64 = 175.0;
 
     /// One Operating run-of-river hydro (`ConstantProductivity`, no filling, no
-    /// commissioning window ⇒ `floor_off == false`), so the endpoint outgoing
+    /// commissioning window ⇒ no relaxed floor), so the endpoint outgoing
     /// storage column takes the hard `[MIN_STORAGE_HM3, MAX_STORAGE_HM3]` floor and
     /// interior == endpoint is the unambiguous expectation. No FPHA/evaporation, so
     /// the layout reserves only the structural storage families.
@@ -1212,6 +1257,7 @@ mod interior_storage_bound_tests {
                     outflow_violation_below_cost: 0.0,
                     outflow_violation_above_cost: 0.0,
                     generation_violation_below_cost: 0.0,
+                    fpha_violation_cost: 0.0,
                     evaporation_violation_cost: 0.0,
                     water_withdrawal_violation_cost: 0.0,
                     water_withdrawal_violation_pos_cost: 0.0,
@@ -1636,6 +1682,7 @@ mod diversion_bound_tests {
                     outflow_violation_below_cost: 0.0,
                     outflow_violation_above_cost: 0.0,
                     generation_violation_below_cost: 0.0,
+                    fpha_violation_cost: 0.0,
                     evaporation_violation_cost: 0.0,
                     water_withdrawal_violation_cost: 0.0,
                     water_withdrawal_violation_pos_cost: 0.0,
@@ -2012,6 +2059,7 @@ mod filling_phase_gating_tests {
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -3814,6 +3862,7 @@ mod block_family_slack_tests {
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -4105,8 +4154,8 @@ mod evaporation_slack_objective_tests {
     };
 
     use crate::hydro_models::{
-        EvaporationModel, EvaporationModelSet, LinearizedEvaporation, ProductionModelSet,
-        ResolvedProductionModel,
+        EvaporationCoefficientSign, EvaporationModel, EvaporationModelSet, LinearizedEvaporation,
+        ProductionModelSet, ResolvedProductionModel,
     };
     use crate::indexer::{BlockIdx, EvapLocal, HydroCellIndex};
 
@@ -4220,6 +4269,7 @@ mod evaporation_slack_objective_tests {
                     outflow_violation_below_cost: 0.0,
                     outflow_violation_above_cost: 0.0,
                     generation_violation_below_cost: 0.0,
+                    fpha_violation_cost: 0.0,
                     evaporation_violation_cost: 0.0,
                     water_withdrawal_violation_cost: 0.0,
                     water_withdrawal_violation_pos_cost: 0.0,
@@ -4288,6 +4338,7 @@ mod evaporation_slack_objective_tests {
                     LinearizedEvaporation {
                         intercept_m3s: 1.0,
                         volume_slope_m3s_per_hm3: 0.0,
+                        coefficient_sign: EvaporationCoefficientSign::Positive,
                     };
                     N_STAGES
                 ],
@@ -5238,6 +5289,7 @@ mod line_contract_pumping_block_bound_tests {
                     outflow_violation_below_cost: 0.0,
                     outflow_violation_above_cost: 0.0,
                     generation_violation_below_cost: 0.0,
+                    fpha_violation_cost: 0.0,
                     evaporation_violation_cost: 0.0,
                     water_withdrawal_violation_cost: 0.0,
                     water_withdrawal_violation_pos_cost: 0.0,
@@ -5834,6 +5886,7 @@ mod hydro_block_bound_tests {
             outflow_violation_below_cost,
             outflow_violation_above_cost,
             generation_violation_below_cost,
+            fpha_violation_cost: 10.0 * generation_violation_below_cost,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -6894,6 +6947,7 @@ mod cell_column_bound_tests {
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -7951,6 +8005,7 @@ mod ncs_objective_tests {
                     outflow_violation_below_cost: 0.0,
                     outflow_violation_above_cost: 0.0,
                     generation_violation_below_cost: 0.0,
+                    fpha_violation_cost: 0.0,
                     evaporation_violation_cost: 0.0,
                     water_withdrawal_violation_cost: 0.0,
                     water_withdrawal_violation_pos_cost: 0.0,

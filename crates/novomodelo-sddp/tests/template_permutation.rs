@@ -17,7 +17,7 @@ use novomodelo_solver::ActiveSolver;
 
 use common::in_code_studies::{
     ChronologicalNoiseSpec, FphaLagOptions, chronological_noise_study, fpha_lag_study_with,
-    mixed_lead_anticipated_study, negative_draw_par1_spec,
+    mixed_lead_anticipated_study, negative_draw_par1_spec, prefilling_withdrawal_route_study,
 };
 use common::permute::permute_case;
 use common::selection_fingerprint::SelectionFingerprint;
@@ -127,6 +127,41 @@ fn every_in_code_study_template_is_invariant_to_declaration_order() {
             .map(|(study, group)| format!("  {study}\t{group}"))
             .collect::<Vec<_>>()
             .join("\n")
+    );
+}
+
+fn prefilling_route_setup(
+    reverse_declaration_order: bool,
+    prefilling_withdrawals_m3s: [f64; 2],
+) -> StudySetup {
+    let (system, config) =
+        prefilling_withdrawal_route_study(reverse_declaration_order, prefilling_withdrawals_m3s);
+    build_setup_in_code(system, &config)
+}
+
+#[test]
+fn prefilling_withdrawal_route_template_is_invariant_to_declaration_order() {
+    assert_ne!(
+        ((0.3_f64 + 0.1) + 0.2).to_bits(),
+        ((0.3_f64 + 0.2) + 0.1).to_bits(),
+        "the chosen withdrawals do not make the summation order visible in the sum's bits"
+    );
+
+    let label = "in-code/prefilling-withdrawal-route";
+    let base_setup = prefilling_route_setup(false, [0.1, 0.2]);
+    let reversed_setup = prefilling_route_setup(true, [0.1, 0.2]);
+    let mismatches = mismatched_groups(&base_setup, &reversed_setup, label);
+    assert!(
+        mismatches.is_empty(),
+        "{label}: template facts differ under declaration-order reversal for groups: {mismatches:?}"
+    );
+
+    let zero_setup = prefilling_route_setup(false, [0.0, 0.0]);
+    assert_ne!(
+        template_fact_groups(&base_setup).get("lp.row_bounds"),
+        template_fact_groups(&zero_setup).get("lp.row_bounds"),
+        "{label}: lp.row_bounds is the same with and without the PreFilling withdrawals, so the \
+         comparison does not reach the target's RHS"
     );
 }
 

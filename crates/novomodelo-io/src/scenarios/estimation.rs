@@ -57,7 +57,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
-use chrono::{Months, NaiveDate};
+use chrono::{Datelike, Months, NaiveDate};
 use novomodelo_core::{EntityId, SeasonMap, Stage, System, ValidationError};
 use novomodelo_stochastic::{
     StochasticError,
@@ -76,7 +76,7 @@ use novomodelo_stochastic::{
 use crate::LoadError::ConstraintError;
 use crate::{
     Config, FileManifest, InputFile, LoadError, OrderSelectionMethod, ValidationContext,
-    config::CorrelationTarget,
+    config::{CorrelationTarget, HistoricalYearRange},
     parse_inflow_ar_coefficients, parse_inflow_history,
     scenarios::{
         InflowAnnualComponentRow, InflowArCoefficientRow, InflowHistoryRow, InflowSeasonalStatsRow,
@@ -315,7 +315,12 @@ fn run_estimation(
         .collect();
     let stages = stages.as_slice();
 
-    let observations = load_and_aggregate_observations(case_dir, study_stages, season_map)?;
+    let observations = load_and_aggregate_observations(
+        case_dir,
+        study_stages,
+        season_map,
+        config.estimation.history_years,
+    )?;
 
     let seasonal_stats =
         estimate_seasonal_stats_with_season_map(&observations, stages, &hydro_ids, season_map)?;
@@ -333,6 +338,7 @@ fn run_estimation(
                 config.estimation.order_selection,
                 OrderSelectionMethod::PacfAnnual
             ),
+            assembled_stats: None,
         },
     )?;
 
@@ -389,7 +395,12 @@ fn run_partial_estimation(
     let stages = stages_owned.as_slice();
 
     // Aggregate against study_stages (the season map resolves observations there).
-    let observations = load_and_aggregate_observations(case_dir, study_stages, season_map)?;
+    let observations = load_and_aggregate_observations(
+        case_dir,
+        study_stages,
+        season_map,
+        config.estimation.history_years,
+    )?;
 
     if system.inflow_models().is_empty() {
         return Err(EstimationError::Load(ConstraintError {
@@ -404,6 +415,18 @@ fn run_partial_estimation(
     let fitting_stats =
         estimate_seasonal_stats_with_season_map(&observations, stages, &hydro_ids, season_map)?;
 
+    // LP assembly uses USER stats, not the fitting stats above.
+    let mut stats_rows = user_stats_to_rows(&system);
+    // Out-of-window lag seasons have no user stat; source their (mean, std) from
+    // fitting_stats so PrecomputedPar::build gets a Tier-1 lag hit at the negative
+    // stage_id rather than zeroing the lag. In-window wrap lags stay on the
+    // Tier-2 → user-stat path. Empty for full-year.
+    stats_rows.extend(prestudy_seasonal_rows(&fitting_stats, &prestudy));
+    stats_rows.sort_by_key(|r| (r.hydro_id.0, r.stage_id));
+    // `stages` includes prestudy (see synthesize_prestudy_stages doc).
+    let (stage_to_season, n_seasons) = resolve_stage_seasons(stages, season_map);
+    let assembled_stats = assembled_seasonal_stats(&stats_rows, &stage_to_season);
+
     let (ar_estimates, mut estimation_report) = estimate_ar_coefficients_with_selection(
         &observations,
         &fitting_stats,
@@ -417,6 +440,7 @@ fn run_partial_estimation(
                 config.estimation.order_selection,
                 OrderSelectionMethod::PacfAnnual
             ),
+            assembled_stats: Some(&assembled_stats),
         },
     )?;
 
@@ -438,19 +462,9 @@ fn run_partial_estimation(
         )?
     };
 
-    // LP assembly uses USER stats, not the fitting stats above.
-    let mut stats_rows = user_stats_to_rows(&system);
-    // Out-of-window lag seasons have no user stat; source their (mean, std) from
-    // fitting_stats so PrecomputedPar::build gets a Tier-1 lag hit at the negative
-    // stage_id rather than zeroing the lag. In-window wrap lags stay on the
-    // Tier-2 → user-stat path. Empty for full-year.
-    stats_rows.extend(prestudy_seasonal_rows(&fitting_stats, &prestudy));
-    stats_rows.sort_by_key(|r| (r.hydro_id.0, r.stage_id));
     let coeff_rows = ar_estimates_to_rows(&ar_estimates, stages);
     let annual_rows = ar_estimates_to_annual_rows(&ar_estimates, stages);
     let mut inflow_models = assemble_inflow_models(stats_rows, coeff_rows, annual_rows)?;
-    // `stages` includes prestudy (see synthesize_prestudy_stages doc).
-    let (stage_to_season, n_seasons) = resolve_stage_seasons(stages, season_map);
     populate_derived_residual_ratios(&mut inflow_models, &stage_to_season, n_seasons)?;
 
     estimation_report.white_noise_fallbacks = white_noise_fallbacks;
@@ -460,33 +474,47 @@ fn run_partial_estimation(
     Ok((system, estimation_report))
 }
 
-/// Load inflow history from the case directory, gate each hydro's season
-/// occurrences on full record coverage, and aggregate
-/// the resulting samples to season resolution when a season map is present.
-///
-/// See [`resolve_coverage_gated_observations`] for the coverage gate itself
-/// (record windows only — the initial-conditions conditioning layer is never
-/// read here).
 fn load_and_aggregate_observations(
     case_dir: &Path,
     stages: &[Stage],
     season_map: Option<&SeasonMap>,
+    history_years: Option<HistoricalYearRange>,
 ) -> Result<Vec<(EntityId, NaiveDate, f64)>, EstimationError> {
     let history_path = case_dir.join("scenarios/inflow_history.parquet");
     let history = parse_inflow_history(&history_path)?;
-
     let (observations, skipped_partial) =
-        resolve_coverage_gated_observations(&history, season_map, stages.first());
+        estimation_samples(&history, stages, season_map, history_years)?;
     log_skipped_partial_occurrences(&skipped_partial);
-
-    if let Some(sm) = season_map {
-        Ok(aggregate_observations_to_season(&observations, stages, sm)?)
-    } else {
-        Ok(observations)
-    }
+    Ok(observations)
 }
 
-/// Return type of [`resolve_coverage_gated_observations`]:
+/// The samples estimation fits from `history`: its fully covered season
+/// occurrences ([`resolve_coverage_gated_observations`]), aggregated to season
+/// resolution under `season_map`, that start in `history_years`; with each
+/// hydro's count of skipped partial occurrences.
+///
+/// # Errors
+///
+/// [`EstimationError::Stochastic`] when the samples cannot be aggregated to their
+/// seasons.
+pub(crate) fn estimation_samples(
+    history: &[InflowHistoryRow],
+    stages: &[Stage],
+    season_map: Option<&SeasonMap>,
+    history_years: Option<HistoricalYearRange>,
+) -> Result<CoverageGatedObservations, EstimationError> {
+    let (observations, skipped_partial) =
+        resolve_coverage_gated_observations(history, season_map, stages.first());
+    let mut observations = match season_map {
+        Some(season_map) => aggregate_observations_to_season(&observations, stages, season_map)?,
+        None => observations,
+    };
+    observations.retain(|&(_, start_date, _)| {
+        history_years.is_none_or(|years| years.contains(start_date.year()))
+    });
+    Ok((observations, skipped_partial))
+}
+
 /// `(observations, skipped_partial)`.
 type CoverageGatedObservations = (Vec<(EntityId, NaiveDate, f64)>, BTreeMap<EntityId, usize>);
 
@@ -748,7 +776,12 @@ fn run_user_ar_estimation(
         .collect();
     let extended = extended.as_slice();
 
-    let observations = load_and_aggregate_observations(case_dir, stages, season_map)?;
+    let observations = load_and_aggregate_observations(
+        case_dir,
+        stages,
+        season_map,
+        config.estimation.history_years,
+    )?;
 
     let seasonal_stats =
         estimate_seasonal_stats_with_season_map(&observations, extended, &hydro_ids, season_map)?;
@@ -1146,6 +1179,29 @@ fn prestudy_seasonal_rows(
     }
     rows.sort_by_key(|r| (r.hydro_id.0, r.stage_id));
     rows
+}
+
+/// One row per `(hydro, season)` of the sorted `rows`: the first in its season,
+/// the model [`populate_derived_residual_ratios`] derives the season's residual
+/// ratio from.
+fn assembled_seasonal_stats(
+    rows: &[InflowSeasonalStatsRow],
+    stage_to_season: &HashMap<i32, usize>,
+) -> Vec<SeasonalStats> {
+    let mut seen: HashSet<(EntityId, usize)> = HashSet::new();
+    rows.iter()
+        .filter(|row| {
+            stage_to_season
+                .get(&row.stage_id)
+                .is_some_and(|&season| seen.insert((row.hydro_id, season)))
+        })
+        .map(|row| SeasonalStats {
+            entity_id: row.hydro_id,
+            stage_id: row.stage_id,
+            mean: row.mean_m3s,
+            std: row.std_m3s,
+        })
+        .collect()
 }
 
 /// Index stage ids by their `season_id`, skipping stages without one.

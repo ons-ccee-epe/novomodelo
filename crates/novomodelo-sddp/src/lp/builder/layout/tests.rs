@@ -38,7 +38,8 @@ use super::super::test_support::zero_hydro_penalties;
 use super::{
     RangeCursor, StageLayout, StateSpace, TemplateBuildCtx, build_anticipated_decision_row_pos,
     build_anticipated_fishing_row_pos, build_anticipated_slot_row_pos,
-    build_transit_bucket_row_pos, entity_flat, fold_endpoint, variable_ref_is_block_independent,
+    build_transit_bucket_row_pos, entity_flat, evaporation_slot_boundaries, fold_endpoint,
+    variable_ref_is_block_independent,
 };
 
 // ── RangeCursor ──────────────────────────────────────────────────────────
@@ -1328,7 +1329,8 @@ impl FillingMembershipFixtures {
 
     fn new() -> Self {
         use crate::hydro_models::{
-            EvaporationModel, FphaPlane, LinearizedEvaporation, ResolvedProductionModel,
+            EvaporationCoefficientSign, EvaporationModel, FphaPlane, LinearizedEvaporation,
+            ResolvedProductionModel,
         };
 
         let filling = || {
@@ -1366,6 +1368,7 @@ impl FillingMembershipFixtures {
                 coefficients: vec![LinearizedEvaporation {
                     intercept_m3s: 0.0,
                     volume_slope_m3s_per_hm3: 0.0,
+                    coefficient_sign: EvaporationCoefficientSign::Zero,
                 }],
                 reference_volumes_hm3: vec![0.0],
             },
@@ -1374,6 +1377,7 @@ impl FillingMembershipFixtures {
         let production_models = ProductionModelSet::new(models, &hydros, 1);
         Self {
             base: CtxFixture {
+                bounds: bounds_with_entities(hydros.len(), 0, 1),
                 hydros,
                 cascade,
                 hydro_cell_index,
@@ -1535,9 +1539,10 @@ fn filling_target_row_and_col_below_structural_bounds() {
         );
     }
     // At the terminal Filling stage (id 2) no hydro is Operating, so the
-    // sibling σ^{v-} `filled_min_storage_floor` column block (the true last column family)
-    // is empty: its start coincides with num_cols and the σ_fill block is the
-    // last occupied family, so num_cols = col_filling_target_start + n_targets.
+    // sibling σ^{v-} `filled_min_storage_floor` column block is empty: its start
+    // coincides with num_cols because `fpha_slack`, the last family, is empty
+    // without FPHA, and the σ_fill block is the last occupied family, so
+    // num_cols = col_filling_target_start + n_targets.
     assert_eq!(
         layout.geometry.filled_min_storage_floor_col.start, layout.num_cols,
         "σ^{{v-}} column block empty at the terminal Filling stage"
@@ -1772,6 +1777,29 @@ fn non_filling_hydro_membership_bit_identical_across_stages() {
             "non-filling evap_hydro_indices must be stage-invariant (stage_id {stage_id})"
         );
     }
+}
+
+// ── Evaporation slot boundaries ──────────────────────────────────────────
+
+#[test]
+fn evaporation_slot_boundaries_pair_each_slot_with_its_storage_columns() {
+    assert_eq!(
+        evaporation_slot_boundaries(BlockMode::Parallel, 0, 3),
+        (Boundary::Incoming, Boundary::Outgoing),
+        "a parallel stage's one slot spans the stage endpoints"
+    );
+    assert_eq!(
+        evaporation_slot_boundaries(BlockMode::Chronological, 0, 3),
+        (Boundary::Incoming, Boundary::Interior(1))
+    );
+    assert_eq!(
+        evaporation_slot_boundaries(BlockMode::Chronological, 1, 3),
+        (Boundary::Interior(1), Boundary::Interior(2))
+    );
+    assert_eq!(
+        evaporation_slot_boundaries(BlockMode::Chronological, 2, 3),
+        (Boundary::Interior(2), Boundary::Outgoing)
+    );
 }
 
 // ── Operational-violation row ranges ─────────────────────────────────────
@@ -3576,6 +3604,37 @@ fn test_generation_family_is_sized_by_fpha_cell() {
             col1, col2,
             "block {blk}: plant 2's two FPHA cells must be distinct columns"
         );
+    }
+}
+
+/// `fpha_slack` closes the column chain: it starts where `σ^{v-}` ends, runs to
+/// `num_cols`, and addresses one column per FPHA cell and block, block-striped.
+#[test]
+fn fpha_slack_range_follows_floor_family() {
+    let n_blks = 2;
+    let mut fixtures = FphaMultiBusFixtures::new();
+    let ctx = fixtures.make_ctx();
+    let stage = stage_with_blocks(BlockMode::Parallel, n_blks);
+    let layout = StageLayout::new(&ctx, &stage, 0);
+    let geometry = &layout.geometry;
+
+    assert_eq!(
+        geometry.fpha_slack.start,
+        geometry.filled_min_storage_floor_col.end
+    );
+    assert_eq!(geometry.fpha_slack.end, layout.num_cols);
+    assert_eq!(
+        geometry.fpha_slack.len(),
+        3 * n_blks,
+        "n_fpha_cells == 3, as for the generation family"
+    );
+    for cell in 0..3 {
+        for blk in 0..n_blks {
+            assert_eq!(
+                geometry.fpha_slack_col(FphaCellLocal::new(cell), BlockIdx::new(blk)),
+                geometry.fpha_slack.start + cell * n_blks + blk
+            );
+        }
     }
 }
 

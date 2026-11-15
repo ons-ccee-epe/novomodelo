@@ -7,6 +7,7 @@
 
 use novomodelo_core::{HydraulicLossesModel, Hydro, TailraceModel};
 use novomodelo_io::extensions::{FphaColumnLayout, HydroGeometryRow};
+use novomodelo_io::validation::semantic::range_covers;
 
 use super::error::FphaFittingError;
 
@@ -70,77 +71,93 @@ const V_SYNTH_ABS: f64 = 1.0;
 ///
 /// # Volume range resolution
 ///
-/// The volume range is resolved in three mutually exclusive modes — no fitting
-/// window (full forebay range), absolute bounds, or percentile bounds — each
-/// clamped to the forebay table range. Mixed min/max modes are accepted as long
-/// as neither bound sets both absolute and percentile.
+/// The default window and the clamp range of every bound is the plant's own
+/// `[min_storage_hm3, max_storage_hm3]`, not the range of the geometry table. The
+/// window is resolved in three mutually exclusive modes — no fitting window (the plant
+/// range), absolute bounds, or percentile bounds taken against the plant range — and a
+/// missing bound takes the plant's. Mixed min/max modes are accepted as long as neither
+/// bound sets both absolute and percentile.
 ///
 /// # Run-of-river reroute
 ///
 /// A range collapsing to a single point (`0 <= v_max - v_min <= V_EPS`) or a
 /// config requesting `NPTV = 1` is a run-of-river plant: rather than rejecting it,
-/// the function synthesizes two tangent-in-volume samples and flags
-/// `single_volume = true` so the hull fitter zeros `γ_V` exactly. The multi-volume
-/// `n_volume_points >= 2` guard does NOT apply to this path.
+/// the function synthesizes two samples `v0 ± half_width` around the window's lower
+/// bound `v0` and flags `single_volume = true`. It returns the table pinned at `v0`
+/// (`ForebayTable::pinned_at`), so both samples see the head of `v0` and `γ_V` is 0 by
+/// construction. The multi-volume `n_volume_points >= 2` guard does NOT apply to this
+/// path. Every other path returns the table it was given.
 ///
 /// # Errors
 ///
 /// | Condition | Error variant |
 /// |-----------|---------------|
 /// | Both absolute and percentile set for the same bound (min or max) | [`FphaFittingError::ConflictingFittingWindow`] |
-/// | Resolved `v_max < v_min` (inverted range, not single-point) | [`FphaFittingError::EmptyFittingWindow`] |
+/// | Plant `min_storage_hm3 > max_storage_hm3` or either is NaN, or resolved `v_max < v_min` (inverted range, not single-point) | [`FphaFittingError::EmptyFittingWindow`] |
+/// | The resolved window `[v_min, v_max]` is not covered by the forebay table's volume range (single-volume plants included) | [`FphaFittingError::UncoveredFittingWindow`] |
 /// | A turbine/spillage count < 2, `max_planes_per_hydro` < 1, or (multi-volume only) `n_volume_points` < 2 | [`FphaFittingError::InsufficientDiscretization`] |
 pub(crate) fn resolve_fitting_bounds(
     config: &FphaColumnLayout,
     hydro: &Hydro,
-    forebay: &ForebayTable,
-) -> Result<FittingBounds, FphaFittingError> {
+    forebay: ForebayTable,
+) -> Result<(FittingBounds, ForebayTable), FphaFittingError> {
     let hydro_name = &hydro.name;
 
-    let (v_min, v_max) = match &config.fitting_window {
-        None => (forebay.v_min(), forebay.v_max()),
-        Some(fw) => {
-            if fw.volume_min_hm3.is_some() && fw.volume_min_percentile.is_some() {
-                return Err(FphaFittingError::ConflictingFittingWindow {
-                    hydro_name: hydro_name.clone(),
-                    detail: "volume_min_hm3 and volume_min_percentile cannot both be set; \
-                             use absolute bounds OR percentiles, not both for the same bound"
-                        .to_owned(),
-                });
-            }
-            if fw.volume_max_hm3.is_some() && fw.volume_max_percentile.is_some() {
-                return Err(FphaFittingError::ConflictingFittingWindow {
-                    hydro_name: hydro_name.clone(),
-                    detail: "volume_max_hm3 and volume_max_percentile cannot both be set; \
-                             use absolute bounds OR percentiles, not both for the same bound"
-                        .to_owned(),
-                });
-            }
+    if let Some(fw) = &config.fitting_window {
+        if fw.volume_min_hm3.is_some() && fw.volume_min_percentile.is_some() {
+            return Err(FphaFittingError::ConflictingFittingWindow {
+                hydro_name: hydro_name.clone(),
+                detail: "volume_min_hm3 and volume_min_percentile cannot both be set; \
+                         use absolute bounds OR percentiles, not both for the same bound"
+                    .to_owned(),
+            });
+        }
+        if fw.volume_max_hm3.is_some() && fw.volume_max_percentile.is_some() {
+            return Err(FphaFittingError::ConflictingFittingWindow {
+                hydro_name: hydro_name.clone(),
+                detail: "volume_max_hm3 and volume_max_percentile cannot both be set; \
+                         use absolute bounds OR percentiles, not both for the same bound"
+                    .to_owned(),
+            });
+        }
+    }
 
-            let entity_v_min = hydro.min_storage_hm3;
-            let entity_v_max = hydro.max_storage_hm3;
-            let entity_range = entity_v_max - entity_v_min;
+    let plant_min = hydro.min_storage_hm3;
+    let plant_max = hydro.max_storage_hm3;
+    let plant_range_is_ordered = plant_min <= plant_max;
+    if !plant_range_is_ordered {
+        return Err(FphaFittingError::EmptyFittingWindow {
+            hydro_name: hydro_name.clone(),
+            v_min: plant_min,
+            v_max: plant_max,
+        });
+    }
+
+    let (v_min, v_max) = match &config.fitting_window {
+        None => (plant_min, plant_max),
+        Some(fw) => {
+            let plant_range = plant_max - plant_min;
 
             let v_min_raw = if let Some(abs) = fw.volume_min_hm3 {
                 abs
             } else if let Some(pct) = fw.volume_min_percentile {
-                entity_v_min + pct * entity_range
+                plant_min + pct * plant_range
             } else {
-                forebay.v_min()
+                plant_min
             };
 
             let v_max_raw = if let Some(abs) = fw.volume_max_hm3 {
                 abs
             } else if let Some(pct) = fw.volume_max_percentile {
-                entity_v_min + pct * entity_range
+                plant_min + pct * plant_range
             } else {
-                forebay.v_max()
+                plant_max
             };
 
-            let v_min = v_min_raw.clamp(forebay.v_min(), forebay.v_max());
-            let v_max = v_max_raw.clamp(forebay.v_min(), forebay.v_max());
-
-            (v_min, v_max)
+            (
+                v_min_raw.clamp(plant_min, plant_max),
+                v_max_raw.clamp(plant_min, plant_max),
+            )
         }
     };
 
@@ -151,6 +168,16 @@ pub(crate) fn resolve_fitting_bounds(
             hydro_name: hydro_name.clone(),
             v_min,
             v_max,
+        });
+    }
+
+    if !range_covers(forebay.v_min(), forebay.v_max(), v_min, v_max) {
+        return Err(FphaFittingError::UncoveredFittingWindow {
+            hydro_name: hydro_name.clone(),
+            window_min: v_min,
+            window_max: v_max,
+            geometry_min: forebay.v_min(),
+            geometry_max: forebay.v_max(),
         });
     }
 
@@ -170,50 +197,19 @@ pub(crate) fn resolve_fitting_bounds(
         // the proportional half-width collapses and `V_SYNTH_ABS` takes over.
         let useful = (hydro.max_storage_hm3 - hydro.min_storage_hm3).max(0.0);
         let half_width = (0.005 * useful).max(V_SYNTH_ABS);
-        // Clamp to the forebay range ONLY when it spans a range. When the table is
-        // a single point, clamping to `[v0, v0]` would collapse `v_lo == v_hi` into
-        // a coplanar cloud the hull rejects; `height()` clamps queries internally,
-        // so spreading beyond the degenerate range is safe and yields `γ_V = 0`.
-        let (v_lo, v_hi) = if (forebay.v_max() - forebay.v_min()) <= V_EPS {
-            (v0 - half_width, v0 + half_width)
-        } else {
-            (
-                (v0 - half_width).clamp(forebay.v_min(), forebay.v_max()),
-                (v0 + half_width).clamp(forebay.v_min(), forebay.v_max()),
-            )
-        };
 
-        if n_flow_points < 2 {
-            return Err(FphaFittingError::InsufficientDiscretization {
-                hydro_name: hydro_name.clone(),
-                dimension: "turbine".to_owned(),
-                value: n_flow_points,
-            });
-        }
-        if n_spillage_points < 2 {
-            return Err(FphaFittingError::InsufficientDiscretization {
-                hydro_name: hydro_name.clone(),
-                dimension: "spillage".to_owned(),
-                value: n_spillage_points,
-            });
-        }
-        if max_planes < 1 {
-            return Err(FphaFittingError::InsufficientDiscretization {
-                hydro_name: hydro_name.clone(),
-                dimension: "max_planes_per_hydro".to_owned(),
-                value: max_planes,
-            });
-        }
+        check_non_volume_discretization(hydro_name, n_flow_points, n_spillage_points, max_planes)?;
 
-        return Ok(FittingBounds {
-            v_min: v_lo,
-            v_max: v_hi,
+        let bounds = FittingBounds {
+            v_min: v0 - half_width,
+            v_max: v0 + half_width,
             n_volume_points: 2,
             n_flow_points,
             n_spillage_points,
             max_planes_per_hydro: max_planes,
             single_volume: true,
-        });
+        };
+        return Ok((bounds, forebay.pinned_at(v0)));
     }
 
     let n_volume_points = requested_volume_points;
@@ -224,29 +220,9 @@ pub(crate) fn resolve_fitting_bounds(
             value: n_volume_points,
         });
     }
-    if n_flow_points < 2 {
-        return Err(FphaFittingError::InsufficientDiscretization {
-            hydro_name: hydro_name.clone(),
-            dimension: "turbine".to_owned(),
-            value: n_flow_points,
-        });
-    }
-    if n_spillage_points < 2 {
-        return Err(FphaFittingError::InsufficientDiscretization {
-            hydro_name: hydro_name.clone(),
-            dimension: "spillage".to_owned(),
-            value: n_spillage_points,
-        });
-    }
-    if max_planes < 1 {
-        return Err(FphaFittingError::InsufficientDiscretization {
-            hydro_name: hydro_name.clone(),
-            dimension: "max_planes_per_hydro".to_owned(),
-            value: max_planes,
-        });
-    }
+    check_non_volume_discretization(hydro_name, n_flow_points, n_spillage_points, max_planes)?;
 
-    Ok(FittingBounds {
+    let bounds = FittingBounds {
         v_min,
         v_max,
         n_volume_points,
@@ -254,7 +230,38 @@ pub(crate) fn resolve_fitting_bounds(
         n_spillage_points,
         max_planes_per_hydro: max_planes,
         single_volume: false,
-    })
+    };
+    Ok((bounds, forebay))
+}
+
+fn check_non_volume_discretization(
+    hydro_name: &str,
+    n_flow_points: usize,
+    n_spillage_points: usize,
+    max_planes: usize,
+) -> Result<(), FphaFittingError> {
+    if n_flow_points < 2 {
+        return Err(FphaFittingError::InsufficientDiscretization {
+            hydro_name: hydro_name.to_owned(),
+            dimension: "turbine".to_owned(),
+            value: n_flow_points,
+        });
+    }
+    if n_spillage_points < 2 {
+        return Err(FphaFittingError::InsufficientDiscretization {
+            hydro_name: hydro_name.to_owned(),
+            dimension: "spillage".to_owned(),
+            value: n_spillage_points,
+        });
+    }
+    if max_planes < 1 {
+        return Err(FphaFittingError::InsufficientDiscretization {
+            hydro_name: hydro_name.to_owned(),
+            dimension: "max_planes_per_hydro".to_owned(),
+            value: max_planes,
+        });
+    }
+    Ok(())
 }
 
 // ── ForebayTable ──────────────────────────────────────────────────────────────
@@ -371,6 +378,14 @@ impl ForebayTable {
     pub(crate) fn v_max(&self) -> f64 {
         // INVARIANT: `volumes` is non-empty (enforced by `new`).
         self.volumes[self.volumes.len() - 1]
+    }
+
+    /// Single-row table at `v0` whose `height` is `self.height(v0)` for every query.
+    fn pinned_at(&self, v0: f64) -> Self {
+        Self {
+            volumes: vec![v0],
+            heights: vec![self.height(v0)],
+        }
     }
 
     /// Interpolated forebay surface elevation at `volume_hm3` (m).

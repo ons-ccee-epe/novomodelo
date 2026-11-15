@@ -80,6 +80,7 @@ fn default_hydro_penalties() -> HydroPenalties {
         outflow_violation_below_cost: 0.0,
         outflow_violation_above_cost: 0.0,
         generation_violation_below_cost: 0.0,
+        fpha_violation_cost: 5000.0,
         evaporation_violation_cost: 0.0,
         water_withdrawal_violation_cost: 0.0,
         water_withdrawal_violation_pos_cost: 0.0,
@@ -261,7 +262,8 @@ fn empty_resolved_params() -> ResolvedParameters {
     }
 }
 
-/// All-zero per-plant [`HydroPenalties`] for fixture hydros.
+/// Per-plant [`HydroPenalties`] for fixture hydros, zero but for the FPHA
+/// violation cost.
 fn hydro_penalties_zero() -> HydroPenalties {
     HydroPenalties {
         spillage_cost: 0.0,
@@ -273,6 +275,7 @@ fn hydro_penalties_zero() -> HydroPenalties {
         outflow_violation_below_cost: 0.0,
         outflow_violation_above_cost: 0.0,
         generation_violation_below_cost: 0.0,
+        fpha_violation_cost: 5000.0,
         evaporation_violation_cost: 0.0,
         water_withdrawal_violation_cost: 0.0,
         water_withdrawal_violation_pos_cost: 0.0,
@@ -3189,6 +3192,7 @@ fn one_hydro_active_violations(n_stages: usize) -> System {
             outflow_violation_below_cost: 1000.0,
             outflow_violation_above_cost: 1000.0,
             generation_violation_below_cost: 1000.0,
+            fpha_violation_cost: 10000.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -3319,6 +3323,7 @@ fn one_hydro_active_violations(n_stages: usize) -> System {
                 outflow_violation_below_cost: 1000.0,
                 outflow_violation_above_cost: 1000.0,
                 generation_violation_below_cost: 1000.0,
+                fpha_violation_cost: 10000.0,
                 evaporation_violation_cost: 0.0,
                 water_withdrawal_violation_cost: 0.0,
                 water_withdrawal_violation_pos_cost: 0.0,

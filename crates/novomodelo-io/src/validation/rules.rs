@@ -358,6 +358,12 @@ declare_rules! {
     POST_STUDY_THERMAL_CALENDAR_UNUSED = "semantic.5a.65",
         Semantic, ModelQuality, Warning,
         "A current-format post_study_stages.json declares thermal_stages on a deck with no anticipated thermal, so the key has no effect";
+    SEMANTIC_FPHA_GEOMETRY_DOES_NOT_COVER_STORAGE = "semantic.5a.66",
+        Semantic, BusinessRuleViolation, Error,
+        "A computed-FPHA hydro's hydro_geometry.parquet volumes do not cover its storage range";
+    SEMANTIC_HARD_STORAGE_FLOOR_RISES = "semantic.5a.67",
+        Semantic, ModelQuality, Warning,
+        "A hydro's minimum storage rises above the previous stage's floor, which a stage with too little inflow cannot reach";
     TRAVEL_TIME_INVALID = "travel_time.1",
         Semantic, InvalidValue, Error,
         "A hydro's travel_time_hours is negative or not finite";
@@ -517,6 +523,12 @@ declare_rules! {
     SEMANTIC_STAGE_BLOCKS = "semantic.5b.52",
         Semantic, InvalidValue, Error,
         "A study stage declares no block, or a block whose duration_hours is not finite and positive";
+    SEMANTIC_ESTIMATION_HISTORY_YEARS_OUTSIDE_HISTORY = "semantic.5b.53",
+        Semantic, BusinessRuleViolation, Error,
+        "Estimation from inflow history is required but estimation.history_years reaches before the first or past the last year of the history";
+    SEMANTIC_FPHA_PRICE_NOT_ABOVE_DEFICIT_PLUS_GENERATION = "semantic.5b.54",
+        Semantic, ModelQuality, Warning,
+        "An FPHA hydro's fpha_violation_cost does not exceed the maximum deficit-segment cost plus its generation_violation_below_cost (all $/MWh)";
     PRODUCTIVITY_SUPPLIED_TWICE = "productivity_resolution.1",
         ProductivityResolution, SchemaViolation, Error,
         "A hydro's stage productivity is supplied by both hydro_production_models.json and hydro_energy_productivity.parquet";
