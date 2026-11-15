@@ -465,6 +465,13 @@ def _unknown_simulation_cut_set(case: pathlib.Path) -> None:
     _edit_json(case / "config.json", edit)
 
 
+def _fpha_geometry_short_of_storage_range(case: pathlib.Path) -> None:
+    def edit(hydros: Any) -> None:
+        hydros["hydros"][0]["reservoir"]["max_storage_hm3"] = 250.0
+
+    _edit_json(case / "system" / "hydros.json", edit)
+
+
 ROWS = [
     _row(
         name="travel_time_negative",
@@ -853,6 +860,15 @@ ROWS = [
         outcome="BracketedRefusal",
         kind="ParseError",
         fragment="invalid type: null, expected f64",
+        error_class_name="ValidationError",
+    ),
+    _row(
+        name="fpha_geometry_short_of_storage_range",
+        base_case="deterministic/d07-fpha-computed",
+        mutate=_fpha_geometry_short_of_storage_range,
+        outcome="BracketedRefusal",
+        kind="BusinessRuleViolation",
+        fragment="does not cover its storage range",
         error_class_name="ValidationError",
     ),
 ]

@@ -391,6 +391,15 @@ const ROWS: &[ParityRow] = &[
         outcome: Outcome::BracketedRefusal { kind: "ParseError" },
         fragment: "invalid type: null, expected f64",
     },
+    ParityRow {
+        name: "fpha_geometry_short_of_storage_range",
+        base_case: "deterministic/d07-fpha-computed",
+        mutate: fpha_geometry_short_of_storage_range,
+        outcome: Outcome::BracketedRefusal {
+            kind: "BusinessRuleViolation",
+        },
+        fragment: "does not cover its storage range",
+    },
 ];
 
 fn edit_json(path: &Path, edit: impl FnOnce(&mut Value)) {
@@ -816,6 +825,12 @@ fn dynamic_simulation_over_deactivated_boundary_cuts(case: &Path) {
 fn unknown_simulation_cut_set(case: &Path) {
     edit_json(&case.join("config.json"), |config| {
         config["simulation"]["cut_set"] = json!("every");
+    });
+}
+
+fn fpha_geometry_short_of_storage_range(case: &Path) {
+    edit_json(&case.join("system/hydros.json"), |hydros| {
+        hydros["hydros"][0]["reservoir"]["max_storage_hm3"] = json!(250.0);
     });
 }
 
