@@ -3,14 +3,16 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
+use chrono::Datelike;
 use novomodelo_core::scenario::SamplingScheme;
 use novomodelo_core::{EntityId, Hydro};
 use novomodelo_stochastic::derive_external_sample_moments;
 use novomodelo_stochastic::par::{
     AnnualParams, ClosureRejection, check_stationarity, check_stationarity_annual,
 };
-use novomodelo_stochastic::season_cast::{RealizedWindow, SeasonPeriodWindow, cast};
 
+use crate::config::HistoricalYearRange;
+use crate::scenarios::estimation::estimation_samples;
 use crate::{LoadError, StageIdResolver};
 
 use super::super::{ValidationContext, rules, schema::ParsedData};
@@ -928,15 +930,6 @@ pub(super) fn check_load_factor_consistency(data: &ParsedData, ctx: &mut Validat
 
 // ── Rules 19-21: Estimation prerequisites ─────────────────────────────────────
 
-/// Total hours in `[start, end)`, for constructing a [`SeasonPeriodWindow`]
-/// directly from a study stage's own dates (the stage's dates already are its
-/// occurrence bounds, so no `season_cast` calendar disambiguation is needed).
-fn window_hours(start: chrono::NaiveDate, end: chrono::NaiveDate) -> f64 {
-    let days = u32::try_from((end - start).num_days().max(0))
-        .unwrap_or_else(|_| unreachable!("a study stage's day count always fits in u32"));
-    f64::from(days) * 24.0
-}
-
 /// Validates prerequisites for the history-based PAR(p) estimation path.
 ///
 /// Runs only when `inflow_history.parquet` is present and
@@ -947,7 +940,8 @@ fn window_hours(start: chrono::NaiveDate, end: chrono::NaiveDate) -> f64 {
 /// observations can be grouped by season.
 ///
 /// Rule 20: Each `(hydro_id, season_id)` group must have at least
-/// `config.estimation.min_observations_per_season` observations.
+/// `config.estimation.min_observations_per_season` of the samples estimation fits
+/// from ([`estimation_samples`]).
 ///
 /// Rule 21: Every hydro in the system must have at least one observation in
 /// `inflow_history.parquet`; missing hydros cannot be estimated.
@@ -989,47 +983,25 @@ pub(super) fn check_estimation_prerequisites(data: &ParsedData, ctx: &mut Valida
 
     // Skipped when season_map is None: Rule 19 already errored, and running here
     // would cascade a confusing second diagnostic.
-    if data.stages.policy_graph.season_map.is_some() {
+    if let Some(season_map) = &data.stages.policy_graph.season_map {
         let min_obs = data.config.estimation.min_observations_per_season as usize;
 
         let stage_index = super::season::build_stage_index(data);
-
-        // Bucket rows by the study-stage occurrence they fall within, keyed by
-        // (hydro_id, stage_index position): a stage's rows may be split across
-        // several partial windows, and only their combined coverage decides
-        // whether the occurrence counts toward the minimum — a
-        // partial occurrence must not count.
-        let mut rows_by_occurrence: HashMap<(i32, usize), Vec<RealizedWindow>> = HashMap::new();
-        for row in &data.inflow_history {
-            let Some(stage_pos) =
-                super::season::resolve_stage_position(&stage_index, row.start_date)
-            else {
-                continue;
-            };
-            rows_by_occurrence
-                .entry((row.hydro_id.0, stage_pos))
-                .or_default()
-                .push(RealizedWindow {
-                    start_date: row.start_date,
-                    end_date: row.end_date,
-                    value_m3s: row.value_m3s,
-                });
-        }
-
+        // An unaggregatable history fails estimation itself, with its own error.
+        let Ok((samples, _skipped_partial)) = estimation_samples(
+            &data.inflow_history,
+            &data.stages.stages,
+            Some(season_map),
+            data.config.estimation.history_years,
+        ) else {
+            return;
+        };
         let mut counts: HashMap<(i32, usize), usize> = HashMap::new();
-        for (&(hydro_id, stage_pos), rows) in &rows_by_occurrence {
-            let (start_date, end_date, season_id) = stage_index[stage_pos];
-            let period = SeasonPeriodWindow {
-                start: start_date,
-                end: end_date,
-                hours: window_hours(start_date, end_date),
-            };
-            // Exact gate, not a tolerance shortcut: see `resolve_coverage_gated_observations`
-            // in `scenarios/estimation.rs` for why a full-coverage ratio is bit-exact 1.0.
-            #[allow(clippy::float_cmp)]
-            let is_full_coverage = cast(rows, &period).coverage == 1.0;
-            if is_full_coverage {
-                *counts.entry((hydro_id, season_id)).or_insert(0) += 1;
+        for (hydro_id, start_date, _) in samples {
+            if let Some(season_id) =
+                super::season::estimation_season_for_date(&stage_index, season_map, start_date)
+            {
+                *counts.entry((hydro_id.0, season_id)).or_insert(0) += 1;
             }
         }
 
@@ -1052,6 +1024,33 @@ pub(super) fn check_estimation_prerequisites(data: &ParsedData, ctx: &mut Valida
                 ),
             );
         }
+    }
+}
+
+/// Refuses an `estimation.history_years` range reaching outside the start-date
+/// years of `inflow_history.parquet`.
+pub(super) fn check_estimation_history_years(data: &ParsedData, ctx: &mut ValidationContext) {
+    let Some(HistoricalYearRange { from, to }) = data.config.estimation.history_years else {
+        return;
+    };
+    if !super::season::estimation_active(data) {
+        return;
+    }
+    let years = data.inflow_history.iter().map(|row| row.start_date.year());
+    let (Some(first), Some(last)) = (years.clone().min(), years.max()) else {
+        return;
+    };
+    if from < first || to > last {
+        ctx.emit(
+            &rules::SEMANTIC_ESTIMATION_HISTORY_YEARS_OUTSIDE_HISTORY,
+            "config.json",
+            None::<&str>,
+            format!(
+                "estimation.history_years ({from} to {to}) reaches outside the years of \
+                 scenarios/inflow_history.parquet ({first} to {last}); narrow the range to \
+                 those years"
+            ),
+        );
     }
 }
 
@@ -1162,6 +1161,7 @@ mod tests {
     use super::M3S_TO_HM3;
     use crate::test_support::*;
     use crate::{
+        config::HistoricalYearRange,
         scenarios::{
             BlockFactor, InflowAnnualComponentRow, InflowArCoefficientRow, InflowHistoryRow,
             InflowSeasonalStatsRow, LoadFactorEntry, LoadSeasonalStatsRow,
@@ -2200,6 +2200,126 @@ mod tests {
             "stats+coefficients present should disable estimation checks; \
              errors: {estimation_errors:?}, warnings: {estimation_warnings:?}"
         );
+    }
+
+    fn history_years_errors(data: &ParsedData) -> Vec<String> {
+        let mut ctx = ValidationContext::new();
+        validate_semantic_stages_penalties_scenarios(data, &mut ctx);
+        ctx.errors()
+            .into_iter()
+            .filter(|e| e.message.contains("estimation.history_years"))
+            .map(|e| e.message.clone())
+            .collect()
+    }
+
+    #[test]
+    fn estimation_history_years_reaching_outside_the_history_is_an_error() {
+        // History covers 2000-2002.
+        for (from, to, refused) in [
+            (2000, 2002, false),
+            (2001, 2001, false),
+            (1999, 2002, true),
+            (2000, 2003, true),
+        ] {
+            let mut data = make_data_estimation(
+                vec![make_hydro(1, None)],
+                make_stages_with_seasons(36, true),
+                make_history_rows(1, 36),
+            );
+            data.config.estimation.history_years = Some(HistoricalYearRange { from, to });
+
+            let errors = history_years_errors(&data);
+            assert_eq!(
+                !errors.is_empty(),
+                refused,
+                "history_years {from}..={to}: {errors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn estimation_history_years_is_not_checked_when_stats_and_coefficients_are_supplied() {
+        let mut data = make_data_estimation(
+            vec![make_hydro(1, None)],
+            make_stages_with_seasons(12, false),
+            make_history_rows(1, 12),
+        );
+        data.inflow_seasonal_stats = vec![InflowSeasonalStatsRow {
+            hydro_id: EntityId::from(1),
+            stage_id: 0,
+            mean_m3s: 500.0,
+            std_m3s: 50.0,
+        }];
+        data.inflow_ar_coefficients = vec![make_ar_row(1, 0, 1)];
+        data.config.estimation.history_years = Some(HistoricalYearRange {
+            from: 1931,
+            to: 2024,
+        });
+
+        let errors = history_years_errors(&data);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    /// Three full-January rows, from `first_year` on.
+    fn january_rows(first_year: i32) -> Vec<InflowHistoryRow> {
+        (0..3)
+            .map(|y| InflowHistoryRow {
+                hydro_id: EntityId::from(1),
+                start_date: chrono::NaiveDate::from_ymd_opt(first_year + y, 1, 1).unwrap(),
+                end_date: chrono::NaiveDate::from_ymd_opt(first_year + y, 2, 1).unwrap(),
+                value_m3s: 100.0,
+            })
+            .collect()
+    }
+
+    fn assert_season_0_count(data: &ParsedData, n: usize) {
+        let mut ctx = ValidationContext::new();
+        validate_semantic_stages_penalties_scenarios(data, &mut ctx);
+        let expected = format!("hydro 1 season 0 has {n} observations");
+        assert!(
+            ctx.warnings().iter().any(|w| w.message.contains(&expected)),
+            "{:?}",
+            ctx.warnings()
+        );
+    }
+
+    #[test]
+    fn estimation_observation_count_covers_only_the_history_years() {
+        let mut data = make_data_estimation(
+            vec![make_hydro(1, None)],
+            make_stages_with_seasons(36, true),
+            january_rows(2000),
+        );
+        data.config.estimation.history_years = Some(HistoricalYearRange {
+            from: 2000,
+            to: 2001,
+        });
+
+        assert_season_0_count(&data, 2);
+    }
+
+    #[test]
+    fn estimation_observation_count_includes_history_before_the_study() {
+        let data = make_data_estimation(
+            vec![make_hydro(1, None)],
+            make_stages_with_seasons(12, true),
+            january_rows(1990),
+        );
+
+        assert_season_0_count(&data, 3);
+    }
+
+    #[test]
+    fn estimation_observation_count_skips_a_partially_covered_occurrence() {
+        let mut history = january_rows(1990);
+        history[0].end_date = chrono::NaiveDate::from_ymd_opt(1990, 1, 20).unwrap();
+        let data = make_data_estimation(
+            vec![make_hydro(1, None)],
+            make_stages_with_seasons(12, true),
+            history,
+        );
+
+        assert_season_0_count(&data, 2);
     }
 
     /// When `inflow_seasonal_stats` is present but `inflow_ar_coefficients`

@@ -111,6 +111,7 @@ pub(crate) fn validate_semantic_stages_penalties_scenarios(
     scenarios::check_external_library_coherence(data, ctx);
     scenarios::check_load_factor_consistency(data, ctx);
     scenarios::check_estimation_prerequisites(data, ctx);
+    scenarios::check_estimation_history_years(data, ctx);
     season::check_season_id_consistency(data, ctx);
     season::check_observation_season_alignment(data, ctx);
 }

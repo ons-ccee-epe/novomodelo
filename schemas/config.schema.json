@@ -157,6 +157,18 @@
           "default": "inflows",
           "description": "Series the spatial inflow correlation is estimated from when no\n`scenarios/correlation.json` is supplied: `\"inflows\"` (default) or `\"residuals\"`.\n\nEvaluation option, expected to be removed once evaluated."
         },
+        "history_years": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HistoricalYearRange"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Years of `scenarios/inflow_history.parquet` the inflow model is estimated\nfrom, as an inclusive `{\"from\", \"to\"}` range of the years season\noccurrences start in. Absent: every year. A range reaching outside the\nfile's years is refused. The historical scenario scheme and the initial\nconditions still read the whole file."
+        },
         "max_coefficient_magnitude": {
           "default": null,
           "description": "Maximum allowed absolute magnitude for any AR coefficient.\n\nWhen set, any (entity, season) pair with `|coefficient| > threshold`\nis immediately reduced to order 0 before the contribution analysis\nruns. This acts as a fast-path safety net for the most extreme\nexplosive models. Absent by default (disabled; contribution analysis\nis the primary guard).",
@@ -212,7 +224,7 @@
     },
     "HistoricalYearRange": {
       "additionalProperties": false,
-      "description": "Inclusive `{\"from\", \"to\"}` range form of `historical_years`.",
+      "description": "Inclusive `{\"from\", \"to\"}` year range.",
       "properties": {
         "from": {
           "description": "First year (inclusive).",
@@ -1357,6 +1369,7 @@
       "$ref": "#/$defs/EstimationConfig",
       "default": {
         "correlation_target": "inflows",
+        "history_years": null,
         "max_coefficient_magnitude": null,
         "max_order": 6,
         "min_observations_per_season": 30,
