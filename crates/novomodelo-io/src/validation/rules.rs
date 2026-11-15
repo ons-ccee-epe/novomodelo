@@ -328,6 +328,9 @@ declare_rules! {
     SEMANTIC_INITIAL_STORAGE_OUTSIDE_FIRST_STAGE_BOUNDS = "semantic.5a.55",
         Semantic, ModelQuality, Warning,
         "A hydro's initial storage lies outside the storage bounds at the end of its first operating stage";
+    SEMANTIC_FPHA_GEOMETRY_DOES_NOT_COVER_STORAGE = "semantic.5a.56",
+        Semantic, BusinessRuleViolation, Error,
+        "A computed-FPHA hydro's hydro_geometry.parquet volumes do not cover its storage range";
     SEMANTIC_HARD_STORAGE_FLOOR_RISES = "semantic.5a.57",
         Semantic, ModelQuality, Warning,
         "A hydro's minimum storage rises above the previous stage's floor, which a stage with too little inflow cannot reach";

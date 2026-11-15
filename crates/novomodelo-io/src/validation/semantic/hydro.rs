@@ -8,7 +8,7 @@ use novomodelo_core::commissioning::{
 use novomodelo_core::{EntityId, Hydro, ResolvedBounds};
 
 use super::super::{ValidationContext, rules, schema::ParsedData};
-use super::envelope_tolerance;
+use super::{envelope_tolerance, range_covers};
 use crate::StageIdResolver;
 use crate::config::InflowNonNegativityMethod;
 use crate::resolution::{BoundsEntitySlices, BoundsOverrides, resolve_bounds};
@@ -756,6 +756,54 @@ pub(super) fn check_evaporation_geometry_coverage(data: &ParsedData, ctx: &mut V
                      in hydro_geometry.parquet; evaporation linearization requires \
                      area-volume curve data",
                     hydro.name, hydro.id.0
+                ),
+            );
+        }
+    }
+}
+
+/// Rule 56: each computed-FPHA hydro's geometry volumes cover its storage range.
+pub(super) fn check_fpha_geometry_coverage(data: &ParsedData, ctx: &mut ValidationContext) {
+    let computed_hydro_ids: HashSet<i32> = data
+        .production_models
+        .iter()
+        .filter(|config| config.uses_computed_fpha())
+        .map(|config| config.hydro_id.0)
+        .collect();
+    if computed_hydro_ids.is_empty() {
+        return;
+    }
+
+    let mut geometry_ranges: HashMap<i32, (f64, f64)> = HashMap::new();
+    for row in &data.hydro_geometry {
+        let (min, max) = geometry_ranges
+            .entry(row.hydro_id.0)
+            .or_insert((row.volume_hm3, row.volume_hm3));
+        *min = min.min(row.volume_hm3);
+        *max = max.max(row.volume_hm3);
+    }
+
+    for hydro in &data.hydros {
+        if !computed_hydro_ids.contains(&hydro.id.0) {
+            continue;
+        }
+        let Some(&(geometry_min, geometry_max)) = geometry_ranges.get(&hydro.id.0) else {
+            continue;
+        };
+        if !range_covers(
+            geometry_min,
+            geometry_max,
+            hydro.min_storage_hm3,
+            hydro.max_storage_hm3,
+        ) {
+            let entity = format!("Hydro {} (id={})", hydro.name, hydro.id.0);
+            ctx.emit(
+                &rules::SEMANTIC_FPHA_GEOMETRY_DOES_NOT_COVER_STORAGE,
+                "system/hydro_geometry.parquet",
+                Some(&entity),
+                format!(
+                    "{entity}: the hydro_geometry.parquet volume range [{geometry_min}, {geometry_max}] hm³ does not cover its storage range [{}, {}] hm³, over which its computed FPHA planes are fitted; extend the geometry to cover it",
+                    hydro.min_storage_hm3, hydro.max_storage_hm3
                 ),
             );
         }
@@ -3536,5 +3584,174 @@ mod tests {
             )]
         );
         assert_eq!(forward, reversed);
+    }
+
+    // ── FPHA geometry coverage tests ──────────────────────────────────────────
+
+    use crate::{
+        FphaColumnLayout, HydroGeometryRow, ProductionModelConfig, SelectionMode, StageRange,
+    };
+    use novomodelo_core::entities::HydroGenerationModel;
+
+    fn validate_fpha_geometry_coverage(
+        hydros: Vec<Hydro>,
+        geometry: Vec<HydroGeometryRow>,
+        production_models: Vec<ProductionModelConfig>,
+    ) -> Vec<ValidationEntry> {
+        let mut data = make_data(
+            hydros,
+            vec![],
+            vec![],
+            make_stages(vec![0]),
+            geometry,
+            vec![],
+        );
+        data.production_models = production_models;
+        let mut ctx = ValidationContext::new();
+        validate_semantic_hydro_thermal(&data, &mut ctx);
+        ctx.errors()
+            .into_iter()
+            .filter(|e| e.message.contains("does not cover its storage range"))
+            .cloned()
+            .collect()
+    }
+
+    fn fpha_config(hydro_id: i32, source: &str) -> ProductionModelConfig {
+        ProductionModelConfig {
+            hydro_id: EntityId::from(hydro_id),
+            selection_mode: SelectionMode::StageRanges {
+                ranges: vec![StageRange {
+                    start_stage_id: 0,
+                    end_stage_id: None,
+                    model: HydroGenerationModel::Fpha,
+                    fpha_config: Some(FphaColumnLayout {
+                        source: source.into(),
+                        volume_discretization_points: None,
+                        turbine_discretization_points: None,
+                        spillage_discretization_points: None,
+                        max_planes_per_hydro: None,
+                        fitting_window: None,
+                        spillage_fit_max_m3s: None,
+                        turbined_fit_max_m3s: None,
+                    }),
+                    reference_volume: None,
+                    productivity_mw_per_m3s: None,
+                }],
+            },
+        }
+    }
+
+    fn geometry_at(hydro_id: i32, volumes_hm3: &[f64]) -> Vec<HydroGeometryRow> {
+        volumes_hm3
+            .iter()
+            .map(|&volume| make_geom_row(hydro_id, volume, 100.0, 10.0))
+            .collect()
+    }
+
+    #[test]
+    fn fpha_geometry_coverage_is_silent_when_geometry_spans_the_storage_range() {
+        let entries = validate_fpha_geometry_coverage(
+            vec![make_hydro(1, None)],
+            geometry_at(1, &[0.0, 500.0, 1000.0]),
+            vec![fpha_config(1, "computed")],
+        );
+        assert!(entries.is_empty(), "got: {entries:?}");
+    }
+
+    #[test]
+    fn fpha_geometry_coverage_refuses_geometry_starting_above_the_minimum() {
+        let entries = validate_fpha_geometry_coverage(
+            vec![make_hydro(1, None)],
+            geometry_at(1, &[10.0, 1000.0]),
+            vec![fpha_config(1, "computed")],
+        );
+        assert_eq!(entries.len(), 1, "got: {entries:?}");
+        let entry = &entries[0];
+        assert_eq!(entry.kind, ErrorKind::BusinessRuleViolation);
+        assert_eq!(
+            entry.file.to_string_lossy(),
+            "system/hydro_geometry.parquet"
+        );
+        assert_eq!(entry.entity.as_deref(), Some("Hydro Hydro 1 (id=1)"));
+        assert!(entry.message.contains("[10, 1000]"), "{}", entry.message);
+        assert!(entry.message.contains("[0, 1000]"), "{}", entry.message);
+    }
+
+    #[test]
+    fn fpha_geometry_coverage_refuses_geometry_ending_below_the_maximum() {
+        let entries = validate_fpha_geometry_coverage(
+            vec![make_hydro(1, None)],
+            geometry_at(1, &[0.0, 900.0]),
+            vec![fpha_config(1, "computed")],
+        );
+        assert_eq!(entries.len(), 1, "got: {entries:?}");
+        assert!(
+            entries[0].message.contains("[0, 900]"),
+            "{}",
+            entries[0].message
+        );
+    }
+
+    #[test]
+    fn fpha_geometry_coverage_admits_geometry_within_the_tolerance() {
+        let entries = validate_fpha_geometry_coverage(
+            vec![make_hydro(1, None)],
+            geometry_at(1, &[0.0, 1000.0 - 1e-7]),
+            vec![fpha_config(1, "computed")],
+        );
+        assert!(entries.is_empty(), "got: {entries:?}");
+    }
+
+    #[test]
+    fn fpha_geometry_coverage_refuses_geometry_just_past_the_tolerance() {
+        let entries = validate_fpha_geometry_coverage(
+            vec![make_hydro(1, None)],
+            geometry_at(1, &[0.0, 1000.0 - 1e-5]),
+            vec![fpha_config(1, "computed")],
+        );
+        assert_eq!(entries.len(), 1, "got: {entries:?}");
+    }
+
+    #[test]
+    fn fpha_geometry_coverage_ignores_precomputed_and_constant_plants() {
+        for (plant, production_models) in [
+            ("precomputed", vec![fpha_config(1, "precomputed")]),
+            ("constant", vec![]),
+        ] {
+            let entries = validate_fpha_geometry_coverage(
+                vec![make_hydro(1, None)],
+                geometry_at(1, &[10.0, 1000.0]),
+                production_models,
+            );
+            assert!(entries.is_empty(), "{plant}: got {entries:?}");
+        }
+    }
+
+    #[test]
+    fn fpha_geometry_coverage_leaves_a_plant_without_geometry_rows_to_the_prerequisite() {
+        let entries = validate_fpha_geometry_coverage(
+            vec![make_hydro(1, None), make_hydro(2, None)],
+            geometry_at(2, &[0.0, 1000.0]),
+            vec![fpha_config(1, "computed"), fpha_config(2, "computed")],
+        );
+        assert!(entries.is_empty(), "got: {entries:?}");
+    }
+
+    #[test]
+    fn fpha_geometry_coverage_reports_each_uncovered_plant_once() {
+        let entries = validate_fpha_geometry_coverage(
+            vec![make_hydro(1, None), make_hydro(2, None)],
+            [
+                geometry_at(1, &[10.0, 1000.0]),
+                geometry_at(2, &[10.0, 1000.0]),
+            ]
+            .concat(),
+            vec![fpha_config(1, "computed"), fpha_config(2, "computed")],
+        );
+        let entities: Vec<Option<&str>> = entries.iter().map(|e| e.entity.as_deref()).collect();
+        assert_eq!(
+            entities,
+            vec![Some("Hydro Hydro 1 (id=1)"), Some("Hydro Hydro 2 (id=2)")]
+        );
     }
 }

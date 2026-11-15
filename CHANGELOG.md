@@ -26,9 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   existing cases. It can also be set per plant in `system/hydros.json` and
   per stage in `constraints/penalty_overrides_hydro.parquet`.
 - **BREAKING:** FPHA planes with `fpha_config.source: "computed"` are fitted
-  over the plant's `min_storage_hm3` to `max_storage_hm3`; a plant whose
-  `system/hydro_geometry.parquet` does not cover its fitting window is
-  refused. Extend the geometry. Results change where the two ranges differ.
+  over the plant's `min_storage_hm3` to `max_storage_hm3`, which
+  `system/hydro_geometry.parquet` must cover or the case is refused. Extend
+  the geometry. Results change where the two ranges differ.
 
 ### Fixed
 
