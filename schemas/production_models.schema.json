@@ -17,7 +17,7 @@
     },
     "RawFittingWindow": {
       "additionalProperties": false,
-      "description": "Volume fitting window restricting the range used for FPHA hyperplane\ncomputation.\n\nAbsolute bounds (`volume_min_hm3` / `volume_max_hm3`) and percentile bounds\n(`volume_min_percentile` / `volume_max_percentile`) are mutually exclusive:\nset one pair or the other, not both for the same bound.",
+      "description": "Volume fitting window restricting the range used for FPHA hyperplane\ncomputation.\n\nEach bound is clamped to the plant's storage range, `min_storage_hm3` to\n`max_storage_hm3`, and a bound left unset takes that range's endpoint.\n\nAbsolute bounds (`volume_min_hm3` / `volume_max_hm3`) and percentile bounds\n(`volume_min_percentile` / `volume_max_percentile`) are mutually exclusive:\nset one pair or the other, not both for the same bound.",
       "properties": {
         "volume_max_hm3": {
           "description": "Explicit maximum volume for fitting (hm³). Mutually exclusive with\n`volume_max_percentile`.",
@@ -28,7 +28,7 @@
           ]
         },
         "volume_max_percentile": {
-          "description": "Maximum as a percentile of the operating range. Mutually exclusive\nwith `volume_max_hm3`.",
+          "description": "Maximum as a percentile of the storage range. Mutually exclusive\nwith `volume_max_hm3`.",
           "format": "double",
           "type": [
             "number",
@@ -44,7 +44,7 @@
           ]
         },
         "volume_min_percentile": {
-          "description": "Minimum as a percentile of the operating range. Mutually exclusive\nwith `volume_min_hm3`.",
+          "description": "Minimum as a percentile of the storage range. Mutually exclusive\nwith `volume_min_hm3`.",
           "format": "double",
           "type": [
             "number",
@@ -67,7 +67,7 @@
               "type": "null"
             }
           ],
-          "description": "Optional volume fitting window for hyperplane computation. Absent or\nnull = full operating range."
+          "description": "Optional volume fitting window for hyperplane computation. Absent or\nnull = the plant's storage range, `min_storage_hm3` to\n`max_storage_hm3`. `system/hydro_geometry.parquet` must cover that\nrange whether or not a window is set."
         },
         "max_planes_per_hydro": {
           "description": "Maximum number of planes per hydro after heuristic selection. Absent =\nalgorithm default (10).",

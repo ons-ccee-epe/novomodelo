@@ -176,7 +176,8 @@ pub struct FphaColumnLayout {
     pub spillage_discretization_points: Option<i32>,
     /// Maximum number of planes per hydro after heuristic selection.
     pub max_planes_per_hydro: Option<i32>,
-    /// Optional fitting window restricting the volume range for hyperplane computation.
+    /// Optional fitting window within the plant's storage range; absent = the
+    /// whole range, `min_storage_hm3` to `max_storage_hm3`.
     pub fitting_window: Option<FittingWindow>,
     /// Upper end (m³/s) of the spillage range the spillage coefficient is fit over.
     /// Finite and `> 0.0` when present.
@@ -214,6 +215,9 @@ pub enum PlaneReductionConfig {
 
 /// Volume fitting window for computed FPHA hyperplanes.
 ///
+/// Each bound is clamped to the plant's storage range, `min_storage_hm3` to
+/// `max_storage_hm3`, and a bound left unset takes that range's endpoint.
+///
 /// Absolute bounds (`volume_min_hm3` / `volume_max_hm3`) and percentile bounds
 /// (`volume_min_percentile` / `volume_max_percentile`) are mutually exclusive.
 #[derive(Debug, Clone, PartialEq)]
@@ -222,9 +226,9 @@ pub struct FittingWindow {
     pub volume_min_hm3: Option<f64>,
     /// Explicit maximum volume for fitting (hm³). Mutually exclusive with `volume_max_percentile`.
     pub volume_max_hm3: Option<f64>,
-    /// Minimum as percentile of the operating range. Mutually exclusive with `volume_min_hm3`.
+    /// Minimum as a percentile of the storage range. Mutually exclusive with `volume_min_hm3`.
     pub volume_min_percentile: Option<f64>,
-    /// Maximum as percentile of the operating range. Mutually exclusive with `volume_max_hm3`.
+    /// Maximum as a percentile of the storage range. Mutually exclusive with `volume_max_hm3`.
     pub volume_max_percentile: Option<f64>,
 }
 
@@ -575,7 +579,9 @@ struct RawFphaColumnLayout {
     /// algorithm default (10).
     max_planes_per_hydro: Option<i32>,
     /// Optional volume fitting window for hyperplane computation. Absent or
-    /// null = full operating range.
+    /// null = the plant's storage range, `min_storage_hm3` to
+    /// `max_storage_hm3`. `system/hydro_geometry.parquet` must cover that
+    /// range whether or not a window is set.
     fitting_window: Option<RawFittingWindow>,
     /// Upper end of the spillage range (m³/s) the spillage coefficient is fit
     /// over. Absent = twice the hydro's long-term mean inflow, or twice its
@@ -618,6 +624,9 @@ enum RawPlaneReductionConfig {
 /// Volume fitting window restricting the range used for FPHA hyperplane
 /// computation.
 ///
+/// Each bound is clamped to the plant's storage range, `min_storage_hm3` to
+/// `max_storage_hm3`, and a bound left unset takes that range's endpoint.
+///
 /// Absolute bounds (`volume_min_hm3` / `volume_max_hm3`) and percentile bounds
 /// (`volume_min_percentile` / `volume_max_percentile`) are mutually exclusive:
 /// set one pair or the other, not both for the same bound.
@@ -632,10 +641,10 @@ struct RawFittingWindow {
     /// Explicit maximum volume for fitting (hm³). Mutually exclusive with
     /// `volume_max_percentile`.
     volume_max_hm3: Option<f64>,
-    /// Minimum as a percentile of the operating range. Mutually exclusive
+    /// Minimum as a percentile of the storage range. Mutually exclusive
     /// with `volume_min_hm3`.
     volume_min_percentile: Option<f64>,
-    /// Maximum as a percentile of the operating range. Mutually exclusive
+    /// Maximum as a percentile of the storage range. Mutually exclusive
     /// with `volume_max_hm3`.
     volume_max_percentile: Option<f64>,
 }
