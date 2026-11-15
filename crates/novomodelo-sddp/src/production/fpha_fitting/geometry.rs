@@ -7,6 +7,7 @@
 
 use novomodelo_core::{HydraulicLossesModel, Hydro, TailraceModel};
 use novomodelo_io::extensions::{FphaColumnLayout, HydroGeometryRow};
+use novomodelo_io::validation::semantic::range_covers;
 
 use super::error::FphaFittingError;
 
@@ -93,6 +94,7 @@ const V_SYNTH_ABS: f64 = 1.0;
 /// |-----------|---------------|
 /// | Both absolute and percentile set for the same bound (min or max) | [`FphaFittingError::ConflictingFittingWindow`] |
 /// | Plant `min_storage_hm3 > max_storage_hm3` or either is NaN, or resolved `v_max < v_min` (inverted range, not single-point) | [`FphaFittingError::EmptyFittingWindow`] |
+/// | The resolved window `[v_min, v_max]` is not covered by the forebay table's volume range (single-volume plants included) | [`FphaFittingError::UncoveredFittingWindow`] |
 /// | A turbine/spillage count < 2, `max_planes_per_hydro` < 1, or (multi-volume only) `n_volume_points` < 2 | [`FphaFittingError::InsufficientDiscretization`] |
 pub(crate) fn resolve_fitting_bounds(
     config: &FphaColumnLayout,
@@ -169,6 +171,16 @@ pub(crate) fn resolve_fitting_bounds(
         });
     }
 
+    if !range_covers(forebay.v_min(), forebay.v_max(), v_min, v_max) {
+        return Err(FphaFittingError::UncoveredFittingWindow {
+            hydro_name: hydro_name.clone(),
+            window_min: v_min,
+            window_max: v_max,
+            geometry_min: forebay.v_min(),
+            geometry_max: forebay.v_max(),
+        });
+    }
+
     #[allow(clippy::cast_sign_loss)]
     let requested_volume_points = config.volume_discretization_points.unwrap_or(5) as usize;
     #[allow(clippy::cast_sign_loss)]
@@ -186,27 +198,7 @@ pub(crate) fn resolve_fitting_bounds(
         let useful = (hydro.max_storage_hm3 - hydro.min_storage_hm3).max(0.0);
         let half_width = (0.005 * useful).max(V_SYNTH_ABS);
 
-        if n_flow_points < 2 {
-            return Err(FphaFittingError::InsufficientDiscretization {
-                hydro_name: hydro_name.clone(),
-                dimension: "turbine".to_owned(),
-                value: n_flow_points,
-            });
-        }
-        if n_spillage_points < 2 {
-            return Err(FphaFittingError::InsufficientDiscretization {
-                hydro_name: hydro_name.clone(),
-                dimension: "spillage".to_owned(),
-                value: n_spillage_points,
-            });
-        }
-        if max_planes < 1 {
-            return Err(FphaFittingError::InsufficientDiscretization {
-                hydro_name: hydro_name.clone(),
-                dimension: "max_planes_per_hydro".to_owned(),
-                value: max_planes,
-            });
-        }
+        check_non_volume_discretization(hydro_name, n_flow_points, n_spillage_points, max_planes)?;
 
         let bounds = FittingBounds {
             v_min: v0 - half_width,
@@ -228,27 +220,7 @@ pub(crate) fn resolve_fitting_bounds(
             value: n_volume_points,
         });
     }
-    if n_flow_points < 2 {
-        return Err(FphaFittingError::InsufficientDiscretization {
-            hydro_name: hydro_name.clone(),
-            dimension: "turbine".to_owned(),
-            value: n_flow_points,
-        });
-    }
-    if n_spillage_points < 2 {
-        return Err(FphaFittingError::InsufficientDiscretization {
-            hydro_name: hydro_name.clone(),
-            dimension: "spillage".to_owned(),
-            value: n_spillage_points,
-        });
-    }
-    if max_planes < 1 {
-        return Err(FphaFittingError::InsufficientDiscretization {
-            hydro_name: hydro_name.clone(),
-            dimension: "max_planes_per_hydro".to_owned(),
-            value: max_planes,
-        });
-    }
+    check_non_volume_discretization(hydro_name, n_flow_points, n_spillage_points, max_planes)?;
 
     let bounds = FittingBounds {
         v_min,
@@ -260,6 +232,36 @@ pub(crate) fn resolve_fitting_bounds(
         single_volume: false,
     };
     Ok((bounds, forebay))
+}
+
+fn check_non_volume_discretization(
+    hydro_name: &str,
+    n_flow_points: usize,
+    n_spillage_points: usize,
+    max_planes: usize,
+) -> Result<(), FphaFittingError> {
+    if n_flow_points < 2 {
+        return Err(FphaFittingError::InsufficientDiscretization {
+            hydro_name: hydro_name.to_owned(),
+            dimension: "turbine".to_owned(),
+            value: n_flow_points,
+        });
+    }
+    if n_spillage_points < 2 {
+        return Err(FphaFittingError::InsufficientDiscretization {
+            hydro_name: hydro_name.to_owned(),
+            dimension: "spillage".to_owned(),
+            value: n_spillage_points,
+        });
+    }
+    if max_planes < 1 {
+        return Err(FphaFittingError::InsufficientDiscretization {
+            hydro_name: hydro_name.to_owned(),
+            dimension: "max_planes_per_hydro".to_owned(),
+            value: max_planes,
+        });
+    }
+    Ok(())
 }
 
 // ── ForebayTable ──────────────────────────────────────────────────────────────

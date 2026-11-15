@@ -52,7 +52,8 @@ pub(crate) enum FphaFittingError {
         detail: String,
     },
 
-    /// The resolved volume range is inverted (`v_max < v_min`).
+    /// The resolved volume range is inverted (`v_max < v_min`), or the plant's
+    /// storage range is inverted or NaN.
     ///
     /// A range that collapses to a single point (`v_min == v_max`) is NOT an
     /// error: it reroutes through the single-volume run-of-river path
@@ -63,6 +64,16 @@ pub(crate) enum FphaFittingError {
         v_min: f64,
         /// Resolved upper bound (hm³).
         v_max: f64,
+    },
+
+    /// The `hydro_geometry.parquet` volume range does not cover the fitting window
+    /// (all volumes in hm³).
+    UncoveredFittingWindow {
+        hydro_name: String,
+        window_min: f64,
+        window_max: f64,
+        geometry_min: f64,
+        geometry_max: f64,
     },
 
     /// A discretization count was too small to define a valid grid interval.
@@ -195,6 +206,18 @@ impl std::fmt::Display for FphaFittingError {
                 f,
                 "hydro '{hydro_name}': fitting window is empty after resolution: \
                  v_min={v_min} >= v_max={v_max}"
+            ),
+            Self::UncoveredFittingWindow {
+                hydro_name,
+                window_min,
+                window_max,
+                geometry_min,
+                geometry_max,
+            } => write!(
+                f,
+                "hydro '{hydro_name}': the fitting window [{window_min}, {window_max}] hm³ is not \
+                 covered by the hydro_geometry.parquet volume range [{geometry_min}, {geometry_max}] \
+                 hm³; extend the geometry to cover it"
             ),
             Self::InsufficientDiscretization {
                 hydro_name,

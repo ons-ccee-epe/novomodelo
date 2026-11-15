@@ -896,6 +896,73 @@ fn inverted_plant_storage_range_is_an_empty_fitting_window() {
     );
 }
 
+// ── Coverage — the table must reach the fitting window ───────────────────
+
+/// A single-volume plant whose storage lies below its table is refused: the
+/// production function would read a clamped head outside the table.
+#[test]
+fn uncovered_window_below_the_geometry_is_refused() {
+    let forebay = ForebayTable::new(&[row(878.0, 600.0), row(879.0, 600.5)], "CB2Mini").unwrap();
+    let hydro = make_hydro(867.547_302, 867.547_302);
+
+    let err = resolve_bounds(&default_config(), &hydro, forebay).unwrap_err();
+    let FphaFittingError::UncoveredFittingWindow {
+        window_min,
+        window_max,
+        geometry_min,
+        geometry_max,
+        ..
+    } = err
+    else {
+        panic!("expected UncoveredFittingWindow, got: {err:?}");
+    };
+    assert_eq!(window_min, 867.547_302);
+    assert_eq!(window_max, 867.547_302);
+    assert_eq!(geometry_min, 878.0);
+    assert_eq!(geometry_max, 879.0);
+}
+
+#[test]
+fn uncovered_window_above_the_geometry_is_refused() {
+    let err = resolve_bounds(
+        &default_config(),
+        &make_hydro(100.0, 2_500.0),
+        small_forebay(),
+    )
+    .unwrap_err();
+    let FphaFittingError::UncoveredFittingWindow {
+        window_max,
+        geometry_max,
+        ..
+    } = err
+    else {
+        panic!("expected UncoveredFittingWindow, got: {err:?}");
+    };
+    assert_eq!(window_max, 2_500.0);
+    assert_eq!(geometry_max, 2_000.0);
+}
+
+#[test]
+fn window_inside_the_coverage_tolerance_is_fitted() {
+    let hydro = make_hydro(100.0, 2_000.0 + 1e-7);
+
+    let bounds = resolve_bounds(&default_config(), &hydro, small_forebay()).unwrap();
+
+    assert_eq!(bounds.v_max, 2_000.0 + 1e-7);
+}
+
+#[test]
+fn window_past_the_coverage_tolerance_is_refused() {
+    let hydro = make_hydro(100.0, 2_000.0 + 1e-5);
+
+    let err = resolve_bounds(&default_config(), &hydro, small_forebay()).unwrap_err();
+
+    assert!(
+        matches!(err, FphaFittingError::UncoveredFittingWindow { .. }),
+        "expected UncoveredFittingWindow, got: {err:?}"
+    );
+}
+
 /// Equal absolute bounds (v_min == v_max) are a run-of-river plant: rerouted
 /// through the single-volume path, NOT rejected. The window must resolve to two
 /// synthesized samples with `single_volume = true` and exactly 2 volume points.
@@ -1072,6 +1139,28 @@ fn volume_discretization_zero_returns_error() {
     let forebay = sobradinho_forebay();
 
     let err = resolve_bounds(&config, &hydro, forebay).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            FphaFittingError::InsufficientDiscretization { ref dimension, value: 0, .. }
+            if dimension == "volume"
+        ),
+        "expected InsufficientDiscretization for volume=0, got: {err:?}"
+    );
+}
+
+/// A volume count and a turbine count both too low report `volume`.
+#[test]
+fn volume_count_is_refused_before_the_turbine_count() {
+    let config = FphaColumnLayout {
+        volume_discretization_points: Some(0),
+        turbine_discretization_points: Some(1),
+        ..default_config()
+    };
+
+    let err =
+        resolve_bounds(&config, &make_hydro(0.0, 34_116.0), sobradinho_forebay()).unwrap_err();
+
     assert!(
         matches!(
             err,
@@ -1961,6 +2050,27 @@ fn display_non_positive_alpha_contains_name_and_value() {
     let msg = err.to_string();
     assert!(msg.contains("Itaipu"), "should contain hydro name: {msg}");
     assert!(msg.contains('0'), "should contain alpha value: {msg}");
+}
+
+#[test]
+fn display_uncovered_fitting_window_names_the_hydro_and_both_ranges() {
+    let err = FphaFittingError::UncoveredFittingWindow {
+        hydro_name: "CB2Mini".to_owned(),
+        window_min: 867.547_302,
+        window_max: 867.547_302,
+        geometry_min: 878.0,
+        geometry_max: 879.0,
+    };
+    let msg = err.to_string();
+    assert!(msg.contains("CB2Mini"), "should contain hydro name: {msg}");
+    assert!(
+        msg.contains("[867.547302, 867.547302]"),
+        "should contain the window: {msg}"
+    );
+    assert!(
+        msg.contains("[878, 879]"),
+        "should contain the geometry range: {msg}"
+    );
 }
 
 #[test]
