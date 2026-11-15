@@ -59,10 +59,11 @@
 //! - That exactly one source (JSON or parquet) provides `productivity_mw_per_m3s` for each
 //!   `(hydro, stage)` pair — `validation::productivity_resolution`.
 
-use novomodelo_core::{EntityId, HydroGenerationModel};
+use novomodelo_core::{EntityId, HydroGenerationModel, Stage};
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::path::Path;
+use std::slice;
 
 use crate::LoadError;
 
@@ -175,7 +176,8 @@ pub struct FphaColumnLayout {
     pub spillage_discretization_points: Option<i32>,
     /// Maximum number of planes per hydro after heuristic selection.
     pub max_planes_per_hydro: Option<i32>,
-    /// Optional fitting window restricting the volume range for hyperplane computation.
+    /// Optional fitting window within the plant's storage range; absent = the
+    /// whole range, `min_storage_hm3` to `max_storage_hm3`.
     pub fitting_window: Option<FittingWindow>,
     /// Upper end (m³/s) of the spillage range the spillage coefficient is fit over.
     /// Finite and `> 0.0` when present.
@@ -213,6 +215,9 @@ pub enum PlaneReductionConfig {
 
 /// Volume fitting window for computed FPHA hyperplanes.
 ///
+/// Each bound is clamped to the plant's storage range, `min_storage_hm3` to
+/// `max_storage_hm3`, and a bound left unset takes that range's endpoint.
+///
 /// Absolute bounds (`volume_min_hm3` / `volume_max_hm3`) and percentile bounds
 /// (`volume_min_percentile` / `volume_max_percentile`) are mutually exclusive.
 #[derive(Debug, Clone, PartialEq)]
@@ -221,9 +226,9 @@ pub struct FittingWindow {
     pub volume_min_hm3: Option<f64>,
     /// Explicit maximum volume for fitting (hm³). Mutually exclusive with `volume_max_percentile`.
     pub volume_max_hm3: Option<f64>,
-    /// Minimum as percentile of the operating range. Mutually exclusive with `volume_min_hm3`.
+    /// Minimum as a percentile of the storage range. Mutually exclusive with `volume_min_hm3`.
     pub volume_min_percentile: Option<f64>,
-    /// Maximum as percentile of the operating range. Mutually exclusive with `volume_max_hm3`.
+    /// Maximum as a percentile of the storage range. Mutually exclusive with `volume_max_hm3`.
     pub volume_max_percentile: Option<f64>,
 }
 
@@ -239,6 +244,195 @@ pub enum ReferenceVolume {
     AbsoluteHm3(f64),
     /// Reference volume as a percentile of the operating range, in `[0.0, 1.0]`.
     Percentile(f64),
+}
+
+// ── Per-stage resolution ──────────────────────────────────────────────────────
+
+impl ProductionModelConfig {
+    /// Resolve this hydro's production-model entry at `stage`: the only per-stage
+    /// `SelectionMode` match, so every consumer asking which model a hydro uses at
+    /// a stage gets one answer.
+    ///
+    /// `StageRanges`: the first range covering `stage.id`, else every field
+    /// `None`. `Seasonal`: the season matching `stage.season_id`, else
+    /// `default_model` with `fpha_config`, `reference_volume`, and `productivity`
+    /// all `None` — `default_model` is the config's declared fallback, not a
+    /// coverage gap, so it still resolves a model where a `StageRanges` gap would
+    /// not.
+    #[must_use]
+    pub fn resolve_stage(&self, stage: &Stage) -> StageProductionResolution<'_> {
+        match &self.selection_mode {
+            SelectionMode::StageRanges { ranges } => {
+                for range in ranges {
+                    let after_start = stage.id >= range.start_stage_id;
+                    let before_end = range.end_stage_id.is_none_or(|end| stage.id <= end);
+                    if after_start && before_end {
+                        return StageProductionResolution {
+                            model: Some(range.model),
+                            fpha_config: range.fpha_config.as_ref(),
+                            reference_volume: range.reference_volume.as_ref(),
+                            productivity: range.productivity_mw_per_m3s,
+                        };
+                    }
+                }
+                StageProductionResolution {
+                    model: None,
+                    fpha_config: None,
+                    reference_volume: None,
+                    productivity: None,
+                }
+            }
+            SelectionMode::Seasonal {
+                default_model,
+                seasons,
+            } => {
+                if let Some(season_id) = stage.season_id {
+                    for season in seasons {
+                        if i32::try_from(season_id).is_ok_and(|sid| sid == season.season_id) {
+                            return StageProductionResolution {
+                                model: Some(season.model),
+                                fpha_config: season.fpha_config.as_ref(),
+                                reference_volume: season.reference_volume.as_ref(),
+                                productivity: season.productivity_mw_per_m3s,
+                            };
+                        }
+                    }
+                }
+                StageProductionResolution {
+                    model: Some(*default_model),
+                    fpha_config: None,
+                    reference_volume: None,
+                    productivity: None,
+                }
+            }
+        }
+    }
+
+    /// Enumerate every declared `SelectionMode` entry, plus — for `Seasonal` — one
+    /// synthetic `default_model` entry with `fpha_config: None`: the only
+    /// config-level `SelectionMode` match, the counterpart of
+    /// [`Self::resolve_stage`].
+    ///
+    /// The synthetic entry makes `default_model` count in every predicate below,
+    /// as a season miss resolves to it: a fold over the declared seasons alone
+    /// misses a `default_model == "fpha"` config whose listed seasons are all
+    /// non-FPHA.
+    #[must_use]
+    pub fn selection_entries(&self) -> SelectionEntries<'_> {
+        match &self.selection_mode {
+            SelectionMode::StageRanges { ranges } => SelectionEntries::StageRanges(ranges.iter()),
+            SelectionMode::Seasonal {
+                default_model,
+                seasons,
+            } => SelectionEntries::Seasonal {
+                seasons: seasons.iter(),
+                default_model: Some(*default_model),
+            },
+        }
+    }
+
+    /// `true` when any entry, `default_model` included, selects the FPHA model.
+    #[must_use]
+    pub fn uses_fpha(&self) -> bool {
+        self.selection_entries()
+            .any(|entry| entry.model == HydroGenerationModel::Fpha)
+    }
+
+    /// `true` when any entry fits its FPHA hyperplanes from geometry
+    /// (`source: "computed"`).
+    #[must_use]
+    pub fn uses_computed_fpha(&self) -> bool {
+        self.selection_entries()
+            .any(|entry| entry.fpha_config.is_some_and(|f| f.source == "computed"))
+    }
+
+    /// `true` when any entry reads its FPHA hyperplanes from
+    /// `fpha_hyperplanes.parquet`: `source: "precomputed"`, or an FPHA entry with
+    /// no `fpha_config` — the `Seasonal` `default_model` case, precomputed by
+    /// construction. Not the complement of [`Self::uses_computed_fpha`]: a config
+    /// with one computed and one precomputed entry is both.
+    #[must_use]
+    pub fn uses_precomputed_fpha(&self) -> bool {
+        self.selection_entries().any(|entry| {
+            entry.fpha_config.is_some_and(|f| f.source == "precomputed")
+                || (entry.model == HydroGenerationModel::Fpha && entry.fpha_config.is_none())
+        })
+    }
+
+    /// `true` when the entry resolved at `stage` selects the FPHA model.
+    #[must_use]
+    pub fn uses_fpha_at(&self, stage: &Stage) -> bool {
+        self.resolve_stage(stage).model == Some(HydroGenerationModel::Fpha)
+    }
+}
+
+/// One `(hydro, stage)` production-model entry, resolved by
+/// [`ProductionModelConfig::resolve_stage`] and borrowed from the config.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StageProductionResolution<'a> {
+    /// Model, or `None` for a `StageRanges` gap — the sole case with no default
+    /// (a `Seasonal` season miss always resolves to `default_model`).
+    pub model: Option<HydroGenerationModel>,
+    /// FPHA configuration of the resolved entry.
+    pub fpha_config: Option<&'a FphaColumnLayout>,
+    /// Reference operating volume of the resolved entry.
+    pub reference_volume: Option<&'a ReferenceVolume>,
+    /// Constant productivity of the resolved entry [MW/(m³/s)].
+    pub productivity: Option<f64>,
+}
+
+/// One `SelectionMode` entry's borrowed `(model, fpha_config)` view, yielded by
+/// [`ProductionModelConfig::selection_entries`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct SelectionEntry<'a> {
+    /// Model the entry selects.
+    pub model: HydroGenerationModel,
+    /// FPHA configuration of the entry; `None` on the synthetic `default_model`
+    /// entry.
+    pub fpha_config: Option<&'a FphaColumnLayout>,
+}
+
+/// Enum-dispatched iterator behind [`ProductionModelConfig::selection_entries`]
+/// over the two `SelectionMode` arms, avoiding a `Box<dyn Iterator>`.
+#[derive(Debug, Clone)]
+pub enum SelectionEntries<'a> {
+    /// The ranges of a `StageRanges` config.
+    StageRanges(slice::Iter<'a, StageRange>),
+    /// The seasons of a `Seasonal` config, then its `default_model` once.
+    Seasonal {
+        /// Seasons not yet yielded.
+        seasons: slice::Iter<'a, SeasonConfig>,
+        /// `default_model`, taken after the last season.
+        default_model: Option<HydroGenerationModel>,
+    },
+}
+
+impl<'a> Iterator for SelectionEntries<'a> {
+    type Item = SelectionEntry<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::StageRanges(ranges) => ranges.next().map(|range| SelectionEntry {
+                model: range.model,
+                fpha_config: range.fpha_config.as_ref(),
+            }),
+            Self::Seasonal {
+                seasons,
+                default_model,
+            } => seasons
+                .next()
+                .map(|season| SelectionEntry {
+                    model: season.model,
+                    fpha_config: season.fpha_config.as_ref(),
+                })
+                .or_else(|| {
+                    default_model.take().map(|model| SelectionEntry {
+                        model,
+                        fpha_config: None,
+                    })
+                }),
+        }
+    }
 }
 
 /// Per-hydro production model configuration loaded from
@@ -385,7 +579,9 @@ struct RawFphaColumnLayout {
     /// algorithm default (10).
     max_planes_per_hydro: Option<i32>,
     /// Optional volume fitting window for hyperplane computation. Absent or
-    /// null = full operating range.
+    /// null = the plant's storage range, `min_storage_hm3` to
+    /// `max_storage_hm3`. `system/hydro_geometry.parquet` must cover that
+    /// range whether or not a window is set.
     fitting_window: Option<RawFittingWindow>,
     /// Upper end of the spillage range (m³/s) the spillage coefficient is fit
     /// over. Absent = twice the hydro's long-term mean inflow, or twice its
@@ -428,6 +624,9 @@ enum RawPlaneReductionConfig {
 /// Volume fitting window restricting the range used for FPHA hyperplane
 /// computation.
 ///
+/// Each bound is clamped to the plant's storage range, `min_storage_hm3` to
+/// `max_storage_hm3`, and a bound left unset takes that range's endpoint.
+///
 /// Absolute bounds (`volume_min_hm3` / `volume_max_hm3`) and percentile bounds
 /// (`volume_min_percentile` / `volume_max_percentile`) are mutually exclusive:
 /// set one pair or the other, not both for the same bound.
@@ -442,10 +641,10 @@ struct RawFittingWindow {
     /// Explicit maximum volume for fitting (hm³). Mutually exclusive with
     /// `volume_max_percentile`.
     volume_max_hm3: Option<f64>,
-    /// Minimum as a percentile of the operating range. Mutually exclusive
+    /// Minimum as a percentile of the storage range. Mutually exclusive
     /// with `volume_min_hm3`.
     volume_min_percentile: Option<f64>,
-    /// Maximum as a percentile of the operating range. Mutually exclusive
+    /// Maximum as a percentile of the storage range. Mutually exclusive
     /// with `volume_max_hm3`.
     volume_max_percentile: Option<f64>,
 }
@@ -976,7 +1175,7 @@ fn convert_plane_reduction(raw: &RawPlaneReductionConfig) -> PlaneReductionConfi
 )]
 mod tests {
     use super::*;
-    use crate::test_support::write_json;
+    use crate::test_support::{make_stage, write_json};
 
     // ── AC: valid stage_ranges mode ───────────────────────────────────────────
 
@@ -2339,5 +2538,319 @@ mod tests {
         for field in FIT_MAX_FIELDS {
             assert!(text.contains(field), "{field}");
         }
+    }
+
+    // ── Per-stage resolution ──────────────────────────────────────────────────
+
+    fn layout(source: &str) -> FphaColumnLayout {
+        FphaColumnLayout {
+            source: source.to_string(),
+            volume_discretization_points: None,
+            turbine_discretization_points: None,
+            spillage_discretization_points: None,
+            max_planes_per_hydro: None,
+            fitting_window: None,
+            spillage_fit_max_m3s: None,
+            turbined_fit_max_m3s: None,
+        }
+    }
+
+    fn stage_range(
+        start_stage_id: i32,
+        end_stage_id: Option<i32>,
+        model: HydroGenerationModel,
+        fpha_config: Option<FphaColumnLayout>,
+    ) -> StageRange {
+        StageRange {
+            start_stage_id,
+            end_stage_id,
+            model,
+            fpha_config,
+            reference_volume: None,
+            productivity_mw_per_m3s: None,
+        }
+    }
+
+    fn season(
+        season_id: i32,
+        model: HydroGenerationModel,
+        fpha_config: Option<FphaColumnLayout>,
+    ) -> SeasonConfig {
+        SeasonConfig {
+            season_id,
+            model,
+            fpha_config,
+            reference_volume: None,
+            productivity_mw_per_m3s: None,
+        }
+    }
+
+    fn stage_ranges_config(ranges: Vec<StageRange>) -> ProductionModelConfig {
+        ProductionModelConfig {
+            hydro_id: EntityId::from(0),
+            selection_mode: SelectionMode::StageRanges { ranges },
+        }
+    }
+
+    fn seasonal_config(
+        default_model: HydroGenerationModel,
+        seasons: Vec<SeasonConfig>,
+    ) -> ProductionModelConfig {
+        ProductionModelConfig {
+            hydro_id: EntityId::from(0),
+            selection_mode: SelectionMode::Seasonal {
+                default_model,
+                seasons,
+            },
+        }
+    }
+
+    fn stage_in_season(season_id: Option<usize>) -> Stage {
+        let mut stage = make_stage(0);
+        stage.season_id = season_id;
+        stage
+    }
+
+    #[test]
+    fn resolve_stage_stage_ranges_hit() {
+        let config = stage_ranges_config(vec![
+            StageRange {
+                reference_volume: Some(ReferenceVolume::Percentile(0.5)),
+                productivity_mw_per_m3s: Some(0.42),
+                ..stage_range(
+                    0,
+                    Some(10),
+                    HydroGenerationModel::ConstantProductivity,
+                    Some(layout("precomputed")),
+                )
+            },
+            stage_range(
+                11,
+                None,
+                HydroGenerationModel::Fpha,
+                Some(layout("computed")),
+            ),
+        ]);
+        let computed = layout("computed");
+        let precomputed = layout("precomputed");
+
+        for id in [0, 5, 10] {
+            assert_eq!(
+                config.resolve_stage(&make_stage(id)),
+                StageProductionResolution {
+                    model: Some(HydroGenerationModel::ConstantProductivity),
+                    fpha_config: Some(&precomputed),
+                    reference_volume: Some(&ReferenceVolume::Percentile(0.5)),
+                    productivity: Some(0.42),
+                },
+                "stage {id}"
+            );
+        }
+        for id in [11, 100] {
+            assert_eq!(
+                config.resolve_stage(&make_stage(id)),
+                StageProductionResolution {
+                    model: Some(HydroGenerationModel::Fpha),
+                    fpha_config: Some(&computed),
+                    reference_volume: None,
+                    productivity: None,
+                },
+                "stage {id}"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_stage_stage_ranges_gap_is_all_none() {
+        let config = stage_ranges_config(vec![stage_range(
+            5,
+            Some(10),
+            HydroGenerationModel::Fpha,
+            Some(layout("computed")),
+        )]);
+        let gap = StageProductionResolution {
+            model: None,
+            fpha_config: None,
+            reference_volume: None,
+            productivity: None,
+        };
+
+        for id in [0, 4, 11, 20] {
+            assert_eq!(config.resolve_stage(&make_stage(id)), gap, "stage {id}");
+            assert!(!config.uses_fpha_at(&make_stage(id)), "stage {id}");
+        }
+        assert!(config.uses_fpha_at(&make_stage(7)));
+    }
+
+    #[test]
+    fn resolve_stage_seasonal_hit() {
+        let config = seasonal_config(
+            HydroGenerationModel::Fpha,
+            vec![
+                SeasonConfig {
+                    reference_volume: Some(ReferenceVolume::AbsoluteHm3(1200.0)),
+                    productivity_mw_per_m3s: Some(0.77),
+                    ..season(2, HydroGenerationModel::ConstantProductivity, None)
+                },
+                season(3, HydroGenerationModel::Fpha, Some(layout("computed"))),
+            ],
+        );
+        let computed = layout("computed");
+
+        assert_eq!(
+            config.resolve_stage(&stage_in_season(Some(2))),
+            StageProductionResolution {
+                model: Some(HydroGenerationModel::ConstantProductivity),
+                fpha_config: None,
+                reference_volume: Some(&ReferenceVolume::AbsoluteHm3(1200.0)),
+                productivity: Some(0.77),
+            }
+        );
+        assert_eq!(
+            config.resolve_stage(&stage_in_season(Some(3))),
+            StageProductionResolution {
+                model: Some(HydroGenerationModel::Fpha),
+                fpha_config: Some(&computed),
+                reference_volume: None,
+                productivity: None,
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_stage_seasonal_miss_falls_back_to_default_model() {
+        let config = seasonal_config(
+            HydroGenerationModel::ConstantProductivity,
+            vec![
+                SeasonConfig {
+                    reference_volume: Some(ReferenceVolume::Percentile(0.3)),
+                    ..season(1, HydroGenerationModel::Fpha, Some(layout("precomputed")))
+                },
+                SeasonConfig {
+                    productivity_mw_per_m3s: Some(0.6),
+                    ..season(2, HydroGenerationModel::ConstantProductivity, None)
+                },
+            ],
+        );
+        let default_entry = StageProductionResolution {
+            model: Some(HydroGenerationModel::ConstantProductivity),
+            fpha_config: None,
+            reference_volume: None,
+            productivity: None,
+        };
+
+        for season_id in [Some(99), None] {
+            assert_eq!(
+                config.resolve_stage(&stage_in_season(season_id)),
+                default_entry,
+                "season {season_id:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn default_fpha_with_constant_seasons_predicates() {
+        let config = seasonal_config(
+            HydroGenerationModel::Fpha,
+            vec![SeasonConfig {
+                productivity_mw_per_m3s: Some(0.5),
+                ..season(1, HydroGenerationModel::ConstantProductivity, None)
+            }],
+        );
+
+        assert!(config.uses_fpha());
+        assert!(config.uses_precomputed_fpha());
+        assert!(!config.uses_computed_fpha());
+        assert!(!config.uses_fpha_at(&stage_in_season(Some(1))));
+        assert!(config.uses_fpha_at(&stage_in_season(Some(99))));
+        assert!(config.uses_fpha_at(&stage_in_season(None)));
+    }
+
+    #[test]
+    fn mixed_computed_and_precomputed_predicates() {
+        let mixed = stage_ranges_config(vec![
+            stage_range(
+                0,
+                Some(4),
+                HydroGenerationModel::Fpha,
+                Some(layout("computed")),
+            ),
+            stage_range(
+                5,
+                None,
+                HydroGenerationModel::Fpha,
+                Some(layout("precomputed")),
+            ),
+        ]);
+        assert!(mixed.uses_fpha());
+        assert!(mixed.uses_computed_fpha());
+        assert!(mixed.uses_precomputed_fpha());
+
+        let computed_only = stage_ranges_config(vec![stage_range(
+            0,
+            None,
+            HydroGenerationModel::Fpha,
+            Some(layout("computed")),
+        )]);
+        assert!(computed_only.uses_fpha());
+        assert!(computed_only.uses_computed_fpha());
+        assert!(!computed_only.uses_precomputed_fpha());
+
+        let constant_only = stage_ranges_config(vec![stage_range(
+            0,
+            None,
+            HydroGenerationModel::ConstantProductivity,
+            None,
+        )]);
+        assert!(!constant_only.uses_fpha());
+        assert!(!constant_only.uses_computed_fpha());
+        assert!(!constant_only.uses_precomputed_fpha());
+    }
+
+    /// The synthetic `default_model` entry follows the declared seasons, so a
+    /// `default_model == "fpha"` config with no `fpha_config` reads as
+    /// precomputed FPHA even when every listed season is non-FPHA.
+    #[test]
+    fn selection_entries_classifies_default_fpha_as_precomputed() {
+        let config = seasonal_config(
+            HydroGenerationModel::Fpha,
+            vec![season(1, HydroGenerationModel::ConstantProductivity, None)],
+        );
+
+        assert_eq!(
+            config.selection_entries().collect::<Vec<_>>(),
+            [
+                SelectionEntry {
+                    model: HydroGenerationModel::ConstantProductivity,
+                    fpha_config: None,
+                },
+                SelectionEntry {
+                    model: HydroGenerationModel::Fpha,
+                    fpha_config: None,
+                },
+            ]
+        );
+        assert!(config.uses_precomputed_fpha());
+    }
+
+    /// Wherever a season miss resolves the FPHA `default_model`, the
+    /// `fpha_hyperplanes.parquet` gate (`uses_precomputed_fpha`) must open: a
+    /// classification blind to `default_model` would skip the load the
+    /// resolution then reads.
+    #[test]
+    fn seasonal_default_fpha_classifies_as_precomputed_source() {
+        let config = seasonal_config(
+            HydroGenerationModel::Fpha,
+            vec![
+                season(1, HydroGenerationModel::ConstantProductivity, None),
+                season(2, HydroGenerationModel::ConstantProductivity, None),
+            ],
+        );
+        let miss = config.resolve_stage(&stage_in_season(Some(7)));
+
+        assert_eq!(miss.model, Some(HydroGenerationModel::Fpha));
+        assert!(miss.fpha_config.is_none());
+        assert!(config.uses_precomputed_fpha());
+        assert!(!config.uses_computed_fpha());
     }
 }

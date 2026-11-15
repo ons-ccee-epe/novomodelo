@@ -497,8 +497,9 @@ mod cut_subgradient_parity {
     use novomodelo_sddp::{
         build_stage_templates_resolving_layout,
         hydro_models::{
-            EvaporationModel, EvaporationModelSet, FphaPlane, LinearizedEvaporation,
-            PrepareHydroModelsResult, ProductionModelSet, ResolvedProductionModel,
+            EvaporationCoefficientSign, EvaporationModel, EvaporationModelSet, FphaPlane,
+            LinearizedEvaporation, PrepareHydroModelsResult, ProductionModelSet,
+            ResolvedProductionModel,
         },
         inflow_method::InflowNonNegativityMethod,
         resolved_parameters::ResolvedParameters,
@@ -583,6 +584,7 @@ mod cut_subgradient_parity {
                     outflow_violation_below_cost: 0.0,
                     outflow_violation_above_cost: 0.0,
                     generation_violation_below_cost: 0.0,
+                    fpha_violation_cost: 5000.0,
                     evaporation_violation_cost: 0.0,
                     water_withdrawal_violation_cost: 0.0,
                     water_withdrawal_violation_pos_cost: 0.0,
@@ -699,6 +701,7 @@ mod cut_subgradient_parity {
                     outflow_violation_below_cost: 0.0,
                     outflow_violation_above_cost: 0.0,
                     generation_violation_below_cost: 0.0,
+                    fpha_violation_cost: 5000.0,
                     evaporation_violation_cost: 0.0,
                     water_withdrawal_violation_cost: 0.0,
                     water_withdrawal_violation_pos_cost: 0.0,
@@ -745,6 +748,7 @@ mod cut_subgradient_parity {
             coefficients: vec![LinearizedEvaporation {
                 intercept_m3s: INTERCEPT_M3S,
                 volume_slope_m3s_per_hm3: VOLUME_SLOPE_M3S_PER_HM3,
+                coefficient_sign: EvaporationCoefficientSign::Positive,
             }],
             reference_volumes_hm3: vec![100.0],
         }];
@@ -4433,6 +4437,7 @@ mod range_warm_start_determinism {
                     outflow_violation_below_cost: 0.0,
                     outflow_violation_above_cost: 0.0,
                     generation_violation_below_cost: 0.0,
+                    fpha_violation_cost: 0.0,
                     evaporation_violation_cost: 0.0,
                     water_withdrawal_violation_cost: 0.0,
                     water_withdrawal_violation_pos_cost: 0.0,

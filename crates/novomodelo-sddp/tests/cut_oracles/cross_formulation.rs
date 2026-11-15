@@ -22,6 +22,9 @@ use crate::common::{
 };
 
 const OPENINGS: usize = 3;
+/// Below the FPHA lag study's thermal cost, so a plane MW is cheaper through σ.
+const ACTIVE_FPHA_VIOLATION_COST: f64 = 20.0;
+const FPHA_SLACK_ACTIVE_FLOOR: f64 = 1e-9;
 const SWEEP_STATES_PER_STAGE: usize = 2;
 const MIN_FEASIBLE_POINTS: usize = 3;
 /// A cut value of `m` terms rounds at most `m + 2` times along one term: its difference and its
@@ -100,6 +103,7 @@ impl Cut {
 struct ColdSolve {
     compact: Cut,
     expanded: Cut,
+    fpha_slack_active: bool,
 }
 
 struct Fixture<'a> {
@@ -158,6 +162,7 @@ struct Totals {
     cvar_pair_checks: usize,
     compact_lag_cuts: usize,
     pool_lag_cuts: usize,
+    fpha_slack_active_solves: usize,
 }
 
 /// Solves the compact LP and the expanded LP of `stage` at `x` and `raw_noise`, each from no basis;
@@ -218,6 +223,14 @@ fn solve_cold(
         .enumerate()
         .map(|(j, &slope)| (projection.global_state_index(CutSlot::new(j)).get(), slope))
         .collect();
+    let compact_col_scale =
+        &fx.compact.inputs.stage_data.stage_templates.templates[stage].col_scale;
+    let fpha_slack_active = fx.compact.stage_ctx().geometry_per_stage[stage]
+        .fpha_slack
+        .clone()
+        .any(|col| {
+            solve.compact_cut.primal[col] * compact_col_scale[col] > FPHA_SLACK_ACTIVE_FLOOR
+        });
     Some(ColdSolve {
         compact: Cut {
             value: solve.compact_cut.objective,
@@ -227,6 +240,7 @@ fn solve_cold(
             value: expanded.objective,
             slopes: expanded_slopes,
         },
+        fpha_slack_active,
     })
 }
 
@@ -420,6 +434,7 @@ fn check_stage(fx: &Fixture, t: usize, states_per_stage: Option<usize>, totals: 
                 });
             check_cold_objectives(&context, &solved, &mut totals.objectives);
             totals.compact_lag_cuts += usize::from(solved.compact.has_lag_slope(&fx.lag));
+            totals.fpha_slack_active_solves += usize::from(solved.fpha_slack_active);
             per_opening.push(solved);
         }
         cold.push(per_opening);
@@ -467,7 +482,7 @@ fn check_fixture(fx: &Fixture, states_per_stage: Option<usize>) -> Totals {
          infeasible), skipped pools {:?}, stages skipped for a dropped state dimension {:?}; cold \
          objectives: {}; compact cuts against the expanded values: {}; expanded cuts against the \
          compact values: {}; folded pools against the expanded successor: {}; {} compact cuts and \
-         {} pool cuts with a non-zero lag coefficient",
+         {} pool cuts with a non-zero lag coefficient; {} solves with an active FPHA slack",
         totals.stages,
         totals.states,
         totals.solves,
@@ -480,7 +495,8 @@ fn check_fixture(fx: &Fixture, states_per_stage: Option<usize>) -> Totals {
         totals.expanded_validity.describe(),
         totals.folded_pool.describe(),
         totals.compact_lag_cuts,
-        totals.pool_lag_cuts
+        totals.pool_lag_cuts,
+        totals.fpha_slack_active_solves
     );
     assert!(
         totals.widest_stage_states >= 2,
@@ -568,6 +584,22 @@ fn cold_solves_and_cuts_agree_across_the_formulations_under_cvar() {
     assert!(
         totals.compact_lag_cuts >= 1,
         "{LAG_STUDY}: no checked compact cut has a non-zero lag coefficient"
+    );
+}
+
+/// The same agreement with the FPHA price below the thermal cost, so σ carries plane MW in some
+/// cold solve and the expanded LP must carry its column.
+#[test]
+fn cold_solves_and_cuts_agree_across_the_formulations_with_an_active_fpha_slack() {
+    let totals = check_lag_study(FphaLagOptions {
+        openings: OPENINGS,
+        fpha_violation_cost: Some(ACTIVE_FPHA_VIOLATION_COST),
+        ..FphaLagOptions::default()
+    });
+    assert!(
+        totals.fpha_slack_active_solves >= 1,
+        "{LAG_STUDY}: no cold solve has an FPHA slack above {FPHA_SLACK_ACTIVE_FLOOR:e} at the \
+         price {ACTIVE_FPHA_VIOLATION_COST}"
     );
 }
 

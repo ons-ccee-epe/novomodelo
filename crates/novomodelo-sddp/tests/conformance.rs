@@ -1021,6 +1021,7 @@ fn build_geometry(
     let water_balance_start = hydro_count;
     let load_balance_start = water_balance_start + hydro_count;
     let load_balance_end = load_balance_start + n_buses * n_blks;
+    let fpha_slack = gb.end..gb.end + n_fpha * n_blks;
 
     StageGeometry {
         turbine: turbine_start..spillage_start,
@@ -1063,6 +1064,7 @@ fn build_geometry(
         filling_target_col: 0..0,
         filled_min_storage_floor: 0..0,
         filled_min_storage_floor_col: 0..0,
+        fpha_slack,
         plant_max_turbine: 0..0,
         plant_max_generation: 0..0,
         n_blks,
@@ -1152,7 +1154,7 @@ fn indexer_constraint_inventory() {
 /// When a developer adds a new constraint type to the LP builder, they must
 /// also:
 /// 1. Add the corresponding slack column range to `StageGeometry`/`StageLayout`.
-/// 2. Add extraction logic in `accumulate_category_costs`.
+/// 2. Add extraction logic in `compute_hydro_violation_costs`.
 /// 3. Add a new field to `SimulationCostResult`.
 /// 4. Update this guard count.
 #[test]
@@ -1163,7 +1165,7 @@ fn constraint_extraction_regression_guard() {
     let geometry = build_geometry(2, 1, 1, 1, 1, 1, true, 1, vec![HydroSys::new(0)], &[2]);
 
     // The families that feed the hydro violation cost decomposition in
-    // accumulate_category_costs().
+    // compute_hydro_violation_costs().
     let slack_families: Vec<(&str, &Range<usize>)> = vec![
         ("outflow_below_slack", &geometry.outflow_below_slack),
         ("outflow_above_slack", &geometry.outflow_above_slack),
@@ -1172,13 +1174,14 @@ fn constraint_extraction_regression_guard() {
         ("withdrawal_slack_neg", &geometry.withdrawal_slack_neg),
         ("withdrawal_slack_pos", &geometry.withdrawal_slack_pos),
         ("inflow_slack", &geometry.inflow_slack),
+        ("fpha_slack", &geometry.fpha_slack),
     ];
 
     assert_eq!(
         slack_families.len(),
-        7,
-        "Expected exactly 7 hydro-related slack column families. \
-         If you added a new constraint type, update: (a) accumulate_category_costs, \
+        8,
+        "Expected exactly 8 hydro-related slack column families. \
+         If you added a new constraint type, update: (a) compute_hydro_violation_costs, \
          (b) SimulationCostResult, (c) CostWriteRecord + costs_schema, \
          (d) this regression guard."
     );

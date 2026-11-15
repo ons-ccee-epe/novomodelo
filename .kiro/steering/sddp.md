@@ -694,6 +694,64 @@ Read: `lp/builder/entries.rs` (`fill_fpha_entries` — pushes `−γᵥ/2` onto 
 incoming- and outgoing-storage columns), `lp/builder/rows.rs` (`fill_fpha_rows`),
 and `lp/builder/template.rs`.
 
+## The FPHA slack sits only in plane rows
+
+Each FPHA cell has one plane slack `σ` per block: a column in `[0, ∞)` with
+`−1` in every plane row of that cell and block and in no other row. No
+water-balance, load-balance or generic-constraint row holds it, so the inflow
+coupling and the lag fold see no new term. The family is
+`StageGeometry::fpha_slack`, addressed by `fpha_slack_col(FphaCellLocal,
+BlockIdx)` and allocated last, so it shifts no other family's start. Its price
+is the hydro's `fpha_violation_cost` times the block's hours, divided by the
+cost scale like every other objective term.
+
+The cell's generation `g` is basic, so its zero reduced cost makes the plane
+dual, in magnitude, the bus's load-balance dual `λ_bus` plus the dual
+`μ_GHMIN` of the cell's min-generation row plus the duals of the
+generic-constraint rows that hold `g`, each per MWh. `σ` stays 0 only while
+`fpha_violation_cost` exceeds that sum. Once `σ` is basic it sets the plane
+dual, so the storage coefficient prices the head term `σ_c·γᵥ/2` and the
+turbining term `γ_q` at the slack price instead of the marginal resource's
+cost.
+
+`semantic.5b.54` checks only the first two terms: it warns when the price does
+not exceed the largest deficit-segment cost plus `generation_violation_below_cost`.
+A lower-bounded generic constraint on FPHA generation whose slack is priced at
+or above the FPHA price adds a third term, so `σ` can be active at a price that
+passes the check. RE_450 of the DECOMP March 2026 rv2 case is such a
+constraint.
+
+The wrong-but-compiling alternatives:
+
+- `σ` in a row that carries an inflow (a water-balance row): it then moves
+  water as well as MW, and while it is basic that row's dual, which the lag
+  price reads through the coupling, is set by the slack price;
+- `σ` priced at `fpha_violation_cost` per hour without the block hours: a MWh
+  of plane violation then costs the price divided by the block's hours, so `σ`
+  undercuts the thermal and the deficit and the plane no longer binds.
+
+Read: `lp/builder/layout.rs` (`StageGeometry::fpha_slack`, `fpha_slack_col`),
+`lp/builder/columns.rs` (`fill_fpha_slack_columns`), `lp/builder/entries.rs`
+(`fill_fpha_entries`). Pinned by, in
+`tests/cut_oracles/analytical_fold_cuts.rs`, the closed forms
+`an_fpha_storage_coefficient_prices_the_head_at_the_thermal_cost_when_the_slack_is_idle`
+and `an_fpha_storage_coefficient_prices_the_head_at_the_slack_price_when_the_slack_is_active`
+(the storage coefficient's head term is priced at the thermal cost while `σ` is
+0 and at the slack price once `σ` is basic) and
+`a_generation_floor_activates_the_fpha_slack_above_the_two_term_sum` (a priced
+generation floor makes `σ` basic at a price above the two-term sum, with the
+plane dual equal to the load dual plus the floor dual);
+`cold_solves_and_cuts_agree_across_the_formulations_with_an_active_fpha_slack`
+(`tests/cut_oracles/cross_formulation.rs`: with `σ` active in some solve, the
+stage LP and an LP that defines the inflow in a row agree on objectives and
+cuts); `expanded_template_carries_the_fpha_slack_column`
+(`tests/template_integration/expander.rs`: that LP carries each `σ` column with
+its bounds, price and plane-row entries); and
+`fpha_slack_column_structure_one_cell_five_planes` and
+`fpha_slack_absent_without_fpha` (`tests/template_integration/fpha_structure.rs`:
+the bounds, the price and a `−1` in each plane row and nowhere else, and no
+column without FPHA).
+
 ## Parallel evaporation is one stage-level slot
 
 On a parallel stage each evaporating hydro has **one** evaporation slot, on the
@@ -714,10 +772,144 @@ the one coupled slot's violation slack is still priced at only ONE block's
 hours while its flow moves the WHOLE stage's water — understating the true
 violation cost by a factor of `K`.
 
-Read: `lp/builder/layout.rs` (`evaporation_slot_count`), `lp/builder/columns.rs`
+Read: `lp/builder/layout.rs` (`evaporation_slot_count`, `evaporation_slot_boundaries`), `lp/builder/columns.rs`
 (`fill_evaporation_columns`).
 Pinned by `parallel_multi_block_evap_slack_price_matches_water_it_moves` and
 `parallel_multiblock_evaporation_study_has_one_priced_stage_slot`.
+
+## Evaporation bounds follow the coefficient sign
+
+Each evaporation slot's row is `e = τ(v̄) − f_plus + f_minus`, with
+`τ(v) = intercept_m3s + volume_slope_m3s_per_hm3 · v` (`evaporation_target`) and
+`v̄` the average of the slot's two storage columns
+(`evaporation_slot_boundaries`). The box of `e` and the cap on the
+under-evaporation slack `f_plus` follow `LinearizedEvaporation::coefficient_sign`,
+which model preparation takes from the month's `coefficients_mm`. With `q_max`
+the magnitude of τ at the stage's `max_storage_hm3` times
+`EVAPORATION_FLOW_SAFETY_MARGIN`:
+
+- positive: `e ∈ [min(0, τ_min), q_max]`, `f_plus ∈ [0, ∞)`;
+- negative: `e ∈ [−q_max, max(0, τ_max)]`, `f_plus ∈ [0, u]` with
+  `u = max(0, τ_hard_max)`;
+- zero: `e ∈ [−q_max, q_max]`, `f_plus ∈ [0, ∞)`.
+
+`f_minus` is `[0, ∞)` in every month. `τ_min` and `τ_max` are τ's extremes over
+the slot's average `[tight floor, ceiling]`, and `τ_hard_max` is its maximum over
+`[hard floor, ceiling]`, all evaluated at both endpoints
+(`evaporation_target_range`).
+
+`evaporation_slot_reachable_storage` gives each storage column a tight floor, a
+hard floor (`hard_storage_floor`) and a ceiling (`storage_ceiling`), and averages
+them over the slot's two columns:
+
+- the outgoing column's tight floor is the resolved `min_storage_hm3` of a
+  filling plant in `Operating`, where that floor is soft
+  (`has_soft_storage_floor`), and its hard floor otherwise;
+- an interior column takes its hard floor;
+- the incoming column takes the predecessor stage's floors and ceiling, kind for
+  kind;
+- a seed (the first study stage, or a stage after a `PreFilling` predecessor, as
+  `incoming_storage_floor` classifies it) takes the interval
+  `canonicalize_initial_state` clamps it into: from `hard_storage_floor` of the
+  hydro's own `min_storage_hm3` at the first study stage up to its own
+  `max_storage_hm3`.
+
+The row always has a point: `e`'s box holds 0 in every month, and
+`τ(v̄) ≤ max(0, τ_hard_max)` for every reachable `v̄`, so `e = 0` with
+`f_plus = max(0, τ(v̄))` and `f_minus = max(0, −τ(v̄))` meets it, with
+`f_plus ≤ u` in a negative month.
+
+The wrong-but-compiling alternatives:
+
+- the sign read from the linearization instead of `coefficients_mm`: from
+  `intercept_m3s`, a positive month with a negative intercept takes the negative
+  box; from `volume_slope_m3s_per_hm3`, so does a positive month whose area
+  falls within the geometry tolerance. The negative box lets its `e` fall below
+  `min(0, τ_min)`, so `f_plus` creates water;
+- the seed's floor read from `hydro_bounds(h, 0).min_storage_hm3`, which
+  `semantic.5a.55` lets the seed undercut: the caps are sized over storages
+  above the seed, and stage 0 is infeasible in a negative month whose τ at the
+  seed exceeds them;
+- `f_plus` fixed at `[0, 0]` in a negative month, or `u` taken from the tight
+  floor: a filling plant at its hard floor, below its soft floor, needs `f_plus`
+  above that cap, so its stage is infeasible;
+- τ evaluated at one endpoint: `check_geometry_monotonicity` admits an area that
+  falls within its tolerance, so the slope can take either sign and the extreme
+  can sit at either endpoint.
+
+The complete-recourse precondition: for an incoming storage in
+`[F_in(t), C(t−1)]`, every stage LP is feasible when all of the following hold:
+
+- (a) the inflow method can lift a negative local inflow to 0;
+- (b) no hard forced release applies (a positive `min_spillage_m3s` or
+  `min_diversion_m3s`, or a positive `min_flow_m3s` of a pumping station whose
+  `source_hydro_id` is the hydro);
+- (c) the hard floor of stage `t` does not rise above `F_in(t)`;
+- (d) excess water can leave the reservoir when `max_spillage_m3s` is finite,
+  since the negative-month ceiling on `e` keeps evaporation from removing it;
+- (e) every generic constraint on water or hydro generation carries a slack.
+
+`F_in(t)` is the seed's clamp floor at a seed stage and the predecessor's hard
+floor otherwise (`incoming_storage_floor`). `C(t−1)` is the predecessor's storage
+ceiling, and the hydro's own `max_storage_hm3` at a seed stage.
+
+Who checks what:
+
+- `penalty` meets (a), (b) and (c) unconditionally: its inflow slack is priced
+  and unbounded (`fill_inflow_slack_columns` prices it when `slack_is_priced()`
+  and sets its upper bound to 0 only when `truncates()`), so it adds any missing
+  water. The truncation methods meet (a) through the bounded inflow slack (the
+  truncation section above); `none` does not.
+- `semantic.5a.67` (`check_rising_hard_storage_floor`) warns on (c) under
+  `truncation`, `truncation_with_penalty` and `none`. It leaves a seed stage to
+  `semantic.5a.55`, which warns on the seed cases under every method.
+- (b), (d) and (e) are derived from the water-balance row, and
+  `novomodelo validate` does not warn on them:
+  - (b) a positive `min_spillage_m3s`, `min_diversion_m3s` or pumping
+    `min_flow_m3s` is a column lower bound, so the row draws that release even
+    from a reservoir at `F_in(t)` with no inflow, which can take the outgoing
+    storage below its hard floor;
+  - (d) in a negative month `e ≤ max(0, τ_max)` caps the water evaporation
+    removes, so water above the stage's ceiling leaves through turbining,
+    spillage, diversion, a pumping station's draw and the over-withdrawal slack
+    `withdrawal_slack_pos`. That slack is unbounded only while the effective
+    withdrawal (`effective_withdrawal_m3s`) is positive; otherwise
+    `fill_withdrawal_slack_columns` caps it at the negated withdrawal, so the
+    realized withdrawal removes no water, and a finite `max_spillage_m3s` can
+    leave the excess no outlet;
+  - (e) a generic constraint on water or hydro generation without a slack is
+    a hard row over the water-balance row's columns, so it can force a release
+    as (b) does, or a storage the inflow cannot supply.
+
+Read: `lp/builder/hydro_state.rs` (`evaporation_slot_reachable_storage`,
+`evaporation_target_range`, `has_soft_storage_floor`), `lp/builder/columns.rs`
+(`fill_evaporation_columns`, `fill_inflow_slack_columns`),
+`crates/novomodelo-core/src/commissioning.rs` (`hard_storage_floor`,
+`incoming_storage_floor`), `crates/novomodelo-io/src/validation/semantic/hydro.rs`
+(`check_rising_hard_storage_floor`). Pinned by, in
+`tests/template_integration/evaporation.rs`,
+`evap_positive_month_bounds_the_flow_below_at_the_lowest_reachable_target`,
+`evap_negative_month_bounds_the_flow_above_and_caps_under_evaporation` and
+`evap_zero_month_keeps_the_symmetric_box` (each sign's box for `e` and cap on
+`f_plus` against a closed-form target range) and
+`evap_negative_month_hard_floor_needs_the_capped_under_evaporation_slack` (a
+filling plant at its hard floor solves with `u` and is infeasible with a cap
+sized from the tight floor); in `lp/builder/hydro_state.rs`,
+`reachable_storage_reads_the_seed_clamp_never_the_stage_box` and
+`reachable_storage_reads_the_seed_clamp_after_a_prefilling_predecessor` (a seed
+reads the clamp interval, at the first stage and after a `PreFilling`
+predecessor, never the stage box) and
+`reachable_storage_keeps_a_filling_plants_soft_floor_tight_and_its_hard_floor_zero`
+(the soft floor enters the tight floor only, at the outgoing column and through
+the incoming column, and the hard floor stays 0);
+`d17_evaporation_is_signed_per_month` (`tests/hydro_sim.rs`: on a mixed-sign
+deck every simulated stage closes the row inside its month's box, with the
+month's sign and both slacks idle); and, in `novomodelo-io`,
+`rising_storage_floor_warns_once_naming_each_pair` (one warning naming each
+rising (hydro, stage) pair),
+`rising_storage_floor_leaves_the_entry_seed_to_the_first_stage_check` (the stage
+that receives a late-entry seed is not compared) and
+`rising_storage_floor_is_silent_under_the_penalty_method`.
 
 ## A generic-constraint slack is priced by its declared basis, never by its terms
 
@@ -4562,15 +4754,16 @@ so they carry its end-of-stage storage targets (`hydro_bounds`
 `min_storage_hm3`/`max_storage_hm3`). The incoming initial storage has no
 producing stage: `canonicalize_initial_state` projects it onto the hydro's own
 `[min_storage_hm3, max_storage_hm3]`, the floor lifted to `0` where
-`storage_floor_relaxed` holds at stage 0. Projecting it onto the stage-0 box is
+`hard_storage_floor` relaxes it at stage 0. Projecting it onto the stage-0 box is
 the wrong-but-running alternative: a stage-0 floor above the declared storage
 raises it and a ceiling below lowers it, creating or removing water before the
 first solve with no diagnostic. A dormant (`PreFilling`) hydro's frozen-identity
 row pins its storage to that kept seed, so `storage_ceiling` never lowers its
 column ceiling below the hydro's own `max_storage_hm3`.
-Read: `setup/mod.rs` (`canonicalize_initial_state`), `lp/builder/hydro_state.rs`
-(`storage_floor_relaxed`, the one owner of which hydros have a hard floor, and
-`storage_ceiling`). Pinned by
+Read: `setup/mod.rs` (`canonicalize_initial_state`),
+`crates/novomodelo-core/src/commissioning.rs` (`hard_storage_floor`, the one owner
+of which hydros have a hard floor and its value), and `lp/builder/hydro_state.rs`
+(`storage_ceiling`). Pinned by
 `initial_storage_below_stage0_storage_floor_is_not_raised`,
 `initial_storage_above_stage0_storage_ceiling_is_not_lowered`,
 `dormant_hydro_seed_above_stage0_storage_ceiling_trains` and

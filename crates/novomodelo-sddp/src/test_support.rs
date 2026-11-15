@@ -427,6 +427,7 @@ fn geometry_zero_penalties() -> HydroPenalties {
         outflow_violation_below_cost: 0.0,
         outflow_violation_above_cost: 0.0,
         generation_violation_below_cost: 0.0,
+        fpha_violation_cost: 0.0,
         evaporation_violation_cost: 0.0,
         water_withdrawal_violation_cost: 0.0,
         water_withdrawal_violation_pos_cost: 0.0,
@@ -729,7 +730,7 @@ pub fn geometry(
     let delivery_axis_len = anticipated_lead_stages.iter().copied().max().unwrap_or(0) + 2;
     let bounds = ResolvedBounds::new(
         &BoundsCountsSpec {
-            n_hydros: 0,
+            n_hydros: dims.hydro_count,
             n_thermals: 0,
             n_lines: 0,
             n_pumping: 0,
@@ -2773,6 +2774,7 @@ fn fan_or_chain_system_builder(
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -2902,6 +2904,7 @@ fn fan_or_chain_system_builder(
                 outflow_violation_below_cost: 0.0,
                 outflow_violation_above_cost: 0.0,
                 generation_violation_below_cost: 0.0,
+                fpha_violation_cost: 0.0,
                 evaporation_violation_cost: 0.0,
                 water_withdrawal_violation_cost: 0.0,
                 water_withdrawal_violation_pos_cost: 0.0,

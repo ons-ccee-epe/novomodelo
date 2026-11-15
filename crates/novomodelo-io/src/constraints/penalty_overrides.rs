@@ -40,6 +40,7 @@
 //! | `outflow_violation_below_cost`    | DOUBLE | No       | Outflow below-min violation (USD/(m³/s·h))|
 //! | `outflow_violation_above_cost`    | DOUBLE | No       | Outflow above-max violation (USD/(m³/s·h))|
 //! | `generation_violation_below_cost` | DOUBLE | No       | Generation below-min violation (USD/`MWh`)|
+//! | `fpha_violation_cost` | DOUBLE | No | FPHA plane violation (USD/`MWh`) |
 //! | `evaporation_violation_cost`                 | DOUBLE | No       | Evaporation violation (USD/(m³/s·h))             |
 //! | `water_withdrawal_violation_cost`            | DOUBLE | No       | Water withdrawal violation (USD/(m³/s·h))        |
 //! | `water_withdrawal_violation_pos_cost`        | DOUBLE | No       | Over-withdrawal violation (USD/(m³/s·h))         |
@@ -156,8 +157,8 @@ pub struct LinePenaltyOverrideRow {
 
 /// A single row from `constraints/penalty_overrides_hydro.parquet`.
 ///
-/// Carries stage-varying penalty cost overrides for a hydro plant. All sixteen
-/// penalty columns are optional. An absent or null directional evaporation or
+/// Carries stage-varying penalty cost overrides for a hydro plant. Every
+/// penalty column is optional. An absent or null directional evaporation or
 /// withdrawal column takes the row's symmetric cost when the row sets it (see
 /// [`resolve_penalties`](crate::resolution::resolve_penalties)); any other absent or
 /// null column means "use entity-level or global default".
@@ -180,6 +181,7 @@ pub struct LinePenaltyOverrideRow {
 ///     outflow_violation_below_cost: None,
 ///     outflow_violation_above_cost: None,
 ///     generation_violation_below_cost: None,
+///     fpha_violation_cost: None,
 ///     evaporation_violation_cost: None,
 ///     water_withdrawal_violation_cost: None,
 ///     water_withdrawal_violation_pos_cost: None,
@@ -217,6 +219,8 @@ pub struct HydroPenaltyOverrideRow {
     pub outflow_violation_above_cost: Option<f64>,
     /// Generation violation override.
     pub generation_violation_below_cost: Option<f64>,
+    /// FPHA plane violation override.
+    pub fpha_violation_cost: Option<f64>,
     /// Evaporation violation override.
     pub evaporation_violation_cost: Option<f64>,
     /// Water withdrawal violation override.
@@ -476,7 +480,7 @@ pub fn parse_penalty_overrides_line(path: &Path) -> Result<Vec<LinePenaltyOverri
 /// Parse `constraints/penalty_overrides_hydro.parquet`, returning rows sorted by
 /// `(hydro_id, stage_id)` ascending.
 ///
-/// The file may contain any subset of the sixteen optional penalty columns; columns
+/// The file may contain any subset of the optional penalty columns; columns
 /// absent from the file schema produce `None` in all rows (the sparse-override design,
 /// not a schema error).
 ///
@@ -531,6 +535,8 @@ pub fn parse_penalty_overrides_hydro(
             extract_optional_float64(&batch, "outflow_violation_above_cost", path)?;
         let generation_violation_below_cost_col =
             extract_optional_float64(&batch, "generation_violation_below_cost", path)?;
+        let fpha_violation_cost_col =
+            extract_optional_float64(&batch, "fpha_violation_cost", path)?;
         let evaporation_violation_cost_col =
             extract_optional_float64(&batch, "evaporation_violation_cost", path)?;
         let water_withdrawal_violation_cost_col =
@@ -568,6 +574,7 @@ pub fn parse_penalty_overrides_hydro(
             let outflow_violation_above_cost = optional_value(outflow_violation_above_cost_col, i);
             let generation_violation_below_cost =
                 optional_value(generation_violation_below_cost_col, i);
+            let fpha_violation_cost = optional_value(fpha_violation_cost_col, i);
             let evaporation_violation_cost = optional_value(evaporation_violation_cost_col, i);
             let water_withdrawal_violation_cost =
                 optional_value(water_withdrawal_violation_cost_col, i);
@@ -645,6 +652,13 @@ pub fn parse_penalty_overrides_hydro(
                 path,
             )?;
             validate_optional_positive(
+                fpha_violation_cost,
+                "penalty_overrides_hydro",
+                row_idx,
+                "fpha_violation_cost",
+                path,
+            )?;
+            validate_optional_positive(
                 evaporation_violation_cost,
                 "penalty_overrides_hydro",
                 row_idx,
@@ -706,6 +720,7 @@ pub fn parse_penalty_overrides_hydro(
                 outflow_violation_below_cost,
                 outflow_violation_above_cost,
                 generation_violation_below_cost,
+                fpha_violation_cost,
                 evaporation_violation_cost,
                 water_withdrawal_violation_cost,
                 water_withdrawal_violation_pos_cost,
@@ -1108,13 +1123,14 @@ mod tests {
             Field::new("outflow_violation_below_cost", DataType::Float64, true),
             Field::new("outflow_violation_above_cost", DataType::Float64, true),
             Field::new("generation_violation_below_cost", DataType::Float64, true),
+            Field::new("fpha_violation_cost", DataType::Float64, true),
             Field::new("evaporation_violation_cost", DataType::Float64, true),
             Field::new("water_withdrawal_violation_cost", DataType::Float64, true),
         ]))
     }
 
     /// AC: 2 rows for 1 hydro at 2 stages, only spillage_cost and
-    /// storage_violation_below_cost have non-null values; other 9 fields are None.
+    /// storage_violation_below_cost have non-null values; the other fields are None.
     #[test]
     fn test_hydro_two_columns_non_null_rest_none() {
         let batch = RecordBatch::try_new(
@@ -1126,6 +1142,7 @@ mod tests {
                 Arc::new(Float64Array::from(vec![None::<f64>, None::<f64>])),
                 Arc::new(Float64Array::from(vec![None::<f64>, None::<f64>])),
                 Arc::new(Float64Array::from(vec![Some(9999.0_f64), Some(8888.0_f64)])),
+                Arc::new(Float64Array::from(vec![None::<f64>, None::<f64>])),
                 Arc::new(Float64Array::from(vec![None::<f64>, None::<f64>])),
                 Arc::new(Float64Array::from(vec![None::<f64>, None::<f64>])),
                 Arc::new(Float64Array::from(vec![None::<f64>, None::<f64>])),
@@ -1153,6 +1170,7 @@ mod tests {
         assert!(rows[0].outflow_violation_below_cost.is_none());
         assert!(rows[0].outflow_violation_above_cost.is_none());
         assert!(rows[0].generation_violation_below_cost.is_none());
+        assert!(rows[0].fpha_violation_cost.is_none());
         assert!(rows[0].evaporation_violation_cost.is_none());
         assert!(rows[0].water_withdrawal_violation_cost.is_none());
 
@@ -1163,9 +1181,9 @@ mod tests {
         assert!((rows[1].storage_violation_below_cost.unwrap() - 8888.0).abs() < f64::EPSILON);
     }
 
-    /// AC: valid file with all 11 optional columns present, mix of null and non-null.
+    /// AC: valid file with every `hydro_full_schema` column present, mix of null and non-null.
     #[test]
-    fn test_hydro_all_11_columns_mixed() {
+    fn test_hydro_full_schema_columns_mixed() {
         let batch = RecordBatch::try_new(
             hydro_full_schema(),
             vec![
@@ -1180,6 +1198,7 @@ mod tests {
                 Arc::new(Float64Array::from(vec![Some(2000.0_f64)])),
                 Arc::new(Float64Array::from(vec![Some(3000.0_f64)])),
                 Arc::new(Float64Array::from(vec![None::<f64>])),
+                Arc::new(Float64Array::from(vec![Some(7000.0_f64)])),
                 Arc::new(Float64Array::from(vec![Some(50.0_f64)])),
                 Arc::new(Float64Array::from(vec![None::<f64>])),
             ],
@@ -1201,6 +1220,7 @@ mod tests {
         assert!(r.outflow_violation_below_cost.is_some());
         assert!(r.outflow_violation_above_cost.is_some());
         assert!(r.generation_violation_below_cost.is_none());
+        assert_eq!(r.fpha_violation_cost, Some(7000.0));
         assert!(r.evaporation_violation_cost.is_some());
         assert!(r.water_withdrawal_violation_cost.is_none());
     }
@@ -1471,6 +1491,62 @@ mod tests {
             }
             other => panic!("expected SchemaError, got: {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_hydro_override_fpha_violation_cost_must_be_positive() {
+        let batch_with_column = |column: &str, values: Vec<Option<f64>>| {
+            let stage_ids: Vec<i32> = (0..i32::try_from(values.len()).unwrap()).collect();
+            RecordBatch::try_new(
+                Arc::new(Schema::new(vec![
+                    Field::new("hydro_id", DataType::Int32, false),
+                    Field::new("stage_id", DataType::Int32, false),
+                    Field::new(column, DataType::Float64, true),
+                ])),
+                vec![
+                    Arc::new(Int32Array::from(vec![1_i32; stage_ids.len()])),
+                    Arc::new(Int32Array::from(stage_ids)),
+                    Arc::new(Float64Array::from(values)),
+                ],
+            )
+            .unwrap()
+        };
+
+        let zero = write_parquet(&batch_with_column(
+            "fpha_violation_cost",
+            vec![Some(5.0), None, Some(0.0)],
+        ));
+        let err = parse_penalty_overrides_hydro(zero.path()).unwrap_err();
+        assert!(
+            err.to_string().contains("fpha_violation_cost"),
+            "error should name fpha_violation_cost, got: {err}"
+        );
+        match &err {
+            LoadError::SchemaError { field, message, .. } => {
+                assert_eq!(field, "penalty_overrides_hydro[2].fpha_violation_cost");
+                assert!(
+                    message.contains("must be > 0.0"),
+                    "message should contain 'must be > 0.0', got: {message}"
+                );
+            }
+            other => panic!("expected SchemaError, got: {other:?}"),
+        }
+
+        let valid = write_parquet(&batch_with_column(
+            "fpha_violation_cost",
+            vec![Some(5.0), None],
+        ));
+        let rows = parse_penalty_overrides_hydro(valid.path()).unwrap();
+        let parsed: Vec<Option<f64>> = rows.iter().map(|r| r.fpha_violation_cost).collect();
+        assert_eq!(parsed, [Some(5.0), None]);
+
+        let absent = write_parquet(&batch_with_column(
+            "spillage_cost",
+            vec![Some(0.5), Some(0.6)],
+        ));
+        let rows = parse_penalty_overrides_hydro(absent.path()).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|r| r.fpha_violation_cost.is_none()));
     }
 
     /// AC: scrambled input order -> output sorted by (hydro_id, stage_id).

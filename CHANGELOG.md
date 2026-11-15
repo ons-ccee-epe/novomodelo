@@ -26,6 +26,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   years of `scenarios/inflow_history.parquet` the inflow model is estimated
   from; absent, every year is used. A range reaching outside the file's years
   is refused.
+- `novomodelo validate` warns when `hydro.fpha_violation_cost` is at or below
+  the largest deficit cost plus `generation_violation_below_cost`.
+- `novomodelo validate` warns when a hydro's minimum storage in
+  `constraints/hydro_bounds.parquet` rises above the previous stage's, which
+  can make a stage infeasible.
 
 ### Changed
 
@@ -53,6 +58,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **BREAKING:** the AR orders and coefficients estimated from
   `scenarios/inflow_history.parquet` change under both
   `estimation.order_selection` values. Results change.
+- **BREAKING:** `penalties.json` must declare `hydro.fpha_violation_cost`
+  ($/MWh, > 0); a `penalties.json` without it is refused. Add the key to
+  existing cases. It can also be set per plant in `system/hydros.json` and
+  per stage in `constraints/penalty_overrides_hydro.parquet`.
+- **BREAKING:** FPHA planes with `fpha_config.source: "computed"` are fitted
+  over the plant's `min_storage_hm3` to `max_storage_hm3`, which
+  `system/hydro_geometry.parquet` must cover or the case is refused. Extend
+  the geometry. Results change where the two ranges differ.
 
 ### Fixed
 
@@ -64,6 +77,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `scenarios/inflow_history.parquet` years outside the study horizon and
   counted rows covering only part of a season; they now count the observations
   estimation fits from.
+- `storage_violation_cost` and `filling_target_cost` in `simulation/costs`
+  were always 0. They now report the cost of a filling plant's soft
+  minimum-storage and filling-target slacks.
+- A negative `water_withdrawal_m3s` in `constraints/hydro_bounds.parquet`
+  could add water through `water_withdrawal_violation_neg_m3s`, and a
+  withdrawal set before a plant's `entry_stage_id` could make the stage
+  infeasible. Results change.
+- FPHA plants whose planes cannot be met no longer make the stage infeasible:
+  the excess is priced at `hydro.fpha_violation_cost` and reported as
+  `fpha_violation_mw` in `simulation/hydros` and `fpha_violation_cost` (inside
+  `hydro_violation_cost`) in `simulation/costs`. Results change where it binds.
+- `evaporation_m3s` in `simulation/hydros` could take the sign opposite to
+  the month's `evaporation.coefficients_mm` in `system/hydros.json`, adding
+  water in a month of net evaporation or removing it in a month of net
+  rainfall. Results change.
 
 ## [0.20.0] - 2026-11-03
 

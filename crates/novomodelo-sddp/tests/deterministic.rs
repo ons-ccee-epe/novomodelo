@@ -2814,7 +2814,8 @@ fn d21_min_outflow_regression() {
             + cost.turbined_violation_cost
             + cost.generation_violation_cost
             + cost.evaporation_violation_cost
-            + cost.withdrawal_violation_cost;
+            + cost.withdrawal_violation_cost
+            + cost.fpha_violation_cost;
         assert!(
             (cost.hydro_violation_cost - component_sum).abs() < 1e-6,
             "D21 stage {s}: sum invariant failed: hydro_violation_cost={}, component_sum={}",
@@ -2846,6 +2847,11 @@ fn d21_min_outflow_regression() {
             cost.withdrawal_violation_cost.abs() < 1e-10,
             "D21 stage {s}: withdrawal should be 0, got {}",
             cost.withdrawal_violation_cost
+        );
+        assert!(
+            cost.fpha_violation_cost == 0.0,
+            "D21 stage {s}: fpha should be 0, got {}",
+            cost.fpha_violation_cost
         );
 
         let slack_m3s = stage_result.hydros[0].outflow_slack_below_m3s;
@@ -7025,6 +7031,7 @@ mod chronological_telescoping {
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -7765,6 +7772,7 @@ mod season_descriptor_checkpoint_round_trip {
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -8156,6 +8164,7 @@ mod boundary_season_gate_round_trip {
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -8519,6 +8528,7 @@ mod transit_arrival_interval_checkpoint_round_trip {
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -8903,6 +8913,7 @@ mod chronological_attribution {
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -8924,6 +8935,7 @@ mod chronological_attribution {
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -10850,6 +10862,7 @@ mod enumerated_external {
                     outflow_violation_below_cost: 0.0,
                     outflow_violation_above_cost: 0.0,
                     generation_violation_below_cost: 0.0,
+                    fpha_violation_cost: 0.0,
                     evaporation_violation_cost: 0.0,
                     water_withdrawal_violation_cost: 0.0,
                     water_withdrawal_violation_pos_cost: 0.0,
@@ -12216,6 +12229,7 @@ mod enumerated_cvar_gap {
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -12503,6 +12517,7 @@ mod stored_energy_fixture_json {
     "storage_violation_below_cost": 10000.0, "filling_target_violation_cost": 10000.0,
     "turbined_violation_below_cost": 10000.0, "outflow_violation_below_cost": 10000.0,
     "outflow_violation_above_cost": 10000.0, "generation_violation_below_cost": 10000.0,
+    "fpha_violation_cost": 110000.0,
     "evaporation_violation_cost": 10000.0, "water_withdrawal_violation_cost": 10000.0
   },
   "non_controllable_source": { "curtailment_cost": 0.005 }

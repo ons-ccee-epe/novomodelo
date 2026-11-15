@@ -422,6 +422,15 @@
             "null"
           ]
         },
+        "fpha_violation_cost": {
+          "default": null,
+          "description": "FPHA plane violation cost ($/`MWh`).",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
         "generation_violation_below_cost": {
           "default": null,
           "description": "Generation below-minimum violation penalty ($/`MWh`).",

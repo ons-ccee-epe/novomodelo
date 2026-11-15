@@ -86,6 +86,7 @@ HYDROS_SCHEMA_FIELDS = {
     "outflow_slack_below_m3s",
     "outflow_slack_above_m3s",
     "generation_slack_mw",
+    "fpha_violation_mw",
     "storage_violation_below_hm3",
     "filling_target_violation_hm3",
     "evaporation_violation_pos_m3s",

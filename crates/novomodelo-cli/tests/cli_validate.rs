@@ -982,6 +982,7 @@ fn write_boundary_case_with_hydros(dir: &Path, hydro_ids: &[i64]) {
                 "storage_violation_below_cost": 1500.0, "filling_target_violation_cost": 500.0,
                 "turbined_violation_below_cost": 500.0, "outflow_violation_below_cost": 500.0,
                 "outflow_violation_above_cost": 500.0, "generation_violation_below_cost": 500.0,
+                "fpha_violation_cost": 15000.0,
                 "evaporation_violation_cost": 500.0, "water_withdrawal_violation_cost": 500.0
             },
             "non_controllable_source": { "curtailment_cost": 0.005 }

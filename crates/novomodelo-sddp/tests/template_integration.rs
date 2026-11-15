@@ -35,8 +35,9 @@ use novomodelo_stochastic::par::precompute::PrecomputedPar;
 use novomodelo_sddp::{
     build_stage_templates_resolving_layout,
     hydro_models::{
-        EvaporationModel, EvaporationModelSet, FphaPlane, LinearizedEvaporation,
-        PrepareHydroModelsResult, ProductionModelSet, ResolvedProductionModel,
+        EvaporationCoefficientSign, EvaporationModel, EvaporationModelSet, FphaPlane,
+        LinearizedEvaporation, PrepareHydroModelsResult, ProductionModelSet,
+        ResolvedProductionModel,
     },
     indexer::{BlockGrid, BlockRowFamily, StateSpace},
     inflow_method::InflowNonNegativityMethod,
@@ -78,6 +79,26 @@ fn production_set(productivities: &[f64], n_stages: usize) -> ProductionModelSet
     )
 }
 
+fn load_template_with_no_cuts(
+    template: &novomodelo_solver::StageTemplate,
+) -> novomodelo_solver::ActiveSolver {
+    use novomodelo_solver::SolverInterface;
+
+    let mut solver =
+        novomodelo_solver::ActiveSolver::new().expect("ActiveSolver::new must succeed");
+    solver.load_model(template);
+    let empty_cuts = novomodelo_solver::RowBatch {
+        num_rows: 0,
+        row_starts: vec![0_i32],
+        col_indices: vec![],
+        values: vec![],
+        row_lower: vec![],
+        row_upper: vec![],
+    };
+    solver.add_rows(&empty_cuts);
+    solver
+}
+
 fn no_penalty_config() -> InflowNonNegativityMethod {
     InflowNonNegativityMethod::None
 }
@@ -114,6 +135,7 @@ fn default_hydro_penalties() -> HydroPenalties {
         outflow_violation_below_cost: 0.0,
         outflow_violation_above_cost: 0.0,
         generation_violation_below_cost: 0.0,
+        fpha_violation_cost: 5000.0,
         evaporation_violation_cost: 0.0,
         water_withdrawal_violation_cost: 0.0,
         water_withdrawal_violation_pos_cost: 0.0,
@@ -313,6 +335,7 @@ fn one_hydro_system(n_stages: usize, lag_order: usize) -> novomodelo_core::Syste
                 outflow_violation_below_cost: 0.0,
                 outflow_violation_above_cost: 0.0,
                 generation_violation_below_cost: 0.0,
+                fpha_violation_cost: 0.0,
                 evaporation_violation_cost: 0.0,
                 water_withdrawal_violation_cost: 0.0,
                 water_withdrawal_violation_pos_cost: 0.0,
@@ -512,6 +535,7 @@ fn fpha_system_with_turbined_cost(
                 outflow_violation_below_cost: 0.0,
                 outflow_violation_above_cost: 0.0,
                 generation_violation_below_cost: 0.0,
+                fpha_violation_cost: 5000.0,
                 evaporation_violation_cost: 0.0,
                 water_withdrawal_violation_cost: 0.0,
                 water_withdrawal_violation_pos_cost: 0.0,
@@ -634,6 +658,7 @@ fn fpha_system_with_turbined_cost(
                 outflow_violation_below_cost: 0.0,
                 outflow_violation_above_cost: 0.0,
                 generation_violation_below_cost: 0.0,
+                fpha_violation_cost: 5000.0,
                 evaporation_violation_cost: 0.0,
                 water_withdrawal_violation_cost: 0.0,
                 water_withdrawal_violation_pos_cost: 0.0,
@@ -793,6 +818,7 @@ fn two_bus_system_with_stochastic_load(
                         outflow_violation_below_cost: 0.0,
                         outflow_violation_above_cost: 0.0,
                         generation_violation_below_cost: 0.0,
+                        fpha_violation_cost: 0.0,
                         evaporation_violation_cost: 0.0,
                         water_withdrawal_violation_cost: 0.0,
                         water_withdrawal_violation_pos_cost: 0.0,
@@ -979,6 +1005,7 @@ fn one_fpha_hydro_system(n_planes: usize) -> (novomodelo_core::System, Productio
                 outflow_violation_below_cost: 0.0,
                 outflow_violation_above_cost: 0.0,
                 generation_violation_below_cost: 0.0,
+                fpha_violation_cost: 5000.0,
                 evaporation_violation_cost: 0.0,
                 water_withdrawal_violation_cost: 0.0,
                 water_withdrawal_violation_pos_cost: 0.0,
@@ -1158,6 +1185,7 @@ fn four_hydro_mixed_system() -> (novomodelo_core::System, ProductionModelSet) {
         outflow_violation_below_cost: 0.0,
         outflow_violation_above_cost: 0.0,
         generation_violation_below_cost: 0.0,
+        fpha_violation_cost: 5000.0,
         evaporation_violation_cost: 0.0,
         water_withdrawal_violation_cost: 0.0,
         water_withdrawal_violation_pos_cost: 0.0,
@@ -1452,6 +1480,27 @@ fn fpha_solve_system() -> (novomodelo_core::System, ProductionModelSet) {
 
 use novomodelo_solver::StageTemplate;
 
+/// Reference volume (hm³) of the evaporation fixtures below.
+const EVAP_FIXTURE_REFERENCE_VOLUME_HM3: f64 = 100.0;
+
+/// Sign of `intercept + slope · EVAP_FIXTURE_REFERENCE_VOLUME_HM3`: a test
+/// fixture standing in for model preparation, which classifies the month's
+/// `coefficients_mm` instead.
+fn fixture_coefficient_sign(
+    intercept_m3s: f64,
+    volume_slope_m3s_per_hm3: f64,
+) -> EvaporationCoefficientSign {
+    let rate_at_reference =
+        intercept_m3s + volume_slope_m3s_per_hm3 * EVAP_FIXTURE_REFERENCE_VOLUME_HM3;
+    if rate_at_reference > 0.0 {
+        EvaporationCoefficientSign::Positive
+    } else if rate_at_reference < 0.0 {
+        EvaporationCoefficientSign::Negative
+    } else {
+        EvaporationCoefficientSign::Zero
+    }
+}
+
 /// `EvaporationModelSet` giving `None` to every hydro except those in
 /// `evap_indices`, which get `Linearized` from `intercept_per_stage`.
 fn evap_set_for_system(
@@ -1465,17 +1514,21 @@ fn evap_set_for_system(
         .map(|h| {
             if evap_indices.contains(&h) {
                 let coefficients = (0..n_stages)
-                    .map(|s| LinearizedEvaporation {
-                        intercept_m3s: intercept_per_stage
+                    .map(|s| {
+                        let intercept_m3s = intercept_per_stage
                             .get(s)
                             .copied()
-                            .unwrap_or(intercept_per_stage.first().copied().unwrap_or(0.0)),
-                        volume_slope_m3s_per_hm3: 0.0,
+                            .unwrap_or(intercept_per_stage.first().copied().unwrap_or(0.0));
+                        LinearizedEvaporation {
+                            intercept_m3s,
+                            volume_slope_m3s_per_hm3: 0.0,
+                            coefficient_sign: fixture_coefficient_sign(intercept_m3s, 0.0),
+                        }
                     })
                     .collect();
                 EvaporationModel::Linearized {
                     coefficients,
-                    reference_volumes_hm3: vec![100.0; n_stages],
+                    reference_volumes_hm3: vec![EVAP_FIXTURE_REFERENCE_VOLUME_HM3; n_stages],
                 }
             } else {
                 EvaporationModel::None
@@ -1506,11 +1559,15 @@ fn evap_set_with_volume_slope(
                     .map(|_| LinearizedEvaporation {
                         intercept_m3s,
                         volume_slope_m3s_per_hm3,
+                        coefficient_sign: fixture_coefficient_sign(
+                            intercept_m3s,
+                            volume_slope_m3s_per_hm3,
+                        ),
                     })
                     .collect();
                 EvaporationModel::Linearized {
                     coefficients,
-                    reference_volumes_hm3: vec![100.0; n_stages],
+                    reference_volumes_hm3: vec![EVAP_FIXTURE_REFERENCE_VOLUME_HM3; n_stages],
                 }
             } else {
                 EvaporationModel::None
@@ -1602,6 +1659,7 @@ fn evap_hydro_system_with_violation_cost(
                 outflow_violation_below_cost: 0.0,
                 outflow_violation_above_cost: 0.0,
                 generation_violation_below_cost: 0.0,
+                fpha_violation_cost: 0.0,
                 evaporation_violation_cost,
                 water_withdrawal_violation_cost: 0.0,
                 water_withdrawal_violation_pos_cost: 0.0,
@@ -1718,6 +1776,7 @@ fn evap_hydro_system_with_violation_cost(
                 outflow_violation_below_cost: 0.0,
                 outflow_violation_above_cost: 0.0,
                 generation_violation_below_cost: 0.0,
+                fpha_violation_cost: 0.0,
                 evaporation_violation_cost,
                 water_withdrawal_violation_cost: 0.0,
                 water_withdrawal_violation_pos_cost: 0.0,
@@ -1925,6 +1984,7 @@ fn one_hydro_system_with_withdrawal(
                 outflow_violation_below_cost: 0.0,
                 outflow_violation_above_cost: 0.0,
                 generation_violation_below_cost: 0.0,
+                fpha_violation_cost: 0.0,
                 evaporation_violation_cost: 0.0,
                 water_withdrawal_violation_cost,
                 water_withdrawal_violation_pos_cost: water_withdrawal_violation_cost,
@@ -2056,6 +2116,7 @@ fn one_hydro_system_with_withdrawal(
                 outflow_violation_below_cost: 0.0,
                 outflow_violation_above_cost: 0.0,
                 generation_violation_below_cost: 0.0,
+                fpha_violation_cost: 0.0,
                 evaporation_violation_cost: 0.0,
                 water_withdrawal_violation_cost,
                 water_withdrawal_violation_pos_cost: water_withdrawal_violation_cost,
@@ -2628,6 +2689,7 @@ fn one_hydro_active_violations(n_stages: usize) -> novomodelo_core::System {
                 outflow_violation_below_cost: 1000.0,
                 outflow_violation_above_cost: 1000.0,
                 generation_violation_below_cost: 1000.0,
+                fpha_violation_cost: 10000.0,
                 evaporation_violation_cost: 0.0,
                 water_withdrawal_violation_cost: 0.0,
                 water_withdrawal_violation_pos_cost: 0.0,
@@ -2763,6 +2825,7 @@ fn one_hydro_active_violations(n_stages: usize) -> novomodelo_core::System {
                 outflow_violation_below_cost: 1000.0,
                 outflow_violation_above_cost: 1000.0,
                 generation_violation_below_cost: 1000.0,
+                fpha_violation_cost: 10000.0,
                 evaporation_violation_cost: 0.0,
                 water_withdrawal_violation_cost: 0.0,
                 water_withdrawal_violation_pos_cost: 0.0,
@@ -2962,6 +3025,7 @@ fn two_hydro_par_system(
                         outflow_violation_below_cost: 0.0,
                         outflow_violation_above_cost: 0.0,
                         generation_violation_below_cost: 0.0,
+                        fpha_violation_cost: 0.0,
                         evaporation_violation_cost: 0.0,
                         water_withdrawal_violation_cost: 0.0,
                         water_withdrawal_violation_pos_cost: 0.0,
@@ -3009,6 +3073,7 @@ fn two_hydro_par_system(
                         outflow_violation_below_cost: 0.0,
                         outflow_violation_above_cost: 0.0,
                         generation_violation_below_cost: 0.0,
+                        fpha_violation_cost: 0.0,
                         evaporation_violation_cost: 0.0,
                         water_withdrawal_violation_cost: 0.0,
                         water_withdrawal_violation_pos_cost: 0.0,
@@ -3640,6 +3705,7 @@ fn one_hydro_one_ant_system(n_stages: usize) -> novomodelo_core::System {
                 outflow_violation_below_cost: 0.0,
                 outflow_violation_above_cost: 0.0,
                 generation_violation_below_cost: 0.0,
+                fpha_violation_cost: 0.0,
                 evaporation_violation_cost: 0.0,
                 water_withdrawal_violation_cost: 0.0,
                 water_withdrawal_violation_pos_cost: 0.0,
@@ -3908,6 +3974,7 @@ fn build_hydro_one_ant_system(
                 outflow_violation_below_cost: 0.0,
                 outflow_violation_above_cost: 0.0,
                 generation_violation_below_cost: 0.0,
+                fpha_violation_cost: 0.0,
                 evaporation_violation_cost: 0.0,
                 water_withdrawal_violation_cost: 0.0,
                 water_withdrawal_violation_pos_cost: 0.0,
@@ -4149,6 +4216,7 @@ fn build_k0_baseline_system() -> novomodelo_core::System {
                 outflow_violation_below_cost: 0.0,
                 outflow_violation_above_cost: 0.0,
                 generation_violation_below_cost: 0.0,
+                fpha_violation_cost: 0.0,
                 evaporation_violation_cost: 0.0,
                 water_withdrawal_violation_cost: 0.0,
                 water_withdrawal_violation_pos_cost: 0.0,

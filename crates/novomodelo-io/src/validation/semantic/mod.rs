@@ -58,8 +58,10 @@ pub(crate) fn validate_semantic_hydro_thermal(data: &ParsedData, ctx: &mut Valid
     hydro::check_initial_storage_range(data, ctx);
     hydro::check_initial_storage_array(data, ctx);
     hydro::check_initial_storage_first_stage_bounds(data, ctx);
+    hydro::check_rising_hard_storage_floor(data, ctx);
     hydro::check_geometry_monotonicity(data, ctx);
     hydro::check_evaporation_geometry_coverage(data, ctx);
+    hydro::check_fpha_geometry_coverage(data, ctx);
     hydro::check_fpha_constraints(data, ctx);
     hydro::check_hydro_unit_groups(data, ctx);
     thermal::check_thermal_generation_bounds(data, ctx);
@@ -103,6 +105,7 @@ pub(crate) fn validate_semantic_stages_penalties_scenarios(
     scenarios::check_penalty_ordering(data, ctx);
     scenarios::check_filling_sufficiency(data, ctx);
     scenarios::check_fpha_penalty_rule(data, ctx);
+    scenarios::check_fpha_price_dominance(data, ctx);
     scenarios::check_scenario_models(data, ctx);
     scenarios::check_par_stationarity(data, ctx);
     correlation::check_correlation_matrices(data, ctx);
@@ -136,4 +139,79 @@ const ENVELOPE_TOLERANCE: f64 = 1e-9;
 #[must_use]
 pub fn envelope_tolerance(value: f64) -> f64 {
     ENVELOPE_TOLERANCE * value.abs().max(1.0)
+}
+
+/// `true` when `[range_min, range_max]` contains `[inner_min, inner_max]`, each
+/// inner endpoint widened outward by its own [`envelope_tolerance`]; `false`
+/// when any argument is NaN.
+#[must_use]
+pub fn range_covers(range_min: f64, range_max: f64, inner_min: f64, inner_max: f64) -> bool {
+    range_min <= inner_min + envelope_tolerance(inner_min)
+        && range_max >= inner_max - envelope_tolerance(inner_max)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{envelope_tolerance, range_covers};
+
+    #[test]
+    fn range_covers_accepts_an_inner_range_inside() {
+        assert!(range_covers(0.0, 10.0, 2.0, 8.0));
+    }
+
+    #[test]
+    fn range_covers_accepts_equal_ranges() {
+        assert!(range_covers(878.0, 879.0, 878.0, 879.0));
+    }
+
+    #[test]
+    fn range_covers_rejects_an_inner_minimum_below() {
+        assert!(!range_covers(878.0, 879.0, 867.547_302, 867.547_302));
+    }
+
+    #[test]
+    fn range_covers_rejects_an_inner_maximum_above() {
+        assert!(!range_covers(100.0, 2000.0, 100.0, 2500.0));
+    }
+
+    #[test]
+    fn range_covers_accepts_the_tolerance_boundary() {
+        assert!(range_covers(
+            100.0 + envelope_tolerance(100.0),
+            2000.0,
+            100.0,
+            2000.0
+        ));
+        assert!(range_covers(
+            100.0,
+            2000.0 - envelope_tolerance(2000.0),
+            100.0,
+            2000.0
+        ));
+    }
+
+    #[test]
+    fn range_covers_rejects_just_past_the_tolerance() {
+        assert!(!range_covers(
+            (100.0 + envelope_tolerance(100.0)).next_up(),
+            2000.0,
+            100.0,
+            2000.0
+        ));
+        assert!(!range_covers(
+            100.0,
+            (2000.0 - envelope_tolerance(2000.0)).next_down(),
+            100.0,
+            2000.0
+        ));
+    }
+
+    #[test]
+    fn range_covers_rejects_nan() {
+        let nan = f64::NAN;
+        assert!(!range_covers(nan, 10.0, 2.0, 8.0));
+        assert!(!range_covers(0.0, nan, 2.0, 8.0));
+        assert!(!range_covers(0.0, 10.0, nan, 8.0));
+        assert!(!range_covers(0.0, 10.0, 2.0, nan));
+    }
 }

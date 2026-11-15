@@ -426,6 +426,13 @@ pub enum ColOwner {
         /// The column's block.
         blk: BlockIdx,
     },
+    /// An FPHA plane-slack column for hydro-cell `cell`, block `blk`.
+    FphaSlack {
+        /// The slack column's cell.
+        cell: HydroCell,
+        /// The column's block.
+        blk: BlockIdx,
+    },
     /// An in-study anticipated-ring incoming column: ring lane `lane`
     /// (anticipated-local index), slot `slot`.
     AnticipatedIn {
@@ -648,6 +655,10 @@ pub fn column_owners(
                     geom.generation_col(cell_local, blk),
                     ColOwner::Generation { cell, blk },
                 );
+                owners.insert(
+                    geom.fpha_slack_col(cell_local, blk),
+                    ColOwner::FphaSlack { cell, blk },
+                );
             }
         }
     }
@@ -792,6 +803,13 @@ pub enum ColKey {
         /// The column's block.
         blk: BlockIdx,
     },
+    /// An FPHA plane-slack column for hydro-cell `cell`, block `blk`.
+    FphaSlack {
+        /// The slack column's cell.
+        cell: HydroCell,
+        /// The column's block.
+        blk: BlockIdx,
+    },
     /// An in-study anticipated-ring incoming column: ring lane `lane`
     /// (anticipated-local index), slot `slot`.
     AnticipatedIn {
@@ -840,6 +858,7 @@ impl From<ColOwner> for ColKey {
             ColOwner::LineFwd { line, blk } => ColKey::LineFwd { line, blk },
             ColOwner::LineRev { line, blk } => ColKey::LineRev { line, blk },
             ColOwner::Generation { cell, blk } => ColKey::Generation { cell, blk },
+            ColOwner::FphaSlack { cell, blk } => ColKey::FphaSlack { cell, blk },
             ColOwner::AnticipatedIn { lane, slot } => ColKey::AnticipatedIn { lane, slot },
             ColOwner::Contract {
                 contract_type,

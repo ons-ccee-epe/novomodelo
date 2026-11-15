@@ -2,15 +2,17 @@
 
 use std::ops::Range;
 
-use novomodelo_core::commissioning::{Phase, filling_phase};
+use novomodelo_core::commissioning::{
+    IncomingStorageFloor, Phase, filling_phase, hard_storage_floor, incoming_storage_floor,
+};
 use novomodelo_core::{
-    CascadeTopology, Hydro, HydroBlockBounds, HydroPenalties, HydroUnitGroup, ResolvedBounds,
-    ResolvedHydroUnitGroupBounds, Stage,
+    CascadeTopology, Hydro, HydroBlockBounds, HydroPenalties, HydroStageBounds, HydroUnitGroup,
+    ResolvedBounds, ResolvedHydroUnitGroupBounds, Stage,
 };
 use novomodelo_io::validation::semantic::envelope_tolerance;
 
-use crate::hydro_models::ResolvedProductionModel;
-use crate::indexer::{EntityPositions, HydroCell, HydroCellIndex, HydroSys};
+use crate::hydro_models::{LinearizedEvaporation, ResolvedProductionModel};
+use crate::indexer::{Boundary, EntityPositions, HydroCell, HydroCellIndex, HydroSys};
 
 pub(super) fn hydro_phase(hydro: &Hydro, stage_id: i32) -> Phase {
     filling_phase(
@@ -19,22 +21,6 @@ pub(super) fn hydro_phase(hydro: &Hydro, stage_id: i32) -> Phase {
         hydro.exit_stage_id,
         stage_id,
     )
-}
-
-/// Whether `hydro`'s `min_storage` floor is lifted to `0` at `stage_id`.
-///
-/// CONTRACT: `min_storage` is a HARD lower bound for every hydro EXCEPT (a) a
-/// filling one (`hydro.filling.is_some()`), whose floor relaxes to `0` in ALL
-/// phases and is re-imposed as a SOFT floor by
-/// `fill_filled_min_storage_floor_columns`, and (b) a non-filling hydro while
-/// `PreFilling` (commissioning-dormant), whose frozen-identity row pins `v_h`
-/// to the inert IC storage — a hard floor above that IC value would reject the
-/// pin and make the LP infeasible. FORBIDDEN — globalizing the relax to all
-/// Operating hydros (makes dead volume soft system-wide); keeping it hard
-/// through a dormant non-filling stage (rejects the IC pin). The dormant relax
-/// disappears at `Operating`, restoring the hard floor.
-pub(crate) fn storage_floor_relaxed(hydro: &Hydro, stage_id: i32) -> bool {
-    hydro.filling.is_some() || matches!(hydro_phase(hydro, stage_id), Phase::PreFilling)
 }
 
 /// `hydro`'s storage ceiling at `stage_id`, given that stage's resolved
@@ -49,6 +35,113 @@ pub(super) fn storage_ceiling(hydro: &Hydro, stage_id: i32, resolved_max_hm3: f6
         resolved_max_hm3.max(hydro.max_storage_hm3)
     } else {
         resolved_max_hm3
+    }
+}
+
+/// Whether `hydro`'s resolved `min_storage_hm3` is a soft floor at `stage_id`: a
+/// filling plant that is `Operating`.
+pub(super) fn has_soft_storage_floor(hydro: &Hydro, stage_id: i32) -> bool {
+    hydro.filling.is_some() && matches!(hydro_phase(hydro, stage_id), Phase::Operating)
+}
+
+#[must_use]
+pub(super) fn evaporation_target(coefficient: &LinearizedEvaporation, storage_hm3: f64) -> f64 {
+    coefficient.intercept_m3s + coefficient.volume_slope_m3s_per_hm3 * storage_hm3
+}
+
+/// `(min, max)` of [`evaporation_target`] over `[low_hm3, high_hm3]`. The slope's
+/// sign orders the two endpoints, and the area can fall within the validation
+/// tolerance of rules 8-10, so the extreme sits at either one.
+#[must_use]
+pub(super) fn evaporation_target_range(
+    coefficient: &LinearizedEvaporation,
+    low_hm3: f64,
+    high_hm3: f64,
+) -> (f64, f64) {
+    let at_low = evaporation_target(coefficient, low_hm3);
+    let at_high = evaporation_target(coefficient, high_hm3);
+    (at_low.min(at_high), at_low.max(at_high))
+}
+
+/// The average storage (hm³) an evaporation slot's two storage columns can reach.
+///
+/// `hard_floor_hm3` sizes the under-evaporation cap, not `tight_floor_hm3`: a
+/// filling plant at its hard floor is otherwise infeasible.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "the unit suffix names each field"
+)]
+pub(super) struct ReachableStorage {
+    pub(super) tight_floor_hm3: f64,
+    pub(super) hard_floor_hm3: f64,
+    pub(super) ceiling_hm3: f64,
+}
+
+/// The componentwise average of [`ReachableStorage`] over the slot's two storage
+/// columns. `tight_floor_hm3` is the resolved `min_storage_hm3` where it is a soft
+/// floor ([`has_soft_storage_floor`]), `hard_floor_hm3` the column's lower bound.
+///
+/// A seed reads the clamp interval, never the stage-0 box, which `semantic.5a.55`
+/// lets the seed undercut.
+#[must_use]
+pub(super) fn evaporation_slot_reachable_storage(
+    hydro: &Hydro,
+    first_stage_id: i32,
+    stage: (i32, &HydroStageBounds),
+    predecessor: Option<(i32, &HydroStageBounds)>,
+    slot: (Boundary, Boundary),
+) -> ReachableStorage {
+    let (stage_id, bounds) = stage;
+    let own_floor = hard_storage_floor(hydro, stage_id, bounds.min_storage_hm3);
+    let own_ceiling = storage_ceiling(hydro, stage_id, bounds.max_storage_hm3);
+    let seed_floor = hard_storage_floor(hydro, first_stage_id, hydro.min_storage_hm3);
+    let column = |boundary: Boundary| match boundary {
+        Boundary::Outgoing => ReachableStorage {
+            tight_floor_hm3: if has_soft_storage_floor(hydro, stage_id) {
+                bounds.min_storage_hm3
+            } else {
+                own_floor
+            },
+            hard_floor_hm3: own_floor,
+            ceiling_hm3: own_ceiling,
+        },
+        Boundary::Interior(_) => ReachableStorage {
+            tight_floor_hm3: own_floor,
+            hard_floor_hm3: own_floor,
+            ceiling_hm3: own_ceiling,
+        },
+        Boundary::Incoming => {
+            let floor = incoming_storage_floor(
+                hydro,
+                predecessor.map(|(id, previous)| (id, previous.min_storage_hm3)),
+            );
+            match (floor, predecessor) {
+                (IncomingStorageFloor::PredecessorFloor(hard), Some((id, previous))) => {
+                    ReachableStorage {
+                        tight_floor_hm3: if has_soft_storage_floor(hydro, id) {
+                            previous.min_storage_hm3
+                        } else {
+                            hard
+                        },
+                        hard_floor_hm3: hard,
+                        ceiling_hm3: storage_ceiling(hydro, id, previous.max_storage_hm3),
+                    }
+                }
+                (IncomingStorageFloor::InitialStorage | IncomingStorageFloor::PinnedSeed, _)
+                | (IncomingStorageFloor::PredecessorFloor(_), None) => ReachableStorage {
+                    tight_floor_hm3: seed_floor,
+                    hard_floor_hm3: seed_floor,
+                    ceiling_hm3: hydro.max_storage_hm3,
+                },
+            }
+        }
+    };
+    let (first, second) = (column(slot.0), column(slot.1));
+    ReachableStorage {
+        tight_floor_hm3: 0.5 * (first.tight_floor_hm3 + second.tight_floor_hm3),
+        hard_floor_hm3: 0.5 * (first.hard_floor_hm3 + second.hard_floor_hm3),
+        ceiling_hm3: 0.5 * (first.ceiling_hm3 + second.ceiling_hm3),
     }
 }
 
@@ -95,6 +188,44 @@ pub(super) fn resolve_shortcircuit_target(
         current_id = down_id;
     }
     None
+}
+
+/// Per-hydro effective withdrawal `T_eff[d] = T[d] + Σ T[h]` (m³/s, signed), over the
+/// `PreFilling` hydros `h` that [`resolve_shortcircuit_target`] routes onto `d`, summed
+/// in ascending system index; `0.0` for a `PreFilling` hydro, whose demand moves to its
+/// target. The sole owner of where a `PreFilling` hydro's withdrawal demand lands: the
+/// water-row RHS and the matrix routing agree because both resolve the same target.
+///
+/// A hydro with no feeder keeps its own `T` bit for bit: the sum starts from `T`, never
+/// from `0.0`, which would turn `T = -0.0` into `+0.0`. Summing feeders through the
+/// cascade's upstream lists instead of ascending system index makes the bits depend on
+/// declaration order.
+pub(super) fn effective_withdrawals(
+    hydros: &[Hydro],
+    cascade: &CascadeTopology,
+    positions: &EntityPositions,
+    stage_id: i32,
+    own_withdrawal_m3s: impl Fn(usize) -> f64,
+) -> Vec<f64> {
+    let mut effective: Vec<f64> = hydros
+        .iter()
+        .enumerate()
+        .map(|(h_idx, hydro)| {
+            if matches!(hydro_phase(hydro, stage_id), Phase::PreFilling) {
+                0.0
+            } else {
+                own_withdrawal_m3s(h_idx)
+            }
+        })
+        .collect();
+    for h_idx in 0..hydros.len() {
+        if let Some(d_idx) =
+            resolve_shortcircuit_target(hydros, cascade, positions, stage_id, h_idx)
+        {
+            effective[d_idx] += own_withdrawal_m3s(h_idx);
+        }
+    }
+    effective
 }
 
 /// Bundles the resolved group-bounds table with the three indices that are
@@ -513,11 +644,18 @@ pub(crate) fn warn_on_inert_plant_floor_overrides(
 
 #[cfg(test)]
 mod tests {
-    use novomodelo_core::{CascadeTopology, EntityId, Hydro, HydroGenerationModel, HydroPenalties};
+    use novomodelo_core::{
+        CascadeTopology, EntityId, FillingConfig, Hydro, HydroGenerationModel, HydroPenalties,
+        HydroStageBounds,
+    };
 
-    use crate::indexer::EntityPositions;
+    use crate::hydro_models::{EvaporationCoefficientSign, LinearizedEvaporation};
+    use crate::indexer::{Boundary, EntityPositions};
 
-    use super::resolve_shortcircuit_target;
+    use super::{
+        ReachableStorage, effective_withdrawals, evaporation_slot_reachable_storage,
+        evaporation_target_range, has_soft_storage_floor, resolve_shortcircuit_target,
+    };
 
     const STAGE_ID: i32 = 0;
     const FUTURE_ENTRY: i32 = 1;
@@ -552,6 +690,35 @@ mod tests {
             diversion: None,
             filling: None,
             penalties: HydroPenalties::uniform(0.0),
+        }
+    }
+
+    fn filling_hydro(start_stage_id: i32, entry_stage_id: Option<i32>) -> Hydro {
+        Hydro {
+            min_storage_hm3: 100.0,
+            max_storage_hm3: 200.0,
+            filling: Some(FillingConfig {
+                start_stage_id,
+                filling_min_rate_m3s: 0.0,
+            }),
+            ..chain_hydro(1, None, entry_stage_id)
+        }
+    }
+
+    fn stage_bounds(min_storage_hm3: f64, max_storage_hm3: f64) -> HydroStageBounds {
+        HydroStageBounds {
+            min_storage_hm3,
+            max_storage_hm3,
+            filling_min_rate_m3s: 0.0,
+            water_withdrawal_m3s: 0.0,
+        }
+    }
+
+    fn reachable(tight: f64, hard: f64, ceiling: f64) -> ReachableStorage {
+        ReachableStorage {
+            tight_floor_hm3: tight,
+            hard_floor_hm3: hard,
+            ceiling_hm3: ceiling,
         }
     }
 
@@ -602,5 +769,208 @@ mod tests {
             None,
             "C is a PreFilling sink: the chain never reaches a non-PreFilling target"
         );
+    }
+
+    /// Derived: each feeder's `T` is added to the target's own `T` in ascending index,
+    /// `(0.07 + 0.2) + 0.5`; both `PreFilling` plants end at `0.0`.
+    #[test]
+    fn effective_withdrawals_sum_a_prefilling_chain_into_its_target() {
+        let hydros = vec![
+            chain_hydro(1, Some(2), Some(FUTURE_ENTRY)),
+            chain_hydro(2, Some(3), Some(FUTURE_ENTRY)),
+            chain_hydro(3, None, None),
+        ];
+        let cascade = CascadeTopology::build(&hydros);
+        let positions = positions_of(&hydros);
+        let own = [0.2, 0.5, 0.07];
+
+        let effective = effective_withdrawals(&hydros, &cascade, &positions, STAGE_ID, |h| own[h]);
+
+        let bits: Vec<u64> = effective.iter().map(|t| t.to_bits()).collect();
+        assert_eq!(
+            bits,
+            [0.0_f64, 0.0, (0.07 + 0.2) + 0.5].map(f64::to_bits),
+            "feeders add to C in ascending index; A and B end at 0.0"
+        );
+    }
+
+    /// Derived: a `PreFilling` chain with no non-`PreFilling` target sums into nothing;
+    /// its plants read `0.0` and the unrelated plant D keeps its own `T`.
+    #[test]
+    fn effective_withdrawals_drop_a_sink_chain_and_touch_no_other_entry() {
+        let hydros = vec![
+            chain_hydro(1, Some(2), Some(FUTURE_ENTRY)),
+            chain_hydro(2, None, Some(FUTURE_ENTRY)),
+            chain_hydro(3, None, None),
+        ];
+        let cascade = CascadeTopology::build(&hydros);
+        let positions = positions_of(&hydros);
+        let own = [0.2, 0.5, 0.3];
+
+        let effective = effective_withdrawals(&hydros, &cascade, &positions, STAGE_ID, |h| own[h]);
+
+        let bits: Vec<u64> = effective.iter().map(|t| t.to_bits()).collect();
+        assert_eq!(bits, [0.0_f64, 0.0, 0.3].map(f64::to_bits));
+    }
+
+    /// Derived: with no feeder the entry is the plant's own `T` bit for bit, `-0.0` and
+    /// a negative return included; a sum started from `0.0` turns `-0.0` into `+0.0`.
+    #[test]
+    fn effective_withdrawals_keep_the_own_bits_of_a_plant_with_no_feeder() {
+        let hydros = vec![chain_hydro(1, Some(2), None), chain_hydro(2, None, None)];
+        let cascade = CascadeTopology::build(&hydros);
+        let positions = positions_of(&hydros);
+        let own = [-0.0, -3.5];
+
+        let effective = effective_withdrawals(&hydros, &cascade, &positions, STAGE_ID, |h| own[h]);
+
+        let bits: Vec<u64> = effective.iter().map(|t| t.to_bits()).collect();
+        assert_eq!(bits, own.map(f64::to_bits));
+    }
+
+    /// Derived: two `PreFilling` feeders at indices 1 and 2 into target 0 add in index
+    /// order, `(0.1 + 0.2) + 0.3`, which differs from `0.1 + (0.2 + 0.3)` in the last bit.
+    #[test]
+    fn effective_withdrawals_add_feeders_in_ascending_index() {
+        let hydros = vec![
+            chain_hydro(1, None, None),
+            chain_hydro(2, Some(1), Some(FUTURE_ENTRY)),
+            chain_hydro(3, Some(1), Some(FUTURE_ENTRY)),
+        ];
+        let cascade = CascadeTopology::build(&hydros);
+        let positions = positions_of(&hydros);
+        let own = [0.1, 0.2, 0.3];
+
+        let effective = effective_withdrawals(&hydros, &cascade, &positions, STAGE_ID, |h| own[h]);
+
+        let bits: Vec<u64> = effective.iter().map(|t| t.to_bits()).collect();
+        assert_eq!(bits, [(0.1 + 0.2) + 0.3, 0.0, 0.0].map(f64::to_bits));
+        assert_ne!(
+            effective[0].to_bits(),
+            (0.1 + (0.2 + 0.3_f64)).to_bits(),
+            "the oracle must tell ascending-index order from a feeders-first sum"
+        );
+    }
+
+    #[test]
+    fn has_soft_storage_floor_holds_only_for_an_operating_filling_plant() {
+        let plain = chain_hydro(1, None, None);
+        assert!(!has_soft_storage_floor(&plain, 0));
+
+        let entering_at_two = filling_hydro(0, Some(2));
+        assert!(!has_soft_storage_floor(&entering_at_two, 1));
+        assert!(has_soft_storage_floor(&entering_at_two, 2));
+
+        let starting_at_three = filling_hydro(3, Some(4));
+        assert!(!has_soft_storage_floor(&starting_at_three, 1));
+        assert!(!has_soft_storage_floor(&starting_at_three, 3));
+        assert!(has_soft_storage_floor(&starting_at_three, 4));
+    }
+
+    #[test]
+    fn evaporation_target_range_orders_the_two_endpoints() {
+        let rising = LinearizedEvaporation {
+            intercept_m3s: 1.0,
+            volume_slope_m3s_per_hm3: 0.5,
+            coefficient_sign: EvaporationCoefficientSign::Positive,
+        };
+        let falling = LinearizedEvaporation {
+            volume_slope_m3s_per_hm3: -0.5,
+            ..rising
+        };
+
+        assert_eq!(evaporation_target_range(&rising, 2.0, 10.0), (2.0, 6.0));
+        assert_eq!(evaporation_target_range(&falling, 2.0, 10.0), (-4.0, 0.0));
+    }
+
+    #[test]
+    fn reachable_storage_reads_the_seed_clamp_never_the_stage_box() {
+        let hydro = Hydro {
+            min_storage_hm3: 5.0,
+            max_storage_hm3: 200.0,
+            ..chain_hydro(1, None, None)
+        };
+        let bounds = stage_bounds(40.0, 200.0);
+
+        let slot = evaporation_slot_reachable_storage(
+            &hydro,
+            0,
+            (0, &bounds),
+            None,
+            (Boundary::Incoming, Boundary::Outgoing),
+        );
+
+        assert_eq!(slot, reachable(22.5, 22.5, 200.0));
+    }
+
+    #[test]
+    fn reachable_storage_reads_the_predecessor_floor_and_ceiling() {
+        let hydro = chain_hydro(1, None, None);
+        let previous = stage_bounds(10.0, 150.0);
+        let bounds = stage_bounds(30.0, 180.0);
+
+        let slot = evaporation_slot_reachable_storage(
+            &hydro,
+            0,
+            (1, &bounds),
+            Some((0, &previous)),
+            (Boundary::Incoming, Boundary::Outgoing),
+        );
+
+        assert_eq!(slot, reachable(20.0, 20.0, 165.0));
+    }
+
+    #[test]
+    fn reachable_storage_keeps_a_filling_plants_soft_floor_tight_and_its_hard_floor_zero() {
+        let hydro = filling_hydro(0, Some(1));
+        let bounds = stage_bounds(100.0, 200.0);
+
+        let first_half = evaporation_slot_reachable_storage(
+            &hydro,
+            0,
+            (1, &bounds),
+            Some((0, &bounds)),
+            (Boundary::Incoming, Boundary::Interior(1)),
+        );
+        let second_half = evaporation_slot_reachable_storage(
+            &hydro,
+            0,
+            (1, &bounds),
+            Some((0, &bounds)),
+            (Boundary::Interior(1), Boundary::Outgoing),
+        );
+        assert_eq!(first_half, reachable(0.0, 0.0, 200.0));
+        assert_eq!(second_half, reachable(50.0, 0.0, 200.0));
+
+        let previous = stage_bounds(80.0, 190.0);
+        let later = evaporation_slot_reachable_storage(
+            &hydro,
+            0,
+            (2, &bounds),
+            Some((1, &previous)),
+            (Boundary::Incoming, Boundary::Interior(1)),
+        );
+        assert_eq!(later, reachable(40.0, 0.0, 195.0));
+    }
+
+    #[test]
+    fn reachable_storage_reads_the_seed_clamp_after_a_prefilling_predecessor() {
+        let hydro = Hydro {
+            min_storage_hm3: 5.0,
+            max_storage_hm3: 200.0,
+            ..chain_hydro(1, None, Some(2))
+        };
+        let previous = stage_bounds(40.0, 300.0);
+        let bounds = stage_bounds(30.0, 180.0);
+
+        let slot = evaporation_slot_reachable_storage(
+            &hydro,
+            0,
+            (2, &bounds),
+            Some((1, &previous)),
+            (Boundary::Incoming, Boundary::Outgoing),
+        );
+
+        assert_eq!(slot, reachable(15.0, 15.0, 190.0));
     }
 }

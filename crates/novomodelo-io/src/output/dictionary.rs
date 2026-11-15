@@ -355,12 +355,12 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
     (
         "costs",
         "storage_violation_cost",
-        "Total storage violation penalty",
+        "Soft minimum-storage floor slack cost of filling plants, counted in the violation category",
     ),
     (
         "costs",
         "filling_target_cost",
-        "Total filling-target violation cost",
+        "Filling-target slack cost of filling plants, counted in the violation category",
     ),
     (
         "costs",
@@ -396,6 +396,11 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
         "costs",
         "withdrawal_violation_cost",
         "Cost of water withdrawal constraint violations",
+    ),
+    (
+        "costs",
+        "fpha_violation_cost",
+        "Cost of FPHA plane violations, counted in hydro_violation_cost",
     ),
     (
         "costs",
@@ -538,6 +543,11 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
         "Outflow above-maximum slack",
     ),
     ("hydros", "generation_slack_mw", "Generation minimum slack"),
+    (
+        "hydros",
+        "fpha_violation_mw",
+        "FPHA plane violation slack, summed over the plant's cells",
+    ),
     (
         "hydros",
         "storage_violation_below_hm3",
@@ -2103,6 +2113,7 @@ mod tests {
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -3015,8 +3026,8 @@ mod tests {
 
         let row_count = rdr.records().count();
         assert_eq!(
-            row_count, 253,
-            "variables.csv must have exactly 253 data rows (one per column across all schemas)"
+            row_count, 255,
+            "variables.csv must have exactly 255 data rows (one per column across all schemas)"
         );
     }
 
