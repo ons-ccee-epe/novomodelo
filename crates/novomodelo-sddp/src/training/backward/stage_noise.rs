@@ -17,6 +17,7 @@ use crate::{
 #[derive(Debug, Default)]
 pub(crate) struct StageNoiseTable {
     noise_terms: Vec<f64>,
+    closing_noise_terms: Vec<f64>,
     cut_noise: Vec<f64>,
     n_hydros: usize,
     stride: usize,
@@ -34,6 +35,7 @@ impl StageNoiseTable {
         noise_dim: usize,
     ) {
         reserve_to(&mut self.noise_terms, max_outcomes * n_hydros);
+        reserve_to(&mut self.closing_noise_terms, max_outcomes * n_hydros);
         reserve_to(&mut self.cut_noise, max_outcomes * max_rows);
         reserve_to(&mut self.external_noise, noise_dim);
     }
@@ -56,6 +58,7 @@ impl StageNoiseTable {
         let total = outcomes.total_outcomes();
         let Self {
             noise_terms,
+            closing_noise_terms,
             cut_noise,
             n_hydros: row_width,
             stride,
@@ -65,6 +68,8 @@ impl StageNoiseTable {
 
         noise_terms.clear();
         noise_terms.resize(total * n_hydros, 0.0);
+        closing_noise_terms.clear();
+        closing_noise_terms.resize(total * n_hydros, 0.0);
         let mut write_noise_term = |omega: usize, raw_noise: &[f64]| {
             if par.n_stages() > 0 {
                 evaluate_par_noise_term_batch(
@@ -104,7 +109,7 @@ impl StageNoiseTable {
         let stride = *stride;
         cut_noise.clear();
         cut_noise.resize(total * stride, 0.0);
-        if stride == 0 {
+        if stride == 0 || n_hydros == 0 {
             return Ok(());
         }
 
@@ -112,17 +117,19 @@ impl StageNoiseTable {
         let layouts = training_ctx.cut_state_layouts;
         cut_noise
             .par_chunks_mut(stride)
+            .zip(closing_noise_terms.par_chunks_mut(n_hydros))
             .enumerate()
-            .for_each(|(omega, row)| {
+            .for_each(|(omega, (row, lane_out))| {
                 let child = outcomes.child_of_outcome(omega);
                 let lag_point = layouts[child.pool_id].lag_point();
                 let noise_term = &noise_terms[omega * n_hydros..][..n_hydros];
+                let noise_lane = lag_point.noise_lane(noise_term, lane_out);
                 let slots = child.successor_active_slots;
                 cut_noise_terms_into(
                     child.successor_pool,
                     slots,
                     lag_point,
-                    noise_term,
+                    noise_lane,
                     &mut row[..slots.len()],
                 );
             });
@@ -141,7 +148,7 @@ impl StageNoiseTable {
     }
 
     #[cfg(test)]
-    pub(crate) fn buffer_identity(&self) -> [(usize, usize); 3] {
+    pub(crate) fn buffer_identity(&self) -> [(usize, usize); 4] {
         [
             (
                 self.noise_terms.as_ptr().addr(),
@@ -151,6 +158,10 @@ impl StageNoiseTable {
             (
                 self.external_noise.as_ptr().addr(),
                 self.external_noise.capacity(),
+            ),
+            (
+                self.closing_noise_terms.as_ptr().addr(),
+                self.closing_noise_terms.capacity(),
             ),
         ]
     }

@@ -231,6 +231,7 @@ fn kernel_cut(
         &ChainRuleInputs {
             slots: &slots,
             resident_pool,
+            resident_lag_point: resident.lag_point(),
             extracted,
             par: training_ctx.stochastic.par(),
             stage,

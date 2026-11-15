@@ -35,6 +35,7 @@ use crate::{
     setup::node_graph::{EnumeratedPlan, NodeGraph, NodeId, NodePos, StageIdx, TypedVec},
     solve::StageOpeningSolver,
     solver_stats::SolverStatsDelta,
+    training::stage_solve_prep::closes_lag_period,
     trajectory::TrajectoryRecord,
     workspace::{BasisStore, CapturedBasis, SolverWorkspace},
 };
@@ -60,6 +61,8 @@ struct NodeVisit {
     /// the value scattered into every visiting path's record `state` field.
     out_state: Vec<f64>,
     accum: AccumSnapshot,
+    /// The partial sum this visit's pin read; empty unless the node's pool closes a lag period.
+    partial_sum: Vec<f64>,
     /// Post-solve captured basis (frozen path only; `None` on the DCS path).
     basis: Option<CapturedBasis>,
     /// Populated only for an eligible External terminal leaf; see [`FusedTerminalSlice`].
@@ -131,6 +134,7 @@ impl EnumeratedForwardScratch {
                 node_id: NodeId(0),
                 out_state: vec![0.0; n_state],
                 accum: AccumSnapshot::default(),
+                partial_sum: Vec::new(),
                 basis: None,
                 fused: FusedTerminalSlice::with_capacity(n_state),
             })
@@ -148,6 +152,12 @@ impl EnumeratedForwardScratch {
     /// `records`/`exchange.state_at`.
     pub(crate) fn out_state(&self, node: NodePos) -> &[f64] {
         &self.arena[node].out_state
+    }
+
+    /// Node `node`'s lag accumulator after its own solve, which every child's pin reads as its
+    /// partial sum.
+    pub(crate) fn lag_accumulator(&self, node: NodePos) -> &[f64] {
+        self.arena[node].accum.lag_accumulator()
     }
 
     /// Node `node`'s captured terminal-leaf subgradient from the most recent
@@ -456,6 +466,8 @@ where
                 dst.out_state.clear();
                 dst.out_state.extend_from_slice(&src.out_state);
                 src.accum.copy_into(&mut dst.accum);
+                dst.partial_sum.clear();
+                dst.partial_sum.extend_from_slice(&src.partial_sum);
                 dst.fused.captured = src.fused.captured;
                 dst.fused.objective = src.fused.objective;
                 dst.fused.subgradient.clear();
@@ -512,6 +524,10 @@ where
                 n_state,
                 "record state must be n_state long"
             );
+            if !visit.partial_sum.is_empty() {
+                rec.partial_sum.clear();
+                rec.partial_sum.extend_from_slice(&visit.partial_sum);
+            }
         }
         scenario_costs.push(cost);
     }
@@ -658,6 +674,14 @@ fn enumerated_stage_worker<S: SolverInterface + Send>(
         // solve — no per-solve copy needed (mirrors the sampled driver).
         let raw_noise = noise.as_slice();
         let visit = &mut captures[count];
+        let lag_point =
+            params.training_ctx.cut_state_layouts[node_graph.nodes[node].pool_id].lag_point();
+        visit.partial_sum.clear();
+        if closes_lag_period(lag_point) {
+            visit
+                .partial_sum
+                .extend_from_slice(&ws.scratch.lag_accumulator[..lag_point.lag0().len()]);
+        }
         let stage_cost = solve_forward_node(
             ws,
             params,

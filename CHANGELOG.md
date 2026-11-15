@@ -46,6 +46,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `post_study_stages.json`, are deprecated. Such a deck keeps running, and
   `novomodelo validate` warns; run
   `python3 scripts/migrate/post_study_stages.py <deck-dir>` to migrate it.
+- **BREAKING:** studies whose `stages.json` splits an inflow-lag period over
+  stages, or steps lags from months to quarters, give different results when
+  cuts carry inflow-lag terms (exact only where the period's partial inflow is
+  the same on every path); retrain them. A month-to-quarter stage warns once.
 
 ### Fixed
 

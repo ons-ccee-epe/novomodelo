@@ -66,7 +66,7 @@ use crate::{
     setup::node_graph::{NodeId, NodeOpenings, NodePos, StageIdx},
     solver_stats::SolverStatsDelta,
     state_exchange::ExchangeBuffers,
-    training::stage_solve_prep::BracketSource,
+    training::stage_solve_prep::{BracketSource, PartialSumSource},
     trajectory::TrajectoryRecord,
 };
 
@@ -224,6 +224,11 @@ pub(crate) struct SuccessorSpec<'a> {
     pub(crate) cut_state: &'a CutStateProjection,
     /// Where each child's pin phase takes the frozen-row brackets from.
     pub(crate) slab: SlabLookup<'a>,
+    /// The iteration's records, which hold the partial sum of each trial's forward visit at the
+    /// successor stage; empty where every pin reads its own node's.
+    pub(crate) records: &'a [TrajectoryRecord],
+    /// Stages per trial: the stride of `records`.
+    pub(crate) n_stages: usize,
     /// The node's σ·η and cut-row W tables, or `None` where each opening computes its own.
     pub(crate) stage_noise: Option<&'a StageNoiseTable>,
 }
@@ -241,6 +246,11 @@ impl<'a> SuccessorSpec<'a> {
                     .read(self.iteration, child.successor_node_id, child.frozen_rows()),
             ),
         }
+    }
+
+    /// The partial sum trial `m`'s forward visit read at the successor stage, whatever the slab.
+    pub(crate) fn partial_sum_source(&self, m: usize) -> PartialSumSource<'a> {
+        PartialSumSource::Given(&self.records[m * self.n_stages + self.successor.0].partial_sum)
     }
 }
 

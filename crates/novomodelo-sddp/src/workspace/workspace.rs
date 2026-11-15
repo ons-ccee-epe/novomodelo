@@ -827,6 +827,8 @@ pub struct ScratchBuffers {
     pub(crate) par_mean_buf: Vec<f64>,
     /// σ·η per hydro for the current opening.
     pub(crate) par_noise_term_buf: Vec<f64>,
+    pub(crate) closing_mean_buf: Vec<f64>,
+    pub(crate) closing_noise_buf: Vec<f64>,
     /// Pool slot of each cut row of the loaded LP, in LP row order.
     pub(crate) cut_slots_buf: Vec<usize>,
     /// The bracket B of each cut row, in LP row order.
@@ -1037,6 +1039,8 @@ impl ScratchBuffers {
             realized_inflow_buf: Vec::with_capacity(hydro_count),
             par_mean_buf: vec![0.0; hydro_count],
             par_noise_term_buf: vec![0.0; hydro_count],
+            closing_mean_buf: vec![0.0; hydro_count],
+            closing_noise_buf: vec![0.0; hydro_count],
             cut_slots_buf: Vec::with_capacity(initial_pool_capacity),
             cut_bracket_buf: Vec::with_capacity(initial_pool_capacity),
             #[cfg(any(test, feature = "test-support"))]
@@ -1504,6 +1508,8 @@ impl ScratchBuffers {
             realized_inflow_buf: Vec::with_capacity(hydro_count),
             par_mean_buf: vec![0.0; hydro_count],
             par_noise_term_buf: vec![0.0; hydro_count],
+            closing_mean_buf: vec![0.0; hydro_count],
+            closing_noise_buf: vec![0.0; hydro_count],
             cut_slots_buf: Vec::new(),
             cut_bracket_buf: Vec::new(),
             slab_misses: 0,
@@ -1681,6 +1687,8 @@ mod tests {
         for (name, buf) in [
             ("par_mean_buf", &scratch.par_mean_buf),
             ("par_noise_term_buf", &scratch.par_noise_term_buf),
+            ("closing_mean_buf", &scratch.closing_mean_buf),
+            ("closing_noise_buf", &scratch.closing_noise_buf),
         ] {
             assert_eq!(buf.len(), 3, "{name} must hold one value per hydro");
             assert!(

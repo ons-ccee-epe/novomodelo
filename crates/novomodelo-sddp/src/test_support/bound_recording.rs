@@ -62,7 +62,7 @@ pub struct RecordedSolve {
 
 /// What one `solve` saw of the cut rows. Rows are LP row indices; a cut row is fresh once its RHS
 /// was written since the last change of pinned state or noise.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct CutRowPushRecord {
     /// First cut row of the loaded template.
     pub first_cut_row: usize,
@@ -78,6 +78,10 @@ pub struct CutRowPushRecord {
     pub stale_rows: usize,
     /// Lowest stale cut row.
     pub first_stale_row: Option<usize>,
+    /// RHS each cut row holds at the solve, frozen rows first: its last write, else the bound it was loaded or appended with.
+    pub cut_row_rhs: Vec<f64>,
+    /// Unscaled value each watched column (see [`CutRowPushRecorder::with_pinned_columns`]) is pinned at.
+    pub pinned: Vec<f64>,
 }
 
 /// How a recorder counts a cut row's own bound when the row is appended.
@@ -338,11 +342,15 @@ pub struct CutRowPushRecorder<S: SolverInterface> {
     log: CutRowPushLog,
     theta_col: usize,
     appended_bound: AppendedCutRowBound,
+    pinned_columns: Vec<usize>,
+    col_lower: Vec<f64>,
+    col_scale: Vec<f64>,
     base_rows: usize,
     appended_rows: usize,
     first_cut_row: usize,
     fresh: Vec<bool>,
     written: Vec<bool>,
+    rhs: Vec<f64>,
     credit_from: usize,
     structural_window: bool,
     added_in_window: usize,
@@ -362,15 +370,27 @@ impl<S: SolverInterface> CutRowPushRecorder<S> {
             log,
             theta_col,
             appended_bound,
+            pinned_columns: Vec::new(),
+            col_lower: Vec::new(),
+            col_scale: Vec::new(),
             base_rows: 0,
             appended_rows: 0,
             first_cut_row: 0,
             fresh: Vec::new(),
             written: Vec::new(),
+            rhs: Vec::new(),
             credit_from: 0,
             structural_window: false,
             added_in_window: 0,
         }
+    }
+
+    /// Records, per `solve`, the unscaled value `columns` are pinned at: the lower bound the last
+    /// `set_col_bounds` wrote, else the loaded one, times the column's scale.
+    #[must_use]
+    pub fn with_pinned_columns(mut self, columns: Vec<usize>) -> Self {
+        self.pinned_columns = columns;
+        self
     }
 
     fn open_window(&mut self, template: &StageTemplate) {
@@ -391,6 +411,9 @@ impl<S: SolverInterface> CutRowPushRecorder<S> {
         self.fresh.resize(cut_rows, false);
         self.written.clear();
         self.written.resize(cut_rows, false);
+        self.rhs.clear();
+        self.rhs
+            .extend_from_slice(&template.row_lower[self.first_cut_row..template.num_rows]);
         self.credit_from = cut_rows;
         self.structural_window = false;
         self.added_in_window = 0;
@@ -413,13 +436,17 @@ impl<S: SolverInterface> CutRowPushRecorder<S> {
         self.fresh.resize(self.fresh.len() + rows.num_rows, false);
         self.written
             .resize(self.written.len() + rows.num_rows, false);
+        self.rhs.extend_from_slice(&rows.row_lower);
         self.added_in_window += rows.num_rows;
         self.appended_rows += rows.num_rows;
     }
 
-    fn note_row_write(&mut self, row: usize) {
+    fn note_row_write(&mut self, row: usize, lower: f64) {
         match row.checked_sub(self.first_cut_row) {
-            Some(cut) => self.written[cut] = true,
+            Some(cut) => {
+                self.written[cut] = true;
+                self.rhs[cut] = lower;
+            }
             None => self.note_structural_write(),
         }
     }
@@ -442,6 +469,12 @@ impl<S: SolverInterface> CutRowPushRecorder<S> {
             structural_window,
             stale_rows: self.fresh.iter().filter(|&&fresh| !fresh).count(),
             first_stale_row: first_stale.map(|cut| self.first_cut_row + cut),
+            cut_row_rhs: self.rhs.clone(),
+            pinned: self
+                .pinned_columns
+                .iter()
+                .map(|&col| self.col_lower[col] * self.col_scale.get(col).copied().unwrap_or(1.0))
+                .collect(),
         };
         self.written.fill(false);
         self.credit_from = self.fresh.len();
@@ -470,6 +503,8 @@ impl<S: SolverInterface> SolverInterface for CutRowPushRecorder<S> {
     fn load_model(&mut self, template: &StageTemplate) {
         self.base_rows = template.num_rows;
         self.appended_rows = 0;
+        self.col_lower.clone_from(&template.col_lower);
+        self.col_scale.clone_from(&template.col_scale);
         self.open_window(template);
         self.inner.load_model(template);
     }
@@ -480,20 +515,23 @@ impl<S: SolverInterface> SolverInterface for CutRowPushRecorder<S> {
     }
 
     fn set_row_bounds(&mut self, indices: &[usize], lower: &[f64], upper: &[f64]) {
-        for &i in indices {
-            self.note_row_write(i);
+        for (&i, &lower) in indices.iter().zip(lower) {
+            self.note_row_write(i, lower);
         }
         self.inner.set_row_bounds(indices, lower, upper);
     }
 
     fn set_row_lower_bounds_range(&mut self, first_row: usize, lower: &[f64]) {
-        for row in first_row..first_row + lower.len() {
-            self.note_row_write(row);
+        for (row, &lower) in (first_row..).zip(lower) {
+            self.note_row_write(row, lower);
         }
         self.inner.set_row_lower_bounds_range(first_row, lower);
     }
 
     fn set_col_bounds(&mut self, indices: &[usize], lower: &[f64], upper: &[f64]) {
+        for (&col, &lower) in indices.iter().zip(lower) {
+            self.col_lower[col] = lower;
+        }
         self.note_structural_write();
         self.inner.set_col_bounds(indices, lower, upper);
     }
@@ -777,6 +815,8 @@ mod tests {
                 structural_window: false,
                 stale_rows: 0,
                 first_stale_row: None,
+                cut_row_rhs: vec![2.0, 3.0, 4.0],
+                pinned: vec![],
             }
         );
         assert_eq!(
@@ -789,6 +829,8 @@ mod tests {
                 structural_window: false,
                 stale_rows: 1,
                 first_stale_row: Some(4),
+                cut_row_rhs: vec![2.0, 3.0, 4.0, 0.0],
+                pinned: vec![],
             }
         );
     }
@@ -866,8 +908,50 @@ mod tests {
                 structural_window: false,
                 stale_rows: 2,
                 first_stale_row: Some(1),
+                cut_row_rhs: vec![2.0, 3.0],
+                pinned: vec![],
             }
         );
+    }
+
+    #[test]
+    fn a_record_holds_the_rhs_each_cut_row_last_took() {
+        let log = CutRowPushLog::new();
+        let mut rec = logging_recorder(&log);
+        rec.load_model(&theta_template());
+        rec.solve(None).expect("first LP is feasible");
+
+        rec.add_rows(&theta_row());
+        rec.set_row_lower_bounds_range(2, &[7.0]);
+        rec.set_row_bounds(&[3], &[9.0], &[f64::INFINITY]);
+        rec.solve(None).expect("second LP is feasible");
+
+        let [loaded, written] = log.records().try_into().expect("two solves logged");
+        assert_eq!(loaded.cut_row_rhs, [2.0, 3.0]);
+        assert_eq!(written.cut_row_rhs, [2.0, 7.0, 9.0]);
+    }
+
+    #[test]
+    fn a_record_holds_the_unscaled_value_pinned_on_each_watched_column() {
+        let log = CutRowPushLog::new();
+        let mut rec = logging_recorder(&log).with_pinned_columns(vec![0, 1]);
+        let template = StageTemplate {
+            col_scale: vec![4.0, 1.0],
+            ..theta_template()
+        };
+        rec.load_model(&template);
+        rec.solve(None).expect("first LP is feasible");
+
+        rec.set_col_bounds(&[0], &[2.5], &[2.5]);
+        rec.solve(None).expect("second LP is feasible");
+
+        rec.load_model(&template);
+        rec.solve(None).expect("third LP is feasible");
+
+        let [loaded, pinned, reloaded] = log.records().try_into().expect("three solves logged");
+        assert_eq!(loaded.pinned, [0.0, 0.0]);
+        assert_eq!(pinned.pinned, [10.0, 0.0]);
+        assert_eq!(reloaded.pinned, [0.0, 0.0]);
     }
 
     #[test]

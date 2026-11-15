@@ -28,7 +28,9 @@ use crate::{
     risk_measure::{BackwardOutcome, RiskMeasure},
     solve::{StageOpeningSolver, partition},
     stage_solve::{StageInputs, run_stage_solve},
-    training::stage_solve_prep::{BracketSource, LoadedCutRows, NoiseTermSource, StageSolvePrep},
+    training::stage_solve_prep::{
+        BracketSource, LoadedCutRows, NoiseTermSource, PartialSumSource, StageSolvePrep,
+    },
     workspace::SolverWorkspace,
 };
 
@@ -92,6 +94,7 @@ pub(crate) fn solve_replicated_outcome_slice<S: SolverInterface + Send>(
     succ: &SuccessorSpec<'_>,
     child: &SuccessorChild<'_>,
     x_hat: &[f64],
+    partial_sum: &[f64],
     local_start: usize,
     local_end: usize,
     scenario_base: usize,
@@ -111,6 +114,7 @@ pub(crate) fn solve_replicated_outcome_slice<S: SolverInterface + Send>(
         x_hat,
         s,
         BracketSource::Computed,
+        PartialSumSource::Given(partial_sum),
     );
     let rows = child_cut_rows(training_ctx, child);
 
@@ -242,6 +246,7 @@ fn solve_replicated_opening<S: SolverInterface + Send>(
         &ChainRuleStageInputs {
             slots: child.chain_rule_slots,
             resident_pool: child.successor_pool,
+            resident_lag_point: rows.projection.lag_point(),
             par: training_ctx.stochastic.par(),
             stage: s.0,
         },
@@ -301,6 +306,7 @@ pub(crate) fn run_backward_node_replicated<S: SolverInterface + Send, C: Communi
     succ: &SuccessorSpec<'_>,
     outcomes: &SuccessorOutcomes<'_>,
     x_hat: &[f64],
+    partial_sum: &[f64],
     pool_id: usize,
     enumerated_state: &EnumeratedForwardScratch,
 ) -> Result<f64, SddpError> {
@@ -364,6 +370,7 @@ pub(crate) fn run_backward_node_replicated<S: SolverInterface + Send, C: Communi
             succ,
             &child,
             x_hat,
+            partial_sum,
             lo - child.outcome_range.start,
             hi - child.outcome_range.start,
             pool_id,

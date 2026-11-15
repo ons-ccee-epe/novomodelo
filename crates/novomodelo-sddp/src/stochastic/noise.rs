@@ -108,6 +108,10 @@ fn copy_vec_from_slice(dst: &mut Vec<f64>, src: &[f64]) {
 }
 
 impl AccumSnapshot {
+    pub(crate) fn lag_accumulator(&self) -> &[f64] {
+        &self.lag_accumulator
+    }
+
     pub(crate) fn capture_from(&mut self, ws_scratch: &ScratchBuffers) {
         copy_vec_from_slice(&mut self.lag_accumulator, &ws_scratch.lag_accumulator);
         copy_vec_from_slice(&mut self.lag_weight_accum, &ws_scratch.lag_weight_accum);

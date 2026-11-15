@@ -17,7 +17,10 @@ use crate::{
         backward::{
             ChainRuleStageInputs, DualExtractionSpec, OpeningDualBuffers, extract_opening_cut,
         },
-        stage_solve_prep::{SingleSolvePrepParams, StageSolvePrep, StateSource},
+        stage_solve_prep::{
+            SingleSolvePrepParams, StageSolvePrep, StateSource,
+            debug_assert_live_weight_is_replayed,
+        },
     },
     workspace::{CapturedBasis, SolverWorkspace},
 };
@@ -192,6 +195,7 @@ pub(super) fn solve_forward_node_core<S: SolverInterface + Send>(
                 &ChainRuleStageInputs {
                     slots: &ChainRuleSlots::compose(training_ctx.state, resident, parent),
                     resident_pool: pool,
+                    resident_lag_point: resident.lag_point(),
                     par: training_ctx.stochastic.par(),
                     stage: t.0,
                 },
@@ -236,6 +240,7 @@ fn prepare_stage_solve<S: SolverInterface + Send>(
         opening_solver,
         ..
     } = *solve;
+    debug_assert_live_weight_is_replayed(&ws.scratch, resident.lag_point(), t);
     StageSolvePrep::prepare_single(
         &mut ws.solver,
         &mut ws.patch_buf,
@@ -244,7 +249,7 @@ fn prepare_stage_solve<S: SolverInterface + Send>(
         training_ctx,
         t,
         &SingleSolvePrepParams {
-            state_source: StateSource(&ws.current_state),
+            state_source: StateSource::live(&ws.current_state),
             raw_noise,
             pool,
             projection: resident,

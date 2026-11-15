@@ -217,7 +217,16 @@ pub(crate) fn process_stage_backward_by_node<S: SolverInterface + Send>(
                 ws.solver.reset_solver_state();
                 load_backward_lp(ws, &child);
                 let source = succ.bracket_source(m, &child);
-                pin_child_lp(ws, ctx, training_ctx, &child, x_hat, s, source);
+                pin_child_lp(
+                    ws,
+                    ctx,
+                    training_ctx,
+                    &child,
+                    x_hat,
+                    s,
+                    source,
+                    succ.partial_sum_source(m),
+                );
 
                 // take/fill/restore reuses `external_noise_buf`: no hot-path allocation.
                 let mut buf = std::mem::take(&mut ws.backward_accum.external_noise_buf);

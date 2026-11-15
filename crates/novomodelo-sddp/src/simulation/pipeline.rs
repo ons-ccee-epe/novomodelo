@@ -47,7 +47,9 @@ use crate::{
     },
     solve::{LazyInputs, StageOpeningSolver},
     solver_stats::SolverStatsDelta,
-    training::stage_solve_prep::{SingleSolvePrepParams, StageSolvePrep, StateSource},
+    training::stage_solve_prep::{
+        SingleSolvePrepParams, StageSolvePrep, StateSource, debug_assert_live_weight_is_replayed,
+    },
     workspace::{CapturedBasis, ScratchBuffers, SolverWorkspace},
 };
 
@@ -379,6 +381,7 @@ fn prepare_simulation_stage<S: SolverInterface>(
     cut_set: CutSet,
     opening_solver: &StageOpeningSolver,
 ) {
+    debug_assert_live_weight_is_replayed(&ws.scratch, resident.lag_point(), t);
     StageSolvePrep::prepare_single(
         &mut ws.solver,
         &mut ws.patch_buf,
@@ -387,7 +390,7 @@ fn prepare_simulation_stage<S: SolverInterface>(
         training_ctx,
         t,
         &SingleSolvePrepParams {
-            state_source: StateSource(&ws.current_state),
+            state_source: StateSource::live(&ws.current_state),
             raw_noise,
             pool,
             projection: resident,

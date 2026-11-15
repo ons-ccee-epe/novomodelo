@@ -29,7 +29,8 @@ use crate::{
     },
     solve::StageOpeningSolver,
     training::stage_solve_prep::{
-        BracketSource, LoadedCutRows, NoiseTermSource, StageSolvePrep, StateSource,
+        BracketSource, LoadedCutRows, NoiseTermSource, PartialSumSource, StageSolvePrep,
+        StateSource,
     },
     workspace::ScratchBuffers,
 };
@@ -237,7 +238,10 @@ fn lb_evaluate_stage_0<S: SolverInterface>(
         ctx,
         training_ctx,
         StageIdx(0),
-        StateSource(initial_state),
+        StateSource {
+            state: initial_state,
+            partial_sum: PartialSumSource::Given(training_ctx.lag_accum_seed),
+        },
         &rows,
         BracketSource::Computed,
     );

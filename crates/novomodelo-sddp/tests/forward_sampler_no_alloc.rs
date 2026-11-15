@@ -448,6 +448,7 @@ mod folded_solve {
                     inputs: ChainRuleInputs {
                         slots: &chain_slots,
                         resident_pool: pool,
+                        resident_lag_point: layouts[RESIDENT_POOL].lag_point(),
                         extracted: &layouts[EXTRACTED_POOL],
                         par: training_ctx.stochastic.par(),
                         stage: STAGE,

@@ -156,7 +156,16 @@ pub(crate) fn process_by_scenario_backward<S: SolverInterface + Send>(
         ws.solver.reset_solver_state();
         prepare_child_lp(opening_solver, ws, ctx, succ, &child);
         let source = succ.bracket_source(m, &child);
-        pin_child_lp(ws, ctx, training_ctx, &child, x_hat, s, source);
+        pin_child_lp(
+            ws,
+            ctx,
+            training_ctx,
+            &child,
+            x_hat,
+            s,
+            source,
+            succ.partial_sum_source(m),
+        );
 
         // Resolved per child, never once from child 0: each child's External
         // column is its own.

@@ -18,7 +18,7 @@ use crate::{
         rhs::{cut_brackets_into, cut_rhs_from_noise_terms_into, cut_rhs_into},
     },
     lp::builder::{PatchBuffer, StateBox},
-    lp::indexer::{BlockGrid, CutStateProjection},
+    lp::indexer::{BlockGrid, CutLagPoint, CutStateProjection, LagPointMode},
     noise::{
         apply_inflow_slack_col_bounds, apply_ncs_col_bounds, realize_inflow, transform_load_noise,
         transform_ncs_noise,
@@ -28,11 +28,71 @@ use crate::{
     workspace::ScratchBuffers,
 };
 
-/// The state slice this stage solve pins as incoming state; the caller resolves
-/// it per site (forward `current_state`, backward `x_hat`, lower-bound
-/// `initial_state`, simulation `current_state`).
+/// The state slice this stage solve pins as incoming state, and where it reads the lag
+/// accumulator's partial sum s; the caller resolves both per site (forward `current_state`,
+/// backward `x_hat`, lower-bound `initial_state`, simulation `current_state`).
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct StateSource<'a>(pub &'a [f64]);
+pub(crate) struct StateSource<'a> {
+    pub(crate) state: &'a [f64],
+    pub(crate) partial_sum: PartialSumSource<'a>,
+}
+
+/// Where a pin takes s, the inflow the open lag period has already averaged before this solve.
+/// It stays on its rank and never reaches `state`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum PartialSumSource<'a> {
+    /// The `ScratchBuffers::lag_accumulator`, restored for this trial or node.
+    Live,
+    /// The s of the forward visit this pin belongs to.
+    Given(&'a [f64]),
+}
+
+impl<'a> StateSource<'a> {
+    pub(crate) fn live(state: &'a [f64]) -> Self {
+        Self {
+            state,
+            partial_sum: PartialSumSource::Live,
+        }
+    }
+
+    /// `live` is the caller's `ScratchBuffers::lag_accumulator`, a field of the scratch the pin
+    /// also writes: taking the one field keeps both borrows disjoint.
+    pub(crate) fn partial_sum<'b>(&'b self, live: &'b [f64]) -> &'b [f64] {
+        match self.partial_sum {
+            PartialSumSource::Live => live,
+            PartialSumSource::Given(given) => given,
+        }
+    }
+}
+
+/// Whether the pool's cut rows read s: its stage closes a lag period that began earlier.
+pub(crate) fn closes_lag_period(lag_point: &CutLagPoint) -> bool {
+    lag_point.mode() == LagPointMode::Closing && !lag_point.lag0().is_empty()
+}
+
+/// Debug check of a `Live` pin site: on entering a stage that closes a lag period, the
+/// scratch's weight accumulator holds the weight the setup replay holds for that stage, bit for
+/// bit, which holds only if the trial's own lag chain was restored before the solve.
+pub(crate) fn debug_assert_live_weight_is_replayed(
+    scratch: &ScratchBuffers,
+    lag_point: &CutLagPoint,
+    stage: StageIdx,
+) {
+    debug_assert!(
+        !closes_lag_period(lag_point)
+            || scratch
+                .lag_weight_accum
+                .get(..lag_point.lag0().len())
+                .is_some_and(|live| {
+                    live.iter()
+                        .map(|w| w.to_bits())
+                        .eq(lag_point.incoming_weight().iter().map(|w| w.to_bits()))
+                }),
+        "stage {}: the live weight accumulator differs from the weight the setup replay holds on \
+         entering the closing stage",
+        stage.0
+    );
+}
 
 /// Inputs of the single-solve prep: the pinned state, this solve's raw
 /// noise, the resident pool and its projection, and the opening solver.
@@ -133,9 +193,16 @@ impl StageSolvePrep {
     ) where
         S: SolverInterface,
     {
-        Self::pin(solver, patch_buf, ctx, training_ctx, stage, trial_state.0);
+        Self::pin(
+            solver,
+            patch_buf,
+            ctx,
+            training_ctx,
+            stage,
+            trial_state.state,
+        );
 
-        let incoming_lags = &trial_state.0[training_ctx.state.state_dim_lag_range()];
+        let incoming_lags = &trial_state.state[training_ctx.state.state_dim_lag_range()];
         let par_lp = training_ctx.stochastic.par();
         if par_lp.n_stages() > 0 {
             evaluate_par_conditional_mean_batch(
@@ -166,12 +233,28 @@ impl StageSolvePrep {
         );
         scratch.cut_bracket_buf.resize(cut_rows.slots.len(), 0.0);
         scratch.cut_bracket_buf[..n].copy_from_slice(prefix);
+        let lag_point = cut_rows.projection.lag_point();
+        let partial_sum = trial_state.partial_sum(&scratch.lag_accumulator);
+        if let PartialSumSource::Given(given) = trial_state.partial_sum {
+            debug_assert!(
+                !closes_lag_period(lag_point) || given.len() >= lag_point.lag0().len(),
+                "stage {}: the partial sum holds {} values for {} hydros",
+                stage.0,
+                given.len(),
+                lag_point.lag0().len()
+            );
+        }
+        let conditional_mean = lag_point.mean_lane(
+            partial_sum,
+            &scratch.par_mean_buf,
+            &mut scratch.closing_mean_buf,
+        );
         cut_brackets_into(
             cut_rows.pool,
             &cut_rows.slots[n..],
-            cut_rows.projection.lag_point(),
+            lag_point,
             incoming_lags,
-            &scratch.par_mean_buf,
+            conditional_mean,
             &mut scratch.cut_bracket_buf[n..],
         );
     }
@@ -225,14 +308,19 @@ impl StageSolvePrep {
         );
         scratch.cut_rhs_buf.resize(cut_rows.slots.len(), 0.0);
         match noise {
-            NoiseTermSource::OnTheFly => cut_rhs_into(
-                cut_rows.pool,
-                cut_rows.slots,
-                cut_rows.projection.lag_point(),
-                &scratch.par_noise_term_buf,
-                &scratch.cut_bracket_buf,
-                &mut scratch.cut_rhs_buf,
-            ),
+            NoiseTermSource::OnTheFly => {
+                let lag_point = cut_rows.projection.lag_point();
+                let noise_term = lag_point
+                    .noise_lane(&scratch.par_noise_term_buf, &mut scratch.closing_noise_buf);
+                cut_rhs_into(
+                    cut_rows.pool,
+                    cut_rows.slots,
+                    lag_point,
+                    noise_term,
+                    &scratch.cut_bracket_buf,
+                    &mut scratch.cut_rhs_buf,
+                );
+            }
             NoiseTermSource::Stage { cut_noise, .. } => {
                 debug_assert_eq!(
                     cut_noise.len(),

@@ -78,7 +78,7 @@ use crate::lp::builder::{
 };
 use crate::lp::indexer::{
     AnticipatedPlants, BlockRowFamily, ChainRuleSlots, CutStateProjection, EntityPositions,
-    HydroCellIndex, HydroSys, REGION_ORDER, StateDim, StateSpace, StudyDimensions,
+    HydroCellIndex, HydroSys, LagPointMode, REGION_ORDER, StateDim, StateSpace, StudyDimensions,
 };
 use crate::noise::{apply_inflow_slack_col_bounds, realize_inflow};
 use crate::policy::policy_load::{
@@ -103,7 +103,9 @@ use crate::training::backward::{
     extract_opening_cut, fill_external_opening_noise, resolve_block_size,
 };
 use crate::training::session::TrainingSession;
-use crate::training::stage_solve_prep::{SingleSolvePrepParams, StageSolvePrep, StateSource};
+use crate::training::stage_solve_prep::{
+    PartialSumSource, SingleSolvePrepParams, StageSolvePrep, StateSource,
+};
 use crate::trajectory::TrajectoryRecord;
 use crate::workspace::{ScratchBuffers, SolverWorkspace, WorkspaceSizing};
 use novomodelo_core::scenario::{ExternalLoadRow, ExternalScenarioRow};
@@ -1197,6 +1199,21 @@ impl TrainingContextFixture {
         self
     }
 
+    /// Makes every pool close a lag period, with neutral per-hydro coefficients.
+    #[must_use]
+    pub fn closing_lag_points(mut self) -> Self {
+        let n = self.state.hydro_count;
+        for layout in &mut self.cut_state_layouts {
+            layout.lag_point_mut().install_mode(
+                LagPointMode::Closing,
+                &vec![1.0; n],
+                &vec![1.0; n],
+                &vec![0.0; n],
+            );
+        }
+        self
+    }
+
     /// Sets the lent context's horizon to `HorizonMode::Finite { num_stages }`.
     #[must_use]
     pub fn num_stages(mut self, num_stages: usize) -> Self {
@@ -1771,6 +1788,52 @@ fn prep_for_probe<S: SolverInterface + Send>(
     raw_noise: &[f64],
     cuts: &ProbeCuts<'_>,
 ) {
+    prep_for_probe_from(
+        ws,
+        ctx,
+        training_ctx,
+        stage,
+        StateSource::live(pinned_state),
+        raw_noise,
+        cuts,
+    );
+}
+
+/// Like [`opening_cut_for_probe`]'s prep, with the pin reading `partial_sum` as the lag
+/// accumulator the visit held before its solve instead of the workspace's live one.
+pub fn prep_for_probe_with_partial_sum<S: SolverInterface + Send>(
+    ws: &mut SolverWorkspace<S>,
+    ctx: &StageContext<'_>,
+    training_ctx: &TrainingContext<'_>,
+    stage: StageIdx,
+    pinned_state: &[f64],
+    partial_sum: &[f64],
+    raw_noise: &[f64],
+    cuts: &ProbeCuts<'_>,
+) {
+    prep_for_probe_from(
+        ws,
+        ctx,
+        training_ctx,
+        stage,
+        StateSource {
+            state: pinned_state,
+            partial_sum: PartialSumSource::Given(partial_sum),
+        },
+        raw_noise,
+        cuts,
+    );
+}
+
+fn prep_for_probe_from<S: SolverInterface + Send>(
+    ws: &mut SolverWorkspace<S>,
+    ctx: &StageContext<'_>,
+    training_ctx: &TrainingContext<'_>,
+    stage: StageIdx,
+    state_source: StateSource<'_>,
+    raw_noise: &[f64],
+    cuts: &ProbeCuts<'_>,
+) {
     StageSolvePrep::prepare_single(
         &mut ws.solver,
         &mut ws.patch_buf,
@@ -1779,7 +1842,7 @@ fn prep_for_probe<S: SolverInterface + Send>(
         training_ctx,
         stage,
         &SingleSolvePrepParams {
-            state_source: StateSource(pinned_state),
+            state_source,
             raw_noise,
             pool: cuts.pool,
             projection: &training_ctx.cut_state_layouts[cuts.pool_id],
@@ -2009,6 +2072,7 @@ pub fn opening_cut_for_probe<S: SolverInterface + Send>(
         &ChainRuleStageInputs {
             slots: &ChainRuleSlots::compose(training_ctx.state, resident, extracted),
             resident_pool: cuts.pool,
+            resident_lag_point: resident.lag_point(),
             par: training_ctx.stochastic.par(),
             stage: stage.0,
         },
@@ -3522,7 +3586,7 @@ fn capture_patched_node_with_raw_noise(
         &training_ctx,
         stage,
         &SingleSolvePrepParams {
-            state_source: StateSource(incoming_state),
+            state_source: StateSource::live(incoming_state),
             raw_noise,
             pool: &setup.fcf.pools[pool_id],
             projection: &training_ctx.cut_state_layouts[pool_id],

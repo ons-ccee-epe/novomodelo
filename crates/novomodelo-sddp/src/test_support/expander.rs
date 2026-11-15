@@ -1,16 +1,15 @@
 //! Rebuilds the LP that carries the incoming-lag columns, z columns and z rows
 //! from the compact template, the unscaled inflow coupling and
-//! `PrecomputedPar`, addressing the lag columns through its own alias, and
-//! renders a pool's cuts as rows of it. It is the oracle for the compact LP.
+//! `PrecomputedPar`, addressing the lag columns through its own alias. It is
+//! the oracle for the compact LP.
 
 use std::ops::Range;
 
 use novomodelo_core::System;
-use novomodelo_solver::{RowBatch, StageTemplate};
+use novomodelo_solver::StageTemplate;
 use novomodelo_stochastic::par::precompute::PrecomputedPar;
 
-use crate::cut::CutPool;
-use crate::indexer::{CutSlot, CutStateProjection, HydroSys, StateDim, StateSpace};
+use crate::indexer::{HydroSys, StateDim, StateSpace};
 use crate::lp::builder::{InflowCoupling, StageTemplates, assemble_csc};
 use crate::setup::StudySetup;
 use crate::setup::template_postprocess::postprocess_templates;
@@ -103,7 +102,8 @@ impl ExpandedLayout {
         n + l * n + h.get()
     }
 
-    /// Hydro `h`'s outgoing lag `l`: the z column at lag 0, else the incoming lag `l - 1`.
+    /// Hydro `h`'s outgoing lag `l` of a stage whose lags shift: the z column at lag 0, else the
+    /// incoming lag `l - 1`.
     #[must_use]
     pub fn outgoing_lag_col(&self, h: HydroSys, l: usize) -> usize {
         if l == 0 {
@@ -257,56 +257,6 @@ pub fn expand_stage_templates(system: &System, compact: &StudySetup) -> Expanded
         unscaled: local.pre_scaling_templates().to_vec(),
         scaled: local.templates,
     }
-}
-
-#[expect(
-    clippy::expect_used,
-    reason = "the solver C API takes i32 offsets and column indices, and a stage LP is far below i32::MAX"
-)]
-fn csr_index(n: usize) -> i32 {
-    i32::try_from(n).expect("CSR index exceeds i32::MAX")
-}
-
-/// Writes the cuts of `slots` of `pool` into `batch` as rows of the expanded LP, in list order,
-/// scaled by the pool's stage's expanded `col_scale`.
-///
-/// # Panics
-///
-/// Panics if a cut's coefficient count differs from `cut_state.n_slots()`, or
-/// a column index or the entry count exceeds `i32::MAX`.
-pub fn expanded_cut_rows_into(
-    batch: &mut RowBatch,
-    pool: &CutPool,
-    slots: &[usize],
-    cut_state: &CutStateProjection,
-    layout: &ExpandedLayout,
-    col_scale: &[f64],
-) {
-    batch.clear();
-    let state = layout.state();
-    for &slot in slots {
-        let (intercept, coefficients) = (pool.intercept(slot), pool.coefficient_row(slot));
-        assert_eq!(
-            coefficients.len(),
-            cut_state.n_slots(),
-            "cut slot {slot}: coefficient count"
-        );
-        batch.row_starts.push(csr_index(batch.values.len()));
-        for (j, &coefficient) in coefficients.iter().enumerate() {
-            let d = cut_state.global_state_index(CutSlot::new(j));
-            if state.nonzero_state_indices.binary_search(&d).is_ok() {
-                let c = layout.outgoing_state_col(d);
-                batch.col_indices.push(csr_index(c));
-                batch.values.push(-coefficient * col_scale[c]);
-            }
-        }
-        batch.col_indices.push(csr_index(state.theta));
-        batch.values.push(col_scale[state.theta]);
-        batch.row_lower.push(intercept);
-        batch.row_upper.push(f64::INFINITY);
-        batch.num_rows += 1;
-    }
-    batch.row_starts.push(csr_index(batch.values.len()));
 }
 
 /// Per-solve bounds that exist only in the expanded LP, each written to both bounds of its row or column.

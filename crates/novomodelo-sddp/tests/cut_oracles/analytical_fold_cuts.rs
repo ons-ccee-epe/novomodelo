@@ -6,8 +6,9 @@
 //! worth `λ(ρ) = −(c·ρ − c_q)/(M·K)` in cost-scaled units, with `c_q` the turbined cost, and the
 //! realized inflow enters its water balance at `κ = hours·M` hm³ per m³/s.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
 
 use chrono::NaiveDate;
 use novomodelo_core::entities::hydro::{HydroGenerationModel, HydroPenalties};
@@ -22,11 +23,11 @@ use novomodelo_core::{
     HydroStageBounds, HydroStorage, InitialConditions, LineBlockBounds, LineStagePenalties,
     LinearTerm, NcsStagePenalties, PenaltiesCountsSpec, PenaltiesDefaults, PenaltyBasis,
     PumpingBlockBounds, ResolvedBounds, ResolvedGenericConstraintBounds, ResolvedPenalties,
-    SlackConfig, System, SystemBuilder, ThermalBlockBounds, VariableRef,
+    SlackConfig, System, SystemBuilder, ThermalBlockBounds, TrainingEvent, VariableRef,
 };
 use novomodelo_io::Config;
 use novomodelo_io::config::{
-    EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
+    BackwardScheduler, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
     InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, ParallelismConfig, PolicyConfig,
     RowSelectionConfig, SimulationConfig as IoSimulationConfig, StoppingMode, StoppingRuleConfig,
     TrainingConfig, TrainingSelection, TrainingSolverConfig, UpperBoundEvaluationConfig,
@@ -35,25 +36,43 @@ use novomodelo_sddp::hydro_models::{
     EvaporationModel, EvaporationModelSet, LinearizedEvaporation, PrepareHydroModelsResult,
     ProductionModelSet, ResolvedProductionModel,
 };
-use novomodelo_sddp::indexer::{CutSlot, CutStateProjection, HydroSys, StateDim};
+use novomodelo_sddp::indexer::{CutSlot, CutStateProjection, HydroSys, LagPointMode, StateDim};
 use novomodelo_sddp::setup::{NodePos, StageIdx};
+use novomodelo_sddp::test_support::bound_recording::{
+    AppendedCutRowBound, CutRowPushLog, CutRowPushRecord, CutRowPushRecorder,
+};
+use novomodelo_sddp::test_support::decks::committed_decks;
 use novomodelo_sddp::test_support::template_structure::state_lag_dims;
 use novomodelo_sddp::test_support::{
-    ProbeCut, ProbeCuts, ProbeOpening, empty_row_batch, inflow_slack_bounds_for_probe,
-    opening_cut_for_probe, oracle_initial_state,
+    ProbeCut, ProbeCuts, ProbeOpening, empty_row_batch, fixture_priced_date,
+    inflow_slack_bounds_for_probe, opening_cut_for_probe, oracle_initial_state,
+    write_synthetic_boundary, ymd,
 };
-use novomodelo_sddp::{DEFAULT_COST_SCALE_FACTOR, StudySetup, build_cut_row_batch_into};
+use novomodelo_sddp::{
+    BoundaryLoadRequest, DEFAULT_COST_SCALE_FACTOR, SolverProfiles, StudySetup,
+    build_cut_row_batch_into, inject_boundary_cuts, load_boundary_cuts,
+};
 use novomodelo_solver::{ActiveSolver, SolverInterface};
 
 use crate::common::builders::{
     BusSpec, HydroSpec, StageSpec, ThermalSpec, make_bus, make_hydro, make_stage, make_thermal,
 };
+use crate::common::expanded_solve::{OracleLagPoint, oracle_lag_point};
 use crate::common::in_code_studies::{
-    CHRONOLOGICAL_NOISE_BLOCK_HOURS, CHRONOLOGICAL_NOISE_RELEASE_COST,
-    chronological_noise_hydro_models, chronological_noise_study, negative_draw_water_value_spec,
+    CHRONOLOGICAL_NOISE_BLOCK_HOURS, CHRONOLOGICAL_NOISE_RELEASE_COST, SAME_PATH_LAG_SEED_M3S,
+    WEEKS_THEN_MONTH_TERMINAL_OPENINGS, chronological_noise_hydro_models,
+    chronological_noise_study, negative_draw_water_value_spec, same_path_partial_sum_study,
+    weeks_then_month_study,
 };
-use crate::common::oracle_tolerance::{UnscaledTolerance, assert_first_try, rounding_factor};
-use crate::common::{StubComm, build_setup_in_code_with_models, fresh_system_and_setup_with};
+use crate::common::oracle_tolerance::{
+    UnscaledTolerance, assert_first_try, rounding_factor, value_tolerance,
+};
+use crate::common::stored_cut_oracles::{
+    PartialSums, apply_oracle_config, pushed_cut_rhs_at_visit, replay_partial_sums,
+};
+use crate::common::{
+    StubComm, build_setup_in_code_with_models, fresh_system_and_setup_with, lift_to_global_state,
+};
 
 const M3S_TO_HM3: f64 = 3_600.0 / 1_000_000.0;
 const BUS_ID: EntityId = EntityId(10);
@@ -117,6 +136,13 @@ const WEEKLY_PAR_DECK: &str = "examples/deterministic/d29-weekly-par-noise-shari
 const WEEKLY_PAR_NON_FINALIZING_STAGE: usize = 1;
 /// The deck's last week, which closes its month.
 const WEEKLY_PAR_FINALIZING_STAGE: usize = 3;
+
+const CLOSING_MONTH_FIXTURE: &str = "tests/fixtures/weekly_then_closing_month";
+/// The fixture's last week of January, which closes its month.
+const CLOSING_MONTH_FIXTURE_CLOSING_STAGE: usize = 3;
+const MULTI_RESOLUTION_DECK: &str = "examples/deterministic/d30-multi-resolution-monthly-quarterly";
+/// The deck's last month, whose lags rebuild from the downstream ring.
+const MULTI_RESOLUTION_REBUILD_STAGE: usize = 6;
 
 const POWER_FLOOR: f64 = 1e-9;
 const SEPARATION_FLOOR: f64 = 1e-6;
@@ -1599,6 +1625,15 @@ fn assert_weekly_lag_alias(stage: usize, finalizes: bool) {
     let slopes: Vec<(usize, f64)> = {
         let resident = &setup.training_ctx().cut_state_layouts[stage];
         assert_eq!(
+            resident.lag_point().mode(),
+            if finalizes {
+                LagPointMode::Closing
+            } else {
+                LagPointMode::Carry
+            },
+            "{fixture}: stage {stage}'s pool must take the point its period position gives"
+        );
+        assert_eq!(
             resident.lag_point().full().len(),
             n_hydros * lag_depth,
             "{fixture}: stage {stage}'s resident pool must project every lag slot"
@@ -1612,6 +1647,12 @@ fn assert_weekly_lag_alias(stage: usize, finalizes: bool) {
                 )
             })
             .collect()
+    };
+    let closing_share = {
+        let stage_ctx = setup.stage_ctx();
+        let weight = |t: usize| stage_ctx.stage_lag(StageIdx(t)).accumulate_weight;
+        let incoming = (0..stage).fold(0.0, |sum, t| sum + weight(t));
+        weight(stage) / (incoming + weight(stage))
     };
     let pool_slots = inject_cut(&mut setup, stage, &slopes);
     let training_ctx = setup.training_ctx();
@@ -1632,48 +1673,774 @@ fn assert_weekly_lag_alias(stage: usize, finalizes: bool) {
     );
     assert_has_power(fixture, "injected cut's dual y", y);
     let extracted = &training_ctx.cut_state_layouts[stage - 1];
+    let cut_term_scale = if finalizes { closing_share } else { 0.0 };
     for h in 0..n_hydros {
         let coupled = cut.coupled_duals[h];
         let psi = psi_at(&setup, stage, h);
-        let g = -coupled + y * weekly_injected_slope(n_hydros, h, 0);
-        let g_abs = coupled.abs() + (y * weekly_injected_slope(n_hydros, h, 0)).abs();
-        assert_non_degenerate(fixture, &format!("hydro {h}'s lag-1 coefficient ψ"), psi[0]);
-        assert_has_power(fixture, &format!("hydro {h}'s lag-0 sensitivity g"), g);
-        for l in 0..lag_depth {
-            let psi_l = psi.get(l).copied().unwrap_or(0.0);
-            let next = if l + 1 < lag_depth {
-                y * weekly_injected_slope(n_hydros, h, l + 1)
+        let injected = |l: usize| {
+            if l < lag_depth {
+                y * weekly_injected_slope(n_hydros, h, l)
             } else {
                 0.0
+            }
+        };
+        let g = -coupled + cut_term_scale * injected(0);
+        let g_alias = -coupled + injected(0);
+        let g_abs = coupled.abs() + (cut_term_scale * injected(0)).abs();
+        assert_non_degenerate(fixture, &format!("hydro {h}'s lag-1 coefficient ψ"), psi[0]);
+        if finalizes {
+            assert_has_power(fixture, &format!("hydro {h}'s lag-0 sensitivity g"), g);
+        } else {
+            assert_has_power(
+                fixture,
+                &format!("hydro {h}'s injected lag-0 term"),
+                injected(0),
+            );
+        }
+        let mut separation = f64::NEG_INFINITY;
+        for l in 0..lag_depth {
+            let psi_l = psi.get(l).copied().unwrap_or(0.0);
+            let carried = if finalizes {
+                injected(l + 1)
+            } else {
+                injected(l)
             };
+            let want = psi_l * g + carried;
+            let alias = psi_l * g_alias + injected(l + 1);
+            let abs_sum = psi_l.abs() * g_abs + carried.abs();
             let lag = lag_slot(extracted, n_hydros, h, l);
-            // n = 5: y·β_inj(h, 0), −c_h + y·β_inj(h, 0), ψ·g, y·β_inj(h, l + 1) and the last +
-            // on either side; no tolerance is added, since c_h and y are the solve's own.
+            // n = 5: the cut term of g, g itself, ψ·g, the carried term and the last + on either
+            // side; no tolerance is added, since c_h and y are the solve's own.
             ClosedForm {
                 fixture,
                 quantity: &format!("hydro {h}'s lag-{l} coefficient"),
                 slot: Some(lag),
-                want: psi_l * g + next,
+                want,
                 n: 5,
-                abs_sum: psi_l.abs() * g_abs + next.abs(),
+                abs_sum,
                 added: 0.0,
             }
             .assert_solved(cut.coefficients[lag]);
+            separation = separation.max((alias - want).abs() - 2.0 * rounding_factor(5) * abs_sum);
         }
+        assert!(
+            separation > 0.0,
+            "{fixture}: hydro {h}'s lag coefficients under the shifted alias are within the \
+             tolerance of the derived ones, so the closed form could hold vacuously"
+        );
     }
 }
 
-/// derived: a week inside its month evaluates the lag at the same point as a closing week, so
-/// with the injected cut binding at y the lag coefficient is `ψ_{h,l}·(−c_h + y·β_inj(h, 0)) +
-/// y·β_inj(h, l + 1)`, with `β_inj(h, L) = 0`, from the solve's own `c_h` and y. A chain rule that
-/// reads the resident `(h, l)` slot within the month adds `y·β_inj(h, l)` to it.
+/// derived: week 1 of the deck leaves January open, so its pool evaluates the cut at the lags
+/// it is handed, `Φ = â`, and the cut leaves `g_h = −(Gᵀπ)_h`. With the injected cut binding at y
+/// the lag coefficient is `−ψ_{h,l}·(Gᵀπ)_h + y·β_inj(h, l)`, with `β_inj(h, l)` over every slot.
+/// The shifted alias reads `β_inj(h, l + 1)` and adds `ψ_{h,l}·y·β_inj(h, 0)` to g.
 #[test]
-fn a_non_finalizing_stage_keeps_the_lag_alias() {
+fn a_non_finalizing_stage_evaluates_cuts_at_the_carried_lags() {
     assert_weekly_lag_alias(WEEKLY_PAR_NON_FINALIZING_STAGE, false);
 }
 
-/// derived: the same alias formula at the week that closes the month.
+/// derived: week 3 closes January over the weight W of the weeks before it and its own w, so
+/// `Φ(h, 0) = (s + w·ẑ_h)/(W + w)` and `Φ(h, l) = â(h, l − 1)`. The cut term of `g_h` moves with
+/// ẑ at `c = w/(W + w)`, so the lag coefficient is `ψ_{h,l}·(−(Gᵀπ)_h + c·y·β_inj(h, 0)) +
+/// y·β_inj(h, l + 1)`, with `β_inj(h, L) = 0`. The shifted alias takes `c = 1`.
 #[test]
-fn a_finalizing_stage_keeps_the_lag_alias() {
+fn a_finalizing_stage_evaluates_cuts_at_the_closing_period_mean() {
     assert_weekly_lag_alias(WEEKLY_PAR_FINALIZING_STAGE, true);
+}
+
+fn leaves_the_shifted_point(dir: &Path) -> bool {
+    let (_, setup) = fresh_system_and_setup_with(dir, |_| {});
+    setup
+        .training_ctx()
+        .cut_state_layouts
+        .iter()
+        .filter(|layout| layout.has_lag_slots())
+        .any(|layout| layout.lag_point().mode() != LagPointMode::Shifted)
+}
+
+/// derived: weeks 0 to 2 of the fixture leave the January period open, so their pools take the
+/// carried lag point, and week 3 closes it over the weight of the three weeks before it plus its
+/// own: `inv = 1/(W + w)` and `c = w·inv`.
+#[test]
+fn lag_point_modes_of_the_weekly_closing_month_fixture_follow_its_calendar() {
+    let (_, setup) = fresh_system_and_setup_with(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join(CLOSING_MONTH_FIXTURE),
+        |_| {},
+    );
+    let stage_ctx = setup.stage_ctx();
+    let weight = |t: usize| stage_ctx.stage_lag(StageIdx(t)).accumulate_weight;
+    let layouts = setup.training_ctx().cut_state_layouts;
+
+    for (t, layout) in layouts
+        .iter()
+        .enumerate()
+        .take(CLOSING_MONTH_FIXTURE_CLOSING_STAGE)
+        .skip(1)
+    {
+        assert_eq!(layout.lag_point().mode(), LagPointMode::Carry, "stage {t}");
+    }
+    let closing = layouts[CLOSING_MONTH_FIXTURE_CLOSING_STAGE].lag_point();
+    assert_eq!(closing.mode(), LagPointMode::Closing);
+    let incoming = (0..CLOSING_MONTH_FIXTURE_CLOSING_STAGE).fold(0.0, |sum, t| sum + weight(t));
+    let own = weight(CLOSING_MONTH_FIXTURE_CLOSING_STAGE);
+    let inverse = 1.0 / (incoming + own);
+    assert_eq!(closing.incoming_weight()[0], incoming);
+    assert_eq!(closing.closing_inverse_weight()[0], inverse);
+    assert_eq!(closing.closing_share()[0], own * inverse);
+}
+
+/// derived: the month-to-quarter stage rebuilds its lags from the downstream ring, which
+/// the shifted point already evaluates, so its pool is shifted. The primary weight survives the
+/// rebuild, so the quarter after it closes a period that already holds the last month's weight
+/// and each hydro's share of it is 1/2.
+#[test]
+fn lag_point_mode_of_the_quarter_after_a_rebuild_is_closing_at_one_half() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(MULTI_RESOLUTION_DECK);
+    let (_, setup) = fresh_system_and_setup_with(&dir, |_| {});
+    let layouts = setup.training_ctx().cut_state_layouts;
+
+    assert_eq!(
+        layouts[MULTI_RESOLUTION_REBUILD_STAGE].lag_point().mode(),
+        LagPointMode::Shifted
+    );
+    let quarter = layouts[MULTI_RESOLUTION_REBUILD_STAGE + 1].lag_point();
+    assert_eq!(quarter.mode(), LagPointMode::Closing);
+    assert!(!quarter.closing_share().is_empty());
+    for (h, &share) in quarter.closing_share().iter().enumerate() {
+        assert_eq!(share, 0.5, "hydro {h}");
+    }
+}
+
+/// A study whose stages all close their own lag period evaluates every cut at the shifted
+/// point, so only the studies that mix lag periods leave it.
+#[test]
+fn lag_point_modes_of_uniform_committed_decks_are_shifted() {
+    let mixed: BTreeSet<String> = committed_decks()
+        .into_iter()
+        .filter(|deck| leaves_the_shifted_point(&deck.dir))
+        .map(|deck| deck.key)
+        .collect();
+    let expected: BTreeSet<String> = [
+        WEEKLY_PAR_DECK,
+        MULTI_RESOLUTION_DECK,
+        "crates/novomodelo-sddp/tests/fixtures/weekly_then_closing_month",
+    ]
+    .map(String::from)
+    .into();
+    assert_eq!(mixed, expected);
+}
+
+struct TrainedRun {
+    setup: StudySetup,
+    partial_sums: PartialSums,
+    bounds: Vec<(u64, f64, f64)>,
+}
+
+/// Trains `setup` with every pool storing its trial states, after replaying the partial sums its
+/// forward visits read, and collects each iteration's lower and upper bound.
+fn train_exporting_states(mut setup: StudySetup) -> TrainedRun {
+    setup.set_export_states(true);
+    let partial_sums = replay_partial_sums(&setup);
+    let mut solver = ActiveSolver::new().expect("the training solver must build");
+    let (sender, events) = mpsc::channel();
+    let outcome = setup
+        .train(
+            &mut solver,
+            &StubComm,
+            1,
+            ActiveSolver::new,
+            Some(sender),
+            None,
+        )
+        .expect("training must return Ok");
+    assert!(
+        outcome.error.is_none(),
+        "training must not error: {:?}",
+        outcome.error
+    );
+    let bounds = events
+        .try_iter()
+        .filter_map(|event| match event {
+            TrainingEvent::IterationSummary {
+                iteration,
+                lower_bound,
+                upper_bound,
+                ..
+            } => Some((iteration, lower_bound, upper_bound)),
+            _ => None,
+        })
+        .collect();
+    TrainedRun {
+        setup,
+        partial_sums,
+        bounds,
+    }
+}
+
+fn train_same_path_deck() -> TrainedRun {
+    let (system, mut config, hydro_models) = same_path_partial_sum_study();
+    apply_oracle_config(&mut config);
+    train_exporting_states(build_setup_in_code_with_models(
+        system,
+        &config,
+        hydro_models,
+    ))
+}
+
+/// What one forward visit of a stage saw: the state it was pinned at, the state it left and the
+/// lag accumulator it read.
+struct Visit {
+    incoming: Vec<f64>,
+    outgoing: Vec<f64>,
+    partial_sum: Vec<f64>,
+}
+
+fn stored_state(setup: &StudySetup, pool_id: usize, slot: usize) -> Vec<f64> {
+    let n_state = setup.training_ctx().state.n_state;
+    let layout = &setup.training_ctx().cut_state_layouts[pool_id];
+    assert_eq!(
+        layout.n_slots(),
+        n_state,
+        "pool {pool_id} must project every state dimension for its row to be a whole state"
+    );
+    let row = setup.fcf.pools[pool_id]
+        .trial_state(slot)
+        .unwrap_or_else(|| panic!("pool {pool_id} must store the trial state of slot {slot}"));
+    lift_to_global_state(layout, row, &vec![0.0; n_state])
+}
+
+/// The forward visit that generated the cut of `pool_id` at `slot`: the visit of stage `pool_id`
+/// whose outgoing state the cut was computed at, in the iteration and trial that wrote the cut.
+fn generating_visit(run: &TrainedRun, pool_id: usize, slot: usize) -> Visit {
+    let setup = &run.setup;
+    let origin = setup.fcf.pools[pool_id].metadata(slot);
+    let incoming = match pool_id.checked_sub(1) {
+        None => setup.training_ctx().initial_state.to_vec(),
+        Some(previous) => {
+            let pool = &setup.fcf.pools[previous];
+            let sibling = (0..pool.populated())
+                .find(|&candidate| {
+                    let other = pool.metadata(candidate);
+                    other.iteration_generated == origin.iteration_generated
+                        && other.forward_pass_index == origin.forward_pass_index
+                })
+                .unwrap_or_else(|| panic!("pool {previous} must hold the visit of slot {slot}"));
+            stored_state(setup, previous, sibling)
+        }
+    };
+    Visit {
+        incoming,
+        outgoing: stored_state(setup, pool_id, slot),
+        partial_sum: run
+            .partial_sums
+            .of_cut(&setup.fcf.pools[pool_id], slot, pool_id),
+    }
+}
+
+/// `p(â)` of hydro 0 at `stage`: the PAR conditional mean at the lags of `incoming`.
+fn conditional_mean(setup: &StudySetup, stage: usize, incoming: &[f64]) -> f64 {
+    let par = setup.training_ctx().stochastic.par();
+    let lags: f64 = par
+        .psi_slice(stage, 0)
+        .iter()
+        .enumerate()
+        .map(|(l, psi)| psi * incoming[lag_dim(setup, 0, l)])
+        .sum();
+    par.deterministic_base(stage, 0) + lags
+}
+
+fn hydro_noise_slot(setup: &StudySetup) -> usize {
+    setup
+        .training_ctx()
+        .stochastic
+        .class_dimensions()
+        .hydro_range()
+        .start
+}
+
+/// `Σ_l β(0, l)·x̂(0, l)` over the lag slots of the cut of `pool_id` at `slot`, with `x̂` the
+/// visit's outgoing lags, and the same sum over the lags `lags` replaces them with.
+fn lag_terms(setup: &StudySetup, pool_id: usize, slot: usize, lags: impl Fn(usize) -> f64) -> f64 {
+    let pool = &setup.fcf.pools[pool_id];
+    let layout = &setup.training_ctx().cut_state_layouts[pool_id];
+    let n_lags = setup.training_ctx().state.max_par_order;
+    (0..n_lags).fold(0.0, |sum, l| {
+        sum + pool.coefficient_row(slot)[lag_slot(layout, 1, 0, l)] * lags(l)
+    })
+}
+
+/// The tolerance of an RHS of `|α| + Σ|β·x|` magnitude: `n = 16` covers the sums the writer
+/// forms and the rounding of the visit's own accumulator.
+fn rhs_tolerance(magnitude: f64) -> f64 {
+    2.0 * rounding_factor(16) * magnitude
+}
+
+/// Checks that the RHS the production prep pushes for each cut of `pool_id` at the visit that
+/// generated it is `α + Σ β·x̂` over the lags the visit left, with `z_hat` the visit's realized
+/// inflow; returns the smallest distance between that value and the one at `ẑ` in lag 0.
+fn assert_cut_rhs_at_its_own_trial_point(
+    run: &TrainedRun,
+    fixture: &str,
+    pool_id: usize,
+    z_hat: impl Fn(&Visit, usize) -> f64,
+    noise: impl Fn(&Visit, usize) -> Vec<f64>,
+) -> f64 {
+    let setup = &run.setup;
+    let pool = &setup.fcf.pools[pool_id];
+    let mut separation = f64::INFINITY;
+    for slot in 0..pool.populated() {
+        let visit = generating_visit(run, pool_id, slot);
+        let pushed = pushed_cut_rhs_at_visit(
+            setup,
+            pool_id,
+            slot,
+            &visit.incoming,
+            &visit.partial_sum,
+            &noise(&visit, slot),
+        );
+        let alpha = pool.intercept(slot);
+        let outgoing = |l: usize| visit.outgoing[lag_dim(setup, 0, l)];
+        let want = alpha + lag_terms(setup, pool_id, slot, outgoing);
+        let z = z_hat(&visit, slot);
+        let aliased = alpha
+            + lag_terms(
+                setup,
+                pool_id,
+                slot,
+                |l| {
+                    if l == 0 { z } else { outgoing(l) }
+                },
+            );
+        let beta_0 = pool.coefficient_row(slot)
+            [lag_slot(&setup.training_ctx().cut_state_layouts[pool_id], 1, 0, 0)];
+        let tolerance = rhs_tolerance(alpha.abs() + beta_0.abs() * (outgoing(0).abs() + z.abs()));
+        assert_has_power(
+            fixture,
+            &format!("pool {pool_id} slot {slot}'s lag-0 coefficient"),
+            beta_0,
+        );
+        assert!(
+            (pushed - want).abs() <= tolerance,
+            "{fixture}: pool {pool_id} slot {slot}: the pushed RHS {pushed} is not α + β·x̂ = \
+             {want} at the cut's own trial point (tolerance {tolerance:e}); the shifted alias \
+             reads {aliased}"
+        );
+        separation = separation.min((aliased - want).abs() - 2.0 * tolerance);
+    }
+    separation
+}
+
+/// derived: five stages of one PAR(1) hydro, `ψ = 1/2`, one opening each, over January's weeks
+/// 0 to 2, its last ten days (the stage that closes it) and February, with the lag seeded at 200
+/// m³/s above every January mean. A 400 MW load over a 200 MW plant and a 100 `$/MWh` thermal
+/// gives water a constant value, so a cut generated at a trial state is the successor value
+/// there. The partial sum is the same on every iteration, so each pool's cuts are exact at its
+/// generating visit: pools 0 to 2 carry the seeded lag, `x̂_lag = 200`, and pool 3 closes January
+/// at `x̂_lag = Σ_t w_t·ẑ_t/Σ_t w_t` over the four stages' hours `w_t`, with
+/// `ẑ_t = b_t + ψ·200 + σ_t·η_t`. Each cut's RHS at its generating visit is `α + β_lag·x̂_lag`;
+/// the shifted alias gives `α + β_lag·ẑ`, which is off by `β_lag·(ẑ − x̂_lag)`, a distance each
+/// iteration's `η_t` makes non-zero here.
+#[test]
+fn stored_cuts_are_tight_at_their_own_trial_point_on_a_same_path_partial_sum_deck() {
+    const FIXTURE: &str = "same-path partial-sum deck";
+    const JANUARY_STAGE_HOURS: [f64; 4] = [168.0, 168.0, 168.0, 240.0];
+    let run = train_same_path_deck();
+    let setup = &run.setup;
+    let state = setup.training_ctx().state;
+    assert_eq!(
+        (state.hydro_count, state.max_par_order),
+        (1, 1),
+        "{FIXTURE}: one hydro with one lag"
+    );
+    let noise_slot = hydro_noise_slot(setup);
+    let z_at = |stage: usize, incoming: &[f64]| {
+        let eta = opening_noise(setup, stage)[noise_slot];
+        let par = setup.training_ctx().stochastic.par();
+        conditional_mean(setup, stage, incoming) + par.sigma(stage, 0) * eta
+    };
+    let window = [0_usize, 1, 2, 3];
+    let mut pools_checked = 0;
+    for pool_id in window {
+        let pool = &setup.fcf.pools[pool_id];
+        assert_eq!(
+            pool.populated(),
+            run.bounds.len(),
+            "{FIXTURE}: pool {pool_id} holds one cut per iteration"
+        );
+        let carried = SAME_PATH_LAG_SEED_M3S;
+        let january_mean = {
+            let seed = setup.training_ctx().initial_state.to_vec();
+            let total: f64 = JANUARY_STAGE_HOURS.iter().sum();
+            window
+                .iter()
+                .zip(JANUARY_STAGE_HOURS)
+                .map(|(&t, hours)| hours / total * z_at(t, &seed))
+                .sum::<f64>()
+        };
+        for slot in 0..pool.populated() {
+            let visit = generating_visit(&run, pool_id, slot);
+            let want_lag = if pool_id < 3 { carried } else { january_mean };
+            let got = visit.outgoing[lag_dim(setup, 0, 0)];
+            assert!(
+                (got - want_lag).abs() <= rhs_tolerance(want_lag.abs()),
+                "{FIXTURE}: pool {pool_id} slot {slot}: the visit leaves lag {got}, derived \
+                 {want_lag}"
+            );
+        }
+        let separation = assert_cut_rhs_at_its_own_trial_point(
+            &run,
+            FIXTURE,
+            pool_id,
+            |visit, _| z_at(pool_id, &visit.incoming),
+            |_, _| opening_noise(setup, pool_id),
+        );
+        assert!(
+            separation > 0.0,
+            "{FIXTURE}: pool {pool_id}: the alias RHS is within the tolerance of α + β·x̂, so \
+             the tightness check could hold vacuously"
+        );
+        pools_checked += 1;
+    }
+    assert_eq!(pools_checked, 4, "{FIXTURE}: every pool is checked");
+}
+
+/// derived: on the deck above every iteration's cuts are exact at the generating visit, so a
+/// stage-0 value built from them is the cost of a path the single forward pass can take: the
+/// lower bound never exceeds the forward cost. A cut evaluated at the shifted alias is off by
+/// `β_lag·(ẑ − x̂_lag)`, which with a lag seeded above every mean overstates the value of the
+/// future and lifts the lower bound past the path's cost.
+#[test]
+fn lower_bound_stays_below_the_upper_bound_on_a_same_path_partial_sum_deck() {
+    let run = train_same_path_deck();
+    assert!(
+        run.bounds.len() > 1,
+        "the run must iterate for the bound to move"
+    );
+    for &(iteration, lower, upper) in &run.bounds {
+        assert!(
+            lower <= upper + value_tolerance(lower, upper),
+            "iteration {iteration}: the lower bound {lower} exceeds the upper bound {upper}"
+        );
+    }
+}
+
+const WEEKS_THEN_MONTH_TERMINAL_STAGE: usize = 5;
+const WEEKS_THEN_MONTH_FORWARD_PASSES: u32 = 6;
+const WEEKS_THEN_MONTH_BOUNDARY_INTERCEPT: f64 = 1.0e4;
+const WEEKS_THEN_MONTH_BOUNDARY_LAG_SLOPE: f64 = -0.75;
+
+/// The terminal pool's boundary row as the worker solves of stage 5 saw it in the one iteration
+/// of a run: the forward trials first, then every trial's backward openings.
+struct TerminalBoundaryPushes {
+    forward: Vec<f64>,
+    backward: Vec<f64>,
+}
+
+/// The weeks-then-month study with a one-cut boundary on its first lag installed, trained for one
+/// iteration of `WEEKS_THEN_MONTH_FORWARD_PASSES` trials; the worker solves that carry the
+/// boundary row alone are the terminal stage's, since no interior pool holds a cut yet.
+fn train_weeks_then_month_deck(
+    backward_scheduler: BackwardScheduler,
+) -> (StudySetup, TerminalBoundaryPushes) {
+    let (system, mut config, hydro_models) = weeks_then_month_study();
+    config.training.selection = Some(TrainingSelection::Sampled {
+        forward_passes: WEEKS_THEN_MONTH_FORWARD_PASSES,
+    });
+    let mut setup = build_setup_in_code_with_models(system, &config, hydro_models);
+
+    let lag = lag_dim(&setup, 0, 0);
+    let coefficients: Vec<f64> = (0..setup.fcf.state_dimension)
+        .map(|dim| {
+            if dim == lag {
+                WEEKS_THEN_MONTH_BOUNDARY_LAG_SLOPE
+            } else {
+                0.0
+            }
+        })
+        .collect();
+    let state_dimension = u32::try_from(coefficients.len()).expect("fits u32");
+    let date = fixture_priced_date(ymd(2030, 1, 1), 0);
+    let boundary_dir = tempfile::tempdir().expect("tempdir");
+    write_synthetic_boundary(
+        boundary_dir.path(),
+        state_dimension,
+        WEEKS_THEN_MONTH_BOUNDARY_INTERCEPT,
+        &coefficients,
+        date,
+    );
+    let boundary = load_boundary_cuts(&BoundaryLoadRequest::new(
+        boundary_dir.path(),
+        date,
+        state_dimension,
+        &[],
+        1.0,
+    ))
+    .expect("the boundary cut must load");
+    inject_boundary_cuts(&mut setup, &boundary).expect("the boundary cut must inject");
+
+    let theta = setup.training_ctx().state.theta;
+    let worker_log = CutRowPushLog::new();
+    let lower_bound_log = CutRowPushLog::new();
+    let recording = |log: &CutRowPushLog| {
+        ActiveSolver::new().map(|solver| {
+            CutRowPushRecorder::new(solver, theta, log.clone(), AppendedCutRowBound::Patched)
+        })
+    };
+    let mut solver = recording(&lower_bound_log).expect("the lower-bound solver must build");
+    let outcome = setup
+        .train_with_solver_profiles(
+            &mut solver,
+            &StubComm,
+            1,
+            || recording(&worker_log),
+            SolverProfiles {
+                backward_scheduler,
+                ..SolverProfiles::default()
+            },
+        )
+        .expect("training must return Ok");
+    assert!(
+        outcome.error.is_none(),
+        "training must not error: {:?}",
+        outcome.error
+    );
+
+    let at_terminal_stage =
+        |record: &&CutRowPushRecord| record.frozen_rows == 1 && record.appended_rows == 0;
+    let pushes: Vec<f64> = worker_log
+        .records()
+        .iter()
+        .filter(at_terminal_stage)
+        .map(|record| record.cut_row_rhs[0])
+        .collect();
+    let trials = WEEKS_THEN_MONTH_FORWARD_PASSES as usize;
+    assert_eq!(
+        pushes.len(),
+        trials * (1 + WEEKS_THEN_MONTH_TERMINAL_OPENINGS),
+        "one forward solve per trial and one backward solve per trial and terminal opening"
+    );
+    let (forward, backward) = pushes.split_at(trials);
+    let pushes = TerminalBoundaryPushes {
+        forward: forward.to_vec(),
+        backward: backward.to_vec(),
+    };
+    (setup, pushes)
+}
+
+/// derived: five January-season weeks and the rest of February, one PAR(1) hydro, `ψ = 1/2`, one
+/// opening at every stage but the terminal one (three), the lag seeded at 200 m³/s. The fifth week
+/// runs 29 January to 5 February: its 72 h in January's 744 h finalize January, and its 96 h
+/// open February's period, whose 696 h the terminal stage closes with its own 600. The terminal
+/// pool is therefore `Closing` with `W = 96/696` and `w = 600/696`, and every path of the study
+/// reads the same partial sum `s = W·ẑ_4`, so a cut there is exact: a boundary row `θ ≥ α + β·x`
+/// on the first lag is pushed at `α + β·Φ` with `Φ = (96·ẑ_4 + 600·ẑ_5)/696`, `ẑ_5` that
+/// opening's realized inflow at the lag `(168·(ẑ_0 + ẑ_1 + ẑ_2 + ẑ_3) + 72·ẑ_4)/744` January
+/// leaves, and `ẑ_t = b_t + ψ·200 + σ_t·η_t` before it. The shifted alias pushes `α + β·ẑ_5`, off
+/// by `β·(96/696)·(ẑ_5 − ẑ_4)`, and a terminal-stage solve is pushed at one opening's `Φ`, so the
+/// openings' pushes differ from each other.
+#[test]
+fn terminal_boundary_value_on_a_weeks_then_month_calendar_matches_the_closed_form() {
+    const FIXTURE: &str = "weeks-then-month deck";
+    const WEEK_HOURS: f64 = 168.0;
+    const JANUARY_HOURS: f64 = 744.0;
+    const STRADDLE_JANUARY_HOURS: f64 = 72.0;
+    const STRADDLE_FEBRUARY_HOURS: f64 = 96.0;
+    const FEBRUARY_HOURS: f64 = 696.0;
+    const TERMINAL_HOURS: f64 = 600.0;
+
+    for backward_scheduler in [
+        BackwardScheduler::ByScenario {},
+        BackwardScheduler::ByNode { block_size: None },
+    ] {
+        let label = format!("{FIXTURE} ({backward_scheduler:?})");
+        let (setup, pushes) = train_weeks_then_month_deck(backward_scheduler);
+        let terminal = WEEKS_THEN_MONTH_TERMINAL_STAGE;
+        let state = setup.training_ctx().state;
+        assert_eq!(
+            (state.hydro_count, state.max_par_order),
+            (1, 1),
+            "{label}: one hydro with one lag"
+        );
+
+        let (own_weight, period_weight) = {
+            let ctx = setup.stage_ctx();
+            let training_ctx = setup.training_ctx();
+            match oracle_lag_point(
+                ctx.stage_lag_transitions,
+                training_ctx.lag_weight_seed,
+                training_ctx.study_dims.downstream_par_order,
+                state.hydro_count,
+                terminal,
+            ) {
+                OracleLagPoint::Closing {
+                    own_weight,
+                    period_weight,
+                } => (own_weight, period_weight[0]),
+                other => panic!("{label}: stage {terminal} must close its period, got {other:?}"),
+            }
+        };
+        let share = TERMINAL_HOURS / FEBRUARY_HOURS;
+        assert!(
+            (own_weight - share).abs() <= f64::EPSILON
+                && (period_weight - 1.0).abs() <= f64::EPSILON,
+            "{label}: the terminal stage closes February at w = {own_weight} over \
+             {period_weight}, derived {share} over 1"
+        );
+
+        let par = setup.training_ctx().stochastic.par();
+        let noise_slot = hydro_noise_slot(&setup);
+        let tree = setup.training_ctx().stochastic.tree_view();
+        let z_at = |stage: usize, opening: usize, lag: f64| {
+            par.deterministic_base(stage, 0)
+                + par.psi_slice(stage, 0)[0] * lag
+                + par.sigma(stage, 0) * tree.opening(stage, opening)[noise_slot]
+        };
+        let seed = SAME_PATH_LAG_SEED_M3S;
+        let weeks: Vec<f64> = (0..4).map(|stage| z_at(stage, 0, seed)).collect();
+        let straddle = z_at(4, 0, seed);
+        let january_mean = (WEEK_HOURS * weeks.iter().sum::<f64>()
+            + STRADDLE_JANUARY_HOURS * straddle)
+            / JANUARY_HOURS;
+
+        let pool = &setup.fcf.pools[terminal];
+        assert_eq!(pool.populated(), 1, "{label}: the boundary is one cut");
+        let alpha = pool.intercept(0);
+        let beta = pool.coefficient_row(0)
+            [lag_slot(&setup.training_ctx().cut_state_layouts[terminal], 1, 0, 0)];
+        assert_has_power(&label, "boundary lag slope", beta);
+        assert_non_degenerate(&label, "boundary lag slope", beta);
+
+        let mut closed = Vec::new();
+        let mut alias = Vec::new();
+        let mut tolerance = 0.0_f64;
+        for opening in 0..WEEKS_THEN_MONTH_TERMINAL_OPENINGS {
+            let z = z_at(terminal, opening, january_mean);
+            let phi = (STRADDLE_FEBRUARY_HOURS * straddle + TERMINAL_HOURS * z) / FEBRUARY_HOURS;
+            closed.push(alpha + beta * phi);
+            alias.push(alpha + beta * z);
+            tolerance = tolerance.max(rhs_tolerance(
+                alpha.abs() + beta.abs() * (straddle.abs() + z.abs()),
+            ));
+        }
+        for (opening, (&want, &aliased)) in closed.iter().zip(&alias).enumerate() {
+            assert!(
+                (aliased - want).abs() > 2.0 * tolerance,
+                "{label}: opening {opening}'s alias push {aliased} is within the tolerance of \
+                 the closed form {want}, so the check could hold vacuously"
+            );
+        }
+        for (i, &first) in closed.iter().enumerate() {
+            for (j, &second) in closed.iter().enumerate().skip(i + 1) {
+                assert!(
+                    (first - second).abs() > 2.0 * tolerance,
+                    "{label}: openings {i} and {j} push the same bound, so the terminal \
+                     openings could not be told apart"
+                );
+            }
+        }
+
+        let opening_of = |site: &str, trial: usize, pushed: f64| {
+            let matches: Vec<usize> = (0..closed.len())
+                .filter(|&opening| (pushed - closed[opening]).abs() <= tolerance)
+                .collect();
+            let [opening] = matches[..] else {
+                panic!(
+                    "{label}: the {site} solve of trial {trial} pushes {pushed}, which is not \
+                     α + β·Φ of exactly one opening {closed:?} (tolerance {tolerance:e}); the \
+                     shifted alias pushes {alias:?}"
+                );
+            };
+            opening
+        };
+        let forward: BTreeSet<usize> = pushes
+            .forward
+            .iter()
+            .enumerate()
+            .map(|(trial, &pushed)| opening_of("forward", trial, pushed))
+            .collect();
+        assert!(
+            forward.len() >= 2,
+            "{label}: the forward trials drew one terminal opening, so Φ never varied"
+        );
+        let mut backward_openings = vec![0_usize; closed.len()];
+        for (index, &pushed) in pushes.backward.iter().enumerate() {
+            backward_openings[opening_of("backward", index, pushed)] += 1;
+        }
+        assert_eq!(
+            backward_openings,
+            vec![WEEKS_THEN_MONTH_FORWARD_PASSES as usize; closed.len()],
+            "{label}: every trial's backward pass solves each terminal opening once"
+        );
+    }
+}
+
+fn multi_resolution_deck() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(MULTI_RESOLUTION_DECK)
+}
+
+/// derived: stage 6 rebuilds its lags from the downstream ring, and the primary weight survives
+/// the rebuild, so stage 7 closes a period that already holds the weight `W` of one half: its
+/// lag 0 is `Φ(0, 0) = s/(W + w) + c·ẑ` with `c = w/(W + w) = 1/2`, and `Φ(0, l) = â(0, l − 1)`
+/// for `l ≥ 1`. The RHS each stage-7 cut is pushed at its generating visit is `α + β·x̂` over the
+/// lags the kernel wrote there. The forward noise is drawn out of the tree, so the visit's ẑ is
+/// read back from the lag the kernel wrote, `ẑ = (x̂_lag0 − s/(W + w))/c`, and its noise from
+/// `ẑ = p(â) + σ·η`; the shifted alias evaluates at `ẑ` itself.
+#[test]
+fn d30_stage_seven_cuts_evaluate_at_the_closing_point_of_one_half() {
+    const FIXTURE: &str = "d30";
+    const STAGE: usize = MULTI_RESOLUTION_REBUILD_STAGE + 1;
+    let (_, setup) = fresh_system_and_setup_with(&multi_resolution_deck(), apply_oracle_config);
+    let (own_weight, period_weight) = {
+        let ctx = setup.stage_ctx();
+        let training_ctx = setup.training_ctx();
+        match oracle_lag_point(
+            ctx.stage_lag_transitions,
+            training_ctx.lag_weight_seed,
+            training_ctx.study_dims.downstream_par_order,
+            training_ctx.state.hydro_count,
+            STAGE,
+        ) {
+            OracleLagPoint::Closing {
+                own_weight,
+                period_weight,
+            } => (own_weight, period_weight[0]),
+            other => panic!("{FIXTURE}: stage {STAGE} must close its period, got {other:?}"),
+        }
+    };
+    let closing_share = own_weight / period_weight;
+    assert_eq!(
+        closing_share, 0.5,
+        "{FIXTURE}: stage {STAGE} closes at one half"
+    );
+    let run = train_exporting_states(setup);
+    let setup = &run.setup;
+    let noise_slot = hydro_noise_slot(setup);
+    let sigma = setup.training_ctx().stochastic.par().sigma(STAGE, 0);
+    assert_non_degenerate(FIXTURE, "σ of stage 7", sigma);
+    let z_of = |visit: &Visit| {
+        let carried = visit.partial_sum[0] / period_weight;
+        (visit.outgoing[lag_dim(setup, 0, 0)] - carried) / closing_share
+    };
+    let separation = assert_cut_rhs_at_its_own_trial_point(
+        &run,
+        FIXTURE,
+        STAGE,
+        |visit, _| z_of(visit),
+        |visit, _| {
+            let mut noise = opening_noise(setup, STAGE);
+            noise[noise_slot] =
+                (z_of(visit) - conditional_mean(setup, STAGE, &visit.incoming)) / sigma;
+            noise
+        },
+    );
+    assert!(
+        separation > 0.0,
+        "{FIXTURE}: the alias RHS is within the tolerance of α + β·x̂, so the closing-point check \
+         could hold vacuously"
+    );
 }

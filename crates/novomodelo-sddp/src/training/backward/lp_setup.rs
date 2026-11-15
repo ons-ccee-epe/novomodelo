@@ -10,7 +10,9 @@ use crate::{
     error::SddpError,
     forward::write_capture_metadata,
     setup::{NodeId, NodeOpenings, NodePos, OpeningSource, StageIdx},
-    training::stage_solve_prep::{BracketSource, LoadedCutRows, StageSolvePrep, StateSource},
+    training::stage_solve_prep::{
+        BracketSource, LoadedCutRows, PartialSumSource, StageSolvePrep, StateSource,
+    },
     workspace::{BasisStoreSliceMut, CapturedBasis, SolverWorkspace},
 };
 
@@ -56,6 +58,7 @@ pub(crate) fn pin_child_lp<S: SolverInterface + Send>(
     x_hat: &[f64],
     s: StageIdx,
     source: BracketSource<'_>,
+    partial_sum: PartialSumSource<'_>,
 ) {
     assert_eq!(
         child.successor_active_slots.len(),
@@ -69,7 +72,10 @@ pub(crate) fn pin_child_lp<S: SolverInterface + Send>(
         ctx,
         training_ctx,
         s,
-        StateSource(x_hat),
+        StateSource {
+            state: x_hat,
+            partial_sum,
+        },
         &child_cut_rows(training_ctx, child),
         source,
     );

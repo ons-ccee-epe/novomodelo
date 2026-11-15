@@ -23,8 +23,8 @@ use novomodelo_stochastic::{
 };
 
 use super::{
-    BracketSource, LoadedCutRows, NoiseTermSource, SingleSolvePrepParams, StageSolvePrep,
-    StateSource,
+    BracketSource, LoadedCutRows, NoiseTermSource, PartialSumSource, SingleSolvePrepParams,
+    StageSolvePrep, StateSource, debug_assert_live_weight_is_replayed,
 };
 use crate::{
     context::{StageContext, TrainingContext},
@@ -38,7 +38,9 @@ use crate::{
     inflow_method::InflowNonNegativityMethod,
     lead_time::AnticipatedResolution,
     lp::builder::{InflowCoupling, PatchBuffer, StageGeometry, StateBox},
-    lp::indexer::{BlockGrid, BlockRowFamily, CutStateProjection, StateSpace, StudyDimensions},
+    lp::indexer::{
+        BlockGrid, BlockRowFamily, CutStateProjection, LagPointMode, StateSpace, StudyDimensions,
+    },
     noise::{
         build_dense_ncs_col_indices, gather_dense_ncs_bounds, realize_inflow, transform_load_noise,
         transform_ncs_noise,
@@ -383,7 +385,7 @@ fn prepare_without_cut_rows(
         training_ctx,
         StageIdx(0),
         &SingleSolvePrepParams {
-            state_source: StateSource(pinned_state),
+            state_source: StateSource::live(pinned_state),
             raw_noise,
             pool: &pool,
             projection,
@@ -1078,7 +1080,7 @@ impl CompactCase {
             &ctx,
             &training_ctx,
             StageIdx(0),
-            StateSource(trial_state),
+            StateSource::live(trial_state),
             &cut_rows,
             source,
         );
@@ -1163,6 +1165,118 @@ fn pin_folded_reads_the_cut_rows_in_slot_list_order() {
         scratch.cut_bracket_buf[0].to_bits(),
         scratch.cut_bracket_buf[1].to_bits()
     );
+}
+
+#[test]
+fn a_live_partial_sum_source_reads_the_scratch_accumulator() {
+    let (accumulator, state) = ([1.5, 2.5], [9.0]);
+
+    let source = StateSource::live(&state);
+
+    assert_eq!(
+        source.partial_sum(&accumulator).as_ptr(),
+        accumulator.as_ptr()
+    );
+}
+
+#[test]
+fn a_given_partial_sum_source_reads_the_given_slice() {
+    let (accumulator, given, state) = ([1.5, 2.5], [3.5, 4.5], [9.0]);
+
+    let source = StateSource {
+        state: &state,
+        partial_sum: PartialSumSource::Given(&given),
+    };
+
+    assert_eq!(source.partial_sum(&accumulator).as_ptr(), given.as_ptr());
+}
+
+fn closing_case(entering_weight: f64) -> CompactCase {
+    let mut case = CompactCase::new(&[(1.0, [4.0, 2.0, 3.0])]);
+    case.prep.cut_state_layouts[0].lag_point_mut().install_mode(
+        LagPointMode::Closing,
+        &[0.5],
+        &[0.5],
+        &[entering_weight],
+    );
+    case
+}
+
+fn pin_on_a_closing_pool(partial_sum: PartialSumSource<'_>) {
+    let case = closing_case(0.0);
+    let fixture = case.fixture();
+    let ctx = fixture.ctx();
+    let training_ctx = case.prep.ctx(
+        &case.state,
+        &case.stochastic,
+        &case.study_dims,
+        &InflowNonNegativityMethod::None,
+        &[],
+    );
+    let mut scratch = CompactCase::scratch(&ctx, &training_ctx);
+    let cut_rows = LoadedCutRows {
+        pool: &case.pool,
+        projection: &case.prep.cut_state_layouts[0],
+        slots: &[0],
+        first_row: ctx.template(StageIdx(0)).num_rows,
+    };
+    StageSolvePrep::pin_and_bracket(
+        &mut RecordingSolver::default(),
+        &mut PatchBuffer::new(&case.state, &[], &case.geometry, &case.couplings),
+        &mut scratch,
+        &ctx,
+        &training_ctx,
+        StageIdx(0),
+        StateSource {
+            state: &TRIAL_STATE,
+            partial_sum,
+        },
+        &cut_rows,
+        BracketSource::Computed,
+    );
+}
+
+fn live_weight_entering_a_closing_stage(entering_weight: f64) {
+    let case = closing_case(entering_weight);
+    let fixture = case.fixture();
+    let ctx = fixture.ctx();
+    let training_ctx = case.prep.ctx(
+        &case.state,
+        &case.stochastic,
+        &case.study_dims,
+        &InflowNonNegativityMethod::None,
+        &[],
+    );
+    let scratch = CompactCase::scratch(&ctx, &training_ctx);
+    debug_assert_live_weight_is_replayed(
+        &scratch,
+        case.prep.cut_state_layouts[0].lag_point(),
+        StageIdx(0),
+    );
+}
+
+#[test]
+fn a_closing_stage_accepts_a_live_accumulator_that_entered_at_the_setup_weight() {
+    live_weight_entering_a_closing_stage(0.0);
+}
+
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "the live weight accumulator differs")]
+fn a_closing_stage_rejects_a_live_accumulator_that_entered_at_another_weight() {
+    live_weight_entering_a_closing_stage(1.0);
+}
+
+#[test]
+fn a_closing_pin_accepts_a_given_partial_sum_of_every_hydro() {
+    pin_on_a_closing_pool(PartialSumSource::Given(&[3.0]));
+}
+
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "the partial sum holds 0 values for 1 hydros")]
+fn a_closing_pin_rejects_a_given_partial_sum_shorter_than_the_hydros() {
+    pin_on_a_closing_pool(PartialSumSource::Given(&[]));
 }
 
 const SLAB_SLOTS: [usize; 3] = [0, 1, 2];
@@ -1700,7 +1814,7 @@ fn prepare_folded_single_makes_the_pin_then_open_calls_bit_for_bit() {
                 training_ctx,
                 StageIdx(0),
                 &SingleSolvePrepParams {
-                    state_source: StateSource(&TRIAL_STATE),
+                    state_source: StateSource::live(&TRIAL_STATE),
                     raw_noise: &raw_noise,
                     pool: &case.pool,
                     projection,
@@ -1723,7 +1837,7 @@ fn prepare_folded_single_makes_the_pin_then_open_calls_bit_for_bit() {
             ctx,
             training_ctx,
             StageIdx(0),
-            StateSource(&TRIAL_STATE),
+            StateSource::live(&TRIAL_STATE),
             &rows,
             BracketSource::Computed,
         );
@@ -1777,7 +1891,7 @@ fn the_lazy_opening_solver_leaves_the_cut_range_to_the_lazy_solve() {
                     ctx,
                     training_ctx,
                     StageIdx(0),
-                    StateSource(&TRIAL_STATE),
+                    StateSource::live(&TRIAL_STATE),
                     &rows,
                     BracketSource::Computed,
                 );

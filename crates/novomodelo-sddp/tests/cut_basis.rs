@@ -5471,18 +5471,25 @@ mod simulation_cut_set {
 }
 
 mod solve_cache_equivalence {
+    use std::path::Path;
+
     use novomodelo_comm::{BackendKind, Communicator, LocalBackend, create_communicator};
     use novomodelo_io::config::{
         BackwardScheduler, SelectionMethod, StoppingRuleConfig, TrainingSelection,
     };
     use novomodelo_sddp::test_support::decks::committed_decks;
-    use novomodelo_sddp::{SolverProfiles, SolverStatsDelta, StudySetup, TrainingOutcome};
+    use novomodelo_sddp::test_support::{fixture_priced_date, write_synthetic_boundary, ymd};
+    use novomodelo_sddp::{
+        BoundaryLoadRequest, BoundaryStateRequirements, SolverProfiles, SolverStatsDelta,
+        StudySetup, TrainingOutcome, inject_boundary_cuts, load_boundary_cuts,
+    };
     use novomodelo_solver::ActiveSolver;
 
     use super::common::in_code_studies::{FphaLagOptions, fpha_lag_study_with};
     use super::common::stored_cut_oracles::apply_oracle_config;
     use super::common::{
-        StubComm, build_setup_in_code_with_models, fresh_system_and_setup_with, is_chain, positive,
+        StubComm, build_setup_in_code_with_models, fresh_system_and_setup_with,
+        fresh_system_and_setup_with_boundary, is_chain, positive,
     };
 
     type Run = (StudySetup, TrainingOutcome);
@@ -5495,6 +5502,10 @@ mod solve_cache_equivalence {
     const WORLD_OPENINGS: usize = 3;
     const WORLD_FORWARD_PASSES: u32 = 8;
     const WORLD_ITERATIONS: u32 = 2;
+    const LAGLESS_DECK: &str = "examples/deterministic/d28-decomp-weekly-monthly";
+    const BOUNDARY_LAG_DEPTH: u32 = 1;
+    const BOUNDARY_INTERCEPT: f64 = 1.0e4;
+    const BOUNDARY_LAG_SLOPE: f64 = -0.01;
 
     fn lag_study(
         openings: usize,
@@ -5578,9 +5589,9 @@ mod solve_cache_equivalence {
     fn stores_a_lag_cut(setup: &StudySetup) -> bool {
         let training_ctx = setup.training_ctx();
         setup.fcf.pools.iter().enumerate().any(|(pool_id, pool)| {
-            let lag0 = training_ctx.cut_state_layouts[pool_id].lag_point().lag0();
+            let lag_slots = training_ctx.cut_state_layouts[pool_id].lag_point().full();
             (0..pool.populated()).any(|slot| {
-                pool.coefficient_row(slot)[lag0.clone()]
+                pool.coefficient_row(slot)[lag_slots.clone()]
                     .iter()
                     .any(|&c| c != 0.0)
             })
@@ -5634,7 +5645,7 @@ mod solve_cache_equivalence {
             assert!(is_chain(&cached.0), "{label}: the study must be a chain");
             assert!(
                 stores_a_lag_cut(&cached.0),
-                "{label}: no stored cut has a nonzero lag-0 coefficient"
+                "{label}: no stored cut has a nonzero lag coefficient"
             );
             let frozen_rows = largest_frozen_pin(&cached.0, cached.1.result.iterations);
             assert!(
@@ -5724,6 +5735,84 @@ mod solve_cache_equivalence {
         );
     }
 
+    fn lagless_deck_with_lag_bearing_boundary(deck_dir: &Path, boundary_dir: &Path) -> StudySetup {
+        let (_, mut setup) = fresh_system_and_setup_with_boundary(
+            deck_dir,
+            BoundaryStateRequirements::present(BOUNDARY_LAG_DEPTH),
+            apply_oracle_config,
+        );
+        let state = setup.stage_state();
+        let lag_dims = state.hydro_count..state.hydro_count * (1 + state.max_par_order);
+        let coefficients: Vec<f64> = (0..setup.fcf.state_dimension)
+            .map(|dim| {
+                if lag_dims.contains(&dim) {
+                    BOUNDARY_LAG_SLOPE
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+        let state_dimension = u32::try_from(coefficients.len()).expect("fits u32");
+        let date = fixture_priced_date(ymd(2030, 1, 1), 0);
+        write_synthetic_boundary(
+            boundary_dir,
+            state_dimension,
+            BOUNDARY_INTERCEPT,
+            &coefficients,
+            date,
+        );
+        let boundary = load_boundary_cuts(&BoundaryLoadRequest::new(
+            boundary_dir,
+            date,
+            state_dimension,
+            &[],
+            1.0,
+        ))
+        .expect("the boundary cut must load");
+        inject_boundary_cuts(&mut setup, &boundary).expect("the boundary cut must inject");
+        setup
+    }
+
+    #[test]
+    fn a_lagless_deck_with_a_lag_bearing_boundary_trains_to_the_same_bits_with_the_solve_caches_bypassed()
+     {
+        let deck = committed_decks()
+            .into_iter()
+            .find(|deck| deck.key == LAGLESS_DECK)
+            .expect("the lagless deck is committed");
+        for backward_scheduler in [BY_SCENARIO, BY_NODE] {
+            let (cached, bypassed) = train_cached_and_bypassed(
+                || {
+                    let boundary_dir = tempfile::tempdir().expect("tempdir");
+                    lagless_deck_with_lag_bearing_boundary(&deck.dir, boundary_dir.path())
+                },
+                &StubComm,
+                backward_scheduler,
+            );
+            let label = format!("{backward_scheduler:?}");
+            eprintln!(
+                "{label}: slab misses cached={} bypassed={}",
+                cached.1.slab_misses, bypassed.1.slab_misses
+            );
+
+            let par_order = cached.0.training_ctx().stochastic.par().max_order();
+            assert!(
+                par_order == 0,
+                "{label}: the PAR order is {par_order}, not 0"
+            );
+            let lag_depth = cached.0.stage_state().max_par_order;
+            assert!(
+                lag_depth == 1,
+                "{label}: the lag-state depth is {lag_depth}, not 1"
+            );
+            assert!(
+                bypassed.1.slab_misses > 0,
+                "{label}: the bypass recomputed no bracket"
+            );
+            assert_same_bits(&label, &cached, &bypassed);
+        }
+    }
+
     #[test]
     fn lag_cut_guard_is_false_without_inflow_lags() {
         let setup = committed_decks()
@@ -5743,6 +5832,7 @@ mod solve_cache_equivalence {
         assert!(!stores_a_lag_cut(&trained));
     }
 
+    /// The skip reads the lag-state depth, the boundary's included, never the AR order.
     #[test]
     #[cfg_attr(
         not(feature = "slow-tests"),

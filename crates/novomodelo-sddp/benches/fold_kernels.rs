@@ -706,6 +706,7 @@ fn chain_inputs<'a>(lay: &'a Layout, pool: &'a CutPool) -> ChainRuleInputs<'a> {
     ChainRuleInputs {
         slots: &lay.slots,
         resident_pool: pool,
+        resident_lag_point: lay.projection.lag_point(),
         extracted: &lay.projection,
         par: &lay.par,
         stage: 0,

@@ -16,7 +16,10 @@
 //!
 //! [`FutureCostFunction`]: crate::cut::fcf::FutureCostFunction
 
-use crate::{setup::NodeId, workspace::workspace::reserve_to};
+use crate::{
+    context::TrainingContext, setup::NodeId, training::stage_solve_prep::closes_lag_period,
+    workspace::workspace::reserve_to,
+};
 
 /// One local trial's stage cost, visited node and end-of-stage state at one stage.
 #[derive(Debug, Clone, Default)]
@@ -30,7 +33,39 @@ pub struct TrajectoryRecord {
     /// End-of-stage state vector (length `n_state`).
     pub state: Vec<f64>,
 
+    /// The lag accumulator this visit's pin read before the solve (length `n_hydros`); empty
+    /// unless a pool closes a lag period. Never persisted or exchanged.
+    pub(crate) partial_sum: Vec<f64>,
+
     pub(crate) frozen_brackets: FrozenBrackets,
+}
+
+impl TrajectoryRecord {
+    pub(crate) fn allocate(count: usize, training_ctx: &TrainingContext<'_>) -> Vec<Self> {
+        let closing = training_ctx
+            .cut_state_layouts
+            .iter()
+            .any(|layout| closes_lag_period(layout.lag_point()));
+        let n_partial_sum = if closing {
+            training_ctx.state.hydro_count
+        } else {
+            0
+        };
+        (0..count)
+            .map(|_| Self {
+                state: vec![0.0; training_ctx.state.n_state],
+                partial_sum: vec![0.0; n_partial_sum],
+                ..Self::default()
+            })
+            .collect()
+    }
+
+    /// The partial sum this visit's pin read; empty unless a pool closes a lag period.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn partial_sum(&self) -> &[f64] {
+        &self.partial_sum
+    }
 }
 
 /// The cut-RHS brackets B of one node's frozen rows in `active_cuts()` order,
@@ -75,6 +110,7 @@ impl FrozenBrackets {
 #[cfg(test)]
 mod tests {
     use super::{FrozenBrackets, NodeId, TrajectoryRecord};
+    use crate::test_support::{TrainingContextFixture, state_layout};
 
     #[test]
     fn construct_and_access_all_fields() {
@@ -150,6 +186,34 @@ mod tests {
         // neighbours read scenario=1,stage=2 → 7.0 and scenario=1,stage=4 → 9.0.
         assert_eq!(records[scenario * n_stages + 2].stage_cost, 7.0);
         assert_eq!(records[scenario * n_stages + 4].stage_cost, 9.0);
+    }
+
+    #[test]
+    fn a_record_holds_one_partial_sum_per_hydro_when_a_pool_is_closing() {
+        let fixture = TrainingContextFixture::new(state_layout(2, 1)).closing_lag_points();
+        let training_ctx = fixture.training_ctx();
+
+        let records = TrajectoryRecord::allocate(3, &training_ctx);
+
+        assert_eq!(records.len(), 3);
+        for record in &records {
+            assert_eq!(record.partial_sum, [0.0, 0.0]);
+            assert_eq!(record.state.len(), training_ctx.state.n_state);
+        }
+    }
+
+    #[test]
+    fn a_record_holds_no_partial_sum_when_no_pool_is_closing() {
+        let fixture = TrainingContextFixture::new(state_layout(2, 1));
+        let training_ctx = fixture.training_ctx();
+
+        let records = TrajectoryRecord::allocate(3, &training_ctx);
+
+        assert_eq!(records.len(), 3);
+        for record in &records {
+            assert_eq!(record.partial_sum.capacity(), 0);
+            assert_eq!(record.state.len(), training_ctx.state.n_state);
+        }
     }
 
     #[test]

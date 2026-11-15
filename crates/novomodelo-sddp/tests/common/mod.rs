@@ -220,6 +220,26 @@ pub fn build_setup_for_case(
     stochastic: StochasticContext,
     hydro_models: PrepareHydroModelsResult,
 ) -> StudySetup {
+    build_setup_for_case_with_boundary(
+        case_dir,
+        config,
+        system,
+        stochastic,
+        hydro_models,
+        boundary_requirements(case_dir, config),
+    )
+}
+
+/// [`build_setup_for_case`] with the boundary state requirements given, not resolved
+/// from `config.policy.boundary`.
+pub fn build_setup_for_case_with_boundary(
+    case_dir: &Path,
+    config: &Config,
+    system: &System,
+    stochastic: StochasticContext,
+    hydro_models: PrepareHydroModelsResult,
+    boundary: BoundaryStateRequirements,
+) -> StudySetup {
     let sentinel = Path::new("config.json");
     let training_source = config
         .training_scenario_source(sentinel)
@@ -230,7 +250,7 @@ pub fn build_setup_for_case(
 
     let mut construction = StudyParams::from_config(config, Vec::new())
         .expect("StudyParams::from_config must succeed");
-    construction.boundary = boundary_requirements(case_dir, config);
+    construction.boundary = boundary;
     construction.scalar_parameters = novomodelo_io::load_case_with_artifacts(case_dir)
         .expect("load_case_with_artifacts must succeed")
         .artifacts
@@ -256,6 +276,21 @@ pub fn fresh_system_and_setup_with(
     case_dir: &Path,
     mutate: impl FnOnce(&mut Config),
 ) -> (System, StudySetup) {
+    let mut config =
+        novomodelo_io::parse_config(&case_dir.join("config.json")).expect("config must parse");
+    mutate(&mut config);
+    let boundary = boundary_requirements(case_dir, &config);
+    fresh_system_and_setup_with_boundary(case_dir, boundary, |fresh| *fresh = config)
+}
+
+/// [`fresh_system_and_setup_with`] with the boundary state requirements given, not
+/// resolved from the mutated `config.policy.boundary`: the way to build a study whose
+/// lag state is widened past its PAR order with no boundary checkpoint on disk.
+pub fn fresh_system_and_setup_with_boundary(
+    case_dir: &Path,
+    boundary: BoundaryStateRequirements,
+    mutate: impl FnOnce(&mut Config),
+) -> (System, StudySetup) {
     let config_path = case_dir.join("config.json");
     let mut config = novomodelo_io::parse_config(&config_path).expect("config must parse");
     mutate(&mut config);
@@ -264,14 +299,13 @@ pub fn fresh_system_and_setup_with(
     let training_source = config
         .training_scenario_source(&config_path)
         .expect("training_scenario_source must parse");
-    let inflow_lag_depth = boundary_requirements(case_dir, &config).inflow_lag_depth();
     let prepare_result = prepare_stochastic(
         system,
         case_dir,
         &config,
         42,
         &training_source,
-        inflow_lag_depth,
+        boundary.inflow_lag_depth(),
     )
     .expect("prepare_stochastic must succeed");
     let system = prepare_result.system;
@@ -280,7 +314,14 @@ pub fn fresh_system_and_setup_with(
     let hydro_models =
         prepare_hydro_models(&system, case_dir, false).expect("prepare_hydro_models must succeed");
 
-    let setup = build_setup_for_case(case_dir, &config, &system, stochastic, hydro_models);
+    let setup = build_setup_for_case_with_boundary(
+        case_dir,
+        &config,
+        &system,
+        stochastic,
+        hydro_models,
+        boundary,
+    );
     (system, setup)
 }
 

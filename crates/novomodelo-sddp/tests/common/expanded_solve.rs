@@ -4,13 +4,14 @@
 
 use std::collections::{HashMap, HashSet};
 
-use novomodelo_sddp::indexer::{CutLagPoint, CutSlot, CutStateProjection, HydroSys, StateDim};
+use novomodelo_core::temporal::StageLagTransition;
+use novomodelo_sddp::indexer::{CutSlot, CutStateProjection, HydroSys, StateDim};
 use novomodelo_sddp::setup::StageIdx;
 use novomodelo_sddp::test_support::bound_recording::{
     BoundRecordingSolver, BoundWrite, RecordedSolve,
 };
 use novomodelo_sddp::test_support::expander::{
-    ExpandedLayout, ExpandedStudy, expanded_cut_rows_into, expanded_solve_patch,
+    ExpandedLayout, ExpandedStudy, expanded_solve_patch,
 };
 use novomodelo_sddp::test_support::template_structure::column_entries;
 use novomodelo_sddp::test_support::{
@@ -88,6 +89,11 @@ pub struct ExpandedSolve {
     pub cut_rows: RowBatch,
     /// Cut `k`'s lag coefficients at offset `k * N * L`, lag-major: offset `l * N + h` within a cut.
     pub lag_coefficients: Vec<f64>,
+    /// How the expanded cut rows read the lag region.
+    pub lag_point: OracleLagPoint,
+    /// The open lag period's partial sum per hydro that the expanded cut rows were written at;
+    /// the compact probe reads the live accumulator of a fresh workspace, zero.
+    pub partial_sum: Vec<f64>,
 }
 
 pub fn scale_at(scale: &[f64], index: usize) -> f64 {
@@ -107,6 +113,202 @@ pub fn lag_dims(layout: &ExpandedLayout) -> Vec<Option<(usize, usize)>> {
             })
         })
         .collect()
+}
+
+/// How a stage's cut rows read the lag region of its outgoing state, derived from the stage
+/// calendar alone: a stage that rebuilds its lags from the downstream ring evaluates them as at a
+/// shifting stage.
+#[derive(Clone, Debug, PartialEq)]
+pub enum OracleLagPoint {
+    /// Lag 0 is the realized inflow, lag `l >= 1` the incoming lag `l - 1`.
+    Shifted,
+    /// Every lag is the incoming lag it holds.
+    Carry,
+    /// Lag 0 is `(s_h + w·ẑ_h) / (W_h + w)` for the open period's partial sum `s_h`, lag `l >= 1`
+    /// as under `Shifted`.
+    Closing {
+        /// The stage's own weight `w`.
+        own_weight: f64,
+        /// `W_h + w` per hydro, or 1.0 where the lag chain does not scale.
+        period_weight: Vec<f64>,
+    },
+}
+
+impl OracleLagPoint {
+    /// `(b_h, c_h)` with lag 0 equal to `b_h + c_h·ẑ_h`.
+    fn closing_terms(own_weight: f64, period_weight: f64, partial_sum: f64) -> (f64, f64) {
+        (partial_sum / period_weight, own_weight / period_weight)
+    }
+
+    fn lag0_terms(&self, hydro: usize, partial_sum: &[f64]) -> Option<(f64, f64)> {
+        match self {
+            Self::Closing {
+                own_weight,
+                period_weight,
+            } => Some(Self::closing_terms(
+                *own_weight,
+                period_weight[hydro],
+                partial_sum[hydro],
+            )),
+            Self::Shifted | Self::Carry => None,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct OracleWeights {
+    primary: Vec<f64>,
+    downstream: f64,
+    completed: usize,
+}
+
+impl OracleWeights {
+    fn accumulate(&mut self, stage: &StageLagTransition, downstream_par_order: usize) {
+        for held in &mut self.primary {
+            *held += stage.accumulate_weight;
+        }
+        if downstream_par_order > 0 && stage.accumulate_downstream {
+            self.downstream += stage.downstream_accumulate_weight;
+            if stage.downstream_finalize && self.downstream > 0.0 {
+                self.completed = (self.completed + 1).min(downstream_par_order);
+                self.downstream = stage.downstream_spillover_weight.max(0.0);
+            }
+        }
+    }
+
+    fn close(&mut self, stage: &StageLagTransition) {
+        if stage.rebuild_from_downstream && self.completed > 0 {
+            self.completed = 0;
+            self.downstream = 0.0;
+        } else if stage.finalize_period {
+            self.primary.fill(stage.spillover_weight.max(0.0));
+        }
+    }
+}
+
+/// The point at which the cut rows of `stage` read the lag region, from the stage transitions and
+/// the per-hydro weight the lag period holds at the start of the trajectory.
+pub fn oracle_lag_point(
+    transitions: &[StageLagTransition],
+    seed_weight: &[f64],
+    downstream_par_order: usize,
+    n_hydros: usize,
+    stage: usize,
+) -> OracleLagPoint {
+    let Some(own) = transitions.get(stage) else {
+        return OracleLagPoint::Shifted;
+    };
+    let mut weights = OracleWeights {
+        primary: if seed_weight.is_empty() {
+            vec![0.0; n_hydros]
+        } else {
+            seed_weight.to_vec()
+        },
+        downstream: 0.0,
+        completed: 0,
+    };
+    for earlier in &transitions[..stage] {
+        weights.accumulate(earlier, downstream_par_order);
+        weights.close(earlier);
+    }
+    let mut after_own_accumulation = weights.clone();
+    after_own_accumulation.accumulate(own, downstream_par_order);
+    if own.rebuild_from_downstream && after_own_accumulation.completed > 0 {
+        OracleLagPoint::Shifted
+    } else if own.finalize_period {
+        OracleLagPoint::Closing {
+            own_weight: own.accumulate_weight,
+            period_weight: weights
+                .primary
+                .iter()
+                .map(|&held| {
+                    let total = held + own.accumulate_weight;
+                    if total > 0.0 { total } else { 1.0 }
+                })
+                .collect(),
+        }
+    } else {
+        OracleLagPoint::Carry
+    }
+}
+
+fn row_entry(coefficient: f64, weight: f64, col_scale: f64) -> f64 {
+    -(coefficient * weight) * col_scale
+}
+
+#[expect(
+    clippy::expect_used,
+    reason = "the solver C API takes i32 offsets and column indices, and a stage LP is far below i32::MAX"
+)]
+fn csr_index(n: usize) -> i32 {
+    i32::try_from(n).expect("CSR index exceeds i32::MAX")
+}
+
+/// Writes the cuts of `slots` of `pool` into `batch` as rows of the expanded LP, in list order,
+/// scaled by the stage's expanded `col_scale`, each lag slot read at `lag_point`: a `Shifted` lag
+/// on the column that carries it out of the stage, a `Carry` lag on its own incoming column, and a
+/// `Closing` lag 0 as `c_h·z_h` on the z column with `b_h` moved to the row's bound.
+///
+/// # Panics
+///
+/// Panics if a cut's coefficient count differs from `cut_state.n_slots()`, or a column index or the
+/// entry count exceeds `i32::MAX`.
+// Rationale (too_many_arguments): the rows are a function of the pool's slots, the projection,
+// the expanded layout, the stage's scale and the two facts of the lag point; a wrapper struct
+// would only relocate the same values.
+#[allow(clippy::too_many_arguments)]
+pub fn expanded_cut_rows_into(
+    batch: &mut RowBatch,
+    pool: &CutPool,
+    slots: &[usize],
+    cut_state: &CutStateProjection,
+    layout: &ExpandedLayout,
+    col_scale: &[f64],
+    lag_point: &OracleLagPoint,
+    partial_sum: &[f64],
+) {
+    batch.clear();
+    let state = layout.state();
+    let lag_of = lag_dims(layout);
+    for &slot in slots {
+        let (intercept, coefficients) = (pool.intercept(slot), pool.coefficient_row(slot));
+        assert_eq!(
+            coefficients.len(),
+            cut_state.n_slots(),
+            "cut slot {slot}: coefficient count"
+        );
+        batch.row_starts.push(csr_index(batch.values.len()));
+        let mut lower = intercept;
+        for (j, &coefficient) in coefficients.iter().enumerate() {
+            let d = cut_state.global_state_index(CutSlot::new(j));
+            if state.nonzero_state_indices.binary_search(&d).is_err() {
+                continue;
+            }
+            let (column, weight) = match (lag_of[d.get()], lag_point) {
+                (Some((h, 0)), OracleLagPoint::Closing { .. }) => {
+                    let (b, c) = lag_point
+                        .lag0_terms(h, partial_sum)
+                        .expect("a closing point has lag-0 terms");
+                    lower += coefficient * b;
+                    (layout.z_col(HydroSys::new(h)), c)
+                }
+                (Some((h, l)), OracleLagPoint::Carry) => {
+                    (layout.incoming_lag_col(HydroSys::new(h), l), 1.0)
+                }
+                _ => (layout.outgoing_state_col(d), 1.0),
+            };
+            batch.col_indices.push(csr_index(column));
+            batch
+                .values
+                .push(row_entry(coefficient, weight, col_scale[column]));
+        }
+        batch.col_indices.push(csr_index(state.theta));
+        batch.values.push(col_scale[state.theta]);
+        batch.row_lower.push(lower);
+        batch.row_upper.push(f64::INFINITY);
+        batch.num_rows += 1;
+    }
+    batch.row_starts.push(csr_index(batch.values.len()));
 }
 
 /// The stages `s >= 1` with an active cut whose producer pool `s - 1` stores fewer dimensions than
@@ -273,6 +475,57 @@ pub fn assemble_expanded_solve(
     incoming_state: &[f64],
     raw_noise: &[f64],
 ) -> ExpandedSolve {
+    let partial_sum = vec![0.0; expanded.layout.state().hydro_count];
+    assemble_expanded_solve_at(
+        compact,
+        expanded,
+        fcf,
+        rows,
+        stage,
+        incoming_state,
+        raw_noise,
+        &partial_sum,
+    )
+}
+
+fn lag_coefficient_rows(
+    layout: &ExpandedLayout,
+    cut_pool: &CutPool,
+    slots: &[usize],
+    projection: &CutStateProjection,
+) -> Vec<f64> {
+    let lag_dims = lag_dims(layout);
+    let dims = layout.state();
+    let width = dims.hydro_count * dims.max_par_order;
+    let mut lag_coefficients = vec![0.0; slots.len() * width];
+    for (k, &slot) in slots.iter().enumerate() {
+        for (j, &coefficient) in cut_pool.coefficient_row(slot).iter().enumerate() {
+            let d = projection.global_state_index(CutSlot::new(j)).get();
+            if let Some((h, l)) = lag_dims[d] {
+                lag_coefficients[k * width + l * dims.hydro_count + h] = coefficient;
+            }
+        }
+    }
+    lag_coefficients
+}
+
+/// [`assemble_expanded_solve`] with the expanded cut rows written at `partial_sum`, the open lag
+/// period's partial sum per hydro that the cuts' visit held. The compact solve stays at the live
+/// accumulator of a fresh workspace, zero, so only a value of the expanded LP is comparable at a
+/// non-zero `partial_sum`.
+// Rationale (too_many_arguments): the parameters are `assemble_expanded_solve`'s plus the partial
+// sum; a wrapper struct would only rename them.
+#[allow(clippy::too_many_arguments)]
+pub fn assemble_expanded_solve_at(
+    compact: &StudySetup,
+    expanded: &ExpandedStudy,
+    fcf: &FutureCostFunction,
+    rows: &CutRowSet,
+    stage: usize,
+    incoming_state: &[f64],
+    raw_noise: &[f64],
+    partial_sum: &[f64],
+) -> ExpandedSolve {
     let layout = &expanded.layout;
     let pool = rows.resident_pool;
     let slots = &rows.slots;
@@ -382,6 +635,18 @@ pub fn assemble_expanded_solve(
         template.col_upper[col] = pin;
     }
 
+    let lag_point = oracle_lag_point(
+        ctx.stage_lag_transitions,
+        training_ctx.lag_weight_seed,
+        training_ctx.study_dims.downstream_par_order,
+        layout.state().hydro_count,
+        stage,
+    );
+    assert_eq!(
+        partial_sum.len(),
+        layout.state().hydro_count,
+        "stage {stage} pool {pool}: one partial sum per hydro"
+    );
     let mut cut_rows = empty_row_batch();
     expanded_cut_rows_into(
         &mut cut_rows,
@@ -390,6 +655,8 @@ pub fn assemble_expanded_solve(
         projection,
         layout,
         &expanded.scaled[stage].col_scale,
+        &lag_point,
+        partial_sum,
     );
     assert_eq!(
         cut_rows.num_rows,
@@ -397,18 +664,7 @@ pub fn assemble_expanded_solve(
         "stage {stage} pool {pool}: expanded cut-row count"
     );
 
-    let lag_dims = lag_dims(layout);
-    let dims = layout.state();
-    let width = dims.hydro_count * dims.max_par_order;
-    let mut lag_coefficients = vec![0.0; slots.len() * width];
-    for (k, &slot) in slots.iter().enumerate() {
-        for (j, &coefficient) in cut_pool.coefficient_row(slot).iter().enumerate() {
-            let d = projection.global_state_index(CutSlot::new(j)).get();
-            if let Some((h, l)) = lag_dims[d] {
-                lag_coefficients[k * width + l * dims.hydro_count + h] = coefficient;
-            }
-        }
-    }
+    let lag_coefficients = lag_coefficient_rows(layout, cut_pool, slots, projection);
 
     ExpandedSolve {
         compact: compact_solve,
@@ -418,6 +674,8 @@ pub fn assemble_expanded_solve(
         template,
         cut_rows,
         lag_coefficients,
+        lag_point,
+        partial_sum: partial_sum.to_vec(),
     }
 }
 
@@ -1025,12 +1283,34 @@ const COMPACT_CLOSING_ADDS: usize = 3;
 const Z_RHS_ROUNDINGS: usize = 3;
 /// `ẑ_h` takes one subtraction and one division after `b_h` and the column sum.
 const Z_CLOSING_ROUNDINGS: usize = 2;
+/// A closing lag 0 adds a product and a sum to the chain of `p` and to the chain of `ẑ`.
+const CLOSING_LAG0_ROUNDINGS: usize = 2;
+
+fn closing_rounds(lag_point: &OracleLagPoint) -> usize {
+    match lag_point {
+        OracleLagPoint::Closing { .. } => CLOSING_LAG0_ROUNDINGS,
+        OracleLagPoint::Shifted | OracleLagPoint::Carry => 0,
+    }
+}
 
 /// Longest chain of the compact RHS over its terms: S's dot and the three adds; p's accumulation,
-/// P's dot and the last two adds; W's dot and the last add; α's three adds.
-fn compact_chain_length(lag_point: &CutLagPoint, n_hydros: usize, lag_depth: usize) -> usize {
-    let s_chain = lag_point.shifted().len() + COMPACT_CLOSING_ADDS;
-    let p_chain = (lag_depth + 1) + n_hydros + (COMPACT_CLOSING_ADDS - 1);
+/// the closing lane, P's dot and the last two adds; W's dot and the last add; α's three adds.
+/// S dots every lag slot under `Carry` and the slots past lag 0 otherwise.
+fn compact_chain_length(
+    lag_point: &OracleLagPoint,
+    lag_slots: usize,
+    n_hydros: usize,
+    lag_depth: usize,
+) -> usize {
+    let s_slots = match lag_point {
+        OracleLagPoint::Carry => lag_slots,
+        OracleLagPoint::Shifted | OracleLagPoint::Closing { .. } => {
+            lag_slots.saturating_sub(n_hydros)
+        }
+    };
+    let s_chain = s_slots + COMPACT_CLOSING_ADDS;
+    let p_chain =
+        (lag_depth + 1) + closing_rounds(lag_point) + n_hydros + (COMPACT_CLOSING_ADDS - 1);
     let w_chain = n_hydros + 1;
     s_chain.max(p_chain).max(w_chain).max(COMPACT_CLOSING_ADDS)
 }
@@ -1041,9 +1321,10 @@ fn z_chain_length(lag_depth: usize) -> usize {
     (Z_RHS_ROUNDINGS + Z_CLOSING_ROUNDINGS).max(lag_depth + Z_CLOSING_ROUNDINGS)
 }
 
-/// Longest chain of the expanded RHS: `ẑ_h`, then the dot over the lag slots and α's add.
-fn expanded_chain_length(lag_point: &CutLagPoint, lag_depth: usize) -> usize {
-    z_chain_length(lag_depth) + lag_point.full().len() + 1
+/// Longest chain of the expanded RHS: `ẑ_h`, the closing lag 0, then the dot over the lag slots and
+/// α's add.
+fn expanded_chain_length(lag_point: &OracleLagPoint, lag_slots: usize, lag_depth: usize) -> usize {
+    z_chain_length(lag_depth) + closing_rounds(lag_point) + lag_slots + 1
 }
 
 struct ZDefinition {
@@ -1244,8 +1525,8 @@ pub fn check_compact_cut_rhs(
         dims.n_state,
         "{label} stage {stage}: incoming state length vs state dimension count"
     );
-    let lag_point = cut_state.lag_point();
-    let lag_slots = lag_point.full();
+    let lag_point = &solve.lag_point;
+    let lag_slots = cut_state.lag_point().full();
     assert!(
         lag_slots.is_empty() || lag_slots.len() == n_hydros * depth,
         "{label} stage {stage}: {} lag slots vs {n_hydros} hydros x {depth} lags",
@@ -1268,8 +1549,8 @@ pub fn check_compact_cut_rhs(
         incoming_state,
         &lag_state_dim,
     );
-    let chain = compact_chain_length(lag_point, n_hydros, depth)
-        .max(expanded_chain_length(lag_point, depth));
+    let chain = compact_chain_length(lag_point, lag_slots.len(), n_hydros, depth)
+        .max(expanded_chain_length(lag_point, lag_slots.len(), depth));
     let pool = &fcf.pools[solve.rows.resident_pool];
     let col_scale = &expanded.scaled[stage].col_scale;
 
@@ -1283,20 +1564,40 @@ pub fn check_compact_cut_rhs(
             let (lag, hydro_index) = (offset / n_hydros, offset % n_hydros);
             let hydro = HydroSys::new(hydro_index);
             let coefficient = beta[lag_slot];
-            let (column, value) = if lag == 0 {
-                (layout.z_col(hydro), z_defs[hydro_index].z_hat)
-            } else {
-                let dim = lag_state_dim[(lag - 1) * n_hydros + hydro_index];
+            let incoming = |lag: usize| {
+                let dim = lag_state_dim[lag * n_hydros + hydro_index];
                 (
                     layout.incoming_state_col(StateDim::new(dim)),
                     incoming_state[dim],
                 )
             };
+            let z_hat = z_defs[hydro_index].z_hat;
+            let (column, value, weight, anchor) = match (lag_point, lag) {
+                (OracleLagPoint::Carry, lag) => {
+                    let (column, value) = incoming(lag);
+                    (column, value, 1.0, 0.0)
+                }
+                (OracleLagPoint::Closing { .. }, 0) => {
+                    let (b, c) = lag_point
+                        .lag0_terms(hydro_index, &solve.partial_sum)
+                        .expect("a closing point has lag-0 terms");
+                    (layout.z_col(hydro), b + c * z_hat, c, b)
+                }
+                (_, 0) => (layout.z_col(hydro), z_hat, 1.0, 0.0),
+                (_, lag) => {
+                    let (column, value) = incoming(lag - 1);
+                    (column, value, 1.0, 0.0)
+                }
+            };
+            let carried_column = if matches!(lag_point, OracleLagPoint::Carry) {
+                layout.incoming_lag_col(hydro, lag)
+            } else {
+                layout.outgoing_lag_col(hydro, lag)
+            };
             assert_eq!(
-                layout.outgoing_lag_col(hydro, lag),
-                column,
+                carried_column, column,
                 "{label} stage {stage} cut row {row} (slot {slot}): hydro {hydro_index} lag \
-                 {lag}: outgoing_lag_col vs the column that carries the value"
+                 {lag}: the column the lag point names vs the column that carries the value"
             );
             assert_eq!(
                 cut_state.global_state_index(CutSlot::new(lag_slot)).get(),
@@ -1304,12 +1605,13 @@ pub fn check_compact_cut_rhs(
                 "{label} stage {stage} cut row {row} (slot {slot}): slot {lag_slot} vs the state \
                  dimension of hydro {hydro_index} lag {lag}"
             );
+            let expected = row_entry(coefficient, weight, col_scale[column]);
             match attached.get(&column) {
                 Some(&entry) => assert!(
-                    entry.to_bits() == (-coefficient * col_scale[column]).to_bits(),
+                    entry.to_bits() == expected.to_bits(),
                     "{label} stage {stage} cut row {row} (slot {slot}): hydro {hydro_index} lag \
-                     {lag}: the expanded cut row holds {entry:e} at column {column}, expected {:e}",
-                    -coefficient * col_scale[column]
+                     {lag}: the expanded cut row holds {entry:e} at column {column}, expected \
+                     {expected:e}"
                 ),
                 None => assert!(
                     coefficient == 0.0,
@@ -1320,8 +1622,9 @@ pub fn check_compact_cut_rhs(
             let term = coefficient * value;
             lag_sum += term;
             magnitude += term.abs();
-            if lag == 0 {
-                magnitude += coefficient.abs() * z_defs[hydro_index].magnitude;
+            if lag == 0 && !matches!(lag_point, OracleLagPoint::Carry) {
+                magnitude +=
+                    coefficient.abs() * (anchor.abs() + weight * z_defs[hydro_index].magnitude);
             }
             has_lag_terms |= coefficient != 0.0;
         }
@@ -1337,8 +1640,8 @@ pub fn check_compact_cut_rhs(
              RHS {rhs_exp:e} (alpha {alpha:e}, lag terms {lag_sum:e}), gap {gap:e} > 2*gamma_n*S \
              {bound:e} (S = {magnitude:e}, n = {chain}: compact {}, expanded {}; hydro noise \
              {raw_noise_hydro:?})",
-            compact_chain_length(lag_point, n_hydros, depth),
-            expanded_chain_length(lag_point, depth)
+            compact_chain_length(lag_point, lag_slots.len(), n_hydros, depth),
+            expanded_chain_length(lag_point, lag_slots.len(), depth)
         );
         report.rows_checked += 1;
         report.largest_chain = chain;

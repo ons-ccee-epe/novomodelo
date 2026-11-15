@@ -105,7 +105,7 @@ At stage t with trial state (v̂, â) and opening η:
 p_h   = b_h + Σ_l ψ_{h,l} â_{h,l}             once per trial point
 ẑ_h   = p_h + σ_h η_h                          once per solve
 base row r:  bound̃_r = r_r · (bound_r − Σ_h G_{r,h} ẑ_h)    both finite bounds; bound_r is the unscaled template bound
-cut row k:   row_lower_k = α_k + Σ_{j ∈ lag slots of P_t} β_{k,j} Φ_{t,j}(â, ẑ),  row_upper_k = +∞
+cut row k:   row_lower_k = α_k + Σ_{j ∈ lag slots of P_t} β_{k,j} Φ_{t,j}(â, ẑ, s),  row_upper_k = +∞
 ```
 
 `G_{r,h} = A_{r,z_h}`: the unscaled coefficient the builder records for hydro h's
@@ -122,11 +122,25 @@ the compact LP is today's LP with each z column fixed at ẑ_h and eliminated in
 bounds of the rows it touches, and with the lag columns and the z rows dropped: the
 elimination a presolve would perform, done by the builder.
 
-Φ_t is the lag point at which stage t's cut rows evaluate the successor cut. It is the
-alias that `StateSpace::state_to_lp_column` encodes in today's LP: Φ_{(h,0)} = ẑ_h and
-Φ_{(h,l)} = â_{h,l−1} for l ≥ 1. It does not depend on the multi-resolution
-accumulator, which only builds the outgoing state vector. So reproducing today's
-cuts needs no accumulator weights.
+Φ_t is the lag point at which stage t's cut rows evaluate the successor cut: the lag
+region the stage's `assemble_outgoing_state` writes. Its mode is fixed at setup by the
+stage's lag transition and the lag-kernel weights:
+
+| Mode | Φ_{(h,0)} | Φ_{(h,l)}, l ≥ 1 |
+|---|---|---|
+| Shifted | ẑ_h | â_{h,l−1} |
+| Carry | â_{h,0} | â_{h,l} |
+| Closing | b_h + c_h ẑ_h | â_{h,l−1} |
+
+Shifted is the alias that `StateSpace::state_to_lp_column` encodes in the expanded LP.
+A stage that leaves its lag period open is Carry, since its outgoing lags are the
+incoming ones. A stage that closes a period that began at an earlier stage is Closing:
+with s_h the period's partial sum at the visit, W_h the weight the period holds on
+entering the stage and w the stage's own weight, b_h = s_h/(W_h + w) and
+c_h = w/(W_h + w). A single-resolution stage, and a stage that rebuilds its lags from
+the downstream ring, stay Shifted; the rebuild warns once at setup, and a uniform study
+has every pool Shifted. s_h is the partial sum the pin of the cut-row RHS read at its
+own forward visit (§4.4).
 
 Today's lag and z columns have objective coefficient exactly 0, and the shift adds no
 constant offset, so the compact LP's optimal value Q equals today's.
@@ -185,7 +199,17 @@ g_h        = − Σ_{r ∈ R} G_{r,h} π_r  +  Σ_k y_k β_{k,(h,0)}
   (h, l+1) and contributes 0 if P_t lacks it; g_h reads P_t's slot for (h, 0) if present.
 - **General form,** through the Φ_t owner (§4.4): with `M_z = ∂Φ_t/∂ẑ`,
   `M_a = ∂Φ_t/∂â` and `w = Σ_k y_k β_k^lag`, `g = −Gᵀπ + M_zᵀ w` and
-  `β^new,lag = Ψᵀ g + M_aᵀ w`. Today `M_z = E_0` and `M_a` is the shift.
+  `β^new,lag = Ψᵀ g + M_aᵀ w`. s is held constant, never differentiated. The two
+  formulas above are the Shifted form, where `M_z = E_0` and `M_a` is the shift.
+  Carry has `M_z = 0` and `M_a = I`: `g_h = −Σ G_{r,h} π_r`, and `w` sums every lag slot,
+  so `β^new_{h,l} = ψ_{h,l} g_h + Σ_k y_k β_{k,(h,l)}` for every l. Closing keeps
+  `M_a` as the shift and scales the lag-0 cut term by c_h:
+  `g_h = −Σ G_{r,h} π_r + c_h Σ_k y_k β_{k,(h,0)}`.
+- **The limit.** The state carries the period's mean b_h + c_h ẑ_h, not s_h, so a cut
+  generated at one trial's s is read at another's. A Closing cut is exact only where s
+  is the same on every path of the study. Where the partial sums of an open period differ
+  between paths the cuts are approximate and the lower bound is not guaranteed to stay
+  below the upper bound. No setup warning flags such a study.
 
 ### 3.4 Intercept
 
@@ -326,17 +350,26 @@ larger one: the template the builder emits is the template the solver loads.
 
 ### 4.4 One owner for the cut-evaluation lag point
 
-Φ_t, M_z and M_a are owned in one place, and both the cut-RHS function (§5.1) and the
-chain rule (§3.3) read it. Today it encodes the fixed alias. The owner resolves the
-alias at setup into slot ranges per projection: the lag-0 slots, read against p and
-σ·η, and the lag ≥ 1 slots, read against â one lag back. The kernels read those ranges
-and write into the caller's buffer; no kernel consults the owner per element.
+Φ_t, M_z and M_a are owned in one place, `CutLagPoint`, and both the cut-RHS function
+(§5.1) and the chain rule (§3.3) read it. It holds the pool's mode, the Closing
+coefficients (1/(W_h + w), c_h and W_h per hydro) and the slot ranges per projection:
+the lag-0 slots, read against p and σ·η, and the lag ≥ 1 slots, read against â one lag
+back. Under Carry the lag-0 range is empty and the shifted range spans every lag slot,
+so every slot reads the lag it holds. The kernels read those ranges and write into the
+caller's buffer; no kernel consults the owner per element. Two lane writers produce
+the operands the P and W dots read: b + c ⊙ p and c ⊙ σ·η under Closing, the input slice
+itself under the other modes. The chain rule branches on the resident pool's mode, and
+`has_lag_slots` reads the full lag region, which a Carry pool has even though its lag-0
+range is empty.
 
-A later change that evaluates lag 0 as a month average when a month spans several
-stages starts at this owner but does not end there. At a non-closing stage M_z = 0 and
-M_a = I, so the chain rule reads slot (h, l) instead of (h, l+1) and the RHS loses its
-P and W terms: the kernels' operands change, not only the owner. That change also has
-open questions of its own (§12).
+s is not part of the state. Each pin reads the partial sum of its own forward visit: a
+forward pin the accumulator its trial's `AccumSnapshot` restored, a sampled backward pin
+of trial m at stage `successor` the record `m·n_stages + successor`, independently of
+the bracket slab, and the replicated backward its node's `AccumSnapshot`. s is
+rank-local and never enters `state`, an MPI payload, a checkpoint or a policy. The
+replicated backward's source holds on every rank only while `TrainingSession::new`
+rejects interior branching under enumerated traversal at world size ≥ 2; an interior-node
+state exchange must carry the node's `AccumSnapshot` with its `out_state`.
 
 ### 4.5 Buffers of record
 
@@ -441,7 +474,8 @@ RHS_k = fl(B_k + W_k)
   along the inner dimension, so an element's bits never depend on which rows or trials
   share its call.
 - The function reads the slot ranges the Φ_t owner resolves at setup (§4.4), not
-  hard-coded slots.
+  hard-coded slots. Under Carry the lag-0 range is empty, so P and W vanish and S runs
+  over every lag slot; under Closing P reads b + c ⊙ p and W reads c ⊙ σ·η.
 - A cache stores only values this function produced, so cache on and cache off give
   the same bits.
 - This is a new definition: β₀·ẑ is split into P + W, which is not bit-equal to one
@@ -537,8 +571,9 @@ The kernel takes Gᵀπ and a borrowed slice of (slot, y) pairs of any length, i
 ascending slot order, and never reads the G store, so T-ID (§9.3) can feed it values
 formed on the expanded LP. It skips an exact-zero weight (y, ȳ, or μ, the last before any of that opening's adds) and accumulates each
 ḡ_h in one accumulator: the Gᵀπ terms in canonical ω order, then the ȳ_k β_{k,(h,0)}
-terms in ascending slot. With both rules its bits do not depend on whether zero duals
-or zero-weight openings are present. A Σ_k summed separately from +0.0 and added afterwards breaks this:
+terms in ascending slot; a Closing pool forms that lag-0 sum apart from −0.0, scales it
+once by c_h and adds the product to ḡ_h. With both rules its bits do not depend on
+whether zero duals or zero-weight openings are present. A Σ_k summed separately from +0.0 and added afterwards breaks this:
 +0.0 + (−0.0) is +0.0, and the sign the per-opening shape preserves is lost.
 
 The aggregate-first shape goes into production only after the per-opening shape passes
@@ -1016,8 +1051,9 @@ New:
     DCS appends, lower-bound rows including deactivated ones, the simulation cut set,
     and terminal boundary rows.
 11. **The cut-evaluation lag point has one owner.** Φ_t, M_z and M_a live in one place,
-    resolved at setup into slot ranges; the RHS function and the chain rule both read
-    them. A cached bracket is valid only for the (iteration, node_id, â bits, child) it
+    resolved at setup into a mode, its Closing coefficients and slot ranges; the RHS
+    function and the chain rule both read them, and each pin reads its own visit's
+    partial sum. A cached bracket is valid only for the (iteration, node_id, â bits, child) it
     was computed for.
 12. **The cut-row RHS has one association.** ((α + S) + P) + W, each dot ascending,
     vectorized across rows or trials only, no `mul_add`, independent of batch shape;
@@ -1109,7 +1145,7 @@ conversion is exact only for first-try solves, since retries change solver optio
     `inflow_slack_follows_z_routing_for_prefilling`;
   - generic `HydroInflow`: the sink test, T4-4 and the `hydro_inflow_travel_time.rs`
     equivalence;
-  - the Φ alias: T4-2, T4-7, the d16 lag-shift twin, d29 and d30.
+  - the Φ_t modes: T4-2, T4-7, the d16 lag-shift twin, d29 and d30.
 
   The sweep and the travel-time equivalence are retargeted onto the sink's entries
   before the switch-over and run on both emissions while the arm exists. The sweep
@@ -1143,7 +1179,7 @@ Each test is labeled `/// derived:` and has a non-degeneracy twin.
 | T4-4 | Hand-built binding generic `hydro_inflow` row of range sense | Missing −w·π_gen; equality or range rows shifting only one bound |
 | T4-5 | Storage-only projection | Lag slots leaking into a storage-only cut |
 | T4-6 | Truncation with ẑ < 0 | Differentiating l\* |
-| T4-7 | Multi-resolution non-finalize stage | Breaking today's alias |
+| T4-7 | Multi-resolution non-finalizing and finalizing stages | Evaluating a Carry or Closing pool's cuts at the Shifted alias |
 
 ### 9.3 Twin tests on the production path
 
@@ -1346,7 +1382,7 @@ The §9.3 checks are labelled by what they check: basis transfer, the primary KK
 | 9.1 Coupling-independence set: chronological −τ_k | landed | `every_study_reads_z_inflow_on_its_water_rows`, `inflow_coupling_chronological_stage_is_minus_tau_per_block_row`, `chronological_inflow_noise_moves_only_its_own_hydro` |
 | 9.1 Coupling-independence set: the PreFilling route | landed | `every_study_reads_z_inflow_on_its_water_rows`, `inflow_coupling_prefilling_routes_to_the_target_water_rows`, `a_prefilling_upstream_inflow_is_priced_at_the_target_water_value`, `a_prefilling_upstream_inflow_is_priced_at_the_target_water_value_with_the_productivities_swapped`, `d39_converges_to_known_optimum`, `d40_converges_to_known_optimum`, `inflow_slack_follows_z_routing_for_prefilling` |
 | 9.1 Coupling-independence set: generic `HydroInflow` | landed | `inflow_coupling_merges_generic_hydro_inflow_terms_on_one_hydro`, `a_range_inflow_row_prices_the_lag_on_both_of_its_sides`, `a_range_inflow_row_prices_the_lag_on_both_of_its_sides_on_a_narrower_range`, and every test of `hydro_inflow_travel_time` (for example `hydro_inflow_rows_match_the_water_balance_inflow_side_with_travel_time`) |
-| 9.1 Coupling-independence set: the Φ alias | landed | `an_injected_binding_cut_adds_its_next_lag_coefficient_to_the_producer_cut`, `an_injected_binding_cut_adds_its_next_lag_coefficient_to_the_producer_cut_with_the_injected_lags_swapped`, `a_non_finalizing_stage_keeps_the_lag_alias`, `a_finalizing_stage_keeps_the_lag_alias`, `d16_par1_lag_shift`, `d29_weekly_par_noise_sharing`, `d30_multi_resolution_loads_and_trains` |
+| 9.1 Coupling-independence set: the Φ_t modes | landed | `an_injected_binding_cut_adds_its_next_lag_coefficient_to_the_producer_cut`, `an_injected_binding_cut_adds_its_next_lag_coefficient_to_the_producer_cut_with_the_injected_lags_swapped`, `a_non_finalizing_stage_evaluates_cuts_at_the_carried_lags`, `a_finalizing_stage_evaluates_cuts_at_the_closing_period_mean`, `d16_par1_lag_shift`, `d29_weekly_par_noise_sharing`, `d30_multi_resolution_loads_and_trains` |
 | 9.1 Mutation-kill table | discharged | run once against the coupling-independence set above, recorded in the switch-over commit message, no permanent code |
 | 9.1 Scaling | landed | `expanded_scaling_follows_the_compact_template` |
 | 9.1 Fewer columns and base rows | landed | `expanded_scaling_follows_the_compact_template` (asserts the column and row counts against the compact template) |
@@ -1358,7 +1394,7 @@ The §9.3 checks are labelled by what they check: basis transfer, the primary KK
 | 9.2 T4-4 | landed | `a_range_inflow_row_prices_the_lag_on_both_of_its_sides`, `a_range_inflow_row_prices_the_lag_on_both_of_its_sides_on_a_narrower_range` |
 | 9.2 T4-5 | landed | `a_storage_only_cut_carries_no_lag_coefficient`, `a_cut_that_keeps_the_lag_state_carries_its_lag_coefficient` |
 | 9.2 T4-6 | landed | `a_truncated_negative_draw_prices_the_lag_without_the_truncation_bound`, `a_truncated_positive_draw_prices_the_lag_at_the_same_water_value` |
-| 9.2 T4-7 | landed | `a_non_finalizing_stage_keeps_the_lag_alias`, `a_finalizing_stage_keeps_the_lag_alias` |
+| 9.2 T4-7 | landed | `a_non_finalizing_stage_evaluates_cuts_at_the_carried_lags`, `a_finalizing_stage_evaluates_cuts_at_the_closing_period_mean` |
 | 9.3 Basis transfer | landed | `the_mapped_compact_basis_is_optimal_on_the_expanded_lp`, `the_mapped_compact_basis_is_optimal_on_d43_outside_its_lag_dropping_stage`, `every_lag_deck_warm_starts_from_the_mapped_basis` |
 | 9.3 Primary KKT check | landed | `the_lifted_compact_solution_meets_every_expanded_row`, `compact_and_expanded_agree_at_identical_pinned_states`, `compact_and_expanded_agree_at_identical_pinned_states_on_every_lag_deck` |
 | 9.3 KKT configuration per cut-row-set shape | landed | `the_fold_meets_the_expanded_kkt_conditions_at_every_cut_row_shape` (its differing-projection configurations are a storage-only and a lag-only resident pool), `solve_site_kinds_are_listed_once` |
@@ -1459,9 +1495,9 @@ any run.
 
 ## 12. Out of scope
 
-- Evaluating lag 0 of the cuts as a month average when a month spans several stages.
-  The Φ_t owner of §4.4 is where that change starts; it has its own open questions on
-  the state space and on the noise grouping.
+- Cuts that stay exact where the partial sum of an open lag period differs between
+  paths. They would carry s in the state, which changes the state space and every cut
+  and policy layout; the limit of §3.3 stands.
 - FPHA reading z for tailrace lateral inflow (a new coupling goes through the
   inflow-coupling sink, so the chain rule picks it up with no special case).
 - Folding the truncation slack.

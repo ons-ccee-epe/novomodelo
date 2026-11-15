@@ -966,6 +966,8 @@ impl BackwardPassState {
                     probabilities: &self.probabilities_buf,
                     cut_state: &training_ctx.cut_state_layouts[pool_id],
                     slab: SlabLookup::Unavailable,
+                    records: &[],
+                    n_stages: 0,
                     stage_noise: None,
                 };
 
@@ -983,6 +985,7 @@ impl BackwardPassState {
                     &succ_spec,
                     &outcomes,
                     x_hat,
+                    inputs.enumerated_state.lag_accumulator(node_pos),
                     pool_id,
                     inputs.enumerated_state,
                 )?;
@@ -2076,6 +2079,8 @@ fn compute_one_backward_node<S: SolverInterface + Send, C: Communicator>(
         probabilities: &state.probabilities_buf,
         cut_state: cut_state_projection,
         slab,
+        records: inputs.records,
+        n_stages: training_ctx.horizon.num_stages(),
         stage_noise: stage_noise_table.then_some(&state.stage_noise),
     };
     let node_params = BackwardNodeParams {
