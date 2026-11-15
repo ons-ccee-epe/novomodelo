@@ -22,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `constraints/thermal_bounds.parquet` accepts `cost_per_mwh` on a row with a
   `block_id`, pricing that block's generation. Such rows on a thermal with
   `anticipated_config` are still refused.
+- `estimation.history_years` in `config.json`, as `{"from", "to"}`, limits the
+  years of `scenarios/inflow_history.parquet` the inflow model is estimated
+  from; absent, every year is used. A range reaching outside the file's years
+  is refused.
 - `novomodelo validate` warns when `hydro.fpha_violation_cost` is at or below
   the largest deficit cost plus `generation_violation_below_cost`.
 - `novomodelo validate` warns when a hydro's minimum storage in
@@ -51,6 +55,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `post_study_stages.json`, are deprecated. Such a deck keeps running, and
   `novomodelo validate` warns; run
   `python3 scripts/migrate/post_study_stages.py <deck-dir>` to migrate it.
+- **BREAKING:** the AR orders and coefficients estimated from
+  `scenarios/inflow_history.parquet` change under both
+  `estimation.order_selection` values. Results change.
 - **BREAKING:** `penalties.json` must declare `hydro.fpha_violation_cost`
   ($/MWh, > 0); a `penalties.json` without it is refused. Add the key to
   existing cases. It can also be set per plant in `system/hydros.json` and
@@ -62,6 +69,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Estimation from `scenarios/inflow_history.parquet` aborted the run when a
+  fitted month implied a negative noise variance; that month's order is now
+  reduced and listed as `negative_residual_variance` in
+  `output/stochastic/fitting_report.json`.
+- Validation's warnings on inflow observations per season missed
+  `scenarios/inflow_history.parquet` years outside the study horizon and
+  counted rows covering only part of a season; they now count the observations
+  estimation fits from.
 - `storage_violation_cost` and `filling_target_cost` in `simulation/costs`
   were always 0. They now report the cost of a filling plant's soft
   minimum-storage and filling-target slacks.

@@ -714,7 +714,7 @@ dual, so the storage coefficient prices the head term `σ_c·γᵥ/2` and the
 turbining term `γ_q` at the slack price instead of the marginal resource's
 cost.
 
-`semantic.5b.53` checks only the first two terms: it warns when the price does
+`semantic.5b.54` checks only the first two terms: it warns when the price does
 not exceed the largest deficit-segment cost plus `generation_violation_below_cost`.
 A lower-bounded generic constraint on FPHA generation whose slack is priced at
 or above the FPHA price adds a third term, so `σ` can be active at a price that

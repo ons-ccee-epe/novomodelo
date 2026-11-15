@@ -1673,21 +1673,21 @@ fn periodic_autocorrelation_single_season_basic() {
     //
     // For a single season, ref_season=0, lag_season=0, n_seasons=1.
     // Cross-year triggers (lag_season >= ref_season and lag < n_seasons).
-    // So ref starts at index 1, pairs = N-1.
+    // So ref starts at index 1, pairs = N-1, divisor N.
     //
     // Use data [1, 3, 5, 7, 9]: mean=5, std=sqrt(8).
     // ref = [3, 5, 7, 9], lag = [1, 3, 5, 7], 4 pairs.
-    // gamma = 1/4 * [(3-5)(1-5) + (5-5)(3-5) + (7-5)(5-5) + (9-5)(7-5)]
-    //       = 1/4 * [(-2)(-4) + 0*(-2) + 2*0 + 4*2]
-    //       = 1/4 * [8 + 0 + 0 + 8] = 4.0
-    // rho = 4.0 / (sqrt(8) * sqrt(8)) = 4.0 / 8.0 = 0.5
+    // gamma = 1/5 * [(3-5)(1-5) + (5-5)(3-5) + (7-5)(5-5) + (9-5)(7-5)]
+    //       = 1/5 * [(-2)(-4) + 0*(-2) + 2*0 + 4*2]
+    //       = 1/5 * [8 + 0 + 0 + 8] = 3.2
+    // rho = 3.2 / (sqrt(8) * sqrt(8)) = 3.2 / 8.0 = 0.4
     let data = [1.0, 3.0, 5.0, 7.0, 9.0];
     let stats = pop_mean_std(&data);
     let obs: &[&[f64]] = &[&data];
     let stats_arr: &[(f64, f64)] = &[stats];
 
     let rho = periodic_autocorrelation(0, 1, 1, obs, stats_arr, &same_year_starts(1));
-    assert!((rho - 0.5).abs() < 1e-10, "rho(0,1) = {rho}, expected 0.5");
+    assert!((rho - 0.4).abs() < 1e-10, "rho(0,1) = {rho}, expected 0.4");
 }
 
 #[test]
@@ -1989,11 +1989,11 @@ fn build_periodic_yw_matrix_forward_prediction_two_season_ar2() {
 
     // Expected autocorrelations (computed analytically from data):
     // rho(ref=1, lag=1) = 0.9 (matrix off-diagonal)
-    // rho(ref=0, lag=1) = -0.375 (RHS[0])
-    // rho(ref=0, lag=2) = -0.625 (RHS[1])
+    // rho(ref=0, lag=1) = -0.3 (RHS[0]; 4 cross-year pairs over N = 5)
+    // rho(ref=0, lag=2) = -0.5 (RHS[1]; 4 cross-year pairs over N = 5)
     let expected_rho_m = 0.9_f64;
-    let expected_rhs0 = -0.375_f64;
-    let expected_rhs1 = -0.625_f64;
+    let expected_rhs0 = -0.3_f64;
+    let expected_rhs1 = -0.5_f64;
 
     let (mat_orig, rhs_orig) = build_periodic_yw_matrix(
         season,
@@ -2055,7 +2055,7 @@ fn build_periodic_yw_matrix_forward_prediction_two_season_ar2() {
     }
 
     // Verify analytical forward-prediction solution: det = 0.19,
-    // phi1 ≈ 0.987, phi2 ≈ -1.513.
+    // phi1 ≈ 0.789, phi2 ≈ -1.211.
     let det = 1.0 - expected_rho_m * expected_rho_m;
     let expected_phi1 = (expected_rhs0 - expected_rho_m * expected_rhs1) / det;
     let expected_phi2 = (expected_rhs1 - expected_rho_m * expected_rhs0) / det;
@@ -2271,7 +2271,7 @@ fn lag_years_back_counts_whole_cycles_for_long_lags() {
     );
 
     assert!(
-        (rho_three_seasons_back + 1.0 / 6.0).abs() < 1e-12,
+        (rho_three_seasons_back + 0.1).abs() < 1e-12,
         "season 0 of year Y pairs with season 1 of year Y - 2: got {rho_three_seasons_back}"
     );
     assert!(
@@ -2302,8 +2302,8 @@ fn periodic_autocorrelation_pairs_buckets_by_absolute_year() {
 
     let cases = [
         (0, SHIFTED_YEAR_STARTS, 0.4),
-        (1, SHIFTED_YEAR_STARTS, 7.0 / 15.0),
-        (0, [2000, 2000], 1.0 / 3.0),
+        (1, SHIFTED_YEAR_STARTS, 0.35),
+        (0, [2000, 2000], 0.25),
         (1, [2000, 2000], 0.4),
     ];
     for (season, year_starts, expected) in cases {
@@ -2387,11 +2387,11 @@ fn periodic_autocorrelation_population_divisor_verification() {
 
     // Compute manually with population divisor to verify.
     // cross-year: lag_season=1 >= ref_season=0 -> yes, ref starts at index 1.
-    // pairs = min(3-1, 3) = 2.
+    // pairs = min(3-1, 3) = 2, divisor N = 3.
     // ref: s0[1]=4.0, s0[2]=3.0. lag: s1[0]=2.0, s1[1]=5.0.
     let mu_ref = stats_0.0;
     let mu_lag = stats_1.0;
-    let gamma = 0.5 * ((4.0 - mu_ref) * (2.0 - mu_lag) + (3.0 - mu_ref) * (5.0 - mu_lag));
+    let gamma = ((4.0 - mu_ref) * (2.0 - mu_lag) + (3.0 - mu_ref) * (5.0 - mu_lag)) / 3.0;
     let expected = gamma / (stats_0.1 * stats_1.1);
     assert!(
         (rho - expected.clamp(-1.0, 1.0)).abs() < 1e-10,
@@ -3284,19 +3284,19 @@ fn build_extended_periodic_yw_matrix_diagonal_is_one_for_ar1() {
 /// rhs:
 ///   rhs[0] = periodic_autocorrelation(season=0, lag=1)
 ///     lag_season=1; years_crossed=1; 4 pairs: z0[1..5] vs z1[0..4]
-///     gamma=[(3-3)(-1.2)+(2-3)(-2.2)+(5-3)(0.8)+(4-3)(-0.2)]/4=3.6/4=0.9
-///     rho=0.9/(1.4142136*1.7204651) ~ 0.3698977
+///     gamma=[(3-3)(-1.2)+(2-3)(-2.2)+(5-3)(0.8)+(4-3)(-0.2)]/5=3.6/5=0.72
+///     rho=0.72/(1.4142136*1.7204651) ~ 0.2959182
 ///
 ///   rhs[1] = periodic_autocorrelation(season=0, lag=2)
 ///     lag_season=0; lag>=n_seasons => years_crossed=1
 ///     4 pairs: z0[1..5] vs z0[0..4]
-///     gamma=[(3-3)(1-3)+(2-3)(3-3)+(5-3)(2-3)+(4-3)(5-3)]/4=0.0
+///     gamma=[(3-3)(1-3)+(2-3)(3-3)+(5-3)(2-3)+(4-3)(5-3)]/5=0.0
 ///     rho=0.0
 ///
 ///   rhs[2] = cross_correlation_a_z_neg1(ref=1)
 ///     z_season=0; years_crossed=1; z_start=1; 4 pairs
-///     gamma=[(-1.4)(3-3)+0.6(2-3)+0.1(5-3)+1.1(4-3)]/4=0.7/4=0.175
-///     rho=0.175/(0.8602325*1.4142136) ~ 0.1438491
+///     gamma=[(-1.4)(3-3)+0.6(2-3)+0.1(5-3)+1.1(4-3)]/5=0.7/5=0.14
+///     rho=0.14/(0.8602325*1.4142136) ~ 0.1150793
 /// ```
 #[test]
 fn build_extended_periodic_yw_matrix_hand_computed_3x3() {
@@ -3371,7 +3371,8 @@ fn build_extended_periodic_yw_matrix_hand_computed_3x3() {
     );
 
     // RHS.
-    let expected_rhs0 = 0.369_897_721_437_054;
+    // rhs[0] crosses a year boundary: 4 pairs over N = 5.
+    let expected_rhs0 = 0.369_897_721_437_054 * 4.0 / 5.0;
     let expected_rhs1 = 0.0;
     // rhs[2] = cross_correlation_a_z_neg1(prev=1) — for n_seasons=2 the
     // year-forward-shift skips one Z entry, giving n_pairs=4. The
@@ -3978,7 +3979,7 @@ fn conditional_facp_partitioned_two_season_hand_computed() {
 ///   Σ_22 = [[1.0, 0.0, 0.9],                       (rows: Z_{t-1}, Z_{t-2}, A_{t-1})
 ///           [0.0, 1.0, 0.1],
 ///           [0.9, 0.1, 1.0]]
-///   Σ_12 = [[0.5, -0.625, 0.10],                   (row 0 = Z_t)
+///   Σ_12 = [[0.4, -0.5,   0.10],                   (row 0 = Z_t)
 ///           [0.3,  0.7,   0.4 ]]                   (row 1 = Z_{t-3})
 ///
 /// Σ_12[0, 2] = ρ(Z_t, A_{t-1}) uses [`cross_correlation_a_z_neg1`], which
@@ -4046,7 +4047,7 @@ fn assemble_partitioned_covariance_three_season_k3_hand_computed() {
 
     // Σ_12 (2×3, row-major). Row 1 (Z_{t-3} cross conditioning Z's) guards the
     // per-j row anchoring.
-    let exp_12 = [0.5, -0.625, 0.10, 0.3, 0.7, 0.4];
+    let exp_12 = [0.4, -0.5, 0.10, 0.3, 0.7, 0.4];
     for (i, &expected) in exp_12.iter().enumerate() {
         assert!(
             (cov.sigma_12[i] - expected).abs() < 1e-12,
@@ -4228,17 +4229,14 @@ fn select_order_pacf_annual_first_lag_significant() {
 fn select_order_pacf_annual_max_lag_significant() {
     // threshold = 1.96 / sqrt(100) = 0.196
     // conditional_facp = [0.05, 0.03, 0.4]
-    // Only lag 3 (0.4) exceeds threshold -> max_significant = 3.
-    // PACF[0] = 0.05 is non-zero -> min-order-1 gives max(1, 3) = 3.
+    // Only lag 3 (0.4) exceeds threshold -> order 3.
     let result = select_order_pacf_annual(&[0.05, 0.03, 0.4], 100, 1.96);
     assert_eq!(result.selected_order, 3);
 }
 
 #[test]
-fn select_order_pacf_annual_min_order_one_rule_when_lag1_nonzero() {
+fn select_order_pacf_annual_min_order_one_when_no_lag_is_significant() {
     // n=100; both PACF values below the threshold.
-    // Without min-order-1 rule, max_significant = 0.
-    // PACF[0] = 0.05 is non-zero -> min-order-1 rule forces order = max(1, 0) = 1.
     let result = select_order_pacf_annual(&[0.05, 0.03], 100, 1.96);
     assert_eq!(result.selected_order, 1);
 }
@@ -4252,27 +4250,29 @@ fn select_order_pacf_annual_negative_value_uses_abs() {
 
 #[test]
 fn select_order_pacf_annual_zero_observations_returns_infinity_threshold() {
-    // n_observations = 0 -> threshold = infinity -> no lag exceeds it.
-    // PACF[0] = 0.5 is non-zero -> min-order-1 rule forces order = 1.
+    // n_observations = 0 -> threshold = infinity -> no lag exceeds it -> order 1.
     let result = select_order_pacf_annual(&[0.5, 0.3], 0, 1.96);
     assert_eq!(result.threshold, f64::INFINITY);
     assert_eq!(result.selected_order, 1);
 }
 
 #[test]
-fn select_order_pacf_annual_structural_zero_at_lag1_returns_zero() {
-    // FACP exactly 0.0 at lag 1 -> structural-zero short-circuit.
-    // Even though lag 2 = 0.5 is "significant", the model is forced
-    // to white noise (degenerate Z⊗A bucket).
+fn select_order_pacf_annual_exact_zero_at_lag1_keeps_the_outer_significant_lag() {
+    // A zero-std lag-1 season gives FACP exactly 0.0 at lag 1; the order still
+    // reaches lag 2 so the caller's solve at that order fixes ψ.
     let result = select_order_pacf_annual(&[0.0, 0.5], 100, 1.96);
-    assert_eq!(result.selected_order, 0);
+    assert_eq!(result.selected_order, 2);
 }
 
 #[test]
-fn select_order_pacf_annual_structural_zero_at_lag2_does_not_short_circuit() {
-    // Structural zero at lag 2 (PACF[1] = 0.0) does NOT trigger short-circuit;
-    // only lag 1 does. The selector proceeds normally with the surviving
-    // lags: lag 1 = 0.5 > threshold, lag 3 = 0.6 > threshold -> order = 3.
+fn select_order_pacf_annual_exact_zero_at_lag1_with_no_significant_lag_selects_order_one() {
+    let result = select_order_pacf_annual(&[0.0, 0.05], 100, 1.96);
+    assert_eq!(result.selected_order, 1);
+}
+
+#[test]
+fn select_order_pacf_annual_structural_zero_at_lag2_keeps_the_outer_significant_lag() {
+    // lag 1 = 0.5 > threshold, lag 3 = 0.6 > threshold -> order = 3.
     let result = select_order_pacf_annual(&[0.5, 0.0, 0.6], 100, 1.96);
     assert_eq!(result.selected_order, 3);
 }
@@ -4287,26 +4287,10 @@ fn select_order_pacf_annual_only_lag1_significant_with_zeros_after() {
 }
 
 #[test]
-fn select_order_pacf_annual_structural_zero_at_lag3_does_not_short_circuit() {
-    // Structural zero at lag 3 (k > 2) does NOT trigger short-circuit.
+fn select_order_pacf_annual_structural_zero_at_lag3_selects_the_significant_lag1() {
     // Lag 1 (0.5) is significant; max_significant = 1; min-order-1 -> 1.
     let result = select_order_pacf_annual(&[0.5, 0.1, 0.0], 100, 1.96);
     assert_eq!(result.selected_order, 1);
-}
-
-#[test]
-fn select_order_pacf_annual_matches_select_order_pacf_for_short_circuit_zero_at_lag1() {
-    // When lag 1 has a structural zero, the annual variant returns 0
-    // even if higher lags would be significant — this is where it
-    // diverges most sharply from `select_order_pacf`, which only looks
-    // at the maximum significant lag.
-    let facp = &[0.0, 0.5_f64];
-    let n = 100_usize;
-    let z = 1.96_f64;
-    let annual = select_order_pacf_annual(facp, n, z);
-    let classical = select_order_pacf(facp, n, z);
-    assert_eq!(annual.selected_order, 0);
-    assert_eq!(classical.selected_order, 2);
 }
 
 #[test]
@@ -4512,12 +4496,13 @@ fn estimate_periodic_ar_annual_coefficients_order_zero_returns_one_by_one_soluti
 /// [za0,   za1,   1.0] [ψ ]   [rhs2]
 /// ```
 /// where R01 ≈ 0.3287979746, za0 ≈ -0.1216216216, za1 ≈ 0.7397954429,
-/// rhs = [0.3698977214, 0.0, 0.1438491139].
+/// rhs = [0.2959181771, 0.0, 0.1150792911] (the year-crossing entries scaled
+/// by 4/5 for the 1/N divisor).
 ///
-/// Numerical solution (verified with numpy):
-/// - φ1 ≈ 0.81267678
-/// - φ2 ≈ -0.98684211
-/// - ψ  ≈ 0.97274947
+/// Numerical solution (Gaussian elimination):
+/// - φ1 ≈ 0.65014142
+/// - φ2 ≈ -0.78947368
+/// - ψ  ≈ 0.77819958
 #[test]
 fn estimate_periodic_ar_annual_coefficients_hand_computed_three_season() {
     let z0: &[f64] = &[1.0, 3.0, 2.0, 5.0, 4.0];
@@ -4548,24 +4533,20 @@ fn estimate_periodic_ar_annual_coefficients_hand_computed_three_season() {
         "selected_order=2 must produce 2 AR coefficients"
     );
 
-    // Expected values reflect the max-bucket-size cross-cov divisor
-    // (see [`cross_correlation_z_a`] docs). For the synthetic 5-element
-    // buckets, only the cross-terms with year-forward-shift pick up the
-    // 4/5 scale; the rest of the YW system is unaffected.
     let tol = 1e-8;
     assert!(
-        (result.coefficients[0] - 0.773_889_929_208_993_9).abs() < tol,
-        "φ1={} expected≈0.7738899292",
+        (result.coefficients[0] - 0.650_141_420_242_403_8).abs() < tol,
+        "φ1={} expected≈0.6501414202",
         result.coefficients[0]
     );
     assert!(
-        (result.coefficients[1] - (-0.903_947_368_421_052_3)).abs() < tol,
-        "φ2={} expected≈-0.9039473684",
+        (result.coefficients[1] - (-0.789_473_684_210_531_4)).abs() < tol,
+        "φ2={} expected≈-0.7894736842",
         result.coefficients[1]
     );
     assert!(
-        (result.annual_coefficient - 0.877_937_183_016_726_5).abs() < tol,
-        "ψ={} expected≈0.8779371830",
+        (result.annual_coefficient - 0.778_199_578_775_0).abs() < tol,
+        "ψ={} expected≈0.7781995788",
         result.annual_coefficient
     );
 }
