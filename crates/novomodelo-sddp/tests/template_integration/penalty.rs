@@ -80,9 +80,6 @@ fn test_penalty_objective_coefficient() {
     )
     .expect("constant productivity ok");
     let t = &result.templates[0];
-    // N=1, L=0: theta=2, decision_start=3, turbine=3, spillage=4, diversion=5,
-    // deficit=6, excess=7, inflow_slack=8, withdrawal_neg=9, withdrawal_pos=10,
-    // outflow_below=11, outflow_above=12, turbine_below=13, generation_below=14.
     let slack_col = result.geometry_per_stage[0].inflow_slack_col(HydroSys::new(0));
     let expected_obj = 1000.0 * 744.0 / COST_SCALE_FACTOR;
     assert!(
