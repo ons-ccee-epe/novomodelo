@@ -25,6 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ($/MWh, > 0); a `penalties.json` without it is refused. Add the key to
   existing cases. It can also be set per plant in `system/hydros.json` and
   per stage in `constraints/penalty_overrides_hydro.parquet`.
+- FPHA planes with `fpha_config.source: "computed"` are fitted over the
+  plant's `min_storage_hm3` to `max_storage_hm3` instead of the range of
+  `system/hydro_geometry.parquet`. Results change where the two differ.
 
 ### Fixed
 

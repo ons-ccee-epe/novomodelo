@@ -147,9 +147,10 @@ pub(crate) fn fit_fpha_planes(
     collect_deviation_points: bool,
 ) -> Result<FphaFitResult, FphaFittingError> {
     let forebay = ForebayTable::new(forebay_rows, &hydro.name)?;
+    let (bounds, forebay) = resolve_fitting_bounds(config, hydro, forebay)?;
 
     let pf = ProductionFunction::new(
-        forebay.clone(),
+        forebay,
         tailrace_source,
         hydro.hydraulic_losses.as_ref(),
         hydro.efficiency.as_ref(),
@@ -159,8 +160,6 @@ pub(crate) fn fit_fpha_planes(
         hydro.name.clone(),
     )
     .with_max_generation_mw(hydro.max_generation_mw);
-
-    let bounds = resolve_fitting_bounds(config, hydro, &forebay)?;
 
     // Any hull failure maps to a typed FPHA error instead of panicking, so one
     // pathological hydro does not abort the whole fitting loop. The dominant case

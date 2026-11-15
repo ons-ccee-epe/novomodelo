@@ -648,21 +648,30 @@ fn default_config() -> FphaColumnLayout {
     }
 }
 
-// ── No fitting window — forebay defaults, all discretization = 5 ─────────
+/// `resolve_fitting_bounds` without the returned forebay table.
+fn resolve_bounds(
+    config: &FphaColumnLayout,
+    hydro: &Hydro,
+    forebay: ForebayTable,
+) -> Result<FittingBounds, FphaFittingError> {
+    resolve_fitting_bounds(config, hydro, forebay).map(|(bounds, _)| bounds)
+}
+
+// ── No fitting window — plant range, all discretization = 5 ──────────────
 
 /// Given config with no fitting window and all discretization fields None,
-/// resolve_fitting_bounds uses forebay range and defaults all counts to 5,
-/// max_planes_per_hydro to 10.
+/// resolve_fitting_bounds uses the plant storage range, which is narrower than
+/// the forebay table, and defaults all counts to 5, max_planes_per_hydro to 10.
 #[test]
-fn no_fitting_window_uses_forebay_defaults() {
+fn no_fitting_window_uses_the_plant_storage_range() {
     let config = default_config();
-    let hydro = make_hydro(0.0, 34_116.0);
+    let hydro = make_hydro(1_000.0, 30_000.0);
     let forebay = sobradinho_forebay();
 
-    let bounds: FittingBounds = resolve_fitting_bounds(&config, &hydro, &forebay).unwrap();
+    let bounds: FittingBounds = resolve_bounds(&config, &hydro, forebay).unwrap();
 
-    assert_eq!(bounds.v_min, 0.0);
-    assert_eq!(bounds.v_max, 34_116.0);
+    assert_eq!(bounds.v_min, 1_000.0);
+    assert_eq!(bounds.v_max, 30_000.0);
     assert_eq!(bounds.n_volume_points, 5);
     assert_eq!(bounds.n_flow_points, 5);
     assert_eq!(bounds.n_spillage_points, 5);
@@ -672,7 +681,7 @@ fn no_fitting_window_uses_forebay_defaults() {
 // ── Absolute bounds — both set ────────────────────────────────────────────
 
 /// Given config with absolute volume_min_hm3 = 1000 and volume_max_hm3 = 30000,
-/// resolve_fitting_bounds returns those bounds unchanged (within forebay range).
+/// resolve_fitting_bounds returns those bounds unchanged (within the plant range).
 #[test]
 fn absolute_bounds_both_set() {
     let config = FphaColumnLayout {
@@ -687,7 +696,7 @@ fn absolute_bounds_both_set() {
     let hydro = make_hydro(0.0, 34_116.0);
     let forebay = sobradinho_forebay();
 
-    let bounds = resolve_fitting_bounds(&config, &hydro, &forebay).unwrap();
+    let bounds = resolve_bounds(&config, &hydro, forebay).unwrap();
 
     assert_eq!(bounds.v_min, 1_000.0);
     assert_eq!(bounds.v_max, 30_000.0);
@@ -695,9 +704,9 @@ fn absolute_bounds_both_set() {
 
 // ── Absolute bounds — only min set ───────────────────────────────────────
 
-/// Given only volume_min_hm3, v_max falls back to forebay.v_max().
+/// Given only volume_min_hm3, v_max falls back to the plant's max_storage_hm3.
 #[test]
-fn absolute_bounds_only_min() {
+fn absolute_bounds_only_min_takes_the_plant_maximum() {
     let config = FphaColumnLayout {
         fitting_window: Some(FittingWindow {
             volume_min_hm3: Some(5_000.0),
@@ -707,20 +716,20 @@ fn absolute_bounds_only_min() {
         }),
         ..default_config()
     };
-    let hydro = make_hydro(0.0, 34_116.0);
+    let hydro = make_hydro(1_000.0, 30_000.0);
     let forebay = sobradinho_forebay();
 
-    let bounds = resolve_fitting_bounds(&config, &hydro, &forebay).unwrap();
+    let bounds = resolve_bounds(&config, &hydro, forebay).unwrap();
 
     assert_eq!(bounds.v_min, 5_000.0);
-    assert_eq!(bounds.v_max, 34_116.0);
+    assert_eq!(bounds.v_max, 30_000.0);
 }
 
 // ── Absolute bounds — only max set ───────────────────────────────────────
 
-/// Given only volume_max_hm3, v_min falls back to forebay.v_min().
+/// Given only volume_max_hm3, v_min falls back to the plant's min_storage_hm3.
 #[test]
-fn absolute_bounds_only_max() {
+fn absolute_bounds_only_max_takes_the_plant_minimum() {
     let config = FphaColumnLayout {
         fitting_window: Some(FittingWindow {
             volume_min_hm3: None,
@@ -730,12 +739,12 @@ fn absolute_bounds_only_max() {
         }),
         ..default_config()
     };
-    let hydro = make_hydro(0.0, 34_116.0);
+    let hydro = make_hydro(1_000.0, 30_000.0);
     let forebay = sobradinho_forebay();
 
-    let bounds = resolve_fitting_bounds(&config, &hydro, &forebay).unwrap();
+    let bounds = resolve_bounds(&config, &hydro, forebay).unwrap();
 
-    assert_eq!(bounds.v_min, 0.0);
+    assert_eq!(bounds.v_min, 1_000.0);
     assert_eq!(bounds.v_max, 20_000.0);
 }
 
@@ -757,7 +766,7 @@ fn percentile_bounds_both_set() {
     let hydro = make_hydro(100.0, 2_000.0);
     let forebay = small_forebay();
 
-    let bounds = resolve_fitting_bounds(&config, &hydro, &forebay).unwrap();
+    let bounds = resolve_bounds(&config, &hydro, forebay).unwrap();
 
     let expected_min = 100.0 + 0.1 * 1_900.0; // 290.0
     let expected_max = 100.0 + 0.9 * 1_900.0; // 1810.0
@@ -782,7 +791,7 @@ fn mixed_absolute_min_percentile_max() {
     let hydro = make_hydro(100.0, 2_000.0);
     let forebay = small_forebay();
 
-    let bounds = resolve_fitting_bounds(&config, &hydro, &forebay).unwrap();
+    let bounds = resolve_bounds(&config, &hydro, forebay).unwrap();
 
     let expected_max = 100.0 + 0.9 * 1_900.0; // 1810.0
     assert_eq!(bounds.v_min, 200.0);
@@ -806,7 +815,7 @@ fn conflicting_min_bound_returns_error() {
     let hydro = make_hydro(100.0, 2_000.0);
     let forebay = small_forebay();
 
-    let err = resolve_fitting_bounds(&config, &hydro, &forebay).unwrap_err();
+    let err = resolve_bounds(&config, &hydro, forebay).unwrap_err();
     assert!(
         matches!(err, FphaFittingError::ConflictingFittingWindow { .. }),
         "expected ConflictingFittingWindow, got: {err:?}"
@@ -830,7 +839,7 @@ fn conflicting_max_bound_returns_error() {
     let hydro = make_hydro(100.0, 2_000.0);
     let forebay = small_forebay();
 
-    let err = resolve_fitting_bounds(&config, &hydro, &forebay).unwrap_err();
+    let err = resolve_bounds(&config, &hydro, forebay).unwrap_err();
     assert!(
         matches!(err, FphaFittingError::ConflictingFittingWindow { .. }),
         "expected ConflictingFittingWindow, got: {err:?}"
@@ -854,10 +863,36 @@ fn inverted_absolute_bounds_returns_empty_window_error() {
     let hydro = make_hydro(0.0, 34_116.0);
     let forebay = sobradinho_forebay();
 
-    let err = resolve_fitting_bounds(&config, &hydro, &forebay).unwrap_err();
+    let err = resolve_bounds(&config, &hydro, forebay).unwrap_err();
     assert!(
         matches!(err, FphaFittingError::EmptyFittingWindow { .. }),
         "expected EmptyFittingWindow, got: {err:?}"
+    );
+}
+
+/// A plant range with `min_storage_hm3 > max_storage_hm3`, or a NaN bound, is an
+/// `EmptyFittingWindow` carrying the plant range; it must not reach `f64::clamp`.
+#[test]
+fn inverted_plant_storage_range_is_an_empty_fitting_window() {
+    let config = default_config();
+
+    let err =
+        resolve_bounds(&config, &make_hydro(2_000.0, 1_000.0), sobradinho_forebay()).unwrap_err();
+    let FphaFittingError::EmptyFittingWindow { v_min, v_max, .. } = err else {
+        panic!("expected EmptyFittingWindow, got: {err:?}");
+    };
+    assert_eq!(v_min, 2_000.0);
+    assert_eq!(v_max, 1_000.0);
+
+    let err = resolve_bounds(
+        &config,
+        &make_hydro(f64::NAN, 1_000.0),
+        sobradinho_forebay(),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, FphaFittingError::EmptyFittingWindow { .. }),
+        "expected EmptyFittingWindow for a NaN plant minimum, got: {err:?}"
     );
 }
 
@@ -878,8 +913,8 @@ fn equal_absolute_bounds_reroutes_to_single_volume() {
     let hydro = make_hydro(0.0, 34_116.0);
     let forebay = sobradinho_forebay();
 
-    let bounds = resolve_fitting_bounds(&config, &hydro, &forebay)
-        .expect("equal bounds must reroute, not error");
+    let bounds =
+        resolve_bounds(&config, &hydro, forebay).expect("equal bounds must reroute, not error");
     assert!(
         bounds.single_volume,
         "equal bounds must be flagged single-volume"
@@ -908,8 +943,8 @@ fn explicit_single_volume_point_reroutes_not_rejected() {
     let hydro = make_hydro(0.0, 34_116.0);
     let forebay = sobradinho_forebay();
 
-    let bounds = resolve_fitting_bounds(&config, &hydro, &forebay)
-        .expect("NPTV = 1 must reroute, not error");
+    let bounds =
+        resolve_bounds(&config, &hydro, forebay).expect("NPTV = 1 must reroute, not error");
     assert!(
         bounds.single_volume,
         "NPTV = 1 must be flagged single-volume"
@@ -920,11 +955,30 @@ fn explicit_single_volume_point_reroutes_not_rejected() {
     );
 }
 
-// ── Clamping — absolute bounds outside forebay range ─────────────────────
-
-/// Absolute v_min below forebay.v_min() gets clamped to forebay.v_min().
+/// The single-volume path returns the table pinned at the plant volume, so both
+/// synthesized samples see `height(v0)` bit for bit.
 #[test]
-fn absolute_min_below_forebay_gets_clamped() {
+fn single_volume_pins_the_forebay_at_the_plant_volume() {
+    let config = default_config();
+    let hydro = make_hydro(1_000.0, 1_000.0);
+
+    let (bounds, pinned) = resolve_fitting_bounds(&config, &hydro, small_forebay()).unwrap();
+
+    assert!(bounds.single_volume);
+    assert_eq!(bounds.v_min, 999.0);
+    assert_eq!(bounds.v_max, 1_001.0);
+    assert_eq!(pinned.v_min(), 1_000.0);
+    assert_eq!(pinned.v_max(), 1_000.0);
+    let head_at_plant_volume = small_forebay().height(1_000.0).to_bits();
+    assert_eq!(pinned.height(999.0).to_bits(), head_at_plant_volume);
+    assert_eq!(pinned.height(1_001.0).to_bits(), head_at_plant_volume);
+}
+
+// ── Clamping — absolute bounds outside the plant range ───────────────────
+
+/// Absolute v_min below the plant's min_storage_hm3 gets clamped to it.
+#[test]
+fn absolute_min_below_the_plant_range_gets_clamped() {
     let config = FphaColumnLayout {
         fitting_window: Some(FittingWindow {
             volume_min_hm3: Some(-500.0),
@@ -934,36 +988,34 @@ fn absolute_min_below_forebay_gets_clamped() {
         }),
         ..default_config()
     };
-    let hydro = make_hydro(0.0, 34_116.0);
+    let hydro = make_hydro(1_000.0, 30_000.0);
     let forebay = sobradinho_forebay();
 
-    let bounds = resolve_fitting_bounds(&config, &hydro, &forebay).unwrap();
+    let bounds = resolve_bounds(&config, &hydro, forebay).unwrap();
 
-    // Clamped to forebay.v_min() = 0.0
-    assert_eq!(bounds.v_min, 0.0);
+    assert_eq!(bounds.v_min, 1_000.0);
     assert_eq!(bounds.v_max, 20_000.0);
 }
 
-/// Absolute v_max above forebay.v_max() gets clamped to forebay.v_max().
+/// Absolute v_max above the plant's max_storage_hm3 gets clamped to it.
 #[test]
-fn absolute_max_above_forebay_gets_clamped() {
+fn absolute_max_above_the_plant_range_gets_clamped() {
     let config = FphaColumnLayout {
         fitting_window: Some(FittingWindow {
-            volume_min_hm3: Some(1_000.0),
+            volume_min_hm3: Some(5_000.0),
             volume_max_hm3: Some(50_000.0),
             volume_min_percentile: None,
             volume_max_percentile: None,
         }),
         ..default_config()
     };
-    let hydro = make_hydro(0.0, 34_116.0);
+    let hydro = make_hydro(1_000.0, 30_000.0);
     let forebay = sobradinho_forebay();
 
-    let bounds = resolve_fitting_bounds(&config, &hydro, &forebay).unwrap();
+    let bounds = resolve_bounds(&config, &hydro, forebay).unwrap();
 
-    assert_eq!(bounds.v_min, 1_000.0);
-    // Clamped to forebay.v_max() = 34_116.0
-    assert_eq!(bounds.v_max, 34_116.0);
+    assert_eq!(bounds.v_min, 5_000.0);
+    assert_eq!(bounds.v_max, 30_000.0);
 }
 
 // ── Discretization defaults ──────────────────────────────────────────────
@@ -975,7 +1027,7 @@ fn discretization_all_none_defaults_to_five() {
     let hydro = make_hydro(0.0, 34_116.0);
     let forebay = sobradinho_forebay();
 
-    let bounds = resolve_fitting_bounds(&config, &hydro, &forebay).unwrap();
+    let bounds = resolve_bounds(&config, &hydro, forebay).unwrap();
 
     assert_eq!(bounds.n_volume_points, 5);
     assert_eq!(bounds.n_flow_points, 5);
@@ -995,7 +1047,7 @@ fn discretization_explicit_values_passed_through() {
     let hydro = make_hydro(0.0, 34_116.0);
     let forebay = sobradinho_forebay();
 
-    let bounds = resolve_fitting_bounds(&config, &hydro, &forebay).unwrap();
+    let bounds = resolve_bounds(&config, &hydro, forebay).unwrap();
 
     assert_eq!(bounds.n_volume_points, 8);
     assert_eq!(bounds.n_flow_points, 6);
@@ -1019,7 +1071,7 @@ fn volume_discretization_zero_returns_error() {
     let hydro = make_hydro(0.0, 34_116.0);
     let forebay = sobradinho_forebay();
 
-    let err = resolve_fitting_bounds(&config, &hydro, &forebay).unwrap_err();
+    let err = resolve_bounds(&config, &hydro, forebay).unwrap_err();
     assert!(
         matches!(
             err,
@@ -1040,7 +1092,7 @@ fn turbine_discretization_one_returns_error() {
     let hydro = make_hydro(0.0, 34_116.0);
     let forebay = sobradinho_forebay();
 
-    let err = resolve_fitting_bounds(&config, &hydro, &forebay).unwrap_err();
+    let err = resolve_bounds(&config, &hydro, forebay).unwrap_err();
     assert!(
         matches!(
             err,
@@ -1061,7 +1113,7 @@ fn spillage_discretization_one_returns_error() {
     let hydro = make_hydro(0.0, 34_116.0);
     let forebay = sobradinho_forebay();
 
-    let err = resolve_fitting_bounds(&config, &hydro, &forebay).unwrap_err();
+    let err = resolve_bounds(&config, &hydro, forebay).unwrap_err();
     assert!(
         matches!(
             err,
@@ -1081,7 +1133,7 @@ fn max_planes_per_hydro_none_defaults_to_ten() {
     let hydro = make_hydro(0.0, 34_116.0);
     let forebay = sobradinho_forebay();
 
-    let bounds = resolve_fitting_bounds(&config, &hydro, &forebay).unwrap();
+    let bounds = resolve_bounds(&config, &hydro, forebay).unwrap();
 
     assert_eq!(bounds.max_planes_per_hydro, 10);
 }
@@ -1096,7 +1148,7 @@ fn max_planes_per_hydro_explicit_value() {
     let hydro = make_hydro(0.0, 34_116.0);
     let forebay = sobradinho_forebay();
 
-    let bounds = resolve_fitting_bounds(&config, &hydro, &forebay).unwrap();
+    let bounds = resolve_bounds(&config, &hydro, forebay).unwrap();
 
     assert_eq!(bounds.max_planes_per_hydro, 5);
 }
@@ -1111,7 +1163,7 @@ fn max_planes_per_hydro_zero_returns_error() {
     let hydro = make_hydro(0.0, 34_116.0);
     let forebay = sobradinho_forebay();
 
-    let err = resolve_fitting_bounds(&config, &hydro, &forebay).unwrap_err();
+    let err = resolve_bounds(&config, &hydro, forebay).unwrap_err();
     assert!(
         matches!(
             err,
@@ -1795,7 +1847,9 @@ fn single_volume_run_of_river_fits_with_zero_gamma_v() {
         height_m: 386.5,
         area_km2: 0.0,
     }];
-    let hydro = make_sobradinho_hydro();
+    let mut hydro = make_sobradinho_hydro();
+    hydro.min_storage_hm3 = 1_500.0;
+    hydro.max_storage_hm3 = 1_500.0;
     let config = FphaColumnLayout {
         source: "computed".to_owned(),
         volume_discretization_points: None,
@@ -1836,6 +1890,64 @@ fn single_volume_run_of_river_fits_with_zero_gamma_v() {
             plane.gamma_q
         );
     }
+}
+
+fn assert_single_volume_fit_over_a_sloped_forebay_is_flat_in_storage(config: &FphaColumnLayout) {
+    let rows = vec![row(100.0, 386.5), row(2_000.0, 390.0)];
+    let mut hydro = make_sobradinho_hydro();
+    hydro.min_storage_hm3 = 1_000.0;
+    hydro.max_storage_hm3 = 1_000.0;
+    hydro.max_generation_mw = 1_000_000.0;
+
+    let result = fit_fpha_planes(
+        &rows,
+        &hydro,
+        config,
+        0.0,
+        TailraceSource::Entity(hydro.tailrace.clone()),
+        None,
+        1,
+        0,
+        false,
+    )
+    .expect("single-volume fit must succeed");
+
+    assert!(
+        !result.planes.is_empty(),
+        "fit must yield at least one plane"
+    );
+    for (idx, plane) in result.planes.iter().enumerate() {
+        assert_eq!(
+            plane.gamma_v.to_bits(),
+            0.0_f64.to_bits(),
+            "plane {idx}: gamma_v={} must be exactly +0.0",
+            plane.gamma_v
+        );
+        assert!(
+            plane.intercept + plane.gamma_v * 1_000.0 >= -1e-9,
+            "plane {idx}: negative at zero turbining at the plant volume: intercept={}",
+            plane.intercept
+        );
+    }
+}
+
+#[test]
+fn single_volume_fit_over_a_sloped_forebay_has_gamma_v_exactly_zero() {
+    assert_single_volume_fit_over_a_sloped_forebay_is_flat_in_storage(&default_config());
+}
+
+#[test]
+fn single_volume_fit_with_an_explicit_window_has_gamma_v_exactly_zero() {
+    let config = FphaColumnLayout {
+        fitting_window: Some(FittingWindow {
+            volume_min_hm3: Some(1_000.0),
+            volume_max_hm3: Some(1_000.0),
+            volume_min_percentile: None,
+            volume_max_percentile: None,
+        }),
+        ..default_config()
+    };
+    assert_single_volume_fit_over_a_sloped_forebay_is_flat_in_storage(&config);
 }
 
 // ── FphaFittingError Display messages for new variants ────────────────────
@@ -1974,7 +2086,7 @@ fn alpha_scaled_planes_are_outer_approximation_and_not_double_scaled() {
         hydro.name.clone(),
     )
     .with_max_generation_mw(hydro.max_generation_mw);
-    let bounds = resolve_fitting_bounds(&config, &hydro, &forebay).expect("bounds resolve");
+    let bounds = resolve_bounds(&config, &hydro, forebay).expect("bounds resolve");
 
     let raw_planes = fit_hull_planes(&pf, &bounds).expect("hull fit succeeds");
 
@@ -2081,7 +2193,7 @@ fn fitted_min_envelope_tracks_production_on_concave_reservoir() {
         hydro.name.clone(),
     )
     .with_max_generation_mw(hydro.max_generation_mw);
-    let bounds = resolve_fitting_bounds(&config, &hydro, &forebay).expect("bounds resolve");
+    let bounds = resolve_bounds(&config, &hydro, forebay).expect("bounds resolve");
 
     let result = fit_fpha_planes(
         &rows,
