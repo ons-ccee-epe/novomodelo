@@ -20,7 +20,7 @@
 //! live here in `mod`, co-located with the re-export surface.
 
 use novomodelo_core::Hydro;
-use novomodelo_io::extensions::{FphaColumnLayout, HydroGeometryRow};
+use novomodelo_io::extensions::{FphaColumnLayout, HydroGeometryRow, PlaneReductionConfig};
 
 use crate::hydro_models::FphaPlane;
 
@@ -47,8 +47,6 @@ mod tailrace;
     clippy::similar_names
 )]
 mod tests;
-
-use novomodelo_io::extensions::PlaneReductionConfig;
 
 use alpha::{compute_alpha_fpha, scale_plane_affine};
 use deviation::{collect_fit_deviation_points, compute_fit_deviation};
