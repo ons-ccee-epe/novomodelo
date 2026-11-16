@@ -37,10 +37,8 @@ use std::path::Path;
 use chrono::{NaiveDate, TimeDelta};
 use novomodelo_core::entities::thermal::AnticipatedConfig;
 use novomodelo_core::{
-    AnticipatedCommitmentHistory, BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, EntityId,
-    HydroBlockBounds, HydroStageBounds, InitialConditions, LineBlockBounds, PostStudyStage,
-    PostStudyStages, PostStudyThermalBound, PumpingBlockBounds, ResolvedBounds, System,
-    SystemBuilder, ThermalBlockBounds, WaterBucketStages,
+    AnticipatedCommitmentHistory, EntityId, InitialConditions, PostStudyStage, PostStudyStages,
+    PostStudyThermalBound, System, SystemBuilder, WaterBucketStages,
 };
 use novomodelo_sddp::setup::StageIdx;
 use novomodelo_sddp::test_support::{ProbeCuts, prep_for_counterfactual_probe};
@@ -151,94 +149,6 @@ fn post_study_stages(v: f64) -> PostStudyStages {
     }
 }
 
-/// Shared zero-default bounds, parameterized only by the per-block thermal
-/// generation cap: `0.0` for the RIGHT fixture (its in-study self-delivery
-/// needs no in-study generation) and [`CAPABILITY_MAX_MW`] for the LEFT
-/// fixture (its fished generation must reach the committed value).
-fn bounds(thermal_block_max_mw: f64) -> ResolvedBounds {
-    ResolvedBounds::new(
-        &BoundsCountsSpec {
-            n_hydros: 0,
-            n_thermals: 1,
-            n_lines: 0,
-            n_pumping: 0,
-            n_contracts: 0,
-            n_stages: 2,
-            k_max: 1,
-        },
-        &BoundsDefaults {
-            hydro: HydroStageBounds {
-                min_storage_hm3: 0.0,
-                max_storage_hm3: 0.0,
-                filling_min_rate_m3s: 0.0,
-                water_withdrawal_m3s: 0.0,
-            },
-            hydro_block: HydroBlockBounds::default(),
-            thermal_block: ThermalBlockBounds {
-                min_generation_mw: 0.0,
-                max_generation_mw: thermal_block_max_mw,
-                cost_per_mwh: 1.0,
-            },
-            line_block: LineBlockBounds {
-                direct_mw: 0.0,
-                reverse_mw: 0.0,
-            },
-            pumping_block: PumpingBlockBounds {
-                min_flow_m3s: 0.0,
-                max_flow_m3s: 0.0,
-            },
-            contract_block: ContractBlockBounds {
-                min_mw: 0.0,
-                max_mw: 0.0,
-                price_per_mwh: 0.0,
-            },
-        },
-    )
-}
-
-fn penalties() -> novomodelo_core::resolved::ResolvedPenalties {
-    use novomodelo_core::HydroPenalties;
-    use novomodelo_core::resolved::{
-        BusStagePenalties, LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec,
-        PenaltiesDefaults, ResolvedPenalties,
-    };
-    ResolvedPenalties::new(
-        &PenaltiesCountsSpec {
-            n_hydros: 0,
-            n_buses: 1,
-            n_lines: 0,
-            n_ncs: 0,
-            n_stages: 2,
-        },
-        &PenaltiesDefaults {
-            hydro: HydroPenalties {
-                spillage_cost: 0.0,
-                diversion_cost: 0.0,
-                turbined_cost: 0.0,
-                storage_violation_below_cost: 0.0,
-                filling_target_violation_cost: 0.0,
-                turbined_violation_below_cost: 0.0,
-                outflow_violation_below_cost: 0.0,
-                outflow_violation_above_cost: 0.0,
-                generation_violation_below_cost: 0.0,
-                fpha_violation_cost: 0.0,
-                evaporation_violation_cost: 0.0,
-                water_withdrawal_violation_cost: 0.0,
-                water_withdrawal_violation_pos_cost: 0.0,
-                water_withdrawal_violation_neg_cost: 0.0,
-                evaporation_violation_pos_cost: 0.0,
-                evaporation_violation_neg_cost: 0.0,
-                inflow_nonnegativity_cost: 0.0,
-            },
-            bus: BusStagePenalties { excess_cost: 0.0 },
-            line: LineStagePenalties { exchange_cost: 0.0 },
-            ncs: NcsStagePenalties {
-                curtailment_cost: 0.0,
-            },
-        },
-    )
-}
-
 /// RIGHT boundary: `LeadTime` thermal, `with_window` toggles the declared
 /// `post_study_stages` destination pinning the post-study-targeted delivery
 /// to `v`; `v` is read only when `with_window` is `true`.
@@ -256,16 +166,20 @@ fn build_system_right(with_window: bool, v: f64) -> System {
         },
     );
 
-    let mut builder = SystemBuilder::new()
-        .buses(vec![bus])
-        .thermals(vec![thermal])
-        .stages(stages())
-        .bounds(bounds(0.0))
-        .penalties(penalties());
-    if with_window {
-        builder = builder.post_study_stages(Some(post_study_stages(v)));
-    }
-    builder.build().expect("fixture System must build")
+    novomodelo_sddp::test_support::build_with_resolved_tables(
+        || {
+            let mut builder = SystemBuilder::new()
+                .buses(vec![bus.clone()])
+                .thermals(vec![thermal.clone()])
+                .stages(stages());
+            if with_window {
+                builder = builder.post_study_stages(Some(post_study_stages(v)));
+            }
+            builder
+        },
+        1,
+        |_, _, _| {},
+    )
 }
 
 /// LEFT boundary: the calendar reflection of [`build_system_right`] — a
@@ -295,15 +209,17 @@ fn build_system_left(v: f64) -> System {
         ..Default::default()
     };
 
-    SystemBuilder::new()
-        .buses(vec![bus])
-        .thermals(vec![thermal])
-        .stages(stages())
-        .bounds(bounds(CAPABILITY_MAX_MW))
-        .penalties(penalties())
-        .initial_conditions(initial_conditions)
-        .build()
-        .expect("fixture System must build")
+    novomodelo_sddp::test_support::build_with_resolved_tables(
+        || {
+            SystemBuilder::new()
+                .buses(vec![bus.clone()])
+                .thermals(vec![thermal.clone()])
+                .stages(stages())
+                .initial_conditions(initial_conditions.clone())
+        },
+        1,
+        |_, _, _| {},
+    )
 }
 
 fn config() -> novomodelo_io::config::Config {
@@ -673,11 +589,11 @@ mod left_right_symmetry {
     /// mechanism at the right boundary.
     #[test]
     fn right_boundary_carries_and_prices_the_committed_value() {
-        let setup_struct = build_setup_in_code(build_system_right(true, V), &config());
-        let decision_col = setup_struct.stage_ctx().geometry_per_stage[0]
+        let mut setup = build_setup_in_code(build_system_right(true, V), &config());
+        let decision_col = setup.stage_ctx().geometry_per_stage[0]
             .anticipated_decision
             .start;
-        let decider_template = &setup_struct.stage_ctx().templates[0];
+        let decider_template = &setup.stage_ctx().templates[0];
         assert_eq!(
             (
                 decider_template.col_lower[decision_col],
@@ -688,7 +604,6 @@ mod left_right_symmetry {
              own [min_mw, max_mw] interval)"
         );
 
-        let mut setup = setup_struct;
         let tmp = tempfile::tempdir().expect("tempdir");
         inject_ring_boundary(&mut setup, &tmp.path().join("boundary"), BETA);
 

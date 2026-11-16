@@ -645,12 +645,12 @@ pub(crate) fn warn_on_inert_plant_floor_overrides(
 #[cfg(test)]
 mod tests {
     use novomodelo_core::{
-        CascadeTopology, EntityId, FillingConfig, Hydro, HydroGenerationModel, HydroPenalties,
-        HydroStageBounds,
+        CascadeTopology, EntityId, FillingConfig, Hydro, HydroPenalties, HydroStageBounds,
     };
 
     use crate::hydro_models::{EvaporationCoefficientSign, LinearizedEvaporation};
     use crate::indexer::{Boundary, EntityPositions};
+    use crate::test_support::builders::{HydroSpec, make_hydro};
 
     use super::{
         ReachableStorage, effective_withdrawals, evaporation_slot_reachable_storage,
@@ -663,34 +663,21 @@ mod tests {
     /// A cascade hydro with a caller-chosen `downstream_id` and `entry_stage_id`,
     /// no `FillingConfig` (a `PreFilling`/`Operating` chain needs none).
     fn chain_hydro(id: i32, downstream: Option<i32>, entry_stage_id: Option<i32>) -> Hydro {
-        Hydro {
-            id: EntityId(id),
-            name: format!("H{id}"),
-            operational_start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            downstream_id: downstream.map(EntityId),
-            travel_time_hours: None,
-            entry_stage_id,
-            exit_stage_id: None,
-            min_storage_hm3: 0.0,
-            max_storage_hm3: 100.0,
-            min_outflow_m3s: 0.0,
-            max_outflow_m3s: None,
-            generation_model: HydroGenerationModel::ConstantProductivity,
-            min_turbined_m3s: 0.0,
-            max_turbined_m3s: 50.0,
-            specific_productivity_mw_per_m3s_per_m: None,
-            min_generation_mw: 0.0,
-            max_generation_mw: 45.0,
-            unit_groups: Vec::new(),
-            tailrace: None,
-            hydraulic_losses: None,
-            efficiency: None,
-            evaporation_coefficients_mm: None,
-            evaporation_reference_volumes_hm3: None,
-            diversion: None,
-            filling: None,
-            penalties: HydroPenalties::uniform(0.0),
-        }
+        let mut hydro = make_hydro(
+            EntityId(id),
+            HydroSpec {
+                name: format!("H{id}"),
+                downstream_id: downstream.map(EntityId),
+                entry_stage_id,
+                max_storage_hm3: 100.0,
+                max_turbined_m3s: 50.0,
+                max_generation_mw: 45.0,
+                penalties: HydroPenalties::uniform(0.0),
+                ..HydroSpec::default()
+            },
+        );
+        hydro.unit_groups = Vec::new();
+        hydro
     }
 
     fn filling_hydro(start_stage_id: i32, entry_stage_id: Option<i32>) -> Hydro {

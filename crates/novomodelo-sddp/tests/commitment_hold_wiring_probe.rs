@@ -17,12 +17,7 @@ mod common;
 
 use chrono::{NaiveDate, TimeDelta};
 use novomodelo_core::entities::thermal::AnticipatedConfig;
-use novomodelo_core::{
-    BoundsCountsSpec, BoundsDefaults, BusStagePenalties, ContractBlockBounds, EntityId,
-    HydroBlockBounds, HydroPenalties, HydroStageBounds, LineBlockBounds, LineStagePenalties,
-    NcsStagePenalties, PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
-    ResolvedPenalties, System, SystemBuilder, ThermalBlockBounds,
-};
+use novomodelo_core::{EntityId, System, SystemBuilder};
 use novomodelo_io::config::{
     Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig, InflowNonNegativityMethod,
     ModelingConfig, ParallelismConfig, PolicyConfig, RowSelectionConfig, SimulationConfig,
@@ -65,7 +60,7 @@ fn build_system() -> System {
     let stage_start = |offset_days: i64| {
         NaiveDate::from_ymd_opt(2024, 1, 1).unwrap() + TimeDelta::days(offset_days)
     };
-    let stages = (0..N_STAGES)
+    let stages: Vec<_> = (0..N_STAGES)
         .map(|i| {
             make_stage(
                 i,
@@ -78,89 +73,21 @@ fn build_system() -> System {
         })
         .collect();
 
-    let bounds = ResolvedBounds::new(
-        &BoundsCountsSpec {
-            n_hydros: 0,
-            n_thermals: 1,
-            n_lines: 0,
-            n_pumping: 0,
-            n_contracts: 0,
-            n_stages: N_STAGES,
-            k_max: K_MAX,
+    novomodelo_sddp::test_support::build_with_resolved_tables(
+        || {
+            SystemBuilder::new()
+                .buses(vec![bus.clone()])
+                .thermals(vec![thermal.clone()])
+                .stages(stages.clone())
         },
-        &BoundsDefaults {
-            hydro: HydroStageBounds {
-                min_storage_hm3: 0.0,
-                max_storage_hm3: 0.0,
-                filling_min_rate_m3s: 0.0,
-                water_withdrawal_m3s: 0.0,
-            },
-            hydro_block: HydroBlockBounds::default(),
-            thermal_block: ThermalBlockBounds {
-                min_generation_mw: 0.0,
-                max_generation_mw: MAX_GEN_MW,
-                cost_per_mwh: COST_PER_MWH,
-            },
-            line_block: LineBlockBounds {
-                direct_mw: 0.0,
-                reverse_mw: 0.0,
-            },
-            pumping_block: PumpingBlockBounds {
-                min_flow_m3s: 0.0,
-                max_flow_m3s: 0.0,
-            },
-            contract_block: ContractBlockBounds {
-                min_mw: 0.0,
-                max_mw: 0.0,
-                price_per_mwh: 0.0,
-            },
+        K_MAX,
+        |_, bounds, _| {
+            for s in 0..N_STAGES + K_MAX {
+                bounds.thermal_block_base_mut(0, s).cost_per_mwh = COST_PER_MWH;
+                bounds.thermal_block_base_mut(0, s).max_generation_mw = MAX_GEN_MW;
+            }
         },
-    );
-
-    let penalties = ResolvedPenalties::new(
-        &PenaltiesCountsSpec {
-            n_hydros: 0,
-            n_buses: 1,
-            n_lines: 0,
-            n_ncs: 0,
-            n_stages: N_STAGES,
-        },
-        &PenaltiesDefaults {
-            hydro: HydroPenalties {
-                spillage_cost: 0.0,
-                diversion_cost: 0.0,
-                turbined_cost: 0.0,
-                storage_violation_below_cost: 0.0,
-                filling_target_violation_cost: 0.0,
-                turbined_violation_below_cost: 0.0,
-                outflow_violation_below_cost: 0.0,
-                outflow_violation_above_cost: 0.0,
-                generation_violation_below_cost: 0.0,
-                fpha_violation_cost: 0.0,
-                evaporation_violation_cost: 0.0,
-                water_withdrawal_violation_cost: 0.0,
-                water_withdrawal_violation_pos_cost: 0.0,
-                water_withdrawal_violation_neg_cost: 0.0,
-                evaporation_violation_pos_cost: 0.0,
-                evaporation_violation_neg_cost: 0.0,
-                inflow_nonnegativity_cost: 0.0,
-            },
-            bus: BusStagePenalties { excess_cost: 0.0 },
-            line: LineStagePenalties { exchange_cost: 0.0 },
-            ncs: NcsStagePenalties {
-                curtailment_cost: 0.0,
-            },
-        },
-    );
-
-    SystemBuilder::new()
-        .buses(vec![bus])
-        .thermals(vec![thermal])
-        .stages(stages)
-        .bounds(bounds)
-        .penalties(penalties)
-        .build()
-        .expect("fixture System must build")
+    )
 }
 
 fn build_config() -> Config {

@@ -308,10 +308,8 @@ pub(crate) fn build_external_ncs_library(
 
 #[cfg(test)]
 mod tests {
-    use chrono::NaiveDate;
     use novomodelo_core::{
-        Block, BlockMode, ExternalLoadRow, ExternalScenarioRow, InflowHistoryRow, InflowModel,
-        NoiseMethod, ScenarioSourceConfig, StageRiskConfig, StageStateConfig, System,
+        Block, ExternalLoadRow, ExternalScenarioRow, InflowHistoryRow, InflowModel, System,
         SystemBuilder,
     };
     use novomodelo_stochastic::{
@@ -323,30 +321,24 @@ mod tests {
         StageLagTransition, build_external_inflow_library, build_external_load_library,
         build_historical_inflow_library,
     };
+    use crate::test_support::builders::{self, StageSpec};
+    use crate::test_support::ymd;
 
     fn single_stage(id: i32) -> Stage {
-        Stage {
-            index: 0,
-            id,
-            start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            end_date: NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-            season_id: Some(0),
-            blocks: vec![Block {
-                index: 0,
-                name: "SINGLE".to_string(),
-                duration_hours: 744.0,
-            }],
-            block_mode: BlockMode::Parallel,
-            state_config: StageStateConfig {
-                storage: true,
-                inflow_lags: false,
+        let mut stage = builders::make_stage(
+            0,
+            StageSpec {
+                season_id: Some(0),
+                blocks: vec![Block {
+                    index: 0,
+                    name: "SINGLE".to_string(),
+                    duration_hours: 744.0,
+                }],
+                ..StageSpec::default()
             },
-            risk_config: StageRiskConfig::Expectation,
-            scenario_config: ScenarioSourceConfig {
-                branching_factor: 1,
-                noise_method: NoiseMethod::Saa,
-            },
-        }
+        );
+        stage.id = id;
+        stage
     }
 
     fn finalizing_transition() -> StageLagTransition {
@@ -1020,13 +1012,11 @@ mod tests {
     fn historical_library_reports_a_seasonless_stage_before_standardizing() {
         let hydro_id = EntityId(1);
         let hydro_ids = vec![hydro_id];
-        let seasonless = Stage {
-            index: 1,
-            start_date: NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-            end_date: NaiveDate::from_ymd_opt(2024, 3, 1).unwrap(),
-            season_id: None,
-            ..single_stage(1)
-        };
+        let mut seasonless = single_stage(1);
+        seasonless.index = 1;
+        seasonless.start_date = ymd(2024, 2, 1);
+        seasonless.end_date = ymd(2024, 3, 1);
+        seasonless.season_id = None;
         let stages = vec![single_stage(0), seasonless];
         let models: Vec<InflowModel> = stages
             .iter()
@@ -1044,8 +1034,8 @@ mod tests {
         let history: Vec<InflowHistoryRow> = (1990..=1992)
             .map(|year| InflowHistoryRow {
                 hydro_id,
-                start_date: NaiveDate::from_ymd_opt(year, 1, 1).unwrap(),
-                end_date: NaiveDate::from_ymd_opt(year, 2, 1).unwrap(),
+                start_date: ymd(year, 1, 1),
+                end_date: ymd(year, 2, 1),
                 value_m3s: 100.0,
             })
             .collect();

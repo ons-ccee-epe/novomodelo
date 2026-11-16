@@ -1061,7 +1061,6 @@ fn generic_constraint_degenerate_band_gets_equality_row_and_two_slacks() {
 }
 
 #[test]
-#[allow(clippy::cast_possible_wrap)]
 fn generic_constraint_two_hydros_sum_csc_entries() {
     use chrono::NaiveDate;
     use novomodelo_core::ResolvedGenericConstraintBounds;
@@ -1278,69 +1277,24 @@ fn generic_constraint_two_hydros_sum_csc_entries() {
     let rows = vec![(100_i32, 0_i32, None::<i32>, None, Some(200.0_f64))];
     let generic_bounds = ResolvedGenericConstraintBounds::new(&id_map, rows.into_iter());
 
-    let resolved_bounds = ResolvedBounds::new(
-        &BoundsCountsSpec {
-            n_hydros: 2,
-            n_thermals: 0,
-            n_lines: 0,
-            n_pumping: 0,
-            n_contracts: 0,
-            n_stages: 1,
-            k_max: 0,
+    let system = novomodelo_sddp::test_support::build_with_resolved_tables(
+        || {
+            SystemBuilder::new()
+                .buses(vec![bus.clone()])
+                .hydros(hydros.clone())
+                .stages(vec![stage.clone()])
+                .inflow_models(inflow_models.clone())
+                .load_models(load_models.clone())
+                .generic_constraints(vec![constraint.clone()])
+                .resolved_generic_bounds(generic_bounds.clone())
         },
-        &BoundsDefaults {
-            hydro: default_hydro_bounds(),
-            hydro_block: default_hydro_block_bounds(),
-            thermal_block: ThermalBlockBounds {
-                min_generation_mw: 0.0,
-                max_generation_mw: 0.0,
-                cost_per_mwh: 0.0,
-            },
-            line_block: LineBlockBounds {
-                direct_mw: 0.0,
-                reverse_mw: 0.0,
-            },
-            pumping_block: PumpingBlockBounds {
-                min_flow_m3s: 0.0,
-                max_flow_m3s: 0.0,
-            },
-            contract_block: ContractBlockBounds {
-                min_mw: 0.0,
-                max_mw: 0.0,
-                price_per_mwh: 0.0,
-            },
+        0,
+        |_, _, penalties| {
+            for h_idx in 0..2 {
+                penalties.hydro_penalties_mut(h_idx, 0).fpha_violation_cost = 5000.0;
+            }
         },
     );
-    let penalties = ResolvedPenalties::new(
-        &PenaltiesCountsSpec {
-            n_hydros: 2,
-            n_buses: 1,
-            n_lines: 0,
-            n_ncs: 0,
-            n_stages: 1,
-        },
-        &PenaltiesDefaults {
-            hydro: default_hydro_penalties(),
-            bus: BusStagePenalties { excess_cost: 0.0 },
-            line: LineStagePenalties { exchange_cost: 0.0 },
-            ncs: NcsStagePenalties {
-                curtailment_cost: 0.0,
-            },
-        },
-    );
-
-    let system = SystemBuilder::new()
-        .buses(vec![bus])
-        .hydros(hydros)
-        .stages(vec![stage])
-        .inflow_models(inflow_models)
-        .load_models(load_models)
-        .bounds(resolved_bounds)
-        .penalties(penalties)
-        .generic_constraints(vec![constraint])
-        .resolved_generic_bounds(generic_bounds)
-        .build()
-        .expect("two_hydro_system: valid");
 
     // Productivities are supplied explicitly (prod_h1=2.5 at index 0, prod_h2=3.0
     // at index 1) so the generic-row LP coefficients equal the productivities.
@@ -1617,7 +1571,6 @@ fn hydro_study_system(study: HydroStudy) -> novomodelo_core::System {
 }
 
 #[test]
-#[allow(clippy::cast_possible_wrap)]
 fn generic_constraint_chronological_stage_net_storage_one_row() {
     use novomodelo_core::ResolvedGenericConstraintBounds;
     use novomodelo_core::{

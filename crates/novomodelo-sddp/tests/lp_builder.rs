@@ -799,11 +799,7 @@ mod cell_partition_gates {
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, StageRiskConfig, StageStateConfig,
     };
     use novomodelo_core::{
-        BoundsCountsSpec, BoundsDefaults, Bus, BusStagePenalties, ContractBlockBounds,
-        DeficitSegment, EntityId, HydroBlockBounds, HydroPenalties, HydroStageBounds,
-        HydroUnitGroup, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
-        PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
-        ResolvedPenalties, System, SystemBuilder, ThermalBlockBounds,
+        Bus, DeficitSegment, EntityId, HydroUnitGroup, ResolvedBounds, System, SystemBuilder,
     };
     use novomodelo_sddp::hydro_models::{
         EvaporationModelSet, FphaPlane, PrepareHydroModelsResult, ProductionModelSet,
@@ -975,102 +971,24 @@ mod cell_partition_gates {
         ]
     }
 
-    /// A `ResolvedBounds` whose hydro clamp (`100_000.0` on every axis) never
-    /// binds against any group/raw sum this module's fixtures declare — a
-    /// binding clamp would mask the summing/folding helper each test exists
-    /// to exercise. Every non-hydro family is zeroed (no thermals/lines/
-    /// pumping/contracts declared anywhere in this module).
-    fn generous_resolved_bounds(counts: &BoundsCountsSpec) -> ResolvedBounds {
-        ResolvedBounds::new(
-            counts,
-            &BoundsDefaults {
-                hydro: HydroStageBounds {
-                    min_storage_hm3: 0.0,
-                    max_storage_hm3: 100_000.0,
-                    filling_min_rate_m3s: 0.0,
-                    water_withdrawal_m3s: 0.0,
-                },
-                hydro_block: HydroBlockBounds {
-                    max_turbined_m3s: 100_000.0,
-                    max_generation_mw: 100_000.0,
-                    ..Default::default()
-                },
-                thermal_block: ThermalBlockBounds {
-                    min_generation_mw: 0.0,
-                    max_generation_mw: 0.0,
-                    cost_per_mwh: 0.0,
-                },
-                line_block: LineBlockBounds {
-                    direct_mw: 0.0,
-                    reverse_mw: 0.0,
-                },
-                pumping_block: PumpingBlockBounds {
-                    min_flow_m3s: 0.0,
-                    max_flow_m3s: 0.0,
-                },
-                contract_block: ContractBlockBounds {
-                    min_mw: 0.0,
-                    max_mw: 0.0,
-                    price_per_mwh: 0.0,
-                },
-            },
-        )
+    /// A clamp that never binds; a binding one would mask the group summing/folding
+    /// helpers these tests exercise.
+    fn restore_generous_hydro_limits(system: &System, bounds: &mut ResolvedBounds) {
+        for hydro in 0..system.hydros().len() {
+            for stage in 0..system.stages().len() {
+                bounds.hydro_bounds_mut(hydro, stage).max_storage_hm3 = 100_000.0;
+                let block = bounds.hydro_block_base_mut(hydro, stage);
+                block.max_turbined_m3s = 100_000.0;
+                block.max_generation_mw = 100_000.0;
+            }
+        }
     }
 
-    /// `ResolvedPenalties` with every cost zero but the FPHA violation cost — no
-    /// test in this module solves, so cost coefficients are inert; only the shape
-    /// (counts) matters.
-    fn zero_resolved_penalties(counts: &PenaltiesCountsSpec) -> ResolvedPenalties {
-        ResolvedPenalties::new(
-            counts,
-            &PenaltiesDefaults {
-                hydro: HydroPenalties {
-                    spillage_cost: 0.0,
-                    diversion_cost: 0.0,
-                    turbined_cost: 0.0,
-                    storage_violation_below_cost: 0.0,
-                    filling_target_violation_cost: 0.0,
-                    turbined_violation_below_cost: 0.0,
-                    outflow_violation_below_cost: 0.0,
-                    outflow_violation_above_cost: 0.0,
-                    generation_violation_below_cost: 0.0,
-                    fpha_violation_cost: 5000.0,
-                    evaporation_violation_cost: 0.0,
-                    water_withdrawal_violation_cost: 0.0,
-                    water_withdrawal_violation_pos_cost: 0.0,
-                    water_withdrawal_violation_neg_cost: 0.0,
-                    evaporation_violation_pos_cost: 0.0,
-                    evaporation_violation_neg_cost: 0.0,
-                    inflow_nonnegativity_cost: 0.0,
-                },
-                bus: BusStagePenalties { excess_cost: 0.0 },
-                line: LineStagePenalties { exchange_cost: 0.0 },
-                ncs: NcsStagePenalties {
-                    curtailment_cost: 0.0,
-                },
-            },
-        )
-    }
-
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "build_with_resolved_tables runs its make closure twice, so the by-value arguments are cloned into each build"
+    )]
     fn build_system(fpha_groups: Vec<HydroUnitGroup>) -> System {
-        let bounds = generous_resolved_bounds(&BoundsCountsSpec {
-            n_hydros: 2,
-            n_thermals: 0,
-            n_lines: 0,
-            n_pumping: 0,
-            n_contracts: 0,
-            n_stages: 1,
-            k_max: 0,
-        });
-
-        let penalties = zero_resolved_penalties(&PenaltiesCountsSpec {
-            n_hydros: 2,
-            n_buses: 4,
-            n_lines: 0,
-            n_ncs: 0,
-            n_stages: 1,
-        });
-
         let stage = make_stage(
             0,
             StageSpec {
@@ -1114,15 +1032,17 @@ mod cell_partition_gates {
             },
         ];
 
-        SystemBuilder::new()
-            .buses(buses())
-            .hydros(vec![other_hydro(), fpha_hydro(fpha_groups)])
-            .stages(vec![stage])
-            .inflow_models(inflow_models)
-            .bounds(bounds)
-            .penalties(penalties)
-            .build()
-            .expect("cell_partition_gates fixture must be a valid System")
+        novomodelo_sddp::test_support::build_with_resolved_tables(
+            || {
+                SystemBuilder::new()
+                    .buses(buses())
+                    .hydros(vec![other_hydro(), fpha_hydro(fpha_groups.clone())])
+                    .stages(vec![stage.clone()])
+                    .inflow_models(inflow_models.clone())
+            },
+            0,
+            |system, bounds, _| restore_generous_hydro_limits(system, bounds),
+        )
     }
 
     /// `H_OTHER` (`ConstantProductivity`) at hydro system-index 0, `H_FPHA`
@@ -1345,23 +1265,6 @@ mod cell_partition_gates {
             },
         );
 
-        let bounds = generous_resolved_bounds(&BoundsCountsSpec {
-            n_hydros: 1,
-            n_thermals: 0,
-            n_lines: 0,
-            n_pumping: 0,
-            n_contracts: 0,
-            n_stages: 1,
-            k_max: 0,
-        });
-        let penalties = zero_resolved_penalties(&PenaltiesCountsSpec {
-            n_hydros: 1,
-            n_buses: 1,
-            n_lines: 0,
-            n_ncs: 0,
-            n_stages: 1,
-        });
-
         let stage = make_stage(
             0,
             StageSpec {
@@ -1384,23 +1287,25 @@ mod cell_partition_gates {
             },
         );
 
-        let system = SystemBuilder::new()
-            .buses(vec![bus])
-            .hydros(vec![hydro])
-            .stages(vec![stage])
-            .inflow_models(vec![InflowModel {
-                hydro_id: MIXED_HYDRO,
-                stage_id: 0,
-                mean_m3s: 0.0,
-                std_m3s: 0.0,
-                ar_coefficients: vec![],
-                residual_std_ratio: 1.0,
-                annual: None,
-            }])
-            .bounds(bounds)
-            .penalties(penalties)
-            .build()
-            .expect("mixed-binding fixture must be a valid System");
+        let system = novomodelo_sddp::test_support::build_with_resolved_tables(
+            || {
+                SystemBuilder::new()
+                    .buses(vec![bus.clone()])
+                    .hydros(vec![hydro.clone()])
+                    .stages(vec![stage.clone()])
+                    .inflow_models(vec![InflowModel {
+                        hydro_id: MIXED_HYDRO,
+                        stage_id: 0,
+                        mean_m3s: 0.0,
+                        std_m3s: 0.0,
+                        ar_coefficients: vec![],
+                        residual_std_ratio: 1.0,
+                        annual: None,
+                    }])
+            },
+            0,
+            |system, bounds, _| restore_generous_hydro_limits(system, bounds),
+        );
 
         let production = ProductionModelSet::new(
             vec![vec![ResolvedProductionModel::ConstantProductivity {

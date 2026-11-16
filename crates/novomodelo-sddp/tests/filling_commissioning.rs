@@ -1317,11 +1317,7 @@ mod filling_cut_validity {
         StageStateConfig,
     };
     use novomodelo_core::{
-        BoundsCountsSpec, BoundsDefaults, BusStagePenalties, ContractBlockBounds, EntityId,
-        HydroBlockBounds, HydroPenalties, HydroStageBounds, HydroStorage, InitialConditions,
-        LineBlockBounds, LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec,
-        PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds, ResolvedPenalties, SystemBuilder,
-        ThermalBlockBounds, TrainingEvent,
+        EntityId, HydroPenalties, HydroStorage, InitialConditions, SystemBuilder, TrainingEvent,
     };
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
@@ -1400,7 +1396,7 @@ mod filling_cut_validity {
             EntityId(1),
             BusSpec {
                 name: "B1".to_string(),
-                operational_start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 2).unwrap(),
+                operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 2).unwrap(),
                 deficit_segments: vec![DeficitSegment {
                     depth_mw: None,
                     cost_per_mwh: 500.0,
@@ -1414,7 +1410,7 @@ mod filling_cut_validity {
             EntityId(5),
             ThermalSpec {
                 name: "T_backup".to_string(),
-                operational_start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 6).unwrap(),
+                operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 6).unwrap(),
                 bus_id: EntityId(1),
                 entry_stage_id: None,
                 exit_stage_id: None,
@@ -1443,7 +1439,7 @@ mod filling_cut_validity {
                     EntityId(id),
                     HydroSpec {
                         name: name.to_string(),
-                        operational_start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1)
+                        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1)
                             .unwrap()
                             .checked_add_signed(chrono::Duration::days(i64::from(id)))
                             .unwrap(),
@@ -1535,109 +1531,6 @@ mod filling_cut_validity {
             })
             .collect();
 
-        fn default_hydro_bounds() -> HydroStageBounds {
-            HydroStageBounds {
-                min_storage_hm3: 0.0,
-                max_storage_hm3: 200.0,
-                filling_min_rate_m3s: 0.0,
-                water_withdrawal_m3s: 0.0,
-            }
-        }
-
-        fn default_hydro_block_bounds() -> HydroBlockBounds {
-            HydroBlockBounds {
-                max_turbined_m3s: 100.0,
-                max_generation_mw: 250.0,
-                ..Default::default()
-            }
-        }
-
-        fn default_hydro_penalties() -> HydroPenalties {
-            HydroPenalties {
-                spillage_cost: 0.01,
-                diversion_cost: 0.0,
-                turbined_cost: 0.0,
-                storage_violation_below_cost: 500.0,
-                filling_target_violation_cost: 0.0,
-                turbined_violation_below_cost: 0.0,
-                outflow_violation_below_cost: 0.0,
-                outflow_violation_above_cost: 0.0,
-                generation_violation_below_cost: 0.0,
-                fpha_violation_cost: 0.0,
-                evaporation_violation_cost: 0.0,
-                water_withdrawal_violation_cost: 0.0,
-                water_withdrawal_violation_pos_cost: 0.0,
-                water_withdrawal_violation_neg_cost: 0.0,
-                evaporation_violation_pos_cost: 0.0,
-                evaporation_violation_neg_cost: 0.0,
-                inflow_nonnegativity_cost: 1000.0,
-            }
-        }
-
-        let mut bounds = ResolvedBounds::new(
-            &BoundsCountsSpec {
-                n_hydros: 4,
-                n_thermals: 1,
-                n_lines: 0,
-                n_pumping: 0,
-                n_contracts: 0,
-                n_stages: N_STAGES,
-                k_max: 0,
-            },
-            &BoundsDefaults {
-                hydro: default_hydro_bounds(),
-                hydro_block: default_hydro_block_bounds(),
-                thermal_block: ThermalBlockBounds {
-                    min_generation_mw: 0.0,
-                    max_generation_mw: 400.0,
-                    cost_per_mwh: 500.0,
-                },
-                line_block: LineBlockBounds {
-                    direct_mw: 0.0,
-                    reverse_mw: 0.0,
-                },
-                pumping_block: PumpingBlockBounds {
-                    min_flow_m3s: 0.0,
-                    max_flow_m3s: 0.0,
-                },
-                contract_block: ContractBlockBounds {
-                    min_mw: 0.0,
-                    max_mw: 0.0,
-                    price_per_mwh: 0.0,
-                },
-            },
-        );
-
-        // The per-stage Filling impound cap is read from the resolved bounds table
-        // (`hydro_bounds(h_idx, stage_idx).filling_min_rate_m3s`), NOT the
-        // `FillingConfig` scalar; set it on the two filling hydros (positional
-        // indices 0 = Hf1, 1 = Hf2) at every stage so the Filling-phase row impounds.
-        for h_idx in [0_usize, 1] {
-            for stage_idx in 0..N_STAGES {
-                bounds
-                    .hydro_bounds_mut(h_idx, stage_idx)
-                    .filling_min_rate_m3s = 50.0;
-            }
-        }
-
-        let penalties = ResolvedPenalties::new(
-            &PenaltiesCountsSpec {
-                n_hydros: 4,
-                n_buses: 1,
-                n_lines: 0,
-                n_ncs: 0,
-                n_stages: N_STAGES,
-            },
-            &PenaltiesDefaults {
-                hydro: default_hydro_penalties(),
-                bus: BusStagePenalties { excess_cost: 0.0 },
-                line: LineStagePenalties { exchange_cost: 0.0 },
-                ncs: NcsStagePenalties {
-                    curtailment_cost: 0.0,
-                },
-            },
-        );
-
         // Filling hydros carry their stage-0 seed in `filling_storage`, operating /
         // control hydros in `storage`; the filling seed is `0.0` (empty pit, frozen
         // through the PreFilling phase that exists because `start_stage_id > 0`).
@@ -1667,18 +1560,26 @@ mod filling_cut_validity {
             past_defluences: vec![],
         };
 
-        SystemBuilder::new()
-            .buses(vec![bus])
-            .thermals(vec![thermal_backup])
-            .hydros(hydros)
-            .stages(stages)
-            .inflow_models(inflow_models)
-            .load_models(load_models)
-            .bounds(bounds)
-            .penalties(penalties)
-            .initial_conditions(initial_conditions)
-            .build()
-            .expect("build_system: valid chained filling cascade")
+        novomodelo_sddp::test_support::build_with_resolved_tables(
+            || {
+                SystemBuilder::new()
+                    .buses(vec![bus.clone()])
+                    .thermals(vec![thermal_backup.clone()])
+                    .hydros(hydros.clone())
+                    .stages(stages.clone())
+                    .inflow_models(inflow_models.clone())
+                    .load_models(load_models.clone())
+                    .initial_conditions(initial_conditions.clone())
+            },
+            0,
+            |system, bounds, _| {
+                for hydro in 0..system.hydros().len() {
+                    for stage in 0..N_STAGES {
+                        bounds.hydro_bounds_mut(hydro, stage).min_storage_hm3 = 0.0;
+                    }
+                }
+            },
+        )
     }
 
     // ---------------------------------------------------------------------------
@@ -1876,11 +1777,10 @@ mod filling_cut_validity {
         let last_filling = entry - 1;
         let hf1_pos = 0_usize;
 
-        let out_col_last_filling = state.storage.start + hf1_pos;
-        let out_col_entry = state.storage.start + hf1_pos;
+        let hf1_storage_col = state.storage.start + hf1_pos;
 
-        let last_filling_values = stored_at(last_filling, out_col_last_filling);
-        let entry_values = stored_at(entry, out_col_entry);
+        let last_filling_values = stored_at(last_filling, hf1_storage_col);
+        let entry_values = stored_at(entry, hf1_storage_col);
         assert!(
             !last_filling_values.is_empty() && !entry_values.is_empty(),
             "the pools must store outgoing states at the last Filling stage \

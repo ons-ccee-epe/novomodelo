@@ -786,7 +786,7 @@ fn resolve_computed(
 mod tests {
     use novomodelo_core::{
         CascadeTopology, ComputedParameter, EntityId, ParameterKind, ScalarParameter, StudyPos,
-        entities::hydro::{HydroGenerationModel, HydroPenalties},
+        entities::hydro::HydroPenalties,
     };
 
     use novomodelo_io::{
@@ -800,6 +800,7 @@ mod tests {
     };
     use crate::fpha_fitting::ForebayTable;
     use crate::test_support;
+    use crate::test_support::builders::HydroSpec;
 
     // -------------------------------------------------------------------------
     // Shared test helpers
@@ -813,54 +814,23 @@ mod tests {
         max_storage: f64,
         specific_productivity: Option<f64>,
     ) -> Hydro {
-        let mut hydro = Hydro {
-            unit_groups: Vec::new(),
-            id: EntityId(id),
-            name: format!("h{id}"),
-            operational_start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            downstream_id: None,
-            travel_time_hours: None,
-            entry_stage_id: None,
-            exit_stage_id: None,
-            generation_model: HydroGenerationModel::ConstantProductivity,
-            min_storage_hm3: min_storage,
-            max_storage_hm3: max_storage,
-            min_outflow_m3s: 0.0,
-            max_outflow_m3s: None,
-            min_turbined_m3s: 0.0,
-            max_turbined_m3s: 500.0,
-            specific_productivity_mw_per_m3s_per_m: specific_productivity,
-            min_generation_mw: 0.0,
-            max_generation_mw: 100.0,
-            tailrace: None,
-            hydraulic_losses: None,
-            efficiency: None,
-            evaporation_coefficients_mm: None,
-            evaporation_reference_volumes_hm3: None,
-            diversion: None,
-            filling: None,
-            penalties: HydroPenalties {
-                spillage_cost: 0.0,
-                diversion_cost: 0.0,
-                turbined_cost: 0.0,
-                storage_violation_below_cost: 0.0,
-                filling_target_violation_cost: 0.0,
-                turbined_violation_below_cost: 0.0,
-                outflow_violation_below_cost: 0.0,
-                outflow_violation_above_cost: 0.0,
-                generation_violation_below_cost: 0.0,
-                fpha_violation_cost: 0.0,
-                evaporation_violation_cost: 0.0,
-                water_withdrawal_violation_cost: 0.0,
-                water_withdrawal_violation_pos_cost: 0.0,
-                water_withdrawal_violation_neg_cost: 0.0,
-                evaporation_violation_pos_cost: 0.0,
-                evaporation_violation_neg_cost: 0.0,
-                inflow_nonnegativity_cost: 1000.0,
+        test_support::builders::make_hydro(
+            EntityId(id),
+            HydroSpec {
+                name: format!("h{id}"),
+                bus_id: EntityId(1),
+                min_storage_hm3: min_storage,
+                max_storage_hm3: max_storage,
+                max_turbined_m3s: 500.0,
+                specific_productivity_mw_per_m3s_per_m: specific_productivity,
+                max_generation_mw: 100.0,
+                penalties: HydroPenalties {
+                    inflow_nonnegativity_cost: 1000.0,
+                    ..HydroPenalties::uniform(0.0)
+                },
+                ..HydroSpec::default()
             },
-        };
-        hydro.declare_mirror_unit_group(EntityId(1));
-        hydro
+        )
     }
 
     /// Build an [`EnergyConversionSet`] with `n_hydros` hydros, each with

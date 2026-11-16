@@ -18,6 +18,7 @@ use super::selection::validate_fitted_planes;
 use super::tailrace::TailraceFamilies;
 use super::{FphaFitResult, fit_fpha_planes};
 use crate::hydro_models::FphaPlane;
+use crate::test_support::builders::HydroSpec;
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -572,55 +573,23 @@ fn evaluate_acceptance_criterion() {
 
 /// Build a minimal `Hydro` with the given storage bounds.
 fn make_hydro(min_storage_hm3: f64, max_storage_hm3: f64) -> Hydro {
-    let zero_penalties = HydroPenalties {
-        spillage_cost: 0.0,
-        diversion_cost: 0.0,
-        turbined_cost: 0.0,
-        storage_violation_below_cost: 0.0,
-        filling_target_violation_cost: 0.0,
-        turbined_violation_below_cost: 0.0,
-        outflow_violation_below_cost: 0.0,
-        outflow_violation_above_cost: 0.0,
-        generation_violation_below_cost: 0.0,
-        fpha_violation_cost: 0.0,
-        evaporation_violation_cost: 0.0,
-        water_withdrawal_violation_cost: 0.0,
-        water_withdrawal_violation_pos_cost: 0.0,
-        water_withdrawal_violation_neg_cost: 0.0,
-        evaporation_violation_pos_cost: 0.0,
-        evaporation_violation_neg_cost: 0.0,
-        inflow_nonnegativity_cost: 1000.0,
-    };
-    let mut hydro = Hydro {
-        unit_groups: Vec::new(),
-        id: EntityId::from(1),
-        name: "TestHydro".to_owned(),
-        operational_start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        downstream_id: None,
-        travel_time_hours: None,
-        entry_stage_id: None,
-        exit_stage_id: None,
-        min_storage_hm3,
-        max_storage_hm3,
-        min_outflow_m3s: 0.0,
-        max_outflow_m3s: None,
-        generation_model: HydroGenerationModel::Fpha,
-        min_turbined_m3s: 0.0,
-        max_turbined_m3s: 12_600.0,
-        specific_productivity_mw_per_m3s_per_m: None,
-        min_generation_mw: 0.0,
-        max_generation_mw: 14_000.0,
-        tailrace: None,
-        hydraulic_losses: None,
-        efficiency: None,
-        evaporation_coefficients_mm: None,
-        evaporation_reference_volumes_hm3: None,
-        diversion: None,
-        filling: None,
-        penalties: zero_penalties,
-    };
-    hydro.declare_mirror_unit_group(EntityId::from(10));
-    hydro
+    crate::test_support::builders::make_hydro(
+        EntityId::from(1),
+        HydroSpec {
+            name: "TestHydro".to_owned(),
+            bus_id: EntityId::from(10),
+            min_storage_hm3,
+            max_storage_hm3,
+            generation_model: HydroGenerationModel::Fpha,
+            max_turbined_m3s: 12_600.0,
+            max_generation_mw: 14_000.0,
+            penalties: HydroPenalties {
+                inflow_nonnegativity_cost: 1000.0,
+                ..HydroPenalties::uniform(0.0)
+            },
+            ..HydroSpec::default()
+        },
+    )
 }
 
 /// Build a `ForebayTable` spanning `[0.0, 34_116.0]` hm³.
@@ -1437,57 +1406,27 @@ fn validate_fitted_planes_near_zero_gamma_s_within_tolerance_passes() {
 
 /// Build a Hydro entity with Sobradinho-style geometry and optional models.
 fn make_sobradinho_hydro() -> Hydro {
-    let zero_penalties = HydroPenalties {
-        spillage_cost: 0.0,
-        diversion_cost: 0.0,
-        turbined_cost: 0.0,
-        storage_violation_below_cost: 0.0,
-        filling_target_violation_cost: 0.0,
-        turbined_violation_below_cost: 0.0,
-        outflow_violation_below_cost: 0.0,
-        outflow_violation_above_cost: 0.0,
-        generation_violation_below_cost: 0.0,
-        fpha_violation_cost: 0.0,
-        evaporation_violation_cost: 0.0,
-        water_withdrawal_violation_cost: 0.0,
-        water_withdrawal_violation_pos_cost: 0.0,
-        water_withdrawal_violation_neg_cost: 0.0,
-        evaporation_violation_pos_cost: 0.0,
-        evaporation_violation_neg_cost: 0.0,
-        inflow_nonnegativity_cost: 1000.0,
-    };
-    let mut hydro = Hydro {
-        unit_groups: Vec::new(),
-        id: EntityId::from(1),
-        name: "Sobradinho".to_owned(),
-        operational_start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        downstream_id: None,
-        travel_time_hours: None,
-        entry_stage_id: None,
-        exit_stage_id: None,
-        min_storage_hm3: 0.0,
-        max_storage_hm3: 34_116.0,
-        min_outflow_m3s: 0.0,
-        max_outflow_m3s: None,
-        generation_model: HydroGenerationModel::Fpha,
-        min_turbined_m3s: 0.0,
-        max_turbined_m3s: 3_000.0,
-        specific_productivity_mw_per_m3s_per_m: None,
-        min_generation_mw: 0.0,
-        max_generation_mw: 1_000.0,
-        tailrace: Some(TailraceModel::Polynomial {
-            coefficients: vec![0.0, 0.001_f64],
-        }),
-        hydraulic_losses: Some(HydraulicLossesModel::Constant { value_m: 2.0 }),
-        efficiency: Some(EfficiencyModel::Constant { value: 0.92 }),
-        evaporation_coefficients_mm: None,
-        evaporation_reference_volumes_hm3: None,
-        diversion: None,
-        filling: None,
-        penalties: zero_penalties,
-    };
-    hydro.declare_mirror_unit_group(EntityId::from(10));
-    hydro
+    crate::test_support::builders::make_hydro(
+        EntityId::from(1),
+        HydroSpec {
+            name: "Sobradinho".to_owned(),
+            bus_id: EntityId::from(10),
+            max_storage_hm3: 34_116.0,
+            generation_model: HydroGenerationModel::Fpha,
+            max_turbined_m3s: 3_000.0,
+            max_generation_mw: 1_000.0,
+            tailrace: Some(TailraceModel::Polynomial {
+                coefficients: vec![0.0, 0.001_f64],
+            }),
+            hydraulic_losses: Some(HydraulicLossesModel::Constant { value_m: 2.0 }),
+            efficiency: Some(EfficiencyModel::Constant { value: 0.92 }),
+            penalties: HydroPenalties {
+                inflow_nonnegativity_cost: 1000.0,
+                ..HydroPenalties::uniform(0.0)
+            },
+            ..HydroSpec::default()
+        },
+    )
 }
 
 /// Fit_fpha_planes with Sobradinho-style geometry and default FphaColumnLayout
@@ -1789,54 +1728,22 @@ fn fit_fpha_planes_linear_function_produces_one_plane() {
             area_km2: 0.0,
         },
     ];
-    let zero_penalties = HydroPenalties {
-        spillage_cost: 0.0,
-        diversion_cost: 0.0,
-        turbined_cost: 0.0,
-        storage_violation_below_cost: 0.0,
-        filling_target_violation_cost: 0.0,
-        turbined_violation_below_cost: 0.0,
-        outflow_violation_below_cost: 0.0,
-        outflow_violation_above_cost: 0.0,
-        generation_violation_below_cost: 0.0,
-        fpha_violation_cost: 0.0,
-        evaporation_violation_cost: 0.0,
-        water_withdrawal_violation_cost: 0.0,
-        water_withdrawal_violation_pos_cost: 0.0,
-        water_withdrawal_violation_neg_cost: 0.0,
-        evaporation_violation_pos_cost: 0.0,
-        evaporation_violation_neg_cost: 0.0,
-        inflow_nonnegativity_cost: 1000.0,
-    };
-    let mut hydro = Hydro {
-        unit_groups: Vec::new(),
-        id: EntityId::from(1),
-        name: "FlatHydro".to_owned(),
-        operational_start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        downstream_id: None,
-        travel_time_hours: None,
-        entry_stage_id: None,
-        exit_stage_id: None,
-        min_storage_hm3: 0.0,
-        max_storage_hm3: 20_000.0,
-        min_outflow_m3s: 0.0,
-        max_outflow_m3s: None,
-        generation_model: HydroGenerationModel::Fpha,
-        min_turbined_m3s: 0.0,
-        max_turbined_m3s: 1_000.0,
-        specific_productivity_mw_per_m3s_per_m: None,
-        min_generation_mw: 0.0,
-        max_generation_mw: 4_000.0,
-        tailrace: None,
-        hydraulic_losses: None,
-        efficiency: None,
-        evaporation_coefficients_mm: None,
-        evaporation_reference_volumes_hm3: None,
-        diversion: None,
-        filling: None,
-        penalties: zero_penalties,
-    };
-    hydro.declare_mirror_unit_group(EntityId::from(10));
+    let hydro = crate::test_support::builders::make_hydro(
+        EntityId::from(1),
+        HydroSpec {
+            name: "FlatHydro".to_owned(),
+            bus_id: EntityId::from(10),
+            max_storage_hm3: 20_000.0,
+            generation_model: HydroGenerationModel::Fpha,
+            max_turbined_m3s: 1_000.0,
+            max_generation_mw: 4_000.0,
+            penalties: HydroPenalties {
+                inflow_nonnegativity_cost: 1000.0,
+                ..HydroPenalties::uniform(0.0)
+            },
+            ..HydroSpec::default()
+        },
+    );
     let config = FphaColumnLayout {
         source: "computed".to_owned(),
         volume_discretization_points: None,

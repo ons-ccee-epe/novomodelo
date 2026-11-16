@@ -652,9 +652,7 @@ mod tests {
     use std::collections::HashMap;
 
     use chrono::NaiveDate;
-    use novomodelo_core::temporal::{
-        Block, NoiseMethod, ScenarioSourceConfig, StageRiskConfig, StageStateConfig,
-    };
+    use novomodelo_core::temporal::Block;
     use novomodelo_core::{
         EntityId, HorizonGraph, SeasonDefinition, SeasonMap, Stage, SystemBuilder,
     };
@@ -665,6 +663,7 @@ mod tests {
         System, build_season_manifest, hydro_season_orders, partial_policy_dir,
         training_block_provenance, write_checkpoint,
     };
+    use crate::test_support::builders::{StageSpec, make_stage};
     use crate::test_support::{k_fan_setup, k_fan_system, snapshot_files};
     use crate::{CheckpointBasisStore, TrainingResult};
 
@@ -780,28 +779,20 @@ mod tests {
     }
 
     fn stage_with_season(id: i32, season_id: Option<usize>) -> Stage {
-        Stage {
-            index: 0,
-            id,
-            start_date: NaiveDate::from_ymd_opt(2024, 1, 1).expect("valid date"),
-            end_date: NaiveDate::from_ymd_opt(2024, 2, 1).expect("valid date"),
-            season_id,
-            blocks: vec![Block {
-                index: 0,
-                name: "SINGLE".to_string(),
-                duration_hours: 744.0,
-            }],
-            block_mode: BlockMode::Parallel,
-            state_config: StageStateConfig {
-                storage: true,
-                inflow_lags: false,
+        let mut stage = make_stage(
+            0,
+            StageSpec {
+                season_id,
+                blocks: vec![Block {
+                    index: 0,
+                    name: "SINGLE".to_string(),
+                    duration_hours: 744.0,
+                }],
+                ..StageSpec::default()
             },
-            risk_config: StageRiskConfig::Expectation,
-            scenario_config: ScenarioSourceConfig {
-                branching_factor: 1,
-                noise_method: NoiseMethod::Saa,
-            },
-        }
+        );
+        stage.id = id;
+        stage
     }
 
     fn season_map(cycle_type: SeasonCycleType, n_seasons: usize) -> SeasonMap {
@@ -1035,10 +1026,11 @@ mod tests {
     #[test]
     fn season_descriptor_keeps_gap_season_orders_from_synthesized_prestudy_stages() {
         // Declared study stages: ids 0..3, seasons 8..11 (Sep-Dec).
-        let month_stage = |id: i32, season: usize, start: (i32, u32), end: (i32, u32)| Stage {
-            start_date: NaiveDate::from_ymd_opt(start.0, start.1, 1).expect("valid date"),
-            end_date: NaiveDate::from_ymd_opt(end.0, end.1, 1).expect("valid date"),
-            ..stage_with_season(id, Some(season))
+        let month_stage = |id: i32, season: usize, start: (i32, u32), end: (i32, u32)| {
+            let mut stage = stage_with_season(id, Some(season));
+            stage.start_date = NaiveDate::from_ymd_opt(start.0, start.1, 1).expect("valid date");
+            stage.end_date = NaiveDate::from_ymd_opt(end.0, end.1, 1).expect("valid date");
+            stage
         };
         let stages = vec![
             month_stage(0, 8, (2024, 9), (2024, 10)),

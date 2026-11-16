@@ -41,10 +41,8 @@ use chrono::NaiveDate;
 use novomodelo_core::entities::thermal::AnticipatedConfig;
 use novomodelo_core::temporal::{Node as PolicyNode, PolicyGraphType, Transition};
 use novomodelo_core::{
-    AnticipatedCommitmentHistory, BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, EntityId,
-    HorizonGraph, HydroBlockBounds, HydroStageBounds, InitialConditions, LineBlockBounds,
-    PostStudyStage, PostStudyStages, PostStudyThermalBound, PumpingBlockBounds, ResolvedBounds,
-    System, SystemBuilder, ThermalBlockBounds, WaterBucketStages,
+    AnticipatedCommitmentHistory, EntityId, HorizonGraph, InitialConditions, PostStudyStage,
+    PostStudyStages, PostStudyThermalBound, System, SystemBuilder, WaterBucketStages,
 };
 use novomodelo_sddp::indexer::StateDim;
 use novomodelo_sddp::setup::{NodeGraph, NodePos, StageIdx};
@@ -148,90 +146,6 @@ fn post_study_stages() -> PostStudyStages {
     }
 }
 
-fn bounds() -> ResolvedBounds {
-    ResolvedBounds::new(
-        &BoundsCountsSpec {
-            n_hydros: 0,
-            n_thermals: 1,
-            n_lines: 0,
-            n_pumping: 0,
-            n_contracts: 0,
-            n_stages: 2,
-            k_max: 1,
-        },
-        &BoundsDefaults {
-            hydro: HydroStageBounds {
-                min_storage_hm3: 0.0,
-                max_storage_hm3: 0.0,
-                filling_min_rate_m3s: 0.0,
-                water_withdrawal_m3s: 0.0,
-            },
-            hydro_block: HydroBlockBounds::default(),
-            thermal_block: ThermalBlockBounds {
-                min_generation_mw: 0.0,
-                max_generation_mw: 0.0,
-                cost_per_mwh: 1.0,
-            },
-            line_block: LineBlockBounds {
-                direct_mw: 0.0,
-                reverse_mw: 0.0,
-            },
-            pumping_block: PumpingBlockBounds {
-                min_flow_m3s: 0.0,
-                max_flow_m3s: 0.0,
-            },
-            contract_block: ContractBlockBounds {
-                min_mw: 0.0,
-                max_mw: 0.0,
-                price_per_mwh: 0.0,
-            },
-        },
-    )
-}
-
-fn penalties() -> novomodelo_core::resolved::ResolvedPenalties {
-    use novomodelo_core::HydroPenalties;
-    use novomodelo_core::resolved::{
-        BusStagePenalties, LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec,
-        PenaltiesDefaults, ResolvedPenalties,
-    };
-    ResolvedPenalties::new(
-        &PenaltiesCountsSpec {
-            n_hydros: 0,
-            n_buses: 1,
-            n_lines: 0,
-            n_ncs: 0,
-            n_stages: 2,
-        },
-        &PenaltiesDefaults {
-            hydro: HydroPenalties {
-                spillage_cost: 0.0,
-                diversion_cost: 0.0,
-                turbined_cost: 0.0,
-                storage_violation_below_cost: 0.0,
-                filling_target_violation_cost: 0.0,
-                turbined_violation_below_cost: 0.0,
-                outflow_violation_below_cost: 0.0,
-                outflow_violation_above_cost: 0.0,
-                generation_violation_below_cost: 0.0,
-                fpha_violation_cost: 0.0,
-                evaporation_violation_cost: 0.0,
-                water_withdrawal_violation_cost: 0.0,
-                water_withdrawal_violation_pos_cost: 0.0,
-                water_withdrawal_violation_neg_cost: 0.0,
-                evaporation_violation_pos_cost: 0.0,
-                evaporation_violation_neg_cost: 0.0,
-                inflow_nonnegativity_cost: 0.0,
-            },
-            bus: BusStagePenalties { excess_cost: 0.0 },
-            line: LineStagePenalties { exchange_cost: 0.0 },
-            ncs: NcsStagePenalties {
-                curtailment_cost: 0.0,
-            },
-        },
-    )
-}
-
 /// Two-leaf terminal fan: root (id 0, stage 0) branches into leaves (ids 1 and
 /// 2, stage 1) — both terminal, sharing ONE pool (`build_node_graph`'s
 /// leaf-sharing rule).
@@ -294,20 +208,24 @@ fn build_system(with_window: bool, fanned: bool) -> System {
             ..Default::default()
         },
     );
-    let mut builder = SystemBuilder::new()
-        .buses(vec![bus])
-        .thermals(vec![thermal])
-        .stages(stages())
-        .bounds(bounds())
-        .penalties(penalties())
-        .initial_conditions(InitialConditions::default());
-    if with_window {
-        builder = builder.post_study_stages(Some(post_study_stages()));
-    }
-    if fanned {
-        builder = builder.policy_graph(two_leaf_fan_graph());
-    }
-    builder.build().expect("fixture System must build")
+    novomodelo_sddp::test_support::build_with_resolved_tables(
+        || {
+            let mut builder = SystemBuilder::new()
+                .buses(vec![bus.clone()])
+                .thermals(vec![thermal.clone()])
+                .stages(stages())
+                .initial_conditions(InitialConditions::default());
+            if with_window {
+                builder = builder.post_study_stages(Some(post_study_stages()));
+            }
+            if fanned {
+                builder = builder.policy_graph(two_leaf_fan_graph());
+            }
+            builder
+        },
+        1,
+        |_, _, _| {},
+    )
 }
 
 fn config() -> novomodelo_io::config::Config {
@@ -776,50 +694,6 @@ const THERMAL_ID_B: EntityId = EntityId(3);
 /// Generation cap admitting an in-study (class-2) commitment seed.
 const CAPABILITY_MAX_MW: f64 = 100.0;
 
-/// Zero-default bounds parameterized only by `n_thermals`; the per-block
-/// thermal cap is [`CAPABILITY_MAX_MW`] so an in-study class-2 seed is
-/// admissible.
-fn bounds_for(n_thermals: usize) -> ResolvedBounds {
-    ResolvedBounds::new(
-        &BoundsCountsSpec {
-            n_hydros: 0,
-            n_thermals,
-            n_lines: 0,
-            n_pumping: 0,
-            n_contracts: 0,
-            n_stages: 2,
-            k_max: 1,
-        },
-        &BoundsDefaults {
-            hydro: HydroStageBounds {
-                min_storage_hm3: 0.0,
-                max_storage_hm3: 0.0,
-                filling_min_rate_m3s: 0.0,
-                water_withdrawal_m3s: 0.0,
-            },
-            hydro_block: HydroBlockBounds::default(),
-            thermal_block: ThermalBlockBounds {
-                min_generation_mw: 0.0,
-                max_generation_mw: CAPABILITY_MAX_MW,
-                cost_per_mwh: 1.0,
-            },
-            line_block: LineBlockBounds {
-                direct_mw: 0.0,
-                reverse_mw: 0.0,
-            },
-            pumping_block: PumpingBlockBounds {
-                min_flow_m3s: 0.0,
-                max_flow_m3s: 0.0,
-            },
-            contract_block: ContractBlockBounds {
-                min_mw: 0.0,
-                max_mw: 0.0,
-                price_per_mwh: 0.0,
-            },
-        },
-    )
-}
-
 /// Build an accessor-test system: each id in `thermal_ids` (given declaration
 /// order — the builder canonicalizes) is a `LeadStages(1)` anticipated thermal
 /// on the shared bus; `commitments` seeds `past_anticipated_commitments`.
@@ -850,15 +724,17 @@ fn build_accessor_system(
         past_anticipated_commitments: commitments,
         ..Default::default()
     };
-    SystemBuilder::new()
-        .buses(vec![bus])
-        .thermals(thermals)
-        .stages(stages())
-        .bounds(bounds_for(thermal_ids.len()))
-        .penalties(penalties())
-        .initial_conditions(initial_conditions)
-        .build()
-        .expect("accessor fixture System must build")
+    novomodelo_sddp::test_support::build_with_resolved_tables(
+        || {
+            SystemBuilder::new()
+                .buses(vec![bus.clone()])
+                .thermals(thermals.clone())
+                .stages(stages())
+                .initial_conditions(initial_conditions.clone())
+        },
+        1,
+        |_, _, _| {},
+    )
 }
 
 /// An in-study (class-2) commitment window covering stage 0 for `thermal_id`.

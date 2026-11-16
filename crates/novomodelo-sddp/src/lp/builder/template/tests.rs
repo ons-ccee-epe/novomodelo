@@ -11,11 +11,10 @@ use novomodelo_core::scenario::SamplingScheme;
 use novomodelo_core::{
     AnticipatedConfig, Block, BlockMode, BoundsCountsSpec, BoundsDefaults, Bus, BusStagePenalties,
     ContractBlockBounds, ContractType, DeficitSegment, EnergyContract, EntityId, FillingConfig,
-    Hydro, HydroBlockBounds, HydroGenerationModel, HydroPenalties, HydroStageBounds,
-    LineBlockBounds, LineStagePenalties, LoadModel, NcsStagePenalties, NoiseMethod,
-    NonControllableSource, PenaltiesCountsSpec, PenaltiesDefaults, PostStudyStage, PostStudyStages,
-    PostStudyThermalBound, PumpingBlockBounds, PumpingStation, ResolvedBounds, ResolvedNcsBounds,
-    ResolvedNcsFactors, ResolvedPenalties, ScenarioSourceConfig, Stage, StageRiskConfig,
+    Hydro, HydroBlockBounds, HydroPenalties, HydroStageBounds, LineBlockBounds, LineStagePenalties,
+    LoadModel, NcsStagePenalties, NonControllableSource, PenaltiesCountsSpec, PenaltiesDefaults,
+    PostStudyStage, PostStudyStages, PostStudyThermalBound, PumpingBlockBounds, PumpingStation,
+    ResolvedBounds, ResolvedNcsBounds, ResolvedNcsFactors, ResolvedPenalties, Stage,
     StageStateConfig, SystemBuilder, Thermal, ThermalBlockBounds, WaterBucketStages,
 };
 use novomodelo_stochastic::PrecomputedNormal;
@@ -32,7 +31,12 @@ use crate::inflow_method::InflowNonNegativityMethod;
 use crate::lead_time::AnticipatedResolution;
 use crate::policy::resolved_generic_coefficients::ResolvedGenericCoefficients;
 use crate::resolved_parameters::ResolvedParameters;
-use crate::test_support::{assert_templates_byte_identical, resolve_anticipated_commitments};
+use crate::test_support::builders::{
+    self, BusSpec, ContractSpec, HydroSpec, NcsSpec, PumpingSpec, StageSpec, ThermalSpec,
+};
+use crate::test_support::{
+    assert_templates_byte_identical, build_with_resolved_tables, resolve_anticipated_commitments,
+};
 use crate::time_value::{
     DeliveryCalendar, PostStudyResolved, TimeValue, compute_cumulative_discount_factors,
     compute_per_stage_discount_factors, resolve_post_study_artifacts,
@@ -92,56 +96,62 @@ fn default_hydro_penalties() -> HydroPenalties {
 }
 
 fn fixture_bus() -> Bus {
-    Bus {
-        id: EntityId(1),
-        name: "B1".to_string(),
-        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        deficit_segments: vec![DeficitSegment {
-            depth_mw: None,
-            cost_per_mwh: 500.0,
-        }],
-        excess_cost: 0.0,
-    }
+    builders::make_bus(
+        EntityId(1),
+        BusSpec {
+            name: "B1".to_string(),
+            deficit_segments: vec![DeficitSegment {
+                depth_mw: None,
+                cost_per_mwh: 500.0,
+            }],
+            ..BusSpec::default()
+        },
+    )
+}
+
+fn single_stage(blocks: Vec<Block>) -> Vec<Stage> {
+    vec![builders::make_stage(
+        0,
+        StageSpec {
+            season_id: Some(0),
+            blocks,
+            state_config: StageStateConfig {
+                storage: false,
+                inflow_lags: false,
+            },
+            ..StageSpec::default()
+        },
+    )]
+}
+
+fn single_block_stage() -> Vec<Stage> {
+    single_stage(vec![Block {
+        index: 0,
+        name: "BLK0".to_string(),
+        duration_hours: 744.0,
+    }])
+}
+
+fn single_stage_load() -> Vec<LoadModel> {
+    vec![LoadModel {
+        bus_id: EntityId(1),
+        stage_id: 0,
+        mean_mw: 100.0,
+        std_mw: 0.0,
+    }]
 }
 
 /// Build a one-bus system with exactly the thermals provided.
 ///
 /// Uses one study stage with a single block of 744 hours and no hydros.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "build_with_resolved_tables runs its make closure twice, so the by-value arguments are cloned into each build"
+)]
 fn system_with_thermals(thermals: Vec<Thermal>) -> novomodelo_core::System {
-    let n_thermals = thermals.len();
-    let n_stages = 1_usize;
-
     let bus = fixture_bus();
-
-    let stages: Vec<Stage> = vec![Stage {
-        index: 0,
-        id: 0,
-        start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        end_date: NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-        season_id: Some(0),
-        blocks: vec![Block {
-            index: 0,
-            name: "BLK0".to_string(),
-            duration_hours: 744.0,
-        }],
-        block_mode: BlockMode::Parallel,
-        state_config: StageStateConfig {
-            storage: false,
-            inflow_lags: false,
-        },
-        risk_config: StageRiskConfig::Expectation,
-        scenario_config: ScenarioSourceConfig {
-            branching_factor: 1,
-            noise_method: NoiseMethod::Saa,
-        },
-    }];
-
-    let load_models = vec![LoadModel {
-        bus_id: EntityId(1),
-        stage_id: 0,
-        mean_mw: 100.0,
-        std_mw: 0.0,
-    }];
+    let stages = single_block_stage();
+    let load_models = single_stage_load();
 
     let k_max = thermals
         .iter()
@@ -150,66 +160,23 @@ fn system_with_thermals(thermals: Vec<Thermal>) -> novomodelo_core::System {
         .max()
         .unwrap_or(0);
 
-    let resolved_bounds = ResolvedBounds::new(
-        &BoundsCountsSpec {
-            n_hydros: 0,
-            n_thermals,
-            n_lines: 0,
-            n_pumping: 0,
-            n_contracts: 0,
-            n_stages,
-            k_max,
+    build_with_resolved_tables(
+        || {
+            SystemBuilder::new()
+                .buses(vec![bus.clone()])
+                .thermals(thermals.clone())
+                .stages(stages.clone())
+                .load_models(load_models.clone())
         },
-        &BoundsDefaults {
-            hydro: default_hydro_bounds(),
-            hydro_block: default_hydro_block_bounds(),
-            thermal_block: ThermalBlockBounds {
-                min_generation_mw: 0.0,
-                max_generation_mw: 100.0,
-                cost_per_mwh: 0.0,
-            },
-            line_block: LineBlockBounds {
-                direct_mw: 0.0,
-                reverse_mw: 0.0,
-            },
-            pumping_block: PumpingBlockBounds {
-                min_flow_m3s: 0.0,
-                max_flow_m3s: 0.0,
-            },
-            contract_block: ContractBlockBounds {
-                min_mw: 0.0,
-                max_mw: 0.0,
-                price_per_mwh: 0.0,
-            },
+        k_max,
+        |system, bounds, _| {
+            for t in 0..system.n_thermals() {
+                for s in 0..bounds.thermal_stage_axis_len() {
+                    bounds.thermal_block_base_mut(t, s).cost_per_mwh = 0.0;
+                }
+            }
         },
-    );
-    let penalties = ResolvedPenalties::new(
-        &PenaltiesCountsSpec {
-            n_hydros: 0,
-            n_buses: 1,
-            n_lines: 0,
-            n_ncs: 0,
-            n_stages,
-        },
-        &PenaltiesDefaults {
-            hydro: default_hydro_penalties(),
-            bus: BusStagePenalties { excess_cost: 0.0 },
-            line: LineStagePenalties { exchange_cost: 0.0 },
-            ncs: NcsStagePenalties {
-                curtailment_cost: 0.0,
-            },
-        },
-    );
-
-    SystemBuilder::new()
-        .buses(vec![bus])
-        .thermals(thermals)
-        .stages(stages)
-        .load_models(load_models)
-        .bounds(resolved_bounds)
-        .penalties(penalties)
-        .build()
-        .expect("system_with_thermals: valid system")
+    )
 }
 
 /// `system_with_thermals`'s bus carries a `std_mw == 0.0` load model; its slot
@@ -262,68 +229,23 @@ fn empty_resolved_params() -> ResolvedParameters {
     }
 }
 
-/// Per-plant [`HydroPenalties`] for fixture hydros, zero but for the FPHA
-/// violation cost.
-fn hydro_penalties_zero() -> HydroPenalties {
-    HydroPenalties {
-        spillage_cost: 0.0,
-        diversion_cost: 0.0,
-        turbined_cost: 0.0,
-        storage_violation_below_cost: 0.0,
-        filling_target_violation_cost: 0.0,
-        turbined_violation_below_cost: 0.0,
-        outflow_violation_below_cost: 0.0,
-        outflow_violation_above_cost: 0.0,
-        generation_violation_below_cost: 0.0,
-        fpha_violation_cost: 5000.0,
-        evaporation_violation_cost: 0.0,
-        water_withdrawal_violation_cost: 0.0,
-        water_withdrawal_violation_pos_cost: 0.0,
-        water_withdrawal_violation_neg_cost: 0.0,
-        evaporation_violation_pos_cost: 0.0,
-        evaporation_violation_neg_cost: 0.0,
-        inflow_nonnegativity_cost: 0.0,
-    }
-}
-
-// Deliberately non-binding, not an install capacity: the mirror group copies
-// this value and every cell column bound sums against it, so a realistic
-// number caps the cells below what `default_hydro_bounds()`-derived resolved
-// bounds resolve to.
+// Non-binding on purpose: the mirror group copies this value, so a realistic one
+// would cap the cells below the resolved bounds.
 const FIXTURE_NONBINDING_MAX_TURBINED_M3S: f64 = 1_000_000.0;
 
 /// Minimal independent (no-downstream) hydro for pumping-station refs.
 fn fixture_hydro(id: i32) -> Hydro {
-    let mut hydro = Hydro {
-        unit_groups: Vec::new(),
-        id: EntityId(id),
-        name: format!("H{id}"),
-        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        downstream_id: None,
-        travel_time_hours: None,
-        entry_stage_id: None,
-        exit_stage_id: None,
-        min_storage_hm3: 0.0,
-        max_storage_hm3: 100.0,
-        min_outflow_m3s: 0.0,
-        max_outflow_m3s: None,
-        generation_model: HydroGenerationModel::ConstantProductivity,
-        min_turbined_m3s: 0.0,
-        max_turbined_m3s: FIXTURE_NONBINDING_MAX_TURBINED_M3S,
-        specific_productivity_mw_per_m3s_per_m: None,
-        min_generation_mw: 0.0,
-        max_generation_mw: 1_000_000.0,
-        tailrace: None,
-        hydraulic_losses: None,
-        efficiency: None,
-        evaporation_coefficients_mm: None,
-        evaporation_reference_volumes_hm3: None,
-        diversion: None,
-        filling: None,
-        penalties: hydro_penalties_zero(),
-    };
-    hydro.declare_mirror_unit_group(EntityId(1));
-    hydro
+    builders::make_hydro(
+        EntityId(id),
+        HydroSpec {
+            name: format!("H{id}"),
+            bus_id: EntityId(1),
+            max_storage_hm3: 100.0,
+            max_turbined_m3s: FIXTURE_NONBINDING_MAX_TURBINED_M3S,
+            max_generation_mw: 1_000_000.0,
+            ..HydroSpec::default()
+        },
+    )
 }
 
 /// Build a one-bus, two-hydro system with the supplied pumping stations.
@@ -333,124 +255,58 @@ fn fixture_hydro(id: i32) -> Hydro {
 /// guarantee that `build_template_build_ctx` relies on when threading the
 /// slice into `ctx.pumping_stations`/`ctx.positions`. The two hydros and bus
 /// exist solely to satisfy pumping-station reference validation.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "build_with_resolved_tables runs its make closure twice, so the by-value arguments are cloned into each build"
+)]
 fn system_with_pumping_stations(stations: Vec<PumpingStation>) -> novomodelo_core::System {
-    let n_pumping = stations.len();
-    let n_hydros = 2_usize;
-    let n_stages = 1_usize;
-
     let bus = fixture_bus();
 
     let hydros = vec![fixture_hydro(1), fixture_hydro(2)];
+    let stages = single_block_stage();
+    let load_models = single_stage_load();
 
-    let stages: Vec<Stage> = vec![Stage {
-        index: 0,
-        id: 0,
-        start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        end_date: NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-        season_id: Some(0),
-        blocks: vec![Block {
-            index: 0,
-            name: "BLK0".to_string(),
-            duration_hours: 744.0,
-        }],
-        block_mode: BlockMode::Parallel,
-        state_config: StageStateConfig {
-            storage: false,
-            inflow_lags: false,
+    build_with_resolved_tables(
+        || {
+            SystemBuilder::new()
+                .buses(vec![bus.clone()])
+                .hydros(hydros.clone())
+                .pumping_stations(stations.clone())
+                .stages(stages.clone())
+                .load_models(load_models.clone())
         },
-        risk_config: StageRiskConfig::Expectation,
-        scenario_config: ScenarioSourceConfig {
-            branching_factor: 1,
-            noise_method: NoiseMethod::Saa,
+        0,
+        |system, bounds, penalties| {
+            for h in 0..system.n_hydros() {
+                for s in 0..bounds.n_stages() {
+                    bounds.hydro_bounds_mut(h, s).max_storage_hm3 = 200.0;
+                    let block = bounds.hydro_block_base_mut(h, s);
+                    block.max_turbined_m3s = 100.0;
+                    block.max_generation_mw = 250.0;
+                    let penalty = penalties.hydro_penalties_mut(h, s);
+                    penalty.spillage_cost = 0.01;
+                    penalty.inflow_nonnegativity_cost = 1000.0;
+                }
+            }
         },
-    }];
-
-    let load_models = vec![LoadModel {
-        bus_id: EntityId(1),
-        stage_id: 0,
-        mean_mw: 100.0,
-        std_mw: 0.0,
-    }];
-
-    let resolved_bounds = ResolvedBounds::new(
-        &BoundsCountsSpec {
-            n_hydros,
-            n_thermals: 0,
-            n_lines: 0,
-            n_pumping,
-            n_contracts: 0,
-            n_stages,
-            k_max: 0,
-        },
-        &BoundsDefaults {
-            hydro: default_hydro_bounds(),
-            hydro_block: default_hydro_block_bounds(),
-            thermal_block: ThermalBlockBounds {
-                min_generation_mw: 0.0,
-                max_generation_mw: 100.0,
-                cost_per_mwh: 0.0,
-            },
-            line_block: LineBlockBounds {
-                direct_mw: 0.0,
-                reverse_mw: 0.0,
-            },
-            pumping_block: PumpingBlockBounds {
-                min_flow_m3s: 0.0,
-                max_flow_m3s: 100.0,
-            },
-            contract_block: ContractBlockBounds {
-                min_mw: 0.0,
-                max_mw: 0.0,
-                price_per_mwh: 0.0,
-            },
-        },
-    );
-    let penalties = ResolvedPenalties::new(
-        &PenaltiesCountsSpec {
-            n_hydros,
-            n_buses: 1,
-            n_lines: 0,
-            n_ncs: 0,
-            n_stages,
-        },
-        &PenaltiesDefaults {
-            hydro: default_hydro_penalties(),
-            bus: BusStagePenalties { excess_cost: 0.0 },
-            line: LineStagePenalties { exchange_cost: 0.0 },
-            ncs: NcsStagePenalties {
-                curtailment_cost: 0.0,
-            },
-        },
-    );
-
-    SystemBuilder::new()
-        .buses(vec![bus])
-        .hydros(hydros)
-        .pumping_stations(stations)
-        .stages(stages)
-        .load_models(load_models)
-        .bounds(resolved_bounds)
-        .penalties(penalties)
-        .build()
-        .expect("system_with_pumping_stations: valid system")
+    )
 }
 
 /// Build a pumping station with the given id (bus/hydro refs fixed to the
 /// fixture entities; flow window and consumption are non-degenerate).
 fn fixture_pumping_station(id: i32) -> PumpingStation {
-    PumpingStation {
-        id: EntityId(id),
-        name: format!("P{id}"),
-        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        bus_id: EntityId(1),
-        source_hydro_id: EntityId(1),
-        destination_hydro_id: EntityId(2),
-        entry_stage_id: None,
-        exit_stage_id: None,
-        consumption_mw_per_m3s: 0.5,
-        min_flow_m3s: 0.0,
-        max_flow_m3s: 100.0,
-    }
+    builders::make_pumping_station(
+        EntityId(id),
+        PumpingSpec {
+            name: format!("P{id}"),
+            bus_id: EntityId(1),
+            source_hydro_id: EntityId(1),
+            destination_hydro_id: EntityId(2),
+            consumption_mw_per_m3s: 0.5,
+            max_flow_m3s: 100.0,
+            ..PumpingSpec::default()
+        },
+    )
 }
 
 // ── Pumping data threaded into TemplateBuildCtx ────────────────────────────
@@ -712,28 +568,29 @@ fn geometry_pumping_family_is_block_major_over_the_station_count() {
 /// Build a non-controllable source with the given id (bus ref fixed to the
 /// fixture bus; a non-degenerate installed capacity, curtailment allowed).
 fn fixture_non_controllable_source(id: i32) -> NonControllableSource {
-    NonControllableSource {
-        id: EntityId(id),
-        name: format!("W{id}"),
-        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        bus_id: EntityId(1),
-        entry_stage_id: None,
-        exit_stage_id: None,
-        max_generation_mw: 100.0,
-        allow_curtailment: true,
-        curtailment_cost: 5.0,
-    }
+    builders::make_ncs(
+        EntityId(id),
+        NcsSpec {
+            name: format!("W{id}"),
+            bus_id: EntityId(1),
+            curtailment_cost: 5.0,
+            ..NcsSpec::default()
+        },
+    )
 }
 
 /// Build a one-bus, two-hydro system with the supplied non-controllable
 /// sources over `n_blks` blocks. Mirrors `system_with_pumping_stations`; the
 /// two hydros and bus exist solely to satisfy NCS bus-reference validation.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "build_with_resolved_tables runs its make closure twice, so the by-value arguments are cloned into each build"
+)]
 fn system_with_non_controllable_sources(
     sources: Vec<NonControllableSource>,
     n_blks: usize,
 ) -> novomodelo_core::System {
     let n_ncs = sources.len();
-    let n_hydros = 2_usize;
     let n_stages = 1_usize;
 
     let bus = fixture_bus();
@@ -747,96 +604,42 @@ fn system_with_non_controllable_sources(
         })
         .collect();
 
-    let stages: Vec<Stage> = vec![Stage {
-        index: 0,
-        id: 0,
-        start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        end_date: NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-        season_id: Some(0),
-        blocks,
-        block_mode: BlockMode::Parallel,
-        state_config: StageStateConfig {
-            storage: false,
-            inflow_lags: false,
-        },
-        risk_config: StageRiskConfig::Expectation,
-        scenario_config: ScenarioSourceConfig {
-            branching_factor: 1,
-            noise_method: NoiseMethod::Saa,
-        },
-    }];
+    let stages = single_stage(blocks);
+    let load_models = single_stage_load();
 
-    let load_models = vec![LoadModel {
-        bus_id: EntityId(1),
-        stage_id: 0,
-        mean_mw: 100.0,
-        std_mw: 0.0,
-    }];
-
-    let resolved_bounds = ResolvedBounds::new(
-        &BoundsCountsSpec {
-            n_hydros,
-            n_thermals: 0,
-            n_lines: 0,
-            n_pumping: 0,
-            n_contracts: 0,
-            n_stages,
-            k_max: 0,
-        },
-        &BoundsDefaults {
-            hydro: default_hydro_bounds(),
-            hydro_block: default_hydro_block_bounds(),
-            thermal_block: ThermalBlockBounds {
-                min_generation_mw: 0.0,
-                max_generation_mw: 100.0,
-                cost_per_mwh: 0.0,
-            },
-            line_block: LineBlockBounds {
-                direct_mw: 0.0,
-                reverse_mw: 0.0,
-            },
-            pumping_block: PumpingBlockBounds {
-                min_flow_m3s: 0.0,
-                max_flow_m3s: 0.0,
-            },
-            contract_block: ContractBlockBounds {
-                min_mw: 0.0,
-                max_mw: 0.0,
-                price_per_mwh: 0.0,
-            },
-        },
-    );
-    let penalties = ResolvedPenalties::new(
-        &PenaltiesCountsSpec {
-            n_hydros,
-            n_buses: 1,
-            n_lines: 0,
-            n_ncs,
-            n_stages,
-        },
-        &PenaltiesDefaults {
-            hydro: default_hydro_penalties(),
-            bus: BusStagePenalties { excess_cost: 0.0 },
-            line: LineStagePenalties { exchange_cost: 0.0 },
-            ncs: NcsStagePenalties {
-                curtailment_cost: 0.0,
-            },
-        },
-    );
     let max_gen: Vec<f64> = sources.iter().map(|s| s.max_generation_mw).collect();
 
-    SystemBuilder::new()
-        .buses(vec![bus])
-        .hydros(hydros)
-        .non_controllable_sources(sources)
-        .stages(stages)
-        .load_models(load_models)
-        .bounds(resolved_bounds)
-        .penalties(penalties)
-        .resolved_ncs_bounds(ResolvedNcsBounds::new(n_ncs, n_stages, &max_gen))
-        .resolved_ncs_factors(ResolvedNcsFactors::new(n_ncs, n_stages, n_blks))
-        .build()
-        .expect("system_with_non_controllable_sources: valid system")
+    build_with_resolved_tables(
+        || {
+            SystemBuilder::new()
+                .buses(vec![bus.clone()])
+                .hydros(hydros.clone())
+                .non_controllable_sources(sources.clone())
+                .stages(stages.clone())
+                .load_models(load_models.clone())
+                .resolved_ncs_bounds(ResolvedNcsBounds::new(n_ncs, n_stages, &max_gen))
+                .resolved_ncs_factors(ResolvedNcsFactors::new(n_ncs, n_stages, n_blks))
+        },
+        0,
+        |system, bounds, penalties| {
+            for h in 0..system.n_hydros() {
+                for s in 0..bounds.n_stages() {
+                    bounds.hydro_bounds_mut(h, s).max_storage_hm3 = 200.0;
+                    let block = bounds.hydro_block_base_mut(h, s);
+                    block.max_turbined_m3s = 100.0;
+                    block.max_generation_mw = 250.0;
+                    let penalty = penalties.hydro_penalties_mut(h, s);
+                    penalty.spillage_cost = 0.01;
+                    penalty.inflow_nonnegativity_cost = 1000.0;
+                }
+            }
+            for n in 0..n_ncs {
+                for s in 0..penalties.n_stages() {
+                    penalties.ncs_penalties_mut(n, s).curtailment_cost = 0.0;
+                }
+            }
+        },
+    )
 }
 
 /// `StageGeometry::ncs_generation` spans exactly `n_ncs * n_blks` columns at
@@ -1016,30 +819,28 @@ fn build_stage_templates_empty_system_yields_no_templates() {
 /// Build an energy contract with the given id and direction (bus fixed to the
 /// fixture bus; a non-degenerate price/power window).
 fn fixture_contract(id: i32, contract_type: ContractType) -> EnergyContract {
-    EnergyContract {
-        id: EntityId(id),
-        name: format!("C{id}"),
-        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        bus_id: EntityId(1),
-        contract_type,
-        entry_stage_id: None,
-        exit_stage_id: None,
-        price_per_mwh: 100.0,
-        min_mw: 0.0,
-        max_mw: 500.0,
-    }
+    builders::make_contract(
+        EntityId(id),
+        ContractSpec {
+            name: format!("C{id}"),
+            bus_id: EntityId(1),
+            contract_type,
+            price_per_mwh: 100.0,
+            max_mw: 500.0,
+            ..ContractSpec::default()
+        },
+    )
 }
 
 /// Build a one-bus, two-hydro system with the supplied contracts and a single
-/// `n_blks`-block study stage. `n_contracts` matches the slice so the
-/// resolved-bounds count check holds; the two hydros and bus exist solely to
-/// satisfy contract bus-reference validation and give the layout pumping-end
-/// anchor a non-trivial column prefix.
+/// `n_blks`-block study stage. The two hydros and bus exist solely to satisfy
+/// contract bus-reference validation and give the layout pumping-end anchor a
+/// non-trivial column prefix.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "build_with_resolved_tables runs its make closure twice, so the by-value arguments are cloned into each build"
+)]
 fn system_with_contracts(contracts: Vec<EnergyContract>, n_blks: usize) -> novomodelo_core::System {
-    let n_contracts = contracts.len();
-    let n_hydros = 2_usize;
-    let n_stages = 1_usize;
-
     let bus = fixture_bus();
 
     let hydros = vec![fixture_hydro(1), fixture_hydro(2)];
@@ -1052,93 +853,33 @@ fn system_with_contracts(contracts: Vec<EnergyContract>, n_blks: usize) -> novom
         })
         .collect();
 
-    let stages: Vec<Stage> = vec![Stage {
-        index: 0,
-        id: 0,
-        start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        end_date: NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-        season_id: Some(0),
-        blocks,
-        block_mode: BlockMode::Parallel,
-        state_config: StageStateConfig {
-            storage: false,
-            inflow_lags: false,
-        },
-        risk_config: StageRiskConfig::Expectation,
-        scenario_config: ScenarioSourceConfig {
-            branching_factor: 1,
-            noise_method: NoiseMethod::Saa,
-        },
-    }];
+    let stages = single_stage(blocks);
+    let load_models = single_stage_load();
 
-    let load_models = vec![LoadModel {
-        bus_id: EntityId(1),
-        stage_id: 0,
-        mean_mw: 100.0,
-        std_mw: 0.0,
-    }];
-
-    let resolved_bounds = ResolvedBounds::new(
-        &BoundsCountsSpec {
-            n_hydros,
-            n_thermals: 0,
-            n_lines: 0,
-            n_pumping: 0,
-            n_contracts,
-            n_stages,
-            k_max: 0,
+    build_with_resolved_tables(
+        || {
+            SystemBuilder::new()
+                .buses(vec![bus.clone()])
+                .hydros(hydros.clone())
+                .contracts(contracts.clone())
+                .stages(stages.clone())
+                .load_models(load_models.clone())
         },
-        &BoundsDefaults {
-            hydro: default_hydro_bounds(),
-            hydro_block: default_hydro_block_bounds(),
-            thermal_block: ThermalBlockBounds {
-                min_generation_mw: 0.0,
-                max_generation_mw: 100.0,
-                cost_per_mwh: 0.0,
-            },
-            line_block: LineBlockBounds {
-                direct_mw: 0.0,
-                reverse_mw: 0.0,
-            },
-            pumping_block: PumpingBlockBounds {
-                min_flow_m3s: 0.0,
-                max_flow_m3s: 0.0,
-            },
-            contract_block: ContractBlockBounds {
-                min_mw: 0.0,
-                max_mw: 500.0,
-                price_per_mwh: 100.0,
-            },
+        0,
+        |system, bounds, penalties| {
+            for h in 0..system.n_hydros() {
+                for s in 0..bounds.n_stages() {
+                    bounds.hydro_bounds_mut(h, s).max_storage_hm3 = 200.0;
+                    let block = bounds.hydro_block_base_mut(h, s);
+                    block.max_turbined_m3s = 100.0;
+                    block.max_generation_mw = 250.0;
+                    let penalty = penalties.hydro_penalties_mut(h, s);
+                    penalty.spillage_cost = 0.01;
+                    penalty.inflow_nonnegativity_cost = 1000.0;
+                }
+            }
         },
-    );
-    let penalties = ResolvedPenalties::new(
-        &PenaltiesCountsSpec {
-            n_hydros,
-            n_buses: 1,
-            n_lines: 0,
-            n_ncs: 0,
-            n_stages,
-        },
-        &PenaltiesDefaults {
-            hydro: default_hydro_penalties(),
-            bus: BusStagePenalties { excess_cost: 0.0 },
-            line: LineStagePenalties { exchange_cost: 0.0 },
-            ncs: NcsStagePenalties {
-                curtailment_cost: 0.0,
-            },
-        },
-    );
-
-    SystemBuilder::new()
-        .buses(vec![bus])
-        .hydros(hydros)
-        .contracts(contracts)
-        .stages(stages)
-        .load_models(load_models)
-        .bounds(resolved_bounds)
-        .penalties(penalties)
-        .build()
-        .expect("system_with_contracts: valid system")
+    )
 }
 
 /// One import + one export contract (declared out of ID order) are exposed
@@ -1343,34 +1084,8 @@ fn stage_layout_geometry_empty_contracts_are_pumping_end_anchored() {
 #[should_panic(expected = "resolved-bounds")]
 fn build_template_build_ctx_contract_count_divergence_panics() {
     let bus = fixture_bus();
-    let stages: Vec<Stage> = vec![Stage {
-        index: 0,
-        id: 0,
-        start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        end_date: NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-        season_id: Some(0),
-        blocks: vec![Block {
-            index: 0,
-            name: "BLK0".to_string(),
-            duration_hours: 744.0,
-        }],
-        block_mode: BlockMode::Parallel,
-        state_config: StageStateConfig {
-            storage: false,
-            inflow_lags: false,
-        },
-        risk_config: StageRiskConfig::Expectation,
-        scenario_config: ScenarioSourceConfig {
-            branching_factor: 1,
-            noise_method: NoiseMethod::Saa,
-        },
-    }];
-    let load_models = vec![LoadModel {
-        bus_id: EntityId(1),
-        stage_id: 0,
-        mean_mw: 100.0,
-        std_mw: 0.0,
-    }];
+    let stages = single_block_stage();
+    let load_models = single_stage_load();
     let resolved_bounds = ResolvedBounds::new(
         &BoundsCountsSpec {
             n_hydros: 0,
@@ -1472,42 +1187,38 @@ fn build_template_build_ctx_contract_count_divergence_panics() {
 #[test]
 fn build_template_build_ctx_populates_anticipated_metadata() {
     let thermals = vec![
-        Thermal {
-            id: EntityId(1),
-            name: "T_a".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId(1),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            cost_per_mwh: 10.0,
-            min_generation_mw: 0.0,
-            max_generation_mw: 100.0,
-            anticipated_config: Some(AnticipatedConfig::LeadStages(2)),
-        },
-        Thermal {
-            id: EntityId(2),
-            name: "T_b".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId(1),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            cost_per_mwh: 20.0,
-            min_generation_mw: 0.0,
-            max_generation_mw: 100.0,
-            anticipated_config: None,
-        },
-        Thermal {
-            id: EntityId(3),
-            name: "T_c".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId(1),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            cost_per_mwh: 30.0,
-            min_generation_mw: 0.0,
-            max_generation_mw: 100.0,
-            anticipated_config: Some(AnticipatedConfig::LeadStages(3)),
-        },
+        builders::make_thermal(
+            EntityId(1),
+            ThermalSpec {
+                name: "T_a".to_string(),
+                bus_id: EntityId(1),
+                cost_per_mwh: 10.0,
+                max_generation_mw: 100.0,
+                anticipated_config: Some(AnticipatedConfig::LeadStages(2)),
+                ..ThermalSpec::default()
+            },
+        ),
+        builders::make_thermal(
+            EntityId(2),
+            ThermalSpec {
+                name: "T_b".to_string(),
+                bus_id: EntityId(1),
+                cost_per_mwh: 20.0,
+                max_generation_mw: 100.0,
+                ..ThermalSpec::default()
+            },
+        ),
+        builders::make_thermal(
+            EntityId(3),
+            ThermalSpec {
+                name: "T_c".to_string(),
+                bus_id: EntityId(1),
+                cost_per_mwh: 30.0,
+                max_generation_mw: 100.0,
+                anticipated_config: Some(AnticipatedConfig::LeadStages(3)),
+                ..ThermalSpec::default()
+            },
+        ),
     ];
     let system = system_with_thermals(thermals);
     let hydro_result = PrepareHydroModelsResult::default_from_system(&system);
@@ -1571,30 +1282,26 @@ fn build_template_build_ctx_populates_anticipated_metadata() {
 #[test]
 fn build_template_build_ctx_zero_anticipated_when_none() {
     let thermals = vec![
-        Thermal {
-            id: EntityId(1),
-            name: "T1".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId(1),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            cost_per_mwh: 10.0,
-            min_generation_mw: 0.0,
-            max_generation_mw: 100.0,
-            anticipated_config: None,
-        },
-        Thermal {
-            id: EntityId(2),
-            name: "T2".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId(1),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            cost_per_mwh: 20.0,
-            min_generation_mw: 0.0,
-            max_generation_mw: 100.0,
-            anticipated_config: None,
-        },
+        builders::make_thermal(
+            EntityId(1),
+            ThermalSpec {
+                name: "T1".to_string(),
+                bus_id: EntityId(1),
+                cost_per_mwh: 10.0,
+                max_generation_mw: 100.0,
+                ..ThermalSpec::default()
+            },
+        ),
+        builders::make_thermal(
+            EntityId(2),
+            ThermalSpec {
+                name: "T2".to_string(),
+                bus_id: EntityId(1),
+                cost_per_mwh: 20.0,
+                max_generation_mw: 100.0,
+                ..ThermalSpec::default()
+            },
+        ),
     ];
     let system = system_with_thermals(thermals);
     let hydro_result = PrepareHydroModelsResult::default_from_system(&system);
@@ -1658,90 +1365,81 @@ fn build_template_build_ctx_zero_anticipated_when_none() {
 /// - `id=2`: anticipated K=3, max=80 MW, cost=40 $/MWh
 /// - `id=3`: standard thermal (no anticipation), max=200 MW, cost=500 $/MWh
 ///
-/// `ResolvedBounds` is populated with per-thermal stage costs/limits matching
-/// the per-thermal declarations (the default `BoundsDefaults::thermal_block` is uniform,
-/// so a probe that relied on defaults would be trivial — distinct per-thermal
-/// stage data is required to expose any latent order-dependence in the LP fill).
+/// `ResolvedBounds` carries each thermal's own stage cost and limit, so the
+/// distinct per-thermal stage data exposes any latent order-dependence in the
+/// LP fill.
 ///
 /// `n_stages = 5` ensures both anticipated decisions are active at `stage_idx=0`
 /// (strict gate `t + K_i < n_stages` -> `2 < 5` and `3 < 5`).
 fn anticipated_invariance_system() -> novomodelo_core::System {
     let thermals = vec![
-        Thermal {
-            id: EntityId(1),
-            name: "T_ant_k2".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId(1),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            cost_per_mwh: 50.0,
-            min_generation_mw: 0.0,
-            max_generation_mw: 120.0,
-            anticipated_config: Some(AnticipatedConfig::LeadStages(2)),
-        },
-        Thermal {
-            id: EntityId(2),
-            name: "T_ant_k3".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId(1),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            cost_per_mwh: 40.0,
-            min_generation_mw: 0.0,
-            max_generation_mw: 80.0,
-            anticipated_config: Some(AnticipatedConfig::LeadStages(3)),
-        },
-        Thermal {
-            id: EntityId(3),
-            name: "T_backup".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId(1),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            cost_per_mwh: 500.0,
-            min_generation_mw: 0.0,
-            max_generation_mw: 200.0,
-            anticipated_config: None,
-        },
+        builders::make_thermal(
+            EntityId(1),
+            ThermalSpec {
+                name: "T_ant_k2".to_string(),
+                bus_id: EntityId(1),
+                cost_per_mwh: 50.0,
+                max_generation_mw: 120.0,
+                anticipated_config: Some(AnticipatedConfig::LeadStages(2)),
+                ..ThermalSpec::default()
+            },
+        ),
+        builders::make_thermal(
+            EntityId(2),
+            ThermalSpec {
+                name: "T_ant_k3".to_string(),
+                bus_id: EntityId(1),
+                cost_per_mwh: 40.0,
+                max_generation_mw: 80.0,
+                anticipated_config: Some(AnticipatedConfig::LeadStages(3)),
+                ..ThermalSpec::default()
+            },
+        ),
+        builders::make_thermal(
+            EntityId(3),
+            ThermalSpec {
+                name: "T_backup".to_string(),
+                bus_id: EntityId(1),
+                cost_per_mwh: 500.0,
+                max_generation_mw: 200.0,
+                ..ThermalSpec::default()
+            },
+        ),
     ];
 
-    let n_thermals = thermals.len();
     let n_stages = 5_usize;
     let k_max = 3_usize;
 
-    let bus = Bus {
-        id: EntityId(1),
-        name: "B1".to_string(),
-        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        deficit_segments: vec![DeficitSegment {
-            depth_mw: None,
-            cost_per_mwh: 1000.0,
-        }],
-        excess_cost: 0.0,
-    };
+    let bus = builders::make_bus(
+        EntityId(1),
+        BusSpec {
+            name: "B1".to_string(),
+            deficit_segments: vec![DeficitSegment {
+                depth_mw: None,
+                cost_per_mwh: 1000.0,
+            }],
+            ..BusSpec::default()
+        },
+    );
 
     let stages: Vec<Stage> = (0..n_stages)
-        .map(|i| Stage {
-            index: i,
-            id: i as i32,
-            start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            end_date: NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-            season_id: Some(0),
-            blocks: vec![Block {
-                index: 0,
-                name: "BLK0".to_string(),
-                duration_hours: 744.0,
-            }],
-            block_mode: BlockMode::Parallel,
-            state_config: StageStateConfig {
-                storage: false,
-                inflow_lags: false,
-            },
-            risk_config: StageRiskConfig::Expectation,
-            scenario_config: ScenarioSourceConfig {
-                branching_factor: 1,
-                noise_method: NoiseMethod::Saa,
-            },
+        .map(|i| {
+            builders::make_stage(
+                i,
+                StageSpec {
+                    season_id: Some(0),
+                    blocks: vec![Block {
+                        index: 0,
+                        name: "BLK0".to_string(),
+                        duration_hours: 744.0,
+                    }],
+                    state_config: StageStateConfig {
+                        storage: false,
+                        inflow_lags: false,
+                    },
+                    ..StageSpec::default()
+                },
+            )
         })
         .collect();
 
@@ -1754,87 +1452,17 @@ fn anticipated_invariance_system() -> novomodelo_core::System {
         })
         .collect();
 
-    let mut resolved_bounds = ResolvedBounds::new(
-        &BoundsCountsSpec {
-            n_hydros: 0,
-            n_thermals,
-            n_lines: 0,
-            n_pumping: 0,
-            n_contracts: 0,
-            n_stages,
-            k_max,
+    build_with_resolved_tables(
+        || {
+            SystemBuilder::new()
+                .buses(vec![bus.clone()])
+                .thermals(thermals.clone())
+                .stages(stages.clone())
+                .load_models(load_models.clone())
         },
-        &BoundsDefaults {
-            hydro: default_hydro_bounds(),
-            hydro_block: default_hydro_block_bounds(),
-            thermal_block: ThermalBlockBounds {
-                min_generation_mw: 0.0,
-                max_generation_mw: 100.0,
-                cost_per_mwh: 0.0,
-            },
-            line_block: LineBlockBounds {
-                direct_mw: 0.0,
-                reverse_mw: 0.0,
-            },
-            pumping_block: PumpingBlockBounds {
-                min_flow_m3s: 0.0,
-                max_flow_m3s: 0.0,
-            },
-            contract_block: ContractBlockBounds {
-                min_mw: 0.0,
-                max_mw: 0.0,
-                price_per_mwh: 0.0,
-            },
-        },
-    );
-
-    // The bounds table is indexed [thermal_idx][stage_idx] with a stage axis of
-    // length `n_stages + k_max` (delivery-stage padding).
-    let stage_axis_len = resolved_bounds.thermal_stage_axis_len();
-    for t_idx in 0..n_thermals {
-        for s_idx in 0..stage_axis_len {
-            let (max_generation_mw, cost_per_mwh) = match t_idx {
-                0 => (120.0, 50.0),
-                1 => (80.0, 40.0),
-                2 => (200.0, 500.0),
-                _ => unreachable!("only 3 thermals"),
-            };
-            resolved_bounds
-                .thermal_block_base_mut(t_idx, s_idx)
-                .max_generation_mw = max_generation_mw;
-            resolved_bounds
-                .thermal_block_base_mut(t_idx, s_idx)
-                .cost_per_mwh = cost_per_mwh;
-        }
-    }
-
-    let penalties = ResolvedPenalties::new(
-        &PenaltiesCountsSpec {
-            n_hydros: 0,
-            n_buses: 1,
-            n_lines: 0,
-            n_ncs: 0,
-            n_stages,
-        },
-        &PenaltiesDefaults {
-            hydro: default_hydro_penalties(),
-            bus: BusStagePenalties { excess_cost: 0.0 },
-            line: LineStagePenalties { exchange_cost: 0.0 },
-            ncs: NcsStagePenalties {
-                curtailment_cost: 0.0,
-            },
-        },
-    );
-
-    SystemBuilder::new()
-        .buses(vec![bus])
-        .thermals(thermals)
-        .stages(stages)
-        .load_models(load_models)
-        .bounds(resolved_bounds)
-        .penalties(penalties)
-        .build()
-        .expect("anticipated_invariance_system: valid system")
+        k_max,
+        |_, _, _| {},
+    )
 }
 
 /// Assert two `StageTemplate`s are bit-for-bit equivalent under the swap-(0,1)
@@ -2272,50 +1900,47 @@ fn discounted_multi_stage_system() -> novomodelo_core::System {
 /// [`discounted_multi_stage_system`], optionally attaching `post_study`
 /// stages — the single owner of this fixture's shape so the delivery-axis
 /// tests share the same non-trivial discount rate.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "build_with_resolved_tables runs its make closure twice, so the by-value arguments are cloned into each build"
+)]
 fn discounted_multi_stage_system_with_post_study(
     post_study: Option<PostStudyStages>,
 ) -> novomodelo_core::System {
     use novomodelo_core::{HorizonGraph, PolicyGraphType};
 
     let n_stages = 3_usize;
-    let thermals = vec![Thermal {
-        id: EntityId(1),
-        name: "T1".to_string(),
-        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        bus_id: EntityId(1),
-        entry_stage_id: None,
-        exit_stage_id: None,
-        cost_per_mwh: 10.0,
-        min_generation_mw: 0.0,
-        max_generation_mw: 100.0,
-        anticipated_config: None,
-    }];
-    let n_thermals = thermals.len();
+    let thermals = vec![builders::make_thermal(
+        EntityId(1),
+        ThermalSpec {
+            name: "T1".to_string(),
+            bus_id: EntityId(1),
+            cost_per_mwh: 10.0,
+            max_generation_mw: 100.0,
+            ..ThermalSpec::default()
+        },
+    )];
 
     let bus = fixture_bus();
 
     let stages: Vec<Stage> = (0..n_stages)
-        .map(|i| Stage {
-            index: i,
-            id: i as i32,
-            start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            end_date: NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-            season_id: Some(0),
-            blocks: vec![Block {
-                index: 0,
-                name: "BLK0".to_string(),
-                duration_hours: 744.0,
-            }],
-            block_mode: BlockMode::Parallel,
-            state_config: StageStateConfig {
-                storage: false,
-                inflow_lags: false,
-            },
-            risk_config: StageRiskConfig::Expectation,
-            scenario_config: ScenarioSourceConfig {
-                branching_factor: 1,
-                noise_method: NoiseMethod::Saa,
-            },
+        .map(|i| {
+            builders::make_stage(
+                i,
+                StageSpec {
+                    season_id: Some(0),
+                    blocks: vec![Block {
+                        index: 0,
+                        name: "BLK0".to_string(),
+                        duration_hours: 744.0,
+                    }],
+                    state_config: StageStateConfig {
+                        storage: false,
+                        inflow_lags: false,
+                    },
+                    ..StageSpec::default()
+                },
+            )
         })
         .collect();
 
@@ -2328,57 +1953,6 @@ fn discounted_multi_stage_system_with_post_study(
         })
         .collect();
 
-    let resolved_bounds = ResolvedBounds::new(
-        &BoundsCountsSpec {
-            n_hydros: 0,
-            n_thermals,
-            n_lines: 0,
-            n_pumping: 0,
-            n_contracts: 0,
-            n_stages,
-            k_max: 0,
-        },
-        &BoundsDefaults {
-            hydro: default_hydro_bounds(),
-            hydro_block: default_hydro_block_bounds(),
-            thermal_block: ThermalBlockBounds {
-                min_generation_mw: 0.0,
-                max_generation_mw: 100.0,
-                cost_per_mwh: 10.0,
-            },
-            line_block: LineBlockBounds {
-                direct_mw: 0.0,
-                reverse_mw: 0.0,
-            },
-            pumping_block: PumpingBlockBounds {
-                min_flow_m3s: 0.0,
-                max_flow_m3s: 0.0,
-            },
-            contract_block: ContractBlockBounds {
-                min_mw: 0.0,
-                max_mw: 0.0,
-                price_per_mwh: 0.0,
-            },
-        },
-    );
-    let penalties = ResolvedPenalties::new(
-        &PenaltiesCountsSpec {
-            n_hydros: 0,
-            n_buses: 1,
-            n_lines: 0,
-            n_ncs: 0,
-            n_stages,
-        },
-        &PenaltiesDefaults {
-            hydro: default_hydro_penalties(),
-            bus: BusStagePenalties { excess_cost: 0.0 },
-            line: LineStagePenalties { exchange_cost: 0.0 },
-            ncs: NcsStagePenalties {
-                curtailment_cost: 0.0,
-            },
-        },
-    );
-
     let policy_graph = HorizonGraph {
         stage_discount_rate_overrides: std::collections::BTreeMap::new(),
         graph_type: PolicyGraphType::FiniteHorizon,
@@ -2388,17 +1962,19 @@ fn discounted_multi_stage_system_with_post_study(
         season_map: None,
     };
 
-    SystemBuilder::new()
-        .buses(vec![bus])
-        .thermals(thermals)
-        .stages(stages)
-        .load_models(load_models)
-        .bounds(resolved_bounds)
-        .penalties(penalties)
-        .policy_graph(policy_graph)
-        .post_study_stages(post_study)
-        .build()
-        .expect("discounted_multi_stage_system: valid system")
+    build_with_resolved_tables(
+        || {
+            SystemBuilder::new()
+                .buses(vec![bus.clone()])
+                .thermals(thermals.clone())
+                .stages(stages.clone())
+                .load_models(load_models.clone())
+                .policy_graph(policy_graph.clone())
+                .post_study_stages(post_study.clone())
+        },
+        0,
+        |_, _, _| {},
+    )
 }
 
 /// Building the templates gives every stage's theta coefficient the one-step
@@ -2815,17 +2391,19 @@ fn delivery_cumulative_discount_matches_recomputed_extended_horizon() {
 fn two_anticipated_thermals(ids: [i32; 2]) -> Vec<Thermal> {
     ids.into_iter()
         .enumerate()
-        .map(|(i, id)| Thermal {
-            id: EntityId(id),
-            name: format!("T{id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1 + i as u32, 1).unwrap(),
-            bus_id: EntityId(1),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            cost_per_mwh: 10.0,
-            min_generation_mw: 0.0,
-            max_generation_mw: 100.0,
-            anticipated_config: Some(AnticipatedConfig::LeadStages(1)),
+        .map(|(i, id)| {
+            builders::make_thermal(
+                EntityId(id),
+                ThermalSpec {
+                    name: format!("T{id}"),
+                    operational_start_date: NaiveDate::from_ymd_opt(2024, 1 + i as u32, 1).unwrap(),
+                    bus_id: EntityId(1),
+                    cost_per_mwh: 10.0,
+                    max_generation_mw: 100.0,
+                    anticipated_config: Some(AnticipatedConfig::LeadStages(1)),
+                    ..ThermalSpec::default()
+                },
+            )
         })
         .collect()
 }
@@ -2833,105 +2411,36 @@ fn two_anticipated_thermals(ids: [i32; 2]) -> Vec<Thermal> {
 /// [`system_with_thermals`]'s one-stage, one-bus shape plus `post_study`
 /// attached — a dedicated fixture rather than widening `system_with_thermals`
 /// itself, whose existing callers are outside this table's scope.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "build_with_resolved_tables runs its make closure twice, so the by-value arguments are cloned into each build"
+)]
 fn system_with_anticipated_thermals_and_post_study(
     thermals: Vec<Thermal>,
     post_study: PostStudyStages,
 ) -> novomodelo_core::System {
-    let n_thermals = thermals.len();
-    let n_stages = 1_usize;
     let bus = fixture_bus();
+    let stages = single_block_stage();
+    let load_models = single_stage_load();
 
-    let stages: Vec<Stage> = vec![Stage {
-        index: 0,
-        id: 0,
-        start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        end_date: NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-        season_id: Some(0),
-        blocks: vec![Block {
-            index: 0,
-            name: "BLK0".to_string(),
-            duration_hours: 744.0,
-        }],
-        block_mode: BlockMode::Parallel,
-        state_config: StageStateConfig {
-            storage: false,
-            inflow_lags: false,
+    build_with_resolved_tables(
+        || {
+            SystemBuilder::new()
+                .buses(vec![bus.clone()])
+                .thermals(thermals.clone())
+                .stages(stages.clone())
+                .load_models(load_models.clone())
+                .post_study_stages(Some(post_study.clone()))
         },
-        risk_config: StageRiskConfig::Expectation,
-        scenario_config: ScenarioSourceConfig {
-            branching_factor: 1,
-            noise_method: NoiseMethod::Saa,
+        1,
+        |system, bounds, _| {
+            for t in 0..system.n_thermals() {
+                for s in 0..bounds.thermal_stage_axis_len() {
+                    bounds.thermal_block_base_mut(t, s).cost_per_mwh = 0.0;
+                }
+            }
         },
-    }];
-
-    let load_models = vec![LoadModel {
-        bus_id: EntityId(1),
-        stage_id: 0,
-        mean_mw: 100.0,
-        std_mw: 0.0,
-    }];
-
-    let resolved_bounds = ResolvedBounds::new(
-        &BoundsCountsSpec {
-            n_hydros: 0,
-            n_thermals,
-            n_lines: 0,
-            n_pumping: 0,
-            n_contracts: 0,
-            n_stages,
-            k_max: 1,
-        },
-        &BoundsDefaults {
-            hydro: default_hydro_bounds(),
-            hydro_block: default_hydro_block_bounds(),
-            thermal_block: ThermalBlockBounds {
-                min_generation_mw: 0.0,
-                max_generation_mw: 100.0,
-                cost_per_mwh: 0.0,
-            },
-            line_block: LineBlockBounds {
-                direct_mw: 0.0,
-                reverse_mw: 0.0,
-            },
-            pumping_block: PumpingBlockBounds {
-                min_flow_m3s: 0.0,
-                max_flow_m3s: 0.0,
-            },
-            contract_block: ContractBlockBounds {
-                min_mw: 0.0,
-                max_mw: 0.0,
-                price_per_mwh: 0.0,
-            },
-        },
-    );
-    let penalties = ResolvedPenalties::new(
-        &PenaltiesCountsSpec {
-            n_hydros: 0,
-            n_buses: 1,
-            n_lines: 0,
-            n_ncs: 0,
-            n_stages,
-        },
-        &PenaltiesDefaults {
-            hydro: default_hydro_penalties(),
-            bus: BusStagePenalties { excess_cost: 0.0 },
-            line: LineStagePenalties { exchange_cost: 0.0 },
-            ncs: NcsStagePenalties {
-                curtailment_cost: 0.0,
-            },
-        },
-    );
-
-    SystemBuilder::new()
-        .buses(vec![bus])
-        .thermals(thermals)
-        .stages(stages)
-        .load_models(load_models)
-        .bounds(resolved_bounds)
-        .penalties(penalties)
-        .post_study_stages(Some(post_study))
-        .build()
-        .expect("system_with_anticipated_thermals_and_post_study: valid system")
+    )
 }
 
 /// Three post-study stages, matching [`two_anticipated_thermals`]'s pair —
@@ -3156,83 +2665,52 @@ fn one_hydro_active_violations(n_stages: usize) -> System {
 
     let bus = fixture_bus();
 
-    let mut hydro = Hydro {
-        unit_groups: Vec::new(),
-        id: EntityId(2),
-        name: "H1".to_string(),
-        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        downstream_id: None,
-        travel_time_hours: None,
-        entry_stage_id: None,
-        exit_stage_id: None,
-        min_storage_hm3: 0.0,
-        max_storage_hm3: 200.0,
-        min_outflow_m3s: 50.0,
-        max_outflow_m3s: Some(800.0),
-        generation_model: HydroGenerationModel::ConstantProductivity,
-        min_turbined_m3s: 10.0,
-        max_turbined_m3s: 100.0,
-        specific_productivity_mw_per_m3s_per_m: None,
-        min_generation_mw: 5.0,
-        max_generation_mw: 250.0,
-        tailrace: None,
-        hydraulic_losses: None,
-        efficiency: None,
-        evaporation_coefficients_mm: None,
-        evaporation_reference_volumes_hm3: None,
-        diversion: None,
-        filling: None,
-        penalties: HydroPenalties {
-            spillage_cost: 0.01,
-            diversion_cost: 0.0,
-            turbined_cost: 0.0,
-            storage_violation_below_cost: 0.0,
-            filling_target_violation_cost: 0.0,
-            turbined_violation_below_cost: 1000.0,
-            outflow_violation_below_cost: 1000.0,
-            outflow_violation_above_cost: 1000.0,
-            generation_violation_below_cost: 1000.0,
-            fpha_violation_cost: 10000.0,
-            evaporation_violation_cost: 0.0,
-            water_withdrawal_violation_cost: 0.0,
-            water_withdrawal_violation_pos_cost: 0.0,
-            water_withdrawal_violation_neg_cost: 0.0,
-            evaporation_violation_pos_cost: 0.0,
-            evaporation_violation_neg_cost: 0.0,
-            inflow_nonnegativity_cost: 1000.0,
+    let hydro = builders::make_hydro(
+        EntityId(2),
+        HydroSpec {
+            name: "H1".to_string(),
+            bus_id: EntityId(1),
+            max_storage_hm3: 200.0,
+            min_outflow_m3s: 50.0,
+            max_outflow_m3s: Some(800.0),
+            min_turbined_m3s: 10.0,
+            max_turbined_m3s: 100.0,
+            min_generation_mw: 5.0,
+            max_generation_mw: 250.0,
+            penalties: HydroPenalties {
+                fpha_violation_cost: 10000.0,
+                spillage_cost: 0.01,
+                turbined_violation_below_cost: 1000.0,
+                outflow_violation_below_cost: 1000.0,
+                outflow_violation_above_cost: 1000.0,
+                generation_violation_below_cost: 1000.0,
+                inflow_nonnegativity_cost: 1000.0,
+                ..HydroPenalties::uniform(0.0)
+            },
+            ..HydroSpec::default()
         },
-    };
-    hydro.declare_mirror_unit_group(EntityId(1));
+    );
 
     let stages: Vec<Stage> = (0..n_stages)
-        .map(|i| Stage {
-            index: i,
-            id: i as i32,
-            start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            end_date: NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-            season_id: None,
-            blocks: vec![
-                Block {
-                    index: 0,
-                    name: "Heavy".to_string(),
-                    duration_hours: 720.0,
+        .map(|i| {
+            builders::make_stage(
+                i,
+                StageSpec {
+                    blocks: vec![
+                        Block {
+                            index: 0,
+                            name: "Heavy".to_string(),
+                            duration_hours: 720.0,
+                        },
+                        Block {
+                            index: 1,
+                            name: "Light".to_string(),
+                            duration_hours: 48.0,
+                        },
+                    ],
+                    ..StageSpec::default()
                 },
-                Block {
-                    index: 1,
-                    name: "Light".to_string(),
-                    duration_hours: 48.0,
-                },
-            ],
-            block_mode: BlockMode::Parallel,
-            state_config: StageStateConfig {
-                storage: true,
-                inflow_lags: false,
-            },
-            risk_config: StageRiskConfig::Expectation,
-            scenario_config: ScenarioSourceConfig {
-                branching_factor: 1,
-                noise_method: NoiseMethod::Saa,
-            },
+            )
         })
         .collect();
 
@@ -3257,99 +2735,18 @@ fn one_hydro_active_violations(n_stages: usize) -> System {
         })
         .collect();
 
-    let n_st = n_stages.max(1);
-    let bounds = ResolvedBounds::new(
-        &BoundsCountsSpec {
-            n_hydros: 1,
-            n_thermals: 0,
-            n_lines: 0,
-            n_pumping: 0,
-            n_contracts: 0,
-            n_stages: n_st,
-            k_max: 0,
+    build_with_resolved_tables(
+        || {
+            SystemBuilder::new()
+                .buses(vec![bus.clone()])
+                .hydros(vec![hydro.clone()])
+                .stages(stages.clone())
+                .inflow_models(inflow_models.clone())
+                .load_models(load_models.clone())
         },
-        &BoundsDefaults {
-            hydro: HydroStageBounds {
-                min_storage_hm3: 0.0,
-                max_storage_hm3: 200.0,
-                filling_min_rate_m3s: 0.0,
-                water_withdrawal_m3s: 0.0,
-            },
-            hydro_block: HydroBlockBounds {
-                min_turbined_m3s: 10.0,
-                max_turbined_m3s: 100.0,
-                min_outflow_m3s: 50.0,
-                max_outflow_m3s: Some(800.0),
-                min_generation_mw: 5.0,
-                max_generation_mw: 250.0,
-                ..Default::default()
-            },
-            thermal_block: ThermalBlockBounds {
-                min_generation_mw: 0.0,
-                max_generation_mw: 0.0,
-                cost_per_mwh: 0.0,
-            },
-            line_block: LineBlockBounds {
-                direct_mw: 0.0,
-                reverse_mw: 0.0,
-            },
-            pumping_block: PumpingBlockBounds {
-                min_flow_m3s: 0.0,
-                max_flow_m3s: 0.0,
-            },
-            contract_block: ContractBlockBounds {
-                min_mw: 0.0,
-                max_mw: 0.0,
-                price_per_mwh: 0.0,
-            },
-        },
-    );
-    let penalties = ResolvedPenalties::new(
-        &PenaltiesCountsSpec {
-            n_hydros: 1,
-            n_buses: 1,
-            n_lines: 0,
-            n_ncs: 0,
-            n_stages: n_st,
-        },
-        &PenaltiesDefaults {
-            hydro: HydroPenalties {
-                spillage_cost: 0.01,
-                diversion_cost: 0.0,
-                turbined_cost: 0.0,
-                storage_violation_below_cost: 0.0,
-                filling_target_violation_cost: 0.0,
-                turbined_violation_below_cost: 1000.0,
-                outflow_violation_below_cost: 1000.0,
-                outflow_violation_above_cost: 1000.0,
-                generation_violation_below_cost: 1000.0,
-                fpha_violation_cost: 10000.0,
-                evaporation_violation_cost: 0.0,
-                water_withdrawal_violation_cost: 0.0,
-                water_withdrawal_violation_pos_cost: 0.0,
-                water_withdrawal_violation_neg_cost: 0.0,
-                evaporation_violation_pos_cost: 0.0,
-                evaporation_violation_neg_cost: 0.0,
-                inflow_nonnegativity_cost: 1000.0,
-            },
-            bus: BusStagePenalties { excess_cost: 0.0 },
-            line: LineStagePenalties { exchange_cost: 0.0 },
-            ncs: NcsStagePenalties {
-                curtailment_cost: 0.0,
-            },
-        },
-    );
-
-    SystemBuilder::new()
-        .buses(vec![bus])
-        .hydros(vec![hydro])
-        .stages(stages)
-        .inflow_models(inflow_models)
-        .load_models(load_models)
-        .bounds(bounds)
-        .penalties(penalties)
-        .build()
-        .expect("one_hydro_active_violations: valid")
+        0,
+        |_, _, _| {},
+    )
 }
 
 /// Get CSC entries for column `col` of a built `StageTemplate` as
@@ -3774,24 +3171,15 @@ fn one_hydro_block_system(block_mode: BlockMode, n_blks: usize) -> System {
         })
         .collect();
 
-    let stages: Vec<Stage> = vec![Stage {
-        index: 0,
-        id: 0,
-        start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        end_date: NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-        season_id: Some(0),
-        blocks,
-        block_mode,
-        state_config: StageStateConfig {
-            storage: true,
-            inflow_lags: false,
+    let stages: Vec<Stage> = vec![builders::make_stage(
+        0,
+        StageSpec {
+            season_id: Some(0),
+            blocks,
+            block_mode,
+            ..StageSpec::default()
         },
-        risk_config: StageRiskConfig::Expectation,
-        scenario_config: ScenarioSourceConfig {
-            branching_factor: 1,
-            noise_method: NoiseMethod::Saa,
-        },
-    }];
+    )];
 
     let inflow_models = vec![InflowModel {
         hydro_id: EntityId(2),
@@ -3803,74 +3191,32 @@ fn one_hydro_block_system(block_mode: BlockMode, n_blks: usize) -> System {
         annual: None,
     }];
 
-    let load_models = vec![LoadModel {
-        bus_id: EntityId(1),
-        stage_id: 0,
-        mean_mw: 100.0,
-        std_mw: 0.0,
-    }];
+    let load_models = single_stage_load();
 
-    let bounds = ResolvedBounds::new(
-        &BoundsCountsSpec {
-            n_hydros: 1,
-            n_thermals: 0,
-            n_lines: 0,
-            n_pumping: 0,
-            n_contracts: 0,
-            n_stages: 1,
-            k_max: 0,
+    build_with_resolved_tables(
+        || {
+            SystemBuilder::new()
+                .buses(vec![bus.clone()])
+                .hydros(vec![hydro.clone()])
+                .stages(stages.clone())
+                .inflow_models(inflow_models.clone())
+                .load_models(load_models.clone())
         },
-        &BoundsDefaults {
-            hydro: default_hydro_bounds(),
-            hydro_block: default_hydro_block_bounds(),
-            thermal_block: ThermalBlockBounds {
-                min_generation_mw: 0.0,
-                max_generation_mw: 0.0,
-                cost_per_mwh: 0.0,
-            },
-            line_block: LineBlockBounds {
-                direct_mw: 0.0,
-                reverse_mw: 0.0,
-            },
-            pumping_block: PumpingBlockBounds {
-                min_flow_m3s: 0.0,
-                max_flow_m3s: 0.0,
-            },
-            contract_block: ContractBlockBounds {
-                min_mw: 0.0,
-                max_mw: 0.0,
-                price_per_mwh: 0.0,
-            },
+        0,
+        |system, bounds, penalties| {
+            for h in 0..system.n_hydros() {
+                for s in 0..bounds.n_stages() {
+                    bounds.hydro_bounds_mut(h, s).max_storage_hm3 = 200.0;
+                    let block = bounds.hydro_block_base_mut(h, s);
+                    block.max_turbined_m3s = 100.0;
+                    block.max_generation_mw = 250.0;
+                    let penalty = penalties.hydro_penalties_mut(h, s);
+                    penalty.spillage_cost = 0.01;
+                    penalty.inflow_nonnegativity_cost = 1000.0;
+                }
+            }
         },
-    );
-    let penalties = ResolvedPenalties::new(
-        &PenaltiesCountsSpec {
-            n_hydros: 1,
-            n_buses: 1,
-            n_lines: 0,
-            n_ncs: 0,
-            n_stages: 1,
-        },
-        &PenaltiesDefaults {
-            hydro: default_hydro_penalties(),
-            bus: BusStagePenalties { excess_cost: 0.0 },
-            line: LineStagePenalties { exchange_cost: 0.0 },
-            ncs: NcsStagePenalties {
-                curtailment_cost: 0.0,
-            },
-        },
-    );
-
-    SystemBuilder::new()
-        .buses(vec![bus])
-        .hydros(vec![hydro])
-        .stages(stages)
-        .inflow_models(inflow_models)
-        .load_models(load_models)
-        .bounds(bounds)
-        .penalties(penalties)
-        .build()
-        .expect("one_hydro_block_system: valid")
+    )
 }
 
 /// Build the full stage-0 `StageTemplate` for the one-hydro FPHA study under
@@ -4400,51 +3746,34 @@ fn system_with_contracts_filling_and_anticipated() -> novomodelo_core::System {
 
     let bus = fixture_bus();
 
-    let mut hydro = Hydro {
-        unit_groups: Vec::new(),
-        id: EntityId(1),
-        name: "H1".to_string(),
-        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        downstream_id: None,
-        travel_time_hours: None,
-        entry_stage_id: Some(3),
-        exit_stage_id: None,
-        min_storage_hm3: 0.0,
-        max_storage_hm3: 100.0,
-        min_outflow_m3s: 0.0,
-        max_outflow_m3s: None,
-        generation_model: HydroGenerationModel::ConstantProductivity,
-        min_turbined_m3s: 0.0,
-        max_turbined_m3s: FIXTURE_NONBINDING_MAX_TURBINED_M3S,
-        specific_productivity_mw_per_m3s_per_m: None,
-        min_generation_mw: 0.0,
-        max_generation_mw: 1_000_000.0,
-        tailrace: None,
-        hydraulic_losses: None,
-        efficiency: None,
-        evaporation_coefficients_mm: None,
-        evaporation_reference_volumes_hm3: None,
-        diversion: None,
-        filling: Some(FillingConfig {
-            start_stage_id: 1,
-            filling_min_rate_m3s: 0.0,
-        }),
-        penalties: hydro_penalties_zero(),
-    };
-    hydro.declare_mirror_unit_group(EntityId(1));
+    let hydro = builders::make_hydro(
+        EntityId(1),
+        HydroSpec {
+            name: "H1".to_string(),
+            bus_id: EntityId(1),
+            entry_stage_id: Some(3),
+            max_storage_hm3: 100.0,
+            max_turbined_m3s: FIXTURE_NONBINDING_MAX_TURBINED_M3S,
+            max_generation_mw: 1_000_000.0,
+            filling: Some(FillingConfig {
+                start_stage_id: 1,
+                filling_min_rate_m3s: 0.0,
+            }),
+            ..HydroSpec::default()
+        },
+    );
 
-    let thermal = Thermal {
-        id: EntityId(2),
-        name: "T1".to_string(),
-        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        bus_id: EntityId(1),
-        entry_stage_id: None,
-        exit_stage_id: None,
-        cost_per_mwh: 50.0,
-        min_generation_mw: 0.0,
-        max_generation_mw: 100.0,
-        anticipated_config: Some(AnticipatedConfig::LeadStages(1)),
-    };
+    let thermal = builders::make_thermal(
+        EntityId(2),
+        ThermalSpec {
+            name: "T1".to_string(),
+            bus_id: EntityId(1),
+            cost_per_mwh: 50.0,
+            max_generation_mw: 100.0,
+            anticipated_config: Some(AnticipatedConfig::LeadStages(1)),
+            ..ThermalSpec::default()
+        },
+    );
 
     let contracts = vec![
         fixture_contract(10, ContractType::Import),
@@ -4452,27 +3781,23 @@ fn system_with_contracts_filling_and_anticipated() -> novomodelo_core::System {
     ];
 
     let stages: Vec<Stage> = (0..n_stages)
-        .map(|i| Stage {
-            index: i,
-            id: i as i32,
-            start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            end_date: NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-            season_id: Some(0),
-            blocks: vec![Block {
-                index: 0,
-                name: "BLK0".to_string(),
-                duration_hours: 744.0,
-            }],
-            block_mode: BlockMode::Parallel,
-            state_config: StageStateConfig {
-                storage: false,
-                inflow_lags: false,
-            },
-            risk_config: StageRiskConfig::Expectation,
-            scenario_config: ScenarioSourceConfig {
-                branching_factor: 1,
-                noise_method: NoiseMethod::Saa,
-            },
+        .map(|i| {
+            builders::make_stage(
+                i,
+                StageSpec {
+                    season_id: Some(0),
+                    blocks: vec![Block {
+                        index: 0,
+                        name: "BLK0".to_string(),
+                        duration_hours: 744.0,
+                    }],
+                    state_config: StageStateConfig {
+                        storage: false,
+                        inflow_lags: false,
+                    },
+                    ..StageSpec::default()
+                },
+            )
         })
         .collect();
 
@@ -4485,68 +3810,36 @@ fn system_with_contracts_filling_and_anticipated() -> novomodelo_core::System {
         })
         .collect();
 
-    let resolved_bounds = ResolvedBounds::new(
-        &BoundsCountsSpec {
-            n_hydros: 1,
-            n_thermals: 1,
-            n_lines: 0,
-            n_pumping: 0,
-            n_contracts: 2,
-            n_stages,
-            k_max: 1,
+    build_with_resolved_tables(
+        || {
+            SystemBuilder::new()
+                .buses(vec![bus.clone()])
+                .hydros(vec![hydro.clone()])
+                .thermals(vec![thermal.clone()])
+                .contracts(contracts.clone())
+                .stages(stages.clone())
+                .load_models(load_models.clone())
         },
-        &BoundsDefaults {
-            hydro: default_hydro_bounds(),
-            hydro_block: default_hydro_block_bounds(),
-            thermal_block: ThermalBlockBounds {
-                min_generation_mw: 0.0,
-                max_generation_mw: 100.0,
-                cost_per_mwh: 0.0,
-            },
-            line_block: LineBlockBounds {
-                direct_mw: 0.0,
-                reverse_mw: 0.0,
-            },
-            pumping_block: PumpingBlockBounds {
-                min_flow_m3s: 0.0,
-                max_flow_m3s: 0.0,
-            },
-            contract_block: ContractBlockBounds {
-                min_mw: 0.0,
-                max_mw: 500.0,
-                price_per_mwh: 100.0,
-            },
+        1,
+        |system, bounds, penalties| {
+            for t in 0..system.n_thermals() {
+                for s in 0..bounds.thermal_stage_axis_len() {
+                    bounds.thermal_block_base_mut(t, s).cost_per_mwh = 0.0;
+                }
+            }
+            for h in 0..system.n_hydros() {
+                for s in 0..bounds.n_stages() {
+                    bounds.hydro_bounds_mut(h, s).max_storage_hm3 = 200.0;
+                    let block = bounds.hydro_block_base_mut(h, s);
+                    block.max_turbined_m3s = 100.0;
+                    block.max_generation_mw = 250.0;
+                    let penalty = penalties.hydro_penalties_mut(h, s);
+                    penalty.spillage_cost = 0.01;
+                    penalty.inflow_nonnegativity_cost = 1000.0;
+                }
+            }
         },
-    );
-    let penalties = ResolvedPenalties::new(
-        &PenaltiesCountsSpec {
-            n_hydros: 1,
-            n_buses: 1,
-            n_lines: 0,
-            n_ncs: 0,
-            n_stages,
-        },
-        &PenaltiesDefaults {
-            hydro: default_hydro_penalties(),
-            bus: BusStagePenalties { excess_cost: 0.0 },
-            line: LineStagePenalties { exchange_cost: 0.0 },
-            ncs: NcsStagePenalties {
-                curtailment_cost: 0.0,
-            },
-        },
-    );
-
-    SystemBuilder::new()
-        .buses(vec![bus])
-        .hydros(vec![hydro])
-        .thermals(vec![thermal])
-        .contracts(contracts)
-        .stages(stages)
-        .load_models(load_models)
-        .bounds(resolved_bounds)
-        .penalties(penalties)
-        .build()
-        .expect("system_with_contracts_filling_and_anticipated: valid system")
+    )
 }
 
 /// Range-equality regression for the seven rerouted `StageGeometry` fields
@@ -4901,39 +4194,24 @@ fn filling_block_system(block_mode: BlockMode, n_blks: usize) -> System {
     let bus = fixture_bus();
 
     let filling_hydro = |id: i32, downstream: Option<i32>, start: i32| {
-        let mut hydro = Hydro {
-            unit_groups: Vec::new(),
-            id: EntityId(id),
-            name: format!("H{id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            downstream_id: downstream.map(EntityId),
-            travel_time_hours: None,
-            entry_stage_id: Some(FILL_ENTRY_ID),
-            exit_stage_id: None,
-            min_storage_hm3: FILL_MIN_STORAGE_HM3,
-            max_storage_hm3: 200.0,
-            min_outflow_m3s: 0.0,
-            max_outflow_m3s: None,
-            generation_model: HydroGenerationModel::ConstantProductivity,
-            min_turbined_m3s: 0.0,
-            max_turbined_m3s: 100.0,
-            specific_productivity_mw_per_m3s_per_m: None,
-            min_generation_mw: 0.0,
-            max_generation_mw: 250.0,
-            tailrace: None,
-            hydraulic_losses: None,
-            efficiency: None,
-            evaporation_coefficients_mm: None,
-            evaporation_reference_volumes_hm3: None,
-            diversion: None,
-            filling: Some(FillingConfig {
-                start_stage_id: start,
-                filling_min_rate_m3s: FILL_RATE_M3S,
-            }),
-            penalties: hydro_penalties_zero(),
-        };
-        hydro.declare_mirror_unit_group(EntityId(1));
-        hydro
+        builders::make_hydro(
+            EntityId(id),
+            HydroSpec {
+                name: format!("H{id}"),
+                bus_id: EntityId(1),
+                downstream_id: downstream.map(EntityId),
+                entry_stage_id: Some(FILL_ENTRY_ID),
+                min_storage_hm3: FILL_MIN_STORAGE_HM3,
+                max_storage_hm3: 200.0,
+                max_turbined_m3s: 100.0,
+                max_generation_mw: 250.0,
+                filling: Some(FillingConfig {
+                    start_stage_id: start,
+                    filling_min_rate_m3s: FILL_RATE_M3S,
+                }),
+                ..HydroSpec::default()
+            },
+        )
     };
 
     let hydros = vec![
@@ -4954,23 +4232,19 @@ fn filling_block_system(block_mode: BlockMode, n_blks: usize) -> System {
         .collect();
 
     let stages: Vec<Stage> = (0..FILL_N_STAGES)
-        .map(|i| Stage {
-            index: i,
-            id: i as i32,
-            start_date: NaiveDate::from_ymd_opt(2024, (i % 12 + 1) as u32, 1).unwrap(),
-            end_date: NaiveDate::from_ymd_opt(2024, ((i % 12 + 1) % 12 + 1) as u32, 1).unwrap(),
-            season_id: Some(0),
-            blocks: blocks.clone(),
-            block_mode,
-            state_config: StageStateConfig {
-                storage: true,
-                inflow_lags: false,
-            },
-            risk_config: StageRiskConfig::Expectation,
-            scenario_config: ScenarioSourceConfig {
-                branching_factor: 1,
-                noise_method: NoiseMethod::Saa,
-            },
+        .map(|i| {
+            builders::make_stage(
+                i,
+                StageSpec {
+                    start_date: NaiveDate::from_ymd_opt(2024, (i % 12 + 1) as u32, 1).unwrap(),
+                    end_date: NaiveDate::from_ymd_opt(2024, ((i % 12 + 1) % 12 + 1) as u32, 1)
+                        .unwrap(),
+                    season_id: Some(0),
+                    blocks: blocks.clone(),
+                    block_mode,
+                    ..StageSpec::default()
+                },
+            )
         })
         .collect();
 
@@ -4998,84 +4272,26 @@ fn filling_block_system(block_mode: BlockMode, n_blks: usize) -> System {
         })
         .collect();
 
-    let mut bounds = ResolvedBounds::new(
-        &BoundsCountsSpec {
-            n_hydros: 2,
-            n_thermals: 0,
-            n_lines: 0,
-            n_pumping: 0,
-            n_contracts: 0,
-            n_stages: FILL_N_STAGES,
-            k_max: 0,
+    build_with_resolved_tables(
+        || {
+            SystemBuilder::new()
+                .buses(vec![bus.clone()])
+                .hydros(hydros.clone())
+                .stages(stages.clone())
+                .inflow_models(inflow_models.clone())
+                .load_models(load_models.clone())
         },
-        &BoundsDefaults {
-            hydro: HydroStageBounds {
-                min_storage_hm3: FILL_MIN_STORAGE_HM3,
-                max_storage_hm3: 200.0,
-                filling_min_rate_m3s: FILL_RATE_M3S,
-                water_withdrawal_m3s: 0.0,
-            },
-            hydro_block: HydroBlockBounds {
-                max_turbined_m3s: 100.0,
-                max_generation_mw: 250.0,
-                ..Default::default()
-            },
-            thermal_block: ThermalBlockBounds {
-                min_generation_mw: 0.0,
-                max_generation_mw: 0.0,
-                cost_per_mwh: 0.0,
-            },
-            line_block: LineBlockBounds {
-                direct_mw: 0.0,
-                reverse_mw: 0.0,
-            },
-            pumping_block: PumpingBlockBounds {
-                min_flow_m3s: 0.0,
-                max_flow_m3s: 0.0,
-            },
-            contract_block: ContractBlockBounds {
-                min_mw: 0.0,
-                max_mw: 0.0,
-                price_per_mwh: 0.0,
-            },
+        0,
+        |system, _, penalties| {
+            for h in 0..system.n_hydros() {
+                for s in 0..FILL_N_STAGES {
+                    let penalty = penalties.hydro_penalties_mut(h, s);
+                    penalty.spillage_cost = 0.01;
+                    penalty.inflow_nonnegativity_cost = 1000.0;
+                }
+            }
         },
-    );
-    for h_idx in [0_usize, 1] {
-        for stage_idx in 0..FILL_N_STAGES {
-            let hb = bounds.hydro_bounds_mut(h_idx, stage_idx);
-            hb.min_storage_hm3 = FILL_MIN_STORAGE_HM3;
-            hb.filling_min_rate_m3s = FILL_RATE_M3S;
-        }
-    }
-
-    let penalties = ResolvedPenalties::new(
-        &PenaltiesCountsSpec {
-            n_hydros: 2,
-            n_buses: 1,
-            n_lines: 0,
-            n_ncs: 0,
-            n_stages: FILL_N_STAGES,
-        },
-        &PenaltiesDefaults {
-            hydro: default_hydro_penalties(),
-            bus: BusStagePenalties { excess_cost: 0.0 },
-            line: LineStagePenalties { exchange_cost: 0.0 },
-            ncs: NcsStagePenalties {
-                curtailment_cost: 0.0,
-            },
-        },
-    );
-
-    SystemBuilder::new()
-        .buses(vec![bus])
-        .hydros(hydros)
-        .stages(stages)
-        .inflow_models(inflow_models)
-        .load_models(load_models)
-        .bounds(bounds)
-        .penalties(penalties)
-        .build()
-        .expect("filling_block_system: valid filling cascade")
+    )
 }
 
 /// Build the stage-0 `StageLayout` and `StageTemplate` for [`filling_block_system`]
@@ -5306,8 +4522,8 @@ fn chronological_filling_target_on_final_storage() {
 
 /// One-bus, no-hydro, `n_stages`-stage system with a single thermal carrying
 /// `anticipated_config`, each stage a single `stage_hours`-hour block.
-/// `k_max_bounds` sizes `BoundsCountsSpec::k_max` for the delivery-stage
-/// padding the thermal's per-stage bounds axis needs.
+/// `k_max_bounds` sizes the delivery-stage padding the thermal's per-stage
+/// bounds axis needs.
 fn anticipated_lead_config_system(
     n_stages: usize,
     stage_hours: f64,
@@ -5316,41 +4532,36 @@ fn anticipated_lead_config_system(
 ) -> novomodelo_core::System {
     let bus = fixture_bus();
 
-    let thermal = Thermal {
-        id: EntityId(1),
-        name: "T1".to_string(),
-        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        bus_id: EntityId(1),
-        entry_stage_id: None,
-        exit_stage_id: None,
-        cost_per_mwh: 50.0,
-        min_generation_mw: 0.0,
-        max_generation_mw: 100.0,
-        anticipated_config: Some(anticipated_config),
-    };
+    let thermal = builders::make_thermal(
+        EntityId(1),
+        ThermalSpec {
+            name: "T1".to_string(),
+            bus_id: EntityId(1),
+            cost_per_mwh: 50.0,
+            max_generation_mw: 100.0,
+            anticipated_config: Some(anticipated_config),
+            ..ThermalSpec::default()
+        },
+    );
 
     let stages: Vec<Stage> = (0..n_stages)
-        .map(|i| Stage {
-            index: i,
-            id: i as i32,
-            start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            end_date: NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-            season_id: Some(0),
-            blocks: vec![Block {
-                index: 0,
-                name: "BLK0".to_string(),
-                duration_hours: stage_hours,
-            }],
-            block_mode: BlockMode::Parallel,
-            state_config: StageStateConfig {
-                storage: false,
-                inflow_lags: false,
-            },
-            risk_config: StageRiskConfig::Expectation,
-            scenario_config: ScenarioSourceConfig {
-                branching_factor: 1,
-                noise_method: NoiseMethod::Saa,
-            },
+        .map(|i| {
+            builders::make_stage(
+                i,
+                StageSpec {
+                    season_id: Some(0),
+                    blocks: vec![Block {
+                        index: 0,
+                        name: "BLK0".to_string(),
+                        duration_hours: stage_hours,
+                    }],
+                    state_config: StageStateConfig {
+                        storage: false,
+                        inflow_lags: false,
+                    },
+                    ..StageSpec::default()
+                },
+            )
         })
         .collect();
 
@@ -5363,66 +4574,23 @@ fn anticipated_lead_config_system(
         })
         .collect();
 
-    let resolved_bounds = ResolvedBounds::new(
-        &BoundsCountsSpec {
-            n_hydros: 0,
-            n_thermals: 1,
-            n_lines: 0,
-            n_pumping: 0,
-            n_contracts: 0,
-            n_stages,
-            k_max: k_max_bounds,
+    build_with_resolved_tables(
+        || {
+            SystemBuilder::new()
+                .buses(vec![bus.clone()])
+                .thermals(vec![thermal.clone()])
+                .stages(stages.clone())
+                .load_models(load_models.clone())
         },
-        &BoundsDefaults {
-            hydro: default_hydro_bounds(),
-            hydro_block: default_hydro_block_bounds(),
-            thermal_block: ThermalBlockBounds {
-                min_generation_mw: 0.0,
-                max_generation_mw: 100.0,
-                cost_per_mwh: 0.0,
-            },
-            line_block: LineBlockBounds {
-                direct_mw: 0.0,
-                reverse_mw: 0.0,
-            },
-            pumping_block: PumpingBlockBounds {
-                min_flow_m3s: 0.0,
-                max_flow_m3s: 0.0,
-            },
-            contract_block: ContractBlockBounds {
-                min_mw: 0.0,
-                max_mw: 0.0,
-                price_per_mwh: 0.0,
-            },
+        k_max_bounds,
+        |system, bounds, _| {
+            for t in 0..system.n_thermals() {
+                for s in 0..bounds.thermal_stage_axis_len() {
+                    bounds.thermal_block_base_mut(t, s).cost_per_mwh = 0.0;
+                }
+            }
         },
-    );
-    let penalties = ResolvedPenalties::new(
-        &PenaltiesCountsSpec {
-            n_hydros: 0,
-            n_buses: 1,
-            n_lines: 0,
-            n_ncs: 0,
-            n_stages,
-        },
-        &PenaltiesDefaults {
-            hydro: default_hydro_penalties(),
-            bus: BusStagePenalties { excess_cost: 0.0 },
-            line: LineStagePenalties { exchange_cost: 0.0 },
-            ncs: NcsStagePenalties {
-                curtailment_cost: 0.0,
-            },
-        },
-    );
-
-    SystemBuilder::new()
-        .buses(vec![bus])
-        .thermals(vec![thermal])
-        .stages(stages)
-        .load_models(load_models)
-        .bounds(resolved_bounds)
-        .penalties(penalties)
-        .build()
-        .expect("anticipated_lead_config_system: valid system")
+    )
 }
 
 /// On a uniform 3×744h calendar, a `LeadTime(744.0)` plant resolves

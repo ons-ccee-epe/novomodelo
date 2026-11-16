@@ -25,10 +25,7 @@ use std::sync::mpsc;
 
 use chrono::NaiveDate;
 use novomodelo_core::{
-    BoundsCountsSpec, BoundsDefaults, BusStagePenalties, ContractBlockBounds, DeficitSegment,
-    EntityId, HydroBlockBounds, HydroPenalties, HydroStageBounds, LineBlockBounds,
-    LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec, PenaltiesDefaults,
-    PumpingBlockBounds, ResolvedBounds, ResolvedPenalties, SystemBuilder, ThermalBlockBounds,
+    DeficitSegment, EntityId, SystemBuilder,
     scenario::{
         CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile, SamplingScheme,
     },
@@ -278,98 +275,18 @@ fn build_system_from(spec: &FixtureSpec) -> novomodelo_core::System {
         schedule: vec![],
     };
 
-    let hydro_bounds_default = HydroStageBounds {
-        min_storage_hm3: 0.0,
-        max_storage_hm3: spec.max_storage_hm3,
-        filling_min_rate_m3s: 0.0,
-        water_withdrawal_m3s: 0.0,
-    };
-    let hydro_bounds_default_block = HydroBlockBounds {
-        max_turbined_m3s: 50.0,
-        max_generation_mw: 50.0,
-        ..Default::default()
-    };
-    let resolved_bounds = ResolvedBounds::new(
-        &BoundsCountsSpec {
-            n_hydros: N_HYDROS,
-            n_thermals: 0,
-            n_lines: 0,
-            n_pumping: 0,
-            n_contracts: 0,
-            n_stages: N_STAGES,
-            k_max: 0,
+    novomodelo_sddp::test_support::build_with_resolved_tables(
+        || {
+            SystemBuilder::new()
+                .buses(vec![bus.clone()])
+                .hydros(hydros.clone())
+                .stages(stages.clone())
+                .inflow_models(inflow_models.clone())
+                .correlation(correlation.clone())
         },
-        &BoundsDefaults {
-            hydro: hydro_bounds_default,
-            hydro_block: hydro_bounds_default_block,
-            thermal_block: ThermalBlockBounds {
-                min_generation_mw: 0.0,
-                max_generation_mw: 0.0,
-                cost_per_mwh: 0.0,
-            },
-            line_block: LineBlockBounds {
-                direct_mw: 0.0,
-                reverse_mw: 0.0,
-            },
-            pumping_block: PumpingBlockBounds {
-                min_flow_m3s: 0.0,
-                max_flow_m3s: 0.0,
-            },
-            contract_block: ContractBlockBounds {
-                min_mw: 0.0,
-                max_mw: 0.0,
-                price_per_mwh: 0.0,
-            },
-        },
-    );
-
-    let hydro_penalties_default = HydroPenalties {
-        spillage_cost: spec.release_cost,
-        diversion_cost: 0.0,
-        turbined_cost: spec.release_cost,
-        storage_violation_below_cost: 0.0,
-        filling_target_violation_cost: 0.0,
-        turbined_violation_below_cost: 0.0,
-        outflow_violation_below_cost: 0.0,
-        outflow_violation_above_cost: 0.0,
-        generation_violation_below_cost: 0.0,
-        fpha_violation_cost: 0.0,
-        evaporation_violation_cost: 0.0,
-        water_withdrawal_violation_cost: 0.0,
-        water_withdrawal_violation_pos_cost: 0.0,
-        water_withdrawal_violation_neg_cost: 0.0,
-        evaporation_violation_pos_cost: 0.0,
-        evaporation_violation_neg_cost: 0.0,
-        inflow_nonnegativity_cost: spec.inflow_nonnegativity_cost,
-    };
-    let resolved_penalties = ResolvedPenalties::new(
-        &PenaltiesCountsSpec {
-            n_hydros: N_HYDROS,
-            n_buses: 1,
-            n_lines: 0,
-            n_ncs: 0,
-            n_stages: N_STAGES,
-        },
-        &PenaltiesDefaults {
-            hydro: hydro_penalties_default,
-            bus: BusStagePenalties { excess_cost: 0.0 },
-            line: LineStagePenalties { exchange_cost: 0.0 },
-            ncs: NcsStagePenalties {
-                curtailment_cost: 0.0,
-            },
-        },
-    );
-
-    SystemBuilder::new()
-        .buses(vec![bus])
-        .hydros(hydros)
-        .stages(stages)
-        .inflow_models(inflow_models)
-        .correlation(correlation)
-        .bounds(resolved_bounds)
-        .penalties(resolved_penalties)
-        .build()
-        .unwrap()
+        0,
+        |_, _, _| {},
+    )
 }
 
 fn build_stochastic(system: &novomodelo_core::System) -> StochasticContext {
@@ -731,8 +648,7 @@ fn test_penalty_method_prevents_infeasibility() {
 #[test]
 fn test_penalty_slack_value_matches_negative_inflow() {
     let fx = build_fixture();
-    let n_stages = fx.stage_templates.templates.len();
-    let fcf = FutureCostFunction::new(n_stages, fx.state.n_state, 1, 20, &vec![0; n_stages]);
+    let fcf = empty_fcf(&fx);
 
     train_fixture(&fx, 3).expect("training must succeed before simulation");
     let scenario_results = simulate_fixture(&fx, &fcf).expect("simulate must succeed");
@@ -753,8 +669,7 @@ fn test_penalty_slack_value_matches_negative_inflow() {
 #[test]
 fn test_simulation_slack_output_populated() {
     let fx = build_fixture();
-    let n_stages = fx.stage_templates.templates.len();
-    let fcf = FutureCostFunction::new(n_stages, fx.state.n_state, 1, 20, &vec![0; n_stages]);
+    let fcf = empty_fcf(&fx);
 
     train_fixture(&fx, 3).expect("training must succeed");
     let scenario_results = simulate_fixture(&fx, &fcf).expect("simulate must succeed");
@@ -804,59 +719,27 @@ fn truncation_with_penalty_training_completes() {
 /// The two-hydro system with per-plant `inflow_nonnegativity_cost` H1 = 100 and
 /// H2 = 5000 $/(m³/s·h).
 fn per_plant_penalty_system() -> novomodelo_core::System {
-    let hydro_penalties_default = HydroPenalties {
-        spillage_cost: 0.0,
-        diversion_cost: 0.0,
-        turbined_cost: 0.0,
-        storage_violation_below_cost: 0.0,
-        filling_target_violation_cost: 0.0,
-        turbined_violation_below_cost: 0.0,
-        outflow_violation_below_cost: 0.0,
-        outflow_violation_above_cost: 0.0,
-        generation_violation_below_cost: 0.0,
-        fpha_violation_cost: 0.0,
-        evaporation_violation_cost: 0.0,
-        water_withdrawal_violation_cost: 0.0,
-        water_withdrawal_violation_pos_cost: 0.0,
-        water_withdrawal_violation_neg_cost: 0.0,
-        evaporation_violation_pos_cost: 0.0,
-        evaporation_violation_neg_cost: 0.0,
-        inflow_nonnegativity_cost: 100.0,
-    };
-    let mut resolved_penalties = ResolvedPenalties::new(
-        &PenaltiesCountsSpec {
-            n_hydros: N_HYDROS,
-            n_buses: 1,
-            n_lines: 0,
-            n_ncs: 0,
-            n_stages: N_STAGES,
-        },
-        &PenaltiesDefaults {
-            hydro: hydro_penalties_default,
-            bus: BusStagePenalties { excess_cost: 0.0 },
-            line: LineStagePenalties { exchange_cost: 0.0 },
-            ncs: NcsStagePenalties {
-                curtailment_cost: 0.0,
-            },
-        },
-    );
-    for stage_idx in 0..N_STAGES {
-        resolved_penalties
-            .hydro_penalties_mut(1, stage_idx)
-            .inflow_nonnegativity_cost = 5000.0;
-    }
-
     let base_system = build_system();
-    SystemBuilder::new()
-        .buses(base_system.buses().to_vec())
-        .hydros(base_system.hydros().to_vec())
-        .stages(base_system.stages().to_vec())
-        .inflow_models(base_system.inflow_models().to_vec())
-        .correlation(base_system.correlation().clone())
-        .bounds(base_system.bounds().clone())
-        .penalties(resolved_penalties)
-        .build()
-        .unwrap()
+    novomodelo_sddp::test_support::build_with_resolved_tables(
+        || {
+            SystemBuilder::new()
+                .buses(base_system.buses().to_vec())
+                .hydros(base_system.hydros().to_vec())
+                .stages(base_system.stages().to_vec())
+                .inflow_models(base_system.inflow_models().to_vec())
+                .correlation(base_system.correlation().clone())
+        },
+        0,
+        |_, b, p| {
+            *b = base_system.bounds().clone();
+            for stage_idx in 0..N_STAGES {
+                p.hydro_penalties_mut(1, stage_idx)
+                    .inflow_nonnegativity_cost = 5000.0;
+                p.hydro_penalties_mut(0, stage_idx)
+                    .inflow_nonnegativity_cost = 100.0;
+            }
+        },
+    )
 }
 
 fn templates_for(

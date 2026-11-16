@@ -7,13 +7,14 @@ use std::collections::HashMap;
 use std::ops::Range;
 
 use chrono::NaiveDate;
+use novomodelo_core::entities::hydro::HydroPenalties;
 use novomodelo_core::{
     Block, BlockMode, BoundsCountsSpec, BoundsDefaults, Bus, CascadeTopology, ConstraintExpression,
     ContractBlockBounds, ContractType, EnergyContract, EntityId, FillingConfig, GenericConstraint,
     Hydro, HydroBlockBounds, HydroGenerationModel, HydroStageBounds, LineBlockBounds, LinearTerm,
-    NoiseMethod, NonControllableSource, PenaltyBasis, PumpingBlockBounds, PumpingStation,
-    ResolvedBounds, ResolvedGenericConstraintBounds, ScalarExpr, ScenarioSourceConfig, SlackConfig,
-    Stage, StageRiskConfig, StageStateConfig, Thermal, ThermalBlockBounds, VariableRef,
+    NonControllableSource, PenaltyBasis, PumpingBlockBounds, PumpingStation, ResolvedBounds,
+    ResolvedGenericConstraintBounds, ScalarExpr, SlackConfig, Stage, StageStateConfig, Thermal,
+    ThermalBlockBounds, VariableRef,
 };
 
 use crate::hydro_models::{EvaporationModelSet, ProductionModelSet};
@@ -24,6 +25,9 @@ use crate::indexer::{
 };
 use crate::lead_time::{AnticipatedResolution, DeliveryAxis, LeadTime, PointResolution};
 use crate::resolved_parameters::ResolvedParameters;
+use crate::test_support::builders::{
+    self, BusSpec, ContractSpec, HydroSpec, NcsSpec, PumpingSpec, StageSpec, ThermalSpec,
+};
 use crate::test_support::ctx_fixture::CtxFixture;
 use crate::test_support::{
     anticipated_plants_at, constant_lead_resolution, identity_hydro_cell_index, make_unit_group,
@@ -34,7 +38,6 @@ use crate::time_value::{PostStudyResolved, TimeValue};
 
 use super::super::DeliveryRing;
 use super::super::entries::build_stage_inflow_coupling;
-use super::super::test_support::zero_hydro_penalties;
 use super::{
     RangeCursor, StageLayout, StateSpace, TemplateBuildCtx, build_anticipated_decision_row_pos,
     build_anticipated_fishing_row_pos, build_anticipated_slot_row_pos,
@@ -171,28 +174,24 @@ fn minimal_stage() -> Stage {
 /// `stage_idx = 0`, while the phase gate reads `stage.id` alone — decoupling
 /// the two lets one bounds/model row serve every phase under test.
 fn stage_with_id(stage_id: i32) -> Stage {
-    Stage {
-        index: 0,
-        id: stage_id,
-        start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        end_date: NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-        season_id: Some(0),
-        blocks: vec![Block {
-            index: 0,
-            name: "BLK0".to_string(),
-            duration_hours: 744.0,
-        }],
-        block_mode: BlockMode::Parallel,
-        state_config: StageStateConfig {
-            storage: false,
-            inflow_lags: false,
+    let mut stage = builders::make_stage(
+        0,
+        StageSpec {
+            season_id: Some(0),
+            blocks: vec![Block {
+                index: 0,
+                name: "BLK0".to_string(),
+                duration_hours: 744.0,
+            }],
+            state_config: StageStateConfig {
+                storage: false,
+                inflow_lags: false,
+            },
+            ..StageSpec::default()
         },
-        risk_config: StageRiskConfig::Expectation,
-        scenario_config: ScenarioSourceConfig {
-            branching_factor: 1,
-            noise_method: NoiseMethod::Saa,
-        },
-    }
+    );
+    stage.id = stage_id;
+    stage
 }
 
 /// Build a single hydro for the FPHA/evaporation membership fixtures.
@@ -207,89 +206,69 @@ fn membership_hydro(
     filling: Option<FillingConfig>,
     entry: Option<i32>,
 ) -> Hydro {
-    let mut hydro = Hydro {
-        unit_groups: Vec::new(),
-        id: EntityId(id),
-        name: format!("H{id}"),
-        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        downstream_id: None,
-        travel_time_hours: None,
-        entry_stage_id: entry,
-        exit_stage_id: None,
-        min_storage_hm3: 0.0,
-        max_storage_hm3: 100.0,
-        min_outflow_m3s: 0.0,
-        max_outflow_m3s: None,
-        generation_model: if fpha {
-            HydroGenerationModel::Fpha
-        } else {
-            HydroGenerationModel::ConstantProductivity
+    builders::make_hydro(
+        EntityId(id),
+        HydroSpec {
+            name: format!("H{id}"),
+            bus_id: EntityId(1),
+            entry_stage_id: entry,
+            max_storage_hm3: 100.0,
+            generation_model: if fpha {
+                HydroGenerationModel::Fpha
+            } else {
+                HydroGenerationModel::ConstantProductivity
+            },
+            max_turbined_m3s: 50.0,
+            max_generation_mw: 45.0,
+            filling,
+            penalties: HydroPenalties {
+                fpha_violation_cost: 10000.0,
+                ..HydroPenalties::uniform(0.0)
+            },
+            ..HydroSpec::default()
         },
-        min_turbined_m3s: 0.0,
-        max_turbined_m3s: 50.0,
-        specific_productivity_mw_per_m3s_per_m: None,
-        min_generation_mw: 0.0,
-        max_generation_mw: 45.0,
-        tailrace: None,
-        hydraulic_losses: None,
-        efficiency: None,
-        evaporation_coefficients_mm: None,
-        evaporation_reference_volumes_hm3: None,
-        diversion: None,
-        filling,
-        penalties: zero_hydro_penalties(),
-    };
-    hydro.declare_mirror_unit_group(EntityId(1));
-    hydro
+    )
 }
 
 /// Placeholder thermal at position `idx`, inert past its `id`: these tests
 /// need only the count `ctx.thermals.len()` reserves in `StageLayout`, never
 /// a bound or cost.
 fn dormant_thermal(idx: usize) -> Thermal {
-    Thermal {
-        id: EntityId(i32::try_from(idx).unwrap_or(i32::MAX)),
-        name: String::new(),
-        operational_start_date: NaiveDate::default(),
-        bus_id: EntityId(0),
-        entry_stage_id: None,
-        exit_stage_id: None,
-        cost_per_mwh: 0.0,
-        min_generation_mw: 0.0,
-        max_generation_mw: 0.0,
-        anticipated_config: None,
-    }
+    builders::make_thermal(
+        EntityId(i32::try_from(idx).unwrap_or(i32::MAX)),
+        ThermalSpec {
+            operational_start_date: NaiveDate::default(),
+            ..ThermalSpec::default()
+        },
+    )
 }
 
 /// Placeholder bus at position `idx`, inert past its `id`: these tests need
 /// only the count `ctx.buses.len()` reserves in `StageLayout`, never a
 /// deficit segment or excess cost.
 fn dormant_bus(idx: usize) -> Bus {
-    Bus {
-        id: EntityId(i32::try_from(idx).unwrap_or(i32::MAX)),
-        name: String::new(),
-        operational_start_date: NaiveDate::default(),
-        deficit_segments: Vec::new(),
-        excess_cost: 0.0,
-    }
+    builders::make_bus(
+        EntityId(i32::try_from(idx).unwrap_or(i32::MAX)),
+        BusSpec {
+            operational_start_date: NaiveDate::default(),
+            deficit_segments: Vec::new(),
+            ..BusSpec::default()
+        },
+    )
 }
 
 /// Placeholder contract at position `idx`, inert past its `id` and
 /// `contract_type`: these tests need only the per-direction counts
 /// `StageLayout` derives from `ctx.contracts`, never a price or MW bound.
 fn dormant_contract(idx: usize, contract_type: ContractType) -> EnergyContract {
-    EnergyContract {
-        id: EntityId(i32::try_from(idx).unwrap_or(i32::MAX)),
-        name: String::new(),
-        operational_start_date: NaiveDate::default(),
-        bus_id: EntityId(0),
-        contract_type,
-        entry_stage_id: None,
-        exit_stage_id: None,
-        price_per_mwh: 0.0,
-        min_mw: 0.0,
-        max_mw: 0.0,
-    }
+    builders::make_contract(
+        EntityId(i32::try_from(idx).unwrap_or(i32::MAX)),
+        ContractSpec {
+            operational_start_date: NaiveDate::default(),
+            contract_type,
+            ..ContractSpec::default()
+        },
+    )
 }
 
 /// `StageLayout` built from a context with `n_anticipated == 0` has
@@ -1024,7 +1003,7 @@ fn storage_boundary_endpoints_match_state_space_accessors() {
     let ctx = fixtures.make_ctx();
     let stage = stage_with_blocks(BlockMode::Chronological, 3);
     let layout = StageLayout::new(&ctx, &stage, 0);
-    let geometry = layout.geometry.clone();
+    let geometry = &layout.geometry;
     assert!(ctx.state.hydro_count >= 2);
     let mut compared = 0;
     for h in 0..ctx.state.hydro_count {
@@ -1896,7 +1875,7 @@ fn assert_block_strided_addresses(layout: &StageLayout) -> [usize; 6] {
     }
 
     let n_blks = layout.clock.n_blks();
-    let geometry = layout.geometry.clone();
+    let geometry = &layout.geometry;
     let oper = &layout.oper_violation;
 
     [
@@ -2776,18 +2755,17 @@ struct PumpingFixtures {
 impl PumpingFixtures {
     fn new(n_pumping: usize, n_stages: usize) -> Self {
         let stations = (0..n_pumping)
-            .map(|i| PumpingStation {
-                id: EntityId(i as i32),
-                name: format!("P{i}"),
-                operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-                bus_id: EntityId(0),
-                source_hydro_id: EntityId(0),
-                destination_hydro_id: EntityId(1),
-                entry_stage_id: None,
-                exit_stage_id: None,
-                consumption_mw_per_m3s: 0.5,
-                min_flow_m3s: 0.0,
-                max_flow_m3s: 10.0,
+            .map(|i| {
+                builders::make_pumping_station(
+                    EntityId(i as i32),
+                    PumpingSpec {
+                        name: format!("P{i}"),
+                        destination_hydro_id: EntityId(1),
+                        consumption_mw_per_m3s: 0.5,
+                        max_flow_m3s: 10.0,
+                        ..PumpingSpec::default()
+                    },
+                )
             })
             .collect();
         Self {
@@ -3642,34 +3620,28 @@ fn fpha_slack_range_follows_floor_family() {
 
 /// Minimal non-controllable source for the equipment column pins.
 fn make_ncs(id: i32) -> NonControllableSource {
-    NonControllableSource {
-        id: EntityId(id),
-        name: format!("W{id}"),
-        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        bus_id: EntityId(1),
-        entry_stage_id: None,
-        exit_stage_id: None,
-        max_generation_mw: 100.0,
-        allow_curtailment: true,
-        curtailment_cost: 0.0,
-    }
+    builders::make_ncs(
+        EntityId(id),
+        NcsSpec {
+            name: format!("W{id}"),
+            bus_id: EntityId(1),
+            ..NcsSpec::default()
+        },
+    )
 }
 
 /// Minimal pumping station for the equipment column pins.
 fn make_pumping_station(id: i32) -> PumpingStation {
-    PumpingStation {
-        id: EntityId(id),
-        name: format!("P{id}"),
-        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        bus_id: EntityId(1),
-        source_hydro_id: EntityId(1),
-        destination_hydro_id: EntityId(2),
-        entry_stage_id: None,
-        exit_stage_id: None,
-        consumption_mw_per_m3s: 0.0,
-        min_flow_m3s: 0.0,
-        max_flow_m3s: 0.0,
-    }
+    builders::make_pumping_station(
+        EntityId(id),
+        PumpingSpec {
+            name: format!("P{id}"),
+            bus_id: EntityId(1),
+            source_hydro_id: EntityId(1),
+            destination_hydro_id: EntityId(2),
+            ..PumpingSpec::default()
+        },
+    )
 }
 
 /// Per-family count of addresses [`compare_column_addresses`] compared, so a
@@ -3890,7 +3862,7 @@ fn transit_bucket_addressing_matches_state_space_bucket_accessors() {
 /// target, floor, evaporation, generic); a family empty on this particular
 /// `layout` compares zero.
 fn assert_row_addresses(layout: &StageLayout) -> [usize; 8] {
-    let geom = layout.geometry.clone();
+    let geom = &layout.geometry;
     let anticipated = &layout.anticipated;
     let mut counts = [0usize; 8];
 
@@ -4273,28 +4245,24 @@ fn two_sided_real_layout_allocates_minus_slack_column() {
     };
     let ctx = fixture.ctx();
 
-    let stage = Stage {
-        index: 0,
-        id: 0,
-        start_date: NaiveDate::default(),
-        end_date: NaiveDate::default(),
-        season_id: Some(0),
-        blocks: vec![Block {
-            index: 0,
-            name: "BLK0".to_string(),
-            duration_hours: 730.0,
-        }],
-        block_mode: BlockMode::Parallel,
-        state_config: StageStateConfig {
-            storage: false,
-            inflow_lags: false,
+    let stage = builders::make_stage(
+        0,
+        StageSpec {
+            start_date: NaiveDate::default(),
+            end_date: NaiveDate::default(),
+            season_id: Some(0),
+            blocks: vec![Block {
+                index: 0,
+                name: "BLK0".to_string(),
+                duration_hours: 730.0,
+            }],
+            state_config: StageStateConfig {
+                storage: false,
+                inflow_lags: false,
+            },
+            ..StageSpec::default()
         },
-        risk_config: StageRiskConfig::Expectation,
-        scenario_config: ScenarioSourceConfig {
-            branching_factor: 1,
-            noise_method: NoiseMethod::Saa,
-        },
-    };
+    );
 
     let layout = StageLayout::new(&ctx, &stage, 0);
 
