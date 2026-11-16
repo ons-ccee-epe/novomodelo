@@ -61,4 +61,4 @@ trigger:   adding a release-profile test job to CI, or the next edit to lp/build
 owner:     novomodelo-sddp maintainers
 blast:     crates/novomodelo-sddp/src/lp/builder/layout/tests.rs only; `cargo test -p novomodelo-sddp --lib` must pass in debug and in release
 origin:    found on branch feat/generic-constraint-stage-volume while adding the stage-volume builder guard; not introduced by that work
-paid:      branch fix/debt-001-release-gate, which gates the test with #[cfg(debug_assertions)], as the entries.rs tests are gated
+paid:      branch fix/debt-001-release-gate, which gates the test with #[cfg(debug_assertions)], as the entries.rs tests are gated, and gates the same way the nine other #[should_panic] tests of a debug_assert! that `cargo test -p novomodelo-sddp --lib --release` failed on

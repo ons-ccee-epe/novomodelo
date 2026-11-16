@@ -1673,6 +1673,7 @@ mod assemble_csc_tests {
     /// A column whose `(row, _)` pairs are out of order trips the `debug_assert`,
     /// proving the caller-owned-sort precondition is guarded in debug/test builds.
     #[test]
+    #[cfg(debug_assertions)]
     #[should_panic(expected = "each column's entries must be row-sorted")]
     fn test_assemble_csc_unsorted_column_panics() {
         // Column 0 has rows 2 then 1 — strictly decreasing, violating the contract.

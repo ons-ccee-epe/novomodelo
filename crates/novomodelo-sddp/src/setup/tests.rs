@@ -4830,6 +4830,7 @@ fn initial_state_leaves_padding_slots_zero() {
 /// coverage rule — and the `debug_assert!` guarding the silent-drop replacement
 /// fires in a debug build.
 #[test]
+#[cfg(debug_assertions)]
 #[should_panic(expected = "covered stage beyond plant's own lead")]
 fn initial_state_rejects_a_covered_stage_beyond_the_plants_own_lead() {
     use super::build_initial_state;
