@@ -336,10 +336,7 @@ mod tests {
     };
     use novomodelo_core::{
         EntityId, HorizonGraph,
-        temporal::{
-            BlockMode, NoiseMethod, PolicyGraphType, ScenarioSourceConfig, SeasonCycleType,
-            SeasonDefinition, SeasonMap, Stage, StageRiskConfig, StageStateConfig,
-        },
+        temporal::{PolicyGraphType, SeasonCycleType, SeasonDefinition, SeasonMap, Stage},
     };
 
     // ── Local helpers ─────────────────────────────────────────────────────────
@@ -421,23 +418,14 @@ mod tests {
         let stages = stage_specs
             .into_iter()
             .enumerate()
-            .map(|(index, (id, start_date, end_date, season_id))| Stage {
-                id,
-                index,
-                start_date,
-                end_date,
-                season_id: Some(season_id),
-                blocks: vec![],
-                block_mode: BlockMode::Parallel,
-                state_config: StageStateConfig {
-                    storage: true,
-                    inflow_lags: false,
-                },
-                risk_config: StageRiskConfig::Expectation,
-                scenario_config: ScenarioSourceConfig {
-                    branching_factor: 1,
-                    noise_method: NoiseMethod::Saa,
-                },
+            .map(|(index, (id, start_date, end_date, season_id))| {
+                let mut stage = make_stage(id);
+                stage.index = index;
+                stage.start_date = start_date;
+                stage.end_date = end_date;
+                stage.season_id = Some(season_id);
+                stage.blocks = vec![];
+                stage
             })
             .collect();
         StagesData {
@@ -472,23 +460,14 @@ mod tests {
             seasons,
         };
         let stages = (0..num_stages)
-            .map(|i| Stage {
-                id: i as i32,
-                index: i,
-                start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-                end_date: chrono::NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-                season_id: Some(i % num_seasons),
-                blocks: vec![],
-                block_mode: BlockMode::Parallel,
-                state_config: StageStateConfig {
-                    storage: true,
-                    inflow_lags: false,
-                },
-                risk_config: StageRiskConfig::Expectation,
-                scenario_config: ScenarioSourceConfig {
-                    branching_factor: 1,
-                    noise_method: NoiseMethod::Saa,
-                },
+            .map(|i| {
+                let mut stage = make_stage(i as i32);
+                stage.index = i;
+                stage.start_date = chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
+                stage.end_date = chrono::NaiveDate::from_ymd_opt(2024, 2, 1).unwrap();
+                stage.season_id = Some(i % num_seasons);
+                stage.blocks = vec![];
+                stage
             })
             .collect();
         StagesData {
@@ -1023,8 +1002,6 @@ mod tests {
     /// season_map layers multiple resolution levels.
     #[test]
     fn test_resolution_consistency_multi_resolution_map_notes_layering() {
-        use novomodelo_core::temporal::SeasonCycleType;
-
         let mut seasons: Vec<SeasonDefinition> = (0..12)
             .map(|i| SeasonDefinition {
                 id: i,
@@ -1069,23 +1046,14 @@ mod tests {
         let stages: Vec<Stage> = specs
             .into_iter()
             .enumerate()
-            .map(|(index, (id, start_date, end_date, season_id))| Stage {
-                id,
-                index,
-                start_date,
-                end_date,
-                season_id: Some(season_id),
-                blocks: vec![],
-                block_mode: BlockMode::Parallel,
-                state_config: StageStateConfig {
-                    storage: true,
-                    inflow_lags: false,
-                },
-                risk_config: StageRiskConfig::Expectation,
-                scenario_config: ScenarioSourceConfig {
-                    branching_factor: 1,
-                    noise_method: NoiseMethod::Saa,
-                },
+            .map(|(index, (id, start_date, end_date, season_id))| {
+                let mut stage = make_stage(id);
+                stage.index = index;
+                stage.start_date = start_date;
+                stage.end_date = end_date;
+                stage.season_id = Some(season_id);
+                stage.blocks = vec![];
+                stage
             })
             .collect();
         let stages_data = StagesData {
@@ -1344,23 +1312,14 @@ mod tests {
         let stages_vec: Vec<Stage> = referenced
             .iter()
             .enumerate()
-            .map(|(idx, &sid)| Stage {
-                id: idx as i32,
-                index: idx,
-                start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-                end_date: chrono::NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-                season_id: Some(sid),
-                blocks: vec![],
-                block_mode: BlockMode::Parallel,
-                state_config: StageStateConfig {
-                    storage: true,
-                    inflow_lags: false,
-                },
-                risk_config: StageRiskConfig::Expectation,
-                scenario_config: ScenarioSourceConfig {
-                    branching_factor: 1,
-                    noise_method: NoiseMethod::Saa,
-                },
+            .map(|(idx, &sid)| {
+                let mut stage = make_stage(idx as i32);
+                stage.index = idx;
+                stage.start_date = chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
+                stage.end_date = chrono::NaiveDate::from_ymd_opt(2024, 2, 1).unwrap();
+                stage.season_id = Some(sid);
+                stage.blocks = vec![];
+                stage
             })
             .collect();
         let stages = StagesData {
@@ -1828,7 +1787,7 @@ mod tests {
 
     #[test]
     fn rule_31_counts_weekly_history_by_iso_week_numbering_year() {
-        use novomodelo_stochastic::test_support::weekly_season_map;
+        use novomodelo_core::test_support::weekly_season_map;
 
         let mut stages = make_stages_with_seasons(0, /*with_season_map=*/ false);
         stages.policy_graph.season_map = Some(weekly_season_map());

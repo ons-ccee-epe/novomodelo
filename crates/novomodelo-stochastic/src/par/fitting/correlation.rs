@@ -712,7 +712,10 @@ mod tests {
 
     use chrono::{Datelike, NaiveDate};
     use novomodelo_core::scenario::CorrelationModel;
-    use novomodelo_core::{EntityId, SeasonMap, Stage};
+    use novomodelo_core::{
+        EntityId, SeasonMap, Stage,
+        test_support::{date, sparse_ring_season_map},
+    };
     use tracing::field::{Field, Visit};
     use tracing::{Event, Level, Metadata, Subscriber, span};
 
@@ -726,7 +729,7 @@ mod tests {
         ArCoefficientEstimate, ArEstimationConfig, SeasonalStats,
         estimate_ar_coefficients_with_selection, estimate_seasonal_stats_with_season_map,
     };
-    use crate::test_support::{keep_callsite_interest_dynamic, sparse_ring_season_map};
+    use crate::test_support::keep_callsite_interest_dynamic;
 
     /// Pre-change oracle: the `HashMap`-intersection + per-pair-sort algorithm
     /// `compute_seasonal_pearson_matrix`'s date-sorted merge-walk replaces.
@@ -792,10 +795,6 @@ mod tests {
         (min_pairs, matrix)
     }
 
-    fn date(day: u32) -> NaiveDate {
-        NaiveDate::from_ymd_opt(2020, 1, day).unwrap()
-    }
-
     /// On a fixture with partial date overlap across three hydros
     /// (A has all 10 days, B is missing the first and last, C holds only odd
     /// days), the date-sorted merge-walk in `compute_seasonal_pearson_matrix`
@@ -805,19 +804,19 @@ mod tests {
     fn seasonal_pearson_matrix_merge_walk_matches_hashmap_intersection_oracle() {
         let a_vals = [1.0, -1.0, 2.0, -2.0, 1.5, -1.5, 2.5, -2.5, 1.0, -1.0];
         let a: HashMap<NaiveDate, f64> = (1..=10)
-            .map(|day| (date(day), a_vals[(day - 1) as usize]))
+            .map(|day| (date(2020, 1, day), a_vals[(day - 1) as usize]))
             .collect();
 
         let b_vals = [0.5, -0.5, 1.0, -1.0, 0.5, -0.5, 1.0, -1.0];
         let b: HashMap<NaiveDate, f64> = (2..=9)
-            .map(|day| (date(day), b_vals[(day - 2) as usize]))
+            .map(|day| (date(2020, 1, day), b_vals[(day - 2) as usize]))
             .collect();
 
         let c_vals = [2.0, 1.0, -1.0, -2.0, 0.5];
         let c: HashMap<NaiveDate, f64> = [1u32, 3, 5, 7, 9]
             .into_iter()
             .zip(c_vals)
-            .map(|(day, v)| (date(day), v))
+            .map(|(day, v)| (date(2020, 1, day), v))
             .collect();
 
         let (oracle_min_pairs, oracle_matrix) =
@@ -854,8 +853,9 @@ mod tests {
     /// `n <= 1` branch.
     #[test]
     fn seasonal_pearson_matrix_single_hydro_reports_its_own_count() {
-        let solo: HashMap<NaiveDate, f64> =
-            (1..=5).map(|day| (date(day), f64::from(day))).collect();
+        let solo: HashMap<NaiveDate, f64> = (1..=5)
+            .map(|day| (date(2020, 1, day), f64::from(day)))
+            .collect();
         let (oracle_min_pairs, oracle_matrix) =
             oracle_min_pairs_and_matrix(std::slice::from_ref(&solo));
 

@@ -370,18 +370,19 @@ mod tests {
         SeasonCycleType, SeasonCycles, SeasonDefinition, SeasonMap, Stage,
     };
     use novomodelo_core::{
-        EntityId, Hydro, InflowHistoryRow, RecentObservation,
-        test_support::{HydroSpec, MirrorUnitGroup, StageSpec, date, single_block},
+        EntityId, InflowHistoryRow, RecentObservation,
+        test_support::{
+            InflowModelSpec, MonthlyLabels, StageSpec, date, make_inflow_model,
+            monthly_quarterly_season_map, monthly_season_map, single_block, sparse_ring_season_map,
+            weekly_season_map,
+        },
     };
 
     use crate::par::lag_kernel::{
         DownstreamLagAccum, EntityMajor, PrimaryLagAccum, advance_lag_chain,
     };
     use crate::seeds::{DerivedInflowSeeds, derive_inflow_seeds};
-    use crate::test_support::{
-        InflowModelSpec, MonthlyLabels, make_inflow_model, monthly_quarterly_season_map,
-        monthly_season_map, sparse_ring_season_map, weekly_season_map,
-    };
+    use crate::test_support::unmirrored_hydro;
 
     /// A one-hydro [`PrecomputedPar`] with `max_order() == 1`: an order-1
     /// model anchored at `stages[0]`'s id, plus a `stage_id = -1` pre-study
@@ -425,10 +426,6 @@ mod tests {
         })
     }
 
-    fn d(y: i32, m: u32, day: u32) -> NaiveDate {
-        NaiveDate::from_ymd_opt(y, m, day).unwrap()
-    }
-
     // -----------------------------------------------------------------------
     // derive_downstream_par_order gate (month-to-quarter span step)
     // -----------------------------------------------------------------------
@@ -437,10 +434,10 @@ mod tests {
     fn test_derive_downstream_par_order_weekly_returns_zero() {
         let season_map = weekly_season_map();
         let stages = vec![
-            make_stage(0, d(2026, 1, 1), d(2026, 1, 8), Some(0)),
-            make_stage(1, d(2026, 1, 8), d(2026, 1, 15), Some(1)),
-            make_stage(2, d(2026, 1, 15), d(2026, 1, 22), Some(2)),
-            make_stage(3, d(2026, 1, 22), d(2026, 1, 29), Some(12)),
+            make_stage(0, date(2026, 1, 1), date(2026, 1, 8), Some(0)),
+            make_stage(1, date(2026, 1, 8), date(2026, 1, 15), Some(1)),
+            make_stage(2, date(2026, 1, 15), date(2026, 1, 22), Some(2)),
+            make_stage(3, date(2026, 1, 22), date(2026, 1, 29), Some(12)),
         ];
 
         let derived =
@@ -462,10 +459,10 @@ mod tests {
     fn test_derive_downstream_par_order_monthly_map_stays_inert() {
         let season_map = monthly_season_map(MonthlyLabels::OneBased);
         let stages = vec![
-            make_stage(0, d(2026, 1, 1), d(2026, 2, 1), Some(0)),
-            make_stage(1, d(2026, 2, 1), d(2026, 3, 1), Some(1)),
-            make_stage(2, d(2026, 3, 1), d(2026, 4, 1), Some(2)),
-            make_stage(3, d(2026, 4, 1), d(2026, 7, 1), Some(12)),
+            make_stage(0, date(2026, 1, 1), date(2026, 2, 1), Some(0)),
+            make_stage(1, date(2026, 2, 1), date(2026, 3, 1), Some(1)),
+            make_stage(2, date(2026, 3, 1), date(2026, 4, 1), Some(2)),
+            make_stage(3, date(2026, 4, 1), date(2026, 7, 1), Some(12)),
         ];
 
         let derived =
@@ -480,10 +477,10 @@ mod tests {
     #[test]
     fn test_derive_downstream_par_order_no_season_map_returns_zero() {
         let stages = vec![
-            make_stage(0, d(2026, 1, 1), d(2026, 2, 1), Some(0)),
-            make_stage(1, d(2026, 2, 1), d(2026, 3, 1), Some(1)),
-            make_stage(2, d(2026, 3, 1), d(2026, 4, 1), Some(2)),
-            make_stage(3, d(2026, 4, 1), d(2026, 7, 1), Some(12)),
+            make_stage(0, date(2026, 1, 1), date(2026, 2, 1), Some(0)),
+            make_stage(1, date(2026, 2, 1), date(2026, 3, 1), Some(1)),
+            make_stage(2, date(2026, 3, 1), date(2026, 4, 1), Some(2)),
+            make_stage(3, date(2026, 4, 1), date(2026, 7, 1), Some(12)),
         ];
 
         let derived = derive_downstream_par_order(&stages, &par_of_order_one(&stages), None);
@@ -493,8 +490,8 @@ mod tests {
     #[test]
     fn test_derive_downstream_par_order_custom_quarterly_stays_active() {
         let season_map = custom_multi_resolution_season_map();
-        let june_stage = make_stage(0, d(2024, 6, 1), d(2024, 7, 1), Some(5));
-        let q3_stage = make_stage(1, d(2024, 7, 1), d(2024, 10, 1), Some(12));
+        let june_stage = make_stage(0, date(2024, 6, 1), date(2024, 7, 1), Some(5));
+        let q3_stage = make_stage(1, date(2024, 7, 1), date(2024, 10, 1), Some(12));
         let stages = vec![june_stage, q3_stage];
 
         let derived =
@@ -508,11 +505,11 @@ mod tests {
 
     fn ring_study_stages(season_ids: [usize; 5]) -> Vec<Stage> {
         let bounds = [
-            (d(2026, 1, 1), d(2026, 2, 1)),
-            (d(2026, 2, 1), d(2026, 3, 1)),
-            (d(2026, 3, 1), d(2026, 4, 1)),
-            (d(2026, 4, 1), d(2026, 7, 1)),
-            (d(2026, 7, 1), d(2026, 10, 1)),
+            (date(2026, 1, 1), date(2026, 2, 1)),
+            (date(2026, 2, 1), date(2026, 3, 1)),
+            (date(2026, 3, 1), date(2026, 4, 1)),
+            (date(2026, 4, 1), date(2026, 7, 1)),
+            (date(2026, 7, 1), date(2026, 10, 1)),
         ];
         bounds
             .into_iter()
@@ -611,9 +608,9 @@ mod tests {
                 .collect(),
         };
         let stages = vec![
-            make_stage(0, d(2024, 7, 1), d(2024, 10, 1), Some(12)),
-            make_stage(1, d(2024, 10, 1), d(2025, 1, 1), Some(13)),
-            make_stage(2, d(2025, 1, 1), d(2025, 4, 1), Some(14)),
+            make_stage(0, date(2024, 7, 1), date(2024, 10, 1), Some(12)),
+            make_stage(1, date(2024, 10, 1), date(2025, 1, 1), Some(13)),
+            make_stage(2, date(2025, 1, 1), date(2025, 4, 1), Some(14)),
         ];
 
         let derived =
@@ -637,16 +634,16 @@ mod tests {
     fn cascade_step_matches_the_resolution_groups_on_a_layered_map() {
         let season_map = monthly_quarterly_season_map();
         let stages = vec![
-            make_stage(0, d(2024, 1, 1), d(2024, 2, 1), Some(0)),
-            make_stage(1, d(2024, 2, 1), d(2024, 3, 1), Some(1)),
-            make_stage(2, d(2024, 3, 1), d(2024, 4, 1), Some(2)),
-            make_stage(3, d(2024, 4, 1), d(2024, 5, 1), Some(3)),
-            make_stage(4, d(2024, 5, 1), d(2024, 6, 1), Some(4)),
-            make_stage(5, d(2024, 6, 1), d(2024, 7, 1), Some(5)),
-            make_stage(6, d(2024, 7, 1), d(2024, 10, 1), Some(12)),
-            make_stage(7, d(2024, 10, 1), d(2025, 1, 1), Some(13)),
-            make_stage(8, d(2025, 1, 1), d(2025, 4, 1), Some(14)),
-            make_stage(9, d(2025, 4, 1), d(2025, 7, 1), Some(15)),
+            make_stage(0, date(2024, 1, 1), date(2024, 2, 1), Some(0)),
+            make_stage(1, date(2024, 2, 1), date(2024, 3, 1), Some(1)),
+            make_stage(2, date(2024, 3, 1), date(2024, 4, 1), Some(2)),
+            make_stage(3, date(2024, 4, 1), date(2024, 5, 1), Some(3)),
+            make_stage(4, date(2024, 5, 1), date(2024, 6, 1), Some(4)),
+            make_stage(5, date(2024, 6, 1), date(2024, 7, 1), Some(5)),
+            make_stage(6, date(2024, 7, 1), date(2024, 10, 1), Some(12)),
+            make_stage(7, date(2024, 10, 1), date(2025, 1, 1), Some(13)),
+            make_stage(8, date(2025, 1, 1), date(2025, 4, 1), Some(14)),
+            make_stage(9, date(2025, 4, 1), date(2025, 7, 1), Some(15)),
         ];
 
         let derived =
@@ -682,13 +679,13 @@ mod tests {
         let stages: Vec<Stage> = (0..12usize)
             .map(|i| {
                 let month = u32::try_from(i + 1).unwrap();
-                let start = d(2026, month, 1);
+                let start = date(2026, month, 1);
                 let (ny, nm) = if month == 12 {
                     (2027, 1u32)
                 } else {
                     (2026, month + 1)
                 };
-                let end = d(ny, nm, 1);
+                let end = date(ny, nm, 1);
                 make_stage(i, start, end, Some(i))
             })
             .collect();
@@ -730,12 +727,12 @@ mod tests {
         let season_map = monthly_season_map(MonthlyLabels::OneBased);
 
         let stages = vec![
-            make_stage(0, d(2026, 3, 28), d(2026, 4, 4), Some(3)),
-            make_stage(1, d(2026, 4, 4), d(2026, 4, 11), Some(3)),
-            make_stage(2, d(2026, 4, 11), d(2026, 4, 18), Some(3)),
-            make_stage(3, d(2026, 4, 18), d(2026, 4, 25), Some(3)),
-            make_stage(4, d(2026, 4, 25), d(2026, 5, 2), Some(3)),
-            make_stage(5, d(2026, 5, 2), d(2026, 6, 1), Some(4)),
+            make_stage(0, date(2026, 3, 28), date(2026, 4, 4), Some(3)),
+            make_stage(1, date(2026, 4, 4), date(2026, 4, 11), Some(3)),
+            make_stage(2, date(2026, 4, 11), date(2026, 4, 18), Some(3)),
+            make_stage(3, date(2026, 4, 18), date(2026, 4, 25), Some(3)),
+            make_stage(4, date(2026, 4, 25), date(2026, 5, 2), Some(3)),
+            make_stage(5, date(2026, 5, 2), date(2026, 6, 1), Some(4)),
         ];
 
         let transitions = precompute_stage_lag_transitions(&stages, &season_map, 0);
@@ -841,7 +838,7 @@ mod tests {
     #[test]
     fn test_boundary_straddling_week() {
         let season_map = monthly_season_map(MonthlyLabels::OneBased);
-        let stage = make_stage(0, d(2026, 1, 28), d(2026, 2, 4), Some(0));
+        let stage = make_stage(0, date(2026, 1, 28), date(2026, 2, 4), Some(0));
         let stages = vec![stage];
 
         let transitions = precompute_stage_lag_transitions(&stages, &season_map, 0);
@@ -874,7 +871,7 @@ mod tests {
     #[test]
     fn test_no_season_id_produces_noop() {
         let season_map = monthly_season_map(MonthlyLabels::OneBased);
-        let stage = make_stage(0, d(2026, 1, 1), d(2026, 2, 1), None);
+        let stage = make_stage(0, date(2026, 1, 1), date(2026, 2, 1), None);
         let stages = vec![stage];
 
         let transitions = precompute_stage_lag_transitions(&stages, &season_map, 0);
@@ -894,8 +891,8 @@ mod tests {
     fn test_single_stage_per_month_finalizes() {
         let season_map = monthly_season_map(MonthlyLabels::OneBased);
         let stages = vec![
-            make_stage(0, d(2026, 1, 1), d(2026, 2, 1), Some(0)),
-            make_stage(1, d(2026, 2, 1), d(2026, 3, 1), Some(1)),
+            make_stage(0, date(2026, 1, 1), date(2026, 2, 1), Some(0)),
+            make_stage(1, date(2026, 2, 1), date(2026, 3, 1), Some(1)),
         ];
 
         let transitions = precompute_stage_lag_transitions(&stages, &season_map, 0);
@@ -918,10 +915,10 @@ mod tests {
     fn test_multiple_weekly_stages_only_last_finalizes() {
         let season_map = monthly_season_map(MonthlyLabels::OneBased);
         let stages = vec![
-            make_stage(0, d(2026, 1, 1), d(2026, 1, 8), Some(0)),
-            make_stage(1, d(2026, 1, 8), d(2026, 1, 15), Some(0)),
-            make_stage(2, d(2026, 1, 15), d(2026, 1, 22), Some(0)),
-            make_stage(3, d(2026, 1, 22), d(2026, 1, 29), Some(0)),
+            make_stage(0, date(2026, 1, 1), date(2026, 1, 8), Some(0)),
+            make_stage(1, date(2026, 1, 8), date(2026, 1, 15), Some(0)),
+            make_stage(2, date(2026, 1, 15), date(2026, 1, 22), Some(0)),
+            make_stage(3, date(2026, 1, 22), date(2026, 1, 29), Some(0)),
         ];
 
         let transitions = precompute_stage_lag_transitions(&stages, &season_map, 0);
@@ -965,10 +962,10 @@ mod tests {
     fn test_weekly_cycle_per_week_finalizes() {
         let season_map = weekly_season_map();
         let stages = vec![
-            make_stage(0, d(2024, 1, 1), d(2024, 1, 8), Some(0)),
-            make_stage(1, d(2024, 1, 8), d(2024, 1, 15), Some(1)),
-            make_stage(2, d(2024, 1, 15), d(2024, 1, 22), Some(2)),
-            make_stage(3, d(2024, 1, 22), d(2024, 1, 29), Some(3)),
+            make_stage(0, date(2024, 1, 1), date(2024, 1, 8), Some(0)),
+            make_stage(1, date(2024, 1, 8), date(2024, 1, 15), Some(1)),
+            make_stage(2, date(2024, 1, 15), date(2024, 1, 22), Some(2)),
+            make_stage(3, date(2024, 1, 22), date(2024, 1, 29), Some(3)),
         ];
 
         let transitions = precompute_stage_lag_transitions(&stages, &season_map, 0);
@@ -999,9 +996,9 @@ mod tests {
     #[test]
     fn test_weekly_iso_week_53_folds() {
         let season_map = weekly_season_map();
-        assert_eq!(season_map.season_for_date(d(2026, 12, 28)), Some(51));
+        assert_eq!(season_map.season_for_date(date(2026, 12, 28)), Some(51));
 
-        let stage = make_stage(0, d(2026, 12, 28), d(2027, 1, 4), Some(51));
+        let stage = make_stage(0, date(2026, 12, 28), date(2027, 1, 4), Some(51));
         let transitions = precompute_stage_lag_transitions(&[stage], &season_map, 0);
         assert_eq!(transitions.len(), 1);
 
@@ -1054,8 +1051,8 @@ mod tests {
         // June stage spans its whole month (30 days); the Q3 stage spans only
         // the first 30 days of the 92-day quarter — a sub-window, so its
         // weight can only match if it used the QUARTER's hours, not July's.
-        let june_stage = make_stage(0, d(2024, 6, 1), d(2024, 7, 1), Some(5));
-        let q3_partial_stage = make_stage(1, d(2024, 7, 1), d(2024, 7, 31), Some(12));
+        let june_stage = make_stage(0, date(2024, 6, 1), date(2024, 7, 1), Some(5));
+        let q3_partial_stage = make_stage(1, date(2024, 7, 1), date(2024, 7, 31), Some(12));
         let stages = vec![june_stage, q3_partial_stage];
 
         let transitions = precompute_stage_lag_transitions(&stages, &season_map, 0);
@@ -1126,12 +1123,12 @@ mod tests {
     #[test]
     fn test_migration_equivalence_window_period_overlaps_bit_identical_to_days_in_period() {
         // (a) stage straddling a monthly boundary: accumulate + nonzero spillover.
-        let stage_monthly = make_stage(0, d(2026, 1, 28), d(2026, 2, 4), Some(0));
-        let jan_start = d(2026, 1, 1);
-        let jan_end = d(2026, 2, 1);
+        let stage_monthly = make_stage(0, date(2026, 1, 28), date(2026, 2, 4), Some(0));
+        let jan_start = date(2026, 1, 1);
+        let jan_end = date(2026, 2, 1);
         let jan_hours = 31.0 * 24.0;
-        let feb_start = d(2026, 2, 1);
-        let feb_end = d(2026, 3, 1);
+        let feb_start = date(2026, 2, 1);
+        let feb_end = date(2026, 3, 1);
         let feb_hours = 28.0 * 24.0;
 
         let accumulate_new =
@@ -1167,9 +1164,9 @@ mod tests {
         );
 
         // (b) Weekly full-week stage.
-        let stage_weekly = make_stage(0, d(2024, 1, 1), d(2024, 1, 8), Some(0));
-        let week_start = d(2024, 1, 1);
-        let week_end = d(2024, 1, 8);
+        let stage_weekly = make_stage(0, date(2024, 1, 1), date(2024, 1, 8), Some(0));
+        let week_start = date(2024, 1, 1);
+        let week_end = date(2024, 1, 8);
         let week_hours = 7.0 * 24.0;
         let weekly_new =
             single_period_overlap_hours(&stage_weekly, week_start, week_hours) / week_hours;
@@ -1187,9 +1184,9 @@ mod tests {
 
         // (c) Custom sub-window stage (the D30 shape): a Q3 stage spanning
         // only the first 30 days of a 92-day quarter.
-        let stage_custom = make_stage(1, d(2024, 7, 1), d(2024, 7, 31), Some(12));
-        let q3_start = d(2024, 7, 1);
-        let q3_end = d(2024, 10, 1);
+        let stage_custom = make_stage(1, date(2024, 7, 1), date(2024, 7, 31), Some(12));
+        let q3_start = date(2024, 7, 1);
+        let q3_end = date(2024, 10, 1);
         let q3_hours = 92.0 * 24.0;
         let custom_new = single_period_overlap_hours(&stage_custom, q3_start, q3_hours) / q3_hours;
         let custom_ref = reference_weight(
@@ -1206,12 +1203,12 @@ mod tests {
 
         // (d) quarterly downstream window: a stage straddling the Q3/Q4
         // boundary, mirroring compute_downstream_transitions's own weighting.
-        let stage_quarterly = make_stage(0, d(2026, 9, 25), d(2026, 10, 4), Some(8));
-        let q3_2026_start = d(2026, 7, 1);
-        let q3_2026_end = d(2026, 10, 1);
+        let stage_quarterly = make_stage(0, date(2026, 9, 25), date(2026, 10, 4), Some(8));
+        let q3_2026_start = date(2026, 7, 1);
+        let q3_2026_end = date(2026, 10, 1);
         let q3_2026_hours = 92.0 * 24.0;
-        let q4_2026_start = d(2026, 10, 1);
-        let q4_2026_end = d(2027, 1, 1);
+        let q4_2026_start = date(2026, 10, 1);
+        let q4_2026_end = date(2027, 1, 1);
         let q4_2026_hours = 92.0 * 24.0;
 
         let downstream_accumulate_new =
@@ -1254,13 +1251,13 @@ mod tests {
         let stages: Vec<Stage> = (0..12usize)
             .map(|i| {
                 let month = u32::try_from(i + 1).unwrap();
-                let start = d(2024, month, 1);
+                let start = date(2024, month, 1);
                 let (ny, nm) = if month == 12 {
                     (2025, 1u32)
                 } else {
                     (2024, month + 1)
                 };
-                let end = d(ny, nm, 1);
+                let end = date(ny, nm, 1);
                 make_stage(i, start, end, Some(i))
             })
             .collect();
@@ -1278,8 +1275,8 @@ mod tests {
             .map(|i| {
                 let day_start = u32::try_from(i * 7 + 1).unwrap();
                 let day_end = u32::try_from(i * 7 + 8).unwrap();
-                let start = d(2024, 1, day_start);
-                let end = d(2024, 1, day_end);
+                let start = date(2024, 1, day_start);
+                let end = date(2024, 1, day_end);
                 make_stage(i, start, end, Some(0))
             })
             .collect();
@@ -1287,8 +1284,8 @@ mod tests {
             .map(|i| {
                 let day_start = u32::try_from(i * 7 + 1).unwrap();
                 let day_end = u32::try_from(i * 7 + 8).unwrap();
-                let start = d(2024, 2, day_start);
-                let end = d(2024, 2, day_end);
+                let start = date(2024, 2, day_start);
+                let end = date(2024, 2, day_end);
                 make_stage(i + 4, start, end, Some(1))
             })
             .collect();
@@ -1309,12 +1306,12 @@ mod tests {
             .map(|i| {
                 let day_start = u32::try_from(i * 7 + 1).unwrap();
                 let day_end = u32::try_from(i * 7 + 8).unwrap();
-                let start = d(2024, 1, day_start);
-                let end = d(2024, 1, day_end);
+                let start = date(2024, 1, day_start);
+                let end = date(2024, 1, day_end);
                 make_stage(i, start, end, Some(0))
             })
             .collect();
-        let monthly = make_stage(4, d(2024, 1, 1), d(2024, 2, 1), Some(0));
+        let monthly = make_stage(4, date(2024, 1, 1), date(2024, 2, 1), Some(0));
 
         let mut stages = weekly;
         stages.push(monthly);
@@ -1332,8 +1329,8 @@ mod tests {
     fn test_noise_groups_none_season_id() {
         let stages: Vec<Stage> = (0..3usize)
             .map(|i| {
-                let start = d(2024, 1, u32::try_from(i + 1).unwrap());
-                let end = d(2024, 1, u32::try_from(i + 2).unwrap());
+                let start = date(2024, 1, u32::try_from(i + 1).unwrap());
+                let end = date(2024, 1, u32::try_from(i + 2).unwrap());
                 make_stage(i, start, end, None)
             })
             .collect();
@@ -1350,8 +1347,8 @@ mod tests {
     #[test]
     fn test_noise_groups_cross_year() {
         // Two weekly stages: season_id=0, year 2024 and year 2025.
-        let stage_2024 = make_stage(0, d(2024, 1, 1), d(2024, 1, 8), Some(0));
-        let stage_2025 = make_stage(1, d(2025, 1, 1), d(2025, 1, 8), Some(0));
+        let stage_2024 = make_stage(0, date(2024, 1, 1), date(2024, 1, 8), Some(0));
+        let stage_2025 = make_stage(1, date(2025, 1, 1), date(2025, 1, 8), Some(0));
 
         let stages = vec![stage_2024, stage_2025];
         let groups = precompute_noise_groups(&stages);
@@ -1368,19 +1365,6 @@ mod tests {
     // -----------------------------------------------------------------------
     // Seeded weekly-to-monthly finalize (item 9, RV0/RV1 fixtures)
     // -----------------------------------------------------------------------
-
-    fn make_hydro(id: i32) -> Hydro {
-        novomodelo_core::test_support::make_hydro(HydroSpec {
-            id,
-            name: format!("H{id}"),
-            max_storage_hm3: 100.0,
-            max_turbined_m3s: 100.0,
-            max_generation_mw: 100.0,
-            operational_start_date: date(2020, 1, 1),
-            mirror_unit_group: MirrorUnitGroup::None,
-            ..Default::default()
-        })
-    }
 
     /// Finalizes `derived`'s `accum`/`weight` seed through `stage_lag_transitions`
     /// for a single entity, accumulating `realized_per_stage[i]` at stage `i`;
@@ -1434,20 +1418,20 @@ mod tests {
     fn test_seeded_weekly_to_monthly_finalize_values_exact() {
         let season_map = monthly_season_map(MonthlyLabels::OneBased);
         let hydro_id = EntityId(1);
-        let hydros = vec![make_hydro(1)];
+        let hydros = vec![unmirrored_hydro(1)];
 
         let stages = vec![
-            make_stage(0, d(2026, 4, 4), d(2026, 4, 11), Some(3)),
-            make_stage(1, d(2026, 4, 11), d(2026, 4, 18), Some(3)),
-            make_stage(2, d(2026, 4, 18), d(2026, 4, 25), Some(3)),
-            make_stage(3, d(2026, 4, 25), d(2026, 5, 1), Some(3)),
+            make_stage(0, date(2026, 4, 4), date(2026, 4, 11), Some(3)),
+            make_stage(1, date(2026, 4, 11), date(2026, 4, 18), Some(3)),
+            make_stage(2, date(2026, 4, 18), date(2026, 4, 25), Some(3)),
+            make_stage(3, date(2026, 4, 25), date(2026, 5, 1), Some(3)),
         ];
         let first_stage = stages[0].clone();
 
         let record = vec![InflowHistoryRow {
             hydro_id,
-            start_date: d(2026, 4, 1),
-            end_date: d(2026, 4, 4),
+            start_date: date(2026, 4, 1),
+            end_date: date(2026, 4, 4),
             value_m3s: 210.0,
         }];
 
@@ -1492,20 +1476,20 @@ mod tests {
     fn test_rv1_elapsed_week_conditioning_with_straddle() {
         let season_map = monthly_season_map(MonthlyLabels::OneBased);
         let hydro_id = EntityId(1);
-        let hydros = vec![make_hydro(1)];
+        let hydros = vec![unmirrored_hydro(1)];
 
         let stages = vec![
-            make_stage(0, d(2026, 4, 4), d(2026, 4, 11), Some(3)),
-            make_stage(1, d(2026, 4, 11), d(2026, 4, 18), Some(3)),
-            make_stage(2, d(2026, 4, 18), d(2026, 4, 25), Some(3)),
-            make_stage(3, d(2026, 4, 25), d(2026, 5, 1), Some(3)),
+            make_stage(0, date(2026, 4, 4), date(2026, 4, 11), Some(3)),
+            make_stage(1, date(2026, 4, 11), date(2026, 4, 18), Some(3)),
+            make_stage(2, date(2026, 4, 18), date(2026, 4, 25), Some(3)),
+            make_stage(3, date(2026, 4, 25), date(2026, 5, 1), Some(3)),
         ];
         let first_stage = stages[0].clone();
 
         let conditioning = vec![RecentObservation {
             hydro_id,
-            start_date: d(2026, 3, 28),
-            end_date: d(2026, 4, 4),
+            start_date: date(2026, 3, 28),
+            end_date: date(2026, 4, 4),
             value_m3s: 220.0,
         }];
 

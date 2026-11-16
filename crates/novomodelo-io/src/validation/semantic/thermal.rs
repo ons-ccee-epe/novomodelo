@@ -1388,12 +1388,11 @@ mod tests {
         entry_stage_id: Option<i32>,
         exit_stage_id: Option<i32>,
     ) -> Thermal {
-        Thermal {
-            anticipated_config: Some(AnticipatedConfig::LeadStages(lead_stages)),
-            entry_stage_id,
-            exit_stage_id,
-            ..make_thermal(id, 0.0, 500.0)
-        }
+        let mut thermal = make_thermal(id, 0.0, 500.0);
+        thermal.anticipated_config = Some(AnticipatedConfig::LeadStages(lead_stages));
+        thermal.entry_stage_id = entry_stage_id;
+        thermal.exit_stage_id = exit_stage_id;
+        thermal
     }
 
     /// Build a `LeadTime`-configured thermal.
@@ -1403,12 +1402,11 @@ mod tests {
         entry_stage_id: Option<i32>,
         exit_stage_id: Option<i32>,
     ) -> Thermal {
-        Thermal {
-            anticipated_config: Some(AnticipatedConfig::LeadTime(lead_time_hours)),
-            entry_stage_id,
-            exit_stage_id,
-            ..make_thermal(id, 0.0, 500.0)
-        }
+        let mut thermal = make_thermal(id, 0.0, 500.0);
+        thermal.anticipated_config = Some(AnticipatedConfig::LeadTime(lead_time_hours));
+        thermal.entry_stage_id = entry_stage_id;
+        thermal.exit_stage_id = exit_stage_id;
+        thermal
     }
 
     /// Anchor of every anticipated-thermal test calendar; stage 0 starts here.
@@ -2972,11 +2970,9 @@ mod tests {
     /// is emitted.
     #[test]
     fn test_window_on_plain_thermal_accepted() {
-        let thermal = Thermal {
-            entry_stage_id: Some(1),
-            exit_stage_id: Some(2),
-            ..make_thermal(1, 0.0, 100.0)
-        };
+        let mut thermal = make_thermal(1, 0.0, 100.0);
+        thermal.entry_stage_id = Some(1);
+        thermal.exit_stage_id = Some(2);
         let data = make_data(
             vec![],
             vec![thermal],
@@ -3082,10 +3078,8 @@ mod tests {
     #[test]
     fn test_committed_value_below_min_gen_bounds_error() {
         // Build a thermal with min_mw=100.0.
-        let thermal = Thermal {
-            anticipated_config: Some(AnticipatedConfig::LeadStages(2)),
-            ..make_thermal(5, 100.0, 500.0)
-        };
+        let mut thermal = make_thermal(5, 100.0, 500.0);
+        thermal.anticipated_config = Some(AnticipatedConfig::LeadStages(2));
         let data = make_data_anticipated(vec![thermal], 5, commitments(5, &[200.0, 50.0]));
         let mut ctx = ValidationContext::new();
         validate_semantic_hydro_thermal(&data, &mut ctx);
@@ -3120,10 +3114,8 @@ mod tests {
     /// emitted (0.0 is within [0.0, 400.0]).
     #[test]
     fn test_committed_values_all_zero_ok() {
-        let thermal = Thermal {
-            anticipated_config: Some(AnticipatedConfig::LeadStages(3)),
-            ..make_thermal(7, 0.0, 400.0)
-        };
+        let mut thermal = make_thermal(7, 0.0, 400.0);
+        thermal.anticipated_config = Some(AnticipatedConfig::LeadStages(3));
         let data = make_data_anticipated(vec![thermal], 5, commitments(7, &[0.0, 0.0, 0.0]));
         let mut ctx = ValidationContext::new();
         validate_semantic_hydro_thermal(&data, &mut ctx);
@@ -3140,10 +3132,8 @@ mod tests {
     /// emitted (the minimum is inclusive).
     #[test]
     fn test_committed_value_zero_accepted() {
-        let thermal = Thermal {
-            anticipated_config: Some(AnticipatedConfig::LeadStages(1)),
-            ..make_thermal(9, 0.0, 400.0)
-        };
+        let mut thermal = make_thermal(9, 0.0, 400.0);
+        thermal.anticipated_config = Some(AnticipatedConfig::LeadStages(1));
         let data = make_data_anticipated(vec![thermal], 5, commitments(9, &[0.0]));
         let mut ctx = ValidationContext::new();
         validate_semantic_hydro_thermal(&data, &mut ctx);
@@ -3161,10 +3151,8 @@ mod tests {
     /// 400.0 > 350.0 is outside [100.0, 350.0].
     #[test]
     fn test_committed_value_above_max_bounds_error() {
-        let thermal = Thermal {
-            anticipated_config: Some(AnticipatedConfig::LeadStages(1)),
-            ..make_thermal(11, 100.0, 350.0)
-        };
+        let mut thermal = make_thermal(11, 100.0, 350.0);
+        thermal.anticipated_config = Some(AnticipatedConfig::LeadStages(1));
         let data = make_data_anticipated(vec![thermal], 5, commitments(11, &[400.0]));
         let mut ctx = ValidationContext::new();
         validate_semantic_hydro_thermal(&data, &mut ctx);
@@ -3198,10 +3186,8 @@ mod tests {
     /// some upstream pipeline may drift a hair past a bound it was meant to sit on).
     #[test]
     fn test_committed_value_within_tolerance_above_max_accepted() {
-        let thermal = Thermal {
-            anticipated_config: Some(AnticipatedConfig::LeadStages(1)),
-            ..make_thermal(13, 100.0, 350.0)
-        };
+        let mut thermal = make_thermal(13, 100.0, 350.0);
+        thermal.anticipated_config = Some(AnticipatedConfig::LeadStages(1));
         // 1e-8 above max_generation_mw: an order of magnitude below the 3.5e-7 tolerance.
         let data = make_data_anticipated(vec![thermal], 5, commitments(13, &[350.0 + 1e-8]));
         let mut ctx = ValidationContext::new();
@@ -3218,10 +3204,8 @@ mod tests {
     /// relative-with-floor tolerance — must not be rejected.
     #[test]
     fn test_committed_value_within_tolerance_below_min_accepted() {
-        let thermal = Thermal {
-            anticipated_config: Some(AnticipatedConfig::LeadStages(1)),
-            ..make_thermal(14, 100.0, 350.0)
-        };
+        let mut thermal = make_thermal(14, 100.0, 350.0);
+        thermal.anticipated_config = Some(AnticipatedConfig::LeadStages(1));
         // 1e-8 below min_generation_mw: an order of magnitude below the 1e-7 tolerance.
         let data = make_data_anticipated(vec![thermal], 5, commitments(14, &[100.0 - 1e-8]));
         let mut ctx = ValidationContext::new();
@@ -3239,10 +3223,8 @@ mod tests {
     /// must have power, not just admit a hairline drift.
     #[test]
     fn test_committed_value_beyond_tolerance_above_max_still_rejected() {
-        let thermal = Thermal {
-            anticipated_config: Some(AnticipatedConfig::LeadStages(1)),
-            ..make_thermal(15, 100.0, 350.0)
-        };
+        let mut thermal = make_thermal(15, 100.0, 350.0);
+        thermal.anticipated_config = Some(AnticipatedConfig::LeadStages(1));
         // 3.5e-6 above max_generation_mw: an order of magnitude above the 3.5e-7 tolerance.
         let data = make_data_anticipated(vec![thermal], 5, commitments(15, &[350.0 + 3.5e-6]));
         let mut ctx = ValidationContext::new();
@@ -3275,10 +3257,8 @@ mod tests {
     /// date: it is rejected exactly as an in-study window would be.
     #[test]
     fn committed_value_bounds_reject_an_out_of_envelope_post_horizon_window() {
-        let thermal = Thermal {
-            anticipated_config: Some(AnticipatedConfig::LeadStages(1)),
-            ..make_thermal(21, 0.0, 200.0)
-        };
+        let mut thermal = make_thermal(21, 0.0, 200.0);
+        thermal.anticipated_config = Some(AnticipatedConfig::LeadStages(1));
         let mut records = commitments(21, &[0.0]);
         records.push(AnticipatedCommitmentHistory {
             thermal_id: EntityId::from(21),
@@ -3314,10 +3294,8 @@ mod tests {
     /// `[0.0, 200.0]`: no envelope error is emitted.
     #[test]
     fn committed_value_bounds_accept_an_in_envelope_post_horizon_window() {
-        let thermal = Thermal {
-            anticipated_config: Some(AnticipatedConfig::LeadStages(1)),
-            ..make_thermal(22, 0.0, 200.0)
-        };
+        let mut thermal = make_thermal(22, 0.0, 200.0);
+        thermal.anticipated_config = Some(AnticipatedConfig::LeadStages(1));
         let mut records = commitments(22, &[0.0]);
         records.push(AnticipatedCommitmentHistory {
             thermal_id: EntityId::from(22),
@@ -3342,10 +3320,8 @@ mod tests {
     /// mistaken for a missing declaration.
     #[test]
     fn committed_value_bounds_accept_an_explicit_zero_at_the_lower_bound() {
-        let thermal = Thermal {
-            anticipated_config: Some(AnticipatedConfig::LeadStages(1)),
-            ..make_thermal(23, 0.0, 200.0)
-        };
+        let mut thermal = make_thermal(23, 0.0, 200.0);
+        thermal.anticipated_config = Some(AnticipatedConfig::LeadStages(1));
         let mut records = commitments(23, &[100.0]);
         records.push(AnticipatedCommitmentHistory {
             thermal_id: EntityId::from(23),
@@ -3540,10 +3516,8 @@ mod tests {
     /// and the validator emits no errors.
     #[test]
     fn test_nonzero_value_in_bounds_accepted_k1() {
-        let thermal = Thermal {
-            anticipated_config: Some(AnticipatedConfig::LeadStages(1)),
-            ..make_thermal(2, 0.0, 350.0)
-        };
+        let mut thermal = make_thermal(2, 0.0, 350.0);
+        thermal.anticipated_config = Some(AnticipatedConfig::LeadStages(1));
         let data = make_data_anticipated(vec![thermal], 5, commitments(2, &[204.5647]));
         let mut ctx = ValidationContext::new();
         validate_semantic_hydro_thermal(&data, &mut ctx);
@@ -3577,10 +3551,8 @@ mod tests {
     /// reintroducing a same-dispatch-as-zero-seed warning.
     #[test]
     fn test_nonzero_in_bounds_seed_emits_no_semantic_ambiguity_warning() {
-        let thermal = Thermal {
-            anticipated_config: Some(AnticipatedConfig::LeadStages(2)),
-            ..make_thermal(3, 0.0, 350.0)
-        };
+        let mut thermal = make_thermal(3, 0.0, 350.0);
+        thermal.anticipated_config = Some(AnticipatedConfig::LeadStages(2));
         let data = make_data_anticipated(vec![thermal], 5, commitments(3, &[100.0, 200.0]));
         let mut ctx = ValidationContext::new();
         validate_semantic_hydro_thermal(&data, &mut ctx);
@@ -3755,15 +3727,10 @@ mod tests {
     /// new validator.
     #[test]
     fn test_anticipated_decision_on_anticipated_thermal_ok() {
-        use novomodelo_core::{
-            ConstraintExpression, GenericConstraint, LinearTerm, VariableRef,
-            entities::AnticipatedConfig,
-        };
+        use novomodelo_core::{ConstraintExpression, GenericConstraint, LinearTerm, VariableRef};
 
-        let thermal = Thermal {
-            anticipated_config: Some(AnticipatedConfig::LeadStages(2)),
-            ..make_thermal(3, 0.0, 500.0)
-        };
+        let mut thermal = make_thermal(3, 0.0, 500.0);
+        thermal.anticipated_config = Some(AnticipatedConfig::LeadStages(2));
         let constraint = GenericConstraint {
             id: EntityId::from(10),
             name: "valid_anticipated_constraint".to_string(),
@@ -3808,15 +3775,10 @@ mod tests {
     /// the constraint and the thermal ID with a hint to use `anticipated_decision`.
     #[test]
     fn test_thermal_generation_on_anticipated_thermal_warns() {
-        use novomodelo_core::{
-            ConstraintExpression, GenericConstraint, LinearTerm, VariableRef,
-            entities::AnticipatedConfig,
-        };
+        use novomodelo_core::{ConstraintExpression, GenericConstraint, LinearTerm, VariableRef};
 
-        let thermal = Thermal {
-            anticipated_config: Some(AnticipatedConfig::LeadStages(1)),
-            ..make_thermal(5, 0.0, 300.0)
-        };
+        let mut thermal = make_thermal(5, 0.0, 300.0);
+        thermal.anticipated_config = Some(AnticipatedConfig::LeadStages(1));
         let constraint = GenericConstraint {
             id: EntityId::from(20),
             name: "ambiguous_constraint".to_string(),

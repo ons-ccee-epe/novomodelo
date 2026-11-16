@@ -22,10 +22,8 @@ use chrono::{Months, NaiveDate};
 use novomodelo_core::{
     EntityId,
     scenario::{AnnualComponent, InflowHistoryRow, InflowModel},
-    temporal::{
-        Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageLagTransition,
-        StageRiskConfig, StageStateConfig,
-    },
+    temporal::{Stage, StageLagTransition},
+    test_support::{StageSpec, make_stage, single_block},
 };
 use novomodelo_stochastic::{
     DerivedSeed, HistoricalScenarioLibrary, check_historical_structure, evaluate_par_batch,
@@ -34,28 +32,15 @@ use novomodelo_stochastic::{
 
 fn monthly_stage(index: usize, season_id: usize) -> Stage {
     let month = u32::try_from(season_id).expect("season_id fits in u32") + 1;
-    Stage {
-        index,
+    make_stage(StageSpec {
         id: i32::try_from(index).expect("index fits in i32"),
+        index: Some(index),
         start_date: NaiveDate::from_ymd_opt(2024, month, 1).expect("valid date"),
         end_date: NaiveDate::from_ymd_opt(2024, month, 28).expect("valid date"),
         season_id: Some(season_id),
-        blocks: vec![Block {
-            index: 0,
-            name: "SINGLE".to_string(),
-            duration_hours: 720.0,
-        }],
-        block_mode: BlockMode::Parallel,
-        state_config: StageStateConfig {
-            storage: true,
-            inflow_lags: false,
-        },
-        risk_config: StageRiskConfig::Expectation,
-        scenario_config: ScenarioSourceConfig {
-            branching_factor: 1,
-            noise_method: NoiseMethod::Saa,
-        },
-    }
+        blocks: single_block("SINGLE", 720.0),
+        ..Default::default()
+    })
 }
 
 fn row(hydro_id: EntityId, year: i32, month0: u32, value: f64) -> InflowHistoryRow {

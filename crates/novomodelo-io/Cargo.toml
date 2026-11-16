@@ -51,7 +51,6 @@ gethostname = "1.1.0"
 
 [dev-dependencies]
 novomodelo-core = { version = "0.20.0", path = "../novomodelo-core", features = ["test-support"] }
-novomodelo-stochastic = { version = "0.20.0", path = "../novomodelo-stochastic", features = ["test-support"] }
 novomodelo-io = { path = ".", features = ["test-support"] }
 parquet = { version = "60", default-features = false, features = ["arrow", "zstd"] }
 proptest = "1"

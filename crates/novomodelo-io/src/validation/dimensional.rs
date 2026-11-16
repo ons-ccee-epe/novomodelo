@@ -243,20 +243,17 @@ mod tests {
             CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile,
             CorrelationScheduleEntry,
         },
-        temporal::{
-            Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
-            StageStateConfig,
-        },
+        temporal::Stage,
     };
 
     use crate::{
         extensions::{FphaHyperplaneRow, HydroGeometryRow},
         scenarios::{InflowSeasonalStatsRow, LoadSeasonalStatsRow},
+        test_support::make_bus_with_deficit,
         validation::{ErrorKind, ValidationContext},
     };
 
     use super::*;
-    use chrono::NaiveDate;
 
     fn make_hydro(
         id: i32,
@@ -264,91 +261,39 @@ mod tests {
         entry_stage_id: Option<i32>,
         exit_stage_id: Option<i32>,
     ) -> Hydro {
-        Hydro {
-            unit_groups: Vec::new(),
-            id: EntityId(id),
-            name: format!("Hydro {id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            downstream_id: None,
-            travel_time_hours: None,
-            entry_stage_id,
-            exit_stage_id,
-            min_storage_hm3: 0.0,
-            max_storage_hm3: 1000.0,
-            min_outflow_m3s: 0.0,
-            max_outflow_m3s: None,
-            generation_model,
-            min_turbined_m3s: 0.0,
-            max_turbined_m3s: 100.0,
-            specific_productivity_mw_per_m3s_per_m: None,
-            min_generation_mw: 0.0,
-            max_generation_mw: 500.0,
-            tailrace: None,
-            hydraulic_losses: None,
-            efficiency: None,
-            evaporation_coefficients_mm: None,
-            evaporation_reference_volumes_hm3: None,
-            diversion: None,
-            filling: None,
-            penalties: crate::test_support::penalties_all(1.0),
-        }
+        let mut hydro = crate::test_support::make_hydro(id, None);
+        hydro.entry_stage_id = entry_stage_id;
+        hydro.exit_stage_id = exit_stage_id;
+        hydro.generation_model = generation_model;
+        hydro.max_turbined_m3s = 100.0;
+        hydro.max_generation_mw = 500.0;
+        hydro
     }
 
     fn make_bus(id: i32) -> Bus {
-        Bus {
-            id: EntityId(id),
-            name: format!("Bus {id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            deficit_segments: vec![],
-            excess_cost: 0.0,
-        }
+        let mut bus = make_bus_with_deficit(id, 0.0);
+        bus.deficit_segments = Vec::new();
+        bus.excess_cost = 0.0;
+        bus
     }
 
     fn make_stage(id: i32) -> Stage {
-        Stage {
-            index: id as usize,
-            id,
-            start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            end_date: chrono::NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-            season_id: None,
-            blocks: vec![Block {
-                index: 0,
-                name: "FLAT".to_string(),
-                duration_hours: 744.0,
-            }],
-            block_mode: BlockMode::Parallel,
-            state_config: StageStateConfig {
-                storage: true,
-                inflow_lags: false,
-            },
-            risk_config: StageRiskConfig::Expectation,
-            scenario_config: ScenarioSourceConfig {
-                branching_factor: 50,
-                noise_method: NoiseMethod::Saa,
-            },
-        }
+        let mut stage = crate::test_support::make_stage(id);
+        stage.index = id as usize;
+        stage.blocks[0].name = "FLAT".to_string();
+        stage.blocks[0].duration_hours = 744.0;
+        stage.scenario_config.branching_factor = 50;
+        stage
     }
 
     fn make_pre_study_stage(id: i32) -> Stage {
         // Pre-study stages have negative IDs.
-        Stage {
-            index: 0,
-            id,
-            start_date: chrono::NaiveDate::from_ymd_opt(2023, 12, 1).unwrap(),
-            end_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            season_id: None,
-            blocks: vec![],
-            block_mode: BlockMode::Parallel,
-            state_config: StageStateConfig {
-                storage: false,
-                inflow_lags: false,
-            },
-            risk_config: StageRiskConfig::Expectation,
-            scenario_config: ScenarioSourceConfig {
-                branching_factor: 1,
-                noise_method: NoiseMethod::Saa,
-            },
-        }
+        let mut stage = crate::test_support::make_stage(id);
+        stage.start_date = chrono::NaiveDate::from_ymd_opt(2023, 12, 1).unwrap();
+        stage.end_date = chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
+        stage.blocks = Vec::new();
+        stage.state_config.storage = false;
+        stage
     }
 
     fn inflow_stats_row(hydro_id: i32, stage_id: i32) -> InflowSeasonalStatsRow {

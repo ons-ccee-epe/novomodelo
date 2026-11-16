@@ -750,41 +750,27 @@ mod tests {
     // PAR(p)-A extension tests
     // -----------------------------------------------------------------------
 
-    use chrono::NaiveDate;
     use novomodelo_core::{
         EntityId,
         scenario::{AnnualComponent, InflowModel},
-        temporal::{
-            Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
-            StageStateConfig,
-        },
+        temporal::{NoiseMethod, ScenarioSourceConfig, Stage},
+        test_support::{StageSpec, make_stage, single_block},
     };
 
     use crate::par::precompute::PrecomputedPar;
 
     fn par_a_stage(index: usize, id: i32, season_id: usize) -> Stage {
-        Stage {
-            index,
+        make_stage(StageSpec {
             id,
-            start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            end_date: NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
+            index: Some(index),
             season_id: Some(season_id),
-            blocks: vec![Block {
-                index: 0,
-                name: "SINGLE".to_string(),
-                duration_hours: 744.0,
-            }],
-            block_mode: BlockMode::Parallel,
-            state_config: StageStateConfig {
-                storage: true,
-                inflow_lags: false,
-            },
-            risk_config: StageRiskConfig::Expectation,
+            blocks: single_block("SINGLE", 744.0),
             scenario_config: ScenarioSourceConfig {
                 branching_factor: 10,
                 noise_method: NoiseMethod::Saa,
             },
-        }
+            ..Default::default()
+        })
     }
 
     /// 12-month PAR(p)-A fixture over one stage per season:

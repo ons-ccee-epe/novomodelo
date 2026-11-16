@@ -284,28 +284,10 @@ impl Default for PrecomputedNormal {
 
 #[cfg(test)]
 mod tests {
-    use novomodelo_core::{
-        EntityId,
-        scenario::LoadModel,
-        temporal::{NoiseMethod, ScenarioSourceConfig, Stage},
-        test_support::{StageSpec, single_block},
-    };
+    use novomodelo_core::{EntityId, scenario::LoadModel};
 
     use super::{BlockFactorPair, EntityFactorEntry, PrecomputedNormal};
-
-    fn make_stage(index: usize, id: i32) -> Stage {
-        novomodelo_core::test_support::make_stage(StageSpec {
-            id,
-            index: Some(index),
-            season_id: Some(0),
-            blocks: single_block("SINGLE", 744.0),
-            scenario_config: ScenarioSourceConfig {
-                branching_factor: 10,
-                noise_method: NoiseMethod::Saa,
-            },
-            ..Default::default()
-        })
-    }
+    use crate::test_support::saa_stage;
 
     fn make_model(entity_id: i32, stage_id: i32, mean: f64, std: f64) -> LoadModel {
         LoadModel {
@@ -318,7 +300,7 @@ mod tests {
 
     #[test]
     fn build_empty_returns_zero_mean_std_one_factors() {
-        let stages = [make_stage(0, 0)];
+        let stages = [saa_stage(0, 0, 10)];
         let entity_ids = [EntityId(1)];
 
         let lp = PrecomputedNormal::build(&[], &[], &stages, &entity_ids, 2).unwrap();
@@ -347,7 +329,11 @@ mod tests {
 
     #[test]
     fn build_with_models_populates_mean_std() {
-        let stages = [make_stage(0, 0), make_stage(1, 1), make_stage(2, 2)];
+        let stages = [
+            saa_stage(0, 0, 10),
+            saa_stage(1, 1, 10),
+            saa_stage(2, 2, 10),
+        ];
         let entity_ids = [EntityId(10), EntityId(20)];
 
         let models = vec![
@@ -380,7 +366,7 @@ mod tests {
 
     #[test]
     fn build_with_factors_populates_block_factors() {
-        let stages = [make_stage(0, 0)];
+        let stages = [saa_stage(0, 0, 10)];
         let entity_ids = [EntityId(1), EntityId(2)];
 
         let block_factors_entity2: &[BlockFactorPair] = &[(0, 0.85), (1, 1.15)];
@@ -412,7 +398,7 @@ mod tests {
 
     #[test]
     fn build_with_missing_entity_stage_defaults_to_zero() {
-        let stages = [make_stage(0, 0), make_stage(1, 1)];
+        let stages = [saa_stage(0, 0, 10), saa_stage(1, 1, 10)];
         let entity_ids = [EntityId(1), EntityId(2)];
 
         // Only entity 1 at stage 0 has a model
@@ -455,7 +441,7 @@ mod tests {
 
     #[test]
     fn build_with_missing_factor_defaults_to_one() {
-        let stages = [make_stage(0, 0), make_stage(1, 1)];
+        let stages = [saa_stage(0, 0, 10), saa_stage(1, 1, 10)];
         let entity_ids = [EntityId(1), EntityId(2)];
 
         // Only entity 1 at stage 0, block 0 has a factor
@@ -480,7 +466,11 @@ mod tests {
     #[test]
     fn accessor_consistency_across_stages() {
         // 2 entities, 3 stages, 2 blocks — the acceptance criterion scenario.
-        let stages = [make_stage(0, 0), make_stage(1, 1), make_stage(2, 2)];
+        let stages = [
+            saa_stage(0, 0, 10),
+            saa_stage(1, 1, 10),
+            saa_stage(2, 2, 10),
+        ];
         let entity_ids = [EntityId(5), EntityId(7)];
 
         let models = vec![
@@ -534,7 +524,11 @@ mod tests {
 
     #[test]
     fn acceptance_criterion_mean_stage1_entity0() {
-        let stages = [make_stage(0, 0), make_stage(1, 1), make_stage(2, 2)];
+        let stages = [
+            saa_stage(0, 0, 10),
+            saa_stage(1, 1, 10),
+            saa_stage(2, 2, 10),
+        ];
         let entity_ids = [EntityId(3), EntityId(9)];
 
         let models = vec![
@@ -560,7 +554,7 @@ mod tests {
 
     #[test]
     fn declaration_order_invariance() {
-        let stage = make_stage(0, 0);
+        let stage = saa_stage(0, 0, 10);
         let entity_ids = [EntityId(3), EntityId(7)];
 
         // Models provided in reverse entity order
@@ -588,7 +582,7 @@ mod tests {
     /// populated independent of `std_arr` (see the module docs' noise model).
     #[test]
     fn test_block_factors_applied_at_zero_sigma() {
-        let stage = make_stage(0, 0);
+        let stage = saa_stage(0, 0, 10);
         let entity_ids = [EntityId(1)];
         let mean_mw = 100.0;
         let model = make_model(1, 0, mean_mw, 0.0);
@@ -621,7 +615,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "stage index 1 is out of bounds")]
     fn mean_out_of_bounds_panics() {
-        let stage = make_stage(0, 0);
+        let stage = saa_stage(0, 0, 10);
         let model = make_model(1, 0, 100.0, 20.0);
         let lp = PrecomputedNormal::build(&[model], &[], &[stage], &[EntityId(1)], 1).unwrap();
         let _ = lp.mean(1, 0);
@@ -631,7 +625,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "entity index 1 is out of bounds")]
     fn mean_entity_out_of_bounds_panics() {
-        let stage = make_stage(0, 0);
+        let stage = saa_stage(0, 0, 10);
         let model = make_model(1, 0, 100.0, 20.0);
         let lp = PrecomputedNormal::build(&[model], &[], &[stage], &[EntityId(1)], 1).unwrap();
         let _ = lp.mean(0, 1);
@@ -641,7 +635,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "stage index 1 is out of bounds")]
     fn std_out_of_bounds_panics() {
-        let stage = make_stage(0, 0);
+        let stage = saa_stage(0, 0, 10);
         let model = make_model(1, 0, 100.0, 20.0);
         let lp = PrecomputedNormal::build(&[model], &[], &[stage], &[EntityId(1)], 1).unwrap();
         let _ = lp.std(1, 0);
@@ -651,7 +645,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "block index 1 is out of bounds")]
     fn block_factor_out_of_bounds_panics() {
-        let stage = make_stage(0, 0);
+        let stage = saa_stage(0, 0, 10);
         let lp = PrecomputedNormal::build(&[], &[], &[stage], &[EntityId(1)], 1).unwrap();
         let _ = lp.block_factor(0, 0, 1);
     }

@@ -745,13 +745,13 @@ mod tests {
     use std::collections::BTreeMap;
 
     use novomodelo_core::{
-        Bus, DeficitSegment, EntityId, Hydro, SystemBuilder,
+        EntityId, SystemBuilder,
         scenario::{
             CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile, InflowModel,
             LoadModel, NcsModel, SamplingScheme,
         },
-        temporal::{NoiseMethod, ScenarioSourceConfig, Stage},
-        test_support::{BusSpec, HydroSpec, StageSpec, single_block},
+        temporal::{NoiseMethod, Stage},
+        test_support::{InflowModelSpec, make_inflow_model},
     };
 
     #[cfg(debug_assertions)]
@@ -765,64 +765,13 @@ mod tests {
         NoisePointSpec, StochasticContext, StochasticError,
         context::{ClassSchemes, OpeningTreeInputs, build_stochastic_context},
         sample_forward,
-        test_support::{WarnRecorder, uniform_tree},
+        test_support::{
+            WarnRecorder, deficit_bus, method_stage, saa_stage, sized_hydro, uniform_tree,
+        },
         tree::MomentMatching,
         tree::generate::ClassDimensions,
         tree::lhs::{sample_lhs_point, sample_lhs_point_reference},
     };
-
-    fn make_bus(id: i32) -> Bus {
-        novomodelo_core::test_support::make_bus(BusSpec {
-            id,
-            name: format!("Bus{id}"),
-            deficit_segments: vec![DeficitSegment {
-                depth_mw: None,
-                cost_per_mwh: 1000.0,
-            }],
-            ..Default::default()
-        })
-    }
-
-    fn make_stage(index: usize, id: i32, bf: usize) -> Stage {
-        make_stage_with_method(index, id, bf, NoiseMethod::Saa)
-    }
-
-    fn make_stage_with_method(index: usize, id: i32, bf: usize, method: NoiseMethod) -> Stage {
-        novomodelo_core::test_support::make_stage(StageSpec {
-            id,
-            index: Some(index),
-            season_id: Some(0),
-            blocks: single_block("SINGLE", 744.0),
-            scenario_config: ScenarioSourceConfig {
-                branching_factor: bf,
-                noise_method: method,
-            },
-            ..Default::default()
-        })
-    }
-
-    fn make_hydro(id: i32) -> Hydro {
-        novomodelo_core::test_support::make_hydro(HydroSpec {
-            id,
-            name: format!("H{id}"),
-            max_storage_hm3: 100.0,
-            max_turbined_m3s: 100.0,
-            max_generation_mw: 100.0,
-            ..Default::default()
-        })
-    }
-
-    fn make_inflow_model(hydro_id: i32, stage_id: i32) -> InflowModel {
-        InflowModel {
-            hydro_id: EntityId(hydro_id),
-            stage_id,
-            mean_m3s: 100.0,
-            std_m3s: 30.0,
-            ar_coefficients: vec![],
-            residual_std_ratio: 1.0,
-            annual: None,
-        }
-    }
 
     fn identity_correlation(entity_ids: &[i32]) -> CorrelationModel {
         let n = entity_ids.len();
@@ -854,11 +803,22 @@ mod tests {
     }
 
     fn build_test_ctx(forward_seed: Option<u64>) -> (StochasticContext, Vec<Stage>) {
-        let hydros = vec![make_hydro(1)];
-        let stages = vec![make_stage(0, 0, 5), make_stage(1, 1, 5)];
-        let inflow_models = vec![make_inflow_model(1, 0), make_inflow_model(1, 1)];
+        let hydros = vec![sized_hydro(1)];
+        let stages = vec![saa_stage(0, 0, 5), saa_stage(1, 1, 5)];
+        let inflow_models = vec![
+            make_inflow_model(InflowModelSpec {
+                hydro_id: 1,
+                stage_id: 0,
+                ..Default::default()
+            }),
+            make_inflow_model(InflowModelSpec {
+                hydro_id: 1,
+                stage_id: 1,
+                ..Default::default()
+            }),
+        ];
         let system = SystemBuilder::new()
-            .buses(vec![make_bus(0)])
+            .buses(vec![deficit_bus(0)])
             .hydros(hydros)
             .stages(stages.clone())
             .inflow_models(inflow_models)
@@ -1509,7 +1469,7 @@ mod tests {
     }
 
     fn build_three_class_oos_ctx(forward_seed: Option<u64>) -> (StochasticContext, Vec<Stage>) {
-        let stages = vec![make_stage(0, 0, 5), make_stage(1, 1, 5)];
+        let stages = vec![saa_stage(0, 0, 5), saa_stage(1, 1, 5)];
         let load_model = |stage_id: i32| LoadModel {
             bus_id: EntityId(0),
             stage_id,
@@ -1523,14 +1483,30 @@ mod tests {
             std: 0.1,
         };
         let system = SystemBuilder::new()
-            .buses(vec![make_bus(0)])
-            .hydros(vec![make_hydro(1), make_hydro(2)])
+            .buses(vec![deficit_bus(0)])
+            .hydros(vec![sized_hydro(1), sized_hydro(2)])
             .stages(stages.clone())
             .inflow_models(vec![
-                make_inflow_model(1, 0),
-                make_inflow_model(1, 1),
-                make_inflow_model(2, 0),
-                make_inflow_model(2, 1),
+                make_inflow_model(InflowModelSpec {
+                    hydro_id: 1,
+                    stage_id: 0,
+                    ..Default::default()
+                }),
+                make_inflow_model(InflowModelSpec {
+                    hydro_id: 1,
+                    stage_id: 1,
+                    ..Default::default()
+                }),
+                make_inflow_model(InflowModelSpec {
+                    hydro_id: 2,
+                    stage_id: 0,
+                    ..Default::default()
+                }),
+                make_inflow_model(InflowModelSpec {
+                    hydro_id: 2,
+                    stage_id: 1,
+                    ..Default::default()
+                }),
             ])
             .load_models(vec![load_model(0), load_model(1)])
             .ncs_models(vec![ncs_model(0), ncs_model(1)])
@@ -1677,19 +1653,31 @@ mod tests {
         methods: [NoiseMethod; 3],
         forward_seed: u64,
     ) -> (StochasticContext, Vec<Stage>) {
-        let hydros = vec![make_hydro(1)];
+        let hydros = vec![sized_hydro(1)];
         let stages = vec![
-            make_stage_with_method(0, 0, 5, methods[0]),
-            make_stage_with_method(1, 1, 5, methods[1]),
-            make_stage_with_method(2, 2, 5, methods[2]),
+            method_stage(0, 0, 5, methods[0]),
+            method_stage(1, 1, 5, methods[1]),
+            method_stage(2, 2, 5, methods[2]),
         ];
         let inflow_models = vec![
-            make_inflow_model(1, 0),
-            make_inflow_model(1, 1),
-            make_inflow_model(1, 2),
+            make_inflow_model(InflowModelSpec {
+                hydro_id: 1,
+                stage_id: 0,
+                ..Default::default()
+            }),
+            make_inflow_model(InflowModelSpec {
+                hydro_id: 1,
+                stage_id: 1,
+                ..Default::default()
+            }),
+            make_inflow_model(InflowModelSpec {
+                hydro_id: 1,
+                stage_id: 2,
+                ..Default::default()
+            }),
         ];
         let system = SystemBuilder::new()
-            .buses(vec![make_bus(0)])
+            .buses(vec![deficit_bus(0)])
             .hydros(hydros)
             .stages(stages.clone())
             .inflow_models(inflow_models)
@@ -1967,18 +1955,24 @@ mod tests {
     fn build_inflow_oos_ctx_with_stage_ids(
         stage_specs: &[(i32, NoiseMethod)],
     ) -> (StochasticContext, Vec<Stage>) {
-        let hydros = vec![make_hydro(1)];
+        let hydros = vec![sized_hydro(1)];
         let stages: Vec<Stage> = stage_specs
             .iter()
             .enumerate()
-            .map(|(idx, &(id, method))| make_stage_with_method(idx, id, 5, method))
+            .map(|(idx, &(id, method))| method_stage(idx, id, 5, method))
             .collect();
         let inflow_models: Vec<InflowModel> = stage_specs
             .iter()
-            .map(|&(id, _)| make_inflow_model(1, id))
+            .map(|&(id, _)| {
+                make_inflow_model(InflowModelSpec {
+                    hydro_id: 1,
+                    stage_id: id,
+                    ..Default::default()
+                })
+            })
             .collect();
         let system = SystemBuilder::new()
-            .buses(vec![make_bus(0)])
+            .buses(vec![deficit_bus(0)])
             .hydros(hydros)
             .stages(stages.clone())
             .inflow_models(inflow_models)
@@ -2090,14 +2084,25 @@ mod tests {
 
     #[test]
     fn test_warn_skips_class_not_sampled_out_of_sample() {
-        let hydros = vec![make_hydro(1)];
+        let hydros = vec![sized_hydro(1)];
         let stages = vec![
-            make_stage_with_method(0, 0, 5, NoiseMethod::Selective),
-            make_stage_with_method(1, 1, 5, NoiseMethod::Selective),
+            method_stage(0, 0, 5, NoiseMethod::Selective),
+            method_stage(1, 1, 5, NoiseMethod::Selective),
         ];
-        let inflow_models = vec![make_inflow_model(1, 0), make_inflow_model(1, 1)];
+        let inflow_models = vec![
+            make_inflow_model(InflowModelSpec {
+                hydro_id: 1,
+                stage_id: 0,
+                ..Default::default()
+            }),
+            make_inflow_model(InflowModelSpec {
+                hydro_id: 1,
+                stage_id: 1,
+                ..Default::default()
+            }),
+        ];
         let system = SystemBuilder::new()
-            .buses(vec![make_bus(0)])
+            .buses(vec![deficit_bus(0)])
             .hydros(hydros)
             .stages(stages.clone())
             .inflow_models(inflow_models)
@@ -2141,8 +2146,8 @@ mod tests {
     #[test]
     fn test_warn_once_per_class_for_three_out_of_sample_classes() {
         let stages = vec![
-            make_stage_with_method(0, 0, 5, NoiseMethod::Selective),
-            make_stage_with_method(1, 1, 5, NoiseMethod::Selective),
+            method_stage(0, 0, 5, NoiseMethod::Selective),
+            method_stage(1, 1, 5, NoiseMethod::Selective),
         ];
         let load_model = |stage_id: i32| LoadModel {
             bus_id: EntityId(0),
@@ -2157,10 +2162,21 @@ mod tests {
             std: 0.1,
         };
         let system = SystemBuilder::new()
-            .buses(vec![make_bus(0)])
-            .hydros(vec![make_hydro(1)])
+            .buses(vec![deficit_bus(0)])
+            .hydros(vec![sized_hydro(1)])
             .stages(stages.clone())
-            .inflow_models(vec![make_inflow_model(1, 0), make_inflow_model(1, 1)])
+            .inflow_models(vec![
+                make_inflow_model(InflowModelSpec {
+                    hydro_id: 1,
+                    stage_id: 0,
+                    ..Default::default()
+                }),
+                make_inflow_model(InflowModelSpec {
+                    hydro_id: 1,
+                    stage_id: 1,
+                    ..Default::default()
+                }),
+            ])
             .load_models(vec![load_model(0), load_model(1)])
             .ncs_models(vec![ncs_model(0), ncs_model(1)])
             .correlation(identity_correlation(&[1]))

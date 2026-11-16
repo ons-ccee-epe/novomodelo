@@ -96,27 +96,16 @@ fn first_stage_outside_operating_window(
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic, clippy::doc_markdown)]
 mod tests {
-    use chrono::NaiveDate;
-    use novomodelo_core::{EntityId, FillingConfig, Hydro, entities::PumpingStation};
+    use novomodelo_core::{FillingConfig, Hydro, entities::PumpingStation};
 
     use super::super::validate_semantic_hydro_thermal;
-    use crate::test_support::{make_data, make_hydro, make_stages};
+    use crate::test_support::{make_data, make_hydro, make_pumping_station, make_stages};
     use crate::validation::{ErrorKind, ValidationContext, schema::ParsedData};
 
     fn make_pumping(id: i32, bus_id: i32, src_hydro: i32, dst_hydro: i32) -> PumpingStation {
-        PumpingStation {
-            id: EntityId::from(id),
-            name: format!("Pump_{id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId::from(bus_id),
-            source_hydro_id: EntityId::from(src_hydro),
-            destination_hydro_id: EntityId::from(dst_hydro),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            consumption_mw_per_m3s: 0.5,
-            min_flow_m3s: 0.0,
-            max_flow_m3s: 100.0,
-        }
+        let mut station = make_pumping_station(id, bus_id, src_hydro, dst_hydro);
+        station.name = format!("Pump_{id}");
+        station
     }
 
     /// A station whose source and destination hydros are identical (hydro 10)

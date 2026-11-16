@@ -138,8 +138,8 @@ fn apply_group_bounds_row(row: &HydroUnitGroupBoundsRow, over: &mut HydroUnitGro
 #[allow(clippy::unwrap_used, clippy::float_cmp)]
 mod tests {
     use super::*;
-    use chrono::NaiveDate;
-    use novomodelo_core::entities::{HydroGenerationModel, HydroPenalties, HydroUnitGroup};
+    use crate::test_support::make_unit_group;
+    use novomodelo_core::entities::{HydroPenalties, HydroUnitGroup};
 
     fn make_penalties() -> HydroPenalties {
         HydroPenalties {
@@ -164,46 +164,17 @@ mod tests {
     }
 
     fn make_group(id: i32) -> HydroUnitGroup {
-        HydroUnitGroup {
-            id: EntityId::from(id),
-            name: format!("Group {id}"),
-            bus_id: EntityId::from(1),
-            min_generation_mw: 0.0,
-            max_generation_mw: 100.0,
-            min_turbined_m3s: 0.0,
-            max_turbined_m3s: 50.0,
-        }
+        make_unit_group(id, 1, 0.0, 100.0, 0.0, 50.0)
     }
 
     fn make_hydro(id: i32, group_ids: &[i32]) -> Hydro {
-        Hydro {
-            id: EntityId::from(id),
-            name: format!("Hydro {id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            downstream_id: None,
-            travel_time_hours: None,
-            entry_stage_id: None,
-            exit_stage_id: None,
-            min_storage_hm3: 0.0,
-            max_storage_hm3: 100.0,
-            min_outflow_m3s: 0.0,
-            max_outflow_m3s: None,
-            generation_model: HydroGenerationModel::ConstantProductivity,
-            specific_productivity_mw_per_m3s_per_m: None,
-            min_turbined_m3s: 0.0,
-            max_turbined_m3s: 50.0,
-            min_generation_mw: 0.0,
-            max_generation_mw: 100.0,
-            unit_groups: group_ids.iter().copied().map(make_group).collect(),
-            tailrace: None,
-            hydraulic_losses: None,
-            efficiency: None,
-            evaporation_coefficients_mm: None,
-            evaporation_reference_volumes_hm3: None,
-            diversion: None,
-            filling: None,
-            penalties: make_penalties(),
-        }
+        let mut hydro = crate::test_support::make_hydro(id, None);
+        hydro.max_storage_hm3 = 100.0;
+        hydro.max_turbined_m3s = 50.0;
+        hydro.max_generation_mw = 100.0;
+        hydro.unit_groups = group_ids.iter().copied().map(make_group).collect();
+        hydro.penalties = make_penalties();
+        hydro
     }
 
     fn all_none_row(hydro_id: i32, group_id: i32, stage_id: i32) -> HydroUnitGroupBoundsRow {

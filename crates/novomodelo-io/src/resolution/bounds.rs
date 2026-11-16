@@ -829,14 +829,13 @@ fn zero_hydro_block_bounds() -> HydroBlockBounds {
     clippy::doc_markdown
 )]
 mod tests {
-    use chrono::NaiveDate;
     use std::collections::HashMap;
 
     use novomodelo_core::{
         EntityId,
         entities::{
-            ContractType, DiversionChannel, EnergyContract, FillingConfig, Hydro,
-            HydroGenerationModel, HydroPenalties, Line, PumpingStation, Thermal,
+            DiversionChannel, EnergyContract, FillingConfig, Hydro, HydroPenalties, Line,
+            PumpingStation, Thermal,
         },
         resolved::ResolvedBounds,
     };
@@ -844,6 +843,7 @@ mod tests {
     use crate::constraints::{
         ContractBoundsRow, HydroBoundsRow, LineBoundsRow, PumpingBoundsRow, ThermalBoundsRow,
     };
+    use crate::test_support::make_pumping_station;
 
     /// Build a 0-based consecutive stage_index map: {0→0, 1→1, …, (n-1)→(n-1)}.
     fn si(n: usize) -> HashMap<i32, usize> {
@@ -922,96 +922,45 @@ mod tests {
         diversion: Option<DiversionChannel>,
         filling: Option<FillingConfig>,
     ) -> Hydro {
-        Hydro {
-            unit_groups: Vec::new(),
-            id: EntityId::from(id),
-            name: format!("Hydro {id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            downstream_id: None,
-            travel_time_hours: None,
-            entry_stage_id: None,
-            exit_stage_id: None,
-            min_storage_hm3,
-            max_storage_hm3,
-            min_outflow_m3s: 0.0,
-            max_outflow_m3s,
-            generation_model: HydroGenerationModel::ConstantProductivity,
-            min_turbined_m3s: 0.0,
-            max_turbined_m3s: 50.0,
-            specific_productivity_mw_per_m3s_per_m: None,
-            min_generation_mw: 0.0,
-            max_generation_mw: 100.0,
-            tailrace: None,
-            hydraulic_losses: None,
-            efficiency: None,
-            evaporation_coefficients_mm: None,
-            evaporation_reference_volumes_hm3: None,
-            diversion,
-            filling,
-            penalties: make_penalties(),
-        }
+        let mut hydro = crate::test_support::make_hydro(id, None);
+        hydro.min_storage_hm3 = min_storage_hm3;
+        hydro.max_storage_hm3 = max_storage_hm3;
+        hydro.max_outflow_m3s = max_outflow_m3s;
+        hydro.max_turbined_m3s = 50.0;
+        hydro.max_generation_mw = 100.0;
+        hydro.diversion = diversion;
+        hydro.filling = filling;
+        hydro.penalties = make_penalties();
+        hydro
     }
 
     fn make_thermal(id: i32, min_generation_mw: f64, max_generation_mw: f64) -> Thermal {
-        Thermal {
-            id: EntityId::from(id),
-            name: format!("Thermal {id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId::from(1),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            cost_per_mwh: 50.0,
-            min_generation_mw,
-            max_generation_mw,
-            anticipated_config: None,
-        }
+        let mut thermal =
+            crate::test_support::make_thermal(id, min_generation_mw, max_generation_mw);
+        thermal.cost_per_mwh = 50.0;
+        thermal
     }
 
     fn make_line(id: i32, direct_mw: f64, reverse_mw: f64) -> Line {
-        Line {
-            id: EntityId::from(id),
-            name: format!("Line {id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            source_bus_id: EntityId::from(1),
-            target_bus_id: EntityId::from(2),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            direct_capacity_mw: direct_mw,
-            reverse_capacity_mw: reverse_mw,
-            losses_percent: 0.0,
-            exchange_cost: 0.0,
-        }
+        let mut line = crate::test_support::make_line(id, 1, 2);
+        line.direct_capacity_mw = direct_mw;
+        line.reverse_capacity_mw = reverse_mw;
+        line
     }
 
     fn make_pumping(id: i32, min_flow_m3s: f64, max_flow_m3s: f64) -> PumpingStation {
-        PumpingStation {
-            id: EntityId::from(id),
-            name: format!("Pumping {id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId::from(1),
-            source_hydro_id: EntityId::from(1),
-            destination_hydro_id: EntityId::from(2),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            consumption_mw_per_m3s: 0.5,
-            min_flow_m3s,
-            max_flow_m3s,
-        }
+        let mut pumping = make_pumping_station(id, 1, 1, 2);
+        pumping.min_flow_m3s = min_flow_m3s;
+        pumping.max_flow_m3s = max_flow_m3s;
+        pumping
     }
 
     fn make_contract(id: i32, min_mw: f64, max_mw: f64, price_per_mwh: f64) -> EnergyContract {
-        EnergyContract {
-            id: EntityId::from(id),
-            name: format!("Contract {id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId::from(1),
-            contract_type: ContractType::Import,
-            entry_stage_id: None,
-            exit_stage_id: None,
-            price_per_mwh,
-            min_mw,
-            max_mw,
-        }
+        let mut contract = crate::test_support::make_contract(id, 1);
+        contract.price_per_mwh = price_per_mwh;
+        contract.min_mw = min_mw;
+        contract.max_mw = max_mw;
+        contract
     }
 
     fn all_none_hydro_row(hydro_id: i32, stage_id: i32) -> HydroBoundsRow {
@@ -1823,18 +1772,10 @@ mod tests {
     /// Thermal with cost_per_mwh == 0.0, no override — resolves to 0.0.
     #[test]
     fn test_thermal_zero_base_cost_no_override() {
-        let thermals = vec![Thermal {
-            id: EntityId::from(0),
-            name: "ZeroCost".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId::from(1),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            cost_per_mwh: 0.0,
-            min_generation_mw: 0.0,
-            max_generation_mw: 100.0,
-            anticipated_config: None,
-        }];
+        let mut thermal = crate::test_support::make_thermal(0, 0.0, 100.0);
+        thermal.name = "ZeroCost".to_string();
+        thermal.cost_per_mwh = 0.0;
+        let thermals = vec![thermal];
 
         let result = resolve_bounds(
             &[],
