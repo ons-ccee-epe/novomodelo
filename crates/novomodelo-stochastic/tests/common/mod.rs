@@ -14,7 +14,7 @@ pub use novomodelo_core::test_support::{
     InflowModelSpec, StageSpec, make_inflow_model, make_stage, norm_cdf, single_block,
 };
 use novomodelo_core::{
-    EntityId, SamplingScheme, Stage,
+    EntityId, SamplingScheme, Stage, System,
     scenario::{CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile},
 };
 pub use novomodelo_stochastic::test_support::{
@@ -74,9 +74,7 @@ pub fn identity_correlation_model(entity_ids: &[i32]) -> CorrelationModel {
 }
 
 pub fn identity_correlation(entity_ids: &[i32]) -> DecomposedCorrelation {
-    let (entity_order, dims) = inflow_entity_order_and_dims(entity_ids);
-    DecomposedCorrelation::build(&identity_correlation_model(entity_ids), &entity_order, dims)
-        .unwrap()
+    correlated_correlation(entity_ids, 0.0)
 }
 
 pub fn correlated_correlation(entity_ids: &[i32], rho: f64) -> DecomposedCorrelation {
@@ -115,10 +113,7 @@ pub fn make_sampler_config<'a>(
 
 /// The in-sample [`StochasticContext`] for `system`, base seed `42`.
 #[must_use]
-pub fn build_test_ctx(
-    system: &novomodelo_core::System,
-    forward_seed: Option<u64>,
-) -> StochasticContext {
+pub fn build_test_ctx(system: &System, forward_seed: Option<u64>) -> StochasticContext {
     build_stochastic_context(
         system,
         42,
@@ -137,7 +132,7 @@ pub fn build_test_ctx(
 
 /// The study stages of `system` (excludes the pre-study `id < 0` stage).
 #[must_use]
-pub fn stages_from_system(system: &novomodelo_core::System) -> Vec<Stage> {
+pub fn stages_from_system(system: &System) -> Vec<Stage> {
     system
         .stages()
         .iter()

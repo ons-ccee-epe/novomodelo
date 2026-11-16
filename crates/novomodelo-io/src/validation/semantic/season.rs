@@ -1043,31 +1043,8 @@ mod tests {
                 12,
             ), // 30d, mistakenly labeled season_id 12
         ];
-        let stages: Vec<Stage> = specs
-            .into_iter()
-            .enumerate()
-            .map(|(index, (id, start_date, end_date, season_id))| {
-                let mut stage = make_stage(id);
-                stage.index = index;
-                stage.start_date = start_date;
-                stage.end_date = end_date;
-                stage.season_id = Some(season_id);
-                stage.blocks = vec![];
-                stage
-            })
-            .collect();
-        let stages_data = StagesData {
-            openings_declared: std::collections::HashSet::new(),
-            stages,
-            policy_graph: HorizonGraph {
-                stage_discount_rate_overrides: std::collections::BTreeMap::new(),
-                graph_type: PolicyGraphType::FiniteHorizon,
-                annual_discount_rate: 0.06,
-                transitions: vec![],
-                nodes: Vec::new(),
-                season_map: Some(season_map),
-            },
-        };
+        let mut stages_data = make_stages_for_resolution_check(specs);
+        stages_data.policy_graph.season_map = Some(season_map);
         let data = make_data_5b(
             vec![make_hydro_ordered_penalties(1)],
             stages_data,

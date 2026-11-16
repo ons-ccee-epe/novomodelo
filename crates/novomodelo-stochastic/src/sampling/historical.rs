@@ -1681,7 +1681,7 @@ mod tests {
         );
 
         let eta = lib.eta_slice(0, 0)[0];
-        let expected = (110.0 - 90.0) / 10.0; // = 2.0
+        let expected = (110.0 - 90.0) / 10.0;
         assert!(
             (eta - expected).abs() < 1e-10,
             "None season_map backward compat: expected eta={expected}, got {eta}"

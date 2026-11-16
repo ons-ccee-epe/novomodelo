@@ -204,15 +204,9 @@ fn make_two_season_stage(
     first_half: bool,
 ) -> Stage {
     let (start_date, end_date) = if first_half {
-        (
-            NaiveDate::from_ymd_opt(year, 1, 1).unwrap(),
-            NaiveDate::from_ymd_opt(year, 7, 1).unwrap(),
-        )
+        (date(year, 1, 1), date(year, 7, 1))
     } else {
-        (
-            NaiveDate::from_ymd_opt(year, 7, 1).unwrap(),
-            NaiveDate::from_ymd_opt(year + 1, 1, 1).unwrap(),
-        )
+        (date(year, 7, 1), date(year + 1, 1, 1))
     };
 
     let mut stage = make_stage(StageSpec {
@@ -277,8 +271,8 @@ fn make_monthly_stages_for_annual(n_years: usize) -> Vec<Stage> {
             stages.push(make_stage(StageSpec {
                 id: idx as i32,
                 index: Some(idx),
-                start_date: NaiveDate::from_ymd_opt(y, m, 1).unwrap(),
-                end_date: NaiveDate::from_ymd_opt(ey, em, 1).unwrap(),
+                start_date: date(y, m, 1),
+                end_date: date(ey, em, 1),
                 season_id: Some(month),
                 blocks: single_block("SINGLE", 744.0),
                 ..Default::default()

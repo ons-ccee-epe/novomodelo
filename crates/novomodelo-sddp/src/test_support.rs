@@ -1550,17 +1550,18 @@ pub fn producer_block() -> ProducerBlock {
 )]
 #[must_use]
 pub fn chain_graph_manifest(n_stages: u32) -> GraphManifest {
+    let node_id = |t: u32| i32::try_from(t).expect("small stage count");
     let nodes = (0..n_stages)
         .map(|t| ManifestNode {
-            id: i32::try_from(t).expect("small stage count"),
-            stage_id: i32::try_from(t).expect("small stage count"),
+            id: node_id(t),
+            stage_id: node_id(t),
             pool_id: t,
         })
         .collect();
     let edges = (0..n_stages.saturating_sub(1))
         .map(|t| ManifestEdge {
-            source_id: i32::try_from(t).expect("small stage count"),
-            target_id: i32::try_from(t + 1).expect("small stage count"),
+            source_id: node_id(t),
+            target_id: node_id(t + 1),
             probability: 1.0,
         })
         .collect();
@@ -2458,29 +2459,32 @@ fn reverse_declaration_order_if(
 fn external_fan_policy_graph(k: usize, root_scenario_id: i32, reversed: bool) -> HorizonGraph {
     let mut nodes = Vec::with_capacity(1 + k);
     let mut transitions = Vec::with_capacity(k);
-    nodes.push(PolicyNode {
-        id: 0,
-        stage_id: 0,
-        scenario_id: Some(root_scenario_id),
-        label: None,
-    });
+    nodes.push(policy_node(0, 0, Some(root_scenario_id)));
     let total: f64 = (1..=k).map(|i| i as f64).sum();
     for i in 1..=k {
-        nodes.push(PolicyNode {
-            id: i as i32,
-            stage_id: 1,
-            scenario_id: Some((i - 1) as i32),
-            label: None,
-        });
-        transitions.push(Transition {
-            source_id: 0,
-            target_id: i as i32,
-            probability: (i as f64) / total,
-            annual_discount_rate_override: None,
-        });
+        nodes.push(policy_node(i as i32, 1, Some((i - 1) as i32)));
+        transitions.push(policy_transition(0, i as i32, (i as f64) / total));
     }
     reverse_declaration_order_if(reversed, &mut nodes, &mut transitions);
     finite_horizon_graph(nodes, transitions)
+}
+
+fn policy_node(id: i32, stage_id: i32, scenario_id: Option<i32>) -> PolicyNode {
+    PolicyNode {
+        id,
+        stage_id,
+        scenario_id,
+        label: None,
+    }
+}
+
+fn policy_transition(source_id: i32, target_id: i32, probability: f64) -> Transition {
+    Transition {
+        source_id,
+        target_id,
+        probability,
+        annual_discount_rate_override: None,
+    }
 }
 
 fn finite_horizon_graph(nodes: Vec<PolicyNode>, transitions: Vec<Transition>) -> HorizonGraph {
@@ -2513,40 +2517,15 @@ fn k_fan_policy_graph(k: usize, reversed: bool) -> HorizonGraph {
     debug_assert!(k >= 2, "k_fan_policy_graph: k must be >= 2 (DECOMP shape)");
     let mut nodes = Vec::with_capacity(1 + 2 * k);
     let mut transitions = Vec::with_capacity(2 * k);
-    nodes.push(PolicyNode {
-        id: 0,
-        stage_id: K_FAN_ROOT_STAGE_ID,
-        scenario_id: None,
-        label: None,
-    });
+    nodes.push(policy_node(0, K_FAN_ROOT_STAGE_ID, None));
     let total_weight: f64 = (1..=k).map(|i| i as f64).sum();
     for i in 1..=k {
         let fan_id = i as i32;
         let leaf_id = fan_id + k as i32;
-        nodes.push(PolicyNode {
-            id: fan_id,
-            stage_id: K_FAN_BRANCH_STAGE_ID,
-            scenario_id: None,
-            label: None,
-        });
-        nodes.push(PolicyNode {
-            id: leaf_id,
-            stage_id: K_FAN_LEAF_STAGE_ID,
-            scenario_id: None,
-            label: None,
-        });
-        transitions.push(Transition {
-            source_id: 0,
-            target_id: fan_id,
-            probability: (i as f64) / total_weight,
-            annual_discount_rate_override: None,
-        });
-        transitions.push(Transition {
-            source_id: fan_id,
-            target_id: leaf_id,
-            probability: 1.0,
-            annual_discount_rate_override: None,
-        });
+        nodes.push(policy_node(fan_id, K_FAN_BRANCH_STAGE_ID, None));
+        nodes.push(policy_node(leaf_id, K_FAN_LEAF_STAGE_ID, None));
+        transitions.push(policy_transition(0, fan_id, (i as f64) / total_weight));
+        transitions.push(policy_transition(fan_id, leaf_id, 1.0));
     }
     reverse_declaration_order_if(reversed, &mut nodes, &mut transitions);
     finite_horizon_graph(nodes, transitions)
@@ -3813,26 +3792,11 @@ fn terminal_generated_fan_policy_graph(k: usize) -> HorizonGraph {
     );
     let mut nodes = Vec::with_capacity(1 + k);
     let mut transitions = Vec::with_capacity(k);
-    nodes.push(PolicyNode {
-        id: 0,
-        stage_id: 0,
-        scenario_id: None,
-        label: None,
-    });
+    nodes.push(policy_node(0, 0, None));
     let total_weight: f64 = (1..=k).map(|i| i as f64).sum();
     for i in 1..=k {
-        nodes.push(PolicyNode {
-            id: i as i32,
-            stage_id: 1,
-            scenario_id: None,
-            label: None,
-        });
-        transitions.push(Transition {
-            source_id: 0,
-            target_id: i as i32,
-            probability: (i as f64) / total_weight,
-            annual_discount_rate_override: None,
-        });
+        nodes.push(policy_node(i as i32, 1, None));
+        transitions.push(policy_transition(0, i as i32, (i as f64) / total_weight));
     }
     finite_horizon_graph(nodes, transitions)
 }
@@ -4416,44 +4380,19 @@ const BRANCHING_TREE_RIGHT_WEIGHT: f64 = 0.65;
 fn branching_tree_policy_graph(reversed: bool) -> HorizonGraph {
     let mut nodes = Vec::with_capacity(7);
     let mut transitions = Vec::with_capacity(6);
-    nodes.push(PolicyNode {
-        id: 0,
-        stage_id: K_FAN_ROOT_STAGE_ID,
-        scenario_id: None,
-        label: None,
-    });
+    nodes.push(policy_node(0, K_FAN_ROOT_STAGE_ID, None));
     let mut next_leaf_id: i32 = 3;
     for (fan_id, fan_weight) in [
         (1_i32, BRANCHING_TREE_LEFT_WEIGHT),
         (2, BRANCHING_TREE_RIGHT_WEIGHT),
     ] {
-        nodes.push(PolicyNode {
-            id: fan_id,
-            stage_id: K_FAN_BRANCH_STAGE_ID,
-            scenario_id: None,
-            label: None,
-        });
-        transitions.push(Transition {
-            source_id: 0,
-            target_id: fan_id,
-            probability: fan_weight,
-            annual_discount_rate_override: None,
-        });
+        nodes.push(policy_node(fan_id, K_FAN_BRANCH_STAGE_ID, None));
+        transitions.push(policy_transition(0, fan_id, fan_weight));
         for leaf_weight in [BRANCHING_TREE_LEFT_WEIGHT, BRANCHING_TREE_RIGHT_WEIGHT] {
             let leaf_id = next_leaf_id;
             next_leaf_id += 1;
-            nodes.push(PolicyNode {
-                id: leaf_id,
-                stage_id: K_FAN_LEAF_STAGE_ID,
-                scenario_id: None,
-                label: None,
-            });
-            transitions.push(Transition {
-                source_id: fan_id,
-                target_id: leaf_id,
-                probability: leaf_weight,
-                annual_discount_rate_override: None,
-            });
+            nodes.push(policy_node(leaf_id, K_FAN_LEAF_STAGE_ID, None));
+            transitions.push(policy_transition(fan_id, leaf_id, leaf_weight));
         }
     }
     reverse_declaration_order_if(reversed, &mut nodes, &mut transitions);
@@ -5006,39 +4945,14 @@ fn dual_folding_policy_graph(k: usize) -> HorizonGraph {
     debug_assert!(k >= 2, "dual_folding_policy_graph: k must be >= 2");
     let mut nodes = Vec::with_capacity(2 + k);
     let mut transitions = Vec::with_capacity(1 + k);
-    nodes.push(PolicyNode {
-        id: 0,
-        stage_id: K_FAN_ROOT_STAGE_ID,
-        scenario_id: None,
-        label: None,
-    });
-    nodes.push(PolicyNode {
-        id: 1,
-        stage_id: K_FAN_BRANCH_STAGE_ID,
-        scenario_id: None,
-        label: None,
-    });
-    transitions.push(Transition {
-        source_id: 0,
-        target_id: 1,
-        probability: 1.0,
-        annual_discount_rate_override: None,
-    });
+    nodes.push(policy_node(0, K_FAN_ROOT_STAGE_ID, None));
+    nodes.push(policy_node(1, K_FAN_BRANCH_STAGE_ID, None));
+    transitions.push(policy_transition(0, 1, 1.0));
     let total_weight: f64 = (1..=k).map(|i| i as f64).sum();
     for i in 1..=k {
         let leaf_id = 1 + i as i32;
-        nodes.push(PolicyNode {
-            id: leaf_id,
-            stage_id: K_FAN_LEAF_STAGE_ID,
-            scenario_id: None,
-            label: None,
-        });
-        transitions.push(Transition {
-            source_id: 1,
-            target_id: leaf_id,
-            probability: (i as f64) / total_weight,
-            annual_discount_rate_override: None,
-        });
+        nodes.push(policy_node(leaf_id, K_FAN_LEAF_STAGE_ID, None));
+        transitions.push(policy_transition(1, leaf_id, (i as f64) / total_weight));
     }
     finite_horizon_graph(nodes, transitions)
 }
@@ -5163,37 +5077,21 @@ fn trunk_fan_policy_graph(t_trunk: usize, k: usize) -> HorizonGraph {
     let mut nodes = Vec::with_capacity(t_trunk + k);
     let mut transitions = Vec::with_capacity(t_trunk - 1 + k);
     for i in 0..t_trunk {
-        nodes.push(PolicyNode {
-            id: i as i32,
-            stage_id: i as i32,
-            scenario_id: None,
-            label: None,
-        });
+        nodes.push(policy_node(i as i32, i as i32, None));
         if i > 0 {
-            transitions.push(Transition {
-                source_id: (i - 1) as i32,
-                target_id: i as i32,
-                probability: 1.0,
-                annual_discount_rate_override: None,
-            });
+            transitions.push(policy_transition((i - 1) as i32, i as i32, 1.0));
         }
     }
     let last_trunk_id = (t_trunk - 1) as i32;
     let total_weight: f64 = (1..=k).map(|i| i as f64).sum();
     for i in 1..=k {
         let leaf_id = last_trunk_id + i as i32;
-        nodes.push(PolicyNode {
-            id: leaf_id,
-            stage_id: t_trunk as i32,
-            scenario_id: None,
-            label: None,
-        });
-        transitions.push(Transition {
-            source_id: last_trunk_id,
-            target_id: leaf_id,
-            probability: (i as f64) / total_weight,
-            annual_discount_rate_override: None,
-        });
+        nodes.push(policy_node(leaf_id, t_trunk as i32, None));
+        transitions.push(policy_transition(
+            last_trunk_id,
+            leaf_id,
+            (i as f64) / total_weight,
+        ));
     }
     finite_horizon_graph(nodes, transitions)
 }

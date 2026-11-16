@@ -97,7 +97,7 @@ mod tests {
     use novomodelo_core::temporal::{SeasonMap, Stage};
 
     use super::StitchedSeasonMap;
-    use crate::season_cast::{nth_previous_occurrence, season_period_window};
+    use crate::season_cast::{month_exclusive_end, nth_previous_occurrence, season_period_window};
     use novomodelo_core::test_support::{
         MonthlyLabels, StageSpec, date, make_stage, monthly_quarterly_season_map,
         monthly_season_map, single_block, sparse_ring_season_map, weekly_season_map,
@@ -119,12 +119,12 @@ mod tests {
     }
 
     fn month_stage(id: i32, year: i32, month: u32, season: Option<usize>) -> Stage {
-        let end = if month == 12 {
-            date(year + 1, 1, 1)
-        } else {
-            date(year, month + 1, 1)
-        };
-        study_stage(id, date(year, month, 1), end, season)
+        study_stage(
+            id,
+            date(year, month, 1),
+            month_exclusive_end(year, month),
+            season,
+        )
     }
 
     fn walk_oracle(season_map: &SeasonMap, anchor: &Stage, k: usize) -> Option<usize> {

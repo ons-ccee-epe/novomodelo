@@ -109,38 +109,17 @@ pub fn build_test_system(methods: &[NoiseMethod], correlation: CorrelationModel)
         method_stage(1, 1, 5, methods[1]),
         method_stage(2, 2, 5, methods[2]),
     ];
-    let inflow_models = vec![
-        make_inflow_model(InflowModelSpec {
-            hydro_id: 1,
-            stage_id: 0,
-            ..Default::default()
-        }),
-        make_inflow_model(InflowModelSpec {
-            hydro_id: 1,
-            stage_id: 1,
-            ..Default::default()
-        }),
-        make_inflow_model(InflowModelSpec {
-            hydro_id: 1,
-            stage_id: 2,
-            ..Default::default()
-        }),
-        make_inflow_model(InflowModelSpec {
-            hydro_id: 2,
-            stage_id: 0,
-            ..Default::default()
-        }),
-        make_inflow_model(InflowModelSpec {
-            hydro_id: 2,
-            stage_id: 1,
-            ..Default::default()
-        }),
-        make_inflow_model(InflowModelSpec {
-            hydro_id: 2,
-            stage_id: 2,
-            ..Default::default()
-        }),
-    ];
+    let inflow_models: Vec<_> = (1..=2)
+        .flat_map(|hydro_id| {
+            (0..3).map(move |stage_id| {
+                make_inflow_model(InflowModelSpec {
+                    hydro_id,
+                    stage_id,
+                    ..Default::default()
+                })
+            })
+        })
+        .collect();
     SystemBuilder::new()
         .buses(vec![deficit_bus(0)])
         .hydros(hydros)
