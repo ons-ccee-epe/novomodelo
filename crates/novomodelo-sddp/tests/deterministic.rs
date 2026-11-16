@@ -12618,7 +12618,8 @@ mod d58_stored_energy_bound_composition {
             *entry_bound = lower;
 
             let template = &stage_templates.templates[stage_idx];
-            let row = template.num_rows - entries.len();
+            let geometry = &stage_templates.geometry_per_stage[stage_idx];
+            let row = geometry.outflow_volume.start - entries.len();
             let row_scale = template.row_scale.get(row).copied().unwrap_or(1.0);
             let row_lower = template.row_lower[row] / row_scale;
             assert!(
@@ -12752,6 +12753,7 @@ mod d58_stored_energy_bound_composition {
 mod stage_outflow_volume_cap {
     use std::path::Path;
 
+    use novomodelo_core::volume_cost_from_flow_cost;
     use novomodelo_io::GenericConstraintEchoRow;
     use novomodelo_sddp::build_generic_constraint_echo_rows;
     use novomodelo_sddp::test_support::assert_all_templates_byte_identical;
@@ -12762,6 +12764,7 @@ mod stage_outflow_volume_cap {
     use super::{assert_cost, copy_case_dir, edit_json, run_with_simulation};
 
     const CASE_DIR: &str = "../../examples/deterministic/d60-stage-outflow-volume-cap";
+    const D62_CASE_DIR: &str = "../../examples/deterministic/d62-stage-outflow-volume-bounds";
 
     const HOURS: [f64; 2] = [100.0, 300.0];
     const TAU: [f64; 2] = [
@@ -12884,8 +12887,28 @@ mod stage_outflow_volume_cap {
     const D60_PER_BLOCK_TOTAL_COST: f64 =
         D60_PER_BLOCK_STAGE0_COST + 3.0 * thermal_cost(HOURS, [Q_MAX, Q_MAX]);
 
+    /// derived: without any volume bound every stage turbines `Q_MAX` in both blocks, and the water used, `4 · (TAU[0] + TAU[1]) · Q_MAX`, stays below `V_INIT`.
+    const D62_UNBOUNDED_TOTAL_COST: f64 = 4.0 * thermal_cost(HOURS, [Q_MAX, Q_MAX]);
+
+    /// derived: a PEAK hm³ is still worth more than twice `PENALTY`, so the stage-1 slack stays at its d60 value and each hm³ of it costs double.
+    const D62_DOUBLED_ABOVE_PRICE: f64 = 2.0 * PENALTY;
+    /// derived: the d60 total plus the extra `PENALTY` per hm³ the doubled price charges on the unchanged stage-1 slack.
+    const D62_DOUBLED_ABOVE_TOTAL_COST: f64 = D60_TOTAL_COST + PENALTY * D60_SLACK_HM3[1];
+    /// derived: half the volume price equivalent to `SPILL_COST`, so a below slack is cheaper than spilling the same hm³.
+    const D62_CHEAP_BELOW_PRICE: f64 = volume_cost_from_flow_cost(SPILL_COST) / 2.0;
+    /// derived: the d60 total with the stage-2 spill replaced by a below slack of the same volume at `D62_CHEAP_BELOW_PRICE`.
+    const D62_CHEAP_BELOW_TOTAL_COST: f64 =
+        D60_TOTAL_COST - D60_SPILLAGE_COST[2] + D62_CHEAP_BELOW_PRICE * D60_SPILL_HM3;
+    /// derived: the price derived from the flow price exceeds a PEAK hm³'s value, so stage 1 honours `CEILING_HM3` with no slack and turbines only its PEAK block at the ceiling.
+    const D62_DEFAULT_PRICE_TOTAL_COST: f64 =
+        D60_TOTAL_COST - D60_IMMEDIATE_COST[1] + thermal_cost(HOURS, [CEILING_HM3 / TAU[0], 0.0]);
+
     fn case_dir() -> &'static Path {
         Path::new(CASE_DIR)
+    }
+
+    fn d62_case_dir() -> &'static Path {
+        Path::new(D62_CASE_DIR)
     }
 
     fn echo_rows(case_dir: &Path) -> Vec<GenericConstraintEchoRow> {
@@ -12975,6 +12998,20 @@ mod stage_outflow_volume_cap {
             std::fs::remove_file(twin.path().join(file))
                 .expect("the d60 deck carries both constraint files");
         }
+        twin
+    }
+
+    fn d62_penalty_twin(
+        edit: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>),
+    ) -> tempfile::TempDir {
+        let twin = copy_case_dir(d62_case_dir());
+        edit_json(&twin.path().join("penalties.json"), |penalties| {
+            edit(
+                penalties["hydro"]
+                    .as_object_mut()
+                    .expect("penalties.json has a hydro object"),
+            );
+        });
         twin
     }
 
@@ -13392,5 +13429,411 @@ mod stage_outflow_volume_cap {
                 );
             }
         }
+    }
+
+    #[cfg_attr(
+        not(feature = "slow-tests"),
+        ignore = "slow: run with --features slow-tests"
+    )]
+    #[test]
+    fn d62_native_outflow_volume_bounds_match_the_d60_closed_form() {
+        let (result, scenario_results, summary) = run_with_simulation(d62_case_dir());
+
+        assert_cost(
+            result.final_lb,
+            D60_TOTAL_COST,
+            1e-6 * D60_TOTAL_COST,
+            "D62",
+        );
+        assert_cost(
+            summary.mean_cost,
+            D60_TOTAL_COST,
+            1e-6 * D60_TOTAL_COST,
+            "D62-sim",
+        );
+
+        assert_eq!(
+            scenario_results.len(),
+            1,
+            "D62: simulation must produce exactly 1 scenario"
+        );
+        let stages = &scenario_results[0].stages;
+        assert_eq!(stages.len(), 4, "D62: expected 4 stages");
+        for (stage, stage_result) in stages.iter().enumerate() {
+            assert_eq!(
+                stage_result.costs.len(),
+                1,
+                "D62 stage {stage}: one stage-level cost row"
+            );
+            let costs = &stage_result.costs[0];
+            for (name, actual, expected) in [
+                (
+                    "immediate_cost",
+                    costs.immediate_cost,
+                    D60_IMMEDIATE_COST[stage],
+                ),
+                ("thermal_cost", costs.thermal_cost, D60_THERMAL_COST[stage]),
+                (
+                    "spillage_cost",
+                    costs.spillage_cost,
+                    D60_SPILLAGE_COST[stage],
+                ),
+                (
+                    "hydro_violation_cost",
+                    costs.hydro_violation_cost,
+                    D60_VIOLATION_COST[stage],
+                ),
+                (
+                    "outflow_volume_violation_above_cost",
+                    costs.outflow_volume_violation_above_cost,
+                    D60_VIOLATION_COST[stage],
+                ),
+                (
+                    "outflow_volume_violation_below_cost",
+                    costs.outflow_volume_violation_below_cost,
+                    0.0,
+                ),
+            ] {
+                assert_cost(
+                    actual,
+                    expected,
+                    cost_tolerance(expected),
+                    &format!("D62 stage {stage} {name}"),
+                );
+            }
+            assert_eq!(
+                costs.generic_violation_cost, 0.0,
+                "D62 stage {stage}: no generic constraint is declared"
+            );
+            assert!(
+                stage_result.generic_violations.is_empty(),
+                "D62 stage {stage}: no generic violation record"
+            );
+
+            let hydros: Vec<_> = stage_result
+                .hydros
+                .iter()
+                .filter(|h| h.hydro_id == 0)
+                .collect();
+            assert_eq!(
+                hydros.iter().map(|h| h.block_id).collect::<Vec<_>>(),
+                [Some(0), Some(1)],
+                "D62 stage {stage}: H0 block ids"
+            );
+            let mut outflow_volume = 0.0;
+            for (block, hydro) in hydros.iter().enumerate() {
+                assert_close(
+                    hydro.turbined_m3s,
+                    D60_TURBINED_M3S[stage][block],
+                    &format!("D62 stage {stage} block {block}: turbined_m3s"),
+                );
+                if stage != 2 {
+                    assert_close(
+                        hydro.spillage_m3s,
+                        0.0,
+                        &format!("D62 stage {stage} block {block}: spillage_m3s"),
+                    );
+                }
+                outflow_volume += TAU[block] * (hydro.turbined_m3s + hydro.spillage_m3s);
+            }
+            assert_close(
+                outflow_volume,
+                D60_OUTFLOW_VOLUME_HM3[stage],
+                &format!("D62 stage {stage}: outflow volume"),
+            );
+            assert_close(
+                hydros[0].storage_final_hm3,
+                D60_STORAGE_FINAL_HM3[stage],
+                &format!("D62 stage {stage}: storage_final_hm3"),
+            );
+
+            assert_eq!(
+                hydros[0].outflow_volume_slack_above_hm3.to_bits(),
+                hydros[1].outflow_volume_slack_above_hm3.to_bits(),
+                "D62 stage {stage}: the stage slack above repeats on both block rows"
+            );
+            assert_eq!(
+                hydros[0].outflow_volume_slack_below_hm3.to_bits(),
+                hydros[1].outflow_volume_slack_below_hm3.to_bits(),
+                "D62 stage {stage}: the stage slack below repeats on both block rows"
+            );
+            let slack_above = hydros[0].outflow_volume_slack_above_hm3;
+            let slack_below = hydros[0].outflow_volume_slack_below_hm3;
+            if let Some(&expected) = D60_SLACK_HM3.get(stage) {
+                assert_close(
+                    slack_above,
+                    expected,
+                    &format!("D62 stage {stage}: outflow_volume_slack_above_hm3"),
+                );
+                assert_close(
+                    slack_below,
+                    0.0,
+                    &format!("D62 stage {stage}: outflow_volume_slack_below_hm3"),
+                );
+            } else {
+                assert_eq!(
+                    slack_above, 0.0,
+                    "D62 stage {stage}: a stage without a bounds row has no slack above"
+                );
+                assert_eq!(
+                    slack_below, 0.0,
+                    "D62 stage {stage}: a stage without a bounds row has no slack below"
+                );
+            }
+
+            if stage == 1 {
+                assert!(
+                    slack_above > 0.0,
+                    "D62 stage {stage}: the ceiling must be violated, got slack {slack_above}"
+                );
+                let priced = PENALTY * slack_above;
+                assert_cost(
+                    costs.outflow_volume_violation_above_cost,
+                    priced,
+                    1e-12 * priced,
+                    &format!("D62 stage {stage}: outflow_volume_violation_above_cost"),
+                );
+            }
+        }
+    }
+
+    #[cfg_attr(
+        not(feature = "slow-tests"),
+        ignore = "slow: run with --features slow-tests"
+    )]
+    #[test]
+    fn d62_without_hydro_bounds_runs_the_unbounded_closed_form() {
+        assert!(
+            (D62_UNBOUNDED_TOTAL_COST - D60_TOTAL_COST).abs() > 1e-6 * D60_TOTAL_COST,
+            "the unbounded and bounded closed forms must differ for the twin to tell them apart"
+        );
+        let twin = copy_case_dir(d62_case_dir());
+        std::fs::remove_file(twin.path().join("constraints/hydro_bounds.parquet"))
+            .expect("the d62 deck carries a hydro bounds file to remove");
+        let (result, _, summary) = run_with_simulation(twin.path());
+
+        assert_cost(
+            result.final_lb,
+            D62_UNBOUNDED_TOTAL_COST,
+            1e-6 * D62_UNBOUNDED_TOTAL_COST,
+            "D62 unbounded",
+        );
+        assert_cost(
+            summary.mean_cost,
+            D62_UNBOUNDED_TOTAL_COST,
+            1e-6 * D62_UNBOUNDED_TOTAL_COST,
+            "D62 unbounded-sim",
+        );
+    }
+
+    #[cfg_attr(
+        not(feature = "slow-tests"),
+        ignore = "slow: run with --features slow-tests"
+    )]
+    #[test]
+    fn d62_doubled_above_price_keeps_the_slack_and_doubles_its_cost() {
+        assert!(
+            (D62_DOUBLED_ABOVE_TOTAL_COST - D60_TOTAL_COST).abs() > 1e-6 * D60_TOTAL_COST,
+            "the doubled-price closed form must differ from the d60 total for the twin to tell them apart"
+        );
+        let twin = d62_penalty_twin(|hydro| {
+            hydro.insert(
+                "outflow_volume_violation_above_cost".to_owned(),
+                serde_json::Value::from(D62_DOUBLED_ABOVE_PRICE),
+            );
+        });
+        let (result, scenario_results, summary) = run_with_simulation(twin.path());
+
+        assert_cost(
+            result.final_lb,
+            D62_DOUBLED_ABOVE_TOTAL_COST,
+            1e-6 * D62_DOUBLED_ABOVE_TOTAL_COST,
+            "D62 doubled above price",
+        );
+        assert_cost(
+            summary.mean_cost,
+            D62_DOUBLED_ABOVE_TOTAL_COST,
+            1e-6 * D62_DOUBLED_ABOVE_TOTAL_COST,
+            "D62 doubled above price-sim",
+        );
+
+        let stage = &scenario_results[0].stages[1];
+        let hydro = stage
+            .hydros
+            .iter()
+            .find(|h| h.hydro_id == 0)
+            .expect("stage 1 has an H0 row");
+        assert_close(
+            hydro.outflow_volume_slack_above_hm3,
+            D60_SLACK_HM3[1],
+            "D62 doubled above price stage 1: outflow_volume_slack_above_hm3",
+        );
+        let priced = D62_DOUBLED_ABOVE_PRICE * hydro.outflow_volume_slack_above_hm3;
+        assert_cost(
+            stage.costs[0].outflow_volume_violation_above_cost,
+            priced,
+            1e-12 * priced,
+            "D62 doubled above price stage 1: outflow_volume_violation_above_cost",
+        );
+    }
+
+    #[cfg_attr(
+        not(feature = "slow-tests"),
+        ignore = "slow: run with --features slow-tests"
+    )]
+    #[test]
+    fn d62_cheap_below_price_trades_the_spill_for_slack() {
+        assert!(
+            (D62_CHEAP_BELOW_TOTAL_COST - D60_TOTAL_COST).abs() > 1e-6 * D60_TOTAL_COST,
+            "the cheap-below closed form must differ from the d60 total for the twin to tell them apart"
+        );
+        let twin = d62_penalty_twin(|hydro| {
+            hydro.insert(
+                "outflow_volume_violation_below_cost".to_owned(),
+                serde_json::Value::from(D62_CHEAP_BELOW_PRICE),
+            );
+        });
+        let (result, scenario_results, summary) = run_with_simulation(twin.path());
+
+        assert_cost(
+            result.final_lb,
+            D62_CHEAP_BELOW_TOTAL_COST,
+            1e-6 * D62_CHEAP_BELOW_TOTAL_COST,
+            "D62 cheap below price",
+        );
+        assert_cost(
+            summary.mean_cost,
+            D62_CHEAP_BELOW_TOTAL_COST,
+            1e-6 * D62_CHEAP_BELOW_TOTAL_COST,
+            "D62 cheap below price-sim",
+        );
+
+        let stage = &scenario_results[0].stages[2];
+        let hydros: Vec<_> = stage.hydros.iter().filter(|h| h.hydro_id == 0).collect();
+        assert_eq!(hydros.len(), 2, "D62 cheap below price: two H0 block rows");
+        assert_close(
+            hydros[0].outflow_volume_slack_below_hm3,
+            D60_SPILL_HM3,
+            "D62 cheap below price stage 2: outflow_volume_slack_below_hm3",
+        );
+        for (block, hydro) in hydros.iter().enumerate() {
+            assert_close(
+                hydro.spillage_m3s,
+                0.0,
+                &format!("D62 cheap below price stage 2 block {block}: spillage_m3s"),
+            );
+        }
+        assert_close(
+            stage.costs[0].spillage_cost,
+            0.0,
+            "D62 cheap below price stage 2: spillage_cost",
+        );
+        let priced = D62_CHEAP_BELOW_PRICE * hydros[0].outflow_volume_slack_below_hm3;
+        assert_cost(
+            stage.costs[0].outflow_volume_violation_below_cost,
+            priced,
+            1e-12 * priced,
+            "D62 cheap below price stage 2: outflow_volume_violation_below_cost",
+        );
+    }
+
+    #[cfg_attr(
+        not(feature = "slow-tests"),
+        ignore = "slow: run with --features slow-tests"
+    )]
+    #[test]
+    fn d62_absent_volume_price_derives_from_the_flow_price() {
+        assert!(
+            (D62_DEFAULT_PRICE_TOTAL_COST - D60_TOTAL_COST).abs() > 1e-6 * D60_TOTAL_COST,
+            "the derived-price closed form must differ from the d60 total for the twin to tell them apart"
+        );
+        let twin = d62_penalty_twin(|hydro| {
+            hydro.remove("outflow_volume_violation_below_cost");
+            hydro.remove("outflow_volume_violation_above_cost");
+        });
+        let (result, scenario_results, summary) = run_with_simulation(twin.path());
+
+        assert_cost(
+            result.final_lb,
+            D62_DEFAULT_PRICE_TOTAL_COST,
+            1e-6 * D62_DEFAULT_PRICE_TOTAL_COST,
+            "D62 absent volume price",
+        );
+        assert_cost(
+            summary.mean_cost,
+            D62_DEFAULT_PRICE_TOTAL_COST,
+            1e-6 * D62_DEFAULT_PRICE_TOTAL_COST,
+            "D62 absent volume price-sim",
+        );
+
+        let hydros: Vec<_> = scenario_results[0].stages[1]
+            .hydros
+            .iter()
+            .filter(|h| h.hydro_id == 0)
+            .collect();
+        assert_eq!(
+            hydros.len(),
+            2,
+            "D62 absent volume price: two H0 block rows"
+        );
+        for (block, expected) in [CEILING_HM3 / TAU[0], 0.0].into_iter().enumerate() {
+            assert_close(
+                hydros[block].turbined_m3s,
+                expected,
+                &format!("D62 absent volume price stage 1 block {block}: turbined_m3s"),
+            );
+        }
+        assert_close(
+            hydros[0].outflow_volume_slack_above_hm3,
+            0.0,
+            "D62 absent volume price stage 1: outflow_volume_slack_above_hm3",
+        );
+        assert_close(
+            hydros[0].outflow_volume_slack_below_hm3,
+            0.0,
+            "D62 absent volume price stage 1: outflow_volume_slack_below_hm3",
+        );
+    }
+
+    #[test]
+    fn d62_explicit_derived_volume_price_builds_the_absent_price_templates() {
+        let absent = d62_penalty_twin(|hydro| {
+            hydro.remove("outflow_volume_violation_below_cost");
+            hydro.remove("outflow_volume_violation_above_cost");
+        });
+        let explicit = d62_penalty_twin(|hydro| {
+            for key in [
+                "outflow_volume_violation_below_cost",
+                "outflow_volume_violation_above_cost",
+            ] {
+                hydro.insert(
+                    key.to_owned(),
+                    serde_json::Value::from(volume_cost_from_flow_cost(PENALTY)),
+                );
+            }
+        });
+        let (_, absent_setup) = fresh_system_and_setup_with(absent.path(), |_| {});
+        let (_, explicit_setup) = fresh_system_and_setup_with(explicit.path(), |_| {});
+        let (_, unedited_setup) = fresh_system_and_setup_with(d62_case_dir(), |_| {});
+        let absent_templates = &absent_setup.inputs.stage_data.stage_templates.templates;
+        let explicit_templates = &explicit_setup.inputs.stage_data.stage_templates.templates;
+        let unedited_templates = &unedited_setup.inputs.stage_data.stage_templates.templates;
+
+        assert_all_templates_byte_identical(
+            absent_templates,
+            explicit_templates,
+            "d62 explicit derived volume price",
+        );
+        assert!(
+            absent_templates
+                .iter()
+                .zip(unedited_templates)
+                .any(|(absent, unedited)| absent
+                    .objective
+                    .iter()
+                    .map(|c| c.to_bits())
+                    .ne(unedited.objective.iter().map(|c| c.to_bits()))),
+            "the absent-price templates must differ from the unedited d62 templates in some stage objective"
+        );
     }
 }

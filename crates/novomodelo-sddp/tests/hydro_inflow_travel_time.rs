@@ -723,15 +723,10 @@ fn matrix_entry(tpl: &StageTemplate, row: usize, col: usize) -> f64 {
     stored / (col_scale * row_scale)
 }
 
-/// The first `hydro_inflow` row for `stage`: generic-constraint rows are the
-/// last row family the builder allocates (`layout.rows.row_generic_start =
-/// row.pos()` immediately before `enumerate_generic_constraint_rows`, and no
-/// row family is allocated after it), so they occupy the trailing
-/// `generic_constraint_row_entries[stage].len()` rows of `[0, num_rows)`.
+/// Generic rows end where the native stage-volume rows begin.
 fn generic_row_start(templates: &StageTemplates, stage: usize) -> usize {
-    let tpl = &templates.templates[stage];
-    let n_generic = templates.generic_constraint_row_entries[stage].len();
-    tpl.num_rows - n_generic
+    templates.geometry_per_stage[stage].outflow_volume.start
+        - templates.generic_constraint_row_entries[stage].len()
 }
 
 /// Every one of the plant's cells' turbine columns for `block`, `cells` in

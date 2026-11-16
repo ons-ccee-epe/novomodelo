@@ -10,6 +10,7 @@ use novomodelo_core::{
     ResolvedBlockBounds, ResolvedGenericConstraintBounds, ResolvedStageVolumeBounds,
     StageVolumeBoundsCountsSpec, volume_cost_from_flow_cost,
 };
+use novomodelo_io::load_case;
 use novomodelo_sddp::StudySetup;
 use novomodelo_sddp::test_support::{assert_all_templates_byte_identical, template_fact_groups};
 use novomodelo_solver::StageTemplate;
@@ -17,7 +18,8 @@ use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use tempfile::TempDir;
 
 use super::common::parquet_fixtures::{
-    Hm3Columns, HydroBoundsRow, PumpingBoundsRow, write_hydro_bounds, write_pumping_bounds,
+    Hm3Columns, HydroBoundsRow, HydroPenaltyOverrideRow, PumpingBoundsRow, write_hydro_bounds,
+    write_hydro_penalty_overrides, write_pumping_bounds,
 };
 use super::common::permute::permute_case;
 use super::common::{copy_toy_case, fresh_setup_with};
@@ -87,6 +89,13 @@ fn null_hm3_columns_build_byte_identical_templates() {
 
 const BLOCK_MODES: [BlockMode; 2] = [BlockMode::Parallel, BlockMode::Chronological];
 
+fn block_mode_study(block_mode: BlockMode) -> HydroStudy {
+    HydroStudy {
+        block_mode,
+        ..diversion_pumping_hydro_study()
+    }
+}
+
 fn bits(entries: &[(usize, f64)]) -> Vec<(usize, u64)> {
     entries.iter().map(|&(col, v)| (col, v.to_bits())).collect()
 }
@@ -131,10 +140,7 @@ fn outflow_volume_templates(
     max_outflow_hm3: Option<f64>,
 ) -> (StageTemplate, StageTemplate) {
     outflow_volume_templates_of(
-        || HydroStudy {
-            block_mode,
-            ..diversion_pumping_hydro_study()
-        },
+        || block_mode_study(block_mode),
         min_outflow_hm3,
         max_outflow_hm3,
     )
@@ -299,13 +305,7 @@ fn diversion_volume_templates(
     cell.min_diversion_hm3 = min_diversion_hm3;
     cell.max_diversion_hm3 = max_diversion_hm3;
 
-    baseline_and_declared(
-        || HydroStudy {
-            block_mode,
-            ..diversion_pumping_hydro_study()
-        },
-        stage_volume,
-    )
+    baseline_and_declared(|| block_mode_study(block_mode), stage_volume)
 }
 
 #[test]
@@ -388,24 +388,13 @@ fn pumping_volume_templates(
     min_hm3: Option<f64>,
     max_hm3: Option<f64>,
 ) -> (StageTemplate, StageTemplate) {
-    pumping_volume_templates_of(
-        || HydroStudy {
-            block_mode,
-            ..diversion_pumping_hydro_study()
-        },
-        0,
-        min_hm3,
-        max_hm3,
-    )
+    pumping_volume_templates_of(|| block_mode_study(block_mode), 0, min_hm3, max_hm3)
 }
 
 /// Station 30 (source hydro 10, destination hydro 5) beside station 31, which pumps the
 /// other way.
 fn two_pump_study(block_mode: BlockMode) -> HydroStudy {
-    let mut study = HydroStudy {
-        block_mode,
-        ..diversion_pumping_hydro_study()
-    };
+    let mut study = block_mode_study(block_mode);
     let reverse = PumpingStation {
         id: EntityId(31),
         name: "P31".to_string(),
@@ -418,10 +407,7 @@ fn two_pump_study(block_mode: BlockMode) -> HydroStudy {
 }
 
 fn dormant_pump_study(block_mode: BlockMode) -> HydroStudy {
-    let mut study = HydroStudy {
-        block_mode,
-        ..diversion_pumping_hydro_study()
-    };
+    let mut study = block_mode_study(block_mode);
     study.pumping_stations[0].entry_stage_id = Some(1);
     study
 }
@@ -1222,4 +1208,153 @@ fn stage_volume_study_is_invariant_to_declaration_order() {
             &format!("{block_mode:?}: reversed vs declared"),
         );
     }
+}
+
+fn d62_copy() -> TempDir {
+    let deck = TempDir::new().expect("tempdir");
+    copy_toy_case(
+        &Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/deterministic/d62-stage-outflow-volume-bounds"),
+        deck.path(),
+    );
+    deck
+}
+
+fn d62_without_global_volume_prices() -> TempDir {
+    let deck = d62_copy();
+    let path = deck.path().join("penalties.json");
+    let mut document = read_json(&path);
+    let hydro = document["hydro"].as_object_mut().expect("hydro penalties");
+    hydro.remove("outflow_volume_violation_below_cost");
+    hydro.remove("outflow_volume_violation_above_cost");
+    std::fs::write(&path, document.to_string()).expect("write penalties");
+    deck
+}
+
+fn d62_cascade(explicit: bool) -> TempDir {
+    let deck = d62_copy();
+    edit_registry(deck.path(), "system/hydros.json", "hydros", |hydros| {
+        let mut penalties = serde_json::json!({
+            "outflow_violation_below_cost": 400.0,
+            "outflow_violation_above_cost": 500.0,
+            "outflow_volume_violation_above_cost": 123_456.0,
+        });
+        if explicit {
+            penalties["outflow_volume_violation_below_cost"] =
+                serde_json::json!(volume_cost_from_flow_cost(400.0));
+        }
+        hydros[0]["penalties"] = penalties;
+    });
+    let rows = [
+        HydroPenaltyOverrideRow {
+            hydro_id: 0,
+            stage_id: 0,
+            outflow_violation_below_cost: Some(30.0),
+            outflow_violation_above_cost: None,
+            outflow_volume_violation_below_cost: Some(77.0),
+            outflow_volume_violation_above_cost: None,
+        },
+        HydroPenaltyOverrideRow {
+            hydro_id: 0,
+            stage_id: 1,
+            outflow_violation_below_cost: Some(30.0),
+            outflow_violation_above_cost: None,
+            outflow_volume_violation_below_cost: explicit
+                .then_some(volume_cost_from_flow_cost(30.0)),
+            outflow_volume_violation_above_cost: None,
+        },
+        HydroPenaltyOverrideRow {
+            hydro_id: 0,
+            stage_id: 2,
+            outflow_violation_below_cost: None,
+            outflow_violation_above_cost: Some(70.0),
+            outflow_volume_violation_below_cost: None,
+            outflow_volume_violation_above_cost: explicit
+                .then_some(volume_cost_from_flow_cost(70.0)),
+        },
+    ];
+    write_hydro_penalty_overrides(
+        &deck
+            .path()
+            .join("constraints/penalty_overrides_hydro.parquet"),
+        &rows,
+    );
+    deck
+}
+
+/// derived: a tier's outflow-volume price is its explicit volume price, else
+/// `volume_cost_from_flow_cost` of its own flow price, else the tier above's.
+#[test]
+fn outflow_volume_price_cascades_per_level_on_d62() {
+    const GLOBAL_PRICE: f64 = 10_000.0;
+    let assert_prices = |label: &str, deck: &TempDir, below: [f64; 4], above: [f64; 4]| {
+        let system = load_case(deck.path()).expect("load deck");
+        for (stage, (&below, &above)) in below.iter().zip(&above).enumerate() {
+            let resolved = system.penalties().hydro_penalties(0, stage);
+            for (side, got, want) in [
+                ("below", resolved.outflow_volume_violation_below_cost, below),
+                ("above", resolved.outflow_volume_violation_above_cost, above),
+            ] {
+                assert_eq!(
+                    got.to_bits(),
+                    want.to_bits(),
+                    "{label}: {side} at stage {stage}: {got} vs {want}"
+                );
+            }
+        }
+    };
+
+    assert_prices(
+        "global explicit",
+        &d62_copy(),
+        [GLOBAL_PRICE; 4],
+        [GLOBAL_PRICE; 4],
+    );
+    let derived_global = volume_cost_from_flow_cost(GLOBAL_PRICE);
+    assert_prices(
+        "global derived",
+        &d62_without_global_volume_prices(),
+        [derived_global; 4],
+        [derived_global; 4],
+    );
+    let (entity_below, entity_above) = (volume_cost_from_flow_cost(400.0), 123_456.0);
+    assert_prices(
+        "entity and stage tiers",
+        &d62_cascade(false),
+        [
+            77.0,
+            volume_cost_from_flow_cost(30.0),
+            entity_below,
+            entity_below,
+        ],
+        [
+            entity_above,
+            entity_above,
+            volume_cost_from_flow_cost(70.0),
+            entity_above,
+        ],
+    );
+}
+
+#[test]
+fn derived_cascade_prices_build_the_explicit_cascade_templates() {
+    let derived = fresh_setup_with(d62_cascade(false).path(), |_| {});
+    let explicit = fresh_setup_with(d62_cascade(true).path(), |_| {});
+    let global_derived = fresh_setup_with(d62_without_global_volume_prices().path(), |_| {});
+
+    assert_all_templates_byte_identical(
+        templates_of(&derived),
+        templates_of(&explicit),
+        "derived vs explicit cascade",
+    );
+
+    let objective_bits =
+        |t: &StageTemplate| t.objective.iter().map(|c| c.to_bits()).collect::<Vec<_>>();
+    assert!(
+        templates_of(&derived)
+            .iter()
+            .zip(templates_of(&global_derived))
+            .any(|(cascade, global)| objective_bits(cascade) != objective_bits(global)),
+        "the cascade prices move no stage objective"
+    );
 }

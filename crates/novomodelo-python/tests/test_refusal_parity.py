@@ -153,6 +153,177 @@ def _stage_volume_constraint_with_a_block_bounds_row(case: pathlib.Path) -> None
     )
 
 
+def _write_hydro_volume_bounds(case: pathlib.Path, rows: list[dict[str, Any]]) -> None:
+    fields = [
+        pa.field("hydro_id", pa.int32(), nullable=False),
+        pa.field("stage_id", pa.int32(), nullable=False),
+    ]
+    if any(row.get("block_id") is not None for row in rows):
+        fields.append(pa.field("block_id", pa.int32()))
+    fields.extend(
+        pa.field(name, pa.float64())
+        for name in (
+            "min_outflow_hm3",
+            "max_outflow_hm3",
+            "min_diversion_hm3",
+            "max_diversion_hm3",
+        )
+    )
+    schema = pa.schema(fields)
+    table = pa.table(
+        {field.name: [row.get(field.name) for row in rows] for field in schema},
+        schema=schema,
+    )
+    (case / "constraints").mkdir(exist_ok=True)
+    pq.write_table(
+        table, case / "constraints" / "hydro_bounds.parquet", compression="none"
+    )
+
+
+def _hydro_outflow_volume_bound_negative(case: pathlib.Path) -> None:
+    _write_hydro_volume_bounds(
+        case, [{"hydro_id": 0, "stage_id": 1, "min_outflow_hm3": -1.0}]
+    )
+
+
+def _hydro_outflow_volume_bounds_inverted(case: pathlib.Path) -> None:
+    _write_hydro_volume_bounds(
+        case,
+        [
+            {
+                "hydro_id": 0,
+                "stage_id": 1,
+                "min_outflow_hm3": 20.0,
+                "max_outflow_hm3": 10.8,
+            }
+        ],
+    )
+
+
+def _hydro_diversion_volume_bounds_inverted(case: pathlib.Path) -> None:
+    _write_hydro_volume_bounds(
+        case,
+        [
+            {
+                "hydro_id": 0,
+                "stage_id": 1,
+                "min_diversion_hm3": 20.0,
+                "max_diversion_hm3": 10.0,
+            }
+        ],
+    )
+
+
+def _hydro_outflow_volume_bound_set_twice(case: pathlib.Path) -> None:
+    _write_hydro_volume_bounds(
+        case,
+        [
+            {"hydro_id": 0, "stage_id": 1, "max_outflow_hm3": 10.8},
+            {"hydro_id": 0, "stage_id": 1, "max_outflow_hm3": 11.0},
+        ],
+    )
+
+
+def _hydro_outflow_volume_bound_with_a_block_id(case: pathlib.Path) -> None:
+    _write_hydro_volume_bounds(
+        case,
+        [{"hydro_id": 0, "stage_id": 1, "block_id": 0, "max_outflow_hm3": 10.8}],
+    )
+
+
+def _hydro_diversion_volume_bound_without_a_channel(case: pathlib.Path) -> None:
+    _write_hydro_volume_bounds(
+        case, [{"hydro_id": 0, "stage_id": 1, "min_diversion_hm3": 5.0}]
+    )
+
+
+def _hydro_outflow_volume_bounds_inverted_across_rows(case: pathlib.Path) -> None:
+    _write_hydro_volume_bounds(
+        case,
+        [
+            {"hydro_id": 0, "stage_id": 1, "max_outflow_hm3": 10.8},
+            {"hydro_id": 0, "stage_id": 1, "min_outflow_hm3": 20.0},
+        ],
+    )
+
+
+def _hydro_diversion_volume_above_channel_capacity(case: pathlib.Path) -> None:
+    def edit(hydros: Any) -> None:
+        hydros["hydros"][0]["diversion"] = {"downstream_id": 3, "max_flow_m3s": 50.0}
+
+    _edit_json(case / "system" / "hydros.json", edit)
+    _write_hydro_volume_bounds(
+        case, [{"hydro_id": 0, "stage_id": 5, "min_diversion_hm3": 1000.0}]
+    )
+
+
+def _write_pumping_volume_bounds(
+    case: pathlib.Path, rows: list[dict[str, Any]]
+) -> None:
+    fields = [
+        pa.field("pumping_station_id", pa.int32(), nullable=False),
+        pa.field("stage_id", pa.int32(), nullable=False),
+    ]
+    if any(row.get("block_id") is not None for row in rows):
+        fields.append(pa.field("block_id", pa.int32()))
+    fields.extend(pa.field(name, pa.float64()) for name in ("min_hm3", "max_hm3"))
+    schema = pa.schema(fields)
+    table = pa.table(
+        {field.name: [row.get(field.name) for row in rows] for field in schema},
+        schema=schema,
+    )
+    (case / "constraints").mkdir(exist_ok=True)
+    pq.write_table(
+        table, case / "constraints" / "pumping_bounds.parquet", compression="none"
+    )
+
+
+def _pumping_volume_bound_negative(case: pathlib.Path) -> None:
+    _write_pumping_volume_bounds(
+        case, [{"pumping_station_id": 0, "stage_id": 1, "min_hm3": -1.0}]
+    )
+
+
+def _pumping_volume_bounds_inverted(case: pathlib.Path) -> None:
+    _write_pumping_volume_bounds(
+        case,
+        [{"pumping_station_id": 0, "stage_id": 1, "min_hm3": 20.0, "max_hm3": 10.0}],
+    )
+
+
+def _pumping_volume_bound_set_twice(case: pathlib.Path) -> None:
+    _write_pumping_volume_bounds(
+        case,
+        [
+            {"pumping_station_id": 0, "stage_id": 1, "max_hm3": 10.0},
+            {"pumping_station_id": 0, "stage_id": 1, "max_hm3": 11.0},
+        ],
+    )
+
+
+def _pumping_volume_bound_with_a_block_id(case: pathlib.Path) -> None:
+    _write_pumping_volume_bounds(
+        case,
+        [{"pumping_station_id": 0, "stage_id": 1, "block_id": 0, "min_hm3": 5.0}],
+    )
+
+
+def _pumping_volume_bounds_inverted_across_rows(case: pathlib.Path) -> None:
+    _write_pumping_volume_bounds(
+        case,
+        [
+            {"pumping_station_id": 0, "stage_id": 1, "max_hm3": 10.0},
+            {"pumping_station_id": 0, "stage_id": 1, "min_hm3": 20.0},
+        ],
+    )
+
+
+def _pumping_volume_above_station_capacity(case: pathlib.Path) -> None:
+    _write_pumping_volume_bounds(
+        case, [{"pumping_station_id": 0, "stage_id": 1, "min_hm3": 100.0}]
+    )
+
+
 def _set_policy_path(case: pathlib.Path, policy_path: str) -> None:
     def edit(config: Any) -> None:
         config.setdefault("policy", {})["path"] = policy_path
@@ -609,6 +780,135 @@ ROWS = [
         outcome="BracketedRefusal",
         kind="BusinessRuleViolation",
         fragment="takes one row per stage with a null block_id",
+        error_class_name="ValidationError",
+    ),
+    _row(
+        name="hydro_outflow_volume_bound_negative",
+        base_case="deterministic/d62-stage-outflow-volume-bounds",
+        mutate=_hydro_outflow_volume_bound_negative,
+        outcome="BracketedRefusal",
+        kind="SchemaViolation",
+        fragment="min_outflow_hm3: value must be >= 0.0",
+        error_class_name="ValidationError",
+    ),
+    _row(
+        name="hydro_outflow_volume_bounds_inverted",
+        base_case="deterministic/d62-stage-outflow-volume-bounds",
+        mutate=_hydro_outflow_volume_bounds_inverted,
+        outcome="BracketedRefusal",
+        kind="SchemaViolation",
+        fragment="must be >= min_outflow_hm3",
+        error_class_name="ValidationError",
+    ),
+    _row(
+        name="hydro_diversion_volume_bounds_inverted",
+        base_case="deterministic/d62-stage-outflow-volume-bounds",
+        mutate=_hydro_diversion_volume_bounds_inverted,
+        outcome="BracketedRefusal",
+        kind="SchemaViolation",
+        fragment="must be >= min_diversion_hm3",
+        error_class_name="ValidationError",
+    ),
+    _row(
+        name="hydro_outflow_volume_bound_set_twice",
+        base_case="deterministic/d62-stage-outflow-volume-bounds",
+        mutate=_hydro_outflow_volume_bound_set_twice,
+        outcome="BracketedRefusal",
+        kind="DuplicateId",
+        fragment="sets max_outflow_hm3 twice for stage_id=1",
+        error_class_name="ValidationError",
+    ),
+    _row(
+        name="hydro_outflow_volume_bound_with_a_block_id",
+        base_case="deterministic/d62-stage-outflow-volume-bounds",
+        mutate=_hydro_outflow_volume_bound_with_a_block_id,
+        outcome="BracketedRefusal",
+        kind="BusinessRuleViolation",
+        fragment=(
+            "sets max_outflow_hm3 with block_id=0, but stage-total volume bounds are "
+            "stage-level"
+        ),
+        error_class_name="ValidationError",
+    ),
+    _row(
+        name="hydro_diversion_volume_bound_without_a_channel",
+        base_case="deterministic/d62-stage-outflow-volume-bounds",
+        mutate=_hydro_diversion_volume_bound_without_a_channel,
+        outcome="BracketedRefusal",
+        kind="InvalidValue",
+        fragment="but the hydro declares no diversion channel",
+        error_class_name="ValidationError",
+    ),
+    _row(
+        name="hydro_outflow_volume_bounds_inverted_across_rows",
+        base_case="deterministic/d62-stage-outflow-volume-bounds",
+        mutate=_hydro_outflow_volume_bounds_inverted_across_rows,
+        outcome="BracketedRefusal",
+        kind="InvalidValue",
+        fragment="resolves min_outflow_hm3=20 above max_outflow_hm3=10.8",
+        error_class_name="ValidationError",
+    ),
+    _row(
+        name="hydro_diversion_volume_above_channel_capacity",
+        base_case="deterministic/d38-dead-volume-filling",
+        mutate=_hydro_diversion_volume_above_channel_capacity,
+        outcome="BracketedRefusal",
+        kind="InvalidValue",
+        fragment="the stage's diversion flow bounds allow",
+        error_class_name="ValidationError",
+    ),
+    _row(
+        name="pumping_volume_bound_negative",
+        base_case="deterministic/d35-pumping-commissioning",
+        mutate=_pumping_volume_bound_negative,
+        outcome="BracketedRefusal",
+        kind="SchemaViolation",
+        fragment="min_hm3: value must be >= 0.0",
+        error_class_name="ValidationError",
+    ),
+    _row(
+        name="pumping_volume_bounds_inverted",
+        base_case="deterministic/d35-pumping-commissioning",
+        mutate=_pumping_volume_bounds_inverted,
+        outcome="BracketedRefusal",
+        kind="SchemaViolation",
+        fragment="max_hm3 (10) must be >= min_hm3 (20)",
+        error_class_name="ValidationError",
+    ),
+    _row(
+        name="pumping_volume_bound_set_twice",
+        base_case="deterministic/d35-pumping-commissioning",
+        mutate=_pumping_volume_bound_set_twice,
+        outcome="BracketedRefusal",
+        kind="DuplicateId",
+        fragment="sets max_hm3 twice for stage_id=1",
+        error_class_name="ValidationError",
+    ),
+    _row(
+        name="pumping_volume_bound_with_a_block_id",
+        base_case="deterministic/d35-pumping-commissioning",
+        mutate=_pumping_volume_bound_with_a_block_id,
+        outcome="BracketedRefusal",
+        kind="BusinessRuleViolation",
+        fragment="sets min_hm3 with block_id=0",
+        error_class_name="ValidationError",
+    ),
+    _row(
+        name="pumping_volume_bounds_inverted_across_rows",
+        base_case="deterministic/d35-pumping-commissioning",
+        mutate=_pumping_volume_bounds_inverted_across_rows,
+        outcome="BracketedRefusal",
+        kind="InvalidValue",
+        fragment="resolves min_hm3=20 above max_hm3=10",
+        error_class_name="ValidationError",
+    ),
+    _row(
+        name="pumping_volume_above_station_capacity",
+        base_case="deterministic/d35-pumping-commissioning",
+        mutate=_pumping_volume_above_station_capacity,
+        outcome="BracketedRefusal",
+        kind="InvalidValue",
+        fragment="the stage's pumping flow bounds allow",
         error_class_name="ValidationError",
     ),
     _row(

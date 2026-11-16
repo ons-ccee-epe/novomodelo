@@ -3025,7 +3025,10 @@ mod stage_volume_commissioning {
     use novomodelo_sddp::StudySetup;
     use tempfile::TempDir;
 
-    use super::common::parquet_fixtures::{GenericBoundsRow, write_generic_constraint_bounds};
+    use super::common::parquet_fixtures::{
+        GenericBoundsRow, Hm3Columns, HydroBoundsRow, PumpingBoundsRow,
+        write_generic_constraint_bounds, write_hydro_bounds, write_pumping_bounds,
+    };
     use super::common::{copy_toy_case, fresh_setup_with};
 
     const FILLING_DECK: &str = "d38-dead-volume-filling";
@@ -3045,7 +3048,8 @@ mod stage_volume_commissioning {
     fn constraint_rows(setup: &StudySetup, stage: usize, constraint_id: i32) -> Vec<usize> {
         let stage_templates = &setup.inputs.stage_data.stage_templates;
         let entries = &stage_templates.generic_constraint_row_entries[stage];
-        let base = stage_templates.templates[stage].num_rows - entries.len();
+        let geometry = &stage_templates.geometry_per_stage[stage];
+        let base = geometry.outflow_volume.start - entries.len();
         entries
             .iter()
             .enumerate()
@@ -3068,6 +3072,16 @@ mod stage_volume_commissioning {
                 }
             }
         }
+        columns
+    }
+
+    fn native_row_columns(setup: &StudySetup, stage: usize, row: usize) -> BTreeSet<usize> {
+        let geometry = &setup.inputs.stage_data.stage_templates.geometry_per_stage[stage];
+        let mut columns = row_columns(setup, stage, &[row]);
+        columns.retain(|col| {
+            !geometry.outflow_volume_below_slack.contains(col)
+                && !geometry.outflow_volume_above_slack.contains(col)
+        });
         columns
     }
 
@@ -3165,6 +3179,44 @@ mod stage_volume_commissioning {
                 .path()
                 .join("constraints/generic_constraint_bounds.parquet"),
             &bounds,
+        );
+        case
+    }
+
+    fn native_filling_fixture() -> TempDir {
+        let case = filling_fixture();
+        let rows: Vec<HydroBoundsRow> = (0..6)
+            .map(|stage_id| HydroBoundsRow {
+                hydro_id: 1,
+                stage_id,
+                min_outflow_hm3: None,
+                max_outflow_hm3: Some(NEVER_BINDING_UPPER),
+                min_diversion_hm3: None,
+                max_diversion_hm3: Some(NEVER_BINDING_UPPER),
+            })
+            .collect();
+        write_hydro_bounds(
+            &case.path().join("constraints/hydro_bounds.parquet"),
+            &rows,
+            Hm3Columns::Write,
+        );
+        case
+    }
+
+    fn native_pumping_fixture() -> TempDir {
+        let case = pumping_fixture();
+        let rows: Vec<PumpingBoundsRow> = (0..3)
+            .map(|stage_id| PumpingBoundsRow {
+                pumping_station_id: 0,
+                stage_id,
+                min_hm3: None,
+                max_hm3: Some(NEVER_BINDING_UPPER),
+            })
+            .collect();
+        write_pumping_bounds(
+            &case.path().join("constraints/pumping_bounds.parquet"),
+            &rows,
+            Hm3Columns::Write,
         );
         case
     }
@@ -3281,12 +3333,137 @@ mod stage_volume_commissioning {
         }
     }
 
+    /// derived: the native hm³ rows read the same columns as the generic probes, so they inherit each phase's pins: outflow volume is pinned while the hydro is PreFilling, diversion volume while it is PreFilling or Filling.
+    #[test]
+    fn native_stage_volume_rows_read_the_pinned_columns_of_a_filling_plant() {
+        let case = native_filling_fixture();
+        let setup = fresh_setup_with(case.path(), |_| {});
+        let stage_templates = &setup.inputs.stage_data.stage_templates;
+
+        for stage in 0..6 {
+            let geometry = &stage_templates.geometry_per_stage[stage];
+            assert_eq!(
+                geometry.outflow_volume.len(),
+                1,
+                "stage {stage}: native outflow volume rows"
+            );
+            assert_eq!(
+                geometry.diversion_volume.len(),
+                1,
+                "stage {stage}: native diversion volume rows"
+            );
+
+            let outflow_row = geometry.outflow_volume.start;
+            let all_outflow = row_columns(&setup, stage, &[outflow_row]);
+            for (name, range) in [
+                ("below", &geometry.outflow_volume_below_slack),
+                ("above", &geometry.outflow_volume_above_slack),
+            ] {
+                let held = all_outflow.iter().filter(|col| range.contains(col)).count();
+                assert_eq!(
+                    held, 1,
+                    "stage {stage}: native outflow row holds {held} {name}-slack columns"
+                );
+            }
+            let outflow = native_row_columns(&setup, stage, outflow_row);
+            let outflow_probe = row_columns(&setup, stage, &constraint_rows(&setup, stage, 1));
+            assert_eq!(
+                outflow, outflow_probe,
+                "stage {stage}: native outflow row and hydro_outflow_volume(1) columns"
+            );
+            assert!(
+                !outflow.is_empty(),
+                "stage {stage}: native outflow row is empty"
+            );
+
+            let diversion = native_row_columns(&setup, stage, geometry.diversion_volume.start);
+            let diversion_probe = row_columns(&setup, stage, &constraint_rows(&setup, stage, 4));
+            assert_eq!(
+                diversion, diversion_probe,
+                "stage {stage}: native diversion row and hydro_diversion_volume(1) columns"
+            );
+            assert!(
+                !diversion.is_empty(),
+                "stage {stage}: native diversion row is empty"
+            );
+
+            if stage < 2 {
+                assert!(
+                    pinned(&setup, stage, &outflow),
+                    "stage {stage}: PreFilling native outflow columns {outflow:?} must be pinned"
+                );
+            } else if stage >= 4 {
+                assert!(
+                    outflow
+                        .iter()
+                        .all(|&col| stage_templates.templates[stage].col_upper[col] > 0.0),
+                    "stage {stage}: Operating native outflow columns {outflow:?} must be open"
+                );
+            }
+            if stage < 4 {
+                assert!(
+                    pinned(&setup, stage, &diversion),
+                    "stage {stage}: native diversion columns {diversion:?} must be pinned"
+                );
+            }
+        }
+    }
+
+    /// derived: the native pumping hm³ row reads the station's flow column like `pumping_flow`, so it is pinned at stages 0 and 2, outside the station's [1, 2) commissioning window.
+    #[test]
+    fn native_pumping_volume_row_reads_the_station_flow_outside_its_window() {
+        let case = native_pumping_fixture();
+        let setup = fresh_setup_with(case.path(), |_| {});
+        let stage_templates = &setup.inputs.stage_data.stage_templates;
+
+        for stage in 0..3 {
+            let geometry = &stage_templates.geometry_per_stage[stage];
+            assert_eq!(
+                geometry.pumping_volume.len(),
+                1,
+                "stage {stage}: native pumping volume rows"
+            );
+
+            let native = native_row_columns(&setup, stage, geometry.pumping_volume.start);
+            let probe = row_columns(&setup, stage, &constraint_rows(&setup, stage, 1));
+            assert_eq!(
+                native, probe,
+                "stage {stage}: native pumping row and pumping_volume(0) columns"
+            );
+            assert!(
+                !native.is_empty(),
+                "stage {stage}: native pumping row is empty"
+            );
+
+            match stage {
+                0 | 2 => assert!(
+                    pinned(&setup, stage, &native),
+                    "stage {stage}: inactive station native columns {native:?} must be pinned"
+                ),
+                1 => assert!(
+                    native
+                        .iter()
+                        .all(|&col| stage_templates.templates[stage].col_upper[col] > 0.0),
+                    "stage {stage}: active station native columns {native:?} must be open"
+                ),
+                _ => unreachable!("stage {stage} is outside the fixture"),
+            }
+        }
+    }
+
     /// derived: each fixture adds no validation warning, so its count equals its base deck's.
     #[test]
     fn stage_volume_fixtures_add_no_validation_warning() {
         let filling = filling_fixture();
         let pumping = pumping_fixture();
-        for (fixture, deck) in [(&filling, FILLING_DECK), (&pumping, PUMPING_DECK)] {
+        let native_filling = native_filling_fixture();
+        let native_pumping = native_pumping_fixture();
+        for (fixture, deck) in [
+            (&filling, FILLING_DECK),
+            (&pumping, PUMPING_DECK),
+            (&native_filling, FILLING_DECK),
+            (&native_pumping, PUMPING_DECK),
+        ] {
             let (_, base) = novomodelo_io::validate_case(&base_deck(deck)).expect("base deck");
             let (_, report) = novomodelo_io::validate_case(fixture.path()).expect("fixture");
             assert_eq!(report.error_count, 0, "{deck} fixture errors");

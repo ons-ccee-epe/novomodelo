@@ -231,3 +231,59 @@ pub fn write_pumping_bounds(dest: &Path, rows: &[PumpingBoundsRow], hm3: Hm3Colu
     }
     write_bounds_batch(dest, fields, columns);
 }
+
+pub struct HydroPenaltyOverrideRow {
+    pub hydro_id: i32,
+    pub stage_id: i32,
+    pub outflow_violation_below_cost: Option<f64>,
+    pub outflow_violation_above_cost: Option<f64>,
+    pub outflow_volume_violation_below_cost: Option<f64>,
+    pub outflow_volume_violation_above_cost: Option<f64>,
+}
+
+/// Writes a `penalty_overrides_hydro.parquet` table with the four outflow price columns.
+pub fn write_hydro_penalty_overrides(dest: &Path, rows: &[HydroPenaltyOverrideRow]) {
+    let mut fields = vec![
+        Field::new("hydro_id", DataType::Int32, false),
+        Field::new("stage_id", DataType::Int32, false),
+    ];
+    let mut columns: Vec<Arc<dyn Array>> = vec![
+        Arc::new(Int32Array::from_iter_values(
+            rows.iter().map(|r| r.hydro_id),
+        )),
+        Arc::new(Int32Array::from_iter_values(
+            rows.iter().map(|r| r.stage_id),
+        )),
+    ];
+    let (f, c): (Vec<_>, Vec<_>) = [
+        nullable_f64(
+            "outflow_violation_below_cost",
+            rows.iter()
+                .map(|r| r.outflow_violation_below_cost)
+                .collect(),
+        ),
+        nullable_f64(
+            "outflow_violation_above_cost",
+            rows.iter()
+                .map(|r| r.outflow_violation_above_cost)
+                .collect(),
+        ),
+        nullable_f64(
+            "outflow_volume_violation_below_cost",
+            rows.iter()
+                .map(|r| r.outflow_volume_violation_below_cost)
+                .collect(),
+        ),
+        nullable_f64(
+            "outflow_volume_violation_above_cost",
+            rows.iter()
+                .map(|r| r.outflow_volume_violation_above_cost)
+                .collect(),
+        ),
+    ]
+    .into_iter()
+    .unzip();
+    fields.extend(f);
+    columns.extend(c);
+    write_bounds_batch(dest, fields, columns);
+}

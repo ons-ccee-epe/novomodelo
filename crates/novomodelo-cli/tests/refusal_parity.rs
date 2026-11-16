@@ -13,7 +13,7 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 
-use arrow::array::{Float64Array, Int32Array};
+use arrow::array::{ArrayRef, Float64Array, Int32Array};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use parquet::arrow::ArrowWriter;
@@ -141,6 +141,133 @@ const ROWS: &[ParityRow] = &[
             kind: "BusinessRuleViolation",
         },
         fragment: "takes one row per stage with a null block_id",
+    },
+    ParityRow {
+        name: "hydro_outflow_volume_bound_negative",
+        base_case: "deterministic/d62-stage-outflow-volume-bounds",
+        mutate: hydro_outflow_volume_bound_negative,
+        outcome: Outcome::BracketedRefusal {
+            kind: "SchemaViolation",
+        },
+        fragment: "min_outflow_hm3: value must be >= 0.0",
+    },
+    ParityRow {
+        name: "hydro_outflow_volume_bounds_inverted",
+        base_case: "deterministic/d62-stage-outflow-volume-bounds",
+        mutate: hydro_outflow_volume_bounds_inverted,
+        outcome: Outcome::BracketedRefusal {
+            kind: "SchemaViolation",
+        },
+        fragment: "must be >= min_outflow_hm3",
+    },
+    ParityRow {
+        name: "hydro_diversion_volume_bounds_inverted",
+        base_case: "deterministic/d62-stage-outflow-volume-bounds",
+        mutate: hydro_diversion_volume_bounds_inverted,
+        outcome: Outcome::BracketedRefusal {
+            kind: "SchemaViolation",
+        },
+        fragment: "must be >= min_diversion_hm3",
+    },
+    ParityRow {
+        name: "hydro_outflow_volume_bound_set_twice",
+        base_case: "deterministic/d62-stage-outflow-volume-bounds",
+        mutate: hydro_outflow_volume_bound_set_twice,
+        outcome: Outcome::BracketedRefusal {
+            kind: "DuplicateId",
+        },
+        fragment: "sets max_outflow_hm3 twice for stage_id=1",
+    },
+    ParityRow {
+        name: "hydro_outflow_volume_bound_with_a_block_id",
+        base_case: "deterministic/d62-stage-outflow-volume-bounds",
+        mutate: hydro_outflow_volume_bound_with_a_block_id,
+        outcome: Outcome::BracketedRefusal {
+            kind: "BusinessRuleViolation",
+        },
+        fragment: "sets max_outflow_hm3 with block_id=0, but stage-total volume bounds are \
+                   stage-level",
+    },
+    ParityRow {
+        name: "hydro_diversion_volume_bound_without_a_channel",
+        base_case: "deterministic/d62-stage-outflow-volume-bounds",
+        mutate: hydro_diversion_volume_bound_without_a_channel,
+        outcome: Outcome::BracketedRefusal {
+            kind: "InvalidValue",
+        },
+        fragment: "but the hydro declares no diversion channel",
+    },
+    ParityRow {
+        name: "hydro_outflow_volume_bounds_inverted_across_rows",
+        base_case: "deterministic/d62-stage-outflow-volume-bounds",
+        mutate: hydro_outflow_volume_bounds_inverted_across_rows,
+        outcome: Outcome::BracketedRefusal {
+            kind: "InvalidValue",
+        },
+        fragment: "resolves min_outflow_hm3=20 above max_outflow_hm3=10.8",
+    },
+    ParityRow {
+        name: "hydro_diversion_volume_above_channel_capacity",
+        base_case: "deterministic/d38-dead-volume-filling",
+        mutate: hydro_diversion_volume_above_channel_capacity,
+        outcome: Outcome::BracketedRefusal {
+            kind: "InvalidValue",
+        },
+        fragment: "the stage's diversion flow bounds allow",
+    },
+    ParityRow {
+        name: "pumping_volume_bound_negative",
+        base_case: "deterministic/d35-pumping-commissioning",
+        mutate: pumping_volume_bound_negative,
+        outcome: Outcome::BracketedRefusal {
+            kind: "SchemaViolation",
+        },
+        fragment: "min_hm3: value must be >= 0.0",
+    },
+    ParityRow {
+        name: "pumping_volume_bounds_inverted",
+        base_case: "deterministic/d35-pumping-commissioning",
+        mutate: pumping_volume_bounds_inverted,
+        outcome: Outcome::BracketedRefusal {
+            kind: "SchemaViolation",
+        },
+        fragment: "max_hm3 (10) must be >= min_hm3 (20)",
+    },
+    ParityRow {
+        name: "pumping_volume_bound_set_twice",
+        base_case: "deterministic/d35-pumping-commissioning",
+        mutate: pumping_volume_bound_set_twice,
+        outcome: Outcome::BracketedRefusal {
+            kind: "DuplicateId",
+        },
+        fragment: "sets max_hm3 twice for stage_id=1",
+    },
+    ParityRow {
+        name: "pumping_volume_bound_with_a_block_id",
+        base_case: "deterministic/d35-pumping-commissioning",
+        mutate: pumping_volume_bound_with_a_block_id,
+        outcome: Outcome::BracketedRefusal {
+            kind: "BusinessRuleViolation",
+        },
+        fragment: "sets min_hm3 with block_id=0",
+    },
+    ParityRow {
+        name: "pumping_volume_bounds_inverted_across_rows",
+        base_case: "deterministic/d35-pumping-commissioning",
+        mutate: pumping_volume_bounds_inverted_across_rows,
+        outcome: Outcome::BracketedRefusal {
+            kind: "InvalidValue",
+        },
+        fragment: "resolves min_hm3=20 above max_hm3=10",
+    },
+    ParityRow {
+        name: "pumping_volume_above_station_capacity",
+        base_case: "deterministic/d35-pumping-commissioning",
+        mutate: pumping_volume_above_station_capacity,
+        outcome: Outcome::BracketedRefusal {
+            kind: "InvalidValue",
+        },
+        fragment: "the stage's pumping flow bounds allow",
     },
     ParityRow {
         name: "policy_path_empty",
@@ -516,6 +643,196 @@ fn stage_volume_constraint_with_a_block_bounds_row(case: &Path) {
     );
 }
 
+fn hydro_outflow_volume_bound_negative(case: &Path) {
+    write_hydro_volume_bounds(
+        case,
+        &[HydroVolumeRow {
+            stage_id: 1,
+            min_outflow_hm3: Some(-1.0),
+            ..HydroVolumeRow::default()
+        }],
+    );
+}
+
+fn hydro_outflow_volume_bounds_inverted(case: &Path) {
+    write_hydro_volume_bounds(
+        case,
+        &[HydroVolumeRow {
+            stage_id: 1,
+            min_outflow_hm3: Some(20.0),
+            max_outflow_hm3: Some(10.8),
+            ..HydroVolumeRow::default()
+        }],
+    );
+}
+
+fn hydro_diversion_volume_bounds_inverted(case: &Path) {
+    write_hydro_volume_bounds(
+        case,
+        &[HydroVolumeRow {
+            stage_id: 1,
+            min_diversion_hm3: Some(20.0),
+            max_diversion_hm3: Some(10.0),
+            ..HydroVolumeRow::default()
+        }],
+    );
+}
+
+fn hydro_outflow_volume_bound_set_twice(case: &Path) {
+    write_hydro_volume_bounds(
+        case,
+        &[
+            HydroVolumeRow {
+                stage_id: 1,
+                max_outflow_hm3: Some(10.8),
+                ..HydroVolumeRow::default()
+            },
+            HydroVolumeRow {
+                stage_id: 1,
+                max_outflow_hm3: Some(11.0),
+                ..HydroVolumeRow::default()
+            },
+        ],
+    );
+}
+
+fn hydro_outflow_volume_bound_with_a_block_id(case: &Path) {
+    write_hydro_volume_bounds(
+        case,
+        &[HydroVolumeRow {
+            stage_id: 1,
+            block_id: Some(0),
+            max_outflow_hm3: Some(10.8),
+            ..HydroVolumeRow::default()
+        }],
+    );
+}
+
+fn hydro_diversion_volume_bound_without_a_channel(case: &Path) {
+    write_hydro_volume_bounds(
+        case,
+        &[HydroVolumeRow {
+            stage_id: 1,
+            min_diversion_hm3: Some(5.0),
+            ..HydroVolumeRow::default()
+        }],
+    );
+}
+
+fn hydro_outflow_volume_bounds_inverted_across_rows(case: &Path) {
+    write_hydro_volume_bounds(
+        case,
+        &[
+            HydroVolumeRow {
+                stage_id: 1,
+                max_outflow_hm3: Some(10.8),
+                ..HydroVolumeRow::default()
+            },
+            HydroVolumeRow {
+                stage_id: 1,
+                min_outflow_hm3: Some(20.0),
+                ..HydroVolumeRow::default()
+            },
+        ],
+    );
+}
+
+fn hydro_diversion_volume_above_channel_capacity(case: &Path) {
+    edit_json(&case.join("system/hydros.json"), |hydros| {
+        hydros["hydros"][0]["diversion"] = json!({"downstream_id": 3, "max_flow_m3s": 50.0});
+    });
+    write_hydro_volume_bounds(
+        case,
+        &[HydroVolumeRow {
+            stage_id: 5,
+            min_diversion_hm3: Some(1000.0),
+            ..HydroVolumeRow::default()
+        }],
+    );
+}
+
+fn pumping_volume_bound_negative(case: &Path) {
+    write_pumping_volume_bounds(
+        case,
+        &[PumpingVolumeRow {
+            stage_id: 1,
+            min_hm3: Some(-1.0),
+            ..PumpingVolumeRow::default()
+        }],
+    );
+}
+
+fn pumping_volume_bounds_inverted(case: &Path) {
+    write_pumping_volume_bounds(
+        case,
+        &[PumpingVolumeRow {
+            stage_id: 1,
+            min_hm3: Some(20.0),
+            max_hm3: Some(10.0),
+            ..PumpingVolumeRow::default()
+        }],
+    );
+}
+
+fn pumping_volume_bound_set_twice(case: &Path) {
+    write_pumping_volume_bounds(
+        case,
+        &[
+            PumpingVolumeRow {
+                stage_id: 1,
+                max_hm3: Some(10.0),
+                ..PumpingVolumeRow::default()
+            },
+            PumpingVolumeRow {
+                stage_id: 1,
+                max_hm3: Some(11.0),
+                ..PumpingVolumeRow::default()
+            },
+        ],
+    );
+}
+
+fn pumping_volume_bound_with_a_block_id(case: &Path) {
+    write_pumping_volume_bounds(
+        case,
+        &[PumpingVolumeRow {
+            stage_id: 1,
+            block_id: Some(0),
+            min_hm3: Some(5.0),
+            ..PumpingVolumeRow::default()
+        }],
+    );
+}
+
+fn pumping_volume_bounds_inverted_across_rows(case: &Path) {
+    write_pumping_volume_bounds(
+        case,
+        &[
+            PumpingVolumeRow {
+                stage_id: 1,
+                max_hm3: Some(10.0),
+                ..PumpingVolumeRow::default()
+            },
+            PumpingVolumeRow {
+                stage_id: 1,
+                min_hm3: Some(20.0),
+                ..PumpingVolumeRow::default()
+            },
+        ],
+    );
+}
+
+fn pumping_volume_above_station_capacity(case: &Path) {
+    write_pumping_volume_bounds(
+        case,
+        &[PumpingVolumeRow {
+            stage_id: 1,
+            min_hm3: Some(100.0),
+            ..PumpingVolumeRow::default()
+        }],
+    );
+}
+
 fn set_policy_path(case: &Path, policy_path: &str) {
     edit_json(&case.join("config.json"), |config| {
         config["policy"]["path"] = json!(policy_path);
@@ -629,6 +946,106 @@ fn write_volume_bounds_with_a_block_row(path: &Path) {
     )
     .unwrap();
     let mut writer = ArrowWriter::try_new(fs::File::create(path).unwrap(), schema, None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+}
+
+#[derive(Default)]
+struct HydroVolumeRow {
+    hydro_id: i32,
+    stage_id: i32,
+    block_id: Option<i32>,
+    min_outflow_hm3: Option<f64>,
+    max_outflow_hm3: Option<f64>,
+    min_diversion_hm3: Option<f64>,
+    max_diversion_hm3: Option<f64>,
+}
+
+fn write_hydro_volume_bounds(case: &Path, rows: &[HydroVolumeRow]) {
+    let mut fields = vec![
+        Field::new("hydro_id", DataType::Int32, false),
+        Field::new("stage_id", DataType::Int32, false),
+    ];
+    let mut columns: Vec<ArrayRef> = vec![
+        Arc::new(Int32Array::from_iter_values(
+            rows.iter().map(|r| r.hydro_id),
+        )),
+        Arc::new(Int32Array::from_iter_values(
+            rows.iter().map(|r| r.stage_id),
+        )),
+    ];
+    if rows.iter().any(|r| r.block_id.is_some()) {
+        fields.push(Field::new("block_id", DataType::Int32, true));
+        columns.push(Arc::new(
+            rows.iter().map(|r| r.block_id).collect::<Int32Array>(),
+        ));
+    }
+    let volume = |select: fn(&HydroVolumeRow) -> Option<f64>| -> ArrayRef {
+        Arc::new(rows.iter().map(select).collect::<Float64Array>())
+    };
+    let volume_columns = [
+        ("min_outflow_hm3", volume(|r| r.min_outflow_hm3)),
+        ("max_outflow_hm3", volume(|r| r.max_outflow_hm3)),
+        ("min_diversion_hm3", volume(|r| r.min_diversion_hm3)),
+        ("max_diversion_hm3", volume(|r| r.max_diversion_hm3)),
+    ];
+    for (name, column) in volume_columns {
+        fields.push(Field::new(name, DataType::Float64, true));
+        columns.push(column);
+    }
+    let schema = Arc::new(Schema::new(fields));
+    let batch = RecordBatch::try_new(schema.clone(), columns).unwrap();
+    fs::create_dir_all(case.join("constraints")).unwrap();
+    let file = fs::File::create(case.join("constraints/hydro_bounds.parquet")).unwrap();
+    let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+}
+
+#[derive(Default)]
+struct PumpingVolumeRow {
+    pumping_station_id: i32,
+    stage_id: i32,
+    block_id: Option<i32>,
+    min_hm3: Option<f64>,
+    max_hm3: Option<f64>,
+}
+
+fn write_pumping_volume_bounds(case: &Path, rows: &[PumpingVolumeRow]) {
+    let mut fields = vec![
+        Field::new("pumping_station_id", DataType::Int32, false),
+        Field::new("stage_id", DataType::Int32, false),
+    ];
+    let mut columns: Vec<ArrayRef> = vec![
+        Arc::new(Int32Array::from_iter_values(
+            rows.iter().map(|r| r.pumping_station_id),
+        )),
+        Arc::new(Int32Array::from_iter_values(
+            rows.iter().map(|r| r.stage_id),
+        )),
+    ];
+    if rows.iter().any(|r| r.block_id.is_some()) {
+        fields.push(Field::new("block_id", DataType::Int32, true));
+        columns.push(Arc::new(
+            rows.iter().map(|r| r.block_id).collect::<Int32Array>(),
+        ));
+    }
+    let volume = |select: fn(&PumpingVolumeRow) -> Option<f64>| -> ArrayRef {
+        Arc::new(rows.iter().map(select).collect::<Float64Array>())
+    };
+    let volume_columns = [
+        ("min_hm3", volume(|r| r.min_hm3)),
+        ("max_hm3", volume(|r| r.max_hm3)),
+    ];
+    for (name, column) in volume_columns {
+        fields.push(Field::new(name, DataType::Float64, true));
+        columns.push(column);
+    }
+    let schema = Arc::new(Schema::new(fields));
+    let batch = RecordBatch::try_new(schema.clone(), columns).unwrap();
+    fs::create_dir_all(case.join("constraints")).unwrap();
+    let file = fs::File::create(case.join("constraints/pumping_bounds.parquet")).unwrap();
+    let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
     writer.write(&batch).unwrap();
     writer.close().unwrap();
 }

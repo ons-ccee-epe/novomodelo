@@ -2460,9 +2460,10 @@ mod diversion_outflow_bounds {
     use novomodelo_core::{
         BoundsCountsSpec, BoundsDefaults, BusStagePenalties, ContractBlockBounds, DeficitSegment,
         EntityId, HydroBlockBounds, HydroPenalties, HydroStageBounds, HydroStorage,
-        InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
+        InitialConditions, LineBlockBounds, LineStagePenalties, M3S_TO_HM3, NcsStagePenalties,
         PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
-        ResolvedPenalties, System, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
+        ResolvedPenalties, ResolvedStageVolumeBounds, StageVolumeBoundsCountsSpec, System,
+        SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
     };
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
@@ -2493,6 +2494,11 @@ mod diversion_outflow_bounds {
     /// Deterministic run-of-river inflow (std 0): the source must release exactly
     /// this every block, split among turbine / spill / diversion.
     const INFLOW_M3S: f64 = 500.0;
+    const BLOCK_HOURS: f64 = 730.0;
+    const DIVERSION_TARGET_M3S: f64 = 300.0;
+    /// derived: one block per stage, so the stage volume is the target flow held
+    /// for the block's hours.
+    const DIVERSION_TARGET_HM3: f64 = DIVERSION_TARGET_M3S * BLOCK_HOURS * M3S_TO_HM3;
 
     /// Which outflow bound the fixture exercises. Both bind `q + s`; each needs a
     /// cost structure that would push the diverted flow across the bound if the
@@ -2525,7 +2531,7 @@ mod diversion_outflow_bounds {
                         blocks: vec![Block {
                             index: 0,
                             name: "S".to_string(),
-                            duration_hours: 730.0,
+                            duration_hours: BLOCK_HOURS,
                         }],
                         block_mode: BlockMode::Parallel,
                         state_config: StageStateConfig {
@@ -2569,7 +2575,11 @@ mod diversion_outflow_bounds {
     /// headroom to absorb the whole diverted flow. Neither generates (default
     /// zero productivity): the operative economics are spill-vs-divert cost, which
     /// is all the floor semantics need to be exercised.
-    fn build_system(bound: Bound, diversion_cap_m3s: Option<f64>) -> System {
+    fn build_system(
+        bound: Bound,
+        diversion_cap_m3s: Option<f64>,
+        diversion_volume_hm3: Option<f64>,
+    ) -> System {
         let (entity_min, entity_max) = match bound {
             Bound::Min => (MIN_OUTFLOW_M3S, None),
             Bound::Max => (0.0, Some(MAX_OUTFLOW_M3S)),
@@ -2684,6 +2694,21 @@ mod diversion_outflow_bounds {
                 Bound::Max => src.max_outflow_m3s = Some(MAX_OUTFLOW_M3S),
             }
         }
+        if let Some(volume_hm3) = diversion_volume_hm3 {
+            let mut overlay = ResolvedStageVolumeBounds::new(&StageVolumeBoundsCountsSpec {
+                n_hydros: 2,
+                n_pumping: 0,
+                n_stages,
+            });
+            for stage_idx in 0..n_stages {
+                let source = overlay
+                    .hydro_mut(0, stage_idx)
+                    .expect("the source is within the overlay");
+                source.min_diversion_hm3 = Some(volume_hm3);
+                source.max_diversion_hm3 = Some(volume_hm3);
+            }
+            bounds.set_stage_volume_overlay(overlay);
+        }
 
         let penalties = ResolvedPenalties::new(
             &PenaltiesCountsSpec {
@@ -2774,8 +2799,10 @@ mod diversion_outflow_bounds {
     /// zero below-slack — the silent Volta Grande under-release.
     #[test]
     fn min_outflow_binds_the_non_diverted_flow_on_a_diverter() {
-        let mut setup =
-            build_setup_in_code(build_system(Bound::Min, Some(DIVERSION_CAP_M3S)), &config());
+        let mut setup = build_setup_in_code(
+            build_system(Bound::Min, Some(DIVERSION_CAP_M3S), None),
+            &config(),
+        );
         let results = run_simulation(&mut setup, 1);
         assert_eq!(results.len(), 1, "exactly one scenario must be produced");
         let scenario: &SimulationScenarioResult = &results[0];
@@ -2826,8 +2853,10 @@ mod diversion_outflow_bounds {
     /// diversion — the total-release cap this change removes.
     #[test]
     fn max_outflow_binds_the_non_diverted_flow_on_a_diverter() {
-        let mut setup =
-            build_setup_in_code(build_system(Bound::Max, Some(DIVERSION_CAP_M3S)), &config());
+        let mut setup = build_setup_in_code(
+            build_system(Bound::Max, Some(DIVERSION_CAP_M3S), None),
+            &config(),
+        );
         let results = run_simulation(&mut setup, 1);
         assert_eq!(results.len(), 1, "exactly one scenario must be produced");
         let scenario: &SimulationScenarioResult = &results[0];
@@ -2879,7 +2908,8 @@ mod diversion_outflow_bounds {
     /// Diverted flow per block of the source, and the target's received release
     /// (`q + s`; the target has no inflow of its own).
     fn diverted_and_received(diversion_cap_m3s: Option<f64>) -> Vec<(f64, f64, f64)> {
-        let mut setup = build_setup_in_code(build_system(Bound::Max, diversion_cap_m3s), &config());
+        let mut setup =
+            build_setup_in_code(build_system(Bound::Max, diversion_cap_m3s, None), &config());
         let results = run_simulation(&mut setup, 1);
         let scenario: &SimulationScenarioResult = &results[0];
         scenario
@@ -2936,6 +2966,101 @@ mod diversion_outflow_bounds {
             assert!(
                 (slack_above - (SURPLUS_M3S - TWIN_CAP_M3S)).abs() < 1e-3,
                 "capped twin pays the uncarried surplus, got {slack_above}"
+            );
+        }
+    }
+
+    /// derived: a declared diversion volume is a hard row, so the diverted flow
+    /// is the declared volume over the block's hours and the rest of the inflow
+    /// stays on the natural channel. Without the declaration the plant diverts
+    /// only the surplus above the natural-channel cap, which is not the target.
+    #[test]
+    fn declared_diversion_volume_target_is_met_exactly() {
+        let mut declared = build_setup_in_code(
+            build_system(
+                Bound::Max,
+                Some(DIVERSION_CAP_M3S),
+                Some(DIVERSION_TARGET_HM3),
+            ),
+            &config(),
+        );
+        for geometry in &declared
+            .inputs
+            .stage_data
+            .stage_templates
+            .geometry_per_stage
+        {
+            assert_eq!(
+                geometry.diversion_volume.len(),
+                1,
+                "the declared target adds one diversion-volume row per stage"
+            );
+        }
+        let results = run_simulation(&mut declared, 1);
+        let source_rows: Vec<_> = results[0]
+            .stages
+            .iter()
+            .flat_map(|s| &s.hydros)
+            .filter(|h| h.hydro_id == SOURCE_ID)
+            .collect();
+        assert_eq!(
+            source_rows.len(),
+            stages().len(),
+            "the source reports one row per stage"
+        );
+        for h in source_rows {
+            let diverted = h
+                .diverted_outflow_m3s
+                .expect("a diverting plant reports its diverted outflow");
+            let volume_hm3 = BLOCK_HOURS * M3S_TO_HM3 * diverted;
+            assert!(
+                (volume_hm3 - DIVERSION_TARGET_HM3).abs() < 1e-6 * DIVERSION_TARGET_HM3,
+                "diverted volume {volume_hm3} hm3 must equal the declared {DIVERSION_TARGET_HM3}"
+            );
+            let non_diverted = h.turbined_m3s + h.spillage_m3s;
+            assert!(
+                (non_diverted - (INFLOW_M3S - DIVERSION_TARGET_M3S)).abs() < 1e-3,
+                "the rest of the inflow stays on the natural channel, got q + s = {non_diverted}"
+            );
+            assert!(
+                h.outflow_slack_above_m3s < 1e-3,
+                "the natural channel stays under its cap, got slack {}",
+                h.outflow_slack_above_m3s
+            );
+        }
+
+        let mut undeclared = build_setup_in_code(
+            build_system(Bound::Max, Some(DIVERSION_CAP_M3S), None),
+            &config(),
+        );
+        for geometry in &undeclared
+            .inputs
+            .stage_data
+            .stage_templates
+            .geometry_per_stage
+        {
+            assert!(
+                geometry.diversion_volume.is_empty(),
+                "no declaration adds no diversion-volume row"
+            );
+        }
+        let results = run_simulation(&mut undeclared, 1);
+        for h in results[0]
+            .stages
+            .iter()
+            .flat_map(|s| &s.hydros)
+            .filter(|h| h.hydro_id == SOURCE_ID)
+        {
+            let diverted = h
+                .diverted_outflow_m3s
+                .expect("a diverting plant reports its diverted outflow");
+            assert!(
+                (diverted - (INFLOW_M3S - MAX_OUTFLOW_M3S)).abs() < 1e-3,
+                "the undeclared plant diverts the surplus above the cap, got {diverted}"
+            );
+            assert!(
+                (diverted - DIVERSION_TARGET_M3S).abs() > 1e-3,
+                "the twin must differ from the target, got {diverted}"
             );
         }
     }
