@@ -150,7 +150,9 @@ the lag sums `w` of `lag_coefficients_into`, and `aggregate_first_cut_into`'s Q�
 (`q_bar`), its coefficient vector and its Gᵀπ sums (`chain.g`).
 `per_opening_coefficients_into` starts each `g` at `−(Gᵀπ)(h)`, the bits of
 `−0.0 − (Gᵀπ)(h)`, and adds the cut-dual terms into that same accumulator; a
-zero cut dual, of either sign, is skipped, never multiplied in.
+zero cut dual, of either sign, is skipped, never multiplied in. A `Closing`
+pool's lag-0 cut-dual sum is the one formed apart: it starts at −0.0, is scaled
+once by the share `c_h`, and the product is added to `g`.
 `aggregate_first_cut_into` likewise skips an opening whose weight is exactly 0.0
 before any of its adds, so a zero-weight opening, such as a pure-CVaR opening
 outside the tail, changes no bit; a successor child whose openings all weigh
@@ -178,9 +180,10 @@ fold.
 The wrong-but-compiling alternatives:
 
 - a `0.0` start in the kernel (a `fill(0.0)`, a `q_bar` of `0.0`, or a
-  cut-dual sum formed from +0.0 and added to `g` afterwards): `+0.0 + (−0.0)`
-  is `+0.0`, so a lone −0.0 term flips to +0.0, and the aggregate of one
-  opening at weight 1.0 no longer equals `per_opening_cut_into` bit for bit;
+  `Closing` cut-dual sum started from +0.0 before it is scaled and added to
+  `g`): `+0.0 + (−0.0)` is `+0.0`, so a lone −0.0 term flips to +0.0, and the
+  aggregate of one opening at weight 1.0 no longer equals
+  `per_opening_cut_into` bit for bit;
 - multiplying a zero weight in (`q_bar += 0.0 * Q`, `g -= 0.0 * coupled`): `0·x`
   is −0.0 for a negative `x` and +0.0 for a positive one, so a zero-weight
   opening flips a −0.0 accumulator, and the aggregate no longer equals the cut
@@ -216,6 +219,9 @@ coupling's −0.0 survives in `g`, which a cut-dual sum formed apart from +0.0
 would flip),
 `an_empty_cut_sum_keeps_the_sign_of_a_negated_zero_coefficient` (an empty `w`
 keeps ψ·g's −0.0),
+`a_closing_pool_with_no_nonzero_cut_dual_leaves_g_bit_identical` (a `Closing`
+pool whose cut duals are all zero gives every lag coefficient the bits of the
+`Shifted` pool's; a +0.0 start flips `g`'s −0.0),
 `aggregate_of_one_opening_at_unit_weight_equals_the_per_opening_cut` (one
 opening at weight 1.0, with a −0.0 state dual, returns the per-opening
 coefficients and intercept bit for bit),
@@ -276,17 +282,99 @@ kind and cut-row shape records no stale cut row), its committed-deck sweep
 `lb_cut_slots_follow_lp_row_order_and_keep_deactivated_rows`
 (`training/lower_bound.rs`).
 
+## A sampled forward trial owns its lag chain
+
+A sampled forward trial's inflow lag chain is the primary partial sum and
+weight (`lag_accumulator`, `lag_weight_accum`) plus the downstream accumulator,
+weight, completed ring and count (`downstream_*`). The worker scratch holds one
+chain, so a trial's chain lives in its own `AccumSnapshot`, one per local trial.
+In `run_forward_worker`, every (trial, stage) solve after stage 0 first restores
+the trial's own snapshot into the scratch, and captures it back after the solve,
+once the lag advance in `run_forward_stage` has run. Stage 0 seeds the chain from
+`inflow_seeds`. A trial's trajectory then depends on neither the number
+of trials sharing its worker thread or rank nor their order.
+
+The wrong-but-compiling alternatives:
+
+- one chain per worker, reset only at stage 0: a trial reads the chain another
+  trial left, so the trajectories depend on `--threads` and on the rank count;
+- capturing before `assemble_outgoing_state`: the snapshot predates the lag
+  advance, so the trial's next stage reads a chain that has not advanced;
+- isolating only the primary accumulator: the downstream ring and count still
+  leak between trials at the stages that rebuild the lag from the downstream
+  ring.
+
+Read: `training/forward_pass_state.rs` (`run_forward_worker`),
+`stochastic/noise.rs` (`AccumSnapshot`). Pinned by the gates of
+`trial_isolated_lag_chain` in `tests/mpi_wire.rs`:
+`weekly_closing_month_trains_to_the_same_bits_at_every_thread_count`,
+`monthly_quarterly_rebuild_trains_to_the_same_bits_at_every_thread_count`,
+`weekly_closing_month_is_world_size_invariant` and
+`monthly_quarterly_rebuild_is_world_size_invariant`, the last two registered in
+`scripts/ci/run-mpi-launcher-gates.sh`; and
+`fixture_calendars_have_the_lag_shapes_the_gates_need`, which checks that the
+fixtures keep the lag transitions the gates read.
+
 ## The cut-evaluation lag point has one owner
 
-A cut's lag slots are evaluated at one point `Φ`: for hydro `h`,
-`Φ(h, 0) = ẑ_h` and `Φ(h, l) = â(h, l − 1)` for `l ≥ 1`, so a cut's lag terms
-read the realized inflow at lag 0 and the trial lags shifted by one elsewhere.
-`CutStateProjection::lag_point` owns the slot ranges, resolved at setup into a
-`CutLagPoint`, lag-major: slot `lag0.start + l·N + h` holds `(h, l)`. The
-cut-row RHS functions of `cut/rhs.rs` and the chain rule, through
-`ChainRuleSlots::compose`, which composes the extracted and resident
-projections by global dimension, both read it; no call site computes a lag
-slot.
+A pool's cut rows evaluate their lag slots at one point `Φ`, set by the lag
+transition of the pool's stage and installed at setup in the pool's
+`CutLagPoint` as a `LagPointRule` (`classify_lag_points`). With `ẑ_h` the
+realized inflow, `â` the trial lags, `s_h` the partial sum of the open lag
+period at the visit, `W_h` the weight the period holds on entering the stage and
+`w` the stage's own weight:
+
+| Mode      | Stage                                                | `Φ(h, 0)`                                                   | `Φ(h, l ≥ 1)` | Chain rule                                       |
+| --------- | ---------------------------------------------------- | ----------------------------------------------------------- | ------------- | ------------------------------------------------ |
+| `Shifted` | a finalizing stage at monthly identity, or a rebuild | `ẑ_h`                                                       | `â(h, l − 1)` | `g_h = −(Gᵀπ)(h) + Σ y·β(k, (h, 0))`             |
+| `Carry`   | leaves its lag period open                           | `â(h, 0)`                                                   | `â(h, l)`     | `g_h = −(Gᵀπ)(h)`; `w(h, l)` sums every lag slot |
+| `Closing` | closes a period that began at an earlier stage       | `b_h + c_h·ẑ_h`, `b_h = s_h/(W_h + w)`, `c_h = w/(W_h + w)` | `â(h, l − 1)` | the cut term of `g_h` is scaled by `c_h`         |
+
+`CutLagPoint` is the only owner of `Φ`: the mode, the Closing coefficients
+(`closing_inverse_weight`, `closing_share`, `incoming_weight`) and the slot
+ranges, lag-major, so slot `lag0.start + l·N + h` holds `(h, l)`. `full` spans
+every lag slot whatever the mode. `lag0` and `shifted` follow the mode: under
+`Carry`, `lag0` is empty and `shifted` is `full`, so a Carry pool reads every
+slot against the lag it holds. `mean_lane` and `noise_lane` write the operands
+the P and W dots read, `b + c ⊙ p` and `c ⊙ σ·η` under `Closing`, the input
+slice itself otherwise. The chain rule branches on the resident pool's
+`CutLagPoint::mode`, and `has_lag_slots` reads `full`. The cut-row RHS
+functions of `cut/rhs.rs` and the chain rule, through `ChainRuleSlots::compose`,
+which composes the extracted and resident projections by global dimension, read
+it; no call site computes a lag slot, a mode or a coefficient.
+
+A stage that rebuilds its lags from the downstream ring keeps `Shifted` and warns
+once at setup: its cuts evaluate the lags as at a single-resolution stage. The
+kernel's rebuild branch leaves the primary weight as it was, so a `Closing` stage
+after a rebuild holds that weight in `W_h`.
+
+**The partial sum.** `s` is the open period's partial sum as the pin of one
+forward visit read it, and every pin reads its own visit's. A forward pin reads
+the accumulator its trial's `AccumSnapshot` restored. The record holds it
+(`TrajectoryRecord::partial_sum`: one entry per hydro when some pool is
+`Closing`, empty otherwise). A sampled backward pin of trial `m` at successor
+stage `successor` reads `records[m·n_stages + successor]`, whatever the slab
+lookup says (`SuccessorSpec::partial_sum_source`). The enumerated backward reads
+its node's accumulator (`EnumeratedForwardScratch::lag_accumulator`), and the
+lower bound reads the seed's. A debug build refuses a `Closing` pin whose live
+accumulator entered the stage at another weight than the setup replayed, and one
+whose given sum is shorter than the hydro count.
+
+`s` is rank-local: it lives in the trial's `AccumSnapshot` and record, never in
+`state`, an MPI payload, a checkpoint or a policy, and is never exchanged between
+ranks. The replicated backward reads the node's `AccumSnapshot` from the
+enumerated forward's visit, which every rank holds only while
+`TrainingSession::new` rejects interior branching under enumerated traversal at
+world size ≥ 2. Whatever lifts that rejection through an interior-node state
+exchange must carry the node's `AccumSnapshot` with its `out_state`: a rank that
+never visits the node would otherwise read a zeroed partial sum.
+
+**The limit.** The state carries the period's mean `b + c·ẑ`, not `s`, so a cut
+generated at one trial's `s` is read at another's. A cut is exact only where `s`
+is the same on every path of the study. Where the partial sums of an open period
+differ between paths, the cuts are approximate and the lower bound is not
+guaranteed to stay below the upper bound. No setup warning flags such a study;
+the limit is not remedied.
 
 A bracket the forward pass wrote is read only at the visit it was written for.
 A trajectory record's `FrozenBrackets` slab carries the tag
@@ -299,6 +387,26 @@ is a miss that recomputes the brackets, and a default slab never hits.
 
 The wrong-but-compiling alternatives:
 
+- the shifted alias at a `Carry` or `Closing` pool (`Φ(h, 0) = ẑ_h` and
+  `Φ(h, l) = â(h, l − 1)` whatever the mode): the row pushes a bound the stage's
+  outgoing lags are not at, so a cut is not tight at the trial state it was
+  generated at, and the lower bound can exceed the upper bound;
+- a `Carry` chain rule, or the cut-dual read that feeds it, guarded on `lag0`: a
+  Carry pool's `lag0` is empty, so its lag slots read as absent and the cut loses
+  the `w` terms of every lag;
+- the `Closing` share applied to `g` under `Carry`: a Carry stage's lag 0 is
+  `â(h, 0)`, so `ẑ` does not enter it and `g` has no cut term to scale; and
+  leaving the cut term of `g` unscaled under `Closing`, which prices `ẑ` as if it
+  entered the period mean at weight 1;
+- `s` read from the worker scratch at a backward site: the scratch holds the
+  accumulator of the last trial the worker advanced, not the visited trial's, so
+  the cut follows the worker a trial landed on and the thread count;
+- `s` tied to the slab (read only on a slab hit, or from `FrozenBrackets`): a
+  miss, an unavailable lookup or the bypassed cache then supplies another `s`, and
+  the bits of a solve follow whether the cache was hit;
+- `s` appended to `state` or to an MPI payload: the state is the domain of the
+  cut, so every projection, cut wire, checkpoint and policy would change layout
+  for a quantity no cut is a function of;
 - lag-slot arithmetic at a call site (`lag0.start + h·L + l`, hydro-major): it
   agrees with the owner only for a single hydro or a single lag;
 - composing the chain rule's slot pairs by position: a pool that drops a region
@@ -308,15 +416,70 @@ The wrong-but-compiling alternatives:
   trial state.
 
 Read: `lp/indexer/cut_state_projection.rs` (`CutStateProjection::lag_point`,
-`CutLagPoint`, `ChainRuleSlots::compose`), `cut/rhs.rs`,
-`training/trajectory.rs` (`FrozenBrackets`), `training/backward/mod.rs`
-(`SlabLookup`, `SuccessorSpec::bracket_source`), `training/stage_solve_prep.rs`
-(`StageSolvePrep::pin_and_bracket`, `BracketSource`). Pinned by
+`CutLagPoint`, `LagPointMode`, `LagPointRule`, `ChainRuleSlots::compose`),
+`setup/lag_points.rs` (`classify_lag_points`), `cut/chain_rule.rs`
+(`lag_coefficients_into`), `cut/rhs.rs`, `training/stage_solve_prep.rs`
+(`StageSolvePrep::pin_and_bracket`, `BracketSource`, `PartialSumSource`,
+`closing_partial_sum`), `training/trajectory.rs` (`TrajectoryRecord`,
+`FrozenBrackets`), `training/backward/mod.rs` (`ForwardVisits`, `SlabLookup`,
+`SuccessorSpec::bracket_source`, `SuccessorSpec::partial_sum_source`),
+`training/forward/enumerated.rs` (`EnumeratedForwardScratch::lag_accumulator`),
+`stochastic/noise.rs` (`AccumSnapshot`), `training/session/mod.rs`
+(`TrainingSession::new`). Pinned by, in `lp/indexer/cut_state_projection.rs`,
 `lag_point_follows_the_lag_region_of_each_projection`,
-`lag_point_of_a_single_lag_has_no_shifted_slots` and
-`lag_point_slots_map_to_the_lag_state_dims`
-(`lp/indexer/cut_state_projection.rs`), `lag_ranges_come_from_the_projection_owner`
-(`cut/rhs.rs`); `a_default_slab_misses_at_every_tag`,
+`lag_point_of_a_single_lag_has_no_shifted_slots`,
+`lag_point_slots_map_to_the_lag_state_dims`,
+`a_carry_lag_point_reads_every_lag_slot_as_shifted`,
+`has_lag_slots_follows_the_full_lag_region`,
+`an_installed_lag_point_mode_leaves_the_slot_ranges_unchanged`,
+`shifted_and_carry_lag_lanes_return_the_input_slice`,
+`closing_mean_lane_is_the_partial_sum_share_plus_the_scaled_mean`,
+`closing_noise_lane_scales_each_noise_term_by_its_share`,
+`closing_lanes_evaluate_the_cut_at_the_kernel_lag_region` and
+`carry_lanes_evaluate_the_cut_at_the_kernel_lag_region`;
+`lag_ranges_come_from_the_projection_owner` (`cut/rhs.rs`);
+`carry_mode_chain_rule_carries_every_lag_of_the_resident_cut` and
+`closing_mode_chain_rule_scales_the_lag0_cut_term_by_the_share`
+(`cut/chain_rule.rs`); the classifier, in `setup/tests.rs`,
+`lag_point_modes_follow_the_kernel_order` and
+`lag_point_mode_of_a_rebuild_stage_warns_once_naming_the_stage`, and, in
+`tests/cut_oracles/analytical_fold_cuts.rs`,
+`lag_point_modes_of_the_weekly_closing_month_fixture_follow_its_calendar`,
+`lag_point_mode_of_the_quarter_after_a_rebuild_is_closing_at_one_half` and
+`lag_point_modes_of_uniform_committed_decks_are_shifted` (a uniform deck keeps
+the shifted point at every pool); the partial sum, in `training/trajectory.rs`,
+`a_record_holds_one_partial_sum_per_hydro_when_a_pool_is_closing` and
+`a_record_holds_no_partial_sum_when_no_pool_is_closing`, in
+`training/stage_solve_prep/tests.rs`,
+`a_given_partial_sum_source_reads_the_given_slice`,
+`a_live_partial_sum_source_reads_the_scratch_accumulator`,
+`a_closing_pin_accepts_a_given_partial_sum_of_every_hydro`,
+`a_closing_pin_rejects_a_given_partial_sum_shorter_than_the_hydros`,
+`a_closing_stage_accepts_a_live_accumulator_that_entered_at_the_setup_weight`
+and `a_closing_stage_rejects_a_live_accumulator_that_entered_at_another_weight`,
+and, in `training/backward/tests.rs`,
+`a_backward_partial_sum_source_does_not_depend_on_the_slab_lookup` and
+`a_sampled_backward_pin_reads_the_partial_sum_of_its_trials_successor_record`;
+the evaluation at the pool's point, in `tests/cut_oracles/analytical_fold_cuts.rs`,
+`a_non_finalizing_stage_evaluates_cuts_at_the_carried_lags` and
+`a_finalizing_stage_evaluates_cuts_at_the_closing_period_mean` (each against its
+closed form, with the alias value differing from it),
+`stored_cuts_are_tight_at_their_own_trial_point_on_a_same_path_partial_sum_deck`
+(the RHS pushed at a cut's generating visit equals `α + β·x̂`),
+`lower_bound_stays_below_the_upper_bound_on_a_same_path_partial_sum_deck`,
+`d30_stage_seven_cuts_evaluate_at_the_closing_point_of_one_half`,
+`terminal_boundary_value_on_a_weeks_then_month_calendar_matches_the_closed_form`
+(a last week that straddles into the terminal month makes the terminal pool
+`Closing`, and its boundary row is pushed at `α + β·Φ` at every forward trial
+and backward opening) and
+`every_solve_site_pushes_cut_rows_at_its_own_partial_sum`
+(`tests/cut_basis/cut_row_push_coverage.rs`: every solve-site kind pushes each
+cut row at `α + β·Φ` of its own visit, the visit matched by the state the solve
+pins, with the alias value differing from it);
+`a_lagless_deck_with_a_lag_bearing_boundary_trains_to_the_same_bits_with_the_solve_caches_bypassed`
+(`tests/cut_basis.rs`) and
+`a_resume_on_a_mixed_resolution_lag_deck_equals_the_uninterrupted_run`
+(`tests/periodic_checkpoint.rs`); and the slab tests: `a_default_slab_misses_at_every_tag`,
 `a_written_slab_hits_only_at_its_own_iteration_and_node` and
 `reserve_never_shrinks_and_a_write_within_capacity_keeps_the_buffer`
 (`training/trajectory.rs`); in `training/backward/tests.rs`,
@@ -328,8 +491,10 @@ Read: `lp/indexer/cut_state_projection.rs` (`CutStateProjection::lag_point`,
 `compact_slab_unwritten_slab_misses_on_every_pin`,
 `compact_slab_values_reach_the_pushed_cut_rhs` and
 `compact_forward_stage_writes_the_brackets_of_its_frozen_rows`;
-`the_bracket_slab_grows_only_when_the_templates_are_frozen`
-(`training/session/mod.rs`); and, in `training/stage_solve_prep/tests.rs`,
+`the_bracket_slab_grows_only_when_the_templates_are_frozen` and
+`training_session_new_rejects_interior_branching_enumerated_at_world_ge_2`, the
+guard the rank-local partial sum rests on (`training/session/mod.rs`); and, in
+`training/stage_solve_prep/tests.rs`,
 `pin_folded_brackets_each_cut_row_from_the_raw_trial_state`,
 `pin_folded_slab_hit_equals_the_computed_brackets_and_does_not_count` and
 `pin_folded_slab_miss_equals_the_computed_brackets_and_counts`.

@@ -48,6 +48,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **BREAKING:** the AR orders and coefficients estimated from
   `scenarios/inflow_history.parquet` change under both
   `estimation.order_selection` values. Results change.
+- **BREAKING:** studies whose `stages.json` splits an inflow-lag period over
+  stages, or steps lags from months to quarters, give different results when
+  cuts carry inflow-lag terms; retrain them. The result is exact only where
+  the period's partial inflow is the same on every path, and a
+  month-to-quarter stage warns once.
 
 #### Hydro plants
 
@@ -81,8 +86,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+#### Case files
+
+- `novomodelo validate` refused a `stages.json` whose stages of different
+  lengths share a `season_id`, each the season's whole period or a slice of
+  it. Weeks that name their month, in a study where another year has that
+  month as one stage, are such a case.
+
 #### Inflow model
 
+- Sampled training gave results that depended on `--threads` and on the MPI
+  rank count when an inflow-lag period spans several stages, as weeks within a
+  month or a quarter built from months. Results change for those studies.
 - Estimation from `scenarios/inflow_history.parquet` aborted the run when a
   fitted month implied a negative noise variance; that month's order is now
   reduced and listed as `negative_residual_variance` in

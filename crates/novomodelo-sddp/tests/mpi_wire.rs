@@ -4105,19 +4105,20 @@ mod compact_fold_determinism {
     use std::collections::BTreeSet;
     use std::path::Path;
 
-    use novomodelo_comm::{BackendKind, Communicator, LocalBackend, create_communicator};
-    use novomodelo_io::Config;
-    use novomodelo_io::config::{BackwardScheduler, StoppingRuleConfig, TrainingSelection};
+    use novomodelo_comm::{BackendKind, LocalBackend, create_communicator};
+    use novomodelo_io::config::BackwardScheduler;
     use novomodelo_sddp::indexer::CutStateProjection;
     use novomodelo_sddp::setup::NodePos;
     use novomodelo_sddp::test_support::{
         external_distinct_fan_setup_heterogeneous_cut_state, opening_block_count,
     };
-    use novomodelo_sddp::{RiskMeasure, StudySetup, TrainingResult};
-    use novomodelo_solver::ActiveSolver;
+    use novomodelo_sddp::{RiskMeasure, StudySetup};
 
+    use crate::common::determinism_gates::{
+        BUDGET_THAT_EVICTS_NOTHING, assert_matches_single_rank, assert_thread_shapes_agree,
+        assert_world_splits_the_trials, sample, train,
+    };
     use crate::common::in_code_studies::{FphaLagOptions, fpha_lag_study_with};
-    use crate::common::selection_fingerprint::SelectionFingerprint;
     use crate::common::{
         Rank0Of2, StubComm, build_setup_in_code_with_models, fresh_setup_with_openings,
     };
@@ -4142,17 +4143,6 @@ mod compact_fold_determinism {
         alpha: 0.5,
         lambda: 1.0,
     };
-    /// Binding is recorded only for a reader, and a budget no pool reaches is a
-    /// reader that evicts nothing.
-    const BUDGET_THAT_EVICTS_NOTHING: u32 = 100_000;
-
-    fn sample(config: &mut Config, forward_passes: u32, iterations: u32) {
-        config.training.selection = Some(TrainingSelection::Sampled { forward_passes });
-        config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit {
-            limit: iterations,
-        }]);
-        config.training.cut_selection.max_active_per_stage = Some(BUDGET_THAT_EVICTS_NOTHING);
-    }
 
     fn lag_study(forward_passes: u32, iterations: u32) -> StudySetup {
         let (system, mut config, hydro_models) = fpha_lag_study_with(FphaLagOptions {
@@ -4178,107 +4168,6 @@ mod compact_fold_determinism {
         let num_stages = setup.num_stages();
         setup.set_risk_measures(vec![CVAR; num_stages]);
         setup
-    }
-
-    /// Trains `setup` on a fresh solver and returns its fingerprint, after
-    /// asserting the run's own power checks. `budget` is the
-    /// `max_active_per_stage` the fixture was built with.
-    fn train(
-        mut setup: StudySetup,
-        comm: &impl Communicator,
-        n_threads: usize,
-        fixture: &str,
-        budget: Option<u32>,
-    ) -> SelectionFingerprint {
-        let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
-        let outcome = setup
-            .train(&mut solver, comm, n_threads, ActiveSolver::new, None, None)
-            .expect("train must return Ok");
-        assert!(
-            outcome.error.is_none(),
-            "{fixture}: training must not error: {:?}",
-            outcome.error
-        );
-        assert_frozen_rows_exist(fixture, &setup, &outcome.result);
-        if let Some(budget) = budget {
-            assert_budget_evicted_nothing(fixture, &setup, budget);
-            assert_lag_bearing_binding_cut(fixture, &setup);
-        }
-        SelectionFingerprint::capture(&setup, &outcome.result)
-    }
-
-    fn assert_budget_evicted_nothing(fixture: &str, setup: &StudySetup, budget: u32) {
-        let budget = usize::try_from(budget).unwrap();
-        for (pool_id, pool) in setup.fcf.pools.iter().enumerate() {
-            assert!(
-                pool.populated() <= budget,
-                "{fixture}: pool {pool_id} populates {} slots, above the budget of {budget}, so \
-                 the budget may have evicted a cut",
-                pool.populated()
-            );
-        }
-    }
-
-    fn cut_generating_pools(setup: &StudySetup) -> BTreeSet<usize> {
-        let graph = &setup.inputs.node_graph;
-        graph
-            .nodes
-            .iter()
-            .zip(graph.successors.iter())
-            .filter(|(_, successors)| !successors.is_empty())
-            .map(|(node, _)| node.pool_id)
-            .collect()
-    }
-
-    fn assert_frozen_rows_exist(fixture: &str, setup: &StudySetup, result: &TrainingResult) {
-        assert!(
-            result.iterations >= 2,
-            "{fixture}: trained {} iteration(s), so no cut reached a later iteration's templates",
-            result.iterations
-        );
-        let frozen = cut_generating_pools(setup).into_iter().any(|pool_id| {
-            let pool = &setup.fcf.pools[pool_id];
-            (0..pool.populated()).any(|slot| {
-                pool.is_active(slot) && pool.metadata(slot).iteration_generated < result.iterations
-            })
-        });
-        assert!(
-            frozen,
-            "{fixture}: no cut-generating pool holds an active cut generated before the last of \
-             {} iterations",
-            result.iterations
-        );
-    }
-
-    fn assert_lag_bearing_binding_cut(fixture: &str, setup: &StudySetup) {
-        let context = setup.training_ctx();
-        let mut lag_pools = Vec::new();
-        let mut binding_cuts = 0;
-        let mut lag_coefficient_cuts = 0;
-        let mut lag_bearing_binding_cuts = 0;
-        for (pool_id, layout) in context.cut_state_layouts.iter().enumerate() {
-            if !layout.has_lag_slots() {
-                continue;
-            }
-            lag_pools.push(pool_id);
-            let pool = &setup.fcf.pools[pool_id];
-            let lags = layout.lag_point().full();
-            for slot in 0..pool.populated() {
-                let binding = pool.metadata(slot).active_count > 0;
-                let lag_bearing = pool.coefficient_row(slot)[lags.clone()]
-                    .iter()
-                    .any(|&coefficient| coefficient != 0.0);
-                binding_cuts += usize::from(binding);
-                lag_coefficient_cuts += usize::from(lag_bearing);
-                lag_bearing_binding_cuts += usize::from(binding && lag_bearing);
-            }
-        }
-        assert!(
-            lag_bearing_binding_cuts > 0,
-            "{fixture}: no binding cut carries a nonzero lag coefficient: over the lag-bearing \
-             pools {lag_pools:?}, {binding_cuts} cut(s) bound and {lag_coefficient_cuts} carry a \
-             nonzero lag coefficient"
-        );
     }
 
     fn assert_forward_windows_differ(fixture: &str, forward_passes: u32, shapes: &[usize]) {
@@ -4346,28 +4235,6 @@ mod compact_fold_determinism {
             "{fixture}: per-stage opening counts {openings:?}; the shortest-chain order reorders \
              only a stage with at least three openings"
         );
-    }
-
-    /// Trains one fresh `build()` per shape and returns the first shape's fingerprint.
-    fn assert_thread_shapes_agree(
-        fixture: &str,
-        budget: Option<u32>,
-        build: impl Fn() -> StudySetup,
-        shapes: &[usize],
-    ) -> SelectionFingerprint {
-        let reference = train(build(), &StubComm, shapes[0], fixture, budget);
-        for (index, &n_threads) in shapes.iter().enumerate().skip(1) {
-            let repeat = if shapes[..index].contains(&n_threads) {
-                " repeat"
-            } else {
-                ""
-            };
-            train(build(), &StubComm, n_threads, fixture, budget).assert_matches(
-                &reference,
-                &format!("{fixture} threads={n_threads}{repeat}"),
-            );
-        }
-        reference
     }
 
     /// `build` gives a fixture built through [`sample`].
@@ -4503,41 +4370,6 @@ mod compact_fold_determinism {
         }
     }
 
-    /// Every rank of the world must hold a trial and, on two or more ranks, a
-    /// strict share of them, so a rank's forward window differs from the single
-    /// rank's.
-    fn assert_world_splits_the_trials(fixture: &str, world: &impl Communicator, trials: usize) {
-        assert!(
-            world.size() <= trials,
-            "a world of {} ranks leaves a rank without a trial",
-            world.size()
-        );
-        if world.size() >= 2 {
-            let share = trials.div_ceil(world.size());
-            assert!(
-                share < trials,
-                "{fixture}: a rank trains {share} of the {trials} trials on {} ranks, so its \
-                 forward window is the single rank's",
-                world.size()
-            );
-        }
-    }
-
-    fn assert_matches_single_rank(
-        world: &impl Communicator,
-        on_world: &SelectionFingerprint,
-        reference: &SelectionFingerprint,
-    ) {
-        on_world.assert_matches(
-            reference,
-            &format!(
-                "rank {} of {} must be bit-identical to the single-rank reference",
-                world.rank(),
-                world.size()
-            ),
-        );
-    }
-
     /// Compares every rank's fingerprint of the by-node `CVaR` lag study, trained
     /// on the MPI world, with a single-rank run of the same study in the same
     /// process. Under `cargo test` the world has one rank and the comparison is
@@ -4619,5 +4451,127 @@ mod compact_fold_determinism {
         let reference = train(probe, &LocalBackend, 1, FAN, None);
         let on_world = train(build(), &world, 1, FAN, None);
         assert_matches_single_rank(&world, &on_world, &reference);
+    }
+}
+
+mod trial_isolated_lag_chain {
+    //! Trial-isolation gates: a trial's inflow lag chain is its own, so its
+    //! trajectory depends on neither how many trials share its worker thread or
+    //! rank nor on their order. The gates need a worker that owns several
+    //! trials, stochastic inflow, and a lag period that spans several stages;
+    //! the weeks-then-closing-month fixture has the last, and the shape test
+    //! pins that its calendar, and the multi-resolution case's, keep the lag
+    //! transitions the gates read.
+
+    use std::path::Path;
+
+    use novomodelo_comm::{BackendKind, LocalBackend, create_communicator};
+    use novomodelo_sddp::StudySetup;
+    use novomodelo_sddp::setup::StageIdx;
+
+    use crate::common::determinism_gates::{
+        BUDGET_THAT_EVICTS_NOTHING, assert_matches_single_rank, assert_thread_shapes_agree,
+        assert_world_splits_the_trials, sample, train,
+    };
+    use crate::common::fresh_setup_with_openings;
+
+    const FIXTURE: &str = "tests/fixtures/weekly_then_closing_month";
+    const MULTI_RESOLUTION_CASE: &str =
+        "../../examples/deterministic/d30-multi-resolution-monthly-quarterly";
+    const OPENINGS: u32 = 3;
+    const FIXTURE_LAST_WEEK_OF_JANUARY: usize = 3;
+    const FORWARD_PASSES: u32 = 4;
+    const ITERATIONS: u32 = 8;
+    const THREAD_SHAPES: [usize; 4] = [1, 2, 4, 1];
+
+    fn study(case: &str) -> StudySetup {
+        fresh_setup_with_openings(Path::new(case), OPENINGS, |config| {
+            sample(config, FORWARD_PASSES, ITERATIONS);
+        })
+    }
+
+    fn assert_every_thread_count_gives_the_same_bits(case: &str) {
+        assert_thread_shapes_agree(
+            case,
+            Some(BUDGET_THAT_EVICTS_NOTHING),
+            || study(case),
+            &THREAD_SHAPES,
+        );
+    }
+
+    /// One thread per rank puts every trial of a rank on one worker, which is
+    /// where a trial can read the lag chain another trial left.
+    fn assert_world_size_gives_the_same_bits(case: &str) {
+        let world =
+            create_communicator(BackendKind::Auto).expect("communicator construction must succeed");
+        let trials = usize::try_from(FORWARD_PASSES).unwrap();
+        assert_world_splits_the_trials(case, &world, trials);
+
+        let budget = Some(BUDGET_THAT_EVICTS_NOTHING);
+        let reference = train(study(case), &LocalBackend, 1, case, budget);
+        let on_world = train(study(case), &world, 1, case, budget);
+        assert_matches_single_rank(&world, &on_world, &reference);
+    }
+
+    #[test]
+    fn fixture_calendars_have_the_lag_shapes_the_gates_need() {
+        let fixture = fresh_setup_with_openings(Path::new(FIXTURE), OPENINGS, |_| {});
+        let ctx = fixture.stage_ctx();
+        for t in 0..FIXTURE_LAST_WEEK_OF_JANUARY {
+            let lag = ctx.stage_lag(StageIdx(t));
+            assert!(
+                !lag.finalize_period,
+                "{FIXTURE}: stage {t} must have finalize_period == false"
+            );
+            assert!(
+                lag.accumulate_weight > 0.0,
+                "{FIXTURE}: stage {t} must have accumulate_weight > 0, got {}",
+                lag.accumulate_weight
+            );
+        }
+        assert!(
+            ctx.stage_lag(StageIdx(FIXTURE_LAST_WEEK_OF_JANUARY))
+                .finalize_period,
+            "{FIXTURE}: stage {FIXTURE_LAST_WEEK_OF_JANUARY} must have finalize_period == true"
+        );
+
+        let multi_resolution =
+            fresh_setup_with_openings(Path::new(MULTI_RESOLUTION_CASE), OPENINGS, |_| {});
+        let ctx = multi_resolution.stage_ctx();
+        assert!(
+            (0..multi_resolution.num_stages())
+                .any(|t| ctx.stage_lag(StageIdx(t)).rebuild_from_downstream),
+            "{MULTI_RESOLUTION_CASE}: at least one stage must have rebuild_from_downstream == true"
+        );
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "slow-tests"),
+        ignore = "slow: run with --features slow-tests"
+    )]
+    fn weekly_closing_month_trains_to_the_same_bits_at_every_thread_count() {
+        assert_every_thread_count_gives_the_same_bits(FIXTURE);
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(feature = "slow-tests"),
+        ignore = "slow: run with --features slow-tests"
+    )]
+    fn monthly_quarterly_rebuild_trains_to_the_same_bits_at_every_thread_count() {
+        assert_every_thread_count_gives_the_same_bits(MULTI_RESOLUTION_CASE);
+    }
+
+    #[test]
+    #[cfg_attr(not(feature = "slow-tests"), ignore = "slow: trains on the MPI world")]
+    fn weekly_closing_month_is_world_size_invariant() {
+        assert_world_size_gives_the_same_bits(FIXTURE);
+    }
+
+    #[test]
+    #[cfg_attr(not(feature = "slow-tests"), ignore = "slow: trains on the MPI world")]
+    fn monthly_quarterly_rebuild_is_world_size_invariant() {
+        assert_world_size_gives_the_same_bits(MULTI_RESOLUTION_CASE);
     }
 }

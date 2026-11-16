@@ -14,6 +14,7 @@ use crate::{
     risk_measure::RiskMeasure,
     setup::node_graph::NodeId,
     solve::StageOpeningSolver,
+    training::stage_solve_prep::StateSource,
     workspace::{BasisStoreSliceMut, SolverWorkspace},
 };
 
@@ -156,7 +157,18 @@ pub(crate) fn process_by_scenario_backward<S: SolverInterface + Send>(
         ws.solver.reset_solver_state();
         prepare_child_lp(opening_solver, ws, ctx, succ, &child);
         let source = succ.bracket_source(m, &child);
-        pin_child_lp(ws, ctx, training_ctx, &child, x_hat, s, source);
+        pin_child_lp(
+            ws,
+            ctx,
+            training_ctx,
+            &child,
+            StateSource {
+                state: x_hat,
+                partial_sum: succ.partial_sum_source(m),
+            },
+            s,
+            source,
+        );
 
         // Resolved per child, never once from child 0: each child's External
         // column is its own.

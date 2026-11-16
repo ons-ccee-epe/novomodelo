@@ -8,15 +8,17 @@ use novomodelo_core::TrainingEvent;
 use novomodelo_io::Config;
 use novomodelo_io::config::{RowSelectionConfig, SelectionMethod, StoppingRuleConfig};
 use novomodelo_sddp::cut::CutPool;
+use novomodelo_sddp::forward::{ForwardPassBatch, run_forward_pass};
 use novomodelo_sddp::indexer::{CutSlot, CutStateProjection};
 use novomodelo_sddp::setup::{NodePos, StageIdx};
+use novomodelo_sddp::test_support::bound_recording::{BoundRecordingSolver, BoundWrite};
 use novomodelo_sddp::test_support::{
     ProbeCut, ProbeCuts, ProbeOpening, inflow_slack_bounds_for_probe, opening_cut_for_probe,
-    stage_state_box_bounds,
+    prep_for_probe_with_partial_sum, solve_probe_opening, stage_state_box_bounds,
 };
-use novomodelo_sddp::workspace::SolverWorkspace;
-use novomodelo_sddp::{FutureCostFunction, SddpError, StudySetup};
-use novomodelo_solver::{ActiveSolver, SolverInterface};
+use novomodelo_sddp::workspace::{BasisStore, SolverWorkspace};
+use novomodelo_sddp::{FutureCostFunction, SddpError, StudySetup, TrajectoryRecord};
+use novomodelo_solver::{ActiveSolver, SolverInterface, StageTemplate};
 use novomodelo_stochastic::OpeningTreeView;
 
 use super::expanded_solve::{CutRowSet, load_compact_cut_rows};
@@ -157,10 +159,116 @@ impl CutOracleReport {
     }
 }
 
+/// The open lag period's partial sum per hydro that every forward visit of every iteration of a
+/// run read before its solve, from a replay over the cut-free setup: the sum is a function of the
+/// noise and the PAR lags alone, so the replay of iteration `i` reproduces the run's.
+pub struct PartialSums {
+    n_stages: usize,
+    forward_passes: usize,
+    n_hydros: usize,
+    visits: Vec<Vec<f64>>,
+}
+
+impl PartialSums {
+    /// The sum the visit of `trial` at `stage` read in `iteration` (1-based); zeros where no pool
+    /// of the study closes a lag period.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `iteration` was not replayed.
+    pub fn at(&self, iteration: u64, trial: usize, stage: usize) -> Vec<f64> {
+        let index = usize::try_from(iteration)
+            .ok()
+            .and_then(|iteration| iteration.checked_sub(1))
+            .map(|iteration| (iteration * self.forward_passes + trial) * self.n_stages + stage);
+        let visit = index
+            .and_then(|index| self.visits.get(index))
+            .unwrap_or_else(|| panic!("iteration {iteration} was not replayed"));
+        if visit.is_empty() {
+            vec![0.0; self.n_hydros]
+        } else {
+            visit.clone()
+        }
+    }
+
+    /// The sum the cut of `pool` at `slot` was generated under: the one its generating visit read
+    /// at `stage`, the stage whose LP the cut is a function of.
+    pub fn of_cut(&self, pool: &CutPool, slot: usize, stage: usize) -> Vec<f64> {
+        let origin = pool.metadata(slot);
+        self.at(
+            origin.iteration_generated,
+            origin.forward_pass_index as usize,
+            stage,
+        )
+    }
+}
+
+/// Replays every iteration of `setup`'s run, one forward pass each over its cut-free templates,
+/// and keeps the partial sum each visit's pin read.
+///
+/// # Panics
+///
+/// Panics if `setup` holds an active cut, or if a forward pass fails.
+pub fn replay_partial_sums(setup: &StudySetup) -> PartialSums {
+    assert_eq!(
+        setup.fcf.total_active_cuts(),
+        0,
+        "the replay runs against cut-free templates"
+    );
+    let stage_ctx = setup.stage_ctx();
+    let training_ctx = setup.training_ctx();
+    let frozen: Vec<StageTemplate> = training_ctx
+        .node_graph
+        .pool_stage
+        .iter()
+        .map(|stage| stage_ctx.templates[stage.0].clone())
+        .collect();
+    let n_stages = setup.num_stages();
+    let forward_passes = setup.fcf.forward_passes as usize;
+    let mut pool = setup
+        .create_workspace_pool(&StubComm, 1, ActiveSolver::new)
+        .expect("replay_partial_sums: workspace pool");
+    let mut basis_store = BasisStore::new(forward_passes, training_ctx.node_graph.nodes.len());
+    let mut visits = Vec::new();
+    for iteration in 1..=setup.loop_params.max_iterations {
+        let mut records = vec![TrajectoryRecord::default(); forward_passes * n_stages];
+        let batch = ForwardPassBatch {
+            local_forward_passes: forward_passes,
+            total_forward_passes: forward_passes,
+            iteration,
+            fwd_offset: 0,
+            event_sender: None,
+        };
+        let _ = run_forward_pass(
+            &mut pool.workspaces,
+            &mut basis_store,
+            &stage_ctx,
+            &frozen,
+            &setup.fcf,
+            &training_ctx,
+            &batch,
+            &mut records,
+        )
+        .expect("replay_partial_sums: forward pass");
+        visits.extend(records.iter().map(|record| record.partial_sum().to_vec()));
+    }
+    PartialSums {
+        n_stages,
+        forward_passes,
+        n_hydros: setup.stage_state().hydro_count,
+        visits,
+    }
+}
+
+pub fn all_zero(values: &[f64]) -> bool {
+    values.iter().all(|&value| value == 0.0)
+}
+
 /// Per-run borrows [`run_cut_oracles`] threads into [`check_pool`]/[`evaluate_point`].
 struct OracleCtx<'a> {
     setup: &'a StudySetup,
     tree_view: OpeningTreeView<'a>,
+    partial_sums: &'a PartialSums,
     /// Per pool, how many cuts the final iteration's selection pass reactivated:
     /// such a cut is an active row that the final backward solve did not have, so
     /// under-tightness against the active rows is no invariant there.
@@ -250,6 +358,23 @@ fn check_mask(
     }
 }
 
+fn reload_successor_rows(
+    setup: &StudySetup,
+    ws: &mut SolverWorkspace<ActiveSolver>,
+    rows: &CutRowSet,
+) {
+    let s = rows.resident_pool;
+    ws.solver.reset_solver_state();
+    load_compact_cut_rows(
+        &mut ws.solver,
+        setup,
+        setup.stage_ctx().template(StageIdx(s)),
+        &setup.fcf.pools[s],
+        &setup.training_ctx().cut_state_layouts[s],
+        rows,
+    );
+}
+
 /// Solves one opening of the successor stage, whose LP is the compact template plus `rows`,
 /// cold: the LP is reloaded first, so the solve depends neither on the order of the points nor
 /// on an earlier call's slack override.
@@ -270,15 +395,7 @@ pub fn solve_successor_opening(
     let training_ctx = setup.training_ctx();
     let s = rows.resident_pool;
     let pool = &setup.fcf.pools[s];
-    ws.solver.reset_solver_state();
-    load_compact_cut_rows(
-        &mut ws.solver,
-        setup,
-        stage_ctx.template(StageIdx(s)),
-        pool,
-        &training_ctx.cut_state_layouts[s],
-        rows,
-    );
+    reload_successor_rows(setup, ws, rows);
     opening_cut_for_probe(
         ws,
         &stage_ctx,
@@ -297,6 +414,127 @@ pub fn solve_successor_opening(
         },
         out,
     )
+}
+
+/// Solves one opening of the successor stage as [`solve_successor_opening`] does, with the cut rows
+/// pinned at `partial_sum` instead of a fresh workspace's zero, and returns its objective. Only
+/// the objective is read, so no cut is extracted. Empty `inflow_slack_bounds`, which
+/// [`inflow_slack_bounds_for_probe`] returns when the method does not truncate, leave the prep's
+/// bounds in place.
+///
+/// # Errors
+///
+/// Returns [`SddpError::Infeasible`] when the LP is infeasible, or [`SddpError::Solver`] for any
+/// other solver failure.
+pub fn successor_objective_at(
+    setup: &StudySetup,
+    ws: &mut SolverWorkspace<ActiveSolver>,
+    rows: &CutRowSet,
+    x: &[f64],
+    raw_noise: &[f64],
+    inflow_slack_bounds: Option<(&[f64], &[f64])>,
+    partial_sum: &[f64],
+) -> Result<f64, SddpError> {
+    let stage_ctx = setup.stage_ctx();
+    let training_ctx = setup.training_ctx();
+    let s = rows.resident_pool;
+    let pool = &setup.fcf.pools[s];
+    reload_successor_rows(setup, ws, rows);
+    let (view, _) = solve_probe_opening(
+        ws,
+        &stage_ctx,
+        &training_ctx,
+        &ProbeOpening {
+            stage: StageIdx(s),
+            pinned_state: x,
+            raw_noise,
+            cuts: ProbeCuts {
+                pool,
+                pool_id: s,
+                slots: &rows.slots,
+            },
+            extracted_pool_id: rows.extracted_pool,
+            inflow_slack_bounds: inflow_slack_bounds.filter(|(lower, _)| !lower.is_empty()),
+        },
+        Some(partial_sum),
+    )?;
+    Ok(view.objective)
+}
+
+/// The RHS the production prep writes for the row of cut `slot` of pool `stage` when `stage`'s LP
+/// is pinned at `incoming_state`, with the lag accumulator at `partial_sum` and the noise
+/// `raw_noise`: the row of one forward visit, as that visit's solve saw it.
+///
+/// # Panics
+///
+/// Panics if the probe solve fails or the prep does not push the cut row's RHS.
+pub fn pushed_cut_rhs_at_visit(
+    setup: &StudySetup,
+    stage: usize,
+    slot: usize,
+    incoming_state: &[f64],
+    partial_sum: &[f64],
+    raw_noise: &[f64],
+) -> f64 {
+    let stage_ctx = setup.stage_ctx();
+    let training_ctx = setup.training_ctx();
+    let pool = &setup.fcf.pools[stage];
+    let rows = CutRowSet {
+        resident_pool: stage,
+        extracted_pool: stage,
+        slots: vec![slot],
+        frozen: 0,
+    };
+    let mut workspaces = setup
+        .create_workspace_pool(&StubComm, 1, || {
+            ActiveSolver::new().map(BoundRecordingSolver::new)
+        })
+        .expect("pushed_cut_rhs_at_visit: workspace pool");
+    let ws = &mut workspaces.workspaces[0];
+    load_compact_cut_rows(
+        &mut ws.solver,
+        setup,
+        stage_ctx.template(StageIdx(stage)),
+        pool,
+        &training_ctx.cut_state_layouts[stage],
+        &rows,
+    );
+    prep_for_probe_with_partial_sum(
+        ws,
+        &stage_ctx,
+        &training_ctx,
+        StageIdx(stage),
+        incoming_state,
+        partial_sum,
+        raw_noise,
+        &ProbeCuts {
+            pool,
+            pool_id: stage,
+            slots: &rows.slots,
+        },
+    );
+    ws.solver
+        .solve(None)
+        .expect("pushed_cut_rhs_at_visit: the visit's LP must solve");
+    let solve = ws
+        .solver
+        .inner()
+        .recorded()
+        .last()
+        .expect("pushed_cut_rhs_at_visit: the solve must be recorded");
+    let row = solve.base_rows;
+    solve
+        .writes
+        .iter()
+        .rev()
+        .find_map(|write| match write {
+            BoundWrite::RowLowerRange { first_row, lower } => row
+                .checked_sub(*first_row)
+                .and_then(|offset| lower.get(offset))
+                .copied(),
+            _ => None,
+        })
+        .expect("pushed_cut_rhs_at_visit: the prep must push the cut row's RHS")
 }
 
 /// Solve every opening of stage `s = t + 1` at sample point `x` (stage `t`'s
@@ -372,7 +610,7 @@ fn slack_signature(
         .collect()
 }
 
-fn bits_eq(a: &[f64], b: &[f64]) -> bool {
+pub fn bits_eq(a: &[f64], b: &[f64]) -> bool {
     a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits())
 }
 
@@ -383,12 +621,12 @@ fn signature_eq(a: &SlackSignature, b: &SlackSignature) -> bool {
             .all(|((la, ua), (lb, ub))| bits_eq(la, lb) && bits_eq(ua, ub))
 }
 
-/// The successor value at `x` with every opening's slack bounds frozen at
-/// `signature`, or `+∞` when an opening is infeasible there.
+/// The successor value at `x` with the cut rows pinned at `partial_sum` and, when `signature` is
+/// given, every opening's slack bounds frozen at it, or `+∞` when an opening is infeasible there.
 // Rationale (too_many_arguments): `rows` selects the successor cut rows per
 // call, so it cannot ride on the per-run `OracleCtx` with the other borrows.
 #[allow(clippy::too_many_arguments)]
-fn frozen_q_hat(
+fn q_hat_at_partial_sum(
     label: &str,
     occ: &OracleCtx<'_>,
     ws: &mut SolverWorkspace<ActiveSolver>,
@@ -396,23 +634,24 @@ fn frozen_q_hat(
     t: usize,
     s: usize,
     x: &[f64],
-    signature: &SlackSignature,
+    signature: Option<&SlackSignature>,
+    partial_sum: &[f64],
 ) -> f64 {
     let n_openings = occ.tree_view.n_openings(s);
     let weight = 1.0 / n_openings as f64;
     let mut q_hat = 0.0_f64;
-    let mut cut = ProbeCut::new(&occ.setup.training_ctx());
-    for (o, (lower, upper)) in signature.iter().enumerate() {
-        match solve_successor_opening(
+    for o in 0..n_openings {
+        let frozen = signature.map(|signature| (&signature[o].0[..], &signature[o].1[..]));
+        match successor_objective_at(
             occ.setup,
             ws,
             rows,
             x,
             occ.tree_view.opening(s, o),
-            Some((lower, upper)),
-            &mut cut,
+            frozen,
+            partial_sum,
         ) {
-            Ok(()) => q_hat += weight * cut.objective,
+            Ok(objective) => q_hat += weight * objective,
             Err(SddpError::Infeasible { .. }) => return f64::INFINITY,
             Err(other) => {
                 panic!("{label}: pool {t} frozen-correction probe failed unexpectedly: {other}")
@@ -422,32 +661,61 @@ fn frozen_q_hat(
     q_hat
 }
 
-/// The slack signatures a pool's checked cuts are frozen at: `by_slot` pairs each
-/// checked slot with its index into `distinct`.
+/// What a checked cut's successor value is frozen at: the inflow-slack bounds of its own trial
+/// state and the partial sum its generating visit read at the successor stage.
+struct CutFreeze {
+    signature: SlackSignature,
+    partial_sum: Vec<f64>,
+}
+
+impl CutFreeze {
+    fn same_as(&self, other: &Self) -> bool {
+        signature_eq(&self.signature, &other.signature)
+            && bits_eq(&self.partial_sum, &other.partial_sum)
+    }
+}
+
+/// The freezes a pool's checked cuts are valued at: `by_slot` pairs each checked slot with its
+/// index into `distinct`.
 struct CutSignatures {
-    distinct: Vec<SlackSignature>,
+    distinct: Vec<CutFreeze>,
     by_slot: Vec<(usize, usize)>,
+}
+
+impl CutSignatures {
+    fn push(&mut self, slot: usize, freeze: CutFreeze) {
+        let k = if let Some(k) = self.distinct.iter().position(|d| d.same_as(&freeze)) {
+            k
+        } else {
+            self.distinct.push(freeze);
+            self.distinct.len() - 1
+        };
+        self.by_slot.push((slot, k));
+    }
 }
 
 fn cut_signatures_at_trial_states(
     occ: &OracleCtx<'_>,
     ws: &mut SolverWorkspace<ActiveSolver>,
+    t: usize,
     s: usize,
     cut_trial_states: &[(usize, Vec<f64>)],
 ) -> CutSignatures {
-    let mut distinct: Vec<SlackSignature> = Vec::new();
-    let mut by_slot: Vec<(usize, usize)> = Vec::new();
+    let pool = &occ.setup.fcf.pools[t];
+    let mut signatures = CutSignatures {
+        distinct: Vec::new(),
+        by_slot: Vec::new(),
+    };
     for (slot, x_hat) in cut_trial_states {
-        let signature = slack_signature(occ, ws, s, x_hat);
-        let k = if let Some(k) = distinct.iter().position(|d| signature_eq(d, &signature)) {
-            k
-        } else {
-            distinct.push(signature);
-            distinct.len() - 1
-        };
-        by_slot.push((*slot, k));
+        signatures.push(
+            *slot,
+            CutFreeze {
+                signature: slack_signature(occ, ws, s, x_hat),
+                partial_sum: occ.partial_sums.of_cut(pool, *slot, s),
+            },
+        );
     }
-    CutSignatures { distinct, by_slot }
+    signatures
 }
 
 /// Every populated slot of pool `t` under the one, empty signature of a successor
@@ -481,10 +749,20 @@ fn state_free_cut_signatures(
         pool.generated(),
         "{label}: pool {t} has a never-written slot"
     );
-    CutSignatures {
-        distinct: vec![signature],
-        by_slot: (0..pool.populated()).map(|slot| (slot, 0)).collect(),
+    let mut signatures = CutSignatures {
+        distinct: Vec::new(),
+        by_slot: Vec::new(),
+    };
+    for slot in 0..pool.populated() {
+        signatures.push(
+            slot,
+            CutFreeze {
+                signature: signature.clone(),
+                partial_sum: occ.partial_sums.of_cut(pool, slot, s),
+            },
+        );
     }
+    signatures
 }
 
 /// Every populated cut of pool `s`, active or not, as the cut rows of stage `s`'s LP, whose
@@ -511,13 +789,17 @@ fn populated_rows(label: &str, fcf: &FutureCostFunction, s: usize, t: usize) -> 
 // pool's own trial/box points and per-cut slack signatures, the solver workspace,
 // and the accumulating report; a second wrapper struct would just relocate the
 // same values.
-#[allow(clippy::too_many_arguments)]
+// Rationale (too_many_lines): one sequential per-point oracle (evaluate, mask, validity,
+// tightness) whose steps share the point's evaluation and the report; helpers would each take the
+// full context.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn check_pool(
     label: &str,
     t: usize,
     s: usize,
     occ: &OracleCtx<'_>,
     trial_points: &[Vec<f64>],
+    trial_partial_sums: &[Vec<f64>],
     box_points: &[Vec<f64>],
     cut_signatures: &CutSignatures,
     ws: &mut SolverWorkspace<ActiveSolver>,
@@ -591,12 +873,14 @@ fn check_pool(
                 let frozen_values: Vec<f64> = cut_signatures
                     .distinct
                     .iter()
-                    .map(|signature| {
-                        if signature_eq(signature, &point_signature) {
+                    .map(|freeze| {
+                        if signature_eq(&freeze.signature, &point_signature)
+                            && all_zero(&freeze.partial_sum)
+                        {
                             validity_q_hat
                         } else {
                             report.frozen_resolves += 1;
-                            let value = frozen_q_hat(
+                            let value = q_hat_at_partial_sum(
                                 label,
                                 occ,
                                 ws,
@@ -604,7 +888,8 @@ fn check_pool(
                                 t,
                                 s,
                                 x,
-                                signature,
+                                Some(&freeze.signature),
+                                &freeze.partial_sum,
                             );
                             if value == f64::INFINITY {
                                 report.frozen_infeasible += 1;
@@ -636,13 +921,32 @@ fn check_pool(
                 // after a selection run and is worth at least the cut computed there.
                 if is_trial && reactivated == 0 {
                     report.under_tightness_points_checked += 1;
+                    let trial_q_hat = if all_zero(&trial_partial_sums[idx]) {
+                        eval.q_hat
+                    } else {
+                        let value = q_hat_at_partial_sum(
+                            label,
+                            occ,
+                            ws,
+                            &active_rows,
+                            t,
+                            s,
+                            x,
+                            None,
+                            &trial_partial_sums[idx],
+                        );
+                        assert!(
+                            value.is_finite(),
+                            "{label}: pool {t} trial point {idx} is infeasible at its own partial sum"
+                        );
+                        value
+                    };
                     let evaluated = pool_t.evaluate_at_state(&proj);
-                    let bound = value_tolerance(evaluated, eval.q_hat);
-                    if evaluated < eval.q_hat - bound {
+                    let bound = value_tolerance(evaluated, trial_q_hat);
+                    if evaluated < trial_q_hat - bound {
                         report.tightness.push(format!(
                             "{label}: pool {t} trial point {idx}: evaluate_at_state={evaluated} \
-                             Q_hat={} tol={bound}",
-                            eval.q_hat
+                             Q_hat={trial_q_hat} tol={bound}"
                         ));
                     }
                 }
@@ -732,8 +1036,8 @@ fn recover_cut_trial_states(
         .collect()
 }
 
-/// The final iteration's `forward_passes` trial states of pool `t`, its dropped
-/// dimensions from `fill`. When the pool drops some, `fill` is the state the first
+/// The final iteration's `forward_passes` trial states of pool `t` and the slots of their cuts,
+/// its dropped dimensions from `fill`. When the pool drops some, `fill` is the state the first
 /// iteration's forward pass ended the stage in, and the pool's first stored state
 /// must equal it in the dimensions the pool keeps, bit for bit.
 ///
@@ -748,26 +1052,27 @@ fn final_trial_points(
     layout: &CutStateProjection,
     forward_passes: usize,
     fill: &[f64],
-) -> Vec<Vec<f64>> {
-    let stored: Vec<&[f64]> = (0..pool.populated())
-        .filter_map(|slot| pool.trial_state(slot))
+) -> (Vec<Vec<f64>>, Vec<usize>) {
+    let stored: Vec<(usize, &[f64])> = (0..pool.populated())
+        .filter_map(|slot| pool.trial_state(slot).map(|row| (slot, row)))
         .collect();
     assert!(
         stored.len() >= forward_passes,
         "{label}: pool {t} stored {} states, fewer than forward_passes ({forward_passes})",
         stored.len()
     );
-    let points: Vec<Vec<f64>> = stored[stored.len() - forward_passes..]
+    let last = &stored[stored.len() - forward_passes..];
+    let points: Vec<Vec<f64>> = last
         .iter()
-        .map(|row| lift_to_global_state(layout, row, fill))
+        .map(|&(_, row)| lift_to_global_state(layout, row, fill))
         .collect();
     if layout.n_slots() < fill.len() {
         assert!(
-            bits_eq(&lift_to_global_state(layout, stored[0], fill), fill),
+            bits_eq(&lift_to_global_state(layout, stored[0].1, fill), fill),
             "{label}: pool {t}: the first stored state is not the state the first iteration's forward pass ended the stage in"
         );
     }
-    points
+    (points, last.iter().map(|&(slot, _)| slot).collect())
 }
 
 /// Trains the compact `setup` with `HiGHS` on a single rank/thread, then gates every stored
@@ -800,6 +1105,7 @@ pub fn run_cut_oracles(label: &str, mut setup: StudySetup) -> CutOracleReport {
 
     setup.set_export_states(true);
     let first_forward_states = super::forward_replay::first_iteration_forward_states(&setup);
+    let partial_sums = replay_partial_sums(&setup);
     let comm = StubComm;
     let mut solver = ActiveSolver::new().expect("run_cut_oracles: ActiveSolver::new must succeed");
     let (event_sender, events) = mpsc::channel();
@@ -857,6 +1163,7 @@ pub fn run_cut_oracles(label: &str, mut setup: StudySetup) -> CutOracleReport {
     let occ = OracleCtx {
         setup: &setup,
         tree_view: setup.training_ctx().stochastic.tree_view(),
+        partial_sums: &partial_sums,
         reactivated_by_final_pass: &reactivated_by_final_pass,
     };
 
@@ -884,7 +1191,12 @@ pub fn run_cut_oracles(label: &str, mut setup: StudySetup) -> CutOracleReport {
             forward_passes == 1 && (0..=t).all(|stage| occ.tree_view.n_openings(stage) == 1),
             forward_state,
         );
-        let trial_points = final_trial_points(label, t, pool_t, layout_t, forward_passes, &fill);
+        let (trial_points, trial_slots) =
+            final_trial_points(label, t, pool_t, layout_t, forward_passes, &fill);
+        let trial_partial_sums: Vec<Vec<f64>> = trial_slots
+            .iter()
+            .map(|&slot| partial_sums.of_cut(pool_t, slot, s))
+            .collect();
 
         let mut box_points = vec![
             box_corner(&lo, &hi, &trial_points[0], f64::midpoint),
@@ -900,7 +1212,7 @@ pub fn run_cut_oracles(label: &str, mut setup: StudySetup) -> CutOracleReport {
             state_free_cut_signatures(label, &occ, ws, t, s, &trial_points[0])
         } else {
             let cut_trial_states = recover_cut_trial_states(label, t, pool_t, layout_t, &fill);
-            cut_signatures_at_trial_states(&occ, ws, s, &cut_trial_states)
+            cut_signatures_at_trial_states(&occ, ws, t, s, &cut_trial_states)
         };
 
         check_pool(
@@ -909,6 +1221,7 @@ pub fn run_cut_oracles(label: &str, mut setup: StudySetup) -> CutOracleReport {
             s,
             &occ,
             &trial_points,
+            &trial_partial_sums,
             &box_points,
             &cut_signatures,
             ws,

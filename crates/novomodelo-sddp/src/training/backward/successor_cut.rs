@@ -48,6 +48,7 @@ pub(super) fn aggregate_successor_cut<'r>(
             inputs: ChainRuleInputs {
                 slots: child.chain_rule_slots,
                 resident_pool: child.successor_pool,
+                resident_lag_point: training_ctx.cut_state_layouts[child.pool_id].lag_point(),
                 extracted: succ.cut_state,
                 par: training_ctx.stochastic.par(),
                 stage: succ.successor.0,

@@ -44,7 +44,7 @@ pub(crate) fn child_cut_rows<'a>(
     }
 }
 
-/// Pins `x_hat` on `child`'s loaded compact LP and computes the brackets of its
+/// Pins `trial_state` on `child`'s loaded compact LP and computes the brackets of its
 /// cut rows.
 ///
 /// Runs once per child LP load, after [`load_backward_lp`].
@@ -53,7 +53,7 @@ pub(crate) fn pin_child_lp<S: SolverInterface + Send>(
     ctx: &StageContext<'_>,
     training_ctx: &TrainingContext<'_>,
     child: &SuccessorChild<'_>,
-    x_hat: &[f64],
+    trial_state: StateSource<'_>,
     s: StageIdx,
     source: BracketSource<'_>,
 ) {
@@ -69,7 +69,7 @@ pub(crate) fn pin_child_lp<S: SolverInterface + Send>(
         ctx,
         training_ctx,
         s,
-        StateSource(x_hat),
+        trial_state,
         &child_cut_rows(training_ctx, child),
         source,
     );

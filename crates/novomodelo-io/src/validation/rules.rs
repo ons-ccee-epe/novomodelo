@@ -447,7 +447,7 @@ declare_rules! {
         "A defined season has no inflow history observation while estimation is active and the training inflow scheme is not external";
     SEMANTIC_SEASON_DURATION_SPREAD = "semantic.5b.29",
         Semantic, BusinessRuleViolation, Error,
-        "Stages that share a season_id differ in duration by more than the sub-period tolerance";
+        "A stage shares a season_id with stages of another duration and is neither the season's whole period nor a slice of it";
     SEMANTIC_SEASON_UNREFERENCED = "semantic.5b.30",
         Semantic, ModelQuality, Warning,
         "A season defined in season_definitions is referenced by no stage";

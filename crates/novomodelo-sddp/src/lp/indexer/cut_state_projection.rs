@@ -8,29 +8,130 @@ use novomodelo_core::temporal::StageStateConfig;
 
 use super::{CutSlot, InCol, OutCol, REGION_ORDER, StateDim, StateRegion, StateSpace};
 
-/// Cut-slot ranges of the lag point a cut row is evaluated at: Φ(h, 0) =
-/// `ẑ_h`, the realized inflow of this stage, and Φ(h, l) = `â_(h, l−1)` for
-/// l ≥ 1, the incoming lag one step back. Slots are lag-major: with N hydros,
-/// slot `lag0.start + l·N + h` holds (h, l).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// How a pool's cut rows are evaluated in lag space, fixed at setup from its stage's
+/// lag transition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LagPointMode {
+    /// Φ(h, 0) = `ẑ_h`, the realized inflow, and Φ(h, l) = `â_(h, l−1)` for l ≥ 1.
+    Shifted,
+    /// The stage leaves its lag period open, so its outgoing lags are the incoming ones.
+    Carry,
+    /// The stage closes a lag period that began at an earlier stage, so lag 0 mixes
+    /// the period's partial sum with `ẑ_h`.
+    Closing,
+}
+
+/// The per-hydro lag-0 coefficients of a `Closing` point, in hydro-id order.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ClosingCoefficients {
+    inverse_weight: Vec<f64>,
+    share: Vec<f64>,
+    incoming_weight: Vec<f64>,
+}
+
+impl ClosingCoefficients {
+    /// # Panics
+    ///
+    /// When the three vectors differ in length.
+    pub(crate) fn new(
+        inverse_weight: Vec<f64>,
+        share: Vec<f64>,
+        incoming_weight: Vec<f64>,
+    ) -> Self {
+        assert!(
+            share.len() == inverse_weight.len() && incoming_weight.len() == inverse_weight.len(),
+            "closing coefficients are per hydro"
+        );
+        Self {
+            inverse_weight,
+            share,
+            incoming_weight,
+        }
+    }
+
+    pub(crate) fn inverse_weight(&self) -> &[f64] {
+        &self.inverse_weight
+    }
+
+    pub(crate) fn share(&self) -> &[f64] {
+        &self.share
+    }
+
+    pub(crate) fn incoming_weight(&self) -> &[f64] {
+        &self.incoming_weight
+    }
+}
+
+/// A [`LagPointMode`] with the coefficients that mode reads: only `Closing` holds any.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum LagPointRule {
+    Shifted,
+    Carry,
+    Closing(ClosingCoefficients),
+}
+
+impl LagPointRule {
+    pub(crate) fn mode(&self) -> LagPointMode {
+        match self {
+            Self::Shifted => LagPointMode::Shifted,
+            Self::Carry => LagPointMode::Carry,
+            Self::Closing(_) => LagPointMode::Closing,
+        }
+    }
+
+    pub(crate) fn closing(&self) -> Option<&ClosingCoefficients> {
+        match self {
+            Self::Closing(coefficients) => Some(coefficients),
+            Self::Shifted | Self::Carry => None,
+        }
+    }
+}
+
+/// Cut-slot ranges of the lag region and the [`LagPointMode`] its cut rows are
+/// evaluated under: slots are lag-major, so with N hydros slot
+/// `lag0.start + l·N + h` holds (h, l). [`Self::full`] is geometric; [`Self::lag0`] and
+/// [`Self::shifted`] follow the mode.
+///
+/// The `Closing` coefficients are per hydro in hydro-id order and empty under any
+/// other mode.
+#[derive(Debug, Clone, PartialEq)]
 pub struct CutLagPoint {
     lag0: Range<usize>,
     shifted: Range<usize>,
+    rule: LagPointRule,
 }
 
 impl CutLagPoint {
-    /// Slots of (h, 0), read against p and σ·η.
+    fn shifted_over(lag0: Range<usize>, shifted: Range<usize>) -> Self {
+        Self {
+            lag0,
+            shifted,
+            rule: LagPointRule::Shifted,
+        }
+    }
+
+    /// Slots of (h, 0), read against p and σ·η; empty under `Carry`, whose every slot is read
+    /// against the incoming lag it holds.
     #[inline]
     #[must_use]
     pub fn lag0(&self) -> Range<usize> {
-        self.lag0.clone()
+        if matches!(self.rule, LagPointRule::Carry) {
+            self.lag0.start..self.lag0.start
+        } else {
+            self.lag0.clone()
+        }
     }
 
-    /// Slots of (h, l ≥ 1), read against â one lag back.
+    /// Slots read against the incoming lags: (h, l ≥ 1) one lag back, and under `Carry` every
+    /// (h, l) at its own lag.
     #[inline]
     #[must_use]
     pub fn shifted(&self) -> Range<usize> {
-        self.shifted.clone()
+        if matches!(self.rule, LagPointRule::Carry) {
+            self.lag0.start..self.shifted.end
+        } else {
+            self.shifted.clone()
+        }
     }
 
     /// Slots of every (h, l), lag-major; `0..0` when the lag region is absent.
@@ -38,6 +139,102 @@ impl CutLagPoint {
     #[must_use]
     pub fn full(&self) -> Range<usize> {
         self.lag0.start..self.shifted.end
+    }
+
+    /// The mode the pool's cut rows are evaluated under.
+    #[inline]
+    #[must_use]
+    pub fn mode(&self) -> LagPointMode {
+        self.rule.mode()
+    }
+
+    /// `1 / (W_h + w)` per hydro: the kernel's finalize multiplier at a `Closing` stage.
+    #[inline]
+    #[must_use]
+    pub fn closing_inverse_weight(&self) -> &[f64] {
+        self.rule
+            .closing()
+            .map_or(&[], ClosingCoefficients::inverse_weight)
+    }
+
+    /// `w · inverse_weight` per hydro: the weight of `ẑ_h` in a `Closing` lag 0.
+    #[inline]
+    #[must_use]
+    pub fn closing_share(&self) -> &[f64] {
+        self.rule.closing().map_or(&[], ClosingCoefficients::share)
+    }
+
+    /// `W_h` per hydro: the weight the lag period holds on entering a `Closing` stage.
+    #[inline]
+    #[must_use]
+    pub fn incoming_weight(&self) -> &[f64] {
+        self.rule
+            .closing()
+            .map_or(&[], ClosingCoefficients::incoming_weight)
+    }
+
+    /// The lag-0 mean a cut row's P dot reads: `conditional_mean` itself, or under `Closing`
+    /// `b + c ⊙ p` written into `out`, where `b = partial_sum ⊙ inverse_weight`. `partial_sum`
+    /// is read only under `Closing`.
+    pub fn mean_lane<'a>(
+        &self,
+        partial_sum: &[f64],
+        conditional_mean: &'a [f64],
+        out: &'a mut [f64],
+    ) -> &'a [f64] {
+        let n_hydros = self.lag0.len();
+        debug_assert!(
+            conditional_mean.len() >= n_hydros && out.len() >= n_hydros,
+            "mean_lane: conditional_mean or out is shorter than the hydro count"
+        );
+        let Some(closing) = self.rule.closing() else {
+            return conditional_mean;
+        };
+        debug_assert!(
+            partial_sum.len() >= n_hydros,
+            "mean_lane: partial_sum is shorter than the hydro count"
+        );
+        let coefficients = closing.inverse_weight.iter().zip(&closing.share);
+        for (((lane, &s), &p), (&inverse_weight, &share)) in out
+            .iter_mut()
+            .zip(partial_sum)
+            .zip(conditional_mean)
+            .zip(coefficients)
+        {
+            *lane = s * inverse_weight + share * p;
+        }
+        out
+    }
+
+    /// The lag-0 noise term a cut row's W dot reads: `noise_term` itself, or under `Closing`
+    /// `c ⊙ σ·η` written into `out`.
+    pub fn noise_lane<'a>(&self, noise_term: &'a [f64], out: &'a mut [f64]) -> &'a [f64] {
+        let n_hydros = self.lag0.len();
+        debug_assert!(
+            noise_term.len() >= n_hydros && out.len() >= n_hydros,
+            "noise_lane: noise_term or out is shorter than the hydro count"
+        );
+        let Some(closing) = self.rule.closing() else {
+            return noise_term;
+        };
+        for ((lane, &eta), &share) in out.iter_mut().zip(noise_term).zip(&closing.share) {
+            *lane = share * eta;
+        }
+        out
+    }
+
+    /// # Panics
+    ///
+    /// When a `Closing` rule's coefficients are not one per hydro of the lag region.
+    pub(crate) fn install_rule(&mut self, rule: LagPointRule) {
+        if let Some(closing) = rule.closing() {
+            assert_eq!(
+                closing.share.len(),
+                self.lag0.len(),
+                "closing coefficients are per hydro"
+            );
+        }
+        self.rule = rule;
     }
 }
 
@@ -169,15 +366,9 @@ impl CutStateProjection {
         let lag_point = if StateRegion::Lag.cut_enabled(state_config) && !lag_dims.is_empty() {
             let start = global_state_indices.partition_point(|d| d.get() < lag_dims.start);
             let first_shifted = start + global.hydro_count;
-            CutLagPoint {
-                lag0: start..first_shifted,
-                shifted: first_shifted..start + lag_dims.len(),
-            }
+            CutLagPoint::shifted_over(start..first_shifted, first_shifted..start + lag_dims.len())
         } else {
-            CutLagPoint {
-                lag0: 0..0,
-                shifted: 0..0,
-            }
+            CutLagPoint::shifted_over(0..0, 0..0)
         };
 
         debug_assert!(
@@ -226,11 +417,16 @@ impl CutStateProjection {
         &self.lag_point
     }
 
+    #[inline]
+    pub(crate) fn lag_point_mut(&mut self) -> &mut CutLagPoint {
+        &mut self.lag_point
+    }
+
     /// Whether the projection carries inflow-lag slots, the slots the chain rule writes.
     #[inline]
     #[must_use]
     pub fn has_lag_slots(&self) -> bool {
-        !self.lag_point.lag0().is_empty()
+        !self.lag_point.full().is_empty()
     }
 
     #[inline]
@@ -504,11 +700,22 @@ impl ChainRuleSlots {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        ChainRuleSlots, CutSlot, CutStateProjection, InCol, OutCol, StageStateConfig, StateDim,
+    use novomodelo_core::temporal::StageLagTransition;
+    use novomodelo_stochastic::par::{
+        DownstreamLagAccum, LagMajor, PrimaryLagAccum, advance_lag_chain,
     };
+    use proptest::prelude::*;
+    use proptest::test_runner::RngSeed;
+
+    use super::{
+        ChainRuleSlots, ClosingCoefficients, CutSlot, CutStateProjection, InCol, LagPointMode,
+        LagPointRule, OutCol, StageStateConfig, StateDim,
+    };
+    use crate::cut::CutPool;
+    use crate::cut::rhs::{cut_brackets_into, cut_noise_terms_into};
     use crate::indexer::{HydroSys, StateRegion, StateSpace};
-    use crate::test_support::constant_lead_resolution;
+    use crate::setup::NodeId;
+    use crate::test_support::{bits, constant_lead_resolution};
 
     fn finalized(
         hydro_count: usize,
@@ -1167,13 +1374,74 @@ mod tests {
     }
 
     #[test]
-    fn has_lag_slots_follows_the_lag_point() {
+    fn an_installed_lag_point_mode_leaves_the_slot_ranges_unchanged() {
+        let global = lagged_state_space();
+        let mut cut = CutStateProjection::new(&global, ALL_ENABLED);
+        let n_slots = cut.n_slots();
+        let lag_point = cut.lag_point();
+        assert_eq!(lag_point.mode(), LagPointMode::Shifted);
+        assert!(lag_point.closing_inverse_weight().is_empty());
+        assert!(lag_point.closing_share().is_empty());
+        assert!(lag_point.incoming_weight().is_empty());
+
+        cut.lag_point_mut()
+            .install_rule(closing_rule(&[1.0, 0.5], &[0.5, 0.25], &[0.5, 1.5]));
+
+        let lag_point = cut.lag_point();
+        assert_eq!(lag_point.mode(), LagPointMode::Closing);
+        assert_eq!(lag_point.closing_inverse_weight(), [1.0, 0.5]);
+        assert_eq!(lag_point.closing_share(), [0.5, 0.25]);
+        assert_eq!(lag_point.incoming_weight(), [0.5, 1.5]);
+        assert_eq!(lag_point.lag0(), 2..4);
+        assert_eq!(lag_point.shifted(), 4..6);
+        assert_eq!(lag_point.full(), 2..6);
+        assert!(cut.has_lag_slots());
+        assert_eq!(cut.n_slots(), n_slots);
+    }
+
+    #[test]
+    #[should_panic(expected = "closing coefficients are per hydro")]
+    fn closing_coefficients_of_unequal_lengths_are_refused() {
+        ClosingCoefficients::new(vec![1.0, 0.5], vec![0.5], vec![0.5, 1.5]);
+    }
+
+    #[test]
+    #[should_panic(expected = "closing coefficients are per hydro")]
+    fn a_closing_rule_without_coefficients_is_refused_at_a_pool_with_lag_slots() {
+        let mut cut = CutStateProjection::new(&lagged_state_space(), ALL_ENABLED);
+        cut.lag_point_mut()
+            .install_rule(closing_rule(&[], &[], &[]));
+    }
+
+    #[test]
+    fn a_carry_lag_point_reads_every_lag_slot_as_shifted() {
+        let global = lagged_state_space();
+
+        for (config, full) in [(ALL_ENABLED, 2..6), (LAGS_ONLY, 0..4), (STORAGE_ONLY, 0..0)] {
+            let mut cut = CutStateProjection::new(&global, config);
+            cut.lag_point_mut().install_rule(LagPointRule::Carry);
+
+            let lag_point = cut.lag_point();
+            assert_eq!(lag_point.mode(), LagPointMode::Carry);
+            assert_eq!(lag_point.lag0().len(), 0, "{config:?}");
+            assert_eq!(lag_point.shifted(), full, "{config:?}");
+            assert_eq!(lag_point.full(), full, "{config:?}");
+        }
+    }
+
+    #[test]
+    fn has_lag_slots_follows_the_full_lag_region() {
         let global = lagged_state_space();
         assert!(CutStateProjection::new(&global, ALL_ENABLED).has_lag_slots());
         assert!(CutStateProjection::new(&global, LAGS_ONLY).has_lag_slots());
         assert!(!CutStateProjection::new(&global, STORAGE_ONLY).has_lag_slots());
         let no_lags = CutStateProjection::new(&finalized(3, 0, &[]), ALL_ENABLED);
         assert!(!no_lags.has_lag_slots());
+
+        let mut carry = CutStateProjection::new(&global, ALL_ENABLED);
+        carry.lag_point_mut().install_rule(LagPointRule::Carry);
+        assert!(carry.lag_point().lag0().is_empty());
+        assert!(carry.has_lag_slots());
     }
 
     #[test]
@@ -1206,6 +1474,250 @@ mod tests {
             assert_eq!(cut.lag_point().lag0(), 0..0);
             assert_eq!(cut.lag_point().shifted(), 0..0);
             assert_eq!(cut.lag_point().full(), 0..0);
+        }
+    }
+
+    fn closing_rule(
+        inverse_weight: &[f64],
+        share: &[f64],
+        incoming_weight: &[f64],
+    ) -> LagPointRule {
+        LagPointRule::Closing(ClosingCoefficients::new(
+            inverse_weight.to_vec(),
+            share.to_vec(),
+            incoming_weight.to_vec(),
+        ))
+    }
+
+    fn closing_projection(
+        inverse_weight: &[f64],
+        share: &[f64],
+        incoming_weight: &[f64],
+    ) -> CutStateProjection {
+        let global = finalized(share.len(), 2, &[]);
+        let mut cut = CutStateProjection::new(&global, LAGS_ONLY);
+        cut.lag_point_mut()
+            .install_rule(closing_rule(inverse_weight, share, incoming_weight));
+        cut
+    }
+
+    #[test]
+    fn closing_mean_lane_is_the_partial_sum_share_plus_the_scaled_mean() {
+        let (inverse_weight, share) = ([1.0 / 3.0, 0.1], [2.0 / 3.0, 0.3]);
+        let cut = closing_projection(&inverse_weight, &share, &[1.0, 3.0]);
+        let (partial_sum, mean) = ([1.5, 2.25], [0.75, -4.0]);
+        let mut out = [f64::NAN; 2];
+        let out_at = out.as_ptr();
+
+        let lane = cut.lag_point().mean_lane(&partial_sum, &mean, &mut out);
+
+        assert_eq!(lane.as_ptr(), out_at);
+        let expected = [0, 1].map(|h| partial_sum[h] * inverse_weight[h] + share[h] * mean[h]);
+        assert_eq!(bits(lane), bits(&expected));
+    }
+
+    #[test]
+    fn closing_noise_lane_scales_each_noise_term_by_its_share() {
+        let share = [2.0 / 3.0, 0.3];
+        let cut = closing_projection(&[1.0 / 3.0, 0.1], &share, &[1.0, 3.0]);
+        let noise_term = [-0.5, 7.25];
+        let mut out = [f64::NAN; 2];
+        let out_at = out.as_ptr();
+
+        let lane = cut.lag_point().noise_lane(&noise_term, &mut out);
+
+        assert_eq!(lane.as_ptr(), out_at);
+        let expected = [0, 1].map(|h| share[h] * noise_term[h]);
+        assert_eq!(bits(lane), bits(&expected));
+    }
+
+    #[test]
+    fn shifted_and_carry_lag_lanes_return_the_input_slice() {
+        let (mean, noise_term) = ([1.0, 2.0], [3.0, 4.0]);
+
+        for rule in [LagPointRule::Shifted, LagPointRule::Carry] {
+            let mode = rule.mode();
+            let mut cut = closing_projection(&[1.0, 0.5], &[0.5, 0.25], &[0.5, 1.5]);
+            cut.lag_point_mut().install_rule(rule);
+            let lag_point = cut.lag_point();
+            let mut out = [f64::NAN; 2];
+
+            let lane = lag_point.mean_lane(&[], &mean, &mut out);
+            assert_eq!(lane.as_ptr(), mean.as_ptr(), "{mode:?}");
+            assert!(out.iter().all(|v| v.is_nan()), "{mode:?}");
+
+            let lane = lag_point.noise_lane(&noise_term, &mut out);
+            assert_eq!(lane.as_ptr(), noise_term.as_ptr(), "{mode:?}");
+            assert!(out.iter().all(|v| v.is_nan()), "{mode:?}");
+        }
+    }
+
+    const KERNEL_LAG_REGION_ULPS: u64 = 4;
+
+    type ClosingCase = (
+        usize,
+        usize,
+        Vec<f64>,
+        Vec<f64>,
+        Vec<f64>,
+        Vec<f64>,
+        f64,
+        Vec<f64>,
+        Vec<f64>,
+        Vec<f64>,
+    );
+
+    fn closing_case() -> impl Strategy<Value = ClosingCase> {
+        let positive = || 0.25_f64..8.0;
+        (1..4usize, 1..4usize).prop_flat_map(move |(n, depth)| {
+            (
+                Just(n),
+                Just(depth),
+                prop::collection::vec(positive(), 3 * n * depth),
+                prop::collection::vec(positive(), 3),
+                prop::collection::vec(positive(), n),
+                prop::collection::vec(positive(), n),
+                positive(),
+                prop::collection::vec(positive(), n),
+                prop::collection::vec(positive(), n),
+                prop::collection::vec(positive(), n * depth),
+            )
+        })
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig {
+            cases: 256,
+            rng_seed: RngSeed::Fixed(42),
+            ..ProptestConfig::default()
+        })]
+
+        #[test]
+        fn closing_lanes_evaluate_the_cut_at_the_kernel_lag_region(
+            (n, depth, betas, alphas, partial_sum, incoming_weight, weight, mean, noise_term, lags)
+                in closing_case()
+        ) {
+            let global = finalized(n, depth, &[]);
+            let mut cut = CutStateProjection::new(&global, LAGS_ONLY);
+            let inverse_weight: Vec<f64> = incoming_weight
+                .iter()
+                .map(|&incoming| 1.0 / (incoming + weight))
+                .collect();
+            let share: Vec<f64> = inverse_weight.iter().map(|&inverse| weight * inverse).collect();
+            cut.lag_point_mut()
+                .install_rule(closing_rule(&inverse_weight, &share, &incoming_weight));
+            let (lag_point, n_slots) = (cut.lag_point(), cut.n_slots());
+            prop_assert_eq!(n_slots, n * depth);
+            let mut pool = CutPool::new(3, n_slots, 1, 0);
+            for (k, row) in betas.chunks(n_slots).enumerate() {
+                pool.add_cut(NodeId(0), k as u64, 0, alphas[k], row);
+            }
+
+            let (mut mean_out, mut noise_out) = (vec![f64::NAN; n], vec![f64::NAN; n]);
+            let mean_lane = lag_point.mean_lane(&partial_sum, &mean, &mut mean_out);
+            let noise_lane = lag_point.noise_lane(&noise_term, &mut noise_out);
+            let (mut brackets, mut noise_terms) = ([f64::NAN; 3], [f64::NAN; 3]);
+            cut_brackets_into(&pool, &[0, 1, 2], lag_point, &lags, mean_lane, &mut brackets);
+            cut_noise_terms_into(&pool, &[0, 1, 2], lag_point, noise_lane, &mut noise_terms);
+
+            let realized: Vec<f64> = mean.iter().zip(&noise_term).map(|(p, eta)| p + eta).collect();
+            let (mut accumulator, mut weight_accum) = (partial_sum.clone(), incoming_weight.clone());
+            let mut phi = vec![f64::NAN; n_slots];
+            advance_lag_chain(
+                LagMajor { entity_count: n, max_order: depth },
+                &mut phi,
+                &lags,
+                &realized,
+                &StageLagTransition {
+                    accumulate_weight: weight,
+                    spillover_weight: 0.0,
+                    finalize_period: true,
+                    accumulate_downstream: false,
+                    downstream_accumulate_weight: 0.0,
+                    downstream_spillover_weight: 0.0,
+                    downstream_finalize: false,
+                    rebuild_from_downstream: false,
+                },
+                &mut PrimaryLagAccum {
+                    accumulator: &mut accumulator,
+                    weight_accum: &mut weight_accum,
+                },
+                &mut DownstreamLagAccum {
+                    accumulator: &mut [],
+                    weight_accum: &mut 0.0,
+                    completed_lags: &mut [],
+                    n_completed: &mut 0,
+                    par_order: 0,
+                },
+            );
+
+            for (k, row) in betas.chunks(n_slots).enumerate() {
+                let scalar = row.iter().zip(&phi).fold(alphas[k], |acc, (beta, at)| acc + beta * at);
+                let rhs = brackets[k] + noise_terms[k];
+                prop_assert!(
+                    rhs.to_bits().abs_diff(scalar.to_bits()) <= KERNEL_LAG_REGION_ULPS,
+                    "cut {k}: lanes {rhs:e}, scalar {scalar:e}"
+                );
+            }
+        }
+
+        #[test]
+        fn carry_lanes_evaluate_the_cut_at_the_kernel_lag_region(
+            (n, depth, betas, alphas, partial_sum, incoming_weight, weight, mean, noise_term, lags)
+                in closing_case()
+        ) {
+            let global = finalized(n, depth, &[]);
+            let mut cut = CutStateProjection::new(&global, LAGS_ONLY);
+            cut.lag_point_mut().install_rule(LagPointRule::Carry);
+            let (lag_point, n_slots) = (cut.lag_point(), cut.n_slots());
+            let mut pool = CutPool::new(3, n_slots, 1, 0);
+            for (k, row) in betas.chunks(n_slots).enumerate() {
+                pool.add_cut(NodeId(0), k as u64, 0, alphas[k], row);
+            }
+
+            let (mut brackets, mut noise_terms) = ([f64::NAN; 3], [f64::NAN; 3]);
+            cut_brackets_into(&pool, &[0, 1, 2], lag_point, &lags, &mean, &mut brackets);
+            cut_noise_terms_into(&pool, &[0, 1, 2], lag_point, &noise_term, &mut noise_terms);
+
+            let realized: Vec<f64> = mean.iter().zip(&noise_term).map(|(p, eta)| p + eta).collect();
+            let (mut accumulator, mut weight_accum) = (partial_sum.clone(), incoming_weight.clone());
+            let mut phi = lags.clone();
+            advance_lag_chain(
+                LagMajor { entity_count: n, max_order: depth },
+                &mut phi,
+                &lags,
+                &realized,
+                &StageLagTransition {
+                    accumulate_weight: weight,
+                    spillover_weight: 0.0,
+                    finalize_period: false,
+                    accumulate_downstream: false,
+                    downstream_accumulate_weight: 0.0,
+                    downstream_spillover_weight: 0.0,
+                    downstream_finalize: false,
+                    rebuild_from_downstream: false,
+                },
+                &mut PrimaryLagAccum {
+                    accumulator: &mut accumulator,
+                    weight_accum: &mut weight_accum,
+                },
+                &mut DownstreamLagAccum {
+                    accumulator: &mut [],
+                    weight_accum: &mut 0.0,
+                    completed_lags: &mut [],
+                    n_completed: &mut 0,
+                    par_order: 0,
+                },
+            );
+
+            for (k, row) in betas.chunks(n_slots).enumerate() {
+                let scalar = row.iter().zip(&phi).fold(alphas[k], |acc, (beta, at)| acc + beta * at);
+                let rhs = brackets[k] + noise_terms[k];
+                prop_assert!(
+                    rhs.to_bits().abs_diff(scalar.to_bits()) <= KERNEL_LAG_REGION_ULPS,
+                    "cut {k}: lanes {rhs:e}, scalar {scalar:e}"
+                );
+            }
         }
     }
 

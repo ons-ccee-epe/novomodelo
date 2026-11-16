@@ -6,16 +6,18 @@ use novomodelo_sddp::test_support::decks::{SLOW_DECKS, committed_decks};
 use novomodelo_sddp::test_support::expander::{ExpandedStudy, expand_stage_templates};
 use novomodelo_sddp::test_support::stage_state_box_bounds;
 use novomodelo_sddp::{RiskMeasure, StudySetup};
-use novomodelo_solver::{ActiveSolver, SolverError, SolverInterface};
+use novomodelo_solver::{ActiveSolver, LpSolution, SolverError, SolverInterface};
 
 use crate::common::expanded_solve::{
-    CutRowSet, assemble_expanded_solve, lag_dims, load_expanded,
-    stages_whose_producer_drops_a_state_dimension,
+    CutRowSet, ExpandedSolve, assemble_expanded_solve, assemble_expanded_solve_at, lag_dims,
+    load_expanded, stages_whose_producer_drops_a_state_dimension,
 };
 use crate::common::in_code_studies::FPHA_LAG_STUDY_KEY as LAG_STUDY;
 use crate::common::in_code_studies::{FphaLagOptions, fpha_lag_study_with};
 use crate::common::oracle_tolerance::{assert_first_try, rounding_factor, value_tolerance};
-use crate::common::stored_cut_oracles::apply_oracle_config;
+use crate::common::stored_cut_oracles::{
+    PartialSums, all_zero, apply_oracle_config, bits_eq, replay_partial_sums,
+};
 use crate::common::{
     build_setup_in_code_with_models, fresh_system_and_setup_with, is_chain,
     train_storing_trial_states, try_stored_trial_states,
@@ -110,6 +112,7 @@ struct Fixture<'a> {
     label: &'a str,
     compact: &'a StudySetup,
     expanded: &'a ExpandedStudy,
+    partial_sums: &'a PartialSums,
     risk_measures: Vec<RiskMeasure>,
     lag: Vec<bool>,
 }
@@ -120,11 +123,13 @@ impl<'a> Fixture<'a> {
         system: &System,
         compact: &'a StudySetup,
         expanded: &'a ExpandedStudy,
+        partial_sums: &'a PartialSums,
     ) -> Self {
         Self {
             label,
             compact,
             expanded,
+            partial_sums,
             risk_measures: stage_risk_measures(system),
             lag: lag_dims(&expanded.layout)
                 .iter()
@@ -165,6 +170,52 @@ struct Totals {
     fpha_slack_active_solves: usize,
 }
 
+/// Solves the expanded LP of `solve` from no basis; `None` when it is infeasible.
+fn solve_expanded(fx: &Fixture, solve: &ExpandedSolve, stage: usize) -> Option<LpSolution> {
+    let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
+    load_expanded(&mut solver, solve);
+    let before = solver.statistics();
+    let outcome = solver.solve(None).map(|view| view.to_owned());
+    let after = solver.statistics();
+    let solution = match outcome {
+        Ok(solution) => solution,
+        Err(SolverError::Infeasible) => return None,
+        Err(error) => panic!(
+            "{}: stage {stage}: the expanded solve failed: {error:?}",
+            fx.label
+        ),
+    };
+    assert_first_try(
+        &format!("{}: stage {stage}: expanded cold solve", fx.label),
+        &before,
+        &after,
+    );
+    Some(solution)
+}
+
+/// The objective of the expanded LP of `stage` at `x` and `raw_noise` with its cut rows written at
+/// `partial_sum`; `None` when it is infeasible.
+fn expanded_value_at(
+    fx: &Fixture,
+    rows: &CutRowSet,
+    stage: usize,
+    x: &[f64],
+    raw_noise: &[f64],
+    partial_sum: &[f64],
+) -> Option<f64> {
+    let solve = assemble_expanded_solve_at(
+        fx.compact,
+        fx.expanded,
+        &fx.compact.fcf,
+        rows,
+        stage,
+        x,
+        raw_noise,
+        partial_sum,
+    );
+    solve_expanded(fx, &solve, stage).map(|solution| solution.objective)
+}
+
 /// Solves the compact LP and the expanded LP of `stage` at `x` and `raw_noise`, each from no basis;
 /// `None` when the expanded LP is infeasible.
 fn solve_cold(
@@ -183,24 +234,7 @@ fn solve_cold(
         x,
         raw_noise,
     );
-    let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
-    load_expanded(&mut solver, &solve);
-    let before = solver.statistics();
-    let outcome = solver.solve(None).map(|view| view.to_owned());
-    let after = solver.statistics();
-    let expanded = match outcome {
-        Ok(solution) => solution,
-        Err(SolverError::Infeasible) => return None,
-        Err(error) => panic!(
-            "{}: stage {stage}: the expanded solve failed: {error:?}",
-            fx.label
-        ),
-    };
-    assert_first_try(
-        &format!("{}: stage {stage}: expanded cold solve", fx.label),
-        &before,
-        &after,
-    );
+    let expanded = solve_expanded(fx, &solve, stage)?;
 
     let layout = &fx.expanded.layout;
     let col_scale = &fx.expanded.scaled[stage].col_scale;
@@ -320,7 +354,10 @@ fn check_cross_validity(
 }
 
 /// Every populated cut of pool `t` stays below the expanded successor's expected value at the
-/// stored states, the midpoint and the lower corner of the state box.
+/// stored states, the midpoint and the lower corner of the state box. The successor's cut rows
+/// are written at the partial sum the cut's own generating visit read, so a cut is compared with
+/// the successor value it was computed from. The cold solves of the stored states are the
+/// successor's values at an all-zero partial sum, and are reused for that group.
 fn check_folded_pool(
     fx: &Fixture,
     t: usize,
@@ -333,15 +370,46 @@ fn check_folded_pool(
     let training_ctx = fx.compact.training_ctx();
     let tree = training_ctx.stochastic.tree_view();
     let n_openings = tree.n_openings(s);
-    let mean = |values: Vec<f64>| values.iter().sum::<f64>() / as_f64(n_openings);
+    let pool = &fx.compact.fcf.pools[t];
 
-    let mut points: Vec<(String, Vec<f64>, f64)> = states
+    let mut by_partial_sum: Vec<(Vec<f64>, Vec<usize>)> = Vec::new();
+    for slot in 0..pool.populated() {
+        let sum = fx.partial_sums.of_cut(pool, slot, s);
+        if let Some((_, slots)) = by_partial_sum
+            .iter_mut()
+            .find(|(other, _)| bits_eq(&sum, other))
+        {
+            slots.push(slot);
+        } else {
+            by_partial_sum.push((sum.clone(), vec![slot]));
+        }
+    }
+    let q_hats = |x: &[f64], cold_at_x: Option<&[ColdSolve]>| -> Option<Vec<f64>> {
+        by_partial_sum
+            .iter()
+            .map(|(sum, _)| {
+                let values: Option<Vec<f64>> = (0..n_openings)
+                    .map(|opening| match cold_at_x {
+                        Some(cold) if all_zero(sum) => Some(cold[opening].expanded.value),
+                        _ => expanded_value_at(fx, rows, s, x, tree.opening(s, opening), sum),
+                    })
+                    .collect();
+                values.map(|values| values.iter().sum::<f64>() / as_f64(n_openings))
+            })
+            .collect()
+    };
+
+    let mut points: Vec<(String, Vec<f64>, Vec<f64>)> = states
         .iter()
-        .zip(cold)
         .enumerate()
-        .map(|(i, (x, solves))| {
-            let q_hat = mean(solves.iter().map(|c| c.expanded.value).collect());
-            (format!("stored state {i}"), x.clone(), q_hat)
+        .map(|(i, x)| {
+            let per_group = q_hats(x, Some(&cold[i])).unwrap_or_else(|| {
+                panic!(
+                    "{}: pool {t}: the expanded LP is infeasible at stored state {i}",
+                    fx.label
+                )
+            });
+            (format!("stored state {i}"), x.clone(), per_group)
         })
         .collect();
     let mut infeasible = 0;
@@ -359,15 +427,11 @@ fn check_folded_pool(
                 }
             })
             .collect();
-        let per_opening: Option<Vec<ColdSolve>> = (0..n_openings)
-            .map(|opening| solve_cold(fx, rows, s, &x, tree.opening(s, opening)))
-            .collect();
-        let Some(cold_solves) = per_opening else {
+        let Some(per_group) = q_hats(&x, None) else {
             infeasible += 1;
             continue;
         };
-        let q_hat = mean(cold_solves.iter().map(|c| c.expanded.value).collect());
-        points.push((name.to_string(), x, q_hat));
+        points.push((name.to_string(), x, per_group));
     }
     assert!(
         points.len() >= MIN_FEASIBLE_POINTS,
@@ -376,7 +440,6 @@ fn check_folded_pool(
         points.len()
     );
 
-    let pool = &fx.compact.fcf.pools[t];
     let projection = &training_ctx.cut_state_layouts[t];
     let cuts: Vec<Cut> = (0..pool.populated())
         .map(|slot| Cut {
@@ -391,20 +454,23 @@ fn check_folded_pool(
         .collect();
     totals.pool_lag_cuts += cuts.iter().filter(|cut| cut.has_lag_slope(&fx.lag)).count();
     let origin = vec![0.0; fx.expanded.layout.state().n_state];
-    for (idx, (name, x, q_hat)) in points.iter().enumerate() {
-        for (slot, cut) in cuts.iter().enumerate() {
-            assert_below(
-                &format!(
-                    "{}: pool {t} point {idx} ({name}) slot {slot}: against the expanded \
-                     successor's expected value over {n_openings} openings",
-                    fx.label
-                ),
-                cut,
-                &origin,
-                x,
-                *q_hat,
-                &mut totals.folded_pool,
-            );
+    for (idx, (name, x, per_group)) in points.iter().enumerate() {
+        for (group, (_, slots)) in by_partial_sum.iter().enumerate() {
+            for &slot in slots {
+                assert_below(
+                    &format!(
+                        "{}: pool {t} point {idx} ({name}) slot {slot}: against the expanded \
+                         successor's expected value over {n_openings} openings at the partial \
+                         sum of its own visit",
+                        fx.label
+                    ),
+                    &cuts[slot],
+                    &origin,
+                    x,
+                    per_group[group],
+                    &mut totals.folded_pool,
+                );
+            }
         }
     }
     totals.expected_pool_checks += points.len() * cuts.len();
@@ -542,11 +608,15 @@ fn check_lag_study(options: FphaLagOptions) -> Totals {
     let (system, mut config, hydro_models) = fpha_lag_study_with(options);
     apply_oracle_config(&mut config);
     let mut compact = build_setup_in_code_with_models(system, &config, hydro_models);
+    let partial_sums = replay_partial_sums(&compact);
     train_storing_trial_states(LAG_STUDY, &mut compact);
     let (system, _, _) = fpha_lag_study_with(options);
     let expanded = expand_stage_templates(&system, &compact);
 
-    check_fixture(&Fixture::new(LAG_STUDY, &system, &compact, &expanded), None)
+    check_fixture(
+        &Fixture::new(LAG_STUDY, &system, &compact, &expanded, &partial_sums),
+        None,
+    )
 }
 
 /// Independent cold solves of the compact and the expanded LP reach one objective, and each
@@ -625,10 +695,11 @@ fn cold_solves_and_cuts_agree_across_the_formulations_on_every_lag_deck() {
             not_chain.push(deck.key);
             continue;
         }
+        let partial_sums = replay_partial_sums(&compact);
         train_storing_trial_states(&deck.key, &mut compact);
         let expanded = expand_stage_templates(&system, &compact);
         let totals = check_fixture(
-            &Fixture::new(&deck.key, &system, &compact, &expanded),
+            &Fixture::new(&deck.key, &system, &compact, &expanded, &partial_sums),
             Some(SWEEP_STATES_PER_STAGE),
         );
         compact_lag_cuts += totals.compact_lag_cuts;

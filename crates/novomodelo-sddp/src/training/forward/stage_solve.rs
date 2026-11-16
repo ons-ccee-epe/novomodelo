@@ -9,6 +9,7 @@ use crate::{
     context::{StageContext, TrainingContext},
     error::SddpError,
     solve::StageOpeningSolver,
+    training::stage_solve_prep::closing_partial_sum,
     trajectory::TrajectoryRecord,
     workspace::{BasisStoreSliceMut, SolverWorkspace},
 };
@@ -47,6 +48,13 @@ pub(crate) fn run_forward_stage<S: SolverInterface + Send>(
     } = *key;
     let node_id = training_ctx.node_graph.node_ids[node];
     let template = ctx.template(t);
+    let rec = &mut worker_records[local_m * training_ctx.horizon.num_stages() + t.0];
+    let lag_point =
+        training_ctx.cut_state_layouts[training_ctx.node_graph.nodes[node].pool_id].lag_point();
+    if let Some(partial_sum) = closing_partial_sum(lag_point, &ws.scratch.lag_accumulator) {
+        rec.partial_sum.clear();
+        rec.partial_sum.extend_from_slice(partial_sum);
+    }
 
     // DCS path: load the cut-free base template here (the caller skips its frozen
     // load). Loading the frozen template instead would make the lazy loop's fresh
@@ -89,7 +97,6 @@ pub(crate) fn run_forward_stage<S: SolverInterface + Send>(
         }
     })?;
 
-    let rec = &mut worker_records[local_m * training_ctx.horizon.num_stages() + t.0];
     rec.stage_cost = stage_cost;
     rec.node_id = node_id;
     rec.state.clear();

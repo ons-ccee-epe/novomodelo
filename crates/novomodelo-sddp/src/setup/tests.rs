@@ -1,3 +1,4 @@
+use super::lag_points::classify_lag_points;
 use super::{
     BoundaryStateRequirements, NodeId, NodePos, PhaseLibraries, ScenarioLibraries, StudySetup,
     assert_external_library_widths, build_contract_prices_per_stage, study_horizon_end,
@@ -7,7 +8,9 @@ use crate::SddpError;
 use crate::block_clock::M3S_TO_HM3;
 use crate::hydro_models::{PrepareHydroModelsResult, ProductionModelSet, ResolvedProductionModel};
 use crate::lp::builder::StageGeometry;
-use crate::lp::indexer::{AnticipatedPlants, ChainRuleSlots, StateSpace, ThermalSys};
+use crate::lp::indexer::{
+    AnticipatedPlants, ChainRuleSlots, LagPointMode, LagPointRule, StateSpace, ThermalSys,
+};
 use crate::test_support;
 use crate::time_value::{DeliveryCalendar, WaterDeliveryBasis};
 use novomodelo_io::test_support::owned_piece_defaults;
@@ -33,7 +36,7 @@ use novomodelo_core::{
     scenario::{InflowHistoryRow, InflowModel, LoadModel, SamplingScheme},
     temporal::{
         Block, BlockMode, NoiseMethod, PolicyGraphType, ScenarioSourceConfig, SeasonMap, Stage,
-        StageRiskConfig, StageStateConfig,
+        StageLagTransition, StageRiskConfig, StageStateConfig,
     },
 };
 use novomodelo_io::config::{
@@ -43,7 +46,9 @@ use novomodelo_io::config::{
     SimulationConfig as IoSimulationConfig, SimulationSelection, StoppingMode, StoppingRuleConfig,
     TrainingConfig, TrainingSelection, TrainingSolverConfig, UpperBoundEvaluationConfig,
 };
-use novomodelo_stochastic::{ClassSchemes, OpeningTreeInputs, build_stochastic_context};
+use novomodelo_stochastic::{
+    ClassSchemes, DerivedInflowSeeds, OpeningTreeInputs, build_stochastic_context,
+};
 
 /// Bounds and penalties are non-zero so the training tests below (e.g.
 /// `train_generates_cuts_in_fcf`) solve a genuinely optimized LP with real
@@ -8405,11 +8410,9 @@ fn cut_state_layouts_resolve_the_lag_point_per_pool() {
     let setup = setup_from_system(&system);
     let layouts = &setup.inputs.cut_state_layouts;
 
-    assert_eq!(layouts[0].lag_point().lag0(), 0..0);
-    assert_eq!(layouts[0].lag_point().shifted(), 0..0);
+    assert_eq!(layouts[0].lag_point().full(), 0..0);
     for layout in &layouts[1..] {
-        assert_eq!(layout.lag_point().lag0(), 1..2);
-        assert_eq!(layout.lag_point().shifted(), 2..3);
+        assert_eq!(layout.lag_point().full(), 1..3);
     }
 }
 
@@ -8429,14 +8432,14 @@ fn chain_rule_slots_of_a_pool_pair_follow_each_pools_layout() {
         ChainRuleSlots::compose(&setup.inputs.stage_data.state, &layouts[1], &layouts[0])
     };
 
+    let resident_lag_region =
+        |slots: &ChainRuleSlots| slots.resident_lag0().start..slots.resident_shifted().end;
     let storage_only_extracted = slots_of_pools_1_and_0(&[lags, storage_only, lags, lags]);
     assert_eq!(storage_only_extracted.extracted_lag(), 0..0);
-    assert_eq!(storage_only_extracted.resident_lag0(), 1..2);
-    assert_eq!(storage_only_extracted.resident_shifted(), 2..3);
+    assert_eq!(resident_lag_region(&storage_only_extracted), 1..3);
 
     let storage_only_resident = slots_of_pools_1_and_0(&[lags, lags, storage_only, lags]);
-    assert_eq!(storage_only_resident.resident_lag0(), 0..0);
-    assert_eq!(storage_only_resident.resident_shifted(), 0..0);
+    assert_eq!(resident_lag_region(&storage_only_resident), 0..0);
     assert_eq!(storage_only_resident.extracted_lag(), 1..3);
 }
 
@@ -11061,4 +11064,141 @@ fn terminal_boundary_flag_formulas_agree_on_chain_and_terminal_fan() {
     )
     .unwrap();
     check(&fan_injected, 2, true);
+}
+
+fn lag_transition(accumulate_weight: f64, finalize_period: bool) -> StageLagTransition {
+    StageLagTransition {
+        accumulate_weight,
+        spillover_weight: 0.0,
+        finalize_period,
+        accumulate_downstream: false,
+        downstream_accumulate_weight: 0.0,
+        downstream_spillover_weight: 0.0,
+        downstream_finalize: false,
+        rebuild_from_downstream: false,
+    }
+}
+
+fn ring_closing_transition() -> StageLagTransition {
+    StageLagTransition {
+        accumulate_downstream: true,
+        downstream_accumulate_weight: 1.0,
+        downstream_finalize: true,
+        ..lag_transition(0.5, false)
+    }
+}
+
+fn rebuild_transition(finalize_period: bool) -> StageLagTransition {
+    StageLagTransition {
+        rebuild_from_downstream: true,
+        ..lag_transition(0.5, finalize_period)
+    }
+}
+
+fn lag_seed(weight: &[f64], accum: &[f64]) -> DerivedInflowSeeds {
+    DerivedInflowSeeds {
+        lag_values: vec![0.0; weight.len()],
+        accum: accum.to_vec(),
+        weight: weight.to_vec(),
+    }
+}
+
+/// Hand-derived from the kernel's update order over two hydros seeded at weights `[0.0, 0.5]`:
+/// every hydro must sit at a zero weight for a closing stage to stay shifted, `49·(1/49)` is
+/// not 1.0, a rebuild stage over a filled ring is shifted whatever else it does, the rebuild
+/// leaves the primary weight alone, a rebuild over an empty ring does nothing, and a seeded
+/// accumulator keeps a zero-weight closing stage off the shifted point until a period finalizes.
+#[test]
+fn lag_point_modes_follow_the_kernel_order() {
+    let transitions = [
+        lag_transition(1.0, true),
+        lag_transition(1.0, true),
+        lag_transition(0.25, false),
+        lag_transition(0.25, true),
+        lag_transition(49.0, true),
+        ring_closing_transition(),
+        rebuild_transition(true),
+        lag_transition(0.5, true),
+        rebuild_transition(false),
+        lag_transition(0.5, true),
+    ];
+    let stage_ids: Vec<i32> = (0..10).collect();
+
+    let classes = classify_lag_points(
+        &stage_ids,
+        &transitions,
+        1,
+        &lag_seed(&[0.0, 0.5], &[0.0; 2]),
+    );
+
+    let modes: Vec<LagPointMode> = classes.iter().map(LagPointRule::mode).collect();
+    assert_eq!(
+        modes,
+        [
+            LagPointMode::Closing,
+            LagPointMode::Shifted,
+            LagPointMode::Carry,
+            LagPointMode::Closing,
+            LagPointMode::Closing,
+            LagPointMode::Carry,
+            LagPointMode::Shifted,
+            LagPointMode::Closing,
+            LagPointMode::Carry,
+            LagPointMode::Closing,
+        ]
+    );
+    for class in classes
+        .iter()
+        .filter(|class| class.mode() != LagPointMode::Closing)
+    {
+        assert!(class.closing().is_none());
+    }
+    let closing = |stage: usize| classes[stage].closing().unwrap();
+
+    let seeded_half = 1.0 / 1.5;
+    assert_eq!(closing(0).incoming_weight(), [0.0, 0.5]);
+    assert_eq!(closing(0).inverse_weight(), [1.0, seeded_half]);
+    assert_eq!(closing(0).share(), [1.0, seeded_half]);
+
+    assert_eq!(closing(3).incoming_weight(), [0.25, 0.25]);
+    assert_eq!(closing(3).inverse_weight(), [2.0, 2.0]);
+    assert_eq!(closing(3).share(), [0.5, 0.5]);
+
+    let inverse_of_49 = 1.0 / 49.0;
+    assert_eq!(closing(4).inverse_weight(), [inverse_of_49; 2]);
+    assert_eq!(closing(4).share(), [49.0 * inverse_of_49; 2]);
+
+    assert_eq!(closing(7).incoming_weight(), [1.0, 1.0]);
+    assert_eq!(closing(7).share(), [0.5 * seeded_half; 2]);
+    assert_eq!(closing(9).incoming_weight(), [0.5, 0.5]);
+    assert_eq!(closing(9).share(), [0.5, 0.5]);
+
+    let seeded_accumulator = classify_lag_points(
+        &[0, 1],
+        &[lag_transition(1.0, true), lag_transition(1.0, true)],
+        0,
+        &lag_seed(&[0.0], &[3.0]),
+    );
+    assert_eq!(seeded_accumulator[0].mode(), LagPointMode::Closing);
+    assert_eq!(seeded_accumulator[0].closing().unwrap().share(), [1.0]);
+    assert_eq!(seeded_accumulator[1].mode(), LagPointMode::Shifted);
+}
+
+#[test]
+fn lag_point_mode_of_a_rebuild_stage_warns_once_naming_the_stage() {
+    let transitions = [
+        lag_transition(1.0, true),
+        ring_closing_transition(),
+        rebuild_transition(true),
+        lag_transition(1.0, true),
+    ];
+
+    let (subscriber, messages) = WarnRecorder::new();
+    tracing::subscriber::with_default(subscriber, || {
+        classify_lag_points(&[5, 6, 7, 8], &transitions, 1, &lag_seed(&[0.0], &[0.0]));
+    });
+
+    let recorded = messages.lock().unwrap();
+    assert_eq!(recorded.len(), 1, "got: {recorded:?}");
+    assert!(recorded[0].contains("stage 7"), "got: {}", recorded[0]);
 }

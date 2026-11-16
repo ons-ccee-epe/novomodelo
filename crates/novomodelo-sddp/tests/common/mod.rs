@@ -15,11 +15,14 @@ use novomodelo_core::{BlockMode, System};
 use novomodelo_io::test_support::owned_piece_defaults;
 use novomodelo_io::{Config, OwnedPolicyCutRecord};
 use novomodelo_sddp::{
-    BoundaryStateRequirements, CutPool, SddpError, SimulationScenarioResult, StudySetup,
+    BoundaryLoadRequest, BoundaryStateRequirements, CutPool, SddpError, SimulationScenarioResult,
+    StudySetup,
     hydro_models::{PrepareHydroModelsResult, prepare_hydro_models},
     indexer::{CutSlot, CutStateProjection},
+    inject_boundary_cuts, load_boundary_cuts,
     setup::{NodePos, StageIdx, StudyParams, prepare_stochastic},
     test_support::decks::{Deck, SLOW_DECKS, committed_decks},
+    test_support::{fixture_priced_date, write_synthetic_boundary, ymd},
 };
 use novomodelo_solver::ActiveSolver;
 use novomodelo_stochastic::{
@@ -29,6 +32,7 @@ use tempfile::TempDir;
 
 pub mod anticipated_structural_assertions;
 pub mod builders;
+pub mod determinism_gates;
 pub mod expanded_solve;
 pub mod forward_replay;
 pub mod in_code_studies;
@@ -219,6 +223,26 @@ pub fn build_setup_for_case(
     stochastic: StochasticContext,
     hydro_models: PrepareHydroModelsResult,
 ) -> StudySetup {
+    build_setup_for_case_with_boundary(
+        case_dir,
+        config,
+        system,
+        stochastic,
+        hydro_models,
+        boundary_requirements(case_dir, config),
+    )
+}
+
+/// [`build_setup_for_case`] with the boundary state requirements given, not resolved
+/// from `config.policy.boundary`.
+pub fn build_setup_for_case_with_boundary(
+    case_dir: &Path,
+    config: &Config,
+    system: &System,
+    stochastic: StochasticContext,
+    hydro_models: PrepareHydroModelsResult,
+    boundary: BoundaryStateRequirements,
+) -> StudySetup {
     let sentinel = Path::new("config.json");
     let training_source = config
         .training_scenario_source(sentinel)
@@ -229,7 +253,7 @@ pub fn build_setup_for_case(
 
     let mut construction = StudyParams::from_config(config, Vec::new())
         .expect("StudyParams::from_config must succeed");
-    construction.boundary = boundary_requirements(case_dir, config);
+    construction.boundary = boundary;
     construction.scalar_parameters = novomodelo_io::load_case_with_artifacts(case_dir)
         .expect("load_case_with_artifacts must succeed")
         .artifacts
@@ -255,6 +279,21 @@ pub fn fresh_system_and_setup_with(
     case_dir: &Path,
     mutate: impl FnOnce(&mut Config),
 ) -> (System, StudySetup) {
+    let mut config =
+        novomodelo_io::parse_config(&case_dir.join("config.json")).expect("config must parse");
+    mutate(&mut config);
+    let boundary = boundary_requirements(case_dir, &config);
+    fresh_system_and_setup_with_boundary(case_dir, boundary, |fresh| *fresh = config)
+}
+
+/// [`fresh_system_and_setup_with`] with the boundary state requirements given, not
+/// resolved from the mutated `config.policy.boundary`: the way to build a study whose
+/// lag state is widened past its PAR order with no boundary checkpoint on disk.
+pub fn fresh_system_and_setup_with_boundary(
+    case_dir: &Path,
+    boundary: BoundaryStateRequirements,
+    mutate: impl FnOnce(&mut Config),
+) -> (System, StudySetup) {
     let config_path = case_dir.join("config.json");
     let mut config = novomodelo_io::parse_config(&config_path).expect("config must parse");
     mutate(&mut config);
@@ -263,14 +302,13 @@ pub fn fresh_system_and_setup_with(
     let training_source = config
         .training_scenario_source(&config_path)
         .expect("training_scenario_source must parse");
-    let inflow_lag_depth = boundary_requirements(case_dir, &config).inflow_lag_depth();
     let prepare_result = prepare_stochastic(
         system,
         case_dir,
         &config,
         42,
         &training_source,
-        inflow_lag_depth,
+        boundary.inflow_lag_depth(),
     )
     .expect("prepare_stochastic must succeed");
     let system = prepare_result.system;
@@ -279,7 +317,14 @@ pub fn fresh_system_and_setup_with(
     let hydro_models =
         prepare_hydro_models(&system, case_dir, false).expect("prepare_hydro_models must succeed");
 
-    let setup = build_setup_for_case(case_dir, &config, &system, stochastic, hydro_models);
+    let setup = build_setup_for_case_with_boundary(
+        case_dir,
+        &config,
+        &system,
+        stochastic,
+        hydro_models,
+        boundary,
+    );
     (system, setup)
 }
 
@@ -674,6 +719,28 @@ pub fn inject_constant_terminal_boundary_cuts(
         .collect();
     setup.fcf.pools[terminal] =
         CutPool::new_with_warm_start(state_dim, setup.fcf.forward_passes, 0, &records);
+}
+
+/// Writes a one-cut boundary checkpoint of `intercept` and `coefficients`, one per state
+/// dimension, into `dir`, loads it and installs it as the terminal pool.
+pub fn inject_synthetic_boundary_cut(
+    setup: &mut StudySetup,
+    dir: &Path,
+    intercept: f64,
+    coefficients: &[f64],
+) {
+    let state_dimension = u32::try_from(coefficients.len()).expect("fits u32");
+    let date = fixture_priced_date(ymd(2030, 1, 1), 0);
+    write_synthetic_boundary(dir, state_dimension, intercept, coefficients, date);
+    let boundary = load_boundary_cuts(&BoundaryLoadRequest::new(
+        dir,
+        date,
+        state_dimension,
+        &[],
+        1.0,
+    ))
+    .expect("the boundary cut must load");
+    inject_boundary_cuts(setup, &boundary).expect("the boundary cut must inject");
 }
 
 /// A state a pool stored, at its projected dimensions, as a vector over the global state: the

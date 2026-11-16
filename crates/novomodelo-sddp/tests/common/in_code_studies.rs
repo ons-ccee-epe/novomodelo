@@ -1868,6 +1868,325 @@ pub fn chronological_pumping_pair() -> (
     )
 }
 
+const SAME_PATH_BUS_ID: EntityId = EntityId(1);
+const SAME_PATH_HYDRO_ID: EntityId = EntityId(2);
+const SAME_PATH_THERMAL_ID: EntityId = EntityId(3);
+const SAME_PATH_THERMAL_COST_PER_MWH: f64 = 100.0;
+const SAME_PATH_LOAD_MW: f64 = 400.0;
+const SAME_PATH_INITIAL_STORAGE_HM3: f64 = 100.0;
+/// Initial storage that keeps water worth the thermal's price through every stage without
+/// emptying the reservoir in January.
+pub const WEEKLY_PARTIAL_SUM_INITIAL_STORAGE_HM3: f64 = 250.0;
+const SAME_PATH_PSI: f64 = 0.5;
+const SAME_PATH_STD_M3S: f64 = 20.0;
+const SAME_PATH_FEBRUARY_STD_M3S: f64 = 15.0;
+/// The seeded lag: the December inflow, well above every January mean.
+pub const SAME_PATH_LAG_SEED_M3S: f64 = 200.0;
+/// January and February stage boundaries (2024): three weeks, the rest of January, February.
+const SAME_PATH_BOUNDARIES: [(u32, u32); 6] = [(1, 1), (1, 8), (1, 15), (1, 22), (2, 1), (3, 1)];
+/// Five weeks, the last of which (29 January to 5 February) spans the turn of the month and keeps
+/// January's season, then the rest of February.
+const WEEKS_THEN_MONTH_BOUNDARIES: [(u32, u32); 7] =
+    [(1, 1), (1, 8), (1, 15), (1, 22), (1, 29), (2, 5), (3, 1)];
+/// Openings of the last stage of [`weeks_then_month_study`]; every earlier stage has one.
+pub const WEEKS_THEN_MONTH_TERMINAL_OPENINGS: usize = 3;
+
+fn same_path_date((month, day): (u32, u32)) -> NaiveDate {
+    NaiveDate::from_ymd_opt(2024, month, day).expect("same_path study: valid calendar date")
+}
+
+// Rationale: the entity/bounds/penalties construction is one sequential
+// fixture; splitting it into helper fns would fragment the declared shape
+// across call sites with no reuse benefit.
+#[allow(clippy::too_many_lines)]
+fn build_same_path_system(
+    boundaries: &[(u32, u32)],
+    interior_openings: usize,
+    terminal_openings: usize,
+    initial_storage_hm3: f64,
+) -> novomodelo_core::System {
+    let n_stages = boundaries.len() - 1;
+    let start = same_path_date(boundaries[0]);
+    let hours = |i: usize| {
+        f64::from(
+            i32::try_from(
+                (same_path_date(boundaries[i + 1]) - same_path_date(boundaries[i])).num_hours(),
+            )
+            .expect("same_path study: stage hours fit an i32"),
+        )
+    };
+    let stages: Vec<Stage> = (0..n_stages)
+        .map(|i| {
+            make_stage(
+                i,
+                StageSpec {
+                    start_date: same_path_date(boundaries[i]),
+                    end_date: same_path_date(boundaries[i + 1]),
+                    season_id: Some(usize::from(i == n_stages - 1)),
+                    blocks: vec![Block {
+                        index: 0,
+                        name: "SINGLE".to_string(),
+                        duration_hours: hours(i),
+                    }],
+                    block_mode: BlockMode::Parallel,
+                    state_config: StageStateConfig {
+                        storage: true,
+                        inflow_lags: true,
+                    },
+                    risk_config: StageRiskConfig::Expectation,
+                    scenario_config: ScenarioSourceConfig {
+                        branching_factor: if i == n_stages - 1 {
+                            terminal_openings
+                        } else if i == 0 {
+                            1
+                        } else {
+                            interior_openings
+                        },
+                        noise_method: NoiseMethod::Saa,
+                    },
+                },
+            )
+        })
+        .collect();
+
+    let bus = make_bus(
+        SAME_PATH_BUS_ID,
+        BusSpec {
+            name: "B".to_string(),
+            operational_start_date: start,
+            deficit_segments: vec![DeficitSegment {
+                depth_mw: None,
+                cost_per_mwh: 1000.0,
+            }],
+            excess_cost: 0.0,
+        },
+    );
+    let hydro = make_hydro(
+        SAME_PATH_HYDRO_ID,
+        HydroSpec {
+            name: "H".to_string(),
+            operational_start_date: start,
+            bus_id: SAME_PATH_BUS_ID,
+            min_storage_hm3: 0.0,
+            max_storage_hm3: 2000.0,
+            max_turbined_m3s: 200.0,
+            generation_model: HydroGenerationModel::ConstantProductivity,
+            specific_productivity_mw_per_m3s_per_m: Some(0.5),
+            max_generation_mw: 200.0,
+            penalties: hydro_penalties(),
+            ..Default::default()
+        },
+    );
+    let thermal = make_thermal(
+        SAME_PATH_THERMAL_ID,
+        ThermalSpec {
+            name: "T".to_string(),
+            operational_start_date: start,
+            bus_id: SAME_PATH_BUS_ID,
+            cost_per_mwh: SAME_PATH_THERMAL_COST_PER_MWH,
+            min_generation_mw: 0.0,
+            max_generation_mw: 1000.0,
+            anticipated_config: None,
+            ..Default::default()
+        },
+    );
+
+    let stats = |stage_id: i32| -> (f64, f64) {
+        if stage_id == n_stages as i32 - 1 {
+            (80.0, SAME_PATH_FEBRUARY_STD_M3S)
+        } else {
+            (100.0, SAME_PATH_STD_M3S)
+        }
+    };
+    let inflow_models: Vec<InflowModel> = (-1..n_stages as i32)
+        .map(|stage_id| {
+            let (mean_m3s, std_m3s) = stats(stage_id);
+            InflowModel {
+                hydro_id: SAME_PATH_HYDRO_ID,
+                stage_id,
+                mean_m3s,
+                std_m3s,
+                ar_coefficients: if stage_id >= 0 {
+                    vec![SAME_PATH_PSI]
+                } else {
+                    vec![]
+                },
+                residual_std_ratio: 1.0,
+                annual: None,
+            }
+        })
+        .collect();
+    let load_models: Vec<LoadModel> = (0..n_stages)
+        .map(|i| LoadModel {
+            bus_id: SAME_PATH_BUS_ID,
+            stage_id: i as i32,
+            mean_mw: SAME_PATH_LOAD_MW,
+            std_mw: 0.0,
+        })
+        .collect();
+
+    let bounds = ResolvedBounds::new(
+        &BoundsCountsSpec {
+            n_hydros: 1,
+            n_thermals: 1,
+            n_lines: 0,
+            n_pumping: 0,
+            n_contracts: 0,
+            n_stages,
+            k_max: 0,
+        },
+        &BoundsDefaults {
+            hydro: HydroStageBounds {
+                min_storage_hm3: 0.0,
+                max_storage_hm3: 2000.0,
+                filling_min_rate_m3s: 0.0,
+                water_withdrawal_m3s: 0.0,
+            },
+            hydro_block: HydroBlockBounds {
+                max_turbined_m3s: 200.0,
+                max_generation_mw: 200.0,
+                ..Default::default()
+            },
+            thermal_block: ThermalBlockBounds {
+                min_generation_mw: 0.0,
+                max_generation_mw: 1000.0,
+                cost_per_mwh: SAME_PATH_THERMAL_COST_PER_MWH,
+            },
+            line_block: LineBlockBounds {
+                direct_mw: 0.0,
+                reverse_mw: 0.0,
+            },
+            pumping_block: PumpingBlockBounds {
+                min_flow_m3s: 0.0,
+                max_flow_m3s: 0.0,
+            },
+            contract_block: ContractBlockBounds {
+                min_mw: 0.0,
+                max_mw: 0.0,
+                price_per_mwh: 0.0,
+            },
+        },
+    );
+    let penalties = ResolvedPenalties::new(
+        &PenaltiesCountsSpec {
+            n_hydros: 1,
+            n_buses: 1,
+            n_lines: 0,
+            n_ncs: 0,
+            n_stages,
+        },
+        &PenaltiesDefaults {
+            hydro: hydro_penalties(),
+            bus: BusStagePenalties { excess_cost: 0.0 },
+            line: LineStagePenalties { exchange_cost: 0.0 },
+            ncs: NcsStagePenalties {
+                curtailment_cost: 0.0,
+            },
+        },
+    );
+    let initial_conditions = InitialConditions {
+        storage: vec![HydroStorage {
+            hydro_id: SAME_PATH_HYDRO_ID,
+            value_hm3: initial_storage_hm3,
+        }],
+        filling_storage: vec![],
+        past_anticipated_commitments: vec![],
+        recent_observations: vec![RecentObservation {
+            hydro_id: SAME_PATH_HYDRO_ID,
+            start_date: NaiveDate::from_ymd_opt(2023, 12, 1)
+                .expect("same_path study: valid observation date"),
+            end_date: start,
+            value_m3s: SAME_PATH_LAG_SEED_M3S,
+        }],
+        past_defluences: vec![],
+    };
+
+    SystemBuilder::new()
+        .buses(vec![bus])
+        .hydros(vec![hydro])
+        .thermals(vec![thermal])
+        .stages(stages)
+        .inflow_models(inflow_models)
+        .load_models(load_models)
+        .bounds(bounds)
+        .penalties(penalties)
+        .initial_conditions(initial_conditions)
+        .policy_graph(HorizonGraph {
+            season_map: Some(monthly_season_map()),
+            ..HorizonGraph::default()
+        })
+        .build()
+        .expect("same_path study: valid system")
+}
+
+fn same_path_study(
+    boundaries: &[(u32, u32)],
+    interior_openings: usize,
+    terminal_openings: usize,
+    initial_storage_hm3: f64,
+) -> (novomodelo_core::System, Config, PrepareHydroModelsResult) {
+    let n_stages = boundaries.len() - 1;
+    let system = build_same_path_system(
+        boundaries,
+        interior_openings,
+        terminal_openings,
+        initial_storage_hm3,
+    );
+    let mut hydro_models = PrepareHydroModelsResult::default_from_system(&system);
+    hydro_models.production = ProductionModelSet::new(
+        vec![
+            vec![ResolvedProductionModel::ConstantProductivity { productivity: 1.0 }; n_stages];
+            1
+        ],
+        system.hydros(),
+        n_stages,
+    );
+    (system, build_config(), hydro_models)
+}
+
+/// A PAR(1) hydro, `psi = 0.5` on a monthly season map, over three one-week January stages, the
+/// rest of January and February, with one opening per stage and the lag seeded at
+/// [`SAME_PATH_LAG_SEED_M3S`], above every January mean. The single opening makes every forward
+/// visit of a stage read the same partial sum `s`, so a Closing cut is exact there. A 400 MW load
+/// over a 200 MW constant-productivity plant and a 100 `$/MWh` thermal gives water a constant
+/// value, so a cut at a trial state is the successor value there and a cut evaluated at another
+/// lag point is off by `beta_lag` times the distance between the two points.
+#[must_use]
+pub fn same_path_partial_sum_study() -> (novomodelo_core::System, Config, PrepareHydroModelsResult)
+{
+    same_path_study(&SAME_PATH_BOUNDARIES, 1, 1, SAME_PATH_INITIAL_STORAGE_HM3)
+}
+
+/// [`same_path_partial_sum_study`]'s calendar and plant with `openings` at every stage after the
+/// first, so trials that draw other openings read other partial sums of January's open lag period
+/// at the stage that closes it, from [`WEEKLY_PARTIAL_SUM_INITIAL_STORAGE_HM3`] of storage.
+#[must_use]
+pub fn weekly_partial_sum_study(
+    openings: usize,
+) -> (novomodelo_core::System, Config, PrepareHydroModelsResult) {
+    same_path_study(
+        &SAME_PATH_BOUNDARIES,
+        openings,
+        openings,
+        WEEKLY_PARTIAL_SUM_INITIAL_STORAGE_HM3,
+    )
+}
+
+/// [`same_path_partial_sum_study`]'s hydro, load and thermal over five January weeks and the
+/// rest of February: the fifth week runs from 29 January to 5 February and keeps January's
+/// season, so it finalizes January and hands 96 of February's 696 hours to the terminal stage,
+/// which covers the other 600 and closes February. One opening at every stage but the terminal
+/// one, which has [`WEEKS_THEN_MONTH_TERMINAL_OPENINGS`].
+#[must_use]
+pub fn weeks_then_month_study() -> (novomodelo_core::System, Config, PrepareHydroModelsResult) {
+    same_path_study(
+        &WEEKS_THEN_MONTH_BOUNDARIES,
+        1,
+        WEEKS_THEN_MONTH_TERMINAL_OPENINGS,
+        SAME_PATH_INITIAL_STORAGE_HM3,
+    )
+}
+
 const PREFILLING_ROUTE_N_STAGES: usize = 2;
 const PREFILLING_ROUTE_BUS_ID: i32 = 10;
 const PREFILLING_ROUTE_TARGET_ID: i32 = 1;

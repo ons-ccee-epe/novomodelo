@@ -80,14 +80,8 @@ impl IterationScratch {
         stage_ctx: &StageContext<'_>,
     ) -> Self {
         let n_pools = pool_stage.len();
-        let n_state = training_ctx.state.n_state;
         let num_stages = training_ctx.horizon.num_stages();
-        let records: Vec<TrajectoryRecord> = (0..max_local_fwd * num_stages)
-            .map(|_| TrajectoryRecord {
-                state: vec![0.0; n_state],
-                ..TrajectoryRecord::default()
-            })
-            .collect();
+        let records = TrajectoryRecord::allocate(max_local_fwd * num_stages, training_ctx);
 
         let patch_buf = crate::lower_bound::lower_bound_patch_buffer(training_ctx.state, stage_ctx);
 

@@ -18,6 +18,7 @@ use crate::cut::chain_rule::{AggregateScratch, ChainRuleScratch, ChildOpenings, 
 use crate::dcs::DcsSolveScratch;
 use crate::indexer::CutStateProjection;
 use crate::lp::builder::{PatchBuffer, StageGeometry};
+use crate::noise::AccumSnapshot;
 use crate::risk_measure::RiskMeasureScratch;
 use crate::setup::{NodeId, NodePos};
 use crate::solve::partition;
@@ -826,6 +827,8 @@ pub struct ScratchBuffers {
     pub(crate) par_mean_buf: Vec<f64>,
     /// σ·η per hydro for the current opening.
     pub(crate) par_noise_term_buf: Vec<f64>,
+    pub(crate) closing_mean_buf: Vec<f64>,
+    pub(crate) closing_noise_buf: Vec<f64>,
     /// Pool slot of each cut row of the loaded LP, in LP row order.
     pub(crate) cut_slots_buf: Vec<usize>,
     /// The bracket B of each cut row, in LP row order.
@@ -913,6 +916,12 @@ pub struct ScratchBuffers {
     /// advanced by the transition draw. Resized (never reallocated once at
     /// capacity) at each `run_forward_worker` call.
     pub(crate) current_node_buf: Vec<NodePos>,
+
+    /// `trial_lag_chains[local_m]` is trajectory `local_m`'s own lag chain
+    /// between stages; the `lag_*`/`downstream_*` fields above hold only the
+    /// trajectory being solved. Grown, never shrunk, at each `run_forward_worker`
+    /// call.
+    pub(crate) trial_lag_chains: Vec<AccumSnapshot>,
 }
 
 /// All per-thread mutable resources required for one LP solve sequence.
@@ -1030,6 +1039,8 @@ impl ScratchBuffers {
             realized_inflow_buf: Vec::with_capacity(hydro_count),
             par_mean_buf: vec![0.0; hydro_count],
             par_noise_term_buf: vec![0.0; hydro_count],
+            closing_mean_buf: vec![0.0; hydro_count],
+            closing_noise_buf: vec![0.0; hydro_count],
             cut_slots_buf: Vec::with_capacity(initial_pool_capacity),
             cut_bracket_buf: Vec::with_capacity(initial_pool_capacity),
             #[cfg(any(test, feature = "test-support"))]
@@ -1067,6 +1078,7 @@ impl ScratchBuffers {
             raw_noise_buf: Vec::with_capacity(noise_dim),
             corr_scratch: Vec::with_capacity(2 * noise_dim),
             current_node_buf: Vec::with_capacity(max_local_fwd),
+            trial_lag_chains: Vec::with_capacity(max_local_fwd),
         }
     }
 
@@ -1496,6 +1508,8 @@ impl ScratchBuffers {
             realized_inflow_buf: Vec::with_capacity(hydro_count),
             par_mean_buf: vec![0.0; hydro_count],
             par_noise_term_buf: vec![0.0; hydro_count],
+            closing_mean_buf: vec![0.0; hydro_count],
+            closing_noise_buf: vec![0.0; hydro_count],
             cut_slots_buf: Vec::new(),
             cut_bracket_buf: Vec::new(),
             slab_misses: 0,
@@ -1528,6 +1542,7 @@ impl ScratchBuffers {
             raw_noise_buf: Vec::new(),
             corr_scratch: Vec::new(),
             current_node_buf: Vec::new(),
+            trial_lag_chains: Vec::new(),
         }
     }
 }
@@ -1672,6 +1687,8 @@ mod tests {
         for (name, buf) in [
             ("par_mean_buf", &scratch.par_mean_buf),
             ("par_noise_term_buf", &scratch.par_noise_term_buf),
+            ("closing_mean_buf", &scratch.closing_mean_buf),
+            ("closing_noise_buf", &scratch.closing_noise_buf),
         ] {
             assert_eq!(buf.len(), 3, "{name} must hold one value per hydro");
             assert!(

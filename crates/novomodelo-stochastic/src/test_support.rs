@@ -6,6 +6,7 @@
 
 use std::sync::{Arc, Mutex, Once};
 
+use chrono::{Months, NaiveDate};
 use novomodelo_core::scenario::AnnualComponent;
 use novomodelo_core::{EntityId, InflowModel, SeasonCycleType, SeasonDefinition, SeasonMap};
 use tracing::subscriber::Interest;
@@ -198,6 +199,50 @@ pub fn weekly_season_map() -> SeasonMap {
         cycle_type: SeasonCycleType::Weekly,
         seasons,
     }
+}
+
+/// `(start, end, season id)` of the 22 stages of a calendar that opens with five weeks from
+/// 2026-05-30 naming June (season 5) and one stage from 2026-07-04 to 2026-08-01 naming July, then
+/// runs on calendar months from 2026-08 through 2027-11 naming their own seasons: June 2027 is
+/// stage 16.
+///
+/// # Panics
+///
+/// Never; every date is a literal or the first of a month of 2026 or 2027.
+#[must_use]
+#[allow(clippy::expect_used)]
+// Rationale: the dates are valid by construction, so no call below can return `None` or `Err`.
+pub fn weeks_naming_june_then_months() -> Vec<(NaiveDate, NaiveDate, usize)> {
+    let date = |year: i32, month: u32, day: u32| {
+        NaiveDate::from_ymd_opt(year, month, day).expect("a valid calendar date")
+    };
+    let week_starts = [
+        date(2026, 5, 30),
+        date(2026, 6, 6),
+        date(2026, 6, 13),
+        date(2026, 6, 20),
+        date(2026, 6, 27),
+        date(2026, 7, 4),
+    ];
+    let weeks = week_starts
+        .windows(2)
+        .map(|week| (week[0], week[1], 5_usize));
+    let july = std::iter::once((date(2026, 7, 4), date(2026, 8, 1), 6_usize));
+    let months = (2026..=2027)
+        .flat_map(|year| (1..=12_u32).map(move |month| (year, month)))
+        .filter(|year_month| ((2026, 8)..=(2027, 11)).contains(year_month))
+        .map(|(year, month)| {
+            let start = date(year, month, 1);
+            let end = start
+                .checked_add_months(Months::new(1))
+                .expect("a month after a date of 2027");
+            (
+                start,
+                end,
+                usize::try_from(month - 1).expect("a month index"),
+            )
+        });
+    weeks.chain(july).chain(months).collect()
 }
 
 /// Fixture fields for [`make_inflow_model`].

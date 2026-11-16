@@ -20,10 +20,10 @@ use rayon::iter::{
 use crate::setup::node_graph::{EnumeratedPlan, NodeGraph, NodePos, StageIdx, Traversal};
 use crate::{
     backward::{
-        BackwardNodeParams, BackwardResult, ReplicatedScratch, SlabLookup, StageNoiseTable,
-        StageWorkerOpeningDelta, StagedCut, SuccessorEntry, SuccessorOutcomes, SuccessorSpec,
-        by_node_block_count, by_node_finish, by_scenario_finish, commit_by_node_cuts,
-        hardest_first_block_order, identity_block_order, merge_block_pivots,
+        BackwardNodeParams, BackwardResult, ForwardVisits, ReplicatedScratch, SlabLookup,
+        StageNoiseTable, StageWorkerOpeningDelta, StagedCut, SuccessorEntry, SuccessorOutcomes,
+        SuccessorSpec, by_node_block_count, by_node_finish, by_scenario_finish,
+        commit_by_node_cuts, hardest_first_block_order, identity_block_order, merge_block_pivots,
         process_by_scenario_backward, process_stage_backward_by_node, reify_successor_outcomes,
         resolve_block_size, run_backward_node_replicated, take_first_error,
     },
@@ -965,7 +965,7 @@ impl BackwardPassState {
                     my_rank,
                     probabilities: &self.probabilities_buf,
                     cut_state: &training_ctx.cut_state_layouts[pool_id],
-                    slab: SlabLookup::Unavailable,
+                    visits: ForwardVisits::Node(inputs.enumerated_state.lag_accumulator(node_pos)),
                     stage_noise: None,
                 };
 
@@ -2057,16 +2057,13 @@ fn compute_one_backward_node<S: SolverInterface + Send, C: Communicator>(
         .map(|p| p.resolve(state.profile.primal_feasibility_tolerance))
         .filter(|p| p.is_active(inputs.iteration));
     let slab = if dcs_params.is_none() {
-        SlabLookup::Frozen {
-            records: inputs.records,
-            n_stages: training_ctx.horizon.num_stages(),
-        }
+        SlabLookup::Frozen
     } else {
         SlabLookup::Unavailable
     };
     #[cfg(any(test, feature = "test-support"))]
     let slab = match slab {
-        SlabLookup::Frozen { .. } if state.solve_cache_bypass => SlabLookup::ForcedMiss,
+        SlabLookup::Frozen if state.solve_cache_bypass => SlabLookup::ForcedMiss,
         other => other,
     };
     let succ_spec = SuccessorSpec {
@@ -2075,7 +2072,11 @@ fn compute_one_backward_node<S: SolverInterface + Send, C: Communicator>(
         my_rank: params.my_rank,
         probabilities: &state.probabilities_buf,
         cut_state: cut_state_projection,
-        slab,
+        visits: ForwardVisits::PerTrial {
+            records: inputs.records,
+            n_stages: training_ctx.horizon.num_stages(),
+            slab,
+        },
         stage_noise: stage_noise_table.then_some(&state.stage_noise),
     };
     let node_params = BackwardNodeParams {

@@ -77,8 +77,9 @@ use crate::lp::builder::{
     encode_stage_templates_facts, encode_time_value_facts,
 };
 use crate::lp::indexer::{
-    AnticipatedPlants, BlockRowFamily, ChainRuleSlots, CutStateProjection, EntityPositions,
-    HydroCellIndex, HydroSys, REGION_ORDER, StateDim, StateSpace, StudyDimensions,
+    AnticipatedPlants, BlockRowFamily, ChainRuleSlots, ClosingCoefficients, CutStateProjection,
+    EntityPositions, HydroCellIndex, HydroSys, LagPointRule, REGION_ORDER, StateDim, StateSpace,
+    StudyDimensions,
 };
 use crate::noise::{apply_inflow_slack_col_bounds, realize_inflow};
 use crate::policy::policy_load::{
@@ -103,7 +104,9 @@ use crate::training::backward::{
     extract_opening_cut, fill_external_opening_noise, resolve_block_size,
 };
 use crate::training::session::TrainingSession;
-use crate::training::stage_solve_prep::{SingleSolvePrepParams, StageSolvePrep, StateSource};
+use crate::training::stage_solve_prep::{
+    PartialSumSource, SingleSolvePrepParams, StageSolvePrep, StateSource,
+};
 use crate::trajectory::TrajectoryRecord;
 use crate::workspace::{ScratchBuffers, SolverWorkspace, WorkspaceSizing};
 use novomodelo_core::scenario::{ExternalLoadRow, ExternalScenarioRow};
@@ -1203,6 +1206,22 @@ impl TrainingContextFixture {
         self
     }
 
+    /// Makes every pool close a lag period, with neutral per-hydro coefficients.
+    #[must_use]
+    pub fn closing_lag_points(mut self) -> Self {
+        let n = self.state.hydro_count;
+        for layout in &mut self.cut_state_layouts {
+            layout
+                .lag_point_mut()
+                .install_rule(LagPointRule::Closing(ClosingCoefficients::new(
+                    vec![1.0; n],
+                    vec![1.0; n],
+                    vec![0.0; n],
+                )));
+        }
+        self
+    }
+
     /// Sets the lent context's horizon to `HorizonMode::Finite { num_stages }`.
     #[must_use]
     pub fn num_stages(mut self, num_stages: usize) -> Self {
@@ -1777,6 +1796,52 @@ fn prep_for_probe<S: SolverInterface + Send>(
     raw_noise: &[f64],
     cuts: &ProbeCuts<'_>,
 ) {
+    prep_for_probe_from(
+        ws,
+        ctx,
+        training_ctx,
+        stage,
+        StateSource::live(pinned_state),
+        raw_noise,
+        cuts,
+    );
+}
+
+/// Like [`opening_cut_for_probe`]'s prep, with the pin reading `partial_sum` as the lag
+/// accumulator the visit held before its solve instead of the workspace's live one.
+pub fn prep_for_probe_with_partial_sum<S: SolverInterface + Send>(
+    ws: &mut SolverWorkspace<S>,
+    ctx: &StageContext<'_>,
+    training_ctx: &TrainingContext<'_>,
+    stage: StageIdx,
+    pinned_state: &[f64],
+    partial_sum: &[f64],
+    raw_noise: &[f64],
+    cuts: &ProbeCuts<'_>,
+) {
+    prep_for_probe_from(
+        ws,
+        ctx,
+        training_ctx,
+        stage,
+        StateSource {
+            state: pinned_state,
+            partial_sum: PartialSumSource::Given(partial_sum),
+        },
+        raw_noise,
+        cuts,
+    );
+}
+
+fn prep_for_probe_from<S: SolverInterface + Send>(
+    ws: &mut SolverWorkspace<S>,
+    ctx: &StageContext<'_>,
+    training_ctx: &TrainingContext<'_>,
+    stage: StageIdx,
+    state_source: StateSource<'_>,
+    raw_noise: &[f64],
+    cuts: &ProbeCuts<'_>,
+) {
     StageSolvePrep::prepare_single(
         &mut ws.solver,
         &mut ws.patch_buf,
@@ -1785,7 +1850,7 @@ fn prep_for_probe<S: SolverInterface + Send>(
         training_ctx,
         stage,
         &SingleSolvePrepParams {
-            state_source: StateSource(pinned_state),
+            state_source,
             raw_noise,
             pool: cuts.pool,
             projection: &training_ctx.cut_state_layouts[cuts.pool_id],
@@ -1913,12 +1978,12 @@ impl ProbeCut {
     }
 }
 
-/// Solve one compact opening and build its cut through the production extraction and chain
-/// rule, [`extract_opening_cut`]; the intercept is Q minus the extracted projection's
-/// trial-state dot of the coefficients at `opening.pinned_state`.
+/// Prepare one compact opening and solve it, returning the solution and the realized inflow ẑ
+/// the prep wrote, in m³/s.
 ///
-/// The caller loads the compact template and appends the rows of `opening.cuts.slots`, in that
-/// order, first. A repeat call at the same stage and row count allocates nothing in `out`.
+/// `partial_sum` is the lag accumulator the visit held before its solve; `None` reads the
+/// workspace's live one. The caller loads the compact template and appends the rows of
+/// `opening.cuts.slots`, in that order, first.
 ///
 /// # Panics
 ///
@@ -1929,23 +1994,29 @@ impl ProbeCut {
 ///
 /// Returns [`SddpError::Infeasible`] when the LP is infeasible, or [`SddpError::Solver`] for any
 /// other solver failure.
-pub fn opening_cut_for_probe<S: SolverInterface + Send>(
-    ws: &mut SolverWorkspace<S>,
+pub fn solve_probe_opening<'w, S: SolverInterface + Send>(
+    ws: &'w mut SolverWorkspace<S>,
     ctx: &StageContext<'_>,
     training_ctx: &TrainingContext<'_>,
     opening: &ProbeOpening<'_>,
-    out: &mut ProbeCut,
-) -> Result<(), SddpError> {
+    partial_sum: Option<&[f64]>,
+) -> Result<(SolutionView<'w>, &'w [f64]), SddpError> {
     let stage = opening.stage;
-    let cuts = &opening.cuts;
-    prep_for_probe(
+    let state_source = match partial_sum {
+        Some(partial_sum) => StateSource {
+            state: opening.pinned_state,
+            partial_sum: PartialSumSource::Given(partial_sum),
+        },
+        None => StateSource::live(opening.pinned_state),
+    };
+    prep_for_probe_from(
         ws,
         ctx,
         training_ctx,
         stage,
-        opening.pinned_state,
+        state_source,
         opening.raw_noise,
-        cuts,
+        &opening.cuts,
     );
     let template = ctx.template(stage);
     let geometry = &ctx.geometry_per_stage[stage.0];
@@ -1971,9 +2042,6 @@ pub fn opening_cut_for_probe<S: SolverInterface + Send>(
             &template.col_scale,
         );
     }
-    out.realized_inflow.clear();
-    out.realized_inflow
-        .extend_from_slice(&ws.scratch.realized_inflow_buf);
     let view = ws.solver.solve(None).map_err(|e| match e {
         SolverError::Infeasible => SddpError::Infeasible {
             stage: stage.0,
@@ -1982,6 +2050,39 @@ pub fn opening_cut_for_probe<S: SolverInterface + Send>(
         },
         other => SddpError::Solver(other),
     })?;
+    Ok((view, &ws.scratch.realized_inflow_buf))
+}
+
+/// Solve one compact opening and build its cut through the production extraction and chain
+/// rule, [`extract_opening_cut`]; the intercept is Q minus the extracted projection's
+/// trial-state dot of the coefficients at `opening.pinned_state`.
+///
+/// The caller loads the compact template and appends the rows of `opening.cuts.slots`, in that
+/// order, first. A repeat call at the same stage and row count allocates nothing in `out`.
+///
+/// # Panics
+///
+/// Panics if `opening.inflow_slack_bounds` does not hold one bound per inflow-slack column in
+/// each slice.
+///
+/// # Errors
+///
+/// Returns [`SddpError::Infeasible`] when the LP is infeasible, or [`SddpError::Solver`] for any
+/// other solver failure.
+pub fn opening_cut_for_probe<S: SolverInterface + Send>(
+    ws: &mut SolverWorkspace<S>,
+    ctx: &StageContext<'_>,
+    training_ctx: &TrainingContext<'_>,
+    opening: &ProbeOpening<'_>,
+    out: &mut ProbeCut,
+) -> Result<(), SddpError> {
+    let stage = opening.stage;
+    let cuts = &opening.cuts;
+    let template = ctx.template(stage);
+    let geometry = &ctx.geometry_per_stage[stage.0];
+    let (view, realized_inflow) = solve_probe_opening(ws, ctx, training_ctx, opening, None)?;
+    out.realized_inflow.clear();
+    out.realized_inflow.extend_from_slice(realized_inflow);
 
     out.primal.clear();
     out.primal.extend_from_slice(view.primal);
@@ -2015,6 +2116,7 @@ pub fn opening_cut_for_probe<S: SolverInterface + Send>(
         &ChainRuleStageInputs {
             slots: &ChainRuleSlots::compose(training_ctx.state, resident, extracted),
             resident_pool: cuts.pool,
+            resident_lag_point: resident.lag_point(),
             par: training_ctx.stochastic.par(),
             stage: stage.0,
         },
@@ -3530,7 +3632,7 @@ fn capture_patched_node_with_raw_noise(
         &training_ctx,
         stage,
         &SingleSolvePrepParams {
-            state_source: StateSource(incoming_state),
+            state_source: StateSource::live(incoming_state),
             raw_noise,
             pool: &setup.fcf.pools[pool_id],
             projection: &training_ctx.cut_state_layouts[pool_id],

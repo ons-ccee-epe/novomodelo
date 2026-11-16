@@ -14,7 +14,7 @@ use crate::{
             ChainRuleInputs, ChainRuleScratch, OpeningDuals, per_opening_coefficients_into,
         },
     },
-    indexer::{ChainRuleSlots, CutStateProjection, HydroSys, InCol},
+    indexer::{ChainRuleSlots, CutLagPoint, CutStateProjection, HydroSys, InCol},
     lp::builder::InflowCoupling,
 };
 
@@ -75,6 +75,7 @@ pub(crate) struct OpeningDualBuffers<'a> {
 pub(crate) struct ChainRuleStageInputs<'a> {
     pub(crate) slots: &'a ChainRuleSlots,
     pub(crate) resident_pool: &'a CutPool,
+    pub(crate) resident_lag_point: &'a CutLagPoint,
     pub(crate) par: &'a PrecomputedPar,
     pub(crate) stage: usize,
 }
@@ -153,6 +154,7 @@ pub(crate) fn extract_opening_cut(
         &ChainRuleInputs {
             slots: chain.slots,
             resident_pool: chain.resident_pool,
+            resident_lag_point: chain.resident_lag_point,
             extracted: spec.extracted,
             par: chain.par,
             stage: chain.stage,

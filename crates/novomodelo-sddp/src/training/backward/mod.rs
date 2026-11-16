@@ -66,7 +66,7 @@ use crate::{
     setup::node_graph::{NodeId, NodeOpenings, NodePos, StageIdx},
     solver_stats::SolverStatsDelta,
     state_exchange::ExchangeBuffers,
-    training::stage_solve_prep::BracketSource,
+    training::stage_solve_prep::{BracketSource, PartialSumSource},
     trajectory::TrajectoryRecord,
 };
 
@@ -222,8 +222,8 @@ pub(crate) struct SuccessorSpec<'a> {
     /// columns dual extraction reads. `n_slots()` equals every successor pool's
     /// `state_dimension` (all children share one stage and `state_config`).
     pub(crate) cut_state: &'a CutStateProjection,
-    /// Where each child's pin phase takes the frozen-row brackets from.
-    pub(crate) slab: SlabLookup<'a>,
+    /// The forward visits the node's pins read their partial sum and brackets from.
+    pub(crate) visits: ForwardVisits<'a>,
     /// The node's σ·η and cut-row W tables, or `None` where each opening computes its own.
     pub(crate) stage_noise: Option<&'a StageNoiseTable>,
 }
@@ -231,32 +231,61 @@ pub(crate) struct SuccessorSpec<'a> {
 impl<'a> SuccessorSpec<'a> {
     /// The pin source for trial `m`'s pin of `child`.
     pub(crate) fn bracket_source(&self, m: usize, child: &SuccessorChild<'_>) -> BracketSource<'a> {
-        match self.slab {
-            SlabLookup::Unavailable => BracketSource::Computed,
-            #[cfg(any(test, feature = "test-support"))]
-            SlabLookup::ForcedMiss => BracketSource::Slab(None),
-            SlabLookup::Frozen { records, n_stages } => BracketSource::Slab(
-                records[m * n_stages + self.successor.0]
-                    .frozen_brackets
-                    .read(self.iteration, child.successor_node_id, child.frozen_rows()),
-            ),
+        match self.visits {
+            ForwardVisits::Node(_) => BracketSource::Computed,
+            ForwardVisits::PerTrial {
+                records,
+                n_stages,
+                slab,
+            } => match slab {
+                SlabLookup::Unavailable => BracketSource::Computed,
+                #[cfg(any(test, feature = "test-support"))]
+                SlabLookup::ForcedMiss => BracketSource::Slab(None),
+                SlabLookup::Frozen => BracketSource::Slab(
+                    records[m * n_stages + self.successor.0]
+                        .frozen_brackets
+                        .read(self.iteration, child.successor_node_id, child.frozen_rows()),
+                ),
+            },
         }
+    }
+
+    /// The partial sum trial `m`'s forward visit read at the successor stage, whatever the slab;
+    /// `m` is unread under [`ForwardVisits::Node`].
+    pub(crate) fn partial_sum_source(&self, m: usize) -> PartialSumSource<'a> {
+        PartialSumSource::Given(match self.visits {
+            ForwardVisits::Node(partial_sum) => partial_sum,
+            ForwardVisits::PerTrial {
+                records, n_stages, ..
+            } => &records[m * n_stages + self.successor.0].partial_sum,
+        })
     }
 }
 
-/// Where a backward node's pins find the brackets the forward wrote.
+/// The forward visits a backward node's pins read.
 #[derive(Clone, Copy)]
-pub(crate) enum SlabLookup<'a> {
+pub(crate) enum ForwardVisits<'a> {
+    /// The node's own visit: every pin reads its partial sum and computes its brackets.
+    Node(&'a [f64]),
+    /// The iteration's records, one per trial and stage, stride `n_stages`: trial `m`'s pin
+    /// reads the record of the successor stage.
+    PerTrial {
+        records: &'a [TrajectoryRecord],
+        n_stages: usize,
+        slab: SlabLookup,
+    },
+}
+
+/// Where a sampled backward node's pins find the brackets the forward wrote.
+#[derive(Clone, Copy)]
+pub(crate) enum SlabLookup {
     /// The loaded LP is not the frozen template the forward pinned: every pin computes its brackets.
     Unavailable,
     /// Every pin counts a slab miss and computes its brackets, whatever tag the slab carries.
     #[cfg(any(test, feature = "test-support"))]
     ForcedMiss,
-    /// The iteration's records, read at the successor stage's slab of each local trial.
-    Frozen {
-        records: &'a [TrajectoryRecord],
-        n_stages: usize,
-    },
+    /// Every pin reads the slab of the successor stage's record of its trial.
+    Frozen,
 }
 
 /// The read-only captures of one cut-generating node's sampled backward solve, shared by every

@@ -57,6 +57,7 @@ use crate::simulation::SimulationConfig;
 use crate::solve::solver_phase::{Phase, validate_phase_solver_config};
 use crate::stochastic::noise_key::build_noise_key_table;
 mod accessors;
+mod lag_points;
 pub(crate) mod lp_build_inputs;
 pub mod node_graph;
 mod orchestration;
@@ -445,8 +446,16 @@ impl StudySetup {
             stochastic_pipeline::forward_seed_for(simulation_source),
         )?;
 
-        let (fcf, cut_state_layouts) =
+        let (fcf, mut cut_state_layouts) =
             build_future_cost_function(system, &stage_data.state, &node_graph, &loop_params);
+        lag_points::install_lag_points(
+            &mut cut_state_layouts,
+            &node_graph,
+            &study_stage_ids,
+            &stage_data.stage_lag_transitions,
+            stage_data.study_dims.downstream_par_order,
+            &initial.inflow_seeds,
+        );
 
         let horizon = HorizonMode::Finite {
             num_stages: n_stages,

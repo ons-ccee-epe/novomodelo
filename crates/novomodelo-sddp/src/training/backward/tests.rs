@@ -126,7 +126,9 @@ use crate::{
         bound_recording::{BoundRecordingSolver, BoundWrite, RecordedSolve},
         empty_row_batch, equipment_free_geometry, permissive_state_boxes,
     },
-    training::stage_solve_prep::{BracketSource, LoadedCutRows, StageSolvePrep, StateSource},
+    training::stage_solve_prep::{
+        BracketSource, LoadedCutRows, PartialSumSource, StageSolvePrep, StateSource,
+    },
     trajectory::{FrozenBrackets, TrajectoryRecord},
     workspace::{BackwardAccumulators, BasisStore, CapturedBasis, ScratchBuffers, SolverWorkspace},
 };
@@ -4327,13 +4329,18 @@ fn run_one_trial_state_with_stores(
         },
     );
     let template_num_rows = frozen_template.num_rows;
+    let records = single_trial_records();
     let succ_spec = super::SuccessorSpec {
         successor: StageIdx(1),
         iteration,
         my_rank: 0,
         probabilities: &succ_probabilities,
         cut_state: &cut_state_projection,
-        slab: super::SlabLookup::Unavailable,
+        visits: super::ForwardVisits::PerTrial {
+            records: &records,
+            n_stages: 2,
+            slab: super::SlabLookup::Unavailable,
+        },
         stage_noise: None,
     };
     let single = SingleSuccessor::new(
@@ -4457,7 +4464,7 @@ fn pin_folded_pins_transit_bucket_incoming_columns_per_stage_visit() {
         &ctx,
         &training_ctx,
         StageIdx(0),
-        StateSource(&x_hat),
+        StateSource::live(&x_hat),
         &LoadedCutRows {
             pool: &pool,
             projection: &projection,
@@ -4597,13 +4604,18 @@ fn per_child_backward_isolates_column_basis_and_pool_metadata() {
             inflow_lags: true,
         },
     );
+    let records = single_trial_records();
     let succ_spec = super::SuccessorSpec {
         successor: StageIdx(1),
         iteration: 1,
         my_rank: 0,
         probabilities: &[0.5_f64, 0.5],
         cut_state: &cut_state_projection,
-        slab: super::SlabLookup::Unavailable,
+        visits: super::ForwardVisits::PerTrial {
+            records: &records,
+            n_stages: 2,
+            slab: super::SlabLookup::Unavailable,
+        },
         stage_noise: None,
     };
     let outcomes = multi.outcomes(&fcf.pools, base_num_rows, Some(0.0));
@@ -5325,13 +5337,18 @@ fn run_dcs_backward_trial_state_at(
         },
     );
     let template_num_rows = core.num_rows;
+    let records = single_trial_records();
     let succ = super::SuccessorSpec {
         successor: StageIdx(1),
         iteration,
         my_rank: 0,
         probabilities: &probabilities,
         cut_state: &cut_state_projection,
-        slab: super::SlabLookup::Unavailable,
+        visits: super::ForwardVisits::PerTrial {
+            records: &records,
+            n_stages: 2,
+            slab: super::SlabLookup::Unavailable,
+        },
         stage_noise: None,
     };
     let single = SingleSuccessor::new(
@@ -5821,13 +5838,18 @@ fn backward_dcs_frozen_cuts_present_no_duplicate_rows() {
         },
     );
     let template_num_rows = base.num_rows;
+    let records = single_trial_records();
     let succ = super::SuccessorSpec {
         successor: StageIdx(1),
         iteration,
         my_rank: 0,
         probabilities: &probabilities,
         cut_state: &cut_state_projection,
-        slab: super::SlabLookup::Unavailable,
+        visits: super::ForwardVisits::PerTrial {
+            records: &records,
+            n_stages: 2,
+            slab: super::SlabLookup::Unavailable,
+        },
         stage_noise: None,
     };
     let single = SingleSuccessor::new(
@@ -6421,13 +6443,18 @@ impl CompactBackwardCase {
                     .fill(training_ctx, StageIdx(1), &outcomes)
                     .expect("generated openings need no library");
             }
+            let records = single_trial_records();
             let spec = super::SuccessorSpec {
                 successor: StageIdx(1),
                 iteration: 1,
                 my_rank: 0,
                 probabilities: &self.probabilities,
                 cut_state: &self.layouts[0],
-                slab: super::SlabLookup::Unavailable,
+                visits: super::ForwardVisits::PerTrial {
+                    records: &records,
+                    n_stages: 2,
+                    slab: super::SlabLookup::Unavailable,
+                },
                 stage_noise: with_stage_noise.then_some(&table),
             };
             let exchange = exchange_with_states(self.state.n_state, vec![COMPACT_X_HAT.to_vec()]);
@@ -6518,6 +6545,7 @@ impl CompactBackwardCase {
             &ChainRuleInputs {
                 slots: &slots,
                 resident_pool: &self.pools[1],
+                resident_lag_point: self.layouts[1].lag_point(),
                 extracted: &self.layouts[0],
                 par: self.stochastic.par(),
                 stage: 1,
@@ -6787,7 +6815,7 @@ fn compact_slab_reference(case: &CompactBackwardCase, state: &[f64]) -> Vec<f64>
             ctx,
             training_ctx,
             StageIdx(1),
-            StateSource(state),
+            StateSource::live(state),
             &LoadedCutRows {
                 pool: &case.pools[1],
                 projection: &case.layouts[1],
@@ -7010,13 +7038,14 @@ fn compact_slab_lookup_maps_to_the_pin_source() {
         my_rank: 0,
         probabilities: &case.probabilities,
         cut_state: &case.layouts[0],
-        slab,
+        visits: super::ForwardVisits::PerTrial {
+            records: &records,
+            n_stages: 2,
+            slab,
+        },
         stage_noise: None,
     };
-    let frozen = super::SlabLookup::Frozen {
-        records: &records,
-        n_stages: 2,
-    };
+    let frozen = super::SlabLookup::Frozen;
     let successor = case.successor();
     let outcomes = successor.outcomes(&case.pools, COMPACT_TEMPLATE_ROWS, None);
     let child = outcomes.child(0);
@@ -7055,6 +7084,105 @@ fn compact_slab_lookup_maps_to_the_pin_source() {
         spec(frozen, 7).bracket_source(1, &other_rows),
         BracketSource::Slab(None)
     );
+}
+
+fn single_trial_records() -> Vec<TrajectoryRecord> {
+    vec![TrajectoryRecord::default(); 2]
+}
+
+/// Two trials of two stages, each record holding a distinct partial sum.
+fn records_with_partial_sums() -> Vec<TrajectoryRecord> {
+    [[0.5], [1.5], [2.5], [3.5]]
+        .map(|partial_sum| TrajectoryRecord {
+            partial_sum: partial_sum.to_vec(),
+            ..TrajectoryRecord::default()
+        })
+        .to_vec()
+}
+
+#[test]
+fn a_sampled_backward_pin_reads_the_partial_sum_of_its_trials_successor_record() {
+    let case = CompactBackwardCase::new(&[1.0]);
+    let records = records_with_partial_sums();
+    let spec = super::SuccessorSpec {
+        successor: StageIdx(1),
+        iteration: 7,
+        my_rank: 0,
+        probabilities: &case.probabilities,
+        cut_state: &case.layouts[0],
+        visits: super::ForwardVisits::PerTrial {
+            records: &records,
+            n_stages: 2,
+            slab: super::SlabLookup::Unavailable,
+        },
+        stage_noise: None,
+    };
+
+    assert_eq!(
+        spec.partial_sum_source(0),
+        PartialSumSource::Given(&[1.5][..])
+    );
+    assert_eq!(
+        spec.partial_sum_source(1),
+        PartialSumSource::Given(&[3.5][..])
+    );
+}
+
+#[test]
+fn a_backward_partial_sum_source_does_not_depend_on_the_slab_lookup() {
+    let case = CompactBackwardCase::new(&[1.0]);
+    let records = records_with_partial_sums();
+    let spec = |slab| super::SuccessorSpec {
+        successor: StageIdx(1),
+        iteration: 7,
+        my_rank: 0,
+        probabilities: &case.probabilities,
+        cut_state: &case.layouts[0],
+        visits: super::ForwardVisits::PerTrial {
+            records: &records,
+            n_stages: 2,
+            slab,
+        },
+        stage_noise: None,
+    };
+    let frozen = super::SlabLookup::Frozen;
+
+    for slab in [
+        super::SlabLookup::Unavailable,
+        super::SlabLookup::ForcedMiss,
+        frozen,
+    ] {
+        assert_eq!(
+            spec(slab).partial_sum_source(1),
+            PartialSumSource::Given(&[3.5][..])
+        );
+    }
+}
+
+#[test]
+fn a_node_visit_supplies_its_own_partial_sum_to_every_trial_and_computes_the_brackets() {
+    let case = CompactBackwardCase::new(&[1.0]);
+    let node_partial_sum = [2.5];
+    let spec = super::SuccessorSpec {
+        successor: StageIdx(1),
+        iteration: 7,
+        my_rank: 0,
+        probabilities: &case.probabilities,
+        cut_state: &case.layouts[0],
+        visits: super::ForwardVisits::Node(&node_partial_sum),
+        stage_noise: None,
+    };
+    let successor = case.successor();
+    let outcomes = successor.outcomes(&case.pools, COMPACT_TEMPLATE_ROWS, None);
+    let child = outcomes.child(0);
+
+    for m in [0, 1, 5] {
+        assert_eq!(
+            spec.partial_sum_source(m),
+            PartialSumSource::Given(&node_partial_sum[..])
+        );
+        assert_eq!(spec.bracket_source(m, &child), BracketSource::Computed);
+    }
 }
 
 #[test]

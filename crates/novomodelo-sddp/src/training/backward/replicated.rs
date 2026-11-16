@@ -28,7 +28,9 @@ use crate::{
     risk_measure::{BackwardOutcome, RiskMeasure},
     solve::{StageOpeningSolver, partition},
     stage_solve::{StageInputs, run_stage_solve},
-    training::stage_solve_prep::{BracketSource, LoadedCutRows, NoiseTermSource, StageSolvePrep},
+    training::stage_solve_prep::{
+        BracketSource, LoadedCutRows, NoiseTermSource, StageSolvePrep, StateSource,
+    },
     workspace::SolverWorkspace,
 };
 
@@ -108,7 +110,10 @@ pub(crate) fn solve_replicated_outcome_slice<S: SolverInterface + Send>(
         ctx,
         training_ctx,
         child,
-        x_hat,
+        StateSource {
+            state: x_hat,
+            partial_sum: succ.partial_sum_source(0),
+        },
         s,
         BracketSource::Computed,
     );
@@ -242,6 +247,7 @@ fn solve_replicated_opening<S: SolverInterface + Send>(
         &ChainRuleStageInputs {
             slots: child.chain_rule_slots,
             resident_pool: child.successor_pool,
+            resident_lag_point: rows.projection.lag_point(),
             par: training_ctx.stochastic.par(),
             stage: s.0,
         },

@@ -8,11 +8,16 @@
 //! β′(h, l)  = ψ(h, l)·g(h) + w(h, l)       w absent at the last lag
 //! α′        = Q − Σ_j β′(j)·x̂(j)
 //! ```
+//!
+//! Under `Closing` the cut term of g is scaled by the hydro's share c(h); under `Carry` it is
+//! absent and w(h, l) sums y(k)·β(k, (h, l)) over the cuts for every l, the last included.
 
 use novomodelo_stochastic::par::precompute::PrecomputedPar;
 
+use std::ops::Range;
+
 use crate::cut::CutPool;
-use crate::indexer::{ChainRuleSlots, CutStateProjection};
+use crate::indexer::{ChainRuleSlots, CutLagPoint, CutStateProjection, LagPointMode};
 
 /// Per-(pool pair, stage) inputs of the kernel; none owns a buffer.
 pub struct ChainRuleInputs<'a> {
@@ -20,6 +25,8 @@ pub struct ChainRuleInputs<'a> {
     pub slots: &'a ChainRuleSlots,
     /// The pool whose cut duals the opening reports.
     pub resident_pool: &'a CutPool,
+    /// The resident pool's lag point, whose `Closing` share scales the lag-0 cut term.
+    pub resident_lag_point: &'a CutLagPoint,
     /// Projection of the pool the new cut joins.
     pub extracted: &'a CutStateProjection,
     /// Source of ψ.
@@ -50,12 +57,41 @@ pub struct ChainRuleScratch {
 
 impl ChainRuleScratch {
     /// Scratch built from the layout's N (`n_hydros`) and L (`lag_depth`): g holds N values and w
-    /// holds N·(L−1). Every pool pair of one layout shares that shape.
+    /// holds N·L. `Shifted` and `Closing` use the first N·(L−1) of w for the shifted terms, and
+    /// `Closing` the last N for its lag-0 cut sums; `Carry` uses all N·L as w. Every pool pair of
+    /// one layout shares that shape.
     #[must_use]
     pub fn new(n_hydros: usize, lag_depth: usize) -> Self {
         Self {
             g: vec![0.0; n_hydros],
-            w: vec![0.0; n_hydros * lag_depth.saturating_sub(1)],
+            w: vec![0.0; n_hydros * lag_depth],
+        }
+    }
+}
+
+/// Adds `y·β` of every nonzero cut dual's row over `lag0` into `lag0_sums` and over `shifted`
+/// into `shifted_sums`, each ascending over the duals.
+#[expect(
+    clippy::inline_always,
+    reason = "fold_kernels fixed_part measures +9% per cut without it"
+)]
+#[inline(always)]
+fn accumulate_cut_duals(
+    pool: &CutPool,
+    cut_duals: &[(usize, f64)],
+    (lag0, lag0_sums): (&Range<usize>, &mut [f64]),
+    (shifted, shifted_sums): (&Range<usize>, &mut [f64]),
+) {
+    for &(slot, y) in cut_duals {
+        if y == 0.0 {
+            continue;
+        }
+        let row = pool.coefficient_row(slot);
+        for (sum, &beta) in lag0_sums.iter_mut().zip(&row[lag0.clone()]) {
+            *sum += y * beta;
+        }
+        for (sum, &beta) in shifted_sums.iter_mut().zip(&row[shifted.clone()]) {
+            *sum += y * beta;
         }
     }
 }
@@ -77,26 +113,62 @@ fn lag_coefficients_into(
 
     let ChainRuleScratch { g, w } = scratch;
     debug_assert!(
-        g.len() == n_hydros && w.len() == n_hydros * lag_depth.saturating_sub(1),
+        g.len() == n_hydros && w.len() == n_hydros * lag_depth,
         "scratch was built for another pair"
     );
-    w.fill(-0.0);
-    let (lag0, shifted) = (slots.resident_lag0(), slots.resident_shifted());
-    if !lag0.is_empty() {
-        for &(slot, y) in cut_duals {
-            if y == 0.0 {
-                continue;
+    let mode = inputs.resident_lag_point.mode();
+    let resident = inputs.resident_pool;
+    match mode {
+        LagPointMode::Shifted => {
+            let (lag0, shifted) = (slots.resident_lag0(), slots.resident_shifted());
+            let w_shifted = &mut w[..n_hydros * lag_depth.saturating_sub(1)];
+            w_shifted.fill(-0.0);
+            if !lag0.is_empty() {
+                accumulate_cut_duals(
+                    resident,
+                    cut_duals,
+                    (&lag0, &mut g[..]),
+                    (&shifted, w_shifted),
+                );
             }
-            let row = inputs.resident_pool.coefficient_row(slot);
-            for (g_h, &beta) in g.iter_mut().zip(&row[lag0.clone()]) {
-                *g_h += y * beta;
+        }
+        LagPointMode::Closing => {
+            let (lag0, shifted) = (slots.resident_lag0(), slots.resident_shifted());
+            let (w_shifted, lag0_sums) = w.split_at_mut(n_hydros * lag_depth.saturating_sub(1));
+            w_shifted.fill(-0.0);
+            lag0_sums.fill(-0.0);
+            if !lag0.is_empty() {
+                accumulate_cut_duals(
+                    resident,
+                    cut_duals,
+                    (&lag0, &mut lag0_sums[..]),
+                    (&shifted, w_shifted),
+                );
+                let share = inputs.resident_lag_point.closing_share();
+                debug_assert_eq!(
+                    share.len(),
+                    n_hydros,
+                    "a Closing pool holds a share per hydro"
+                );
+                for ((g_h, &sum), &share) in g.iter_mut().zip(lag0_sums.iter()).zip(share) {
+                    *g_h += share * sum;
+                }
             }
-            for (w_i, &beta) in w.iter_mut().zip(&row[shifted.clone()]) {
-                *w_i += y * beta;
+        }
+        LagPointMode::Carry => {
+            let full = inputs.resident_lag_point.full();
+            w.fill(-0.0);
+            if !full.is_empty() {
+                accumulate_cut_duals(resident, cut_duals, (&full, &mut w[..]), (&(0..0), &mut []));
             }
         }
     }
 
+    let lags_with_w = if mode == LagPointMode::Carry {
+        lag_depth
+    } else {
+        lag_depth.saturating_sub(1)
+    };
     for (h, &g_h) in g.iter().enumerate() {
         let psi = if inputs.par.max_order() > 0 {
             inputs.par.psi_slice(inputs.stage, h)
@@ -111,7 +183,7 @@ fn lag_coefficients_into(
             // A lag past the PAR order carries ψ = 0: the lag state is widened past it.
             let psi_l = psi.get(l).copied().unwrap_or(0.0);
             let at = l * n_hydros + h;
-            lag_out[at] = if l + 1 < lag_depth {
+            lag_out[at] = if l < lags_with_w {
                 psi_l * g_h + w[at]
             } else {
                 psi_l * g_h
@@ -353,7 +425,7 @@ mod tests {
         OpeningDuals, PrecomputedPar, aggregate_first_cut_into, per_opening_cut_into,
     };
     use crate::cut::CutPool;
-    use crate::indexer::CutStateProjection;
+    use crate::indexer::{ClosingCoefficients, CutStateProjection, LagPointMode, LagPointRule};
     use crate::risk_measure::{BackwardOutcome, RiskMeasure, RiskMeasureScratch};
     use crate::setup::NodeId;
     use crate::test_support::{bits, par_with_ar_coefficients, state_layout};
@@ -370,6 +442,7 @@ mod tests {
     struct Pair {
         slots: ChainRuleSlots,
         pool: CutPool,
+        resident: CutStateProjection,
         extracted: CutStateProjection,
         par: PrecomputedPar,
     }
@@ -391,6 +464,7 @@ mod tests {
             Self {
                 slots: ChainRuleSlots::compose(&global, &resident, &extracted),
                 pool,
+                resident,
                 extracted,
                 par,
             }
@@ -400,6 +474,7 @@ mod tests {
             ChainRuleInputs {
                 slots: &self.slots,
                 resident_pool: &self.pool,
+                resident_lag_point: self.resident.lag_point(),
                 extracted: &self.extracted,
                 par: &self.par,
                 stage: 0,
@@ -485,6 +560,99 @@ mod tests {
 
         assert_eq!(coefficients, [-1.5, -2.5, 14.5, 17.0, 0.75, 0.5]);
         assert_eq!(alpha, 112.25);
+    }
+
+    const CLOSING_INVERSE_WEIGHT: [f64; 2] = [1.0, 0.5];
+    const CLOSING_SHARE: [f64; 2] = [0.5, 0.25];
+    const CLOSING_INCOMING_WEIGHT: [f64; 2] = [0.5, 1.5];
+
+    fn closed_form_pair_in(mode: LagPointMode) -> Pair {
+        let mut pair = Pair::new(
+            (2, 2),
+            (ALL, ALL),
+            &[
+                &CLOSED_FORM_ROWS[0],
+                &CLOSED_FORM_ROWS[1],
+                &[9.0, 9.0, 100.0, 100.0, 100.0, 100.0],
+            ],
+            par_with_psi(2, &[0.5, 0.25]),
+        );
+        let rule = match mode {
+            LagPointMode::Shifted => LagPointRule::Shifted,
+            LagPointMode::Carry => LagPointRule::Carry,
+            LagPointMode::Closing => LagPointRule::Closing(ClosingCoefficients::new(
+                CLOSING_INVERSE_WEIGHT.to_vec(),
+                CLOSING_SHARE.to_vec(),
+                CLOSING_INCOMING_WEIGHT.to_vec(),
+            )),
+        };
+        pair.resident.lag_point_mut().install_rule(rule);
+        pair.slots = ChainRuleSlots::compose(&state_layout(2, 2), &pair.resident, &pair.extracted);
+        pair
+    }
+
+    fn run_closed_form(pair: &Pair) -> (Vec<f64>, f64) {
+        pair.run(
+            &OpeningDuals {
+                objective: 100.0,
+                state_duals: &[-1.5, -2.5],
+                coupled_duals: &[4.0, 8.0],
+                cut_duals: &[(0, 2.0), (1, 1.0), (2, 0.0)],
+            },
+            &CLOSED_FORM_X_HAT,
+        )
+    }
+
+    #[test]
+    fn carry_mode_chain_rule_carries_every_lag_of_the_resident_cut() {
+        let pair = closed_form_pair_in(LagPointMode::Carry);
+
+        let (coefficients, alpha) = run_closed_form(&pair);
+
+        assert_eq!(coefficients, [-1.5, -2.5, 5.0, 6.0, 12.0, 14.0]);
+        assert_eq!(alpha, 56.0);
+        let dot = pair
+            .extracted
+            .dot_trial_state(&coefficients, &CLOSED_FORM_X_HAT);
+        assert_eq!(alpha, 100.0 - dot);
+    }
+
+    #[test]
+    fn closing_mode_chain_rule_scales_the_lag0_cut_term_by_the_share() {
+        let pair = closed_form_pair_in(LagPointMode::Closing);
+
+        let (coefficients, alpha) = run_closed_form(&pair);
+
+        assert_eq!(coefficients, [-1.5, -2.5, 12.75, 13.25, -0.125, -1.375]);
+        assert_eq!(alpha, 131.625);
+        let dot = pair
+            .extracted
+            .dot_trial_state(&coefficients, &CLOSED_FORM_X_HAT);
+        assert_eq!(alpha, 100.0 - dot);
+    }
+
+    #[test]
+    fn a_closing_pool_with_no_nonzero_cut_dual_leaves_g_bit_identical() {
+        let opening = OpeningDuals {
+            objective: 100.0,
+            state_duals: &[-1.5, -2.5],
+            coupled_duals: &[0.0, 0.0],
+            cut_duals: &[(0, 0.0), (1, -0.0)],
+        };
+
+        let (shifted, shifted_alpha) =
+            closed_form_pair_in(LagPointMode::Shifted).run(&opening, &CLOSED_FORM_X_HAT);
+        let (closing, closing_alpha) =
+            closed_form_pair_in(LagPointMode::Closing).run(&opening, &CLOSED_FORM_X_HAT);
+
+        assert!(
+            shifted[2..]
+                .iter()
+                .all(|c| c.to_bits() == (-0.0f64).to_bits()),
+            "g is the negated zero coupling, so every lag coefficient is -0.0: {shifted:?}"
+        );
+        assert_eq!(bits(&closing), bits(&shifted));
+        assert_eq!(closing_alpha.to_bits(), shifted_alpha.to_bits());
     }
 
     #[test]

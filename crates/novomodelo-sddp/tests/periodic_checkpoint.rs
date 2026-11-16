@@ -30,7 +30,7 @@ use novomodelo_sddp::policy::full_fcf_load::{FullFcfLoadKind, check_full_fcf_loa
 use novomodelo_sddp::policy::orchestration::{
     CheckpointParams, partial_policy_dir, write_checkpoint,
 };
-use novomodelo_sddp::setup::NodePos;
+use novomodelo_sddp::setup::{NodePos, StageIdx};
 use novomodelo_sddp::test_support::snapshot_files;
 use novomodelo_sddp::{
     CapturedBasis, DEFAULT_COST_SCALE_FACTOR, SddpError, StoredBasisMisfit, StudySetup,
@@ -51,6 +51,10 @@ fn toy_case() -> PathBuf {
 
 fn lag_case() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/deterministic/d19-multi-hydro-par")
+}
+
+fn mixed_resolution_lag_case() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/weekly_then_closing_month")
 }
 
 fn checkpointing_setup(
@@ -1468,6 +1472,37 @@ fn a_resume_on_a_lag_deck_equals_the_uninterrupted_run() {
         "power: the lag deck has no inflow lag"
     );
     finish("lag deck", &run_leg(LAG_DECK));
+}
+
+const MIXED_RESOLUTION_LAG_DECK: Leg = Leg {
+    case: mixed_resolution_lag_case,
+    forward_passes: 4,
+    ..SELECTION_OFF
+};
+
+#[test]
+fn a_resume_on_a_mixed_resolution_lag_deck_equals_the_uninterrupted_run() {
+    let (_, setup) = fresh_system_and_setup_with(&mixed_resolution_lag_case(), no_edit);
+    assert!(
+        setup.stage_state().max_par_order >= 1,
+        "power: the mixed-resolution deck has no inflow lag"
+    );
+    let ctx = setup.stage_ctx();
+    let first_open_period = (0..setup.num_stages())
+        .find(|&t| {
+            let lag = ctx.stage_lag(StageIdx(t));
+            !lag.finalize_period && lag.accumulate_weight > 0.0
+        })
+        .expect("power: no stage has finalize_period == false with accumulate_weight > 0");
+    let first_later_stage = first_open_period + 1;
+    assert!(
+        (first_later_stage..setup.num_stages()).any(|t| ctx.stage_lag(StageIdx(t)).finalize_period),
+        "power: no stage after an open period has finalize_period == true"
+    );
+    finish(
+        "mixed-resolution lag deck",
+        &run_leg(MIXED_RESOLUTION_LAG_DECK),
+    );
 }
 
 fn tamper_basis_files(policy_dir: &Path, extra_cols: usize, extra_rows: usize) {

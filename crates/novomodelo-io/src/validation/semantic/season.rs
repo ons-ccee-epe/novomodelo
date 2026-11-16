@@ -5,9 +5,9 @@ use std::collections::{HashMap, HashSet};
 use super::super::{ValidationContext, rules, schema::ParsedData};
 use crate::scenarios::estimation::estimation_samples;
 
-use novomodelo_core::SeasonMap;
-use novomodelo_core::temporal::SUB_PERIOD_TOLERANCE_DAYS;
-use novomodelo_stochastic::season_cast::observation_occurrence_year;
+use novomodelo_core::temporal::{SUB_PERIOD_TOLERANCE_DAYS, SeasonCycles};
+use novomodelo_core::{SeasonDefinition, SeasonMap, Stage};
+use novomodelo_stochastic::season_cast::{observation_occurrence_year, season_period_window};
 
 // ── Rules 27+29: Season ID range coverage and resolution consistency ──────────
 
@@ -39,55 +39,121 @@ pub(super) fn check_season_id_consistency(data: &ParsedData, ctx: &mut Validatio
         }
     }
 
-    let mut season_groups: HashMap<usize, Vec<(i32, i64)>> = HashMap::new();
+    let mut season_groups: HashMap<usize, Vec<&Stage>> = HashMap::new();
     for stage in &data.stages.stages {
         if let Some(sid) = stage.season_id {
-            let duration_days = (stage.end_date - stage.start_date).num_days();
-            season_groups
-                .entry(sid)
-                .or_default()
-                .push((stage.id, duration_days));
+            season_groups.entry(sid).or_default().push(stage);
         }
     }
 
     let mut sorted_season_ids: Vec<usize> = season_groups.keys().copied().collect();
     sorted_season_ids.sort_unstable();
 
+    let cycles = season_map
+        .is_multi_resolution()
+        .then(|| SeasonCycles::new(season_map));
+
     for sid in sorted_season_ids {
         let members = &season_groups[&sid];
         if members.len() < 2 {
             continue;
         }
-        let min_d = members.iter().map(|&(_, d)| d).min().unwrap_or(0);
-        let max_d = members.iter().map(|&(_, d)| d).max().unwrap_or(0);
-        if max_d - min_d > SUB_PERIOD_TOLERANCE_DAYS {
-            let mut details_parts: Vec<String> = members
-                .iter()
-                .map(|&(id, d)| format!("stage {id} ({d}d)"))
-                .collect();
-            details_parts.sort_unstable();
-            let details = details_parts.join(", ");
-            let level_note = if season_map.is_multi_resolution() {
-                " (season_definitions layers multiple resolution levels; verify \
-                  each stage's declared season_id matches its intended level)"
-            } else {
-                ""
-            };
-            ctx.emit(
-                &rules::SEMANTIC_SEASON_DURATION_SPREAD,
-                "stages.json",
-                Some(format!("Season {sid}")),
-                format!(
-                    "stages sharing season_id {sid} have incompatible durations: {details}; \
-                     stages within the same season must have the same temporal resolution \
-                     (e.g., all monthly or all weekly){level_note}",
-                ),
-            );
+        let durations: Vec<i64> = members.iter().map(|s| stage_days(s)).collect();
+        let min_d = durations.iter().copied().min().unwrap_or(0);
+        let max_d = durations.iter().copied().max().unwrap_or(0);
+        if max_d - min_d <= SUB_PERIOD_TOLERANCE_DAYS {
+            continue;
         }
+        let Some(def) = season_map.seasons.iter().find(|s| s.id == sid) else {
+            continue;
+        };
+        let finer_spans = cycles
+            .as_ref()
+            .map_or_else(Vec::new, |c| finer_level_spans(season_map, c, sid));
+        let mut offenders: Vec<i32> = members
+            .iter()
+            .filter(|s| !fits_its_season_occurrence(s, def, season_map, &finer_spans))
+            .map(|s| s.id)
+            .collect();
+        if offenders.is_empty() {
+            continue;
+        }
+        offenders.sort_unstable();
+        let mut details_parts: Vec<String> = members
+            .iter()
+            .map(|s| format!("stage {} ({}d)", s.id, stage_days(s)))
+            .collect();
+        details_parts.sort_unstable();
+        let details = details_parts.join(", ");
+        let offenders = match offenders.as_slice() {
+            [only] => format!("stage {only} is neither"),
+            many => format!(
+                "stages {} are neither",
+                many.iter()
+                    .map(i32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        };
+        let level_note = if season_map.is_multi_resolution() {
+            " (season_definitions layers multiple resolution levels; verify \
+              each stage's declared season_id matches its intended level)"
+        } else {
+            ""
+        };
+        ctx.emit(
+            &rules::SEMANTIC_SEASON_DURATION_SPREAD,
+            "stages.json",
+            Some(format!("Season {sid}")),
+            format!(
+                "stages sharing season_id {sid} have incompatible durations: {details}; \
+                 each stage must span its season's period (within \
+                 {SUB_PERIOD_TOLERANCE_DAYS} days) or be a slice that overlaps it and is \
+                 at least {SUB_PERIOD_TOLERANCE_DAYS} days shorter; {offenders}{level_note}",
+            ),
+        );
     }
 
     check_season_observation_coverage(data, season_map, ctx);
     check_season_contiguity(data, season_map, ctx);
+}
+
+fn stage_days(stage: &Stage) -> i64 {
+    (stage.end_date - stage.start_date).num_days()
+}
+
+fn finer_level_spans(season_map: &SeasonMap, cycles: &SeasonCycles, sid: usize) -> Vec<i64> {
+    let Some(level) = cycles.group_of(sid) else {
+        return Vec::new();
+    };
+    season_map
+        .seasons
+        .iter()
+        .filter(|s| cycles.group_of(s.id).is_some_and(|l| l < level))
+        .filter_map(|s| season_map.resolution_level_of(s.id))
+        .filter_map(|span| i64::try_from(span).ok())
+        .collect()
+}
+
+// mutation-equivalent: {"function": "fits_its_season_occurrence", "mutation": "replace + with - in fits_its_season_occurrence", "ordinal": 1, "reason": "the first disjunct already accepts every days within the tolerance of period, so the slice disjunct decides only days below period - tolerance, where days + tolerance <= period and days - tolerance <= period are both true; above period + tolerance both are false"}
+/// A slice never has a finer level's length: such a stage names the wrong level of a layered map.
+fn fits_its_season_occurrence(
+    stage: &Stage,
+    def: &SeasonDefinition,
+    season_map: &SeasonMap,
+    finer_spans: &[i64],
+) -> bool {
+    let window = season_period_window(season_map, def, stage);
+    if stage.start_date >= window.end || stage.end_date <= window.start {
+        return false;
+    }
+    let period = (window.end - window.start).num_days();
+    let days = stage_days(stage);
+    (days - period).abs() <= SUB_PERIOD_TOLERANCE_DAYS
+        || (days + SUB_PERIOD_TOLERANCE_DAYS <= period
+            && !finer_spans
+                .iter()
+                .any(|&span| (days - span).abs() <= SUB_PERIOD_TOLERANCE_DAYS))
 }
 
 // ── Shared stage-index lookup (Rules 28, 31) ──────────────────────────────────
@@ -341,6 +407,10 @@ mod tests {
             SeasonDefinition, SeasonMap, Stage, StageRiskConfig, StageStateConfig,
         },
     };
+    use novomodelo_stochastic::test_support::{
+        MonthlyLabels, monthly_quarterly_season_map, monthly_season_map, quarterly_season_map,
+        weeks_naming_june_then_months,
+    };
 
     // ── Local helpers ─────────────────────────────────────────────────────────
 
@@ -396,7 +466,8 @@ mod tests {
         }
     }
 
-    /// Build a `StagesData` for Rule 29 tests.
+    /// Build a `StagesData` for Rule 29 tests on a Monthly map whose
+    /// `month_start` is each season's position among the sorted ids.
     fn make_stages_for_resolution_check(
         stage_specs: Vec<(i32, chrono::NaiveDate, chrono::NaiveDate, usize)>,
     ) -> StagesData {
@@ -418,6 +489,14 @@ mod tests {
             cycle_type: SeasonCycleType::Monthly,
             seasons,
         };
+        stages_data_on_map(season_map, stage_specs)
+    }
+
+    /// Build a `StagesData` of `(id, start, end, season_id)` stages on `season_map`.
+    fn stages_data_on_map(
+        season_map: SeasonMap,
+        stage_specs: Vec<(i32, chrono::NaiveDate, chrono::NaiveDate, usize)>,
+    ) -> StagesData {
         let stages = stage_specs
             .into_iter()
             .enumerate()
@@ -736,26 +815,7 @@ mod tests {
                 11,
             ), // 31d
         ];
-        let stages = make_stages_for_resolution_check(specs);
-        let data = make_data_5b(
-            vec![make_hydro_ordered_penalties(1)],
-            stages,
-            vec![make_bus_with_deficit(1, 10.0)],
-            vec![],
-            vec![],
-            None,
-        );
-        let mut ctx = ValidationContext::new();
-        check_season_id_consistency(&data, &mut ctx);
-
-        let rule29_errors: Vec<_> = ctx
-            .errors()
-            .into_iter()
-            .filter(|e| {
-                e.kind == ErrorKind::BusinessRuleViolation
-                    && e.message.contains("incompatible durations")
-            })
-            .collect();
+        let rule29_errors = duration_errors(make_stages_for_resolution_check(specs));
         assert!(
             rule29_errors.is_empty(),
             "monthly study with 28-31d stages should produce no rule-29 errors; \
@@ -763,9 +823,10 @@ mod tests {
         );
     }
 
-    /// Given a study where season_id 0 is shared by a 30-day stage (monthly)
-    /// and a 91-day stage (quarterly), one `BusinessRuleViolation` is emitted
-    /// mentioning season_id 0 and listing both stages with their durations.
+    /// Given a study where season_id 0 (January) is shared by a 30-day January
+    /// stage and a 91-day stage lying outside January, one
+    /// `BusinessRuleViolation` is emitted mentioning season_id 0 and listing
+    /// both stages with their durations.
     #[test]
     fn test_resolution_consistency_mixed_monthly_quarterly() {
         use chrono::NaiveDate;
@@ -784,32 +845,13 @@ mod tests {
                 0,
             ), // 91d quarterly
         ];
-        let stages = make_stages_for_resolution_check(specs);
-        let data = make_data_5b(
-            vec![make_hydro_ordered_penalties(1)],
-            stages,
-            vec![make_bus_with_deficit(1, 10.0)],
-            vec![],
-            vec![],
-            None,
-        );
-        let mut ctx = ValidationContext::new();
-        check_season_id_consistency(&data, &mut ctx);
-
-        let rule29_errors: Vec<_> = ctx
-            .errors()
-            .into_iter()
-            .filter(|e| {
-                e.kind == ErrorKind::BusinessRuleViolation
-                    && e.message.contains("incompatible durations")
-            })
-            .collect();
+        let rule29_errors = duration_errors(make_stages_for_resolution_check(specs));
         assert_eq!(
             rule29_errors.len(),
             1,
             "expected exactly one rule-29 error for season_id 0; got: {rule29_errors:?}"
         );
-        let msg = &rule29_errors[0].message;
+        let msg = &rule29_errors[0];
         assert!(
             msg.contains("season_id 0"),
             "error message must mention season_id 0; got: {msg}"
@@ -932,26 +974,7 @@ mod tests {
             ), // 92d
         ];
         let specs: Vec<_> = monthly.into_iter().chain(quarterly).collect();
-        let stages = make_stages_for_resolution_check(specs);
-        let data = make_data_5b(
-            vec![make_hydro_ordered_penalties(1)],
-            stages,
-            vec![make_bus_with_deficit(1, 10.0)],
-            vec![],
-            vec![],
-            None,
-        );
-        let mut ctx = ValidationContext::new();
-        check_season_id_consistency(&data, &mut ctx);
-
-        let rule29_errors: Vec<_> = ctx
-            .errors()
-            .into_iter()
-            .filter(|e| {
-                e.kind == ErrorKind::BusinessRuleViolation
-                    && e.message.contains("incompatible durations")
-            })
-            .collect();
+        let rule29_errors = duration_errors(make_stages_for_resolution_check(specs));
         assert!(
             rule29_errors.is_empty(),
             "disjoint monthly (0-11) and quarterly (12-15) season_ids should produce no \
@@ -959,9 +982,9 @@ mod tests {
         );
     }
 
-    /// Given a study where season_id 3 is shared by a 7-day stage (weekly)
-    /// and a 30-day stage (monthly), one `BusinessRuleViolation` is emitted
-    /// for season_id 3.
+    /// Given a study where season_id 3 (January on this map) is shared by a
+    /// 7-day January week and a 30-day stage lying outside January, one
+    /// `BusinessRuleViolation` is emitted for season_id 3.
     #[test]
     fn test_resolution_consistency_weekly_vs_monthly() {
         use chrono::NaiveDate;
@@ -980,32 +1003,13 @@ mod tests {
                 3,
             ), // 30d monthly
         ];
-        let stages = make_stages_for_resolution_check(specs);
-        let data = make_data_5b(
-            vec![make_hydro_ordered_penalties(1)],
-            stages,
-            vec![make_bus_with_deficit(1, 10.0)],
-            vec![],
-            vec![],
-            None,
-        );
-        let mut ctx = ValidationContext::new();
-        check_season_id_consistency(&data, &mut ctx);
-
-        let rule29_errors: Vec<_> = ctx
-            .errors()
-            .into_iter()
-            .filter(|e| {
-                e.kind == ErrorKind::BusinessRuleViolation
-                    && e.message.contains("incompatible durations")
-            })
-            .collect();
+        let rule29_errors = duration_errors(make_stages_for_resolution_check(specs));
         assert_eq!(
             rule29_errors.len(),
             1,
             "expected exactly one rule-29 error for season_id 3; got: {rule29_errors:?}"
         );
-        let msg = &rule29_errors[0].message;
+        let msg = &rule29_errors[0];
         assert!(
             msg.contains("season_id 3"),
             "error message must mention season_id 3; got: {msg}"
@@ -1053,56 +1057,33 @@ mod tests {
         );
 
         let specs = vec![
-            (
-                0,
-                chrono::NaiveDate::from_ymd_opt(2024, 7, 1).unwrap(),
-                chrono::NaiveDate::from_ymd_opt(2024, 10, 1).unwrap(),
-                12,
-            ), // 92d quarterly
-            (
-                1,
-                chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-                chrono::NaiveDate::from_ymd_opt(2024, 1, 31).unwrap(),
-                12,
-            ), // 30d, mistakenly labeled season_id 12
+            (0, date(2024, 7, 1), date(2024, 10, 1), 12), // 92d quarterly
+            (1, date(2024, 1, 1), date(2024, 1, 31), 12), // 30d, mistakenly labeled season_id 12
         ];
-        let stages: Vec<Stage> = specs
-            .into_iter()
-            .enumerate()
-            .map(|(index, (id, start_date, end_date, season_id))| Stage {
-                id,
-                index,
-                start_date,
-                end_date,
-                season_id: Some(season_id),
-                blocks: vec![],
-                block_mode: BlockMode::Parallel,
-                state_config: StageStateConfig {
-                    storage: true,
-                    inflow_lags: false,
-                },
-                risk_config: StageRiskConfig::Expectation,
-                scenario_config: ScenarioSourceConfig {
-                    branching_factor: 1,
-                    noise_method: NoiseMethod::Saa,
-                },
-            })
-            .collect();
-        let stages_data = StagesData {
-            openings_declared: std::collections::HashSet::new(),
-            stages,
-            policy_graph: HorizonGraph {
-                stage_discount_rate_overrides: std::collections::BTreeMap::new(),
-                graph_type: PolicyGraphType::FiniteHorizon,
-                annual_discount_rate: 0.06,
-                transitions: vec![],
-                nodes: Vec::new(),
-                season_map: Some(season_map),
-            },
-        };
+        let rule29_errors = duration_errors_on_map(season_map, specs);
+        assert_eq!(
+            rule29_errors.len(),
+            1,
+            "expected exactly one rule-29 error for season_id 12; got: {rule29_errors:?}"
+        );
+        let msg = &rule29_errors[0];
+        assert!(
+            msg.contains("layers multiple resolution levels"),
+            "a multi-resolution season_map must be noted in the message; got: {msg}"
+        );
+    }
+
+    fn duration_errors_on_map(
+        season_map: SeasonMap,
+        specs: Vec<(i32, chrono::NaiveDate, chrono::NaiveDate, usize)>,
+    ) -> Vec<String> {
+        duration_errors(stages_data_on_map(season_map, specs))
+    }
+
+    fn duration_errors(stages: StagesData) -> Vec<String> {
         let data = make_data_5b(
             vec![make_hydro_ordered_penalties(1)],
-            stages_data,
+            stages,
             vec![make_bus_with_deficit(1, 10.0)],
             vec![],
             vec![],
@@ -1110,25 +1091,170 @@ mod tests {
         );
         let mut ctx = ValidationContext::new();
         check_season_id_consistency(&data, &mut ctx);
-
-        let rule29_errors: Vec<_> = ctx
-            .errors()
+        ctx.errors()
             .into_iter()
             .filter(|e| {
                 e.kind == ErrorKind::BusinessRuleViolation
                     && e.message.contains("incompatible durations")
             })
+            .map(|e| e.message.clone())
+            .collect()
+    }
+
+    /// Given weeks naming June 2026, a July stage, then calendar months through
+    /// November 2027, so that June 2027 is one 30-day stage of the season the
+    /// June weeks name, no Rule 29 error is emitted.
+    #[test]
+    fn test_resolution_consistency_accepts_the_reported_weeks_then_months_calendar() {
+        let specs: Vec<_> = weeks_naming_june_then_months()
+            .into_iter()
+            .zip(0..)
+            .map(|((start, end, season), id)| (id, start, end, season))
             .collect();
-        assert_eq!(
-            rule29_errors.len(),
-            1,
-            "expected exactly one rule-29 error for season_id 12; got: {rule29_errors:?}"
-        );
-        let msg = &rule29_errors[0].message;
+        assert_eq!(specs.len(), 22);
+        let errors = duration_errors(make_stages_for_resolution_check(specs));
+        assert!(errors.is_empty(), "got: {errors:?}");
+    }
+
+    /// Given a week of April 2026 and April 2027 as one stage, both naming
+    /// April, no Rule 29 error is emitted.
+    #[test]
+    fn test_resolution_consistency_accepts_a_week_and_its_month_a_year_later() {
+        let specs = vec![
+            (0, date(2026, 4, 4), date(2026, 4, 11), 3),
+            (1, date(2027, 4, 1), date(2027, 5, 1), 3),
+        ];
+        let errors = duration_errors_on_map(monthly_season_map(MonthlyLabels::OneBased), specs);
+        assert!(errors.is_empty(), "got: {errors:?}");
+    }
+
+    /// Given three slices of June 2026 of 7, 7 and 16 days, all naming June, no
+    /// Rule 29 error is emitted.
+    #[test]
+    fn test_resolution_consistency_accepts_slices_of_unequal_length() {
+        let specs = vec![
+            (0, date(2026, 6, 1), date(2026, 6, 8), 5),
+            (1, date(2026, 6, 8), date(2026, 6, 15), 5),
+            (2, date(2026, 6, 15), date(2026, 7, 1), 5),
+        ];
+        let errors = duration_errors_on_map(monthly_season_map(MonthlyLabels::OneBased), specs);
+        assert!(errors.is_empty(), "got: {errors:?}");
+    }
+
+    /// Given a quarterly-only map, a January stage and a first-quarter stage
+    /// both naming Q1, no Rule 29 error is emitted.
+    #[test]
+    fn test_resolution_consistency_accepts_a_month_naming_a_quarter_on_a_quarterly_map() {
+        let specs = vec![
+            (0, date(2026, 1, 1), date(2026, 2, 1), 0),
+            (1, date(2027, 1, 1), date(2027, 4, 1), 0),
+        ];
+        let errors = duration_errors_on_map(quarterly_season_map(), specs);
+        assert!(errors.is_empty(), "got: {errors:?}");
+    }
+
+    /// Given a monthly-plus-quarterly map, four weeks of June 2026 and June 2027
+    /// as one stage, all naming June, no Rule 29 error is emitted.
+    #[test]
+    fn test_resolution_consistency_accepts_weeks_and_month_on_a_layered_map() {
+        let specs = vec![
+            (0, date(2026, 6, 1), date(2026, 6, 8), 5),
+            (1, date(2026, 6, 8), date(2026, 6, 15), 5),
+            (2, date(2026, 6, 15), date(2026, 6, 22), 5),
+            (3, date(2026, 6, 22), date(2026, 6, 29), 5),
+            (4, date(2027, 6, 1), date(2027, 7, 1), 5),
+        ];
+        let errors = duration_errors_on_map(monthly_quarterly_season_map(), specs);
+        assert!(errors.is_empty(), "got: {errors:?}");
+    }
+
+    /// Given a monthly-plus-quarterly map, a January stage naming Q1 and a
+    /// first-quarter stage naming Q1, one error names the January stage and the
+    /// layering.
+    #[test]
+    fn test_resolution_consistency_refuses_a_month_naming_a_quarter_on_a_layered_map() {
+        let specs = vec![
+            (0, date(2026, 1, 1), date(2026, 2, 1), 14),
+            (1, date(2027, 1, 1), date(2027, 4, 1), 14),
+        ];
+        let errors = duration_errors_on_map(monthly_quarterly_season_map(), specs);
+        assert_eq!(errors.len(), 1, "got: {errors:?}");
+        assert!(errors[0].contains("season_id 14"), "got: {errors:?}");
+        assert!(errors[0].contains("stage 0 is neither"), "got: {errors:?}");
         assert!(
-            msg.contains("layers multiple resolution levels"),
-            "a multi-resolution season_map must be noted in the message; got: {msg}"
+            errors[0].contains("layers multiple resolution levels"),
+            "got: {errors:?}"
         );
+    }
+
+    /// Given a 92-day stage naming January and January 2027, one error names
+    /// the 92-day stage.
+    #[test]
+    fn test_resolution_consistency_refuses_a_stage_longer_than_its_season_period() {
+        let specs = vec![
+            (0, date(2026, 1, 1), date(2026, 4, 3), 0),
+            (1, date(2027, 1, 1), date(2027, 2, 1), 0),
+        ];
+        let errors = duration_errors_on_map(monthly_season_map(MonthlyLabels::OneBased), specs);
+        assert_eq!(errors.len(), 1, "got: {errors:?}");
+        assert!(errors[0].contains("season_id 0"), "got: {errors:?}");
+        assert!(errors[0].contains("stage 0 is neither"), "got: {errors:?}");
+    }
+
+    /// Given a January stage and two 7-day stages lying outside January, all
+    /// naming January, one error names both short stages in ascending id order.
+    #[test]
+    fn test_resolution_consistency_refuses_every_stage_outside_the_season_occurrence() {
+        let specs = vec![
+            (0, date(2026, 1, 1), date(2026, 2, 1), 0),
+            (10, date(2026, 3, 1), date(2026, 3, 8), 0),
+            (2, date(2026, 5, 1), date(2026, 5, 8), 0),
+        ];
+        let errors = duration_errors_on_map(monthly_season_map(MonthlyLabels::OneBased), specs);
+        assert_eq!(errors.len(), 1, "got: {errors:?}");
+        assert!(
+            errors[0].contains("stages 2, 10 are neither"),
+            "got: {errors:?}"
+        );
+    }
+
+    /// Given a 30-day April stage and a 31-day July stage, both naming April,
+    /// no Rule 29 error is emitted: durations within the tolerance pass without
+    /// a check of where the stages lie.
+    #[test]
+    fn test_resolution_consistency_accepts_stages_of_similar_length_wherever_they_lie() {
+        let specs = vec![
+            (0, date(2026, 4, 1), date(2026, 5, 1), 3),
+            (1, date(2026, 7, 1), date(2026, 8, 1), 3),
+        ];
+        let errors = duration_errors_on_map(monthly_season_map(MonthlyLabels::OneBased), specs);
+        assert!(errors.is_empty(), "got: {errors:?}");
+    }
+
+    /// Given a monthly-plus-quarterly map and a 22-day and an 8-day slice of
+    /// June, both naming June, no Rule 29 error is emitted: months are the
+    /// finest level, so no finer level exists to mistake a 22-day slice for.
+    #[test]
+    fn test_resolution_consistency_accepts_a_slice_of_a_month_as_long_as_another_month() {
+        let specs = vec![
+            (0, date(2026, 6, 1), date(2026, 6, 23), 5),
+            (1, date(2026, 6, 23), date(2026, 7, 1), 5),
+        ];
+        let errors = duration_errors_on_map(monthly_quarterly_season_map(), specs);
+        assert!(errors.is_empty(), "got: {errors:?}");
+    }
+
+    /// Given a monthly-plus-quarterly map, a 14-day slice of the first quarter
+    /// and the first quarter of 2027, both naming Q1, no Rule 29 error is
+    /// emitted: a slice far shorter than a month does not name the month level.
+    #[test]
+    fn test_resolution_consistency_accepts_a_slice_of_a_quarter_shorter_than_any_month() {
+        let specs = vec![
+            (0, date(2026, 1, 1), date(2026, 1, 15), 14),
+            (1, date(2027, 1, 1), date(2027, 4, 1), 14),
+        ];
+        let errors = duration_errors_on_map(monthly_quarterly_season_map(), specs);
+        assert!(errors.is_empty(), "got: {errors:?}");
     }
 
     // ── Rule 28: Observation coverage ────────────────────────────────────────
