@@ -306,13 +306,7 @@ fn gamma_0_is_scaled_by_kappa() {
         vec![&row as &FphaHyperplaneRow],
     );
 
-    let model = build_fpha_model(
-        &hydro,
-        &stage,
-        ProductionModelSource::PrecomputedHyperplanes,
-        &map,
-    )
-    .expect("should build FPHA model");
+    let model = build_fpha_model(&hydro, &stage, &map).expect("should build FPHA model");
 
     match model {
         ResolvedProductionModel::Fpha { planes, .. } => {
@@ -480,13 +474,7 @@ fn stage_specific_hyperplanes_override_all_stage() {
         vec![&stage_row as &FphaHyperplaneRow],
     );
 
-    let model = build_fpha_model(
-        &hydro,
-        &stage,
-        ProductionModelSource::PrecomputedHyperplanes,
-        &map,
-    )
-    .expect("should succeed");
+    let model = build_fpha_model(&hydro, &stage, &map).expect("should succeed");
 
     match model {
         ResolvedProductionModel::Fpha { planes, .. } => {
@@ -525,13 +513,7 @@ fn all_stage_hyperplanes_used_when_no_stage_specific_rows() {
         vec![&global_row as &FphaHyperplaneRow],
     );
 
-    let model = build_fpha_model(
-        &hydro,
-        &stage,
-        ProductionModelSource::PrecomputedHyperplanes,
-        &map,
-    )
-    .expect("should succeed using global rows");
+    let model = build_fpha_model(&hydro, &stage, &map).expect("should succeed using global rows");
 
     match model {
         ResolvedProductionModel::Fpha { planes, .. } => {
@@ -556,13 +538,8 @@ fn zero_hyperplanes_for_stage_returns_validation_error() {
         Vec::<&FphaHyperplaneRow>::new(),
     );
 
-    let err = build_fpha_model(
-        &hydro,
-        &stage,
-        ProductionModelSource::PrecomputedHyperplanes,
-        &map,
-    )
-    .expect_err("should fail with zero hyperplanes");
+    let err =
+        build_fpha_model(&hydro, &stage, &map).expect_err("should fail with zero hyperplanes");
 
     assert!(
         matches!(err, SddpError::Validation(_)),
@@ -586,12 +563,7 @@ fn precomputed_stage_needs_a_flow_dependent_plane() {
     };
     let build = |rows: Vec<&FphaHyperplaneRow>| {
         let map = HashMap::from([((EntityId::from(0), None::<i32>), rows)]);
-        build_fpha_model(
-            &hydro,
-            &stage,
-            ProductionModelSource::PrecomputedHyperplanes,
-            &map,
-        )
+        build_fpha_model(&hydro, &stage, &map)
     };
 
     for rows in [vec![&rising, &cap], vec![&cap, &rising]] {

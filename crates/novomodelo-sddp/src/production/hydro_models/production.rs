@@ -793,7 +793,7 @@ fn resolve_stage_model(
                     .to_vec();
                 Ok(ResolvedProductionModel::Fpha { planes })
             } else {
-                build_fpha_model(hydro, stage, source, hyperplane_map)
+                build_fpha_model(hydro, stage, hyperplane_map)
             }
         } else {
             // Resolution order (matches build_energy_conversion_set): parquet
@@ -837,7 +837,6 @@ fn resolve_stage_model(
 fn build_fpha_model(
     hydro: &Hydro,
     stage: &Stage,
-    _source: ProductionModelSource,
     hyperplane_map: &HashMap<(EntityId, Option<i32>), Vec<&FphaHyperplaneRow>>,
 ) -> Result<ResolvedProductionModel, SddpError> {
     let rows: &[&FphaHyperplaneRow] = hyperplane_map

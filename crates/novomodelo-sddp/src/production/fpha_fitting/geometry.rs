@@ -71,12 +71,8 @@ const V_SYNTH_ABS: f64 = 1.0;
 ///
 /// # Volume range resolution
 ///
-/// The default window and the clamp range of every bound is the plant's own
-/// `[min_storage_hm3, max_storage_hm3]`, not the range of the geometry table. The
-/// window is resolved in three mutually exclusive modes — no fitting window (the plant
-/// range), absolute bounds, or percentile bounds taken against the plant range — and a
-/// missing bound takes the plant's. Mixed min/max modes are accepted as long as neither
-/// bound sets both absolute and percentile.
+/// The window is [`FphaColumnLayout::resolve_fitting_window`]'s, taken against the
+/// plant's own `[min_storage_hm3, max_storage_hm3]`, not the geometry table's range.
 ///
 /// # Run-of-river reroute
 ///

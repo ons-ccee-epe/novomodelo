@@ -34,7 +34,7 @@ plain directory walk has no such ambiguity.
 The second case (`examples/deterministic/d57-fpha-zero-turbine-capacity`) has
 one plant that requests FPHA but has no turbine capacity. It is here to check
 that both write paths list that plant under the `no_turbine_capacity` key of
-`training/hydro_models.json`.
+`training/hydro_models.json`, with the same `frozen_turbining` row.
 
 The third case (`examples/deterministic/d59-parameter-sum-useful-volume-floor`)
 declares a generic constraint with a parameter-sum coefficient on a

@@ -39,7 +39,10 @@ use novomodelo_solver::{ActiveSolver, SolverInterface};
 use novomodelo_stochastic::par::HydroEstimationEntry;
 
 mod common;
-use common::{D03_EXPECTED_COST, StubComm, build_setup_for_case, fresh_setup_with};
+use common::{
+    D03_EXPECTED_COST, StubComm, build_setup_for_case, d51_with_dead_bus1_group, edit_json,
+    fresh_setup_with,
+};
 
 /// Train a case (`StubComm`, `ActiveSolver`, seed 42, 1 thread) and return the
 /// setup, the canonicalized system, the training result, and the live solver.
@@ -2624,18 +2627,6 @@ fn train_d19_variant(edit: impl FnOnce(&Path)) -> novomodelo_sddp::TrainingResul
         .expect("train must return Ok");
     assert!(outcome.error.is_none(), "expected no training error");
     outcome.result
-}
-
-/// Rewrite the JSON file at `path` in place through `edit`.
-fn edit_json(path: &Path, edit: impl FnOnce(&mut serde_json::Value)) {
-    let text = std::fs::read_to_string(path).expect("read JSON input");
-    let mut value: serde_json::Value = serde_json::from_str(&text).expect("parse JSON input");
-    edit(&mut value);
-    std::fs::write(
-        path,
-        serde_json::to_string_pretty(&value).expect("serialize JSON"),
-    )
-    .expect("write JSON input");
 }
 
 /// Operational violation slacks: 1 hydro with active min_outflow, max_outflow,
@@ -5907,18 +5898,6 @@ fn d51_hydro_bus_generation_sums_bit_exactly_to_plant_rows() {
         checked_blocks, 3,
         "D51: 2 blocks at stage 0 + 1 at stage 1 = 3 (stage, block) pairs"
     );
-}
-
-/// D51 with group 1 (`H0-B1`, bus 1) declaring no generation capacity, so its
-/// cell is dead at every block.
-fn d51_with_dead_bus1_group() -> tempfile::TempDir {
-    let case = copy_case_dir(Path::new(
-        "../../examples/deterministic/d51-split-plant-two-bus",
-    ));
-    edit_json(&case.path().join("system/hydros.json"), |hydros| {
-        hydros["hydros"][0]["unit_groups"][1]["max_generation_mw"] = serde_json::Value::from(0.0);
-    });
-    case
 }
 
 /// Asserts that the dead bus-1 cell of a D51 copy turbines and generates nothing

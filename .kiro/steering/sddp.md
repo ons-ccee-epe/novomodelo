@@ -758,8 +758,8 @@ column without FPHA).
 ## A computed plane is ≥ 0 at zero turbining over its fitting window
 
 A computed plane `P = γ₀ + γᵥ·v + γ_q·q + γₛ·s` has `γᵥ ≥ 0` and `γₛ ≤ 0`
-(`validate_fitted_planes` refuses any other sign), so at `q = 0` over
-`v ∈ [v_min, v_max]` and `s ∈ [0, S_max]` its minimum is the corner
+(`validate_fitted_planes` refuses any other sign beyond round-off), so at
+`q = 0` over `v ∈ [v_min, v_max]` and `s ∈ [0, S_max]` its minimum is the corner
 `(v_min, 0, S_max)`, where it reads `γ₀ + γᵥ·v_min + γₛ·S_max`. A plane below 0
 there needs `σ ≥ −P > 0` even at `g = 0`, so a plant that spills without
 turbining pays plane slack and reports `fpha_violation_mw`.

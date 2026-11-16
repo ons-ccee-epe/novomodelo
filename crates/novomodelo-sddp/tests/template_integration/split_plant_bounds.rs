@@ -14,7 +14,6 @@ use novomodelo_core::scenario::ScenarioSource;
 use novomodelo_sddp::hydro_models::prepare_hydro_models;
 use novomodelo_sddp::indexer::{BlockIdx, FphaCellLocal, HydroCell, HydroCellIndex, HydroSys};
 use novomodelo_sddp::{StageTemplates, StudyParams, prepare_stochastic};
-use tempfile::TempDir;
 
 use super::*;
 
@@ -187,21 +186,6 @@ fn split_plant_ac2_available_capacity_is_not_the_fold_after_sum_plant_product() 
     );
 }
 
-/// d51 with group 1 (`H0-B1`, bus 1) declaring no generation capacity.
-fn d51_with_dead_bus1_group() -> TempDir {
-    let case = TempDir::new().expect("create the d51 copy directory");
-    common::copy_toy_case(Path::new(D51_DIR), case.path());
-    let hydros_file = case.path().join("system/hydros.json");
-    let mut document: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(&hydros_file).expect("read the copy's system/hydros.json"),
-    )
-    .expect("parse the copy's system/hydros.json");
-    document["hydros"][0]["unit_groups"][1]["max_generation_mw"] = serde_json::json!(0.0);
-    std::fs::write(&hydros_file, document.to_string())
-        .expect("write the copy's system/hydros.json");
-    case
-}
-
 /// derived: cell 0's `(generation MW, turbine m3/s)` column upper bounds on the
 /// dead-bus-1 copy, the fold `min(group, plant)` of group 0 (30 MW, 42 m3/s)
 /// against the plant's resolved limits: stage 0 `(min(30, 28), min(42, 32))`
@@ -219,7 +203,7 @@ const DEAD_COPY_CELL0_BOUNDS: [(f64, f64); 2] = [(28.0, 32.0), (30.0, 42.0)];
 /// The shipped build is the non-degeneracy twin: its cell 1 rows are `<= 0`.
 #[test]
 fn split_plant_dead_cell_freezes_its_columns_and_frees_its_plane_rows() {
-    let case = d51_with_dead_bus1_group();
+    let case = common::d51_with_dead_bus1_group();
     let (system, dead) = build_d51_templates_from(case.path());
     let (_, shipped) = build_d51_templates();
     let first_cell = HydroCellIndex::build(system.hydros())
@@ -336,7 +320,7 @@ fn split_plant_dead_cell_freezes_its_columns_and_frees_its_plane_rows() {
 /// `28 + 20` MW and `32 + 28` m3/s.
 #[test]
 fn split_plant_dead_cell_drops_the_binding_cap_row() {
-    let case = d51_with_dead_bus1_group();
+    let case = common::d51_with_dead_bus1_group();
     let (_, dead) = build_d51_templates_from(case.path());
     let (_, shipped) = build_d51_templates();
 

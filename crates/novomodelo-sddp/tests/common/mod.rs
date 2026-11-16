@@ -326,6 +326,31 @@ pub fn copy_toy_case(src: &Path, dst: &Path) {
     }
 }
 
+pub fn edit_json(path: &Path, edit: impl FnOnce(&mut serde_json::Value)) {
+    let text = std::fs::read_to_string(path).expect("read JSON input");
+    let mut value: serde_json::Value = serde_json::from_str(&text).expect("parse JSON input");
+    edit(&mut value);
+    std::fs::write(
+        path,
+        serde_json::to_string_pretty(&value).expect("serialize JSON"),
+    )
+    .expect("write JSON input");
+}
+
+/// d51 with group 1 (`H0-B1`, bus 1) declaring no generation capacity.
+pub fn d51_with_dead_bus1_group() -> TempDir {
+    let case = TempDir::new().expect("tempdir");
+    copy_toy_case(
+        &Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/deterministic/d51-split-plant-two-bus"),
+        case.path(),
+    );
+    edit_json(&case.path().join("system/hydros.json"), |hydros| {
+        hydros["hydros"][0]["unit_groups"][1]["max_generation_mw"] = serde_json::json!(0.0);
+    });
+    case
+}
+
 /// 1dtoy cut to its first `stages` stages, so its boundary date is the end of
 /// stage `stages - 1`: the date the 1dtoy pool with that index is priced at.
 pub fn truncated_toy_case(stages: usize) -> TempDir {

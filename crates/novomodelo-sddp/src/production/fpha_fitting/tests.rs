@@ -1288,16 +1288,7 @@ fn make_sobradinho_hydro() -> Hydro {
 fn fit_fpha_planes_sobradinho_style_end_to_end() {
     let rows = sobradinho_rows();
     let hydro = make_sobradinho_hydro();
-    let config = FphaColumnLayout {
-        source: "computed".to_owned(),
-        volume_discretization_points: None,
-        turbine_discretization_points: None,
-        spillage_discretization_points: None,
-        max_planes_per_hydro: None,
-        fitting_window: None,
-        spillage_fit_max_m3s: None,
-        turbined_fit_max_m3s: None,
-    };
+    let config = default_config();
 
     let result = fit_fpha_planes(
         &rows,
@@ -1352,16 +1343,7 @@ fn fit_fpha_planes_sobradinho_style_end_to_end() {
 fn fit_fpha_planes_spill_sensitive_yields_negative_gamma_s() {
     let rows = sobradinho_rows();
     let hydro = make_sobradinho_hydro();
-    let config = FphaColumnLayout {
-        source: "computed".to_owned(),
-        volume_discretization_points: None,
-        turbine_discretization_points: None,
-        spillage_discretization_points: None,
-        max_planes_per_hydro: None,
-        fitting_window: None,
-        spillage_fit_max_m3s: None,
-        turbined_fit_max_m3s: None,
-    };
+    let config = default_config();
 
     let result = fit_fpha_planes(
         &rows,
@@ -1643,16 +1625,7 @@ fn reduce_planes_keeps_every_plane_at_or_above_zero_at_the_window_corner() {
 fn fit_fpha_planes_intercepts_are_finite() {
     let rows = sobradinho_rows();
     let hydro = make_sobradinho_hydro();
-    let config = FphaColumnLayout {
-        source: "computed".to_owned(),
-        volume_discretization_points: None,
-        turbine_discretization_points: None,
-        spillage_discretization_points: None,
-        max_planes_per_hydro: None,
-        fitting_window: None,
-        spillage_fit_max_m3s: None,
-        turbined_fit_max_m3s: None,
-    };
+    let config = default_config();
 
     let result = fit_fpha_planes(
         &rows,
@@ -1667,8 +1640,6 @@ fn fit_fpha_planes_intercepts_are_finite() {
     )
     .expect("fit should succeed");
 
-    // All intercepts must be finite and the planes must have non-negative intercepts
-    // for a physically reasonable geometry where phi > 0 at the fitting origin.
     for (idx, plane) in result.planes.iter().enumerate() {
         assert!(
             plane.intercept.is_finite(),
@@ -1747,14 +1718,8 @@ fn fit_fpha_planes_run_of_river_yields_zero_gamma_v_end_to_end() {
     hydro.min_storage_hm3 = 5_000.0;
     hydro.max_storage_hm3 = 5_000.0;
     let config = FphaColumnLayout {
-        source: "computed".to_owned(),
         volume_discretization_points: Some(1),
-        turbine_discretization_points: None,
-        spillage_discretization_points: None,
-        max_planes_per_hydro: None,
-        fitting_window: None,
-        spillage_fit_max_m3s: None,
-        turbined_fit_max_m3s: None,
+        ..default_config()
     };
 
     let result = fit_fpha_planes(
@@ -1856,16 +1821,7 @@ fn fit_fpha_planes_linear_function_produces_one_plane() {
         penalties: zero_penalties,
     };
     hydro.declare_mirror_unit_group(EntityId::from(10));
-    let config = FphaColumnLayout {
-        source: "computed".to_owned(),
-        volume_discretization_points: None,
-        turbine_discretization_points: None,
-        spillage_discretization_points: None,
-        max_planes_per_hydro: None,
-        fitting_window: None,
-        spillage_fit_max_m3s: None,
-        turbined_fit_max_m3s: None,
-    };
+    let config = default_config();
 
     let result = fit_fpha_planes(
         &flat_rows,
@@ -1910,16 +1866,7 @@ fn fit_fpha_planes_linear_function_produces_one_plane() {
 fn fit_fpha_planes_propagates_forebay_error_on_empty_rows() {
     let rows: Vec<HydroGeometryRow> = Vec::new();
     let hydro = make_sobradinho_hydro();
-    let config = FphaColumnLayout {
-        source: "computed".to_owned(),
-        volume_discretization_points: None,
-        turbine_discretization_points: None,
-        spillage_discretization_points: None,
-        max_planes_per_hydro: None,
-        fitting_window: None,
-        spillage_fit_max_m3s: None,
-        turbined_fit_max_m3s: None,
-    };
+    let config = default_config();
 
     let err = fit_fpha_planes(
         &rows,
@@ -1958,16 +1905,7 @@ fn single_volume_run_of_river_fits_with_zero_gamma_v() {
     let mut hydro = make_sobradinho_hydro();
     hydro.min_storage_hm3 = 1_500.0;
     hydro.max_storage_hm3 = 1_500.0;
-    let config = FphaColumnLayout {
-        source: "computed".to_owned(),
-        volume_discretization_points: None,
-        turbine_discretization_points: None,
-        spillage_discretization_points: None,
-        max_planes_per_hydro: None,
-        fitting_window: None,
-        spillage_fit_max_m3s: None,
-        turbined_fit_max_m3s: None,
-    };
+    let config = default_config();
 
     let result = fit_fpha_planes(
         &rows,
@@ -2138,16 +2076,7 @@ fn display_invalid_coefficient_contains_name_and_index_and_detail() {
 fn fit_fpha_planes_result_alpha_positive_and_intercept_consistent() {
     let rows = sobradinho_rows();
     let hydro = make_sobradinho_hydro();
-    let config = FphaColumnLayout {
-        source: "computed".to_owned(),
-        volume_discretization_points: None,
-        turbine_discretization_points: None,
-        spillage_discretization_points: None,
-        max_planes_per_hydro: None,
-        fitting_window: None,
-        spillage_fit_max_m3s: None,
-        turbined_fit_max_m3s: None,
-    };
+    let config = default_config();
 
     let result = fit_fpha_planes(
         &rows,
@@ -2192,16 +2121,7 @@ fn fit_fpha_planes_result_alpha_positive_and_intercept_consistent() {
 fn alpha_scaled_planes_are_outer_approximation_and_not_double_scaled() {
     let rows = sobradinho_rows();
     let hydro = make_sobradinho_hydro();
-    let config = FphaColumnLayout {
-        source: "computed".to_owned(),
-        volume_discretization_points: None,
-        turbine_discretization_points: None,
-        spillage_discretization_points: None,
-        max_planes_per_hydro: None,
-        fitting_window: None,
-        spillage_fit_max_m3s: None,
-        turbined_fit_max_m3s: None,
-    };
+    let config = default_config();
 
     // Reconstruct the production function and bounds exactly as fit_fpha_planes does,
     // so we can recompute the raw hull (FPHA_0) and α independently of the pipeline.
@@ -2302,16 +2222,7 @@ fn alpha_scaled_planes_are_outer_approximation_and_not_double_scaled() {
 fn fitted_min_envelope_tracks_production_on_concave_reservoir() {
     let rows = sobradinho_rows();
     let hydro = make_sobradinho_hydro();
-    let config = FphaColumnLayout {
-        source: "computed".to_owned(),
-        volume_discretization_points: None,
-        turbine_discretization_points: None,
-        spillage_discretization_points: None,
-        max_planes_per_hydro: None,
-        fitting_window: None,
-        spillage_fit_max_m3s: None,
-        turbined_fit_max_m3s: None,
-    };
+    let config = default_config();
     let forebay = ForebayTable::new(&rows, &hydro.name).expect("valid VHA curve");
     let pf = ProductionFunction::new(
         forebay.clone(),
@@ -2445,16 +2356,7 @@ fn single_family_matching_polynomial(coeffs: [f64; 5], outflow_max: f64) -> Tail
 fn families_single_family_matches_entity_polynomial_planes() {
     let rows = sobradinho_rows();
     let hydro = make_sobradinho_hydro();
-    let config = FphaColumnLayout {
-        source: "computed".to_owned(),
-        volume_discretization_points: None,
-        turbine_discretization_points: None,
-        spillage_discretization_points: None,
-        max_planes_per_hydro: None,
-        fitting_window: None,
-        spillage_fit_max_m3s: None,
-        turbined_fit_max_m3s: None,
-    };
+    let config = default_config();
 
     // Entity-path fit (Sobradinho tailrace = Polynomial [0.0, 0.001]).
     let entity = fit_fpha_planes(
@@ -2521,16 +2423,7 @@ fn families_single_family_matches_entity_polynomial_planes() {
 fn fit_fpha_planes_none_reduction_is_bit_identical_skip() {
     let rows = sobradinho_rows();
     let hydro = make_sobradinho_hydro();
-    let config = FphaColumnLayout {
-        source: "computed".to_owned(),
-        volume_discretization_points: None,
-        turbine_discretization_points: None,
-        spillage_discretization_points: None,
-        max_planes_per_hydro: None,
-        fitting_window: None,
-        spillage_fit_max_m3s: None,
-        turbined_fit_max_m3s: None,
-    };
+    let config = default_config();
 
     let reference = fit_fpha_planes(
         &rows,
@@ -2600,16 +2493,7 @@ fn fit_fpha_planes_none_reduction_is_bit_identical_skip() {
 fn fit_fpha_planes_distance_reduction_is_deterministic() {
     let rows = sobradinho_rows();
     let hydro = make_sobradinho_hydro();
-    let config = FphaColumnLayout {
-        source: "computed".to_owned(),
-        volume_discretization_points: None,
-        turbine_discretization_points: None,
-        spillage_discretization_points: None,
-        max_planes_per_hydro: None,
-        fitting_window: None,
-        spillage_fit_max_m3s: None,
-        turbined_fit_max_m3s: None,
-    };
+    let config = default_config();
     let reduction = PlaneReductionConfig::Distance {
         tolerance_pct: 0.5,
         n_samples: 128,
@@ -2711,16 +2595,7 @@ fn assert_fit_planes_bit_identical(left: &[FphaPlane], right: &[FphaPlane], cont
 fn reduced_sobradinho_planes(reduction: &PlaneReductionConfig) -> Vec<FphaPlane> {
     let rows = sobradinho_rows();
     let hydro = make_sobradinho_hydro();
-    let config = FphaColumnLayout {
-        source: "computed".to_owned(),
-        volume_discretization_points: None,
-        turbine_discretization_points: None,
-        spillage_discretization_points: None,
-        max_planes_per_hydro: None,
-        fitting_window: None,
-        spillage_fit_max_m3s: None,
-        turbined_fit_max_m3s: None,
-    };
+    let config = default_config();
     fit_fpha_planes(
         &rows,
         &hydro,

@@ -2683,7 +2683,7 @@ mod moment_matched_opening_tree {
     use tempfile::TempDir;
 
     use super::common::permute::permute_case;
-    use super::common::{boundary_requirements, copy_toy_case};
+    use super::common::{boundary_requirements, copy_toy_case, edit_json};
 
     const ASYMMETRIC_INFLOW_CORRELATION: &str = r#"{
         "method": "spectral",
@@ -2730,19 +2730,6 @@ mod moment_matched_opening_tree {
             case.path(),
         );
         case
-    }
-
-    fn edit_json(path: &Path, edit: impl FnOnce(&mut Value)) {
-        let mut value: Value = serde_json::from_str(
-            &fs::read_to_string(path).expect("deck JSON file must be readable"),
-        )
-        .expect("deck JSON file must parse");
-        edit(&mut value);
-        fs::write(
-            path,
-            serde_json::to_string_pretty(&value).expect("deck JSON file must serialize"),
-        )
-        .expect("deck JSON file must be writable");
     }
 
     fn set_openings(case: &Path, openings: &Value) {
