@@ -254,7 +254,7 @@ pub struct Hydro {
     pub generation_model: HydroGenerationModel,
     /// Minimum turbined flow \[m³/s\].
     pub min_turbined_m3s: f64,
-    /// Maximum turbined flow (installed turbine capacity) \[m³/s\].
+    /// Declared maximum turbined flow \[m³/s\].
     pub max_turbined_m3s: f64,
     /// Specific productivity `ρ_esp` \[MW / ((m³/s) · m)\].
     ///

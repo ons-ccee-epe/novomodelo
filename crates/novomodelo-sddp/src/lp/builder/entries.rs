@@ -1012,7 +1012,7 @@ pub(super) fn fill_load_balance_entries(
 /// cell-and-block plane slack (`StageGeometry::fpha_slack`), `−1` unscaled in
 /// every plane row of that cell and block and in no other row. `σ_c`
 /// apportions the plane's flow-independent part by the cell's share of the plant's
-/// declared turbine capacity; `γ_q` stays unscaled on the cell's own flow `q_c`.
+/// declared maximum turbined flow; `γ_q` stays unscaled on the cell's own flow `q_c`.
 ///
 /// FPHA uses AVERAGE storage `(V_in + V_out)/2`, so `−σ_c·γᵥ/2` lands on BOTH the
 /// outgoing- and incoming-storage columns. Putting it on `V_out` alone compiles and
@@ -1054,7 +1054,7 @@ pub(super) fn fill_fpha_entries(
         let col_g = geom.generation_col(visit.cell_local, visit.blk);
         let col_slack = geom.fpha_slack_col(visit.cell_local, visit.blk);
         // Apportion the plane's flow-independent part by this cell's share of the
-        // plant's declared turbine capacity; γ_q stays unscaled on the cell's own
+        // plant's declared maximum turbined flow; γ_q stays unscaled on the cell's own
         // flow (only `A ≡ γ₀ + γ_V·V̄ + γ_s·s` fails the homogeneity that makes
         // same-bus aggregation exact — the cell partition's whole safety argument).
         let sigma_c = ctx.hydro_cell_index.share_of(visit.cell);

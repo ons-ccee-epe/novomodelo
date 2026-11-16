@@ -104,10 +104,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in any block turbined water at 0 MW and could report `fpha_violation_mw`; it
   now spills that water, and its minima, like a plant's before `entry_stage_id`
   or after `exit_stage_id`, are no longer charged. Results change.
-- A hydro with `fpha_config.source: "computed"` could report `fpha_violation_mw`
-  in `simulation/hydros` while it spilled. Results change. `novomodelo validate`
-  now warns when a plane in `system/fpha_hyperplanes.parquet` falls below 0 MW
-  at zero turbining.
+- A hydro with `fpha_config.source: "computed"` could turbine water at 0 MW in
+  `simulation/hydros` while it spilled within its spillage fit range. Results
+  change. `novomodelo validate` now warns when a plane in
+  `system/fpha_hyperplanes.parquet` falls below 0 MW at zero turbining.
 
 ## [0.20.0] - 2026-11-03
 
