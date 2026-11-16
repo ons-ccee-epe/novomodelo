@@ -33,10 +33,8 @@ use novomodelo_core::entities::thermal::AnticipatedConfig;
 use novomodelo_core::scenario::InflowModel;
 use novomodelo_core::temporal::{Block, Stage};
 use novomodelo_core::{
-    BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, EntityId, HydroBlockBounds,
-    HydroPastDefluence, HydroStageBounds, HydroStorage, InitialConditions, LineBlockBounds,
-    PostStudyStage, PostStudyStages, PostStudyThermalBound, PumpingBlockBounds, ResolvedBounds,
-    System, SystemBuilder, ThermalBlockBounds, WaterBucketStages,
+    EntityId, HydroPastDefluence, HydroStorage, InitialConditions, PostStudyStage, PostStudyStages,
+    PostStudyThermalBound, System, SystemBuilder, WaterBucketStages,
 };
 use novomodelo_io::config::{
     BoundaryPolicy, Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
@@ -464,94 +462,6 @@ fn run_post_study_stages() -> PostStudyStages {
     }
 }
 
-fn run_bounds() -> ResolvedBounds {
-    ResolvedBounds::new(
-        &BoundsCountsSpec {
-            n_hydros: 2,
-            n_thermals: 1,
-            n_lines: 0,
-            n_pumping: 0,
-            n_contracts: 0,
-            n_stages: RUN_N_STAGES,
-            k_max: 1,
-        },
-        &BoundsDefaults {
-            hydro: HydroStageBounds {
-                min_storage_hm3: 0.0,
-                max_storage_hm3: 1_000.0,
-                filling_min_rate_m3s: 0.0,
-                water_withdrawal_m3s: 0.0,
-            },
-            hydro_block: HydroBlockBounds {
-                max_turbined_m3s: 200.0,
-                max_generation_mw: 500.0,
-                ..Default::default()
-            },
-            thermal_block: ThermalBlockBounds {
-                min_generation_mw: 0.0,
-                max_generation_mw: 0.0,
-                cost_per_mwh: 1.0,
-            },
-            line_block: LineBlockBounds {
-                direct_mw: 0.0,
-                reverse_mw: 0.0,
-            },
-            pumping_block: PumpingBlockBounds {
-                min_flow_m3s: 0.0,
-                max_flow_m3s: 0.0,
-            },
-            contract_block: ContractBlockBounds {
-                min_mw: 0.0,
-                max_mw: 0.0,
-                price_per_mwh: 0.0,
-            },
-        },
-    )
-}
-
-fn run_penalties() -> novomodelo_core::resolved::ResolvedPenalties {
-    use novomodelo_core::HydroPenalties;
-    use novomodelo_core::resolved::{
-        BusStagePenalties, LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec,
-        PenaltiesDefaults, ResolvedPenalties,
-    };
-    ResolvedPenalties::new(
-        &PenaltiesCountsSpec {
-            n_hydros: 2,
-            n_buses: 1,
-            n_lines: 0,
-            n_ncs: 0,
-            n_stages: RUN_N_STAGES,
-        },
-        &PenaltiesDefaults {
-            hydro: HydroPenalties {
-                spillage_cost: 0.01,
-                diversion_cost: 0.0,
-                turbined_cost: 0.0,
-                storage_violation_below_cost: 500.0,
-                filling_target_violation_cost: 0.0,
-                turbined_violation_below_cost: 0.0,
-                outflow_violation_below_cost: 0.0,
-                outflow_violation_above_cost: 0.0,
-                generation_violation_below_cost: 0.0,
-                fpha_violation_cost: 0.0,
-                evaporation_violation_cost: 0.0,
-                water_withdrawal_violation_cost: 0.0,
-                water_withdrawal_violation_pos_cost: 0.0,
-                water_withdrawal_violation_neg_cost: 0.0,
-                evaporation_violation_pos_cost: 0.0,
-                evaporation_violation_neg_cost: 0.0,
-                inflow_nonnegativity_cost: 1_000.0,
-            },
-            bus: BusStagePenalties { excess_cost: 0.0 },
-            line: LineStagePenalties { exchange_cost: 0.0 },
-            ncs: NcsStagePenalties {
-                curtailment_cost: 0.0,
-            },
-        },
-    )
-}
-
 /// A water travel-time arc (`RUN_UPSTREAM_ID` -> `RUN_DOWNSTREAM_ID`), a
 /// `LeadTime` anticipated thermal with a post-study target, and the
 /// `post_study_stages` calendar that target resolves into.
@@ -627,18 +537,37 @@ fn run_build_system() -> System {
         ..Default::default()
     };
 
-    SystemBuilder::new()
-        .buses(vec![bus])
-        .hydros(vec![downstream, upstream])
-        .thermals(vec![thermal])
-        .stages(run_stages())
-        .inflow_models(inflow_models)
-        .bounds(run_bounds())
-        .penalties(run_penalties())
-        .initial_conditions(initial_conditions)
-        .post_study_stages(Some(run_post_study_stages()))
-        .build()
-        .expect("combined deck: water arc + post-study anticipated thermal must build")
+    novomodelo_sddp::test_support::build_with_resolved_tables(
+        || {
+            SystemBuilder::new()
+                .buses(vec![bus.clone()])
+                .hydros(vec![downstream.clone(), upstream.clone()])
+                .thermals(vec![thermal.clone()])
+                .stages(run_stages())
+                .inflow_models(inflow_models.clone())
+                .initial_conditions(initial_conditions.clone())
+                .post_study_stages(Some(run_post_study_stages()))
+        },
+        1,
+        |system, bounds, penalties| {
+            let upstream_pos = system
+                .hydros()
+                .iter()
+                .position(|h| h.id == RUN_UPSTREAM_ID)
+                .expect("the upstream hydro is declared");
+            for stage in 0..RUN_N_STAGES {
+                bounds
+                    .hydro_block_base_mut(upstream_pos, stage)
+                    .min_outflow_m3s = 0.0;
+                for hydro in 0..system.hydros().len() {
+                    let cell = penalties.hydro_penalties_mut(hydro, stage);
+                    cell.spillage_cost = 0.01;
+                    cell.storage_violation_below_cost = 500.0;
+                    cell.inflow_nonnegativity_cost = 1_000.0;
+                }
+            }
+        },
+    )
 }
 
 fn run_config() -> Config {

@@ -22,13 +22,11 @@ use novomodelo_core::temporal::{
     Node as PolicyNode, PolicyGraphType, StageLagTransition, Transition,
 };
 use novomodelo_core::{
-    AnticipatedConfig, Block, BlockMode, BoundsCountsSpec, BoundsDefaults, Bus, BusStagePenalties,
-    ContractBlockBounds, DeficitSegment, EntityId, HorizonGraph, Hydro, HydroBlockBounds,
-    HydroGenerationModel, HydroPenalties, HydroStageBounds, HydroStorage, HydroUnitGroup,
-    InitialConditions, Line, LineBlockBounds, LineStagePenalties, NcsStagePenalties, NoiseMethod,
-    PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds, ResolvedPenalties,
-    ScenarioSourceConfig, Stage, StageRiskConfig, StageStateConfig, System, SystemBuilder, Thermal,
-    ThermalBlockBounds,
+    AnticipatedConfig, Block, BoundsCountsSpec, BoundsDefaults, Bus, ContractBlockBounds,
+    DeficitSegment, EntityId, HorizonGraph, Hydro, HydroBlockBounds, HydroGenerationModel,
+    HydroPenalties, HydroStageBounds, HydroStorage, HydroUnitGroup, InitialConditions, Line,
+    LineBlockBounds, NoiseMethod, PumpingBlockBounds, ResolvedBounds, ScenarioSourceConfig, Stage,
+    StageStateConfig, System, SystemBuilder, Thermal, ThermalBlockBounds,
 };
 use novomodelo_io::StageIdResolver;
 use novomodelo_io::config::{
@@ -128,6 +126,10 @@ pub use table_resolution::{build_with_resolved_tables, resolved_tables};
 
 pub(crate) mod ctx_fixture;
 use bound_recording::BoundRecordingSolver;
+use builders::{
+    BusSpec, HydroSpec, LineSpec, StageSpec, ThermalSpec, make_bus, make_hydro, make_line,
+    make_stage, make_thermal,
+};
 use ctx_fixture::CtxFixture;
 
 /// Equipment dimensions for the [`geometry`] / [`study_dims_for`] test builders.
@@ -301,12 +303,16 @@ pub fn anticipated_plants_at(positions: &[usize]) -> AnticipatedPlants {
     );
     let n = positions.last().map_or(0, |&p| p + 1);
     let thermals: Vec<Thermal> = (0..n)
-        .map(|idx| Thermal {
-            operational_start_date: ymd(2024, 1, 1),
-            anticipated_config: positions
-                .contains(&idx)
-                .then_some(AnticipatedConfig::LeadStages(1)),
-            ..geometry_thermal(idx)
+        .map(|idx| {
+            make_thermal(
+                EntityId(i32::try_from(idx).unwrap_or(i32::MAX)),
+                ThermalSpec {
+                    anticipated_config: positions
+                        .contains(&idx)
+                        .then_some(AnticipatedConfig::LeadStages(1)),
+                    ..ThermalSpec::default()
+                },
+            )
         })
         .collect();
     AnticipatedPlants::build(&thermals)
@@ -421,30 +427,6 @@ pub(crate) use crate::setup::{
     build_study_dimensions, resolve_anticipated_commitments, resolve_lp_build_inputs,
 };
 
-/// All-zero [`HydroPenalties`] for [`geometry_hydro`] — no fixture-side penalty
-/// cost reaches the column/objective arithmetic `StageLayout::new` computes.
-fn geometry_zero_penalties() -> HydroPenalties {
-    HydroPenalties {
-        spillage_cost: 0.0,
-        diversion_cost: 0.0,
-        turbined_cost: 0.0,
-        storage_violation_below_cost: 0.0,
-        filling_target_violation_cost: 0.0,
-        turbined_violation_below_cost: 0.0,
-        outflow_violation_below_cost: 0.0,
-        outflow_violation_above_cost: 0.0,
-        generation_violation_below_cost: 0.0,
-        fpha_violation_cost: 0.0,
-        evaporation_violation_cost: 0.0,
-        water_withdrawal_violation_cost: 0.0,
-        water_withdrawal_violation_pos_cost: 0.0,
-        water_withdrawal_violation_neg_cost: 0.0,
-        evaporation_violation_pos_cost: 0.0,
-        evaporation_violation_neg_cost: 0.0,
-        inflow_nonnegativity_cost: 0.0,
-    }
-}
-
 /// Build a [`HydroUnitGroup`] with the given `id`, `bus_id`, and four bounds —
 /// the shared multi-bus fixture helper (`unit_groups` cannot otherwise be
 /// populated from outside `novomodelo-io`'s `pub(super)` validation-module helper).
@@ -477,36 +459,18 @@ pub fn make_unit_group(
 /// exact hydros.
 pub(crate) fn geometry_hydro(idx: usize) -> Hydro {
     let id = EntityId(i32::try_from(idx).unwrap_or(i32::MAX));
-    let mut hydro = Hydro {
-        unit_groups: Vec::new(),
+    make_hydro(
         id,
-        name: String::new(),
-        operational_start_date: NaiveDate::default(),
-        downstream_id: None,
-        travel_time_hours: None,
-        entry_stage_id: None,
-        exit_stage_id: None,
-        min_storage_hm3: 0.0,
-        max_storage_hm3: 1.0,
-        min_outflow_m3s: 0.0,
-        max_outflow_m3s: None,
-        generation_model: HydroGenerationModel::ConstantProductivity,
-        min_turbined_m3s: 0.0,
-        max_turbined_m3s: 1.0,
-        specific_productivity_mw_per_m3s_per_m: None,
-        min_generation_mw: 0.0,
-        max_generation_mw: 1.0,
-        tailrace: None,
-        hydraulic_losses: None,
-        efficiency: None,
-        evaporation_coefficients_mm: None,
-        evaporation_reference_volumes_hm3: None,
-        diversion: None,
-        filling: None,
-        penalties: geometry_zero_penalties(),
-    };
-    hydro.declare_mirror_unit_group(id);
-    hydro
+        HydroSpec {
+            operational_start_date: NaiveDate::default(),
+            bus_id: id,
+            max_storage_hm3: 1.0,
+            max_turbined_m3s: 1.0,
+            max_generation_mw: 1.0,
+            penalties: HydroPenalties::uniform(0.0),
+            ..HydroSpec::default()
+        },
+    )
 }
 
 /// `geometry_hydro` with caller-chosen `unit_groups` and `generation_model`,
@@ -554,54 +518,44 @@ pub fn identity_hydro_cell_index(n_hydros: usize) -> HydroCellIndex {
 /// `ctx.buses.iter().map(|b| b.deficit_segments.len()).max()`, so every bus must
 /// carry the caller's count for that derivation to reproduce it.
 fn geometry_bus(idx: usize, max_deficit_segments: usize) -> Bus {
-    Bus {
-        id: EntityId(i32::try_from(idx).unwrap_or(i32::MAX)),
-        name: String::new(),
-        operational_start_date: NaiveDate::default(),
-        deficit_segments: vec![
-            DeficitSegment {
-                depth_mw: None,
-                cost_per_mwh: 0.0,
-            };
-            max_deficit_segments
-        ],
-        excess_cost: 0.0,
-    }
+    make_bus(
+        EntityId(i32::try_from(idx).unwrap_or(i32::MAX)),
+        BusSpec {
+            operational_start_date: NaiveDate::default(),
+            deficit_segments: vec![
+                DeficitSegment {
+                    depth_mw: None,
+                    cost_per_mwh: 0.0,
+                };
+                max_deficit_segments
+            ],
+            ..BusSpec::default()
+        },
+    )
 }
 
 /// Fixture thermal at system position `idx`, inert past its `id`: `geometry`
 /// needs only the count `ctx.thermals.len()` reserves, never a bound or cost.
 fn geometry_thermal(idx: usize) -> Thermal {
-    Thermal {
-        id: EntityId(i32::try_from(idx).unwrap_or(i32::MAX)),
-        name: String::new(),
-        operational_start_date: NaiveDate::default(),
-        bus_id: EntityId(0),
-        entry_stage_id: None,
-        exit_stage_id: None,
-        cost_per_mwh: 0.0,
-        min_generation_mw: 0.0,
-        max_generation_mw: 0.0,
-        anticipated_config: None,
-    }
+    make_thermal(
+        EntityId(i32::try_from(idx).unwrap_or(i32::MAX)),
+        ThermalSpec {
+            operational_start_date: NaiveDate::default(),
+            ..ThermalSpec::default()
+        },
+    )
 }
 
 /// Fixture line at system position `idx`, inert past its `id`: `geometry`
 /// needs only the count `ctx.lines.len()` reserves, never a capacity.
 fn geometry_line(idx: usize) -> Line {
-    Line {
-        id: EntityId(i32::try_from(idx).unwrap_or(i32::MAX)),
-        name: String::new(),
-        operational_start_date: NaiveDate::default(),
-        source_bus_id: EntityId(0),
-        target_bus_id: EntityId(0),
-        entry_stage_id: None,
-        exit_stage_id: None,
-        direct_capacity_mw: 0.0,
-        reverse_capacity_mw: 0.0,
-        losses_percent: 0.0,
-        exchange_cost: 0.0,
-    }
+    make_line(
+        EntityId(i32::try_from(idx).unwrap_or(i32::MAX)),
+        LineSpec {
+            operational_start_date: NaiveDate::default(),
+            ..LineSpec::default()
+        },
+    )
 }
 
 /// Single-stage [`ProductionModelSet`]: `Fpha` with `fpha_planes[local]` planes at
@@ -672,30 +626,26 @@ fn geometry_evaporation_models(
 
 /// Single-stage [`Stage`] fixture: `n_blks` uniform blocks, [`BlockMode::Parallel`].
 fn geometry_stage(n_blks: usize) -> Stage {
-    Stage {
-        index: 0,
-        id: 0,
-        start_date: NaiveDate::default(),
-        end_date: NaiveDate::default(),
-        season_id: Some(0),
-        blocks: (0..n_blks)
-            .map(|i| Block {
-                index: i,
-                name: String::new(),
-                duration_hours: 744.0,
-            })
-            .collect(),
-        block_mode: BlockMode::Parallel,
-        state_config: StageStateConfig {
-            storage: false,
-            inflow_lags: false,
+    make_stage(
+        0,
+        StageSpec {
+            start_date: NaiveDate::default(),
+            end_date: NaiveDate::default(),
+            season_id: Some(0),
+            blocks: (0..n_blks)
+                .map(|i| Block {
+                    index: i,
+                    name: String::new(),
+                    duration_hours: 744.0,
+                })
+                .collect(),
+            state_config: StageStateConfig {
+                storage: false,
+                inflow_lags: false,
+            },
+            ..StageSpec::default()
         },
-        risk_config: StageRiskConfig::Expectation,
-        scenario_config: ScenarioSourceConfig {
-            branching_factor: 1,
-            noise_method: NoiseMethod::Saa,
-        },
-    }
+    )
 }
 
 /// Build the role-(b) [`StageGeometry`] for a single stage from explicit
@@ -1415,7 +1365,7 @@ pub fn study_dims_for(dims: &GeometryDims) -> StudyDimensions {
 )]
 #[must_use]
 pub fn trivial_full_fcf_proof(state_dimension: u32, num_stages: u32) -> PolicyLoadProof<FullFcf> {
-    let graph = novomodelo_io::GraphManifest::default();
+    let graph = GraphManifest::default();
     let manifest = PolicyStageManifest {
         state_dimension,
         num_stages,
@@ -1441,8 +1391,8 @@ pub fn trivial_full_fcf_proof(state_dimension: u32, num_stages: u32) -> PolicyLo
 #[must_use]
 pub fn checkpoint_metadata(
     num_stages: u32,
-    graph_manifest: novomodelo_io::GraphManifest,
-    producer: novomodelo_io::ProducerBlock,
+    graph_manifest: GraphManifest,
+    producer: ProducerBlock,
 ) -> novomodelo_io::CheckpointManifest {
     novomodelo_io::CheckpointManifest {
         created_at: "2026-01-01T00:00:00Z".to_string(),
@@ -2531,44 +2481,41 @@ pub fn hydro_free_stochastic_context(
     n_stages: usize,
     branching_factor: usize,
 ) -> StochasticContext {
-    let bus = Bus {
-        id: EntityId(0),
-        name: "B0".to_string(),
-        operational_start_date: ymd(2024, 1, 1),
-        deficit_segments: vec![DeficitSegment {
-            depth_mw: None,
-            cost_per_mwh: 1000.0,
-        }],
-        excess_cost: 0.0,
-    };
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_possible_wrap,
-        reason = "idx is a small fixture stage index, far below i32::MAX"
-    )]
-    let make_stage = |idx: usize| Stage {
-        index: idx,
-        id: idx as i32,
-        start_date: ymd(2024, 1, 1),
-        end_date: ymd(2024, 2, 1),
-        season_id: Some(0),
-        blocks: vec![Block {
-            index: 0,
-            name: "S".to_string(),
-            duration_hours: 744.0,
-        }],
-        block_mode: BlockMode::Parallel,
-        state_config: StageStateConfig {
-            storage: false,
-            inflow_lags: false,
+    let bus = make_bus(
+        EntityId(0),
+        BusSpec {
+            name: "B0".to_string(),
+            deficit_segments: vec![DeficitSegment {
+                depth_mw: None,
+                cost_per_mwh: 1000.0,
+            }],
+            ..BusSpec::default()
         },
-        risk_config: StageRiskConfig::Expectation,
-        scenario_config: ScenarioSourceConfig {
-            branching_factor,
-            noise_method: NoiseMethod::Saa,
-        },
-    };
-    let stages: Vec<Stage> = (0..n_stages).map(make_stage).collect();
+    );
+    let stages: Vec<Stage> = (0..n_stages)
+        .map(|idx| {
+            make_stage(
+                idx,
+                StageSpec {
+                    season_id: Some(0),
+                    blocks: vec![Block {
+                        index: 0,
+                        name: "S".to_string(),
+                        duration_hours: 744.0,
+                    }],
+                    state_config: StageStateConfig {
+                        storage: false,
+                        inflow_lags: false,
+                    },
+                    scenario_config: ScenarioSourceConfig {
+                        branching_factor,
+                        noise_method: NoiseMethod::Saa,
+                    },
+                    ..StageSpec::default()
+                },
+            )
+        })
+        .collect();
     let correlation = CorrelationModel {
         method: "spectral".to_string(),
         profiles: BTreeMap::new(),
@@ -2605,6 +2552,42 @@ fn reverse_declaration_order_if(
         nodes.reverse();
         transitions.reverse();
     }
+}
+
+/// Root (stage 0, pinning `root_scenario_id`) fanning into `k` leaves (stage 1, leaf `i`
+/// pinning column `i - 1`) under non-uniform weights `i / Σj`.
+#[expect(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_wrap,
+    clippy::cast_possible_truncation,
+    reason = "k and its derived scenario/node ids are small fixture counts, far below i32::MAX and below f64's exact-integer range"
+)]
+fn external_fan_policy_graph(k: usize, root_scenario_id: i32, reversed: bool) -> HorizonGraph {
+    let mut nodes = Vec::with_capacity(1 + k);
+    let mut transitions = Vec::with_capacity(k);
+    nodes.push(PolicyNode {
+        id: 0,
+        stage_id: 0,
+        scenario_id: Some(root_scenario_id),
+        label: None,
+    });
+    let total: f64 = (1..=k).map(|i| i as f64).sum();
+    for i in 1..=k {
+        nodes.push(PolicyNode {
+            id: i as i32,
+            stage_id: 1,
+            scenario_id: Some((i - 1) as i32),
+            label: None,
+        });
+        transitions.push(Transition {
+            source_id: 0,
+            target_id: i as i32,
+            probability: (i as f64) / total,
+            annual_discount_rate_override: None,
+        });
+    }
+    reverse_declaration_order_if(reversed, &mut nodes, &mut transitions);
+    finite_horizon_graph(nodes, transitions)
 }
 
 fn finite_horizon_graph(nodes: Vec<PolicyNode>, transitions: Vec<Transition>) -> HorizonGraph {
@@ -2694,25 +2677,24 @@ fn k_fan_stage(
     state_config: StageStateConfig,
     branching_factor: usize,
 ) -> Stage {
-    Stage {
+    let mut stage = make_stage(
         index,
-        id,
-        start_date: ymd(2024, 1, 1),
-        end_date: ymd(2024, 2, 1),
-        season_id: None,
-        blocks: vec![Block {
-            index: 0,
-            name: "S".to_string(),
-            duration_hours: 744.0,
-        }],
-        block_mode: BlockMode::Parallel,
-        state_config,
-        risk_config: StageRiskConfig::Expectation,
-        scenario_config: ScenarioSourceConfig {
-            branching_factor,
-            noise_method: NoiseMethod::Saa,
+        StageSpec {
+            blocks: vec![Block {
+                index: 0,
+                name: "S".to_string(),
+                duration_hours: 744.0,
+            }],
+            state_config,
+            scenario_config: ScenarioSourceConfig {
+                branching_factor,
+                noise_method: NoiseMethod::Saa,
+            },
+            ..StageSpec::default()
         },
-    }
+    );
+    stage.id = id;
+    stage
 }
 
 /// A single-hydro, single-bus [`System`] over the 3-stage K-fan calendar: hydro
@@ -2774,13 +2756,14 @@ fn fan_or_chain_bus(first_deficit_tier: Option<DeficitSegment>) -> Bus {
         depth_mw: None,
         cost_per_mwh: 500.0,
     });
-    Bus {
-        id: FAN_OR_CHAIN_BUS_ID,
-        name: "B".to_string(),
-        operational_start_date: ymd(2024, 1, 1),
-        deficit_segments,
-        excess_cost: 0.0,
-    }
+    make_bus(
+        FAN_OR_CHAIN_BUS_ID,
+        BusSpec {
+            name: "B".to_string(),
+            deficit_segments,
+            ..BusSpec::default()
+        },
+    )
 }
 
 /// [`fan_or_chain_system`] with explicit inflow/load standard deviations, reservoir
@@ -2830,9 +2813,12 @@ fn fan_or_chain_system_ext(
 /// [`fan_or_chain_system_ext`] before `build`, so a caller can replace an
 /// entity, with `openings` as every stage's branching factor.
 #[expect(
-    clippy::too_many_lines,
+    clippy::expect_used,
+    reason = "the fixed study probed here is valid and internally consistent by construction"
+)]
+#[expect(
     clippy::too_many_arguments,
-    reason = "one linear entity/bounds/penalties assembly shared by every fan/chain fixture in this file; splitting the newest knob into a struct would cost a one-off type for its two call sites, while every existing caller already reads as a flat parameter list at its call site"
+    reason = "splitting the newest knob into a struct would cost a one-off type for its two call sites, while every existing caller already reads as a flat parameter list at its call site"
 )]
 fn fan_or_chain_system_builder(
     n_stages: usize,
@@ -2849,53 +2835,23 @@ fn fan_or_chain_system_builder(
     let bus_id = FAN_OR_CHAIN_BUS_ID;
     let hydro_id = EntityId(2);
 
-    let mut hydro = Hydro {
-        unit_groups: Vec::new(),
-        id: hydro_id,
-        name: "H".to_string(),
-        operational_start_date: ymd(2024, 1, 1),
-        downstream_id: None,
-        travel_time_hours: None,
-        entry_stage_id: None,
-        exit_stage_id: None,
-        min_storage_hm3: 0.0,
-        max_storage_hm3: storage.max_storage_hm3,
-        min_outflow_m3s: 0.0,
-        max_outflow_m3s: None,
-        generation_model: HydroGenerationModel::ConstantProductivity,
-        min_turbined_m3s: 0.0,
-        max_turbined_m3s: 100.0,
-        specific_productivity_mw_per_m3s_per_m: Some(0.5),
-        min_generation_mw: 0.0,
-        max_generation_mw: 250.0,
-        tailrace: None,
-        hydraulic_losses: None,
-        efficiency: None,
-        evaporation_coefficients_mm: None,
-        evaporation_reference_volumes_hm3: None,
-        diversion: None,
-        filling: None,
-        penalties: HydroPenalties {
-            spillage_cost: 0.01,
-            diversion_cost: 0.0,
-            turbined_cost: 0.0,
-            storage_violation_below_cost: 0.0,
-            filling_target_violation_cost: 0.0,
-            turbined_violation_below_cost: 0.0,
-            outflow_violation_below_cost: 0.0,
-            outflow_violation_above_cost: 0.0,
-            generation_violation_below_cost: 0.0,
-            fpha_violation_cost: 0.0,
-            evaporation_violation_cost: 0.0,
-            water_withdrawal_violation_cost: 0.0,
-            water_withdrawal_violation_pos_cost: 0.0,
-            water_withdrawal_violation_neg_cost: 0.0,
-            evaporation_violation_pos_cost: 0.0,
-            evaporation_violation_neg_cost: 0.0,
-            inflow_nonnegativity_cost: 1000.0,
+    let hydro = make_hydro(
+        hydro_id,
+        HydroSpec {
+            name: "H".to_string(),
+            bus_id,
+            max_storage_hm3: storage.max_storage_hm3,
+            max_turbined_m3s: 100.0,
+            specific_productivity_mw_per_m3s_per_m: Some(0.5),
+            max_generation_mw: 250.0,
+            penalties: HydroPenalties {
+                spillage_cost: 0.01,
+                inflow_nonnegativity_cost: 1000.0,
+                ..HydroPenalties::uniform(0.0)
+            },
+            ..HydroSpec::default()
         },
-    };
-    hydro.declare_mirror_unit_group(bus_id);
+    );
 
     debug_assert!(
         stage_state_configs.is_none_or(|cfgs| cfgs.len() == n_stages),
@@ -2953,84 +2909,18 @@ fn fan_or_chain_system_builder(
         })
         .collect();
 
-    let bounds = ResolvedBounds::new(
-        &BoundsCountsSpec {
-            n_hydros: 1,
-            n_thermals: 0,
-            n_lines: 0,
-            n_pumping: 0,
-            n_contracts: 0,
-            n_stages,
-            k_max: 0,
-        },
-        &BoundsDefaults {
-            hydro: HydroStageBounds {
-                min_storage_hm3: 0.0,
-                max_storage_hm3: storage.max_storage_hm3,
-                filling_min_rate_m3s: 0.0,
-                water_withdrawal_m3s: 0.0,
-            },
-            hydro_block: HydroBlockBounds {
-                max_turbined_m3s: 100.0,
-                max_generation_mw: 250.0,
-                ..Default::default()
-            },
-            thermal_block: ThermalBlockBounds {
-                min_generation_mw: 0.0,
-                max_generation_mw: 0.0,
-                cost_per_mwh: 0.0,
-            },
-            line_block: LineBlockBounds {
-                direct_mw: 0.0,
-                reverse_mw: 0.0,
-            },
-            pumping_block: PumpingBlockBounds {
-                min_flow_m3s: 0.0,
-                max_flow_m3s: 0.0,
-            },
-            contract_block: ContractBlockBounds {
-                min_mw: 0.0,
-                max_mw: 0.0,
-                price_per_mwh: 0.0,
-            },
-        },
-    );
-
-    let penalties = ResolvedPenalties::new(
-        &PenaltiesCountsSpec {
-            n_hydros: 1,
-            n_buses: 1,
-            n_lines: 0,
-            n_ncs: 0,
-            n_stages,
-        },
-        &PenaltiesDefaults {
-            hydro: HydroPenalties {
-                spillage_cost: 0.01,
-                diversion_cost: 0.0,
-                turbined_cost: 0.0,
-                storage_violation_below_cost: 500.0,
-                filling_target_violation_cost: 0.0,
-                turbined_violation_below_cost: 0.0,
-                outflow_violation_below_cost: 0.0,
-                outflow_violation_above_cost: 0.0,
-                generation_violation_below_cost: 0.0,
-                fpha_violation_cost: 0.0,
-                evaporation_violation_cost: 0.0,
-                water_withdrawal_violation_cost: 0.0,
-                water_withdrawal_violation_pos_cost: 0.0,
-                water_withdrawal_violation_neg_cost: 0.0,
-                evaporation_violation_pos_cost: 0.0,
-                evaporation_violation_neg_cost: 0.0,
-                inflow_nonnegativity_cost: 1000.0,
-            },
-            bus: BusStagePenalties { excess_cost: 0.0 },
-            line: LineStagePenalties { exchange_cost: 0.0 },
-            ncs: NcsStagePenalties {
-                curtailment_cost: 0.0,
-            },
-        },
-    );
+    let probe = SystemBuilder::new()
+        .buses(vec![fan_or_chain_bus(None)])
+        .hydros(vec![hydro.clone()])
+        .stages(stages.clone())
+        .build()
+        .expect("fan_or_chain probe: valid entities");
+    let (bounds, mut penalties) = resolved_tables(&probe, 0);
+    for stage in 0..n_stages {
+        penalties
+            .hydro_penalties_mut(0, stage)
+            .storage_violation_below_cost = 500.0;
+    }
 
     let initial_conditions = InitialConditions {
         storage: vec![HydroStorage {
@@ -4268,10 +4158,9 @@ pub fn external_distinct_fan_setup_lagged_parent(k: usize, max_iterations: u32) 
     reason = "build_stochastic_context/StudySetup::new never error on this fixture's fixed, internally consistent inputs"
 )]
 #[expect(
-    clippy::cast_precision_loss,
     clippy::cast_possible_wrap,
     clippy::cast_possible_truncation,
-    reason = "k and its derived scenario/node ids are small fixture counts, far below i32::MAX and below f64's exact-integer range"
+    reason = "k and its derived scenario ids are small fixture counts, far below i32::MAX"
 )]
 fn build_external_distinct_fan_setup(
     k: usize,
@@ -4285,32 +4174,7 @@ fn build_external_distinct_fan_setup(
         EXTERNAL_FAN_INFLOWS.len()
     );
 
-    let policy_graph = {
-        let mut nodes = Vec::with_capacity(1 + k);
-        let mut transitions = Vec::with_capacity(k);
-        nodes.push(PolicyNode {
-            id: 0,
-            stage_id: 0,
-            scenario_id: Some(0),
-            label: None,
-        });
-        let total: f64 = (1..=k).map(|i| i as f64).sum();
-        for i in 1..=k {
-            nodes.push(PolicyNode {
-                id: i as i32,
-                stage_id: 1,
-                scenario_id: Some((i - 1) as i32),
-                label: None,
-            });
-            transitions.push(Transition {
-                source_id: 0,
-                target_id: i as i32,
-                probability: (i as f64) / total,
-                annual_discount_rate_override: None,
-            });
-        }
-        finite_horizon_graph(nodes, transitions)
-    };
+    let policy_graph = external_fan_policy_graph(k, 0, false);
 
     let hydro_id = EntityId(2);
     let bus_id = EntityId(1);
@@ -4404,10 +4268,9 @@ fn build_external_distinct_fan_setup(
     reason = "build_stochastic_context/StudySetup::new never error on this fixture's fixed, internally consistent inputs"
 )]
 #[expect(
-    clippy::cast_precision_loss,
     clippy::cast_possible_wrap,
     clippy::cast_possible_truncation,
-    reason = "k and its derived scenario/node ids are small fixture counts, far below i32::MAX and below f64's exact-integer range"
+    reason = "k and its derived scenario ids are small fixture counts, far below i32::MAX"
 )]
 #[must_use]
 pub fn external_root_fan_setup(k: usize, max_iterations: u32) -> StudySetup {
@@ -4422,32 +4285,7 @@ pub fn external_root_fan_setup(k: usize, max_iterations: u32) -> StudySetup {
         EXTERNAL_FAN_INFLOWS.len()
     );
 
-    let policy_graph = {
-        let mut nodes = Vec::with_capacity(1 + k);
-        let mut transitions = Vec::with_capacity(k);
-        nodes.push(PolicyNode {
-            id: 0,
-            stage_id: 0,
-            scenario_id: Some(ROOT_COLUMN),
-            label: None,
-        });
-        let total: f64 = (1..=k).map(|i| i as f64).sum();
-        for i in 1..=k {
-            nodes.push(PolicyNode {
-                id: i as i32,
-                stage_id: 1,
-                scenario_id: Some((i - 1) as i32),
-                label: None,
-            });
-            transitions.push(Transition {
-                source_id: 0,
-                target_id: i as i32,
-                probability: (i as f64) / total,
-                annual_discount_rate_override: None,
-            });
-        }
-        finite_horizon_graph(nodes, transitions)
-    };
+    let policy_graph = external_fan_policy_graph(k, ROOT_COLUMN, false);
 
     let hydro_id = EntityId(2);
     let bus_id = EntityId(1);
@@ -4560,13 +4398,11 @@ fn water_binding_fan_config_enumerated(max_iterations: u32) -> Config {
 /// drives `final_lb` above the extensive-form optimum (an invalid lower bound). The
 /// demand is a deterministic 80 MW in-sample load (`std = 0`, a zero-count class
 /// exempt from the external-node in-sample guard), which the oracle reproduces at
-/// its mean.
+/// its mean. Nodes and transitions are declared in canonical (id-ascending) order.
 ///
 /// # Panics
 ///
 /// Never in practice — every literal is a hand-checked, internally-consistent fixture.
-/// The water-binding fan trained with its nodes/transitions declared in canonical
-/// (id-ascending) order — the value-red / determinism baseline.
 #[must_use]
 pub fn water_binding_external_fan_setup(k: usize, max_iterations: u32) -> StudySetup {
     build_water_binding_external_fan(k, max_iterations, false)
@@ -4586,10 +4422,9 @@ pub fn water_binding_external_fan_setup_reversed(k: usize, max_iterations: u32) 
     reason = "build_stochastic_context/StudySetup::new never error on this fixture's fixed, internally consistent inputs"
 )]
 #[expect(
-    clippy::cast_precision_loss,
     clippy::cast_possible_wrap,
     clippy::cast_possible_truncation,
-    reason = "k and its derived scenario/node ids are small fixture counts, far below i32::MAX and below f64's exact-integer range"
+    reason = "k and its derived scenario ids are small fixture counts, far below i32::MAX"
 )]
 fn build_water_binding_external_fan(k: usize, max_iterations: u32, reversed: bool) -> StudySetup {
     assert!(
@@ -4597,33 +4432,7 @@ fn build_water_binding_external_fan(k: usize, max_iterations: u32, reversed: boo
         "water-binding fan k in 2..=3"
     );
 
-    let policy_graph = {
-        let mut nodes = Vec::with_capacity(1 + k);
-        let mut transitions = Vec::with_capacity(k);
-        nodes.push(PolicyNode {
-            id: 0,
-            stage_id: 0,
-            scenario_id: Some(0),
-            label: None,
-        });
-        let total: f64 = (1..=k).map(|i| i as f64).sum();
-        for i in 1..=k {
-            nodes.push(PolicyNode {
-                id: i as i32,
-                stage_id: 1,
-                scenario_id: Some((i - 1) as i32),
-                label: None,
-            });
-            transitions.push(Transition {
-                source_id: 0,
-                target_id: i as i32,
-                probability: (i as f64) / total,
-                annual_discount_rate_override: None,
-            });
-        }
-        reverse_declaration_order_if(reversed, &mut nodes, &mut transitions);
-        finite_horizon_graph(nodes, transitions)
-    };
+    let policy_graph = external_fan_policy_graph(k, 0, reversed);
 
     let hydro_id = EntityId(2);
     // Stage 0: the root's single column. Stage 1: k distinct inflow columns.

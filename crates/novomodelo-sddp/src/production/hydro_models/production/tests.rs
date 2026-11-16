@@ -11,14 +11,10 @@
 
 use std::collections::HashMap;
 
-use chrono::NaiveDate;
 use novomodelo_core::{
     Bus, EfficiencyModel, EntityId, HydraulicLossesModel, StudyPos, SystemBuilder, TailraceModel,
     entities::hydro::{HydroGenerationModel, HydroPenalties},
-    temporal::{
-        Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
-        StageStateConfig,
-    },
+    temporal::{Block, NoiseMethod, ScenarioSourceConfig, Stage},
 };
 use novomodelo_io::extensions::{
     FittingWindow, FphaColumnLayout, FphaHyperplaneRow, HydroGeometryRow, ProductionModelConfig,
@@ -26,88 +22,51 @@ use novomodelo_io::extensions::{
 };
 use novomodelo_io::output::write_fpha_hyperplanes;
 
+use crate::test_support::builders::{BusSpec, HydroSpec, StageSpec};
+
 use super::*;
 
 // ── Test helpers ──────────────────────────────────────────────────────────
 
 fn make_stage(id: i32) -> Stage {
-    Stage {
-        index: usize::try_from(id.max(0)).unwrap_or(0),
-        id,
-        start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap_or_default(),
-        end_date: NaiveDate::from_ymd_opt(2024, 2, 1).unwrap_or_default(),
-        season_id: Some(0),
-        blocks: vec![Block {
-            index: 0,
-            name: "SINGLE".to_string(),
-            duration_hours: 744.0,
-        }],
-        block_mode: BlockMode::Parallel,
-        state_config: StageStateConfig {
-            storage: true,
-            inflow_lags: false,
+    let mut stage = crate::test_support::builders::make_stage(
+        usize::try_from(id.max(0)).unwrap_or(0),
+        StageSpec {
+            season_id: Some(0),
+            blocks: vec![Block {
+                index: 0,
+                name: "SINGLE".to_string(),
+                duration_hours: 744.0,
+            }],
+            scenario_config: ScenarioSourceConfig {
+                branching_factor: 50,
+                noise_method: NoiseMethod::Saa,
+            },
+            ..StageSpec::default()
         },
-        risk_config: StageRiskConfig::Expectation,
-        scenario_config: ScenarioSourceConfig {
-            branching_factor: 50,
-            noise_method: NoiseMethod::Saa,
-        },
-    }
-}
-
-fn zero_penalties() -> HydroPenalties {
-    HydroPenalties {
-        spillage_cost: 0.0,
-        diversion_cost: 0.0,
-        turbined_cost: 0.0,
-        storage_violation_below_cost: 0.0,
-        filling_target_violation_cost: 0.0,
-        turbined_violation_below_cost: 0.0,
-        outflow_violation_below_cost: 0.0,
-        outflow_violation_above_cost: 0.0,
-        generation_violation_below_cost: 0.0,
-        fpha_violation_cost: 0.0,
-        evaporation_violation_cost: 0.0,
-        water_withdrawal_violation_cost: 0.0,
-        water_withdrawal_violation_pos_cost: 0.0,
-        water_withdrawal_violation_neg_cost: 0.0,
-        evaporation_violation_pos_cost: 0.0,
-        evaporation_violation_neg_cost: 0.0,
-        inflow_nonnegativity_cost: 1000.0,
-    }
+    );
+    stage.id = id;
+    stage
 }
 
 fn make_hydro(id: i32, model: HydroGenerationModel) -> Hydro {
-    let mut hydro = Hydro {
-        unit_groups: Vec::new(),
-        id: EntityId::from(id),
-        name: format!("Hydro{id}"),
-        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        downstream_id: None,
-        travel_time_hours: None,
-        entry_stage_id: None,
-        exit_stage_id: None,
-        min_storage_hm3: 100.0,
-        max_storage_hm3: 2000.0,
-        min_outflow_m3s: 0.0,
-        max_outflow_m3s: None,
-        generation_model: model,
-        min_turbined_m3s: 0.0,
-        max_turbined_m3s: 500.0,
-        specific_productivity_mw_per_m3s_per_m: None,
-        min_generation_mw: 0.0,
-        max_generation_mw: 1000.0,
-        tailrace: None,
-        hydraulic_losses: None,
-        efficiency: None,
-        evaporation_coefficients_mm: None,
-        evaporation_reference_volumes_hm3: None,
-        diversion: None,
-        filling: None,
-        penalties: zero_penalties(),
-    };
-    hydro.declare_mirror_unit_group(EntityId::from(10));
-    hydro
+    crate::test_support::builders::make_hydro(
+        EntityId::from(id),
+        HydroSpec {
+            name: format!("Hydro{id}"),
+            bus_id: EntityId::from(10),
+            min_storage_hm3: 100.0,
+            max_storage_hm3: 2000.0,
+            generation_model: model,
+            max_turbined_m3s: 500.0,
+            max_generation_mw: 1000.0,
+            penalties: HydroPenalties {
+                inflow_nonnegativity_cost: 1000.0,
+                ..HydroPenalties::uniform(0.0)
+            },
+            ..HydroSpec::default()
+        },
+    )
 }
 
 fn valid_row(hydro_id: i32, stage_id: Option<i32>, plane_id: i32) -> FphaHyperplaneRow {
@@ -296,7 +255,7 @@ fn gamma_0_is_scaled_by_kappa() {
         valid_q_max_m3s: None,
     };
 
-    let mut map = std::collections::HashMap::new();
+    let mut map = HashMap::new();
     map.insert(
         (EntityId::from(0), None::<i32>),
         vec![&row as &FphaHyperplaneRow],
@@ -460,7 +419,7 @@ fn stage_specific_hyperplanes_override_all_stage() {
         valid_q_max_m3s: None,
     };
 
-    let mut map = std::collections::HashMap::new();
+    let mut map = HashMap::new();
     map.insert(
         (EntityId::from(0), None::<i32>),
         vec![&global_row as &FphaHyperplaneRow],
@@ -503,7 +462,7 @@ fn all_stage_hyperplanes_used_when_no_stage_specific_rows() {
         valid_q_max_m3s: None,
     };
 
-    let mut map = std::collections::HashMap::new();
+    let mut map = HashMap::new();
     map.insert(
         (EntityId::from(0), None::<i32>),
         vec![&global_row as &FphaHyperplaneRow],
@@ -528,7 +487,7 @@ fn zero_hyperplanes_for_stage_returns_validation_error() {
     let hydro = make_hydro(0, HydroGenerationModel::Fpha);
     let stage = make_stage(0);
 
-    let mut map = std::collections::HashMap::new();
+    let mut map = HashMap::new();
     map.insert(
         (EntityId::from(0), None::<i32>),
         Vec::<&FphaHyperplaneRow>::new(),
@@ -601,7 +560,7 @@ fn resolve_stage_model_uses_productivity_override() {
             }],
         },
     };
-    let empty_map = std::collections::HashMap::new();
+    let empty_map = HashMap::new();
     let model = super::resolve_stage_model(
         &hydro,
         &stage,
@@ -641,7 +600,7 @@ fn test_resolve_stage_model_returns_sentinel_when_json_lacks_productivity() {
             }],
         },
     };
-    let empty_map = std::collections::HashMap::new();
+    let empty_map = HashMap::new();
 
     #[cfg(debug_assertions)]
     {
@@ -713,7 +672,7 @@ fn test_resolve_stage_model_uses_parquet_override_when_json_omits_productivity()
             }],
         },
     };
-    let empty_map = std::collections::HashMap::new();
+    let empty_map = HashMap::new();
     let override_table =
         build_hydro_energy_productivity_override(&[novomodelo_io::HydroEnergyProductivityRow {
             hydro_id: EntityId::from(0),
@@ -753,7 +712,7 @@ fn test_resolve_stage_model_uses_parquet_override_when_json_omits_productivity()
 fn test_resolve_stage_model_returns_sentinel_when_no_config_entry() {
     let hydro = make_hydro(7, HydroGenerationModel::ConstantProductivity);
     let stage = make_stage(3);
-    let empty_map = std::collections::HashMap::new();
+    let empty_map = HashMap::new();
 
     #[cfg(debug_assertions)]
     {
@@ -1721,13 +1680,14 @@ fn spillage_fit_max_sets_the_secant_range() {
 // ── resolve_downstream_level tests ───────────────────────────────────────
 
 fn make_bus() -> Bus {
-    Bus {
-        id: EntityId::from(10),
-        name: "Bus10".to_string(),
-        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        deficit_segments: Vec::new(),
-        excess_cost: 0.0,
-    }
+    crate::test_support::builders::make_bus(
+        EntityId::from(10),
+        BusSpec {
+            name: "Bus10".to_string(),
+            deficit_segments: Vec::new(),
+            ..BusSpec::default()
+        },
+    )
 }
 
 /// Build a `HydroReferenceVolumeFractions` whose `get(hydro, stage)` returns

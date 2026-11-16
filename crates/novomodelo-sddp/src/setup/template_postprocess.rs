@@ -98,34 +98,24 @@ mod tests {
     use super::postprocess_templates;
     use crate::lp::builder::StageTemplates;
     use crate::lp::indexer::{AnticipatedPlants, StateSpace};
-    use crate::test_support::{bits, equipment_free_geometry, state_layout_full};
+    use crate::test_support::builders::{self, StageSpec};
+    use crate::test_support::{bits, equipment_free_geometry, state_layout_full, ymd};
     use crate::time_value::{PostStudyResolved, TimeValue};
-    use chrono::NaiveDate;
-    use novomodelo_core::temporal::{
-        BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig, StageStateConfig,
-    };
+    use novomodelo_core::temporal::Stage;
     use novomodelo_core::{ResolvedBounds, SystemBuilder};
     use novomodelo_solver::StageTemplate;
 
     fn one_year_stage(id: i32) -> Stage {
-        Stage {
-            index: 0,
-            id,
-            start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            end_date: NaiveDate::from_ymd_opt(2025, 1, 1).unwrap(),
-            season_id: None,
-            blocks: vec![],
-            block_mode: BlockMode::Parallel,
-            state_config: StageStateConfig {
-                storage: true,
-                inflow_lags: false,
+        let mut stage = builders::make_stage(
+            0,
+            StageSpec {
+                end_date: ymd(2025, 1, 1),
+                blocks: vec![],
+                ..StageSpec::default()
             },
-            risk_config: StageRiskConfig::Expectation,
-            scenario_config: ScenarioSourceConfig {
-                branching_factor: 1,
-                noise_method: NoiseMethod::Saa,
-            },
-        }
+        );
+        stage.id = id;
+        stage
     }
 
     /// A minimal 4-column template (`storage`, then 3 filler columns padding

@@ -110,6 +110,7 @@ mod tests {
     use super::AnticipatedPlants;
     use crate::indexer::{AnticipatedLocal, ThermalSys};
     use crate::test_support::anticipated_plants_at;
+    use crate::test_support::builders::{ThermalSpec, make_thermal};
 
     fn thermal_with_window(
         id: i32,
@@ -117,18 +118,15 @@ mod tests {
         entry_stage_id: Option<i32>,
         exit_stage_id: Option<i32>,
     ) -> Thermal {
-        Thermal {
-            id: EntityId(id),
-            name: String::new(),
-            operational_start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId(0),
-            entry_stage_id,
-            exit_stage_id,
-            cost_per_mwh: 0.0,
-            min_generation_mw: 0.0,
-            max_generation_mw: 0.0,
-            anticipated_config,
-        }
+        make_thermal(
+            EntityId(id),
+            ThermalSpec {
+                entry_stage_id,
+                exit_stage_id,
+                anticipated_config,
+                ..ThermalSpec::default()
+            },
+        )
     }
 
     #[test]

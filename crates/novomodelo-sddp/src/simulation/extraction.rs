@@ -1944,18 +1944,15 @@ mod transit_seed_tests {
         build_transit_seed,
     };
     use crate::setup::NodeId;
-
-    fn date(y: i32, m: u32, d: u32) -> NaiveDate {
-        NaiveDate::from_ymd_opt(y, m, d).unwrap_or_else(|| unreachable!("hardcoded date is valid"))
-    }
+    use crate::test_support::ymd;
 
     /// Three 30-day stages: `[2024-01-01, 2024-01-31)`, `[2024-01-31,
     /// 2024-03-01)`, `[2024-03-01, 2024-03-31)` — 2160h horizon.
     fn three_stage_dates() -> Vec<(NaiveDate, NaiveDate)> {
         vec![
-            (date(2024, 1, 1), date(2024, 1, 31)),
-            (date(2024, 1, 31), date(2024, 3, 1)),
-            (date(2024, 3, 1), date(2024, 3, 31)),
+            (ymd(2024, 1, 1), ymd(2024, 1, 31)),
+            (ymd(2024, 1, 31), ymd(2024, 3, 1)),
+            (ymd(2024, 3, 1), ymd(2024, 3, 31)),
         ]
     }
 
@@ -2093,21 +2090,21 @@ mod transit_seed_tests {
         let past_defluences = vec![
             HydroPastDefluence {
                 hydro_id: EntityId(HYDRO_ID),
-                start_date: date(2023, 12, 2),
-                end_date: date(2024, 1, 1),
+                start_date: ymd(2023, 12, 2),
+                end_date: ymd(2024, 1, 1),
                 value_m3s: 99.0,
             },
             HydroPastDefluence {
                 hydro_id: EntityId(HYDRO_ID),
-                start_date: date(2023, 11, 1),
-                end_date: date(2023, 12, 2),
+                start_date: ymd(2023, 11, 1),
+                end_date: ymd(2023, 12, 2),
                 value_m3s: 88.0,
             },
             // A window ending well before the trailing span must be dropped.
             HydroPastDefluence {
                 hydro_id: EntityId(HYDRO_ID),
-                start_date: date(2020, 1, 1),
-                end_date: date(2020, 2, 1),
+                start_date: ymd(2020, 1, 1),
+                end_date: ymd(2020, 2, 1),
                 value_m3s: 1.0,
             },
         ];
@@ -2137,14 +2134,14 @@ mod transit_seed_tests {
                 },
                 SimulationTransitSeedResult {
                     hydro_id: HYDRO_ID,
-                    start_date: date(2023, 12, 2),
-                    end_date: date(2024, 1, 1),
+                    start_date: ymd(2023, 12, 2),
+                    end_date: ymd(2024, 1, 1),
                     value_m3s: 99.0,
                 },
                 SimulationTransitSeedResult {
                     hydro_id: HYDRO_ID,
-                    start_date: date(2023, 11, 1),
-                    end_date: date(2023, 12, 2),
+                    start_date: ymd(2023, 11, 1),
+                    end_date: ymd(2023, 12, 2),
                     value_m3s: 88.0,
                 },
             ],
@@ -2159,8 +2156,8 @@ mod transit_seed_tests {
         let stages = vec![stage_with_hydro(0, HYDRO_ID, 10.0)];
         let past_defluences = vec![HydroPastDefluence {
             hydro_id: EntityId(HYDRO_ID),
-            start_date: date(2023, 11, 1),
-            end_date: date(2024, 1, 1),
+            start_date: ymd(2023, 11, 1),
+            end_date: ymd(2024, 1, 1),
             value_m3s: 99.0,
         }];
 

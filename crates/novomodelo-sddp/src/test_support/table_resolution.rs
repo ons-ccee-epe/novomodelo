@@ -135,7 +135,7 @@ mod tests {
     use std::cell::Cell;
     use std::collections::HashMap;
 
-    use novomodelo_core::{EntityId, Hydro, Stage, SystemBuilder};
+    use novomodelo_core::{EntityId, Hydro, SystemBuilder};
     use novomodelo_io::resolution::{
         BoundsEntitySlices, BoundsOverrides, PenaltiesEntitySlices, PenaltiesOverrides,
         resolve_bounds, resolve_penalties,
@@ -201,9 +201,10 @@ mod tests {
                         },
                     )])
                     .stages(vec![
-                        Stage {
-                            id: -1,
-                            ..make_stage(0, StageSpec::default())
+                        {
+                            let mut pre_study = make_stage(0, StageSpec::default());
+                            pre_study.id = -1;
+                            pre_study
                         },
                         make_stage(0, StageSpec::default()),
                         make_stage(1, StageSpec::default()),

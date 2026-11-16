@@ -43,6 +43,8 @@ mod tests {
     use chrono::NaiveDate;
     use novomodelo_core::EntityId;
 
+    use crate::test_support::ymd;
+
     fn window(
         thermal_id: i32,
         start_date: NaiveDate,
@@ -57,16 +59,12 @@ mod tests {
         }
     }
 
-    fn date(y: i32, m: u32, d: u32) -> NaiveDate {
-        NaiveDate::from_ymd_opt(y, m, d).expect("valid date")
-    }
-
     #[test]
     fn fixed_delivery_maps_multi_plant_windows_preserving_order() {
         let windows = vec![
-            window(3, date(2030, 1, 1), date(2030, 1, 31), 120.5),
-            window(3, date(2030, 2, 1), date(2030, 2, 28), 110.0),
-            window(7, date(2030, 1, 1), date(2030, 1, 31), 88.0),
+            window(3, ymd(2030, 1, 1), ymd(2030, 1, 31), 120.5),
+            window(3, ymd(2030, 2, 1), ymd(2030, 2, 28), 110.0),
+            window(7, ymd(2030, 1, 1), ymd(2030, 1, 31), 88.0),
         ];
 
         let rows = fixed_delivery_rows_from_windows(&windows);
@@ -82,7 +80,7 @@ mod tests {
 
     #[test]
     fn fixed_delivery_echoes_a_zero_value_commissioning_inactive_window() {
-        let windows = vec![window(5, date(2031, 1, 1), date(2031, 12, 31), 0.0)];
+        let windows = vec![window(5, ymd(2031, 1, 1), ymd(2031, 12, 31), 0.0)];
 
         let rows = fixed_delivery_rows_from_windows(&windows);
 

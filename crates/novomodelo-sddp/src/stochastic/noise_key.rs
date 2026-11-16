@@ -285,15 +285,14 @@ fn apply_chain_order(
 
 #[cfg(test)]
 mod tests {
-    use chrono::NaiveDate;
     use novomodelo_core::{
-        Block, BlockMode, Bus, DeficitSegment, EntityId, Hydro, HydroGenerationModel,
-        HydroPenalties, InflowModel, NoiseMethod, SamplingScheme, ScenarioSourceConfig, Stage,
-        StageRiskConfig, StageStateConfig, System, SystemBuilder,
+        Block, Bus, DeficitSegment, EntityId, Hydro, HydroPenalties, InflowModel, NoiseMethod,
+        SamplingScheme, ScenarioSourceConfig, Stage, System, SystemBuilder,
     };
     use novomodelo_stochastic::{ClassSchemes, OpeningTreeInputs, build_stochastic_context};
 
     use super::{StochasticContext, build_noise_key_table, noise_key};
+    use crate::test_support::builders::{self, BusSpec, HydroSpec, StageSpec};
 
     #[test]
     fn test_noise_key_sums_sigma_weighted_components() {
@@ -389,92 +388,56 @@ mod tests {
     // ------------------------------------------------------------------
 
     fn bus_fixture(id: i32) -> Bus {
-        Bus {
-            id: EntityId(id),
-            name: format!("Bus{id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).expect("valid date"),
-            deficit_segments: vec![DeficitSegment {
-                depth_mw: None,
-                cost_per_mwh: 1000.0,
-            }],
-            excess_cost: 0.0,
-        }
+        builders::make_bus(
+            EntityId(id),
+            BusSpec {
+                name: format!("Bus{id}"),
+                deficit_segments: vec![DeficitSegment {
+                    depth_mw: None,
+                    cost_per_mwh: 1000.0,
+                }],
+                ..BusSpec::default()
+            },
+        )
     }
 
     fn hydro_fixture(id: i32, bus_id: i32) -> Hydro {
-        let mut hydro = Hydro {
-            unit_groups: Vec::new(),
-            id: EntityId(id),
-            name: format!("H{id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).expect("valid date"),
-            downstream_id: None,
-            travel_time_hours: None,
-            entry_stage_id: None,
-            exit_stage_id: None,
-            min_storage_hm3: 0.0,
-            max_storage_hm3: 100.0,
-            min_outflow_m3s: 0.0,
-            max_outflow_m3s: None,
-            generation_model: HydroGenerationModel::ConstantProductivity,
-            min_turbined_m3s: 0.0,
-            max_turbined_m3s: 100.0,
-            specific_productivity_mw_per_m3s_per_m: None,
-            min_generation_mw: 0.0,
-            max_generation_mw: 100.0,
-            tailrace: None,
-            hydraulic_losses: None,
-            efficiency: None,
-            evaporation_coefficients_mm: None,
-            evaporation_reference_volumes_hm3: None,
-            diversion: None,
-            filling: None,
-            penalties: HydroPenalties {
-                spillage_cost: 0.0,
-                diversion_cost: 0.0,
-                turbined_cost: 0.0,
-                storage_violation_below_cost: 0.0,
-                filling_target_violation_cost: 0.0,
-                turbined_violation_below_cost: 0.0,
-                outflow_violation_below_cost: 0.0,
-                outflow_violation_above_cost: 0.0,
-                generation_violation_below_cost: 0.0,
-                fpha_violation_cost: 0.0,
-                evaporation_violation_cost: 0.0,
-                water_withdrawal_violation_cost: 0.0,
-                water_withdrawal_violation_pos_cost: 0.0,
-                water_withdrawal_violation_neg_cost: 0.0,
-                evaporation_violation_pos_cost: 0.0,
-                evaporation_violation_neg_cost: 0.0,
-                inflow_nonnegativity_cost: 1000.0,
+        builders::make_hydro(
+            EntityId(id),
+            HydroSpec {
+                name: format!("H{id}"),
+                bus_id: EntityId(bus_id),
+                max_storage_hm3: 100.0,
+                max_turbined_m3s: 100.0,
+                max_generation_mw: 100.0,
+                penalties: HydroPenalties {
+                    inflow_nonnegativity_cost: 1000.0,
+                    ..HydroPenalties::uniform(0.0)
+                },
+                ..HydroSpec::default()
             },
-        };
-        hydro.declare_mirror_unit_group(EntityId(bus_id));
-        hydro
+        )
     }
 
     fn stage_fixture(index: usize, id: i32, branching_factor: usize) -> Stage {
-        Stage {
+        let mut stage = builders::make_stage(
             index,
-            id,
-            start_date: NaiveDate::from_ymd_opt(2024, 1, 1).expect("valid date"),
-            end_date: NaiveDate::from_ymd_opt(2024, 2, 1).expect("valid date"),
-            season_id: Some(0),
-            blocks: vec![Block {
-                index: 0,
-                name: "SINGLE".to_string(),
-                duration_hours: 744.0,
-            }],
-            block_mode: BlockMode::Parallel,
-            state_config: StageStateConfig {
-                storage: true,
-                inflow_lags: false,
+            StageSpec {
+                season_id: Some(0),
+                blocks: vec![Block {
+                    index: 0,
+                    name: "SINGLE".to_string(),
+                    duration_hours: 744.0,
+                }],
+                scenario_config: ScenarioSourceConfig {
+                    branching_factor,
+                    noise_method: NoiseMethod::Saa,
+                },
+                ..StageSpec::default()
             },
-            risk_config: StageRiskConfig::Expectation,
-            scenario_config: ScenarioSourceConfig {
-                branching_factor,
-                noise_method: NoiseMethod::Saa,
-            },
-        }
+        );
+        stage.id = id;
+        stage
     }
 
     fn inflow_model_fixture(hydro_id: i32, stage_id: i32, std_m3s: f64) -> InflowModel {

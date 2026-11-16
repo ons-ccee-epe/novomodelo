@@ -1,16 +1,13 @@
 use std::collections::BTreeMap;
 
-use chrono::NaiveDate;
 use novomodelo_comm::{CommData, Communicator, ReduceOp};
-use novomodelo_core::entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties};
+use novomodelo_core::entities::hydro::HydroPenalties;
 use novomodelo_core::scenario::{
     CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile, InflowModel,
     LoadModel, SamplingScheme,
 };
-use novomodelo_core::temporal::{
-    Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig, StageStateConfig,
-};
-use novomodelo_core::{Bus, DeficitSegment, EntityId, SystemBuilder, WorkerPhaseTimings};
+use novomodelo_core::temporal::{Block, NoiseMethod, ScenarioSourceConfig, Stage};
+use novomodelo_core::{DeficitSegment, EntityId, SystemBuilder, WorkerPhaseTimings};
 use novomodelo_solver::{
     Basis, LpSolution, ProfiledSolver, RowBatch, SolverError, SolverInterface, SolverStatistics,
     StageTemplate,
@@ -211,88 +208,52 @@ fn empty_records(n: usize) -> Vec<TrajectoryRecord> {
 /// to be structurally valid for the sampling API.
 #[allow(clippy::too_many_lines)]
 fn make_stochastic_context_1_hydro(n_stages: usize, with_profile: bool) -> StochasticContext {
-    let bus = Bus {
-        id: EntityId(0),
-        name: "B0".to_string(),
-        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        deficit_segments: vec![DeficitSegment {
-            depth_mw: None,
-            cost_per_mwh: 1000.0,
-        }],
-        excess_cost: 0.0,
-    };
-    let mut hydro = Hydro {
-        unit_groups: Vec::new(),
-        id: EntityId(1),
-        name: "H1".to_string(),
-        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        downstream_id: None,
-        travel_time_hours: None,
-        entry_stage_id: None,
-        exit_stage_id: None,
-        min_storage_hm3: 0.0,
-        max_storage_hm3: 100.0,
-        min_outflow_m3s: 0.0,
-        max_outflow_m3s: None,
-        generation_model: HydroGenerationModel::ConstantProductivity,
-        min_turbined_m3s: 0.0,
-        max_turbined_m3s: 100.0,
-        specific_productivity_mw_per_m3s_per_m: None,
-        min_generation_mw: 0.0,
-        max_generation_mw: 100.0,
-        tailrace: None,
-        hydraulic_losses: None,
-        efficiency: None,
-        evaporation_coefficients_mm: None,
-        evaporation_reference_volumes_hm3: None,
-        diversion: None,
-        filling: None,
-        penalties: HydroPenalties {
-            spillage_cost: 0.0,
-            diversion_cost: 0.0,
-            turbined_cost: 0.0,
-            storage_violation_below_cost: 0.0,
-            filling_target_violation_cost: 0.0,
-            turbined_violation_below_cost: 0.0,
-            outflow_violation_below_cost: 0.0,
-            outflow_violation_above_cost: 0.0,
-            generation_violation_below_cost: 0.0,
-            fpha_violation_cost: 0.0,
-            evaporation_violation_cost: 0.0,
-            water_withdrawal_violation_cost: 0.0,
-            water_withdrawal_violation_pos_cost: 0.0,
-            water_withdrawal_violation_neg_cost: 0.0,
-            evaporation_violation_pos_cost: 0.0,
-            evaporation_violation_neg_cost: 0.0,
-            inflow_nonnegativity_cost: 1000.0,
+    use crate::test_support::builders::{self, BusSpec, HydroSpec, StageSpec};
+
+    let bus = builders::make_bus(
+        EntityId(0),
+        BusSpec {
+            name: "B0".to_string(),
+            deficit_segments: vec![DeficitSegment {
+                depth_mw: None,
+                cost_per_mwh: 1000.0,
+            }],
+            ..BusSpec::default()
         },
-    };
-    hydro.declare_mirror_unit_group(EntityId(0));
-    let make_stage = |idx: usize, id: i32| Stage {
-        index: idx,
-        id,
-        start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        end_date: NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-        season_id: Some(0),
-        blocks: vec![Block {
-            index: 0,
-            name: "S".to_string(),
-            duration_hours: 744.0,
-        }],
-        block_mode: BlockMode::Parallel,
-        state_config: StageStateConfig {
-            storage: true,
-            inflow_lags: false,
+    );
+    let hydro = builders::make_hydro(
+        EntityId(1),
+        HydroSpec {
+            name: "H1".to_string(),
+            max_storage_hm3: 100.0,
+            max_turbined_m3s: 100.0,
+            max_generation_mw: 100.0,
+            penalties: HydroPenalties {
+                inflow_nonnegativity_cost: 1000.0,
+                ..HydroPenalties::uniform(0.0)
+            },
+            ..HydroSpec::default()
         },
-        risk_config: StageRiskConfig::Expectation,
-        scenario_config: ScenarioSourceConfig {
-            branching_factor: 3,
-            noise_method: NoiseMethod::Saa,
-        },
-    };
-    #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
+    );
     let stages: Vec<Stage> = (0..n_stages)
-        .map(|idx| make_stage(idx, idx as i32))
+        .map(|idx| {
+            builders::make_stage(
+                idx,
+                StageSpec {
+                    season_id: Some(0),
+                    blocks: vec![Block {
+                        index: 0,
+                        name: "S".to_string(),
+                        duration_hours: 744.0,
+                    }],
+                    scenario_config: ScenarioSourceConfig {
+                        branching_factor: 3,
+                        noise_method: NoiseMethod::Saa,
+                    },
+                    ..StageSpec::default()
+                },
+            )
+        })
         .collect();
     let inflow = |stage_id: i32| InflowModel {
         hydro_id: EntityId(1),
@@ -555,29 +516,28 @@ fn single_workspace(solver: MockSolver, state: &StateSpace) -> SolverWorkspace<M
 /// Provides the `stages` slice required by [`TrainingContext`] so that
 /// [`novomodelo_stochastic::build_forward_sampler`] can read per-stage noise methods.
 fn make_stages_3() -> Vec<Stage> {
-    let make_stage = |idx: usize, id: i32| Stage {
-        index: idx,
-        id,
-        start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        end_date: NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-        season_id: Some(0),
-        blocks: vec![Block {
-            index: 0,
-            name: "S".to_string(),
-            duration_hours: 744.0,
-        }],
-        block_mode: BlockMode::Parallel,
-        state_config: StageStateConfig {
-            storage: true,
-            inflow_lags: false,
-        },
-        risk_config: StageRiskConfig::Expectation,
-        scenario_config: ScenarioSourceConfig {
-            branching_factor: 3,
-            noise_method: NoiseMethod::Saa,
-        },
-    };
-    vec![make_stage(0, 0), make_stage(1, 1), make_stage(2, 2)]
+    use crate::test_support::builders::{self, StageSpec};
+
+    (0..3)
+        .map(|idx| {
+            builders::make_stage(
+                idx,
+                StageSpec {
+                    season_id: Some(0),
+                    blocks: vec![Block {
+                        index: 0,
+                        name: "S".to_string(),
+                        duration_hours: 744.0,
+                    }],
+                    scenario_config: ScenarioSourceConfig {
+                        branching_factor: 3,
+                        noise_method: NoiseMethod::Saa,
+                    },
+                    ..StageSpec::default()
+                },
+            )
+        })
+        .collect()
 }
 
 // ── Integration tests ───────────────────────────────────────────────────
@@ -1863,85 +1823,49 @@ fn test_forward_pass_work_distribution() {
 /// `mean_m3s` and `std_m3s`. Used by truncation tests.
 #[allow(clippy::too_many_lines)]
 fn make_stochastic_1h_1s(mean_m3s: f64, std_m3s: f64) -> StochasticContext {
-    let bus = Bus {
-        id: EntityId(0),
-        name: "B0".to_string(),
-        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        deficit_segments: vec![DeficitSegment {
-            depth_mw: None,
-            cost_per_mwh: 1000.0,
-        }],
-        excess_cost: 0.0,
-    };
-    let mut hydro = Hydro {
-        unit_groups: Vec::new(),
-        id: EntityId(1),
-        name: "H1".to_string(),
-        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        downstream_id: None,
-        travel_time_hours: None,
-        entry_stage_id: None,
-        exit_stage_id: None,
-        min_storage_hm3: 0.0,
-        max_storage_hm3: 100.0,
-        min_outflow_m3s: 0.0,
-        max_outflow_m3s: None,
-        generation_model: HydroGenerationModel::ConstantProductivity,
-        min_turbined_m3s: 0.0,
-        max_turbined_m3s: 100.0,
-        specific_productivity_mw_per_m3s_per_m: None,
-        min_generation_mw: 0.0,
-        max_generation_mw: 100.0,
-        tailrace: None,
-        hydraulic_losses: None,
-        efficiency: None,
-        evaporation_coefficients_mm: None,
-        evaporation_reference_volumes_hm3: None,
-        diversion: None,
-        filling: None,
-        penalties: HydroPenalties {
-            spillage_cost: 0.0,
-            diversion_cost: 0.0,
-            turbined_cost: 0.0,
-            storage_violation_below_cost: 0.0,
-            filling_target_violation_cost: 0.0,
-            turbined_violation_below_cost: 0.0,
-            outflow_violation_below_cost: 0.0,
-            outflow_violation_above_cost: 0.0,
-            generation_violation_below_cost: 0.0,
-            fpha_violation_cost: 0.0,
-            evaporation_violation_cost: 0.0,
-            water_withdrawal_violation_cost: 0.0,
-            water_withdrawal_violation_pos_cost: 0.0,
-            water_withdrawal_violation_neg_cost: 0.0,
-            evaporation_violation_pos_cost: 0.0,
-            evaporation_violation_neg_cost: 0.0,
-            inflow_nonnegativity_cost: 1000.0,
+    use crate::test_support::builders::{self, BusSpec, HydroSpec, StageSpec};
+
+    let bus = builders::make_bus(
+        EntityId(0),
+        BusSpec {
+            name: "B0".to_string(),
+            deficit_segments: vec![DeficitSegment {
+                depth_mw: None,
+                cost_per_mwh: 1000.0,
+            }],
+            ..BusSpec::default()
         },
-    };
-    hydro.declare_mirror_unit_group(EntityId(0));
-    let stage = Stage {
-        index: 0,
-        id: 0,
-        start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        end_date: NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-        season_id: Some(0),
-        blocks: vec![Block {
-            index: 0,
-            name: "S".to_string(),
-            duration_hours: 744.0,
-        }],
-        block_mode: BlockMode::Parallel,
-        state_config: StageStateConfig {
-            storage: true,
-            inflow_lags: false,
+    );
+    let hydro = builders::make_hydro(
+        EntityId(1),
+        HydroSpec {
+            name: "H1".to_string(),
+            max_storage_hm3: 100.0,
+            max_turbined_m3s: 100.0,
+            max_generation_mw: 100.0,
+            penalties: HydroPenalties {
+                inflow_nonnegativity_cost: 1000.0,
+                ..HydroPenalties::uniform(0.0)
+            },
+            ..HydroSpec::default()
         },
-        risk_config: StageRiskConfig::Expectation,
-        scenario_config: ScenarioSourceConfig {
-            branching_factor: 3,
-            noise_method: NoiseMethod::Saa,
+    );
+    let stage = builders::make_stage(
+        0,
+        StageSpec {
+            season_id: Some(0),
+            blocks: vec![Block {
+                index: 0,
+                name: "S".to_string(),
+                duration_hours: 744.0,
+            }],
+            scenario_config: ScenarioSourceConfig {
+                branching_factor: 3,
+                noise_method: NoiseMethod::Saa,
+            },
+            ..StageSpec::default()
         },
-    };
+    );
     let inflow_model = InflowModel {
         hydro_id: EntityId(1),
         stage_id: 0,
@@ -2001,6 +1925,8 @@ fn run_single_stage_forward(
     stochastic: &StochasticContext,
     inflow_method: InflowNonNegativityMethod,
 ) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+    use crate::test_support::builders::{self, StageSpec};
+
     let state = test_support::state_layout(1, 0);
     let solution = fixed_solution(3, 0.0, state.theta, 0.0);
     let solver = MockSolver::always_ok(solution);
@@ -2018,28 +1944,18 @@ fn run_single_stage_forward(
     let fixture =
         StageContextFixture::new(&templates, &state_boxes, &geometry).without_inflow_entries(1);
     let ctx = fixture.ctx();
-    let stages = vec![Stage {
-        index: 0,
-        id: 0,
-        start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        end_date: NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-        season_id: Some(0),
-        blocks: vec![Block {
-            index: 0,
-            name: "S".to_string(),
-            duration_hours: 744.0,
-        }],
-        block_mode: BlockMode::Parallel,
-        state_config: StageStateConfig {
-            storage: true,
-            inflow_lags: false,
+    let stages = vec![builders::make_stage(
+        0,
+        StageSpec {
+            season_id: Some(0),
+            blocks: vec![Block {
+                index: 0,
+                name: "S".to_string(),
+                duration_hours: 744.0,
+            }],
+            ..StageSpec::default()
         },
-        risk_config: StageRiskConfig::Expectation,
-        scenario_config: ScenarioSourceConfig {
-            branching_factor: 1,
-            noise_method: NoiseMethod::Saa,
-        },
-    }];
+    )];
     let _ = run_forward_pass(
         std::slice::from_mut(&mut ws),
         &mut basis_store,
@@ -2234,95 +2150,60 @@ fn none_method_records_the_untruncated_stage_cost() {
 /// independent standard normals.
 #[allow(clippy::too_many_lines)]
 fn make_stochastic_context_1_hydro_1_load_bus(mean_mw: f64, std_mw: f64) -> StochasticContext {
-    let bus0 = Bus {
-        id: EntityId(0),
-        name: "B0".to_string(),
-        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        deficit_segments: vec![DeficitSegment {
-            depth_mw: None,
-            cost_per_mwh: 1000.0,
-        }],
-        excess_cost: 0.0,
-    };
-    let bus1 = Bus {
-        id: EntityId(1),
-        name: "B1".to_string(),
-        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        deficit_segments: vec![DeficitSegment {
-            depth_mw: None,
-            cost_per_mwh: 1000.0,
-        }],
-        excess_cost: 0.0,
-    };
-    let mut hydro = Hydro {
-        unit_groups: Vec::new(),
-        id: EntityId(10),
-        name: "H10".to_string(),
-        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        downstream_id: None,
-        travel_time_hours: None,
-        entry_stage_id: None,
-        exit_stage_id: None,
-        min_storage_hm3: 0.0,
-        max_storage_hm3: 100.0,
-        min_outflow_m3s: 0.0,
-        max_outflow_m3s: None,
-        generation_model: HydroGenerationModel::ConstantProductivity,
-        min_turbined_m3s: 0.0,
-        max_turbined_m3s: 100.0,
-        specific_productivity_mw_per_m3s_per_m: None,
-        min_generation_mw: 0.0,
-        max_generation_mw: 100.0,
-        tailrace: None,
-        hydraulic_losses: None,
-        efficiency: None,
-        evaporation_coefficients_mm: None,
-        evaporation_reference_volumes_hm3: None,
-        diversion: None,
-        filling: None,
-        penalties: HydroPenalties {
-            spillage_cost: 0.0,
-            diversion_cost: 0.0,
-            turbined_cost: 0.0,
-            storage_violation_below_cost: 0.0,
-            filling_target_violation_cost: 0.0,
-            turbined_violation_below_cost: 0.0,
-            outflow_violation_below_cost: 0.0,
-            outflow_violation_above_cost: 0.0,
-            generation_violation_below_cost: 0.0,
-            fpha_violation_cost: 0.0,
-            evaporation_violation_cost: 0.0,
-            water_withdrawal_violation_cost: 0.0,
-            water_withdrawal_violation_pos_cost: 0.0,
-            water_withdrawal_violation_neg_cost: 0.0,
-            evaporation_violation_pos_cost: 0.0,
-            evaporation_violation_neg_cost: 0.0,
-            inflow_nonnegativity_cost: 1000.0,
+    use crate::test_support::builders::{self, BusSpec, HydroSpec, StageSpec};
+
+    let bus0 = builders::make_bus(
+        EntityId(0),
+        BusSpec {
+            name: "B0".to_string(),
+            deficit_segments: vec![DeficitSegment {
+                depth_mw: None,
+                cost_per_mwh: 1000.0,
+            }],
+            ..BusSpec::default()
         },
-    };
-    hydro.declare_mirror_unit_group(EntityId(0));
-    let stage = Stage {
-        index: 0,
-        id: 0,
-        start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        end_date: NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-        season_id: Some(0),
-        blocks: vec![Block {
-            index: 0,
-            name: "S".to_string(),
-            duration_hours: 744.0,
-        }],
-        block_mode: BlockMode::Parallel,
-        state_config: StageStateConfig {
-            storage: true,
-            inflow_lags: false,
+    );
+    let bus1 = builders::make_bus(
+        EntityId(1),
+        BusSpec {
+            name: "B1".to_string(),
+            deficit_segments: vec![DeficitSegment {
+                depth_mw: None,
+                cost_per_mwh: 1000.0,
+            }],
+            ..BusSpec::default()
         },
-        risk_config: StageRiskConfig::Expectation,
-        scenario_config: ScenarioSourceConfig {
-            branching_factor: 3,
-            noise_method: NoiseMethod::Saa,
+    );
+    let hydro = builders::make_hydro(
+        EntityId(10),
+        HydroSpec {
+            name: "H10".to_string(),
+            max_storage_hm3: 100.0,
+            max_turbined_m3s: 100.0,
+            max_generation_mw: 100.0,
+            penalties: HydroPenalties {
+                inflow_nonnegativity_cost: 1000.0,
+                ..HydroPenalties::uniform(0.0)
+            },
+            ..HydroSpec::default()
         },
-    };
+    );
+    let stage = builders::make_stage(
+        0,
+        StageSpec {
+            season_id: Some(0),
+            blocks: vec![Block {
+                index: 0,
+                name: "S".to_string(),
+                duration_hours: 744.0,
+            }],
+            scenario_config: ScenarioSourceConfig {
+                branching_factor: 3,
+                noise_method: NoiseMethod::Saa,
+            },
+            ..StageSpec::default()
+        },
+    );
     let inflow_model = InflowModel {
         hydro_id: EntityId(10),
         stage_id: 0,

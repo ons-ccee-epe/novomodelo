@@ -3095,77 +3095,35 @@ mod tests;
 #[cfg(test)]
 mod transit_seed_round_trip_tests {
     use chrono::{Duration, NaiveDate};
-    use novomodelo_core::entities::bus::{Bus, DeficitSegment};
-    use novomodelo_core::entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties};
-    use novomodelo_core::temporal::{
-        Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
-        StageStateConfig,
-    };
+    use novomodelo_core::entities::bus::DeficitSegment;
+    use novomodelo_core::entities::hydro::Hydro;
+    use novomodelo_core::entities::hydro::HydroPenalties;
+    use novomodelo_core::temporal::{Block, Stage};
     use novomodelo_core::{EntityId, HydroPastDefluence, InitialConditions, System, SystemBuilder};
 
     use super::{TransitSeedArc, build_initial_transit_bucket_state};
     use crate::bucket_topology;
     use crate::simulation::extraction::build_transit_seed;
     use crate::simulation::types::{SimulationHydroResult, SimulationStageResult};
+    use crate::test_support::builders::{self, BusSpec, HydroSpec, StageSpec};
+    use crate::test_support::ymd;
     use crate::time_value::{DeliveryCalendar, WaterDeliveryBasis};
 
-    fn date(y: i32, m: u32, d: u32) -> NaiveDate {
-        NaiveDate::from_ymd_opt(y, m, d).unwrap_or_else(|| unreachable!("hardcoded date is valid"))
-    }
-
-    fn zero_penalties() -> HydroPenalties {
-        HydroPenalties {
-            spillage_cost: 0.0,
-            diversion_cost: 0.0,
-            turbined_cost: 0.0,
-            storage_violation_below_cost: 0.0,
-            filling_target_violation_cost: 0.0,
-            turbined_violation_below_cost: 0.0,
-            outflow_violation_below_cost: 0.0,
-            outflow_violation_above_cost: 0.0,
-            generation_violation_below_cost: 0.0,
-            fpha_violation_cost: 0.0,
-            evaporation_violation_cost: 0.0,
-            water_withdrawal_violation_cost: 0.0,
-            water_withdrawal_violation_pos_cost: 0.0,
-            water_withdrawal_violation_neg_cost: 0.0,
-            evaporation_violation_pos_cost: 0.0,
-            evaporation_violation_neg_cost: 0.0,
-            inflow_nonnegativity_cost: 0.0,
-        }
-    }
-
     fn hydro(id: i32, downstream_id: Option<i32>, travel_time_hours: Option<f64>) -> Hydro {
-        let mut h = Hydro {
-            unit_groups: Vec::new(),
-            id: EntityId(id),
-            name: format!("H{id}"),
-            operational_start_date: date(2024, 1, 1),
-            downstream_id: downstream_id.map(EntityId),
-            travel_time_hours,
-            entry_stage_id: None,
-            exit_stage_id: None,
-            min_storage_hm3: 0.0,
-            max_storage_hm3: 100.0,
-            min_outflow_m3s: 0.0,
-            max_outflow_m3s: None,
-            generation_model: HydroGenerationModel::ConstantProductivity,
-            min_turbined_m3s: 0.0,
-            max_turbined_m3s: 100.0,
-            specific_productivity_mw_per_m3s_per_m: None,
-            min_generation_mw: 0.0,
-            max_generation_mw: 100.0,
-            tailrace: None,
-            hydraulic_losses: None,
-            efficiency: None,
-            evaporation_coefficients_mm: None,
-            evaporation_reference_volumes_hm3: None,
-            diversion: None,
-            filling: None,
-            penalties: zero_penalties(),
-        };
-        h.declare_mirror_unit_group(EntityId(1));
-        h
+        builders::make_hydro(
+            EntityId(id),
+            HydroSpec {
+                name: format!("H{id}"),
+                bus_id: EntityId(1),
+                downstream_id: downstream_id.map(EntityId),
+                travel_time_hours,
+                max_storage_hm3: 100.0,
+                max_turbined_m3s: 100.0,
+                max_generation_mw: 100.0,
+                penalties: HydroPenalties::uniform(0.0),
+                ..HydroSpec::default()
+            },
+        )
     }
 
     /// One study stage, `id`-indexed from 0, a single `hours`-long block, each
@@ -3176,28 +3134,19 @@ mod transit_seed_round_trip_tests {
         (0..n)
             .map(|id| {
                 let start_date = start + Duration::days(i64::from(id));
-                Stage {
-                    index: usize::try_from(id).unwrap_or(0),
-                    id,
-                    start_date,
-                    end_date: start_date + Duration::days(1),
-                    season_id: None,
-                    blocks: vec![Block {
-                        index: 0,
-                        name: "FLAT".to_string(),
-                        duration_hours: hours,
-                    }],
-                    block_mode: BlockMode::Parallel,
-                    state_config: StageStateConfig {
-                        storage: true,
-                        inflow_lags: false,
+                builders::make_stage(
+                    usize::try_from(id).unwrap_or(0),
+                    StageSpec {
+                        start_date,
+                        end_date: start_date + Duration::days(1),
+                        blocks: vec![Block {
+                            index: 0,
+                            name: "FLAT".to_string(),
+                            duration_hours: hours,
+                        }],
+                        ..StageSpec::default()
                     },
-                    risk_config: StageRiskConfig::Expectation,
-                    scenario_config: ScenarioSourceConfig {
-                        branching_factor: 1,
-                        noise_method: NoiseMethod::Saa,
-                    },
-                }
+                )
             })
             .collect()
     }
@@ -3207,16 +3156,17 @@ mod transit_seed_round_trip_tests {
         stages: Vec<Stage>,
         past: Vec<HydroPastDefluence>,
     ) -> System {
-        let bus = Bus {
-            id: EntityId(1),
-            name: "B1".to_string(),
-            operational_start_date: date(2024, 1, 1),
-            deficit_segments: vec![DeficitSegment {
-                depth_mw: None,
-                cost_per_mwh: 500.0,
-            }],
-            excess_cost: 0.0,
-        };
+        let bus = builders::make_bus(
+            EntityId(1),
+            BusSpec {
+                name: "B1".to_string(),
+                deficit_segments: vec![DeficitSegment {
+                    depth_mw: None,
+                    cost_per_mwh: 500.0,
+                }],
+                ..BusSpec::default()
+            },
+        );
         SystemBuilder::new()
             .buses(vec![bus])
             .hydros(hydros)
@@ -3306,7 +3256,7 @@ mod transit_seed_round_trip_tests {
     /// emitted windows reproduce when fed to a continuing run starting there.
     #[test]
     fn emitted_windows_reproduce_the_directly_reanchored_seed() {
-        let study_start_a = date(2024, 1, 1);
+        let study_start_a = ymd(2024, 1, 1);
         let study_end_a = study_start_a + Duration::days(2); // 2 stages, 24h each
         let pre_study_window = HydroPastDefluence {
             hydro_id: EntityId(UPSTREAM_ID),
@@ -3581,29 +3531,7 @@ mod scalar_parameter_construction_tests {
 
     #[test]
     fn generic_constraint_unresolved_parameter_fails_loud_at_construction() {
-        let base = k_fan_system(3, false);
-        let constraint = GenericConstraint {
-            id: EntityId(500),
-            name: "probe_constraint".to_string(),
-            description: None,
-            expression: ConstraintExpression { terms: vec![] },
-            slack: None,
-            bound_lower: Some(ScalarExpr::param(EntityId(999))),
-            bound_upper: None,
-        };
-        let system = SystemBuilder::new()
-            .buses(base.buses().to_vec())
-            .hydros(base.hydros().to_vec())
-            .stages(base.stages().to_vec())
-            .inflow_models(base.inflow_models().to_vec())
-            .load_models(base.load_models().to_vec())
-            .bounds(base.bounds().clone())
-            .penalties(base.penalties().clone())
-            .initial_conditions(base.initial_conditions().clone())
-            .policy_graph(base.policy_graph().clone())
-            .generic_constraints(vec![constraint])
-            .build()
-            .expect("adding a generic constraint keeps the fixture valid");
+        let system = system_with_probe_lower_bound(ScalarExpr::param(EntityId(999)));
         let config = k_fan_config(1, 1);
         let err = build(&system, &config, Vec::new())
             .expect_err("must reject the unresolved parameter reference before the LP builds");
@@ -3615,29 +3543,7 @@ mod scalar_parameter_construction_tests {
 
     #[test]
     fn validate_generic_constraint_parameters_rejects_unresolved_reference_without_a_setup() {
-        let base = k_fan_system(3, false);
-        let constraint = GenericConstraint {
-            id: EntityId(500),
-            name: "probe_constraint".to_string(),
-            description: None,
-            expression: ConstraintExpression { terms: vec![] },
-            slack: None,
-            bound_lower: Some(ScalarExpr::param(EntityId(999))),
-            bound_upper: None,
-        };
-        let system = SystemBuilder::new()
-            .buses(base.buses().to_vec())
-            .hydros(base.hydros().to_vec())
-            .stages(base.stages().to_vec())
-            .inflow_models(base.inflow_models().to_vec())
-            .load_models(base.load_models().to_vec())
-            .bounds(base.bounds().clone())
-            .penalties(base.penalties().clone())
-            .initial_conditions(base.initial_conditions().clone())
-            .policy_graph(base.policy_graph().clone())
-            .generic_constraints(vec![constraint])
-            .build()
-            .expect("adding a generic constraint keeps the fixture valid");
+        let system = system_with_probe_lower_bound(ScalarExpr::param(EntityId(999)));
         let hydro_models = PrepareHydroModelsResult::default_from_system(&system);
         let err = super::validate_generic_constraint_parameters(
             &system,

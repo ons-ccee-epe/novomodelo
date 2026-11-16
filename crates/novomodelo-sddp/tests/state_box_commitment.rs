@@ -14,26 +14,16 @@
     clippy::doc_markdown,
     clippy::too_many_lines
 )]
-// `..Default::default()` in the make_* Spec calls is the intentional future-field
-// seam from `common::builders` — a no-op today, not dead code.
-#![allow(clippy::needless_update)]
 
 mod common;
 
 use chrono::{NaiveDate, TimeDelta};
-use novomodelo_core::entities::{
-    bus::DeficitSegment, hydro::HydroGenerationModel, thermal::AnticipatedConfig,
-};
+use novomodelo_core::entities::{bus::DeficitSegment, thermal::AnticipatedConfig};
 use novomodelo_core::scenario::{InflowModel, LoadModel};
-use novomodelo_core::temporal::{
-    Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig, StageStateConfig,
-};
+use novomodelo_core::temporal::{Block, Stage};
 use novomodelo_core::{
-    AnticipatedCommitmentHistory, BoundsCountsSpec, BoundsDefaults, BusStagePenalties,
-    ContractBlockBounds, EntityId, HydroBlockBounds, HydroPenalties, HydroStageBounds,
-    HydroStorage, InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
-    PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds, ResolvedPenalties,
-    SystemBuilder, ThermalBlockBounds,
+    AnticipatedCommitmentHistory, EntityId, HydroPenalties, HydroStorage, InitialConditions,
+    ResolvedBounds, SystemBuilder,
 };
 use novomodelo_io::config::{
     Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
@@ -92,23 +82,6 @@ fn windowed_commitments_daily(
         .collect()
 }
 
-fn default_hydro_bounds() -> HydroStageBounds {
-    HydroStageBounds {
-        min_storage_hm3: 0.0,
-        max_storage_hm3: 200.0,
-        filling_min_rate_m3s: 0.0,
-        water_withdrawal_m3s: 0.0,
-    }
-}
-
-fn default_hydro_block_bounds() -> HydroBlockBounds {
-    HydroBlockBounds {
-        max_turbined_m3s: 100.0,
-        max_generation_mw: 250.0,
-        ..Default::default()
-    }
-}
-
 fn default_hydro_penalties() -> HydroPenalties {
     HydroPenalties {
         spillage_cost: 0.01,
@@ -143,12 +116,10 @@ fn build_system_and_bounds() -> (novomodelo_core::System, ResolvedBounds) {
         EntityId(1),
         BusSpec {
             name: "B1".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
             deficit_segments: vec![DeficitSegment {
                 depth_mw: None,
                 cost_per_mwh: 500.0,
             }],
-            excess_cost: 0.0,
             ..Default::default()
         },
     );
@@ -158,14 +129,10 @@ fn build_system_and_bounds() -> (novomodelo_core::System, ResolvedBounds) {
         anticipated_id,
         ThermalSpec {
             name: "T_ant".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
             bus_id: EntityId(1),
-            min_generation_mw: 0.0,
             max_generation_mw: 100.0,
             cost_per_mwh: 50.0,
             anticipated_config: Some(AnticipatedConfig::LeadStages(K_MAX as u32)),
-            entry_stage_id: None,
-            exit_stage_id: None,
             ..Default::default()
         },
     );
@@ -174,14 +141,9 @@ fn build_system_and_bounds() -> (novomodelo_core::System, ResolvedBounds) {
         EntityId(4),
         ThermalSpec {
             name: "T_backup".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
             bus_id: EntityId(1),
-            min_generation_mw: 0.0,
             max_generation_mw: 200.0,
             cost_per_mwh: 500.0,
-            anticipated_config: None,
-            entry_stage_id: None,
-            exit_stage_id: None,
             ..Default::default()
         },
     );
@@ -190,28 +152,10 @@ fn build_system_and_bounds() -> (novomodelo_core::System, ResolvedBounds) {
         EntityId(3),
         HydroSpec {
             name: "H1".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
             bus_id: EntityId(1),
-            downstream_id: None,
-            entry_stage_id: None,
-            exit_stage_id: None,
-            min_storage_hm3: 0.0,
             max_storage_hm3: 200.0,
-            min_outflow_m3s: 0.0,
-            max_outflow_m3s: None,
-            generation_model: HydroGenerationModel::ConstantProductivity,
-            min_turbined_m3s: 0.0,
             max_turbined_m3s: 100.0,
-            specific_productivity_mw_per_m3s_per_m: None,
-            min_generation_mw: 0.0,
             max_generation_mw: 250.0,
-            tailrace: None,
-            hydraulic_losses: None,
-            efficiency: None,
-            evaporation_coefficients_mm: None,
-            evaporation_reference_volumes_hm3: None,
-            diversion: None,
-            filling: None,
             penalties: default_hydro_penalties(),
             ..Default::default()
         },
@@ -226,22 +170,11 @@ fn build_system_and_bounds() -> (novomodelo_core::System, ResolvedBounds) {
                 StageSpec {
                     start_date: stage_dates[i].0,
                     end_date: stage_dates[i].1,
-                    season_id: None,
                     blocks: vec![Block {
                         index: 0,
                         name: "S".to_string(),
                         duration_hours: 744.0,
                     }],
-                    block_mode: BlockMode::Parallel,
-                    state_config: StageStateConfig {
-                        storage: true,
-                        inflow_lags: false,
-                    },
-                    risk_config: StageRiskConfig::Expectation,
-                    scenario_config: ScenarioSourceConfig {
-                        branching_factor: 1,
-                        noise_method: NoiseMethod::Saa,
-                    },
                     ..Default::default()
                 },
             )
@@ -269,70 +202,6 @@ fn build_system_and_bounds() -> (novomodelo_core::System, ResolvedBounds) {
         })
         .collect();
 
-    let mut bounds = ResolvedBounds::new(
-        &BoundsCountsSpec {
-            n_hydros: 1,
-            n_thermals: 2,
-            n_lines: 0,
-            n_pumping: 0,
-            n_contracts: 0,
-            n_stages: N_STAGES,
-            k_max: K_MAX,
-        },
-        &BoundsDefaults {
-            hydro: default_hydro_bounds(),
-            hydro_block: default_hydro_block_bounds(),
-            thermal_block: ThermalBlockBounds {
-                min_generation_mw: 0.0,
-                max_generation_mw: 100.0,
-                cost_per_mwh: 0.0,
-            },
-            line_block: LineBlockBounds {
-                direct_mw: 0.0,
-                reverse_mw: 0.0,
-            },
-            pumping_block: PumpingBlockBounds {
-                min_flow_m3s: 0.0,
-                max_flow_m3s: 0.0,
-            },
-            contract_block: ContractBlockBounds {
-                min_mw: 0.0,
-                max_mw: 0.0,
-                price_per_mwh: 0.0,
-            },
-        },
-    );
-
-    // The anticipated thermal is system thermal index 0 (`.thermals(vec![thermal_ant,
-    // thermal_backup])`). Overriding only DELIVERY_STAGE's and
-    // INTERIOR_DELIVERY_STAGE's cells — leaving every other stage at the uniform
-    // default — makes both assertions fail if `build_state_box` read any stage
-    // other than each slot's own genuine held delivery target.
-    let ant_cell = bounds.thermal_block_base_mut(0, DELIVERY_STAGE);
-    ant_cell.min_generation_mw = OVERRIDE_MIN_MW;
-    ant_cell.max_generation_mw = OVERRIDE_MAX_MW;
-    let interior_cell = bounds.thermal_block_base_mut(0, INTERIOR_DELIVERY_STAGE);
-    interior_cell.min_generation_mw = INTERIOR_MIN_MW;
-    interior_cell.max_generation_mw = INTERIOR_MAX_MW;
-
-    let penalties = ResolvedPenalties::new(
-        &PenaltiesCountsSpec {
-            n_hydros: 1,
-            n_buses: 1,
-            n_lines: 0,
-            n_ncs: 0,
-            n_stages: N_STAGES,
-        },
-        &PenaltiesDefaults {
-            hydro: default_hydro_penalties(),
-            bus: BusStagePenalties { excess_cost: 0.0 },
-            line: LineStagePenalties { exchange_cost: 0.0 },
-            ncs: NcsStagePenalties {
-                curtailment_cost: 0.0,
-            },
-        },
-    );
-
     let initial_conditions = InitialConditions {
         storage: vec![HydroStorage {
             hydro_id: EntityId(3),
@@ -349,18 +218,38 @@ fn build_system_and_bounds() -> (novomodelo_core::System, ResolvedBounds) {
         past_defluences: vec![],
     };
 
-    let system = SystemBuilder::new()
-        .buses(vec![bus])
-        .thermals(vec![thermal_ant, thermal_backup])
-        .hydros(vec![hydro])
-        .stages(stages)
-        .inflow_models(inflow_models)
-        .load_models(load_models)
-        .bounds(bounds.clone())
-        .penalties(penalties)
-        .initial_conditions(initial_conditions)
-        .build()
-        .expect("build_system_and_bounds: valid");
+    let system = novomodelo_sddp::test_support::build_with_resolved_tables(
+        || {
+            SystemBuilder::new()
+                .buses(vec![bus.clone()])
+                .thermals(vec![thermal_ant.clone(), thermal_backup.clone()])
+                .hydros(vec![hydro.clone()])
+                .stages(stages.clone())
+                .inflow_models(inflow_models.clone())
+                .load_models(load_models.clone())
+                .initial_conditions(initial_conditions.clone())
+        },
+        K_MAX,
+        |_, bounds, _| {
+            // The anticipated thermal is system thermal index 0 (`.thermals(vec![thermal_ant,
+            // thermal_backup])`). Overriding only DELIVERY_STAGE's and
+            // INTERIOR_DELIVERY_STAGE's cells — leaving every other stage at the uniform
+            // default — makes both assertions fail if `build_state_box` read any stage
+            // other than each slot's own genuine held delivery target.
+            let ant_cell = bounds.thermal_block_base_mut(0, DELIVERY_STAGE);
+            ant_cell.min_generation_mw = OVERRIDE_MIN_MW;
+            ant_cell.max_generation_mw = OVERRIDE_MAX_MW;
+            let interior_cell = bounds.thermal_block_base_mut(0, INTERIOR_DELIVERY_STAGE);
+            interior_cell.min_generation_mw = INTERIOR_MIN_MW;
+            interior_cell.max_generation_mw = INTERIOR_MAX_MW;
+            for s in 0..N_STAGES + K_MAX {
+                bounds.thermal_block_base_mut(0, s).cost_per_mwh = 0.0;
+                bounds.thermal_block_base_mut(1, s).cost_per_mwh = 0.0;
+                bounds.thermal_block_base_mut(1, s).max_generation_mw = 100.0;
+            }
+        },
+    );
+    let bounds = system.bounds().clone();
 
     (system, bounds)
 }
