@@ -839,7 +839,7 @@ mod tests {
 
     use novomodelo_core::temporal::PolicyGraphType;
     use novomodelo_core::{
-        AnticipatedCommitmentHistory, AnticipatedConfig, EntityId, HorizonGraph, Hydro, Thermal,
+        AnticipatedCommitmentHistory, AnticipatedConfig, EntityId, HorizonGraph, Hydro,
     };
 
     use chrono::NaiveDate;
@@ -2144,10 +2144,8 @@ mod tests {
 
     #[test]
     fn test_cost_only_block_row_rejected_on_anticipated_thermal() {
-        let anticipated_thermal = Thermal {
-            anticipated_config: Some(AnticipatedConfig::LeadStages(1)),
-            ..make_thermal(1, 0.0, 500.0)
-        };
+        let mut anticipated_thermal = make_thermal(1, 0.0, 500.0);
+        anticipated_thermal.anticipated_config = Some(AnticipatedConfig::LeadStages(1));
         let mut data = make_data(
             vec![],
             vec![anticipated_thermal],

@@ -267,16 +267,14 @@ fn evap_negative_month_hard_floor_needs_the_capped_under_evaporation_slack() {
     use novomodelo_solver::{SolverError, SolverInterface};
 
     let base = one_hydro_system(2, 0);
-    let hydro = novomodelo_core::Hydro {
-        min_storage_hm3: 100.0,
-        max_storage_hm3: 200.0,
-        entry_stage_id: Some(1),
-        filling: Some(FillingConfig {
-            start_stage_id: 0,
-            filling_min_rate_m3s: 0.0,
-        }),
-        ..base.hydros()[0].clone()
-    };
+    let mut hydro = base.hydros()[0].clone();
+    hydro.min_storage_hm3 = 100.0;
+    hydro.max_storage_hm3 = 200.0;
+    hydro.entry_stage_id = Some(1);
+    hydro.filling = Some(FillingConfig {
+        start_stage_id: 0,
+        filling_min_rate_m3s: 0.0,
+    });
     let mut bounds = base.bounds().clone();
     for stage_idx in 0..2 {
         bounds.hydro_bounds_mut(0, stage_idx).min_storage_hm3 = 100.0;

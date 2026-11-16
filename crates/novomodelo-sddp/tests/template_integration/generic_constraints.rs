@@ -1347,7 +1347,6 @@ struct HydroStudy {
     block_mode: novomodelo_core::BlockMode,
     hydros: Vec<novomodelo_core::Hydro>,
     pumping_stations: Vec<novomodelo_core::PumpingStation>,
-    hydro_block: HydroBlockBounds,
     constraints: Vec<novomodelo_core::GenericConstraint>,
     generic_bounds: novomodelo_core::ResolvedGenericConstraintBounds,
 }
@@ -1368,6 +1367,12 @@ fn study_hydro(id: i32, downstream: Option<i32>) -> novomodelo_core::Hydro {
             max_turbined_m3s: 100.0,
             generation_model: HydroGenerationModel::ConstantProductivity,
             max_generation_mw: 250.0,
+            penalties: HydroPenalties {
+                spillage_cost: 0.01,
+                fpha_violation_cost: 5000.0,
+                inflow_nonnegativity_cost: 1000.0,
+                ..HydroPenalties::uniform(0.0)
+            },
             ..Default::default()
         },
     )
@@ -1380,7 +1385,6 @@ impl Default for HydroStudy {
             block_mode: novomodelo_core::BlockMode::Parallel,
             hydros: vec![study_hydro(5, None)],
             pumping_stations: Vec::new(),
-            hydro_block: default_hydro_block_bounds(),
             constraints: Vec::new(),
             generic_bounds: novomodelo_core::ResolvedGenericConstraintBounds::new(
                 &std::collections::HashMap::new(),
@@ -1409,6 +1413,10 @@ fn one_hydro_system(
     })
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "build_with_resolved_tables runs its make closure twice, so the by-value arguments are cloned into each build"
+)]
 fn hydro_study_system(study: HydroStudy) -> novomodelo_core::System {
     use chrono::NaiveDate;
     use novomodelo_core::scenario::{InflowModel, LoadModel};
@@ -1462,10 +1470,9 @@ fn hydro_study_system(study: HydroStudy) -> novomodelo_core::System {
         },
     );
 
-    let n_hydros = study.hydros.len();
     let mut hydro_ids: Vec<EntityId> = study.hydros.iter().map(|hydro| hydro.id).collect();
     hydro_ids.sort_unstable();
-    let inflow_models = hydro_ids
+    let inflow_models: Vec<InflowModel> = hydro_ids
         .into_iter()
         .map(|hydro_id| InflowModel {
             hydro_id,
@@ -1476,98 +1483,34 @@ fn hydro_study_system(study: HydroStudy) -> novomodelo_core::System {
             residual_std_ratio: 0.0,
             annual: None,
         })
-        .collect::<Vec<_>>();
+        .collect();
 
-    let load_models = vec![LoadModel {
+    let load_models: Vec<LoadModel> = vec![LoadModel {
         bus_id: EntityId(1),
         stage_id: 0,
         mean_mw: 100.0,
         std_mw: 0.0,
     }];
 
-    let mut resolved_bounds = ResolvedBounds::new(
-        &BoundsCountsSpec {
-            n_hydros,
-            n_thermals: 0,
-            n_lines: 0,
-            n_pumping: study.pumping_stations.len(),
-            n_contracts: 0,
-            n_stages: 1,
-            k_max: 0,
+    novomodelo_sddp::test_support::build_with_resolved_tables(
+        || {
+            let mut builder = SystemBuilder::new()
+                .buses(vec![bus.clone()])
+                .hydros(study.hydros.clone())
+                .pumping_stations(study.pumping_stations.clone())
+                .stages(vec![stage.clone()])
+                .inflow_models(inflow_models.clone())
+                .load_models(load_models.clone());
+            if !study.constraints.is_empty() {
+                builder = builder
+                    .generic_constraints(study.constraints.clone())
+                    .resolved_generic_bounds(study.generic_bounds.clone());
+            }
+            builder
         },
-        &BoundsDefaults {
-            hydro: default_hydro_bounds(),
-            hydro_block: study.hydro_block,
-            thermal_block: ThermalBlockBounds {
-                min_generation_mw: 0.0,
-                max_generation_mw: 0.0,
-                cost_per_mwh: 0.0,
-            },
-            line_block: LineBlockBounds {
-                direct_mw: 0.0,
-                reverse_mw: 0.0,
-            },
-            pumping_block: PumpingBlockBounds {
-                min_flow_m3s: 0.0,
-                max_flow_m3s: 0.0,
-            },
-            contract_block: ContractBlockBounds {
-                min_mw: 0.0,
-                max_mw: 0.0,
-                price_per_mwh: 0.0,
-            },
-        },
-    );
-    let mut stations: Vec<_> = study.pumping_stations.iter().collect();
-    stations.sort_by_key(|station| station.id);
-    for (p, station) in stations.into_iter().enumerate() {
-        *resolved_bounds.pumping_bounds_mut(p, 0) = PumpingBlockBounds {
-            min_flow_m3s: station.min_flow_m3s,
-            max_flow_m3s: station.max_flow_m3s,
-        };
-    }
-    let mut sorted_hydros: Vec<_> = study.hydros.iter().collect();
-    sorted_hydros.sort_by_key(|hydro| hydro.id);
-    for (pos, hydro) in sorted_hydros.into_iter().enumerate() {
-        if let Some(channel) = &hydro.diversion {
-            resolved_bounds
-                .hydro_block_base_mut(pos, 0)
-                .max_diversion_m3s = channel.max_flow_m3s;
-        }
-    }
-    let penalties = ResolvedPenalties::new(
-        &PenaltiesCountsSpec {
-            n_hydros,
-            n_buses: 1,
-            n_lines: 0,
-            n_ncs: 0,
-            n_stages: 1,
-        },
-        &PenaltiesDefaults {
-            hydro: default_hydro_penalties(),
-            bus: BusStagePenalties { excess_cost: 0.0 },
-            line: LineStagePenalties { exchange_cost: 0.0 },
-            ncs: NcsStagePenalties {
-                curtailment_cost: 0.0,
-            },
-        },
-    );
-
-    let mut builder = SystemBuilder::new()
-        .buses(vec![bus])
-        .hydros(study.hydros)
-        .pumping_stations(study.pumping_stations)
-        .stages(vec![stage])
-        .inflow_models(inflow_models)
-        .load_models(load_models)
-        .bounds(resolved_bounds)
-        .penalties(penalties);
-    if !study.constraints.is_empty() {
-        builder = builder
-            .generic_constraints(study.constraints)
-            .resolved_generic_bounds(study.generic_bounds);
-    }
-    builder.build().expect("hydro_study_system: valid")
+        0,
+        |_, _, _| {},
+    )
 }
 
 #[test]
@@ -1905,7 +1848,7 @@ fn stage_volume_template(
     bounds_rows: Vec<GenericBoundsRow>,
 ) -> (usize, StageTemplate) {
     stage_volume_template_with(
-        default_hydro_block_bounds(),
+        &[study_hydro(5, None)],
         block_hours,
         block_mode,
         constraints_json,
@@ -1914,7 +1857,7 @@ fn stage_volume_template(
 }
 
 fn stage_volume_template_with(
-    hydro_block: HydroBlockBounds,
+    hydros: &[novomodelo_core::Hydro],
     block_hours: &[f64],
     block_mode: novomodelo_core::BlockMode,
     constraints_json: &str,
@@ -1925,7 +1868,7 @@ fn stage_volume_template_with(
     let baseline = build_templates_for(&hydro_study_system(HydroStudy {
         block_hours: block_hours.to_vec(),
         block_mode,
-        hydro_block,
+        hydros: hydros.to_vec(),
         ..Default::default()
     }));
     let constraints = parse_generic_from_str(constraints_json);
@@ -1938,7 +1881,7 @@ fn stage_volume_template_with(
     let template = build_templates_for(&hydro_study_system(HydroStudy {
         block_hours: block_hours.to_vec(),
         block_mode,
-        hydro_block,
+        hydros: hydros.to_vec(),
         constraints,
         generic_bounds,
         ..Default::default()
@@ -2279,12 +2222,11 @@ fn neighbour_template(with_volume: bool) -> (usize, StageTemplate) {
     } else {
         NEIGHBOUR_TWIN_JSON
     };
+    let mut hydro = study_hydro(5, None);
+    hydro.min_outflow_m3s = MIN_OUTFLOW;
+    hydro.max_outflow_m3s = Some(MAX_OUTFLOW);
     stage_volume_template_with(
-        HydroBlockBounds {
-            min_outflow_m3s: MIN_OUTFLOW,
-            max_outflow_m3s: Some(MAX_OUTFLOW),
-            ..default_hydro_block_bounds()
-        },
+        &[hydro],
         &VOLUME_BLOCK_HOURS,
         BlockMode::Parallel,
         json,
@@ -2390,37 +2332,32 @@ fn diversion_pumping_study(
     bounds_rows: Vec<GenericBoundsRow>,
     id_map: &std::collections::HashMap<i32, usize>,
 ) -> (usize, StageTemplate) {
-    use chrono::NaiveDate;
-    use novomodelo_core::{
-        DiversionChannel, Hydro, PumpingStation, ResolvedGenericConstraintBounds,
-    };
+    use novomodelo_core::{DiversionChannel, ResolvedGenericConstraintBounds};
 
-    let study = || HydroStudy {
-        block_hours: VOLUME_BLOCK_HOURS.to_vec(),
-        hydros: vec![
-            Hydro {
-                diversion: Some(DiversionChannel {
-                    downstream_id: EntityId(10),
-                    max_flow_m3s: Some(MAX_DIVERSION),
-                }),
-                ..study_hydro(5, None)
-            },
-            study_hydro(10, None),
-        ],
-        pumping_stations: vec![PumpingStation {
-            id: EntityId(30),
-            name: "P30".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId(1),
-            source_hydro_id: EntityId(10),
-            destination_hydro_id: EntityId(5),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            consumption_mw_per_m3s: 0.5,
-            min_flow_m3s: 0.0,
-            max_flow_m3s: PUMP_MAX,
-        }],
-        ..Default::default()
+    let study = || {
+        let mut diverter = study_hydro(5, None);
+        diverter.diversion = Some(DiversionChannel {
+            downstream_id: EntityId(10),
+            max_flow_m3s: Some(MAX_DIVERSION),
+        });
+        HydroStudy {
+            block_hours: VOLUME_BLOCK_HOURS.to_vec(),
+            hydros: vec![diverter, study_hydro(10, None)],
+            pumping_stations: vec![make_pumping_station(
+                EntityId(30),
+                PumpingSpec {
+                    name: "P30".to_string(),
+                    bus_id: EntityId(1),
+                    source_hydro_id: EntityId(10),
+                    destination_hydro_id: EntityId(5),
+                    consumption_mw_per_m3s: 0.5,
+                    min_flow_m3s: 0.0,
+                    max_flow_m3s: PUMP_MAX,
+                    ..PumpingSpec::default()
+                },
+            )],
+            ..Default::default()
+        }
     };
     let generic_row = build_templates_for(&hydro_study_system(study()))[0].num_rows;
     let template = build_templates_for(&hydro_study_system(HydroStudy {

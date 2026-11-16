@@ -49,7 +49,8 @@ use novomodelo_sddp::{
 
 mod common;
 use common::builders::{
-    BusSpec, HydroSpec, StageSpec, ThermalSpec, make_bus, make_hydro, make_stage, make_thermal,
+    BusSpec, HydroSpec, PumpingSpec, StageSpec, ThermalSpec, make_bus, make_hydro,
+    make_pumping_station, make_stage, make_thermal,
 };
 
 /// LP objective cost scale factor. Matches `novomodelo_sddp::setup::params::DEFAULT_COST_SCALE_FACTOR`.
@@ -105,45 +106,6 @@ fn no_penalty_config() -> InflowNonNegativityMethod {
 
 fn penalty_config(_cost: f64) -> InflowNonNegativityMethod {
     InflowNonNegativityMethod::Penalty
-}
-
-fn default_hydro_bounds() -> HydroStageBounds {
-    HydroStageBounds {
-        min_storage_hm3: 0.0,
-        max_storage_hm3: 200.0,
-        filling_min_rate_m3s: 0.0,
-        water_withdrawal_m3s: 0.0,
-    }
-}
-
-fn default_hydro_block_bounds() -> HydroBlockBounds {
-    HydroBlockBounds {
-        max_turbined_m3s: 100.0,
-        max_generation_mw: 250.0,
-        ..Default::default()
-    }
-}
-
-fn default_hydro_penalties() -> HydroPenalties {
-    HydroPenalties {
-        spillage_cost: 0.01,
-        diversion_cost: 0.0,
-        turbined_cost: 0.0,
-        storage_violation_below_cost: 0.0,
-        filling_target_violation_cost: 0.0,
-        turbined_violation_below_cost: 0.0,
-        outflow_violation_below_cost: 0.0,
-        outflow_violation_above_cost: 0.0,
-        generation_violation_below_cost: 0.0,
-        fpha_violation_cost: 5000.0,
-        evaporation_violation_cost: 0.0,
-        water_withdrawal_violation_cost: 0.0,
-        water_withdrawal_violation_pos_cost: 0.0,
-        water_withdrawal_violation_neg_cost: 0.0,
-        evaporation_violation_pos_cost: 0.0,
-        evaporation_violation_neg_cost: 0.0,
-        inflow_nonnegativity_cost: 1000.0,
-    }
 }
 
 /// One-bus, no-entity system with `n_stages` study stages.
