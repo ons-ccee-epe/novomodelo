@@ -675,13 +675,72 @@ mod tests {
         assert_eq!(
             errors.len(),
             1,
-            "only the plant with turbine capacity needs rows, got: {errors:?}"
+            "only the plant with turbined-flow and generation capacity needs rows, got: {errors:?}"
         );
         assert_eq!(errors[0].kind, ErrorKind::DimensionMismatch);
         assert!(
             errors[0].message.contains("Hydro 2"),
             "error should name hydro 2, got: {}",
             errors[0].message
+        );
+    }
+
+    /// derived: hydro 1 is exempt because a zero `max_generation_mw` leaves it no turbine capacity.
+    #[test]
+    fn zero_generation_capacity_fpha_hydro_needs_no_hyperplane_rows() {
+        let mut data = crate::test_support::base_parsed_data(stages(), vec![]);
+
+        let mut capacity_less = make_hydro(1, HydroGenerationModel::Fpha, None, None);
+        capacity_less.max_generation_mw = 0.0;
+        let with_capacity = make_hydro(2, HydroGenerationModel::Fpha, None, None);
+        assert!(with_capacity.has_turbine_capacity());
+        data.hydros = vec![
+            capacity_less,
+            with_capacity,
+            make_hydro(3, HydroGenerationModel::Fpha, None, None),
+        ];
+
+        data.fpha_hyperplanes = vec![fpha_row(3)];
+
+        let mut ctx = ValidationContext::new();
+        validate_dimensional_consistency(&data, &mut ctx);
+
+        let errors = ctx.errors();
+        assert_eq!(
+            errors.len(),
+            1,
+            "only the plant with turbined-flow and generation capacity needs rows, got: {errors:?}"
+        );
+        assert_eq!(errors[0].kind, ErrorKind::DimensionMismatch);
+        assert!(
+            errors[0].message.contains("Hydro 2"),
+            "error should name hydro 2, got: {}",
+            errors[0].message
+        );
+    }
+
+    /// derived: hydro 1 is exempt because both declared limits are zero.
+    #[test]
+    fn fpha_hydro_without_either_limit_needs_no_hyperplane_rows() {
+        let mut data = crate::test_support::base_parsed_data(stages(), vec![]);
+
+        let mut capacity_less = make_hydro(1, HydroGenerationModel::Fpha, None, None);
+        capacity_less.max_turbined_m3s = 0.0;
+        capacity_less.max_generation_mw = 0.0;
+        data.hydros = vec![
+            capacity_less,
+            make_hydro(3, HydroGenerationModel::Fpha, None, None),
+        ];
+
+        data.fpha_hyperplanes = vec![fpha_row(3)];
+
+        let mut ctx = ValidationContext::new();
+        validate_dimensional_consistency(&data, &mut ctx);
+
+        let errors = ctx.errors();
+        assert!(
+            errors.is_empty(),
+            "a plant with neither limit needs no rows, got: {errors:?}"
         );
     }
 

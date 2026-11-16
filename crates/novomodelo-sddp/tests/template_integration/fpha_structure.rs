@@ -1,7 +1,7 @@
 //! `fpha_structure` section tests.
 
 use super::*;
-use novomodelo_sddp::indexer::{BlockIdx, FphaCellLocal};
+use novomodelo_sddp::indexer::{BlockIdx, FphaCellLocal, HydroCell, HydroSys};
 use novomodelo_solver::{ActiveSolver, RowBatch, SolverInterface};
 
 fn empty_cut_batch() -> RowBatch {
@@ -54,6 +54,85 @@ fn fpha_ac1_dimensions_one_fpha_hydro_five_planes() {
         const_tmpl.num_rows + 5,
         "FPHA adds exactly 5 constraint rows (5 planes * 1 block)"
     );
+}
+
+#[test]
+fn fpha_plant_without_capacity_builds_no_fpha_structure() {
+    const N_PLANES: usize = 5;
+    /// derived: 1 cell * 1 block for each of the generation and plane-slack columns.
+    const FPHA_COLUMNS: usize = 2;
+    /// derived: `N_PLANES` planes * 1 block.
+    const FPHA_ROWS: usize = N_PLANES;
+
+    let build = |max_turbined_m3s: f64, max_generation_mw: f64, label: &str| {
+        let (system, production) = one_fpha_hydro_system_with_block_bounds(
+            N_PLANES,
+            HydroBlockBounds {
+                max_turbined_m3s,
+                max_generation_mw,
+                ..Default::default()
+            },
+        );
+        build_stage_templates_resolving_layout(
+            &system,
+            no_penalty_config(),
+            &PrecomputedPar::default(),
+            &PrecomputedNormal::default(),
+            &production,
+            &default_evaporation(&system),
+            &ResolvedParameters::default(),
+        )
+        .unwrap_or_else(|err| panic!("{label}: template build failed: {err:?}"))
+    };
+    let turbine_bounds = |result: &novomodelo_sddp::StageTemplates| {
+        let col = result.geometry_per_stage[0].turbine_col(HydroCell::new(0), BlockIdx::new(0));
+        let tmpl = &result.templates[0];
+        (tmpl.col_lower[col], tmpl.col_upper[col])
+    };
+
+    let twin = build(150.0, 300.0, "FPHA twin");
+    assert_eq!(
+        twin.geometry_per_stage[0].fpha_hydro_indices,
+        [HydroSys::new(0)],
+        "the twin keeps the plant in FPHA, or the comparison below is Dormant against Dormant"
+    );
+    assert_eq!(
+        turbine_bounds(&twin).1,
+        150.0,
+        "the twin's turbine column is open"
+    );
+
+    for (max_turbined_m3s, max_generation_mw, label) in [
+        (150.0, 0.0, "generation limit 0"),
+        (0.0, 300.0, "turbined limit 0"),
+        (0.0, 0.0, "both limits 0"),
+    ] {
+        let result = build(max_turbined_m3s, max_generation_mw, label);
+        let geometry = &result.geometry_per_stage[0];
+
+        assert_eq!(
+            result.templates[0].num_cols + FPHA_COLUMNS,
+            twin.templates[0].num_cols,
+            "{label}: no generation and no plane-slack column"
+        );
+        assert_eq!(
+            result.templates[0].num_rows + FPHA_ROWS,
+            twin.templates[0].num_rows,
+            "{label}: no plane rows"
+        );
+        assert!(
+            geometry.fpha_hydro_indices.is_empty(),
+            "{label}: the plant is not an FPHA plant at this stage"
+        );
+        assert!(geometry.generation.is_empty(), "{label}: generation");
+        assert!(geometry.fpha.is_empty(), "{label}: plane rows");
+        assert!(geometry.fpha_slack.is_empty(), "{label}: plane slack");
+        assert_eq!(
+            turbine_bounds(&result),
+            (0.0, 0.0),
+            "{label}: the turbine column is frozen"
+        );
+    }
 }
 
 #[test]

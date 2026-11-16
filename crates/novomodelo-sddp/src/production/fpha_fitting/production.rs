@@ -96,15 +96,8 @@ impl ProductionFunction {
     }
 
     /// Set the installed-capacity ceiling \[MW\].
-    ///
-    /// A non-positive value leaves the ceiling disabled (`f64::INFINITY`) rather
-    /// than clamping every point to zero — a guard for a malformed entity.
     pub(crate) fn with_max_generation_mw(mut self, max_generation_mw: f64) -> Self {
-        self.max_generation_mw = if max_generation_mw > 0.0 {
-            max_generation_mw
-        } else {
-            f64::INFINITY
-        };
+        self.max_generation_mw = max_generation_mw;
         self
     }
 

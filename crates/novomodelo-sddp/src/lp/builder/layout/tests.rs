@@ -8,12 +8,15 @@ use std::ops::Range;
 
 use chrono::NaiveDate;
 use novomodelo_core::{
-    Block, BlockMode, BoundsCountsSpec, BoundsDefaults, Bus, CascadeTopology, ConstraintExpression,
-    ContractBlockBounds, ContractType, EnergyContract, EntityId, FillingConfig, GenericConstraint,
-    Hydro, HydroBlockBounds, HydroGenerationModel, HydroStageBounds, LineBlockBounds, LinearTerm,
-    NoiseMethod, NonControllableSource, PenaltyBasis, PumpingBlockBounds, PumpingStation,
-    ResolvedBounds, ResolvedGenericConstraintBounds, ScalarExpr, ScenarioSourceConfig, SlackConfig,
-    Stage, StageRiskConfig, StageStateConfig, Thermal, ThermalBlockBounds, VariableRef,
+    Block, BlockBoundsCountsSpec, BlockMode, BoundsCountsSpec, BoundsDefaults, Bus,
+    BusStagePenalties, CascadeTopology, ConstraintExpression, ContractBlockBounds, ContractType,
+    EnergyContract, EntityId, FillingConfig, GenericConstraint, Hydro, HydroBlockBounds,
+    HydroBlockOverride, HydroGenerationModel, HydroStageBounds, LineBlockBounds,
+    LineStagePenalties, LinearTerm, NcsStagePenalties, NoiseMethod, NonControllableSource,
+    PenaltiesCountsSpec, PenaltiesDefaults, PenaltyBasis, PumpingBlockBounds, PumpingStation,
+    ResolvedBlockBounds, ResolvedBounds, ResolvedGenericConstraintBounds, ResolvedPenalties,
+    ScalarExpr, ScenarioSourceConfig, SlackConfig, Stage, StageRiskConfig, StageStateConfig,
+    Thermal, ThermalBlockBounds, VariableRef,
 };
 
 use crate::hydro_models::{EvaporationModelSet, ProductionModelSet};
@@ -36,10 +39,10 @@ use super::super::DeliveryRing;
 use super::super::entries::build_stage_inflow_coupling;
 use super::super::test_support::zero_hydro_penalties;
 use super::{
-    RangeCursor, StageLayout, StateSpace, TemplateBuildCtx, build_anticipated_decision_row_pos,
-    build_anticipated_fishing_row_pos, build_anticipated_slot_row_pos,
-    build_transit_bucket_row_pos, entity_flat, evaporation_slot_boundaries, fold_endpoint,
-    variable_ref_is_block_independent,
+    RangeCursor, StageLayout, StageProductionRole, StateSpace, TemplateBuildCtx,
+    build_anticipated_decision_row_pos, build_anticipated_fishing_row_pos,
+    build_anticipated_slot_row_pos, build_transit_bucket_row_pos, entity_flat,
+    evaporation_slot_boundaries, fold_endpoint, variable_ref_is_block_independent,
 };
 
 // ── RangeCursor ──────────────────────────────────────────────────────────
@@ -1308,6 +1311,152 @@ fn stage_layout_populates_fpha_local_index_inverse_map() {
         layout.fpha_local_index,
         vec![None, Some(FphaLocal::new(0)), None],
         "fpha_local_index inverts fpha_hydro_indices over n_h = 3"
+    );
+}
+
+/// `fpha_hydro_indices` and the role of [`FphaMixFixtures`]' FPHA plant at stage
+/// 0 under the given resolved plant limits.
+fn fpha_plant_membership(
+    max_turbined_m3s: f64,
+    max_generation_mw: f64,
+) -> (Vec<HydroSys>, StageProductionRole) {
+    let mut fixtures = FphaMixFixtures::new();
+    let hb = fixtures.base.bounds.hydro_block_base_mut(1, 0);
+    hb.max_turbined_m3s = max_turbined_m3s;
+    hb.max_generation_mw = max_generation_mw;
+    let ctx = fixtures.make_ctx();
+    let stage = minimal_stage();
+    let layout = StageLayout::new(&ctx, &stage, 0);
+    let role = layout.stage_production_role(ctx.production_models, 1, 0);
+    (layout.geometry.fpha_hydro_indices, role)
+}
+
+/// `derived:` the one block has no capacity at the plant term.
+#[test]
+fn fpha_plant_without_capacity_is_dormant() {
+    for (max_turbined_m3s, max_generation_mw) in [(50.0, 0.0), (0.0, 45.0), (0.0, 0.0)] {
+        let (fpha_hydro_indices, role) = fpha_plant_membership(max_turbined_m3s, max_generation_mw);
+        assert!(
+            fpha_hydro_indices.is_empty(),
+            "limits ({max_turbined_m3s}, {max_generation_mw}) leave no FPHA plant"
+        );
+        assert!(
+            matches!(role, StageProductionRole::Dormant),
+            "limits ({max_turbined_m3s}, {max_generation_mw}) give role {role:?}"
+        );
+    }
+}
+
+#[test]
+fn fpha_plant_with_capacity_keeps_its_fpha_index() {
+    let (fpha_hydro_indices, role) = fpha_plant_membership(50.0, 45.0);
+    assert_eq!(fpha_hydro_indices, vec![HydroSys::new(1)]);
+    assert!(
+        matches!(role, StageProductionRole::Fpha(local) if local == FphaLocal::new(0)),
+        "role {role:?}"
+    );
+}
+
+/// [`FphaMixFixtures`] over `n_blks` blocks, with the FPHA plant's generation
+/// maximum overridden to 0 at `dead_blocks`, and the penalty table
+/// `fill_stage_columns` reads.
+fn fpha_mix_with_dead_blocks(n_blks: usize, dead_blocks: &[usize]) -> FphaMixFixtures {
+    let mut fixtures = FphaMixFixtures::new();
+    fixtures.base.penalties = ResolvedPenalties::new(
+        &PenaltiesCountsSpec {
+            n_hydros: fixtures.base.hydros.len(),
+            n_buses: 0,
+            n_lines: 0,
+            n_ncs: 0,
+            n_stages: 1,
+        },
+        &PenaltiesDefaults {
+            hydro: zero_hydro_penalties(),
+            bus: BusStagePenalties { excess_cost: 0.0 },
+            line: LineStagePenalties { exchange_cost: 0.0 },
+            ncs: NcsStagePenalties {
+                curtailment_cost: 0.0,
+            },
+        },
+    );
+    fixtures
+        .base
+        .bounds
+        .set_block_overlay(ResolvedBlockBounds::new(&BlockBoundsCountsSpec {
+            n_hydros: fixtures.base.hydros.len(),
+            n_thermals: 0,
+            n_lines: 0,
+            n_pumping: 0,
+            n_contracts: 0,
+            n_stages: 1,
+            max_blocks: n_blks,
+        }));
+    for &blk in dead_blocks {
+        *fixtures
+            .base
+            .bounds
+            .block_overlay_mut()
+            .hydro_override_mut(1, 0, blk)
+            .expect("overlay cell must exist for a fixture-sized overlay") = HydroBlockOverride {
+            max_generation_mw: Some(0.0),
+            ..HydroBlockOverride::default()
+        };
+    }
+    fixtures
+}
+
+/// `derived:` block 0 fails the plant term (ḡ = 0) and block 1 passes it, so
+/// the plant has capacity somewhere in the stage; its one cell's share is 1 and
+/// the fixture's plane intercept is 0, so the live rows' upper bound is 0.
+#[test]
+fn fpha_plant_with_capacity_in_one_block_stays_fpha() {
+    use super::super::columns::fill_stage_columns;
+    use super::super::fpha_cursor::for_each_fpha_plane;
+    use super::super::rows::fill_stage_rows;
+
+    let stage = stage_with_blocks(BlockMode::Parallel, 2);
+    let mut fixtures = fpha_mix_with_dead_blocks(2, &[0]);
+    let ctx = fixtures.make_ctx();
+    let layout = StageLayout::new(&ctx, &stage, 0);
+    assert_eq!(
+        layout.geometry.fpha_hydro_indices,
+        vec![HydroSys::new(1)],
+        "capacity in block 1 keeps the plant FPHA for the whole stage"
+    );
+
+    let (row_lower, row_upper) = fill_stage_rows(&ctx, &stage, 0, &layout);
+    let (col_lower, col_upper, _objective) = fill_stage_columns(&ctx, &stage, 0, &layout);
+    let mut visited = 0;
+    for_each_fpha_plane(&ctx, 0, &layout, |visit, _plane| {
+        visited += 1;
+        let slack = layout.geometry.fpha_slack_col(visit.cell_local, visit.blk);
+        let (plane_upper, slack_upper) = if visit.blk.get() == 0 {
+            (f64::INFINITY, 0.0)
+        } else {
+            (0.0, f64::INFINITY)
+        };
+        assert_eq!(
+            (row_lower[visit.row], row_upper[visit.row]),
+            (f64::NEG_INFINITY, plane_upper),
+            "plane row of block {}",
+            visit.blk.get()
+        );
+        assert_eq!(
+            (col_lower[slack], col_upper[slack]),
+            (0.0, slack_upper),
+            "plane slack of block {}",
+            visit.blk.get()
+        );
+    });
+    assert_eq!(visited, 2, "one plane row per block");
+
+    let mut twin = fpha_mix_with_dead_blocks(2, &[0, 1]);
+    let ctx = twin.make_ctx();
+    let layout = StageLayout::new(&ctx, &stage, 0);
+    assert_eq!(
+        layout.geometry.fpha_hydro_indices,
+        Vec::<HydroSys>::new(),
+        "no capacity in any block drops the plant"
     );
 }
 
@@ -2723,8 +2872,9 @@ fn bounds_with_pumping(n_pumping: usize, n_stages: usize) -> ResolvedBounds {
     bounds_with_entities(0, n_pumping, n_stages)
 }
 
-/// Build an all-zero `ResolvedBounds` sized for `n_hydros` plants and
-/// `n_pumping` stations over `n_stages` stages.
+/// Build a `ResolvedBounds` sized for `n_hydros` plants and `n_pumping`
+/// stations over `n_stages` stages; the resolved plant limits mirror the entity
+/// limits `membership_hydro` declares, every other bound is zero.
 fn bounds_with_entities(n_hydros: usize, n_pumping: usize, n_stages: usize) -> ResolvedBounds {
     ResolvedBounds::new(
         &BoundsCountsSpec {
@@ -2743,7 +2893,11 @@ fn bounds_with_entities(n_hydros: usize, n_pumping: usize, n_stages: usize) -> R
                 filling_min_rate_m3s: 0.0,
                 water_withdrawal_m3s: 0.0,
             },
-            hydro_block: HydroBlockBounds::default(),
+            hydro_block: HydroBlockBounds {
+                max_turbined_m3s: 50.0,
+                max_generation_mw: 45.0,
+                ..HydroBlockBounds::default()
+            },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,

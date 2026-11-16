@@ -187,7 +187,7 @@ pub struct HydroSpec {
     pub downstream_id: Option<i32>,
     /// Minimum turbined flow.
     pub min_turbined_m3s: f64,
-    /// Maximum turbined flow (installed turbine capacity).
+    /// Declared maximum turbined flow.
     pub max_turbined_m3s: f64,
     /// Minimum electrical generation.
     pub min_generation_mw: f64,
