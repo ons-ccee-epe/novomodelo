@@ -12,12 +12,13 @@ use std::collections::BTreeMap;
 
 pub use novomodelo_core::test_support::{StageSpec, make_stage, norm_cdf, single_block};
 use novomodelo_core::{
-    Bus, DeficitSegment, EntityId, Hydro, InflowModel, NoiseMethod, SamplingScheme,
-    ScenarioSourceConfig, Stage, SystemBuilder,
+    EntityId, InflowModel, SamplingScheme, Stage,
     scenario::{CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile},
-    test_support::{BusSpec, HydroSpec, make_bus, make_hydro},
 };
 pub use novomodelo_stochastic::test_support::{InflowModelSpec, make_inflow_model};
+pub use novomodelo_stochastic::test_support::{
+    build_test_system, deficit_bus, method_stage, saa_stage, sized_hydro,
+};
 use novomodelo_stochastic::{
     ClassDimensions, ClassSchemes, ForwardNoiseTables, ForwardSampler, ForwardSamplerConfig,
     OpeningTree, OpeningTreeInputs, StochasticContext, build_stochastic_context,
@@ -108,67 +109,12 @@ pub fn correlated_correlation(entity_ids: &[i32], rho: f64) -> DecomposedCorrela
     .unwrap()
 }
 
-/// The shared [`Bus`]: one uncapped deficit segment at `1000.0`/`MWh`, zero excess cost.
-#[must_use]
-pub fn deficit_bus(id: i32) -> Bus {
-    make_bus(BusSpec {
-        id,
-        name: format!("Bus{id}"),
-        deficit_segments: vec![DeficitSegment {
-            depth_mw: None,
-            cost_per_mwh: 1000.0,
-        }],
-        ..Default::default()
-    })
-}
-
-/// The shared [`Hydro`]: `100.0` hm³ storage, `100.0` m³/s turbined capacity, `100.0` `MW`.
-#[must_use]
-pub fn sized_hydro(id: i32) -> Hydro {
-    make_hydro(HydroSpec {
-        id,
-        name: format!("H{id}"),
-        max_storage_hm3: 100.0,
-        max_turbined_m3s: 100.0,
-        max_generation_mw: 100.0,
-        ..Default::default()
-    })
-}
-
 /// The shared [`InflowModel`]: mean `100.0` m³/s, std `30.0` m³/s, no AR lags or annual term.
 #[must_use]
 pub fn default_inflow_model(hydro_id: i32, stage_id: i32) -> InflowModel {
     make_inflow_model(InflowModelSpec {
         hydro_id,
         stage_id,
-        ..Default::default()
-    })
-}
-
-/// The shared SAA [`Stage`]: one `"SINGLE"` 744-hour block, season `0`.
-#[must_use]
-pub fn saa_stage(index: usize, id: i32, branching_factor: usize) -> Stage {
-    method_stage(index, id, branching_factor, NoiseMethod::Saa)
-}
-
-/// The forward-sampler stage preset: one `"SINGLE"` 744-hour block, season 0,
-/// with the per-stage noise method supplied by the caller.
-#[must_use]
-pub fn method_stage(
-    index: usize,
-    id: i32,
-    branching_factor: usize,
-    noise_method: NoiseMethod,
-) -> Stage {
-    make_stage(StageSpec {
-        id,
-        index: Some(index),
-        season_id: Some(0),
-        blocks: single_block("SINGLE", 744.0),
-        scenario_config: ScenarioSourceConfig {
-            branching_factor,
-            noise_method,
-        },
         ..Default::default()
     })
 }
@@ -195,38 +141,6 @@ pub fn make_sampler_config<'a>(
         external_load_library: None,
         external_ncs_library: None,
     }
-}
-
-/// The two-hydro, three-stage forward-sampler fixture system for `methods`
-/// (one per stage) and `correlation`.
-#[must_use]
-pub fn build_test_system(
-    methods: &[NoiseMethod],
-    correlation: CorrelationModel,
-) -> novomodelo_core::System {
-    assert_eq!(methods.len(), 3, "must supply exactly 3 per-stage methods");
-    let hydros = vec![sized_hydro(1), sized_hydro(2)];
-    let stages = vec![
-        method_stage(0, 0, 5, methods[0]),
-        method_stage(1, 1, 5, methods[1]),
-        method_stage(2, 2, 5, methods[2]),
-    ];
-    let inflow_models = vec![
-        default_inflow_model(1, 0),
-        default_inflow_model(1, 1),
-        default_inflow_model(1, 2),
-        default_inflow_model(2, 0),
-        default_inflow_model(2, 1),
-        default_inflow_model(2, 2),
-    ];
-    SystemBuilder::new()
-        .buses(vec![deficit_bus(0)])
-        .hydros(hydros)
-        .stages(stages)
-        .inflow_models(inflow_models)
-        .correlation(correlation)
-        .build()
-        .unwrap()
 }
 
 /// The in-sample [`StochasticContext`] for `system`, base seed `42`.

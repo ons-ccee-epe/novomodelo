@@ -1,18 +1,145 @@
-//! Test-only fixture builders for this crate's `OpeningTree`, `SeasonMap` and
-//! `InflowModel` shapes and a WARN-message recorder, shared across this crate's
-//! unit and integration tests and reachable from downstream crates via the
-//! `test-support` feature. Compiles only under `cfg(test)` or that feature;
-//! must never be enabled in a production build.
+//! Test-only fixture builders for this crate's `OpeningTree` shape, the
+//! forward-sampler system preset, and a WARN-message recorder, shared across
+//! this crate's unit and integration tests and reachable from downstream crates
+//! via the `test-support` feature.
+//! Compiles only under `cfg(test)` or that feature; must never be enabled in a
+//! production build.
 
 use std::sync::{Arc, Mutex, Once};
 
-use chrono::{Months, NaiveDate};
-use novomodelo_core::scenario::AnnualComponent;
-use novomodelo_core::{EntityId, InflowModel, SeasonCycleType, SeasonDefinition, SeasonMap};
+use novomodelo_core::{
+    Bus, CorrelationModel, DeficitSegment, Hydro, NoiseMethod, ScenarioSourceConfig, Stage, System,
+    SystemBuilder,
+    test_support::{BusSpec, HydroSpec, StageSpec, make_bus, make_hydro, make_stage, single_block},
+};
 use tracing::subscriber::Interest;
 use tracing::{Event, Level, Metadata, Subscriber, span};
 
 use crate::OpeningTree;
+
+pub use novomodelo_core::test_support::{
+    InflowModelSpec, MonthlyLabels, make_inflow_model, monthly_quarterly_season_map,
+    monthly_season_map, quarterly_season_map, sparse_ring_season_map, weekly_season_map,
+    weeks_naming_june_then_months,
+};
+
+/// The shared [`Bus`]: one uncapped deficit segment at `1000.0`/`MWh`, zero excess cost.
+#[must_use]
+pub fn deficit_bus(id: i32) -> Bus {
+    make_bus(BusSpec {
+        id,
+        name: format!("Bus{id}"),
+        deficit_segments: vec![DeficitSegment {
+            depth_mw: None,
+            cost_per_mwh: 1000.0,
+        }],
+        ..Default::default()
+    })
+}
+
+/// The shared [`Hydro`]: `100.0` hm³ storage, `100.0` m³/s turbined capacity, `100.0` `MW`.
+#[must_use]
+pub fn sized_hydro(id: i32) -> Hydro {
+    make_hydro(HydroSpec {
+        id,
+        name: format!("H{id}"),
+        max_storage_hm3: 100.0,
+        max_turbined_m3s: 100.0,
+        max_generation_mw: 100.0,
+        ..Default::default()
+    })
+}
+
+/// The shared SAA [`Stage`]: one `"SINGLE"` 744-hour block, season `0`.
+#[must_use]
+pub fn saa_stage(index: usize, id: i32, branching_factor: usize) -> Stage {
+    method_stage(index, id, branching_factor, NoiseMethod::Saa)
+}
+
+/// The forward-sampler stage preset: one `"SINGLE"` 744-hour block, season 0,
+/// with the per-stage noise method supplied by the caller.
+#[must_use]
+pub fn method_stage(
+    index: usize,
+    id: i32,
+    branching_factor: usize,
+    noise_method: NoiseMethod,
+) -> Stage {
+    make_stage(StageSpec {
+        id,
+        index: Some(index),
+        season_id: Some(0),
+        blocks: single_block("SINGLE", 744.0),
+        scenario_config: ScenarioSourceConfig {
+            branching_factor,
+            noise_method,
+        },
+        ..Default::default()
+    })
+}
+
+/// The two-hydro, three-stage forward-sampler fixture system for `methods`
+/// (one per stage) and `correlation`.
+///
+/// # Panics
+///
+/// If `methods.len() != 3`, or if `SystemBuilder` rejects the preset system
+/// built with `correlation`.
+#[must_use]
+#[allow(clippy::expect_used)]
+// Rationale: the preset's own inputs are valid, so a build failure means the
+// caller's `correlation` is wrong, which is a test-authoring bug.
+pub fn build_test_system(methods: &[NoiseMethod], correlation: CorrelationModel) -> System {
+    use novomodelo_core::test_support::{InflowModelSpec, make_inflow_model};
+
+    assert_eq!(methods.len(), 3, "must supply exactly 3 per-stage methods");
+    let hydros = vec![sized_hydro(1), sized_hydro(2)];
+    let stages = vec![
+        method_stage(0, 0, 5, methods[0]),
+        method_stage(1, 1, 5, methods[1]),
+        method_stage(2, 2, 5, methods[2]),
+    ];
+    let inflow_models = vec![
+        make_inflow_model(InflowModelSpec {
+            hydro_id: 1,
+            stage_id: 0,
+            ..Default::default()
+        }),
+        make_inflow_model(InflowModelSpec {
+            hydro_id: 1,
+            stage_id: 1,
+            ..Default::default()
+        }),
+        make_inflow_model(InflowModelSpec {
+            hydro_id: 1,
+            stage_id: 2,
+            ..Default::default()
+        }),
+        make_inflow_model(InflowModelSpec {
+            hydro_id: 2,
+            stage_id: 0,
+            ..Default::default()
+        }),
+        make_inflow_model(InflowModelSpec {
+            hydro_id: 2,
+            stage_id: 1,
+            ..Default::default()
+        }),
+        make_inflow_model(InflowModelSpec {
+            hydro_id: 2,
+            stage_id: 2,
+            ..Default::default()
+        }),
+    ];
+    SystemBuilder::new()
+        .buses(vec![deficit_bus(0)])
+        .hydros(hydros)
+        .stages(stages)
+        .inflow_models(inflow_models)
+        .correlation(correlation)
+        .build()
+        .expect("the preset system passes SystemBuilder validation")
+}
 
 /// A uniformly-valued [`OpeningTree`] with `n_stages` stages, each holding
 /// `openings` openings of dimension `dim`: values `0.0, 1.0, 2.0, ..` filled
@@ -31,275 +158,6 @@ pub fn uniform_tree(n_stages: usize, openings: usize, dim: usize) -> OpeningTree
         .map(f64::from)
         .collect();
     OpeningTree::from_parts(data, vec![openings; n_stages], dim)
-}
-
-/// Which of the three live monthly-season label spellings
-/// [`monthly_season_map`] produces.
-#[derive(Debug, Clone, Copy)]
-pub enum MonthlyLabels {
-    /// `Month1`..`Month12`.
-    OneBased,
-    /// `Month0`..`Month11`.
-    ZeroBased,
-    /// `Month01`..`Month12`.
-    ZeroPadded,
-}
-
-/// A monthly [`SeasonMap`] (12 seasons, `id` 0..11, `month_start` 1..12,
-/// [`SeasonCycleType::Monthly`]), labelled per `labels`.
-#[must_use]
-#[allow(clippy::cast_possible_truncation)]
-// Rationale: `i` is bounded to 0..12 by the loop range, so the cast to
-// `u32` cannot truncate.
-pub fn monthly_season_map(labels: MonthlyLabels) -> SeasonMap {
-    let seasons: Vec<SeasonDefinition> = (0_usize..12)
-        .map(|i| SeasonDefinition {
-            id: i,
-            label: match labels {
-                MonthlyLabels::OneBased => format!("Month{}", i + 1),
-                MonthlyLabels::ZeroBased => format!("Month{i}"),
-                MonthlyLabels::ZeroPadded => format!("Month{:02}", i + 1),
-            },
-            month_start: (i as u32) + 1,
-            day_start: None,
-            month_end: None,
-            day_end: None,
-        })
-        .collect();
-    SeasonMap {
-        cycle_type: SeasonCycleType::Monthly,
-        seasons,
-    }
-}
-
-/// A quarterly [`SeasonMap`] (`Q1`..`Q4`, [`SeasonCycleType::Custom`]).
-#[must_use]
-pub fn quarterly_season_map() -> SeasonMap {
-    SeasonMap {
-        cycle_type: SeasonCycleType::Custom,
-        seasons: vec![
-            SeasonDefinition {
-                id: 0,
-                label: "Q1".to_string(),
-                month_start: 1,
-                day_start: Some(1),
-                month_end: Some(3),
-                day_end: Some(31),
-            },
-            SeasonDefinition {
-                id: 1,
-                label: "Q2".to_string(),
-                month_start: 4,
-                day_start: Some(1),
-                month_end: Some(6),
-                day_end: Some(30),
-            },
-            SeasonDefinition {
-                id: 2,
-                label: "Q3".to_string(),
-                month_start: 7,
-                day_start: Some(1),
-                month_end: Some(9),
-                day_end: Some(30),
-            },
-            SeasonDefinition {
-                id: 3,
-                label: "Q4".to_string(),
-                month_start: 10,
-                day_start: Some(1),
-                month_end: Some(12),
-                day_end: Some(31),
-            },
-        ],
-    }
-}
-
-/// A sparse-id ring [`SeasonMap`] (`Custom`): ids `0` Jan, `1` Feb, `2` Mar,
-/// `12` Apr-Jun, `13` Jul-Sep.
-#[must_use]
-pub fn sparse_ring_season_map() -> SeasonMap {
-    let def = |id: usize, month_start: u32, month_end: Option<u32>| SeasonDefinition {
-        id,
-        label: format!("S{id}"),
-        month_start,
-        day_start: None,
-        month_end,
-        day_end: None,
-    };
-    SeasonMap {
-        cycle_type: SeasonCycleType::Custom,
-        seasons: vec![
-            def(0, 1, None),
-            def(1, 2, None),
-            def(2, 3, None),
-            def(12, 4, Some(6)),
-            def(13, 7, Some(9)),
-        ],
-    }
-}
-
-/// D30's layered `Custom` [`SeasonMap`]: months 0–11, then Q3 = 12, Q4 = 13, Q1 = 14, Q2 = 15.
-#[must_use]
-pub fn monthly_quarterly_season_map() -> SeasonMap {
-    const MONTHS: [(&str, u32); 12] = [
-        ("January", 31),
-        ("February", 28),
-        ("March", 31),
-        ("April", 30),
-        ("May", 31),
-        ("June", 30),
-        ("July", 31),
-        ("August", 31),
-        ("September", 30),
-        ("October", 31),
-        ("November", 30),
-        ("December", 31),
-    ];
-    let def =
-        |id: usize, label: &str, month_start: u32, month_end: u32, day_end: u32| SeasonDefinition {
-            id,
-            label: label.to_string(),
-            month_start,
-            day_start: Some(1),
-            month_end: Some(month_end),
-            day_end: Some(day_end),
-        };
-    let months = MONTHS
-        .into_iter()
-        .zip(1_u32..)
-        .enumerate()
-        .map(|(id, ((label, day_end), month))| def(id, label, month, month, day_end));
-    let quarters = [
-        def(12, "Q3", 7, 9, 30),
-        def(13, "Q4", 10, 12, 31),
-        def(14, "Q1", 1, 3, 31),
-        def(15, "Q2", 4, 6, 30),
-    ];
-    SeasonMap {
-        cycle_type: SeasonCycleType::Custom,
-        seasons: months.chain(quarters).collect(),
-    }
-}
-
-/// A weekly [`SeasonMap`] (52 seasons, `Week1`..`Week52`,
-/// [`SeasonCycleType::Weekly`]).
-#[must_use]
-pub fn weekly_season_map() -> SeasonMap {
-    let seasons: Vec<SeasonDefinition> = (0..52u32)
-        .map(|i| SeasonDefinition {
-            id: i as usize,
-            label: format!("Week{}", i + 1),
-            month_start: 1,
-            day_start: None,
-            month_end: None,
-            day_end: None,
-        })
-        .collect();
-    SeasonMap {
-        cycle_type: SeasonCycleType::Weekly,
-        seasons,
-    }
-}
-
-/// `(start, end, season id)` of the 22 stages of a calendar that opens with five weeks from
-/// 2026-05-30 naming June (season 5) and one stage from 2026-07-04 to 2026-08-01 naming July, then
-/// runs on calendar months from 2026-08 through 2027-11 naming their own seasons: June 2027 is
-/// stage 16.
-///
-/// # Panics
-///
-/// Never; every date is a literal or the first of a month of 2026 or 2027.
-#[must_use]
-#[allow(clippy::expect_used)]
-// Rationale: the dates are valid by construction, so no call below can return `None` or `Err`.
-pub fn weeks_naming_june_then_months() -> Vec<(NaiveDate, NaiveDate, usize)> {
-    let date = |year: i32, month: u32, day: u32| {
-        NaiveDate::from_ymd_opt(year, month, day).expect("a valid calendar date")
-    };
-    let week_starts = [
-        date(2026, 5, 30),
-        date(2026, 6, 6),
-        date(2026, 6, 13),
-        date(2026, 6, 20),
-        date(2026, 6, 27),
-        date(2026, 7, 4),
-    ];
-    let weeks = week_starts
-        .windows(2)
-        .map(|week| (week[0], week[1], 5_usize));
-    let july = std::iter::once((date(2026, 7, 4), date(2026, 8, 1), 6_usize));
-    let months = (2026..=2027)
-        .flat_map(|year| (1..=12_u32).map(move |month| (year, month)))
-        .filter(|year_month| ((2026, 8)..=(2027, 11)).contains(year_month))
-        .map(|(year, month)| {
-            let start = date(year, month, 1);
-            let end = start
-                .checked_add_months(Months::new(1))
-                .expect("a month after a date of 2027");
-            (
-                start,
-                end,
-                usize::try_from(month - 1).expect("a month index"),
-            )
-        });
-    weeks.chain(july).chain(months).collect()
-}
-
-/// Fixture fields for [`make_inflow_model`].
-#[derive(Debug, Clone)]
-pub struct InflowModelSpec {
-    /// Hydro plant this model belongs to.
-    pub hydro_id: i32,
-    /// Declared study-stage id this model applies to.
-    pub stage_id: i32,
-    /// Seasonal mean inflow in m³/s.
-    pub mean_m3s: f64,
-    /// Seasonal standard deviation in m³/s.
-    pub std_m3s: f64,
-    /// AR lag coefficients, standardized by seasonal std.
-    pub ar_coefficients: Vec<f64>,
-    /// Ratio of residual standard deviation to seasonal standard deviation.
-    pub residual_std_ratio: f64,
-    /// Optional annual component; `None` selects the classical PAR(p) model.
-    pub annual: Option<AnnualComponent>,
-}
-
-impl Default for InflowModelSpec {
-    fn default() -> Self {
-        Self {
-            hydro_id: 0,
-            stage_id: 0,
-            mean_m3s: 100.0,
-            std_m3s: 30.0,
-            ar_coefficients: Vec::new(),
-            residual_std_ratio: 1.0,
-            annual: None,
-        }
-    }
-}
-
-/// Build an [`InflowModel`] from `spec`.
-#[must_use]
-pub fn make_inflow_model(
-    InflowModelSpec {
-        hydro_id,
-        stage_id,
-        mean_m3s,
-        std_m3s,
-        ar_coefficients,
-        residual_std_ratio,
-        annual,
-    }: InflowModelSpec,
-) -> InflowModel {
-    InflowModel {
-        hydro_id: EntityId(hydro_id),
-        stage_id,
-        mean_m3s,
-        std_m3s,
-        ar_coefficients,
-        residual_std_ratio,
-        annual,
-    }
 }
 
 /// Installs, once per test binary, a global subscriber that records nothing and
@@ -411,4 +269,29 @@ impl Subscriber for WarnRecorder {
     fn enter(&self, _span: &span::Id) {}
 
     fn exit(&self, _span: &span::Id) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use novomodelo_core::{CorrelationModel, EntityId, NoiseMethod};
+
+    use super::build_test_system;
+
+    #[test]
+    fn build_test_system_preset_shape() {
+        let system = build_test_system(&[NoiseMethod::Saa; 3], CorrelationModel::default());
+
+        let hydro_ids: Vec<EntityId> = system.hydros().iter().map(|h| h.id).collect();
+        assert_eq!(hydro_ids, [EntityId(1), EntityId(2)]);
+
+        let study_stages: Vec<_> = system.stages().iter().filter(|s| s.id >= 0).collect();
+        assert_eq!(study_stages.len(), 3);
+        assert!(
+            study_stages
+                .iter()
+                .all(|s| s.scenario_config.branching_factor == 5)
+        );
+
+        assert_eq!(system.inflow_models().len(), 6);
+    }
 }

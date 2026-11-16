@@ -1,4 +1,4 @@
-//! Default-bearing entity builders for `novomodelo-sddp` integration tests.
+//! Default-bearing entity builders for `novomodelo-sddp` tests.
 //!
 //! The one-place field-addition invariant: a new required field on a `novomodelo-core`
 //! entity is absorbed by editing only this module — add the field to the
@@ -7,12 +7,6 @@
 //! unchanged, overriding every field they depend on. Each `make_<entity>` entity
 //! literal omits `..`, so the compiler rejects a `Spec` that fails to mirror
 //! every non-identity field.
-
-#![allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::doc_markdown
-)]
 
 use chrono::NaiveDate;
 use novomodelo_core::EntityId;
@@ -26,10 +20,6 @@ use novomodelo_core::temporal::{
     Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig, StageStateConfig,
 };
 
-fn neutral_date() -> NaiveDate {
-    NaiveDate::from_ymd_opt(2024, 1, 1).expect("2024-01-01 is a valid date")
-}
-
 /// Non-identity fields of [`Stage`]; `index`/`id` are supplied positionally to
 /// [`make_stage`].
 #[derive(Clone)]
@@ -42,8 +32,11 @@ pub struct StageSpec {
     pub season_id: Option<usize>,
     /// Load blocks, sorted by index.
     pub blocks: Vec<Block>,
+    /// How the stage's blocks relate in time.
     pub block_mode: BlockMode,
+    /// State variables carried across the stage boundary.
     pub state_config: StageStateConfig,
+    /// Risk measure applied at the stage.
     pub risk_config: StageRiskConfig,
     /// Per-stage scenario source (branching factor and noise method).
     pub scenario_config: ScenarioSourceConfig,
@@ -52,8 +45,8 @@ pub struct StageSpec {
 impl Default for StageSpec {
     fn default() -> Self {
         Self {
-            start_date: neutral_date(),
-            end_date: NaiveDate::from_ymd_opt(2024, 2, 1).expect("2024-02-01 is a valid date"),
+            start_date: super::ymd(2024, 1, 1),
+            end_date: super::ymd(2024, 2, 1),
             season_id: None,
             blocks: vec![Block {
                 index: 0,
@@ -76,8 +69,9 @@ impl Default for StageSpec {
 
 /// Build a [`Stage`] with `index` as the positional identity.
 ///
-/// The stage `id` is set to `index as i32`; the fixtures this mirrors always use
+/// The stage `id` is `index` as an `i32`; the fixtures this mirrors always use
 /// `id == index`, so the identity has no spec default that could alias stages.
+#[must_use]
 pub fn make_stage(
     index: usize,
     StageSpec {
@@ -93,7 +87,7 @@ pub fn make_stage(
 ) -> Stage {
     Stage {
         index,
-        id: index as i32,
+        id: i32::try_from(index).unwrap_or(i32::MAX),
         start_date,
         end_date,
         season_id,
@@ -109,7 +103,9 @@ pub fn make_stage(
 /// [`make_hydro`].
 #[derive(Clone)]
 pub struct HydroSpec {
+    /// Plant name.
     pub name: String,
+    /// Date from which the plant is operational.
     pub operational_start_date: NaiveDate,
     /// Bus receiving this plant's generation.
     pub bus_id: EntityId,
@@ -123,16 +119,23 @@ pub struct HydroSpec {
     pub exit_stage_id: Option<i32>,
     /// Minimum operational storage — dead volume.
     pub min_storage_hm3: f64,
+    /// Maximum operational storage.
     pub max_storage_hm3: f64,
+    /// Minimum outflow (m³/s).
     pub min_outflow_m3s: f64,
     /// Maximum outflow; None = unbounded.
     pub max_outflow_m3s: Option<f64>,
+    /// Generation model.
     pub generation_model: HydroGenerationModel,
+    /// Minimum turbined flow (m³/s).
     pub min_turbined_m3s: f64,
+    /// Maximum turbined flow (m³/s).
     pub max_turbined_m3s: f64,
     /// Specific productivity (MW per (m³/s)·m); None = not supplied.
     pub specific_productivity_mw_per_m3s_per_m: Option<f64>,
+    /// Minimum generation (MW).
     pub min_generation_mw: f64,
+    /// Maximum generation (MW).
     pub max_generation_mw: f64,
     /// Turbine groups partitioning the plant's generation envelope.
     pub unit_groups: Vec<HydroUnitGroup>,
@@ -158,7 +161,7 @@ impl Default for HydroSpec {
     fn default() -> Self {
         Self {
             name: String::new(),
-            operational_start_date: neutral_date(),
+            operational_start_date: super::ymd(2024, 1, 1),
             bus_id: EntityId(0),
             downstream_id: None,
             travel_time_hours: None,
@@ -210,6 +213,7 @@ fn neutral_hydro_penalties() -> HydroPenalties {
 }
 
 /// Build a [`Hydro`] with `id` as the positional identity.
+#[must_use]
 pub fn make_hydro(
     id: EntityId,
     HydroSpec {
@@ -277,11 +281,13 @@ pub fn make_hydro(
 /// [`make_bus`].
 #[derive(Clone)]
 pub struct BusSpec {
+    /// Bus name.
     pub name: String,
+    /// Date from which the bus is operational.
     pub operational_start_date: NaiveDate,
     /// Deficit cost segments, ordered by ascending cost.
     pub deficit_segments: Vec<DeficitSegment>,
-    /// Cost per MWh for surplus generation absorption.
+    /// Cost per `MWh` for surplus generation absorption.
     pub excess_cost: f64,
 }
 
@@ -289,7 +295,7 @@ impl Default for BusSpec {
     fn default() -> Self {
         Self {
             name: String::new(),
-            operational_start_date: neutral_date(),
+            operational_start_date: super::ymd(2024, 1, 1),
             deficit_segments: vec![DeficitSegment {
                 depth_mw: None,
                 cost_per_mwh: 0.0,
@@ -300,6 +306,7 @@ impl Default for BusSpec {
 }
 
 /// Build a [`Bus`] with `id` as the positional identity.
+#[must_use]
 pub fn make_bus(
     id: EntityId,
     BusSpec {
@@ -322,7 +329,9 @@ pub fn make_bus(
 /// [`make_thermal`].
 #[derive(Clone)]
 pub struct ThermalSpec {
+    /// Plant name.
     pub name: String,
+    /// Date from which the plant is operational.
     pub operational_start_date: NaiveDate,
     /// Bus receiving this plant's generation.
     pub bus_id: EntityId,
@@ -330,9 +339,11 @@ pub struct ThermalSpec {
     pub entry_stage_id: Option<i32>,
     /// Decommissioning stage; None = never retired.
     pub exit_stage_id: Option<i32>,
-    /// Marginal cost of generation ($/MWh).
+    /// Marginal cost of generation ($/`MWh`).
     pub cost_per_mwh: f64,
+    /// Minimum generation (MW).
     pub min_generation_mw: f64,
+    /// Maximum generation (MW).
     pub max_generation_mw: f64,
     /// Anticipated dispatch configuration; None = no anticipation lag.
     pub anticipated_config: Option<AnticipatedConfig>,
@@ -342,7 +353,7 @@ impl Default for ThermalSpec {
     fn default() -> Self {
         Self {
             name: String::new(),
-            operational_start_date: neutral_date(),
+            operational_start_date: super::ymd(2024, 1, 1),
             bus_id: EntityId(0),
             entry_stage_id: None,
             exit_stage_id: None,
@@ -355,6 +366,7 @@ impl Default for ThermalSpec {
 }
 
 /// Build a [`Thermal`] with `id` as the positional identity.
+#[must_use]
 pub fn make_thermal(
     id: EntityId,
     ThermalSpec {

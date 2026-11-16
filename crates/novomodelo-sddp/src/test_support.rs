@@ -116,11 +116,15 @@ use novomodelo_solver::{
 };
 
 pub mod bound_recording;
+pub mod builders;
 pub mod decks;
 pub mod expander;
 pub mod solve_sites;
+pub mod table_resolution;
 pub mod template_structure;
 pub mod unmigrated_inputs;
+
+pub use table_resolution::{build_with_resolved_tables, resolved_tables};
 
 pub(crate) mod ctx_fixture;
 use bound_recording::BoundRecordingSolver;
