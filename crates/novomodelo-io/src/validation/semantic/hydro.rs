@@ -141,7 +141,7 @@ pub(super) fn check_hydro_bounds(data: &ParsedData, ctx: &mut ValidationContext)
 
 /// Rule 46: rejects a positive `min_diversion_m3s` or `max_diversion_m3s` override
 /// on a hydro that declares no `diversion` channel. Without a channel
-/// [`resolve_bounds`](crate::resolution::resolve_bounds) seeds the diversion column
+/// [`resolve_bounds`] seeds the diversion column
 /// at `[0, 0]`, and an override replaces that seed: a positive floor is infeasible,
 /// and a positive ceiling diverts water that no plant receives.
 ///
