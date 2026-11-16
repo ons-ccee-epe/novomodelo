@@ -941,15 +941,17 @@ mod tests {
     /// and miss a violation.
     fn two_hydro_capacity_study() -> Vec<Hydro> {
         vec![
-            Hydro {
-                max_turbined_m3s: 600.0,
-                max_generation_mw: 400.0,
-                ..make_hydro(1, None)
+            {
+                let mut hydro = make_hydro(1, None);
+                hydro.max_turbined_m3s = 600.0;
+                hydro.max_generation_mw = 400.0;
+                hydro
             },
-            Hydro {
-                max_turbined_m3s: 1000.0,
-                max_generation_mw: 700.0,
-                ..make_hydro(2, None)
+            {
+                let mut hydro = make_hydro(2, None);
+                hydro.max_turbined_m3s = 1000.0;
+                hydro.max_generation_mw = 700.0;
+                hydro
             },
         ]
     }
@@ -2125,10 +2127,8 @@ mod tests {
 
     #[test]
     fn test_block_row_rejected_on_anticipated_thermal_only() {
-        let anticipated_thermal = Thermal {
-            anticipated_config: Some(AnticipatedConfig::LeadStages(1)),
-            ..make_thermal(1, 0.0, 500.0)
-        };
+        let mut anticipated_thermal = make_thermal(1, 0.0, 500.0);
+        anticipated_thermal.anticipated_config = Some(AnticipatedConfig::LeadStages(1));
         let plain_thermal = make_thermal(2, 0.0, 500.0);
         let mut data = make_data(
             vec![],
@@ -2435,15 +2435,17 @@ mod tests {
     /// both violations below.
     fn two_reservoir_study() -> Vec<Hydro> {
         vec![
-            Hydro {
-                min_storage_hm3: 50.0,
-                max_storage_hm3: 400.0,
-                ..make_hydro(1, None)
+            {
+                let mut hydro = make_hydro(1, None);
+                hydro.min_storage_hm3 = 50.0;
+                hydro.max_storage_hm3 = 400.0;
+                hydro
             },
-            Hydro {
-                min_storage_hm3: 10.0,
-                max_storage_hm3: 900.0,
-                ..make_hydro(2, None)
+            {
+                let mut hydro = make_hydro(2, None);
+                hydro.min_storage_hm3 = 10.0;
+                hydro.max_storage_hm3 = 900.0;
+                hydro
             },
         ]
     }
@@ -2554,24 +2556,26 @@ mod tests {
     /// matched by its groups' `min_*`, so rule 44 stays silent too.
     fn two_group_capacity_study() -> Vec<Hydro> {
         vec![
-            Hydro {
-                min_turbined_m3s: 0.0,
-                max_turbined_m3s: 900.0,
-                min_generation_mw: 0.0,
-                max_generation_mw: 700.0,
-                unit_groups: vec![
+            {
+                let mut hydro = make_hydro(1, None);
+                hydro.min_turbined_m3s = 0.0;
+                hydro.max_turbined_m3s = 900.0;
+                hydro.min_generation_mw = 0.0;
+                hydro.max_generation_mw = 700.0;
+                hydro.unit_groups = vec![
                     make_unit_group(2, 1, 0.0, 400.0, 0.0, 600.0),
                     make_unit_group(5, 1, 0.0, 300.0, 0.0, 300.0),
-                ],
-                ..make_hydro(1, None)
+                ];
+                hydro
             },
-            Hydro {
-                min_turbined_m3s: 0.0,
-                max_turbined_m3s: 1200.0,
-                min_generation_mw: 0.0,
-                max_generation_mw: 1000.0,
-                unit_groups: vec![make_unit_group(3, 2, 0.0, 1000.0, 0.0, 1200.0)],
-                ..make_hydro(2, None)
+            {
+                let mut hydro = make_hydro(2, None);
+                hydro.min_turbined_m3s = 0.0;
+                hydro.max_turbined_m3s = 1200.0;
+                hydro.min_generation_mw = 0.0;
+                hydro.max_generation_mw = 1000.0;
+                hydro.unit_groups = vec![make_unit_group(3, 2, 0.0, 1000.0, 0.0, 1200.0)];
+                hydro
             },
         ]
     }

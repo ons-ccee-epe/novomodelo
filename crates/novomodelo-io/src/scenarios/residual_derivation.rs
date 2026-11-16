@@ -258,6 +258,7 @@ pub(crate) fn season_dense_index(
 )]
 mod tests {
     use super::*;
+    use crate::test_support::make_stage;
     use novomodelo_core::scenario::AnnualComponent;
 
     fn model(
@@ -282,33 +283,18 @@ mod tests {
     /// Minimal `Stage` carrying only `id`/`season_id` as load-bearing fields —
     /// mirrors `closure.rs`'s `par_a_stage` fixture construction.
     fn stage_with_season(index: usize, id: i32, season_id: usize) -> Stage {
-        use chrono::NaiveDate;
-        use novomodelo_core::temporal::{
-            Block, BlockMode, NoiseMethod, ScenarioSourceConfig, StageRiskConfig, StageStateConfig,
-        };
+        use novomodelo_core::temporal::Block;
 
-        Stage {
-            index,
-            id,
-            start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            end_date: NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-            season_id: Some(season_id),
-            blocks: vec![Block {
-                index: 0,
-                name: "SINGLE".to_string(),
-                duration_hours: 744.0,
-            }],
-            block_mode: BlockMode::Parallel,
-            state_config: StageStateConfig {
-                storage: true,
-                inflow_lags: false,
-            },
-            risk_config: StageRiskConfig::Expectation,
-            scenario_config: ScenarioSourceConfig {
-                branching_factor: 10,
-                noise_method: NoiseMethod::Saa,
-            },
-        }
+        let mut stage = make_stage(id);
+        stage.index = index;
+        stage.season_id = Some(season_id);
+        stage.blocks = vec![Block {
+            index: 0,
+            name: "SINGLE".to_string(),
+            duration_hours: 744.0,
+        }];
+        stage.scenario_config.branching_factor = 10;
+        stage
     }
 
     /// A 2-season `Weekly` `SeasonMap` with sparse, non-contiguous ids `21`/`26`
@@ -628,7 +614,7 @@ mod tests {
     #[test]
     fn derived_residual_ratios_follow_the_calendar_cycle_when_season_ids_are_out_of_order() {
         const OUT_OF_ORDER_IDS: [usize; 4] = [2, 0, 3, 1];
-        let calendar_ordered = novomodelo_stochastic::test_support::quarterly_season_map();
+        let calendar_ordered = novomodelo_core::test_support::quarterly_season_map();
         let mut out_of_order = calendar_ordered.clone();
         for (def, id) in out_of_order.seasons.iter_mut().zip(OUT_OF_ORDER_IDS) {
             def.id = id;

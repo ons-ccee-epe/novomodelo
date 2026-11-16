@@ -11,8 +11,9 @@
 )]
 
 use super::*;
+use crate::test_support::{date, make_bus_with_deficit, penalties_all};
 use novomodelo_core::scenario::{CorrelationModel, InflowModel};
-use novomodelo_core::{EntityId, Hydro, HydroPenalties, SeasonMap, Stage, SystemBuilder};
+use novomodelo_core::{Bus, EntityId, Hydro, SeasonMap, Stage, SystemBuilder};
 use novomodelo_stochastic::PrecomputedPar;
 
 fn minimal_system_with_inflow_models(models: Vec<InflowModel>) -> System {
@@ -22,23 +23,17 @@ fn minimal_system_with_inflow_models(models: Vec<InflowModel>) -> System {
         .expect("valid system")
 }
 
+fn infinite_deficit_bus(id: i32, cost_per_mwh: f64) -> Bus {
+    let mut bus = make_bus_with_deficit(id, cost_per_mwh);
+    bus.name = "B1".to_string();
+    bus.deficit_segments[0].depth_mw = Some(f64::INFINITY);
+    bus.excess_cost = 0.0;
+    bus
+}
+
 #[test]
 fn test_with_scenario_models_replaces_fields() {
-    use novomodelo_core::{
-        Bus, DeficitSegment,
-        scenario::{CorrelationModel, InflowModel},
-    };
-
-    let bus = Bus {
-        id: EntityId(1),
-        name: "B1".to_string(),
-        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        deficit_segments: vec![DeficitSegment {
-            depth_mw: Some(f64::INFINITY),
-            cost_per_mwh: 1000.0,
-        }],
-        excess_cost: 0.0,
-    };
+    let bus = infinite_deficit_bus(1, 1000.0);
 
     let replaced_model = InflowModel {
         hydro_id: EntityId(1),
@@ -420,20 +415,8 @@ fn build_system_with_user_stats(n_years: usize) -> System {
 
 #[allow(clippy::cast_possible_wrap)]
 fn build_system_with_user_std(n_years: usize, std_m3s: f64) -> System {
-    use novomodelo_core::scenario::InflowModel;
-    use novomodelo_core::{Bus, DeficitSegment, EntityId, SystemBuilder};
-
     let hydro_id = EntityId(1);
-    let bus = Bus {
-        id: EntityId(10),
-        name: "B1".to_string(),
-        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        deficit_segments: vec![DeficitSegment {
-            depth_mw: Some(f64::INFINITY),
-            cost_per_mwh: 3000.0,
-        }],
-        excess_cost: 0.0,
-    };
+    let bus = infinite_deficit_bus(10, 3000.0);
 
     let ref_year = 1970_i32;
     let mut stages = Vec::with_capacity(n_years * 2);
@@ -872,23 +855,11 @@ fn test_partial_estimation_returns_report() {
 
 /// Partial-year system (seasons 8-11) with `SeasonMap` and user stats (exercises prestudy synthesis).
 fn build_partial_year_system_with_user_stats() -> System {
-    use novomodelo_core::entities::hydro::HydroGenerationModel;
-    use novomodelo_core::scenario::InflowModel;
-    use novomodelo_core::{
-        Bus, DeficitSegment, EntityId, HorizonGraph, PolicyGraphType, SystemBuilder,
-    };
+    use novomodelo_core::{HorizonGraph, PolicyGraphType};
 
     let hydro_id = EntityId(1);
-    let bus = Bus {
-        id: EntityId(10),
-        name: "B1".to_string(),
-        operational_start_date: NaiveDate::from_ymd_opt(2000, 1, 1).unwrap(),
-        deficit_segments: vec![DeficitSegment {
-            depth_mw: Some(f64::INFINITY),
-            cost_per_mwh: 3000.0,
-        }],
-        excess_cost: 0.0,
-    };
+    let mut bus = infinite_deficit_bus(10, 3000.0);
+    bus.operational_start_date = date(2000, 1, 1);
 
     let stages = partial_year_stages(8, 4, 2000);
 
@@ -905,52 +876,14 @@ fn build_partial_year_system_with_user_stats() -> System {
         })
         .collect();
 
-    let mut hydro = Hydro {
-        unit_groups: Vec::new(),
-        id: hydro_id,
-        name: "H1".to_string(),
-        operational_start_date: NaiveDate::from_ymd_opt(2000, 1, 1).unwrap(),
-        downstream_id: None,
-        travel_time_hours: None,
-        entry_stage_id: None,
-        exit_stage_id: None,
-        min_storage_hm3: 0.0,
-        max_storage_hm3: 5000.0,
-        min_outflow_m3s: 0.0,
-        max_outflow_m3s: None,
-        generation_model: HydroGenerationModel::ConstantProductivity,
-        min_turbined_m3s: 0.0,
-        max_turbined_m3s: 1000.0,
-        specific_productivity_mw_per_m3s_per_m: None,
-        min_generation_mw: 0.0,
-        max_generation_mw: 900.0,
-        tailrace: None,
-        hydraulic_losses: None,
-        efficiency: None,
-        evaporation_coefficients_mm: None,
-        evaporation_reference_volumes_hm3: None,
-        diversion: None,
-        filling: None,
-        penalties: HydroPenalties {
-            spillage_cost: 0.0,
-            diversion_cost: 0.0,
-            turbined_cost: 0.0,
-            storage_violation_below_cost: 1000.0,
-            filling_target_violation_cost: 0.0,
-            turbined_violation_below_cost: 0.0,
-            outflow_violation_below_cost: 0.0,
-            outflow_violation_above_cost: 0.0,
-            generation_violation_below_cost: 0.0,
-            fpha_violation_cost: 0.0,
-            evaporation_violation_cost: 0.0,
-            water_withdrawal_violation_cost: 0.0,
-            water_withdrawal_violation_pos_cost: 0.0,
-            water_withdrawal_violation_neg_cost: 0.0,
-            evaporation_violation_pos_cost: 0.0,
-            evaporation_violation_neg_cost: 0.0,
-            inflow_nonnegativity_cost: 1000.0,
-        },
-    };
+    let mut hydro = crate::test_support::make_hydro(hydro_id.0, None);
+    hydro.name = "H1".to_string();
+    hydro.operational_start_date = date(2000, 1, 1);
+    hydro.max_storage_hm3 = 5000.0;
+    hydro.max_turbined_m3s = 1000.0;
+    hydro.max_generation_mw = 900.0;
+    hydro.penalties = penalties_all(0.0);
+    hydro.penalties.storage_violation_below_cost = 1000.0;
     hydro.declare_mirror_unit_group(EntityId(10));
 
     let policy_graph = HorizonGraph {
@@ -1136,33 +1069,16 @@ fn test_estimation_report_empty_for_pacf() {
 }
 
 fn make_expansion_stage(index: usize, id: i32, season_id: Option<usize>) -> Stage {
-    use chrono::NaiveDate;
-    use novomodelo_core::temporal::{
-        Block, BlockMode, NoiseMethod, ScenarioSourceConfig, StageRiskConfig, StageStateConfig,
-    };
-
-    Stage {
-        index,
-        id,
-        start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        end_date: NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-        season_id,
-        blocks: vec![Block {
-            index: 0,
-            name: "SINGLE".to_string(),
-            duration_hours: 744.0,
-        }],
-        block_mode: BlockMode::Parallel,
-        state_config: StageStateConfig {
-            storage: true,
-            inflow_lags: false,
-        },
-        risk_config: StageRiskConfig::Expectation,
-        scenario_config: ScenarioSourceConfig {
-            branching_factor: 10,
-            noise_method: NoiseMethod::Saa,
-        },
-    }
+    let mut stage = crate::test_support::make_stage(id);
+    stage.index = index;
+    stage.season_id = season_id;
+    stage.blocks = vec![Block {
+        index: 0,
+        name: "SINGLE".to_string(),
+        duration_hours: 744.0,
+    }];
+    stage.scenario_config.branching_factor = 10;
+    stage
 }
 
 #[test]
@@ -1399,11 +1315,6 @@ fn make_two_season_stage(
     year: i32,
     first_half: bool,
 ) -> Stage {
-    use chrono::NaiveDate;
-    use novomodelo_core::temporal::{
-        Block, BlockMode, NoiseMethod, ScenarioSourceConfig, StageRiskConfig, StageStateConfig,
-    };
-
     let (start_date, end_date) = if first_half {
         (
             NaiveDate::from_ymd_opt(year, 1, 1).unwrap(),
@@ -1416,28 +1327,18 @@ fn make_two_season_stage(
         )
     };
 
-    Stage {
-        index,
-        id,
-        start_date,
-        end_date,
-        season_id: Some(season_id),
-        blocks: vec![Block {
-            index: 0,
-            name: "SINGLE".to_string(),
-            duration_hours: 4380.0,
-        }],
-        block_mode: BlockMode::Parallel,
-        state_config: StageStateConfig {
-            storage: false,
-            inflow_lags: false,
-        },
-        risk_config: StageRiskConfig::Expectation,
-        scenario_config: ScenarioSourceConfig {
-            branching_factor: 1,
-            noise_method: NoiseMethod::Saa,
-        },
-    }
+    let mut stage = crate::test_support::make_stage(id);
+    stage.index = index;
+    stage.start_date = start_date;
+    stage.end_date = end_date;
+    stage.season_id = Some(season_id);
+    stage.blocks = vec![Block {
+        index: 0,
+        name: "SINGLE".to_string(),
+        duration_hours: 4380.0,
+    }];
+    stage.state_config.storage = false;
+    stage
 }
 
 /// Writes one AR(1) lag-1 row per stage.
@@ -1493,19 +1394,8 @@ fn build_system_empty_models_with_history(
     n_years: usize,
     inflow_history: Vec<InflowHistoryRow>,
 ) -> System {
-    use novomodelo_core::{Bus, DeficitSegment, EntityId, SystemBuilder};
-
     let hydro_id = EntityId(1);
-    let bus = Bus {
-        id: EntityId(10),
-        name: "B1".to_string(),
-        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        deficit_segments: vec![DeficitSegment {
-            depth_mw: Some(f64::INFINITY),
-            cost_per_mwh: 3000.0,
-        }],
-        excess_cost: 0.0,
-    };
+    let bus = infinite_deficit_bus(10, 3000.0);
 
     let ref_year = 1970_i32;
     let mut stages = Vec::with_capacity(n_years * 2);
@@ -1759,53 +1649,13 @@ fn test_user_ar_estimation_returns_user_provided_report() {
 }
 
 fn make_hydro(hydro_id: EntityId, bus_id: EntityId) -> Hydro {
-    use novomodelo_core::entities::hydro::HydroGenerationModel;
-    let mut hydro = Hydro {
-        unit_groups: Vec::new(),
-        id: hydro_id,
-        name: format!("H{}", hydro_id.0),
-        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        downstream_id: None,
-        travel_time_hours: None,
-        entry_stage_id: None,
-        exit_stage_id: None,
-        min_storage_hm3: 0.0,
-        max_storage_hm3: 5000.0,
-        min_outflow_m3s: 0.0,
-        max_outflow_m3s: None,
-        generation_model: HydroGenerationModel::ConstantProductivity,
-        min_turbined_m3s: 0.0,
-        max_turbined_m3s: 1000.0,
-        specific_productivity_mw_per_m3s_per_m: None,
-        min_generation_mw: 0.0,
-        max_generation_mw: 900.0,
-        tailrace: None,
-        hydraulic_losses: None,
-        efficiency: None,
-        evaporation_coefficients_mm: None,
-        evaporation_reference_volumes_hm3: None,
-        diversion: None,
-        filling: None,
-        penalties: HydroPenalties {
-            spillage_cost: 0.0,
-            diversion_cost: 0.0,
-            turbined_cost: 0.0,
-            storage_violation_below_cost: 1000.0,
-            filling_target_violation_cost: 0.0,
-            turbined_violation_below_cost: 0.0,
-            outflow_violation_below_cost: 0.0,
-            outflow_violation_above_cost: 0.0,
-            generation_violation_below_cost: 0.0,
-            fpha_violation_cost: 0.0,
-            evaporation_violation_cost: 0.0,
-            water_withdrawal_violation_cost: 0.0,
-            water_withdrawal_violation_pos_cost: 0.0,
-            water_withdrawal_violation_neg_cost: 0.0,
-            evaporation_violation_pos_cost: 0.0,
-            evaporation_violation_neg_cost: 0.0,
-            inflow_nonnegativity_cost: 1000.0,
-        },
-    };
+    let mut hydro = crate::test_support::make_hydro(hydro_id.0, None);
+    hydro.name = format!("H{}", hydro_id.0);
+    hydro.max_storage_hm3 = 5000.0;
+    hydro.max_turbined_m3s = 1000.0;
+    hydro.max_generation_mw = 900.0;
+    hydro.penalties = penalties_all(0.0);
+    hydro.penalties.storage_violation_below_cost = 1000.0;
     hydro.declare_mirror_unit_group(bus_id);
     hydro
 }
@@ -1817,20 +1667,8 @@ fn build_two_hydro_system_selective_stats(
     all_hydro_ids: &[EntityId],
     stats_hydro_ids: &[EntityId],
 ) -> System {
-    use novomodelo_core::scenario::InflowModel;
-    use novomodelo_core::{Bus, DeficitSegment, SystemBuilder};
-
     let bus_id = EntityId(10);
-    let bus = Bus {
-        id: bus_id,
-        name: "B1".to_string(),
-        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        deficit_segments: vec![DeficitSegment {
-            depth_mw: Some(f64::INFINITY),
-            cost_per_mwh: 3000.0,
-        }],
-        excess_cost: 0.0,
-    };
+    let bus = infinite_deficit_bus(bus_id.0, 3000.0);
 
     let ref_year = 1970_i32;
     let mut stages = Vec::with_capacity(n_years * 2);
@@ -2117,8 +1955,6 @@ fn collect_std_ratio_warnings(
     user_stds: &[f64],
     est_stds: &[f64],
 ) -> Vec<StdRatioDivergence> {
-    use novomodelo_core::scenario::InflowModel;
-
     assert_eq!(
         user_stds.len(),
         est_stds.len(),
@@ -2223,9 +2059,7 @@ fn test_std_ratio_divergence_wraps_last_to_first() {
 }
 
 use chrono::NaiveDate;
-use novomodelo_core::temporal::{
-    Block, BlockMode, NoiseMethod, ScenarioSourceConfig, StageRiskConfig, StageStateConfig,
-};
+use novomodelo_core::temporal::Block;
 
 /// 12-season monthly stages over `n_years` from year 2000; season_id cycles 0..12.
 fn make_monthly_stages_for_annual(n_years: usize) -> Vec<Stage> {
@@ -2236,28 +2070,17 @@ fn make_monthly_stages_for_annual(n_years: usize) -> Vec<Stage> {
             let y = 2000 + year as i32;
             let m = month as u32 + 1;
             let (ey, em) = if m == 12 { (y + 1, 1u32) } else { (y, m + 1) };
-            stages.push(Stage {
-                index: idx,
-                id: idx as i32,
-                start_date: NaiveDate::from_ymd_opt(y, m, 1).unwrap(),
-                end_date: NaiveDate::from_ymd_opt(ey, em, 1).unwrap(),
-                season_id: Some(month),
-                blocks: vec![Block {
-                    index: 0,
-                    name: "SINGLE".to_string(),
-                    duration_hours: 744.0,
-                }],
-                block_mode: BlockMode::Parallel,
-                state_config: StageStateConfig {
-                    storage: true,
-                    inflow_lags: false,
-                },
-                risk_config: StageRiskConfig::Expectation,
-                scenario_config: ScenarioSourceConfig {
-                    branching_factor: 1,
-                    noise_method: NoiseMethod::Saa,
-                },
-            });
+            let mut stage = crate::test_support::make_stage(idx as i32);
+            stage.index = idx;
+            stage.start_date = NaiveDate::from_ymd_opt(y, m, 1).unwrap();
+            stage.end_date = NaiveDate::from_ymd_opt(ey, em, 1).unwrap();
+            stage.season_id = Some(month);
+            stage.blocks = vec![Block {
+                index: 0,
+                name: "SINGLE".to_string(),
+                duration_hours: 744.0,
+            }];
+            stages.push(stage);
             idx += 1;
         }
     }
@@ -2292,18 +2115,8 @@ fn synthetic_monthly_obs(
 /// Two-hydro 12-season monthly system (empty inflow_models for FullEstimation path).
 #[allow(clippy::cast_possible_wrap)]
 fn build_two_hydro_monthly_system(n_years: usize) -> System {
-    use novomodelo_core::{Bus, DeficitSegment, SystemBuilder};
     let bus_id = EntityId(10);
-    let bus = Bus {
-        id: bus_id,
-        name: "B1".to_string(),
-        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        deficit_segments: vec![DeficitSegment {
-            depth_mw: Some(f64::INFINITY),
-            cost_per_mwh: 3000.0,
-        }],
-        excess_cost: 0.0,
-    };
+    let bus = infinite_deficit_bus(bus_id.0, 3000.0);
     let h1 = EntityId(1);
     let h2 = EntityId(2);
     let stages = make_monthly_stages_for_annual(n_years);
@@ -2540,28 +2353,17 @@ fn partial_year_stages(first_season: usize, n: usize, start_year: i32) -> Vec<St
             } else {
                 (start_year, m + 1)
             };
-            Stage {
-                index: k,
-                id: i32::try_from(k).unwrap(),
-                start_date: NaiveDate::from_ymd_opt(start_year, m, 1).unwrap(),
-                end_date: NaiveDate::from_ymd_opt(ey, em, 1).unwrap(),
-                season_id: Some(season),
-                blocks: vec![Block {
-                    index: 0,
-                    name: "SINGLE".to_string(),
-                    duration_hours: 744.0,
-                }],
-                block_mode: BlockMode::Parallel,
-                state_config: StageStateConfig {
-                    storage: true,
-                    inflow_lags: false,
-                },
-                risk_config: StageRiskConfig::Expectation,
-                scenario_config: ScenarioSourceConfig {
-                    branching_factor: 1,
-                    noise_method: NoiseMethod::Saa,
-                },
-            }
+            let mut stage = crate::test_support::make_stage(i32::try_from(k).unwrap());
+            stage.index = k;
+            stage.start_date = NaiveDate::from_ymd_opt(start_year, m, 1).unwrap();
+            stage.end_date = NaiveDate::from_ymd_opt(ey, em, 1).unwrap();
+            stage.season_id = Some(season);
+            stage.blocks = vec![Block {
+                index: 0,
+                name: "SINGLE".to_string(),
+                duration_hours: 744.0,
+            }];
+            stage
         })
         .collect()
 }
@@ -2705,22 +2507,25 @@ fn resolve_model_stage_seasons_recovers_synthesized_prestudy_gap_seasons() {
 }
 
 fn dated_stage(id: i32, start_date: NaiveDate, end_date: NaiveDate, season: usize) -> Stage {
-    novomodelo_core::test_support::make_stage(novomodelo_core::test_support::StageSpec {
-        id,
-        start_date,
-        end_date,
-        season_id: Some(season),
-        ..Default::default()
-    })
+    let mut stage = crate::test_support::make_stage(id);
+    stage.index = usize::try_from(id.max(0)).unwrap_or(0);
+    stage.start_date = start_date;
+    stage.end_date = end_date;
+    stage.season_id = Some(season);
+    stage.blocks = vec![Block {
+        index: 0,
+        name: "B0".to_string(),
+        duration_hours: 744.0,
+    }];
+    stage
 }
 
 #[test]
 fn lag_seasons_agree_across_the_calendar_walk_estimation_and_precompute_on_a_sparse_custom_map() {
-    use novomodelo_core::test_support::{date, f64_bits_eq};
-    use novomodelo_stochastic::season_cast::StitchedSeasonMap;
-    use novomodelo_stochastic::test_support::{
-        InflowModelSpec, make_inflow_model, sparse_ring_season_map,
+    use novomodelo_core::test_support::{
+        InflowModelSpec, f64_bits_eq, make_inflow_model, sparse_ring_season_map,
     };
+    use novomodelo_stochastic::season_cast::StitchedSeasonMap;
 
     let ring = sparse_ring_season_map();
     let stages = vec![
@@ -2771,8 +2576,7 @@ fn lag_seasons_agree_across_the_calendar_walk_estimation_and_precompute_on_a_spa
 
 #[test]
 fn pre_study_lags_fold_iso_week_53_on_a_weekly_map() {
-    use novomodelo_core::test_support::date;
-    use novomodelo_stochastic::test_support::weekly_season_map;
+    use novomodelo_core::test_support::weekly_season_map;
 
     let weekly = weekly_season_map();
     let stages = vec![
@@ -2798,8 +2602,6 @@ fn pre_study_lags_fold_iso_week_53_on_a_weekly_map() {
 
 #[test]
 fn every_synthesized_lag_stage_carries_statistics_when_two_lags_share_a_season() {
-    use novomodelo_core::test_support::date;
-
     let prestudy = vec![
         dated_stage(-1, date(2020, 12, 4), date(2021, 1, 4), 51),
         dated_stage(-2, date(2020, 11, 4), date(2020, 12, 4), 51),
@@ -2965,21 +2767,10 @@ fn build_monthly_system_with_conditioning(
     n_years: usize,
     recent_observations: Vec<novomodelo_core::RecentObservation>,
 ) -> System {
-    use novomodelo_core::{
-        Bus, DeficitSegment, HorizonGraph, InitialConditions, PolicyGraphType, SystemBuilder,
-    };
+    use novomodelo_core::{HorizonGraph, InitialConditions, PolicyGraphType, SystemBuilder};
 
     let bus_id = EntityId(10);
-    let bus = Bus {
-        id: bus_id,
-        name: "B1".to_string(),
-        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        deficit_segments: vec![DeficitSegment {
-            depth_mw: Some(f64::INFINITY),
-            cost_per_mwh: 3000.0,
-        }],
-        excess_cost: 0.0,
-    };
+    let bus = infinite_deficit_bus(bus_id.0, 3000.0);
     let h1 = EntityId(1);
     let stages = make_monthly_stages_for_annual(n_years);
     let policy_graph = HorizonGraph {

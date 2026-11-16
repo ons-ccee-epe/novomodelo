@@ -10,18 +10,15 @@ use std::sync::{Arc, Mutex, Once};
 use novomodelo_core::{
     Bus, CorrelationModel, DeficitSegment, Hydro, NoiseMethod, ScenarioSourceConfig, Stage, System,
     SystemBuilder,
-    test_support::{BusSpec, HydroSpec, StageSpec, make_bus, make_hydro, make_stage, single_block},
+    test_support::{
+        BusSpec, HydroSpec, InflowModelSpec, MirrorUnitGroup, StageSpec, date, make_bus,
+        make_hydro, make_inflow_model, make_stage, single_block,
+    },
 };
 use tracing::subscriber::Interest;
 use tracing::{Event, Level, Metadata, Subscriber, span};
 
 use crate::OpeningTree;
-
-pub use novomodelo_core::test_support::{
-    InflowModelSpec, MonthlyLabels, make_inflow_model, monthly_quarterly_season_map,
-    monthly_season_map, quarterly_season_map, sparse_ring_season_map, weekly_season_map,
-    weeks_naming_june_then_months,
-};
 
 /// The shared [`Bus`]: one uncapped deficit segment at `1000.0`/`MWh`, zero excess cost.
 #[must_use]
@@ -46,6 +43,21 @@ pub fn sized_hydro(id: i32) -> Hydro {
         max_storage_hm3: 100.0,
         max_turbined_m3s: 100.0,
         max_generation_mw: 100.0,
+        ..Default::default()
+    })
+}
+
+/// The shared unmirrored [`Hydro`]: [`sized_hydro`]'s capacities, in service from 2020-01-01, with no mirror unit group.
+#[must_use]
+pub fn unmirrored_hydro(id: i32) -> Hydro {
+    make_hydro(HydroSpec {
+        id,
+        name: format!("H{id}"),
+        max_storage_hm3: 100.0,
+        max_turbined_m3s: 100.0,
+        max_generation_mw: 100.0,
+        operational_start_date: date(2020, 1, 1),
+        mirror_unit_group: MirrorUnitGroup::None,
         ..Default::default()
     })
 }
@@ -90,8 +102,6 @@ pub fn method_stage(
 // Rationale: the preset's own inputs are valid, so a build failure means the
 // caller's `correlation` is wrong, which is a test-authoring bug.
 pub fn build_test_system(methods: &[NoiseMethod], correlation: CorrelationModel) -> System {
-    use novomodelo_core::test_support::{InflowModelSpec, make_inflow_model};
-
     assert_eq!(methods.len(), 3, "must supply exactly 3 per-stage methods");
     let hydros = vec![sized_hydro(1), sized_hydro(2)];
     let stages = vec![

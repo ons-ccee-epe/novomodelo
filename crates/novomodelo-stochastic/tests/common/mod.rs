@@ -1,6 +1,6 @@
 //! Shared fixtures for the `novomodelo-stochastic` integration-test suite:
 //! correlation-model builders, entity-order dimensions, and preset
-//! bus/hydro/inflow-model/stage constructors built on top of
+//! bus/hydro/stage constructors built on top of
 //! `novomodelo_core::test_support` and `novomodelo_stochastic::test_support`.
 
 #![allow(dead_code, unused_imports)]
@@ -10,12 +10,13 @@
 
 use std::collections::BTreeMap;
 
-pub use novomodelo_core::test_support::{StageSpec, make_stage, norm_cdf, single_block};
+pub use novomodelo_core::test_support::{
+    InflowModelSpec, StageSpec, make_inflow_model, make_stage, norm_cdf, single_block,
+};
 use novomodelo_core::{
-    EntityId, InflowModel, SamplingScheme, Stage,
+    EntityId, SamplingScheme, Stage,
     scenario::{CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile},
 };
-pub use novomodelo_stochastic::test_support::{InflowModelSpec, make_inflow_model};
 pub use novomodelo_stochastic::test_support::{
     build_test_system, deficit_bus, method_stage, saa_stage, sized_hydro,
 };
@@ -107,16 +108,6 @@ pub fn correlated_correlation(entity_ids: &[i32], rho: f64) -> DecomposedCorrela
         dims,
     )
     .unwrap()
-}
-
-/// The shared [`InflowModel`]: mean `100.0` m³/s, std `30.0` m³/s, no AR lags or annual term.
-#[must_use]
-pub fn default_inflow_model(hydro_id: i32, stage_id: i32) -> InflowModel {
-    make_inflow_model(InflowModelSpec {
-        hydro_id,
-        stage_id,
-        ..Default::default()
-    })
 }
 
 /// Build a [`ForwardSamplerConfig`] over `stages` and `ctx`, with `scheme`

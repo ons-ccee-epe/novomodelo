@@ -152,10 +152,10 @@ impl CyclePositions {
 #[allow(clippy::expect_used)]
 pub(super) mod twin_fixtures {
     use chrono::NaiveDate;
-    use novomodelo_core::test_support::{StageSpec, date, make_stage};
+    use novomodelo_core::test_support::{
+        StageSpec, date, make_stage, quarterly_season_map, sparse_ring_season_map,
+    };
     use novomodelo_core::{EntityId, SeasonDefinition, SeasonMap, Stage};
-
-    use crate::test_support::{quarterly_season_map, sparse_ring_season_map};
 
     /// A map whose ids are not their calendar positions and its twin over the
     /// same calendar spans with ids `0..n` in calendar order.
@@ -296,7 +296,7 @@ pub(super) mod twin_fixtures {
 mod tests {
     use super::CyclePositions;
     use super::twin_fixtures::permuted_quarterly_season_map;
-    use crate::test_support::{
+    use novomodelo_core::test_support::{
         MonthlyLabels, monthly_quarterly_season_map, monthly_season_map, quarterly_season_map,
         sparse_ring_season_map, weekly_season_map,
     };

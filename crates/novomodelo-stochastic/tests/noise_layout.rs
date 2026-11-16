@@ -9,14 +9,25 @@ use novomodelo_stochastic::{
 };
 
 mod common;
-use common::{default_inflow_model, deficit_bus, saa_stage, sized_hydro};
+use common::{InflowModelSpec, deficit_bus, make_inflow_model, saa_stage, sized_hydro};
 
 fn build_system(with_load: bool) -> novomodelo_core::System {
     let mut builder = SystemBuilder::new()
         .buses(vec![deficit_bus(0)])
         .hydros(vec![sized_hydro(1), sized_hydro(2)])
         .stages(vec![saa_stage(0, 0, 2)])
-        .inflow_models(vec![default_inflow_model(1, 0), default_inflow_model(2, 0)])
+        .inflow_models(vec![
+            make_inflow_model(InflowModelSpec {
+                hydro_id: 1,
+                stage_id: 0,
+                ..Default::default()
+            }),
+            make_inflow_model(InflowModelSpec {
+                hydro_id: 2,
+                stage_id: 0,
+                ..Default::default()
+            }),
+        ])
         .ncs_models(vec![NcsModel {
             ncs_id: EntityId(20),
             stage_id: 0,

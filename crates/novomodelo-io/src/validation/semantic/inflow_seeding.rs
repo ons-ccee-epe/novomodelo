@@ -445,6 +445,7 @@ mod tests {
     use crate::scenarios::InflowAnnualComponentRow;
     use crate::test_support::*;
     use crate::validation::ErrorKind;
+    use novomodelo_core::test_support::{MonthlyLabels, monthly_season_map};
     use novomodelo_core::{RecentObservation, SeasonCycleType, SeasonMap};
 
     fn d(y: i32, m: u32, day: u32) -> chrono::NaiveDate {
@@ -561,10 +562,7 @@ mod tests {
     /// `L_state = 12`.
     fn weekly_monthly_two_month_stages() -> crate::stages::StagesData {
         use novomodelo_core::HorizonGraph;
-        use novomodelo_core::temporal::{
-            Block, BlockMode, NoiseMethod, PolicyGraphType, ScenarioSourceConfig, SeasonCycleType,
-            SeasonDefinition, SeasonMap, Stage, StageRiskConfig, StageStateConfig,
-        };
+        use novomodelo_core::temporal::{Block, PolicyGraphType, SeasonDefinition};
 
         let season_map = SeasonMap {
             cycle_type: SeasonCycleType::Monthly,
@@ -582,28 +580,17 @@ mod tests {
 
         let make =
             |index: usize, start: chrono::NaiveDate, end: chrono::NaiveDate, season_id: usize| {
-                Stage {
-                    index,
-                    id: i32::try_from(index).unwrap(),
-                    start_date: start,
-                    end_date: end,
-                    season_id: Some(season_id),
-                    blocks: vec![Block {
-                        index: 0,
-                        name: "SINGLE".to_string(),
-                        duration_hours: (end - start).num_days() as f64 * 24.0,
-                    }],
-                    block_mode: BlockMode::Parallel,
-                    state_config: StageStateConfig {
-                        storage: true,
-                        inflow_lags: false,
-                    },
-                    risk_config: StageRiskConfig::Expectation,
-                    scenario_config: ScenarioSourceConfig {
-                        branching_factor: 1,
-                        noise_method: NoiseMethod::Saa,
-                    },
-                }
+                let mut stage = make_stage(i32::try_from(index).unwrap());
+                stage.index = index;
+                stage.start_date = start;
+                stage.end_date = end;
+                stage.season_id = Some(season_id);
+                stage.blocks = vec![Block {
+                    index: 0,
+                    name: "SINGLE".to_string(),
+                    duration_hours: (end - start).num_days() as f64 * 24.0,
+                }];
+                stage
             };
 
         let stages = vec![
@@ -774,7 +761,7 @@ mod tests {
         stages.stages[0].start_date = d(2026, 4, 11);
         stages.stages[0].end_date = d(2026, 5, 2);
         stages.stages[0].season_id = Some(3);
-        stages.policy_graph.season_map = Some(make_monthly_season_map());
+        stages.policy_graph.season_map = Some(monthly_season_map(MonthlyLabels::ZeroBased));
         let mut data = make_data(
             vec![make_hydro(1, None)],
             vec![],
@@ -927,7 +914,7 @@ mod tests {
 
     #[test]
     fn test_monthly_cycle_with_annual_component_no_reject() {
-        let mut data = par_cycle_data(make_monthly_season_map());
+        let mut data = par_cycle_data(monthly_season_map(MonthlyLabels::ZeroBased));
         data.inflow_annual_components = vec![annual_component_row(1)];
 
         let mut ctx = ValidationContext::new();

@@ -206,15 +206,13 @@ mod tests {
     use novomodelo_core::{
         EntityId,
         scenario::{HistoricalYears, InflowHistoryRow},
-        temporal::{
-            Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
-            StageStateConfig,
-        },
+        temporal::{NoiseMethod, ScenarioSourceConfig, Stage},
     };
 
     use super::discover_historical_windows;
-    use crate::test_support::{
-        MonthlyLabels, monthly_season_map, quarterly_season_map, sparse_ring_season_map,
+    use novomodelo_core::test_support::{
+        MonthlyLabels, StageSpec, make_stage, monthly_season_map, quarterly_season_map,
+        single_block, sparse_ring_season_map,
     };
 
     fn monthly_history(hydro_id: EntityId, from_year: i32, to_year: i32) -> Vec<InflowHistoryRow> {
@@ -238,27 +236,19 @@ mod tests {
     #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
     fn twelve_monthly_stages() -> Vec<Stage> {
         (0_usize..12)
-            .map(|i| Stage {
-                index: i,
-                id: i as i32,
-                start_date: NaiveDate::from_ymd_opt(2024, (i as u32 % 12) + 1, 1).unwrap(),
-                end_date: NaiveDate::from_ymd_opt(2024, (i as u32 % 12) + 1, 28).unwrap(),
-                season_id: Some(i),
-                blocks: vec![Block {
-                    index: 0,
-                    name: "SINGLE".to_string(),
-                    duration_hours: 720.0,
-                }],
-                block_mode: BlockMode::Parallel,
-                state_config: StageStateConfig {
-                    storage: true,
-                    inflow_lags: false,
-                },
-                risk_config: StageRiskConfig::Expectation,
-                scenario_config: ScenarioSourceConfig {
-                    branching_factor: 5,
-                    noise_method: NoiseMethod::Saa,
-                },
+            .map(|i| {
+                make_stage(StageSpec {
+                    id: i as i32,
+                    index: Some(i),
+                    start_date: NaiveDate::from_ymd_opt(2024, (i as u32 % 12) + 1, 1).unwrap(),
+                    end_date: NaiveDate::from_ymd_opt(2024, (i as u32 % 12) + 1, 28).unwrap(),
+                    season_id: Some(i),
+                    blocks: single_block("SINGLE", 720.0),
+                    scenario_config: ScenarioSourceConfig {
+                        branching_factor: 5,
+                        noise_method: NoiseMethod::Saa,
+                    },
+                })
             })
             .collect()
     }
@@ -382,28 +372,18 @@ mod tests {
             .map(|i| {
                 let (sm, sd) = quarter_starts[i];
                 let (em, ed) = quarter_ends[i];
-                Stage {
-                    index: i,
+                make_stage(StageSpec {
                     id: i as i32,
+                    index: Some(i),
                     start_date: NaiveDate::from_ymd_opt(2024, sm, sd).unwrap(),
                     end_date: NaiveDate::from_ymd_opt(2024, em, ed).unwrap(),
                     season_id: Some(i),
-                    blocks: vec![Block {
-                        index: 0,
-                        name: "SINGLE".to_string(),
-                        duration_hours: 2160.0,
-                    }],
-                    block_mode: BlockMode::Parallel,
-                    state_config: StageStateConfig {
-                        storage: true,
-                        inflow_lags: false,
-                    },
-                    risk_config: StageRiskConfig::Expectation,
+                    blocks: single_block("SINGLE", 2160.0),
                     scenario_config: ScenarioSourceConfig {
                         branching_factor: 5,
                         noise_method: NoiseMethod::Saa,
                     },
-                }
+                })
             })
             .collect()
     }
@@ -523,27 +503,19 @@ mod tests {
     fn three_monthly_stages(year: i32) -> Vec<Stage> {
         [(0_usize, 0_i32, 1_u32), (1, 1, 2), (2, 2, 3)]
             .into_iter()
-            .map(|(index, id, month)| Stage {
-                index,
-                id,
-                start_date: NaiveDate::from_ymd_opt(year, month, 1).unwrap(),
-                end_date: NaiveDate::from_ymd_opt(year, month, 28).unwrap(),
-                season_id: Some(index),
-                blocks: vec![Block {
-                    index: 0,
-                    name: "SINGLE".to_string(),
-                    duration_hours: 720.0,
-                }],
-                block_mode: BlockMode::Parallel,
-                state_config: StageStateConfig {
-                    storage: true,
-                    inflow_lags: false,
-                },
-                risk_config: StageRiskConfig::Expectation,
-                scenario_config: ScenarioSourceConfig {
-                    branching_factor: 5,
-                    noise_method: NoiseMethod::Saa,
-                },
+            .map(|(index, id, month)| {
+                make_stage(StageSpec {
+                    id,
+                    index: Some(index),
+                    start_date: NaiveDate::from_ymd_opt(year, month, 1).unwrap(),
+                    end_date: NaiveDate::from_ymd_opt(year, month, 28).unwrap(),
+                    season_id: Some(index),
+                    blocks: single_block("SINGLE", 720.0),
+                    scenario_config: ScenarioSourceConfig {
+                        branching_factor: 5,
+                        noise_method: NoiseMethod::Saa,
+                    },
+                })
             })
             .collect()
     }

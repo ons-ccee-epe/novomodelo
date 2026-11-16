@@ -1085,7 +1085,6 @@ mod tests {
     use crate::constraints::HydroBoundsRow;
     use crate::test_support::*;
     use crate::validation::{ErrorKind, ValidationContext, ValidationEntry};
-    use chrono::NaiveDate;
     use novomodelo_core::DiversionChannel;
 
     // ── Cascade acyclicity tests ───────────────────────────────────────────────
@@ -1600,57 +1599,38 @@ mod tests {
 
     // ── Commissioning hygiene: ordering parity + applied-window silence ────────
 
-    use novomodelo_core::entities::{
-        ContractType, EnergyContract, NonControllableSource, PumpingStation,
-    };
-    use novomodelo_core::{EntityId, Line, Thermal};
+    use novomodelo_core::entities::{EnergyContract, NonControllableSource, PumpingStation};
+    use novomodelo_core::{EntityId, Line};
 
     /// Build a `PumpingStation` with the given entry/exit commissioning window.
     fn make_pumping_lc(id: i32, entry: Option<i32>, exit: Option<i32>) -> PumpingStation {
-        PumpingStation {
-            id: EntityId::from(id),
-            name: format!("Pump_{id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId::from(1),
-            source_hydro_id: EntityId::from(1),
-            destination_hydro_id: EntityId::from(2),
-            entry_stage_id: entry,
-            exit_stage_id: exit,
-            consumption_mw_per_m3s: 0.5,
-            min_flow_m3s: 0.0,
-            max_flow_m3s: 100.0,
-        }
+        let mut station = make_pumping_station(id, 1, 1, 2);
+        station.name = format!("Pump_{id}");
+        station.entry_stage_id = entry;
+        station.exit_stage_id = exit;
+        station
     }
 
     /// Build a `NonControllableSource` with the given entry/exit window.
     fn make_ncs_lc(id: i32, entry: Option<i32>, exit: Option<i32>) -> NonControllableSource {
-        NonControllableSource {
-            id: EntityId::from(id),
-            name: format!("NCS_{id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId::from(1),
-            entry_stage_id: entry,
-            exit_stage_id: exit,
-            max_generation_mw: 300.0,
-            allow_curtailment: true,
-            curtailment_cost: 0.01,
-        }
+        let mut ncs = make_ncs(id, 1);
+        ncs.name = format!("NCS_{id}");
+        ncs.entry_stage_id = entry;
+        ncs.exit_stage_id = exit;
+        ncs.max_generation_mw = 300.0;
+        ncs.curtailment_cost = 0.01;
+        ncs
     }
 
     /// Build an `EnergyContract` with the given entry/exit window.
     fn make_contract_lc(id: i32, entry: Option<i32>, exit: Option<i32>) -> EnergyContract {
-        EnergyContract {
-            id: EntityId::from(id),
-            name: format!("Contract_{id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId::from(1),
-            contract_type: ContractType::Import,
-            entry_stage_id: entry,
-            exit_stage_id: exit,
-            price_per_mwh: 200.0,
-            min_mw: 0.0,
-            max_mw: 1000.0,
-        }
+        let mut contract = make_contract(id, 1);
+        contract.name = format!("Contract_{id}");
+        contract.entry_stage_id = entry;
+        contract.exit_stage_id = exit;
+        contract.price_per_mwh = 200.0;
+        contract.max_mw = 1000.0;
+        contract
     }
 
     /// A pumping station with entry >= exit produces an InvalidValue error citing
@@ -1843,19 +1823,12 @@ mod tests {
 
     /// Build a windowed `Line` (entry < exit) for the commissioning tests.
     fn make_windowed_line(id: i32, entry: Option<i32>, exit: Option<i32>) -> Line {
-        Line {
-            id: EntityId::from(id),
-            name: format!("Line_{id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            source_bus_id: EntityId::from(1),
-            target_bus_id: EntityId::from(2),
-            entry_stage_id: entry,
-            exit_stage_id: exit,
-            direct_capacity_mw: 100.0,
-            reverse_capacity_mw: 100.0,
-            losses_percent: 0.0,
-            exchange_cost: 0.01,
-        }
+        let mut line = make_line(id, 1, 2);
+        line.name = format!("Line_{id}");
+        line.entry_stage_id = entry;
+        line.exit_stage_id = exit;
+        line.exchange_cost = 0.01;
+        line
     }
 
     /// A windowed thermal, line, NCS, and pumping station each have their
@@ -1863,11 +1836,9 @@ mod tests {
     /// `ModelQuality` warning.
     #[test]
     fn test_applied_window_entities_emit_no_warning() {
-        let thermal = Thermal {
-            entry_stage_id: Some(1),
-            exit_stage_id: Some(2),
-            ..make_thermal(1, 0.0, 100.0)
-        };
+        let mut thermal = make_thermal(1, 0.0, 100.0);
+        thermal.entry_stage_id = Some(1);
+        thermal.exit_stage_id = Some(2);
         let line = make_windowed_line(1, Some(1), Some(2));
         let mut data = make_data(
             vec![make_hydro(1, None), make_hydro(2, None)],

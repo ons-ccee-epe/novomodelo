@@ -209,11 +209,9 @@ pub fn resolve_ncs_factors(
 #[allow(clippy::unwrap_used, clippy::float_cmp)]
 mod tests {
     use super::*;
-    use chrono::NaiveDate;
+    use crate::test_support::{make_bus_with_deficit, make_ncs};
     use novomodelo_core::EntityId;
-    use novomodelo_core::temporal::{
-        Block, BlockMode, NoiseMethod, ScenarioSourceConfig, StageRiskConfig, StageStateConfig,
-    };
+    use novomodelo_core::temporal::Block;
 
     trait FactorFixtures: FactorKind {
         fn make_entity(id: i32) -> Self::Entity;
@@ -228,13 +226,11 @@ mod tests {
 
     impl FactorFixtures for LoadFactors {
         fn make_entity(id: i32) -> Bus {
-            Bus {
-                id: EntityId(id),
-                name: format!("B{id}"),
-                operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-                deficit_segments: vec![],
-                excess_cost: 0.0,
-            }
+            let mut bus = make_bus_with_deficit(id, 0.0);
+            bus.name = format!("B{id}");
+            bus.deficit_segments = Vec::new();
+            bus.excess_cost = 0.0;
+            bus
         }
 
         fn make_entry(id: i32, stage_id: i32, factors: &[(i32, f64)]) -> LoadFactorEntry {
@@ -260,17 +256,9 @@ mod tests {
 
     impl FactorFixtures for NcsFactors {
         fn make_entity(id: i32) -> NonControllableSource {
-            NonControllableSource {
-                id: EntityId(id),
-                name: format!("NCS{id}"),
-                operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-                bus_id: EntityId(0),
-                entry_stage_id: None,
-                exit_stage_id: None,
-                max_generation_mw: 100.0,
-                allow_curtailment: true,
-                curtailment_cost: 5.0,
-            }
+            let mut ncs = make_ncs(id, 0);
+            ncs.name = format!("NCS{id}");
+            ncs
         }
 
         fn make_entry(id: i32, stage_id: i32, factors: &[(i32, f64)]) -> NcsFactorEntry {
@@ -295,30 +283,15 @@ mod tests {
     }
 
     fn make_stage(id: i32, n_blocks: usize) -> Stage {
-        Stage {
-            index: 0,
-            id,
-            start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            end_date: chrono::NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-            season_id: None,
-            blocks: (0..n_blocks)
-                .map(|b| Block {
-                    index: b,
-                    name: format!("B{b}"),
-                    duration_hours: 100.0,
-                })
-                .collect(),
-            block_mode: BlockMode::Parallel,
-            state_config: StageStateConfig {
-                storage: true,
-                inflow_lags: false,
-            },
-            risk_config: StageRiskConfig::Expectation,
-            scenario_config: ScenarioSourceConfig {
-                branching_factor: 1,
-                noise_method: NoiseMethod::Saa,
-            },
-        }
+        let mut stage = crate::test_support::make_stage(id);
+        stage.blocks = (0..n_blocks)
+            .map(|b| Block {
+                index: b,
+                name: format!("B{b}"),
+                duration_hours: 100.0,
+            })
+            .collect();
+        stage
     }
 
     fn scenario_empty_entries_returns_empty<K: FactorFixtures>() {

@@ -212,92 +212,31 @@ impl From<BroadcastComputedParameter> for ComputedParameter {
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+    use crate::test_support::{make_bus_with_deficit, make_hydro, make_thermal, penalties_all};
     use chrono::NaiveDate;
     use novomodelo_core::{
-        AnticipatedCommitmentHistory, Bus, ComputedParameter, DeficitSegment, EntityId, Hydro,
-        HydroGenerationModel, HydroPenalties, InitialConditions, ParameterKind, ScalarParameter,
-        System, SystemBuilder, Thermal, entities::AnticipatedConfig,
+        AnticipatedCommitmentHistory, Bus, Hydro, InitialConditions, System, SystemBuilder,
+        Thermal, entities::AnticipatedConfig,
     };
 
     fn minimal_bus(id: i32) -> Bus {
-        Bus {
-            id: EntityId(id),
-            name: format!("Bus {id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            deficit_segments: vec![DeficitSegment {
-                depth_mw: None,
-                cost_per_mwh: 500.0,
-            }],
-            excess_cost: 0.0,
-        }
+        let mut bus = make_bus_with_deficit(id, 500.0);
+        bus.excess_cost = 0.0;
+        bus
     }
 
     fn minimal_thermal(id: i32, bus_id: i32) -> Thermal {
-        Thermal {
-            id: EntityId(id),
-            name: format!("Thermal {id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId(bus_id),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            cost_per_mwh: 50.0,
-            min_generation_mw: 0.0,
-            max_generation_mw: 100.0,
-            anticipated_config: None,
-        }
-    }
-
-    fn zero_hydro_penalties() -> HydroPenalties {
-        HydroPenalties {
-            spillage_cost: 0.0,
-            diversion_cost: 0.0,
-            turbined_cost: 0.0,
-            storage_violation_below_cost: 0.0,
-            filling_target_violation_cost: 0.0,
-            turbined_violation_below_cost: 0.0,
-            outflow_violation_below_cost: 0.0,
-            outflow_violation_above_cost: 0.0,
-            generation_violation_below_cost: 0.0,
-            fpha_violation_cost: 0.0,
-            evaporation_violation_cost: 0.0,
-            water_withdrawal_violation_cost: 0.0,
-            water_withdrawal_violation_pos_cost: 0.0,
-            water_withdrawal_violation_neg_cost: 0.0,
-            evaporation_violation_pos_cost: 0.0,
-            evaporation_violation_neg_cost: 0.0,
-            inflow_nonnegativity_cost: 1000.0,
-        }
+        let mut thermal = make_thermal(id, 0.0, 100.0);
+        thermal.bus_id = EntityId(bus_id);
+        thermal.cost_per_mwh = 50.0;
+        thermal
     }
 
     fn minimal_hydro(id: i32, bus_id: i32) -> Hydro {
-        let mut hydro = Hydro {
-            unit_groups: Vec::new(),
-            id: EntityId(id),
-            name: format!("Hydro {id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            downstream_id: None,
-            travel_time_hours: None,
-            entry_stage_id: None,
-            exit_stage_id: None,
-            min_storage_hm3: 0.0,
-            max_storage_hm3: 1000.0,
-            min_outflow_m3s: 0.0,
-            max_outflow_m3s: None,
-            generation_model: HydroGenerationModel::ConstantProductivity,
-            min_turbined_m3s: 0.0,
-            max_turbined_m3s: 200.0,
-            specific_productivity_mw_per_m3s_per_m: None,
-            min_generation_mw: 0.0,
-            max_generation_mw: 200.0,
-            tailrace: None,
-            hydraulic_losses: None,
-            efficiency: None,
-            evaporation_coefficients_mm: None,
-            evaporation_reference_volumes_hm3: None,
-            diversion: None,
-            filling: None,
-            penalties: zero_hydro_penalties(),
-        };
+        let mut hydro = make_hydro(id, None);
+        hydro.max_turbined_m3s = 200.0;
+        hydro.max_generation_mw = 200.0;
+        hydro.penalties = penalties_all(0.0);
         hydro.declare_mirror_unit_group(EntityId(bus_id));
         hydro
     }

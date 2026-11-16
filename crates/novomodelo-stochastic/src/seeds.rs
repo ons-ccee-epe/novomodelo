@@ -222,17 +222,14 @@ fn derive_inflow_seeds_reference(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::unmirrored_hydro;
     use chrono::NaiveDate;
     use novomodelo_core::{
         EntityId,
-        test_support::{HydroSpec, MirrorUnitGroup, StageSpec, date, single_block},
+        test_support::{
+            MonthlyLabels, StageSpec, date, monthly_season_map, single_block, weekly_season_map,
+        },
     };
-
-    use crate::test_support::{MonthlyLabels, monthly_season_map, weekly_season_map};
-
-    fn d(y: i32, m: u32, day: u32) -> NaiveDate {
-        NaiveDate::from_ymd_opt(y, m, day).unwrap()
-    }
 
     fn make_stage(
         index: usize,
@@ -252,42 +249,29 @@ mod tests {
         })
     }
 
-    fn make_hydro(id: i32) -> Hydro {
-        novomodelo_core::test_support::make_hydro(HydroSpec {
-            id,
-            name: format!("H{id}"),
-            max_storage_hm3: 100.0,
-            max_turbined_m3s: 100.0,
-            max_generation_mw: 100.0,
-            operational_start_date: date(2020, 1, 1),
-            mirror_unit_group: MirrorUnitGroup::None,
-            ..Default::default()
-        })
-    }
-
     #[test]
     #[allow(clippy::float_cmp)] // full-coverage windows make cast's weighted-value/overlap ratio bit-exact
     fn test_derive_inflow_seeds_full_coverage() {
         let season_map = monthly_season_map(MonthlyLabels::OneBased);
-        let first_stage = make_stage(0, d(2026, 4, 1), d(2026, 5, 1), Some(3));
-        let hydros = vec![make_hydro(1)];
+        let first_stage = make_stage(0, date(2026, 4, 1), date(2026, 5, 1), Some(3));
+        let hydros = vec![unmirrored_hydro(1)];
         let record = vec![
             InflowHistoryRow {
                 hydro_id: EntityId(1),
-                start_date: d(2026, 3, 1),
-                end_date: d(2026, 4, 1),
+                start_date: date(2026, 3, 1),
+                end_date: date(2026, 4, 1),
                 value_m3s: 100.0,
             },
             InflowHistoryRow {
                 hydro_id: EntityId(1),
-                start_date: d(2026, 2, 1),
-                end_date: d(2026, 3, 1),
+                start_date: date(2026, 2, 1),
+                end_date: date(2026, 3, 1),
                 value_m3s: 200.0,
             },
             InflowHistoryRow {
                 hydro_id: EntityId(1),
-                start_date: d(2026, 1, 1),
-                end_date: d(2026, 2, 1),
+                start_date: date(2026, 1, 1),
+                end_date: date(2026, 2, 1),
                 value_m3s: 300.0,
             },
         ];
@@ -303,13 +287,13 @@ mod tests {
     #[allow(clippy::float_cmp)] // whole-day-hours coverage ratio and its product with rate are bit-exact
     fn test_derive_inflow_seeds_partial_inprogress_accumulator() {
         let season_map = monthly_season_map(MonthlyLabels::OneBased);
-        let first_stage = make_stage(0, d(2026, 4, 11), d(2026, 5, 2), Some(3));
-        let hydros = vec![make_hydro(1)];
+        let first_stage = make_stage(0, date(2026, 4, 11), date(2026, 5, 2), Some(3));
+        let hydros = vec![unmirrored_hydro(1)];
         let rate = 500.0;
         let record = vec![InflowHistoryRow {
             hydro_id: EntityId(1),
-            start_date: d(2026, 4, 1),
-            end_date: d(2026, 4, 11),
+            start_date: date(2026, 4, 1),
+            end_date: date(2026, 4, 11),
             value_m3s: rate,
         }];
 
@@ -327,29 +311,29 @@ mod tests {
     #[allow(clippy::float_cmp)] // derivation and the hand-computed merge_layered_windows call share the same operand order, so the ratios are bit-identical
     fn test_derive_inflow_seeds_conditioning_shadows_record() {
         let season_map = monthly_season_map(MonthlyLabels::OneBased);
-        let first_stage = make_stage(0, d(2026, 4, 1), d(2026, 5, 1), Some(3));
-        let hydros = vec![make_hydro(7)];
+        let first_stage = make_stage(0, date(2026, 4, 1), date(2026, 5, 1), Some(3));
+        let hydros = vec![unmirrored_hydro(7)];
         let record = vec![InflowHistoryRow {
             hydro_id: EntityId(7),
-            start_date: d(2026, 3, 1),
-            end_date: d(2026, 4, 1),
+            start_date: date(2026, 3, 1),
+            end_date: date(2026, 4, 1),
             value_m3s: 100.0,
         }];
         let conditioning = vec![RecentObservation {
             hydro_id: EntityId(7),
-            start_date: d(2026, 3, 10),
-            end_date: d(2026, 3, 20),
+            start_date: date(2026, 3, 10),
+            end_date: date(2026, 3, 20),
             value_m3s: 999.0,
         }];
 
         let record_windows = vec![RealizedWindow {
-            start_date: d(2026, 3, 1),
-            end_date: d(2026, 4, 1),
+            start_date: date(2026, 3, 1),
+            end_date: date(2026, 4, 1),
             value_m3s: 100.0,
         }];
         let conditioning_windows = vec![RealizedWindow {
-            start_date: d(2026, 3, 10),
-            end_date: d(2026, 3, 20),
+            start_date: date(2026, 3, 10),
+            end_date: date(2026, 3, 20),
             value_m3s: 999.0,
         }];
         let hand_merged = merge_layered_windows(&record_windows, &conditioning_windows);
@@ -375,8 +359,8 @@ mod tests {
     #[test]
     fn test_derive_inflow_seeds_guard_conditions_return_zero() {
         let season_map = monthly_season_map(MonthlyLabels::OneBased);
-        let first_stage = make_stage(0, d(2026, 4, 1), d(2026, 5, 1), Some(3));
-        let hydros = vec![make_hydro(1)];
+        let first_stage = make_stage(0, date(2026, 4, 1), date(2026, 5, 1), Some(3));
+        let hydros = vec![unmirrored_hydro(1)];
         let l_state = 2;
 
         let empty_hydros: Vec<Hydro> = Vec::new();
@@ -387,14 +371,14 @@ mod tests {
         assert_eq!(seeds.accum, zero.accum);
         assert_eq!(seeds.weight, zero.weight);
 
-        let no_season_stage = make_stage(0, d(2026, 4, 1), d(2026, 5, 1), None);
+        let no_season_stage = make_stage(0, date(2026, 4, 1), date(2026, 5, 1), None);
         let seeds = derive_inflow_seeds(&[], &[], &hydros, &no_season_stage, &season_map, l_state);
         let zero = DerivedInflowSeeds::zero(hydros.len(), l_state);
         assert_eq!(seeds.lag_values, zero.lag_values);
         assert_eq!(seeds.accum, zero.accum);
         assert_eq!(seeds.weight, zero.weight);
 
-        let unresolvable_stage = make_stage(0, d(2026, 4, 1), d(2026, 5, 1), Some(99));
+        let unresolvable_stage = make_stage(0, date(2026, 4, 1), date(2026, 5, 1), Some(99));
         let seeds =
             derive_inflow_seeds(&[], &[], &hydros, &unresolvable_stage, &season_map, l_state);
         let zero = DerivedInflowSeeds::zero(hydros.len(), l_state);
@@ -407,12 +391,12 @@ mod tests {
     #[allow(clippy::float_cmp)] // full-coverage window whole-day-hours arithmetic keeps the ratio bit-exact
     fn test_derive_inflow_seeds_weekly_cycle_populates_lags() {
         let season_map = weekly_season_map();
-        let first_stage = make_stage(2, d(2024, 1, 15), d(2024, 1, 22), Some(2));
-        let hydros = vec![make_hydro(9)];
+        let first_stage = make_stage(2, date(2024, 1, 15), date(2024, 1, 22), Some(2));
+        let hydros = vec![unmirrored_hydro(9)];
         let record = vec![InflowHistoryRow {
             hydro_id: EntityId(9),
-            start_date: d(2024, 1, 8),
-            end_date: d(2024, 1, 15),
+            start_date: date(2024, 1, 8),
+            end_date: date(2024, 1, 15),
             value_m3s: 250.0,
         }];
 
@@ -432,25 +416,25 @@ mod tests {
     #[allow(clippy::float_cmp)] // full-coverage window whole-day-hours arithmetic keeps the value bit-exact
     fn test_seed_correct_under_staggered_commissioning_dates() {
         let season_map = monthly_season_map(MonthlyLabels::OneBased);
-        let first_stage = make_stage(0, d(2026, 4, 1), d(2026, 5, 1), Some(3));
+        let first_stage = make_stage(0, date(2026, 4, 1), date(2026, 5, 1), Some(3));
 
-        let mut hydro_1_earlier = make_hydro(1);
-        hydro_1_earlier.operational_start_date = d(2024, 1, 1);
-        let mut hydro_0_later = make_hydro(0);
-        hydro_0_later.operational_start_date = d(2025, 6, 1);
+        let mut hydro_1_earlier = unmirrored_hydro(1);
+        hydro_1_earlier.operational_start_date = date(2024, 1, 1);
+        let mut hydro_0_later = unmirrored_hydro(0);
+        hydro_0_later.operational_start_date = date(2025, 6, 1);
         let hydros = vec![hydro_1_earlier, hydro_0_later];
 
         let record = vec![
             InflowHistoryRow {
                 hydro_id: EntityId(0),
-                start_date: d(2026, 3, 1),
-                end_date: d(2026, 4, 1),
+                start_date: date(2026, 3, 1),
+                end_date: date(2026, 4, 1),
                 value_m3s: 500.0,
             },
             InflowHistoryRow {
                 hydro_id: EntityId(1),
-                start_date: d(2026, 3, 1),
-                end_date: d(2026, 4, 1),
+                start_date: date(2026, 3, 1),
+                end_date: date(2026, 4, 1),
                 value_m3s: 300.0,
             },
         ];
@@ -470,57 +454,57 @@ mod tests {
     #[test]
     fn test_bucketed_seeds_match_per_hydro_filter_reference() {
         let season_map = monthly_season_map(MonthlyLabels::OneBased);
-        let first_stage = make_stage(0, d(2026, 4, 1), d(2026, 5, 1), Some(3));
-        let hydros = vec![make_hydro(1), make_hydro(2)];
+        let first_stage = make_stage(0, date(2026, 4, 1), date(2026, 5, 1), Some(3));
+        let hydros = vec![unmirrored_hydro(1), unmirrored_hydro(2)];
         let record = vec![
             InflowHistoryRow {
                 hydro_id: EntityId(1),
-                start_date: d(2026, 1, 1),
-                end_date: d(2026, 2, 1),
+                start_date: date(2026, 1, 1),
+                end_date: date(2026, 2, 1),
                 value_m3s: 100.0,
             },
             InflowHistoryRow {
                 hydro_id: EntityId(2),
-                start_date: d(2026, 1, 1),
-                end_date: d(2026, 2, 1),
+                start_date: date(2026, 1, 1),
+                end_date: date(2026, 2, 1),
                 value_m3s: 400.0,
             },
             InflowHistoryRow {
                 hydro_id: EntityId(1),
-                start_date: d(2026, 2, 1),
-                end_date: d(2026, 3, 1),
+                start_date: date(2026, 2, 1),
+                end_date: date(2026, 3, 1),
                 value_m3s: 200.0,
             },
             InflowHistoryRow {
                 hydro_id: EntityId(2),
-                start_date: d(2026, 2, 1),
-                end_date: d(2026, 3, 1),
+                start_date: date(2026, 2, 1),
+                end_date: date(2026, 3, 1),
                 value_m3s: 500.0,
             },
             InflowHistoryRow {
                 hydro_id: EntityId(1),
-                start_date: d(2026, 3, 1),
-                end_date: d(2026, 4, 1),
+                start_date: date(2026, 3, 1),
+                end_date: date(2026, 4, 1),
                 value_m3s: 300.0,
             },
             InflowHistoryRow {
                 hydro_id: EntityId(2),
-                start_date: d(2026, 3, 1),
-                end_date: d(2026, 4, 1),
+                start_date: date(2026, 3, 1),
+                end_date: date(2026, 4, 1),
                 value_m3s: 600.0,
             },
         ];
         let conditioning = vec![
             RecentObservation {
                 hydro_id: EntityId(2),
-                start_date: d(2026, 3, 10),
-                end_date: d(2026, 3, 20),
+                start_date: date(2026, 3, 10),
+                end_date: date(2026, 3, 20),
                 value_m3s: 999.0,
             },
             RecentObservation {
                 hydro_id: EntityId(1),
-                start_date: d(2026, 3, 10),
-                end_date: d(2026, 3, 20),
+                start_date: date(2026, 3, 10),
+                end_date: date(2026, 3, 20),
                 value_m3s: 888.0,
             },
         ];
