@@ -699,7 +699,10 @@ coupling and the lag fold see no new term. The family is
 `StageGeometry::fpha_slack`, addressed by `fpha_slack_col(FphaCellLocal,
 BlockIdx)` and allocated last, so it shifts no other family's start. Its price
 is the hydro's `fpha_violation_cost` times the block's hours, divided by the
-cost scale like every other objective term.
+cost scale like every other objective term. A Dormant plant has no FPHA cell at
+the stage and so no `σ`, and a cell without capacity at a block of a live plant
+has free plane rows and `σ` pinned at `[0, 0]` there, so `fpha_violation_mw`
+sums only live cells (see "An FPHA cell without capacity turbines nothing").
 
 The cell's generation `g` is basic, so its zero reduced cost makes the plane
 dual, in magnitude, the bus's load-balance dual `λ_bus` plus the dual
@@ -842,7 +845,10 @@ The complete-recourse precondition: for an incoming storage in
   `source_hydro_id` is the hydro);
 - (c) the hard floor of stage `t` does not rise above `F_in(t)`;
 - (d) excess water can leave the reservoir when `max_spillage_m3s` is finite,
-  since the negative-month ceiling on `e` keeps evaporation from removing it;
+  since the negative-month ceiling on `e` keeps evaporation from removing it,
+  and turbining is an outlet only where a cell has capacity: it removes at most
+  `Σ_c cell_max_turbined_c`, which is 0 for a cell without capacity, and nothing
+  for a suspended plant, whose turbine columns are `[0, 0]`;
 - (e) every generic constraint on water or hydro generation carries a slack.
 
 `F_in(t)` is the seed's clamp floor at a seed stage and the predecessor's hard
@@ -866,13 +872,21 @@ Who checks what:
     from a reservoir at `F_in(t)` with no inflow, which can take the outgoing
     storage below its hard floor;
   - (d) in a negative month `e ≤ max(0, τ_max)` caps the water evaporation
-    removes, so water above the stage's ceiling leaves through turbining,
-    spillage, diversion, a pumping station's draw and the over-withdrawal slack
-    `withdrawal_slack_pos`. That slack is unbounded only while the effective
-    withdrawal (`effective_withdrawal_m3s`) is positive; otherwise
-    `fill_withdrawal_slack_columns` caps it at the negated withdrawal, so the
-    realized withdrawal removes no water, and a finite `max_spillage_m3s` can
-    leave the excess no outlet;
+    removes, so water above the stage's ceiling leaves through turbining where
+    a cell has capacity, spillage, diversion, a pumping station's draw and the
+    over-withdrawal slack `withdrawal_slack_pos`. That slack is unbounded only
+    while the effective withdrawal (`effective_withdrawal_m3s`) is positive;
+    otherwise `fill_withdrawal_slack_columns` caps it at the negated withdrawal,
+    so the realized withdrawal removes no water, and a finite
+    `max_spillage_m3s` can leave the excess no outlet. A frozen plant, one whose
+    turbining is 0 for lack of capacity, with a finite `max_spillage_m3s` keeps
+    spillage as its only river release; this too is derived and not warned on.
+    Its water still reaches the downstream balance, pinned by
+    `dormant_upstream_plant_spills_into_the_downstream_water_balance` and
+    `dormant_upstream_plant_routes_its_spillage_through_the_transit_buckets`
+    (`tests/hydro_inflow_travel_time.rs`: a Dormant upstream plant's spillage
+    enters the downstream water-balance row, and with travel time its transit
+    buckets);
   - (e) a generic constraint on water or hydro generation without a slack is
     a hard row over the water-balance row's columns, so it can force a release
     as (b) does, or a storage the inflow cannot supply.
@@ -1107,7 +1121,7 @@ Pinned by `production_model_set_model_returns_correct_variant` (the
 `test_multi_bus_plant_splits_into_bus_ordered_cells` (partitioning depends on
 `bus_id` alone, blind to differing group bounds).
 
-### ConstantProductivity's bound fold must run per group, then sum the cell
+### The cell bound folds each group, then sums the cell
 
 A `ConstantProductivity` plant has no separate generation column: its MW cap
 folds into the turbine bound as
@@ -1138,17 +1152,28 @@ which side binds for a group at a given stage — harmless under
 fold-then-sum, which re-folds independently per group regardless, but it
 makes sum-then-fold's overstatement vary stage-to-stage instead of vanishing.
 
+Every model first folds a group term or the closing plant term without turbine
+capacity to 0 (`has_turbine_capacity`, the entry below). A term with capacity
+keeps the fold above: the ρ-fold `min(q̄_g, p̄_g / ρ)` for `ConstantProductivity`
+with `ρ > 0`, the flow cap `q̄_g` otherwise. Testing the predicate on the cell's
+summed limits is sum-then-fold's error again: same-bus FPHA groups `(q̄ 100, p̄ 0)`
+and `(q̄ 100, p̄ 50)` give a flow cap of 100, against 200.
+
 Live: `cell_max_turbined` (`fill_turbine_columns`, `lp/builder/columns.rs`)
 resolves this bound per CELL, folding each of the cell's own member groups
 before summing them, exactly as this sub-contract requires — each group's
 `q̄_g`/`p̄_g` is its RESOLVED per-block value (the override when the study
 supplies one, the declaration otherwise, via `GroupBoundLookup`), never the
-bare declared value.
+bare declared value. `cell_max_generation` applies the same zero fold to each
+group's `p̄_g` and to the plant term.
 
-Read: `crates/novomodelo-sddp/src/lp/builder/hydro_state.rs` (`cell_max_turbined`).
-Pinned by `test_same_bus_groups_sum_into_one_cell_box`, mutation-verified
-against sum-then-fold on a two-group fixture whose groups bind on opposite
-sides.
+Read: `crates/novomodelo-sddp/src/lp/builder/hydro_state.rs` (`cell_max_turbined`,
+`cell_max_generation`). Pinned by `test_same_bus_groups_sum_into_one_cell_box`,
+mutation-verified against sum-then-fold on a two-group fixture whose groups bind
+on opposite sides, and, in `lp/builder/columns.rs` `cell_column_bound_tests`, by
+`test_turbine_fold_drops_a_group_without_generation_capacity` (100, not 200) and
+`test_generation_bound_drops_a_group_without_turbine_capacity` (50, not 150),
+which fail when the predicate reads the summed limits.
 
 ### Both terms of the cell bound's closing `min` are load-bearing
 
@@ -1209,6 +1234,108 @@ rule-41 equality, no override), which pins the group term binding, and by
 `test_cell_columns_take_their_own_group_box`'s block-2 override, which pins
 the plant term binding.
 
+### An FPHA cell without capacity turbines nothing
+
+`has_turbine_capacity(q̄, p̄)` (`novomodelo_core`) is the one capacity predicate:
+a term has turbine capacity only when its resolved `max_turbined_m3s` and
+`max_generation_mw` both exceed the capacity threshold. The stage-LP builder asks
+it through three owners and nowhere else: `GroupBoundLookup::has_capacity` for a
+group at a block, `cell_has_capacity` for a cell (the plant term and at least one
+member group pass) and `plant_has_capacity` for a plant (some cell passes).
+
+- **Zero fold.** `cell_max_turbined` and `cell_max_generation` give 0 for every
+  group term and closing plant term without capacity, under every production
+  model (the fold section above). A `ConstantProductivity` cell without capacity
+  has its turbine column at `[0, 0]`, whatever its ρ.
+- **Dormant stage gate.** `identify_fpha_hydros` admits an FPHA plant at a stage
+  only when it is not suspended and `plant_has_capacity` holds at one block of
+  the stage or more. A plant it leaves out is `StageProductionRole::Dormant`
+  there: no generation column, no plane rows, no `σ`, and its turbine column at
+  `[0, 0]`. The plant spills downstream: its spillage enters the downstream water
+  balance and, with travel time, the transit buckets. `Dormant` stays FPHA-only:
+  a `ConstantProductivity` plant without capacity keeps its `Constant` role, its
+  turbine column frozen by the zero fold.
+- **Dead (cell, block).** In an admitted plant, capacity is decided per (cell,
+  block) by `TemplateBuildCtx::cell_has_capacity`, the one resolution
+  `fill_fpha_rows` and `fill_fpha_slack_columns` both read:
+  a dead (cell, block) has free plane rows and σ pinned at [0, 0], in a single-
+  or multi-cell plant, so it adds nothing to `fpha_violation_mw`. Its plane rows
+  are `(−∞, +∞)` and its `σ` keeps its objective coefficient. Every live (cell,
+  block) keeps its plane rows at its declared share (`HydroCellIndex::share_of`
+  times the plane intercept) and its `σ` at `[0, ∞)`. The layout does not
+  change; only these bounds do, per (cell, block). The cell's columns are
+  `[0, 0]` there, so a plane that is negative at zero turbining would demand
+  `σ > 0`: rows kept at the share charge plane slack to a cell that produces
+  nothing, and rows kept with `σ` pinned make the stage infeasible.
+
+The wrong-but-compiling alternatives:
+
+- the predicate removed from the fold: a zero-productivity plant with turbine
+  flow but no generation limit turbines at 0 MW instead of spilling.
+  `d57_capacity_without_generation_spills_at_the_closed_form`
+  (`tests/deterministic.rs`) fails, the bound about 87.2 below the closed form;
+- the predicate tested on the cell's summed limits (sum-then-fold of the
+  predicate): `test_turbine_fold_drops_a_group_without_generation_capacity`
+  (100, not 200) and `test_generation_bound_drops_a_group_without_turbine_capacity`
+  (50, not 150), in `lp/builder/columns.rs` `cell_column_bound_tests`, fail;
+- the predicate applied in the FPHA arm only: a zero-productivity plant
+  without generation turbines its flow cap.
+  `test_zero_productivity_plant_without_generation_capacity_turbines_nothing`
+  (`cell_column_bound_tests`: 50, not 0) and
+  `d57_capacity_without_generation_spills_at_the_closed_form` (the bound about
+  87.2 below the closed form) fail;
+- the predicate skipped at the closing plant term: a plant whose own limits
+  lack capacity at a block turbines through its groups' caps.
+  `test_plant_without_generation_capacity_at_a_block_freezes_that_block`
+  (`cell_column_bound_tests`: 100, not 0, at the block) and
+  `dormant_fpha_plant_trains_at_the_d57_closed_form` (`tests/deterministic.rs`:
+  the Dormant plant turbines at 0 MW, the bound about 87.2 below the closed form)
+  fail;
+- Dormant wherever one block lacks capacity (`.all` in place of `.any` over the
+  stage's blocks): `fpha_plant_with_capacity_in_one_block_stays_fpha`
+  (`lp/builder/layout/tests.rs`) fails;
+- no capacity condition in `identify_fpha_hydros`: the stage LP stays
+  equivalent, because every cell of such a plant is then dead at every block, so
+  the pins are structural. `fpha_plant_without_capacity_builds_no_fpha_structure`
+  (`tests/template_integration/fpha_structure.rs`: the generation and plane-slack
+  columns and the plane rows are gone),
+  `hydro_generation_of_a_plant_without_capacity_has_no_term`
+  (`lp/builder/generic_constraints/tests.rs`: a generic constraint on its
+  generation gets no term) and
+  `dormant_upstream_plant_spills_into_the_downstream_water_balance`
+  (`tests/hydro_inflow_travel_time.rs`) fail;
+- neither the Dormant gate nor the dead-cell freeing:
+  `dormant_fpha_plant_trains_at_the_d57_closed_form` fails, the bound more than
+  1e6 above the closed form;
+- a dead (cell, block)'s rows kept at its share:
+  `test_dead_cell_block_frees_its_plane_rows` (`cell_column_bound_tests`),
+  `split_plant_dead_cell_freezes_its_columns_and_frees_its_plane_rows`
+  (`tests/template_integration/split_plant_bounds.rs`) and
+  `d51_dead_cell_pays_no_plane_slack_below_zero_planes` (`tests/deterministic.rs`:
+  at least 10 MW of `fpha_violation_mw` at the block where both cells are dead)
+  fail;
+- freeing every cell of the plant where one cell is dead, or every block where
+  one block is: `test_dead_cell_of_a_split_plant_frees_only_its_own_rows`
+  (`cell_column_bound_tests`), the live cell's rows in
+  `split_plant_dead_cell_freezes_its_columns_and_frees_its_plane_rows`, the live
+  block's rows in `fpha_plant_with_capacity_in_one_block_stays_fpha` and the
+  live-cell inequality of `d51_dead_cell_pays_no_plane_slack_below_zero_planes`
+  fail;
+- a dead (cell, block)'s `σ` left at `[0, ∞)`:
+  `test_dead_cell_block_frees_its_plane_rows`,
+  `test_dead_cell_of_a_split_plant_frees_only_its_own_rows` and
+  `split_plant_dead_cell_freezes_its_columns_and_frees_its_plane_rows` fail;
+- `σ` pinned at `[0, 0]` with the rows kept:
+  `d51_dead_cell_pays_no_plane_slack_below_zero_planes` fails, the stage
+  infeasible.
+
+Read: `crates/novomodelo-core/src/entities/hydro.rs` (`has_turbine_capacity`),
+`lp/builder/hydro_state.rs` (`GroupBoundLookup::has_capacity`,
+`cell_has_capacity`, `plant_has_capacity`, `cell_max_turbined`,
+`cell_max_generation`), `lp/builder/layout.rs` (`identify_fpha_hydros`,
+`TemplateBuildCtx::cell_has_capacity`), `lp/builder/rows.rs` (`fill_fpha_rows`),
+`lp/builder/columns.rs` (`fill_fpha_slack_columns`).
+
 ### A plant maximum below its cells' caps binds their total in one row
 
 The per-cell `sum.min(hb...)` clamp above cannot hold a multi-cell plant's
@@ -1268,9 +1395,12 @@ plant totals stay within the lowered envelope and reach it).
 
 `cell_min_turbined`/`cell_min_generation` (`lp/builder/hydro_state.rs`) are the
 MIN-side mirror of `cell_max_turbined`/`cell_max_generation` above, and
-deliberately do NOT mirror their shape: a cell's min-turbine/min-generation
-floor `F_c` is `Σ_{g∈cell} resolved_min_*(g)` — the cell's OWN member groups'
-resolved minima, summed, with no fold and no closing `.min(plant)` term. This is
+deliberately do NOT mirror their shape: with `f_g = resolved_min_*(g)`, a cell's
+min-turbine/min-generation floor `F_c` is `Σ_{g∈cell, live} f_g` — the resolved
+minima of the cell's OWN member groups that have capacity
+(`GroupBoundLookup::has_capacity`), summed, with no fold and no closing
+`.min(plant)` term. A dead group adds no floor: its cap folds to 0 (the entry
+above), so its minimum could only be charged as slack. This is
 the correct shape because the floor bounds a SUM of variables: the cell's
 member groups all feed one shared aggregate column (one turbine column, one
 FPHA-generation column, or the same column read at ρ for
@@ -1281,31 +1411,45 @@ what licenses a `min` fold on the MAX side.
 The plant's resolved minimum `P` (`hydro_bounds_at_block`: the `hydro_bounds`
 override, else the declared value) is a second floor on the plant's total, and
 the TIGHTER of the two wins. `PlantFloor` owns the decision: `P` binds only
-where `P > Σ_c F_c + envelope_tolerance(P)` — the same tolerance rule 44 admits
+where `P > Σ_all f_g + envelope_tolerance(P)`, with every declared group of the
+plant in the sum, dead ones included — the sum and the tolerance rule 44 admits
 a declared minimum with (`P_declared ≤ Σ F_declared + tolerance`), so a
 declared minimum never changes the LP and every study without a raising
-override builds byte-identical rows and columns. Where `P` binds:
+override builds byte-identical rows and columns. Where `P` binds it enforces
+`P' = P − Σ_dead f_g`: the dead groups' floors leave both sides, so the test
+reads `P' > Σ_c F_c + envelope_tolerance(P)` and the enforced floor is above the
+live cells' own. Where `P` binds:
 
-- **A single-cell plant folds `P` into its one cell row** (`cell_rhs`); no
+- **A single-cell plant folds `P'` into its one cell row** (`cell_rhs`); no
   row is added. Every plant without multi-bus groups takes this path.
 - **A multi-cell plant gets one residual row per `MinFloor` and block**,
-  `Σ_c LHS_c + σ_plant ≥ P`, where `LHS_c` repeats cell `c`'s own row terms —
+  `Σ_c LHS_c + σ_plant ≥ P'`, where `LHS_c` repeats cell `c`'s own row terms —
   the turbine column (or FPHA generation column, or `ρ·q_c`; nothing for a
-  dormant plant) **and the cell's own slack `σ_c`** (`push_cell_floor_lhs`, the
+  Dormant plant) **and the cell's own slack `σ_c`** (`push_cell_floor_lhs`, the
   single owner of a cell's floor LHS for both row kinds). Carrying `σ_c` is
-  what makes the charge `max(P − Σq, Σ_c σ_c)`: `σ_plant` tops up only what
+  what makes the charge `max(P' − Σq, Σ_c σ_c)`: `σ_plant` tops up only what
   the cell slacks leave. The wrong-but-compiling alternative — a residual row
-  on the bare columns, `Σ_c q_c + σ_plant ≥ P` — charges every unit of a cell
+  on the bare columns, `Σ_c q_c + σ_plant ≥ P'` — charges every unit of a cell
   shortfall twice whenever both floors bind.
 
+Where the plant cannot produce at a block — `producing` is false: suspended at
+the stage (`is_suspended`), or without capacity at the block
+(`plant_has_capacity`) — every floor it has there is dropped: each cell row, a
+single cell's folded plant floor included, has RHS 0 with its slack pinned
+`[0, 0]`, and no residual row binds. Nothing the plant does there can meet a
+floor, so a floor would only charge its slack.
+
 A plant joins `plant_floor_hydro_indices` for a stage when its residual binds
-at any block; at a block where the cells cover `P` its row is free (`−∞`) and
-its slack pinned `[0, 0]`. Both slacks are priced at the plant's FULL penalty
-per hour (`MinFloor::below_cost`). An override that LOWERS `P` below `Σ F_c`
-cannot loosen the floor — the groups' minima still bind — so setup emits one
-warning per plant and `MinFloor` (`warn_on_inert_plant_floor_overrides`)
-pointing at `hydro_unit_group_bounds` instead. The MAX side mirrors this
-decision with a hard row and no slack (the section above).
+at any block; at a block where the cells cover `P`, or where the plant cannot
+produce, its row is free (`−∞`) and its slack pinned `[0, 0]`. Both slacks are
+priced at the plant's FULL penalty per hour (`MinFloor::below_cost`). An
+override that LOWERS `P` below the full declared sum `Σ_all f_g` cannot loosen
+the floor — `P'` is then below `Σ_c F_c`, so the live groups' minima still bind
+— so setup emits one warning per plant and `MinFloor`
+(`warn_on_inert_plant_floor_overrides`, which compares with the full declared
+sum and skips every block where the plant cannot produce) pointing at
+`hydro_unit_group_bounds` instead. The MAX side mirrors this decision with a
+hard row and no slack (the section above).
 
 Four wrong-but-compiling alternatives for the cell floor, each with a close
 MAX-side cousin that makes it easy to copy over by habit:
@@ -1334,6 +1478,27 @@ MAX-side cousin that makes it easy to copy over by habit:
   onto every cell's turbine column, never apportioned — see the water
   travel-time section below).
 
+The wrong-but-compiling alternatives for groups and plants that cannot produce,
+each pinned in `lp/builder/entries.rs`:
+
+- **The plant floor enforced whole** (`then_some(plant_min)` in place of `P'`):
+  the live groups are charged the dead groups' floors.
+  `test_dead_group_lowers_the_single_cell_plant_floor` fails at P = 12.
+- **Binding decided on the live sum** `Σ_c F_c`: a `P` between the live and the
+  full sum then binds and enforces a `P'` below the live cells' own floors. The
+  same test fails at P = 7, and
+  `test_inert_plant_floor_override_reads_the_full_declared_sum` fails.
+- **Floors charged where the plant cannot produce** (`producing` forced true):
+  `test_plant_without_capacity_in_a_block_drops_its_floors_there`,
+  `test_plant_whose_groups_all_lack_capacity_drops_its_residual`,
+  `test_inert_plant_floor_override_skips_a_plant_without_capacity` and
+  `test_floor_drop_lowers_the_objective_by_the_charged_shortfall_only` (an
+  objective shift of 0 against 23 700) fail.
+- **Suspension ignored**: `test_commissioning_plant_drops_every_floor` and
+  `test_dormant_residual_rows_sum_their_cell_rows` fail, as do
+  `test_inert_plant_floor_override_skips_a_commissioning_plant` and
+  `test_dormant_fpha_plant_operational_violation_contributes_nothing`.
+
 The cell rows `min_turbine`/`min_generation` are sized `n_cells * n_blks`
 (`OperViolationSizes::cells`) and the residual rows
 `plant_min_turbine`/`plant_min_generation` `n_plant_floor * n_blks`
@@ -1351,8 +1516,9 @@ the undetermined same-bus generation split the output-axis decision (§7.10 of
 the blocks-and-units design) rules out.
 
 Read: `crates/novomodelo-sddp/src/lp/builder/hydro_state.rs` (`cell_min_turbined`,
-`cell_min_generation`, `MinFloor`, `PlantFloor`,
-`warn_on_inert_plant_floor_overrides`), `crates/novomodelo-sddp/src/lp/builder/columns.rs`
+`cell_min_generation`, `MinFloor`, `PlantFloor`, `plant_has_capacity`,
+`is_suspended`, `warn_on_inert_plant_floor_overrides`),
+`crates/novomodelo-sddp/src/lp/builder/columns.rs`
 (`fill_cell_floor_slacks`, `fill_plant_floor_slacks`),
 `crates/novomodelo-sddp/src/lp/builder/rows.rs` (`fill_operational_violation_rows`),
 `crates/novomodelo-sddp/src/lp/builder/entries.rs` (`push_cell_floor_lhs`),
@@ -1365,10 +1531,14 @@ Pinned by `test_min_floor_rhs_is_the_cells_own_group_sum` (mutation-verified
 against the `.min(plant)` clamp, the `max`-fold, the ρ-fold, and `1/|cells|`
 apportionment), `test_floor_shortfall_is_charged_once_as_the_larger_of_plant_and_cells`
 (fails at 16 against 12 when the residual row drops `σ_c`), the
-`*_residual_rows_sum_their_cell_rows` trio (constant, FPHA, dormant),
+`*_residual_rows_sum_their_cell_rows` trio (constant, FPHA and dormant; the
+dormant test's suspended plant is absent from `plant_floor_hydro_indices` while
+its unsuspended twin sums its cell rows),
 `test_plant_floor_the_cells_cover_leaves_the_stage_lp_unchanged` (the shared
-tolerance), the d53 binding fixture, and the group-declaration-order
-determinism regression.
+tolerance), the d53 binding fixture, and
+`test_cell_min_floor_is_invariant_to_group_declaration_order`
+(`lp/builder/columns.rs`: the group-declaration-order determinism regression,
+which holds a group without capacity).
 
 ### Both outflow rows bind the non-diverted river-remnant flow
 

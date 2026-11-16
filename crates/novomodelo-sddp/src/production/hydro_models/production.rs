@@ -193,10 +193,12 @@ pub fn resolve_production_models_from_artifacts(
         if fit.provenance.1 == ProductionModelSource::NoTurbineCapacity {
             tracing::warn!(
                 "hydro {} (id={}) requests FPHA but has no turbine capacity \
-                 (max_turbined_m3s = {}); modeling it with zero productivity",
+                 (max_turbined_m3s = {}, max_generation_mw = {}); modeling it with zero \
+                 productivity",
                 hydro.name,
                 hydro.id.0,
-                hydro.max_turbined_m3s
+                hydro.max_turbined_m3s,
+                hydro.max_generation_mw
             );
         }
         provenance.push(fit.provenance);

@@ -37,7 +37,14 @@ pub(super) fn fill_stage_rows(
     );
     fill_fpha_rows(ctx, stage_idx, layout, &mut row_lower, &mut row_upper);
     fill_evaporation_rows(ctx, stage_idx, layout, &mut row_lower, &mut row_upper);
-    fill_operational_violation_rows(ctx, stage_idx, layout, &mut row_lower, &mut row_upper);
+    fill_operational_violation_rows(
+        ctx,
+        stage.id,
+        stage_idx,
+        layout,
+        &mut row_lower,
+        &mut row_upper,
+    );
     fill_plant_cap_rows(
         ctx,
         stage,
@@ -273,12 +280,15 @@ fn fill_load_balance_rows(
     }
 }
 
-/// Fill FPHA hyperplane row bounds: `row_lower = -INF`, `row_upper = σ_c * gamma_0`
-/// (the pre-scaled `intercept`, apportioned by the cell's turbine-capacity share —
-/// see [`super::entries::fill_fpha_entries`]). The `v`/`v_in`/`q`/`s` contributions
-/// live in the matrix entries, so the upper bound carries only the apportioned
-/// intercept. Driven by [`for_each_fpha_plane`] so these bounds and the matrix
-/// coefficients share one row cursor.
+/// Fill FPHA hyperplane row bounds: `row_lower = -INF`. A (cell, block) with
+/// capacity ([`TemplateBuildCtx::cell_has_capacity`]) has `row_upper = share *
+/// gamma_0`, the pre-scaled `intercept` apportioned by the cell's turbine-capacity
+/// share (see [`super::entries::fill_fpha_entries`]); a (cell, block) without has
+/// `row_upper = +INF`, because its turbine and generation columns are `[0, 0]` and
+/// its plane slack is pinned (`columns::fill_fpha_slack_columns`). The
+/// `v`/`v_in`/`q`/`s` contributions live in the matrix entries, so the upper bound
+/// carries only the apportioned intercept. Driven by [`for_each_fpha_plane`] so
+/// these bounds and the matrix coefficients share one row cursor.
 fn fill_fpha_rows(
     ctx: &TemplateBuildCtx<'_>,
     stage_idx: usize,
@@ -287,9 +297,14 @@ fn fill_fpha_rows(
     row_upper: &mut [f64],
 ) {
     for_each_fpha_plane(ctx, stage_idx, layout, |visit, plane| {
-        let sigma_c = ctx.hydro_cell_index.share_of(visit.cell);
+        let share = ctx.hydro_cell_index.share_of(visit.cell);
         row_lower[visit.row] = f64::NEG_INFINITY;
-        row_upper[visit.row] = sigma_c * plane.intercept;
+        row_upper[visit.row] =
+            if ctx.cell_has_capacity(stage_idx, visit.plant, visit.cell, visit.blk.get()) {
+                share * plane.intercept
+            } else {
+                f64::INFINITY
+            };
     });
 }
 
@@ -351,6 +366,7 @@ fn fill_evaporation_rows(
 ///   block where the cells already cover the plant minimum.
 pub(super) fn fill_operational_violation_rows(
     ctx: &TemplateBuildCtx<'_>,
+    stage_id: i32,
     stage_idx: usize,
     layout: &StageLayout,
     row_lower: &mut [f64],
@@ -388,7 +404,7 @@ pub(super) fn fill_operational_violation_rows(
         for kind in MinFloor::ALL {
             for blk in 0..layout.clock.n_blks() {
                 let b = BlockIdx::new(blk);
-                let floor = ctx.plant_floor(stage_idx, kind, hydro_sys, blk);
+                let floor = ctx.plant_floor(stage_id, stage_idx, kind, hydro_sys, blk);
                 for cell_idx in ctx.hydro_cell_index.cells_of(hydro_sys) {
                     let cell = HydroCell::new(cell_idx);
                     let row = layout.min_floor_row(kind, cell, b);
@@ -402,7 +418,7 @@ pub(super) fn fill_operational_violation_rows(
     for (local, &hydro_sys) in layout.geometry.plant_floor_hydro_indices.iter().enumerate() {
         for kind in MinFloor::ALL {
             for blk in 0..layout.clock.n_blks() {
-                let floor = ctx.plant_floor(stage_idx, kind, hydro_sys, blk);
+                let floor = ctx.plant_floor(stage_id, stage_idx, kind, hydro_sys, blk);
                 let row = layout.plant_min_floor_row(
                     kind,
                     PlantFloorLocal::new(local),

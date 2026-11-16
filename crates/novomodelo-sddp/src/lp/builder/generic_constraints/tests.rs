@@ -17,7 +17,7 @@ use crate::hydro_models::{
 };
 use crate::lp::builder::{StageLayout, TemplateBuildCtx};
 use crate::lp::indexer::{
-    AnticipatedPlants, Boundary, EntityPositions, HydroCell, HydroCellIndex, HydroSys,
+    AnticipatedPlants, Boundary, EntityPositions, FphaLocal, HydroCell, HydroCellIndex, HydroSys,
 };
 use crate::test_support::ctx_fixture::CtxFixture;
 use crate::test_support::{
@@ -82,7 +82,8 @@ impl ResolverFixture {
     /// already be in id-ascending (canonical) order — `ctx()` derives every
     /// position map by enumeration, mirroring `System`'s own canonical sort.
     /// `anticipated_lead_stages` is anticipated-local (length must equal the
-    /// number of `thermals` carrying an `anticipated_config`).
+    /// number of `thermals` carrying an `anticipated_config`). The resolved
+    /// plant limits mirror the entity limits `make_hydro` declares.
     fn new(
         hydros: Vec<Hydro>,
         thermals: Vec<Thermal>,
@@ -122,7 +123,11 @@ impl ResolverFixture {
                     filling_min_rate_m3s: 0.0,
                     water_withdrawal_m3s: 0.0,
                 },
-                hydro_block: HydroBlockBounds::default(),
+                hydro_block: HydroBlockBounds {
+                    max_turbined_m3s: 1.0,
+                    max_generation_mw: 1.0,
+                    ..HydroBlockBounds::default()
+                },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
@@ -882,6 +887,97 @@ fn hydro_generation_fpha_second_hydro_block_2() {
     );
 
     assert_eq!(result, vec![(75 + 1 * 3 + 2, 1.0)]);
+}
+
+/// An FPHA plant whose resolved limit is 0 MW in every block of the stage is
+/// dropped from the FPHA set, so a generic row carries no generation term for
+/// it and the generation family holds the remaining FPHA plant alone. The
+/// unmodified twin resolves the same reference to its generation column.
+///
+/// derived: one FPHA hydro is left, so the generation family is `75..78` and
+/// hydro 30 is its first entry: `75 + 0 * 3 + 2` at block 2.
+#[test]
+fn hydro_generation_of_a_plant_without_capacity_has_no_term() {
+    let mut twin = default_fixture();
+    let twin_ctx = twin.base.ctx();
+    let twin_layout = StageLayout::new(&twin_ctx, &twin.stage, 0);
+    let generation_of = |hydro_id: i32| VariableRef::HydroGeneration {
+        hydro_id: EntityId(hydro_id),
+        block_id: None,
+        bus_id: None,
+    };
+    assert_eq!(
+        call(generation_of(10), 0, &twin_ctx, &twin_layout),
+        vec![(75, 1.0)]
+    );
+
+    let mut fx = default_fixture();
+    fx.base.bounds.hydro_block_base_mut(0, 0).max_generation_mw = 0.0;
+    let ctx = fx.base.ctx();
+    let layout = StageLayout::new(&ctx, &fx.stage, 0);
+
+    assert_eq!(
+        layout.fpha_local_index,
+        vec![None, None, Some(FphaLocal::new(0)), None]
+    );
+    assert_eq!(call(generation_of(10), 0, &ctx, &layout), vec![]);
+    assert_eq!(
+        call(generation_of(30), 2, &ctx, &layout),
+        vec![(75 + 0 * 3 + 2, 1.0)]
+    );
+}
+
+/// A plant without capacity keeps its turbine term: the turbine family is
+/// sized by every hydro, so dropping the plant from the FPHA set moves no
+/// turbine column.
+///
+/// derived: hydro 10 is position 0, so block 1 is `9 + 0 * 3 + 1`.
+#[test]
+fn hydro_turbined_of_a_plant_without_capacity_keeps_its_turbine_term() {
+    let mut fx = default_fixture();
+    fx.base.bounds.hydro_block_base_mut(0, 0).max_generation_mw = 0.0;
+    let ctx = fx.base.ctx();
+    let layout = StageLayout::new(&ctx, &fx.stage, 0);
+
+    let result = call(
+        VariableRef::HydroTurbined {
+            hydro_id: EntityId(10),
+            block_id: None,
+            bus_id: None,
+        },
+        1,
+        &ctx,
+        &layout,
+    );
+
+    assert_eq!(result, vec![(9 + 0 * 3 + 1, 1.0)]);
+}
+
+/// A constant-productivity plant is never dropped for lack of capacity: its
+/// generation term stays the turbine column scaled by its productivity, and
+/// the column is frozen by its bounds rather than removed.
+///
+/// derived: hydro 20 is position 1 at productivity 2.5, so block 0 is
+/// `(9 + 1 * 3 + 0, 2.5)`.
+#[test]
+fn hydro_generation_of_a_constant_productivity_plant_without_capacity_keeps_its_turbine_term() {
+    let mut fx = default_fixture();
+    fx.base.bounds.hydro_block_base_mut(1, 0).max_generation_mw = 0.0;
+    let ctx = fx.base.ctx();
+    let layout = StageLayout::new(&ctx, &fx.stage, 0);
+
+    let result = call(
+        VariableRef::HydroGeneration {
+            hydro_id: EntityId(20),
+            block_id: None,
+            bus_id: None,
+        },
+        0,
+        &ctx,
+        &layout,
+    );
+
+    assert_eq!(result, vec![(9 + 1 * 3 + 0, 2.5)]);
 }
 
 // ── Bus-selector tests ────────────────────────────────────────────────────

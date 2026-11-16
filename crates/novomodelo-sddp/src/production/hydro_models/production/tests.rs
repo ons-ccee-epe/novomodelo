@@ -2664,27 +2664,82 @@ fn computed_fpha_without_turbine_capacity_resolves_to_zero_productivity() {
 }
 
 #[test]
-fn computed_fpha_without_generation_capacity_still_fits_planes() {
+fn computed_fpha_without_generation_capacity_resolves_to_zero_productivity() {
     let mut hydro = make_sobradinho_computed_hydro(0);
     hydro.max_generation_mw = 0.0;
 
-    let (set, _, provenance, _, _, _, _) = resolve_single_computed_hydro(hydro);
+    let (set, _, provenance, export_rows, _, fpha_fit_deviations, _) =
+        resolve_single_computed_hydro(hydro);
 
-    assert!(
-        matches!(
-            set.model(0, 0),
-            ResolvedProductionModel::Fpha { planes, .. } if !planes.is_empty()
-        ),
-        "got {:?}",
-        set.model(0, 0)
-    );
+    for stage_idx in 0..2 {
+        assert!(
+            matches!(
+                set.model(0, stage_idx),
+                ResolvedProductionModel::ConstantProductivity { productivity } if *productivity == 0.0
+            ),
+            "stage {stage_idx}: got {:?}",
+            set.model(0, stage_idx)
+        );
+    }
     assert_eq!(
         provenance,
-        vec![(
-            EntityId::from(0),
-            ProductionModelSource::ComputedFromGeometry
-        )]
+        vec![(EntityId::from(0), ProductionModelSource::NoTurbineCapacity)]
     );
+    assert!(export_rows.is_empty() && fpha_fit_deviations.is_empty());
+}
+
+fn resolve_capturing_log(hydro: Hydro) -> String {
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone)]
+    struct Log(Arc<Mutex<Vec<u8>>>);
+    impl std::io::Write for Log {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let log = Log(Arc::new(Mutex::new(Vec::new())));
+    let writer = log.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_writer(move || writer.clone())
+        .finish();
+    tracing::subscriber::with_default(subscriber, || {
+        resolve_single_computed_hydro(hydro);
+    });
+    String::from_utf8(log.0.lock().unwrap().clone()).unwrap()
+}
+
+/// derived: the plant takes the fallback because `max_generation_mw = 0` fails the
+/// core capacity predicate, so its one warning prints both declared limits.
+#[test]
+fn zero_generation_capacity_fallback_warns_with_both_limits() {
+    let mut hydro = make_sobradinho_computed_hydro(0);
+    hydro.max_generation_mw = 0.0;
+    let declared_turbined = format!("max_turbined_m3s = {}", hydro.max_turbined_m3s);
+
+    let log = resolve_capturing_log(hydro);
+
+    let warnings: Vec<&str> = log.lines().filter(|l| l.contains("WARN")).collect();
+    assert_eq!(warnings.len(), 1, "{log}");
+    assert!(
+        warnings[0].contains("no turbine capacity")
+            && warnings[0].contains(&declared_turbined)
+            && warnings[0].contains("max_generation_mw = 0"),
+        "{log}"
+    );
+}
+
+#[test]
+fn fpha_plant_with_both_limits_emits_no_capacity_warning() {
+    let log = resolve_capturing_log(make_sobradinho_computed_hydro(0));
+
+    assert!(!log.contains("no turbine capacity"), "{log}");
 }
 
 #[test]

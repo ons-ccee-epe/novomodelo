@@ -26,7 +26,8 @@ use std::sync::mpsc;
 use novomodelo_core::scenario::ScenarioSource;
 use novomodelo_core::{BlockMode, EntityId};
 use novomodelo_io::{
-    PolicyCutRecord, STAGE_CUTS_PRICED_STATE_DATE_SENTINEL, StageCutsPayload,
+    FphaHyperplaneRow, HydroBoundsRow, PolicyCutRecord, STAGE_CUTS_PRICED_STATE_DATE_SENTINEL,
+    StageCutsPayload, parse_fpha_hyperplanes, parse_hydro_bounds, write_fpha_hyperplanes,
     write_policy_checkpoint,
 };
 use novomodelo_sddp::{
@@ -5761,10 +5762,14 @@ fn d51_split_plant_two_bus_converges_to_known_optimum() {
     );
 
     let twin = copy_case_dir(case_dir);
-    write_plant_max_bounds(
+    write_plant_bounds(
         &twin.path().join("constraints/hydro_bounds.parquet"),
-        50.0,
-        70.0,
+        &[PlantBoundsRow {
+            stage_id: 0,
+            block_id: None,
+            max_generation_mw: Some(50.0),
+            max_turbined_m3s: Some(70.0),
+        }],
     );
     let twin_lb = run_deterministic(twin.path()).final_lb;
     assert!(
@@ -5776,8 +5781,18 @@ fn d51_split_plant_two_bus_converges_to_known_optimum() {
 /// characterization: D51's converged cost (see its test).
 const D51_CAPPED_OPTIMUM: f64 = 10_064_658.525_299_307;
 
-/// Writes a stage-0 plant-axis `hydro_bounds.parquet` row for hydro 0.
-fn write_plant_max_bounds(dest: &Path, max_generation_mw: f64, max_turbined_m3s: f64) {
+/// One plant-axis `constraints/hydro_bounds.parquet` row for hydro 0;
+/// `block_id = None` is a stage-wide row.
+struct PlantBoundsRow {
+    stage_id: i32,
+    block_id: Option<i32>,
+    max_generation_mw: Option<f64>,
+    max_turbined_m3s: Option<f64>,
+}
+
+/// Writes `constraints/hydro_bounds.parquet` at `dest` holding one hydro-0 row
+/// per element of `rows`.
+fn write_plant_bounds(dest: &Path, rows: &[PlantBoundsRow]) {
     use arrow::array::{Float64Array, Int32Array};
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
@@ -5787,16 +5802,28 @@ fn write_plant_max_bounds(dest: &Path, max_generation_mw: f64, max_turbined_m3s:
     let schema = Arc::new(Schema::new(vec![
         Field::new("hydro_id", DataType::Int32, false),
         Field::new("stage_id", DataType::Int32, false),
+        Field::new("block_id", DataType::Int32, true),
         Field::new("max_generation_mw", DataType::Float64, true),
         Field::new("max_turbined_m3s", DataType::Float64, true),
     ]));
     let batch = RecordBatch::try_new(
         Arc::clone(&schema),
         vec![
-            Arc::new(Int32Array::from(vec![0])),
-            Arc::new(Int32Array::from(vec![0])),
-            Arc::new(Float64Array::from(vec![max_generation_mw])),
-            Arc::new(Float64Array::from(vec![max_turbined_m3s])),
+            Arc::new(Int32Array::from(vec![0; rows.len()])),
+            Arc::new(Int32Array::from_iter_values(
+                rows.iter().map(|r| r.stage_id),
+            )),
+            Arc::new(rows.iter().map(|r| r.block_id).collect::<Int32Array>()),
+            Arc::new(
+                rows.iter()
+                    .map(|r| r.max_generation_mw)
+                    .collect::<Float64Array>(),
+            ),
+            Arc::new(
+                rows.iter()
+                    .map(|r| r.max_turbined_m3s)
+                    .collect::<Float64Array>(),
+            ),
         ],
     )
     .expect("hydro_bounds RecordBatch");
@@ -5879,6 +5906,227 @@ fn d51_hydro_bus_generation_sums_bit_exactly_to_plant_rows() {
         checked_blocks, 3,
         "D51: 2 blocks at stage 0 + 1 at stage 1 = 3 (stage, block) pairs"
     );
+}
+
+/// D51 with group 1 (`H0-B1`, bus 1) declaring no generation capacity, so its
+/// cell is dead at every block.
+fn d51_with_dead_bus1_group() -> tempfile::TempDir {
+    let case = copy_case_dir(Path::new(
+        "../../examples/deterministic/d51-split-plant-two-bus",
+    ));
+    let hydros_path = case.path().join("system/hydros.json");
+    let mut hydros: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&hydros_path).expect("read hydros.json"))
+            .expect("hydros.json is JSON");
+    hydros["hydros"][0]["unit_groups"][1]["max_generation_mw"] = serde_json::Value::from(0.0);
+    std::fs::write(
+        &hydros_path,
+        serde_json::to_string_pretty(&hydros).expect("serialize hydros.json"),
+    )
+    .expect("write hydros.json");
+    case
+}
+
+/// Asserts that the dead bus-1 cell of a D51 copy turbines and generates nothing
+/// at each of its 3 simulated (stage, block)s.
+fn assert_bus1_cell_idle(scenario: &novomodelo_sddp::SimulationScenarioResult) {
+    let mut checked = 0_usize;
+    for stage in &scenario.stages {
+        for row in stage.hydro_bus_generation.iter().filter(|r| r.bus_id == 1) {
+            assert!(
+                row.turbined_m3s.abs() <= 1e-9 && row.generation_mw.abs() <= 1e-9,
+                "stage {} block {:?}: the dead bus-1 cell turbines {} m3/s and generates {} MW",
+                stage.stage_id,
+                row.block_id,
+                row.turbined_m3s,
+                row.generation_mw
+            );
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, 3, "one bus-1 row per simulated (stage, block)");
+}
+
+/// derived: the copy's LP is the shipped LP restricted to `q₁ = g₁ = σ₁ = 0`:
+/// cell 1's columns and slack are pinned, and freeing its rows removes nothing,
+/// because the shipped planes are `>= 0` at `q = 0` over storage `[0, 300]`. So
+/// the copy costs at least the shipped optimum (recorded within 1.0), and no
+/// plane slack is paid.
+#[test]
+fn d51_dead_cell_turbines_nothing_and_pays_no_plane_slack() {
+    const V_MAX_HM3: f64 = 300.0;
+
+    let case = d51_with_dead_bus1_group();
+    let planes = parse_fpha_hyperplanes(&case.path().join("system/fpha_hyperplanes.parquet"))
+        .expect("parse fpha_hyperplanes.parquet");
+    assert!(!planes.is_empty(), "D51 ships no plane to guard");
+    for row in &planes {
+        for storage_hm3 in [0.0, V_MAX_HM3] {
+            let power_at_zero_turbining = row.kappa * row.gamma_0 + row.gamma_v * storage_hm3;
+            assert!(
+                power_at_zero_turbining >= 0.0,
+                "plane {} at storage {storage_hm3}: {power_at_zero_turbining} MW at q = 0 is \
+                 negative",
+                row.plane_id
+            );
+        }
+        assert!(
+            row.gamma_s >= 0.0,
+            "plane {}: gamma_s {} < 0 lowers the plane with spillage",
+            row.plane_id,
+            row.gamma_s
+        );
+    }
+
+    let (result, scenario_results, _summary) = run_with_simulation(case.path());
+    assert!(
+        result.final_gap.abs() < 1e-6,
+        "D51 dead cell: gap={:.2e}",
+        result.final_gap
+    );
+    assert!(
+        result.final_lb >= D51_CAPPED_OPTIMUM - 1.0,
+        "D51 dead cell: a restriction of D51 must cost at least {D51_CAPPED_OPTIMUM}, got {}",
+        result.final_lb
+    );
+
+    let scenario = &scenario_results[0];
+    assert_bus1_cell_idle(scenario);
+    let plant_rows: Vec<_> = scenario.stages.iter().flat_map(|s| &s.hydros).collect();
+    assert_eq!(plant_rows.len(), 3, "one plant row per (stage, block)");
+    for row in plant_rows {
+        assert!(
+            row.fpha_violation_mw.abs() <= 1e-9,
+            "stage {} block {:?}: the plant pays {} MW of plane slack",
+            row.stage_id,
+            row.block_id,
+            row.fpha_violation_mw
+        );
+    }
+}
+
+/// The dead-bus-1 copy with its planes shifted below zero at zero turbining
+/// and its plant lowered to 0 MW at (stage 0, block 0), where both cells are dead.
+///
+/// derived: a dead (cell, block)'s columns and slack are pinned at 0, so the
+/// plant reports nothing at (stage 0, block 0) and cell 1 nothing anywhere. Cell
+/// 0 keeps its rows at `λ₀ = 42 / (42 + 28)` elsewhere, so
+/// `g₀ <= λ₀·(−margin) + γ_q·q₀ + σ₀` with `γ_q <= 0.95`.
+///
+/// hybrid: cell 0's `σ₀ = 0` at the live blocks is the optimizer's choice, as σ
+/// costs 110000 per MW·h and clearing it takes about 8 of the cell's 32 m3/s.
+#[test]
+fn d51_dead_cell_pays_no_plane_slack_below_zero_planes() {
+    const V_MAX_HM3: f64 = 300.0;
+    const MARGIN_MW: f64 = 10.0;
+    const MAX_GAMMA_Q: f64 = 0.95;
+    const LIVE_CELL_SHARE: f64 = 42.0 / (42.0 + 28.0);
+
+    let case = d51_with_dead_bus1_group();
+    let planes_path = case.path().join("system/fpha_hyperplanes.parquet");
+    let mut planes = parse_fpha_hyperplanes(&planes_path).expect("parse fpha_hyperplanes.parquet");
+    assert!(!planes.is_empty(), "D51 ships no plane to shift");
+    shift_planes_below_zero_at_zero_turbining(&mut planes, V_MAX_HM3, MARGIN_MW);
+    write_fpha_hyperplanes(&planes_path, &planes).expect("write fpha_hyperplanes.parquet");
+    let written = parse_fpha_hyperplanes(&planes_path).expect("parse fpha_hyperplanes.parquet");
+    assert_eq!(
+        written.len(),
+        planes.len(),
+        "fpha_hyperplanes.parquet row count"
+    );
+    for row in &written {
+        let power_at_max_storage = row.kappa * row.gamma_0 + row.gamma_v * V_MAX_HM3;
+        assert!(
+            power_at_max_storage <= -MARGIN_MW
+                && row.gamma_v >= 0.0
+                && row.gamma_s <= 0.0
+                && row.gamma_q <= MAX_GAMMA_Q,
+            "plane {}: {power_at_max_storage} MW at q = 0 and storage {V_MAX_HM3}, gamma_v {}, \
+             gamma_s {}, gamma_q {} do not keep it below -{MARGIN_MW} MW at zero turbining",
+            row.plane_id,
+            row.gamma_v,
+            row.gamma_s,
+            row.gamma_q
+        );
+    }
+
+    let bounds_path = case.path().join("constraints/hydro_bounds.parquet");
+    assert_eq!(
+        parse_hydro_bounds(&bounds_path).expect("parse hydro_bounds.parquet"),
+        [HydroBoundsRow {
+            hydro_id: EntityId::from(0),
+            stage_id: 0,
+            max_generation_mw: Some(28.0),
+            max_turbined_m3s: Some(32.0),
+            ..HydroBoundsRow::default()
+        }],
+        "the rewrite must keep every field D51 ships in hydro_bounds.parquet"
+    );
+    write_plant_bounds(
+        &bounds_path,
+        &[
+            PlantBoundsRow {
+                stage_id: 0,
+                block_id: None,
+                max_generation_mw: Some(28.0),
+                max_turbined_m3s: Some(32.0),
+            },
+            PlantBoundsRow {
+                stage_id: 0,
+                block_id: Some(0),
+                max_generation_mw: Some(0.0),
+                max_turbined_m3s: None,
+            },
+        ],
+    );
+
+    let (result, scenario_results, _summary) = run_with_simulation(case.path());
+    assert!(
+        result.final_gap.abs() < 1e-6,
+        "D51 dead cell below zero: gap={:.2e}",
+        result.final_gap
+    );
+
+    let scenario = &scenario_results[0];
+    let plant_rows: Vec<_> = scenario.stages.iter().flat_map(|s| &s.hydros).collect();
+    assert_eq!(plant_rows.len(), 3, "one plant row per (stage, block)");
+    let (both_dead, live): (Vec<_>, Vec<_>) = plant_rows
+        .into_iter()
+        .partition(|row| (row.stage_id, row.block_id) == (0, Some(0)));
+    for row in both_dead {
+        assert!(
+            row.fpha_violation_mw.abs() <= 1e-9
+                && row.turbined_m3s.abs() <= 1e-9
+                && row.generation_mw.abs() <= 1e-9,
+            "stage 0 block 0, both cells dead: the plant pays {} MW of plane slack, turbines {} \
+             m3/s and generates {} MW",
+            row.fpha_violation_mw,
+            row.turbined_m3s,
+            row.generation_mw
+        );
+    }
+    assert_bus1_cell_idle(scenario);
+    assert_eq!(live.len(), 2, "two (stage, block)s keep cell 0 live");
+    for row in live {
+        assert!(
+            row.generation_mw + LIVE_CELL_SHARE * MARGIN_MW
+                <= MAX_GAMMA_Q * row.turbined_m3s + row.fpha_violation_mw + 1e-6,
+            "stage {} block {:?}: {} MW from {} m3/s with {} MW of slack escapes the live cell's \
+             rows at its share",
+            row.stage_id,
+            row.block_id,
+            row.generation_mw,
+            row.turbined_m3s,
+            row.fpha_violation_mw
+        );
+        assert!(
+            row.fpha_violation_mw <= 1e-9,
+            "stage {} block {:?}: the live cell pays {} MW of plane slack",
+            row.stage_id,
+            row.block_id,
+            row.fpha_violation_mw
+        );
+    }
 }
 
 /// D52: per-block `max_generation_mw` cap binds in the block it targets, not
@@ -6871,12 +7119,9 @@ fn d53_hydro_cell_min_floor_binds_under_water_starvation() {
     );
 }
 
-/// D57: a computed-FPHA hydro with no turbine capacity resolves to zero
-/// productivity instead of aborting the fit, and is reported as a constant
-/// plant. The thermal serves the whole load; the reservoir fills to its cap and
-/// spills only the inflow it cannot hold.
-#[test]
-fn d57_computed_fpha_without_turbine_capacity_trains_at_zero_generation() {
+/// derived: Σ_t (c_th·L + c_s·spill_t)·H, where stage 0 spills the inflow
+/// above the free volume (V_max − V_0)/(H·k) and the full stage 1 spills all of it.
+fn d57_closed_form_total_cost() -> f64 {
     const HOURS: f64 = 730.0;
     const HM3_PER_M3S_HOUR: f64 = 0.0036;
     const LOAD_MW: f64 = 80.0;
@@ -6886,19 +7131,22 @@ fn d57_computed_fpha_without_turbine_capacity_trains_at_zero_generation() {
     const V_MAX_HM3: f64 = 200.0;
     const INFLOW_M3S: [f64; 2] = [40.0, 10.0];
 
-    /// derived: Σ_t (c_th·L + c_s·spill_t)·H, where stage 0 spills the inflow
-    /// above the free volume (V_max − V_0)/(H·k) and the full stage 1 spills all of it.
-    fn closed_form_total_cost() -> f64 {
-        let spill_m3s = [
-            INFLOW_M3S[0] - (V_MAX_HM3 - V_INIT_HM3) / (HOURS * HM3_PER_M3S_HOUR),
-            INFLOW_M3S[1],
-        ];
-        spill_m3s
-            .iter()
-            .map(|spill| (THERMAL_COST * LOAD_MW + SPILLAGE_COST * spill) * HOURS)
-            .sum()
-    }
+    let spill_m3s = [
+        INFLOW_M3S[0] - (V_MAX_HM3 - V_INIT_HM3) / (HOURS * HM3_PER_M3S_HOUR),
+        INFLOW_M3S[1],
+    ];
+    spill_m3s
+        .iter()
+        .map(|spill| (THERMAL_COST * LOAD_MW + SPILLAGE_COST * spill) * HOURS)
+        .sum()
+}
 
+/// D57: a computed-FPHA hydro with no turbine capacity resolves to zero
+/// productivity instead of aborting the fit, and is reported as a constant
+/// plant. The thermal serves the whole load; the reservoir fills to its cap and
+/// spills only the inflow it cannot hold.
+#[test]
+fn d57_computed_fpha_without_turbine_capacity_trains_at_zero_generation() {
     let case_dir = Path::new("../../examples/deterministic/d57-fpha-zero-turbine-capacity");
     let system = novomodelo_io::load_case(case_dir).expect("load_case must succeed");
     let hydro_models = prepare_hydro_models(&system, case_dir, false)
@@ -6916,7 +7164,64 @@ fn d57_computed_fpha_without_turbine_capacity_trains_at_zero_generation() {
         "D57: gap={:.2e}",
         result.final_gap
     );
-    assert_cost(result.final_lb, closed_form_total_cost(), 1e-2, "D57");
+    assert_cost(result.final_lb, d57_closed_form_total_cost(), 1e-2, "D57");
+}
+
+/// D57 with `max_turbined_m3s` 50 and `max_generation_mw` 0 on the plant and its
+/// group: the plant has no generation capacity, so it spills at the D57 closed
+/// form instead of turbining at 0 MW. Its `max_generation_mw` 50 twin turbines
+/// the thermal's load off, which the closed form does not allow.
+#[test]
+fn d57_capacity_without_generation_spills_at_the_closed_form() {
+    let tmp = copy_case_dir(Path::new(
+        "../../examples/deterministic/d57-fpha-zero-turbine-capacity",
+    ));
+    let set_limits = |max_turbined_m3s: f64, max_generation_mw: f64| {
+        edit_json(&tmp.path().join("system/hydros.json"), |v| {
+            let hydro = &mut v["hydros"][0];
+            let limits = [
+                ("max_turbined_m3s", max_turbined_m3s),
+                ("max_generation_mw", max_generation_mw),
+            ];
+            for (key, value) in limits {
+                hydro["generation"][key] = serde_json::json!(value);
+                hydro["unit_groups"][0][key] = serde_json::json!(value);
+            }
+        });
+    };
+
+    set_limits(50.0, 0.0);
+    let system = novomodelo_io::load_case(tmp.path()).expect("load_case must succeed");
+    let hydro_models = prepare_hydro_models(&system, tmp.path(), false)
+        .expect("a hydro with no generation capacity must not abort the fit");
+    let summary = novomodelo_sddp::build_hydro_model_summary(&hydro_models, &system);
+    assert_eq!(
+        (summary.n_constant, summary.n_fpha),
+        (1, 0),
+        "D57 spill: the plant must be reported as constant, not FPHA"
+    );
+    let result = run_deterministic(tmp.path());
+    assert!(
+        result.final_gap.abs() < 1e-6,
+        "D57 spill: gap={:.2e}",
+        result.final_gap
+    );
+    assert_cost(
+        result.final_lb,
+        d57_closed_form_total_cost(),
+        1e-2,
+        "D57 spill",
+    );
+
+    set_limits(50.0, 50.0);
+    let twin = run_deterministic(tmp.path());
+    assert!(
+        twin.final_lb <= d57_closed_form_total_cost() - 1.0,
+        "D57 spill twin: a plant with generation capacity must undercut the closed form \
+         of the spilling plant, got {} against {}",
+        twin.final_lb,
+        d57_closed_form_total_cost()
+    );
 }
 
 /// D57 switched to `source: "precomputed"` with the hyperplanes its computed run
@@ -6934,18 +7239,7 @@ fn d57_precomputed_round_trip_trains_at_the_computed_cost() {
     let computed = run_deterministic(computed_dir);
 
     let tmp = copy_case_dir(computed_dir);
-    let models_path = tmp.path().join("system/hydro_production_models.json");
-    let mut models: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(&models_path).expect("read hydro_production_models.json"),
-    )
-    .expect("hydro_production_models.json is JSON");
-    models["production_models"][0]["stage_ranges"][0]["fpha_config"]["source"] =
-        serde_json::Value::from("precomputed");
-    std::fs::write(
-        &models_path,
-        serde_json::to_string_pretty(&models).expect("serialize production models"),
-    )
-    .expect("write hydro_production_models.json");
+    switch_fpha_source_to_precomputed(tmp.path());
     assert!(!tmp.path().join("system/fpha_hyperplanes.parquet").exists());
 
     let system =
@@ -6973,6 +7267,145 @@ fn d57_precomputed_round_trip_trains_at_the_computed_cost() {
         result.final_gap
     );
     assert_cost(result.final_lb, computed.final_lb, 1e-2, "D57 precomputed");
+}
+
+/// Sets hydro 0's FPHA source to `precomputed` in the case's
+/// `system/hydro_production_models.json`.
+fn switch_fpha_source_to_precomputed(case_dir: &Path) {
+    let models_path = case_dir.join("system/hydro_production_models.json");
+    let mut models: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&models_path).expect("read hydro_production_models.json"),
+    )
+    .expect("hydro_production_models.json is JSON");
+    models["production_models"][0]["stage_ranges"][0]["fpha_config"]["source"] =
+        serde_json::Value::from("precomputed");
+    std::fs::write(
+        &models_path,
+        serde_json::to_string_pretty(&models).expect("serialize production models"),
+    )
+    .expect("write hydro_production_models.json");
+}
+
+/// Lowers every plane's LP intercept `kappa * gamma_0` by one shared δ, so that
+/// a plane with `gamma_v >= 0` is at most `-margin_mw` at `q = 0`, `s = 0` and any
+/// storage in `[0, v_max_hm3]`.
+fn shift_planes_below_zero_at_zero_turbining(
+    rows: &mut [FphaHyperplaneRow],
+    v_max_hm3: f64,
+    margin_mw: f64,
+) {
+    let delta = margin_mw
+        + rows
+            .iter()
+            .map(|row| row.kappa * row.gamma_0 + row.gamma_v * v_max_hm3)
+            .fold(f64::NEG_INFINITY, f64::max);
+    for row in rows {
+        row.gamma_0 -= delta / row.kappa;
+    }
+}
+
+/// D07 with its computed planes shifted below zero at zero turbining, read back
+/// as `precomputed`, and its plant lowered to 0 MW at both stages by
+/// `hydro_bounds`: the declared limits keep the fit FPHA, and the stage gate
+/// leaves the plant Dormant.
+///
+/// derived: a Dormant plant produces nothing, so the thermal serves the load and
+/// the reservoir takes the D57 spill path ([`d57_closed_form_total_cost`]).
+///
+/// characterization: the same shifted copy without `hydro_bounds` trains away
+/// from that closed form; its direction depends on the shifted planes.
+#[test]
+fn dormant_fpha_plant_trains_at_the_d57_closed_form() {
+    const V_MAX_HM3: f64 = 200.0;
+    const MARGIN_MW: f64 = 10.0;
+
+    let d07_dir = Path::new("../../examples/deterministic/d07-fpha-computed");
+    let d07_system = novomodelo_io::load_case(d07_dir).expect("load_case must accept D07");
+    let mut planes = prepare_hydro_models(&d07_system, d07_dir, false)
+        .expect("prepare_hydro_models must fit D07")
+        .fpha_export_rows;
+    assert!(
+        !planes.is_empty(),
+        "D07: the computed fit exports no hyperplane, so the power guard has nothing to check"
+    );
+    shift_planes_below_zero_at_zero_turbining(&mut planes, V_MAX_HM3, MARGIN_MW);
+
+    let shifted_precomputed_copy = || {
+        let tmp = copy_case_dir(d07_dir);
+        write_fpha_hyperplanes(&tmp.path().join("system/fpha_hyperplanes.parquet"), &planes)
+            .expect("write fpha_hyperplanes.parquet");
+        switch_fpha_source_to_precomputed(tmp.path());
+        tmp
+    };
+
+    let dormant = shifted_precomputed_copy();
+    let written = parse_fpha_hyperplanes(&dormant.path().join("system/fpha_hyperplanes.parquet"))
+        .expect("parse fpha_hyperplanes.parquet");
+    assert_eq!(
+        written.len(),
+        planes.len(),
+        "fpha_hyperplanes.parquet row count"
+    );
+    for row in &written {
+        for storage_hm3 in [0.0, V_MAX_HM3] {
+            let power_at_zero_turbining = row.kappa * row.gamma_0 + row.gamma_v * storage_hm3;
+            assert!(
+                power_at_zero_turbining <= -MARGIN_MW,
+                "plane {} at storage {storage_hm3}: {power_at_zero_turbining} MW at q = 0 is not \
+                 below -{MARGIN_MW}",
+                row.plane_id
+            );
+        }
+        assert!(
+            row.gamma_s <= 0.0,
+            "plane {}: gamma_s {} > 0 lifts the plane with spillage",
+            row.plane_id,
+            row.gamma_s
+        );
+    }
+
+    let constraints_dir = dormant.path().join("constraints");
+    std::fs::create_dir(&constraints_dir).expect("create constraints/");
+    write_plant_bounds(
+        &constraints_dir.join("hydro_bounds.parquet"),
+        &[0, 1].map(|stage_id| PlantBoundsRow {
+            stage_id,
+            block_id: None,
+            max_generation_mw: Some(0.0),
+            max_turbined_m3s: Some(50.0),
+        }),
+    );
+
+    let system = novomodelo_io::load_case(dormant.path())
+        .expect("load_case must accept the 0 MW hydro_bounds rows");
+    let hydro_models = prepare_hydro_models(&system, dormant.path(), false)
+        .expect("prepare_hydro_models must read the shifted fpha_hyperplanes.parquet");
+    let summary = novomodelo_sddp::build_hydro_model_summary(&hydro_models, &system);
+    assert_eq!(
+        (summary.n_constant, summary.n_fpha),
+        (0, 1),
+        "Dormant D07: the declared limits keep the plant FPHA"
+    );
+
+    let result = run_deterministic(dormant.path());
+    assert!(
+        result.final_gap.abs() < 1e-6,
+        "Dormant D07: gap={:.2e}",
+        result.final_gap
+    );
+    assert_cost(
+        result.final_lb,
+        d57_closed_form_total_cost(),
+        1e-2,
+        "Dormant D07",
+    );
+
+    let twin_lb = run_deterministic(shifted_precomputed_copy().path()).final_lb;
+    assert!(
+        (twin_lb - d57_closed_form_total_cost()).abs() > 1.0,
+        "Dormant D07 twin: a plant with capacity must not train at the closed form {}, got {twin_lb}",
+        d57_closed_form_total_cost()
+    );
 }
 
 /// Chronological-blocks telescoping ⇒ parallel bound-agreement anchor.

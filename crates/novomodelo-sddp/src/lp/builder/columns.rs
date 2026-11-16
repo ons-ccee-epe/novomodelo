@@ -591,8 +591,9 @@ fn fill_inflow_slack_columns(
 /// `[0, max_generation_mw]`, objective `0.0` (turbined cost is on the turbine column).
 ///
 /// `identify_fpha_hydros` excludes a filling hydro from `fpha_hydro_indices` during
-/// `PreFilling`/`Filling` — the single owner of "no generation while filling"; this
-/// loop must NOT re-gate by phase (the branch would be dead).
+/// `PreFilling`/`Filling`, and a plant without turbine capacity in any block of the
+/// stage — the single owner of "no generation while filling or without capacity";
+/// this loop must NOT re-gate by phase or capacity (the branch would be dead).
 fn fill_fpha_generation_columns(
     ctx: &TemplateBuildCtx<'_>,
     stage_idx: usize,
@@ -635,9 +636,11 @@ fn fill_fpha_generation_columns(
     }
 }
 
-/// FPHA plane-slack columns: one per FPHA cell per block, `[0, +∞)`, objective
-/// `fpha_violation_cost` times the block's hours, written UNSCALED
-/// (`finalize_stage_objective` divides by the cost scale).
+/// FPHA plane-slack columns: one per FPHA cell per block, `[0, +∞)` where the
+/// (cell, block) has turbine capacity and `[0, 0]` where it has none (its plane
+/// rows are free, `rows::fill_fpha_rows`), objective `fpha_violation_cost` times
+/// the block's hours either way, written UNSCALED (`finalize_stage_objective`
+/// divides by the cost scale).
 fn fill_fpha_slack_columns(
     ctx: &TemplateBuildCtx<'_>,
     stage: &Stage,
@@ -652,12 +655,17 @@ fn fill_fpha_slack_columns(
         let hp = ctx.resolved.penalties.hydro_penalties(h.get(), stage_idx);
         for blk in (0..layout.clock.n_blks()).map(BlockIdx::new) {
             let cost = hp.fpha_violation_cost * stage.blocks[blk.get()].duration_hours;
-            for offset in 0..ctx.hydro_cell_index.cells_of(h).len() {
+            for (offset, cell) in ctx.hydro_cell_index.cells_of(h).enumerate() {
                 let col = layout
                     .geometry
                     .fpha_slack_col(FphaCellLocal::new(fpha_cell_base + offset), blk);
                 bufs.col_lower[col] = 0.0;
-                bufs.col_upper[col] = f64::INFINITY;
+                bufs.col_upper[col] =
+                    if ctx.cell_has_capacity(stage_idx, h, HydroCell::new(cell), blk.get()) {
+                        f64::INFINITY
+                    } else {
+                        0.0
+                    };
                 bufs.objective[col] = cost;
             }
         }
@@ -887,7 +895,7 @@ fn fill_cell_floor_slacks(
         let h = HydroSys::new(h_idx);
         let cost = kind.below_cost(ctx.resolved.penalties.hydro_penalties(h_idx, stage_idx));
         for blk in 0..layout.clock.n_blks() {
-            let floor = ctx.plant_floor(stage_idx, kind, h, blk);
+            let floor = ctx.plant_floor(stage.id, stage_idx, kind, h, blk);
             let block_hours = stage.blocks[blk].duration_hours;
             for cell_idx in ctx.hydro_cell_index.cells_of(h) {
                 let cell = HydroCell::new(cell_idx);
@@ -919,7 +927,7 @@ fn fill_plant_floor_slacks(
         for blk in 0..layout.clock.n_blks() {
             let col = layout.plant_below_col(kind, PlantFloorLocal::new(local), BlockIdx::new(blk));
             let binds = ctx
-                .plant_floor(stage_idx, kind, h, blk)
+                .plant_floor(stage.id, stage_idx, kind, h, blk)
                 .residual_rhs()
                 .is_some();
             bufs.col_upper[col] = if binds { f64::INFINITY } else { 0.0 };
@@ -6160,7 +6168,14 @@ mod hydro_block_bound_tests {
 
         let mut row_lower = vec![0.0_f64; layout.rows.num_rows];
         let mut row_upper = vec![0.0_f64; layout.rows.num_rows];
-        fill_operational_violation_rows(&ctx, stage_idx, &layout, &mut row_lower, &mut row_upper);
+        fill_operational_violation_rows(
+            &ctx,
+            stage.id,
+            stage_idx,
+            &layout,
+            &mut row_lower,
+            &mut row_upper,
+        );
 
         let offsets = FillOffsets {
             turbine: layout.geometry.turbine.start,
@@ -6716,7 +6731,7 @@ mod hydro_block_bound_tests {
         fixtures.set_hydro_bounds(
             0,
             STAGE_IDX,
-            hydro_block_bounds(0.0, 0.0, 0.0, None, 0.0, 300.0, None),
+            hydro_block_bounds(0.0, 1_000_000.0, 0.0, None, 0.0, 300.0, None),
         );
         fixtures.install_block_overlay();
         fixtures.set_hydro_block_override(
@@ -6765,6 +6780,8 @@ mod hydro_block_bound_tests {
 
 #[cfg(test)]
 mod cell_column_bound_tests {
+    use std::collections::BTreeMap;
+
     use crate::test_support::ctx_fixture::CtxFixture;
 
     use novomodelo_core::entities::hydro::{FillingConfig, HydroGenerationModel};
@@ -6787,11 +6804,13 @@ mod cell_column_bound_tests {
     use crate::test_support::make_unit_group;
     use crate::time_value::TimeValue;
 
+    use super::super::fpha_cursor::for_each_fpha_plane;
     use super::super::hydro_state::{cell_min_generation, cell_min_turbined};
+    use super::super::rows::fill_stage_rows;
     use super::super::test_support::{BLOCK_HOURS, three_block_stage, zero_hydro_penalties};
     use super::{
         ColumnBufs, GroupBoundLookup, StageLayout, TemplateBuildCtx, fill_fpha_generation_columns,
-        fill_turbine_columns,
+        fill_fpha_slack_columns, fill_turbine_columns,
     };
 
     const N_STAGES: usize = 1;
@@ -7390,6 +7409,112 @@ mod cell_column_bound_tests {
         );
     }
 
+    fn fpha_model() -> ResolvedProductionModel {
+        ResolvedProductionModel::Fpha {
+            planes: vec![FphaPlane {
+                intercept: 0.0,
+                gamma_v: 0.0,
+                gamma_q: 0.0,
+                gamma_s: 0.0,
+            }],
+        }
+    }
+
+    fn turbine_uppers(fixtures: &mut Fixtures) -> Vec<f64> {
+        let ctx = fixtures.make_ctx();
+        let stage = three_block_stage(STAGE_IDX);
+        let layout = StageLayout::new(&ctx, &stage, STAGE_IDX);
+        let (mut col_lower, mut col_upper, mut objective) = fresh_bufs(layout.num_cols);
+        let mut bufs = ColumnBufs {
+            col_lower: &mut col_lower,
+            col_upper: &mut col_upper,
+            objective: &mut objective,
+        };
+        fill_turbine_columns(&ctx, &stage, STAGE_IDX, &layout, &mut bufs);
+        (0..N_BLKS)
+            .map(|blk| {
+                col_upper[layout
+                    .geometry
+                    .turbine_col(HydroCell::new(0), BlockIdx::new(blk))]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_turbine_fold_drops_a_group_without_generation_capacity() {
+        let groups = vec![
+            make_unit_group(EntityId(11), EntityId(500), 0.0, 0.0, 0.0, 100.0),
+            make_unit_group(EntityId(12), EntityId(500), 0.0, 50.0, 0.0, 100.0),
+        ];
+        let plant = grouped_hydro(1, EntityId(70), groups, 200.0, 50.0);
+        let mut fixtures = Fixtures::new(vec![plant], vec![fpha_model()], N_STAGES);
+        fixtures.set_hydro_bounds(0, STAGE_IDX, hydro_block_bounds(200.0, 50.0));
+
+        assert_eq!(turbine_uppers(&mut fixtures), vec![100.0; N_BLKS]);
+    }
+
+    #[test]
+    fn test_generation_bound_drops_a_group_without_turbine_capacity() {
+        let groups = vec![
+            make_unit_group(EntityId(11), EntityId(500), 0.0, 100.0, 0.0, 0.0),
+            make_unit_group(EntityId(12), EntityId(500), 0.0, 50.0, 0.0, 100.0),
+        ];
+        let plant = grouped_hydro(1, EntityId(70), groups, 100.0, 150.0);
+        let mut fixtures = Fixtures::new(vec![plant], vec![fpha_model()], N_STAGES);
+        fixtures.set_hydro_bounds(0, STAGE_IDX, hydro_block_bounds(100.0, 150.0));
+
+        let ctx = fixtures.make_ctx();
+        let stage = three_block_stage(STAGE_IDX);
+        let layout = StageLayout::new(&ctx, &stage, STAGE_IDX);
+        let (mut col_lower, mut col_upper, mut objective) = fresh_bufs(layout.num_cols);
+        let mut bufs = ColumnBufs {
+            col_lower: &mut col_lower,
+            col_upper: &mut col_upper,
+            objective: &mut objective,
+        };
+        fill_fpha_generation_columns(&ctx, STAGE_IDX, &layout, &mut bufs);
+
+        let upper: Vec<f64> = (0..N_BLKS)
+            .map(|blk| {
+                col_upper[layout
+                    .geometry
+                    .generation_col(FphaCellLocal::new(0), BlockIdx::new(blk))]
+            })
+            .collect();
+        assert_eq!(upper, vec![50.0; N_BLKS]);
+    }
+
+    #[test]
+    fn test_plant_without_generation_capacity_at_a_block_freezes_that_block() {
+        let plant = grouped_hydro(1, EntityId(70), Vec::new(), 100.0, 100.0);
+        let mut fixtures = Fixtures::new(vec![plant], vec![fpha_model()], N_STAGES);
+        fixtures.set_hydro_bounds(0, STAGE_IDX, hydro_block_bounds(100.0, 100.0));
+        fixtures.install_block_overlay();
+        fixtures.set_hydro_block_override(
+            0,
+            1,
+            HydroBlockOverride {
+                max_generation_mw: Some(0.0),
+                ..HydroBlockOverride::default()
+            },
+        );
+
+        assert_eq!(turbine_uppers(&mut fixtures), vec![100.0, 0.0, 100.0]);
+    }
+
+    #[test]
+    fn test_zero_productivity_plant_without_generation_capacity_turbines_nothing() {
+        let plant = grouped_hydro(1, EntityId(70), Vec::new(), 50.0, 0.0);
+        let mut fixtures = Fixtures::new(
+            vec![plant],
+            vec![ResolvedProductionModel::ConstantProductivity { productivity: 0.0 }],
+            N_STAGES,
+        );
+        fixtures.set_hydro_bounds(0, STAGE_IDX, hydro_block_bounds(50.0, 0.0));
+
+        assert_eq!(turbine_uppers(&mut fixtures), vec![0.0; N_BLKS]);
+    }
+
     /// A `PreFilling` split plant pins BOTH its cells' turbined columns to
     /// `[0, 0]` — the plant-scoped `suspended` gate applies once, to every
     /// cell, never re-evaluated per cell. The non-filling padding plant stays
@@ -7809,29 +7934,36 @@ mod cell_column_bound_tests {
     }
 
     /// `cell_min_turbined`/`cell_min_generation` are declaration-order
-    /// invariant: a plant declaring the SAME three groups (one on bus 5, two on
-    /// bus 6) in a different `Vec` order produces the IDENTICAL per-cell floor
-    /// sum, bit-for-bit — the min-floor mirror of `HydroCellIndex`'s own
-    /// declaration-order invariance
+    /// invariant: a plant declaring the SAME four groups (one on bus 5, three on
+    /// bus 6, one of them without capacity) in a different `Vec` order produces
+    /// the IDENTICAL per-cell floor sum, bit-for-bit — the min-floor mirror of
+    /// `HydroCellIndex`'s own declaration-order invariance
     /// (`test_cell_index_is_invariant_to_group_declaration_order_and_ids` in
-    /// `lp/indexer/hydro_cell.rs`).
+    /// `lp/indexer/hydro_cell.rs`). The group without capacity adds nothing: the
+    /// bus-6 cell floors 3 + 4 = 7 m³/s and 4 + 5 = 9 MW, not 9 and 15.
     #[test]
     fn test_cell_min_floor_is_invariant_to_group_declaration_order() {
         let group_a = make_unit_group(EntityId(10), EntityId(5), 8.0, 500.0, 5.0, 500.0);
         let group_b = make_unit_group(EntityId(11), EntityId(6), 4.0, 500.0, 3.0, 500.0);
         let group_c = make_unit_group(EntityId(12), EntityId(6), 5.0, 500.0, 4.0, 500.0);
+        let group_d = make_unit_group(EntityId(13), EntityId(6), 6.0, 0.0, 2.0, 500.0);
 
         let forward = grouped_hydro(
             1,
             EntityId(999),
-            vec![group_a.clone(), group_b.clone(), group_c.clone()],
+            vec![
+                group_a.clone(),
+                group_b.clone(),
+                group_c.clone(),
+                group_d.clone(),
+            ],
             1000.0,
             1000.0,
         );
         let reversed = grouped_hydro(
             1,
             EntityId(999),
-            vec![group_c, group_b, group_a],
+            vec![group_d, group_c, group_b, group_a],
             1000.0,
             1000.0,
         );
@@ -7887,6 +8019,11 @@ mod cell_column_bound_tests {
                 min_gen_r.to_bits(),
                 "bus {bus:?}: min-generation floor must not depend on group declaration order"
             );
+
+            if bus == EntityId(6) {
+                assert_eq!(min_turb_f, 7.0, "bus 6 min-turbine floor");
+                assert_eq!(min_gen_f, 9.0, "bus 6 min-generation floor");
+            }
         }
     }
 
@@ -7945,6 +8082,237 @@ mod cell_column_bound_tests {
             60.0_f64.to_bits(),
             "fold-then-sum on resolved values: min(100,50) + min(10,100) = 50 + 10 = 60, \
              not sum-then-fold's min(110,150) = 110"
+        );
+    }
+
+    const PLANE_INTERCEPT: f64 = 5.0;
+    const FPHA_PRICE: f64 = 7.0;
+
+    fn plane_model() -> ResolvedProductionModel {
+        ResolvedProductionModel::Fpha {
+            planes: vec![FphaPlane {
+                intercept: PLANE_INTERCEPT,
+                gamma_v: 0.0,
+                gamma_q: 1.0,
+                gamma_s: 0.0,
+            }],
+        }
+    }
+
+    /// The padding plant and [`split_plant`] (cells 1 and 2, buses 200 and 300,
+    /// groups 21 and 22 at positions 0 and 1) with one plane each, the split
+    /// plant priced at `FPHA_PRICE`.
+    fn split_plant_fixtures() -> Fixtures {
+        let hydros = vec![padding_hydro(), split_plant(None, None)];
+        let models = vec![
+            ResolvedProductionModel::ConstantProductivity { productivity: 1.0 },
+            plane_model(),
+        ];
+        let mut fixtures = Fixtures::new(hydros, models, N_STAGES);
+        fixtures.set_hydro_bounds(0, STAGE_IDX, hydro_block_bounds(200.0, 1_000_000.0));
+        fixtures.set_hydro_bounds(1, STAGE_IDX, hydro_block_bounds(9000.0, 12000.0));
+        fixtures
+            .base
+            .penalties
+            .hydro_penalties_mut(1, STAGE_IDX)
+            .fpha_violation_cost = FPHA_PRICE;
+        fixtures.install_group_overlay();
+        fixtures
+    }
+
+    /// The bounds of one FPHA `(cell, block)`'s plane row and plane-slack column.
+    struct PlaneCell {
+        row: (f64, f64),
+        slack: (f64, f64),
+        slack_cost: f64,
+    }
+
+    /// Every FPHA `(cell, block)` of the stage, keyed by global cell and block
+    /// index, for a fixture whose plants carry one plane.
+    fn plane_cells(fixtures: &mut Fixtures) -> BTreeMap<(usize, usize), PlaneCell> {
+        let ctx = fixtures.make_ctx();
+        let stage = three_block_stage(STAGE_IDX);
+        let layout = StageLayout::new(&ctx, &stage, STAGE_IDX);
+        let (row_lower, row_upper) = fill_stage_rows(&ctx, &stage, STAGE_IDX, &layout);
+        let (mut col_lower, mut col_upper, mut objective) = fresh_bufs(layout.num_cols);
+        let mut bufs = ColumnBufs {
+            col_lower: &mut col_lower,
+            col_upper: &mut col_upper,
+            objective: &mut objective,
+        };
+        fill_fpha_slack_columns(&ctx, &stage, STAGE_IDX, &layout, &mut bufs);
+
+        let mut cells = BTreeMap::new();
+        for_each_fpha_plane(&ctx, STAGE_IDX, &layout, |visit, _plane| {
+            let col = layout.geometry.fpha_slack_col(visit.cell_local, visit.blk);
+            let plane_cell = PlaneCell {
+                row: (row_lower[visit.row], row_upper[visit.row]),
+                slack: (col_lower[col], col_upper[col]),
+                slack_cost: objective[col],
+            };
+            assert!(
+                cells
+                    .insert((visit.cell.get(), visit.blk.get()), plane_cell)
+                    .is_none(),
+                "one plane per (cell, block)"
+            );
+        });
+        cells
+    }
+
+    /// One `(cell, block)`'s plane row is `(-INF, row_upper)`, its slack
+    /// `[0, slack_upper]`, and the slack is priced at `FPHA_PRICE` times the
+    /// block's hours whether or not it is pinned.
+    fn assert_plane_cell(
+        cells: &BTreeMap<(usize, usize), PlaneCell>,
+        cell: usize,
+        blk: usize,
+        row_upper: f64,
+        slack_upper: f64,
+    ) {
+        let plane_cell = &cells[&(cell, blk)];
+        assert_eq!(
+            plane_cell.row.0,
+            f64::NEG_INFINITY,
+            "cell {cell} block {blk}: plane row lower"
+        );
+        assert_eq!(
+            plane_cell.row.1.to_bits(),
+            row_upper.to_bits(),
+            "cell {cell} block {blk}: plane row upper"
+        );
+        assert_eq!(
+            plane_cell.slack,
+            (0.0, slack_upper),
+            "cell {cell} block {blk}: plane slack"
+        );
+        assert_eq!(
+            plane_cell.slack_cost.to_bits(),
+            (FPHA_PRICE * BLOCK_HOURS[blk]).to_bits(),
+            "cell {cell} block {blk}: plane slack price"
+        );
+    }
+
+    /// `derived:` the single cell's share is 100/100 = 1, and block 1 fails the
+    /// plant term of the predicate (ḡ = 0).
+    #[test]
+    fn test_dead_cell_block_frees_its_plane_rows() {
+        let fixtures = |zero_block_1: bool| {
+            let group = make_unit_group(EntityId(21), EntityId(200), 0.0, 100.0, 0.0, 100.0);
+            let plant = grouped_hydro(2, EntityId(200), vec![group], 100.0, 100.0);
+            let mut fixtures = Fixtures::new(vec![plant], vec![plane_model()], N_STAGES);
+            fixtures.set_hydro_bounds(0, STAGE_IDX, hydro_block_bounds(100.0, 100.0));
+            fixtures
+                .base
+                .penalties
+                .hydro_penalties_mut(0, STAGE_IDX)
+                .fpha_violation_cost = FPHA_PRICE;
+            if zero_block_1 {
+                fixtures.install_block_overlay();
+                fixtures.set_hydro_block_override(
+                    0,
+                    1,
+                    HydroBlockOverride {
+                        max_generation_mw: Some(0.0),
+                        ..HydroBlockOverride::default()
+                    },
+                );
+            }
+            fixtures
+        };
+
+        let mut dead = fixtures(true);
+        let cells = plane_cells(&mut dead);
+        let share = dead.base.hydro_cell_index.share_of(HydroCell::new(0));
+        assert_eq!(share, 1.0);
+        let live_upper = share * PLANE_INTERCEPT;
+        for blk in [0, 2] {
+            assert_plane_cell(&cells, 0, blk, live_upper, f64::INFINITY);
+        }
+        assert_plane_cell(&cells, 0, 1, f64::INFINITY, 0.0);
+
+        let twin = plane_cells(&mut fixtures(false));
+        for blk in 0..N_BLKS {
+            assert_plane_cell(&twin, 0, blk, live_upper, f64::INFINITY);
+        }
+    }
+
+    /// `derived:` group 22 is cell 2's only group, and its ḡ = 0 at block 2
+    /// fails the group term. Cell 1's group 21 is untouched.
+    #[test]
+    fn test_dead_cell_of_a_split_plant_frees_only_its_own_rows() {
+        let mut fixtures = split_plant_fixtures();
+        fixtures.set_group_block_override(
+            1,
+            1,
+            STAGE_IDX,
+            2,
+            HydroUnitGroupOverride {
+                max_generation_mw: Some(0.0),
+                ..HydroUnitGroupOverride::default()
+            },
+        );
+        let cells = plane_cells(&mut fixtures);
+        let index = &fixtures.base.hydro_cell_index;
+        let live_upper = |cell: usize| index.share_of(HydroCell::new(cell)) * PLANE_INTERCEPT;
+
+        assert_plane_cell(&cells, 2, 2, f64::INFINITY, 0.0);
+        for blk in [0, 1] {
+            assert_plane_cell(&cells, 2, blk, live_upper(2), f64::INFINITY);
+        }
+        for blk in 0..N_BLKS {
+            assert_plane_cell(&cells, 1, blk, live_upper(1), f64::INFINITY);
+        }
+    }
+
+    #[test]
+    fn test_cell_has_capacity_follows_the_plant_and_group_terms() {
+        let capacity = |fixtures: &mut Fixtures| -> [[bool; N_BLKS]; 2] {
+            let ctx = fixtures.make_ctx();
+            [1, 2].map(|cell| {
+                std::array::from_fn(|blk| {
+                    ctx.cell_has_capacity(STAGE_IDX, HydroSys::new(1), HydroCell::new(cell), blk)
+                })
+            })
+        };
+
+        assert_eq!(
+            capacity(&mut split_plant_fixtures()),
+            [[true; N_BLKS]; 2],
+            "the unmodified plant has capacity at every cell and block"
+        );
+
+        let mut group_term = split_plant_fixtures();
+        group_term.set_group_block_override(
+            1,
+            1,
+            STAGE_IDX,
+            2,
+            HydroUnitGroupOverride {
+                max_generation_mw: Some(0.0),
+                ..HydroUnitGroupOverride::default()
+            },
+        );
+        assert_eq!(
+            capacity(&mut group_term),
+            [[true; N_BLKS], [true, true, false]],
+            "cell 2's only group has no generation at block 2"
+        );
+
+        let mut plant_term = split_plant_fixtures();
+        plant_term.install_block_overlay();
+        plant_term.set_hydro_block_override(
+            1,
+            0,
+            HydroBlockOverride {
+                max_turbined_m3s: Some(0.0),
+                ..HydroBlockOverride::default()
+            },
+        );
+        assert_eq!(
+            capacity(&mut plant_term),
+            [[false, true, true]; 2],
+            "the plant has no turbine capacity at block 0, so neither cell has"
         );
     }
 }

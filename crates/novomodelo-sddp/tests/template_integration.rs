@@ -942,12 +942,28 @@ fn csc_entry(tmpl: &novomodelo_solver::StageTemplate, col: usize, row: usize) ->
 
 /// 1-bus, 1-FPHA-hydro, 1-stage, 1-block system with `n_planes` planes, each
 /// `intercept=10.0, gamma_v=0.5, gamma_q=2.0, gamma_s=0.1`.
+fn one_fpha_hydro_system(n_planes: usize) -> (novomodelo_core::System, ProductionModelSet) {
+    one_fpha_hydro_system_with_block_bounds(
+        n_planes,
+        HydroBlockBounds {
+            max_turbined_m3s: 150.0,
+            max_generation_mw: 300.0,
+            ..Default::default()
+        },
+    )
+}
+
+/// [`one_fpha_hydro_system`] with the plant's resolved block bounds chosen by the
+/// caller; the entity's declared limits stay 150 m³/s / 300 MW.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_possible_wrap,
     clippy::too_many_lines
 )]
-fn one_fpha_hydro_system(n_planes: usize) -> (novomodelo_core::System, ProductionModelSet) {
+fn one_fpha_hydro_system_with_block_bounds(
+    n_planes: usize,
+    hydro_block: HydroBlockBounds,
+) -> (novomodelo_core::System, ProductionModelSet) {
     use chrono::NaiveDate;
     use novomodelo_core::entities::hydro::{HydroGenerationModel, HydroPenalties};
     use novomodelo_core::scenario::{InflowModel, LoadModel};
@@ -1077,11 +1093,7 @@ fn one_fpha_hydro_system(n_planes: usize) -> (novomodelo_core::System, Productio
                 filling_min_rate_m3s: 0.0,
                 water_withdrawal_m3s: 0.0,
             },
-            hydro_block: HydroBlockBounds {
-                max_turbined_m3s: 150.0,
-                max_generation_mw: 300.0,
-                ..Default::default()
-            },
+            hydro_block,
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,

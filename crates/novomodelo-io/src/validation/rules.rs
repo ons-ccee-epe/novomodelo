@@ -179,7 +179,7 @@ declare_rules! {
         "The correlation schedule names a profile that is not defined";
     DIMENSIONAL_FPHA_HYPERPLANES = "dimensional.6",
         Dimensional, DimensionMismatch, Error,
-        "An FPHA-configured hydro with turbine capacity has no rows in fpha_hyperplanes.parquet";
+        "An FPHA-configured hydro with positive max_turbined_m3s and max_generation_mw has no rows in fpha_hyperplanes.parquet";
     DIMENSIONAL_GEOMETRY_ROWS = "dimensional.7",
         Dimensional, DimensionMismatch, Error,
         "An FPHA hydro has no hydro_geometry.parquet rows";
