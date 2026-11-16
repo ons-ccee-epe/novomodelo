@@ -6,6 +6,7 @@ use novomodelo_io::PlaneReductionConfig;
 use novomodelo_io::extensions::{
     FittingWindow, FphaColumnLayout, HydroGeometryRow, TailraceCurveRow,
 };
+use novomodelo_io::validation::semantic::envelope_tolerance;
 
 use super::alpha::compute_alpha_fpha;
 use super::error::FphaFittingError;
@@ -276,7 +277,6 @@ fn tailrace_polynomial_quartic_five_coefficients() {
 
 /// Build the 3-point piecewise model from the acceptance criteria.
 fn ac_piecewise() -> TailraceModel {
-    use novomodelo_core::TailracePoint;
     TailraceModel::Piecewise {
         points: vec![
             TailracePoint {
@@ -678,174 +678,6 @@ fn no_fitting_window_uses_the_plant_storage_range() {
     assert_eq!(bounds.max_planes_per_hydro, 10);
 }
 
-// ── Absolute bounds — both set ────────────────────────────────────────────
-
-/// Given config with absolute volume_min_hm3 = 1000 and volume_max_hm3 = 30000,
-/// resolve_fitting_bounds returns those bounds unchanged (within the plant range).
-#[test]
-fn absolute_bounds_both_set() {
-    let config = FphaColumnLayout {
-        fitting_window: Some(FittingWindow {
-            volume_min_hm3: Some(1_000.0),
-            volume_max_hm3: Some(30_000.0),
-            volume_min_percentile: None,
-            volume_max_percentile: None,
-        }),
-        ..default_config()
-    };
-    let hydro = make_hydro(0.0, 34_116.0);
-    let forebay = sobradinho_forebay();
-
-    let bounds = resolve_bounds(&config, &hydro, forebay).unwrap();
-
-    assert_eq!(bounds.v_min, 1_000.0);
-    assert_eq!(bounds.v_max, 30_000.0);
-}
-
-// ── Absolute bounds — only min set ───────────────────────────────────────
-
-/// Given only volume_min_hm3, v_max falls back to the plant's max_storage_hm3.
-#[test]
-fn absolute_bounds_only_min_takes_the_plant_maximum() {
-    let config = FphaColumnLayout {
-        fitting_window: Some(FittingWindow {
-            volume_min_hm3: Some(5_000.0),
-            volume_max_hm3: None,
-            volume_min_percentile: None,
-            volume_max_percentile: None,
-        }),
-        ..default_config()
-    };
-    let hydro = make_hydro(1_000.0, 30_000.0);
-    let forebay = sobradinho_forebay();
-
-    let bounds = resolve_bounds(&config, &hydro, forebay).unwrap();
-
-    assert_eq!(bounds.v_min, 5_000.0);
-    assert_eq!(bounds.v_max, 30_000.0);
-}
-
-// ── Absolute bounds — only max set ───────────────────────────────────────
-
-/// Given only volume_max_hm3, v_min falls back to the plant's min_storage_hm3.
-#[test]
-fn absolute_bounds_only_max_takes_the_plant_minimum() {
-    let config = FphaColumnLayout {
-        fitting_window: Some(FittingWindow {
-            volume_min_hm3: None,
-            volume_max_hm3: Some(20_000.0),
-            volume_min_percentile: None,
-            volume_max_percentile: None,
-        }),
-        ..default_config()
-    };
-    let hydro = make_hydro(1_000.0, 30_000.0);
-    let forebay = sobradinho_forebay();
-
-    let bounds = resolve_bounds(&config, &hydro, forebay).unwrap();
-
-    assert_eq!(bounds.v_min, 1_000.0);
-    assert_eq!(bounds.v_max, 20_000.0);
-}
-
-// ── Percentile bounds ─────────────────────────────────────────────────────
-
-/// Given percentile bounds 0.1 and 0.9 on a hydro with range [100, 2000],
-/// v_min = 100 + 0.1 * 1900 = 290, v_max = 100 + 0.9 * 1900 = 1810.
-#[test]
-fn percentile_bounds_both_set() {
-    let config = FphaColumnLayout {
-        fitting_window: Some(FittingWindow {
-            volume_min_hm3: None,
-            volume_max_hm3: None,
-            volume_min_percentile: Some(0.1),
-            volume_max_percentile: Some(0.9),
-        }),
-        ..default_config()
-    };
-    let hydro = make_hydro(100.0, 2_000.0);
-    let forebay = small_forebay();
-
-    let bounds = resolve_bounds(&config, &hydro, forebay).unwrap();
-
-    let expected_min = 100.0 + 0.1 * 1_900.0; // 290.0
-    let expected_max = 100.0 + 0.9 * 1_900.0; // 1810.0
-    assert!((bounds.v_min - expected_min).abs() < 1e-10);
-    assert!((bounds.v_max - expected_max).abs() < 1e-10);
-}
-
-// ── Mixed — absolute min, percentile max (non-conflicting) ────────────────
-
-/// Absolute min bound + percentile max bound is accepted (different dimensions).
-#[test]
-fn mixed_absolute_min_percentile_max() {
-    let config = FphaColumnLayout {
-        fitting_window: Some(FittingWindow {
-            volume_min_hm3: Some(200.0),
-            volume_max_hm3: None,
-            volume_min_percentile: None,
-            volume_max_percentile: Some(0.9),
-        }),
-        ..default_config()
-    };
-    let hydro = make_hydro(100.0, 2_000.0);
-    let forebay = small_forebay();
-
-    let bounds = resolve_bounds(&config, &hydro, forebay).unwrap();
-
-    let expected_max = 100.0 + 0.9 * 1_900.0; // 1810.0
-    assert_eq!(bounds.v_min, 200.0);
-    assert!((bounds.v_max - expected_max).abs() < 1e-10);
-}
-
-// ── Conflicting — both absolute and percentile for min ───────────────────
-
-/// volume_min_hm3 and volume_min_percentile both set -> ConflictingFittingWindow.
-#[test]
-fn conflicting_min_bound_returns_error() {
-    let config = FphaColumnLayout {
-        fitting_window: Some(FittingWindow {
-            volume_min_hm3: Some(500.0),
-            volume_max_hm3: None,
-            volume_min_percentile: Some(0.1),
-            volume_max_percentile: None,
-        }),
-        ..default_config()
-    };
-    let hydro = make_hydro(100.0, 2_000.0);
-    let forebay = small_forebay();
-
-    let err = resolve_bounds(&config, &hydro, forebay).unwrap_err();
-    assert!(
-        matches!(err, FphaFittingError::ConflictingFittingWindow { .. }),
-        "expected ConflictingFittingWindow, got: {err:?}"
-    );
-}
-
-// ── Conflicting — both absolute and percentile for max ───────────────────
-
-/// volume_max_hm3 and volume_max_percentile both set -> ConflictingFittingWindow.
-#[test]
-fn conflicting_max_bound_returns_error() {
-    let config = FphaColumnLayout {
-        fitting_window: Some(FittingWindow {
-            volume_min_hm3: None,
-            volume_max_hm3: Some(1_800.0),
-            volume_min_percentile: None,
-            volume_max_percentile: Some(0.9),
-        }),
-        ..default_config()
-    };
-    let hydro = make_hydro(100.0, 2_000.0);
-    let forebay = small_forebay();
-
-    let err = resolve_bounds(&config, &hydro, forebay).unwrap_err();
-    assert!(
-        matches!(err, FphaFittingError::ConflictingFittingWindow { .. }),
-        "expected ConflictingFittingWindow, got: {err:?}"
-    );
-}
-
 // ── Empty range — v_min >= v_max ─────────────────────────────────────────
 
 /// Absolute bounds with v_min > v_max -> EmptyFittingWindow.
@@ -1039,50 +871,6 @@ fn single_volume_pins_the_forebay_at_the_plant_volume() {
     let head_at_plant_volume = small_forebay().height(1_000.0).to_bits();
     assert_eq!(pinned.height(999.0).to_bits(), head_at_plant_volume);
     assert_eq!(pinned.height(1_001.0).to_bits(), head_at_plant_volume);
-}
-
-// ── Clamping — absolute bounds outside the plant range ───────────────────
-
-/// Absolute v_min below the plant's min_storage_hm3 gets clamped to it.
-#[test]
-fn absolute_min_below_the_plant_range_gets_clamped() {
-    let config = FphaColumnLayout {
-        fitting_window: Some(FittingWindow {
-            volume_min_hm3: Some(-500.0),
-            volume_max_hm3: Some(20_000.0),
-            volume_min_percentile: None,
-            volume_max_percentile: None,
-        }),
-        ..default_config()
-    };
-    let hydro = make_hydro(1_000.0, 30_000.0);
-    let forebay = sobradinho_forebay();
-
-    let bounds = resolve_bounds(&config, &hydro, forebay).unwrap();
-
-    assert_eq!(bounds.v_min, 1_000.0);
-    assert_eq!(bounds.v_max, 20_000.0);
-}
-
-/// Absolute v_max above the plant's max_storage_hm3 gets clamped to it.
-#[test]
-fn absolute_max_above_the_plant_range_gets_clamped() {
-    let config = FphaColumnLayout {
-        fitting_window: Some(FittingWindow {
-            volume_min_hm3: Some(5_000.0),
-            volume_max_hm3: Some(50_000.0),
-            volume_min_percentile: None,
-            volume_max_percentile: None,
-        }),
-        ..default_config()
-    };
-    let hydro = make_hydro(1_000.0, 30_000.0);
-    let forebay = sobradinho_forebay();
-
-    let bounds = resolve_bounds(&config, &hydro, forebay).unwrap();
-
-    assert_eq!(bounds.v_min, 5_000.0);
-    assert_eq!(bounds.v_max, 30_000.0);
 }
 
 // ── Discretization defaults ──────────────────────────────────────────────
@@ -1617,6 +1405,237 @@ fn fit_fpha_planes_spill_sensitive_yields_negative_gamma_s() {
         any_negative,
         "a rising tailrace must produce at least one plane with gamma_s < 0"
     );
+}
+
+fn uncapped_sobradinho_hydro() -> Hydro {
+    let mut hydro = make_sobradinho_hydro();
+    hydro.max_generation_mw = 20_000.0;
+    hydro
+}
+
+/// The plane's value at `(v_min, q = 0, s = S_max)`, its minimum over the window at
+/// zero turbining because `γᵥ ≥ 0` and `γₛ ≤ 0`.
+fn corner_at_zero_turbining(plane: &FphaPlane, v_min_hm3: f64, s_max_m3s: f64) -> f64 {
+    plane.intercept + plane.gamma_v * v_min_hm3 + plane.gamma_s * s_max_m3s
+}
+
+fn corner_tolerance(plane: &FphaPlane, v_min_hm3: f64, s_max_m3s: f64) -> f64 {
+    envelope_tolerance(
+        plane
+            .intercept
+            .abs()
+            .max((plane.gamma_v * v_min_hm3).abs())
+            .max((plane.gamma_s * s_max_m3s).abs()),
+    )
+}
+
+/// derived: with `max_generation_mw` 20 000 the cap never binds, the long-term mean
+/// inflow is 0 and `max_turbined_m3s` is 3 000, so `S_max = 2 · 3 000`. A plane
+/// `P = γ₀ + γᵥ·v + γq·q + γₛ·s` with `γᵥ ≥ 0` and `γₛ ≤ 0` is smallest at
+/// `(v_min, 0, S_max)`, so a corner at or above 0 keeps it at or above 0 MW at zero
+/// turbining over the whole window. The origin plane has `γ₀ = γᵥ = 0`, so its
+/// corner bound is 0 and `γₛ` ends at +0.0.
+#[test]
+fn fit_fpha_planes_puts_every_plane_at_or_above_zero_at_the_window_corner() {
+    let rows = sobradinho_rows();
+    let hydro = uncapped_sobradinho_hydro();
+    let s_max = 6_000.0;
+    let windowed = FphaColumnLayout {
+        fitting_window: Some(FittingWindow {
+            volume_min_hm3: Some(5_000.0),
+            volume_max_hm3: None,
+            volume_min_percentile: None,
+            volume_max_percentile: None,
+        }),
+        ..default_config()
+    };
+
+    for (v_min, config) in [(0.0, default_config()), (5_000.0, windowed)] {
+        let planes = fit_fpha_planes(
+            &rows,
+            &hydro,
+            &config,
+            0.0,
+            TailraceSource::Entity(hydro.tailrace.clone()),
+            None,
+            1,
+            0,
+            false,
+        )
+        .expect("fit should succeed")
+        .planes;
+
+        for (idx, plane) in planes.iter().enumerate() {
+            let corner = corner_at_zero_turbining(plane, v_min, s_max);
+            let tolerance = corner_tolerance(plane, v_min, s_max);
+            assert!(
+                corner >= -tolerance,
+                "v_min={v_min} plane {idx}: corner={corner} must be >= -{tolerance}"
+            );
+        }
+        assert!(
+            planes.iter().any(|plane| {
+                plane.gamma_s < 0.0
+                    && corner_at_zero_turbining(plane, v_min, s_max).abs()
+                        <= corner_tolerance(plane, v_min, s_max)
+            }),
+            "v_min={v_min}: some plane must sit at its limit with gamma_s < 0"
+        );
+
+        let origin: Vec<&FphaPlane> = planes
+            .iter()
+            .filter(|plane| plane.intercept.abs() <= 1e-9 && plane.gamma_v.abs() <= 1e-9)
+            .collect();
+        assert!(!origin.is_empty(), "v_min={v_min}: no origin plane");
+        for plane in origin {
+            assert_eq!(
+                plane.gamma_s.to_bits(),
+                0.0_f64.to_bits(),
+                "v_min={v_min}: origin plane gamma_s={} must be +0.0",
+                plane.gamma_s
+            );
+        }
+    }
+}
+
+/// derived: on the single-volume path `γᵥ = 0`, so the corner is
+/// `γ₀ + γₛ·S_max` with `S_max = 2 · 3 000`, and the limit holds it at or above 0.
+#[test]
+fn fit_fpha_planes_limits_gamma_s_on_the_single_volume_path() {
+    let rows = vec![row(1_500.0, 386.5)];
+    let mut hydro = uncapped_sobradinho_hydro();
+    hydro.min_storage_hm3 = 1_500.0;
+    hydro.max_storage_hm3 = 1_500.0;
+
+    let planes = fit_fpha_planes(
+        &rows,
+        &hydro,
+        &default_config(),
+        0.0,
+        TailraceSource::Entity(hydro.tailrace.clone()),
+        None,
+        1,
+        0,
+        false,
+    )
+    .expect("single-volume fit should succeed")
+    .planes;
+
+    for (idx, plane) in planes.iter().enumerate() {
+        let corner = corner_at_zero_turbining(plane, 1_500.0, 6_000.0);
+        let tolerance = corner_tolerance(plane, 1_500.0, 6_000.0);
+        assert!(
+            corner >= -tolerance,
+            "plane {idx}: corner={corner} must be >= -{tolerance}"
+        );
+    }
+    assert!(
+        planes.iter().any(|plane| plane.gamma_s < 0.0),
+        "a rising tailrace must leave some plane with gamma_s < 0"
+    );
+}
+
+/// The corner is linear in the coefficients, so a midpoint merge of two planes at or
+/// above 0 there stays at or above 0. The checks that the limit binds, that planes
+/// merge and that a merged plane keeps `γₛ < 0` keep the test from passing vacuously.
+#[test]
+fn reduce_planes_keeps_every_plane_at_or_above_zero_at_the_window_corner() {
+    let rows = sobradinho_rows();
+    let hydro = uncapped_sobradinho_hydro();
+    // derived: no `spillage_fit_max_m3s` and a long-term mean inflow of 0, so S_max is
+    // twice the turbine limit, 6 000 m³/s.
+    let s_max = 2.0 * hydro.max_turbined_m3s;
+    let windows = [
+        (0.0, None),
+        (
+            5_000.0,
+            Some(FittingWindow {
+                volume_min_hm3: Some(5_000.0),
+                volume_max_hm3: None,
+                volume_min_percentile: None,
+                volume_max_percentile: None,
+            }),
+        ),
+    ];
+    let reductions = [
+        PlaneReductionConfig::Angle { tolerance_deg: 5.0 },
+        PlaneReductionConfig::Distance {
+            tolerance_pct: 2.0,
+            n_samples: 64,
+        },
+    ];
+    let fit = |config: &FphaColumnLayout, reduction: Option<&PlaneReductionConfig>| {
+        fit_fpha_planes(
+            &rows,
+            &hydro,
+            config,
+            0.0,
+            TailraceSource::Entity(hydro.tailrace.clone()),
+            reduction,
+            hydro.id.0,
+            0,
+            false,
+        )
+        .map(|result| result.planes)
+    };
+
+    for (v_min, fitting_window) in windows {
+        let config = FphaColumnLayout {
+            fitting_window,
+            ..default_config()
+        };
+        let unreduced = fit(&config, None)
+            .unwrap_or_else(|err| panic!("v_min={v_min} unreduced: fit should succeed: {err}"));
+        assert!(
+            unreduced.iter().any(|plane| {
+                plane.gamma_s < 0.0
+                    && corner_at_zero_turbining(plane, v_min, s_max).abs()
+                        <= corner_tolerance(plane, v_min, s_max)
+            }),
+            "v_min={v_min} unreduced: some plane must sit at its limit with gamma_s < 0"
+        );
+
+        for reduction in &reductions {
+            let reduced = fit(&config, Some(reduction)).unwrap_or_else(|err| {
+                panic!("v_min={v_min} {reduction:?}: fit should succeed: {err}")
+            });
+            assert!(
+                reduced.len() < unreduced.len(),
+                "v_min={v_min} {reduction:?}: {} reduced planes must be fewer than {} unreduced",
+                reduced.len(),
+                unreduced.len()
+            );
+            for (idx, plane) in reduced.iter().enumerate() {
+                let corner = corner_at_zero_turbining(plane, v_min, s_max);
+                let tolerance = corner_tolerance(plane, v_min, s_max);
+                assert!(
+                    corner >= -tolerance,
+                    "v_min={v_min} {reduction:?} plane {idx}: corner={corner} must be >= -{tolerance}"
+                );
+            }
+            assert!(
+                reduced.iter().any(|plane| plane.gamma_s < 0.0),
+                "v_min={v_min} {reduction:?}: some reduced plane must carry a limited gamma_s < 0"
+            );
+
+            let origin: Vec<&FphaPlane> = reduced
+                .iter()
+                .filter(|plane| plane.intercept.abs() <= 1e-9 && plane.gamma_v.abs() <= 1e-9)
+                .collect();
+            let [origin] = origin.as_slice() else {
+                panic!(
+                    "v_min={v_min} {reduction:?}: expected exactly one origin plane, got {}",
+                    origin.len()
+                );
+            };
+            assert_eq!(
+                origin.gamma_s.to_bits(),
+                0.0_f64.to_bits(),
+                "v_min={v_min} {reduction:?}: origin plane gamma_s={} must be +0.0",
+                origin.gamma_s
+            );
+        }
+    }
 }
 
 /// Fit_fpha_planes intercepts are finite for the Sobradinho fixture.
@@ -2579,8 +2598,6 @@ fn fit_fpha_planes_none_reduction_is_bit_identical_skip() {
 /// merge decisions.
 #[test]
 fn fit_fpha_planes_distance_reduction_is_deterministic() {
-    use novomodelo_io::extensions::PlaneReductionConfig;
-
     let rows = sobradinho_rows();
     let hydro = make_sobradinho_hydro();
     let config = FphaColumnLayout {
@@ -2729,7 +2746,6 @@ fn reduced_sobradinho_planes(reduction: &PlaneReductionConfig) -> Vec<FphaPlane>
 /// every coefficient.
 #[test]
 fn fit_fpha_planes_angle_reduction_is_shuffle_invariant() {
-    use novomodelo_io::extensions::PlaneReductionConfig;
     let reduction = PlaneReductionConfig::Angle { tolerance_deg: 2.0 };
     let first = reduced_sobradinho_planes(&reduction);
     let second = reduced_sobradinho_planes(&reduction);
@@ -2747,7 +2763,6 @@ fn fit_fpha_planes_angle_reduction_is_shuffle_invariant() {
 /// decisions — `to_bits`-identical for every coefficient.
 #[test]
 fn fit_fpha_planes_distance_reduction_is_shuffle_invariant() {
-    use novomodelo_io::extensions::PlaneReductionConfig;
     let reduction = PlaneReductionConfig::Distance {
         tolerance_pct: 0.5,
         n_samples: 128,
@@ -2769,7 +2784,6 @@ fn fit_fpha_planes_distance_reduction_is_shuffle_invariant() {
 /// input leaked into the seed or the sample loop.
 #[test]
 fn fit_fpha_planes_distance_reduction_is_rank_count_invariant() {
-    use novomodelo_io::extensions::PlaneReductionConfig;
     let reduction = PlaneReductionConfig::Distance {
         tolerance_pct: 0.5,
         n_samples: 128,
@@ -2799,9 +2813,7 @@ fn fit_fpha_planes_distance_reduction_is_rank_count_invariant() {
 /// present regardless of what the hull emits.
 #[test]
 fn reduce_planes_huge_tolerance_preserves_origin_plane_both_methods() {
-    use super::production::{ProductionFunction, TailraceSource};
     use super::reduction::reduce_planes;
-    use novomodelo_io::extensions::PlaneReductionConfig;
 
     // A concave production function with a positive generation window so the
     // Distance sampler exercises a real box (mirrors the reduction unit fixture).
@@ -2911,7 +2923,6 @@ fn reduce_planes_huge_tolerance_preserves_origin_plane_both_methods() {
 /// too, and the two-condition predicate is what keeps them mergeable.
 #[test]
 fn hull_fit_emits_exactly_one_origin_plane() {
-    use super::production::{ProductionFunction, TailraceSource};
     use super::reduction::{ORIGIN_EPS, is_origin_plane};
 
     let forebay = ForebayTable::new(

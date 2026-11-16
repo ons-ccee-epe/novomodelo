@@ -7,13 +7,14 @@
 //! per-hydro `ProductionModelSource` provenance, the `ρ_eq` override carried for
 //! energy-conversion derivation, and the computed-FPHA export rows.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use rayon::prelude::*;
 
 use novomodelo_core::temporal::Stage;
 use novomodelo_core::{
     EntityId, Hydro, StageId, StudyPos, System, entities::hydro::HydroGenerationModel,
+    long_term_mean_inflow_by_hydro,
 };
 use novomodelo_io::CaseArtifacts;
 use novomodelo_io::FphaDeviationPointRow;
@@ -120,10 +121,10 @@ pub fn resolve_production_models_from_artifacts(
             HashMap::new()
         };
 
-    let long_term_mean_inflow_table: HashMap<EntityId, f64> = if uses_computed_fpha {
-        build_long_term_mean_inflow_table(system)
+    let long_term_mean_inflow_table: BTreeMap<EntityId, f64> = if uses_computed_fpha {
+        long_term_mean_inflow_by_hydro(system.inflow_history())
     } else {
-        HashMap::new()
+        BTreeMap::new()
     };
 
     let study_stages: Vec<&Stage> = system.stages().iter().filter(|s| s.id >= 0).collect();
@@ -305,7 +306,7 @@ fn fit_one_hydro(
     system: &System,
     n_stages: usize,
     collect_deviation_points: bool,
-    long_term_mean_inflow_table: &HashMap<EntityId, f64>,
+    long_term_mean_inflow_table: &BTreeMap<EntityId, f64>,
 ) -> Result<PerHydroFit, SddpError> {
     let config_entry = config_map.get(&hydro.id).copied();
 
@@ -431,58 +432,6 @@ fn resolve_downstream_level(
     let v_ref = reference_volume_fractions.get(downstream_id, stage_pos);
 
     Some(forebay.height(v_ref))
-}
-
-/// Long-term mean inflow (m³/s) for every hydro, keyed by canonical
-/// [`EntityId`], from ONE sequential pass over `System::inflow_history()`.
-/// Feeds the lateral-secant `S_max = 2·mean` when the config sets no
-/// `spillage_fit_max_m3s`; a hydro absent from the table
-/// (no history) falls back to `0.0` at the lookup site, mapping to the
-/// `2 × max_turbined` fallback in `resolve_s_max`.
-///
-/// # Determinism
-///
-/// One sequential pass in `inflow_history()`'s stored canonical order; each
-/// hydro's `(sum, count)` accumulates in that same encounter order regardless
-/// of hydro declaration order, so every mean stays bit-identical to a
-/// per-hydro filtered scan. A partitioned-then-reduced parallel accumulator
-/// would reorder the adds and break bit-determinism.
-fn build_long_term_mean_inflow_table(system: &System) -> HashMap<EntityId, f64> {
-    let mut acc: HashMap<EntityId, (f64, u64)> = HashMap::new();
-    for row in system.inflow_history() {
-        let entry = acc.entry(row.hydro_id).or_insert((0.0, 0));
-        entry.0 += row.value_m3s;
-        entry.1 += 1;
-    }
-    acc.into_iter()
-        .map(|(hydro_id, (sum, count))| {
-            #[allow(clippy::cast_precision_loss)]
-            let mean = sum / (count as f64);
-            (hydro_id, mean)
-        })
-        .collect()
-}
-
-/// Reference oracle for [`build_long_term_mean_inflow_table`]: the retired
-/// per-hydro filtered scan, kept to prove the one-pass batch table's mean is
-/// bit-identical to a direct per-hydro `inflow_history()` scan.
-#[cfg(test)]
-fn long_term_mean_inflow_reference(system: &System, hydro_id: EntityId) -> f64 {
-    let mut sum = 0.0_f64;
-    let mut count = 0_u64;
-    for row in system.inflow_history() {
-        if row.hydro_id == hydro_id {
-            sum += row.value_m3s;
-            count += 1;
-        }
-    }
-    if count == 0 {
-        0.0
-    } else {
-        #[allow(clippy::cast_precision_loss)]
-        let n = count as f64;
-        sum / n
-    }
 }
 
 /// Fit FPHA planes for one `SelectionMode` entry's `FphaColumnLayout`, after

@@ -13,8 +13,7 @@ use std::collections::HashMap;
 
 use chrono::NaiveDate;
 use novomodelo_core::{
-    Bus, EfficiencyModel, EntityId, HydraulicLossesModel, InflowHistoryRow, StudyPos,
-    SystemBuilder, TailraceModel,
+    Bus, EfficiencyModel, EntityId, HydraulicLossesModel, StudyPos, SystemBuilder, TailraceModel,
     entities::hydro::{HydroGenerationModel, HydroPenalties},
     temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
@@ -1753,112 +1752,6 @@ fn spillage_fit_max_sets_the_secant_range() {
             .any(|(a, b)| a.gamma_s != b.gamma_s),
         "the input range must change gamma_s against the 2 x max_turbined fallback"
     );
-}
-
-// ── long-term mean inflow for the lateral secant ────────────────────
-
-fn inflow_row(hydro_id: i32, day: u32, value_m3s: f64) -> InflowHistoryRow {
-    let start_date = NaiveDate::from_ymd_opt(2000, 1, day).unwrap();
-    InflowHistoryRow {
-        hydro_id: EntityId::from(hydro_id),
-        start_date,
-        end_date: start_date.succ_opt().unwrap(),
-        value_m3s,
-    }
-}
-
-#[test]
-fn long_term_mean_inflow_is_per_hydro_canonical_mean() {
-    let rows = vec![
-        inflow_row(1, 1, 100.0),
-        inflow_row(2, 1, 9_999.0), // different hydro — must be excluded
-        inflow_row(1, 2, 200.0),
-        inflow_row(1, 3, 300.0),
-    ];
-    let system = SystemBuilder::new()
-        .inflow_history(rows)
-        .build()
-        .expect("valid system");
-
-    // mean(100, 200, 300) = 200. This feeds S_max = 2·mean at the fit site
-    // (resolve_s_max's contract, exercised in the fpha_fitting::secant tests).
-    let long_term_mean_inflow_m3s =
-        super::long_term_mean_inflow_reference(&system, EntityId::from(1));
-    assert_eq!(
-        long_term_mean_inflow_m3s, 200.0,
-        "long-term mean inflow must be the per-hydro mean of its own series"
-    );
-}
-
-#[test]
-fn long_term_mean_inflow_empty_history_is_zero() {
-    let system = SystemBuilder::new().build().expect("empty system is valid");
-    let long_term_mean_inflow_m3s =
-        super::long_term_mean_inflow_reference(&system, EntityId::from(1));
-    assert_eq!(
-        long_term_mean_inflow_m3s, 0.0,
-        "no inflow history must yield long-term mean inflow = 0"
-    );
-}
-
-#[test]
-fn long_term_mean_inflow_is_order_independent() {
-    let ascending = vec![
-        inflow_row(1, 1, 10.0),
-        inflow_row(1, 2, 20.0),
-        inflow_row(1, 3, 60.0),
-    ];
-    let descending = vec![
-        inflow_row(1, 3, 60.0),
-        inflow_row(1, 2, 20.0),
-        inflow_row(1, 1, 10.0),
-    ];
-    let sys_asc = SystemBuilder::new()
-        .inflow_history(ascending)
-        .build()
-        .expect("valid");
-    let sys_desc = SystemBuilder::new()
-        .inflow_history(descending)
-        .build()
-        .expect("valid");
-
-    let mlt_asc = super::long_term_mean_inflow_reference(&sys_asc, EntityId::from(1));
-    let mlt_desc = super::long_term_mean_inflow_reference(&sys_desc, EntityId::from(1));
-    assert_eq!(
-        mlt_asc, mlt_desc,
-        "long-term mean inflow must be order-independent (declaration-order invariance)"
-    );
-}
-
-/// The one-pass batch table's per-hydro mean must be bit-identical to
-/// [`super::long_term_mean_inflow_reference`]'s direct per-hydro filtered scan,
-/// for every hydro, including one with no history at all.
-#[test]
-fn build_long_term_mean_inflow_table_matches_per_hydro_reference() {
-    let rows = vec![
-        inflow_row(1, 1, 100.0),
-        inflow_row(2, 1, 9_999.0),
-        inflow_row(1, 2, 200.0),
-        inflow_row(3, 1, 5.0),
-        inflow_row(1, 3, 300.0),
-        inflow_row(2, 2, 1.0),
-    ];
-    let system = SystemBuilder::new()
-        .inflow_history(rows)
-        .build()
-        .expect("valid system");
-
-    let table = super::build_long_term_mean_inflow_table(&system);
-    for hydro_id in [1, 2, 3, 4] {
-        let hydro_id = EntityId::from(hydro_id);
-        let expected = super::long_term_mean_inflow_reference(&system, hydro_id);
-        let actual = table.get(&hydro_id).copied().unwrap_or(0.0);
-        assert_eq!(
-            actual.to_bits(),
-            expected.to_bits(),
-            "hydro {hydro_id:?}: batch table mean must be bit-identical to the per-hydro scan"
-        );
-    }
 }
 
 // ── resolve_downstream_level tests ───────────────────────────────────────

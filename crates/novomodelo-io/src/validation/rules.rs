@@ -529,6 +529,9 @@ declare_rules! {
     SEMANTIC_FPHA_PRICE_NOT_ABOVE_DEFICIT_PLUS_GENERATION = "semantic.5b.54",
         Semantic, ModelQuality, Warning,
         "An FPHA hydro's fpha_violation_cost does not exceed the maximum deficit-segment cost plus its generation_violation_below_cost (all $/MWh)";
+    SEMANTIC_FPHA_PRECOMPUTED_PLANE_NEGATIVE_AT_ZERO_TURBINING = "semantic.5b.55",
+        Semantic, ModelQuality, Warning,
+        "A precomputed FPHA plane falls below 0 MW with no turbined flow for some spillage up to the spillage fit maximum at the fitting window's lowest storage";
     PRODUCTIVITY_SUPPLIED_TWICE = "productivity_resolution.1",
         ProductivityResolution, SchemaViolation, Error,
         "A hydro's stage productivity is supplied by both hydro_production_models.json and hydro_energy_productivity.parquet";

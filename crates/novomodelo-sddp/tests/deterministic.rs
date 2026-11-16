@@ -7422,6 +7422,138 @@ fn dormant_fpha_plant_trains_at_the_d57_closed_form() {
     );
 }
 
+/// D07's computed planes, read back as `precomputed` under the same `fpha_config`,
+/// raise no zero-turbining warning; the twin shifts them below zero and proves the
+/// check live. The sloped tailrace makes spillage matter, and the fitting window from
+/// 50 hm³ makes the spillage limit bind at a corner other than `min_storage_hm3`.
+#[test]
+fn computed_fpha_planes_round_trip_without_a_zero_turbining_warning() {
+    /// derived: the edited fitting window's `volume_min_hm3`.
+    const V_MIN_HM3: f64 = 50.0;
+    /// derived: twice `max_turbined_m3s` 50, with no inflow history and no
+    /// `spillage_fit_max_m3s`.
+    const S_MAX_M3S: f64 = 100.0;
+    const ZERO_TURBINING_PREFIX: &str = "FPHA plane below zero at zero turbining:";
+    /// derived: after the shift every plane is <= -10 MW at s = 0 for storage in
+    /// [0, 200], so s* = 0 for all 22 pairs, and the tie-break takes stage 0, plane 0.
+    const SHIFTED_PAIRS: &str = "Hydro 0 -- 22 (stage, plane) pair(s) at stages 0-1";
+    /// derived: as [`SHIFTED_PAIRS`], at the window's v_min and the S_max above.
+    const SHIFTED_EARLIEST: &str = "at 0 m³/s of spillage (stage 0, plane 0, storage 50 hm³, \
+                                    spillage up to 100 m³/s)";
+
+    fn edit_case_json(path: &Path, edit: impl FnOnce(&mut serde_json::Value)) {
+        let mut value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).expect("read case JSON"))
+                .expect("case file is JSON");
+        edit(&mut value);
+        std::fs::write(
+            path,
+            serde_json::to_string_pretty(&value).expect("serialize case JSON"),
+        )
+        .expect("write case JSON");
+    }
+
+    let d07_dir = Path::new("../../examples/deterministic/d07-fpha-computed");
+    let fit_sloped_tailrace_copy = || {
+        let copy = copy_case_dir(d07_dir);
+        edit_case_json(&copy.path().join("system/hydros.json"), |hydros| {
+            hydros["hydros"][0]["tailrace"] =
+                serde_json::json!({"type": "polynomial", "coefficients": [300.0, 0.1]});
+        });
+        edit_case_json(
+            &copy.path().join("system/hydro_production_models.json"),
+            |models| {
+                let fpha_config =
+                    &mut models["production_models"][0]["stage_ranges"][0]["fpha_config"];
+                fpha_config["fitting_window"] = serde_json::json!({"volume_min_hm3": V_MIN_HM3});
+            },
+        );
+        let system = novomodelo_io::load_case(copy.path())
+            .expect("load_case must accept the edited D07 copy");
+        let rows = prepare_hydro_models(&system, copy.path(), false)
+            .expect("prepare_hydro_models must fit the edited D07 copy")
+            .fpha_export_rows;
+        (copy, rows)
+    };
+    let write_as_precomputed = |case_dir: &Path, rows: &[FphaHyperplaneRow]| {
+        write_fpha_hyperplanes(&case_dir.join("system/fpha_hyperplanes.parquet"), rows)
+            .expect("write fpha_hyperplanes.parquet");
+        switch_fpha_source_to_precomputed(case_dir);
+    };
+    let zero_turbining_warnings = |case_dir: &Path| -> Vec<String> {
+        let (_, report) = novomodelo_io::validate_case(case_dir)
+            .expect("validate_case must accept the precomputed D07 copy");
+        report
+            .warnings
+            .into_iter()
+            .map(|warning| warning.message)
+            .filter(|message| message.starts_with(ZERO_TURBINING_PREFIX))
+            .collect()
+    };
+
+    let (round_trip, rows) = fit_sloped_tailrace_copy();
+    let corner_at_window_min = |row: &FphaHyperplaneRow| {
+        let terms = [
+            row.kappa * row.gamma_0,
+            row.gamma_v * V_MIN_HM3,
+            row.gamma_s * S_MAX_M3S,
+        ];
+        let magnitude = terms.iter().map(|term| term.abs()).fold(0.0, f64::max);
+        (terms.iter().sum::<f64>(), magnitude)
+    };
+    let summary: Vec<String> = rows
+        .iter()
+        .map(|row| {
+            format!(
+                "(stage {:?}, plane {}, gamma_s {}, corner {})",
+                row.stage_id,
+                row.plane_id,
+                row.gamma_s,
+                corner_at_window_min(row).0
+            )
+        })
+        .collect();
+    assert!(
+        rows.iter().any(|row| row.gamma_s < 0.0),
+        "the sloped tailrace must give some plane gamma_s < 0: {summary:?}"
+    );
+    assert!(
+        rows.iter().filter(|row| row.gamma_s < 0.0).any(|row| {
+            let (corner, magnitude) = corner_at_window_min(row);
+            corner.abs() <= novomodelo_io::validation::semantic::envelope_tolerance(magnitude)
+        }),
+        "the spillage limit must bind on some plane at (v_min {V_MIN_HM3}, 0, S_max \
+         {S_MAX_M3S}): {summary:?}"
+    );
+    assert!(
+        rows.iter().all(|row| row.kappa == 1.0),
+        "computed planes must export kappa = 1: {:?}",
+        rows.iter().map(|row| row.kappa).collect::<Vec<_>>()
+    );
+
+    write_as_precomputed(round_trip.path(), &rows);
+    let raised = zero_turbining_warnings(round_trip.path());
+    assert!(
+        raised.is_empty(),
+        "computed planes read back as precomputed must not warn: {raised:?}"
+    );
+
+    let (shifted, mut shifted_rows) = fit_sloped_tailrace_copy();
+    shift_planes_below_zero_at_zero_turbining(&mut shifted_rows, 200.0, 10.0);
+    write_as_precomputed(shifted.path(), &shifted_rows);
+    let raised = zero_turbining_warnings(shifted.path());
+    assert_eq!(
+        raised.len(),
+        1,
+        "shifted planes must raise one zero-turbining warning: {raised:?}"
+    );
+    assert!(
+        raised[0].contains(SHIFTED_PAIRS) && raised[0].contains(SHIFTED_EARLIEST),
+        "shifted planes' warning must name {SHIFTED_PAIRS:?} and {SHIFTED_EARLIEST:?}: {}",
+        raised[0]
+    );
+}
+
 /// Chronological-blocks telescoping ⇒ parallel bound-agreement anchor.
 ///
 /// Pins the "telescoping ⇒ parallel agreement when interiors are inert" contract

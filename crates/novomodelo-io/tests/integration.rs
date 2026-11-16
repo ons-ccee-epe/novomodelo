@@ -1721,7 +1721,7 @@ fn every_committed_penalties_json_declares_fpha_violation_cost() {
 }
 
 #[test]
-fn no_committed_case_raises_the_fpha_price_warning() {
+fn no_committed_case_raises_an_fpha_plane_or_price_warning() {
     let mut fpha_cases = 0_usize;
     for dir in committed_case_dirs() {
         let declares_fpha =
@@ -1734,7 +1734,10 @@ fn no_committed_case_raises_the_fpha_price_warning() {
                     .warnings
                     .iter()
                     .map(|w| w.message.as_str())
-                    .filter(|m| m.contains("FPHA price ordering violation"))
+                    .filter(|m| {
+                        m.contains("FPHA price ordering violation")
+                            || m.starts_with("FPHA plane below zero at zero turbining:")
+                    })
                     .collect();
                 assert!(raised.is_empty(), "{}: {raised:?}", dir.display());
             }

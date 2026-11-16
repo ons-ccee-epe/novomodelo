@@ -106,6 +106,7 @@ pub(crate) fn validate_semantic_stages_penalties_scenarios(
     scenarios::check_filling_sufficiency(data, ctx);
     scenarios::check_fpha_penalty_rule(data, ctx);
     scenarios::check_fpha_price_dominance(data, ctx);
+    scenarios::check_fpha_precomputed_plane_at_zero_turbining(data, ctx);
     scenarios::check_scenario_models(data, ctx);
     scenarios::check_par_stationarity(data, ctx);
     correlation::check_correlation_matrices(data, ctx);
