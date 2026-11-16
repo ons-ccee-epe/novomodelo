@@ -28,7 +28,7 @@ use novomodelo_stochastic::{
 use tempfile::TempDir;
 
 pub mod anticipated_structural_assertions;
-pub mod builders;
+pub use novomodelo_sddp::test_support::builders;
 pub mod expanded_solve;
 pub mod forward_replay;
 pub mod in_code_studies;
