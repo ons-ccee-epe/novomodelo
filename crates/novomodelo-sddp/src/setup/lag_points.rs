@@ -8,25 +8,7 @@ use novomodelo_stochastic::DerivedInflowSeeds;
 use novomodelo_stochastic::par::lag_kernel::{LagWeightState, advance_lag_weights};
 
 use super::NodeGraph;
-use crate::lp::indexer::{CutStateProjection, LagPointMode};
-
-pub(super) struct LagPointClass {
-    pub(super) mode: LagPointMode,
-    pub(super) inverse_weight: Vec<f64>,
-    pub(super) share: Vec<f64>,
-    pub(super) incoming_weight: Vec<f64>,
-}
-
-impl LagPointClass {
-    fn without_coefficients(mode: LagPointMode) -> Self {
-        Self {
-            mode,
-            inverse_weight: Vec::new(),
-            share: Vec::new(),
-            incoming_weight: Vec::new(),
-        }
-    }
-}
+use crate::lp::indexer::{ClosingCoefficients, CutStateProjection, LagPointRule};
 
 #[expect(
     clippy::float_cmp,
@@ -36,7 +18,7 @@ fn scales_to_unity(weight: f64) -> bool {
     weight * (1.0 / weight) == 1.0
 }
 
-/// One class per stage, in stage order, replaying the lag-kernel weights from `seed`.
+/// One rule per stage, in stage order, replaying the lag-kernel weights from `seed`.
 ///
 /// Warns once for each stage that rebuilds its lags from the downstream ring.
 pub(super) fn classify_lag_points(
@@ -44,7 +26,7 @@ pub(super) fn classify_lag_points(
     transitions: &[StageLagTransition],
     downstream_par_order: usize,
     seed: &DerivedInflowSeeds,
-) -> Vec<LagPointClass> {
+) -> Vec<LagPointRule> {
     let mut weights = LagWeightState::from_seed(&seed.weight);
     let mut seed_accumulator_open = seed.accum.iter().any(|&accumulated| accumulated != 0.0);
 
@@ -65,18 +47,18 @@ pub(super) fn classify_lag_points(
                 transition.rebuild_from_downstream && after_own_downstream_update.n_completed > 0;
 
             let w = transition.accumulate_weight;
-            let class = if rebuilds {
+            let rule = if rebuilds {
                 tracing::warn!(
                     "stage {stage_id}: the inflow lags step from months to quarters here; cuts at \
                      this stage evaluate inflow lags as at a single-resolution stage"
                 );
-                LagPointClass::without_coefficients(LagPointMode::Shifted)
+                LagPointRule::Shifted
             } else if transition.finalize_period {
                 let monthly_identity = scales_to_unity(w)
                     && !seed_accumulator_open
                     && weights.primary.iter().all(|&held| held == 0.0);
                 if monthly_identity {
-                    LagPointClass::without_coefficients(LagPointMode::Shifted)
+                    LagPointRule::Shifted
                 } else {
                     let inverse_weight: Vec<f64> = weights
                         .primary
@@ -86,27 +68,27 @@ pub(super) fn classify_lag_points(
                             if total > 0.0 { 1.0 / total } else { 1.0 }
                         })
                         .collect();
-                    LagPointClass {
-                        mode: LagPointMode::Closing,
-                        share: inverse_weight.iter().map(|&inverse| w * inverse).collect(),
+                    let share = inverse_weight.iter().map(|&inverse| w * inverse).collect();
+                    LagPointRule::Closing(ClosingCoefficients::new(
                         inverse_weight,
-                        incoming_weight: weights.primary.clone(),
-                    }
+                        share,
+                        weights.primary.clone(),
+                    ))
                 }
             } else {
-                LagPointClass::without_coefficients(LagPointMode::Carry)
+                LagPointRule::Carry
             };
 
             if transition.finalize_period && !rebuilds {
                 seed_accumulator_open = false;
             }
             advance_lag_weights(&mut weights, transition, downstream_par_order);
-            class
+            rule
         })
         .collect()
 }
 
-/// Installs on every pool the class of its stage, leaf pools included; a pool
+/// Installs on every pool the rule of its stage, leaf pools included; a pool
 /// without lag slots keeps the shifted point.
 pub(super) fn install_lag_points(
     layouts: &mut [CutStateProjection],
@@ -116,16 +98,10 @@ pub(super) fn install_lag_points(
     downstream_par_order: usize,
     seed: &DerivedInflowSeeds,
 ) {
-    let classes = classify_lag_points(stage_ids, transitions, downstream_par_order, seed);
+    let rules = classify_lag_points(stage_ids, transitions, downstream_par_order, seed);
     for (layout, stage) in layouts.iter_mut().zip(&node_graph.pool_stage) {
         if layout.has_lag_slots() {
-            let class = &classes[stage.0];
-            layout.lag_point_mut().install_mode(
-                class.mode,
-                &class.inverse_weight,
-                &class.share,
-                &class.incoming_weight,
-            );
+            layout.lag_point_mut().install_rule(rules[stage.0].clone());
         }
     }
 }

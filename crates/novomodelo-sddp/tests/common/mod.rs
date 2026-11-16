@@ -15,11 +15,14 @@ use novomodelo_core::{BlockMode, System};
 use novomodelo_io::test_support::owned_piece_defaults;
 use novomodelo_io::{Config, OwnedPolicyCutRecord};
 use novomodelo_sddp::{
-    BoundaryStateRequirements, CutPool, SddpError, SimulationScenarioResult, StudySetup,
+    BoundaryLoadRequest, BoundaryStateRequirements, CutPool, SddpError, SimulationScenarioResult,
+    StudySetup,
     hydro_models::{PrepareHydroModelsResult, prepare_hydro_models},
     indexer::{CutSlot, CutStateProjection},
+    inject_boundary_cuts, load_boundary_cuts,
     setup::{NodePos, StageIdx, StudyParams, prepare_stochastic},
     test_support::decks::{Deck, SLOW_DECKS, committed_decks},
+    test_support::{fixture_priced_date, write_synthetic_boundary, ymd},
 };
 use novomodelo_solver::ActiveSolver;
 use novomodelo_stochastic::{
@@ -691,6 +694,28 @@ pub fn inject_constant_terminal_boundary_cuts(
         .collect();
     setup.fcf.pools[terminal] =
         CutPool::new_with_warm_start(state_dim, setup.fcf.forward_passes, 0, &records);
+}
+
+/// Writes a one-cut boundary checkpoint of `intercept` and `coefficients`, one per state
+/// dimension, into `dir`, loads it and installs it as the terminal pool.
+pub fn inject_synthetic_boundary_cut(
+    setup: &mut StudySetup,
+    dir: &Path,
+    intercept: f64,
+    coefficients: &[f64],
+) {
+    let state_dimension = u32::try_from(coefficients.len()).expect("fits u32");
+    let date = fixture_priced_date(ymd(2030, 1, 1), 0);
+    write_synthetic_boundary(dir, state_dimension, intercept, coefficients, date);
+    let boundary = load_boundary_cuts(&BoundaryLoadRequest::new(
+        dir,
+        date,
+        state_dimension,
+        &[],
+        1.0,
+    ))
+    .expect("the boundary cut must load");
+    inject_boundary_cuts(setup, &boundary).expect("the boundary cut must inject");
 }
 
 /// A state a pool stored, at its projected dimensions, as a vector over the global state: the

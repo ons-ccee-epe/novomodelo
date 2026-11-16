@@ -4336,9 +4336,11 @@ fn run_one_trial_state_with_stores(
         my_rank: 0,
         probabilities: &succ_probabilities,
         cut_state: &cut_state_projection,
-        slab: super::SlabLookup::Unavailable,
-        records: &records,
-        n_stages: 2,
+        visits: super::ForwardVisits::PerTrial {
+            records: &records,
+            n_stages: 2,
+            slab: super::SlabLookup::Unavailable,
+        },
         stage_noise: None,
     };
     let single = SingleSuccessor::new(
@@ -4609,9 +4611,11 @@ fn per_child_backward_isolates_column_basis_and_pool_metadata() {
         my_rank: 0,
         probabilities: &[0.5_f64, 0.5],
         cut_state: &cut_state_projection,
-        slab: super::SlabLookup::Unavailable,
-        records: &records,
-        n_stages: 2,
+        visits: super::ForwardVisits::PerTrial {
+            records: &records,
+            n_stages: 2,
+            slab: super::SlabLookup::Unavailable,
+        },
         stage_noise: None,
     };
     let outcomes = multi.outcomes(&fcf.pools, base_num_rows, Some(0.0));
@@ -5340,9 +5344,11 @@ fn run_dcs_backward_trial_state_at(
         my_rank: 0,
         probabilities: &probabilities,
         cut_state: &cut_state_projection,
-        slab: super::SlabLookup::Unavailable,
-        records: &records,
-        n_stages: 2,
+        visits: super::ForwardVisits::PerTrial {
+            records: &records,
+            n_stages: 2,
+            slab: super::SlabLookup::Unavailable,
+        },
         stage_noise: None,
     };
     let single = SingleSuccessor::new(
@@ -5839,9 +5845,11 @@ fn backward_dcs_frozen_cuts_present_no_duplicate_rows() {
         my_rank: 0,
         probabilities: &probabilities,
         cut_state: &cut_state_projection,
-        slab: super::SlabLookup::Unavailable,
-        records: &records,
-        n_stages: 2,
+        visits: super::ForwardVisits::PerTrial {
+            records: &records,
+            n_stages: 2,
+            slab: super::SlabLookup::Unavailable,
+        },
         stage_noise: None,
     };
     let single = SingleSuccessor::new(
@@ -6442,9 +6450,11 @@ impl CompactBackwardCase {
                 my_rank: 0,
                 probabilities: &self.probabilities,
                 cut_state: &self.layouts[0],
-                slab: super::SlabLookup::Unavailable,
-                records: &records,
-                n_stages: 2,
+                visits: super::ForwardVisits::PerTrial {
+                    records: &records,
+                    n_stages: 2,
+                    slab: super::SlabLookup::Unavailable,
+                },
                 stage_noise: with_stage_noise.then_some(&table),
             };
             let exchange = exchange_with_states(self.state.n_state, vec![COMPACT_X_HAT.to_vec()]);
@@ -7028,15 +7038,14 @@ fn compact_slab_lookup_maps_to_the_pin_source() {
         my_rank: 0,
         probabilities: &case.probabilities,
         cut_state: &case.layouts[0],
-        slab,
-        records: &records,
-        n_stages: 2,
+        visits: super::ForwardVisits::PerTrial {
+            records: &records,
+            n_stages: 2,
+            slab,
+        },
         stage_noise: None,
     };
-    let frozen = super::SlabLookup::Frozen {
-        records: &records,
-        n_stages: 2,
-    };
+    let frozen = super::SlabLookup::Frozen;
     let successor = case.successor();
     let outcomes = successor.outcomes(&case.pools, COMPACT_TEMPLATE_ROWS, None);
     let child = outcomes.child(0);
@@ -7101,9 +7110,11 @@ fn a_sampled_backward_pin_reads_the_partial_sum_of_its_trials_successor_record()
         my_rank: 0,
         probabilities: &case.probabilities,
         cut_state: &case.layouts[0],
-        slab: super::SlabLookup::Unavailable,
-        records: &records,
-        n_stages: 2,
+        visits: super::ForwardVisits::PerTrial {
+            records: &records,
+            n_stages: 2,
+            slab: super::SlabLookup::Unavailable,
+        },
         stage_noise: None,
     };
 
@@ -7127,15 +7138,14 @@ fn a_backward_partial_sum_source_does_not_depend_on_the_slab_lookup() {
         my_rank: 0,
         probabilities: &case.probabilities,
         cut_state: &case.layouts[0],
-        slab,
-        records: &records,
-        n_stages: 2,
+        visits: super::ForwardVisits::PerTrial {
+            records: &records,
+            n_stages: 2,
+            slab,
+        },
         stage_noise: None,
     };
-    let frozen = super::SlabLookup::Frozen {
-        records: &records,
-        n_stages: 2,
-    };
+    let frozen = super::SlabLookup::Frozen;
 
     for slab in [
         super::SlabLookup::Unavailable,
@@ -7146,6 +7156,32 @@ fn a_backward_partial_sum_source_does_not_depend_on_the_slab_lookup() {
             spec(slab).partial_sum_source(1),
             PartialSumSource::Given(&[3.5][..])
         );
+    }
+}
+
+#[test]
+fn a_node_visit_supplies_its_own_partial_sum_to_every_trial_and_computes_the_brackets() {
+    let case = CompactBackwardCase::new(&[1.0]);
+    let node_partial_sum = [2.5];
+    let spec = super::SuccessorSpec {
+        successor: StageIdx(1),
+        iteration: 7,
+        my_rank: 0,
+        probabilities: &case.probabilities,
+        cut_state: &case.layouts[0],
+        visits: super::ForwardVisits::Node(&node_partial_sum),
+        stage_noise: None,
+    };
+    let successor = case.successor();
+    let outcomes = successor.outcomes(&case.pools, COMPACT_TEMPLATE_ROWS, None);
+    let child = outcomes.child(0);
+
+    for m in [0, 1, 5] {
+        assert_eq!(
+            spec.partial_sum_source(m),
+            PartialSumSource::Given(&node_partial_sum[..])
+        );
+        assert_eq!(spec.bracket_source(m, &child), BracketSource::Computed);
     }
 }
 

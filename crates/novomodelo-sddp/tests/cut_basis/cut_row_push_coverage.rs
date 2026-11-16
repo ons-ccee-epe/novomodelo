@@ -21,12 +21,12 @@ use novomodelo_sddp::{
 };
 use novomodelo_solver::ActiveSolver;
 
-use crate::common::expanded_solve::{OracleLagPoint, oracle_lag_point};
+use crate::common::expanded_solve::{OracleLagPoint, realized_inflow};
 use crate::common::in_code_studies::{
     FphaLagOptions, SAME_PATH_LAG_SEED_M3S, WEEKLY_PARTIAL_SUM_INITIAL_STORAGE_HM3,
     fpha_lag_study_with, weekly_partial_sum_study,
 };
-use crate::common::oracle_tolerance::rounding_factor;
+use crate::common::oracle_tolerance::rhs_tolerance;
 use crate::common::stored_cut_oracles::{
     PartialSums, apply_oracle_config, apply_oracle_config_with_selection, replay_partial_sums,
 };
@@ -483,10 +483,6 @@ fn close(a: f64, b: f64) -> bool {
     (a - b).abs() <= STATE_MATCH_TOLERANCE * a.abs().max(b.abs()).max(1.0)
 }
 
-fn rhs_tolerance(magnitude: f64) -> f64 {
-    2.0 * rounding_factor(16) * magnitude
-}
-
 fn written_slots(pool: &CutPool) -> impl Iterator<Item = usize> + '_ {
     (0..pool.populated()).filter(|&slot| !matches!(pool.role(slot).origin, SlotOrigin::Vacant))
 }
@@ -519,14 +515,7 @@ struct StageOracle {
 
 impl Visit {
     fn lag_point(&self, point: &OracleLagPoint, inflow: f64) -> f64 {
-        match point {
-            OracleLagPoint::Shifted => inflow,
-            OracleLagPoint::Carry => self.lag,
-            OracleLagPoint::Closing {
-                own_weight,
-                period_weight,
-            } => (self.partial_sum + own_weight * inflow) / period_weight[0],
-        }
+        point.lag0(0, &[self.partial_sum], inflow, self.lag)
     }
 
     fn lag_points(&self, point: &OracleLagPoint) -> Vec<f64> {
@@ -583,7 +572,6 @@ fn stage_cuts(setup: &StudySetup, stage: usize) -> Vec<(f64, f64)> {
 }
 
 fn stage_oracles(setup: &StudySetup) -> Vec<StageOracle> {
-    let ctx = setup.stage_ctx();
     let training_ctx = setup.training_ctx();
     let state = training_ctx.state;
     assert_eq!(
@@ -597,13 +585,7 @@ fn stage_oracles(setup: &StudySetup) -> Vec<StageOracle> {
                 training_ctx.node_graph.pool_stage[stage].0, stage,
                 "pool {stage} is stage {stage}'s"
             );
-            let point = oracle_lag_point(
-                ctx.stage_lag_transitions,
-                training_ctx.lag_weight_seed,
-                training_ctx.study_dims.downstream_par_order,
-                state.hydro_count,
-                stage,
-            );
+            let point = OracleLagPoint::of(setup, stage);
             match &point {
                 OracleLagPoint::Carry if stage < CLOSING_STAGE => {}
                 OracleLagPoint::Closing {
@@ -626,20 +608,6 @@ fn stage_oracles(setup: &StudySetup) -> Vec<StageOracle> {
         .collect()
 }
 
-fn weekly_inflow(setup: &StudySetup, stage: usize, opening: usize, lag: f64) -> f64 {
-    let training_ctx = setup.training_ctx();
-    let par = training_ctx.stochastic.par();
-    let noise_slot = training_ctx
-        .stochastic
-        .class_dimensions()
-        .hydro_range()
-        .start;
-    par.deterministic_base(stage, 0)
-        + par.psi_slice(stage, 0)[0] * lag
-        + par.sigma(stage, 0)
-            * training_ctx.stochastic.tree_view().opening(stage, opening)[noise_slot]
-}
-
 fn weekly_inflows(setup: &StudySetup, stage: usize, lag: f64) -> Vec<f64> {
     let openings = setup
         .training_ctx()
@@ -647,7 +615,7 @@ fn weekly_inflows(setup: &StudySetup, stage: usize, lag: f64) -> Vec<f64> {
         .tree_view()
         .n_openings(stage);
     (0..openings)
-        .map(|opening| weekly_inflow(setup, stage, opening, lag))
+        .map(|opening| realized_inflow(setup, stage, opening, &[lag]))
         .collect()
 }
 
@@ -788,7 +756,8 @@ fn assert_pushes_at_their_own_visit(
         for other in own {
             assert!(
                 first.shares_point_inputs(other),
-                "{label}: record {index} pins storage {pinned}, which visits at other stages or                  partial sums share, so the solve is not told apart by its state"
+                "{label}: record {index} pins storage {pinned}, which visits at other stages or \
+                 partial sums share, so the solve is not told apart by its state"
             );
             visit.inflows.extend_from_slice(&other.inflows);
         }

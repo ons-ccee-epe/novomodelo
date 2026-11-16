@@ -35,7 +35,7 @@ use crate::{
     setup::node_graph::{EnumeratedPlan, NodeGraph, NodeId, NodePos, StageIdx, TypedVec},
     solve::StageOpeningSolver,
     solver_stats::SolverStatsDelta,
-    training::stage_solve_prep::closes_lag_period,
+    training::stage_solve_prep::closing_partial_sum,
     trajectory::TrajectoryRecord,
     workspace::{BasisStore, CapturedBasis, SolverWorkspace},
 };
@@ -677,10 +677,8 @@ fn enumerated_stage_worker<S: SolverInterface + Send>(
         let lag_point =
             params.training_ctx.cut_state_layouts[node_graph.nodes[node].pool_id].lag_point();
         visit.partial_sum.clear();
-        if closes_lag_period(lag_point) {
-            visit
-                .partial_sum
-                .extend_from_slice(&ws.scratch.lag_accumulator[..lag_point.lag0().len()]);
+        if let Some(partial_sum) = closing_partial_sum(lag_point, &ws.scratch.lag_accumulator) {
+            visit.partial_sum.extend_from_slice(partial_sum);
         }
         let stage_cost = solve_forward_node(
             ws,

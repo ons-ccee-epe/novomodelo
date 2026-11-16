@@ -15,7 +15,9 @@ use crate::common::expanded_solve::{
 use crate::common::in_code_studies::FPHA_LAG_STUDY_KEY as LAG_STUDY;
 use crate::common::in_code_studies::{FphaLagOptions, fpha_lag_study_with};
 use crate::common::oracle_tolerance::{assert_first_try, rounding_factor, value_tolerance};
-use crate::common::stored_cut_oracles::{PartialSums, apply_oracle_config, replay_partial_sums};
+use crate::common::stored_cut_oracles::{
+    PartialSums, all_zero, apply_oracle_config, bits_eq, replay_partial_sums,
+};
 use crate::common::{
     build_setup_in_code_with_models, fresh_system_and_setup_with, is_chain,
     train_storing_trial_states, try_stored_trial_states,
@@ -354,12 +356,14 @@ fn check_cross_validity(
 /// Every populated cut of pool `t` stays below the expanded successor's expected value at the
 /// stored states, the midpoint and the lower corner of the state box. The successor's cut rows
 /// are written at the partial sum the cut's own generating visit read, so a cut is compared with
-/// the successor value it was computed from.
+/// the successor value it was computed from. The cold solves of the stored states are the
+/// successor's values at an all-zero partial sum, and are reused for that group.
 fn check_folded_pool(
     fx: &Fixture,
     t: usize,
     rows: &CutRowSet,
     states: &[Vec<f64>],
+    cold: &[Vec<ColdSolve>],
     totals: &mut Totals,
 ) {
     let s = t + 1;
@@ -371,25 +375,24 @@ fn check_folded_pool(
     let mut by_partial_sum: Vec<(Vec<f64>, Vec<usize>)> = Vec::new();
     for slot in 0..pool.populated() {
         let sum = fx.partial_sums.of_cut(pool, slot, s);
-        let same = |other: &[f64]| {
-            sum.len() == other.len()
-                && sum
-                    .iter()
-                    .zip(other)
-                    .all(|(a, b)| a.to_bits() == b.to_bits())
-        };
-        if let Some((_, slots)) = by_partial_sum.iter_mut().find(|(other, _)| same(other)) {
+        if let Some((_, slots)) = by_partial_sum
+            .iter_mut()
+            .find(|(other, _)| bits_eq(&sum, other))
+        {
             slots.push(slot);
         } else {
             by_partial_sum.push((sum.clone(), vec![slot]));
         }
     }
-    let q_hats = |x: &[f64]| -> Option<Vec<f64>> {
+    let q_hats = |x: &[f64], cold_at_x: Option<&[ColdSolve]>| -> Option<Vec<f64>> {
         by_partial_sum
             .iter()
             .map(|(sum, _)| {
                 let values: Option<Vec<f64>> = (0..n_openings)
-                    .map(|opening| expanded_value_at(fx, rows, s, x, tree.opening(s, opening), sum))
+                    .map(|opening| match cold_at_x {
+                        Some(cold) if all_zero(sum) => Some(cold[opening].expanded.value),
+                        _ => expanded_value_at(fx, rows, s, x, tree.opening(s, opening), sum),
+                    })
                     .collect();
                 values.map(|values| values.iter().sum::<f64>() / as_f64(n_openings))
             })
@@ -400,7 +403,7 @@ fn check_folded_pool(
         .iter()
         .enumerate()
         .map(|(i, x)| {
-            let per_group = q_hats(x).unwrap_or_else(|| {
+            let per_group = q_hats(x, Some(&cold[i])).unwrap_or_else(|| {
                 panic!(
                     "{}: pool {t}: the expanded LP is infeasible at stored state {i}",
                     fx.label
@@ -424,7 +427,7 @@ fn check_folded_pool(
                 }
             })
             .collect();
-        let Some(per_group) = q_hats(&x) else {
+        let Some(per_group) = q_hats(&x, None) else {
             infeasible += 1;
             continue;
         };
@@ -506,7 +509,7 @@ fn check_stage(fx: &Fixture, t: usize, states_per_stage: Option<usize>, totals: 
     let pair_checks = states.len() * (states.len() - 1) * n_openings;
     match fx.risk_measures[s] {
         RiskMeasure::Expectation => {
-            check_folded_pool(fx, t, &rows, &states, totals);
+            check_folded_pool(fx, t, &rows, &states, &cold, totals);
             totals.expectation_stages += 1;
         }
         RiskMeasure::CVaR { .. } => totals.cvar_pair_checks += pair_checks,

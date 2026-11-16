@@ -24,6 +24,13 @@ pub fn rounding_factor(n: usize) -> f64 {
     n_u / (1.0 - n_u)
 }
 
+/// The tolerance of an RHS of `|α| + Σ|β·x|` magnitude: `n = 16` covers the sums the writer
+/// forms and the rounding of the visit's own accumulator.
+#[must_use]
+pub fn rhs_tolerance(magnitude: f64) -> f64 {
+    2.0 * rounding_factor(16) * magnitude
+}
+
 /// Primal and dual feasibility tolerances of a scaled LP.
 #[derive(Clone, Copy, Debug)]
 pub struct UnscaledTolerance {

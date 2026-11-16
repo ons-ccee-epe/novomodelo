@@ -5483,10 +5483,9 @@ mod solve_cache_equivalence {
         BackwardScheduler, SelectionMethod, StoppingRuleConfig, TrainingSelection,
     };
     use novomodelo_sddp::test_support::decks::committed_decks;
-    use novomodelo_sddp::test_support::{fixture_priced_date, write_synthetic_boundary, ymd};
+    use novomodelo_sddp::test_support::template_structure::state_lag_dims;
     use novomodelo_sddp::{
-        BoundaryLoadRequest, BoundaryStateRequirements, SolverProfiles, SolverStatsDelta,
-        StudySetup, TrainingOutcome, inject_boundary_cuts, load_boundary_cuts,
+        BoundaryStateRequirements, SolverProfiles, SolverStatsDelta, StudySetup, TrainingOutcome,
     };
     use novomodelo_solver::ActiveSolver;
 
@@ -5494,7 +5493,7 @@ mod solve_cache_equivalence {
     use super::common::stored_cut_oracles::apply_oracle_config;
     use super::common::{
         StubComm, build_setup_in_code_with_models, fresh_system_and_setup_with,
-        fresh_system_and_setup_with_boundary, is_chain, positive,
+        fresh_system_and_setup_with_boundary, inject_synthetic_boundary_cut, is_chain, positive,
     };
 
     type Run = (StudySetup, TrainingOutcome);
@@ -5746,8 +5745,7 @@ mod solve_cache_equivalence {
             BoundaryStateRequirements::present(BOUNDARY_LAG_DEPTH),
             apply_oracle_config,
         );
-        let state = setup.stage_state();
-        let lag_dims = state.hydro_count..state.hydro_count * (1 + state.max_par_order);
+        let lag_dims = state_lag_dims(setup.stage_state());
         let coefficients: Vec<f64> = (0..setup.fcf.state_dimension)
             .map(|dim| {
                 if lag_dims.contains(&dim) {
@@ -5757,24 +5755,7 @@ mod solve_cache_equivalence {
                 }
             })
             .collect();
-        let state_dimension = u32::try_from(coefficients.len()).expect("fits u32");
-        let date = fixture_priced_date(ymd(2030, 1, 1), 0);
-        write_synthetic_boundary(
-            boundary_dir,
-            state_dimension,
-            BOUNDARY_INTERCEPT,
-            &coefficients,
-            date,
-        );
-        let boundary = load_boundary_cuts(&BoundaryLoadRequest::new(
-            boundary_dir,
-            date,
-            state_dimension,
-            &[],
-            1.0,
-        ))
-        .expect("the boundary cut must load");
-        inject_boundary_cuts(&mut setup, &boundary).expect("the boundary cut must inject");
+        inject_synthetic_boundary_cut(&mut setup, boundary_dir, BOUNDARY_INTERCEPT, &coefficients);
         setup
     }
 

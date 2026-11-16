@@ -46,20 +46,18 @@ use novomodelo_sddp::test_support::bound_recording::{
 use novomodelo_sddp::test_support::decks::committed_decks;
 use novomodelo_sddp::test_support::template_structure::state_lag_dims;
 use novomodelo_sddp::test_support::{
-    ProbeCut, ProbeCuts, ProbeOpening, empty_row_batch, fixture_priced_date,
-    inflow_slack_bounds_for_probe, opening_cut_for_probe, oracle_initial_state,
-    write_synthetic_boundary, ymd,
+    ProbeCut, ProbeCuts, ProbeOpening, empty_row_batch, inflow_slack_bounds_for_probe,
+    opening_cut_for_probe, oracle_initial_state,
 };
 use novomodelo_sddp::{
-    BoundaryLoadRequest, DEFAULT_COST_SCALE_FACTOR, SolverProfiles, StudySetup,
-    build_cut_row_batch_into, inject_boundary_cuts, load_boundary_cuts,
+    DEFAULT_COST_SCALE_FACTOR, SolverProfiles, StudySetup, build_cut_row_batch_into,
 };
 use novomodelo_solver::{ActiveSolver, SolverInterface};
 
 use crate::common::builders::{
     BusSpec, HydroSpec, StageSpec, ThermalSpec, make_bus, make_hydro, make_stage, make_thermal,
 };
-use crate::common::expanded_solve::{OracleLagPoint, oracle_lag_point};
+use crate::common::expanded_solve::{OracleLagPoint, hydro_noise_slot, realized_inflow};
 use crate::common::in_code_studies::{
     CHRONOLOGICAL_NOISE_BLOCK_HOURS, CHRONOLOGICAL_NOISE_RELEASE_COST, SAME_PATH_LAG_SEED_M3S,
     WEEKS_THEN_MONTH_TERMINAL_OPENINGS, chronological_noise_hydro_models,
@@ -67,13 +65,14 @@ use crate::common::in_code_studies::{
     weeks_then_month_study,
 };
 use crate::common::oracle_tolerance::{
-    UnscaledTolerance, assert_first_try, rounding_factor, value_tolerance,
+    UnscaledTolerance, assert_first_try, rhs_tolerance, rounding_factor, value_tolerance,
 };
 use crate::common::stored_cut_oracles::{
     PartialSums, apply_oracle_config, pushed_cut_rhs_at_visit, replay_partial_sums,
 };
 use crate::common::{
-    StubComm, build_setup_in_code_with_models, fresh_system_and_setup_with, lift_to_global_state,
+    StubComm, build_setup_in_code_with_models, fresh_system_and_setup_with,
+    inject_synthetic_boundary_cut, lift_to_global_state,
 };
 
 const M3S_TO_HM3: f64 = 3_600.0 / 1_000_000.0;
@@ -2093,15 +2092,6 @@ fn conditional_mean(setup: &StudySetup, stage: usize, incoming: &[f64]) -> f64 {
     par.deterministic_base(stage, 0) + lags
 }
 
-fn hydro_noise_slot(setup: &StudySetup) -> usize {
-    setup
-        .training_ctx()
-        .stochastic
-        .class_dimensions()
-        .hydro_range()
-        .start
-}
-
 /// `Σ_l β(0, l)·x̂(0, l)` over the lag slots of the cut of `pool_id` at `slot`, with `x̂` the
 /// visit's outgoing lags, and the same sum over the lags `lags` replaces them with.
 fn lag_terms(setup: &StudySetup, pool_id: usize, slot: usize, lags: impl Fn(usize) -> f64) -> f64 {
@@ -2111,12 +2101,6 @@ fn lag_terms(setup: &StudySetup, pool_id: usize, slot: usize, lags: impl Fn(usiz
     (0..n_lags).fold(0.0, |sum, l| {
         sum + pool.coefficient_row(slot)[lag_slot(layout, 1, 0, l)] * lags(l)
     })
-}
-
-/// The tolerance of an RHS of `|α| + Σ|β·x|` magnitude: `n = 16` covers the sums the writer
-/// forms and the rounding of the visit's own accumulator.
-fn rhs_tolerance(magnitude: f64) -> f64 {
-    2.0 * rounding_factor(16) * magnitude
 }
 
 /// Checks that the RHS the production prep pushes for each cut of `pool_id` at the visit that
@@ -2196,11 +2180,11 @@ fn stored_cuts_are_tight_at_their_own_trial_point_on_a_same_path_partial_sum_dec
         (1, 1),
         "{FIXTURE}: one hydro with one lag"
     );
-    let noise_slot = hydro_noise_slot(setup);
     let z_at = |stage: usize, incoming: &[f64]| {
-        let eta = opening_noise(setup, stage)[noise_slot];
-        let par = setup.training_ctx().stochastic.par();
-        conditional_mean(setup, stage, incoming) + par.sigma(stage, 0) * eta
+        let lags: Vec<f64> = (0..state.max_par_order)
+            .map(|l| incoming[lag_dim(setup, 0, l)])
+            .collect();
+        realized_inflow(setup, stage, 0, &lags)
     };
     let window = [0_usize, 1, 2, 3];
     let mut pools_checked = 0;
@@ -2302,25 +2286,13 @@ fn train_weeks_then_month_deck(
             }
         })
         .collect();
-    let state_dimension = u32::try_from(coefficients.len()).expect("fits u32");
-    let date = fixture_priced_date(ymd(2030, 1, 1), 0);
     let boundary_dir = tempfile::tempdir().expect("tempdir");
-    write_synthetic_boundary(
+    inject_synthetic_boundary_cut(
+        &mut setup,
         boundary_dir.path(),
-        state_dimension,
         WEEKS_THEN_MONTH_BOUNDARY_INTERCEPT,
         &coefficients,
-        date,
     );
-    let boundary = load_boundary_cuts(&BoundaryLoadRequest::new(
-        boundary_dir.path(),
-        date,
-        state_dimension,
-        &[],
-        1.0,
-    ))
-    .expect("the boundary cut must load");
-    inject_boundary_cuts(&mut setup, &boundary).expect("the boundary cut must inject");
 
     let theta = setup.training_ctx().state.theta;
     let worker_log = CutRowPushLog::new();
@@ -2406,22 +2378,12 @@ fn terminal_boundary_value_on_a_weeks_then_month_calendar_matches_the_closed_for
             "{label}: one hydro with one lag"
         );
 
-        let (own_weight, period_weight) = {
-            let ctx = setup.stage_ctx();
-            let training_ctx = setup.training_ctx();
-            match oracle_lag_point(
-                ctx.stage_lag_transitions,
-                training_ctx.lag_weight_seed,
-                training_ctx.study_dims.downstream_par_order,
-                state.hydro_count,
-                terminal,
-            ) {
-                OracleLagPoint::Closing {
-                    own_weight,
-                    period_weight,
-                } => (own_weight, period_weight[0]),
-                other => panic!("{label}: stage {terminal} must close its period, got {other:?}"),
-            }
+        let (own_weight, period_weight) = match OracleLagPoint::of(&setup, terminal) {
+            OracleLagPoint::Closing {
+                own_weight,
+                period_weight,
+            } => (own_weight, period_weight[0]),
+            other => panic!("{label}: stage {terminal} must close its period, got {other:?}"),
         };
         let share = TERMINAL_HOURS / FEBRUARY_HOURS;
         assert!(
@@ -2431,13 +2393,8 @@ fn terminal_boundary_value_on_a_weeks_then_month_calendar_matches_the_closed_for
              {period_weight}, derived {share} over 1"
         );
 
-        let par = setup.training_ctx().stochastic.par();
-        let noise_slot = hydro_noise_slot(&setup);
-        let tree = setup.training_ctx().stochastic.tree_view();
         let z_at = |stage: usize, opening: usize, lag: f64| {
-            par.deterministic_base(stage, 0)
-                + par.psi_slice(stage, 0)[0] * lag
-                + par.sigma(stage, 0) * tree.opening(stage, opening)[noise_slot]
+            realized_inflow(&setup, stage, opening, &[lag])
         };
         let seed = SAME_PATH_LAG_SEED_M3S;
         let weeks: Vec<f64> = (0..4).map(|stage| z_at(stage, 0, seed)).collect();
@@ -2536,22 +2493,12 @@ fn d30_stage_seven_cuts_evaluate_at_the_closing_point_of_one_half() {
     const FIXTURE: &str = "d30";
     const STAGE: usize = MULTI_RESOLUTION_REBUILD_STAGE + 1;
     let (_, setup) = fresh_system_and_setup_with(&multi_resolution_deck(), apply_oracle_config);
-    let (own_weight, period_weight) = {
-        let ctx = setup.stage_ctx();
-        let training_ctx = setup.training_ctx();
-        match oracle_lag_point(
-            ctx.stage_lag_transitions,
-            training_ctx.lag_weight_seed,
-            training_ctx.study_dims.downstream_par_order,
-            training_ctx.state.hydro_count,
-            STAGE,
-        ) {
-            OracleLagPoint::Closing {
-                own_weight,
-                period_weight,
-            } => (own_weight, period_weight[0]),
-            other => panic!("{FIXTURE}: stage {STAGE} must close its period, got {other:?}"),
-        }
+    let (own_weight, period_weight) = match OracleLagPoint::of(&setup, STAGE) {
+        OracleLagPoint::Closing {
+            own_weight,
+            period_weight,
+        } => (own_weight, period_weight[0]),
+        other => panic!("{FIXTURE}: stage {STAGE} must close its period, got {other:?}"),
     };
     let closing_share = own_weight / period_weight;
     assert_eq!(

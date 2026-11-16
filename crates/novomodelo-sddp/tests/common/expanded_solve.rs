@@ -135,6 +135,37 @@ pub enum OracleLagPoint {
 }
 
 impl OracleLagPoint {
+    /// The point at which the cut rows of `stage` read the lag region, from the setup's stage
+    /// calendar.
+    pub fn of(setup: &StudySetup, stage: usize) -> Self {
+        let ctx = setup.stage_ctx();
+        let training_ctx = setup.training_ctx();
+        oracle_lag_point(
+            ctx.stage_lag_transitions,
+            training_ctx.lag_weight_seed,
+            training_ctx.study_dims.downstream_par_order,
+            training_ctx.state.hydro_count,
+            stage,
+        )
+    }
+
+    /// Lag 0 of `hydro` at this point, for the realized inflow `inflow`, the incoming lag 0
+    /// `incoming_lag` and the open period's partial sums `partial_sum`.
+    pub fn lag0(&self, hydro: usize, partial_sum: &[f64], inflow: f64, incoming_lag: f64) -> f64 {
+        match self {
+            Self::Shifted => inflow,
+            Self::Carry => incoming_lag,
+            Self::Closing {
+                own_weight,
+                period_weight,
+            } => {
+                let (b, c) =
+                    Self::closing_terms(*own_weight, period_weight[hydro], partial_sum[hydro]);
+                b + c * inflow
+            }
+        }
+    }
+
     /// `(b_h, c_h)` with lag 0 equal to `b_h + c_h·ẑ_h`.
     fn closing_terms(own_weight: f64, period_weight: f64, partial_sum: f64) -> (f64, f64) {
         (partial_sum / period_weight, own_weight / period_weight)
@@ -188,7 +219,7 @@ impl OracleWeights {
 
 /// The point at which the cut rows of `stage` read the lag region, from the stage transitions and
 /// the per-hydro weight the lag period holds at the start of the trajectory.
-pub fn oracle_lag_point(
+fn oracle_lag_point(
     transitions: &[StageLagTransition],
     seed_weight: &[f64],
     downstream_par_order: usize,
@@ -230,6 +261,33 @@ pub fn oracle_lag_point(
     } else {
         OracleLagPoint::Carry
     }
+}
+
+/// The slot of the first hydro's noise in an opening of the tree.
+pub fn hydro_noise_slot(setup: &StudySetup) -> usize {
+    setup
+        .training_ctx()
+        .stochastic
+        .class_dimensions()
+        .hydro_range()
+        .start
+}
+
+/// derived: the realized inflow of hydro 0 at `stage` for opening `opening`,
+/// `ẑ = (b + Σ_l ψ_l·a_l) + σ·η`, with `a_l` the incoming lag `lags[l]` and `η` the opening's hydro
+/// noise; independent of the production inflow and lag code.
+pub fn realized_inflow(setup: &StudySetup, stage: usize, opening: usize, lags: &[f64]) -> f64 {
+    let training_ctx = setup.training_ctx();
+    let par = training_ctx.stochastic.par();
+    let mean = par.deterministic_base(stage, 0)
+        + par
+            .psi_slice(stage, 0)
+            .iter()
+            .enumerate()
+            .map(|(l, psi)| psi * lags[l])
+            .sum::<f64>();
+    mean + par.sigma(stage, 0)
+        * training_ctx.stochastic.tree_view().opening(stage, opening)[hydro_noise_slot(setup)]
 }
 
 fn row_entry(coefficient: f64, weight: f64, col_scale: f64) -> f64 {
@@ -635,13 +693,7 @@ pub fn assemble_expanded_solve_at(
         template.col_upper[col] = pin;
     }
 
-    let lag_point = oracle_lag_point(
-        ctx.stage_lag_transitions,
-        training_ctx.lag_weight_seed,
-        training_ctx.study_dims.downstream_par_order,
-        layout.state().hydro_count,
-        stage,
-    );
+    let lag_point = OracleLagPoint::of(compact, stage);
     assert_eq!(
         partial_sum.len(),
         layout.state().hydro_count,

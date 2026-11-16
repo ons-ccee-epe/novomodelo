@@ -9,7 +9,7 @@ use crate::{
     context::{StageContext, TrainingContext},
     error::SddpError,
     solve::StageOpeningSolver,
-    training::stage_solve_prep::closes_lag_period,
+    training::stage_solve_prep::closing_partial_sum,
     trajectory::TrajectoryRecord,
     workspace::{BasisStoreSliceMut, SolverWorkspace},
 };
@@ -51,10 +51,9 @@ pub(crate) fn run_forward_stage<S: SolverInterface + Send>(
     let rec = &mut worker_records[local_m * training_ctx.horizon.num_stages() + t.0];
     let lag_point =
         training_ctx.cut_state_layouts[training_ctx.node_graph.nodes[node].pool_id].lag_point();
-    if closes_lag_period(lag_point) {
+    if let Some(partial_sum) = closing_partial_sum(lag_point, &ws.scratch.lag_accumulator) {
         rec.partial_sum.clear();
-        rec.partial_sum
-            .extend_from_slice(&ws.scratch.lag_accumulator[..lag_point.lag0().len()]);
+        rec.partial_sum.extend_from_slice(partial_sum);
     }
 
     // DCS path: load the cut-free base template here (the caller skips its frozen

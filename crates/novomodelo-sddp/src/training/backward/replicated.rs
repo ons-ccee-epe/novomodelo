@@ -29,7 +29,7 @@ use crate::{
     solve::{StageOpeningSolver, partition},
     stage_solve::{StageInputs, run_stage_solve},
     training::stage_solve_prep::{
-        BracketSource, LoadedCutRows, NoiseTermSource, PartialSumSource, StageSolvePrep,
+        BracketSource, LoadedCutRows, NoiseTermSource, StageSolvePrep, StateSource,
     },
     workspace::SolverWorkspace,
 };
@@ -94,7 +94,6 @@ pub(crate) fn solve_replicated_outcome_slice<S: SolverInterface + Send>(
     succ: &SuccessorSpec<'_>,
     child: &SuccessorChild<'_>,
     x_hat: &[f64],
-    partial_sum: &[f64],
     local_start: usize,
     local_end: usize,
     scenario_base: usize,
@@ -111,10 +110,12 @@ pub(crate) fn solve_replicated_outcome_slice<S: SolverInterface + Send>(
         ctx,
         training_ctx,
         child,
-        x_hat,
+        StateSource {
+            state: x_hat,
+            partial_sum: succ.partial_sum_source(0),
+        },
         s,
         BracketSource::Computed,
-        PartialSumSource::Given(partial_sum),
     );
     let rows = child_cut_rows(training_ctx, child);
 
@@ -306,7 +307,6 @@ pub(crate) fn run_backward_node_replicated<S: SolverInterface + Send, C: Communi
     succ: &SuccessorSpec<'_>,
     outcomes: &SuccessorOutcomes<'_>,
     x_hat: &[f64],
-    partial_sum: &[f64],
     pool_id: usize,
     enumerated_state: &EnumeratedForwardScratch,
 ) -> Result<f64, SddpError> {
@@ -370,7 +370,6 @@ pub(crate) fn run_backward_node_replicated<S: SolverInterface + Send, C: Communi
             succ,
             &child,
             x_hat,
-            partial_sum,
             lo - child.outcome_range.start,
             hi - child.outcome_range.start,
             pool_id,

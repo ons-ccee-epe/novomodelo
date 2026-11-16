@@ -381,6 +381,7 @@ mod tests {
     use crate::test_support::{
         InflowModelSpec, MonthlyLabels, make_inflow_model, monthly_quarterly_season_map,
         monthly_season_map, sparse_ring_season_map, weekly_season_map,
+        weeks_naming_june_then_months,
     };
 
     /// A one-hydro [`PrecomputedPar`] with `max_order() == 1`: an order-1
@@ -939,31 +940,11 @@ mod tests {
         );
     }
 
-    /// Five weeks from 2026-05-30 naming June, July as one stage, then calendar
-    /// months from 2026-08 through 2027-11: June 2027 is stage 16.
     fn one_season_in_two_years_stages() -> Vec<Stage> {
-        let first_of_month = |m: u32| d(2026 + i32::try_from(m / 12).unwrap(), m % 12 + 1, 1);
-        let weeks = [
-            (d(2026, 5, 30), d(2026, 6, 6)),
-            (d(2026, 6, 6), d(2026, 6, 13)),
-            (d(2026, 6, 13), d(2026, 6, 20)),
-            (d(2026, 6, 20), d(2026, 6, 27)),
-            (d(2026, 6, 27), d(2026, 7, 4)),
-        ];
-        weeks
+        weeks_naming_june_then_months()
             .into_iter()
             .enumerate()
-            .map(|(i, (start, end))| make_stage(i, start, end, Some(5)))
-            .chain([make_stage(5, d(2026, 7, 4), d(2026, 8, 1), Some(6))])
-            .chain((6..22_usize).map(|i| {
-                let m = u32::try_from(i).unwrap() + 1;
-                make_stage(
-                    i,
-                    first_of_month(m),
-                    first_of_month(m + 1),
-                    Some(usize::try_from(m % 12).unwrap()),
-                )
-            }))
+            .map(|(i, (start, end, season))| make_stage(i, start, end, Some(season)))
             .collect()
     }
 

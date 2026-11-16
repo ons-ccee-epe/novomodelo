@@ -33,6 +33,7 @@ use crate::{
     setup::node_graph::{NodeId, NodePos},
     solve::StageOpeningSolver,
     state_exchange::ExchangeBuffers,
+    training::stage_solve_prep::StateSource,
     workspace::{
         BasisStore, ByNodeScratch, SolverWorkspace,
         workspace::{ByNodeFinishScratch, OpeningRecords, recycle},
@@ -222,10 +223,12 @@ pub(crate) fn process_stage_backward_by_node<S: SolverInterface + Send>(
                     ctx,
                     training_ctx,
                     &child,
-                    x_hat,
+                    StateSource {
+                        state: x_hat,
+                        partial_sum: succ.partial_sum_source(m),
+                    },
                     s,
                     source,
-                    succ.partial_sum_source(m),
                 );
 
                 // take/fill/restore reuses `external_noise_buf`: no hot-path allocation.

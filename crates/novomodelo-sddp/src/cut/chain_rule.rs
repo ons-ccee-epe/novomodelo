@@ -425,7 +425,7 @@ mod tests {
         OpeningDuals, PrecomputedPar, aggregate_first_cut_into, per_opening_cut_into,
     };
     use crate::cut::CutPool;
-    use crate::indexer::{CutStateProjection, LagPointMode};
+    use crate::indexer::{ClosingCoefficients, CutStateProjection, LagPointMode, LagPointRule};
     use crate::risk_measure::{BackwardOutcome, RiskMeasure, RiskMeasureScratch};
     use crate::setup::NodeId;
     use crate::test_support::{bits, par_with_ar_coefficients, state_layout};
@@ -577,21 +577,16 @@ mod tests {
             ],
             par_with_psi(2, &[0.5, 0.25]),
         );
-        let closing = mode == LagPointMode::Closing;
-        pair.resident.lag_point_mut().install_mode(
-            mode,
-            if closing {
-                &CLOSING_INVERSE_WEIGHT
-            } else {
-                &[]
-            },
-            if closing { &CLOSING_SHARE } else { &[] },
-            if closing {
-                &CLOSING_INCOMING_WEIGHT
-            } else {
-                &[]
-            },
-        );
+        let rule = match mode {
+            LagPointMode::Shifted => LagPointRule::Shifted,
+            LagPointMode::Carry => LagPointRule::Carry,
+            LagPointMode::Closing => LagPointRule::Closing(ClosingCoefficients::new(
+                CLOSING_INVERSE_WEIGHT.to_vec(),
+                CLOSING_SHARE.to_vec(),
+                CLOSING_INCOMING_WEIGHT.to_vec(),
+            )),
+        };
+        pair.resident.lag_point_mut().install_rule(rule);
         pair.slots = ChainRuleSlots::compose(&state_layout(2, 2), &pair.resident, &pair.extracted);
         pair
     }

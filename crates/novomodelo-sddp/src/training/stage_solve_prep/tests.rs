@@ -39,7 +39,8 @@ use crate::{
     lead_time::AnticipatedResolution,
     lp::builder::{InflowCoupling, PatchBuffer, StageGeometry, StateBox},
     lp::indexer::{
-        BlockGrid, BlockRowFamily, CutStateProjection, LagPointMode, StateSpace, StudyDimensions,
+        BlockGrid, BlockRowFamily, ClosingCoefficients, CutStateProjection, LagPointRule,
+        StateSpace, StudyDimensions,
     },
     noise::{
         build_dense_ncs_col_indices, gather_dense_ncs_bounds, realize_inflow, transform_load_noise,
@@ -1194,66 +1195,54 @@ fn a_given_partial_sum_source_reads_the_given_slice() {
 
 fn closing_case(entering_weight: f64) -> CompactCase {
     let mut case = CompactCase::new(&[(1.0, [4.0, 2.0, 3.0])]);
-    case.prep.cut_state_layouts[0].lag_point_mut().install_mode(
-        LagPointMode::Closing,
-        &[0.5],
-        &[0.5],
-        &[entering_weight],
-    );
+    case.prep.cut_state_layouts[0]
+        .lag_point_mut()
+        .install_rule(LagPointRule::Closing(ClosingCoefficients::new(
+            vec![0.5],
+            vec![0.5],
+            vec![entering_weight],
+        )));
     case
 }
 
 fn pin_on_a_closing_pool(partial_sum: PartialSumSource<'_>) {
     let case = closing_case(0.0);
-    let fixture = case.fixture();
-    let ctx = fixture.ctx();
-    let training_ctx = case.prep.ctx(
-        &case.state,
-        &case.stochastic,
-        &case.study_dims,
-        &InflowNonNegativityMethod::None,
-        &[],
-    );
-    let mut scratch = CompactCase::scratch(&ctx, &training_ctx);
-    let cut_rows = LoadedCutRows {
-        pool: &case.pool,
-        projection: &case.prep.cut_state_layouts[0],
-        slots: &[0],
-        first_row: ctx.template(StageIdx(0)).num_rows,
-    };
-    StageSolvePrep::pin_and_bracket(
-        &mut RecordingSolver::default(),
-        &mut PatchBuffer::new(&case.state, &[], &case.geometry, &case.couplings),
-        &mut scratch,
-        &ctx,
-        &training_ctx,
-        StageIdx(0),
-        StateSource {
-            state: &TRIAL_STATE,
-            partial_sum,
+    case.record(
+        InflowNonNegativityMethod::None,
+        |solver, patch_buf, scratch, ctx, training_ctx| {
+            let cut_rows = LoadedCutRows {
+                pool: &case.pool,
+                projection: &case.prep.cut_state_layouts[0],
+                slots: &[0],
+                first_row: ctx.template(StageIdx(0)).num_rows,
+            };
+            StageSolvePrep::pin_and_bracket(
+                solver,
+                patch_buf,
+                scratch,
+                ctx,
+                training_ctx,
+                StageIdx(0),
+                StateSource {
+                    state: &TRIAL_STATE,
+                    partial_sum,
+                },
+                &cut_rows,
+                BracketSource::Computed,
+            );
         },
-        &cut_rows,
-        BracketSource::Computed,
     );
 }
 
 fn live_weight_entering_a_closing_stage(entering_weight: f64) {
     let case = closing_case(entering_weight);
-    let fixture = case.fixture();
-    let ctx = fixture.ctx();
-    let training_ctx = case.prep.ctx(
-        &case.state,
-        &case.stochastic,
-        &case.study_dims,
-        &InflowNonNegativityMethod::None,
-        &[],
-    );
-    let scratch = CompactCase::scratch(&ctx, &training_ctx);
-    debug_assert_live_weight_is_replayed(
-        &scratch,
-        case.prep.cut_state_layouts[0].lag_point(),
-        StageIdx(0),
-    );
+    case.record(InflowNonNegativityMethod::None, |_, _, scratch, _, _| {
+        debug_assert_live_weight_is_replayed(
+            scratch,
+            case.prep.cut_state_layouts[0].lag_point(),
+            StageIdx(0),
+        );
+    });
 }
 
 #[test]

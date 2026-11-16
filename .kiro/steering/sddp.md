@@ -319,7 +319,7 @@ fixtures keep the lag transitions the gates read.
 
 A pool's cut rows evaluate their lag slots at one point `Φ`, set by the lag
 transition of the pool's stage and installed at setup in the pool's
-`CutLagPoint` as a `LagPointMode` (`classify_lag_points`). With `ẑ_h` the
+`CutLagPoint` as a `LagPointRule` (`classify_lag_points`). With `ẑ_h` the
 realized inflow, `â` the trial lags, `s_h` the partial sum of the open lag
 period at the visit, `W_h` the weight the period holds on entering the stage and
 `w` the stage's own weight:
@@ -416,11 +416,12 @@ The wrong-but-compiling alternatives:
   trial state.
 
 Read: `lp/indexer/cut_state_projection.rs` (`CutStateProjection::lag_point`,
-`CutLagPoint`, `LagPointMode`, `ChainRuleSlots::compose`), `setup/lag_points.rs`
-(`classify_lag_points`), `cut/chain_rule.rs` (`lag_coefficients_into`), `cut/rhs.rs`,
-`training/stage_solve_prep.rs` (`StageSolvePrep::pin_and_bracket`, `BracketSource`,
-`PartialSumSource`), `training/trajectory.rs` (`TrajectoryRecord`,
-`FrozenBrackets`), `training/backward/mod.rs` (`SlabLookup`,
+`CutLagPoint`, `LagPointMode`, `LagPointRule`, `ChainRuleSlots::compose`),
+`setup/lag_points.rs` (`classify_lag_points`), `cut/chain_rule.rs`
+(`lag_coefficients_into`), `cut/rhs.rs`, `training/stage_solve_prep.rs`
+(`StageSolvePrep::pin_and_bracket`, `BracketSource`, `PartialSumSource`,
+`closing_partial_sum`), `training/trajectory.rs` (`TrajectoryRecord`,
+`FrozenBrackets`), `training/backward/mod.rs` (`ForwardVisits`, `SlabLookup`,
 `SuccessorSpec::bracket_source`, `SuccessorSpec::partial_sum_source`),
 `training/forward/enumerated.rs` (`EnumeratedForwardScratch::lag_accumulator`),
 `stochastic/noise.rs` (`AccumSnapshot`), `training/session/mod.rs`
@@ -490,8 +491,10 @@ pins, with the alias value differing from it);
 `compact_slab_unwritten_slab_misses_on_every_pin`,
 `compact_slab_values_reach_the_pushed_cut_rhs` and
 `compact_forward_stage_writes_the_brackets_of_its_frozen_rows`;
-`the_bracket_slab_grows_only_when_the_templates_are_frozen`
-(`training/session/mod.rs`); and, in `training/stage_solve_prep/tests.rs`,
+`the_bracket_slab_grows_only_when_the_templates_are_frozen` and
+`training_session_new_rejects_interior_branching_enumerated_at_world_ge_2`, the
+guard the rank-local partial sum rests on (`training/session/mod.rs`); and, in
+`training/stage_solve_prep/tests.rs`,
 `pin_folded_brackets_each_cut_row_from_the_raw_trial_state`,
 `pin_folded_slab_hit_equals_the_computed_brackets_and_does_not_count` and
 `pin_folded_slab_miss_equals_the_computed_brackets_and_counts`.

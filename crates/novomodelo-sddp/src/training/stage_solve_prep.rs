@@ -70,6 +70,15 @@ pub(crate) fn closes_lag_period(lag_point: &CutLagPoint) -> bool {
     lag_point.mode() == LagPointMode::Closing && !lag_point.lag0().is_empty()
 }
 
+/// The prefix of `lag_accumulator` a pool's cut rows read as s, or `None` where the pool does not
+/// close a lag period.
+pub(crate) fn closing_partial_sum<'a>(
+    lag_point: &CutLagPoint,
+    lag_accumulator: &'a [f64],
+) -> Option<&'a [f64]> {
+    closes_lag_period(lag_point).then(|| &lag_accumulator[..lag_point.lag0().len()])
+}
+
 /// Debug check of a `Live` pin site: on entering a stage that closes a lag period, the
 /// scratch's weight accumulator holds the weight the setup replay holds for that stage, bit for
 /// bit, which holds only if the trial's own lag chain was restored before the solve.

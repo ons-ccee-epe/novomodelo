@@ -115,6 +115,7 @@ pub use anticipated_plants::AnticipatedPlants;
 pub use block_grid::BlockGrid;
 pub use block_row_family::BlockRowFamily;
 pub use cut_state_projection::{ChainRuleSlots, CutLagPoint, CutStateProjection, LagPointMode};
+pub(crate) use cut_state_projection::{ClosingCoefficients, LagPointRule};
 pub use entity_index::{
     AnticipatedLocal, BusSys, EvapLocal, FillingTargetLocal, FloorLocal, FphaCellLocal, FphaLocal,
     HydroCell, HydroSys, LineSys, NcsSys, PlantCapLocal, PlantFloorLocal, PumpingSys, ThermalSys,

@@ -8,7 +8,9 @@ use crate::SddpError;
 use crate::block_clock::M3S_TO_HM3;
 use crate::hydro_models::{PrepareHydroModelsResult, ProductionModelSet, ResolvedProductionModel};
 use crate::lp::builder::StageGeometry;
-use crate::lp::indexer::{AnticipatedPlants, ChainRuleSlots, LagPointMode, StateSpace, ThermalSys};
+use crate::lp::indexer::{
+    AnticipatedPlants, ChainRuleSlots, LagPointMode, LagPointRule, StateSpace, ThermalSys,
+};
 use crate::test_support;
 use crate::time_value::{DeliveryCalendar, WaterDeliveryBasis};
 use novomodelo_io::test_support::owned_piece_defaults;
@@ -11129,7 +11131,7 @@ fn lag_point_modes_follow_the_kernel_order() {
         &lag_seed(&[0.0, 0.5], &[0.0; 2]),
     );
 
-    let modes: Vec<LagPointMode> = classes.iter().map(|class| class.mode).collect();
+    let modes: Vec<LagPointMode> = classes.iter().map(LagPointRule::mode).collect();
     assert_eq!(
         modes,
         [
@@ -11147,29 +11149,29 @@ fn lag_point_modes_follow_the_kernel_order() {
     );
     for class in classes
         .iter()
-        .filter(|class| class.mode != LagPointMode::Closing)
+        .filter(|class| class.mode() != LagPointMode::Closing)
     {
-        assert!(class.inverse_weight.is_empty() && class.share.is_empty());
-        assert!(class.incoming_weight.is_empty());
+        assert!(class.closing().is_none());
     }
+    let closing = |stage: usize| classes[stage].closing().unwrap();
 
     let seeded_half = 1.0 / 1.5;
-    assert_eq!(classes[0].incoming_weight, [0.0, 0.5]);
-    assert_eq!(classes[0].inverse_weight, [1.0, seeded_half]);
-    assert_eq!(classes[0].share, [1.0, seeded_half]);
+    assert_eq!(closing(0).incoming_weight(), [0.0, 0.5]);
+    assert_eq!(closing(0).inverse_weight(), [1.0, seeded_half]);
+    assert_eq!(closing(0).share(), [1.0, seeded_half]);
 
-    assert_eq!(classes[3].incoming_weight, [0.25, 0.25]);
-    assert_eq!(classes[3].inverse_weight, [2.0, 2.0]);
-    assert_eq!(classes[3].share, [0.5, 0.5]);
+    assert_eq!(closing(3).incoming_weight(), [0.25, 0.25]);
+    assert_eq!(closing(3).inverse_weight(), [2.0, 2.0]);
+    assert_eq!(closing(3).share(), [0.5, 0.5]);
 
     let inverse_of_49 = 1.0 / 49.0;
-    assert_eq!(classes[4].inverse_weight, [inverse_of_49; 2]);
-    assert_eq!(classes[4].share, [49.0 * inverse_of_49; 2]);
+    assert_eq!(closing(4).inverse_weight(), [inverse_of_49; 2]);
+    assert_eq!(closing(4).share(), [49.0 * inverse_of_49; 2]);
 
-    assert_eq!(classes[7].incoming_weight, [1.0, 1.0]);
-    assert_eq!(classes[7].share, [0.5 * seeded_half; 2]);
-    assert_eq!(classes[9].incoming_weight, [0.5, 0.5]);
-    assert_eq!(classes[9].share, [0.5, 0.5]);
+    assert_eq!(closing(7).incoming_weight(), [1.0, 1.0]);
+    assert_eq!(closing(7).share(), [0.5 * seeded_half; 2]);
+    assert_eq!(closing(9).incoming_weight(), [0.5, 0.5]);
+    assert_eq!(closing(9).share(), [0.5, 0.5]);
 
     let seeded_accumulator = classify_lag_points(
         &[0, 1],
@@ -11177,9 +11179,9 @@ fn lag_point_modes_follow_the_kernel_order() {
         0,
         &lag_seed(&[0.0], &[3.0]),
     );
-    assert_eq!(seeded_accumulator[0].mode, LagPointMode::Closing);
-    assert_eq!(seeded_accumulator[0].share, [1.0]);
-    assert_eq!(seeded_accumulator[1].mode, LagPointMode::Shifted);
+    assert_eq!(seeded_accumulator[0].mode(), LagPointMode::Closing);
+    assert_eq!(seeded_accumulator[0].closing().unwrap().share(), [1.0]);
+    assert_eq!(seeded_accumulator[1].mode(), LagPointMode::Shifted);
 }
 
 #[test]

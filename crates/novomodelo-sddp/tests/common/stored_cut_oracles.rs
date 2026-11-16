@@ -9,19 +9,19 @@ use novomodelo_io::Config;
 use novomodelo_io::config::{RowSelectionConfig, SelectionMethod, StoppingRuleConfig};
 use novomodelo_sddp::cut::CutPool;
 use novomodelo_sddp::forward::{ForwardPassBatch, run_forward_pass};
-use novomodelo_sddp::indexer::{CutSlot, CutStateProjection, HydroSys};
+use novomodelo_sddp::indexer::{CutSlot, CutStateProjection};
 use novomodelo_sddp::setup::{NodePos, StageIdx};
 use novomodelo_sddp::test_support::bound_recording::{BoundRecordingSolver, BoundWrite};
 use novomodelo_sddp::test_support::{
     ProbeCut, ProbeCuts, ProbeOpening, inflow_slack_bounds_for_probe, opening_cut_for_probe,
-    prep_for_probe_with_partial_sum, stage_state_box_bounds,
+    prep_for_probe_with_partial_sum, solve_probe_opening, stage_state_box_bounds,
 };
 use novomodelo_sddp::workspace::{BasisStore, SolverWorkspace};
 use novomodelo_sddp::{FutureCostFunction, SddpError, StudySetup, TrajectoryRecord};
-use novomodelo_solver::{ActiveSolver, SolverError, SolverInterface, StageTemplate};
+use novomodelo_solver::{ActiveSolver, SolverInterface, StageTemplate};
 use novomodelo_stochastic::OpeningTreeView;
 
-use super::expanded_solve::{CutRowSet, load_compact_cut_rows, scale_at};
+use super::expanded_solve::{CutRowSet, load_compact_cut_rows};
 use super::oracle_tolerance::value_tolerance;
 use super::{StubComm, lift_to_global_state};
 
@@ -260,7 +260,7 @@ pub fn replay_partial_sums(setup: &StudySetup) -> PartialSums {
     }
 }
 
-fn all_zero(values: &[f64]) -> bool {
+pub fn all_zero(values: &[f64]) -> bool {
     values.iter().all(|&value| value == 0.0)
 }
 
@@ -358,6 +358,23 @@ fn check_mask(
     }
 }
 
+fn reload_successor_rows(
+    setup: &StudySetup,
+    ws: &mut SolverWorkspace<ActiveSolver>,
+    rows: &CutRowSet,
+) {
+    let s = rows.resident_pool;
+    ws.solver.reset_solver_state();
+    load_compact_cut_rows(
+        &mut ws.solver,
+        setup,
+        setup.stage_ctx().template(StageIdx(s)),
+        &setup.fcf.pools[s],
+        &setup.training_ctx().cut_state_layouts[s],
+        rows,
+    );
+}
+
 /// Solves one opening of the successor stage, whose LP is the compact template plus `rows`,
 /// cold: the LP is reloaded first, so the solve depends neither on the order of the points nor
 /// on an earlier call's slack override.
@@ -378,15 +395,7 @@ pub fn solve_successor_opening(
     let training_ctx = setup.training_ctx();
     let s = rows.resident_pool;
     let pool = &setup.fcf.pools[s];
-    ws.solver.reset_solver_state();
-    load_compact_cut_rows(
-        &mut ws.solver,
-        setup,
-        stage_ctx.template(StageIdx(s)),
-        pool,
-        &training_ctx.cut_state_layouts[s],
-        rows,
-    );
+    reload_successor_rows(setup, ws, rows);
     opening_cut_for_probe(
         ws,
         &stage_ctx,
@@ -409,7 +418,9 @@ pub fn solve_successor_opening(
 
 /// Solves one opening of the successor stage as [`solve_successor_opening`] does, with the cut rows
 /// pinned at `partial_sum` instead of a fresh workspace's zero, and returns its objective. Only
-/// the objective is read, so no cut is extracted.
+/// the objective is read, so no cut is extracted. Empty `inflow_slack_bounds`, which
+/// [`inflow_slack_bounds_for_probe`] returns when the method does not truncate, leave the prep's
+/// bounds in place.
 ///
 /// # Errors
 ///
@@ -428,54 +439,25 @@ pub fn successor_objective_at(
     let training_ctx = setup.training_ctx();
     let s = rows.resident_pool;
     let pool = &setup.fcf.pools[s];
-    let template = stage_ctx.template(StageIdx(s));
-    ws.solver.reset_solver_state();
-    load_compact_cut_rows(
-        &mut ws.solver,
-        setup,
-        template,
-        pool,
-        &training_ctx.cut_state_layouts[s],
-        rows,
-    );
-    prep_for_probe_with_partial_sum(
+    reload_successor_rows(setup, ws, rows);
+    let (view, _) = solve_probe_opening(
         ws,
         &stage_ctx,
         &training_ctx,
-        StageIdx(s),
-        x,
-        partial_sum,
-        raw_noise,
-        &ProbeCuts {
-            pool,
-            pool_id: s,
-            slots: &rows.slots,
+        &ProbeOpening {
+            stage: StageIdx(s),
+            pinned_state: x,
+            raw_noise,
+            cuts: ProbeCuts {
+                pool,
+                pool_id: s,
+                slots: &rows.slots,
+            },
+            extracted_pool_id: rows.extracted_pool,
+            inflow_slack_bounds: inflow_slack_bounds.filter(|(lower, _)| !lower.is_empty()),
         },
-    );
-    if let Some((lower, upper)) = inflow_slack_bounds
-        && !lower.is_empty()
-    {
-        let geometry = &stage_ctx.geometry_per_stage[s];
-        let cols: Vec<usize> = (0..lower.len())
-            .map(|h| geometry.inflow_slack_col(HydroSys::new(h)))
-            .collect();
-        let scaled = |bounds: &[f64]| -> Vec<f64> {
-            cols.iter()
-                .zip(bounds)
-                .map(|(&col, &bound)| bound / scale_at(&template.col_scale, col))
-                .collect()
-        };
-        ws.solver
-            .set_col_bounds(&cols, &scaled(lower), &scaled(upper));
-    }
-    let view = ws.solver.solve(None).map_err(|error| match error {
-        SolverError::Infeasible => SddpError::Infeasible {
-            stage: s,
-            iteration: 0,
-            scenario: 0,
-        },
-        other => SddpError::Solver(other),
-    })?;
+        Some(partial_sum),
+    )?;
     Ok(view.objective)
 }
 
@@ -628,7 +610,7 @@ fn slack_signature(
         .collect()
 }
 
-fn bits_eq(a: &[f64], b: &[f64]) -> bool {
+pub fn bits_eq(a: &[f64], b: &[f64]) -> bool {
     a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits())
 }
 

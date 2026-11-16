@@ -14,6 +14,7 @@ use crate::{
     risk_measure::RiskMeasure,
     setup::node_graph::NodeId,
     solve::StageOpeningSolver,
+    training::stage_solve_prep::StateSource,
     workspace::{BasisStoreSliceMut, SolverWorkspace},
 };
 
@@ -161,10 +162,12 @@ pub(crate) fn process_by_scenario_backward<S: SolverInterface + Send>(
             ctx,
             training_ctx,
             &child,
-            x_hat,
+            StateSource {
+                state: x_hat,
+                partial_sum: succ.partial_sum_source(m),
+            },
             s,
             source,
-            succ.partial_sum_source(m),
         );
 
         // Resolved per child, never once from child 0: each child's External

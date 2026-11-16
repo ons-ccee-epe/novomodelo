@@ -21,6 +21,72 @@ pub enum LagPointMode {
     Closing,
 }
 
+/// The per-hydro lag-0 coefficients of a `Closing` point, in hydro-id order.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ClosingCoefficients {
+    inverse_weight: Vec<f64>,
+    share: Vec<f64>,
+    incoming_weight: Vec<f64>,
+}
+
+impl ClosingCoefficients {
+    /// # Panics
+    ///
+    /// When the three vectors differ in length.
+    pub(crate) fn new(
+        inverse_weight: Vec<f64>,
+        share: Vec<f64>,
+        incoming_weight: Vec<f64>,
+    ) -> Self {
+        assert!(
+            share.len() == inverse_weight.len() && incoming_weight.len() == inverse_weight.len(),
+            "closing coefficients are per hydro"
+        );
+        Self {
+            inverse_weight,
+            share,
+            incoming_weight,
+        }
+    }
+
+    pub(crate) fn inverse_weight(&self) -> &[f64] {
+        &self.inverse_weight
+    }
+
+    pub(crate) fn share(&self) -> &[f64] {
+        &self.share
+    }
+
+    pub(crate) fn incoming_weight(&self) -> &[f64] {
+        &self.incoming_weight
+    }
+}
+
+/// A [`LagPointMode`] with the coefficients that mode reads: only `Closing` holds any.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum LagPointRule {
+    Shifted,
+    Carry,
+    Closing(ClosingCoefficients),
+}
+
+impl LagPointRule {
+    pub(crate) fn mode(&self) -> LagPointMode {
+        match self {
+            Self::Shifted => LagPointMode::Shifted,
+            Self::Carry => LagPointMode::Carry,
+            Self::Closing(_) => LagPointMode::Closing,
+        }
+    }
+
+    pub(crate) fn closing(&self) -> Option<&ClosingCoefficients> {
+        match self {
+            Self::Closing(coefficients) => Some(coefficients),
+            Self::Shifted | Self::Carry => None,
+        }
+    }
+}
+
 /// Cut-slot ranges of the lag region and the [`LagPointMode`] its cut rows are
 /// evaluated under: slots are lag-major, so with N hydros slot
 /// `lag0.start + l·N + h` holds (h, l). [`Self::full`] is geometric; [`Self::lag0`] and
@@ -32,10 +98,7 @@ pub enum LagPointMode {
 pub struct CutLagPoint {
     lag0: Range<usize>,
     shifted: Range<usize>,
-    mode: LagPointMode,
-    inverse_weight: Vec<f64>,
-    share: Vec<f64>,
-    incoming_weight: Vec<f64>,
+    rule: LagPointRule,
 }
 
 impl CutLagPoint {
@@ -43,10 +106,7 @@ impl CutLagPoint {
         Self {
             lag0,
             shifted,
-            mode: LagPointMode::Shifted,
-            inverse_weight: Vec::new(),
-            share: Vec::new(),
-            incoming_weight: Vec::new(),
+            rule: LagPointRule::Shifted,
         }
     }
 
@@ -55,7 +115,7 @@ impl CutLagPoint {
     #[inline]
     #[must_use]
     pub fn lag0(&self) -> Range<usize> {
-        if self.mode == LagPointMode::Carry {
+        if matches!(self.rule, LagPointRule::Carry) {
             self.lag0.start..self.lag0.start
         } else {
             self.lag0.clone()
@@ -67,7 +127,7 @@ impl CutLagPoint {
     #[inline]
     #[must_use]
     pub fn shifted(&self) -> Range<usize> {
-        if self.mode == LagPointMode::Carry {
+        if matches!(self.rule, LagPointRule::Carry) {
             self.lag0.start..self.shifted.end
         } else {
             self.shifted.clone()
@@ -85,28 +145,32 @@ impl CutLagPoint {
     #[inline]
     #[must_use]
     pub fn mode(&self) -> LagPointMode {
-        self.mode
+        self.rule.mode()
     }
 
     /// `1 / (W_h + w)` per hydro: the kernel's finalize multiplier at a `Closing` stage.
     #[inline]
     #[must_use]
     pub fn closing_inverse_weight(&self) -> &[f64] {
-        &self.inverse_weight
+        self.rule
+            .closing()
+            .map_or(&[], ClosingCoefficients::inverse_weight)
     }
 
     /// `w · inverse_weight` per hydro: the weight of `ẑ_h` in a `Closing` lag 0.
     #[inline]
     #[must_use]
     pub fn closing_share(&self) -> &[f64] {
-        &self.share
+        self.rule.closing().map_or(&[], ClosingCoefficients::share)
     }
 
     /// `W_h` per hydro: the weight the lag period holds on entering a `Closing` stage.
     #[inline]
     #[must_use]
     pub fn incoming_weight(&self) -> &[f64] {
-        &self.incoming_weight
+        self.rule
+            .closing()
+            .map_or(&[], ClosingCoefficients::incoming_weight)
     }
 
     /// The lag-0 mean a cut row's P dot reads: `conditional_mean` itself, or under `Closing`
@@ -123,14 +187,14 @@ impl CutLagPoint {
             conditional_mean.len() >= n_hydros && out.len() >= n_hydros,
             "mean_lane: conditional_mean or out is shorter than the hydro count"
         );
-        if self.mode != LagPointMode::Closing {
+        let Some(closing) = self.rule.closing() else {
             return conditional_mean;
-        }
+        };
         debug_assert!(
             partial_sum.len() >= n_hydros,
             "mean_lane: partial_sum is shorter than the hydro count"
         );
-        let coefficients = self.inverse_weight.iter().zip(&self.share);
+        let coefficients = closing.inverse_weight.iter().zip(&closing.share);
         for (((lane, &s), &p), (&inverse_weight, &share)) in out
             .iter_mut()
             .zip(partial_sum)
@@ -150,35 +214,27 @@ impl CutLagPoint {
             noise_term.len() >= n_hydros && out.len() >= n_hydros,
             "noise_lane: noise_term or out is shorter than the hydro count"
         );
-        if self.mode != LagPointMode::Closing {
+        let Some(closing) = self.rule.closing() else {
             return noise_term;
-        }
-        for ((lane, &eta), &share) in out.iter_mut().zip(noise_term).zip(&self.share) {
+        };
+        for ((lane, &eta), &share) in out.iter_mut().zip(noise_term).zip(&closing.share) {
             *lane = share * eta;
         }
         out
     }
 
-    pub(crate) fn install_mode(
-        &mut self,
-        mode: LagPointMode,
-        inverse_weight: &[f64],
-        share: &[f64],
-        incoming_weight: &[f64],
-    ) {
-        debug_assert!(
-            [inverse_weight, share, incoming_weight]
-                .iter()
-                .all(|per_hydro| per_hydro.is_empty() || per_hydro.len() == self.lag0.len()),
-            "closing coefficients are per hydro"
-        );
-        self.mode = mode;
-        self.inverse_weight.clear();
-        self.inverse_weight.extend_from_slice(inverse_weight);
-        self.share.clear();
-        self.share.extend_from_slice(share);
-        self.incoming_weight.clear();
-        self.incoming_weight.extend_from_slice(incoming_weight);
+    /// # Panics
+    ///
+    /// When a `Closing` rule's coefficients are not one per hydro of the lag region.
+    pub(crate) fn install_rule(&mut self, rule: LagPointRule) {
+        if let Some(closing) = rule.closing() {
+            assert_eq!(
+                closing.share.len(),
+                self.lag0.len(),
+                "closing coefficients are per hydro"
+            );
+        }
+        self.rule = rule;
     }
 }
 
@@ -652,8 +708,8 @@ mod tests {
     use proptest::test_runner::RngSeed;
 
     use super::{
-        ChainRuleSlots, CutSlot, CutStateProjection, InCol, LagPointMode, OutCol, StageStateConfig,
-        StateDim,
+        ChainRuleSlots, ClosingCoefficients, CutSlot, CutStateProjection, InCol, LagPointMode,
+        LagPointRule, OutCol, StageStateConfig, StateDim,
     };
     use crate::cut::CutPool;
     use crate::cut::rhs::{cut_brackets_into, cut_noise_terms_into};
@@ -1328,12 +1384,8 @@ mod tests {
         assert!(lag_point.closing_share().is_empty());
         assert!(lag_point.incoming_weight().is_empty());
 
-        cut.lag_point_mut().install_mode(
-            LagPointMode::Closing,
-            &[1.0, 0.5],
-            &[0.5, 0.25],
-            &[0.5, 1.5],
-        );
+        cut.lag_point_mut()
+            .install_rule(closing_rule(&[1.0, 0.5], &[0.5, 0.25], &[0.5, 1.5]));
 
         let lag_point = cut.lag_point();
         assert_eq!(lag_point.mode(), LagPointMode::Closing);
@@ -1348,13 +1400,26 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "closing coefficients are per hydro")]
+    fn closing_coefficients_of_unequal_lengths_are_refused() {
+        ClosingCoefficients::new(vec![1.0, 0.5], vec![0.5], vec![0.5, 1.5]);
+    }
+
+    #[test]
+    #[should_panic(expected = "closing coefficients are per hydro")]
+    fn a_closing_rule_without_coefficients_is_refused_at_a_pool_with_lag_slots() {
+        let mut cut = CutStateProjection::new(&lagged_state_space(), ALL_ENABLED);
+        cut.lag_point_mut()
+            .install_rule(closing_rule(&[], &[], &[]));
+    }
+
+    #[test]
     fn a_carry_lag_point_reads_every_lag_slot_as_shifted() {
         let global = lagged_state_space();
 
         for (config, full) in [(ALL_ENABLED, 2..6), (LAGS_ONLY, 0..4), (STORAGE_ONLY, 0..0)] {
             let mut cut = CutStateProjection::new(&global, config);
-            cut.lag_point_mut()
-                .install_mode(LagPointMode::Carry, &[], &[], &[]);
+            cut.lag_point_mut().install_rule(LagPointRule::Carry);
 
             let lag_point = cut.lag_point();
             assert_eq!(lag_point.mode(), LagPointMode::Carry);
@@ -1374,9 +1439,7 @@ mod tests {
         assert!(!no_lags.has_lag_slots());
 
         let mut carry = CutStateProjection::new(&global, ALL_ENABLED);
-        carry
-            .lag_point_mut()
-            .install_mode(LagPointMode::Carry, &[], &[], &[]);
+        carry.lag_point_mut().install_rule(LagPointRule::Carry);
         assert!(carry.lag_point().lag0().is_empty());
         assert!(carry.has_lag_slots());
     }
@@ -1414,6 +1477,18 @@ mod tests {
         }
     }
 
+    fn closing_rule(
+        inverse_weight: &[f64],
+        share: &[f64],
+        incoming_weight: &[f64],
+    ) -> LagPointRule {
+        LagPointRule::Closing(ClosingCoefficients::new(
+            inverse_weight.to_vec(),
+            share.to_vec(),
+            incoming_weight.to_vec(),
+        ))
+    }
+
     fn closing_projection(
         inverse_weight: &[f64],
         share: &[f64],
@@ -1421,12 +1496,8 @@ mod tests {
     ) -> CutStateProjection {
         let global = finalized(share.len(), 2, &[]);
         let mut cut = CutStateProjection::new(&global, LAGS_ONLY);
-        cut.lag_point_mut().install_mode(
-            LagPointMode::Closing,
-            inverse_weight,
-            share,
-            incoming_weight,
-        );
+        cut.lag_point_mut()
+            .install_rule(closing_rule(inverse_weight, share, incoming_weight));
         cut
     }
 
@@ -1464,9 +1535,10 @@ mod tests {
     fn shifted_and_carry_lag_lanes_return_the_input_slice() {
         let (mean, noise_term) = ([1.0, 2.0], [3.0, 4.0]);
 
-        for mode in [LagPointMode::Shifted, LagPointMode::Carry] {
+        for rule in [LagPointRule::Shifted, LagPointRule::Carry] {
+            let mode = rule.mode();
             let mut cut = closing_projection(&[1.0, 0.5], &[0.5, 0.25], &[0.5, 1.5]);
-            cut.lag_point_mut().install_mode(mode, &[], &[], &[]);
+            cut.lag_point_mut().install_rule(rule);
             let lag_point = cut.lag_point();
             let mut out = [f64::NAN; 2];
 
@@ -1532,12 +1604,8 @@ mod tests {
                 .map(|&incoming| 1.0 / (incoming + weight))
                 .collect();
             let share: Vec<f64> = inverse_weight.iter().map(|&inverse| weight * inverse).collect();
-            cut.lag_point_mut().install_mode(
-                LagPointMode::Closing,
-                &inverse_weight,
-                &share,
-                &incoming_weight,
-            );
+            cut.lag_point_mut()
+                .install_rule(closing_rule(&inverse_weight, &share, &incoming_weight));
             let (lag_point, n_slots) = (cut.lag_point(), cut.n_slots());
             prop_assert_eq!(n_slots, n * depth);
             let mut pool = CutPool::new(3, n_slots, 1, 0);
@@ -1600,7 +1668,7 @@ mod tests {
         ) {
             let global = finalized(n, depth, &[]);
             let mut cut = CutStateProjection::new(&global, LAGS_ONLY);
-            cut.lag_point_mut().install_mode(LagPointMode::Carry, &[], &[], &[]);
+            cut.lag_point_mut().install_rule(LagPointRule::Carry);
             let (lag_point, n_slots) = (cut.lag_point(), cut.n_slots());
             let mut pool = CutPool::new(3, n_slots, 1, 0);
             for (k, row) in betas.chunks(n_slots).enumerate() {

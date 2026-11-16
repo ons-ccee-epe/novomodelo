@@ -409,6 +409,7 @@ mod tests {
     };
     use novomodelo_stochastic::test_support::{
         MonthlyLabels, monthly_quarterly_season_map, monthly_season_map, quarterly_season_map,
+        weeks_naming_june_then_months,
     };
 
     // ── Local helpers ─────────────────────────────────────────────────────────
@@ -1105,23 +1106,11 @@ mod tests {
     /// June weeks name, no Rule 29 error is emitted.
     #[test]
     fn test_resolution_consistency_accepts_the_reported_weeks_then_months_calendar() {
-        let mut specs = vec![
-            (0, date(2026, 5, 30), date(2026, 6, 6), 5),
-            (1, date(2026, 6, 6), date(2026, 6, 13), 5),
-            (2, date(2026, 6, 13), date(2026, 6, 20), 5),
-            (3, date(2026, 6, 20), date(2026, 6, 27), 5),
-            (4, date(2026, 6, 27), date(2026, 7, 4), 5),
-            (5, date(2026, 7, 4), date(2026, 8, 1), 6),
-        ];
-        let months = (2026..=2027).flat_map(|year| (1..=12_u32).map(move |month| (year, month)));
-        for (offset, (year, month)) in months
-            .filter(|year_month| ((2026, 8)..=(2027, 11)).contains(year_month))
-            .enumerate()
-        {
-            let start = date(year, month, 1);
-            let end = start.checked_add_months(chrono::Months::new(1)).unwrap();
-            specs.push((6 + offset as i32, start, end, month as usize - 1));
-        }
+        let specs: Vec<_> = weeks_naming_june_then_months()
+            .into_iter()
+            .zip(0..)
+            .map(|((start, end, season), id)| (id, start, end, season))
+            .collect();
         assert_eq!(specs.len(), 22);
         let errors = duration_errors(make_stages_for_resolution_check(specs));
         assert!(errors.is_empty(), "got: {errors:?}");
