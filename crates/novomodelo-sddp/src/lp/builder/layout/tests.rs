@@ -819,6 +819,7 @@ fn useful_volume_fold_uses_the_evaluated_coefficient_program() {
 /// test-loud, production-safe `debug_assert!` `ResolvedParameters::get` uses
 /// for its own unreachable-post-validation misses.
 #[test]
+#[cfg(debug_assertions)]
 #[should_panic(expected = "useful-volume term references unknown hydro")]
 fn useful_volume_fold_unresolvable_hydro_id_fires_debug_assert() {
     let mut fixtures = UsefulVolumeFixtures::new(0, 1);
