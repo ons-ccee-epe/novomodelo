@@ -116,7 +116,8 @@ pub use policy::resolved_parameters::{
 };
 pub use production::energy_conversion::{EnergyConversionSet, HydroEnergyProductivityOverride};
 pub use production::hydro_models::{
-    FphaFitDeviationEntry, FphaHydroDetail, HydroFitTimings, HydroModelSummary,
+    DroppedFloor, DroppedFloorKind, DroppedFloorLevel, DroppedFloorReason, FphaFitDeviationEntry,
+    FphaHydroDetail, FrozenTurbiningHydro, HydroFitTimings, HydroModelSummary,
     NoTurbineCapacityHydro, PrepareHydroModelsResult, ProductionModelSource,
     build_deviation_summary, build_evaporation_model_rows, build_hydro_model_summary,
     prepare_hydro_models,

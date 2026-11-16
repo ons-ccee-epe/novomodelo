@@ -697,7 +697,8 @@ fn geometry_stage(n_blks: usize) -> Stage {
 /// `fpha_hydro_indices` / `fpha_planes` are parallel (equal length). Builds the
 /// production `TemplateBuildCtx`/[`StateSpace`]/[`Stage`] the dimensions
 /// describe and delegates to `StageLayout::new` — the single owner of the
-/// offset arithmetic.
+/// offset arithmetic. The resolved plant limits mirror the entity limits
+/// `geometry_hydro` declares.
 #[must_use]
 #[expect(
     clippy::needless_pass_by_value,
@@ -745,7 +746,11 @@ pub fn geometry(
                 filling_min_rate_m3s: 0.0,
                 water_withdrawal_m3s: 0.0,
             },
-            hydro_block: HydroBlockBounds::default(),
+            hydro_block: HydroBlockBounds {
+                max_turbined_m3s: 1.0,
+                max_generation_mw: 1.0,
+                ..HydroBlockBounds::default()
+            },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,

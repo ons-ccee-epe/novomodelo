@@ -31,6 +31,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `novomodelo validate` warns when a hydro's minimum storage in
   `constraints/hydro_bounds.parquet` rises above the previous stage's, which
   can make a stage infeasible.
+- `training/hydro_models.json` lists under `frozen_turbining` each hydro that
+  has no turbine capacity at some study stage, or whose turbined or generation
+  minimum is no longer charged, with those stages and minima; `novomodelo run`
+  prints a line for each.
 
 ### Changed
 
@@ -66,6 +70,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   over the plant's `min_storage_hm3` to `max_storage_hm3`, which
   `system/hydro_geometry.parquet` must cover or the case is refused. Extend
   the geometry. Results change where the two ranges differ.
+- An FPHA hydro with `max_generation_mw` 0 in `system/hydros.json` needs no rows
+  in `system/fpha_hyperplanes.parquet` and is modeled at zero productivity. The
+  "no turbine capacity" warning names `max_turbined_m3s` and
+  `max_generation_mw`. Results change.
 
 ### Fixed
 
@@ -92,6 +100,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the month's `evaporation.coefficients_mm` in `system/hydros.json`, adding
   water in a month of net evaporation or removing it in a month of net
   rainfall. Results change.
+- `max_generation_mw` or `max_turbined_m3s` of 0: a hydro or unit group with it
+  in any block turbined water at 0 MW and could report `fpha_violation_mw`; it
+  now spills that water, and its minima, like a plant's before `entry_stage_id`
+  or after `exit_stage_id`, are no longer charged. Results change.
+- A hydro with `fpha_config.source: "computed"` could turbine water at 0 MW in
+  `simulation/hydros` while it spilled within its spillage fit range. Results
+  change. `novomodelo validate` now warns when a plane in
+  `system/fpha_hyperplanes.parquet` falls below 0 MW at zero turbining.
 
 ## [0.20.0] - 2026-11-03
 

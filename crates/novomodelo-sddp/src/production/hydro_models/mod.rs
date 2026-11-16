@@ -56,10 +56,11 @@ pub struct HydroFitTimings {
     pub evaporation_fit_seconds: f64,
 }
 pub use types::{
+    DroppedFloor, DroppedFloorKind, DroppedFloorLevel, DroppedFloorReason,
     EvaporationCoefficientSign, EvaporationModel, EvaporationModelSet, EvaporationReferenceSource,
-    EvaporationSource, FphaFitDeviationEntry, FphaHydroDetail, FphaPlane, HydroModelProvenance,
-    HydroModelSummary, LinearizedEvaporation, NoTurbineCapacityHydro, PrepareHydroModelsResult,
-    ProductionModelSet, ProductionModelSource, ResolvedProductionModel,
+    EvaporationSource, FphaFitDeviationEntry, FphaHydroDetail, FphaPlane, FrozenTurbiningHydro,
+    HydroModelProvenance, HydroModelSummary, LinearizedEvaporation, NoTurbineCapacityHydro,
+    PrepareHydroModelsResult, ProductionModelSet, ProductionModelSource, ResolvedProductionModel,
 };
 // ── Top-level pipeline function ───────────────────────────────────────────────
 

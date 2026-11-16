@@ -7,13 +7,14 @@
 //! per-hydro `ProductionModelSource` provenance, the `ρ_eq` override carried for
 //! energy-conversion derivation, and the computed-FPHA export rows.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use rayon::prelude::*;
 
 use novomodelo_core::temporal::Stage;
 use novomodelo_core::{
     EntityId, Hydro, StageId, StudyPos, System, entities::hydro::HydroGenerationModel,
+    long_term_mean_inflow_by_hydro,
 };
 use novomodelo_io::CaseArtifacts;
 use novomodelo_io::FphaDeviationPointRow;
@@ -84,7 +85,7 @@ pub fn resolve_production_models_from_artifacts(
 
     let prod_configs: &[ProductionModelConfig] = &artifacts.production_models;
 
-    let plane_reduction: Option<&PlaneReductionConfig> = artifacts.plane_reduction.as_ref();
+    let plane_reduction = artifacts.plane_reduction.as_ref();
 
     let config_map: HashMap<EntityId, &ProductionModelConfig> =
         prod_configs.iter().map(|c| (c.hydro_id, c)).collect();
@@ -120,10 +121,10 @@ pub fn resolve_production_models_from_artifacts(
             HashMap::new()
         };
 
-    let long_term_mean_inflow_table: HashMap<EntityId, f64> = if uses_computed_fpha {
-        build_long_term_mean_inflow_table(system)
+    let long_term_mean_inflow_table: BTreeMap<EntityId, f64> = if uses_computed_fpha {
+        long_term_mean_inflow_by_hydro(system.inflow_history())
     } else {
-        HashMap::new()
+        BTreeMap::new()
     };
 
     let study_stages: Vec<&Stage> = system.stages().iter().filter(|s| s.id >= 0).collect();
@@ -193,10 +194,12 @@ pub fn resolve_production_models_from_artifacts(
         if fit.provenance.1 == ProductionModelSource::NoTurbineCapacity {
             tracing::warn!(
                 "hydro {} (id={}) requests FPHA but has no turbine capacity \
-                 (max_turbined_m3s = {}); modeling it with zero productivity",
+                 (max_turbined_m3s = {}, max_generation_mw = {}); modeling it with zero \
+                 productivity",
                 hydro.name,
                 hydro.id.0,
-                hydro.max_turbined_m3s
+                hydro.max_turbined_m3s,
+                hydro.max_generation_mw
             );
         }
         provenance.push(fit.provenance);
@@ -303,7 +306,7 @@ fn fit_one_hydro(
     system: &System,
     n_stages: usize,
     collect_deviation_points: bool,
-    long_term_mean_inflow_table: &HashMap<EntityId, f64>,
+    long_term_mean_inflow_table: &BTreeMap<EntityId, f64>,
 ) -> Result<PerHydroFit, SddpError> {
     let config_entry = config_map.get(&hydro.id).copied();
 
@@ -340,7 +343,7 @@ fn fit_one_hydro(
                 .get(&hydro.id)
                 .copied()
                 .unwrap_or(0.0);
-            let per_stage = fit_computed_planes_per_stage(
+            Some(fit_computed_planes_per_stage(
                 hydro,
                 config_entry,
                 geometry_map,
@@ -354,8 +357,7 @@ fn fit_one_hydro(
                 &mut export_rows,
                 &mut fpha_deviations,
                 &mut deviation_point_rows,
-            )?;
-            Some(per_stage)
+            )?)
         } else {
             None
         };
@@ -429,58 +431,6 @@ fn resolve_downstream_level(
     let v_ref = reference_volume_fractions.get(downstream_id, stage_pos);
 
     Some(forebay.height(v_ref))
-}
-
-/// Long-term mean inflow (m³/s) for every hydro, keyed by canonical
-/// [`EntityId`], from ONE sequential pass over `System::inflow_history()`.
-/// Feeds the lateral-secant `S_max = 2·mean` when the config sets no
-/// `spillage_fit_max_m3s`; a hydro absent from the table
-/// (no history) falls back to `0.0` at the lookup site, mapping to the
-/// `2 × max_turbined` fallback in `resolve_s_max`.
-///
-/// # Determinism
-///
-/// One sequential pass in `inflow_history()`'s stored canonical order; each
-/// hydro's `(sum, count)` accumulates in that same encounter order regardless
-/// of hydro declaration order, so every mean stays bit-identical to a
-/// per-hydro filtered scan. A partitioned-then-reduced parallel accumulator
-/// would reorder the adds and break bit-determinism.
-fn build_long_term_mean_inflow_table(system: &System) -> HashMap<EntityId, f64> {
-    let mut acc: HashMap<EntityId, (f64, u64)> = HashMap::new();
-    for row in system.inflow_history() {
-        let entry = acc.entry(row.hydro_id).or_insert((0.0, 0));
-        entry.0 += row.value_m3s;
-        entry.1 += 1;
-    }
-    acc.into_iter()
-        .map(|(hydro_id, (sum, count))| {
-            #[allow(clippy::cast_precision_loss)]
-            let mean = sum / (count as f64);
-            (hydro_id, mean)
-        })
-        .collect()
-}
-
-/// Reference oracle for [`build_long_term_mean_inflow_table`]: the retired
-/// per-hydro filtered scan, kept to prove the one-pass batch table's mean is
-/// bit-identical to a direct per-hydro `inflow_history()` scan.
-#[cfg(test)]
-fn long_term_mean_inflow_reference(system: &System, hydro_id: EntityId) -> f64 {
-    let mut sum = 0.0_f64;
-    let mut count = 0_u64;
-    for row in system.inflow_history() {
-        if row.hydro_id == hydro_id {
-            sum += row.value_m3s;
-            count += 1;
-        }
-    }
-    if count == 0 {
-        0.0
-    } else {
-        #[allow(clippy::cast_precision_loss)]
-        let n = count as f64;
-        sum / n
-    }
 }
 
 /// Fit FPHA planes for one `SelectionMode` entry's `FphaColumnLayout`, after
@@ -843,7 +793,7 @@ fn resolve_stage_model(
                     .to_vec();
                 Ok(ResolvedProductionModel::Fpha { planes })
             } else {
-                build_fpha_model(hydro, stage, source, hyperplane_map)
+                build_fpha_model(hydro, stage, hyperplane_map)
             }
         } else {
             // Resolution order (matches build_energy_conversion_set): parquet
@@ -887,7 +837,6 @@ fn resolve_stage_model(
 fn build_fpha_model(
     hydro: &Hydro,
     stage: &Stage,
-    _source: ProductionModelSource,
     hyperplane_map: &HashMap<(EntityId, Option<i32>), Vec<&FphaHyperplaneRow>>,
 ) -> Result<ResolvedProductionModel, SddpError> {
     let rows: &[&FphaHyperplaneRow] = hyperplane_map

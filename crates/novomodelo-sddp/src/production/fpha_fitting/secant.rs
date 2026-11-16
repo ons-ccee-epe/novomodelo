@@ -33,30 +33,6 @@ const N_LATERAL_FLOW_SAMPLES: usize = 101;
 /// tolerance so every snapped value is sign-valid.
 const GAMMA_S_SNAP_EPS: f64 = 1e-10;
 
-/// Resolve the lateral-flow sample upper bound `S_max` for the secant fit: the
-/// input `spillage_fit_max_m3s` when given, else `2 × long-term mean inflow` when
-/// positive, else `2 × max_turbined_m3s`.
-///
-/// # Contract — `long-term mean inflow > 0` strictly, else fall back
-///
-/// The test is strict: a history-less hydro yields `long_term_mean_inflow_m3s =
-/// 0.0` and MUST take the fallback. `>= 0.0` would collapse `S_max = 0` and zero
-/// out every `γ_S` (the degenerate guard in [`anchored_slope`]), silently dropping
-/// the lateral correction.
-pub(crate) fn resolve_s_max(
-    spillage_fit_max_m3s: Option<f64>,
-    long_term_mean_inflow_m3s: f64,
-    max_turbined_m3s: f64,
-) -> f64 {
-    if let Some(s_max) = spillage_fit_max_m3s {
-        s_max
-    } else if long_term_mean_inflow_m3s > 0.0 {
-        2.0 * long_term_mean_inflow_m3s
-    } else {
-        2.0 * max_turbined_m3s
-    }
-}
-
 /// Zero-anchored least-squares slope of `generation` vs `lateral_flow` at
 /// `(v, q)`: `Σ sᵢ·(g(sᵢ) − g(0)) / Σ sᵢ²` over the fixed sample of `[0, S_max]`.
 ///
@@ -111,6 +87,13 @@ fn anchored_slope(pf: &ProductionFunction, v: f64, q: f64, s_max: f64) -> f64 {
 ///
 /// The slopes are evaluated on the uncapped [`ProductionFunction::evaluate`],
 /// once per grid point, and averaged in fixed `(v, q)` grid order.
+///
+/// # Contract — the plane is at or above 0 at `(bounds.v_min, 0, S_max)`
+///
+/// `γ_S ← max(γ_S, min(0, −(γ₀ + γ_V·v_min) / S_max))`, skipped for `S_max ≤ 0`, holds
+/// the plane at or above 0 at the corner. Applied after the snap it leaves a −1e-16
+/// residual in the spillage column; a `v` other than `bounds.v_min` breaks the bound.
+/// Pinned by `gamma_s_limit_puts_the_plane_at_zero_at_the_window_corner`.
 pub(crate) fn fit_gamma_s_for_planes(
     planes: &mut [RawPlane],
     pf: &ProductionFunction,
@@ -151,9 +134,18 @@ pub(crate) fn fit_gamma_s_for_planes(
         } else {
             sum / f64::from(count)
         };
-        // Snap BOTH signs to 0 (see GAMMA_S_SNAP_EPS): `mean.min(0.0)` would let a
+        let limited = if s_max > 0.0 {
+            mean.max((-(plane.gamma_0 + plane.gamma_v * bounds.v_min) / s_max).min(0.0))
+        } else {
+            mean
+        };
+        // Snap BOTH signs to 0 (see GAMMA_S_SNAP_EPS): `limited.min(0.0)` would let a
         // tiny NEGATIVE residual survive into the spillage column.
-        plane.gamma_s = if mean > -GAMMA_S_SNAP_EPS { 0.0 } else { mean };
+        plane.gamma_s = if limited > -GAMMA_S_SNAP_EPS {
+            0.0
+        } else {
+            limited
+        };
     }
 }
 
@@ -170,11 +162,12 @@ pub(crate) fn fit_gamma_s_for_planes(
 mod tests {
     use novomodelo_core::{EfficiencyModel, EntityId, HydraulicLossesModel, TailraceModel};
     use novomodelo_io::extensions::HydroGeometryRow;
+    use novomodelo_io::validation::semantic::envelope_tolerance;
 
     use super::super::geometry::{FittingBounds, ForebayTable};
     use super::super::hull_fit::RawPlane;
     use super::super::production::{ProductionFunction, TailraceSource};
-    use super::{N_LATERAL_FLOW_SAMPLES, fit_gamma_s_for_planes, resolve_s_max};
+    use super::{GAMMA_S_SNAP_EPS, N_LATERAL_FLOW_SAMPLES, fit_gamma_s_for_planes};
 
     fn row(volume_hm3: f64, height_m: f64) -> HydroGeometryRow {
         HydroGeometryRow {
@@ -194,6 +187,13 @@ mod tests {
             n_spillage_points: 2,
             max_planes_per_hydro: 10,
             single_volume: false,
+        }
+    }
+
+    fn window_bounds() -> FittingBounds {
+        FittingBounds {
+            v_min: 10_000.0,
+            ..small_bounds()
         }
     }
 
@@ -278,18 +278,6 @@ mod tests {
         )
     }
 
-    /// `resolve_s_max`: an input `spillage_fit_max_m3s` wins; otherwise
-    /// long-term mean inflow > 0 ⇒ 2·long-term mean inflow, else 2·max_turbined.
-    #[test]
-    fn s_max_resolution_picks_input_then_mlt_then_falls_back() {
-        assert_eq!(resolve_s_max(Some(42_000.0), 1_500.0, 3_000.0), 42_000.0);
-        assert_eq!(resolve_s_max(Some(42_000.0), 0.0, 3_000.0), 42_000.0);
-        assert_eq!(resolve_s_max(None, 1_500.0, 3_000.0), 3_000.0);
-        assert_eq!(resolve_s_max(None, 0.0, 3_000.0), 6_000.0);
-        // Negative/garbage long-term mean inflow also falls back (treated as not-supplied).
-        assert_eq!(resolve_s_max(None, -1.0, 2_000.0), 4_000.0);
-    }
-
     /// A plane active at every grid point gets the mean, over those points, of the
     /// hand-computed zero-anchored slope `Σ sᵢ·(g(sᵢ) − g(0)) / Σ sᵢ²`, and on a
     /// curved tailrace that differs from the free-intercept OLS slope.
@@ -322,10 +310,10 @@ mod tests {
         let expected = anchored.iter().sum::<f64>() / anchored.len() as f64;
         let free_intercept = ols.iter().sum::<f64>() / ols.len() as f64;
 
-        // Zero intercept and a steep, flow-independent bound: the single plane is
-        // the argmin at every grid point.
+        // A steep, flow-independent bound: the single plane is the argmin at every
+        // grid point.
         let mut planes = vec![RawPlane {
-            gamma_0: 0.0,
+            gamma_0: 1_000.0,
             gamma_v: 0.0,
             gamma_q: 1_000.0,
             gamma_s: 0.0,
@@ -352,20 +340,15 @@ mod tests {
         let pf = curved_tailrace_pf();
         let bounds = small_bounds();
         let plane = RawPlane {
-            gamma_0: 0.0,
+            gamma_0: 1_000.0,
             gamma_v: 0.0,
             gamma_q: 1_000.0,
             gamma_s: 0.0,
         };
         let mut narrow = vec![plane];
         let mut wide = vec![plane];
-        fit_gamma_s_for_planes(&mut narrow, &pf, &bounds, resolve_s_max(None, 0.0, 3_000.0));
-        fit_gamma_s_for_planes(
-            &mut wide,
-            &pf,
-            &bounds,
-            resolve_s_max(Some(9_000.0), 0.0, 3_000.0),
-        );
+        fit_gamma_s_for_planes(&mut narrow, &pf, &bounds, 6_000.0);
+        fit_gamma_s_for_planes(&mut wide, &pf, &bounds, 9_000.0);
         assert!(
             wide[0].gamma_s.abs() < narrow[0].gamma_s.abs(),
             "wide |gamma_s|={} must be below narrow |gamma_s|={}",
@@ -383,13 +366,13 @@ mod tests {
         let pf = spill_sensitive_pf();
         let bounds = small_bounds();
         let mut planes = vec![RawPlane {
-            gamma_0: 0.0,
+            gamma_0: 1_000.0,
             gamma_v: 0.001,
             gamma_q: 0.1,
             gamma_s: 0.0,
         }];
 
-        let s_max = resolve_s_max(None, 0.0, pf.max_turbined_m3s);
+        let s_max = 2.0 * pf.max_turbined_m3s;
         let (v, q) = (15_000.0, 1_500.0);
         assert!(
             pf.evaluate(v, q, s_max) < pf.evaluate(v, q, 0.0),
@@ -398,6 +381,100 @@ mod tests {
 
         fit_gamma_s_for_planes(&mut planes, &pf, &bounds, s_max);
         assert!(planes[0].gamma_s < 0.0);
+    }
+
+    /// derived: the plane `{γ₀ 0, γᵥ 0.001, γq 0.12}` reads `γ₀ + γᵥ·v_min = 10` MW at
+    /// the window corner, so the limit binds at `γₛ = −10 / 6 000` and the corner
+    /// `10 + γₛ·6 000` is 0. The twin with `γ₀ = 1 000` has the same argmin set and
+    /// its own limit `−1 010 / 6 000` is below its mean, so it keeps the hand mean of
+    /// the zero-anchored slopes; that mean lies below the first plane's bound, so the
+    /// limit was the binding term for the first plane.
+    #[test]
+    fn gamma_s_limit_puts_the_plane_at_zero_at_the_window_corner() {
+        let pf = spill_sensitive_pf();
+        let bounds = window_bounds();
+        let s_max = 6_000.0;
+        let (gamma_0, gamma_v, v_min) = (0.0, 0.001, 10_000.0);
+
+        let mut planes = vec![RawPlane {
+            gamma_0,
+            gamma_v,
+            gamma_q: 0.12,
+            gamma_s: 0.0,
+        }];
+        fit_gamma_s_for_planes(&mut planes, &pf, &bounds, s_max);
+
+        let bound = -(gamma_0 + gamma_v * v_min) / s_max;
+        let gamma_s = planes[0].gamma_s;
+        assert!(
+            (gamma_s - bound).abs() <= 4.0 * f64::EPSILON * bound.abs(),
+            "gamma_s={gamma_s} must sit at the corner limit {bound}"
+        );
+        let corner = gamma_0 + gamma_v * v_min + gamma_s * s_max;
+        assert!(
+            corner.abs() <= envelope_tolerance(10.0),
+            "corner={corner} must be 0"
+        );
+
+        let mut twin = vec![RawPlane {
+            gamma_0: 1_000.0,
+            ..planes[0]
+        }];
+        fit_gamma_s_for_planes(&mut twin, &pf, &bounds, s_max);
+
+        let xs = lateral_flow_samples(s_max);
+        let slopes: Vec<f64> = grid_points(&pf, &bounds)
+            .into_iter()
+            .map(|(v, q)| {
+                let ys: Vec<f64> = xs.iter().map(|&x| pf.evaluate(v, q, x)).collect();
+                let cross: f64 = xs.iter().zip(&ys).map(|(&x, &y)| x * (y - ys[0])).sum();
+                let square: f64 = xs.iter().map(|&x| x * x).sum();
+                cross / square
+            })
+            .collect();
+        let mean = slopes.iter().sum::<f64>() / slopes.len() as f64;
+        assert!(
+            (twin[0].gamma_s - mean).abs() < 1e-12,
+            "twin gamma_s={} must keep the mean {mean}",
+            twin[0].gamma_s
+        );
+        assert!(
+            twin[0].gamma_s < bound,
+            "twin gamma_s={} must lie below {bound}, or the limit never bound",
+            twin[0].gamma_s
+        );
+    }
+
+    /// derived: the plane `{γ₀ 1e-12, γᵥ 0, γq 0.12}` has limit `−1e-12 / 6 000 ≈
+    /// −1.7e-16`, above `−GAMMA_S_SNAP_EPS`, so the snap maps it to +0.0; a limit
+    /// applied after the snap leaves that residual in the spillage column. The origin
+    /// plane `{0, 0, 0.12}` has limit 0 and ends at +0.0.
+    #[test]
+    fn gamma_s_limit_runs_before_the_snap() {
+        let pf = spill_sensitive_pf();
+        let bounds = window_bounds();
+        let s_max = 6_000.0;
+        let residual_bound = -1e-12 / s_max;
+        assert!(
+            residual_bound < 0.0 && residual_bound > -GAMMA_S_SNAP_EPS,
+            "fixture must put the limit inside the snap band, got {residual_bound}"
+        );
+
+        for gamma_0 in [1e-12, 0.0] {
+            let mut planes = vec![RawPlane {
+                gamma_0,
+                gamma_v: 0.0,
+                gamma_q: 0.12,
+                gamma_s: 0.0,
+            }];
+            fit_gamma_s_for_planes(&mut planes, &pf, &bounds, s_max);
+            assert_eq!(
+                planes[0].gamma_s.to_bits(),
+                0.0_f64.to_bits(),
+                "gamma_0={gamma_0}: gamma_s={} must be +0.0",
+                planes[0].gamma_s
+            );
+        }
     }
 
     /// Flat tailrace → flat `generation` in `lateral_flow` → secant slope exactly 0 (the neutral
@@ -412,20 +489,14 @@ mod tests {
             gamma_q: 0.2,
             gamma_s: 0.0,
         }];
-        fit_gamma_s_for_planes(
-            &mut planes,
-            &pf,
-            &bounds,
-            resolve_s_max(None, 0.0, pf.max_turbined_m3s),
-        );
+        fit_gamma_s_for_planes(&mut planes, &pf, &bounds, 2.0 * pf.max_turbined_m3s);
         assert_eq!(
             planes[0].gamma_s, 0.0,
             "flat tailrace must yield gamma_s = 0"
         );
     }
 
-    /// Degenerate `S_max == 0` (long-term mean inflow = 0 AND max_turbined = 0) → neutral `γ_S = 0`,
-    /// no divide-by-zero.
+    /// Degenerate `S_max = 0` → neutral `γ_S = 0`, no divide-by-zero.
     #[test]
     fn degenerate_s_max_zero_is_neutral() {
         let rows = vec![row(0.0, 400.0), row(30_000.0, 420.0)];
@@ -433,7 +504,6 @@ mod tests {
         let tailrace = TailraceModel::Polynomial {
             coefficients: vec![5.0, 0.001],
         };
-        // max_turbined = 0 → with long-term mean inflow = 0, S_max = 0.
         let pf = ProductionFunction::new(
             forebay,
             TailraceSource::Entity(Some(tailrace)),
@@ -442,7 +512,6 @@ mod tests {
             0.0,
             "ZeroTurb".to_owned(),
         );
-        assert_eq!(resolve_s_max(None, 0.0, pf.max_turbined_m3s), 0.0);
 
         let bounds = small_bounds();
         let mut planes = vec![RawPlane {
@@ -451,14 +520,10 @@ mod tests {
             gamma_q: 0.1,
             gamma_s: 0.0,
         }];
-        fit_gamma_s_for_planes(
-            &mut planes,
-            &pf,
-            &bounds,
-            resolve_s_max(None, 0.0, pf.max_turbined_m3s),
-        );
+        fit_gamma_s_for_planes(&mut planes, &pf, &bounds, 0.0);
         assert_eq!(
-            planes[0].gamma_s, 0.0,
+            planes[0].gamma_s.to_bits(),
+            0.0_f64.to_bits(),
             "S_max = 0 must yield neutral gamma_s"
         );
     }
@@ -484,12 +549,7 @@ mod tests {
                 gamma_s: 0.0,
             },
         ];
-        fit_gamma_s_for_planes(
-            &mut planes,
-            &pf,
-            &bounds,
-            resolve_s_max(None, 0.0, pf.max_turbined_m3s),
-        );
+        fit_gamma_s_for_planes(&mut planes, &pf, &bounds, 2.0 * pf.max_turbined_m3s);
         for plane in &planes {
             assert!(
                 plane.gamma_s <= 1e-10,
@@ -514,24 +574,19 @@ mod tests {
         // plane is the binding (min) bound for q ≤ 1500, the low-γ_q plane for q ≥ 1500.
         let mut planes = vec![
             RawPlane {
-                gamma_0: 0.0,
+                gamma_0: 1_000.0,
                 gamma_v: 0.001,
                 gamma_q: 0.12, // high-γ_q (high head, governs low flow) — index 0
                 gamma_s: 0.0,
             },
             RawPlane {
-                gamma_0: 60.0,
+                gamma_0: 1_060.0,
                 gamma_v: 0.001,
                 gamma_q: 0.08, // low-γ_q (governs high flow) — index 1
                 gamma_s: 0.0,
             },
         ];
-        fit_gamma_s_for_planes(
-            &mut planes,
-            &pf,
-            &bounds,
-            resolve_s_max(None, 0.0, pf.max_turbined_m3s),
-        );
+        fit_gamma_s_for_planes(&mut planes, &pf, &bounds, 2.0 * pf.max_turbined_m3s);
 
         let high_gamma_q = planes[0].gamma_s;
         let low_gamma_q = planes[1].gamma_s;

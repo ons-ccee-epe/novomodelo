@@ -5,13 +5,16 @@ use std::path::Path;
 
 use chrono::Datelike;
 use novomodelo_core::scenario::SamplingScheme;
-use novomodelo_core::{EntityId, Hydro, Stage};
+use novomodelo_core::{
+    EntityId, Hydro, HydroGenerationModel, Stage, long_term_mean_inflow_by_hydro,
+};
 use novomodelo_stochastic::derive_external_sample_moments;
 use novomodelo_stochastic::par::{
     AnnualParams, ClosureRejection, check_stationarity, check_stationarity_annual,
 };
 
 use crate::config::HistoricalYearRange;
+use crate::extensions::{FphaColumnLayout, FphaHyperplaneRow};
 use crate::resolution::{PenaltiesEntitySlices, PenaltiesOverrides, resolve_penalties};
 use crate::scenarios::estimation::estimation_samples;
 use crate::{LoadError, StageIdResolver};
@@ -256,6 +259,152 @@ pub(super) fn check_fpha_price_dominance(data: &ParsedData, ctx: &mut Validation
     );
 }
 
+// ── Rule 55: precomputed FPHA planes at zero turbining ────────────────────────
+
+/// Rule 55: evaluates each precomputed FPHA plane the LP reads at a study stage at
+/// the corner `(v_min, q = 0, S_ref)` of the stage's fitting window
+/// ([`FphaColumnLayout::resolve_fitting_window`]) and spillage fit range
+/// ([`FphaColumnLayout::resolve_spillage_fit_max_m3s`]), with κ on γ₀ only, as the
+/// LP scales it. One warning per hydro with a plane below 0 MW there names its
+/// earliest crossing of 0 MW.
+pub(super) fn check_fpha_precomputed_plane_at_zero_turbining(
+    data: &ParsedData,
+    ctx: &mut ValidationContext,
+) {
+    struct Crossing {
+        s_star: f64,
+        stage_id: i32,
+        plane_id: i32,
+        v_min: f64,
+        s_ref: f64,
+    }
+
+    if data.production_models.is_empty() || data.fpha_hyperplanes.is_empty() {
+        return;
+    }
+    let mut planes: HashMap<(EntityId, Option<i32>), Vec<&FphaHyperplaneRow>> = HashMap::new();
+    for row in &data.fpha_hyperplanes {
+        planes
+            .entry((row.hydro_id, row.stage_id))
+            .or_default()
+            .push(row);
+    }
+    let mlt = long_term_mean_inflow_by_hydro(&data.inflow_history);
+
+    for hydro in &data.hydros {
+        let Some(config) = data
+            .production_models
+            .iter()
+            .find(|c| c.hydro_id == hydro.id)
+        else {
+            continue;
+        };
+        if !config.uses_fpha() || config.uses_computed_fpha() || !hydro.has_turbine_capacity() {
+            continue;
+        }
+        let mean = mlt.get(&hydro.id).copied().unwrap_or(0.0);
+
+        let mut crossings: Vec<Crossing> = Vec::new();
+        for stage in data.stages.stages.iter().filter(|s| s.id >= 0) {
+            let res = config.resolve_stage(stage);
+            if res.model != Some(HydroGenerationModel::Fpha) {
+                continue;
+            }
+            let Ok((v_min, _)) = FphaColumnLayout::resolve_fitting_window(
+                res.fpha_config,
+                hydro.min_storage_hm3,
+                hydro.max_storage_hm3,
+            ) else {
+                continue;
+            };
+            let s_ref = FphaColumnLayout::resolve_spillage_fit_max_m3s(
+                res.fpha_config,
+                mean,
+                hydro.max_turbined_m3s,
+            );
+            let Some(rows) = planes
+                .get(&(hydro.id, Some(stage.id)))
+                .or_else(|| planes.get(&(hydro.id, None)))
+            else {
+                continue;
+            };
+            for row in rows {
+                let intercept = row.gamma_0 * row.kappa;
+                let storage_term = row.gamma_v * v_min;
+                let spillage_term = row.gamma_s * s_ref;
+                let a = intercept + storage_term;
+                let corner = a + spillage_term;
+                let magnitude = intercept
+                    .abs()
+                    .max(storage_term.abs())
+                    .max(spillage_term.abs());
+                if corner < -envelope_tolerance(magnitude) {
+                    crossings.push(Crossing {
+                        s_star: if a > 0.0 { a / row.gamma_s.abs() } else { 0.0 },
+                        stage_id: stage.id,
+                        plane_id: row.plane_id,
+                        v_min,
+                        s_ref,
+                    });
+                }
+            }
+        }
+
+        let Some(worst) = crossings.iter().min_by(|x, y| {
+            x.s_star
+                .total_cmp(&y.s_star)
+                .then(x.stage_id.cmp(&y.stage_id))
+                .then(x.plane_id.cmp(&y.plane_id))
+        }) else {
+            continue;
+        };
+        let n_pairs = crossings.len();
+        let stages = compress_stage_ids(&crossings.iter().map(|c| c.stage_id).collect());
+        let Crossing {
+            s_star,
+            stage_id,
+            plane_id,
+            v_min,
+            s_ref,
+        } = *worst;
+        let entity = format!("Hydro {}", hydro.id.0);
+        let message = format!(
+            "FPHA plane below zero at zero turbining: {entity} -- {n_pairs} (stage, plane) \
+             pair(s) at stages {stages} fall below 0 MW with no turbined flow; the earliest \
+             crosses 0 MW at {s_star} m³/s of spillage (stage {stage_id}, plane {plane_id}, \
+             storage {v_min} hm³, spillage up to {s_ref} m³/s), so while it spills the hydro \
+             turbines water at 0 MW, or reports fpha_violation_mw where turbining cannot lift \
+             the plane to 0 MW"
+        );
+        ctx.emit(
+            &rules::SEMANTIC_FPHA_PRECOMPUTED_PLANE_NEGATIVE_AT_ZERO_TURBINING,
+            "system/fpha_hyperplanes.parquet",
+            Some(&entity),
+            message,
+        );
+    }
+}
+
+fn compress_stage_ids(ids: &BTreeSet<i32>) -> String {
+    let mut runs: Vec<(i32, i32)> = Vec::new();
+    for &id in ids {
+        match runs.last_mut() {
+            Some((_, end)) if end.checked_add(1) == Some(id) => *end = id,
+            _ => runs.push((id, id)),
+        }
+    }
+    runs.iter()
+        .map(|&(start, end)| {
+            if start == end {
+                start.to_string()
+            } else {
+                format!("{start}-{end}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 // ── Rule 11: FPHA penalty rule ─────────────────────────────────────────────────
 
 /// Rule 11: checks that FPHA hydros have `turbined_cost >= 0`.
@@ -264,7 +413,6 @@ pub(super) fn check_fpha_price_dominance(data: &ParsedData, ctx: &mut Validation
 /// LP has no incentive to spill rather than turbine. Negative values are rejected
 /// because they would make turbining artificially profitable and distort dispatch.
 pub(super) fn check_fpha_penalty_rule(data: &ParsedData, ctx: &mut ValidationContext) {
-    use novomodelo_core::entities::HydroGenerationModel;
     for hydro in &data.hydros {
         if hydro.generation_model != HydroGenerationModel::Fpha {
             continue;
@@ -1276,13 +1424,16 @@ mod tests {
     use crate::{
         config::HistoricalYearRange,
         constraints::HydroPenaltyOverrideRow,
-        extensions::{ProductionModelConfig, SeasonConfig, SelectionMode, StageRange},
+        extensions::{
+            FittingWindow, FphaColumnLayout, FphaHyperplaneRow, ProductionModelConfig,
+            SeasonConfig, SelectionMode, StageRange,
+        },
         scenarios::{
             BlockFactor, InflowAnnualComponentRow, InflowArCoefficientRow, InflowHistoryRow,
             InflowSeasonalStatsRow, LoadFactorEntry, LoadSeasonalStatsRow,
         },
         stages::StagesData,
-        validation::{ErrorKind, ValidationContext, schema::ParsedData},
+        validation::{ErrorKind, ValidationContext, ValidationEntry, schema::ParsedData},
     };
     use novomodelo_core::{
         EntityId, HorizonGraph, Hydro,
@@ -1719,14 +1870,22 @@ mod tests {
     }
 
     fn fpha_everywhere(hydro_id: i32) -> ProductionModelConfig {
+        fpha_from(hydro_id, 0, None)
+    }
+
+    fn fpha_from(
+        hydro_id: i32,
+        start_stage_id: i32,
+        fpha_config: Option<FphaColumnLayout>,
+    ) -> ProductionModelConfig {
         ProductionModelConfig {
             hydro_id: EntityId::from(hydro_id),
             selection_mode: SelectionMode::StageRanges {
                 ranges: vec![StageRange {
-                    start_stage_id: 0,
+                    start_stage_id,
                     end_stage_id: None,
                     model: HydroGenerationModel::Fpha,
-                    fpha_config: None,
+                    fpha_config,
                     reference_volume: None,
                     productivity_mw_per_m3s: None,
                 }],
@@ -1904,6 +2063,382 @@ mod tests {
             assert!(given.contains(expected), "missing {expected:?} in: {given}");
         }
         assert_eq!(given, reversed);
+    }
+
+    // ── Rule 55: precomputed FPHA planes at zero turbining ────────────────────
+
+    const ZERO_TURBINING_PREFIX: &str = "FPHA plane below zero at zero turbining:";
+
+    fn zero_turbining_warnings(data: &ParsedData) -> Vec<ValidationEntry> {
+        let mut ctx = ValidationContext::new();
+        validate_semantic_stages_penalties_scenarios(data, &mut ctx);
+        ctx.warnings()
+            .into_iter()
+            .filter(|w| w.message.starts_with(ZERO_TURBINING_PREFIX))
+            .cloned()
+            .collect()
+    }
+
+    fn spill_row(
+        hydro_id: i32,
+        stage_id: Option<i32>,
+        plane_id: i32,
+        gamma_s: f64,
+    ) -> FphaHyperplaneRow {
+        FphaHyperplaneRow {
+            gamma_s,
+            ..make_fpha_row(hydro_id, stage_id, plane_id)
+        }
+    }
+
+    fn precomputed_layout() -> FphaColumnLayout {
+        FphaColumnLayout {
+            source: "precomputed".to_string(),
+            volume_discretization_points: None,
+            turbine_discretization_points: None,
+            spillage_discretization_points: None,
+            max_planes_per_hydro: None,
+            fitting_window: None,
+            spillage_fit_max_m3s: None,
+            turbined_fit_max_m3s: None,
+        }
+    }
+
+    fn zero_turbining_data(
+        hydros: Vec<Hydro>,
+        stage_ids: Vec<i32>,
+        production_models: Vec<ProductionModelConfig>,
+        fpha_hyperplanes: Vec<FphaHyperplaneRow>,
+    ) -> ParsedData {
+        ParsedData {
+            production_models,
+            fpha_hyperplanes,
+            ..make_data_5b(
+                hydros,
+                make_stages_5b(stage_ids),
+                vec![make_bus_with_deficit(1, DEFICIT_COST)],
+                vec![],
+                vec![],
+                None,
+            )
+        }
+    }
+
+    /// derived: v_min is 0 and S_ref = 2 · 1 000, so the corners are
+    /// 100 − 0.02 · 2 000 = 60, 100 with γₛ 0, 62.5 − 0.031 25 · 2 000 = 0 and
+    /// 2 · 50 − 0.031 25 · 2 000 = 37.5, κ scaling γ₀ only.
+    #[test]
+    fn precomputed_plane_at_or_above_zero_at_the_corner_is_silent() {
+        let rows = vec![
+            make_fpha_row(1, None, 0),
+            spill_row(1, None, 1, 0.0),
+            FphaHyperplaneRow {
+                gamma_0: 62.5,
+                gamma_v: 0.0,
+                ..spill_row(1, None, 2, -0.031_25)
+            },
+            FphaHyperplaneRow {
+                gamma_0: 50.0,
+                gamma_v: 0.0,
+                kappa: 2.0,
+                ..spill_row(1, None, 3, -0.031_25)
+            },
+        ];
+        let data = zero_turbining_data(
+            vec![make_hydro(1, None)],
+            vec![0],
+            vec![fpha_everywhere(1)],
+            rows,
+        );
+
+        let warnings = zero_turbining_warnings(&data);
+
+        assert!(
+            warnings.is_empty(),
+            "no warning expected, got: {warnings:?}"
+        );
+    }
+
+    /// derived: hydro 1's plane 1 at γₛ −0.125 has corner 100 − 0.125 · 2 000 = −150
+    /// and crosses at 100 / 0.125 = 800; at stage 4 it is `make_fpha_row` (corner
+    /// 60), and at stage 5 γₛ −0.25 crosses at 100 / 0.25 = 400. Hydro 2's global
+    /// plane crosses at 800 at all six stages, so stage and plane ids break the tie.
+    #[test]
+    fn precomputed_plane_below_zero_at_the_corner_warns_once_per_hydro() {
+        let mut rows = Vec::new();
+        for s in 0..=5 {
+            rows.push(make_fpha_row(1, Some(s), 0));
+            rows.push(match s {
+                4 => make_fpha_row(1, Some(4), 1),
+                5 => spill_row(1, Some(5), 1, -0.25),
+                _ => spill_row(1, Some(s), 1, -0.125),
+            });
+        }
+        rows.push(spill_row(2, None, 0, -0.125));
+        let data_for = |rows: Vec<FphaHyperplaneRow>| {
+            zero_turbining_data(
+                vec![make_hydro(1, None), make_hydro(2, None)],
+                (0..=5).collect(),
+                vec![fpha_everywhere(1), fpha_everywhere(2)],
+                rows,
+            )
+        };
+
+        let warnings = zero_turbining_warnings(&data_for(rows.clone()));
+        let reversed = zero_turbining_warnings(&data_for(rows.into_iter().rev().collect()));
+
+        assert_eq!(warnings.len(), 2, "one warning per hydro: {warnings:?}");
+        for (entry, entity, expected) in [
+            (
+                &warnings[0],
+                "Hydro 1",
+                [
+                    "Hydro 1 -- 5 (stage, plane) pair(s) at stages 0-3, 5",
+                    "at 400 m³/s of spillage (stage 5, plane 1, storage 0 hm³, \
+                     spillage up to 2000 m³/s)",
+                ],
+            ),
+            (
+                &warnings[1],
+                "Hydro 2",
+                [
+                    "Hydro 2 -- 6 (stage, plane) pair(s) at stages 0-5",
+                    "at 800 m³/s of spillage (stage 0, plane 0,",
+                ],
+            ),
+        ] {
+            assert_eq!(
+                entry.file,
+                std::path::PathBuf::from("system/fpha_hyperplanes.parquet")
+            );
+            assert_eq!(entry.entity.as_deref(), Some(entity));
+            for needle in expected {
+                assert!(
+                    entry.message.contains(needle),
+                    "missing {needle:?} in: {}",
+                    entry.message
+                );
+            }
+        }
+        let messages = |entries: &[ValidationEntry]| -> Vec<String> {
+            entries.iter().map(|e| e.message.clone()).collect()
+        };
+        assert_eq!(messages(&warnings), messages(&reversed));
+    }
+
+    /// derived: γ₀ −10 with γᵥ = γₛ = 0 is −10 MW at every spillage.
+    #[test]
+    fn precomputed_plane_negative_for_every_spillage_warns_at_zero_spillage() {
+        let row = FphaHyperplaneRow {
+            gamma_0: -10.0,
+            gamma_v: 0.0,
+            ..spill_row(1, None, 0, 0.0)
+        };
+        let data = zero_turbining_data(
+            vec![make_hydro(1, None)],
+            vec![0],
+            vec![fpha_everywhere(1)],
+            vec![row],
+        );
+
+        let warnings = zero_turbining_warnings(&data);
+
+        assert_eq!(warnings.len(), 1, "exactly one warning: {warnings:?}");
+        let msg = &warnings[0].message;
+        assert!(msg.contains("at 0 m³/s of spillage"), "got: {msg}");
+    }
+
+    #[test]
+    fn precomputed_plane_warning_names_both_outcomes_while_spilling() {
+        let data = zero_turbining_data(
+            vec![make_hydro(1, None)],
+            vec![0],
+            vec![fpha_everywhere(1)],
+            vec![spill_row(1, None, 0, -0.125)],
+        );
+
+        let warnings = zero_turbining_warnings(&data);
+
+        assert_eq!(warnings.len(), 1, "exactly one warning: {warnings:?}");
+        let msg = &warnings[0].message;
+        assert!(
+            msg.ends_with(
+                "so while it spills the hydro turbines water at 0 MW, or reports \
+                 fpha_violation_mw where turbining cannot lift the plane to 0 MW"
+            ),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
+    fn precomputed_plane_check_reads_stage_rows_before_global_rows_at_fpha_stages() {
+        let data = zero_turbining_data(
+            vec![make_hydro(1, None)],
+            vec![0, 1, 2],
+            vec![fpha_from(1, 1, None)],
+            vec![spill_row(1, None, 0, -0.125), make_fpha_row(1, Some(2), 0)],
+        );
+
+        let warnings = zero_turbining_warnings(&data);
+
+        assert_eq!(warnings.len(), 1, "exactly one warning: {warnings:?}");
+        let msg = &warnings[0].message;
+        assert!(
+            msg.contains("1 (stage, plane) pair(s) at stages 1 "),
+            "got: {msg}"
+        );
+    }
+
+    /// derived: at v_min 400 the corner is 100 + 0.5 · 400 − 0.125 · 2 000 = 50; at
+    /// v_min 200 it crosses at (100 + 0.5 · 200) / 0.125 = 1 600.
+    #[test]
+    fn precomputed_plane_check_reads_v_min_from_the_fitting_window() {
+        let window_from = |volume_min_hm3: f64| FphaColumnLayout {
+            fitting_window: Some(FittingWindow {
+                volume_min_hm3: Some(volume_min_hm3),
+                volume_max_hm3: None,
+                volume_min_percentile: None,
+                volume_max_percentile: None,
+            }),
+            ..precomputed_layout()
+        };
+        let warnings_with = |layout: Option<FphaColumnLayout>| {
+            zero_turbining_warnings(&zero_turbining_data(
+                vec![make_hydro(1, None)],
+                vec![0],
+                vec![fpha_from(1, 0, layout)],
+                vec![spill_row(1, None, 0, -0.125)],
+            ))
+        };
+
+        let high = warnings_with(Some(window_from(400.0)));
+        let low = warnings_with(Some(window_from(200.0)));
+        let unwindowed = warnings_with(None);
+
+        assert!(high.is_empty(), "no warning expected, got: {high:?}");
+        assert_eq!(low.len(), 1, "exactly one warning: {low:?}");
+        for expected in ["at 1600 m³/s", "storage 200 hm³"] {
+            assert!(
+                low[0].message.contains(expected),
+                "missing {expected:?} in: {}",
+                low[0].message
+            );
+        }
+        assert_eq!(unwindowed.len(), 1, "exactly one warning: {unwindowed:?}");
+        assert!(
+            unwindowed[0].message.contains("storage 0 hm³"),
+            "got: {}",
+            unwindowed[0].message
+        );
+    }
+
+    /// derived: S_ref 500 gives 100 − 0.125 · 500 = 37.5; a history mean of 100 gives
+    /// S_ref 2 · 100 = 200 and 100 − 0.125 · 200 = 75; neither gives 2 · 1 000.
+    #[test]
+    fn precomputed_plane_check_resolves_the_spillage_range_like_the_fit() {
+        let data_with = |layout: Option<FphaColumnLayout>| {
+            zero_turbining_data(
+                vec![make_hydro(1, None)],
+                vec![0],
+                vec![fpha_from(1, 0, layout)],
+                vec![spill_row(1, None, 0, -0.125)],
+            )
+        };
+        let declared = data_with(Some(FphaColumnLayout {
+            spillage_fit_max_m3s: Some(500.0),
+            ..precomputed_layout()
+        }));
+        let from_history = ParsedData {
+            inflow_history: make_history_rows(1, 12),
+            ..data_with(None)
+        };
+        let neither = data_with(None);
+
+        let declared = zero_turbining_warnings(&declared);
+        let from_history = zero_turbining_warnings(&from_history);
+        let neither = zero_turbining_warnings(&neither);
+
+        assert!(
+            declared.is_empty(),
+            "no warning expected, got: {declared:?}"
+        );
+        assert!(
+            from_history.is_empty(),
+            "no warning expected, got: {from_history:?}"
+        );
+        assert_eq!(neither.len(), 1, "exactly one warning: {neither:?}");
+        assert!(
+            neither[0].message.contains("spillage up to 2000 m³/s"),
+            "got: {}",
+            neither[0].message
+        );
+    }
+
+    #[test]
+    fn precomputed_plane_check_skips_a_hydro_with_a_computed_entry() {
+        let config_with_first_source = |source: &str| ProductionModelConfig {
+            hydro_id: EntityId::from(1),
+            selection_mode: SelectionMode::StageRanges {
+                ranges: vec![
+                    StageRange {
+                        start_stage_id: 0,
+                        end_stage_id: Some(0),
+                        model: HydroGenerationModel::Fpha,
+                        fpha_config: Some(FphaColumnLayout {
+                            source: source.to_string(),
+                            ..precomputed_layout()
+                        }),
+                        reference_volume: None,
+                        productivity_mw_per_m3s: None,
+                    },
+                    StageRange {
+                        start_stage_id: 1,
+                        end_stage_id: None,
+                        model: HydroGenerationModel::Fpha,
+                        fpha_config: Some(precomputed_layout()),
+                        reference_volume: None,
+                        productivity_mw_per_m3s: None,
+                    },
+                ],
+            },
+        };
+        let warnings_with = |source: &str| {
+            zero_turbining_warnings(&zero_turbining_data(
+                vec![make_hydro(1, None)],
+                vec![0, 1],
+                vec![config_with_first_source(source)],
+                vec![spill_row(1, None, 0, -0.125)],
+            ))
+        };
+
+        let computed = warnings_with("computed");
+        let precomputed = warnings_with("precomputed");
+
+        assert!(
+            computed.is_empty(),
+            "no warning expected, got: {computed:?}"
+        );
+        assert_eq!(precomputed.len(), 1, "exactly one warning: {precomputed:?}");
+    }
+
+    #[test]
+    fn precomputed_plane_check_skips_a_hydro_without_turbine_capacity() {
+        let warnings_for = |hydro: Hydro| {
+            zero_turbining_warnings(&zero_turbining_data(
+                vec![hydro],
+                vec![0],
+                vec![fpha_everywhere(1)],
+                vec![spill_row(1, None, 0, -0.125)],
+            ))
+        };
+        let mut dormant = make_hydro(1, None);
+        dormant.max_generation_mw = 0.0;
+
+        let dormant = warnings_for(dormant);
+        let capable = warnings_for(make_hydro(1, None));
+
+        assert!(dormant.is_empty(), "no warning expected, got: {dormant:?}");
+        assert_eq!(capable.len(), 1, "exactly one warning: {capable:?}");
     }
 
     // ── Rule 12: Inflow std_m3s = 0.0 warning ────────────────────────────────

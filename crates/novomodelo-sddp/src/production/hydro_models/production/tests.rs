@@ -13,8 +13,7 @@ use std::collections::HashMap;
 
 use chrono::NaiveDate;
 use novomodelo_core::{
-    Bus, EfficiencyModel, EntityId, HydraulicLossesModel, InflowHistoryRow, StudyPos,
-    SystemBuilder, TailraceModel,
+    Bus, EfficiencyModel, EntityId, HydraulicLossesModel, StudyPos, SystemBuilder, TailraceModel,
     entities::hydro::{HydroGenerationModel, HydroPenalties},
     temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
@@ -307,13 +306,7 @@ fn gamma_0_is_scaled_by_kappa() {
         vec![&row as &FphaHyperplaneRow],
     );
 
-    let model = build_fpha_model(
-        &hydro,
-        &stage,
-        ProductionModelSource::PrecomputedHyperplanes,
-        &map,
-    )
-    .expect("should build FPHA model");
+    let model = build_fpha_model(&hydro, &stage, &map).expect("should build FPHA model");
 
     match model {
         ResolvedProductionModel::Fpha { planes, .. } => {
@@ -481,13 +474,7 @@ fn stage_specific_hyperplanes_override_all_stage() {
         vec![&stage_row as &FphaHyperplaneRow],
     );
 
-    let model = build_fpha_model(
-        &hydro,
-        &stage,
-        ProductionModelSource::PrecomputedHyperplanes,
-        &map,
-    )
-    .expect("should succeed");
+    let model = build_fpha_model(&hydro, &stage, &map).expect("should succeed");
 
     match model {
         ResolvedProductionModel::Fpha { planes, .. } => {
@@ -526,13 +513,7 @@ fn all_stage_hyperplanes_used_when_no_stage_specific_rows() {
         vec![&global_row as &FphaHyperplaneRow],
     );
 
-    let model = build_fpha_model(
-        &hydro,
-        &stage,
-        ProductionModelSource::PrecomputedHyperplanes,
-        &map,
-    )
-    .expect("should succeed using global rows");
+    let model = build_fpha_model(&hydro, &stage, &map).expect("should succeed using global rows");
 
     match model {
         ResolvedProductionModel::Fpha { planes, .. } => {
@@ -557,13 +538,8 @@ fn zero_hyperplanes_for_stage_returns_validation_error() {
         Vec::<&FphaHyperplaneRow>::new(),
     );
 
-    let err = build_fpha_model(
-        &hydro,
-        &stage,
-        ProductionModelSource::PrecomputedHyperplanes,
-        &map,
-    )
-    .expect_err("should fail with zero hyperplanes");
+    let err =
+        build_fpha_model(&hydro, &stage, &map).expect_err("should fail with zero hyperplanes");
 
     assert!(
         matches!(err, SddpError::Validation(_)),
@@ -587,12 +563,7 @@ fn precomputed_stage_needs_a_flow_dependent_plane() {
     };
     let build = |rows: Vec<&FphaHyperplaneRow>| {
         let map = HashMap::from([((EntityId::from(0), None::<i32>), rows)]);
-        build_fpha_model(
-            &hydro,
-            &stage,
-            ProductionModelSource::PrecomputedHyperplanes,
-            &map,
-        )
+        build_fpha_model(&hydro, &stage, &map)
     };
 
     for rows in [vec![&rising, &cap], vec![&cap, &rising]] {
@@ -1513,8 +1484,6 @@ fn single_config_dedup_yields_identical_planes_across_stages() {
         );
     }
 
-    // Each stage emits one export-row block, so the row count is
-    // n_stages * planes_per_stage.
     assert_eq!(
         export_rows.len(),
         per_stage[0].len() * 3,
@@ -1753,112 +1722,6 @@ fn spillage_fit_max_sets_the_secant_range() {
             .any(|(a, b)| a.gamma_s != b.gamma_s),
         "the input range must change gamma_s against the 2 x max_turbined fallback"
     );
-}
-
-// ── long-term mean inflow for the lateral secant ────────────────────
-
-fn inflow_row(hydro_id: i32, day: u32, value_m3s: f64) -> InflowHistoryRow {
-    let start_date = NaiveDate::from_ymd_opt(2000, 1, day).unwrap();
-    InflowHistoryRow {
-        hydro_id: EntityId::from(hydro_id),
-        start_date,
-        end_date: start_date.succ_opt().unwrap(),
-        value_m3s,
-    }
-}
-
-#[test]
-fn long_term_mean_inflow_is_per_hydro_canonical_mean() {
-    let rows = vec![
-        inflow_row(1, 1, 100.0),
-        inflow_row(2, 1, 9_999.0), // different hydro — must be excluded
-        inflow_row(1, 2, 200.0),
-        inflow_row(1, 3, 300.0),
-    ];
-    let system = SystemBuilder::new()
-        .inflow_history(rows)
-        .build()
-        .expect("valid system");
-
-    // mean(100, 200, 300) = 200. This feeds S_max = 2·mean at the fit site
-    // (resolve_s_max's contract, exercised in the fpha_fitting::secant tests).
-    let long_term_mean_inflow_m3s =
-        super::long_term_mean_inflow_reference(&system, EntityId::from(1));
-    assert_eq!(
-        long_term_mean_inflow_m3s, 200.0,
-        "long-term mean inflow must be the per-hydro mean of its own series"
-    );
-}
-
-#[test]
-fn long_term_mean_inflow_empty_history_is_zero() {
-    let system = SystemBuilder::new().build().expect("empty system is valid");
-    let long_term_mean_inflow_m3s =
-        super::long_term_mean_inflow_reference(&system, EntityId::from(1));
-    assert_eq!(
-        long_term_mean_inflow_m3s, 0.0,
-        "no inflow history must yield long-term mean inflow = 0"
-    );
-}
-
-#[test]
-fn long_term_mean_inflow_is_order_independent() {
-    let ascending = vec![
-        inflow_row(1, 1, 10.0),
-        inflow_row(1, 2, 20.0),
-        inflow_row(1, 3, 60.0),
-    ];
-    let descending = vec![
-        inflow_row(1, 3, 60.0),
-        inflow_row(1, 2, 20.0),
-        inflow_row(1, 1, 10.0),
-    ];
-    let sys_asc = SystemBuilder::new()
-        .inflow_history(ascending)
-        .build()
-        .expect("valid");
-    let sys_desc = SystemBuilder::new()
-        .inflow_history(descending)
-        .build()
-        .expect("valid");
-
-    let mlt_asc = super::long_term_mean_inflow_reference(&sys_asc, EntityId::from(1));
-    let mlt_desc = super::long_term_mean_inflow_reference(&sys_desc, EntityId::from(1));
-    assert_eq!(
-        mlt_asc, mlt_desc,
-        "long-term mean inflow must be order-independent (declaration-order invariance)"
-    );
-}
-
-/// The one-pass batch table's per-hydro mean must be bit-identical to
-/// [`super::long_term_mean_inflow_reference`]'s direct per-hydro filtered scan,
-/// for every hydro, including one with no history at all.
-#[test]
-fn build_long_term_mean_inflow_table_matches_per_hydro_reference() {
-    let rows = vec![
-        inflow_row(1, 1, 100.0),
-        inflow_row(2, 1, 9_999.0),
-        inflow_row(1, 2, 200.0),
-        inflow_row(3, 1, 5.0),
-        inflow_row(1, 3, 300.0),
-        inflow_row(2, 2, 1.0),
-    ];
-    let system = SystemBuilder::new()
-        .inflow_history(rows)
-        .build()
-        .expect("valid system");
-
-    let table = super::build_long_term_mean_inflow_table(&system);
-    for hydro_id in [1, 2, 3, 4] {
-        let hydro_id = EntityId::from(hydro_id);
-        let expected = super::long_term_mean_inflow_reference(&system, hydro_id);
-        let actual = table.get(&hydro_id).copied().unwrap_or(0.0);
-        assert_eq!(
-            actual.to_bits(),
-            expected.to_bits(),
-            "hydro {hydro_id:?}: batch table mean must be bit-identical to the per-hydro scan"
-        );
-    }
 }
 
 // ── resolve_downstream_level tests ───────────────────────────────────────
@@ -2664,27 +2527,82 @@ fn computed_fpha_without_turbine_capacity_resolves_to_zero_productivity() {
 }
 
 #[test]
-fn computed_fpha_without_generation_capacity_still_fits_planes() {
+fn computed_fpha_without_generation_capacity_resolves_to_zero_productivity() {
     let mut hydro = make_sobradinho_computed_hydro(0);
     hydro.max_generation_mw = 0.0;
 
-    let (set, _, provenance, _, _, _, _) = resolve_single_computed_hydro(hydro);
+    let (set, _, provenance, export_rows, _, fpha_fit_deviations, _) =
+        resolve_single_computed_hydro(hydro);
 
-    assert!(
-        matches!(
-            set.model(0, 0),
-            ResolvedProductionModel::Fpha { planes, .. } if !planes.is_empty()
-        ),
-        "got {:?}",
-        set.model(0, 0)
-    );
+    for stage_idx in 0..2 {
+        assert!(
+            matches!(
+                set.model(0, stage_idx),
+                ResolvedProductionModel::ConstantProductivity { productivity } if *productivity == 0.0
+            ),
+            "stage {stage_idx}: got {:?}",
+            set.model(0, stage_idx)
+        );
+    }
     assert_eq!(
         provenance,
-        vec![(
-            EntityId::from(0),
-            ProductionModelSource::ComputedFromGeometry
-        )]
+        vec![(EntityId::from(0), ProductionModelSource::NoTurbineCapacity)]
     );
+    assert!(export_rows.is_empty() && fpha_fit_deviations.is_empty());
+}
+
+fn resolve_capturing_log(hydro: Hydro) -> String {
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone)]
+    struct Log(Arc<Mutex<Vec<u8>>>);
+    impl std::io::Write for Log {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let log = Log(Arc::new(Mutex::new(Vec::new())));
+    let writer = log.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_writer(move || writer.clone())
+        .finish();
+    tracing::subscriber::with_default(subscriber, || {
+        resolve_single_computed_hydro(hydro);
+    });
+    String::from_utf8(log.0.lock().unwrap().clone()).unwrap()
+}
+
+/// derived: the plant takes the fallback because `max_generation_mw = 0` fails the
+/// core capacity predicate, so its one warning prints both declared limits.
+#[test]
+fn zero_generation_capacity_fallback_warns_with_both_limits() {
+    let mut hydro = make_sobradinho_computed_hydro(0);
+    hydro.max_generation_mw = 0.0;
+    let declared_turbined = format!("max_turbined_m3s = {}", hydro.max_turbined_m3s);
+
+    let log = resolve_capturing_log(hydro);
+
+    let warnings: Vec<&str> = log.lines().filter(|l| l.contains("WARN")).collect();
+    assert_eq!(warnings.len(), 1, "{log}");
+    assert!(
+        warnings[0].contains("no turbine capacity")
+            && warnings[0].contains(&declared_turbined)
+            && warnings[0].contains("max_generation_mw = 0"),
+        "{log}"
+    );
+}
+
+#[test]
+fn fpha_plant_with_both_limits_emits_no_capacity_warning() {
+    let log = resolve_capturing_log(make_sobradinho_computed_hydro(0));
+
+    assert!(!log.contains("no turbine capacity"), "{log}");
 }
 
 #[test]

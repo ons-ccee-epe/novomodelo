@@ -12,6 +12,8 @@ use super::types::{
     NoTurbineCapacityHydro, PrepareHydroModelsResult, ProductionModelSource,
     ResolvedProductionModel,
 };
+use crate::indexer::HydroCellIndex;
+use crate::lp::builder::frozen_turbining_hydros;
 // ── Summary builder ───────────────────────────────────────────────────────────
 
 /// Build a [`HydroModelSummary`] from the pipeline result and the system;
@@ -105,6 +107,12 @@ pub fn build_hydro_model_summary(
         total_planes,
         fpha_details,
         no_turbine_capacity,
+        frozen_turbining: frozen_turbining_hydros(
+            system.hydros(),
+            system.stages(),
+            system.bounds(),
+            &HydroCellIndex::build(system.hydros()),
+        ),
         n_evaporation,
         n_no_evaporation,
         n_user_supplied_ref,
@@ -132,9 +140,11 @@ fn hydro_name(system: &System, entity_id: EntityId) -> String {
     clippy::panic
 )]
 mod tests {
-    use chrono::NaiveDate;
+    use chrono::{Months, NaiveDate};
     use novomodelo_core::{
-        Bus, DeficitSegment, EntityId, Hydro, SystemBuilder,
+        BoundsCountsSpec, BoundsDefaults, Bus, ContractBlockBounds, DeficitSegment, EntityId,
+        Hydro, HydroBlockBounds, HydroStageBounds, HydroUnitGroup, LineBlockBounds,
+        PumpingBlockBounds, ResolvedBounds, SystemBuilder, ThermalBlockBounds,
         entities::hydro::{HydroGenerationModel, HydroPenalties},
         scenario::CorrelationModel,
         temporal::{
@@ -148,7 +158,7 @@ mod tests {
     // module rather than only `summary`'s own narrow `use` block.
     use crate::HydroEnergyProductivityOverride;
     use crate::production::hydro_models::*;
-    use crate::test_support::minimal_hydros;
+    use crate::test_support::{make_unit_group, minimal_hydros};
 
     // ── Test helpers ──────────────────────────────────────────────────────────
 
@@ -211,6 +221,18 @@ mod tests {
     ///
     /// Uses bus `EntityId(10)` to match the `make_hydro` helper's `bus_id`.
     fn make_system_for_summary(hydros: Vec<Hydro>) -> novomodelo_core::System {
+        make_system_with_bounds(hydros, 1, |_| {})
+    }
+
+    /// Build the single-bus `System` of [`make_system_for_summary`] with `n_stages`
+    /// one-block study stages and a resolved bounds table whose every (hydro, stage)
+    /// holds capacity, then let `edit` change it. `edit` addresses hydros by
+    /// canonical position.
+    fn make_system_with_bounds(
+        hydros: Vec<Hydro>,
+        n_stages: usize,
+        edit: impl FnOnce(&mut ResolvedBounds),
+    ) -> novomodelo_core::System {
         let bus = Bus {
             id: EntityId(10),
             name: "B10".to_string(),
@@ -221,32 +243,82 @@ mod tests {
             }],
             excess_cost: 0.0,
         };
-        let stage = Stage {
-            index: 0,
-            id: 0,
-            start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap_or_default(),
-            end_date: NaiveDate::from_ymd_opt(2024, 2, 1).unwrap_or_default(),
-            season_id: Some(0),
-            blocks: vec![Block {
-                index: 0,
-                name: "S".to_string(),
-                duration_hours: 744.0,
-            }],
-            block_mode: BlockMode::Parallel,
-            state_config: StageStateConfig {
-                storage: true,
-                inflow_lags: false,
+        let first_start = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
+        let stages = (0..n_stages)
+            .map(|index| {
+                let months = u32::try_from(index).unwrap();
+                Stage {
+                    index,
+                    id: i32::try_from(index).unwrap(),
+                    start_date: first_start + Months::new(months),
+                    end_date: first_start + Months::new(months + 1),
+                    season_id: Some(0),
+                    blocks: vec![Block {
+                        index: 0,
+                        name: "S".to_string(),
+                        duration_hours: 744.0,
+                    }],
+                    block_mode: BlockMode::Parallel,
+                    state_config: StageStateConfig {
+                        storage: true,
+                        inflow_lags: false,
+                    },
+                    risk_config: StageRiskConfig::Expectation,
+                    scenario_config: ScenarioSourceConfig {
+                        branching_factor: 3,
+                        noise_method: NoiseMethod::Saa,
+                    },
+                }
+            })
+            .collect();
+        let mut bounds = ResolvedBounds::new(
+            &BoundsCountsSpec {
+                n_hydros: hydros.len(),
+                n_thermals: 0,
+                n_lines: 0,
+                n_pumping: 0,
+                n_contracts: 0,
+                n_stages,
+                k_max: 0,
             },
-            risk_config: StageRiskConfig::Expectation,
-            scenario_config: ScenarioSourceConfig {
-                branching_factor: 3,
-                noise_method: NoiseMethod::Saa,
+            &BoundsDefaults {
+                hydro: HydroStageBounds {
+                    min_storage_hm3: 0.0,
+                    max_storage_hm3: 0.0,
+                    filling_min_rate_m3s: 0.0,
+                    water_withdrawal_m3s: 0.0,
+                },
+                hydro_block: HydroBlockBounds {
+                    max_turbined_m3s: 500.0,
+                    max_generation_mw: 1000.0,
+                    ..HydroBlockBounds::default()
+                },
+                thermal_block: ThermalBlockBounds {
+                    min_generation_mw: 0.0,
+                    max_generation_mw: 0.0,
+                    cost_per_mwh: 0.0,
+                },
+                line_block: LineBlockBounds {
+                    direct_mw: 0.0,
+                    reverse_mw: 0.0,
+                },
+                pumping_block: PumpingBlockBounds {
+                    min_flow_m3s: 0.0,
+                    max_flow_m3s: 0.0,
+                },
+                contract_block: ContractBlockBounds {
+                    min_mw: 0.0,
+                    max_mw: 0.0,
+                    price_per_mwh: 0.0,
+                },
             },
-        };
+        );
+        edit(&mut bounds);
         SystemBuilder::new()
             .buses(vec![bus])
             .hydros(hydros)
-            .stages(vec![stage])
+            .stages(stages)
+            .bounds(bounds)
             .correlation(CorrelationModel::default())
             .build()
             .unwrap()
@@ -878,5 +950,228 @@ mod tests {
         ))
         .expect("summary serializes");
         assert_eq!(empty["no_turbine_capacity"], serde_json::json!([]));
+    }
+
+    fn hydro_with_groups(id: i32, groups: Vec<HydroUnitGroup>) -> Hydro {
+        let mut hydro = make_hydro(id, HydroGenerationModel::ConstantProductivity);
+        hydro.unit_groups = groups;
+        hydro.sort_unit_groups();
+        hydro
+    }
+
+    fn dropped(
+        floor: DroppedFloorKind,
+        group_id: Option<i32>,
+        value: f64,
+        reason: DroppedFloorReason,
+    ) -> DroppedFloor {
+        DroppedFloor {
+            stage_id: 0,
+            block_id: 0,
+            floor,
+            level: if group_id.is_some() {
+                DroppedFloorLevel::UnitGroup
+            } else {
+                DroppedFloorLevel::Plant
+            },
+            hydro_unit_group_id: group_id.map(EntityId),
+            bus_id: group_id.map(|_| EntityId(10)),
+            value,
+            reason,
+        }
+    }
+
+    fn frozen_row(
+        hydro_id: i32,
+        no_capacity_stage_ids: Vec<i32>,
+        dropped_floors: Vec<DroppedFloor>,
+    ) -> FrozenTurbiningHydro {
+        FrozenTurbiningHydro {
+            hydro_id: EntityId(hydro_id),
+            name: format!("Hydro{hydro_id}"),
+            no_capacity_stage_ids,
+            partial_capacity_stage_ids: Vec::new(),
+            dropped_floors,
+        }
+    }
+
+    /// derived: hydro 1's resolved `max_generation_mw` is 0 at both stages, so no
+    /// (cell, block) of it has capacity; the twin keeps the fixture's 1000 MW.
+    #[test]
+    fn frozen_turbining_lists_a_plant_without_capacity_at_every_stage() {
+        let hydros = [1, 2]
+            .map(|id| make_hydro(id, HydroGenerationModel::ConstantProductivity))
+            .to_vec();
+        let system = make_system_with_bounds(hydros, 2, |bounds| {
+            for stage in 0..2 {
+                bounds.hydro_block_base_mut(0, stage).max_generation_mw = 0.0;
+            }
+        });
+
+        let summary = build_hydro_model_summary(&make_result_all_constant(&[1, 2]), &system);
+
+        assert_eq!(
+            summary.frozen_turbining,
+            vec![frozen_row(1, vec![0, 1], Vec::new())]
+        );
+    }
+
+    /// derived: group 2's declared `max_generation_mw` is 0, so it has no capacity
+    /// while group 1 keeps the one cell alive; its 3 m3/s minimum is the only one
+    /// dropped (group 1's 4 m3/s is charged). Raising it to 400 MW gives the twin.
+    #[test]
+    fn frozen_turbining_records_a_dead_group_of_a_live_cell() {
+        let groups = |group_2_max_generation_mw| {
+            vec![
+                make_unit_group(EntityId(1), EntityId(10), 0.0, 500.0, 4.0, 250.0),
+                make_unit_group(
+                    EntityId(2),
+                    EntityId(10),
+                    0.0,
+                    group_2_max_generation_mw,
+                    3.0,
+                    250.0,
+                ),
+            ]
+        };
+
+        let system = make_system_for_summary(vec![hydro_with_groups(1, groups(0.0))]);
+        let summary = build_hydro_model_summary(&make_result_all_constant(&[1]), &system);
+        assert_eq!(
+            summary.frozen_turbining,
+            vec![frozen_row(
+                1,
+                Vec::new(),
+                vec![dropped(
+                    DroppedFloorKind::MinTurbinedM3s,
+                    Some(2),
+                    3.0,
+                    DroppedFloorReason::NoCapacity,
+                )],
+            )]
+        );
+
+        let twin = make_system_for_summary(vec![hydro_with_groups(1, groups(400.0))]);
+        let twin_summary = build_hydro_model_summary(&make_result_all_constant(&[1]), &twin);
+        assert!(twin_summary.frozen_turbining.is_empty());
+    }
+
+    /// derived: group 2 sits alone on bus 11 with `max_generation_mw` 0, so that
+    /// cell is dead while bus 10's cell keeps the plant producing; stage 0 is
+    /// partial, not without capacity, and no minimum is declared to drop.
+    #[test]
+    fn frozen_turbining_lists_a_stage_with_a_dead_cell_as_partial_capacity() {
+        let groups = vec![
+            make_unit_group(EntityId(1), EntityId(10), 0.0, 500.0, 0.0, 250.0),
+            make_unit_group(EntityId(2), EntityId(11), 0.0, 0.0, 0.0, 250.0),
+        ];
+        let system = make_system_for_summary(vec![hydro_with_groups(1, groups)]);
+
+        let summary = build_hydro_model_summary(&make_result_all_constant(&[1]), &system);
+
+        assert_eq!(summary.frozen_turbining.len(), 1);
+        let row = &summary.frozen_turbining[0];
+        assert!(row.no_capacity_stage_ids.is_empty());
+        assert_eq!(row.partial_capacity_stage_ids, vec![0]);
+        assert!(row.dropped_floors.is_empty());
+    }
+
+    /// derived: hydro 1 enters at stage 1, so it is `PreFilling` at stage 0 and
+    /// its resolved 6 MW minimum is dropped there; capacity is intact, so neither
+    /// stage list moves. At stage 1 it produces and the minimum is charged.
+    #[test]
+    fn frozen_turbining_records_the_floors_of_a_commissioning_plant() {
+        let plant = |entry_stage_id| {
+            let mut hydro = make_hydro(1, HydroGenerationModel::ConstantProductivity);
+            hydro.entry_stage_id = entry_stage_id;
+            hydro
+        };
+        let edit = |bounds: &mut ResolvedBounds| {
+            for stage in 0..2 {
+                bounds.hydro_block_base_mut(0, stage).min_generation_mw = 6.0;
+            }
+        };
+
+        let system = make_system_with_bounds(vec![plant(Some(1))], 2, edit);
+        let summary = build_hydro_model_summary(&make_result_all_constant(&[1]), &system);
+        assert_eq!(
+            summary.frozen_turbining,
+            vec![frozen_row(
+                1,
+                Vec::new(),
+                vec![dropped(
+                    DroppedFloorKind::MinGenerationMw,
+                    None,
+                    6.0,
+                    DroppedFloorReason::Commissioning,
+                )],
+            )]
+        );
+
+        let twin = make_system_with_bounds(vec![plant(None)], 2, edit);
+        let twin_summary = build_hydro_model_summary(&make_result_all_constant(&[1]), &twin);
+        assert!(twin_summary.frozen_turbining.is_empty());
+    }
+
+    /// derived: hydro 7 starts in 2020 and is canonical position 0, hydro 3 position 1;
+    /// the rows follow `hydro_id`, not position. Both lack capacity at stage 0
+    /// (`max_generation_mw` 0), so hydro 3's minima are all dropped: the plant's
+    /// 5 m3/s and 6 MW and its groups' 2 and 1 m3/s. The records follow
+    /// (level, group id, floor), not the order the minima are walked in
+    /// (turbined, then generation, plant before groups within each).
+    #[test]
+    fn frozen_turbining_sorts_rows_by_hydro_id_and_records_by_block_level_and_kind() {
+        let mut early = make_hydro(7, HydroGenerationModel::ConstantProductivity);
+        early.operational_start_date = NaiveDate::from_ymd_opt(2020, 1, 1).unwrap();
+        let grouped = hydro_with_groups(
+            3,
+            vec![
+                make_unit_group(EntityId(5), EntityId(10), 0.0, 1000.0, 1.0, 250.0),
+                make_unit_group(EntityId(4), EntityId(10), 0.0, 1000.0, 2.0, 250.0),
+            ],
+        );
+        let system = make_system_with_bounds(vec![grouped, early], 1, |bounds| {
+            for hydro in 0..2 {
+                bounds.hydro_block_base_mut(hydro, 0).max_generation_mw = 0.0;
+            }
+            let plant = bounds.hydro_block_base_mut(1, 0);
+            plant.min_turbined_m3s = 5.0;
+            plant.min_generation_mw = 6.0;
+        });
+
+        let summary = build_hydro_model_summary(&make_result_all_constant(&[7, 3]), &system);
+
+        let no_capacity = DroppedFloorReason::NoCapacity;
+        assert_eq!(
+            summary.frozen_turbining,
+            vec![
+                frozen_row(
+                    3,
+                    vec![0],
+                    vec![
+                        dropped(DroppedFloorKind::MinTurbinedM3s, None, 5.0, no_capacity),
+                        dropped(DroppedFloorKind::MinGenerationMw, None, 6.0, no_capacity),
+                        dropped(DroppedFloorKind::MinTurbinedM3s, Some(4), 2.0, no_capacity),
+                        dropped(DroppedFloorKind::MinTurbinedM3s, Some(5), 1.0, no_capacity),
+                    ],
+                ),
+                frozen_row(7, vec![0], Vec::new()),
+            ]
+        );
+    }
+
+    /// derived: the field sits between `no_turbine_capacity` and `n_evaporation` in
+    /// the struct and serializes in that order; with capacity everywhere it is `[]`.
+    #[test]
+    fn frozen_turbining_serializes_after_no_turbine_capacity_as_an_always_present_list() {
+        let summary = summary_with_no_turbine_capacity_out_of_id_order();
+
+        let value = serde_json::to_value(&summary).expect("summary serializes");
+        assert_eq!(value["frozen_turbining"], serde_json::json!([]));
+
+        let text = serde_json::to_string(&summary).expect("summary serializes");
+        let offset = |key: &str| text.find(key).expect("key is serialized");
+        assert!(offset("\"no_turbine_capacity\":") < offset("\"frozen_turbining\":"));
+        assert!(offset("\"frozen_turbining\":") < offset("\"n_evaporation\":"));
     }
 }

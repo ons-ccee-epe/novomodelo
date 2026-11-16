@@ -71,12 +71,8 @@ const V_SYNTH_ABS: f64 = 1.0;
 ///
 /// # Volume range resolution
 ///
-/// The default window and the clamp range of every bound is the plant's own
-/// `[min_storage_hm3, max_storage_hm3]`, not the range of the geometry table. The
-/// window is resolved in three mutually exclusive modes — no fitting window (the plant
-/// range), absolute bounds, or percentile bounds taken against the plant range — and a
-/// missing bound takes the plant's. Mixed min/max modes are accepted as long as neither
-/// bound sets both absolute and percentile.
+/// The window is [`FphaColumnLayout::resolve_fitting_window`]'s, taken against the
+/// plant's own `[min_storage_hm3, max_storage_hm3]`, not the geometry table's range.
 ///
 /// # Run-of-river reroute
 ///
@@ -92,7 +88,6 @@ const V_SYNTH_ABS: f64 = 1.0;
 ///
 /// | Condition | Error variant |
 /// |-----------|---------------|
-/// | Both absolute and percentile set for the same bound (min or max) | [`FphaFittingError::ConflictingFittingWindow`] |
 /// | Plant `min_storage_hm3 > max_storage_hm3` or either is NaN, or resolved `v_max < v_min` (inverted range, not single-point) | [`FphaFittingError::EmptyFittingWindow`] |
 /// | The resolved window `[v_min, v_max]` is not covered by the forebay table's volume range (single-volume plants included) | [`FphaFittingError::UncoveredFittingWindow`] |
 /// | A turbine/spillage count < 2, `max_planes_per_hydro` < 1, or (multi-volume only) `n_volume_points` < 2 | [`FphaFittingError::InsufficientDiscretization`] |
@@ -103,73 +98,16 @@ pub(crate) fn resolve_fitting_bounds(
 ) -> Result<(FittingBounds, ForebayTable), FphaFittingError> {
     let hydro_name = &hydro.name;
 
-    if let Some(fw) = &config.fitting_window {
-        if fw.volume_min_hm3.is_some() && fw.volume_min_percentile.is_some() {
-            return Err(FphaFittingError::ConflictingFittingWindow {
-                hydro_name: hydro_name.clone(),
-                detail: "volume_min_hm3 and volume_min_percentile cannot both be set; \
-                         use absolute bounds OR percentiles, not both for the same bound"
-                    .to_owned(),
-            });
-        }
-        if fw.volume_max_hm3.is_some() && fw.volume_max_percentile.is_some() {
-            return Err(FphaFittingError::ConflictingFittingWindow {
-                hydro_name: hydro_name.clone(),
-                detail: "volume_max_hm3 and volume_max_percentile cannot both be set; \
-                         use absolute bounds OR percentiles, not both for the same bound"
-                    .to_owned(),
-            });
-        }
-    }
-
-    let plant_min = hydro.min_storage_hm3;
-    let plant_max = hydro.max_storage_hm3;
-    let plant_range_is_ordered = plant_min <= plant_max;
-    if !plant_range_is_ordered {
-        return Err(FphaFittingError::EmptyFittingWindow {
-            hydro_name: hydro_name.clone(),
-            v_min: plant_min,
-            v_max: plant_max,
-        });
-    }
-
-    let (v_min, v_max) = match &config.fitting_window {
-        None => (plant_min, plant_max),
-        Some(fw) => {
-            let plant_range = plant_max - plant_min;
-
-            let v_min_raw = if let Some(abs) = fw.volume_min_hm3 {
-                abs
-            } else if let Some(pct) = fw.volume_min_percentile {
-                plant_min + pct * plant_range
-            } else {
-                plant_min
-            };
-
-            let v_max_raw = if let Some(abs) = fw.volume_max_hm3 {
-                abs
-            } else if let Some(pct) = fw.volume_max_percentile {
-                plant_min + pct * plant_range
-            } else {
-                plant_max
-            };
-
-            (
-                v_min_raw.clamp(plant_min, plant_max),
-                v_max_raw.clamp(plant_min, plant_max),
-            )
-        }
-    };
-
-    // Inverted range is an error; the single-point case (`0 <= v_max - v_min <=
-    // V_EPS`) is NOT inverted — it is rerouted below.
-    if v_max < v_min {
-        return Err(FphaFittingError::EmptyFittingWindow {
-            hydro_name: hydro_name.clone(),
-            v_min,
-            v_max,
-        });
-    }
+    let (v_min, v_max) = FphaColumnLayout::resolve_fitting_window(
+        Some(config),
+        hydro.min_storage_hm3,
+        hydro.max_storage_hm3,
+    )
+    .map_err(|e| FphaFittingError::EmptyFittingWindow {
+        hydro_name: hydro_name.clone(),
+        v_min: e.v_min_hm3,
+        v_max: e.v_max_hm3,
+    })?;
 
     if !range_covers(forebay.v_min(), forebay.v_max(), v_min, v_max) {
         return Err(FphaFittingError::UncoveredFittingWindow {

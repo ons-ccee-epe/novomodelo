@@ -44,14 +44,6 @@ pub(crate) enum FphaFittingError {
         h_curr: f64,
     },
 
-    /// Both absolute and percentile bounds set for the same dimension (the min
-    /// and max pairs are each mutually exclusive).
-    ConflictingFittingWindow {
-        hydro_name: String,
-        /// Human-readable description of the conflict.
-        detail: String,
-    },
-
     /// The resolved volume range is inverted (`v_max < v_min`), or the plant's
     /// storage range is inverted or NaN.
     ///
@@ -164,7 +156,7 @@ pub(crate) enum FphaFittingError {
     },
 }
 
-impl std::fmt::Display for FphaFittingError {
+impl fmt::Display for FphaFittingError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InsufficientPoints { hydro_name, count } => write!(
@@ -193,10 +185,6 @@ impl std::fmt::Display for FphaFittingError {
                 "hydro '{hydro_name}': height decreases at index {index}: \
                  h[{index}]={h_curr} < h[{}]={h_prev}",
                 index - 1
-            ),
-            Self::ConflictingFittingWindow { hydro_name, detail } => write!(
-                f,
-                "hydro '{hydro_name}': conflicting fitting window configuration: {detail}"
             ),
             Self::EmptyFittingWindow {
                 hydro_name,

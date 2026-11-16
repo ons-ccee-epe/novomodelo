@@ -39,6 +39,9 @@ use novomodelo_io::config::{
     SimulationSelection, StoppingMode, StoppingRuleConfig, TrainingConfig, TrainingSelection,
     TrainingSolverConfig, UpperBoundEvaluationConfig,
 };
+use novomodelo_sddp::hydro_models::{
+    FphaPlane, PrepareHydroModelsResult, ProductionModelSet, ResolvedProductionModel,
+};
 use novomodelo_sddp::indexer::{BlockGrid, BlockIdx, HydroCell, HydroCellIndex, HydroSys};
 use novomodelo_sddp::lp::StageGeometry;
 use novomodelo_sddp::{StageTemplates, StudySetup};
@@ -46,8 +49,8 @@ use novomodelo_solver::StageTemplate;
 
 mod common;
 
-use common::build_setup_in_code;
 use common::builders::{BusSpec, HydroSpec, StageSpec, make_bus, make_hydro, make_stage};
+use common::{build_setup_in_code, build_setup_in_code_with_models};
 
 const BUS_ID: i32 = 1;
 const UPSTREAM_ID: i32 = 1;
@@ -248,12 +251,22 @@ fn standard_bus() -> Bus {
     )
 }
 
+fn build_system(travel_time_hours: Option<f64>, block_mode: BlockMode) -> System {
+    build_system_with_upstream_max_generation(travel_time_hours, block_mode, 1_000.0)
+}
+
 /// A minimal upstream (`hydro 1`) -> downstream (`hydro 2`) cascade, each
 /// stage two parallel blocks (`BLOCK_HOURS`), with one `GenericConstraint` on
 /// `VariableRef::HydroInflow { hydro_id: DOWNSTREAM_ID, block_id: None }` at a
 /// non-binding upper bound active at stage 1. `travel_time_hours` toggles the
 /// arc's travel-time bucket between present and absent.
-fn build_system(travel_time_hours: Option<f64>, block_mode: BlockMode) -> System {
+/// `upstream_max_generation_mw` is the upstream plant's resolved generation
+/// limit at every stage; the entity keeps its declared limit.
+fn build_system_with_upstream_max_generation(
+    travel_time_hours: Option<f64>,
+    block_mode: BlockMode,
+    upstream_max_generation_mw: f64,
+) -> System {
     let bus = standard_bus();
 
     let downstream = make_hydro(
@@ -301,12 +314,19 @@ fn build_system(travel_time_hours: Option<f64>, block_mode: BlockMode) -> System
 
     let (generic_constraint, resolved_generic_bounds) = downstream_inflow_constraint();
 
+    let mut bounds = resolved_bounds(n_stages, 2);
+    for stage in 0..n_stages {
+        bounds
+            .hydro_block_base_mut(UPSTREAM_POS, stage)
+            .max_generation_mw = upstream_max_generation_mw;
+    }
+
     let system = SystemBuilder::new()
         .buses(vec![bus])
         .hydros(vec![downstream, upstream])
         .stages(stages)
         .inflow_models(inflow_models)
-        .bounds(resolved_bounds(n_stages, 2))
+        .bounds(bounds)
         .penalties(resolved_penalties(n_stages, 2, 1))
         .generic_constraints(vec![generic_constraint])
         .resolved_generic_bounds(resolved_generic_bounds)
@@ -689,6 +709,43 @@ fn build_exited_plant_system() -> System {
     system
 }
 
+fn fpha_upstream_models(system: &System) -> PrepareHydroModelsResult {
+    let mut hydro_models = PrepareHydroModelsResult::default_from_system(system);
+    let downstream_models: Vec<ResolvedProductionModel> = (0..N_STAGES)
+        .map(|stage| hydro_models.production.model(DOWNSTREAM_POS, stage).clone())
+        .collect();
+    let upstream_models = vec![
+        ResolvedProductionModel::Fpha {
+            planes: vec![FphaPlane {
+                intercept: 0.0,
+                gamma_v: 0.0,
+                gamma_q: 1.0,
+                gamma_s: 0.0,
+            }],
+        };
+        N_STAGES
+    ];
+    hydro_models.production = ProductionModelSet::new(
+        vec![upstream_models, downstream_models],
+        system.hydros(),
+        N_STAGES,
+    );
+    hydro_models
+}
+
+fn fpha_upstream_setup(
+    travel_time_hours: Option<f64>,
+    upstream_max_generation_mw: f64,
+) -> StudySetup {
+    let system = build_system_with_upstream_max_generation(
+        travel_time_hours,
+        BlockMode::Parallel,
+        upstream_max_generation_mw,
+    );
+    let hydro_models = fpha_upstream_models(&system);
+    build_setup_in_code_with_models(system, &config(), hydro_models)
+}
+
 fn config() -> Config {
     config_with(InflowNonNegativityMethod::Penalty)
 }
@@ -1004,6 +1061,117 @@ fn hydro_inflow_rows_match_the_water_balance_inflow_side_with_travel_time() {
         same_stage_share > 0.0 && same_stage_share < 1.0,
         "power guard: hydro 1's block-0 same-stage share must be a genuine \
          split (0, 1), got {same_stage_share}"
+    );
+
+    let columns = inflow_columns(geom, &[UPSTREAM_POS], &[UPSTREAM_POS], &[]);
+    assert_hydro_inflow_matches_water_balance(
+        &setup,
+        1,
+        DOWNSTREAM_POS,
+        &[DOWNSTREAM_POS],
+        &columns,
+    );
+}
+
+/// derived: the gate and the fold change no water-balance coefficient, so the
+/// dormant and capable builds carry the same spillage coefficient.
+#[test]
+fn dormant_upstream_plant_spills_into_the_downstream_water_balance() {
+    let dormant = fpha_upstream_setup(None, 0.0);
+    let dormant_templates = &dormant.inputs.stage_data.stage_templates;
+    let dormant_tpl = &dormant_templates.templates[1];
+    let dormant_geom = &dormant_templates.geometry_per_stage[1];
+    assert!(
+        dormant_geom.fpha_hydro_indices.is_empty(),
+        "a plant with a resolved generation limit of 0 MW must not take FPHA planes"
+    );
+    for block in 0..dormant_geom.n_blks {
+        let col = turbine_cols(dormant_geom, &[UPSTREAM_POS], block)[0];
+        assert!(
+            dormant_tpl.col_upper[col] * dormant_tpl.col_scale[col] == 0.0,
+            "block {block}: the dormant plant's turbine column must be frozen at 0"
+        );
+    }
+    let dormant_w_row =
+        dormant_geom.water_balance_row(HydroSys::new(DOWNSTREAM_POS), BlockIdx::new(0));
+    let dormant_spill = matrix_entry(
+        dormant_tpl,
+        dormant_w_row,
+        spillage_col(dormant_geom, UPSTREAM_POS, 0),
+    );
+    assert!(
+        dormant_spill != 0.0,
+        "the dormant plant's spillage must enter the downstream water-balance row"
+    );
+    let columns = inflow_columns(dormant_geom, &[UPSTREAM_POS], &[UPSTREAM_POS], &[]);
+    assert_hydro_inflow_matches_water_balance(
+        &dormant,
+        1,
+        DOWNSTREAM_POS,
+        &[DOWNSTREAM_POS],
+        &columns,
+    );
+
+    let capable = fpha_upstream_setup(None, 1_000.0);
+    let capable_templates = &capable.inputs.stage_data.stage_templates;
+    let capable_tpl = &capable_templates.templates[1];
+    let capable_geom = &capable_templates.geometry_per_stage[1];
+    assert_eq!(
+        capable_geom.fpha_hydro_indices,
+        [HydroSys::new(UPSTREAM_POS)],
+        "twin: a plant with a resolved generation limit of 1000 MW takes FPHA planes"
+    );
+    for block in 0..capable_geom.n_blks {
+        let col = turbine_cols(capable_geom, &[UPSTREAM_POS], block)[0];
+        let upper = capable_tpl.col_upper[col] * capable_tpl.col_scale[col];
+        assert!(
+            (upper - 500.0).abs() <= 1e-9 * 500.0,
+            "twin block {block}: the turbine column keeps the plant's turbined limit, got {upper}"
+        );
+    }
+    let capable_w_row =
+        capable_geom.water_balance_row(HydroSys::new(DOWNSTREAM_POS), BlockIdx::new(0));
+    let capable_spill = matrix_entry(
+        capable_tpl,
+        capable_w_row,
+        spillage_col(capable_geom, UPSTREAM_POS, 0),
+    );
+    assert_eq!(
+        dormant_spill.to_bits(),
+        capable_spill.to_bits(),
+        "the spillage coefficient on the downstream water balance must not depend on capacity"
+    );
+}
+
+#[test]
+fn dormant_upstream_plant_routes_its_spillage_through_the_transit_buckets() {
+    let setup = fpha_upstream_setup(Some(TRAVEL_TIME_HOURS), 0.0);
+    let templates = &setup.inputs.stage_data.stage_templates;
+    let tpl = &templates.templates[1];
+    let geom = &templates.geometry_per_stage[1];
+    let state = setup.stage_state();
+    assert!(
+        geom.fpha_hydro_indices.is_empty(),
+        "a plant with a resolved generation limit of 0 MW must not take FPHA planes"
+    );
+    let w_row = geom.water_balance_row(HydroSys::new(DOWNSTREAM_POS), BlockIdx::new(0));
+
+    let has_bucket_contribution = state
+        .transit_buckets_in
+        .clone()
+        .any(|c| matrix_entry(tpl, w_row, c) != 0.0);
+    assert!(
+        has_bucket_contribution,
+        "power guard: the water-balance row must carry a nonzero \
+         transit_buckets_in entry, or the arc never routes water through a bucket"
+    );
+
+    let tau_0 = matrix_entry(tpl, w_row, turbine_cols(geom, &[DOWNSTREAM_POS], 0)[0]);
+    let same_stage_share = -matrix_entry(tpl, w_row, spillage_col(geom, UPSTREAM_POS, 0)) / tau_0;
+    assert!(
+        same_stage_share > 0.0 && same_stage_share < 1.0,
+        "power guard: the dormant plant's block-0 spillage same-stage share must \
+         be a genuine split (0, 1), got {same_stage_share}"
     );
 
     let columns = inflow_columns(geom, &[UPSTREAM_POS], &[UPSTREAM_POS], &[]);

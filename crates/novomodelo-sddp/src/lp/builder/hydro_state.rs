@@ -7,11 +7,14 @@ use novomodelo_core::commissioning::{
 };
 use novomodelo_core::{
     CascadeTopology, Hydro, HydroBlockBounds, HydroPenalties, HydroStageBounds, HydroUnitGroup,
-    ResolvedBounds, ResolvedHydroUnitGroupBounds, Stage,
+    ResolvedBounds, ResolvedHydroUnitGroupBounds, Stage, has_turbine_capacity,
 };
 use novomodelo_io::validation::semantic::envelope_tolerance;
 
-use crate::hydro_models::{LinearizedEvaporation, ResolvedProductionModel};
+use crate::hydro_models::{
+    DroppedFloor, DroppedFloorKind, DroppedFloorLevel, DroppedFloorReason, FrozenTurbiningHydro,
+    LinearizedEvaporation, ResolvedProductionModel,
+};
 use crate::indexer::{Boundary, EntityPositions, HydroCell, HydroCellIndex, HydroSys};
 
 pub(super) fn hydro_phase(hydro: &Hydro, stage_id: i32) -> Phase {
@@ -228,11 +231,9 @@ pub(super) fn effective_withdrawals(
     effective
 }
 
-/// Bundles the resolved group-bounds table with the three indices that are
-/// constant across a cell's member groups, so `cell_max_turbined`/
-/// `cell_max_generation` take one bundled parameter instead of four loose
-/// ones that would cross `clippy::too_many_arguments`. `pub(super)` with its
-/// `new` constructor, so `columns` and `rows` build the same per-block lookup.
+/// The resolved group-bounds table with the three indices that are constant
+/// across a cell's member groups. `pub(super)` with its `new` constructor, so
+/// `columns` and `rows` build the same per-block lookup.
 #[derive(Clone, Copy)]
 pub(super) struct GroupBoundLookup<'a> {
     table: &'a ResolvedHydroUnitGroupBounds,
@@ -260,6 +261,15 @@ impl<'a> GroupBoundLookup<'a> {
 /// Methods return the resolved per-block value: the override when the study
 /// supplies one, the declaration otherwise.
 impl GroupBoundLookup<'_> {
+    /// Whether group `group_pos` has turbine capacity at this block: the one
+    /// owner of a group's capacity.
+    pub(super) fn has_capacity(&self, group_pos: usize, group: &HydroUnitGroup) -> bool {
+        has_turbine_capacity(
+            self.max_turbined(group_pos, group),
+            self.max_generation(group_pos, group),
+        )
+    }
+
     /// Group `group_pos`'s resolved turbined-flow maximum.
     fn max_turbined(&self, group_pos: usize, group: &HydroUnitGroup) -> f64 {
         self.table
@@ -293,12 +303,15 @@ impl GroupBoundLookup<'_> {
     }
 }
 
-/// Cell `c`'s turbined-flow upper bound. A `ConstantProductivity` model folds
-/// EACH member group's own MW cap into its own flow cap first, then sums —
-/// summing the raw group boxes and folding the total instead overstates the
-/// cell, since `min` does not distribute over a sum whose terms bind on
-/// different sides (`test_same_bus_groups_sum_into_one_cell_box`). Any other
-/// model (FPHA; a non-positive productivity) sums each group's flow cap
+/// Cell `c`'s turbined-flow upper bound. A term without turbine capacity —
+/// either resolved limit at or below [`has_turbine_capacity`]'s threshold —
+/// contributes 0 under every model, per group before the sum and at the closing
+/// plant term. A `ConstantProductivity` model folds EACH member group's own MW
+/// cap into its own flow cap first, then sums — summing the raw group boxes and
+/// folding the total instead overstates the cell, since `min` does not
+/// distribute over a sum whose terms bind on different sides
+/// (`test_same_bus_groups_sum_into_one_cell_box`). Under any other model (FPHA;
+/// a non-positive productivity) a group with capacity adds its flow cap
 /// unfolded, exact because FPHA's turbine and generation columns are
 /// independent.
 ///
@@ -332,19 +345,64 @@ pub(super) fn cell_max_turbined(
     let sum: f64 = positions
         .iter()
         .map(|&pos| {
-            fold(
-                lookup.max_turbined(pos, &groups[pos]),
-                lookup.max_generation(pos, &groups[pos]),
-            )
+            if lookup.has_capacity(pos, &groups[pos]) {
+                fold(
+                    lookup.max_turbined(pos, &groups[pos]),
+                    lookup.max_generation(pos, &groups[pos]),
+                )
+            } else {
+                0.0
+            }
         })
         .sum();
-    sum.min(fold(hb.max_turbined_m3s, hb.max_generation_mw))
+    let plant = if has_turbine_capacity(hb.max_turbined_m3s, hb.max_generation_mw) {
+        fold(hb.max_turbined_m3s, hb.max_generation_mw)
+    } else {
+        0.0
+    };
+    sum.min(plant)
 }
 
-/// Cell `c`'s own min-turbine floor: the PLAIN SUM of its member groups'
-/// resolved `min_turbined_m3s`, never a fold and never a `.min(plant)` clamp —
-/// a floor on a sum of variables adds, unlike the closing `MAX` bound.
-/// [`PlantFloor`] decides where the plant minimum binds on top of it.
+/// Whether cell `c` has turbine capacity at the block `lookup` resolves: the
+/// plant term and at least one member group each pass [`has_turbine_capacity`],
+/// the same two terms [`cell_max_turbined`] and [`cell_max_generation`] close
+/// with. The one owner of a cell's capacity.
+pub(super) fn cell_has_capacity(
+    groups: &[HydroUnitGroup],
+    positions: &[usize],
+    hb: HydroBlockBounds,
+    lookup: GroupBoundLookup<'_>,
+) -> bool {
+    has_turbine_capacity(hb.max_turbined_m3s, hb.max_generation_mw)
+        && positions
+            .iter()
+            .any(|&pos| lookup.has_capacity(pos, &groups[pos]))
+}
+
+/// Whether plant `h` has turbine capacity at the block `lookup` resolves: some
+/// cell passes [`cell_has_capacity`]. The one owner of a plant's capacity.
+pub(super) fn plant_has_capacity(
+    hydro: &Hydro,
+    cells: &HydroCellIndex,
+    h: HydroSys,
+    lookup: GroupBoundLookup<'_>,
+    hb: HydroBlockBounds,
+) -> bool {
+    cells.cells_of(h).any(|c| {
+        cell_has_capacity(
+            &hydro.unit_groups,
+            cells.groups_of(HydroCell::new(c)),
+            hb,
+            lookup,
+        )
+    })
+}
+
+/// Cell `c`'s own min-turbine floor: the plain sum of the resolved
+/// `min_turbined_m3s` of its member groups that have capacity; never a fold and
+/// never a `.min(plant)` clamp — a floor on a sum of variables adds, unlike the
+/// closing `MAX` bound. [`PlantFloor`] decides where the plant minimum binds on
+/// top of it.
 pub(super) fn cell_min_turbined(
     groups: &[HydroUnitGroup],
     positions: &[usize],
@@ -352,13 +410,16 @@ pub(super) fn cell_min_turbined(
 ) -> f64 {
     positions
         .iter()
-        .map(|&pos| lookup.min_turbined(pos, &groups[pos]))
+        .filter(|&&pos| lookup.has_capacity(pos, &groups[pos]))
+        .map(|&pos| MinFloor::Turbined.of_group(lookup, pos, &groups[pos]))
         .sum()
 }
 
 /// Cell `c`'s FPHA generation-column upper bound. FPHA's turbine and generation
 /// columns are independent (no productivity fold couples them), so summing
-/// `max_generation_mw` over the cell's member groups directly is exact.
+/// `max_generation_mw` over the cell's member groups directly is exact. A group
+/// or plant term without turbine capacity (see [`has_turbine_capacity`])
+/// contributes 0.
 ///
 /// Both terms of `sum.min(hb.max_generation_mw)` are load-bearing — the same
 /// two-term contract `cell_max_turbined` states in full.
@@ -374,14 +435,24 @@ pub(super) fn cell_max_generation(
 ) -> f64 {
     let sum: f64 = positions
         .iter()
-        .map(|&pos| lookup.max_generation(pos, &groups[pos]))
+        .map(|&pos| {
+            if lookup.has_capacity(pos, &groups[pos]) {
+                lookup.max_generation(pos, &groups[pos])
+            } else {
+                0.0
+            }
+        })
         .sum();
-    sum.min(hb.max_generation_mw)
+    if has_turbine_capacity(hb.max_turbined_m3s, hb.max_generation_mw) {
+        sum.min(hb.max_generation_mw)
+    } else {
+        0.0
+    }
 }
 
-/// Cell `c`'s own min-generation floor: the PLAIN SUM of its member groups'
-/// resolved `min_generation_mw`, never folded through a productivity. See
-/// [`cell_min_turbined`].
+/// Cell `c`'s own min-generation floor: the plain sum of the resolved
+/// `min_generation_mw` of its member groups that have capacity, never folded
+/// through a productivity. See [`cell_min_turbined`].
 pub(super) fn cell_min_generation(
     groups: &[HydroUnitGroup],
     positions: &[usize],
@@ -389,7 +460,8 @@ pub(super) fn cell_min_generation(
 ) -> f64 {
     positions
         .iter()
-        .map(|&pos| lookup.min_generation(pos, &groups[pos]))
+        .filter(|&&pos| lookup.has_capacity(pos, &groups[pos]))
+        .map(|&pos| MinFloor::Generation.of_group(lookup, pos, &groups[pos]))
         .sum()
 }
 
@@ -404,6 +476,18 @@ pub(super) enum MinFloor {
 
 impl MinFloor {
     pub(super) const ALL: [Self; 2] = [Self::Turbined, Self::Generation];
+
+    fn of_group(
+        self,
+        lookup: GroupBoundLookup<'_>,
+        group_pos: usize,
+        group: &HydroUnitGroup,
+    ) -> f64 {
+        match self {
+            Self::Turbined => lookup.min_turbined(group_pos, group),
+            Self::Generation => lookup.min_generation(group_pos, group),
+        }
+    }
 
     fn of_cell(
         self,
@@ -445,16 +529,28 @@ impl MinFloor {
             Self::Generation => "min_generation_mw",
         }
     }
+
+    const fn dropped_kind(self) -> DroppedFloorKind {
+        match self {
+            Self::Turbined => DroppedFloorKind::MinTurbinedM3s,
+            Self::Generation => DroppedFloorKind::MinGenerationMw,
+        }
+    }
 }
 
 /// One plant's `MinFloor` at one block, split into what its cell rows and its
-/// residual row enforce. The tighter floor wins: the plant's resolved minimum
-/// binds only where it exceeds the cells' summed floor by more than
-/// [`envelope_tolerance`] — the tolerance rule 44 admits a declared minimum
-/// with, so a declared minimum never changes the LP. A single-cell plant folds
+/// residual row enforce. The plant's resolved minimum binds only where it
+/// exceeds the full declared sum of its groups' floors, those without capacity
+/// included, by more than [`envelope_tolerance`] — the tolerance rule 44 admits
+/// a declared minimum with, so a declared minimum never changes the LP — and
+/// then enforces the minimum less the floors of the groups without capacity: a
+/// group without capacity contributes no cell floor. A single-cell plant folds
 /// the binding minimum into its one cell row; a multi-cell plant gets a
 /// residual row on top of its cell rows. Either way the shortfall is charged
-/// once, as `max(plant shortfall, Σ cell shortfalls)`.
+/// once, as `max(plant shortfall, Σ cell shortfalls)`. Where the plant has no
+/// capacity in the block ([`plant_has_capacity`]) or is suspended at the stage
+/// ([`is_suspended`]), every floor of the plant is dropped: its cell rows read
+/// 0, no residual binds, and [`warn_on_inert_plant_floor_overrides`] ignores it.
 pub(super) struct PlantFloor<'a> {
     kind: MinFloor,
     groups: &'a [HydroUnitGroup],
@@ -462,7 +558,9 @@ pub(super) struct PlantFloor<'a> {
     plant_cells: Range<usize>,
     lookup: GroupBoundLookup<'a>,
     plant_min: f64,
-    cell_sum: f64,
+    full_sum: f64,
+    dead_sum: f64,
+    producing: bool,
 }
 
 impl<'a> PlantFloor<'a> {
@@ -473,18 +571,23 @@ impl<'a> PlantFloor<'a> {
         h: HydroSys,
         lookup: GroupBoundLookup<'a>,
         hb: HydroBlockBounds,
+        suspended: bool,
     ) -> Self {
         let plant_cells = cells.cells_of(h);
-        let cell_sum = plant_cells
-            .clone()
-            .map(|c| {
-                kind.of_cell(
-                    &hydro.unit_groups,
-                    cells.groups_of(HydroCell::new(c)),
-                    lookup,
-                )
-            })
-            .sum();
+        let (mut full_sum, mut dead_sum) = (0.0, 0.0);
+        for c in plant_cells.clone() {
+            let (mut cell_full, mut cell_dead) = (0.0, 0.0);
+            for &pos in cells.groups_of(HydroCell::new(c)) {
+                let group = &hydro.unit_groups[pos];
+                let floor = kind.of_group(lookup, pos, group);
+                cell_full += floor;
+                if !lookup.has_capacity(pos, group) {
+                    cell_dead += floor;
+                }
+            }
+            full_sum += cell_full;
+            dead_sum += cell_dead;
+        }
         Self {
             kind,
             groups: &hydro.unit_groups,
@@ -492,19 +595,24 @@ impl<'a> PlantFloor<'a> {
             plant_cells,
             lookup,
             plant_min: kind.of_plant(hb),
-            cell_sum,
+            full_sum,
+            dead_sum,
+            producing: !suspended && plant_has_capacity(hydro, cells, h, lookup, hb),
         }
     }
 
     fn uncovered(&self) -> Option<f64> {
-        (self.plant_min > self.cell_sum + envelope_tolerance(self.plant_min))
-            .then_some(self.plant_min)
+        (self.producing && self.plant_min > self.full_sum + envelope_tolerance(self.plant_min))
+            .then_some(self.plant_min - self.dead_sum)
     }
 
     /// RHS of cell `c`'s floor row.
     pub(super) fn cell_rhs(&self, c: HydroCell) -> f64 {
+        if !self.producing {
+            return 0.0;
+        }
         match self.uncovered() {
-            Some(plant_min) if self.plant_cells.len() == 1 => plant_min,
+            Some(floor) if self.plant_cells.len() == 1 => floor,
             _ => self
                 .kind
                 .of_cell(self.groups, self.cells.groups_of(c), self.lookup),
@@ -517,7 +625,7 @@ impl<'a> PlantFloor<'a> {
     }
 
     fn is_below_cells(&self) -> bool {
-        self.plant_min + envelope_tolerance(self.plant_min) < self.cell_sum
+        self.producing && self.plant_min + envelope_tolerance(self.plant_min) < self.full_sum
     }
 }
 
@@ -621,6 +729,7 @@ pub(crate) fn warn_on_inert_plant_floor_overrides(
                             HydroSys::new(h_idx),
                             GroupBoundLookup::new(bounds.group_overlay(), h_idx, *stage_idx, blk),
                             bounds.hydro_bounds_at_block(h_idx, *stage_idx, blk),
+                            is_suspended(hydro, stage.id),
                         );
                         floor.plant_min.to_bits() != declared && floor.is_below_cells()
                     })
@@ -640,6 +749,120 @@ pub(crate) fn warn_on_inert_plant_floor_overrides(
             }
         }
     }
+}
+
+/// The hydros with a study stage without turbine capacity, or a minimum the stage
+/// LP no longer charges, ascending by id. Capacity and floors are read through
+/// [`cell_has_capacity`], [`GroupBoundLookup::has_capacity`], [`PlantFloor`] and
+/// [`is_suspended`], never re-derived from a limit, so the rows agree with the LP.
+pub(crate) fn frozen_turbining_hydros(
+    hydros: &[Hydro],
+    stages: &[Stage],
+    bounds: &ResolvedBounds,
+    cells: &HydroCellIndex,
+) -> Vec<FrozenTurbiningHydro> {
+    let study_stages: Vec<_> = stages.iter().filter(|s| s.id >= 0).collect();
+    let mut rows: Vec<_> = hydros
+        .iter()
+        .enumerate()
+        .map(|(h_idx, hydro)| frozen_turbining_of(hydro, h_idx, &study_stages, bounds, cells))
+        .filter(|row| {
+            !(row.no_capacity_stage_ids.is_empty()
+                && row.partial_capacity_stage_ids.is_empty()
+                && row.dropped_floors.is_empty())
+        })
+        .collect();
+    rows.sort_by_key(|row| row.hydro_id);
+    rows
+}
+
+fn frozen_turbining_of(
+    hydro: &Hydro,
+    h_idx: usize,
+    study_stages: &[&Stage],
+    bounds: &ResolvedBounds,
+    cells: &HydroCellIndex,
+) -> FrozenTurbiningHydro {
+    let h = HydroSys::new(h_idx);
+    let mut row = FrozenTurbiningHydro {
+        hydro_id: hydro.id,
+        name: hydro.name.clone(),
+        no_capacity_stage_ids: Vec::new(),
+        partial_capacity_stage_ids: Vec::new(),
+        dropped_floors: Vec::new(),
+    };
+    for (stage_idx, stage) in study_stages.iter().enumerate() {
+        let suspended = is_suspended(hydro, stage.id);
+        let reason = if suspended {
+            DroppedFloorReason::Commissioning
+        } else {
+            DroppedFloorReason::NoCapacity
+        };
+        let (mut n_cells, mut n_dead) = (0_usize, 0_usize);
+        for (blk, block) in stage.blocks.iter().enumerate() {
+            let lookup = GroupBoundLookup::new(bounds.group_overlay(), h_idx, stage_idx, blk);
+            let hb = bounds.hydro_bounds_at_block(h_idx, stage_idx, blk);
+            for c in cells.cells_of(h).map(HydroCell::new) {
+                n_cells += 1;
+                n_dead += usize::from(!cell_has_capacity(
+                    &hydro.unit_groups,
+                    cells.groups_of(c),
+                    hb,
+                    lookup,
+                ));
+            }
+            for kind in MinFloor::ALL {
+                let floor = PlantFloor::resolve(kind, hydro, cells, h, lookup, hb, suspended);
+                let dropped = |level, hydro_unit_group_id, bus_id, value| DroppedFloor {
+                    stage_id: stage.id,
+                    block_id: block.index,
+                    floor: kind.dropped_kind(),
+                    level,
+                    hydro_unit_group_id,
+                    bus_id,
+                    value,
+                    reason,
+                };
+                if !floor.producing && floor.plant_min > 0.0 {
+                    row.dropped_floors.push(dropped(
+                        DroppedFloorLevel::Plant,
+                        None,
+                        None,
+                        floor.plant_min,
+                    ));
+                }
+                for c in cells.cells_of(h).map(HydroCell::new) {
+                    for &pos in cells.groups_of(c) {
+                        let group = &hydro.unit_groups[pos];
+                        let value = kind.of_group(lookup, pos, group);
+                        if value > 0.0 && (!floor.producing || !lookup.has_capacity(pos, group)) {
+                            row.dropped_floors.push(dropped(
+                                DroppedFloorLevel::UnitGroup,
+                                Some(group.id),
+                                Some(cells.bus_of(c)),
+                                value,
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        if n_dead == n_cells && n_cells > 0 {
+            row.no_capacity_stage_ids.push(stage.id);
+        } else if n_dead > 0 {
+            row.partial_capacity_stage_ids.push(stage.id);
+        }
+    }
+    row.dropped_floors.sort_by_key(|d| {
+        (
+            d.stage_id,
+            d.block_id,
+            d.level,
+            d.hydro_unit_group_id,
+            d.floor,
+        )
+    });
+    row
 }
 
 #[cfg(test)]

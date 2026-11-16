@@ -24,8 +24,8 @@ use crate::indexer::{
 use crate::time_value::TimeValue;
 
 use super::hydro_state::{
-    GroupBoundLookup, MaxCap, MinFloor, PlantFloor, effective_withdrawals, has_soft_storage_floor,
-    hydro_phase, is_suspended, plant_cap_rhs,
+    GroupBoundLookup, MaxCap, MinFloor, PlantFloor, cell_has_capacity, effective_withdrawals,
+    has_soft_storage_floor, hydro_phase, is_suspended, plant_cap_rhs, plant_has_capacity,
 };
 use super::{
     EVAP_COLS_PER_HYDRO, EVAP_F_MINUS_OFFSET, EVAP_F_PLUS_OFFSET, EVAP_FLOW_OFFSET,
@@ -131,22 +131,45 @@ pub(crate) struct TemplateBuildCtx<'a> {
 impl<'a> TemplateBuildCtx<'a> {
     /// Plant `h`'s `kind` floor at block `blk` of stage `stage_idx` — the one
     /// resolution the floor rows, their slack columns, and the plant-floor
-    /// membership all read.
+    /// membership all read. Every floor is dropped while the plant is suspended
+    /// at `stage_id` (commissioning), as it is without capacity.
     pub(super) fn plant_floor(
         &self,
+        stage_id: i32,
         stage_idx: usize,
         kind: MinFloor,
         h: HydroSys,
         blk: usize,
     ) -> PlantFloor<'a> {
         let bounds = self.resolved.bounds;
+        let hydro = &self.hydros[h.get()];
         PlantFloor::resolve(
             kind,
-            &self.hydros[h.get()],
+            hydro,
             self.hydro_cell_index,
             h,
             GroupBoundLookup::new(bounds.group_overlay(), h.get(), stage_idx, blk),
             bounds.hydro_bounds_at_block(h.get(), stage_idx, blk),
+            is_suspended(hydro, stage_id),
+        )
+    }
+
+    /// Whether cell `cell` of plant `h` has turbine capacity at block `blk` of
+    /// stage `stage_idx` ([`cell_has_capacity`]) — the one resolution the FPHA
+    /// plane rows and plane-slack columns read.
+    pub(super) fn cell_has_capacity(
+        &self,
+        stage_idx: usize,
+        h: HydroSys,
+        cell: HydroCell,
+        blk: usize,
+    ) -> bool {
+        let bounds = self.resolved.bounds;
+        cell_has_capacity(
+            &self.hydros[h.get()].unit_groups,
+            self.hydro_cell_index.groups_of(cell),
+            bounds.hydro_bounds_at_block(h.get(), stage_idx, blk),
+            GroupBoundLookup::new(bounds.group_overlay(), h.get(), stage_idx, blk),
         )
     }
 
@@ -716,10 +739,17 @@ fn build_evap_indices(
 /// on the commissioning id). A
 /// commissioning-dormant non-filling hydro is `PreFilling` and is dropped here too;
 /// a non-filling hydro with no window is `Operating` at every stage (parity-neutral).
+///
+/// A plant without turbine capacity in any block of the stage
+/// ([`plant_has_capacity`]) is dropped the same way: no generation column, plane
+/// row or plane slack, and its turbine column is `[0, 0]`. Capacity in one block or
+/// one cell keeps the plant's whole FPHA structure for the stage; a (cell, block)
+/// without capacity inside it has free plane rows and a pinned slack.
 fn identify_fpha_hydros(
     ctx: &TemplateBuildCtx<'_>,
     stage_idx: usize,
     stage_id: i32,
+    n_blks: usize,
 ) -> Vec<HydroSys> {
     (0..ctx.hydros.len())
         .filter(|&h_idx| {
@@ -728,6 +758,22 @@ fn identify_fpha_hydros(
                     ctx.production_models.model(h_idx, stage_idx),
                     ResolvedProductionModel::Fpha { .. }
                 )
+                && (0..n_blks).any(|blk| {
+                    plant_has_capacity(
+                        &ctx.hydros[h_idx],
+                        ctx.hydro_cell_index,
+                        HydroSys::new(h_idx),
+                        GroupBoundLookup::new(
+                            ctx.resolved.bounds.group_overlay(),
+                            h_idx,
+                            stage_idx,
+                            blk,
+                        ),
+                        ctx.resolved
+                            .bounds
+                            .hydro_bounds_at_block(h_idx, stage_idx, blk),
+                    )
+                })
         })
         .map(HydroSys::new)
         .collect()
@@ -807,6 +853,7 @@ fn identify_filled_min_storage_floor_hydros(
 /// every study whose plant minima come from declarations alone.
 fn identify_plant_floor_hydros(
     ctx: &TemplateBuildCtx<'_>,
+    stage_id: i32,
     stage_idx: usize,
     n_blks: usize,
 ) -> Vec<HydroSys> {
@@ -816,7 +863,7 @@ fn identify_plant_floor_hydros(
             ctx.hydro_cell_index.cells_of(h).len() > 1
                 && (0..n_blks).any(|blk| {
                     MinFloor::ALL.into_iter().any(|kind| {
-                        ctx.plant_floor(stage_idx, kind, h, blk)
+                        ctx.plant_floor(stage_id, stage_idx, kind, h, blk)
                             .residual_rhs()
                             .is_some()
                     })
@@ -1149,9 +1196,10 @@ pub(super) enum StageProductionRole {
     Fpha(FphaLocal),
     /// Prices through the plant's turbine column at this shared productivity.
     Constant(f64),
-    /// A commissioning-dormant (`PreFilling`/`Filling`) `Fpha`-resolved plant:
-    /// gated out of `fpha_local_index` by `identify_fpha_hydros`, so it has no
-    /// generation column, and its turbine column is frozen `[0, 0]`. It
+    /// An `Fpha`-resolved plant that is commissioning-suspended
+    /// (`PreFilling`/`Filling`) or has no turbine capacity in any block of the
+    /// stage: gated out of `fpha_local_index` by `identify_fpha_hydros`, so it has
+    /// no generation column, and its turbine column is `[0, 0]`. It
     /// contributes nothing to either consumer's row — never priced as
     /// `ConstantProductivity`, which it has no productivity for.
     Dormant,
@@ -1354,7 +1402,7 @@ impl<'a> StageLayout<'a> {
         let n_h = state_layout.hydro_count;
         let n_cells = ctx.hydro_cell_index.n_cells();
 
-        let fpha_hydro_indices = identify_fpha_hydros(ctx, stage_idx, stage.id);
+        let fpha_hydro_indices = identify_fpha_hydros(ctx, stage_idx, stage.id, n_blks);
         let filling_target_hydro_indices = identify_filling_target_hydros(ctx, stage.id);
         let filled_min_storage_floor_hydro_indices =
             identify_filled_min_storage_floor_hydros(ctx, stage.id);
@@ -1445,7 +1493,8 @@ impl<'a> StageLayout<'a> {
         // `n_h * n_blks`/`n_cells * n_blks` are `0` when `n_h`/`n_cells == 0`, so
         // `alloc(0)` collapses every family onto the post-equipment cursor with
         // no branch.
-        geometry.plant_floor_hydro_indices = identify_plant_floor_hydros(ctx, stage_idx, n_blks);
+        geometry.plant_floor_hydro_indices =
+            identify_plant_floor_hydros(ctx, stage.id, stage_idx, n_blks);
         let oper_violation_sizes = OperViolationSizes {
             hydros: n_h * n_blks,
             cells: n_cells * n_blks,
@@ -1580,7 +1629,7 @@ impl StageLayout<'_> {
     /// Hydro `h_idx`'s [`StageProductionRole`] at `stage_idx`: `Fpha` when
     /// `identify_fpha_hydros` admitted it into `fpha_local_index`, else the
     /// resolved model's `Constant` productivity or, for an `Fpha`-resolved
-    /// model excluded by the phase gate, `Dormant`.
+    /// model excluded by the phase or capacity gate, `Dormant`.
     #[inline]
     pub(super) fn stage_production_role(
         &self,

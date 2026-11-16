@@ -54,7 +54,7 @@ use geometry::resolve_fitting_bounds;
 use hull_fit::{RawPlane, fit_hull_planes};
 use production::ProductionFunction;
 use reduction::reduce_planes;
-use secant::{fit_gamma_s_for_planes, resolve_s_max};
+use secant::fit_gamma_s_for_planes;
 use selection::validate_fitted_planes;
 
 pub(crate) use deviation::{FphaDeviationPoint, FphaFitDeviation};
@@ -121,7 +121,7 @@ pub(crate) struct FphaFitResult {
 /// - `long_term_mean_inflow_m3s` — mean of the hydro's inflow history \[m³/s\];
 ///   without `config.spillage_fit_max_m3s` it drives the lateral-secant
 ///   `S_max = 2·long-term mean inflow`, and `0.0` (no inflow history) selects the
-///   `2 × max_turbined` fallback (see `secant::resolve_s_max`).
+///   `2 × max_turbined` fallback (see `FphaColumnLayout::resolve_spillage_fit_max_m3s`).
 /// - `tailrace_source` — resolved per (hydro, entry): [`TailraceSource::Families`]
 ///   when the plant has a `tailrace_curves` table, else [`TailraceSource::Entity`]
 ///   mirroring the entity-level model (the inert fallback).
@@ -178,8 +178,8 @@ pub(crate) fn fit_fpha_planes(
         .map(|raw| scale_plane_affine(raw, alpha))
         .collect();
 
-    let s_max = resolve_s_max(
-        config.spillage_fit_max_m3s,
+    let s_max = FphaColumnLayout::resolve_spillage_fit_max_m3s(
+        Some(config),
         long_term_mean_inflow_m3s,
         hydro.max_turbined_m3s,
     );

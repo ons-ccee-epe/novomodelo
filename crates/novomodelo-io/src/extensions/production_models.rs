@@ -366,6 +366,104 @@ impl ProductionModelConfig {
     }
 }
 
+// ── Fit-domain resolution ─────────────────────────────────────────────────────
+
+/// A storage range whose lower end is not at or below its upper end.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct InvertedStorageRange {
+    /// Lower end (hm³).
+    pub v_min_hm3: f64,
+    /// Upper end (hm³).
+    pub v_max_hm3: f64,
+}
+
+impl FphaColumnLayout {
+    /// Resolve the volume window `[v_min, v_max]` (hm³) the planes are fit over.
+    ///
+    /// Each bound is its absolute value, else its percentile of
+    /// `[min_storage_hm3, max_storage_hm3]`, else that range's endpoint, then
+    /// clamped to the range; the parser refuses an absolute value and a percentile
+    /// on one bound, so the absolute value is read first without a conflict. A
+    /// `None` layout, or one without a `fitting_window`, resolves to the storage
+    /// range. A window that is a single point is not an error.
+    ///
+    /// # Errors
+    ///
+    /// [`InvertedStorageRange`] carrying the storage bounds when they are inverted
+    /// or NaN, or the clamped window when `v_max < v_min`.
+    #[must_use = "the resolved window or its refusal"]
+    pub fn resolve_fitting_window(
+        layout: Option<&Self>,
+        min_storage_hm3: f64,
+        max_storage_hm3: f64,
+    ) -> Result<(f64, f64), InvertedStorageRange> {
+        let storage_range_is_ordered = min_storage_hm3 <= max_storage_hm3;
+        if !storage_range_is_ordered {
+            return Err(InvertedStorageRange {
+                v_min_hm3: min_storage_hm3,
+                v_max_hm3: max_storage_hm3,
+            });
+        }
+
+        let (v_min, v_max) = match layout.and_then(|l| l.fitting_window.as_ref()) {
+            None => (min_storage_hm3, max_storage_hm3),
+            Some(fw) => {
+                let storage_range = max_storage_hm3 - min_storage_hm3;
+
+                let v_min_raw = if let Some(abs) = fw.volume_min_hm3 {
+                    abs
+                } else if let Some(pct) = fw.volume_min_percentile {
+                    min_storage_hm3 + pct * storage_range
+                } else {
+                    min_storage_hm3
+                };
+
+                let v_max_raw = if let Some(abs) = fw.volume_max_hm3 {
+                    abs
+                } else if let Some(pct) = fw.volume_max_percentile {
+                    min_storage_hm3 + pct * storage_range
+                } else {
+                    max_storage_hm3
+                };
+
+                (
+                    v_min_raw.clamp(min_storage_hm3, max_storage_hm3),
+                    v_max_raw.clamp(min_storage_hm3, max_storage_hm3),
+                )
+            }
+        };
+
+        if v_max < v_min {
+            return Err(InvertedStorageRange {
+                v_min_hm3: v_min,
+                v_max_hm3: v_max,
+            });
+        }
+        Ok((v_min, v_max))
+    }
+
+    /// Resolve the upper end (m³/s) of the spillage range the spillage coefficient
+    /// is fit over: `spillage_fit_max_m3s` when the layout sets it, else twice the
+    /// long-term mean inflow when that is positive, else twice `max_turbined_m3s`.
+    ///
+    /// The mean test is strict: a hydro without history passes `0.0` and takes the
+    /// turbine-limit fallback, where `>= 0.0` would give a zero spillage range.
+    #[must_use]
+    pub fn resolve_spillage_fit_max_m3s(
+        layout: Option<&Self>,
+        long_term_mean_inflow_m3s: f64,
+        max_turbined_m3s: f64,
+    ) -> f64 {
+        if let Some(s_max) = layout.and_then(|l| l.spillage_fit_max_m3s) {
+            s_max
+        } else if long_term_mean_inflow_m3s > 0.0 {
+            2.0 * long_term_mean_inflow_m3s
+        } else {
+            2.0 * max_turbined_m3s
+        }
+    }
+}
+
 /// One `(hydro, stage)` production-model entry, resolved by
 /// [`ProductionModelConfig::resolve_stage`] and borrowed from the config.
 #[derive(Debug, Clone, PartialEq)]
@@ -1168,6 +1266,7 @@ fn convert_plane_reduction(raw: &RawPlaneReductionConfig) -> PlaneReductionConfi
 #[allow(
     clippy::doc_markdown,
     clippy::expect_used,
+    clippy::float_cmp,
     clippy::match_wildcard_for_single_variants,
     clippy::panic,
     clippy::too_many_lines,
@@ -2852,5 +2951,187 @@ mod tests {
         assert!(miss.fpha_config.is_none());
         assert!(config.uses_precomputed_fpha());
         assert!(!config.uses_computed_fpha());
+    }
+
+    // ── Fit-domain resolution ─────────────────────────────────────────────────
+
+    const UNSET_WINDOW: FittingWindow = FittingWindow {
+        volume_min_hm3: None,
+        volume_max_hm3: None,
+        volume_min_percentile: None,
+        volume_max_percentile: None,
+    };
+
+    fn windowed(fitting_window: FittingWindow) -> FphaColumnLayout {
+        FphaColumnLayout {
+            fitting_window: Some(fitting_window),
+            ..layout("computed")
+        }
+    }
+
+    #[test]
+    fn resolve_fitting_window_without_a_window_is_the_storage_range() {
+        assert_eq!(
+            FphaColumnLayout::resolve_fitting_window(None, 1_000.0, 30_000.0),
+            Ok((1_000.0, 30_000.0))
+        );
+        assert_eq!(
+            FphaColumnLayout::resolve_fitting_window(Some(&layout("computed")), 1_000.0, 30_000.0),
+            Ok((1_000.0, 30_000.0))
+        );
+    }
+
+    #[test]
+    fn resolve_fitting_window_takes_absolute_bounds_inside_the_storage_range() {
+        let layout = windowed(FittingWindow {
+            volume_min_hm3: Some(1_000.0),
+            volume_max_hm3: Some(30_000.0),
+            ..UNSET_WINDOW
+        });
+
+        assert_eq!(
+            FphaColumnLayout::resolve_fitting_window(Some(&layout), 0.0, 34_116.0),
+            Ok((1_000.0, 30_000.0))
+        );
+    }
+
+    #[test]
+    fn resolve_fitting_window_fills_an_unset_bound_from_the_storage_range() {
+        let only_min = windowed(FittingWindow {
+            volume_min_hm3: Some(5_000.0),
+            ..UNSET_WINDOW
+        });
+        let only_max = windowed(FittingWindow {
+            volume_max_hm3: Some(20_000.0),
+            ..UNSET_WINDOW
+        });
+
+        assert_eq!(
+            FphaColumnLayout::resolve_fitting_window(Some(&only_min), 1_000.0, 30_000.0),
+            Ok((5_000.0, 30_000.0))
+        );
+        assert_eq!(
+            FphaColumnLayout::resolve_fitting_window(Some(&only_max), 1_000.0, 30_000.0),
+            Ok((1_000.0, 20_000.0))
+        );
+    }
+
+    /// derived: 100 + 0.1 * 1_900 = 290 and 100 + 0.9 * 1_900 = 1_810.
+    #[test]
+    fn resolve_fitting_window_reads_percentiles_of_the_storage_range() {
+        let layout = windowed(FittingWindow {
+            volume_min_percentile: Some(0.1),
+            volume_max_percentile: Some(0.9),
+            ..UNSET_WINDOW
+        });
+
+        assert_eq!(
+            FphaColumnLayout::resolve_fitting_window(Some(&layout), 100.0, 2_000.0),
+            Ok((290.0, 1_810.0))
+        );
+    }
+
+    /// derived: the maximum is 100 + 0.9 * 1_900 = 1_810.
+    #[test]
+    fn resolve_fitting_window_mixes_an_absolute_min_with_a_percentile_max() {
+        let layout = windowed(FittingWindow {
+            volume_min_hm3: Some(200.0),
+            volume_max_percentile: Some(0.9),
+            ..UNSET_WINDOW
+        });
+
+        assert_eq!(
+            FphaColumnLayout::resolve_fitting_window(Some(&layout), 100.0, 2_000.0),
+            Ok((200.0, 1_810.0))
+        );
+    }
+
+    #[test]
+    fn resolve_fitting_window_clamps_bounds_to_the_storage_range() {
+        let below = windowed(FittingWindow {
+            volume_min_hm3: Some(-500.0),
+            volume_max_hm3: Some(20_000.0),
+            ..UNSET_WINDOW
+        });
+        let above = windowed(FittingWindow {
+            volume_min_hm3: Some(5_000.0),
+            volume_max_hm3: Some(50_000.0),
+            ..UNSET_WINDOW
+        });
+
+        assert_eq!(
+            FphaColumnLayout::resolve_fitting_window(Some(&below), 1_000.0, 30_000.0),
+            Ok((1_000.0, 20_000.0))
+        );
+        assert_eq!(
+            FphaColumnLayout::resolve_fitting_window(Some(&above), 1_000.0, 30_000.0),
+            Ok((5_000.0, 30_000.0))
+        );
+    }
+
+    #[test]
+    fn resolve_fitting_window_prefers_the_absolute_bound_over_a_percentile() {
+        let layout = windowed(FittingWindow {
+            volume_min_hm3: Some(5_000.0),
+            volume_min_percentile: Some(0.9),
+            ..UNSET_WINDOW
+        });
+
+        let (v_min, _) =
+            FphaColumnLayout::resolve_fitting_window(Some(&layout), 1_000.0, 30_000.0).unwrap();
+
+        assert_eq!(v_min, 5_000.0);
+    }
+
+    #[test]
+    fn resolve_fitting_window_refuses_an_inverted_window() {
+        let layout = windowed(FittingWindow {
+            volume_min_hm3: Some(1_500.0),
+            volume_max_hm3: Some(1_000.0),
+            ..UNSET_WINDOW
+        });
+
+        assert_eq!(
+            FphaColumnLayout::resolve_fitting_window(Some(&layout), 0.0, 34_116.0),
+            Err(InvertedStorageRange {
+                v_min_hm3: 1_500.0,
+                v_max_hm3: 1_000.0,
+            })
+        );
+    }
+
+    #[test]
+    fn resolve_fitting_window_refuses_an_inverted_or_nan_storage_range() {
+        assert_eq!(
+            FphaColumnLayout::resolve_fitting_window(None, 2_000.0, 1_000.0),
+            Err(InvertedStorageRange {
+                v_min_hm3: 2_000.0,
+                v_max_hm3: 1_000.0,
+            })
+        );
+
+        let err =
+            FphaColumnLayout::resolve_fitting_window(Some(&layout("computed")), f64::NAN, 1_000.0)
+                .unwrap_err();
+        assert!(err.v_min_hm3.is_nan());
+        assert_eq!(err.v_max_hm3, 1_000.0);
+    }
+
+    #[test]
+    fn resolve_spillage_fit_max_prefers_the_input_then_twice_the_mean_then_twice_the_turbine_limit()
+    {
+        let with_input = FphaColumnLayout {
+            spillage_fit_max_m3s: Some(42_000.0),
+            ..layout("computed")
+        };
+        let without_input = layout("computed");
+        let resolve = FphaColumnLayout::resolve_spillage_fit_max_m3s;
+
+        assert_eq!(resolve(Some(&with_input), 1_500.0, 3_000.0), 42_000.0);
+        assert_eq!(resolve(Some(&with_input), 0.0, 3_000.0), 42_000.0);
+        assert_eq!(resolve(Some(&without_input), 1_500.0, 3_000.0), 3_000.0);
+        assert_eq!(resolve(Some(&without_input), 0.0, 3_000.0), 6_000.0);
+        assert_eq!(resolve(Some(&without_input), -1.0, 2_000.0), 4_000.0);
+        assert_eq!(resolve(None, 1_500.0, 3_000.0), 3_000.0);
     }
 }

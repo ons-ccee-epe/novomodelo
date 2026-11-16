@@ -71,7 +71,7 @@ pub use entities::{
     AnticipatedConfig, Bus, ContractType, DeficitSegment, DiversionChannel, EfficiencyModel,
     EnergyContract, FillingConfig, HydraulicLossesModel, Hydro, HydroGenerationModel,
     HydroPenalties, HydroUnitGroup, Line, NonControllableSource, PumpingStation, TailraceModel,
-    TailracePoint, Thermal,
+    TailracePoint, Thermal, has_turbine_capacity,
 };
 pub use entity_id::EntityId;
 pub use error::ValidationError;
@@ -103,7 +103,7 @@ pub use model::scenario::{
     CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile,
     CorrelationScheduleEntry, ExternalLoadRow, ExternalNcsRow, ExternalScenarioRow,
     HistoricalYears, InflowHistoryRow, InflowModel, LoadModel, NcsModel, SamplingScheme,
-    ScenarioSource,
+    ScenarioSource, long_term_mean_inflow_by_hydro,
 };
 pub use model::temporal::{
     Block, BlockMode, CalendarMonth, Node, NoiseMethod, PolicyGraphType, ScenarioSourceConfig,
