@@ -21,10 +21,7 @@ use std::path::Path;
 
 use crate::LoadError;
 use crate::StageIdResolver;
-use crate::parquet_helpers::{
-    extract_required_float64, extract_required_int32, extract_required_uint32,
-    open_record_batch_reader,
-};
+use crate::parquet_helpers::{ParquetColumns, open_parquet_input};
 
 /// A single row from `scenarios/noise_openings.parquet`.
 ///
@@ -56,6 +53,11 @@ pub struct NoiseOpeningRow {
     pub value: f64,
 }
 
+static NOISE_OPENINGS_COLUMNS: ParquetColumns = ParquetColumns {
+    known: &["stage_id", "opening_index", "entity_index", "value"],
+    retired: &[],
+};
+
 /// Parse `scenarios/noise_openings.parquet` and return rows sorted by
 /// `(stage_id, opening_index, entity_index)` ascending. Cross-dimensional
 /// validation is deferred to [`validate_noise_openings`].
@@ -67,6 +69,7 @@ pub struct NoiseOpeningRow {
 /// | File not found or permission denied           | [`LoadError::IoError`]     |
 /// | Malformed Parquet (corrupt header, etc.)      | [`LoadError::ParseError`]  |
 /// | Required column missing or wrong type         | [`LoadError::SchemaError`] |
+/// | Unknown or retired column                     | [`LoadError::SchemaError`] |
 ///
 /// # Examples
 ///
@@ -79,17 +82,15 @@ pub struct NoiseOpeningRow {
 /// println!("loaded {} noise opening rows", rows.len());
 /// ```
 pub fn parse_noise_openings(path: &Path) -> Result<Vec<NoiseOpeningRow>, LoadError> {
-    let reader = open_record_batch_reader(path)?;
-
     let mut rows: Vec<NoiseOpeningRow> = Vec::new();
 
-    for batch_result in reader {
-        let batch = batch_result.map_err(|e| LoadError::parse(path, e.to_string()))?;
+    for batch in open_parquet_input(path, &NOISE_OPENINGS_COLUMNS)? {
+        let batch = batch?;
 
-        let stage_id_col = extract_required_int32(&batch, "stage_id", path)?;
-        let opening_index_col = extract_required_uint32(&batch, "opening_index", path)?;
-        let entity_index_col = extract_required_uint32(&batch, "entity_index", path)?;
-        let value_col = extract_required_float64(&batch, "value", path)?;
+        let stage_id_col = batch.required_int32("stage_id")?;
+        let opening_index_col = batch.required_uint32("opening_index")?;
+        let entity_index_col = batch.required_uint32("entity_index")?;
+        let value_col = batch.required_float64("value")?;
 
         let n = batch.num_rows();
         rows.reserve(n);

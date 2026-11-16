@@ -47,16 +47,18 @@ use chrono::NaiveDate;
 use novomodelo_core::EntityId;
 
 use crate::LoadError;
-use crate::parquet_helpers::{
-    extract_required_date32, extract_required_float64, extract_required_int32,
-    open_record_batch_reader,
-};
+use crate::parquet_helpers::{ParquetColumns, open_parquet_input};
 use crate::windowed_history::{WindowedRecord, validate_windowed_records};
 
 pub use novomodelo_core::scenario::InflowHistoryRow;
 
 const LEGACY_LAYOUT_MESSAGE: &str = "scenarios/inflow_history.parquet uses the legacy \
     point-dated layout; re-emit windowed columns \"start_date\"/\"end_date\" in place of \"date\"";
+
+static INFLOW_HISTORY_COLUMNS: ParquetColumns = ParquetColumns {
+    known: &["hydro_id", "start_date", "end_date", "value_m3s"],
+    retired: &[("date", LEGACY_LAYOUT_MESSAGE)],
+};
 
 /// Parse `scenarios/inflow_history.parquet` and return a sorted row table.
 ///
@@ -68,6 +70,7 @@ const LEGACY_LAYOUT_MESSAGE: &str = "scenarios/inflow_history.parquet uses the l
 /// | Malformed Parquet (corrupt header, etc.)            | [`LoadError::ParseError`]  |
 /// | `start_date`/`end_date` missing, or `date` present   | [`LoadError::SchemaError`] |
 /// | Required column missing or wrong type                | [`LoadError::SchemaError`] |
+/// | Unknown or retired column                            | [`LoadError::SchemaError`] |
 /// | `end_date` is not strictly after `start_date`         | [`LoadError::SchemaError`] |
 /// | `value_m3s` is NaN or infinite                        | [`LoadError::SchemaError`] |
 /// | Two windows for the same `hydro_id` overlap           | [`LoadError::SchemaError`] |
@@ -83,27 +86,22 @@ const LEGACY_LAYOUT_MESSAGE: &str = "scenarios/inflow_history.parquet uses the l
 /// println!("loaded {} inflow history rows", rows.len());
 /// ```
 pub fn parse_inflow_history(path: &Path) -> Result<Vec<InflowHistoryRow>, LoadError> {
-    let reader = open_record_batch_reader(path)?;
-
     let mut rows: Vec<InflowHistoryRow> = Vec::new();
 
-    for batch_result in reader {
-        let batch = batch_result.map_err(|e| LoadError::parse(path, e.to_string()))?;
+    for batch in open_parquet_input(path, &INFLOW_HISTORY_COLUMNS)? {
+        let batch = batch?;
 
-        if batch.column_by_name("date").is_some() {
-            return Err(legacy_layout_error(path, "date"));
-        }
-        if batch.column_by_name("start_date").is_none() {
+        if !batch.has_column("start_date") {
             return Err(legacy_layout_error(path, "start_date"));
         }
-        if batch.column_by_name("end_date").is_none() {
+        if !batch.has_column("end_date") {
             return Err(legacy_layout_error(path, "end_date"));
         }
 
-        let hydro_id_col = extract_required_int32(&batch, "hydro_id", path)?;
-        let start_date_col = extract_required_date32(&batch, "start_date", path)?;
-        let end_date_col = extract_required_date32(&batch, "end_date", path)?;
-        let value_col = extract_required_float64(&batch, "value_m3s", path)?;
+        let hydro_id_col = batch.required_int32("hydro_id")?;
+        let start_date_col = batch.required_date32("start_date")?;
+        let end_date_col = batch.required_date32("end_date")?;
+        let value_col = batch.required_float64("value_m3s")?;
 
         let n = batch.num_rows();
         let base_idx = rows.len();

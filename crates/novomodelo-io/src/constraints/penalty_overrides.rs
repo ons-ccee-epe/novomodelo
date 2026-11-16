@@ -82,9 +82,7 @@ use novomodelo_core::EntityId;
 use std::path::Path;
 
 use crate::LoadError;
-use crate::parquet_helpers::{
-    extract_optional_float64, extract_required_int32, open_record_batch_reader,
-};
+use crate::parquet_helpers::{ParquetColumns, open_parquet_input};
 
 fn optional_value(col: Option<&Float64Array>, row: usize) -> Option<f64> {
     col.filter(|c| !c.is_null(row)).map(|c| c.value(row))
@@ -323,6 +321,11 @@ fn validate_optional_bounded(
 
 // ── Parsers ───────────────────────────────────────────────────────────────────
 
+static PENALTY_OVERRIDES_BUS_COLUMNS: ParquetColumns = ParquetColumns {
+    known: &["bus_id", "stage_id", "excess_cost"],
+    retired: &[],
+};
+
 /// Parse `constraints/penalty_overrides_bus.parquet`, returning rows sorted by
 /// `(bus_id, stage_id)` ascending.
 ///
@@ -336,6 +339,7 @@ fn validate_optional_bounded(
 /// | File not found or permission denied                  | [`LoadError::IoError`]     |
 /// | Malformed Parquet (corrupt header, etc.)             | [`LoadError::ParseError`]  |
 /// | Required column missing or wrong type                | [`LoadError::SchemaError`] |
+/// | Unknown or retired column                            | [`LoadError::SchemaError`] |
 /// | Non-finite value in any present penalty column       | [`LoadError::SchemaError`] |
 /// | Value <= 0.0 in any present penalty column           | [`LoadError::SchemaError`] |
 ///
@@ -350,17 +354,15 @@ fn validate_optional_bounded(
 /// println!("loaded {} bus penalty override rows", rows.len());
 /// ```
 pub fn parse_penalty_overrides_bus(path: &Path) -> Result<Vec<BusPenaltyOverrideRow>, LoadError> {
-    let reader = open_record_batch_reader(path)?;
-
     let mut rows: Vec<BusPenaltyOverrideRow> = Vec::new();
 
-    for batch_result in reader {
-        let batch = batch_result.map_err(|e| LoadError::parse(path, e.to_string()))?;
+    for batch in open_parquet_input(path, &PENALTY_OVERRIDES_BUS_COLUMNS)? {
+        let batch = batch?;
 
-        let bus_id_col = extract_required_int32(&batch, "bus_id", path)?;
-        let stage_id_col = extract_required_int32(&batch, "stage_id", path)?;
+        let bus_id_col = batch.required_int32("bus_id")?;
+        let stage_id_col = batch.required_int32("stage_id")?;
 
-        let excess_cost_col = extract_optional_float64(&batch, "excess_cost", path)?;
+        let excess_cost_col = batch.optional_float64("excess_cost")?;
 
         let n = batch.num_rows();
         let base_idx = rows.len();
@@ -400,6 +402,11 @@ pub fn parse_penalty_overrides_bus(path: &Path) -> Result<Vec<BusPenaltyOverride
     Ok(rows)
 }
 
+static PENALTY_OVERRIDES_LINE_COLUMNS: ParquetColumns = ParquetColumns {
+    known: &["line_id", "stage_id", "exchange_cost"],
+    retired: &[],
+};
+
 /// Parse `constraints/penalty_overrides_line.parquet`, returning rows sorted by
 /// `(line_id, stage_id)` ascending.
 ///
@@ -413,6 +420,7 @@ pub fn parse_penalty_overrides_bus(path: &Path) -> Result<Vec<BusPenaltyOverride
 /// | File not found or permission denied                  | [`LoadError::IoError`]     |
 /// | Malformed Parquet (corrupt header, etc.)             | [`LoadError::ParseError`]  |
 /// | Required column missing or wrong type                | [`LoadError::SchemaError`] |
+/// | Unknown or retired column                            | [`LoadError::SchemaError`] |
 /// | Non-finite value in any present penalty column       | [`LoadError::SchemaError`] |
 /// | Value <= 0.0 in any present penalty column           | [`LoadError::SchemaError`] |
 ///
@@ -427,17 +435,15 @@ pub fn parse_penalty_overrides_bus(path: &Path) -> Result<Vec<BusPenaltyOverride
 /// println!("loaded {} line penalty override rows", rows.len());
 /// ```
 pub fn parse_penalty_overrides_line(path: &Path) -> Result<Vec<LinePenaltyOverrideRow>, LoadError> {
-    let reader = open_record_batch_reader(path)?;
-
     let mut rows: Vec<LinePenaltyOverrideRow> = Vec::new();
 
-    for batch_result in reader {
-        let batch = batch_result.map_err(|e| LoadError::parse(path, e.to_string()))?;
+    for batch in open_parquet_input(path, &PENALTY_OVERRIDES_LINE_COLUMNS)? {
+        let batch = batch?;
 
-        let line_id_col = extract_required_int32(&batch, "line_id", path)?;
-        let stage_id_col = extract_required_int32(&batch, "stage_id", path)?;
+        let line_id_col = batch.required_int32("line_id")?;
+        let stage_id_col = batch.required_int32("stage_id")?;
 
-        let exchange_cost_col = extract_optional_float64(&batch, "exchange_cost", path)?;
+        let exchange_cost_col = batch.optional_float64("exchange_cost")?;
 
         let n = batch.num_rows();
         let base_idx = rows.len();
@@ -477,6 +483,31 @@ pub fn parse_penalty_overrides_line(path: &Path) -> Result<Vec<LinePenaltyOverri
     Ok(rows)
 }
 
+static PENALTY_OVERRIDES_HYDRO_COLUMNS: ParquetColumns = ParquetColumns {
+    known: &[
+        "hydro_id",
+        "stage_id",
+        "spillage_cost",
+        "turbined_cost",
+        "diversion_cost",
+        "storage_violation_below_cost",
+        "filling_target_violation_cost",
+        "turbined_violation_below_cost",
+        "outflow_violation_below_cost",
+        "outflow_violation_above_cost",
+        "generation_violation_below_cost",
+        "fpha_violation_cost",
+        "evaporation_violation_cost",
+        "water_withdrawal_violation_cost",
+        "water_withdrawal_violation_pos_cost",
+        "water_withdrawal_violation_neg_cost",
+        "evaporation_violation_pos_cost",
+        "evaporation_violation_neg_cost",
+        "inflow_nonnegativity_cost",
+    ],
+    retired: &[],
+};
+
 /// Parse `constraints/penalty_overrides_hydro.parquet`, returning rows sorted by
 /// `(hydro_id, stage_id)` ascending.
 ///
@@ -491,6 +522,7 @@ pub fn parse_penalty_overrides_line(path: &Path) -> Result<Vec<LinePenaltyOverri
 /// | File not found or permission denied                  | [`LoadError::IoError`]     |
 /// | Malformed Parquet (corrupt header, etc.)             | [`LoadError::ParseError`]  |
 /// | Required column missing or wrong type                | [`LoadError::SchemaError`] |
+/// | Unknown or retired column                            | [`LoadError::SchemaError`] |
 /// | Non-finite value in any present penalty column       | [`LoadError::SchemaError`] |
 /// | Value <= 0.0 in any present penalty column           | [`LoadError::SchemaError`] |
 ///
@@ -510,47 +542,43 @@ pub fn parse_penalty_overrides_line(path: &Path) -> Result<Vec<LinePenaltyOverri
 pub fn parse_penalty_overrides_hydro(
     path: &Path,
 ) -> Result<Vec<HydroPenaltyOverrideRow>, LoadError> {
-    let reader = open_record_batch_reader(path)?;
-
     let mut rows: Vec<HydroPenaltyOverrideRow> = Vec::new();
 
-    for batch_result in reader {
-        let batch = batch_result.map_err(|e| LoadError::parse(path, e.to_string()))?;
+    for batch in open_parquet_input(path, &PENALTY_OVERRIDES_HYDRO_COLUMNS)? {
+        let batch = batch?;
 
-        let hydro_id_col = extract_required_int32(&batch, "hydro_id", path)?;
-        let stage_id_col = extract_required_int32(&batch, "stage_id", path)?;
+        let hydro_id_col = batch.required_int32("hydro_id")?;
+        let stage_id_col = batch.required_int32("stage_id")?;
 
-        let spillage_cost_col = extract_optional_float64(&batch, "spillage_cost", path)?;
-        let turbined_cost_col = extract_optional_float64(&batch, "turbined_cost", path)?;
-        let diversion_cost_col = extract_optional_float64(&batch, "diversion_cost", path)?;
+        let spillage_cost_col = batch.optional_float64("spillage_cost")?;
+        let turbined_cost_col = batch.optional_float64("turbined_cost")?;
+        let diversion_cost_col = batch.optional_float64("diversion_cost")?;
         let storage_violation_below_cost_col =
-            extract_optional_float64(&batch, "storage_violation_below_cost", path)?;
+            batch.optional_float64("storage_violation_below_cost")?;
         let filling_target_violation_cost_col =
-            extract_optional_float64(&batch, "filling_target_violation_cost", path)?;
+            batch.optional_float64("filling_target_violation_cost")?;
         let turbined_violation_below_cost_col =
-            extract_optional_float64(&batch, "turbined_violation_below_cost", path)?;
+            batch.optional_float64("turbined_violation_below_cost")?;
         let outflow_violation_below_cost_col =
-            extract_optional_float64(&batch, "outflow_violation_below_cost", path)?;
+            batch.optional_float64("outflow_violation_below_cost")?;
         let outflow_violation_above_cost_col =
-            extract_optional_float64(&batch, "outflow_violation_above_cost", path)?;
+            batch.optional_float64("outflow_violation_above_cost")?;
         let generation_violation_below_cost_col =
-            extract_optional_float64(&batch, "generation_violation_below_cost", path)?;
-        let fpha_violation_cost_col =
-            extract_optional_float64(&batch, "fpha_violation_cost", path)?;
+            batch.optional_float64("generation_violation_below_cost")?;
+        let fpha_violation_cost_col = batch.optional_float64("fpha_violation_cost")?;
         let evaporation_violation_cost_col =
-            extract_optional_float64(&batch, "evaporation_violation_cost", path)?;
+            batch.optional_float64("evaporation_violation_cost")?;
         let water_withdrawal_violation_cost_col =
-            extract_optional_float64(&batch, "water_withdrawal_violation_cost", path)?;
+            batch.optional_float64("water_withdrawal_violation_cost")?;
         let water_withdrawal_violation_pos_cost_col =
-            extract_optional_float64(&batch, "water_withdrawal_violation_pos_cost", path)?;
+            batch.optional_float64("water_withdrawal_violation_pos_cost")?;
         let water_withdrawal_violation_neg_cost_col =
-            extract_optional_float64(&batch, "water_withdrawal_violation_neg_cost", path)?;
+            batch.optional_float64("water_withdrawal_violation_neg_cost")?;
         let evaporation_violation_pos_cost_col =
-            extract_optional_float64(&batch, "evaporation_violation_pos_cost", path)?;
+            batch.optional_float64("evaporation_violation_pos_cost")?;
         let evaporation_violation_neg_cost_col =
-            extract_optional_float64(&batch, "evaporation_violation_neg_cost", path)?;
-        let inflow_nonnegativity_cost_col =
-            extract_optional_float64(&batch, "inflow_nonnegativity_cost", path)?;
+            batch.optional_float64("evaporation_violation_neg_cost")?;
+        let inflow_nonnegativity_cost_col = batch.optional_float64("inflow_nonnegativity_cost")?;
 
         let n = batch.num_rows();
         let base_idx = rows.len();
@@ -742,6 +770,11 @@ pub fn parse_penalty_overrides_hydro(
     Ok(rows)
 }
 
+static PENALTY_OVERRIDES_NCS_COLUMNS: ParquetColumns = ParquetColumns {
+    known: &["ncs_id", "stage_id", "curtailment_cost"],
+    retired: &[],
+};
+
 /// Parse `constraints/penalty_overrides_ncs.parquet`, returning rows sorted by
 /// `(source_id, stage_id)` ascending.
 ///
@@ -755,6 +788,7 @@ pub fn parse_penalty_overrides_hydro(
 /// | File not found or permission denied                  | [`LoadError::IoError`]     |
 /// | Malformed Parquet (corrupt header, etc.)             | [`LoadError::ParseError`]  |
 /// | Required column missing or wrong type                | [`LoadError::SchemaError`] |
+/// | Unknown or retired column                            | [`LoadError::SchemaError`] |
 /// | Non-finite value in any present penalty column       | [`LoadError::SchemaError`] |
 /// | Value <= 0.0 in any present penalty column           | [`LoadError::SchemaError`] |
 ///
@@ -769,17 +803,15 @@ pub fn parse_penalty_overrides_hydro(
 /// println!("loaded {} NCS penalty override rows", rows.len());
 /// ```
 pub fn parse_penalty_overrides_ncs(path: &Path) -> Result<Vec<NcsPenaltyOverrideRow>, LoadError> {
-    let reader = open_record_batch_reader(path)?;
-
     let mut rows: Vec<NcsPenaltyOverrideRow> = Vec::new();
 
-    for batch_result in reader {
-        let batch = batch_result.map_err(|e| LoadError::parse(path, e.to_string()))?;
+    for batch in open_parquet_input(path, &PENALTY_OVERRIDES_NCS_COLUMNS)? {
+        let batch = batch?;
 
-        let source_id_col = extract_required_int32(&batch, "ncs_id", path)?;
-        let stage_id_col = extract_required_int32(&batch, "stage_id", path)?;
+        let source_id_col = batch.required_int32("ncs_id")?;
+        let stage_id_col = batch.required_int32("stage_id")?;
 
-        let curtailment_cost_col = extract_optional_float64(&batch, "curtailment_cost", path)?;
+        let curtailment_cost_col = batch.optional_float64("curtailment_cost")?;
 
         let n = batch.num_rows();
         let base_idx = rows.len();

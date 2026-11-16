@@ -242,7 +242,6 @@ fn write_energy_productivity_override(
             DataType::Float64,
             true,
         ),
-        Field::new("reference_volume_hm3", DataType::Float64, true),
         Field::new("reference_outflow_m3s", DataType::Float64, true),
         Field::new(
             "specific_productivity_mw_per_m3s_per_m",
@@ -262,7 +261,6 @@ fn write_energy_productivity_override(
             Arc::new(Int32Array::from(vec![hydro_id])),
             Arc::new(Int32Array::from(vec![None::<i32>])),
             Arc::new(Float64Array::from(vec![equivalent_productivity_mw_per_m3s])),
-            Arc::new(Float64Array::from(vec![None::<f64>])),
             Arc::new(Float64Array::from(vec![None::<f64>])),
             Arc::new(Float64Array::from(vec![None::<f64>])),
             Arc::new(Float64Array::from(vec![None::<f64>])),

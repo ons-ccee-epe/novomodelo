@@ -34,9 +34,7 @@ use novomodelo_core::EntityId;
 use std::path::Path;
 
 use crate::LoadError;
-use crate::parquet_helpers::{
-    extract_required_float64, extract_required_int32, open_record_batch_reader,
-};
+use crate::parquet_helpers::{ParquetColumns, open_parquet_input};
 
 /// One point on the Volume-Height-Area (VHA) curve for a hydro plant; a complete
 /// curve is multiple same-`hydro_id` rows sorted by ascending `volume_hm3`. All
@@ -69,6 +67,11 @@ pub struct HydroGeometryRow {
     pub area_km2: f64,
 }
 
+static HYDRO_GEOMETRY_COLUMNS: ParquetColumns = ParquetColumns {
+    known: &["hydro_id", "volume_hm3", "height_m", "area_km2"],
+    retired: &[],
+};
+
 /// Parse `system/hydro_geometry.parquet` into a VHA curve table sorted by
 /// `(hydro_id, volume_hm3)` ascending.
 ///
@@ -79,6 +82,7 @@ pub struct HydroGeometryRow {
 /// | File not found or permission denied             | [`LoadError::IoError`]     |
 /// | Malformed Parquet (corrupt header, etc.)        | [`LoadError::ParseError`]  |
 /// | Required column missing or wrong type           | [`LoadError::SchemaError`] |
+/// | Unknown or retired column                       | [`LoadError::SchemaError`] |
 /// | Negative or non-finite `volume_hm3` / `height_m` / `area_km2` | [`LoadError::SchemaError`] |
 ///
 /// # Examples
@@ -92,17 +96,15 @@ pub struct HydroGeometryRow {
 /// println!("loaded {} VHA curve points", rows.len());
 /// ```
 pub fn parse_hydro_geometry(path: &Path) -> Result<Vec<HydroGeometryRow>, LoadError> {
-    let reader = open_record_batch_reader(path)?;
-
     let mut rows = Vec::new();
 
-    for batch_result in reader {
-        let batch = batch_result.map_err(|e| LoadError::parse(path, e.to_string()))?;
+    for batch in open_parquet_input(path, &HYDRO_GEOMETRY_COLUMNS)? {
+        let batch = batch?;
 
-        let hydro_id_col = extract_required_int32(&batch, "hydro_id", path)?;
-        let volume_col = extract_required_float64(&batch, "volume_hm3", path)?;
-        let height_col = extract_required_float64(&batch, "height_m", path)?;
-        let area_col = extract_required_float64(&batch, "area_km2", path)?;
+        let hydro_id_col = batch.required_int32("hydro_id")?;
+        let volume_col = batch.required_float64("volume_hm3")?;
+        let height_col = batch.required_float64("height_m")?;
+        let area_col = batch.required_float64("area_km2")?;
 
         let n = batch.num_rows();
         let base_idx = rows.len();

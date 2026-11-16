@@ -128,7 +128,7 @@ declare_rules! {
         "A case input file cannot be parsed (invalid JSON syntax or an unreadable Parquet header)";
     SCHEMA_FILE_NONCONFORMING = "schema.3",
         Schema, SchemaViolation, Error,
-        "A case input file does not conform to its schema (a missing field, a wrong type or an out-of-range value)";
+        "A case input file does not conform to its schema (a missing field, an unknown Parquet column, a wrong type or an out-of-range value)";
     REFERENTIAL_UNDECLARED_ENTITY = "referential.1",
         Referential, InvalidReference, Error,
         "An entity field references an entity id that no registry declares";

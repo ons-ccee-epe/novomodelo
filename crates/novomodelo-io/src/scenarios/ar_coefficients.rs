@@ -15,8 +15,8 @@
 //!
 //! The model's innovation scale is not part of the schema: it is derived at
 //! load from the AR coefficients (see
-//! [`crate::scenarios::populate_derived_residual_ratios`]). Columns beyond the
-//! schema are ignored.
+//! [`crate::scenarios::populate_derived_residual_ratios`]). Any other column,
+//! a stored `residual_std_ratio` among them, is refused.
 //!
 //! ## Standardization basis (external fits)
 //!
@@ -49,9 +49,7 @@ use novomodelo_core::EntityId;
 use std::path::Path;
 
 use crate::LoadError;
-use crate::parquet_helpers::{
-    extract_required_float64, extract_required_int32, open_record_batch_reader,
-};
+use crate::parquet_helpers::{ParquetColumns, open_parquet_input};
 
 /// A single row from `scenarios/inflow_ar_coefficients.parquet`.
 ///
@@ -87,6 +85,14 @@ pub struct InflowArCoefficientRow {
     pub coefficient: f64,
 }
 
+static INFLOW_AR_COEFFICIENTS_COLUMNS: ParquetColumns = ParquetColumns {
+    known: &["hydro_id", "stage_id", "lag", "coefficient"],
+    retired: &[(
+        "residual_std_ratio",
+        "it is derived from the AR coefficients at load; remove the column",
+    )],
+};
+
 /// Parse `scenarios/inflow_ar_coefficients.parquet` and return a sorted row table.
 ///
 /// # Errors
@@ -96,6 +102,7 @@ pub struct InflowArCoefficientRow {
 /// | File not found or permission denied           | [`LoadError::IoError`]     |
 /// | Malformed Parquet (corrupt header, etc.)      | [`LoadError::ParseError`]  |
 /// | Required column missing or wrong type         | [`LoadError::SchemaError`] |
+/// | Unknown or retired column                     | [`LoadError::SchemaError`] |
 /// | `lag` < 1                                     | [`LoadError::SchemaError`] |
 ///
 /// # Examples
@@ -109,17 +116,15 @@ pub struct InflowArCoefficientRow {
 /// println!("loaded {} AR coefficient rows", rows.len());
 /// ```
 pub fn parse_inflow_ar_coefficients(path: &Path) -> Result<Vec<InflowArCoefficientRow>, LoadError> {
-    let reader = open_record_batch_reader(path)?;
-
     let mut rows: Vec<InflowArCoefficientRow> = Vec::new();
 
-    for batch_result in reader {
-        let batch = batch_result.map_err(|e| LoadError::parse(path, e.to_string()))?;
+    for batch in open_parquet_input(path, &INFLOW_AR_COEFFICIENTS_COLUMNS)? {
+        let batch = batch?;
 
-        let hydro_id_col = extract_required_int32(&batch, "hydro_id", path)?;
-        let stage_id_col = extract_required_int32(&batch, "stage_id", path)?;
-        let lag_col = extract_required_int32(&batch, "lag", path)?;
-        let coefficient_col = extract_required_float64(&batch, "coefficient", path)?;
+        let hydro_id_col = batch.required_int32("hydro_id")?;
+        let stage_id_col = batch.required_int32("stage_id")?;
+        let lag_col = batch.required_int32("lag")?;
+        let coefficient_col = batch.required_float64("coefficient")?;
 
         let n = batch.num_rows();
         let base_idx = rows.len();
@@ -186,13 +191,13 @@ mod tests {
         ]))
     }
 
-    fn schema_with_extra_column() -> Arc<Schema> {
+    fn schema_with_extra_column(extra: &str) -> Arc<Schema> {
         Arc::new(Schema::new(vec![
             Field::new("hydro_id", DataType::Int32, false),
             Field::new("stage_id", DataType::Int32, false),
             Field::new("lag", DataType::Int32, false),
             Field::new("coefficient", DataType::Float64, false),
-            Field::new("extra", DataType::Float64, false),
+            Field::new(extra, DataType::Float64, false),
         ]))
     }
 
@@ -215,6 +220,7 @@ mod tests {
     }
 
     fn make_batch_with_extra(
+        extra: &str,
         hydro_ids: &[i32],
         stage_ids: &[i32],
         lags: &[i32],
@@ -222,7 +228,7 @@ mod tests {
         extras: &[f64],
     ) -> RecordBatch {
         RecordBatch::try_new(
-            schema_with_extra_column(),
+            schema_with_extra_column(extra),
             vec![
                 Arc::new(Int32Array::from(hydro_ids.to_vec())),
                 Arc::new(Int32Array::from(stage_ids.to_vec())),
@@ -337,9 +343,9 @@ mod tests {
         assert!((row.coefficient - 0.12345).abs() < 1e-10);
     }
 
-    #[test]
-    fn extra_columns_are_ignored() {
+    fn extra_column_refusal(extra: &str) -> (String, String) {
         let batch = make_batch_with_extra(
+            extra,
             &[1, 1, 2],
             &[0, 0, 0],
             &[1, 2, 1],
@@ -347,9 +353,31 @@ mod tests {
             &[0.85, 0.85, 0.9],
         );
         let tmp = write_parquet(&batch);
+        match parse_inflow_ar_coefficients(tmp.path()) {
+            Err(LoadError::SchemaError { field, message, .. }) => (field, message),
+            other => panic!("a file with column {extra} must be refused, got: {other:?}"),
+        }
+    }
 
-        let rows =
-            parse_inflow_ar_coefficients(tmp.path()).expect("a file with extra columns must parse");
-        assert_eq!(rows.len(), 3, "all rows must still parse");
+    #[test]
+    fn an_unknown_column_is_refused() {
+        let (field, message) = extra_column_refusal("extra");
+        assert_eq!(field, "extra");
+        assert_eq!(
+            message,
+            "unknown column \"extra\"; the columns this file may carry are hydro_id, \
+             stage_id, lag, coefficient"
+        );
+    }
+
+    #[test]
+    fn a_stored_residual_std_ratio_is_refused() {
+        let (field, message) = extra_column_refusal("residual_std_ratio");
+        assert_eq!(field, "residual_std_ratio");
+        assert_eq!(
+            message,
+            "column \"residual_std_ratio\" is no longer read; it is derived from the AR \
+             coefficients at load; remove the column"
+        );
     }
 }

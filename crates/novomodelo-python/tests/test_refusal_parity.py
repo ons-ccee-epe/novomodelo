@@ -153,6 +153,23 @@ def _stage_volume_constraint_with_a_block_bounds_row(case: pathlib.Path) -> None
     )
 
 
+def _misspelled_hydro_bounds_column(case: pathlib.Path) -> None:
+    schema = pa.schema(
+        [
+            pa.field("hydro_id", pa.int32(), nullable=False),
+            pa.field("stage_id", pa.int32(), nullable=False),
+            pa.field("max_turbined_m3", pa.float64()),
+        ]
+    )
+    table = pa.table(
+        {"hydro_id": [0], "stage_id": [0], "max_turbined_m3": [10.0]}, schema=schema
+    )
+    (case / "constraints").mkdir(exist_ok=True)
+    pq.write_table(
+        table, case / "constraints" / "hydro_bounds.parquet", compression="none"
+    )
+
+
 def _set_policy_path(case: pathlib.Path, policy_path: str) -> None:
     def edit(config: Any) -> None:
         config.setdefault("policy", {})["path"] = policy_path
@@ -616,6 +633,15 @@ ROWS = [
         outcome="BracketedRefusal",
         kind="BusinessRuleViolation",
         fragment="takes one row per stage with a null block_id",
+        error_class_name="ValidationError",
+    ),
+    _row(
+        name="input_parquet_with_a_misspelled_column",
+        base_case="1dtoy",
+        mutate=_misspelled_hydro_bounds_column,
+        outcome="BracketedRefusal",
+        kind="SchemaViolation",
+        fragment='unknown column "max_turbined_m3"; did you mean "max_turbined_m3s"?',
         error_class_name="ValidationError",
     ),
     _row(

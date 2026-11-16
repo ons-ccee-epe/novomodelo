@@ -45,10 +45,7 @@ use novomodelo_core::EntityId;
 use std::path::Path;
 
 use crate::LoadError;
-use crate::parquet_helpers::{
-    extract_optional_float64, extract_optional_int32, extract_required_float64,
-    extract_required_int32, open_record_batch_reader,
-};
+use crate::parquet_helpers::{ParquetColumns, open_parquet_input};
 
 /// A single row from `system/fpha_hyperplanes.parquet`.
 ///
@@ -102,6 +99,23 @@ pub struct FphaHyperplaneRow {
     pub valid_q_max_m3s: Option<f64>,
 }
 
+static FPHA_HYPERPLANES_COLUMNS: ParquetColumns = ParquetColumns {
+    known: &[
+        "hydro_id",
+        "plane_id",
+        "gamma_0",
+        "gamma_v",
+        "gamma_q",
+        "gamma_s",
+        "stage_id",
+        "kappa",
+        "valid_v_min_hm3",
+        "valid_v_max_hm3",
+        "valid_q_max_m3s",
+    ],
+    retired: &[],
+};
+
 /// Parse `system/fpha_hyperplanes.parquet` and return a sorted FPHA coefficient table.
 ///
 /// # Errors
@@ -111,6 +125,7 @@ pub struct FphaHyperplaneRow {
 /// | File not found or permission denied           | [`LoadError::IoError`]     |
 /// | Malformed Parquet (corrupt header, etc.)      | [`LoadError::ParseError`]  |
 /// | Required column missing or wrong type         | [`LoadError::SchemaError`] |
+/// | Unknown or retired column                     | [`LoadError::SchemaError`] |
 /// | Optional column present with wrong type       | [`LoadError::SchemaError`] |
 ///
 /// # Examples
@@ -125,25 +140,23 @@ pub struct FphaHyperplaneRow {
 /// ```
 #[allow(clippy::similar_names)]
 pub fn parse_fpha_hyperplanes(path: &Path) -> Result<Vec<FphaHyperplaneRow>, LoadError> {
-    let reader = open_record_batch_reader(path)?;
-
     let mut rows: Vec<FphaHyperplaneRow> = Vec::new();
 
-    for batch_result in reader {
-        let batch = batch_result.map_err(|e| LoadError::parse(path, e.to_string()))?;
+    for batch in open_parquet_input(path, &FPHA_HYPERPLANES_COLUMNS)? {
+        let batch = batch?;
 
-        let hydro_id_col = extract_required_int32(&batch, "hydro_id", path)?;
-        let plane_id_col = extract_required_int32(&batch, "plane_id", path)?;
-        let gamma_0_col = extract_required_float64(&batch, "gamma_0", path)?;
-        let gamma_v_col = extract_required_float64(&batch, "gamma_v", path)?;
-        let gamma_q_col = extract_required_float64(&batch, "gamma_q", path)?;
-        let gamma_s_col = extract_required_float64(&batch, "gamma_s", path)?;
+        let hydro_id_col = batch.required_int32("hydro_id")?;
+        let plane_id_col = batch.required_int32("plane_id")?;
+        let gamma_0_col = batch.required_float64("gamma_0")?;
+        let gamma_v_col = batch.required_float64("gamma_v")?;
+        let gamma_q_col = batch.required_float64("gamma_q")?;
+        let gamma_s_col = batch.required_float64("gamma_s")?;
 
-        let stage_id_col = extract_optional_int32(&batch, "stage_id", path)?;
-        let kappa_col = extract_optional_float64(&batch, "kappa", path)?;
-        let valid_v_min_col = extract_optional_float64(&batch, "valid_v_min_hm3", path)?;
-        let valid_v_max_col = extract_optional_float64(&batch, "valid_v_max_hm3", path)?;
-        let valid_q_max_col = extract_optional_float64(&batch, "valid_q_max_m3s", path)?;
+        let stage_id_col = batch.optional_int32("stage_id")?;
+        let kappa_col = batch.optional_float64("kappa")?;
+        let valid_v_min_col = batch.optional_float64("valid_v_min_hm3")?;
+        let valid_v_max_col = batch.optional_float64("valid_v_max_hm3")?;
+        let valid_q_max_col = batch.optional_float64("valid_q_max_m3s")?;
 
         let n = batch.num_rows();
         rows.reserve(n);

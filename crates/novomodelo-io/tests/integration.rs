@@ -331,7 +331,6 @@ fn test_inflow_history_wired_into_system() {
             Field::new("stage_id", DataType::Int32, false),
             Field::new("lag", DataType::Int32, false),
             Field::new("coefficient", DataType::Float64, false),
-            Field::new("residual_std_ratio", DataType::Float64, false),
         ]));
         let ar_batch = RecordBatch::try_new(
             Arc::clone(&ar_schema),
@@ -340,7 +339,6 @@ fn test_inflow_history_wired_into_system() {
                 Arc::new(Int32Array::from(vec![0, 1, 0, 1, 0, 1])),
                 Arc::new(Int32Array::from(vec![1, 1, 1, 1, 1, 1])),
                 Arc::new(Float64Array::from(vec![0.3, 0.25, 0.4, 0.35, 0.2, 0.15])),
-                Arc::new(Float64Array::from(vec![0.95, 0.92, 0.90, 0.88, 0.93, 0.91])),
             ],
         )
         .unwrap();

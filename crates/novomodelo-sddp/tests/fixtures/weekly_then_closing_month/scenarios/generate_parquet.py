@@ -9,8 +9,8 @@ Produces:
   - load_seasonal_stats.parquet
   - inflow_history.parquet
 
-Case: 1 bus (B0), 1 hydro (H0), 5 stages, PAR(1) with psi=0.5 and
-residual_std_ratio=0.85, OutOfSample noise. Calendar (2024):
+Case: 1 bus (B0), 1 hydro (H0), 5 stages, PAR(1) with psi=0.5, OutOfSample
+noise. Calendar (2024):
   - stages 0-2: weeks [01-01, 01-08), [01-08, 01-15), [01-15, 01-22), season_id=0
   - stage 3: [01-22, 02-01), the last week of January stretched to close the
     month (240 h), season_id=0
@@ -75,16 +75,15 @@ print(f"wrote {len(stats_table)} rows -> {stats_path}")
 # ── inflow_ar_coefficients.parquet ────────────────────────────────────────────
 #
 # Schema: hydro_id (INT32), stage_id (INT32), lag (INT32),
-#         coefficient (FLOAT64), residual_std_ratio (FLOAT64)
+#         coefficient (FLOAT64)
 #
-# PAR(1): 1 lag per stage, coefficient=0.5, residual_std_ratio=0.85.
+# PAR(1): 1 lag per stage, coefficient=0.5.
 # Covers all 5 study stages (0..4).
 
 ar_hydro_ids = [0, 0, 0, 0, 0]
 ar_stage_ids = [0, 1, 2, 3, 4]
 ar_lags = [1, 1, 1, 1, 1]
 ar_coefficients = [0.5, 0.5, 0.5, 0.5, 0.5]
-ar_residual_std_ratio = [0.85, 0.85, 0.85, 0.85, 0.85]
 
 ar_schema = pa.schema(
     [
@@ -92,7 +91,6 @@ ar_schema = pa.schema(
         pa.field("stage_id", pa.int32(), nullable=False),
         pa.field("lag", pa.int32(), nullable=False),
         pa.field("coefficient", pa.float64(), nullable=False),
-        pa.field("residual_std_ratio", pa.float64(), nullable=False),
     ]
 )
 
@@ -102,7 +100,6 @@ ar_table = pa.table(
         "stage_id": pa.array(ar_stage_ids, type=pa.int32()),
         "lag": pa.array(ar_lags, type=pa.int32()),
         "coefficient": pa.array(ar_coefficients, type=pa.float64()),
-        "residual_std_ratio": pa.array(ar_residual_std_ratio, type=pa.float64()),
     },
     schema=ar_schema,
 )
