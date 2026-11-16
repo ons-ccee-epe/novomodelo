@@ -904,15 +904,14 @@ mod tests {
     }
 
     fn filling_hydro(start_stage_id: i32, entry_stage_id: Option<i32>) -> Hydro {
-        Hydro {
-            min_storage_hm3: 100.0,
-            max_storage_hm3: 200.0,
-            filling: Some(FillingConfig {
-                start_stage_id,
-                filling_min_rate_m3s: 0.0,
-            }),
-            ..chain_hydro(1, None, entry_stage_id)
-        }
+        let mut hydro = chain_hydro(1, None, entry_stage_id);
+        hydro.min_storage_hm3 = 100.0;
+        hydro.max_storage_hm3 = 200.0;
+        hydro.filling = Some(FillingConfig {
+            start_stage_id,
+            filling_min_rate_m3s: 0.0,
+        });
+        hydro
     }
 
     fn stage_bounds(min_storage_hm3: f64, max_storage_hm3: f64) -> HydroStageBounds {
@@ -1095,11 +1094,9 @@ mod tests {
 
     #[test]
     fn reachable_storage_reads_the_seed_clamp_never_the_stage_box() {
-        let hydro = Hydro {
-            min_storage_hm3: 5.0,
-            max_storage_hm3: 200.0,
-            ..chain_hydro(1, None, None)
-        };
+        let mut hydro = chain_hydro(1, None, None);
+        hydro.min_storage_hm3 = 5.0;
+        hydro.max_storage_hm3 = 200.0;
         let bounds = stage_bounds(40.0, 200.0);
 
         let slot = evaporation_slot_reachable_storage(
@@ -1165,11 +1162,9 @@ mod tests {
 
     #[test]
     fn reachable_storage_reads_the_seed_clamp_after_a_prefilling_predecessor() {
-        let hydro = Hydro {
-            min_storage_hm3: 5.0,
-            max_storage_hm3: 200.0,
-            ..chain_hydro(1, None, Some(2))
-        };
+        let mut hydro = chain_hydro(1, None, Some(2));
+        hydro.min_storage_hm3 = 5.0;
+        hydro.max_storage_hm3 = 200.0;
         let previous = stage_bounds(40.0, 300.0);
         let bounds = stage_bounds(30.0, 180.0);
 

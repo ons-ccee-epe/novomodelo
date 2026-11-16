@@ -1071,81 +1071,23 @@ fn prefilling_pair_system(
         })
         .collect::<Vec<_>>();
 
-    let mut bounds = ResolvedBounds::new(
-        &BoundsCountsSpec {
-            n_hydros: HYDRO_IDS.len(),
-            n_thermals: 0,
-            n_lines: 0,
-            n_pumping: 0,
-            n_contracts: 0,
-            n_stages: N_STAGES,
-            k_max: 0,
+    novomodelo_sddp::test_support::build_with_resolved_tables(
+        || {
+            SystemBuilder::new()
+                .buses(vec![bus.clone()])
+                .hydros(hydros.clone())
+                .stages(stages.clone())
+                .inflow_models(inflow_models.clone())
+                .load_models(load_models.clone())
         },
-        &BoundsDefaults {
-            hydro: HydroStageBounds {
-                min_storage_hm3: 0.0,
-                max_storage_hm3: 200.0,
-                filling_min_rate_m3s: 0.0,
-                water_withdrawal_m3s: 0.0,
-            },
-            hydro_block: HydroBlockBounds {
-                max_turbined_m3s: 100.0,
-                max_generation_mw: 250.0,
-                ..Default::default()
-            },
-            thermal_block: ThermalBlockBounds {
-                min_generation_mw: 0.0,
-                max_generation_mw: 0.0,
-                cost_per_mwh: 0.0,
-            },
-            line_block: LineBlockBounds {
-                direct_mw: 0.0,
-                reverse_mw: 0.0,
-            },
-            pumping_block: PumpingBlockBounds {
-                min_flow_m3s: 0.0,
-                max_flow_m3s: 0.0,
-            },
-            contract_block: ContractBlockBounds {
-                min_mw: 0.0,
-                max_mw: 0.0,
-                price_per_mwh: 0.0,
-            },
+        0,
+        |_, bounds, _| {
+            for stage in 0..N_STAGES {
+                bounds.hydro_bounds_mut(0, stage).water_withdrawal_m3s = target_withdrawal_m3s;
+                bounds.hydro_bounds_mut(1, stage).water_withdrawal_m3s = prefilling_withdrawal_m3s;
+            }
         },
-    );
-    let mut penalties = ResolvedPenalties::new(
-        &PenaltiesCountsSpec {
-            n_hydros: HYDRO_IDS.len(),
-            n_buses: 1,
-            n_lines: 0,
-            n_ncs: 0,
-            n_stages: N_STAGES,
-        },
-        &PenaltiesDefaults {
-            hydro: target_penalties,
-            bus: BusStagePenalties { excess_cost: 0.0 },
-            line: LineStagePenalties { exchange_cost: 0.0 },
-            ncs: NcsStagePenalties {
-                curtailment_cost: 0.0,
-            },
-        },
-    );
-    for stage in 0..N_STAGES {
-        bounds.hydro_bounds_mut(0, stage).water_withdrawal_m3s = target_withdrawal_m3s;
-        bounds.hydro_bounds_mut(1, stage).water_withdrawal_m3s = prefilling_withdrawal_m3s;
-        *penalties.hydro_penalties_mut(1, stage) = prefilling_penalties;
-    }
-
-    SystemBuilder::new()
-        .buses(vec![bus])
-        .hydros(hydros)
-        .stages(stages)
-        .inflow_models(inflow_models)
-        .load_models(load_models)
-        .bounds(bounds)
-        .penalties(penalties)
-        .build()
-        .expect("prefilling_pair_system: valid")
+    )
 }
 
 /// derived: `neg ∈ [0, T]` and `pos ∈ [0, ∞)` for `T > 0`; `neg ∈ [0, 0]` and

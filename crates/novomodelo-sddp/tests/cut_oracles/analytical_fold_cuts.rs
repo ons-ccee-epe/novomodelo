@@ -18,12 +18,9 @@ use novomodelo_core::temporal::{
     SeasonMap, Stage, StageRiskConfig, StageStateConfig,
 };
 use novomodelo_core::{
-    BoundsCountsSpec, BoundsDefaults, BusStagePenalties, ConstraintExpression, ContractBlockBounds,
-    DeficitSegment, EntityId, GenericConstraint, HorizonGraph, Hydro, HydroBlockBounds,
-    HydroStageBounds, HydroStorage, InitialConditions, LineBlockBounds, LineStagePenalties,
-    LinearTerm, NcsStagePenalties, PenaltiesCountsSpec, PenaltiesDefaults, PenaltyBasis,
-    PumpingBlockBounds, ResolvedBounds, ResolvedGenericConstraintBounds, ResolvedPenalties,
-    SlackConfig, System, SystemBuilder, ThermalBlockBounds, TrainingEvent, VariableRef,
+    ConstraintExpression, DeficitSegment, EntityId, GenericConstraint, HorizonGraph, Hydro,
+    HydroStorage, InitialConditions, LinearTerm, PenaltyBasis, ResolvedGenericConstraintBounds,
+    SlackConfig, System, SystemBuilder, TrainingEvent, VariableRef,
 };
 use novomodelo_io::Config;
 use novomodelo_io::config::{
@@ -46,8 +43,8 @@ use novomodelo_sddp::test_support::bound_recording::{
 use novomodelo_sddp::test_support::decks::committed_decks;
 use novomodelo_sddp::test_support::template_structure::state_lag_dims;
 use novomodelo_sddp::test_support::{
-    ProbeCut, ProbeCuts, ProbeOpening, empty_row_batch, inflow_slack_bounds_for_probe,
-    opening_cut_for_probe, oracle_initial_state,
+    ProbeCut, ProbeCuts, ProbeOpening, build_with_resolved_tables, empty_row_batch,
+    inflow_slack_bounds_for_probe, opening_cut_for_probe, oracle_initial_state,
 };
 use novomodelo_sddp::{
     DEFAULT_COST_SCALE_FACTOR, SolverProfiles, StudySetup, build_cut_row_batch_into,
@@ -349,71 +346,6 @@ fn stage_id(index: usize) -> i32 {
     i32::try_from(index).expect("a fixture stage index fits i32")
 }
 
-fn fixture_bounds(case: &StudyCase) -> ResolvedBounds {
-    ResolvedBounds::new(
-        &BoundsCountsSpec {
-            n_hydros: case.hydros.len(),
-            n_thermals: 1,
-            n_lines: 0,
-            n_pumping: 0,
-            n_contracts: 0,
-            n_stages: case.n_stages,
-            k_max: 0,
-        },
-        &BoundsDefaults {
-            hydro: HydroStageBounds {
-                min_storage_hm3: 0.0,
-                max_storage_hm3: MAX_STORAGE_HM3,
-                filling_min_rate_m3s: 0.0,
-                water_withdrawal_m3s: 0.0,
-            },
-            hydro_block: HydroBlockBounds {
-                max_turbined_m3s: MAX_TURBINED_M3S,
-                max_generation_mw: MAX_GENERATION_MW,
-                ..Default::default()
-            },
-            thermal_block: ThermalBlockBounds {
-                min_generation_mw: 0.0,
-                max_generation_mw: THERMAL_MAX_MW,
-                cost_per_mwh: THERMAL_COST_PER_MWH,
-            },
-            line_block: LineBlockBounds {
-                direct_mw: 0.0,
-                reverse_mw: 0.0,
-            },
-            pumping_block: PumpingBlockBounds {
-                min_flow_m3s: 0.0,
-                max_flow_m3s: 0.0,
-            },
-            contract_block: ContractBlockBounds {
-                min_mw: 0.0,
-                max_mw: 0.0,
-                price_per_mwh: 0.0,
-            },
-        },
-    )
-}
-
-fn fixture_penalty_table(case: &StudyCase) -> ResolvedPenalties {
-    ResolvedPenalties::new(
-        &PenaltiesCountsSpec {
-            n_hydros: case.hydros.len(),
-            n_buses: 1,
-            n_lines: 0,
-            n_ncs: 0,
-            n_stages: case.n_stages,
-        },
-        &PenaltiesDefaults {
-            hydro: case_penalties(case),
-            bus: BusStagePenalties { excess_cost: 0.0 },
-            line: LineStagePenalties { exchange_cost: 0.0 },
-            ncs: NcsStagePenalties {
-                curtailment_cost: 0.0,
-            },
-        },
-    )
-}
-
 fn build_system(case: &StudyCase) -> System {
     let bus = make_bus(
         BUS_ID,
@@ -440,7 +372,7 @@ fn build_system(case: &StudyCase) -> System {
             ..Default::default()
         },
     );
-    let inflow_models = case
+    let inflow_models: Vec<InflowModel> = case
         .hydros
         .iter()
         .flat_map(|hydro| {
@@ -455,7 +387,7 @@ fn build_system(case: &StudyCase) -> System {
             })
         })
         .collect();
-    let load_models = (0..case.n_stages)
+    let load_models: Vec<LoadModel> = (0..case.n_stages)
         .map(|i| LoadModel {
             bus_id: BUS_ID,
             stage_id: stage_id(i),
@@ -477,36 +409,37 @@ fn build_system(case: &StudyCase) -> System {
         recent_observations: vec![],
         past_defluences: vec![],
     };
-    let builder = SystemBuilder::new()
-        .buses(vec![bus])
-        .thermals(vec![thermal])
-        .hydros(
-            case.hydros
-                .iter()
-                .map(|hydro| fixture_hydro(hydro, case_penalties(case)))
-                .collect(),
-        )
-        .stages(fixture_stages(case))
-        .inflow_models(inflow_models)
-        .load_models(load_models)
-        .bounds(fixture_bounds(case))
-        .penalties(fixture_penalty_table(case))
-        .initial_conditions(initial_conditions)
-        .policy_graph(HorizonGraph {
-            season_map: Some(monthly_season_map()),
-            ..HorizonGraph::default()
-        });
-    let (constraints, bounds) = fixture_generic_constraints(case);
-    let builder = if constraints.is_empty() {
-        builder
-    } else {
-        builder
-            .generic_constraints(constraints)
-            .resolved_generic_bounds(bounds)
-    };
-    builder
-        .build()
-        .unwrap_or_else(|e| panic!("{}: the system must build: {e:?}", case.name))
+    let (constraints, generic_bounds) = fixture_generic_constraints(case);
+    build_with_resolved_tables(
+        || {
+            let builder = SystemBuilder::new()
+                .buses(vec![bus.clone()])
+                .thermals(vec![thermal.clone()])
+                .hydros(
+                    case.hydros
+                        .iter()
+                        .map(|hydro| fixture_hydro(hydro, case_penalties(case)))
+                        .collect(),
+                )
+                .stages(fixture_stages(case))
+                .inflow_models(inflow_models.clone())
+                .load_models(load_models.clone())
+                .initial_conditions(initial_conditions.clone())
+                .policy_graph(HorizonGraph {
+                    season_map: Some(monthly_season_map()),
+                    ..HorizonGraph::default()
+                });
+            if constraints.is_empty() {
+                builder
+            } else {
+                builder
+                    .generic_constraints(constraints.clone())
+                    .resolved_generic_bounds(generic_bounds.clone())
+            }
+        },
+        0,
+        |_, _, _| {},
+    )
 }
 
 /// `(constraint id, stage id, block id, lower, upper)`, one resolved generic bound row.
