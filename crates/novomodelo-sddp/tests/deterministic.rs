@@ -5915,16 +5915,9 @@ fn d51_with_dead_bus1_group() -> tempfile::TempDir {
     let case = copy_case_dir(Path::new(
         "../../examples/deterministic/d51-split-plant-two-bus",
     ));
-    let hydros_path = case.path().join("system/hydros.json");
-    let mut hydros: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&hydros_path).expect("read hydros.json"))
-            .expect("hydros.json is JSON");
-    hydros["hydros"][0]["unit_groups"][1]["max_generation_mw"] = serde_json::Value::from(0.0);
-    std::fs::write(
-        &hydros_path,
-        serde_json::to_string_pretty(&hydros).expect("serialize hydros.json"),
-    )
-    .expect("write hydros.json");
+    edit_json(&case.path().join("system/hydros.json"), |hydros| {
+        hydros["hydros"][0]["unit_groups"][1]["max_generation_mw"] = serde_json::Value::from(0.0);
+    });
     case
 }
 
@@ -7286,18 +7279,13 @@ fn d57_precomputed_round_trip_trains_at_the_computed_cost() {
 /// Sets hydro 0's FPHA source to `precomputed` in the case's
 /// `system/hydro_production_models.json`.
 fn switch_fpha_source_to_precomputed(case_dir: &Path) {
-    let models_path = case_dir.join("system/hydro_production_models.json");
-    let mut models: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(&models_path).expect("read hydro_production_models.json"),
-    )
-    .expect("hydro_production_models.json is JSON");
-    models["production_models"][0]["stage_ranges"][0]["fpha_config"]["source"] =
-        serde_json::Value::from("precomputed");
-    std::fs::write(
-        &models_path,
-        serde_json::to_string_pretty(&models).expect("serialize production models"),
-    )
-    .expect("write hydro_production_models.json");
+    edit_json(
+        &case_dir.join("system/hydro_production_models.json"),
+        |models| {
+            models["production_models"][0]["stage_ranges"][0]["fpha_config"]["source"] =
+                serde_json::Value::from("precomputed");
+        },
+    );
 }
 
 /// Lowers every plane's LP intercept `kappa * gamma_0` by one shared δ, so that
@@ -7441,26 +7429,14 @@ fn computed_fpha_planes_round_trip_without_a_zero_turbining_warning() {
     const SHIFTED_EARLIEST: &str = "at 0 m³/s of spillage (stage 0, plane 0, storage 50 hm³, \
                                     spillage up to 100 m³/s)";
 
-    fn edit_case_json(path: &Path, edit: impl FnOnce(&mut serde_json::Value)) {
-        let mut value: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(path).expect("read case JSON"))
-                .expect("case file is JSON");
-        edit(&mut value);
-        std::fs::write(
-            path,
-            serde_json::to_string_pretty(&value).expect("serialize case JSON"),
-        )
-        .expect("write case JSON");
-    }
-
     let d07_dir = Path::new("../../examples/deterministic/d07-fpha-computed");
     let fit_sloped_tailrace_copy = || {
         let copy = copy_case_dir(d07_dir);
-        edit_case_json(&copy.path().join("system/hydros.json"), |hydros| {
+        edit_json(&copy.path().join("system/hydros.json"), |hydros| {
             hydros["hydros"][0]["tailrace"] =
                 serde_json::json!({"type": "polynomial", "coefficients": [300.0, 0.1]});
         });
-        edit_case_json(
+        edit_json(
             &copy.path().join("system/hydro_production_models.json"),
             |models| {
                 let fpha_config =

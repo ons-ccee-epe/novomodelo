@@ -231,11 +231,9 @@ pub(super) fn effective_withdrawals(
     effective
 }
 
-/// Bundles the resolved group-bounds table with the three indices that are
-/// constant across a cell's member groups, so `cell_max_turbined`/
-/// `cell_max_generation` take one bundled parameter instead of four loose
-/// ones that would cross `clippy::too_many_arguments`. `pub(super)` with its
-/// `new` constructor, so `columns` and `rows` build the same per-block lookup.
+/// The resolved group-bounds table with the three indices that are constant
+/// across a cell's member groups. `pub(super)` with its `new` constructor, so
+/// `columns` and `rows` build the same per-block lookup.
 #[derive(Clone, Copy)]
 pub(super) struct GroupBoundLookup<'a> {
     table: &'a ResolvedHydroUnitGroupBounds,

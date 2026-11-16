@@ -1512,8 +1512,6 @@ fn single_config_dedup_yields_identical_planes_across_stages() {
         );
     }
 
-    // Each stage emits one export-row block, so the row count is
-    // n_stages * planes_per_stage.
     assert_eq!(
         export_rows.len(),
         per_stage[0].len() * 3,

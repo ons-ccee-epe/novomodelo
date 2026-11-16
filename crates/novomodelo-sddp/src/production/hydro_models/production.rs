@@ -85,7 +85,7 @@ pub fn resolve_production_models_from_artifacts(
 
     let prod_configs: &[ProductionModelConfig] = &artifacts.production_models;
 
-    let plane_reduction: Option<&PlaneReductionConfig> = artifacts.plane_reduction.as_ref();
+    let plane_reduction = artifacts.plane_reduction.as_ref();
 
     let config_map: HashMap<EntityId, &ProductionModelConfig> =
         prod_configs.iter().map(|c| (c.hydro_id, c)).collect();
@@ -343,7 +343,7 @@ fn fit_one_hydro(
                 .get(&hydro.id)
                 .copied()
                 .unwrap_or(0.0);
-            let per_stage = fit_computed_planes_per_stage(
+            Some(fit_computed_planes_per_stage(
                 hydro,
                 config_entry,
                 geometry_map,
@@ -357,8 +357,7 @@ fn fit_one_hydro(
                 &mut export_rows,
                 &mut fpha_deviations,
                 &mut deviation_point_rows,
-            )?;
-            Some(per_stage)
+            )?)
         } else {
             None
         };
