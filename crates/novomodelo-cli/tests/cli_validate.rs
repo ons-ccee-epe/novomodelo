@@ -2098,3 +2098,65 @@ fn validate_warns_once_on_arc_deck_without_post_study_file() {
     assert_eq!(lines.len(), 1, "{lines:?}");
     assert!(lines[0].contains("water_bucket_stages"), "{lines:?}");
 }
+
+#[test]
+fn validate_accepts_weeks_naming_their_month_across_two_years() {
+    let dir = TempDir::new().unwrap();
+    make_valid_case(&dir);
+
+    let seasons: Vec<_> = (1..=12_u32)
+        .map(|month| {
+            serde_json::json!({
+                "id": month - 1,
+                "month_start": month,
+                "label": format!("Month{month}"),
+            })
+        })
+        .collect();
+    let date = |year, month, day| chrono::NaiveDate::from_ymd_opt(year, month, day).unwrap();
+    let mut specs = vec![
+        (date(2026, 5, 30), date(2026, 6, 6), 5),
+        (date(2026, 6, 6), date(2026, 6, 13), 5),
+        (date(2026, 6, 13), date(2026, 6, 20), 5),
+        (date(2026, 6, 20), date(2026, 6, 27), 5),
+        (date(2026, 6, 27), date(2026, 7, 4), 5),
+        (date(2026, 7, 4), date(2026, 8, 1), 6),
+    ];
+    for (year, month) in (2026..=2027).flat_map(|y| (1..=12_u32).map(move |m| (y, m))) {
+        if ((2026, 8)..=(2027, 11)).contains(&(year, month)) {
+            let start = date(year, month, 1);
+            let end = start.checked_add_months(chrono::Months::new(1)).unwrap();
+            specs.push((start, end, month - 1));
+        }
+    }
+    assert_eq!(specs.len(), 22);
+    let stages: Vec<_> = specs
+        .iter()
+        .enumerate()
+        .map(|(id, &(start, end, season_id))| {
+            serde_json::json!({
+                "id": id,
+                "start_date": start.to_string(),
+                "end_date": end.to_string(),
+                "season_id": season_id,
+                "blocks": [{ "id": 0, "name": "FLAT", "hours": (end - start).num_days() * 24 }],
+                "num_openings": 50,
+            })
+        })
+        .collect();
+    let stages_json = serde_json::json!({
+        "season_definitions": { "cycle_type": "monthly", "seasons": seasons },
+        "policy_graph": {
+            "type": "finite_horizon",
+            "annual_discount_rate": 0.06,
+            "transitions": []
+        },
+        "stages": stages,
+    });
+    write_file(dir.path(), "stages.json", &stages_json.to_string());
+
+    novomodelo()
+        .args(["validate", dir.path().to_str().unwrap()])
+        .assert()
+        .success();
+}

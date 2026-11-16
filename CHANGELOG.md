@@ -100,6 +100,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (weekly stages within a month, a quarter built from months) gave results that
   depended on `--threads` and on the MPI rank count; results change for those
   studies.
+- `novomodelo validate` refused a `stages.json` whose stages of different
+  lengths share a `season_id` though each is the season's whole period or a
+  slice of it, as when weeks name their month and another year has that
+  month as one stage.
 
 ## [0.20.0] - 2026-11-03
 
