@@ -1047,15 +1047,7 @@ pub(crate) fn config_from_json(json: &str) -> Config {
 /// Minimal `Config` required to fill `ParsedData`.
 #[must_use]
 pub fn minimal_config() -> Config {
-    let json = r#"{
-        "training": {
-            "selection": {"method": "sampled", "forward_passes": 10},
-            "stopping_rules": [
-                { "type": "iteration_limit", "limit": 100 }
-            ]
-        }
-    }"#;
-    config_from_json(json)
+    config_from_json(VALID_CONFIG_JSON)
 }
 
 /// Build a `Config` with `training.scenario_source.inflow.scheme = "external"`.

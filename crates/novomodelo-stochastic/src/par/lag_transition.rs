@@ -1421,7 +1421,6 @@ mod tests {
     /// Same `season_id` but different years must produce different groups.
     #[test]
     fn test_noise_groups_cross_year() {
-        // Two weekly stages: season_id=0, year 2024 and year 2025.
         let stage_2024 = make_stage(0, date(2024, 1, 1), date(2024, 1, 8), Some(0));
         let stage_2025 = make_stage(1, date(2025, 1, 1), date(2025, 1, 8), Some(0));
 
@@ -1438,7 +1437,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Seeded weekly-to-monthly finalize (item 9, RV0/RV1 fixtures)
+    // Seeded weekly-to-monthly finalize
     // -----------------------------------------------------------------------
 
     /// Finalizes `derived`'s `accum`/`weight` seed through `stage_lag_transitions`
@@ -1545,7 +1544,7 @@ mod tests {
     /// RV1: the same four weekly-shaped stages, but the seed is a single
     /// elapsed-week conditioning window straddling the March/April boundary
     /// (4 March days + 3 April days) instead of a pre-cut record row —
-    /// exercising item 3's straddling-window contract (only the
+    /// exercising the straddling-window contract (only the
     /// April-overlapping days seed the accumulator) through seed derivation.
     #[test]
     fn test_rv1_elapsed_week_conditioning_with_straddle() {

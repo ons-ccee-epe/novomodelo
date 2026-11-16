@@ -901,22 +901,28 @@ mod tests {
     };
     use crate::test_support::unmirrored_hydro;
 
+    /// A primary-lag-only transition: no downstream-ring involvement.
+    fn lag_transition(
+        accumulate_weight: f64,
+        spillover_weight: f64,
+        finalize_period: bool,
+    ) -> StageLagTransition {
+        StageLagTransition {
+            accumulate_weight,
+            spillover_weight,
+            finalize_period,
+            accumulate_downstream: false,
+            downstream_accumulate_weight: 0.0,
+            downstream_spillover_weight: 0.0,
+            downstream_finalize: false,
+            rebuild_from_downstream: false,
+        }
+    }
+
     /// Build `n_stages` uniform-monthly transitions: each stage finalizes its own
     /// period with full weight and no spillover (the simple per-stage path).
     fn uniform_monthly_transitions(n_stages: usize) -> Vec<StageLagTransition> {
-        vec![
-            StageLagTransition {
-                accumulate_weight: 1.0,
-                spillover_weight: 0.0,
-                finalize_period: true,
-                accumulate_downstream: false,
-                downstream_accumulate_weight: 0.0,
-                downstream_spillover_weight: 0.0,
-                downstream_finalize: false,
-                rebuild_from_downstream: false,
-            };
-            n_stages
-        ]
+        vec![lag_transition(1.0, 0.0, true); n_stages]
     }
 
     // -----------------------------------------------------------------------
@@ -1132,36 +1138,9 @@ mod tests {
         let par = PrecomputedPar::build(&models, &stages, &hydro_ids, None).unwrap();
 
         let transitions = vec![
-            StageLagTransition {
-                accumulate_weight: 0.4,
-                spillover_weight: 0.0,
-                finalize_period: false,
-                accumulate_downstream: false,
-                downstream_accumulate_weight: 0.0,
-                downstream_spillover_weight: 0.0,
-                downstream_finalize: false,
-                rebuild_from_downstream: false,
-            },
-            StageLagTransition {
-                accumulate_weight: 0.4,
-                spillover_weight: 0.0,
-                finalize_period: false,
-                accumulate_downstream: false,
-                downstream_accumulate_weight: 0.0,
-                downstream_spillover_weight: 0.0,
-                downstream_finalize: false,
-                rebuild_from_downstream: false,
-            },
-            StageLagTransition {
-                accumulate_weight: 0.2,
-                spillover_weight: 0.0,
-                finalize_period: true,
-                accumulate_downstream: false,
-                downstream_accumulate_weight: 0.0,
-                downstream_spillover_weight: 0.0,
-                downstream_finalize: false,
-                rebuild_from_downstream: false,
-            },
+            lag_transition(0.4, 0.0, false),
+            lag_transition(0.4, 0.0, false),
+            lag_transition(0.2, 0.0, true),
         ];
 
         let mut lib = ExternalScenarioLibrary::new(3, 1, 1, "inflow", vec![1, 1, 1]);
@@ -1274,26 +1253,8 @@ mod tests {
         let par = PrecomputedPar::build(&models, &stages, &hydro_ids, None).unwrap();
 
         let transitions = vec![
-            StageLagTransition {
-                accumulate_weight: 0.7,
-                spillover_weight: 0.3,
-                finalize_period: true,
-                accumulate_downstream: false,
-                downstream_accumulate_weight: 0.0,
-                downstream_spillover_weight: 0.0,
-                downstream_finalize: false,
-                rebuild_from_downstream: false,
-            },
-            StageLagTransition {
-                accumulate_weight: 1.0,
-                spillover_weight: 0.0,
-                finalize_period: true,
-                accumulate_downstream: false,
-                downstream_accumulate_weight: 0.0,
-                downstream_spillover_weight: 0.0,
-                downstream_finalize: false,
-                rebuild_from_downstream: false,
-            },
+            lag_transition(0.7, 0.3, true),
+            lag_transition(1.0, 0.0, true),
         ];
 
         let mut lib = ExternalScenarioLibrary::new(2, 1, 1, "inflow", vec![1, 1]);
@@ -2059,56 +2020,13 @@ mod tests {
         let weight_weekly = 7.0 * 24.0 / 720.0;
         let weight_may = 30.0 * 24.0 / 744.0;
         let stage_lag_transitions = vec![
-            StageLagTransition {
-                accumulate_weight: weight_w1,
-                spillover_weight: 0.0,
-                finalize_period: false,
-                accumulate_downstream: false,
-                downstream_accumulate_weight: 0.0,
-                downstream_spillover_weight: 0.0,
-                downstream_finalize: false,
-                rebuild_from_downstream: false,
-            },
-            StageLagTransition {
-                accumulate_weight: weight_weekly,
-                spillover_weight: 0.0,
-                finalize_period: false,
-                accumulate_downstream: false,
-                downstream_accumulate_weight: 0.0,
-                downstream_spillover_weight: 0.0,
-                downstream_finalize: false,
-                rebuild_from_downstream: false,
-            },
-            StageLagTransition {
-                accumulate_weight: weight_weekly,
-                spillover_weight: 0.0,
-                finalize_period: false,
-                accumulate_downstream: false,
-                downstream_accumulate_weight: 0.0,
-                downstream_spillover_weight: 0.0,
-                downstream_finalize: false,
-                rebuild_from_downstream: false,
-            },
-            StageLagTransition {
-                accumulate_weight: weight_weekly,
-                spillover_weight: 0.0,
-                finalize_period: true, // last April stage → finalize the April period
-                accumulate_downstream: false,
-                downstream_accumulate_weight: 0.0,
-                downstream_spillover_weight: 0.0,
-                downstream_finalize: false,
-                rebuild_from_downstream: false,
-            },
-            StageLagTransition {
-                accumulate_weight: weight_may,
-                spillover_weight: 0.0,
-                finalize_period: true, // only May stage → finalizes itself
-                accumulate_downstream: false,
-                downstream_accumulate_weight: 0.0,
-                downstream_spillover_weight: 0.0,
-                downstream_finalize: false,
-                rebuild_from_downstream: false,
-            },
+            lag_transition(weight_w1, 0.0, false),
+            lag_transition(weight_weekly, 0.0, false),
+            lag_transition(weight_weekly, 0.0, false),
+            // last April stage → finalize the April period
+            lag_transition(weight_weekly, 0.0, true),
+            // only May stage → finalizes itself
+            lag_transition(weight_may, 0.0, true),
         ];
 
         let targets = [

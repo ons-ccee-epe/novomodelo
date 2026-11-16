@@ -217,19 +217,7 @@ mod tests {
 
     fn monthly_history(hydro_id: EntityId, from_year: i32, to_year: i32) -> Vec<InflowHistoryRow> {
         (from_year..=to_year)
-            .flat_map(|y| {
-                (1u32..=12).map(move |m| {
-                    let start_date = NaiveDate::from_ymd_opt(y, m, 1).unwrap();
-                    InflowHistoryRow {
-                        hydro_id,
-                        start_date,
-                        end_date: start_date
-                            .checked_add_months(chrono::Months::new(1))
-                            .unwrap(),
-                        value_m3s: 100.0,
-                    }
-                })
-            })
+            .flat_map(|y| (1u32..=12).map(move |m| history_row(hydro_id, y, m, 100.0)))
             .collect()
     }
 

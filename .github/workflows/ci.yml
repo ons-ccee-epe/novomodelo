@@ -315,6 +315,13 @@ jobs:
         env:
           BASE_REF: ${{ github.event.pull_request.base.sha }}
         run: bash scripts/ci/check-allow-rationale.sh
+      - name: Advisory — hand-built fixture tables in test code
+        # ADVISORY: exits 0 regardless of hits; its output is informational and
+        # never fails the job. On pull_request events, diff against the PR base
+        # SHA; on push BASE_REF is empty and the check defaults to origin/main.
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.sha }}
+        run: bash scripts/ci/check-fixture-tables.sh
       - name: Check Python parity
         run: python3 scripts/ci/check_python_parity.py --max 0
       - name: Check Python binding version lockstep

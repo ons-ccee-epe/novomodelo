@@ -1,0 +1,53 @@
+# Allowlist for scripts/ci/check-fixture-tables.sh.
+#
+# Test code builds its ResolvedBounds / ResolvedPenalties tables from the
+# entities with build_with_resolved_tables / resolved_tables
+# (crates/novomodelo-sddp/src/test_support/table_resolution.rs). The advisory
+# check flags a newly added hand-built table. A site listed here is exempt: its
+# table has to stay literal.
+#
+# Key format, one per line:
+#     path/to/file.rs::qualified_fn  # class
+# A key carries no line number and no count; both drift. An added line matches a
+# key when its path is equal and the innermost fn enclosing it is named like the
+# last `::` segment of the key's fn. Text from the first `#` is an annotation.
+#
+# Classes:
+#   geometry-pinning   a System-free table that pins LP geometry by counts.
+#   n-stages-mismatch  the fixture's stages cannot be reproduced by the
+#                      resolver, which keeps only non-negative stage ids.
+#   helper-shape-gap   the fixture receives finished tables from its caller, or
+#                      declares a deliberate count mismatch.
+#
+# Homes (crates/<crate>/src/test_support.rs and crates/<crate>/src/test_support/)
+# are excluded by the check and need no row.
+#
+# Add a row when a table must stay literal under one of these classes. Otherwise
+# build the table from its System.
+
+crates/novomodelo-sddp/src/setup/tests.rs::minimal_system_with_policy_graph  # n-stages-mismatch
+crates/novomodelo-sddp/src/setup/tests.rs::test_contract_prices_per_block_are_uniform_without_overlay  # helper-shape-gap
+crates/novomodelo-sddp/src/setup/tests.rs::test_contract_price_table_carries_per_block_override  # helper-shape-gap
+crates/novomodelo-sddp/src/lp/builder/template/tests.rs::build_template_build_ctx_contract_count_divergence_panics  # helper-shape-gap
+crates/novomodelo-sddp/src/lp/builder/columns.rs::interior_storage_bound_tests::penalties_one_hydro  # geometry-pinning
+crates/novomodelo-sddp/src/lp/builder/columns.rs::diversion_bound_tests::penalties_one_hydro  # geometry-pinning
+crates/novomodelo-sddp/src/lp/builder/columns.rs::filling_phase_gating_tests::penalties_one_hydro  # geometry-pinning
+crates/novomodelo-sddp/src/lp/builder/columns.rs::anticipated_objective_tests::bounds_two_thermals  # geometry-pinning
+crates/novomodelo-sddp/src/lp/builder/columns.rs::anticipated_objective_tests::DeliveryAnchoredFixtures::new  # geometry-pinning
+crates/novomodelo-sddp/src/lp/builder/columns.rs::anticipated_objective_tests::psa_bounds  # geometry-pinning
+crates/novomodelo-sddp/src/lp/builder/columns.rs::block_family_slack_tests::resolved_tables  # geometry-pinning
+crates/novomodelo-sddp/src/lp/builder/columns.rs::evaporation_slack_objective_tests::penalties_one_hydro  # geometry-pinning
+crates/novomodelo-sddp/src/lp/builder/columns.rs::contract_column_tests::bounds_with_contracts  # geometry-pinning
+crates/novomodelo-sddp/src/lp/builder/columns.rs::thermal_block_bound_tests::bounds_with_thermals  # geometry-pinning
+crates/novomodelo-sddp/src/lp/builder/columns.rs::line_contract_pumping_block_bound_tests::bounds_with  # geometry-pinning
+crates/novomodelo-sddp/src/lp/builder/columns.rs::line_contract_pumping_block_bound_tests::penalties_with  # geometry-pinning
+crates/novomodelo-sddp/src/lp/builder/columns.rs::hydro_block_bound_tests::penalties_with_hydros  # geometry-pinning
+crates/novomodelo-sddp/src/lp/builder/columns.rs::cell_column_bound_tests::zero_penalties  # geometry-pinning
+crates/novomodelo-sddp/src/lp/builder/columns.rs::ncs_objective_tests::penalties_with  # geometry-pinning
+crates/novomodelo-sddp/src/lp/builder/entries.rs::zero_cost_tests::AntFixtures::bounds_with_n_stages  # geometry-pinning
+crates/novomodelo-sddp/src/lp/builder/layout/tests.rs::bounds_with_entities  # geometry-pinning
+crates/novomodelo-sddp/src/lp/builder/generic_constraints/tests.rs::ResolverFixture::new  # geometry-pinning
+crates/novomodelo-sddp/src/policy/policy_export.rs::system_lag_only  # n-stages-mismatch
+crates/novomodelo-sddp/tests/template_integration.rs::one_bus_system  # n-stages-mismatch
+crates/novomodelo-sddp/src/setup/tests.rs::zero_bounds_defaults  # helper-shape-gap
+crates/novomodelo-sddp/src/policy/policy_export.rs::bounds_defaults  # n-stages-mismatch
