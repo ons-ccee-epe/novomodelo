@@ -372,8 +372,9 @@ pub(super) fn check_fpha_precomputed_plane_at_zero_turbining(
             "FPHA plane below zero at zero turbining: {entity} -- {n_pairs} (stage, plane) \
              pair(s) at stages {stages} fall below 0 MW with no turbined flow; the earliest \
              crosses 0 MW at {s_star} m³/s of spillage (stage {stage_id}, plane {plane_id}, \
-             storage {v_min} hm³, spillage up to {s_ref} m³/s), so the hydro reports \
-             fpha_violation_mw while it spills without turbining"
+             storage {v_min} hm³, spillage up to {s_ref} m³/s), so while it spills the hydro \
+             turbines water at 0 MW, or reports fpha_violation_mw where turbining cannot lift \
+             the plane to 0 MW"
         );
         ctx.emit(
             &rules::SEMANTIC_FPHA_PRECOMPUTED_PLANE_NEGATIVE_AT_ZERO_TURBINING,
@@ -2245,6 +2246,28 @@ mod tests {
         assert_eq!(warnings.len(), 1, "exactly one warning: {warnings:?}");
         let msg = &warnings[0].message;
         assert!(msg.contains("at 0 m³/s of spillage"), "got: {msg}");
+    }
+
+    #[test]
+    fn precomputed_plane_warning_names_both_outcomes_while_spilling() {
+        let data = zero_turbining_data(
+            vec![make_hydro(1, None)],
+            vec![0],
+            vec![fpha_everywhere(1)],
+            vec![spill_row(1, None, 0, -0.125)],
+        );
+
+        let warnings = zero_turbining_warnings(&data);
+
+        assert_eq!(warnings.len(), 1, "exactly one warning: {warnings:?}");
+        let msg = &warnings[0].message;
+        assert!(
+            msg.ends_with(
+                "so while it spills the hydro turbines water at 0 MW, or reports \
+                 fpha_violation_mw where turbining cannot lift the plane to 0 MW"
+            ),
+            "got: {msg}"
+        );
     }
 
     #[test]
