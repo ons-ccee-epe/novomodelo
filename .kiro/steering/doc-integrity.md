@@ -259,6 +259,22 @@ no authored input reaches, and cosmetic fixes such as a duplicated message.
 - Sections follow Keep a Changelog: Added, Changed, Removed, Fixed. A removal
   goes under Removed even when it is breaking.
 
+### Order — grouped by theme, breaking first
+
+`novomodelo-bridge` and `novomodelo-mcp` share this layout, and the MCP's
+`server_info` reads the release body, so keep the structure exact.
+
+- A section with more than five entries is split into `####` themes, in this
+  order: `Case files`, `Inflow model`, `Hydro plants`, `Policy`, `Results and
+  outputs`. A theme with no entry is left out; a section of five or fewer
+  entries stays flat, in the same theme order.
+- Within a theme, `**BREAKING:**` entries come first, then entries whose
+  results change, then the rest.
+- Every entry is a `- ` bullet at column 0; never nest bullets or put a
+  heading or bold line inside a theme.
+- An entry's first sentence stands alone in at most 200 characters:
+  `server_info` shows no more of it.
+
 ### Written final, never trimmed later
 
 - Write each entry in its final shape in the commit that makes the change.
