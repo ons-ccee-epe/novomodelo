@@ -1585,7 +1585,6 @@ fn write_unit_test_ar_coefficients(
     hydro_id: i32,
     stages: &[Stage],
     coefficient: f64,
-    residual_std_ratio: f64,
 ) {
     use arrow::array::{Float64Array, Int32Array};
     use arrow::datatypes::{DataType, Field, Schema};
@@ -1598,7 +1597,6 @@ fn write_unit_test_ar_coefficients(
         Field::new("stage_id", DataType::Int32, false),
         Field::new("lag", DataType::Int32, false),
         Field::new("coefficient", DataType::Float64, false),
-        Field::new("residual_std_ratio", DataType::Float64, false),
     ]));
 
     let n = stages.len();
@@ -1606,7 +1604,6 @@ fn write_unit_test_ar_coefficients(
     let stage_ids: Vec<i32> = stages.iter().map(|s| s.id).collect();
     let lags: Vec<i32> = vec![1; n];
     let coefficients: Vec<f64> = vec![coefficient; n];
-    let ratios: Vec<f64> = vec![residual_std_ratio; n];
 
     let batch = RecordBatch::try_new(
         schema.clone(),
@@ -1615,7 +1612,6 @@ fn write_unit_test_ar_coefficients(
             Arc::new(Int32Array::from(stage_ids)),
             Arc::new(Int32Array::from(lags)),
             Arc::new(Float64Array::from(coefficients)),
-            Arc::new(Float64Array::from(ratios)),
         ],
     )
     .expect("valid batch");
@@ -1677,12 +1673,7 @@ fn build_system_empty_models_with_history(
 
 /// Sets up UserArHistoryStats: history + AR coefficients, no seasonal stats.
 #[allow(clippy::cast_possible_wrap)]
-fn setup_user_ar_case(
-    case_dir: &std::path::Path,
-    n_years: usize,
-    ar_coefficient: f64,
-    residual_std_ratio: f64,
-) {
+fn setup_user_ar_case(case_dir: &std::path::Path, n_years: usize, ar_coefficient: f64) {
     create_required_files(case_dir);
     let scenarios = case_dir.join("scenarios");
     std::fs::create_dir_all(&scenarios).unwrap();
@@ -1708,23 +1699,21 @@ fn setup_user_ar_case(
         1,
         &stages,
         ar_coefficient,
-        residual_std_ratio,
     );
 }
 
-/// User AR coefficients preserved bitwise; residual_std_ratio superseded by closure.
+/// User AR coefficients preserved bitwise; residual_std_ratio derived by closure.
 #[test]
 fn test_user_ar_estimation_preserves_ar_coefficients() {
     use tempfile::TempDir;
 
     const N_YEARS: usize = 30;
     const KNOWN_COEFF: f64 = 0.72;
-    const KNOWN_RATIO: f64 = 0.69;
 
     let dir = TempDir::new().unwrap();
     let case_dir = dir.path();
 
-    setup_user_ar_case(case_dir, N_YEARS, KNOWN_COEFF, KNOWN_RATIO);
+    setup_user_ar_case(case_dir, N_YEARS, KNOWN_COEFF);
     let system = build_system_empty_models(N_YEARS);
     let config = default_config();
 
@@ -1753,12 +1742,6 @@ fn test_user_ar_estimation_preserves_ar_coefficients() {
     );
 
     let expected_ratio = (1.0 - KNOWN_COEFF * KNOWN_COEFF).sqrt();
-    assert!(
-        (expected_ratio - KNOWN_RATIO).abs() > 1e-3,
-        "fixture sanity: KNOWN_RATIO must differ from the closure value to prove \
-         the user-column value is superseded, got expected={expected_ratio} \
-         known={KNOWN_RATIO}"
-    );
 
     for m in models {
         assert_eq!(
@@ -1776,8 +1759,7 @@ fn test_user_ar_estimation_preserves_ar_coefficients() {
         assert!(
             (m.residual_std_ratio - expected_ratio).abs() < 1e-12,
             "residual_std_ratio must equal the closure-derived value {expected_ratio} \
-             (order-1 decouples exactly), got {} for stage {} — the raw user-column \
-             value {KNOWN_RATIO} must no longer reach the returned System",
+             (order-1 decouples exactly), got {} for stage {}",
             m.residual_std_ratio,
             m.stage_id
         );
@@ -1793,7 +1775,7 @@ fn test_user_ar_estimation_estimates_stats_from_history() {
     let dir = TempDir::new().unwrap();
     let case_dir = dir.path();
 
-    setup_user_ar_case(case_dir, N_YEARS, 0.55, 0.83);
+    setup_user_ar_case(case_dir, N_YEARS, 0.55);
     let system = build_system_empty_models(N_YEARS);
     let config = default_config();
 
@@ -1889,7 +1871,7 @@ fn test_user_ar_estimation_returns_user_provided_report() {
     let dir = TempDir::new().unwrap();
     let case_dir = dir.path();
 
-    setup_user_ar_case(case_dir, N_YEARS, 0.55, 0.83);
+    setup_user_ar_case(case_dir, N_YEARS, 0.55);
     let system = build_system_empty_models(N_YEARS);
     let config = default_config();
 

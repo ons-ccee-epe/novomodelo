@@ -45,9 +45,7 @@ use novomodelo_core::EntityId;
 use std::path::Path;
 
 use crate::LoadError;
-use crate::parquet_helpers::{
-    extract_required_float64, extract_required_int32, open_record_batch_reader,
-};
+use crate::parquet_helpers::{ParquetColumns, open_parquet_input};
 
 /// A single row from `system/tailrace_curves.parquet`.
 ///
@@ -104,6 +102,23 @@ pub struct TailraceCurveRow {
     pub coefficient_4: f64,
 }
 
+static TAILRACE_CURVES_COLUMNS: ParquetColumns = ParquetColumns {
+    known: &[
+        "hydro_id",
+        "family_id",
+        "segment_id",
+        "downstream_reference_level_m",
+        "outflow_min_m3s",
+        "outflow_max_m3s",
+        "coefficient_0",
+        "coefficient_1",
+        "coefficient_2",
+        "coefficient_3",
+        "coefficient_4",
+    ],
+    retired: &[],
+};
+
 /// Parse `system/tailrace_curves.parquet` and return a sorted segment table.
 ///
 /// # Errors
@@ -113,6 +128,7 @@ pub struct TailraceCurveRow {
 /// | File not found or permission denied                | [`LoadError::IoError`]     |
 /// | Malformed Parquet (corrupt header, etc.)           | [`LoadError::ParseError`]  |
 /// | Required column missing or wrong type              | [`LoadError::SchemaError`] |
+/// | Unknown or retired column                          | [`LoadError::SchemaError`] |
 /// | Negative / non-finite bound, inverted window, or non-finite coefficient | [`LoadError::SchemaError`] |
 ///
 /// # Examples
@@ -126,25 +142,22 @@ pub struct TailraceCurveRow {
 /// println!("loaded {} tailrace segments", rows.len());
 /// ```
 pub fn parse_tailrace_curves(path: &Path) -> Result<Vec<TailraceCurveRow>, LoadError> {
-    let reader = open_record_batch_reader(path)?;
-
     let mut rows: Vec<TailraceCurveRow> = Vec::new();
 
-    for batch_result in reader {
-        let batch = batch_result.map_err(|e| LoadError::parse(path, e.to_string()))?;
+    for batch in open_parquet_input(path, &TAILRACE_CURVES_COLUMNS)? {
+        let batch = batch?;
 
-        let hydro_id_col = extract_required_int32(&batch, "hydro_id", path)?;
-        let family_id_col = extract_required_int32(&batch, "family_id", path)?;
-        let segment_id_col = extract_required_int32(&batch, "segment_id", path)?;
-        let reference_level_col =
-            extract_required_float64(&batch, "downstream_reference_level_m", path)?;
-        let q_inf_col = extract_required_float64(&batch, "outflow_min_m3s", path)?;
-        let q_sup_col = extract_required_float64(&batch, "outflow_max_m3s", path)?;
-        let coefficient_0_col = extract_required_float64(&batch, "coefficient_0", path)?;
-        let coefficient_1_col = extract_required_float64(&batch, "coefficient_1", path)?;
-        let coefficient_2_col = extract_required_float64(&batch, "coefficient_2", path)?;
-        let coefficient_3_col = extract_required_float64(&batch, "coefficient_3", path)?;
-        let coefficient_4_col = extract_required_float64(&batch, "coefficient_4", path)?;
+        let hydro_id_col = batch.required_int32("hydro_id")?;
+        let family_id_col = batch.required_int32("family_id")?;
+        let segment_id_col = batch.required_int32("segment_id")?;
+        let reference_level_col = batch.required_float64("downstream_reference_level_m")?;
+        let q_inf_col = batch.required_float64("outflow_min_m3s")?;
+        let q_sup_col = batch.required_float64("outflow_max_m3s")?;
+        let coefficient_0_col = batch.required_float64("coefficient_0")?;
+        let coefficient_1_col = batch.required_float64("coefficient_1")?;
+        let coefficient_2_col = batch.required_float64("coefficient_2")?;
+        let coefficient_3_col = batch.required_float64("coefficient_3")?;
+        let coefficient_4_col = batch.required_float64("coefficient_4")?;
 
         let n = batch.num_rows();
         let base_idx = rows.len();

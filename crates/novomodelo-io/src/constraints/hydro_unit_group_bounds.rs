@@ -55,10 +55,7 @@ use novomodelo_core::EntityId;
 use std::path::Path;
 
 use crate::LoadError;
-use crate::parquet_helpers::{
-    extract_optional_float64, extract_optional_int32, extract_required_int32,
-    open_record_batch_reader,
-};
+use crate::parquet_helpers::{ParquetColumns, open_parquet_input};
 
 use super::bounds::{optional_f64, optional_i32, validate_optional_finite};
 
@@ -112,6 +109,20 @@ pub struct HydroUnitGroupBoundsRow {
 
 // ── Parser ───────────────────────────────────────────────────────────────────
 
+static HYDRO_UNIT_GROUP_BOUNDS_COLUMNS: ParquetColumns = ParquetColumns {
+    known: &[
+        "hydro_id",
+        "hydro_unit_group_id",
+        "stage_id",
+        "min_turbined_m3s",
+        "max_turbined_m3s",
+        "min_generation_mw",
+        "max_generation_mw",
+        "block_id",
+    ],
+    retired: &[],
+};
+
 /// Parse `constraints/hydro_unit_group_bounds.parquet`, returning rows sorted by
 /// `(hydro_id, hydro_unit_group_id, stage_id, block_id)` ascending (`None` before
 /// `Some(i)`).
@@ -127,6 +138,7 @@ pub struct HydroUnitGroupBoundsRow {
 /// | File not found or permission denied            | [`LoadError::IoError`]     |
 /// | Malformed Parquet (corrupt header, etc.)       | [`LoadError::ParseError`]  |
 /// | Required column missing or wrong type          | [`LoadError::SchemaError`] |
+/// | Unknown or retired column                      | [`LoadError::SchemaError`] |
 /// | Non-finite value in any present bound column   | [`LoadError::SchemaError`] |
 ///
 /// # Examples
@@ -143,22 +155,20 @@ pub struct HydroUnitGroupBoundsRow {
 pub fn parse_hydro_unit_group_bounds(
     path: &Path,
 ) -> Result<Vec<HydroUnitGroupBoundsRow>, LoadError> {
-    let reader = open_record_batch_reader(path)?;
-
     let mut rows = Vec::new();
 
-    for batch_result in reader {
-        let batch = batch_result.map_err(|e| LoadError::parse(path, e.to_string()))?;
+    for batch in open_parquet_input(path, &HYDRO_UNIT_GROUP_BOUNDS_COLUMNS)? {
+        let batch = batch?;
 
-        let hydro_id_col = extract_required_int32(&batch, "hydro_id", path)?;
-        let group_id_col = extract_required_int32(&batch, "hydro_unit_group_id", path)?;
-        let stage_id_col = extract_required_int32(&batch, "stage_id", path)?;
+        let hydro_id_col = batch.required_int32("hydro_id")?;
+        let group_id_col = batch.required_int32("hydro_unit_group_id")?;
+        let stage_id_col = batch.required_int32("stage_id")?;
 
-        let min_turbined_col = extract_optional_float64(&batch, "min_turbined_m3s", path)?;
-        let max_turbined_col = extract_optional_float64(&batch, "max_turbined_m3s", path)?;
-        let min_gen_col = extract_optional_float64(&batch, "min_generation_mw", path)?;
-        let max_gen_col = extract_optional_float64(&batch, "max_generation_mw", path)?;
-        let block_id_col = extract_optional_int32(&batch, "block_id", path)?;
+        let min_turbined_col = batch.optional_float64("min_turbined_m3s")?;
+        let max_turbined_col = batch.optional_float64("max_turbined_m3s")?;
+        let min_gen_col = batch.optional_float64("min_generation_mw")?;
+        let max_gen_col = batch.optional_float64("max_generation_mw")?;
+        let block_id_col = batch.optional_int32("block_id")?;
 
         let n = batch.num_rows();
         let base_idx = rows.len();

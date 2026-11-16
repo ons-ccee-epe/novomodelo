@@ -25,9 +25,7 @@ use novomodelo_core::EntityId;
 use std::path::Path;
 
 use crate::LoadError;
-use crate::parquet_helpers::{
-    extract_required_float64, extract_required_int32, open_record_batch_reader,
-};
+use crate::parquet_helpers::{ParquetColumns, open_parquet_input};
 
 // ── Row type ─────────────────────────────────────────────────────────────────
 
@@ -61,6 +59,11 @@ pub struct NcsBoundsRow {
 
 // ── Parser ───────────────────────────────────────────────────────────────────
 
+static NCS_BOUNDS_COLUMNS: ParquetColumns = ParquetColumns {
+    known: &["ncs_id", "stage_id", "available_generation_mw"],
+    retired: &[],
+};
+
 /// Parse `constraints/ncs_bounds.parquet`, returning rows sorted by
 /// `(ncs_id, stage_id)` ascending.
 ///
@@ -71,6 +74,7 @@ pub struct NcsBoundsRow {
 /// | File not found or permission denied           | [`LoadError::IoError`]     |
 /// | Malformed Parquet (corrupt header, etc.)      | [`LoadError::ParseError`]  |
 /// | Required column missing or wrong type         | [`LoadError::SchemaError`] |
+/// | Unknown or retired column                     | [`LoadError::SchemaError`] |
 /// | Negative or non-finite `available_generation_mw` | [`LoadError::SchemaError`] |
 ///
 /// # Examples
@@ -84,16 +88,14 @@ pub struct NcsBoundsRow {
 /// println!("loaded {} NCS bounds rows", rows.len());
 /// ```
 pub fn parse_ncs_bounds(path: &Path) -> Result<Vec<NcsBoundsRow>, LoadError> {
-    let reader = open_record_batch_reader(path)?;
-
     let mut rows: Vec<NcsBoundsRow> = Vec::new();
 
-    for batch_result in reader {
-        let batch = batch_result.map_err(|e| LoadError::parse(path, e.to_string()))?;
+    for batch in open_parquet_input(path, &NCS_BOUNDS_COLUMNS)? {
+        let batch = batch?;
 
-        let ncs_id_col = extract_required_int32(&batch, "ncs_id", path)?;
-        let stage_id_col = extract_required_int32(&batch, "stage_id", path)?;
-        let avail_gen_col = extract_required_float64(&batch, "available_generation_mw", path)?;
+        let ncs_id_col = batch.required_int32("ncs_id")?;
+        let stage_id_col = batch.required_int32("stage_id")?;
+        let avail_gen_col = batch.required_float64("available_generation_mw")?;
 
         let n = batch.num_rows();
         let base_idx = rows.len();

@@ -143,6 +143,15 @@ const ROWS: &[ParityRow] = &[
         fragment: "takes one row per stage with a null block_id",
     },
     ParityRow {
+        name: "input_parquet_with_a_misspelled_column",
+        base_case: "1dtoy",
+        mutate: misspelled_hydro_bounds_column,
+        outcome: Outcome::BracketedRefusal {
+            kind: "SchemaViolation",
+        },
+        fragment: "unknown column \"max_turbined_m3\"; did you mean \"max_turbined_m3s\"?",
+    },
+    ParityRow {
         name: "policy_path_empty",
         base_case: "1dtoy",
         mutate: empty_policy_path,
@@ -523,6 +532,28 @@ fn stage_volume_constraint_with_a_block_bounds_row(case: &Path) {
     write_volume_bounds_with_a_block_row(
         &case.join("constraints/generic_constraint_bounds.parquet"),
     );
+}
+
+fn misspelled_hydro_bounds_column(case: &Path) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("hydro_id", DataType::Int32, false),
+        Field::new("stage_id", DataType::Int32, false),
+        Field::new("max_turbined_m3", DataType::Float64, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(Int32Array::from(vec![0])),
+            Arc::new(Int32Array::from(vec![0])),
+            Arc::new(Float64Array::from(vec![10.0])),
+        ],
+    )
+    .unwrap();
+    fs::create_dir_all(case.join("constraints")).unwrap();
+    let path = case.join("constraints/hydro_bounds.parquet");
+    let mut writer = ArrowWriter::try_new(fs::File::create(path).unwrap(), schema, None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
 }
 
 fn set_policy_path(case: &Path, policy_path: &str) {

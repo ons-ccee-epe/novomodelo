@@ -36,6 +36,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   must be 0 or more. It now accepts 0 there, in `penalties.json` and in
   `constraints/penalty_overrides_ncs.parquet`, as does `turbined_cost` in
   `constraints/penalty_overrides_hydro.parquet`.
+- **BREAKING:** an input Parquet file with a column novomodelo does not read is
+  refused, naming the closest known column. Remove the column, as
+  `residual_std_ratio` in `scenarios/inflow_ar_coefficients.parquet` and
+  `reference_volume_hm3` in `system/hydro_energy_productivity.parquet`.
 - `post_study_stages.json` accepts `thermal_stages` and `water_bucket_stages`,
   the second required in full on a travel-time deck without `stages`. `stages`,
   and a travel-time deck without the file, warn as deprecated: migrate with

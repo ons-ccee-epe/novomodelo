@@ -1093,7 +1093,6 @@ mod tests {
                 DataType::Float64,
                 true,
             ),
-            Field::new("reference_volume_hm3", DataType::Float64, true),
             Field::new("reference_outflow_m3s", DataType::Float64, true),
             Field::new(
                 "specific_productivity_mw_per_m3s_per_m",
@@ -1118,7 +1117,6 @@ mod tests {
                 Arc::new(Int32Array::from(hydro_ids)),
                 Arc::new(Int32Array::from(stage_ids)),
                 Arc::new(Float64Array::from(rho_eqs)),
-                Arc::new(Float64Array::from(nulls.clone())),
                 Arc::new(Float64Array::from(nulls.clone())),
                 Arc::new(Float64Array::from(nulls.clone())),
                 Arc::new(Float64Array::from(nulls)),
@@ -1148,7 +1146,6 @@ mod tests {
                 DataType::Float64,
                 true,
             ),
-            Field::new("reference_volume_hm3", DataType::Float64, true),
             Field::new("reference_outflow_m3s", DataType::Float64, true),
             Field::new(
                 "specific_productivity_mw_per_m3s_per_m",
@@ -1167,7 +1164,6 @@ mod tests {
             vec![
                 Arc::new(Int32Array::from(vec![None::<i32>])),
                 Arc::new(Int32Array::from(vec![None::<i32>])),
-                Arc::new(Float64Array::from(vec![None::<f64>])),
                 Arc::new(Float64Array::from(vec![None::<f64>])),
                 Arc::new(Float64Array::from(vec![None::<f64>])),
                 Arc::new(Float64Array::from(vec![None::<f64>])),

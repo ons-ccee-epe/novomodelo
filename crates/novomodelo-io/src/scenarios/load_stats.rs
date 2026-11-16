@@ -16,9 +16,7 @@ use novomodelo_core::EntityId;
 use std::path::Path;
 
 use crate::LoadError;
-use crate::parquet_helpers::{
-    extract_required_float64, extract_required_int32, open_record_batch_reader,
-};
+use crate::parquet_helpers::{ParquetColumns, open_parquet_input};
 
 /// A single row from `scenarios/load_seasonal_stats.parquet`.
 ///
@@ -53,6 +51,11 @@ pub struct LoadSeasonalStatsRow {
     pub std_mw: f64,
 }
 
+static LOAD_SEASONAL_STATS_COLUMNS: ParquetColumns = ParquetColumns {
+    known: &["bus_id", "stage_id", "mean_mw", "std_mw"],
+    retired: &[],
+};
+
 /// Parse `scenarios/load_seasonal_stats.parquet` and return rows sorted by
 /// `(bus_id, stage_id)` ascending.
 ///
@@ -63,6 +66,7 @@ pub struct LoadSeasonalStatsRow {
 /// | File not found or permission denied           | [`LoadError::IoError`]     |
 /// | Malformed Parquet (corrupt header, etc.)      | [`LoadError::ParseError`]  |
 /// | Required column missing or wrong type         | [`LoadError::SchemaError`] |
+/// | Unknown or retired column                     | [`LoadError::SchemaError`] |
 /// | `mean_mw` is NaN or infinite                 | [`LoadError::SchemaError`] |
 /// | `std_mw` is negative or not finite            | [`LoadError::SchemaError`] |
 ///
@@ -77,17 +81,15 @@ pub struct LoadSeasonalStatsRow {
 /// println!("loaded {} load seasonal stats rows", rows.len());
 /// ```
 pub fn parse_load_seasonal_stats(path: &Path) -> Result<Vec<LoadSeasonalStatsRow>, LoadError> {
-    let reader = open_record_batch_reader(path)?;
-
     let mut rows: Vec<LoadSeasonalStatsRow> = Vec::new();
 
-    for batch_result in reader {
-        let batch = batch_result.map_err(|e| LoadError::parse(path, e.to_string()))?;
+    for batch in open_parquet_input(path, &LOAD_SEASONAL_STATS_COLUMNS)? {
+        let batch = batch?;
 
-        let bus_id_col = extract_required_int32(&batch, "bus_id", path)?;
-        let stage_id_col = extract_required_int32(&batch, "stage_id", path)?;
-        let mean_mw_col = extract_required_float64(&batch, "mean_mw", path)?;
-        let std_mw_col = extract_required_float64(&batch, "std_mw", path)?;
+        let bus_id_col = batch.required_int32("bus_id")?;
+        let stage_id_col = batch.required_int32("stage_id")?;
+        let mean_mw_col = batch.required_float64("mean_mw")?;
+        let std_mw_col = batch.required_float64("std_mw")?;
 
         let n = batch.num_rows();
         let base_idx = rows.len();
