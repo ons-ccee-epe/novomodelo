@@ -291,7 +291,7 @@ stages alike. τ_k comes only from `Block::tau` in `novomodelo-core`
 (`duration_hours * M3S_TO_HM3`), reached in the builder through
 `BlockClock::tau`, which delegates. `resolve_stage_volume` multiplies the flow
 counterpart's columns by that τ, so the flow resolvers stay the single owners
-of which columns a flow reads, and no column or row family is added.
+of which columns a flow reads, and the generic path adds no column or row family.
 
 The outflow volume reads turbine (every cell) plus spillage and excludes
 diversion: the same flow `hydro_outflow` and both outflow rows bind (see "Both
@@ -391,12 +391,159 @@ The wrong-but-compiling alternatives, and the tests that pin them:
 
 Read: `crates/novomodelo-core/src/model/temporal.rs` (`Block::tau`,
 `M3S_TO_HM3`), `crates/novomodelo-sddp/src/block_clock.rs` (`BlockClock::tau`),
-`lp/builder/generic_constraints.rs` (`resolve_stage_volume`),
+`lp/builder/stage_volume.rs` (`resolve_stage_volume`),
 `lp/builder/layout.rs` (`variable_ref_is_block_independent`),
 `lp/builder/entries.rs` (`fill_generic_constraint_entries`),
 `crates/novomodelo-io/src/validation/semantic/constraints.rs`
 (`check_stage_volume_constraints`), and `docs/design/wire-format-evolution.md`
 (the `VariableRef` tail register, which owns the variants' wire encoding).
+
+### A native hm³ bound reuses the stage-volume left-hand side on its own sparse row
+
+A `(hydro, stage)` that declares `min_outflow_hm3`, `max_outflow_hm3`,
+`min_diversion_hm3` or `max_diversion_hm3` in `constraints/hydro_bounds.parquet`,
+or a `(station, stage)` that declares `min_hm3` or `max_hm3` in
+`constraints/pumping_bounds.parquet`, gets one stage-level row of its own. The
+row bounds the same τ-weighted sum a stage-volume term resolves to, so the τ
+owner and the commissioning paragraph above hold unchanged for it.
+
+Each native row's left-hand side comes from `hydro_outflow_volume_terms`,
+`hydro_diversion_volume_terms` or `pumping_volume_terms`
+(`lp/builder/stage_volume.rs`), the functions the generic terms call. A native
+row and its equivalent generic row therefore carry identical `(column, τ_k)`
+sets.
+
+A declared outflow volume is one ranged row with a below and an above slack
+column, both allocated for every declared pair. An undeclared side is an
+infinite row bound, never `0`, and its slack column is pinned `[0, 0]`. A
+diversion volume and a pumping volume are hard ranged rows with no slack. Pinned
+by `native_outflow_volume_absent_side_is_infinite`,
+`outflow_volume_absent_side_slack_is_pinned`, `native_diversion_volume_row_is_hard`
+and `native_pumping_volume_row_is_hard`
+(`tests/template_integration/stage_volume_bounds.rs`).
+
+Each outflow slack is priced at the stage-resolved
+`outflow_volume_violation_below_cost` or `outflow_volume_violation_above_cost`
+($/hm³), with no hours factor: the amount convention of "A generic-constraint
+slack is priced by its declared basis, never by its terms". `novomodelo-io`
+resolves the price per level (global, entity, stage) at load time: the level's
+explicit volume price, else `volume_cost_from_flow_cost` of its own flow price,
+else the level above's. The builder reads the resolved value
+(`fill_outflow_volume_slack_columns`) and never re-derives it from the flow
+price.
+
+Rows and slack columns exist only for declared pairs, through the per-stage
+lists `outflow_volume_hydro_indices`, `diversion_volume_hydro_indices` and
+`pumping_volume_station_indices` on `StageGeometry`, each ascending by system
+index. The rows are appended after every other row family and before the cut
+rows, ordered outflow, diversion, pumping; the slack columns follow every other
+column family. The generic-constraint rows therefore end where
+`outflow_volume.start` begins: locate them from that anchor, never from
+`num_rows`.
+
+A native row coexists with the m³/s bounds and with an equivalent generic
+constraint on the same columns; nothing is deduplicated. Pinned by
+`stage_volume_rows_coexist_with_every_other_bound`
+(`tests/template_integration/stage_volume_bounds.rs`).
+
+A native row never enters the generic-constraint echo, `generic_violations` or
+`generic_violation_cost`. The outflow slacks are reported in `simulation/hydros`
+(`outflow_volume_slack_below_hm3`, `outflow_volume_slack_above_hm3`) as one stage
+value repeated on every block row, so a reader takes one row per stage and never
+sums block rows. Each cost in `simulation/costs` is the slack times the resolved
+price, scaled by `cost_scale_factor`, and the costs sum into
+`hydro_violation_cost`. The `is_empty()` guard on each family in
+`compute_hydro_violation_costs` is load-bearing for output bytes: an empty
+`range_sum` is `-0.0`, not `0.0`. Pinned by
+`extract_repeats_outflow_volume_slacks_on_every_parallel_block_row`,
+`extract_repeats_outflow_volume_slacks_on_every_chronological_block_row`,
+`outflow_volume_violation_costs_are_slack_times_resolved_price` and
+`hydro_violation_cost_decomposition` (`simulation/extraction/tests.rs`).
+
+The diversion and pumping column bounds come from `effective_diversion_m3s` and
+`effective_pumping_m3s` (`crates/novomodelo-core/src/model/resolved/effective.rs`).
+`fill_diversion_columns` and `fill_pumping_columns` call them for the columns,
+and so do the capacity rules `semantic.5a.60` and `semantic.5a.61`, so the
+load-time check reads exactly what the LP column admits. A filling hydro never
+diverts, so `effective_diversion_m3s` closes it at every stage, `Operating`
+included. Its hydro dormancy test and the builder's `is_suspended`
+(`lp/builder/hydro_state.rs`) both read `hydro_operating_active`; pumping reads
+`commissioning_active`; both predicates live in
+`crates/novomodelo-core/src/commissioning.rs`. A new dormancy reading is added
+there, beside `hydro_operating_active`, and never re-derived at a call site.
+
+Validation lives upstream of the builder. `parse_hydro_bounds` and
+`parse_pumping_bounds` (`crates/novomodelo-io/src/constraints/bounds.rs`) refuse
+a non-finite value, a negative value and a same-row minimum above its maximum.
+`semantic.5a.59` refuses a cross-row inversion, `semantic.5a.60` a diversion
+volume bound that the τ-weighted effective diversion flow cannot meet, and
+`semantic.5a.61` the pumping analogue (`check_stage_volume_bounds`). A
+`SystemBuilder` caller that bypasses `novomodelo-io` skips all of them, and the
+builder carries no `debug_assert!` for them: an inverted pair, or a hard volume
+the flow columns cannot reach, goes to the solver unchecked. That path is a gap
+recorded here and covered by no test, not a guarantee.
+
+The wrong-but-compiling alternatives, and the tests that pin them:
+
+- **A second τ-weighted sum for the native rows.** The native row and its
+  generic twin then bound one stage volume with two independently maintained
+  coefficient sets. A sum that rounds differently fails the bit-exact
+  native-versus-generic term comparison; one that rounds identically passes,
+  which is why the single-owner rule is the contract. Pinned by
+  `native_outflow_volume_matches_the_generic_constraint`,
+  `native_diversion_volume_matches_the_generic_constraint` and
+  `native_pumping_volume_matches_the_generic_constraint`
+  (`tests/template_integration/stage_volume_bounds.rs`).
+- **An hours factor on a slack priced as an amount, or a builder-side
+  conversion of the flow price.** The hours factor rescales the slack price by
+  the stage's hours. The conversion discards the explicit volume price a deck
+  declares at the global, entity or stage level. Both compile. Pinned by
+  `outflow_volume_slack_prices_ignore_stage_hours`,
+  `outflow_volume_slack_prices_are_the_resolved_volume_costs` and
+  `outflow_volume_price_cascades_per_level_on_d62`
+  (`tests/template_integration/stage_volume_bounds.rs`).
+- **Dense rows with infinite bounds for the undeclared pairs.** Every existing
+  template then gains rows and columns, which moves the cut rows and
+  invalidates every stored basis. Pinned by
+  `null_hm3_columns_build_byte_identical_templates`
+  (`tests/template_integration/stage_volume_bounds.rs`; a null hm³ column
+  allocates nothing, so it builds the templates an omitted column builds) and
+  `stage_volume_ranges_append_after_every_family` (`lp/builder/layout/tests.rs`;
+  no existing range moves).
+- **Locating the generic rows from `num_rows`.** Once a native row is declared,
+  `num_rows` lies past the generic rows, so a `num_rows`-relative offset lands
+  on native rows. Pinned by `stage_volume_ranges_append_after_every_family`
+  (`lp/builder/layout/tests.rs`; `outflow_volume.start` is the row count of the
+  layout without native rows).
+- **A second `Phase` variant list at a call site.** Writing the
+  `PreFilling`/`Filling` set again to decide whether diversion is dormant
+  compiles and agrees today. Once a `Phase` variant is added or the suspension
+  rule changes, it pins diversion on different stages than turbine and
+  spillage. The pins hold today's phases and cannot see a copy that agrees with
+  `hydro_operating_active`, which is why the single owner is the contract.
+  Pinned by `native_stage_volume_rows_read_the_pinned_columns_of_a_filling_plant`
+  and `native_pumping_volume_row_reads_the_station_flow_outside_its_window`
+  (`tests/filling_commissioning.rs`), and
+  `diversion_of_a_filling_hydro_is_closed_at_every_stage`
+  (`crates/novomodelo-core/src/model/resolved/effective.rs`).
+
+`examples/deterministic/d62-stage-outflow-volume-bounds/` is the
+`hydro_bounds.parquet` twin of `examples/deterministic/d60-stage-outflow-volume-cap/`
+(the generic-constraint deck), and both are asserted against the same derived
+constants by `d62_native_outflow_volume_bounds_match_the_d60_closed_form`
+(`tests/deterministic.rs`, behind `slow-tests`). For a diversion volume routed to
+a distinct target, `declared_diversion_volume_target_is_met_exactly`
+(`tests/hydro_sim.rs`) pins that the declared volume is met exactly.
+
+Read: `lp/builder/stage_volume.rs` (`hydro_outflow_volume_terms`,
+`hydro_diversion_volume_terms`, `pumping_volume_terms`), `lp/builder/rows.rs`
+(`fill_outflow_volume_rows`, `fill_diversion_volume_rows`,
+`fill_pumping_volume_rows`), `lp/builder/columns.rs`
+(`fill_outflow_volume_slack_columns`),
+`crates/novomodelo-core/src/model/resolved/effective.rs`,
+`crates/novomodelo-core/src/commissioning.rs` (`hydro_operating_active`), and
+`crates/novomodelo-io/src/validation/semantic/stage_volume_bounds.rs`
+(`check_stage_volume_bounds`).
 
 ## Hydro-cell aggregation assumes one production map per cell
 

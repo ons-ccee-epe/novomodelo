@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `hydro_diversion_volume(h)` and `pumping_volume(station)`, stage volumes in
   hm3. Their constraints may add only volume and storage terms, with no block
   argument, `per_stage_block` parameter or bounds row with a `block_id`.
+- `constraints/hydro_bounds.parquet` accepts `{min,max}_{outflow,diversion}_hm3`
+  and `constraints/pumping_bounds.parquet` `{min,max}_hm3`, stage volume bounds.
+  A violated outflow bound costs `outflow_volume_violation_{below,above}_cost`
+  per hm3; `simulation/{hydros,costs}/` end with its slack and cost columns.
 
 ## [0.20.0] - 2026-11-03
 
