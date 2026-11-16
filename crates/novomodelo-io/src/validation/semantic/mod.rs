@@ -50,6 +50,7 @@ pub use inflow_seeding::seed_lag_state_depth;
 pub(crate) fn validate_semantic_hydro_thermal(data: &ParsedData, ctx: &mut ValidationContext) {
     hydro::check_cascade_acyclic(data, ctx);
     hydro::check_hydro_bounds(data, ctx);
+    hydro::check_stage_storage_bounds_inverted(data, ctx);
     hydro::check_diversion_requires_channel(data, ctx);
     hydro::check_lifecycle_consistency(data, ctx);
     hydro::check_lifecycle_consistency_remaining(data, ctx);
@@ -80,6 +81,7 @@ pub(crate) fn validate_semantic_hydro_thermal(data: &ParsedData, ctx: &mut Valid
     block_bounds::check_block_id_on_ineligible_column(data, ctx);
     block_bounds::check_block_id_on_anticipated_thermal(data, ctx);
     block_bounds::check_bound_raises_declared_capacity(data, ctx);
+    block_bounds::check_bound_widens_reservoir_range(data, ctx);
     block_bounds::check_group_bound_raises_declared_capacity(data, ctx);
     pumping::check_pumping_semantics(data, ctx);
     pumping::check_pumping_operating_window(data, ctx);

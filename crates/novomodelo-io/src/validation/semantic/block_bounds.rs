@@ -740,6 +740,50 @@ fn emit_raises_declared_capacity_error(
     );
 }
 
+/// Rule 68, the storage mirror of rule 43: rejects a `hydro_bounds` row whose
+/// `max_storage_hm3` exceeds the reservoir's or whose `min_storage_hm3` lies
+/// below the reservoir's dead volume, since the hydro's geometry, production
+/// and evaporation models only cover the reservoir's range. A row on an unknown
+/// `hydro_id` is skipped, as in rule 43.
+pub(super) fn check_bound_widens_reservoir_range(data: &ParsedData, ctx: &mut ValidationContext) {
+    let declared: HashMap<EntityId, &Hydro> = data.hydros.iter().map(|h| (h.id, h)).collect();
+
+    for row in &data.hydro_bounds {
+        let Some(&hydro) = declared.get(&row.hydro_id) else {
+            continue;
+        };
+        let (floor, ceiling) = (hydro.min_storage_hm3, hydro.max_storage_hm3);
+        let above = row
+            .max_storage_hm3
+            .filter(|&value| value > ceiling + envelope_tolerance(ceiling))
+            .map(|value| ("max_storage_hm3", value, "above", ceiling));
+        let below = row
+            .min_storage_hm3
+            .filter(|&value| value < floor - envelope_tolerance(floor))
+            .map(|value| ("min_storage_hm3", value, "below", floor));
+
+        for (column, value, side, declared_value) in above.into_iter().chain(below) {
+            let (hydro_id, stage_id) = (row.hydro_id.0, row.stage_id);
+            let block_str = block_id_clause(row.block_id);
+            ctx.emit(
+                &rules::SEMANTIC_BOUND_ROW_WIDENS_RESERVOIR_RANGE,
+                HYDRO.file,
+                Some(format!(
+                    "{}={hydro_id}, stage_id={stage_id}",
+                    HYDRO.entity_label
+                )),
+                format!(
+                    "{} {hydro_id}: {} row at stage_id={stage_id}{block_str} sets \
+                     {column}={value}, {side} the reservoir's {column} ({declared_value}) in \
+                     system/hydros.json; a stage's storage bounds must lie within the \
+                     reservoir's range",
+                    HYDRO.family, HYDRO.row_label
+                ),
+            );
+        }
+    }
+}
+
 /// Rule 45: rejects a `hydro_unit_group_bounds` row that raises `max_turbined_m3s` or
 /// `max_generation_mw` above that GROUP's own declared value — not the
 /// plant's — each column checked independently; the group-axis mirror of
@@ -1030,12 +1074,21 @@ mod tests {
         bound_errors_of_kind(data, ErrorKind::DuplicateId)
     }
 
-    /// No other Layer 5a rule emits `InvalidValue` against one of the six
-    /// bound parquets, so this isolates `check_bound_raises_declared_capacity`
-    /// from the plant-level `InvalidValue` rules that target
+    /// Rules 43 and 68 and rule 2's stage-level check are the Layer 5a rules
+    /// emitting `InvalidValue` against a bound parquet; a fixture setting no
+    /// storage bound isolates `check_bound_raises_declared_capacity` from the
+    /// other two and from the plant-level `InvalidValue` rules that target
     /// `system/hydros.json` instead (e.g. rule 3's turbine-bound ordering).
     fn capacity_raise_errors(data: &ParsedData) -> Vec<ValidationEntry> {
         bound_errors_of_kind(data, ErrorKind::InvalidValue)
+    }
+
+    /// The rule 68 findings among [`capacity_raise_errors`]'s.
+    fn reservoir_range_errors(data: &ParsedData) -> Vec<ValidationEntry> {
+        capacity_raise_errors(data)
+            .into_iter()
+            .filter(|e| e.message.contains("must lie within the reservoir's range"))
+            .collect()
     }
 
     /// The group-family counterpart of [`capacity_raise_errors`]: isolates
@@ -2376,6 +2429,120 @@ mod tests {
             "message: {}",
             errors[0].message
         );
+    }
+
+    // ── check_bound_widens_reservoir_range (rule 68) ────────────────────────
+
+    /// Hydro 1's reservoir spans [50, 400] and hydro 2's [10, 900], so a
+    /// positional `data.hydros[id]` lookup (ids 1-based, positions 0-based)
+    /// would compare a hydro-1 row against hydro 2's wider range and miss
+    /// both violations below.
+    fn two_reservoir_study() -> Vec<Hydro> {
+        vec![
+            Hydro {
+                min_storage_hm3: 50.0,
+                max_storage_hm3: 400.0,
+                ..make_hydro(1, None)
+            },
+            Hydro {
+                min_storage_hm3: 10.0,
+                max_storage_hm3: 900.0,
+                ..make_hydro(2, None)
+            },
+        ]
+    }
+
+    fn reservoir_study_data(hydro_bounds: Vec<HydroBoundsRow>) -> ParsedData {
+        let mut data = make_data(
+            two_reservoir_study(),
+            vec![],
+            vec![],
+            two_stage_study_stages(),
+            vec![],
+            vec![],
+        );
+        data.hydro_bounds = hydro_bounds;
+        data
+    }
+
+    #[test]
+    fn test_bounds_row_storage_above_the_reservoir_is_rejected() {
+        let data = reservoir_study_data(vec![HydroBoundsRow {
+            max_storage_hm3: Some(500.0),
+            ..hydro_row(1, 0, None)
+        }]);
+
+        let errors = reservoir_range_errors(&data);
+        assert_eq!(
+            errors.len(),
+            1,
+            "expected exactly one error, got: {errors:?}"
+        );
+        let err = &errors[0];
+        assert_eq!(
+            err.file.to_string_lossy(),
+            "constraints/hydro_bounds.parquet"
+        );
+        assert_eq!(err.entity.as_deref(), Some("hydro_id=1, stage_id=0"));
+        assert_eq!(
+            err.message,
+            "Hydro 1: hydro_bounds row at stage_id=0 sets max_storage_hm3=500, above the \
+             reservoir's max_storage_hm3 (400) in system/hydros.json; a stage's storage \
+             bounds must lie within the reservoir's range"
+        );
+    }
+
+    #[test]
+    fn test_bounds_row_storage_below_the_dead_volume_is_rejected() {
+        let data = reservoir_study_data(vec![HydroBoundsRow {
+            min_storage_hm3: Some(20.0),
+            ..hydro_row(1, 1, None)
+        }]);
+
+        let errors = reservoir_range_errors(&data);
+        assert_eq!(
+            errors.len(),
+            1,
+            "expected exactly one error, got: {errors:?}"
+        );
+        assert_eq!(
+            errors[0].message,
+            "Hydro 1: hydro_bounds row at stage_id=1 sets min_storage_hm3=20, below the \
+             reservoir's min_storage_hm3 (50) in system/hydros.json; a stage's storage \
+             bounds must lie within the reservoir's range"
+        );
+    }
+
+    /// Tightening rows, rows restating the reservoir's own range, a ceiling
+    /// within the envelope tolerance and a row on an unknown hydro are all
+    /// silent; the same rows also leave every stage's range uninverted, so
+    /// no `InvalidValue` finding of any rule may appear.
+    #[test]
+    fn test_bounds_row_storage_within_the_reservoir_is_accepted() {
+        let data = reservoir_study_data(vec![
+            HydroBoundsRow {
+                min_storage_hm3: Some(50.0),
+                max_storage_hm3: Some(400.0 + super::envelope_tolerance(400.0)),
+                ..hydro_row(1, 0, None)
+            },
+            HydroBoundsRow {
+                min_storage_hm3: Some(100.0),
+                max_storage_hm3: Some(300.0),
+                ..hydro_row(1, 1, None)
+            },
+            HydroBoundsRow {
+                max_storage_hm3: Some(900.0),
+                ..hydro_row(2, 0, None)
+            },
+            HydroBoundsRow {
+                min_storage_hm3: Some(0.0),
+                max_storage_hm3: Some(9999.0),
+                ..hydro_row(99, 0, None)
+            },
+        ]);
+
+        let errors = capacity_raise_errors(&data);
+        assert!(errors.is_empty(), "got: {errors:?}");
     }
 
     // ── check_group_bound_raises_declared_capacity (rule 45) ────────────────
