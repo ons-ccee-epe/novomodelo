@@ -11,7 +11,10 @@ use novomodelo_core::{
 };
 use novomodelo_io::validation::semantic::envelope_tolerance;
 
-use crate::hydro_models::{LinearizedEvaporation, ResolvedProductionModel};
+use crate::hydro_models::{
+    DroppedFloor, DroppedFloorKind, DroppedFloorLevel, DroppedFloorReason, FrozenTurbiningHydro,
+    LinearizedEvaporation, ResolvedProductionModel,
+};
 use crate::indexer::{Boundary, EntityPositions, HydroCell, HydroCellIndex, HydroSys};
 
 pub(super) fn hydro_phase(hydro: &Hydro, stage_id: i32) -> Phase {
@@ -528,6 +531,13 @@ impl MinFloor {
             Self::Generation => "min_generation_mw",
         }
     }
+
+    const fn dropped_kind(self) -> DroppedFloorKind {
+        match self {
+            Self::Turbined => DroppedFloorKind::MinTurbinedM3s,
+            Self::Generation => DroppedFloorKind::MinGenerationMw,
+        }
+    }
 }
 
 /// One plant's `MinFloor` at one block, split into what its cell rows and its
@@ -741,6 +751,120 @@ pub(crate) fn warn_on_inert_plant_floor_overrides(
             }
         }
     }
+}
+
+/// The hydros with a study stage without turbine capacity, or a minimum the stage
+/// LP no longer charges, ascending by id. Capacity and floors are read through
+/// [`cell_has_capacity`], [`GroupBoundLookup::has_capacity`], [`PlantFloor`] and
+/// [`is_suspended`], never re-derived from a limit, so the rows agree with the LP.
+pub(crate) fn frozen_turbining_hydros(
+    hydros: &[Hydro],
+    stages: &[Stage],
+    bounds: &ResolvedBounds,
+    cells: &HydroCellIndex,
+) -> Vec<FrozenTurbiningHydro> {
+    let study_stages: Vec<_> = stages.iter().filter(|s| s.id >= 0).collect();
+    let mut rows: Vec<_> = hydros
+        .iter()
+        .enumerate()
+        .map(|(h_idx, hydro)| frozen_turbining_of(hydro, h_idx, &study_stages, bounds, cells))
+        .filter(|row| {
+            !(row.no_capacity_stage_ids.is_empty()
+                && row.partial_capacity_stage_ids.is_empty()
+                && row.dropped_floors.is_empty())
+        })
+        .collect();
+    rows.sort_by_key(|row| row.hydro_id);
+    rows
+}
+
+fn frozen_turbining_of(
+    hydro: &Hydro,
+    h_idx: usize,
+    study_stages: &[&Stage],
+    bounds: &ResolvedBounds,
+    cells: &HydroCellIndex,
+) -> FrozenTurbiningHydro {
+    let h = HydroSys::new(h_idx);
+    let mut row = FrozenTurbiningHydro {
+        hydro_id: hydro.id,
+        name: hydro.name.clone(),
+        no_capacity_stage_ids: Vec::new(),
+        partial_capacity_stage_ids: Vec::new(),
+        dropped_floors: Vec::new(),
+    };
+    for (stage_idx, stage) in study_stages.iter().enumerate() {
+        let suspended = is_suspended(hydro, stage.id);
+        let reason = if suspended {
+            DroppedFloorReason::Commissioning
+        } else {
+            DroppedFloorReason::NoCapacity
+        };
+        let (mut n_cells, mut n_dead) = (0_usize, 0_usize);
+        for (blk, block) in stage.blocks.iter().enumerate() {
+            let lookup = GroupBoundLookup::new(bounds.group_overlay(), h_idx, stage_idx, blk);
+            let hb = bounds.hydro_bounds_at_block(h_idx, stage_idx, blk);
+            for c in cells.cells_of(h).map(HydroCell::new) {
+                n_cells += 1;
+                n_dead += usize::from(!cell_has_capacity(
+                    &hydro.unit_groups,
+                    cells.groups_of(c),
+                    hb,
+                    lookup,
+                ));
+            }
+            for kind in MinFloor::ALL {
+                let floor = PlantFloor::resolve(kind, hydro, cells, h, lookup, hb, suspended);
+                let dropped = |level, hydro_unit_group_id, bus_id, value| DroppedFloor {
+                    stage_id: stage.id,
+                    block_id: block.index,
+                    floor: kind.dropped_kind(),
+                    level,
+                    hydro_unit_group_id,
+                    bus_id,
+                    value,
+                    reason,
+                };
+                if !floor.producing && floor.plant_min > 0.0 {
+                    row.dropped_floors.push(dropped(
+                        DroppedFloorLevel::Plant,
+                        None,
+                        None,
+                        floor.plant_min,
+                    ));
+                }
+                for c in cells.cells_of(h).map(HydroCell::new) {
+                    for &pos in cells.groups_of(c) {
+                        let group = &hydro.unit_groups[pos];
+                        let value = kind.of_group(lookup, pos, group);
+                        if value > 0.0 && (!floor.producing || !lookup.has_capacity(pos, group)) {
+                            row.dropped_floors.push(dropped(
+                                DroppedFloorLevel::UnitGroup,
+                                Some(group.id),
+                                Some(cells.bus_of(c)),
+                                value,
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        if n_dead == n_cells && n_cells > 0 {
+            row.no_capacity_stage_ids.push(stage.id);
+        } else if n_dead > 0 {
+            row.partial_capacity_stage_ids.push(stage.id);
+        }
+    }
+    row.dropped_floors.sort_by_key(|d| {
+        (
+            d.stage_id,
+            d.block_id,
+            d.level,
+            d.hydro_unit_group_id,
+            d.floor,
+        )
+    });
+    row
 }
 
 #[cfg(test)]

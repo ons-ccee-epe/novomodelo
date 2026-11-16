@@ -318,6 +318,82 @@ pub struct NoTurbineCapacityHydro {
     pub name: String,
 }
 
+/// A hydro plant with a study stage without turbine capacity, or with a
+/// turbined or generation minimum the LP no longer charges.
+///
+/// Both stage lists hold ascending study stage ids, are disjoint, and come from
+/// the resolved bounds, independent of commissioning.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FrozenTurbiningHydro {
+    /// Entity identifier of the hydro plant.
+    pub hydro_id: EntityId,
+    /// Human-readable name of the hydro plant.
+    pub name: String,
+    /// Stages where no (cell, block) of the plant has capacity.
+    pub no_capacity_stage_ids: Vec<i32>,
+    /// Stages where some but not all of the plant's (cell, block)s have capacity.
+    pub partial_capacity_stage_ids: Vec<i32>,
+    /// Minima the LP no longer charges.
+    pub dropped_floors: Vec<DroppedFloor>,
+}
+
+/// A turbined or generation minimum the LP no longer charges at one stage
+/// block, on the plant or on one of its unit groups.
+///
+/// `hydro_unit_group_id` and `bus_id` are both `None` (`null`) exactly when
+/// `level` is [`DroppedFloorLevel::Plant`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DroppedFloor {
+    /// Study stage id.
+    pub stage_id: i32,
+    /// The stage block's `index`.
+    pub block_id: usize,
+    /// Which minimum is dropped.
+    pub floor: DroppedFloorKind,
+    /// Whether the minimum is the plant's or a unit group's.
+    pub level: DroppedFloorLevel,
+    /// The unit group's id.
+    pub hydro_unit_group_id: Option<EntityId>,
+    /// The unit group's bus.
+    pub bus_id: Option<EntityId>,
+    /// The resolved minimum the LP no longer charges, in the floor's own unit;
+    /// always > 0.
+    pub value: f64,
+    /// Why the LP no longer charges it.
+    pub reason: DroppedFloorReason,
+}
+
+/// The minimum a [`DroppedFloor`] drops, serialized as its
+/// `constraints/hydro_bounds.parquet` column name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DroppedFloorKind {
+    /// Turbined-flow minimum (m³/s).
+    MinTurbinedM3s,
+    /// Generation minimum (MW).
+    MinGenerationMw,
+}
+
+/// Whether a [`DroppedFloor`] is the plant's own minimum or a unit group's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DroppedFloorLevel {
+    /// The plant's own minimum.
+    Plant,
+    /// One unit group's minimum.
+    UnitGroup,
+}
+
+/// Why the LP no longer charges a [`DroppedFloor`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DroppedFloorReason {
+    /// The plant, or the unit group, has no turbine capacity at the block.
+    NoCapacity,
+    /// The plant is commissioning (`PreFilling` or `Filling`) at the stage.
+    Commissioning,
+}
+
 /// Aggregated production- and evaporation-model counts for `novomodelo-cli` display.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HydroModelSummary {
@@ -333,6 +409,10 @@ pub struct HydroModelSummary {
     /// ([`ProductionModelSource::NoTurbineCapacity`]), sorted ascending by
     /// `hydro_id`. They are also counted in `n_constant`.
     pub no_turbine_capacity: Vec<NoTurbineCapacityHydro>,
+    /// Hydro plants with a study stage without turbine capacity or a minimum the
+    /// LP no longer charges, as computed by `frozen_turbining_hydros`, sorted
+    /// ascending by `hydro_id`.
+    pub frozen_turbining: Vec<FrozenTurbiningHydro>,
     /// Number of hydro plants with linearized evaporation.
     pub n_evaporation: usize,
     /// Number of hydro plants with no evaporation model.
@@ -517,6 +597,88 @@ mod tests {
     use crate::HydroEnergyProductivityOverride;
     use crate::test_support::minimal_hydros;
 
+    fn sample_frozen_turbining_row() -> FrozenTurbiningHydro {
+        FrozenTurbiningHydro {
+            hydro_id: EntityId(7),
+            name: "P".to_owned(),
+            no_capacity_stage_ids: vec![0],
+            partial_capacity_stage_ids: vec![1],
+            dropped_floors: vec![
+                DroppedFloor {
+                    stage_id: 2,
+                    block_id: 1,
+                    floor: DroppedFloorKind::MinGenerationMw,
+                    level: DroppedFloorLevel::Plant,
+                    hydro_unit_group_id: None,
+                    bus_id: None,
+                    value: 6.0,
+                    reason: DroppedFloorReason::Commissioning,
+                },
+                DroppedFloor {
+                    stage_id: 2,
+                    block_id: 1,
+                    floor: DroppedFloorKind::MinTurbinedM3s,
+                    level: DroppedFloorLevel::UnitGroup,
+                    hydro_unit_group_id: Some(EntityId(4)),
+                    bus_id: Some(EntityId(10)),
+                    value: 2.5,
+                    reason: DroppedFloorReason::NoCapacity,
+                },
+            ],
+        }
+    }
+
+    /// derived: the wire names of the `frozen_turbining` rows of
+    /// `training/hydro_models.json`.
+    #[test]
+    fn frozen_turbining_row_serializes_with_the_wire_names() {
+        assert_eq!(
+            serde_json::to_value(sample_frozen_turbining_row()).expect("row serializes"),
+            serde_json::json!({
+                "hydro_id": 7,
+                "name": "P",
+                "no_capacity_stage_ids": [0],
+                "partial_capacity_stage_ids": [1],
+                "dropped_floors": [
+                    {
+                        "stage_id": 2,
+                        "block_id": 1,
+                        "floor": "min_generation_mw",
+                        "level": "plant",
+                        "hydro_unit_group_id": null,
+                        "bus_id": null,
+                        "value": 6.0,
+                        "reason": "commissioning",
+                    },
+                    {
+                        "stage_id": 2,
+                        "block_id": 1,
+                        "floor": "min_turbined_m3s",
+                        "level": "unit_group",
+                        "hydro_unit_group_id": 4,
+                        "bus_id": 10,
+                        "value": 2.5,
+                        "reason": "no_capacity",
+                    },
+                ],
+            })
+        );
+    }
+
+    #[test]
+    fn frozen_turbining_row_round_trips_and_refuses_an_unknown_reason() {
+        let row = sample_frozen_turbining_row();
+        let mut value = serde_json::to_value(&row).expect("row serializes");
+        assert_eq!(
+            serde_json::from_value::<FrozenTurbiningHydro>(value.clone())
+                .expect("row deserializes"),
+            row
+        );
+
+        value["dropped_floors"][0]["reason"] = serde_json::json!("dormant");
+        assert!(serde_json::from_value::<FrozenTurbiningHydro>(value).is_err());
+    }
+
     /// 4-hydro 12-stage system with 2 FPHA and 2 constant hydros: model(h, s) returns correct variant.
     #[test]
     fn mixed_system_model_returns_correct_variant_for_all_pairs() {
@@ -652,6 +814,7 @@ mod tests {
             total_planes: 5,
             fpha_details: vec![detail],
             no_turbine_capacity: Vec::new(),
+            frozen_turbining: Vec::new(),
             n_evaporation: 2,
             n_no_evaporation: 2,
             n_user_supplied_ref: 1,
@@ -927,6 +1090,7 @@ mod tests {
                 hydro_id: EntityId(13),
                 name: "Reservoir C".to_string(),
             }],
+            frozen_turbining: Vec::new(),
             n_evaporation: 1,
             n_no_evaporation: 4,
             n_user_supplied_ref: 1,

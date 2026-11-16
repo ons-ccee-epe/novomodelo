@@ -31,8 +31,9 @@ use novomodelo_io::{
     write_policy_checkpoint,
 };
 use novomodelo_sddp::{
-    SimulationWeighting, StudySetup, aggregate_simulation, hydro_models::prepare_hydro_models,
-    indexer::HydroSys, lead_time::resolve_spread, setup::prepare_stochastic,
+    FrozenTurbiningHydro, SimulationWeighting, StudySetup, aggregate_simulation,
+    hydro_models::prepare_hydro_models, indexer::HydroSys, lead_time::resolve_spread,
+    setup::prepare_stochastic,
 };
 use novomodelo_solver::{ActiveSolver, SolverInterface};
 use novomodelo_stochastic::par::HydroEstimationEntry;
@@ -7156,6 +7157,19 @@ fn d57_computed_fpha_without_turbine_capacity_trains_at_zero_generation() {
         (summary.n_constant, summary.n_fpha),
         (1, 0),
         "D57: the plant must be reported as constant, not FPHA"
+    );
+    // derived: max_turbined_m3s and max_generation_mw are 0 at both stages, and no
+    // minimum is declared.
+    assert_eq!(
+        summary.frozen_turbining,
+        vec![FrozenTurbiningHydro {
+            hydro_id: EntityId(0),
+            name: "H0-Degenerate".to_string(),
+            no_capacity_stage_ids: vec![0, 1],
+            partial_capacity_stage_ids: Vec::new(),
+            dropped_floors: Vec::new(),
+        }],
+        "D57: the plant must be frozen at both stages with no floor dropped"
     );
 
     let result = run_deterministic(case_dir);

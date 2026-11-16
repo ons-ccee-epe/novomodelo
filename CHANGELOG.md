@@ -31,6 +31,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `novomodelo validate` warns when a hydro's minimum storage in
   `constraints/hydro_bounds.parquet` rises above the previous stage's, which
   can make a stage infeasible.
+- `training/hydro_models.json` lists under `frozen_turbining` each hydro that
+  has no turbine capacity at some study stage, or whose turbined or generation
+  minimum is no longer charged, with those stages and minima; `novomodelo run`
+  prints a line for each.
 
 ### Changed
 

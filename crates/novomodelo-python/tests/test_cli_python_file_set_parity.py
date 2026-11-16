@@ -232,13 +232,26 @@ def test_zero_turbine_case_lists_the_plant_on_both_paths(
 
     Non-vacuity check for the D57 file-set case: the plant must reach the
     `no_turbine_capacity` key of `training/hydro_models.json` on the CLI and
-    on the Python path alike.
+    on the Python path alike. Its `frozen_turbining` row must list both study
+    stages without capacity and no dropped floor on both paths as well.
     """
     expected = [{"hydro_id": 0, "name": "H0-Degenerate"}]
+    expected_frozen = [
+        {
+            "hydro_id": 0,
+            "name": "H0-Degenerate",
+            "no_capacity_stage_ids": [0, 1],
+            "partial_capacity_stage_ids": [],
+            "dropped_floors": [],
+        }
+    ]
     for root in (d57_cli_output, d57_python_output):
         summary = json.loads((root / "training" / "hydro_models.json").read_text())
         assert summary["no_turbine_capacity"] == expected, (
             f"unexpected no_turbine_capacity in {root}"
+        )
+        assert summary["frozen_turbining"] == expected_frozen, (
+            f"unexpected frozen_turbining in {root}"
         )
 
 
