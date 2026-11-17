@@ -14,9 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### Hydro plants
 
 - `system/hydros.json` accepts `tailrace_flow` (`own_outflow_factor`,
-  `outflow_influences`, `incremental_inflow_influences`): other plants' flows
-  raise the hydro's FPHA tailrace level. Negative or non-finite factors and
-  self, repeated or unknown hydros are refused; `validate` warns without FPHA.
+  `outflow_influences`, `incremental_inflow_influences`); bad entries are
+  refused and `validate` warns without FPHA. `simulation/hydros` adds
+  `tailrace_flow_m3s`, `tailrace_level_m` and `net_head_m`.
 
 ### Changed
 

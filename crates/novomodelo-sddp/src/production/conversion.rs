@@ -102,6 +102,9 @@ impl IntoWriteRecord for SimulationHydroResult {
                 .integrated_accumulated_productivity_mw_per_m3s,
             stored_energy_initial_mw: s.stored_energy_initial_mw,
             stored_energy_final_mw: s.stored_energy_final_mw,
+            tailrace_flow_m3s: s.tailrace_flow_m3s,
+            tailrace_level_m: s.tailrace_level_m,
+            net_head_m: s.net_head_m,
         }
     }
 }
@@ -430,8 +433,8 @@ mod tests {
             integrated_accumulated_productivity_mw_per_m3s: 0.0,
             stored_energy_initial_mw: 0.0,
             stored_energy_final_mw: 0.0,
-            tailrace_flow_m3s: None,
-            tailrace_level_m: None,
+            tailrace_flow_m3s: Some(219.0),
+            tailrace_level_m: Some(10.219),
             net_head_m: None,
         }
     }
@@ -613,6 +616,9 @@ mod tests {
         assert_eq!(stage0.costs[0].discount_factor, 0.95);
         assert_eq!(stage0.hydros[0].turbined_m3s, 100.0);
         assert_eq!(stage0.hydros[0].storage_initial_hm3, 500.0);
+        assert_eq!(stage0.hydros[0].tailrace_flow_m3s, Some(219.0));
+        assert_eq!(stage0.hydros[0].tailrace_level_m, Some(10.219));
+        assert_eq!(stage0.hydros[0].net_head_m, None);
         assert_eq!(stage0.hydro_bus_generation[0].bus_id, 9);
         assert_eq!(stage0.hydro_bus_generation[0].turbined_m3s, 40.0);
         assert_eq!(stage0.thermals[0].generation_mw, 150.0);

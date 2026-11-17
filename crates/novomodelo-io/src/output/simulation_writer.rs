@@ -137,7 +137,8 @@ pub struct CostWriteRecord {
     pub pumping_cost: f64,
 }
 
-/// Hydro plant result for one (stage, block, hydro) tuple.
+/// Hydro plant result for one (stage, block, hydro) tuple. The tailrace and
+/// net-head fields are `None` unless the hydro uses computed FPHA at the stage.
 #[derive(Debug)]
 pub struct HydroWriteRecord {
     /// Stage index (0-based).
@@ -222,6 +223,12 @@ pub struct HydroWriteRecord {
     pub stored_energy_initial_mw: f64,
     /// Stored energy at block end, averaged over the stage's total hours, in MW.
     pub stored_energy_final_mw: f64,
+    /// Tailrace flow in m³/s.
+    pub tailrace_flow_m3s: Option<f64>,
+    /// Tailrace level in m.
+    pub tailrace_level_m: Option<f64>,
+    /// Net head in m.
+    pub net_head_m: Option<f64>,
 }
 
 /// Thermal unit result for one (stage, block, thermal) tuple.
@@ -1482,6 +1489,9 @@ struct HydroBuilders {
     integrated_accumulated_productivity_mw_per_m3s: Float64Builder,
     stored_energy_initial_mw: Float64Builder,
     stored_energy_final_mw: Float64Builder,
+    tailrace_flow_m3s: Float64Builder,
+    tailrace_level_m: Float64Builder,
+    net_head_m: Float64Builder,
 }
 
 impl HydroBuilders {
@@ -1529,6 +1539,9 @@ impl HydroBuilders {
             integrated_accumulated_productivity_mw_per_m3s: Float64Builder::with_capacity(n),
             stored_energy_initial_mw: Float64Builder::with_capacity(n),
             stored_energy_final_mw: Float64Builder::with_capacity(n),
+            tailrace_flow_m3s: Float64Builder::with_capacity(n),
+            tailrace_level_m: Float64Builder::with_capacity(n),
+            net_head_m: Float64Builder::with_capacity(n),
         }
     }
 }
@@ -1606,6 +1619,9 @@ fn fill_hydro_builders<'a>(
             .append_value(r.stored_energy_initial_mw);
         b.stored_energy_final_mw
             .append_value(r.stored_energy_final_mw);
+        b.tailrace_flow_m3s.append_option(r.tailrace_flow_m3s);
+        b.tailrace_level_m.append_option(r.tailrace_level_m);
+        b.net_head_m.append_option(r.net_head_m);
     }
 }
 
@@ -1665,6 +1681,9 @@ fn build_hydros_batch<'a>(
             Arc::new(b.integrated_accumulated_productivity_mw_per_m3s.finish()),
             Arc::new(b.stored_energy_initial_mw.finish()),
             Arc::new(b.stored_energy_final_mw.finish()),
+            Arc::new(b.tailrace_flow_m3s.finish()),
+            Arc::new(b.tailrace_level_m.finish()),
+            Arc::new(b.net_head_m.finish()),
         ],
     )
     .map_err(|e| OutputError::serialization("hydros", e.to_string()))
@@ -2615,6 +2634,9 @@ mod tests {
             integrated_accumulated_productivity_mw_per_m3s: 6.0,
             stored_energy_initial_mw: 1.7145,
             stored_energy_final_mw: 1.7222,
+            tailrace_flow_m3s: None,
+            tailrace_level_m: None,
+            net_head_m: None,
         }
     }
 
@@ -3407,6 +3429,8 @@ mod tests {
 
     #[test]
     fn write_scenario_parquet_roundtrip_hydros_derived_mwh() {
+        use arrow::array::Array;
+
         let tmp = tempfile::tempdir().expect("tempdir must succeed");
         std::fs::create_dir_all(tmp.path().join("simulation")).unwrap();
 
@@ -3416,7 +3440,11 @@ mod tests {
             SimulationParquetWriter::new(tmp.path(), &system).expect("new must succeed");
 
         // 2 stages x 2 hydros = 4 rows in hydros parquet.
-        let payload = make_scenario_payload(0, 2);
+        let mut payload = make_scenario_payload(0, 2);
+        let fpha_row = &mut payload.stages[0].hydros[0];
+        fpha_row.tailrace_flow_m3s = Some(219.0);
+        fpha_row.tailrace_level_m = Some(10.219);
+        fpha_row.net_head_m = Some(138.781);
         writer
             .write_scenario(payload)
             .expect("write_scenario must succeed");
@@ -3518,6 +3546,37 @@ mod tests {
             1.7222,
             "stored_energy_final_mw must round-trip"
         );
+
+        for (col, expected_index, expected_value) in [
+            ("tailrace_flow_m3s", 42, 219.0),
+            ("tailrace_level_m", 43, 10.219),
+            ("net_head_m", 44, 138.781),
+        ] {
+            let field = schema
+                .field_with_name(col)
+                .unwrap_or_else(|_| panic!("{col} column must exist in schema"));
+            assert_eq!(
+                field.data_type(),
+                &arrow::datatypes::DataType::Float64,
+                "{col} must be Float64"
+            );
+            assert!(field.is_nullable(), "{col} must be nullable");
+            assert_eq!(
+                schema.index_of(col).expect("column must exist"),
+                expected_index,
+                "{col} must sit at its declared tail position"
+            );
+            let arr = batch
+                .column(expected_index)
+                .as_any()
+                .downcast_ref::<arrow::array::Float64Array>()
+                .unwrap_or_else(|| panic!("column {col} must be Float64Array"));
+            assert_eq!(arr.value(0), expected_value, "{col} must round-trip");
+            assert!(
+                arr.is_null(1),
+                "{col} must be null where the record is None"
+            );
+        }
     }
 
     #[test]

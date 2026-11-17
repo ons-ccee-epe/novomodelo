@@ -281,6 +281,8 @@ const NAMED_UNITS: &[(&str, &str, &str)] = &[
     ("buses", "spot_price", "$/MWh"),
     ("contracts", "price_per_mwh", "$/MWh"),
     ("hydros", "water_value_per_hm3", "$/hm3"),
+    ("hydros", "tailrace_level_m", "m"),
+    ("hydros", "net_head_m", "m"),
     ("convergence", "lower_bound", "$"),
     ("convergence", "upper_bound", "$"),
     ("convergence", "upper_bound_std", "$"),
@@ -582,6 +584,21 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
         "hydros",
         "water_withdrawal_violation_neg_m3s",
         "Under-withdrawal constraint violation",
+    ),
+    (
+        "hydros",
+        "tailrace_flow_m3s",
+        "Tailrace flow: the hydro's own release scaled by its outflow factor plus the lateral flow of the plants and incremental inflows that influence it; null unless the hydro uses computed FPHA at the stage.",
+    ),
+    (
+        "hydros",
+        "tailrace_level_m",
+        "Tailrace level at the tailrace flow; null unless the hydro uses computed FPHA at the stage.",
+    ),
+    (
+        "hydros",
+        "net_head_m",
+        "Net head: forebay level at the block-average storage minus the tailrace level and hydraulic losses, floored at 0; null unless the hydro uses computed FPHA at the stage.",
     ),
     ("hydro_bus_generation", "stage_id", "Stage index"),
     (
@@ -3032,8 +3049,8 @@ mod tests {
 
         let row_count = rdr.records().count();
         assert_eq!(
-            row_count, 255,
-            "variables.csv must have exactly 255 data rows (one per column across all schemas)"
+            row_count, 258,
+            "variables.csv must have exactly 258 data rows (one per column across all schemas)"
         );
     }
 
@@ -3999,6 +4016,8 @@ mod tests {
         ("buses", "spot_price", "$/MWh"),
         ("contracts", "price_per_mwh", "$/MWh"),
         ("hydros", "water_value_per_hm3", "$/hm3"),
+        ("hydros", "tailrace_level_m", "m"),
+        ("hydros", "net_head_m", "m"),
         ("convergence", "lower_bound", "$"),
         ("convergence", "upper_bound", "$"),
         ("convergence", "upper_bound_std", "$"),
@@ -4391,6 +4410,7 @@ mod tests {
             "(m3/s)/hm3",
             "%",
             "ms",
+            "m",
             "varies",
         ];
         let problems: Vec<String> = registry_columns()
@@ -4576,6 +4596,16 @@ mod tests {
             description_for("costs", "scenario_id"),
             "0-based scenario identifier"
         );
+    }
+
+    #[test]
+    fn tailrace_columns_state_their_null_condition() {
+        for column in ["tailrace_flow_m3s", "tailrace_level_m", "net_head_m"] {
+            assert!(
+                description_for("hydros", column).contains("computed FPHA"),
+                "{column} must state when it is null"
+            );
+        }
     }
 
     #[test]
