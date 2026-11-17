@@ -43,7 +43,7 @@ use crate::{
             accumulate_category_costs, build_transit_seed, extract_anticipated_lanes,
             extract_stage_result_with_lookups,
         },
-        tailrace::SimulationTailrace,
+        tailrace::{SimulationTailrace, fill_tailrace_quantities},
         types::{ScenarioCategoryCosts, SimulationScenarioResult, SimulationStageResult},
     },
     solve::{LazyInputs, StageOpeningSolver},
@@ -694,6 +694,13 @@ pub(crate) fn extract_sim_stage_result(
         ids.node_id,
         hydro_lookup,
         &lookups.anticipated_plants,
+    );
+    fill_tailrace_quantities(
+        &mut result.hydros,
+        stage_n_blks,
+        output.tailrace.stage(t.0),
+        output.tailrace.lateral(),
+        *training_ctx.inflow_method,
     );
     result.anticipated_lanes = extract_anticipated_lanes(
         &view,
