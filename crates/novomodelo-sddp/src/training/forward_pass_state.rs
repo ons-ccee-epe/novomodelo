@@ -988,7 +988,9 @@ mod tests {
 
     use crate::test_support::RankStub;
     use chrono::NaiveDate;
-    use novomodelo_core::entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties};
+    use novomodelo_core::entities::hydro::{
+        Hydro, HydroGenerationModel, HydroPenalties, TailraceFlow,
+    };
     use novomodelo_core::scenario::{
         CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile, InflowModel,
         SamplingScheme,
@@ -1204,6 +1206,7 @@ mod tests {
                 evaporation_violation_neg_cost: 0.0,
                 inflow_nonnegativity_cost: 1000.0,
             },
+            tailrace_flow: TailraceFlow::default(),
         };
         hydro.declare_mirror_unit_group(EntityId(0));
         let stages: Vec<Stage> = make_stages_2();
@@ -1993,6 +1996,7 @@ mod tests {
                     evaporation_violation_neg_cost: 0.0,
                     inflow_nonnegativity_cost: 1000.0,
                 },
+                tailrace_flow: TailraceFlow::default(),
             };
             hydro.declare_mirror_unit_group(EntityId(0));
             hydro

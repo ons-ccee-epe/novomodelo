@@ -15,7 +15,8 @@ use chrono::NaiveDate;
 use crate::{
     Block, BlockMode, Bus, ContractType, DeficitSegment, EnergyContract, EntityId, Hydro,
     HydroGenerationModel, HydroPenalties, HydroUnitGroup, Line, NoiseMethod, NonControllableSource,
-    PumpingStation, ScenarioSourceConfig, Stage, StageRiskConfig, StageStateConfig, Thermal,
+    PumpingStation, ScenarioSourceConfig, Stage, StageRiskConfig, StageStateConfig, TailraceFlow,
+    Thermal,
 };
 
 /// The `NaiveDate` for a calendar-valid `(year, month, day)` triple.
@@ -197,6 +198,8 @@ pub struct HydroSpec {
     pub max_storage_hm3: f64,
     /// Resolved entity-level penalty costs.
     pub penalties: HydroPenalties,
+    /// Flow that drives the tailrace level.
+    pub tailrace_flow: TailraceFlow,
     /// Which unit group, if any, is declared on construction.
     pub mirror_unit_group: MirrorUnitGroup,
 }
@@ -218,6 +221,7 @@ impl Default for HydroSpec {
                 inflow_nonnegativity_cost: 1000.0,
                 ..HydroPenalties::uniform(0.0)
             },
+            tailrace_flow: TailraceFlow::default(),
             mirror_unit_group: MirrorUnitGroup::OwnBus,
         }
     }
@@ -238,6 +242,7 @@ pub fn make_hydro(
         max_generation_mw,
         max_storage_hm3,
         penalties,
+        tailrace_flow,
         mirror_unit_group,
     }: HydroSpec,
 ) -> Hydro {
@@ -268,6 +273,7 @@ pub fn make_hydro(
         diversion: None,
         filling: None,
         penalties,
+        tailrace_flow,
     };
     match mirror_unit_group {
         MirrorUnitGroup::OwnBus => hydro.declare_mirror_unit_group(EntityId(bus_id)),

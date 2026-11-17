@@ -238,7 +238,7 @@ mod tests {
 
     use novomodelo_core::{
         EntityId, HorizonGraph,
-        entities::{Bus, HydroGenerationModel},
+        entities::{Bus, HydroGenerationModel, TailraceFlow},
         scenario::{
             CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile,
             CorrelationScheduleEntry,
@@ -291,6 +291,7 @@ mod tests {
             diversion: None,
             filling: None,
             penalties: crate::test_support::penalties_all(1.0),
+            tailrace_flow: TailraceFlow::default(),
         }
     }
 

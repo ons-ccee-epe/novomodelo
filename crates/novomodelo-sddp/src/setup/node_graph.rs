@@ -1803,7 +1803,7 @@ mod tests {
     ) -> StochasticContext {
         use chrono::NaiveDate;
         use novomodelo_core::entities::bus::{Bus, DeficitSegment};
-        use novomodelo_core::entities::hydro::{Hydro, HydroGenerationModel};
+        use novomodelo_core::entities::hydro::{Hydro, HydroGenerationModel, TailraceFlow};
         use novomodelo_core::temporal::{
             Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
             StageStateConfig,
@@ -1873,6 +1873,7 @@ mod tests {
                         evaporation_violation_neg_cost: 0.0,
                         inflow_nonnegativity_cost: 1000.0,
                     },
+                    tailrace_flow: TailraceFlow::default(),
                 };
                 hydro.declare_mirror_unit_group(EntityId(1));
                 hydro

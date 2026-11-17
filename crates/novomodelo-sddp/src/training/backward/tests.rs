@@ -739,7 +739,9 @@ fn make_stochastic_context_with_ar(
     ar_coefficients: &[f64],
 ) -> novomodelo_stochastic::StochasticContext {
     use chrono::NaiveDate;
-    use novomodelo_core::entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties};
+    use novomodelo_core::entities::hydro::{
+        Hydro, HydroGenerationModel, HydroPenalties, TailraceFlow,
+    };
     use novomodelo_core::{
         Bus, DeficitSegment, EntityId, SystemBuilder,
         scenario::{
@@ -810,6 +812,7 @@ fn make_stochastic_context_with_ar(
             evaporation_violation_neg_cost: 0.0,
             inflow_nonnegativity_cost: 1000.0,
         },
+        tailrace_flow: TailraceFlow::default(),
     };
     hydro.declare_mirror_unit_group(EntityId(0));
 
@@ -2500,7 +2503,9 @@ fn make_stochastic_context_with_load(
     std_mw: f64,
 ) -> novomodelo_stochastic::StochasticContext {
     use chrono::NaiveDate;
-    use novomodelo_core::entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties};
+    use novomodelo_core::entities::hydro::{
+        Hydro, HydroGenerationModel, HydroPenalties, TailraceFlow,
+    };
     use novomodelo_core::scenario::{CorrelationModel, InflowModel, LoadModel};
     use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
@@ -2576,6 +2581,7 @@ fn make_stochastic_context_with_load(
             evaporation_violation_neg_cost: 0.0,
             inflow_nonnegativity_cost: 1000.0,
         },
+        tailrace_flow: TailraceFlow::default(),
     };
     hydro.declare_mirror_unit_group(EntityId(0));
 

@@ -287,7 +287,9 @@ fn make_stochastic_context(n_stages: usize) -> StochasticContext {
     use std::collections::BTreeMap;
 
     use chrono::NaiveDate;
-    use novomodelo_core::entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties};
+    use novomodelo_core::entities::hydro::{
+        Hydro, HydroGenerationModel, HydroPenalties, TailraceFlow,
+    };
     use novomodelo_core::scenario::{
         CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile, InflowModel,
     };
@@ -355,6 +357,7 @@ fn make_stochastic_context(n_stages: usize) -> StochasticContext {
             evaporation_violation_neg_cost: 0.0,
             inflow_nonnegativity_cost: 1000.0,
         },
+        tailrace_flow: TailraceFlow::default(),
     };
     hydro.declare_mirror_unit_group(EntityId(0));
     let make_stage = |idx: usize, id: i32| Stage {
@@ -517,7 +520,9 @@ fn make_stochastic_context_1_hydro_1_load_bus_sim(mean_mw: f64, std_mw: f64) -> 
     use std::collections::BTreeMap;
 
     use chrono::NaiveDate;
-    use novomodelo_core::entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties};
+    use novomodelo_core::entities::hydro::{
+        Hydro, HydroGenerationModel, HydroPenalties, TailraceFlow,
+    };
     use novomodelo_core::scenario::{CorrelationModel, InflowModel, LoadModel};
     use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
@@ -593,6 +598,7 @@ fn make_stochastic_context_1_hydro_1_load_bus_sim(mean_mw: f64, std_mw: f64) -> 
             evaporation_violation_neg_cost: 0.0,
             inflow_nonnegativity_cost: 1000.0,
         },
+        tailrace_flow: TailraceFlow::default(),
     };
     hydro.declare_mirror_unit_group(EntityId(0));
     let stage = Stage {
@@ -1291,7 +1297,9 @@ fn make_stochastic_1h_1s(mean_m3s: f64, std_m3s: f64) -> StochasticContext {
     use std::collections::BTreeMap;
 
     use chrono::NaiveDate;
-    use novomodelo_core::entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties};
+    use novomodelo_core::entities::hydro::{
+        Hydro, HydroGenerationModel, HydroPenalties, TailraceFlow,
+    };
     use novomodelo_core::scenario::{
         CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile, InflowModel,
     };
@@ -1359,6 +1367,7 @@ fn make_stochastic_1h_1s(mean_m3s: f64, std_m3s: f64) -> StochasticContext {
             evaporation_violation_neg_cost: 0.0,
             inflow_nonnegativity_cost: 1000.0,
         },
+        tailrace_flow: TailraceFlow::default(),
     };
     hydro.declare_mirror_unit_group(EntityId(0));
     let stage = Stage {

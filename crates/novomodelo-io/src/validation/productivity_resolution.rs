@@ -135,7 +135,7 @@ fn parquet_lookup(
 mod tests {
     use chrono::NaiveDate;
     use novomodelo_core::{
-        DeficitSegment, EntityId, HorizonGraph, Hydro,
+        DeficitSegment, EntityId, HorizonGraph, Hydro, TailraceFlow,
         entities::{Bus, HydroGenerationModel},
         temporal::{
             Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
@@ -208,6 +208,7 @@ mod tests {
             diversion: None,
             filling: None,
             penalties: crate::test_support::penalties_all(1.0),
+            tailrace_flow: TailraceFlow::default(),
         }
     }
 

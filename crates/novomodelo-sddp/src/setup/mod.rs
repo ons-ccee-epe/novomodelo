@@ -3096,7 +3096,9 @@ mod tests;
 mod transit_seed_round_trip_tests {
     use chrono::{Duration, NaiveDate};
     use novomodelo_core::entities::bus::{Bus, DeficitSegment};
-    use novomodelo_core::entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties};
+    use novomodelo_core::entities::hydro::{
+        Hydro, HydroGenerationModel, HydroPenalties, TailraceFlow,
+    };
     use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
         StageStateConfig,
@@ -3163,6 +3165,7 @@ mod transit_seed_round_trip_tests {
             diversion: None,
             filling: None,
             penalties: zero_penalties(),
+            tailrace_flow: TailraceFlow::default(),
         };
         h.declare_mirror_unit_group(EntityId(1));
         h

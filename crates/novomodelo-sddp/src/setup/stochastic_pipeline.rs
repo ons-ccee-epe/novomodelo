@@ -431,7 +431,8 @@ mod tests {
         BoundsCountsSpec, BoundsDefaults, BusStagePenalties, ContractBlockBounds, HorizonGraph,
         HydroBlockBounds, HydroPenalties, HydroStageBounds, InitialConditions, LineBlockBounds,
         LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec, PenaltiesDefaults,
-        PumpingBlockBounds, ResolvedBounds, ResolvedPenalties, SystemBuilder, ThermalBlockBounds,
+        PumpingBlockBounds, ResolvedBounds, ResolvedPenalties, SystemBuilder, TailraceFlow,
+        ThermalBlockBounds,
         entities::{
             bus::{Bus, DeficitSegment},
             hydro::{Hydro, HydroGenerationModel},
@@ -629,6 +630,7 @@ mod tests {
                 evaporation_violation_neg_cost: 0.0,
                 inflow_nonnegativity_cost: 1000.0,
             },
+            tailrace_flow: TailraceFlow::default(),
         };
         hydro.declare_mirror_unit_group(RING_BUS_ID);
 
@@ -1644,6 +1646,7 @@ mod tests {
                 evaporation_violation_neg_cost: 0.0,
                 inflow_nonnegativity_cost: 1000.0,
             },
+            tailrace_flow: TailraceFlow::default(),
         };
         hydro.declare_mirror_unit_group(bus_id);
 
@@ -2064,6 +2067,7 @@ mod tests {
                 evaporation_violation_neg_cost: 0.0,
                 inflow_nonnegativity_cost: 1000.0,
             },
+            tailrace_flow: TailraceFlow::default(),
         };
         hydro.declare_mirror_unit_group(bus_id);
 

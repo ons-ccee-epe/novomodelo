@@ -800,6 +800,7 @@ mod tests {
     };
     use crate::fpha_fitting::ForebayTable;
     use crate::test_support;
+    use novomodelo_core::TailraceFlow;
 
     // -------------------------------------------------------------------------
     // Shared test helpers
@@ -858,6 +859,7 @@ mod tests {
                 evaporation_violation_neg_cost: 0.0,
                 inflow_nonnegativity_cost: 1000.0,
             },
+            tailrace_flow: TailraceFlow::default(),
         };
         hydro.declare_mirror_unit_group(EntityId(1));
         hydro

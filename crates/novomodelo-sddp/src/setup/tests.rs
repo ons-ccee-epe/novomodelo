@@ -27,7 +27,7 @@ use novomodelo_core::{
 };
 use novomodelo_core::{
     ContractType, EnergyContract, EntityId, HorizonGraph, HydroPastDefluence, InitialConditions,
-    PostStudyStage, PostStudyStages, System, SystemBuilder, WaterBucketStages,
+    PostStudyStage, PostStudyStages, System, SystemBuilder, TailraceFlow, WaterBucketStages,
     entities::{
         bus::{Bus, DeficitSegment},
         hydro::{Hydro, HydroGenerationModel},
@@ -140,6 +140,7 @@ fn minimal_system_with_policy_graph(
             evaporation_violation_neg_cost: 0.0,
             inflow_nonnegativity_cost: 1000.0,
         },
+        tailrace_flow: TailraceFlow::default(),
     };
     hydro.declare_mirror_unit_group(EntityId(1));
 
@@ -374,6 +375,7 @@ fn minimal_fpha_misconfigured_system(n_stages: usize) -> novomodelo_core::System
             evaporation_violation_neg_cost: 0.0,
             inflow_nonnegativity_cost: 1000.0,
         },
+        tailrace_flow: TailraceFlow::default(),
     };
     hydro.declare_mirror_unit_group(EntityId(1));
 
@@ -1943,6 +1945,7 @@ fn test_prepare_stochastic_historical_residuals_noise_method() {
             evaporation_violation_neg_cost: 0.0,
             inflow_nonnegativity_cost: 1000.0,
         },
+        tailrace_flow: TailraceFlow::default(),
     };
     hydro.declare_mirror_unit_group(EntityId(1));
 
@@ -2384,6 +2387,7 @@ fn minimal_system_2_hydros_with_history(
                 evaporation_violation_neg_cost: 0.0,
                 inflow_nonnegativity_cost: 1000.0,
             },
+            tailrace_flow: TailraceFlow::default(),
         };
         hydro.declare_mirror_unit_group(EntityId(1));
         hydro
@@ -2869,6 +2873,7 @@ fn staggered_dates_system_2_hydros(
                 evaporation_violation_neg_cost: 0.0,
                 inflow_nonnegativity_cost: 1000.0,
             },
+            tailrace_flow: TailraceFlow::default(),
         };
         hydro.declare_mirror_unit_group(EntityId(1));
         hydro
@@ -3212,6 +3217,7 @@ fn filling_system_2_hydros(
                 evaporation_violation_neg_cost: 0.0,
                 inflow_nonnegativity_cost: 1000.0,
             },
+            tailrace_flow: TailraceFlow::default(),
         };
         hydro.declare_mirror_unit_group(EntityId(1));
         hydro
@@ -3785,6 +3791,7 @@ fn system_with_anticipated_thermals(
             evaporation_violation_neg_cost: 0.0,
             inflow_nonnegativity_cost: 1000.0,
         },
+        tailrace_flow: TailraceFlow::default(),
     };
     hydro.declare_mirror_unit_group(EntityId(1));
 
@@ -4055,6 +4062,7 @@ fn system_with_two_anticipated_thermals_staggered_dates(
             evaporation_violation_neg_cost: 0.0,
             inflow_nonnegativity_cost: 1000.0,
         },
+        tailrace_flow: TailraceFlow::default(),
     };
     hydro.declare_mirror_unit_group(EntityId(1));
 
@@ -5054,6 +5062,7 @@ fn system_with_historical_inflow(n_stages: usize) -> novomodelo_core::System {
             evaporation_violation_neg_cost: 0.0,
             inflow_nonnegativity_cost: 1000.0,
         },
+        tailrace_flow: TailraceFlow::default(),
     };
     hydro.declare_mirror_unit_group(EntityId(1));
 
@@ -5325,6 +5334,7 @@ fn external_inflow_library_built_when_scheme_is_external() {
             evaporation_violation_neg_cost: 0.0,
             inflow_nonnegativity_cost: 1000.0,
         },
+        tailrace_flow: TailraceFlow::default(),
     };
     hydro.declare_mirror_unit_group(EntityId(1));
     let stages: Vec<Stage> = (0..2usize)
@@ -5583,6 +5593,7 @@ fn external_load_library_built_when_scheme_is_external() {
             evaporation_violation_neg_cost: 0.0,
             inflow_nonnegativity_cost: 1000.0,
         },
+        tailrace_flow: TailraceFlow::default(),
     };
     hydro.declare_mirror_unit_group(EntityId(1));
 
@@ -5868,6 +5879,7 @@ fn zero_sigma_external_load_system() -> System {
             evaporation_violation_neg_cost: 0.0,
             inflow_nonnegativity_cost: 1000.0,
         },
+        tailrace_flow: TailraceFlow::default(),
     };
     hydro.declare_mirror_unit_group(EntityId(1));
 
@@ -6237,6 +6249,7 @@ fn external_ncs_library_built_when_scheme_is_external() {
             evaporation_violation_neg_cost: 0.0,
             inflow_nonnegativity_cost: 1000.0,
         },
+        tailrace_flow: TailraceFlow::default(),
     };
     hydro.declare_mirror_unit_group(EntityId(1));
 
@@ -6531,6 +6544,7 @@ fn historical_library_fails_when_no_valid_windows() {
             evaporation_violation_neg_cost: 0.0,
             inflow_nonnegativity_cost: 1000.0,
         },
+        tailrace_flow: TailraceFlow::default(),
     };
     hydro.declare_mirror_unit_group(EntityId(1));
 
@@ -6960,6 +6974,7 @@ fn minimal_system_with_anticipated_and_commitments(
             evaporation_violation_neg_cost: 0.0,
             inflow_nonnegativity_cost: 1000.0,
         },
+        tailrace_flow: TailraceFlow::default(),
     };
     hydro.declare_mirror_unit_group(EntityId(1));
 
@@ -8113,6 +8128,7 @@ fn par2_system_with_state_configs(state_configs: &[StageStateConfig]) -> novomod
             evaporation_violation_neg_cost: 0.0,
             inflow_nonnegativity_cost: 1000.0,
         },
+        tailrace_flow: TailraceFlow::default(),
     };
     hydro.declare_mirror_unit_group(EntityId(1));
 
@@ -10510,6 +10526,7 @@ fn bucket_seed_hydro(id: i32, downstream_id: Option<i32>, travel_time_hours: Opt
         diversion: None,
         filling: None,
         penalties: bucket_seed_zero_penalties(),
+        tailrace_flow: TailraceFlow::default(),
     };
     hydro.declare_mirror_unit_group(EntityId(1));
     hydro

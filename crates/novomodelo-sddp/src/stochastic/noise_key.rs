@@ -289,7 +289,7 @@ mod tests {
     use novomodelo_core::{
         Block, BlockMode, Bus, DeficitSegment, EntityId, Hydro, HydroGenerationModel,
         HydroPenalties, InflowModel, NoiseMethod, SamplingScheme, ScenarioSourceConfig, Stage,
-        StageRiskConfig, StageStateConfig, System, SystemBuilder,
+        StageRiskConfig, StageStateConfig, System, SystemBuilder, TailraceFlow,
     };
     use novomodelo_stochastic::{ClassSchemes, OpeningTreeInputs, build_stochastic_context};
 
@@ -447,6 +447,7 @@ mod tests {
                 evaporation_violation_neg_cost: 0.0,
                 inflow_nonnegativity_cost: 1000.0,
             },
+            tailrace_flow: TailraceFlow::default(),
         };
         hydro.declare_mirror_unit_group(EntityId(bus_id));
         hydro

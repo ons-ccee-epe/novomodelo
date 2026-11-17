@@ -2322,7 +2322,7 @@ mod tests {
     use novomodelo_core::{
         Block, BlockMode, Bus, DeficitSegment, EntityId, Hydro, HydroGenerationModel,
         HydroPenalties, Line, NoiseMethod, PumpingStation, ScenarioSourceConfig, Stage,
-        StageRiskConfig, StageStateConfig, SystemBuilder, Thermal,
+        StageRiskConfig, StageStateConfig, SystemBuilder, TailraceFlow, Thermal,
     };
 
     // -----------------------------------------------------------------------
@@ -2379,6 +2379,7 @@ mod tests {
             diversion: None,
             filling: None,
             penalties: make_hydro_penalties_zero(),
+            tailrace_flow: TailraceFlow::default(),
         };
         hydro.declare_mirror_unit_group(EntityId(1));
         hydro

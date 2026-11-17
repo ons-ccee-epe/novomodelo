@@ -14,8 +14,8 @@ pub use bus::{Bus, DeficitSegment};
 pub use energy_contract::{ContractType, EnergyContract};
 pub use hydro::{
     DiversionChannel, EfficiencyModel, FillingConfig, HydraulicLossesModel, Hydro,
-    HydroGenerationModel, HydroPenalties, HydroUnitGroup, TailraceModel, TailracePoint,
-    has_turbine_capacity,
+    HydroGenerationModel, HydroPenalties, HydroUnitGroup, TailraceFlow, TailraceFlowInfluence,
+    TailraceModel, TailracePoint, has_turbine_capacity,
 };
 pub use line::Line;
 pub use non_controllable::NonControllableSource;

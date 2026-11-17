@@ -206,7 +206,9 @@ impl HydroCellIndex {
 #[cfg(test)]
 mod tests {
     use chrono::NaiveDate;
-    use novomodelo_core::{EntityId, Hydro, HydroGenerationModel, HydroPenalties, HydroUnitGroup};
+    use novomodelo_core::{
+        EntityId, Hydro, HydroGenerationModel, HydroPenalties, HydroUnitGroup, TailraceFlow,
+    };
 
     use super::{HydroCell, HydroCellIndex, HydroSys};
     use crate::test_support::{geometry_hydro, make_unit_group};
@@ -266,6 +268,7 @@ mod tests {
             diversion: None,
             filling: None,
             penalties: zero_penalties(),
+            tailrace_flow: TailraceFlow::default(),
         }
     }
 

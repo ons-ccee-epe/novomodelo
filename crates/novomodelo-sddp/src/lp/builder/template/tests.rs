@@ -16,7 +16,7 @@ use novomodelo_core::{
     NonControllableSource, PenaltiesCountsSpec, PenaltiesDefaults, PostStudyStage, PostStudyStages,
     PostStudyThermalBound, PumpingBlockBounds, PumpingStation, ResolvedBounds, ResolvedNcsBounds,
     ResolvedNcsFactors, ResolvedPenalties, ScenarioSourceConfig, Stage, StageRiskConfig,
-    StageStateConfig, SystemBuilder, Thermal, ThermalBlockBounds, WaterBucketStages,
+    StageStateConfig, SystemBuilder, TailraceFlow, Thermal, ThermalBlockBounds, WaterBucketStages,
 };
 use novomodelo_stochastic::PrecomputedNormal;
 use novomodelo_stochastic::par::precompute::PrecomputedPar;
@@ -321,6 +321,7 @@ fn fixture_hydro(id: i32) -> Hydro {
         diversion: None,
         filling: None,
         penalties: hydro_penalties_zero(),
+        tailrace_flow: TailraceFlow::default(),
     };
     hydro.declare_mirror_unit_group(EntityId(1));
     hydro
@@ -3201,6 +3202,7 @@ fn one_hydro_active_violations(n_stages: usize) -> System {
             evaporation_violation_neg_cost: 0.0,
             inflow_nonnegativity_cost: 1000.0,
         },
+        tailrace_flow: TailraceFlow::default(),
     };
     hydro.declare_mirror_unit_group(EntityId(1));
 
@@ -4430,6 +4432,7 @@ fn system_with_contracts_filling_and_anticipated() -> novomodelo_core::System {
             filling_min_rate_m3s: 0.0,
         }),
         penalties: hydro_penalties_zero(),
+        tailrace_flow: TailraceFlow::default(),
     };
     hydro.declare_mirror_unit_group(EntityId(1));
 
@@ -4931,6 +4934,7 @@ fn filling_block_system(block_mode: BlockMode, n_blks: usize) -> System {
                 filling_min_rate_m3s: FILL_RATE_M3S,
             }),
             penalties: hydro_penalties_zero(),
+            tailrace_flow: TailraceFlow::default(),
         };
         hydro.declare_mirror_unit_group(EntityId(1));
         hydro

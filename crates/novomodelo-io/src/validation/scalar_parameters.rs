@@ -143,7 +143,7 @@ mod tests {
     use chrono::NaiveDate;
     use novomodelo_core::{
         Bus, ComputedParameter, DeficitSegment, EntityId, Hydro, HydroGenerationModel,
-        HydroPenalties, ParameterKind, ScalarParameter, SystemBuilder,
+        HydroPenalties, ParameterKind, ScalarParameter, SystemBuilder, TailraceFlow,
     };
 
     use super::*;
@@ -203,6 +203,7 @@ mod tests {
             diversion: None,
             filling: None,
             penalties: zero_hydro_penalties(),
+            tailrace_flow: TailraceFlow::default(),
         };
         hydro.declare_mirror_unit_group(EntityId(1));
         hydro

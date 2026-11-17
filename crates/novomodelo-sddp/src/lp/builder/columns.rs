@@ -1142,7 +1142,8 @@ mod interior_storage_bound_tests {
         ContractBlockBounds, EntityId, Hydro, HydroBlockBounds, HydroPenalties, HydroStageBounds,
         LineBlockBounds, LineStagePenalties, NcsStagePenalties, NoiseMethod, PenaltiesCountsSpec,
         PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds, ResolvedPenalties,
-        ScenarioSourceConfig, Stage, StageRiskConfig, StageStateConfig, ThermalBlockBounds,
+        ScenarioSourceConfig, Stage, StageRiskConfig, StageStateConfig, TailraceFlow,
+        ThermalBlockBounds,
     };
 
     use super::{ColumnBufs, StageLayout, TemplateBuildCtx, fill_storage_columns};
@@ -1190,6 +1191,7 @@ mod interior_storage_bound_tests {
             diversion: None,
             filling: None,
             penalties: super::super::test_support::zero_hydro_penalties(),
+            tailrace_flow: TailraceFlow::default(),
         };
         hydro.declare_mirror_unit_group(EntityId(1));
         hydro
@@ -1565,7 +1567,7 @@ mod diversion_bound_tests {
         BoundsCountsSpec, BoundsDefaults, BusStagePenalties, CascadeTopology, ContractBlockBounds,
         EntityId, Hydro, HydroBlockBounds, HydroPenalties, HydroStageBounds, LineBlockBounds,
         LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec, PenaltiesDefaults,
-        PumpingBlockBounds, ResolvedBounds, ResolvedPenalties, ThermalBlockBounds,
+        PumpingBlockBounds, ResolvedBounds, ResolvedPenalties, TailraceFlow, ThermalBlockBounds,
     };
 
     use crate::hydro_models::{
@@ -1617,6 +1619,7 @@ mod diversion_bound_tests {
             }),
             filling: None,
             penalties: zero_hydro_penalties(),
+            tailrace_flow: TailraceFlow::default(),
         };
         hydro.declare_mirror_unit_group(EntityId(1));
         hydro
@@ -1908,7 +1911,7 @@ mod filling_phase_gating_tests {
         CascadeTopology, ContractBlockBounds, EntityId, Hydro, HydroBlockBounds, HydroPenalties,
         HydroStageBounds, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
         PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBlockBounds,
-        ResolvedBounds, ResolvedPenalties, Stage, ThermalBlockBounds,
+        ResolvedBounds, ResolvedPenalties, Stage, TailraceFlow, ThermalBlockBounds,
     };
 
     use crate::hydro_models::{
@@ -1977,6 +1980,7 @@ mod filling_phase_gating_tests {
             diversion: None,
             filling,
             penalties: zero_hydro_penalties(),
+            tailrace_flow: TailraceFlow::default(),
         };
         hydro.declare_mirror_unit_group(EntityId(1));
         hydro
@@ -3701,7 +3705,7 @@ mod block_family_slack_tests {
         BoundsCountsSpec, BoundsDefaults, BusStagePenalties, CascadeTopology, ContractBlockBounds,
         EntityId, Hydro, HydroBlockBounds, HydroPenalties, HydroStageBounds, LineBlockBounds,
         LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec, PenaltiesDefaults,
-        PumpingBlockBounds, ResolvedBounds, ResolvedPenalties, ThermalBlockBounds,
+        PumpingBlockBounds, ResolvedBounds, ResolvedPenalties, TailraceFlow, ThermalBlockBounds,
     };
 
     use crate::hydro_models::{
@@ -3837,6 +3841,7 @@ mod block_family_slack_tests {
             diversion: None,
             filling: None,
             penalties: zero_hydro_penalties(),
+            tailrace_flow: TailraceFlow::default(),
         };
         hydro.declare_mirror_unit_group(EntityId(1));
         hydro
@@ -4158,7 +4163,8 @@ mod evaporation_slack_objective_tests {
         ContractBlockBounds, EntityId, Hydro, HydroBlockBounds, HydroPenalties, HydroStageBounds,
         LineBlockBounds, LineStagePenalties, NcsStagePenalties, NoiseMethod, PenaltiesCountsSpec,
         PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds, ResolvedPenalties,
-        ScenarioSourceConfig, Stage, StageRiskConfig, StageStateConfig, ThermalBlockBounds,
+        ScenarioSourceConfig, Stage, StageRiskConfig, StageStateConfig, TailraceFlow,
+        ThermalBlockBounds,
     };
 
     use crate::hydro_models::{
@@ -4205,6 +4211,7 @@ mod evaporation_slack_objective_tests {
             diversion: None,
             filling: None,
             penalties: zero_hydro_penalties(),
+            tailrace_flow: TailraceFlow::default(),
         };
         hydro.declare_mirror_unit_group(EntityId(1));
         hydro
@@ -5792,7 +5799,8 @@ mod hydro_block_bound_tests {
         HydroBlockOverride, HydroPenalties, HydroStageBounds, HydroUnitGroupBoundsCountsSpec,
         HydroUnitGroupOverride, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
         PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBlockBounds,
-        ResolvedBounds, ResolvedHydroUnitGroupBounds, ResolvedPenalties, ThermalBlockBounds,
+        ResolvedBounds, ResolvedHydroUnitGroupBounds, ResolvedPenalties, TailraceFlow,
+        ThermalBlockBounds,
     };
 
     use crate::hydro_models::{
@@ -5850,6 +5858,7 @@ mod hydro_block_bound_tests {
             diversion: None,
             filling: None,
             penalties: zero_hydro_penalties(),
+            tailrace_flow: TailraceFlow::default(),
         };
         hydro.declare_mirror_unit_group(EntityId(1));
         hydro
@@ -6792,7 +6801,7 @@ mod cell_column_bound_tests {
         HydroUnitGroupBoundsCountsSpec, HydroUnitGroupOverride, LineBlockBounds,
         LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec, PenaltiesDefaults,
         PumpingBlockBounds, ResolvedBlockBounds, ResolvedBounds, ResolvedHydroUnitGroupBounds,
-        ResolvedPenalties, ThermalBlockBounds,
+        ResolvedPenalties, TailraceFlow, ThermalBlockBounds,
     };
 
     use crate::hydro_models::{
@@ -6853,6 +6862,7 @@ mod cell_column_bound_tests {
             diversion: None,
             filling: None,
             penalties: zero_hydro_penalties(),
+            tailrace_flow: TailraceFlow::default(),
         };
         hydro.declare_mirror_unit_group(EntityId(40));
         hydro
@@ -6895,6 +6905,7 @@ mod cell_column_bound_tests {
             diversion: None,
             filling,
             penalties: zero_hydro_penalties(),
+            tailrace_flow: TailraceFlow::default(),
         };
         hydro.declare_mirror_unit_group(EntityId(99));
         hydro
@@ -6939,6 +6950,7 @@ mod cell_column_bound_tests {
             diversion: None,
             filling: None,
             penalties: zero_hydro_penalties(),
+            tailrace_flow: TailraceFlow::default(),
         };
         hydro.declare_mirror_unit_group(bus_id);
         hydro

@@ -16,7 +16,7 @@ use novomodelo_core::{
     PenaltiesCountsSpec, PenaltiesDefaults, PenaltyBasis, PumpingBlockBounds, PumpingStation,
     ResolvedBlockBounds, ResolvedBounds, ResolvedGenericConstraintBounds, ResolvedPenalties,
     ScalarExpr, ScenarioSourceConfig, SlackConfig, Stage, StageRiskConfig, StageStateConfig,
-    Thermal, ThermalBlockBounds, VariableRef,
+    TailraceFlow, Thermal, ThermalBlockBounds, VariableRef,
 };
 
 use crate::hydro_models::{EvaporationModelSet, ProductionModelSet};
@@ -241,6 +241,7 @@ fn membership_hydro(
         diversion: None,
         filling,
         penalties: zero_hydro_penalties(),
+        tailrace_flow: TailraceFlow::default(),
     };
     hydro.declare_mirror_unit_group(EntityId(1));
     hydro

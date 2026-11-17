@@ -800,7 +800,7 @@ mod tests {
     use novomodelo_core::{
         AnticipatedConfig, Block, BlockMode, Bus, DeficitSegment, EntityId, Hydro,
         HydroGenerationModel, HydroPenalties, NoiseMethod, PostStudyStage, PostStudyStages,
-        ScenarioSourceConfig, Stage, StageRiskConfig, System, SystemBuilder, Thermal,
+        ScenarioSourceConfig, Stage, StageRiskConfig, System, SystemBuilder, TailraceFlow, Thermal,
         WaterBucketStages,
         resolved::{
             BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, HydroBlockBounds,
@@ -904,6 +904,7 @@ mod tests {
             diversion: None,
             filling: None,
             penalties: penalties_zero(),
+            tailrace_flow: TailraceFlow::default(),
         };
         hydro.declare_mirror_unit_group(EntityId(1));
         hydro

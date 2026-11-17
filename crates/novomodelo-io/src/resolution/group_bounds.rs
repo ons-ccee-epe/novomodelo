@@ -139,7 +139,9 @@ fn apply_group_bounds_row(row: &HydroUnitGroupBoundsRow, over: &mut HydroUnitGro
 mod tests {
     use super::*;
     use chrono::NaiveDate;
-    use novomodelo_core::entities::{HydroGenerationModel, HydroPenalties, HydroUnitGroup};
+    use novomodelo_core::entities::{
+        HydroGenerationModel, HydroPenalties, HydroUnitGroup, TailraceFlow,
+    };
 
     fn make_penalties() -> HydroPenalties {
         HydroPenalties {
@@ -203,6 +205,7 @@ mod tests {
             diversion: None,
             filling: None,
             penalties: make_penalties(),
+            tailrace_flow: TailraceFlow::default(),
         }
     }
 

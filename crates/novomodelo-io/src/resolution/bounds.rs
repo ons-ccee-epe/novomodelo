@@ -98,7 +98,7 @@ pub struct BoundsOverrides<'a> {
 /// use novomodelo_core::EntityId;
 /// use novomodelo_core::entities::{
 ///     EnergyContract, ContractType, Hydro, HydroGenerationModel, HydroPenalties,
-///     Line, PumpingStation, Thermal,
+///     Line, PumpingStation, TailraceFlow, Thermal,
 /// };
 /// use novomodelo_io::constraints::HydroBoundsRow;
 /// use novomodelo_io::resolution::{resolve_bounds, BoundsEntitySlices, BoundsOverrides};
@@ -150,6 +150,7 @@ pub struct BoundsOverrides<'a> {
 ///     diversion: None,
 ///     filling: None,
 ///     penalties,
+///     tailrace_flow: TailraceFlow::default(),
 /// };
 ///
 /// let override_row = HydroBoundsRow {
@@ -833,7 +834,7 @@ mod tests {
     use std::collections::HashMap;
 
     use novomodelo_core::{
-        EntityId,
+        EntityId, TailraceFlow,
         entities::{
             ContractType, DiversionChannel, EnergyContract, FillingConfig, Hydro,
             HydroGenerationModel, HydroPenalties, Line, PumpingStation, Thermal,
@@ -949,6 +950,7 @@ mod tests {
             diversion,
             filling,
             penalties: make_penalties(),
+            tailrace_flow: TailraceFlow::default(),
         }
     }
 

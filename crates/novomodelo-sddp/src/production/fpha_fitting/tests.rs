@@ -1,6 +1,6 @@
 use novomodelo_core::{
     EfficiencyModel, EntityId, HydraulicLossesModel, Hydro, HydroGenerationModel, HydroPenalties,
-    TailraceModel, TailracePoint,
+    TailraceFlow, TailraceModel, TailracePoint,
 };
 use novomodelo_io::PlaneReductionConfig;
 use novomodelo_io::extensions::{
@@ -618,6 +618,7 @@ fn make_hydro(min_storage_hm3: f64, max_storage_hm3: f64) -> Hydro {
         diversion: None,
         filling: None,
         penalties: zero_penalties,
+        tailrace_flow: TailraceFlow::default(),
     };
     hydro.declare_mirror_unit_group(EntityId::from(10));
     hydro
@@ -1273,6 +1274,7 @@ fn make_sobradinho_hydro() -> Hydro {
         diversion: None,
         filling: None,
         penalties: zero_penalties,
+        tailrace_flow: TailraceFlow::default(),
     };
     hydro.declare_mirror_unit_group(EntityId::from(10));
     hydro
@@ -1819,6 +1821,7 @@ fn fit_fpha_planes_linear_function_produces_one_plane() {
         diversion: None,
         filling: None,
         penalties: zero_penalties,
+        tailrace_flow: TailraceFlow::default(),
     };
     hydro.declare_mirror_unit_group(EntityId::from(10));
     let config = default_config();

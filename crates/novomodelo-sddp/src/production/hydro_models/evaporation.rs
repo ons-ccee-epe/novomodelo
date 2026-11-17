@@ -431,6 +431,7 @@ mod tests {
     use crate::SddpError;
 
     use super::*;
+    use novomodelo_core::TailraceFlow;
 
     // ── Test helpers ──────────────────────────────────────────────────────────
 
@@ -548,6 +549,7 @@ mod tests {
             diversion: None,
             filling: None,
             penalties: zero_penalties(),
+            tailrace_flow: TailraceFlow::default(),
         };
         hydro.declare_mirror_unit_group(EntityId::from(10));
         hydro

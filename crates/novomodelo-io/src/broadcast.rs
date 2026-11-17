@@ -216,7 +216,8 @@ mod tests {
     use novomodelo_core::{
         AnticipatedCommitmentHistory, Bus, ComputedParameter, DeficitSegment, EntityId, Hydro,
         HydroGenerationModel, HydroPenalties, InitialConditions, ParameterKind, ScalarParameter,
-        System, SystemBuilder, Thermal, entities::AnticipatedConfig,
+        System, SystemBuilder, TailraceFlow, TailraceFlowInfluence, Thermal,
+        entities::AnticipatedConfig,
     };
 
     fn minimal_bus(id: i32) -> Bus {
@@ -297,6 +298,7 @@ mod tests {
             diversion: None,
             filling: None,
             penalties: zero_hydro_penalties(),
+            tailrace_flow: TailraceFlow::default(),
         };
         hydro.declare_mirror_unit_group(EntityId(bus_id));
         hydro
@@ -343,6 +345,34 @@ mod tests {
         assert!(restored.hydro(EntityId(1)).is_some());
 
         assert_eq!(restored, system);
+    }
+
+    #[test]
+    fn test_round_trip_tailrace_flow() {
+        let mut hydro = minimal_hydro(1, 1);
+        hydro.tailrace_flow = TailraceFlow {
+            own_outflow_factor: 1.03,
+            outflow_influences: vec![TailraceFlowInfluence {
+                hydro_id: EntityId(2),
+                factor: 0.5,
+            }],
+            incremental_inflow_influences: vec![TailraceFlowInfluence {
+                hydro_id: EntityId(3),
+                factor: 0.25,
+            }],
+        };
+        let original = hydro.clone();
+
+        let system = SystemBuilder::new()
+            .buses(vec![minimal_bus(1)])
+            .hydros(vec![hydro, minimal_hydro(2, 1), minimal_hydro(3, 1)])
+            .build()
+            .unwrap();
+
+        let bytes = postcard::to_allocvec(&system).unwrap();
+        let restored = postcard::from_bytes::<System>(&bytes).unwrap();
+
+        assert_eq!(restored.hydro(EntityId(1)), Some(&original));
     }
 
     /// A generic constraint's coefficient and bound programs ride the constraint's derived

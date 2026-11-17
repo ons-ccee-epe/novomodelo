@@ -328,7 +328,7 @@ mod tests {
     use novomodelo_core::{
         BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, EntityId, FillingConfig, Hydro,
         HydroBlockBounds, HydroGenerationModel, HydroPenalties, HydroStageBounds, LineBlockBounds,
-        PumpingBlockBounds, ResolvedBounds, ThermalBlockBounds,
+        PumpingBlockBounds, ResolvedBounds, TailraceFlow, ThermalBlockBounds,
     };
 
     use super::build_filling_v_target;
@@ -414,6 +414,7 @@ mod tests {
                 filling_min_rate_m3s: 0.0,
             }),
             penalties: hydro_penalties_zero(),
+            tailrace_flow: TailraceFlow::default(),
         };
         hydro.declare_mirror_unit_group(EntityId(1));
         hydro

@@ -57,7 +57,7 @@ use novomodelo_core::{
     EntityId,
     entities::{
         DiversionChannel, EfficiencyModel, FillingConfig, HydraulicLossesModel, Hydro,
-        HydroGenerationModel, HydroUnitGroup, TailraceModel, TailracePoint,
+        HydroGenerationModel, HydroUnitGroup, TailraceFlow, TailraceModel, TailracePoint,
     },
     penalty::{GlobalPenaltyDefaults, HydroPenaltyOverrides, resolve_hydro_penalties},
 };
@@ -848,6 +848,7 @@ fn convert_hydros(
                 diversion,
                 filling,
                 penalties,
+                tailrace_flow: TailraceFlow::default(),
             };
             hydro.sort_unit_groups();
             Ok(hydro)

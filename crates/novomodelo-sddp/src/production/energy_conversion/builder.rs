@@ -377,7 +377,7 @@ fn fpha_equivalent_head(
 mod tests {
     use novomodelo_core::{
         CascadeTopology, EntityId, HydraulicLossesModel, Hydro, HydroGenerationModel,
-        HydroPenalties, TailraceModel,
+        HydroPenalties, TailraceFlow, TailraceModel,
     };
     use novomodelo_io::{
         HydroEnergyProductivityRow, HydroGeometryRow, HydroReferenceVolumeFractions,
@@ -440,6 +440,7 @@ mod tests {
             diversion: None,
             filling: None,
             penalties: penalties_zero(),
+            tailrace_flow: TailraceFlow::default(),
         };
         hydro.declare_mirror_unit_group(EntityId::from(1));
         hydro

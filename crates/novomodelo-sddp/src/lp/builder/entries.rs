@@ -3418,7 +3418,7 @@ mod pumping_water_tests {
         LineBlockBounds, LineStagePenalties, LinearTerm, NcsStagePenalties, PenaltiesCountsSpec,
         PenaltiesDefaults, PenaltyBasis, PumpingBlockBounds, PumpingStation, ResolvedBlockBounds,
         ResolvedBounds, ResolvedGenericConstraintBounds, ResolvedPenalties, SlackConfig, Stage,
-        Thermal, ThermalBlockBounds, VariableRef,
+        TailraceFlow, Thermal, ThermalBlockBounds, VariableRef,
     };
     use novomodelo_io::validation::semantic::envelope_tolerance;
     use novomodelo_stochastic::par::precompute::PrecomputedPar;
@@ -3494,6 +3494,7 @@ mod pumping_water_tests {
             diversion: None,
             filling: None,
             penalties: zero_hydro_penalties(),
+            tailrace_flow: TailraceFlow::default(),
         };
         hydro.declare_mirror_unit_group(EntityId(1));
         hydro
@@ -9253,6 +9254,7 @@ mod pumping_water_tests {
                 filling_min_rate_m3s: 0.0,
             }),
             penalties: zero_hydro_penalties(),
+            tailrace_flow: TailraceFlow::default(),
         };
         hydro.declare_mirror_unit_group(EntityId(1));
         hydro

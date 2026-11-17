@@ -31,7 +31,7 @@ use novomodelo_core::{
     EntityId, GenericConstraint, Hydro, HydroBlockBounds, HydroStageBounds, Line, LineBlockBounds,
     LinearTerm, NoiseMethod, PumpingBlockBounds, PumpingStation, ResolvedBounds,
     ResolvedGenericConstraintBounds, ScenarioSourceConfig, Stage, StageRiskConfig,
-    StageStateConfig, Thermal, ThermalBlockBounds, VariableRef,
+    StageStateConfig, TailraceFlow, Thermal, ThermalBlockBounds, VariableRef,
 };
 
 // ── Test helpers ──────────────────────────────────────────────────────────
@@ -394,6 +394,7 @@ fn make_hydro(id: i32, downstream_id: Option<i32>) -> Hydro {
         diversion: None,
         filling: None,
         penalties: zero_penalties,
+        tailrace_flow: TailraceFlow::default(),
     };
     hydro.declare_mirror_unit_group(EntityId(0));
     hydro

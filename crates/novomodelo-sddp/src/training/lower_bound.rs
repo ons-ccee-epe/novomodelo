@@ -2107,7 +2107,7 @@ mod tests {
             LineStagePenalties, NcsStagePenalties, NoiseMethod, PenaltiesCountsSpec,
             PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds, ResolvedPenalties,
             ScenarioSourceConfig, Stage, StageRiskConfig, StageStateConfig, SystemBuilder,
-            ThermalBlockBounds,
+            TailraceFlow, ThermalBlockBounds,
         };
         use novomodelo_stochastic::par::precompute::PrecomputedPar;
 
@@ -2171,6 +2171,7 @@ mod tests {
                     filling_min_rate_m3s: 0.0,
                 }),
                 penalties: zero_hydro_penalties(),
+                tailrace_flow: TailraceFlow::default(),
             };
             hydro.declare_mirror_unit_group(EntityId(1));
             hydro

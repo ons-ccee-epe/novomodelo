@@ -27,8 +27,8 @@ use novomodelo_core::{
     HydroGenerationModel, HydroPenalties, HydroStageBounds, HydroStorage, HydroUnitGroup,
     InitialConditions, Line, LineBlockBounds, LineStagePenalties, NcsStagePenalties, NoiseMethod,
     PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds, ResolvedPenalties,
-    ScenarioSourceConfig, Stage, StageRiskConfig, StageStateConfig, System, SystemBuilder, Thermal,
-    ThermalBlockBounds,
+    ScenarioSourceConfig, Stage, StageRiskConfig, StageStateConfig, System, SystemBuilder,
+    TailraceFlow, Thermal, ThermalBlockBounds,
 };
 use novomodelo_io::StageIdResolver;
 use novomodelo_io::config::{
@@ -500,6 +500,7 @@ pub(crate) fn geometry_hydro(idx: usize) -> Hydro {
         diversion: None,
         filling: None,
         penalties: geometry_zero_penalties(),
+        tailrace_flow: TailraceFlow::default(),
     };
     hydro.declare_mirror_unit_group(id);
     hydro
@@ -2890,6 +2891,7 @@ fn fan_or_chain_system_builder(
             evaporation_violation_neg_cost: 0.0,
             inflow_nonnegativity_cost: 1000.0,
         },
+        tailrace_flow: TailraceFlow::default(),
     };
     hydro.declare_mirror_unit_group(bus_id);
 
