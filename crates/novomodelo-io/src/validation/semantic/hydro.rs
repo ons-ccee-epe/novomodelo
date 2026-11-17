@@ -943,19 +943,20 @@ pub(super) fn check_tailrace_flow_effect(data: &ParsedData, ctx: &mut Validation
                     .filter(|stage| stage.id >= 0)
                     .any(|stage| config.uses_fpha_at(stage))
             });
-        if !uses_fpha {
-            let entity = format!("Hydro {} (id={})", hydro.name, hydro.id.0);
-            ctx.emit(
-                &rules::SEMANTIC_TAILRACE_FLOW_NO_EFFECT,
-                "system/hydros.json",
-                Some(&entity),
-                format!(
-                    "{entity}: tailrace_flow has no effect because the hydro uses FPHA at no \
-                     study stage; select FPHA in extensions/production_models.json or remove \
-                     tailrace_flow"
-                ),
-            );
+        if uses_fpha {
+            continue;
         }
+        let entity = format!("Hydro {} (id={})", hydro.name, hydro.id.0);
+        ctx.emit(
+            &rules::SEMANTIC_TAILRACE_FLOW_NO_EFFECT,
+            "system/hydros.json",
+            Some(&entity),
+            format!(
+                "{entity}: tailrace_flow has no effect because the hydro uses FPHA at no \
+                 study stage; select FPHA in extensions/production_models.json or remove \
+                 tailrace_flow"
+            ),
+        );
     }
 }
 
