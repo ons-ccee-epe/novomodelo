@@ -123,8 +123,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `hydro_violation_cost`) in `simulation/costs`. Results change where it binds.
 - `max_generation_mw` or `max_turbined_m3s` of 0 in a block made a hydro or
   unit group turbine water at 0 MW and charged its minima; it now spills that
-  water, and `training/hydro_models.json` lists it under `frozen_turbining`
-  (`novomodelo run` prints a line for each). Results change.
+  water, and `training/hydro_models.json` lists it under `frozen_turbining`.
+  Results change.
 - A hydro with `fpha_config.source: "computed"` could turbine water at 0 MW in
   `simulation/hydros` while it spilled within its spillage fit range. Results
   change. `novomodelo validate` now warns when a plane in

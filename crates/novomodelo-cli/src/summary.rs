@@ -15,45 +15,14 @@ use std::fmt::Display;
 use std::ops::Add;
 use std::path::Path;
 
-use novomodelo_sddp::{
-    BoundaryReconciliationReport, FrozenTurbiningHydro, HydroModelSummary, ModelProvenanceReport,
-};
+use novomodelo_sddp::{BoundaryReconciliationReport, HydroModelSummary, ModelProvenanceReport};
 
 fn hydro_model_summary_lines(summary: &HydroModelSummary) -> Vec<String> {
-    let mut lines = vec![
+    vec![
         console::style("Hydro models").bold().to_string(),
         format!("  Production:    {}", format_production_line(summary)),
         format!("  Evaporation:   {}", format_evaporation_line(summary)),
-    ];
-    lines.extend(summary.frozen_turbining.iter().map(frozen_turbining_line));
-    lines
-}
-
-fn frozen_turbining_line(row: &FrozenTurbiningHydro) -> String {
-    let mut clauses = Vec::new();
-    if !row.no_capacity_stage_ids.is_empty() {
-        clauses.push(format!(
-            "no capacity at stages {}",
-            format_id_ranges(&row.no_capacity_stage_ids)
-        ));
-    }
-    if !row.partial_capacity_stage_ids.is_empty() {
-        clauses.push(format!(
-            "partial at stages {}",
-            format_id_ranges(&row.partial_capacity_stage_ids)
-        ));
-    }
-    match row.dropped_floors.len() {
-        0 => {}
-        1 => clauses.push("1 dropped floor".to_string()),
-        n => clauses.push(format!("{n} dropped floors")),
-    }
-    format!(
-        "  Frozen:        {} (id {}): {}",
-        row.name,
-        row.hydro_id.0,
-        clauses.join("; ")
-    )
+    ]
 }
 
 /// Print hydro model summary to `out`.
@@ -1922,30 +1891,18 @@ mod tests {
     }
 
     #[test]
-    fn hydro_model_summary_lines_print_one_frozen_line_per_row() {
+    fn hydro_model_summary_lines_leave_frozen_turbining_rows_to_the_json_report() {
         let mut summary = make_hydro_model_summary_mixed();
         summary.frozen_turbining = vec![
             frozen_row("Jacui", 77, &[3], &[], 0),
             frozen_row("B", 5, &[0, 1, 2, 5], &[7], 1),
-            frozen_row("C", 9, &[], &[], 2),
         ];
         let lines = hydro_model_summary_lines(&summary);
-        assert_eq!(lines.len(), 6);
-        assert_eq!(
-            lines[3],
-            "  Frozen:        Jacui (id 77): no capacity at stages 3"
+        assert_eq!(lines.len(), 3, "got: {lines:?}");
+        assert!(
+            lines.iter().all(|l| !l.contains("Frozen")),
+            "got: {lines:?}"
         );
-        assert_eq!(
-            lines[4],
-            "  Frozen:        B (id 5): no capacity at stages 0\u{2013}2, 5; partial at stages 7; 1 dropped floor"
-        );
-        assert_eq!(lines[5], "  Frozen:        C (id 9): 2 dropped floors");
-    }
-
-    #[test]
-    fn hydro_model_summary_lines_print_no_frozen_line_for_an_empty_list() {
-        let summary = make_hydro_model_summary_mixed();
-        assert_eq!(hydro_model_summary_lines(&summary).len(), 3);
     }
 
     // ── SetupTimings tests ─────────────────────────────────────────────────
