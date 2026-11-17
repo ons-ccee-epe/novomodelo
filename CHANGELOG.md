@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+#### Hydro plants
+
+- `system/hydros.json` accepts `tailrace_flow` (`own_outflow_factor`,
+  `outflow_influences`, `incremental_inflow_influences`): other plants' flows
+  raise the hydro's FPHA tailrace level. Negative or non-finite factors and
+  self, repeated or unknown hydros are refused; `validate` warns without FPHA.
+
+### Changed
+
+#### Hydro plants
+
+- Results change for FPHA hydros declaring `tailrace_flow`: `gamma_s` in
+  `system/fpha_hyperplanes.parquet` and the `fpha_hyperplanes` output is the
+  lateral-flow slope per m3/s (spill slope if none).
+
 ## [0.21.0] - 2026-11-16
 
 ### Added
