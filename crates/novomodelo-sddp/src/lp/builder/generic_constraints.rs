@@ -473,12 +473,12 @@ fn push_release_columns(
     layout: &StageLayout<'_>,
     out: &mut Vec<(usize, f64)>,
 ) {
-    for col in layout
-        .geometry
-        .plant_release_cols(ctx.hydro_cell_index, HydroSys::new(u_idx), blk)
-    {
-        out.push((col, coeff));
-    }
+    out.extend(
+        layout
+            .geometry
+            .plant_release_cols(ctx.hydro_cell_index, HydroSys::new(u_idx), blk)
+            .map(|col| (col, coeff)),
+    );
 }
 
 /// Resolve `HydroEvaporation` to the evaporation-outflow column for the matching
@@ -530,9 +530,11 @@ fn resolve_hydro_outflow(
     let Some(pos) = ctx.positions.hydro(hydro_id) else {
         return vec![];
     };
-    let mut result = resolve_turbine_cells(hydro_id, None, blk, 1.0, ctx, layout);
-    result.push((layout.geometry.spillage_col(HydroSys::new(pos), blk), 1.0));
-    result
+    layout
+        .geometry
+        .plant_release_cols(ctx.hydro_cell_index, HydroSys::new(pos), blk)
+        .map(|col| (col, 1.0))
+        .collect()
 }
 
 /// Stage volume (hm³): every block's flow columns from `per_block`, each weighted by

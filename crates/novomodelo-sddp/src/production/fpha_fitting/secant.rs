@@ -357,10 +357,8 @@ mod tests {
         );
     }
 
-    /// Default axis is own-spill only: the secant uses `lateral_flow = S` (the spillage
-    /// argument of `evaluate`) with `reference lateral flow = 0` (the lateral_flow = 0 anchor). Feeding the
-    /// lateral flow as the spillage argument is exactly what the tailrace sees as
-    /// `q + lateral_flow`, so a rising tailrace yields a negative slope.
+    /// With no tailrace-flow declaration the lateral flow is the own spill: the tailrace
+    /// is read at `q + lateral_flow`, so a rising tailrace yields a negative slope.
     #[test]
     fn default_axis_is_own_spill_qhat_zero() {
         let pf = spill_sensitive_pf();

@@ -24,14 +24,13 @@ use crate::indexer::{
 use crate::inflow_method::InflowNonNegativityMethod;
 use crate::time_value::TimeValue;
 
-use super::build_inputs::ResolvedTailraceLateral;
 use super::hydro_state::{
     GroupBoundLookup, MaxCap, MinFloor, PlantFloor, cell_has_capacity, effective_withdrawals,
     has_soft_storage_floor, hydro_phase, is_suspended, plant_cap_rhs, plant_has_capacity,
 };
 use super::{
     EVAP_COLS_PER_HYDRO, EVAP_F_MINUS_OFFSET, EVAP_F_PLUS_OFFSET, EVAP_FLOW_OFFSET,
-    GenericConstraintRowEntry,
+    GenericConstraintRowEntry, ResolvedTailraceLateral,
 };
 use crate::block_clock::BlockClock;
 use crate::policy::resolved_generic_coefficients::{BoundSide, ResolvedGenericCoefficients};

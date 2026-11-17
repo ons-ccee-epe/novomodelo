@@ -852,7 +852,7 @@ The wrong-but-compiling alternatives:
 - a second copy of ψ, b or σ: it can drift from the one the conditional mean
   reads, and the lag price then no longer matches the realized inflow;
 - a coupling kept in push order: the touched rows follow the declaration order,
-  and the template and the shift with them.
+  and the template and the shift with them;
 - an FPHA plane-row coupling multiplied by `τ_k` to match the water rows: the
   plane balances MW against flows in m³/s, so the lateral inflow term is off by
   the block's hours times `M3S_TO_HM3`.

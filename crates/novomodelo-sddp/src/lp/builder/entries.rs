@@ -1064,7 +1064,6 @@ pub(super) fn fill_fpha_entries(
         // plant's declared maximum turbined flow; γ_q stays unscaled on the cell's own
         // flow (only `A ≡ γ₀ + γ_V·V̄ + γ_s·s` fails the homogeneity that makes
         // same-bus aggregation exact — the cell partition's whole safety argument).
-        // The tailrace flow's lateral terms ride on γ_s, so they take the same σ_c.
         let sigma_c = ctx.hydro_cell_index.share_of(visit.cell);
         let lateral = &ctx.tailrace_lateral[visit.plant.get()];
 
