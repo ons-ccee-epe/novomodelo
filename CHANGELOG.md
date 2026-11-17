@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-11-16
+
 ### Added
 
 - `constraints/generic_constraints.json` accepts `hydro_outflow_volume(h)`,
@@ -54,9 +56,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `estimation.order_selection` values. Results change.
 - **BREAKING:** studies whose `stages.json` splits an inflow-lag period over
   stages, or steps lags from months to quarters, give different results when
-  cuts carry inflow-lag terms; retrain them. The result is exact only where
-  the period's partial inflow is the same on every path, and a
-  month-to-quarter stage warns once.
+  cuts carry inflow-lag terms; retrain them. Results are exact only where the
+  partial inflow is path-independent; a month-to-quarter stage warns once.
+- PAR(p) folding: the inflow model leaves the stage LP. Each stage's inflow is
+  computed from its lags before the solve, so the LP drops the lag columns and
+  inflow rows and is smaller. Results change. A 0.20.0 policy still loads; its
+  stored bases are skipped with a `stored bases not used` warning.
 
 #### Hydro plants
 
@@ -80,8 +85,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### Policy
 
 - Boundary cuts read on a bucket calendar other than their training one are
-  repriced: in-transit water by the target bucket's hours, and water bound for
-  a hydro the policy has no buckets for at that hydro's storage value
+  repriced. In-transit water is priced by the target bucket's hours, and water
+  bound for a hydro the policy has no buckets for at that hydro's storage value
   (`filled_from_storage` in `novomodelo validate --json`). Results change.
 - For a migrated deck with a travel-time arc, the transit-bucket slots in
   `policy/cuts/*.bin` past the study horizon are now dated, so a later study
@@ -107,24 +112,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rank count when an inflow-lag period spans several stages, as weeks within a
   month or a quarter built from months. Results change for those studies.
 - Estimation from `scenarios/inflow_history.parquet` aborted the run when a
-  fitted month implied a negative noise variance; that month's order is now
+  fitted month implied a negative noise variance. That month's order is now
   reduced and listed as `negative_residual_variance` in
   `output/stochastic/fitting_report.json`.
 - Validation's warnings on inflow observations per season missed
-  `scenarios/inflow_history.parquet` years outside the study horizon and
-  counted rows covering only part of a season; they now count the observations
+  `scenarios/inflow_history.parquet` years outside the study horizon and counted
+  rows covering only part of a season. They now count the observations
   estimation fits from.
 
 #### Hydro plants
 
-- FPHA plants whose planes cannot be met no longer make the stage infeasible:
-  the excess is priced at `hydro.fpha_violation_cost` and reported as
+- FPHA plants whose planes cannot be met no longer make the stage infeasible.
+  The excess is priced at `hydro.fpha_violation_cost` and reported as
   `fpha_violation_mw` in `simulation/hydros` and `fpha_violation_cost` (inside
   `hydro_violation_cost`) in `simulation/costs`. Results change where it binds.
-- `max_generation_mw` or `max_turbined_m3s` of 0 in a block made a hydro or
-  unit group turbine water at 0 MW and charged its minima; it now spills that
-  water, and `training/hydro_models.json` lists it under `frozen_turbining`.
-  Results change.
+- `max_generation_mw` or `max_turbined_m3s` of 0 in a block made a hydro or unit
+  group turbine water at 0 MW and charged its minima. It now spills that water,
+  and `training/hydro_models.json` lists it under `frozen_turbining`. Results
+  change.
 - A hydro with `fpha_config.source: "computed"` could turbine water at 0 MW in
   `simulation/hydros` while it spilled within its spillage fit range. Results
   change. `novomodelo validate` now warns when a plane in
@@ -1985,7 +1990,8 @@ target_bus)`.
 
 <!-- next-url -->
 
-[Unreleased]: https://github.com/ons-ccee-epe/novomodelo/compare/v0.20.0...HEAD
+[Unreleased]: https://github.com/ons-ccee-epe/novomodelo/compare/v0.21.0...HEAD
+[0.21.0]: https://github.com/ons-ccee-epe/novomodelo/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/ons-ccee-epe/novomodelo/compare/v0.19.1...v0.20.0
 [0.19.1]: https://github.com/ons-ccee-epe/novomodelo/compare/v0.19.0...v0.19.1
 [0.19.0]: https://github.com/ons-ccee-epe/novomodelo/compare/v0.18.1...v0.19.0
