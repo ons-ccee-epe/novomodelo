@@ -27,17 +27,6 @@ paid:      the ticket that paid it off (written only on retirement)
 
 ## Open
 
-### DEBT-001
-what:      crates/novomodelo-sddp/src/lp/builder/layout/tests.rs:useful_volume_fold_unresolvable_hydro_id_fires_debug_assert is a #[should_panic] test of a debug_assert! with no debug-only gate, so it fails under `cargo test --release`
-why-now:   inadvertent — found while gating the sibling debug_assert! tests in lp/builder/entries.rs
-quadrant:  inadvertent x prudent
-interest:  a release-profile test run reports a false failure, which hides real release-only regressions; it compounds with every new ungated should_panic test of a debug_assert!
-payoff:    gate the test on debug assertions (#[cfg(debug_assertions)], or #[cfg_attr(not(debug_assertions), ignore = "...")]), as the entries.rs tests are gated
-trigger:   adding a release-profile test job to CI, or the next edit to lp/builder/layout/tests.rs
-owner:     novomodelo-sddp maintainers
-blast:     crates/novomodelo-sddp/src/lp/builder/layout/tests.rs only; `cargo test -p novomodelo-sddp --lib` must pass in debug and in release
-origin:    found on branch feat/generic-constraint-stage-volume while adding the stage-volume builder guard; not introduced by that work
-
 ### DEBT-002
 what:      novomodelo-sddp integration tests hold test-local generic_constraint_bounds.parquet writers beside the shared tests/common/parquet_fixtures.rs:write_generic_constraint_bounds — tests/deterministic.rs (the inline writers and the module-local write_generic_constraint_bounds), tests/cut_basis.rs:write_generic_constraint_bounds_parquet, tests/anticipated_scenarios.rs:write_constraint_bounds_parquet — and tests/template_integration/generic_constraints.rs restates the GenericBoundsRow tuple alias
 why-now:   deliberate — the stage-volume work adds the shared writer for its own decks and leaves the pre-existing copies, to keep the change to the stated capability
@@ -61,3 +50,15 @@ blast:     crates/novomodelo-core (SystemBuilder::build), crates/novomodelo-sddp
 origin:    recorded on branch feat/generic-constraint-stage-volume from the review of its stage-volume builder guard
 
 ## Paid
+
+### DEBT-001
+what:      crates/novomodelo-sddp/src/lp/builder/layout/tests.rs:useful_volume_fold_unresolvable_hydro_id_fires_debug_assert is a #[should_panic] test of a debug_assert! with no debug-only gate, so it fails under `cargo test --release`
+why-now:   inadvertent — found while gating the sibling debug_assert! tests in lp/builder/entries.rs
+quadrant:  inadvertent x prudent
+interest:  a release-profile test run reports a false failure, which hides real release-only regressions; it compounds with every new ungated should_panic test of a debug_assert!
+payoff:    gate the test on debug assertions (#[cfg(debug_assertions)], or #[cfg_attr(not(debug_assertions), ignore = "...")]), as the entries.rs tests are gated
+trigger:   adding a release-profile test job to CI, or the next edit to lp/builder/layout/tests.rs
+owner:     novomodelo-sddp maintainers
+blast:     crates/novomodelo-sddp/src/lp/builder/layout/tests.rs only; `cargo test -p novomodelo-sddp --lib` must pass in debug and in release
+origin:    found on branch feat/generic-constraint-stage-volume while adding the stage-volume builder guard; not introduced by that work
+paid:      branch fix/debt-001-release-gate, which gates the test with #[cfg(debug_assertions)], as the entries.rs tests are gated, and gates the same way the nine other #[should_panic] tests of a debug_assert! that `cargo test -p novomodelo-sddp --lib --release` failed on

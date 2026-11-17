@@ -1740,6 +1740,7 @@ mod tests {
     /// member — so the `debug_assert!` fires instead of silently falling back
     /// to the raw `m`.
     #[test]
+    #[cfg(debug_assertions)]
     #[should_panic = "excised fixed"]
     fn commitment_hold_offset_rejects_an_excised_delivery_target() {
         let idx = ring_axis_offset_fixture();
