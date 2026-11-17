@@ -1333,6 +1333,108 @@ fn fit_fpha_planes_sobradinho_style_end_to_end() {
     }
 }
 
+/// The tailrace is read at `f·q + L`, so the net head over a linear tailrace and
+/// lossless penstock is `h_fore(v) − (a₀ + a₁·(f·q + L))`.
+#[test]
+fn net_head_reads_the_tailrace_at_the_scaled_own_outflow_plus_lateral_flow() {
+    let forebay = ForebayTable::new(&sobradinho_rows(), "Linear").expect("valid VHA curve");
+    let (a0, a1, own_outflow_factor) = (5.0, 0.001, 1.03);
+    let pf = ProductionFunction::new(
+        forebay.clone(),
+        TailraceSource::Entity(Some(TailraceModel::Polynomial {
+            coefficients: vec![a0, a1],
+        })),
+        None,
+        None,
+        3_000.0,
+        "Linear".to_owned(),
+    )
+    .with_own_outflow_factor(own_outflow_factor);
+
+    for (v, q, lateral_flow) in [
+        (10_000.0, 0.0, 0.0),
+        (10_000.0, 1_500.0, 0.0),
+        (24_500.0, 1_500.0, 800.0),
+        (34_116.0, 3_000.0, 2_500.0),
+    ] {
+        let expected = forebay.height(v) - (a0 + a1 * (own_outflow_factor * q + lateral_flow));
+        let net_head = pf.net_head(v, q, lateral_flow);
+        assert!(
+            (net_head - expected).abs() < 1e-12,
+            "v={v}, q={q}, lateral_flow={lateral_flow}: net_head={net_head}, expected={expected}"
+        );
+    }
+}
+
+fn fit_sobradinho(hydro: &Hydro) -> FphaFitResult {
+    fit_fpha_planes(
+        &sobradinho_rows(),
+        hydro,
+        &default_config(),
+        0.0,
+        TailraceSource::Entity(hydro.tailrace.clone()),
+        None,
+        1,
+        0,
+        false,
+    )
+    .expect("fit should succeed")
+}
+
+fn with_own_factor(mut hydro: Hydro, own_outflow_factor: f64) -> Hydro {
+    hydro.tailrace_flow = TailraceFlow {
+        own_outflow_factor,
+        ..TailraceFlow::default()
+    };
+    hydro
+}
+
+fn plane_bits(fit: &FphaFitResult) -> Vec<[u64; 4]> {
+    fit.planes
+        .iter()
+        .map(|p| [p.intercept, p.gamma_v, p.gamma_q, p.gamma_s].map(f64::to_bits))
+        .collect()
+}
+
+/// A declared factor of exactly `1.0` is `1.0 * q`, bit for bit the undeclared fit.
+#[test]
+fn fit_with_unit_own_factor_matches_the_undeclared_fit() {
+    let undeclared = fit_sobradinho(&make_sobradinho_hydro());
+    let explicit = fit_sobradinho(&with_own_factor(make_sobradinho_hydro(), 1.0));
+
+    assert_eq!(plane_bits(&undeclared), plane_bits(&explicit));
+    assert_eq!(undeclared.alpha.to_bits(), explicit.alpha.to_bits());
+}
+
+/// The hull runs at `L = 0`, so a factor above one reads the tailrace higher at
+/// every `q` and the fitted `γ_q` falls. The generation cap is lifted: it would
+/// otherwise pin the largest `γ_q` at its own slope for every factor.
+#[test]
+fn own_factor_above_one_lowers_gamma_q() {
+    let max_gamma_q = |fit: &FphaFitResult| {
+        fit.planes
+            .iter()
+            .map(|plane| plane.gamma_q)
+            .fold(f64::NEG_INFINITY, f64::max)
+    };
+    let mut uncapped = make_sobradinho_hydro();
+    uncapped.max_generation_mw = f64::INFINITY;
+    let undeclared = fit_sobradinho(&uncapped);
+    let scaled = fit_sobradinho(&with_own_factor(uncapped, 1.2));
+
+    assert_ne!(
+        plane_bits(&undeclared),
+        plane_bits(&scaled),
+        "the planes must differ"
+    );
+    assert!(
+        max_gamma_q(&scaled) < max_gamma_q(&undeclared),
+        "max gamma_q {} must fall below the undeclared fit's {}",
+        max_gamma_q(&scaled),
+        max_gamma_q(&undeclared)
+    );
+}
+
 /// A computed-FPHA fixture with a spillage-sensitive tailrace yields planes
 /// with `γ_S < 0` that still form a valid outer approximation.
 ///

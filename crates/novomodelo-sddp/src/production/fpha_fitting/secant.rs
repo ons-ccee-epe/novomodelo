@@ -6,12 +6,12 @@
 //! sample is a closed-form evenly-spaced grid, so the fit is deterministic and
 //! order-independent.
 //!
-//! # The smart default (`lateral_flow = S`, `reference lateral flow = 0`)
+//! # Meaning of `γ_S`
 //!
-//! The lateral axis collapses to own spill: feeding the lateral flow as the
-//! spillage argument makes the tailrace see `outflow = q + lateral_flow` (it
-//! already evaluates at `q_out = q + s`), exactly the spill-only default. Richer
-//! `lateral_flow` composition and its LP wiring are a later refinement.
+//! `γ_S` is the plane's slope per m³/s of tailrace lateral flow `L`: the own spill
+//! times the own outflow factor plus the other plants' contributions. It is fitted
+//! on `L ∈ [0, S_max]` with `FphaColumnLayout::resolve_spillage_fit_max_m3s`'s
+//! `S_max`; past `S_max` the plane extrapolates linearly.
 
 use super::geometry::FittingBounds;
 use super::hull_fit::RawPlane;
@@ -69,7 +69,7 @@ fn anchored_slope(pf: &ProductionFunction, v: f64, q: f64, s_max: f64) -> f64 {
     cross / square
 }
 
-/// Fit `γ_S` in place for every plane, using the smart default `lateral_flow = S`.
+/// Fit `γ_S` in place for every plane on `lateral_flow ∈ [0, S_max]`.
 ///
 /// `γ_S` is the only coefficient this step sets; the α-scaled gradients and
 /// intercept are untouched. A plane's `γ_S` is the mean [`anchored_slope`] over
@@ -166,8 +166,8 @@ mod tests {
 
     use super::super::geometry::{FittingBounds, ForebayTable};
     use super::super::hull_fit::RawPlane;
-    use super::super::production::{ProductionFunction, TailraceSource};
-    use super::{GAMMA_S_SNAP_EPS, N_LATERAL_FLOW_SAMPLES, fit_gamma_s_for_planes};
+    use super::super::production::{K, ProductionFunction, TailraceSource};
+    use super::{GAMMA_S_SNAP_EPS, N_LATERAL_FLOW_SAMPLES, anchored_slope, fit_gamma_s_for_planes};
 
     fn row(volume_hm3: f64, height_m: f64) -> HydroGeometryRow {
         HydroGeometryRow {
@@ -381,6 +381,29 @@ mod tests {
 
         fit_gamma_s_for_planes(&mut planes, &pf, &bounds, s_max);
         assert!(planes[0].gamma_s < 0.0);
+    }
+
+    /// The linear tailrace gives `∂g/∂L = −K·η·q·a₁` at any `own_outflow_factor`: the
+    /// factor scales `q` inside the tailrace argument, so it never enters the slope in
+    /// `L`.
+    #[test]
+    fn secant_slope_is_per_unit_lateral_flow_for_any_own_factor() {
+        let (efficiency, tailrace_slope) = (0.9, 0.001);
+        let (v, q, s_max) = (15_000.0, 1_500.0, 6_000.0);
+        let expected = -K * efficiency * q * tailrace_slope;
+
+        for own_outflow_factor in [1.0, 1.5] {
+            let pf = spill_sensitive_pf().with_own_outflow_factor(own_outflow_factor);
+            assert!(
+                pf.net_head(v, q, s_max) > 0.0,
+                "f={own_outflow_factor}: the grid point must keep the net head positive"
+            );
+            let slope = anchored_slope(&pf, v, q, s_max);
+            assert!(
+                ((slope - expected) / expected).abs() < 1e-9,
+                "f={own_outflow_factor}: slope={slope} must equal the closed form {expected}"
+            );
+        }
     }
 
     /// derived: the plane `{γ₀ 0, γᵥ 0.001, γq 0.12}` reads `γ₀ + γᵥ·v_min = 10` MW at

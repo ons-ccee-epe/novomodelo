@@ -16,7 +16,8 @@ use super::tailrace::TailraceFamilies;
 ///
 /// A plant without a `tailrace_curves` table resolves to [`TailraceSource::Entity`]
 /// and must fit bit-for-bit to the same planes as before the families path
-/// existed: `net_head` evaluates the same `evaluate_tailrace(model, q + lateral_flow)`.
+/// existed: `net_head` evaluates the same
+/// `evaluate_tailrace(model, own_outflow_factor·q + lateral_flow)`.
 /// Routing a table-less plant through the `Families` arm would silently perturb
 /// its fitted γ values and is forbidden.
 #[derive(Debug, Clone)]
@@ -36,7 +37,7 @@ pub(crate) enum TailraceSource {
 
 /// Gravity times water density over unit conversion `g·ρ / 1000 = 9.81e-3`,
 /// converting `phi = K·eta·q·h_net` from hydraulic power (W) to MW.
-const K: f64 = 9.81 / 1000.0;
+pub(super) const K: f64 = 9.81 / 1000.0;
 
 /// Complete hydro production function `phi(v, q, lateral_flow)` with analytical derivatives —
 /// the forebay table, optional tailrace and loss models, and a constant turbine
@@ -46,7 +47,7 @@ const K: f64 = 9.81 / 1000.0;
 /// Both `net_head` and `evaluate` take `(v, q, lateral_flow)`: reservoir volume
 /// \[hm³\], turbined flow \[m³/s\], tailrace lateral flow \[m³/s\] — the own
 /// spill when no tailrace-flow declaration applies. The tailrace is read at
-/// `q + lateral_flow`.
+/// `own_outflow_factor·q + lateral_flow`; hydraulic losses stay on `q`.
 #[derive(Debug, Clone)]
 pub(crate) struct ProductionFunction {
     /// Forebay height interpolation table.
@@ -58,6 +59,8 @@ pub(crate) struct ProductionFunction {
     /// Turbine efficiency (dimensionless, in `(0, 1]`); `1.0` when the entity has
     /// no `EfficiencyModel`.
     efficiency: f64,
+    /// Weight of the own turbined flow `q` in the tailrace flow (`1.0` by default).
+    own_outflow_factor: f64,
     /// Maximum turbined flow \[m³/s\].
     pub(crate) max_turbined_m3s: f64,
     /// Installed-capacity ceiling \[MW\] that [`Self::evaluate_capped`] clips to
@@ -91,6 +94,7 @@ impl ProductionFunction {
             tailrace,
             hydraulic_losses: hydraulic_losses.copied(),
             efficiency: efficiency_value,
+            own_outflow_factor: 1.0,
             max_turbined_m3s,
             max_generation_mw: f64::INFINITY,
             hydro_name,
@@ -103,8 +107,15 @@ impl ProductionFunction {
         self
     }
 
+    /// Set the weight of the own turbined flow in the tailrace flow.
+    pub(crate) fn with_own_outflow_factor(mut self, factor: f64) -> Self {
+        self.own_outflow_factor = factor;
+        self
+    }
+
     /// Net head at the turbine \[m\]:
-    /// `h_net = h_fore(v) − h_tail(q+lateral_flow) − h_loss(gross_head, q)`, clamped to
+    /// `h_net = h_fore(v) − h_tail(own_outflow_factor·q + lateral_flow) −
+    /// h_loss(gross_head, q)`, clamped to
     /// `max(0.0, h_net)` (negative net head is physically impossible). The
     /// [`HydraulicLossesModel::Factor`] variant simplifies to
     /// `(1 − k)·(h_fore − h_tail)`.
@@ -112,7 +123,7 @@ impl ProductionFunction {
         let h_fore = self.forebay.height(v);
         // The `Entity` arm MUST call `evaluate_tailrace(model, q_out)` verbatim —
         // the inert-fallback contract on [`TailraceSource`].
-        let q_out = q + lateral_flow;
+        let q_out = self.own_outflow_factor * q + lateral_flow;
         let h_tail = match &self.tailrace {
             TailraceSource::Entity(model) => {
                 model.as_ref().map_or(0.0, |m| evaluate_tailrace(m, q_out))

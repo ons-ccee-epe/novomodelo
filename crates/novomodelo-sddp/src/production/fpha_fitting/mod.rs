@@ -108,6 +108,8 @@ pub(crate) struct FphaFitResult {
 /// The top-level entry point for the computed FPHA path. The returned
 /// `Vec<FphaPlane>` is structurally identical to what the precomputed path
 /// produces from `fpha_hyperplanes.parquet`; the LP builder treats both identically.
+/// The hydro's `tailrace_flow.own_outflow_factor` enters through the production
+/// function, which reads the tailrace at `own_outflow_factor·q + lateral_flow`.
 ///
 /// # Errors
 ///
@@ -157,7 +159,8 @@ pub(crate) fn fit_fpha_planes(
             .unwrap_or(hydro.max_turbined_m3s),
         hydro.name.clone(),
     )
-    .with_max_generation_mw(hydro.max_generation_mw);
+    .with_max_generation_mw(hydro.max_generation_mw)
+    .with_own_outflow_factor(hydro.tailrace_flow.own_outflow_factor);
 
     // Any hull failure maps to a typed FPHA error instead of panicking, so one
     // pathological hydro does not abort the whole fitting loop. The dominant case
