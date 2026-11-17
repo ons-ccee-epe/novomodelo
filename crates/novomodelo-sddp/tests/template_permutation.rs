@@ -10,14 +10,16 @@ mod common;
 
 use novomodelo_io::config::InflowNonNegativityMethod as CfgInflowMethod;
 use novomodelo_io::config::{StoppingRuleConfig, TrainingSelection};
+use novomodelo_sddp::indexer::HydroSys;
 use novomodelo_sddp::test_support::decks::{SLOW_DECKS, committed_decks};
 use novomodelo_sddp::test_support::template_fact_groups;
 use novomodelo_sddp::{StudySetup, TrainingResult};
 use novomodelo_solver::ActiveSolver;
 
 use common::in_code_studies::{
-    ChronologicalNoiseSpec, FphaLagOptions, chronological_noise_study, fpha_lag_study_with,
-    mixed_lead_anticipated_study, negative_draw_par1_spec, prefilling_withdrawal_route_study,
+    ChronologicalNoiseSpec, FphaLagOptions, LateralFactors, chronological_noise_study,
+    fpha_lag_study_with, mixed_lead_anticipated_study, negative_draw_par1_spec,
+    prefilling_withdrawal_route_study,
 };
 use common::permute::permute_case;
 use common::selection_fingerprint::SelectionFingerprint;
@@ -169,10 +171,15 @@ const LAG_STUDY_OPENINGS: usize = 3;
 const LAG_STUDY_FORWARD_PASSES: u32 = 2;
 const LAG_STUDY_ITERATIONS: u32 = 3;
 const BUDGET_THAT_EVICTS_NOTHING: u32 = 100_000;
+const LATERAL_FACTORS: LateralFactors = LateralFactors {
+    outflow: 0.6,
+    incremental_inflow: 0.4,
+};
 
-fn lag_study_setup(reverse_declaration_order: bool) -> StudySetup {
+fn lag_study_setup(reverse_declaration_order: bool, lateral: Option<LateralFactors>) -> StudySetup {
     let (system, config, hydro_models) = fpha_lag_study_with(FphaLagOptions {
         reverse_declaration_order,
+        h0_lateral_from_h1: lateral,
         ..FphaLagOptions::default()
     });
     build_setup_in_code_with_models(system, &config, hydro_models)
@@ -183,8 +190,8 @@ fn the_lag_study_template_is_invariant_to_declaration_order() {
     let mut mismatches: Vec<(String, String)> = Vec::new();
 
     let label = "in-code/fpha-lag".to_string();
-    let base_setup = lag_study_setup(false);
-    let reversed_setup = lag_study_setup(true);
+    let base_setup = lag_study_setup(false, None);
+    let reversed_setup = lag_study_setup(true, None);
     for group in mismatched_groups(&base_setup, &reversed_setup, &label) {
         mismatches.push((label.clone(), group));
     }
@@ -212,6 +219,35 @@ fn the_lag_study_template_is_invariant_to_declaration_order() {
             .map(|(study, group)| format!("  {study}\t{group}"))
             .collect::<Vec<_>>()
             .join("\n")
+    );
+}
+
+#[test]
+fn the_lateral_lag_study_template_is_invariant_to_declaration_order() {
+    let label = "in-code/fpha-lateral-lag";
+    let base_setup = lag_study_setup(false, Some(LATERAL_FACTORS));
+    let reversed_setup = lag_study_setup(true, Some(LATERAL_FACTORS));
+    let mismatches = mismatched_groups(&base_setup, &reversed_setup, label);
+    assert!(
+        mismatches.is_empty(),
+        "{label}: template facts differ under declaration-order reversal for groups: {mismatches:?}"
+    );
+
+    assert!(
+        template_fact_groups(&base_setup).contains_key("lp.inflow_coupling"),
+        "{label}: no lp.inflow_coupling fact group"
+    );
+    let templates = &base_setup.inputs.stage_data.stage_templates;
+    assert!(
+        templates
+            .inflow_coupling_per_stage
+            .iter()
+            .zip(&templates.geometry_per_stage)
+            .any(|(coupling, geometry)| coupling
+                .hydro_entries(HydroSys::new(1))
+                .any(|(row, _)| geometry.fpha.contains(&row))),
+        "{label}: no inflow-coupling entry of H1 sits on an FPHA plane row, so the comparison \
+         does not reach the lateral record"
     );
 }
 
@@ -256,10 +292,14 @@ fn every_lag_deck_compact_template_is_invariant_to_declaration_order() {
     );
 }
 
-fn train_compact_lag_study(reverse_declaration_order: bool) -> (StudySetup, TrainingResult) {
+fn train_compact_lag_study(
+    reverse_declaration_order: bool,
+    lateral: Option<LateralFactors>,
+) -> (StudySetup, TrainingResult) {
     let (system, mut config, hydro_models) = fpha_lag_study_with(FphaLagOptions {
         openings: LAG_STUDY_OPENINGS,
         reverse_declaration_order,
+        h0_lateral_from_h1: lateral,
         ..FphaLagOptions::default()
     });
     config.training.selection = Some(TrainingSelection::Sampled {
@@ -319,12 +359,24 @@ fn assert_lag_bearing_binding_cut(setup: &StudySetup, result: &TrainingResult) {
 
 #[test]
 fn the_compact_lag_study_trains_to_the_same_bits_in_either_declaration_order() {
-    let (base_setup, base_result) = train_compact_lag_study(false);
+    let (base_setup, base_result) = train_compact_lag_study(false, None);
     assert_lag_bearing_binding_cut(&base_setup, &base_result);
-    let (reversed_setup, reversed_result) = train_compact_lag_study(true);
+    let (reversed_setup, reversed_result) = train_compact_lag_study(true, None);
 
     SelectionFingerprint::capture(&reversed_setup, &reversed_result).assert_matches(
         &SelectionFingerprint::capture(&base_setup, &base_result),
         "compact lag study, reversed declaration order",
+    );
+}
+
+#[test]
+fn the_compact_lateral_lag_study_trains_to_the_same_bits_in_either_declaration_order() {
+    let (base_setup, base_result) = train_compact_lag_study(false, Some(LATERAL_FACTORS));
+    assert_lag_bearing_binding_cut(&base_setup, &base_result);
+    let (reversed_setup, reversed_result) = train_compact_lag_study(true, Some(LATERAL_FACTORS));
+
+    SelectionFingerprint::capture(&reversed_setup, &reversed_result).assert_matches(
+        &SelectionFingerprint::capture(&base_setup, &base_result),
+        "compact lateral lag study, reversed declaration order",
     );
 }
