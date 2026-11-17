@@ -24,6 +24,7 @@ use crate::indexer::{
 use crate::inflow_method::InflowNonNegativityMethod;
 use crate::time_value::TimeValue;
 
+use super::build_inputs::ResolvedTailraceLateral;
 use super::hydro_state::{
     GroupBoundLookup, MaxCap, MinFloor, PlantFloor, cell_has_capacity, effective_withdrawals,
     has_soft_storage_floor, hydro_phase, is_suspended, plant_cap_rhs, plant_has_capacity,
@@ -94,6 +95,10 @@ pub(crate) struct TemplateBuildCtx<'a> {
     /// single `resolve_lp_build_inputs` resolution
     /// (`LpBuildInputs::diversion_upstream`).
     pub(crate) diversion_upstream: &'a HashMap<EntityId, Vec<usize>>,
+    /// Per-hydro tailrace-flow terms, one record per hydro in system order.
+    /// Borrowed from setup's single `resolve_lp_build_inputs` resolution
+    /// (`LpBuildInputs::tailrace_lateral`).
+    pub(crate) tailrace_lateral: &'a [ResolvedTailraceLateral],
     /// The role-(a) state layout, from setup's single owner
     /// (`resolve_state_layout`), which owns `anticipated_lead_stages` and
     /// `anticipated_resolution`.
