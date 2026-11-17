@@ -1,6 +1,7 @@
 //! `fpha_structure` section tests.
 
 use super::*;
+use novomodelo_core::TailraceFlowInfluence;
 use novomodelo_sddp::indexer::{BlockIdx, FphaCellLocal, HydroCell, HydroSys};
 use novomodelo_solver::{ActiveSolver, RowBatch, SolverInterface};
 
@@ -622,4 +623,261 @@ fn fpha_solve_mixed_system_optimal() {
         "FPHA hydro 1 generation must be non-negative, got {}",
         view.primal[col_g1]
     );
+}
+
+/// derived: the mixed fixture's plane slope `γ_s`; each plant has one cell, so `σ_c = 1`.
+const LATERAL_GAMMA_S: f64 = 0.1;
+
+/// derived: planes per FPHA plant in the mixed fixture, one block.
+const LATERAL_PLANES: usize = 3;
+
+fn tailrace_flow(own: f64, outflow: &[(i32, f64)], incremental: &[(i32, f64)]) -> TailraceFlow {
+    let influences = |list: &[(i32, f64)]| {
+        list.iter()
+            .map(|&(id, factor)| TailraceFlowInfluence {
+                hydro_id: EntityId(id),
+                factor,
+            })
+            .collect()
+    };
+    TailraceFlow {
+        own_outflow_factor: own,
+        outflow_influences: influences(outflow),
+        incremental_inflow_influences: influences(incremental),
+    }
+}
+
+fn mixed_templates(
+    flow_102: TailraceFlow,
+    method: InflowNonNegativityMethod,
+) -> novomodelo_sddp::StageTemplates {
+    let (system, production) = four_hydro_mixed_system_with(flow_102);
+    build_stage_templates_resolving_layout(
+        &system,
+        method,
+        &PrecomputedPar::default(),
+        &PrecomputedNormal::default(),
+        &production,
+        &default_evaporation(&system),
+        &ResolvedParameters::default(),
+    )
+    .expect("mixed FPHA/constant system with a tailrace declaration builds")
+}
+
+/// Hydro 102's plane rows: the first FPHA plant of the mixed fixture.
+fn plane_rows_of_102(
+    geometry: &novomodelo_sddp::lp::builder::StageGeometry,
+) -> std::ops::Range<usize> {
+    geometry.fpha.start..geometry.fpha.start + LATERAL_PLANES
+}
+
+fn assert_entry(got: Option<f64>, want: f64, what: &str) {
+    let got = got.unwrap_or_else(|| panic!("{what}: no entry, expected {want}"));
+    assert!(
+        (got - want).abs() < 1e-12,
+        "{what}: expected {want}, got {got}"
+    );
+}
+
+fn coupling_entries(result: &novomodelo_sddp::StageTemplates, hydro: usize) -> Vec<(usize, f64)> {
+    result.inflow_coupling_per_stage[0]
+        .hydro_entries(HydroSys::new(hydro))
+        .collect()
+}
+
+/// Hydro 102 declares own factor 1.5, outflow of 100 at 0.8 and incremental of 101 at 0.5.
+#[test]
+fn fpha_lateral_entries_carry_the_scaled_plane_slope_on_every_influencing_column() {
+    let result = mixed_templates(
+        tailrace_flow(1.5, &[(100, 0.8)], &[(101, 0.5)]),
+        no_penalty_config(),
+    );
+    let tmpl = &result.templates[0];
+    let geometry = &result.geometry_per_stage[0];
+    let blk = BlockIdx::new(0);
+    let own_spillage = geometry.spillage_col(HydroSys::new(2), blk);
+    let influenced = [
+        ("100 turbine", geometry.turbine_col(HydroCell::new(0), blk)),
+        ("100 spillage", geometry.spillage_col(HydroSys::new(0), blk)),
+    ];
+
+    for row in plane_rows_of_102(geometry) {
+        assert_entry(
+            csc_entry(tmpl, own_spillage, row),
+            -LATERAL_GAMMA_S * 1.5,
+            &format!("102 spillage, row {row}"),
+        );
+        for (name, col) in influenced {
+            assert_entry(
+                csc_entry(tmpl, col, row),
+                -LATERAL_GAMMA_S * 0.8,
+                &format!("{name}, row {row}"),
+            );
+        }
+    }
+    let plane_rows = plane_rows_of_102(geometry);
+    for row in plane_rows.end..plane_rows.end + LATERAL_PLANES {
+        for (name, col) in influenced {
+            assert_eq!(
+                csc_entry(tmpl, col, row),
+                None,
+                "{name} must carry nothing on 103's plane row {row}"
+            );
+        }
+    }
+}
+
+#[test]
+fn fpha_lateral_inflow_records_the_coupling_and_the_truncation_slack() {
+    let result = mixed_templates(
+        tailrace_flow(1.5, &[(100, 0.8)], &[(101, 0.5)]),
+        InflowNonNegativityMethod::Truncation,
+    );
+    let tmpl = &result.templates[0];
+    let geometry = &result.geometry_per_stage[0];
+    let recorded = coupling_entries(&result, 1);
+    let slack = geometry.inflow_slack_col(HydroSys::new(1));
+
+    for row in plane_rows_of_102(geometry) {
+        let hits: Vec<f64> = recorded
+            .iter()
+            .filter(|&&(r, _)| r == row)
+            .map(|&(_, c)| c)
+            .collect();
+        assert_eq!(hits.len(), 1, "one record of hydro 101 on plane row {row}");
+        assert_entry(
+            Some(hits[0]),
+            -LATERAL_GAMMA_S * 0.5,
+            &format!("101 record, row {row}"),
+        );
+        assert_entry(
+            csc_entry(tmpl, slack, row),
+            -LATERAL_GAMMA_S * 0.5,
+            &format!("101 inflow slack, row {row}"),
+        );
+    }
+}
+
+#[test]
+fn fpha_lateral_inflow_skips_the_slack_outside_truncation() {
+    for method in [
+        InflowNonNegativityMethod::Penalty,
+        InflowNonNegativityMethod::None,
+    ] {
+        let result = mixed_templates(tailrace_flow(1.5, &[(100, 0.8)], &[(101, 0.5)]), method);
+        let tmpl = &result.templates[0];
+        let geometry = &result.geometry_per_stage[0];
+        let recorded = coupling_entries(&result, 1);
+
+        for row in plane_rows_of_102(geometry) {
+            let record = recorded.iter().find(|&&(r, _)| r == row).copied();
+            assert_entry(
+                record.map(|(_, c)| c),
+                -LATERAL_GAMMA_S * 0.5,
+                &format!("{method:?}: 101 record, row {row}"),
+            );
+            if !geometry.inflow_slack.is_empty() {
+                let slack = geometry.inflow_slack_col(HydroSys::new(1));
+                assert_eq!(
+                    csc_entry(tmpl, slack, row),
+                    None,
+                    "{method:?}: 101 inflow slack must carry nothing on plane row {row}"
+                );
+            }
+        }
+    }
+}
+
+/// Hydro 102 declares its own incremental inflow, own factor 1.0 and no outflow influence.
+#[test]
+fn fpha_lateral_self_inflow_couples_the_plants_own_incremental() {
+    let declared = || tailrace_flow(1.0, &[], &[(102, 0.5)]);
+
+    for method in [
+        InflowNonNegativityMethod::Truncation,
+        InflowNonNegativityMethod::Penalty,
+    ] {
+        let result = mixed_templates(declared(), method);
+        let undeclared = mixed_templates(TailraceFlow::default(), method);
+        let tmpl = &result.templates[0];
+        let geometry = &result.geometry_per_stage[0];
+        let plane_rows = plane_rows_of_102(geometry);
+        let slack = geometry.inflow_slack_col(HydroSys::new(2));
+        let recorded = coupling_entries(&result, 2);
+
+        for row in plane_rows.clone() {
+            let hits: Vec<f64> = recorded
+                .iter()
+                .filter(|&&(r, _)| r == row)
+                .map(|&(_, c)| c)
+                .collect();
+            assert_eq!(hits.len(), 1, "{method:?}: one record on plane row {row}");
+            assert_entry(
+                Some(hits[0]),
+                -LATERAL_GAMMA_S * 0.5,
+                &format!("{method:?}: 102 record, row {row}"),
+            );
+            let slack_entry = csc_entry(tmpl, slack, row);
+            if method == InflowNonNegativityMethod::Truncation {
+                assert_entry(
+                    slack_entry,
+                    -LATERAL_GAMMA_S * 0.5,
+                    &format!("{method:?}: 102 inflow slack, row {row}"),
+                );
+            } else {
+                assert_eq!(
+                    slack_entry, None,
+                    "{method:?}: 102 inflow slack must carry nothing on plane row {row}"
+                );
+            }
+        }
+
+        let outside_plane_rows: Vec<(usize, u64)> = recorded
+            .iter()
+            .filter(|&&(r, _)| !plane_rows.contains(&r))
+            .map(|&(r, c)| (r, c.to_bits()))
+            .collect();
+        let undeclared_entries: Vec<(usize, u64)> = coupling_entries(&undeclared, 2)
+            .iter()
+            .map(|&(r, c)| (r, c.to_bits()))
+            .collect();
+        assert_eq!(
+            outside_plane_rows, undeclared_entries,
+            "{method:?}: 102's entries off its plane rows are the undeclared system's"
+        );
+    }
+}
+
+#[test]
+fn fpha_zero_factor_declaration_builds_the_undeclared_template() {
+    let method = InflowNonNegativityMethod::Truncation;
+    let zeroed = mixed_templates(tailrace_flow(1.0, &[(100, 0.0)], &[(101, 0.0)]), method);
+    let undeclared = mixed_templates(TailraceFlow::default(), method);
+    let (zeroed_tmpl, undeclared_tmpl) = (&zeroed.templates[0], &undeclared.templates[0]);
+
+    assert_eq!(zeroed_tmpl.col_starts, undeclared_tmpl.col_starts);
+    assert_eq!(zeroed_tmpl.row_indices, undeclared_tmpl.row_indices);
+    let bits = |values: &[f64]| values.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+    assert_eq!(bits(&zeroed_tmpl.values), bits(&undeclared_tmpl.values));
+    assert_eq!(
+        bits(&zeroed_tmpl.row_lower),
+        bits(&undeclared_tmpl.row_lower)
+    );
+    assert_eq!(
+        bits(&zeroed_tmpl.row_upper),
+        bits(&undeclared_tmpl.row_upper)
+    );
+    for hydro in 0..4 {
+        let entry_bits = |result: &novomodelo_sddp::StageTemplates| {
+            coupling_entries(result, hydro)
+                .iter()
+                .map(|&(r, c)| (r, c.to_bits()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            entry_bits(&zeroed),
+            entry_bits(&undeclared),
+            "hydro {hydro}: inflow-coupling entries"
+        );
+    }
 }
