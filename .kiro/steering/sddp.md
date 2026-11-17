@@ -643,9 +643,13 @@ to a row:
 `push_local_inflow_coupling` records `−ζ` on a parallel stage and `−τ_k` (block
 `k`'s duration hours times `M3S_TO_HM3`) on each chronological block row — on
 the hydro's own water-balance row(s), or its `PreFilling` short-circuit
-target's — and `fill_generic_constraint_entries` records the generic
-`hydro_inflow` terms. `InflowCouplingSink::finish` returns the coupling `G`
-(`InflowCoupling`), unscaled, with each touched row's unscaled bounds. Every
+target's — `fill_generic_constraint_entries` records the generic
+`hydro_inflow` terms, and `fill_fpha_entries` records `σ_c·(−γ_s)·f_k` for
+each incremental-inflow influence `k` of an FPHA plant on each of that plant's
+plane rows, at the rate (no block-duration factor), and puts the same
+coefficient on `k`'s inflow-slack column under the truncation methods only (the
+FPHA lateral-flow subsection below). `InflowCouplingSink::finish` returns the
+coupling `G` (`InflowCoupling`), unscaled, with each touched row's unscaled bounds. Every
 solve writes each touched row's bounds as its unscaled bound minus
 `Σ_h G(r, h)·ẑ_h`, the sum accumulated from +0.0 in ascending hydro, then entry,
 order, times the row's `row_scale`; both sides of a range row move, and an
@@ -653,7 +657,9 @@ infinite side stays infinite (`PatchBuffer::fill_inflow_shift_patches`).
 
 The same router gives the hydro's inflow-slack column, when the method has
 one, exactly the hydro's water-row entries: the target's rows for a `PreFilling`
-hydro, no row at a sink, never a frozen identity row. Under `truncation` and
+hydro, no row at a sink, never a frozen identity row; under the truncation
+methods it also carries the FPHA plane-row entries of every plant `h`
+influences. Under `truncation` and
 `truncation_with_penalty` the noise also patches the column bounds of hydro
 `h`'s own inflow-slack column (`apply_inflow_slack_col_bounds`, divided by
 `col_scale`), and nothing else. A water-balance row has no inflow term of its
@@ -673,7 +679,7 @@ The wrong-but-compiling alternatives:
 
 Read: `lp/builder/inflow_coupling.rs` (`InflowCouplingSink`, `InflowCoupling`),
 `lp/builder/entries.rs` (`push_local_inflow_coupling`,
-`fill_generic_constraint_entries`), `lp/builder/patch.rs`
+`fill_generic_constraint_entries`, `fill_fpha_entries`), `lp/builder/patch.rs`
 (`PatchBuffer::fill_inflow_shift_patches`), `stochastic/noise.rs`
 (`realize_inflow`, `apply_inflow_slack_col_bounds`). Pinned by
 `chronological_inflow_noise_moves_only_its_own_hydro`
@@ -683,7 +689,13 @@ Read: `lp/builder/inflow_coupling.rs` (`InflowCouplingSink`, `InflowCoupling`),
 rows under `none` and `penalty`, and the coupled rows plus the hydro's own
 inflow-slack column bounds under the truncation methods;
 `inflow_slack_follows_z_routing_for_prefilling` (`lp/builder/entries.rs`) for
-the slack route; `every_study_reads_z_inflow_on_its_water_rows`
+the slack route;
+`fpha_lateral_inflow_records_the_coupling_and_the_truncation_slack` and
+`fpha_lateral_inflow_skips_the_slack_outside_truncation`
+(`tests/template_integration/fpha_structure.rs`: the FPHA record of an
+influencing plant's inflow on each plane row at `σ_c·(−γ_s)·f_k`, and the same
+coefficient on its inflow-slack column under `truncation` and none under
+`penalty` or `none`); `every_study_reads_z_inflow_on_its_water_rows`
 (`tests/template_integration/water_balance_coupling.rs`: every study's water
 rows read the inflow through the sink, on a chronological stage with unequal
 block hours, a `PreFilling` route and a generic `hydro_inflow` entry);
@@ -827,6 +839,15 @@ canonically whatever order the sites recorded them in, so the coupling does not
 depend on the declaration order. ψ, b and σ have one owner, `PrecomputedPar`: the conditional mean, the
 noise term and the chain rule's ψ all read it.
 
+An FPHA plane row is a coupled row when its plant declares an incremental-inflow
+influence (the FPHA lateral-flow subsection below): its bounds shift with the
+influencing plant's realized inflow, and its dual enters that plant's lag price
+like a water row's. The chronological/parallel coupling-sum identity (a hydro's
+water-row entries sum to `−ζ` on either block mode) covers the water-balance
+and generic rows only, never a plane row: a plane row records the rate on every
+block row, with no block-duration factor, so summing a hydro's entries over
+every coupled row does not give `−ζ`.
+
 The wrong-but-compiling alternatives:
 
 - an inflow coupling written outside the sink (a coupled row's bound offset by
@@ -836,6 +857,9 @@ The wrong-but-compiling alternatives:
   reads, and the lag price then no longer matches the realized inflow;
 - a coupling kept in push order: the touched rows follow the declaration order,
   and the template and the shift with them.
+- an FPHA plane-row coupling multiplied by `τ_k` to match the water rows: the
+  plane balances MW against flows in m³/s, so the lateral inflow term is off by
+  the block's hours times `M3S_TO_HM3`.
 
 Read: `lp/builder/inflow_coupling.rs` (`InflowCouplingSink`, `InflowCoupling`),
 `crates/novomodelo-stochastic/src/par/precompute.rs` (`PrecomputedPar`). Pinned by
@@ -847,25 +871,93 @@ the sink's structural tests in `lp/builder/inflow_coupling/tests.rs`,
 `record_rejects_a_hydro_past_the_sink` and the `finish_*` tests; and the
 declaration-order gates `every_lag_deck_compact_template_is_invariant_to_declaration_order`
 and `the_compact_lag_study_trains_to_the_same_bits_in_either_declaration_order`
-(`tests/template_permutation.rs`).
+(`tests/template_permutation.rs`); and, for the FPHA route,
+`every_study_reads_z_inflow_on_its_water_rows`
+(`tests/template_integration/water_balance_coupling.rs`: every sink entry sits
+on a water, an FPHA or a generic row, the `−ζ` sum is checked on the water rows
+alone, and the sweep must reach an FPHA row entry) and the sweep label
+`in-code/fpha-lateral-lag` of `every_noise_dimension_patches_only_its_own_entity`
+(`tests/patch_ownership_sweep.rs`: the influencing plant's noise moves the
+plane rows it is coupled to and nothing it does not own).
 
 ## FPHA uses average storage
 
 The FPHA generation constraint is
-`g ≤ γ₀ + (γᵥ/2)·(V_in + V_out) + γ_q·q (+ γ_s·s)`. The `−γᵥ/2` coefficient
-appears on **both** the incoming and outgoing storage columns — not on `V_out`
+`g ≤ γ₀ + (γᵥ/2)·(V_in + V_out) + γ_q·q (+ γ_s·L)`, with `L` the plant's own
+spillage `s` unless it declares a tailrace lateral flow (the subsection below).
+The `−γᵥ/2` coefficient appears on **both** the incoming and outgoing storage columns — not on `V_out`
 alone. (Discovered during deterministic case D06.)
 Read: `lp/builder/entries.rs` (`fill_fpha_entries` — pushes `−γᵥ/2` onto both the
 incoming- and outgoing-storage columns), `lp/builder/rows.rs` (`fill_fpha_rows`),
 and `lp/builder/template.rs`.
 
+### FPHA rows carry the tailrace lateral flow
+
+The plane's spillage term is the tailrace lateral flow `L`, so each plane row
+of cell `c` of plant `i` reads
+`g − σ_c·(γᵥ/2)·(V_in + V_out) − γ_q·q_c − σ_c·γ_s·L − σ ≤ σ_c·γ₀` with
+`L = f_i·s_i + Σ_j f_ij·(Σ_c' q_j,c' + s_j) + Σ_k f_ik·z_k`: plant `i`'s own
+spillage, the release of each outflow-influencing plant `j` (every cell's
+turbined flow plus its spillage) and the realized incremental inflow `z_k` of
+each inflow-influencing plant `k`. `γ_s` is per m³/s of lateral flow, so every
+term of `L` takes the one coefficient `σ_c·(−γ_s)` times its factor; `σ_c` is
+the cell's share of the plant's declared maximum turbined flow
+(`HydroCellIndex::share_of`), the same apportioning as the plane's other
+flow-independent terms. `ResolvedTailraceLateral` holds the factors; a plant
+that declares nothing has `f_i = 1` and no influences, so `L = s_i`.
+
+`fill_fpha_entries` writes the terms on each plane row of the cell:
+
+- the own-spillage entry `σ_c·(−γ_s)·f_i` is always pushed, so a plant that
+  declares only zero factors builds the template of a plant that declares
+  nothing, bit for bit;
+- each cross-plant term whose coefficient `σ_c·(−γ_s)·f` is exactly zero
+  (`is_exact_zero`) is skipped, column and record alike;
+- an outflow influence puts the coefficient on every column of
+  `plant_release_cols(j)`, replicated across `j`'s cells, never divided;
+- an inflow influence is recorded through `InflowCouplingSink::record` at the
+  rate (the coupling-sink section above) and, under the truncation methods
+  only, put on `k`'s inflow-slack column, so the plane reads `k`'s effective
+  inflow `ẑ_k + l*_k` as `k`'s water row does.
+
+The wrong-but-compiling alternatives:
+
+- dividing the lateral coefficient by the influencing plant's cell count: the
+  release `Σ_c' q_j,c' + s_j` is a sum of columns, so the division prices `j`'s
+  turbined flow at a fraction of its weight on every multi-cell plant;
+- omitting the inflow-slack entry under the truncation methods: the plane reads
+  the raw `ẑ_k`, negative where truncation lifts it, while `k`'s water row reads
+  the corrected inflow;
+- adding the slack entry under `penalty`: there the slack is a priced water
+  source in `k`'s water row, and its entry on the plane lets it raise the
+  tailrace as well, so the plane prices water that is not in the river.
+
+Read: `lp/builder/entries.rs` (`fill_fpha_entries`),
+`lp/builder/build_inputs.rs` (`ResolvedTailraceLateral`),
+`lp/builder/layout.rs` (`plant_release_cols`, `effective_inflow_slack_col`).
+Pinned by, in `tests/template_integration/fpha_structure.rs`,
+`fpha_lateral_entries_carry_the_scaled_plane_slope_on_every_influencing_column`
+(the own-spillage, turbine and spillage entries at `−γ_s·f` on every plane row
+of the plant and on no other plant's),
+`fpha_lateral_inflow_records_the_coupling_and_the_truncation_slack` and
+`fpha_lateral_inflow_skips_the_slack_outside_truncation` (the slack entry under
+the truncation methods only) and
+`fpha_zero_factor_declaration_builds_the_undeclared_template` (columns, values,
+row bounds and coupling bit for bit); and, in `tests/template_permutation.rs`,
+`the_lateral_lag_study_template_is_invariant_to_declaration_order` and
+`the_compact_lateral_lag_study_trains_to_the_same_bits_in_either_declaration_order`.
+
 ## The FPHA slack sits only in plane rows
 
 Each FPHA cell has one plane slack `σ` per block: a column in `[0, ∞)` with
 `−1` in every plane row of that cell and block and in no other row. No
-water-balance, load-balance or generic-constraint row holds it, so the inflow
-coupling and the lag fold see no new term. The family is
-`StageGeometry::fpha_slack`, addressed by `fpha_slack_col(FphaCellLocal,
+water-balance, load-balance or generic-constraint row holds it, so the slack
+column itself is in no coupled row. A plane row can be coupled, though (the
+FPHA lateral-flow subsection above): while `σ` is basic it sets the plane
+dual, so the lag price of an inflow-influencing plant `k` reads the slack price
+through `σ_c·(−γ_s)·f_k`, not the marginal resource's cost. That is a valid
+subgradient of the penalized LP, whose plane is soft at the slack price. The
+family is `StageGeometry::fpha_slack`, addressed by `fpha_slack_col(FphaCellLocal,
 BlockIdx)` and allocated last, so it shifts no other family's start. Its price
 is the hydro's `fpha_violation_cost` times the block's hours, divided by the
 cost scale like every other objective term. A Dormant plant has no FPHA cell at
@@ -909,6 +1001,14 @@ and `an_fpha_storage_coefficient_prices_the_head_at_the_slack_price_when_the_sla
 `a_generation_floor_activates_the_fpha_slack_above_the_two_term_sum` (a priced
 generation floor makes `σ` basic at a price above the two-term sum, with the
 plane dual equal to the load dual plus the floor dual);
+`a_lateral_inflow_prices_the_influencing_lag_through_the_fpha_plane_when_the_slack_is_idle`
+and `a_lateral_inflow_prices_the_influencing_lag_through_the_fpha_plane_when_the_slack_is_active`
+(the influencing plant's lag coefficient gains `−p·h·σ_c·γ_s·f_k·ψ_k/K`, with
+`p` the thermal cost while `σ` is 0 and the slack price once `σ` is basic);
+`cold_solves_and_cuts_agree_across_the_formulations_with_a_lateral_fpha_inflow`
+(`tests/cut_oracles/cross_formulation.rs`: with another plant's outflow and
+inflow in the tailrace flow, the stage LP and an LP that defines the inflow in a
+row agree on objectives and cuts);
 `cold_solves_and_cuts_agree_across_the_formulations_with_an_active_fpha_slack`
 (`tests/cut_oracles/cross_formulation.rs`: with `σ` active in some solve, the
 stage LP and an LP that defines the inflow in a row agree on objectives and
