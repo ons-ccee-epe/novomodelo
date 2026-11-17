@@ -139,6 +139,48 @@ pub(super) fn check_hydro_bounds(data: &ParsedData, ctx: &mut ValidationContext)
     }
 }
 
+/// Rule 2 at each study stage, on the storage range [`resolve_bounds`] puts in
+/// force: two `hydro_bounds` rows may set a stage's minimum and maximum
+/// separately, and an override may cross the hydro's own opposite bound. A
+/// hydro whose own range is inverted is left to the plant-level check.
+pub(super) fn check_stage_storage_bounds_inverted(data: &ParsedData, ctx: &mut ValidationContext) {
+    let (ids, bounds) = resolve_study_hydro_bounds(data);
+    let mut inverted: Vec<(i32, i32, f64, f64)> = Vec::new();
+    for (h_idx, hydro) in data.hydros.iter().enumerate() {
+        if hydro.min_storage_hm3 > hydro.max_storage_hm3 {
+            continue;
+        }
+        for (t, &stage_id) in ids.iter().enumerate() {
+            let stage_bounds = bounds.hydro_bounds(h_idx, t);
+            let (floor, ceiling) = (stage_bounds.min_storage_hm3, stage_bounds.max_storage_hm3);
+            if floor > ceiling {
+                inverted.push((hydro.id.0, stage_id, floor, ceiling));
+            }
+        }
+    }
+    if inverted.is_empty() {
+        return;
+    }
+    inverted.sort_by_key(|&(hydro_id, stage_id, _, _)| (hydro_id, stage_id));
+    let pairs = inverted
+        .iter()
+        .map(|(hydro_id, stage_id, floor, ceiling)| {
+            format!("Hydro {hydro_id} at stage {stage_id} ({floor} > {ceiling})")
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    ctx.emit(
+        &rules::SEMANTIC_HYDRO_STORAGE_BOUNDS_INVERTED,
+        "constraints/hydro_bounds.parquet",
+        None::<String>,
+        format!(
+            "min_storage_hm3 exceeds max_storage_hm3 at {} (hydro, stage) pair(s), so no \
+             storage satisfies those stages: {pairs}",
+            inverted.len()
+        ),
+    );
+}
+
 /// Rule 46: rejects a positive `min_diversion_m3s` or `max_diversion_m3s` override
 /// on a hydro that declares no `diversion` channel. Without a channel
 /// [`resolve_bounds`] seeds the diversion column
@@ -3497,9 +3539,10 @@ mod tests {
         let falling = validate_storage_floors(
             vec![make_ranged_hydro(1)],
             vec![
-                min_storage_row(1, 1, 80.0),
-                min_storage_row(1, 2, 60.0),
-                min_storage_row(1, 3, 40.0),
+                min_storage_row(1, 0, 400.0),
+                min_storage_row(1, 1, 300.0),
+                min_storage_row(1, 2, 200.0),
+                min_storage_row(1, 3, 150.0),
             ],
             InflowNonNegativityMethod::Truncation,
         );
@@ -3584,6 +3627,106 @@ mod tests {
             )]
         );
         assert_eq!(forward, reversed);
+    }
+
+    // ── Stage storage bound inversion tests ───────────────────────────────────
+
+    /// Validate `hydros` over study stages 0-3 with `hydro_bounds` rows; return
+    /// the stage-level inverted-storage error messages.
+    fn stage_storage_inversions(
+        hydros: Vec<Hydro>,
+        hydro_bounds: Vec<HydroBoundsRow>,
+    ) -> Vec<String> {
+        let mut data = make_data(
+            hydros,
+            vec![],
+            vec![],
+            make_stages(vec![0, 1, 2, 3]),
+            vec![],
+            vec![],
+        );
+        data.hydro_bounds = hydro_bounds;
+        let mut ctx = ValidationContext::new();
+        validate_semantic_hydro_thermal(&data, &mut ctx);
+        ctx.errors()
+            .into_iter()
+            .filter(|e| {
+                e.message
+                    .contains("min_storage_hm3 exceeds max_storage_hm3")
+            })
+            .map(|e| {
+                assert_eq!(e.kind, ErrorKind::InvalidValue);
+                assert_eq!(e.file.to_string_lossy(), "constraints/hydro_bounds.parquet");
+                assert_eq!(e.entity, None);
+                e.message.clone()
+            })
+            .collect()
+    }
+
+    fn max_storage_row(hydro_id: i32, stage_id: i32, max_storage_hm3: f64) -> HydroBoundsRow {
+        HydroBoundsRow {
+            hydro_id: EntityId::from(hydro_id),
+            stage_id,
+            max_storage_hm3: Some(max_storage_hm3),
+            ..Default::default()
+        }
+    }
+
+    fn inversion_message(n_pairs: usize, pairs: &str) -> String {
+        format!(
+            "min_storage_hm3 exceeds max_storage_hm3 at {n_pairs} (hydro, stage) pair(s), so no \
+             storage satisfies those stages: {pairs}"
+        )
+    }
+
+    #[test]
+    fn stage_storage_bounds_crossed_by_two_rows_are_rejected_in_any_declaration_order() {
+        let rows = vec![
+            min_storage_row(1, 2, 600.0),
+            max_storage_row(1, 2, 500.0),
+            min_storage_row(2, 1, 700.0),
+            max_storage_row(2, 1, 300.0),
+        ];
+        let forward = stage_storage_inversions(
+            vec![make_ranged_hydro(1), make_ranged_hydro(2)],
+            rows.clone(),
+        );
+        let reversed = stage_storage_inversions(
+            vec![make_ranged_hydro(2), make_ranged_hydro(1)],
+            rows.into_iter().rev().collect(),
+        );
+        assert_eq!(
+            forward,
+            vec![inversion_message(
+                2,
+                "Hydro 1 at stage 2 (600 > 500), Hydro 2 at stage 1 (700 > 300)"
+            )]
+        );
+        assert_eq!(forward, reversed);
+    }
+
+    #[test]
+    fn stage_storage_override_crossing_the_hydros_own_bound_is_rejected() {
+        let msgs = stage_storage_inversions(
+            vec![make_ranged_hydro(1)],
+            vec![max_storage_row(1, 1, 50.0), min_storage_row(1, 3, 1200.0)],
+        );
+        assert_eq!(
+            msgs,
+            vec![inversion_message(
+                2,
+                "Hydro 1 at stage 1 (100 > 50), Hydro 1 at stage 3 (1200 > 1000)"
+            )]
+        );
+    }
+
+    #[test]
+    fn stage_storage_bounds_that_meet_are_accepted() {
+        let msgs = stage_storage_inversions(
+            vec![make_ranged_hydro(1)],
+            vec![min_storage_row(1, 2, 500.0), max_storage_row(1, 2, 500.0)],
+        );
+        assert!(msgs.is_empty(), "got: {msgs:?}");
     }
 
     // ── FPHA geometry coverage tests ──────────────────────────────────────────

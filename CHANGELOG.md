@@ -68,6 +68,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   over the plant's `min_storage_hm3` to `max_storage_hm3`, which
   `system/hydro_geometry.parquet` must cover or the case is refused. Extend
   the geometry. Results change where the two ranges differ.
+- **BREAKING:** a storage bound in `constraints/hydro_bounds.parquet` outside
+  the reservoir's range in `system/hydros.json` is refused, as is a stage whose
+  minimum storage exceeds its maximum. Keep each stage's bounds within the
+  reservoir's `min_storage_hm3` to `max_storage_hm3`.
 - An FPHA hydro with `max_generation_mw` 0 in `system/hydros.json` needs no rows
   in `system/fpha_hyperplanes.parquet` and is modeled at zero productivity. The
   "no turbine capacity" warning names `max_turbined_m3s` and
