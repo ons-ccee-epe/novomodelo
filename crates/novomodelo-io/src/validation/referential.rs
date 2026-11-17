@@ -292,6 +292,16 @@ const HYDRO_DIVERSION_DOWNSTREAM_HYDRO: DanglingRefDescriptor = DanglingRefDescr
     target_entity: "Hydro",
     field: "diversion.downstream_id",
 };
+const HYDRO_TAILRACE_OUTFLOW_INFLUENCE: DanglingRefDescriptor = DanglingRefDescriptor {
+    file: "system/hydros.json",
+    target_entity: "Hydro",
+    field: "tailrace_flow.outflow_influences.hydro_id",
+};
+const HYDRO_TAILRACE_INCREMENTAL_INFLOW_INFLUENCE: DanglingRefDescriptor = DanglingRefDescriptor {
+    file: "system/hydros.json",
+    target_entity: "Hydro",
+    field: "tailrace_flow.incremental_inflow_influences.hydro_id",
+};
 const HYDRO_UNIT_GROUP_BUS: DanglingRefDescriptor = DanglingRefDescriptor {
     file: "system/hydros.json",
     target_entity: "Bus",
@@ -370,6 +380,28 @@ fn check_hydro_references(
                 diversion.downstream_id.0,
                 ctx,
             );
+        }
+
+        for influence in &hydro.tailrace_flow.outflow_influences {
+            if !hydro_ids.contains(&influence.hydro_id.0) {
+                emit_dangling_ref_at(
+                    &HYDRO_TAILRACE_OUTFLOW_INFLUENCE,
+                    &entity_str,
+                    influence.hydro_id.0,
+                    ctx,
+                );
+            }
+        }
+
+        for influence in &hydro.tailrace_flow.incremental_inflow_influences {
+            if !hydro_ids.contains(&influence.hydro_id.0) {
+                emit_dangling_ref_at(
+                    &HYDRO_TAILRACE_INCREMENTAL_INFLOW_INFLUENCE,
+                    &entity_str,
+                    influence.hydro_id.0,
+                    ctx,
+                );
+            }
         }
 
         for group in &hydro.unit_groups {
@@ -1193,7 +1225,7 @@ mod tests {
         EntityId,
         entities::{
             Bus, DiversionChannel, HydroUnitGroup, Line, NonControllableSource, PumpingStation,
-            Thermal,
+            TailraceFlow, TailraceFlowInfluence, Thermal,
         },
         scenario::{CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile},
     };
@@ -1369,6 +1401,84 @@ mod tests {
         assert!(
             msg.contains("downstream_id"),
             "message should contain 'downstream_id', got: {msg}"
+        );
+    }
+
+    /// Given hydro 3 lists hydro 100 in `outflow_influences` and hydro 200 in
+    /// `incremental_inflow_influences` and neither exists, each dangling id is
+    /// reported once, naming its list.
+    #[test]
+    fn test_hydro_tailrace_flow_dangling_influence_ids() {
+        let dir = TempDir::new().unwrap();
+        make_minimal_case(&dir);
+        let mut data = parse_case(&dir);
+        let mut hydro = make_hydro(3, None);
+        hydro.tailrace_flow = TailraceFlow {
+            outflow_influences: vec![TailraceFlowInfluence {
+                hydro_id: EntityId::from(100),
+                factor: 1.0,
+            }],
+            incremental_inflow_influences: vec![TailraceFlowInfluence {
+                hydro_id: EntityId::from(200),
+                factor: 1.0,
+            }],
+            ..TailraceFlow::default()
+        };
+        data.hydros = vec![hydro];
+        let mut ctx = ValidationContext::new();
+        validate_referential_integrity(&data, &mut ctx);
+        let errors = ctx.errors();
+        let inv_ref: Vec<_> = errors
+            .iter()
+            .filter(|e| e.kind == ErrorKind::InvalidReference)
+            .collect();
+        assert_eq!(inv_ref.len(), 2, "got: {inv_ref:?}");
+        let outflow = &inv_ref[0].message;
+        assert!(
+            outflow.contains("Hydro 3")
+                && outflow.contains("100")
+                && outflow.contains("tailrace_flow.outflow_influences.hydro_id"),
+            "got: {outflow}"
+        );
+        let incremental = &inv_ref[1].message;
+        assert!(
+            incremental.contains("200")
+                && incremental.contains("tailrace_flow.incremental_inflow_influences.hydro_id"),
+            "got: {incremental}"
+        );
+    }
+
+    /// Given hydros 3 and 4 list each other in both influence lists and hydro 3
+    /// also lists itself in `incremental_inflow_influences`, no reference is
+    /// dangling.
+    #[test]
+    fn test_hydro_tailrace_flow_declared_influence_ids_pass() {
+        let dir = TempDir::new().unwrap();
+        make_minimal_case(&dir);
+        let mut data = parse_case(&dir);
+        let influence = |id: i32| TailraceFlowInfluence {
+            hydro_id: EntityId::from(id),
+            factor: 1.0,
+        };
+        let mut hydro_3 = make_hydro(3, None);
+        hydro_3.tailrace_flow = TailraceFlow {
+            outflow_influences: vec![influence(4)],
+            incremental_inflow_influences: vec![influence(3), influence(4)],
+            ..TailraceFlow::default()
+        };
+        let mut hydro_4 = make_hydro(4, None);
+        hydro_4.tailrace_flow = TailraceFlow {
+            outflow_influences: vec![influence(3)],
+            incremental_inflow_influences: vec![influence(3)],
+            ..TailraceFlow::default()
+        };
+        data.hydros = vec![hydro_3, hydro_4];
+        let mut ctx = ValidationContext::new();
+        validate_referential_integrity(&data, &mut ctx);
+        let errors = ctx.errors();
+        assert!(
+            errors.iter().all(|e| e.kind != ErrorKind::InvalidReference),
+            "got: {errors:?}"
         );
     }
 
