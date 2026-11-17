@@ -127,16 +127,12 @@ impl ProductionModelSet {
 
     /// The production function fitted for `(h, t)`; `None` at a stage without one or
     /// out of range.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "read by the simulation tailrace lookup")
-    )]
     pub(crate) fn fpha_production_function(
         &self,
         h: usize,
         t: usize,
-    ) -> Option<&ProductionFunction> {
-        self.fpha_production_functions.get(h)?.get(t)?.as_deref()
+    ) -> Option<&Arc<ProductionFunction>> {
+        self.fpha_production_functions.get(h)?.get(t)?.as_ref()
     }
 
     /// Resolved production model at `(hydro, stage)`.

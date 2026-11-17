@@ -73,7 +73,7 @@ use novomodelo_sddp::{
     simulate,
     simulation::{
         EntityCounts, SimulationConfig, SimulationOutputSpec, SimulationScenarioResult,
-        aggregation::GatheredScenarioCosts,
+        SimulationTailrace, aggregation::GatheredScenarioCosts,
     },
     solver_stats::SolverStatsDelta,
     test_support::{
@@ -803,6 +803,7 @@ fn train_simulate_write_cycle() {
             contract_prices_per_stage: &vec![Vec::new(); fx.n_stages],
             contract_slots: &[],
             diversion_upstream: &HashMap::new(),
+            tailrace: &SimulationTailrace::default(),
             hydro_productivities_per_stage: &vec![vec![1.0]; fx.n_stages],
             energy_conversion: &ec,
             hydro_min_storage_hm3: &[0.0],
@@ -1393,6 +1394,7 @@ fn simulation_min_outflow_slack_extracted_from_primal() {
             contract_prices_per_stage: &vec![Vec::new(); n_stages],
             contract_slots: &[],
             diversion_upstream: &HashMap::new(),
+            tailrace: &SimulationTailrace::default(),
             hydro_productivities_per_stage: &hydro_productivities_per_stage,
             energy_conversion: &ec2,
             hydro_min_storage_hm3: &[0.0],
@@ -1560,6 +1562,7 @@ fn enumerated_census_k1_matches_sampled_single_scenario() {
                     contract_prices_per_stage: &vec![Vec::new(); fx.n_stages],
                     contract_slots: &[],
                     diversion_upstream: &HashMap::new(),
+                    tailrace: &SimulationTailrace::default(),
                     hydro_productivities_per_stage: &hydro_productivities_per_stage,
                     energy_conversion: &ec,
                     hydro_min_storage_hm3: &[0.0],

@@ -43,6 +43,7 @@ use crate::{
             accumulate_category_costs, build_transit_seed, extract_anticipated_lanes,
             extract_stage_result_with_lookups,
         },
+        tailrace::SimulationTailrace,
         types::{ScenarioCategoryCosts, SimulationScenarioResult, SimulationStageResult},
     },
     solve::{LazyInputs, StageOpeningSolver},
@@ -127,6 +128,10 @@ pub struct SimulationOutputSpec<'a> {
     /// Map from target hydro ID to source hydro indices that divert to it; empty
     /// when no hydros have diversion.
     pub diversion_upstream: &'a HashMap<EntityId, Vec<usize>>,
+
+    /// Per-stage production functions and lateral terms for the tailrace
+    /// quantities.
+    pub tailrace: &'a SimulationTailrace,
 
     /// Per-stage per-hydro productivity (per-stage override, or base if none);
     /// `0.0` for FPHA hydros.

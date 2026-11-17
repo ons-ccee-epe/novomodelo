@@ -53,7 +53,7 @@ use crate::config::LoopParams;
 use crate::policy::resolved_generic_coefficients::ResolvedGenericCoefficients;
 use crate::resolved_parameters::{ResolvedParameters, build_resolved_parameters};
 use crate::scaling_report::ScalingReport;
-use crate::simulation::SimulationConfig;
+use crate::simulation::{SimulationConfig, SimulationTailrace};
 use crate::solve::solver_phase::{Phase, validate_phase_solver_config};
 use crate::stochastic::noise_key::build_noise_key_table;
 mod accessors;
@@ -255,6 +255,10 @@ pub struct StudySetup {
     /// `V_min` (`min_storage_hm3`) per hydro, in declaration order; threaded into
     /// the simulation pipeline for stored-energy calculations.
     pub(crate) hydro_min_storage_hm3: Vec<f64>,
+
+    /// Production functions and lateral terms threaded into the simulation's
+    /// [`SimulationOutputSpec`](crate::simulation::SimulationOutputSpec).
+    pub(crate) simulation_tailrace: SimulationTailrace,
 
     /// The bases and trial states of a loaded checkpoint, set by
     /// [`StudySetup::set_loaded_policy`] and moved into the training session
@@ -479,6 +483,9 @@ impl StudySetup {
         let extended_delivery_anchors =
             build_extended_delivery_anchors(system, stage_data.time_value.calendar());
 
+        let simulation_tailrace =
+            SimulationTailrace::build(&hydro_models.production, system.hydros());
+
         Ok(Self {
             inputs: SolveInputs {
                 stage_data,
@@ -520,6 +527,7 @@ impl StudySetup {
             hardest_first_claim_order: true,
             energy_conversion,
             hydro_min_storage_hm3: system.hydros().iter().map(|h| h.min_storage_hm3).collect(),
+            simulation_tailrace,
             loaded: LoadedPolicy::default(),
             boundary_requirements: config.boundary,
         })
