@@ -37,6 +37,9 @@
 
 set -euo pipefail
 
+# objdump translates the "file format" line that probe_file matches.
+export LC_ALL=C
+
 readonly PACKED_FMA='\bvf(n)?m(add|sub|addsub|subadd)(132|213|231)p[sd]\b'
 readonly SCRIPT_PATH="${BASH_SOURCE[0]}"
 
