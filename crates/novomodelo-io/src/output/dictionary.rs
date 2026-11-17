@@ -1344,7 +1344,11 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
     ("fpha_hyperplanes", "gamma_0", "Intercept coefficient"),
     ("fpha_hyperplanes", "gamma_v", "Stored-volume coefficient"),
     ("fpha_hyperplanes", "gamma_q", "Turbined-flow coefficient"),
-    ("fpha_hyperplanes", "gamma_s", "Spillage coefficient"),
+    (
+        "fpha_hyperplanes",
+        "gamma_s",
+        "Tailrace lateral-flow coefficient (spill when no tailrace_flow is declared)",
+    ),
     (
         "fpha_hyperplanes",
         "kappa",

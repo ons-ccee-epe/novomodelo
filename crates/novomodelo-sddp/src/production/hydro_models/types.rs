@@ -38,7 +38,9 @@ pub struct FphaPlane {
     pub gamma_v: f64,
     /// Turbined-flow coefficient.
     pub gamma_q: f64,
-    /// Spillage coefficient.
+    /// Tailrace lateral-flow coefficient (MW per m³/s): spill times the own-outflow factor
+    /// plus the declared influences of other plants; the spill coefficient when the hydro
+    /// declares no `tailrace_flow`.
     pub gamma_s: f64,
 }
 

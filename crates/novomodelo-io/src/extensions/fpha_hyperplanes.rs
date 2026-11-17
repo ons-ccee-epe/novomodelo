@@ -6,19 +6,19 @@
 //!
 //! ## Parquet schema
 //!
-//! | Column            | Type         | Required | Description                              |
-//! | ----------------- | ------------ | -------- | ---------------------------------------- |
-//! | `hydro_id`        | INT32        | Yes      | Hydro plant identifier                   |
-//! | `stage_id`        | INT32?       | No       | Stage (`null` = valid for all stages)    |
-//! | `plane_id`        | INT32        | Yes      | Plane index within hydro                 |
-//! | `gamma_0`         | DOUBLE       | Yes      | Intercept coefficient (MW)               |
-//! | `gamma_v`         | DOUBLE       | Yes      | Volume coefficient (MW/hm³)              |
-//! | `gamma_q`         | DOUBLE       | Yes      | Turbined flow coefficient (MW per m³/s)  |
-//! | `gamma_s`         | DOUBLE       | Yes      | Spillage coefficient (MW per m³/s)       |
-//! | `kappa`           | DOUBLE?      | No       | Correction factor (default: 1.0)         |
-//! | `valid_v_min_hm3` | DOUBLE?      | No       | Volume range minimum                     |
-//! | `valid_v_max_hm3` | DOUBLE?      | No       | Volume range maximum                     |
-//! | `valid_q_max_m3s` | DOUBLE?      | No       | Maximum turbined flow validity           |
+//! | Column            | Type         | Required | Description                                                                                                                                                                                        |
+//! | ----------------- | ------------ | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+//! | `hydro_id`        | INT32        | Yes      | Hydro plant identifier                                                                                                                                                                             |
+//! | `stage_id`        | INT32?       | No       | Stage (`null` = valid for all stages)                                                                                                                                                              |
+//! | `plane_id`        | INT32        | Yes      | Plane index within hydro                                                                                                                                                                           |
+//! | `gamma_0`         | DOUBLE       | Yes      | Intercept coefficient (MW)                                                                                                                                                                         |
+//! | `gamma_v`         | DOUBLE       | Yes      | Volume coefficient (MW/hm³)                                                                                                                                                                        |
+//! | `gamma_q`         | DOUBLE       | Yes      | Turbined flow coefficient (MW per m³/s)                                                                                                                                                            |
+//! | `gamma_s`         | DOUBLE       | Yes      | Tailrace lateral-flow coefficient (MW per m³/s): spill times the own-outflow factor plus the declared influences of other plants; the spill coefficient when the hydro declares no `tailrace_flow` |
+//! | `kappa`           | DOUBLE?      | No       | Correction factor (default: 1.0)                                                                                                                                                                   |
+//! | `valid_v_min_hm3` | DOUBLE?      | No       | Volume range minimum                                                                                                                                                                               |
+//! | `valid_v_max_hm3` | DOUBLE?      | No       | Volume range maximum                                                                                                                                                                               |
+//! | `valid_q_max_m3s` | DOUBLE?      | No       | Maximum turbined flow validity                                                                                                                                                                     |
 //!
 //! ## Output ordering
 //!
@@ -87,7 +87,9 @@ pub struct FphaHyperplaneRow {
     pub gamma_v: f64,
     /// Turbined flow coefficient (MW per m³/s).
     pub gamma_q: f64,
-    /// Spillage coefficient (MW per m³/s, typically ≤ 0).
+    /// Tailrace lateral-flow coefficient (MW per m³/s, typically ≤ 0): spill times the
+    /// own-outflow factor plus the declared influences of other plants; the spill
+    /// coefficient when the hydro declares no `tailrace_flow`.
     pub gamma_s: f64,
     /// Correction factor κ. Defaults to `1.0` when absent or null in the file.
     pub kappa: f64,
