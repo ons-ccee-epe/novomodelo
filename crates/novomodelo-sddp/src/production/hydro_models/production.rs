@@ -8,6 +8,7 @@
 //! energy-conversion derivation, and the computed-FPHA export rows.
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 
 use rayon::prelude::*;
 
@@ -34,8 +35,8 @@ use crate::energy_conversion::{
     HydroEnergyProductivityOverride, build_hydro_energy_productivity_override,
 };
 use crate::fpha_fitting::{
-    ForebayTable, FphaDeviationPoint, FphaFitDeviation, FphaFitResult, TailraceFamilies,
-    TailraceSource, build_tailrace_families_map, fit_fpha_planes,
+    ForebayTable, FphaDeviationPoint, FphaFitDeviation, FphaFitResult, ProductionFunction,
+    TailraceFamilies, TailraceSource, build_tailrace_families_map, fit_fpha_planes,
 };
 // ── FPHA production model resolution ─────────────────────────────────────────
 
@@ -156,6 +157,8 @@ pub fn resolve_production_models_from_artifacts(
         build_hydro_reference_volumes_resolved(&reference_volumes_hm3, 0.0);
 
     let mut all_models: Vec<Vec<ResolvedProductionModel>> = Vec::with_capacity(n_hydros);
+    let mut all_production_functions: Vec<Vec<Option<Arc<ProductionFunction>>>> =
+        Vec::with_capacity(n_hydros);
     let mut provenance: Vec<(EntityId, ProductionModelSource)> = Vec::with_capacity(n_hydros);
     let mut export_rows: Vec<FphaHyperplaneRow> = Vec::new();
     let mut fpha_fit_deviations: Vec<FphaFitDeviationEntry> = Vec::new();
@@ -206,6 +209,7 @@ pub fn resolve_production_models_from_artifacts(
         export_rows.extend(fit.export_rows);
         fpha_deviation_point_rows.extend(fit.deviation_point_rows);
         all_models.push(fit.stage_models);
+        all_production_functions.push(fit.fpha_production_functions);
         for diag in fit.fpha_deviations {
             fpha_fit_deviations.push(FphaFitDeviationEntry {
                 hydro_id: hydro.id,
@@ -231,7 +235,8 @@ pub fn resolve_production_models_from_artifacts(
         }
     }
 
-    let set = ProductionModelSet::new(all_models, system.hydros(), n_stages);
+    let set = ProductionModelSet::new(all_models, system.hydros(), n_stages)
+        .with_fpha_production_functions(all_production_functions);
     Ok((
         set,
         override_table,
@@ -261,6 +266,8 @@ struct PerHydroFit {
     fpha_deviations: Vec<FphaDeviationDiagnostic>,
     /// Per-sampled-point rows; empty unless `collect_deviation_points` is on.
     deviation_point_rows: Vec<FphaDeviationPointRow>,
+    /// `Some` at a computed-FPHA stage, `None` at every other.
+    fpha_production_functions: Vec<Option<Arc<ProductionFunction>>>,
 }
 
 fn no_turbine_capacity_fit(hydro_id: EntityId, n_stages: usize) -> PerHydroFit {
@@ -273,6 +280,7 @@ fn no_turbine_capacity_fit(hydro_id: EntityId, n_stages: usize) -> PerHydroFit {
         export_rows: Vec::new(),
         fpha_deviations: Vec::new(),
         deviation_point_rows: Vec::new(),
+        fpha_production_functions: vec![None; n_stages],
     }
 }
 
@@ -334,7 +342,7 @@ fn fit_one_hydro(
     // Fit once per distinct `SelectionMode` entry (via the dedup in
     // `fit_computed_planes_per_stage`); each study stage carries the plane set of
     // the entry covering it.
-    let computed_planes_per_stage: Option<Vec<Vec<FphaPlane>>> =
+    let (computed_planes_per_stage, fpha_production_functions) =
         if source == ProductionModelSource::ComputedFromGeometry {
             // Without `spillage_fit_max_m3s`, drives the lateral-secant
             // `S_max = 2·long-term mean inflow`; a history-less hydro yields `0.0`,
@@ -343,7 +351,7 @@ fn fit_one_hydro(
                 .get(&hydro.id)
                 .copied()
                 .unwrap_or(0.0);
-            Some(fit_computed_planes_per_stage(
+            let (planes_per_stage, production_functions) = fit_computed_planes_per_stage(
                 hydro,
                 config_entry,
                 geometry_map,
@@ -357,9 +365,10 @@ fn fit_one_hydro(
                 &mut export_rows,
                 &mut fpha_deviations,
                 &mut deviation_point_rows,
-            )?)
+            )?;
+            (Some(planes_per_stage), production_functions)
         } else {
-            None
+            (None, vec![None; n_stages])
         };
 
     let mut stage_models: Vec<ResolvedProductionModel> = Vec::with_capacity(n_stages);
@@ -385,6 +394,7 @@ fn fit_one_hydro(
         export_rows,
         fpha_deviations,
         deviation_point_rows,
+        fpha_production_functions,
     })
 }
 
@@ -500,23 +510,29 @@ fn resolve_tailrace_source(
 }
 
 /// One per-hydro dedup-cache entry: the `(config, downstream-level bits)` key, the
-/// fitted plane set, and that fit's per-sampled-point deviation points. The
-/// `Option<u64>` is the resolved `downstream_level_m` as `f64::to_bits` (`None` for
-/// the entity fallback / unresolved level).
+/// fitted plane set, that fit's per-sampled-point deviation points and its
+/// production function. The `Option<u64>` is the resolved `downstream_level_m` as
+/// `f64::to_bits` (`None` for the entity fallback / unresolved level).
 ///
-/// The deviation points are cached beside the planes so a dedup'd stage reuses the
-/// same per-point rows — they are a pure function of (config + level).
+/// The deviation points and the production function are cached beside the planes so
+/// a dedup'd stage reuses the same per-point rows and shares the same function —
+/// they are a pure function of (config + level).
 type FittedCacheEntry<'a> = (
     (&'a FphaColumnLayout, Option<u64>),
     Vec<FphaPlane>,
     Vec<FphaDeviationPoint>,
+    Option<Arc<ProductionFunction>>,
 );
 
+/// Per-stage planes and production functions of one hydro's computed-FPHA fit.
+type StageFits = (Vec<Vec<FphaPlane>>, Vec<Option<Arc<ProductionFunction>>>);
+
 /// Fit computed-FPHA planes per study stage for one hydro, deduplicating
-/// identical `SelectionMode` entries. Returns one plane set per study stage (in
-/// `study_stages` order; empty for a stage whose entry selects a non-FPHA model)
-/// and appends export rows, per-distinct-fit diagnostics, and (opt-in) per-point
-/// rows in canonical `(stage_id, …)` order.
+/// identical `SelectionMode` entries. Returns one plane set and one production
+/// function per study stage (in `study_stages` order; empty and `None` for a stage
+/// whose entry selects a non-FPHA model) and appends export rows,
+/// per-distinct-fit diagnostics, and (opt-in) per-point rows in canonical
+/// `(stage_id, …)` order.
 ///
 /// ## Contract — the dedup key MUST include the downstream level
 ///
@@ -549,11 +565,13 @@ fn fit_computed_planes_per_stage(
     export_rows: &mut Vec<FphaHyperplaneRow>,
     diagnostics: &mut Vec<FphaDeviationDiagnostic>,
     deviation_point_rows: &mut Vec<FphaDeviationPointRow>,
-) -> Result<Vec<Vec<FphaPlane>>, SddpError> {
+) -> Result<StageFits, SddpError> {
     // Linear scan over `PartialEq` rather than a hash map: `FphaColumnLayout` holds
     // f64 fields (no `Eq`/`Hash`) and the per-hydro entry count is small.
     let mut fitted: Vec<FittedCacheEntry> = Vec::new();
     let mut per_stage: Vec<Vec<FphaPlane>> = Vec::with_capacity(study_stages.len());
+    let mut production_functions: Vec<Option<Arc<ProductionFunction>>> =
+        Vec::with_capacity(study_stages.len());
 
     for (stage_pos, stage) in study_stages.iter().enumerate() {
         let resolution = config_entry.map(|c| c.resolve_stage(stage));
@@ -563,6 +581,7 @@ fn fit_computed_planes_per_stage(
             .is_some_and(|model| model != HydroGenerationModel::Fpha)
         {
             per_stage.push(Vec::new());
+            production_functions.push(None);
             continue;
         }
         let config = resolution.and_then(|r| r.fpha_config).ok_or_else(|| {
@@ -589,9 +608,11 @@ fn fit_computed_planes_per_stage(
         };
 
         let key = (config, level_bits);
-        let (planes, deviation_points) =
-            if let Some((_, planes, points)) = fitted.iter().find(|(k, _, _)| *k == key) {
-                (planes.clone(), points.clone())
+        let (planes, deviation_points, production_function) =
+            if let Some((_, planes, points, function)) =
+                fitted.iter().find(|(k, _, _, _)| *k == key)
+            {
+                (planes.clone(), points.clone(), function.clone())
             } else {
                 let fit_result = fit_planes_for_hydro(
                     hydro,
@@ -614,8 +635,13 @@ fn fit_computed_planes_per_stage(
                     key,
                     fit_result.planes.clone(),
                     fit_result.deviation_points.clone(),
+                    fit_result.production_function.clone(),
                 ));
-                (fit_result.planes, fit_result.deviation_points)
+                (
+                    fit_result.planes,
+                    fit_result.deviation_points,
+                    fit_result.production_function,
+                )
             };
 
         for point in &deviation_points {
@@ -657,9 +683,10 @@ fn fit_computed_planes_per_stage(
         }
 
         per_stage.push(planes);
+        production_functions.push(production_function);
     }
 
-    Ok(per_stage)
+    Ok((per_stage, production_functions))
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────

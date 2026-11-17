@@ -19,6 +19,8 @@
 //! The orchestration entry point `fit_fpha_planes` and its result `FphaFitResult`
 //! live here in `mod`, co-located with the re-export surface.
 
+use std::sync::Arc;
+
 use novomodelo_core::Hydro;
 use novomodelo_io::extensions::{FphaColumnLayout, HydroGeometryRow, PlaneReductionConfig};
 
@@ -52,7 +54,6 @@ use alpha::{compute_alpha_fpha, scale_plane_affine};
 use deviation::{collect_fit_deviation_points, compute_fit_deviation};
 use geometry::resolve_fitting_bounds;
 use hull_fit::{RawPlane, fit_hull_planes};
-use production::ProductionFunction;
 use reduction::reduce_planes;
 use secant::fit_gamma_s_for_planes;
 use selection::validate_fitted_planes;
@@ -60,7 +61,7 @@ use selection::validate_fitted_planes;
 pub(crate) use deviation::{FphaDeviationPoint, FphaFitDeviation};
 pub(crate) use error::FphaFittingError;
 pub(crate) use geometry::{ForebayTable, evaluate_losses, evaluate_tailrace};
-pub(crate) use production::TailraceSource;
+pub(crate) use production::{ProductionFunction, TailraceSource};
 pub(crate) use tailrace::{TailraceFamilies, build_tailrace_families_map};
 
 // ── Top-level fitting pipeline ────────────────────────────────────────────────
@@ -101,6 +102,8 @@ pub(crate) struct FphaFitResult {
     /// [`fit_fpha_planes`]; otherwise empty with zero overhead, leaving the fit
     /// bit-identical. Feeds the opt-in `fpha_deviation_points.parquet` export.
     pub deviation_points: Vec<FphaDeviationPoint>,
+    /// The production function the planes were fitted to.
+    pub production_function: Option<Arc<ProductionFunction>>,
 }
 
 /// Fit FPHA hyperplanes for a single hydro plant from its VHA curve geometry.
@@ -226,5 +229,6 @@ pub(crate) fn fit_fpha_planes(
         alpha,
         deviation,
         deviation_points,
+        production_function: Some(Arc::new(pf)),
     })
 }

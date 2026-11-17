@@ -113,6 +113,26 @@ impl ProductionFunction {
         self
     }
 
+    /// Flow that drives the tailrace \[m³/s\]: `own_outflow_factor·q + lateral_flow`.
+    pub(crate) fn tailrace_flow(&self, q: f64, lateral_flow: f64) -> f64 {
+        self.own_outflow_factor * q + lateral_flow
+    }
+
+    /// Tailrace elevation \[m\] at `tailrace_flow`.
+    pub(crate) fn tailrace_level(&self, tailrace_flow: f64) -> f64 {
+        // The `Entity` arm MUST call `evaluate_tailrace(model, tailrace_flow)` verbatim —
+        // the inert-fallback contract on [`TailraceSource`].
+        match &self.tailrace {
+            TailraceSource::Entity(model) => model
+                .as_ref()
+                .map_or(0.0, |m| evaluate_tailrace(m, tailrace_flow)),
+            TailraceSource::Families {
+                families,
+                downstream_level_m,
+            } => families.evaluate(tailrace_flow, *downstream_level_m),
+        }
+    }
+
     /// Net head at the turbine \[m\]:
     /// `h_net = h_fore(v) − h_tail(own_outflow_factor·q + lateral_flow) −
     /// h_loss(gross_head, q)`, clamped to
@@ -121,18 +141,7 @@ impl ProductionFunction {
     /// `(1 − k)·(h_fore − h_tail)`.
     pub(crate) fn net_head(&self, v: f64, q: f64, lateral_flow: f64) -> f64 {
         let h_fore = self.forebay.height(v);
-        // The `Entity` arm MUST call `evaluate_tailrace(model, q_out)` verbatim —
-        // the inert-fallback contract on [`TailraceSource`].
-        let q_out = self.own_outflow_factor * q + lateral_flow;
-        let h_tail = match &self.tailrace {
-            TailraceSource::Entity(model) => {
-                model.as_ref().map_or(0.0, |m| evaluate_tailrace(m, q_out))
-            }
-            TailraceSource::Families {
-                families,
-                downstream_level_m,
-            } => families.evaluate(q_out, *downstream_level_m),
-        };
+        let h_tail = self.tailrace_level(self.tailrace_flow(q, lateral_flow));
         let gross_head = h_fore - h_tail;
         let h_loss = self
             .hydraulic_losses

@@ -17,6 +17,7 @@
 //! `novomodelo-core`.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use novomodelo_core::{EntityId, Hydro, StudyPos, System};
 use novomodelo_io::FphaDeviationPointRow;
@@ -25,6 +26,7 @@ use novomodelo_io::HydroGeometryRow;
 use serde::{Deserialize, Serialize};
 
 use crate::energy_conversion::HydroEnergyProductivityOverride;
+use crate::fpha_fitting::ProductionFunction;
 
 // ── Hyperplane types ──────────────────────────────────────────────────────────
 
@@ -71,6 +73,9 @@ pub struct ProductionModelSet {
     stage_models: Vec<Vec<ResolvedProductionModel>>,
     /// Number of stages (inner dimension).
     n_stages: usize,
+    /// `[h][t]` is the fit's production function at a computed-FPHA stage; empty when
+    /// none are kept.
+    fpha_production_functions: Vec<Vec<Option<Arc<ProductionFunction>>>>,
 }
 
 impl ProductionModelSet {
@@ -98,7 +103,40 @@ impl ProductionModelSet {
         Self {
             stage_models: models,
             n_stages,
+            fpha_production_functions: Vec::new(),
         }
+    }
+
+    /// Keeps each hydro's per-stage production functions, `per_hydro[h][t]`.
+    pub(crate) fn with_fpha_production_functions(
+        mut self,
+        per_hydro: Vec<Vec<Option<Arc<ProductionFunction>>>>,
+    ) -> Self {
+        debug_assert_eq!(
+            per_hydro.len(),
+            self.n_hydros(),
+            "outer dimension must equal n_hydros"
+        );
+        debug_assert!(
+            per_hydro.iter().all(|row| row.len() == self.n_stages),
+            "each hydro's stage vector must have length n_stages"
+        );
+        self.fpha_production_functions = per_hydro;
+        self
+    }
+
+    /// The production function fitted for `(h, t)`; `None` at a stage without one or
+    /// out of range.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "read by the simulation tailrace lookup")
+    )]
+    pub(crate) fn fpha_production_function(
+        &self,
+        h: usize,
+        t: usize,
+    ) -> Option<&ProductionFunction> {
+        self.fpha_production_functions.get(h)?.get(t)?.as_deref()
     }
 
     /// Resolved production model at `(hydro, stage)`.

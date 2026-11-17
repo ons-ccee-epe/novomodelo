@@ -1406,6 +1406,29 @@ fn fit_with_unit_own_factor_matches_the_undeclared_fit() {
     assert_eq!(undeclared.alpha.to_bits(), explicit.alpha.to_bits());
 }
 
+/// The retained function reads the tailrace at `f·q + L` and takes the net head
+/// from that level, so the three published values share one code path.
+#[test]
+fn tailrace_methods_compose_into_net_head() {
+    let hydro = with_own_factor(make_sobradinho_hydro(), 1.2);
+    let function = fit_sobradinho(&hydro)
+        .production_function
+        .expect("a computed fit keeps its production function");
+    let (q, lateral_flow, v) = (1_000.0, 250.0, 17_058.0);
+
+    assert_eq!(function.tailrace_flow(q, lateral_flow), 1_450.0);
+
+    let level = evaluate_tailrace(hydro.tailrace.as_ref().unwrap(), 1_450.0);
+    assert_eq!(function.tailrace_level(1_450.0), level);
+
+    let gross_head = sobradinho_forebay().height(v) - level;
+    let losses = evaluate_losses(hydro.hydraulic_losses.as_ref().unwrap(), gross_head, q);
+    assert_eq!(
+        function.net_head(v, q, lateral_flow),
+        (gross_head - losses).max(0.0)
+    );
+}
+
 /// The hull runs at `L = 0`, so a factor above one reads the tailrace higher at
 /// every `q` and the fitted `γ_q` falls. The generation cap is lifted: it would
 /// otherwise pin the largest `γ_q` at its own slope for every factor.
