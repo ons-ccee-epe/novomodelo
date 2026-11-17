@@ -62,6 +62,7 @@ EXPECTED_COLUMNS = [
     "lp_successes",
     "lp_retries",
     "lp_failures",
+    "lp_row_violations",
     "retry_attempts",
     "basis_offered",
     "basis_consistency_failures",
@@ -130,7 +131,7 @@ def test_python_opening_column_values(d01_python_output: pathlib.Path) -> None:
     phases = table.column("phase").to_pylist()
     openings = table.column("opening_index").to_pylist()
 
-    for phase, opening in zip(phases, openings):
+    for phase, opening in zip(phases, openings, strict=True):
         if phase == "backward":
             assert opening is not None, (
                 f"backward row must have non-NULL opening; got None for phase={phase}"

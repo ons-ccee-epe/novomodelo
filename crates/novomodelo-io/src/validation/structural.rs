@@ -177,7 +177,7 @@ const INPUT_FILES: &[FileEntry] = &[
     FileEntry {
         key: InputFile::SystemLinesJson,
         relative: "system/lines.json",
-        required: true,
+        required: false,
     },
     FileEntry {
         key: InputFile::SystemHydrosJson,
@@ -187,7 +187,7 @@ const INPUT_FILES: &[FileEntry] = &[
     FileEntry {
         key: InputFile::SystemThermalsJson,
         relative: "system/thermals.json",
-        required: true,
+        required: false,
     },
     // system/ — optional
     FileEntry {
@@ -487,7 +487,8 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
-    /// Create a temporary case directory containing all 8 required files.
+    /// Create a temporary case directory with the required files plus
+    /// `system/lines.json` and `system/thermals.json`.
     fn make_case_with_required(dir: &TempDir) {
         let root = dir.path();
         fs::create_dir_all(root.join("system")).unwrap();
@@ -581,6 +582,25 @@ mod tests {
     }
 
     #[test]
+    fn test_structural_lines_and_thermals_absent_no_error() {
+        let dir = TempDir::new().unwrap();
+        make_case_with_required(&dir);
+        fs::remove_file(dir.path().join("system/lines.json")).unwrap();
+        fs::remove_file(dir.path().join("system/thermals.json")).unwrap();
+
+        let mut ctx = ValidationContext::new();
+        let manifest = validate_structure(dir.path(), &mut ctx);
+
+        assert!(
+            !ctx.has_errors(),
+            "absent lines.json/thermals.json should not produce errors, got: {:?}",
+            ctx.errors()
+        );
+        assert!(!manifest.present(InputFile::SystemLinesJson));
+        assert!(!manifest.present(InputFile::SystemThermalsJson));
+    }
+
+    #[test]
     fn test_structural_optional_absent_no_error() {
         let dir = TempDir::new().unwrap();
         make_case_with_required(&dir);
@@ -631,12 +651,12 @@ mod tests {
 
         assert!(
             ctx.has_errors(),
-            "should have errors for all 8 missing required files"
+            "should have errors for all 6 missing required files"
         );
         assert_eq!(
             ctx.errors().len(),
-            8,
-            "should have exactly 8 errors (one per required file), got: {}",
+            6,
+            "should have exactly 6 errors (one per required file), got: {}",
             ctx.errors().len()
         );
         for entry in ctx.errors() {
@@ -650,7 +670,7 @@ mod tests {
 
     /// Registry invariants: every row's relative path is unique, the table
     /// covers every [`InputFile`] variant exactly once in declaration order,
-    /// and the required set is exactly the eight files documented above.
+    /// and the required set is exactly the six files documented above.
     #[test]
     fn test_input_files_registry_invariants() {
         assert_eq!(
@@ -687,15 +707,13 @@ mod tests {
             "stages.json",
             "initial_conditions.json",
             "system/buses.json",
-            "system/lines.json",
             "system/hydros.json",
-            "system/thermals.json",
         ]
         .into_iter()
         .collect();
         assert_eq!(
             required_paths, expected_required,
-            "the required set must be exactly the eight files documented today"
+            "the required set must be exactly the six files documented today"
         );
     }
 

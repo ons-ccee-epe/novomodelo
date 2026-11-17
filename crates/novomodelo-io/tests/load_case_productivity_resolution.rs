@@ -63,7 +63,6 @@ fn write_productivity_parquet(dir: &TempDir, rows: &[(i32, Option<i32>, Option<f
             DataType::Float64,
             true,
         ),
-        Field::new("reference_volume_hm3", DataType::Float64, true),
         Field::new("reference_outflow_m3s", DataType::Float64, true),
         Field::new(
             "specific_productivity_mw_per_m3s_per_m",
@@ -88,7 +87,6 @@ fn write_productivity_parquet(dir: &TempDir, rows: &[(i32, Option<i32>, Option<f
             Arc::new(hydro_ids),
             Arc::new(stage_ids),
             Arc::new(rho_eqs),
-            Arc::new(nulls.clone()),
             Arc::new(nulls.clone()),
             Arc::new(nulls.clone()),
             Arc::new(nulls),

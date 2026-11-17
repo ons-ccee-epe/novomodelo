@@ -22,7 +22,7 @@ use std::collections::HashMap;
 use novomodelo_core::{EntityId, entities::HydroGenerationModel, temporal::Stage};
 
 use crate::{
-    extensions::{HydroEnergyProductivityRow, ProductionModelConfig, SelectionMode},
+    extensions::{HydroEnergyProductivityRow, ProductionModelConfig},
     validation::{ValidationContext, rules},
 };
 
@@ -54,7 +54,7 @@ pub(crate) fn validate_productivity_resolution(data: &ParsedData, ctx: &mut Vali
             let parquet_value = parquet_lookup(&parquet_map, hydro.id, stage.id);
             let json_value = json_map
                 .get(&hydro.id)
-                .and_then(|config| find_productivity_for_stage(config, stage));
+                .and_then(|config| config.resolve_stage(stage).productivity);
 
             match (parquet_value, json_value) {
                 (Some(p), Some(j)) => {
@@ -123,37 +123,6 @@ fn parquet_lookup(
         .copied()
 }
 
-// ── JSON model lookup ─────────────────────────────────────────────────────────
-
-/// Find the `productivity_mw_per_m3s` from the JSON config for a given stage.
-///
-/// The matching logic is reimplemented locally so this crate carries no
-/// dependency on downstream solver crates and no algorithm-specific identifiers
-/// — a mirror of the solver crate's `resolve_stage`/`selection_entries`
-/// resolver's season-miss shape, kept in agreement rather than called.
-///
-/// For `Seasonal`, a stage with no matching season entry falls back to the
-/// `default_model`, which carries no explicit productivity (returns `None`).
-fn find_productivity_for_stage(config: &ProductionModelConfig, stage: &Stage) -> Option<f64> {
-    match &config.selection_mode {
-        SelectionMode::StageRanges { ranges } => ranges
-            .iter()
-            .find(|range| {
-                stage.id >= range.start_stage_id
-                    && range.end_stage_id.is_none_or(|end| stage.id <= end)
-            })
-            .and_then(|range| range.productivity_mw_per_m3s),
-        SelectionMode::Seasonal { seasons, .. } => {
-            let season_id = stage.season_id?;
-            let sid = i32::try_from(season_id).ok()?;
-            seasons
-                .iter()
-                .find(|season| season.season_id == sid)
-                .and_then(|season| season.productivity_mw_per_m3s)
-        }
-    }
-}
-
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -174,11 +143,10 @@ mod tests {
         },
     };
 
-    use super::{find_productivity_for_stage, validate_productivity_resolution};
+    use super::validate_productivity_resolution;
     use crate::{
         extensions::{
-            HydroEnergyProductivityRow, ProductionModelConfig, SeasonConfig, SelectionMode,
-            StageRange,
+            HydroEnergyProductivityRow, ProductionModelConfig, SelectionMode, StageRange,
         },
         stages::StagesData,
         validation::{ErrorKind, ValidationContext},
@@ -468,82 +436,6 @@ mod tests {
         assert!(
             kinds.contains(&ErrorKind::DimensionMismatch),
             "expected a DimensionMismatch for the gap"
-        );
-    }
-
-    // ── Helper unit tests for find_productivity_for_stage ─────────────────────
-
-    #[test]
-    fn test_find_productivity_stage_ranges_match() {
-        let config = stage_range_config(0, Some(0.5));
-        let stage = make_stage(0);
-        let result = find_productivity_for_stage(&config, &stage);
-        assert_eq!(result, Some(0.5));
-    }
-
-    #[test]
-    fn test_find_productivity_stage_ranges_no_match() {
-        let config = ProductionModelConfig {
-            hydro_id: EntityId(0),
-            selection_mode: SelectionMode::StageRanges {
-                ranges: vec![StageRange {
-                    start_stage_id: 0,
-                    end_stage_id: Some(5),
-                    model: HydroGenerationModel::ConstantProductivity,
-                    fpha_config: None,
-                    reference_volume: None,
-                    productivity_mw_per_m3s: Some(0.5),
-                }],
-            },
-        };
-        let stage = make_stage(99);
-        let result = find_productivity_for_stage(&config, &stage);
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn test_find_productivity_seasonal_match() {
-        let config = ProductionModelConfig {
-            hydro_id: EntityId(0),
-            selection_mode: SelectionMode::Seasonal {
-                default_model: HydroGenerationModel::ConstantProductivity,
-                seasons: vec![SeasonConfig {
-                    season_id: 0,
-                    model: HydroGenerationModel::ConstantProductivity,
-                    fpha_config: None,
-                    reference_volume: None,
-                    productivity_mw_per_m3s: Some(0.8),
-                }],
-            },
-        };
-        let mut stage = make_stage(0);
-        stage.season_id = Some(0);
-        let result = find_productivity_for_stage(&config, &stage);
-        assert_eq!(result, Some(0.8));
-    }
-
-    #[test]
-    fn test_find_productivity_seasonal_fallback_to_default_is_none() {
-        let config = ProductionModelConfig {
-            hydro_id: EntityId(0),
-            selection_mode: SelectionMode::Seasonal {
-                default_model: HydroGenerationModel::ConstantProductivity,
-                seasons: vec![SeasonConfig {
-                    season_id: 5,
-                    model: HydroGenerationModel::ConstantProductivity,
-                    fpha_config: None,
-                    reference_volume: None,
-                    productivity_mw_per_m3s: Some(0.8),
-                }],
-            },
-        };
-        // Stage has season_id=0, which is not in the seasons list.
-        let mut stage = make_stage(0);
-        stage.season_id = Some(0);
-        let result = find_productivity_for_stage(&config, &stage);
-        assert_eq!(
-            result, None,
-            "default model falls back to None productivity"
         );
     }
 }

@@ -48,7 +48,7 @@ def test_study_loads_hydro_inflow_cascade() -> None:
     proves `novomodelo_io` parses the keyword and the Python `Study` path accepts it
     with no independent Python-side parser — the auto-parity claim.
     """
-    import novomodelo  # noqa: PLC0415
+    import novomodelo
 
     assert CASCADE_CASE.is_dir(), (
         f"the B6a cascade fixture must exist at {CASCADE_CASE}"

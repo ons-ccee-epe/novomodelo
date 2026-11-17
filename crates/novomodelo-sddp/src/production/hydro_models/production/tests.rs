@@ -13,8 +13,7 @@ use std::collections::HashMap;
 
 use chrono::NaiveDate;
 use novomodelo_core::{
-    Bus, EfficiencyModel, EntityId, HydraulicLossesModel, InflowHistoryRow, StudyPos,
-    SystemBuilder, TailraceModel,
+    Bus, EfficiencyModel, EntityId, HydraulicLossesModel, StudyPos, SystemBuilder, TailraceModel,
     entities::hydro::{HydroGenerationModel, HydroPenalties},
     temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
@@ -67,6 +66,7 @@ fn zero_penalties() -> HydroPenalties {
         outflow_violation_below_cost: 0.0,
         outflow_violation_above_cost: 0.0,
         generation_violation_below_cost: 0.0,
+        fpha_violation_cost: 0.0,
         evaporation_violation_cost: 0.0,
         water_withdrawal_violation_cost: 0.0,
         water_withdrawal_violation_pos_cost: 0.0,
@@ -282,56 +282,6 @@ fn computed_source_missing_geometry_returns_validation_error() {
 }
 
 #[test]
-fn find_fpha_config_for_stage_returns_config_in_range() {
-    let config = computed_fpha_config(0);
-    let stage = make_stage(5);
-
-    let result = find_fpha_config_for_stage(&config, &stage);
-    assert!(
-        result.is_some(),
-        "expected Some(FphaColumnLayout) for stage 5, got None"
-    );
-    assert_eq!(
-        result.expect("just checked is_some").source,
-        "computed",
-        "expected source 'computed'"
-    );
-}
-
-#[test]
-fn find_fpha_config_for_stage_returns_none_outside_range() {
-    let config = ProductionModelConfig {
-        hydro_id: EntityId::from(0),
-        selection_mode: SelectionMode::StageRanges {
-            ranges: vec![StageRange {
-                start_stage_id: 5,
-                end_stage_id: Some(10),
-                model: HydroGenerationModel::Fpha,
-                fpha_config: Some(FphaColumnLayout {
-                    source: "computed".to_string(),
-                    volume_discretization_points: None,
-                    turbine_discretization_points: None,
-                    spillage_discretization_points: None,
-                    max_planes_per_hydro: None,
-                    fitting_window: None,
-                    spillage_fit_max_m3s: None,
-                    turbined_fit_max_m3s: None,
-                }),
-                reference_volume: None,
-                productivity_mw_per_m3s: None,
-            }],
-        },
-    };
-
-    let stage = make_stage(0);
-    let result = find_fpha_config_for_stage(&config, &stage);
-    assert!(
-        result.is_none(),
-        "expected None for stage 0 (outside range [5,10]), got {result:?}"
-    );
-}
-
-#[test]
 fn gamma_0_is_scaled_by_kappa() {
     let hydro = make_hydro(0, HydroGenerationModel::Fpha);
     let stage = make_stage(0);
@@ -356,13 +306,7 @@ fn gamma_0_is_scaled_by_kappa() {
         vec![&row as &FphaHyperplaneRow],
     );
 
-    let model = build_fpha_model(
-        &hydro,
-        &stage,
-        ProductionModelSource::PrecomputedHyperplanes,
-        &map,
-    )
-    .expect("should build FPHA model");
+    let model = build_fpha_model(&hydro, &stage, &map).expect("should build FPHA model");
 
     match model {
         ResolvedProductionModel::Fpha { planes, .. } => {
@@ -530,13 +474,7 @@ fn stage_specific_hyperplanes_override_all_stage() {
         vec![&stage_row as &FphaHyperplaneRow],
     );
 
-    let model = build_fpha_model(
-        &hydro,
-        &stage,
-        ProductionModelSource::PrecomputedHyperplanes,
-        &map,
-    )
-    .expect("should succeed");
+    let model = build_fpha_model(&hydro, &stage, &map).expect("should succeed");
 
     match model {
         ResolvedProductionModel::Fpha { planes, .. } => {
@@ -575,13 +513,7 @@ fn all_stage_hyperplanes_used_when_no_stage_specific_rows() {
         vec![&global_row as &FphaHyperplaneRow],
     );
 
-    let model = build_fpha_model(
-        &hydro,
-        &stage,
-        ProductionModelSource::PrecomputedHyperplanes,
-        &map,
-    )
-    .expect("should succeed using global rows");
+    let model = build_fpha_model(&hydro, &stage, &map).expect("should succeed using global rows");
 
     match model {
         ResolvedProductionModel::Fpha { planes, .. } => {
@@ -606,13 +538,8 @@ fn zero_hyperplanes_for_stage_returns_validation_error() {
         Vec::<&FphaHyperplaneRow>::new(),
     );
 
-    let err = build_fpha_model(
-        &hydro,
-        &stage,
-        ProductionModelSource::PrecomputedHyperplanes,
-        &map,
-    )
-    .expect_err("should fail with zero hyperplanes");
+    let err =
+        build_fpha_model(&hydro, &stage, &map).expect_err("should fail with zero hyperplanes");
 
     assert!(
         matches!(err, SddpError::Validation(_)),
@@ -636,12 +563,7 @@ fn precomputed_stage_needs_a_flow_dependent_plane() {
     };
     let build = |rows: Vec<&FphaHyperplaneRow>| {
         let map = HashMap::from([((EntityId::from(0), None::<i32>), rows)]);
-        build_fpha_model(
-            &hydro,
-            &stage,
-            ProductionModelSource::PrecomputedHyperplanes,
-            &map,
-        )
+        build_fpha_model(&hydro, &stage, &map)
     };
 
     for rows in [vec![&rising, &cap], vec![&cap, &rising]] {
@@ -662,66 +584,6 @@ fn precomputed_stage_needs_a_flow_dependent_plane() {
             if msg.contains("no hyperplane has gamma_q > 0") && msg.contains("stage 0")),
         "got: {err}"
     );
-}
-
-#[test]
-fn find_model_for_stage_returns_correct_model_in_range() {
-    let config = precomputed_fpha_config(0);
-    let stage = make_stage(3);
-    let result = find_model_for_stage(&config, &stage);
-    assert_eq!(
-        result.map(|(model, _)| model),
-        Some(HydroGenerationModel::Fpha)
-    );
-}
-
-#[test]
-fn find_model_for_stage_returns_none_when_before_range_start() {
-    let config = ProductionModelConfig {
-        hydro_id: EntityId::from(0),
-        selection_mode: SelectionMode::StageRanges {
-            ranges: vec![StageRange {
-                start_stage_id: 5,
-                end_stage_id: Some(10),
-                model: HydroGenerationModel::Fpha,
-                fpha_config: None,
-                reference_volume: None,
-                productivity_mw_per_m3s: None,
-            }],
-        },
-    };
-    let stage = make_stage(3);
-    let result = find_model_for_stage(&config, &stage);
-    assert!(
-        result.is_none(),
-        "stage 3 is before range [5, 10], expected None"
-    );
-}
-
-#[test]
-fn find_model_for_stage_open_ended_range_covers_all_stages() {
-    let config = ProductionModelConfig {
-        hydro_id: EntityId::from(0),
-        selection_mode: SelectionMode::StageRanges {
-            ranges: vec![StageRange {
-                start_stage_id: 0,
-                end_stage_id: None,
-                model: HydroGenerationModel::ConstantProductivity,
-                fpha_config: None,
-                reference_volume: None,
-                productivity_mw_per_m3s: None,
-            }],
-        },
-    };
-    for stage_id in [0, 5, 11, 100] {
-        let stage = make_stage(stage_id);
-        let result = find_model_for_stage(&config, &stage);
-        assert_eq!(
-            result.map(|(model, _)| model),
-            Some(HydroGenerationModel::ConstantProductivity),
-            "open-ended range must cover stage {stage_id}"
-        );
-    }
 }
 
 // ── Productivity override tests ─────────────────────────────────────────
@@ -950,176 +812,13 @@ fn test_resolve_stage_model_returns_sentinel_when_no_config_entry() {
     }
 }
 
+/// A `Seasonal` config whose `default_model` is `"fpha"` and whose listed
+/// seasons are all non-FPHA classifies as `PrecomputedHyperplanes`: a
+/// `determine_source` blind to `default_model` classifies `DefaultConstant`,
+/// the `fpha_hyperplanes.parquet` load is skipped, and `resolve_stage_model`
+/// reaches `build_fpha_model` on a season miss with no hyperplane rows.
 #[test]
-fn find_model_for_stage_returns_override_in_tuple() {
-    let config = ProductionModelConfig {
-        hydro_id: EntityId::from(0),
-        selection_mode: SelectionMode::StageRanges {
-            ranges: vec![StageRange {
-                start_stage_id: 0,
-                end_stage_id: None,
-                model: HydroGenerationModel::ConstantProductivity,
-                fpha_config: None,
-                reference_volume: None,
-                productivity_mw_per_m3s: Some(0.75),
-            }],
-        },
-    };
-    let stage = make_stage(0);
-    let result = find_model_for_stage(&config, &stage);
-    assert_eq!(
-        result,
-        Some((HydroGenerationModel::ConstantProductivity, Some(0.75)))
-    );
-}
-
-#[test]
-fn find_model_for_stage_seasonal_with_override() {
-    let config = ProductionModelConfig {
-        hydro_id: EntityId::from(0),
-        selection_mode: SelectionMode::Seasonal {
-            default_model: HydroGenerationModel::ConstantProductivity,
-            seasons: vec![SeasonConfig {
-                season_id: 1,
-                model: HydroGenerationModel::ConstantProductivity,
-                fpha_config: None,
-                reference_volume: None,
-                productivity_mw_per_m3s: Some(0.60),
-            }],
-        },
-    };
-    let mut stage_match = make_stage(0);
-    stage_match.season_id = Some(1);
-    let result = find_model_for_stage(&config, &stage_match);
-    assert_eq!(
-        result,
-        Some((HydroGenerationModel::ConstantProductivity, Some(0.60)))
-    );
-
-    let mut stage_default = make_stage(0);
-    stage_default.season_id = Some(99);
-    let result = find_model_for_stage(&config, &stage_default);
-    assert_eq!(
-        result,
-        Some((HydroGenerationModel::ConstantProductivity, None))
-    );
-}
-
-// ── Canonical resolver (resolve_stage / selection_entries) ────────────────
-
-#[test]
-fn resolve_stage_seasonal_season_miss_uses_default_model() {
-    let config = ProductionModelConfig {
-        hydro_id: EntityId::from(0),
-        selection_mode: SelectionMode::Seasonal {
-            default_model: HydroGenerationModel::ConstantProductivity,
-            seasons: vec![SeasonConfig {
-                season_id: 1,
-                model: HydroGenerationModel::Fpha,
-                fpha_config: Some(FphaColumnLayout {
-                    source: "precomputed".to_string(),
-                    volume_discretization_points: None,
-                    turbine_discretization_points: None,
-                    spillage_discretization_points: None,
-                    max_planes_per_hydro: None,
-                    fitting_window: None,
-                    spillage_fit_max_m3s: None,
-                    turbined_fit_max_m3s: None,
-                }),
-                reference_volume: None,
-                productivity_mw_per_m3s: None,
-            }],
-        },
-    };
-    let mut stage = make_stage(0);
-    stage.season_id = Some(99);
-
-    let resolution = resolve_stage(&config, &stage);
-
-    assert_eq!(
-        resolution.model,
-        Some(HydroGenerationModel::ConstantProductivity)
-    );
-    assert!(resolution.fpha_config.is_none());
-    assert!(resolution.reference_volume.is_none());
-    assert!(resolution.productivity.is_none());
-}
-
-#[test]
-fn resolve_stage_seasonal_matching_season_passes_through() {
-    let config = ProductionModelConfig {
-        hydro_id: EntityId::from(0),
-        selection_mode: SelectionMode::Seasonal {
-            default_model: HydroGenerationModel::Fpha,
-            seasons: vec![SeasonConfig {
-                season_id: 2,
-                model: HydroGenerationModel::ConstantProductivity,
-                fpha_config: None,
-                reference_volume: Some(ReferenceVolume::AbsoluteHm3(1200.0)),
-                productivity_mw_per_m3s: Some(0.77),
-            }],
-        },
-    };
-    let mut stage = make_stage(3);
-    stage.season_id = Some(2);
-
-    let resolution = resolve_stage(&config, &stage);
-
-    assert_eq!(
-        resolution.model,
-        Some(HydroGenerationModel::ConstantProductivity)
-    );
-    assert!(resolution.fpha_config.is_none());
-    assert_eq!(
-        resolution.reference_volume,
-        Some(&ReferenceVolume::AbsoluteHm3(1200.0))
-    );
-    assert_eq!(resolution.productivity, Some(0.77));
-}
-
-/// `selection_entries` emits a synthetic `default_model` entry, so
-/// `default_model == "fpha"` with no `fpha_config` (precomputed by parquet)
-/// classifies as precomputed FPHA even when every listed season is non-FPHA.
-#[test]
-fn selection_entries_classifies_default_fpha_as_precomputed() {
-    let config = ProductionModelConfig {
-        hydro_id: EntityId::from(0),
-        selection_mode: SelectionMode::Seasonal {
-            default_model: HydroGenerationModel::Fpha,
-            seasons: vec![SeasonConfig {
-                season_id: 1,
-                model: HydroGenerationModel::ConstantProductivity,
-                fpha_config: None,
-                reference_volume: None,
-                productivity_mw_per_m3s: Some(0.5),
-            }],
-        },
-    };
-
-    let uses_precomputed = selection_entries(&config).any(|entry| {
-        entry.fpha_config.is_some_and(|f| f.source == "precomputed")
-            || (entry.model == HydroGenerationModel::Fpha && entry.fpha_config.is_none())
-    });
-
-    assert!(
-        uses_precomputed,
-        "default_model == \"fpha\" with no fpha_config must classify as using precomputed FPHA"
-    );
-}
-
-/// A `Seasonal` config with `default_model == "fpha"` and every listed season
-/// non-FPHA classifies as precomputed FPHA on both `determine_source` and
-/// `config_uses_precomputed_fpha`: `default_model` participates in source
-/// classification, not only in per-stage resolution. Guards the
-/// validate-then-blow-up path: the wrong-but-compiling alternative has
-/// `determine_source` ignore `default_model` and classify `DefaultConstant`,
-/// so the `fpha_hyperplanes.parquet` load gate (keyed on
-/// `config_uses_precomputed_fpha`) skips loading it — yet `find_model_for_stage`
-/// already resolves `"fpha"` on the season miss, so `resolve_stage_model`
-/// reaches `build_fpha_model` against an empty hyperplane map and errors "no
-/// hyperplane rows" for a config with no real coverage gap.
-#[test]
-fn seasonal_default_fpha_classifies_as_precomputed_source() {
+fn seasonal_default_fpha_config_determines_precomputed_hyperplanes() {
     let hydro = make_hydro(0, HydroGenerationModel::Fpha);
     let config = ProductionModelConfig {
         hydro_id: EntityId::from(0),
@@ -1137,56 +836,7 @@ fn seasonal_default_fpha_classifies_as_precomputed_source() {
 
     let source = determine_source(&hydro, Some(&config)).expect("should succeed");
     assert_eq!(source, ProductionModelSource::PrecomputedHyperplanes);
-    assert!(config_uses_precomputed_fpha(&config));
-}
-
-#[test]
-fn resolve_stage_stage_ranges_covering_and_uncovered() {
-    let config = ProductionModelConfig {
-        hydro_id: EntityId::from(0),
-        selection_mode: SelectionMode::StageRanges {
-            ranges: vec![StageRange {
-                start_stage_id: 0,
-                end_stage_id: Some(10),
-                model: HydroGenerationModel::ConstantProductivity,
-                fpha_config: Some(FphaColumnLayout {
-                    source: "precomputed".to_string(),
-                    volume_discretization_points: None,
-                    turbine_discretization_points: None,
-                    spillage_discretization_points: None,
-                    max_planes_per_hydro: None,
-                    fitting_window: None,
-                    spillage_fit_max_m3s: None,
-                    turbined_fit_max_m3s: None,
-                }),
-                reference_volume: Some(ReferenceVolume::Percentile(0.5)),
-                productivity_mw_per_m3s: Some(0.42),
-            }],
-        },
-    };
-
-    let covered = make_stage(5);
-    let resolution = resolve_stage(&config, &covered);
-    assert_eq!(
-        resolution.model,
-        Some(HydroGenerationModel::ConstantProductivity)
-    );
-    assert_eq!(
-        resolution.fpha_config.map(|f| f.source.as_str()),
-        Some("precomputed")
-    );
-    assert_eq!(
-        resolution.reference_volume,
-        Some(&ReferenceVolume::Percentile(0.5))
-    );
-    assert_eq!(resolution.productivity, Some(0.42));
-
-    let uncovered = make_stage(20);
-    let resolution = resolve_stage(&config, &uncovered);
-    assert!(resolution.model.is_none());
-    assert!(resolution.fpha_config.is_none());
-    assert!(resolution.reference_volume.is_none());
-    assert!(resolution.productivity.is_none());
+    assert!(config.uses_precomputed_fpha());
 }
 
 #[test]
@@ -1253,8 +903,10 @@ fn computed_source_end_to_end_produces_valid_fpha_planes() {
     let mut geometry_map: HashMap<EntityId, Vec<&HydroGeometryRow>> = HashMap::new();
     geometry_map.insert(EntityId::from(0), geo_refs);
 
-    let layout =
-        find_fpha_config_for_stage(&config, &stage).expect("computed config covers stage 0");
+    let layout = config
+        .resolve_stage(&stage)
+        .fpha_config
+        .expect("computed config covers stage 0");
     let fit_result = super::fit_planes_for_hydro(
         &hydro,
         layout,
@@ -1437,8 +1089,10 @@ fn mixed_precomputed_and_computed_sources_resolve_correctly() {
         "hydro 1 must be ComputedFromGeometry"
     );
 
-    let layout1 =
-        find_fpha_config_for_stage(&config1, &stage).expect("computed config covers stage 0");
+    let layout1 = config1
+        .resolve_stage(&stage)
+        .fpha_config
+        .expect("computed config covers stage 0");
     let computed_fit = super::fit_planes_for_hydro(
         &hydro1,
         layout1,
@@ -1508,8 +1162,10 @@ fn computed_source_all_stages_produce_identical_planes() {
 
     let stages = [make_stage(0), make_stage(1), make_stage(2)];
 
-    let layout =
-        find_fpha_config_for_stage(&config, &stages[0]).expect("computed config covers stage 0");
+    let layout = config
+        .resolve_stage(&stages[0])
+        .fpha_config
+        .expect("computed config covers stage 0");
     let cached_fit = super::fit_planes_for_hydro(
         &hydro,
         layout,
@@ -1828,8 +1484,6 @@ fn single_config_dedup_yields_identical_planes_across_stages() {
         );
     }
 
-    // Each stage emits one export-row block, so the row count is
-    // n_stages * planes_per_stage.
     assert_eq!(
         export_rows.len(),
         per_stage[0].len() * 3,
@@ -2068,112 +1722,6 @@ fn spillage_fit_max_sets_the_secant_range() {
             .any(|(a, b)| a.gamma_s != b.gamma_s),
         "the input range must change gamma_s against the 2 x max_turbined fallback"
     );
-}
-
-// ── long-term mean inflow for the lateral secant ────────────────────
-
-fn inflow_row(hydro_id: i32, day: u32, value_m3s: f64) -> InflowHistoryRow {
-    let start_date = NaiveDate::from_ymd_opt(2000, 1, day).unwrap();
-    InflowHistoryRow {
-        hydro_id: EntityId::from(hydro_id),
-        start_date,
-        end_date: start_date.succ_opt().unwrap(),
-        value_m3s,
-    }
-}
-
-#[test]
-fn long_term_mean_inflow_is_per_hydro_canonical_mean() {
-    let rows = vec![
-        inflow_row(1, 1, 100.0),
-        inflow_row(2, 1, 9_999.0), // different hydro — must be excluded
-        inflow_row(1, 2, 200.0),
-        inflow_row(1, 3, 300.0),
-    ];
-    let system = SystemBuilder::new()
-        .inflow_history(rows)
-        .build()
-        .expect("valid system");
-
-    // mean(100, 200, 300) = 200. This feeds S_max = 2·mean at the fit site
-    // (resolve_s_max's contract, exercised in the fpha_fitting::secant tests).
-    let long_term_mean_inflow_m3s =
-        super::long_term_mean_inflow_reference(&system, EntityId::from(1));
-    assert_eq!(
-        long_term_mean_inflow_m3s, 200.0,
-        "long-term mean inflow must be the per-hydro mean of its own series"
-    );
-}
-
-#[test]
-fn long_term_mean_inflow_empty_history_is_zero() {
-    let system = SystemBuilder::new().build().expect("empty system is valid");
-    let long_term_mean_inflow_m3s =
-        super::long_term_mean_inflow_reference(&system, EntityId::from(1));
-    assert_eq!(
-        long_term_mean_inflow_m3s, 0.0,
-        "no inflow history must yield long-term mean inflow = 0"
-    );
-}
-
-#[test]
-fn long_term_mean_inflow_is_order_independent() {
-    let ascending = vec![
-        inflow_row(1, 1, 10.0),
-        inflow_row(1, 2, 20.0),
-        inflow_row(1, 3, 60.0),
-    ];
-    let descending = vec![
-        inflow_row(1, 3, 60.0),
-        inflow_row(1, 2, 20.0),
-        inflow_row(1, 1, 10.0),
-    ];
-    let sys_asc = SystemBuilder::new()
-        .inflow_history(ascending)
-        .build()
-        .expect("valid");
-    let sys_desc = SystemBuilder::new()
-        .inflow_history(descending)
-        .build()
-        .expect("valid");
-
-    let mlt_asc = super::long_term_mean_inflow_reference(&sys_asc, EntityId::from(1));
-    let mlt_desc = super::long_term_mean_inflow_reference(&sys_desc, EntityId::from(1));
-    assert_eq!(
-        mlt_asc, mlt_desc,
-        "long-term mean inflow must be order-independent (declaration-order invariance)"
-    );
-}
-
-/// The one-pass batch table's per-hydro mean must be bit-identical to
-/// [`super::long_term_mean_inflow_reference`]'s direct per-hydro filtered scan,
-/// for every hydro, including one with no history at all.
-#[test]
-fn build_long_term_mean_inflow_table_matches_per_hydro_reference() {
-    let rows = vec![
-        inflow_row(1, 1, 100.0),
-        inflow_row(2, 1, 9_999.0),
-        inflow_row(1, 2, 200.0),
-        inflow_row(3, 1, 5.0),
-        inflow_row(1, 3, 300.0),
-        inflow_row(2, 2, 1.0),
-    ];
-    let system = SystemBuilder::new()
-        .inflow_history(rows)
-        .build()
-        .expect("valid system");
-
-    let table = super::build_long_term_mean_inflow_table(&system);
-    for hydro_id in [1, 2, 3, 4] {
-        let hydro_id = EntityId::from(hydro_id);
-        let expected = super::long_term_mean_inflow_reference(&system, hydro_id);
-        let actual = table.get(&hydro_id).copied().unwrap_or(0.0);
-        assert_eq!(
-            actual.to_bits(),
-            expected.to_bits(),
-            "hydro {hydro_id:?}: batch table mean must be bit-identical to the per-hydro scan"
-        );
-    }
 }
 
 // ── resolve_downstream_level tests ───────────────────────────────────────
@@ -2745,58 +2293,6 @@ fn export_rows_are_declaration_order_invariant_with_tailrace() {
 
 // ── reference_volume resolution ─────────────────────────────────────────
 
-fn config_with_reference_volume(rv: Option<ReferenceVolume>) -> ProductionModelConfig {
-    ProductionModelConfig {
-        hydro_id: EntityId::from(1),
-        selection_mode: SelectionMode::StageRanges {
-            ranges: vec![StageRange {
-                start_stage_id: 0,
-                end_stage_id: None,
-                model: HydroGenerationModel::ConstantProductivity,
-                fpha_config: None,
-                reference_volume: rv,
-                productivity_mw_per_m3s: Some(0.5),
-            }],
-        },
-    }
-}
-
-#[test]
-fn find_reference_volume_for_stage_returns_covering_entry_value() {
-    let config = config_with_reference_volume(Some(ReferenceVolume::AbsoluteHm3(800.0)));
-    let stage0 = make_stage(0);
-    assert_eq!(
-        find_reference_volume_for_stage(&config, &stage0),
-        Some(&ReferenceVolume::AbsoluteHm3(800.0))
-    );
-}
-
-#[test]
-fn find_reference_volume_for_stage_returns_none_when_unset() {
-    let config = config_with_reference_volume(None);
-    let stage0 = make_stage(0);
-    assert_eq!(find_reference_volume_for_stage(&config, &stage0), None);
-}
-
-#[test]
-fn find_reference_volume_for_stage_returns_none_outside_coverage() {
-    let config = ProductionModelConfig {
-        hydro_id: EntityId::from(1),
-        selection_mode: SelectionMode::StageRanges {
-            ranges: vec![StageRange {
-                start_stage_id: 5,
-                end_stage_id: Some(10),
-                model: HydroGenerationModel::ConstantProductivity,
-                fpha_config: None,
-                reference_volume: Some(ReferenceVolume::AbsoluteHm3(800.0)),
-                productivity_mw_per_m3s: Some(0.5),
-            }],
-        },
-    };
-    let stage0 = make_stage(0);
-    assert_eq!(find_reference_volume_for_stage(&config, &stage0), None);
-}
-
 #[test]
 fn resolve_reference_volume_hm3_absolute_passthrough() {
     let rv = ReferenceVolume::AbsoluteHm3(800.0);
@@ -2922,7 +2418,7 @@ fn resolver_declared_percentile_resolves_against_band() {
 /// A study horizon may begin in any season and wrap the cycle. With a SEASONAL
 /// `reference_volume` config, the resolver is keyed by 0-based study position —
 /// never by `season_id` or `stage.index` — so each position resolves THAT
-/// stage's own season value (via `find_reference_volume_for_stage`). A
+/// stage's own season value (via `ProductionModelConfig::resolve_stage`). A
 /// season-keyed or index-keyed lookup would mis-assign for a horizon not
 /// starting at season 0.
 #[test]
@@ -3031,27 +2527,82 @@ fn computed_fpha_without_turbine_capacity_resolves_to_zero_productivity() {
 }
 
 #[test]
-fn computed_fpha_without_generation_capacity_still_fits_planes() {
+fn computed_fpha_without_generation_capacity_resolves_to_zero_productivity() {
     let mut hydro = make_sobradinho_computed_hydro(0);
     hydro.max_generation_mw = 0.0;
 
-    let (set, _, provenance, _, _, _, _) = resolve_single_computed_hydro(hydro);
+    let (set, _, provenance, export_rows, _, fpha_fit_deviations, _) =
+        resolve_single_computed_hydro(hydro);
 
-    assert!(
-        matches!(
-            set.model(0, 0),
-            ResolvedProductionModel::Fpha { planes, .. } if !planes.is_empty()
-        ),
-        "got {:?}",
-        set.model(0, 0)
-    );
+    for stage_idx in 0..2 {
+        assert!(
+            matches!(
+                set.model(0, stage_idx),
+                ResolvedProductionModel::ConstantProductivity { productivity } if *productivity == 0.0
+            ),
+            "stage {stage_idx}: got {:?}",
+            set.model(0, stage_idx)
+        );
+    }
     assert_eq!(
         provenance,
-        vec![(
-            EntityId::from(0),
-            ProductionModelSource::ComputedFromGeometry
-        )]
+        vec![(EntityId::from(0), ProductionModelSource::NoTurbineCapacity)]
     );
+    assert!(export_rows.is_empty() && fpha_fit_deviations.is_empty());
+}
+
+fn resolve_capturing_log(hydro: Hydro) -> String {
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone)]
+    struct Log(Arc<Mutex<Vec<u8>>>);
+    impl std::io::Write for Log {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let log = Log(Arc::new(Mutex::new(Vec::new())));
+    let writer = log.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_writer(move || writer.clone())
+        .finish();
+    tracing::subscriber::with_default(subscriber, || {
+        resolve_single_computed_hydro(hydro);
+    });
+    String::from_utf8(log.0.lock().unwrap().clone()).unwrap()
+}
+
+/// derived: the plant takes the fallback because `max_generation_mw = 0` fails the
+/// core capacity predicate, so its one warning prints both declared limits.
+#[test]
+fn zero_generation_capacity_fallback_warns_with_both_limits() {
+    let mut hydro = make_sobradinho_computed_hydro(0);
+    hydro.max_generation_mw = 0.0;
+    let declared_turbined = format!("max_turbined_m3s = {}", hydro.max_turbined_m3s);
+
+    let log = resolve_capturing_log(hydro);
+
+    let warnings: Vec<&str> = log.lines().filter(|l| l.contains("WARN")).collect();
+    assert_eq!(warnings.len(), 1, "{log}");
+    assert!(
+        warnings[0].contains("no turbine capacity")
+            && warnings[0].contains(&declared_turbined)
+            && warnings[0].contains("max_generation_mw = 0"),
+        "{log}"
+    );
+}
+
+#[test]
+fn fpha_plant_with_both_limits_emits_no_capacity_warning() {
+    let log = resolve_capturing_log(make_sobradinho_computed_hydro(0));
+
+    assert!(!log.contains("no turbine capacity"), "{log}");
 }
 
 #[test]

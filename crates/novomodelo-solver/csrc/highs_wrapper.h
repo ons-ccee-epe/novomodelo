@@ -84,6 +84,17 @@ int32_t novomodelo_highs_change_rows_bounds_by_set(
     const double*   upper
 );
 
+/** Change bounds of the contiguous row range [from_row, to_row] (inclusive).
+ *  Wraps Highs_changeRowsBoundsByRange().
+ *  Returns a kHighsStatus constant. */
+int32_t novomodelo_highs_change_rows_bounds_by_range(
+    void*           highs,
+    int32_t         from_row,
+    int32_t         to_row,
+    const double*   lower,
+    const double*   upper
+);
+
 /** Change bounds of columns identified by an index set.
  *  Wraps Highs_changeColsBoundsBySet().
  *  Returns a kHighsStatus constant. */
@@ -150,6 +161,30 @@ int32_t novomodelo_highs_set_basis_non_alien(
     const int32_t*  col_status,
     const int32_t*  row_status
 );
+
+/** Row excess of col_value against the incumbent LP's rows.
+ *  For each row i, writes act_i = sum_j a_ij x_j into activity[i], and
+ *  writes mag_i = sum_j |a_ij x_j| into magnitude[i] only for rows whose
+ *  violation exceeds the tolerance. With v_i the bound violation of act_i and
+ *  t = primal_tolerance, returns max(0, max_i (v_i - t) / max(1, mag_i)),
+ *  or +infinity when some act_i or that ratio is NaN.
+ *  col_value must hold num_col entries; activity and magnitude must hold
+ *  num_row entries. Returns 0 without touching the buffers when num_row is
+ *  zero or differs from the incumbent LP's row count.
+ *  Reads Highs::getLp() by reference, without copying. */
+double novomodelo_highs_max_row_violation(
+    void*         highs,
+    const double* col_value,
+    double*       activity,
+    double*       magnitude,
+    int32_t       num_row,
+    double        primal_tolerance
+);
+
+/** Primal feasibility tolerance in the units of a returned solution under the
+ *  current options: primal_feasibility_tolerance * 2^(-user_bound_scale).
+ *  Reads Highs::getOptions() by reference, without a name lookup. */
+double novomodelo_highs_primal_tolerance_in_effect(const void* highs);
 
 /** Get the current basis into caller-allocated column and row status arrays.
  *  Wraps Highs_getBasis().

@@ -19,9 +19,15 @@ Prebuilt wheels are published for:
 - Windows x86_64
 - Python 3.12+
 
-Elsewhere, build the package from the root of a clone made with
-`git clone --recurse-submodules` (the solvers are vendored as submodules), with
-a Rust toolchain (1.88+):
+The x86_64 Linux wheel is tagged `manylinux_2_34`, so it needs glibc 2.34 or newer:
+RHEL and Rocky Linux 9+, Ubuntu 22.04+, Debian 12+. RHEL 8 and Ubuntu 20.04 are older,
+so pip does not select the wheel there. The aarch64 Linux wheel is tagged
+`manylinux_2_28` (glibc 2.28 or newer).
+
+Where no wheel fits, pip builds the published sdist instead, which needs a Rust
+toolchain (1.88+), cmake and a C++ compiler. The same toolchain builds the package
+from the root of a clone made with `git clone --recurse-submodules` (the solvers are
+vendored as submodules):
 
 ```bash
 pip install ./crates/novomodelo-python

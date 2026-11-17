@@ -80,3 +80,43 @@ pub fn write_seasonal_stats(
     writer.write(&batch).expect("write seasonal stats batch");
     writer.close().expect("close seasonal stats writer");
 }
+
+pub type GenericBoundsRow = (i32, i32, Option<i32>, Option<f64>, Option<f64>);
+
+/// Writes a `generic_constraint_bounds.parquet` table:
+/// `(constraint_id, stage_id, block_id, bound_lower, bound_upper)`.
+pub fn write_generic_constraint_bounds(dest: &Path, rows: &[GenericBoundsRow]) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("constraint_id", DataType::Int32, false),
+        Field::new("stage_id", DataType::Int32, false),
+        Field::new("block_id", DataType::Int32, true),
+        Field::new("bound_lower", DataType::Float64, true),
+        Field::new("bound_upper", DataType::Float64, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(
+                rows.iter().map(|r| r.0).collect::<Vec<_>>(),
+            )),
+            Arc::new(Int32Array::from(
+                rows.iter().map(|r| r.1).collect::<Vec<_>>(),
+            )),
+            Arc::new(Int32Array::from(
+                rows.iter().map(|r| r.2).collect::<Vec<_>>(),
+            )),
+            Arc::new(Float64Array::from(
+                rows.iter().map(|r| r.3).collect::<Vec<_>>(),
+            )),
+            Arc::new(Float64Array::from(
+                rows.iter().map(|r| r.4).collect::<Vec<_>>(),
+            )),
+        ],
+    )
+    .expect("valid RecordBatch for generic_constraint_bounds");
+    let file = std::fs::File::create(dest).expect("create generic_constraint_bounds.parquet");
+    let mut writer =
+        ArrowWriter::try_new(file, schema, None).expect("ArrowWriter for constraint bounds");
+    writer.write(&batch).expect("write constraint bounds batch");
+    writer.close().expect("close constraint bounds writer");
+}

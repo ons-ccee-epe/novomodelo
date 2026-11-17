@@ -11,7 +11,8 @@
 
 use novomodelo_core::{EntityId, NoiseMethod, ScenarioSourceConfig, Stage};
 use novomodelo_stochastic::{
-    ClassDimensions, generate_opening_tree, tree::OpeningTreeGenerationInputs,
+    ClassDimensions, generate_opening_tree,
+    tree::{MomentMatching, OpeningTreeGenerationInputs},
 };
 
 mod common;
@@ -63,7 +64,10 @@ fn saa_golden_value_regression() {
         &corr,
         &entity_order,
         dims,
-        &OpeningTreeGenerationInputs::default(),
+        &OpeningTreeGenerationInputs {
+            moment_matching: MomentMatching::None,
+            ..Default::default()
+        },
     )
     .unwrap();
 

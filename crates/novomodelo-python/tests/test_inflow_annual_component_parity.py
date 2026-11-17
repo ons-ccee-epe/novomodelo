@@ -74,7 +74,11 @@ def test_inflow_annual_component_byte_identical(
 
     if cli_bytes != py_bytes:
         first_diff = next(
-            (i for i, (a, b) in enumerate(zip(cli_bytes, py_bytes)) if a != b),
+            (
+                i
+                for i, (a, b) in enumerate(zip(cli_bytes, py_bytes, strict=False))
+                if a != b
+            ),
             -1,
         )
         pytest.fail(

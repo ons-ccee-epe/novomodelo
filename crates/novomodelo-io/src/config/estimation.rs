@@ -1,6 +1,11 @@
 //! Time series estimation configuration types for `config.json → estimation`.
 
+use std::path::Path;
+
 use serde::{Deserialize, Deserializer, Serialize};
+
+use crate::LoadError;
+use crate::config::HistoricalYearRange;
 
 /// Order selection criterion for autoregressive model fitting.
 ///
@@ -29,7 +34,7 @@ pub enum OrderSelectionMethod {
     ///    rolling 12-month average, yielding the annual coefficient ψ
     ///    alongside the classical AR coefficients.
     /// 2. **Annual-stats computation** — per-season sample mean μ^A and
-    ///    Bessel-corrected standard deviation σ^A of the rolling 12-month
+    ///    population standard deviation σ^A of the rolling 12-month
     ///    average are computed for each hydro plant.
     /// 3. **Parquet emission** — the triple (ψ, μ^A, σ^A) is written to
     ///    `inflow_annual_component.parquet` in the output directory.
@@ -48,6 +53,38 @@ impl<'de> serde::Deserialize<'de> for OrderSelectionMethod {
                 other,
                 &["pacf", "pacf_annual"],
             )),
+        }
+    }
+}
+
+/// Series the estimated spatial inflow correlation is computed from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub enum CorrelationTarget {
+    /// Residuals of the fitted PAR lags.
+    Residuals,
+    /// Standardized historical inflows.
+    #[default]
+    Inflows,
+}
+
+impl CorrelationTarget {
+    /// The `config.json` spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Residuals => "residuals",
+            Self::Inflows => "inflows",
+        }
+    }
+}
+
+impl From<CorrelationTarget> for novomodelo_stochastic::par::fitting::CorrelationTarget {
+    fn from(target: CorrelationTarget) -> Self {
+        match target {
+            CorrelationTarget::Residuals => Self::Residuals,
+            CorrelationTarget::Inflows => Self::Inflows,
         }
     }
 }
@@ -80,15 +117,43 @@ pub struct EstimationConfig {
     /// is the primary guard).
     #[serde(default)]
     pub max_coefficient_magnitude: Option<f64>,
+
+    /// Series the spatial inflow correlation is estimated from when no
+    /// `scenarios/correlation.json` is supplied: `"inflows"` (default) or `"residuals"`.
+    ///
+    /// Evaluation option, expected to be removed once evaluated.
+    pub correlation_target: CorrelationTarget,
+
+    /// Years of `scenarios/inflow_history.parquet` the inflow model is estimated
+    /// from, as an inclusive `{"from", "to"}` range of the years season
+    /// occurrences start in. Absent: every year. A range reaching outside the
+    /// file's years is refused. The historical scenario scheme and the initial
+    /// conditions still read the whole file.
+    pub history_years: Option<HistoricalYearRange>,
 }
 
 impl Default for EstimationConfig {
     fn default() -> Self {
         Self {
             max_order: 6,
-            order_selection: OrderSelectionMethod::Pacf,
+            order_selection: OrderSelectionMethod::default(),
             min_observations_per_season: 30,
             max_coefficient_magnitude: None,
+            correlation_target: CorrelationTarget::default(),
+            history_years: None,
+        }
+    }
+}
+
+impl EstimationConfig {
+    pub(crate) fn check_history_years(&self, config_path: &Path) -> Result<(), LoadError> {
+        match self.history_years {
+            Some(HistoricalYearRange { from, to }) if from > to => Err(LoadError::SchemaError {
+                path: config_path.to_path_buf(),
+                field: "estimation.history_years".to_string(),
+                message: format!("range 'from' ({from}) must be <= 'to' ({to})"),
+            }),
+            _ => Ok(()),
         }
     }
 }

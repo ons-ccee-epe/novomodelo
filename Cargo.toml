@@ -9,7 +9,6 @@ members = [
     "crates/novomodelo-comm",
     "crates/novomodelo-sddp",
     "crates/novomodelo-cli",
-    "crates/novomodelo-mcp",
     "crates/novomodelo-tui",
     "crates/novomodelo-flow",
     "crates/novomodelo-uc",
@@ -23,7 +22,7 @@ exclude = [
 ]
 
 [workspace.package]
-version = "0.19.1"
+version = "0.21.0"
 edition = "2024"
 rust-version = "1.88"
 license = "Apache-2.0"
@@ -52,9 +51,9 @@ split-debuginfo = "unpacked"
 [profile.release]
 strip = "symbols"
 
-# Opt-in profile for flamegraph/DHAT — keeps line-number debug info so samples
-# resolve to source locations. Use with `cargo build --profile profiling` or
-# `cargo flamegraph --profile profiling`.
+# Opt-in profile for perf/DHAT/Valgrind — keeps line-number debug info so samples
+# resolve to source locations. perf call graphs also need a GNU-ld link, which a
+# profile cannot set: build with `scripts/build-profiling.sh` (docs/profiling.md).
 [profile.profiling]
 inherits = "release"
 debug = 1

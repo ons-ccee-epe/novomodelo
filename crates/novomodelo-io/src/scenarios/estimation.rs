@@ -44,7 +44,7 @@
 //!
 //! `correlation.json` is handled independently: if present, the existing
 //! `system.correlation()` is kept; if absent, the correlation is estimated from
-//! residuals.
+//! the series `estimation.correlation_target` selects.
 //!
 //! ## PACF order selection
 //!
@@ -57,7 +57,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
-use chrono::{Months, NaiveDate};
+use chrono::{Datelike, Months, NaiveDate};
 use novomodelo_core::{EntityId, SeasonMap, Stage, System, ValidationError};
 use novomodelo_stochastic::{
     StochasticError,
@@ -76,6 +76,7 @@ use novomodelo_stochastic::{
 use crate::LoadError::ConstraintError;
 use crate::{
     Config, FileManifest, InputFile, LoadError, OrderSelectionMethod, ValidationContext,
+    config::{CorrelationTarget, HistoricalYearRange},
     parse_inflow_ar_coefficients, parse_inflow_history,
     scenarios::{
         InflowAnnualComponentRow, InflowArCoefficientRow, InflowHistoryRow, InflowSeasonalStatsRow,
@@ -149,6 +150,20 @@ impl EstimationPath {
     }
 }
 
+/// Where the study's spatial inflow correlation comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CorrelationOrigin {
+    /// Read from `scenarios/correlation.json`.
+    UserFile,
+    /// Estimated from inflow history.
+    Estimated {
+        /// Series it was estimated from.
+        target: CorrelationTarget,
+    },
+    /// Neither supplied nor estimated.
+    NotApplicable,
+}
+
 /// Errors that can occur during the automatic estimation pipeline.
 #[derive(Debug, thiserror::Error)]
 pub enum EstimationError {
@@ -166,10 +181,24 @@ pub enum EstimationError {
     Validation(#[from] ValidationError),
 }
 
+/// What [`estimate_from_history`] returns.
+#[derive(Debug)]
+pub struct HistoryEstimate {
+    /// System carrying the estimated or user-provided scenario models.
+    pub system: System,
+    /// Estimation report; `None` on the pass-through paths.
+    pub report: Option<EstimationReport>,
+    /// Resolved input path.
+    pub path: EstimationPath,
+    /// Where the spatial correlation comes from.
+    pub correlation_origin: CorrelationOrigin,
+}
+
 /// Estimate or load PAR(p) model parameters based on the input file manifest.
 ///
-/// Resolves the [`EstimationPath`] for `case_dir` and dispatches to the matching
-/// `run_*` pipeline; pass-through paths return `system` unchanged with `None` report.
+/// Resolves the [`EstimationPath`] and the [`CorrelationOrigin`] for `case_dir` and
+/// dispatches to the matching `run_*` pipeline; pass-through paths return `system`
+/// unchanged with `None` report.
 ///
 /// # Errors
 ///
@@ -182,37 +211,86 @@ pub fn estimate_from_history(
     system: System,
     case_dir: &Path,
     config: &Config,
-) -> Result<(System, Option<EstimationReport>, EstimationPath), EstimationError> {
+) -> Result<HistoryEstimate, EstimationError> {
     let mut ctx = ValidationContext::new();
     let manifest = validate_structure(case_dir, &mut ctx);
 
-    // Treat structural validation errors as a no-op deterministic path.
-    if ctx.into_result().is_err() {
-        return Ok((system, None, EstimationPath::Deterministic));
-    }
-
-    let path = EstimationPath::resolve(&manifest);
+    let path = if ctx.into_result().is_ok() {
+        EstimationPath::resolve(&manifest)
+    } else {
+        EstimationPath::Deterministic
+    };
+    let correlation_origin = resolve_correlation_origin(
+        &manifest,
+        path,
+        &system,
+        config.estimation.correlation_target,
+    );
 
     match path {
         EstimationPath::Deterministic
         | EstimationPath::UserStatsWhiteNoise
         | EstimationPath::UserProvidedNoHistory
-        | EstimationPath::UserProvidedAll => Ok((system, None, path)),
+        | EstimationPath::UserProvidedAll => Ok(HistoryEstimate {
+            system,
+            report: None,
+            path,
+            correlation_origin,
+        }),
 
         EstimationPath::PartialEstimation => {
-            let (system, report) = run_partial_estimation(system, case_dir, config, &manifest)?;
-            Ok((system, Some(report), path))
+            let (system, report) =
+                run_partial_estimation(system, case_dir, config, correlation_origin)?;
+            Ok(HistoryEstimate {
+                system,
+                report: Some(report),
+                path,
+                correlation_origin,
+            })
         }
 
         EstimationPath::FullEstimation => {
-            let (system, report) = run_estimation(system, case_dir, config, &manifest)?;
-            Ok((system, Some(report), path))
+            let (system, report) = run_estimation(system, case_dir, config, correlation_origin)?;
+            Ok(HistoryEstimate {
+                system,
+                report: Some(report),
+                path,
+                correlation_origin,
+            })
         }
 
         EstimationPath::UserArHistoryStats => {
-            let (system, report) = run_user_ar_estimation(system, case_dir, config, &manifest)?;
-            Ok((system, Some(report), path))
+            let (system, report) =
+                run_user_ar_estimation(system, case_dir, config, correlation_origin)?;
+            Ok(HistoryEstimate {
+                system,
+                report: Some(report),
+                path,
+                correlation_origin,
+            })
         }
+    }
+}
+
+fn resolve_correlation_origin(
+    manifest: &FileManifest,
+    path: EstimationPath,
+    system: &System,
+    target: CorrelationTarget,
+) -> CorrelationOrigin {
+    if manifest.present(InputFile::ScenariosCorrelationJson) {
+        return CorrelationOrigin::UserFile;
+    }
+    let estimating = matches!(
+        path,
+        EstimationPath::FullEstimation
+            | EstimationPath::PartialEstimation
+            | EstimationPath::UserArHistoryStats
+    );
+    if estimating && !system.hydros().is_empty() {
+        CorrelationOrigin::Estimated { target }
+    } else {
+        CorrelationOrigin::NotApplicable
     }
 }
 
@@ -220,7 +298,7 @@ fn run_estimation(
     system: System,
     case_dir: &Path,
     config: &Config,
-    manifest: &FileManifest,
+    correlation_origin: CorrelationOrigin,
 ) -> Result<(System, EstimationReport), EstimationError> {
     let hydro_ids: Vec<EntityId> = system.hydros().iter().map(|h| h.id).collect();
 
@@ -237,7 +315,12 @@ fn run_estimation(
         .collect();
     let stages = stages.as_slice();
 
-    let observations = load_and_aggregate_observations(case_dir, study_stages, season_map)?;
+    let observations = load_and_aggregate_observations(
+        case_dir,
+        study_stages,
+        season_map,
+        config.estimation.history_years,
+    )?;
 
     let seasonal_stats =
         estimate_seasonal_stats_with_season_map(&observations, stages, &hydro_ids, season_map)?;
@@ -255,10 +338,11 @@ fn run_estimation(
                 config.estimation.order_selection,
                 OrderSelectionMethod::PacfAnnual
             ),
+            assembled_stats: None,
         },
     )?;
 
-    let correlation = if manifest.present(InputFile::ScenariosCorrelationJson) {
+    let correlation = if correlation_origin == CorrelationOrigin::UserFile {
         system.correlation().clone()
     } else {
         estimate_correlation_with_season_map(
@@ -268,6 +352,7 @@ fn run_estimation(
             stages,
             &hydro_ids,
             season_map,
+            config.estimation.correlation_target.into(),
         )?
     };
 
@@ -294,7 +379,7 @@ fn run_partial_estimation(
     system: System,
     case_dir: &Path,
     config: &Config,
-    manifest: &FileManifest,
+    correlation_origin: CorrelationOrigin,
 ) -> Result<(System, EstimationReport), EstimationError> {
     let hydro_ids: Vec<EntityId> = system.hydros().iter().map(|h| h.id).collect();
     let study_stages = system.stages();
@@ -310,7 +395,12 @@ fn run_partial_estimation(
     let stages = stages_owned.as_slice();
 
     // Aggregate against study_stages (the season map resolves observations there).
-    let observations = load_and_aggregate_observations(case_dir, study_stages, season_map)?;
+    let observations = load_and_aggregate_observations(
+        case_dir,
+        study_stages,
+        season_map,
+        config.estimation.history_years,
+    )?;
 
     if system.inflow_models().is_empty() {
         return Err(EstimationError::Load(ConstraintError {
@@ -325,6 +415,18 @@ fn run_partial_estimation(
     let fitting_stats =
         estimate_seasonal_stats_with_season_map(&observations, stages, &hydro_ids, season_map)?;
 
+    // LP assembly uses USER stats, not the fitting stats above.
+    let mut stats_rows = user_stats_to_rows(&system);
+    // Out-of-window lag seasons have no user stat; source their (mean, std) from
+    // fitting_stats so PrecomputedPar::build gets a Tier-1 lag hit at the negative
+    // stage_id rather than zeroing the lag. In-window wrap lags stay on the
+    // Tier-2 → user-stat path. Empty for full-year.
+    stats_rows.extend(prestudy_seasonal_rows(&fitting_stats, &prestudy));
+    stats_rows.sort_by_key(|r| (r.hydro_id.0, r.stage_id));
+    // `stages` includes prestudy (see synthesize_prestudy_stages doc).
+    let (stage_to_season, n_seasons) = resolve_stage_seasons(stages, season_map);
+    let assembled_stats = assembled_seasonal_stats(&stats_rows, &stage_to_season);
+
     let (ar_estimates, mut estimation_report) = estimate_ar_coefficients_with_selection(
         &observations,
         &fitting_stats,
@@ -338,6 +440,7 @@ fn run_partial_estimation(
                 config.estimation.order_selection,
                 OrderSelectionMethod::PacfAnnual
             ),
+            assembled_stats: Some(&assembled_stats),
         },
     )?;
 
@@ -345,7 +448,7 @@ fn run_partial_estimation(
     let (white_noise_fallbacks, std_ratio_warnings) =
         validate_partial_estimation_coverage(&system, &fitting_stats, study_stages)?;
 
-    let correlation = if manifest.present(InputFile::ScenariosCorrelationJson) {
+    let correlation = if correlation_origin == CorrelationOrigin::UserFile {
         system.correlation().clone()
     } else {
         estimate_correlation_with_season_map(
@@ -355,22 +458,13 @@ fn run_partial_estimation(
             stages,
             &hydro_ids,
             season_map,
+            config.estimation.correlation_target.into(),
         )?
     };
 
-    // LP assembly uses USER stats, not the fitting stats above.
-    let mut stats_rows = user_stats_to_rows(&system);
-    // Out-of-window lag seasons have no user stat; source their (mean, std) from
-    // fitting_stats so PrecomputedPar::build gets a Tier-1 lag hit at the negative
-    // stage_id rather than zeroing the lag. In-window wrap lags stay on the
-    // Tier-2 → user-stat path. Empty for full-year.
-    stats_rows.extend(prestudy_seasonal_rows(&fitting_stats, &prestudy));
-    stats_rows.sort_by_key(|r| (r.hydro_id.0, r.stage_id));
     let coeff_rows = ar_estimates_to_rows(&ar_estimates, stages);
     let annual_rows = ar_estimates_to_annual_rows(&ar_estimates, stages);
     let mut inflow_models = assemble_inflow_models(stats_rows, coeff_rows, annual_rows)?;
-    // `stages` includes prestudy (see synthesize_prestudy_stages doc).
-    let (stage_to_season, n_seasons) = resolve_stage_seasons(stages, season_map);
     populate_derived_residual_ratios(&mut inflow_models, &stage_to_season, n_seasons)?;
 
     estimation_report.white_noise_fallbacks = white_noise_fallbacks;
@@ -380,33 +474,47 @@ fn run_partial_estimation(
     Ok((system, estimation_report))
 }
 
-/// Load inflow history from the case directory, gate each hydro's season
-/// occurrences on full record coverage, and aggregate
-/// the resulting samples to season resolution when a season map is present.
-///
-/// See [`resolve_coverage_gated_observations`] for the coverage gate itself
-/// (record windows only — the initial-conditions conditioning layer is never
-/// read here).
 fn load_and_aggregate_observations(
     case_dir: &Path,
     stages: &[Stage],
     season_map: Option<&SeasonMap>,
+    history_years: Option<HistoricalYearRange>,
 ) -> Result<Vec<(EntityId, NaiveDate, f64)>, EstimationError> {
     let history_path = case_dir.join("scenarios/inflow_history.parquet");
     let history = parse_inflow_history(&history_path)?;
-
     let (observations, skipped_partial) =
-        resolve_coverage_gated_observations(&history, season_map, stages.first());
+        estimation_samples(&history, stages, season_map, history_years)?;
     log_skipped_partial_occurrences(&skipped_partial);
-
-    if let Some(sm) = season_map {
-        Ok(aggregate_observations_to_season(&observations, stages, sm)?)
-    } else {
-        Ok(observations)
-    }
+    Ok(observations)
 }
 
-/// Return type of [`resolve_coverage_gated_observations`]:
+/// The samples estimation fits from `history`: its fully covered season
+/// occurrences ([`resolve_coverage_gated_observations`]), aggregated to season
+/// resolution under `season_map`, that start in `history_years`; with each
+/// hydro's count of skipped partial occurrences.
+///
+/// # Errors
+///
+/// [`EstimationError::Stochastic`] when the samples cannot be aggregated to their
+/// seasons.
+pub(crate) fn estimation_samples(
+    history: &[InflowHistoryRow],
+    stages: &[Stage],
+    season_map: Option<&SeasonMap>,
+    history_years: Option<HistoricalYearRange>,
+) -> Result<CoverageGatedObservations, EstimationError> {
+    let (observations, skipped_partial) =
+        resolve_coverage_gated_observations(history, season_map, stages.first());
+    let mut observations = match season_map {
+        Some(season_map) => aggregate_observations_to_season(&observations, stages, season_map)?,
+        None => observations,
+    };
+    observations.retain(|&(_, start_date, _)| {
+        history_years.is_none_or(|years| years.contains(start_date.year()))
+    });
+    Ok((observations, skipped_partial))
+}
+
 /// `(observations, skipped_partial)`.
 type CoverageGatedObservations = (Vec<(EntityId, NaiveDate, f64)>, BTreeMap<EntityId, usize>);
 
@@ -653,7 +761,7 @@ fn run_user_ar_estimation(
     system: System,
     case_dir: &Path,
     config: &Config,
-    manifest: &FileManifest,
+    correlation_origin: CorrelationOrigin,
 ) -> Result<(System, EstimationReport), EstimationError> {
     let hydro_ids: Vec<EntityId> = system.hydros().iter().map(|h| h.id).collect();
     let stages = system.stages();
@@ -668,7 +776,12 @@ fn run_user_ar_estimation(
         .collect();
     let extended = extended.as_slice();
 
-    let observations = load_and_aggregate_observations(case_dir, stages, season_map)?;
+    let observations = load_and_aggregate_observations(
+        case_dir,
+        stages,
+        season_map,
+        config.estimation.history_years,
+    )?;
 
     let seasonal_stats =
         estimate_seasonal_stats_with_season_map(&observations, extended, &hydro_ids, season_map)?;
@@ -679,7 +792,7 @@ fn run_user_ar_estimation(
 
     let user_ar_estimates = ar_rows_to_estimates(&user_ar_rows, stages);
 
-    let correlation = if manifest.present(InputFile::ScenariosCorrelationJson) {
+    let correlation = if correlation_origin == CorrelationOrigin::UserFile {
         system.correlation().clone()
     } else {
         estimate_correlation_with_season_map(
@@ -689,6 +802,7 @@ fn run_user_ar_estimation(
             extended,
             &hydro_ids,
             season_map,
+            config.estimation.correlation_target.into(),
         )?
     };
 
@@ -1065,6 +1179,29 @@ fn prestudy_seasonal_rows(
     }
     rows.sort_by_key(|r| (r.hydro_id.0, r.stage_id));
     rows
+}
+
+/// One row per `(hydro, season)` of the sorted `rows`: the first in its season,
+/// the model [`populate_derived_residual_ratios`] derives the season's residual
+/// ratio from.
+fn assembled_seasonal_stats(
+    rows: &[InflowSeasonalStatsRow],
+    stage_to_season: &HashMap<i32, usize>,
+) -> Vec<SeasonalStats> {
+    let mut seen: HashSet<(EntityId, usize)> = HashSet::new();
+    rows.iter()
+        .filter(|row| {
+            stage_to_season
+                .get(&row.stage_id)
+                .is_some_and(|&season| seen.insert((row.hydro_id, season)))
+        })
+        .map(|row| SeasonalStats {
+            entity_id: row.hydro_id,
+            stage_id: row.stage_id,
+            mean: row.mean_m3s,
+            std: row.std_m3s,
+        })
+        .collect()
 }
 
 /// Index stage ids by their `season_id`, skipping stages without one.

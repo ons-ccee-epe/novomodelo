@@ -1321,7 +1321,7 @@ mod filling_cut_validity {
         HydroBlockBounds, HydroPenalties, HydroStageBounds, HydroStorage, InitialConditions,
         LineBlockBounds, LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec,
         PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds, ResolvedPenalties, SystemBuilder,
-        ThermalBlockBounds, ThermalStageBounds, TrainingEvent,
+        ThermalBlockBounds, TrainingEvent,
     };
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
@@ -1378,6 +1378,7 @@ mod filling_cut_validity {
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -1564,12 +1565,10 @@ mod filling_cut_validity {
             &BoundsDefaults {
                 hydro: default_hydro_bounds(),
                 hydro_block: default_hydro_block_bounds(),
-                thermal: ThermalStageBounds {
-                    cost_per_mwh: 500.0,
-                },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 400.0,
+                    cost_per_mwh: 500.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -1704,10 +1703,7 @@ mod filling_cut_validity {
     #[test]
     fn filling_cascade_lower_bound_monotone_no_basis_spike() {
         let system = build_system();
-        let mut config = build_config();
-        // The warm-start-validity contract covers forward basis reuse across the
-        // filling boundaries, so warm-start the forward pass.
-        super::common::enable_forward_warm_start(&mut config);
+        let config = build_config();
         let mut setup = build_setup_in_code(system, &config);
         // Store each pool's trial states so the control hydro's forward-pass
         // storage trajectory is observable for the parity-neutrality assertion below.
@@ -3031,5 +3027,466 @@ mod exited_plant_transit {
             (routed_to_d - matured).abs() <= TOL,
             "D must receive exactly J's matured bucket ({matured} hm³); got {routed_to_d}"
         );
+    }
+}
+
+mod d39_filling_cost_reconciliation {
+    //! The parity hash does not hash the filling slacks, so this test checks that the
+    //! simulated cost breakdown prices them. hybrid: per stage,
+    //! `storage_violation_cost` and `filling_target_cost` equal `Σ_h slack_hm3 × price`,
+    //! with the slacks from the simulated LP and the prices from the resolved penalties,
+    //! per hm³ with no hours factor and no discount. `D_down` (id 0) is Filling at
+    //! stages 1–3 and Operating at 4–5, `U_up` (id 1) Filling at 3–4 and Operating at 5;
+    //! both are PreFilling at stage 0, where both slack families are empty and both
+    //! costs are exactly zero.
+
+    use std::path::Path;
+
+    use novomodelo_io::config::{SimulationConfig, SimulationSelection};
+    use novomodelo_sddp::ScenarioCategoryCosts;
+    use novomodelo_sddp::simulation::accumulate_category_costs;
+
+    use super::common::{fresh_system_and_setup_with, run_simulation};
+
+    const D_DOWN_ID: i32 = 0;
+    const U_UP_ID: i32 = 1;
+    const STORAGE_VIOLATION_BELOW_COST: f64 = 20_000.0;
+    const FILLING_TARGET_VIOLATION_COST: f64 = 500.0;
+    const ORACLE_REL_TOL: f64 = 1e-9;
+    const CATEGORY_REL_TOL: f64 = 1e-6;
+    const BINDING_SLACK_HM3: f64 = 1e-6;
+
+    #[test]
+    fn filling_slack_costs_reconcile_on_d39() {
+        let case_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("the crate directory has a parent")
+            .parent()
+            .expect("the crates directory has a parent")
+            .join("examples/deterministic/d39-prefilling-upstream-of-filling");
+        let (system, mut setup) = fresh_system_and_setup_with(&case_dir, |config| {
+            config.simulation = SimulationConfig {
+                enabled: true,
+                io_channel_capacity: 8,
+                selection: Some(SimulationSelection::Sampled { num_scenarios: 1 }),
+                ..SimulationConfig::default()
+            };
+        });
+        let scenarios = run_simulation(&mut setup, 1);
+        assert_eq!(scenarios.len(), 1, "one sampled simulation scenario");
+        let scenario = &scenarios[0];
+        assert_eq!(scenario.stages.len(), 6, "d39 simulates six stages");
+
+        let hydros = system.hydros();
+        let penalties = system.penalties();
+        let pinned = [D_DOWN_ID, U_UP_ID].map(|id| {
+            let h_idx = hydros
+                .iter()
+                .position(|h| h.id.0 == id)
+                .expect("D_down and U_up must be in the canonical hydro order");
+            (id, h_idx)
+        });
+
+        let mut slack_sums_hm3 = Vec::with_capacity(scenario.stages.len());
+        for (stage_index, stage) in scenario.stages.iter().enumerate() {
+            let cost = &stage.costs[0];
+
+            for (id, h_idx) in pinned {
+                let prices = penalties.hydro_penalties(h_idx, stage_index);
+                assert_eq!(
+                    prices.storage_violation_below_cost, STORAGE_VIOLATION_BELOW_COST,
+                    "hydro {id} stage {stage_index}: storage_violation_below_cost must be \
+                     d39's penalties.json value"
+                );
+                assert_eq!(
+                    prices.filling_target_violation_cost, FILLING_TARGET_VIOLATION_COST,
+                    "hydro {id} stage {stage_index}: filling_target_violation_cost must be \
+                     d39's penalties.json value"
+                );
+            }
+
+            let mut floor_hm3 = 0.0;
+            let mut fill_hm3 = 0.0;
+            let mut floor_oracle = 0.0;
+            let mut fill_oracle = 0.0;
+            for (h_idx, hydro) in hydros.iter().enumerate() {
+                let row = stage
+                    .hydros
+                    .iter()
+                    .find(|r| r.hydro_id == hydro.id.0)
+                    .expect("every hydro must have a row at every stage");
+                let prices = penalties.hydro_penalties(h_idx, stage_index);
+                floor_hm3 += row.storage_violation_below_hm3;
+                fill_hm3 += row.filling_target_violation_hm3;
+                floor_oracle +=
+                    row.storage_violation_below_hm3 * prices.storage_violation_below_cost;
+                fill_oracle +=
+                    row.filling_target_violation_hm3 * prices.filling_target_violation_cost;
+            }
+
+            let floor_err = (cost.storage_violation_cost - floor_oracle).abs();
+            assert!(
+                floor_err <= ORACLE_REL_TOL * floor_oracle.abs().max(1.0),
+                "stage {stage_index}: storage_violation_cost {} must equal Σ_h σ^{{v-}} × price \
+                 {floor_oracle} (diff {floor_err})",
+                cost.storage_violation_cost
+            );
+            let fill_err = (cost.filling_target_cost - fill_oracle).abs();
+            assert!(
+                fill_err <= ORACLE_REL_TOL * fill_oracle.abs().max(1.0),
+                "stage {stage_index}: filling_target_cost {} must equal Σ_h σ_fill × price \
+                 {fill_oracle} (diff {fill_err})",
+                cost.filling_target_cost
+            );
+
+            let mut categories = ScenarioCategoryCosts {
+                resource_cost: 0.0,
+                recourse_cost: 0.0,
+                violation_cost: 0.0,
+                regularization_cost: 0.0,
+                imputed_cost: 0.0,
+            };
+            accumulate_category_costs(cost, &mut categories);
+            let category_sum = categories.resource_cost
+                + categories.recourse_cost
+                + categories.violation_cost
+                + categories.regularization_cost
+                + categories.imputed_cost;
+            let category_err = (category_sum - cost.immediate_cost).abs();
+            assert!(
+                category_err <= CATEGORY_REL_TOL * cost.immediate_cost.abs().max(1.0),
+                "stage {stage_index}: the five cost categories sum to {category_sum}, not \
+                 immediate_cost {} (abs err {category_err})",
+                cost.immediate_cost
+            );
+
+            if floor_hm3 > BINDING_SLACK_HM3 {
+                assert!(
+                    cost.storage_violation_cost > 0.0,
+                    "stage {stage_index}: σ^{{v-}} binds ({floor_hm3} hm³) but \
+                     storage_violation_cost is {}",
+                    cost.storage_violation_cost
+                );
+            }
+            if fill_hm3 > BINDING_SLACK_HM3 {
+                assert!(
+                    cost.filling_target_cost > 0.0,
+                    "stage {stage_index}: σ_fill binds ({fill_hm3} hm³) but filling_target_cost \
+                     is {}",
+                    cost.filling_target_cost
+                );
+            }
+            slack_sums_hm3.push((stage.stage_id, floor_hm3, fill_hm3));
+        }
+
+        assert!(
+            slack_sums_hm3
+                .iter()
+                .any(|&(_, floor, _)| floor > BINDING_SLACK_HM3),
+            "power guard: no stage binds σ^{{v-}}; (stage_id, Σ_h σ^{{v-}}, Σ_h σ_fill) hm³: \
+             {slack_sums_hm3:?}"
+        );
+        assert!(
+            slack_sums_hm3
+                .iter()
+                .any(|&(_, _, fill)| fill > BINDING_SLACK_HM3),
+            "power guard: no stage binds σ_fill; (stage_id, Σ_h σ^{{v-}}, Σ_h σ_fill) hm³: \
+             {slack_sums_hm3:?}"
+        );
+
+        let stage0_cost = &scenario
+            .stages
+            .iter()
+            .find(|s| s.stage_id == 0)
+            .expect("stage id 0 must be simulated")
+            .costs[0];
+        assert_eq!(
+            stage0_cost.storage_violation_cost, 0.0,
+            "stage 0: both filling plants are PreFilling, so σ^{{v-}} has no column"
+        );
+        assert_eq!(
+            stage0_cost.filling_target_cost, 0.0,
+            "stage 0: both filling plants are PreFilling, so σ_fill has no column"
+        );
+    }
+}
+
+mod stage_volume_commissioning {
+    use std::collections::BTreeSet;
+    use std::path::{Path, PathBuf};
+
+    use novomodelo_sddp::StudySetup;
+    use tempfile::TempDir;
+
+    use super::common::parquet_fixtures::{GenericBoundsRow, write_generic_constraint_bounds};
+    use super::common::{copy_toy_case, fresh_setup_with};
+
+    const FILLING_DECK: &str = "d38-dead-volume-filling";
+    const PUMPING_DECK: &str = "d35-pumping-commissioning";
+    const NEVER_BINDING_UPPER: f64 = 1.0e6;
+
+    fn base_deck(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("examples/deterministic")
+            .join(name)
+    }
+
+    fn constraint_rows(setup: &StudySetup, stage: usize, constraint_id: i32) -> Vec<usize> {
+        let stage_templates = &setup.inputs.stage_data.stage_templates;
+        let entries = &stage_templates.generic_constraint_row_entries[stage];
+        let base = stage_templates.templates[stage].num_rows - entries.len();
+        entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| entry.entity_id == constraint_id)
+            .map(|(position, _)| base + position)
+            .collect()
+    }
+
+    fn row_columns(setup: &StudySetup, stage: usize, rows: &[usize]) -> BTreeSet<usize> {
+        let template = &setup.inputs.stage_data.stage_templates.templates[stage];
+        let mut columns = BTreeSet::new();
+        for (col, span) in template.col_starts.windows(2).enumerate() {
+            let first = usize::try_from(span[0]).expect("col_starts entry is non-negative");
+            let end = usize::try_from(span[1]).expect("col_starts entry is non-negative");
+            for nz in first..end {
+                let row = usize::try_from(template.row_indices[nz])
+                    .expect("row_indices entry is non-negative");
+                if template.values[nz] != 0.0 && rows.contains(&row) {
+                    columns.insert(col);
+                }
+            }
+        }
+        columns
+    }
+
+    fn pinned(setup: &StudySetup, stage: usize, cols: &BTreeSet<usize>) -> bool {
+        let template = &setup.inputs.stage_data.stage_templates.templates[stage];
+        cols.iter()
+            .all(|&col| template.col_lower[col] == 0.0 && template.col_upper[col] == 0.0)
+    }
+
+    fn filling_fixture() -> TempDir {
+        let case = TempDir::new().expect("tempdir");
+        copy_toy_case(&base_deck(FILLING_DECK), case.path());
+
+        let hydros_file = case.path().join("system/hydros.json");
+        let mut hydros: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&hydros_file).expect("read hydros"))
+                .expect("parse hydros");
+        hydros["hydros"][1]["diversion"] =
+            serde_json::json!({ "downstream_id": 3, "max_flow_m3s": 50.0 });
+        std::fs::write(&hydros_file, hydros.to_string()).expect("write hydros");
+
+        let expressions = [
+            "hydro_outflow_volume(1)",
+            "hydro_outflow(1)",
+            "hydro_turbined(1)",
+            "hydro_diversion_volume(1)",
+            "hydro_diversion(1)",
+            "hydro_diversion_volume(3)",
+            "hydro_diversion(3)",
+        ];
+        let constraints: Vec<serde_json::Value> = expressions
+            .iter()
+            .zip(1_i32..)
+            .map(|(expression, id)| {
+                serde_json::json!({
+                    "id": id,
+                    "name": format!("volume_probe_{id}"),
+                    "expression": expression,
+                    "slack": { "enabled": false },
+                })
+            })
+            .collect();
+        std::fs::create_dir_all(case.path().join("constraints")).expect("create constraints dir");
+        std::fs::write(
+            case.path().join("constraints/generic_constraints.json"),
+            serde_json::json!({ "constraints": constraints }).to_string(),
+        )
+        .expect("write generic constraints");
+
+        let bounds: Vec<GenericBoundsRow> = (1..=7)
+            .flat_map(|id| {
+                (0..6).map(move |stage| (id, stage, None, None, Some(NEVER_BINDING_UPPER)))
+            })
+            .collect();
+        write_generic_constraint_bounds(
+            &case
+                .path()
+                .join("constraints/generic_constraint_bounds.parquet"),
+            &bounds,
+        );
+        case
+    }
+
+    fn pumping_fixture() -> TempDir {
+        let case = TempDir::new().expect("tempdir");
+        copy_toy_case(&base_deck(PUMPING_DECK), case.path());
+
+        let expressions = ["pumping_volume(0)", "pumping_flow(0)"];
+        let constraints: Vec<serde_json::Value> = expressions
+            .iter()
+            .zip(1_i32..)
+            .map(|(expression, id)| {
+                serde_json::json!({
+                    "id": id,
+                    "name": format!("volume_probe_{id}"),
+                    "expression": expression,
+                    "slack": { "enabled": false },
+                })
+            })
+            .collect();
+        std::fs::create_dir_all(case.path().join("constraints")).expect("create constraints dir");
+        std::fs::write(
+            case.path().join("constraints/generic_constraints.json"),
+            serde_json::json!({ "constraints": constraints }).to_string(),
+        )
+        .expect("write generic constraints");
+
+        let bounds: Vec<GenericBoundsRow> = (1..=2)
+            .flat_map(|id| {
+                (0..3).map(move |stage| (id, stage, None, None, Some(NEVER_BINDING_UPPER)))
+            })
+            .collect();
+        write_generic_constraint_bounds(
+            &case
+                .path()
+                .join("constraints/generic_constraint_bounds.parquet"),
+            &bounds,
+        );
+        case
+    }
+
+    /// derived: a PreFilling hydro's outflow volume is 0 and a Filling hydro's is its spillage only, because the volume row reads the same pinned turbine columns as `hydro_outflow`.
+    #[test]
+    fn stage_volume_outflow_reads_the_frozen_turbines_of_a_filling_plant() {
+        let case = filling_fixture();
+        let setup = fresh_setup_with(case.path(), |_| {});
+        let templates = &setup.inputs.stage_data.stage_templates.templates;
+
+        for stage in 0..6 {
+            let vol = row_columns(&setup, stage, &constraint_rows(&setup, stage, 1));
+            let flow = row_columns(&setup, stage, &constraint_rows(&setup, stage, 2));
+            let turb = row_columns(&setup, stage, &constraint_rows(&setup, stage, 3));
+            assert_eq!(
+                vol, flow,
+                "stage {stage}: hydro_outflow_volume(1) and hydro_outflow(1) columns"
+            );
+            assert!(
+                !vol.is_empty(),
+                "stage {stage}: outflow volume row is empty"
+            );
+            assert!(!turb.is_empty(), "stage {stage}: turbine row is empty");
+
+            match stage {
+                0 | 1 => assert!(
+                    pinned(&setup, stage, &vol),
+                    "stage {stage}: PreFilling outflow volume columns {vol:?} must be pinned"
+                ),
+                2 | 3 => {
+                    assert!(
+                        pinned(&setup, stage, &turb),
+                        "stage {stage}: Filling turbine columns {turb:?} must be pinned"
+                    );
+                    let spillage: BTreeSet<usize> = vol.difference(&turb).copied().collect();
+                    assert!(
+                        !spillage.is_empty(),
+                        "stage {stage}: Filling outflow volume has no spillage column"
+                    );
+                    assert!(
+                        spillage
+                            .iter()
+                            .all(|&col| templates[stage].col_upper[col] > 0.0),
+                        "stage {stage}: Filling spillage columns {spillage:?} must stay open"
+                    );
+                }
+                4 | 5 => assert!(
+                    turb.iter()
+                        .all(|&col| templates[stage].col_upper[col] > 0.0),
+                    "stage {stage}: Operating turbine columns {turb:?} must be open"
+                ),
+                _ => unreachable!("stage {stage} is outside the fixture"),
+            }
+        }
+    }
+
+    /// derived: diversion volume is 0 for H2 while it is PreFilling or Filling and for the non-diverting H4 at every stage, because both read pinned diversion columns.
+    #[test]
+    fn stage_volume_diversion_reads_the_pinned_diversion_columns() {
+        let case = filling_fixture();
+        let setup = fresh_setup_with(case.path(), |_| {});
+
+        for (volume_id, flow_id, stages) in [(4, 5, 4), (6, 7, 6)] {
+            for stage in 0..stages {
+                let vol = row_columns(&setup, stage, &constraint_rows(&setup, stage, volume_id));
+                let flow = row_columns(&setup, stage, &constraint_rows(&setup, stage, flow_id));
+                assert_eq!(
+                    vol, flow,
+                    "stage {stage}: constraints {volume_id} and {flow_id} columns"
+                );
+                assert!(
+                    !vol.is_empty(),
+                    "stage {stage}: constraint {volume_id} row is empty"
+                );
+                assert!(
+                    pinned(&setup, stage, &vol),
+                    "stage {stage}: constraint {volume_id} columns {vol:?} must be pinned"
+                );
+            }
+        }
+    }
+
+    /// derived: pumping volume is 0 at stages 0 and 2, outside the station's [1, 2) commissioning window, because the volume row reads the pinned station flow column.
+    #[test]
+    fn stage_volume_pumping_reads_the_station_flow_outside_its_window() {
+        let case = pumping_fixture();
+        let setup = fresh_setup_with(case.path(), |_| {});
+        let templates = &setup.inputs.stage_data.stage_templates.templates;
+
+        for stage in 0..3 {
+            let vol = row_columns(&setup, stage, &constraint_rows(&setup, stage, 1));
+            let flow = row_columns(&setup, stage, &constraint_rows(&setup, stage, 2));
+            assert_eq!(
+                vol, flow,
+                "stage {stage}: pumping_volume(0) and pumping_flow(0) columns"
+            );
+            assert!(
+                !vol.is_empty(),
+                "stage {stage}: pumping volume row is empty"
+            );
+
+            match stage {
+                0 | 2 => assert!(
+                    pinned(&setup, stage, &vol),
+                    "stage {stage}: inactive station columns {vol:?} must be pinned"
+                ),
+                1 => assert!(
+                    vol.iter().all(|&col| templates[stage].col_upper[col] > 0.0),
+                    "stage {stage}: active station columns {vol:?} must be open"
+                ),
+                _ => unreachable!("stage {stage} is outside the fixture"),
+            }
+        }
+    }
+
+    /// derived: each fixture adds no validation warning, so its count equals its base deck's.
+    #[test]
+    fn stage_volume_fixtures_add_no_validation_warning() {
+        let filling = filling_fixture();
+        let pumping = pumping_fixture();
+        for (fixture, deck) in [(&filling, FILLING_DECK), (&pumping, PUMPING_DECK)] {
+            let (_, base) = novomodelo_io::validate_case(&base_deck(deck)).expect("base deck");
+            let (_, report) = novomodelo_io::validate_case(fixture.path()).expect("fixture");
+            assert_eq!(report.error_count, 0, "{deck} fixture errors");
+            assert_eq!(
+                report.warning_count, base.warning_count,
+                "{deck} fixture warnings"
+            );
+        }
     }
 }

@@ -1,17 +1,19 @@
-//! Layer 5a — generic-constraint-vs-stage-mode semantic validation.
+//! Layer 5a — generic-constraint semantic validation: per-block references against stage mode,
+//! and the terms, parameters and bounds rows a stage-volume constraint may take.
 //!
 //! Rejects per-block variable references that cannot resolve to a real column on a
 //! stage: interior storage boundaries (`HydroStorageInitial` / `HydroStorageFinal`)
 //! on parallel stages, and out-of-range block selectors on any per-block reference.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use novomodelo_core::{
-    ComputedParameter, EntityId, GenericConstraint, ParameterKind, VariableRef,
+    ComputedParameter, EntityId, GenericConstraint, ParameterKind, ScalarParameter, VariableRef,
     expand_expression_parameters, temporal::BlockMode,
 };
 
-use super::super::{ValidationContext, rules, schema::ParsedData};
+use super::super::{ValidationContext, rules, rules::ValidationRule, schema::ParsedData};
+use crate::expression::catalog::variable_call;
 
 /// Rule 20. Layer 5a — rejects per-block variable references that address a column a stage
 /// cannot expose, honoring per-`(constraint, stage)` activation.
@@ -248,25 +250,14 @@ enum StorageRef {
     Final(Option<usize>),
 }
 
-#[derive(Clone, Copy)]
-struct StorageTerm {
-    accessor: &'static str,
-    hydro_id: EntityId,
-    boundary: StorageRef,
-}
-
-/// The term as an expression writes it: `accessor(hydro_id, block)`.
-fn block_term(accessor: &str, hydro_id: EntityId, block: usize) -> String {
-    format!("{accessor}({hydro_id}, {block})")
-}
-
 fn add_constraint_error(
     ctx: &mut ValidationContext,
+    rule: &ValidationRule,
     constraint: &GenericConstraint,
     message: String,
 ) {
     ctx.emit(
-        &rules::SEMANTIC_GENERIC_PER_BLOCK_REFERENCE_UNRESOLVABLE,
+        rule,
         "constraints/generic_constraints.json",
         Some(format!("constraint[id={}]", constraint.id.0)),
         message,
@@ -287,18 +278,18 @@ fn validate_block_ref(
     block_mode: BlockMode,
     ctx: &mut ValidationContext,
 ) {
-    if let Some(term) = storage_boundary_ref(variable) {
-        validate_storage_ref(constraint, term, k, stage_id, block_mode, ctx);
+    if let Some(boundary) = storage_boundary_ref(variable) {
+        validate_storage_ref(constraint, variable, boundary, k, stage_id, block_mode, ctx);
         return;
     }
     match variable {
         VariableRef::HydroEvaporation {
-            hydro_id,
-            block_id: Some(b),
+            block_id: Some(b), ..
         } if *b >= k => {
-            let term = block_term("hydro_evaporation", *hydro_id, *b);
+            let term = variable_call(variable);
             add_constraint_error(
                 ctx,
+                &rules::SEMANTIC_GENERIC_PER_BLOCK_REFERENCE_UNRESOLVABLE,
                 constraint,
                 format!(
                     "Constraint \"{}\": per-block evaporation reference \
@@ -309,12 +300,12 @@ fn validate_block_ref(
             );
         }
         VariableRef::HydroEvaporation {
-            hydro_id,
-            block_id: Some(b),
+            block_id: Some(b), ..
         } if block_mode == BlockMode::Parallel && k > 1 && *b >= 1 => {
-            let term = block_term("hydro_evaporation", *hydro_id, *b);
+            let term = variable_call(variable);
             add_constraint_error(
                 ctx,
+                &rules::SEMANTIC_GENERIC_PER_BLOCK_REFERENCE_UNRESOLVABLE,
                 constraint,
                 format!(
                     "Constraint \"{}\": per-block evaporation reference \
@@ -330,12 +321,17 @@ fn validate_block_ref(
             hydro_id,
             block_id: None,
         } if block_mode == BlockMode::Chronological && k > 1 => {
-            let example = block_term("hydro_evaporation", *hydro_id, 0);
+            let term = variable_call(variable);
+            let example = variable_call(&VariableRef::HydroEvaporation {
+                hydro_id: *hydro_id,
+                block_id: Some(0),
+            });
             add_constraint_error(
                 ctx,
+                &rules::SEMANTIC_GENERIC_PER_BLOCK_REFERENCE_UNRESOLVABLE,
                 constraint,
                 format!(
-                    "Constraint \"{}\": stage-level `hydro_evaporation({hydro_id})` at \
+                    "Constraint \"{}\": stage-level `{term}` at \
                      chronological stage {stage_id} is ambiguous — evaporation is \
                      per-block there (K = {k}); name a block, e.g. `{example}`",
                     constraint.name
@@ -346,55 +342,39 @@ fn validate_block_ref(
     }
 }
 
-/// The accessor name, hydro and boundary of a storage-boundary term, `None` for
-/// every other variant.
-fn storage_boundary_ref(variable: &VariableRef) -> Option<StorageTerm> {
+/// The boundary a storage-boundary term references, `None` for every other variant.
+fn storage_boundary_ref(variable: &VariableRef) -> Option<StorageRef> {
     match variable {
-        VariableRef::HydroStorageInitial { hydro_id, block_id } => Some(StorageTerm {
-            accessor: "hydro_storage_initial",
-            hydro_id: *hydro_id,
-            boundary: StorageRef::Initial(*block_id),
-        }),
-        VariableRef::HydroStorageFinal { hydro_id, block_id } => Some(StorageTerm {
-            accessor: "hydro_storage_final",
-            hydro_id: *hydro_id,
-            boundary: StorageRef::Final(*block_id),
-        }),
-        VariableRef::HydroUsefulVolumeInitial { hydro_id, block_id } => Some(StorageTerm {
-            accessor: "hydro_useful_volume_initial",
-            hydro_id: *hydro_id,
-            boundary: StorageRef::Initial(*block_id),
-        }),
-        VariableRef::HydroUsefulVolumeFinal { hydro_id, block_id } => Some(StorageTerm {
-            accessor: "hydro_useful_volume_final",
-            hydro_id: *hydro_id,
-            boundary: StorageRef::Final(*block_id),
-        }),
+        VariableRef::HydroStorageInitial { block_id, .. }
+        | VariableRef::HydroUsefulVolumeInitial { block_id, .. } => {
+            Some(StorageRef::Initial(*block_id))
+        }
+        VariableRef::HydroStorageFinal { block_id, .. }
+        | VariableRef::HydroUsefulVolumeFinal { block_id, .. } => {
+            Some(StorageRef::Final(*block_id))
+        }
         _ => None,
     }
 }
 
 fn validate_storage_ref(
     constraint: &GenericConstraint,
-    term: StorageTerm,
+    variable: &VariableRef,
+    boundary: StorageRef,
     k: usize,
     stage_id: i32,
     block_mode: BlockMode,
     ctx: &mut ValidationContext,
 ) {
-    let StorageTerm {
-        accessor,
-        hydro_id,
-        boundary,
-    } = term;
     let (StorageRef::Initial(block_id) | StorageRef::Final(block_id)) = boundary;
 
     if let Some(b) = block_id
         && b >= k
     {
-        let rendered = block_term(accessor, hydro_id, b);
+        let rendered = variable_call(variable);
         add_constraint_error(
             ctx,
+            &rules::SEMANTIC_GENERIC_PER_BLOCK_REFERENCE_UNRESOLVABLE,
             constraint,
             format!(
                 "Constraint \"{}\": per-block storage reference `{rendered}` at \
@@ -420,9 +400,10 @@ fn validate_storage_ref(
                 StorageRef::Final(_) => boundary_is_interior(b + 1, k),
             };
             if interior {
-                let rendered = block_term(accessor, hydro_id, b);
+                let rendered = variable_call(variable);
                 add_constraint_error(
                     ctx,
+                    &rules::SEMANTIC_GENERIC_PER_BLOCK_REFERENCE_UNRESOLVABLE,
                     constraint,
                     format!(
                         "Constraint \"{}\": per-block storage reference `{rendered}` at \
@@ -442,6 +423,133 @@ fn boundary_is_interior(k: usize, num_blocks: usize) -> bool {
     k > 0 && k < num_blocks
 }
 
+fn is_stage_volume(variable: &VariableRef) -> bool {
+    matches!(
+        variable,
+        VariableRef::HydroOutflowVolume { .. }
+            | VariableRef::HydroDiversionVolume { .. }
+            | VariableRef::PumpingVolume { .. }
+    )
+}
+
+/// Block-independent is not enough: evaporation and the anticipated decision are not amounts.
+fn is_stage_amount(variable: &VariableRef) -> bool {
+    match variable {
+        VariableRef::HydroOutflowVolume { .. }
+        | VariableRef::HydroDiversionVolume { .. }
+        | VariableRef::PumpingVolume { .. }
+        | VariableRef::HydroStorage { .. } => true,
+        VariableRef::HydroStorageInitial { block_id, .. }
+        | VariableRef::HydroStorageFinal { block_id, .. }
+        | VariableRef::HydroUsefulVolumeInitial { block_id, .. }
+        | VariableRef::HydroUsefulVolumeFinal { block_id, .. } => block_id.is_none(),
+        VariableRef::HydroTurbined { .. }
+        | VariableRef::HydroSpillage { .. }
+        | VariableRef::HydroDiversion { .. }
+        | VariableRef::HydroOutflow { .. }
+        | VariableRef::HydroGeneration { .. }
+        | VariableRef::HydroEvaporation { .. }
+        | VariableRef::HydroWithdrawal { .. }
+        | VariableRef::HydroInflow { .. }
+        | VariableRef::ThermalGeneration { .. }
+        | VariableRef::LineDirect { .. }
+        | VariableRef::LineReverse { .. }
+        | VariableRef::LineExchange { .. }
+        | VariableRef::BusDeficit { .. }
+        | VariableRef::BusExcess { .. }
+        | VariableRef::PumpingFlow { .. }
+        | VariableRef::PumpingPower { .. }
+        | VariableRef::ContractImport { .. }
+        | VariableRef::ContractExport { .. }
+        | VariableRef::NonControllableGeneration { .. }
+        | VariableRef::NonControllableCurtailment { .. }
+        | VariableRef::AnticipatedDecision { .. } => false,
+    }
+}
+
+/// Rules 56, 57 and 58. Layer 5a — refuses, beside a stage-volume term, every term that is not a
+/// block-free stage amount, every `per_stage_block` parameter a coefficient or bound reads,
+/// directly or through expression parameters, and every bounds row that names a `block_id`.
+/// The first two refusals do not depend on the constraint's bounds rows.
+pub(super) fn check_stage_volume_constraints(data: &ParsedData, ctx: &mut ValidationContext) {
+    let parameters: HashMap<EntityId, &ScalarParameter> =
+        data.scalar_parameters.iter().map(|p| (p.id, p)).collect();
+    let mut volume_constraints: BTreeMap<i32, &str> = BTreeMap::new();
+    for constraint in &data.generic_constraints {
+        let terms = &constraint.expression.terms;
+        if !terms.iter().any(|t| is_stage_volume(&t.variable)) {
+            continue;
+        }
+        volume_constraints.insert(constraint.id.0, &constraint.name);
+        let sources = data
+            .generic_constraint_named_sources
+            .get(&constraint.id)
+            .map_or(&[][..], Vec::as_slice);
+        for term in terms.iter().filter(|t| !is_stage_amount(&t.variable)) {
+            let introduced_by: Vec<&str> = sources
+                .iter()
+                .filter(|source| source.variables.contains(&term.variable))
+                .map(|source| source.name.as_str())
+                .collect();
+            let origin = if introduced_by.is_empty() {
+                String::new()
+            } else {
+                format!(" (from @{})", introduced_by.join(", @"))
+            };
+            add_constraint_error(
+                ctx,
+                &rules::SEMANTIC_GENERIC_STAGE_VOLUME_NON_AMOUNT_TERM,
+                constraint,
+                format!(
+                    "Constraint \"{}\": `{}`{origin} cannot appear beside a stage-volume term; \
+                     such a constraint takes only stage volumes, hydro_storage, and \
+                     hydro_storage_* or hydro_useful_volume_* without a block argument",
+                    constraint.name,
+                    variable_call(&term.variable),
+                ),
+            );
+        }
+        let reached =
+            expand_expression_parameters(constraint.parameter_ids(), &data.scalar_parameters);
+        for parameter in reached
+            .iter()
+            .filter_map(|id| parameters.get(id))
+            .filter(|p| matches!(p.kind, ParameterKind::PerStageBlock { .. }))
+        {
+            add_constraint_error(
+                ctx,
+                &rules::SEMANTIC_GENERIC_STAGE_VOLUME_PER_BLOCK_PARAMETER,
+                constraint,
+                format!(
+                    "Constraint \"{}\": parameter `@{}` is per_stage_block; a constraint \
+                     with a stage-volume term takes no coefficient or bound that varies \
+                     by block",
+                    constraint.name, parameter.name,
+                ),
+            );
+        }
+    }
+    for row in &data.generic_constraint_bounds {
+        let (Some(name), Some(block)) = (volume_constraints.get(&row.constraint_id), row.block_id)
+        else {
+            continue;
+        };
+        ctx.emit(
+            &rules::SEMANTIC_GENERIC_STAGE_VOLUME_BLOCK_BOUND_ROW,
+            "constraints/generic_constraint_bounds.parquet",
+            Some(format!(
+                "constraint_id={}, stage_id={}",
+                row.constraint_id, row.stage_id
+            )),
+            format!(
+                "Constraint \"{name}\": the bounds row at stage_id={} has block_id={block}; a \
+                 constraint with a stage-volume term takes one row per stage with a null block_id",
+                row.stage_id,
+            ),
+        );
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
@@ -452,9 +560,11 @@ mod tests {
     };
 
     use super::super::validate_semantic_hydro_thermal;
-    use super::check_productivity_tag_pairing;
+    use super::{check_productivity_tag_pairing, check_stage_volume_constraints};
     use crate::ValidationEntry;
     use crate::constraints::GenericConstraintBoundsRow;
+    use crate::expression::catalog::{build_variable_ref, variable_call};
+    use crate::expression::lower::NamedSource;
     use crate::test_support::*;
     use crate::validation::schema::ParsedData;
     use crate::validation::{ErrorKind, ValidationContext};
@@ -1370,5 +1480,450 @@ mod tests {
         check_productivity_tag_pairing(&data, &mut ctx);
 
         assert!(ctx.warnings().is_empty());
+    }
+
+    const VOLUME_REFUSAL_TAIL: &str = "cannot appear beside a stage-volume term; such a constraint \
+         takes only stage volumes, hydro_storage, and hydro_storage_* or \
+         hydro_useful_volume_* without a block argument";
+
+    fn volume_refusal(call: &str) -> String {
+        format!("Constraint \"volume_constraint\": `{call}` {VOLUME_REFUSAL_TAIL}")
+    }
+
+    fn volume_constraint_data(terms: Vec<(f64, VariableRef)>) -> ParsedData {
+        make_data_with_constraint(
+            vec![],
+            GenericConstraint {
+                id: EntityId::from(1),
+                name: "volume_constraint".to_string(),
+                description: None,
+                expression: ConstraintExpression {
+                    terms: terms
+                        .into_iter()
+                        .map(|(coefficient, variable)| LinearTerm::literal(coefficient, variable))
+                        .collect(),
+                },
+                slack: None,
+                bound_lower: None,
+                bound_upper: None,
+            },
+        )
+    }
+
+    fn outflow_volume() -> VariableRef {
+        VariableRef::HydroOutflowVolume {
+            hydro_id: EntityId::from(1),
+        }
+    }
+
+    fn volume_refusal_entries(data: &ParsedData) -> Vec<ValidationEntry> {
+        let mut ctx = ValidationContext::new();
+        check_stage_volume_constraints(data, &mut ctx);
+        ctx.errors().into_iter().cloned().collect()
+    }
+
+    #[test]
+    fn stage_volume_constraint_refuses_each_non_amount_term() {
+        let data = volume_constraint_data(vec![
+            (1.0, outflow_volume()),
+            (
+                1.0,
+                VariableRef::HydroTurbined {
+                    hydro_id: EntityId::from(1),
+                    block_id: Some(0),
+                    bus_id: None,
+                },
+            ),
+            (-1.0, final_(Some(0))),
+        ]);
+        let entries = volume_refusal_entries(&data);
+        let messages: Vec<&str> = entries.iter().map(|e| e.message.as_str()).collect();
+        assert_eq!(
+            messages,
+            [
+                volume_refusal("hydro_turbined(1, 0)"),
+                volume_refusal("hydro_storage_final(1, 0)"),
+            ]
+        );
+        for entry in &entries {
+            assert_eq!(entry.kind, ErrorKind::BusinessRuleViolation);
+            assert_eq!(
+                entry.file.to_string_lossy(),
+                "constraints/generic_constraints.json"
+            );
+            assert_eq!(entry.entity.as_deref(), Some("constraint[id=1]"));
+        }
+    }
+
+    #[test]
+    fn stage_volume_refusal_names_the_named_expression_that_introduced_the_term() {
+        let turbined = VariableRef::HydroTurbined {
+            hydro_id: EntityId::from(1),
+            block_id: None,
+            bus_id: None,
+        };
+        let elsewhere = VariableRef::ThermalGeneration {
+            thermal_id: EntityId::from(1),
+            block_id: None,
+        };
+        let source = |name: &str, variables: Vec<VariableRef>| NamedSource {
+            name: name.to_owned(),
+            variables,
+        };
+        let messages = |data: &ParsedData| -> Vec<String> {
+            volume_refusal_entries(data)
+                .into_iter()
+                .map(|e| e.message)
+                .collect()
+        };
+        let named = |from: &str| {
+            format!(
+                "Constraint \"volume_constraint\": `hydro_turbined(1)` ({from}) \
+                 {VOLUME_REFUSAL_TAIL}"
+            )
+        };
+        let mut data = volume_constraint_data(vec![(1.0, outflow_volume()), (1.0, turbined)]);
+        assert_eq!(messages(&data), [volume_refusal("hydro_turbined(1)")]);
+
+        data.generic_constraint_named_sources
+            .insert(EntityId::from(1), vec![source("f", vec![turbined])]);
+        assert_eq!(messages(&data), [named("from @f")]);
+
+        data.generic_constraint_named_sources.insert(
+            EntityId::from(1),
+            vec![
+                source("f", vec![turbined]),
+                source("g", vec![turbined]),
+                source("h", vec![elsewhere]),
+            ],
+        );
+        assert_eq!(messages(&data), [named("from @f, @g")]);
+    }
+
+    #[test]
+    fn stage_volume_constraint_refuses_every_other_variable_form() {
+        const NON_AMOUNT_NAMES: [&str; 21] = [
+            "hydro_withdrawal",
+            "hydro_evaporation",
+            "hydro_inflow",
+            "hydro_turbined",
+            "hydro_spillage",
+            "hydro_diversion",
+            "hydro_outflow",
+            "hydro_generation",
+            "thermal_generation",
+            "line_direct",
+            "line_reverse",
+            "line_exchange",
+            "bus_deficit",
+            "bus_excess",
+            "pumping_flow",
+            "pumping_power",
+            "contract_import",
+            "contract_export",
+            "non_controllable_generation",
+            "non_controllable_curtailment",
+            "anticipated_decision",
+        ];
+        const BOUNDARY_NAMES: [&str; 4] = [
+            "hydro_storage_initial",
+            "hydro_storage_final",
+            "hydro_useful_volume_initial",
+            "hydro_useful_volume_final",
+        ];
+        let build = |name: &str, block: Option<usize>| {
+            build_variable_ref(name, EntityId::from(1), block, None).unwrap()
+        };
+        let refused: Vec<VariableRef> = NON_AMOUNT_NAMES
+            .iter()
+            .map(|name| build(name, None))
+            .chain(BOUNDARY_NAMES.iter().map(|name| build(name, Some(0))))
+            .collect();
+
+        for variable in refused {
+            let call = variable_call(&variable);
+            let data = volume_constraint_data(vec![(1.0, outflow_volume()), (1.0, variable)]);
+            let messages: Vec<String> = volume_refusal_entries(&data)
+                .into_iter()
+                .map(|e| e.message)
+                .collect();
+            assert_eq!(messages, [volume_refusal(&call)], "{call}");
+        }
+    }
+
+    #[test]
+    fn stage_volume_constraint_accepts_volume_and_block_free_storage_terms() {
+        let id = EntityId::from(1);
+        for terms in [
+            vec![
+                (1.0, outflow_volume()),
+                (1.0, VariableRef::HydroDiversionVolume { hydro_id: id }),
+                (-1.0, VariableRef::HydroStorage { hydro_id: id }),
+                (1.0, useful_initial(None)),
+            ],
+            vec![
+                (1.0, VariableRef::PumpingVolume { station_id: id }),
+                (1.0, initial(None)),
+                (1.0, final_(None)),
+                (1.0, useful_final(None)),
+            ],
+        ] {
+            let data = volume_constraint_data(terms);
+            assert!(data.generic_constraint_bounds.is_empty());
+            let entries = volume_refusal_entries(&data);
+            assert!(entries.is_empty(), "{entries:?}");
+        }
+    }
+
+    #[test]
+    fn constraint_without_stage_volume_term_is_not_checked() {
+        let data = volume_constraint_data(vec![
+            (
+                1.0,
+                VariableRef::HydroTurbined {
+                    hydro_id: EntityId::from(1),
+                    block_id: None,
+                    bus_id: None,
+                },
+            ),
+            (1.0, final_(Some(0))),
+        ]);
+        let entries = volume_refusal_entries(&data);
+        assert!(entries.is_empty(), "{entries:?}");
+    }
+
+    fn per_block_refusal(parameter: &str) -> String {
+        format!(
+            "Constraint \"volume_constraint\": parameter `@{parameter}` is per_stage_block; \
+             a constraint with a stage-volume term takes no coefficient or bound that \
+             varies by block"
+        )
+    }
+
+    fn scalar_param(id: i32, name: &str, kind: ParameterKind) -> ScalarParameter {
+        ScalarParameter {
+            id: EntityId::from(id),
+            name: name.to_string(),
+            kind,
+        }
+    }
+
+    fn per_stage_block_param(id: i32, name: &str) -> ScalarParameter {
+        scalar_param(
+            id,
+            name,
+            ParameterKind::PerStageBlock {
+                values: vec![(0, 0, 1.0)],
+            },
+        )
+    }
+
+    fn one_term_constraint_data(
+        parameters: Vec<ScalarParameter>,
+        coefficient: ScalarExpr,
+        variable: VariableRef,
+        bound_upper: Option<ScalarExpr>,
+    ) -> ParsedData {
+        make_data_with_constraint(
+            parameters,
+            GenericConstraint {
+                id: EntityId::from(1),
+                name: "volume_constraint".to_string(),
+                description: None,
+                expression: ConstraintExpression {
+                    terms: vec![LinearTerm {
+                        coefficient,
+                        variable,
+                    }],
+                },
+                slack: None,
+                bound_lower: None,
+                bound_upper,
+            },
+        )
+    }
+
+    #[test]
+    fn stage_volume_constraint_refuses_a_per_stage_block_parameter() {
+        let data = one_term_constraint_data(
+            vec![per_stage_block_param(1, "k")],
+            ScalarExpr::param(EntityId::from(1)),
+            outflow_volume(),
+            None,
+        );
+        let entries = volume_refusal_entries(&data);
+        let messages: Vec<&str> = entries.iter().map(|e| e.message.as_str()).collect();
+        assert_eq!(messages, [per_block_refusal("k")]);
+        assert_eq!(entries[0].kind, ErrorKind::BusinessRuleViolation);
+        assert_eq!(
+            entries[0].file.to_string_lossy(),
+            "constraints/generic_constraints.json"
+        );
+        assert_eq!(entries[0].entity.as_deref(), Some("constraint[id=1]"));
+    }
+
+    #[test]
+    fn stage_volume_constraint_refuses_a_per_stage_block_parameter_once_however_reached() {
+        let k = ScalarExpr::param(EntityId::from(1));
+        let e = ScalarExpr::param(EntityId::from(2));
+        let one = ScalarExpr::literal(1.0);
+        for (case, coefficient, bound_upper) in [
+            ("coefficient is an expression reading @k", e, None),
+            ("bound_upper is @k", one, Some(k.clone())),
+            (
+                "coefficient and bound_upper both read @k",
+                k.clone(),
+                Some(k.clone()),
+            ),
+        ] {
+            let data = one_term_constraint_data(
+                vec![
+                    per_stage_block_param(1, "k"),
+                    expression_scalar_param(2, "e", k.clone() * ScalarExpr::literal(2.0)),
+                ],
+                coefficient,
+                outflow_volume(),
+                bound_upper,
+            );
+            let messages: Vec<String> = volume_refusal_entries(&data)
+                .into_iter()
+                .map(|entry| entry.message)
+                .collect();
+            assert_eq!(messages, [per_block_refusal("k")], "{case}");
+        }
+    }
+
+    #[test]
+    fn per_stage_parameter_in_a_stage_volume_constraint_is_accepted() {
+        let k = ScalarExpr::param(EntityId::from(1));
+        let per_stage = one_term_constraint_data(
+            vec![scalar_param(
+                1,
+                "p",
+                ParameterKind::PerStage { values: vec![1.0] },
+            )],
+            k.clone(),
+            outflow_volume(),
+            None,
+        );
+        let no_volume_term = one_term_constraint_data(
+            vec![per_stage_block_param(1, "k")],
+            k,
+            VariableRef::HydroTurbined {
+                hydro_id: EntityId::from(1),
+                block_id: None,
+                bus_id: None,
+            },
+            None,
+        );
+        for data in [per_stage, no_volume_term] {
+            let entries = volume_refusal_entries(&data);
+            assert!(entries.is_empty(), "{entries:?}");
+        }
+    }
+
+    #[test]
+    fn stage_volume_refusal_runs_in_the_semantic_layer() {
+        let data = volume_constraint_data(vec![
+            (1.0, outflow_volume()),
+            (
+                1.0,
+                VariableRef::HydroTurbined {
+                    hydro_id: EntityId::from(1),
+                    block_id: Some(0),
+                    bus_id: None,
+                },
+            ),
+            (-1.0, final_(Some(0))),
+        ]);
+        let mut ctx = ValidationContext::new();
+        validate_semantic_hydro_thermal(&data, &mut ctx);
+        let messages: Vec<&str> = ctx
+            .errors()
+            .into_iter()
+            .map(|e| e.message.as_str())
+            .filter(|m| m.contains(VOLUME_REFUSAL_TAIL))
+            .collect();
+        assert_eq!(
+            messages,
+            [
+                volume_refusal("hydro_turbined(1, 0)"),
+                volume_refusal("hydro_storage_final(1, 0)"),
+            ]
+        );
+    }
+
+    fn bounds_row(
+        stage_id: i32,
+        block_id: Option<i32>,
+        bound_lower: Option<f64>,
+        bound_upper: Option<f64>,
+    ) -> GenericConstraintBoundsRow {
+        GenericConstraintBoundsRow {
+            constraint_id: 1,
+            stage_id,
+            block_id,
+            bound_lower,
+            bound_upper,
+        }
+    }
+
+    fn block_bound_refusal(stage_id: i32, block_id: i32) -> String {
+        format!(
+            "Constraint \"volume_constraint\": the bounds row at stage_id={stage_id} has \
+             block_id={block_id}; a constraint with a stage-volume term takes one row per \
+             stage with a null block_id"
+        )
+    }
+
+    #[test]
+    fn stage_volume_constraint_refuses_each_bounds_row_with_a_block_id() {
+        let mut data = volume_constraint_data(vec![(1.0, outflow_volume())]);
+        data.generic_constraint_bounds = vec![
+            bounds_row(0, None, Some(9.0), Some(9.0)),
+            bounds_row(0, Some(1), None, Some(9.0)),
+            bounds_row(0, Some(2), Some(1.0), None),
+        ];
+        let entries = volume_refusal_entries(&data);
+        let messages: Vec<&str> = entries.iter().map(|e| e.message.as_str()).collect();
+        assert_eq!(
+            messages,
+            [block_bound_refusal(0, 1), block_bound_refusal(0, 2)]
+        );
+        for entry in &entries {
+            assert_eq!(entry.kind, ErrorKind::BusinessRuleViolation);
+            assert_eq!(
+                entry.file.to_string_lossy(),
+                "constraints/generic_constraint_bounds.parquet"
+            );
+            assert_eq!(entry.entity.as_deref(), Some("constraint_id=1, stage_id=0"));
+        }
+    }
+
+    #[test]
+    fn stage_volume_constraint_accepts_null_block_bounds_rows_of_every_shape() {
+        let mut data = volume_constraint_data(vec![(1.0, outflow_volume())]);
+        data.generic_constraint_bounds = vec![
+            bounds_row(0, None, Some(1.0), None),
+            bounds_row(1, None, None, Some(2.0)),
+            bounds_row(2, None, Some(3.0), Some(3.0)),
+        ];
+        let entries = volume_refusal_entries(&data);
+        assert!(entries.is_empty(), "{entries:?}");
+    }
+
+    #[test]
+    fn block_bounds_row_of_a_constraint_without_a_stage_volume_term_is_accepted() {
+        let mut data = volume_constraint_data(vec![(
+            1.0,
+            VariableRef::HydroTurbined {
+                hydro_id: EntityId::from(1),
+                block_id: None,
+                bus_id: None,
+            },
+        )]);
+        data.generic_constraint_bounds = vec![bounds_row(0, Some(0), None, Some(5.0))];
+        let entries = volume_refusal_entries(&data);
+        assert!(entries.is_empty(), "{entries:?}");
     }
 }

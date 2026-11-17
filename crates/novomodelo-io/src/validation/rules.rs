@@ -128,7 +128,7 @@ declare_rules! {
         "A case input file cannot be parsed (invalid JSON syntax or an unreadable Parquet header)";
     SCHEMA_FILE_NONCONFORMING = "schema.3",
         Schema, SchemaViolation, Error,
-        "A case input file does not conform to its schema (a missing field, a wrong type or an out-of-range value)";
+        "A case input file does not conform to its schema (a missing field, an unknown Parquet column, a wrong type or an out-of-range value)";
     REFERENTIAL_UNDECLARED_ENTITY = "referential.1",
         Referential, InvalidReference, Error,
         "An entity field references an entity id that no registry declares";
@@ -179,7 +179,7 @@ declare_rules! {
         "The correlation schedule names a profile that is not defined";
     DIMENSIONAL_FPHA_HYPERPLANES = "dimensional.6",
         Dimensional, DimensionMismatch, Error,
-        "An FPHA-configured hydro with turbine capacity has no rows in fpha_hyperplanes.parquet";
+        "An FPHA-configured hydro with positive max_turbined_m3s and max_generation_mw has no rows in fpha_hyperplanes.parquet";
     DIMENSIONAL_GEOMETRY_ROWS = "dimensional.7",
         Dimensional, DimensionMismatch, Error,
         "An FPHA hydro has no hydro_geometry.parquet rows";
@@ -328,6 +328,45 @@ declare_rules! {
     SEMANTIC_INITIAL_STORAGE_OUTSIDE_FIRST_STAGE_BOUNDS = "semantic.5a.55",
         Semantic, ModelQuality, Warning,
         "A hydro's initial storage lies outside the storage bounds at the end of its first operating stage";
+    SEMANTIC_GENERIC_STAGE_VOLUME_NON_AMOUNT_TERM = "semantic.5a.56",
+        Semantic, BusinessRuleViolation, Error,
+        "A generic constraint with a stage-volume term also has a term that is not a block-free stage amount";
+    SEMANTIC_GENERIC_STAGE_VOLUME_PER_BLOCK_PARAMETER = "semantic.5a.57",
+        Semantic, BusinessRuleViolation, Error,
+        "A generic constraint with a stage-volume term reads a per_stage_block parameter in a coefficient or bound";
+    SEMANTIC_GENERIC_STAGE_VOLUME_BLOCK_BOUND_ROW = "semantic.5a.58",
+        Semantic, BusinessRuleViolation, Error,
+        "A generic_constraint_bounds.parquet row gives a block_id to a constraint with a stage-volume term";
+    POST_STUDY_LEGACY_FORMAT_DEPRECATED = "semantic.5a.59",
+        Semantic, ModelQuality, Warning,
+        "post_study_stages.json uses the deprecated stages key, or a deck declaring a travel-time arc has no post_study_stages.json";
+    POST_STUDY_MIXED_FORMAT = "semantic.5a.60",
+        Semantic, BusinessRuleViolation, Error,
+        "post_study_stages.json declares stages together with thermal_stages or water_bucket_stages";
+    POST_STUDY_WATER_CALENDAR_MISSING = "semantic.5a.61",
+        Semantic, BusinessRuleViolation, Error,
+        "A current-format post_study_stages.json on a deck declaring a travel-time arc has no water_bucket_stages key";
+    POST_STUDY_WATER_CALENDAR_SHORT = "semantic.5a.62",
+        Semantic, BusinessRuleViolation, Error,
+        "The declared water_bucket_stages calendar covers fewer hours than the deepest travel-time arc";
+    POST_STUDY_THERMAL_PAIR_INCOMPLETE = "semantic.5a.63",
+        Semantic, BusinessRuleViolation, Error,
+        "post_study_stages.json declares one of thermal_stages and thermal_bounds without the other; the two must be declared together";
+    POST_STUDY_WATER_CALENDAR_UNUSED = "semantic.5a.64",
+        Semantic, ModelQuality, Warning,
+        "A current-format post_study_stages.json declares water_bucket_stages on a deck with no travel-time arc, so the key has no effect";
+    POST_STUDY_THERMAL_CALENDAR_UNUSED = "semantic.5a.65",
+        Semantic, ModelQuality, Warning,
+        "A current-format post_study_stages.json declares thermal_stages on a deck with no anticipated thermal, so the key has no effect";
+    SEMANTIC_FPHA_GEOMETRY_DOES_NOT_COVER_STORAGE = "semantic.5a.66",
+        Semantic, BusinessRuleViolation, Error,
+        "A computed-FPHA hydro's hydro_geometry.parquet volumes do not cover its storage range";
+    SEMANTIC_HARD_STORAGE_FLOOR_RISES = "semantic.5a.67",
+        Semantic, ModelQuality, Warning,
+        "A hydro's minimum storage rises above the previous stage's floor, which a stage with too little inflow cannot reach";
+    SEMANTIC_BOUND_ROW_WIDENS_RESERVOIR_RANGE = "semantic.5a.68",
+        Semantic, InvalidValue, Error,
+        "A hydro_bounds row sets max_storage_hm3 above the reservoir's max_storage_hm3 or min_storage_hm3 below its min_storage_hm3";
     TRAVEL_TIME_INVALID = "travel_time.1",
         Semantic, InvalidValue, Error,
         "A hydro's travel_time_hours is negative or not finite";
@@ -411,7 +450,7 @@ declare_rules! {
         "A defined season has no inflow history observation while estimation is active and the training inflow scheme is not external";
     SEMANTIC_SEASON_DURATION_SPREAD = "semantic.5b.29",
         Semantic, BusinessRuleViolation, Error,
-        "Stages that share a season_id differ in duration by more than the sub-period tolerance";
+        "A stage shares a season_id with stages of another duration and is neither the season's whole period nor a slice of it";
     SEMANTIC_SEASON_UNREFERENCED = "semantic.5b.30",
         Semantic, ModelQuality, Warning,
         "A season defined in season_definitions is referenced by no stage";
@@ -487,6 +526,15 @@ declare_rules! {
     SEMANTIC_STAGE_BLOCKS = "semantic.5b.52",
         Semantic, InvalidValue, Error,
         "A study stage declares no block, or a block whose duration_hours is not finite and positive";
+    SEMANTIC_ESTIMATION_HISTORY_YEARS_OUTSIDE_HISTORY = "semantic.5b.53",
+        Semantic, BusinessRuleViolation, Error,
+        "Estimation from inflow history is required but estimation.history_years reaches before the first or past the last year of the history";
+    SEMANTIC_FPHA_PRICE_NOT_ABOVE_DEFICIT_PLUS_GENERATION = "semantic.5b.54",
+        Semantic, ModelQuality, Warning,
+        "An FPHA hydro's fpha_violation_cost does not exceed the maximum deficit-segment cost plus its generation_violation_below_cost (all $/MWh)";
+    SEMANTIC_FPHA_PRECOMPUTED_PLANE_NEGATIVE_AT_ZERO_TURBINING = "semantic.5b.55",
+        Semantic, ModelQuality, Warning,
+        "A precomputed FPHA plane falls below 0 MW with no turbined flow for some spillage up to the spillage fit maximum at the fitting window's lowest storage";
     PRODUCTIVITY_SUPPLIED_TWICE = "productivity_resolution.1",
         ProductivityResolution, SchemaViolation, Error,
         "A hydro's stage productivity is supplied by both hydro_production_models.json and hydro_energy_productivity.parquet";

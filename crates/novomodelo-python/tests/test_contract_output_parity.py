@@ -153,7 +153,7 @@ def test_study_simulate_emits_contract_output_with_schema(
     Parquet schema equal to exactly the 8 contract fields, and a non-empty read
     through `novomodelo.results(entity_type="contracts")`.
     """
-    import novomodelo  # noqa: PLC0415
+    import novomodelo
 
     assert CONTRACT_CASE.is_dir(), (
         f"the D41 energy-contracts fixture must exist at {CONTRACT_CASE}"
@@ -212,7 +212,7 @@ def test_run_via_study_emits_contract_output(tmp_path: pathlib.Path) -> None:
     produce simulation/contracts/.../data.parquet identically to Study.simulate
     (both converge on the shared write_simulation_results call).
     """
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     assert CONTRACT_CASE.is_dir(), (
         f"the D41 energy-contracts fixture must exist at {CONTRACT_CASE}"
@@ -249,7 +249,7 @@ def test_cli_python_contract_row_parity(
     end-to-end Python-parity check: if the CLI and Python paths diverge between the
     LP solve and the Parquet write, this fails.
     """
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     assert CONTRACT_CASE.is_dir(), (
         f"the D41 energy-contracts fixture must exist at {CONTRACT_CASE}"
@@ -287,7 +287,7 @@ def test_cli_python_contract_row_parity(
 
     mismatches = [
         f"  row {idx}:\n    CLI: {cli}\n    PY : {py}"
-        for idx, (cli, py) in enumerate(zip(cli_rows, py_rows))
+        for idx, (cli, py) in enumerate(zip(cli_rows, py_rows, strict=True))
         if not _rows_equal(cli, py)
     ]
     assert not mismatches, (
@@ -305,7 +305,7 @@ def test_zero_contract_study_emits_no_contract_output(
     is symmetric, so a regression that always created the directory (an empty
     partition) would fail here.
     """
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     assert ZERO_CONTRACT_CASE.is_dir(), (
         f"the zero-contract case must exist at {ZERO_CONTRACT_CASE}"

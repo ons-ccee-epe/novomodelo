@@ -20,7 +20,6 @@ import re
 import shutil
 
 import pytest
-
 from test_policy_load_validation import (
     _copy_case_with_renamed_hydro,
     _restamp_policy_version,
@@ -58,7 +57,7 @@ def test_boundary_load_reports_source_date_and_reconciliation(
     """A compatible self-boundary load reports the source, priced date, and
     cut count, then the reconciliation summary, on stderr.
     """
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     source_output = tmp_path / "source"
     novomodelo.run.run(VALID_CASE, output_dir=str(source_output))
@@ -97,7 +96,7 @@ def test_boundary_load_strict_accepts_a_faithful_self_boundary(
     superset of itself, so it loads cleanly and still reports the
     reconciliation summary on stderr.
     """
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     source_output = tmp_path / "strict_source"
     novomodelo.run.run(VALID_CASE, output_dir=str(source_output))
@@ -125,8 +124,8 @@ def test_boundary_load_rejects_a_mismatched_source(tmp_path: pathlib.Path) -> No
     """A source checkpoint naming a different hydro raises `ValidationError`,
     naming the offending hydro in the message.
     """
-    import novomodelo.errors  # noqa: PLC0415
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.errors
+    import novomodelo.run
 
     source_output = tmp_path / "source"
     novomodelo.run.run(VALID_CASE, output_dir=str(source_output))
@@ -159,10 +158,10 @@ def test_boundary_load_rejects_an_undated_checkpoint_with_validation_error(
     """A boundary source whose every pool carries the undated sentinel is
     refused with `ValidationError` once the run applies its policy mode.
     """
-    import novomodelo  # noqa: PLC0415
-    import novomodelo.errors  # noqa: PLC0415
-    import novomodelo.results  # noqa: PLC0415
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo
+    import novomodelo.errors
+    import novomodelo.results
+    import novomodelo.run
 
     source_output = tmp_path / "source"
     novomodelo.run.run(VALID_CASE, output_dir=str(source_output))
@@ -202,9 +201,9 @@ def test_boundary_load_rejects_a_source_written_by_another_version(
     same-version self-boundary is
     `test_boundary_load_reports_source_date_and_reconciliation`).
     """
-    import novomodelo  # noqa: PLC0415
-    import novomodelo.errors  # noqa: PLC0415
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo
+    import novomodelo.errors
+    import novomodelo.run
 
     source_output = tmp_path / "source"
     novomodelo.run.run(VALID_CASE, output_dir=str(source_output))

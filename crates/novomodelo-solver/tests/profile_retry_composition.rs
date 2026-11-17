@@ -46,7 +46,6 @@ mod tests {
             objective: vec![1.0, 1.0],
             row_lower: vec![],
             row_upper: vec![],
-            n_state: 0,
             col_scale: vec![],
             row_scale: vec![],
         }
@@ -453,7 +452,6 @@ mod tests {
             presolve: PresolveKind::Off,
             simplex_update_limit: 1000,
             cost_perturbation: 1.0,
-            refactor_error_tolerance: 1e-5,
             factor_pivot_threshold: 0.2,
             use_warm_start: false,
             steepest_edge_devex_fallback_threshold: 20.0,
@@ -488,9 +486,6 @@ mod tests {
         let cost_perturbation = solver
             .get_double_option(c"dual_simplex_cost_perturbation_multiplier")
             .expect("dual_simplex_cost_perturbation_multiplier must be readable");
-        let refactor_error_tolerance = solver
-            .get_double_option(c"rebuild_refactor_solution_error_tolerance")
-            .expect("rebuild_refactor_solution_error_tolerance must be readable");
         let factor_pivot_threshold = solver
             .get_double_option(c"factor_pivot_threshold")
             .expect("factor_pivot_threshold must be readable");
@@ -530,11 +525,6 @@ mod tests {
             (cost_perturbation - profile.cost_perturbation).abs() < 1e-20,
             "cost_perturbation must survive the finalization seam; expected {}, got {cost_perturbation}",
             profile.cost_perturbation
-        );
-        assert!(
-            (refactor_error_tolerance - profile.refactor_error_tolerance).abs() < 1e-20,
-            "refactor_error_tolerance must survive the finalization seam; expected {}, got {refactor_error_tolerance}",
-            profile.refactor_error_tolerance
         );
         assert!(
             (factor_pivot_threshold - profile.factor_pivot_threshold).abs() < 1e-20,
@@ -614,6 +604,7 @@ mod tests {
         fn load_model(&mut self, _t: &StageTemplate) {}
         fn add_rows(&mut self, _r: &RowBatch) {}
         fn set_row_bounds(&mut self, _i: &[usize], _l: &[f64], _u: &[f64]) {}
+        fn set_row_lower_bounds_range(&mut self, _first_row: usize, _lower: &[f64]) {}
         fn set_col_bounds(&mut self, _i: &[usize], _l: &[f64], _u: &[f64]) {}
         fn solve(&mut self, _b: Option<&Basis>) -> Result<SolutionView<'_>, SolverError> {
             Err(SolverError::InternalError {
@@ -656,7 +647,6 @@ mod tests {
             presolve: PresolveKind::Off,
             simplex_update_limit: 1000,
             cost_perturbation: 1.0,
-            refactor_error_tolerance: 1e-5,
             factor_pivot_threshold: 0.2,
             use_warm_start: false,
             steepest_edge_devex_fallback_threshold: 20.0,

@@ -124,7 +124,6 @@ pub(crate) fn encode_lp_facts(templates: &[StageTemplate], groups: &mut FactGrou
             objective,
             row_lower,
             row_upper,
-            n_state,
             col_scale,
             row_scale,
         } = template;
@@ -133,7 +132,6 @@ pub(crate) fn encode_lp_facts(templates: &[StageTemplate], groups: &mut FactGrou
         put_usize(dims, stage);
         put_usize(dims, *num_cols);
         put_usize(dims, *num_rows);
-        put_usize(dims, *n_state);
 
         let sparsity = group(groups, "lp.sparsity");
         put_usize(sparsity, stage);
@@ -269,6 +267,7 @@ fn put_geometry(buf: &mut Vec<u8>, geometry: &StageGeometry, state: &StateSpace)
         filling_target_col,
         filled_min_storage_floor,
         filled_min_storage_floor_col,
+        fpha_slack,
         plant_max_turbine,
         plant_max_generation,
         n_blks,
@@ -317,10 +316,10 @@ fn put_geometry(buf: &mut Vec<u8>, geometry: &StageGeometry, state: &StateSpace)
     put_range(buf, filling_target_col);
     put_range(buf, filled_min_storage_floor);
     put_range(buf, filled_min_storage_floor_col);
+    put_range(buf, fpha_slack);
     put_range(buf, plant_max_turbine);
     put_range(buf, plant_max_generation);
 
-    put_usize(buf, state.z_inflow_rows().start);
     put_usize(buf, *n_blks);
 
     put_usize(buf, state.storage_in.start);
@@ -354,11 +353,14 @@ pub(crate) fn encode_stage_templates_facts(
     let StageTemplates {
         templates,
         state_boxes,
+        pre_scaling_templates: _,
+        row_families: _,
         block_hours_per_stage,
         cost_scale_factor,
         load_bus_indices,
         generic_constraint_row_entries,
         geometry_per_stage,
+        inflow_coupling_per_stage,
         diversion_upstream,
         hydro_productivities_per_stage,
     } = templates;
@@ -397,6 +399,27 @@ pub(crate) fn encode_stage_templates_facts(
     for (stage, geometry) in geometry_per_stage.iter().enumerate() {
         put_usize(geometry_buf, stage);
         put_geometry(geometry_buf, geometry, state);
+    }
+
+    let coupling_buf = group(groups, "lp.inflow_coupling");
+    for (stage, coupling) in inflow_coupling_per_stage.iter().enumerate() {
+        put_usize(coupling_buf, stage);
+        for h in 0..coupling.n_hydros() {
+            let entries: Vec<(usize, f64)> = coupling.hydro_entries(HydroSys::new(h)).collect();
+            put_usize(coupling_buf, entries.len());
+            for (row, coefficient) in entries {
+                put_usize(coupling_buf, row);
+                put_f64(coupling_buf, coefficient);
+            }
+        }
+        let touched_rows: Vec<usize> = coupling
+            .touched_rows()
+            .iter()
+            .map(|&r| r as usize)
+            .collect();
+        put_usize_slice(coupling_buf, &touched_rows);
+        put_f64_slice(coupling_buf, coupling.touched_row_lower());
+        put_f64_slice(coupling_buf, coupling.touched_row_upper());
     }
 
     let buf = group(groups, "stochastic.load_buses");
@@ -475,8 +498,13 @@ fn put_option_triple(buf: &mut Vec<u8>, value: Option<(f64, f64, f64)>) {
 /// [`TimeValue::cumulative_discount_factors`] (the prefix accessor), never
 /// recomputed, so it stays the single derivation.
 pub(crate) fn encode_time_value_facts(time_value: &TimeValue, groups: &mut FactGroups) {
-    let (discount_factors, delivery_cumulative_discount_factors, calendar, post_study) =
-        time_value.canonical_fields();
+    let (
+        discount_factors,
+        delivery_cumulative_discount_factors,
+        delivery_stage_ids,
+        calendar,
+        post_study,
+    ) = time_value.canonical_fields();
 
     put_f64_slice(
         group(groups, "time_value.discount_factors"),
@@ -493,12 +521,15 @@ pub(crate) fn encode_time_value_facts(time_value: &TimeValue, groups: &mut FactG
 
     // Dates are not LP facts; their sole LP effect, the post-study discount
     // continuation, is already digested via `post_study` below.
-    let (total_hours, stage_ids, _post_study_stages) = calendar.canonical_fields();
+    let (total_hours, _post_study_stages) = calendar.canonical_fields();
     put_f64_slice(
         group(groups, "time_value.delivery_total_hours"),
         total_hours,
     );
-    put_i32_slice(group(groups, "time_value.delivery_stage_ids"), stage_ids);
+    put_i32_slice(
+        group(groups, "time_value.delivery_stage_ids"),
+        delivery_stage_ids,
+    );
 
     let (
         post_study_cumulative_discount_factors,
@@ -605,6 +636,7 @@ mod tests {
                 "layout.pumping_cols",
                 "lp.col_bounds",
                 "lp.dims",
+                "lp.inflow_coupling",
                 "lp.objective",
                 "lp.row_bounds",
                 "lp.scaling",

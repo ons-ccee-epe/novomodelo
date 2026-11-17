@@ -1,5 +1,6 @@
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import Any, Callable, Mapping, Optional, Sequence, Union
+from typing import Any
 
 from . import errors as errors
 from . import io as io
@@ -14,12 +15,12 @@ __version__: str
 
 def version_info() -> dict[str, Any]: ...
 def write_policy_checkpoint(
-    path: Union[str, Path],
+    path: str | Path,
     stage_cuts: Sequence[Mapping[str, Any]],
     metadata: Mapping[str, Any],
-    stage_bases: Optional[Sequence[Mapping[str, Any]]] = None,
-    stage_states: Optional[Sequence[Mapping[str, Any]]] = None,
-    inflow_lag_depth: Optional[int] = None,
+    stage_bases: Sequence[Mapping[str, Any]] | None = None,
+    stage_states: Sequence[Mapping[str, Any]] | None = None,
+    inflow_lag_depth: int | None = None,
 ) -> None:
     """Write a policy checkpoint from plain Python dicts.
 
@@ -109,10 +110,10 @@ def write_policy_checkpoint(
 class Study:
     def __init__(
         self,
-        case_dir: Union[str, Path],
-        output_dir: Optional[Union[str, Path]] = None,
-        threads: Optional[int] = None,
-        config_overrides: Optional[Mapping[str, Any]] = None,
+        case_dir: str | Path,
+        output_dir: str | Path | None = None,
+        threads: int | None = None,
+        config_overrides: Mapping[str, Any] | None = None,
     ) -> None: ...
     @property
     def output_dir(self) -> str: ...
@@ -127,16 +128,16 @@ class Study:
     def validate(self) -> dict[str, Any]: ...
     def train(
         self,
-        on_iteration: Optional[Callable[[dict[str, Any]], Any]] = None,
-    ) -> "Policy": ...
+        on_iteration: Callable[[dict[str, Any]], Any] | None = None,
+    ) -> Policy: ...
     def load_policy(
         self,
-        output_dir: Optional[Union[str, Path]] = None,
-    ) -> "Policy": ...
+        output_dir: str | Path | None = None,
+    ) -> Policy: ...
     def simulate(
         self,
-        policy: "Policy",
-        output_dir: Optional[Union[str, Path]] = None,
+        policy: Policy,
+        output_dir: str | Path | None = None,
     ) -> dict[str, Any]: ...
 
 class Policy:

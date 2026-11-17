@@ -25,12 +25,14 @@ use crate::inflow_method::InflowNonNegativityMethod;
 use crate::lp::builder::LpBuildInputs;
 #[cfg(any(test, feature = "test-support"))]
 use crate::lp::builder::{StageTemplates, build_stage_templates};
+#[cfg(any(test, feature = "test-support"))]
+use crate::lp::indexer::StateSpace;
 use crate::lp::indexer::{EntityPositions, HydroCellIndex, StudyDimensions};
 use crate::policy::resolved_generic_coefficients::ResolvedGenericCoefficients;
 use crate::resolved_parameters::ResolvedParameters;
-#[cfg(any(test, feature = "test-support"))]
-use crate::time_value::DeliveryCalendar;
 use crate::time_value::TimeValue;
+#[cfg(any(test, feature = "test-support"))]
+use crate::time_value::{DeliveryCalendar, WaterDeliveryBasis};
 
 /// Precompute the per-stage minimum target-storage trajectory `V_target[t]` for
 /// every filling hydro, keyed `(hydro_idx, stage_id) → V_target` \[hm³\].
@@ -240,9 +242,11 @@ pub fn build_stage_templates_resolving_layout(
     evaporation_models: &EvaporationModelSet,
     resolved_parameters: &ResolvedParameters,
 ) -> Result<StageTemplates, SddpError> {
-    let calendar = DeliveryCalendar::from_system(system);
+    let thermal = DeliveryCalendar::thermal(system);
+    let basis = WaterDeliveryBasis::of(system);
+    let water = DeliveryCalendar::water(system, basis);
     let (topology, layout) =
-        super::resolve_state_and_topology(system, &calendar, par_lp, None, false)?;
+        super::resolve_state_and_topology(system, &thermal, &water, basis, par_lp, None, false)?;
     let hydro_cell_index = HydroCellIndex::build(system.hydros());
     let stages: Vec<Stage> = system
         .stages()
@@ -261,7 +265,7 @@ pub fn build_stage_templates_resolving_layout(
         layout.anticipated_plants.clone(),
         downstream_par_order,
     );
-    let time_value = TimeValue::from_system(system, &study_dims.anticipated_plants, calendar);
+    let time_value = TimeValue::from_system(system, &study_dims.anticipated_plants, thermal);
     let study_stage_ids: Vec<StageId> = stages.iter().map(|s| StageId(s.id)).collect();
     let stage_block_counts: Vec<usize> = stages.iter().map(|s| s.blocks.len()).collect();
     let resolved_generic_coefficients = ResolvedGenericCoefficients::build(
@@ -297,6 +301,25 @@ pub fn build_stage_templates_resolving_layout(
     ))
 }
 
+/// The [`StateSpace`] [`build_stage_templates_resolving_layout`] builds its
+/// templates against.
+///
+/// # Errors
+///
+/// As [`build_stage_templates_resolving_layout`].
+#[cfg(any(test, feature = "test-support"))]
+pub fn resolved_state_layout(
+    system: &System,
+    par_lp: &PrecomputedPar,
+) -> Result<StateSpace, SddpError> {
+    let thermal = DeliveryCalendar::thermal(system);
+    let basis = WaterDeliveryBasis::of(system);
+    let water = DeliveryCalendar::water(system, basis);
+    let (_, layout) =
+        super::resolve_state_and_topology(system, &thermal, &water, basis, par_lp, None, false)?;
+    Ok(layout.state)
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -305,7 +328,7 @@ mod tests {
     use novomodelo_core::{
         BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, EntityId, FillingConfig, Hydro,
         HydroBlockBounds, HydroGenerationModel, HydroPenalties, HydroStageBounds, LineBlockBounds,
-        PumpingBlockBounds, ResolvedBounds, ThermalBlockBounds, ThermalStageBounds,
+        PumpingBlockBounds, ResolvedBounds, ThermalBlockBounds,
     };
 
     use super::build_filling_v_target;
@@ -340,6 +363,7 @@ mod tests {
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -411,10 +435,10 @@ mod tests {
             &BoundsDefaults {
                 hydro: default_hydro_bounds(),
                 hydro_block: default_hydro_block_bounds(),
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,

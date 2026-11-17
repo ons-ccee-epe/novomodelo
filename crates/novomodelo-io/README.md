@@ -50,9 +50,10 @@ not just the first.
    count consistency, and estimation prerequisites (see below).
 
 After every layer passes, `load_case` resolves the three-tier penalty/bound
-cascade, assembles the scenario models (running the estimation pipeline first
-when `inflow_history.parquet` is present without `inflow_seasonal_stats.parquet`),
-and calls `SystemBuilder::build()` to construct the immutable `System`.
+cascade, assembles the scenario models (first fitting from
+`inflow_history.parquet`, when present, what the case does not supply; see
+[Estimation pipeline](#estimation-pipeline)), and calls `SystemBuilder::build()`
+to construct the immutable `System`.
 
 ## Error handling (`LoadError`)
 
@@ -112,30 +113,35 @@ differs from tier 2 — and expands the result into dense
 
 ## Estimation pipeline
 
-When `scenarios/inflow_history.parquet` is present and
-`scenarios/inflow_seasonal_stats.parquet` is **absent**, `load_case` derives
-seasonal statistics and AR coefficients from the historical series instead of
-reading pre-computed Parquet files. `config.estimation` controls the fit:
+When `scenarios/inflow_history.parquet` is present, `load_case` fits from the
+history whichever of the seasonal statistics
+(`scenarios/inflow_seasonal_stats.parquet`) and the AR coefficients
+(`scenarios/inflow_ar_coefficients.parquet`) the case does not supply, and
+estimates the spatial correlation unless `scenarios/correlation.json` is
+supplied. The module docs of `scenarios/estimation.rs` give the full path
+matrix. `config.estimation` controls the fit:
 
-| Field                         | Type                        | Default  | Description                                                               |
-| ----------------------------- | --------------------------- | -------- | ------------------------------------------------------------------------- |
-| `max_order`                   | `u32`                       | `6`      | Maximum AR lag order considered during model selection                    |
-| `order_selection`             | `"pacf"` \| `"pacf_annual"` | `"pacf"` | PACF significance testing, optionally with an annual component (PAR(p)-A) |
-| `min_observations_per_season` | `u32`                       | `30`     | Minimum observations required per `(entity, season)` group                |
+| Field                         | Type                         | Default     | Description                                                                                                                                                                                                          |
+| ----------------------------- | ---------------------------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `max_order`                   | `u32`                        | `6`         | Maximum AR lag order considered during model selection                                                                                                                                                               |
+| `order_selection`             | `"pacf"` \| `"pacf_annual"`  | `"pacf"`    | PACF significance testing, optionally with an annual component (PAR(p)-A)                                                                                                                                            |
+| `min_observations_per_season` | `u32`                        | `30`        | Minimum observations required per `(entity, season)` group                                                                                                                                                           |
+| `max_coefficient_magnitude`   | `f64` \| `null`              | `null`      | Reduces an (entity, season) fit to order 0 when any AR coefficient's magnitude exceeds this bound; `null` disables the check                                                                                         |
+| `correlation_target`          | `"inflows"` \| `"residuals"` | `"inflows"` | Series the spatial correlation is estimated from when no `scenarios/correlation.json` is supplied: the standardized historical inflows or the AR residuals. Evaluation option, expected to be removed once evaluated |
 
 The estimation path additionally requires `season_definitions` in
 `stages.json` (to group observations by season) and at least one history
 observation per hydro plant; groups below `min_observations_per_season`
-produce a `ModelQuality` warning rather than a hard failure. When explicit
-stats files are provided instead, `inflow_history.parquet` (if present) is
+produce a `ModelQuality` warning rather than a hard failure. When the case
+supplies both files, `inflow_history.parquet` (if present) is
 still loaded and carried on the loaded system but does not influence model
 assembly.
 
 ## Links
 
-| Resource   | URL                                                      |
-| ---------- | -------------------------------------------------------- |
-| Docs site  | <https://docs.modelossetoreletrico.org.br/>                    |
+| Resource   | URL                                                               |
+| ---------- | ----------------------------------------------------------------- |
+| Docs site  | <https://docs.modelossetoreletrico.org.br/>                       |
 | Repository | https://github.com/ons-ccee-epe/novomodelo                        |
 | CHANGELOG  | https://github.com/ons-ccee-epe/novomodelo/blob/main/CHANGELOG.md |
 

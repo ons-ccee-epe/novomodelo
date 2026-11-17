@@ -50,7 +50,9 @@ use crate::{
     stages::StagesData,
 };
 #[cfg(test)]
-use crate::{InflowSeasonalStatsRow, validation::schema::ParsedData};
+use crate::{
+    InflowSeasonalStatsRow, post_study_stages::PostStudyFormat, validation::schema::ParsedData,
+};
 use parquet::arrow::ArrowWriter;
 use std::fmt::Debug;
 use std::fs;
@@ -392,6 +394,7 @@ pub const VALID_PENALTIES_JSON: &str = r#"{
             "outflow_violation_below_cost": 500.0,
             "outflow_violation_above_cost": 500.0,
             "generation_violation_below_cost": 1000.0,
+            "fpha_violation_cost": 60000.0,
             "evaporation_violation_cost": 5000.0,
             "water_withdrawal_violation_cost": 1000.0
         },
@@ -457,9 +460,8 @@ pub fn write_file(root: &Path, relative: &str, content: &str) {
     fs::write(&full, content).expect("write fixture file");
 }
 
-/// Populate `dir` with the eight required JSON files for a minimal valid
-/// case: 1 bus, 0 lines/hydros/thermals, 1 finite-horizon stage with no
-/// transitions.
+/// Populate `dir` with a minimal valid case: 1 bus, 0 lines/hydros/thermals,
+/// 1 finite-horizon stage with no transitions.
 ///
 /// # Panics
 ///
@@ -496,6 +498,7 @@ pub fn penalties_all(v: f64) -> HydroPenalties {
         outflow_violation_below_cost: v,
         outflow_violation_above_cost: v,
         generation_violation_below_cost: v,
+        fpha_violation_cost: v,
         evaporation_violation_cost: v,
         water_withdrawal_violation_cost: v,
         water_withdrawal_violation_pos_cost: v,
@@ -533,6 +536,7 @@ pub fn make_global() -> GlobalPenaltyDefaults {
             outflow_violation_below_cost: 500.0,
             outflow_violation_above_cost: 500.0,
             generation_violation_below_cost: 1_000.0,
+            fpha_violation_cost: 60_000.0,
             evaporation_violation_cost: 5_000.0,
             water_withdrawal_violation_cost: 1_000.0,
             water_withdrawal_violation_pos_cost: 1_000.0,
@@ -699,6 +703,7 @@ pub(crate) fn base_parsed_data(stages: StagesData, buses: Vec<Bus>) -> ParsedDat
         stages,
         initial_conditions: InitialConditions::default(),
         post_study_stages: None,
+        post_study_format: Some(PostStudyFormat::Absent),
         buses,
         thermals: vec![],
         hydros: vec![],
@@ -730,6 +735,7 @@ pub(crate) fn base_parsed_data(stages: StagesData, buses: Vec<Bus>) -> ParsedDat
         pumping_bounds: vec![],
         contract_bounds: vec![],
         generic_constraints: vec![],
+        generic_constraint_named_sources: std::collections::BTreeMap::new(),
         generic_constraint_bounds: vec![],
         penalty_overrides_bus: vec![],
         penalty_overrides_line: vec![],
@@ -828,6 +834,7 @@ pub fn make_hydro_ordered_penalties(id: i32) -> Hydro {
         outflow_violation_below_cost: 50.0,
         outflow_violation_above_cost: 50.0,
         generation_violation_below_cost: 50.0,
+        fpha_violation_cost: 500.0,
         evaporation_violation_cost: 50.0,
         water_withdrawal_violation_cost: 50.0,
         water_withdrawal_violation_pos_cost: 50.0,

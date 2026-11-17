@@ -29,7 +29,6 @@ use novomodelo_core::{
     EntityId, HydroBlockBounds, HydroPenalties, HydroStageBounds, LineBlockBounds,
     LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec, PenaltiesDefaults,
     PumpingBlockBounds, ResolvedBounds, ResolvedPenalties, SystemBuilder, ThermalBlockBounds,
-    ThermalStageBounds,
     scenario::{
         CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile, SamplingScheme,
     },
@@ -55,7 +54,7 @@ use novomodelo_sddp::{
     setup::node_graph::Traversal,
     simulate,
     simulation::{EntityCounts, SimulationConfig, SimulationOutputSpec},
-    test_support::permissive_state_boxes,
+    test_support::{permissive_state_boxes, template_structure::state_lag_dims},
     train,
     workspace::{SolverWorkspace, WorkspaceSizing},
 };
@@ -150,6 +149,7 @@ fn build_system_from(spec: &FixtureSpec) -> novomodelo_core::System {
         outflow_violation_below_cost: 0.0,
         outflow_violation_above_cost: 0.0,
         generation_violation_below_cost: 0.0,
+        fpha_violation_cost: 0.0,
         evaporation_violation_cost: 0.0,
         water_withdrawal_violation_cost: 0.0,
         water_withdrawal_violation_pos_cost: 0.0,
@@ -302,10 +302,10 @@ fn build_system_from(spec: &FixtureSpec) -> novomodelo_core::System {
         &BoundsDefaults {
             hydro: hydro_bounds_default,
             hydro_block: hydro_bounds_default_block,
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -333,6 +333,7 @@ fn build_system_from(spec: &FixtureSpec) -> novomodelo_core::System {
         outflow_violation_below_cost: 0.0,
         outflow_violation_above_cost: 0.0,
         generation_violation_below_cost: 0.0,
+        fpha_violation_cost: 0.0,
         evaporation_violation_cost: 0.0,
         water_withdrawal_violation_cost: 0.0,
         water_withdrawal_violation_pos_cost: 0.0,
@@ -457,7 +458,7 @@ fn build_fixture_from(spec: &FixtureSpec, inflow_method: InflowNonNegativityMeth
 
     let state = state_layout_for(n_h, max_par_order);
     let mut initial_state = vec![0.0_f64; state.n_state];
-    initial_state[state.inflow_lags.clone()].fill(spec.initial_lag_m3s);
+    initial_state[state_lag_dims(&state)].fill(spec.initial_lag_m3s);
     initial_state[state.storage.clone()].fill(spec.initial_storage_hm3);
     let horizon = HorizonMode::Finite {
         num_stages: n_stages,
@@ -628,7 +629,12 @@ fn simulate_fixture(
         0,
         0,
         ActiveSolver::new().expect("ActiveSolver::new must succeed"),
-        PatchBuffer::new(&fx.state, &[], &[]),
+        PatchBuffer::new(
+            &fx.state,
+            &[],
+            &[],
+            &fx.stage_templates.inflow_coupling_per_stage,
+        ),
         &sim_training_ctx,
         &stage_ctx_sim,
         WorkspaceSizing::default(),
@@ -808,6 +814,7 @@ fn per_plant_penalty_system() -> novomodelo_core::System {
         outflow_violation_below_cost: 0.0,
         outflow_violation_above_cost: 0.0,
         generation_violation_below_cost: 0.0,
+        fpha_violation_cost: 0.0,
         evaporation_violation_cost: 0.0,
         water_withdrawal_violation_cost: 0.0,
         water_withdrawal_violation_pos_cost: 0.0,

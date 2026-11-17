@@ -92,7 +92,7 @@ pub use fixed_delivery_echo::build_fixed_delivery_rows;
 pub use generic_constraint_echo::build_generic_constraint_echo_rows;
 pub use lp::builder::StageTemplates;
 pub use novomodelo_io::scenarios::estimation::{
-    EstimationPath, EstimationReport, estimate_from_history,
+    CorrelationOrigin, EstimationPath, EstimationReport, HistoryEstimate, estimate_from_history,
 };
 pub use policy::policy_export::{ReservedInflowLagLayout, reserve_boundary_inflow_lag_slots};
 pub use policy::policy_load::{
@@ -116,13 +116,14 @@ pub use policy::resolved_parameters::{
 };
 pub use production::energy_conversion::{EnergyConversionSet, HydroEnergyProductivityOverride};
 pub use production::hydro_models::{
-    FphaFitDeviationEntry, FphaHydroDetail, HydroFitTimings, HydroModelSummary,
+    DroppedFloor, DroppedFloorKind, DroppedFloorLevel, DroppedFloorReason, FphaFitDeviationEntry,
+    FphaHydroDetail, FrozenTurbiningHydro, HydroFitTimings, HydroModelSummary,
     NoTurbineCapacityHydro, PrepareHydroModelsResult, ProductionModelSource,
     build_deviation_summary, build_evaporation_model_rows, build_hydro_model_summary,
     prepare_hydro_models,
 };
 #[cfg(any(test, feature = "test-support"))]
-pub use setup::lp_build_inputs::build_stage_templates_resolving_layout;
+pub use setup::lp_build_inputs::{build_stage_templates_resolving_layout, resolved_state_layout};
 pub use setup::{
     BoundaryStateRequirements, DEFAULT_COST_SCALE_FACTOR, DEFAULT_SEED, PrepareStochasticResult,
     StudyParams, StudySetup, build_stochastic_context_for_study, prepare_stochastic,
@@ -136,9 +137,10 @@ pub use simulation::{
 pub use solve::solver_phase::{BACKWARD_PROFILE, FORWARD_PROFILE, SIMULATION_PROFILE};
 pub use solve::solver_phase::{Phase, SolverProfiles};
 pub use solver_stats::{
-    SOLVER_STATS_DELTA_SCALAR_FIELDS, SolverStatsDelta, SolverStatsLogEntry, StatsFoldMode,
-    aggregate_solver_stats_log, delta_to_stats_row, pack_delta_scalars, pack_scenario_stats,
-    solver_stats_log_to_rows, unpack_delta_scalars, unpack_scenario_stats,
+    PhaseCounts, RowViolationReport, SOLVER_STATS_DELTA_SCALAR_FIELDS, SolveTotals,
+    SolverStatsDelta, SolverStatsLogEntry, StatsFoldMode, aggregate_solver_stats_log,
+    delta_to_stats_row, pack_delta_scalars, pack_scenario_stats, solver_stats_log_to_rows,
+    unpack_delta_scalars, unpack_scenario_stats,
 };
 pub use stochastic::inflow_method::InflowNonNegativityMethod;
 pub use stochastic::stochastic_summary::{

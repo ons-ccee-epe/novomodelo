@@ -130,7 +130,7 @@ def test_cli_python_anticipated_column_parity(
     element-wise equal INCLUDING null positions. If the CLI and Python paths
     diverge between the LP solve and the Parquet write, this fails.
     """
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     assert ANTICIPATED_CASE.is_dir(), (
         f"the anticipated fixture must exist at {ANTICIPATED_CASE}"
@@ -176,7 +176,7 @@ def test_cli_python_anticipated_column_parity(
 
     mismatches = [
         f"  row {idx} col {column}: CLI={cli[column]!r} PY={py[column]!r}"
-        for idx, (cli, py) in enumerate(zip(cli_rows, py_rows))
+        for idx, (cli, py) in enumerate(zip(cli_rows, py_rows, strict=True))
         for column in _ANTICIPATED_COLUMNS
         if not _anticipated_values_equal(cli[column], py[column])
     ]

@@ -2,19 +2,11 @@
 //!
 //! ## Column layout
 //!
-//! The state-region column layout is defined by [`StateSpace`]:
-//!
-//! ```text
-//! [0, N)             storage      — outgoing storage volumes
-//! [N, N*(1+L))       inflow_lags  — AR lag variables (hydro-major order)
-//! [N*(1+L), N*(2+L)) z_inflow     — realized inflow (auxiliary, not state)
-//! [N*(2+L), N*(3+L)) storage_in   — incoming storage volumes (fixed vars)
-//! N*(3+L)            theta        — future cost variable
-//! [theta+1, ...)     equipment    — turbine, spillage, thermal, lines, deficit, excess
-//! ```
-//!
-//! The equipment column layout is defined per stage by `StageLayout`, threaded
-//! into extraction as [`StageGeometry`].
+//! The state-region column layout is defined by [`StateSpace`]; the equipment
+//! column layout is defined per stage by `StageLayout`, threaded into
+//! extraction as [`StageGeometry`]. The AR lag state has no LP column: the
+//! inflow outputs read the realized inflow and the incoming lags from the
+//! solve scratch.
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -602,7 +594,10 @@ pub struct SolutionView<'a> {
     pub objective: f64,
     /// Objective coefficient vector from the stage template.
     pub objective_coeffs: &'a [f64],
-    /// Row lower bounds from the stage template (may be patched for load noise).
+    /// Unscaled template row lower bounds, with the load-balance rows overwritten
+    /// by the realized load. Every other row keeps its template bound, a coupled
+    /// row whose solved bound carries the inflow shift included. Extraction reads
+    /// only the load-balance rows.
     pub row_lower: &'a [f64],
 }
 
@@ -636,7 +631,7 @@ fn water_value_per_hm3(
 /// stage. For uniform-block studies the per-stage and stage-0 reads coincide.
 pub struct StageExtractionSpec<'a> {
     /// Role-(a) state layout: source of the state-region column reads (`storage`,
-    /// `storage_in`, `inflow_lags`, `commit_in`, `max_par_order`).
+    /// `storage_in`, `commit_in`, `max_par_order`).
     pub state: &'a StateSpace,
     /// Single owner of the study-invariant, non-state LP shape (entity counts and
     /// optional-column presence flags).
@@ -644,16 +639,18 @@ pub struct StageExtractionSpec<'a> {
     /// Stage-correct equipment geometry, resolved per stage from `StageLayout`
     /// (via `StageTemplates::geometry_per_stage`).
     pub geometry: &'a StageGeometry,
-    /// Study-scope hydro-cell partition: a plant's reported `turbined_m3s`,
-    /// FPHA `generation_mw`, `turbined_slack_m3s`, and `generation_slack_mw`
-    /// are each sums over [`HydroCellIndex::cells_of`] — exact because every
-    /// cell of a plant shares that plant's one production model, and, for the
-    /// two slacks, because each cell owns its own min-floor row and column.
+    /// Study-scope hydro-cell partition: every plant-level value the hydros row
+    /// reads from a per-cell column family is a sum over
+    /// [`HydroCellIndex::cells_of`] — exact because a plant's cells share its
+    /// production model.
     pub hydro_cell_index: &'a HydroCellIndex,
     /// Entity ID lists and productivities needed to build result records.
     pub entity_counts: &'a EntityCounts,
     /// Volumetric inflow per hydro (m³/s), one entry per hydro plant.
     pub inflow_m3s_per_hydro: &'a [f64],
+    /// Incoming lag slice of the pinned state, in state-vector order; the source of the
+    /// `inflow_lags` output.
+    pub incoming_lags: &'a [f64],
     /// Block hours per dispatch block, used to convert duals to spot prices.
     pub block_hours: &'a [f64],
     /// Per-row metadata for active generic constraint rows at this stage.
@@ -723,11 +720,9 @@ impl StageExtractionSpec<'_> {
 /// `col_scale[col]` when in range and non-zero; `1.0` otherwise.
 #[inline]
 fn col_scale_factor_at(col_scale: &[f64], col: usize) -> f64 {
-    if col < col_scale.len() {
-        let d = col_scale[col];
-        if d == 0.0 { 1.0 } else { d }
-    } else {
-        1.0
+    match col_scale.get(col) {
+        Some(&d) if d != 0.0 => d,
+        _ => 1.0,
     }
 }
 
@@ -910,6 +905,10 @@ fn extract_hydro_per_block<'a>(
 
     let hydro_entity_id = EntityId(hydro_id);
     let div_sources = spec.diversion_upstream.get(&hydro_entity_id);
+    let fpha_cells = ctx.fpha_local.map(|local| {
+        let start = lookup.fpha_cell_local_start[local.get()];
+        start..start + spec.hydro_cell_index.cells_of(HydroSys::new(h)).len()
+    });
 
     (0..n_blks).map(move |b| {
         let blk = BlockIdx::new(b);
@@ -943,19 +942,18 @@ fn extract_hydro_per_block<'a>(
         // FPHA hydros sum the LP `g_{c,k}` column over the plant's cells (same
         // ascending-order/single-term-under-identity reasoning as `turbined`
         // above); constant-productivity hydros compute it as turbined * productivity.
-        let generation_mw = if let Some(local_fpha_idx) = ctx.fpha_local {
-            let cell_start = lookup.fpha_cell_local_start[local_fpha_idx.get()];
-            let n_cells = spec.hydro_cell_index.cells_of(HydroSys::new(h)).len();
-            (0..n_cells)
-                .map(|i| {
-                    view.primal[spec
-                        .geometry
-                        .generation_col(FphaCellLocal::new(cell_start + i), blk)]
-                })
+        let generation_mw = if let Some(cells) = fpha_cells.clone() {
+            cells
+                .map(|c| view.primal[spec.geometry.generation_col(FphaCellLocal::new(c), blk)])
                 .sum::<f64>()
         } else {
             turbined * spec.hydro_productivities[h]
         };
+        let fpha_violation_mw = fpha_cells.clone().map_or(0.0, |cells| {
+            cells
+                .map(|c| view.primal[spec.geometry.fpha_slack_col(FphaCellLocal::new(c), blk)])
+                .sum()
+        });
 
         let (turbined_slack, outflow_slack_below, outflow_slack_above, generation_slack) =
             hydro_operational_slacks(view, spec, lookup, h, b);
@@ -1048,6 +1046,7 @@ fn extract_hydro_per_block<'a>(
             outflow_slack_below_m3s: outflow_slack_below,
             outflow_slack_above_m3s: outflow_slack_above,
             generation_slack_mw: generation_slack,
+            fpha_violation_mw,
             storage_violation_below_hm3: ctx.storage_violation_below,
             filling_target_violation_hm3: ctx.filling_target_violation,
             evaporation_violation_pos_m3s,
@@ -1399,6 +1398,7 @@ struct HydroViolationCosts {
     outflow_above: f64,
     turbined: f64,
     generation: f64,
+    fpha: f64,
 }
 
 impl HydroViolationCosts {
@@ -1409,10 +1409,11 @@ impl HydroViolationCosts {
             + self.outflow_above
             + self.turbined
             + self.generation
+            + self.fpha
     }
 }
 
-/// Compute the 6 per-constraint hydro violation costs from a solution view.
+/// Compute the per-constraint hydro violation costs from a solution view.
 fn compute_hydro_violation_costs(
     equipment: &StageGeometry,
     col_cost: impl Fn(usize) -> f64,
@@ -1432,6 +1433,12 @@ fn compute_hydro_violation_costs(
         (range_sum(equipment.withdrawal_slack_neg.clone())
             + range_sum(equipment.withdrawal_slack_pos.clone()))
             * cost_scale_factor
+    };
+
+    let fpha = if equipment.fpha_slack.is_empty() {
+        0.0
+    } else {
+        range_sum(equipment.fpha_slack.clone()) * cost_scale_factor
     };
 
     let (outflow_below, outflow_above, turbined, generation) =
@@ -1457,6 +1464,7 @@ fn compute_hydro_violation_costs(
         outflow_above,
         turbined,
         generation,
+        fpha,
     }
 }
 
@@ -1541,6 +1549,8 @@ fn compute_cost_result(
     let turbined_cost = family_cost(&equipment.turbine);
     let inflow_penalty_cost = family_cost(&equipment.inflow_slack);
     let diversion_cost = family_cost(&equipment.diversion);
+    let storage_violation_cost = family_cost(&equipment.filled_min_storage_floor_col);
+    let filling_target_cost = family_cost(&equipment.filling_target_col);
 
     let hv = compute_hydro_violation_costs(equipment, col_cost, range_sum, cost_scale_factor);
 
@@ -1556,8 +1566,8 @@ fn compute_cost_result(
         contract_cost,
         deficit_cost,
         excess_cost,
-        storage_violation_cost: 0.0,
-        filling_target_cost: 0.0,
+        storage_violation_cost,
+        filling_target_cost,
         hydro_violation_cost: hv.total(),
         outflow_violation_below_cost: hv.outflow_below,
         outflow_violation_above_cost: hv.outflow_above,
@@ -1565,6 +1575,7 @@ fn compute_cost_result(
         generation_violation_cost: hv.generation,
         evaporation_violation_cost: hv.evaporation,
         withdrawal_violation_cost: hv.withdrawal,
+        fpha_violation_cost: hv.fpha,
         inflow_penalty_cost,
         generic_violation_cost,
         spillage_cost: spillage_cost + diversion_cost,
@@ -1825,12 +1836,14 @@ fn extract_stub_collections(
     inflow_lags.extend(spec.entity_counts.hydro_ids.iter().enumerate().flat_map(
         |(h, &hydro_id)| {
             (0..state.max_par_order).map(move |l| {
+                let lag_dim = state.lag_state_dim(l, HydroSys::new(h)).get();
+                let inflow_m3s = spec.incoming_lags[lag_dim - state.state_dim_lag_range().start];
                 #[allow(clippy::cast_possible_truncation)]
                 SimulationInflowLagResult {
                     stage_id,
                     hydro_id,
                     lag_index: l as u32,
-                    inflow_m3s: view.primal[state.lag_incoming_col(l, HydroSys::new(h)).get()],
+                    inflow_m3s,
                 }
             })
         },
@@ -1882,6 +1895,7 @@ fn extract_stub_collections(
 ///     generation_violation_cost: 0.0,
 ///     evaporation_violation_cost: 0.0,
 ///     withdrawal_violation_cost: 0.0,
+///     fpha_violation_cost: 0.0,
 ///     inflow_penalty_cost: 3.0,
 ///     generic_violation_cost: 2.0,
 ///     spillage_cost: 1.0,
@@ -1980,6 +1994,7 @@ mod transit_seed_tests {
             outflow_slack_below_m3s: 0.0,
             outflow_slack_above_m3s: 0.0,
             generation_slack_mw: 0.0,
+            fpha_violation_mw: 0.0,
             storage_violation_below_hm3: 0.0,
             filling_target_violation_hm3: 0.0,
             evaporation_violation_pos_m3s: 0.0,

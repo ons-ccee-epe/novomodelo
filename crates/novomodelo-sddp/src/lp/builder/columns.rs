@@ -1,7 +1,7 @@
-use novomodelo_core::commissioning::{Phase, commissioning_active};
+use novomodelo_core::commissioning::{Phase, commissioning_active, hard_storage_floor};
 use novomodelo_core::{BlockMode, ContractType, Stage};
 
-use crate::hydro_models::EvaporationModel;
+use crate::hydro_models::{EvaporationCoefficientSign, EvaporationModel};
 use crate::indexer::{
     AnticipatedLocal, BlockIdx, Boundary, BusSys, EvapLocal, FillingTargetLocal, FloorLocal,
     FphaCellLocal, FphaLocal, HydroCell, HydroSys, LineSys, NcsSys, PlantFloorLocal, PumpingSys,
@@ -11,11 +11,13 @@ use crate::indexer::{
 use super::EVAPORATION_FLOW_SAFETY_MARGIN;
 use super::delivery_ring::{ColumnBufs, DeliveryRing};
 use super::hydro_state::{
-    GroupBoundLookup, MinFloor, cell_max_generation, cell_max_turbined, hydro_phase, is_suspended,
-    storage_ceiling, storage_floor_relaxed,
+    GroupBoundLookup, MinFloor, cell_max_generation, cell_max_turbined,
+    evaporation_slot_reachable_storage, evaporation_target, evaporation_target_range, hydro_phase,
+    is_suspended, storage_ceiling,
 };
 use super::layout::{
     StageLayout, TemplateBuildCtx, contract_direction_counts, contract_family_slot,
+    evaporation_slot_boundaries,
 };
 
 /// Fill column lower/upper bounds and objective coefficients for one stage.
@@ -38,7 +40,6 @@ pub(super) fn fill_stage_columns(
     fill_storage_columns(ctx, stage, stage_idx, layout, bufs);
     fill_transit_bucket_columns(layout, bufs);
     fill_anticipated_slot_columns(layout, bufs);
-    fill_ar_lag_columns(layout, bufs);
     fill_anticipated_state_columns(layout, bufs);
     fill_theta_column(layout, bufs);
     fill_turbine_columns(ctx, stage, stage_idx, layout, bufs);
@@ -58,7 +59,7 @@ pub(super) fn fill_stage_columns(
     fill_contract_columns(ctx, stage, stage_idx, layout, bufs);
     fill_filling_target_columns(ctx, stage_idx, layout, bufs);
     fill_filled_min_storage_floor_columns(ctx, stage_idx, layout, bufs);
-    fill_z_inflow_columns(layout, bufs);
+    fill_fpha_slack_columns(ctx, stage, stage_idx, layout, bufs);
 
     (col_lower, col_upper, objective)
 }
@@ -76,9 +77,8 @@ fn fill_storage_columns(
 ) {
     for h_idx in 0..layout.state.hydro_count {
         let hydro = &ctx.hydros[h_idx];
-        let floor_off = storage_floor_relaxed(hydro, stage.id);
         let hb = ctx.resolved.bounds.hydro_bounds(h_idx, stage_idx);
-        let storage_lower = if floor_off { 0.0 } else { hb.min_storage_hm3 };
+        let storage_lower = hard_storage_floor(hydro, stage.id, hb.min_storage_hm3);
         let storage_upper = storage_ceiling(hydro, stage.id, hb.max_storage_hm3);
         let storage_out_col = layout
             .state
@@ -92,9 +92,9 @@ fn fill_storage_columns(
         bufs.col_upper[storage_out_col] = storage_upper;
         bufs.col_lower[storage_in_col] = f64::NEG_INFINITY;
         bufs.col_upper[storage_in_col] = f64::INFINITY;
-        // Interior Sᵏ reuse the outgoing column's EXACT bounds, floor_off and the
-        // dormant ceiling included: the frozen-identity chain pins each interior to the
-        // inert IC, so a hard bound excluding IC would reject the pin.
+        // Interior Sᵏ reuse the outgoing column's EXACT bounds, the relaxed floor and
+        // the dormant ceiling included: the frozen-identity chain pins each interior to
+        // the inert IC, so a hard bound excluding IC would reject the pin.
         for k in 1..layout.clock.n_blks() {
             let col = layout.block_storage_col(HydroSys::new(h_idx), Boundary::Interior(k));
             bufs.col_lower[col] = storage_lower;
@@ -131,14 +131,6 @@ fn fill_anticipated_slot_columns(layout: &StageLayout, bufs: &mut ColumnBufs<'_>
         (f64::NEG_INFINITY, f64::INFINITY),
         bufs,
     );
-}
-
-/// AR lag columns: unconstrained (signed).
-fn fill_ar_lag_columns(layout: &StageLayout, bufs: &mut ColumnBufs<'_>) {
-    for lag_col in layout.state.inflow_lags.clone() {
-        bufs.col_lower[lag_col] = f64::NEG_INFINITY;
-        bufs.col_upper[lag_col] = f64::INFINITY;
-    }
 }
 
 /// Incoming commitment-hold columns (in-study + post-horizon): open
@@ -319,9 +311,8 @@ fn fill_diversion_columns(
 /// gate; the shifted gate (decision priced `K` stages early) lives on the decision column
 /// in `fill_anticipated_columns`, not here.
 ///
-/// The generation bound is read per block
-/// ([`thermal_bounds_at_block`](novomodelo_core::ResolvedBounds::thermal_bounds_at_block)); the
-/// cost stays stage-level (`thermal_bounds`) — `ThermalBlockOverride` has no cost field.
+/// The generation bounds and the cost are read per block
+/// ([`thermal_bounds_at_block`](novomodelo_core::ResolvedBounds::thermal_bounds_at_block)).
 pub(super) fn fill_thermal_columns(
     ctx: &TemplateBuildCtx<'_>,
     stage: &Stage,
@@ -331,11 +322,6 @@ pub(super) fn fill_thermal_columns(
 ) {
     for (t_idx, thermal) in ctx.thermals.iter().enumerate() {
         let active = commissioning_active(thermal.entry_stage_id, thermal.exit_stage_id, stage.id);
-        let marginal_cost_per_mwh = ctx
-            .resolved
-            .bounds
-            .thermal_bounds(t_idx, stage_idx)
-            .cost_per_mwh;
         // `build_anticipated_fishing_row_pos` returns an empty vec whenever
         // `k_max == 0`, regardless of `n_anticipated`.
         let is_anticipated = ctx
@@ -368,7 +354,7 @@ pub(super) fn fill_thermal_columns(
             }
             if !is_anticipated {
                 let block_hours = stage.blocks[blk].duration_hours;
-                bufs.objective[col] = marginal_cost_per_mwh * block_hours;
+                bufs.objective[col] = tb.cost_per_mwh * block_hours;
             }
         }
     }
@@ -380,7 +366,7 @@ pub(super) fn fill_thermal_columns(
 /// The decision column is bound/costed at ITS OWN delivery stage — never the
 /// decision stage `stage_idx`, never `stage_idx + constant` — split on
 /// `delivery_stage < n_stages`. In study, `thermal_block_base` supplies
-/// `[min, max]` and `thermal_bounds` supplies `cost_per_mwh`. Post study,
+/// `[min, max]` and `cost_per_mwh`. Post study,
 /// `ctx.time_value.post_study().anticipated_bound` supplies `(cost, min_mw,
 /// max_mw)` from the post-study table ALONE — no intersection with a second
 /// declaration, since `post_study_stages.json` is the sole post-horizon bound
@@ -466,12 +452,11 @@ pub(super) fn fill_anticipated_columns(
                     .resolved
                     .bounds
                     .thermal_block_base(thermal_idx.get(), delivery_stage);
-                let cost = ctx
-                    .resolved
-                    .bounds
-                    .thermal_bounds(thermal_idx.get(), delivery_stage)
-                    .cost_per_mwh;
-                Some((cap.min_generation_mw, cap.max_generation_mw, cost))
+                Some((
+                    cap.min_generation_mw,
+                    cap.max_generation_mw,
+                    cap.cost_per_mwh,
+                ))
             } else {
                 ctx.time_value
                     .post_study()
@@ -606,8 +591,9 @@ fn fill_inflow_slack_columns(
 /// `[0, max_generation_mw]`, objective `0.0` (turbined cost is on the turbine column).
 ///
 /// `identify_fpha_hydros` excludes a filling hydro from `fpha_hydro_indices` during
-/// `PreFilling`/`Filling` — the single owner of "no generation while filling"; this
-/// loop must NOT re-gate by phase (the branch would be dead).
+/// `PreFilling`/`Filling`, and a plant without turbine capacity in any block of the
+/// stage — the single owner of "no generation while filling or without capacity";
+/// this loop must NOT re-gate by phase or capacity (the branch would be dead).
 fn fill_fpha_generation_columns(
     ctx: &TemplateBuildCtx<'_>,
     stage_idx: usize,
@@ -650,12 +636,51 @@ fn fill_fpha_generation_columns(
     }
 }
 
+/// FPHA plane-slack columns: one per FPHA cell per block, `[0, +∞)` where the
+/// (cell, block) has turbine capacity and `[0, 0]` where it has none (its plane
+/// rows are free, `rows::fill_fpha_rows`), objective `fpha_violation_cost` times
+/// the block's hours either way, written UNSCALED (`finalize_stage_objective`
+/// divides by the cost scale).
+fn fill_fpha_slack_columns(
+    ctx: &TemplateBuildCtx<'_>,
+    stage: &Stage,
+    stage_idx: usize,
+    layout: &StageLayout,
+    bufs: &mut ColumnBufs<'_>,
+) {
+    for (local_idx, &h) in layout.geometry.fpha_hydro_indices.iter().enumerate() {
+        let fpha_cell_base = layout
+            .fpha_local_first_cell(FphaLocal::new(local_idx))
+            .get();
+        let hp = ctx.resolved.penalties.hydro_penalties(h.get(), stage_idx);
+        for blk in (0..layout.clock.n_blks()).map(BlockIdx::new) {
+            let cost = hp.fpha_violation_cost * stage.blocks[blk.get()].duration_hours;
+            for (offset, cell) in ctx.hydro_cell_index.cells_of(h).enumerate() {
+                let col = layout
+                    .geometry
+                    .fpha_slack_col(FphaCellLocal::new(fpha_cell_base + offset), blk);
+                bufs.col_lower[col] = 0.0;
+                bufs.col_upper[col] =
+                    if ctx.cell_has_capacity(stage_idx, h, HydroCell::new(cell), blk.get()) {
+                        f64::INFINITY
+                    } else {
+                        0.0
+                    };
+                bufs.objective[col] = cost;
+            }
+        }
+    }
+}
+
 /// Evaporation columns: one `EVAP_COLS_PER_HYDRO` triple (evaporation outflow,
 /// `f_evap_plus`, `f_evap_minus`) per evaporation hydro per block.
 ///
-/// The evaporation-outflow column is bounded symmetrically `[-q_max, +q_max]`, zero
-/// objective. `f_evap_plus`/`f_evap_minus` are `[0, +inf)` and carry the directional
-/// violation costs; the pricing hours per block mode are chosen where they are written.
+/// The evaporation-outflow column, zero objective, takes the box of its month's
+/// `coefficient_sign`, always containing 0: a positive month bounds it below at the
+/// lowest reachable target, a negative month above at the highest and caps
+/// `f_evap_plus` at the highest target over the hard floor, a zero month keeps
+/// `[-q_max, +q_max]`. `f_evap_minus` is `[0, +inf)`; both slacks carry the directional
+/// violation costs, priced at the hours chosen where they are written.
 fn fill_evaporation_columns(
     ctx: &TemplateBuildCtx<'_>,
     stage: &Stage,
@@ -663,21 +688,15 @@ fn fill_evaporation_columns(
     layout: &StageLayout,
     bufs: &mut ColumnBufs<'_>,
 ) {
+    let delivery_stage_ids = ctx.time_value.delivery_stage_ids();
     for (local_idx, &h) in layout.geometry.evap_hydro_indices.iter().enumerate() {
         let local_idx = EvapLocal::new(local_idx);
-        let (q_max_abs, hp) = match ctx.evaporation_models.model(h.get()) {
-            EvaporationModel::Linearized { coefficients, .. } => {
-                let coeff = &coefficients[stage_idx];
-                let hb = ctx.resolved.bounds.hydro_bounds(h.get(), stage_idx);
-                let q_max_abs = (coeff.intercept_m3s
-                    + coeff.volume_slope_m3s_per_hm3 * hb.max_storage_hm3)
-                    .abs()
-                    * EVAPORATION_FLOW_SAFETY_MARGIN;
-                (
-                    q_max_abs,
-                    ctx.resolved.penalties.hydro_penalties(h.get(), stage_idx),
-                )
-            }
+        let (coeff, hb, hp) = match ctx.evaporation_models.model(h.get()) {
+            EvaporationModel::Linearized { coefficients, .. } => (
+                &coefficients[stage_idx],
+                ctx.resolved.bounds.hydro_bounds(h.get(), stage_idx),
+                ctx.resolved.penalties.hydro_penalties(h.get(), stage_idx),
+            ),
             EvaporationModel::None => {
                 debug_assert!(
                     false,
@@ -687,15 +706,42 @@ fn fill_evaporation_columns(
                 continue;
             }
         };
+        let q_max_abs =
+            evaporation_target(coeff, hb.max_storage_hm3).abs() * EVAPORATION_FLOW_SAFETY_MARGIN;
+        let predecessor = stage_idx.checked_sub(1).map(|p| {
+            (
+                delivery_stage_ids[p],
+                ctx.resolved.bounds.hydro_bounds(h.get(), p),
+            )
+        });
         for slot in 0..layout.n_evap_slots {
             let col_evaporation_flow = layout.evap_flow_col(local_idx, BlockIdx::new(slot));
             let col_f_plus = layout.evap_f_plus_col(local_idx, BlockIdx::new(slot));
             let col_f_minus = layout.evap_f_minus_col(local_idx, BlockIdx::new(slot));
-            // Signed: a negative outflow reads as net rainfall input (inflow).
-            bufs.col_lower[col_evaporation_flow] = -q_max_abs;
-            bufs.col_upper[col_evaporation_flow] = q_max_abs;
+            let reachable = evaporation_slot_reachable_storage(
+                &ctx.hydros[h.get()],
+                delivery_stage_ids[0],
+                (stage.id, hb),
+                predecessor,
+                evaporation_slot_boundaries(stage.block_mode, slot, layout.clock.n_blks()),
+            );
+            let (tight_min, tight_max) =
+                evaporation_target_range(coeff, reachable.tight_floor_hm3, reachable.ceiling_hm3);
+            let (_, hard_max) =
+                evaporation_target_range(coeff, reachable.hard_floor_hm3, reachable.ceiling_hm3);
+            let (flow_lower, flow_upper, f_plus_upper) = match coeff.coefficient_sign {
+                EvaporationCoefficientSign::Positive => {
+                    (0.0_f64.min(tight_min), q_max_abs, f64::INFINITY)
+                }
+                EvaporationCoefficientSign::Negative => {
+                    (-q_max_abs, 0.0_f64.max(tight_max), 0.0_f64.max(hard_max))
+                }
+                EvaporationCoefficientSign::Zero => (-q_max_abs, q_max_abs, f64::INFINITY),
+            };
+            bufs.col_lower[col_evaporation_flow] = flow_lower;
+            bufs.col_upper[col_evaporation_flow] = flow_upper;
             bufs.col_lower[col_f_plus] = 0.0;
-            bufs.col_upper[col_f_plus] = f64::INFINITY;
+            bufs.col_upper[col_f_plus] = f_plus_upper;
             bufs.col_lower[col_f_minus] = 0.0;
             bufs.col_upper[col_f_minus] = f64::INFINITY;
             // f_evap_plus = under-evaporation, f_evap_minus = over-evaporation. A
@@ -712,16 +758,13 @@ fn fill_evaporation_columns(
     }
 }
 
-/// Withdrawal violation slack columns — neg (under-withdrawal) and pos
+/// Withdrawal violation slack columns, `neg` (under-withdrawal) and `pos`
 /// (over-withdrawal), one stage-level column per hydro per direction.
 ///
-/// Realized withdrawal is `R = T - neg + pos`, `T = water_withdrawal_m3s` (signed:
-/// `T > 0` removal, `T < 0` inter-basin return). `R` must NOT flip sign, so the
-/// *under-delivery* direction (the one dragging `R` toward zero) is capped at `|T|`
-/// while *over-delivery* is left `+∞`:
-/// - `T > 0`: cap `neg ≤ |T|` (floors `R ≥ 0`); `pos` is `+∞`.
-/// - `T < 0`: cap `pos ≤ |T|` (floors `R ≤ 0`); `neg` is `+∞`.
-/// - `T = 0`: both `0` (presolve-eliminated).
+/// The realized withdrawal `R = T_eff - neg + pos` never changes sign: `T_eff > 0`
+/// bounds `neg ≤ T_eff` with `pos` unbounded, `T_eff < 0` bounds `pos ≤ -T_eff`
+/// with `neg = 0`, and `T_eff = 0` pins both to 0. `T_eff` is owned by
+/// [`StageLayout::effective_withdrawal_m3s`].
 fn fill_withdrawal_slack_columns(
     ctx: &TemplateBuildCtx<'_>,
     stage_idx: usize,
@@ -730,20 +773,13 @@ fn fill_withdrawal_slack_columns(
     bufs: &mut ColumnBufs<'_>,
 ) {
     for h_idx in 0..layout.state.hydro_count {
-        let hb = ctx.resolved.bounds.hydro_bounds(h_idx, stage_idx);
         let hp = ctx.resolved.penalties.hydro_penalties(h_idx, stage_idx);
-        let t = hb.water_withdrawal_m3s;
+        let t = layout.effective_withdrawal_m3s[h_idx];
 
         let neg_col = layout
             .geometry
             .withdrawal_slack_neg_col(HydroSys::new(h_idx));
-        bufs.col_upper[neg_col] = if t > 0.0 {
-            t
-        } else if t < 0.0 {
-            f64::INFINITY
-        } else {
-            0.0
-        };
+        bufs.col_upper[neg_col] = if t > 0.0 { t } else { 0.0 };
         bufs.objective[neg_col] = hp.water_withdrawal_violation_neg_cost * total_stage_hours;
 
         let pos_col = layout
@@ -859,7 +895,7 @@ fn fill_cell_floor_slacks(
         let h = HydroSys::new(h_idx);
         let cost = kind.below_cost(ctx.resolved.penalties.hydro_penalties(h_idx, stage_idx));
         for blk in 0..layout.clock.n_blks() {
-            let floor = ctx.plant_floor(stage_idx, kind, h, blk);
+            let floor = ctx.plant_floor(stage.id, stage_idx, kind, h, blk);
             let block_hours = stage.blocks[blk].duration_hours;
             for cell_idx in ctx.hydro_cell_index.cells_of(h) {
                 let cell = HydroCell::new(cell_idx);
@@ -891,7 +927,7 @@ fn fill_plant_floor_slacks(
         for blk in 0..layout.clock.n_blks() {
             let col = layout.plant_below_col(kind, PlantFloorLocal::new(local), BlockIdx::new(blk));
             let binds = ctx
-                .plant_floor(stage_idx, kind, h, blk)
+                .plant_floor(stage.id, stage_idx, kind, h, blk)
                 .residual_rhs()
                 .is_some();
             bufs.col_upper[col] = if binds { f64::INFINITY } else { 0.0 };
@@ -990,9 +1026,6 @@ pub(super) fn fill_pumping_columns(
 /// both families and regardless of commissioning — the stored price sign carries
 /// direction (import `> 0` cost, export `< 0` revenue) and the prescaling pass owns
 /// `col_scale`.
-///
-/// `price_per_mwh` IS block-eligible, unlike [`fill_thermal_columns`]'s
-/// `cost_per_mwh` — ratified, not an oversight.
 fn fill_contract_columns(
     ctx: &TemplateBuildCtx<'_>,
     stage: &Stage,
@@ -1095,14 +1128,6 @@ fn fill_filled_min_storage_floor_columns(
     }
 }
 
-/// Z-inflow columns: free variables for realized total inflow per hydro.
-fn fill_z_inflow_columns(layout: &StageLayout, bufs: &mut ColumnBufs<'_>) {
-    for col in layout.state.z_inflow.clone() {
-        bufs.col_lower[col] = f64::NEG_INFINITY;
-        bufs.col_upper[col] = f64::INFINITY;
-    }
-}
-
 #[cfg(test)]
 #[expect(
     clippy::needless_range_loop,
@@ -1118,7 +1143,6 @@ mod interior_storage_bound_tests {
         LineBlockBounds, LineStagePenalties, NcsStagePenalties, NoiseMethod, PenaltiesCountsSpec,
         PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds, ResolvedPenalties,
         ScenarioSourceConfig, Stage, StageRiskConfig, StageStateConfig, ThermalBlockBounds,
-        ThermalStageBounds,
     };
 
     use super::{ColumnBufs, StageLayout, TemplateBuildCtx, fill_storage_columns};
@@ -1134,7 +1158,7 @@ mod interior_storage_bound_tests {
     const MAX_STORAGE_HM3: f64 = 175.0;
 
     /// One Operating run-of-river hydro (`ConstantProductivity`, no filling, no
-    /// commissioning window ⇒ `floor_off == false`), so the endpoint outgoing
+    /// commissioning window ⇒ no relaxed floor), so the endpoint outgoing
     /// storage column takes the hard `[MIN_STORAGE_HM3, MAX_STORAGE_HM3]` floor and
     /// interior == endpoint is the unambiguous expectation. No FPHA/evaporation, so
     /// the layout reserves only the structural storage families.
@@ -1196,10 +1220,10 @@ mod interior_storage_bound_tests {
                     max_generation_mw: 250.0,
                     ..Default::default()
                 },
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -1241,6 +1265,7 @@ mod interior_storage_bound_tests {
                     outflow_violation_below_cost: 0.0,
                     outflow_violation_above_cost: 0.0,
                     generation_violation_below_cost: 0.0,
+                    fpha_violation_cost: 0.0,
                     evaporation_violation_cost: 0.0,
                     water_withdrawal_violation_cost: 0.0,
                     water_withdrawal_violation_pos_cost: 0.0,
@@ -1541,7 +1566,6 @@ mod diversion_bound_tests {
         EntityId, Hydro, HydroBlockBounds, HydroPenalties, HydroStageBounds, LineBlockBounds,
         LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec, PenaltiesDefaults,
         PumpingBlockBounds, ResolvedBounds, ResolvedPenalties, ThermalBlockBounds,
-        ThermalStageBounds,
     };
 
     use crate::hydro_models::{
@@ -1624,10 +1648,10 @@ mod diversion_bound_tests {
                     max_generation_mw: 250.0,
                     ..Default::default()
                 },
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -1666,6 +1690,7 @@ mod diversion_bound_tests {
                     outflow_violation_below_cost: 0.0,
                     outflow_violation_above_cost: 0.0,
                     generation_violation_below_cost: 0.0,
+                    fpha_violation_cost: 0.0,
                     evaporation_violation_cost: 0.0,
                     water_withdrawal_violation_cost: 0.0,
                     water_withdrawal_violation_pos_cost: 0.0,
@@ -1883,7 +1908,7 @@ mod filling_phase_gating_tests {
         CascadeTopology, ContractBlockBounds, EntityId, Hydro, HydroBlockBounds, HydroPenalties,
         HydroStageBounds, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
         PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBlockBounds,
-        ResolvedBounds, ResolvedPenalties, Stage, ThermalBlockBounds, ThermalStageBounds,
+        ResolvedBounds, ResolvedPenalties, Stage, ThermalBlockBounds,
     };
 
     use crate::hydro_models::{
@@ -1981,10 +2006,10 @@ mod filling_phase_gating_tests {
                     max_diversion_m3s: Some(MAX_DIVERSION_M3S),
                     ..Default::default()
                 },
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -2042,6 +2067,7 @@ mod filling_phase_gating_tests {
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -2968,7 +2994,7 @@ mod anticipated_objective_tests {
         BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, EntityId, HorizonGraph,
         HydroBlockBounds, HydroStageBounds, LineBlockBounds, PostStudyStage, PostStudyStages,
         PostStudyThermalBound, PumpingBlockBounds, ResolvedBounds, Thermal, ThermalBlockBounds,
-        ThermalStageBounds,
+        WaterBucketStages,
     };
 
     use novomodelo_stochastic::season_cast::post_study_calendar_stages;
@@ -3026,9 +3052,9 @@ mod anticipated_objective_tests {
             let anticipated_plants = AnticipatedPlants::build(&thermals);
             let mut bounds = bounds_two_thermals();
             for stage in 0..N_STAGES {
-                bounds.thermal_bounds_mut(0, stage).cost_per_mwh = DELIVERY_COST_PER_MWH;
+                bounds.thermal_block_base_mut(0, stage).cost_per_mwh = DELIVERY_COST_PER_MWH;
                 bounds.thermal_block_base_mut(0, stage).max_generation_mw = MAX_GEN_MW;
-                bounds.thermal_bounds_mut(1, stage).cost_per_mwh = STD_COST_PER_MWH;
+                bounds.thermal_block_base_mut(1, stage).cost_per_mwh = STD_COST_PER_MWH;
                 bounds.thermal_block_base_mut(1, stage).max_generation_mw = MAX_GEN_MW;
             }
             Self {
@@ -3076,10 +3102,10 @@ mod anticipated_objective_tests {
                 hydro_block: HydroBlockBounds {
                     ..Default::default()
                 },
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -3157,7 +3183,7 @@ mod anticipated_objective_tests {
 
     /// Borrow-target owner for a one-anticipated-plant delivery-anchoring
     /// preservation `TemplateBuildCtx`. `per_stage[s] == (min_gen, max_gen,
-    /// cost)` is the plant's stage-`s` `thermal_bounds`; the discount factor is
+    /// cost)` is the plant's stage-`s` `ThermalBlockBounds`; the discount factor is
     /// stage-varying (`0.9^s`) too. Both are deliberately stage-varying so a
     /// DECISION-anchored read (the forbidden alternative) yields a provably
     /// different column than the shipped DELIVERY-anchored read.
@@ -3203,10 +3229,10 @@ mod anticipated_objective_tests {
                     hydro_block: HydroBlockBounds {
                         ..Default::default()
                     },
-                    thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                     thermal_block: ThermalBlockBounds {
                         min_generation_mw: 0.0,
                         max_generation_mw: 0.0,
+                        cost_per_mwh: 0.0,
                     },
                     line_block: LineBlockBounds {
                         direct_mw: 0.0,
@@ -3227,7 +3253,7 @@ mod anticipated_objective_tests {
                 let tbb = bounds.thermal_block_base_mut(0, stage);
                 tbb.min_generation_mw = min_g;
                 tbb.max_generation_mw = max_g;
-                bounds.thermal_bounds_mut(0, stage).cost_per_mwh = cost;
+                tbb.cost_per_mwh = cost;
             }
             let mut discount = Vec::with_capacity(n_stages);
             let mut d = 1.0_f64;
@@ -3262,11 +3288,12 @@ mod anticipated_objective_tests {
     /// Delivery-anchoring preservation contract: the anticipated decision
     /// column is bounded/costed at ITS OWN delivery stage `m`, never the
     /// decision stage —
-    /// `col_upper == thermal_bounds(m).max_generation_mw`,
-    /// `col_lower == thermal_bounds(m).min_generation_mw`,
-    /// `objective == cost(m) * hours(m) * discount(m)`. STAGE-VARYING delivery
-    /// bounds/cost so a decision-anchored read gives a provably different
-    /// value (constant-across-lead bounds would make the test vacuous).
+    /// `col_upper == thermal_block_base(t, m).max_generation_mw`,
+    /// `col_lower == thermal_block_base(t, m).min_generation_mw`,
+    /// `objective == thermal_block_base(t, m).cost_per_mwh * hours(m) *
+    /// discount(m)`. STAGE-VARYING delivery bounds/cost so a decision-anchored
+    /// read gives a provably different value (constant-across-lead bounds
+    /// would make the test vacuous).
     ///
     /// Load-bearing verified by MUTATION: changing the production read at
     /// `fill_anticipated_columns` from `thermal_block_base(thermal_idx,
@@ -3376,10 +3403,10 @@ mod anticipated_objective_tests {
                 hydro_block: HydroBlockBounds {
                     ..Default::default()
                 },
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -3400,7 +3427,7 @@ mod anticipated_objective_tests {
             let tbb = bounds.thermal_block_base_mut(0, stage);
             tbb.min_generation_mw = min_g;
             tbb.max_generation_mw = max_g;
-            bounds.thermal_bounds_mut(0, stage).cost_per_mwh = cost;
+            tbb.cost_per_mwh = cost;
         }
         bounds
     }
@@ -3419,7 +3446,7 @@ mod anticipated_objective_tests {
             return PostStudyResolved::default();
         }
         let post_study = PostStudyStages {
-            stages: (0..n_post)
+            thermal_stages: (0..n_post)
                 .map(|_| PostStudyStage {
                     start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
                     duration_hours: PSA_STUDY_HOURS,
@@ -3437,8 +3464,9 @@ mod anticipated_objective_tests {
                     },
                 )
                 .collect(),
+            water_bucket_stages: WaterBucketStages::FromThermalStages,
         };
-        let post_study_stages = post_study_calendar_stages(&post_study.stages);
+        let post_study_stages = post_study_calendar_stages(&post_study.thermal_stages);
         resolve_post_study_artifacts(
             Some(&post_study),
             &[PSA_THERMAL_ID],
@@ -3666,7 +3694,6 @@ mod block_family_slack_tests {
         EntityId, Hydro, HydroBlockBounds, HydroPenalties, HydroStageBounds, LineBlockBounds,
         LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec, PenaltiesDefaults,
         PumpingBlockBounds, ResolvedBounds, ResolvedPenalties, ThermalBlockBounds,
-        ThermalStageBounds,
     };
 
     use crate::hydro_models::{
@@ -3835,6 +3862,7 @@ mod block_family_slack_tests {
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -3862,10 +3890,10 @@ mod block_family_slack_tests {
             &BoundsDefaults {
                 hydro: zero_hydro_stage_bounds(),
                 hydro_block: zero_hydro_block_bounds(),
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -4123,12 +4151,11 @@ mod evaporation_slack_objective_tests {
         LineBlockBounds, LineStagePenalties, NcsStagePenalties, NoiseMethod, PenaltiesCountsSpec,
         PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds, ResolvedPenalties,
         ScenarioSourceConfig, Stage, StageRiskConfig, StageStateConfig, ThermalBlockBounds,
-        ThermalStageBounds,
     };
 
     use crate::hydro_models::{
-        EvaporationModel, EvaporationModelSet, LinearizedEvaporation, ProductionModelSet,
-        ResolvedProductionModel,
+        EvaporationCoefficientSign, EvaporationModel, EvaporationModelSet, LinearizedEvaporation,
+        ProductionModelSet, ResolvedProductionModel,
     };
     use crate::indexer::{BlockIdx, EvapLocal, HydroCellIndex};
 
@@ -4198,10 +4225,10 @@ mod evaporation_slack_objective_tests {
                     max_generation_mw: 45.0,
                     ..Default::default()
                 },
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -4242,6 +4269,7 @@ mod evaporation_slack_objective_tests {
                     outflow_violation_below_cost: 0.0,
                     outflow_violation_above_cost: 0.0,
                     generation_violation_below_cost: 0.0,
+                    fpha_violation_cost: 0.0,
                     evaporation_violation_cost: 0.0,
                     water_withdrawal_violation_cost: 0.0,
                     water_withdrawal_violation_pos_cost: 0.0,
@@ -4310,6 +4338,7 @@ mod evaporation_slack_objective_tests {
                     LinearizedEvaporation {
                         intercept_m3s: 1.0,
                         volume_slope_m3s_per_hm3: 0.0,
+                        coefficient_sign: EvaporationCoefficientSign::Positive,
                     };
                     N_STAGES
                 ],
@@ -4455,7 +4484,6 @@ mod contract_column_tests {
     use novomodelo_core::{
         BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, EntityId, HydroBlockBounds,
         HydroStageBounds, LineBlockBounds, PumpingBlockBounds, ResolvedBounds, ThermalBlockBounds,
-        ThermalStageBounds,
     };
 
     use super::{ColumnBufs, StageLayout, TemplateBuildCtx, fill_contract_columns};
@@ -4505,10 +4533,10 @@ mod contract_column_tests {
                 hydro_block: HydroBlockBounds {
                     ..Default::default()
                 },
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -4672,7 +4700,7 @@ mod thermal_block_bound_tests {
     use novomodelo_core::{
         BlockBoundsCountsSpec, BoundsCountsSpec, BoundsDefaults, ContractBlockBounds,
         HydroBlockBounds, HydroStageBounds, LineBlockBounds, PumpingBlockBounds,
-        ResolvedBlockBounds, ResolvedBounds, Thermal, ThermalBlockBounds, ThermalStageBounds,
+        ResolvedBlockBounds, ResolvedBounds, Thermal, ThermalBlockBounds,
     };
 
     use crate::indexer::AnticipatedPlants;
@@ -4720,10 +4748,10 @@ mod thermal_block_bound_tests {
                 hydro_block: HydroBlockBounds {
                     ..Default::default()
                 },
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -4779,10 +4807,7 @@ mod thermal_block_bound_tests {
             let cell = self.base.bounds.thermal_block_base_mut(t_idx, stage_idx);
             cell.min_generation_mw = min_mw;
             cell.max_generation_mw = max_mw;
-            self.base
-                .bounds
-                .thermal_bounds_mut(t_idx, stage_idx)
-                .cost_per_mwh = cost;
+            cell.cost_per_mwh = cost;
         }
 
         fn install_block_overlay(&mut self) {
@@ -4815,6 +4840,21 @@ mod thermal_block_bound_tests {
                 .expect("overlay cell must exist for a fixture-sized overlay");
             over.min_generation_mw = min_mw;
             over.max_generation_mw = max_mw;
+        }
+
+        fn set_block_cost(
+            &mut self,
+            t_idx: usize,
+            stage_idx: usize,
+            block_idx: usize,
+            cost: Option<f64>,
+        ) {
+            self.base
+                .bounds
+                .block_overlay_mut()
+                .thermal_override_mut(t_idx, stage_idx, block_idx)
+                .expect("overlay cell must exist for a fixture-sized overlay")
+                .cost_per_mwh = cost;
         }
 
         fn make_ctx(&mut self) -> TemplateBuildCtx<'_> {
@@ -4994,7 +5034,117 @@ mod thermal_block_bound_tests {
             assert_eq!(
                 objective[thermal_start + blk],
                 45.0 * BLOCK_HOURS[blk],
-                "objective reads the stage-level (not per-block) cost, blk {blk}"
+                "a bound-only override leaves the objective at the stage cost, blk {blk}"
+            );
+        }
+    }
+
+    /// One thermal at stage cost 30.0 with block 0 overridden to 10.0 and block 2
+    /// to 70.0; block 1 falls through to the stage cost.
+    ///
+    /// derived: `10 * 200`, `30 * 300`, `70 * 244` from `BLOCK_HOURS = [200, 300, 244]`.
+    #[test]
+    fn test_thermal_objective_prices_each_block_with_its_resolved_cost() {
+        let mut fixtures = ThermalFixtures::new(vec![thermal(1, None, 30.0)]);
+        fixtures.set_stage_bounds(0, STAGE_IDX, 0.0, 500.0, 30.0);
+        fixtures.install_block_overlay();
+        fixtures.set_block_cost(0, STAGE_IDX, 0, Some(10.0));
+        fixtures.set_block_cost(0, STAGE_IDX, 2, Some(70.0));
+
+        let (_col_lower, _col_upper, objective, thermal_start) = run_fill(&mut fixtures, STAGE_IDX);
+
+        let expected = [2000.0_f64, 9000.0, 17080.0];
+        for blk in 0..N_BLKS {
+            assert_eq!(
+                objective[thermal_start + blk].to_bits(),
+                expected[blk].to_bits(),
+                "objective prices the resolved block cost, blk {blk}"
+            );
+        }
+    }
+
+    /// A cost override at (thermal 1, block 2) changes that one objective entry; every
+    /// other objective entry and both bound vectors stay bit-identical to the run
+    /// without it.
+    ///
+    /// derived: the changed entry is `99 * 244 = 24156`.
+    #[test]
+    fn test_thermal_block_cost_override_changes_exactly_one_objective_entry() {
+        let run = |override_cost: Option<f64>| {
+            let mut fixtures =
+                ThermalFixtures::new(vec![thermal(1, None, 30.0), thermal(2, None, 45.0)]);
+            fixtures.set_stage_bounds(0, STAGE_IDX, 0.0, 200.0, 30.0);
+            fixtures.set_stage_bounds(1, STAGE_IDX, 0.0, 150.0, 45.0);
+            fixtures.install_block_overlay();
+            if override_cost.is_some() {
+                fixtures.set_block_cost(1, STAGE_IDX, 2, override_cost);
+            }
+            run_fill(&mut fixtures, STAGE_IDX)
+        };
+
+        let (lower_a, upper_a, objective_a, thermal_start) = run(None);
+        let (lower_b, upper_b, objective_b, _) = run(Some(99.0));
+
+        let changed = thermal_start + N_BLKS + 2;
+        assert_eq!(objective_a.len(), objective_b.len());
+        for col in 0..objective_a.len() {
+            if col == changed {
+                assert_eq!(
+                    objective_b[col].to_bits(),
+                    24156.0_f64.to_bits(),
+                    "overridden entry prices 99.0 over block 2's hours"
+                );
+                assert_ne!(
+                    objective_a[col].to_bits(),
+                    objective_b[col].to_bits(),
+                    "overridden entry differs from the run without it"
+                );
+            } else {
+                assert_eq!(
+                    objective_a[col].to_bits(),
+                    objective_b[col].to_bits(),
+                    "objective entry {col} is untouched"
+                );
+            }
+            assert_eq!(
+                lower_a[col].to_bits(),
+                lower_b[col].to_bits(),
+                "col_lower {col} is untouched"
+            );
+            assert_eq!(
+                upper_a[col].to_bits(),
+                upper_b[col].to_bits(),
+                "col_upper {col} is untouched"
+            );
+        }
+    }
+
+    /// A block-1 cap of 100.0 and a block-1 cost of 70.0 on one thermal (stage bounds
+    /// `(0, 500, 20)`) apply independently: the cap leaves the cost at 70.0 and the
+    /// cost leaves the cap at 100.0.
+    ///
+    /// derived: `20 * 200`, `70 * 300`, `20 * 244` from `BLOCK_HOURS = [200, 300, 244]`.
+    #[test]
+    fn test_thermal_block_cost_and_block_bound_apply_together() {
+        let mut fixtures = ThermalFixtures::new(vec![thermal(1, None, 20.0)]);
+        fixtures.set_stage_bounds(0, STAGE_IDX, 0.0, 500.0, 20.0);
+        fixtures.install_block_overlay();
+        fixtures.set_block_override(0, STAGE_IDX, 1, None, Some(100.0));
+        fixtures.set_block_cost(0, STAGE_IDX, 1, Some(70.0));
+
+        let (_col_lower, col_upper, objective, thermal_start) = run_fill(&mut fixtures, STAGE_IDX);
+
+        assert_eq!(
+            col_upper[thermal_start..thermal_start + N_BLKS],
+            [500.0, 100.0, 500.0],
+            "the block cost leaves the other blocks' caps alone"
+        );
+        let expected = [4000.0_f64, 21000.0, 4880.0];
+        for blk in 0..N_BLKS {
+            assert_eq!(
+                objective[thermal_start + blk].to_bits(),
+                expected[blk].to_bits(),
+                "the block cap leaves the cost at the resolved value, blk {blk}"
             );
         }
     }
@@ -5011,7 +5161,7 @@ mod line_contract_pumping_block_bound_tests {
         HydroStageBounds, Line, LineBlockBounds, LineBlockOverride, LineStagePenalties,
         NcsStagePenalties, PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds,
         PumpingBlockOverride, PumpingStation, ResolvedBlockBounds, ResolvedBounds,
-        ResolvedPenalties, ThermalBlockBounds, ThermalStageBounds,
+        ResolvedPenalties, ThermalBlockBounds,
     };
 
     use crate::time_value::TimeValue;
@@ -5097,10 +5247,10 @@ mod line_contract_pumping_block_bound_tests {
                 hydro_block: HydroBlockBounds {
                     ..Default::default()
                 },
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -5139,6 +5289,7 @@ mod line_contract_pumping_block_bound_tests {
                     outflow_violation_below_cost: 0.0,
                     outflow_violation_above_cost: 0.0,
                     generation_violation_below_cost: 0.0,
+                    fpha_violation_cost: 0.0,
                     evaporation_violation_cost: 0.0,
                     water_withdrawal_violation_cost: 0.0,
                     water_withdrawal_violation_pos_cost: 0.0,
@@ -5634,7 +5785,6 @@ mod hydro_block_bound_tests {
         HydroUnitGroupOverride, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
         PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBlockBounds,
         ResolvedBounds, ResolvedHydroUnitGroupBounds, ResolvedPenalties, ThermalBlockBounds,
-        ThermalStageBounds,
     };
 
     use crate::hydro_models::{
@@ -5736,6 +5886,7 @@ mod hydro_block_bound_tests {
             outflow_violation_below_cost,
             outflow_violation_above_cost,
             generation_violation_below_cost,
+            fpha_violation_cost: 10.0 * generation_violation_below_cost,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -5765,10 +5916,10 @@ mod hydro_block_bound_tests {
                     water_withdrawal_m3s: 0.0,
                 },
                 hydro_block: hydro_block_bounds(0.0, 0.0, 0.0, None, 0.0, 0.0, None),
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -6009,7 +6160,14 @@ mod hydro_block_bound_tests {
 
         let mut row_lower = vec![0.0_f64; layout.rows.num_rows];
         let mut row_upper = vec![0.0_f64; layout.rows.num_rows];
-        fill_operational_violation_rows(&ctx, stage_idx, &layout, &mut row_lower, &mut row_upper);
+        fill_operational_violation_rows(
+            &ctx,
+            stage.id,
+            stage_idx,
+            &layout,
+            &mut row_lower,
+            &mut row_upper,
+        );
 
         let offsets = FillOffsets {
             turbine: layout.geometry.turbine.start,
@@ -6565,7 +6723,7 @@ mod hydro_block_bound_tests {
         fixtures.set_hydro_bounds(
             0,
             STAGE_IDX,
-            hydro_block_bounds(0.0, 0.0, 0.0, None, 0.0, 300.0, None),
+            hydro_block_bounds(0.0, 1_000_000.0, 0.0, None, 0.0, 300.0, None),
         );
         fixtures.install_block_overlay();
         fixtures.set_hydro_block_override(
@@ -6614,6 +6772,8 @@ mod hydro_block_bound_tests {
 
 #[cfg(test)]
 mod cell_column_bound_tests {
+    use std::collections::BTreeMap;
+
     use crate::test_support::ctx_fixture::CtxFixture;
 
     use novomodelo_core::entities::hydro::{FillingConfig, HydroGenerationModel};
@@ -6624,7 +6784,7 @@ mod cell_column_bound_tests {
         HydroUnitGroupBoundsCountsSpec, HydroUnitGroupOverride, LineBlockBounds,
         LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec, PenaltiesDefaults,
         PumpingBlockBounds, ResolvedBlockBounds, ResolvedBounds, ResolvedHydroUnitGroupBounds,
-        ResolvedPenalties, ThermalBlockBounds, ThermalStageBounds,
+        ResolvedPenalties, ThermalBlockBounds,
     };
 
     use crate::hydro_models::{
@@ -6636,11 +6796,13 @@ mod cell_column_bound_tests {
     use crate::test_support::make_unit_group;
     use crate::time_value::TimeValue;
 
+    use super::super::fpha_cursor::for_each_fpha_plane;
     use super::super::hydro_state::{cell_min_generation, cell_min_turbined};
+    use super::super::rows::fill_stage_rows;
     use super::super::test_support::{BLOCK_HOURS, three_block_stage, zero_hydro_penalties};
     use super::{
         ColumnBufs, GroupBoundLookup, StageLayout, TemplateBuildCtx, fill_fpha_generation_columns,
-        fill_turbine_columns,
+        fill_fpha_slack_columns, fill_turbine_columns,
     };
 
     const N_STAGES: usize = 1;
@@ -6796,6 +6958,7 @@ mod cell_column_bound_tests {
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -6825,10 +6988,10 @@ mod cell_column_bound_tests {
                     water_withdrawal_m3s: 0.0,
                 },
                 hydro_block: hydro_block_bounds(0.0, 0.0),
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -7236,6 +7399,112 @@ mod cell_column_bound_tests {
             col_lower[layout.geometry.turbine_col(cell_a, BlockIdx::new(0))],
             0.0
         );
+    }
+
+    fn fpha_model() -> ResolvedProductionModel {
+        ResolvedProductionModel::Fpha {
+            planes: vec![FphaPlane {
+                intercept: 0.0,
+                gamma_v: 0.0,
+                gamma_q: 0.0,
+                gamma_s: 0.0,
+            }],
+        }
+    }
+
+    fn turbine_uppers(fixtures: &mut Fixtures) -> Vec<f64> {
+        let ctx = fixtures.make_ctx();
+        let stage = three_block_stage(STAGE_IDX);
+        let layout = StageLayout::new(&ctx, &stage, STAGE_IDX);
+        let (mut col_lower, mut col_upper, mut objective) = fresh_bufs(layout.num_cols);
+        let mut bufs = ColumnBufs {
+            col_lower: &mut col_lower,
+            col_upper: &mut col_upper,
+            objective: &mut objective,
+        };
+        fill_turbine_columns(&ctx, &stage, STAGE_IDX, &layout, &mut bufs);
+        (0..N_BLKS)
+            .map(|blk| {
+                col_upper[layout
+                    .geometry
+                    .turbine_col(HydroCell::new(0), BlockIdx::new(blk))]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_turbine_fold_drops_a_group_without_generation_capacity() {
+        let groups = vec![
+            make_unit_group(EntityId(11), EntityId(500), 0.0, 0.0, 0.0, 100.0),
+            make_unit_group(EntityId(12), EntityId(500), 0.0, 50.0, 0.0, 100.0),
+        ];
+        let plant = grouped_hydro(1, EntityId(70), groups, 200.0, 50.0);
+        let mut fixtures = Fixtures::new(vec![plant], vec![fpha_model()], N_STAGES);
+        fixtures.set_hydro_bounds(0, STAGE_IDX, hydro_block_bounds(200.0, 50.0));
+
+        assert_eq!(turbine_uppers(&mut fixtures), vec![100.0; N_BLKS]);
+    }
+
+    #[test]
+    fn test_generation_bound_drops_a_group_without_turbine_capacity() {
+        let groups = vec![
+            make_unit_group(EntityId(11), EntityId(500), 0.0, 100.0, 0.0, 0.0),
+            make_unit_group(EntityId(12), EntityId(500), 0.0, 50.0, 0.0, 100.0),
+        ];
+        let plant = grouped_hydro(1, EntityId(70), groups, 100.0, 150.0);
+        let mut fixtures = Fixtures::new(vec![plant], vec![fpha_model()], N_STAGES);
+        fixtures.set_hydro_bounds(0, STAGE_IDX, hydro_block_bounds(100.0, 150.0));
+
+        let ctx = fixtures.make_ctx();
+        let stage = three_block_stage(STAGE_IDX);
+        let layout = StageLayout::new(&ctx, &stage, STAGE_IDX);
+        let (mut col_lower, mut col_upper, mut objective) = fresh_bufs(layout.num_cols);
+        let mut bufs = ColumnBufs {
+            col_lower: &mut col_lower,
+            col_upper: &mut col_upper,
+            objective: &mut objective,
+        };
+        fill_fpha_generation_columns(&ctx, STAGE_IDX, &layout, &mut bufs);
+
+        let upper: Vec<f64> = (0..N_BLKS)
+            .map(|blk| {
+                col_upper[layout
+                    .geometry
+                    .generation_col(FphaCellLocal::new(0), BlockIdx::new(blk))]
+            })
+            .collect();
+        assert_eq!(upper, vec![50.0; N_BLKS]);
+    }
+
+    #[test]
+    fn test_plant_without_generation_capacity_at_a_block_freezes_that_block() {
+        let plant = grouped_hydro(1, EntityId(70), Vec::new(), 100.0, 100.0);
+        let mut fixtures = Fixtures::new(vec![plant], vec![fpha_model()], N_STAGES);
+        fixtures.set_hydro_bounds(0, STAGE_IDX, hydro_block_bounds(100.0, 100.0));
+        fixtures.install_block_overlay();
+        fixtures.set_hydro_block_override(
+            0,
+            1,
+            HydroBlockOverride {
+                max_generation_mw: Some(0.0),
+                ..HydroBlockOverride::default()
+            },
+        );
+
+        assert_eq!(turbine_uppers(&mut fixtures), vec![100.0, 0.0, 100.0]);
+    }
+
+    #[test]
+    fn test_zero_productivity_plant_without_generation_capacity_turbines_nothing() {
+        let plant = grouped_hydro(1, EntityId(70), Vec::new(), 50.0, 0.0);
+        let mut fixtures = Fixtures::new(
+            vec![plant],
+            vec![ResolvedProductionModel::ConstantProductivity { productivity: 0.0 }],
+            N_STAGES,
+        );
+        fixtures.set_hydro_bounds(0, STAGE_IDX, hydro_block_bounds(50.0, 0.0));
+
+        assert_eq!(turbine_uppers(&mut fixtures), vec![0.0; N_BLKS]);
     }
 
     /// A `PreFilling` split plant pins BOTH its cells' turbined columns to
@@ -7657,29 +7926,36 @@ mod cell_column_bound_tests {
     }
 
     /// `cell_min_turbined`/`cell_min_generation` are declaration-order
-    /// invariant: a plant declaring the SAME three groups (one on bus 5, two on
-    /// bus 6) in a different `Vec` order produces the IDENTICAL per-cell floor
-    /// sum, bit-for-bit — the min-floor mirror of `HydroCellIndex`'s own
-    /// declaration-order invariance
+    /// invariant: a plant declaring the SAME four groups (one on bus 5, three on
+    /// bus 6, one of them without capacity) in a different `Vec` order produces
+    /// the IDENTICAL per-cell floor sum, bit-for-bit — the min-floor mirror of
+    /// `HydroCellIndex`'s own declaration-order invariance
     /// (`test_cell_index_is_invariant_to_group_declaration_order_and_ids` in
-    /// `lp/indexer/hydro_cell.rs`).
+    /// `lp/indexer/hydro_cell.rs`). The group without capacity adds nothing: the
+    /// bus-6 cell floors 3 + 4 = 7 m³/s and 4 + 5 = 9 MW, not 9 and 15.
     #[test]
     fn test_cell_min_floor_is_invariant_to_group_declaration_order() {
         let group_a = make_unit_group(EntityId(10), EntityId(5), 8.0, 500.0, 5.0, 500.0);
         let group_b = make_unit_group(EntityId(11), EntityId(6), 4.0, 500.0, 3.0, 500.0);
         let group_c = make_unit_group(EntityId(12), EntityId(6), 5.0, 500.0, 4.0, 500.0);
+        let group_d = make_unit_group(EntityId(13), EntityId(6), 6.0, 0.0, 2.0, 500.0);
 
         let forward = grouped_hydro(
             1,
             EntityId(999),
-            vec![group_a.clone(), group_b.clone(), group_c.clone()],
+            vec![
+                group_a.clone(),
+                group_b.clone(),
+                group_c.clone(),
+                group_d.clone(),
+            ],
             1000.0,
             1000.0,
         );
         let reversed = grouped_hydro(
             1,
             EntityId(999),
-            vec![group_c, group_b, group_a],
+            vec![group_d, group_c, group_b, group_a],
             1000.0,
             1000.0,
         );
@@ -7735,6 +8011,11 @@ mod cell_column_bound_tests {
                 min_gen_r.to_bits(),
                 "bus {bus:?}: min-generation floor must not depend on group declaration order"
             );
+
+            if bus == EntityId(6) {
+                assert_eq!(min_turb_f, 7.0, "bus 6 min-turbine floor");
+                assert_eq!(min_gen_f, 9.0, "bus 6 min-generation floor");
+            }
         }
     }
 
@@ -7795,6 +8076,237 @@ mod cell_column_bound_tests {
              not sum-then-fold's min(110,150) = 110"
         );
     }
+
+    const PLANE_INTERCEPT: f64 = 5.0;
+    const FPHA_PRICE: f64 = 7.0;
+
+    fn plane_model() -> ResolvedProductionModel {
+        ResolvedProductionModel::Fpha {
+            planes: vec![FphaPlane {
+                intercept: PLANE_INTERCEPT,
+                gamma_v: 0.0,
+                gamma_q: 1.0,
+                gamma_s: 0.0,
+            }],
+        }
+    }
+
+    /// The padding plant and [`split_plant`] (cells 1 and 2, buses 200 and 300,
+    /// groups 21 and 22 at positions 0 and 1) with one plane each, the split
+    /// plant priced at `FPHA_PRICE`.
+    fn split_plant_fixtures() -> Fixtures {
+        let hydros = vec![padding_hydro(), split_plant(None, None)];
+        let models = vec![
+            ResolvedProductionModel::ConstantProductivity { productivity: 1.0 },
+            plane_model(),
+        ];
+        let mut fixtures = Fixtures::new(hydros, models, N_STAGES);
+        fixtures.set_hydro_bounds(0, STAGE_IDX, hydro_block_bounds(200.0, 1_000_000.0));
+        fixtures.set_hydro_bounds(1, STAGE_IDX, hydro_block_bounds(9000.0, 12000.0));
+        fixtures
+            .base
+            .penalties
+            .hydro_penalties_mut(1, STAGE_IDX)
+            .fpha_violation_cost = FPHA_PRICE;
+        fixtures.install_group_overlay();
+        fixtures
+    }
+
+    /// The bounds of one FPHA `(cell, block)`'s plane row and plane-slack column.
+    struct PlaneCell {
+        row: (f64, f64),
+        slack: (f64, f64),
+        slack_cost: f64,
+    }
+
+    /// Every FPHA `(cell, block)` of the stage, keyed by global cell and block
+    /// index, for a fixture whose plants carry one plane.
+    fn plane_cells(fixtures: &mut Fixtures) -> BTreeMap<(usize, usize), PlaneCell> {
+        let ctx = fixtures.make_ctx();
+        let stage = three_block_stage(STAGE_IDX);
+        let layout = StageLayout::new(&ctx, &stage, STAGE_IDX);
+        let (row_lower, row_upper) = fill_stage_rows(&ctx, &stage, STAGE_IDX, &layout);
+        let (mut col_lower, mut col_upper, mut objective) = fresh_bufs(layout.num_cols);
+        let mut bufs = ColumnBufs {
+            col_lower: &mut col_lower,
+            col_upper: &mut col_upper,
+            objective: &mut objective,
+        };
+        fill_fpha_slack_columns(&ctx, &stage, STAGE_IDX, &layout, &mut bufs);
+
+        let mut cells = BTreeMap::new();
+        for_each_fpha_plane(&ctx, STAGE_IDX, &layout, |visit, _plane| {
+            let col = layout.geometry.fpha_slack_col(visit.cell_local, visit.blk);
+            let plane_cell = PlaneCell {
+                row: (row_lower[visit.row], row_upper[visit.row]),
+                slack: (col_lower[col], col_upper[col]),
+                slack_cost: objective[col],
+            };
+            assert!(
+                cells
+                    .insert((visit.cell.get(), visit.blk.get()), plane_cell)
+                    .is_none(),
+                "one plane per (cell, block)"
+            );
+        });
+        cells
+    }
+
+    /// One `(cell, block)`'s plane row is `(-INF, row_upper)`, its slack
+    /// `[0, slack_upper]`, and the slack is priced at `FPHA_PRICE` times the
+    /// block's hours whether or not it is pinned.
+    fn assert_plane_cell(
+        cells: &BTreeMap<(usize, usize), PlaneCell>,
+        cell: usize,
+        blk: usize,
+        row_upper: f64,
+        slack_upper: f64,
+    ) {
+        let plane_cell = &cells[&(cell, blk)];
+        assert_eq!(
+            plane_cell.row.0,
+            f64::NEG_INFINITY,
+            "cell {cell} block {blk}: plane row lower"
+        );
+        assert_eq!(
+            plane_cell.row.1.to_bits(),
+            row_upper.to_bits(),
+            "cell {cell} block {blk}: plane row upper"
+        );
+        assert_eq!(
+            plane_cell.slack,
+            (0.0, slack_upper),
+            "cell {cell} block {blk}: plane slack"
+        );
+        assert_eq!(
+            plane_cell.slack_cost.to_bits(),
+            (FPHA_PRICE * BLOCK_HOURS[blk]).to_bits(),
+            "cell {cell} block {blk}: plane slack price"
+        );
+    }
+
+    /// `derived:` the single cell's share is 100/100 = 1, and block 1 fails the
+    /// plant term of the predicate (ḡ = 0).
+    #[test]
+    fn test_dead_cell_block_frees_its_plane_rows() {
+        let fixtures = |zero_block_1: bool| {
+            let group = make_unit_group(EntityId(21), EntityId(200), 0.0, 100.0, 0.0, 100.0);
+            let plant = grouped_hydro(2, EntityId(200), vec![group], 100.0, 100.0);
+            let mut fixtures = Fixtures::new(vec![plant], vec![plane_model()], N_STAGES);
+            fixtures.set_hydro_bounds(0, STAGE_IDX, hydro_block_bounds(100.0, 100.0));
+            fixtures
+                .base
+                .penalties
+                .hydro_penalties_mut(0, STAGE_IDX)
+                .fpha_violation_cost = FPHA_PRICE;
+            if zero_block_1 {
+                fixtures.install_block_overlay();
+                fixtures.set_hydro_block_override(
+                    0,
+                    1,
+                    HydroBlockOverride {
+                        max_generation_mw: Some(0.0),
+                        ..HydroBlockOverride::default()
+                    },
+                );
+            }
+            fixtures
+        };
+
+        let mut dead = fixtures(true);
+        let cells = plane_cells(&mut dead);
+        let share = dead.base.hydro_cell_index.share_of(HydroCell::new(0));
+        assert_eq!(share, 1.0);
+        let live_upper = share * PLANE_INTERCEPT;
+        for blk in [0, 2] {
+            assert_plane_cell(&cells, 0, blk, live_upper, f64::INFINITY);
+        }
+        assert_plane_cell(&cells, 0, 1, f64::INFINITY, 0.0);
+
+        let twin = plane_cells(&mut fixtures(false));
+        for blk in 0..N_BLKS {
+            assert_plane_cell(&twin, 0, blk, live_upper, f64::INFINITY);
+        }
+    }
+
+    /// `derived:` group 22 is cell 2's only group, and its ḡ = 0 at block 2
+    /// fails the group term. Cell 1's group 21 is untouched.
+    #[test]
+    fn test_dead_cell_of_a_split_plant_frees_only_its_own_rows() {
+        let mut fixtures = split_plant_fixtures();
+        fixtures.set_group_block_override(
+            1,
+            1,
+            STAGE_IDX,
+            2,
+            HydroUnitGroupOverride {
+                max_generation_mw: Some(0.0),
+                ..HydroUnitGroupOverride::default()
+            },
+        );
+        let cells = plane_cells(&mut fixtures);
+        let index = &fixtures.base.hydro_cell_index;
+        let live_upper = |cell: usize| index.share_of(HydroCell::new(cell)) * PLANE_INTERCEPT;
+
+        assert_plane_cell(&cells, 2, 2, f64::INFINITY, 0.0);
+        for blk in [0, 1] {
+            assert_plane_cell(&cells, 2, blk, live_upper(2), f64::INFINITY);
+        }
+        for blk in 0..N_BLKS {
+            assert_plane_cell(&cells, 1, blk, live_upper(1), f64::INFINITY);
+        }
+    }
+
+    #[test]
+    fn test_cell_has_capacity_follows_the_plant_and_group_terms() {
+        let capacity = |fixtures: &mut Fixtures| -> [[bool; N_BLKS]; 2] {
+            let ctx = fixtures.make_ctx();
+            [1, 2].map(|cell| {
+                std::array::from_fn(|blk| {
+                    ctx.cell_has_capacity(STAGE_IDX, HydroSys::new(1), HydroCell::new(cell), blk)
+                })
+            })
+        };
+
+        assert_eq!(
+            capacity(&mut split_plant_fixtures()),
+            [[true; N_BLKS]; 2],
+            "the unmodified plant has capacity at every cell and block"
+        );
+
+        let mut group_term = split_plant_fixtures();
+        group_term.set_group_block_override(
+            1,
+            1,
+            STAGE_IDX,
+            2,
+            HydroUnitGroupOverride {
+                max_generation_mw: Some(0.0),
+                ..HydroUnitGroupOverride::default()
+            },
+        );
+        assert_eq!(
+            capacity(&mut group_term),
+            [[true; N_BLKS], [true, true, false]],
+            "cell 2's only group has no generation at block 2"
+        );
+
+        let mut plant_term = split_plant_fixtures();
+        plant_term.install_block_overlay();
+        plant_term.set_hydro_block_override(
+            1,
+            0,
+            HydroBlockOverride {
+                max_turbined_m3s: Some(0.0),
+                ..HydroBlockOverride::default()
+            },
+        );
+        assert_eq!(
+            capacity(&mut plant_term),
+            [[false, true, true]; 2],
+            "the plant has no turbine capacity at block 0, so neither cell has"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -7853,6 +8365,7 @@ mod ncs_objective_tests {
                     outflow_violation_below_cost: 0.0,
                     outflow_violation_above_cost: 0.0,
                     generation_violation_below_cost: 0.0,
+                    fpha_violation_cost: 0.0,
                     evaporation_violation_cost: 0.0,
                     water_withdrawal_violation_cost: 0.0,
                     water_withdrawal_violation_pos_cost: 0.0,

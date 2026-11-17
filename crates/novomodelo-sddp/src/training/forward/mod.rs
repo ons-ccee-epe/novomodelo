@@ -37,6 +37,7 @@ use std::sync::mpsc::Sender;
 mod basis_capture;
 mod delta_cut_batch;
 mod enumerated;
+mod node_solve;
 mod sampler;
 mod stage_solve;
 mod stats_aggregation;
@@ -48,7 +49,7 @@ pub use delta_cut_batch::build_delta_cut_row_batch_into;
 pub use sampler::build_sampler_from_ctx;
 pub use stats_aggregation::{ForwardBound, NestedUbScratch, sync_forward};
 
-pub(crate) use basis_capture::write_capture_metadata;
+pub(crate) use basis_capture::{capture_forward_basis, write_capture_metadata};
 pub use enumerated::EnumeratedForwardScratch;
 pub(crate) use enumerated::{EnumeratedForwardResult, EnumeratedParams, run_enumerated_forward};
 pub(crate) use stage_solve::run_forward_stage;

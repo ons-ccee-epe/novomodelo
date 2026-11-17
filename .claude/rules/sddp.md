@@ -13,106 +13,717 @@ Verify against the cited code before changing any of them.
 ## Benders cut sign & subgradient extraction
 
 The FCF stores the **raw subgradient** `∂Q/∂x` as a cut's `coefficients` (it is
-_not_ negated at storage). That subgradient is the incoming-state column's
-reduced cost **divided** by `col_scale`:
+_not_ negated at storage), one per slot of the extracted cut-state projection,
+mapped by global state dimension. A columned slot (storage, bucket, commitment
+hold) takes the incoming-state column's reduced cost **divided** by `col_scale`:
 `∂Q/∂x_orig = rc_scaled / col_scale[col]` — divided, not multiplied, because the
-pin sets `v_scaled = v_orig / col_scale`. Cut-row construction then negates the
-gradient so the LP row reads `−∇·x + θ ≥ intercept`, yielding the Benders cut
+pin sets `v_scaled = v_orig / col_scale`. A lag slot has no column. Its
+coefficient is `β(h, l) = ψ_l·g_h + w(h, l)` (the chain-rule subsection below),
+in cost-scaled units with no `col_scale` division, where
+`g_h = −(Gᵀπ)(h) + Σ y·β(k, (h, 0))` over the binding resident cuts `k` and
+`(Gᵀπ)(h)` sums each coupling coefficient the inflow-coupling sink recorded for
+hydro `h` times its row's dual times that row's `row_scale`. Cut-row
+construction then negates the gradient on the columns the row has, writing
+`−β·col_scale` for each columned slot, so the LP row reads
+`−∇·x + θ ≥ intercept`, and moves the lag terms to the right-hand side (the
+cut-row RHS section below). That yields the Benders cut
 `θ ≥ Q(x̂) + π'(x − x̂)`.
-Read: `training/backward/duals_extraction.rs` (`extract_duals_from_view`), `cut/fcf.rs`, and
+
+The wrong-but-compiling alternatives:
+
+- multiplying a columned slot's reduced cost by `col_scale` instead of dividing
+  it: the coefficient is off by the square of the column's scale;
+- dividing a lag coefficient by a `col_scale`: a lag slot has no column, so the
+  division reads the scale of whichever column sits at that index;
+- rendering a lag slot as a row coefficient at a column computed by hand: the
+  row has no lag column, so the coefficient lands on another family's column;
+- reading `(Gᵀπ)(h)` from the scaled row duals without `row_scale`: every lag
+  coefficient is off by the scales of its hydro's coupled rows.
+
+Read: `training/backward/duals_extraction.rs` (`extract_opening_duals`),
+`solve/opening_solver.rs` (`StageOpeningSolver::read_resident_cut_duals`),
+`cut/chain_rule.rs` (`per_opening_coefficients_into`,
+`lag_coefficients_into`), `cut/fcf.rs`, `lp/indexer/cut_state_projection.rs`
+(`CutStateProjection::incoming_pairs`, `CutStateProjection::render_pairs`), and
 `cut::row::push_scaled_coefficient`, where `batch.values.push(-coeff * d)`
-applies the negation.
+applies the negation. Pinned by
+`folded_state_duals_hold_only_the_columned_slots` and
+`folded_coupled_duals_sum_unscaled_base_row_duals_in_entry_order`
+(`training/backward/duals_extraction.rs`: the state duals hold the columned
+slots only, divided by `col_scale`, and the coupled duals are the unscaled
+base-row duals summed in entry order);
+`per_opening_cut_matches_the_closed_form_on_a_par2_pair`,
+`lagless_extracted_cut_is_the_state_duals` and
+`lagless_resident_gives_psi_times_the_negated_coupling` (`cut/chain_rule.rs`);
+in `tests/cut_oracles/analytical_fold_cuts.rs`, the closed forms
+`a_terminal_stage_prices_a_par1_lag_at_psi_kappa_times_the_water_value` and
+`a_terminal_stage_prices_a_par1_lag_at_psi_kappa_times_the_water_value_on_another_psi_and_stage_length`
+(a negated coupling term flips the lag coefficient against the storage sign),
+and `an_injected_binding_cut_adds_its_next_lag_coefficient_to_the_producer_cut`
+and `an_injected_binding_cut_adds_its_next_lag_coefficient_to_the_producer_cut_with_the_injected_lags_swapped`
+(dropping `w`, reading `β(h, l)` for `β(h, l + 1)`, negating `y·β` in `g`, or
+multiplying the storage dual by its non-unit column scale moves a coefficient
+off the closed form); the shared dual identity, which `check_shared_dual_identity_on`
+checks against an LP that defines the inflow in a row, in
+`the_shared_dual_identity_holds_on_the_fpha_lag_study`,
+`the_shared_dual_identity_holds_at_every_opening_of_a_three_opening_lag_study`,
+`the_shared_dual_identity_holds_on_d19`,
+`the_shared_dual_identity_holds_on_d43_outside_its_lag_dropping_stage` and
+`the_shared_dual_identity_holds_on_a_lag_state_deeper_than_the_par_order`
+(`tests/cut_oracles/shared_dual_identity.rs`); and
+`the_fold_meets_the_expanded_kkt_conditions_at_every_cut_row_shape`
+(`tests/cut_oracles/kkt_per_shape.rs`: the cut's duals satisfy the KKT
+conditions of that LP at every cut-row shape of its fixtures).
 
 ### The cut intercept dots the trial state through the projection, never positionally
 
 The intercept `Q(x̂) − Σ_j β_j·x̂[dim(j)]` gathers the full trial-state vector
 `x̂` (length `StateSpace::n_state`) through the pool's `CutStateProjection`,
 pairing projected coefficient slot `j` with global state dimension
-`global_state_index(j)`. `CutStateProjection::dot_trial_state` is the single
-owner; every backward intercept site routes through it
-(`backward/replicated.rs`, `backward/outcome_aggregation.rs`'s
-`write_opening_outcome`, which the by-scenario and by-node schedulers share).
+`global_state_index(j)`. It is computed only after the chain rule has rebuilt
+the lag coefficients, so `β` is the cut's final coefficient vector. Under
+aggregate-first it is `Σ_ω μ_ω·Q_ω − β̄·x̂`, and the weights are joint:
+`aggregate_successor_cut` makes one `RiskMeasure::opening_weights_into` call
+over the canonical-ω costs of the flattened successor×opening vector, and
+`aggregate_first_cut_into` takes each child's ȳ and Gᵀπ partial sums under
+those joint weights, never renormalised per child, with `β̄` the sum over the
+children. `CutStateProjection::dot_trial_state` is the single owner, and every
+backward intercept site routes through it: `aggregate_first_cut_into`, called by
+both schedulers through `backward/successor_cut.rs`'s `aggregate_successor_cut`;
+the replicated backward (`backward/replicated.rs`), which recomputes each
+gathered opening's intercept the same way after the outcome exchange; and
+`cut/chain_rule.rs`'s `per_opening_cut_into`, the per-opening reference the
+oracles and benches compare against. `extract_opening_cut`, which the replicated
+backward and the forward node solve's fused slice call, returns only the opening's
+objective and coefficients, so it computes no intercept.
 
-A positional `coefficients.iter().zip(x̂)` is the wrong-but-compiling
-alternative. It agrees ONLY for the all-enabled identity projection; the moment a
-pool drops a region — a `storage:false`/`inflow_lags:false` pool, e.g. a study
-whose stages disable inflow-lag cut-state — slot `j` past the gap projects a
-global dimension `> j`, so the zip multiplies that coefficient by the WRONG
-dimension's value (an anticipated coefficient against a lag entry). The intercept
-gains a per-cut roughly constant bias, so the cut sits too high: an invalid,
-still-converging bound that, under a state-coupling terminal boundary FCF, drives
-`final_lb > final_ub` — a persistent negative gap halting a `gap` rule at a
-spurious crossover. Reduces to the positional dot bit-for-bit for an all-enabled
-pool (`global_state_index(j) == j`), so no existing full-projection study moves.
+The wrong-but-compiling alternatives:
+
+- a positional `coefficients.iter().zip(x̂)`. It agrees ONLY for the
+  all-enabled identity projection; the moment a pool drops a region — a
+  `storage:false`/`inflow_lags:false` pool, e.g. a study whose stages disable
+  inflow-lag cut-state — slot `j` past the gap projects a global dimension
+  `> j`, so the zip multiplies that coefficient by the WRONG dimension's value
+  (an anticipated coefficient against a lag entry). The intercept gains a
+  per-cut roughly constant bias, so the cut sits too high: an invalid,
+  still-converging bound that, under a state-coupling terminal boundary FCF,
+  drives `final_lb > final_ub` — a persistent negative gap halting a `gap` rule
+  at a spurious crossover. The gather reduces to the positional dot bit for bit
+  for an all-enabled pool (`global_state_index(j) == j`);
+- an intercept taken before the lag coefficients are rebuilt: it misses the
+  lag terms `Σ β(h, l)·â(h, l)`, so the cut is shifted by them at every trial
+  state;
+- weights renormalised per child (a weight call per child, or the joint
+  weights divided by each child's mass): the measure is applied per child and
+  then averaged, the nested form the joint-risk section below forbids.
+
 Read: `lp/indexer/cut_state_projection.rs` (`dot_trial_state`,
 `global_state_index`), `training/backward/replicated.rs`,
-`training/backward/outcome_aggregation.rs` (`write_opening_outcome`). Pinned by
-`dot_trial_state_gathers_reduced_projection_not_positional` (the gather picks the
-anticipated dimension past the dropped lag block) and
+`training/backward/successor_cut.rs` (`aggregate_successor_cut`),
+`cut/chain_rule.rs` (`per_opening_cut_into`, `aggregate_first_cut_into`),
+`training/forward/node_solve.rs`. Pinned by
+`dot_trial_state_gathers_reduced_projection_not_positional` (the gather picks
+the anticipated dimension past the dropped lag block) and
 `dot_trial_state_all_enabled_matches_positional_zip` (byte-neutral for the
-identity projection), both in `lp/indexer/cut_state_projection.rs`.
+identity projection), both in `lp/indexer/cut_state_projection.rs`;
+`a_cut_that_keeps_the_lag_state_carries_its_lag_coefficient` and
+`a_storage_only_cut_carries_no_lag_coefficient`
+(`tests/cut_oracles/analytical_fold_cuts.rs`: a reduced projection holds the
+storage coefficient alone, and the full one adds the lag coefficient);
+`aggregate_first_equals_weighted_per_opening_cuts`,
+`aggregate_under_pure_cvar_matches_the_weighted_per_opening_cuts`,
+`aggregate_on_a_cvar_fan_uses_joint_weights_never_renormalised` and
+`the_fan_strategy_draws_joint_weights_that_per_child_normalisation_would_change`
+(`cut/chain_rule.rs`: the aggregate equals the weighted per-opening cuts, and
+on a fan the joint weights differ from any per-child normalisation); and
+`compact_aggregate_first_agrees_with_weighted_per_opening_cuts`
+(`training/backward/tests.rs`).
+
+### Chain-rule accumulators start at negative zero; cut-RHS dots start at positive zero
+
+The chain-rule kernel in `cut/chain_rule.rs` starts its accumulators at −0.0:
+the lag sums `w` of `lag_coefficients_into`, and `aggregate_first_cut_into`'s Q̄
+(`q_bar`), its coefficient vector and its Gᵀπ sums (`chain.g`).
+`per_opening_coefficients_into` starts each `g` at `−(Gᵀπ)(h)`, the bits of
+`−0.0 − (Gᵀπ)(h)`, and adds the cut-dual terms into that same accumulator; a
+zero cut dual, of either sign, is skipped, never multiplied in. A `Closing`
+pool's lag-0 cut-dual sum is the one formed apart: it starts at −0.0, is scaled
+once by the share `c_h`, and the product is added to `g`.
+`aggregate_first_cut_into` likewise skips an opening whose weight is exactly 0.0
+before any of its adds, so a zero-weight opening, such as a pure-CVaR opening
+outside the tail, changes no bit; a successor child whose openings all weigh
+exactly 0.0 reaches neither `lag_coefficients_into` nor the coefficient add.
+−0.0 is the identity of IEEE-754 addition: `-0.0 + x` has the bits of `x` for
+every `x`, `x = −0.0` included. So the aggregate of one opening at weight 1.0 returns
+`per_opening_cut_into`'s bits, and an empty sum keeps a −0.0 coefficient's
+sign.
+
+A lag past the PAR order is multiplied in with ψ = 0, never skipped:
+`lag_coefficients_into` reads `psi.get(l).copied().unwrap_or(0.0)`, so the
+deepest lag's coefficient is exactly `0·g`, which is −0.0 when `g < 0` and +0.0
+when `g > 0`, and a shallower lag past the order gets `0·g + w`.
+
+The canonical cut-RHS dots of `cut/rhs.rs` start at +0.0: S, P and W are
+ascending-slot dots from +0.0. `cut_brackets_into` is the production owner of S
+and P, and `cut_noise_terms_into` of W, each a batched form with lanes across
+rows only; `rhs_reference::cut_bracket` and `rhs_reference::cut_noise_term` are
+their scalar statements, and `cut_rhs_into` adds W to the brackets. The aggregate's ȳ slots
+also start at +0.0 (`AggregateScratch` holds every one at 0.0 between calls).
+Every writer of the canonical cut-row RHS must produce the same bits, so a
+writer that recomputes an RHS calls the canonical function, never a re-derived
+fold.
+
+The wrong-but-compiling alternatives:
+
+- a `0.0` start in the kernel (a `fill(0.0)`, a `q_bar` of `0.0`, or a
+  `Closing` cut-dual sum started from +0.0 before it is scaled and added to
+  `g`): `+0.0 + (−0.0)` is `+0.0`, so a lone −0.0 term flips to +0.0, and the
+  aggregate of one opening at weight 1.0 no longer equals
+  `per_opening_cut_into` bit for bit;
+- multiplying a zero weight in (`q_bar += 0.0 * Q`, `g -= 0.0 * coupled`): `0·x`
+  is −0.0 for a negative `x` and +0.0 for a positive one, so a zero-weight
+  opening flips a −0.0 accumulator, and the aggregate no longer equals the cut
+  of its weighted openings bit for bit;
+- writing a literal `0.0` where ψ is zero: the deepest lag's coefficient
+  becomes +0.0 whatever the sign of `g`, so the stored bits of a cut move with
+  no change to the model; skipping the write where ψ is zero instead leaves the
+  slot's previous contents, which a buffer reused across solves, such as the
+  fused slice's, carries over from an earlier solve;
+- an iterator `sum()`, which starts from −0.0, or any fold from −0.0 in place
+  of a `cut/rhs.rs` dot: an empty dot, or one whose every product is −0.0
+  (a negative coefficient times a zero value), then returns −0.0 where the
+  canonical function returns +0.0, so that writer's RHS no longer has the bits
+  of every writer that calls the canonical function;
+- a reassociated row in the batched form of `cut_brackets_into` or
+  `cut_noise_terms_into`: each chunk of the range summed into its own partial
+  and the partials added, or a lane taken across one row's slots. The row's dot
+  is no longer the ascending fold from +0.0, so its bracket or W no longer has
+  the bits of `rhs_reference::cut_bracket` or `rhs_reference::cut_noise_term`.
+
+Each compiles and breaks a bitwise identity between a cut and its per-opening
+form, between a cut and its model, or between two writers of one cut's RHS.
+Read: `cut/chain_rule.rs` (`per_opening_coefficients_into`, `per_opening_cut_into`,
+`lag_coefficients_into`, `aggregate_first_cut_into`, `AggregateScratch`), `cut/rhs.rs` (the module
+documentation, `cut_brackets_into`, `cut_noise_terms_into`, the batched form),
+`cut/rhs_reference.rs` (`rhs_reference::cut_bracket` and
+`rhs_reference::cut_noise_term`, the scalar statements).
+Pinned by
+`zero_cut_duals_leave_the_bits_unchanged` (padding the cut duals with +0.0 and
+−0.0 entries over infinite pool rows changes no bit),
+`single_accumulator_keeps_the_sign_of_a_negated_zero_coupling` (a zero
+coupling's −0.0 survives in `g`, which a cut-dual sum formed apart from +0.0
+would flip),
+`an_empty_cut_sum_keeps_the_sign_of_a_negated_zero_coefficient` (an empty `w`
+keeps ψ·g's −0.0),
+`a_closing_pool_with_no_nonzero_cut_dual_leaves_g_bit_identical` (a `Closing`
+pool whose cut duals are all zero gives every lag coefficient the bits of the
+`Shifted` pool's; a +0.0 start flips `g`'s −0.0),
+`aggregate_of_one_opening_at_unit_weight_equals_the_per_opening_cut` (one
+opening at weight 1.0, with a −0.0 state dual, returns the per-opening
+coefficients and intercept bit for bit),
+`a_zero_weight_opening_changes_no_bit` (a zero-weight opening whose products
+would flip each −0.0 accumulator changes no bit of the cut or its intercept),
+`a_child_whose_openings_all_have_zero_weight_changes_no_bit` (a child whose
+openings all weigh 0.0, under a negative ψ, leaves a −0.0 lag coefficient and
+the intercept as they were),
+`padding_lag_coefficient_carries_the_sign_of_zero_times_g` (the deepest lag
+past the PAR order is −0.0 for a negative `g` and +0.0 for a positive one; a
++0.0 written where ψ is zero fails it),
+`lags_past_the_par_order_take_a_zero_psi` and
+`orderless_par_never_reads_psi`, all in `cut/chain_rule.rs`; and, in
+`cut/rhs.rs`, `bracket_accumulators_start_at_positive_zero` (a bracket whose
+every product is −0.0 is +0.0 over one row and over a full group of lanes,
+where a fold from −0.0 gives −0.0),
+`noise_term_accumulators_start_at_positive_zero` (the same for W),
+`batched_brackets_equal_the_scalar_reference_bit_for_bit` (every bracket of the
+batched form equals `rhs_reference::cut_bracket` bit for bit over random row
+subsets, every remainder of a group included; a chunk-summed row fails it) and
+`batched_noise_terms_equal_the_scalar_reference_bit_for_bit` (the same for W
+against `rhs_reference::cut_noise_term`).
+
+## Every resident cut row's RHS is written at every solve
+
+Every cut row resident in a solver instance has its right-hand side written
+before every solve that follows a change of the pinned state or of the noise:
+the frozen and delta rows of a stage template, the rows a lazy solve appends,
+the lower bound's rows, deactivated ones included (`lb_cut_slots_into` lists
+them in LP row order), the rows of the simulation cut set and the terminal
+boundary rows. A cut row's RHS depends on the trial lags and on the solve's
+noise (the cut-row RHS section below), so a row left unwritten keeps the bound
+of an earlier solve, and the LP still solves to a wrong cut or bound. The
+opening phase (`StageSolvePrep::patch_opening`) computes the RHS of every
+resident row. On a frozen LP it hands them to the solver as one range from the
+first cut row (`StageOpeningSolver::push_cut_rhs`); a lazy solve reads its
+active cuts' values (`ActiveCutRhs`, in `CutPool::active_cuts` order) and pushes
+each row it makes resident.
+
+The wrong-but-compiling alternatives:
+
+- writing the RHS of the delta rows only: the frozen rows keep the bound of the
+  solve that froze them;
+- skipping the deactivated lower-bound rows: the lower-bound LP keeps every row
+  it appended, so a deactivated row keeps a stale bound;
+- writing the RHS at pin time only: no opening's noise reaches it.
+
+Read: `training/stage_solve_prep.rs` (`StageSolvePrep::patch_opening`),
+`solve/opening_solver.rs` (`StageOpeningSolver::push_cut_rhs`), `cut/dcs.rs`
+(`ActiveCutRhs`), `training/lower_bound.rs` (`lb_cut_slots_into`),
+`test_support/bound_recording.rs` (`CutRowPushRecord`, the recorder's notion of
+a fresh row), `test_support/solve_sites.rs` (`SolveSiteKind`, `CutRowShape`).
+Pinned by `every_solve_site_patches_every_resident_cut_row_at_every_solve`
+(`tests/cut_basis/cut_row_push_coverage.rs`: every solve of every solve-site
+kind and cut-row shape records no stale cut row), its committed-deck sweep
+`every_committed_deck_patches_every_resident_cut_row_at_every_solve` (under
+`slow-tests`) and
+`lb_cut_slots_follow_lp_row_order_and_keep_deactivated_rows`
+(`training/lower_bound.rs`).
+
+## A sampled forward trial owns its lag chain
+
+A sampled forward trial's inflow lag chain is the primary partial sum and
+weight (`lag_accumulator`, `lag_weight_accum`) plus the downstream accumulator,
+weight, completed ring and count (`downstream_*`). The worker scratch holds one
+chain, so a trial's chain lives in its own `AccumSnapshot`, one per local trial.
+In `run_forward_worker`, every (trial, stage) solve after stage 0 first restores
+the trial's own snapshot into the scratch, and captures it back after the solve,
+once the lag advance in `run_forward_stage` has run. Stage 0 seeds the chain from
+`inflow_seeds`. A trial's trajectory then depends on neither the number
+of trials sharing its worker thread or rank nor their order.
+
+The wrong-but-compiling alternatives:
+
+- one chain per worker, reset only at stage 0: a trial reads the chain another
+  trial left, so the trajectories depend on `--threads` and on the rank count;
+- capturing before `assemble_outgoing_state`: the snapshot predates the lag
+  advance, so the trial's next stage reads a chain that has not advanced;
+- isolating only the primary accumulator: the downstream ring and count still
+  leak between trials at the stages that rebuild the lag from the downstream
+  ring.
+
+Read: `training/forward_pass_state.rs` (`run_forward_worker`),
+`stochastic/noise.rs` (`AccumSnapshot`). Pinned by the gates of
+`trial_isolated_lag_chain` in `tests/mpi_wire.rs`:
+`weekly_closing_month_trains_to_the_same_bits_at_every_thread_count`,
+`monthly_quarterly_rebuild_trains_to_the_same_bits_at_every_thread_count`,
+`weekly_closing_month_is_world_size_invariant` and
+`monthly_quarterly_rebuild_is_world_size_invariant`, the last two registered in
+`scripts/ci/run-mpi-launcher-gates.sh`; and
+`fixture_calendars_have_the_lag_shapes_the_gates_need`, which checks that the
+fixtures keep the lag transitions the gates read.
+
+## The cut-evaluation lag point has one owner
+
+A pool's cut rows evaluate their lag slots at one point `Φ`, set by the lag
+transition of the pool's stage and installed at setup in the pool's
+`CutLagPoint` as a `LagPointRule` (`classify_lag_points`). With `ẑ_h` the
+realized inflow, `â` the trial lags, `s_h` the partial sum of the open lag
+period at the visit, `W_h` the weight the period holds on entering the stage and
+`w` the stage's own weight:
+
+| Mode      | Stage                                                | `Φ(h, 0)`                                                   | `Φ(h, l ≥ 1)` | Chain rule                                       |
+| --------- | ---------------------------------------------------- | ----------------------------------------------------------- | ------------- | ------------------------------------------------ |
+| `Shifted` | a finalizing stage at monthly identity, or a rebuild | `ẑ_h`                                                       | `â(h, l − 1)` | `g_h = −(Gᵀπ)(h) + Σ y·β(k, (h, 0))`             |
+| `Carry`   | leaves its lag period open                           | `â(h, 0)`                                                   | `â(h, l)`     | `g_h = −(Gᵀπ)(h)`; `w(h, l)` sums every lag slot |
+| `Closing` | closes a period that began at an earlier stage       | `b_h + c_h·ẑ_h`, `b_h = s_h/(W_h + w)`, `c_h = w/(W_h + w)` | `â(h, l − 1)` | the cut term of `g_h` is scaled by `c_h`         |
+
+`CutLagPoint` is the only owner of `Φ`: the mode, the Closing coefficients
+(`closing_inverse_weight`, `closing_share`, `incoming_weight`) and the slot
+ranges, lag-major, so slot `lag0.start + l·N + h` holds `(h, l)`. `full` spans
+every lag slot whatever the mode. `lag0` and `shifted` follow the mode: under
+`Carry`, `lag0` is empty and `shifted` is `full`, so a Carry pool reads every
+slot against the lag it holds. `mean_lane` and `noise_lane` write the operands
+the P and W dots read, `b + c ⊙ p` and `c ⊙ σ·η` under `Closing`, the input
+slice itself otherwise. The chain rule branches on the resident pool's
+`CutLagPoint::mode`, and `has_lag_slots` reads `full`. The cut-row RHS
+functions of `cut/rhs.rs` and the chain rule, through `ChainRuleSlots::compose`,
+which composes the extracted and resident projections by global dimension, read
+it; no call site computes a lag slot, a mode or a coefficient.
+
+A stage that rebuilds its lags from the downstream ring keeps `Shifted` and warns
+once at setup: its cuts evaluate the lags as at a single-resolution stage. The
+kernel's rebuild branch leaves the primary weight as it was, so a `Closing` stage
+after a rebuild holds that weight in `W_h`.
+
+**The partial sum.** `s` is the open period's partial sum as the pin of one
+forward visit read it, and every pin reads its own visit's. A forward pin reads
+the accumulator its trial's `AccumSnapshot` restored. The record holds it
+(`TrajectoryRecord::partial_sum`: one entry per hydro when some pool is
+`Closing`, empty otherwise). A sampled backward pin of trial `m` at successor
+stage `successor` reads `records[m·n_stages + successor]`, whatever the slab
+lookup says (`SuccessorSpec::partial_sum_source`). The enumerated backward reads
+its node's accumulator (`EnumeratedForwardScratch::lag_accumulator`), and the
+lower bound reads the seed's. A debug build refuses a `Closing` pin whose live
+accumulator entered the stage at another weight than the setup replayed, and one
+whose given sum is shorter than the hydro count.
+
+`s` is rank-local: it lives in the trial's `AccumSnapshot` and record, never in
+`state`, an MPI payload, a checkpoint or a policy, and is never exchanged between
+ranks. The replicated backward reads the node's `AccumSnapshot` from the
+enumerated forward's visit, which every rank holds only while
+`TrainingSession::new` rejects interior branching under enumerated traversal at
+world size ≥ 2. Whatever lifts that rejection through an interior-node state
+exchange must carry the node's `AccumSnapshot` with its `out_state`: a rank that
+never visits the node would otherwise read a zeroed partial sum.
+
+**The limit.** The state carries the period's mean `b + c·ẑ`, not `s`, so a cut
+generated at one trial's `s` is read at another's. A cut is exact only where `s`
+is the same on every path of the study. Where the partial sums of an open period
+differ between paths, the cuts are approximate and the lower bound is not
+guaranteed to stay below the upper bound. No setup warning flags such a study;
+the limit is not remedied.
+
+A bracket the forward pass wrote is read only at the visit it was written for.
+A trajectory record's `FrozenBrackets` slab carries the tag
+`(iteration, NodeId)` of the forward visit that wrote it, and the backward pin
+of trial `m` at successor stage `s` reads record `m·n_stages + s`
+(`SuccessorSpec::bracket_source`), so the trial state is the record's own. The
+read compares `(iteration, NodeId)` and the written row count against the
+child's frozen row count (`SuccessorChild::frozen_rows`); a mismatch of either
+is a miss that recomputes the brackets, and a default slab never hits.
+
+The wrong-but-compiling alternatives:
+
+- the shifted alias at a `Carry` or `Closing` pool (`Φ(h, 0) = ẑ_h` and
+  `Φ(h, l) = â(h, l − 1)` whatever the mode): the row pushes a bound the stage's
+  outgoing lags are not at, so a cut is not tight at the trial state it was
+  generated at, and the lower bound can exceed the upper bound;
+- a `Carry` chain rule, or the cut-dual read that feeds it, guarded on `lag0`: a
+  Carry pool's `lag0` is empty, so its lag slots read as absent and the cut loses
+  the `w` terms of every lag;
+- the `Closing` share applied to `g` under `Carry`: a Carry stage's lag 0 is
+  `â(h, 0)`, so `ẑ` does not enter it and `g` has no cut term to scale; and
+  leaving the cut term of `g` unscaled under `Closing`, which prices `ẑ` as if it
+  entered the period mean at weight 1;
+- `s` read from the worker scratch at a backward site: the scratch holds the
+  accumulator of the last trial the worker advanced, not the visited trial's, so
+  the cut follows the worker a trial landed on and the thread count;
+- `s` tied to the slab (read only on a slab hit, or from `FrozenBrackets`): a
+  miss, an unavailable lookup or the bypassed cache then supplies another `s`, and
+  the bits of a solve follow whether the cache was hit;
+- `s` appended to `state` or to an MPI payload: the state is the domain of the
+  cut, so every projection, cut wire, checkpoint and policy would change layout
+  for a quantity no cut is a function of;
+- lag-slot arithmetic at a call site (`lag0.start + h·L + l`, hydro-major): it
+  agrees with the owner only for a single hydro or a single lag;
+- composing the chain rule's slot pairs by position: a pool that drops a region
+  pairs a coefficient with another dimension's dual;
+- reading the slab without its tag, or by iteration alone: a record written for
+  another node, or in an earlier iteration, supplies the brackets of another
+  trial state.
+
+Read: `lp/indexer/cut_state_projection.rs` (`CutStateProjection::lag_point`,
+`CutLagPoint`, `LagPointMode`, `LagPointRule`, `ChainRuleSlots::compose`),
+`setup/lag_points.rs` (`classify_lag_points`), `cut/chain_rule.rs`
+(`lag_coefficients_into`), `cut/rhs.rs`, `training/stage_solve_prep.rs`
+(`StageSolvePrep::pin_and_bracket`, `BracketSource`, `PartialSumSource`,
+`closing_partial_sum`), `training/trajectory.rs` (`TrajectoryRecord`,
+`FrozenBrackets`), `training/backward/mod.rs` (`ForwardVisits`, `SlabLookup`,
+`SuccessorSpec::bracket_source`, `SuccessorSpec::partial_sum_source`),
+`training/forward/enumerated.rs` (`EnumeratedForwardScratch::lag_accumulator`),
+`stochastic/noise.rs` (`AccumSnapshot`), `training/session/mod.rs`
+(`TrainingSession::new`). Pinned by, in `lp/indexer/cut_state_projection.rs`,
+`lag_point_follows_the_lag_region_of_each_projection`,
+`lag_point_of_a_single_lag_has_no_shifted_slots`,
+`lag_point_slots_map_to_the_lag_state_dims`,
+`a_carry_lag_point_reads_every_lag_slot_as_shifted`,
+`has_lag_slots_follows_the_full_lag_region`,
+`an_installed_lag_point_mode_leaves_the_slot_ranges_unchanged`,
+`shifted_and_carry_lag_lanes_return_the_input_slice`,
+`closing_mean_lane_is_the_partial_sum_share_plus_the_scaled_mean`,
+`closing_noise_lane_scales_each_noise_term_by_its_share`,
+`closing_lanes_evaluate_the_cut_at_the_kernel_lag_region` and
+`carry_lanes_evaluate_the_cut_at_the_kernel_lag_region`;
+`lag_ranges_come_from_the_projection_owner` (`cut/rhs.rs`);
+`carry_mode_chain_rule_carries_every_lag_of_the_resident_cut` and
+`closing_mode_chain_rule_scales_the_lag0_cut_term_by_the_share`
+(`cut/chain_rule.rs`); the classifier, in `setup/tests.rs`,
+`lag_point_modes_follow_the_kernel_order` and
+`lag_point_mode_of_a_rebuild_stage_warns_once_naming_the_stage`, and, in
+`tests/cut_oracles/analytical_fold_cuts.rs`,
+`lag_point_modes_of_the_weekly_closing_month_fixture_follow_its_calendar`,
+`lag_point_mode_of_the_quarter_after_a_rebuild_is_closing_at_one_half` and
+`lag_point_modes_of_uniform_committed_decks_are_shifted` (a uniform deck keeps
+the shifted point at every pool); the partial sum, in `training/trajectory.rs`,
+`a_record_holds_one_partial_sum_per_hydro_when_a_pool_is_closing` and
+`a_record_holds_no_partial_sum_when_no_pool_is_closing`, in
+`training/stage_solve_prep/tests.rs`,
+`a_given_partial_sum_source_reads_the_given_slice`,
+`a_live_partial_sum_source_reads_the_scratch_accumulator`,
+`a_closing_pin_accepts_a_given_partial_sum_of_every_hydro`,
+`a_closing_pin_rejects_a_given_partial_sum_shorter_than_the_hydros`,
+`a_closing_stage_accepts_a_live_accumulator_that_entered_at_the_setup_weight`
+and `a_closing_stage_rejects_a_live_accumulator_that_entered_at_another_weight`,
+and, in `training/backward/tests.rs`,
+`a_backward_partial_sum_source_does_not_depend_on_the_slab_lookup` and
+`a_sampled_backward_pin_reads_the_partial_sum_of_its_trials_successor_record`;
+the evaluation at the pool's point, in `tests/cut_oracles/analytical_fold_cuts.rs`,
+`a_non_finalizing_stage_evaluates_cuts_at_the_carried_lags` and
+`a_finalizing_stage_evaluates_cuts_at_the_closing_period_mean` (each against its
+closed form, with the alias value differing from it),
+`stored_cuts_are_tight_at_their_own_trial_point_on_a_same_path_partial_sum_deck`
+(the RHS pushed at a cut's generating visit equals `α + β·x̂`),
+`lower_bound_stays_below_the_upper_bound_on_a_same_path_partial_sum_deck`,
+`d30_stage_seven_cuts_evaluate_at_the_closing_point_of_one_half`,
+`terminal_boundary_value_on_a_weeks_then_month_calendar_matches_the_closed_form`
+(a last week that straddles into the terminal month makes the terminal pool
+`Closing`, and its boundary row is pushed at `α + β·Φ` at every forward trial
+and backward opening) and
+`every_solve_site_pushes_cut_rows_at_its_own_partial_sum`
+(`tests/cut_basis/cut_row_push_coverage.rs`: every solve-site kind pushes each
+cut row at `α + β·Φ` of its own visit, the visit matched by the state the solve
+pins, with the alias value differing from it);
+`a_lagless_deck_with_a_lag_bearing_boundary_trains_to_the_same_bits_with_the_solve_caches_bypassed`
+(`tests/cut_basis.rs`) and
+`a_resume_on_a_mixed_resolution_lag_deck_equals_the_uninterrupted_run`
+(`tests/periodic_checkpoint.rs`); and the slab tests: `a_default_slab_misses_at_every_tag`,
+`a_written_slab_hits_only_at_its_own_iteration_and_node` and
+`reserve_never_shrinks_and_a_write_within_capacity_keeps_the_buffer`
+(`training/trajectory.rs`); in `training/backward/tests.rs`,
+`a_slab_read_with_another_row_count_is_a_miss`,
+`compact_slab_lookup_maps_to_the_pin_source`,
+`compact_slab_is_read_at_each_trials_own_record`,
+`compact_slab_hit_reads_without_a_miss_and_matches_the_unwritten_run`,
+`compact_slab_foreign_tags_miss_on_every_pin_and_match_the_unwritten_run`,
+`compact_slab_unwritten_slab_misses_on_every_pin`,
+`compact_slab_values_reach_the_pushed_cut_rhs` and
+`compact_forward_stage_writes_the_brackets_of_its_frozen_rows`;
+`the_bracket_slab_grows_only_when_the_templates_are_frozen` and
+`training_session_new_rejects_interior_branching_enumerated_at_world_ge_2`, the
+guard the rank-local partial sum rests on (`training/session/mod.rs`); and, in
+`training/stage_solve_prep/tests.rs`,
+`pin_folded_brackets_each_cut_row_from_the_raw_trial_state`,
+`pin_folded_slab_hit_equals_the_computed_brackets_and_does_not_count` and
+`pin_folded_slab_miss_equals_the_computed_brackets_and_counts`.
+
+## The cut-row RHS has one association
+
+A cut row's RHS is `fl(fl(fl(α + S) + P) + W)`: `S` dots the cut's shifted lag
+slots (`l ≥ 1`) with the trial lags they read, `P` its lag-0 slots with the
+conditional mean `p(â)`, and `W` its lag-0 slots with the noise term `σ·η`
+(the lag point of the section above). Each is an ascending-slot dot from +0.0
+(the chain-rule subsection above) with no fused multiply-add, and
+`ẑ = p + σ·η` is never dotted in one piece. The bracket `B = fl(fl(α + S) + P)`
+is written by `cut_brackets_into`, with lanes across rows only, and
+`rhs_reference::cut_bracket` is its scalar statement; `cut_noise_terms_into`
+writes `W` the same way, with `rhs_reference::cut_noise_term` as its scalar
+statement; `cut_rhs_into` and `cut_rhs_from_noise_terms_into` write `fl(B + W)`. The
+value of a row therefore does not depend on the batch it is computed in.
+
+A cache holds only values these functions produced: a trajectory record's
+`FrozenBrackets` slab holds the brackets `cut_brackets_into` wrote for the
+node's frozen rows, and `StageNoiseTable` holds the `σ·η` that
+`evaluate_par_noise_term_batch` wrote and the `W` that `cut_noise_terms_into` wrote
+for each outcome. A solve with a cache gives the bits of the solve without it.
+The RHS reaches the solver through `StageOpeningSolver::push_cut_rhs` on a
+frozen LP, and through the rows a lazy solve makes resident from
+`ActiveCutRhs`.
+
+The slab is positional: entry `i` is the bracket of LP cut row `i` of the
+node's frozen template, in `active_cuts()` order, and the read compares the row
+count, not the rows. A hit is right only because the backward loads the same
+rows in the same order: `load_backward_lp` loads the frozen template and then
+appends the delta rows, and `successor_active_slots` lists the pool's active
+cuts in that row order. That holds because the pool is append-only and
+`TrainingSession::run_iteration` runs the forward, then the backward, then
+selection, budget and refreeze, so the forward and the backward of one
+iteration see one frozen template, and the backward loads those rows first,
+then the delta appended since.
+`fpha_lag_study_trains_to_the_same_bits_with_the_solve_caches_bypassed`
+(`tests/cut_basis.rs`) pins it: a slab hit gives the bits of the brackets
+recomputed on the loaded rows. `StageNoiseTable::cut_noise` against its stride
+and `cut_rhs_from_noise_terms_into` across its three slices assert their
+lengths in every build.
+
+The wrong-but-compiling alternatives:
+
+- one dot over `ẑ`: `fl(p + σ·η)` rounds before the products, so the RHS loses
+  the bits of every writer that adds `W` last;
+- a fused multiply-add (`mul_add`) in a dot: each product is no longer rounded
+  on its own;
+- a reassociated batch, or the blocked GEMM kernel for `S`: the row's sum no
+  longer runs in ascending slot order;
+- a cache value computed another way (a `σ·η` product formed inline, a `W`
+  from another fold): the cached solve and the uncached one differ in their
+  last bits, and the run's results follow whether the cache was hit;
+- a deactivation or a reorder of the active cuts between the forward and the
+  backward of one iteration, with or without a refreeze (selection or budget
+  moved there): without a refreeze `successor_active_slots` stops matching the
+  loaded rows, and with one the slab holds the brackets of the rows the
+  template had. A changed row count is caught, by a slab miss or by the length
+  assertion in `pin_child_lp`; the same count at other cuts is not, and one
+  cut's bracket or `W` lands on another cut's row.
+
+Read: `cut/rhs.rs` (the module documentation, `cut_brackets_into`,
+`cut_noise_terms_into`, `cut_rhs_into`, `cut_rhs_from_noise_terms_into`),
+`cut/rhs_reference.rs`, `training/backward/stage_noise.rs` (`StageNoiseTable`),
+`training/trajectory.rs` (`FrozenBrackets`), `training/backward/lp_setup.rs`
+(`load_backward_lp`, `pin_child_lp`), `training/backward/mod.rs`
+(`reify_successor_outcomes`), `training/session/mod.rs`
+(`TrainingSession::run_iteration`), `training/stage_solve_prep.rs`
+(`StageSolvePrep::patch_opening`, `NoiseTermSource`), `solve/opening_solver.rs`
+(`StageOpeningSolver::push_cut_rhs`). Pinned by, in `cut/rhs.rs`,
+`bracket_accumulators_start_at_positive_zero`,
+`noise_term_accumulators_start_at_positive_zero`,
+`batched_brackets_equal_the_scalar_reference_bit_for_bit`,
+`batched_noise_terms_equal_the_scalar_reference_bit_for_bit`,
+`bracket_adds_the_lag_shift_before_the_conditional_mean`,
+`rhs_adds_the_noise_term_last_not_one_dot_over_z`,
+`row_loops_equal_the_scalar_function_on_a_slot_subset`,
+`shifted_dot_runs_in_ascending_slot_order` and
+`cut_rhs_from_noise_terms_equals_cut_rhs_into_bit_for_bit`;
+`open_folded_writes_cut_rhs_as_bracket_plus_noise_term`
+(`training/stage_solve_prep/tests.rs`); the cache bypass, in
+`fpha_lag_study_trains_to_the_same_bits_with_the_solve_caches_bypassed`
+(`tests/cut_basis.rs`) and
+`compact_solve_cache_bypass_forces_the_miss_and_gives_the_cached_bits`
+(`training/backward/tests.rs`); the thread- and rank-shape gates
+`compact_by_node_cvar_thread_shapes_agree_on_the_lag_study` and
+`compact_lag_study_is_world_size_invariant` (`tests/mpi_wire.rs`); and
+`a_folded_solve_and_its_cut_allocate_nothing_after_warm_up`
+(`tests/forward_sampler_no_alloc.rs`).
 
 ## State pinning uses column bounds, not equality rows
 
-Incoming state is pinned with `set_col_bounds` on the incoming-state LP column;
-there is no state-fixing row range in the LP. Always resolve the LP column —
-for both pinning and dual extraction — via
+Every incoming state dimension that has an LP column — storage, bucket and
+commitment hold — is pinned with `set_col_bounds` on its incoming-state column;
+there is no state-fixing row range in the LP. Always resolve that column — for
+both pinning and dual extraction — via
 `StateSpace::state_to_lp_incoming_column`; never assume a fixing-row index.
-Read: `lp/indexer/state_space.rs`.
+`StateSpace::incoming_block_start(region)` owns which incoming column block a
+region pins and `StateSpace::outgoing_block_start(region)` the outgoing block
+that holds its values. The inflow-lag region has no LP columns, so it has no
+block, and asking either resolver for one panics in every build profile;
+`fill_col_state_patches` pins no lag. The lags enter the LP only through the
+realized inflow, which shifts the coupled rows' bounds (the coupling-sink
+section below) and, under the truncation methods, sets the inflow-slack bounds
+(the truncation section below), and through the cut-row RHS (the cut-row RHS
+section above).
 
-## Inflow noise enters only through the z rows
+`assemble_outgoing_state` builds the outgoing state by region, in
+`REGION_ORDER`: a columned region copies its outgoing block
+(`StateSpace::outgoing_block_range`), and the lag region is advanced from the
+incoming lags and the realized inflow by `advance_lag_chain`.
 
-The inflow-noise patch touches hydro `h`'s z-inflow row and, under
-`truncation` and `truncation_with_penalty`, only the column bounds of hydro
+The wrong-but-compiling alternatives:
+
+- a lag column offset computed by hand (past the storage block): no column
+  holds the lags, so the pin lands on another family's column;
+- reading the outgoing state from the primal at each dimension's state index:
+  no column holds the lags, and the columns past storage do not sit at their
+  state index.
+
+Read: `lp/indexer/state_space.rs` (`StateSpace::incoming_block_start`,
+`StateSpace::outgoing_block_start`, `StateSpace::outgoing_block_range`,
+`REGION_ORDER`), `lp/builder/patch.rs` (`fill_col_state_patches`),
+`solve/stage_solve.rs` (`assemble_outgoing_state`), and
+`crates/novomodelo-stochastic/src/par/lag_kernel.rs` (`advance_lag_chain`).
+Pinned by `lag_region_has_no_incoming_lp_block` and
+`lag_region_has_no_outgoing_lp_block` (`lp/indexer/state_space.rs`),
+`fill_col_state_patches_skips_the_lag_region`
+(`lp/builder/patch.rs`),
+`assemble_outgoing_state_seeds_the_compact_lag_slice_from_the_incoming_lags` and
+`assemble_outgoing_state_shifts_the_compact_lag_slice_onto_the_realized_inflow`
+(`solve/stage_solve.rs`), and
+`compact_and_expanded_agree_at_identical_pinned_states`
+(`tests/cut_oracles/pinned_state_cross_checks.rs`: at the same pinned state the
+stage LP and an LP that defines the inflow in a row agree).
+
+## Inflow enters only through the coupling sink
+
+The realized inflow `ẑ_h` enters the stage LP only through the base rows the
+inflow-coupling sink recorded for hydro `h`, with the coefficients it recorded,
+through the lag-0 term of the cut-row RHS and, under the truncation methods,
+through the bounds of hydro `h`'s inflow-slack column (below).
+`InflowCouplingSink::record` is the only way a builder site couples an inflow
+to a row:
+`push_local_inflow_coupling` records `−ζ` on a parallel stage and `−τ_k` (block
+`k`'s duration hours times `M3S_TO_HM3`) on each chronological block row — on
+the hydro's own water-balance row(s), or its `PreFilling` short-circuit
+target's — and `fill_generic_constraint_entries` records the generic
+`hydro_inflow` terms. `InflowCouplingSink::finish` returns the coupling `G`
+(`InflowCoupling`), unscaled, with each touched row's unscaled bounds. Every
+solve writes each touched row's bounds as its unscaled bound minus
+`Σ_h G(r, h)·ẑ_h`, the sum accumulated from +0.0 in ascending hydro, then entry,
+order, times the row's `row_scale`; both sides of a range row move, and an
+infinite side stays infinite (`PatchBuffer::fill_inflow_shift_patches`).
+
+The same router gives the hydro's inflow-slack column, when the method has
+one, exactly the hydro's water-row entries: the target's rows for a `PreFilling`
+hydro, no row at a sink, never a frozen identity row. Under `truncation` and
+`truncation_with_penalty` the noise also patches the column bounds of hydro
 `h`'s own inflow-slack column (`apply_inflow_slack_col_bounds`, divided by
-`col_scale`) — never a water-balance row. Every water-balance row instead
-reads the deterministic column `z_h` through `push_local_inflow_coupling`: at
-`−ζ` on a parallel stage, and at `−τ_k` (block `k`'s duration hours times
-`M3S_TO_HM3`) on each chronological block row — on the hydro's own
-water-balance row(s), or its `PreFilling` short-circuit target's. The same
-router gives the hydro's inflow-slack column, when the method has one, exactly
-`z_h`'s water-row entries: the target's rows for a `PreFilling` hydro, no row
-at a sink, never a frozen identity row. The water rows themselves carry no
-lag, base, or patch of their own; re-encoding the inflow there routes a
-chronological hydro's noise onto another hydro's block row.
+`col_scale`), and nothing else. A water-balance row has no inflow term of its
+own. Its bounds move only through the coupling shift, and no lag reaches it by
+another route.
 
-Read: `lp/builder/entries.rs` (`push_local_inflow_coupling`), `stochastic/noise.rs`
-(`transform_inflow_noise`, `apply_inflow_slack_col_bounds`). Pinned by
+The wrong-but-compiling alternatives:
+
+- coupling an inflow in a row the sink did not record, or on another row than
+  the router's: the shift misses that row, so its dual drops out of the lag
+  price, and a chronological hydro's noise or a `PreFilling` hydro's inflow
+  lands on another hydro's row;
+- scaling `G` when the templates are built: the shift term is then scaled
+  twice;
+- shifting one side of a range or equality row: the row's width changes with
+  the inflow.
+
+Read: `lp/builder/inflow_coupling.rs` (`InflowCouplingSink`, `InflowCoupling`),
+`lp/builder/entries.rs` (`push_local_inflow_coupling`,
+`fill_generic_constraint_entries`), `lp/builder/patch.rs`
+(`PatchBuffer::fill_inflow_shift_patches`), `stochastic/noise.rs`
+(`realize_inflow`, `apply_inflow_slack_col_bounds`). Pinned by
 `chronological_inflow_noise_moves_only_its_own_hydro`
-(`tests/chronological_inflow_noise.rs`, method `none`) for the z-row part;
+(`tests/chronological_inflow_noise.rs`, method `none`);
 `every_noise_dimension_patches_only_its_own_entity`
-(`tests/patch_ownership_sweep.rs`), whose inflow ownership set is the z row
-under `none` and `penalty`, and the z row plus the hydro's own inflow-slack
-column bounds under the truncation methods; and
+(`tests/patch_ownership_sweep.rs`), whose inflow ownership set is the coupled
+rows under `none` and `penalty`, and the coupled rows plus the hydro's own
+inflow-slack column bounds under the truncation methods;
 `inflow_slack_follows_z_routing_for_prefilling` (`lp/builder/entries.rs`) for
-the slack route.
+the slack route; `every_study_reads_z_inflow_on_its_water_rows`
+(`tests/template_integration/water_balance_coupling.rs`: every study's water
+rows read the inflow through the sink, on a chronological stage with unequal
+block hours, a `PreFilling` route and a generic `hydro_inflow` entry);
+`inflow_shift_accumulates_hydros_in_ascending_order_from_positive_zero`,
+`inflow_shift_moves_both_bounds_and_keeps_infinite_ones`,
+`inflow_shift_scales_the_shifted_unscaled_bound` and
+`inflow_shift_region_follows_the_load_patches` (`lp/builder/patch.rs`); and the
+closed forms `a_prefilling_upstream_inflow_is_priced_at_the_target_water_value`
+(coupling the upstream's inflow on its own row prices it at its own water value)
+and `a_range_inflow_row_prices_the_lag_on_both_of_its_sides` (a shift of the
+lower bounds alone breaks the upper-side solve), with their twins, in
+`tests/cut_oracles/analytical_fold_cuts.rs`.
 
 ## Truncation keeps the PAR state raw; the correction is a bounded column
 
-Under `truncation` and `truncation_with_penalty` η is never clamped: the z RHS
-is `b + σ·η` (0 without a PAR model) for every method, and outgoing lag 0 is
-built from the raw z primal — directly, or through the multi-resolution lag
-accumulator — with no clamp, so it may be negative (`assemble_outgoing_state`
-never clamps inflow lags; they are unbounded in the state box). The correction
-is the hydro's own inflow-slack column. Whenever the family exists it carries
-exactly z's water-row entries (`push_local_inflow_coupling`); only under the
-truncation methods does it also carry `+1` in the generic `hydro_inflow` term
-(`push_local_inflow_rate`). Its template bounds are `[0, 0]`
+Under `truncation` and `truncation_with_penalty` η is never clamped. One
+`realize_inflow` call per solve writes the realized inflow `ẑ = p(â) + σ·η`,
+where `p(â)` is the PAR conditional mean at this solve's pinned lags (`ẑ` is 0
+without a PAR model), and that one value feeds the coupled rows' shift (the
+coupling-sink section above), the slack bound `l*` and outgoing lag 0.
+`assemble_outgoing_state` builds outgoing lag 0 from `ẑ` — directly, or through
+the multi-resolution lag accumulator (`advance_lag_chain`) — with no clamp, so
+it may be negative (it never clamps inflow lags; they are unbounded in the state
+box). The correction is
+the hydro's own inflow-slack column. Whenever the family exists it carries
+exactly the hydro's water-row entries (`push_local_inflow_coupling`); only under
+the truncation methods does it also carry `+1` in the generic `hydro_inflow`
+term (`push_local_inflow_rate`). Its template bounds are `[0, 0]`
 (`fill_inflow_slack_columns`), and every solve patches them to `[l*, l*]` at
 cost 0 under `truncation` or to `[0, l*]` at `c_inf·T` (the hydro's
 `inflow_nonnegativity_cost` times the stage hours) under
-`truncation_with_penalty`, with `l* = max(−r(â, η), 0)` written as `+0.0` when
-`r ≥ 0`. `r` is the raw PAR value `evaluate_par_batch` returns at
-`current_state[inflow_lags]` — this solve's pinned lags — and this solve's
-noise. `transform_inflow_noise` writes the physical bounds and
+`truncation_with_penalty`, with `l* = max(−ẑ, 0)` written as `+0.0` when
+`ẑ ≥ 0`. `realize_inflow` writes the physical bounds and
 `apply_inflow_slack_col_bounds` applies them divided by `col_scale`,
 identically at every solve site (forward, enumerated forward, backward per
-opening, simulation, lower bound) through `StageSolvePrep::run`.
+opening, simulation, lower bound) through the one opening phase,
+`StageSolvePrep::patch_opening`. The chain rule never differentiates `l*`: a
+cut's lag coefficients are its subgradient with the slack bounds frozen at the
+cut's own trial state.
 
 Wrong-but-compiling alternatives:
 
 - clamping η before the solve (the old mechanism): it censors the PAR state,
-  so the lag carries `r⁺` instead of `r` and every successor cut is evaluated
+  so the lag carries `ẑ⁺` instead of `ẑ` and every successor cut is evaluated
   at the wrong lag;
 - computing `l*` from a precomputed scenario path instead of the pinned lags:
   the backward openings and the lower bound pin a different trial state than
@@ -123,7 +734,10 @@ Wrong-but-compiling alternatives:
   `col_scale = 1`): the slack's water-row entries are `−ζ`/`−τ_k`, so its
   column scale is not 1 and an unscaled write mis-sizes `l*` by it;
 - a non-zero cost on the `truncation` column: a fixed column with cost `c`
-  adds the constant `c·T·l*` to every objective, lower bound and cut.
+  adds the constant `c·T·l*` to every objective, lower bound and cut;
+- differentiating `l*` in the chain rule: the fixed slack's reduced cost is
+  added to the lag coefficient, so the cut is no longer the subgradient at the
+  frozen correction.
 
 Known limitation (Larroyd et al. (2022), the paper's §2.5): `l*` depends on the
 trial state, so a cut taken with the correction frozen at `l*(x̂_k, ω)` can
@@ -136,19 +750,19 @@ is then not guaranteed to stay below the upper bound, and a `gap` rule
 reads `(UB − LB).max(0.0)`. This is not remedied. Each stored cut stays a
 valid minorant of the successor value with the slack bounds frozen at its own
 trial state, which is what the cut oracles assert (`check_pool` in
-`tests/common/cut_oracles.rs`), so validity is checked on every truncation
+`tests/common/stored_cut_oracles.rs`), so validity is checked on every truncation
 deck with no exclusion.
 
-Read: `stochastic/noise.rs` (`transform_inflow_noise`,
-`apply_inflow_slack_col_bounds`), `training/stage_solve_prep.rs`
-(`StageSolvePrep::run`), `lp/builder/columns.rs` (`fill_inflow_slack_columns`),
-`lp/builder/entries.rs` (`push_local_inflow_coupling`),
+Read: `stochastic/noise.rs` (`realize_inflow`, `apply_inflow_slack_col_bounds`),
+`training/stage_solve_prep.rs` (`StageSolvePrep::patch_opening`),
+`lp/builder/columns.rs` (`fill_inflow_slack_columns`), `lp/builder/entries.rs`
+(`push_local_inflow_coupling`),
 `lp/builder/generic_constraints.rs` (`push_local_inflow_rate`),
 `stochastic/inflow_method.rs` (`truncates`, `slack_is_priced`),
 `solve/stage_solve.rs` (`assemble_outgoing_state`). Pinned by
-`test_transform_inflow_noise_truncation_writes_the_raw_rhs_and_fixes_the_correction`
-(the z RHS is never clamped; bounds `[l*, l*]` — forbids clamping η),
-`test_transform_inflow_noise_truncation_with_penalty_caps_the_correction`
+`test_realize_inflow_truncation_keeps_the_raw_inflow_and_fixes_the_correction`
+(`ẑ` is never clamped; bounds `[l*, l*]` — forbids clamping η),
+`test_realize_inflow_truncation_with_penalty_caps_the_correction`
 (bounds `[0, l*]` — forbids an unbounded slack),
 `truncation_slack_bound_is_divided_by_col_scale` (forbids an unscaled bound
 write) and `inflow_slack_index_buffer_rebuilds_on_start_change_at_equal_length`
@@ -162,7 +776,12 @@ write) and `inflow_slack_index_buffer_rebuilds_on_start_change_at_equal_length`
 `every_noise_dimension_patches_only_its_own_entity`
 (`tests/patch_ownership_sweep.rs`);
 `truncation_writes_the_raw_rhs_and_fixes_the_slack_at_the_correction`
-(`training/forward/tests.rs`); and, in `tests/cut_oracles.rs`,
+(`training/forward/tests.rs`);
+`a_truncated_negative_draw_prices_the_lag_without_the_truncation_bound` and
+`a_truncated_positive_draw_prices_the_lag_at_the_same_water_value`
+(`tests/cut_oracles/analytical_fold_cuts.rs`: the slack is fixed at `l* > 0`
+with a non-zero reduced cost, which a chain rule that differentiates `l*` adds
+— forbids differentiating `l*`); and, in `tests/cut_oracles.rs`,
 `inflow_slack_bounds_for_probe_evaluates_the_given_state` (`l*` follows the
 pinned lags of the given state — forbids a precomputed scenario path),
 `frozen_inflow_slack_bounds_reach_the_successor_lp`,
@@ -179,17 +798,52 @@ comparator can tell a right reference from a wrong one). On solved LPs: in
 `truncation_with_penalty_slack_is_zero_for_non_negative_inflow` and
 `truncation_handles_zero_sigma` (the per-method closed forms),
 `truncation_keeps_the_raw_par_value_as_the_next_lag` (a raw negative lag reaches
-the next z row), `truncation_simulated_slack_matches_the_negated_inflow_at_raw_lags`,
+the next stage's realized inflow),
+`truncation_simulated_slack_matches_the_negated_inflow_at_raw_lags`,
 `simulated_water_balance_closes_from_outputs` (the balance closes from the written
 outputs under every method, warm start on and off),
 `simulated_water_balance_closes_with_a_nonzero_release` (the same with water
 released and a withdrawal withheld) and
-`truncation_lag_sequence_is_order_invariant`;
-`truncation_out_of_lp_par_value_matches_the_z_row` (`tests/hydro_sim.rs`, the
-out-of-LP `r` equals the solved z on monthly and quarterly stages); and
+`truncation_lag_sequence_is_order_invariant`; and
 `truncation_slack_bounds_are_identical_across_solve_sites`
 (`tests/patch_ownership_sweep.rs`, lower bound vs forward at the root and the
 closed form at stored trial states).
+
+## The realized inflow has one route into the LP
+
+The stage-LP builder references the realized inflow only through the
+inflow-coupling sink (the coupling-sink section above): every coupling of an
+inflow to a row is an `InflowCouplingSink::record` call, and no builder site
+writes an inflow term into a row, a column or a bound by another route. A debug
+build refuses, in `InflowCouplingSink::record`, a hydro past the sink's hydro
+count and, in `InflowCouplingSink::finish`, a row past the base rows, a
+duplicate row for one hydro, a non-finite coefficient and row-bound slices of
+different lengths. `finish` lists each touched row once and orders the entries
+canonically whatever order the sites recorded them in, so the coupling does not
+depend on the declaration order. ψ, b and σ have one owner, `PrecomputedPar`: the conditional mean, the
+noise term and the chain rule's ψ all read it.
+
+The wrong-but-compiling alternatives:
+
+- an inflow coupling written outside the sink (a coupled row's bound offset by
+  the realized inflow by hand): the sink's shift misses that row and the lag
+  price loses its dual;
+- a second copy of ψ, b or σ: it can drift from the one the conditional mean
+  reads, and the lag price then no longer matches the realized inflow;
+- a coupling kept in push order: the touched rows follow the declaration order,
+  and the template and the shift with them.
+
+Read: `lp/builder/inflow_coupling.rs` (`InflowCouplingSink`, `InflowCoupling`),
+`crates/novomodelo-stochastic/src/par/precompute.rs` (`PrecomputedPar`). Pinned by
+the closed forms in `tests/cut_oracles/analytical_fold_cuts.rs`:
+`a_terminal_stage_prices_a_par1_lag_at_psi_kappa_times_the_water_value`,
+`a_prefilling_upstream_inflow_is_priced_at_the_target_water_value` and
+`a_range_inflow_row_prices_the_lag_on_both_of_its_sides`, each with its twin;
+the sink's structural tests in `lp/builder/inflow_coupling/tests.rs`,
+`record_rejects_a_hydro_past_the_sink` and the `finish_*` tests; and the
+declaration-order gates `every_lag_deck_compact_template_is_invariant_to_declaration_order`
+and `the_compact_lag_study_trains_to_the_same_bits_in_either_declaration_order`
+(`tests/template_permutation.rs`).
 
 ## FPHA uses average storage
 
@@ -200,6 +854,151 @@ alone. (Discovered during deterministic case D06.)
 Read: `lp/builder/entries.rs` (`fill_fpha_entries` — pushes `−γᵥ/2` onto both the
 incoming- and outgoing-storage columns), `lp/builder/rows.rs` (`fill_fpha_rows`),
 and `lp/builder/template.rs`.
+
+## The FPHA slack sits only in plane rows
+
+Each FPHA cell has one plane slack `σ` per block: a column in `[0, ∞)` with
+`−1` in every plane row of that cell and block and in no other row. No
+water-balance, load-balance or generic-constraint row holds it, so the inflow
+coupling and the lag fold see no new term. The family is
+`StageGeometry::fpha_slack`, addressed by `fpha_slack_col(FphaCellLocal,
+BlockIdx)` and allocated last, so it shifts no other family's start. Its price
+is the hydro's `fpha_violation_cost` times the block's hours, divided by the
+cost scale like every other objective term. A Dormant plant has no FPHA cell at
+the stage and so no `σ`, and a cell without capacity at a block of a live plant
+has free plane rows and `σ` pinned at `[0, 0]` there, so `fpha_violation_mw`
+sums only live cells (see "An FPHA cell without capacity turbines nothing").
+
+The cell's generation `g` is basic, so its zero reduced cost makes the plane
+dual, in magnitude, the bus's load-balance dual `λ_bus` plus the dual
+`μ_GHMIN` of the cell's min-generation row plus the duals of the
+generic-constraint rows that hold `g`, each per MWh. `σ` stays 0 only while
+`fpha_violation_cost` exceeds that sum. Once `σ` is basic it sets the plane
+dual, so the storage coefficient prices the head term `σ_c·γᵥ/2` and the
+turbining term `γ_q` at the slack price instead of the marginal resource's
+cost.
+
+`semantic.5b.54` checks only the first two terms: it warns when the price does
+not exceed the largest deficit-segment cost plus `generation_violation_below_cost`.
+A lower-bounded generic constraint on FPHA generation whose slack is priced at
+or above the FPHA price adds a third term, so `σ` can be active at a price that
+passes the check. RE_450 of the DECOMP March 2026 rv2 case is such a
+constraint.
+
+The wrong-but-compiling alternatives:
+
+- `σ` in a row that carries an inflow (a water-balance row): it then moves
+  water as well as MW, and while it is basic that row's dual, which the lag
+  price reads through the coupling, is set by the slack price;
+- `σ` priced at `fpha_violation_cost` per hour without the block hours: a MWh
+  of plane violation then costs the price divided by the block's hours, so `σ`
+  undercuts the thermal and the deficit and the plane no longer binds.
+
+Read: `lp/builder/layout.rs` (`StageGeometry::fpha_slack`, `fpha_slack_col`),
+`lp/builder/columns.rs` (`fill_fpha_slack_columns`), `lp/builder/entries.rs`
+(`fill_fpha_entries`). Pinned by, in
+`tests/cut_oracles/analytical_fold_cuts.rs`, the closed forms
+`an_fpha_storage_coefficient_prices_the_head_at_the_thermal_cost_when_the_slack_is_idle`
+and `an_fpha_storage_coefficient_prices_the_head_at_the_slack_price_when_the_slack_is_active`
+(the storage coefficient's head term is priced at the thermal cost while `σ` is
+0 and at the slack price once `σ` is basic) and
+`a_generation_floor_activates_the_fpha_slack_above_the_two_term_sum` (a priced
+generation floor makes `σ` basic at a price above the two-term sum, with the
+plane dual equal to the load dual plus the floor dual);
+`cold_solves_and_cuts_agree_across_the_formulations_with_an_active_fpha_slack`
+(`tests/cut_oracles/cross_formulation.rs`: with `σ` active in some solve, the
+stage LP and an LP that defines the inflow in a row agree on objectives and
+cuts); `expanded_template_carries_the_fpha_slack_column`
+(`tests/template_integration/expander.rs`: that LP carries each `σ` column with
+its bounds, price and plane-row entries); and
+`fpha_slack_column_structure_one_cell_five_planes` and
+`fpha_slack_absent_without_fpha` (`tests/template_integration/fpha_structure.rs`:
+the bounds, the price and a `−1` in each plane row and nowhere else, and no
+column without FPHA).
+
+## A computed plane is ≥ 0 at zero turbining over its fitting window
+
+A computed plane `P = γ₀ + γᵥ·v + γ_q·q + γₛ·s` has `γᵥ ≥ 0` and `γₛ ≤ 0`
+(`validate_fitted_planes` refuses any other sign beyond round-off), so at
+`q = 0` over `v ∈ [v_min, v_max]` and `s ∈ [0, S_max]` its minimum is the corner
+`(v_min, 0, S_max)`, where it reads `γ₀ + γᵥ·v_min + γₛ·S_max`. A plane below 0
+there needs `σ ≥ −P > 0` even at `g = 0`, so a plant that spills without
+turbining pays plane slack and reports `fpha_violation_mw`.
+
+`fit_gamma_s_for_planes` limits each plane's γₛ by
+`γₛ ← max(γₛ, min(0, −(γ₀ + γᵥ·v_min) / S_max))`, which puts the corner at or
+above 0 whenever `γ₀ + γᵥ·v_min ≥ 0`; `min(0, ·)` keeps `γₛ ≤ 0`. `v_min` is
+the lower bound of the fitting window that
+`FphaColumnLayout::resolve_fitting_window` resolves, and `S_max` is
+`FphaColumnLayout::resolve_spillage_fit_max_m3s` of the long-term mean inflow
+that `long_term_mean_inflow_by_hydro` (`novomodelo_core`) gives; the warning
+below calls the same functions. The single-volume path is
+limited too: its `bounds.v_min` sits a synthetic half-width below the window's
+lower bound, and with `γᵥ = 0` there (the table is pinned at that bound) the
+corner does not depend on `v`.
+
+The limit runs before the `GAMMA_S_SNAP_EPS` snap, so the snap maps a limit
+inside its band to +0.0, the origin plane's included (`γ₀ = γᵥ = 0`, so its
+limit is 0), and no negative residual reaches the spillage column. It is skipped
+when `S_max ≤ 0`; `S_max = 0` leaves γₛ at +0.0.
+
+`reduce_planes` runs after the limit and keeps the bound with no second pass:
+`mean_plane` merges a pair by the coefficient-wise `f64::midpoint`, and the
+corner is linear in the coefficients, so a merged plane's corner is the midpoint
+of two corners at or above 0. The origin plane is never merged.
+
+Precomputed planes are not limited. `semantic.5b.55`
+(`check_fpha_precomputed_plane_at_zero_turbining`) warns on a precomputed plane
+the LP reads at an FPHA stage whose corner, taken with the LP intercept `κ·γ₀`
+and the same `v_min` and `S_max`, is below 0 by more than `envelope_tolerance`
+of its largest term, the margin the fit's corner pins read. A computed plane
+exported with `κ = 1` and read back as precomputed under the same `fpha_config`
+therefore raises nothing.
+
+The wrong-but-compiling alternatives:
+
+- the limit after the snap: a sub-snap negative γₛ survives in the spillage
+  column. Pinned by `gamma_s_limit_runs_before_the_snap`
+  (`production/fpha_fitting/secant.rs`: a limit inside the snap band and the
+  origin plane both end at +0.0 bits);
+- only the origin plane limited, or γₛ forced to 0 for every plane: the first
+  leaves every other plane whose mean is steeper than its limit below 0 at the
+  corner, and the second drops the spillage effect of every plane. Pinned by
+  `gamma_s_limit_puts_the_plane_at_zero_at_the_window_corner`
+  (`production/fpha_fitting/secant.rs`: a plane whose limit binds sits at the
+  limit with its corner at 0, and its twin, whose limit does not bind, keeps the
+  hand mean of its slopes);
+- the limit at `min_storage_hm3` or at 0 in place of the window's `v_min`: it
+  over-limits γₛ wherever the window starts above the plant minimum. Pinned by
+  `gamma_s_limit_puts_the_plane_at_zero_at_the_window_corner`, whose window
+  starts above its storage range's lower end;
+- the limit at a `v` above the window's `v_min`, or the warning at a `v` below
+  it: the fit and the check then disagree on the corner. Pinned by
+  `computed_fpha_planes_round_trip_without_a_zero_turbining_warning`
+  (`tests/deterministic.rs`: on a D07 copy with a sloped tailrace and a window
+  above `min_storage_hm3`, the first fails its check that the limit binds at the
+  window corner, and the second warns on the read-back planes);
+- the single-volume path left unlimited: a run-of-river plant keeps corners
+  below 0. Pinned by `fit_fpha_planes_limits_gamma_s_on_the_single_volume_path`
+  (`production/fpha_fitting/tests.rs`);
+- a merge that is not a convex combination of the coefficients, such as keeping
+  the steeper γₛ: merged planes fall below 0 at the corner. Pinned by
+  `reduce_planes_keeps_every_plane_at_or_above_zero_at_the_window_corner`
+  (`production/fpha_fitting/tests.rs`: Angle and Distance reduction, with and
+  without a window).
+
+Read: `production/fpha_fitting/secant.rs` (`fit_gamma_s_for_planes`),
+`production/fpha_fitting/reduction.rs` (`mean_plane`),
+`crates/novomodelo-io/src/extensions/production_models.rs`
+(`FphaColumnLayout::resolve_fitting_window`,
+`FphaColumnLayout::resolve_spillage_fit_max_m3s`) and
+`crates/novomodelo-io/src/validation/semantic/scenarios.rs`
+(`check_fpha_precomputed_plane_at_zero_turbining`). Pinned also by
+`fit_fpha_planes_puts_every_plane_at_or_above_zero_at_the_window_corner`
+(`production/fpha_fitting/tests.rs`: every plane of uncapped Sobradinho at or
+above 0 at the corner, with and without a window, with the origin plane at +0.0)
+and `degenerate_s_max_zero_is_neutral` (`production/fpha_fitting/secant.rs`:
+`S_max = 0` leaves γₛ at +0.0 bits).
 
 ## Parallel evaporation is one stage-level slot
 
@@ -221,10 +1020,155 @@ the one coupled slot's violation slack is still priced at only ONE block's
 hours while its flow moves the WHOLE stage's water — understating the true
 violation cost by a factor of `K`.
 
-Read: `lp/builder/layout.rs` (`evaporation_slot_count`), `lp/builder/columns.rs`
+Read: `lp/builder/layout.rs` (`evaporation_slot_count`, `evaporation_slot_boundaries`), `lp/builder/columns.rs`
 (`fill_evaporation_columns`).
 Pinned by `parallel_multi_block_evap_slack_price_matches_water_it_moves` and
 `parallel_multiblock_evaporation_study_has_one_priced_stage_slot`.
+
+## Evaporation bounds follow the coefficient sign
+
+Each evaporation slot's row is `e = τ(v̄) − f_plus + f_minus`, with
+`τ(v) = intercept_m3s + volume_slope_m3s_per_hm3 · v` (`evaporation_target`) and
+`v̄` the average of the slot's two storage columns
+(`evaporation_slot_boundaries`). The box of `e` and the cap on the
+under-evaporation slack `f_plus` follow `LinearizedEvaporation::coefficient_sign`,
+which model preparation takes from the month's `coefficients_mm`. With `q_max`
+the magnitude of τ at the stage's `max_storage_hm3` times
+`EVAPORATION_FLOW_SAFETY_MARGIN`:
+
+- positive: `e ∈ [min(0, τ_min), q_max]`, `f_plus ∈ [0, ∞)`;
+- negative: `e ∈ [−q_max, max(0, τ_max)]`, `f_plus ∈ [0, u]` with
+  `u = max(0, τ_hard_max)`;
+- zero: `e ∈ [−q_max, q_max]`, `f_plus ∈ [0, ∞)`.
+
+`f_minus` is `[0, ∞)` in every month. `τ_min` and `τ_max` are τ's extremes over
+the slot's average `[tight floor, ceiling]`, and `τ_hard_max` is its maximum over
+`[hard floor, ceiling]`, all evaluated at both endpoints
+(`evaporation_target_range`).
+
+`evaporation_slot_reachable_storage` gives each storage column a tight floor, a
+hard floor (`hard_storage_floor`) and a ceiling (`storage_ceiling`), and averages
+them over the slot's two columns:
+
+- the outgoing column's tight floor is the resolved `min_storage_hm3` of a
+  filling plant in `Operating`, where that floor is soft
+  (`has_soft_storage_floor`), and its hard floor otherwise;
+- an interior column takes its hard floor;
+- the incoming column takes the predecessor stage's floors and ceiling, kind for
+  kind;
+- a seed (the first study stage, or a stage after a `PreFilling` predecessor, as
+  `incoming_storage_floor` classifies it) takes the interval
+  `canonicalize_initial_state` clamps it into: from `hard_storage_floor` of the
+  hydro's own `min_storage_hm3` at the first study stage up to its own
+  `max_storage_hm3`.
+
+The row always has a point: `e`'s box holds 0 in every month, and
+`τ(v̄) ≤ max(0, τ_hard_max)` for every reachable `v̄`, so `e = 0` with
+`f_plus = max(0, τ(v̄))` and `f_minus = max(0, −τ(v̄))` meets it, with
+`f_plus ≤ u` in a negative month.
+
+The wrong-but-compiling alternatives:
+
+- the sign read from the linearization instead of `coefficients_mm`: from
+  `intercept_m3s`, a positive month with a negative intercept takes the negative
+  box; from `volume_slope_m3s_per_hm3`, so does a positive month whose area
+  falls within the geometry tolerance. The negative box lets its `e` fall below
+  `min(0, τ_min)`, so `f_plus` creates water;
+- the seed's floor read from `hydro_bounds(h, 0).min_storage_hm3`, which
+  `semantic.5a.55` lets the seed undercut: the caps are sized over storages
+  above the seed, and stage 0 is infeasible in a negative month whose τ at the
+  seed exceeds them;
+- `f_plus` fixed at `[0, 0]` in a negative month, or `u` taken from the tight
+  floor: a filling plant at its hard floor, below its soft floor, needs `f_plus`
+  above that cap, so its stage is infeasible;
+- τ evaluated at one endpoint: `check_geometry_monotonicity` admits an area that
+  falls within its tolerance, so the slope can take either sign and the extreme
+  can sit at either endpoint.
+
+The complete-recourse precondition: for an incoming storage in
+`[F_in(t), C(t−1)]`, every stage LP is feasible when all of the following hold:
+
+- (a) the inflow method can lift a negative local inflow to 0;
+- (b) no hard forced release applies (a positive `min_spillage_m3s` or
+  `min_diversion_m3s`, or a positive `min_flow_m3s` of a pumping station whose
+  `source_hydro_id` is the hydro);
+- (c) the hard floor of stage `t` does not rise above `F_in(t)`;
+- (d) excess water can leave the reservoir when `max_spillage_m3s` is finite,
+  since the negative-month ceiling on `e` keeps evaporation from removing it,
+  and turbining is an outlet only where a cell has capacity: it removes at most
+  `Σ_c cell_max_turbined_c`, which is 0 for a cell without capacity, and nothing
+  for a suspended plant, whose turbine columns are `[0, 0]`;
+- (e) every generic constraint on water or hydro generation carries a slack.
+
+`F_in(t)` is the seed's clamp floor at a seed stage and the predecessor's hard
+floor otherwise (`incoming_storage_floor`). `C(t−1)` is the predecessor's storage
+ceiling, and the hydro's own `max_storage_hm3` at a seed stage.
+
+Who checks what:
+
+- `penalty` meets (a), (b) and (c) unconditionally: its inflow slack is priced
+  and unbounded (`fill_inflow_slack_columns` prices it when `slack_is_priced()`
+  and sets its upper bound to 0 only when `truncates()`), so it adds any missing
+  water. The truncation methods meet (a) through the bounded inflow slack (the
+  truncation section above); `none` does not.
+- `semantic.5a.67` (`check_rising_hard_storage_floor`) warns on (c) under
+  `truncation`, `truncation_with_penalty` and `none`. It leaves a seed stage to
+  `semantic.5a.55`, which warns on the seed cases under every method.
+- (b), (d) and (e) are derived from the water-balance row, and
+  `novomodelo validate` does not warn on them:
+  - (b) a positive `min_spillage_m3s`, `min_diversion_m3s` or pumping
+    `min_flow_m3s` is a column lower bound, so the row draws that release even
+    from a reservoir at `F_in(t)` with no inflow, which can take the outgoing
+    storage below its hard floor;
+  - (d) in a negative month `e ≤ max(0, τ_max)` caps the water evaporation
+    removes, so water above the stage's ceiling leaves through turbining where
+    a cell has capacity, spillage, diversion, a pumping station's draw and the
+    over-withdrawal slack `withdrawal_slack_pos`. That slack is unbounded only
+    while the effective withdrawal (`effective_withdrawal_m3s`) is positive;
+    otherwise `fill_withdrawal_slack_columns` caps it at the negated withdrawal,
+    so the realized withdrawal removes no water, and a finite
+    `max_spillage_m3s` can leave the excess no outlet. A frozen plant, one whose
+    turbining is 0 for lack of capacity, with a finite `max_spillage_m3s` keeps
+    spillage as its only river release; this too is derived and not warned on.
+    Its water still reaches the downstream balance, pinned by
+    `dormant_upstream_plant_spills_into_the_downstream_water_balance` and
+    `dormant_upstream_plant_routes_its_spillage_through_the_transit_buckets`
+    (`tests/hydro_inflow_travel_time.rs`: a Dormant upstream plant's spillage
+    enters the downstream water-balance row, and with travel time its transit
+    buckets);
+  - (e) a generic constraint on water or hydro generation without a slack is
+    a hard row over the water-balance row's columns, so it can force a release
+    as (b) does, or a storage the inflow cannot supply.
+
+Read: `lp/builder/hydro_state.rs` (`evaporation_slot_reachable_storage`,
+`evaporation_target_range`, `has_soft_storage_floor`), `lp/builder/columns.rs`
+(`fill_evaporation_columns`, `fill_inflow_slack_columns`),
+`crates/novomodelo-core/src/commissioning.rs` (`hard_storage_floor`,
+`incoming_storage_floor`), `crates/novomodelo-io/src/validation/semantic/hydro.rs`
+(`check_rising_hard_storage_floor`). Pinned by, in
+`tests/template_integration/evaporation.rs`,
+`evap_positive_month_bounds_the_flow_below_at_the_lowest_reachable_target`,
+`evap_negative_month_bounds_the_flow_above_and_caps_under_evaporation` and
+`evap_zero_month_keeps_the_symmetric_box` (each sign's box for `e` and cap on
+`f_plus` against a closed-form target range) and
+`evap_negative_month_hard_floor_needs_the_capped_under_evaporation_slack` (a
+filling plant at its hard floor solves with `u` and is infeasible with a cap
+sized from the tight floor); in `lp/builder/hydro_state.rs`,
+`reachable_storage_reads_the_seed_clamp_never_the_stage_box` and
+`reachable_storage_reads_the_seed_clamp_after_a_prefilling_predecessor` (a seed
+reads the clamp interval, at the first stage and after a `PreFilling`
+predecessor, never the stage box) and
+`reachable_storage_keeps_a_filling_plants_soft_floor_tight_and_its_hard_floor_zero`
+(the soft floor enters the tight floor only, at the outgoing column and through
+the incoming column, and the hard floor stays 0);
+`d17_evaporation_is_signed_per_month` (`tests/hydro_sim.rs`: on a mixed-sign
+deck every simulated stage closes the row inside its month's box, with the
+month's sign and both slacks idle); and, in `novomodelo-io`,
+`rising_storage_floor_warns_once_naming_each_pair` (one warning naming each
+rising (hydro, stage) pair),
+`rising_storage_floor_leaves_the_entry_seed_to_the_first_stage_check` (the stage
+that receives a late-entry seed is not compared) and
+`rising_storage_floor_is_silent_under_the_penalty_method`.
 
 ## A generic-constraint slack is priced by its declared basis, never by its terms
 
@@ -252,7 +1196,11 @@ Inferring it from the row's terms is the wrong-but-compiling alternative. An
 amount can be written with flow terms, for example a volume row built from
 hours-weighted turbined and spilled flow. Adding or removing one term would
 then silently change what the penalty means and rescale the slack price by the
-stage hours, which still compiles and still converges.
+stage hours, which still compiles and still converges. The stage-volume terms
+`hydro_outflow_volume`, `hydro_diversion_volume` and `pumping_volume` are
+another way to write an amount. A row built only from them reads as an amount,
+which makes inferring the basis from the terms more tempting, not less; the
+declared basis still prices it.
 
 Read: `crates/novomodelo-core/src/constraints/generic_constraint.rs`
 (`SlackConfig::unit_cost`, `PenaltyBasis`), `lp/builder/entries.rs`
@@ -263,9 +1211,131 @@ Read: `crates/novomodelo-core/src/constraints/generic_constraint.rs`
 720 h and 2160 h stages),
 `per_unit_storage_shortfall_costs_the_same_on_a_week_and_a_month` and
 `per_hour_storage_shortfall_cost_scales_with_stage_hours` (`tests/hydro_sim.rs`,
-reported cost on 168 h and 744 h stages), and
+reported cost on 168 h and 744 h stages),
 `generic_constraint_collapsed_slack_priced_by_total_stage_hours` (a stage-level
-`per_hour` row prices at the total stage hours).
+`per_hour` row prices at the total stage hours),
+`stage_volume_slack_price_follows_the_declared_basis`
+(`tests/template_integration/generic_constraints.rs`, a volume row's objective
+coefficient under both bases), and
+`per_unit_diversion_volume_shortfall_costs_the_same_on_two_block_stages` and
+its twin `per_hour_diversion_volume_shortfall_cost_scales_with_total_stage_hours`
+(`tests/hydro_sim.rs`; a `per_hour` volume row on two-block stages is priced at
+the total stage hours, never a block's hours).
+
+## A stage-volume term is the τ-weighted block sum on one stage-level row
+
+A stage-volume term (`hydro_outflow_volume`, `hydro_diversion_volume`,
+`pumping_volume`) is the stage volume in hm³: `Σ_k τ_k · flow_k` over every
+block of the stage, in ascending block order, on parallel and chronological
+stages alike. τ_k comes only from `BlockClock::tau`
+(`duration_hours * M3S_TO_HM3`). `resolve_stage_volume` multiplies the flow
+counterpart's columns by that τ, so the flow resolvers stay the single owners
+of which columns a flow reads, and no column or row family is added.
+
+The outflow volume reads turbine (every cell) plus spillage and excludes
+diversion: the same flow `hydro_outflow` and both outflow rows bind (see "Both
+outflow rows bind the non-diverted river-remnant flow"). The diversion volume
+reads the diversion column alone. The pumping volume reads the pump's flow
+column at unit multiplier, never the power coefficient. Each volume is what the
+plant or station releases in the stage: never the water arriving from upstream
+and never the travel-time delivery columns.
+
+The stage-volume variants are block-independent
+(`variable_ref_is_block_independent`), so a constraint with a volume term
+materialises as one stage-level row per stage, addressed by a bounds row with a
+null `block_id`. `novomodelo-io` refuses each input that would split that row:
+the expression parser (`build_variable_ref`) refuses a block argument on a
+volume term, and `check_stage_volume_constraints` refuses a per-(stage, block)
+parameter, a bounds row with a block id, and any other term that is not a stage
+amount, which is how a block-dependent flow term would split it.
+`fill_generic_constraint_entries` backs the refusal with a `debug_assert!`. A
+`SystemBuilder` caller that bypasses `novomodelo-io` in a release build gets
+per-block rows, each carrying the whole-stage volume, with no error. That path
+is a gap, registered as DEBT-003 in `DEBT.md` and covered by no test, not a
+guarantee.
+
+Each volume reads the same columns as its flow counterpart, so commissioning
+needs no special case: a `PreFilling` plant's outflow volume is zero (turbine
+and spillage pinned), a `Filling` plant's outflow volume is its spillage only,
+the diversion volume is zero while the diversion columns are pinned, and an
+inactive pumping station's volume is zero (see "Spillage is frozen `[0, 0]`
+during PreFilling"). The generic-constraint echo reports the user's
+coefficient, never τ times it.
+
+The wrong-but-compiling alternatives, and the tests that pin them:
+
+- **Weighting every block by ζ, or by the uniform split ζ/K.** ζ counts each
+  block's flow for the whole stage's hours, and ζ/K gives a long block's flow
+  the weight of a short one's. Both equal τ_k only when every block has the
+  same hours, so on unequal blocks the row bounds the wrong volume. Pinned by
+  `hydro_outflow_volume_weights_each_block_by_its_own_hours`
+  (`lp/builder/generic_constraints/tests.rs`),
+  `stage_volume_collapse_one_row_carries_tau_on_turbine_and_spillage`
+  (`tests/template_integration/generic_constraints.rs`) and
+  `d60_outflow_volume_band_matches_closed_form` (`tests/deterministic.rs`; the
+  unequal-hours closed form moves).
+  `stage_volume_collapse_twin_with_equal_hours_carries_the_uniform_split` and
+  `d60_equal_hours_twin_matches_its_own_closed_form` are controls, not pins:
+  they pass under the uniform split by design.
+- **A second τ derivation** (hours times a locally restated conversion, or a
+  split of ζ). `BlockClock::tau` is the only owner. A derivation that rounds
+  differently fails the bit-exact `*_weights_each_block_by_its_own_hours`
+  comparisons (`lp/builder/generic_constraints/tests.rs`). Some second
+  derivations round identically and pass, which is why the single-owner rule is
+  the contract.
+- **Reading one block only** (a truncated block loop, or the row's
+  `block_idx`). The row then holds one block's volume, not the stage's. Pinned
+  by `stage_volume_resolution_ignores_the_block_argument_and_the_block_mode`
+  (`lp/builder/generic_constraints/tests.rs`) and
+  `stage_volume_outflow_reads_the_frozen_turbines_of_a_filling_plant`
+  (`tests/filling_commissioning.rs`, at a multi-block stage).
+- **Per-block replication**: a volume term on per-block rows, each carrying the
+  whole-stage volume. Each block row then bounds the whole stage, so the
+  tightest block bound governs the stage and a `per_unit` violation is charged
+  once per block row. Pinned by `stage_volume_variants_are_block_independent`
+  (`lp/builder/generic_constraints/tests.rs`),
+  `stage_volume_term_on_a_split_parameter_row_panics_in_debug` and
+  `stage_volume_term_on_a_block_bounds_row_panics_in_debug`
+  (`lp/builder/entries.rs`, debug builds only), and
+  `d60_bounded_volume_constraint_adds_one_stage_level_row_per_bounded_stage`
+  (`tests/deterministic.rs`).
+- **Including diversion in the outflow volume.** The volume then counts water
+  routed to another target, so a cap on the plant's outflow volume also limits
+  its diversion and a floor can be met with diverted water. Pinned by
+  `stage_volume_twin_outflow_volume_excludes_an_open_diversion`
+  (`tests/template_integration/generic_constraints.rs`).
+- **Reading another plant's columns or the upstream arrival.** The row then
+  counts water the plant receives, not what it releases. Pinned by
+  `stage_volume_matrix_rows_read_their_own_plants_columns`
+  (`tests/template_integration/generic_constraints.rs`; on a zero-travel-time
+  cascade the upstream turbine enters the downstream water row, and the
+  downstream volume row still reads only its own plant's columns). The
+  travel-time clause holds by construction: `resolve_stage_volume` reads only
+  the flow resolvers' columns.
+- **The pump's power coefficient instead of its flow column.** The row then
+  sums power scaled by τ, not water. Pinned by
+  `stage_volume_twin_pumping_volume_reads_the_pumping_flow_columns`
+  (`tests/template_integration/generic_constraints.rs`).
+- **Special-casing a commissioning phase or an inactive station.** A volume
+  that forces its own value for a phase can disagree with the column pins its
+  flow counterpart reads. Pinned by
+  `stage_volume_diversion_reads_the_pinned_diversion_columns` and
+  `stage_volume_pumping_reads_the_station_flow_outside_its_window`
+  (`tests/filling_commissioning.rs`).
+- **Echoing τ times the coefficient.** The echo then reports a τ-scaled value
+  instead of the coefficient the user declared. Pinned by
+  `stage_volume_row_echoes_the_user_coefficient_not_tau`
+  (`generic_constraint_echo.rs`) and
+  `d60_echo_carries_the_declared_coefficient_and_shapes`
+  (`tests/deterministic.rs`).
+
+Read: `crates/novomodelo-sddp/src/block_clock.rs` (`BlockClock::tau`),
+`lp/builder/generic_constraints.rs` (`resolve_stage_volume`),
+`lp/builder/layout.rs` (`variable_ref_is_block_independent`),
+`lp/builder/entries.rs` (`fill_generic_constraint_entries`),
+`crates/novomodelo-io/src/validation/semantic/constraints.rs`
+(`check_stage_volume_constraints`), and `docs/design/wire-format-evolution.md`
+(the `VariableRef` tail register, which owns the variants' wire encoding).
 
 ## Hydro-cell aggregation assumes one production map per cell
 
@@ -300,7 +1370,7 @@ Pinned by `production_model_set_model_returns_correct_variant` (the
 `test_multi_bus_plant_splits_into_bus_ordered_cells` (partitioning depends on
 `bus_id` alone, blind to differing group bounds).
 
-### ConstantProductivity's bound fold must run per group, then sum the cell
+### The cell bound folds each group, then sums the cell
 
 A `ConstantProductivity` plant has no separate generation column: its MW cap
 folds into the turbine bound as
@@ -331,17 +1401,28 @@ which side binds for a group at a given stage — harmless under
 fold-then-sum, which re-folds independently per group regardless, but it
 makes sum-then-fold's overstatement vary stage-to-stage instead of vanishing.
 
+Every model first folds a group term or the closing plant term without turbine
+capacity to 0 (`has_turbine_capacity`, the entry below). A term with capacity
+keeps the fold above: the ρ-fold `min(q̄_g, p̄_g / ρ)` for `ConstantProductivity`
+with `ρ > 0`, the flow cap `q̄_g` otherwise. Testing the predicate on the cell's
+summed limits is sum-then-fold's error again: same-bus FPHA groups `(q̄ 100, p̄ 0)`
+and `(q̄ 100, p̄ 50)` give a flow cap of 100, against 200.
+
 Live: `cell_max_turbined` (`fill_turbine_columns`, `lp/builder/columns.rs`)
 resolves this bound per CELL, folding each of the cell's own member groups
 before summing them, exactly as this sub-contract requires — each group's
 `q̄_g`/`p̄_g` is its RESOLVED per-block value (the override when the study
 supplies one, the declaration otherwise, via `GroupBoundLookup`), never the
-bare declared value.
+bare declared value. `cell_max_generation` applies the same zero fold to each
+group's `p̄_g` and to the plant term.
 
-Read: `crates/novomodelo-sddp/src/lp/builder/hydro_state.rs` (`cell_max_turbined`).
-Pinned by `test_same_bus_groups_sum_into_one_cell_box`, mutation-verified
-against sum-then-fold on a two-group fixture whose groups bind on opposite
-sides.
+Read: `crates/novomodelo-sddp/src/lp/builder/hydro_state.rs` (`cell_max_turbined`,
+`cell_max_generation`). Pinned by `test_same_bus_groups_sum_into_one_cell_box`,
+mutation-verified against sum-then-fold on a two-group fixture whose groups bind
+on opposite sides, and, in `lp/builder/columns.rs` `cell_column_bound_tests`, by
+`test_turbine_fold_drops_a_group_without_generation_capacity` (100, not 200) and
+`test_generation_bound_drops_a_group_without_turbine_capacity` (50, not 150),
+which fail when the predicate reads the summed limits.
 
 ### Both terms of the cell bound's closing `min` are load-bearing
 
@@ -402,6 +1483,108 @@ rule-41 equality, no override), which pins the group term binding, and by
 `test_cell_columns_take_their_own_group_box`'s block-2 override, which pins
 the plant term binding.
 
+### An FPHA cell without capacity turbines nothing
+
+`has_turbine_capacity(q̄, p̄)` (`novomodelo_core`) is the one capacity predicate:
+a term has turbine capacity only when its resolved `max_turbined_m3s` and
+`max_generation_mw` both exceed the capacity threshold. The stage-LP builder asks
+it through three owners and nowhere else: `GroupBoundLookup::has_capacity` for a
+group at a block, `cell_has_capacity` for a cell (the plant term and at least one
+member group pass) and `plant_has_capacity` for a plant (some cell passes).
+
+- **Zero fold.** `cell_max_turbined` and `cell_max_generation` give 0 for every
+  group term and closing plant term without capacity, under every production
+  model (the fold section above). A `ConstantProductivity` cell without capacity
+  has its turbine column at `[0, 0]`, whatever its ρ.
+- **Dormant stage gate.** `identify_fpha_hydros` admits an FPHA plant at a stage
+  only when it is not suspended and `plant_has_capacity` holds at one block of
+  the stage or more. A plant it leaves out is `StageProductionRole::Dormant`
+  there: no generation column, no plane rows, no `σ`, and its turbine column at
+  `[0, 0]`. The plant spills downstream: its spillage enters the downstream water
+  balance and, with travel time, the transit buckets. `Dormant` stays FPHA-only:
+  a `ConstantProductivity` plant without capacity keeps its `Constant` role, its
+  turbine column frozen by the zero fold.
+- **Dead (cell, block).** In an admitted plant, capacity is decided per (cell,
+  block) by `TemplateBuildCtx::cell_has_capacity`, the one resolution
+  `fill_fpha_rows` and `fill_fpha_slack_columns` both read:
+  a dead (cell, block) has free plane rows and σ pinned at [0, 0], in a single-
+  or multi-cell plant, so it adds nothing to `fpha_violation_mw`. Its plane rows
+  are `(−∞, +∞)` and its `σ` keeps its objective coefficient. Every live (cell,
+  block) keeps its plane rows at its declared share (`HydroCellIndex::share_of`
+  times the plane intercept) and its `σ` at `[0, ∞)`. The layout does not
+  change; only these bounds do, per (cell, block). The cell's columns are
+  `[0, 0]` there, so a plane that is negative at zero turbining would demand
+  `σ > 0`: rows kept at the share charge plane slack to a cell that produces
+  nothing, and rows kept with `σ` pinned make the stage infeasible.
+
+The wrong-but-compiling alternatives:
+
+- the predicate removed from the fold: a zero-productivity plant with turbine
+  flow but no generation limit turbines at 0 MW instead of spilling.
+  `d57_capacity_without_generation_spills_at_the_closed_form`
+  (`tests/deterministic.rs`) fails, the bound about 87.2 below the closed form;
+- the predicate tested on the cell's summed limits (sum-then-fold of the
+  predicate): `test_turbine_fold_drops_a_group_without_generation_capacity`
+  (100, not 200) and `test_generation_bound_drops_a_group_without_turbine_capacity`
+  (50, not 150), in `lp/builder/columns.rs` `cell_column_bound_tests`, fail;
+- the predicate applied in the FPHA arm only: a zero-productivity plant
+  without generation turbines its flow cap.
+  `test_zero_productivity_plant_without_generation_capacity_turbines_nothing`
+  (`cell_column_bound_tests`: 50, not 0) and
+  `d57_capacity_without_generation_spills_at_the_closed_form` (the bound about
+  87.2 below the closed form) fail;
+- the predicate skipped at the closing plant term: a plant whose own limits
+  lack capacity at a block turbines through its groups' caps.
+  `test_plant_without_generation_capacity_at_a_block_freezes_that_block`
+  (`cell_column_bound_tests`: 100, not 0, at the block) and
+  `dormant_fpha_plant_trains_at_the_d57_closed_form` (`tests/deterministic.rs`:
+  the Dormant plant turbines at 0 MW, the bound about 87.2 below the closed form)
+  fail;
+- Dormant wherever one block lacks capacity (`.all` in place of `.any` over the
+  stage's blocks): `fpha_plant_with_capacity_in_one_block_stays_fpha`
+  (`lp/builder/layout/tests.rs`) fails;
+- no capacity condition in `identify_fpha_hydros`: the stage LP stays
+  equivalent, because every cell of such a plant is then dead at every block, so
+  the pins are structural. `fpha_plant_without_capacity_builds_no_fpha_structure`
+  (`tests/template_integration/fpha_structure.rs`: the generation and plane-slack
+  columns and the plane rows are gone),
+  `hydro_generation_of_a_plant_without_capacity_has_no_term`
+  (`lp/builder/generic_constraints/tests.rs`: a generic constraint on its
+  generation gets no term) and
+  `dormant_upstream_plant_spills_into_the_downstream_water_balance`
+  (`tests/hydro_inflow_travel_time.rs`) fail;
+- neither the Dormant gate nor the dead-cell freeing:
+  `dormant_fpha_plant_trains_at_the_d57_closed_form` fails, the bound more than
+  1e6 above the closed form;
+- a dead (cell, block)'s rows kept at its share:
+  `test_dead_cell_block_frees_its_plane_rows` (`cell_column_bound_tests`),
+  `split_plant_dead_cell_freezes_its_columns_and_frees_its_plane_rows`
+  (`tests/template_integration/split_plant_bounds.rs`) and
+  `d51_dead_cell_pays_no_plane_slack_below_zero_planes` (`tests/deterministic.rs`:
+  at least 10 MW of `fpha_violation_mw` at the block where both cells are dead)
+  fail;
+- freeing every cell of the plant where one cell is dead, or every block where
+  one block is: `test_dead_cell_of_a_split_plant_frees_only_its_own_rows`
+  (`cell_column_bound_tests`), the live cell's rows in
+  `split_plant_dead_cell_freezes_its_columns_and_frees_its_plane_rows`, the live
+  block's rows in `fpha_plant_with_capacity_in_one_block_stays_fpha` and the
+  live-cell inequality of `d51_dead_cell_pays_no_plane_slack_below_zero_planes`
+  fail;
+- a dead (cell, block)'s `σ` left at `[0, ∞)`:
+  `test_dead_cell_block_frees_its_plane_rows`,
+  `test_dead_cell_of_a_split_plant_frees_only_its_own_rows` and
+  `split_plant_dead_cell_freezes_its_columns_and_frees_its_plane_rows` fail;
+- `σ` pinned at `[0, 0]` with the rows kept:
+  `d51_dead_cell_pays_no_plane_slack_below_zero_planes` fails, the stage
+  infeasible.
+
+Read: `crates/novomodelo-core/src/entities/hydro.rs` (`has_turbine_capacity`),
+`lp/builder/hydro_state.rs` (`GroupBoundLookup::has_capacity`,
+`cell_has_capacity`, `plant_has_capacity`, `cell_max_turbined`,
+`cell_max_generation`), `lp/builder/layout.rs` (`identify_fpha_hydros`,
+`TemplateBuildCtx::cell_has_capacity`), `lp/builder/rows.rs` (`fill_fpha_rows`),
+`lp/builder/columns.rs` (`fill_fpha_slack_columns`).
+
 ### A plant maximum below its cells' caps binds their total in one row
 
 The per-cell `sum.min(hb...)` clamp above cannot hold a multi-cell plant's
@@ -461,9 +1644,12 @@ plant totals stay within the lowered envelope and reach it).
 
 `cell_min_turbined`/`cell_min_generation` (`lp/builder/hydro_state.rs`) are the
 MIN-side mirror of `cell_max_turbined`/`cell_max_generation` above, and
-deliberately do NOT mirror their shape: a cell's min-turbine/min-generation
-floor `F_c` is `Σ_{g∈cell} resolved_min_*(g)` — the cell's OWN member groups'
-resolved minima, summed, with no fold and no closing `.min(plant)` term. This is
+deliberately do NOT mirror their shape: with `f_g = resolved_min_*(g)`, a cell's
+min-turbine/min-generation floor `F_c` is `Σ_{g∈cell, live} f_g` — the resolved
+minima of the cell's OWN member groups that have capacity
+(`GroupBoundLookup::has_capacity`), summed, with no fold and no closing
+`.min(plant)` term. A dead group adds no floor: its cap folds to 0 (the entry
+above), so its minimum could only be charged as slack. This is
 the correct shape because the floor bounds a SUM of variables: the cell's
 member groups all feed one shared aggregate column (one turbine column, one
 FPHA-generation column, or the same column read at ρ for
@@ -474,31 +1660,45 @@ what licenses a `min` fold on the MAX side.
 The plant's resolved minimum `P` (`hydro_bounds_at_block`: the `hydro_bounds`
 override, else the declared value) is a second floor on the plant's total, and
 the TIGHTER of the two wins. `PlantFloor` owns the decision: `P` binds only
-where `P > Σ_c F_c + envelope_tolerance(P)` — the same tolerance rule 44 admits
+where `P > Σ_all f_g + envelope_tolerance(P)`, with every declared group of the
+plant in the sum, dead ones included — the sum and the tolerance rule 44 admits
 a declared minimum with (`P_declared ≤ Σ F_declared + tolerance`), so a
 declared minimum never changes the LP and every study without a raising
-override builds byte-identical rows and columns. Where `P` binds:
+override builds byte-identical rows and columns. Where `P` binds it enforces
+`P' = P − Σ_dead f_g`: the dead groups' floors leave both sides, so the test
+reads `P' > Σ_c F_c + envelope_tolerance(P)` and the enforced floor is above the
+live cells' own. Where `P` binds:
 
-- **A single-cell plant folds `P` into its one cell row** (`cell_rhs`); no
+- **A single-cell plant folds `P'` into its one cell row** (`cell_rhs`); no
   row is added. Every plant without multi-bus groups takes this path.
 - **A multi-cell plant gets one residual row per `MinFloor` and block**,
-  `Σ_c LHS_c + σ_plant ≥ P`, where `LHS_c` repeats cell `c`'s own row terms —
+  `Σ_c LHS_c + σ_plant ≥ P'`, where `LHS_c` repeats cell `c`'s own row terms —
   the turbine column (or FPHA generation column, or `ρ·q_c`; nothing for a
-  dormant plant) **and the cell's own slack `σ_c`** (`push_cell_floor_lhs`, the
+  Dormant plant) **and the cell's own slack `σ_c`** (`push_cell_floor_lhs`, the
   single owner of a cell's floor LHS for both row kinds). Carrying `σ_c` is
-  what makes the charge `max(P − Σq, Σ_c σ_c)`: `σ_plant` tops up only what
+  what makes the charge `max(P' − Σq, Σ_c σ_c)`: `σ_plant` tops up only what
   the cell slacks leave. The wrong-but-compiling alternative — a residual row
-  on the bare columns, `Σ_c q_c + σ_plant ≥ P` — charges every unit of a cell
+  on the bare columns, `Σ_c q_c + σ_plant ≥ P'` — charges every unit of a cell
   shortfall twice whenever both floors bind.
 
+Where the plant cannot produce at a block — `producing` is false: suspended at
+the stage (`is_suspended`), or without capacity at the block
+(`plant_has_capacity`) — every floor it has there is dropped: each cell row, a
+single cell's folded plant floor included, has RHS 0 with its slack pinned
+`[0, 0]`, and no residual row binds. Nothing the plant does there can meet a
+floor, so a floor would only charge its slack.
+
 A plant joins `plant_floor_hydro_indices` for a stage when its residual binds
-at any block; at a block where the cells cover `P` its row is free (`−∞`) and
-its slack pinned `[0, 0]`. Both slacks are priced at the plant's FULL penalty
-per hour (`MinFloor::below_cost`). An override that LOWERS `P` below `Σ F_c`
-cannot loosen the floor — the groups' minima still bind — so setup emits one
-warning per plant and `MinFloor` (`warn_on_inert_plant_floor_overrides`)
-pointing at `hydro_unit_group_bounds` instead. The MAX side mirrors this
-decision with a hard row and no slack (the section above).
+at any block; at a block where the cells cover `P`, or where the plant cannot
+produce, its row is free (`−∞`) and its slack pinned `[0, 0]`. Both slacks are
+priced at the plant's FULL penalty per hour (`MinFloor::below_cost`). An
+override that LOWERS `P` below the full declared sum `Σ_all f_g` cannot loosen
+the floor — `P'` is then below `Σ_c F_c`, so the live groups' minima still bind
+— so setup emits one warning per plant and `MinFloor`
+(`warn_on_inert_plant_floor_overrides`, which compares with the full declared
+sum and skips every block where the plant cannot produce) pointing at
+`hydro_unit_group_bounds` instead. The MAX side mirrors this decision with a
+hard row and no slack (the section above).
 
 Four wrong-but-compiling alternatives for the cell floor, each with a close
 MAX-side cousin that makes it easy to copy over by habit:
@@ -527,6 +1727,27 @@ MAX-side cousin that makes it easy to copy over by habit:
   onto every cell's turbine column, never apportioned — see the water
   travel-time section below).
 
+The wrong-but-compiling alternatives for groups and plants that cannot produce,
+each pinned in `lp/builder/entries.rs`:
+
+- **The plant floor enforced whole** (`then_some(plant_min)` in place of `P'`):
+  the live groups are charged the dead groups' floors.
+  `test_dead_group_lowers_the_single_cell_plant_floor` fails at P = 12.
+- **Binding decided on the live sum** `Σ_c F_c`: a `P` between the live and the
+  full sum then binds and enforces a `P'` below the live cells' own floors. The
+  same test fails at P = 7, and
+  `test_inert_plant_floor_override_reads_the_full_declared_sum` fails.
+- **Floors charged where the plant cannot produce** (`producing` forced true):
+  `test_plant_without_capacity_in_a_block_drops_its_floors_there`,
+  `test_plant_whose_groups_all_lack_capacity_drops_its_residual`,
+  `test_inert_plant_floor_override_skips_a_plant_without_capacity` and
+  `test_floor_drop_lowers_the_objective_by_the_charged_shortfall_only` (an
+  objective shift of 0 against 23 700) fail.
+- **Suspension ignored**: `test_commissioning_plant_drops_every_floor` and
+  `test_dormant_residual_rows_sum_their_cell_rows` fail, as do
+  `test_inert_plant_floor_override_skips_a_commissioning_plant` and
+  `test_dormant_fpha_plant_operational_violation_contributes_nothing`.
+
 The cell rows `min_turbine`/`min_generation` are sized `n_cells * n_blks`
 (`OperViolationSizes::cells`) and the residual rows
 `plant_min_turbine`/`plant_min_generation` `n_plant_floor * n_blks`
@@ -544,8 +1765,9 @@ the undetermined same-bus generation split the output-axis decision (§7.10 of
 the blocks-and-units design) rules out.
 
 Read: `crates/novomodelo-sddp/src/lp/builder/hydro_state.rs` (`cell_min_turbined`,
-`cell_min_generation`, `MinFloor`, `PlantFloor`,
-`warn_on_inert_plant_floor_overrides`), `crates/novomodelo-sddp/src/lp/builder/columns.rs`
+`cell_min_generation`, `MinFloor`, `PlantFloor`, `plant_has_capacity`,
+`is_suspended`, `warn_on_inert_plant_floor_overrides`),
+`crates/novomodelo-sddp/src/lp/builder/columns.rs`
 (`fill_cell_floor_slacks`, `fill_plant_floor_slacks`),
 `crates/novomodelo-sddp/src/lp/builder/rows.rs` (`fill_operational_violation_rows`),
 `crates/novomodelo-sddp/src/lp/builder/entries.rs` (`push_cell_floor_lhs`),
@@ -558,10 +1780,14 @@ Pinned by `test_min_floor_rhs_is_the_cells_own_group_sum` (mutation-verified
 against the `.min(plant)` clamp, the `max`-fold, the ρ-fold, and `1/|cells|`
 apportionment), `test_floor_shortfall_is_charged_once_as_the_larger_of_plant_and_cells`
 (fails at 16 against 12 when the residual row drops `σ_c`), the
-`*_residual_rows_sum_their_cell_rows` trio (constant, FPHA, dormant),
+`*_residual_rows_sum_their_cell_rows` trio (constant, FPHA and dormant; the
+dormant test's suspended plant is absent from `plant_floor_hydro_indices` while
+its unsuspended twin sums its cell rows),
 `test_plant_floor_the_cells_cover_leaves_the_stage_lp_unchanged` (the shared
-tolerance), the d53 binding fixture, and the group-declaration-order
-determinism regression.
+tolerance), the d53 binding fixture, and
+`test_cell_min_floor_is_invariant_to_group_declaration_order`
+(`lp/builder/columns.rs`: the group-declaration-order determinism regression,
+which holds a group without capacity).
 
 ### Both outflow rows bind the non-diverted river-remnant flow
 
@@ -928,8 +2154,10 @@ from the wrong factorization. The interior hot path is untouched —
 `reconstruct_basis` remains its sole entry, reached through `run_stage_solve`.
 Read: `solve/stage_solve.rs` (`run_stage_solve_terminal_static`,
 `filtered_stored_basis`, `terminal_basis_shape_matches`, and `run_stage_solve`
-for the interior path), `training/forward/enumerated.rs` (`solve_forward_node`'s
-`is_terminal` gate). Pinned by
+for the interior path), `training/forward/node_solve.rs`
+(`solve_forward_node_core`, the one call site of `run_stage_solve_terminal_static`),
+`training/forward/enumerated.rs` (`solve_forward_node`'s `is_terminal` gate).
+Pinned by
 `run_stage_solve_terminal_static_applies_basis_1to1_without_reconstruct_basis`
 (the verbatim copy, no reconstruction) and its interior counterpart
 `run_stage_solve_interior_warm_start_invokes_reconstruct_basis` (an interior
@@ -1049,6 +2277,35 @@ the resume is refused and a warm start of the same checkpoint loads);
 (`crates/novomodelo-cli/tests/cli_run.rs`) and
 `test_load_policy_with_a_wider_stored_basis_loads_and_warns_once`
 (`crates/novomodelo-python/tests/test_policy_load_validation.py`).
+
+The stage LP has no inflow-lag column and no inflow-definition row, so its base
+row count is one row per hydro fewer than an LP that defines the inflow in a
+row, and its column count differs too. A stored basis captured on such an LP,
+by an earlier build of the same software version, does not fit the stage LP:
+`admit_stored_basis` leaves it out like any other misfit, the load proceeds, the
+entry is counted in the `stored bases not used: …` warning, and its solve
+starts cold. A policy written by another software version never reaches the
+admission: `validate_policy_load` refuses it first, with
+`SddpError::PolicySoftwareMismatch`.
+
+The wrong-but-compiling alternatives are refusing the load over such a basis,
+which refuses an input this rule admits, and mapping its rows onto the stage LP
+by position, which hands `reconstruct_basis` a basis of another layout that
+CLP accepts silently (the node-tag section below).
+Read: `policy/policy_load.rs` (`validate_policy_load`, `admit_stored_basis`,
+`UnusedStoredBases`). Pinned by
+`stored_basis_whose_basic_count_differs_from_its_rows_is_dropped`,
+`unused_stored_bases_report_is_independent_of_record_order` and
+`a_stored_basis_with_an_unmapped_slot_is_left_out_and_counted`
+(`policy/policy_load.rs`),
+`warm_start_skips_a_stored_basis_with_too_few_basic_entries_instead_of_aborting`
+(`tests/cut_basis.rs`) and
+`simulation_only_loads_a_policy_with_a_wider_stored_basis_and_warns`
+(`crates/novomodelo-cli/tests/cli_run.rs`: a basis wider than the stage LP is
+left out with the warning and the load succeeds); and, for the version gate,
+`policy_version_refused_for_every_kind` (`policy/policy_load.rs`) and
+`warm_start_refuses_a_policy_written_by_another_version`
+(`crates/novomodelo-cli/tests/cli_validate.rs`).
 
 ### Simulation loads the cuts of one chosen set
 
@@ -1291,13 +2548,14 @@ Read: `stochastic/noise.rs` (`transform_ncs_noise`).
 
 ## Lower-bound evaluation must patch NCS
 
-`evaluate_lower_bound` patches NCS column bounds per opening via
-`StageSolvePrep::run`'s internal `transform_ncs_noise` call, exactly as the
+`evaluate_lower_bound` patches NCS column bounds per opening via the internal
+`transform_ncs_noise` call of `StageSolvePrep::patch_opening`, exactly as the
 forward and backward passes do. Skipping the patch understates the bound (a
 real bug caught during D15). The patch inputs ride on `StageContext`
 (`ncs_max_gen`, `ncs_allow_curtailment`), the same struct every other solve
 site reads.
-Read: `training/lower_bound.rs`, `training/stage_solve_prep.rs`.
+Read: `training/lower_bound.rs`, `training/stage_solve_prep.rs`. Pinned by
+`lb_evaluate_stage_0_patches_ncs_bounds_per_opening` (`training/lower_bound.rs`).
 
 The lower bound patches stochastic load-balance rows the same way, through the
 same `StageSolvePrep` call's load patch over the root opening's own load
@@ -1645,6 +2903,21 @@ resolves rounds each product), `ownership_blocks_stay_inside_the_pinned_gemm_env
 `incremental_record_equals_rebuild_and_reference` (structure, on values every
 summation order computes exactly) and
 `incremental_record_equals_rebuild_on_inexact_values` (`cut/ownership.rs`).
+
+The cut-row RHS bracket (the cut-row RHS section above) and the cut's value at
+a stored state are separate quantities, and neither is computed from the other.
+The bracket is `cut/rhs.rs`'s ascending-slot dot of the cut's lag slots against
+the trial lags and the conditional mean of one solve; the value is the
+`gemm_block` element plus the intercept at a stored state. Computing either
+through the other's function compiles and breaks a bitwise identity: the two
+sum in different orders, so a bracket taken from `gemm_block` loses the bits of
+`rhs_reference::cut_bracket`, and a value taken from a `cut/rhs.rs` dot loses
+the bits of the rebuilt record.
+Read: `cut/rhs.rs` (`cut_brackets_into`), `cut/ownership.rs` (`scan_block`),
+`gemm.rs` (`gemm_block`). Pinned by
+`gemm_block_element_is_independent_of_the_block_shape` (`gemm.rs`),
+`incremental_record_equals_rebuild_on_inexact_values` (`cut/ownership.rs`) and
+`batched_brackets_equal_the_scalar_reference_bit_for_bit` (`cut/rhs.rs`).
 
 ## The ownership record is a cache of the ownership function
 
@@ -2083,9 +3356,9 @@ survives the postcard round trip).
 ## Binding activity is recorded only for a configured reader
 
 A cut's binding activity (`CutMetadata::active_count`,
-`CutMetadata::last_active_iter`) has two readers: the eviction key of the
-active-cut budget (`CutPool::enforce_budget`) and the seed window of a lazy
-solve under the `dynamic` method (`build_initial_resident_set`).
+`CutMetadata::last_active_iter`) is read by the eviction key of the active-cut
+budget (`CutPool::enforce_budget`) and by the seed window of a lazy solve under
+the `dynamic` method (`build_initial_resident_set`), and by nothing else.
 `CutManagementConfig::tracks_binding_activity` owns the predicate: true when a
 budget is set or the strategy is `CutSelectionStrategy::Dynamic`. It is a method
 over the two config values, not a stored flag, and matches every strategy
@@ -2100,27 +3373,40 @@ from rank 0, every rank builds its `StudySetup` from it
 (`StudySetup::from_broadcast_params`), no `StudySetup` setter changes the
 strategy variant or the budget, and the training entry
 points of `StudySetup` copy both into the `TrainingConfig` the session reads.
-The switch is therefore the same on every rank for the whole run. A `BackwardPassState` built without the session
-keeps the default, which records.
+The switch is therefore the same on every rank for the whole run. A
+`BackwardPassState` built without the session keeps the default, which records.
 
-With the switch off a sampled backward pass does none of the recording work:
+The cut-row duals have a second reader, the chain rule, whose `Σ y·β` terms need
+them wherever the successor pool's cut-state projection has lag slots
+(`CutStateProjection::has_lag_slots`). `solve_backward_opening` reads them when
+the projection has lag slots or a threshold is set, whatever the switch: the
+frozen arm through `extract_opening_duals`, the lazy arm through
+`StageOpeningSolver::read_resident_cut_duals`. Both arms give one zero-free (slot, y)
+extraction, which keeps a pair only when `y != 0.0`, never a bit test and never
+a tolerance, so a +0.0 and a −0.0 dual are both dropped; the frozen arm's pairs
+follow LP row order. `count_binding_slots` then counts a pair when
+`y > threshold`. `CutStateProjection::structural_dual_bound` sizes the pair
+buffers' reservations and never caps a record: a record with more pairs than
+the reservation grows the buffer (`OpeningRecords::push`).
 
-- `extract_duals_from_view` copies no cut-row dual;
-- `accumulate_opening_outcome` runs no slot loop;
+With the switch off, on a successor pool without lag slots, a sampled backward
+pass does none of the recording work:
+
+- neither extraction arm fills a (slot, y) pair, and `count_binding_slots` runs
+  no loop;
 - neither scheduler grows or zero-fills a worker's `slot_increments` and
   `metadata_sync_contribution`, or calls `fold_slot_increments_into_sync`;
 - `run_one_backward_level` does not call `sync_stage_metadata`, so no per-worker
   sum, no `allreduce` and no `CutPool::record_binding` runs.
 
+On a pool with lag slots the pairs are read and only the counting is skipped.
 The workers read the switch from the threshold on the successor view
-(`SuccessorOutcomes`, `SuccessorChild`), an option that is `None` when binding is
-not tracked; the lazy solve reads the same option before
-`accumulate_dcs_binding_counts`. Every cut then keeps `active_count = 0` and
-`last_active_iter` at the value it started with (the activity clock paragraph
-above). The state duals are
-filled by the same routine in both states, so the cuts and the bounds are
-bit-identical with the switch on and off. The worker buffers stay allocated.
-The enumerated backward records no binding activity in either state.
+(`SuccessorOutcomes`, `SuccessorChild`), an option that is `None` when binding
+is not tracked. Every cut then keeps `active_count = 0` and `last_active_iter`
+at the value it started with (the activity clock paragraph above). The state
+duals are filled by the same routine in both states, so the cuts and the bounds
+are bit-identical with the switch on and off. The worker buffers stay
+allocated. The enumerated backward records no binding activity in either state.
 
 The wrong-but-compiling alternatives:
 
@@ -2131,7 +3417,18 @@ The wrong-but-compiling alternatives:
   of `sync_stage_metadata` on an empty pool is not such a decision: it rests on
   the populated count being the same on every rank, as the method's doc states;
 - skipping only the reduction while the workers keep scanning cut-row duals
-  and folding increments: no result changes and the work per solve stays.
+  and folding increments: no result changes and the work per solve stays;
+- gating the cut-row dual read on the switch: the `Σ y·β` terms drop out of
+  every cut of a study with lag slots run without a reader, which still
+  compiles and converges;
+- a bit test in the zero filter (`y.to_bits() != 0`): a −0.0 dual is kept as a
+  pair, so the pair lists differ between duals that are equal as numbers;
+- a tolerance in the zero filter: a small binding dual is dropped, so its
+  `Σ y·β` term leaves the cut and the binding count no longer follows the
+  configured threshold;
+- capping a record's pairs at the reservation: the pairs past it leave the
+  record, so their `Σ y·β` terms leave the cut and their bindings are not
+  counted.
 
 Read: `config.rs` (`CutManagementConfig::tracks_binding_activity`),
 `training/session/mod.rs` (`TrainingSession::new`),
@@ -2139,11 +3436,16 @@ Read: `config.rs` (`CutManagementConfig::tracks_binding_activity`),
 `run_one_backward_level`, `compute_one_backward_node`,
 `process_stage_backward`, `sync_stage_metadata`), `training/backward/mod.rs`
 (`SuccessorOutcomes`, `SuccessorChild`),
-`training/backward/duals_extraction.rs` (`extract_duals_from_view`),
-`training/backward/outcome_aggregation.rs` (`accumulate_opening_outcome`,
-`accumulate_dcs_binding_counts`, `fold_slot_increments_into_sync`),
+`training/backward/duals_extraction.rs` (`extract_opening_duals`),
+`solve/opening_solver.rs` (`StageOpeningSolver::read_resident_cut_duals`),
+`training/backward/opening_solve.rs` (`solve_backward_opening`),
+`training/backward/binding_count.rs` (`count_binding_slots`,
+`fold_slot_increments_into_sync`),
 `training/backward/by_scenario.rs` (`process_by_scenario_backward`),
 `training/backward/by_node.rs` (`process_stage_backward_by_node`),
+`lp/indexer/cut_state_projection.rs` (`CutStateProjection::has_lag_slots`,
+`CutStateProjection::structural_dual_bound`),
+`workspace/workspace.rs` (`OpeningRecords`),
 `cut/pool.rs` (`CutPool::record_binding`, `CutPool::enforce_budget`),
 `cut/dcs.rs` (`build_initial_resident_set`), `setup/mod.rs`
 (`StudySetup::from_broadcast_params`), `setup/orchestration.rs`
@@ -2151,12 +3453,30 @@ Read: `config.rs` (`CutManagementConfig::tracks_binding_activity`),
 `crates/novomodelo-cli/src/commands/broadcast.rs` (`BroadcastConfig`,
 `broadcast_value`). Pinned by
 `tracks_binding_activity_only_for_a_budget_or_the_dynamic_method` (`config.rs`:
-the truth table over a budget and every strategy),
+the truth table over a budget and every strategy);
 `binding_is_recorded_only_when_tracking_is_on`
 (`training/backward/tests.rs`: with the switch off, under both schedulers, the
-pass issues no `u64` sum reduction, moves no slot's metadata, copies no
-cut-row dual and touches no worker buffer, and its cuts equal those of the
-pass with the switch on) and `binding_activity_is_recorded_only_for_a_reader`
+pass issues no `u64` sum reduction, moves no slot's metadata, fills no
+(slot, y) pair and touches no worker buffer, and its cuts equal those of the
+pass with the switch on);
+`compact_backward_reads_cut_duals_without_binding_tracking`
+(`training/backward/tests.rs`: with the switch off, a pool with lag slots still
+reads its cut-row pairs, and the stored cut carries their `Σ y·β` terms);
+`pure_cvar_counts_every_binding_opening_as_expectation_does`
+(`training/backward/tests.rs`); in `training/backward/duals_extraction.rs`,
+`folded_cut_pairs_skip_zero_duals_and_follow_lp_row_order`,
+`frozen_cut_dual_pairs_skip_zero_duals_of_either_sign`,
+`zero_free_pairs_leave_the_binding_counts_unchanged_at_a_zero_threshold`,
+`folded_extraction_reads_no_cut_duals_when_not_asked` and
+`folded_pair_count_stays_within_the_structural_bound`;
+`structural_dual_bound_counts_theta_and_the_rendered_columns`
+(`lp/indexer/cut_state_projection.rs`);
+`a_record_with_more_pairs_than_reserved_keeps_every_pair`
+(`workspace/workspace.rs`: a record with more pairs than the reservation keeps
+every pair, in order; a cap at the reservation fails it);
+`count_binding_slots_bumps_only_strictly_binding_pairs_in_the_child_region`
+(`training/backward/binding_count.rs`); and
+`binding_activity_is_recorded_only_for_a_reader`
 (`tests/cut_basis.rs`: a `level1` run without a budget records nothing, a
 budget-only run and a `dynamic` run record, and a budget that evicts nothing
 gives the cuts and bounds of a run without one). No in-process test can show
@@ -2168,9 +3488,11 @@ A trial point's backward openings are SOLVED in the installed `solve_order`
 permutation (`OpeningTree::set_solve_order`, keyed by
 `noise_key::build_noise_key_table` — the intrinsic shortest-chain order, a
 nearest-neighbor + 2-opt minimum-distance path over the openings'
-inflow-noise vectors; a stage below 3 openings keeps its σ-weighted key, the
-live fallback that also owns the noise-dimension validation) but each
-opening's outcome is WRITTEN and AGGREGATED by **canonical ω**. The
+inflow-noise vectors; a stage with too few openings for a path to improve
+keeps its σ-weighted key (`apply_chain_order`), the live fallback that also
+owns the noise-dimension validation) but each opening is RECORDED under its
+`(trial position, ω)` key
+(`OpeningRecords`) and every cut is AGGREGATED by **canonical ω**. The
 aggregation therefore carries no solve-order dependence: results are
 declaration-order-invariant and run-to-run reproducible across thread and
 rank shapes (the pinned gates). No config field selects the order.
@@ -2179,18 +3501,20 @@ chain each opening's solve starts from, and at a degenerate optimum a
 differently-warmed solve may settle on a different-but-equally-valid vertex
 with different duals — the hot≠cold divergence the Novomodelo determinism contract
 permits — so an order change re-checks the golden parity baselines instead of
-assuming byte-identical outputs. Aggregating the outcome slice indexed by
-solve position — or handing solve-order-permuted probabilities to
-`RiskMeasure::aggregate_cut_into` — is the wrong-but-compiling alternative: it
-makes the cut depend on solve order, silently
-breaking declaration-order invariance and run-to-run reproducibility.
+assuming byte-identical outputs. Aggregating the records indexed by solve
+position — or handing solve-order-permuted costs or probabilities to
+`RiskMeasure::opening_weights_into` or `RiskMeasure::aggregate_cut_into` — is
+the wrong-but-compiling alternative: it makes the cut depend on solve order,
+silently breaking declaration-order invariance and run-to-run reproducibility.
 Read: `stochastic/noise_key.rs` (`build_noise_key_table`, `apply_chain_order`),
 `training/backward/by_scenario.rs` (`process_by_scenario_backward` — solves by
-`solve_order`, aggregates by canonical ω), `training/backward/outcome_aggregation.rs`
-(`write_opening_outcome`). Pinned by the `opening_order_determinism` gate in
-`tests/mpi_wire.rs` (threads=k / threads=1 / a same-shape repeat / a 2-rank
-stub, bitwise `final_lb`) and the MPI SLURM Integration job's rank-invariance
-comparison on `examples/4ree`.
+`solve_order`, aggregates by canonical ω through `aggregate_successor_cut`),
+`workspace/workspace.rs` (`OpeningRecords`). Pinned by the
+`opening_order_determinism` gate in `tests/mpi_wire.rs` (several thread counts,
+a same-shape repeat and a 2-rank stub, bitwise `final_lb`),
+`compact_opening_order_is_result_neutral_on_the_lag_study`
+(`tests/mpi_wire.rs`: the same on a study with lag slots) and the MPI SLURM
+Integration job's rank-invariance comparison on `examples/4ree`.
 
 ## By-node scheduler is warm-start-only
 
@@ -2207,33 +3531,66 @@ reassigns the backward pass's work unit from a whole trial point to an
 opening-block: workers claim `(trial point, block)` units in any order from a
 shared atomic counter, warm-chaining each block's openings from a fresh
 frozen-LP load. Units are SOLVED in claim order — dependent on worker count and
-scheduling timing — but each opening's outcome is WRITTEN into a per-`(m, ω)`
-arena and AGGREGATED per trial point over CANONICAL ω, in ASCENDING m. The
-generated cut set is therefore independent of claim order and worker count:
-reordering claims changes only which worker warms which block, never which cut
-is produced. Aggregating the arena in claim/solve-position order, or keying it
-on the claim index instead of `(m, ω)`, is the wrong-but-compiling
-alternative — CVaR's tail weighting is order-sensitive, so it silently breaks
-CVaR reproducibility and declaration-order invariance the same way a
-solve-order-keyed aggregation would break the by-scenario path above. An
-active `dynamic` iteration always falls back to the by-scenario path: the
+scheduling timing — but each worker records each opening it solves in its own
+`OpeningRecords`, keyed by `(trial position, ω)`, and every cut is AGGREGATED
+per trial position over CANONICAL ω. `by_node_finish` first fills a location
+table for every `(position, ω)` by walking the workers' records in
+`canonical_scatter` order. It then splits the positions into one contiguous
+range per finish entry (`ByNodeFinishScratch`) and finishes the ranges in
+parallel, or serially when the pool has no cut-state slots: each position's cut
+is aggregated over canonical ω by one thread, through
+`aggregate_successor_cut`, with no reduction across threads. The cuts are
+staged and committed afterwards: `add_cut` takes `&mut FutureCostFunction`,
+which the successor outcomes (`SuccessorOutcomes`) borrow for the whole
+parallel finish, so `commit_by_node_cuts` runs once, serially, in ascending
+position. The location scatter and the commit are the only
+ordered steps. The generated cut set is therefore independent of claim order,
+worker count and finish-thread count: reordering claims changes only which
+worker warms which block, never which cut is produced.
+
+The wrong-but-compiling alternatives:
+
+- aggregating the records in claim or solve-position order, or keying them on
+  the claim index instead of `(position, ω)`: CVaR's tail weighting is
+  order-sensitive, so it silently breaks CVaR reproducibility and
+  declaration-order invariance the same way a solve-order-keyed aggregation
+  would break the by-scenario path above;
+- splitting one position's aggregation across threads and adding the partial
+  sums: the sums are reassociated, so the cut's bits follow the thread count.
+
+An active `dynamic` iteration always falls back to the by-scenario path: the
 by-node scheduler's frozen-LP load is incompatible with the lazy solve's
 cut-free core.
 Read: `training/backward/by_node.rs`
-(`process_stage_backward_by_node`'s claim loop,
-`by_node_finish`'s per-`(m, ω)` arena and ascending-m aggregation),
-`training/backward_pass_state.rs` (`compute_one_backward_node`'s
-scheduler dispatch via `resolve_backward_scheduler`). Pinned by
+(`process_stage_backward_by_node`'s claim loop, `by_node_finish`),
+`workspace/workspace.rs` (`OpeningRecords`, `ByNodeFinishScratch`),
+`claim_scatter.rs` (`canonical_scatter`), `training/backward/successor_cut.rs`
+(`aggregate_successor_cut`), `training/backward_pass_state.rs`
+(`compute_one_backward_node`'s scheduler dispatch via
+`resolve_backward_scheduler`), `training/backward/by_node.rs`
+(`commit_by_node_cuts`). The claim-order
+independence is pinned by
+`compact_aggregate_first_cut_is_scheduler_and_worker_independent`
+(`training/backward/tests.rs`: on a stub solver whose solution depends on the
+noise only, by-node at one and two workers, with and without hardest-first,
+equals by-scenario bit for bit under CVaR over three openings, so an ω-reversed
+lookup fails). Pinned by
 `by_node_scheduler_determinism_expectation` and
-`by_node_scheduler_determinism_cvar` in `tests/mpi_wire.rs` (threads=4
-/ a same-shape threads=4 repeat / threads=2 / threads=1 / a `Rank0Of2`
-2-rank stub, bitwise `final_lb`, on both an expectation and a `CVaR`
-configuration), `by_node_degenerates_on_single_opening`
+`by_node_scheduler_determinism_cvar` in `tests/mpi_wire.rs` (several thread
+counts, a same-shape repeat and a `Rank0Of2` 2-rank stub, bitwise `final_lb`,
+on both an expectation and a `CVaR` configuration),
+`compact_by_node_cvar_thread_shapes_agree_on_the_lag_study` and
+`compact_by_node_cvar_rank_stub_matches_single_rank_on_the_lag_study`
+(`tests/mpi_wire.rs`: the same under CVaR on a study with lag slots, so the
+finish runs in parallel), `by_node_degenerates_on_single_opening`
 (by-node-vs-by-scenario equality on a single-opening case whose
-resolved block count is `1`), and
+resolved block count is `1`),
 `by_node_handles_non_uniform_cut_projection`
 (by-node-vs-by-scenario equality on a case whose per-stage cut-state
-projection dimension varies across stages).
+projection dimension varies across stages),
+`compact_aggregate_first_records_never_reallocate_inside_the_claim_loop`
+(`training/backward/tests.rs`) and `opening_records_are_sized_by_scheduler`
+(`workspace/workspace.rs`).
 
 **Hardest-first claim order is result-neutral.** Under `ByNode`,
 claims are further ordered hardest-`(stage, block)`-first
@@ -2241,12 +3598,12 @@ claims are further ordered hardest-`(stage, block)`-first
 block)` mean `simplex_iterations` pivot — never per-`(m, block)`, since
 resampled trial points make per-m hardness noise where the opening-block
 component is iteration-stable. The hardest-first order touches only the
-claim decode: the per-`(m, ω)` write and the ascending-m aggregation above
-are unchanged, so hardest-first-on and the canonical identity order produce
-a bit-identical cut set and `final_lb`. Keying the order on per-`(m, block)`
-pivots, reordering the arena or the aggregation instead of only the claim
-decode, and a tie-break that leaves equal-mean blocks unordered (not a total
-order) are each wrong-but-compiling: the first two reintroduce a
+claim decode: the per-`(position, ω)` record and the canonical-ω aggregation
+above are unchanged, so hardest-first-on and the canonical identity order
+produce a bit-identical cut set and `final_lb`. Keying the order on
+per-`(m, block)` pivots, reordering the records or the aggregation instead of
+only the claim decode, and a tie-break that leaves equal-mean blocks unordered
+(not a total order) are each wrong-but-compiling: the first two reintroduce a
 claim-order dependence the invariant above forbids; the third makes the
 claim order itself nondeterministic across otherwise-identical runs.
 `block_pivots_prev` is the previous iteration's fully-merged row —
@@ -2270,7 +3627,9 @@ computation, the `run` swap). Pinned by
 `p_ω/α`, total mass 1, openings visited by cost descending then canonical index
 ascending via `sort_unstable_by` on the pre-allocated scratch). Every opening keeps at
 least `(1−λ)·p_ω` and at most `(1−λ)·p_ω + λ·p_ω/α`. The same kernel feeds
-`RiskMeasure::aggregate_cut_into` (every backward scheduler), `evaluate_risk_into`
+`RiskMeasure::aggregate_cut_into` (the replicated backward),
+`RiskMeasure::opening_weights_into` (one joint weight call per trial point in
+`aggregate_successor_cut`, which both schedulers use), `evaluate_risk_into`
 (the nested upper bound) and the root lower bound, so LB and UB sit under one measure.
 
 A single greedy whose per-opening cap is `(1−λ)·p_ω + λ·p_ω/α`, with no floor, is
@@ -2281,6 +3640,7 @@ two-opening fan; only three or more openings with `0 < λ < 1`, where the floor 
 discriminate. Switching one consumer without the others opens a spurious LB/UB gap.
 
 Read: `convergence/risk_measure.rs` (the kernel and its two entry points),
+`training/backward/successor_cut.rs` (`aggregate_successor_cut`),
 `training/lower_bound.rs` (`lb_aggregate_and_broadcast`),
 `training/forward/stats_aggregation.rs` (`nested_ub_recursion`). Pinned by
 `cvar_weights_match_analytic_table` (equiprobable `10/20/30/40` at `α = λ = 0.5`
@@ -2297,10 +3657,14 @@ gives `30.0`; the cap-only form gives `31.25`),
 A branching node's backward cut applies the stage `RiskMeasure` **once** over the
 single flattened joint outcome vector spanning every successor and every one of
 their openings, weighted by the product `P(n→child)·q_{child,ω}` and ordered
-canonically — ascending child node id, then within-child opening.
-`RiskMeasure::aggregate_cut_into` runs exactly once per trial point over that joint
-arena; `assemble_outcome_weights` fills the product weights in the canonical order
-the aggregation depends on (`CVaR`'s tail weighting is index-order-sensitive).
+canonically — ascending child node id, then within-child opening. On the
+replicated backward `RiskMeasure::aggregate_cut_into` runs exactly once per trial
+point over that joint vector; under both schedulers `aggregate_successor_cut`
+makes one `RiskMeasure::opening_weights_into` call over the same flattened costs
+and one `aggregate_first_cut_into` over the children, which takes each child's ȳ
+and Gᵀπ partial sums under the joint weights, never renormalised per child.
+`assemble_outcome_weights` fills the product weights in the canonical order the
+aggregation depends on (`CVaR`'s tail weighting is index-order-sensitive).
 
 Applying the measure per child and then probability-averaging the children — a
 NESTED measure — is the wrong-but-compiling alternative. It is indistinguishable
@@ -2310,15 +3674,22 @@ measure exists for — the within-node measure is vacuous, so the nested form
 collapses to plain expectation with NO tail weighting at all. On a genuine fan the
 two differ: joint `CVaR₀.₅` over outcomes `[10, 20, 30, 40]` at weight `0.25`
 concentrates on the worst two → `35`, while `max`-per-child-then-average gives
-`(20 + 40)/2 = 30`.
+`(20 + 40)/2 = 30`. Renormalising the joint weights per child inside the
+aggregate is the same nested form.
 
-Read: `convergence/risk_measure.rs` (`RiskMeasure::aggregate_cut_into`),
-`setup/node_graph.rs` (`assemble_outcome_weights` — the canonical product-weight
-fill), `training/backward/by_scenario.rs` (`process_by_scenario_backward`),
+Read: `convergence/risk_measure.rs` (`RiskMeasure::aggregate_cut_into`,
+`RiskMeasure::opening_weights_into`), `setup/node_graph.rs`
+(`assemble_outcome_weights` — the canonical product-weight fill),
+`training/backward/by_scenario.rs` (`process_by_scenario_backward`),
+`training/backward/successor_cut.rs` (`aggregate_successor_cut`),
+`cut/chain_rule.rs` (`aggregate_first_cut_into`),
 `training/backward/by_node.rs` (`by_node_finish`), `training/backward/replicated.rs`
 (the replicated path applies the same single aggregation over the same flattened
-arena). Pinned by `joint_cvar_differs_from_nested_per_child_then_average` in
-`convergence/risk_measure.rs` (the analytical `35`-vs-`30` mutation control).
+vector). Pinned by `joint_cvar_differs_from_nested_per_child_then_average` in
+`convergence/risk_measure.rs` (the analytical `35`-vs-`30` mutation control), and
+`aggregate_on_a_cvar_fan_uses_joint_weights_never_renormalised` and
+`the_fan_strategy_draws_joint_weights_that_per_child_normalisation_would_change`
+in `cut/chain_rule.rs`.
 
 ## The branching backward integrates every successor exhaustively
 
@@ -2417,7 +3788,7 @@ solves lazily: `run_backward_node_replicated` loads the frozen template of each
 successor it solves and reads state duals only, and nothing in
 `run_enumerated_backward` reaches `sync_stage_metadata`, the only caller of
 `CutPool::record_binding`, so no binding activity is recorded. The enumerated
-forward does have a lazy branch (`solve_forward_node`): it seeds its resident set
+forward does have a lazy branch (`solve_forward_node_core`): it seeds its resident set
 through `build_initial_resident_set` from a window over each cut's
 `last_active_iter`, and under enumerated traversal that clock never advances past
 the cut's generating iteration. Admitting the pairing is the wrong-but-compiling
@@ -2429,8 +3800,8 @@ forwards, are admitted — the reject discriminates on the `Dynamic` variant, no
 any strategy being present.
 
 Read: `setup/mod.rs` (`admission_gate`,
-`reject_dynamic_cut_selection_under_enumerated`), `training/forward/enumerated.rs`
-(`solve_forward_node`), `cut/dcs.rs` (`build_initial_resident_set`),
+`reject_dynamic_cut_selection_under_enumerated`), `training/forward/node_solve.rs`
+(`solve_forward_node_core`), `cut/dcs.rs` (`build_initial_resident_set`),
 `training/backward_pass_state.rs` (`run_enumerated_backward`,
 `sync_stage_metadata`), `training/backward/replicated.rs`
 (`run_backward_node_replicated`). Pinned by
@@ -2652,8 +4023,7 @@ to `[0, 0]` (forward) or leaves the terminal pool empty with `θ`'s `0.0` lower
 bound driving it to `0` (simulation), so the fix is byte-neutral there.
 
 Read: `cut/pool.rs` (`CutPool::has_prefix_cuts`, the flag's only formula),
-`training/forward/enumerated.rs` (`solve_forward_node`),
-`training/forward/stage_solve.rs` (`run_forward_stage`), `simulation/pipeline.rs`
+`training/forward/node_solve.rs` (`solve_forward_node_core`), `simulation/pipeline.rs`
 (`extract_sim_stage_result`, flag read from the stage's pool in
 `solve_simulation_stage`). Do NOT change `evaluate_lower_bound`
 (`training/lower_bound.rs`) — it is correct — and do NOT fold `θ` into the
@@ -2718,6 +4088,43 @@ every External terminal-leaf backward solve), and
 Generated fan is never fused and solves every leaf every iteration), all in
 `tests/branching_value_oracle.rs`.
 
+On a pool with lag slots the fused slice runs the chain rule from the leaf's
+own pool to the parent pool by global dimension. `solve_forward_node_core`
+makes one `extract_opening_cut` call per fused leaf. Its `DualExtractionSpec`
+carries the parent pool's projection as `extracted`, the cut rows starting at
+the leaf template's row count, and `read_cut_duals` set when the leaf's own
+projection has lag slots; its `ChainRuleStageInputs` carries the slots from
+`ChainRuleSlots::compose`, with the leaf's own projection as the resident one
+and the parent pool's as the extracted one, and the leaf's own pool as the
+resident pool. `extract_opening_cut` takes `extracted` once, from the spec, for
+both the dual extraction and `per_opening_coefficients_into`, and writes a parent-sized
+slice. The leaf's own pool projects every state dimension, so it is wider than
+the parent pool whenever the two differ. Swapping the two projections in the
+spec (`extracted` and the source of `read_cut_duals`) compiles, and the leaf's
+projection then reaches `per_opening_coefficients_into` as `extracted` too: a debug
+build stops at its coefficient-length check, the leaf's `n_slots` against the
+parent-sized slice, and a release build changes nothing while both pools
+project the same columned slots, until the leaf stage declares `storage: false`.
+The parent pool then drops the storage slots, and the slice takes the leaf
+pool's columned duals, storage first: a release build writes the leading ones
+over the parent's bucket and commitment-hold slots, or, on a parent with
+neither, leaves the slice unchanged. Swapping them in `ChainRuleSlots::compose`
+takes the slot ranges from the leaf pool, which is wider:
+`per_opening_coefficients_into` then indexes past the parent-sized coefficients or state
+duals and panics, in a debug build at the state-dual length check when the
+columned slots differ.
+Read: `training/forward/node_solve.rs` (`solve_forward_node_core`),
+`training/backward/duals_extraction.rs` (`extract_opening_cut`,
+`ChainRuleStageInputs`), `lp/indexer/cut_state_projection.rs`
+(`ChainRuleSlots::compose`), `cut/chain_rule.rs` (`per_opening_coefficients_into`).
+Pinned by
+`enumerated_forward_compact_fused_slice_carries_no_storage_under_a_storage_free_leaf_stage`
+(each slice against a reference solve of the leaf; it fails under either
+swap), `enumerated_forward_compact_fused_slice_spans_the_parent_projection`
+(fails under the compose swap) and
+`enumerated_forward_compact_fused_slice_reads_a_lagged_parent`
+(`training/forward/enumerated.rs`), with the projection pins above.
+
 ## Spillage is frozen `[0, 0]` during PreFilling
 
 A `PreFilling` hydro's spillage column is pinned `[0, 0]` — no dam exists yet to
@@ -2774,13 +4181,13 @@ row `m`, and the global scenario of that row is `fwd_offset + m`
 sent. `gather_basis_store` (`training/training.rs`) assembles the store on rank
 0: per canonical node, each rank packs its rows `0..my_actual_fwd` with
 `CapturedBasis::to_broadcast_payload`, the sole owner of the bytes (`0_i32` for a
-row with no basis), and the node issues one `allgatherv` of the two payload
-lengths of every rank, then one `allgatherv` each of the `i32` and the `f64`
-payloads at the displacements those lengths give. Rank 0 decodes each rank's
-segment with `CapturedBasis::try_from_broadcast_payload`, numbers its rows from
-the rank's first scenario (the ranks' scenarios are contiguous blocks in rank
-order, so no scenario index travels), drops `state_at_capture`, and keeps the
-rows that hold a basis, in a `CheckpointBasisStore` marked `complete`. The
+row with no basis), and the node issues one `allgatherv` of every rank's payload
+length, then one `allgatherv` of the payloads at the displacements those lengths
+give. Rank 0 decodes each rank's segment with
+`CapturedBasis::try_from_broadcast_payload`, numbers its rows from the rank's
+first scenario (the ranks' scenarios are contiguous blocks in rank order, so no
+scenario index travels), and keeps the rows that hold a basis, in a
+`CheckpointBasisStore` marked `complete`. The
 writer (`build_basis_store_entries`) writes one entry per kept row, and the
 manifest's `basis_store_complete` is the store's `complete`.
 `TrainingResult::basis_cache` and `broadcast_basis_cache` keep their own job:
@@ -3460,7 +4867,7 @@ and `newave_boundary_injected_decomp_run_converges`
 `reserve_boundary_inflow_lag_slots`-built source stays sentinel-dated and
 must keep loading.
 
-### Dated forward-family fan-out reconciliation is hour-weighted by the SOURCE interval
+### Dated forward-family fan-out reconciliation is hour-weighted by quantity class: rates by the SOURCE interval, volumes by the TARGET interval
 
 A forward-family slot's identity date is its `[interval_start, interval_end)`
 span, never a single anchor — `HydroInflowLag` is the one family keyed on a
@@ -3469,26 +4876,75 @@ single `reference_date` instead (a past stage, not a delivery target).
 The calendar-`subindex` relaxation the parent section reserves for a date family
 IS this fan-out, and it now covers BOTH forward-dated families —
 `AnticipatedThermalState` and `HydroTransitBucket` — inside `load_boundary_cuts`,
-dispatched through the single `resolve_by_interval_overlap` resolver; there is no
-per-family miss-rule parameter, because both families miss to `Zero` for their own
-expected reason (below). A source study prices its anticipated commitments on a
-monthly delivery calendar and its transit-bucket arrivals on their own per-arc
-arrival calendar; the current study may deliver either on a differently-shaped
-calendar (weekly, monthly, or a differing arc topology). `resolve_by_interval_overlap`
+dispatched through the single `resolve_by_interval_overlap` resolver, which takes
+one `on_source_miss` op. `resolve_target_slot` chooses it per family and the
+resolver returns it only on the `source_index` miss: `AnticipatedThermalState`
+passes `Zero`, `HydroTransitBucket` passes `receiver_storage_fill`. A source
+study prices its anticipated commitments on a monthly delivery calendar and its
+transit-bucket arrivals on their own per-arc arrival calendar; the current
+study may deliver either on a differently-shaped calendar (weekly, monthly, or
+a differing arc topology). `resolve_by_interval_overlap`
 reconciles each target slot `w` against the source intervals `M` of the SAME family
-it overlaps **by real calendar date**, not by subindex: full coverage yields
-`RebindOp::Blend` with per-interval weight `overlap_hours(w, M) / H_M` — divided by
-the **source** interval's hours `H_M`, the conservation identity that makes a
-slot's fanned coefficients sum back to the source's (a covered target slot's coeff
-ratio equals `H_w / H_M`). A target slot straddling into unpriced time yields
-`RebindOp::Renormalize`: the same weights additionally scaled by
-`H_w / Σ_covered overlap`, so the covered intervals' price density replicates
-across the uncovered span instead of deflating the boundary FCF with an implicit
-`0.0` term. No covered interval yields `Zero` — for `AnticipatedThermalState` this
-is usually an in-study delivery (below); for `HydroTransitBucket` this is the
-expected outcome when the source is NEWAVE-shaped and carries no transit arcs at
-all, the same "miss is expected, not incompatible" status the identity join used
-to grant it, now reached through the calendar join instead.
+it overlaps **by real calendar date**, not by subindex. The weight depends on
+the family's `QuantityClass` (`quantity_class` in `policy/reconcile.rs`, an
+exhaustive match with no wildcard arm, so a new `StateFamily` variant must declare
+its class before it compiles). The rule applies to every deck, legacy included.
+It moves a legacy deck's results only when that deck loads a boundary policy whose
+source and target bucket grids differ. The old source-hours weight for volumes is
+replaced, not kept behind a flag.
+
+- **`Rate` (`AnticipatedThermalState`, MW).** Full coverage yields
+  `RebindOp::Blend` with per-interval weight `overlap_hours(w, M) / H_M`, divided
+  by the **source** interval's hours `H_M`. This is the conservation identity that
+  makes a slot's fanned coefficients sum back to the source's: a covered target
+  slot's coeff ratio equals `H_w / H_M`. A source `[Jan 1, Feb 1)` at
+  `beta = -30` split into 14- and 17-day slots gives `-13.548` and `-16.452`, so
+  60 MW committed across both prices `-1,800`, the unsplit term. A target slot
+  straddling into unpriced time yields `RebindOp::Renormalize`: the same weights
+  additionally scaled by `H_w / Σ_covered overlap`.
+- **`Volume` (`HydroTransitBucket`, hm3 in transit).** Full coverage yields
+  `Blend` with weight `overlap_hours(w, M) / H_w`, divided by the **target**
+  slot's own hours, so each target takes the hours-average of the source $/hm3
+  values it overlaps. A target inside one source bucket carries the source
+  coefficient verbatim (weight `1.0`). A source `[Jan 1, Jan 21)` at
+  `beta = -50` $/hm3 read by buckets holding 43.2, 43.2 and 86.4 hm3 prices
+  `-8,640`, the unsplit term; the source-hours weight would give `-3,240`. A
+  straddling target yields `Renormalize` with weight `overlap / Σ_covered overlap`.
+
+Under either class, `Renormalize` extends the covered intervals across the
+uncovered span instead of deflating the boundary FCF with an implicit `0.0` term.
+No covered interval yields `Zero` for `AnticipatedThermalState`; that miss is
+usually an in-study delivery (below).
+
+A `HydroTransitBucket` miss is different. A live target with
+`interval_end > boundary_date` whose receiver has no live source transit
+interval (a source whose transit slots for it are all sentinel included)
+resolves to `RebindOp::FillFromStorage(p)`, `p` being the receiver's source
+`HydroStorage` position found by identity (the `EntitySlot::storage` key). A
+receiver with no source storage keeps `Zero`, counted `default_zero`; there is no
+inflow-lag fallback. The receiver's own coefficient is used whatever its
+operating status. `rebind_cut` reads `cut.coefficients[p]` verbatim from the
+post-rescale record, per cut: the intercept is untouched, there is no sign flip,
+and the value is undiscounted. This is the cut-wise composition of the source
+FCF with `v_h <- v_h + sum_d b_{h,d}`, a documented boundary approximation that
+ignores the arrival delay and the receiver's capacity, and stays a lower bound
+where `beta_v(h) <= 0`. The fill is counted in `FamilyTally::filled_from_storage`
+and listed in `filled_from_storage_slots`; the consumed storage position is
+referenced, so it leaves `dropped_source` and cannot trip
+`policy.boundary.strict`. Wrong-but-compiling alternatives: expressing the fill
+as `Blend(vec![(p, 1.0)])` or `Copy(p)` (misreports the tally); filling a bucket
+whose hydro has source intervals, none overlapping (below); applying it in
+`build_boundary_fold` or before `rescale_cut_records_for_load`; averaging
+storage coefficients across cuts; filling an `AnticipatedThermalState` miss
+from a same-id storage slot; deciding the miss for the whole source (filling
+only when it holds no live bucket for any hydro), which leaves a receiver the
+source has no bucket for at 0.0 as soon as another receiver has one.
+
+Because the miss is the receiver's own, a receiver the source prices only in
+part keeps `Zero` past its source buckets. A source study that declares one of
+two arcs into a receiver is the case: the target buckets its arc's buckets do
+not overlap price the other arc's arriving water at 0.0. This is a documented
+boundary approximation, like the arrival delay above.
 
 Only a live anticipated target slot whose interval reaches past
 `boundary_date` fans out. A live target slot whose `interval_end` is at or
@@ -3537,9 +4993,11 @@ delivery against the source's months.
 `rebind_cut` applies both through the identical weighted-sum, so unifying them
 reads like harmless dedup — but only `build_rebind` carries the `Renormalize`
 anti-deflation scale, and dropping it silently understates the boundary FCF on any
-partial-coverage calendar. Two further wrong-but-compiling alternatives: dividing
-by the **target** slot's `H_w` instead of the source `H_M` (breaks the
-`H_w / H_M` conservation ratio), and joining on `subindex` instead of the real
+partial-coverage calendar. Three further wrong-but-compiling alternatives:
+dividing a `Rate` by the **target** slot's `H_w` instead of the source `H_M`
+(breaks the `H_w / H_M` conservation ratio); dividing a `Volume` by the
+**source** `H_M` instead of the target `H_w` (prices a held volume as a density
+and understates it on any mismatched bucket grid); and joining on `subindex` instead of the real
 interval (anticipated delivery is NON-monotone in subindex — the modular
 delivery-target residue of the ring contract above — so a subindex join misaligns
 months to weeks). Source intervals are read from each live source slot's OWN
@@ -3551,8 +5009,9 @@ division is guarded: `resolve_by_interval_overlap` returns `Zero` on
 `terms.is_empty()` before it can divide by a zero covered span.
 
 `HydroTransitBucket` target and source slots reconcile through this EXACT SAME
-`resolve_by_interval_overlap` call and the exact same `÷H_m` math above — there is
-no separate transit resolver. `build_source_interval_index` selects live
+`resolve_by_interval_overlap` call, with the `Volume` weight above — there is
+no separate transit resolver; the class and its `on_source_miss` op are the
+only things that differ. `build_source_interval_index` selects live
 (non-sentinel) source slots of EITHER family into one shared index, keyed
 `(entity_type, entity_id)`; the family byte already in that key is what keeps an
 anticipated and a transit source entry sharing one `entity_id` disjoint, so
@@ -3562,22 +5021,24 @@ above — the identical family-byte discipline). A transit target's `subindex` (
 maturity lag) plays no part in the join, for a reason distinct from anticipated's
 non-monotone-residue one: two buckets of one downstream plant at different lags
 have disjoint arrival intervals (each stamped from its own arrival stage on the
-extended delivery calendar) and are told apart by that alone; re-introducing
+study stages extended by the water calendar — the declared
+`water_bucket_stages`, or the thermal post-study `stages` on the legacy path;
+Water calendar paths below) and are told apart by that alone; re-introducing
 `subindex` into the join would reject a legitimate source whose lag indexing
 differs from the current study's. Under an identical source/current arrival
 interval the overlap is full and the single term's weight is
-`overlap / H_m == 1.0`, reproducing today's coefficient bit-for-bit — but the
+`overlap / H_w == 1.0`, reproducing today's coefficient bit-for-bit — but the
 reconciliation report tallies that slot as `fan_out`, never `copy`: the
 coefficients are unchanged, the JOIN MECHANISM is not, and collapsing a
 full-coverage single term back into `RebindOp::Copy` would hide that the family is
 now date-validated (and would have to apply to the anticipated family's own
 copy-equivalent, fully-inside-one-source-interval case too, silently changing its
-tally as well). A dated transit miss that is NOT the NEWAVE-shaped no-arcs case —
+tally as well). A dated transit miss that is NOT the storage-fill case above —
 both sides declare transit arcs but their intervals do not overlap — still resolves
 `Zero` at the same report tier as any other miss; promoting it to a louder tier is
 diagnostics work this contract does not cover.
 
-The constant intercept fold (`build_boundary_fold`) reuses this SAME
+The constant intercept fold (`build_boundary_fold`) reuses this SAME `Rate`
 `overlap/H_m` source-interval weighting on a different object: a class-4 fixed
 post-horizon window's declared MW is a CONSTANT, not a state dimension, so
 `Σ_m (overlap_hours(w, m) / H_m) · v_w` sums directly into a `(source_pos,
@@ -3597,8 +5058,9 @@ rest of the intercept. Folding after rescale, or reading a rescaled coefficient
 into the fold sum, is the wrong-but-compiling alternative: the transforms are
 not idempotent across that boundary, so a post-rescale fold prices the fixed
 commitment at the wrong scale.
-Read: `policy/reconcile.rs` (`resolve_by_interval_overlap`, `build_rebind`,
-`rebind_cut`, `build_source_interval_index`, `overlap_hours`, `build_boundary_fold`,
+Read: `policy/reconcile.rs` (`QuantityClass`, `quantity_class`,
+`resolve_by_interval_overlap`, `build_rebind`, `FillFromStorage`,
+`receiver_storage_fill`, `rebind_cut`, `build_source_interval_index`, `overlap_hours`, `build_boundary_fold`,
 the `Blend`/`Renormalize` variants), `policy/policy_export.rs`
 (`build_stage_entity_manifest`, intervalling each ring slot at its modular
 delivery stage via `slot_lane_at`), `policy/policy_load.rs` (`load_boundary_cuts` builds one
@@ -3606,7 +5068,12 @@ delivery stage via `slot_lane_at`), `policy/policy_load.rs` (`load_boundary_cuts
 `boundary_date` into `build_rebind`, and applies the fold before rescale).
 Pinned by the `hm_distribute_conservation` fixtures in
 `tests/anticipated_core.rs` (coeff ratio equals `H_w / H_M`, invariant to the
-delivery stage's hours), the `Blend`/`Renormalize` `rebind_cut` unit tests (both
+delivery stage's hours), the two quantity-class goldens
+`anticipated_lane_target_inside_one_source_interval_keeps_source_hours_weight`
+(`-1,800`) and `transit_bucket_volume_golden_matches_unsplit_term` (`-8,640`),
+`mismatched_bucket_grid_uses_target_hours_for_every_deck` (a weekly source
+bucket grid read by a monthly target, the every-deck exception),
+`quantity_class_covers_every_state_family`, the `Blend`/`Renormalize` `rebind_cut` unit tests (both
 apply identical mechanics, distinction is only the weight),
 `tests/boundary_reconcile_defaults.rs` (the fan-out matrix and the superset
 bit-identity `to_bits` pin),
@@ -3622,15 +5089,30 @@ intercept fold's own regressions
 `resolve_by_interval_overlap`/`build_source_interval_index` pins above and is
 additionally pinned by `policy/reconcile.rs`'s own
 `transit_bucket_identical_arrival_interval_blends_at_unit_weight`,
-`transit_bucket_target_inside_one_source_interval_blends_at_fractional_source_hours`,
+`transit_bucket_target_inside_one_source_interval_takes_its_target_hours_share`,
 `transit_bucket_non_overlapping_arrival_interval_zeroes`,
 `transit_bucket_join_ignores_subindex`,
 `transit_bucket_sentinel_interval_is_a_structural_pad`, and
 `unrecognized_entity_type_still_rejects_by_identity`, plus the boundary-load
 round trip `load_boundary_cuts_matching_transit_bucket_arrival_interval_round_trips`
 (`policy/policy_load.rs`) and
-`boundary_injection_transit_bucket_blends_on_identical_arrival_interval`
-(`tests/boundary_reconcile_defaults.rs`).
+`boundary_injection_transit_bucket_blends_on_identical_arrival_interval` and
+`boundary_injection_transit_bucket_takes_its_target_hours_share`
+(`tests/boundary_reconcile_defaults.rs`). The storage fill is pinned by
+`transit_bucket_source_miss_fills_from_receiver_storage`,
+`transit_bucket_fill_consumes_the_receiver_storage_position`,
+`transit_bucket_source_miss_without_receiver_storage_stays_zero`,
+`transit_bucket_in_study_target_stays_zero_when_receiver_storage_is_priced`,
+`transit_bucket_all_sentinel_source_transit_fills_from_storage`,
+`transit_bucket_fill_triggers_per_receiver_not_per_source`,
+`anticipated_source_miss_never_fills_from_a_same_id_storage_slot` and
+`transit_bucket_fill_is_declaration_order_invariant` (`policy/reconcile.rs`),
+by `boundary_injection_transit_bucket_fills_from_receiver_storage` and
+`boundary_injection_transit_fill_matches_the_storage_copy_under_cost_rescale`
+(`tests/boundary_reconcile_defaults.rs`), and by
+`newave_source_reconciles_into_decomp_current` and
+`newave_source_without_receiver_storage_keeps_transit_zero`
+(`tests/boundary_dim_mismatch_reconcile.rs`).
 
 A sentinel-interval forward-family slot is a structural ring pad on BOTH sides
 of reconciliation, not just the target: `dropped_source_positions` excludes it
@@ -3687,15 +5169,16 @@ so they carry its end-of-stage storage targets (`hydro_bounds`
 `min_storage_hm3`/`max_storage_hm3`). The incoming initial storage has no
 producing stage: `canonicalize_initial_state` projects it onto the hydro's own
 `[min_storage_hm3, max_storage_hm3]`, the floor lifted to `0` where
-`storage_floor_relaxed` holds at stage 0. Projecting it onto the stage-0 box is
+`hard_storage_floor` relaxes it at stage 0. Projecting it onto the stage-0 box is
 the wrong-but-running alternative: a stage-0 floor above the declared storage
 raises it and a ceiling below lowers it, creating or removing water before the
 first solve with no diagnostic. A dormant (`PreFilling`) hydro's frozen-identity
 row pins its storage to that kept seed, so `storage_ceiling` never lowers its
 column ceiling below the hydro's own `max_storage_hm3`.
-Read: `setup/mod.rs` (`canonicalize_initial_state`), `lp/builder/hydro_state.rs`
-(`storage_floor_relaxed`, the one owner of which hydros have a hard floor, and
-`storage_ceiling`). Pinned by
+Read: `setup/mod.rs` (`canonicalize_initial_state`),
+`crates/novomodelo-core/src/commissioning.rs` (`hard_storage_floor`, the one owner
+of which hydros have a hard floor and its value), and `lp/builder/hydro_state.rs`
+(`storage_ceiling`). Pinned by
 `initial_storage_below_stage0_storage_floor_is_not_raised`,
 `initial_storage_above_stage0_storage_ceiling_is_not_lowered`,
 `dormant_hydro_seed_above_stage0_storage_ceiling_trains` and
@@ -3714,9 +5197,10 @@ declared, each of the following is a contract.
 
 The water in-transit bucket ring and the anticipated-thermal ring are one
 lagged-delivery ring construct, owned by `DeliveryRing`. They share a borrowed
-outgoing block (identity-resolved, contributing to `n_state`), a separate
-borrowed incoming block (pinned via `state_to_lp_incoming_column`), and the
-paired row-cap/column-freeze masking (`DeliveryRing::freeze_masked_columns`).
+outgoing block (resolved through `StateSpace::outgoing_block_start`,
+contributing to `n_state`), a separate borrowed incoming block (pinned via
+`state_to_lp_incoming_column`), and the paired row-cap/column-freeze masking
+(`DeliveryRing::freeze_masked_columns`).
 The interior transition differs: water shifts one Markov-1 slot per stage
 (`DeliveryRing::emit_shift_rows`, slot → slot+1), while anticipated holds each
 commitment in its own slot (`DeliveryRing::emit_carry_rows`, same slot). The
@@ -3766,9 +5250,9 @@ buckets are pinned via column bounds, resolved through
 `StateSpace::state_to_lp_incoming_column`'s explicit `transit_buckets_in` arm,
 never falling through to the commitment-hold `commit_in` arm. Subgradient extraction
 divides the incoming bucket column's reduced cost by `col_scale`
-(`extract_duals_from_view`, the same rc/col_scale contract as storage); the
+(`extract_opening_duals`, the same rc/col_scale contract as storage); the
 cut row renders the **outgoing** bucket column through
-`StateSpace::lp_column_for_state`'s identity arm and multiplies `col_scale`
+`StateSpace::lp_column_for_state`'s outgoing-block arm and multiplies `col_scale`
 back on via `push_scaled_coefficient` — divided on extract, multiplied on
 render, identical to storage. Swapping which column is pinned/read, or
 dividing on render instead of extract, prices the in-transit water in the
@@ -3780,13 +5264,13 @@ Read: `lp/builder/entries.rs` (`fill_transit_bucket_definition_entries`,
 `fill_arc_release_block_entries`), `lp/builder/delivery_ring.rs`
 (`DeliveryRing::transit_buckets`), `lp/indexer/state_space.rs`
 (`StateSpace::state_to_lp_incoming_column`, `StateSpace::lp_column_for_state`),
-`training/backward/duals_extraction.rs` (`extract_duals_from_view`), `cut/row.rs`
+`training/backward/duals_extraction.rs` (`extract_opening_duals`), `cut/row.rs`
 (`push_scaled_coefficient`, `push_cut_row`). Pinned by the bucket-arm
-column-resolution tests (outgoing resolves by identity, incoming resolves to the
-pinned column via an explicit arm, never the anticipated catch-all) and the
-per-stage-visit bucket-pinning regressions in the backward pass and lower-bound
-evaluation; a sub-stage-delay bucket-dual regression is the fold-discriminating
-pin for the sign/magnitude itself.
+column-resolution tests (outgoing resolves through the outgoing block, incoming
+resolves to the pinned column via an explicit arm, never the anticipated
+catch-all) and the per-stage-visit bucket-pinning regressions in the backward
+pass and lower-bound evaluation; a sub-stage-delay bucket-dual regression is
+the fold-discriminating pin for the sign/magnitude itself.
 
 ### k-factor conservation
 
@@ -4005,11 +5489,23 @@ The bucket state stays a pure function of stage lengths, never of
 `n_blks`/`block_mode`, only because each of the following holds:
 
 - **Depth from stage lengths alone.** Bucket depth and `n_buckets` derive from
-  the per-stage calendar, the declared post-study calendar, and the pre-study
-  anchor alone (`DeliveryCalendar`, `build_transit_bucket_topology`) — never
-  from `n_blks` or `block_mode`. Deriving any part of the depth inside a
-  block-aware code path re-couples the state dimension to how a stage happens
-  to be resolved.
+  the per-stage calendar, the water calendar (`DeliveryCalendar::water`), and
+  the pre-study anchor alone (`DeliveryCalendar`,
+  `build_transit_bucket_topology`) — never from `n_blks` or `block_mode`.
+  Deriving any part of the depth inside a block-aware code path re-couples the
+  state dimension to how a stage happens to be resolved. The water calendar
+  reaches the depth arithmetic through one of two paths (Water calendar paths
+  below): a deck declaring `water_bucket_stages` is resolved on the study
+  stages plus that calendar UNPADDED, and must cover the deepest travel time
+  or setup refuses it; a deck without it (the legacy `stages` key of
+  `post_study_stages.json`, or no file) is resolved on the study stages plus
+  the thermal post-study `stages`, padded by `extend_for_resolution`, which is
+  reachable only through `resolution_base`'s `WaterDeliveryBasis::Legacy` arm.
+  Either way the base is a list of stage lengths, so the property holds on both
+  paths. Pinned by
+  `setup::calendar_cross_wire_tests::water_consumers_ignore_the_thermal_calendar`,
+  `resolution_base_uses_declared_water_calendar_unpadded` and
+  `resolution_base_pads_without_post_study_file` (`bucket_topology.rs`).
 - **Shared arrival density.** A chronological stage's per-block deposit shares
   `block_deposits`/`within_stage_routing` and the stage-level `stage_weights`
   come from the same shared arrival density (`resolve_spread`'s
@@ -4045,6 +5541,72 @@ precomputed `arc_arrival_density` table entry verbatim) is the direct pin for
 the fixed-delivery-density clause itself; the parallel-fill regression (the
 maturing bucket keeps a single `-1.0` regardless of the table's contents)
 pins that `fill_parallel_water_entries` never reads it.
+
+### Water calendar paths
+
+The transit-bucket water calendar has exactly two paths, selected once per study
+by `WaterDeliveryBasis::of` from the core `WaterBucketStages` carried on
+`PostStudyStages`:
+
+- **Declared (`WaterBucketStages::Declared`, the `water_bucket_stages` key of
+  `post_study_stages.json`).** `DeliveryCalendar::water` is the study stages plus
+  the declared water stages, and `resolution_base`'s `Declared` arm borrows it
+  UNPADDED — no padding, no fallback to the thermal calendar.
+- **Legacy (`WaterBucketStages::FromThermalStages`, the core default: the
+  deprecated `stages` key, or no post-study file).** `DeliveryCalendar::water` is
+  `DeliveryCalendar::thermal`, and `resolution_base`'s `Legacy` arm pads it with
+  `extend_for_resolution`. That arm is `extend_for_resolution`'s only production
+  caller; the pad never exists on the declared path. This path is recorded
+  debt: it exists for decks still in the deprecated format and is removed
+  together with that format, not on its own.
+
+The basis is passed by value and never stored on `DeliveryCalendar`, which feeds
+the frozen digest. Four invariants hold across the two paths:
+
+- **Pad-free neutrality.** For any water calendar covering the deepest travel
+  time, the declared-unpadded and the legacy-padded bases build a bit-identical
+  `TransitBucketTopology` — `column_order`, `per_stage_mask`, stage weights, the
+  chronological spreads (`stage_reach` included) and `arc_arrival_density` —
+  with and without a loaded boundary: a covering calendar already holds every
+  travel-time window, so the pad is never read. This is what makes the declared
+  path a format change, not a results change, for a deck whose migrated water
+  calendar covers its arcs. `scripts/migrate/post_study_stages.py` writes such a
+  calendar: the legacy one extended with copies of its last stage, the periods the
+  pad reads. Pinned by the
+  `declared_and_padded_bases_agree_on_covering_water_calendars` property test
+  and `declared_and_padded_bases_agree_at_equality_coverage`
+  (`bucket_topology/neutrality_tests.rs`).
+- **A declared calendar that does not cover is refused, never padded.**
+  `resolve_state_and_topology` calls `deepest_uncovered_travel_time_arc`
+  (core) before building the topology and returns `SddpError::Validation` naming
+  the hydro, its travel time and the declared span. Padding the declared
+  calendar, or falling back to the legacy base, is the wrong-but-compiling
+  alternative: it silently invents water stages the deck did not declare. Pinned
+  by `resolve_state_and_topology_refuses_uncovered_declared_water_calendar` and
+  `resolve_state_and_topology_accepts_covering_declared_water_calendar`
+  (`setup/tests.rs`).
+- **A short legacy calendar is padded, never refused.** The refusal is scoped to
+  the declared path; applying it to a legacy deck rejects decks the deprecated
+  format accepts. Pinned by
+  `resolve_state_and_topology_pads_a_short_legacy_water_calendar`.
+- **Bucket slots are dated from the water calendar, never from the pad.**
+  `build_stage_entity_manifest` dates a `HydroTransitBucket` slot's arrival
+  interval over the study stages extended by `DeliveryCalendar::water`: the
+  declared `water_bucket_stages` on the declared path, with or without a loaded
+  boundary; the thermal post-study stages on the legacy path, as before. A slot
+  whose arrival lands past that calendar carries the sentinel. Anticipated ring
+  slots stay on `DeliveryCalendar::thermal`. Dating a bucket from the thermal
+  calendar on the declared path moves every bucket interval a boundary fan-out
+  joins on. Pinned by
+  `public_manifest_dates_bucket_slots_from_water_bucket_stages`
+  (`tests/water_calendar_differential.rs`) and
+  `transit_bucket_dates_onto_the_post_study_calendar_and_sentinels_past_it`
+  (`policy/policy_export.rs`).
+
+Read: `time_value.rs` (`WaterDeliveryBasis`, `DeliveryCalendar::water`),
+`bucket_topology.rs` (`resolution_base`, `extend_for_resolution`),
+`setup/mod.rs` (`resolve_state_and_topology`), `policy/policy_export.rs`
+(`build_stage_entity_manifest`).
 
 ### Maturing transit into a `PreFilling` plant follows the short-circuit target
 
@@ -4269,12 +5831,13 @@ Pinned by `ring_depth_covers_every_simultaneous_pre_study_seed`,
 The in-study anticipated ring is `DeliveryRing`'s other instantiation (the shared
 skeleton above), borrowing the LEADING `n_anticipated * k_max` sub-range of the
 merged commitment-hold region: an outgoing block (`StateSpace::commit_out`,
-identity-resolved by `state_to_lp_column`, contributing to `n_state`) and a
-separate incoming block (`StateSpace::commit_in`, pinned via
-`state_to_lp_incoming_column`) — never one dual-purpose range shifted out-of-LP.
+resolved through `StateSpace::outgoing_block_start` by `state_to_lp_column`,
+contributing to `n_state`) and a separate incoming block
+(`StateSpace::commit_in`, pinned via `state_to_lp_incoming_column`) — never one
+dual-purpose range shifted out-of-LP.
 There is no Rust-side shift step: the ring transition is resolved entirely by the
-definition rows below, and `current_state`/`state_at_capture` read the outgoing
-block by the same plain copy already used for storage and travel-time buckets.
+definition rows below, and `current_state` reads the outgoing block by the same
+plain copy already used for storage and travel-time buckets.
 Slots are keyed by DELIVERY-TARGET RESIDUE, not by distance to maturity: delivery
 target `m`'s slot is `ring_index(m) mod k_max` — `m mod k_max` where the index
 is already a ring-axis index (The ring axis subsection above) —
@@ -4364,7 +5927,7 @@ resolution.
 
 The sign / `col_scale` invariants are unchanged from storage and the water buckets:
 the incoming column's reduced cost is DIVIDED by `col_scale` on extract
-(`extract_duals_from_view`) and the outgoing column's cut coefficient is MULTIPLIED
+(`extract_opening_duals`) and the outgoing column's cut coefficient is MULTIPLIED
 back on render (`push_scaled_coefficient`); `col_scale` is forced to `1.0` across
 the whole region (the reconcile contract below).
 
@@ -4463,11 +6026,12 @@ commitment — in-study or post-study-targeted — is ever discarded at the
 delivery-axis boundary; none is created past it in the first place.
 `is_anticipated_decision_active_for_delivery` gates a decision column's
 existence on the strict clause `stage_idx + K_i < n_delivery`, against the
-EXTENDED delivery calendar (`n_delivery = StateSpace::n_delivery`, the
-study stages plus the `post_study_stages.json` continuation), not merely
-`n_stages`; `PointResolution::decider` has the matching domain
-`m in [0, n_delivery)`, so no code path ever computes a commitment targeting a
-delivery past the extended axis and then truncates it. A post-study-targeted
+EXTENDED thermal calendar (`n_delivery = StateSpace::n_delivery`, the
+study stages plus the thermal calendar's post-study stages,
+`DeliveryCalendar::thermal`), not merely `n_stages`;
+`PointResolution::decider` has the matching domain `m in [0, n_delivery)`, so
+no code path ever computes a commitment targeting a delivery past the extended
+axis and then truncates it. A post-study-targeted
 delivery (`m` in `[n_stages, n_delivery)`) is CREATED and rides the ring, priced
 through the boundary FCF — masking is exact at `n_delivery`, not `n_stages`.
 `build_anticipated_slot_row_pos`'s per-slot `None` (no carry row) and
@@ -4494,8 +6058,9 @@ Read: `lp/indexer/anticipated_gate.rs`
 (`fill_anticipated_slot_columns`). Pinned by
 `is_anticipated_decision_active_for_delivery_strict_extended_bound` (the strict
 `< n_delivery` gate on the extended axis; `<=` would admit a delivery at
-`n_delivery`) and `a1c_lead_stages_is_pure_index_shift`'s
-empty-`decision_sets`-past-the-delivery-bound assertion.
+`n_delivery`), `a1c_lead_stages_is_pure_index_shift`'s
+empty-`decision_sets`-past-the-delivery-bound assertion, and
+`setup::calendar_cross_wire_tests::thermal_consumers_follow_the_thermal_calendar`.
 
 ### In-LP anticipated ring: single-decider deposit & `K = 0` exclusion
 
@@ -4587,11 +6152,10 @@ Every anticipated plant's decision column is bounded, costed, and
 commissioning-gated at ITS OWN delivery stage `m` (its
 `genuine_decisions_at(t)` target, when one exists), never the decision stage
 `t`. `fill_anticipated_columns` reads `thermal_block_base(thermal_idx,
-delivery_stage)` for the column's `[min, max]` bounds (the overlay-ignoring
-base is safe here only because a load-time rule rejects a `block_id` bound row
-on an anticipated thermal — see `novomodelo-io`'s
+delivery_stage)` for the column's `[min, max]` bounds and its `cost_per_mwh`
+(the overlay-ignoring base is safe here only because a load-time rule rejects a
+`block_id` bound row on an anticipated thermal — see `novomodelo-io`'s
 `check_block_id_on_anticipated_thermal`),
-`thermal_bounds(thermal_idx, delivery_stage).cost_per_mwh` for its cost,
 `TimeValue::delivery_total_hours(delivery_stage)` for its hours,
 `TimeValue::relative_delivery_discount(stage_idx, delivery_stage)` (the delivery
 stage's cumulative discount over the decision stage's, `D(m)/D(t)`, one

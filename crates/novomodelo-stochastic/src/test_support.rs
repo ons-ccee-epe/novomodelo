@@ -1,11 +1,16 @@
 //! Test-only fixture builders for this crate's `OpeningTree`, `SeasonMap` and
-//! `InflowModel` shapes, shared across this crate's unit and integration
-//! tests and reachable from downstream crates via the `test-support`
-//! feature. Compiles only under `cfg(test)` or that feature; must never be
-//! enabled in a production build.
+//! `InflowModel` shapes and a WARN-message recorder, shared across this crate's
+//! unit and integration tests and reachable from downstream crates via the
+//! `test-support` feature. Compiles only under `cfg(test)` or that feature;
+//! must never be enabled in a production build.
 
+use std::sync::{Arc, Mutex, Once};
+
+use chrono::{Months, NaiveDate};
 use novomodelo_core::scenario::AnnualComponent;
 use novomodelo_core::{EntityId, InflowModel, SeasonCycleType, SeasonDefinition, SeasonMap};
+use tracing::subscriber::Interest;
+use tracing::{Event, Level, Metadata, Subscriber, span};
 
 use crate::OpeningTree;
 
@@ -196,6 +201,50 @@ pub fn weekly_season_map() -> SeasonMap {
     }
 }
 
+/// `(start, end, season id)` of the 22 stages of a calendar that opens with five weeks from
+/// 2026-05-30 naming June (season 5) and one stage from 2026-07-04 to 2026-08-01 naming July, then
+/// runs on calendar months from 2026-08 through 2027-11 naming their own seasons: June 2027 is
+/// stage 16.
+///
+/// # Panics
+///
+/// Never; every date is a literal or the first of a month of 2026 or 2027.
+#[must_use]
+#[allow(clippy::expect_used)]
+// Rationale: the dates are valid by construction, so no call below can return `None` or `Err`.
+pub fn weeks_naming_june_then_months() -> Vec<(NaiveDate, NaiveDate, usize)> {
+    let date = |year: i32, month: u32, day: u32| {
+        NaiveDate::from_ymd_opt(year, month, day).expect("a valid calendar date")
+    };
+    let week_starts = [
+        date(2026, 5, 30),
+        date(2026, 6, 6),
+        date(2026, 6, 13),
+        date(2026, 6, 20),
+        date(2026, 6, 27),
+        date(2026, 7, 4),
+    ];
+    let weeks = week_starts
+        .windows(2)
+        .map(|week| (week[0], week[1], 5_usize));
+    let july = std::iter::once((date(2026, 7, 4), date(2026, 8, 1), 6_usize));
+    let months = (2026..=2027)
+        .flat_map(|year| (1..=12_u32).map(move |month| (year, month)))
+        .filter(|year_month| ((2026, 8)..=(2027, 11)).contains(year_month))
+        .map(|(year, month)| {
+            let start = date(year, month, 1);
+            let end = start
+                .checked_add_months(Months::new(1))
+                .expect("a month after a date of 2027");
+            (
+                start,
+                end,
+                usize::try_from(month - 1).expect("a month index"),
+            )
+        });
+    weeks.chain(july).chain(months).collect()
+}
+
 /// Fixture fields for [`make_inflow_model`].
 #[derive(Debug, Clone)]
 pub struct InflowModelSpec {
@@ -251,4 +300,115 @@ pub fn make_inflow_model(
         residual_std_ratio,
         annual,
     }
+}
+
+/// Installs, once per test binary, a global subscriber that records nothing and
+/// answers [`Interest::sometimes`] for every callsite, so a scoped subscriber
+/// sees every event it enables.
+///
+/// Without it, tracing caches a callsite's interest from the thread that first
+/// reaches it while only one subscriber is registered: a concurrent test with no
+/// subscriber caches the callsite as "never" and a scoped recorder on another
+/// thread then misses its events.
+pub fn keep_callsite_interest_dynamic() {
+    static INSTALL: Once = Once::new();
+    INSTALL.call_once(|| {
+        // Err only when the binary already set a global subscriber; that one stays.
+        let _ = tracing::subscriber::set_global_default(DynamicInterest);
+    });
+}
+
+struct DynamicInterest;
+
+impl Subscriber for DynamicInterest {
+    fn register_callsite(&self, _metadata: &'static Metadata<'static>) -> Interest {
+        Interest::sometimes()
+    }
+
+    fn enabled(&self, _metadata: &Metadata<'_>) -> bool {
+        false
+    }
+
+    fn new_span(&self, _attrs: &span::Attributes<'_>) -> span::Id {
+        span::Id::from_u64(1)
+    }
+
+    fn record(&self, _span: &span::Id, _values: &span::Record<'_>) {}
+
+    fn record_follows_from(&self, _span: &span::Id, _follows: &span::Id) {}
+
+    fn event(&self, _event: &Event<'_>) {}
+
+    fn enter(&self, _span: &span::Id) {}
+
+    fn exit(&self, _span: &span::Id) {}
+}
+
+/// Records the `message` of every WARN event.
+pub struct WarnRecorder {
+    messages: Arc<Mutex<Vec<String>>>,
+}
+
+impl WarnRecorder {
+    /// A recorder and the shared list it appends to.
+    #[must_use]
+    pub fn new() -> (Self, Arc<Mutex<Vec<String>>>) {
+        keep_callsite_interest_dynamic();
+        let messages = Arc::new(Mutex::new(Vec::new()));
+        (
+            Self {
+                messages: Arc::clone(&messages),
+            },
+            messages,
+        )
+    }
+}
+
+impl Subscriber for WarnRecorder {
+    fn enabled(&self, metadata: &Metadata<'_>) -> bool {
+        *metadata.level() <= Level::WARN
+    }
+
+    fn new_span(&self, _attrs: &span::Attributes<'_>) -> span::Id {
+        span::Id::from_u64(1)
+    }
+
+    fn record(&self, _span: &span::Id, _values: &span::Record<'_>) {}
+
+    fn record_follows_from(&self, _span: &span::Id, _follows: &span::Id) {}
+
+    #[allow(clippy::expect_used)]
+    // Rationale: only a panic in another test thread poisons the list, and that test has failed.
+    fn event(&self, event: &Event<'_>) {
+        if *event.metadata().level() == Level::WARN {
+            struct MessageVisitor(String);
+            impl tracing::field::Visit for MessageVisitor {
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
+                    if field.name() == "message" {
+                        self.0 = format!("{value:?}");
+                    }
+                }
+
+                fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                    if field.name() == "message" {
+                        self.0 = value.to_string();
+                    }
+                }
+            }
+            let mut visitor = MessageVisitor(String::new());
+            event.record(&mut visitor);
+            self.messages
+                .lock()
+                .expect("warn message list is never poisoned")
+                .push(visitor.0);
+        }
+    }
+
+    fn enter(&self, _span: &span::Id) {}
+
+    fn exit(&self, _span: &span::Id) {}
 }

@@ -124,7 +124,7 @@ def test_study_simulate_emits_in_transit_output_with_schema() -> None:
     equal to exactly the 5 in_transit fields, and canonical (stage_id, lag) row
     order with the lag-1-only delivery contract.
     """
-    import novomodelo  # noqa: PLC0415
+    import novomodelo
 
     assert TRAVEL_TIME_CASE.is_dir(), (
         f"the travel-time fixture must exist at {TRAVEL_TIME_CASE}"
@@ -166,7 +166,7 @@ def test_run_via_study_emits_in_transit_output() -> None:
     must produce simulation/in_transit/.../data.parquet identically to
     Study.simulate (both converge on run_simulation_phase_py).
     """
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     assert TRAVEL_TIME_CASE.is_dir(), (
         f"the travel-time fixture must exist at {TRAVEL_TIME_CASE}"
@@ -192,7 +192,7 @@ def test_non_travel_time_study_emits_no_in_transit_output() -> None:
     symmetric, so a regression that always created the directory (byte-noise for
     existing studies) would fail here.
     """
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     assert NO_ARC_CASE.is_dir(), f"the non-travel-time case must exist at {NO_ARC_CASE}"
 

@@ -26,6 +26,7 @@ fn main() {
     let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
     let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     let no_fma = no_fma_flags(&target_env, &target_arch);
+    let solver_debuginfo = solver_debuginfo_flags(&target_env);
 
     // Exactly one LP backend may be enabled; enabling both `highs` and `clp` is
     // rejected at compile time (see the `compile_error!` in `lib.rs`).
@@ -64,7 +65,7 @@ fn main() {
             // programmatically, so disabling it avoids a system dependency that breaks
             // cross-compilation in the Python wheel CI.
             .define("CMAKE_DISABLE_FIND_PACKAGE_ZLIB", "ON");
-        for flag in no_fma {
+        for flag in no_fma.iter().chain(solver_debuginfo) {
             cmake_config.cflag(flag).cxxflag(flag);
         }
 
@@ -212,7 +213,7 @@ fn main() {
         clp_config
             .define("CMAKE_BUILD_TYPE", "Release")
             .define("BUILD_SHARED_LIBS", "OFF");
-        for flag in no_fma {
+        for flag in no_fma.iter().chain(solver_debuginfo) {
             clp_config.cflag(flag).cxxflag(flag);
         }
 
@@ -334,6 +335,20 @@ fn no_fma_flags(target_env: &str, target_arch: &str) -> &'static [&'static str] 
         ("msvc", _) => &[],
         (_, "x86_64") => &["-ffp-contract=off", "-mno-fma"],
         _ => &["-ffp-contract=off"],
+    }
+}
+
+/// Line tables for the cmake-built solvers in optimised builds that request
+/// debug info (the `profiling` profile), so profilers resolve samples inside
+/// them. Dev and test builds stay without: every solver-linked test binary
+/// would otherwise carry the solvers' line tables.
+fn solver_debuginfo_flags(target_env: &str) -> &'static [&'static str] {
+    let debug = env::var("DEBUG").is_ok_and(|v| v == "true");
+    let optimized = env::var("OPT_LEVEL").is_ok_and(|v| v != "0");
+    if target_env == "msvc" || !debug || !optimized {
+        &[]
+    } else {
+        &["-g1"]
     }
 }
 

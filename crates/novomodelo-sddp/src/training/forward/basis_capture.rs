@@ -1,6 +1,6 @@
 //! Captured-basis metadata population after a forward stage solve.
 
-use novomodelo_solver::BasisStatus;
+use novomodelo_solver::{BasisStatus, SolverInterface, StageTemplate};
 
 use crate::cut::pool::CutPool;
 use crate::setup::NodeId;
@@ -26,22 +26,43 @@ pub(crate) fn write_capture_metadata(
     pool: &CutPool,
     base_row_count: usize,
     cut_row_count: usize,
-    current_state: &[f64],
     node_id: NodeId,
 ) {
     captured.cut_row_slots.clear();
     for (slot, _intercept, _coeffs) in pool.active_cuts().take(cut_row_count) {
         captured.cut_row_slots.push(slot as u32);
     }
-    captured.state_at_capture.clear();
-    captured.state_at_capture.extend_from_slice(current_state);
     captured.base_row_count = base_row_count;
     captured.node_id = node_id;
-    let expected_len = base_row_count + cut_row_count;
-    if captured.basis.row_status.len() != expected_len {
-        captured
-            .basis
-            .row_status
-            .resize(expected_len, BasisStatus::Basic);
-    }
+    captured
+        .basis
+        .row_status
+        .resize(base_row_count + cut_row_count, BasisStatus::Basic);
+}
+
+/// Captures the solver's current basis into `slot`, reusing its buffer when
+/// present. Called only for a frozen solve: a lazy solve's basis describes the
+/// resident subset, not the frozen layout (`StageOpeningSolver::captures_basis`).
+///
+/// `basis_row_capacity` is the frozen template's row count.
+pub(crate) fn capture_forward_basis<S: SolverInterface>(
+    solver: &mut S,
+    slot: &mut Option<CapturedBasis>,
+    template: &StageTemplate,
+    basis_row_capacity: usize,
+    pool: &CutPool,
+    node_id: NodeId,
+) {
+    let cut_row_count = basis_row_capacity.saturating_sub(template.num_rows);
+    let captured = slot.get_or_insert_with(|| {
+        CapturedBasis::new(
+            template.num_cols,
+            basis_row_capacity,
+            template.num_rows,
+            cut_row_count,
+            node_id,
+        )
+    });
+    solver.get_basis(&mut captured.basis);
+    write_capture_metadata(captured, pool, template.num_rows, cut_row_count, node_id);
 }

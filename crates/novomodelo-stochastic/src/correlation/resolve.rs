@@ -360,15 +360,9 @@ impl DecomposedCorrelation {
         class_noise: &mut [f64],
         scratch: &mut [f64],
     ) {
-        for gf in groups {
-            if gf.entity_type != class {
-                continue;
-            }
+        for gf in active_groups(groups, class) {
             let positions = &gf.class_positions;
             let n = positions.len();
-            if n == 0 || n != gf.factor.dim() {
-                continue;
-            }
 
             if n <= MAX_STACK_DIM {
                 let mut gathered = [0.0_f64; MAX_STACK_DIM];
@@ -398,6 +392,33 @@ impl DecomposedCorrelation {
             }
         }
     }
+
+    /// Writes into `out` the variance each `class` coordinate has after
+    /// [`DecomposedCorrelation::apply_groups_for_class`] on i.i.d.
+    /// standard-normal input. A coordinate in no applied group keeps 1.0.
+    /// Allocates nothing.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `out` is shorter than the class.
+    pub fn implied_class_variances(groups: &[GroupFactor], class: EntityClass, out: &mut [f64]) {
+        out.fill(1.0);
+        for gf in active_groups(groups, class) {
+            for (r, &pos) in gf.class_positions.iter().enumerate() {
+                out[pos] = gf.factor.row_sum_of_squares(r);
+            }
+        }
+    }
+}
+
+/// Groups of `class` that `apply_groups_for_class` applies: non-empty in the
+/// class and fully resolved against the factor's dimension.
+fn active_groups(groups: &[GroupFactor], class: EntityClass) -> impl Iterator<Item = &GroupFactor> {
+    groups.iter().filter(move |gf| {
+        gf.entity_type == class
+            && !gf.class_positions.is_empty()
+            && gf.class_positions.len() == gf.factor.dim()
+    })
 }
 
 #[cfg(test)]
@@ -413,6 +434,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::correlation::spectral::jacobi_eigen;
 
     // -----------------------------------------------------------------------
     // Helpers
@@ -1044,6 +1066,131 @@ mod tests {
             [7.0, 9.0],
             "class_noise must be untouched when the group resolves empty"
         );
+    }
+
+    fn build_inflow_class(model: &CorrelationModel, ids: &[i32]) -> DecomposedCorrelation {
+        let order: Vec<EntityId> = ids.iter().copied().map(EntityId).collect();
+        DecomposedCorrelation::build(
+            model,
+            &order,
+            ClassDimensions {
+                n_hydros: ids.len(),
+                n_load_buses: 0,
+                n_ncs: 0,
+            },
+        )
+        .unwrap()
+    }
+
+    fn implied_inflow_variances(groups: &[GroupFactor], class_len: usize) -> Vec<f64> {
+        let mut out = vec![f64::NAN; class_len];
+        DecomposedCorrelation::implied_class_variances(groups, EntityClass::Inflow, &mut out);
+        out
+    }
+
+    fn pushed_through_variances(groups: &[GroupFactor], class_len: usize) -> Vec<f64> {
+        let mut sums = vec![0.0_f64; class_len];
+        let mut scratch = vec![0.0_f64; 2 * class_len];
+        for j in 0..class_len {
+            let mut unit = vec![0.0_f64; class_len];
+            unit[j] = 1.0;
+            DecomposedCorrelation::apply_groups_for_class(
+                groups,
+                EntityClass::Inflow,
+                &mut unit,
+                &mut scratch,
+            );
+            for (sum, v) in sums.iter_mut().zip(&unit) {
+                *sum += v * v;
+            }
+        }
+        sums
+    }
+
+    fn bits(values: &[f64]) -> Vec<u64> {
+        values.iter().map(|x| x.to_bits()).collect()
+    }
+
+    #[test]
+    fn implied_class_variances_equal_the_variance_pushed_through_the_factor() {
+        let dc = build_inflow_class(
+            &single_profile_model("default", vec![identity_group("g", &[1, 2])]),
+            &[1, 2],
+        );
+        let implied = implied_inflow_variances(dc.groups_for_stage(0), 2);
+        assert_eq!(bits(&implied), bits(&[1.0, 1.0]));
+        assert_eq!(
+            bits(&implied),
+            bits(&pushed_through_variances(dc.groups_for_stage(0), 2))
+        );
+
+        let dc = build_inflow_class(
+            &single_profile_model("default", vec![correlated_group("g", &[1, 2], 0.5)]),
+            &[1, 2],
+        );
+        let implied = implied_inflow_variances(dc.groups_for_stage(0), 2);
+        for variance in &implied {
+            assert!((variance - 1.0).abs() <= 1e-12, "variance {variance}");
+        }
+        assert_eq!(
+            bits(&implied),
+            bits(&pushed_through_variances(dc.groups_for_stage(0), 2))
+        );
+
+        let dc = build_inflow_class(
+            &single_profile_model("default", vec![correlated_group("g", &[1, 2], 0.5)]),
+            &[1, 2, 3],
+        );
+        let implied = implied_inflow_variances(dc.groups_for_stage(0), 3);
+        assert_eq!(implied[2].to_bits(), 1.0_f64.to_bits());
+        assert_eq!(
+            bits(&implied),
+            bits(&pushed_through_variances(dc.groups_for_stage(0), 3))
+        );
+
+        let dc = build_inflow_class(
+            &single_profile_model("default", vec![correlated_group("g", &[1, 99], 0.5)]),
+            &[1, 2],
+        );
+        let groups = dc.groups_for_stage(0);
+        assert_eq!(groups[0].class_positions.len(), 1);
+        assert_ne!(groups[0].class_positions.len(), groups[0].factor.dim());
+        assert_eq!(
+            bits(&implied_inflow_variances(groups, 2)),
+            bits(&[1.0, 1.0])
+        );
+
+        let matrix = [[1.0, 0.9, -0.6], [0.9, 1.0, 0.8], [-0.6, 0.8, 1.0]];
+        let group = CorrelationGroup {
+            name: "indefinite".to_string(),
+            entities: [1, 2, 3]
+                .into_iter()
+                .map(|id| make_entity_of_type(id, "inflow"))
+                .collect(),
+            matrix: matrix.iter().map(|row| row.to_vec()).collect(),
+        };
+        let dc = build_inflow_class(&single_profile_model("default", vec![group]), &[1, 2, 3]);
+        let groups = dc.groups_for_stage(0);
+        let implied = implied_inflow_variances(groups, 3);
+
+        let mut flat: Vec<f64> = matrix.iter().flatten().copied().collect();
+        let (eigenvalues, eigenvectors) = jacobi_eigen(&mut flat, 3);
+        for (i, &got) in implied.iter().enumerate() {
+            let expected: f64 = (0..3)
+                .map(|k| eigenvectors[i * 3 + k].powi(2) * eigenvalues[k].max(0.0))
+                .sum();
+            assert!(
+                (got - expected).abs() <= 1e-12,
+                "coordinate {i}: {got} vs diag(V L+ V^T) {expected}"
+            );
+        }
+        for (a, &va) in implied.iter().enumerate() {
+            assert!(va > 1.0 + 1e-3, "variance {a} = {va} must exceed 1");
+            for &vb in &implied[a + 1..] {
+                assert!((va - vb).abs() > 1e-3, "variances {va} and {vb} coincide");
+            }
+        }
+        assert_eq!(bits(&implied), bits(&pushed_through_variances(groups, 3)));
     }
 
     #[test]

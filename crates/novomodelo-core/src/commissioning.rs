@@ -1,7 +1,7 @@
 //! Commissioning-window and filling-lifecycle predicates shared by every
 //! equipment family.
 
-use crate::entities::FillingConfig;
+use crate::entities::{FillingConfig, Hydro};
 
 /// Whether an entity is operationally commissioned at `stage_id`:
 /// `entry <= stage_id < exit`, with the exit bound **half-open** (a stage equal to
@@ -88,9 +88,98 @@ pub fn hydro_operating_active(
     )
 }
 
+/// The hard lower bound of `hydro`'s storage column at `stage_id`: `0.0` where
+/// the floor is relaxed, otherwise `min_storage_hm3`.
+///
+/// CONTRACT: `min_storage` is a HARD lower bound for every hydro EXCEPT (a) a
+/// filling one (`hydro.filling.is_some()`), whose floor relaxes to `0` in ALL
+/// phases and is re-imposed as a SOFT floor by the stage LP, and (b) a
+/// non-filling hydro while [`Phase::PreFilling`] (commissioning-dormant), whose
+/// frozen-identity row pins its storage to the inert initial storage — a hard
+/// floor above that value would reject the pin and make the LP infeasible.
+/// FORBIDDEN — globalizing the relax to all `Operating` hydros (makes dead
+/// volume soft system-wide); keeping it hard through a dormant non-filling stage
+/// (rejects the initial-storage pin). The dormant relax disappears at
+/// `Operating`, restoring the hard floor.
+///
+/// The caller chooses `min_storage_hm3`: a stage LP passes that stage's resolved
+/// bound, the initial-state projection passes the entity's own value. Single
+/// owner of which hydros have a hard floor. Total function, no panic; a NaN
+/// `min_storage_hm3` passes through unchanged.
+#[inline]
+#[must_use]
+pub fn hard_storage_floor(hydro: &Hydro, stage_id: i32, min_storage_hm3: f64) -> f64 {
+    let relaxed = hydro.filling.is_some()
+        || matches!(
+            filling_phase(
+                hydro.filling.as_ref(),
+                hydro.entry_stage_id,
+                hydro.exit_stage_id,
+                stage_id
+            ),
+            Phase::PreFilling
+        );
+    if relaxed { 0.0 } else { min_storage_hm3 }
+}
+
+/// The lowest incoming storage a stage can see, as classified by
+/// [`incoming_storage_floor`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum IncomingStorageFloor {
+    /// First study stage: the incoming storage is the canonicalized initial
+    /// storage.
+    InitialStorage,
+    /// The predecessor stage is [`Phase::PreFilling`]: the incoming storage is the
+    /// pinned seed, which is the canonicalized initial storage held unchanged
+    /// since the first study stage.
+    PinnedSeed,
+    /// The incoming storage is the predecessor stage's outgoing storage, bounded
+    /// below by that stage's [`hard_storage_floor`] (hm³).
+    PredecessorFloor(f64),
+}
+
+/// The [`IncomingStorageFloor`] of `hydro` at a stage whose predecessor study
+/// stage is `predecessor`, given as that stage's id and its resolved
+/// `min_storage_hm3`; `None` means the first study stage.
+///
+/// `predecessor` carries the PREDECESSOR's resolved minimum, not the current
+/// stage's: the incoming storage was produced under the predecessor's bounds.
+/// Phases are monotone in stage id, so a hydro that is `PreFilling` at the
+/// predecessor and active now has been `PreFilling` since the first study stage.
+/// Total function, no panic.
+#[inline]
+#[must_use]
+pub fn incoming_storage_floor(
+    hydro: &Hydro,
+    predecessor: Option<(i32, f64)>,
+) -> IncomingStorageFloor {
+    let Some((predecessor_id, predecessor_min_hm3)) = predecessor else {
+        return IncomingStorageFloor::InitialStorage;
+    };
+    let predecessor_phase = filling_phase(
+        hydro.filling.as_ref(),
+        hydro.entry_stage_id,
+        hydro.exit_stage_id,
+        predecessor_id,
+    );
+    if matches!(predecessor_phase, Phase::PreFilling) {
+        IncomingStorageFloor::PinnedSeed
+    } else {
+        IncomingStorageFloor::PredecessorFloor(hard_storage_floor(
+            hydro,
+            predecessor_id,
+            predecessor_min_hm3,
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{FillingConfig, Phase, filling_phase, hydro_operating_active};
+    use super::{
+        FillingConfig, Hydro, IncomingStorageFloor, Phase, filling_phase, hard_storage_floor,
+        hydro_operating_active, incoming_storage_floor,
+    };
+    use crate::test_support::{HydroSpec, make_hydro};
 
     /// Builds a `FillingConfig` with the given `start_stage_id`; the impound cap
     /// is irrelevant to phase derivation, so any non-negative value is fine.
@@ -211,5 +300,119 @@ mod tests {
         assert!(!hydro_operating_active(Some(&f), Some(4), None, 0));
         assert!(!hydro_operating_active(Some(&f), Some(4), None, 3));
         assert!(hydro_operating_active(Some(&f), Some(4), None, 4));
+    }
+
+    fn hydro(filling: Option<FillingConfig>, entry: Option<i32>, exit: Option<i32>) -> Hydro {
+        let mut hydro = make_hydro(HydroSpec::default());
+        hydro.filling = filling;
+        hydro.entry_stage_id = entry;
+        hydro.exit_stage_id = exit;
+        hydro
+    }
+
+    /// A filling hydro's floor relaxes in ALL phases (it is re-imposed as a soft
+    /// floor elsewhere). The forbidden alternative — relaxing only while
+    /// `PreFilling` — would hard-bound the dead volume while the reservoir fills.
+    #[test]
+    fn hard_storage_floor_is_zero_for_a_filling_hydro_in_every_phase() {
+        let filling_hydro = hydro(Some(config(2)), Some(4), None);
+        for (stage_id, phase) in [
+            (0, Phase::PreFilling),
+            (2, Phase::Filling),
+            (4, Phase::Operating),
+        ] {
+            assert_eq!(
+                filling_phase(
+                    filling_hydro.filling.as_ref(),
+                    filling_hydro.entry_stage_id,
+                    filling_hydro.exit_stage_id,
+                    stage_id
+                ),
+                phase,
+                "fixture phase at stage_id={stage_id}"
+            );
+            assert_eq!(
+                hard_storage_floor(&filling_hydro, stage_id, 30.0),
+                0.0,
+                "filling hydro at stage_id={stage_id}"
+            );
+        }
+    }
+
+    /// A non-filling hydro's floor relaxes while commissioning-dormant — before
+    /// `entry_stage_id` and from `exit_stage_id` on (the half-open exit).
+    #[test]
+    fn hard_storage_floor_is_zero_while_a_non_filling_hydro_is_dormant() {
+        let windowed = hydro(None, Some(2), Some(5));
+        for stage_id in [1, 5] {
+            assert_eq!(
+                hard_storage_floor(&windowed, stage_id, 30.0),
+                0.0,
+                "dormant non-filling hydro at stage_id={stage_id}"
+            );
+        }
+    }
+
+    /// The relax disappears at `Operating`: the floor is the caller's minimum,
+    /// unchanged. Globalizing the relax to every operating hydro would make dead
+    /// volume soft system-wide.
+    #[test]
+    fn hard_storage_floor_is_the_given_minimum_for_an_operating_hydro() {
+        let always_on = hydro(None, None, None);
+        assert_eq!(hard_storage_floor(&always_on, 0, 30.0), 30.0);
+        let windowed = hydro(None, Some(2), Some(5));
+        for stage_id in [2, 4] {
+            assert_eq!(
+                hard_storage_floor(&windowed, stage_id, 30.0),
+                30.0,
+                "operating non-filling hydro at stage_id={stage_id}"
+            );
+        }
+    }
+
+    #[test]
+    fn incoming_storage_floor_is_the_initial_storage_at_the_first_stage() {
+        for h in [
+            hydro(None, None, None),
+            hydro(Some(config(0)), Some(4), None),
+        ] {
+            assert_eq!(
+                incoming_storage_floor(&h, None),
+                IncomingStorageFloor::InitialStorage
+            );
+        }
+    }
+
+    /// The hydro is dormant at the predecessor and active now: its incoming
+    /// storage is the seed the frozen-identity row pinned, whatever the
+    /// predecessor's resolved minimum.
+    #[test]
+    fn incoming_storage_floor_is_the_pinned_seed_after_a_dormant_stage() {
+        let non_filling = hydro(None, Some(2), None);
+        assert_eq!(
+            incoming_storage_floor(&non_filling, Some((1, 30.0))),
+            IncomingStorageFloor::PinnedSeed
+        );
+        let filling_hydro = hydro(Some(config(2)), Some(4), None);
+        assert_eq!(
+            incoming_storage_floor(&filling_hydro, Some((1, 30.0))),
+            IncomingStorageFloor::PinnedSeed
+        );
+    }
+
+    /// The predecessor's own resolved minimum feeds the hard floor, never the
+    /// current stage's.
+    #[test]
+    fn incoming_storage_floor_is_the_predecessor_hard_floor() {
+        let non_filling = hydro(None, Some(2), Some(5));
+        assert_eq!(
+            incoming_storage_floor(&non_filling, Some((3, 30.0))),
+            IncomingStorageFloor::PredecessorFloor(30.0)
+        );
+        let filling_hydro = hydro(Some(config(0)), Some(4), None);
+        assert_eq!(
+            incoming_storage_floor(&filling_hydro, Some((2, 30.0))),
+            IncomingStorageFloor::PredecessorFloor(0.0)
+        );
     }
 }

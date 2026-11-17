@@ -11,6 +11,8 @@ use console::Term;
 use novomodelo_comm::ExecutionTopology;
 use novomodelo_io::SetupTimings;
 
+use std::fmt::Display;
+use std::ops::Add;
 use std::path::Path;
 
 use novomodelo_sddp::{BoundaryReconciliationReport, HydroModelSummary, ModelProvenanceReport};
@@ -30,37 +32,40 @@ pub fn print_hydro_model_summary(out: &Term, summary: &HydroModelSummary) {
     }
 }
 
-/// Format a sorted list of rank indices into a compact range string.
+/// Format a sorted list of ids into a compact range string.
 ///
-/// Contiguous sequences use en-dash notation (`0–3`). Non-contiguous ranks are
+/// Contiguous sequences use en-dash notation (`0–3`). Non-contiguous ids are
 /// comma-separated. Mixed sequences interleave both styles: `0–2, 7, 9–11`.
 /// An empty slice returns an empty string.
 ///
 /// # Examples
 ///
 /// ```ignore
-/// assert_eq!(format_rank_list(&[0, 1, 2, 3]), "0–3");
-/// assert_eq!(format_rank_list(&[0, 2, 5]),    "0, 2, 5");
-/// assert_eq!(format_rank_list(&[0, 1, 2, 7, 9, 10, 11]), "0–2, 7, 9–11");
+/// assert_eq!(format_id_ranges(&[0, 1, 2, 3]), "0–3");
+/// assert_eq!(format_id_ranges(&[0, 2, 5]),    "0, 2, 5");
+/// assert_eq!(format_id_ranges(&[0, 1, 2, 7, 9, 10, 11]), "0–2, 7, 9–11");
 /// ```
-fn format_rank_list(ranks: &[usize]) -> String {
-    if ranks.is_empty() {
+fn format_id_ranges<T>(ids: &[T]) -> String
+where
+    T: Copy + PartialEq + Display + Add<Output = T> + From<u8>,
+{
+    if ids.is_empty() {
         return String::new();
     }
     let mut segments: Vec<String> = Vec::new();
-    let mut start = ranks[0];
-    let mut end = ranks[0];
+    let mut start = ids[0];
+    let mut end = ids[0];
 
-    let format_segment = |start: usize, end: usize| {
-        if end > start {
-            format!("{start}\u{2013}{end}")
-        } else {
+    let format_segment = |start: T, end: T| {
+        if end == start {
             format!("{start}")
+        } else {
+            format!("{start}\u{2013}{end}")
         }
     };
 
-    for &r in &ranks[1..] {
-        if r == end + 1 {
+    for &r in &ids[1..] {
+        if r == end + T::from(1) {
             end = r;
         } else {
             segments.push(format_segment(start, end));
@@ -157,7 +162,7 @@ pub fn print_execution_topology(
                 for host in &topology.hosts {
                     let count = host.ranks.len();
                     let rank_count_word = if count == 1 { "rank" } else { "ranks" };
-                    let range = format_rank_list(&host.ranks);
+                    let range = format_id_ranges(&host.ranks);
                     let _ = out.write_line(&format!(
                         "    {}: ranks {range}  ({count} {rank_count_word})",
                         host.hostname
@@ -248,8 +253,27 @@ fn provenance_ar_detail(report: &ModelProvenanceReport) -> String {
     }
 }
 
+/// Returns `" (target: T)"` when the correlation was estimated, or an empty
+/// string when it was not.
+fn provenance_correlation_detail(report: &ModelProvenanceReport) -> String {
+    match report.inflow.correlation_target {
+        Some(target) => format!(" (target: {})", target.as_str()),
+        None => String::new(),
+    }
+}
+
+/// Returns `" (moment matching: M)"` for a generated opening tree, or an empty string.
+fn provenance_opening_tree_detail(report: &ModelProvenanceReport) -> String {
+    match report.inflow.opening_tree_moment_matching {
+        Some(matching) => format!(" (moment matching: {})", matching.as_str()),
+        None => String::new(),
+    }
+}
+
 fn provenance_summary_lines(report: &ModelProvenanceReport) -> Vec<String> {
     let ar_detail = provenance_ar_detail(report);
+    let correlation_detail = provenance_correlation_detail(report);
+    let opening_tree_detail = provenance_opening_tree_detail(report);
     vec![
         console::style("Model provenance").bold().to_string(),
         format!("  Estimation path: {}", report.inflow.estimation_path),
@@ -258,8 +282,14 @@ fn provenance_summary_lines(report: &ModelProvenanceReport) -> Vec<String> {
             "  AR coefficients: {}{}",
             report.inflow.ar_coefficients_source, ar_detail
         ),
-        format!("  Correlation:     {}", report.inflow.correlation_source),
-        format!("  Opening tree:    {}", report.inflow.opening_tree_source),
+        format!(
+            "  Correlation:     {}{}",
+            report.inflow.correlation_source, correlation_detail
+        ),
+        format!(
+            "  Opening tree:    {}{}",
+            report.inflow.opening_tree_source, opening_tree_detail
+        ),
     ]
 }
 
@@ -277,9 +307,14 @@ fn format_boundary_reconciliation_row(report: &BoundaryReconciliationReport) -> 
     if !report.reconciled {
         return "dimension-only load (entity manifest absent)".to_string();
     }
-    let (copy, fan_out, default_zero, dropped) = report.tally_totals();
+    let totals = report.tally_totals();
     format!(
-        "{copy} copied, {fan_out} fanned out, {default_zero} defaulted to 0.0, {dropped} dropped"
+        "{} copied, {} fanned out, {} filled from storage, {} defaulted to 0.0, {} dropped",
+        totals.copy,
+        totals.fan_out,
+        totals.filled_from_storage,
+        totals.default_zero,
+        totals.dropped_source
     )
 }
 
@@ -1432,7 +1467,10 @@ mod tests {
 
     use super::{HydroModelSummary, hydro_model_summary_lines, print_hydro_model_summary};
     use novomodelo_core::EntityId;
-    use novomodelo_sddp::{FphaHydroDetail, ProductionModelSource};
+    use novomodelo_sddp::{
+        DroppedFloor, DroppedFloorKind, DroppedFloorLevel, DroppedFloorReason, FphaHydroDetail,
+        FrozenTurbiningHydro, ProductionModelSource,
+    };
 
     fn make_hydro_model_summary_mixed() -> HydroModelSummary {
         HydroModelSummary {
@@ -1454,6 +1492,7 @@ mod tests {
                 },
             ],
             no_turbine_capacity: Vec::new(),
+            frozen_turbining: Vec::new(),
             n_evaporation: 3,
             n_no_evaporation: 1,
             n_user_supplied_ref: 0,
@@ -1468,6 +1507,7 @@ mod tests {
             total_planes: 0,
             fpha_details: vec![],
             no_turbine_capacity: Vec::new(),
+            frozen_turbining: Vec::new(),
             n_evaporation: 0,
             n_no_evaporation: 4,
             n_user_supplied_ref: 0,
@@ -1482,6 +1522,7 @@ mod tests {
             total_planes: 825,
             fpha_details: vec![],
             no_turbine_capacity: Vec::new(),
+            frozen_turbining: Vec::new(),
             n_evaporation: 162,
             n_no_evaporation: 3,
             n_user_supplied_ref: 0,
@@ -1557,6 +1598,7 @@ mod tests {
                 },
             ],
             no_turbine_capacity: Vec::new(),
+            frozen_turbining: Vec::new(),
             n_evaporation: 0,
             n_no_evaporation: 2,
             n_user_supplied_ref: 0,
@@ -1649,6 +1691,7 @@ mod tests {
             total_planes: 0,
             fpha_details: vec![],
             no_turbine_capacity: Vec::new(),
+            frozen_turbining: Vec::new(),
             n_evaporation: 1,
             n_no_evaporation: 1,
             n_user_supplied_ref: 1,
@@ -1715,6 +1758,7 @@ mod tests {
             total_planes: 0,
             fpha_details: vec![],
             no_turbine_capacity: Vec::new(),
+            frozen_turbining: Vec::new(),
             n_evaporation: 2,
             n_no_evaporation: 0,
             n_user_supplied_ref: 0,
@@ -1744,6 +1788,7 @@ mod tests {
             total_planes: 0,
             fpha_details: vec![],
             no_turbine_capacity: Vec::new(),
+            frozen_turbining: Vec::new(),
             n_evaporation: 3,
             n_no_evaporation: 1,
             n_user_supplied_ref: 3,
@@ -1777,6 +1822,7 @@ mod tests {
             total_planes: 0,
             fpha_details: vec![],
             no_turbine_capacity: Vec::new(),
+            frozen_turbining: Vec::new(),
             n_evaporation: 3,
             n_no_evaporation: 1,
             n_user_supplied_ref: 2,
@@ -1813,6 +1859,49 @@ mod tests {
         assert!(
             s.contains("0 linearized"),
             "zero-evaporation must contain '0 linearized', got: {s}"
+        );
+    }
+
+    fn frozen_row(
+        name: &str,
+        id: i32,
+        no_capacity: &[i32],
+        partial: &[i32],
+        n_dropped: usize,
+    ) -> FrozenTurbiningHydro {
+        FrozenTurbiningHydro {
+            hydro_id: EntityId(id),
+            name: name.to_owned(),
+            no_capacity_stage_ids: no_capacity.to_vec(),
+            partial_capacity_stage_ids: partial.to_vec(),
+            dropped_floors: vec![
+                DroppedFloor {
+                    stage_id: 0,
+                    block_id: 0,
+                    floor: DroppedFloorKind::MinTurbinedM3s,
+                    level: DroppedFloorLevel::Plant,
+                    hydro_unit_group_id: None,
+                    bus_id: None,
+                    value: 1.0,
+                    reason: DroppedFloorReason::NoCapacity,
+                };
+                n_dropped
+            ],
+        }
+    }
+
+    #[test]
+    fn hydro_model_summary_lines_leave_frozen_turbining_rows_to_the_json_report() {
+        let mut summary = make_hydro_model_summary_mixed();
+        summary.frozen_turbining = vec![
+            frozen_row("Jacui", 77, &[3], &[], 0),
+            frozen_row("B", 5, &[0, 1, 2, 5], &[7], 1),
+        ];
+        let lines = hydro_model_summary_lines(&summary);
+        assert_eq!(lines.len(), 3, "got: {lines:?}");
+        assert!(
+            lines.iter().all(|l| !l.contains("Frozen")),
+            "got: {lines:?}"
         );
     }
 
@@ -1870,6 +1959,7 @@ mod tests {
 
     // ── ModelProvenanceReport tests ───────────────────────────────────────────
 
+    use novomodelo_io::config::{CorrelationTarget, MomentMatching};
     use novomodelo_sddp::{HydroProductionProvenance, InflowProvenance, ProvenanceSource};
 
     use super::{ModelProvenanceReport, print_provenance_summary, provenance_summary_lines};
@@ -1881,7 +1971,9 @@ mod tests {
                 seasonal_stats_source: ProvenanceSource::Estimated,
                 ar_coefficients_source: ProvenanceSource::Estimated,
                 correlation_source: ProvenanceSource::Estimated,
+                correlation_target: None,
                 opening_tree_source: ProvenanceSource::Estimated,
+                opening_tree_moment_matching: None,
                 n_hydros: 3,
                 ar_method: Some("PACF".to_string()),
                 ar_max_order: Some(6),
@@ -1899,7 +1991,9 @@ mod tests {
                 seasonal_stats_source: ProvenanceSource::NotApplicable,
                 ar_coefficients_source: ProvenanceSource::NotApplicable,
                 correlation_source: ProvenanceSource::NotApplicable,
+                correlation_target: None,
                 opening_tree_source: ProvenanceSource::NotApplicable,
+                opening_tree_moment_matching: None,
                 n_hydros: 0,
                 ar_method: None,
                 ar_max_order: None,
@@ -1992,7 +2086,9 @@ mod tests {
                 seasonal_stats_source: ProvenanceSource::UserFile,
                 ar_coefficients_source: ProvenanceSource::UserFile,
                 correlation_source: ProvenanceSource::Estimated,
+                correlation_target: None,
                 opening_tree_source: ProvenanceSource::Estimated,
+                opening_tree_moment_matching: None,
                 n_hydros: 2,
                 ar_method: None,
                 ar_max_order: None,
@@ -2012,6 +2108,76 @@ mod tests {
         );
     }
 
+    #[test]
+    fn provenance_summary_names_the_correlation_target_only_when_estimated() {
+        let cases = [
+            (
+                make_provenance_report_full_estimation(),
+                ProvenanceSource::Estimated,
+                Some(CorrelationTarget::Inflows),
+                "  Correlation:     estimated (target: inflows)",
+            ),
+            (
+                make_provenance_report_full_estimation(),
+                ProvenanceSource::Estimated,
+                Some(CorrelationTarget::Residuals),
+                "  Correlation:     estimated (target: residuals)",
+            ),
+            (
+                make_provenance_report_full_estimation(),
+                ProvenanceSource::UserFile,
+                None,
+                "  Correlation:     user_file",
+            ),
+            (
+                make_provenance_report_deterministic(),
+                ProvenanceSource::NotApplicable,
+                None,
+                "  Correlation:     n/a",
+            ),
+        ];
+        for (mut report, source, target, expected) in cases {
+            report.inflow.correlation_source = source;
+            report.inflow.correlation_target = target;
+            let lines = provenance_summary_lines(&report);
+            assert!(
+                lines.iter().any(|line| line == expected),
+                "expected the line {expected:?}, got: {lines:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn provenance_summary_names_the_moment_matching_of_a_generated_tree() {
+        let cases = [
+            (
+                ProvenanceSource::Estimated,
+                Some(MomentMatching::PerCoordinate),
+                "  Opening tree:    estimated (moment matching: per_coordinate)",
+            ),
+            (
+                ProvenanceSource::Estimated,
+                Some(MomentMatching::None),
+                "  Opening tree:    estimated (moment matching: none)",
+            ),
+            (
+                ProvenanceSource::UserFile,
+                None,
+                "  Opening tree:    user_file",
+            ),
+        ];
+        for (source, matching, expected) in cases {
+            let mut report = make_provenance_report_full_estimation();
+            report.inflow.opening_tree_source = source;
+            report.inflow.opening_tree_moment_matching = matching;
+            let lines = provenance_summary_lines(&report);
+            assert!(
+                lines.iter().any(|line| line == expected),
+                "expected the line {expected:?}, got: {lines:?}"
+            );
+        }
+    }
+
     fn make_provenance_report_with_hydro_production(
         hydro_production: HydroProductionProvenance,
     ) -> ModelProvenanceReport {
@@ -2021,7 +2187,9 @@ mod tests {
                 seasonal_stats_source: ProvenanceSource::Estimated,
                 ar_coefficients_source: ProvenanceSource::Estimated,
                 correlation_source: ProvenanceSource::Estimated,
+                correlation_target: None,
                 opening_tree_source: ProvenanceSource::Estimated,
+                opening_tree_moment_matching: None,
                 n_hydros: 3,
                 ar_method: Some("PACF".to_string()),
                 ar_max_order: Some(6),
@@ -2082,21 +2250,23 @@ mod tests {
                 ..FamilyTally::default()
             },
             inflow_lag: FamilyTally {
-                fan_out: 1,
+                fan_out: 7,
                 ..FamilyTally::default()
             },
             transit_bucket: FamilyTally {
+                filled_from_storage: 3,
                 dropped_source: 2,
                 ..FamilyTally::default()
             },
             anticipated: FamilyTally {
-                default_zero: 1,
+                default_zero: 5,
                 ..FamilyTally::default()
             },
             anticipated_coverage: AnticipatedCoverage::default(),
             other_identity: FamilyTally::default(),
             dropped_source_slots: Vec::new(),
             straddling_slots: Vec::new(),
+            filled_from_storage_slots: Vec::new(),
         }
     }
 
@@ -2120,7 +2290,10 @@ mod tests {
             "output must contain the aligned 'Source:' row, got: {s}"
         );
         assert!(
-            s.contains("Reconciliation: 2184 copied, 1 fanned out, 1 defaulted to 0.0, 2 dropped"),
+            s.contains(
+                "Reconciliation: 2184 copied, 7 fanned out, 3 filled from storage, 5 defaulted to \
+                 0.0, 2 dropped"
+            ),
             "output must contain the compact reconciliation tally, got: {s}"
         );
     }
@@ -2158,35 +2331,40 @@ mod tests {
         );
     }
 
-    // ── format_rank_list tests ────────────────────────────────────────────────
+    // ── format_id_ranges tests ────────────────────────────────────────────────
 
-    use super::format_rank_list;
+    use super::format_id_ranges;
 
     #[test]
-    fn test_format_rank_list_empty() {
-        assert_eq!(format_rank_list(&[]), "");
+    fn test_format_id_ranges_empty() {
+        assert_eq!(format_id_ranges::<usize>(&[]), "");
     }
 
     #[test]
-    fn test_format_rank_list_single() {
-        assert_eq!(format_rank_list(&[5]), "5");
+    fn test_format_id_ranges_single() {
+        assert_eq!(format_id_ranges(&[5]), "5");
     }
 
     #[test]
-    fn test_format_rank_list_contiguous() {
-        assert_eq!(format_rank_list(&[0, 1, 2, 3]), "0\u{2013}3");
+    fn test_format_id_ranges_contiguous() {
+        assert_eq!(format_id_ranges(&[0, 1, 2, 3]), "0\u{2013}3");
     }
 
     #[test]
-    fn test_format_rank_list_non_contiguous() {
-        assert_eq!(format_rank_list(&[0, 2, 5]), "0, 2, 5");
+    fn test_format_id_ranges_non_contiguous() {
+        assert_eq!(format_id_ranges(&[0, 2, 5]), "0, 2, 5");
     }
 
     #[test]
-    fn test_format_rank_list_mixed() {
+    fn test_format_id_ranges_mixed() {
         assert_eq!(
-            format_rank_list(&[0, 1, 2, 7, 9, 10, 11]),
+            format_id_ranges(&[0, 1, 2, 7, 9, 10, 11]),
             "0\u{2013}2, 7, 9\u{2013}11"
         );
+    }
+
+    #[test]
+    fn test_format_id_ranges_of_stage_ids() {
+        assert_eq!(format_id_ranges(&[0i32, 1, 2, 5]), "0\u{2013}2, 5");
     }
 }

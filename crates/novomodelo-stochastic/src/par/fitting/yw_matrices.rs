@@ -76,16 +76,16 @@ pub fn periodic_autocorrelation(
         return 0.0;
     }
 
-    // Z⊗Z divides by n_pairs — the max-bucket-size divisor of
-    // cross_correlation_z_a / _a_z_neg1 applies only to Z⊗A cross-terms, whose
-    // buckets differ in length.
+    // Divide by the max bucket size N, not n_pairs, as [`cross_correlation_z_a`]
+    // does: the 1/N estimator keeps N when a cross-year lag loses its first pair.
     let mut gamma = 0.0_f64;
     for i in 0..n_pairs {
         gamma += (ref_obs[ref_start + i] - mu_ref) * (lag_obs[lag_start + i] - mu_lag);
     }
+    let denom_n = ref_obs.len().max(lag_obs.len());
     #[allow(clippy::cast_precision_loss)]
     {
-        gamma /= n_pairs as f64;
+        gamma /= denom_n as f64;
     }
 
     let rho = gamma / (std_ref * std_lag);

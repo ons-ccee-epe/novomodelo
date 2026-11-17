@@ -14,11 +14,11 @@
 //!
 //! `solver_stats_log`'s `phase == "backward"` rows (summed) and
 //! `TrainingEvent::IterationSummary::lp_solves - forward - lower_bound` are two
-//! independently-derived views of the same count: the former reads
-//! `BackwardResult::stage_stats` directly (one `(rank, worker_id, 0, delta)`
+//! independently-derived views of the same count: the former reads the entries
+//! `BackwardPassState::stage_stats` yields (one `(rank, worker_id, 0, delta)`
 //! entry per visited successor stage on the node-native path — mirroring how
 //! `tests/branching_value_oracle.rs`'s `bwd_solves += entry.delta.lp_solves`
-//! accumulation reads the sampled path's own `stage_stats`), the latter derives
+//! accumulation reads the sampled path's own entries), the latter derives
 //! it from `TrainingEvent::IterationSummary::lp_solves` (
 //! `forward_result.lp_solves + backward_result.lp_solves + lb_lp_solves`,
 //! `TrainingSession::run_iteration`) minus the forward and lower-bound phases'

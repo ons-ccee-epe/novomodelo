@@ -221,11 +221,11 @@ mod extraction_nonuniform_block_bases {
             let cost = stage.costs.first().expect("one cost record per stage");
 
             // `hydro_violation_cost` is the total of the per-constraint violation
-            // costs (outflow/turbined/generation/evaporation/withdrawal); summing it
-            // here together with the standalone categories covers every priced column
-            // exactly once. `generic_violation_cost` and `curtailment_cost` use a
-            // non-range formula, but D33/D34 declare neither generic constraints nor
-            // NCS, so both are zero and do not perturb the reconciliation.
+            // costs; summing it here together with the standalone categories covers
+            // every priced column exactly once. `generic_violation_cost` and
+            // `curtailment_cost` use a non-range formula, but D33/D34 declare neither
+            // generic constraints nor NCS, so both are zero and do not perturb the
+            // reconciliation.
             let breakdown = cost.thermal_cost
                 + cost.anticipated_thermal_cost
                 + cost.contract_cost
@@ -803,7 +803,7 @@ mod cell_partition_gates {
         DeficitSegment, EntityId, HydroBlockBounds, HydroPenalties, HydroStageBounds,
         HydroUnitGroup, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
         PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
-        ResolvedPenalties, System, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
+        ResolvedPenalties, System, SystemBuilder, ThermalBlockBounds,
     };
     use novomodelo_sddp::hydro_models::{
         EvaporationModelSet, FphaPlane, PrepareHydroModelsResult, ProductionModelSet,
@@ -812,10 +812,13 @@ mod cell_partition_gates {
     use novomodelo_sddp::inflow_method::InflowNonNegativityMethod;
     use novomodelo_sddp::resolved_parameters::ResolvedParameters;
     use novomodelo_sddp::test_support::{assert_templates_byte_identical, make_unit_group};
-    use novomodelo_sddp::{StageTemplates, build_stage_templates_resolving_layout};
+    use novomodelo_sddp::{
+        StageTemplates, build_stage_templates_resolving_layout, resolved_state_layout,
+    };
     use novomodelo_solver::StageTemplate;
     use novomodelo_stochastic::normal::precompute::PrecomputedNormal;
     use novomodelo_stochastic::par::precompute::PrecomputedPar;
+    use std::ops::Range;
 
     use super::common::builders::{
         BusSpec, HydroSpec, StageSpec, make_bus, make_hydro, make_stage,
@@ -992,10 +995,10 @@ mod cell_partition_gates {
                     max_generation_mw: 100_000.0,
                     ..Default::default()
                 },
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -1014,8 +1017,9 @@ mod cell_partition_gates {
         )
     }
 
-    /// All-zero `ResolvedPenalties` — no test in this module solves, so cost
-    /// coefficients are inert; only the shape (counts) matters.
+    /// `ResolvedPenalties` with every cost zero but the FPHA violation cost — no
+    /// test in this module solves, so cost coefficients are inert; only the shape
+    /// (counts) matters.
     fn zero_resolved_penalties(counts: &PenaltiesCountsSpec) -> ResolvedPenalties {
         ResolvedPenalties::new(
             counts,
@@ -1030,6 +1034,7 @@ mod cell_partition_gates {
                     outflow_violation_below_cost: 0.0,
                     outflow_violation_above_cost: 0.0,
                     generation_violation_below_cost: 0.0,
+                    fpha_violation_cost: 5000.0,
                     evaporation_violation_cost: 0.0,
                     water_withdrawal_violation_cost: 0.0,
                     water_withdrawal_violation_pos_cost: 0.0,
@@ -1158,11 +1163,20 @@ mod cell_partition_gates {
     }
 
     fn build_template(fpha_groups: Vec<HydroUnitGroup>) -> StageTemplate {
-        build_stage_templates(fpha_groups)
+        build_template_with_slack(fpha_groups).0
+    }
+
+    fn build_template_with_slack(
+        fpha_groups: Vec<HydroUnitGroup>,
+    ) -> (StageTemplate, Range<usize>) {
+        let built = build_stage_templates(fpha_groups);
+        let slack = built.geometry_per_stage[0].fpha_slack.clone();
+        let template = built
             .templates
             .into_iter()
             .next()
-            .expect("exactly one stage")
+            .expect("exactly one stage");
+        (template, slack)
     }
 
     // ---- CSC probes --------------------------------------------------------
@@ -1469,28 +1483,31 @@ mod cell_partition_gates {
     // ---- State-space invariance --------------------------------------------
 
     /// Declaring groups (including the two-bus variant, which DOES add
-    /// columns) never moves `n_state`, and an independently-built
+    /// columns) never moves the resolved `n_state`, and an independently-built
     /// `StateSpace` (unrelated to `unit_groups` at all) agrees. Checkpoint
     /// bytes and the terminal entity manifest are a separate artifact-level
     /// concern this test does not assert.
     #[test]
     fn test_declaring_groups_does_not_move_the_state_space() {
-        let tmpl_a = build_template(groups_three_same_bus());
         let tmpl_b = build_template(groups_single_mirror());
         let tmpl_c = build_template(groups_two_buses());
-
-        for (label, t) in [("A", &tmpl_a), ("B", &tmpl_b), ("C", &tmpl_c)] {
-            assert_eq!(t.n_state, tmpl_b.n_state, "{label}: n_state");
-        }
 
         // Independent cross-check via a totally separate code path: a
         // StateSpace built directly from (hydro_count, max_par_order) alone
         // -- unit_groups plays no role in state-layout resolution at all.
         let independent = novomodelo_sddp::test_support::state_layout(2, 0);
-        assert_eq!(
-            independent.n_state, tmpl_b.n_state,
-            "an independently-built StateSpace must agree with the template's n_state"
-        );
+        for (label, groups) in [
+            ("A", groups_three_same_bus()),
+            ("B", groups_single_mirror()),
+            ("C", groups_two_buses()),
+        ] {
+            let resolved = resolved_state_layout(&build_system(groups), &PrecomputedPar::default())
+                .expect("resolved_state_layout ok");
+            assert_eq!(
+                resolved.n_state, independent.n_state,
+                "{label}: the resolved n_state must equal an independently-built StateSpace's"
+            );
+        }
 
         // Variant C is the load-bearing case: splitting a plant across two buses
         // adds an extra turbine and an extra FPHA generation column, and this is
@@ -1510,7 +1527,8 @@ mod cell_partition_gates {
     /// `tau`. `num_cols` grows by one turbine + one FPHA generation column
     /// for the new cell, plus one `turbine_below_slack` + one
     /// `generation_below_slack` column (`OperViolationRanges` sizes both
-    /// power-family slacks per cell, not per hydro — `n_blks = 1` here).
+    /// power-family slacks per cell, not per hydro — `n_blks = 1` here) and
+    /// one `fpha_slack` column (one FPHA cell per block).
     #[test]
     fn test_two_bus_plant_credits_each_bus_and_still_balances_water() {
         let tau_h = BLOCK_HOURS * M3S_TO_HM3;
@@ -1520,9 +1538,9 @@ mod cell_partition_gates {
 
         assert_eq!(
             tmpl_c.num_cols,
-            tmpl_b.num_cols + 4,
+            tmpl_b.num_cols + 5,
             "variant C must add 1 turbine + 1 FPHA generation + 1 turbine_below_slack \
-             + 1 generation_below_slack column over B (n_blks=1)"
+             + 1 generation_below_slack + 1 fpha_slack column over B (n_blks=1)"
         );
 
         let cell_first_gen = find_col_by_upper(&tmpl_c, 7_000.0, 1e-9);
@@ -1710,11 +1728,13 @@ mod cell_partition_gates {
     /// pairing equal coefficients (`v_each` stands for BOTH `V_in` and
     /// `V_out`, so which physical column is which cannot matter here --
     /// `chronological_d06_gamma_v_on_both_block_columns` is the dedicated
-    /// pin for that contract, not this test's job).
+    /// pin for that contract, not this test's job). `slack_cols` are the
+    /// plane slack columns, evaluated at 0.
     fn row_allowance_excluding_generation(
         tmpl: &StageTemplate,
         row: usize,
         gen_cols: &[usize],
+        slack_cols: &Range<usize>,
         turb_q: &[(usize, f64)],
         v_each: f64,
         s: f64,
@@ -1722,7 +1742,7 @@ mod cell_partition_gates {
         let mut non_flow_terms: Vec<f64> = Vec::new();
         let mut q_contribution = 0.0;
         for (col, val) in row_entries(tmpl, row) {
-            if gen_cols.contains(&col) {
+            if gen_cols.contains(&col) || slack_cols.contains(&col) {
                 continue;
             }
             if let Some(&(_, q_c)) = turb_q.iter().find(|&&(tc, _)| tc == col) {
@@ -1756,13 +1776,23 @@ mod cell_partition_gates {
 
     /// The aggregate cap: sum `row_allowance_excluding_generation`
     /// over every one of the plant's (deduplicated) generic-plane rows.
-    fn aggregate_cap(tmpl: &StageTemplate, cells: &[(f64, f64, f64)], v_each: f64, s: f64) -> f64 {
+    fn aggregate_cap(
+        tmpl: &StageTemplate,
+        slack_cols: &Range<usize>,
+        cells: &[(f64, f64, f64)],
+        v_each: f64,
+        s: f64,
+    ) -> f64 {
         let resolved = resolve_cells(tmpl, cells);
         let gen_cols: Vec<usize> = resolved.iter().map(|&(g, _, _)| g).collect();
         let turb_q: Vec<(usize, f64)> = resolved.iter().map(|&(_, t, q)| (t, q)).collect();
         plant_plane_rows(tmpl, &resolved, WhichPlane::Generic)
             .into_iter()
-            .map(|row| row_allowance_excluding_generation(tmpl, row, &gen_cols, &turb_q, v_each, s))
+            .map(|row| {
+                row_allowance_excluding_generation(
+                    tmpl, row, &gen_cols, slack_cols, &turb_q, v_each, s,
+                )
+            })
             .sum()
     }
 
@@ -1785,21 +1815,29 @@ mod cell_partition_gates {
         // ~40 out of ~442 -- a ~9% relative error).
         const REL_TOL: f64 = 1e-9;
 
-        let tmpl_1 = build_template(groups_single_mirror());
-        let tmpl_2 = build_template(groups_two_buses());
-        let tmpl_3 = build_template(groups_three_buses());
+        let (tmpl_1, slack_1) = build_template_with_slack(groups_single_mirror());
+        let (tmpl_2, slack_2) = build_template_with_slack(groups_two_buses());
+        let (tmpl_3, slack_3) = build_template_with_slack(groups_three_buses());
 
         // Same total turbined flow (500.0 m3/s), split differently per
         // partition; (gen_upper, turb_upper) identify each cell.
-        let cap_1 = aggregate_cap(&tmpl_1, &[(12_000.0, 750.0, 500.0)], V_EACH, SPILLAGE);
+        let cap_1 = aggregate_cap(
+            &tmpl_1,
+            &slack_1,
+            &[(12_000.0, 750.0, 500.0)],
+            V_EACH,
+            SPILLAGE,
+        );
         let cap_2 = aggregate_cap(
             &tmpl_2,
+            &slack_2,
             &[(7_000.0, 450.0, 200.0), (5_000.0, 300.0, 300.0)],
             V_EACH,
             SPILLAGE,
         );
         let cap_3 = aggregate_cap(
             &tmpl_3,
+            &slack_3,
             &[
                 (3_000.0, 200.0, 150.0),
                 (4_000.0, 250.0, 200.0),
@@ -1876,6 +1914,7 @@ mod cell_partition_gates {
                 &tmpl_2,
                 row,
                 &gen_cols_2,
+                &slack_2,
                 &[(turb_col, 0.0)],
                 V_EACH,
                 SPILLAGE,

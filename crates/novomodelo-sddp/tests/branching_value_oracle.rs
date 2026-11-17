@@ -67,7 +67,6 @@
 mod common;
 
 use novomodelo_io::config::BackwardScheduler;
-use novomodelo_io::test_support::owned_piece_defaults;
 use novomodelo_sddp::CutPool;
 use novomodelo_sddp::StudySetup;
 use novomodelo_sddp::cut::SlotOrigin;
@@ -76,14 +75,16 @@ use novomodelo_sddp::policy_export::{BindingCounters, build_stage_cut_records};
 use novomodelo_sddp::setup::{NodePos, OpeningSource, StageIdx};
 use novomodelo_sddp::test_support::{
     dcs_k_fan_setup, extensive_form_optimum, external_distinct_fan_setup,
-    external_distinct_fan_setup_heterogeneous_cut_state, external_root_fan_setup, k_fan_setup,
-    node_prefix_counts, node_scenario_count, node_visit_probabilities, oracle_chain_setup,
-    pool_cut_state_dimensions, terminal_generated_fan_setup, try_k_fan_simulation_enumerated,
+    external_distinct_fan_setup_heterogeneous_cut_state, external_distinct_fan_setup_lagged_parent,
+    external_root_fan_setup, k_fan_setup, node_prefix_counts, node_scenario_count,
+    node_visit_probabilities, oracle_chain_setup, pool_cut_state_dimensions,
+    terminal_generated_fan_setup, try_k_fan_simulation_enumerated,
     water_binding_external_fan_setup, water_binding_external_fan_setup_reversed,
+    water_binding_generated_fan_setup,
 };
 use novomodelo_solver::ActiveSolver;
 
-use common::{StubComm, run_simulation};
+use common::{StubComm, inject_constant_terminal_boundary_cuts, run_simulation};
 
 /// Relative + absolute LP tolerance for oracle-vs-engine value comparison. The
 /// backend primal/dual feasibility tolerance is `≈ 1e-9`; scaled by the objective
@@ -929,32 +930,6 @@ fn external_distinct_fan_terminal_pool_stays_fixed_and_single_materialized() {
 /// in-horizon optimal policy.
 const TERMINAL_BOUNDARY_INTERCEPT: f64 = 100.0;
 
-/// Replace `setup`'s terminal FCF pool with a single constant boundary cut
-/// (`θ_terminal ≥ intercept`, zero state coefficients), so the terminal θ prices a
-/// nonzero post-horizon value-to-go — the terminal-boundary-policy shape no
-/// existing fixture exercised. Mirrors `inject_boundary_cuts`, building the fixed
-/// warm-start pool directly from a hand-constructed record (the validated
-/// file-load path is unnecessary for a synthetic fixture).
-fn inject_constant_terminal_boundary_fcf(setup: &mut StudySetup, intercept: f64, is_active: bool) {
-    let terminal = setup
-        .inputs
-        .node_graph
-        .terminal_pool(setup.num_stages())
-        .unwrap();
-    let state_dim = setup.fcf.state_dimension;
-    let forward_passes = setup.fcf.forward_passes;
-    let record = novomodelo_io::OwnedPolicyCutRecord {
-        slot_index: 0,
-        coefficients: vec![0.0; state_dim],
-        intercept,
-        iteration: 0,
-        is_active,
-        ..owned_piece_defaults()
-    };
-    setup.fcf.pools[terminal] =
-        CutPool::new_with_warm_start(state_dim, forward_passes, 0, &[record]);
-}
-
 /// A terminal boundary FCF (nonzero post-horizon value-to-go) must be booked
 /// identically in the lower and upper bound, so a converged deterministic chain
 /// still closes `final_lb == final_ub`. Before the terminal-θ-in-cost fix the UB
@@ -972,7 +947,7 @@ fn terminal_boundary_fcf_training_gap_is_consistent() {
     );
 
     let mut boundary = oracle_chain_setup(30);
-    inject_constant_terminal_boundary_fcf(&mut boundary, TERMINAL_BOUNDARY_INTERCEPT, true);
+    inject_constant_terminal_boundary_cuts(&mut boundary, &[TERMINAL_BOUNDARY_INTERCEPT], true);
     let (lb_b, ub_b) = train_bounds(&mut boundary);
 
     assert!(
@@ -1011,7 +986,7 @@ fn terminal_boundary_fcf_simulation_cost_includes_post_horizon() {
     let mean_plain = mean_scenario_total_cost(&run_simulation(&mut plain, 1));
 
     let mut boundary = try_k_fan_simulation_enumerated(2).expect("simulate-enabled fixture builds");
-    inject_constant_terminal_boundary_fcf(&mut boundary, TERMINAL_BOUNDARY_INTERCEPT, true);
+    inject_constant_terminal_boundary_cuts(&mut boundary, &[TERMINAL_BOUNDARY_INTERCEPT], true);
     let mean_boundary = mean_scenario_total_cost(&run_simulation(&mut boundary, 1));
 
     assert!(
@@ -1083,7 +1058,7 @@ fn terminal_boundary_records_all_inactive_leave_the_plain_chain_bounds() {
     let (lb_plain, ub_plain) = train_bounds(&mut plain);
 
     let mut inactive = oracle_chain_setup(30);
-    inject_constant_terminal_boundary_fcf(&mut inactive, TERMINAL_BOUNDARY_INTERCEPT, false);
+    inject_constant_terminal_boundary_cuts(&mut inactive, &[TERMINAL_BOUNDARY_INTERCEPT], false);
     let (lb_inactive, ub_inactive) = train_bounds(&mut inactive);
 
     assert_inactive_boundary_record_leaves_bounds_unchanged(
@@ -1107,7 +1082,7 @@ fn terminal_boundary_records_all_inactive_leave_the_plain_fan_bounds() {
     let (lb_plain, ub_plain) = train_bounds(&mut plain);
 
     let mut inactive = terminal_generated_fan_setup(2, MAX_ITERATIONS);
-    inject_constant_terminal_boundary_fcf(&mut inactive, TERMINAL_BOUNDARY_INTERCEPT, false);
+    inject_constant_terminal_boundary_cuts(&mut inactive, &[TERMINAL_BOUNDARY_INTERCEPT], false);
     let (lb_inactive, ub_inactive) = train_bounds(&mut inactive);
 
     assert_inactive_boundary_record_leaves_bounds_unchanged(
@@ -1162,17 +1137,10 @@ mod terminal_fusion {
     const ANALYTICAL_ORACLE_ITERATIONS: u32 = 1;
 
     /// Trains `setup` single-rank/single-thread with an attached event
-    /// channel, returning `(final_lb, final_ub, backward_lp_solves)`.
-    /// `solver_stats_log`'s own `"backward"` phase stays empty for enumerated
-    /// training — `BackwardResult::stage_stats` is unconditionally
-    /// `Vec::new()` off the sampled/by-node path
-    /// (`BackwardPassState::run_enumerated_backward`) — so the real backward
-    /// solve count is recovered by subtracting this iteration's logged
-    /// `"forward"` + `"lower_bound"` total from
-    /// `TrainingEvent::IterationSummary::lp_solves`, which sums all three
-    /// phases for that iteration. Filtering `solver_stats_log` by
-    /// `phase == "backward"` here would silently read zero regardless of
-    /// fusion — the wrong-but-compiling shortcut this helper exists to avoid.
+    /// channel, returning `(final_lb, final_ub, backward_lp_solves)`. The backward
+    /// solve count is `TrainingEvent::IterationSummary::lp_solves`, which sums
+    /// the forward, backward and lower-bound phases of an iteration, minus that
+    /// iteration's logged `"forward"` + `"lower_bound"` total.
     fn train_enumerated_backward_lp_solves(setup: &mut StudySetup) -> (f64, f64, u64) {
         let comm = StubComm;
         let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
@@ -1426,6 +1394,123 @@ mod terminal_fusion {
             "the compute-win mirror: a Generated terminal leaf is never fused, so the backward \
              must solve every one of the {FUSION_FAN_K} leaves on every one of the \
              {FUSION_MAX_ITERATIONS} iterations, got {backward_lp_solves} backward LP solves"
+        );
+    }
+}
+
+mod compact_form {
+    use super::{
+        NodePos, OpeningSource, StageIdx, assert_distinct_external_leaf_columns, close,
+        extensive_form_optimum, external_distinct_fan_setup_lagged_parent,
+        pool_cut_state_dimensions, train_bounds, train_bounds_threads,
+        water_binding_generated_fan_setup,
+    };
+
+    const FAN_K: usize = 2;
+    const TERMINAL_FAN_K: usize = 3;
+    const MAX_ITERATIONS: u32 = 30;
+
+    /// The leaf pool and the cut-generating parent pool project the same lag
+    /// slot, so the folded leaf slice reads a lag dual the compact LP has no
+    /// column for.
+    #[test]
+    fn external_distinct_fan_lagged_parent_compact_matches_extensive_form() {
+        let mut compact = external_distinct_fan_setup_lagged_parent(FAN_K, MAX_ITERATIONS);
+        assert_distinct_external_leaf_columns(&compact);
+        let g = &compact.inputs.node_graph;
+        let root_pool = (0..g.nodes.len())
+            .map(NodePos)
+            .find(|&pos| g.nodes[pos].stage == StageIdx(0))
+            .map(|pos| g.nodes[pos].pool_id)
+            .expect("fixture must have a stage-0 root");
+        let dims = pool_cut_state_dimensions(&compact);
+        for pos in (0..g.nodes.len())
+            .map(NodePos)
+            .filter(|&p| g.successors[p].is_empty())
+        {
+            let leaf_pool = g.nodes[pos].pool_id;
+            assert_eq!(
+                dims[leaf_pool], dims[root_pool],
+                "power check: leaf pool {leaf_pool} and root pool {root_pool} must project the \
+                 same cut-state dimension ({dims:?}), lag slot included"
+            );
+        }
+
+        let optimum = extensive_form_optimum(&compact);
+        let (lb, ub) = train_bounds(&mut compact);
+
+        assert!(
+            close(lb, optimum),
+            "compact lagged-parent fan final_lb {lb} must equal extensive-form optimum \
+             {optimum} (gap {})",
+            lb - optimum
+        );
+        assert!(
+            close(lb, ub),
+            "compact lagged-parent fan final_lb {lb} must equal final_ub {ub} (gap {})",
+            lb - ub
+        );
+    }
+
+    /// The Generated leaves share one pool and no leaf is an External terminal
+    /// leaf, so every leaf goes through the replicated per-node solve, which
+    /// pins once per child load and chain-rules each opening. The hydro is
+    /// productive in a scarce reservoir, so the pinned incoming storage changes
+    /// the leaf's cost and its cut coefficient.
+    #[test]
+    fn water_binding_generated_fan_compact_matches_extensive_form() {
+        let mut compact = water_binding_generated_fan_setup(TERMINAL_FAN_K, MAX_ITERATIONS);
+        let g = &compact.inputs.node_graph;
+        let leaves: Vec<NodePos> = (0..g.nodes.len())
+            .map(NodePos)
+            .filter(|&pos| g.successors[pos].is_empty())
+            .collect();
+        assert_eq!(leaves.len(), TERMINAL_FAN_K, "one leaf per fan branch");
+        assert!(
+            leaves
+                .iter()
+                .all(|&pos| g.nodes[pos].openings.source == OpeningSource::Generated),
+            "power check: no leaf is an External terminal leaf, so none is read from a \
+             captured slice"
+        );
+        let root_pool = (0..g.nodes.len())
+            .map(NodePos)
+            .find(|&pos| g.nodes[pos].stage == StageIdx(0))
+            .map(|pos| g.nodes[pos].pool_id)
+            .expect("fixture must have a stage-0 root");
+
+        let optimum = extensive_form_optimum(&compact);
+        let (lb, ub) = train_bounds(&mut compact);
+        assert!(
+            compact.fcf.pools[root_pool]
+                .active_cuts()
+                .any(|(_, _, coefficients)| coefficients.iter().any(|&c| c != 0.0)),
+            "power check: water has value, so some root cut must carry a nonzero coefficient"
+        );
+        assert!(
+            close(lb, optimum),
+            "compact water-binding fan final_lb {lb} must equal extensive-form optimum \
+             {optimum} (gap {})",
+            lb - optimum
+        );
+        assert!(
+            close(lb, ub),
+            "compact water-binding fan final_lb {lb} must equal final_ub {ub} (gap {})",
+            lb - ub
+        );
+    }
+
+    #[test]
+    fn water_binding_generated_fan_compact_final_lb_is_thread_shape_invariant() {
+        let mut one = water_binding_generated_fan_setup(TERMINAL_FAN_K, MAX_ITERATIONS);
+        let mut two = water_binding_generated_fan_setup(TERMINAL_FAN_K, MAX_ITERATIONS);
+        let (lb1, _) = train_bounds_threads(&mut one, 1);
+        let (lb2, _) = train_bounds_threads(&mut two, 2);
+        assert_eq!(
+            lb1.to_bits(),
+            lb2.to_bits(),
+            "compact water-binding fan final_lb must be bit-identical across --threads 1 \
+             ({lb1}) and --threads 2 ({lb2})"
         );
     }
 }

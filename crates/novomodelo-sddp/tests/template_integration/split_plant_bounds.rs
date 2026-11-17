@@ -12,14 +12,19 @@ use std::path::Path;
 use novomodelo_core::EntityId;
 use novomodelo_core::scenario::ScenarioSource;
 use novomodelo_sddp::hydro_models::prepare_hydro_models;
-use novomodelo_sddp::indexer::{BlockIdx, HydroCell, HydroCellIndex, HydroSys};
+use novomodelo_sddp::indexer::{BlockIdx, FphaCellLocal, HydroCell, HydroCellIndex, HydroSys};
 use novomodelo_sddp::{StageTemplates, StudyParams, prepare_stochastic};
 
 use super::*;
 
+const D51_DIR: &str = "../../examples/deterministic/d51-split-plant-two-bus";
+
 /// Structural (Tier 3) read of d51's `col_upper` — no solve.
 fn build_d51_templates() -> (novomodelo_core::System, StageTemplates) {
-    let case_dir = Path::new("../../examples/deterministic/d51-split-plant-two-bus");
+    build_d51_templates_from(Path::new(D51_DIR))
+}
+
+fn build_d51_templates_from(case_dir: &Path) -> (novomodelo_core::System, StageTemplates) {
     let config_path = case_dir.join("config.json");
     let config = novomodelo_io::parse_config(&config_path).expect("d51 config must parse");
     let system = novomodelo_io::load_case(case_dir).expect("d51 load_case must succeed");
@@ -178,5 +183,156 @@ fn split_plant_ac2_available_capacity_is_not_the_fold_after_sum_plant_product() 
          groups before folding against the plant envelope would silently manufacture a \
          SMALLER, wrong bound (min(Σa, C) <= Σ min(a, C) whenever more than one term binds \
          below C individually while the sum exceeds it)"
+    );
+}
+
+/// derived: cell 0's `(generation MW, turbine m3/s)` column upper bounds on the
+/// dead-bus-1 copy, the fold `min(group, plant)` of group 0 (30 MW, 42 m3/s)
+/// against the plant's resolved limits: stage 0 `(min(30, 28), min(42, 32))`
+/// under the lowered 28 MW / 32 m3/s, stage 1 `(min(30, 60), min(42, 80))`
+/// under the declared 60 MW / 80 m3/s.
+const DEAD_COPY_CELL0_BOUNDS: [(f64, f64); 2] = [(28.0, 32.0), (30.0, 42.0)];
+
+/// A cell of a multi-cell FPHA plant that is dead at every block keeps the live
+/// cell's structure intact.
+///
+/// derived: cell 1's generation and turbine columns are `[0, 0]` because group 1
+/// has no generation capacity. Cell 1 is dead at every block, so its plane rows
+/// are free (`[-inf, +inf]`) and its plane slack is `[0, 0]`; cell 0 is live, so
+/// its slack is `[0, +inf)` and its rows are the shipped build's, bit for bit.
+/// The shipped build is the non-degeneracy twin: its cell 1 rows are `<= 0`.
+#[test]
+fn split_plant_dead_cell_freezes_its_columns_and_frees_its_plane_rows() {
+    let case = common::d51_with_dead_bus1_group();
+    let (system, dead) = build_d51_templates_from(case.path());
+    let (_, shipped) = build_d51_templates();
+    let first_cell = HydroCellIndex::build(system.hydros())
+        .cells_of(HydroSys::new(0))
+        .start;
+
+    assert_eq!(dead.templates.len(), DEAD_COPY_CELL0_BOUNDS.len());
+    assert_eq!(shipped.templates.len(), DEAD_COPY_CELL0_BOUNDS.len());
+
+    for (stage_idx, (expected_generation, expected_turbine)) in
+        DEAD_COPY_CELL0_BOUNDS.into_iter().enumerate()
+    {
+        let n_blks = dead.block_hours_per_stage[stage_idx].len();
+        let geometry = &dead.geometry_per_stage[stage_idx];
+        let shipped_geometry = &shipped.geometry_per_stage[stage_idx];
+        let template = &dead.templates[stage_idx];
+        let shipped_template = &shipped.templates[stage_idx];
+
+        assert_eq!(
+            geometry.fpha_hydro_indices,
+            [HydroSys::new(0)],
+            "stage {stage_idx}: the live cell keeps the plant FPHA"
+        );
+        assert_eq!(
+            geometry.fpha.len(),
+            shipped_geometry.fpha.len(),
+            "stage {stage_idx}: the dead cell keeps its plane rows, free"
+        );
+        assert_eq!(
+            geometry.fpha_slack.len(),
+            2 * n_blks,
+            "stage {stage_idx}: one plane slack per cell per block"
+        );
+        assert_eq!(
+            geometry.fpha.len() % (2 * n_blks),
+            0,
+            "stage {stage_idx}: plane rows must split evenly over 2 cells x {n_blks} blocks"
+        );
+        let n_planes = geometry.fpha.len() / (2 * n_blks);
+        assert!(n_planes > 0, "stage {stage_idx}: no plane rows to check");
+
+        let grid = BlockGrid::new(n_blks, 1);
+        let cell0_base = geometry.fpha.start;
+        let cell1_base = grid.advance_fpha_base(cell0_base, n_planes);
+        let shipped_cell0_base = shipped_geometry.fpha.start;
+        let shipped_cell1_base = grid.advance_fpha_base(shipped_cell0_base, n_planes);
+
+        for blk in (0..n_blks).map(BlockIdx::new) {
+            let (generation0, generation1) =
+                cell_generation_bounds_at(&system, &dead, stage_idx, blk.get());
+            let turbine0 =
+                template.col_upper[geometry.turbine_col(HydroCell::new(first_cell), blk)];
+            let turbine1 =
+                template.col_upper[geometry.turbine_col(HydroCell::new(first_cell + 1), blk)];
+            for (name, got, expected) in [
+                ("cell 0 generation", generation0, expected_generation),
+                ("cell 0 turbine", turbine0, expected_turbine),
+                ("cell 1 generation", generation1, 0.0),
+                ("cell 1 turbine", turbine1, 0.0),
+            ] {
+                assert_eq!(
+                    got.to_bits(),
+                    expected.to_bits(),
+                    "stage {stage_idx} block {}: {name} col_upper = {got}, expected {expected}",
+                    blk.get()
+                );
+            }
+
+            for (cell, expected_upper) in [(0, f64::INFINITY), (1, 0.0)] {
+                let col = geometry.fpha_slack_col(FphaCellLocal::new(cell), blk);
+                assert_eq!(
+                    (template.col_lower[col], template.col_upper[col]),
+                    (0.0, expected_upper),
+                    "stage {stage_idx} block {}: cell {cell} plane-slack column",
+                    blk.get()
+                );
+            }
+
+            for p_idx in 0..n_planes {
+                let row = |base| grid.fpha_plane(base, blk, p_idx, n_planes);
+                let at = format!("stage {stage_idx} block {} plane {p_idx}", blk.get());
+
+                let dead_cell1 = row(cell1_base);
+                assert_eq!(
+                    (
+                        template.row_lower[dead_cell1],
+                        template.row_upper[dead_cell1]
+                    ),
+                    (f64::NEG_INFINITY, f64::INFINITY),
+                    "{at}: the dead cell's plane row must be free"
+                );
+
+                let live_cell0 = row(cell0_base);
+                let shipped_cell0 = row(shipped_cell0_base);
+                assert_eq!(
+                    template.row_upper[live_cell0].to_bits(),
+                    shipped_template.row_upper[shipped_cell0].to_bits(),
+                    "{at}: the live cell's plane row must match the shipped build's"
+                );
+
+                let shipped_cell1 = row(shipped_cell1_base);
+                assert_eq!(
+                    shipped_template.row_upper[shipped_cell1], 0.0,
+                    "{at}: the shipped build's cell 1 row is bounded (non-degeneracy twin)"
+                );
+            }
+        }
+    }
+}
+
+/// derived: the copy's cells sum to `28 + 0` MW at stage 0, which no longer
+/// exceeds the plant's lowered 28 MW (and `32 + 0` m3/s no longer exceeds 32), so
+/// `plant_cap_rhs` leaves the plant uncapped; the shipped cells sum to
+/// `28 + 20` MW and `32 + 28` m3/s.
+#[test]
+fn split_plant_dead_cell_drops_the_binding_cap_row() {
+    let case = common::d51_with_dead_bus1_group();
+    let (_, dead) = build_d51_templates_from(case.path());
+    let (_, shipped) = build_d51_templates();
+
+    assert_eq!(
+        shipped.geometry_per_stage[0].plant_cap_hydro_indices,
+        [HydroSys::new(0)],
+        "the shipped deck needs its plant cap row at stage 0"
+    );
+    assert!(
+        dead.geometry_per_stage[0]
+            .plant_cap_hydro_indices
+            .is_empty(),
+        "the dead cell's zero capacity leaves no binding plant cap row at stage 0"
     );
 }

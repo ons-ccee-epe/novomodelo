@@ -9,22 +9,25 @@
     clippy::float_cmp
 )]
 
+use std::collections::BTreeMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use arrow::array::{Array, BooleanArray, Float64Array, Int32Array, Int64Array, StringArray};
 use arrow::record_batch::RecordBatch;
 use assert_cmd::prelude::*;
 use novomodelo_io::scenarios::parse_inflow_annual_component;
 use novomodelo_io::{EntitySlot, StateFamily, deserialize_stage_cuts};
+use novomodelo_sddp::test_support::legacy_inputs::{materialize, overlay_dir};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use predicates::prelude::*;
 use tempfile::TempDir;
 
 mod common;
+use common::varying_external_deck::edit_json;
 use common::{
     case_dir, copy_dir_recursive, make_valid_case, novomodelo, restamp_policy_version,
-    snapshot_files, write_file, write_supplied_opening_tree_case,
+    snapshot_files, write_file, write_supplied_correlation_case, write_supplied_opening_tree_case,
 };
 
 #[test]
@@ -125,6 +128,50 @@ fn custom_output_dir_receives_training_artifacts() {
 
     assert!(custom_out.path().join("training/metadata.json").is_file());
     assert!(!dir.path().join("output").exists());
+}
+
+#[test]
+fn case_without_lines_and_thermals_files_exits_0() {
+    let dir = TempDir::new().unwrap();
+    make_valid_case(dir.path(), None, None, None, None);
+    fs::remove_file(dir.path().join("system/lines.json")).unwrap();
+    fs::remove_file(dir.path().join("system/thermals.json")).unwrap();
+    let out = TempDir::new().unwrap();
+
+    novomodelo()
+        .args([
+            "run",
+            dir.path().to_str().unwrap(),
+            "--output",
+            out.path().to_str().unwrap(),
+            "--quiet",
+        ])
+        .assert()
+        .success();
+
+    assert!(out.path().join("training/metadata.json").is_file());
+}
+
+#[test]
+fn one_d_toy_without_thermals_file_runs_as_hydro_only_study() {
+    let dir = TempDir::new().unwrap();
+    copy_dir_recursive(&case_dir("1dtoy"), dir.path());
+    fs::remove_file(dir.path().join("system/thermals.json")).unwrap();
+    fs::remove_file(dir.path().join("system/lines.json")).unwrap();
+    let out = TempDir::new().unwrap();
+
+    novomodelo()
+        .args([
+            "run",
+            dir.path().to_str().unwrap(),
+            "--output",
+            out.path().to_str().unwrap(),
+            "--quiet",
+        ])
+        .assert()
+        .success();
+
+    assert!(out.path().join("training/metadata.json").is_file());
 }
 
 #[test]
@@ -1201,7 +1248,7 @@ fn find_line<'a>(haystack: &'a str, label: &str) -> &'a str {
         .unwrap_or_else(|| panic!("expected a {label} Time-split line in run stderr"))
 }
 
-const EXPECTED_MEAN_COST: f64 = 9_679_385.922_404_844;
+const EXPECTED_MEAN_COST: f64 = 12_865_159.706_109_203;
 
 /// Golden LP counts and cost on input-committed `examples/1dtoy` (seed 42, all
 /// `in_sample`). Goldens change only when the case, solver or algorithm changes.
@@ -1239,11 +1286,11 @@ fn run_produces_deterministic_end_block_and_metadata() {
     }
 
     for needle in [
-        "Lower bound:  1.55955e7",
+        "Lower bound:  2.06161e7",
         "Upper bound:  5.79592e5",
         "LP solves:    5632 (",
         "LP solves:    400 (",
-        "Expected cost: 9.67939e6",
+        "Expected cost: 1.28652e7",
         "1 constant",
         "0 linearized, 1 without",
         "user_stats_white_noise",
@@ -1597,7 +1644,7 @@ fn unreadable_policy_checkpoint_is_reported_as_a_read_failure() {
         .stderr(predicate::str::contains("report this at").not());
 }
 
-fn warm_start_case_with_output_policy_dir() -> (TempDir, TempDir, std::path::PathBuf) {
+fn warm_start_case_with_output_policy_dir() -> (TempDir, TempDir, PathBuf) {
     let case = TempDir::new().unwrap();
     copy_dir_recursive(&case_dir("1dtoy"), case.path());
     rewrite_json(&case.path().join("config.json"), |config| {
@@ -2399,6 +2446,62 @@ fn run_accepts_a_supplied_opening_tree_with_historical_residuals_stages() {
         .stderr(predicate::str::contains("V2.").not());
 }
 
+/// Runs `case` with the provenance block printed and returns the run's stdout and
+/// the `inflow` object of its `training/model_provenance.json`.
+fn run_and_read_inflow_provenance(case: &Path) -> (String, serde_json::Value) {
+    let out = TempDir::new().unwrap();
+    let (stdout, _) = run_ok(&[
+        "run",
+        case.to_str().unwrap(),
+        "--output",
+        out.path().to_str().unwrap(),
+    ]);
+    let report: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(out.path().join("training/model_provenance.json")).unwrap(),
+    )
+    .unwrap();
+    (stdout, report["inflow"].clone())
+}
+
+#[test]
+fn a_supplied_correlation_on_an_estimated_path_is_reported_as_user_file() {
+    let case = TempDir::new().unwrap();
+    write_supplied_correlation_case(case.path());
+    let (stdout, inflow) = run_and_read_inflow_provenance(case.path());
+    assert!(
+        stdout
+            .lines()
+            .any(|line| line == "  Correlation:     user_file"),
+        "stdout must name the supplied correlation, got: {stdout}"
+    );
+    assert_eq!(inflow["estimation_path"], "full_estimation");
+    assert_eq!(inflow["correlation_source"], "user_file");
+    assert_eq!(
+        inflow.as_object().unwrap().get("correlation_target"),
+        Some(&serde_json::Value::Null),
+        "correlation_target must be written as null, got: {inflow}"
+    );
+
+    let control = TempDir::new().unwrap();
+    copy_dir_recursive(
+        &case_dir("deterministic/d26-estimated-par2"),
+        control.path(),
+    );
+    rewrite_json(&control.path().join("config.json"), |config| {
+        config["training"]["stopping_rules"] =
+            serde_json::json!([{ "type": "iteration_limit", "limit": 1 }]);
+    });
+    let (stdout, inflow) = run_and_read_inflow_provenance(control.path());
+    assert!(
+        stdout
+            .lines()
+            .any(|line| line == "  Correlation:     estimated (target: inflows)"),
+        "stdout must name the estimation target, got: {stdout}"
+    );
+    assert_eq!(inflow["correlation_source"], "estimated");
+    assert_eq!(inflow["correlation_target"], "inflows");
+}
+
 // ── A failed run keeps the last whole checkpoint ──────────────────────────────
 
 /// The deck of `infeasible_training_lp_exits_3_naming_stage_iteration_and_scenario`: with
@@ -2484,6 +2587,7 @@ mod mpi {
     use std::process::Command;
 
     use super::common::mpiexec;
+    use super::common::varying_external_deck::write_varying_external_deck;
     use super::*;
 
     /// Trains `examples/1dtoy` for three iterations with `forward_passes`
@@ -2581,4 +2685,215 @@ mod mpi {
             "[lower_bound, upper_bound] bits per iteration"
         );
     }
+
+    #[test]
+    fn training_matches_a_single_rank_on_a_moment_matched_tree_clamped_by_external_scenarios() {
+        let case = TempDir::new().unwrap();
+        copy_dir_recursive(
+            &case_dir("deterministic/d56-external-authoritative"),
+            case.path(),
+        );
+        write_varying_external_deck(case.path(), "per_coordinate");
+        let case_path = case.path().to_str().unwrap();
+
+        let single = TempDir::new().unwrap();
+        run_case(case.path(), single.path());
+
+        let two_ranks = TempDir::new().unwrap();
+        Command::new("timeout")
+            .args(["-s", "KILL", "300"])
+            .arg(mpiexec())
+            .args(["-n", "2"])
+            .arg(novomodelo().get_program())
+            .args(["run", case_path])
+            .args(["--output", two_ranks.path().to_str().unwrap(), "--quiet"])
+            .assert()
+            .success();
+
+        let single_bounds = bound_bits(single.path());
+        assert_eq!(
+            single_bounds.len(),
+            5,
+            "one [lower_bound, upper_bound] row per iteration of the deck's iteration_limit"
+        );
+        assert_eq!(
+            bound_bits(two_ranks.path()),
+            single_bounds,
+            "[lower_bound, upper_bound] bits per iteration"
+        );
+        assert_eq!(
+            training_solve_counts(two_ranks.path()),
+            training_solve_counts(single.path()),
+            "[total, first_try, retried, failed]"
+        );
+    }
+
+    #[test]
+    fn setup_warnings_print_once_under_two_ranks() {
+        let case = TempDir::new().unwrap();
+        copy_dir_recursive(
+            &case_dir("deterministic/d56-external-authoritative"),
+            case.path(),
+        );
+        write_varying_external_deck(case.path(), "per_coordinate");
+        let case_path = case.path().to_str().unwrap();
+        let clamp_warnings = |stderr: &[u8]| {
+            String::from_utf8_lossy(stderr)
+                .lines()
+                .filter(|line| line.contains("External scenarios: 3 raw scenarios"))
+                .count()
+        };
+
+        let single_out = TempDir::new().unwrap();
+        let single = novomodelo()
+            .env_remove("RUST_LOG")
+            .args(["run", case_path])
+            .args(["--output", single_out.path().to_str().unwrap(), "--quiet"])
+            .assert()
+            .success();
+
+        let two_ranks_out = TempDir::new().unwrap();
+        let two_ranks = Command::new("timeout")
+            .env_remove("RUST_LOG")
+            .args(["-s", "KILL", "300"])
+            .arg(mpiexec())
+            .args(["-n", "2"])
+            .arg(novomodelo().get_program())
+            .args(["run", case_path])
+            .args([
+                "--output",
+                two_ranks_out.path().to_str().unwrap(),
+                "--quiet",
+            ])
+            .assert()
+            .success();
+
+        let single_count = clamp_warnings(&single.get_output().stderr);
+        assert!(
+            single_count >= 1,
+            "the deck must raise the external-scenario clamp warning"
+        );
+        assert_eq!(
+            clamp_warnings(&two_ranks.get_output().stderr),
+            single_count,
+            "external-scenario clamp warnings on stderr, two ranks vs one process"
+        );
+    }
+}
+
+const CONFIG_4REE_SHORT_JSON: &str = r#"{
+    "training": {
+        "selection": { "method": "sampled", "forward_passes": 4 },
+        "stopping_rules": [ { "type": "iteration_limit", "limit": 4 } ],
+        "scenario_source": {
+            "seed": 42,
+            "inflow": { "scheme": "in_sample" },
+            "load": { "scheme": "in_sample" },
+            "ncs": { "scheme": "in_sample" }
+        }
+    },
+    "simulation": { "enabled": true, "selection": { "method": "sampled", "num_scenarios": 8 } },
+    "modeling": { "inflow_non_negativity": { "method": "none" } }
+}"#;
+
+#[test]
+fn run_reports_no_row_violation_warning_on_4ree() {
+    let case = TempDir::new().unwrap();
+    copy_dir_recursive(&case_dir("4ree"), case.path());
+    write_file(case.path(), "config.json", CONFIG_4REE_SHORT_JSON);
+    let output = TempDir::new().unwrap();
+
+    let run = novomodelo()
+        .args([
+            "run",
+            case.path().to_str().unwrap(),
+            "--output",
+            output.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let stderr = String::from_utf8_lossy(&run.get_output().stderr).into_owned();
+    assert!(
+        !stderr.contains("misses a row bound"),
+        "unexpected row-violation warning: {stderr}"
+    );
+    assert!(output.path().join("simulation/_SUCCESS").exists());
+}
+
+/// Outputs that hold the run's wall-clock time or solver timings, so two runs of
+/// the same inputs never write them identically.
+const RUN_IDENTITY_OUTPUTS: [&str; 8] = [
+    "policy/manifest.bin",
+    "simulation/metadata.json",
+    "simulation/solver/",
+    "training/convergence.parquet",
+    "training/dictionaries/codes.json",
+    "training/metadata.json",
+    "training/solver/",
+    "training/timing/",
+];
+
+fn result_outputs(output: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+    snapshot_files(output)
+        .into_iter()
+        .filter(|(path, _)| {
+            let path = path.to_str().unwrap();
+            !RUN_IDENTITY_OUTPUTS
+                .iter()
+                .any(|identity| path.starts_with(identity))
+        })
+        .collect()
+}
+
+#[test]
+fn legacy_post_study_deck_writes_the_outputs_of_its_migrated_deck() {
+    const DECK: &str = "deterministic/d55-post-study-anticipated-lanes";
+    let [migrated, legacy] = [false, true].map(|legacy| {
+        let case = TempDir::new().unwrap();
+        copy_dir_recursive(&case_dir(DECK), case.path());
+        if legacy {
+            materialize(&overlay_dir(&format!("examples/{DECK}")), case.path()).unwrap();
+            let post_study =
+                fs::read_to_string(case.path().join("post_study_stages.json")).unwrap();
+            assert!(
+                post_study.contains("\"stages\"") && !post_study.contains("thermal_stages"),
+                "the overlay must restore the deprecated format: {post_study}"
+            );
+        }
+        edit_json(&case.path().join("config.json"), |config| {
+            config["simulation"] = serde_json::json!({
+                "enabled": true,
+                "selection": { "method": "sampled", "num_scenarios": 1 }
+            });
+        });
+        let output = TempDir::new().unwrap();
+        novomodelo()
+            .args(["run", case.path().to_str().unwrap()])
+            .args(["--output", output.path().to_str().unwrap(), "--quiet"])
+            .assert()
+            .success();
+        result_outputs(output.path())
+    });
+
+    for compared in ["policy/cuts/", "simulation/anticipated_lanes/"] {
+        assert!(
+            migrated
+                .keys()
+                .any(|path| path.to_str().unwrap().starts_with(compared)),
+            "the comparison has no power unless it covers {compared}"
+        );
+    }
+    assert!(
+        migrated.keys().eq(legacy.keys()),
+        "output files: migrated {:?}, legacy {:?}",
+        migrated.keys().collect::<Vec<_>>(),
+        legacy.keys().collect::<Vec<_>>()
+    );
+    let differing: Vec<_> = migrated
+        .iter()
+        .filter(|(path, bytes)| legacy[*path] != **bytes)
+        .map(|(path, _)| path)
+        .collect();
+    assert!(differing.is_empty(), "outputs differ: {differing:?}");
 }

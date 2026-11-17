@@ -284,8 +284,12 @@ where
         .simulation_scenario_source(sentinel)
         .expect("simulation_scenario_source must parse");
 
-    let params = StudyParams::from_config(&config_with_sim, Vec::new())
+    let mut params = StudyParams::from_config(&config_with_sim, Vec::new())
         .expect("StudyParams::from_config must succeed");
+    params.scalar_parameters = novomodelo_io::load_case_with_artifacts(dir)
+        .expect("load_case_with_artifacts must succeed")
+        .artifacts
+        .scalar_parameters;
 
     let mut setup = StudySetup::from_broadcast_params(
         &system,
@@ -354,7 +358,7 @@ where
 /// `parity_regen_*`/`shuffle_matrix_*` test share one body; `make_solver`
 /// supplies fresh worker solvers exactly as the production
 /// training/simulation paths do.
-fn compute_case_hash_at_dir<S, F>(dir: &Path, make_solver: F) -> String
+pub fn compute_case_hash_at_dir<S, F>(dir: &Path, make_solver: F) -> String
 where
     S: novomodelo_solver::SolverInterface<Profile = novomodelo_solver::ActiveProfile> + Send,
     F: Fn() -> Result<S, novomodelo_solver::SolverError> + Copy,

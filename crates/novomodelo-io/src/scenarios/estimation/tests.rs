@@ -145,7 +145,11 @@ fn test_estimate_explicit_stats_returns_unchanged() {
     let original_len = system.inflow_models().len();
 
     let config = default_config();
-    let (result, report, _path) = estimate_from_history(system, case_dir, &config).unwrap();
+    let HistoryEstimate {
+        system: result,
+        report,
+        ..
+    } = estimate_from_history(system, case_dir, &config).unwrap();
 
     assert_eq!(
         result.inflow_models().len(),
@@ -180,7 +184,11 @@ fn test_estimate_no_history_returns_unchanged() {
     let original_len = system.inflow_models().len();
 
     let config = default_config();
-    let (result, report, _path) = estimate_from_history(system, case_dir, &config).unwrap();
+    let HistoryEstimate {
+        system: result,
+        report,
+        ..
+    } = estimate_from_history(system, case_dir, &config).unwrap();
 
     assert_eq!(
         result.inflow_models().len(),
@@ -327,6 +335,23 @@ fn test_user_stats_to_rows_empty_system() {
     assert!(rows.is_empty(), "empty system must produce empty rows");
 }
 
+#[test]
+fn assembled_seasonal_stats_keep_the_first_row_of_each_season() {
+    let row = |stage_id, std_m3s| InflowSeasonalStatsRow {
+        hydro_id: EntityId(1),
+        stage_id,
+        mean_m3s: 10.0,
+        std_m3s,
+    };
+    let rows = vec![row(-1, 2.0), row(0, 5.0), row(11, 7.0)];
+    let stage_to_season: HashMap<i32, usize> = [(-1, 11), (0, 0), (11, 11)].into_iter().collect();
+
+    let stats = assembled_seasonal_stats(&rows, &stage_to_season);
+
+    let kept: Vec<(i32, f64)> = stats.iter().map(|s| (s.stage_id, s.std)).collect();
+    assert_eq!(kept, vec![(-1, 2.0), (0, 5.0)]);
+}
+
 /// Observation dates must fall within `make_two_season_stage` stages (map to seasons 0/1).
 fn write_unit_test_inflow_history(path: &std::path::Path, hydro_id: i32, n_years: usize) {
     use arrow::array::{Date32Array, Float64Array, Int32Array};
@@ -389,8 +414,12 @@ fn write_unit_test_inflow_history(path: &std::path::Path, hydro_id: i32, n_years
 }
 
 /// Precondition for `PartialEstimation` path: user stats loaded, no AR coefficients.
-#[allow(clippy::cast_possible_wrap)]
 fn build_system_with_user_stats(n_years: usize) -> System {
+    build_system_with_user_std(n_years, 10.0)
+}
+
+#[allow(clippy::cast_possible_wrap)]
+fn build_system_with_user_std(n_years: usize, std_m3s: f64) -> System {
     use novomodelo_core::scenario::InflowModel;
     use novomodelo_core::{Bus, DeficitSegment, EntityId, SystemBuilder};
 
@@ -426,7 +455,7 @@ fn build_system_with_user_stats(n_years: usize) -> System {
             hydro_id,
             stage_id: s.id,
             mean_m3s: 100.0,
-            std_m3s: 10.0,
+            std_m3s,
             ar_coefficients: vec![],
             residual_std_ratio: 1.0,
             annual: None,
@@ -471,8 +500,12 @@ fn test_partial_estimation_preserves_user_stats() {
     let system = build_system_with_user_stats(N_YEARS);
     let config = default_config();
 
-    let (updated, report, path) =
-        estimate_from_history(system, case_dir, &config).expect("partial estimation must succeed");
+    let HistoryEstimate {
+        system: updated,
+        report,
+        path,
+        ..
+    } = estimate_from_history(system, case_dir, &config).expect("partial estimation must succeed");
 
     assert_eq!(
         path,
@@ -511,6 +544,263 @@ fn test_partial_estimation_preserves_user_stats() {
     }
 }
 
+#[test]
+fn correlation_target_reaches_the_estimator() {
+    use crate::config::CorrelationTarget;
+    use tempfile::TempDir;
+
+    const N_YEARS: usize = 30;
+    let dir = TempDir::new().unwrap();
+    let case_dir = dir.path();
+    setup_partial_estimation_case(case_dir, N_YEARS);
+
+    let correlation_under = |target: CorrelationTarget| {
+        let mut config = default_config();
+        config.estimation.correlation_target = target;
+        let HistoryEstimate {
+            system: updated,
+            path,
+            ..
+        } = estimate_from_history(build_system_with_user_stats(N_YEARS), case_dir, &config)
+            .expect("partial estimation must succeed");
+        assert_eq!(path, EstimationPath::PartialEstimation);
+        updated.correlation().clone()
+    };
+
+    assert!(
+        !correlation_under(CorrelationTarget::Residuals)
+            .profiles
+            .contains_key("season_0"),
+        "season 0 loses its first record to the lag, leaving 29 pairs"
+    );
+    assert!(
+        correlation_under(CorrelationTarget::Inflows)
+            .profiles
+            .contains_key("season_0"),
+        "inflows keep every record, 30 pairs"
+    );
+}
+
+const CORRELATION_JSON: &str = r#"{
+  "method": "spectral",
+  "profiles": {
+    "default": {
+      "correlation_groups": [
+        {
+          "name": "se_cascade",
+          "entities": [
+            { "type": "inflow", "id": 0 },
+            { "type": "inflow", "id": 1 }
+          ],
+          "matrix": [
+            [1.0, 0.75],
+            [0.75, 1.0]
+          ]
+        }
+      ]
+    }
+  }
+}"#;
+
+#[test]
+fn correlation_target_has_no_effect_when_correlation_json_is_present() {
+    use crate::config::CorrelationTarget;
+    use tempfile::TempDir;
+
+    const N_YEARS: usize = 30;
+    let dir = TempDir::new().unwrap();
+    let case_dir = dir.path();
+    setup_partial_estimation_case(case_dir, N_YEARS);
+    std::fs::write(
+        case_dir.join("scenarios/correlation.json"),
+        CORRELATION_JSON,
+    )
+    .unwrap();
+
+    for target in [CorrelationTarget::Residuals, CorrelationTarget::Inflows] {
+        let system = build_system_with_user_stats(N_YEARS);
+        let input_correlation = system.correlation().clone();
+        let mut config = default_config();
+        config.estimation.correlation_target = target;
+
+        let HistoryEstimate {
+            system: updated,
+            path,
+            ..
+        } = estimate_from_history(system, case_dir, &config)
+            .expect("partial estimation must succeed");
+
+        assert_eq!(path, EstimationPath::PartialEstimation);
+        assert_eq!(updated.correlation(), &input_correlation, "{target:?}");
+    }
+}
+
+#[test]
+fn correlation_origin_follows_the_manifest_the_path_and_the_hydros() {
+    use crate::config::CorrelationTarget;
+    use crate::{FileManifest, InputFile};
+    use CorrelationOrigin::{Estimated, NotApplicable, UserFile};
+
+    let paths = [
+        EstimationPath::Deterministic,
+        EstimationPath::UserStatsWhiteNoise,
+        EstimationPath::UserProvidedNoHistory,
+        EstimationPath::FullEstimation,
+        EstimationPath::UserArHistoryStats,
+        EstimationPath::PartialEstimation,
+        EstimationPath::UserProvidedAll,
+    ];
+    let with_hydros = build_system_with_user_stats(1);
+    let without_hydros = minimal_system_with_inflow_models(vec![]);
+    let mut with_file = FileManifest::default();
+    with_file.set_present(InputFile::ScenariosCorrelationJson);
+    let without_file = FileManifest::default();
+
+    let cases = [
+        ("file, hydros", &with_file, &with_hydros, [UserFile; 7]),
+        (
+            "file, no hydros",
+            &with_file,
+            &without_hydros,
+            [UserFile; 7],
+        ),
+        (
+            "no file, hydros",
+            &without_file,
+            &with_hydros,
+            [
+                NotApplicable,
+                NotApplicable,
+                NotApplicable,
+                Estimated {
+                    target: CorrelationTarget::Inflows,
+                },
+                Estimated {
+                    target: CorrelationTarget::Inflows,
+                },
+                Estimated {
+                    target: CorrelationTarget::Inflows,
+                },
+                NotApplicable,
+            ],
+        ),
+        (
+            "no file, no hydros",
+            &without_file,
+            &without_hydros,
+            [NotApplicable; 7],
+        ),
+    ];
+
+    for (label, manifest, system, expected) in cases {
+        for (path, expected) in paths.into_iter().zip(expected) {
+            assert_eq!(
+                resolve_correlation_origin(manifest, path, system, CorrelationTarget::Inflows),
+                expected,
+                "{label}, {path:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn correlation_origin_is_user_file_when_correlation_json_is_present_on_an_estimating_path() {
+    use tempfile::TempDir;
+
+    const N_YEARS: usize = 30;
+    let dir = TempDir::new().unwrap();
+    let case_dir = dir.path();
+    setup_partial_estimation_case(case_dir, N_YEARS);
+    std::fs::write(
+        case_dir.join("scenarios/correlation.json"),
+        CORRELATION_JSON,
+    )
+    .unwrap();
+
+    let HistoryEstimate {
+        path,
+        correlation_origin,
+        ..
+    } = estimate_from_history(
+        build_system_with_user_stats(N_YEARS),
+        case_dir,
+        &default_config(),
+    )
+    .expect("partial estimation must succeed");
+
+    assert_eq!(path, EstimationPath::PartialEstimation);
+    assert_eq!(correlation_origin, CorrelationOrigin::UserFile);
+}
+
+#[test]
+fn correlation_origin_is_user_file_when_correlation_json_is_present_on_the_deterministic_path() {
+    use tempfile::TempDir;
+
+    let dir = TempDir::new().unwrap();
+    let case_dir = dir.path();
+    create_required_files(case_dir);
+    std::fs::write(
+        case_dir.join("scenarios/correlation.json"),
+        CORRELATION_JSON,
+    )
+    .unwrap();
+
+    let HistoryEstimate {
+        path,
+        correlation_origin,
+        ..
+    } = estimate_from_history(build_system_with_user_stats(1), case_dir, &default_config())
+        .expect("deterministic pass-through must succeed");
+
+    assert_eq!(path, EstimationPath::Deterministic);
+    assert_eq!(correlation_origin, CorrelationOrigin::UserFile);
+}
+
+#[test]
+fn correlation_origin_is_estimated_with_the_configured_target() {
+    use crate::config::CorrelationTarget;
+    use tempfile::TempDir;
+
+    const N_YEARS: usize = 30;
+    let dir = TempDir::new().unwrap();
+    let case_dir = dir.path();
+    setup_partial_estimation_case(case_dir, N_YEARS);
+
+    for target in [CorrelationTarget::Residuals, CorrelationTarget::Inflows] {
+        let mut config = default_config();
+        config.estimation.correlation_target = target;
+
+        let HistoryEstimate {
+            path,
+            correlation_origin,
+            ..
+        } = estimate_from_history(build_system_with_user_stats(N_YEARS), case_dir, &config)
+            .expect("partial estimation must succeed");
+
+        assert_eq!(path, EstimationPath::PartialEstimation);
+        assert_eq!(correlation_origin, CorrelationOrigin::Estimated { target });
+    }
+}
+
+#[test]
+fn correlation_origin_is_not_applicable_without_correlation_or_history() {
+    use tempfile::TempDir;
+
+    let dir = TempDir::new().unwrap();
+    let case_dir = dir.path();
+    create_required_files(case_dir);
+
+    let HistoryEstimate {
+        path,
+        correlation_origin,
+        ..
+    } = estimate_from_history(build_system_with_user_stats(1), case_dir, &default_config())
+        .expect("deterministic pass-through must succeed");
+
+    assert_eq!(path, EstimationPath::Deterministic);
+    assert_eq!(correlation_origin, CorrelationOrigin::NotApplicable);
+}
+
 /// `residual_std_ratio` must come from the periodic-ACF closure, not raw YW.
 #[test]
 fn test_partial_estimation_populates_closure_derived_ratio() {
@@ -525,8 +815,11 @@ fn test_partial_estimation_populates_closure_derived_ratio() {
     let system = build_system_with_user_stats(N_YEARS);
     let config = default_config();
 
-    let (updated, _report, path) =
-        estimate_from_history(system, case_dir, &config).expect("partial estimation must succeed");
+    let HistoryEstimate {
+        system: updated,
+        path,
+        ..
+    } = estimate_from_history(system, case_dir, &config).expect("partial estimation must succeed");
     assert_eq!(
         path,
         EstimationPath::PartialEstimation,
@@ -575,8 +868,12 @@ fn test_partial_estimation_returns_report() {
     let system = build_system_with_user_stats(N_YEARS);
     let config = default_config();
 
-    let (_updated, report, _path) =
-        estimate_from_history(system, case_dir, &config).expect("partial estimation must succeed");
+    let HistoryEstimate {
+        system: _updated,
+        report,
+        path: _path,
+        ..
+    } = estimate_from_history(system, case_dir, &config).expect("partial estimation must succeed");
 
     let report = report.expect("PartialEstimation must return Some(EstimationReport)");
 
@@ -668,6 +965,7 @@ fn build_partial_year_system_with_user_stats() -> System {
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -721,7 +1019,12 @@ fn test_partial_estimation_partial_year_study_orders_canonically() {
     let system = build_partial_year_system_with_user_stats();
     let config = default_config();
 
-    let (updated, report, path) = estimate_from_history(system, case_dir, &config)
+    let HistoryEstimate {
+        system: updated,
+        report,
+        path,
+        ..
+    } = estimate_from_history(system, case_dir, &config)
         .expect("partial estimation over a genuine partial-year study must succeed");
 
     assert_eq!(
@@ -754,13 +1057,15 @@ fn test_partial_estimation_partial_year_study_orders_canonically() {
 }
 
 fn default_config() -> Config {
-    use crate::config::{EstimationConfig, OrderSelectionMethod};
+    use crate::config::{CorrelationTarget, EstimationConfig, OrderSelectionMethod};
     let mut cfg: Config = serde_json::from_str(MINIMAL_CONFIG_JSON).unwrap();
     cfg.estimation = EstimationConfig {
         max_order: 2,
         order_selection: OrderSelectionMethod::Pacf,
         min_observations_per_season: 2,
         max_coefficient_magnitude: None,
+        correlation_target: CorrelationTarget::Residuals,
+        history_years: None,
     };
     cfg
 }
@@ -844,6 +1149,7 @@ fn test_estimation_report_empty_for_pacf() {
             max_coeff_magnitude: None,
             season_map: None,
             use_annual_component: false,
+            assembled_stats: None,
         },
     )
     .unwrap();
@@ -1279,7 +1585,6 @@ fn write_unit_test_ar_coefficients(
     hydro_id: i32,
     stages: &[Stage],
     coefficient: f64,
-    residual_std_ratio: f64,
 ) {
     use arrow::array::{Float64Array, Int32Array};
     use arrow::datatypes::{DataType, Field, Schema};
@@ -1292,7 +1597,6 @@ fn write_unit_test_ar_coefficients(
         Field::new("stage_id", DataType::Int32, false),
         Field::new("lag", DataType::Int32, false),
         Field::new("coefficient", DataType::Float64, false),
-        Field::new("residual_std_ratio", DataType::Float64, false),
     ]));
 
     let n = stages.len();
@@ -1300,7 +1604,6 @@ fn write_unit_test_ar_coefficients(
     let stage_ids: Vec<i32> = stages.iter().map(|s| s.id).collect();
     let lags: Vec<i32> = vec![1; n];
     let coefficients: Vec<f64> = vec![coefficient; n];
-    let ratios: Vec<f64> = vec![residual_std_ratio; n];
 
     let batch = RecordBatch::try_new(
         schema.clone(),
@@ -1309,7 +1612,6 @@ fn write_unit_test_ar_coefficients(
             Arc::new(Int32Array::from(stage_ids)),
             Arc::new(Int32Array::from(lags)),
             Arc::new(Float64Array::from(coefficients)),
-            Arc::new(Float64Array::from(ratios)),
         ],
     )
     .expect("valid batch");
@@ -1321,8 +1623,15 @@ fn write_unit_test_ar_coefficients(
 }
 
 /// System with empty inflow_models (UserArHistoryStats precondition).
-#[allow(clippy::cast_possible_wrap)]
 fn build_system_empty_models(n_years: usize) -> System {
+    build_system_empty_models_with_history(n_years, Vec::new())
+}
+
+#[allow(clippy::cast_possible_wrap)]
+fn build_system_empty_models_with_history(
+    n_years: usize,
+    inflow_history: Vec<InflowHistoryRow>,
+) -> System {
     use novomodelo_core::{Bus, DeficitSegment, EntityId, SystemBuilder};
 
     let hydro_id = EntityId(1);
@@ -1357,18 +1666,14 @@ fn build_system_empty_models(n_years: usize) -> System {
         .buses(vec![bus])
         .hydros(vec![hydro])
         .stages(stages)
+        .inflow_history(inflow_history)
         .build()
         .expect("valid system with empty inflow models")
 }
 
 /// Sets up UserArHistoryStats: history + AR coefficients, no seasonal stats.
 #[allow(clippy::cast_possible_wrap)]
-fn setup_user_ar_case(
-    case_dir: &std::path::Path,
-    n_years: usize,
-    ar_coefficient: f64,
-    residual_std_ratio: f64,
-) {
+fn setup_user_ar_case(case_dir: &std::path::Path, n_years: usize, ar_coefficient: f64) {
     create_required_files(case_dir);
     let scenarios = case_dir.join("scenarios");
     std::fs::create_dir_all(&scenarios).unwrap();
@@ -1394,27 +1699,30 @@ fn setup_user_ar_case(
         1,
         &stages,
         ar_coefficient,
-        residual_std_ratio,
     );
 }
 
-/// User AR coefficients preserved bitwise; residual_std_ratio superseded by closure.
+/// User AR coefficients preserved bitwise; residual_std_ratio derived by closure.
 #[test]
 fn test_user_ar_estimation_preserves_ar_coefficients() {
     use tempfile::TempDir;
 
     const N_YEARS: usize = 30;
     const KNOWN_COEFF: f64 = 0.72;
-    const KNOWN_RATIO: f64 = 0.69;
 
     let dir = TempDir::new().unwrap();
     let case_dir = dir.path();
 
-    setup_user_ar_case(case_dir, N_YEARS, KNOWN_COEFF, KNOWN_RATIO);
+    setup_user_ar_case(case_dir, N_YEARS, KNOWN_COEFF);
     let system = build_system_empty_models(N_YEARS);
     let config = default_config();
 
-    let (updated, report, path) = estimate_from_history(system, case_dir, &config)
+    let HistoryEstimate {
+        system: updated,
+        report,
+        path,
+        ..
+    } = estimate_from_history(system, case_dir, &config)
         .expect("UserArHistoryStats estimation must succeed");
 
     assert_eq!(
@@ -1434,12 +1742,6 @@ fn test_user_ar_estimation_preserves_ar_coefficients() {
     );
 
     let expected_ratio = (1.0 - KNOWN_COEFF * KNOWN_COEFF).sqrt();
-    assert!(
-        (expected_ratio - KNOWN_RATIO).abs() > 1e-3,
-        "fixture sanity: KNOWN_RATIO must differ from the closure value to prove \
-         the user-column value is superseded, got expected={expected_ratio} \
-         known={KNOWN_RATIO}"
-    );
 
     for m in models {
         assert_eq!(
@@ -1457,8 +1759,7 @@ fn test_user_ar_estimation_preserves_ar_coefficients() {
         assert!(
             (m.residual_std_ratio - expected_ratio).abs() < 1e-12,
             "residual_std_ratio must equal the closure-derived value {expected_ratio} \
-             (order-1 decouples exactly), got {} for stage {} — the raw user-column \
-             value {KNOWN_RATIO} must no longer reach the returned System",
+             (order-1 decouples exactly), got {} for stage {}",
             m.residual_std_ratio,
             m.stage_id
         );
@@ -1474,11 +1775,16 @@ fn test_user_ar_estimation_estimates_stats_from_history() {
     let dir = TempDir::new().unwrap();
     let case_dir = dir.path();
 
-    setup_user_ar_case(case_dir, N_YEARS, 0.55, 0.83);
+    setup_user_ar_case(case_dir, N_YEARS, 0.55);
     let system = build_system_empty_models(N_YEARS);
     let config = default_config();
 
-    let (updated, _report, _path) = estimate_from_history(system, case_dir, &config)
+    let HistoryEstimate {
+        system: updated,
+        report: _report,
+        path: _path,
+        ..
+    } = estimate_from_history(system, case_dir, &config)
         .expect("UserArHistoryStats estimation must succeed");
 
     let models = updated.inflow_models();
@@ -1504,6 +1810,59 @@ fn test_user_ar_estimation_estimates_stats_from_history() {
 }
 
 #[test]
+fn history_years_limit_the_estimation_and_leave_the_system_history_whole() {
+    use crate::config::HistoricalYearRange;
+    use tempfile::TempDir;
+
+    const N_YEARS: usize = 30;
+    const FIT_YEARS: usize = 20;
+
+    let dir = TempDir::new().unwrap();
+    let case_dir = dir.path();
+    create_required_files(case_dir);
+    let history_path = case_dir.join("scenarios/inflow_history.parquet");
+    write_unit_test_inflow_history(&history_path, 1, N_YEARS);
+    let history = crate::parse_inflow_history(&history_path).unwrap();
+    let system = build_system_empty_models_with_history(N_YEARS, history.clone());
+
+    let mut config = default_config();
+    config.estimation.history_years = Some(HistoricalYearRange {
+        from: 1970,
+        to: 1970 + FIT_YEARS as i32 - 1,
+    });
+
+    let HistoryEstimate {
+        system: updated,
+        path,
+        ..
+    } = estimate_from_history(system, case_dir, &config).unwrap();
+    assert_eq!(path, EstimationPath::FullEstimation);
+
+    let (obs_s0, _) = simulate_two_season_par2(0.7, 0.15, N_YEARS, 99);
+    let mean = |years: &[f64]| {
+        years.iter().sum::<f64>() / f64::from(u32::try_from(years.len()).unwrap()) + 300.0
+    };
+    let window_mean = mean(&obs_s0[..FIT_YEARS]);
+    assert!((window_mean - mean(&obs_s0)).abs() > 1e-6, "fixture sanity");
+
+    let season_0_models: Vec<_> = updated
+        .inflow_models()
+        .iter()
+        .filter(|m| m.stage_id >= 0 && m.stage_id % 2 == 0)
+        .collect();
+    assert!(!season_0_models.is_empty());
+    for m in season_0_models {
+        assert!(
+            (m.mean_m3s - window_mean).abs() < 1e-9,
+            "stage {}: mean {} vs window mean {window_mean}",
+            m.stage_id,
+            m.mean_m3s
+        );
+    }
+    assert_eq!(updated.inflow_history(), history.as_slice());
+}
+
+#[test]
 fn test_user_ar_estimation_returns_user_provided_report() {
     use tempfile::TempDir;
 
@@ -1512,11 +1871,16 @@ fn test_user_ar_estimation_returns_user_provided_report() {
     let dir = TempDir::new().unwrap();
     let case_dir = dir.path();
 
-    setup_user_ar_case(case_dir, N_YEARS, 0.55, 0.83);
+    setup_user_ar_case(case_dir, N_YEARS, 0.55);
     let system = build_system_empty_models(N_YEARS);
     let config = default_config();
 
-    let (_updated, report, _path) = estimate_from_history(system, case_dir, &config)
+    let HistoryEstimate {
+        system: _updated,
+        report,
+        path: _path,
+        ..
+    } = estimate_from_history(system, case_dir, &config)
         .expect("UserArHistoryStats estimation must succeed");
 
     let report = report.expect("UserArHistoryStats must return Some(EstimationReport)");
@@ -1571,6 +1935,7 @@ fn make_hydro(hydro_id: EntityId, bus_id: EntityId) -> Hydro {
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -1777,7 +2142,12 @@ fn test_partial_estimation_direction_b_white_noise_fallback() {
     );
 
     let config = default_config();
-    let (updated, report, path) = estimate_from_history(system, case_dir, &config)
+    let HistoryEstimate {
+        system: updated,
+        report,
+        path,
+        ..
+    } = estimate_from_history(system, case_dir, &config)
         .expect("Direction B must succeed (not an error)");
 
     assert_eq!(
@@ -1825,8 +2195,12 @@ fn test_partial_estimation_exact_coverage_no_fallback() {
     let system = build_system_with_user_stats(N_YEARS);
     let config = default_config();
 
-    let (_updated, report, _path) =
-        estimate_from_history(system, case_dir, &config).expect("exact coverage must succeed");
+    let HistoryEstimate {
+        system: _updated,
+        report,
+        path: _path,
+        ..
+    } = estimate_from_history(system, case_dir, &config).expect("exact coverage must succeed");
 
     let report = report.expect("PartialEstimation must return Some(EstimationReport)");
 
@@ -1858,7 +2232,7 @@ fn test_full_estimation_report_has_empty_fallbacks() {
     );
 
     let config = default_config();
-    let (_, report, path) =
+    let HistoryEstimate { report, path, .. } =
         estimate_from_history(system, case_dir, &config).expect("FullEstimation must succeed");
 
     assert_eq!(
@@ -2132,7 +2506,7 @@ fn write_monthly_inflow_history_two_hydros(path: &std::path::Path, n_years: usiz
 
 #[test]
 fn estimate_from_history_pacf_annual_populates_annual_field() {
-    use crate::config::{EstimationConfig, OrderSelectionMethod};
+    use crate::config::{CorrelationTarget, EstimationConfig, OrderSelectionMethod};
     use tempfile::TempDir;
 
     const N_YEARS: usize = 5;
@@ -2152,9 +2526,16 @@ fn estimate_from_history_pacf_annual_populates_annual_field() {
         order_selection: OrderSelectionMethod::PacfAnnual,
         min_observations_per_season: 2,
         max_coefficient_magnitude: None,
+        correlation_target: CorrelationTarget::Residuals,
+        history_years: None,
     };
 
-    let (updated, report, path) = estimate_from_history(system, case_dir, &config)
+    let HistoryEstimate {
+        system: updated,
+        report,
+        path,
+        ..
+    } = estimate_from_history(system, case_dir, &config)
         .expect("full estimation with PacfAnnual must succeed");
 
     assert_eq!(
@@ -2177,7 +2558,7 @@ fn estimate_from_history_pacf_annual_populates_annual_field() {
 
 #[test]
 fn estimate_from_history_pacf_classical_keeps_annual_none() {
-    use crate::config::{EstimationConfig, OrderSelectionMethod};
+    use crate::config::{CorrelationTarget, EstimationConfig, OrderSelectionMethod};
     use tempfile::TempDir;
 
     const N_YEARS: usize = 5;
@@ -2197,9 +2578,16 @@ fn estimate_from_history_pacf_classical_keeps_annual_none() {
         order_selection: OrderSelectionMethod::Pacf,
         min_observations_per_season: 2,
         max_coefficient_magnitude: None,
+        correlation_target: CorrelationTarget::Residuals,
+        history_years: None,
     };
 
-    let (updated, report, path) = estimate_from_history(system, case_dir, &config)
+    let HistoryEstimate {
+        system: updated,
+        report,
+        path,
+        ..
+    } = estimate_from_history(system, case_dir, &config)
         .expect("full estimation with Pacf must succeed");
 
     assert_eq!(
@@ -2245,6 +2633,7 @@ fn estimate_ar_coefficients_with_selection_classical_path_unchanged() {
             max_coeff_magnitude: None,
             season_map: None,
             use_annual_component: false,
+            assembled_stats: None,
         },
     )
     .expect("classical path must succeed");
@@ -2376,6 +2765,7 @@ fn partial_year_par2_synthesizes_prestudy_lag_models() {
             max_coeff_magnitude: None,
             season_map: Some(&season_map),
             use_annual_component: false,
+            assembled_stats: None,
         },
     )
     .expect("AR(2) fit must succeed");
@@ -2848,12 +3238,18 @@ fn test_conditioning_window_does_not_change_fitted_statistics() {
 
     let config = default_config();
 
-    let (updated_without, _report_a, path_a) =
-        estimate_from_history(system_without_conditioning, case_dir_a, &config)
-            .expect("estimation without conditioning must succeed");
-    let (updated_with, _report_b, path_b) =
-        estimate_from_history(system_with_conditioning, case_dir_b, &config)
-            .expect("estimation with conditioning must succeed");
+    let HistoryEstimate {
+        system: updated_without,
+        path: path_a,
+        ..
+    } = estimate_from_history(system_without_conditioning, case_dir_a, &config)
+        .expect("estimation without conditioning must succeed");
+    let HistoryEstimate {
+        system: updated_with,
+        path: path_b,
+        ..
+    } = estimate_from_history(system_with_conditioning, case_dir_b, &config)
+        .expect("estimation with conditioning must succeed");
 
     assert_eq!(path_a, EstimationPath::FullEstimation);
     assert_eq!(path_b, EstimationPath::FullEstimation);
@@ -2973,5 +3369,41 @@ fn cursor_subslice_matches_filter_collect_across_straddling_occurrences() {
         skipped_partial.get(&hydro_id).copied().unwrap_or(0),
         reference_skip_count,
         "skipped-partial count must match the independent filter-based reference"
+    );
+}
+
+#[test]
+fn partial_annual_estimation_checks_the_residual_variance_with_the_supplied_stds() {
+    use crate::config::OrderSelectionMethod;
+    use novomodelo_stochastic::par::fitting::ReductionReason;
+    use tempfile::TempDir;
+
+    const N_YEARS: usize = 30;
+    let dir = TempDir::new().unwrap();
+    let case_dir = dir.path();
+    setup_partial_estimation_case(case_dir, N_YEARS);
+    // Against a history std near 1.5, a supplied std of 100 widens the annual
+    // term enough that the history-std model and the assembled model disagree.
+    let system = build_system_with_user_std(N_YEARS, 100.0);
+    let mut config = default_config();
+    config.estimation.order_selection = OrderSelectionMethod::PacfAnnual;
+
+    let estimate = estimate_from_history(system, case_dir, &config)
+        .expect("the fit must reduce a season the assembled model would reject");
+
+    let report = estimate.report.expect("partial estimation reports");
+    assert!(
+        report
+            .entries
+            .values()
+            .flat_map(|entry| &entry.contribution_reductions)
+            .any(|reduction| reduction.reason == ReductionReason::NegativeResidualVariance)
+    );
+    assert!(
+        estimate
+            .system
+            .inflow_models()
+            .iter()
+            .all(|model| model.std_m3s == 100.0 && model.residual_std_ratio.is_finite())
     );
 }

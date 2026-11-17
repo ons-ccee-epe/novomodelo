@@ -2,10 +2,11 @@
 //! `novomodelo-sddp`.
 //!
 //! Groups the golden parity-hash regression, the self-reproducibility regression,
-//! the b6a hydro-inflow parity, the determinism conformance suite, and
+//! the b6a hydro-inflow parity, the determinism conformance suite,
 //! `simulation_scenario_seed` (the simulation seed's effect on out-of-sample
 //! draws, its fallback to the training seed, and their declaration-order and
-//! thread-count invariance) into one
+//! thread-count invariance), and `moment_matched_opening_tree` (properties of a
+//! moment-matched opening tree built from a committed deck) into one
 //! binary so the statically-linked solver links once rather than once per file.
 //! The two parity-hash sources carry mutually exclusive solver-backend gates, so
 //! each is a per-`mod` `#[cfg(feature = …)]`: `parity_hash_highs` compiles under
@@ -518,23 +519,23 @@ mod b6a_hydro_inflow_parity {
     //!
     //! ## What this file proves (and what it deliberately does not)
     //!
-    //! `hydro_inflow(h[,blk])` resolves to the **total** inflow column set:
-    //! `z_inflow(h)` plus, for each immediately-upstream plant `i`, the turbine and
-    //! spillage columns at the referenced block (plus any diversion-into columns),
-    //! each with coefficient `+1.0`. The exhaustive **resolver-level** assertion of
-    //! that full column set — that the row references `z_inflow` AND each upstream
-    //! plant's turbine+spillage (and diversion-into) at `+1.0`, NOT merely that
-    //! `z_inflow` appears — is a crate-internal property of `resolve_variable_ref`,
-    //! which is `pub(crate)` to `novomodelo-sddp` and therefore unreachable from an
+    //! `hydro_inflow(h[,blk])` resolves to the **total** inflow: the hydro's own
+    //! realized-inflow term plus, for each immediately-upstream plant `i`, the
+    //! turbine and spillage columns at the referenced block (plus any diversion-into
+    //! columns), each with coefficient `+1.0`. The exhaustive **resolver-level**
+    //! assertion — that the row carries the realized-inflow term AND each upstream
+    //! plant's turbine+spillage (and diversion-into) at `+1.0` — is a crate-internal
+    //! property of `resolve_variable_ref`, which is `pub(crate)` to `novomodelo-sddp`
+    //! and therefore unreachable from an
     //! integration test under `tests/`. That assertion lives in the crate-internal
     //! unit tests in `lp::builder::generic_constraints` (e.g.
     //! `hydro_inflow_two_upstream_canonical_order`,
     //! `hydro_inflow_diversion_into_appends_diversion_column`,
-    //! `hydro_inflow_headwater_resolves_to_z_inflow_only`,
-    //! `hydro_inflow_is_block_dependent`), which assert the exact `(col, +1.0)`
-    //! pair list for a multi-upstream cascade. This file relies on that coverage and
-    //! proves the complementary, genuinely-integration property the unit tests
-    //! cannot: the full public `load → train → simulate` pipeline materializes the
+    //! `hydro_inflow_headwater_resolves_to_its_own_inflow_only`,
+    //! `hydro_inflow_is_block_dependent`), which assert the exact inflow pair and
+    //! `(col, +1.0)` pair list for a multi-upstream cascade. This file relies on that
+    //! coverage and proves the complementary, genuinely-integration property the
+    //! unit tests cannot: the full public `load → train → simulate` pipeline materializes the
     //! cascade `hydro_inflow` row and **solves** it on HiGHS and on CLP.
     //!
     //! ## Fixture
@@ -851,26 +852,24 @@ mod determinism {
     //
     // Column layout for the N=3, L=0 state vector:
     //   storage      = 0..3
-    //   inflow_lags  = 3..3  (empty, L=0)
-    //   z_inflow     = 3..6
-    //   storage_in   = 6..9
-    //   theta        = 9
+    //   storage_in   = 3..6  (the lag region has no LP column)
+    //   theta        = 6
     //   then the decoupled hydro+bus equipment padding `test_support::geometry`
-    //   addresses for N=3 hydros, 1 bus, 1 block (cols 10-38), so per-block
+    //   addresses for N=3 hydros, 1 bus, 1 block (cols 7-35), so per-block
     //   hydro/bus extraction addresses real columns instead of an empty family.
-    //   num_cols     = 39
+    //   num_cols     = 36
     //
-    // The primal must have 39 entries so simulation's per-block extraction can
-    // address every equipment column. The dual must have at least 7 entries
+    // The primal must have 36 entries so simulation's per-block extraction can
+    // address every equipment column. The dual must have at least 4 entries
     // to cover the widened geometry's water-balance/load-balance row family.
     // ===========================================================================
 
-    const PRIMAL_3H: &[f64] = &[0.0; 39];
+    const PRIMAL_3H: &[f64] = &[0.0; 36];
     // The dual must cover the widened row family plus max cuts per stage
     // (10 iterations × 1 pass = 10). Use 64 to cover any reasonable iteration
     // count without tight sizing.
     const DUAL_3H: &[f64] = &[0.0; 64];
-    const REDUCED_COSTS_3H: &[f64] = &[0.0; 39];
+    const REDUCED_COSTS_3H: &[f64] = &[0.0; 36];
 
     /// Mock solver returning a fixed objective on every solve, so any output
     /// variation across thread counts comes from the orchestration layer alone.
@@ -894,6 +893,7 @@ mod determinism {
         fn load_model(&mut self, _template: &StageTemplate) {}
         fn add_rows(&mut self, _cuts: &RowBatch) {}
         fn set_row_bounds(&mut self, _indices: &[usize], _lower: &[f64], _upper: &[f64]) {}
+        fn set_row_lower_bounds_range(&mut self, _first_row: usize, _lower: &[f64]) {}
         fn set_col_bounds(&mut self, _indices: &[usize], _lower: &[f64], _upper: &[f64]) {}
 
         fn solve(
@@ -951,6 +951,7 @@ mod determinism {
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -1121,64 +1122,54 @@ mod determinism {
     /// Column layout (N=3, L=0):
     /// ```text
     /// 0..3   storage_out  (outgoing storage, N=3)
-    /// 3..6   z_inflow     (realized inflow variables, N=3, free)
-    /// 6..9   storage_in   (incoming storage, N=3, L=0 → no lag cols)
-    /// 9      theta
-    /// 10..39 decoupled hydro+bus equipment padding `test_support::geometry`
+    /// 3..6   storage_in   (incoming storage, N=3, L=0 → no lag cols)
+    /// 6      theta
+    /// 7..36  decoupled hydro+bus equipment padding `test_support::geometry`
     ///        addresses for N=3 hydros, 1 bus, 1 block (zero cost, zero NZ):
     ///        `MockSolver3H` never reads the coefficients.
     /// ```
     ///
     /// Row layout (N=3, L=0):
     /// ```text
-    /// 0..3  z_inflow rows        (one per hydro, at StateSpace::z_inflow_rows())
-    /// 3..6  storage_in pin rows (one per hydro)
-    /// 6     the widened geometry's load-balance row (unused, no NZ)
+    /// 0..3  water-balance rows (one per hydro)
+    /// 3     the widened geometry's load-balance row (unused, no NZ)
     /// ```
     ///
-    /// The matrix has one nonzero per z_inflow row (column = `z_inflow[h]`) and one
-    /// per storage_in pin row (column = `storage_in[h]`), each coefficient 1.0, so
-    /// the patch buffer has something to patch.
+    /// The matrix has one nonzero per water-balance row (column = `storage_in[h]`),
+    /// coefficient 1.0, so the patch buffer has something to patch.
     fn template_3h() -> StageTemplate {
-        let num_cols = 39;
-        let num_rows = 7;
-        // CSC col_starts: 39 columns + 1 sentinel; z_inflow and storage_in cols
-        // each carry one NZ, cols 9 (theta) onward carry none.
+        let num_cols = 36;
+        let num_rows = 4;
+        // CSC col_starts: 36 columns + 1 sentinel; storage_in cols each carry one
+        // NZ, cols 6 (theta) onward carry none.
         let col_starts = {
-            let mut v = vec![6_i32; num_cols + 1];
+            let mut v = vec![3_i32; num_cols + 1];
             v[0] = 0; // col 0 (storage_out[0])
             v[1] = 0; // col 1 (storage_out[1])
             v[2] = 0; // col 2 (storage_out[2])
-            v[3] = 0; // col 3 (z_inflow[0]) — NZ starts here
-            v[4] = 1; // col 4 (z_inflow[1])
-            v[5] = 2; // col 5 (z_inflow[2])
-            v[6] = 3; // col 6 (storage_in[0])
-            v[7] = 4; // col 7 (storage_in[1])
-            v[8] = 5; // col 8 (storage_in[2])
+            v[3] = 0; // col 3 (storage_in[0]) — NZ starts here
+            v[4] = 1; // col 4 (storage_in[1])
+            v[5] = 2; // col 5 (storage_in[2])
             v
         };
-        let row_indices = vec![0_i32, 1, 2, 3, 4, 5];
-        let values = vec![1.0_f64, 1.0, 1.0, 1.0, 1.0, 1.0];
+        let row_indices = vec![0_i32, 1, 2];
+        let values = vec![1.0_f64, 1.0, 1.0];
 
         let mut objective = vec![0.0_f64; num_cols];
-        objective[9] = 1.0; // theta at col 9
-
-        let mut col_lower = vec![0.0_f64; num_cols];
-        col_lower[3..6].fill(f64::NEG_INFINITY); // z_inflow cols are free
+        objective[6] = 1.0; // theta at col 6
 
         StageTemplate {
             num_cols,
             num_rows,
-            num_nz: 6,
+            num_nz: 3,
             col_starts,
             row_indices,
             values,
-            col_lower,
+            col_lower: vec![0.0_f64; num_cols],
             col_upper: vec![f64::INFINITY; num_cols],
             objective,
             row_lower: vec![0.0; num_rows],
             row_upper: vec![0.0; num_rows],
-            n_state: 3,
             col_scale: Vec::new(),
             row_scale: Vec::new(),
         }
@@ -1291,7 +1282,8 @@ mod determinism {
 
         let state_boxes = permissive_state_boxes(fx.state.n_state, fx.n_stages);
         let geometry = vec![three_hydro_one_bus_geometry(); fx.n_stages];
-        let stage_ctx_fixture = StageContextFixture::new(&fx.templates, &state_boxes, &geometry);
+        let stage_ctx_fixture = StageContextFixture::new(&fx.templates, &state_boxes, &geometry)
+            .without_inflow_entries(fx.state.hydro_count);
         let stage_ctx = stage_ctx_fixture.ctx();
         let result = pool
             .install(|| {
@@ -1399,14 +1391,15 @@ mod determinism {
         };
         let state_boxes = permissive_state_boxes(fx.state.n_state, fx.n_stages);
         let geometry = vec![three_hydro_one_bus_geometry(); fx.n_stages];
-        let stage_ctx_fixture = StageContextFixture::new(&fx.templates, &state_boxes, &geometry);
+        let stage_ctx_fixture = StageContextFixture::new(&fx.templates, &state_boxes, &geometry)
+            .without_inflow_entries(fx.state.hydro_count);
         let mut workspaces: Vec<SolverWorkspace<MockSolver3H>> = (0..n_workspaces)
             .map(|idx| {
                 SolverWorkspace::new(
                     0,
                     i32::try_from(idx).expect("worker_id fits in i32"),
                     MockSolver3H::new(100.0),
-                    PatchBuffer::new(&fx.state, &[], &[]),
+                    PatchBuffer::new(&fx.state, &[], &[], &[]),
                     &sim_training_ctx,
                     &stage_ctx_fixture.ctx(),
                     WorkspaceSizing::default(),
@@ -1918,7 +1911,7 @@ mod water_travel_time_no_arc_byte_identity {
         EntityId, HydroBlockBounds, HydroGenerationModel, HydroPenalties, HydroStageBounds,
         HydroStorage, InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
         PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
-        ResolvedPenalties, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
+        ResolvedPenalties, SystemBuilder, ThermalBlockBounds,
     };
     use novomodelo_sddp::{
         StudySetup,
@@ -1949,6 +1942,7 @@ mod water_travel_time_no_arc_byte_identity {
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -2058,12 +2052,10 @@ mod water_travel_time_no_arc_byte_identity {
             &BoundsDefaults {
                 hydro: default_hydro_bounds(),
                 hydro_block: default_hydro_bounds_block(),
-                thermal: ThermalStageBounds {
-                    cost_per_mwh: 100.0,
-                },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 400.0,
+                    cost_per_mwh: 100.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -2340,21 +2332,27 @@ mod water_travel_time_gate_byte_neutrality {
     //! alone does not pin.
     //!
     //! The second is the arrival-calendar gate: the topology sizing derived
-    //! from a declared post-study calendar only diverges from today's
-    //! synthetic pad when the deck actually declares one. This deck declares
-    //! none, so that gate is structurally incapable of moving these goldens —
-    //! asserted directly below rather than assumed.
+    //! from a declared post-study calendar only diverges from the synthetic
+    //! pad when the declared calendar changes the transit depth. This deck
+    //! declares its water calendar, and its legacy-input overlay does not, so
+    //! the gate is pinned by building both and comparing the state topology
+    //! and the bucket masks.
 
     use std::path::Path;
 
     use novomodelo_io::config::BoundaryPolicy;
+    use novomodelo_sddp::test_support::legacy_inputs::{materialize, overlay_dir};
     use novomodelo_solver::ActiveSolver;
+    use tempfile::TempDir;
 
-    use super::common::{StubComm, fresh_setup_with};
+    use super::common::{StubComm, copy_toy_case, fresh_setup_with};
+
+    const CASE_KEY: &str = "examples/deterministic/d44-travel-time-substage";
 
     fn case_dir() -> std::path::PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../examples/deterministic/d44-travel-time-substage")
+            .join("../..")
+            .join(CASE_KEY)
     }
 
     fn train_gated_off() -> f64 {
@@ -2441,13 +2439,47 @@ mod water_travel_time_gate_byte_neutrality {
     }
 
     #[test]
-    fn declared_arc_golden_deck_declares_no_post_study_calendar() {
-        let system = novomodelo_io::load_case(&case_dir()).expect("load_case must succeed");
+    fn declared_arc_golden_deck_topology_matches_its_legacy_overlay() {
+        let legacy_case = TempDir::new().expect("tempdir");
+        copy_toy_case(&case_dir(), legacy_case.path());
+        materialize(&overlay_dir(CASE_KEY), legacy_case.path())
+            .expect("the legacy overlay must materialize");
+
+        let migrated = fresh_setup_with(&case_dir(), |_cfg| {});
+        let legacy = fresh_setup_with(legacy_case.path(), |_cfg| {});
+
+        let (state_migrated, state_legacy) = (migrated.stage_state(), legacy.stage_state());
         assert!(
-            system.post_study_stages().is_none(),
-            "the water goldens' deck declares no post-study calendar, so the \
-             arrival-calendar extension cannot move them"
+            state_migrated.n_buckets > 0,
+            "fixture has no power unless it declares at least one travel-time bucket"
         );
+        assert_eq!(state_migrated.n_state, state_legacy.n_state);
+        assert_eq!(
+            state_migrated.transit_bucket_column_order,
+            state_legacy.transit_bucket_column_order
+        );
+
+        assert_eq!(migrated.num_stages(), legacy.num_stages());
+        let buckets = state_migrated.transit_buckets_out.clone();
+        let bounds = |setup: &novomodelo_sddp::StudySetup, stage: usize| {
+            let template = &setup.stage_ctx().templates[stage];
+            buckets
+                .clone()
+                .map(|col| {
+                    (
+                        template.col_lower[col].to_bits(),
+                        template.col_upper[col].to_bits(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        for stage in 0..migrated.num_stages() {
+            assert_eq!(
+                bounds(&migrated, stage),
+                bounds(&legacy, stage),
+                "stage {stage}: the bucket masks must equal the legacy overlay's"
+            );
+        }
     }
 }
 
@@ -2632,6 +2664,312 @@ mod simulation_scenario_seed {
     }
 }
 
+mod moment_matched_opening_tree {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    use novomodelo_io::config::CorrelationTarget;
+    use novomodelo_io::output::write_noise_openings;
+    use novomodelo_io::scenarios::CorrelationOrigin;
+    use novomodelo_sddp::{PrepareStochasticResult, prepare_stochastic};
+    use novomodelo_stochastic::context::OpeningTree;
+    use novomodelo_stochastic::provenance::ComponentProvenance;
+    use novomodelo_stochastic::tree::MomentMatching;
+    use novomodelo_stochastic::{DecomposedCorrelation, EntityClass};
+    use serde_json::{Value, json};
+    use tempfile::TempDir;
+
+    use super::common::permute::permute_case;
+    use super::common::{boundary_requirements, copy_toy_case, edit_json};
+
+    const ASYMMETRIC_INFLOW_CORRELATION: &str = r#"{
+        "method": "spectral",
+        "profiles": {
+            "default": {
+                "correlation_groups": [{
+                    "name": "asymmetric",
+                    "entities": [
+                        {"type": "inflow", "id": 0},
+                        {"type": "inflow", "id": 1},
+                        {"type": "inflow", "id": 2}
+                    ],
+                    "matrix": [[1, 0.9, -0.6], [0.9, 1, 0.8], [-0.6, 0.8, 1]]
+                }]
+            }
+        }
+    }"#;
+
+    fn prepare_case(case_dir: &Path) -> PrepareStochasticResult {
+        let config_path = case_dir.join("config.json");
+        let config = novomodelo_io::parse_config(&config_path).expect("config must parse");
+        let system = novomodelo_io::load_case(case_dir).expect("load_case must succeed");
+        let training_source = config
+            .training_scenario_source(&config_path)
+            .expect("training_scenario_source must parse");
+        let inflow_lag_depth = boundary_requirements(case_dir, &config).inflow_lag_depth();
+        prepare_stochastic(
+            system,
+            case_dir,
+            &config,
+            42,
+            &training_source,
+            inflow_lag_depth,
+        )
+        .expect("prepare_stochastic must succeed")
+    }
+
+    fn example_copy(name: &str) -> TempDir {
+        let case = TempDir::new().expect("tempdir");
+        copy_toy_case(
+            &PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../examples")
+                .join(name),
+            case.path(),
+        );
+        case
+    }
+
+    fn set_openings(case: &Path, openings: &Value) {
+        edit_json(&case.join("config.json"), |config| {
+            config["training"]["scenario_source"]["openings"] = openings.clone();
+        });
+    }
+
+    fn three_opening_d12(
+        correlation_target: &str,
+        moment_matching: &str,
+    ) -> (TempDir, PrepareStochasticResult) {
+        let case = example_copy("deterministic/d12-par-annual");
+        edit_json(&case.path().join("stages.json"), |stages| {
+            for stage in stages["stages"]
+                .as_array_mut()
+                .expect("stages.json must hold a stages array")
+            {
+                stage["num_openings"] = json!(3);
+            }
+        });
+        edit_json(&case.path().join("config.json"), |config| {
+            config["estimation"]["correlation_target"] = json!(correlation_target);
+            config["training"]["scenario_source"]["openings"] = generated(moment_matching);
+        });
+        let prepared = prepare_case(case.path());
+        (case, prepared)
+    }
+
+    fn generated(moment_matching: &str) -> Value {
+        json!({"source": "generated", "moment_matching": moment_matching})
+    }
+
+    fn tree_bits(tree: &OpeningTree) -> Vec<u64> {
+        tree.data().iter().map(|v| v.to_bits()).collect()
+    }
+
+    fn hydro_ids(case: &Path) -> Vec<i64> {
+        let hydros: Value = serde_json::from_str(
+            &fs::read_to_string(case.join("system").join("hydros.json"))
+                .expect("hydros.json must be readable"),
+        )
+        .expect("hydros.json must parse");
+        hydros["hydros"]
+            .as_array()
+            .expect("hydros.json must hold a hydros array")
+            .iter()
+            .map(|h| {
+                h["id"]
+                    .as_i64()
+                    .expect("every hydro must have an integer id")
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_matched_tree_read_back_from_file_reproduces_the_generated_tree() {
+        let case = example_copy("1dtoy");
+        set_openings(case.path(), &generated("per_coordinate"));
+        let matched = prepare_case(case.path());
+        let study_stage_ids: Vec<i32> = matched
+            .system
+            .stages()
+            .iter()
+            .filter(|s| s.id >= 0)
+            .map(|s| s.id)
+            .collect();
+        assert_eq!(study_stage_ids, [0, 1, 2, 3]);
+        let matched_tree = matched.stochastic.opening_tree();
+        assert_eq!(
+            matched_tree.openings_per_stage_slice(),
+            &[10, 10, 10, 10],
+            "every stage must keep its branching factor of openings"
+        );
+
+        write_noise_openings(
+            &case.path().join("scenarios").join("noise_openings.parquet"),
+            matched_tree,
+        )
+        .expect("noise_openings.parquet must be writable");
+        set_openings(case.path(), &json!({"source": "file"}));
+        let read_back = prepare_case(case.path());
+        assert_eq!(
+            read_back.stochastic.provenance().opening_tree,
+            ComponentProvenance::UserSupplied
+        );
+        assert_eq!(
+            tree_bits(read_back.stochastic.opening_tree()),
+            tree_bits(matched_tree),
+            "a matched tree read from file must be used as written, never matched again"
+        );
+
+        set_openings(case.path(), &generated("none"));
+        let drawn = prepare_case(case.path());
+        assert_ne!(
+            tree_bits(matched_tree),
+            tree_bits(drawn.stochastic.opening_tree()),
+            "per_coordinate must change the 1dtoy tree, or the read-back comparison has no power"
+        );
+    }
+
+    #[test]
+    fn moment_matched_tree_is_declaration_order_invariant() {
+        let base = example_copy("4ree");
+        fs::write(
+            base.path().join("scenarios").join("correlation.json"),
+            ASYMMETRIC_INFLOW_CORRELATION,
+        )
+        .expect("correlation.json must be writable");
+        set_openings(base.path(), &generated("per_coordinate"));
+
+        let base_order = hydro_ids(base.path());
+        let permuted = (0..=16_u64)
+            .map(|i| permute_case(base.path(), super::SHUFFLE_BASE_SEED.wrapping_add(i)))
+            .find(|copy| hydro_ids(copy.path()) != base_order)
+            .expect("one of the 17 permutation seeds must reorder system/hydros.json");
+
+        let matched = prepare_case(base.path());
+        let mut variances = vec![0.0; 4];
+        DecomposedCorrelation::implied_class_variances(
+            matched.stochastic.correlation().groups_for_stage(0),
+            EntityClass::Inflow,
+            &mut variances,
+        );
+        for (i, &variance) in variances[..3].iter().enumerate() {
+            assert!(
+                variance > 1.0 + 1e-3,
+                "hydro {i}'s implied variance must exceed 1, got {variances:?}"
+            );
+        }
+        for (i, j) in [(0, 1), (0, 2), (1, 2)] {
+            assert!(
+                (variances[i] - variances[j]).abs() > 1e-3,
+                "hydros {i} and {j} must have distinct implied variances, got {variances:?}"
+            );
+        }
+        assert_eq!(variances[3], 1.0, "hydro 3 is in no correlation group");
+
+        let permuted_matched = prepare_case(permuted.path());
+        assert_eq!(
+            tree_bits(permuted_matched.stochastic.opening_tree()),
+            tree_bits(matched.stochastic.opening_tree()),
+            "the matched tree must not depend on entity declaration order"
+        );
+
+        set_openings(base.path(), &generated("none"));
+        let drawn = prepare_case(base.path());
+        assert_ne!(
+            tree_bits(matched.stochastic.opening_tree()),
+            tree_bits(drawn.stochastic.opening_tree()),
+            "per_coordinate must change the 4ree tree, or the order comparison has no power"
+        );
+    }
+
+    #[test]
+    fn inflows_target_and_per_coordinate_matching_compose_through_prepare_stochastic() {
+        let (_inflows_matched_case, inflows_matched) =
+            three_opening_d12("inflows", "per_coordinate");
+        let (_residuals_matched_case, residuals_matched) =
+            three_opening_d12("residuals", "per_coordinate");
+        let (_inflows_drawn_case, inflows_drawn) = three_opening_d12("inflows", "none");
+
+        let context = &inflows_matched.stochastic;
+        let tree = context.opening_tree();
+        let openings_per_stage = tree.openings_per_stage_slice();
+        assert!(
+            openings_per_stage.iter().any(|&k| k >= 2),
+            "some study stage must hold several openings, got {openings_per_stage:?}"
+        );
+        assert_eq!(context.n_hydros(), 2, "d12 must carry two hydros");
+
+        assert_eq!(
+            inflows_matched.correlation_origin,
+            CorrelationOrigin::Estimated {
+                target: CorrelationTarget::Inflows
+            }
+        );
+        assert_eq!(
+            context.provenance().opening_tree_moment_matching,
+            Some(MomentMatching::PerCoordinate)
+        );
+
+        let mut variances = vec![0.0; context.n_hydros()];
+        let study_stage_ids = inflows_matched
+            .system
+            .stages()
+            .iter()
+            .filter(|s| s.id >= 0)
+            .map(|s| s.id);
+        for (t, stage_id) in study_stage_ids.enumerate() {
+            let n_openings = openings_per_stage[t];
+            if n_openings < 2 {
+                continue;
+            }
+            DecomposedCorrelation::implied_class_variances(
+                context.correlation().groups_for_stage(stage_id),
+                EntityClass::Inflow,
+                &mut variances,
+            );
+            let count = n_openings as f64;
+            for (c, &variance) in variances.iter().enumerate() {
+                let mut sum = 0.0;
+                for k in 0..n_openings {
+                    sum += tree.opening(t, k)[c];
+                }
+                let mean = sum / count;
+                let mut sum_sq = 0.0;
+                for k in 0..n_openings {
+                    let d = tree.opening(t, k)[c] - mean;
+                    sum_sq += d * d;
+                }
+                let var = sum_sq / count;
+                assert!(
+                    mean.abs() <= 1e-13 * variance.sqrt(),
+                    "stage {t} coordinate {c}: mean {mean}, variance {var}, target variance {variance}"
+                );
+                assert!(
+                    (var - variance).abs() <= 1e-13 * variance,
+                    "stage {t} coordinate {c}: mean {mean}, variance {var}, target variance {variance}"
+                );
+            }
+        }
+
+        let profiles = |leg: &PrepareStochasticResult| -> Vec<String> {
+            leg.system.correlation().profiles.keys().cloned().collect()
+        };
+        assert_ne!(
+            tree_bits(tree),
+            tree_bits(residuals_matched.stochastic.opening_tree()),
+            "the correlation target must change the matched tree; inflows profiles {:?}, residuals profiles {:?}",
+            profiles(&inflows_matched),
+            profiles(&residuals_matched)
+        );
+        assert_ne!(
+            tree_bits(tree),
+            tree_bits(inflows_drawn.stochastic.opening_tree()),
+            "per_coordinate must change the inflows tree; matched profiles {:?}, drawn profiles {:?}",
+            profiles(&inflows_matched),
+            profiles(&inflows_drawn)
+        );
+    }
+}
+
 mod sacred_chain_parity_roster {
     //! The ten chain-parity obligations and their break-one-obligation
     //! verification table. No executable code — a module doc only, the
@@ -2734,8 +3072,8 @@ mod thermal_unit_neutrality {
         EntityId, HydroBlockBounds, HydroGenerationModel, HydroStageBounds, HydroStorage,
         InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
         PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
-        ResolvedPenalties, SystemBuilder, ThermalBlockBounds, ThermalStageBounds, ThermalUnit,
-        ThermalUnitInitialState, ThermalUnitStatus,
+        ResolvedPenalties, SystemBuilder, ThermalBlockBounds, ThermalUnit, ThermalUnitInitialState,
+        ThermalUnitStatus,
     };
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
@@ -2904,12 +3242,10 @@ mod thermal_unit_neutrality {
                     max_generation_mw: 250.0,
                     ..Default::default()
                 },
-                thermal: ThermalStageBounds {
-                    cost_per_mwh: 100.0,
-                },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: plant_max_mw,
+                    cost_per_mwh: 100.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,

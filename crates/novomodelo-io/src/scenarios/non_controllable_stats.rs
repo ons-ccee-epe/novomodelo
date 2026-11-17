@@ -17,8 +17,11 @@ use novomodelo_core::scenario::NcsModel;
 use std::path::Path;
 
 use crate::LoadError;
-use crate::parquet_helpers::{
-    extract_required_float64, extract_required_int32, open_record_batch_reader,
+use crate::parquet_helpers::{ParquetColumns, open_parquet_input};
+
+static NCS_STATS_COLUMNS: ParquetColumns = ParquetColumns {
+    known: &["ncs_id", "stage_id", "mean", "std"],
+    retired: &[],
 };
 
 /// Parse `scenarios/non_controllable_stats.parquet` and return rows sorted by
@@ -34,6 +37,7 @@ use crate::parquet_helpers::{
 /// | File not found or permission denied           | [`LoadError::IoError`]     |
 /// | Malformed Parquet (corrupt header, etc.)      | [`LoadError::ParseError`]  |
 /// | Required column missing or wrong type         | [`LoadError::SchemaError`] |
+/// | Unknown or retired column                     | [`LoadError::SchemaError`] |
 /// | `mean` is NaN, infinite, or outside `[0, 1]` | [`LoadError::SchemaError`] |
 /// | `std` is negative or not finite              | [`LoadError::SchemaError`] |
 ///
@@ -48,17 +52,15 @@ use crate::parquet_helpers::{
 /// println!("loaded {} NCS model rows", models.len());
 /// ```
 pub fn parse_ncs_stats(path: &Path) -> Result<Vec<NcsModel>, LoadError> {
-    let reader = open_record_batch_reader(path)?;
-
     let mut rows: Vec<NcsModel> = Vec::new();
 
-    for batch_result in reader {
-        let batch = batch_result.map_err(|e| LoadError::parse(path, e.to_string()))?;
+    for batch in open_parquet_input(path, &NCS_STATS_COLUMNS)? {
+        let batch = batch?;
 
-        let ncs_id_col = extract_required_int32(&batch, "ncs_id", path)?;
-        let stage_id_col = extract_required_int32(&batch, "stage_id", path)?;
-        let mean_col = extract_required_float64(&batch, "mean", path)?;
-        let std_col = extract_required_float64(&batch, "std", path)?;
+        let ncs_id_col = batch.required_int32("ncs_id")?;
+        let stage_id_col = batch.required_int32("stage_id")?;
+        let mean_col = batch.required_float64("mean")?;
+        let std_col = batch.required_float64("std")?;
 
         let n = batch.num_rows();
         let base_idx = rows.len();

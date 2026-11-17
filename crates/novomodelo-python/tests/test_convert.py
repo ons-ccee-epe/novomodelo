@@ -29,7 +29,7 @@ VALID_CASE_1DTOY = "examples/1dtoy"
 
 def _validate(overrides: dict[str, object]) -> dict[str, object]:
     """Run validate() with the given override map and return the result dict."""
-    import novomodelo.io  # noqa: PLC0415
+    import novomodelo.io
 
     return novomodelo.io.validate(VALID_CASE_1DTOY, config_overrides=overrides)
 

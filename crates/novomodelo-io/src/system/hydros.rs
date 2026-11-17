@@ -402,6 +402,9 @@ pub(crate) struct RawHydroPenaltyOverrides {
     /// Generation below-minimum violation penalty ($/`MWh`).
     #[serde(default)]
     generation_violation_below_cost: Option<f64>,
+    /// FPHA plane violation cost ($/`MWh`).
+    #[serde(default)]
+    fpha_violation_cost: Option<f64>,
     /// Symmetric evaporation violation penalty of this plant, applied in both
     /// directions ($/(m³/s·h)).
     #[serde(default)]
@@ -922,6 +925,7 @@ fn convert_penalty_overrides(raw: RawHydroPenaltyOverrides) -> HydroPenaltyOverr
         outflow_violation_below_cost: raw.outflow_violation_below_cost,
         outflow_violation_above_cost: raw.outflow_violation_above_cost,
         generation_violation_below_cost: raw.generation_violation_below_cost,
+        fpha_violation_cost: raw.fpha_violation_cost,
         evaporation_violation_cost: raw.evaporation_violation_cost,
         water_withdrawal_violation_cost: raw.water_withdrawal_violation_cost,
         water_withdrawal_violation_pos_cost: None,
@@ -1372,6 +1376,72 @@ mod tests {
         assert!((p.water_withdrawal_violation_neg_cost - 2_000.0).abs() < f64::EPSILON);
         assert!((p.evaporation_violation_pos_cost - 6_000.0).abs() < f64::EPSILON);
         assert!((p.evaporation_violation_neg_cost - 6_000.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_entity_fpha_violation_cost_override_parsed() {
+        let json = r#"{
+          "hydros": [{
+            "id": 0, "name": "WithKey",
+            "operational_start_date": "2024-01-01",
+            "downstream_id": null,
+            "reservoir": { "min_storage_hm3": 0.0, "max_storage_hm3": 1000.0 },
+            "outflow": { "min_outflow_m3s": 0.0, "max_outflow_m3s": null },
+            "generation": {
+              "model": "constant_productivity",
+              "min_turbined_m3s": 0.0,
+              "max_turbined_m3s": 500.0,
+              "min_generation_mw": 0.0,
+              "max_generation_mw": 250.0
+            },
+            "penalties": { "fpha_violation_cost": 250.0 },
+            "unit_groups": [
+              { "id": 0, "name": "WithKey", "bus_id": 0,
+                "min_generation_mw": 0.0, "max_generation_mw": 250.0,
+                "min_turbined_m3s": 0.0, "max_turbined_m3s": 500.0 }
+            ]
+          }, {
+            "id": 1, "name": "WithoutKey",
+            "operational_start_date": "2024-01-01",
+            "downstream_id": null,
+            "reservoir": { "min_storage_hm3": 0.0, "max_storage_hm3": 1000.0 },
+            "outflow": { "min_outflow_m3s": 0.0, "max_outflow_m3s": null },
+            "generation": {
+              "model": "constant_productivity",
+              "min_turbined_m3s": 0.0,
+              "max_turbined_m3s": 500.0,
+              "min_generation_mw": 0.0,
+              "max_generation_mw": 250.0
+            },
+            "penalties": { "spillage_cost": 0.05 },
+            "unit_groups": [
+              { "id": 0, "name": "WithoutKey", "bus_id": 0,
+                "min_generation_mw": 0.0, "max_generation_mw": 250.0,
+                "min_turbined_m3s": 0.0, "max_turbined_m3s": 500.0 }
+            ]
+          }]
+        }"#;
+
+        let raw: RawHydroFile = serde_json::from_str(json).unwrap();
+        let overrides: Vec<HydroPenaltyOverrides> = raw
+            .hydros
+            .into_iter()
+            .map(|hydro| convert_penalty_overrides(hydro.penalties.unwrap()))
+            .collect();
+        assert_eq!(overrides[0].fpha_violation_cost, Some(250.0));
+        assert_eq!(overrides[1].fpha_violation_cost, None);
+
+        let f = write_json(json);
+        let global = make_global();
+        let hydros = parse_hydros(f.path(), &global).unwrap();
+        assert_eq!(
+            hydros[0].penalties.fpha_violation_cost.to_bits(),
+            250.0_f64.to_bits()
+        );
+        assert_eq!(
+            hydros[1].penalties.fpha_violation_cost.to_bits(),
+            global.hydro.fpha_violation_cost.to_bits()
+        );
     }
 
     // ── AC: entity-level penalty all-default (no penalties block) ─────────────

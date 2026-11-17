@@ -40,7 +40,7 @@
           "type": "number"
         },
         "post_study_stage_index": {
-          "description": "Index into `stages`. Must be `< stages.len()`.",
+          "description": "Index into `thermal_stages` (`stages` in the deprecated format). Must be\nless than that list's length.",
           "format": "uint",
           "minimum": 0,
           "type": "integer"
@@ -63,7 +63,48 @@
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "Root object of `post_study_stages.json`.",
+  "description": "Root object of `post_study_stages.json`.\n\nA file uses either the deprecated `stages` key or the `thermal_stages` and\n`water_bucket_stages` keys, never both. `scripts/migrate/post_study_stages.py`\nrewrites the former into the latter.",
+  "oneOf": [
+    {
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "thermal_stages"
+            ]
+          },
+          {
+            "required": [
+              "water_bucket_stages"
+            ]
+          }
+        ]
+      },
+      "required": [
+        "stages",
+        "thermal_bounds"
+      ]
+    },
+    {
+      "dependentRequired": {
+        "thermal_bounds": [
+          "thermal_stages"
+        ],
+        "thermal_stages": [
+          "thermal_bounds"
+        ]
+      },
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "stages"
+            ]
+          }
+        ]
+      }
+    }
+  ],
   "properties": {
     "$schema": {
       "description": "JSON schema URI — informational, not validated.",
@@ -73,24 +114,47 @@
       ]
     },
     "stages": {
-      "description": "Ordered post-horizon calendar stages.",
+      "deprecated": true,
+      "description": "Deprecated: replaced by `thermal_stages`. Cannot be combined with\n`thermal_stages` or `water_bucket_stages`.",
       "items": {
         "$ref": "#/$defs/RawPostStudyStage"
       },
-      "type": "array"
+      "type": [
+        "array",
+        "null"
+      ]
     },
     "thermal_bounds": {
-      "description": "Per-`(thermal, post-study stage)` cost and generation bounds.",
+      "description": "Per-`(thermal, post-study stage)` cost and generation bounds. Required\nwith the deprecated `stages` key.",
       "items": {
         "$ref": "#/$defs/RawPostStudyThermalBound"
       },
-      "type": "array"
+      "type": [
+        "array",
+        "null"
+      ]
+    },
+    "thermal_stages": {
+      "description": "Ordered post-horizon thermal calendar stages; they date thermal\ndeliveries and `thermal_bounds`.",
+      "items": {
+        "$ref": "#/$defs/RawPostStudyStage"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
+    },
+    "water_bucket_stages": {
+      "description": "Ordered post-horizon water-bucket calendar stages; they date water-bucket\nslots.",
+      "items": {
+        "$ref": "#/$defs/RawPostStudyStage"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
     }
   },
-  "required": [
-    "stages",
-    "thermal_bounds"
-  ],
   "title": "RawPostStudyStagesFile",
   "type": "object"
 }

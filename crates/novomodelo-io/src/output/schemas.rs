@@ -54,6 +54,7 @@ fn build_costs_schema() -> Schema {
         Field::new("generation_violation_cost", DataType::Float64, false),
         Field::new("evaporation_violation_cost", DataType::Float64, false),
         Field::new("withdrawal_violation_cost", DataType::Float64, false),
+        Field::new("fpha_violation_cost", DataType::Float64, false),
         Field::new("inflow_penalty_cost", DataType::Float64, false),
         Field::new("generic_violation_cost", DataType::Float64, false),
         Field::new("spillage_cost", DataType::Float64, false),
@@ -112,6 +113,7 @@ fn build_hydros_schema() -> Schema {
         Field::new("outflow_slack_below_m3s", DataType::Float64, false),
         Field::new("outflow_slack_above_m3s", DataType::Float64, false),
         Field::new("generation_slack_mw", DataType::Float64, false),
+        Field::new("fpha_violation_mw", DataType::Float64, false),
         Field::new("storage_violation_below_hm3", DataType::Float64, false),
         Field::new("filling_target_violation_hm3", DataType::Float64, false),
         Field::new("evaporation_violation_pos_m3s", DataType::Float64, false),
@@ -511,7 +513,7 @@ pub(crate) fn convergence_schema() -> Schema {
 /// Row semantics: one row per `(iteration, rank)` for rank-only sequential values
 /// (`worker_id = NULL`), and one row per `(iteration, rank, worker_id)` for
 /// per-worker parallel-region values. `SUM(col) GROUP BY iteration` recovers the
-/// single-row-per-iteration value for each of the 16 timing columns.
+/// single-row-per-iteration value for each timing column.
 ///
 /// Only the top-level non-overlapping phases (`forward_wall_ms`,
 /// `backward_wall_ms`, `cut_selection_ms`, `mpi_allreduce_ms`, `lower_bound_ms`)
@@ -566,6 +568,7 @@ pub(crate) fn solver_iterations_schema() -> Schema {
         Field::new("lp_successes", DataType::UInt32, false),
         Field::new("lp_retries", DataType::UInt32, false),
         Field::new("lp_failures", DataType::UInt32, false),
+        Field::new("lp_row_violations", DataType::UInt32, false),
         Field::new("retry_attempts", DataType::UInt32, false),
         Field::new("basis_offered", DataType::UInt32, false),
         Field::new("basis_consistency_failures", DataType::UInt32, false),
@@ -971,8 +974,8 @@ mod tests {
         let schema = costs_schema();
         assert_eq!(
             schema.fields().len(),
-            29,
-            "costs schema must have 29 fields"
+            30,
+            "costs schema must have 30 fields"
         );
         let names = field_names(&schema);
         assert_eq!(
@@ -1000,6 +1003,7 @@ mod tests {
                 "generation_violation_cost",
                 "evaporation_violation_cost",
                 "withdrawal_violation_cost",
+                "fpha_violation_cost",
                 "inflow_penalty_cost",
                 "generic_violation_cost",
                 "spillage_cost",
@@ -1042,6 +1046,7 @@ mod tests {
             "generation_violation_cost",
             "evaporation_violation_cost",
             "withdrawal_violation_cost",
+            "fpha_violation_cost",
             "inflow_penalty_cost",
             "generic_violation_cost",
             "spillage_cost",
@@ -1067,8 +1072,8 @@ mod tests {
         let schema = hydros_schema();
         assert_eq!(
             schema.fields().len(),
-            41,
-            "hydros schema must have 41 fields"
+            42,
+            "hydros schema must have 42 fields"
         );
         let names = field_names(&schema);
         assert_eq!(
@@ -1104,6 +1109,7 @@ mod tests {
                 "outflow_slack_below_m3s",
                 "outflow_slack_above_m3s",
                 "generation_slack_mw",
+                "fpha_violation_mw",
                 "storage_violation_below_hm3",
                 "filling_target_violation_hm3",
                 "evaporation_violation_pos_m3s",
@@ -1157,6 +1163,7 @@ mod tests {
             "outflow_slack_below_m3s",
             "outflow_slack_above_m3s",
             "generation_slack_mw",
+            "fpha_violation_mw",
             "storage_violation_below_hm3",
             "filling_target_violation_hm3",
             "evaporation_violation_pos_m3s",
@@ -1593,8 +1600,8 @@ mod tests {
         let schema = solver_iterations_schema();
         assert_eq!(
             schema.fields().len(),
-            19,
-            "solver_iterations schema must have 19 fields"
+            20,
+            "solver_iterations schema must have 20 fields"
         );
         let expected: &[(&str, DataType, bool)] = &[
             ("iteration", DataType::Int32, true),
@@ -1608,6 +1615,7 @@ mod tests {
             ("lp_successes", DataType::UInt32, false),
             ("lp_retries", DataType::UInt32, false),
             ("lp_failures", DataType::UInt32, false),
+            ("lp_row_violations", DataType::UInt32, false),
             ("retry_attempts", DataType::UInt32, false),
             ("basis_offered", DataType::UInt32, false),
             ("basis_consistency_failures", DataType::UInt32, false),
@@ -1693,8 +1701,8 @@ mod tests {
             .map(|(s, n)| (*n, s.fields().len()))
             .collect();
         let expected: &[(&str, usize)] = &[
-            ("costs", 29),
-            ("hydros", 41),
+            ("costs", 30),
+            ("hydros", 42),
             ("hydro_bus_generation", 9),
             ("thermals", 12),
             ("exchanges", 13),
@@ -1709,7 +1717,7 @@ mod tests {
             ("convergence", 16),
             ("iteration_timing", 19),
             ("cut_selection", 13),
-            ("solver_iterations", 19),
+            ("solver_iterations", 20),
             ("retry_histogram", 5),
             ("generic_constraint_echo", 14),
         ];

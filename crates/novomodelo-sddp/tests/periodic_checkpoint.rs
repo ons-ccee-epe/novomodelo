@@ -21,17 +21,20 @@ use novomodelo_io::Config;
 use novomodelo_io::config::{
     BoundaryPolicy, CheckpointingConfig, SelectionMethod, StoppingRuleConfig, TrainingSelection,
 };
-use novomodelo_io::output::policy::{PolicyCheckpoint, read_policy_checkpoint};
+use novomodelo_io::output::policy::{
+    BasisEntry, PolicyBasisRecord, PolicyCheckpoint, deserialize_stage_basis,
+    read_policy_checkpoint, serialize_stage_basis,
+};
 use novomodelo_sddp::cut::SlotOrigin;
 use novomodelo_sddp::policy::full_fcf_load::{FullFcfLoadKind, check_full_fcf_load};
 use novomodelo_sddp::policy::orchestration::{
     CheckpointParams, partial_policy_dir, write_checkpoint,
 };
-use novomodelo_sddp::setup::NodePos;
+use novomodelo_sddp::setup::{NodePos, StageIdx};
 use novomodelo_sddp::test_support::snapshot_files;
 use novomodelo_sddp::{
-    CapturedBasis, DEFAULT_COST_SCALE_FACTOR, SddpError, StudySetup, TrainingOutcome,
-    TrainingResult, inject_boundary_cuts, reconcile_boundary_policy,
+    CapturedBasis, DEFAULT_COST_SCALE_FACTOR, SddpError, StoredBasisMisfit, StudySetup,
+    TrainingOutcome, TrainingResult, inject_boundary_cuts, reconcile_boundary_policy,
 };
 use novomodelo_solver::{ActiveSolver, BasisStatus};
 use tempfile::TempDir;
@@ -40,12 +43,18 @@ use common::selection_fingerprint::{
     OwnershipPower, SelectionFingerprint, SelectionPower, row_management_events,
     selection_ran_at_the_last_iteration,
 };
-use common::{
-    StubComm, enable_forward_warm_start, fresh_system_and_setup_with, positive, truncated_toy_case,
-};
+use common::{StubComm, fresh_system_and_setup_with, positive, truncated_toy_case};
 
 fn toy_case() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/1dtoy")
+}
+
+fn lag_case() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/deterministic/d19-multi-hydro-par")
+}
+
+fn mixed_resolution_lag_case() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/weekly_then_closing_month")
 }
 
 fn checkpointing_setup(
@@ -680,13 +689,15 @@ impl RestoredStore {
     }
 }
 
-/// A resume leg on `1dtoy`: the config edit every run of the leg takes, the
-/// iteration `k` the interrupted run stops at, the iteration `n` the other
-/// runs stop at, the thread counts before and after the resume, the policy
-/// the runs warm-start from and the policy they declare as `policy.boundary`.
-/// Each run stops on its iteration limit.
+/// A resume leg: the case its runs train on without a boundary, the config
+/// edit every run of the leg takes, the iteration `k` the interrupted run
+/// stops at, the iteration `n` the other runs stop at, the thread counts
+/// before and after the resume, the policy the runs warm-start from and the
+/// policy they declare as `policy.boundary`. Each run stops on its iteration
+/// limit.
 #[derive(Clone, Copy)]
 struct Leg {
+    case: fn() -> PathBuf,
     forward_passes: u32,
     configure: fn(&mut Config),
     k: u32,
@@ -725,7 +736,6 @@ impl Leg {
         iteration_limit: u32,
     ) -> (System, StudySetup) {
         fresh_system_and_setup_with(case, |config| {
-            enable_forward_warm_start(config);
             config.training.selection = Some(TrainingSelection::Sampled {
                 forward_passes: self.forward_passes,
             });
@@ -743,6 +753,7 @@ impl Leg {
 fn no_edit(_: &mut Config) {}
 
 const SELECTION_OFF: Leg = Leg {
+    case: toy_case,
     forward_passes: 1,
     configure: no_edit,
     k: 3,
@@ -818,9 +829,12 @@ impl BoundaryCase {
 }
 
 /// The case a leg's runs train on and the boundary they declare.
-fn case_and_boundary(boundary: Option<&BoundaryCase>) -> (PathBuf, Option<&BoundaryPolicy>) {
+fn case_and_boundary(
+    case: fn() -> PathBuf,
+    boundary: Option<&BoundaryCase>,
+) -> (PathBuf, Option<&BoundaryPolicy>) {
     boundary.map_or_else(
-        || (toy_case(), None),
+        || (case(), None),
         |boundary| (boundary.case.path().to_path_buf(), Some(&boundary.policy)),
     )
 }
@@ -842,7 +856,7 @@ fn leg_setup(
     source: Option<&TrainedSource>,
     boundary: Option<&BoundaryCase>,
 ) -> (System, StudySetup) {
-    let (case, policy) = case_and_boundary(boundary);
+    let (case, policy) = case_and_boundary(leg.case, boundary);
     let (system, mut setup) = leg.setup(&case, policy, leg.configure, iteration_limit);
     if let Some(source) = source {
         load(
@@ -906,7 +920,7 @@ fn run_leg(leg: Leg) -> LegRuns {
     )
     .expect("write_checkpoint must succeed");
 
-    let (case, policy) = case_and_boundary(boundary.as_ref());
+    let (case, policy) = case_and_boundary(leg.case, boundary.as_ref());
     let (system, mut resumed_setup) = leg.setup(&case, policy, leg.configure, leg.n);
     load(
         FullFcfLoadKind::Resume,
@@ -1333,6 +1347,7 @@ fn dynamic(config: &mut Config) {
 }
 
 const LEVEL1: Leg = Leg {
+    case: toy_case,
     forward_passes: 2,
     configure: level1,
     k: 3,
@@ -1441,6 +1456,172 @@ fn resumed_run_equals_the_uninterrupted_run_with_several_forward_passes() {
     );
 }
 
+const LAG_DECK: Leg = Leg {
+    case: lag_case,
+    ..SELECTION_OFF
+};
+
+#[test]
+fn a_resume_on_a_lag_deck_equals_the_uninterrupted_run() {
+    assert!(
+        fresh_system_and_setup_with(&lag_case(), no_edit)
+            .1
+            .stage_state()
+            .max_par_order
+            >= 1,
+        "power: the lag deck has no inflow lag"
+    );
+    finish("lag deck", &run_leg(LAG_DECK));
+}
+
+const MIXED_RESOLUTION_LAG_DECK: Leg = Leg {
+    case: mixed_resolution_lag_case,
+    forward_passes: 4,
+    ..SELECTION_OFF
+};
+
+#[test]
+fn a_resume_on_a_mixed_resolution_lag_deck_equals_the_uninterrupted_run() {
+    let (_, setup) = fresh_system_and_setup_with(&mixed_resolution_lag_case(), no_edit);
+    assert!(
+        setup.stage_state().max_par_order >= 1,
+        "power: the mixed-resolution deck has no inflow lag"
+    );
+    let ctx = setup.stage_ctx();
+    let first_open_period = (0..setup.num_stages())
+        .find(|&t| {
+            let lag = ctx.stage_lag(StageIdx(t));
+            !lag.finalize_period && lag.accumulate_weight > 0.0
+        })
+        .expect("power: no stage has finalize_period == false with accumulate_weight > 0");
+    let first_later_stage = first_open_period + 1;
+    assert!(
+        (first_later_stage..setup.num_stages()).any(|t| ctx.stage_lag(StageIdx(t)).finalize_period),
+        "power: no stage after an open period has finalize_period == true"
+    );
+    finish(
+        "mixed-resolution lag deck",
+        &run_leg(MIXED_RESOLUTION_LAG_DECK),
+    );
+}
+
+fn tamper_basis_files(policy_dir: &Path, extra_cols: usize, extra_rows: usize) {
+    let lower = BasisStatus::Lower.to_discriminant_code();
+    let mut tampered = 0;
+    for file in std::fs::read_dir(policy_dir.join("basis")).expect("the basis directory reads") {
+        let path = file.expect("the basis directory lists").path();
+        let mut record =
+            deserialize_stage_basis(&std::fs::read(&path).expect("the basis file reads"))
+                .expect("the basis file decodes");
+        for entry in &mut record.entries {
+            entry
+                .column_status
+                .resize(entry.column_status.len() + extra_cols, lower);
+            entry
+                .row_status
+                .resize(entry.row_status.len() + extra_rows, lower);
+        }
+        let entries: Vec<BasisEntry<'_>> = record
+            .entries
+            .iter()
+            .map(|entry| BasisEntry {
+                scenario: entry.scenario,
+                column_status: &entry.column_status,
+                row_status: &entry.row_status,
+                piece_row_slots: &entry.piece_row_slots,
+            })
+            .collect();
+        let bytes = serialize_stage_basis(&PolicyBasisRecord {
+            stage_id: record.stage_id,
+            iteration: record.iteration,
+            entries: &entries,
+        });
+        std::fs::write(&path, bytes).expect("the basis file writes");
+        tampered += 1;
+    }
+    assert!(tampered > 0, "power: the checkpoint holds no basis file");
+}
+
+#[test]
+fn a_resume_from_bases_with_lag_and_z_columns_continues_cold() {
+    let leg = LAG_DECK;
+    let (system, mut first_setup) = leg_setup(&leg, leg.k, None, None);
+    let first_result = train_in_pool(&mut first_setup, leg.threads_before, None);
+    assert_eq!(first_result.iterations, u64::from(leg.k));
+    let out = tempfile::tempdir().expect("tempdir");
+    let policy_dir = out.path().join(&first_setup.policy_path);
+    write_checkpoint(
+        &policy_dir,
+        &first_setup,
+        &system,
+        &first_result,
+        &checkpoint_params(&first_setup),
+    )
+    .expect("write_checkpoint must succeed");
+
+    let state = first_setup.stage_state();
+    let (hydros, depth) = (state.hydro_count, state.max_par_order);
+    assert!(depth >= 1, "power: the lag deck has no inflow lag");
+    let lag_and_z_columns = hydros * (depth + 1);
+    tamper_basis_files(&policy_dir, lag_and_z_columns, hydros);
+
+    let (system, mut resumed_setup) = leg_setup(&leg, leg.n, None, None);
+    let mut warnings = Vec::new();
+    let checked = check_full_fcf_load(
+        FullFcfLoadKind::Resume,
+        &policy_dir,
+        &system,
+        &resumed_setup,
+        &mut |msg: &str| warnings.push(msg.to_owned()),
+    )
+    .expect("a checkpoint whose bases do not fit the LP still loads");
+    let unused = checked
+        .unused_stored_bases()
+        .expect("the bases that do not fit are reported")
+        .clone();
+    assert!(
+        unused.total >= 1,
+        "power: the load examined no stored basis"
+    );
+    assert_eq!(unused.count, unused.total, "no stored basis fits the LP");
+    let StoredBasisMisfit::Columns { expected, found } = unused.first_reason else {
+        panic!(
+            "the column count is the reported misfit, not {:?}",
+            unused.first_reason
+        );
+    };
+    assert_eq!(
+        found - expected,
+        lag_and_z_columns,
+        "the column misfit is the lag and z columns of the stored basis"
+    );
+    assert_eq!(
+        warnings.len(),
+        1,
+        "one warning for the dropped bases: {warnings:?}"
+    );
+    assert!(
+        warnings[0].starts_with("stored bases not used: "),
+        "{}",
+        warnings[0]
+    );
+
+    checked.apply_to_training(&mut resumed_setup);
+    for node in 0..resumed_setup.inputs.node_graph.nodes.len() {
+        for scenario in 0..leg.forward_passes {
+            assert!(
+                resumed_setup
+                    .loaded_policy()
+                    .seed_basis(NodePos(node), scenario)
+                    .is_none(),
+                "node {node}, scenario {scenario}: a dropped basis seeds no solve"
+            );
+        }
+    }
+    let resumed_result = train_in_pool(&mut resumed_setup, leg.threads_after, None);
+    assert_eq!(resumed_result.iterations, u64::from(leg.n));
+}
+
 const BOUNDARY: BoundarySource = BoundarySource {
     run: SourceRun {
         iterations: 2,
@@ -1450,9 +1631,10 @@ const BOUNDARY: BoundarySource = BoundarySource {
 };
 
 /// Later and longer than `LEVEL1`: on the 3-stage case a selection pass flips a
-/// flag after the checkpoint on every backend only from `k` 5.
+/// flag after the checkpoint on every backend at `k` 7.
 const BOUNDARY_LEG: Leg = Leg {
-    k: 5,
+    case: toy_case,
+    k: 7,
     n: 12,
     boundary: Some(BOUNDARY),
     ..LEVEL1

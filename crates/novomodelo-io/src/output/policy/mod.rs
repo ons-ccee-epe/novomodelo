@@ -1104,6 +1104,25 @@ mod tests {
     }
 
     #[test]
+    fn read_policy_checkpoint_missing_basis_dir_reads_as_empty_stage_bases() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        let c0 = [1.0_f64];
+        let cuts_s0 = [make_cut_record(0, 1, &c0)];
+        let stage_cuts_payloads = [make_stage_cuts_payload(0, &cuts_s0, 1)];
+        let metadata = make_metadata(1, 1);
+
+        write_policy_checkpoint(tmp.path(), &stage_cuts_payloads, &[], &metadata, &[])
+            .expect("write must succeed");
+        std::fs::remove_dir(tmp.path().join("basis")).unwrap();
+
+        let checkpoint = read_policy_checkpoint(tmp.path()).expect("read must succeed");
+
+        assert_eq!(checkpoint.stage_cuts.len(), 1);
+        assert!(checkpoint.stage_bases.is_empty());
+    }
+
+    #[test]
     fn rewrite_over_existing_checkpoint_reads_back_the_new_artifact() {
         let tmp = tempfile::tempdir().unwrap();
 

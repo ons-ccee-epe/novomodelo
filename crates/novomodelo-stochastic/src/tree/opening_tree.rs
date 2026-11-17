@@ -254,6 +254,25 @@ impl OpeningTree {
     pub fn openings_per_stage_slice(&self) -> &[usize] {
         &self.openings_per_stage
     }
+
+    /// 64-bit FNV-1a hash of the stage count, the dimension, the per-stage
+    /// opening counts, the noise values' bit patterns and the solve order, in that
+    /// order; equal trees give equal values.
+    #[must_use]
+    pub fn fingerprint(&self) -> u64 {
+        let counts = [self.n_stages, self.dim]
+            .into_iter()
+            .chain(self.openings_per_stage.iter().copied());
+        let mut hash = counts.fold(FNV1A_OFFSET, |hash, count| {
+            fnv1a_fold(hash, &(count as u64).to_le_bytes())
+        });
+        hash = self.data.iter().fold(hash, |hash, value| {
+            fnv1a_fold(hash, &value.to_bits().to_le_bytes())
+        });
+        self.solve_order
+            .iter()
+            .fold(hash, |hash, index| fnv1a_fold(hash, &index.to_le_bytes()))
+    }
 }
 
 /// Borrowed read-only view over opening tree data.
@@ -405,6 +424,15 @@ fn is_permutation(order: &[u32], n: usize) -> bool {
         seen[idx] = true;
     }
     true
+}
+
+const FNV1A_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV1A_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+fn fnv1a_fold(hash: u64, bytes: &[u8]) -> u64 {
+    bytes.iter().fold(hash, |hash, &byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(FNV1A_PRIME)
+    })
 }
 
 #[cfg(test)]
@@ -658,5 +686,48 @@ mod tests {
     fn solve_order_panics_on_out_of_bounds_stage() {
         let tree = uniform_tree(2, 3, 2);
         let _ = tree.solve_order(2);
+    }
+
+    // ── fingerprint ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn equal_trees_have_equal_fingerprints() {
+        let build =
+            || OpeningTree::from_parts((0_i32..16).map(f64::from).collect(), vec![3, 1, 4], 2);
+        assert_eq!(build().fingerprint(), build().fingerprint());
+    }
+
+    #[test]
+    fn fingerprint_changes_with_data_and_partition() {
+        let values: Vec<f64> = (0_i32..12).map(f64::from).collect();
+        let base = OpeningTree::from_parts(values.clone(), vec![2, 4], 2);
+
+        let mut flipped_values = values.clone();
+        flipped_values[5] = f64::from_bits(flipped_values[5].to_bits() ^ 1);
+        let flipped = OpeningTree::from_parts(flipped_values, vec![2, 4], 2);
+
+        let repartitioned = OpeningTree::from_parts(values, vec![4, 2], 2);
+
+        assert_ne!(base.fingerprint(), flipped.fingerprint());
+        assert_ne!(base.fingerprint(), repartitioned.fingerprint());
+    }
+
+    #[test]
+    fn fingerprint_changes_with_solve_order() {
+        let build = || OpeningTree::from_parts((0_i32..6).map(f64::from).collect(), vec![3], 2);
+        let mut ascending_keys = build();
+        ascending_keys
+            .set_solve_order(&[vec![1.0, 2.0, 3.0]])
+            .expect("dims aligned");
+        let mut descending_keys = build();
+        descending_keys
+            .set_solve_order(&[vec![3.0, 2.0, 1.0]])
+            .expect("dims aligned");
+
+        assert_ne!(
+            ascending_keys.solve_order(0),
+            descending_keys.solve_order(0)
+        );
+        assert_ne!(ascending_keys.fingerprint(), descending_keys.fingerprint());
     }
 }

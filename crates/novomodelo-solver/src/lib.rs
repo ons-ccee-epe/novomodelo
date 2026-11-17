@@ -66,7 +66,10 @@ pub use types::{
 };
 
 pub mod profile;
-pub use profile::{DEFAULT_PROFILE_HEURISTIC_SENTINEL, DEFAULT_PROFILE_IPM_UNBOUNDED_SENTINEL};
+pub use profile::{
+    DEFAULT_PROFILE_HEURISTIC_SENTINEL, DEFAULT_PROFILE_IPM_UNBOUNDED_SENTINEL,
+    ROW_VIOLATION_RELATIVE_ALLOWANCE,
+};
 
 pub mod freeze;
 pub use freeze::{FreezeScratch, freeze_rows_into_template};

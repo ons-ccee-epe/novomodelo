@@ -98,3 +98,106 @@ pub fn prefix_displs(counts: &[usize]) -> Vec<usize> {
     }
     displs
 }
+
+/// Smallest and largest `value` across all ranks, as `(min, max)`, identical on
+/// every rank. Every rank must call it together.
+///
+/// # Errors
+///
+/// Returns the [`CommError`] of the underlying [`Communicator::allreduce`].
+pub fn min_max_across_ranks<C: Communicator>(
+    comm: &C,
+    value: u64,
+) -> Result<(u64, u64), CommError> {
+    if comm.size() == 1 {
+        return Ok((value, value));
+    }
+    let mut out = [0_u64; 2];
+    comm.allreduce(&[!value, value], &mut out, ReduceOp::Max)?;
+    Ok((!out[0], out[1]))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::any::Any;
+
+    use super::{CommData, CommError, Communicator, LocalBackend, ReduceOp, min_max_across_ranks};
+
+    #[test]
+    fn min_max_across_ranks_on_one_rank_returns_the_value() {
+        assert_eq!(
+            min_max_across_ranks(&LocalBackend, 0x1234).unwrap(),
+            (0x1234, 0x1234)
+        );
+    }
+
+    #[test]
+    fn min_max_across_ranks_reports_a_disagreeing_peer() {
+        let comm = TwoRankStub { peer: 0x10 };
+        assert_eq!(min_max_across_ranks(&comm, 0x20).unwrap(), (0x10, 0x20));
+    }
+
+    struct TwoRankStub {
+        peer: u64,
+    }
+
+    impl Communicator for TwoRankStub {
+        fn allgatherv<T: CommData>(
+            &self,
+            _send: &[T],
+            _recv: &mut [T],
+            _counts: &[usize],
+            _displs: &[usize],
+        ) -> Result<(), CommError> {
+            unreachable!("min_max_across_ranks does not call allgatherv")
+        }
+
+        fn allreduce<T: CommData>(
+            &self,
+            send: &[T],
+            recv: &mut [T],
+            op: ReduceOp,
+        ) -> Result<(), CommError> {
+            assert_eq!(op, ReduceOp::Max, "the exchange must reduce with Max");
+            let peer_send = [!self.peer, self.peer];
+            assert_eq!(send.len(), peer_send.len());
+            assert_eq!(recv.len(), peer_send.len());
+            for ((s, r), p) in send.iter().zip(recv.iter_mut()).zip(peer_send) {
+                *r = upcast_u64(downcast_u64(*s).max(p));
+            }
+            Ok(())
+        }
+
+        fn broadcast<T: CommData>(&self, _buf: &mut [T], _root: usize) -> Result<(), CommError> {
+            unreachable!("min_max_across_ranks does not call broadcast")
+        }
+
+        fn barrier(&self) -> Result<(), CommError> {
+            unreachable!("min_max_across_ranks does not call barrier")
+        }
+
+        fn rank(&self) -> usize {
+            unreachable!("min_max_across_ranks does not call rank")
+        }
+
+        fn size(&self) -> usize {
+            2
+        }
+
+        fn abort(&self, _error_code: i32) -> ! {
+            unreachable!("min_max_across_ranks does not call abort")
+        }
+    }
+
+    fn downcast_u64<T: CommData>(value: T) -> u64 {
+        *(&value as &dyn Any)
+            .downcast_ref::<u64>()
+            .expect("the stub only reduces u64 values")
+    }
+
+    fn upcast_u64<T: CommData>(value: u64) -> T {
+        *(&value as &dyn Any)
+            .downcast_ref::<T>()
+            .expect("the stub only reduces u64 values")
+    }
+}

@@ -27,7 +27,7 @@ use novomodelo_core::{
     ContractBlockBounds, DeficitSegment, EntityId, HydroBlockBounds, HydroPenalties,
     HydroStageBounds, LineBlockBounds, LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec,
     PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds, ResolvedPenalties, SystemBuilder,
-    ThermalBlockBounds, ThermalStageBounds, scenario::InflowModel,
+    ThermalBlockBounds, scenario::InflowModel,
 };
 use novomodelo_stochastic::normal::precompute::PrecomputedNormal;
 use novomodelo_stochastic::par::precompute::PrecomputedPar;
@@ -35,14 +35,16 @@ use novomodelo_stochastic::par::precompute::PrecomputedPar;
 use novomodelo_sddp::{
     build_stage_templates_resolving_layout,
     hydro_models::{
-        EvaporationModel, EvaporationModelSet, FphaPlane, LinearizedEvaporation,
-        PrepareHydroModelsResult, ProductionModelSet, ResolvedProductionModel,
+        EvaporationCoefficientSign, EvaporationModel, EvaporationModelSet, FphaPlane,
+        LinearizedEvaporation, PrepareHydroModelsResult, ProductionModelSet,
+        ResolvedProductionModel,
     },
     indexer::{BlockGrid, BlockRowFamily, StateSpace},
     inflow_method::InflowNonNegativityMethod,
     lead_time::AnticipatedResolution,
     lp::builder::PatchBuffer,
     resolved_parameters::ResolvedParameters,
+    resolved_state_layout,
 };
 
 mod common;
@@ -75,6 +77,26 @@ fn production_set(productivities: &[f64], n_stages: usize) -> ProductionModelSet
         &novomodelo_sddp::test_support::minimal_hydros(n_hydros),
         n_stages,
     )
+}
+
+fn load_template_with_no_cuts(
+    template: &novomodelo_solver::StageTemplate,
+) -> novomodelo_solver::ActiveSolver {
+    use novomodelo_solver::SolverInterface;
+
+    let mut solver =
+        novomodelo_solver::ActiveSolver::new().expect("ActiveSolver::new must succeed");
+    solver.load_model(template);
+    let empty_cuts = novomodelo_solver::RowBatch {
+        num_rows: 0,
+        row_starts: vec![0_i32],
+        col_indices: vec![],
+        values: vec![],
+        row_lower: vec![],
+        row_upper: vec![],
+    };
+    solver.add_rows(&empty_cuts);
+    solver
 }
 
 fn no_penalty_config() -> InflowNonNegativityMethod {
@@ -113,6 +135,7 @@ fn default_hydro_penalties() -> HydroPenalties {
         outflow_violation_below_cost: 0.0,
         outflow_violation_above_cost: 0.0,
         generation_violation_below_cost: 0.0,
+        fpha_violation_cost: 5000.0,
         evaporation_violation_cost: 0.0,
         water_withdrawal_violation_cost: 0.0,
         water_withdrawal_violation_pos_cost: 0.0,
@@ -199,10 +222,10 @@ fn one_bus_system(n_stages: usize) -> novomodelo_core::System {
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -312,6 +335,7 @@ fn one_hydro_system(n_stages: usize, lag_order: usize) -> novomodelo_core::Syste
                 outflow_violation_below_cost: 0.0,
                 outflow_violation_above_cost: 0.0,
                 generation_violation_below_cost: 0.0,
+                fpha_violation_cost: 0.0,
                 evaporation_violation_cost: 0.0,
                 water_withdrawal_violation_cost: 0.0,
                 water_withdrawal_violation_pos_cost: 0.0,
@@ -389,10 +413,10 @@ fn one_hydro_system(n_stages: usize, lag_order: usize) -> novomodelo_core::Syste
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -511,6 +535,7 @@ fn fpha_system_with_turbined_cost(
                 outflow_violation_below_cost: 0.0,
                 outflow_violation_above_cost: 0.0,
                 generation_violation_below_cost: 0.0,
+                fpha_violation_cost: 5000.0,
                 evaporation_violation_cost: 0.0,
                 water_withdrawal_violation_cost: 0.0,
                 water_withdrawal_violation_pos_cost: 0.0,
@@ -593,10 +618,10 @@ fn fpha_system_with_turbined_cost(
                 max_generation_mw: 300.0,
                 ..Default::default()
             },
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -633,6 +658,7 @@ fn fpha_system_with_turbined_cost(
                 outflow_violation_below_cost: 0.0,
                 outflow_violation_above_cost: 0.0,
                 generation_violation_below_cost: 0.0,
+                fpha_violation_cost: 5000.0,
                 evaporation_violation_cost: 0.0,
                 water_withdrawal_violation_cost: 0.0,
                 water_withdrawal_violation_pos_cost: 0.0,
@@ -792,6 +818,7 @@ fn two_bus_system_with_stochastic_load(
                         outflow_violation_below_cost: 0.0,
                         outflow_violation_above_cost: 0.0,
                         generation_violation_below_cost: 0.0,
+                        fpha_violation_cost: 0.0,
                         evaporation_violation_cost: 0.0,
                         water_withdrawal_violation_cost: 0.0,
                         water_withdrawal_violation_pos_cost: 0.0,
@@ -850,10 +877,10 @@ fn two_bus_system_with_stochastic_load(
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -915,12 +942,28 @@ fn csc_entry(tmpl: &novomodelo_solver::StageTemplate, col: usize, row: usize) ->
 
 /// 1-bus, 1-FPHA-hydro, 1-stage, 1-block system with `n_planes` planes, each
 /// `intercept=10.0, gamma_v=0.5, gamma_q=2.0, gamma_s=0.1`.
+fn one_fpha_hydro_system(n_planes: usize) -> (novomodelo_core::System, ProductionModelSet) {
+    one_fpha_hydro_system_with_block_bounds(
+        n_planes,
+        HydroBlockBounds {
+            max_turbined_m3s: 150.0,
+            max_generation_mw: 300.0,
+            ..Default::default()
+        },
+    )
+}
+
+/// [`one_fpha_hydro_system`] with the plant's resolved block bounds chosen by the
+/// caller; the entity's declared limits stay 150 m³/s / 300 MW.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_possible_wrap,
     clippy::too_many_lines
 )]
-fn one_fpha_hydro_system(n_planes: usize) -> (novomodelo_core::System, ProductionModelSet) {
+fn one_fpha_hydro_system_with_block_bounds(
+    n_planes: usize,
+    hydro_block: HydroBlockBounds,
+) -> (novomodelo_core::System, ProductionModelSet) {
     use chrono::NaiveDate;
     use novomodelo_core::entities::hydro::{HydroGenerationModel, HydroPenalties};
     use novomodelo_core::scenario::{InflowModel, LoadModel};
@@ -978,6 +1021,7 @@ fn one_fpha_hydro_system(n_planes: usize) -> (novomodelo_core::System, Productio
                 outflow_violation_below_cost: 0.0,
                 outflow_violation_above_cost: 0.0,
                 generation_violation_below_cost: 0.0,
+                fpha_violation_cost: 5000.0,
                 evaporation_violation_cost: 0.0,
                 water_withdrawal_violation_cost: 0.0,
                 water_withdrawal_violation_pos_cost: 0.0,
@@ -1049,15 +1093,11 @@ fn one_fpha_hydro_system(n_planes: usize) -> (novomodelo_core::System, Productio
                 filling_min_rate_m3s: 0.0,
                 water_withdrawal_m3s: 0.0,
             },
-            hydro_block: HydroBlockBounds {
-                max_turbined_m3s: 150.0,
-                max_generation_mw: 300.0,
-                ..Default::default()
-            },
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
+            hydro_block,
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -1157,6 +1197,7 @@ fn four_hydro_mixed_system() -> (novomodelo_core::System, ProductionModelSet) {
         outflow_violation_below_cost: 0.0,
         outflow_violation_above_cost: 0.0,
         generation_violation_below_cost: 0.0,
+        fpha_violation_cost: 5000.0,
         evaporation_violation_cost: 0.0,
         water_withdrawal_violation_cost: 0.0,
         water_withdrawal_violation_pos_cost: 0.0,
@@ -1347,10 +1388,10 @@ fn four_hydro_mixed_system() -> (novomodelo_core::System, ProductionModelSet) {
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -1451,6 +1492,27 @@ fn fpha_solve_system() -> (novomodelo_core::System, ProductionModelSet) {
 
 use novomodelo_solver::StageTemplate;
 
+/// Reference volume (hm³) of the evaporation fixtures below.
+const EVAP_FIXTURE_REFERENCE_VOLUME_HM3: f64 = 100.0;
+
+/// Sign of `intercept + slope · EVAP_FIXTURE_REFERENCE_VOLUME_HM3`: a test
+/// fixture standing in for model preparation, which classifies the month's
+/// `coefficients_mm` instead.
+fn fixture_coefficient_sign(
+    intercept_m3s: f64,
+    volume_slope_m3s_per_hm3: f64,
+) -> EvaporationCoefficientSign {
+    let rate_at_reference =
+        intercept_m3s + volume_slope_m3s_per_hm3 * EVAP_FIXTURE_REFERENCE_VOLUME_HM3;
+    if rate_at_reference > 0.0 {
+        EvaporationCoefficientSign::Positive
+    } else if rate_at_reference < 0.0 {
+        EvaporationCoefficientSign::Negative
+    } else {
+        EvaporationCoefficientSign::Zero
+    }
+}
+
 /// `EvaporationModelSet` giving `None` to every hydro except those in
 /// `evap_indices`, which get `Linearized` from `intercept_per_stage`.
 fn evap_set_for_system(
@@ -1464,17 +1526,21 @@ fn evap_set_for_system(
         .map(|h| {
             if evap_indices.contains(&h) {
                 let coefficients = (0..n_stages)
-                    .map(|s| LinearizedEvaporation {
-                        intercept_m3s: intercept_per_stage
+                    .map(|s| {
+                        let intercept_m3s = intercept_per_stage
                             .get(s)
                             .copied()
-                            .unwrap_or(intercept_per_stage.first().copied().unwrap_or(0.0)),
-                        volume_slope_m3s_per_hm3: 0.0,
+                            .unwrap_or(intercept_per_stage.first().copied().unwrap_or(0.0));
+                        LinearizedEvaporation {
+                            intercept_m3s,
+                            volume_slope_m3s_per_hm3: 0.0,
+                            coefficient_sign: fixture_coefficient_sign(intercept_m3s, 0.0),
+                        }
                     })
                     .collect();
                 EvaporationModel::Linearized {
                     coefficients,
-                    reference_volumes_hm3: vec![100.0; n_stages],
+                    reference_volumes_hm3: vec![EVAP_FIXTURE_REFERENCE_VOLUME_HM3; n_stages],
                 }
             } else {
                 EvaporationModel::None
@@ -1505,11 +1571,15 @@ fn evap_set_with_volume_slope(
                     .map(|_| LinearizedEvaporation {
                         intercept_m3s,
                         volume_slope_m3s_per_hm3,
+                        coefficient_sign: fixture_coefficient_sign(
+                            intercept_m3s,
+                            volume_slope_m3s_per_hm3,
+                        ),
                     })
                     .collect();
                 EvaporationModel::Linearized {
                     coefficients,
-                    reference_volumes_hm3: vec![100.0; n_stages],
+                    reference_volumes_hm3: vec![EVAP_FIXTURE_REFERENCE_VOLUME_HM3; n_stages],
                 }
             } else {
                 EvaporationModel::None
@@ -1601,6 +1671,7 @@ fn evap_hydro_system_with_violation_cost(
                 outflow_violation_below_cost: 0.0,
                 outflow_violation_above_cost: 0.0,
                 generation_violation_below_cost: 0.0,
+                fpha_violation_cost: 0.0,
                 evaporation_violation_cost,
                 water_withdrawal_violation_cost: 0.0,
                 water_withdrawal_violation_pos_cost: 0.0,
@@ -1677,10 +1748,10 @@ fn evap_hydro_system_with_violation_cost(
                 max_generation_mw: 250.0,
                 ..Default::default()
             },
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -1717,6 +1788,7 @@ fn evap_hydro_system_with_violation_cost(
                 outflow_violation_below_cost: 0.0,
                 outflow_violation_above_cost: 0.0,
                 generation_violation_below_cost: 0.0,
+                fpha_violation_cost: 0.0,
                 evaporation_violation_cost,
                 water_withdrawal_violation_cost: 0.0,
                 water_withdrawal_violation_pos_cost: 0.0,
@@ -1805,10 +1877,10 @@ fn multi_segment_system(buses: Vec<Bus>, block_hours: f64) -> novomodelo_core::S
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -1924,6 +1996,7 @@ fn one_hydro_system_with_withdrawal(
                 outflow_violation_below_cost: 0.0,
                 outflow_violation_above_cost: 0.0,
                 generation_violation_below_cost: 0.0,
+                fpha_violation_cost: 0.0,
                 evaporation_violation_cost: 0.0,
                 water_withdrawal_violation_cost,
                 water_withdrawal_violation_pos_cost: water_withdrawal_violation_cost,
@@ -2012,10 +2085,10 @@ fn one_hydro_system_with_withdrawal(
                 max_generation_mw: 250.0,
                 ..Default::default()
             },
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -2055,6 +2128,7 @@ fn one_hydro_system_with_withdrawal(
                 outflow_violation_below_cost: 0.0,
                 outflow_violation_above_cost: 0.0,
                 generation_violation_below_cost: 0.0,
+                fpha_violation_cost: 0.0,
                 evaporation_violation_cost: 0.0,
                 water_withdrawal_violation_cost,
                 water_withdrawal_violation_pos_cost: water_withdrawal_violation_cost,
@@ -2160,10 +2234,10 @@ fn one_bus_system_n_blks(n_blks: usize) -> novomodelo_core::System {
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -2348,10 +2422,10 @@ fn one_bus_system_n_blks_with_generic(
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -2507,10 +2581,10 @@ fn one_bus_one_thermal_system(
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -2627,6 +2701,7 @@ fn one_hydro_active_violations(n_stages: usize) -> novomodelo_core::System {
                 outflow_violation_below_cost: 1000.0,
                 outflow_violation_above_cost: 1000.0,
                 generation_violation_below_cost: 1000.0,
+                fpha_violation_cost: 10000.0,
                 evaporation_violation_cost: 0.0,
                 water_withdrawal_violation_cost: 0.0,
                 water_withdrawal_violation_pos_cost: 0.0,
@@ -2723,10 +2798,10 @@ fn one_hydro_active_violations(n_stages: usize) -> novomodelo_core::System {
                 max_generation_mw: 250.0,
                 ..Default::default()
             },
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -2762,6 +2837,7 @@ fn one_hydro_active_violations(n_stages: usize) -> novomodelo_core::System {
                 outflow_violation_below_cost: 1000.0,
                 outflow_violation_above_cost: 1000.0,
                 generation_violation_below_cost: 1000.0,
+                fpha_violation_cost: 10000.0,
                 evaporation_violation_cost: 0.0,
                 water_withdrawal_violation_cost: 0.0,
                 water_withdrawal_violation_pos_cost: 0.0,
@@ -2884,10 +2960,10 @@ fn two_hydro_par_system(
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -2961,6 +3037,7 @@ fn two_hydro_par_system(
                         outflow_violation_below_cost: 0.0,
                         outflow_violation_above_cost: 0.0,
                         generation_violation_below_cost: 0.0,
+                        fpha_violation_cost: 0.0,
                         evaporation_violation_cost: 0.0,
                         water_withdrawal_violation_cost: 0.0,
                         water_withdrawal_violation_pos_cost: 0.0,
@@ -3008,6 +3085,7 @@ fn two_hydro_par_system(
                         outflow_violation_below_cost: 0.0,
                         outflow_violation_above_cost: 0.0,
                         generation_violation_below_cost: 0.0,
+                        fpha_violation_cost: 0.0,
                         evaporation_violation_cost: 0.0,
                         water_withdrawal_violation_cost: 0.0,
                         water_withdrawal_violation_pos_cost: 0.0,
@@ -3148,10 +3226,10 @@ fn one_anticipated_thermal_system(
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 50.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw,
                 max_generation_mw,
+                cost_per_mwh: 50.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -3205,8 +3283,8 @@ fn one_anticipated_thermal_system(
 /// - `n_ant_state = n_anticipated * k_max = 1 * lead_stages`
 /// - the ring contributes `n_ant_state` outgoing columns AND `n_ant_state`
 ///   incoming columns (doubled, unlike the water/lag blocks which are
-///   outgoing-only): `theta = n_ant_state + n_ant_state + 0 (z_inflow)
-///   + 0 (storage_in) = 2 * n_ant_state`
+///   outgoing-only): `theta = n_ant_state + n_ant_state + 0 (storage_in)
+///   = 2 * n_ant_state`
 /// - `decision_start = theta + 1`
 /// - `col_thermal_start = decision_start` (0 turbine/spillage/diversion cols)
 /// - `col_anticipated_decision_start = col_thermal_start + n_thermals * n_blks`
@@ -3339,10 +3417,10 @@ fn two_thermal_one_anticipated_system(
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 50.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 50.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -3523,10 +3601,10 @@ fn two_anticipated_thermal_system(n_stages: usize) -> novomodelo_core::System {
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 50.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 50.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -3639,6 +3717,7 @@ fn one_hydro_one_ant_system(n_stages: usize) -> novomodelo_core::System {
                 outflow_violation_below_cost: 0.0,
                 outflow_violation_above_cost: 0.0,
                 generation_violation_below_cost: 0.0,
+                fpha_violation_cost: 0.0,
                 evaporation_violation_cost: 0.0,
                 water_withdrawal_violation_cost: 0.0,
                 water_withdrawal_violation_pos_cost: 0.0,
@@ -3737,10 +3816,10 @@ fn one_hydro_one_ant_system(n_stages: usize) -> novomodelo_core::System {
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 50.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 50.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -3907,6 +3986,7 @@ fn build_hydro_one_ant_system(
                 outflow_violation_below_cost: 0.0,
                 outflow_violation_above_cost: 0.0,
                 generation_violation_below_cost: 0.0,
+                fpha_violation_cost: 0.0,
                 evaporation_violation_cost: 0.0,
                 water_withdrawal_violation_cost: 0.0,
                 water_withdrawal_violation_pos_cost: 0.0,
@@ -4011,10 +4091,10 @@ fn build_hydro_one_ant_system(
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 50.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 50.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -4148,6 +4228,7 @@ fn build_k0_baseline_system() -> novomodelo_core::System {
                 outflow_violation_below_cost: 0.0,
                 outflow_violation_above_cost: 0.0,
                 generation_violation_below_cost: 0.0,
+                fpha_violation_cost: 0.0,
                 evaporation_violation_cost: 0.0,
                 water_withdrawal_violation_cost: 0.0,
                 water_withdrawal_violation_pos_cost: 0.0,
@@ -4249,10 +4330,10 @@ fn build_k0_baseline_system() -> novomodelo_core::System {
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 50.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 50.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -4305,45 +4386,45 @@ fn build_k0_baseline_system() -> novomodelo_core::System {
 /// `commit_in.start` (incoming ring, the column the always-active
 /// fishing row couples) for the roundtrip geometry (N=1, L=0, K=k).
 ///
-/// = N*(3+L) + k = 3 + k: the incoming block sits after
-/// `z_inflow`/`storage_in`, K stages after `theta`'s outgoing-side start.
+/// = N*(2+L') + k = 2 + k (the lag region has no column): the incoming block sits
+/// after `storage_in`, K stages after `theta`'s outgoing-side start.
 fn rt_col_ant_state_incoming_start(k: usize) -> usize {
-    3 + k
+    2 + k
 }
 
 /// `col_thermal_start` for the roundtrip geometry (N=1, L=0, K=k).
 ///
 /// The anticipated ring contributes `2*k` columns (outgoing `commit_out`
 /// AND incoming `commit_in`, each width `k`) before `theta`.
-/// theta = N*(3+L) + 2*k = 3 + 2*k, decision_start = theta+1 = 4+2k, so
-/// col_thermal_start = decision_start + 3*N*n_blks = decision_start + 6 = 10+2K.
+/// theta = N*2 + 2*k = 2 + 2*k, decision_start = theta+1 = 3+2k, so
+/// col_thermal_start = decision_start + 3*N*n_blks = decision_start + 6 = 9+2K.
 fn rt_col_thermal_start(k: usize) -> usize {
-    10 + 2 * k
+    9 + 2 * k
 }
 
 /// `col_anticipated_decision_start` for the roundtrip geometry.
 ///
-/// = col_thermal_start + T*n_blks = (10+2K) + 2 = 12+2K.
+/// = col_thermal_start + T*n_blks = (9+2K) + 2 = 11+2K.
 fn rt_col_ant_dec_start(k: usize) -> usize {
-    12 + 2 * k
+    11 + 2 * k
 }
 
 /// `row_anticipated_fishing_start` for the roundtrip geometry. Incoming state
 /// is pinned by column bounds, so no row pins it: = min_generation_start +
-/// n_op_rows = 11 + 1 = 12 (K-independent: row layout does not depend on the
+/// n_op_rows = 10 + 1 = 11 (K-independent: row layout does not depend on the
 /// anticipated ring's column width).
 fn rt_row_ant_fishing_start(_k: usize) -> usize {
-    12
+    11
 }
 
 /// Expected `num_cols` for the roundtrip geometry with anticipation K=k.
 ///
-/// = 27+2K: the anticipated ring contributes `2*n_ant_state = 2*k` columns
+/// = 26+2K: the anticipated ring contributes `2*n_ant_state = 2*k` columns
 /// (outgoing `commit_out` + incoming `commit_in`) plus the
 /// stage-level `anticipated_decision` column, one more than the pre-ring
 /// no-anticipated baseline's single combined block.
 fn rt_expected_num_cols(k: usize) -> usize {
-    27 + 2 * k
+    26 + 2 * k
 }
 
 /// Expected `num_rows` for the roundtrip geometry with anticipation K=k and stage
@@ -4355,20 +4436,22 @@ fn rt_expected_num_cols(k: usize) -> usize {
 /// definition row iff it is within the horizon-reachable cap
 /// `slot < n_stages - stage_idx - 1`.
 fn rt_expected_num_rows(k: usize, stage_idx: usize) -> usize {
-    // base = 12 (incoming state is pinned by column bounds; no row pins it)
+    // base = 11 (incoming state is pinned by column bounds; no row pins it)
     let fishing = 1_usize; // always-active: 1 fishing row per anticipated plant
     let state_out_def = usize::from(stage_idx + k < 4);
     let horizon_cap = 4_usize.saturating_sub(stage_idx + 1);
     let interior_active = (0..k.saturating_sub(1))
         .filter(|&slot| slot < horizon_cap)
         .count();
-    12 + fishing + state_out_def + interior_active
+    11 + fishing + state_out_def + interior_active
 }
 
 #[path = "template_integration/deficit_and_withdrawal.rs"]
 mod deficit_and_withdrawal;
 #[path = "template_integration/evaporation.rs"]
 mod evaporation;
+#[path = "template_integration/expander.rs"]
+mod expander;
 #[path = "template_integration/fpha_model.rs"]
 mod fpha_model;
 #[path = "template_integration/fpha_structure.rs"]

@@ -2,15 +2,20 @@
 
 use std::ops::Range;
 
-use novomodelo_core::commissioning::{Phase, filling_phase};
+use novomodelo_core::commissioning::{
+    IncomingStorageFloor, Phase, filling_phase, hard_storage_floor, incoming_storage_floor,
+};
 use novomodelo_core::{
-    CascadeTopology, Hydro, HydroBlockBounds, HydroPenalties, HydroUnitGroup, ResolvedBounds,
-    ResolvedHydroUnitGroupBounds, Stage,
+    CascadeTopology, Hydro, HydroBlockBounds, HydroPenalties, HydroStageBounds, HydroUnitGroup,
+    ResolvedBounds, ResolvedHydroUnitGroupBounds, Stage, has_turbine_capacity,
 };
 use novomodelo_io::validation::semantic::envelope_tolerance;
 
-use crate::hydro_models::ResolvedProductionModel;
-use crate::indexer::{EntityPositions, HydroCell, HydroCellIndex, HydroSys};
+use crate::hydro_models::{
+    DroppedFloor, DroppedFloorKind, DroppedFloorLevel, DroppedFloorReason, FrozenTurbiningHydro,
+    LinearizedEvaporation, ResolvedProductionModel,
+};
+use crate::indexer::{Boundary, EntityPositions, HydroCell, HydroCellIndex, HydroSys};
 
 pub(super) fn hydro_phase(hydro: &Hydro, stage_id: i32) -> Phase {
     filling_phase(
@@ -19,22 +24,6 @@ pub(super) fn hydro_phase(hydro: &Hydro, stage_id: i32) -> Phase {
         hydro.exit_stage_id,
         stage_id,
     )
-}
-
-/// Whether `hydro`'s `min_storage` floor is lifted to `0` at `stage_id`.
-///
-/// CONTRACT: `min_storage` is a HARD lower bound for every hydro EXCEPT (a) a
-/// filling one (`hydro.filling.is_some()`), whose floor relaxes to `0` in ALL
-/// phases and is re-imposed as a SOFT floor by
-/// `fill_filled_min_storage_floor_columns`, and (b) a non-filling hydro while
-/// `PreFilling` (commissioning-dormant), whose frozen-identity row pins `v_h`
-/// to the inert IC storage — a hard floor above that IC value would reject the
-/// pin and make the LP infeasible. FORBIDDEN — globalizing the relax to all
-/// Operating hydros (makes dead volume soft system-wide); keeping it hard
-/// through a dormant non-filling stage (rejects the IC pin). The dormant relax
-/// disappears at `Operating`, restoring the hard floor.
-pub(crate) fn storage_floor_relaxed(hydro: &Hydro, stage_id: i32) -> bool {
-    hydro.filling.is_some() || matches!(hydro_phase(hydro, stage_id), Phase::PreFilling)
 }
 
 /// `hydro`'s storage ceiling at `stage_id`, given that stage's resolved
@@ -49,6 +38,113 @@ pub(super) fn storage_ceiling(hydro: &Hydro, stage_id: i32, resolved_max_hm3: f6
         resolved_max_hm3.max(hydro.max_storage_hm3)
     } else {
         resolved_max_hm3
+    }
+}
+
+/// Whether `hydro`'s resolved `min_storage_hm3` is a soft floor at `stage_id`: a
+/// filling plant that is `Operating`.
+pub(super) fn has_soft_storage_floor(hydro: &Hydro, stage_id: i32) -> bool {
+    hydro.filling.is_some() && matches!(hydro_phase(hydro, stage_id), Phase::Operating)
+}
+
+#[must_use]
+pub(super) fn evaporation_target(coefficient: &LinearizedEvaporation, storage_hm3: f64) -> f64 {
+    coefficient.intercept_m3s + coefficient.volume_slope_m3s_per_hm3 * storage_hm3
+}
+
+/// `(min, max)` of [`evaporation_target`] over `[low_hm3, high_hm3]`. The slope's
+/// sign orders the two endpoints, and the area can fall within the validation
+/// tolerance of rules 8-10, so the extreme sits at either one.
+#[must_use]
+pub(super) fn evaporation_target_range(
+    coefficient: &LinearizedEvaporation,
+    low_hm3: f64,
+    high_hm3: f64,
+) -> (f64, f64) {
+    let at_low = evaporation_target(coefficient, low_hm3);
+    let at_high = evaporation_target(coefficient, high_hm3);
+    (at_low.min(at_high), at_low.max(at_high))
+}
+
+/// The average storage (hm³) an evaporation slot's two storage columns can reach.
+///
+/// `hard_floor_hm3` sizes the under-evaporation cap, not `tight_floor_hm3`: a
+/// filling plant at its hard floor is otherwise infeasible.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "the unit suffix names each field"
+)]
+pub(super) struct ReachableStorage {
+    pub(super) tight_floor_hm3: f64,
+    pub(super) hard_floor_hm3: f64,
+    pub(super) ceiling_hm3: f64,
+}
+
+/// The componentwise average of [`ReachableStorage`] over the slot's two storage
+/// columns. `tight_floor_hm3` is the resolved `min_storage_hm3` where it is a soft
+/// floor ([`has_soft_storage_floor`]), `hard_floor_hm3` the column's lower bound.
+///
+/// A seed reads the clamp interval, never the stage-0 box, which `semantic.5a.55`
+/// lets the seed undercut.
+#[must_use]
+pub(super) fn evaporation_slot_reachable_storage(
+    hydro: &Hydro,
+    first_stage_id: i32,
+    stage: (i32, &HydroStageBounds),
+    predecessor: Option<(i32, &HydroStageBounds)>,
+    slot: (Boundary, Boundary),
+) -> ReachableStorage {
+    let (stage_id, bounds) = stage;
+    let own_floor = hard_storage_floor(hydro, stage_id, bounds.min_storage_hm3);
+    let own_ceiling = storage_ceiling(hydro, stage_id, bounds.max_storage_hm3);
+    let seed_floor = hard_storage_floor(hydro, first_stage_id, hydro.min_storage_hm3);
+    let column = |boundary: Boundary| match boundary {
+        Boundary::Outgoing => ReachableStorage {
+            tight_floor_hm3: if has_soft_storage_floor(hydro, stage_id) {
+                bounds.min_storage_hm3
+            } else {
+                own_floor
+            },
+            hard_floor_hm3: own_floor,
+            ceiling_hm3: own_ceiling,
+        },
+        Boundary::Interior(_) => ReachableStorage {
+            tight_floor_hm3: own_floor,
+            hard_floor_hm3: own_floor,
+            ceiling_hm3: own_ceiling,
+        },
+        Boundary::Incoming => {
+            let floor = incoming_storage_floor(
+                hydro,
+                predecessor.map(|(id, previous)| (id, previous.min_storage_hm3)),
+            );
+            match (floor, predecessor) {
+                (IncomingStorageFloor::PredecessorFloor(hard), Some((id, previous))) => {
+                    ReachableStorage {
+                        tight_floor_hm3: if has_soft_storage_floor(hydro, id) {
+                            previous.min_storage_hm3
+                        } else {
+                            hard
+                        },
+                        hard_floor_hm3: hard,
+                        ceiling_hm3: storage_ceiling(hydro, id, previous.max_storage_hm3),
+                    }
+                }
+                (IncomingStorageFloor::InitialStorage | IncomingStorageFloor::PinnedSeed, _)
+                | (IncomingStorageFloor::PredecessorFloor(_), None) => ReachableStorage {
+                    tight_floor_hm3: seed_floor,
+                    hard_floor_hm3: seed_floor,
+                    ceiling_hm3: hydro.max_storage_hm3,
+                },
+            }
+        }
+    };
+    let (first, second) = (column(slot.0), column(slot.1));
+    ReachableStorage {
+        tight_floor_hm3: 0.5 * (first.tight_floor_hm3 + second.tight_floor_hm3),
+        hard_floor_hm3: 0.5 * (first.hard_floor_hm3 + second.hard_floor_hm3),
+        ceiling_hm3: 0.5 * (first.ceiling_hm3 + second.ceiling_hm3),
     }
 }
 
@@ -97,11 +193,47 @@ pub(super) fn resolve_shortcircuit_target(
     None
 }
 
-/// Bundles the resolved group-bounds table with the three indices that are
-/// constant across a cell's member groups, so `cell_max_turbined`/
-/// `cell_max_generation` take one bundled parameter instead of four loose
-/// ones that would cross `clippy::too_many_arguments`. `pub(super)` with its
-/// `new` constructor, so `columns` and `rows` build the same per-block lookup.
+/// Per-hydro effective withdrawal `T_eff[d] = T[d] + Σ T[h]` (m³/s, signed), over the
+/// `PreFilling` hydros `h` that [`resolve_shortcircuit_target`] routes onto `d`, summed
+/// in ascending system index; `0.0` for a `PreFilling` hydro, whose demand moves to its
+/// target. The sole owner of where a `PreFilling` hydro's withdrawal demand lands: the
+/// water-row RHS and the matrix routing agree because both resolve the same target.
+///
+/// A hydro with no feeder keeps its own `T` bit for bit: the sum starts from `T`, never
+/// from `0.0`, which would turn `T = -0.0` into `+0.0`. Summing feeders through the
+/// cascade's upstream lists instead of ascending system index makes the bits depend on
+/// declaration order.
+pub(super) fn effective_withdrawals(
+    hydros: &[Hydro],
+    cascade: &CascadeTopology,
+    positions: &EntityPositions,
+    stage_id: i32,
+    own_withdrawal_m3s: impl Fn(usize) -> f64,
+) -> Vec<f64> {
+    let mut effective: Vec<f64> = hydros
+        .iter()
+        .enumerate()
+        .map(|(h_idx, hydro)| {
+            if matches!(hydro_phase(hydro, stage_id), Phase::PreFilling) {
+                0.0
+            } else {
+                own_withdrawal_m3s(h_idx)
+            }
+        })
+        .collect();
+    for h_idx in 0..hydros.len() {
+        if let Some(d_idx) =
+            resolve_shortcircuit_target(hydros, cascade, positions, stage_id, h_idx)
+        {
+            effective[d_idx] += own_withdrawal_m3s(h_idx);
+        }
+    }
+    effective
+}
+
+/// The resolved group-bounds table with the three indices that are constant
+/// across a cell's member groups. `pub(super)` with its `new` constructor, so
+/// `columns` and `rows` build the same per-block lookup.
 #[derive(Clone, Copy)]
 pub(super) struct GroupBoundLookup<'a> {
     table: &'a ResolvedHydroUnitGroupBounds,
@@ -129,6 +261,15 @@ impl<'a> GroupBoundLookup<'a> {
 /// Methods return the resolved per-block value: the override when the study
 /// supplies one, the declaration otherwise.
 impl GroupBoundLookup<'_> {
+    /// Whether group `group_pos` has turbine capacity at this block: the one
+    /// owner of a group's capacity.
+    pub(super) fn has_capacity(&self, group_pos: usize, group: &HydroUnitGroup) -> bool {
+        has_turbine_capacity(
+            self.max_turbined(group_pos, group),
+            self.max_generation(group_pos, group),
+        )
+    }
+
     /// Group `group_pos`'s resolved turbined-flow maximum.
     fn max_turbined(&self, group_pos: usize, group: &HydroUnitGroup) -> f64 {
         self.table
@@ -162,12 +303,15 @@ impl GroupBoundLookup<'_> {
     }
 }
 
-/// Cell `c`'s turbined-flow upper bound. A `ConstantProductivity` model folds
-/// EACH member group's own MW cap into its own flow cap first, then sums —
-/// summing the raw group boxes and folding the total instead overstates the
-/// cell, since `min` does not distribute over a sum whose terms bind on
-/// different sides (`test_same_bus_groups_sum_into_one_cell_box`). Any other
-/// model (FPHA; a non-positive productivity) sums each group's flow cap
+/// Cell `c`'s turbined-flow upper bound. A term without turbine capacity —
+/// either resolved limit at or below [`has_turbine_capacity`]'s threshold —
+/// contributes 0 under every model, per group before the sum and at the closing
+/// plant term. A `ConstantProductivity` model folds EACH member group's own MW
+/// cap into its own flow cap first, then sums — summing the raw group boxes and
+/// folding the total instead overstates the cell, since `min` does not
+/// distribute over a sum whose terms bind on different sides
+/// (`test_same_bus_groups_sum_into_one_cell_box`). Under any other model (FPHA;
+/// a non-positive productivity) a group with capacity adds its flow cap
 /// unfolded, exact because FPHA's turbine and generation columns are
 /// independent.
 ///
@@ -201,19 +345,64 @@ pub(super) fn cell_max_turbined(
     let sum: f64 = positions
         .iter()
         .map(|&pos| {
-            fold(
-                lookup.max_turbined(pos, &groups[pos]),
-                lookup.max_generation(pos, &groups[pos]),
-            )
+            if lookup.has_capacity(pos, &groups[pos]) {
+                fold(
+                    lookup.max_turbined(pos, &groups[pos]),
+                    lookup.max_generation(pos, &groups[pos]),
+                )
+            } else {
+                0.0
+            }
         })
         .sum();
-    sum.min(fold(hb.max_turbined_m3s, hb.max_generation_mw))
+    let plant = if has_turbine_capacity(hb.max_turbined_m3s, hb.max_generation_mw) {
+        fold(hb.max_turbined_m3s, hb.max_generation_mw)
+    } else {
+        0.0
+    };
+    sum.min(plant)
 }
 
-/// Cell `c`'s own min-turbine floor: the PLAIN SUM of its member groups'
-/// resolved `min_turbined_m3s`, never a fold and never a `.min(plant)` clamp —
-/// a floor on a sum of variables adds, unlike the closing `MAX` bound.
-/// [`PlantFloor`] decides where the plant minimum binds on top of it.
+/// Whether cell `c` has turbine capacity at the block `lookup` resolves: the
+/// plant term and at least one member group each pass [`has_turbine_capacity`],
+/// the same two terms [`cell_max_turbined`] and [`cell_max_generation`] close
+/// with. The one owner of a cell's capacity.
+pub(super) fn cell_has_capacity(
+    groups: &[HydroUnitGroup],
+    positions: &[usize],
+    hb: HydroBlockBounds,
+    lookup: GroupBoundLookup<'_>,
+) -> bool {
+    has_turbine_capacity(hb.max_turbined_m3s, hb.max_generation_mw)
+        && positions
+            .iter()
+            .any(|&pos| lookup.has_capacity(pos, &groups[pos]))
+}
+
+/// Whether plant `h` has turbine capacity at the block `lookup` resolves: some
+/// cell passes [`cell_has_capacity`]. The one owner of a plant's capacity.
+pub(super) fn plant_has_capacity(
+    hydro: &Hydro,
+    cells: &HydroCellIndex,
+    h: HydroSys,
+    lookup: GroupBoundLookup<'_>,
+    hb: HydroBlockBounds,
+) -> bool {
+    cells.cells_of(h).any(|c| {
+        cell_has_capacity(
+            &hydro.unit_groups,
+            cells.groups_of(HydroCell::new(c)),
+            hb,
+            lookup,
+        )
+    })
+}
+
+/// Cell `c`'s own min-turbine floor: the plain sum of the resolved
+/// `min_turbined_m3s` of its member groups that have capacity; never a fold and
+/// never a `.min(plant)` clamp — a floor on a sum of variables adds, unlike the
+/// closing `MAX` bound. [`PlantFloor`] decides where the plant minimum binds on
+/// top of it.
 pub(super) fn cell_min_turbined(
     groups: &[HydroUnitGroup],
     positions: &[usize],
@@ -221,13 +410,16 @@ pub(super) fn cell_min_turbined(
 ) -> f64 {
     positions
         .iter()
-        .map(|&pos| lookup.min_turbined(pos, &groups[pos]))
+        .filter(|&&pos| lookup.has_capacity(pos, &groups[pos]))
+        .map(|&pos| MinFloor::Turbined.of_group(lookup, pos, &groups[pos]))
         .sum()
 }
 
 /// Cell `c`'s FPHA generation-column upper bound. FPHA's turbine and generation
 /// columns are independent (no productivity fold couples them), so summing
-/// `max_generation_mw` over the cell's member groups directly is exact.
+/// `max_generation_mw` over the cell's member groups directly is exact. A group
+/// or plant term without turbine capacity (see [`has_turbine_capacity`])
+/// contributes 0.
 ///
 /// Both terms of `sum.min(hb.max_generation_mw)` are load-bearing — the same
 /// two-term contract `cell_max_turbined` states in full.
@@ -243,14 +435,24 @@ pub(super) fn cell_max_generation(
 ) -> f64 {
     let sum: f64 = positions
         .iter()
-        .map(|&pos| lookup.max_generation(pos, &groups[pos]))
+        .map(|&pos| {
+            if lookup.has_capacity(pos, &groups[pos]) {
+                lookup.max_generation(pos, &groups[pos])
+            } else {
+                0.0
+            }
+        })
         .sum();
-    sum.min(hb.max_generation_mw)
+    if has_turbine_capacity(hb.max_turbined_m3s, hb.max_generation_mw) {
+        sum.min(hb.max_generation_mw)
+    } else {
+        0.0
+    }
 }
 
-/// Cell `c`'s own min-generation floor: the PLAIN SUM of its member groups'
-/// resolved `min_generation_mw`, never folded through a productivity. See
-/// [`cell_min_turbined`].
+/// Cell `c`'s own min-generation floor: the plain sum of the resolved
+/// `min_generation_mw` of its member groups that have capacity, never folded
+/// through a productivity. See [`cell_min_turbined`].
 pub(super) fn cell_min_generation(
     groups: &[HydroUnitGroup],
     positions: &[usize],
@@ -258,7 +460,8 @@ pub(super) fn cell_min_generation(
 ) -> f64 {
     positions
         .iter()
-        .map(|&pos| lookup.min_generation(pos, &groups[pos]))
+        .filter(|&&pos| lookup.has_capacity(pos, &groups[pos]))
+        .map(|&pos| MinFloor::Generation.of_group(lookup, pos, &groups[pos]))
         .sum()
 }
 
@@ -273,6 +476,18 @@ pub(super) enum MinFloor {
 
 impl MinFloor {
     pub(super) const ALL: [Self; 2] = [Self::Turbined, Self::Generation];
+
+    fn of_group(
+        self,
+        lookup: GroupBoundLookup<'_>,
+        group_pos: usize,
+        group: &HydroUnitGroup,
+    ) -> f64 {
+        match self {
+            Self::Turbined => lookup.min_turbined(group_pos, group),
+            Self::Generation => lookup.min_generation(group_pos, group),
+        }
+    }
 
     fn of_cell(
         self,
@@ -314,16 +529,28 @@ impl MinFloor {
             Self::Generation => "min_generation_mw",
         }
     }
+
+    const fn dropped_kind(self) -> DroppedFloorKind {
+        match self {
+            Self::Turbined => DroppedFloorKind::MinTurbinedM3s,
+            Self::Generation => DroppedFloorKind::MinGenerationMw,
+        }
+    }
 }
 
 /// One plant's `MinFloor` at one block, split into what its cell rows and its
-/// residual row enforce. The tighter floor wins: the plant's resolved minimum
-/// binds only where it exceeds the cells' summed floor by more than
-/// [`envelope_tolerance`] — the tolerance rule 44 admits a declared minimum
-/// with, so a declared minimum never changes the LP. A single-cell plant folds
+/// residual row enforce. The plant's resolved minimum binds only where it
+/// exceeds the full declared sum of its groups' floors, those without capacity
+/// included, by more than [`envelope_tolerance`] — the tolerance rule 44 admits
+/// a declared minimum with, so a declared minimum never changes the LP — and
+/// then enforces the minimum less the floors of the groups without capacity: a
+/// group without capacity contributes no cell floor. A single-cell plant folds
 /// the binding minimum into its one cell row; a multi-cell plant gets a
 /// residual row on top of its cell rows. Either way the shortfall is charged
-/// once, as `max(plant shortfall, Σ cell shortfalls)`.
+/// once, as `max(plant shortfall, Σ cell shortfalls)`. Where the plant has no
+/// capacity in the block ([`plant_has_capacity`]) or is suspended at the stage
+/// ([`is_suspended`]), every floor of the plant is dropped: its cell rows read
+/// 0, no residual binds, and [`warn_on_inert_plant_floor_overrides`] ignores it.
 pub(super) struct PlantFloor<'a> {
     kind: MinFloor,
     groups: &'a [HydroUnitGroup],
@@ -331,7 +558,9 @@ pub(super) struct PlantFloor<'a> {
     plant_cells: Range<usize>,
     lookup: GroupBoundLookup<'a>,
     plant_min: f64,
-    cell_sum: f64,
+    full_sum: f64,
+    dead_sum: f64,
+    producing: bool,
 }
 
 impl<'a> PlantFloor<'a> {
@@ -342,18 +571,23 @@ impl<'a> PlantFloor<'a> {
         h: HydroSys,
         lookup: GroupBoundLookup<'a>,
         hb: HydroBlockBounds,
+        suspended: bool,
     ) -> Self {
         let plant_cells = cells.cells_of(h);
-        let cell_sum = plant_cells
-            .clone()
-            .map(|c| {
-                kind.of_cell(
-                    &hydro.unit_groups,
-                    cells.groups_of(HydroCell::new(c)),
-                    lookup,
-                )
-            })
-            .sum();
+        let (mut full_sum, mut dead_sum) = (0.0, 0.0);
+        for c in plant_cells.clone() {
+            let (mut cell_full, mut cell_dead) = (0.0, 0.0);
+            for &pos in cells.groups_of(HydroCell::new(c)) {
+                let group = &hydro.unit_groups[pos];
+                let floor = kind.of_group(lookup, pos, group);
+                cell_full += floor;
+                if !lookup.has_capacity(pos, group) {
+                    cell_dead += floor;
+                }
+            }
+            full_sum += cell_full;
+            dead_sum += cell_dead;
+        }
         Self {
             kind,
             groups: &hydro.unit_groups,
@@ -361,19 +595,24 @@ impl<'a> PlantFloor<'a> {
             plant_cells,
             lookup,
             plant_min: kind.of_plant(hb),
-            cell_sum,
+            full_sum,
+            dead_sum,
+            producing: !suspended && plant_has_capacity(hydro, cells, h, lookup, hb),
         }
     }
 
     fn uncovered(&self) -> Option<f64> {
-        (self.plant_min > self.cell_sum + envelope_tolerance(self.plant_min))
-            .then_some(self.plant_min)
+        (self.producing && self.plant_min > self.full_sum + envelope_tolerance(self.plant_min))
+            .then_some(self.plant_min - self.dead_sum)
     }
 
     /// RHS of cell `c`'s floor row.
     pub(super) fn cell_rhs(&self, c: HydroCell) -> f64 {
+        if !self.producing {
+            return 0.0;
+        }
         match self.uncovered() {
-            Some(plant_min) if self.plant_cells.len() == 1 => plant_min,
+            Some(floor) if self.plant_cells.len() == 1 => floor,
             _ => self
                 .kind
                 .of_cell(self.groups, self.cells.groups_of(c), self.lookup),
@@ -386,7 +625,7 @@ impl<'a> PlantFloor<'a> {
     }
 
     fn is_below_cells(&self) -> bool {
-        self.plant_min + envelope_tolerance(self.plant_min) < self.cell_sum
+        self.producing && self.plant_min + envelope_tolerance(self.plant_min) < self.full_sum
     }
 }
 
@@ -490,6 +729,7 @@ pub(crate) fn warn_on_inert_plant_floor_overrides(
                             HydroSys::new(h_idx),
                             GroupBoundLookup::new(bounds.group_overlay(), h_idx, *stage_idx, blk),
                             bounds.hydro_bounds_at_block(h_idx, *stage_idx, blk),
+                            is_suspended(hydro, stage.id),
                         );
                         floor.plant_min.to_bits() != declared && floor.is_below_cells()
                     })
@@ -511,13 +751,134 @@ pub(crate) fn warn_on_inert_plant_floor_overrides(
     }
 }
 
+/// The hydros with a study stage without turbine capacity, or a minimum the stage
+/// LP no longer charges, ascending by id. Capacity and floors are read through
+/// [`cell_has_capacity`], [`GroupBoundLookup::has_capacity`], [`PlantFloor`] and
+/// [`is_suspended`], never re-derived from a limit, so the rows agree with the LP.
+pub(crate) fn frozen_turbining_hydros(
+    hydros: &[Hydro],
+    stages: &[Stage],
+    bounds: &ResolvedBounds,
+    cells: &HydroCellIndex,
+) -> Vec<FrozenTurbiningHydro> {
+    let study_stages: Vec<_> = stages.iter().filter(|s| s.id >= 0).collect();
+    let mut rows: Vec<_> = hydros
+        .iter()
+        .enumerate()
+        .map(|(h_idx, hydro)| frozen_turbining_of(hydro, h_idx, &study_stages, bounds, cells))
+        .filter(|row| {
+            !(row.no_capacity_stage_ids.is_empty()
+                && row.partial_capacity_stage_ids.is_empty()
+                && row.dropped_floors.is_empty())
+        })
+        .collect();
+    rows.sort_by_key(|row| row.hydro_id);
+    rows
+}
+
+fn frozen_turbining_of(
+    hydro: &Hydro,
+    h_idx: usize,
+    study_stages: &[&Stage],
+    bounds: &ResolvedBounds,
+    cells: &HydroCellIndex,
+) -> FrozenTurbiningHydro {
+    let h = HydroSys::new(h_idx);
+    let mut row = FrozenTurbiningHydro {
+        hydro_id: hydro.id,
+        name: hydro.name.clone(),
+        no_capacity_stage_ids: Vec::new(),
+        partial_capacity_stage_ids: Vec::new(),
+        dropped_floors: Vec::new(),
+    };
+    for (stage_idx, stage) in study_stages.iter().enumerate() {
+        let suspended = is_suspended(hydro, stage.id);
+        let reason = if suspended {
+            DroppedFloorReason::Commissioning
+        } else {
+            DroppedFloorReason::NoCapacity
+        };
+        let (mut n_cells, mut n_dead) = (0_usize, 0_usize);
+        for (blk, block) in stage.blocks.iter().enumerate() {
+            let lookup = GroupBoundLookup::new(bounds.group_overlay(), h_idx, stage_idx, blk);
+            let hb = bounds.hydro_bounds_at_block(h_idx, stage_idx, blk);
+            for c in cells.cells_of(h).map(HydroCell::new) {
+                n_cells += 1;
+                n_dead += usize::from(!cell_has_capacity(
+                    &hydro.unit_groups,
+                    cells.groups_of(c),
+                    hb,
+                    lookup,
+                ));
+            }
+            for kind in MinFloor::ALL {
+                let floor = PlantFloor::resolve(kind, hydro, cells, h, lookup, hb, suspended);
+                let dropped = |level, hydro_unit_group_id, bus_id, value| DroppedFloor {
+                    stage_id: stage.id,
+                    block_id: block.index,
+                    floor: kind.dropped_kind(),
+                    level,
+                    hydro_unit_group_id,
+                    bus_id,
+                    value,
+                    reason,
+                };
+                if !floor.producing && floor.plant_min > 0.0 {
+                    row.dropped_floors.push(dropped(
+                        DroppedFloorLevel::Plant,
+                        None,
+                        None,
+                        floor.plant_min,
+                    ));
+                }
+                for c in cells.cells_of(h).map(HydroCell::new) {
+                    for &pos in cells.groups_of(c) {
+                        let group = &hydro.unit_groups[pos];
+                        let value = kind.of_group(lookup, pos, group);
+                        if value > 0.0 && (!floor.producing || !lookup.has_capacity(pos, group)) {
+                            row.dropped_floors.push(dropped(
+                                DroppedFloorLevel::UnitGroup,
+                                Some(group.id),
+                                Some(cells.bus_of(c)),
+                                value,
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        if n_dead == n_cells && n_cells > 0 {
+            row.no_capacity_stage_ids.push(stage.id);
+        } else if n_dead > 0 {
+            row.partial_capacity_stage_ids.push(stage.id);
+        }
+    }
+    row.dropped_floors.sort_by_key(|d| {
+        (
+            d.stage_id,
+            d.block_id,
+            d.level,
+            d.hydro_unit_group_id,
+            d.floor,
+        )
+    });
+    row
+}
+
 #[cfg(test)]
 mod tests {
-    use novomodelo_core::{CascadeTopology, EntityId, Hydro, HydroGenerationModel, HydroPenalties};
+    use novomodelo_core::{
+        CascadeTopology, EntityId, FillingConfig, Hydro, HydroGenerationModel, HydroPenalties,
+        HydroStageBounds,
+    };
 
-    use crate::indexer::EntityPositions;
+    use crate::hydro_models::{EvaporationCoefficientSign, LinearizedEvaporation};
+    use crate::indexer::{Boundary, EntityPositions};
 
-    use super::resolve_shortcircuit_target;
+    use super::{
+        ReachableStorage, effective_withdrawals, evaporation_slot_reachable_storage,
+        evaporation_target_range, has_soft_storage_floor, resolve_shortcircuit_target,
+    };
 
     const STAGE_ID: i32 = 0;
     const FUTURE_ENTRY: i32 = 1;
@@ -552,6 +913,35 @@ mod tests {
             diversion: None,
             filling: None,
             penalties: HydroPenalties::uniform(0.0),
+        }
+    }
+
+    fn filling_hydro(start_stage_id: i32, entry_stage_id: Option<i32>) -> Hydro {
+        Hydro {
+            min_storage_hm3: 100.0,
+            max_storage_hm3: 200.0,
+            filling: Some(FillingConfig {
+                start_stage_id,
+                filling_min_rate_m3s: 0.0,
+            }),
+            ..chain_hydro(1, None, entry_stage_id)
+        }
+    }
+
+    fn stage_bounds(min_storage_hm3: f64, max_storage_hm3: f64) -> HydroStageBounds {
+        HydroStageBounds {
+            min_storage_hm3,
+            max_storage_hm3,
+            filling_min_rate_m3s: 0.0,
+            water_withdrawal_m3s: 0.0,
+        }
+    }
+
+    fn reachable(tight: f64, hard: f64, ceiling: f64) -> ReachableStorage {
+        ReachableStorage {
+            tight_floor_hm3: tight,
+            hard_floor_hm3: hard,
+            ceiling_hm3: ceiling,
         }
     }
 
@@ -602,5 +992,208 @@ mod tests {
             None,
             "C is a PreFilling sink: the chain never reaches a non-PreFilling target"
         );
+    }
+
+    /// Derived: each feeder's `T` is added to the target's own `T` in ascending index,
+    /// `(0.07 + 0.2) + 0.5`; both `PreFilling` plants end at `0.0`.
+    #[test]
+    fn effective_withdrawals_sum_a_prefilling_chain_into_its_target() {
+        let hydros = vec![
+            chain_hydro(1, Some(2), Some(FUTURE_ENTRY)),
+            chain_hydro(2, Some(3), Some(FUTURE_ENTRY)),
+            chain_hydro(3, None, None),
+        ];
+        let cascade = CascadeTopology::build(&hydros);
+        let positions = positions_of(&hydros);
+        let own = [0.2, 0.5, 0.07];
+
+        let effective = effective_withdrawals(&hydros, &cascade, &positions, STAGE_ID, |h| own[h]);
+
+        let bits: Vec<u64> = effective.iter().map(|t| t.to_bits()).collect();
+        assert_eq!(
+            bits,
+            [0.0_f64, 0.0, (0.07 + 0.2) + 0.5].map(f64::to_bits),
+            "feeders add to C in ascending index; A and B end at 0.0"
+        );
+    }
+
+    /// Derived: a `PreFilling` chain with no non-`PreFilling` target sums into nothing;
+    /// its plants read `0.0` and the unrelated plant D keeps its own `T`.
+    #[test]
+    fn effective_withdrawals_drop_a_sink_chain_and_touch_no_other_entry() {
+        let hydros = vec![
+            chain_hydro(1, Some(2), Some(FUTURE_ENTRY)),
+            chain_hydro(2, None, Some(FUTURE_ENTRY)),
+            chain_hydro(3, None, None),
+        ];
+        let cascade = CascadeTopology::build(&hydros);
+        let positions = positions_of(&hydros);
+        let own = [0.2, 0.5, 0.3];
+
+        let effective = effective_withdrawals(&hydros, &cascade, &positions, STAGE_ID, |h| own[h]);
+
+        let bits: Vec<u64> = effective.iter().map(|t| t.to_bits()).collect();
+        assert_eq!(bits, [0.0_f64, 0.0, 0.3].map(f64::to_bits));
+    }
+
+    /// Derived: with no feeder the entry is the plant's own `T` bit for bit, `-0.0` and
+    /// a negative return included; a sum started from `0.0` turns `-0.0` into `+0.0`.
+    #[test]
+    fn effective_withdrawals_keep_the_own_bits_of_a_plant_with_no_feeder() {
+        let hydros = vec![chain_hydro(1, Some(2), None), chain_hydro(2, None, None)];
+        let cascade = CascadeTopology::build(&hydros);
+        let positions = positions_of(&hydros);
+        let own = [-0.0, -3.5];
+
+        let effective = effective_withdrawals(&hydros, &cascade, &positions, STAGE_ID, |h| own[h]);
+
+        let bits: Vec<u64> = effective.iter().map(|t| t.to_bits()).collect();
+        assert_eq!(bits, own.map(f64::to_bits));
+    }
+
+    /// Derived: two `PreFilling` feeders at indices 1 and 2 into target 0 add in index
+    /// order, `(0.1 + 0.2) + 0.3`, which differs from `0.1 + (0.2 + 0.3)` in the last bit.
+    #[test]
+    fn effective_withdrawals_add_feeders_in_ascending_index() {
+        let hydros = vec![
+            chain_hydro(1, None, None),
+            chain_hydro(2, Some(1), Some(FUTURE_ENTRY)),
+            chain_hydro(3, Some(1), Some(FUTURE_ENTRY)),
+        ];
+        let cascade = CascadeTopology::build(&hydros);
+        let positions = positions_of(&hydros);
+        let own = [0.1, 0.2, 0.3];
+
+        let effective = effective_withdrawals(&hydros, &cascade, &positions, STAGE_ID, |h| own[h]);
+
+        let bits: Vec<u64> = effective.iter().map(|t| t.to_bits()).collect();
+        assert_eq!(bits, [(0.1 + 0.2) + 0.3, 0.0, 0.0].map(f64::to_bits));
+        assert_ne!(
+            effective[0].to_bits(),
+            (0.1 + (0.2 + 0.3_f64)).to_bits(),
+            "the oracle must tell ascending-index order from a feeders-first sum"
+        );
+    }
+
+    #[test]
+    fn has_soft_storage_floor_holds_only_for_an_operating_filling_plant() {
+        let plain = chain_hydro(1, None, None);
+        assert!(!has_soft_storage_floor(&plain, 0));
+
+        let entering_at_two = filling_hydro(0, Some(2));
+        assert!(!has_soft_storage_floor(&entering_at_two, 1));
+        assert!(has_soft_storage_floor(&entering_at_two, 2));
+
+        let starting_at_three = filling_hydro(3, Some(4));
+        assert!(!has_soft_storage_floor(&starting_at_three, 1));
+        assert!(!has_soft_storage_floor(&starting_at_three, 3));
+        assert!(has_soft_storage_floor(&starting_at_three, 4));
+    }
+
+    #[test]
+    fn evaporation_target_range_orders_the_two_endpoints() {
+        let rising = LinearizedEvaporation {
+            intercept_m3s: 1.0,
+            volume_slope_m3s_per_hm3: 0.5,
+            coefficient_sign: EvaporationCoefficientSign::Positive,
+        };
+        let falling = LinearizedEvaporation {
+            volume_slope_m3s_per_hm3: -0.5,
+            ..rising
+        };
+
+        assert_eq!(evaporation_target_range(&rising, 2.0, 10.0), (2.0, 6.0));
+        assert_eq!(evaporation_target_range(&falling, 2.0, 10.0), (-4.0, 0.0));
+    }
+
+    #[test]
+    fn reachable_storage_reads_the_seed_clamp_never_the_stage_box() {
+        let hydro = Hydro {
+            min_storage_hm3: 5.0,
+            max_storage_hm3: 200.0,
+            ..chain_hydro(1, None, None)
+        };
+        let bounds = stage_bounds(40.0, 200.0);
+
+        let slot = evaporation_slot_reachable_storage(
+            &hydro,
+            0,
+            (0, &bounds),
+            None,
+            (Boundary::Incoming, Boundary::Outgoing),
+        );
+
+        assert_eq!(slot, reachable(22.5, 22.5, 200.0));
+    }
+
+    #[test]
+    fn reachable_storage_reads_the_predecessor_floor_and_ceiling() {
+        let hydro = chain_hydro(1, None, None);
+        let previous = stage_bounds(10.0, 150.0);
+        let bounds = stage_bounds(30.0, 180.0);
+
+        let slot = evaporation_slot_reachable_storage(
+            &hydro,
+            0,
+            (1, &bounds),
+            Some((0, &previous)),
+            (Boundary::Incoming, Boundary::Outgoing),
+        );
+
+        assert_eq!(slot, reachable(20.0, 20.0, 165.0));
+    }
+
+    #[test]
+    fn reachable_storage_keeps_a_filling_plants_soft_floor_tight_and_its_hard_floor_zero() {
+        let hydro = filling_hydro(0, Some(1));
+        let bounds = stage_bounds(100.0, 200.0);
+
+        let first_half = evaporation_slot_reachable_storage(
+            &hydro,
+            0,
+            (1, &bounds),
+            Some((0, &bounds)),
+            (Boundary::Incoming, Boundary::Interior(1)),
+        );
+        let second_half = evaporation_slot_reachable_storage(
+            &hydro,
+            0,
+            (1, &bounds),
+            Some((0, &bounds)),
+            (Boundary::Interior(1), Boundary::Outgoing),
+        );
+        assert_eq!(first_half, reachable(0.0, 0.0, 200.0));
+        assert_eq!(second_half, reachable(50.0, 0.0, 200.0));
+
+        let previous = stage_bounds(80.0, 190.0);
+        let later = evaporation_slot_reachable_storage(
+            &hydro,
+            0,
+            (2, &bounds),
+            Some((1, &previous)),
+            (Boundary::Incoming, Boundary::Interior(1)),
+        );
+        assert_eq!(later, reachable(40.0, 0.0, 195.0));
+    }
+
+    #[test]
+    fn reachable_storage_reads_the_seed_clamp_after_a_prefilling_predecessor() {
+        let hydro = Hydro {
+            min_storage_hm3: 5.0,
+            max_storage_hm3: 200.0,
+            ..chain_hydro(1, None, Some(2))
+        };
+        let previous = stage_bounds(40.0, 300.0);
+        let bounds = stage_bounds(30.0, 180.0);
+
+        let slot = evaporation_slot_reachable_storage(
+            &hydro,
+            0,
+            (2, &bounds),
+            Some((1, &previous)),
+            (Boundary::Incoming, Boundary::Outgoing),
+        );
+
+        assert_eq!(slot, reachable(15.0, 15.0, 190.0));
     }
 }

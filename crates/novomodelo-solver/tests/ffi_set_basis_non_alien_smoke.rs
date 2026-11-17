@@ -39,7 +39,6 @@ fn make_fixture_stage_template() -> StageTemplate {
         objective: vec![0.0, 1.0, 50.0],
         row_lower: vec![6.0, 14.0],
         row_upper: vec![6.0, 14.0],
-        n_state: 1,
         col_scale: Vec::new(),
         row_scale: Vec::new(),
     }

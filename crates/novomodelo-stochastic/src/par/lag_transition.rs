@@ -381,6 +381,7 @@ mod tests {
     use crate::test_support::{
         InflowModelSpec, MonthlyLabels, make_inflow_model, monthly_quarterly_season_map,
         monthly_season_map, sparse_ring_season_map, weekly_season_map,
+        weeks_naming_june_then_months,
     };
 
     /// A one-hydro [`PrecomputedPar`] with `max_order() == 1`: an order-1
@@ -826,10 +827,6 @@ mod tests {
         assert!(m2.finalize_period, "M2 must finalize");
     }
 
-    // -----------------------------------------------------------------------
-    // Test 3: single stage straddling a month boundary
-    // -----------------------------------------------------------------------
-
     /// Stage `[2026-01-28, 2026-02-04)` with `season_id=0` (January).
     ///
     /// "Jan 28 to Feb 3" in inclusive notation equals `[Jan 28, Feb 04)` in
@@ -867,10 +864,6 @@ mod tests {
         assert!(t.finalize_period, "single stage must finalize its period");
     }
 
-    // -----------------------------------------------------------------------
-    // Test 4: stage with season_id = None produces no-op
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_no_season_id_produces_noop() {
         let season_map = monthly_season_map(MonthlyLabels::OneBased);
@@ -885,10 +878,6 @@ mod tests {
         assert_eq!(t.spillover_weight, 0.0);
         assert!(!t.finalize_period);
     }
-
-    // -----------------------------------------------------------------------
-    // Test 5: two consecutive monthly stages each finalise their own period
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_single_stage_per_month_finalizes() {
@@ -909,10 +898,6 @@ mod tests {
             "February stage must finalize"
         );
     }
-
-    // -----------------------------------------------------------------------
-    // Test 6: four weekly stages in January — only the last finalises
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_multiple_weekly_stages_only_last_finalizes() {
@@ -952,6 +937,98 @@ mod tests {
             (w4.accumulate_weight - 7.0 * 24.0 / jan_hours).abs() < tol,
             "W4 accumulate_weight wrong: {}",
             w4.accumulate_weight
+        );
+    }
+
+    fn one_season_in_two_years_stages() -> Vec<Stage> {
+        weeks_naming_june_then_months()
+            .into_iter()
+            .enumerate()
+            .map(|(i, (start, end, season))| make_stage(i, start, end, Some(season)))
+            .collect()
+    }
+
+    #[test]
+    fn test_lag_periods_split_one_season_in_two_years() {
+        let season_map = monthly_season_map(MonthlyLabels::OneBased);
+        let stages = one_season_in_two_years_stages();
+        let transitions = precompute_stage_lag_transitions(&stages, &season_map, 0);
+        assert_eq!(transitions.len(), 22);
+
+        let tol = 1e-12;
+        let close = |stage: usize, field: &str, actual: f64, expected: f64| {
+            assert!(
+                (actual - expected).abs() < tol,
+                "stage {stage}: {field} is {actual}, expected {expected}"
+            );
+        };
+        let june_hours = 30.0 * 24.0;
+        let july_hours = 31.0 * 24.0;
+
+        let june_days = [5.0, 7.0, 7.0, 7.0, 4.0];
+        for (i, days) in june_days.into_iter().enumerate() {
+            close(
+                i,
+                "accumulate_weight",
+                transitions[i].accumulate_weight,
+                days * 24.0 / june_hours,
+            );
+            assert_eq!(
+                transitions[i].finalize_period,
+                i == 4,
+                "stage {i}: finalize_period"
+            );
+        }
+        let june_sum: f64 = transitions[..5].iter().map(|t| t.accumulate_weight).sum();
+        close(
+            4,
+            "June accumulate_weight sum over stages 0..=4",
+            june_sum,
+            1.0,
+        );
+
+        close(
+            4,
+            "spillover_weight",
+            transitions[4].spillover_weight,
+            3.0 * 24.0 / july_hours,
+        );
+        close(
+            5,
+            "accumulate_weight",
+            transitions[5].accumulate_weight,
+            28.0 * 24.0 / july_hours,
+        );
+        assert!(transitions[5].finalize_period, "stage 5: finalize_period");
+
+        close(
+            16,
+            "accumulate_weight",
+            transitions[16].accumulate_weight,
+            1.0,
+        );
+        close(
+            16,
+            "spillover_weight",
+            transitions[16].spillover_weight,
+            0.0,
+        );
+        assert!(transitions[16].finalize_period, "stage 16: finalize_period");
+    }
+
+    #[test]
+    fn test_noise_groups_split_one_season_in_two_years() {
+        let groups = precompute_noise_groups(&one_season_in_two_years_stages());
+        assert_eq!(groups.len(), 22);
+
+        for (i, &group) in groups[..5].iter().enumerate() {
+            assert_eq!(group, 0, "stage {i}: group shared by the five June weeks");
+        }
+        assert_eq!(groups[5], 1, "stage 5: group");
+        assert_eq!(groups[16], 12, "stage 16: group");
+        assert_ne!(
+            groups[16], groups[0],
+            "stage 16 (June 2027) must not share stage 0's (June 2026) group"
         );
     }
 
@@ -1346,7 +1423,7 @@ mod tests {
         assert_eq!(groups[2], 2);
     }
 
-    /// Test 5: same `season_id` but different years must produce different groups.
+    /// Same `season_id` but different years must produce different groups.
     #[test]
     fn test_noise_groups_cross_year() {
         // Two weekly stages: season_id=0, year 2024 and year 2025.

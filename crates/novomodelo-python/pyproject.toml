@@ -18,7 +18,6 @@ keywords = ["sddp", "optimization", "power-systems", "energy", "hydrothermal"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: Apache Software License",
     "Operating System :: MacOS",
     "Operating System :: Microsoft :: Windows",
     "Operating System :: POSIX :: Linux",
@@ -42,6 +41,8 @@ features = ["pyo3/extension-module"]
 module-name = "novomodelo._native"
 python-source = "python"
 
+# Editor aid only: ty ([tool.ty]) is the type gate, and pyrightconfig.json takes
+# precedence over this section.
 [tool.pyright]
 venvPath = "../.."
 venv = ".venv"
@@ -52,3 +53,39 @@ reportMissingModuleSource = "none"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ty.environment]
+python-version = "3.12"
+
+[tool.ty.src]
+include = ["python", "tests"]
+
+[tool.ty.terminal]
+error-on-warning = true
+
+[[tool.ty.overrides]]
+# The compiled `novomodelo._native` has no stub: `__init__.pyi` types the public surface.
+include = ["python/novomodelo/__init__.py", "tests/test_import.py"]
+
+[tool.ty.overrides.rules]
+unresolved-import = "ignore"
+
+[tool.ruff]
+target-version = "py312"
+
+[tool.ruff.lint]
+# PGH forbids a blanket `# noqa` / `# type: ignore`; RUF100 drops a suppression that
+# suppresses nothing. PLW1514 (open/read_text/write_text without `encoding`) only
+# exists in preview, so `explicit-preview-rules` enables it and no other preview rule.
+select = ["E", "F", "I", "B", "UP", "PGH", "RUF100", "PLW1514"]
+preview = true
+explicit-preview-rules = true
+
+[tool.ruff.lint.isort]
+# `novomodelo._native` is a compiled module, so ruff cannot find it on disk and would
+# otherwise file it as third-party.
+known-first-party = ["novomodelo", "_novomodelo_cli"]
+
+[tool.ruff.lint.pycodestyle]
+# The formatter wraps at 88; E501 catches only what it cannot wrap.
+max-line-length = 110

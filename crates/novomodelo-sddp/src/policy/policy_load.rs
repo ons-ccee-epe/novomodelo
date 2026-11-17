@@ -657,7 +657,6 @@ fn build_basis_cache_for_nodes(
                     },
                     base_row_count: template_rows,
                     cut_row_slots,
-                    state_at_capture: Vec::new(),
                     node_id: node_ids[node],
                 },
             ));
@@ -3099,7 +3098,7 @@ mod tests {
             "a superset source must still load the current cuts"
         );
         assert!(
-            cuts.report().tally_totals().3 > 0,
+            cuts.report().tally_totals().dropped_source > 0,
             "the extra source hydro must be reported as a dropped coupling"
         );
     }
@@ -3127,7 +3126,7 @@ mod tests {
 
         assert_eq!(cuts.len(), 1, "a superset source must load, never reject");
         assert!(
-            cuts.report().tally_totals().3 > 0,
+            cuts.report().tally_totals().dropped_source > 0,
             "the dropped source slot must still be reported"
         );
     }
@@ -3282,10 +3281,12 @@ mod tests {
 
     /// A policy exported WITHOUT travel-time buckets loaded by bucket-aware
     /// code whose terminal manifest has a `HydroTransitBucket` (type 3) slot
-    /// at the same `state_dimension` succeeds: a target transit bucket with no
-    /// source match defaults to `0.0` (distinct from storage/lag's
-    /// reject-on-miss; a matching source transit slot is instead blended). The
-    /// storage slot still loads its identity-matched coefficient.
+    /// at the same `state_dimension` succeeds: the target bucket is
+    /// sentinel-dated, so it has no arrival interval to reconcile and
+    /// defaults to `0.0` even though the source prices the receiver's storage
+    /// (distinct from storage/lag's reject-on-miss; a matching dated source
+    /// transit slot is instead blended). The storage slot still loads its
+    /// identity-matched coefficient.
     #[test]
     fn load_boundary_cuts_missing_transit_bucket_slot_identity_defaults_to_zero() {
         let tmp = tempfile::tempdir().unwrap();
@@ -3300,9 +3301,7 @@ mod tests {
             &current,
             NEUTRAL_LOADING_FACTOR,
         ))
-        .expect(
-            "a transit-bucket slot with no source counterpart must default to zero, not reject",
-        );
+        .expect("a sentinel-dated transit-bucket slot must default to zero, not reject");
 
         assert_eq!(cuts.len(), 2, "both cuts must still load");
         for cut in cuts.iter() {
@@ -3319,7 +3318,8 @@ mod tests {
     /// (2) than the bucket-aware current study (3). That differing dimension does
     /// not reject under a verifiable manifest: per-slot reconciliation copies
     /// the two identity-matched storage coefficients through and resolves the
-    /// target-only transit bucket to `0.0`.
+    /// sentinel-dated target-only transit bucket to `0.0`, since a sentinel
+    /// date carries no arrival interval.
     #[test]
     fn load_boundary_cuts_no_transit_bucket_export_reconciles_transit_bucket_to_zero() {
         let tmp = tempfile::tempdir().unwrap();
@@ -4170,7 +4170,6 @@ mod tests {
             },
             base_row_count: row_status.len(),
             cut_row_slots: Vec::new(),
-            state_at_capture: Vec::new(),
             node_id: NodeId(0),
         };
         let bases = CheckpointBasisStore {

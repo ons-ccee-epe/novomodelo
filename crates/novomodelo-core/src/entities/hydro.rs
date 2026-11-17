@@ -76,6 +76,8 @@ pub struct HydroPenalties {
     pub outflow_violation_above_cost: f64,
     /// Penalty per `MWh` of generation below minimum bound ($/`MWh`).
     pub generation_violation_below_cost: f64,
+    /// FPHA plane violation cost ($/`MWh`).
+    pub fpha_violation_cost: f64,
     /// Symmetric evaporation violation penalty, the default of both directional
     /// evaporation costs ($/(m³/s·h)).
     pub evaporation_violation_cost: f64,
@@ -111,6 +113,7 @@ impl HydroPenalties {
             outflow_violation_below_cost: v,
             outflow_violation_above_cost: v,
             generation_violation_below_cost: v,
+            fpha_violation_cost: v,
             evaporation_violation_cost: v,
             water_withdrawal_violation_cost: v,
             water_withdrawal_violation_pos_cost: v,
@@ -251,7 +254,7 @@ pub struct Hydro {
     pub generation_model: HydroGenerationModel,
     /// Minimum turbined flow \[m³/s\].
     pub min_turbined_m3s: f64,
-    /// Maximum turbined flow (installed turbine capacity) \[m³/s\].
+    /// Declared maximum turbined flow \[m³/s\].
     pub max_turbined_m3s: f64,
     /// Specific productivity `ρ_esp` \[MW / ((m³/s) · m)\].
     ///
@@ -292,6 +295,15 @@ pub struct Hydro {
     pub penalties: HydroPenalties,
 }
 
+const TURBINE_CAPACITY_EPS: f64 = 1e-9;
+
+/// Whether a plant has turbine capacity: both `max_turbined_m3s` (m³/s) and
+/// `max_generation_mw` (MW) exceed the capacity threshold.
+#[must_use]
+pub fn has_turbine_capacity(max_turbined_m3s: f64, max_generation_mw: f64) -> bool {
+    max_turbined_m3s > TURBINE_CAPACITY_EPS && max_generation_mw > TURBINE_CAPACITY_EPS
+}
+
 impl Hydro {
     /// Puts `unit_groups` in canonical id order so results do not depend on
     /// declaration order.
@@ -299,16 +311,22 @@ impl Hydro {
         self.unit_groups.sort_by_key(|g| g.id.0);
     }
 
-    /// Whether the plant can turbine any flow: `max_turbined_m3s` above 1e-9 m³/s.
+    /// Whether the plant declares both `max_turbined_m3s` and `max_generation_mw`
+    /// above the capacity threshold.
     ///
-    /// At or below that threshold an FPHA fit's flow axis collapses onto `q = 0`
-    /// and no plane survives, so the plant is modeled at zero productivity. A zero
-    /// `max_generation_mw` alone does not make a plant capacity-less: fitting
-    /// drops a non-positive ceiling and the generation column's own bound holds
-    /// output at zero.
+    /// Either limit at or below the threshold makes the plant capacity-less, and
+    /// its fitted model is then zero productivity: a collapsed flow or power axis
+    /// leaves no plane any stage can use.
     #[must_use]
     pub fn has_turbine_capacity(&self) -> bool {
-        self.max_turbined_m3s > 1e-9
+        has_turbine_capacity(self.max_turbined_m3s, self.max_generation_mw)
+    }
+
+    /// Whether the plant declares a travel-time arc: `travel_time_hours` above
+    /// `0.0` (`0.0` is undeclared) and a `downstream_id`.
+    #[must_use]
+    pub fn declares_travel_time_arc(&self) -> bool {
+        self.travel_time_hours.is_some_and(|t| t > 0.0) && self.downstream_id.is_some()
     }
 
     /// Test-only fixture helper: mirrors this plant into a single unit group
@@ -374,6 +392,25 @@ mod tests {
         };
         hydro.declare_mirror_unit_group(EntityId::from(10));
         hydro
+    }
+
+    #[test]
+    fn declares_travel_time_arc_requires_positive_time_and_a_downstream() {
+        let mut hydro = minimal_hydro(HydroGenerationModel::ConstantProductivity);
+
+        hydro.travel_time_hours = None;
+        hydro.downstream_id = Some(EntityId(3));
+        assert!(!hydro.declares_travel_time_arc());
+
+        hydro.travel_time_hours = Some(0.0);
+        assert!(!hydro.declares_travel_time_arc());
+
+        hydro.travel_time_hours = Some(360.0);
+        hydro.downstream_id = None;
+        assert!(!hydro.declares_travel_time_arc());
+
+        hydro.downstream_id = Some(EntityId(3));
+        assert!(hydro.declares_travel_time_arc());
     }
 
     #[test]
@@ -549,6 +586,7 @@ mod tests {
             outflow_violation_below_cost: 7.0,
             outflow_violation_above_cost: 8.0,
             generation_violation_below_cost: 9.0,
+            fpha_violation_cost: 90.0,
             evaporation_violation_cost: 10.0,
             water_withdrawal_violation_cost: 11.0,
             water_withdrawal_violation_pos_cost: 11.0,
@@ -567,6 +605,7 @@ mod tests {
         assert!((p.outflow_violation_below_cost - 7.0).abs() < f64::EPSILON);
         assert!((p.outflow_violation_above_cost - 8.0).abs() < f64::EPSILON);
         assert!((p.generation_violation_below_cost - 9.0).abs() < f64::EPSILON);
+        assert!((p.fpha_violation_cost - 90.0).abs() < f64::EPSILON);
         assert!((p.evaporation_violation_cost - 10.0).abs() < f64::EPSILON);
         assert!((p.water_withdrawal_violation_cost - 11.0).abs() < f64::EPSILON);
     }
@@ -634,6 +673,7 @@ mod tests {
                 outflow_violation_below_cost: 4.0,
                 outflow_violation_above_cost: 5.0,
                 generation_violation_below_cost: 6.0,
+                fpha_violation_cost: 60.0,
                 evaporation_violation_cost: 7.0,
                 water_withdrawal_violation_cost: 8.0,
                 water_withdrawal_violation_pos_cost: 8.0,
@@ -977,5 +1017,42 @@ mod tests {
 
         let ids: Vec<i32> = hydro.unit_groups.iter().map(|g| g.id.0).collect();
         assert_eq!(ids, vec![2, 5, 9]);
+    }
+
+    /// derived: the rule is a conjunction, so only the quadrant with both limits
+    /// positive is true.
+    #[test]
+    fn has_turbine_capacity_needs_both_limits() {
+        assert!(!has_turbine_capacity(0.0, 0.0));
+        assert!(!has_turbine_capacity(0.0, 1.0));
+        assert!(!has_turbine_capacity(1.0, 0.0));
+        assert!(has_turbine_capacity(1.0, 1.0));
+    }
+
+    /// derived: the comparison is strict, so a limit equal to the threshold is
+    /// capacity-less on either axis and twice the threshold on both is not.
+    #[test]
+    fn has_turbine_capacity_is_strict_at_the_threshold() {
+        assert!(!has_turbine_capacity(TURBINE_CAPACITY_EPS, 1.0));
+        assert!(!has_turbine_capacity(1.0, TURBINE_CAPACITY_EPS));
+        assert!(has_turbine_capacity(
+            2.0 * TURBINE_CAPACITY_EPS,
+            2.0 * TURBINE_CAPACITY_EPS
+        ));
+    }
+
+    /// derived: a plant declared with no generation limit has no capacity under
+    /// the free predicate, and the method reads the entity's own two limits.
+    #[test]
+    fn hydro_method_delegates_to_the_free_predicate() {
+        let mut hydro = minimal_hydro(HydroGenerationModel::Fpha);
+        assert!(hydro.has_turbine_capacity());
+
+        hydro.max_generation_mw = 0.0;
+        assert!(!hydro.has_turbine_capacity());
+        assert_eq!(
+            hydro.has_turbine_capacity(),
+            has_turbine_capacity(hydro.max_turbined_m3s, hydro.max_generation_mw)
+        );
     }
 }

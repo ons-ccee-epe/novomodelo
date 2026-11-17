@@ -1,4 +1,5 @@
-//! Sentinel constants for LP-solver profile iteration limits.
+//! Constants shared by the LP-solver profiles: iteration-limit sentinels and the
+//! row-violation allowance.
 
 /// Sentinel for the simplex iteration limit: when
 /// `HighsProfile::simplex_iteration_limit` equals this, implementations MUST fall
@@ -12,6 +13,17 @@ pub const DEFAULT_PROFILE_HEURISTIC_SENTINEL: u32 = 0;
 /// value is applied verbatim. `0` is safe as the sentinel because zero iterations
 /// is never a legitimate cap.
 pub const DEFAULT_PROFILE_IPM_UNBOUNDED_SENTINEL: u32 = 0;
+
+/// Row excess above which a returned solution counts as missing a row bound.
+///
+/// The row excess of a solution is the largest, over rows, of the bound violation
+/// minus the solver's primal feasibility tolerance, divided by `max(1, Σ|a_ij x_j|)`.
+/// A solution counts when that excess is strictly greater than this allowance.
+pub const ROW_VIOLATION_RELATIVE_ALLOWANCE: f64 = 1e-11;
+
+pub(crate) fn counts_as_row_violation(rho: f64) -> bool {
+    rho > ROW_VIOLATION_RELATIVE_ALLOWANCE
+}
 
 /// Fieldless profile for in-crate test mocks, so test-only `SolverInterface`
 /// impls need not name the feature-gated `HighsProfile`. Test-only — never export

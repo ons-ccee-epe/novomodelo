@@ -14,7 +14,7 @@ use novomodelo_core::Hydro;
 use novomodelo_core::entities::HydroGenerationModel;
 
 use super::{ValidationContext, rules, schema::ParsedData};
-use crate::extensions::{ProductionModelConfig, SelectionMode};
+use crate::extensions::ProductionModelConfig;
 
 // ── validate_dimensional_consistency ─────────────────────────────────────────
 
@@ -216,33 +216,12 @@ fn collect_fpha_hydro_ids(
     }
 
     for config in production_models {
-        if production_model_uses_fpha(config) {
+        if config.uses_fpha() {
             ids.insert(config.hydro_id.0);
         }
     }
 
     ids
-}
-
-// Mirrors the solver crate's `resolve_stage`/`selection_entries` resolver: a
-// Seasonal season miss falls back to `default_model`, so the fold reads
-// `default_model` too — keep in agreement with that resolver's season-miss
-// semantics, not just the declared seasons.
-fn production_model_uses_fpha(config: &ProductionModelConfig) -> bool {
-    match &config.selection_mode {
-        SelectionMode::StageRanges { ranges } => {
-            ranges.iter().any(|r| r.model == HydroGenerationModel::Fpha)
-        }
-        SelectionMode::Seasonal {
-            default_model,
-            seasons,
-        } => {
-            *default_model == HydroGenerationModel::Fpha
-                || seasons
-                    .iter()
-                    .any(|s| s.model == HydroGenerationModel::Fpha)
-        }
-    }
 }
 
 #[cfg(test)]
@@ -271,7 +250,7 @@ mod tests {
     };
 
     use crate::{
-        extensions::{FphaHyperplaneRow, HydroGeometryRow, SeasonConfig},
+        extensions::{FphaHyperplaneRow, HydroGeometryRow},
         scenarios::{InflowSeasonalStatsRow, LoadSeasonalStatsRow},
         validation::{ErrorKind, ValidationContext},
     };
@@ -696,13 +675,72 @@ mod tests {
         assert_eq!(
             errors.len(),
             1,
-            "only the plant with turbine capacity needs rows, got: {errors:?}"
+            "only the plant with turbined-flow and generation capacity needs rows, got: {errors:?}"
         );
         assert_eq!(errors[0].kind, ErrorKind::DimensionMismatch);
         assert!(
             errors[0].message.contains("Hydro 2"),
             "error should name hydro 2, got: {}",
             errors[0].message
+        );
+    }
+
+    /// derived: hydro 1 is exempt because a zero `max_generation_mw` leaves it no turbine capacity.
+    #[test]
+    fn zero_generation_capacity_fpha_hydro_needs_no_hyperplane_rows() {
+        let mut data = crate::test_support::base_parsed_data(stages(), vec![]);
+
+        let mut capacity_less = make_hydro(1, HydroGenerationModel::Fpha, None, None);
+        capacity_less.max_generation_mw = 0.0;
+        let with_capacity = make_hydro(2, HydroGenerationModel::Fpha, None, None);
+        assert!(with_capacity.has_turbine_capacity());
+        data.hydros = vec![
+            capacity_less,
+            with_capacity,
+            make_hydro(3, HydroGenerationModel::Fpha, None, None),
+        ];
+
+        data.fpha_hyperplanes = vec![fpha_row(3)];
+
+        let mut ctx = ValidationContext::new();
+        validate_dimensional_consistency(&data, &mut ctx);
+
+        let errors = ctx.errors();
+        assert_eq!(
+            errors.len(),
+            1,
+            "only the plant with turbined-flow and generation capacity needs rows, got: {errors:?}"
+        );
+        assert_eq!(errors[0].kind, ErrorKind::DimensionMismatch);
+        assert!(
+            errors[0].message.contains("Hydro 2"),
+            "error should name hydro 2, got: {}",
+            errors[0].message
+        );
+    }
+
+    /// derived: hydro 1 is exempt because both declared limits are zero.
+    #[test]
+    fn fpha_hydro_without_either_limit_needs_no_hyperplane_rows() {
+        let mut data = crate::test_support::base_parsed_data(stages(), vec![]);
+
+        let mut capacity_less = make_hydro(1, HydroGenerationModel::Fpha, None, None);
+        capacity_less.max_turbined_m3s = 0.0;
+        capacity_less.max_generation_mw = 0.0;
+        data.hydros = vec![
+            capacity_less,
+            make_hydro(3, HydroGenerationModel::Fpha, None, None),
+        ];
+
+        data.fpha_hyperplanes = vec![fpha_row(3)];
+
+        let mut ctx = ValidationContext::new();
+        validate_dimensional_consistency(&data, &mut ctx);
+
+        let errors = ctx.errors();
+        assert!(
+            errors.is_empty(),
+            "a plant with neither limit needs no rows, got: {errors:?}"
         );
     }
 
@@ -940,36 +978,6 @@ mod tests {
                 .iter()
                 .all(|e| e.kind == ErrorKind::DimensionMismatch),
             "all errors should be DimensionMismatch"
-        );
-    }
-
-    // ── Cross-crate agreement with the solver crate's resolve_stage/selection_entries ──
-
-    /// `production_model_uses_fpha` agrees with the solver crate's
-    /// `resolve_stage`/`selection_entries` classification: a `Seasonal` config
-    /// with `default_model == "fpha"` and every listed season non-FPHA still
-    /// classifies as using FPHA.
-    #[test]
-    fn test_production_model_uses_fpha_agrees_with_resolve_stage_on_seasonal_default() {
-        let config = ProductionModelConfig {
-            hydro_id: EntityId(0),
-            selection_mode: SelectionMode::Seasonal {
-                default_model: HydroGenerationModel::Fpha,
-                seasons: vec![SeasonConfig {
-                    season_id: 1,
-                    model: HydroGenerationModel::ConstantProductivity,
-                    fpha_config: None,
-                    reference_volume: None,
-                    productivity_mw_per_m3s: Some(0.5),
-                }],
-            },
-        };
-
-        assert!(
-            production_model_uses_fpha(&config),
-            "production_model_uses_fpha must agree with the solver crate's \
-             resolve_stage/selection_entries: default_model == \"fpha\" classifies \
-             as FPHA even when every listed season is non-FPHA"
         );
     }
 }

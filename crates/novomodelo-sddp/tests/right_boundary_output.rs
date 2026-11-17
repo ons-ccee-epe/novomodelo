@@ -27,7 +27,7 @@ use novomodelo_core::{
     BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, EntityId, HydroBlockBounds,
     HydroStageBounds, InitialConditions, LineBlockBounds, PostStudyStage, PostStudyStages,
     PostStudyThermalBound, PumpingBlockBounds, ResolvedBounds, System, SystemBuilder,
-    ThermalBlockBounds, ThermalStageBounds,
+    ThermalBlockBounds, WaterBucketStages,
 };
 use novomodelo_io::config::SimulationSelection;
 use novomodelo_io::output::simulation_writer::{ScenarioWritePayload, SimulationParquetWriter};
@@ -108,7 +108,7 @@ fn stages() -> Vec<novomodelo_core::temporal::Stage> {
 /// to, so `StageCalendar::resolve_window` covers it at destination index 0.
 fn post_study_stages(min_k: f64, max_k: f64) -> PostStudyStages {
     PostStudyStages {
-        stages: vec![PostStudyStage {
+        thermal_stages: vec![PostStudyStage {
             start_date: NaiveDate::from_ymd_opt(2024, 4, 1).expect("valid date"),
             duration_hours: 720.0,
         }],
@@ -119,6 +119,7 @@ fn post_study_stages(min_k: f64, max_k: f64) -> PostStudyStages {
             min_mw: min_k,
             max_mw: max_k,
         }],
+        water_bucket_stages: WaterBucketStages::FromThermalStages,
     }
 }
 
@@ -141,10 +142,10 @@ fn bounds() -> ResolvedBounds {
                 water_withdrawal_m3s: 0.0,
             },
             hydro_block: HydroBlockBounds::default(),
-            thermal: ThermalStageBounds { cost_per_mwh: 1.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 1.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -188,6 +189,7 @@ fn penalties() -> novomodelo_core::resolved::ResolvedPenalties {
                 outflow_violation_below_cost: 0.0,
                 outflow_violation_above_cost: 0.0,
                 generation_violation_below_cost: 0.0,
+                fpha_violation_cost: 0.0,
                 evaporation_violation_cost: 0.0,
                 water_withdrawal_violation_cost: 0.0,
                 water_withdrawal_violation_pos_cost: 0.0,

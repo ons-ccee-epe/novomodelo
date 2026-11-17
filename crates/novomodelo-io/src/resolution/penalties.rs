@@ -72,6 +72,7 @@ pub struct PenaltiesOverrides<'a> {
 ///     outflow_violation_below_cost: 500.0,
 ///     outflow_violation_above_cost: 500.0,
 ///     generation_violation_below_cost: 500.0,
+///     fpha_violation_cost: 5000.0,
 ///     evaporation_violation_cost: 500.0,
 ///     water_withdrawal_violation_cost: 500.0,
 ///     water_withdrawal_violation_pos_cost: 500.0,
@@ -123,6 +124,7 @@ pub struct PenaltiesOverrides<'a> {
 ///     outflow_violation_below_cost: None,
 ///     outflow_violation_above_cost: None,
 ///     generation_violation_below_cost: None,
+///     fpha_violation_cost: None,
 ///     evaporation_violation_cost: None,
 ///     water_withdrawal_violation_cost: None,
 ///     water_withdrawal_violation_pos_cost: None,
@@ -200,6 +202,7 @@ pub fn resolve_penalties(
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -326,6 +329,9 @@ pub fn resolve_penalties(
         if let Some(v) = row.generation_violation_below_cost {
             cell.generation_violation_below_cost = v;
         }
+        if let Some(v) = row.fpha_violation_cost {
+            cell.fpha_violation_cost = v;
+        }
         if let Some(v) = row.evaporation_violation_cost {
             cell.evaporation_violation_cost = v;
         }
@@ -418,6 +424,9 @@ mod tests {
     use novomodelo_core::entities::{
         Bus, DeficitSegment, HydroGenerationModel, HydroPenalties, Line, NonControllableSource,
     };
+    use novomodelo_core::{HydroPenaltyOverrides, resolve_hydro_penalties};
+
+    use crate::test_support::make_global;
 
     /// Build a 0-based consecutive stage_index map: {0→0, 1→1, …, (n-1)→(n-1)}.
     fn si(n: usize) -> HashMap<i32, usize> {
@@ -495,6 +504,7 @@ mod tests {
                 outflow_violation_below_cost: penalty_value,
                 outflow_violation_above_cost: penalty_value,
                 generation_violation_below_cost: penalty_value,
+                fpha_violation_cost: penalty_value,
                 evaporation_violation_cost: penalty_value,
                 water_withdrawal_violation_cost: penalty_value,
                 water_withdrawal_violation_pos_cost: penalty_value,
@@ -544,6 +554,7 @@ mod tests {
                 outflow_violation_below_cost: 400.0,
                 outflow_violation_above_cost: 300.0,
                 generation_violation_below_cost: 200.0,
+                fpha_violation_cost: 2000.0,
                 evaporation_violation_cost: 150.0,
                 water_withdrawal_violation_cost: 100.0,
                 water_withdrawal_violation_pos_cost: 100.0,
@@ -620,6 +631,7 @@ mod tests {
             outflow_violation_below_cost: None,
             outflow_violation_above_cost: None,
             generation_violation_below_cost: None,
+            fpha_violation_cost: None,
             evaporation_violation_cost: None,
             water_withdrawal_violation_cost: None,
             water_withdrawal_violation_pos_cost: None,
@@ -706,6 +718,7 @@ mod tests {
             outflow_violation_below_cost: Some(77.0),
             outflow_violation_above_cost: Some(88.0),
             generation_violation_below_cost: Some(99.0),
+            fpha_violation_cost: None,
             evaporation_violation_cost: Some(110.0),
             water_withdrawal_violation_cost: Some(120.0),
             water_withdrawal_violation_pos_cost: Some(120.0),
@@ -1141,5 +1154,35 @@ mod tests {
                 ..hydros[1].penalties
             }
         );
+    }
+
+    #[test]
+    fn resolve_penalties_overlays_fpha_violation_cost_per_tier() {
+        let mut global = make_global();
+        global.hydro.fpha_violation_cost = 100.0;
+        let plant_override = HydroPenaltyOverrides {
+            fpha_violation_cost: Some(200.0),
+            ..HydroPenaltyOverrides::default()
+        };
+        let mut hydros = vec![make_hydro(0, 1.0), make_hydro(1, 1.0)];
+        hydros[0].penalties = resolve_hydro_penalties(&None, &global);
+        hydros[1].penalties = resolve_hydro_penalties(&Some(plant_override), &global);
+        let stage_row = HydroPenaltyOverrideRow {
+            fpha_violation_cost: Some(300.0),
+            ..all_none_hydro_override(1, 1)
+        };
+
+        let result = resolve_penalties(&hydros, &[], &[], &[], 2, &[stage_row], &[], &[], &[]);
+
+        let fpha_bits = |hydro_index: usize, stage_index: usize| {
+            result
+                .hydro_penalties(hydro_index, stage_index)
+                .fpha_violation_cost
+                .to_bits()
+        };
+        assert_eq!(fpha_bits(0, 0), 100.0_f64.to_bits());
+        assert_eq!(fpha_bits(0, 1), 100.0_f64.to_bits());
+        assert_eq!(fpha_bits(1, 0), 200.0_f64.to_bits());
+        assert_eq!(fpha_bits(1, 1), 300.0_f64.to_bits());
     }
 }

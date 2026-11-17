@@ -16,6 +16,7 @@ use novomodelo_sddp::policy::full_fcf_load::{
     FullFcfLoadKind, check_full_fcf_load, locate_policy_dir,
 };
 use novomodelo_sddp::policy::orchestration::{CheckpointParams, write_checkpoint};
+use novomodelo_sddp::test_support::bits;
 use novomodelo_sddp::{SddpError, StopMask, StudySetup, TrainingOutcome, TrainingResult};
 use novomodelo_solver::ActiveSolver;
 use tempfile::TempDir;
@@ -47,10 +48,6 @@ fn train_to_completion(setup: &mut StudySetup) -> TrainingResult {
         outcome.error
     );
     outcome.result
-}
-
-fn bits(series: &[f64]) -> Vec<u64> {
-    series.iter().copied().map(f64::to_bits).collect()
 }
 
 /// Train `iterations` iterations and write the checkpoint under the study's
@@ -161,22 +158,8 @@ impl Communicator for LpSolvesFailureComm {
 
 #[test]
 fn checkpoint_records_the_lower_bound_of_every_completed_iteration() {
-    let case_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/1dtoy");
-    let (system, mut setup) = fresh_system_and_setup_with(&case_dir, |config| {
-        config.training.stopping_rules =
-            Some(vec![StoppingRuleConfig::IterationLimit { limit: 4 }]);
-    });
-
-    let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
-    let outcome = setup
-        .train(&mut solver, &StubComm, 1, ActiveSolver::new, None, None)
-        .expect("train must return Ok");
-    assert!(
-        outcome.error.is_none(),
-        "training error: {:?}",
-        outcome.error
-    );
-    let result = outcome.result;
+    let (system, mut setup) = setup_under(vec![StoppingRuleConfig::IterationLimit { limit: 4 }]);
+    let result = train_to_completion(&mut setup);
     assert_eq!(result.iterations, 4);
 
     let tmpdir = tempfile::tempdir().expect("tempdir");

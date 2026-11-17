@@ -134,6 +134,16 @@ unsafe extern "C" {
         upper: *const c_double,
     ) -> c_int;
 
+    /// Change bounds of the contiguous row range `[from_row, to_row]`; `to_row` is inclusive.
+    /// Wraps `Highs_changeRowsBoundsByRange()`.
+    pub fn novomodelo_highs_change_rows_bounds_by_range(
+        highs: *mut c_void,
+        from_row: int32_t,
+        to_row: int32_t,
+        lower: *const c_double,
+        upper: *const c_double,
+    ) -> c_int;
+
     /// Change bounds of columns identified by an index set.
     /// Wraps `Highs_changeColsBoundsBySet()`.
     pub fn novomodelo_highs_change_cols_bounds_by_set(
@@ -188,6 +198,25 @@ unsafe extern "C" {
         col_status: *const int32_t,
         row_status: *const int32_t,
     ) -> c_int;
+
+    /// Row excess of `col_value` against the incumbent LP: writes each row's
+    /// activity into `activity`, and the magnitude only of rows whose violation
+    /// exceeds `primal_tolerance` into `magnitude`, and returns the largest
+    /// bound violation minus `primal_tolerance`, relative to the row magnitude
+    /// (+infinity for a NaN activity; 0 when `num_row` is zero or differs from the incumbent LP's row count).
+    /// Reads the LP by reference, without copying the model.
+    pub fn novomodelo_highs_max_row_violation(
+        highs: *mut c_void,
+        col_value: *const c_double,
+        activity: *mut c_double,
+        magnitude: *mut c_double,
+        num_row: int32_t,
+        primal_tolerance: c_double,
+    ) -> c_double;
+
+    /// `primal_feasibility_tolerance · 2^(−user_bound_scale)` under the current
+    /// options, read by reference without an option-name lookup.
+    pub fn novomodelo_highs_primal_tolerance_in_effect(highs: *const c_void) -> c_double;
 
     /// Get the current basis into caller-allocated arrays. Wraps `Highs_getBasis()`.
     pub fn novomodelo_highs_get_basis(

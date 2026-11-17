@@ -34,7 +34,7 @@ plain directory walk has no such ambiguity.
 The second case (`examples/deterministic/d57-fpha-zero-turbine-capacity`) has
 one plant that requests FPHA but has no turbine capacity. It is here to check
 that both write paths list that plant under the `no_turbine_capacity` key of
-`training/hydro_models.json`.
+`training/hydro_models.json`, with the same `frozen_turbining` row.
 
 The third case (`examples/deterministic/d59-parameter-sum-useful-volume-floor`)
 declares a generic constraint with a parameter-sum coefficient on a
@@ -42,6 +42,10 @@ useful-volume term and a `per_unit` slack, and its simulation writes a
 generic-violation partition. It is here to check that both write paths emit
 `generic_constraints/resolved_echo.parquet` and the
 `simulation/violations/generic/` partition.
+
+The fourth case (`examples/deterministic/d60-stage-outflow-volume-cap`)
+declares a stage outflow-volume constraint, and its simulation writes a
+generic-violation partition.
 """
 
 from __future__ import annotations
@@ -51,6 +55,7 @@ import pathlib
 import re
 import shutil
 
+import pyarrow.parquet as pq
 import pytest
 
 from _novomodelo_cli import resolve_cli_binary, run_cli
@@ -61,6 +66,7 @@ D57_CASE = _REPO_ROOT / "examples" / "deterministic" / "d57-fpha-zero-turbine-ca
 D59_CASE = (
     _REPO_ROOT / "examples" / "deterministic" / "d59-parameter-sum-useful-volume-floor"
 )
+D60_CASE = _REPO_ROOT / "examples" / "deterministic" / "d60-stage-outflow-volume-cap"
 
 _SCENARIO_PARTITION_RE = re.compile(r"scenario_id=(\d{4})")
 
@@ -123,7 +129,7 @@ def d28_cli_output(
 @pytest.fixture(scope="module")
 def d28_python_output(tmp_path_factory: pytest.TempPathFactory) -> pathlib.Path:
     """Run D28 through the module-level Python bindings entry point."""
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     assert D28_CASE.is_dir(), f"the D28 fixture must exist at {D28_CASE}"
     output_dir = tmp_path_factory.mktemp("d28_python_out")
@@ -145,7 +151,7 @@ def d57_cli_output(
 @pytest.fixture(scope="module")
 def d57_python_output(tmp_path_factory: pytest.TempPathFactory) -> pathlib.Path:
     """Run D57 through the module-level Python bindings entry point."""
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     assert D57_CASE.is_dir(), f"the D57 fixture must exist at {D57_CASE}"
     output_dir = tmp_path_factory.mktemp("d57_python_out")
@@ -167,7 +173,7 @@ def d59_cli_output(
 @pytest.fixture(scope="module")
 def d59_python_output(tmp_path_factory: pytest.TempPathFactory) -> pathlib.Path:
     """Run D59 through the module-level Python bindings entry point."""
-    import novomodelo.run  # noqa: PLC0415
+    import novomodelo.run
 
     assert D59_CASE.is_dir(), f"the D59 fixture must exist at {D59_CASE}"
     output_dir = tmp_path_factory.mktemp("d59_python_out")
@@ -175,7 +181,29 @@ def d59_python_output(tmp_path_factory: pytest.TempPathFactory) -> pathlib.Path:
     return output_dir
 
 
-@pytest.mark.parametrize("case", ["d28", "d57", "d59"])
+@pytest.fixture(scope="module")
+def d60_cli_output(
+    tmp_path_factory: pytest.TempPathFactory, cli_binary: pathlib.Path
+) -> pathlib.Path:
+    """Run D60 (a stage outflow-volume constraint) through the compiled CLI binary."""
+    assert D60_CASE.is_dir(), f"the D60 fixture must exist at {D60_CASE}"
+    output_dir = tmp_path_factory.mktemp("d60_cli_out")
+    run_cli(D60_CASE, output_dir, cli_binary)
+    return output_dir
+
+
+@pytest.fixture(scope="module")
+def d60_python_output(tmp_path_factory: pytest.TempPathFactory) -> pathlib.Path:
+    """Run D60 through the module-level Python bindings entry point."""
+    import novomodelo.run
+
+    assert D60_CASE.is_dir(), f"the D60 fixture must exist at {D60_CASE}"
+    output_dir = tmp_path_factory.mktemp("d60_python_out")
+    novomodelo.run.run(str(D60_CASE), output_dir=str(output_dir))
+    return output_dir
+
+
+@pytest.mark.parametrize("case", ["d28", "d57", "d59", "d60"])
 def test_cli_python_output_file_sets_are_equal(
     case: str, request: pytest.FixtureRequest
 ) -> None:
@@ -204,13 +232,26 @@ def test_zero_turbine_case_lists_the_plant_on_both_paths(
 
     Non-vacuity check for the D57 file-set case: the plant must reach the
     `no_turbine_capacity` key of `training/hydro_models.json` on the CLI and
-    on the Python path alike.
+    on the Python path alike. Its `frozen_turbining` row must list both study
+    stages without capacity and no dropped floor on both paths as well.
     """
     expected = [{"hydro_id": 0, "name": "H0-Degenerate"}]
+    expected_frozen = [
+        {
+            "hydro_id": 0,
+            "name": "H0-Degenerate",
+            "no_capacity_stage_ids": [0, 1],
+            "partial_capacity_stage_ids": [],
+            "dropped_floors": [],
+        }
+    ]
     for root in (d57_cli_output, d57_python_output):
         summary = json.loads((root / "training" / "hydro_models.json").read_text())
         assert summary["no_turbine_capacity"] == expected, (
             f"unexpected no_turbine_capacity in {root}"
+        )
+        assert summary["frozen_turbining"] == expected_frozen, (
+            f"unexpected frozen_turbining in {root}"
         )
 
 
@@ -231,6 +272,29 @@ def test_generic_constraint_case_writes_the_echo_and_the_violations_on_both_path
         files = _relative_files(root)
         for rel in expected:
             assert rel in files, f"D59 output {root} is missing {rel}"
+
+
+def test_stage_volume_case_echoes_the_declared_coefficient_on_both_paths(
+    d60_cli_output: pathlib.Path, d60_python_output: pathlib.Path
+) -> None:
+    """Both write paths emit D60's echo and violation partition, with the declared coefficient.
+
+    Non-vacuity check for the D60 file-set case: the echo must label the
+    stage-volume term `hydro_outflow_volume` and carry the coefficient as
+    declared, not multiplied by the block duration.
+    """
+    expected = (
+        "generic_constraints/resolved_echo.parquet",
+        "simulation/violations/generic/scenario_id=0000/data.parquet",
+    )
+    for root in (d60_cli_output, d60_python_output):
+        files = _relative_files(root)
+        for rel in expected:
+            assert rel in files, f"D60 output {root} is missing {rel}"
+        echo = pq.read_table(root / "generic_constraints/resolved_echo.parquet")
+        columns = echo.to_pydict()
+        assert columns["variable_kind"] == ["hydro_outflow_volume"] * 3, root
+        assert columns["coefficient"] == [1.0] * 3, root
 
 
 def test_case_exercises_the_drift_prone_output_surface(

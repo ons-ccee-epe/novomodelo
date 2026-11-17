@@ -6,8 +6,9 @@ use novomodelo_core::{
     StageStateConfig,
 };
 
-/// All-zero `HydroPenalties` so no fixture-side penalty cost contaminates the
-/// column/objective assertions in the builder tests.
+/// `HydroPenalties` with every cost zero but the FPHA violation cost, so no
+/// fixture-side penalty cost contaminates the column/objective assertions in the
+/// builder tests.
 pub(super) fn zero_hydro_penalties() -> HydroPenalties {
     HydroPenalties {
         spillage_cost: 0.0,
@@ -19,6 +20,7 @@ pub(super) fn zero_hydro_penalties() -> HydroPenalties {
         outflow_violation_below_cost: 0.0,
         outflow_violation_above_cost: 0.0,
         generation_violation_below_cost: 0.0,
+        fpha_violation_cost: 10000.0,
         evaporation_violation_cost: 0.0,
         water_withdrawal_violation_cost: 0.0,
         water_withdrawal_violation_pos_cost: 0.0,

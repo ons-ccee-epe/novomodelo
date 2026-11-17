@@ -12,13 +12,17 @@ use std::sync::mpsc;
 use novomodelo_comm::{CommData, CommError, Communicator, ReduceOp};
 use novomodelo_core::scenario::SamplingScheme;
 use novomodelo_core::{BlockMode, System};
-use novomodelo_io::Config;
+use novomodelo_io::test_support::owned_piece_defaults;
+use novomodelo_io::{Config, OwnedPolicyCutRecord};
 use novomodelo_sddp::{
-    BoundaryStateRequirements, SimulationScenarioResult, StudySetup,
+    BoundaryLoadRequest, BoundaryStateRequirements, CutPool, SddpError, SimulationScenarioResult,
+    StudySetup,
     hydro_models::{PrepareHydroModelsResult, prepare_hydro_models},
-    indexer::CutSlot,
-    setup::{NodePos, StudyParams, prepare_stochastic},
-    test_support::decks::{SLOW_DECKS, committed_decks},
+    indexer::{CutSlot, CutStateProjection},
+    inject_boundary_cuts, load_boundary_cuts,
+    setup::{NodePos, StageIdx, StudyParams, prepare_stochastic},
+    test_support::decks::{Deck, SLOW_DECKS, committed_decks},
+    test_support::{fixture_priced_date, write_synthetic_boundary, ymd},
 };
 use novomodelo_solver::ActiveSolver;
 use novomodelo_stochastic::{
@@ -28,12 +32,18 @@ use tempfile::TempDir;
 
 pub mod anticipated_structural_assertions;
 pub mod builders;
-pub mod cut_oracles;
+pub mod determinism_gates;
+pub mod expanded_solve;
+pub mod forward_replay;
 pub mod in_code_studies;
+pub mod oracle_tolerance;
 pub mod parity_hash;
 pub mod parquet_fixtures;
 pub mod permute;
+pub mod power_guards;
+pub mod row_families;
 pub mod selection_fingerprint;
+pub mod stored_cut_oracles;
 
 /// `n` as a positive count; panics on zero.
 pub const fn positive(n: u32) -> NonZeroU32 {
@@ -85,6 +95,20 @@ impl Communicator for StubComm {
     fn abort(&self, error_code: i32) -> ! {
         std::process::exit(error_code)
     }
+}
+
+/// Trains `setup` on one rank with every cut's trial state stored.
+pub fn train_storing_trial_states(label: &str, setup: &mut StudySetup) {
+    setup.set_export_states(true);
+    let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
+    let outcome = setup
+        .train(&mut solver, &StubComm, 1, ActiveSolver::new, None, None)
+        .expect("training must return Ok");
+    assert!(
+        outcome.error.is_none(),
+        "{label}: training must not error: {:?}",
+        outcome.error
+    );
 }
 
 /// `size() == 2` sibling of [`StubComm`]: every collective writes only this
@@ -154,31 +178,6 @@ impl Communicator for Rank0Of2 {
 /// stages and blocks for both hydros).
 pub const D03_EXPECTED_COST: f64 = 1_391_697.766_666_667_3;
 
-/// Re-enables forward warm start for tests that exercise forward basis reuse.
-/// `HiGHS` forward solves are cold by default; CLP has no such switch (it always
-/// reuses an offered basis) and rejects every profile override, so this is a
-/// no-op there.
-#[cfg_attr(not(feature = "highs"), allow(unused_variables))]
-pub fn enable_forward_warm_start(config: &mut novomodelo_io::config::Config) {
-    #[cfg(feature = "highs")]
-    {
-        config.training.solver.forward = Some(novomodelo_io::config::PhaseSolverProfileConfig {
-            dual_edge_weight: None,
-            scale: None,
-            price: None,
-            primal_feasibility_tolerance: None,
-            dual_feasibility_tolerance: None,
-            presolve: None,
-            simplex_update_limit: None,
-            cost_perturbation: None,
-            refactor_error_tolerance: None,
-            factor_pivot_threshold: None,
-            use_warm_start: Some(true),
-            steepest_edge_devex_fallback_threshold: None,
-        });
-    }
-}
-
 /// Re-enables simulation warm start for tests that exercise stored-basis reuse
 /// in simulation, on a built setup because some fixtures expose no config.
 /// `HiGHS` simulation solves are cold by default; CLP always reuses an offered
@@ -224,6 +223,26 @@ pub fn build_setup_for_case(
     stochastic: StochasticContext,
     hydro_models: PrepareHydroModelsResult,
 ) -> StudySetup {
+    build_setup_for_case_with_boundary(
+        case_dir,
+        config,
+        system,
+        stochastic,
+        hydro_models,
+        boundary_requirements(case_dir, config),
+    )
+}
+
+/// [`build_setup_for_case`] with the boundary state requirements given, not resolved
+/// from `config.policy.boundary`.
+pub fn build_setup_for_case_with_boundary(
+    case_dir: &Path,
+    config: &Config,
+    system: &System,
+    stochastic: StochasticContext,
+    hydro_models: PrepareHydroModelsResult,
+    boundary: BoundaryStateRequirements,
+) -> StudySetup {
     let sentinel = Path::new("config.json");
     let training_source = config
         .training_scenario_source(sentinel)
@@ -234,7 +253,7 @@ pub fn build_setup_for_case(
 
     let mut construction = StudyParams::from_config(config, Vec::new())
         .expect("StudyParams::from_config must succeed");
-    construction.boundary = boundary_requirements(case_dir, config);
+    construction.boundary = boundary;
     construction.scalar_parameters = novomodelo_io::load_case_with_artifacts(case_dir)
         .expect("load_case_with_artifacts must succeed")
         .artifacts
@@ -260,6 +279,21 @@ pub fn fresh_system_and_setup_with(
     case_dir: &Path,
     mutate: impl FnOnce(&mut Config),
 ) -> (System, StudySetup) {
+    let mut config =
+        novomodelo_io::parse_config(&case_dir.join("config.json")).expect("config must parse");
+    mutate(&mut config);
+    let boundary = boundary_requirements(case_dir, &config);
+    fresh_system_and_setup_with_boundary(case_dir, boundary, |fresh| *fresh = config)
+}
+
+/// [`fresh_system_and_setup_with`] with the boundary state requirements given, not
+/// resolved from the mutated `config.policy.boundary`: the way to build a study whose
+/// lag state is widened past its PAR order with no boundary checkpoint on disk.
+pub fn fresh_system_and_setup_with_boundary(
+    case_dir: &Path,
+    boundary: BoundaryStateRequirements,
+    mutate: impl FnOnce(&mut Config),
+) -> (System, StudySetup) {
     let config_path = case_dir.join("config.json");
     let mut config = novomodelo_io::parse_config(&config_path).expect("config must parse");
     mutate(&mut config);
@@ -268,14 +302,13 @@ pub fn fresh_system_and_setup_with(
     let training_source = config
         .training_scenario_source(&config_path)
         .expect("training_scenario_source must parse");
-    let inflow_lag_depth = boundary_requirements(case_dir, &config).inflow_lag_depth();
     let prepare_result = prepare_stochastic(
         system,
         case_dir,
         &config,
         42,
         &training_source,
-        inflow_lag_depth,
+        boundary.inflow_lag_depth(),
     )
     .expect("prepare_stochastic must succeed");
     let system = prepare_result.system;
@@ -284,8 +317,25 @@ pub fn fresh_system_and_setup_with(
     let hydro_models =
         prepare_hydro_models(&system, case_dir, false).expect("prepare_hydro_models must succeed");
 
-    let setup = build_setup_for_case(case_dir, &config, &system, stochastic, hydro_models);
+    let setup = build_setup_for_case_with_boundary(
+        case_dir,
+        &config,
+        &system,
+        stochastic,
+        hydro_models,
+        boundary,
+    );
     (system, setup)
+}
+
+/// Whether every node's stage and pool equal its position: no branching, no shared pool.
+pub fn is_chain(setup: &StudySetup) -> bool {
+    setup
+        .inputs
+        .node_graph
+        .nodes
+        .iter_indexed()
+        .all(|(pos, node)| node.stage == StageIdx(pos.0) && node.pool_id == pos.0)
 }
 
 /// Build a fresh [`StudySetup`] from `case_dir`'s config: applies `mutate`,
@@ -305,7 +355,7 @@ pub fn fresh_setup_with_openings(
 ) -> StudySetup {
     let tmp =
         copy_case_with_stage_field(case_dir, "num_openings", &serde_json::json!(num_openings));
-    fresh_setup_with(tmp.path(), mutate)
+    fresh_system_and_setup_with(tmp.path(), mutate).1
 }
 
 pub fn copy_toy_case(src: &Path, dst: &Path) {
@@ -319,6 +369,31 @@ pub fn copy_toy_case(src: &Path, dst: &Path) {
             std::fs::copy(entry.path(), target).expect("copy file");
         }
     }
+}
+
+pub fn edit_json(path: &Path, edit: impl FnOnce(&mut serde_json::Value)) {
+    let text = std::fs::read_to_string(path).expect("read JSON input");
+    let mut value: serde_json::Value = serde_json::from_str(&text).expect("parse JSON input");
+    edit(&mut value);
+    std::fs::write(
+        path,
+        serde_json::to_string_pretty(&value).expect("serialize JSON"),
+    )
+    .expect("write JSON input");
+}
+
+/// d51 with group 1 (`H0-B1`, bus 1) declaring no generation capacity.
+pub fn d51_with_dead_bus1_group() -> TempDir {
+    let case = TempDir::new().expect("tempdir");
+    copy_toy_case(
+        &Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/deterministic/d51-split-plant-two-bus"),
+        case.path(),
+    );
+    edit_json(&case.path().join("system/hydros.json"), |hydros| {
+        hydros["hydros"][0]["unit_groups"][1]["max_generation_mw"] = serde_json::json!(0.0);
+    });
+    case
 }
 
 /// 1dtoy cut to its first `stages` stages, so its boundary date is the end of
@@ -468,6 +543,14 @@ fn build_flip_or_panic(
     }
 }
 
+/// Committed decks a sweep visits: all of them, minus [`SLOW_DECKS`] unless
+/// `slow-tests` is enabled.
+fn swept_decks() -> impl Iterator<Item = Deck> {
+    committed_decks()
+        .into_iter()
+        .filter(|deck| cfg!(feature = "slow-tests") || !SLOW_DECKS.contains(&deck.key.as_str()))
+}
+
 /// Visits every committed deck (skipping [`SLOW_DECKS`] unless `slow-tests`
 /// is enabled) that has a stage of `n_blks > 1` — read from the [`Parallel`]
 /// flip's `block_hours_per_stage` — building both mode flips and visiting
@@ -477,12 +560,8 @@ fn build_flip_or_panic(
 pub fn for_each_deck_in_both_block_modes(
     mut visit: impl FnMut(&str, (&System, &StudySetup), (&System, &StudySetup)),
 ) -> usize {
-    let slow_tests_enabled = cfg!(feature = "slow-tests");
     let mut count = 0;
-    for deck in committed_decks() {
-        if !slow_tests_enabled && SLOW_DECKS.contains(&deck.key.as_str()) {
-            continue;
-        }
+    for deck in swept_decks() {
         let Some((parallel_system, parallel_setup)) =
             build_flip_or_panic(&deck.key, &deck.dir, BlockMode::Parallel)
         else {
@@ -517,12 +596,8 @@ pub fn for_each_deck_in_both_block_modes(
 /// enabled), then every [`in_code_studies::structural_studies`] entry, building
 /// one [`System`] and [`StudySetup`] at a time; returns the total visit count.
 pub fn for_each_study(mut visit: impl FnMut(&str, &System, &StudySetup)) -> usize {
-    let slow_tests_enabled = cfg!(feature = "slow-tests");
     let mut count = 0;
-    for deck in committed_decks() {
-        if !slow_tests_enabled && SLOW_DECKS.contains(&deck.key.as_str()) {
-            continue;
-        }
+    for deck in swept_decks() {
         let (system, setup) = fresh_system_and_setup_with(&deck.dir, |_| {});
         visit(&deck.key, &system, &setup);
         count += 1;
@@ -571,14 +646,16 @@ pub fn stochastic_in_code(system: &System) -> StochasticContext {
     .expect("build_stochastic_context")
 }
 
-/// Fallible core shared by every in-code `StudySetup` constructor below: the
-/// sole call site of `StudySetup::new` in this module.
-#[allow(clippy::needless_pass_by_value)]
+/// Fallible core of every in-code `StudySetup` constructor below.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "callers pass an owned System inline; the body only borrows it"
+)]
 fn try_build_setup_in_code_with_models(
     system: System,
     config: &Config,
     hydro_models: PrepareHydroModelsResult,
-) -> Result<StudySetup, novomodelo_sddp::SddpError> {
+) -> Result<StudySetup, SddpError> {
     let stochastic = stochastic_in_code(&system);
     StudySetup::new(&system, config, stochastic, hydro_models, Vec::new())
 }
@@ -594,7 +671,8 @@ pub fn build_setup_in_code_with_models(
     config: &Config,
     hydro_models: PrepareHydroModelsResult,
 ) -> StudySetup {
-    try_build_setup_in_code_with_models(system, config, hydro_models).expect("StudySetup::new")
+    try_build_setup_in_code_with_models(system, config, hydro_models)
+        .expect("in-code StudySetup must build")
 }
 
 /// Construct a [`StudySetup`] in-process, building the stochastic context
@@ -611,41 +689,106 @@ pub fn build_setup_in_code(system: System, config: &Config) -> StudySetup {
 /// `Result` so a test can assert a setup-time rejection (e.g. the admission
 /// gate) instead of panicking.
 #[allow(clippy::needless_pass_by_value)]
-pub fn try_build_setup_in_code(
-    system: System,
-    config: &Config,
-) -> Result<StudySetup, novomodelo_sddp::SddpError> {
+pub fn try_build_setup_in_code(system: System, config: &Config) -> Result<StudySetup, SddpError> {
     let hydro_models = PrepareHydroModelsResult::default_from_system(&system);
     try_build_setup_in_code_with_models(system, config, hydro_models)
 }
 
-/// The trial states the pool of `node` stored, in slot order, at the global state
-/// dimension; panics unless the pool stores states and projects every dimension.
-pub fn stored_trial_states(setup: &StudySetup, node: NodePos) -> Vec<Vec<f64>> {
+/// Replaces the terminal pool with one zero-coefficient cut per intercept, at slots `0..intercepts.len()`.
+pub fn inject_constant_terminal_boundary_cuts(
+    setup: &mut StudySetup,
+    intercepts: &[f64],
+    is_active: bool,
+) {
+    let terminal = setup
+        .inputs
+        .node_graph
+        .terminal_pool(setup.num_stages())
+        .expect("the study has a terminal pool");
+    let state_dim = setup.fcf.state_dimension;
+    let records: Vec<OwnedPolicyCutRecord> = (0..)
+        .zip(intercepts)
+        .map(|(slot_index, &intercept)| OwnedPolicyCutRecord {
+            slot_index,
+            coefficients: vec![0.0; state_dim],
+            intercept,
+            iteration: 0,
+            is_active,
+            ..owned_piece_defaults()
+        })
+        .collect();
+    setup.fcf.pools[terminal] =
+        CutPool::new_with_warm_start(state_dim, setup.fcf.forward_passes, 0, &records);
+}
+
+/// Writes a one-cut boundary checkpoint of `intercept` and `coefficients`, one per state
+/// dimension, into `dir`, loads it and installs it as the terminal pool.
+pub fn inject_synthetic_boundary_cut(
+    setup: &mut StudySetup,
+    dir: &Path,
+    intercept: f64,
+    coefficients: &[f64],
+) {
+    let state_dimension = u32::try_from(coefficients.len()).expect("fits u32");
+    let date = fixture_priced_date(ymd(2030, 1, 1), 0);
+    write_synthetic_boundary(dir, state_dimension, intercept, coefficients, date);
+    let boundary = load_boundary_cuts(&BoundaryLoadRequest::new(
+        dir,
+        date,
+        state_dimension,
+        &[],
+        1.0,
+    ))
+    .expect("the boundary cut must load");
+    inject_boundary_cuts(setup, &boundary).expect("the boundary cut must inject");
+}
+
+/// A state a pool stored, at its projected dimensions, as a vector over the global state: the
+/// dimensions the pool drops come from `fill`.
+pub fn lift_to_global_state(layout: &CutStateProjection, row: &[f64], fill: &[f64]) -> Vec<f64> {
+    let mut state = fill.to_vec();
+    for (j, &value) in row.iter().enumerate() {
+        state[layout.global_state_index(CutSlot::new(j)).get()] = value;
+    }
+    state
+}
+
+/// The trial states the pool of `node` stored, in slot order, as whole states; `None` when the
+/// pool's projection drops a state dimension, so a stored row is not a whole state.
+///
+/// # Panics
+///
+/// Panics if the pool stores no trial state.
+pub fn try_stored_trial_states(setup: &StudySetup, node: NodePos) -> Option<Vec<Vec<f64>>> {
     let pool_id = setup.inputs.node_graph.nodes[node].pool_id;
     let pool = &setup.fcf.pools[pool_id];
+    let training_ctx = setup.training_ctx();
+    let n_state = training_ctx.state.n_state;
+    let layout = &training_ctx.cut_state_layouts[pool_id];
+    if layout.n_slots() != n_state {
+        return None;
+    }
     assert!(
         pool.stores_trial_states(),
         "pool {pool_id} stores no trial state"
     );
-    let training_ctx = setup.training_ctx();
-    let n_state = training_ctx.state.n_state;
-    let layout = &training_ctx.cut_state_layouts[pool_id];
-    assert_eq!(
-        layout.n_slots(),
-        n_state,
-        "pool {pool_id} must project every state dimension"
-    );
-    (0..pool.populated())
-        .filter_map(|slot| pool.trial_state(slot))
-        .map(|row| {
-            let mut state = vec![0.0; n_state];
-            for (j, &value) in row.iter().enumerate() {
-                state[layout.global_state_index(CutSlot::new(j)).get()] = value;
-            }
-            state
-        })
-        .collect()
+    let fill = vec![0.0; n_state];
+    Some(
+        (0..pool.populated())
+            .filter_map(|slot| pool.trial_state(slot))
+            .map(|row| lift_to_global_state(layout, row, &fill))
+            .collect(),
+    )
+}
+
+/// [`try_stored_trial_states`] for a pool that must project every state dimension.
+///
+/// # Panics
+///
+/// Panics if the pool drops a state dimension or stores no trial state.
+pub fn stored_trial_states(setup: &StudySetup, node: NodePos) -> Vec<Vec<f64>> {
+    try_stored_trial_states(setup, node)
+        .unwrap_or_else(|| panic!("the pool of node {node} must project every state dimension"))
 }
 
 /// Train `iterations`, then run the one-scenario simulation and return the drained

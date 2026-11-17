@@ -45,7 +45,7 @@ jobs:
             runner: ubuntu-24.04-arm
             mpi_source: source
           - target: aarch64-apple-darwin
-            runner: macos-14
+            runner: macos-15
             mpi_source: brew
     runs-on: ${{ matrix.runner }}
     env:

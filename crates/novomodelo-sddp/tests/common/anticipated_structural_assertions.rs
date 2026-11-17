@@ -100,7 +100,7 @@ pub fn assert_training_converged_structurally(
 }
 
 /// Assert the basis cache is fully populated: one entry per study stage,
-/// every entry `Some(..)`, every captured state vector finite.
+/// every entry `Some(..)`.
 ///
 /// This catches the regression "some stage was never solved during the final
 /// iteration", which is the symptom of a backward-pass abort or a
@@ -108,8 +108,7 @@ pub fn assert_training_converged_structurally(
 ///
 /// # Panics
 ///
-/// If any stage has no captured basis, or if any state-at-capture entry is
-/// non-finite.
+/// If any stage has no captured basis.
 pub fn assert_basis_cache_fully_populated(result: &TrainingResult, expected_stages: usize) {
     assert_eq!(
         result.basis_cache.len(),
@@ -118,19 +117,30 @@ pub fn assert_basis_cache_fully_populated(result: &TrainingResult, expected_stag
         result.basis_cache.len(),
     );
     for (stage_idx, entry) in result.basis_cache.iter().enumerate() {
-        let captured = entry
-            .as_ref()
-            .unwrap_or_else(|| panic!("structural: basis_cache[{stage_idx}] must be Some"));
-        for (state_idx, &value) in captured.state_at_capture.iter().enumerate() {
+        assert!(
+            entry.is_some(),
+            "structural: basis_cache[{stage_idx}] must be Some"
+        );
+    }
+}
+
+/// Assert every end-of-stage state of the last forward pass is finite.
+///
+/// # Panics
+///
+/// If any state entry is non-finite.
+pub fn assert_forward_states_finite(forward_states: &[Vec<f64>]) {
+    for (stage_idx, state) in forward_states.iter().enumerate() {
+        for (state_idx, &value) in state.iter().enumerate() {
             assert!(
                 value.is_finite(),
-                "structural: basis_cache[{stage_idx}].state_at_capture[{state_idx}] must be finite; got {value}",
+                "structural: forward_states[{stage_idx}][{state_idx}] must be finite; got {value}",
             );
         }
     }
 }
 
-/// Assert anticipated-state slots in the captured basis are finite and
+/// Assert anticipated-state slots of the forward states are finite and
 /// non-negative at every delivery stage.
 ///
 /// At a delivery stage `t` (where some past commitment matures), the
@@ -139,32 +149,33 @@ pub fn assert_basis_cache_fully_populated(result: &TrainingResult, expected_stag
 ///
 /// # Arguments
 ///
+/// - `forward_states` — the end-of-stage states of the last forward pass; the
+///   state a delivery stage `t` reads is the one entering it,
+///   `forward_states[t - 1]`.
 /// - `anticipated_slots_out_start` — `indexer.commit_out.start`, the
-///   state-vector offset of the anticipated ring's outgoing slots (the domain
-///   `state_at_capture` is addressed in — never the relocated incoming
-///   `commit_in` range).
+///   state-vector offset of the anticipated ring's outgoing slots (never the
+///   relocated incoming `commit_in` range).
 /// - `n_anticipated` — `indexer.n_anticipated`.
 /// - `delivery_stages` — pass the indices of stages where `K_i ≤ stage_idx` for
-///   some plant; slot 0 (slot-major layout) must be populated and non-negative.
+///   some plant, each at least 1; slot 0 (slot-major layout) must be populated
+///   and non-negative.
 ///
 /// # Panics
 ///
 /// If any delivery-stage slot 0 value is non-finite or strictly negative.
 pub fn assert_anticipated_delivery_slots_populated(
-    result: &TrainingResult,
+    forward_states: &[Vec<f64>],
     anticipated_slots_out_start: usize,
     n_anticipated: usize,
     delivery_stages: &[usize],
 ) {
     for &stage_idx in delivery_stages {
-        let captured = result.basis_cache[stage_idx]
-            .as_ref()
-            .unwrap_or_else(|| panic!("structural: basis_cache[{stage_idx}] must be Some"));
+        let entering = &forward_states[stage_idx - 1];
         // Slot 0 holds the matured commitment about to be dispatched at
         // `stage_idx`. Layout is slot-major, plant-minor.
         for plant in 0..n_anticipated {
             let idx = anticipated_slots_out_start + plant;
-            let value = captured.state_at_capture[idx];
+            let value = entering[idx];
             assert!(
                 value.is_finite(),
                 "structural: anticipated state at stage {stage_idx}, plant {plant}, slot 0 must be finite; got {value}",

@@ -92,6 +92,10 @@ impl<S: SolverInterface> SolverInterface for ProfiledSolver<S> {
         self.inner.set_row_bounds(indices, lower, upper);
     }
 
+    fn set_row_lower_bounds_range(&mut self, first_row: usize, lower: &[f64]) {
+        self.inner.set_row_lower_bounds_range(first_row, lower);
+    }
+
     fn set_col_bounds(&mut self, indices: &[usize], lower: &[f64], upper: &[f64]) {
         self.inner.set_col_bounds(indices, lower, upper);
     }
@@ -101,6 +105,10 @@ impl<S: SolverInterface> SolverInterface for ProfiledSolver<S> {
         // already equal `current_profile` on every solve (set at phase
         // boundaries; the retry path restores them after a default reset).
         self.inner.solve(basis)
+    }
+
+    fn warm_starts(&self) -> bool {
+        self.inner.warm_starts()
     }
 
     fn get_basis(&mut self, out: &mut Basis) {
@@ -195,6 +203,8 @@ mod tests {
             self.calls.borrow_mut().push(RecordedCall::SetRowBounds);
         }
 
+        fn set_row_lower_bounds_range(&mut self, _first_row: usize, _lower: &[f64]) {}
+
         fn set_col_bounds(&mut self, _indices: &[usize], _lower: &[f64], _upper: &[f64]) {
             self.calls.borrow_mut().push(RecordedCall::SetColBounds);
         }
@@ -248,7 +258,6 @@ mod tests {
             objective: vec![0.0],
             row_lower: vec![],
             row_upper: vec![],
-            n_state: 0,
             col_scale: vec![],
             row_scale: vec![],
         }
@@ -274,6 +283,17 @@ mod tests {
             calls.is_empty(),
             "expected zero calls after ProfiledSolver::new, got: {calls:?}"
         );
+    }
+
+    #[test]
+    fn warm_starts_delegates_to_the_inner_solver() {
+        let mut solver = ProfiledSolver::new(crate::HighsSolver::new().expect("HiGHS init"));
+        assert!(solver.warm_starts());
+        solver.set_profile(&HighsProfile {
+            use_warm_start: false,
+            ..HighsProfile::default()
+        });
+        assert!(!solver.warm_starts());
     }
 
     #[test]
@@ -370,7 +390,6 @@ mod tests {
             presolve: PresolveKind::Off,
             simplex_update_limit: 1000,
             cost_perturbation: 1.0,
-            refactor_error_tolerance: 1e-5,
             factor_pivot_threshold: 0.2,
             use_warm_start: false,
             steepest_edge_devex_fallback_threshold: 20.0,

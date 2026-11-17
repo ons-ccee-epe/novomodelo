@@ -1,12 +1,13 @@
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Mapping, Optional, Union
+from typing import Any
 
 from . import model as model
 
-def load_case(path: Union[str, Path]) -> model.System: ...
+def load_case(path: str | Path) -> model.System: ...
 def validate(
-    path: Union[str, Path],
-    config_overrides: Optional[Mapping[str, Any]] = None,
+    path: str | Path,
+    config_overrides: Mapping[str, Any] | None = None,
     *,
-    output_dir: Optional[Union[str, Path]] = None,
+    output_dir: str | Path | None = None,
 ) -> dict[str, Any]: ...

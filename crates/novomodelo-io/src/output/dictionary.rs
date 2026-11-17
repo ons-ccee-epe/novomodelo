@@ -355,12 +355,12 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
     (
         "costs",
         "storage_violation_cost",
-        "Total storage violation penalty",
+        "Soft minimum-storage floor slack cost of filling plants, counted in the violation category",
     ),
     (
         "costs",
         "filling_target_cost",
-        "Total filling-target violation cost",
+        "Filling-target slack cost of filling plants, counted in the violation category",
     ),
     (
         "costs",
@@ -396,6 +396,11 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
         "costs",
         "withdrawal_violation_cost",
         "Cost of water withdrawal constraint violations",
+    ),
+    (
+        "costs",
+        "fpha_violation_cost",
+        "Cost of FPHA plane violations, counted in hydro_violation_cost",
     ),
     (
         "costs",
@@ -538,6 +543,11 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
         "Outflow above-maximum slack",
     ),
     ("hydros", "generation_slack_mw", "Generation minimum slack"),
+    (
+        "hydros",
+        "fpha_violation_mw",
+        "FPHA plane violation slack, summed over the plant's cells",
+    ),
     (
         "hydros",
         "storage_violation_below_hm3",
@@ -1078,6 +1088,11 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
     ),
     (
         "solver_iterations",
+        "lp_row_violations",
+        "LP solves whose returned primal solution misses a row bound by more than the primal feasibility tolerance plus 1e-11 times the row's magnitude Σ|a_ij·x_j| (taken as at least 1)",
+    ),
+    (
+        "solver_iterations",
         "retry_attempts",
         "Total retry attempts across all solves",
     ),
@@ -1518,8 +1533,8 @@ fn description_for(schema: &str, column: &str) -> &'static str {
 /// `block_id` row for each (entity, stage, block, `bound_type`) a per-block
 /// override resolved. Only the ten coded `bound_type`s (`write_codes_json`) are
 /// reported at either row class; `LineBlockOverride::reverse_mw`,
-/// `ContractBlockOverride::price_per_mwh`, and
-/// `HydroBlockOverride::max_diversion_m3s` resolve into the LP but have no
+/// `ContractBlockOverride::price_per_mwh`, `ThermalBlockOverride::cost_per_mwh`,
+/// and `HydroBlockOverride::max_diversion_m3s` resolve into the LP but have no
 /// `bound_type` code and are not emitted here.
 ///
 /// `hydro_id` is populated only for a hydro-unit-group row
@@ -2081,7 +2096,7 @@ mod tests {
             BlockBoundsCountsSpec, BoundsCountsSpec, BoundsDefaults, ContractBlockBounds,
             HydroBlockBounds, HydroStageBounds, HydroUnitGroupBoundsCountsSpec, LineBlockBounds,
             PumpingBlockBounds, ResolvedBlockBounds, ResolvedBounds, ResolvedHydroUnitGroupBounds,
-            ThermalBlockBounds, ThermalStageBounds,
+            ThermalBlockBounds,
         },
     };
 
@@ -2098,6 +2113,7 @@ mod tests {
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -2214,10 +2230,10 @@ mod tests {
         let stage = make_stage(0);
 
         let hydro_bounds_default = hydro_stage_bounds(0.0, 100.0);
-        let thermal_bounds_default = ThermalStageBounds { cost_per_mwh: 0.0 };
         let thermal_block_default = ThermalBlockBounds {
             min_generation_mw: 0.0,
             max_generation_mw: 100.0,
+            cost_per_mwh: 0.0,
         };
         let line_default = LineBlockBounds {
             direct_mw: 500.0,
@@ -2245,7 +2261,6 @@ mod tests {
             &BoundsDefaults {
                 hydro: hydro_bounds_default,
                 hydro_block: hydro_block_bounds_default(),
-                thermal: thermal_bounds_default,
                 thermal_block: thermal_block_default,
                 line_block: line_default,
                 pumping_block: pumping_default,
@@ -2271,10 +2286,10 @@ mod tests {
         let stage1 = make_stage(1);
 
         let hydro_bounds_default = hydro_stage_bounds(min_storage, max_storage);
-        let thermal_default = ThermalStageBounds { cost_per_mwh: 0.0 };
         let thermal_block_default = ThermalBlockBounds {
             min_generation_mw: 0.0,
             max_generation_mw: 100.0,
+            cost_per_mwh: 0.0,
         };
         let line_default = LineBlockBounds {
             direct_mw: 500.0,
@@ -2302,7 +2317,6 @@ mod tests {
             &BoundsDefaults {
                 hydro: hydro_bounds_default,
                 hydro_block: hydro_block_bounds_default(),
-                thermal: thermal_default,
                 thermal_block: thermal_block_default,
                 line_block: line_default,
                 pumping_block: pumping_default,
@@ -2359,10 +2373,10 @@ mod tests {
         let stage1 = make_stage_with_blocks(1, 2);
 
         let hydro_bounds_default = hydro_stage_bounds(0.0, 100.0);
-        let thermal_bounds_default = ThermalStageBounds { cost_per_mwh: 0.0 };
         let thermal_block_default = ThermalBlockBounds {
             min_generation_mw: 0.0,
             max_generation_mw: 100.0,
+            cost_per_mwh: 0.0,
         };
         let line_default = LineBlockBounds {
             direct_mw: 500.0,
@@ -2390,7 +2404,6 @@ mod tests {
             &BoundsDefaults {
                 hydro: hydro_bounds_default,
                 hydro_block: hydro_block_bounds_default(),
-                thermal: thermal_bounds_default,
                 thermal_block: thermal_block_default,
                 line_block: line_default,
                 pumping_block: pumping_default,
@@ -2509,10 +2522,10 @@ mod tests {
         let stage1 = make_stage_with_blocks(1, 2);
 
         let hydro_bounds_default = hydro_stage_bounds(0.0, 100.0);
-        let thermal_bounds_default = ThermalStageBounds { cost_per_mwh: 0.0 };
         let thermal_block_default = ThermalBlockBounds {
             min_generation_mw: 0.0,
             max_generation_mw: 0.0,
+            cost_per_mwh: 0.0,
         };
         let line_default = LineBlockBounds {
             direct_mw: 500.0,
@@ -2540,7 +2553,6 @@ mod tests {
             &BoundsDefaults {
                 hydro: hydro_bounds_default,
                 hydro_block: hydro_block_bounds_default(),
-                thermal: thermal_bounds_default,
                 thermal_block: thermal_block_default,
                 line_block: line_default,
                 pumping_block: pumping_default,
@@ -2785,10 +2797,10 @@ mod tests {
             &BoundsDefaults {
                 hydro: hydro_stage_bounds(0.0, 100.0),
                 hydro_block: hydro_block_bounds_default(),
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 100.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 500.0,
@@ -2886,10 +2898,10 @@ mod tests {
             &BoundsDefaults {
                 hydro: hydro_stage_bounds(0.0, 100.0),
                 hydro_block: hydro_block_bounds_default(),
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 100.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 500.0,
@@ -3008,8 +3020,8 @@ mod tests {
 
         let row_count = rdr.records().count();
         assert_eq!(
-            row_count, 252,
-            "variables.csv must have exactly 252 data rows (one per column across all schemas)"
+            row_count, 255,
+            "variables.csv must have exactly 255 data rows (one per column across all schemas)"
         );
     }
 
@@ -3259,6 +3271,48 @@ mod tests {
             assert!(
                 block_id_col.is_null(row),
                 "block_id must be null at row {row} when the overlay is empty"
+            );
+        }
+    }
+
+    #[test]
+    fn bounds_parquet_emits_no_row_for_thermal_block_cost_override() {
+        let mut overlay = ResolvedBlockBounds::new(&BlockBoundsCountsSpec {
+            n_hydros: 2,
+            n_thermals: 2,
+            n_lines: 0,
+            n_pumping: 0,
+            n_contracts: 0,
+            n_stages: 2,
+            max_blocks: 3,
+        });
+        overlay
+            .thermal_override_mut(0, 0, 1)
+            .expect("cell must exist for a fixture-sized overlay")
+            .cost_per_mwh = Some(123.0);
+        overlay
+            .thermal_override_mut(1, 1, 0)
+            .expect("cell must exist for a fixture-sized overlay")
+            .cost_per_mwh = Some(0.0);
+        let system = make_system_2h_2t_blocks(overlay);
+        let tmp = tempfile::tempdir().unwrap();
+
+        write_bounds_parquet(tmp.path(), &system).expect("write_bounds_parquet must succeed");
+
+        let batch = read_first_batch(&tmp.path().join("bounds.parquet"));
+
+        let expected_rows = 2 * 2 * 7 + 2 * 2 * 2 + 2 * 2 * 4;
+        assert_eq!(
+            batch.num_rows(),
+            expected_rows,
+            "a cost-only thermal override must add no row"
+        );
+
+        let block_id_col = batch.column_by_name("block_id").unwrap();
+        for row in 0..batch.num_rows() {
+            assert!(
+                block_id_col.is_null(row),
+                "block_id must be null at row {row} for a cost-only thermal override"
             );
         }
     }
@@ -3626,10 +3680,10 @@ mod tests {
             &BoundsDefaults {
                 hydro: hydro_stage_bounds(0.0, 100.0),
                 hydro_block: hydro_block_bounds_default(),
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 100.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 500.0,
@@ -4139,6 +4193,7 @@ mod tests {
                 "lp_successes",
                 "lp_retries",
                 "lp_failures",
+                "lp_row_violations",
                 "retry_attempts",
                 "basis_offered",
                 "basis_consistency_failures",

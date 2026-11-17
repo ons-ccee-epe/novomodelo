@@ -1348,10 +1348,15 @@ fn read_checkpoint_dir(path: &Path) -> Result<PolicyCheckpoint, OutputError> {
         read_sorted_bin_files(&cuts_dir, "stage_cuts", deserialize_stage_cuts)?;
     stage_cuts.sort_by_key(|r| r.stage_id);
 
+    // Absent reads as empty, like `states/`: zip tools drop the empty `basis/` the writer leaves.
     let basis_dir = path.join("basis");
-    let mut stage_bases: Vec<OwnedPolicyBasisRecord> =
-        read_sorted_bin_files(&basis_dir, "stage_basis", deserialize_stage_basis)?;
-    stage_bases.sort_by_key(|r| r.stage_id);
+    let stage_bases: Vec<OwnedPolicyBasisRecord> = if basis_dir.is_dir() {
+        let mut sb = read_sorted_bin_files(&basis_dir, "stage_basis", deserialize_stage_basis)?;
+        sb.sort_by_key(|r| r.stage_id);
+        sb
+    } else {
+        Vec::new()
+    };
 
     let states_dir = path.join("states");
     let stage_states: Vec<StageStatesReadResult> = if states_dir.is_dir() {

@@ -30,6 +30,7 @@
 
 use chrono::NaiveDate;
 use novomodelo_core::ContractType;
+use novomodelo_core::commissioning::hard_storage_floor;
 use novomodelo_core::temporal::SeasonCycleType::Monthly;
 use novomodelo_core::temporal::SeasonMap;
 use novomodelo_core::temporal::StageLagTransition;
@@ -56,6 +57,7 @@ use crate::simulation::SimulationConfig;
 use crate::solve::solver_phase::{Phase, validate_phase_solver_config};
 use crate::stochastic::noise_key::build_noise_key_table;
 mod accessors;
+mod lag_points;
 pub(crate) mod lp_build_inputs;
 pub mod node_graph;
 mod orchestration;
@@ -89,7 +91,7 @@ use std::path::Path;
 
 use novomodelo_core::{
     AnticipatedConfig, EntityId, Hydro, HydroPastDefluence, ScalarParameter, Stage, StageId,
-    System, Thermal,
+    System, Thermal, deepest_uncovered_travel_time_arc,
     scenario::{SamplingScheme, ScenarioSource},
 };
 use novomodelo_io::StageIdResolver;
@@ -112,7 +114,7 @@ use crate::{
     lead_time::{AnticipatedResolution, DeliveryAxis, LeadTime, PointResolution},
     lp::builder::{
         LpBuildInputs, StageGeometry, StateBox, build_stage_templates, contract_family_slot,
-        storage_floor_relaxed, warn_on_inert_plant_floor_overrides,
+        warn_on_inert_plant_floor_overrides,
     },
     lp::indexer::{
         AnticipatedLocal, AnticipatedPlants, CutStateProjection, HydroCellIndex, HydroSys,
@@ -123,7 +125,7 @@ use crate::{
     simulation::EntityCounts,
     simulation::extraction::TransitSeedArc,
     stopping_rule::{StopDecision, StopMask, StoppingRule, StoppingRuleSet},
-    time_value::{DeliveryCalendar, TimeValue},
+    time_value::{DeliveryCalendar, TimeValue, WaterDeliveryBasis},
     training::LoadedPolicy,
 };
 
@@ -265,6 +267,16 @@ pub struct StudySetup {
     pub(crate) boundary_requirements: BoundaryStateRequirements,
 }
 
+/// No case directory is available to read the source checkpoint, so the depth is
+/// unresolved; presence still follows the config.
+pub(crate) fn unresolved_boundary_requirements(config: &Config) -> BoundaryStateRequirements {
+    if config.policy.boundary.is_some() {
+        BoundaryStateRequirements::present(0)
+    } else {
+        BoundaryStateRequirements::none()
+    }
+}
+
 impl StudySetup {
     /// Build all precomputed study state from a validated system and config.
     ///
@@ -283,20 +295,12 @@ impl StudySetup {
         hydro_models: PrepareHydroModelsResult,
         scalar_parameters: Vec<ScalarParameter>,
     ) -> Result<Self, SddpError> {
-        // No case dir to read the source checkpoint, so the depth is unresolved
-        // (None); presence still follows the config, matching the boundary-mask
-        // gate an entry point resolves via `resolve_boundary_state_requirements`.
-        let boundary = if config.policy.boundary.is_some() {
-            BoundaryStateRequirements::present(0)
-        } else {
-            BoundaryStateRequirements::none()
-        };
         Self::new_with_boundary_requirements(
             system,
             config,
             stochastic,
             hydro_models,
-            boundary,
+            unresolved_boundary_requirements(config),
             scalar_parameters,
         )
     }
@@ -325,8 +329,9 @@ impl StudySetup {
         Self::new_from_params(system, config, stochastic, hydro_models, boundary, params)
     }
 
-    /// [`Self::new_with_boundary_requirements`] from parameters the caller has
-    /// already extracted from `config`, so `StudyParams::from_config` runs once.
+    /// [`Self::new_with_boundary_requirements`] from parameters the
+    /// caller has already extracted from `config`, so `StudyParams::from_config`
+    /// runs once.
     pub(crate) fn new_from_params(
         system: &System,
         config: &Config,
@@ -441,8 +446,16 @@ impl StudySetup {
             stochastic_pipeline::forward_seed_for(simulation_source),
         )?;
 
-        let (fcf, cut_state_layouts) =
+        let (fcf, mut cut_state_layouts) =
             build_future_cost_function(system, &stage_data.state, &node_graph, &loop_params);
+        lag_points::install_lag_points(
+            &mut cut_state_layouts,
+            &node_graph,
+            &study_stage_ids,
+            &stage_data.stage_lag_transitions,
+            stage_data.study_dims.downstream_par_order,
+            &initial.inflow_seeds,
+        );
 
         let horizon = HorizonMode::Finite {
             num_stages: n_stages,
@@ -826,11 +839,10 @@ fn build_ncs_entity_data(
     // Bridge each slot to its dense column via entity id (not a direct index) so the
     // map stays correct when only a subset of NCS are stochastic or the orders
     // diverge. Keyed on the id-sorted slot order, not entity declaration order.
-    let mut stochastic_dense_col: Vec<usize> = Vec::with_capacity(stoch_ncs_ids.len());
-    let mut stochastic_windows: Vec<(Option<i32>, Option<i32>)> =
-        Vec::with_capacity(stoch_ncs_ids.len());
-    let mut max_gen: Vec<f64> = Vec::with_capacity(stoch_ncs_ids.len());
-    let mut allow_curtailment: Vec<bool> = Vec::with_capacity(stoch_ncs_ids.len());
+    let mut stochastic_dense_col = Vec::with_capacity(stoch_ncs_ids.len());
+    let mut stochastic_windows = Vec::with_capacity(stoch_ncs_ids.len());
+    let mut max_gen = Vec::with_capacity(stoch_ncs_ids.len());
+    let mut allow_curtailment = Vec::with_capacity(stoch_ncs_ids.len());
     for slot_id in stoch_ncs_ids {
         let not_found = || {
             SddpError::Validation(format!(
@@ -1247,17 +1259,30 @@ pub(crate) fn resolve_state_layout(
 ///
 /// # Errors
 ///
-/// Propagates [`resolve_state_layout`]'s `LeadTime` fan-out rejection.
+/// [`SddpError::Validation`] when a declared water calendar is shorter than the
+/// deepest travel-time arc, checked before the topology is built; otherwise
+/// propagates [`resolve_state_layout`]'s `LeadTime` fan-out rejection.
 pub(crate) fn resolve_state_and_topology(
     system: &System,
-    calendar: &DeliveryCalendar,
+    thermal: &DeliveryCalendar,
+    water: &DeliveryCalendar,
+    basis: WaterDeliveryBasis<'_>,
     par_lp: &PrecomputedPar,
     inflow_lag_depth: Option<u32>,
     boundary_present: bool,
 ) -> Result<(bucket_topology::TransitBucketTopology, ResolvedStateLayout), SddpError> {
+    if let WaterDeliveryBasis::Declared(water_stages) = basis
+        && let Some(arc) = deepest_uncovered_travel_time_arc(system.hydros(), water_stages)
+    {
+        return Err(SddpError::Validation(format!(
+            "hydro {} declares a travel time of {} h but the declared water_bucket_stages span \
+             {} h; water_bucket_stages must cover the deepest travel time",
+            arc.hydro_id, arc.travel_time_hours, arc.declared_hours
+        )));
+    }
     let topology =
-        bucket_topology::build_transit_bucket_topology(system, calendar, boundary_present);
-    let layout = resolve_state_layout(system, calendar, par_lp, &topology, inflow_lag_depth)?;
+        bucket_topology::build_transit_bucket_topology(system, water, basis, boundary_present);
+    let layout = resolve_state_layout(system, thermal, par_lp, &topology, inflow_lag_depth)?;
     Ok((topology, layout))
 }
 
@@ -1422,10 +1447,8 @@ pub(crate) fn resolve_anticipated_commitments_core(
     calendar: &DeliveryCalendar,
     anticipated_plants: &AnticipatedPlants,
 ) -> (AnticipatedResolution, Vec<usize>) {
-    let anticipated_thermals: Vec<&Thermal> = anticipated_plants
-        .thermals()
-        .map(|t| &system.thermals()[t.get()])
-        .collect();
+    let anticipated_thermals: Vec<&Thermal> =
+        anticipated_plants.thermals_in(system.thermals()).collect();
     let leads: Vec<LeadTime> = anticipated_thermals
         .iter()
         .filter_map(|t| t.anticipated_config.as_ref())
@@ -1486,10 +1509,8 @@ pub(crate) fn resolve_anticipated_commitments(
 ) -> (AnticipatedResolution, Vec<usize>) {
     let (resolution, lead_stages) =
         resolve_anticipated_commitments_core(system, calendar, anticipated_plants);
-    let anticipated_thermals: Vec<&Thermal> = anticipated_plants
-        .thermals()
-        .map(|t| &system.thermals()[t.get()])
-        .collect();
+    let anticipated_thermals: Vec<&Thermal> =
+        anticipated_plants.thermals_in(system.thermals()).collect();
     warn_on_sub_stage_lead(&anticipated_thermals, &resolution);
     (resolution, lead_stages)
 }
@@ -1552,15 +1573,15 @@ fn warn_on_boundary_absent_post_study_delivery(
         })
     };
     let affected: Vec<String> = anticipated_plants
-        .thermals()
+        .thermals_in(thermals)
         .zip(&resolution.per_plant)
-        .filter(|&(t, point)| {
+        .filter(|&(thermal, point)| {
             let class3 = point.decider.get(n_stages..).is_some_and(|post_study| {
                 post_study.iter().any(|c| c.is_some_and(|t| t < n_stages))
             });
-            class3 || has_nonzero_fixed(thermals[t.get()].id.0)
+            class3 || has_nonzero_fixed(thermal.id.0)
         })
-        .map(|(t, _)| format!("{} ({})", thermals[t.get()].id, thermals[t.get()].name))
+        .map(|(thermal, _)| format!("{} ({})", thermal.id, thermal.name))
         .collect();
     if affected.is_empty() {
         return;
@@ -1897,10 +1918,14 @@ fn resolve_stage_data(
     stochastic: &StochasticContext,
     hydro_models: &PrepareHydroModelsResult,
 ) -> Result<ResolvedStageInputs, SddpError> {
-    let calendar = DeliveryCalendar::from_system(system);
+    let thermal = DeliveryCalendar::thermal(system);
+    let basis = WaterDeliveryBasis::of(system);
+    let water = DeliveryCalendar::water(system, basis);
     let (transit_bucket_topology, layout) = resolve_state_and_topology(
         system,
-        &calendar,
+        &thermal,
+        &water,
+        basis,
         stochastic.par(),
         config.boundary.inflow_lag_depth(),
         config.boundary.is_present(),
@@ -1908,7 +1933,7 @@ fn resolve_stage_data(
     let transit_seed_arcs = build_transit_seed_arcs(system, &transit_bucket_topology);
     warn_on_boundary_absent_post_study_delivery(
         system,
-        &calendar,
+        &thermal,
         &layout.anticipated_plants,
         &layout.state.anticipated_resolution,
         config.boundary.is_present(),
@@ -1940,7 +1965,7 @@ fn resolve_stage_data(
         downstream_par_order,
     );
 
-    let time_value = TimeValue::from_system(system, &study_dims.anticipated_plants, calendar);
+    let time_value = TimeValue::from_system(system, &study_dims.anticipated_plants, thermal);
     let hydro_cell_index = HydroCellIndex::build(system.hydros());
     warn_on_inert_plant_floor_overrides(
         system.hydros(),
@@ -2788,7 +2813,7 @@ fn study_stages_slice(system: &System) -> &[Stage] {
 
 /// Project the stage-0 initial (incoming) state onto what each box-stable family
 /// admits on entry. Storage (and its `PreFilling` seed) takes the hydro's
-/// physical range, its floor lifted to `0` where [`storage_floor_relaxed`] holds
+/// physical range, its floor lifted to `0` where [`hard_storage_floor`] relaxes it
 /// at stage 0 — NEVER the stage-0 box, which is the OUTGOING column's bounds and
 /// carries that stage's end-of-stage storage targets: projecting the incoming
 /// storage onto it creates or removes water before the first solve. Travel-time
@@ -2809,16 +2834,12 @@ fn canonicalize_initial_state(
     if let Some(stage0) = stage0 {
         for (idx, hydro) in system.hydros().iter().enumerate() {
             let j = layout.storage_state_dim(HydroSys::new(idx)).get();
-            let floor = if storage_floor_relaxed(hydro, stage0.id) {
-                0.0
-            } else {
-                hydro.min_storage_hm3
-            };
+            let floor = hard_storage_floor(hydro, stage0.id, hydro.min_storage_hm3);
             state[j] = state[j].clamp(floor, hydro.max_storage_hm3);
         }
     }
     if let Some(stage0_box) = stage0_box {
-        for j in layout.transit_buckets_out.clone() {
+        for j in layout.state_dim_bucket_range() {
             state[j] = state[j].clamp(stage0_box.lower[j], stage0_box.upper[j]);
         }
     }
@@ -2904,8 +2925,7 @@ fn build_initial_state(
             for (slot, fraction) in calendar.coverage(&window).into_iter().enumerate() {
                 if fraction == 1.0 {
                     if slot < k_i {
-                        let off = layout.commit_out.start
-                            + layout.commitment_hold_in_study_offset(local_idx, slot);
+                        let j = layout.commitment_hold_state_dim(local_idx, slot).get();
                         // Project the seed onto its delivery stage's generation
                         // bound — the setup-time analog of the read-back seam's
                         // clamp — so a sub-tolerance input overshoot cannot drive
@@ -2916,7 +2936,7 @@ fn build_initial_state(
                         // residue-0 slot bounds a later delivery than the seed held
                         // here.
                         let cap = system.bounds().thermal_block_base(global_idx, slot);
-                        state[off] = history
+                        state[j] = history
                             .value_mw
                             .clamp(cap.min_generation_mw, cap.max_generation_mw);
                     } else {
@@ -2933,10 +2953,9 @@ fn build_initial_state(
                 reason = "padding slots must be exactly 0.0, because a non-zero value corrupts the ring buffer and makes the LP infeasible"
             )]
             for slot in k_i..layout.k_max {
-                let off = layout.commit_out.start
-                    + layout.commitment_hold_in_study_offset(local_idx, slot);
+                let j = layout.commitment_hold_state_dim(local_idx, slot).get();
                 debug_assert_eq!(
-                    state[off], 0.0,
+                    state[j], 0.0,
                     "padding slot must be zero: plant local_idx={local_idx}, slot={slot}, K_i={k_i}, k_max={}",
                     layout.k_max
                 );
@@ -3043,10 +3062,10 @@ fn hours_between(later: NaiveDate, earlier: NaiveDate) -> f64 {
     (later - earlier).num_hours() as f64
 }
 
-/// Write the travel-time bucket seed into `state`'s declared `transit_buckets_out`
-/// slots — the same index space [`StateSpace::state_to_lp_incoming_column`]
-/// remaps to the pinned `transit_buckets_in` LP column, so no separate pin wiring is
-/// needed beyond this splice.
+/// Write the travel-time bucket seed into `state`'s bucket dimensions — the
+/// same index space [`StateSpace::state_to_lp_incoming_column`] remaps to the
+/// pinned `transit_buckets_in` LP column, so no separate pin wiring is needed
+/// beyond this splice.
 fn splice_transit_bucket_seed(
     state: &mut [f64],
     layout: &StateSpace,
@@ -3054,12 +3073,15 @@ fn splice_transit_bucket_seed(
     topology: &bucket_topology::TransitBucketTopology,
 ) {
     let seed = build_initial_transit_bucket_state(system, topology, layout);
-    state[layout.transit_buckets_out.clone()].copy_from_slice(&seed);
+    state[layout.state_dim_bucket_range()].copy_from_slice(&seed);
 }
 
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod calendar_cross_wire_tests;
 
 #[cfg(test)]
 mod tests;
@@ -3085,7 +3107,7 @@ mod transit_seed_round_trip_tests {
     use crate::bucket_topology;
     use crate::simulation::extraction::build_transit_seed;
     use crate::simulation::types::{SimulationHydroResult, SimulationStageResult};
-    use crate::time_value::DeliveryCalendar;
+    use crate::time_value::{DeliveryCalendar, WaterDeliveryBasis};
 
     fn date(y: i32, m: u32, d: u32) -> NaiveDate {
         NaiveDate::from_ymd_opt(y, m, d).unwrap_or_else(|| unreachable!("hardcoded date is valid"))
@@ -3102,6 +3124,7 @@ mod transit_seed_round_trip_tests {
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -3248,6 +3271,7 @@ mod transit_seed_round_trip_tests {
                 outflow_slack_below_m3s: 0.0,
                 outflow_slack_above_m3s: 0.0,
                 generation_slack_mw: 0.0,
+                fpha_violation_mw: 0.0,
                 storage_violation_below_hm3: 0.0,
                 filling_target_violation_hm3: 0.0,
                 evaporation_violation_pos_m3s: 0.0,
@@ -3332,9 +3356,10 @@ mod transit_seed_round_trip_tests {
                 })
                 .collect(),
         );
-        let calendar_b = DeliveryCalendar::from_system(&system_b);
+        let basis_b = WaterDeliveryBasis::of(&system_b);
+        let calendar_b = DeliveryCalendar::water(&system_b, basis_b);
         let topology_b =
-            bucket_topology::build_transit_bucket_topology(&system_b, &calendar_b, false);
+            bucket_topology::build_transit_bucket_topology(&system_b, &calendar_b, basis_b, false);
         let state_b = crate::test_support::bucket_seed_state(&system_b, &topology_b);
         let seed_from_emission =
             build_initial_transit_bucket_state(&system_b, &topology_b, &state_b);
@@ -3358,10 +3383,12 @@ mod transit_seed_round_trip_tests {
                 },
             ],
         );
-        let calendar_reference = DeliveryCalendar::from_system(&system_reference);
+        let basis_reference = WaterDeliveryBasis::of(&system_reference);
+        let calendar_reference = DeliveryCalendar::water(&system_reference, basis_reference);
         let topology_reference = bucket_topology::build_transit_bucket_topology(
             &system_reference,
             &calendar_reference,
+            basis_reference,
             false,
         );
         let state_reference =

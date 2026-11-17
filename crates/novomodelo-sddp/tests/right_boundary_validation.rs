@@ -36,21 +36,17 @@ use std::path::Path;
 
 use chrono::{NaiveDate, TimeDelta};
 use novomodelo_core::entities::thermal::AnticipatedConfig;
-use novomodelo_core::temporal::StageStateConfig;
 use novomodelo_core::{
     AnticipatedCommitmentHistory, BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, EntityId,
     HydroBlockBounds, HydroStageBounds, InitialConditions, LineBlockBounds, PostStudyStage,
     PostStudyStages, PostStudyThermalBound, PumpingBlockBounds, ResolvedBounds, System,
-    SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
+    SystemBuilder, ThermalBlockBounds, WaterBucketStages,
 };
-use novomodelo_sddp::indexer::CutStateProjection;
-use novomodelo_sddp::setup::{NodeId, StageIdx};
-use novomodelo_sddp::test_support::{
-    patch_backward_opening_for_counterfactual_probe, solve_stage_for_probe,
-};
+use novomodelo_sddp::setup::StageIdx;
+use novomodelo_sddp::test_support::{ProbeCuts, prep_for_counterfactual_probe};
 use novomodelo_sddp::workspace::SolverWorkspace;
 use novomodelo_sddp::{
-    BoundaryLoadRequest, CutPool, StudySetup, build_cut_row_batch_into, inject_boundary_cuts,
+    BoundaryLoadRequest, StudySetup, build_cut_row_batch_into, inject_boundary_cuts,
     load_boundary_cuts,
 };
 use novomodelo_solver::{
@@ -140,7 +136,7 @@ fn stages() -> Vec<novomodelo_core::temporal::Stage> {
 /// bound comes SOLELY from `post_study_stages.json`'s own table.
 fn post_study_stages(v: f64) -> PostStudyStages {
     PostStudyStages {
-        stages: vec![PostStudyStage {
+        thermal_stages: vec![PostStudyStage {
             start_date: study_end(),
             duration_hours: POST_STUDY_HOURS,
         }],
@@ -151,6 +147,7 @@ fn post_study_stages(v: f64) -> PostStudyStages {
             min_mw: v,
             max_mw: v,
         }],
+        water_bucket_stages: WaterBucketStages::FromThermalStages,
     }
 }
 
@@ -177,10 +174,10 @@ fn bounds(thermal_block_max_mw: f64) -> ResolvedBounds {
                 water_withdrawal_m3s: 0.0,
             },
             hydro_block: HydroBlockBounds::default(),
-            thermal: ThermalStageBounds { cost_per_mwh: 1.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: thermal_block_max_mw,
+                cost_per_mwh: 1.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -224,6 +221,7 @@ fn penalties() -> novomodelo_core::resolved::ResolvedPenalties {
                 outflow_violation_below_cost: 0.0,
                 outflow_violation_above_cost: 0.0,
                 generation_violation_below_cost: 0.0,
+                fpha_violation_cost: 0.0,
                 evaporation_violation_cost: 0.0,
                 water_withdrawal_violation_cost: 0.0,
                 water_withdrawal_violation_pos_cost: 0.0,
@@ -403,14 +401,6 @@ fn freeze_terminal_template(setup: &StudySetup, pool_id: usize) -> StageTemplate
     let ctx = setup.stage_ctx();
     let base = &ctx.templates[terminal_stage];
 
-    let cut_state = CutStateProjection::new(
-        state,
-        StageStateConfig {
-            storage: true,
-            inflow_lags: true,
-        },
-    );
-
     let mut batch = RowBatch {
         num_rows: 0,
         row_starts: Vec::new(),
@@ -424,7 +414,7 @@ fn freeze_terminal_template(setup: &StudySetup, pool_id: usize) -> StageTemplate
         &setup.fcf,
         pool_id,
         state,
-        &cut_state,
+        &setup.training_ctx().cut_state_layouts[pool_id],
         &base.col_scale,
     );
 
@@ -439,8 +429,7 @@ fn freeze_terminal_template(setup: &StudySetup, pool_id: usize) -> StageTemplate
 fn terminal_theta(
     setup: &StudySetup,
     template: &StageTemplate,
-    pool: &CutPool,
-    node_id: NodeId,
+    pool_id: usize,
     pinned_state: &[f64],
 ) -> f64 {
     let comm = StubComm;
@@ -453,18 +442,32 @@ fn terminal_theta(
     let theta_col = setup.stage_state().theta;
     let terminal_stage = setup.num_stages() - 1;
 
+    let raw_noise = vec![0.0_f64; training_ctx.stochastic.dim()];
+    let slots: Vec<usize> = setup
+        .fcf
+        .active_cuts(pool_id)
+        .map(|(slot, _, _)| slot)
+        .collect();
+
     ws.solver.reset_solver_state();
     ws.solver.load_model(template);
-    patch_backward_opening_for_counterfactual_probe(
+    prep_for_counterfactual_probe(
         ws,
         &ctx,
         &training_ctx,
         StageIdx(terminal_stage),
         pinned_state,
-        &[],
+        &raw_noise,
+        &ProbeCuts {
+            pool: &setup.fcf.pools[pool_id],
+            pool_id,
+            slots: &slots,
+        },
     );
 
-    let view = solve_stage_for_probe(ws, &ctx, pool, None, StageIdx(terminal_stage), 0, node_id)
+    let view = ws
+        .solver
+        .solve(None)
         .expect("terminal stage solve must not error");
     view.primal[theta_col]
 }
@@ -695,10 +698,9 @@ mod left_right_symmetry {
             .terminal_pool(setup.num_stages())
             .unwrap();
         let template = freeze_terminal_template(&setup, terminal_pool_id);
-        let pool = &setup.fcf.pools[terminal_pool_id];
-        let theta_at_v = terminal_theta(&setup, &template, pool, NodeId(1), &ring_pin(&setup, V));
+        let theta_at_v = terminal_theta(&setup, &template, terminal_pool_id, &ring_pin(&setup, V));
         let theta_at_zero =
-            terminal_theta(&setup, &template, pool, NodeId(1), &ring_pin(&setup, 0.0));
+            terminal_theta(&setup, &template, terminal_pool_id, &ring_pin(&setup, 0.0));
 
         let expected_delta = BETA * V;
         let actual_delta = theta_at_v - theta_at_zero;

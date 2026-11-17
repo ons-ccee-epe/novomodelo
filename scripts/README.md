@@ -11,8 +11,22 @@ Helper scripts for Novomodelo, grouped by role.
 - **`rebrand/`** — the fork's rename tool. `rebrand.py paths|tokens|check`
   moves paths, rewrites contents and guards against leftovers, all driven by
   the one name map `map.toml`; `test_rebrand.py` covers it.
+- **`migrate/`** — one-time deck migrations. `post_study_stages.py DECK_DIR [DECK_DIR ...]`
+  rewrites each deck's `post_study_stages.json` from the deprecated `stages` format:
+  `stages` becomes `thermal_stages` (kept with `thermal_bounds` only when a thermal is
+  anticipated, dropped otherwise). On a deck with a travel-time arc, `water_bucket_stages`
+  is the calendar the deprecated format resolves to: the legacy `stages`, extended with
+  copies of the last stage until they cover the deepest travel time, so migrating does
+  not change results. All decks are planned before any file is
+  written, so one refused deck writes nothing (exit 1; usage errors exit 2), and a second
+  run changes nothing. `test_post_study_stages.py` covers it; its `validate` cases need
+  `NOVOMODELO_BIN` to point at a built `novomodelo` binary and skip without it.
 - **`pre-commit`** — the git pre-commit hook. Install with
   `ln -sf ../../scripts/pre-commit .git/hooks/pre-commit`.
+- **`build-profiling.sh`** — builds with the `profiling` profile into
+  `target/perf/`, linked with GNU `ld` so `perf` can unwind call stacks; x86_64
+  Linux only, runs from anywhere. Usage and the profiling workflow are in
+  `docs/profiling.md`.
 - **`loc-stats.sh`** — refreshable reporting tool (not a CI gate): Rust line
   counts split into production vs test, per crate and global, plus test-function
   counts. `--nextest` adds the runtime test count, `--worktree`/`--csv` vary the
@@ -21,6 +35,9 @@ Helper scripts for Novomodelo, grouped by role.
   with all states and with state windows, and a simulation of all cuts against
   active cuts, on a case, and reports lower bound, simulated cost, wall time and
   peak memory.
+- **`measure_run_wallclock.py`** — reporting tool (not a CI gate): compares
+  training and simulation wall-clock of two `novomodelo` binaries on given
+  cases.
 
 ## `ci/` — quality gates
 
@@ -44,8 +61,9 @@ still carry the canonical boundary regex).
 | `check-allow-rationale.sh`           | Every `#[allow]` carries a `// Rationale:` (E4; diff-scoped via `BASE_REF`).                               |
 | `check-infra-genericity.sh`          | No algorithm-specific vocabulary in the infrastructure crates.                                             |
 | `check-cut-selection-determinism.sh` | No fast-math, runtime CPU detection or target feature/cpu flag in own or build-read code; see `deny.toml`. |
-| `check-deny.sh`                      | cargo-deny on the workspace (all checks) and on `crates/novomodelo-python` (bans), at the version it pins (`--print-version`). |
+| `check-deny.sh`                      | cargo-deny on the workspace and on `crates/novomodelo-python` (all checks on both), at the version it pins (`--print-version`). |
 | `check-release-kernel.sh`            | A built x86_64 Linux binary, archive or wheel has no packed FMA instruction (run on the release builds).   |
+| `check_binding_version.py`           | `crates/novomodelo-python` (manifest and lockfile) has the workspace version; the binding is outside the workspace, so it cannot inherit it. |
 | `check_python_parity.py`             | Both write paths call the same set of `novomodelo_io` / `novomodelo_sddp::policy::orchestration` writers, and each phase writer calls `write_success_marker` as its last write. |
 | `check_schemas.sh`                   | Exported JSON schemas match the source types (needs the release binary; `--build`).                        |
 | `run-mpi-launcher-gates.sh`          | Runs the MPI world-size gates at 2 and 4 ranks, each rank passing; an oversized world must be refused.     |
@@ -57,5 +75,5 @@ still carry the canonical boundary regex).
 
 | Script                     | Purpose                                                                                                    |
 | -------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `inject_wheel_licenses.py` | Bundle license files into built Python wheels (used by `release-python.yml`).                              |
+| `inject_dist_licenses.py`  | Bundle license files into the built Python wheels and sdist (used by `release-python.yml`).                 |
 | `sync-kiro-steering.py`    | Project the `.claude/` rule set onto `.kiro/steering/*.md` (translates front-matter). Run after editing rules. |

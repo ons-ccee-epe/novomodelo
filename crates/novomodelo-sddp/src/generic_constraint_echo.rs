@@ -296,6 +296,15 @@ pub(crate) fn render_variable(v: &VariableRef) -> (&'static str, String) {
             "hydro_useful_volume_final",
             format!("id={}, block={}", hydro_id.0, block_label(block_id)),
         ),
+        VariableRef::HydroOutflowVolume { hydro_id } => {
+            ("hydro_outflow_volume", format!("id={}", hydro_id.0))
+        }
+        VariableRef::HydroDiversionVolume { hydro_id } => {
+            ("hydro_diversion_volume", format!("id={}", hydro_id.0))
+        }
+        VariableRef::PumpingVolume { station_id } => {
+            ("pumping_volume", format!("id={}", station_id.0))
+        }
     };
     (kind, format!("{kind}({args})"))
 }
@@ -416,6 +425,55 @@ mod tests {
         assert!(r.slack_enabled);
         assert_eq!(r.slack_penalty, Some(5000.0));
         assert_eq!(r.slack_penalty_basis.as_deref(), Some("per_unit"));
+    }
+
+    #[test]
+    fn stage_volume_row_echoes_the_user_coefficient_not_tau() {
+        let constraints = vec![constraint(
+            21,
+            "vol",
+            vec![
+                LinearTerm::literal(
+                    2.0,
+                    VariableRef::HydroOutflowVolume {
+                        hydro_id: EntityId(0),
+                    },
+                ),
+                LinearTerm::literal(
+                    -1.0,
+                    VariableRef::PumpingVolume {
+                        station_id: EntityId(1),
+                    },
+                ),
+            ],
+        )];
+        let entries = vec![vec![entry(0, 21, 0, true, None, Some(9.0), None)]];
+        let resolved = ResolvedParameters::default();
+
+        let rows = build_echo_rows_from_parts(
+            &entries,
+            &[0],
+            &coefficients(&constraints, &resolved, &[0], &entries),
+            &constraints,
+        );
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].term_index, Some(0));
+        assert_eq!(rows[0].block_id, None);
+        assert_eq!(
+            rows[0].variable_kind.as_deref(),
+            Some("hydro_outflow_volume")
+        );
+        assert_eq!(
+            rows[0].variable.as_deref(),
+            Some("hydro_outflow_volume(id=0)")
+        );
+        assert_eq!(rows[0].coefficient, Some(2.0));
+        assert_eq!(rows[1].term_index, Some(1));
+        assert_eq!(rows[1].block_id, None);
+        assert_eq!(rows[1].variable_kind.as_deref(), Some("pumping_volume"));
+        assert_eq!(rows[1].variable.as_deref(), Some("pumping_volume(id=1)"));
+        assert_eq!(rows[1].coefficient, Some(-1.0));
     }
 
     /// The echo shows the POST-NORMALIZATION flat form, not the authored
@@ -839,5 +897,23 @@ mod tests {
         });
         assert_eq!(kind, "hydro_useful_volume_final");
         assert_eq!(r, "hydro_useful_volume_final(id=66, block=2)");
+
+        let (kind, r) = render_variable(&VariableRef::HydroOutflowVolume {
+            hydro_id: EntityId(66),
+        });
+        assert_eq!(kind, "hydro_outflow_volume");
+        assert_eq!(r, "hydro_outflow_volume(id=66)");
+
+        let (kind, r) = render_variable(&VariableRef::HydroDiversionVolume {
+            hydro_id: EntityId(66),
+        });
+        assert_eq!(kind, "hydro_diversion_volume");
+        assert_eq!(r, "hydro_diversion_volume(id=66)");
+
+        let (kind, r) = render_variable(&VariableRef::PumpingVolume {
+            station_id: EntityId(3),
+        });
+        assert_eq!(kind, "pumping_volume");
+        assert_eq!(r, "pumping_volume(id=3)");
     }
 }

@@ -44,10 +44,10 @@ pub struct HydroCellIndex {
     /// Member group positions within the owning plant's `unit_groups` slice,
     /// ascending. Length `Σ groups`.
     cell_group_pos: Vec<usize>,
-    /// Cell `c`'s share of its plant's declared turbine capacity:
+    /// Cell `c`'s share of its plant's declared maximum turbined flow:
     /// `(Σ_{g∈c} max_turbined_m3s) / (Σ_{g∈plant} max_turbined_m3s)`, `0.0` when
     /// the plant total is `0.0` (never `NaN` from a `0.0 / 0.0`). Length
-    /// `n_cells()`. A study-time constant derived from DECLARED capacity, never
+    /// `n_cells()`. A study-time constant derived from the DECLARED maximum turbined flow, never
     /// recomputed per stage or block, and never sourced from a resolved
     /// per-stage bound override on a group, should one later exist: an
     /// availability derate is already enforced on the flow path by each
@@ -175,7 +175,7 @@ impl HydroCellIndex {
         self.cell_bus[c.get()]
     }
 
-    /// Cell `c`'s share of its plant's declared turbine capacity:
+    /// Cell `c`'s share of its plant's declared maximum turbined flow:
     /// `(Σ_{g∈c} max_turbined_m3s) / (Σ_{g∈plant} max_turbined_m3s)`, `0.0` when
     /// the plant total is `0.0`.
     #[inline]
@@ -222,6 +222,7 @@ mod tests {
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
