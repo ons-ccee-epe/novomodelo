@@ -64,6 +64,7 @@ pub(crate) fn validate_semantic_hydro_thermal(data: &ParsedData, ctx: &mut Valid
     hydro::check_evaporation_geometry_coverage(data, ctx);
     hydro::check_fpha_geometry_coverage(data, ctx);
     hydro::check_fpha_constraints(data, ctx);
+    hydro::check_tailrace_flow_effect(data, ctx);
     hydro::check_hydro_unit_groups(data, ctx);
     thermal::check_thermal_generation_bounds(data, ctx);
     thermal::check_anticipated_thermals(data, ctx);

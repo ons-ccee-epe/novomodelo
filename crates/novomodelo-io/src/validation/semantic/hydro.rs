@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use novomodelo_core::commissioning::{
     IncomingStorageFloor, commissioning_active, hard_storage_floor, incoming_storage_floor,
 };
-use novomodelo_core::{EntityId, Hydro, ResolvedBounds};
+use novomodelo_core::{EntityId, Hydro, ResolvedBounds, TailraceFlow};
 
 use super::super::{ValidationContext, rules, schema::ParsedData};
 use super::{envelope_tolerance, range_covers};
@@ -919,6 +919,40 @@ pub(super) fn check_fpha_constraints(data: &ParsedData, ctx: &mut ValidationCont
                 format!(
                     "{entity_str} (stage={stage_label}): no FPHA planes defined; \
                      at least 1 plane is required"
+                ),
+            );
+        }
+    }
+}
+
+/// Rule 68 (warning): a non-default `tailrace_flow` on a hydro that selects
+/// FPHA at no study stage.
+pub(super) fn check_tailrace_flow_effect(data: &ParsedData, ctx: &mut ValidationContext) {
+    for hydro in &data.hydros {
+        if hydro.tailrace_flow == TailraceFlow::default() {
+            continue;
+        }
+        let uses_fpha = data
+            .production_models
+            .iter()
+            .find(|config| config.hydro_id == hydro.id)
+            .is_some_and(|config| {
+                data.stages
+                    .stages
+                    .iter()
+                    .filter(|stage| stage.id >= 0)
+                    .any(|stage| config.uses_fpha_at(stage))
+            });
+        if !uses_fpha {
+            let entity = format!("Hydro {} (id={})", hydro.name, hydro.id.0);
+            ctx.emit(
+                &rules::SEMANTIC_TAILRACE_FLOW_NO_EFFECT,
+                "system/hydros.json",
+                Some(&entity),
+                format!(
+                    "{entity}: tailrace_flow has no effect because the hydro uses FPHA at no \
+                     study stage; select FPHA in extensions/production_models.json or remove \
+                     tailrace_flow"
                 ),
             );
         }
@@ -3734,6 +3768,7 @@ mod tests {
     use crate::{
         FphaColumnLayout, HydroGeometryRow, ProductionModelConfig, SelectionMode, StageRange,
     };
+    use novomodelo_core::TailraceFlow;
     use novomodelo_core::entities::HydroGenerationModel;
 
     fn validate_fpha_geometry_coverage(
@@ -3896,5 +3931,85 @@ mod tests {
             entities,
             vec![Some("Hydro Hydro 1 (id=1)"), Some("Hydro Hydro 2 (id=2)")]
         );
+    }
+
+    fn constant_productivity_config(hydro_id: i32) -> ProductionModelConfig {
+        ProductionModelConfig {
+            hydro_id: EntityId::from(hydro_id),
+            selection_mode: SelectionMode::StageRanges {
+                ranges: vec![StageRange {
+                    start_stage_id: 0,
+                    end_stage_id: None,
+                    model: HydroGenerationModel::ConstantProductivity,
+                    fpha_config: None,
+                    reference_volume: None,
+                    productivity_mw_per_m3s: None,
+                }],
+            },
+        }
+    }
+
+    fn tailrace_flow_effect_warnings(
+        tailrace_flow: TailraceFlow,
+        production_models: Vec<ProductionModelConfig>,
+    ) -> Vec<ValidationEntry> {
+        let mut hydro = make_hydro(1, None);
+        hydro.tailrace_flow = tailrace_flow;
+        let mut data = make_data(
+            vec![hydro],
+            vec![],
+            vec![],
+            make_stages(vec![0]),
+            vec![],
+            vec![],
+        );
+        data.production_models = production_models;
+        let mut ctx = ValidationContext::new();
+        validate_semantic_hydro_thermal(&data, &mut ctx);
+        ctx.warnings()
+            .into_iter()
+            .filter(|e| e.message.contains("tailrace_flow has no effect"))
+            .cloned()
+            .collect()
+    }
+
+    fn declared_tailrace_flow() -> TailraceFlow {
+        TailraceFlow {
+            own_outflow_factor: 0.5,
+            ..TailraceFlow::default()
+        }
+    }
+
+    #[test]
+    fn tailrace_flow_effect_warns_without_any_fpha_stage() {
+        let entries = tailrace_flow_effect_warnings(declared_tailrace_flow(), vec![]);
+        assert_eq!(entries.len(), 1, "got: {entries:?}");
+        assert_eq!(entries[0].kind, ErrorKind::ModelQuality);
+        assert_eq!(entries[0].file.to_string_lossy(), "system/hydros.json");
+        assert_eq!(entries[0].entity.as_deref(), Some("Hydro Hydro 1 (id=1)"));
+    }
+
+    #[test]
+    fn tailrace_flow_effect_warns_for_constant_productivity_config() {
+        let entries = tailrace_flow_effect_warnings(
+            declared_tailrace_flow(),
+            vec![constant_productivity_config(1)],
+        );
+        assert_eq!(entries.len(), 1, "got: {entries:?}");
+    }
+
+    #[test]
+    fn tailrace_flow_effect_is_silent_when_fpha_applies() {
+        let entries = tailrace_flow_effect_warnings(
+            declared_tailrace_flow(),
+            vec![fpha_config(1, "computed")],
+        );
+        assert!(entries.is_empty(), "got: {entries:?}");
+    }
+
+    #[test]
+    fn tailrace_flow_effect_is_silent_for_the_default_declaration() {
+        let entries = tailrace_flow_effect_warnings(TailraceFlow::default(), vec![]);
+        assert!(entries.is_empty(), "got: {entries:?}");
     }
 }
