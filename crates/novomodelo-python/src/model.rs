@@ -279,7 +279,7 @@ impl PyHydro {
         self.hydro().min_turbined_m3s
     }
 
-    /// Maximum turbined flow (installed turbine capacity) [m³/s].
+    /// Declared maximum turbined flow [m³/s].
     #[getter]
     fn max_turbined_m3s(&self) -> f64 {
         self.hydro().max_turbined_m3s

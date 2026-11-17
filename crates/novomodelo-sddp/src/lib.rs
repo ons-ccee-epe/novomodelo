@@ -116,13 +116,14 @@ pub use policy::resolved_parameters::{
 };
 pub use production::energy_conversion::{EnergyConversionSet, HydroEnergyProductivityOverride};
 pub use production::hydro_models::{
-    FphaFitDeviationEntry, FphaHydroDetail, HydroFitTimings, HydroModelSummary,
+    DroppedFloor, DroppedFloorKind, DroppedFloorLevel, DroppedFloorReason, FphaFitDeviationEntry,
+    FphaHydroDetail, FrozenTurbiningHydro, HydroFitTimings, HydroModelSummary,
     NoTurbineCapacityHydro, PrepareHydroModelsResult, ProductionModelSource,
     build_deviation_summary, build_evaporation_model_rows, build_hydro_model_summary,
     prepare_hydro_models,
 };
 #[cfg(any(test, feature = "test-support"))]
-pub use setup::lp_build_inputs::build_stage_templates_resolving_layout;
+pub use setup::lp_build_inputs::{build_stage_templates_resolving_layout, resolved_state_layout};
 pub use setup::{
     BoundaryStateRequirements, DEFAULT_COST_SCALE_FACTOR, DEFAULT_SEED, PrepareStochasticResult,
     StudyParams, StudySetup, build_stochastic_context_for_study, prepare_stochastic,

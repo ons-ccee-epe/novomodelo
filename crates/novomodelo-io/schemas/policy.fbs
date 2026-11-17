@@ -133,7 +133,7 @@ table AffinePiece {
   /// permanently burned.
   piece_id:uint64 (id: 0, deprecated);
 
-  /// LP row position. Required for artifact reproducibility and
+  /// Pool slot of this piece. Required for artifact reproducibility and
   /// basis warm-starting.
   slot_index:uint32 (id: 1);
 

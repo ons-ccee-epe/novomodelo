@@ -8,7 +8,6 @@ use novomodelo_core::{
     ResolvedBounds, ResolvedGenericConstraintBounds, ResolvedLoadFactors, ResolvedNcsBounds,
     ResolvedNcsFactors, ResolvedPenalties, SlackConfig, Stage, Thermal, VariableRef,
 };
-use novomodelo_stochastic::par::precompute::PrecomputedPar;
 
 use crate::bucket_topology::TransitBucketTopology;
 use crate::hydro_models::{
@@ -25,7 +24,8 @@ use crate::indexer::{
 use crate::time_value::TimeValue;
 
 use super::hydro_state::{
-    GroupBoundLookup, MaxCap, MinFloor, PlantFloor, hydro_phase, is_suspended, plant_cap_rhs,
+    GroupBoundLookup, MaxCap, MinFloor, PlantFloor, cell_has_capacity, effective_withdrawals,
+    has_soft_storage_floor, hydro_phase, is_suspended, plant_cap_rhs, plant_has_capacity,
 };
 use super::{
     EVAP_COLS_PER_HYDRO, EVAP_F_MINUS_OFFSET, EVAP_F_PLUS_OFFSET, EVAP_FLOW_OFFSET,
@@ -74,7 +74,6 @@ pub(crate) struct TemplateBuildCtx<'a> {
     /// Declaration-order bit-determinism (`csc_byte_identical_under_permuted_multi_entity_order`)
     /// depends on every fill iterating a slice, never this map.
     pub(crate) positions: &'a EntityPositions,
-    pub(crate) par_lp: &'a PrecomputedPar,
     /// Resolved production models for all (hydro, stage) pairs.
     pub(crate) production_models: &'a ProductionModelSet,
     /// Resolved evaporation models for all hydro plants.
@@ -132,22 +131,45 @@ pub(crate) struct TemplateBuildCtx<'a> {
 impl<'a> TemplateBuildCtx<'a> {
     /// Plant `h`'s `kind` floor at block `blk` of stage `stage_idx` — the one
     /// resolution the floor rows, their slack columns, and the plant-floor
-    /// membership all read.
+    /// membership all read. Every floor is dropped while the plant is suspended
+    /// at `stage_id` (commissioning), as it is without capacity.
     pub(super) fn plant_floor(
         &self,
+        stage_id: i32,
         stage_idx: usize,
         kind: MinFloor,
         h: HydroSys,
         blk: usize,
     ) -> PlantFloor<'a> {
         let bounds = self.resolved.bounds;
+        let hydro = &self.hydros[h.get()];
         PlantFloor::resolve(
             kind,
-            &self.hydros[h.get()],
+            hydro,
             self.hydro_cell_index,
             h,
             GroupBoundLookup::new(bounds.group_overlay(), h.get(), stage_idx, blk),
             bounds.hydro_bounds_at_block(h.get(), stage_idx, blk),
+            is_suspended(hydro, stage_id),
+        )
+    }
+
+    /// Whether cell `cell` of plant `h` has turbine capacity at block `blk` of
+    /// stage `stage_idx` ([`cell_has_capacity`]) — the one resolution the FPHA
+    /// plane rows and plane-slack columns read.
+    pub(super) fn cell_has_capacity(
+        &self,
+        stage_idx: usize,
+        h: HydroSys,
+        cell: HydroCell,
+        blk: usize,
+    ) -> bool {
+        let bounds = self.resolved.bounds;
+        cell_has_capacity(
+            &self.hydros[h.get()].unit_groups,
+            self.hydro_cell_index.groups_of(cell),
+            bounds.hydro_bounds_at_block(h.get(), stage_idx, blk),
+            GroupBoundLookup::new(bounds.group_overlay(), h.get(), stage_idx, blk),
         )
     }
 
@@ -452,6 +474,9 @@ pub(crate) struct StageLayout<'a> {
     /// of [`evaporation_slot_count`] (`1` on a parallel stage, `n_blks` on a
     /// chronological one) — the stride every evaporation column/row family uses.
     pub(crate) n_evap_slots: usize,
+    /// Per-hydro effective withdrawal (m³/s, length `n_h`), the owner of what the
+    /// water-balance RHS reads; see [`effective_withdrawals`].
+    pub(crate) effective_withdrawal_m3s: Vec<f64>,
     /// Per-row metadata for active generic constraint rows, one per active
     /// `(constraint, block)` pair in constraint-index-major order.
     pub(crate) generic_constraint_rows: Vec<GenericConstraintRowEntry>,
@@ -648,6 +673,22 @@ pub(crate) fn evaporation_slot_count(block_mode: BlockMode, n_blks: usize) -> us
     }
 }
 
+/// The single owner of the two storage boundaries an evaporation slot's row reads.
+#[must_use]
+pub(super) fn evaporation_slot_boundaries(
+    block_mode: BlockMode,
+    slot: usize,
+    n_blks: usize,
+) -> (Boundary, Boundary) {
+    match block_mode {
+        BlockMode::Parallel => (Boundary::Incoming, Boundary::Outgoing),
+        BlockMode::Chronological => (
+            Boundary::from_index(slot, n_blks),
+            Boundary::from_index(slot + 1, n_blks),
+        ),
+    }
+}
+
 /// The slot block `blk` reads, given the stage's slot count.
 pub(crate) fn evaporation_slot(slot_count: usize, blk: BlockIdx) -> BlockIdx {
     if slot_count == 1 {
@@ -698,25 +739,44 @@ fn build_evap_indices(
 /// on the commissioning id). A
 /// commissioning-dormant non-filling hydro is `PreFilling` and is dropped here too;
 /// a non-filling hydro with no window is `Operating` at every stage (parity-neutral).
+///
+/// A plant without turbine capacity in any block of the stage
+/// ([`plant_has_capacity`]) is dropped the same way: no generation column, plane
+/// row or plane slack, and its turbine column is `[0, 0]`. Capacity in one block or
+/// one cell keeps the plant's whole FPHA structure for the stage; a (cell, block)
+/// without capacity inside it has free plane rows and a pinned slack.
 fn identify_fpha_hydros(
     ctx: &TemplateBuildCtx<'_>,
     stage_idx: usize,
     stage_id: i32,
+    n_blks: usize,
 ) -> Vec<HydroSys> {
-    let mut fpha_hydro_indices: Vec<HydroSys> = Vec::new();
-    for h_idx in 0..ctx.hydros.len() {
-        let hydro = &ctx.hydros[h_idx];
-        if is_suspended(hydro, stage_id) {
-            continue;
-        }
-        if matches!(
-            ctx.production_models.model(h_idx, stage_idx),
-            ResolvedProductionModel::Fpha { .. }
-        ) {
-            fpha_hydro_indices.push(HydroSys::new(h_idx));
-        }
-    }
-    fpha_hydro_indices
+    (0..ctx.hydros.len())
+        .filter(|&h_idx| {
+            !is_suspended(&ctx.hydros[h_idx], stage_id)
+                && matches!(
+                    ctx.production_models.model(h_idx, stage_idx),
+                    ResolvedProductionModel::Fpha { .. }
+                )
+                && (0..n_blks).any(|blk| {
+                    plant_has_capacity(
+                        &ctx.hydros[h_idx],
+                        ctx.hydro_cell_index,
+                        HydroSys::new(h_idx),
+                        GroupBoundLookup::new(
+                            ctx.resolved.bounds.group_overlay(),
+                            h_idx,
+                            stage_idx,
+                            blk,
+                        ),
+                        ctx.resolved
+                            .bounds
+                            .hydro_bounds_at_block(h_idx, stage_idx, blk),
+                    )
+                })
+        })
+        .map(HydroSys::new)
+        .collect()
 }
 
 /// Collect the indices of hydros with linearized evaporation at this stage.
@@ -782,10 +842,7 @@ fn identify_filled_min_storage_floor_hydros(
     stage_id: i32,
 ) -> Vec<HydroSys> {
     (0..ctx.hydros.len())
-        .filter(|&h_idx| {
-            let hydro = &ctx.hydros[h_idx];
-            matches!(hydro_phase(hydro, stage_id), Phase::Operating) && hydro.filling.is_some()
-        })
+        .filter(|&h_idx| has_soft_storage_floor(&ctx.hydros[h_idx], stage_id))
         .map(HydroSys::new)
         .collect()
 }
@@ -796,6 +853,7 @@ fn identify_filled_min_storage_floor_hydros(
 /// every study whose plant minima come from declarations alone.
 fn identify_plant_floor_hydros(
     ctx: &TemplateBuildCtx<'_>,
+    stage_id: i32,
     stage_idx: usize,
     n_blks: usize,
 ) -> Vec<HydroSys> {
@@ -805,7 +863,7 @@ fn identify_plant_floor_hydros(
             ctx.hydro_cell_index.cells_of(h).len() > 1
                 && (0..n_blks).any(|blk| {
                     MinFloor::ALL.into_iter().any(|kind| {
-                        ctx.plant_floor(stage_idx, kind, h, blk)
+                        ctx.plant_floor(stage_id, stage_idx, kind, h, blk)
                             .residual_rhs()
                             .is_some()
                     })
@@ -884,7 +942,7 @@ fn allocate_generic_slack_cols(
 }
 
 /// Whether a single [`VariableRef`] resolves to the *same* LP column(s) regardless
-/// of `block_idx` — **block-independent** ("stock"). Seven kinds qualify:
+/// of `block_idx` — **block-independent**. These kinds qualify:
 /// [`VariableRef::HydroStorage`] (stage-final alias `Sᴷ`),
 /// [`VariableRef::AnticipatedDecision`], [`VariableRef::HydroEvaporation`] (a fixed
 /// single-block column or the all-block sum — both `block_idx`-independent), and the
@@ -892,18 +950,21 @@ fn allocate_generic_slack_cols(
 /// [`VariableRef::HydroStorageFinal`] / [`VariableRef::HydroUsefulVolumeInitial`] /
 /// [`VariableRef::HydroUsefulVolumeFinal`], each resolving to a fixed boundary column
 /// (`Sᵏ` / `S⁰` / `Sᴷ`) that does not follow the materialized row's block.
+/// A stage-volume variant ([`VariableRef::HydroOutflowVolume`] /
+/// [`VariableRef::HydroDiversionVolume`] / [`VariableRef::PumpingVolume`]) reads
+/// every block's flow column itself, so it is stage-level.
 ///
 /// [`VariableRef::HydroInflow`] is block-DEPENDENT: its upstream-release terms are
-/// per-block columns. Classifying it "stock" would collapse a multi-block expression
-/// to one mis-priced stage-level row reading upstream columns at a single arbitrary
-/// block, silently dropping the other blocks. [`VariableRef::PumpingFlow`] /
+/// per-block columns. Classifying it block-independent would collapse a multi-block
+/// expression to one mis-priced stage-level row reading upstream columns at a single
+/// arbitrary block, silently dropping the other blocks. [`VariableRef::PumpingFlow`] /
 /// [`VariableRef::PumpingPower`] are block-level for the same reason. The stub kinds
 /// (withdrawal, contracts, non-controllable) resolve to no columns and are
-/// conservatively block-level, so only *provably* stock variables enable the
-/// single-row collapse.
+/// conservatively block-level, so only *provably* block-independent variables enable
+/// the single-row collapse.
 ///
 /// The match is exhaustive (no wildcard): a future variant forces a compile error
-/// here, defaulting nothing to "stock" by omission.
+/// here, defaulting nothing to block-independent by omission.
 #[must_use]
 pub(super) fn variable_ref_is_block_independent(var_ref: &VariableRef) -> bool {
     match var_ref {
@@ -913,7 +974,10 @@ pub(super) fn variable_ref_is_block_independent(var_ref: &VariableRef) -> bool {
         | VariableRef::HydroUsefulVolumeInitial { .. }
         | VariableRef::HydroUsefulVolumeFinal { .. }
         | VariableRef::HydroEvaporation { .. }
-        | VariableRef::AnticipatedDecision { .. } => true,
+        | VariableRef::AnticipatedDecision { .. }
+        | VariableRef::HydroOutflowVolume { .. }
+        | VariableRef::HydroDiversionVolume { .. }
+        | VariableRef::PumpingVolume { .. } => true,
         VariableRef::HydroInflow { .. }
         | VariableRef::HydroTurbined { .. }
         | VariableRef::HydroSpillage { .. }
@@ -1132,9 +1196,10 @@ pub(super) enum StageProductionRole {
     Fpha(FphaLocal),
     /// Prices through the plant's turbine column at this shared productivity.
     Constant(f64),
-    /// A commissioning-dormant (`PreFilling`/`Filling`) `Fpha`-resolved plant:
-    /// gated out of `fpha_local_index` by `identify_fpha_hydros`, so it has no
-    /// generation column, and its turbine column is frozen `[0, 0]`. It
+    /// An `Fpha`-resolved plant that is commissioning-suspended
+    /// (`PreFilling`/`Filling`) or has no turbine capacity in any block of the
+    /// stage: gated out of `fpha_local_index` by `identify_fpha_hydros`, so it has
+    /// no generation column, and its turbine column is `[0, 0]`. It
     /// contributes nothing to either consumer's row — never priced as
     /// `ConstantProductivity`, which it has no productivity for.
     Dormant,
@@ -1313,6 +1378,7 @@ impl StageGeometry {
             filling_target_col: 0..0,
             filled_min_storage_floor: 0..0,
             filled_min_storage_floor_col: 0..0,
+            fpha_slack: 0..0,
             plant_max_turbine: 0..0,
             plant_max_generation: 0..0,
             n_blks,
@@ -1336,7 +1402,7 @@ impl<'a> StageLayout<'a> {
         let n_h = state_layout.hydro_count;
         let n_cells = ctx.hydro_cell_index.n_cells();
 
-        let fpha_hydro_indices = identify_fpha_hydros(ctx, stage_idx, stage.id);
+        let fpha_hydro_indices = identify_fpha_hydros(ctx, stage_idx, stage.id, n_blks);
         let filling_target_hydro_indices = identify_filling_target_hydros(ctx, stage.id);
         let filled_min_storage_floor_hydro_indices =
             identify_filled_min_storage_floor_hydros(ctx, stage.id);
@@ -1346,6 +1412,13 @@ impl<'a> StageLayout<'a> {
         let (fpha_local_index, fpha_cell_local_start, n_fpha_cells, total_fpha_rows) =
             fpha_cell_offsets(ctx, &fpha_hydro_indices, stage_idx, n_h);
         let n_evap_slots = evaporation_slot_count(stage.block_mode, n_blks);
+        let effective_withdrawal_m3s =
+            effective_withdrawals(ctx.hydros, ctx.cascade, ctx.positions, stage.id, |h_idx| {
+                ctx.resolved
+                    .bounds
+                    .hydro_bounds(h_idx, stage_idx)
+                    .water_withdrawal_m3s
+            });
 
         let mut geometry = StageGeometry::unallocated(stage.block_mode, n_blks);
         geometry.fpha_hydro_indices = fpha_hydro_indices;
@@ -1389,10 +1462,7 @@ impl<'a> StageLayout<'a> {
         geometry.inflow_slack = col.alloc(if has_inflow_slack_columns { n_h } else { 0 });
 
         // ── Role-(b) constraint row ranges ───────────────────────────────────
-        // The builder's own rows start immediately after `StateSpace::z_inflow_rows()`,
-        // the sole owner of that leading row range. `row` allocates every family
-        // through `RangeCursor::alloc`, mirroring `col` above.
-        let mut row = RangeCursor::new(state_layout.z_inflow_rows().end);
+        let mut row = RangeCursor::new(0);
         geometry.water_balance =
             allocate_water_balance_rows(&mut row, stage.block_mode, n_h, n_blks);
         // Sized from this stage's reachable count, not the stage-invariant
@@ -1423,7 +1493,8 @@ impl<'a> StageLayout<'a> {
         // `n_h * n_blks`/`n_cells * n_blks` are `0` when `n_h`/`n_cells == 0`, so
         // `alloc(0)` collapses every family onto the post-equipment cursor with
         // no branch.
-        geometry.plant_floor_hydro_indices = identify_plant_floor_hydros(ctx, stage_idx, n_blks);
+        geometry.plant_floor_hydro_indices =
+            identify_plant_floor_hydros(ctx, stage.id, stage_idx, n_blks);
         let oper_violation_sizes = OperViolationSizes {
             hydros: n_h * n_blks,
             cells: n_cells * n_blks,
@@ -1459,11 +1530,13 @@ impl<'a> StageLayout<'a> {
         let (generic, generic_rows) =
             allocate_generic_constraints(&mut col, &mut row, ctx, stage, stage_idx, n_blks);
 
-        // σ_fill then σ^{v-} are the last two per-stage column families; σ^{v-}
-        // last so its presence cannot shift any other family's start.
+        // σ_fill, σ^{v-}, then `fpha_slack` close the column chain; `fpha_slack` last
+        // (sized by FPHA cell × block, empty without FPHA) so it shifts no other
+        // family's start.
         geometry.filling_target_col = col.alloc(filling_target_hydro_indices.len());
         geometry.filled_min_storage_floor_col =
             col.alloc(filled_min_storage_floor_hydro_indices.len());
+        geometry.fpha_slack = col.alloc(n_fpha_cells * n_blks);
         geometry.filling_target_hydro_indices = filling_target_hydro_indices;
         geometry.filled_min_storage_floor_hydro_indices = filled_min_storage_floor_hydro_indices;
 
@@ -1489,6 +1562,7 @@ impl<'a> StageLayout<'a> {
             fpha_local_index,
             fpha_cell_local_start,
             n_evap_slots,
+            effective_withdrawal_m3s,
             generic_constraint_rows: generic.generic_constraint_rows,
         }
     }
@@ -1555,7 +1629,7 @@ impl StageLayout<'_> {
     /// Hydro `h_idx`'s [`StageProductionRole`] at `stage_idx`: `Fpha` when
     /// `identify_fpha_hydros` admitted it into `fpha_local_index`, else the
     /// resolved model's `Constant` productivity or, for an `Fpha`-resolved
-    /// model excluded by the phase gate, `Dormant`.
+    /// model excluded by the phase or capacity gate, `Dormant`.
     #[inline]
     pub(super) fn stage_production_role(
         &self,
@@ -1711,6 +1785,50 @@ pub(crate) fn contract_family_slot(
     (contract_type, family_slot)
 }
 
+/// The structural row families of a stage LP, in the order the builder allocates them.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RowFamily {
+    /// Water-balance rows.
+    WaterBalance,
+    /// Transit-bucket definition rows.
+    TransitBucketDefinition,
+    /// Load-balance rows.
+    LoadBalance,
+    /// FPHA plane rows.
+    Fpha,
+    /// Evaporation equality rows.
+    Evaporation,
+    /// Below-minimum-outflow rows.
+    MinOutflow,
+    /// Above-maximum-outflow rows.
+    MaxOutflow,
+    /// Per-cell minimum-turbine rows.
+    MinTurbine,
+    /// Per-cell minimum-generation rows.
+    MinGeneration,
+    /// Plant residual minimum-turbine rows.
+    PlantMinTurbine,
+    /// Plant residual minimum-generation rows.
+    PlantMinGeneration,
+    /// Plant maximum-turbine cap rows.
+    PlantMaxTurbine,
+    /// Plant maximum-generation cap rows.
+    PlantMaxGeneration,
+    /// Filling-target rows.
+    FillingTarget,
+    /// Filled minimum-storage floor rows.
+    FilledMinStorageFloor,
+    /// Anticipated commitment-maturity rows.
+    AnticipatedFishing,
+    /// Anticipated state-out definition rows.
+    AnticipatedStateOutDef,
+    /// Anticipated future-slot carry rows.
+    AnticipatedSlotDefinition,
+    /// Generic-constraint rows.
+    GenericConstraint,
+}
+
 impl StageLayout<'_> {
     /// Base column of the `(evap hydro local_idx, slot)` triple, slot-major
     /// (`(local_idx * n_evap_slots + slot) * EVAP_COLS_PER_HYDRO`). Single owner of
@@ -1769,13 +1887,6 @@ impl StageLayout<'_> {
         self.state.theta
     }
 
-    /// Column-side state dimension; reads `self.state.n_state`.
-    #[inline]
-    #[must_use]
-    pub(crate) fn n_state(&self) -> usize {
-        self.state.n_state
-    }
-
     // ── Role-(b) accessors (read StageLayout's own fields) ───────────────────────
 
     /// Start of evaporation constraint rows, one per `(evap hydro, slot)`; see
@@ -1821,11 +1932,82 @@ impl StageLayout<'_> {
         )
     }
 
-    /// Hydro `h`'s z-inflow definition row.
-    #[inline]
+    /// Every structural row family with its range, in allocation order; empty
+    /// families stay in the list.
+    #[cfg(any(test, feature = "test-support"))]
     #[must_use]
-    pub(crate) fn z_inflow_row(&self, h: HydroSys) -> usize {
-        self.state.z_inflow_row(h)
+    pub(crate) fn row_families(&self) -> Vec<(RowFamily, Range<usize>)> {
+        let evap_start = self.row_evap_start();
+        let generic_start = self.rows.row_generic_start;
+        vec![
+            (RowFamily::WaterBalance, self.geometry.water_balance.range()),
+            (
+                RowFamily::TransitBucketDefinition,
+                self.rows.transit_bucket_definition.clone(),
+            ),
+            (RowFamily::LoadBalance, self.geometry.load_balance.range()),
+            (RowFamily::Fpha, self.geometry.fpha.clone()),
+            (
+                RowFamily::Evaporation,
+                evap_start..evap_start + self.geometry.evap_indices.len(),
+            ),
+            (
+                RowFamily::MinOutflow,
+                self.oper_violation.min_outflow.clone(),
+            ),
+            (
+                RowFamily::MaxOutflow,
+                self.oper_violation.max_outflow.clone(),
+            ),
+            (
+                RowFamily::MinTurbine,
+                self.oper_violation.min_turbine.clone(),
+            ),
+            (
+                RowFamily::MinGeneration,
+                self.oper_violation.min_generation.clone(),
+            ),
+            (
+                RowFamily::PlantMinTurbine,
+                self.oper_violation.plant_min_turbine.clone(),
+            ),
+            (
+                RowFamily::PlantMinGeneration,
+                self.oper_violation.plant_min_generation.clone(),
+            ),
+            (
+                RowFamily::PlantMaxTurbine,
+                self.geometry.plant_max_turbine.clone(),
+            ),
+            (
+                RowFamily::PlantMaxGeneration,
+                self.geometry.plant_max_generation.clone(),
+            ),
+            (
+                RowFamily::FillingTarget,
+                self.geometry.filling_target.clone(),
+            ),
+            (
+                RowFamily::FilledMinStorageFloor,
+                self.geometry.filled_min_storage_floor.clone(),
+            ),
+            (
+                RowFamily::AnticipatedFishing,
+                self.anticipated.fishing_rows.clone(),
+            ),
+            (
+                RowFamily::AnticipatedStateOutDef,
+                self.anticipated.state_out_def_rows.clone(),
+            ),
+            (
+                RowFamily::AnticipatedSlotDefinition,
+                self.anticipated.slot_definition_rows.clone(),
+            ),
+            (
+                RowFamily::GenericConstraint,
+                generic_start..generic_start + self.rows.n_generic_rows,
+            ),
+        ]
     }
 }
 
@@ -1937,6 +2119,9 @@ pub struct StageGeometry {
     /// stage. Simulation extraction reads the `σ^{v-}` primal at `start + local_idx`,
     /// resolving `local_idx` via `filled_min_storage_floor_hydro_indices`.
     pub filled_min_storage_floor_col: Range<usize>,
+    /// FPHA plane-slack column range (one per FPHA cell per block, the
+    /// `generation` indexing); empty without FPHA.
+    pub fpha_slack: Range<usize>,
     /// Hard plant max-turbined row range (one row per plant-cap hydro per block).
     pub plant_max_turbine: Range<usize>,
     /// Hard plant max-generation row range (one row per plant-cap hydro per block).
@@ -2056,6 +2241,13 @@ impl StageGeometry {
     #[must_use]
     pub fn generation_col(&self, c: FphaCellLocal, blk: BlockIdx) -> usize {
         self.block_flat(&self.generation, c.get(), blk)
+    }
+
+    /// FPHA plane-slack column for FPHA-cell-local index `c`, block `blk`.
+    #[inline]
+    #[must_use]
+    pub fn fpha_slack_col(&self, c: FphaCellLocal, blk: BlockIdx) -> usize {
+        self.block_flat(&self.fpha_slack, c.get(), blk)
     }
 
     /// Thermal-generation column for thermal `t`, block `blk`.

@@ -46,6 +46,8 @@ pub struct HighsSolver {
     pub(super) row_activity: Vec<f64>,
     /// Row magnitude `Σ|a_ij x_j|` of the returned primal solution.
     pub(super) row_magnitude: Vec<f64>,
+    /// `+∞` per row, the upper-bound slice of `set_row_lower_bounds_range`.
+    pub(super) row_upper_infinity: Vec<f64>,
     /// Primal tolerance, in returned units, under which `HiGHS` accepted the
     /// current solution; captured before the retry ladder restores the options.
     pub(super) accepted_primal_tolerance: f64,
@@ -125,6 +127,7 @@ impl HighsSolver {
             row_dual: Vec::new(),
             row_activity: Vec::new(),
             row_magnitude: Vec::new(),
+            row_upper_infinity: Vec::new(),
             accepted_primal_tolerance: 0.0,
             scratch_i32: Vec::new(),
             basis_col_i32: Vec::new(),

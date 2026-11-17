@@ -57,11 +57,14 @@ use novomodelo_core::EntityId;
 use std::path::Path;
 
 use crate::LoadError;
-use crate::parquet_helpers::{
-    extract_required_float64, extract_required_int32, open_record_batch_reader,
-};
+use crate::parquet_helpers::{ParquetColumns, open_parquet_input};
 
 pub use novomodelo_core::scenario::{ExternalLoadRow, ExternalNcsRow, ExternalScenarioRow};
+
+static EXTERNAL_INFLOW_SCENARIOS_COLUMNS: ParquetColumns = ParquetColumns {
+    known: &["stage_id", "scenario_id", "hydro_id", "value_m3s"],
+    retired: &[],
+};
 
 /// Parse `scenarios/external_inflow_scenarios.parquet` and return a sorted row table.
 ///
@@ -72,6 +75,7 @@ pub use novomodelo_core::scenario::{ExternalLoadRow, ExternalNcsRow, ExternalSce
 /// | File not found or permission denied                  | [`LoadError::IoError`]     |
 /// | Malformed Parquet (corrupt header, etc.)             | [`LoadError::ParseError`]  |
 /// | Required column missing or wrong type                | [`LoadError::SchemaError`] |
+/// | Unknown or retired column                            | [`LoadError::SchemaError`] |
 /// | `value_m3s` not finite (NaN or infinity)             | [`LoadError::SchemaError`] |
 /// | `scenario_id` < 0                                    | [`LoadError::SchemaError`] |
 ///
@@ -88,17 +92,15 @@ pub use novomodelo_core::scenario::{ExternalLoadRow, ExternalNcsRow, ExternalSce
 /// println!("loaded {} external inflow scenario rows", rows.len());
 /// ```
 pub fn parse_external_inflow_scenarios(path: &Path) -> Result<Vec<ExternalScenarioRow>, LoadError> {
-    let reader = open_record_batch_reader(path)?;
-
     let mut rows: Vec<ExternalScenarioRow> = Vec::new();
 
-    for batch_result in reader {
-        let batch = batch_result.map_err(|e| LoadError::parse(path, e.to_string()))?;
+    for batch in open_parquet_input(path, &EXTERNAL_INFLOW_SCENARIOS_COLUMNS)? {
+        let batch = batch?;
 
-        let stage_id_col = extract_required_int32(&batch, "stage_id", path)?;
-        let scenario_id_col = extract_required_int32(&batch, "scenario_id", path)?;
-        let hydro_id_col = extract_required_int32(&batch, "hydro_id", path)?;
-        let value_m3s_col = extract_required_float64(&batch, "value_m3s", path)?;
+        let stage_id_col = batch.required_int32("stage_id")?;
+        let scenario_id_col = batch.required_int32("scenario_id")?;
+        let hydro_id_col = batch.required_int32("hydro_id")?;
+        let value_m3s_col = batch.required_float64("value_m3s")?;
 
         let n = batch.num_rows();
         let base_idx = rows.len();
@@ -170,6 +172,11 @@ pub fn parse_external_inflow_scenarios(path: &Path) -> Result<Vec<ExternalScenar
     Ok(rows)
 }
 
+static EXTERNAL_LOAD_SCENARIOS_COLUMNS: ParquetColumns = ParquetColumns {
+    known: &["stage_id", "scenario_id", "bus_id", "value_mw"],
+    retired: &[],
+};
+
 /// Parse `scenarios/external_load_scenarios.parquet` and return a sorted row table.
 ///
 /// # Errors
@@ -179,6 +186,7 @@ pub fn parse_external_inflow_scenarios(path: &Path) -> Result<Vec<ExternalScenar
 /// | File not found or permission denied                  | [`LoadError::IoError`]     |
 /// | Malformed Parquet (corrupt header, etc.)             | [`LoadError::ParseError`]  |
 /// | Required column missing or wrong type                | [`LoadError::SchemaError`] |
+/// | Unknown or retired column                            | [`LoadError::SchemaError`] |
 /// | `value_mw` not finite (NaN or infinity)              | [`LoadError::SchemaError`] |
 /// | `scenario_id` < 0                                    | [`LoadError::SchemaError`] |
 ///
@@ -195,17 +203,15 @@ pub fn parse_external_inflow_scenarios(path: &Path) -> Result<Vec<ExternalScenar
 /// println!("loaded {} external load scenario rows", rows.len());
 /// ```
 pub fn parse_external_load_scenarios(path: &Path) -> Result<Vec<ExternalLoadRow>, LoadError> {
-    let reader = open_record_batch_reader(path)?;
-
     let mut rows: Vec<ExternalLoadRow> = Vec::new();
 
-    for batch_result in reader {
-        let batch = batch_result.map_err(|e| LoadError::parse(path, e.to_string()))?;
+    for batch in open_parquet_input(path, &EXTERNAL_LOAD_SCENARIOS_COLUMNS)? {
+        let batch = batch?;
 
-        let stage_id_col = extract_required_int32(&batch, "stage_id", path)?;
-        let scenario_id_col = extract_required_int32(&batch, "scenario_id", path)?;
-        let bus_id_col = extract_required_int32(&batch, "bus_id", path)?;
-        let value_mw_col = extract_required_float64(&batch, "value_mw", path)?;
+        let stage_id_col = batch.required_int32("stage_id")?;
+        let scenario_id_col = batch.required_int32("scenario_id")?;
+        let bus_id_col = batch.required_int32("bus_id")?;
+        let value_mw_col = batch.required_float64("value_mw")?;
 
         let n = batch.num_rows();
         let base_idx = rows.len();
@@ -277,6 +283,11 @@ pub fn parse_external_load_scenarios(path: &Path) -> Result<Vec<ExternalLoadRow>
     Ok(rows)
 }
 
+static EXTERNAL_NCS_SCENARIOS_COLUMNS: ParquetColumns = ParquetColumns {
+    known: &["stage_id", "scenario_id", "ncs_id", "availability_factor"],
+    retired: &[],
+};
+
 /// Parse `scenarios/external_ncs_scenarios.parquet` and return a sorted row table.
 ///
 /// # Errors
@@ -286,6 +297,7 @@ pub fn parse_external_load_scenarios(path: &Path) -> Result<Vec<ExternalLoadRow>
 /// | File not found or permission denied                  | [`LoadError::IoError`]     |
 /// | Malformed Parquet (corrupt header, etc.)             | [`LoadError::ParseError`]  |
 /// | Required column missing or wrong type                | [`LoadError::SchemaError`] |
+/// | Unknown or retired column                            | [`LoadError::SchemaError`] |
 /// | `value` not finite (NaN or infinity)                 | [`LoadError::SchemaError`] |
 /// | `scenario_id` < 0                                    | [`LoadError::SchemaError`] |
 ///
@@ -302,17 +314,15 @@ pub fn parse_external_load_scenarios(path: &Path) -> Result<Vec<ExternalLoadRow>
 /// println!("loaded {} external NCS scenario rows", rows.len());
 /// ```
 pub fn parse_external_ncs_scenarios(path: &Path) -> Result<Vec<ExternalNcsRow>, LoadError> {
-    let reader = open_record_batch_reader(path)?;
-
     let mut rows: Vec<ExternalNcsRow> = Vec::new();
 
-    for batch_result in reader {
-        let batch = batch_result.map_err(|e| LoadError::parse(path, e.to_string()))?;
+    for batch in open_parquet_input(path, &EXTERNAL_NCS_SCENARIOS_COLUMNS)? {
+        let batch = batch?;
 
-        let stage_id_col = extract_required_int32(&batch, "stage_id", path)?;
-        let scenario_id_col = extract_required_int32(&batch, "scenario_id", path)?;
-        let ncs_id_col = extract_required_int32(&batch, "ncs_id", path)?;
-        let value_col = extract_required_float64(&batch, "availability_factor", path)?;
+        let stage_id_col = batch.required_int32("stage_id")?;
+        let scenario_id_col = batch.required_int32("scenario_id")?;
+        let ncs_id_col = batch.required_int32("ncs_id")?;
+        let value_col = batch.required_float64("availability_factor")?;
 
         let n = batch.num_rows();
         let base_idx = rows.len();

@@ -20,7 +20,7 @@
 //! live here in `mod`, co-located with the re-export surface.
 
 use novomodelo_core::Hydro;
-use novomodelo_io::extensions::{FphaColumnLayout, HydroGeometryRow};
+use novomodelo_io::extensions::{FphaColumnLayout, HydroGeometryRow, PlaneReductionConfig};
 
 use crate::hydro_models::FphaPlane;
 
@@ -48,15 +48,13 @@ mod tailrace;
 )]
 mod tests;
 
-use novomodelo_io::extensions::PlaneReductionConfig;
-
 use alpha::{compute_alpha_fpha, scale_plane_affine};
 use deviation::{collect_fit_deviation_points, compute_fit_deviation};
 use geometry::resolve_fitting_bounds;
 use hull_fit::{RawPlane, fit_hull_planes};
 use production::ProductionFunction;
 use reduction::reduce_planes;
-use secant::{fit_gamma_s_for_planes, resolve_s_max};
+use secant::fit_gamma_s_for_planes;
 use selection::validate_fitted_planes;
 
 pub(crate) use deviation::{FphaDeviationPoint, FphaFitDeviation};
@@ -123,7 +121,7 @@ pub(crate) struct FphaFitResult {
 /// - `long_term_mean_inflow_m3s` — mean of the hydro's inflow history \[m³/s\];
 ///   without `config.spillage_fit_max_m3s` it drives the lateral-secant
 ///   `S_max = 2·long-term mean inflow`, and `0.0` (no inflow history) selects the
-///   `2 × max_turbined` fallback (see `secant::resolve_s_max`).
+///   `2 × max_turbined` fallback (see `FphaColumnLayout::resolve_spillage_fit_max_m3s`).
 /// - `tailrace_source` — resolved per (hydro, entry): [`TailraceSource::Families`]
 ///   when the plant has a `tailrace_curves` table, else [`TailraceSource::Entity`]
 ///   mirroring the entity-level model (the inert fallback).
@@ -147,9 +145,10 @@ pub(crate) fn fit_fpha_planes(
     collect_deviation_points: bool,
 ) -> Result<FphaFitResult, FphaFittingError> {
     let forebay = ForebayTable::new(forebay_rows, &hydro.name)?;
+    let (bounds, forebay) = resolve_fitting_bounds(config, hydro, forebay)?;
 
     let pf = ProductionFunction::new(
-        forebay.clone(),
+        forebay,
         tailrace_source,
         hydro.hydraulic_losses.as_ref(),
         hydro.efficiency.as_ref(),
@@ -159,8 +158,6 @@ pub(crate) fn fit_fpha_planes(
         hydro.name.clone(),
     )
     .with_max_generation_mw(hydro.max_generation_mw);
-
-    let bounds = resolve_fitting_bounds(config, hydro, &forebay)?;
 
     // Any hull failure maps to a typed FPHA error instead of panicking, so one
     // pathological hydro does not abort the whole fitting loop. The dominant case
@@ -181,8 +178,8 @@ pub(crate) fn fit_fpha_planes(
         .map(|raw| scale_plane_affine(raw, alpha))
         .collect();
 
-    let s_max = resolve_s_max(
-        config.spillage_fit_max_m3s,
+    let s_max = FphaColumnLayout::resolve_spillage_fit_max_m3s(
+        Some(config),
         long_term_mean_inflow_m3s,
         hydro.max_turbined_m3s,
     );

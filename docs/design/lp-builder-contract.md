@@ -22,8 +22,15 @@ built in `setup` — for example the block clock (`BlockClock`), the time value 
 delivery calendar (`TimeValue`), the anticipated-plant set (`AnticipatedPlants`) and
 the state layout (`StateSpace`) — rather than resolving raw input itself.
 
+The stage LP has no inflow-lag column and no inflow-definition row. Every site that
+couples a hydro's inflow to a row records its coefficient through the one
+inflow-coupling sink (`InflowCouplingSink::record`), and the sink returns the unscaled
+coupling with each touched row's unscaled bounds (`InflowCoupling`).
+
 - **Must not:** re-derive a fact that a resolved owner already holds, or resolve
   input inside the builder. Resolution belongs in `setup`.
+- **Must not:** reference the realized inflow other than through
+  `InflowCouplingSink::record`.
 
 ### 2. Update
 
@@ -32,15 +39,20 @@ Which rows and columns a patch touches is decided at build time; the per-solve w
 only writes precomputed values into precomputed positions (`PatchBuffer`). The
 per-solve edits are:
 
-- the column bounds that pin the incoming state (`fill_col_state_patches`);
-- the right-hand sides of the inflow-definition rows (`fill_z_inflow_patches`) and of
-  the load-balance rows (`fill_load_patches`);
+- the column bounds that pin the incoming storage, bucket and commitment-hold
+  columns (`fill_col_state_patches`); the inflow lags have no column and no pin;
+- the bounds of the base rows the inflow-coupling sink recorded, shifted by the
+  realized inflow (`PatchBuffer::fill_inflow_shift_patches`), and the right-hand
+  sides of the load-balance rows (`fill_load_patches`);
 - the column bounds of stochastic non-controllable sources (`apply_ncs_col_bounds`);
 - the column bounds of the inflow-slack columns under the truncation methods
   (`apply_inflow_slack_col_bounds`), divided by the column scale;
-- the future-cost column θ, pinned to zero at the terminal stage;
-- the cut rows appended to, or toggled on, a solver instance (owned by the cut layer,
-  which reads the builder's row count, θ column and column scales).
+- the future-cost column θ, pinned to zero at a terminal forward solve unless
+  boundary cuts are loaded;
+- the cut rows appended to, or toggled on, a solver instance, and their lower bounds,
+  which depend on the trial lags and the noise and are written at every solve
+  (`StageSolvePrep::patch_opening`). The cut layer owns these rows and reads the
+  builder's row count, θ column and column scales.
 
 The objective is set at build time and is not part of the per-solve update.
 
@@ -58,7 +70,8 @@ of consumer read the address facts, with different needs:
   reads must be contiguous ranges or precomputed index vectors.
 - **Output decoding** (simulation extraction, policy export) reads the full per-stage
   address map (`StageGeometry`) and its inverse, which classifies a row or column
-  back to its entity and block (`classify_incoming_column` for state columns).
+  back to its entity and block; the policy export classifies a state dimension by
+  its state index (`StateSpace::classify`).
 
 Each row or column family has one address formula, owned in one place, with its block
 stride taken from one source. Consumers call accessors instead of computing
@@ -98,9 +111,15 @@ depends on. Their full statements, with the regression tests that pin them, are 
 - **Cut sign and subgradients:** the sign convention and scaling of the state
   coefficients that cuts are built from ("Benders cut sign & subgradient
   extraction").
-- **State pinning through column bounds:** every incoming state dimension is fixed
-  by its column bounds, not by equality rows ("State pinning uses column bounds, not
-  equality rows").
+- **State pinning through column bounds:** every incoming state dimension that has
+  an LP column is fixed by its column bounds, not by equality rows; the inflow lags
+  have no column and enter only through the realized inflow, which shifts the
+  coupled rows' bounds and, under the truncation methods, sets the inflow-slack
+  bounds, and through the cut-row right-hand sides ("State pinning uses column
+  bounds, not equality rows").
+- **One route for the realized inflow:** the builder references the realized inflow
+  only through the inflow-coupling sink, and the PAR coefficients have one owner,
+  `PrecomputedPar` ("The realized inflow has one route into the LP").
 - **Stable slots:** an append-only cut pool and a layout that lets stored bases match
   by slot identity ("Cut pool is append-only; basis matches by slot identity"; bases
   are applied through `reconstruct_basis`).
@@ -114,13 +133,13 @@ depends on. Their full statements, with the regression tests that pin them, are 
   dimensionless factor, and anticipated deliveries are discounted relative to their
   decision stage.
 - **Layout conventions the runtime relies on without re-deriving them:**
-  - state columns come first in every stage LP, and a state dimension's outgoing
-    column index equals its state index (`assemble_outgoing_state` copies the
-    leading block of the primal);
-  - the inflow-definition rows occupy the same range at every stage;
-  - a stage's base row count is fixed and cut rows are appended after it, the
-    boundary that basis reconstruction (`ReconstructionTarget`) and cut-dual
-    extraction read;
+  - the outgoing state columns come first in every stage LP, and each columned state
+    region's outgoing values sit in its outgoing block
+    (`StateSpace::outgoing_block_range`), which `assemble_outgoing_state` copies; the
+    outgoing inflow lags come from `advance_lag_chain`, not from the primal;
+  - a stage's base row count is fixed, holds no inflow-definition row, and cut rows
+    are appended after it, the boundary that basis reconstruction
+    (`ReconstructionTarget`) and cut-dual extraction read;
   - a column scale has one meaning: state pins, inflow-slack bounds and reduced costs
     are divided by it,
     and commitment columns are left unscaled;

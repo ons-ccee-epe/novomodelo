@@ -46,7 +46,6 @@ mod tests {
             objective: vec![1.0, 1.0],
             row_lower: vec![],
             row_upper: vec![],
-            n_state: 0,
             col_scale: vec![],
             row_scale: vec![],
         }
@@ -605,6 +604,7 @@ mod tests {
         fn load_model(&mut self, _t: &StageTemplate) {}
         fn add_rows(&mut self, _r: &RowBatch) {}
         fn set_row_bounds(&mut self, _i: &[usize], _l: &[f64], _u: &[f64]) {}
+        fn set_row_lower_bounds_range(&mut self, _first_row: usize, _lower: &[f64]) {}
         fn set_col_bounds(&mut self, _i: &[usize], _l: &[f64], _u: &[f64]) {}
         fn solve(&mut self, _b: Option<&Basis>) -> Result<SolutionView<'_>, SolverError> {
             Err(SolverError::InternalError {

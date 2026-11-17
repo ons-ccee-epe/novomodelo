@@ -131,7 +131,7 @@ samples. So for AR(p > 0):
   > **Note (superseded mechanism):** truncation no longer moves η. The PAR value stays
   > raw, and a per-hydro slack column fixed at the truncation amount `max(−r, 0)`
   > (capped at it and priced under `truncation_with_penalty`) raises the local inflow
-  > instead (`transform_inflow_noise` and `apply_inflow_slack_col_bounds` in
+  > instead (`realize_inflow` and `apply_inflow_slack_col_bounds` in
   > `novomodelo-sddp` `stochastic/noise.rs`). The external realizations still
   > round-trip through η unchanged; the correction bound no longer acts on η.
 - σ = 0 is **kept rejected** (decision, §7): a deterministic AR(p > 0) inflow would

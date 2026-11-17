@@ -1,9 +1,9 @@
 //! Benders cut-row construction for the SDDP LP.
 //!
 //! Owns the cut-sign convention: `push_scaled_coefficient` negates the stored
-//! raw subgradient so each row reads `−∇·x + θ ≥ intercept`, the Benders cut
+//! raw subgradient so each row reads `−∇·x + θ ≥ row_lower`, the Benders cut
 //! `θ ≥ Q(x̂) + π'(x − x̂)`. The subgradient-extraction side lives in
-//! `training::backward::duals_extraction::extract_duals_from_view`.
+//! `training::backward::duals_extraction::extract_opening_duals`.
 //!
 //! The forward training loop uses pre-frozen templates and does not call these
 //! builders; the backward pass, simulation, lower-bound evaluation, and DCS do.
@@ -17,15 +17,10 @@ use crate::cut::FutureCostFunction;
 use crate::indexer::{CutStateProjection, OutCol, StateSpace};
 
 /// Push one cut-row coefficient: `-coeff * col_scale[j]` (sign negation per the
-/// module-doc Benders contract). Sole owner of the negate-and-scale rule, shared
-/// by all three cut-row builders so it cannot drift apart.
+/// module-doc Benders contract). Sole owner of the negate-and-scale rule; every
+/// cut-row writer reaches it through [`push_cut_row`].
 #[inline]
-pub(crate) fn push_scaled_coefficient(
-    batch: &mut RowBatch,
-    col: OutCol,
-    coeff: f64,
-    col_scale: &[f64],
-) {
+fn push_scaled_coefficient(batch: &mut RowBatch, col: OutCol, coeff: f64, col_scale: &[f64]) {
     let j = col.get();
     debug_assert!(
         i32::try_from(j).is_ok(),
@@ -47,17 +42,19 @@ pub(crate) fn push_scaled_coefficient(
 /// The caller pushes this row's `row_starts` offset before calling and the
 /// terminator / `num_rows` / `add_rows` afterward; this helper appends only the
 /// non-zeros and bounds. Shared by [`build_cut_row_batch_into`],
-/// [`append_new_cuts_to_lp`], and the DCS [`append_slots_to_lp`] so the three
-/// cannot drift apart.
+/// [`append_new_cuts_to_lp`], the DCS [`append_slots_to_lp`], and
+/// [`build_delta_cut_row_batch_into`](crate::training::forward::build_delta_cut_row_batch_into)
+/// so the four cannot drift apart.
 ///
 /// `coefficients` has length `cut_state.n_slots()` (the pool's enabled cut-state
 /// dimensions); the row places each enabled non-padding coefficient onto the
-/// outgoing column [`CutStateProjection::render_pairs`] yields. `theta` is the global
-/// scalar column (stage-invariant).
+/// outgoing column [`CutStateProjection::render_pairs`] yields. `row_lower` is the
+/// row's lower bound: the cut's intercept, or the right-hand side its lag terms are
+/// folded into. `theta` is the global scalar column (stage-invariant).
 #[inline]
 pub(crate) fn push_cut_row(
     batch: &mut RowBatch,
-    intercept: f64,
+    row_lower: f64,
     coefficients: &[f64],
     cut_state: &CutStateProjection,
     theta_col: usize,
@@ -80,7 +77,7 @@ pub(crate) fn push_cut_row(
     };
     batch.values.push(d_theta);
 
-    batch.row_lower.push(intercept);
+    batch.row_lower.push(row_lower);
     batch.row_upper.push(f64::INFINITY);
 }
 
@@ -129,7 +126,7 @@ pub(crate) fn build_cut_set_row_batch_into(
     );
 }
 
-fn fill_cut_rows<'a>(
+pub(crate) fn fill_cut_rows<'a>(
     batch: &mut RowBatch,
     cuts: impl Iterator<Item = (usize, f64, &'a [f64])>,
     state: &StateSpace,
@@ -223,8 +220,6 @@ pub fn build_cut_row_batch(
 ///
 /// Panics if `total_nnz` exceeds `i32::MAX` (LP exceeds the `HiGHS` API limit).
 /// In debug builds, also panics if `pool >= fcf.pools.len()`.
-///
-/// [`CutRowMap`]: CutRowMap
 pub fn append_new_cuts_to_lp<S: SolverInterface>(
     solver: &mut S,
     fcf: &FutureCostFunction,
@@ -298,6 +293,9 @@ pub fn append_new_cuts_to_lp<S: SolverInterface>(
 ///
 /// - `slots`: the slot ids to append, in caller order (the appended LP rows
 ///   follow this order).
+/// - `row_lower_by_slot`: the slot-indexed lower bound of every populated slot;
+///   each appended row takes `row_lower_by_slot[slot]` as its bound (the slot's
+///   folded value).
 /// - `col_scale`: column scaling factors (empty slice ⇒ no scaling).
 /// - `row_map`: per-(stage, solve) [`CutRowMap`] to update.
 ///
@@ -305,12 +303,11 @@ pub fn append_new_cuts_to_lp<S: SolverInterface>(
 ///
 /// Panics if the total non-zero count exceeds `i32::MAX` (the `HiGHS` API
 /// limit), matching [`append_new_cuts_to_lp`].
-///
-/// [`CutPool`]: CutPool
 pub fn append_slots_to_lp<S: SolverInterface>(
     solver: &mut S,
     pool: &CutPool,
     slots: &[u32],
+    row_lower_by_slot: &[f64],
     state: &StateSpace,
     cut_state: &CutStateProjection,
     col_scale: &[f64],
@@ -328,6 +325,12 @@ pub fn append_slots_to_lp<S: SolverInterface>(
         pool.state_dimension,
         cut_state.n_slots(),
     );
+    debug_assert!(
+        row_lower_by_slot.len() >= pool.populated(),
+        "append_slots_to_lp: row_lower_by_slot holds {} values for {} populated slots",
+        row_lower_by_slot.len(),
+        pool.populated(),
+    );
     let theta_col = state.theta;
     let nnz_per_cut = cut_state.render_len() + 1;
 
@@ -344,7 +347,6 @@ pub fn append_slots_to_lp<S: SolverInterface>(
             continue;
         }
 
-        let intercept = pool.intercept(slot_usize);
         let coefficients = pool.coefficient_row(slot_usize);
 
         #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
@@ -352,7 +354,7 @@ pub fn append_slots_to_lp<S: SolverInterface>(
 
         push_cut_row(
             batch_buf,
-            intercept,
+            row_lower_by_slot[slot_usize],
             coefficients,
             cut_state,
             theta_col,
@@ -390,6 +392,7 @@ mod tests {
     use crate::indexer::{CutStateProjection, StateSpace};
     use crate::lead_time::AnticipatedResolution;
     use crate::setup::NodeId;
+    use crate::test_support::empty_row_batch;
 
     /// Build a finalized storage+lag [`StateSpace`] (no anticipated thermals)
     /// with the full `max_par_order` lag stride for every hydro — the dense
@@ -444,7 +447,7 @@ mod tests {
 
         assert_eq!(batch.num_rows, 1);
         assert_eq!(batch.row_starts, vec![0, 2]);
-        assert_eq!(batch.col_indices, vec![0, 3]); // theta at col N*(3+L) = 3
+        assert_eq!(batch.col_indices, vec![0, 2]); // theta at col 2N = 2
         assert_eq!(batch.values, vec![-2.0, 1.0]);
         assert_eq!(batch.row_lower, vec![5.0]);
         assert!(batch.row_upper[0].is_infinite() && batch.row_upper[0] > 0.0);
@@ -459,19 +462,9 @@ mod tests {
         let batch = build_cut_row_batch(&fcf, 1, &state, &cut_state(&state), &[]);
 
         assert_eq!(batch.num_rows, 2);
-        assert_eq!(batch.row_starts, vec![0, 3, 6]);
-        assert_eq!(batch.col_indices[0], 0); // storage col 0
-        assert_eq!(batch.col_indices[1], 2); // lag 0 → z_inflow col N*(1+L)=2
-        assert_eq!(batch.col_indices[2], 4); // theta at N*(3+L) = 1*(3+1) = 4
-        assert_eq!(batch.values[0], -1.0);
-        assert_eq!(batch.values[1], -3.0);
-        assert_eq!(batch.values[2], 1.0);
-        assert_eq!(batch.col_indices[3], 0); // storage col 0
-        assert_eq!(batch.col_indices[4], 2); // lag 0 → z_inflow col 2
-        assert_eq!(batch.col_indices[5], 4); // theta at N*(3+L) = 4
-        assert_eq!(batch.values[3], -2.0);
-        assert_eq!(batch.values[4], -4.0);
-        assert_eq!(batch.values[5], 1.0);
+        assert_eq!(batch.row_starts, vec![0, 2, 4]);
+        assert_eq!(batch.col_indices, vec![0, 2, 0, 2]); // storage col 0, theta at 2N = 2; the lag slot has no column
+        assert_eq!(batch.values, vec![-1.0, 1.0, -2.0, 1.0]);
         assert_eq!(batch.row_lower, vec![10.0, 20.0]);
         assert!(batch.row_upper[0].is_infinite() && batch.row_upper[0] > 0.0);
         assert!(batch.row_upper[1].is_infinite() && batch.row_upper[1] > 0.0);
@@ -485,8 +478,8 @@ mod tests {
         let batch = build_cut_row_batch(&fcf, 0, &state, &cut_state(&state), &[]);
 
         assert_eq!(batch.num_rows, 1);
-        assert_eq!(batch.col_indices, vec![0, 2, 4]); // lag 0 → z_inflow col 2; theta at 4
-        assert_eq!(batch.values, vec![0.0, -7.0, 1.0]);
+        assert_eq!(batch.col_indices, vec![0, 2]); // storage col 0; theta at 2N = 2
+        assert_eq!(batch.values, vec![0.0, 1.0]);
         assert_eq!(batch.row_lower, vec![3.0]);
     }
 
@@ -531,6 +524,8 @@ mod tests {
 
         fn set_row_bounds(&mut self, _indices: &[usize], _lower: &[f64], _upper: &[f64]) {}
 
+        fn set_row_lower_bounds_range(&mut self, _first_row: usize, _lower: &[f64]) {}
+
         fn set_col_bounds(&mut self, _indices: &[usize], _lower: &[f64], _upper: &[f64]) {}
 
         fn solve(
@@ -557,17 +552,6 @@ mod tests {
 
         fn name(&self) -> &'static str {
             "RecordingMock"
-        }
-    }
-
-    fn empty_row_batch() -> RowBatch {
-        RowBatch {
-            num_rows: 0,
-            row_starts: Vec::new(),
-            col_indices: Vec::new(),
-            values: Vec::new(),
-            row_lower: Vec::new(),
-            row_upper: Vec::new(),
         }
     }
 

@@ -22,6 +22,7 @@
     "outflow_violation_below_cost": 10000.0,
     "outflow_violation_above_cost": 10000.0,
     "generation_violation_below_cost": 10000.0,
+    "fpha_violation_cost": 110000.0,
     "evaporation_violation_cost": 10000.0,
     "water_withdrawal_violation_cost": 10000.0
   },

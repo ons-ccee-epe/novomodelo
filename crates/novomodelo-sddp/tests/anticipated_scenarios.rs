@@ -95,7 +95,7 @@ mod anticipated_5stage_k2_smoke {
         HydroBlockBounds, HydroPenalties, HydroStageBounds, HydroStorage, InitialConditions,
         LineBlockBounds, LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec,
         PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds, ResolvedPenalties, SystemBuilder,
-        ThermalBlockBounds, ThermalStageBounds,
+        ThermalBlockBounds,
     };
     use novomodelo_io::config::TrainingSelection;
     use novomodelo_io::config::{
@@ -110,12 +110,13 @@ mod anticipated_5stage_k2_smoke {
     use super::common::StubComm;
     use super::common::anticipated_structural_assertions::{
         assert_anticipated_delivery_slots_populated, assert_basis_cache_fully_populated,
-        assert_training_converged_structurally,
+        assert_forward_states_finite, assert_training_converged_structurally,
     };
     use super::common::build_setup_in_code;
     use super::common::builders::{
         BusSpec, HydroSpec, StageSpec, ThermalSpec, make_bus, make_hydro, make_stage, make_thermal,
     };
+    use super::common::forward_replay::final_forward_states;
 
     // ---------------------------------------------------------------------------
     // System builder
@@ -208,6 +209,7 @@ mod anticipated_5stage_k2_smoke {
                     outflow_violation_below_cost: 0.0,
                     outflow_violation_above_cost: 0.0,
                     generation_violation_below_cost: 0.0,
+                    fpha_violation_cost: 0.0,
                     evaporation_violation_cost: 0.0,
                     water_withdrawal_violation_cost: 0.0,
                     water_withdrawal_violation_pos_cost: 0.0,
@@ -303,6 +305,7 @@ mod anticipated_5stage_k2_smoke {
                 outflow_violation_below_cost: 0.0,
                 outflow_violation_above_cost: 0.0,
                 generation_violation_below_cost: 0.0,
+                fpha_violation_cost: 0.0,
                 evaporation_violation_cost: 0.0,
                 water_withdrawal_violation_cost: 0.0,
                 water_withdrawal_violation_pos_cost: 0.0,
@@ -326,10 +329,10 @@ mod anticipated_5stage_k2_smoke {
             &BoundsDefaults {
                 hydro: default_hydro_bounds(),
                 hydro_block: default_hydro_block_bounds(),
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 100.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -435,6 +438,7 @@ mod anticipated_5stage_k2_smoke {
         let system = build_system();
         let config = build_config();
         let mut setup = build_setup_in_code(system, &config);
+        setup.set_export_states(true);
         let comm = StubComm;
         let mut solver = ActiveSolver::new().expect("ActiveSolver::new");
 
@@ -455,10 +459,12 @@ mod anticipated_5stage_k2_smoke {
 
         assert_training_converged_structurally(result, &[], 8);
         assert_basis_cache_fully_populated(result, 5);
+        let forward_states = final_forward_states(&setup);
+        assert_forward_states_finite(&forward_states);
         // K=2 strict predicate (t + K < n_stages): decisions at t in {0,1,2} deliver
         // at t+K in {2,3,4}.
         assert_anticipated_delivery_slots_populated(
-            result,
+            &forward_states,
             commit_out_start,
             n_anticipated,
             &[2, 3, 4],
@@ -531,9 +537,8 @@ mod anticipated_two_plants_smoke {
     //! slot (`m mod k_max`) until it matures — the ring never shifts slots. The carry
     //! invariant asserts a not-yet-matured commitment (plant 1's slot-3 delivery, held
     //! across stages 0-2) keeps the SAME slot across the consecutive forward-outgoing
-    //! captures `basis_cache[1]` (stage 0) and `basis_cache[2]` (stage 1). It uses
-    //! stage 0->1, not the trivial `basis_cache[0] == basis_cache[1]` identity, so it
-    //! exercises a genuine forward-to-forward hold advancement.
+    //! states of stage 0 and stage 1, a genuine forward-to-forward hold
+    //! advancement.
 
     use novomodelo_core::entities::{
         bus::DeficitSegment, hydro::HydroGenerationModel, thermal::AnticipatedConfig,
@@ -548,7 +553,7 @@ mod anticipated_two_plants_smoke {
         HydroBlockBounds, HydroPenalties, HydroStageBounds, HydroStorage, InitialConditions,
         LineBlockBounds, LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec,
         PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds, ResolvedPenalties, SystemBuilder,
-        ThermalBlockBounds, ThermalStageBounds,
+        ThermalBlockBounds,
     };
     use novomodelo_io::config::TrainingSelection;
     use novomodelo_io::config::{
@@ -564,6 +569,7 @@ mod anticipated_two_plants_smoke {
     use super::common::builders::{
         BusSpec, HydroSpec, StageSpec, ThermalSpec, make_bus, make_hydro, make_stage, make_thermal,
     };
+    use super::common::forward_replay::final_forward_states;
 
     // Closed form over 744 h stages: each stage's residual (150 MW load minus its
     // delivered commitments; seeded ones are sunk) at the cheapest source the
@@ -684,6 +690,7 @@ mod anticipated_two_plants_smoke {
                     outflow_violation_below_cost: 0.0,
                     outflow_violation_above_cost: 0.0,
                     generation_violation_below_cost: 0.0,
+                    fpha_violation_cost: 0.0,
                     evaporation_violation_cost: 0.0,
                     water_withdrawal_violation_cost: 0.0,
                     water_withdrawal_violation_pos_cost: 0.0,
@@ -779,6 +786,7 @@ mod anticipated_two_plants_smoke {
                 outflow_violation_below_cost: 0.0,
                 outflow_violation_above_cost: 0.0,
                 generation_violation_below_cost: 0.0,
+                fpha_violation_cost: 0.0,
                 evaporation_violation_cost: 0.0,
                 water_withdrawal_violation_cost: 0.0,
                 water_withdrawal_violation_pos_cost: 0.0,
@@ -802,10 +810,10 @@ mod anticipated_two_plants_smoke {
             &BoundsDefaults {
                 hydro: default_hydro_bounds(),
                 hydro_block: default_hydro_block_bounds(),
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 100.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -828,12 +836,10 @@ mod anticipated_two_plants_smoke {
             .enumerate()
         {
             for stage_idx in 0..n_stages {
-                *bounds.thermal_bounds_mut(t_idx, stage_idx) = ThermalStageBounds {
-                    cost_per_mwh: thermal.cost_per_mwh,
-                };
                 *bounds.thermal_block_base_mut(t_idx, stage_idx) = ThermalBlockBounds {
                     min_generation_mw: thermal.min_generation_mw,
                     max_generation_mw: thermal.max_generation_mw,
+                    cost_per_mwh: thermal.cost_per_mwh,
                 };
             }
         }
@@ -938,6 +944,7 @@ mod anticipated_two_plants_smoke {
         let system = build_system_two_anticipated();
         let config = build_config();
         let mut setup = build_setup_in_code(system, &config);
+        setup.set_export_states(true);
         let comm = StubComm;
         let mut solver = ActiveSolver::new().expect("ActiveSolver::new");
 
@@ -999,14 +1006,10 @@ mod anticipated_two_plants_smoke {
         let ant_start = state.commit_out.start;
         let ant_block_len = n_anticipated * k_max;
 
-        let basis_cache = &result.basis_cache;
-        assert_eq!(basis_cache.len(), 6);
+        assert_eq!(result.basis_cache.len(), 6);
 
-        let s0 = basis_cache[0]
-            .as_ref()
-            .expect("stage 0 basis must be Some")
-            .state_at_capture
-            .as_slice();
+        let forward_states = final_forward_states(&setup);
+        let s0 = forward_states[0].as_slice();
 
         let ant_slice = &s0[ant_start..ant_start + ant_block_len];
         assert_eq!(ant_slice.len(), 8);
@@ -1014,34 +1017,25 @@ mod anticipated_two_plants_smoke {
             assert!(v.is_finite(), "anticipated state must be finite");
         }
 
-        let s1 = basis_cache[1]
-            .as_ref()
-            .expect("stage 1 basis must be Some")
-            .state_at_capture
-            .as_slice();
-        let s2 = basis_cache[2]
-            .as_ref()
-            .expect("stage 2 basis must be Some")
-            .state_at_capture
-            .as_slice();
+        let s1 = forward_states[1].as_slice();
 
         // Plant 1 (K=4, id 5) holds its delivery-3 commitment in slot `3 mod 4 = 3`
         // across stages 0-2, maturing only at stage 3, so the SAME slot carries the
-        // same value across the consecutive forward-outgoing captures bc[1] (stage
-        // 0) and bc[2] (stage 1).
+        // same value across the consecutive forward-outgoing states of stage 0 and
+        // stage 1.
         let plant1 = 1_usize;
         let slot3_p1 = ant_start + 3 * n_anticipated + plant1;
         assert!(
-            s1[slot3_p1].abs() > 1e-9,
+            s0[slot3_p1].abs() > 1e-9,
             "carry check must exercise a non-zero held commitment; got {}",
-            s1[slot3_p1]
+            s0[slot3_p1]
         );
         assert!(
-            (s1[slot3_p1] - s2[slot3_p1]).abs() < 1e-9,
+            (s0[slot3_p1] - s1[slot3_p1]).abs() < 1e-9,
             "commitment-hold carry violated: plant 1's slot-3 commitment must be held \
-         in place across the forward transition (bc[1]={}, bc[2]={}), not shifted",
-            s1[slot3_p1],
-            s2[slot3_p1]
+         in place across the forward transition (stage 0={}, stage 1={}), not shifted",
+            s0[slot3_p1],
+            s1[slot3_p1]
         );
     }
 }
@@ -1071,7 +1065,7 @@ mod anticipated_simulation_ring_buffer {
         HydroBlockBounds, HydroPenalties, HydroStageBounds, HydroStorage, InitialConditions,
         LineBlockBounds, LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec,
         PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds, ResolvedPenalties, SystemBuilder,
-        ThermalBlockBounds, ThermalStageBounds,
+        ThermalBlockBounds,
     };
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
@@ -1194,6 +1188,7 @@ mod anticipated_simulation_ring_buffer {
                     outflow_violation_below_cost: 0.0,
                     outflow_violation_above_cost: 0.0,
                     generation_violation_below_cost: 0.0,
+                    fpha_violation_cost: 0.0,
                     evaporation_violation_cost: 0.0,
                     water_withdrawal_violation_cost: 0.0,
                     water_withdrawal_violation_pos_cost: 0.0,
@@ -1286,6 +1281,7 @@ mod anticipated_simulation_ring_buffer {
                 outflow_violation_below_cost: 0.0,
                 outflow_violation_above_cost: 0.0,
                 generation_violation_below_cost: 0.0,
+                fpha_violation_cost: 0.0,
                 evaporation_violation_cost: 0.0,
                 water_withdrawal_violation_cost: 0.0,
                 water_withdrawal_violation_pos_cost: 0.0,
@@ -1309,10 +1305,10 @@ mod anticipated_simulation_ring_buffer {
             &BoundsDefaults {
                 hydro: default_hydro_bounds(),
                 hydro_block: default_hydro_block_bounds(),
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 200.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -1337,9 +1333,9 @@ mod anticipated_simulation_ring_buffer {
         // delivery-stage axis there, so the decision column needs its cost out to K.
         let thermal_axis = n_stages + k;
         for s in 0..thermal_axis {
-            bounds.thermal_bounds_mut(0, s).cost_per_mwh = 10.0;
+            bounds.thermal_block_base_mut(0, s).cost_per_mwh = 10.0;
             bounds.thermal_block_base_mut(0, s).max_generation_mw = 100.0;
-            bounds.thermal_bounds_mut(1, s).cost_per_mwh = 5000.0;
+            bounds.thermal_block_base_mut(1, s).cost_per_mwh = 5000.0;
             bounds.thermal_block_base_mut(1, s).max_generation_mw = 200.0;
         }
 
@@ -1660,7 +1656,7 @@ mod anticipated_generic_constraint_e2e {
         HydroStageBounds, InitialConditions, LineBlockBounds, LineStagePenalties, LinearTerm,
         NcsStagePenalties, PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds,
         ResolvedBounds, ResolvedGenericConstraintBounds, ResolvedPenalties, SystemBuilder,
-        ThermalBlockBounds, ThermalStageBounds, VariableRef,
+        ThermalBlockBounds, VariableRef,
         entities::{bus::DeficitSegment, thermal::AnticipatedConfig},
         scenario::LoadModel,
         temporal::{
@@ -1822,10 +1818,10 @@ mod anticipated_generic_constraint_e2e {
                     water_withdrawal_m3s: 0.0,
                 },
                 hydro_block: HydroBlockBounds::default(),
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -1845,23 +1841,19 @@ mod anticipated_generic_constraint_e2e {
 
         // SystemBuilder sorts thermals by EntityId ascending, so thermal_idx 0 = id=2
         // (anticipated) and thermal_idx 1 = id=3 (backup); these indices feed
-        // thermal_bounds_mut below. The thermal stage axis runs N_STAGES + K_MAX to
+        // thermal_block_base_mut below. The thermal stage axis runs N_STAGES + K_MAX to
         // cover delivery-stage lookups in fill_anticipated_columns.
         let thermal_axis = N_STAGES + K_MAX;
         for s in 0..thermal_axis {
-            *bounds.thermal_bounds_mut(0, s) = ThermalStageBounds {
-                cost_per_mwh: ANT_COST,
-            };
             *bounds.thermal_block_base_mut(0, s) = ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: ANT_MAX_MW,
-            };
-            *bounds.thermal_bounds_mut(1, s) = ThermalStageBounds {
-                cost_per_mwh: BACKUP_COST,
+                cost_per_mwh: ANT_COST,
             };
             *bounds.thermal_block_base_mut(1, s) = ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: BACKUP_MAX_MW,
+                cost_per_mwh: BACKUP_COST,
             };
         }
 
@@ -1884,6 +1876,7 @@ mod anticipated_generic_constraint_e2e {
                     outflow_violation_below_cost: 0.0,
                     outflow_violation_above_cost: 0.0,
                     generation_violation_below_cost: 0.0,
+                    fpha_violation_cost: 0.0,
                     evaporation_violation_cost: 0.0,
                     water_withdrawal_violation_cost: 0.0,
                     water_withdrawal_violation_pos_cost: 0.0,
@@ -2218,6 +2211,7 @@ mod anticipated_generic_constraint_e2e {
     "outflow_violation_below_cost": 10000.0,
     "outflow_violation_above_cost": 10000.0,
     "generation_violation_below_cost": 10000.0,
+    "fpha_violation_cost": 110000.0,
     "evaporation_violation_cost": 10000.0,
     "water_withdrawal_violation_cost": 10000.0
   },
@@ -2671,7 +2665,7 @@ mod anticipated_commitment_at_cap {
         HydroBlockBounds, HydroPenalties, HydroStageBounds, HydroStorage, InitialConditions,
         LineBlockBounds, LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec,
         PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds, ResolvedPenalties, SystemBuilder,
-        ThermalBlockBounds, ThermalStageBounds,
+        ThermalBlockBounds,
     };
     use novomodelo_io::config::TrainingSelection;
     use novomodelo_io::config::{
@@ -2780,6 +2774,7 @@ mod anticipated_commitment_at_cap {
                     outflow_violation_below_cost: 0.0,
                     outflow_violation_above_cost: 0.0,
                     generation_violation_below_cost: 0.0,
+                    fpha_violation_cost: 0.0,
                     evaporation_violation_cost: 0.0,
                     water_withdrawal_violation_cost: 0.0,
                     water_withdrawal_violation_pos_cost: 0.0,
@@ -2875,10 +2870,10 @@ mod anticipated_commitment_at_cap {
             &BoundsDefaults {
                 hydro: default_hydro_bounds(),
                 hydro_block: default_hydro_block_bounds(),
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: CAP_MW,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -2915,6 +2910,7 @@ mod anticipated_commitment_at_cap {
                     outflow_violation_below_cost: 0.0,
                     outflow_violation_above_cost: 0.0,
                     generation_violation_below_cost: 0.0,
+                    fpha_violation_cost: 0.0,
                     evaporation_violation_cost: 0.0,
                     water_withdrawal_violation_cost: 0.0,
                     water_withdrawal_violation_pos_cost: 0.0,
@@ -3056,7 +3052,7 @@ mod faithful_resolution {
         InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
         PenaltiesCountsSpec, PenaltiesDefaults, PostStudyStage, PostStudyStages,
         PumpingBlockBounds, ResolvedBounds, ResolvedPenalties, SystemBuilder, ThermalBlockBounds,
-        ThermalStageBounds,
+        WaterBucketStages,
     };
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
@@ -3153,8 +3149,9 @@ mod faithful_resolution {
             })
             .collect();
         PostStudyStages {
-            stages,
+            thermal_stages: stages,
             thermal_bounds: vec![],
+            water_bucket_stages: WaterBucketStages::FromThermalStages,
         }
     }
 
@@ -3225,10 +3222,10 @@ mod faithful_resolution {
                     water_withdrawal_m3s: 0.0,
                 },
                 hydro_block: HydroBlockBounds::default(),
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -3246,10 +3243,10 @@ mod faithful_resolution {
             },
         );
         for s in 0..(N_STUDY_STAGES + k_max) {
-            *b.thermal_bounds_mut(0, s) = ThermalStageBounds { cost_per_mwh: 10.0 };
             *b.thermal_block_base_mut(0, s) = ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 500.0,
+                cost_per_mwh: 10.0,
             };
         }
         b
@@ -3275,6 +3272,7 @@ mod faithful_resolution {
                     outflow_violation_below_cost: 0.0,
                     outflow_violation_above_cost: 0.0,
                     generation_violation_below_cost: 0.0,
+                    fpha_violation_cost: 0.0,
                     evaporation_violation_cost: 0.0,
                     water_withdrawal_violation_cost: 0.0,
                     water_withdrawal_violation_pos_cost: 0.0,

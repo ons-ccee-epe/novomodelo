@@ -23,15 +23,12 @@
 //! Rows are sorted by `(hydro_id, stage_id)` ascending. Null `stage_id` sorts
 //! before any non-null value.
 
-use arrow::array::{Array, StringArray};
+use arrow::array::Array;
 use novomodelo_core::EntityId;
 use std::path::Path;
 
 use crate::LoadError;
-use crate::parquet_helpers::{
-    extract_optional_int32, extract_required_float64, extract_required_int32,
-    open_record_batch_reader,
-};
+use crate::parquet_helpers::{ParquetColumns, open_parquet_input};
 
 /// A single fitted evaporation-model coefficient row.
 ///
@@ -67,6 +64,18 @@ pub struct EvaporationModelRow {
     pub source: String,
 }
 
+static EVAPORATION_MODELS_COLUMNS: ParquetColumns = ParquetColumns {
+    known: &[
+        "hydro_id",
+        "intercept_m3s",
+        "volume_slope_m3s_per_hm3",
+        "reference_volume_hm3",
+        "source",
+        "stage_id",
+    ],
+    retired: &[],
+};
+
 /// Parse an evaporation-models Parquet file into a coefficient table sorted by
 /// `(hydro_id, stage_id)` ascending (NULL `stage_id` before any non-null stage).
 ///
@@ -77,22 +86,21 @@ pub struct EvaporationModelRow {
 /// | File not found or permission denied      | [`LoadError::IoError`]     |
 /// | Malformed Parquet (corrupt header, etc.) | [`LoadError::ParseError`]  |
 /// | Required column missing or wrong type    | [`LoadError::SchemaError`] |
+/// | Unknown or retired column                | [`LoadError::SchemaError`] |
 /// | `source` column missing or wrong type    | [`LoadError::SchemaError`] |
 pub fn parse_evaporation_models(path: &Path) -> Result<Vec<EvaporationModelRow>, LoadError> {
-    let reader = open_record_batch_reader(path)?;
-
     let mut rows: Vec<EvaporationModelRow> = Vec::new();
 
-    for batch_result in reader {
-        let batch = batch_result.map_err(|e| LoadError::parse(path, e.to_string()))?;
+    for batch in open_parquet_input(path, &EVAPORATION_MODELS_COLUMNS)? {
+        let batch = batch?;
 
-        let hydro_id_col = extract_required_int32(&batch, "hydro_id", path)?;
-        let intercept_col = extract_required_float64(&batch, "intercept_m3s", path)?;
-        let volume_slope_col = extract_required_float64(&batch, "volume_slope_m3s_per_hm3", path)?;
-        let reference_volume_col = extract_required_float64(&batch, "reference_volume_hm3", path)?;
-        let source_col = extract_required_string(&batch, "source", path)?;
+        let hydro_id_col = batch.required_int32("hydro_id")?;
+        let intercept_col = batch.required_float64("intercept_m3s")?;
+        let volume_slope_col = batch.required_float64("volume_slope_m3s_per_hm3")?;
+        let reference_volume_col = batch.required_float64("reference_volume_hm3")?;
+        let source_col = batch.required_string("source")?;
 
-        let stage_id_col = extract_optional_int32(&batch, "stage_id", path)?;
+        let stage_id_col = batch.optional_int32("stage_id")?;
 
         let n = batch.num_rows();
         rows.reserve(n);
@@ -143,30 +151,4 @@ pub fn parse_evaporation_models(path: &Path) -> Result<Vec<EvaporationModelRow>,
     });
 
     Ok(rows)
-}
-
-/// Local to this module because `source` is the only Utf8 column the extension
-/// readers consume; the shared `parquet_helpers` cover only the numeric types.
-fn extract_required_string<'a>(
-    batch: &'a arrow::record_batch::RecordBatch,
-    name: &str,
-    path: &Path,
-) -> Result<&'a StringArray, LoadError> {
-    let col = batch
-        .column_by_name(name)
-        .ok_or_else(|| LoadError::SchemaError {
-            path: path.to_path_buf(),
-            field: name.to_string(),
-            message: format!("missing required column \"{name}\""),
-        })?;
-    col.as_any()
-        .downcast_ref::<StringArray>()
-        .ok_or_else(|| LoadError::SchemaError {
-            path: path.to_path_buf(),
-            field: name.to_string(),
-            message: format!(
-                "column \"{name}\" has type {} but Utf8 is required",
-                col.data_type()
-            ),
-        })
 }

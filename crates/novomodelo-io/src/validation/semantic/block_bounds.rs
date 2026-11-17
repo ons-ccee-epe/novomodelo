@@ -532,13 +532,10 @@ fn check_row_columns(
 /// One bound column with no per-block LP variable, and the reason to surface
 /// in its rejection message.
 ///
-/// Hand-synced against `novomodelo_core::resolved::HydroBlockOverride` /
-/// `ThermalBlockOverride`'s excluded fields, which mirror
-/// [`crate::constraints::bounds`]'s `## Block eligibility` table — the struct
-/// field sets are the actual eligibility check; this table is not derived
-/// from them at compile time. Never add `price_per_mwh` here: contract price
-/// is deliberately block-eligible (`ContractBlockOverride::price_per_mwh`),
-/// asymmetric with thermal `cost_per_mwh` below.
+/// Hand-synced against `novomodelo_core::resolved::HydroBlockOverride`'s
+/// excluded fields, which mirror [`crate::constraints::bounds`]'s
+/// `## Block eligibility` table — the struct field set is the actual
+/// eligibility check; this table is not derived from it at compile time.
 struct IneligibleColumn {
     name: &'static str,
     reason: &'static str,
@@ -563,15 +560,9 @@ const INELIGIBLE_HYDRO_COLUMNS: [IneligibleColumn; 4] = [
     },
 ];
 
-const INELIGIBLE_THERMAL_COLUMNS: [IneligibleColumn; 1] = [IneligibleColumn {
-    name: "cost_per_mwh",
-    reason: "per-block thermal cost is out of scope; thermal cost is stage-level, \
-             unlike contract price, which is block-eligible",
-}];
-
-/// Rule 37: rejects a `block_id` on a hydro or thermal bound column with no per-block
+/// Rule 37: rejects a `block_id` on a hydro bound column with no per-block
 /// LP variable: [`resolve_bounds`] never reads the column for a block row at
-/// all (`HydroBlockOverride`/`ThermalBlockOverride` carry no field for it), so
+/// all (`HydroBlockOverride` carries no field for it), so
 /// today the value is dropped without a diagnostic; this rule turns that into
 /// a hard error. A row mixing an ineligible column with an eligible one under
 /// the same `block_id` is rejected — one finding per ineligible column
@@ -590,23 +581,6 @@ pub(super) fn check_block_id_on_ineligible_column(data: &ParsedData, ctx: &mut V
         for (column, value) in INELIGIBLE_HYDRO_COLUMNS.iter().zip(values) {
             if value.is_some() {
                 emit_ineligible_column_error(&HYDRO, row.hydro_id.0, row.stage_id, b, column, ctx);
-            }
-        }
-    }
-
-    for row in &data.thermal_bounds {
-        let Some(b) = row.block_id else { continue };
-        let values = [row.cost_per_mwh];
-        for (column, value) in INELIGIBLE_THERMAL_COLUMNS.iter().zip(values) {
-            if value.is_some() {
-                emit_ineligible_column_error(
-                    &THERMAL,
-                    row.thermal_id.0,
-                    row.stage_id,
-                    b,
-                    column,
-                    ctx,
-                );
             }
         }
     }
@@ -674,7 +648,7 @@ pub(super) fn check_block_id_on_anticipated_thermal(
         let entity_str = format!("thermal_id={thermal_id}, stage_id={stage_id}");
         ctx.emit(
             &rules::SEMANTIC_BOUND_ROW_BLOCK_ON_ANTICIPATED_THERMAL,
-            "constraints/thermal_bounds.parquet",
+            THERMAL.file,
             Some(entity_str),
             format!(
                 "Thermal {thermal_id}: thermal_bounds row at stage_id={stage_id} \
@@ -764,6 +738,50 @@ fn emit_raises_declared_capacity_error(
              and add hydro_bounds rows tightening the earlier stages down to their true value"
         ),
     );
+}
+
+/// Rule 68, the storage mirror of rule 43: rejects a `hydro_bounds` row whose
+/// `max_storage_hm3` exceeds the reservoir's or whose `min_storage_hm3` lies
+/// below the reservoir's dead volume, since the hydro's geometry, production
+/// and evaporation models only cover the reservoir's range. A row on an unknown
+/// `hydro_id` is skipped, as in rule 43.
+pub(super) fn check_bound_widens_reservoir_range(data: &ParsedData, ctx: &mut ValidationContext) {
+    let declared: HashMap<EntityId, &Hydro> = data.hydros.iter().map(|h| (h.id, h)).collect();
+
+    for row in &data.hydro_bounds {
+        let Some(&hydro) = declared.get(&row.hydro_id) else {
+            continue;
+        };
+        let (floor, ceiling) = (hydro.min_storage_hm3, hydro.max_storage_hm3);
+        let above = row
+            .max_storage_hm3
+            .filter(|&value| value > ceiling + envelope_tolerance(ceiling))
+            .map(|value| ("max_storage_hm3", value, "above", ceiling));
+        let below = row
+            .min_storage_hm3
+            .filter(|&value| value < floor - envelope_tolerance(floor))
+            .map(|value| ("min_storage_hm3", value, "below", floor));
+
+        for (column, value, side, declared_value) in above.into_iter().chain(below) {
+            let (hydro_id, stage_id) = (row.hydro_id.0, row.stage_id);
+            let block_str = block_id_clause(row.block_id);
+            ctx.emit(
+                &rules::SEMANTIC_BOUND_ROW_WIDENS_RESERVOIR_RANGE,
+                HYDRO.file,
+                Some(format!(
+                    "{}={hydro_id}, stage_id={stage_id}",
+                    HYDRO.entity_label
+                )),
+                format!(
+                    "{} {hydro_id}: {} row at stage_id={stage_id}{block_str} sets \
+                     {column}={value}, {side} the reservoir's {column} ({declared_value}) in \
+                     system/hydros.json; a stage's storage bounds must lie within the \
+                     reservoir's range",
+                    HYDRO.family, HYDRO.row_label
+                ),
+            );
+        }
+    }
 }
 
 /// Rule 45: rejects a `hydro_unit_group_bounds` row that raises `max_turbined_m3s` or
@@ -1056,12 +1074,21 @@ mod tests {
         bound_errors_of_kind(data, ErrorKind::DuplicateId)
     }
 
-    /// No other Layer 5a rule emits `InvalidValue` against one of the six
-    /// bound parquets, so this isolates `check_bound_raises_declared_capacity`
-    /// from the plant-level `InvalidValue` rules that target
+    /// Rules 43 and 68 and rule 2's stage-level check are the Layer 5a rules
+    /// emitting `InvalidValue` against a bound parquet; a fixture setting no
+    /// storage bound isolates `check_bound_raises_declared_capacity` from the
+    /// other two and from the plant-level `InvalidValue` rules that target
     /// `system/hydros.json` instead (e.g. rule 3's turbine-bound ordering).
     fn capacity_raise_errors(data: &ParsedData) -> Vec<ValidationEntry> {
         bound_errors_of_kind(data, ErrorKind::InvalidValue)
+    }
+
+    /// The rule 68 findings among [`capacity_raise_errors`]'s.
+    fn reservoir_range_errors(data: &ParsedData) -> Vec<ValidationEntry> {
+        capacity_raise_errors(data)
+            .into_iter()
+            .filter(|e| e.message.contains("must lie within the reservoir's range"))
+            .collect()
     }
 
     /// The group-family counterpart of [`capacity_raise_errors`]: isolates
@@ -1971,7 +1998,7 @@ mod tests {
     }
 
     #[test]
-    fn test_thermal_cost_rejected_while_contract_price_accepted() {
+    fn test_thermal_cost_and_contract_price_accept_block_id() {
         let mut data = make_data(
             vec![],
             vec![],
@@ -1991,25 +2018,10 @@ mod tests {
 
         let mut ctx = ValidationContext::new();
         validate_semantic_hydro_thermal(&data, &mut ctx);
-        let errors = ctx.errors();
-
-        let cost_errors: Vec<_> = errors
-            .iter()
-            .filter(|e| e.message.contains("cost_per_mwh"))
-            .collect();
-        assert_eq!(
-            cost_errors.len(),
-            1,
-            "expected exactly one error naming cost_per_mwh, got: {errors:?}"
-        );
-        let msg = &cost_errors[0].message;
         assert!(
-            msg.contains("thermal") || msg.contains("Thermal"),
-            "message must name thermal specifically: {msg}"
-        );
-        assert!(
-            !errors.iter().any(|e| e.message.contains("price_per_mwh")),
-            "no error may name price_per_mwh (the block-eligible contract column): {errors:?}"
+            !ctx.has_errors(),
+            "thermal cost and contract price accept a block_id, got: {:?}",
+            ctx.errors()
         );
     }
 
@@ -2063,6 +2075,10 @@ mod tests {
             ThermalBoundsRow {
                 max_generation_mw: Some(2.0),
                 ..thermal_row(1, 1, Some(0))
+            },
+            ThermalBoundsRow {
+                cost_per_mwh: Some(3.0),
+                ..thermal_row(1, 1, Some(1))
             },
         ];
         data.line_bounds = vec![
@@ -2176,6 +2192,54 @@ mod tests {
         assert!(
             !errors.iter().any(|e| e.message.contains("Thermal 2")),
             "no error may name Thermal 2 (the plain thermal): {errors:?}"
+        );
+    }
+
+    #[test]
+    fn test_cost_only_block_row_rejected_on_anticipated_thermal() {
+        let anticipated_thermal = Thermal {
+            anticipated_config: Some(AnticipatedConfig::LeadStages(1)),
+            ..make_thermal(1, 0.0, 500.0)
+        };
+        let mut data = make_data(
+            vec![],
+            vec![anticipated_thermal],
+            vec![],
+            two_stage_study_stages(),
+            vec![],
+            vec![],
+        );
+        data.initial_conditions.past_anticipated_commitments = vec![AnticipatedCommitmentHistory {
+            thermal_id: EntityId::from(1),
+            start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
+            end_date: NaiveDate::from_ymd_opt(2024, 1, 31).unwrap(),
+            value_mw: 0.0,
+        }];
+        data.thermal_bounds = vec![ThermalBoundsRow {
+            cost_per_mwh: Some(500.0),
+            ..thermal_row(1, 0, Some(0))
+        }];
+
+        let mut ctx = ValidationContext::new();
+        validate_semantic_hydro_thermal(&data, &mut ctx);
+        let errors = ctx.errors();
+        assert_eq!(
+            errors.len(),
+            1,
+            "expected exactly one error, got: {errors:?}"
+        );
+        let msg = &errors[0].message;
+        assert!(
+            msg.contains("Thermal 1")
+                && msg.contains("stage_id=0")
+                && msg.contains("anticipated_config"),
+            "expected the anticipated-thermal error naming Thermal 1 at stage_id=0: {msg}"
+        );
+        assert!(
+            !errors
+                .iter()
+                .any(|e| e.message.contains("no per-block variable")),
+            "the ineligible-column rule must not fire on a cost-only row: {errors:?}"
         );
     }
 
@@ -2365,6 +2429,120 @@ mod tests {
             "message: {}",
             errors[0].message
         );
+    }
+
+    // ── check_bound_widens_reservoir_range (rule 68) ────────────────────────
+
+    /// Hydro 1's reservoir spans [50, 400] and hydro 2's [10, 900], so a
+    /// positional `data.hydros[id]` lookup (ids 1-based, positions 0-based)
+    /// would compare a hydro-1 row against hydro 2's wider range and miss
+    /// both violations below.
+    fn two_reservoir_study() -> Vec<Hydro> {
+        vec![
+            Hydro {
+                min_storage_hm3: 50.0,
+                max_storage_hm3: 400.0,
+                ..make_hydro(1, None)
+            },
+            Hydro {
+                min_storage_hm3: 10.0,
+                max_storage_hm3: 900.0,
+                ..make_hydro(2, None)
+            },
+        ]
+    }
+
+    fn reservoir_study_data(hydro_bounds: Vec<HydroBoundsRow>) -> ParsedData {
+        let mut data = make_data(
+            two_reservoir_study(),
+            vec![],
+            vec![],
+            two_stage_study_stages(),
+            vec![],
+            vec![],
+        );
+        data.hydro_bounds = hydro_bounds;
+        data
+    }
+
+    #[test]
+    fn test_bounds_row_storage_above_the_reservoir_is_rejected() {
+        let data = reservoir_study_data(vec![HydroBoundsRow {
+            max_storage_hm3: Some(500.0),
+            ..hydro_row(1, 0, None)
+        }]);
+
+        let errors = reservoir_range_errors(&data);
+        assert_eq!(
+            errors.len(),
+            1,
+            "expected exactly one error, got: {errors:?}"
+        );
+        let err = &errors[0];
+        assert_eq!(
+            err.file.to_string_lossy(),
+            "constraints/hydro_bounds.parquet"
+        );
+        assert_eq!(err.entity.as_deref(), Some("hydro_id=1, stage_id=0"));
+        assert_eq!(
+            err.message,
+            "Hydro 1: hydro_bounds row at stage_id=0 sets max_storage_hm3=500, above the \
+             reservoir's max_storage_hm3 (400) in system/hydros.json; a stage's storage \
+             bounds must lie within the reservoir's range"
+        );
+    }
+
+    #[test]
+    fn test_bounds_row_storage_below_the_dead_volume_is_rejected() {
+        let data = reservoir_study_data(vec![HydroBoundsRow {
+            min_storage_hm3: Some(20.0),
+            ..hydro_row(1, 1, None)
+        }]);
+
+        let errors = reservoir_range_errors(&data);
+        assert_eq!(
+            errors.len(),
+            1,
+            "expected exactly one error, got: {errors:?}"
+        );
+        assert_eq!(
+            errors[0].message,
+            "Hydro 1: hydro_bounds row at stage_id=1 sets min_storage_hm3=20, below the \
+             reservoir's min_storage_hm3 (50) in system/hydros.json; a stage's storage \
+             bounds must lie within the reservoir's range"
+        );
+    }
+
+    /// Tightening rows, rows restating the reservoir's own range, a ceiling
+    /// within the envelope tolerance and a row on an unknown hydro are all
+    /// silent; the same rows also leave every stage's range uninverted, so
+    /// no `InvalidValue` finding of any rule may appear.
+    #[test]
+    fn test_bounds_row_storage_within_the_reservoir_is_accepted() {
+        let data = reservoir_study_data(vec![
+            HydroBoundsRow {
+                min_storage_hm3: Some(50.0),
+                max_storage_hm3: Some(400.0 + super::envelope_tolerance(400.0)),
+                ..hydro_row(1, 0, None)
+            },
+            HydroBoundsRow {
+                min_storage_hm3: Some(100.0),
+                max_storage_hm3: Some(300.0),
+                ..hydro_row(1, 1, None)
+            },
+            HydroBoundsRow {
+                max_storage_hm3: Some(900.0),
+                ..hydro_row(2, 0, None)
+            },
+            HydroBoundsRow {
+                min_storage_hm3: Some(0.0),
+                max_storage_hm3: Some(9999.0),
+                ..hydro_row(99, 0, None)
+            },
+        ]);
+
+        let errors = capacity_raise_errors(&data);
+        assert!(errors.is_empty(), "got: {errors:?}");
     }
 
     // ── check_group_bound_raises_declared_capacity (rule 45) ────────────────

@@ -35,9 +35,7 @@ use novomodelo_core::EntityId;
 use std::path::Path;
 
 use crate::LoadError;
-use crate::parquet_helpers::{
-    extract_required_float64, extract_required_int32, open_record_batch_reader,
-};
+use crate::parquet_helpers::{ParquetColumns, open_parquet_input};
 
 /// A single row from `scenarios/inflow_seasonal_stats.parquet`.
 ///
@@ -73,6 +71,11 @@ pub struct InflowSeasonalStatsRow {
     pub std_m3s: f64,
 }
 
+static INFLOW_SEASONAL_STATS_COLUMNS: ParquetColumns = ParquetColumns {
+    known: &["hydro_id", "stage_id", "mean_m3s", "std_m3s"],
+    retired: &[],
+};
+
 /// Parse `scenarios/inflow_seasonal_stats.parquet` and return a sorted row table.
 ///
 /// # Errors
@@ -82,6 +85,7 @@ pub struct InflowSeasonalStatsRow {
 /// | File not found or permission denied           | [`LoadError::IoError`]     |
 /// | Malformed Parquet (corrupt header, etc.)      | [`LoadError::ParseError`]  |
 /// | Required column missing or wrong type         | [`LoadError::SchemaError`] |
+/// | Unknown or retired column                     | [`LoadError::SchemaError`] |
 /// | `mean_m3s` is NaN or infinite                 | [`LoadError::SchemaError`] |
 /// | `std_m3s` is negative or not finite           | [`LoadError::SchemaError`] |
 ///
@@ -96,17 +100,15 @@ pub struct InflowSeasonalStatsRow {
 /// println!("loaded {} inflow seasonal stats rows", rows.len());
 /// ```
 pub fn parse_inflow_seasonal_stats(path: &Path) -> Result<Vec<InflowSeasonalStatsRow>, LoadError> {
-    let reader = open_record_batch_reader(path)?;
-
     let mut rows: Vec<InflowSeasonalStatsRow> = Vec::new();
 
-    for batch_result in reader {
-        let batch = batch_result.map_err(|e| LoadError::parse(path, e.to_string()))?;
+    for batch in open_parquet_input(path, &INFLOW_SEASONAL_STATS_COLUMNS)? {
+        let batch = batch?;
 
-        let hydro_id_col = extract_required_int32(&batch, "hydro_id", path)?;
-        let stage_id_col = extract_required_int32(&batch, "stage_id", path)?;
-        let mean_m3s_col = extract_required_float64(&batch, "mean_m3s", path)?;
-        let std_m3s_col = extract_required_float64(&batch, "std_m3s", path)?;
+        let hydro_id_col = batch.required_int32("hydro_id")?;
+        let stage_id_col = batch.required_int32("stage_id")?;
+        let mean_m3s_col = batch.required_float64("mean_m3s")?;
+        let std_m3s_col = batch.required_float64("std_m3s")?;
 
         let n = batch.num_rows();
         let base_idx = rows.len();

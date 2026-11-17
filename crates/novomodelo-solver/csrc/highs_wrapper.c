@@ -111,6 +111,22 @@ int32_t novomodelo_highs_change_rows_bounds_by_set(
     );
 }
 
+int32_t novomodelo_highs_change_rows_bounds_by_range(
+    void*           highs,
+    int32_t         from_row,
+    int32_t         to_row,
+    const double*   lower,
+    const double*   upper
+) {
+    return (int32_t)Highs_changeRowsBoundsByRange(
+        highs,
+        (HighsInt)from_row,
+        (HighsInt)to_row,
+        lower,
+        upper
+    );
+}
+
 int32_t novomodelo_highs_change_cols_bounds_by_set(
     void*           highs,
     int32_t         num_set_entries,

@@ -10,10 +10,11 @@
 //!
 //! ## Optional files
 //!
-//! Three entity registries are optional: `non_controllable_sources.json`,
-//! `pumping_stations.json`, and `energy_contracts.json`. When the file is absent
-//! from the case directory the corresponding `load_*` wrapper (which accepts
-//! `Option<&Path>`) returns `Ok(Vec::new())` without error.
+//! Five entity registries are optional: `lines.json`, `thermals.json`,
+//! `non_controllable_sources.json`, `pumping_stations.json`, and
+//! `energy_contracts.json`. When the file is absent from the case directory the
+//! corresponding `load_*` wrapper (which accepts `Option<&Path>`) returns
+//! `Ok(Vec::new())` without error.
 
 pub mod buses;
 pub mod energy_contracts;
@@ -33,7 +34,7 @@ pub use thermals::parse_thermals;
 
 use chrono::NaiveDate;
 use novomodelo_core::{
-    entities::{EnergyContract, NonControllableSource, PumpingStation},
+    entities::{EnergyContract, Line, NonControllableSource, PumpingStation, Thermal},
     penalty::GlobalPenaltyDefaults,
 };
 use std::path::Path;
@@ -60,6 +61,33 @@ pub(crate) fn parse_operational_start_date(
         field: field.to_string(),
         message: format!("'{raw}' is not a valid ISO-8601 date (YYYY-MM-DD)"),
     })
+}
+
+/// Load `system/lines.json`, or return an empty vec when absent.
+///
+/// # Errors
+///
+/// Propagates errors from [`parse_lines`] when `path` is `Some`.
+pub fn load_lines(
+    path: Option<&Path>,
+    global_penalties: &GlobalPenaltyDefaults,
+) -> Result<Vec<Line>, LoadError> {
+    match path {
+        Some(p) => lines::parse_lines(p, global_penalties),
+        None => Ok(Vec::new()),
+    }
+}
+
+/// Load `system/thermals.json`, or return an empty vec when absent.
+///
+/// # Errors
+///
+/// Propagates errors from [`parse_thermals`] when `path` is `Some`.
+pub fn load_thermals(path: Option<&Path>) -> Result<Vec<Thermal>, LoadError> {
+    match path {
+        Some(p) => thermals::parse_thermals(p),
+        None => Ok(Vec::new()),
+    }
 }
 
 /// Load `system/non_controllable_sources.json`, or return an empty vec when absent.
@@ -108,6 +136,25 @@ mod tests {
     use crate::test_support::make_global;
 
     // ── AC: optional file wrapper returns empty vec for None ──────────────────
+
+    #[test]
+    fn test_load_lines_none_returns_empty() {
+        let global = make_global();
+        let result = load_lines(None, &global).unwrap();
+        assert!(
+            result.is_empty(),
+            "expected empty vec when path is None, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_load_thermals_none_returns_empty() {
+        let result = load_thermals(None).unwrap();
+        assert!(
+            result.is_empty(),
+            "expected empty vec when path is None, got {result:?}"
+        );
+    }
 
     #[test]
     fn test_load_ncs_none_returns_empty() {

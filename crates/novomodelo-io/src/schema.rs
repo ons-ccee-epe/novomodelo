@@ -709,7 +709,7 @@ mod tests {
         const FLOW: &str = "($/(m³/s·h))";
         const STORAGE: &str = "($/hm³)";
         const ENERGY: &str = "($/`MWh`)";
-        let units: [(&str, &str); 16] = [
+        let units: [(&str, &str); 17] = [
             ("spillage_cost", FLOW),
             ("turbined_cost", FLOW),
             ("diversion_cost", FLOW),
@@ -719,6 +719,7 @@ mod tests {
             ("outflow_violation_below_cost", FLOW),
             ("outflow_violation_above_cost", FLOW),
             ("generation_violation_below_cost", ENERGY),
+            ("fpha_violation_cost", ENERGY),
             ("evaporation_violation_cost", FLOW),
             ("water_withdrawal_violation_cost", FLOW),
             ("water_withdrawal_violation_pos_cost", FLOW),

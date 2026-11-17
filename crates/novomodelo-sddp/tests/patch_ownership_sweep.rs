@@ -21,13 +21,16 @@ use std::path::Path;
 
 use novomodelo_core::{BlockMode, EntityId};
 use novomodelo_io::config::{InflowNonNegativityMethod as CfgInflowMethod, StoppingRuleConfig};
-use novomodelo_sddp::indexer::{BlockIdx, BusSys, HydroSys, NcsSys, StateSpace};
+use novomodelo_sddp::indexer::{BlockIdx, BusSys, HydroSys, NcsSys};
 use novomodelo_sddp::lp::StageGeometry;
+use novomodelo_sddp::lp::builder::InflowCoupling;
 use novomodelo_sddp::setup::{NodePos, StageIdx};
 use novomodelo_sddp::test_support::decks::{Deck, SLOW_DECKS, committed_decks};
+use novomodelo_sddp::test_support::template_structure::state_lag_dims;
 use novomodelo_sddp::test_support::{
-    capture_patched_node_template, capture_patched_node_template_at, lower_bound_root_templates,
-    node_opening_noise, oracle_initial_state, stage_state_box_bounds, state_space,
+    bits, capture_patched_node_template, capture_patched_node_template_at,
+    lower_bound_root_templates, node_opening_noise, oracle_initial_state, stage_state_box_bounds,
+    state_space,
 };
 use novomodelo_sddp::{InflowNonNegativityMethod, StudySetup};
 use novomodelo_solver::{ActiveSolver, StageTemplate};
@@ -50,10 +53,10 @@ fn capture_at_initial_state_matches_node_capture() {
         let at = capture_patched_node_template_at(&setup, pos, &zero_noise, &initial_state);
         let node = capture_patched_node_template(&setup, pos);
 
-        assert_eq!(to_bits(&at.row_lower), to_bits(&node.row_lower));
-        assert_eq!(to_bits(&at.row_upper), to_bits(&node.row_upper));
-        assert_eq!(to_bits(&at.col_lower), to_bits(&node.col_lower));
-        assert_eq!(to_bits(&at.col_upper), to_bits(&node.col_upper));
+        assert_eq!(bits(&at.row_lower), bits(&node.row_lower));
+        assert_eq!(bits(&at.row_upper), bits(&node.row_upper));
+        assert_eq!(bits(&at.col_lower), bits(&node.col_lower));
+        assert_eq!(bits(&at.col_upper), bits(&node.col_upper));
     }
 }
 
@@ -71,19 +74,12 @@ fn node_opening_noise_has_the_raw_noise_length() {
     }
 }
 
-fn to_bits(v: &[f64]) -> Vec<u64> {
-    v.iter().map(|x| x.to_bits()).collect()
-}
-
 // ── One-hot patch-ownership sweep ────────────────────────────────────────────
 //
 // One address-arithmetic helper per family despite each having a single call
 // site below: keeps a later change to an ownership set confined to one
-// function instead of every check site.
-
-fn z_row(state: &StateSpace, h: usize) -> usize {
-    state.z_inflow_row(HydroSys::new(h))
-}
+// function instead of every check site. A hydro's rows are the rows its inflow
+// coupling touches.
 
 fn load_chunk(geom: &StageGeometry, bus_pos: usize) -> Range<usize> {
     let bus = BusSys::new(bus_pos);
@@ -158,7 +154,7 @@ fn check_inflow(
     pos: NodePos,
     dim: usize,
     h: usize,
-    state: &StateSpace,
+    coupling: &InflowCoupling,
     own_slack: Option<usize>,
     changed: &ChangedIndices,
     violations: &mut Vec<String>,
@@ -171,11 +167,15 @@ fn check_inflow(
             ));
         }
     }
-    let z = z_row(state, h);
+    let owned: Vec<usize> = coupling
+        .hydro_entries(HydroSys::new(h))
+        .map(|(row, _)| row)
+        .collect();
     for &row in &changed.rows {
-        if row != z {
+        if !owned.contains(&row) {
             violations.push(format!(
-                "{deck} node={pos} dim={dim} (inflow h={h}): row {row} outside z row {z}"
+                "{deck} node={pos} dim={dim} (inflow h={h}): row {row} outside coupled rows \
+                 {owned:?}"
             ));
         }
     }
@@ -293,7 +293,11 @@ fn sweep_setup(
                     pos,
                     dim,
                     dim,
-                    state_space(setup),
+                    &setup
+                        .inputs
+                        .stage_data
+                        .stage_templates
+                        .inflow_coupling_per_stage[stage],
                     own_slack,
                     &changed,
                     violations,
@@ -320,8 +324,8 @@ fn sweep_setup(
 
 /// On every deck, each noise dimension, on its own, changes only the bounds
 /// the layout assigns to that dimension's entity. Ownership is defined by
-/// row/column families (`z_row`/`load_chunk`/`ncs_chunk`
-/// above), never by the patch buffers themselves.
+/// row/column families (the coupled rows of `check_inflow`, `load_chunk`,
+/// `ncs_chunk`), never by the patch buffers themselves.
 #[test]
 fn every_noise_dimension_patches_only_its_own_entity() {
     let slow_tests_enabled = cfg!(feature = "slow-tests");
@@ -650,7 +654,7 @@ fn truncation_slack_bounds_are_identical_across_solve_sites() {
         let geometry = &setup.inputs.stage_data.stage_templates.geometry_per_stage[next_stage];
         let n_openings = setup.inputs.node_graph.nodes[node].openings.len;
         let l_star = |x: &[f64], noise: &[f64], h: usize| {
-            let lags = &x[state.inflow_lags.clone()];
+            let lags = &x[state_lag_dims(&state)];
             let lag_term: f64 = par
                 .psi_slice(next_stage, h)
                 .iter()
@@ -665,7 +669,7 @@ fn truncation_slack_bounds_are_identical_across_solve_sites() {
 
         let (mut checked, mut moved_by_the_lag) = (0usize, 0usize);
         for x in &stored_trial_states(&setup, NodePos(0)) {
-            if to_bits(x) == to_bits(&initial_state) {
+            if bits(x) == bits(&initial_state) {
                 continue;
             }
             for o in 0..n_openings {
@@ -755,6 +759,12 @@ fn every_deck_workspace_pool_is_sized_from_its_owners() {
             .map(|g| g.n_blks)
             .max()
             .unwrap_or(0);
+        let max_touched_rows = stage_ctx
+            .inflow_coupling
+            .iter()
+            .map(|coupling| coupling.touched_rows().len())
+            .max()
+            .unwrap_or(0);
 
         any_downstream_par_order_positive |= training_ctx.study_dims.downstream_par_order > 0;
 
@@ -766,15 +776,13 @@ fn every_deck_workspace_pool_is_sized_from_its_owners() {
         for ws in &pool.workspaces {
             assert_eq!(
                 ws.patch_buf.indices.len(),
-                stage_ctx.load_bus_indices.len() * max_n_blks + state.hydro_count,
+                stage_ctx.load_bus_indices.len() * max_n_blks + max_touched_rows,
                 "deck {}: patch_buf.indices length",
                 deck.key
             );
             assert_eq!(
                 ws.patch_buf.col_indices.len(),
-                state.hydro_count * (1 + state.max_par_order)
-                    + state.n_buckets
-                    + state.n_anticipated * state.k_max,
+                state.hydro_count + state.n_buckets + state.n_anticipated * state.k_max,
                 "deck {}: patch_buf.col_indices length",
                 deck.key
             );

@@ -74,6 +74,9 @@ pub struct SolverProfiles {
     /// reserved test-support seam for the byte-neutrality gate; production
     /// always resolves `true`.
     pub hardest_first_claim_order: bool,
+    /// Recomputes B and W in every backward solve, counting each frozen pin as a slab miss.
+    #[cfg(any(test, feature = "test-support"))]
+    pub bypass_solve_caches: bool,
 }
 
 impl Default for SolverProfiles {
@@ -83,6 +86,8 @@ impl Default for SolverProfiles {
             backward: Phase::Backward.profile(),
             backward_scheduler: BackwardScheduler::default(),
             hardest_first_claim_order: true,
+            #[cfg(any(test, feature = "test-support"))]
+            bypass_solve_caches: false,
         }
     }
 }

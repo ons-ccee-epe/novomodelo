@@ -18,7 +18,7 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use novomodelo_core::StageStateConfig;
 use novomodelo_sddp::cut::{CutPool, CutRowMap};
-use novomodelo_sddp::dcs::{DcsParams, DcsScoringScratch, score_violated_candidates};
+use novomodelo_sddp::dcs::{DcsCutView, DcsParams, DcsScoringScratch, score_violated_candidates};
 use novomodelo_sddp::indexer::{CutStateProjection, StateDim, StateSpace};
 use novomodelo_sddp::lead_time::AnticipatedResolution;
 use novomodelo_sddp::setup::NodeId;
@@ -216,21 +216,25 @@ fn bench_one(c: &mut Criterion, k: usize, n_state: usize) {
 
     {
         let mut scratch = DcsScoringScratch::default();
-        scratch.reserve(n_state, k);
+        scratch.reserve(cut_state.columned_len(), k);
         let mut out = Vec::with_capacity(k);
+        let cuts = DcsCutView {
+            pool: &pool,
+            state: &state,
+            cut_state: &cut_state,
+            col_scale: &[],
+        };
         group.bench_with_input(BenchmarkId::new("batched", &id), &id, |b, _| {
             b.iter(|| {
                 let count = score_violated_candidates(
-                    black_box(&pool),
-                    black_box(&state),
-                    black_box(&cut_state),
+                    black_box(cuts),
                     black_box(&primal),
-                    black_box(&[]),
                     black_box(&resident),
                     black_box(&params),
                     black_box(current_iteration),
                     &mut scratch,
                     &mut out,
+                    black_box(pool.intercepts_prefix()),
                 );
                 black_box(count);
             });

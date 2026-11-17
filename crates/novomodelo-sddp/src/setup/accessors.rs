@@ -205,16 +205,14 @@ impl StudySetup {
             return Vec::new();
         };
         let ic = system.initial_conditions();
-        let thermals = system.thermals();
         let mut windows = Vec::new();
-        for t in self
+        for thermal in self
             .inputs
             .stage_data
             .study_dims
             .anticipated_plants
-            .thermals()
+            .thermals_in(system.thermals())
         {
-            let thermal = &thermals[t.get()];
             let mut plant_windows: Vec<AnticipatedCommitmentHistory> = ic
                 .past_anticipated_commitments
                 .iter()

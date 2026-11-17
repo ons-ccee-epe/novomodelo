@@ -257,11 +257,81 @@ pub fn advance_lag_chain<L: LagIndex>(
     }
 }
 
+/// Lag-period weights of one trajectory: what [`advance_lag_chain`] tracks in
+/// `PrimaryLagAccum::weight_accum` and in the downstream weight and
+/// completed-period count of `DownstreamLagAccum`, without any realized value.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LagWeightState {
+    /// Weight accumulated in the current lag period, per entity.
+    pub primary: Vec<f64>,
+    /// Weight accumulated in the current downstream period.
+    pub downstream: f64,
+    /// Completed downstream periods held in the ring.
+    pub n_completed: usize,
+}
+
+impl LagWeightState {
+    /// The state of a trajectory start whose period holds `seed_weight` per entity.
+    #[must_use]
+    pub fn from_seed(seed_weight: &[f64]) -> Self {
+        Self {
+            primary: seed_weight.to_vec(),
+            downstream: 0.0,
+            n_completed: 0,
+        }
+    }
+}
+
+/// Advance `state` through one stage exactly as [`advance_lag_chain`] advances
+/// its weights, in the kernel's order: accumulate, rebuild, finalize.
+///
+/// A rebuild neither finalizes nor resets the primary weight.
+pub fn advance_lag_weights(
+    state: &mut LagWeightState,
+    stage_lag: &StageLagTransition,
+    downstream_par_order: usize,
+) {
+    for weight in &mut state.primary {
+        *weight += stage_lag.accumulate_weight;
+    }
+
+    if downstream_par_order > 0 && stage_lag.accumulate_downstream {
+        state.downstream += stage_lag.downstream_accumulate_weight;
+        if stage_lag.downstream_finalize && state.downstream > 0.0 {
+            state.n_completed = (state.n_completed + 1).min(downstream_par_order);
+            state.downstream = if stage_lag.downstream_spillover_weight > 0.0 {
+                stage_lag.downstream_spillover_weight
+            } else {
+                0.0
+            };
+        }
+    }
+
+    if stage_lag.rebuild_from_downstream && state.n_completed > 0 {
+        state.n_completed = 0;
+        state.downstream = 0.0;
+        return;
+    }
+
+    if stage_lag.finalize_period {
+        let carried = if stage_lag.spillover_weight > 0.0 {
+            stage_lag.spillover_weight
+        } else {
+            0.0
+        };
+        state.primary.fill(carried);
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::float_cmp)]
 mod tests {
-    use super::{DownstreamLagAccum, EntityMajor, LagMajor, PrimaryLagAccum, advance_lag_chain};
+    use super::{
+        DownstreamLagAccum, EntityMajor, LagMajor, LagWeightState, PrimaryLagAccum,
+        advance_lag_chain, advance_lag_weights,
+    };
     use novomodelo_core::temporal::StageLagTransition;
+    use proptest::prelude::*;
 
     /// Builds a `StageLagTransition` exercising only the primary path — the
     /// `downstream_*` fields stay inert (`0.0` / `false`).
@@ -1047,6 +1117,129 @@ mod tests {
             f64::midpoint(150.0, 170.0),
             "the no-window hydro must finalize to the in-study average of its \
              own realized values, not a zero-inflow imputation"
+        );
+    }
+
+    fn weight() -> impl Strategy<Value = f64> {
+        prop_oneof![Just(0.0), 0.0..=1.0f64]
+    }
+
+    fn random_transition() -> impl Strategy<Value = StageLagTransition> {
+        (
+            (weight(), weight(), any::<bool>()),
+            (any::<bool>(), weight(), weight(), any::<bool>()),
+            any::<bool>(),
+        )
+            .prop_map(
+                |(
+                    (accumulate_weight, spillover_weight, finalize_period),
+                    (
+                        accumulate_downstream,
+                        downstream_accumulate_weight,
+                        downstream_spillover_weight,
+                        downstream_finalize,
+                    ),
+                    rebuild_from_downstream,
+                )| StageLagTransition {
+                    accumulate_weight,
+                    spillover_weight,
+                    finalize_period,
+                    accumulate_downstream,
+                    downstream_accumulate_weight,
+                    downstream_spillover_weight,
+                    downstream_finalize,
+                    rebuild_from_downstream,
+                },
+            )
+    }
+
+    proptest! {
+        #[test]
+        fn weight_replay_matches_the_kernel_weights_on_random_transitions(
+            entity_count in 1usize..=3,
+            downstream_par_order in 0usize..=2,
+            seed_weight in prop::collection::vec(weight(), 3),
+            stages in prop::collection::vec(
+                (random_transition(), prop::collection::vec(-1.0e3..1.0e3f64, 3)),
+                1..=12,
+            ),
+        ) {
+            let layout = LagMajor { entity_count, max_order: 2 };
+            let mut lag_state = vec![0.0; entity_count * 2];
+            let mut accumulator = vec![0.0; entity_count];
+            let mut weight_accum = seed_weight[..entity_count].to_vec();
+            let mut downstream_accumulator = vec![0.0; entity_count * usize::from(downstream_par_order > 0)];
+            let mut downstream_weight_accum = 0.0;
+            let mut completed_lags = vec![0.0; entity_count * downstream_par_order];
+            let mut n_completed = 0;
+            let mut replay = LagWeightState::from_seed(&weight_accum);
+
+            for (stage_lag, realized) in &stages {
+                let incoming_lags = lag_state.clone();
+                let mut primary = PrimaryLagAccum {
+                    accumulator: &mut accumulator,
+                    weight_accum: &mut weight_accum,
+                };
+                let mut downstream = DownstreamLagAccum {
+                    accumulator: &mut downstream_accumulator,
+                    weight_accum: &mut downstream_weight_accum,
+                    completed_lags: &mut completed_lags,
+                    n_completed: &mut n_completed,
+                    par_order: downstream_par_order,
+                };
+                advance_lag_chain(
+                    layout,
+                    &mut lag_state,
+                    &incoming_lags,
+                    &realized[..entity_count],
+                    stage_lag,
+                    &mut primary,
+                    &mut downstream,
+                );
+                advance_lag_weights(&mut replay, stage_lag, downstream_par_order);
+
+                for (replayed, kernel) in replay.primary.iter().zip(&weight_accum) {
+                    prop_assert_eq!(replayed.to_bits(), kernel.to_bits());
+                }
+                prop_assert_eq!(replay.downstream.to_bits(), downstream_weight_accum.to_bits());
+                prop_assert_eq!(replay.n_completed, n_completed);
+            }
+        }
+    }
+
+    #[test]
+    fn weight_replay_keeps_the_primary_weight_across_a_rebuild() {
+        let ring_closing = StageLagTransition {
+            accumulate_downstream: true,
+            downstream_accumulate_weight: 1.0,
+            downstream_finalize: true,
+            ..primary_transition(0.5, 0.0, false)
+        };
+        let rebuild = StageLagTransition {
+            rebuild_from_downstream: true,
+            ..primary_transition(0.5, 0.0, true)
+        };
+
+        let mut state = LagWeightState::from_seed(&[0.25, 0.0]);
+        advance_lag_weights(&mut state, &ring_closing, 1);
+        assert_eq!(state.n_completed, 1);
+        assert_eq!(state.primary, [0.75, 0.5]);
+
+        advance_lag_weights(&mut state, &rebuild, 1);
+        assert_eq!(state.n_completed, 0);
+        assert_eq!(state.downstream, 0.0);
+        assert_eq!(
+            state.primary,
+            [1.25, 1.0],
+            "a rebuild neither finalizes nor resets the primary weight"
+        );
+
+        let mut empty_ring = LagWeightState::from_seed(&[0.25, 0.0]);
+        advance_lag_weights(&mut empty_ring, &rebuild, 1);
+        assert_eq!(
+            empty_ring.primary,
+            [0.0, 0.0],
+            "a rebuild over an empty ring falls through to the finalize"
         );
     }
 }

@@ -51,7 +51,7 @@ use arrow::array::{
 use chrono::NaiveDate;
 
 use super::date32_days;
-use novomodelo_core::System;
+use novomodelo_core::{Hydro, System};
 
 use crate::MetadataSimulationSolveStats;
 use crate::output::SimulationOutput;
@@ -119,6 +119,8 @@ pub struct CostWriteRecord {
     pub evaporation_violation_cost: f64,
     /// Cost of water withdrawal constraint violations.
     pub withdrawal_violation_cost: f64,
+    /// Cost of FPHA plane violations: the FPHA slacks times their price.
+    pub fpha_violation_cost: f64,
     /// Inflow non-negativity violation cost.
     pub inflow_penalty_cost: f64,
     /// Generic constraint violation cost.
@@ -195,6 +197,8 @@ pub struct HydroWriteRecord {
     pub outflow_slack_above_m3s: f64,
     /// Generation capacity violation slack in MW.
     pub generation_slack_mw: f64,
+    /// FPHA plane violation slack in MW, summed over the plant's cells.
+    pub fpha_violation_mw: f64,
     /// Storage below minimum bound violation in hm³.
     pub storage_violation_below_hm3: f64,
     /// Filling target violation in hm³.
@@ -768,13 +772,8 @@ fn family_has_non_controllables(system: &System) -> bool {
     system.n_non_controllable_sources() > 0
 }
 
-/// A declared travel-time arc: `travel_time_hours > 0` and a downstream
-/// target. Mirrors `bucket_topology`'s arc predicate.
 fn family_declares_travel_time(system: &System) -> bool {
-    system
-        .hydros()
-        .iter()
-        .any(|h| h.travel_time_hours.is_some_and(|t| t > 0.0) && h.downstream_id.is_some())
+    system.hydros().iter().any(Hydro::declares_travel_time_arc)
 }
 
 fn family_has_generic_constraints(system: &System) -> bool {
@@ -784,7 +783,7 @@ fn family_has_generic_constraints(system: &System) -> bool {
 fn family_declares_post_study(system: &System) -> bool {
     system
         .post_study_stages()
-        .is_some_and(|ps| !ps.stages.is_empty())
+        .is_some_and(|ps| !ps.thermal_stages.is_empty())
 }
 
 fn scenario_batch_costs(
@@ -1358,6 +1357,7 @@ fn build_costs_batch<'a>(
     let mut generation_violation_cost = Float64Builder::with_capacity(n);
     let mut evaporation_violation_cost = Float64Builder::with_capacity(n);
     let mut withdrawal_violation_cost = Float64Builder::with_capacity(n);
+    let mut fpha_violation_cost = Float64Builder::with_capacity(n);
     let mut inflow_penalty_cost = Float64Builder::with_capacity(n);
     let mut generic_violation_cost = Float64Builder::with_capacity(n);
     let mut spillage_cost = Float64Builder::with_capacity(n);
@@ -1389,6 +1389,7 @@ fn build_costs_batch<'a>(
         generation_violation_cost.append_value(r.generation_violation_cost);
         evaporation_violation_cost.append_value(r.evaporation_violation_cost);
         withdrawal_violation_cost.append_value(r.withdrawal_violation_cost);
+        fpha_violation_cost.append_value(r.fpha_violation_cost);
         inflow_penalty_cost.append_value(r.inflow_penalty_cost);
         generic_violation_cost.append_value(r.generic_violation_cost);
         spillage_cost.append_value(r.spillage_cost);
@@ -1423,6 +1424,7 @@ fn build_costs_batch<'a>(
             Arc::new(generation_violation_cost.finish()),
             Arc::new(evaporation_violation_cost.finish()),
             Arc::new(withdrawal_violation_cost.finish()),
+            Arc::new(fpha_violation_cost.finish()),
             Arc::new(inflow_penalty_cost.finish()),
             Arc::new(generic_violation_cost.finish()),
             Arc::new(spillage_cost.finish()),
@@ -1468,6 +1470,7 @@ struct HydroBuilders {
     outflow_slack_below_m3s: Float64Builder,
     outflow_slack_above_m3s: Float64Builder,
     generation_slack_mw: Float64Builder,
+    fpha_violation_mw: Float64Builder,
     storage_violation_below_hm3: Float64Builder,
     filling_target_violation_hm3: Float64Builder,
     evaporation_violation_pos_m3s: Float64Builder,
@@ -1514,6 +1517,7 @@ impl HydroBuilders {
             outflow_slack_below_m3s: Float64Builder::with_capacity(n),
             outflow_slack_above_m3s: Float64Builder::with_capacity(n),
             generation_slack_mw: Float64Builder::with_capacity(n),
+            fpha_violation_mw: Float64Builder::with_capacity(n),
             storage_violation_below_hm3: Float64Builder::with_capacity(n),
             filling_target_violation_hm3: Float64Builder::with_capacity(n),
             evaporation_violation_pos_m3s: Float64Builder::with_capacity(n),
@@ -1579,6 +1583,7 @@ fn fill_hydro_builders<'a>(
         b.outflow_slack_above_m3s
             .append_value(r.outflow_slack_above_m3s);
         b.generation_slack_mw.append_value(r.generation_slack_mw);
+        b.fpha_violation_mw.append_value(r.fpha_violation_mw);
         b.storage_violation_below_hm3
             .append_value(r.storage_violation_below_hm3);
         b.filling_target_violation_hm3
@@ -1648,6 +1653,7 @@ fn build_hydros_batch<'a>(
             Arc::new(b.outflow_slack_below_m3s.finish()),
             Arc::new(b.outflow_slack_above_m3s.finish()),
             Arc::new(b.generation_slack_mw.finish()),
+            Arc::new(b.fpha_violation_mw.finish()),
             Arc::new(b.storage_violation_below_hm3.finish()),
             Arc::new(b.filling_target_violation_hm3.finish()),
             Arc::new(b.evaporation_violation_pos_m3s.finish()),
@@ -2335,6 +2341,7 @@ mod tests {
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -2550,6 +2557,7 @@ mod tests {
             generation_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             withdrawal_violation_cost: 0.0,
+            fpha_violation_cost: 0.0,
             inflow_penalty_cost: 0.0,
             generic_violation_cost: 0.0,
             spillage_cost: 5.0,
@@ -2589,6 +2597,7 @@ mod tests {
             outflow_slack_below_m3s: 0.0,
             outflow_slack_above_m3s: 0.0,
             generation_slack_mw: 0.0,
+            fpha_violation_mw: 0.0,
             storage_violation_below_hm3: 0.0,
             filling_target_violation_hm3: 0.0,
             evaporation_violation_pos_m3s: 0.0,
@@ -2646,7 +2655,11 @@ mod tests {
             .expect("costs batch must build");
 
         assert_eq!(batch.num_rows(), 2, "must have 2 rows");
-        assert_eq!(batch.num_columns(), 29, "costs schema has 29 columns");
+        assert_eq!(
+            batch.num_columns(),
+            costs_schema().fields().len(),
+            "batch must carry every costs schema column"
+        );
 
         let expected = costs_schema();
         assert_eq!(
@@ -2663,13 +2676,14 @@ mod tests {
 
         let mut r0 = make_hydro_record(0, Some(0), 1); // generation_mw = 50.0
         r0.water_withdrawal_violation_pos_m3s = 2.5; // nonzero for round-trip test
+        r0.fpha_violation_mw = 1.25;
         let r1 = make_hydro_record(1, Some(0), 2); // generation_mw = 50.0
         let records = [&r0, &r1];
 
         let batch = build_hydros_batch(records.iter().copied(), 0, &block_durations, records.len())
             .expect("hydros batch must build");
         assert_eq!(batch.num_rows(), 2);
-        assert_eq!(batch.num_columns(), 41, "hydros schema has 41 columns");
+        assert_eq!(batch.num_columns(), hydros_schema().fields().len());
 
         let gen_mwh_col = batch
             .column_by_name("generation_mwh")
@@ -2724,6 +2738,14 @@ mod tests {
             0.0,
             "row 1 withdrawal violation must be 0.0"
         );
+
+        let fpha_arr = batch
+            .column_by_name("fpha_violation_mw")
+            .expect("fpha_violation_mw column must exist")
+            .as_any()
+            .downcast_ref::<arrow::array::Float64Array>()
+            .expect("fpha_violation_mw must be Float64Array");
+        assert_eq!(fpha_arr.values().as_ref(), [1.25, 0.0]);
     }
 
     #[test]
@@ -3370,7 +3392,11 @@ mod tests {
             .join("simulation/costs/scenario_id=0000/data.parquet");
         let batch = read_first_batch(&path);
         assert_eq!(batch.num_rows(), 2, "costs parquet must have 2 rows");
-        assert_eq!(batch.num_columns(), 29, "costs schema has 29 columns");
+        assert_eq!(
+            batch.num_columns(),
+            costs_schema().fields().len(),
+            "batch must carry every costs schema column"
+        );
     }
 
     #[test]
@@ -3437,10 +3463,10 @@ mod tests {
         // both front ends' output identically.
         let schema = batch.schema();
         for (col, expected_index) in [
-            ("integrated_equivalent_productivity_mw_per_m3s", 37),
-            ("integrated_accumulated_productivity_mw_per_m3s", 38),
-            ("stored_energy_initial_mw", 39),
-            ("stored_energy_final_mw", 40),
+            ("integrated_equivalent_productivity_mw_per_m3s", 38),
+            ("integrated_accumulated_productivity_mw_per_m3s", 39),
+            ("stored_energy_initial_mw", 40),
+            ("stored_energy_final_mw", 41),
         ] {
             let field = schema
                 .field_with_name(col)
@@ -3554,16 +3580,6 @@ mod tests {
             hydros_batch.num_rows(),
             6,
             "hydros must have 6 rows (3 stages × 2 hydros)"
-        );
-    }
-
-    #[test]
-    fn hydros_schema_has_forty_one_fields() {
-        let schema = hydros_schema();
-        assert_eq!(
-            schema.fields().len(),
-            41,
-            "hydros_schema must have 41 fields (39 + scenario_id + node_id)"
         );
     }
 

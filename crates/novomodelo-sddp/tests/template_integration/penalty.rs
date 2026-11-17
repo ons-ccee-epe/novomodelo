@@ -1,6 +1,7 @@
 //! `penalty` section tests.
 
 use super::*;
+use novomodelo_sddp::indexer::HydroSys;
 
 #[test]
 fn test_penalty_columns_added() {
@@ -79,12 +80,7 @@ fn test_penalty_objective_coefficient() {
     )
     .expect("constant productivity ok");
     let t = &result.templates[0];
-    let n_h = system.hydros().len();
-    // N=1, L=0: theta=3, decision_start=4, turbine=4, spillage=5, diversion=6,
-    // deficit=7, excess=8, inflow_slack=9, withdrawal_neg=10, withdrawal_pos=11,
-    // outflow_below=12, outflow_above=13, turbine_below=14, generation_below=15.
-    // inflow_slack sits before the 2 withdrawal + 4 op-violation slacks (6 per hydro).
-    let slack_col = t.num_cols - 1 - 6 * n_h;
+    let slack_col = result.geometry_per_stage[0].inflow_slack_col(HydroSys::new(0));
     let expected_obj = 1000.0 * 744.0 / COST_SCALE_FACTOR;
     assert!(
         (t.objective[slack_col] - expected_obj).abs() < 1e-12,
@@ -107,16 +103,16 @@ fn test_no_penalty_columns_when_none() {
     )
     .expect("constant productivity ok");
     let t = &result.templates[0];
-    // N=1, L=2: state+aux = N*(3+L)+1 = 6 (storage, lags, z_inflow, storage_in, theta);
-    // decisions = turb+spill+diversion+def+exc = 5; withdrawal = 2 (neg+pos);
-    // operational violation slacks = 4; total = 17.
+    // N=1, L=2: state+aux = 3 (storage_out, storage_in, theta; the lag region has
+    // no column); decisions = turb+spill+diversion+def+exc = 5; withdrawal = 2
+    // (neg+pos); operational violation slacks = 4; total = 14.
     assert_eq!(
-        t.num_cols, 17,
+        t.num_cols, 14,
         "method=none must not add extra penalty columns"
     );
-    // num_rows = N z_inflow + N water_balance + B*K load_balance (1+1+1)
-    // + 4 op-violation rows = 7; no state-fixing rows (state pinned via column bounds).
-    assert_eq!(t.num_rows, 7, "method=none must not add extra penalty rows");
+    // num_rows = N water_balance + B*K load_balance (1+1)
+    // + 4 op-violation rows = 6; no state-fixing rows (state pinned via column bounds).
+    assert_eq!(t.num_rows, 6, "method=none must not add extra penalty rows");
 }
 
 #[test]
@@ -135,12 +131,9 @@ fn test_penalty_slack_in_water_balance() {
     )
     .expect("constant productivity ok");
     let t = &result.templates[0];
-    let n_h = system.hydros().len();
+    let slack_col = result.geometry_per_stage[0].inflow_slack_col(HydroSys::new(0));
 
-    // inflow_slack sits before the withdrawal + 4 op-violation slacks (6 per hydro).
-    let slack_col = t.num_cols - 1 - 6 * n_h;
-
-    let water_balance_row = 1_usize; // N + h = 1 + 0
+    let water_balance_row = 0_usize; // water-balance rows start at 0: h = 0
 
     let col_start = t.col_starts[slack_col] as usize;
     let col_end = t.col_starts[slack_col + 1] as usize;
@@ -170,9 +163,7 @@ fn test_penalty_slack_bounds() {
     )
     .expect("constant productivity ok");
     let t = &result.templates[0];
-    let n_h = system.hydros().len();
-    // inflow_slack sits before the withdrawal + 4 op-violation slacks (6 per hydro).
-    let slack_col = t.num_cols - 1 - 6 * n_h;
+    let slack_col = result.geometry_per_stage[0].inflow_slack_col(HydroSys::new(0));
     assert_eq!(t.col_lower[slack_col], 0.0, "slack lower bound must be 0.0");
     assert!(
         t.col_upper[slack_col].is_infinite() && t.col_upper[slack_col] > 0.0,
@@ -199,11 +190,8 @@ fn test_penalty_water_balance_coefficient_value() {
     )
     .expect("constant productivity ok");
     let t = &result.templates[0];
-    let n_h = system.hydros().len();
-
-    // inflow_slack sits before the withdrawal + 4 op-violation slacks (6 per hydro).
-    let slack_col = t.num_cols - 1 - 6 * n_h;
-    let water_balance_row = 1_usize; // N + h = 1 + 0
+    let slack_col = result.geometry_per_stage[0].inflow_slack_col(HydroSys::new(0));
+    let water_balance_row = 0_usize; // water-balance rows start at 0: h = 0
     let zeta = 744.0 * (3_600.0 / 1_000_000.0);
     let expected_coeff = -zeta;
 
@@ -257,7 +245,7 @@ fn test_penalty_multi_stage_consistent() {
 // spillage ≥ 0), so the slack is mandatory regardless of turbine level.
 #[test]
 fn test_penalty_slack_absorbs_negative_inflow() {
-    use novomodelo_solver::{ActiveSolver, RowBatch, SolverInterface};
+    use novomodelo_solver::SolverInterface;
 
     let system = one_hydro_system(1, 0);
     let config = penalty_config(1000.0);
@@ -273,26 +261,12 @@ fn test_penalty_slack_absorbs_negative_inflow() {
     )
     .expect("constant productivity ok");
     let template = &result.templates[0];
-    let n_h = system.hydros().len();
+    let col_inflow_slack_start = result.geometry_per_stage[0].inflow_slack_col(HydroSys::new(0));
 
-    // inflow_slack sits before the withdrawal + 4 op-violation slacks (6 per hydro).
-    let col_inflow_slack_start = template.num_cols - 1 - 6 * n_h;
+    let col_storage_in = 1_usize; // storage_in for hydro 0 when N=1, L=0
+    let water_balance_row = 0_usize; // water-balance rows start at 0: h = 0
 
-    let col_storage_in = 2_usize; // storage_in for hydro 0 when N=1, L=0
-    let water_balance_row = 1_usize; // N + h = 1 + 0
-
-    let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
-    solver.load_model(template);
-
-    let empty_cuts = RowBatch {
-        num_rows: 0,
-        row_starts: vec![0_i32],
-        col_indices: vec![],
-        values: vec![],
-        row_lower: vec![],
-        row_upper: vec![],
-    };
-    solver.add_rows(&empty_cuts);
+    let mut solver = load_template_with_no_cuts(template);
 
     // Incoming storage is pinned via column bounds, not a row-0 equality.
     let initial_storage = 100.0_f64;

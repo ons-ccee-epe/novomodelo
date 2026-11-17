@@ -5,7 +5,9 @@
 //! release water profitably (zero load, positive turbining and spillage costs, a
 //! wide storage box), so each hydro's end-of-stage storage is its initial storage
 //! plus the stage inflow volume. A one-hot standardized draw on hydro 1 must then
-//! raise hydro 1's end storage by `ζ · σ₁` hm³ and leave hydro 0's untouched. The
+//! raise hydro 1's end storage by `ζ · σ₁` hm³ and its storage after block 0 by
+//! `τ₀ · σ₁` hm³, and leave hydro 0's untouched. The end read cannot tell a swap
+//! of `τ₀` and `τ₁` apart, because `Σ τₖ = ζ`; the block-0 read can. The
 //! assertions read the solved LP, not row positions, so they hold for any
 //! encoding of the inflow in the water balance.
 
@@ -23,11 +25,12 @@
 mod common;
 
 use novomodelo_sddp::StudySetup;
-use novomodelo_sddp::indexer::StateDim;
+use novomodelo_sddp::indexer::{Boundary, HydroSys, StateDim};
 use novomodelo_sddp::setup::{NodePos, StageIdx};
 use novomodelo_sddp::test_support::{
     capture_patched_node_template_at, capture_patched_node_template_with_inflow_noise,
     no_cut_root_lower_bound, node_opening_noise, oracle_initial_state,
+    template_structure::hours_to_hm3,
 };
 use novomodelo_solver::{ActiveSolver, SolverInterface};
 
@@ -38,8 +41,6 @@ use common::in_code_studies::{
     CHRONOLOGICAL_NOISE_RELEASE_COST, ChronologicalNoiseSpec, chronological_noise_study,
 };
 
-const M3S_TO_HM3: f64 = 0.0036;
-
 fn root_node(setup: &StudySetup) -> NodePos {
     let graph = &setup.inputs.node_graph;
     (0..graph.nodes.len())
@@ -48,30 +49,40 @@ fn root_node(setup: &StudySetup) -> NodePos {
         .expect("study must have a stage-0 node")
 }
 
-fn end_storage_hm3(setup: &StudySetup, inflow_eta: &[f64]) -> Vec<f64> {
+struct SolvedStorage {
+    end: Vec<f64>,
+    after_block_0: Vec<f64>,
+}
+
+fn solved_storage_hm3(setup: &StudySetup, inflow_eta: &[f64]) -> SolvedStorage {
     let template =
         capture_patched_node_template_with_inflow_noise(setup, root_node(setup), inflow_eta);
     let mut solver = ActiveSolver::new().expect("ActiveSolver::new");
     solver.load_model(&template);
     let view = solver.solve(None).expect("root stage LP must solve");
     let state = setup.stage_state();
-    (0..CHRONOLOGICAL_NOISE_INFLOW_STD_M3S.len())
-        .map(|h| {
-            let col = state.lp_column_for_state(StateDim::new(h)).get();
-            let scale = template.col_scale.get(col).copied().unwrap_or(1.0);
-            view.primal[col] * scale
-        })
-        .collect()
+    let geom = &setup.inputs.stage_data.stage_templates.geometry_per_stage[0];
+    let read = |col: usize| view.primal[col] * template.col_scale.get(col).copied().unwrap_or(1.0);
+    let n_hydros = CHRONOLOGICAL_NOISE_INFLOW_STD_M3S.len();
+    SolvedStorage {
+        end: (0..n_hydros)
+            .map(|h| read(state.lp_column_for_state(StateDim::new(h)).get()))
+            .collect(),
+        after_block_0: (0..n_hydros)
+            .map(|h| read(geom.block_storage_col(state, HydroSys::new(h), Boundary::Interior(1))))
+            .collect(),
+    }
 }
 
 #[test]
 fn chronological_inflow_noise_moves_only_its_own_hydro() {
     let (system, config) = chronological_noise_study(&ChronologicalNoiseSpec::default());
     let setup = build_setup_in_code(system, &config);
-    let zeta_hm3_per_m3s: f64 = CHRONOLOGICAL_NOISE_BLOCK_HOURS.iter().sum::<f64>() * M3S_TO_HM3;
+    let zeta_hm3_per_m3s = hours_to_hm3(CHRONOLOGICAL_NOISE_BLOCK_HOURS.iter().sum());
+    let tau_0_hm3_per_m3s = hours_to_hm3(CHRONOLOGICAL_NOISE_BLOCK_HOURS[0]);
 
-    let baseline = end_storage_hm3(&setup, &[0.0, 0.0]);
-    for (h, &storage) in baseline.iter().enumerate() {
+    let baseline = solved_storage_hm3(&setup, &[0.0, 0.0]);
+    for (h, &storage) in baseline.end.iter().enumerate() {
         let expected = CHRONOLOGICAL_NOISE_INITIAL_STORAGE_HM3
             + zeta_hm3_per_m3s * CHRONOLOGICAL_NOISE_INFLOW_MEAN_M3S;
         assert!(
@@ -81,8 +92,13 @@ fn chronological_inflow_noise_moves_only_its_own_hydro() {
         );
     }
 
-    let shocked = end_storage_hm3(&setup, &[0.0, 1.0]);
-    let delta: Vec<f64> = shocked.iter().zip(&baseline).map(|(s, b)| s - b).collect();
+    let shocked = solved_storage_hm3(&setup, &[0.0, 1.0]);
+    let delta: Vec<f64> = shocked
+        .end
+        .iter()
+        .zip(&baseline.end)
+        .map(|(s, b)| s - b)
+        .collect();
     let expected_delta = [
         0.0,
         zeta_hm3_per_m3s * CHRONOLOGICAL_NOISE_INFLOW_STD_M3S[1],
@@ -94,6 +110,36 @@ fn chronological_inflow_noise_moves_only_its_own_hydro() {
              {} hm³, got {} (all deltas: {delta:?})",
             expected_delta[h],
             delta[h]
+        );
+    }
+
+    for (h, &storage) in baseline.after_block_0.iter().enumerate() {
+        let expected = CHRONOLOGICAL_NOISE_INITIAL_STORAGE_HM3
+            + tau_0_hm3_per_m3s * CHRONOLOGICAL_NOISE_INFLOW_MEAN_M3S;
+        assert!(
+            (storage - expected).abs() < 1e-6,
+            "hydro {h}: with a zero draw block 0 must store its share of the mean inflow, \
+             expected {expected}, got {storage}"
+        );
+    }
+
+    let delta_block_0: Vec<f64> = shocked
+        .after_block_0
+        .iter()
+        .zip(&baseline.after_block_0)
+        .map(|(s, b)| s - b)
+        .collect();
+    let expected_delta_block_0 = [
+        0.0,
+        tau_0_hm3_per_m3s * CHRONOLOGICAL_NOISE_INFLOW_STD_M3S[1],
+    ];
+    for h in 0..CHRONOLOGICAL_NOISE_INFLOW_STD_M3S.len() {
+        assert!(
+            (delta_block_0[h] - expected_delta_block_0[h]).abs() < 1e-6,
+            "a one-hot draw on hydro 1 must change hydro {h}'s storage after block 0 by \
+             {} hm³, got {} (all deltas: {delta_block_0:?})",
+            expected_delta_block_0[h],
+            delta_block_0[h]
         );
     }
 }

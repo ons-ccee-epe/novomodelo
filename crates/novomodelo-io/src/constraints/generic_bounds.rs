@@ -42,10 +42,7 @@ use arrow::array::Array;
 use std::path::Path;
 
 use crate::LoadError;
-use crate::parquet_helpers::{
-    extract_optional_float64, extract_optional_int32, extract_required_int32,
-    open_record_batch_reader,
-};
+use crate::parquet_helpers::{ParquetColumns, open_parquet_input};
 
 /// A single row from `constraints/generic_constraint_bounds.parquet`.
 ///
@@ -83,6 +80,17 @@ pub struct GenericConstraintBoundsRow {
     pub bound_upper: Option<f64>,
 }
 
+static GENERIC_CONSTRAINT_BOUNDS_COLUMNS: ParquetColumns = ParquetColumns {
+    known: &[
+        "constraint_id",
+        "stage_id",
+        "block_id",
+        "bound_lower",
+        "bound_upper",
+    ],
+    retired: &[],
+};
+
 /// Parse `constraints/generic_constraint_bounds.parquet`, returning rows sorted by
 /// `(constraint_id, stage_id, block_id)` ascending (`None` block before `Some(i)`).
 ///
@@ -93,6 +101,7 @@ pub struct GenericConstraintBoundsRow {
 /// | File not found or permission denied       | [`LoadError::IoError`]     |
 /// | Malformed Parquet (corrupt header, etc.)  | [`LoadError::ParseError`]  |
 /// | Required column missing or wrong type     | [`LoadError::SchemaError`] |
+/// | Unknown or retired column                 | [`LoadError::SchemaError`] |
 /// | `bound_lower` or `bound_upper` is NaN or infinite | [`LoadError::SchemaError`] |
 ///
 /// # Examples
@@ -109,19 +118,17 @@ pub struct GenericConstraintBoundsRow {
 pub fn parse_generic_constraint_bounds(
     path: &Path,
 ) -> Result<Vec<GenericConstraintBoundsRow>, LoadError> {
-    let reader = open_record_batch_reader(path)?;
-
     let mut rows: Vec<GenericConstraintBoundsRow> = Vec::new();
 
-    for batch_result in reader {
-        let batch = batch_result.map_err(|e| LoadError::parse(path, e.to_string()))?;
+    for batch in open_parquet_input(path, &GENERIC_CONSTRAINT_BOUNDS_COLUMNS)? {
+        let batch = batch?;
 
-        let constraint_id_col = extract_required_int32(&batch, "constraint_id", path)?;
-        let stage_id_col = extract_required_int32(&batch, "stage_id", path)?;
+        let constraint_id_col = batch.required_int32("constraint_id")?;
+        let stage_id_col = batch.required_int32("stage_id")?;
 
-        let block_id_col = extract_optional_int32(&batch, "block_id", path)?;
-        let bound_lower_col = extract_optional_float64(&batch, "bound_lower", path)?;
-        let bound_upper_col = extract_optional_float64(&batch, "bound_upper", path)?;
+        let block_id_col = batch.optional_int32("block_id")?;
+        let bound_lower_col = batch.optional_float64("bound_lower")?;
+        let bound_upper_col = batch.optional_float64("bound_upper")?;
 
         let n = batch.num_rows();
         let base_idx = rows.len();

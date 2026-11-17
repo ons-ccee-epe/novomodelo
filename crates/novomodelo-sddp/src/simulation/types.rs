@@ -81,6 +81,8 @@ pub struct SimulationCostResult {
     pub evaporation_violation_cost: f64,
     /// Cost of water withdrawal constraint violations.
     pub withdrawal_violation_cost: f64,
+    /// Cost of FPHA plane violations: the FPHA slacks times their price.
+    pub fpha_violation_cost: f64,
     /// Cost of inflow non-negativity constraint violations.
     pub inflow_penalty_cost: f64,
     /// Cost of generic constraint violations.
@@ -169,6 +171,8 @@ pub struct SimulationHydroResult {
     pub outflow_slack_above_m3s: f64,
     /// Generation capacity violation slack in MW.
     pub generation_slack_mw: f64,
+    /// FPHA plane violation slack in MW, summed over the plant's cells.
+    pub fpha_violation_mw: f64,
     /// Storage below minimum bound violation in hm³.
     pub storage_violation_below_hm3: f64,
     /// Filling target violation in hm³.
@@ -643,6 +647,7 @@ mod tests {
             generation_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             withdrawal_violation_cost: 0.0,
+            fpha_violation_cost: 0.0,
             inflow_penalty_cost: 3.0,
             generic_violation_cost: 2.0,
             spillage_cost: 1.0,
@@ -704,6 +709,7 @@ mod tests {
             outflow_slack_below_m3s: 0.0,
             outflow_slack_above_m3s: 0.0,
             generation_slack_mw: 0.0,
+            fpha_violation_mw: 0.0,
             storage_violation_below_hm3: 0.0,
             filling_target_violation_hm3: 0.0,
             evaporation_violation_pos_m3s: 0.0,
@@ -762,6 +768,7 @@ mod tests {
             outflow_slack_below_m3s: 0.0,
             outflow_slack_above_m3s: 0.0,
             generation_slack_mw: 0.0,
+            fpha_violation_mw: 0.0,
             storage_violation_below_hm3: 0.0,
             filling_target_violation_hm3: 0.0,
             evaporation_violation_pos_m3s: 0.0,

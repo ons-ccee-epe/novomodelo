@@ -9,8 +9,10 @@
 //!
 //! Parquet parsers follow the canonical pattern:
 //!
-//! 1. Obtain the batch reader from `open_record_batch_reader` and consume all record batches.
-//! 2. Extract typed columns by name; return `SchemaError` for missing or wrong-type columns.
+//! 1. Open the file with `open_parquet_input` and the file's `ParquetColumns`, which
+//!    refuses any column outside that set, and consume all record batches.
+//! 2. Read typed columns by name through the `InputBatch` accessors; return
+//!    `SchemaError` for missing or wrong-type columns.
 //! 3. Validate per-row constraints; return `SchemaError` on violation.
 //! 4. Sort the output by the documented sort key and return.
 //!

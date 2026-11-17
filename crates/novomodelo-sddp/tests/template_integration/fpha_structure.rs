@@ -1,6 +1,7 @@
 //! `fpha_structure` section tests.
 
 use super::*;
+use novomodelo_sddp::indexer::{BlockIdx, FphaCellLocal, HydroCell, HydroSys};
 use novomodelo_solver::{ActiveSolver, RowBatch, SolverInterface};
 
 fn empty_cut_batch() -> RowBatch {
@@ -45,14 +46,155 @@ fn fpha_ac1_dimensions_one_fpha_hydro_five_planes() {
 
     assert_eq!(
         fpha_tmpl.num_cols,
-        const_tmpl.num_cols + 1,
-        "FPHA adds exactly 1 generation column (1 hydro * 1 block)"
+        const_tmpl.num_cols + 2,
+        "FPHA adds 1 generation and 1 slack column (1 cell * 1 block)"
     );
     assert_eq!(
         fpha_tmpl.num_rows,
         const_tmpl.num_rows + 5,
         "FPHA adds exactly 5 constraint rows (5 planes * 1 block)"
     );
+}
+
+#[test]
+fn fpha_plant_without_capacity_builds_no_fpha_structure() {
+    const N_PLANES: usize = 5;
+    /// derived: 1 cell * 1 block for each of the generation and plane-slack columns.
+    const FPHA_COLUMNS: usize = 2;
+    /// derived: `N_PLANES` planes * 1 block.
+    const FPHA_ROWS: usize = N_PLANES;
+
+    let build = |max_turbined_m3s: f64, max_generation_mw: f64, label: &str| {
+        let (system, production) = one_fpha_hydro_system_with_block_bounds(
+            N_PLANES,
+            HydroBlockBounds {
+                max_turbined_m3s,
+                max_generation_mw,
+                ..Default::default()
+            },
+        );
+        build_stage_templates_resolving_layout(
+            &system,
+            no_penalty_config(),
+            &PrecomputedPar::default(),
+            &PrecomputedNormal::default(),
+            &production,
+            &default_evaporation(&system),
+            &ResolvedParameters::default(),
+        )
+        .unwrap_or_else(|err| panic!("{label}: template build failed: {err:?}"))
+    };
+    let turbine_bounds = |result: &novomodelo_sddp::StageTemplates| {
+        let col = result.geometry_per_stage[0].turbine_col(HydroCell::new(0), BlockIdx::new(0));
+        let tmpl = &result.templates[0];
+        (tmpl.col_lower[col], tmpl.col_upper[col])
+    };
+
+    let twin = build(150.0, 300.0, "FPHA twin");
+    assert_eq!(
+        twin.geometry_per_stage[0].fpha_hydro_indices,
+        [HydroSys::new(0)],
+        "the twin keeps the plant in FPHA, or the comparison below is Dormant against Dormant"
+    );
+    assert_eq!(
+        turbine_bounds(&twin).1,
+        150.0,
+        "the twin's turbine column is open"
+    );
+
+    for (max_turbined_m3s, max_generation_mw, label) in [
+        (150.0, 0.0, "generation limit 0"),
+        (0.0, 300.0, "turbined limit 0"),
+        (0.0, 0.0, "both limits 0"),
+    ] {
+        let result = build(max_turbined_m3s, max_generation_mw, label);
+        let geometry = &result.geometry_per_stage[0];
+
+        assert_eq!(
+            result.templates[0].num_cols + FPHA_COLUMNS,
+            twin.templates[0].num_cols,
+            "{label}: no generation and no plane-slack column"
+        );
+        assert_eq!(
+            result.templates[0].num_rows + FPHA_ROWS,
+            twin.templates[0].num_rows,
+            "{label}: no plane rows"
+        );
+        assert!(
+            geometry.fpha_hydro_indices.is_empty(),
+            "{label}: the plant is not an FPHA plant at this stage"
+        );
+        assert!(geometry.generation.is_empty(), "{label}: generation");
+        assert!(geometry.fpha.is_empty(), "{label}: plane rows");
+        assert!(geometry.fpha_slack.is_empty(), "{label}: plane slack");
+        assert_eq!(
+            turbine_bounds(&result),
+            (0.0, 0.0),
+            "{label}: the turbine column is frozen"
+        );
+    }
+}
+
+#[test]
+fn fpha_slack_column_structure_one_cell_five_planes() {
+    let n_planes = 5;
+    let (system, production) = one_fpha_hydro_system(n_planes);
+    let result = build_stage_templates_resolving_layout(
+        &system,
+        no_penalty_config(),
+        &PrecomputedPar::default(),
+        &PrecomputedNormal::default(),
+        &production,
+        &default_evaporation(&system),
+        &ResolvedParameters::default(),
+    )
+    .expect("FPHA system ok");
+
+    let tmpl = &result.templates[0];
+    let geometry = &result.geometry_per_stage[0];
+    assert_eq!(geometry.fpha_slack.len(), 1, "1 cell * 1 block");
+    let col = geometry.fpha_slack_col(FphaCellLocal::new(0), BlockIdx::new(0));
+
+    assert_eq!(tmpl.col_lower[col], 0.0);
+    assert_eq!(tmpl.col_upper[col], f64::INFINITY);
+
+    let price = system.penalties().hydro_penalties(0, 0).fpha_violation_cost;
+    let hours = 744.0_f64;
+    assert_eq!(
+        tmpl.objective[col].to_bits(),
+        (price * hours / COST_SCALE_FACTOR).to_bits(),
+        "price times block hours, divided by the cost scale"
+    );
+
+    let entries = entries_for_col(tmpl, col);
+    let expected_rows: Vec<usize> = (geometry.fpha.start..geometry.fpha.start + n_planes).collect();
+    let mut rows: Vec<usize> = entries.iter().map(|&(row, _)| row).collect();
+    rows.sort_unstable();
+    assert_eq!(
+        rows, expected_rows,
+        "one entry in each plane row, none elsewhere"
+    );
+    assert!(
+        entries.iter().all(|&(_, value)| value == -1.0),
+        "every plane row carries -1 on the slack: {entries:?}"
+    );
+}
+
+#[test]
+fn fpha_slack_absent_without_fpha() {
+    let system = one_hydro_system(1, 2);
+    let result = build_stage_templates_resolving_layout(
+        &system,
+        no_penalty_config(),
+        &PrecomputedPar::default(),
+        &PrecomputedNormal::default(),
+        &default_production(&system),
+        &default_evaporation(&system),
+        &ResolvedParameters::default(),
+    )
+    .expect("constant productivity ok");
+
+    assert!(result.geometry_per_stage[0].fpha_slack.is_empty());
 }
 
 #[test]
@@ -73,12 +215,12 @@ fn fpha_ac2_generation_column_entries() {
 
     let tmpl = &result.templates[0];
 
-    // N=1, L=0 → n_state = 1, decision_start = 4, col_generation_start = 9.
-    // (turbine[4..5], spillage[5..6], diversion[6..7], deficit[7..8], excess[8..9], generation[9])
-    let col_g = 9_usize;
+    // N=1, L=0 → n_state = 1, decision_start = 3, col_generation_start = 8.
+    // (turbine[3..4], spillage[4..5], diversion[5..6], deficit[6..7], excess[7..8], generation[8])
+    let col_g = 8_usize;
 
-    // row_fpha_start = 3 (= N z_inflow + N water balance + B*1 load balance)
-    let row_fpha_start = 3_usize;
+    // row_fpha_start = 2 (= N water balance + B*1 load balance)
+    let row_fpha_start = 2_usize;
 
     for p in 0..n_planes {
         let row = row_fpha_start + p;
@@ -90,7 +232,7 @@ fn fpha_ac2_generation_column_entries() {
         );
     }
 
-    let row_lb = 2_usize; // load balance row
+    let row_lb = 1_usize; // load balance row
     let lb_coeff = csc_entry(tmpl, col_g, row_lb)
         .unwrap_or_else(|| panic!("generation column missing entry in load balance row {row_lb}"));
     assert!(
@@ -118,8 +260,8 @@ fn fpha_ac3_v_in_column_entries() {
 
     let tmpl = &result.templates[0];
 
-    let col_v_in = 2_usize; // N=1, L=0: storage_in after z_inflow
-    let row_fpha_start = 3_usize; // N z_inflow + N water balance + B*K load balance
+    let col_v_in = 1_usize; // N=1, L=0: storage_in follows storage_out
+    let row_fpha_start = 2_usize; // N water balance + B*K load balance
     let expected = -0.5_f64 / 2.0;
 
     for p in 0..n_planes {
@@ -153,7 +295,7 @@ fn fpha_ac4_v_out_column_entries() {
     let tmpl = &result.templates[0];
 
     let col_v = 0_usize; // outgoing storage is column 0 for N=1
-    let row_fpha_start = 3_usize; // N z_inflow + N water balance + B*K load balance
+    let row_fpha_start = 2_usize; // N water balance + B*K load balance
     let expected = -0.5_f64 / 2.0;
 
     for p in 0..n_planes {
@@ -184,24 +326,24 @@ fn fpha_ac5_mixed_system_load_balance_uses_generation_col() {
 
     let tmpl = &result.templates[0];
 
-    // Base (constant) num_cols = 13 + 4*1*3 (turbine+spillage+diversion per hydro/block)
-    // + 1*1*2 = 27; + 2 FPHA generation = 29; + 2*N=8 withdrawal = 37;
-    // + 4*N=16 op-violation slacks = 53.
-    // num_rows (no state-fixing rows) = N z_inflow(4) + N water balance(4) + load balance(1)
-    // = 9; + 2*3 FPHA = 15; + 4*N=16 op-violation = 31.
+    // Base (constant) num_cols = 9 + 4*1*3 (turbine+spillage+diversion per hydro/block)
+    // + 1*1*2 = 23; + 2 FPHA generation = 25; + 2*N=8 withdrawal = 33;
+    // + 4*N=16 op-violation slacks = 49; + 2 FPHA slack = 51.
+    // num_rows (no state-fixing rows) = N water balance(4) + load balance(1)
+    // = 5; + 2*3 FPHA = 11; + 4*N=16 op-violation = 27.
     assert_eq!(
-        tmpl.num_cols, 53,
-        "4-hydro mixed system: num_cols should be 53 (includes diversion, 2*4 withdrawal, and operational slacks)"
+        tmpl.num_cols, 51,
+        "4-hydro mixed system: num_cols should be 51 (includes diversion, 2*4 withdrawal, operational slacks and FPHA slacks)"
     );
     assert_eq!(
-        tmpl.num_rows, 31,
-        "4-hydro mixed system: num_rows should be 31 (no state-fixing rows)"
+        tmpl.num_rows, 27,
+        "4-hydro mixed system: num_rows should be 27 (no state-fixing rows)"
     );
 
-    let row_lb = 8_usize; // N z_inflow(4) + N water balance(4) + bus_blk_idx(0)
+    let row_lb = 4_usize; // N water balance(4) + bus_blk_idx(0)
 
-    // FPHA hydro h_idx=2 (local_idx=0): generation col 27 (= 23 + 4 diversion cols).
-    let col_g_fpha0 = 27_usize;
+    // FPHA hydro h_idx=2 (local_idx=0): generation col 23 (= 19 + 4 diversion cols).
+    let col_g_fpha0 = 23_usize;
     let g0_lb_coeff = csc_entry(tmpl, col_g_fpha0, row_lb).unwrap_or_else(|| {
         panic!("FPHA hydro 0 generation column missing entry in load balance row {row_lb}")
     });
@@ -210,7 +352,7 @@ fn fpha_ac5_mixed_system_load_balance_uses_generation_col() {
         "FPHA hydro 0 load balance: expected +1.0, got {g0_lb_coeff}"
     );
 
-    let col_g_fpha1 = 28_usize; // FPHA hydro h_idx=3 (local_idx=1)
+    let col_g_fpha1 = 24_usize; // FPHA hydro h_idx=3 (local_idx=1)
     let g1_lb_coeff = csc_entry(tmpl, col_g_fpha1, row_lb).unwrap_or_else(|| {
         panic!("FPHA hydro 1 generation column missing entry in load balance row {row_lb}")
     });
@@ -219,7 +361,7 @@ fn fpha_ac5_mixed_system_load_balance_uses_generation_col() {
         "FPHA hydro 1 load balance: expected +1.0, got {g1_lb_coeff}"
     );
 
-    let col_turb_const = 13_usize; // constant hydro h_idx=0: col_turbine_start
+    let col_turb_const = 9_usize; // constant hydro h_idx=0: col_turbine_start
     let turb_lb_coeff = csc_entry(tmpl, col_turb_const, row_lb);
     assert!(
         turb_lb_coeff.is_some(),
@@ -255,17 +397,25 @@ fn fpha_solve_one_hydro_optimal() {
     solver.add_rows(&empty_cut_batch());
 
     let v_in = 100.0_f64;
-    solver.set_row_bounds(&[0], &[v_in], &[v_in]);
+    solver.set_col_bounds(&[1], &[v_in], &[v_in]);
 
     let view = solver
         .solve(None)
         .expect("FPHA LP must be feasible and optimal");
 
-    let col_g = 9_usize; // g column, shifted +1 by the diversion column
+    let col_g = 8_usize;
     let generation = view.primal[col_g];
     assert!(
         generation > 0.0,
         "FPHA generation must be strictly positive, got {generation}"
+    );
+
+    let col_slack =
+        result.geometry_per_stage[0].fpha_slack_col(FphaCellLocal::new(0), BlockIdx::new(0));
+    let slack = view.primal[col_slack];
+    assert!(
+        slack.abs() < 1e-9,
+        "the FPHA plane slack must be zero while the planes are met, got {slack}"
     );
 }
 
@@ -301,7 +451,7 @@ fn fpha_solve_hyperplane_constraints_hold() {
     solver.add_rows(&empty_cut_batch());
 
     let v_in = 100.0_f64;
-    solver.set_row_bounds(&[0], &[v_in], &[v_in]);
+    solver.set_col_bounds(&[1], &[v_in], &[v_in]);
 
     let view = solver.solve(None).expect("FPHA LP must solve to optimal");
     let primal = view.primal;
@@ -310,7 +460,7 @@ fn fpha_solve_hyperplane_constraints_hold() {
     let col_v_in = 1_usize;
     let col_q = 3_usize;
     let col_s = 4_usize;
-    let col_g = 9_usize;
+    let col_g = 8_usize;
 
     let g = primal[col_g];
     let v = primal[col_v];
@@ -394,8 +544,8 @@ fn fpha_solve_incoming_storage_reduced_cost_differs_from_constant() {
         let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
         solver.load_model(template);
         solver.add_rows(&empty_cut_batch());
-        // Storage is pinned via column bounds: col 0 = storage_out, 1 = z_inflow, 2 = storage_in.
-        let col_storage_in = 2_usize;
+        // Storage is pinned via column bounds: col 0 = storage_out, 1 = storage_in.
+        let col_storage_in = 1_usize;
         let v_in = 100.0_f64;
         solver.set_col_bounds(&[col_storage_in], &[v_in], &[v_in]);
         let view = solver.solve(None).expect("LP must solve to optimal");
@@ -444,8 +594,8 @@ fn fpha_solve_mixed_system_optimal() {
     solver.load_model(template);
     solver.add_rows(&empty_cut_batch());
 
-    solver.set_row_bounds(
-        &[0, 1, 2, 3],
+    solver.set_col_bounds(
+        &[4, 5, 6, 7],
         &[100.0, 100.0, 100.0, 100.0],
         &[100.0, 100.0, 100.0, 100.0],
     );
@@ -460,8 +610,8 @@ fn fpha_solve_mixed_system_optimal() {
         view.objective
     );
 
-    let col_g0 = 19_usize; // FPHA generation variables for hydros 2 and 3
-    let col_g1 = 20_usize;
+    let col_g0 = 23_usize; // FPHA generation variables for hydros 2 and 3
+    let col_g1 = 24_usize;
     assert!(
         view.primal[col_g0] >= 0.0,
         "FPHA hydro 0 generation must be non-negative, got {}",

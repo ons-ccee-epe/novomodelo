@@ -198,7 +198,7 @@ fn enumerated_sim_stage_worker<S: SolverInterface + Send>(
                 params.sampler,
                 global_scenario,
                 params.total_scenarios,
-                state.inflow_lags.start,
+                state.state_dim_lag_range().start,
                 training_ctx,
                 node,
             );

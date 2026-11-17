@@ -21,12 +21,9 @@
 //!
 //! ## Patch sequence
 //!
-//! Each forward-pass solve writes the row buffer (load balance when
-//! `n_load_buses > 0`, z-inflow) via `fill_load_patches` /
-//! `fill_z_inflow_patches`, and the column buffer (incoming storage,
-//! AR lags, travel-time buckets, anticipated state) via `fill_col_state_patches`.
-//! The backward pass writes only the column buffer; noise comes from the fixed
-//! opening tree through `fill_z_inflow_patches` with the opening-specific vector.
+//! Every solve writes the row buffer (`fill_load_patches`, then
+//! `fill_inflow_shift_patches`) in `StageSolvePrep::patch_opening` and the column
+//! buffer (`fill_col_state_patches`) in `StageSolvePrep::pin_and_bracket`.
 //!
 //! ## Commissioning window
 //!
@@ -48,6 +45,7 @@ mod entries;
 mod fpha_cursor;
 mod generic_constraints;
 mod hydro_state;
+pub(crate) mod inflow_coupling;
 mod layout;
 mod patch;
 mod rows;
@@ -61,6 +59,9 @@ mod test_support;
 // --- Public re-exports (stable API) ---
 #[cfg(any(test, feature = "test-support"))]
 pub use delivery_ring::DeliveryRing;
+pub use inflow_coupling::InflowCoupling;
+#[cfg(any(test, feature = "test-support"))]
+pub use layout::RowFamily;
 pub use layout::StageGeometry;
 pub use patch::PatchBuffer;
 pub use state_box::StateBox;
@@ -68,7 +69,9 @@ pub use template::StageTemplates;
 
 // --- Crate-internal re-exports ---
 pub(crate) use build_inputs::LpBuildInputs;
-pub(crate) use hydro_state::{storage_floor_relaxed, warn_on_inert_plant_floor_overrides};
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) use entries::assemble_csc;
+pub(crate) use hydro_state::{frozen_turbining_hydros, warn_on_inert_plant_floor_overrides};
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) use layout::ResolvedTables;
 #[cfg(any(test, feature = "test-support"))]
@@ -89,11 +92,10 @@ pub(crate) use template::{build_stage_templates, models_from_normal};
 // Shared constants
 // ---------------------------------------------------------------------------
 
-/// Margin on the symmetric magnitude bound `[-q_max, +q_max]` of the evaporation
-/// outflow variable, absorbing linearization error where the area-volume curve
-/// exceeds the linear estimate near `v_max`. Symmetric because that error runs both
-/// directions: a negative evaporation-outflow value is net rainfall input (inflow),
-/// a positive one is evaporative outflow.
+/// Margin on `q_max_abs`, the magnitude bound on the side of the evaporation-outflow
+/// box that the coefficient sign leaves open: the upper bound of a positive month, the
+/// lower bound of a negative one, both sides of a zero month. It absorbs linearization
+/// error where the area-volume curve exceeds the linear estimate near `v_max`.
 pub(crate) const EVAPORATION_FLOW_SAFETY_MARGIN: f64 = 2.0;
 
 /// Number of LP columns per `(evaporating hydro, slot)` triple: evaporation

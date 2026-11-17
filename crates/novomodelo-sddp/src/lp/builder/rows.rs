@@ -8,7 +8,7 @@ use crate::indexer::{
 };
 
 use super::fpha_cursor::for_each_fpha_plane;
-use super::hydro_state::{MaxCap, MinFloor, hydro_phase, resolve_shortcircuit_target};
+use super::hydro_state::{MaxCap, MinFloor, hydro_phase};
 use super::layout::{StageLayout, TemplateBuildCtx, position_table_row};
 
 /// Fill row lower/upper bounds for one stage.
@@ -23,14 +23,7 @@ pub(super) fn fill_stage_rows(
     let mut row_lower = vec![0.0_f64; layout.rows.num_rows];
     let mut row_upper = vec![0.0_f64; layout.rows.num_rows];
 
-    fill_water_balance_rows(
-        ctx,
-        stage,
-        stage_idx,
-        layout,
-        &mut row_lower,
-        &mut row_upper,
-    );
+    fill_water_balance_rows(ctx, stage, layout, &mut row_lower, &mut row_upper);
     fill_transit_bucket_definition_rows(layout, &mut row_lower, &mut row_upper);
     fill_filling_target_rows(ctx, stage.id, layout, &mut row_lower, &mut row_upper);
     fill_filled_min_storage_floor_rows(ctx, stage_idx, layout, &mut row_lower, &mut row_upper);
@@ -44,7 +37,14 @@ pub(super) fn fill_stage_rows(
     );
     fill_fpha_rows(ctx, stage_idx, layout, &mut row_lower, &mut row_upper);
     fill_evaporation_rows(ctx, stage_idx, layout, &mut row_lower, &mut row_upper);
-    fill_operational_violation_rows(ctx, stage_idx, layout, &mut row_lower, &mut row_upper);
+    fill_operational_violation_rows(
+        ctx,
+        stage.id,
+        stage_idx,
+        layout,
+        &mut row_lower,
+        &mut row_upper,
+    );
     fill_plant_cap_rows(
         ctx,
         stage,
@@ -56,39 +56,30 @@ pub(super) fn fill_stage_rows(
     fill_anticipated_fishing_rows(layout, &mut row_lower, &mut row_upper);
     fill_anticipated_state_out_def_rows(layout, &mut row_lower, &mut row_upper);
     fill_anticipated_slot_definition_rows(layout, &mut row_lower, &mut row_upper);
-    fill_z_inflow_rows(ctx, stage_idx, layout, &mut row_lower, &mut row_upper);
 
     (row_lower, row_upper)
 }
 
-/// Fill water-balance row bounds: static RHS = `−(ζ · water_withdrawal_m3s_h)`.
-/// The realized inflow (deterministic base + noise) enters through the water
-/// row's own `z_h` coupling entry (`entries::push_local_inflow_coupling`),
-/// never the RHS.
-///
-/// A `PreFilling` hydro's row is the frozen identity `v_h − v_h_in = 0` (matrix
-/// entries by [`super::entries::fill_state_and_water_entries`]), so its RHS is
-/// `0`: its own row carries no `z_h` coupling (the coupling routes to the
-/// short-circuit target instead), and its withdrawal DEMAND transfers to that
-/// target's RHS below.
+/// Fill water-balance row bounds: static RHS = `−(ζ · T_eff_h)`, `T_eff` read from
+/// [`StageLayout::effective_withdrawal_m3s`]. A `PreFilling` hydro's row is the frozen
+/// identity `v_h − v_h_in = 0` with RHS `0`. The realized inflow enters through the
+/// coupling sink, never the RHS.
 ///
 /// In `BlockMode::Chronological` the single per-hydro RHS splits into `K` per-block
-/// row bounds `−(τ_k·withdrawal)` (block-major, mirroring the entries side);
-/// summing them recovers the parallel `−(ζ·withdrawal)` since `Σ_k τ_k = ζ`.
+/// row bounds `−(τ_k·T_eff)` (block-major, mirroring the entries side).
 fn fill_water_balance_rows(
     ctx: &TemplateBuildCtx<'_>,
     stage: &Stage,
-    stage_idx: usize,
     layout: &StageLayout,
     row_lower: &mut [f64],
     row_upper: &mut [f64],
 ) {
     match stage.block_mode {
         BlockMode::Parallel => {
-            fill_parallel_water_rows(ctx, stage, stage_idx, layout, row_lower, row_upper);
+            fill_parallel_water_rows(ctx, stage, layout, row_lower, row_upper);
         }
         BlockMode::Chronological => {
-            fill_chronological_water_rows(ctx, stage, stage_idx, layout, row_lower, row_upper);
+            fill_chronological_water_rows(ctx, stage, layout, row_lower, row_upper);
         }
     }
 }
@@ -96,7 +87,6 @@ fn fill_water_balance_rows(
 fn fill_parallel_water_rows(
     ctx: &TemplateBuildCtx<'_>,
     stage: &Stage,
-    stage_idx: usize,
     layout: &StageLayout,
     row_lower: &mut [f64],
     row_upper: &mut [f64],
@@ -110,53 +100,19 @@ fn fill_parallel_water_rows(
             row_upper[row] = 0.0;
             continue;
         }
-        let withdrawal = ctx
-            .resolved
-            .bounds
-            .hydro_bounds(h_idx, stage_idx)
-            .water_withdrawal_m3s;
-        let rhs = -(layout.clock.zeta() * withdrawal);
+        let rhs = -(layout.clock.zeta() * layout.effective_withdrawal_m3s[h_idx]);
         row_lower[row] = rhs;
         row_upper[row] = rhs;
-    }
-
-    // Transfer each PreFilling hydro's withdrawal DEMAND (`ζ·withdrawal_h`) to its
-    // short-circuit target `d`'s RHS, absorbed by `d`'s withdrawal slacks. `d` MUST
-    // be the SAME target `fill_prefilling_shortcircuit` routed the matrix terms to,
-    // so the RHS transfer and the matrix coupling agree; routing onto the immediate
-    // `downstream(h)` would land it on a PreFilling downstream's frozen-identity RHS
-    // (which must stay `0`). A second pass, since `d` may be filled before or after
-    // `h` in index order; sink case transfers nothing.
-    for h_idx in 0..layout.state.hydro_count {
-        let Some(d_idx) =
-            resolve_shortcircuit_target(ctx.hydros, ctx.cascade, ctx.positions, stage.id, h_idx)
-        else {
-            continue;
-        };
-        let withdrawal_h = ctx
-            .resolved
-            .bounds
-            .hydro_bounds(h_idx, stage_idx)
-            .water_withdrawal_m3s;
-        let delta = layout.clock.zeta() * withdrawal_h;
-        let row_d = layout
-            .geometry
-            .water_balance_row(HydroSys::new(d_idx), BlockIdx::new(0));
-        row_lower[row_d] -= delta;
-        row_upper[row_d] -= delta;
     }
 }
 
 /// Per-block water-balance RHS for chronological mode: each Operating/Filling hydro
-/// gets `K` rows `−(τ_k·withdrawal)` (block-major `row_water + h·K + (k−1)`), with
-/// `τ_k` replacing `ζ` so `Σ_k` recovers the parallel total. A `PreFilling`
-/// hydro gets `K` frozen-identity rows with RHS `0` (block-major), and its
-/// withdrawal transfers per block (`−τ_k·withdrawal_h`) to the short-circuit
-/// target's block rows, mirroring the entries side.
+/// gets `K` rows `−(τ_k·T_eff)` (block-major `row_water + h·K + (k−1)`), with `τ_k`
+/// replacing `ζ` so `Σ_k` recovers the parallel total. A `PreFilling` hydro gets `K`
+/// frozen-identity rows with RHS `0`.
 fn fill_chronological_water_rows(
     ctx: &TemplateBuildCtx<'_>,
     stage: &Stage,
-    stage_idx: usize,
     layout: &StageLayout,
     row_lower: &mut [f64],
     row_upper: &mut [f64],
@@ -173,11 +129,7 @@ fn fill_chronological_water_rows(
             }
             continue;
         }
-        let withdrawal = ctx
-            .resolved
-            .bounds
-            .hydro_bounds(h_idx, stage_idx)
-            .water_withdrawal_m3s;
+        let withdrawal = layout.effective_withdrawal_m3s[h_idx];
         for blk in 0..n_blks {
             let row = layout
                 .geometry
@@ -186,28 +138,6 @@ fn fill_chronological_water_rows(
             let rhs = -(tau_k * withdrawal);
             row_lower[row] = rhs;
             row_upper[row] = rhs;
-        }
-    }
-
-    for h_idx in 0..layout.state.hydro_count {
-        let Some(d_idx) =
-            resolve_shortcircuit_target(ctx.hydros, ctx.cascade, ctx.positions, stage.id, h_idx)
-        else {
-            continue;
-        };
-        let withdrawal_h = ctx
-            .resolved
-            .bounds
-            .hydro_bounds(h_idx, stage_idx)
-            .water_withdrawal_m3s;
-        for blk in 0..n_blks {
-            let tau_k = layout.clock.tau(BlockIdx::new(blk));
-            let row_d = layout
-                .geometry
-                .water_balance_row(HydroSys::new(d_idx), BlockIdx::new(blk));
-            let delta = tau_k * withdrawal_h;
-            row_lower[row_d] -= delta;
-            row_upper[row_d] -= delta;
         }
     }
 }
@@ -350,12 +280,15 @@ fn fill_load_balance_rows(
     }
 }
 
-/// Fill FPHA hyperplane row bounds: `row_lower = -INF`, `row_upper = σ_c * gamma_0`
-/// (the pre-scaled `intercept`, apportioned by the cell's turbine-capacity share —
-/// see [`super::entries::fill_fpha_entries`]). The `v`/`v_in`/`q`/`s` contributions
-/// live in the matrix entries, so the upper bound carries only the apportioned
-/// intercept. Driven by [`for_each_fpha_plane`] so these bounds and the matrix
-/// coefficients share one row cursor.
+/// Fill FPHA hyperplane row bounds: `row_lower = -INF`. A (cell, block) with
+/// capacity ([`TemplateBuildCtx::cell_has_capacity`]) has `row_upper = share *
+/// gamma_0`, the pre-scaled `intercept` apportioned by the cell's turbine-capacity
+/// share (see [`super::entries::fill_fpha_entries`]); a (cell, block) without has
+/// `row_upper = +INF`, because its turbine and generation columns are `[0, 0]` and
+/// its plane slack is pinned (`columns::fill_fpha_slack_columns`). The
+/// `v`/`v_in`/`q`/`s` contributions live in the matrix entries, so the upper bound
+/// carries only the apportioned intercept. Driven by [`for_each_fpha_plane`] so
+/// these bounds and the matrix coefficients share one row cursor.
 fn fill_fpha_rows(
     ctx: &TemplateBuildCtx<'_>,
     stage_idx: usize,
@@ -364,9 +297,14 @@ fn fill_fpha_rows(
     row_upper: &mut [f64],
 ) {
     for_each_fpha_plane(ctx, stage_idx, layout, |visit, plane| {
-        let sigma_c = ctx.hydro_cell_index.share_of(visit.cell);
+        let share = ctx.hydro_cell_index.share_of(visit.cell);
         row_lower[visit.row] = f64::NEG_INFINITY;
-        row_upper[visit.row] = sigma_c * plane.intercept;
+        row_upper[visit.row] =
+            if ctx.cell_has_capacity(stage_idx, visit.plant, visit.cell, visit.blk.get()) {
+                share * plane.intercept
+            } else {
+                f64::INFINITY
+            };
     });
 }
 
@@ -411,31 +349,6 @@ fn fill_evaporation_rows(
     }
 }
 
-/// Fill z-inflow definition row bounds: equality with RHS = `base_h` (m3/s).
-///
-/// The base is the deterministic PAR base inflow (before noise), NOT multiplied
-/// by ζ and NOT reduced by withdrawal. The noise component (sigma · eta) is added
-/// at solve time via [`super::PatchBuffer::fill_z_inflow_patches`].
-fn fill_z_inflow_rows(
-    ctx: &TemplateBuildCtx<'_>,
-    stage_idx: usize,
-    layout: &StageLayout,
-    row_lower: &mut [f64],
-    row_upper: &mut [f64],
-) {
-    let has_par = ctx.par_lp.n_stages() > 0;
-    for h_idx in 0..layout.state.hydro_count {
-        let row = layout.z_inflow_row(HydroSys::new(h_idx));
-        let base = if has_par {
-            ctx.par_lp.deterministic_base(stage_idx, h_idx)
-        } else {
-            0.0
-        };
-        row_lower[row] = base;
-        row_upper[row] = base;
-    }
-}
-
 /// Fill row bounds for the 6 operational violation constraint families.
 ///
 /// The two flow families are per-hydro per-block; RHS is in rate units
@@ -453,6 +366,7 @@ fn fill_z_inflow_rows(
 ///   block where the cells already cover the plant minimum.
 pub(super) fn fill_operational_violation_rows(
     ctx: &TemplateBuildCtx<'_>,
+    stage_id: i32,
     stage_idx: usize,
     layout: &StageLayout,
     row_lower: &mut [f64],
@@ -490,7 +404,7 @@ pub(super) fn fill_operational_violation_rows(
         for kind in MinFloor::ALL {
             for blk in 0..layout.clock.n_blks() {
                 let b = BlockIdx::new(blk);
-                let floor = ctx.plant_floor(stage_idx, kind, hydro_sys, blk);
+                let floor = ctx.plant_floor(stage_id, stage_idx, kind, hydro_sys, blk);
                 for cell_idx in ctx.hydro_cell_index.cells_of(hydro_sys) {
                     let cell = HydroCell::new(cell_idx);
                     let row = layout.min_floor_row(kind, cell, b);
@@ -504,7 +418,7 @@ pub(super) fn fill_operational_violation_rows(
     for (local, &hydro_sys) in layout.geometry.plant_floor_hydro_indices.iter().enumerate() {
         for kind in MinFloor::ALL {
             for blk in 0..layout.clock.n_blks() {
-                let floor = ctx.plant_floor(stage_idx, kind, hydro_sys, blk);
+                let floor = ctx.plant_floor(stage_id, stage_idx, kind, hydro_sys, blk);
                 let row = layout.plant_min_floor_row(
                     kind,
                     PlantFloorLocal::new(local),

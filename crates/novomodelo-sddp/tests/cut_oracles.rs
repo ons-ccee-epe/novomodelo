@@ -1,4 +1,7 @@
-//! Gates every stored Benders cut with a validity, tightness, and mask-soundness oracle.
+//! Gates stored Benders cuts and the stage LP that folds the inflow lags: each stored cut's
+//! validity, tightness and mask soundness, and each folded solve's agreement with the expanded LP
+//! the test-support expander rebuilds from it. Each `tests/cut_oracles/*.rs` file is one gate of
+//! this binary.
 
 #![allow(
     clippy::unwrap_used,
@@ -17,29 +20,33 @@ use novomodelo_io::config::{
     InflowNonNegativityMethod as CfgInflowMethod, SelectionMethod, StoppingRuleConfig,
     TrainingSelection,
 };
-use novomodelo_sddp::setup::{NodePos, StageIdx};
+use novomodelo_sddp::setup::StageIdx;
 use novomodelo_sddp::test_support::decks::committed_decks;
+use novomodelo_sddp::test_support::template_structure::state_lag_dims;
 use novomodelo_sddp::test_support::{
-    inflow_slack_bounds_for_probe, stage_state_box_bounds,
-    write_backward_opening_outcome_with_inflow_slack_bounds_for_probe,
+    ProbeCut, inflow_slack_bounds_for_probe, stage_state_box_bounds,
 };
 use novomodelo_sddp::{DEFAULT_COST_SCALE_FACTOR, StudySetup};
 use novomodelo_solver::ActiveSolver;
 
-use common::cut_oracles::{
-    apply_oracle_config, apply_oracle_config_with_selection, run_cut_oracles,
-};
+use common::expanded_solve::CutRowSet;
 use common::in_code_studies::{
     ChronologicalNoiseSpec, chronological_noise_hydro_models, chronological_noise_study,
     discounted_anticipated_study, mixed_lead_anticipated_study, negative_draw_par1_spec,
     negative_draw_water_value_spec, parallel_multiblock_evaporation_study,
     stochastic_parallel_study,
 };
+use common::stored_cut_oracles::{
+    apply_oracle_config, apply_oracle_config_with_selection, run_cut_oracles,
+    solve_successor_opening,
+};
 use common::{
-    StubComm, build_setup_in_code, build_setup_in_code_with_models, fresh_setup_with, positive,
+    StubComm, build_setup_in_code, build_setup_in_code_with_models, fresh_system_and_setup_with,
+    positive,
 };
 
 const D19_DIR: &str = "../../examples/deterministic/d19-multi-hydro-par";
+const D43_DIR: &str = "../../examples/deterministic/d43-storage-only-cut";
 const ONE_D_TOY: &str = "examples/1dtoy";
 const LEVEL1_FORWARD_PASSES: u32 = 2;
 const LEVEL1_ITERATIONS: u32 = 10;
@@ -49,13 +56,17 @@ const SLOPED_CUT_MARGIN: f64 = 1_000.0;
 /// Two storages and two inflow lags.
 const WATER_VALUE_STATE_DIMENSION: usize = 4;
 
+fn compact_setup_with(case_dir: &Path, mutate: impl FnOnce(&mut Config)) -> StudySetup {
+    fresh_system_and_setup_with(case_dir, mutate).1
+}
+
 fn deck_setup(key: &str, mutate: impl FnOnce(&mut Config)) -> StudySetup {
     let decks = committed_decks();
     let deck = decks
         .iter()
         .find(|deck| deck.key == key)
         .unwrap_or_else(|| panic!("committed deck {key} is absent"));
-    fresh_setup_with(&deck.dir, mutate)
+    compact_setup_with(&deck.dir, mutate)
 }
 
 fn oracle_setup(system: System, mut config: Config) -> StudySetup {
@@ -268,16 +279,12 @@ fn cut_oracles_hold_on_the_chronological_and_parallel_storage_decks() {
 }
 
 #[test]
-#[cfg_attr(
-    not(feature = "slow-tests"),
-    ignore = "trains every committed deck that carries inflow-lag or anticipated state"
-)]
 fn cut_oracles_hold_on_every_committed_deck_with_lag_or_anticipated_state() {
     let mut selected: Vec<String> = Vec::new();
     let mut any_max_par_order = false;
 
     for deck in committed_decks() {
-        let setup = fresh_setup_with(&deck.dir, apply_oracle_config);
+        let setup = compact_setup_with(&deck.dir, apply_oracle_config);
         let (has_anticipated, has_lag) = {
             let state = setup.stage_state();
             (state.n_anticipated > 0, state.max_par_order > 0)
@@ -321,7 +328,7 @@ fn cut_oracles_hold_on_every_committed_deck_with_lag_or_anticipated_state() {
 /// gives a `+0.0` cap.
 #[test]
 fn inflow_slack_bounds_for_probe_evaluates_the_given_state() {
-    let setup = fresh_setup_with(Path::new(D19_DIR), |config| {
+    let setup = compact_setup_with(Path::new(D19_DIR), |config| {
         apply_oracle_config(config);
         config.modeling.inflow_non_negativity.method = CfgInflowMethod::TruncationWithPenalty;
     });
@@ -347,7 +354,7 @@ fn inflow_slack_bounds_for_probe_evaluates_the_given_state() {
         let mut x = training_ctx.initial_state.to_vec();
         for &(h, psi_sum) in &lag_driven {
             for lag in 0..par.psi_slice(1, h).len() {
-                x[state.inflow_lags.start + lag * state.hydro_count + h] = target / psi_sum;
+                x[state_lag_dims(state).start + lag * state.hydro_count + h] = target / psi_sum;
             }
         }
         x
@@ -377,13 +384,12 @@ fn inflow_slack_bounds_for_probe_evaluates_the_given_state() {
 /// bounds returns that slack as the solved primal.
 #[test]
 fn frozen_inflow_slack_bounds_reach_the_successor_lp() {
-    let setup = fresh_setup_with(Path::new(D19_DIR), |_| {});
+    let setup = compact_setup_with(Path::new(D19_DIR), |_| {});
     let mut workspace_pool = setup
         .create_workspace_pool(&StubComm, 1, ActiveSolver::new)
         .expect("create_workspace_pool must succeed");
     let ws = &mut workspace_pool.workspaces[0];
     let training_ctx = setup.training_ctx();
-    let stage_ctx = setup.stage_ctx();
     let (lo, hi) = stage_state_box_bounds(&setup, 1);
     let x: Vec<f64> = (0..lo.len())
         .map(|j| {
@@ -395,24 +401,22 @@ fn frozen_inflow_slack_bounds_reach_the_successor_lp() {
         })
         .collect();
     let raw_noise = training_ctx.stochastic.tree_view().opening(2, 0).to_vec();
+    let rows = CutRowSet::active(&setup.fcf, 2, 1);
+    let mut cut = ProbeCut::new(&training_ctx);
 
     for pinned in [[1.0_f64, 2.0], [0.0, 0.0]] {
-        let (_, slack) = write_backward_opening_outcome_with_inflow_slack_bounds_for_probe(
+        solve_successor_opening(
+            &setup,
             ws,
-            &stage_ctx,
-            &training_ctx,
-            &setup.fcf.pools[2],
-            &training_ctx.cut_state_layouts[1],
-            StageIdx(2),
-            setup.inputs.node_graph.node_ids[NodePos(2)],
+            &rows,
             &x,
             &raw_noise,
-            &pinned,
-            &pinned,
+            Some((&pinned, &pinned)),
+            &mut cut,
         )
         .expect("the override probe must solve");
-        assert_eq!(slack.len(), pinned.len());
-        for (h, (&got, &want)) in slack.iter().zip(&pinned).enumerate() {
+        assert_eq!(cut.inflow_slack.len(), pinned.len());
+        for (h, (&got, &want)) in cut.inflow_slack.iter().zip(&pinned).enumerate() {
             assert!(
                 (got - want).abs() <= 1e-9 * 1.0_f64.max(want.abs()),
                 "hydro {h}: slack primal {got}, pinned at {want}"
@@ -420,3 +424,28 @@ fn frozen_inflow_slack_bounds_reach_the_successor_lp() {
         }
     }
 }
+
+#[path = "cut_oracles/analytical_fold_cuts.rs"]
+mod analytical_fold_cuts;
+#[path = "cut_oracles/cross_formulation.rs"]
+mod cross_formulation;
+#[path = "cut_oracles/cut_dual_counts.rs"]
+mod cut_dual_counts;
+#[path = "cut_oracles/expanded_solve_assembly.rs"]
+mod expanded_solve_assembly;
+#[path = "cut_oracles/fpha_lag_study_checks.rs"]
+mod fpha_lag_study_checks;
+#[path = "cut_oracles/kkt_per_shape.rs"]
+mod kkt_per_shape;
+#[path = "cut_oracles/mapped_basis_warm_start.rs"]
+mod mapped_basis_warm_start;
+#[path = "cut_oracles/oracle_tolerance_checks.rs"]
+mod oracle_tolerance_checks;
+#[path = "cut_oracles/pinned_state_cross_checks.rs"]
+mod pinned_state_cross_checks;
+#[path = "cut_oracles/power_guard_checks.rs"]
+mod power_guard_checks;
+#[path = "cut_oracles/row_classifier.rs"]
+mod row_classifier;
+#[path = "cut_oracles/shared_dual_identity.rs"]
+mod shared_dual_identity;

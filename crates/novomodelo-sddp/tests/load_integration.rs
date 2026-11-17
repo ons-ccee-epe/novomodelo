@@ -99,6 +99,7 @@ impl SolverInterface for MockSolver {
     fn load_model(&mut self, _template: &StageTemplate) {}
     fn add_rows(&mut self, _cuts: &RowBatch) {}
     fn set_row_bounds(&mut self, _indices: &[usize], _lower: &[f64], _upper: &[f64]) {}
+    fn set_row_lower_bounds_range(&mut self, _first_row: usize, _lower: &[f64]) {}
     fn set_col_bounds(&mut self, _indices: &[usize], _lower: &[f64], _upper: &[f64]) {}
 
     fn solve(
@@ -193,6 +194,7 @@ fn build_system_with_load(
                 outflow_violation_below_cost: 0.0,
                 outflow_violation_above_cost: 0.0,
                 generation_violation_below_cost: 0.0,
+                fpha_violation_cost: 0.0,
                 evaporation_violation_cost: 0.0,
                 water_withdrawal_violation_cost: 0.0,
                 water_withdrawal_violation_pos_cost: 0.0,
@@ -311,7 +313,6 @@ fn minimal_template() -> StageTemplate {
         objective: vec![0.0, 0.0, 0.0, 1.0],
         row_lower: vec![0.0; 2],
         row_upper: vec![0.0; 2],
-        n_state: 1,
         col_scale: Vec::new(),
         row_scale: Vec::new(),
     }
@@ -408,6 +409,7 @@ fn test_stochastic_load_training_completes() {
 
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
     let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry_per_stage)
+        .without_inflow_entries(state.hydro_count)
         .load_bus_indices(&load_bus_indices);
     let stage_ctx = stage_ctx_fixture.ctx();
     let result = train(
@@ -499,7 +501,8 @@ fn test_deterministic_load_training_matches_baseline() {
     let geometry = equipment_free_geometry(&vec![1usize; n_stages]);
 
     let state_boxes = permissive_state_boxes(state.n_state, n_stages);
-    let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry);
+    let stage_ctx_fixture = StageContextFixture::new(&templates, &state_boxes, &geometry)
+        .without_inflow_entries(state.hydro_count);
     let stage_ctx = stage_ctx_fixture.ctx();
     let result = train(
         &mut solver,
@@ -617,6 +620,7 @@ fn test_stochastic_load_seed_determinism() {
         let state_boxes = permissive_state_boxes(state.n_state, n_stages);
         let stage_ctx_fixture =
             StageContextFixture::new(&templates, &state_boxes, &geometry_per_stage)
+                .without_inflow_entries(state.hydro_count)
                 .load_bus_indices(&load_bus_indices);
         let stage_ctx = stage_ctx_fixture.ctx();
         let result = train(

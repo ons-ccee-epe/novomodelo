@@ -232,7 +232,6 @@ mod tests {
             row_upper,
             col_scale: Vec::new(),
             row_scale: Vec::new(),
-            n_state: 0,
         }
     }
 
@@ -401,10 +400,10 @@ mod tests {
         let state_layout = StateSpace::new(2, 0, vec![], vec![2], resolution, &[0, 0]);
 
         assert_eq!(state_layout.commit_out, 2..4);
-        assert_eq!(state_layout.commit_in, 8..10);
-        assert_eq!(state_layout.theta, 10);
+        assert_eq!(state_layout.commit_in, 6..8);
+        assert_eq!(state_layout.theta, 8);
 
-        let mut col_scale: Vec<f64> = (2..13).map(f64::from).collect();
+        let mut col_scale: Vec<f64> = (2..11).map(f64::from).collect();
         assert_eq!(col_scale.len(), state_layout.theta + 1);
         let before = col_scale.clone();
 
@@ -421,6 +420,40 @@ mod tests {
                 continue;
             }
             assert_eq!(got, want, "non-commitment-hold index {i} must be untouched");
+        }
+    }
+
+    #[test]
+    fn apply_commitment_hold_col_scale_unscale_forces_the_hold_to_one_beside_a_lag_region() {
+        let state_layout = StateSpace::new(
+            2,
+            1,
+            vec![],
+            vec![2],
+            constant_lead_resolution(&[2], 4),
+            &[1, 1],
+        );
+
+        assert_eq!(state_layout.commit_out, 2..4);
+        assert_eq!(state_layout.commit_in, 6..8);
+        assert_eq!(state_layout.theta, 8);
+
+        let mut col_scale: Vec<f64> = (2..11).map(f64::from).collect();
+        assert_eq!(col_scale.len(), state_layout.theta + 1);
+        let before = col_scale.clone();
+
+        super::apply_commitment_hold_col_scale_unscale(&mut col_scale, &state_layout);
+
+        for (i, (&got, &want)) in col_scale.iter().zip(&before).enumerate() {
+            if [2, 3, 6, 7].contains(&i) {
+                assert_eq!(got, 1.0, "hold index {i}");
+            } else {
+                assert_eq!(
+                    got.to_bits(),
+                    want.to_bits(),
+                    "non-hold index {i} must keep its bits"
+                );
+            }
         }
     }
 

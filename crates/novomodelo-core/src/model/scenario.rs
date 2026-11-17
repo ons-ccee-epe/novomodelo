@@ -467,6 +467,28 @@ pub struct InflowHistoryRow {
     pub value_m3s: f64,
 }
 
+/// Mean of each hydro's `value_m3s` over its rows in `rows`.
+///
+/// A hydro with no row is absent from the map. Rows are summed in slice order, so callers pass the
+/// canonical `(hydro_id, start_date)` order and each mean is bit-identical to a filtered scan of
+/// that hydro's rows.
+#[must_use]
+pub fn long_term_mean_inflow_by_hydro(rows: &[InflowHistoryRow]) -> BTreeMap<EntityId, f64> {
+    let mut acc: BTreeMap<EntityId, (f64, u64)> = BTreeMap::new();
+    for row in rows {
+        let entry = acc.entry(row.hydro_id).or_insert((0.0, 0));
+        entry.0 += row.value_m3s;
+        entry.1 += 1;
+    }
+    acc.into_iter()
+        .map(|(hydro_id, (sum, count))| {
+            #[allow(clippy::cast_precision_loss)]
+            let mean = sum / (count as f64);
+            (hydro_id, mean)
+        })
+        .collect()
+}
+
 /// A single row from `scenarios/external_inflow_scenarios.parquet`.
 ///
 /// Each row defines the pre-computed inflow value for one (stage, scenario, hydro)
@@ -774,9 +796,12 @@ impl Default for CorrelationModel {
 mod tests {
     use std::collections::BTreeMap;
 
+    use chrono::NaiveDate;
+
     use super::{
         AnnualComponent, CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile,
-        CorrelationScheduleEntry, InflowModel, LoadModel, NcsModel, SamplingScheme, ScenarioSource,
+        CorrelationScheduleEntry, InflowHistoryRow, InflowModel, LoadModel, NcsModel,
+        SamplingScheme, ScenarioSource, long_term_mean_inflow_by_hydro,
     };
     use crate::EntityId;
 
@@ -1171,5 +1196,101 @@ mod tests {
         };
         let b = a.clone();
         assert_eq!(a, b);
+    }
+
+    fn inflow_row(hydro_id: i32, day: u32, value_m3s: f64) -> InflowHistoryRow {
+        let start_date = NaiveDate::from_ymd_opt(2000, 1, day).unwrap();
+        InflowHistoryRow {
+            hydro_id: EntityId::from(hydro_id),
+            start_date,
+            end_date: start_date.succ_opt().unwrap(),
+            value_m3s,
+        }
+    }
+
+    fn per_hydro_scan(rows: &[InflowHistoryRow], hydro_id: EntityId) -> Option<f64> {
+        let mut sum = 0.0_f64;
+        let mut count = 0_u32;
+        for row in rows.iter().filter(|row| row.hydro_id == hydro_id) {
+            sum += row.value_m3s;
+            count += 1;
+        }
+        (count > 0).then(|| sum / f64::from(count))
+    }
+
+    /// derived: hydro 1 is (100 + 200 + 300) / 3 = 200; hydro 2 has one row, so
+    /// its mean is that row.
+    #[test]
+    fn long_term_mean_inflow_is_the_mean_of_each_hydros_own_rows() {
+        let rows = [
+            inflow_row(1, 1, 100.0),
+            inflow_row(2, 1, 9_999.0),
+            inflow_row(1, 2, 200.0),
+            inflow_row(1, 3, 300.0),
+        ];
+
+        let means = long_term_mean_inflow_by_hydro(&rows);
+
+        assert_eq!(
+            means,
+            BTreeMap::from([(EntityId(1), 200.0), (EntityId(2), 9_999.0)])
+        );
+    }
+
+    #[test]
+    fn long_term_mean_inflow_leaves_a_hydro_without_history_out() {
+        assert!(long_term_mean_inflow_by_hydro(&[]).is_empty());
+
+        let rows = [inflow_row(1, 1, 100.0), inflow_row(2, 1, 50.0)];
+        let means = long_term_mean_inflow_by_hydro(&rows);
+
+        assert_eq!(means.get(&EntityId(4)), None);
+    }
+
+    #[test]
+    fn long_term_mean_inflow_ignores_interleaved_rows_of_other_hydros() {
+        let grouped = [
+            inflow_row(1, 1, 0.1),
+            inflow_row(1, 2, 0.2),
+            inflow_row(1, 3, 0.3),
+        ];
+        let interleaved = [
+            inflow_row(1, 1, 0.1),
+            inflow_row(2, 1, 7.7),
+            inflow_row(1, 2, 0.2),
+            inflow_row(2, 2, 3.3),
+            inflow_row(1, 3, 0.3),
+        ];
+
+        let grouped_mean = long_term_mean_inflow_by_hydro(&grouped)[&EntityId(1)];
+        let interleaved_mean = long_term_mean_inflow_by_hydro(&interleaved)[&EntityId(1)];
+
+        assert_eq!(grouped_mean.to_bits(), interleaved_mean.to_bits());
+    }
+
+    #[test]
+    fn long_term_mean_inflow_is_bit_identical_to_a_per_hydro_scan() {
+        let rows = [
+            inflow_row(1, 1, 0.1),
+            inflow_row(2, 1, 7.7),
+            inflow_row(1, 2, 0.2),
+            inflow_row(3, 1, 5.0),
+            inflow_row(2, 2, 3.3),
+            inflow_row(1, 3, 0.3),
+        ];
+
+        let means = long_term_mean_inflow_by_hydro(&rows);
+
+        assert_eq!(means.len(), 3);
+        for (&hydro_id, mean) in &means {
+            let scanned = per_hydro_scan(&rows, hydro_id).expect("a mapped hydro has rows");
+            assert_eq!(
+                mean.to_bits(),
+                scanned.to_bits(),
+                "hydro {hydro_id:?}: mean must be bit-identical to the per-hydro scan"
+            );
+        }
+        assert_eq!(per_hydro_scan(&rows, EntityId(4)), None);
+        assert_eq!(means.get(&EntityId(4)), None);
     }
 }

@@ -81,6 +81,11 @@
           "format": "double",
           "type": "number"
         },
+        "fpha_violation_cost": {
+          "description": "FPHA plane violation cost ($/`MWh`): the price of generation above an\nFPHA plane, per MW and hour.",
+          "format": "double",
+          "type": "number"
+        },
         "generation_violation_below_cost": {
           "description": "Generation below-minimum violation penalty ($/`MWh`).",
           "format": "double",
@@ -115,7 +120,7 @@
           "type": "number"
         },
         "turbined_cost": {
-          "description": "Turbined-flow regularization cost ($/(m³/s·h)).",
+          "description": "Turbined-flow regularization cost ($/(m³/s·h)). Must be >= 0.",
           "format": "double",
           "type": "number"
         },
@@ -156,6 +161,7 @@
         "outflow_violation_below_cost",
         "outflow_violation_above_cost",
         "generation_violation_below_cost",
+        "fpha_violation_cost",
         "evaporation_violation_cost",
         "water_withdrawal_violation_cost"
       ],
@@ -181,7 +187,7 @@
       "description": "The `non_controllable_source` section.",
       "properties": {
         "curtailment_cost": {
-          "description": "Curtailment cost ($/`MWh`).",
+          "description": "Curtailment cost ($/`MWh`). Must be >= 0.",
           "format": "double",
           "type": "number"
         }

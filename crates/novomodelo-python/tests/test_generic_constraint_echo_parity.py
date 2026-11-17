@@ -16,13 +16,16 @@ runs in novomodelo-python's own test job:
     maturin develop --release --manifest-path crates/novomodelo-python/Cargo.toml
     pytest crates/novomodelo-python/tests/test_generic_constraint_echo_parity.py -v
 
-The module fixture is parametrized over two cases, and each one runs both
+The module fixture is parametrized over three cases, and each one runs both
 write paths:
 
 - `examples/deterministic/d13-generic-constraint` declares one thermal cap
   (`thermal_generation(0) <= 10`);
 - `examples/deterministic/d59-parameter-sum-useful-volume-floor` puts a
   parameter-sum coefficient on a useful-volume term, under a `per_unit` slack.
+- `examples/deterministic/d60-stage-outflow-volume-cap` puts a
+  `hydro_outflow_volume` term, a stage-volume amount, under a `per_unit` slack,
+  with equality, cap and floor rows.
 """
 
 from __future__ import annotations
@@ -39,11 +42,14 @@ D13_CASE = _REPO_ROOT / "examples" / "deterministic" / "d13-generic-constraint"
 D59_CASE = (
     _REPO_ROOT / "examples" / "deterministic" / "d59-parameter-sum-useful-volume-floor"
 )
+D60_CASE = _REPO_ROOT / "examples" / "deterministic" / "d60-stage-outflow-volume-cap"
 
 _ECHO_REL = "generic_constraints/resolved_echo.parquet"
 
 
-@pytest.fixture(scope="module", params=[D13_CASE, D59_CASE], ids=["d13", "d59"])
+@pytest.fixture(
+    scope="module", params=[D13_CASE, D59_CASE, D60_CASE], ids=["d13", "d59", "d60"]
+)
 def case_dir(request: pytest.FixtureRequest) -> pathlib.Path:
     """The case directory both write paths run."""
     case: pathlib.Path = request.param

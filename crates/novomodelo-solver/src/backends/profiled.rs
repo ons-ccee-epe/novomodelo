@@ -92,6 +92,10 @@ impl<S: SolverInterface> SolverInterface for ProfiledSolver<S> {
         self.inner.set_row_bounds(indices, lower, upper);
     }
 
+    fn set_row_lower_bounds_range(&mut self, first_row: usize, lower: &[f64]) {
+        self.inner.set_row_lower_bounds_range(first_row, lower);
+    }
+
     fn set_col_bounds(&mut self, indices: &[usize], lower: &[f64], upper: &[f64]) {
         self.inner.set_col_bounds(indices, lower, upper);
     }
@@ -199,6 +203,8 @@ mod tests {
             self.calls.borrow_mut().push(RecordedCall::SetRowBounds);
         }
 
+        fn set_row_lower_bounds_range(&mut self, _first_row: usize, _lower: &[f64]) {}
+
         fn set_col_bounds(&mut self, _indices: &[usize], _lower: &[f64], _upper: &[f64]) {
             self.calls.borrow_mut().push(RecordedCall::SetColBounds);
         }
@@ -252,7 +258,6 @@ mod tests {
             objective: vec![0.0],
             row_lower: vec![],
             row_upper: vec![],
-            n_state: 0,
             col_scale: vec![],
             row_scale: vec![],
         }

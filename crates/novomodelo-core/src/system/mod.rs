@@ -2597,9 +2597,9 @@ mod tests {
             CorrelationProfile, CorrelationScheduleEntry, DeficitSegment, HydroBlockBounds,
             HydroPastDefluence, HydroPenalties, HydroStageBounds, HydroStorage, HydroUnitStatus,
             LineBlockBounds, LineStagePenalties, LinearTerm, NcsStagePenalties,
-            PenaltiesCountsSpec, PenaltiesDefaults, PenaltyBasis, PolicyGraphType,
+            PenaltiesCountsSpec, PenaltiesDefaults, PenaltyBasis, PolicyGraphType, PostStudyStage,
             PumpingBlockBounds, RecentObservation, SlackConfig, ThermalBlockBounds,
-            ThermalStageBounds, ThermalUnitStatus, Transition, VariableRef,
+            ThermalUnitStatus, Transition, VariableRef, WaterBucketStages,
         };
 
         let bus1 = {
@@ -2828,6 +2828,7 @@ mod tests {
                     outflow_violation_below_cost: 400.0,
                     outflow_violation_above_cost: 300.0,
                     generation_violation_below_cost: 200.0,
+                    fpha_violation_cost: 2000.0,
                     evaporation_violation_cost: 150.0,
                     water_withdrawal_violation_cost: 100.0,
                     water_withdrawal_violation_pos_cost: 100.0,
@@ -2873,10 +2874,10 @@ mod tests {
                     max_diversion_m3s: Some(20.0),
                     ..Default::default()
                 },
-                thermal: ThermalStageBounds { cost_per_mwh: 85.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 10.0,
                     max_generation_mw: 150.0,
+                    cost_per_mwh: 85.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 300.0,
@@ -3137,6 +3138,14 @@ mod tests {
             .external_scenarios(external_scenarios)
             .external_load_scenarios(external_load_scenarios)
             .external_ncs_scenarios(external_ncs_scenarios)
+            .post_study_stages(Some(PostStudyStages {
+                thermal_stages: Vec::new(),
+                thermal_bounds: Vec::new(),
+                water_bucket_stages: WaterBucketStages::Declared(vec![PostStudyStage {
+                    start_date: NaiveDate::from_ymd_opt(2024, 3, 1).unwrap(),
+                    duration_hours: 168.0,
+                }]),
+            }))
             .build()
             .expect("fully populated, cross-reference-consistent system must be valid");
 

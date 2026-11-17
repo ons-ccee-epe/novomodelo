@@ -735,9 +735,10 @@ mod tests {
     /// have a real later-stage slot's stored eta inverted against a
     /// fabricated phantom lag (`0.0`) instead of the lag the runtime forward
     /// pass actually feeds: every stage-1 branch descends from the SAME
-    /// stage-0 root, so `accumulate_and_shift_lag_state`
-    /// (`stochastic/noise.rs`) carries that root's own realized inflow to
-    /// every child regardless of `scenario_id`. `standardize_external_inflow`
+    /// stage-0 root, so `advance_lag_chain`
+    /// (`novomodelo_stochastic::par::lag_kernel`) carries that root's own
+    /// realized inflow to every child regardless of `scenario_id`.
+    /// `standardize_external_inflow`
     /// (`sampling/external.rs`) replicates a stage's real raw values to
     /// uniform width BEFORE `run_eta_inversion`'s lag-chain advance for
     /// exactly this reason. `lag_realized` below is sourced independently of

@@ -3,8 +3,10 @@
 //! [`parse_penalties`] reads `penalties.json`, bridges the four nested JSON
 //! sections (`bus`, `line`, `hydro`, `non_controllable_source`) through
 //! intermediate serde types to the flat [`GlobalPenaltyDefaults`], and validates
-//! it. Every penalty is strictly positive except `hydro.turbined_cost`, which may
-//! be zero (constant-head plants have `gamma_v = 0`).
+//! it. Every penalty is strictly positive except `hydro.turbined_cost`
+//! (constant-head plants have `gamma_v = 0`) and
+//! `non_controllable_source.curtailment_cost` (curtailing is then free), which
+//! may be zero.
 //!
 //! See the penalty system spec §3 for the full requirements.
 
@@ -78,7 +80,7 @@ pub(crate) struct RawLinePenalties {
 pub(crate) struct RawHydroPenalties {
     /// Spillage penalty ($/(m³/s·h)).
     spillage_cost: f64,
-    /// Turbined-flow regularization cost ($/(m³/s·h)).
+    /// Turbined-flow regularization cost ($/(m³/s·h)). Must be >= 0.
     turbined_cost: f64,
     /// Diversion flow penalty ($/(m³/s·h)).
     diversion_cost: f64,
@@ -94,6 +96,9 @@ pub(crate) struct RawHydroPenalties {
     outflow_violation_above_cost: f64,
     /// Generation below-minimum violation penalty ($/`MWh`).
     generation_violation_below_cost: f64,
+    /// FPHA plane violation cost ($/`MWh`): the price of generation above an
+    /// FPHA plane, per MW and hour.
+    fpha_violation_cost: f64,
     /// Symmetric evaporation violation penalty, the default of both directional
     /// evaporation costs ($/(m³/s·h)).
     evaporation_violation_cost: f64,
@@ -117,7 +122,7 @@ pub(crate) struct RawHydroPenalties {
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub(crate) struct RawNcsPenalties {
-    /// Curtailment cost ($/`MWh`).
+    /// Curtailment cost ($/`MWh`). Must be >= 0.
     curtailment_cost: f64,
 }
 
@@ -278,6 +283,7 @@ fn validate_hydro(raw: &RawPenalties, path: &Path) -> Result<(), LoadError> {
             "hydro.generation_violation_below_cost",
             h.generation_violation_below_cost,
         ),
+        ("hydro.fpha_violation_cost", h.fpha_violation_cost),
         (
             "hydro.evaporation_violation_cost",
             h.evaporation_violation_cost,
@@ -302,12 +308,12 @@ fn validate_hydro(raw: &RawPenalties, path: &Path) -> Result<(), LoadError> {
 }
 
 fn validate_ncs(raw: &RawPenalties, path: &Path) -> Result<(), LoadError> {
-    if raw.non_controllable_source.curtailment_cost <= 0.0 {
+    if raw.non_controllable_source.curtailment_cost < 0.0 {
         return Err(LoadError::SchemaError {
             path: path.to_path_buf(),
             field: "non_controllable_source.curtailment_cost".to_string(),
             message: format!(
-                "penalty value must be > 0.0, got {}",
+                "penalty value must be >= 0.0, got {}",
                 raw.non_controllable_source.curtailment_cost
             ),
         });
@@ -337,6 +343,7 @@ fn convert(raw: RawPenalties) -> GlobalPenaltyDefaults {
         outflow_violation_below_cost: raw.hydro.outflow_violation_below_cost,
         outflow_violation_above_cost: raw.hydro.outflow_violation_above_cost,
         generation_violation_below_cost: raw.hydro.generation_violation_below_cost,
+        fpha_violation_cost: raw.hydro.fpha_violation_cost,
         evaporation_violation_cost: raw.hydro.evaporation_violation_cost,
         water_withdrawal_violation_cost: raw.hydro.water_withdrawal_violation_cost,
         water_withdrawal_violation_pos_cost: raw
@@ -400,6 +407,7 @@ mod tests {
         "outflow_violation_below_cost": 500.0,
         "outflow_violation_above_cost": 500.0,
         "generation_violation_below_cost": 1000.0,
+        "fpha_violation_cost": 60000.0,
         "evaporation_violation_cost": 5000.0,
         "water_withdrawal_violation_cost": 1000.0
       },
@@ -446,6 +454,10 @@ mod tests {
         assert!((defaults.hydro.outflow_violation_below_cost - 500.0).abs() < f64::EPSILON);
         assert!((defaults.hydro.outflow_violation_above_cost - 500.0).abs() < f64::EPSILON);
         assert!((defaults.hydro.generation_violation_below_cost - 1000.0).abs() < f64::EPSILON);
+        assert_eq!(
+            defaults.hydro.fpha_violation_cost.to_bits(),
+            60_000.0_f64.to_bits()
+        );
         assert!((defaults.hydro.evaporation_violation_cost - 5000.0).abs() < f64::EPSILON);
         assert!((defaults.hydro.water_withdrawal_violation_cost - 1000.0).abs() < f64::EPSILON);
 
@@ -483,6 +495,7 @@ mod tests {
                 outflow_violation_below_cost: 500.0,
                 outflow_violation_above_cost: 500.0,
                 generation_violation_below_cost: 1000.0,
+                fpha_violation_cost: 60_000.0,
                 evaporation_violation_cost: 5000.0,
                 water_withdrawal_violation_cost: 1000.0,
                 water_withdrawal_violation_pos_cost: 1000.0,
@@ -517,6 +530,7 @@ mod tests {
             "outflow_violation_below_cost": 500.0,
             "outflow_violation_above_cost": 500.0,
             "generation_violation_below_cost": 1000.0,
+            "fpha_violation_cost": 20000.0,
             "evaporation_violation_cost": 5000.0,
             "water_withdrawal_violation_cost": 1000.0
           },
@@ -560,6 +574,7 @@ mod tests {
             "outflow_violation_below_cost": 500.0,
             "outflow_violation_above_cost": 500.0,
             "generation_violation_below_cost": 1000.0,
+            "fpha_violation_cost": 60000.0,
             "evaporation_violation_cost": 5000.0,
             "water_withdrawal_violation_cost": 1000.0
           },
@@ -603,6 +618,7 @@ mod tests {
             "outflow_violation_below_cost": 500.0,
             "outflow_violation_above_cost": 500.0,
             "generation_violation_below_cost": 1000.0,
+            "fpha_violation_cost": 60000.0,
             "evaporation_violation_cost": 5000.0,
             "water_withdrawal_violation_cost": 1000.0
           },
@@ -662,6 +678,7 @@ mod tests {
             "outflow_violation_below_cost": 500.0,
             "outflow_violation_above_cost": 500.0,
             "generation_violation_below_cost": 1000.0,
+            "fpha_violation_cost": 60000.0,
             "evaporation_violation_cost": 5000.0,
             "water_withdrawal_violation_cost": 1000.0
           },
@@ -708,6 +725,50 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_missing_fpha_violation_cost_is_refused() {
+        let json = VALID_JSON.replace("\"fpha_violation_cost\": 60000.0,\n", "");
+        assert_ne!(json, VALID_JSON, "the fixture must carry the key to remove");
+
+        let f = write_json(&json);
+        let err = parse_penalties(f.path()).unwrap_err();
+        assert!(
+            matches!(err, LoadError::ParseError { .. }),
+            "expected ParseError, got: {err:?}"
+        );
+        assert!(
+            err.to_string().contains("fpha_violation_cost"),
+            "error should name fpha_violation_cost, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_fpha_violation_cost_must_be_positive() {
+        for value in ["0.0", "-1.0"] {
+            let json = VALID_JSON.replace(
+                "\"fpha_violation_cost\": 60000.0,",
+                &format!("\"fpha_violation_cost\": {value},"),
+            );
+            assert_ne!(
+                json, VALID_JSON,
+                "the fixture must carry the key to replace"
+            );
+
+            let f = write_json(&json);
+            let err = parse_penalties(f.path()).unwrap_err();
+            match &err {
+                LoadError::SchemaError { field, message, .. } => {
+                    assert_eq!(field, "hydro.fpha_violation_cost", "value {value}");
+                    assert!(
+                        message.contains("must be > 0.0"),
+                        "value {value}: message should state the > 0.0 bound, got: {message}"
+                    );
+                }
+                other => panic!("value {value}: expected SchemaError, got: {other:?}"),
+            }
+        }
+    }
+
     // ── AC: file not found → IoError ─────────────────────────────────────────
 
     /// Given a nonexistent path, `parse_penalties` returns `Err(LoadError::IoError)`.
@@ -743,6 +804,7 @@ mod tests {
             "outflow_violation_below_cost": 500.0,
             "outflow_violation_above_cost": 500.0,
             "generation_violation_below_cost": 1000.0,
+            "fpha_violation_cost": 20000.0,
             "evaporation_violation_cost": 5000.0,
             "water_withdrawal_violation_cost": 1000.0
           },
@@ -780,6 +842,7 @@ mod tests {
             "outflow_violation_below_cost": 500.0,
             "outflow_violation_above_cost": 500.0,
             "generation_violation_below_cost": 1000.0,
+            "fpha_violation_cost": 20000.0,
             "evaporation_violation_cost": 5000.0,
             "water_withdrawal_violation_cost": 1000.0
           },
@@ -813,6 +876,7 @@ mod tests {
             "outflow_violation_below_cost": 500.0,
             "outflow_violation_above_cost": 500.0,
             "generation_violation_below_cost": 1000.0,
+            "fpha_violation_cost": 20000.0,
             "evaporation_violation_cost": 5000.0,
             "water_withdrawal_violation_cost": 1000.0
           },
@@ -831,6 +895,51 @@ mod tests {
                     message.contains(">= 0.0"),
                     "message should mention '>= 0.0', got: {message}"
                 );
+            }
+            other => panic!("expected SchemaError, got: {other:?}"),
+        }
+    }
+
+    fn penalties_json_with_ncs_curtailment_cost(curtailment_cost: f64) -> String {
+        format!(
+            r#"{{
+          "bus": {{
+            "deficit_segments": [{{ "depth_mw": null, "cost": 1000.0 }}],
+            "excess_cost": 100.0
+          }},
+          "line": {{ "exchange_cost": 2.0 }},
+          "hydro": {{
+            "spillage_cost": 0.01, "turbined_cost": 0.05,
+            "diversion_cost": 0.1, "storage_violation_below_cost": 10000.0,
+            "filling_target_violation_cost": 50000.0,
+            "turbined_violation_below_cost": 500.0,
+            "outflow_violation_below_cost": 500.0,
+            "outflow_violation_above_cost": 500.0,
+            "generation_violation_below_cost": 1000.0,
+            "evaporation_violation_cost": 5000.0,
+            "water_withdrawal_violation_cost": 1000.0,
+            "fpha_violation_cost": 60000.0
+          }},
+          "non_controllable_source": {{ "curtailment_cost": {curtailment_cost:?} }}
+        }}"#
+        )
+    }
+
+    #[test]
+    fn test_parse_penalties_ncs_curtailment_cost_zero_valid() {
+        let f = write_json(&penalties_json_with_ncs_curtailment_cost(0.0));
+        let defaults = parse_penalties(f.path()).expect("curtailment_cost = 0.0 should be valid");
+        assert_eq!(defaults.ncs_curtailment_cost.to_bits(), 0.0_f64.to_bits());
+    }
+
+    #[test]
+    fn test_parse_penalties_ncs_curtailment_cost_negative_invalid() {
+        let f = write_json(&penalties_json_with_ncs_curtailment_cost(-0.0001));
+        let err = parse_penalties(f.path()).unwrap_err();
+        match &err {
+            LoadError::SchemaError { field, message, .. } => {
+                assert_eq!(field, "non_controllable_source.curtailment_cost");
+                assert!(message.contains(">= 0.0"), "got: {message}");
             }
             other => panic!("expected SchemaError, got: {other:?}"),
         }
@@ -857,6 +966,7 @@ mod tests {
             "outflow_violation_below_cost": 500.0,
             "outflow_violation_above_cost": 500.0,
             "generation_violation_below_cost": 1000.0,
+            "fpha_violation_cost": 20000.0,
             "evaporation_violation_cost": 5000.0,
             "water_withdrawal_violation_cost": 1000.0
           },
@@ -893,6 +1003,7 @@ mod tests {
             "outflow_violation_below_cost": 500.0,
             "outflow_violation_above_cost": 500.0,
             "generation_violation_below_cost": 1000.0,
+            "fpha_violation_cost": 60000.0,
             "evaporation_violation_cost": 5000.0,
             "water_withdrawal_violation_cost": 1000.0
           },

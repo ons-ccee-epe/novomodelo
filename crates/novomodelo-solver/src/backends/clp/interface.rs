@@ -2,7 +2,7 @@ use std::time::Instant;
 
 use super::config::{ClpAlgorithm, ClpProfile};
 use super::retry::LADDER_RUNGS;
-use super::solver::{ClpSolver, clp_version, i32_from_usize};
+use super::solver::{ClpSolver, clp_version};
 use crate::{
     BasisStatus, SolverInterface, clp_ffi,
     types::{Basis, RowBatch, SolutionView, SolverError, SolverStatistics, StageTemplate},
@@ -160,24 +160,10 @@ impl SolverInterface for ClpSolver {
         self.row_activity.resize(self.num_rows, 0.0);
         self.row_magnitude.resize(self.num_rows, 0.0);
 
-        // Clone the template CSC/bounds into the retained buffers — the
-        // canonical, declaration-ordered mirror that `add_rows`/`set_*_bounds`
-        // patch and reconcile into CLP natively.
-        self.col_starts.clear();
-        self.col_starts.extend_from_slice(&template.col_starts);
-        self.row_indices.clear();
-        self.row_indices.extend_from_slice(&template.row_indices);
-        self.values.clear();
-        self.values.extend_from_slice(&template.values);
-        self.col_lower.clear();
-        self.col_lower.extend_from_slice(&template.col_lower);
-        self.col_upper.clear();
-        self.col_upper.extend_from_slice(&template.col_upper);
-        self.row_lower.clear();
-        self.row_lower.extend_from_slice(&template.row_lower);
-        self.row_upper.clear();
-        self.row_upper.extend_from_slice(&template.row_upper);
-        self.num_nz = template.num_nz;
+        self.col_lower.clone_from(&template.col_lower);
+        self.col_upper.clone_from(&template.col_upper);
+        self.row_lower.clone_from(&template.row_lower);
+        self.row_upper.clone_from(&template.row_upper);
 
         self.stats.total_load_model_time_seconds += t0.elapsed().as_secs_f64();
         self.stats.load_model_count += 1;
@@ -185,10 +171,9 @@ impl SolverInterface for ClpSolver {
 
     /// Appends a batch of constraint rows to the loaded LP.
     ///
-    /// `rows` is CSR; the retained model is CSC. `novomodelo_clp_add_rows` takes the
-    /// CSR batch directly, so the CSC transpose feeds only the retained mirror,
-    /// not the FFI call. The native append preserves CLP's persistent simplex
-    /// basis (no full rebuild).
+    /// `rows` is CSR, which `novomodelo_clp_add_rows` takes directly; the native
+    /// append preserves CLP's persistent simplex basis (no full rebuild). The
+    /// retained row bounds are extended to match.
     ///
     /// # Panics
     ///
@@ -207,9 +192,6 @@ impl SolverInterface for ClpSolver {
 
         let new_nz = rows.col_indices.len();
         if rows.num_rows == 0 {
-            // A well-formed empty batch has no column entries; guard so a
-            // malformed batch (no rows but non-empty col_indices) cannot scatter
-            // ghost entries into the retained CSC.
             debug_assert!(
                 new_nz == 0,
                 "malformed RowBatch: num_rows is 0 but col_indices has {new_nz} entries"
@@ -217,67 +199,9 @@ impl SolverInterface for ClpSolver {
             return;
         }
 
-        let mut per_col_count = vec![0_usize; self.num_cols];
-        for &col in &rows.col_indices {
-            #[allow(clippy::cast_sign_loss)]
-            let col = col as usize;
-            debug_assert!(
-                col < self.num_cols,
-                "RowBatch column index {col} out of range [0, {})",
-                self.num_cols
-            );
-            per_col_count[col] += 1;
-        }
-
-        let merged_nz = self.num_nz + new_nz;
-        let mut new_col_starts = Vec::with_capacity(self.num_cols + 1);
-        let mut new_row_indices = vec![0_i32; merged_nz];
-        let mut new_values = vec![0.0_f64; merged_nz];
-
-        let mut write_cursor = Vec::with_capacity(self.num_cols);
-        let mut acc = 0_usize;
-        for c in 0..self.num_cols {
-            new_col_starts.push(i32_from_usize(acc));
-            write_cursor.push(acc);
-            #[allow(clippy::cast_sign_loss)]
-            let old_start = self.col_starts[c] as usize;
-            #[allow(clippy::cast_sign_loss)]
-            let old_end = self.col_starts[c + 1] as usize;
-            for k in old_start..old_end {
-                new_row_indices[acc] = self.row_indices[k];
-                new_values[acc] = self.values[k];
-                acc += 1;
-            }
-            write_cursor[c] = acc;
-            acc += per_col_count[c];
-        }
-        new_col_starts.push(i32_from_usize(acc));
-        debug_assert_eq!(acc, merged_nz);
-
-        // Appended rows occupy global row indices [num_rows, num_rows + n).
-        for r in 0..rows.num_rows {
-            #[allow(clippy::cast_sign_loss)]
-            let start = rows.row_starts[r] as usize;
-            #[allow(clippy::cast_sign_loss)]
-            let end = rows.row_starts[r + 1] as usize;
-            let global_row = self.num_rows + r;
-            for k in start..end {
-                #[allow(clippy::cast_sign_loss)]
-                let col = rows.col_indices[k] as usize;
-                let pos = write_cursor[col];
-                new_row_indices[pos] = i32_from_usize(global_row);
-                new_values[pos] = rows.values[k];
-                write_cursor[col] += 1;
-            }
-        }
-
-        self.col_starts = new_col_starts;
-        self.row_indices = new_row_indices;
-        self.values = new_values;
         self.row_lower.extend_from_slice(&rows.row_lower);
         self.row_upper.extend_from_slice(&rows.row_upper);
         self.num_rows += rows.num_rows;
-        self.num_nz = merged_nz;
 
         // Rationale: `rows.num_rows` was asserted to fit in i32 above.
         #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
@@ -315,9 +239,8 @@ impl SolverInterface for ClpSolver {
     ///
     /// An empty `indices` slice is a no-op. The retained `row_lower`/`row_upper`
     /// (the canonical mirror) is patched, then the **full** bound vectors are
-    /// pushed into CLP via `novomodelo_clp_chg_row_lower`/`novomodelo_clp_chg_row_upper`,
-    /// which take the whole array, not an index subset. This preserves CLP's
-    /// factorization/basis across the patch.
+    /// pushed into CLP, whose row-bound setters take the whole array, not an
+    /// index subset. This preserves CLP's factorization/basis across the patch.
     ///
     /// # Panics
     ///
@@ -345,17 +268,31 @@ impl SolverInterface for ClpSolver {
             self.row_lower[row] = lower[i];
             self.row_upper[row] = upper[i];
         }
-        // SAFETY:
-        // - `self.handle` is a valid, non-null CLP pointer with a model loaded.
-        // - `self.row_lower`/`self.row_upper` each have exactly `self.num_rows`
-        //   entries (maintained by `load_model`/`add_rows`), matching the model's
-        //   current row count that the C wrapper queries to size its translation.
-        // - The pointers reference owned `Vec` data alive for the call.
-        // - Bounds are forwarded verbatim; the C wrapper owns the
-        //   ±IEEE-inf → ±DBL_MAX translation.
-        unsafe {
-            clp_ffi::novomodelo_clp_chg_row_lower(self.handle, self.row_lower.as_ptr());
-            clp_ffi::novomodelo_clp_chg_row_upper(self.handle, self.row_upper.as_ptr());
+        self.push_row_bounds_to_clp();
+        self.stats.total_set_bounds_time_seconds += t0.elapsed().as_secs_f64();
+    }
+
+    fn set_row_lower_bounds_range(&mut self, first_row: usize, lower: &[f64]) {
+        if lower.is_empty() {
+            return;
+        }
+        let end = first_row + lower.len();
+        assert!(
+            end <= self.num_rows,
+            "set_row_lower_bounds_range: rows {first_row}..{end} exceed num_rows {}",
+            self.num_rows
+        );
+
+        let t0 = Instant::now();
+        self.row_lower[first_row..end].copy_from_slice(lower);
+        if self.row_upper[first_row..end]
+            .iter()
+            .all(|&upper| upper == f64::INFINITY)
+        {
+            self.push_row_lower_to_clp();
+        } else {
+            self.row_upper[first_row..end].fill(f64::INFINITY);
+            self.push_row_bounds_to_clp();
         }
         self.stats.total_set_bounds_time_seconds += t0.elapsed().as_secs_f64();
     }
@@ -630,4 +567,32 @@ impl SolverInterface for ClpSolver {
 
     // `record_reconstruction_stats` is intentionally NOT overridden — CLP has no
     // slot-reconciliation basis reconstruction, so the trait default no-op holds.
+}
+
+impl ClpSolver {
+    fn push_row_bounds_to_clp(&mut self) {
+        self.push_row_lower_to_clp();
+        self.push_row_upper_to_clp();
+    }
+
+    fn push_row_lower_to_clp(&mut self) {
+        // SAFETY:
+        // - `self.handle` is a valid, non-null CLP pointer with a model loaded.
+        // - `self.row_lower` has exactly `self.num_rows` entries (maintained by
+        //   `load_model`/`add_rows`), matching the model's current row count that
+        //   the C wrapper queries to size its translation.
+        // - The pointer references owned `Vec` data alive for the call.
+        // - Bounds are forwarded verbatim; the C wrapper owns the
+        //   ±IEEE-inf → ±DBL_MAX translation.
+        unsafe {
+            clp_ffi::novomodelo_clp_chg_row_lower(self.handle, self.row_lower.as_ptr());
+        }
+    }
+
+    fn push_row_upper_to_clp(&mut self) {
+        // SAFETY: as for `push_row_lower_to_clp`, with `self.row_upper`.
+        unsafe {
+            clp_ffi::novomodelo_clp_chg_row_upper(self.handle, self.row_upper.as_ptr());
+        }
+    }
 }

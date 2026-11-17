@@ -35,6 +35,8 @@ mod constraints;
 mod correlation;
 mod hydro;
 mod inflow_seeding;
+mod post_study_calendar;
+mod post_study_format;
 mod pumping;
 mod scenarios;
 mod season;
@@ -48,6 +50,7 @@ pub use inflow_seeding::seed_lag_state_depth;
 pub(crate) fn validate_semantic_hydro_thermal(data: &ParsedData, ctx: &mut ValidationContext) {
     hydro::check_cascade_acyclic(data, ctx);
     hydro::check_hydro_bounds(data, ctx);
+    hydro::check_stage_storage_bounds_inverted(data, ctx);
     hydro::check_diversion_requires_channel(data, ctx);
     hydro::check_lifecycle_consistency(data, ctx);
     hydro::check_lifecycle_consistency_remaining(data, ctx);
@@ -56,24 +59,29 @@ pub(crate) fn validate_semantic_hydro_thermal(data: &ParsedData, ctx: &mut Valid
     hydro::check_initial_storage_range(data, ctx);
     hydro::check_initial_storage_array(data, ctx);
     hydro::check_initial_storage_first_stage_bounds(data, ctx);
+    hydro::check_rising_hard_storage_floor(data, ctx);
     hydro::check_geometry_monotonicity(data, ctx);
     hydro::check_evaporation_geometry_coverage(data, ctx);
+    hydro::check_fpha_geometry_coverage(data, ctx);
     hydro::check_fpha_constraints(data, ctx);
     hydro::check_hydro_unit_groups(data, ctx);
     thermal::check_thermal_generation_bounds(data, ctx);
     thermal::check_anticipated_thermals(data, ctx);
     thermal::check_anticipated_cadence_transition(data, ctx);
+    post_study_format::check_post_study_format(data, ctx);
     thermal::check_post_study_stages(data, ctx);
     thermal::check_anticipated_decision_target_is_anticipated(data, ctx);
     thermal::warn_thermal_generation_on_anticipated_thermal(data, ctx);
     constraints::check_per_block_storage_interior_reference(data, ctx);
     constraints::check_productivity_tag_pairing(data, ctx);
+    constraints::check_stage_volume_constraints(data, ctx);
     block_bounds::check_bound_block_id_range(data, ctx);
     block_bounds::check_bound_stage_id_range(data, ctx);
     block_bounds::check_duplicate_bound_rows(data, ctx);
     block_bounds::check_block_id_on_ineligible_column(data, ctx);
     block_bounds::check_block_id_on_anticipated_thermal(data, ctx);
     block_bounds::check_bound_raises_declared_capacity(data, ctx);
+    block_bounds::check_bound_widens_reservoir_range(data, ctx);
     block_bounds::check_group_bound_raises_declared_capacity(data, ctx);
     pumping::check_pumping_semantics(data, ctx);
     pumping::check_pumping_operating_window(data, ctx);
@@ -99,6 +107,8 @@ pub(crate) fn validate_semantic_stages_penalties_scenarios(
     scenarios::check_penalty_ordering(data, ctx);
     scenarios::check_filling_sufficiency(data, ctx);
     scenarios::check_fpha_penalty_rule(data, ctx);
+    scenarios::check_fpha_price_dominance(data, ctx);
+    scenarios::check_fpha_precomputed_plane_at_zero_turbining(data, ctx);
     scenarios::check_scenario_models(data, ctx);
     scenarios::check_par_stationarity(data, ctx);
     correlation::check_correlation_matrices(data, ctx);
@@ -107,6 +117,7 @@ pub(crate) fn validate_semantic_stages_penalties_scenarios(
     scenarios::check_external_library_coherence(data, ctx);
     scenarios::check_load_factor_consistency(data, ctx);
     scenarios::check_estimation_prerequisites(data, ctx);
+    scenarios::check_estimation_history_years(data, ctx);
     season::check_season_id_consistency(data, ctx);
     season::check_observation_season_alignment(data, ctx);
 }
@@ -131,4 +142,79 @@ const ENVELOPE_TOLERANCE: f64 = 1e-9;
 #[must_use]
 pub fn envelope_tolerance(value: f64) -> f64 {
     ENVELOPE_TOLERANCE * value.abs().max(1.0)
+}
+
+/// `true` when `[range_min, range_max]` contains `[inner_min, inner_max]`, each
+/// inner endpoint widened outward by its own [`envelope_tolerance`]; `false`
+/// when any argument is NaN.
+#[must_use]
+pub fn range_covers(range_min: f64, range_max: f64, inner_min: f64, inner_max: f64) -> bool {
+    range_min <= inner_min + envelope_tolerance(inner_min)
+        && range_max >= inner_max - envelope_tolerance(inner_max)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{envelope_tolerance, range_covers};
+
+    #[test]
+    fn range_covers_accepts_an_inner_range_inside() {
+        assert!(range_covers(0.0, 10.0, 2.0, 8.0));
+    }
+
+    #[test]
+    fn range_covers_accepts_equal_ranges() {
+        assert!(range_covers(878.0, 879.0, 878.0, 879.0));
+    }
+
+    #[test]
+    fn range_covers_rejects_an_inner_minimum_below() {
+        assert!(!range_covers(878.0, 879.0, 867.547_302, 867.547_302));
+    }
+
+    #[test]
+    fn range_covers_rejects_an_inner_maximum_above() {
+        assert!(!range_covers(100.0, 2000.0, 100.0, 2500.0));
+    }
+
+    #[test]
+    fn range_covers_accepts_the_tolerance_boundary() {
+        assert!(range_covers(
+            100.0 + envelope_tolerance(100.0),
+            2000.0,
+            100.0,
+            2000.0
+        ));
+        assert!(range_covers(
+            100.0,
+            2000.0 - envelope_tolerance(2000.0),
+            100.0,
+            2000.0
+        ));
+    }
+
+    #[test]
+    fn range_covers_rejects_just_past_the_tolerance() {
+        assert!(!range_covers(
+            (100.0 + envelope_tolerance(100.0)).next_up(),
+            2000.0,
+            100.0,
+            2000.0
+        ));
+        assert!(!range_covers(
+            100.0,
+            (2000.0 - envelope_tolerance(2000.0)).next_down(),
+            100.0,
+            2000.0
+        ));
+    }
+
+    #[test]
+    fn range_covers_rejects_nan() {
+        let nan = f64::NAN;
+        assert!(!range_covers(nan, 10.0, 2.0, 8.0));
+        assert!(!range_covers(0.0, nan, 2.0, 8.0));
+        assert!(!range_covers(0.0, 10.0, nan, 8.0));
+        assert!(!range_covers(0.0, 10.0, 2.0, nan));
+    }
 }

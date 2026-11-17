@@ -52,7 +52,7 @@
 //! use novomodelo_sddp::workspace::CapturedBasis;
 //! use novomodelo_solver::Basis;
 //!
-//! let stored = CapturedBasis::new(4, 3, 3, 0, 0, NodeId(0)); // empty — shim state
+//! let stored = CapturedBasis::new(4, 3, 3, 0, NodeId(0));
 //! let target = ReconstructionTarget { base_row_count: 3, num_cols: 4 };
 //! let mut out = Basis::new(0, 0);
 //! let mut lookup: Vec<Option<u32>> = vec![None; 16];
@@ -364,18 +364,10 @@ mod tests {
         num_cols: usize,
         slots: &[u32],
         cut_statuses: &[novomodelo_solver::BasisStatus],
-        state_at_capture: &[f64],
     ) -> CapturedBasis {
         assert_eq!(slots.len(), cut_statuses.len());
         let total_rows = base_rows + cut_statuses.len();
-        let mut cb = CapturedBasis::new(
-            num_cols,
-            total_rows,
-            base_rows,
-            slots.len(),
-            state_at_capture.len(),
-            NodeId(0),
-        );
+        let mut cb = CapturedBasis::new(num_cols, total_rows, base_rows, slots.len(), NodeId(0));
 
         cb.basis.row_status.clear();
         cb.basis.row_status.resize(base_rows, B);
@@ -385,7 +377,6 @@ mod tests {
         cb.basis.col_status.resize(num_cols, B);
 
         cb.cut_row_slots.extend_from_slice(slots);
-        cb.state_at_capture.extend_from_slice(state_at_capture);
 
         cb
     }
@@ -398,7 +389,7 @@ mod tests {
     /// `BASIC` and `stats.new_slack == 3`.
     #[test]
     fn returns_basic_for_all_new_cuts() {
-        let stored = make_stored_basis(1, 2, &[], &[], &[1.0]);
+        let stored = make_stored_basis(1, 2, &[], &[]);
         let cuts: Vec<(usize, f64, Vec<f64>)> = vec![
             (5, 0.0, vec![0.0, 0.0]),
             (6, 0.0, vec![0.0, 0.0]),
@@ -437,7 +428,7 @@ mod tests {
     /// `BASIC` itself.
     #[test]
     fn copies_stored_status_for_preserved_slots() {
-        let stored = make_stored_basis(1, 2, &[10, 20], &[B, L], &[1.0]);
+        let stored = make_stored_basis(1, 2, &[10, 20], &[B, L]);
         let cuts: Vec<(usize, f64, Vec<f64>)> =
             vec![(10, 0.0, vec![0.0, 0.0]), (20, 0.0, vec![0.0, 0.0])];
         let target = ReconstructionTarget {
@@ -473,7 +464,7 @@ mod tests {
     /// statuses copied); slots 25, 45, 50 are new and receive `BASIC`.
     #[test]
     fn mixed_case_preserved_and_new() {
-        let stored = make_stored_basis(2, 3, &[10, 20, 30, 40], &[L, B, L, B], &[1.0, 2.0]);
+        let stored = make_stored_basis(2, 3, &[10, 20, 30, 40], &[L, B, L, B]);
         let cuts: Vec<(usize, f64, Vec<f64>)> = vec![
             (10, 0.0, vec![0.0, 0.0]),
             (25, 0.0, vec![0.0, 0.0]),
@@ -519,7 +510,7 @@ mod tests {
     /// basis.
     #[test]
     fn empty_iterator_preserves_template_rows() {
-        let stored = make_stored_basis(3, 2, &[10, 20], &[B, L], &[1.0]);
+        let stored = make_stored_basis(3, 2, &[10, 20], &[B, L]);
         let target = ReconstructionTarget {
             base_row_count: 3,
             num_cols: 2,
@@ -555,7 +546,7 @@ mod tests {
     fn uniform_basic_appends_all_basic_cut_rows() {
         // Template rows must be LOWER here, so build the CapturedBasis directly
         // rather than via make_stored_basis (which forces template rows BASIC).
-        let mut stored = CapturedBasis::new(3, 2, 2, 0, 0, NodeId(0));
+        let mut stored = CapturedBasis::new(3, 2, 2, 0, NodeId(0));
         stored.basis.col_status.clear();
         stored.basis.col_status.extend_from_slice(&[B, B, L]);
         stored.basis.row_status.clear();
@@ -579,7 +570,7 @@ mod tests {
     /// one, so the repair demotes exactly one trailing BASIC cut row.
     #[test]
     fn uniform_basic_then_invariant_repair_balances() {
-        let mut stored = CapturedBasis::new(3, 2, 2, 0, 0, NodeId(0));
+        let mut stored = CapturedBasis::new(3, 2, 2, 0, NodeId(0));
         stored.basis.col_status.clear();
         stored.basis.col_status.extend_from_slice(&[B, B, B]); // col_basic = 3
         stored.basis.row_status.clear();
@@ -619,7 +610,7 @@ mod tests {
         };
 
         // Stored with a populated (but to-be-ignored) cut_row_slots list.
-        let with_slots = make_stored_basis(1, 2, &[10, 20, 30], &[B, L, B], &[1.0]);
+        let with_slots = make_stored_basis(1, 2, &[10, 20, 30], &[B, L, B]);
         assert!(
             !with_slots.cut_row_slots.is_empty(),
             "fixture must have non-empty cut_row_slots to make the test meaningful"
@@ -628,7 +619,7 @@ mod tests {
         reconstruct_basis_uniform_basic(&with_slots, target, 3, &mut out_with);
 
         // Same stored basis with the slots cleared.
-        let mut without_slots = make_stored_basis(1, 2, &[10, 20, 30], &[B, L, B], &[1.0]);
+        let mut without_slots = make_stored_basis(1, 2, &[10, 20, 30], &[B, L, B]);
         without_slots.cut_row_slots.clear();
         let mut out_without = Basis::new(0, 0);
         reconstruct_basis_uniform_basic(&without_slots, target, 3, &mut out_without);
@@ -640,7 +631,7 @@ mod tests {
     /// `cut_row_count = 0` appends no cut rows; only the template rows remain.
     #[test]
     fn uniform_basic_zero_cut_rows() {
-        let stored = make_stored_basis(3, 2, &[10, 20], &[B, L], &[1.0]);
+        let stored = make_stored_basis(3, 2, &[10, 20], &[B, L]);
         let target = ReconstructionTarget {
             base_row_count: 3,
             num_cols: 2,
@@ -696,7 +687,7 @@ mod tests {
     /// reconstruction lands two basics short of the target's 8 rows.
     #[test]
     fn reconstruct_from_grown_base_row_count_yields_deficit() {
-        let mut stored = CapturedBasis::new(5, 6, 2, 4, 0, NodeId(0));
+        let mut stored = CapturedBasis::new(5, 6, 2, 4, NodeId(0));
         stored.basis.col_status.clear();
         stored.basis.col_status.extend_from_slice(&[B, B, B, B, L]);
         stored.basis.row_status.clear();

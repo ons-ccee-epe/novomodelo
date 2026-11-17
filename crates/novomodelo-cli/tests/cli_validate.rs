@@ -982,6 +982,7 @@ fn write_boundary_case_with_hydros(dir: &Path, hydro_ids: &[i64]) {
                 "storage_violation_below_cost": 1500.0, "filling_target_violation_cost": 500.0,
                 "turbined_violation_below_cost": 500.0, "outflow_violation_below_cost": 500.0,
                 "outflow_violation_above_cost": 500.0, "generation_violation_below_cost": 500.0,
+                "fpha_violation_cost": 15000.0,
                 "evaporation_violation_cost": 500.0, "water_withdrawal_violation_cost": 500.0
             },
             "non_controllable_source": { "curtailment_cost": 0.005 }
@@ -1151,6 +1152,11 @@ fn boundary_json_mode_emits_parseable_object_with_tallies() {
     assert_eq!(value["configured"], serde_json::json!(true));
     assert_eq!(value["boundary_date"], serde_json::json!("2024-03-01"));
     assert_eq!(value["report"]["storage"]["copy"], serde_json::json!(1));
+    assert!(value["report"]["filled_from_storage_slots"].is_array());
+    assert_eq!(
+        value["report"]["transit_bucket"]["filled_from_storage"],
+        serde_json::json!(0)
+    );
 }
 
 /// `--json` with no `policy.boundary` configured emits the explicit
@@ -2028,4 +2034,129 @@ fn validate_help_lists_the_output_flag() {
         .success()
         .stdout(predicate::str::contains("--output"))
         .stdout(predicate::str::contains("<DIR>"));
+}
+
+fn deprecation_lines(output: &std::process::Output) -> Vec<String> {
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .chain(String::from_utf8_lossy(&output.stderr).lines())
+        .filter(|line| line.contains("is deprecated"))
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn validate_warns_once_on_legacy_post_study_format() {
+    let dir = TempDir::new().unwrap();
+    copy_dir_recursive(
+        &common::case_dir("deterministic/d55-post-study-anticipated-lanes"),
+        dir.path(),
+    );
+    write_file(
+        dir.path(),
+        "post_study_stages.json",
+        r#"{
+            "stages": [{ "start_date": "2024-07-01", "duration_hours": 744.0 }],
+            "thermal_bounds": [
+                { "thermal_id": 1, "post_study_stage_index": 0, "cost_per_mwh": 5.0, "min_mw": 0.0, "max_mw": 150.0 }
+            ]
+        }"#,
+    );
+
+    let output = novomodelo()
+        .env_remove("RUST_LOG")
+        .args(["validate", dir.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "{output:?}");
+    let lines = deprecation_lines(&output);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].contains("thermal_stages"), "{lines:?}");
+}
+
+#[test]
+fn validate_warns_once_on_arc_deck_without_post_study_file() {
+    let dir = TempDir::new().unwrap();
+    copy_dir_recursive(
+        &common::case_dir("deterministic/d44-travel-time-substage"),
+        dir.path(),
+    );
+    let post_study = dir.path().join("post_study_stages.json");
+    if post_study.exists() {
+        fs::remove_file(post_study).unwrap();
+    }
+
+    let output = novomodelo()
+        .env_remove("RUST_LOG")
+        .args(["validate", dir.path().to_str().unwrap()])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "{output:?}");
+    let lines = deprecation_lines(&output);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].contains("water_bucket_stages"), "{lines:?}");
+}
+
+#[test]
+fn validate_accepts_weeks_naming_their_month_across_two_years() {
+    let dir = TempDir::new().unwrap();
+    make_valid_case(&dir);
+
+    let seasons: Vec<_> = (1..=12_u32)
+        .map(|month| {
+            serde_json::json!({
+                "id": month - 1,
+                "month_start": month,
+                "label": format!("Month{month}"),
+            })
+        })
+        .collect();
+    let date = |year, month, day| chrono::NaiveDate::from_ymd_opt(year, month, day).unwrap();
+    let mut specs = vec![
+        (date(2026, 5, 30), date(2026, 6, 6), 5),
+        (date(2026, 6, 6), date(2026, 6, 13), 5),
+        (date(2026, 6, 13), date(2026, 6, 20), 5),
+        (date(2026, 6, 20), date(2026, 6, 27), 5),
+        (date(2026, 6, 27), date(2026, 7, 4), 5),
+        (date(2026, 7, 4), date(2026, 8, 1), 6),
+    ];
+    for (year, month) in (2026..=2027).flat_map(|y| (1..=12_u32).map(move |m| (y, m))) {
+        if ((2026, 8)..=(2027, 11)).contains(&(year, month)) {
+            let start = date(year, month, 1);
+            let end = start.checked_add_months(chrono::Months::new(1)).unwrap();
+            specs.push((start, end, month - 1));
+        }
+    }
+    assert_eq!(specs.len(), 22);
+    let stages: Vec<_> = specs
+        .iter()
+        .enumerate()
+        .map(|(id, &(start, end, season_id))| {
+            serde_json::json!({
+                "id": id,
+                "start_date": start.to_string(),
+                "end_date": end.to_string(),
+                "season_id": season_id,
+                "blocks": [{ "id": 0, "name": "FLAT", "hours": (end - start).num_days() * 24 }],
+                "num_openings": 50,
+            })
+        })
+        .collect();
+    let stages_json = serde_json::json!({
+        "season_definitions": { "cycle_type": "monthly", "seasons": seasons },
+        "policy_graph": {
+            "type": "finite_horizon",
+            "annual_discount_rate": 0.06,
+            "transitions": []
+        },
+        "stages": stages,
+    });
+    write_file(dir.path(), "stages.json", &stages_json.to_string());
+
+    novomodelo()
+        .args(["validate", dir.path().to_str().unwrap()])
+        .assert()
+        .success();
 }

@@ -14,8 +14,8 @@
 //! | `stage_id`         | INT32  | Yes      | Stage ID                                             |
 //! | `min_generation_mw`| DOUBLE | No       | Minimum generation (MW)                              |
 //! | `max_generation_mw`| DOUBLE | No       | Maximum generation (MW)                              |
-//! | `cost_per_mwh`     | DOUBLE | No       | Dispatch cost override (`$/MWh`); rejected at validation if `block_id` is also non-null |
-//! | `block_id`         | INT32 (null) | No | 0-based block index within the stage (matches `Block::index`) selecting one block's `min_generation_mw`/`max_generation_mw` override; a value outside `[0, n_blocks)` for the referenced stage, a non-null `cost_per_mwh` on the same row, or any `block_id` on a thermal declaring `anticipated_config` is rejected at validation |
+//! | `cost_per_mwh`     | DOUBLE | No       | Variable cost override (`$/MWh`); with a null `block_id` it applies to the stage, with a `block_id` to that block |
+//! | `block_id`         | INT32 (null) | No | 0-based block index within the stage (matches `Block::index`) selecting one block's `min_generation_mw`/`max_generation_mw`/`cost_per_mwh` override; a value outside `[0, n_blocks)` for the referenced stage, or any `block_id` on a thermal declaring `anticipated_config`, is rejected at validation |
 //!
 //! ### `hydro_bounds`
 //!
@@ -99,12 +99,12 @@
 //! | hydro    | `water_withdrawal_m3s` | no             | stage-level only                                                                                 |
 //! | thermal  | `min_generation_mw`    | yes            | —                                                                                                |
 //! | thermal  | `max_generation_mw`    | yes            | —                                                                                                |
-//! | thermal  | `cost_per_mwh`         | no             | per-block thermal cost is out of scope; deliberately asymmetric with `contract_bounds.price_per_mwh` below |
+//! | thermal  | `cost_per_mwh`         | yes            | —                                                                                                |
 //! | line     | `direct_mw`            | yes            | —                                                                                                |
 //! | line     | `reverse_mw`           | yes            | —                                                                                                |
 //! | contract | `min_mw`               | yes            | —                                                                                                |
 //! | contract | `max_mw`               | yes            | —                                                                                                |
-//! | contract | `price_per_mwh`        | yes            | deliberately asymmetric with `thermal_bounds.cost_per_mwh` above, which is NOT block-eligible    |
+//! | contract | `price_per_mwh`        | yes            | —                                                                                                |
 //! | pumping  | `min_m3s`              | yes            | —                                                                                                |
 //! | pumping  | `max_m3s`              | yes            | —                                                                                                |
 //!
@@ -145,10 +145,7 @@ use novomodelo_core::EntityId;
 use std::path::Path;
 
 use crate::LoadError;
-use crate::parquet_helpers::{
-    extract_optional_float64, extract_optional_int32, extract_required_int32,
-    open_record_batch_reader,
-};
+use crate::parquet_helpers::{ParquetColumns, open_parquet_input};
 
 // ── Row types ─────────────────────────────────────────────────────────────────
 
@@ -188,18 +185,15 @@ pub struct ThermalBoundsRow {
     pub min_generation_mw: Option<f64>,
     /// Maximum generation override (MW).
     pub max_generation_mw: Option<f64>,
-    /// Dispatch cost override (`$/MWh`). Overrides `Thermal.cost_per_mwh` when `Some` and
-    /// `block_id` is `None`. Rejected at validation when `block_id` is also `Some`
-    /// (see the `block_id` field).
+    /// Variable cost override (`$/MWh`) of `Thermal.cost_per_mwh`: for the stage
+    /// when `block_id` is `None`, for that block when `Some`.
     pub cost_per_mwh: Option<f64>,
     /// Selects one block within the stage for `min_generation_mw` /
-    /// `max_generation_mw`; `None` applies the row at the stage level. A
-    /// 0-based index matching `Block::index`; a value outside `[0, n_blocks)`
-    /// for the referenced stage is rejected at validation. Does not create a
-    /// per-block cost — a row with a non-null `block_id` and a non-null
-    /// `cost_per_mwh` is rejected at validation (see the `cost_per_mwh` field),
-    /// as is any `block_id` on a thermal declaring `anticipated_config`
-    /// (commitment is stage-level).
+    /// `max_generation_mw` / `cost_per_mwh`; `None` applies the row at the stage
+    /// level. A 0-based index matching `Block::index`; a value outside
+    /// `[0, n_blocks)` for the referenced stage is rejected at validation, as is
+    /// any `block_id` on a thermal declaring `anticipated_config` (commitment is
+    /// stage-level).
     pub block_id: Option<i32>,
 }
 
@@ -413,8 +407,7 @@ pub struct ContractBoundsRow {
     /// Override for contract price (USD/`MWh`). `None` means use base value.
     pub price_per_mwh: Option<f64>,
     /// `None` applies at the stage level; `Some(b)` applies to block `b` only and is
-    /// valid on `min_mw`, `max_mw`, and `price_per_mwh` — block-eligible here, asymmetric
-    /// with `ThermalBoundsRow.cost_per_mwh`, which stays stage-level.
+    /// valid on `min_mw`, `max_mw`, and `price_per_mwh`.
     pub block_id: Option<i32>,
 }
 
@@ -470,6 +463,18 @@ pub(super) fn validate_optional_nonneg(
     Ok(())
 }
 
+static THERMAL_BOUNDS_COLUMNS: ParquetColumns = ParquetColumns {
+    known: &[
+        "thermal_id",
+        "stage_id",
+        "min_generation_mw",
+        "max_generation_mw",
+        "cost_per_mwh",
+        "block_id",
+    ],
+    retired: &[],
+};
+
 /// Parse `constraints/thermal_bounds.parquet`, returning rows sorted by
 /// `(thermal_id, stage_id, block_id)` ascending (`None` before `Some(i)`).
 ///
@@ -480,6 +485,7 @@ pub(super) fn validate_optional_nonneg(
 /// | File not found or permission denied           | [`LoadError::IoError`]     |
 /// | Malformed Parquet (corrupt header, etc.)      | [`LoadError::ParseError`]  |
 /// | Required column missing or wrong type         | [`LoadError::SchemaError`] |
+/// | Unknown or retired column                     | [`LoadError::SchemaError`] |
 /// | Non-finite value in any present bound column  | [`LoadError::SchemaError`] |
 ///
 /// # Examples
@@ -493,20 +499,18 @@ pub(super) fn validate_optional_nonneg(
 /// println!("loaded {} thermal bounds rows", rows.len());
 /// ```
 pub fn parse_thermal_bounds(path: &Path) -> Result<Vec<ThermalBoundsRow>, LoadError> {
-    let reader = open_record_batch_reader(path)?;
-
     let mut rows: Vec<ThermalBoundsRow> = Vec::new();
 
-    for batch_result in reader {
-        let batch = batch_result.map_err(|e| LoadError::parse(path, e.to_string()))?;
+    for batch in open_parquet_input(path, &THERMAL_BOUNDS_COLUMNS)? {
+        let batch = batch?;
 
-        let thermal_id_col = extract_required_int32(&batch, "thermal_id", path)?;
-        let stage_id_col = extract_required_int32(&batch, "stage_id", path)?;
+        let thermal_id_col = batch.required_int32("thermal_id")?;
+        let stage_id_col = batch.required_int32("stage_id")?;
 
-        let min_gen_col = extract_optional_float64(&batch, "min_generation_mw", path)?;
-        let max_gen_col = extract_optional_float64(&batch, "max_generation_mw", path)?;
-        let cost_col = extract_optional_float64(&batch, "cost_per_mwh", path)?;
-        let block_id_col = extract_optional_int32(&batch, "block_id", path)?;
+        let min_gen_col = batch.optional_float64("min_generation_mw")?;
+        let max_gen_col = batch.optional_float64("max_generation_mw")?;
+        let cost_col = batch.optional_float64("cost_per_mwh")?;
+        let block_id_col = batch.optional_int32("block_id")?;
 
         let n = batch.num_rows();
         let base_idx = rows.len();
@@ -554,6 +558,29 @@ pub fn parse_thermal_bounds(path: &Path) -> Result<Vec<ThermalBoundsRow>, LoadEr
     Ok(rows)
 }
 
+static HYDRO_BOUNDS_COLUMNS: ParquetColumns = ParquetColumns {
+    known: &[
+        "hydro_id",
+        "stage_id",
+        "min_turbined_m3s",
+        "max_turbined_m3s",
+        "min_storage_hm3",
+        "max_storage_hm3",
+        "min_outflow_m3s",
+        "max_outflow_m3s",
+        "min_generation_mw",
+        "max_generation_mw",
+        "min_diversion_m3s",
+        "max_diversion_m3s",
+        "min_spillage_m3s",
+        "max_spillage_m3s",
+        "filling_min_rate_m3s",
+        "water_withdrawal_m3s",
+        "block_id",
+    ],
+    retired: &[],
+};
+
 /// Parse `constraints/hydro_bounds.parquet`, returning rows sorted by
 /// `(hydro_id, stage_id, block_id)` ascending (`None` before `Some(i)`).
 ///
@@ -568,6 +595,7 @@ pub fn parse_thermal_bounds(path: &Path) -> Result<Vec<ThermalBoundsRow>, LoadEr
 /// | File not found or permission denied           | [`LoadError::IoError`]     |
 /// | Malformed Parquet (corrupt header, etc.)      | [`LoadError::ParseError`]  |
 /// | Required column missing or wrong type         | [`LoadError::SchemaError`] |
+/// | Unknown or retired column                     | [`LoadError::SchemaError`] |
 /// | Non-finite value in any present bound column  | [`LoadError::SchemaError`] |
 ///
 /// # Examples
@@ -584,31 +612,29 @@ pub fn parse_thermal_bounds(path: &Path) -> Result<Vec<ThermalBoundsRow>, LoadEr
 // splitting would require multiple passes over the batch.
 #[allow(clippy::too_many_lines)]
 pub fn parse_hydro_bounds(path: &Path) -> Result<Vec<HydroBoundsRow>, LoadError> {
-    let reader = open_record_batch_reader(path)?;
-
     let mut rows: Vec<HydroBoundsRow> = Vec::new();
 
-    for batch_result in reader {
-        let batch = batch_result.map_err(|e| LoadError::parse(path, e.to_string()))?;
+    for batch in open_parquet_input(path, &HYDRO_BOUNDS_COLUMNS)? {
+        let batch = batch?;
 
-        let hydro_id_col = extract_required_int32(&batch, "hydro_id", path)?;
-        let stage_id_col = extract_required_int32(&batch, "stage_id", path)?;
+        let hydro_id_col = batch.required_int32("hydro_id")?;
+        let stage_id_col = batch.required_int32("stage_id")?;
 
-        let min_turbined_col = extract_optional_float64(&batch, "min_turbined_m3s", path)?;
-        let max_turbined_col = extract_optional_float64(&batch, "max_turbined_m3s", path)?;
-        let min_storage_col = extract_optional_float64(&batch, "min_storage_hm3", path)?;
-        let max_storage_col = extract_optional_float64(&batch, "max_storage_hm3", path)?;
-        let min_outflow_col = extract_optional_float64(&batch, "min_outflow_m3s", path)?;
-        let max_outflow_col = extract_optional_float64(&batch, "max_outflow_m3s", path)?;
-        let min_gen_col = extract_optional_float64(&batch, "min_generation_mw", path)?;
-        let max_gen_col = extract_optional_float64(&batch, "max_generation_mw", path)?;
-        let min_diversion_col = extract_optional_float64(&batch, "min_diversion_m3s", path)?;
-        let max_diversion_col = extract_optional_float64(&batch, "max_diversion_m3s", path)?;
-        let min_spillage_col = extract_optional_float64(&batch, "min_spillage_m3s", path)?;
-        let max_spillage_col = extract_optional_float64(&batch, "max_spillage_m3s", path)?;
-        let filling_min_rate_col = extract_optional_float64(&batch, "filling_min_rate_m3s", path)?;
-        let water_withdrawal_col = extract_optional_float64(&batch, "water_withdrawal_m3s", path)?;
-        let block_id_col = extract_optional_int32(&batch, "block_id", path)?;
+        let min_turbined_col = batch.optional_float64("min_turbined_m3s")?;
+        let max_turbined_col = batch.optional_float64("max_turbined_m3s")?;
+        let min_storage_col = batch.optional_float64("min_storage_hm3")?;
+        let max_storage_col = batch.optional_float64("max_storage_hm3")?;
+        let min_outflow_col = batch.optional_float64("min_outflow_m3s")?;
+        let max_outflow_col = batch.optional_float64("max_outflow_m3s")?;
+        let min_gen_col = batch.optional_float64("min_generation_mw")?;
+        let max_gen_col = batch.optional_float64("max_generation_mw")?;
+        let min_diversion_col = batch.optional_float64("min_diversion_m3s")?;
+        let max_diversion_col = batch.optional_float64("max_diversion_m3s")?;
+        let min_spillage_col = batch.optional_float64("min_spillage_m3s")?;
+        let max_spillage_col = batch.optional_float64("max_spillage_m3s")?;
+        let filling_min_rate_col = batch.optional_float64("filling_min_rate_m3s")?;
+        let water_withdrawal_col = batch.optional_float64("water_withdrawal_m3s")?;
+        let block_id_col = batch.optional_int32("block_id")?;
 
         let n = batch.num_rows();
         let base_idx = rows.len();
@@ -730,6 +756,11 @@ pub fn parse_hydro_bounds(path: &Path) -> Result<Vec<HydroBoundsRow>, LoadError>
     Ok(rows)
 }
 
+static LINE_BOUNDS_COLUMNS: ParquetColumns = ParquetColumns {
+    known: &["line_id", "stage_id", "direct_mw", "reverse_mw", "block_id"],
+    retired: &[],
+};
+
 /// Parse `constraints/line_bounds.parquet`, returning rows sorted by
 /// `(line_id, stage_id, block_id)` ascending (`None` before `Some(i)`).
 ///
@@ -740,6 +771,7 @@ pub fn parse_hydro_bounds(path: &Path) -> Result<Vec<HydroBoundsRow>, LoadError>
 /// | File not found or permission denied           | [`LoadError::IoError`]     |
 /// | Malformed Parquet (corrupt header, etc.)      | [`LoadError::ParseError`]  |
 /// | Required column missing or wrong type         | [`LoadError::SchemaError`] |
+/// | Unknown or retired column                     | [`LoadError::SchemaError`] |
 /// | Non-finite value in any present bound column  | [`LoadError::SchemaError`] |
 ///
 /// # Examples
@@ -753,19 +785,17 @@ pub fn parse_hydro_bounds(path: &Path) -> Result<Vec<HydroBoundsRow>, LoadError>
 /// println!("loaded {} line bounds rows", rows.len());
 /// ```
 pub fn parse_line_bounds(path: &Path) -> Result<Vec<LineBoundsRow>, LoadError> {
-    let reader = open_record_batch_reader(path)?;
-
     let mut rows: Vec<LineBoundsRow> = Vec::new();
 
-    for batch_result in reader {
-        let batch = batch_result.map_err(|e| LoadError::parse(path, e.to_string()))?;
+    for batch in open_parquet_input(path, &LINE_BOUNDS_COLUMNS)? {
+        let batch = batch?;
 
-        let line_id_col = extract_required_int32(&batch, "line_id", path)?;
-        let stage_id_col = extract_required_int32(&batch, "stage_id", path)?;
+        let line_id_col = batch.required_int32("line_id")?;
+        let stage_id_col = batch.required_int32("stage_id")?;
 
-        let direct_col = extract_optional_float64(&batch, "direct_mw", path)?;
-        let reverse_col = extract_optional_float64(&batch, "reverse_mw", path)?;
-        let block_id_col = extract_optional_int32(&batch, "block_id", path)?;
+        let direct_col = batch.optional_float64("direct_mw")?;
+        let reverse_col = batch.optional_float64("reverse_mw")?;
+        let block_id_col = batch.optional_int32("block_id")?;
 
         let n = batch.num_rows();
         let base_idx = rows.len();
@@ -799,6 +829,17 @@ pub fn parse_line_bounds(path: &Path) -> Result<Vec<LineBoundsRow>, LoadError> {
     Ok(rows)
 }
 
+static PUMPING_BOUNDS_COLUMNS: ParquetColumns = ParquetColumns {
+    known: &[
+        "pumping_station_id",
+        "stage_id",
+        "min_m3s",
+        "max_m3s",
+        "block_id",
+    ],
+    retired: &[],
+};
+
 /// Parse `constraints/pumping_bounds.parquet`, returning rows sorted by
 /// `(station_id, stage_id, block_id)` ascending (`None` before `Some(i)`).
 ///
@@ -809,6 +850,7 @@ pub fn parse_line_bounds(path: &Path) -> Result<Vec<LineBoundsRow>, LoadError> {
 /// | File not found or permission denied           | [`LoadError::IoError`]     |
 /// | Malformed Parquet (corrupt header, etc.)      | [`LoadError::ParseError`]  |
 /// | Required column missing or wrong type         | [`LoadError::SchemaError`] |
+/// | Unknown or retired column                     | [`LoadError::SchemaError`] |
 /// | Non-finite value in any present bound column  | [`LoadError::SchemaError`] |
 ///
 /// # Examples
@@ -822,19 +864,17 @@ pub fn parse_line_bounds(path: &Path) -> Result<Vec<LineBoundsRow>, LoadError> {
 /// println!("loaded {} pumping bounds rows", rows.len());
 /// ```
 pub fn parse_pumping_bounds(path: &Path) -> Result<Vec<PumpingBoundsRow>, LoadError> {
-    let reader = open_record_batch_reader(path)?;
-
     let mut rows: Vec<PumpingBoundsRow> = Vec::new();
 
-    for batch_result in reader {
-        let batch = batch_result.map_err(|e| LoadError::parse(path, e.to_string()))?;
+    for batch in open_parquet_input(path, &PUMPING_BOUNDS_COLUMNS)? {
+        let batch = batch?;
 
-        let station_id_col = extract_required_int32(&batch, "pumping_station_id", path)?;
-        let stage_id_col = extract_required_int32(&batch, "stage_id", path)?;
+        let station_id_col = batch.required_int32("pumping_station_id")?;
+        let stage_id_col = batch.required_int32("stage_id")?;
 
-        let min_col = extract_optional_float64(&batch, "min_m3s", path)?;
-        let max_col = extract_optional_float64(&batch, "max_m3s", path)?;
-        let block_id_col = extract_optional_int32(&batch, "block_id", path)?;
+        let min_col = batch.optional_float64("min_m3s")?;
+        let max_col = batch.optional_float64("max_m3s")?;
+        let block_id_col = batch.optional_int32("block_id")?;
 
         let n = batch.num_rows();
         let base_idx = rows.len();
@@ -884,6 +924,18 @@ pub fn parse_pumping_bounds(path: &Path) -> Result<Vec<PumpingBoundsRow>, LoadEr
     Ok(rows)
 }
 
+static CONTRACT_BOUNDS_COLUMNS: ParquetColumns = ParquetColumns {
+    known: &[
+        "contract_id",
+        "stage_id",
+        "min_mw",
+        "max_mw",
+        "price_per_mwh",
+        "block_id",
+    ],
+    retired: &[],
+};
+
 /// Parse `constraints/contract_bounds.parquet`, returning rows sorted by
 /// `(contract_id, stage_id, block_id)` ascending (`None` before `Some(i)`).
 ///
@@ -894,6 +946,7 @@ pub fn parse_pumping_bounds(path: &Path) -> Result<Vec<PumpingBoundsRow>, LoadEr
 /// | File not found or permission denied           | [`LoadError::IoError`]     |
 /// | Malformed Parquet (corrupt header, etc.)      | [`LoadError::ParseError`]  |
 /// | Required column missing or wrong type         | [`LoadError::SchemaError`] |
+/// | Unknown or retired column                     | [`LoadError::SchemaError`] |
 /// | Non-finite value in any present bound column  | [`LoadError::SchemaError`] |
 ///
 /// # Examples
@@ -907,20 +960,18 @@ pub fn parse_pumping_bounds(path: &Path) -> Result<Vec<PumpingBoundsRow>, LoadEr
 /// println!("loaded {} contract bounds rows", rows.len());
 /// ```
 pub fn parse_contract_bounds(path: &Path) -> Result<Vec<ContractBoundsRow>, LoadError> {
-    let reader = open_record_batch_reader(path)?;
-
     let mut rows: Vec<ContractBoundsRow> = Vec::new();
 
-    for batch_result in reader {
-        let batch = batch_result.map_err(|e| LoadError::parse(path, e.to_string()))?;
+    for batch in open_parquet_input(path, &CONTRACT_BOUNDS_COLUMNS)? {
+        let batch = batch?;
 
-        let contract_id_col = extract_required_int32(&batch, "contract_id", path)?;
-        let stage_id_col = extract_required_int32(&batch, "stage_id", path)?;
+        let contract_id_col = batch.required_int32("contract_id")?;
+        let stage_id_col = batch.required_int32("stage_id")?;
 
-        let min_col = extract_optional_float64(&batch, "min_mw", path)?;
-        let max_col = extract_optional_float64(&batch, "max_mw", path)?;
-        let price_col = extract_optional_float64(&batch, "price_per_mwh", path)?;
-        let block_id_col = extract_optional_int32(&batch, "block_id", path)?;
+        let min_col = batch.optional_float64("min_mw")?;
+        let max_col = batch.optional_float64("max_mw")?;
+        let price_col = batch.optional_float64("price_per_mwh")?;
+        let block_id_col = batch.optional_int32("block_id")?;
 
         let n = batch.num_rows();
         let base_idx = rows.len();
@@ -1096,35 +1147,66 @@ mod tests {
         assert!(rows.is_empty());
     }
 
-    /// AC: scrambled input order -> output sorted by (thermal_id, stage_id).
+    /// AC: scrambled input order -> output sorted by (thermal_id, stage_id, block_id).
     #[test]
     fn test_thermal_declaration_order_invariance() {
-        let batch_asc = make_thermal_batch(
-            &[1, 1, 5, 5],
-            &[0, 1, 0, 1],
-            vec![Some(10.0), Some(11.0), Some(50.0), Some(51.0)],
-            vec![Some(100.0), Some(110.0), Some(500.0), Some(510.0)],
-        );
-        let batch_desc = make_thermal_batch(
-            &[5, 5, 1, 1],
-            &[1, 0, 1, 0],
-            vec![Some(51.0), Some(50.0), Some(11.0), Some(10.0)],
-            vec![Some(510.0), Some(500.0), Some(110.0), Some(100.0)],
-        );
-        let tmp_asc = write_parquet(&batch_asc);
-        let tmp_desc = write_parquet(&batch_desc);
-        let rows_asc = parse_thermal_bounds(tmp_asc.path()).unwrap();
-        let rows_desc = parse_thermal_bounds(tmp_desc.path()).unwrap();
+        // (thermal_id, stage_id, block_id, min_generation_mw, cost_per_mwh)
+        type Input = (i32, i32, Option<i32>, Option<f64>, Option<f64>);
 
-        let keys_asc: Vec<(i32, i32)> = rows_asc
-            .iter()
-            .map(|r| (r.thermal_id.0, r.stage_id))
-            .collect();
-        let keys_desc: Vec<(i32, i32)> = rows_desc
-            .iter()
-            .map(|r| (r.thermal_id.0, r.stage_id))
-            .collect();
-        assert_eq!(keys_asc, keys_desc);
+        let ascending: [Input; 5] = [
+            (1, 0, None, None, Some(80.0)),
+            (1, 0, Some(0), None, Some(300.0)),
+            (1, 0, Some(2), None, Some(0.0)),
+            (1, 1, Some(2), None, Some(150.0)),
+            (5, 0, None, Some(10.0), None),
+        ];
+        let scrambled: [Input; 5] = [
+            ascending[3],
+            ascending[0],
+            ascending[4],
+            ascending[2],
+            ascending[1],
+        ];
+
+        let parse = |rows: &[Input]| {
+            let schema = Arc::new(Schema::new(vec![
+                Field::new("thermal_id", DataType::Int32, false),
+                Field::new("stage_id", DataType::Int32, false),
+                Field::new("min_generation_mw", DataType::Float64, true),
+                Field::new("max_generation_mw", DataType::Float64, true),
+                Field::new("cost_per_mwh", DataType::Float64, true),
+                Field::new("block_id", DataType::Int32, true),
+            ]));
+            let batch = RecordBatch::try_new(
+                schema,
+                vec![
+                    Arc::new(Int32Array::from_iter_values(rows.iter().map(|r| r.0))),
+                    Arc::new(Int32Array::from_iter_values(rows.iter().map(|r| r.1))),
+                    Arc::new(rows.iter().map(|r| r.3).collect::<Float64Array>()),
+                    Arc::new(Float64Array::from(vec![None::<f64>; rows.len()])),
+                    Arc::new(rows.iter().map(|r| r.4).collect::<Float64Array>()),
+                    Arc::new(rows.iter().map(|r| r.2).collect::<Int32Array>()),
+                ],
+            )
+            .unwrap();
+            let tmp = write_parquet(&batch);
+            let parsed = parse_thermal_bounds(tmp.path()).unwrap();
+            parsed
+                .iter()
+                .map(|r| {
+                    (
+                        r.thermal_id.0,
+                        r.stage_id,
+                        r.block_id,
+                        r.min_generation_mw.map(f64::to_bits),
+                        r.max_generation_mw.map(f64::to_bits),
+                        r.cost_per_mwh.map(f64::to_bits),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(parse(&ascending), parse(&scrambled));
     }
 
     /// AC: load_thermal_bounds(None) returns Ok(Vec::new()).

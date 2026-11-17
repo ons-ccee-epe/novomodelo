@@ -241,14 +241,16 @@ mod d17_signed_evaporation {
     //!   `evaporation_m3s` must be **negative**.
     //! - Stage 3 lands on January where `coefficients_mm` is positive (true
     //!   evaporation loss); the simulated `evaporation_m3s` must be **positive**.
-    //! - In every stage the symmetric `[-q_max, +q_max]` magnitude bound must
-    //!   absorb the linearized target, so neither the positive nor the negative
-    //!   evaporation violation slack should fire.
+    //! - In every stage the linearized target at the stage's average storage must
+    //!   fit the sign-dependent flow bounds, so neither the positive nor the
+    //!   negative evaporation violation slack should fire.
     //!
-    //! The companion `parity_hash_d17` test guards bit-for-bit byte stability of
-    //! the same case; this test guards the **sign semantics** explicitly so a
-    //! future regression that flips the sign convention is caught by an
-    //! actionable assertion rather than an opaque hash diff.
+    //! The flow's box follows the month's coefficient sign: in a positive month it
+    //! never falls below the lowest target over the storage range (or 0), in a
+    //! negative month it never rises above the highest one (or 0), and in a zero
+    //! month it is 0. Under-evaporation in a negative month is capped at the same
+    //! highest target. The row identity `e = tau(v) - f_plus + f_minus` ties the
+    //! reported flow and slacks back to the target.
 
     use novomodelo_io::config::SimulationSelection;
     use std::path::Path;
@@ -257,7 +259,7 @@ mod d17_signed_evaporation {
     use novomodelo_core::scenario::ScenarioSource;
     use novomodelo_sddp::{
         SimulationWeighting, StudySetup, aggregate_simulation,
-        hydro_models::prepare_hydro_models,
+        hydro_models::{EvaporationCoefficientSign, EvaporationModel, prepare_hydro_models},
         setup::{StudyParams, prepare_stochastic},
     };
     use novomodelo_solver::ActiveSolver;
@@ -284,6 +286,7 @@ mod d17_signed_evaporation {
 
         let hydro_models =
             prepare_hydro_models(&system, &dir, false).expect("prepare_hydro_models must succeed");
+        let evaporation = hydro_models.evaporation.clone();
 
         let mut config_with_sim = config.clone();
         config_with_sim.simulation.enabled = true;
@@ -365,6 +368,12 @@ mod d17_signed_evaporation {
             scenario.stages.len()
         );
 
+        let EvaporationModel::Linearized { coefficients, .. } = evaporation.model(0) else {
+            panic!("D17 must model evaporation for its hydro");
+        };
+        let hydro = &system.hydros()[0];
+        let (min_storage_hm3, max_storage_hm3) = (hydro.min_storage_hm3, hydro.max_storage_hm3);
+
         for stage in &scenario.stages {
             assert_eq!(
                 stage.hydros.len(),
@@ -376,6 +385,50 @@ mod d17_signed_evaporation {
             let evap = h
                 .evaporation_m3s
                 .expect("evaporation must be modeled for D17");
+
+            let stage_idx = usize::try_from(stage.stage_id).expect("stage ids are non-negative");
+            let c = &coefficients[stage_idx];
+            let target =
+                |storage_hm3: f64| c.intercept_m3s + c.volume_slope_m3s_per_hm3 * storage_hm3;
+            let tau = target(0.5 * (h.storage_initial_hm3 + h.storage_final_hm3));
+            let (at_min, at_max) = (target(min_storage_hm3), target(max_storage_hm3));
+            let (t_lo, t_hi) = (at_min.min(at_max), at_min.max(at_max));
+
+            assert!(
+                (evap - h.evaporation_violation_pos_m3s + h.evaporation_violation_neg_m3s - tau)
+                    .abs()
+                    <= 1e-6 * (1.0 + tau.abs()),
+                "stage {}: e - f_minus + f_plus must equal the target {tau}, got e={evap}, \
+                 f_minus={}, f_plus={}",
+                stage.stage_id,
+                h.evaporation_violation_pos_m3s,
+                h.evaporation_violation_neg_m3s
+            );
+            match c.coefficient_sign {
+                EvaporationCoefficientSign::Positive => assert!(
+                    evap >= t_lo.min(0.0) - 1e-9,
+                    "stage {}: positive month flow {evap} below the lowest reachable target",
+                    stage.stage_id
+                ),
+                EvaporationCoefficientSign::Negative => {
+                    assert!(
+                        evap <= t_hi.max(0.0) + 1e-9,
+                        "stage {}: negative month flow {evap} above the highest reachable target",
+                        stage.stage_id
+                    );
+                    assert!(
+                        h.evaporation_violation_neg_m3s <= t_hi.max(0.0) + 1e-9,
+                        "stage {}: under-evaporation {} above the highest reachable target",
+                        stage.stage_id,
+                        h.evaporation_violation_neg_m3s
+                    );
+                }
+                EvaporationCoefficientSign::Zero => assert!(
+                    evap.abs() <= 1e-9,
+                    "stage {}: zero month flow must be 0, got {evap}",
+                    stage.stage_id
+                ),
+            }
 
             match stage.stage_id {
                 0..=2 => assert!(
@@ -892,13 +945,17 @@ mod multi_resolution_integration {
     }
 
     /// Under `truncation`, the PAR value computed out of the LP at a trial state's
-    /// lags and an opening's noise equals the solved z primal at that state and
-    /// noise, on monthly and quarterly stages.
+    /// lags and an opening's noise equals the realized inflow the solve's coupled
+    /// rows shift by at that state and noise, on monthly and quarterly stages.
     #[test]
-    fn truncation_out_of_lp_par_value_matches_the_z_row() {
+    fn truncation_out_of_lp_par_value_matches_the_realized_inflow() {
         use novomodelo_sddp::setup::{NodePos, StageIdx};
-        use novomodelo_sddp::test_support::{node_opening_noise, z_inflow_primal_for_probe};
-        use novomodelo_sddp::workspace::StageContext;
+        use novomodelo_sddp::test_support::template_structure::state_lag_dims;
+        use novomodelo_sddp::test_support::{
+            ProbeCut, ProbeCuts, ProbeOpening, cut_rows_for_slots_into, empty_row_batch,
+            node_opening_noise, opening_cut_for_probe,
+        };
+        use novomodelo_solver::SolverInterface;
         use novomodelo_stochastic::evaluate_par_batch;
 
         let case_dir = d30_case_dir();
@@ -928,16 +985,12 @@ mod multi_resolution_integration {
             "training error: {:?}",
             outcome.error
         );
-        let frozen = outcome.result.frozen_templates.expect("frozen templates");
         let mut pool = setup
             .create_workspace_pool(&comm, 1, ActiveSolver::new)
             .expect("workspace pool");
         let ws = &mut pool.workspaces[0];
         let training_ctx = setup.training_ctx();
-        let stage_ctx = StageContext {
-            templates: &frozen,
-            ..setup.stage_ctx()
-        };
+        let stage_ctx = setup.stage_ctx();
         let state = training_ctx.state;
         let par = setup.inputs.stochastic.par();
         let tree = training_ctx.stochastic.tree_view();
@@ -957,24 +1010,47 @@ mod multi_resolution_integration {
         let (mut max_rel, mut checked, mut quarterly_checked) = (0.0_f64, 0usize, 0usize);
         let (mut strong_lag, mut negative) = (0usize, 0usize);
         let mut r = vec![0.0; n_h];
+        let mut cut = ProbeCut::new(&training_ctx);
         for (t, &is_quarterly) in quarterly.iter().enumerate().skip(1) {
-            let node_id = setup.inputs.node_graph.node_ids[NodePos(t)];
+            let slots: Vec<usize> = setup.fcf.active_cuts(t).map(|(slot, _, _)| slot).collect();
+            let template = stage_ctx.template(StageIdx(t));
+            let mut cut_rows = empty_row_batch();
+            cut_rows_for_slots_into(
+                &mut cut_rows,
+                &setup.fcf.pools[t],
+                &slots,
+                state,
+                &training_ctx.cut_state_layouts[t],
+                &template.col_scale,
+            );
             for x in &stored_trial_states(&setup, NodePos(t - 1)) {
-                let lags = &x[state.inflow_lags.clone()];
+                let lags = &x[state_lag_dims(state)];
                 for o in 0..tree.n_openings(t) {
                     let noise = node_opening_noise(&setup, NodePos(t), o);
                     evaluate_par_batch(par, t, lags, &noise[..n_h], &mut r);
-                    let z = z_inflow_primal_for_probe(
+                    ws.solver.reset_solver_state();
+                    ws.solver.load_model(template);
+                    ws.solver.add_rows(&cut_rows);
+                    opening_cut_for_probe(
                         ws,
                         &stage_ctx,
                         &training_ctx,
-                        &setup.fcf.pools[t],
-                        StageIdx(t),
-                        node_id,
-                        x,
-                        &noise,
+                        &ProbeOpening {
+                            stage: StageIdx(t),
+                            pinned_state: x,
+                            raw_noise: &noise,
+                            cuts: ProbeCuts {
+                                pool: &setup.fcf.pools[t],
+                                pool_id: t,
+                                slots: &slots,
+                            },
+                            extracted_pool_id: t,
+                            inflow_slack_bounds: None,
+                        },
+                        &mut cut,
                     )
                     .expect("probe solve");
+                    let z = &cut.realized_inflow;
                     for h in 0..n_h {
                         let rel = (r[h] - z[h]).abs() / r[h].abs().max(1.0);
                         max_rel = max_rel.max(rel);
@@ -990,7 +1066,7 @@ mod multi_resolution_integration {
                         strong_lag += usize::from(lag_term.abs() > 1.0);
                         assert!(
                             rel <= 1e-9,
-                            "stage {t} opening {o} hydro {h}: out-of-LP r = {} vs solved z = {}",
+                            "stage {t} opening {o} hydro {h}: out-of-LP r = {} vs realized inflow = {}",
                             r[h],
                             z[h]
                         );
@@ -1015,9 +1091,10 @@ mod multi_resolution_integration {
 
 mod sparse_dense {
     //! `build_cut_row_batch_into` emits one `(lp_column, coefficient)` pair per
-    //! nonzero-state-mask entry in ascending order, then the theta column. For a
-    //! proper-subset mask (mixed AR orders), the emitted columns and values must
-    //! equal the remapped LP columns and the negated coefficients.
+    //! nonzero-state-mask entry that has an LP column, in ascending order, then
+    //! the theta column. For a proper-subset mask (mixed AR orders), the emitted
+    //! columns and values must equal the remapped LP columns and the negated
+    //! coefficients; a lag slot has no LP column and emits nothing.
 
     use novomodelo_sddp::FutureCostFunction;
     use novomodelo_sddp::build_cut_row_batch_into;
@@ -1025,6 +1102,7 @@ mod sparse_dense {
     use novomodelo_sddp::lead_time::AnticipatedResolution;
     use novomodelo_sddp::setup::NodeId;
     use novomodelo_sddp::test_support::cut_state_projection;
+    use novomodelo_sddp::test_support::template_structure::state_lag_dims;
     use novomodelo_solver::RowBatch;
 
     #[test]
@@ -1070,9 +1148,14 @@ mod sparse_dense {
 
         assert_eq!(batch.num_rows, 1);
         let theta_col = state.theta;
-        let expected_cols: Vec<i32> = mask
+        let lag_dims = state_lag_dims(&state);
+        let lp_dims: Vec<_> = mask
             .iter()
-            .map(|&j| state.state_to_lp_column(j).get() as i32)
+            .filter(|j| !lag_dims.contains(&j.get()))
+            .collect();
+        let expected_cols: Vec<i32> = lp_dims
+            .iter()
+            .map(|&&j| state.state_to_lp_column(j).get() as i32)
             .chain(std::iter::once(theta_col as i32))
             .collect();
         assert_eq!(
@@ -1080,9 +1163,9 @@ mod sparse_dense {
             "sparse col_indices mismatch"
         );
 
-        let expected_values: Vec<f64> = mask
+        let expected_values: Vec<f64> = lp_dims
             .iter()
-            .map(|&j| -coeffs[j.get()])
+            .map(|&&j| -coeffs[j.get()])
             .chain(std::iter::once(1.0))
             .collect();
         for (i, (actual, expected)) in batch.values.iter().zip(expected_values.iter()).enumerate() {
@@ -1531,7 +1614,7 @@ mod transit_seed_output {
         EntityId, HydroBlockBounds, HydroPastDefluence, HydroPenalties, HydroStageBounds,
         HydroStorage, InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
         PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
-        ResolvedPenalties, System, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
+        ResolvedPenalties, System, SystemBuilder, ThermalBlockBounds,
     };
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
@@ -1606,6 +1689,7 @@ mod transit_seed_output {
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -1694,12 +1778,10 @@ mod transit_seed_output {
                     max_generation_mw: 500.0,
                     ..Default::default()
                 },
-                thermal: ThermalStageBounds {
-                    cost_per_mwh: 500.0,
-                },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
+                    cost_per_mwh: 500.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -1925,7 +2007,7 @@ mod transit_seed_round_trip {
         EntityId, HydroBlockBounds, HydroPastDefluence, HydroPenalties, HydroStageBounds,
         HydroStorage, InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
         PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
-        ResolvedPenalties, System, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
+        ResolvedPenalties, System, SystemBuilder, ThermalBlockBounds,
     };
     use novomodelo_io::config::{
         BoundaryPolicy, Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
@@ -2010,6 +2092,7 @@ mod transit_seed_round_trip {
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -2111,12 +2194,10 @@ mod transit_seed_round_trip {
                     max_generation_mw: 1_000.0,
                     ..Default::default()
                 },
-                thermal: ThermalStageBounds {
-                    cost_per_mwh: 500.0,
-                },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
+                    cost_per_mwh: 500.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -2495,7 +2576,7 @@ mod diversion_outflow_bounds {
         EntityId, HydroBlockBounds, HydroPenalties, HydroStageBounds, HydroStorage,
         InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
         PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
-        ResolvedPenalties, System, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
+        ResolvedPenalties, System, SystemBuilder, ThermalBlockBounds,
     };
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
@@ -2597,6 +2678,7 @@ mod diversion_outflow_bounds {
             outflow_violation_below_cost: 1000.0,
             outflow_violation_above_cost: 1000.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -2693,12 +2775,10 @@ mod diversion_outflow_bounds {
                     max_generation_mw: 500.0,
                     ..Default::default()
                 },
-                thermal: ThermalStageBounds {
-                    cost_per_mwh: 500.0,
-                },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
+                    cost_per_mwh: 500.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -3008,7 +3088,7 @@ mod water_arc_and_post_study_anticipated_coexist_on_extended_layout {
         BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, EntityId, HydroBlockBounds,
         HydroPastDefluence, HydroStageBounds, HydroStorage, InitialConditions, LineBlockBounds,
         PostStudyStage, PostStudyStages, PostStudyThermalBound, PumpingBlockBounds, ResolvedBounds,
-        System, SystemBuilder, ThermalBlockBounds, ThermalStageBounds,
+        System, SystemBuilder, ThermalBlockBounds, WaterBucketStages,
     };
     use novomodelo_io::config::{
         BoundaryPolicy, Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
@@ -3016,9 +3096,9 @@ mod water_arc_and_post_study_anticipated_coexist_on_extended_layout {
         RowSelectionConfig, SimulationConfig, StoppingMode, StoppingRuleConfig, TrainingConfig,
         TrainingSelection, TrainingSolverConfig, UpperBoundEvaluationConfig,
     };
-    use novomodelo_sddp::indexer::{CutStateProjection, StateDim};
-    use novomodelo_sddp::setup::{NodeId, StageIdx};
-    use novomodelo_sddp::test_support::{patch_backward_opening_for_probe, solve_stage_for_probe};
+    use novomodelo_sddp::indexer::StateDim;
+    use novomodelo_sddp::setup::StageIdx;
+    use novomodelo_sddp::test_support::{ProbeCuts, prep_for_counterfactual_probe};
     use novomodelo_sddp::workspace::SolverWorkspace;
     use novomodelo_sddp::{
         BoundaryLoadRequest, SolverStatsDelta, inject_boundary_cuts, load_boundary_cuts,
@@ -3120,7 +3200,7 @@ mod water_arc_and_post_study_anticipated_coexist_on_extended_layout {
     /// onto, so `StageCalendar::resolve_window` covers it at destination index 0.
     fn post_study_stages() -> PostStudyStages {
         PostStudyStages {
-            stages: vec![PostStudyStage {
+            thermal_stages: vec![PostStudyStage {
                 start_date: study_end(),
                 duration_hours: POST_STUDY_HOURS,
             }],
@@ -3131,6 +3211,7 @@ mod water_arc_and_post_study_anticipated_coexist_on_extended_layout {
                 min_mw: 0.0,
                 max_mw: 100.0,
             }],
+            water_bucket_stages: WaterBucketStages::FromThermalStages,
         }
     }
 
@@ -3157,10 +3238,10 @@ mod water_arc_and_post_study_anticipated_coexist_on_extended_layout {
                     max_generation_mw: 500.0,
                     ..Default::default()
                 },
-                thermal: ThermalStageBounds { cost_per_mwh: 1.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
+                    cost_per_mwh: 1.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -3204,6 +3285,7 @@ mod water_arc_and_post_study_anticipated_coexist_on_extended_layout {
                     outflow_violation_below_cost: 0.0,
                     outflow_violation_above_cost: 0.0,
                     generation_violation_below_cost: 0.0,
+                    fpha_violation_cost: 0.0,
                     evaporation_violation_cost: 0.0,
                     water_withdrawal_violation_cost: 0.0,
                     water_withdrawal_violation_pos_cost: 0.0,
@@ -3464,14 +3546,6 @@ mod water_arc_and_post_study_anticipated_coexist_on_extended_layout {
         let ctx = setup.stage_ctx();
         let base = &ctx.templates[terminal_stage];
 
-        let cut_state = CutStateProjection::new(
-            state,
-            novomodelo_core::temporal::StageStateConfig {
-                storage: true,
-                inflow_lags: true,
-            },
-        );
-
         let mut batch = RowBatch {
             num_rows: 0,
             row_starts: Vec::new(),
@@ -3485,7 +3559,7 @@ mod water_arc_and_post_study_anticipated_coexist_on_extended_layout {
             &setup.fcf,
             pool_id,
             state,
-            &cut_state,
+            &setup.training_ctx().cut_state_layouts[pool_id],
             &base.col_scale,
         );
 
@@ -3495,16 +3569,15 @@ mod water_arc_and_post_study_anticipated_coexist_on_extended_layout {
         frozen
     }
 
-    /// Solve the terminal stage's frozen `template` against `pool` with the
-    /// state vector pinned to `pinned_state`, returning `theta`'s primal
+    /// Solve the terminal stage's frozen `template` against pool `pool_id` with
+    /// the state vector pinned to `pinned_state`, returning `theta`'s primal
     /// value. `raw_noise` is zeroed per hydro (deterministic mean inflow):
     /// the probe's pinned state alone drives `theta`, independent of the
     /// realized noise draw.
     fn terminal_theta(
         setup: &novomodelo_sddp::StudySetup,
         template: &StageTemplate,
-        pool: &novomodelo_sddp::CutPool,
-        node_id: NodeId,
+        pool_id: usize,
         pinned_state: &[f64],
     ) -> f64 {
         let comm = super::common::StubComm;
@@ -3516,22 +3589,33 @@ mod water_arc_and_post_study_anticipated_coexist_on_extended_layout {
         let training_ctx = setup.training_ctx();
         let theta_col = setup.stage_state().theta;
         let terminal_stage = setup.num_stages() - 1;
-        let raw_noise = vec![0.0_f64; setup.stage_state().hydro_count];
+        let raw_noise = vec![0.0_f64; training_ctx.stochastic.dim()];
+        let slots: Vec<usize> = setup
+            .fcf
+            .active_cuts(pool_id)
+            .map(|(slot, _, _)| slot)
+            .collect();
 
         ws.solver.reset_solver_state();
         ws.solver.load_model(template);
-        patch_backward_opening_for_probe(
+        prep_for_counterfactual_probe(
             ws,
             &ctx,
             &training_ctx,
             StageIdx(terminal_stage),
             pinned_state,
             &raw_noise,
+            &ProbeCuts {
+                pool: &setup.fcf.pools[pool_id],
+                pool_id,
+                slots: &slots,
+            },
         );
 
-        let view =
-            solve_stage_for_probe(ws, &ctx, pool, None, StageIdx(terminal_stage), 0, node_id)
-                .expect("terminal stage solve must not error");
+        let view = ws
+            .solver
+            .solve(None)
+            .expect("terminal stage solve must not error");
         view.primal[theta_col]
     }
 
@@ -3643,33 +3727,28 @@ mod water_arc_and_post_study_anticipated_coexist_on_extended_layout {
             .terminal_pool(setup.num_stages())
             .unwrap();
         let template = freeze_terminal_template(&setup, terminal_pool_id);
-        let pool = &setup.fcf.pools[terminal_pool_id];
-        let node_id = NodeId(i32::try_from(setup.num_stages() - 1).unwrap_or(0));
 
         let x_water = 4.0;
         let x_ant = 6.0;
 
         let theta_baseline =
-            terminal_theta(&setup, &template, pool, node_id, &pin_state(&setup, &[]));
+            terminal_theta(&setup, &template, terminal_pool_id, &pin_state(&setup, &[]));
         let theta_water = terminal_theta(
             &setup,
             &template,
-            pool,
-            node_id,
+            terminal_pool_id,
             &pin_state(&setup, &[(water_pin, x_water)]),
         );
         let theta_ant = terminal_theta(
             &setup,
             &template,
-            pool,
-            node_id,
+            terminal_pool_id,
             &pin_state(&setup, &[(ant_slot, x_ant)]),
         );
         let theta_both = terminal_theta(
             &setup,
             &template,
-            pool,
-            node_id,
+            terminal_pool_id,
             &pin_state(&setup, &[(water_pin, x_water), (ant_slot, x_ant)]),
         );
 
@@ -3809,7 +3888,7 @@ mod generic_slack_penalty_basis {
         LineStagePenalties, LinearTerm, NcsStagePenalties, ParameterKind, PenaltiesCountsSpec,
         PenaltiesDefaults, PenaltyBasis, PumpingBlockBounds, ResolvedBounds,
         ResolvedGenericConstraintBounds, ResolvedPenalties, ScalarExpr, ScalarParameter,
-        SlackConfig, System, SystemBuilder, ThermalBlockBounds, ThermalStageBounds, VariableRef,
+        SlackConfig, System, SystemBuilder, ThermalBlockBounds, VariableRef,
     };
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
@@ -3854,24 +3933,35 @@ mod generic_slack_penalty_basis {
     const RHO_MWH_ID: i32 = 1;
     const MAX_STORED_ENERGY_MWH_ID: i32 = 2;
     const FLOOR_SHARE_ID: i32 = 3;
+    /// derived: the hydro has no diversion channel, so its diversion columns are pinned
+    /// `[0, 0]`, the stage diversion volume is 0 and the shortfall is the whole floor on
+    /// every stage.
+    const DIVERSION_FLOOR_HM3: f64 = 50.0;
 
-    fn stages() -> Vec<Stage> {
+    const SINGLE_BLOCK_HOURS: [&[f64]; 2] = [&[168.0], &[744.0]];
+    const SPLIT_BLOCK_HOURS: [&[f64]; 2] = [&[42.0, 126.0], &[186.0, 558.0]];
+
+    fn stages(block_hours: [&[f64]; 2]) -> Vec<Stage> {
         let mut start = NaiveDate::from_ymd_opt(2024, 1, 1).expect("valid date");
-        STAGE_HOURS
+        block_hours
             .iter()
             .enumerate()
-            .map(|(i, &hours)| {
-                let end = start + chrono::Duration::hours(hours as i64);
+            .map(|(i, hours)| {
+                let end = start + chrono::Duration::hours(hours.iter().sum::<f64>() as i64);
                 let stage = make_stage(
                     i,
                     StageSpec {
                         start_date: start,
                         end_date: end,
-                        blocks: vec![Block {
-                            index: 0,
-                            name: "S".to_string(),
-                            duration_hours: hours,
-                        }],
+                        blocks: hours
+                            .iter()
+                            .enumerate()
+                            .map(|(k, &duration_hours)| Block {
+                                index: k,
+                                name: format!("S{k}"),
+                                duration_hours,
+                            })
+                            .collect(),
                         block_mode: BlockMode::Parallel,
                         state_config: StageStateConfig {
                             storage: true,
@@ -3900,6 +3990,28 @@ mod generic_slack_penalty_basis {
                 terms: vec![LinearTerm::literal(
                     1.0,
                     VariableRef::HydroStorage {
+                        hydro_id: EntityId(HYDRO_ID),
+                    },
+                )],
+            },
+            slack: Some(SlackConfig {
+                penalty: PENALTY,
+                penalty_basis,
+            }),
+            bound_lower: None,
+            bound_upper: None,
+        }
+    }
+
+    fn diversion_volume_floor(penalty_basis: PenaltyBasis) -> GenericConstraint {
+        GenericConstraint {
+            id: EntityId(CONSTRAINT_ID),
+            name: "diversion_volume_floor".to_string(),
+            description: None,
+            expression: ConstraintExpression {
+                terms: vec![LinearTerm::literal(
+                    1.0,
+                    VariableRef::HydroDiversionVolume {
                         hydro_id: EntityId(HYDRO_ID),
                     },
                 )],
@@ -3982,7 +4094,7 @@ mod generic_slack_penalty_basis {
         hydro_models
     }
 
-    fn build_system(floor: GenericConstraint, row_lower: f64) -> System {
+    fn build_system(floor: GenericConstraint, row_lower: f64, stages: Vec<Stage>) -> System {
         let bus = make_bus(
             EntityId(BUS_ID),
             BusSpec {
@@ -4005,7 +4117,6 @@ mod generic_slack_penalty_basis {
             },
         );
 
-        let stages = stages();
         let n_stages = stages.len();
         let inflow_models: Vec<InflowModel> = (0..n_stages)
             .map(|i| InflowModel {
@@ -4041,10 +4152,10 @@ mod generic_slack_penalty_basis {
                     max_generation_mw: 100.0,
                     ..Default::default()
                 },
-                thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
                 thermal_block: ThermalBlockBounds {
                     min_generation_mw: 0.0,
                     max_generation_mw: 0.0,
+                    cost_per_mwh: 0.0,
                 },
                 line_block: LineBlockBounds {
                     direct_mw: 0.0,
@@ -4138,12 +4249,20 @@ mod generic_slack_penalty_basis {
     }
 
     fn storage_floor_setup(penalty_basis: PenaltyBasis) -> StudySetup {
-        let system = build_system(storage_floor(penalty_basis), STORAGE_FLOOR_HM3);
+        let system = build_system(
+            storage_floor(penalty_basis),
+            STORAGE_FLOOR_HM3,
+            stages(SINGLE_BLOCK_HOURS),
+        );
         build_setup_in_code(system, &config())
     }
 
     fn stored_energy_floor_setup(penalty_basis: PenaltyBasis) -> StudySetup {
-        let system = build_system(stored_energy_floor(penalty_basis), 0.0);
+        let system = build_system(
+            stored_energy_floor(penalty_basis),
+            0.0,
+            stages(SINGLE_BLOCK_HOURS),
+        );
         let hydro_models = constant_productivity_models(&system);
         StudySetup::new(
             &system,
@@ -4153,6 +4272,15 @@ mod generic_slack_penalty_basis {
             stored_energy_parameters(),
         )
         .expect("generic_slack_penalty_basis: stored-energy study builds")
+    }
+
+    fn diversion_volume_floor_setup(penalty_basis: PenaltyBasis) -> StudySetup {
+        let system = build_system(
+            diversion_volume_floor(penalty_basis),
+            DIVERSION_FLOOR_HM3,
+            stages(SPLIT_BLOCK_HOURS),
+        );
+        build_setup_in_code(system, &config())
     }
 
     /// The `(slack_value, slack_cost)` the simulation reports for the floor row
@@ -4231,6 +4359,30 @@ mod generic_slack_penalty_basis {
         let violations = reported_violations(stored_energy_floor_setup(PenaltyBasis::PerHour));
         assert_violations(&violations, SHORTFALL_MWH, |hours| {
             PENALTY * SHORTFALL_MWH * hours
+        });
+    }
+
+    /// derived: `per_unit` costs `PENALTY × DIVERSION_FLOOR_HM3` on both stages, whatever the split.
+    #[test]
+    fn per_unit_diversion_volume_shortfall_costs_the_same_on_two_block_stages() {
+        let violations = reported_violations(diversion_volume_floor_setup(PenaltyBasis::PerUnit));
+        assert_violations(&violations, DIVERSION_FLOOR_HM3, |_| {
+            PENALTY * DIVERSION_FLOOR_HM3
+        });
+    }
+
+    /// derived: `per_hour` costs `PENALTY × DIVERSION_FLOOR_HM3 × total stage hours`, not block hours.
+    #[test]
+    fn per_hour_diversion_volume_shortfall_cost_scales_with_total_stage_hours() {
+        for (blocks, hours) in SPLIT_BLOCK_HOURS.iter().zip(STAGE_HOURS) {
+            assert!(
+                (blocks.iter().sum::<f64>() - hours).abs() < 1e-9,
+                "split blocks {blocks:?} must sum to the stage's {hours} h"
+            );
+        }
+        let violations = reported_violations(diversion_volume_floor_setup(PenaltyBasis::PerHour));
+        assert_violations(&violations, DIVERSION_FLOOR_HM3, |hours| {
+            PENALTY * DIVERSION_FLOOR_HM3 * hours
         });
     }
 }

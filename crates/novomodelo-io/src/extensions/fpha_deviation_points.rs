@@ -32,10 +32,7 @@ use novomodelo_core::EntityId;
 use std::path::Path;
 
 use crate::LoadError;
-use crate::parquet_helpers::{
-    extract_optional_int32, extract_required_float64, extract_required_int32,
-    open_record_batch_reader,
-};
+use crate::parquet_helpers::{ParquetColumns, open_parquet_input};
 
 /// A single per-sampled-point computed-FPHA fit-deviation row at spillage = 0.
 ///
@@ -77,6 +74,20 @@ pub struct FphaDeviationPointRow {
     pub relative: f64,
 }
 
+static FPHA_DEVIATION_POINTS_COLUMNS: ParquetColumns = ParquetColumns {
+    known: &[
+        "hydro_id",
+        "v",
+        "q",
+        "fph_exact",
+        "fpha_fitted",
+        "deviation",
+        "relative",
+        "stage_id",
+    ],
+    retired: &[],
+};
+
 /// Parse an FPHA-deviation-points Parquet file into a table sorted by `(hydro_id,
 /// stage_id)` ascending (NULL `stage_id` first; within-block grid order preserved).
 ///
@@ -87,23 +98,22 @@ pub struct FphaDeviationPointRow {
 /// | File not found or permission denied      | [`LoadError::IoError`]     |
 /// | Malformed Parquet (corrupt header, etc.) | [`LoadError::ParseError`]  |
 /// | Required column missing or wrong type    | [`LoadError::SchemaError`] |
+/// | Unknown or retired column                | [`LoadError::SchemaError`] |
 pub fn parse_fpha_deviation_points(path: &Path) -> Result<Vec<FphaDeviationPointRow>, LoadError> {
-    let reader = open_record_batch_reader(path)?;
-
     let mut rows: Vec<FphaDeviationPointRow> = Vec::new();
 
-    for batch_result in reader {
-        let batch = batch_result.map_err(|e| LoadError::parse(path, e.to_string()))?;
+    for batch in open_parquet_input(path, &FPHA_DEVIATION_POINTS_COLUMNS)? {
+        let batch = batch?;
 
-        let hydro_id_col = extract_required_int32(&batch, "hydro_id", path)?;
-        let v_col = extract_required_float64(&batch, "v", path)?;
-        let q_col = extract_required_float64(&batch, "q", path)?;
-        let fph_exact_col = extract_required_float64(&batch, "fph_exact", path)?;
-        let fpha_fitted_col = extract_required_float64(&batch, "fpha_fitted", path)?;
-        let deviation_col = extract_required_float64(&batch, "deviation", path)?;
-        let relative_col = extract_required_float64(&batch, "relative", path)?;
+        let hydro_id_col = batch.required_int32("hydro_id")?;
+        let v_col = batch.required_float64("v")?;
+        let q_col = batch.required_float64("q")?;
+        let fph_exact_col = batch.required_float64("fph_exact")?;
+        let fpha_fitted_col = batch.required_float64("fpha_fitted")?;
+        let deviation_col = batch.required_float64("deviation")?;
+        let relative_col = batch.required_float64("relative")?;
 
-        let stage_id_col = extract_optional_int32(&batch, "stage_id", path)?;
+        let stage_id_col = batch.optional_int32("stage_id")?;
 
         let n = batch.num_rows();
         rows.reserve(n);

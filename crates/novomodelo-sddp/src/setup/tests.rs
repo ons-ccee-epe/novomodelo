@@ -1,3 +1,4 @@
+use super::lag_points::classify_lag_points;
 use super::{
     BoundaryStateRequirements, NodeId, NodePos, PhaseLibraries, ScenarioLibraries, StudySetup,
     assert_external_library_widths, build_contract_prices_per_stage, study_horizon_end,
@@ -7,9 +8,11 @@ use crate::SddpError;
 use crate::block_clock::M3S_TO_HM3;
 use crate::hydro_models::{PrepareHydroModelsResult, ProductionModelSet, ResolvedProductionModel};
 use crate::lp::builder::StageGeometry;
-use crate::lp::indexer::{AnticipatedPlants, StateSpace, ThermalSys};
+use crate::lp::indexer::{
+    AnticipatedPlants, ChainRuleSlots, LagPointMode, LagPointRule, StateSpace, ThermalSys,
+};
 use crate::test_support;
-use crate::time_value::DeliveryCalendar;
+use crate::time_value::{DeliveryCalendar, WaterDeliveryBasis};
 use novomodelo_core::test_support::{ThermalSpec, make_thermal};
 use novomodelo_io::test_support::owned_piece_defaults;
 use novomodelo_stochastic::ExternalScenarioLibrary;
@@ -22,11 +25,10 @@ use novomodelo_core::{
     ContractBlockBounds, ContractBlockOverride, HydroBlockBounds, HydroPenalties, HydroStageBounds,
     LineBlockBounds, LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec, PenaltiesDefaults,
     PumpingBlockBounds, ResolvedBlockBounds, ResolvedBounds, ResolvedPenalties, ThermalBlockBounds,
-    ThermalStageBounds,
 };
 use novomodelo_core::{
     ContractType, EnergyContract, EntityId, HorizonGraph, HydroPastDefluence, InitialConditions,
-    PostStudyStage, PostStudyStages, System, SystemBuilder,
+    PostStudyStage, PostStudyStages, System, SystemBuilder, WaterBucketStages,
     entities::{
         bus::{Bus, DeficitSegment},
         hydro::{Hydro, HydroGenerationModel},
@@ -35,7 +37,7 @@ use novomodelo_core::{
     scenario::{InflowHistoryRow, InflowModel, LoadModel, SamplingScheme},
     temporal::{
         Block, BlockMode, NoiseMethod, PolicyGraphType, ScenarioSourceConfig, SeasonMap, Stage,
-        StageRiskConfig, StageStateConfig,
+        StageLagTransition, StageRiskConfig, StageStateConfig,
     },
 };
 use novomodelo_io::config::{
@@ -45,7 +47,9 @@ use novomodelo_io::config::{
     SimulationConfig as IoSimulationConfig, SimulationSelection, StoppingMode, StoppingRuleConfig,
     TrainingConfig, TrainingSelection, TrainingSolverConfig, UpperBoundEvaluationConfig,
 };
-use novomodelo_stochastic::{ClassSchemes, OpeningTreeInputs, build_stochastic_context};
+use novomodelo_stochastic::{
+    ClassSchemes, DerivedInflowSeeds, OpeningTreeInputs, build_stochastic_context,
+};
 
 /// Bounds and penalties are non-zero so the training tests below (e.g.
 /// `train_generates_cuts_in_fcf`) solve a genuinely optimized LP with real
@@ -122,6 +126,7 @@ fn minimal_system_with_policy_graph(
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -209,6 +214,7 @@ fn minimal_system_with_policy_graph(
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -232,10 +238,10 @@ fn minimal_system_with_policy_graph(
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -348,6 +354,7 @@ fn minimal_fpha_misconfigured_system(n_stages: usize) -> novomodelo_core::System
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 5000.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -429,10 +436,10 @@ fn minimal_fpha_misconfigured_system(n_stages: usize) -> novomodelo_core::System
                 max_generation_mw: 250.0,
                 ..Default::default()
             },
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -469,6 +476,7 @@ fn minimal_fpha_misconfigured_system(n_stages: usize) -> novomodelo_core::System
                 outflow_violation_below_cost: 0.0,
                 outflow_violation_above_cost: 0.0,
                 generation_violation_below_cost: 0.0,
+                fpha_violation_cost: 5000.0,
                 evaporation_violation_cost: 0.0,
                 water_withdrawal_violation_cost: 0.0,
                 water_withdrawal_violation_pos_cost: 0.0,
@@ -1909,6 +1917,7 @@ fn test_prepare_stochastic_historical_residuals_noise_method() {
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -2005,10 +2014,10 @@ fn test_prepare_stochastic_historical_residuals_noise_method() {
                 max_generation_mw: 250.0,
                 ..Default::default()
             },
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -2044,6 +2053,7 @@ fn test_prepare_stochastic_historical_residuals_noise_method() {
                 outflow_violation_below_cost: 0.0,
                 outflow_violation_above_cost: 0.0,
                 generation_violation_below_cost: 0.0,
+                fpha_violation_cost: 0.0,
                 evaporation_violation_cost: 0.0,
                 water_withdrawal_violation_cost: 0.0,
                 water_withdrawal_violation_pos_cost: 0.0,
@@ -2348,6 +2358,7 @@ fn minimal_system_2_hydros_with_history(
                 outflow_violation_below_cost: 0.0,
                 outflow_violation_above_cost: 0.0,
                 generation_violation_below_cost: 0.0,
+                fpha_violation_cost: 0.0,
                 evaporation_violation_cost: 0.0,
                 water_withdrawal_violation_cost: 0.0,
                 water_withdrawal_violation_pos_cost: 0.0,
@@ -2444,6 +2455,7 @@ fn minimal_system_2_hydros_with_history(
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -2467,10 +2479,10 @@ fn minimal_system_2_hydros_with_history(
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -2616,7 +2628,7 @@ fn build_initial_state_populates_lags_from_derived_values() {
 
     // State layout: storage(0..2), lags(2..6) in lag-major order.
     // Lag-major: slot = s + lag * N + h, where N = 2.
-    let s = layout.inflow_lags.start;
+    let s = layout.state_dim_lag_range().start;
     assert!(
         (state[s] - 600.0).abs() < 1e-10,
         "lag0 hydro 0: expected 600.0, got {}",
@@ -2659,7 +2671,7 @@ fn build_initial_state_zero_derived_lag_values_leaves_zero_lags() {
         &derived_lag_values,
     );
 
-    let s = layout.inflow_lags.start;
+    let s = layout.state_dim_lag_range().start;
     for l in 0..3 {
         assert!(
             state[s + l].abs() < 1e-10,
@@ -2737,7 +2749,7 @@ fn build_initial_state_derived_lags_match_positional_seed() {
     );
 
     // Lag-major: slot = s + lag * N + h, with h1=[600, 500] and h2=[200, 100].
-    let s = layout.inflow_lags.start;
+    let s = layout.state_dim_lag_range().start;
     assert!(
         (state[s] - 600.0).abs() < 1e-10,
         "lag0 hydro 0: expected 600.0, got {}",
@@ -2825,6 +2837,7 @@ fn staggered_dates_system_2_hydros(
                 outflow_violation_below_cost: 0.0,
                 outflow_violation_above_cost: 0.0,
                 generation_violation_below_cost: 0.0,
+                fpha_violation_cost: 0.0,
                 evaporation_violation_cost: 0.0,
                 water_withdrawal_violation_cost: 0.0,
                 water_withdrawal_violation_pos_cost: 0.0,
@@ -2923,6 +2936,7 @@ fn staggered_dates_system_2_hydros(
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -2946,10 +2960,10 @@ fn staggered_dates_system_2_hydros(
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -3070,7 +3084,7 @@ fn test_initial_state_seeds_correctly_under_staggered_commissioning_dates() {
     );
 
     // Lag block: lag-major layout, slot = lag_start + lag * N + idx.
-    let s = layout.inflow_lags.start;
+    let s = layout.state_dim_lag_range().start;
     assert!(
         (state[s] - h2_past[0]).abs() < 1e-10,
         "hydro id=2 lag0 should be its own derived value {}, got {}",
@@ -3163,6 +3177,7 @@ fn filling_system_2_hydros(
                 outflow_violation_below_cost: 0.0,
                 outflow_violation_above_cost: 0.0,
                 generation_violation_below_cost: 0.0,
+                fpha_violation_cost: 0.0,
                 evaporation_violation_cost: 0.0,
                 water_withdrawal_violation_cost: 0.0,
                 water_withdrawal_violation_pos_cost: 0.0,
@@ -3258,6 +3273,7 @@ fn filling_system_2_hydros(
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -3281,10 +3297,10 @@ fn filling_system_2_hydros(
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -3467,7 +3483,7 @@ fn build_initial_state_mixed_operating_and_filling_seeds() {
 
     // Lag block, identical to the operating-only case (lag-major: slot = s +
     // lag * N + h, N = 2).
-    let s = layout.inflow_lags.start;
+    let s = layout.state_dim_lag_range().start;
     assert!(
         (state[s] - 600.0).abs() < 1e-10,
         "lag0 hydro 0: expected 600.0, got {}",
@@ -3591,7 +3607,7 @@ fn build_initial_state_no_lags_state_is_storage_only() {
     // n_state = N*(1+L) = 1*(1+0) = 1
     assert_eq!(layout.n_state, 1);
     assert!(
-        layout.inflow_lags.is_empty(),
+        layout.state_dim_lag_range().is_empty(),
         "inflow_lags range should be empty for L=0"
     );
 
@@ -3715,6 +3731,7 @@ fn system_with_anticipated_thermals(
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -3807,6 +3824,7 @@ fn system_with_anticipated_thermals(
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -3830,10 +3848,10 @@ fn system_with_anticipated_thermals(
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 500.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -3978,6 +3996,7 @@ fn system_with_two_anticipated_thermals_staggered_dates(
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -4067,6 +4086,7 @@ fn system_with_two_anticipated_thermals_staggered_dates(
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -4090,10 +4110,10 @@ fn system_with_two_anticipated_thermals_staggered_dates(
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 500.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -4630,11 +4650,12 @@ fn bug_doc_reproduction_past_commits() -> Vec<novomodelo_core::AnticipatedCommit
 /// pins `resolution.anchored_depth() == 4` and `lead_stages == [4]` for this exact shape.
 fn bug_doc_reproduction_system() -> novomodelo_core::System {
     let post_study = PostStudyStages {
-        stages: vec![PostStudyStage {
+        thermal_stages: vec![PostStudyStage {
             start_date: NaiveDate::from_ymd_opt(2024, 2, 18).unwrap(),
             duration_hours: 648.0,
         }],
         thermal_bounds: Vec::new(),
+        water_bucket_stages: WaterBucketStages::FromThermalStages,
     };
     minimal_system_with_anticipated_and_commitments(
         &[168.0, 168.0, 168.0, 648.0],
@@ -4900,6 +4921,7 @@ fn system_with_historical_inflow(n_stages: usize) -> novomodelo_core::System {
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -4964,6 +4986,7 @@ fn system_with_historical_inflow(n_stages: usize) -> novomodelo_core::System {
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -5050,10 +5073,10 @@ fn system_with_historical_inflow(n_stages: usize) -> novomodelo_core::System {
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -5228,6 +5251,7 @@ fn external_inflow_library_built_when_scheme_is_external() {
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -5306,10 +5330,10 @@ fn external_inflow_library_built_when_scheme_is_external() {
                 max_generation_mw: 250.0,
                 ..Default::default()
             },
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -5345,6 +5369,7 @@ fn external_inflow_library_built_when_scheme_is_external() {
                 outflow_violation_below_cost: 0.0,
                 outflow_violation_above_cost: 0.0,
                 generation_violation_below_cost: 0.0,
+                fpha_violation_cost: 0.0,
                 evaporation_violation_cost: 0.0,
                 water_withdrawal_violation_cost: 0.0,
                 water_withdrawal_violation_pos_cost: 0.0,
@@ -5478,6 +5503,7 @@ fn external_load_library_built_when_scheme_is_external() {
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -5569,10 +5595,10 @@ fn external_load_library_built_when_scheme_is_external() {
                 max_generation_mw: 250.0,
                 ..Default::default()
             },
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -5608,6 +5634,7 @@ fn external_load_library_built_when_scheme_is_external() {
                 outflow_violation_below_cost: 0.0,
                 outflow_violation_above_cost: 0.0,
                 generation_violation_below_cost: 0.0,
+                fpha_violation_cost: 0.0,
                 evaporation_violation_cost: 0.0,
                 water_withdrawal_violation_cost: 0.0,
                 water_withdrawal_violation_pos_cost: 0.0,
@@ -5755,6 +5782,7 @@ fn zero_sigma_external_load_system() -> System {
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -5861,10 +5889,10 @@ fn zero_sigma_external_load_system() -> System {
                 max_generation_mw: 250.0,
                 ..Default::default()
             },
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -5900,6 +5928,7 @@ fn zero_sigma_external_load_system() -> System {
                 outflow_violation_below_cost: 0.0,
                 outflow_violation_above_cost: 0.0,
                 generation_violation_below_cost: 0.0,
+                fpha_violation_cost: 0.0,
                 evaporation_violation_cost: 0.0,
                 water_withdrawal_violation_cost: 0.0,
                 water_withdrawal_violation_pos_cost: 0.0,
@@ -6116,6 +6145,7 @@ fn external_ncs_library_built_when_scheme_is_external() {
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -6229,10 +6259,10 @@ fn external_ncs_library_built_when_scheme_is_external() {
                 max_generation_mw: 250.0,
                 ..Default::default()
             },
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -6268,6 +6298,7 @@ fn external_ncs_library_built_when_scheme_is_external() {
                 outflow_violation_below_cost: 0.0,
                 outflow_violation_above_cost: 0.0,
                 generation_violation_below_cost: 0.0,
+                fpha_violation_cost: 0.0,
                 evaporation_violation_cost: 0.0,
                 water_withdrawal_violation_cost: 0.0,
                 water_withdrawal_violation_pos_cost: 0.0,
@@ -6402,6 +6433,7 @@ fn historical_library_fails_when_no_valid_windows() {
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -6481,10 +6513,10 @@ fn historical_library_fails_when_no_valid_windows() {
                 max_generation_mw: 250.0,
                 ..Default::default()
             },
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -6520,6 +6552,7 @@ fn historical_library_fails_when_no_valid_windows() {
                 outflow_violation_below_cost: 0.0,
                 outflow_violation_above_cost: 0.0,
                 generation_violation_below_cost: 0.0,
+                fpha_violation_cost: 0.0,
                 evaporation_violation_cost: 0.0,
                 water_withdrawal_violation_cost: 0.0,
                 water_withdrawal_violation_pos_cost: 0.0,
@@ -6827,6 +6860,7 @@ fn minimal_system_with_anticipated_and_commitments(
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -6926,6 +6960,7 @@ fn minimal_system_with_anticipated_and_commitments(
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -6949,10 +6984,10 @@ fn minimal_system_with_anticipated_and_commitments(
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 500.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -7069,7 +7104,7 @@ fn setup_leadstages_resolution_preserves_k_max_and_state_dimension() {
     let system = minimal_system_with_anticipated_lead_stages(5, 2);
     let (resolution, lead_stages) = super::resolve_anticipated_commitments(
         &system,
-        &DeliveryCalendar::from_system(&system),
+        &DeliveryCalendar::thermal(&system),
         &AnticipatedPlants::build(system.thermals()),
     );
 
@@ -7149,7 +7184,7 @@ fn test_anticipated_resolve_point_pmo_calendar() {
     );
     let (resolution, _) = super::resolve_anticipated_commitments(
         &system,
-        &DeliveryCalendar::from_system(&system),
+        &DeliveryCalendar::thermal(&system),
         &AnticipatedPlants::build(system.thermals()),
     );
     let point = &resolution.per_plant[0];
@@ -7176,7 +7211,7 @@ fn lead_time_three_stage_lead_resolves_a_pre_study_prefix() {
         minimal_system_with_anticipated(&[100.0; 4], AnticipatedConfig::LeadTime(350.0), 1, None);
     let (resolution, _) = super::resolve_anticipated_commitments_core(
         &system,
-        &DeliveryCalendar::from_system(&system),
+        &DeliveryCalendar::thermal(&system),
         &AnticipatedPlants::build(system.thermals()),
     );
     let point = &resolution.per_plant[0];
@@ -7197,7 +7232,7 @@ fn ring_depth_counts_pre_study_occupancy() {
         minimal_system_with_anticipated(&[100.0; 4], AnticipatedConfig::LeadTime(350.0), 1, None);
     let (resolution, _) = super::resolve_anticipated_commitments_core(
         &system,
-        &DeliveryCalendar::from_system(&system),
+        &DeliveryCalendar::thermal(&system),
         &AnticipatedPlants::build(system.thermals()),
     );
 
@@ -7217,7 +7252,7 @@ fn leadstages_ring_depth_covers_full_lead_when_lead_equals_horizon() {
         minimal_system_with_anticipated_lead_stages(n_stages, u32::try_from(n_stages).unwrap());
     let (resolution, lead_stages) = super::resolve_anticipated_commitments_core(
         &system,
-        &DeliveryCalendar::from_system(&system),
+        &DeliveryCalendar::thermal(&system),
         &AnticipatedPlants::build(system.thermals()),
     );
 
@@ -7239,7 +7274,7 @@ fn test_anticipated_resolve_point_fanout_calendar() {
     );
     let (resolution, _) = super::resolve_anticipated_commitments(
         &system,
-        &DeliveryCalendar::from_system(&system),
+        &DeliveryCalendar::thermal(&system),
         &AnticipatedPlants::build(system.thermals()),
     );
     let point = &resolution.per_plant[0];
@@ -7258,11 +7293,12 @@ fn test_anticipated_resolve_point_fanout_calendar() {
 #[test]
 fn resolve_anticipated_commitments_widens_lead_time_plant_lead_to_the_ring_depth() {
     let post_study = PostStudyStages {
-        stages: vec![PostStudyStage {
+        thermal_stages: vec![PostStudyStage {
             start_date: NaiveDate::from_ymd_opt(2024, 2, 18).unwrap(),
             duration_hours: 648.0,
         }],
         thermal_bounds: Vec::new(),
+        water_bucket_stages: WaterBucketStages::FromThermalStages,
     };
     let system = minimal_system_with_anticipated(
         &[168.0, 168.0, 168.0, 648.0],
@@ -7272,7 +7308,7 @@ fn resolve_anticipated_commitments_widens_lead_time_plant_lead_to_the_ring_depth
     );
     let (resolution, lead_stages) = super::resolve_anticipated_commitments_core(
         &system,
-        &DeliveryCalendar::from_system(&system),
+        &DeliveryCalendar::thermal(&system),
         &AnticipatedPlants::build(system.thermals()),
     );
 
@@ -7315,8 +7351,9 @@ fn assert_state_layout_finalized(state: &StateSpace) {
     assert_eq!(state.theta, reference.theta, "theta column must match");
     assert_eq!(state.storage, reference.storage, "storage range must match");
     assert_eq!(
-        state.inflow_lags, reference.inflow_lags,
-        "inflow_lags range must match"
+        state.state_dim_lag_range(),
+        reference.state_dim_lag_range(),
+        "lag range must match"
     );
     assert_eq!(
         state.transit_buckets_out, reference.transit_buckets_out,
@@ -7329,10 +7366,6 @@ fn assert_state_layout_finalized(state: &StateSpace) {
     assert_eq!(
         state.commit_out, reference.commit_out,
         "commit_out range must match"
-    );
-    assert_eq!(
-        state.z_inflow, reference.z_inflow,
-        "z_inflow range must match"
     );
     assert_eq!(
         state.storage_in, reference.storage_in,
@@ -7382,8 +7415,10 @@ fn state_space_build_matches_the_loose_constructor() {
         .build()
         .expect("valid system");
 
-    let calendar = DeliveryCalendar::from_system(&system);
-    let topology = crate::bucket_topology::build_transit_bucket_topology(&system, &calendar, false);
+    let basis = WaterDeliveryBasis::of(&system);
+    let calendar = DeliveryCalendar::water(&system, basis);
+    let topology =
+        crate::bucket_topology::build_transit_bucket_topology(&system, &calendar, basis, false);
     let anticipated_plants = AnticipatedPlants::build(system.thermals());
     let leads = vec![2; anticipated_plants.len()];
     let n_stages = leads.iter().copied().max().unwrap_or(0) + 2;
@@ -7493,7 +7528,7 @@ fn resolve_state_layout_widens_dense_stride_and_mask_to_declared_depth() {
     let lag_active_count = state
         .nonzero_state_indices
         .iter()
-        .filter(|d| state.inflow_lags.contains(&d.get()))
+        .filter(|d| state.state_dim_lag_range().contains(&d.get()))
         .count();
     assert_eq!(
         lag_active_count,
@@ -7545,7 +7580,7 @@ fn resolve_state_layout_floors_declared_depth_at_ar_order() {
     let lag_active_count = state
         .nonzero_state_indices
         .iter()
-        .filter(|d| state.inflow_lags.contains(&d.get()))
+        .filter(|d| state.state_dim_lag_range().contains(&d.get()))
         .count();
     assert_eq!(
         lag_active_count,
@@ -7650,271 +7685,6 @@ fn stage_id_resolver_agrees_with_study_stage_ids() {
         assert_eq!(resolver.resolve(id), Some(i));
         assert_eq!(resolver.id_at(i), Some(id));
     }
-}
-
-/// 2-hydro cascade: hydro 2 (upstream) declares a travel-time arc into hydro 1
-/// (downstream), so `bucket_topology.n_buckets() > 0`.
-#[expect(
-    clippy::too_many_lines,
-    clippy::items_after_statements,
-    reason = "the fixture spells out one complete study inline so each assertion traces to a literal, and fixture-local helper items sit beside the entities that use them"
-)]
-fn system_with_travel_time_arc(n_stages: usize) -> novomodelo_core::System {
-    use chrono::NaiveDate;
-
-    let bus = Bus {
-        id: EntityId(1),
-        name: "B1".to_string(),
-        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        deficit_segments: vec![DeficitSegment {
-            depth_mw: None,
-            cost_per_mwh: 500.0,
-        }],
-        excess_cost: 0.0,
-    };
-
-    let thermal = make_thermal(ThermalSpec {
-        id: 3,
-        name: "T1".to_string(),
-        bus_id: 1,
-        ..Default::default()
-    });
-
-    let make_hydro =
-        |id: i32, name: &str, downstream_id: Option<i32>, travel_time_hours: Option<f64>| {
-            let mut hydro = Hydro {
-                unit_groups: Vec::new(),
-                id: EntityId(id),
-                name: name.to_string(),
-                operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-                downstream_id: downstream_id.map(EntityId),
-                travel_time_hours,
-                entry_stage_id: None,
-                exit_stage_id: None,
-                min_storage_hm3: 0.0,
-                max_storage_hm3: 200.0,
-                min_outflow_m3s: 0.0,
-                max_outflow_m3s: None,
-                generation_model: HydroGenerationModel::ConstantProductivity,
-                min_turbined_m3s: 0.0,
-                max_turbined_m3s: 100.0,
-                specific_productivity_mw_per_m3s_per_m: None,
-                min_generation_mw: 0.0,
-                max_generation_mw: 250.0,
-                tailrace: None,
-                hydraulic_losses: None,
-                efficiency: None,
-                evaporation_coefficients_mm: None,
-                evaporation_reference_volumes_hm3: None,
-                diversion: None,
-                filling: None,
-                penalties: HydroPenalties {
-                    spillage_cost: 0.01,
-                    diversion_cost: 0.0,
-                    turbined_cost: 0.0,
-                    storage_violation_below_cost: 0.0,
-                    filling_target_violation_cost: 0.0,
-                    turbined_violation_below_cost: 0.0,
-                    outflow_violation_below_cost: 0.0,
-                    outflow_violation_above_cost: 0.0,
-                    generation_violation_below_cost: 0.0,
-                    evaporation_violation_cost: 0.0,
-                    water_withdrawal_violation_cost: 0.0,
-                    water_withdrawal_violation_pos_cost: 0.0,
-                    water_withdrawal_violation_neg_cost: 0.0,
-                    evaporation_violation_pos_cost: 0.0,
-                    evaporation_violation_neg_cost: 0.0,
-                    inflow_nonnegativity_cost: 1000.0,
-                },
-            };
-            hydro.declare_mirror_unit_group(EntityId(1));
-            hydro
-        };
-
-    // One 31-day calendar month per stage: `StageCalendar::new` (the
-    // travel-time seed's resolver) requires chronologically ordered,
-    // non-overlapping stage dates — a fixed date range shared by every stage
-    // (the pre-StageCalendar fixture) violates that precondition.
-    let mut stage_cursor = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
-    let stages: Vec<Stage> = (0..n_stages)
-        .map(|i| {
-            let start_date = stage_cursor;
-            let end_date = start_date + chrono::Duration::days(31);
-            stage_cursor = end_date;
-            Stage {
-                index: i,
-                id: i as i32,
-                start_date,
-                end_date,
-                season_id: None,
-                blocks: vec![Block {
-                    index: 0,
-                    name: "S".to_string(),
-                    duration_hours: 744.0,
-                }],
-                block_mode: BlockMode::Parallel,
-                state_config: StageStateConfig {
-                    storage: true,
-                    inflow_lags: false,
-                },
-                risk_config: StageRiskConfig::Expectation,
-                scenario_config: ScenarioSourceConfig {
-                    branching_factor: 1,
-                    noise_method: NoiseMethod::Saa,
-                },
-            }
-        })
-        .collect();
-
-    let inflow_models: Vec<InflowModel> = [1_i32, 2]
-        .into_iter()
-        .flat_map(|hid| {
-            (0..n_stages).map(move |i| InflowModel {
-                hydro_id: EntityId(hid),
-                stage_id: i as i32,
-                mean_m3s: 80.0,
-                std_m3s: 20.0,
-                ar_coefficients: vec![],
-                residual_std_ratio: 1.0,
-                annual: None,
-            })
-        })
-        .collect();
-
-    let load_models: Vec<LoadModel> = (0..n_stages)
-        .map(|i| LoadModel {
-            bus_id: EntityId(1),
-            stage_id: i as i32,
-            mean_mw: 100.0,
-            std_mw: 0.0,
-        })
-        .collect();
-
-    let n_st = n_stages.max(1);
-
-    fn default_hydro_bounds() -> HydroStageBounds {
-        HydroStageBounds {
-            min_storage_hm3: 0.0,
-            max_storage_hm3: 200.0,
-            filling_min_rate_m3s: 0.0,
-            water_withdrawal_m3s: 0.0,
-        }
-    }
-
-    fn default_hydro_block_bounds() -> HydroBlockBounds {
-        HydroBlockBounds {
-            max_turbined_m3s: 100.0,
-            max_generation_mw: 250.0,
-            ..Default::default()
-        }
-    }
-
-    fn default_hydro_penalties() -> HydroPenalties {
-        HydroPenalties {
-            spillage_cost: 0.01,
-            diversion_cost: 0.0,
-            turbined_cost: 0.0,
-            storage_violation_below_cost: 500.0,
-            filling_target_violation_cost: 0.0,
-            turbined_violation_below_cost: 0.0,
-            outflow_violation_below_cost: 0.0,
-            outflow_violation_above_cost: 0.0,
-            generation_violation_below_cost: 0.0,
-            evaporation_violation_cost: 0.0,
-            water_withdrawal_violation_cost: 0.0,
-            water_withdrawal_violation_pos_cost: 0.0,
-            water_withdrawal_violation_neg_cost: 0.0,
-            evaporation_violation_pos_cost: 0.0,
-            evaporation_violation_neg_cost: 0.0,
-            inflow_nonnegativity_cost: 1000.0,
-        }
-    }
-
-    let bounds = ResolvedBounds::new(
-        &BoundsCountsSpec {
-            n_hydros: 2,
-            n_thermals: 1,
-            n_lines: 0,
-            n_pumping: 0,
-            n_contracts: 0,
-            n_stages: n_st,
-            k_max: 0,
-        },
-        &BoundsDefaults {
-            hydro: default_hydro_bounds(),
-            hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
-            thermal_block: ThermalBlockBounds {
-                min_generation_mw: 0.0,
-                max_generation_mw: 100.0,
-            },
-            line_block: LineBlockBounds {
-                direct_mw: 0.0,
-                reverse_mw: 0.0,
-            },
-            pumping_block: PumpingBlockBounds {
-                min_flow_m3s: 0.0,
-                max_flow_m3s: 0.0,
-            },
-            contract_block: ContractBlockBounds {
-                min_mw: 0.0,
-                max_mw: 0.0,
-                price_per_mwh: 0.0,
-            },
-        },
-    );
-
-    let penalties = ResolvedPenalties::new(
-        &PenaltiesCountsSpec {
-            n_hydros: 2,
-            n_buses: 1,
-            n_lines: 0,
-            n_ncs: 0,
-            n_stages: n_st,
-        },
-        &PenaltiesDefaults {
-            hydro: default_hydro_penalties(),
-            bus: BusStagePenalties { excess_cost: 0.0 },
-            line: LineStagePenalties { exchange_cost: 0.0 },
-            ncs: NcsStagePenalties {
-                curtailment_cost: 0.0,
-            },
-        },
-    );
-
-    SystemBuilder::new()
-        .buses(vec![bus])
-        .thermals(vec![thermal])
-        .hydros(vec![
-            make_hydro(1, "H1_downstream", None, None),
-            make_hydro(2, "H2_upstream", Some(1), Some(2000.0)),
-        ])
-        .stages(stages)
-        .inflow_models(inflow_models)
-        .load_models(load_models)
-        .bounds(bounds)
-        .penalties(penalties)
-        .initial_conditions(InitialConditions::default())
-        .build()
-        .expect("system_with_travel_time_arc: valid")
-}
-
-/// A declared arc (`n_buckets > 0`) sizes `StageData.state` and the LP
-/// template's `n_state` to the same value — both read the one threaded instance.
-#[test]
-fn setup_state_and_stage_template_agree_on_n_state_with_declared_arc() {
-    let system = system_with_travel_time_arc(6);
-    let setup = setup_from_system(&system);
-
-    assert!(
-        setup.inputs.stage_data.state.n_buckets > 0,
-        "fixture must declare a real travel-time arc"
-    );
-    assert_eq!(
-        setup.inputs.stage_data.stage_templates.templates[0].n_state,
-        setup.inputs.stage_data.state.n_state,
-        "the template's n_state must agree with StageData.state.n_state"
-    );
 }
 
 /// Geometry byte-identity (the role-(b) analogue of
@@ -8235,6 +8005,7 @@ fn par2_system_with_state_configs(state_configs: &[StageStateConfig]) -> novomod
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -8326,10 +8097,10 @@ fn par2_system_with_state_configs(state_configs: &[StageStateConfig]) -> novomod
                 max_generation_mw: 200.0,
                 ..Default::default()
             },
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -8366,6 +8137,7 @@ fn par2_system_with_state_configs(state_configs: &[StageStateConfig]) -> novomod
                 outflow_violation_below_cost: 0.0,
                 outflow_violation_above_cost: 0.0,
                 generation_violation_below_cost: 0.0,
+                fpha_violation_cost: 0.0,
                 evaporation_violation_cost: 0.0,
                 water_withdrawal_violation_cost: 0.0,
                 water_withdrawal_violation_pos_cost: 0.0,
@@ -8525,6 +8297,53 @@ fn cut_state_layouts_stored_one_per_pool_and_reachable() {
     );
 }
 
+#[test]
+fn cut_state_layouts_resolve_the_lag_point_per_pool() {
+    let lags = StageStateConfig {
+        storage: true,
+        inflow_lags: true,
+    };
+    let storage_only = StageStateConfig {
+        storage: true,
+        inflow_lags: false,
+    };
+    let system = par2_system_with_state_configs(&[lags, storage_only, lags, lags]);
+    let setup = setup_from_system(&system);
+    let layouts = &setup.inputs.cut_state_layouts;
+
+    assert_eq!(layouts[0].lag_point().full(), 0..0);
+    for layout in &layouts[1..] {
+        assert_eq!(layout.lag_point().full(), 1..3);
+    }
+}
+
+#[test]
+fn chain_rule_slots_of_a_pool_pair_follow_each_pools_layout() {
+    let lags = StageStateConfig {
+        storage: true,
+        inflow_lags: true,
+    };
+    let storage_only = StageStateConfig {
+        storage: true,
+        inflow_lags: false,
+    };
+    let slots_of_pools_1_and_0 = |state_configs: &[StageStateConfig]| {
+        let setup = setup_from_system(&par2_system_with_state_configs(state_configs));
+        let layouts = &setup.inputs.cut_state_layouts;
+        ChainRuleSlots::compose(&setup.inputs.stage_data.state, &layouts[1], &layouts[0])
+    };
+
+    let resident_lag_region =
+        |slots: &ChainRuleSlots| slots.resident_lag0().start..slots.resident_shifted().end;
+    let storage_only_extracted = slots_of_pools_1_and_0(&[lags, storage_only, lags, lags]);
+    assert_eq!(storage_only_extracted.extracted_lag(), 0..0);
+    assert_eq!(resident_lag_region(&storage_only_extracted), 1..3);
+
+    let storage_only_resident = slots_of_pools_1_and_0(&[lags, lags, storage_only, lags]);
+    assert_eq!(resident_lag_region(&storage_only_resident), 0..0);
+    assert_eq!(storage_only_resident.extracted_lag(), 1..3);
+}
+
 // ---------------------------------------------------------------------------
 // K = 0 sub-stage lead (`c(m) = m`) — exclude-with-advisory
 // ---------------------------------------------------------------------------
@@ -8606,7 +8425,7 @@ fn test_anticipated_resolve_point_k0_uniform_calendar() {
     );
     let (resolution, lead_stages) = super::resolve_anticipated_commitments(
         &system,
-        &DeliveryCalendar::from_system(&system),
+        &DeliveryCalendar::thermal(&system),
         &AnticipatedPlants::build(system.thermals()),
     );
     let point = &resolution.per_plant[0];
@@ -8647,7 +8466,7 @@ fn resolve_anticipated_commitments_warns_on_k0_sub_stage_lead() {
     tracing::subscriber::with_default(subscriber, || {
         let _ = super::resolve_anticipated_commitments(
             &system,
-            &DeliveryCalendar::from_system(&system),
+            &DeliveryCalendar::thermal(&system),
             &AnticipatedPlants::build(system.thermals()),
         );
     });
@@ -8684,7 +8503,7 @@ fn resolve_anticipated_commitments_leadstages_never_warns() {
     tracing::subscriber::with_default(subscriber, || {
         let _ = super::resolve_anticipated_commitments(
             &system,
-            &DeliveryCalendar::from_system(&system),
+            &DeliveryCalendar::thermal(&system),
             &AnticipatedPlants::build(system.thermals()),
         );
     });
@@ -8715,7 +8534,7 @@ fn warn_on_sub_stage_lead_emits_once_per_self_delivered_stage() {
     tracing::subscriber::with_default(subscriber, || {
         let _ = super::resolve_anticipated_commitments(
             &system,
-            &DeliveryCalendar::from_system(&system),
+            &DeliveryCalendar::thermal(&system),
             &AnticipatedPlants::build(system.thermals()),
         );
     });
@@ -8754,7 +8573,7 @@ fn warn_on_sub_stage_lead_emits_once_per_self_delivered_stage() {
 #[test]
 fn resolve_anticipated_commitments_core_reports_the_extended_delivery_width() {
     let post_study = PostStudyStages {
-        stages: vec![
+        thermal_stages: vec![
             PostStudyStage {
                 start_date: NaiveDate::from_ymd_opt(2024, 3, 1).unwrap(),
                 duration_hours: 744.0,
@@ -8765,6 +8584,7 @@ fn resolve_anticipated_commitments_core_reports_the_extended_delivery_width() {
             },
         ],
         thermal_bounds: Vec::new(),
+        water_bucket_stages: WaterBucketStages::FromThermalStages,
     };
     let system = minimal_system_with_anticipated(
         &[744.0, 744.0],
@@ -8775,7 +8595,7 @@ fn resolve_anticipated_commitments_core_reports_the_extended_delivery_width() {
 
     let (resolution, _) = super::resolve_anticipated_commitments_core(
         &system,
-        &DeliveryCalendar::from_system(&system),
+        &DeliveryCalendar::thermal(&system),
         &AnticipatedPlants::build(system.thermals()),
     );
 
@@ -8800,7 +8620,7 @@ fn resolve_anticipated_commitments_core_matches_study_only_width_without_post_st
 
     let (resolution, _) = super::resolve_anticipated_commitments_core(
         &system,
-        &DeliveryCalendar::from_system(&system),
+        &DeliveryCalendar::thermal(&system),
         &AnticipatedPlants::build(system.thermals()),
     );
 
@@ -8818,11 +8638,12 @@ fn resolve_anticipated_commitments_core_matches_study_only_width_without_post_st
 #[test]
 fn warn_on_boundary_absent_post_study_delivery_fires_once_when_boundary_absent() {
     let post_study = PostStudyStages {
-        stages: vec![PostStudyStage {
+        thermal_stages: vec![PostStudyStage {
             start_date: NaiveDate::from_ymd_opt(2024, 3, 1).unwrap(),
             duration_hours: 744.0,
         }],
         thermal_bounds: Vec::new(),
+        water_bucket_stages: WaterBucketStages::FromThermalStages,
     };
     let system = minimal_system_with_anticipated(
         &[744.0, 744.0],
@@ -8832,7 +8653,7 @@ fn warn_on_boundary_absent_post_study_delivery_fires_once_when_boundary_absent()
     );
     let (resolution, _) = super::resolve_anticipated_commitments_core(
         &system,
-        &DeliveryCalendar::from_system(&system),
+        &DeliveryCalendar::thermal(&system),
         &AnticipatedPlants::build(system.thermals()),
     );
 
@@ -8840,7 +8661,7 @@ fn warn_on_boundary_absent_post_study_delivery_fires_once_when_boundary_absent()
     tracing::subscriber::with_default(subscriber, || {
         super::warn_on_boundary_absent_post_study_delivery(
             &system,
-            &DeliveryCalendar::from_system(&system),
+            &DeliveryCalendar::thermal(&system),
             &AnticipatedPlants::build(system.thermals()),
             &resolution,
             false,
@@ -8869,11 +8690,12 @@ fn warn_on_boundary_absent_post_study_delivery_fires_once_when_boundary_absent()
 #[test]
 fn warn_on_boundary_absent_post_study_delivery_silent_when_boundary_present() {
     let post_study = PostStudyStages {
-        stages: vec![PostStudyStage {
+        thermal_stages: vec![PostStudyStage {
             start_date: NaiveDate::from_ymd_opt(2024, 3, 1).unwrap(),
             duration_hours: 744.0,
         }],
         thermal_bounds: Vec::new(),
+        water_bucket_stages: WaterBucketStages::FromThermalStages,
     };
     let system = minimal_system_with_anticipated(
         &[744.0, 744.0],
@@ -8883,7 +8705,7 @@ fn warn_on_boundary_absent_post_study_delivery_silent_when_boundary_present() {
     );
     let (resolution, _) = super::resolve_anticipated_commitments_core(
         &system,
-        &DeliveryCalendar::from_system(&system),
+        &DeliveryCalendar::thermal(&system),
         &AnticipatedPlants::build(system.thermals()),
     );
 
@@ -8891,7 +8713,7 @@ fn warn_on_boundary_absent_post_study_delivery_silent_when_boundary_present() {
     tracing::subscriber::with_default(subscriber, || {
         super::warn_on_boundary_absent_post_study_delivery(
             &system,
-            &DeliveryCalendar::from_system(&system),
+            &DeliveryCalendar::thermal(&system),
             &AnticipatedPlants::build(system.thermals()),
             &resolution,
             true,
@@ -8928,7 +8750,7 @@ fn warn_on_boundary_absent_fires_for_nonzero_fixed_value_without_boundary() {
     );
     let (resolution, _) = super::resolve_anticipated_commitments_core(
         &system,
-        &DeliveryCalendar::from_system(&system),
+        &DeliveryCalendar::thermal(&system),
         &AnticipatedPlants::build(system.thermals()),
     );
 
@@ -8936,7 +8758,7 @@ fn warn_on_boundary_absent_fires_for_nonzero_fixed_value_without_boundary() {
     tracing::subscriber::with_default(subscriber, || {
         super::warn_on_boundary_absent_post_study_delivery(
             &system,
-            &DeliveryCalendar::from_system(&system),
+            &DeliveryCalendar::thermal(&system),
             &AnticipatedPlants::build(system.thermals()),
             &resolution,
             false,
@@ -8981,7 +8803,7 @@ fn warn_on_boundary_absent_silent_for_all_zero_stub_without_boundary() {
     );
     let (resolution, _) = super::resolve_anticipated_commitments_core(
         &system,
-        &DeliveryCalendar::from_system(&system),
+        &DeliveryCalendar::thermal(&system),
         &AnticipatedPlants::build(system.thermals()),
     );
 
@@ -8989,7 +8811,7 @@ fn warn_on_boundary_absent_silent_for_all_zero_stub_without_boundary() {
     tracing::subscriber::with_default(subscriber, || {
         super::warn_on_boundary_absent_post_study_delivery(
             &system,
-            &DeliveryCalendar::from_system(&system),
+            &DeliveryCalendar::thermal(&system),
             &AnticipatedPlants::build(system.thermals()),
             &resolution,
             false,
@@ -9012,11 +8834,12 @@ fn warn_on_boundary_absent_names_dual_cause_plant_once() {
     use novomodelo_core::AnticipatedCommitmentHistory;
 
     let post_study = PostStudyStages {
-        stages: vec![PostStudyStage {
+        thermal_stages: vec![PostStudyStage {
             start_date: NaiveDate::from_ymd_opt(2024, 3, 1).unwrap(),
             duration_hours: 744.0,
         }],
         thermal_bounds: Vec::new(),
+        water_bucket_stages: WaterBucketStages::FromThermalStages,
     };
     let system = minimal_system_with_anticipated_and_commitments(
         &[744.0, 744.0],
@@ -9032,7 +8855,7 @@ fn warn_on_boundary_absent_names_dual_cause_plant_once() {
     );
     let (resolution, _) = super::resolve_anticipated_commitments_core(
         &system,
-        &DeliveryCalendar::from_system(&system),
+        &DeliveryCalendar::thermal(&system),
         &AnticipatedPlants::build(system.thermals()),
     );
 
@@ -9040,7 +8863,7 @@ fn warn_on_boundary_absent_names_dual_cause_plant_once() {
     tracing::subscriber::with_default(subscriber, || {
         super::warn_on_boundary_absent_post_study_delivery(
             &system,
-            &DeliveryCalendar::from_system(&system),
+            &DeliveryCalendar::thermal(&system),
             &AnticipatedPlants::build(system.thermals()),
             &resolution,
             false,
@@ -9091,7 +8914,7 @@ fn lead_time_fanout_rejected_at_setup() {
     // Sanity: the fixture genuinely fans out (guards the guard's own fixture).
     let (resolution, _) = super::resolve_anticipated_commitments(
         &system,
-        &DeliveryCalendar::from_system(&system),
+        &DeliveryCalendar::thermal(&system),
         &AnticipatedPlants::build(system.thermals()),
     );
     assert_eq!(
@@ -9243,10 +9066,10 @@ fn system_with_two_thermals_one_fanning() -> novomodelo_core::System {
                 water_withdrawal_m3s: 0.0,
             },
             hydro_block: HydroBlockBounds::default(),
-            thermal: ThermalStageBounds { cost_per_mwh: 50.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 50.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -9265,10 +9088,10 @@ fn system_with_two_thermals_one_fanning() -> novomodelo_core::System {
     );
     for thermal_idx in 0..2 {
         for s in 0..(n_stages + k_max_bounds) {
-            *bounds.thermal_bounds_mut(thermal_idx, s) = ThermalStageBounds { cost_per_mwh: 50.0 };
             *bounds.thermal_block_base_mut(thermal_idx, s) = ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 50.0,
             };
         }
     }
@@ -9292,6 +9115,7 @@ fn system_with_two_thermals_one_fanning() -> novomodelo_core::System {
                 outflow_violation_below_cost: 0.0,
                 outflow_violation_above_cost: 0.0,
                 generation_violation_below_cost: 0.0,
+                fpha_violation_cost: 0.0,
                 evaporation_violation_cost: 0.0,
                 water_withdrawal_violation_cost: 0.0,
                 water_withdrawal_violation_pos_cost: 0.0,
@@ -9458,10 +9282,10 @@ fn system_with_interleaved_anticipated_thermals() -> novomodelo_core::System {
                 water_withdrawal_m3s: 0.0,
             },
             hydro_block: HydroBlockBounds::default(),
-            thermal: ThermalStageBounds { cost_per_mwh: 50.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 50.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -9480,10 +9304,10 @@ fn system_with_interleaved_anticipated_thermals() -> novomodelo_core::System {
     );
     for thermal_idx in 0..3 {
         for s in 0..(n_stages + k_max_bounds) {
-            *bounds.thermal_bounds_mut(thermal_idx, s) = ThermalStageBounds { cost_per_mwh: 50.0 };
             *bounds.thermal_block_base_mut(thermal_idx, s) = ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 50.0,
             };
         }
     }
@@ -9507,6 +9331,7 @@ fn system_with_interleaved_anticipated_thermals() -> novomodelo_core::System {
                 outflow_violation_below_cost: 0.0,
                 outflow_violation_above_cost: 0.0,
                 generation_violation_below_cost: 0.0,
+                fpha_violation_cost: 0.0,
                 evaporation_violation_cost: 0.0,
                 water_withdrawal_violation_cost: 0.0,
                 water_withdrawal_violation_pos_cost: 0.0,
@@ -9635,10 +9460,10 @@ fn zero_bounds_defaults(contract_price: f64) -> BoundsDefaults {
             water_withdrawal_m3s: 0.0,
         },
         hydro_block: HydroBlockBounds::default(),
-        thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
         thermal_block: ThermalBlockBounds {
             min_generation_mw: 0.0,
             max_generation_mw: 0.0,
+            cost_per_mwh: 0.0,
         },
         line_block: LineBlockBounds {
             direct_mw: 0.0,
@@ -9862,36 +9687,36 @@ fn ng_edge(child: usize) -> super::NodeSuccessor {
 /// path-product-sum is 2·3·5 + 2·7 = 44. Asymmetric so the test cannot pass a
 /// uniform-fan tautology.
 fn asymmetric_fan_node_graph() -> super::NodeGraph {
-    super::NodeGraph {
-        node_ids: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)].into(),
-        nodes: vec![ng_node(0, 2), ng_node(1, 3), ng_node(2, 5), ng_node(1, 7)].into(),
-        successors: vec![
+    super::NodeGraph::new(
+        vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)].into(),
+        vec![ng_node(0, 2), ng_node(1, 3), ng_node(2, 5), ng_node(1, 7)].into(),
+        vec![
             vec![ng_edge(1), ng_edge(3)],
             vec![ng_edge(2)],
             vec![],
             vec![],
         ]
         .into(),
-        n_pools: 1,
-        pool_stage: vec![super::node_graph::StageIdx(0)],
-    }
+        1,
+        vec![super::node_graph::StageIdx(0)],
+    )
 }
 
 /// A 3-node chain whose per-node |Ω| = 6·10⁹ makes the path product overflow
 /// `u64` (`u64::MAX ≈ 1.8·10¹⁹`, so the first multiply already overflows).
 fn overflowing_chain_node_graph() -> super::NodeGraph {
-    super::NodeGraph {
-        node_ids: vec![NodeId(0), NodeId(1), NodeId(2)].into(),
-        nodes: vec![
+    super::NodeGraph::new(
+        vec![NodeId(0), NodeId(1), NodeId(2)].into(),
+        vec![
             ng_node(0, 6_000_000_000),
             ng_node(1, 6_000_000_000),
             ng_node(2, 6_000_000_000),
         ]
         .into(),
-        successors: vec![vec![ng_edge(1)], vec![ng_edge(2)], vec![]].into(),
-        n_pools: 1,
-        pool_stage: vec![super::node_graph::StageIdx(0)],
-    }
+        vec![vec![ng_edge(1)], vec![ng_edge(2)], vec![]].into(),
+        1,
+        vec![super::node_graph::StageIdx(0)],
+    )
 }
 
 fn rules_with_gap() -> crate::stopping_rule::StoppingRuleSet {
@@ -10157,19 +9982,19 @@ fn enumeration_asymmetry_symmetric_declarations_do_not_warn() {
 /// `resolve_enumerated_simulation_count` must admit now that the derived-≥-1
 /// census gate is open.
 fn terminal_fan_tree_node_graph() -> super::NodeGraph {
-    super::NodeGraph {
-        node_ids: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)].into(),
-        nodes: vec![ng_node(0, 1), ng_node(1, 1), ng_node(1, 1), ng_node(1, 1)].into(),
-        successors: vec![
+    super::NodeGraph::new(
+        vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)].into(),
+        vec![ng_node(0, 1), ng_node(1, 1), ng_node(1, 1), ng_node(1, 1)].into(),
+        vec![
             vec![ng_edge(1), ng_edge(2), ng_edge(3)],
             vec![],
             vec![],
             vec![],
         ]
         .into(),
-        n_pools: 1,
-        pool_stage: vec![super::node_graph::StageIdx(0)],
-    }
+        1,
+        vec![super::node_graph::StageIdx(0)],
+    )
 }
 
 /// A `K = 3` branching tree is admitted for TRAINING through the shared
@@ -10208,13 +10033,13 @@ fn resolve_enumerated_simulation_count_propagates_kt_overflow_guard() {
 /// predecessor of its one child), so `reject_within_node_opening_enumeration`
 /// is the guard that fires, not `reject_recombining_node_enumeration`.
 fn within_node_multi_opening_node_graph() -> super::NodeGraph {
-    super::NodeGraph {
-        node_ids: vec![NodeId(0), NodeId(1)].into(),
-        nodes: vec![ng_node(0, 2), ng_node(1, 1)].into(),
-        successors: vec![vec![ng_edge(1)], vec![]].into(),
-        n_pools: 1,
-        pool_stage: vec![super::node_graph::StageIdx(0)],
-    }
+    super::NodeGraph::new(
+        vec![NodeId(0), NodeId(1)].into(),
+        vec![ng_node(0, 2), ng_node(1, 1)].into(),
+        vec![vec![ng_edge(1)], vec![]].into(),
+        1,
+        vec![super::node_graph::StageIdx(0)],
+    )
 }
 
 /// A within-node multi-opening node (`|Ω| > 1`) under enumerated SIMULATION is
@@ -10240,19 +10065,19 @@ fn resolve_enumerated_simulation_count_rejects_within_node_multi_opening() {
 /// opening set, so the within-node-opening rejection passes and the
 /// recombination guard is what fires.
 fn recombining_tree_node_graph() -> super::NodeGraph {
-    super::NodeGraph {
-        node_ids: vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)].into(),
-        nodes: vec![ng_node(0, 1), ng_node(1, 1), ng_node(1, 1), ng_node(2, 1)].into(),
-        successors: vec![
+    super::NodeGraph::new(
+        vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)].into(),
+        vec![ng_node(0, 1), ng_node(1, 1), ng_node(1, 1), ng_node(2, 1)].into(),
+        vec![
             vec![ng_edge(1), ng_edge(2)],
             vec![ng_edge(3)],
             vec![ng_edge(3)],
             vec![],
         ]
         .into(),
-        n_pools: 1,
-        pool_stage: vec![super::node_graph::StageIdx(0)],
-    }
+        1,
+        vec![super::node_graph::StageIdx(0)],
+    )
 }
 
 /// A recombining node (in-degree ≥ 2) under enumerated TRAINING is a named
@@ -10344,16 +10169,16 @@ fn ng_external_node(stage: usize, offset: usize) -> super::NodeRuntime {
 /// column 2, node id 9): the child's `scenario_id` surfaces as an `External`
 /// opening, the shape the sampled-selection guard rejects.
 fn external_pointer_node_graph() -> super::NodeGraph {
-    super::NodeGraph {
-        node_ids: vec![NodeId(7), NodeId(9)].into(),
-        nodes: vec![ng_node(0, 3), ng_external_node(1, 2)].into(),
-        successors: vec![vec![ng_edge(1)], vec![]].into(),
-        n_pools: 2,
-        pool_stage: vec![
+    super::NodeGraph::new(
+        vec![NodeId(7), NodeId(9)].into(),
+        vec![ng_node(0, 3), ng_external_node(1, 2)].into(),
+        vec![vec![ng_edge(1)], vec![]].into(),
+        2,
+        vec![
             super::node_graph::StageIdx(0),
             super::node_graph::StageIdx(1),
         ],
-    }
+    )
 }
 
 /// A node carrying a scenario pointer (`External` opening) under sampled forward
@@ -10523,6 +10348,7 @@ fn bucket_seed_zero_penalties() -> HydroPenalties {
         outflow_violation_below_cost: 0.0,
         outflow_violation_above_cost: 0.0,
         generation_violation_below_cost: 0.0,
+        fpha_violation_cost: 0.0,
         evaporation_violation_cost: 0.0,
         water_withdrawal_violation_cost: 0.0,
         water_withdrawal_violation_pos_cost: 0.0,
@@ -10635,6 +10461,12 @@ fn bucket_seed_build_system(
         .expect("valid system")
 }
 
+fn bucket_seed_water_topology(system: &System) -> crate::bucket_topology::TransitBucketTopology {
+    let basis = WaterDeliveryBasis::of(system);
+    let calendar = DeliveryCalendar::water(system, basis);
+    crate::bucket_topology::build_transit_bucket_topology(system, &calendar, basis, false)
+}
+
 /// `start_0 = 2024-01-01`. A single `past_defluences` window ending
 /// `start_0_minus_hours` before `start_0` and spanning `width_hours`, at rate
 /// `value` m³/s.
@@ -10668,8 +10500,7 @@ fn test_single_arc_unroll_matches_ac1() {
         vec![bucket_seed_defluence_window(2, 0.0, 24.0, 100.0)],
     );
 
-    let calendar = DeliveryCalendar::from_system(&system);
-    let topology = crate::bucket_topology::build_transit_bucket_topology(&system, &calendar, false);
+    let topology = bucket_seed_water_topology(&system);
     let state = crate::test_support::bucket_seed_state(&system, &topology);
     assert_eq!(
         state
@@ -10709,8 +10540,7 @@ fn test_mid_horizon_entrant_zero_history_zero_seeds_stage_0_transit_buckets() {
         vec![bucket_seed_defluence_window(2, 0.0, 24.0, 0.0)],
     );
 
-    let calendar = DeliveryCalendar::from_system(&system);
-    let topology = crate::bucket_topology::build_transit_bucket_topology(&system, &calendar, false);
+    let topology = bucket_seed_water_topology(&system);
     let state = crate::test_support::bucket_seed_state(&system, &topology);
     assert_eq!(
         state
@@ -10746,8 +10576,7 @@ fn test_confluence_aggregates_two_upstreams_into_shared_transit_buckets() {
         ],
     );
 
-    let calendar = DeliveryCalendar::from_system(&system);
-    let topology = crate::bucket_topology::build_transit_bucket_topology(&system, &calendar, false);
+    let topology = bucket_seed_water_topology(&system);
     let state = crate::test_support::bucket_seed_state(&system, &topology);
     assert_eq!(
         state
@@ -10801,12 +10630,8 @@ fn test_seed_is_declaration_order_invariant() {
         defluences,
     );
 
-    let calendar_a = DeliveryCalendar::from_system(&system_a);
-    let calendar_b = DeliveryCalendar::from_system(&system_b);
-    let topology_a =
-        crate::bucket_topology::build_transit_bucket_topology(&system_a, &calendar_a, false);
-    let topology_b =
-        crate::bucket_topology::build_transit_bucket_topology(&system_b, &calendar_b, false);
+    let topology_a = bucket_seed_water_topology(&system_a);
+    let topology_b = bucket_seed_water_topology(&system_b);
     let state_a = crate::test_support::bucket_seed_state(&system_a, &topology_a);
     let state_b = crate::test_support::bucket_seed_state(&system_b, &topology_b);
     let seed_a = super::build_initial_transit_bucket_state(&system_a, &topology_a, &state_a);
@@ -10829,8 +10654,7 @@ fn test_seed_len_matches_n_buckets() {
         bucket_seed_study_stages(4, 12.0),
         vec![bucket_seed_defluence_window(2, 0.0, 24.0, 100.0)],
     );
-    let calendar = DeliveryCalendar::from_system(&system);
-    let topology = crate::bucket_topology::build_transit_bucket_topology(&system, &calendar, false);
+    let topology = bucket_seed_water_topology(&system);
     let state = crate::test_support::bucket_seed_state(&system, &topology);
     let seed = super::build_initial_transit_bucket_state(&system, &topology, &state);
     assert_eq!(seed.len(), topology.n_buckets());
@@ -10841,12 +10665,7 @@ fn test_seed_len_matches_n_buckets() {
         bucket_seed_study_stages(3, 24.0),
         vec![],
     );
-    let no_arc_calendar = DeliveryCalendar::from_system(&no_arc_system);
-    let no_arc_topology = crate::bucket_topology::build_transit_bucket_topology(
-        &no_arc_system,
-        &no_arc_calendar,
-        false,
-    );
+    let no_arc_topology = bucket_seed_water_topology(&no_arc_system);
     assert_eq!(no_arc_topology.n_buckets(), 0);
     let no_arc_state = crate::test_support::bucket_seed_state(&no_arc_system, &no_arc_topology);
     let no_arc_seed =
@@ -10876,9 +10695,7 @@ fn test_gapped_windows_contribute_additively() {
         ],
     );
 
-    let delivery_calendar = DeliveryCalendar::from_system(&system);
-    let topology =
-        crate::bucket_topology::build_transit_bucket_topology(&system, &delivery_calendar, false);
+    let topology = bucket_seed_water_topology(&system);
     let state = crate::test_support::bucket_seed_state(&system, &topology);
     let seed = super::build_initial_transit_bucket_state(&system, &topology, &state);
 
@@ -10909,6 +10726,94 @@ fn test_gapped_windows_contribute_additively() {
             "bucket {idx}: gapped windows must contribute additively, got {got} vs expected {want}"
         );
     }
+}
+
+// ── resolve_state_and_topology: declared water calendar coverage ────────────
+
+const SHORT_POST_STUDY_HOURS: [f64; 2] = [168.0, 167.0];
+
+fn post_study_stage_hours(hours: &[f64]) -> Vec<PostStudyStage> {
+    hours
+        .iter()
+        .zip(0_i64..)
+        .map(|(&duration_hours, week)| PostStudyStage {
+            start_date: bucket_seed_date(2024, 1, 5) + Duration::weeks(week),
+            duration_hours,
+        })
+        .collect()
+}
+
+/// Hydro 2 declares a 336 h arc into hydro 1. The thermal calendar is
+/// [`SHORT_POST_STUDY_HOURS`], one hour short of it; the water calendar is
+/// `declared_water_hours` when given, else the thermal one.
+fn system_with_water_arc(declared_water_hours: Option<&[f64]>) -> System {
+    SystemBuilder::new()
+        .buses(vec![Bus {
+            id: EntityId(1),
+            name: "B1".to_string(),
+            operational_start_date: bucket_seed_date(2024, 1, 1),
+            deficit_segments: vec![DeficitSegment {
+                depth_mw: None,
+                cost_per_mwh: 500.0,
+            }],
+            excess_cost: 0.0,
+        }])
+        .hydros(vec![
+            bucket_seed_hydro(1, None, None),
+            bucket_seed_hydro(2, Some(1), Some(336.0)),
+        ])
+        .stages(bucket_seed_study_stages(4, 168.0))
+        .post_study_stages(Some(PostStudyStages {
+            thermal_stages: post_study_stage_hours(&SHORT_POST_STUDY_HOURS),
+            thermal_bounds: Vec::new(),
+            water_bucket_stages: declared_water_hours
+                .map_or(WaterBucketStages::FromThermalStages, |hours| {
+                    WaterBucketStages::Declared(post_study_stage_hours(hours))
+                }),
+        }))
+        .build()
+        .expect("valid system")
+}
+
+fn resolve_water_arc_system(system: &System) -> Result<(), SddpError> {
+    let basis = WaterDeliveryBasis::of(system);
+    super::resolve_state_and_topology(
+        system,
+        &DeliveryCalendar::thermal(system),
+        &DeliveryCalendar::water(system, basis),
+        basis,
+        &PrecomputedPar::default(),
+        None,
+        false,
+    )
+    .map(|_| ())
+}
+
+#[test]
+fn resolve_state_and_topology_refuses_uncovered_declared_water_calendar() {
+    let system = system_with_water_arc(Some(&SHORT_POST_STUDY_HOURS));
+
+    let result = resolve_water_arc_system(&system);
+    let Err(SddpError::Validation(msg)) = result else {
+        panic!("expected a Validation refusal, got {result:?}");
+    };
+    assert!(msg.contains("hydro 2 "), "{msg}");
+    assert!(msg.contains("336 h"), "{msg}");
+    assert!(msg.contains("335 h"), "{msg}");
+}
+
+#[test]
+fn resolve_state_and_topology_accepts_covering_declared_water_calendar() {
+    let system = system_with_water_arc(Some(&[168.0, 168.0]));
+
+    resolve_water_arc_system(&system).expect("a calendar spanning the travel time resolves");
+}
+
+#[test]
+fn resolve_state_and_topology_pads_a_short_legacy_water_calendar() {
+    let system = system_with_water_arc(None);
+
+    resolve_water_arc_system(&system).expect("the legacy calendar is padded, not refused");
 }
 
 // ── study_horizon_end ───────────────────────────────────────────────────────
@@ -11040,4 +10945,141 @@ fn terminal_boundary_flag_formulas_agree_on_chain_and_terminal_fan() {
     )
     .unwrap();
     check(&fan_injected, 2, true);
+}
+
+fn lag_transition(accumulate_weight: f64, finalize_period: bool) -> StageLagTransition {
+    StageLagTransition {
+        accumulate_weight,
+        spillover_weight: 0.0,
+        finalize_period,
+        accumulate_downstream: false,
+        downstream_accumulate_weight: 0.0,
+        downstream_spillover_weight: 0.0,
+        downstream_finalize: false,
+        rebuild_from_downstream: false,
+    }
+}
+
+fn ring_closing_transition() -> StageLagTransition {
+    StageLagTransition {
+        accumulate_downstream: true,
+        downstream_accumulate_weight: 1.0,
+        downstream_finalize: true,
+        ..lag_transition(0.5, false)
+    }
+}
+
+fn rebuild_transition(finalize_period: bool) -> StageLagTransition {
+    StageLagTransition {
+        rebuild_from_downstream: true,
+        ..lag_transition(0.5, finalize_period)
+    }
+}
+
+fn lag_seed(weight: &[f64], accum: &[f64]) -> DerivedInflowSeeds {
+    DerivedInflowSeeds {
+        lag_values: vec![0.0; weight.len()],
+        accum: accum.to_vec(),
+        weight: weight.to_vec(),
+    }
+}
+
+/// Hand-derived from the kernel's update order over two hydros seeded at weights `[0.0, 0.5]`:
+/// every hydro must sit at a zero weight for a closing stage to stay shifted, `49·(1/49)` is
+/// not 1.0, a rebuild stage over a filled ring is shifted whatever else it does, the rebuild
+/// leaves the primary weight alone, a rebuild over an empty ring does nothing, and a seeded
+/// accumulator keeps a zero-weight closing stage off the shifted point until a period finalizes.
+#[test]
+fn lag_point_modes_follow_the_kernel_order() {
+    let transitions = [
+        lag_transition(1.0, true),
+        lag_transition(1.0, true),
+        lag_transition(0.25, false),
+        lag_transition(0.25, true),
+        lag_transition(49.0, true),
+        ring_closing_transition(),
+        rebuild_transition(true),
+        lag_transition(0.5, true),
+        rebuild_transition(false),
+        lag_transition(0.5, true),
+    ];
+    let stage_ids: Vec<i32> = (0..10).collect();
+
+    let classes = classify_lag_points(
+        &stage_ids,
+        &transitions,
+        1,
+        &lag_seed(&[0.0, 0.5], &[0.0; 2]),
+    );
+
+    let modes: Vec<LagPointMode> = classes.iter().map(LagPointRule::mode).collect();
+    assert_eq!(
+        modes,
+        [
+            LagPointMode::Closing,
+            LagPointMode::Shifted,
+            LagPointMode::Carry,
+            LagPointMode::Closing,
+            LagPointMode::Closing,
+            LagPointMode::Carry,
+            LagPointMode::Shifted,
+            LagPointMode::Closing,
+            LagPointMode::Carry,
+            LagPointMode::Closing,
+        ]
+    );
+    for class in classes
+        .iter()
+        .filter(|class| class.mode() != LagPointMode::Closing)
+    {
+        assert!(class.closing().is_none());
+    }
+    let closing = |stage: usize| classes[stage].closing().unwrap();
+
+    let seeded_half = 1.0 / 1.5;
+    assert_eq!(closing(0).incoming_weight(), [0.0, 0.5]);
+    assert_eq!(closing(0).inverse_weight(), [1.0, seeded_half]);
+    assert_eq!(closing(0).share(), [1.0, seeded_half]);
+
+    assert_eq!(closing(3).incoming_weight(), [0.25, 0.25]);
+    assert_eq!(closing(3).inverse_weight(), [2.0, 2.0]);
+    assert_eq!(closing(3).share(), [0.5, 0.5]);
+
+    let inverse_of_49 = 1.0 / 49.0;
+    assert_eq!(closing(4).inverse_weight(), [inverse_of_49; 2]);
+    assert_eq!(closing(4).share(), [49.0 * inverse_of_49; 2]);
+
+    assert_eq!(closing(7).incoming_weight(), [1.0, 1.0]);
+    assert_eq!(closing(7).share(), [0.5 * seeded_half; 2]);
+    assert_eq!(closing(9).incoming_weight(), [0.5, 0.5]);
+    assert_eq!(closing(9).share(), [0.5, 0.5]);
+
+    let seeded_accumulator = classify_lag_points(
+        &[0, 1],
+        &[lag_transition(1.0, true), lag_transition(1.0, true)],
+        0,
+        &lag_seed(&[0.0], &[3.0]),
+    );
+    assert_eq!(seeded_accumulator[0].mode(), LagPointMode::Closing);
+    assert_eq!(seeded_accumulator[0].closing().unwrap().share(), [1.0]);
+    assert_eq!(seeded_accumulator[1].mode(), LagPointMode::Shifted);
+}
+
+#[test]
+fn lag_point_mode_of_a_rebuild_stage_warns_once_naming_the_stage() {
+    let transitions = [
+        lag_transition(1.0, true),
+        ring_closing_transition(),
+        rebuild_transition(true),
+        lag_transition(1.0, true),
+    ];
+
+    let (subscriber, messages) = WarnRecorder::new();
+    tracing::subscriber::with_default(subscriber, || {
+        classify_lag_points(&[5, 6, 7, 8], &transitions, 1, &lag_seed(&[0.0], &[0.0]));
+    });
+
+    let recorded = messages.lock().unwrap();
+    assert_eq!(recorded.len(), 1, "got: {recorded:?}");
+    assert!(recorded[0].contains("stage 7"), "got: {}", recorded[0]);
 }

@@ -175,6 +175,7 @@ mod tests {
             outflow_violation_below_cost: 0.0,
             outflow_violation_above_cost: 0.0,
             generation_violation_below_cost: 0.0,
+            fpha_violation_cost: 0.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -335,6 +336,7 @@ mod tests {
                 coefficients: vec![LinearizedEvaporation {
                     intercept_m3s: 2.0,
                     volume_slope_m3s_per_hm3: 0.02,
+                    coefficient_sign: EvaporationCoefficientSign::Positive,
                 }],
                 reference_volumes_hm3: vec![250.0],
             },
@@ -342,6 +344,7 @@ mod tests {
                 coefficients: vec![LinearizedEvaporation {
                     intercept_m3s: 3.0,
                     volume_slope_m3s_per_hm3: 0.03,
+                    coefficient_sign: EvaporationCoefficientSign::Positive,
                 }],
                 reference_volumes_hm3: vec![350.0],
             },
@@ -390,14 +393,17 @@ mod tests {
                 LinearizedEvaporation {
                     intercept_m3s: 1.0,
                     volume_slope_m3s_per_hm3: 0.01,
+                    coefficient_sign: EvaporationCoefficientSign::Positive,
                 },
                 LinearizedEvaporation {
                     intercept_m3s: 2.0,
                     volume_slope_m3s_per_hm3: 0.02,
+                    coefficient_sign: EvaporationCoefficientSign::Positive,
                 },
                 LinearizedEvaporation {
                     intercept_m3s: 3.0,
                     volume_slope_m3s_per_hm3: 0.03,
+                    coefficient_sign: EvaporationCoefficientSign::Positive,
                 },
             ],
             reference_volumes_hm3: vec![100.0, 200.0, 300.0],

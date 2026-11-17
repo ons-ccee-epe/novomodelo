@@ -17,7 +17,7 @@ use novomodelo_core::{
     NonControllableSource, PenaltiesCountsSpec, PenaltiesDefaults, PostStudyStage, PostStudyStages,
     PostStudyThermalBound, PumpingBlockBounds, PumpingStation, ResolvedBounds, ResolvedNcsBounds,
     ResolvedNcsFactors, ResolvedPenalties, ScenarioSourceConfig, Stage, StageRiskConfig,
-    StageStateConfig, SystemBuilder, Thermal, ThermalBlockBounds, ThermalStageBounds,
+    StageStateConfig, SystemBuilder, Thermal, ThermalBlockBounds, WaterBucketStages,
 };
 use novomodelo_stochastic::PrecomputedNormal;
 use novomodelo_stochastic::par::precompute::PrecomputedPar;
@@ -33,9 +33,7 @@ use crate::inflow_method::InflowNonNegativityMethod;
 use crate::lead_time::AnticipatedResolution;
 use crate::policy::resolved_generic_coefficients::ResolvedGenericCoefficients;
 use crate::resolved_parameters::ResolvedParameters;
-use crate::test_support::{
-    assert_templates_byte_identical, resolve_anticipated_commitments, state_layout_full,
-};
+use crate::test_support::{assert_templates_byte_identical, resolve_anticipated_commitments};
 use crate::time_value::{
     DeliveryCalendar, PostStudyResolved, TimeValue, compute_cumulative_discount_factors,
     compute_per_stage_discount_factors, resolve_post_study_artifacts,
@@ -49,7 +47,7 @@ fn build_time_value_for(system: &novomodelo_core::System) -> TimeValue {
     TimeValue::from_system(
         system,
         &anticipated_plants,
-        DeliveryCalendar::from_system(system),
+        DeliveryCalendar::thermal(system),
     )
 }
 
@@ -83,6 +81,7 @@ fn default_hydro_penalties() -> HydroPenalties {
         outflow_violation_below_cost: 0.0,
         outflow_violation_above_cost: 0.0,
         generation_violation_below_cost: 0.0,
+        fpha_violation_cost: 5000.0,
         evaporation_violation_cost: 0.0,
         water_withdrawal_violation_cost: 0.0,
         water_withdrawal_violation_pos_cost: 0.0,
@@ -165,10 +164,10 @@ fn system_with_thermals(thermals: Vec<Thermal>) -> novomodelo_core::System {
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -264,7 +263,8 @@ fn empty_resolved_params() -> ResolvedParameters {
     }
 }
 
-/// All-zero per-plant [`HydroPenalties`] for fixture hydros.
+/// Per-plant [`HydroPenalties`] for fixture hydros, zero but for the FPHA
+/// violation cost.
 fn hydro_penalties_zero() -> HydroPenalties {
     HydroPenalties {
         spillage_cost: 0.0,
@@ -276,6 +276,7 @@ fn hydro_penalties_zero() -> HydroPenalties {
         outflow_violation_below_cost: 0.0,
         outflow_violation_above_cost: 0.0,
         generation_violation_below_cost: 0.0,
+        fpha_violation_cost: 5000.0,
         evaporation_violation_cost: 0.0,
         water_withdrawal_violation_cost: 0.0,
         water_withdrawal_violation_pos_cost: 0.0,
@@ -385,10 +386,10 @@ fn system_with_pumping_stations(stations: Vec<PumpingStation>) -> novomodelo_cor
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -496,7 +497,6 @@ fn build_template_build_ctx_pumping_stations_id_sorted_and_pos_mapped() {
     );
     let ctx = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,
@@ -557,7 +557,6 @@ fn build_template_build_ctx_n_pumping_matches_slice_and_bounds() {
     );
     let ctx = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,
@@ -637,7 +636,6 @@ fn build_stage_templates_records_the_layout_pumping_flow_range_per_stage() {
     );
     let ctx = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,
@@ -789,10 +787,10 @@ fn system_with_non_controllable_sources(
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -891,7 +889,6 @@ fn geometry_ncs_family_matches_the_stage_layout() {
     );
     let ctx = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,
@@ -1095,10 +1092,10 @@ fn system_with_contracts(contracts: Vec<EnergyContract>, n_blks: usize) -> novom
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -1181,7 +1178,6 @@ fn build_template_build_ctx_contracts_counted_and_pos_mapped() {
     );
     let ctx = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,
@@ -1256,7 +1252,6 @@ fn stage_layout_geometry_populates_contract_ranges() {
     );
     let ctx = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,
@@ -1315,7 +1310,6 @@ fn stage_layout_geometry_empty_contracts_are_pumping_end_anchored() {
     );
     let ctx = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,
@@ -1391,10 +1385,10 @@ fn build_template_build_ctx_contract_count_divergence_panics() {
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -1463,7 +1457,6 @@ fn build_template_build_ctx_contract_count_divergence_panics() {
     );
     let _ = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,
@@ -1535,7 +1528,6 @@ fn build_template_build_ctx_populates_anticipated_metadata() {
     );
     let ctx = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,
@@ -1613,7 +1605,6 @@ fn build_template_build_ctx_zero_anticipated_when_none() {
     );
     let ctx = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,
@@ -1650,7 +1641,7 @@ fn build_template_build_ctx_zero_anticipated_when_none() {
 /// - `id=3`: standard thermal (no anticipation), max=200 MW, cost=500 $/MWh
 ///
 /// `ResolvedBounds` is populated with per-thermal stage costs/limits matching
-/// the per-thermal declarations (the default `BoundsDefaults::thermal` is uniform,
+/// the per-thermal declarations (the default `BoundsDefaults::thermal_block` is uniform,
 /// so a probe that relied on defaults would be trivial — distinct per-thermal
 /// stage data is required to expose any latent order-dependence in the LP fill).
 ///
@@ -1751,10 +1742,10 @@ fn anticipated_invariance_system() -> novomodelo_core::System {
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -1787,7 +1778,7 @@ fn anticipated_invariance_system() -> novomodelo_core::System {
                 .thermal_block_base_mut(t_idx, s_idx)
                 .max_generation_mw = max_generation_mw;
             resolved_bounds
-                .thermal_bounds_mut(t_idx, s_idx)
+                .thermal_block_base_mut(t_idx, s_idx)
                 .cost_per_mwh = cost_per_mwh;
         }
     }
@@ -2019,7 +2010,6 @@ fn lp_template_invariant_under_anticipated_index_permutation() {
     );
     let ctx_a = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,
@@ -2113,7 +2103,6 @@ fn lp_template_invariant_under_anticipated_index_permutation() {
     );
     let ctx_b = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &ctx_b_state,
@@ -2228,7 +2217,7 @@ fn state_boxes_read_before_postprocess_panics() {
     let mut unfilled = super::StageTemplates::empty(DEFAULT_COST_SCALE_FACTOR);
     unfilled
         .templates
-        .push(crate::test_support::transit_bucket_only_template(1, 1));
+        .push(crate::test_support::transit_bucket_only_template(1));
 
     let _ = unfilled.state_boxes();
 }
@@ -2240,7 +2229,7 @@ fn set_state_boxes_rejects_a_box_count_other_than_the_stage_count() {
     let mut templates = super::StageTemplates::empty(DEFAULT_COST_SCALE_FACTOR);
     templates
         .templates
-        .push(crate::test_support::transit_bucket_only_template(1, 1));
+        .push(crate::test_support::transit_bucket_only_template(1));
 
     templates.set_state_boxes(Vec::new());
 }
@@ -2322,10 +2311,10 @@ fn discounted_multi_stage_system_with_post_study(
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 10.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 10.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -2551,7 +2540,7 @@ fn theta_discount_lands_on_the_state_theta_column_with_anticipated_thermals() {
 /// the per-thermal cost/bounds lookup.
 fn two_post_study_stages() -> PostStudyStages {
     PostStudyStages {
-        stages: vec![
+        thermal_stages: vec![
             PostStudyStage {
                 start_date: NaiveDate::from_ymd_opt(2024, 4, 1).unwrap(),
                 duration_hours: 720.0,
@@ -2562,6 +2551,7 @@ fn two_post_study_stages() -> PostStudyStages {
             },
         ],
         thermal_bounds: vec![],
+        water_bucket_stages: WaterBucketStages::FromThermalStages,
     }
 }
 
@@ -2596,7 +2586,6 @@ fn delivery_stage_ids_equals_study_stage_ids_with_no_post_study() {
     );
     let ctx = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,
@@ -2645,7 +2634,6 @@ fn delivery_stage_ids_continue_the_horizon_with_synthetic_ids() {
     );
     let ctx = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,
@@ -2702,7 +2690,6 @@ fn delivery_vectors_read_the_post_study_element_at_its_delivery_index() {
     );
     let ctx = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,
@@ -2712,7 +2699,7 @@ fn delivery_vectors_read_the_post_study_element_at_its_delivery_index() {
 
     assert_eq!(
         ctx.time_value.delivery_total_hours(3),
-        post_study.stages[0].duration_hours
+        post_study.thermal_stages[0].duration_hours
     );
     assert_eq!(
         ctx.time_value.relative_delivery_discount(0, 3),
@@ -2754,7 +2741,6 @@ fn delivery_cumulative_discount_matches_recomputed_extended_horizon() {
     );
     let ctx = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,
@@ -2772,7 +2758,7 @@ fn delivery_cumulative_discount_matches_recomputed_extended_horizon() {
         annual_discount_rate: system.policy_graph().annual_discount_rate,
         ..novomodelo_core::HorizonGraph::default()
     };
-    let calendar_stages = post_study_calendar_stages(&post_study.stages);
+    let calendar_stages = post_study_calendar_stages(&post_study.thermal_stages);
     let calendar_stage_refs: Vec<_> = calendar_stages.iter().collect();
     let per_stage_post = compute_per_stage_discount_factors(&calendar_stage_refs, &rate_graph);
 
@@ -2867,10 +2853,10 @@ fn system_with_anticipated_thermals_and_post_study(
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -2945,8 +2931,9 @@ fn build_post_study_resolved_for(
     let system = system_with_anticipated_thermals_and_post_study(
         two_anticipated_thermals(ids),
         PostStudyStages {
-            stages: three_post_study_stages(),
+            thermal_stages: three_post_study_stages(),
             thermal_bounds,
+            water_bucket_stages: WaterBucketStages::FromThermalStages,
         },
     );
     let hydro_result = PrepareHydroModelsResult::default_from_system(&system);
@@ -2974,7 +2961,6 @@ fn build_post_study_resolved_for(
     );
     let ctx = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,
@@ -3123,11 +3109,12 @@ fn anticipated_bounds_table_shape_is_two_plants_by_three_stages() {
 
 // ── Operational-violation RHS & matrix-coefficient verification ──────────
 
-use super::super::layout::StageLayout;
+use super::super::layout::{RowFamily, StageLayout};
 use crate::DEFAULT_COST_SCALE_FACTOR;
 use crate::hydro_models::{ProductionModelSet, ResolvedProductionModel};
 use novomodelo_core::System;
 use novomodelo_solver::StageTemplate;
+use std::ops::Range;
 
 /// One-hydro system with all operational-violation bounds active (min/max
 /// outflow, min turbine, min generation > 0), two blocks per stage, and
@@ -3174,6 +3161,7 @@ fn one_hydro_active_violations(n_stages: usize) -> System {
             outflow_violation_below_cost: 1000.0,
             outflow_violation_above_cost: 1000.0,
             generation_violation_below_cost: 1000.0,
+            fpha_violation_cost: 10000.0,
             evaporation_violation_cost: 0.0,
             water_withdrawal_violation_cost: 0.0,
             water_withdrawal_violation_pos_cost: 0.0,
@@ -3265,10 +3253,10 @@ fn one_hydro_active_violations(n_stages: usize) -> System {
                 max_generation_mw: 250.0,
                 ..Default::default()
             },
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -3304,6 +3292,7 @@ fn one_hydro_active_violations(n_stages: usize) -> System {
                 outflow_violation_below_cost: 1000.0,
                 outflow_violation_above_cost: 1000.0,
                 generation_violation_below_cost: 1000.0,
+                fpha_violation_cost: 10000.0,
                 evaporation_violation_cost: 0.0,
                 water_withdrawal_violation_cost: 0.0,
                 water_withdrawal_violation_pos_cost: 0.0,
@@ -3398,7 +3387,6 @@ fn build_active_violations_layout_and_template() -> (StageLayout<'static>, Stage
     )));
     let ctx = super::build_template_build_ctx(
         system,
-        par_lp,
         production,
         &hydro_models.evaporation,
         &resolved.state,
@@ -3804,10 +3792,10 @@ fn one_hydro_block_system(block_mode: BlockMode, n_blks: usize) -> System {
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -3899,7 +3887,6 @@ fn block_template(block_mode: BlockMode, n_blks: usize) -> StageTemplate {
     );
     let ctx = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &production,
         &hydro_models.evaporation,
         &resolved.state,
@@ -3923,37 +3910,17 @@ fn chronological_k1_byte_identical_to_parallel() {
     assert_templates_byte_identical(&parallel, &chronological, "parallel vs chronological");
 }
 
-/// `theta` and `n_state` are pure functions of `(N, L, A, k_max)` and are
-/// `n_blks`-free by construction (`StateSpace::new` never sees `block_mode` or
-/// `n_blks`): per-block storage lives strictly in the control region, never in
-/// the state region. Building a chronological `K ≥ 2` stage therefore
-/// changes neither — only the control-region column count grows, by exactly
-/// `n_h * (n_blks − 1)` interior storage columns.
+/// Per-block storage lives strictly in the control region, never in the state
+/// region, so building a chronological `K ≥ 2` stage changes only the
+/// control-region column count, by exactly `n_h * (n_blks − 1)` interior storage
+/// columns.
 #[test]
-fn theta_and_n_state_invariant_to_block_mode() {
+fn chronological_stage_adds_only_interior_storage_columns() {
     let hydro_count = 1_usize;
-    let max_par_order = 0_usize;
     let n_blks = 3_usize;
-
-    let state = state_layout_full(hydro_count, max_par_order, vec![]);
-    let parallel_theta = state.theta;
-    let parallel_n_state = state.n_state;
 
     let parallel = block_template(BlockMode::Parallel, n_blks);
     let chronological = block_template(BlockMode::Chronological, n_blks);
-
-    assert_eq!(
-        parallel.n_state, parallel_n_state,
-        "parallel template n_state must equal StateSpace n_state"
-    );
-    assert_eq!(
-        chronological.n_state, parallel_n_state,
-        "chronological build must not change n_state"
-    );
-    assert_eq!(
-        parallel_theta, state.theta,
-        "building chronological must not change theta"
-    );
 
     assert_eq!(
         chronological.num_cols,
@@ -4015,7 +3982,6 @@ fn block_layout_and_template(
     )));
     let ctx = super::build_template_build_ctx(
         system,
-        par_lp,
         production,
         &hydro_models.evaporation,
         &resolved.state,
@@ -4498,10 +4464,10 @@ fn system_with_contracts_filling_and_anticipated() -> novomodelo_core::System {
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -4586,7 +4552,6 @@ fn stage_geometry_rerouted_ranges_match_layout_source_at_every_stage() {
     );
     let ctx = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,
@@ -4677,6 +4642,107 @@ fn stage_geometry_rerouted_ranges_match_layout_source_at_every_stage() {
     assert!(
         saw_empty_filled_floor,
         "fixture must exercise a non-Operating stage"
+    );
+}
+
+/// The non-empty row families of every stage tile `0..num_rows` exactly: each
+/// row has one family, and the families follow the allocation order. The union
+/// assertion guards the test's power, so a fixture that stops reaching a family
+/// fails here rather than passing on empty ranges.
+#[test]
+fn row_families_partition_every_stage_row() {
+    let check_partition = |fixture: &str,
+                           stage: usize,
+                           families: &[(RowFamily, Range<usize>)],
+                           num_rows: usize|
+     -> Vec<RowFamily> {
+        let mut owner: Vec<Option<RowFamily>> = vec![None; num_rows];
+        let mut previous_start = 0;
+        let mut placed = Vec::new();
+        for (family, range) in families.iter().filter(|(_, range)| !range.is_empty()) {
+            assert!(
+                range.start >= previous_start,
+                "{fixture} stage {stage}: {family:?} starts at row {} before the previous family's start {previous_start}",
+                range.start
+            );
+            previous_start = range.start;
+            assert!(
+                range.end <= num_rows,
+                "{fixture} stage {stage}: {family:?} ends at row {} past num_rows {num_rows}",
+                range.end
+            );
+            for row in range.clone() {
+                assert!(
+                    owner[row].is_none(),
+                    "{fixture} stage {stage}: row {row} is in both {:?} and {family:?}",
+                    owner[row]
+                );
+                owner[row] = Some(*family);
+            }
+            placed.push(*family);
+        }
+        if let Some(row) = owner.iter().position(Option::is_none) {
+            panic!("{fixture} stage {stage}: row {row} is in no family");
+        }
+        placed
+    };
+
+    let mut union: Vec<RowFamily> = Vec::new();
+
+    let (layout, template) = build_active_violations_layout_and_template();
+    union.extend(check_partition(
+        "active violations",
+        0,
+        &layout.row_families(),
+        template.num_rows,
+    ));
+
+    let system = system_with_contracts_filling_and_anticipated();
+    let hydro_result = PrepareHydroModelsResult::default_from_system(&system);
+    let templates = crate::build_stage_templates_resolving_layout(
+        &system,
+        InflowNonNegativityMethod::None,
+        &PrecomputedPar::default(),
+        &PrecomputedNormal::default(),
+        &hydro_result.production,
+        &hydro_result.evaporation,
+        &empty_resolved_params(),
+    )
+    .expect("build_stage_templates: valid system");
+    assert_eq!(
+        templates.row_families().len(),
+        templates.templates.len(),
+        "one row-family record per stage"
+    );
+    for (stage, families) in templates.row_families().iter().enumerate() {
+        union.extend(check_partition(
+            "contracts, filling and anticipated",
+            stage,
+            families,
+            templates.templates[stage].num_rows,
+        ));
+    }
+
+    for required in [
+        RowFamily::WaterBalance,
+        RowFamily::LoadBalance,
+        RowFamily::MinOutflow,
+        RowFamily::FillingTarget,
+    ] {
+        assert!(
+            union.contains(&required),
+            "no fixture reaches {required:?}; reached {union:?}"
+        );
+    }
+    assert!(
+        [
+            RowFamily::AnticipatedFishing,
+            RowFamily::AnticipatedStateOutDef,
+            RowFamily::AnticipatedSlotDefinition,
+        ]
+        .iter()
+        .any(|family| union.contains(family)),
+        "no fixture reaches an anticipated family; reached {union:?}"
     );
 }
 
@@ -4920,10 +4986,10 @@ fn filling_block_system(block_mode: BlockMode, n_blks: usize) -> System {
                 max_generation_mw: 250.0,
                 ..Default::default()
             },
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -5033,7 +5099,6 @@ fn filling_block_layout_and_template(
     )));
     let ctx = super::build_template_build_ctx(
         system,
-        par_lp,
         production,
         &hydro_models.evaporation,
         &resolved.state,
@@ -5274,10 +5339,10 @@ fn anticipated_lead_config_system(
         &BoundsDefaults {
             hydro: default_hydro_bounds(),
             hydro_block: default_hydro_block_bounds(),
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -5363,7 +5428,6 @@ fn template_anticipated_resolution_matches_setup_lead_time() {
     );
     let ctx = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,
@@ -5399,7 +5463,7 @@ fn template_anticipated_resolution_matches_setup_lead_time() {
 
     let (setup_resolution, setup_lead_stages) = resolve_anticipated_commitments(
         &system,
-        &DeliveryCalendar::from_system(&system),
+        &DeliveryCalendar::thermal(&system),
         &AnticipatedPlants::build(system.thermals()),
     );
     assert_eq!(
@@ -5452,7 +5516,6 @@ fn template_leadstages_byte_identical_to_setup_and_fallback() {
     );
     let ctx = super::build_template_build_ctx(
         &system,
-        &par_lp,
         &hydro_result.production,
         &hydro_result.evaporation,
         &resolved.state,
@@ -5468,7 +5531,7 @@ fn template_leadstages_byte_identical_to_setup_and_fallback() {
 
     let (setup_resolution, setup_lead_stages) = resolve_anticipated_commitments(
         &system,
-        &DeliveryCalendar::from_system(&system),
+        &DeliveryCalendar::thermal(&system),
         &AnticipatedPlants::build(system.thermals()),
     );
     assert_eq!(setup_lead_stages, ctx.state.anticipated_lead_stages);

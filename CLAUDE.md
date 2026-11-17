@@ -102,7 +102,7 @@ When changing the MPI basis-cache wire format, read:
 `CapturedBasis::try_from_broadcast_payload` are the sole
 owners of the byte layout. Any layout change must update
 both methods together; the `broadcast_basis_cache` helper
-in `training/training.rs` only owns the four MPI broadcast calls.
+in `training/training.rs` only owns the two MPI broadcast calls.
 
 When changing the stage-LP builder (`lp/builder/`, `lp/indexer/`, or the `setup/`
 code that resolves the builder's inputs), read:

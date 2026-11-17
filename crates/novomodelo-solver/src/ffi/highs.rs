@@ -134,6 +134,16 @@ unsafe extern "C" {
         upper: *const c_double,
     ) -> c_int;
 
+    /// Change bounds of the contiguous row range `[from_row, to_row]`; `to_row` is inclusive.
+    /// Wraps `Highs_changeRowsBoundsByRange()`.
+    pub fn novomodelo_highs_change_rows_bounds_by_range(
+        highs: *mut c_void,
+        from_row: int32_t,
+        to_row: int32_t,
+        lower: *const c_double,
+        upper: *const c_double,
+    ) -> c_int;
+
     /// Change bounds of columns identified by an index set.
     /// Wraps `Highs_changeColsBoundsBySet()`.
     pub fn novomodelo_highs_change_cols_bounds_by_set(

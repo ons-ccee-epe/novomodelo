@@ -15,8 +15,12 @@
 //! combination no committed deck combines.
 //! `discounted_delivery_oracle_study` backs `discounted_delivery_closed_form_lb`
 //! in `tests/anticipated_core.rs`.
+//! `fpha_lag_study` combines FPHA, PAR(2) lags, linearized evaporation, a soft
+//! generic inflow cap and an anticipated thermal on one chronological stage.
 
 #![allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+
+use std::collections::HashMap;
 
 use chrono::{NaiveDate, TimeDelta};
 use novomodelo_core::entities::hydro::{HydroGenerationModel, HydroPenalties};
@@ -27,12 +31,13 @@ use novomodelo_core::temporal::{
 };
 use novomodelo_core::{
     AnticipatedCommitmentHistory, AnticipatedConfig, BoundsCountsSpec, BoundsDefaults,
-    BusStagePenalties, ContractBlockBounds, DeficitSegment, EntityId, HorizonGraph,
-    HydroBlockBounds, HydroStageBounds, HydroStorage, InitialConditions, LineBlockBounds,
-    LineStagePenalties, NcsStagePenalties, NonControllableSource, PenaltiesCountsSpec,
-    PenaltiesDefaults, PostStudyStage, PostStudyStages, PostStudyThermalBound, PumpingBlockBounds,
-    PumpingStation, ResolvedBounds, ResolvedPenalties, SystemBuilder, ThermalBlockBounds,
-    ThermalStageBounds,
+    BusStagePenalties, ConstraintExpression, ContractBlockBounds, DeficitSegment, EntityId,
+    GenericConstraint, HorizonGraph, Hydro, HydroBlockBounds, HydroStageBounds, HydroStorage,
+    InitialConditions, LineBlockBounds, LineStagePenalties, LinearTerm, NcsStagePenalties,
+    NonControllableSource, PenaltiesCountsSpec, PenaltiesDefaults, PenaltyBasis, PostStudyStage,
+    PostStudyStages, PostStudyThermalBound, PumpingBlockBounds, PumpingStation, RecentObservation,
+    ResolvedBounds, ResolvedGenericConstraintBounds, ResolvedPenalties, SlackConfig, SystemBuilder,
+    Thermal, ThermalBlockBounds, VariableRef, WaterBucketStages,
 };
 use novomodelo_io::config::{
     Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
@@ -42,8 +47,8 @@ use novomodelo_io::config::{
 };
 use novomodelo_sddp::StudySetup;
 use novomodelo_sddp::hydro_models::{
-    EvaporationModel, EvaporationModelSet, LinearizedEvaporation, PrepareHydroModelsResult,
-    ProductionModelSet, ResolvedProductionModel,
+    EvaporationCoefficientSign, EvaporationModel, EvaporationModelSet, FphaPlane,
+    LinearizedEvaporation, PrepareHydroModelsResult, ProductionModelSet, ResolvedProductionModel,
 };
 
 use super::builders::{
@@ -71,6 +76,7 @@ fn hydro_penalties() -> HydroPenalties {
         outflow_violation_below_cost: 0.0,
         outflow_violation_above_cost: 0.0,
         generation_violation_below_cost: 0.0,
+        fpha_violation_cost: 5000.0,
         evaporation_violation_cost: 0.0,
         water_withdrawal_violation_cost: 0.0,
         water_withdrawal_violation_pos_cost: 0.0,
@@ -78,6 +84,17 @@ fn hydro_penalties() -> HydroPenalties {
         evaporation_violation_pos_cost: 0.0,
         evaporation_violation_neg_cost: 0.0,
         inflow_nonnegativity_cost: 1000.0,
+    }
+}
+
+fn finite_horizon_graph(annual_discount_rate: f64) -> HorizonGraph {
+    HorizonGraph {
+        stage_discount_rate_overrides: std::collections::BTreeMap::new(),
+        graph_type: PolicyGraphType::FiniteHorizon,
+        annual_discount_rate,
+        transitions: vec![],
+        nodes: Vec::new(),
+        season_map: None,
     }
 }
 
@@ -215,10 +232,10 @@ fn build_system() -> novomodelo_core::System {
                 max_generation_mw: 250.0,
                 ..Default::default()
             },
-            thermal: ThermalStageBounds { cost_per_mwh: 50.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 50.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -240,10 +257,10 @@ fn build_system() -> novomodelo_core::System {
     // cost and capacity; a delivery past the horizon is priced from the
     // post-study calendar, not from this axis.
     for s in 0..thermal_axis {
-        *bounds.thermal_bounds_mut(0, s) = ThermalStageBounds { cost_per_mwh: 50.0 };
         *bounds.thermal_block_base_mut(0, s) = ThermalBlockBounds {
             min_generation_mw: 0.0,
             max_generation_mw: 100.0,
+            cost_per_mwh: 50.0,
         };
     }
 
@@ -286,14 +303,7 @@ fn build_system() -> novomodelo_core::System {
         ..InitialConditions::default()
     };
 
-    let policy_graph = HorizonGraph {
-        stage_discount_rate_overrides: std::collections::BTreeMap::new(),
-        graph_type: PolicyGraphType::FiniteHorizon,
-        annual_discount_rate: 0.06,
-        transitions: vec![],
-        nodes: Vec::new(),
-        season_map: None,
-    };
+    let policy_graph = finite_horizon_graph(0.06);
 
     SystemBuilder::new()
         .buses(vec![bus])
@@ -515,10 +525,10 @@ fn build_mixed_lead_system(reversed: bool) -> novomodelo_core::System {
                 max_generation_mw: 250.0,
                 ..Default::default()
             },
-            thermal: ThermalStageBounds { cost_per_mwh: 50.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 50.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -542,10 +552,10 @@ fn build_mixed_lead_system(reversed: bool) -> novomodelo_core::System {
     // post-study calendar below, not from this axis.
     for thermal_idx in 0..2 {
         for s in 0..thermal_axis {
-            *bounds.thermal_bounds_mut(thermal_idx, s) = ThermalStageBounds { cost_per_mwh: 50.0 };
             *bounds.thermal_block_base_mut(thermal_idx, s) = ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 50.0,
             };
         }
     }
@@ -595,14 +605,7 @@ fn build_mixed_lead_system(reversed: bool) -> novomodelo_core::System {
         ..InitialConditions::default()
     };
 
-    let policy_graph = HorizonGraph {
-        stage_discount_rate_overrides: std::collections::BTreeMap::new(),
-        graph_type: PolicyGraphType::FiniteHorizon,
-        annual_discount_rate: 0.06,
-        transitions: vec![],
-        nodes: Vec::new(),
-        season_map: None,
-    };
+    let policy_graph = finite_horizon_graph(0.06);
 
     // Post-study calendar covering the long lead's post-horizon deliveries
     // (decision stages 2-4 deliver at stages 5-7, i.e. post-study indices
@@ -615,7 +618,7 @@ fn build_mixed_lead_system(reversed: bool) -> novomodelo_core::System {
         })
         .collect();
     let post_study = PostStudyStages {
-        stages: post_study_stages,
+        thermal_stages: post_study_stages,
         thermal_bounds: vec![
             PostStudyThermalBound {
                 thermal_id: MIXED_LEAD_SHORT_THERMAL_ID,
@@ -646,6 +649,7 @@ fn build_mixed_lead_system(reversed: bool) -> novomodelo_core::System {
                 max_mw: 100.0,
             },
         ],
+        water_bucket_stages: WaterBucketStages::FromThermalStages,
     };
 
     let mut buses = vec![bus];
@@ -757,6 +761,7 @@ fn delivery_oracle_bounds() -> ResolvedBounds {
     let backup_capacity = ThermalBlockBounds {
         min_generation_mw: 0.0,
         max_generation_mw: DELIVERY_ORACLE_BACKUP_CAP_MW,
+        cost_per_mwh: DELIVERY_ORACLE_BACKUP_COST,
     };
     let mut bounds = ResolvedBounds::new(
         &BoundsCountsSpec {
@@ -776,9 +781,6 @@ fn delivery_oracle_bounds() -> ResolvedBounds {
                 water_withdrawal_m3s: 0.0,
             },
             hydro_block: HydroBlockBounds::default(),
-            thermal: ThermalStageBounds {
-                cost_per_mwh: DELIVERY_ORACLE_BACKUP_COST,
-            },
             thermal_block: backup_capacity,
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -796,12 +798,10 @@ fn delivery_oracle_bounds() -> ResolvedBounds {
         },
     );
     for axis in 0..=DELIVERY_ORACLE_N_STAGES {
-        *bounds.thermal_bounds_mut(0, axis) = ThermalStageBounds {
-            cost_per_mwh: DELIVERY_ORACLE_ANTICIPATED_COST[axis.min(DELIVERY_ORACLE_N_STAGES - 1)],
-        };
         *bounds.thermal_block_base_mut(0, axis) = ThermalBlockBounds {
             min_generation_mw: 0.0,
             max_generation_mw: DELIVERY_ORACLE_ANTICIPATED_CAP_MW,
+            cost_per_mwh: DELIVERY_ORACLE_ANTICIPATED_COST[axis.min(DELIVERY_ORACLE_N_STAGES - 1)],
         };
     }
     bounds
@@ -809,7 +809,7 @@ fn delivery_oracle_bounds() -> ResolvedBounds {
 
 fn delivery_oracle_post_study(study_end: NaiveDate) -> PostStudyStages {
     PostStudyStages {
-        stages: vec![PostStudyStage {
+        thermal_stages: vec![PostStudyStage {
             start_date: study_end,
             duration_hours: DELIVERY_ORACLE_POST_STUDY_HOURS,
         }],
@@ -820,6 +820,7 @@ fn delivery_oracle_post_study(study_end: NaiveDate) -> PostStudyStages {
             min_mw: DELIVERY_ORACLE_POST_STUDY_MIN_MW,
             max_mw: DELIVERY_ORACLE_ANTICIPATED_CAP_MW,
         }],
+        water_bucket_stages: WaterBucketStages::FromThermalStages,
     }
 }
 
@@ -896,14 +897,7 @@ fn build_delivery_oracle_system(annual_discount_rate: f64) -> novomodelo_core::S
         }],
         ..InitialConditions::default()
     };
-    let policy_graph = HorizonGraph {
-        stage_discount_rate_overrides: std::collections::BTreeMap::new(),
-        graph_type: PolicyGraphType::FiniteHorizon,
-        annual_discount_rate,
-        transitions: vec![],
-        nodes: Vec::new(),
-        season_map: None,
-    };
+    let policy_graph = finite_horizon_graph(annual_discount_rate);
 
     SystemBuilder::new()
         .buses(vec![bus])
@@ -1082,10 +1076,10 @@ fn build_parallel_evap_system() -> novomodelo_core::System {
                 max_generation_mw: 250.0,
                 ..Default::default()
             },
-            thermal: ThermalStageBounds { cost_per_mwh: 50.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 50.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -1129,14 +1123,7 @@ fn build_parallel_evap_system() -> novomodelo_core::System {
         ..InitialConditions::default()
     };
 
-    let policy_graph = HorizonGraph {
-        stage_discount_rate_overrides: std::collections::BTreeMap::new(),
-        graph_type: PolicyGraphType::FiniteHorizon,
-        annual_discount_rate: 0.0,
-        transitions: vec![],
-        nodes: Vec::new(),
-        season_map: None,
-    };
+    let policy_graph = finite_horizon_graph(0.0);
 
     SystemBuilder::new()
         .buses(vec![bus])
@@ -1160,10 +1147,12 @@ fn parallel_evap_hydro_models(system: &novomodelo_core::System) -> PrepareHydroM
             LinearizedEvaporation {
                 intercept_m3s: 1.0,
                 volume_slope_m3s_per_hm3: 0.01,
+                coefficient_sign: EvaporationCoefficientSign::Positive,
             },
             LinearizedEvaporation {
                 intercept_m3s: 1.0,
                 volume_slope_m3s_per_hm3: 0.01,
+                coefficient_sign: EvaporationCoefficientSign::Positive,
             },
         ],
         reference_volumes_hm3: vec![100.0, 100.0],
@@ -1328,10 +1317,10 @@ fn build_stochastic_parallel_system() -> novomodelo_core::System {
                 max_generation_mw: 250.0,
                 ..Default::default()
             },
-            thermal: ThermalStageBounds { cost_per_mwh: 0.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 0.0,
+                cost_per_mwh: 0.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -1375,14 +1364,7 @@ fn build_stochastic_parallel_system() -> novomodelo_core::System {
         ..InitialConditions::default()
     };
 
-    let policy_graph = HorizonGraph {
-        stage_discount_rate_overrides: std::collections::BTreeMap::new(),
-        graph_type: PolicyGraphType::FiniteHorizon,
-        annual_discount_rate: 0.0,
-        transitions: vec![],
-        nodes: Vec::new(),
-        season_map: None,
-    };
+    let policy_graph = finite_horizon_graph(0.0);
 
     SystemBuilder::new()
         .buses(vec![bus])
@@ -1658,12 +1640,10 @@ fn build_chronological_noise_system(spec: &ChronologicalNoiseSpec) -> novomodelo
                 max_generation_mw: 250.0,
                 ..Default::default()
             },
-            thermal: ThermalStageBounds {
-                cost_per_mwh: 100.0,
-            },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 400.0,
+                cost_per_mwh: 100.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -1872,6 +1852,582 @@ pub fn chronological_pumping_pair() -> (
     )
 }
 
+const SAME_PATH_BUS_ID: EntityId = EntityId(1);
+const SAME_PATH_HYDRO_ID: EntityId = EntityId(2);
+const SAME_PATH_THERMAL_ID: EntityId = EntityId(3);
+const SAME_PATH_THERMAL_COST_PER_MWH: f64 = 100.0;
+const SAME_PATH_LOAD_MW: f64 = 400.0;
+const SAME_PATH_INITIAL_STORAGE_HM3: f64 = 100.0;
+/// Initial storage that keeps water worth the thermal's price through every stage without
+/// emptying the reservoir in January.
+pub const WEEKLY_PARTIAL_SUM_INITIAL_STORAGE_HM3: f64 = 250.0;
+const SAME_PATH_PSI: f64 = 0.5;
+const SAME_PATH_STD_M3S: f64 = 20.0;
+const SAME_PATH_FEBRUARY_STD_M3S: f64 = 15.0;
+/// The seeded lag: the December inflow, well above every January mean.
+pub const SAME_PATH_LAG_SEED_M3S: f64 = 200.0;
+/// January and February stage boundaries (2024): three weeks, the rest of January, February.
+const SAME_PATH_BOUNDARIES: [(u32, u32); 6] = [(1, 1), (1, 8), (1, 15), (1, 22), (2, 1), (3, 1)];
+/// Five weeks, the last of which (29 January to 5 February) spans the turn of the month and keeps
+/// January's season, then the rest of February.
+const WEEKS_THEN_MONTH_BOUNDARIES: [(u32, u32); 7] =
+    [(1, 1), (1, 8), (1, 15), (1, 22), (1, 29), (2, 5), (3, 1)];
+/// Openings of the last stage of [`weeks_then_month_study`]; every earlier stage has one.
+pub const WEEKS_THEN_MONTH_TERMINAL_OPENINGS: usize = 3;
+
+fn same_path_date((month, day): (u32, u32)) -> NaiveDate {
+    NaiveDate::from_ymd_opt(2024, month, day).expect("same_path study: valid calendar date")
+}
+
+// Rationale: the entity/bounds/penalties construction is one sequential
+// fixture; splitting it into helper fns would fragment the declared shape
+// across call sites with no reuse benefit.
+#[allow(clippy::too_many_lines)]
+fn build_same_path_system(
+    boundaries: &[(u32, u32)],
+    interior_openings: usize,
+    terminal_openings: usize,
+    initial_storage_hm3: f64,
+) -> novomodelo_core::System {
+    let n_stages = boundaries.len() - 1;
+    let start = same_path_date(boundaries[0]);
+    let hours = |i: usize| {
+        f64::from(
+            i32::try_from(
+                (same_path_date(boundaries[i + 1]) - same_path_date(boundaries[i])).num_hours(),
+            )
+            .expect("same_path study: stage hours fit an i32"),
+        )
+    };
+    let stages: Vec<Stage> = (0..n_stages)
+        .map(|i| {
+            make_stage(
+                i,
+                StageSpec {
+                    start_date: same_path_date(boundaries[i]),
+                    end_date: same_path_date(boundaries[i + 1]),
+                    season_id: Some(usize::from(i == n_stages - 1)),
+                    blocks: vec![Block {
+                        index: 0,
+                        name: "SINGLE".to_string(),
+                        duration_hours: hours(i),
+                    }],
+                    block_mode: BlockMode::Parallel,
+                    state_config: StageStateConfig {
+                        storage: true,
+                        inflow_lags: true,
+                    },
+                    risk_config: StageRiskConfig::Expectation,
+                    scenario_config: ScenarioSourceConfig {
+                        branching_factor: if i == n_stages - 1 {
+                            terminal_openings
+                        } else if i == 0 {
+                            1
+                        } else {
+                            interior_openings
+                        },
+                        noise_method: NoiseMethod::Saa,
+                    },
+                },
+            )
+        })
+        .collect();
+
+    let bus = make_bus(
+        SAME_PATH_BUS_ID,
+        BusSpec {
+            name: "B".to_string(),
+            operational_start_date: start,
+            deficit_segments: vec![DeficitSegment {
+                depth_mw: None,
+                cost_per_mwh: 1000.0,
+            }],
+            excess_cost: 0.0,
+        },
+    );
+    let hydro = make_hydro(
+        SAME_PATH_HYDRO_ID,
+        HydroSpec {
+            name: "H".to_string(),
+            operational_start_date: start,
+            bus_id: SAME_PATH_BUS_ID,
+            min_storage_hm3: 0.0,
+            max_storage_hm3: 2000.0,
+            max_turbined_m3s: 200.0,
+            generation_model: HydroGenerationModel::ConstantProductivity,
+            specific_productivity_mw_per_m3s_per_m: Some(0.5),
+            max_generation_mw: 200.0,
+            penalties: hydro_penalties(),
+            ..Default::default()
+        },
+    );
+    let thermal = make_thermal(
+        SAME_PATH_THERMAL_ID,
+        ThermalSpec {
+            name: "T".to_string(),
+            operational_start_date: start,
+            bus_id: SAME_PATH_BUS_ID,
+            cost_per_mwh: SAME_PATH_THERMAL_COST_PER_MWH,
+            min_generation_mw: 0.0,
+            max_generation_mw: 1000.0,
+            anticipated_config: None,
+            ..Default::default()
+        },
+    );
+
+    let stats = |stage_id: i32| -> (f64, f64) {
+        if stage_id == n_stages as i32 - 1 {
+            (80.0, SAME_PATH_FEBRUARY_STD_M3S)
+        } else {
+            (100.0, SAME_PATH_STD_M3S)
+        }
+    };
+    let inflow_models: Vec<InflowModel> = (-1..n_stages as i32)
+        .map(|stage_id| {
+            let (mean_m3s, std_m3s) = stats(stage_id);
+            InflowModel {
+                hydro_id: SAME_PATH_HYDRO_ID,
+                stage_id,
+                mean_m3s,
+                std_m3s,
+                ar_coefficients: if stage_id >= 0 {
+                    vec![SAME_PATH_PSI]
+                } else {
+                    vec![]
+                },
+                residual_std_ratio: 1.0,
+                annual: None,
+            }
+        })
+        .collect();
+    let load_models: Vec<LoadModel> = (0..n_stages)
+        .map(|i| LoadModel {
+            bus_id: SAME_PATH_BUS_ID,
+            stage_id: i as i32,
+            mean_mw: SAME_PATH_LOAD_MW,
+            std_mw: 0.0,
+        })
+        .collect();
+
+    let bounds = ResolvedBounds::new(
+        &BoundsCountsSpec {
+            n_hydros: 1,
+            n_thermals: 1,
+            n_lines: 0,
+            n_pumping: 0,
+            n_contracts: 0,
+            n_stages,
+            k_max: 0,
+        },
+        &BoundsDefaults {
+            hydro: HydroStageBounds {
+                min_storage_hm3: 0.0,
+                max_storage_hm3: 2000.0,
+                filling_min_rate_m3s: 0.0,
+                water_withdrawal_m3s: 0.0,
+            },
+            hydro_block: HydroBlockBounds {
+                max_turbined_m3s: 200.0,
+                max_generation_mw: 200.0,
+                ..Default::default()
+            },
+            thermal_block: ThermalBlockBounds {
+                min_generation_mw: 0.0,
+                max_generation_mw: 1000.0,
+                cost_per_mwh: SAME_PATH_THERMAL_COST_PER_MWH,
+            },
+            line_block: LineBlockBounds {
+                direct_mw: 0.0,
+                reverse_mw: 0.0,
+            },
+            pumping_block: PumpingBlockBounds {
+                min_flow_m3s: 0.0,
+                max_flow_m3s: 0.0,
+            },
+            contract_block: ContractBlockBounds {
+                min_mw: 0.0,
+                max_mw: 0.0,
+                price_per_mwh: 0.0,
+            },
+        },
+    );
+    let penalties = ResolvedPenalties::new(
+        &PenaltiesCountsSpec {
+            n_hydros: 1,
+            n_buses: 1,
+            n_lines: 0,
+            n_ncs: 0,
+            n_stages,
+        },
+        &PenaltiesDefaults {
+            hydro: hydro_penalties(),
+            bus: BusStagePenalties { excess_cost: 0.0 },
+            line: LineStagePenalties { exchange_cost: 0.0 },
+            ncs: NcsStagePenalties {
+                curtailment_cost: 0.0,
+            },
+        },
+    );
+    let initial_conditions = InitialConditions {
+        storage: vec![HydroStorage {
+            hydro_id: SAME_PATH_HYDRO_ID,
+            value_hm3: initial_storage_hm3,
+        }],
+        filling_storage: vec![],
+        past_anticipated_commitments: vec![],
+        recent_observations: vec![RecentObservation {
+            hydro_id: SAME_PATH_HYDRO_ID,
+            start_date: NaiveDate::from_ymd_opt(2023, 12, 1)
+                .expect("same_path study: valid observation date"),
+            end_date: start,
+            value_m3s: SAME_PATH_LAG_SEED_M3S,
+        }],
+        past_defluences: vec![],
+        ..InitialConditions::default()
+    };
+
+    SystemBuilder::new()
+        .buses(vec![bus])
+        .hydros(vec![hydro])
+        .thermals(vec![thermal])
+        .stages(stages)
+        .inflow_models(inflow_models)
+        .load_models(load_models)
+        .bounds(bounds)
+        .penalties(penalties)
+        .initial_conditions(initial_conditions)
+        .policy_graph(HorizonGraph {
+            season_map: Some(monthly_season_map()),
+            ..HorizonGraph::default()
+        })
+        .build()
+        .expect("same_path study: valid system")
+}
+
+fn same_path_study(
+    boundaries: &[(u32, u32)],
+    interior_openings: usize,
+    terminal_openings: usize,
+    initial_storage_hm3: f64,
+) -> (novomodelo_core::System, Config, PrepareHydroModelsResult) {
+    let n_stages = boundaries.len() - 1;
+    let system = build_same_path_system(
+        boundaries,
+        interior_openings,
+        terminal_openings,
+        initial_storage_hm3,
+    );
+    let mut hydro_models = PrepareHydroModelsResult::default_from_system(&system);
+    hydro_models.production = ProductionModelSet::new(
+        vec![
+            vec![ResolvedProductionModel::ConstantProductivity { productivity: 1.0 }; n_stages];
+            1
+        ],
+        system.hydros(),
+        n_stages,
+    );
+    (system, build_config(), hydro_models)
+}
+
+/// A PAR(1) hydro, `psi = 0.5` on a monthly season map, over three one-week January stages, the
+/// rest of January and February, with one opening per stage and the lag seeded at
+/// [`SAME_PATH_LAG_SEED_M3S`], above every January mean. The single opening makes every forward
+/// visit of a stage read the same partial sum `s`, so a Closing cut is exact there. A 400 MW load
+/// over a 200 MW constant-productivity plant and a 100 `$/MWh` thermal gives water a constant
+/// value, so a cut at a trial state is the successor value there and a cut evaluated at another
+/// lag point is off by `beta_lag` times the distance between the two points.
+#[must_use]
+pub fn same_path_partial_sum_study() -> (novomodelo_core::System, Config, PrepareHydroModelsResult)
+{
+    same_path_study(&SAME_PATH_BOUNDARIES, 1, 1, SAME_PATH_INITIAL_STORAGE_HM3)
+}
+
+/// [`same_path_partial_sum_study`]'s calendar and plant with `openings` at every stage after the
+/// first, so trials that draw other openings read other partial sums of January's open lag period
+/// at the stage that closes it, from [`WEEKLY_PARTIAL_SUM_INITIAL_STORAGE_HM3`] of storage.
+#[must_use]
+pub fn weekly_partial_sum_study(
+    openings: usize,
+) -> (novomodelo_core::System, Config, PrepareHydroModelsResult) {
+    same_path_study(
+        &SAME_PATH_BOUNDARIES,
+        openings,
+        openings,
+        WEEKLY_PARTIAL_SUM_INITIAL_STORAGE_HM3,
+    )
+}
+
+/// [`same_path_partial_sum_study`]'s hydro, load and thermal over five January weeks and the
+/// rest of February: the fifth week runs from 29 January to 5 February and keeps January's
+/// season, so it finalizes January and hands 96 of February's 696 hours to the terminal stage,
+/// which covers the other 600 and closes February. One opening at every stage but the terminal
+/// one, which has [`WEEKS_THEN_MONTH_TERMINAL_OPENINGS`].
+#[must_use]
+pub fn weeks_then_month_study() -> (novomodelo_core::System, Config, PrepareHydroModelsResult) {
+    same_path_study(
+        &WEEKS_THEN_MONTH_BOUNDARIES,
+        1,
+        WEEKS_THEN_MONTH_TERMINAL_OPENINGS,
+        SAME_PATH_INITIAL_STORAGE_HM3,
+    )
+}
+
+const PREFILLING_ROUTE_N_STAGES: usize = 2;
+const PREFILLING_ROUTE_BUS_ID: i32 = 10;
+const PREFILLING_ROUTE_TARGET_ID: i32 = 1;
+const PREFILLING_ROUTE_HYDRO_IDS: [i32; 3] = [PREFILLING_ROUTE_TARGET_ID, 2, 3];
+const PREFILLING_ROUTE_ENTRY_STAGE_ID: i32 = 2;
+const PREFILLING_ROUTE_TARGET_WITHDRAWAL_M3S: f64 = 0.3;
+const PREFILLING_ROUTE_MAX_STORAGE_HM3: f64 = 200.0;
+
+// Rationale: the entity/bounds/penalties construction is one sequential
+// fixture; splitting it into helper fns would fragment the declared shape
+// across call sites with no reuse benefit.
+#[allow(clippy::too_many_lines)]
+fn build_prefilling_withdrawal_route_system(
+    reverse_declaration_order: bool,
+    prefilling_withdrawals_m3s: [f64; 2],
+) -> novomodelo_core::System {
+    let start =
+        NaiveDate::from_ymd_opt(2024, 1, 1).expect("prefilling_withdrawal_route_study: valid date");
+
+    let bus = make_bus(
+        EntityId(PREFILLING_ROUTE_BUS_ID),
+        BusSpec {
+            name: "B".to_string(),
+            operational_start_date: start,
+            deficit_segments: vec![DeficitSegment {
+                depth_mw: None,
+                cost_per_mwh: 500.0,
+            }],
+            excess_cost: 0.0,
+        },
+    );
+
+    let mut hydros: Vec<_> = PREFILLING_ROUTE_HYDRO_IDS
+        .iter()
+        .map(|&id| {
+            let routed_to_target = id != PREFILLING_ROUTE_TARGET_ID;
+            make_hydro(
+                EntityId(id),
+                HydroSpec {
+                    name: format!("H{id}"),
+                    operational_start_date: start,
+                    bus_id: EntityId(PREFILLING_ROUTE_BUS_ID),
+                    downstream_id: routed_to_target.then_some(EntityId(PREFILLING_ROUTE_TARGET_ID)),
+                    entry_stage_id: routed_to_target.then_some(PREFILLING_ROUTE_ENTRY_STAGE_ID),
+                    min_storage_hm3: 0.0,
+                    max_storage_hm3: PREFILLING_ROUTE_MAX_STORAGE_HM3,
+                    max_turbined_m3s: 100.0,
+                    generation_model: HydroGenerationModel::ConstantProductivity,
+                    specific_productivity_mw_per_m3s_per_m: Some(0.5),
+                    max_generation_mw: 250.0,
+                    penalties: chronological_noise_hydro_penalties(0.0),
+                    ..Default::default()
+                },
+            )
+        })
+        .collect();
+
+    let blocks: Vec<Block> = CHRONOLOGICAL_NOISE_BLOCK_HOURS
+        .iter()
+        .enumerate()
+        .map(|(index, &duration_hours)| Block {
+            index,
+            name: format!("B{index}"),
+            duration_hours,
+        })
+        .collect();
+
+    let block_modes = [BlockMode::Parallel, BlockMode::Chronological];
+    let stages: Vec<Stage> = (0..PREFILLING_ROUTE_N_STAGES)
+        .map(|i| {
+            make_stage(
+                i,
+                StageSpec {
+                    start_date: stage_date(i),
+                    end_date: stage_date(i + 1),
+                    season_id: Some(0),
+                    blocks: blocks.clone(),
+                    block_mode: block_modes[i],
+                    state_config: StageStateConfig {
+                        storage: true,
+                        inflow_lags: false,
+                    },
+                    risk_config: StageRiskConfig::Expectation,
+                    scenario_config: ScenarioSourceConfig {
+                        branching_factor: 1,
+                        noise_method: NoiseMethod::Saa,
+                    },
+                },
+            )
+        })
+        .collect();
+
+    let inflow_models = PREFILLING_ROUTE_HYDRO_IDS
+        .iter()
+        .flat_map(|&id| {
+            (0..PREFILLING_ROUTE_N_STAGES).map(move |i| InflowModel {
+                hydro_id: EntityId(id),
+                stage_id: i32::try_from(i).expect("stage index fits i32"),
+                mean_m3s: CHRONOLOGICAL_NOISE_INFLOW_MEAN_M3S,
+                std_m3s: 10.0,
+                ar_coefficients: Vec::new(),
+                residual_std_ratio: 1.0,
+                annual: None,
+            })
+        })
+        .collect();
+
+    let load_models = (0..PREFILLING_ROUTE_N_STAGES)
+        .map(|i| LoadModel {
+            bus_id: EntityId(PREFILLING_ROUTE_BUS_ID),
+            stage_id: i32::try_from(i).expect("stage index fits i32"),
+            mean_mw: 0.0,
+            std_mw: 0.0,
+        })
+        .collect();
+
+    let mut bounds = ResolvedBounds::new(
+        &BoundsCountsSpec {
+            n_hydros: PREFILLING_ROUTE_HYDRO_IDS.len(),
+            n_thermals: 1,
+            n_lines: 0,
+            n_pumping: 0,
+            n_contracts: 0,
+            n_stages: PREFILLING_ROUTE_N_STAGES,
+            k_max: 0,
+        },
+        &BoundsDefaults {
+            hydro: HydroStageBounds {
+                min_storage_hm3: 0.0,
+                max_storage_hm3: PREFILLING_ROUTE_MAX_STORAGE_HM3,
+                filling_min_rate_m3s: 0.0,
+                water_withdrawal_m3s: 0.0,
+            },
+            hydro_block: HydroBlockBounds {
+                max_turbined_m3s: 100.0,
+                max_generation_mw: 250.0,
+                ..Default::default()
+            },
+            thermal_block: ThermalBlockBounds {
+                min_generation_mw: 0.0,
+                max_generation_mw: 400.0,
+                cost_per_mwh: 100.0,
+            },
+            line_block: LineBlockBounds {
+                direct_mw: 0.0,
+                reverse_mw: 0.0,
+            },
+            pumping_block: PumpingBlockBounds {
+                min_flow_m3s: 0.0,
+                max_flow_m3s: 0.0,
+            },
+            contract_block: ContractBlockBounds {
+                min_mw: 0.0,
+                max_mw: 0.0,
+                price_per_mwh: 0.0,
+            },
+        },
+    );
+    // Canonical (id-sorted) positions, never declaration positions: the target is 0.
+    let withdrawals_m3s = [
+        PREFILLING_ROUTE_TARGET_WITHDRAWAL_M3S,
+        prefilling_withdrawals_m3s[0],
+        prefilling_withdrawals_m3s[1],
+    ];
+    for stage in 0..PREFILLING_ROUTE_N_STAGES {
+        for (position, withdrawal_m3s) in withdrawals_m3s.into_iter().enumerate() {
+            bounds
+                .hydro_bounds_mut(position, stage)
+                .water_withdrawal_m3s = withdrawal_m3s;
+        }
+    }
+
+    let penalties = ResolvedPenalties::new(
+        &PenaltiesCountsSpec {
+            n_hydros: PREFILLING_ROUTE_HYDRO_IDS.len(),
+            n_buses: 1,
+            n_lines: 0,
+            n_ncs: 0,
+            n_stages: PREFILLING_ROUTE_N_STAGES,
+        },
+        &PenaltiesDefaults {
+            hydro: chronological_noise_hydro_penalties(0.0),
+            bus: BusStagePenalties { excess_cost: 0.0 },
+            line: LineStagePenalties { exchange_cost: 0.0 },
+            ncs: NcsStagePenalties {
+                curtailment_cost: 0.0,
+            },
+        },
+    );
+
+    let initial_conditions = InitialConditions {
+        storage: PREFILLING_ROUTE_HYDRO_IDS
+            .iter()
+            .map(|&id| HydroStorage {
+                hydro_id: EntityId(id),
+                value_hm3: PREFILLING_ROUTE_MAX_STORAGE_HM3 / 2.0,
+            })
+            .collect(),
+        filling_storage: vec![],
+        past_anticipated_commitments: vec![],
+        recent_observations: vec![],
+        past_defluences: vec![],
+        ..InitialConditions::default()
+    };
+
+    let mut buses = vec![bus];
+    let mut thermals = vec![make_thermal(
+        EntityId(20),
+        ThermalSpec {
+            name: "T".to_string(),
+            operational_start_date: start,
+            bus_id: EntityId(PREFILLING_ROUTE_BUS_ID),
+            cost_per_mwh: 100.0,
+            min_generation_mw: 0.0,
+            max_generation_mw: 400.0,
+            anticipated_config: None,
+            ..Default::default()
+        },
+    )];
+    if reverse_declaration_order {
+        buses.reverse();
+        hydros.reverse();
+        thermals.reverse();
+    }
+
+    SystemBuilder::new()
+        .buses(buses)
+        .thermals(thermals)
+        .hydros(hydros)
+        .stages(stages)
+        .inflow_models(inflow_models)
+        .load_models(load_models)
+        .bounds(bounds)
+        .penalties(penalties)
+        .initial_conditions(initial_conditions)
+        .build()
+        .expect(
+            "prefilling_withdrawal_route_study: one target and two PreFilling plants routed to it",
+        )
+}
+
+/// Two `PreFilling` withdrawals summed onto one target, with values whose sum depends on the order.
+#[must_use]
+pub fn prefilling_withdrawal_route_study(
+    reverse_declaration_order: bool,
+    prefilling_withdrawals_m3s: [f64; 2],
+) -> (novomodelo_core::System, Config) {
+    (
+        build_prefilling_withdrawal_route_system(
+            reverse_declaration_order,
+            prefilling_withdrawals_m3s,
+        ),
+        build_config(),
+    )
+}
+
 const TWO_HYDRO_EVAP_N_STAGES: usize = 2;
 const TWO_HYDRO_EVAP_BUS_ID: EntityId = EntityId(1);
 const TWO_HYDRO_EVAP_HYDRO0_ID: EntityId = EntityId(2);
@@ -2027,10 +2583,10 @@ fn build_two_hydro_evap_system() -> novomodelo_core::System {
                 max_generation_mw: 250.0,
                 ..Default::default()
             },
-            thermal: ThermalStageBounds { cost_per_mwh: 50.0 },
             thermal_block: ThermalBlockBounds {
                 min_generation_mw: 0.0,
                 max_generation_mw: 100.0,
+                cost_per_mwh: 50.0,
             },
             line_block: LineBlockBounds {
                 direct_mw: 0.0,
@@ -2080,14 +2636,7 @@ fn build_two_hydro_evap_system() -> novomodelo_core::System {
         ..InitialConditions::default()
     };
 
-    let policy_graph = HorizonGraph {
-        stage_discount_rate_overrides: std::collections::BTreeMap::new(),
-        graph_type: PolicyGraphType::FiniteHorizon,
-        annual_discount_rate: 0.0,
-        transitions: vec![],
-        nodes: Vec::new(),
-        season_map: None,
-    };
+    let policy_graph = finite_horizon_graph(0.0);
 
     SystemBuilder::new()
         .buses(vec![bus])
@@ -2113,6 +2662,7 @@ fn two_hydro_evap_hydro_models(system: &novomodelo_core::System) -> PrepareHydro
                 LinearizedEvaporation {
                     intercept_m3s: 1.0,
                     volume_slope_m3s_per_hm3: 0.01,
+                    coefficient_sign: EvaporationCoefficientSign::Positive,
                 };
                 TWO_HYDRO_EVAP_N_STAGES
             ],
@@ -2135,6 +2685,537 @@ pub fn two_hydro_evaporation_study() -> (novomodelo_core::System, Config, Prepar
     (system, build_config(), hydro_models)
 }
 
+const FPHA_LAG_N_STAGES: usize = 3;
+const FPHA_LAG_BUS_ID: EntityId = EntityId(1);
+const FPHA_LAG_UPSTREAM_ID: EntityId = EntityId(2);
+const FPHA_LAG_DOWNSTREAM_ID: EntityId = EntityId(3);
+const FPHA_LAG_THERMAL_ID: EntityId = EntityId(4);
+const FPHA_LAG_ANTICIPATED_THERMAL_ID: EntityId = EntityId(5);
+const FPHA_LAG_N_HYDROS: usize = 2;
+const FPHA_LAG_N_THERMALS: usize = 2;
+// Canonical positions, which follow the id order above.
+const FPHA_LAG_DOWNSTREAM_POS: usize = 1;
+const FPHA_LAG_ANTICIPATED_THERMAL_POS: usize = 1;
+const FPHA_LAG_CONSTRAINT_ID: i32 = 10;
+const FPHA_LAG_CHRONOLOGICAL_STAGE: usize = 1;
+const FPHA_LAG_BLOCK_HOURS: [f64; 2] = [300.0, 444.0];
+const FPHA_LAG_ANTICIPATED_LEAD: u32 = 1;
+const FPHA_LAG_LOAD_MW: f64 = 450.0;
+const FPHA_LAG_DEFICIT_COST_PER_MWH: f64 = 500.0;
+const FPHA_LAG_THERMAL_COST_PER_MWH: f64 = 50.0;
+const FPHA_LAG_THERMAL_CAPACITY_MW: f64 = 400.0;
+const FPHA_LAG_ANTICIPATED_CAPACITY_MW: f64 = 100.0;
+const FPHA_LAG_UPSTREAM_MAX_STORAGE_HM3: f64 = 200.0;
+// Below the stage's inflow volume, so the reservoir floods and its water carries the spillage price.
+const FPHA_LAG_DOWNSTREAM_MAX_STORAGE_HM3: f64 = 60.0;
+const FPHA_LAG_INITIAL_STORAGE_HM3: [f64; 2] = [100.0, 40.0];
+const FPHA_LAG_UPSTREAM_MAX_TURBINED_M3S: f64 = 100.0;
+// Below the downstream inflow, so the flood is forced whatever the upstream releases.
+const FPHA_LAG_DOWNSTREAM_MAX_TURBINED_M3S: f64 = 40.0;
+const FPHA_LAG_UPSTREAM_MAX_GENERATION_MW: f64 = 200.0;
+const FPHA_LAG_DOWNSTREAM_MAX_GENERATION_MW: f64 = 50.0;
+const FPHA_LAG_SPILLAGE_COST: f64 = 1.0;
+const FPHA_LAG_EVAPORATION_VIOLATION_COST: f64 = 100.0;
+// gamma_q stays below the stage-1 block-hours conversion so the inflow column sets the coupled generic row's scale.
+const FPHA_LAG_PLANES: [FphaPlane; 2] = [
+    FphaPlane {
+        intercept: -5.0,
+        gamma_v: 0.03,
+        gamma_q: 1.45,
+        gamma_s: -0.3,
+    },
+    FphaPlane {
+        intercept: 5.0,
+        gamma_v: 0.02,
+        gamma_q: 1.3,
+        gamma_s: -0.2,
+    },
+];
+const FPHA_LAG_EVAPORATION: LinearizedEvaporation = LinearizedEvaporation {
+    intercept_m3s: 2.0,
+    volume_slope_m3s_per_hm3: 0.02,
+    coefficient_sign: EvaporationCoefficientSign::Positive,
+};
+const FPHA_LAG_EVAPORATION_REFERENCE_HM3: f64 = 50.0;
+const FPHA_LAG_PRE_STUDY_STAGES: usize = 2;
+// Mean and std below are per hydro, indexed by `stage_id + FPHA_LAG_PRE_STUDY_STAGES`.
+const FPHA_LAG_INFLOW_MEAN_M3S: [[f64; 5]; 2] = [
+    [90.0, 95.0, 100.0, 110.0, 105.0],
+    [70.0, 75.0, 80.0, 90.0, 85.0],
+];
+const FPHA_LAG_INFLOW_STD_M3S: [[f64; 5]; 2] = [
+    [12.0, 14.0, 16.0, 20.0, 18.0],
+    [9.0, 10.0, 11.0, 13.0, 15.0],
+];
+/// Standardized PAR(2) coefficients per hydro, every one nonzero.
+const FPHA_LAG_AR_COEFFICIENTS: [[f64; 2]; 2] = [[0.4, 0.2], [0.35, 0.25]];
+/// The key under which the FPHA lag study is registered.
+pub const FPHA_LAG_STUDY_KEY: &str = "structural/fpha-lag";
+// Below the downstream hydro's stage-1 inflow mean, so the row is violated.
+const FPHA_LAG_GENERIC_CAP_M3S: f64 = 60.0;
+// Above the thermal cost and below the upstream plane's marginal benefit, so the upstream hydro still releases.
+const FPHA_LAG_GENERIC_SLACK_PENALTY: f64 = 55.0;
+
+fn fpha_lag_hydro_penalties(fpha_violation_cost: Option<f64>) -> HydroPenalties {
+    let base = hydro_penalties();
+    HydroPenalties {
+        spillage_cost: FPHA_LAG_SPILLAGE_COST,
+        evaporation_violation_pos_cost: FPHA_LAG_EVAPORATION_VIOLATION_COST,
+        evaporation_violation_neg_cost: FPHA_LAG_EVAPORATION_VIOLATION_COST,
+        fpha_violation_cost: fpha_violation_cost.unwrap_or(base.fpha_violation_cost),
+        ..base
+    }
+}
+
+fn fpha_lag_stages(options: FphaLagOptions) -> Vec<Stage> {
+    let blocks: Vec<Block> = FPHA_LAG_BLOCK_HOURS
+        .iter()
+        .enumerate()
+        .map(|(index, &duration_hours)| Block {
+            index,
+            name: format!("B{index}"),
+            duration_hours,
+        })
+        .collect();
+    (0..FPHA_LAG_N_STAGES)
+        .map(|i| {
+            make_stage(
+                i,
+                StageSpec {
+                    start_date: stage_date(i),
+                    end_date: stage_date(i + 1),
+                    season_id: Some(i),
+                    blocks: blocks.clone(),
+                    block_mode: if i == FPHA_LAG_CHRONOLOGICAL_STAGE {
+                        BlockMode::Chronological
+                    } else {
+                        BlockMode::Parallel
+                    },
+                    state_config: StageStateConfig {
+                        storage: i + 1 < FPHA_LAG_N_STAGES || options.last_stage_storage,
+                        inflow_lags: i + 1 < FPHA_LAG_N_STAGES || options.last_stage_inflow_lags,
+                    },
+                    risk_config: options.risk_config,
+                    scenario_config: ScenarioSourceConfig {
+                        branching_factor: options.openings,
+                        noise_method: NoiseMethod::Saa,
+                    },
+                },
+            )
+        })
+        .collect()
+}
+
+/// One model per hydro for the study stages and for the two stages before
+/// them, which only supply the lag statistics the coefficient conversion reads.
+fn fpha_lag_inflow_models() -> Vec<InflowModel> {
+    [FPHA_LAG_UPSTREAM_ID, FPHA_LAG_DOWNSTREAM_ID]
+        .into_iter()
+        .enumerate()
+        .flat_map(|(h, hydro_id)| {
+            (0..FPHA_LAG_N_STAGES + FPHA_LAG_PRE_STUDY_STAGES).map(move |k| {
+                let stage_id = k as i32 - FPHA_LAG_PRE_STUDY_STAGES as i32;
+                InflowModel {
+                    hydro_id,
+                    stage_id,
+                    mean_m3s: FPHA_LAG_INFLOW_MEAN_M3S[h][k],
+                    std_m3s: FPHA_LAG_INFLOW_STD_M3S[h][k],
+                    ar_coefficients: if stage_id >= 0 {
+                        FPHA_LAG_AR_COEFFICIENTS[h].to_vec()
+                    } else {
+                        vec![]
+                    },
+                    residual_std_ratio: 1.0,
+                    annual: None,
+                }
+            })
+        })
+        .collect()
+}
+
+/// The two months before the study at each hydro's mean there, so the lag seeds
+/// are the lag statistics.
+fn fpha_lag_recent_observations() -> Vec<RecentObservation> {
+    let month_start = |year, month| {
+        NaiveDate::from_ymd_opt(year, month, 1).expect("fpha_lag_study: valid observation date")
+    };
+    let windows = [
+        (month_start(2023, 11), month_start(2023, 12)),
+        (month_start(2023, 12), month_start(2024, 1)),
+    ];
+    [FPHA_LAG_UPSTREAM_ID, FPHA_LAG_DOWNSTREAM_ID]
+        .into_iter()
+        .enumerate()
+        .flat_map(|(h, hydro_id)| {
+            windows
+                .into_iter()
+                .enumerate()
+                .map(move |(k, (start_date, end_date))| RecentObservation {
+                    hydro_id,
+                    start_date,
+                    end_date,
+                    value_m3s: FPHA_LAG_INFLOW_MEAN_M3S[h][k],
+                })
+        })
+        .collect()
+}
+
+fn fpha_lag_hydros(fpha_violation_cost: Option<f64>) -> Vec<Hydro> {
+    let hydro = |id, downstream_id, fpha: bool| {
+        let (max_storage_hm3, max_turbined_m3s, max_generation_mw) = if fpha {
+            (
+                FPHA_LAG_UPSTREAM_MAX_STORAGE_HM3,
+                FPHA_LAG_UPSTREAM_MAX_TURBINED_M3S,
+                FPHA_LAG_UPSTREAM_MAX_GENERATION_MW,
+            )
+        } else {
+            (
+                FPHA_LAG_DOWNSTREAM_MAX_STORAGE_HM3,
+                FPHA_LAG_DOWNSTREAM_MAX_TURBINED_M3S,
+                FPHA_LAG_DOWNSTREAM_MAX_GENERATION_MW,
+            )
+        };
+        make_hydro(
+            id,
+            HydroSpec {
+                name: format!("H{}", id.0),
+                operational_start_date: stage_date(0),
+                bus_id: FPHA_LAG_BUS_ID,
+                downstream_id,
+                max_storage_hm3,
+                max_turbined_m3s,
+                max_generation_mw,
+                penalties: fpha_lag_hydro_penalties(fpha_violation_cost),
+                ..Default::default()
+            },
+        )
+    };
+    vec![
+        hydro(FPHA_LAG_UPSTREAM_ID, Some(FPHA_LAG_DOWNSTREAM_ID), true),
+        hydro(FPHA_LAG_DOWNSTREAM_ID, None, false),
+    ]
+}
+
+fn fpha_lag_thermals() -> Vec<Thermal> {
+    let thermal = |id, max_generation_mw, anticipated_config| {
+        make_thermal(
+            id,
+            ThermalSpec {
+                name: format!("T{}", id.0),
+                operational_start_date: stage_date(0),
+                bus_id: FPHA_LAG_BUS_ID,
+                min_generation_mw: 0.0,
+                max_generation_mw,
+                cost_per_mwh: FPHA_LAG_THERMAL_COST_PER_MWH,
+                anticipated_config,
+                ..Default::default()
+            },
+        )
+    };
+    vec![
+        thermal(FPHA_LAG_THERMAL_ID, FPHA_LAG_THERMAL_CAPACITY_MW, None),
+        thermal(
+            FPHA_LAG_ANTICIPATED_THERMAL_ID,
+            FPHA_LAG_ANTICIPATED_CAPACITY_MW,
+            Some(AnticipatedConfig::LeadStages(FPHA_LAG_ANTICIPATED_LEAD)),
+        ),
+    ]
+}
+
+fn fpha_lag_bounds() -> ResolvedBounds {
+    let k_max = FPHA_LAG_ANTICIPATED_LEAD as usize;
+    let mut bounds = ResolvedBounds::new(
+        &BoundsCountsSpec {
+            n_hydros: FPHA_LAG_N_HYDROS,
+            n_thermals: FPHA_LAG_N_THERMALS,
+            n_lines: 0,
+            n_pumping: 0,
+            n_contracts: 0,
+            n_stages: FPHA_LAG_N_STAGES,
+            k_max,
+        },
+        &BoundsDefaults {
+            hydro: HydroStageBounds {
+                min_storage_hm3: 0.0,
+                max_storage_hm3: FPHA_LAG_UPSTREAM_MAX_STORAGE_HM3,
+                filling_min_rate_m3s: 0.0,
+                water_withdrawal_m3s: 0.0,
+            },
+            hydro_block: HydroBlockBounds {
+                max_turbined_m3s: FPHA_LAG_UPSTREAM_MAX_TURBINED_M3S,
+                max_generation_mw: FPHA_LAG_UPSTREAM_MAX_GENERATION_MW,
+                ..Default::default()
+            },
+            thermal_block: ThermalBlockBounds {
+                min_generation_mw: 0.0,
+                max_generation_mw: FPHA_LAG_THERMAL_CAPACITY_MW,
+                cost_per_mwh: FPHA_LAG_THERMAL_COST_PER_MWH,
+            },
+            line_block: LineBlockBounds {
+                direct_mw: 0.0,
+                reverse_mw: 0.0,
+            },
+            pumping_block: PumpingBlockBounds {
+                min_flow_m3s: 0.0,
+                max_flow_m3s: 0.0,
+            },
+            contract_block: ContractBlockBounds {
+                min_mw: 0.0,
+                max_mw: 0.0,
+                price_per_mwh: 0.0,
+            },
+        },
+    );
+    for s in 0..FPHA_LAG_N_STAGES {
+        bounds
+            .hydro_bounds_mut(FPHA_LAG_DOWNSTREAM_POS, s)
+            .max_storage_hm3 = FPHA_LAG_DOWNSTREAM_MAX_STORAGE_HM3;
+        let block = bounds.hydro_block_base_mut(FPHA_LAG_DOWNSTREAM_POS, s);
+        block.max_turbined_m3s = FPHA_LAG_DOWNSTREAM_MAX_TURBINED_M3S;
+        block.max_generation_mw = FPHA_LAG_DOWNSTREAM_MAX_GENERATION_MW;
+    }
+    for s in 0..FPHA_LAG_N_STAGES + k_max {
+        *bounds.thermal_block_base_mut(FPHA_LAG_ANTICIPATED_THERMAL_POS, s) = ThermalBlockBounds {
+            min_generation_mw: 0.0,
+            max_generation_mw: FPHA_LAG_ANTICIPATED_CAPACITY_MW,
+            cost_per_mwh: FPHA_LAG_THERMAL_COST_PER_MWH,
+        };
+    }
+    bounds
+}
+
+fn fpha_lag_penalties(fpha_violation_cost: Option<f64>) -> ResolvedPenalties {
+    ResolvedPenalties::new(
+        &PenaltiesCountsSpec {
+            n_hydros: FPHA_LAG_N_HYDROS,
+            n_buses: 1,
+            n_lines: 0,
+            n_ncs: 0,
+            n_stages: FPHA_LAG_N_STAGES,
+        },
+        &PenaltiesDefaults {
+            hydro: fpha_lag_hydro_penalties(fpha_violation_cost),
+            bus: BusStagePenalties { excess_cost: 0.0 },
+            line: LineStagePenalties { exchange_cost: 0.0 },
+            ncs: NcsStagePenalties {
+                curtailment_cost: 0.0,
+            },
+        },
+    )
+}
+
+fn fpha_lag_initial_conditions() -> InitialConditions {
+    InitialConditions {
+        storage: [FPHA_LAG_UPSTREAM_ID, FPHA_LAG_DOWNSTREAM_ID]
+            .into_iter()
+            .zip(FPHA_LAG_INITIAL_STORAGE_HM3)
+            .map(|(hydro_id, value_hm3)| HydroStorage {
+                hydro_id,
+                value_hm3,
+            })
+            .collect(),
+        filling_storage: vec![],
+        past_anticipated_commitments: (0..FPHA_LAG_ANTICIPATED_LEAD as usize)
+            .map(|i| AnticipatedCommitmentHistory {
+                thermal_id: FPHA_LAG_ANTICIPATED_THERMAL_ID,
+                start_date: stage_date(i),
+                end_date: stage_date(i + 1),
+                value_mw: 0.0,
+            })
+            .collect(),
+        recent_observations: fpha_lag_recent_observations(),
+        past_defluences: vec![],
+        ..InitialConditions::default()
+    }
+}
+
+/// Soft upper cap on the downstream hydro's inflow at the chronological stage only.
+fn fpha_lag_generic_cap() -> (GenericConstraint, ResolvedGenericConstraintBounds) {
+    let constraint = GenericConstraint {
+        id: EntityId(FPHA_LAG_CONSTRAINT_ID),
+        name: "downstream_inflow_cap".to_string(),
+        description: None,
+        expression: ConstraintExpression {
+            terms: vec![LinearTerm::literal(
+                1.0,
+                VariableRef::HydroInflow {
+                    hydro_id: FPHA_LAG_DOWNSTREAM_ID,
+                    block_id: None,
+                },
+            )],
+        },
+        slack: Some(SlackConfig {
+            penalty: FPHA_LAG_GENERIC_SLACK_PENALTY,
+            penalty_basis: PenaltyBasis::PerHour,
+        }),
+        bound_lower: None,
+        bound_upper: None,
+    };
+    let id_map: HashMap<i32, usize> = [(FPHA_LAG_CONSTRAINT_ID, 0)].into_iter().collect();
+    let rows = [(
+        FPHA_LAG_CONSTRAINT_ID,
+        FPHA_LAG_CHRONOLOGICAL_STAGE as i32,
+        None::<i32>,
+        None::<f64>,
+        Some(FPHA_LAG_GENERIC_CAP_M3S),
+    )];
+    let bounds = ResolvedGenericConstraintBounds::new(&id_map, rows.into_iter());
+    (constraint, bounds)
+}
+
+fn declared<T>(vector: &str, mut entries: Vec<T>, reverse: bool) -> Vec<T> {
+    if reverse {
+        assert!(
+            entries.len() >= 2,
+            "fpha_lag_study: the {vector} vector has {} entry, so reversing it permutes nothing",
+            entries.len()
+        );
+        entries.reverse();
+    }
+    entries
+}
+
+fn build_fpha_lag_system(options: FphaLagOptions) -> novomodelo_core::System {
+    let bus = make_bus(
+        FPHA_LAG_BUS_ID,
+        BusSpec {
+            name: "B1".to_string(),
+            operational_start_date: stage_date(0),
+            deficit_segments: vec![DeficitSegment {
+                depth_mw: None,
+                cost_per_mwh: FPHA_LAG_DEFICIT_COST_PER_MWH,
+            }],
+            excess_cost: 0.0,
+        },
+    );
+    let load_models: Vec<LoadModel> = (0..FPHA_LAG_N_STAGES)
+        .map(|i| LoadModel {
+            bus_id: FPHA_LAG_BUS_ID,
+            stage_id: i as i32,
+            mean_mw: FPHA_LAG_LOAD_MW,
+            std_mw: 0.0,
+        })
+        .collect();
+    let (generic_constraint, generic_bounds) = fpha_lag_generic_cap();
+    let reverse = options.reverse_declaration_order;
+    let mut initial_conditions = fpha_lag_initial_conditions();
+    initial_conditions.storage = declared("initial storage", initial_conditions.storage, reverse);
+    initial_conditions.recent_observations = declared(
+        "recent observation",
+        initial_conditions.recent_observations,
+        reverse,
+    );
+
+    SystemBuilder::new()
+        .buses(vec![bus])
+        .hydros(declared(
+            "hydro",
+            fpha_lag_hydros(options.fpha_violation_cost),
+            reverse,
+        ))
+        .thermals(declared("thermal", fpha_lag_thermals(), reverse))
+        .stages(fpha_lag_stages(options))
+        .inflow_models(fpha_lag_inflow_models())
+        .load_models(load_models)
+        .bounds(fpha_lag_bounds())
+        .penalties(fpha_lag_penalties(options.fpha_violation_cost))
+        .generic_constraints(vec![generic_constraint])
+        .resolved_generic_bounds(generic_bounds)
+        .initial_conditions(initial_conditions)
+        .policy_graph(HorizonGraph {
+            season_map: Some(monthly_season_map()),
+            ..HorizonGraph::default()
+        })
+        .build()
+        .expect("fpha_lag_study: valid system")
+}
+
+/// FPHA planes on the upstream hydro and linearized evaporation on the
+/// downstream one; the downstream hydro keeps the default production model.
+fn fpha_lag_hydro_models(system: &novomodelo_core::System) -> PrepareHydroModelsResult {
+    let mut hydro_models = PrepareHydroModelsResult::default_from_system(system);
+    hydro_models.production = ProductionModelSet::new(
+        vec![
+            vec![
+                ResolvedProductionModel::Fpha {
+                    planes: FPHA_LAG_PLANES.to_vec(),
+                };
+                FPHA_LAG_N_STAGES
+            ],
+            vec![
+                ResolvedProductionModel::ConstantProductivity { productivity: 0.0 };
+                FPHA_LAG_N_STAGES
+            ],
+        ],
+        system.hydros(),
+        FPHA_LAG_N_STAGES,
+    );
+    hydro_models.evaporation = EvaporationModelSet::new(vec![
+        EvaporationModel::None,
+        EvaporationModel::Linearized {
+            coefficients: vec![FPHA_LAG_EVAPORATION; FPHA_LAG_N_STAGES],
+            reference_volumes_hm3: vec![FPHA_LAG_EVAPORATION_REFERENCE_HM3; FPHA_LAG_N_STAGES],
+        },
+    ]);
+    hydro_models
+}
+
+/// Three monthly PAR(2) stages on a two-hydro cascade (`H0` upstream of `H1`)
+/// whose middle stage is chronological with two unequal blocks: `H0` produces
+/// through two FPHA planes per stage with a storage term, `H1` loses water to
+/// linearized evaporation, and a soft `hydro_inflow` cap on `H1` is active at
+/// the chronological stage only. The load exceeds both plants' capacity, with one
+/// ordinary and one `LeadStages(1)` anticipated thermal. Every stage's lag
+/// coefficients are nonzero and none has magnitude one. The feature checks live
+/// in `fpha_lag_study_checks` (`tests/cut_oracles/fpha_lag_study_checks.rs`).
+#[must_use]
+pub fn fpha_lag_study() -> (novomodelo_core::System, Config, PrepareHydroModelsResult) {
+    fpha_lag_study_with(FphaLagOptions::default())
+}
+
+/// Each field is one variation of [`fpha_lag_study`]; the default is the study itself.
+#[derive(Clone, Copy, Debug)]
+pub struct FphaLagOptions {
+    /// Noise openings at every stage.
+    pub openings: usize,
+    /// Whether the last stage keeps inflow lags in its state; `false` leaves the pool before it storage-only.
+    pub last_stage_inflow_lags: bool,
+    pub last_stage_storage: bool,
+    pub risk_config: StageRiskConfig,
+    /// Declares the hydros, thermals, recent observations and initial storages in reverse order.
+    pub reverse_declaration_order: bool,
+    /// Replaces the study's FPHA price, in the hydro entities and the resolved penalties, when set.
+    pub fpha_violation_cost: Option<f64>,
+}
+
+impl Default for FphaLagOptions {
+    fn default() -> Self {
+        Self {
+            openings: 1,
+            last_stage_inflow_lags: true,
+            last_stage_storage: true,
+            risk_config: StageRiskConfig::Expectation,
+            reverse_declaration_order: false,
+            fpha_violation_cost: None,
+        }
+    }
+}
+
+/// [`fpha_lag_study`] varied by `options`; panics when `options.openings` is 0.
+#[must_use]
+pub fn fpha_lag_study_with(
+    options: FphaLagOptions,
+) -> (novomodelo_core::System, Config, PrepareHydroModelsResult) {
+    assert!(
+        options.openings >= 1,
+        "fpha_lag_study_with: openings must be at least 1, got {}",
+        options.openings
+    );
+    let system = build_fpha_lag_system(options);
+    let hydro_models = fpha_lag_hydro_models(&system);
+    (system, build_config(), hydro_models)
+}
+
 /// The in-code studies the structural sweep (`for_each_study`) visits after the
 /// committed decks, in visit order: [`discounted_anticipated_study`] and
 /// [`parallel_multiblock_evaporation_study`], each isolating a stage-LP builder
@@ -2143,7 +3224,9 @@ pub fn two_hydro_evaporation_study() -> (novomodelo_core::System, Config, Prepar
 /// evaporating hydro; and [`parallel_inflow_slack_study`]'s multi-block
 /// parallel inflow slack: the smallest in-code study that reaches the
 /// inflow-slack-per-block mutation check, unreachable on every committed deck
-/// and every other in-code study.
+/// and every other in-code study; and [`fpha_lag_study`]'s FPHA, PAR(2),
+/// evaporation, soft inflow cap and anticipated lane on one chronological
+/// stage.
 ///
 /// Each study's builder is called twice — once for the returned `System`,
 /// once for the `System` `build_setup_in_code*` consumes by value — since
@@ -2163,6 +3246,8 @@ pub fn structural_studies() -> Vec<(String, novomodelo_core::System, StudySetup)
     let (evap_system_for_setup, _, evap_hydro_models_for_setup) = two_hydro_evaporation_study();
     let (slack_system, slack_config) = parallel_inflow_slack_study();
     let (slack_system_for_setup, _) = parallel_inflow_slack_study();
+    let (fpha_lag_system, fpha_lag_config, _) = fpha_lag_study();
+    let (fpha_lag_system_for_setup, _, fpha_lag_hydro_models_for_setup) = fpha_lag_study();
     vec![
         (
             "in-code/discounted-anticipated".to_string(),
@@ -2196,6 +3281,15 @@ pub fn structural_studies() -> Vec<(String, novomodelo_core::System, StudySetup)
             "structural/parallel-inflow-slack".to_string(),
             slack_system,
             super::build_setup_in_code(slack_system_for_setup, &slack_config),
+        ),
+        (
+            FPHA_LAG_STUDY_KEY.to_string(),
+            fpha_lag_system,
+            super::build_setup_in_code_with_models(
+                fpha_lag_system_for_setup,
+                &fpha_lag_config,
+                fpha_lag_hydro_models_for_setup,
+            ),
         ),
     ]
 }

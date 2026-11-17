@@ -30,8 +30,7 @@
 //!
 //! The reference operating volume is declared in `hydro_production_models.json`
 //! (`reference_volume`), the single source of truth, not here. A stale
-//! `reference_volume_hm3` column is warned-and-ignored rather than erroring, so
-//! an old parquet still loads while the inert column is surfaced.
+//! `reference_volume_hm3` column is refused with that instruction.
 //!
 //! ## Parquet schema
 //!
@@ -61,9 +60,7 @@ use arrow::array::{Array, Float64Array};
 use novomodelo_core::EntityId;
 
 use crate::LoadError;
-use crate::parquet_helpers::{
-    extract_required_float64, extract_required_int32, open_record_batch_reader,
-};
+use crate::parquet_helpers::{ParquetColumns, open_parquet_input};
 
 /// A single row of the `system/hydro_energy_productivity.parquet` override table.
 ///
@@ -84,6 +81,21 @@ pub struct HydroEnergyProductivityRow {
     pub integrated_equivalent_productivity_mw_per_m3s: Option<f64>,
 }
 
+static HYDRO_ENERGY_PRODUCTIVITY_COLUMNS: ParquetColumns = ParquetColumns {
+    known: &[
+        "hydro_id",
+        "stage_id",
+        "equivalent_productivity_mw_per_m3s",
+        "reference_outflow_m3s",
+        "specific_productivity_mw_per_m3s_per_m",
+        "integrated_equivalent_productivity_mw_per_m3s",
+    ],
+    retired: &[(
+        "reference_volume_hm3",
+        "declare reference_volume in system/hydro_production_models.json instead",
+    )],
+};
+
 /// Parse `system/hydro_energy_productivity.parquet`, sorted by `(hydro_id,
 /// stage_id)` with NULL `stage_id` (per-hydro default) before any concrete stage.
 ///
@@ -91,32 +103,23 @@ pub struct HydroEnergyProductivityRow {
 ///
 /// Returns [`LoadError::IoError`] when the file cannot be opened,
 /// [`LoadError::ParseError`] for malformed Parquet, and
-/// [`LoadError::SchemaError`] for missing/wrong-typed columns, null `hydro_id`,
-/// or out-of-range override values.
+/// [`LoadError::SchemaError`] for missing/wrong-typed columns, an unknown or
+/// retired column, null `hydro_id`, or out-of-range override values.
 pub fn parse_hydro_energy_productivity(
     path: &Path,
 ) -> Result<Vec<HydroEnergyProductivityRow>, LoadError> {
-    let reader = open_record_batch_reader(path)?;
-
     let mut rows: Vec<HydroEnergyProductivityRow> = Vec::new();
 
-    for batch_result in reader {
-        let batch = batch_result.map_err(|e| LoadError::parse(path, e.to_string()))?;
+    for batch in open_parquet_input(path, &HYDRO_ENERGY_PRODUCTIVITY_COLUMNS)? {
+        let batch = batch?;
 
-        warn_on_stale_reference_volume_column(&batch);
-
-        let hydro_id_col = extract_required_int32(&batch, "hydro_id", path)?;
-        let stage_id_col = extract_required_int32(&batch, "stage_id", path)?;
-        let rho_eq_col =
-            extract_required_float64(&batch, "equivalent_productivity_mw_per_m3s", path)?;
-        let q_ref_col = extract_required_float64(&batch, "reference_outflow_m3s", path)?;
-        let rho_esp_col =
-            extract_required_float64(&batch, "specific_productivity_mw_per_m3s_per_m", path)?;
-        let integrated_rho_eq_col = extract_required_float64(
-            &batch,
-            "integrated_equivalent_productivity_mw_per_m3s",
-            path,
-        )?;
+        let hydro_id_col = batch.required_int32("hydro_id")?;
+        let stage_id_col = batch.required_int32("stage_id")?;
+        let rho_eq_col = batch.required_float64("equivalent_productivity_mw_per_m3s")?;
+        let q_ref_col = batch.required_float64("reference_outflow_m3s")?;
+        let rho_esp_col = batch.required_float64("specific_productivity_mw_per_m3s_per_m")?;
+        let integrated_rho_eq_col =
+            batch.required_float64("integrated_equivalent_productivity_mw_per_m3s")?;
 
         let n = batch.num_rows();
         let base_idx = rows.len();
@@ -180,27 +183,6 @@ pub fn parse_hydro_energy_productivity(
 
     rows.sort_by_key(|r| (r.hydro_id.0, r.stage_id.unwrap_or(-1)));
     Ok(rows)
-}
-
-// ── stale-column deprecation notice ─────────────────────────────────────────────
-
-/// Process-wide guard so the stale-column deprecation notice is emitted at most
-/// once, no matter how many files or batches carry the column.
-static STALE_REFERENCE_VOLUME_NOTICE: std::sync::Once = std::sync::Once::new();
-
-fn warn_on_stale_reference_volume_column(batch: &arrow::record_batch::RecordBatch) {
-    if batch
-        .schema()
-        .column_with_name("reference_volume_hm3")
-        .is_some()
-    {
-        STALE_REFERENCE_VOLUME_NOTICE.call_once(|| {
-            tracing::warn!(
-                "reference_volume_hm3 in hydro_energy_productivity.parquet is no longer read; \
-                 declare reference_volume in hydro_production_models.json instead"
-            );
-        });
-    }
 }
 
 // ── per-value validation helpers ───────────────────────────────────────────────
@@ -384,8 +366,7 @@ mod tests {
     }
 
     /// Builds a batch that still physically carries the retired
-    /// `reference_volume_hm3` column (6 columns) to exercise the
-    /// warn-and-ignore path.
+    /// `reference_volume_hm3` column.
     fn make_stale_batch(
         hydro_ids: &[i32],
         stage_ids: &[Option<i32>],
@@ -430,34 +411,30 @@ mod tests {
         .expect("valid stale batch construction")
     }
 
-    /// A parquet that still physically carries a stale `reference_volume_hm3`
-    /// column parses `Ok` (warn-and-ignore forward-compat), the column is
-    /// ignored, and the other override values survive. The one-time
-    /// deprecation notice goes to `tracing::warn!`; no tracing capture is wired
-    /// in this crate's tests, so this asserts the tolerate-and-ignore behavior
-    /// (the parser must NOT error and the row carries the kept overrides).
+    /// A parquet that still carries the retired `reference_volume_hm3` column
+    /// is refused with the instruction that replaces it.
     #[test]
-    fn parser_warns_and_ignores_stale_reference_volume_column() {
+    fn parser_refuses_stale_reference_volume_column() {
         let batch = make_stale_batch(
             &[1],
             &[Some(0)],
             &[Some(3.6)],
-            // A populated stale column must not error and must be ignored.
             &[Some(120.0)],
             &[Some(200.0)],
             &[Some(0.009)],
         );
         let tmp = write_parquet(&batch);
-        let rows = parse_hydro_energy_productivity(tmp.path())
-            .expect("a stale reference_volume_hm3 column must be ignored, not rejected");
-
-        assert_eq!(rows.len(), 1);
-        let row = &rows[0];
-        assert_eq!(row.hydro_id, EntityId::from(1));
-        assert_eq!(row.stage_id, Some(0));
-        assert_eq!(row.equivalent_productivity_mw_per_m3s, Some(3.6));
-        assert_eq!(row.reference_outflow_m3s, Some(200.0));
-        assert_eq!(row.specific_productivity_mw_per_m3s_per_m, Some(0.009));
+        match parse_hydro_energy_productivity(tmp.path()) {
+            Err(LoadError::SchemaError { field, message, .. }) => {
+                assert_eq!(field, "reference_volume_hm3");
+                assert_eq!(
+                    message,
+                    "column \"reference_volume_hm3\" is no longer read; declare \
+                     reference_volume in system/hydro_production_models.json instead"
+                );
+            }
+            other => panic!("expected SchemaError, got: {other:?}"),
+        }
     }
 
     /// `reference_outflow_m3s = NaN` must be rejected.

@@ -9,6 +9,146 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-11-16
+
+### Added
+
+- `constraints/generic_constraints.json` accepts `hydro_outflow_volume(h)`,
+  `hydro_diversion_volume(h)` and `pumping_volume(station)`, stage volumes in
+  hm3. Their constraints may add only volume and storage terms, with no block
+  argument, `per_stage_block` parameter or bounds row with a `block_id`.
+- `constraints/thermal_bounds.parquet` accepts `cost_per_mwh` on a row with a
+  `block_id`, pricing that block's generation. Such rows on a thermal with
+  `anticipated_config` are still refused.
+- `estimation.history_years` in `config.json`, as `{"from", "to"}`, limits the
+  years of `scenarios/inflow_history.parquet` the inflow model is estimated
+  from; absent, every year is used. A range reaching outside the file's years
+  is refused.
+- `novomodelo validate` warns when `hydro.fpha_violation_cost` is at or below
+  the largest deficit cost plus `generation_violation_below_cost`.
+- `novomodelo validate` warns when a hydro's minimum storage in
+  `constraints/hydro_bounds.parquet` rises above the previous stage's, which
+  can make a stage infeasible.
+
+### Changed
+
+#### Case files
+
+- **BREAKING:** `curtailment_cost` in `system/non_controllable_sources.json`
+  must be 0 or more. It now accepts 0 there, in `penalties.json` and in
+  `constraints/penalty_overrides_ncs.parquet`, as does `turbined_cost` in
+  `constraints/penalty_overrides_hydro.parquet`.
+- **BREAKING:** an input Parquet file with a column novomodelo does not read is
+  refused, naming the closest known column. Remove the column, as
+  `residual_std_ratio` in `scenarios/inflow_ar_coefficients.parquet` and
+  `reference_volume_hm3` in `system/hydro_energy_productivity.parquet`.
+- `post_study_stages.json` accepts `thermal_stages` and `water_bucket_stages`,
+  the second required in full on a travel-time deck without `stages`. `stages`,
+  and a travel-time deck without the file, warn as deprecated: migrate with
+  `python3 scripts/migrate/post_study_stages.py <deck-dir>`.
+- `system/lines.json` and `system/thermals.json` are optional: a case without
+  them validates and runs as a study with no lines or no thermals.
+
+#### Inflow model
+
+- **BREAKING:** the AR orders and coefficients estimated from
+  `scenarios/inflow_history.parquet` change under both
+  `estimation.order_selection` values. Results change.
+- **BREAKING:** studies whose `stages.json` splits an inflow-lag period over
+  stages, or steps lags from months to quarters, give different results when
+  cuts carry inflow-lag terms; retrain them. Results are exact only where the
+  partial inflow is path-independent; a month-to-quarter stage warns once.
+- PAR(p) folding: the inflow model leaves the stage LP. Each stage's inflow is
+  computed from its lags before the solve, so the LP drops the lag columns and
+  inflow rows and is smaller. Results change. A 0.20.0 policy still loads; its
+  stored bases are skipped with a `stored bases not used` warning.
+
+#### Hydro plants
+
+- **BREAKING:** `penalties.json` must declare `hydro.fpha_violation_cost`
+  ($/MWh, > 0); a `penalties.json` without it is refused. Add the key to
+  existing cases. It can also be set per plant in `system/hydros.json` and
+  per stage in `constraints/penalty_overrides_hydro.parquet`.
+- **BREAKING:** FPHA planes with `fpha_config.source: "computed"` are fitted
+  over the plant's `min_storage_hm3` to `max_storage_hm3`, which
+  `system/hydro_geometry.parquet` must cover or the case is refused. Extend
+  the geometry. Results change where the two ranges differ.
+- **BREAKING:** a storage bound in `constraints/hydro_bounds.parquet` outside
+  the reservoir's range in `system/hydros.json` is refused, as is a stage whose
+  minimum storage exceeds its maximum. Keep each stage's bounds within the
+  reservoir's `min_storage_hm3` to `max_storage_hm3`.
+- An FPHA hydro with `max_generation_mw` 0 in `system/hydros.json` needs no rows
+  in `system/fpha_hyperplanes.parquet` and is modeled at zero productivity. The
+  "no turbine capacity" warning names `max_turbined_m3s` and
+  `max_generation_mw`. Results change.
+
+#### Policy
+
+- Boundary cuts read on a bucket calendar other than their training one are
+  repriced. In-transit water is priced by the target bucket's hours, and water
+  bound for a hydro the policy has no buckets for at that hydro's storage value
+  (`filled_from_storage` in `novomodelo validate --json`). Results change.
+- For a migrated deck with a travel-time arc, the transit-bucket slots in
+  `policy/cuts/*.bin` past the study horizon are now dated, so a later study
+  loading that policy as a boundary reads them.
+
+#### Results and outputs
+
+- Training and simulation results change: each stage LP solves the same model
+  with fewer rows and columns.
+
+### Fixed
+
+#### Case files
+
+- `novomodelo validate` refused a `stages.json` whose stages of different
+  lengths share a `season_id`, each the season's whole period or a slice of
+  it. Weeks that name their month, in a study where another year has that
+  month as one stage, are such a case.
+
+#### Inflow model
+
+- Sampled training gave results that depended on `--threads` and on the MPI
+  rank count when an inflow-lag period spans several stages, as weeks within a
+  month or a quarter built from months. Results change for those studies.
+- Estimation from `scenarios/inflow_history.parquet` aborted the run when a
+  fitted month implied a negative noise variance. That month's order is now
+  reduced and listed as `negative_residual_variance` in
+  `output/stochastic/fitting_report.json`.
+- Validation's warnings on inflow observations per season missed
+  `scenarios/inflow_history.parquet` years outside the study horizon and counted
+  rows covering only part of a season. They now count the observations
+  estimation fits from.
+
+#### Hydro plants
+
+- FPHA plants whose planes cannot be met no longer make the stage infeasible.
+  The excess is priced at `hydro.fpha_violation_cost` and reported as
+  `fpha_violation_mw` in `simulation/hydros` and `fpha_violation_cost` (inside
+  `hydro_violation_cost`) in `simulation/costs`. Results change where it binds.
+- `max_generation_mw` or `max_turbined_m3s` of 0 in a block made a hydro or unit
+  group turbine water at 0 MW and charged its minima. It now spills that water,
+  and `training/hydro_models.json` lists it under `frozen_turbining`. Results
+  change.
+- A hydro with `fpha_config.source: "computed"` could turbine water at 0 MW in
+  `simulation/hydros` while it spilled within its spillage fit range. Results
+  change. `novomodelo validate` now warns when a plane in
+  `system/fpha_hyperplanes.parquet` falls below 0 MW at zero turbining.
+- `evaporation_m3s` in `simulation/hydros` could take the opposite sign to the
+  month's `evaporation.coefficients_mm` in `system/hydros.json`. It added water
+  in a month of net evaporation or removed it in a month of net rainfall.
+  Results change.
+- A negative `water_withdrawal_m3s` in `constraints/hydro_bounds.parquet`
+  could add water through `water_withdrawal_violation_neg_m3s`. A withdrawal
+  set before a plant's `entry_stage_id` could make the stage infeasible.
+  Results change.
+
+#### Results and outputs
+
+- `storage_violation_cost` and `filling_target_cost` in `simulation/costs`
+  were always 0. They now report the cost of a filling plant's soft
+  minimum-storage and filling-target slacks.
+
 ## [0.20.0] - 2026-11-03
 
 ### Added
@@ -1850,7 +1990,8 @@ target_bus)`.
 
 <!-- next-url -->
 
-[Unreleased]: https://github.com/ons-ccee-epe/novomodelo/compare/v0.20.0...HEAD
+[Unreleased]: https://github.com/ons-ccee-epe/novomodelo/compare/v0.21.0...HEAD
+[0.21.0]: https://github.com/ons-ccee-epe/novomodelo/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/ons-ccee-epe/novomodelo/compare/v0.19.1...v0.20.0
 [0.19.1]: https://github.com/ons-ccee-epe/novomodelo/compare/v0.19.0...v0.19.1
 [0.19.0]: https://github.com/ons-ccee-epe/novomodelo/compare/v0.18.1...v0.19.0

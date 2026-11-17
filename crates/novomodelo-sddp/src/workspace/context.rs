@@ -11,7 +11,7 @@ use crate::{
     dcs::DcsConfig,
     horizon_mode::HorizonMode,
     inflow_method::InflowNonNegativityMethod,
-    lp::builder::{StageGeometry, StateBox},
+    lp::builder::{InflowCoupling, StageGeometry, StateBox},
     lp::indexer::{CutStateProjection, StateSpace, StudyDimensions},
     setup::node_graph::{NodeGraph, StageIdx},
 };
@@ -31,6 +31,10 @@ pub struct StageContext<'a> {
     /// column and row ranges; a single global stage-0 geometry would carry
     /// `n_blks`-striped bases that misread any stage with a differing block count.
     pub geometry_per_stage: &'a [StageGeometry],
+    /// Per-stage realized-inflow coupling and the unscaled bounds of the rows it
+    /// touches, mirroring
+    /// [`StageTemplates::inflow_coupling_per_stage`](crate::lp::builder::StageTemplates::inflow_coupling_per_stage).
+    pub inflow_coupling: &'a [InflowCoupling],
     /// Resolved objective cost-scale factor (`modeling.cost_scale_factor`),
     /// mirroring [`StageTemplates::cost_scale_factor`](crate::lp::builder::StageTemplates::cost_scale_factor).
     /// Multiplies a scaled-objective quantity back to currency units at the

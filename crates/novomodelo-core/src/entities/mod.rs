@@ -15,7 +15,7 @@ pub use energy_contract::{ContractType, EnergyContract};
 pub use hydro::{
     DiversionChannel, EfficiencyModel, FillingConfig, HydraulicLossesModel, Hydro,
     HydroGenerationModel, HydroPenalties, HydroTurbineType, HydroUnit, HydroUnitGroup,
-    TailraceModel, TailracePoint,
+    TailraceModel, TailracePoint, has_turbine_capacity,
 };
 pub use line::Line;
 pub use non_controllable::NonControllableSource;

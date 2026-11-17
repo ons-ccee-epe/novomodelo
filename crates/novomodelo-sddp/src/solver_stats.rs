@@ -75,36 +75,45 @@ impl SolverStatsDelta {
     /// Compute the delta between two [`SolverStatistics`] snapshots.
     #[must_use]
     pub fn from_snapshots(before: &SolverStatistics, after: &SolverStatistics) -> Self {
-        Self {
-            lp_solves: after.solve_count - before.solve_count,
-            lp_successes: after.success_count - before.success_count,
-            first_try_successes: after.first_try_successes - before.first_try_successes,
-            lp_failures: after.failure_count - before.failure_count,
-            retry_attempts: after.retry_count - before.retry_count,
-            basis_offered: after.basis_offered - before.basis_offered,
-            basis_consistency_failures: after.basis_consistency_failures
-                - before.basis_consistency_failures,
-            row_violations: after.row_violations - before.row_violations,
-            simplex_iterations: after.total_iterations - before.total_iterations,
-            solve_time_ms: (after.total_solve_time_seconds - before.total_solve_time_seconds)
-                * 1000.0,
-            load_model_count: after.load_model_count - before.load_model_count,
-            load_model_time_ms: (after.total_load_model_time_seconds
-                - before.total_load_model_time_seconds)
-                * 1000.0,
-            set_bounds_time_ms: (after.total_set_bounds_time_seconds
-                - before.total_set_bounds_time_seconds)
-                * 1000.0,
-            basis_set_time_ms: (after.total_basis_set_time_seconds
-                - before.total_basis_set_time_seconds)
-                * 1000.0,
-            retry_level_histogram: after
+        let mut delta = Self::default();
+        Self::from_snapshots_into(&mut delta, before, after);
+        delta
+    }
+
+    /// Overwrite `dst` with the delta between two snapshots, reusing its
+    /// `retry_level_histogram` allocation.
+    pub fn from_snapshots_into(
+        dst: &mut Self,
+        before: &SolverStatistics,
+        after: &SolverStatistics,
+    ) {
+        dst.lp_solves = after.solve_count - before.solve_count;
+        dst.lp_successes = after.success_count - before.success_count;
+        dst.first_try_successes = after.first_try_successes - before.first_try_successes;
+        dst.lp_failures = after.failure_count - before.failure_count;
+        dst.retry_attempts = after.retry_count - before.retry_count;
+        dst.basis_offered = after.basis_offered - before.basis_offered;
+        dst.basis_consistency_failures =
+            after.basis_consistency_failures - before.basis_consistency_failures;
+        dst.row_violations = after.row_violations - before.row_violations;
+        dst.simplex_iterations = after.total_iterations - before.total_iterations;
+        dst.solve_time_ms =
+            (after.total_solve_time_seconds - before.total_solve_time_seconds) * 1000.0;
+        dst.load_model_count = after.load_model_count - before.load_model_count;
+        dst.load_model_time_ms =
+            (after.total_load_model_time_seconds - before.total_load_model_time_seconds) * 1000.0;
+        dst.set_bounds_time_ms =
+            (after.total_set_bounds_time_seconds - before.total_set_bounds_time_seconds) * 1000.0;
+        dst.basis_set_time_ms =
+            (after.total_basis_set_time_seconds - before.total_basis_set_time_seconds) * 1000.0;
+        dst.retry_level_histogram.clear();
+        dst.retry_level_histogram.extend(
+            after
                 .retry_level_histogram
                 .iter()
                 .zip(&before.retry_level_histogram)
-                .map(|(a, b)| a - b)
-                .collect(),
-        }
+                .map(|(a, b)| a - b),
+        );
     }
 
     /// Add `rhs` element-wise into `dst` in place — allocation-free for the hot backward-pass path.
@@ -754,14 +763,23 @@ impl StageWorkerStatsBuffer {
         &self.data[idx]
     }
 
-    /// Write `delta` into the slot at `(worker_id, slot)`.
+    /// Copy `delta` into the slot at `(worker_id, slot)`, reusing the slot's
+    /// histogram allocation.
     ///
     /// # Panics (debug only)
     ///
     /// Panics if indices are out of bounds.
-    pub fn set(&mut self, worker_id: usize, slot: usize, delta: SolverStatsDelta) {
+    pub fn set(&mut self, worker_id: usize, slot: usize, delta: &SolverStatsDelta) {
         let idx = self.index(worker_id, slot);
-        self.data[idx] = delta;
+        delta.clone_into_reuse(&mut self.data[idx]);
+    }
+
+    /// Reserve `histogram_len` histogram entries in every slot, so no
+    /// [`Self::set`] allocates.
+    pub fn reserve_histograms(&mut self, histogram_len: usize) {
+        for slot in &mut self.data {
+            slot.retry_level_histogram.reserve_exact(histogram_len);
+        }
     }
 
     /// Zero all slots without re-allocating (cadence on the type doc).
@@ -1745,7 +1763,7 @@ mod tests {
                     lp_solves: 7,
                     ..SolverStatsDelta::default()
                 };
-                buf.set(w, k, d);
+                buf.set(w, k, &d);
             }
         }
         for slot in buf.as_slice() {

@@ -19,7 +19,6 @@ fn make_fixture_stage_template() -> StageTemplate {
         objective: vec![0.0, 1.0, 50.0],
         row_lower: vec![6.0, 14.0],
         row_upper: vec![6.0, 14.0],
-        n_state: 1,
         col_scale: Vec::new(),
         row_scale: Vec::new(),
     }
@@ -727,7 +726,6 @@ fn make_single_equality_template() -> StageTemplate {
         objective: vec![1.0],
         row_lower: vec![0.5],
         row_upper: vec![0.5],
-        n_state: 1,
         col_scale: Vec::new(),
         row_scale: Vec::new(),
     }
@@ -810,7 +808,6 @@ fn max_row_violation_is_zero_without_rows() {
         objective: vec![1.0],
         row_lower: Vec::new(),
         row_upper: Vec::new(),
-        n_state: 1,
         col_scale: Vec::new(),
         row_scale: Vec::new(),
     };
@@ -1388,7 +1385,6 @@ mod research_tests {
             objective: vec![-1.0, -1.0],
             row_lower: vec![1.0],
             row_upper: vec![f64::INFINITY],
-            n_state: 1,
             col_scale: Vec::new(),
             row_scale: Vec::new(),
         };
@@ -1414,7 +1410,6 @@ mod research_tests {
             objective: vec![0.0],
             row_lower: vec![99.0],
             row_upper: vec![99.0],
-            n_state: 1,
             col_scale: Vec::new(),
             row_scale: Vec::new(),
         };
@@ -1449,7 +1444,6 @@ mod research_tests {
             objective: vec![0.0],
             row_lower: vec![99.0],
             row_upper: vec![99.0],
-            n_state: 1,
             col_scale: Vec::new(),
             row_scale: Vec::new(),
         };

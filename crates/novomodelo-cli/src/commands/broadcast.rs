@@ -342,13 +342,13 @@ impl From<BroadcastNodeGraph> for NodeGraph {
                     .collect()
             })
             .collect();
-        NodeGraph {
-            node_ids: b.node_ids.into_iter().map(NodeId).collect(),
+        NodeGraph::new(
+            b.node_ids.into_iter().map(NodeId).collect(),
             nodes,
             successors,
-            n_pools: b.n_pools,
+            b.n_pools,
             pool_stage,
-        }
+        )
     }
 }
 
@@ -583,9 +583,9 @@ mod tests {
     /// `External` child) exercising both `OpeningSource` variants and a
     /// non-trivial successor CSR.
     fn sample_node_graph() -> NodeGraph {
-        NodeGraph {
-            node_ids: vec![NodeId(0), NodeId(1), NodeId(2)].into(),
-            nodes: vec![
+        NodeGraph::new(
+            vec![NodeId(0), NodeId(1), NodeId(2)].into(),
+            vec![
                 NodeRuntime {
                     stage: StageIdx(0),
                     pool_id: 0,
@@ -618,7 +618,7 @@ mod tests {
                 },
             ]
             .into(),
-            successors: vec![
+            vec![
                 vec![
                     NodeSuccessor {
                         child: NodePos(1),
@@ -633,9 +633,9 @@ mod tests {
                 Vec::new(),
             ]
             .into(),
-            n_pools: 3,
-            pool_stage: vec![StageIdx(0), StageIdx(1), StageIdx(1)],
-        }
+            3,
+            vec![StageIdx(0), StageIdx(1), StageIdx(1)],
+        )
     }
 
     #[test]

@@ -8,7 +8,7 @@
 //!
 //! - `noise` — the per-solve inflow, load and NCS noise transforms and LP patches. Owns the
 //!   NCS availability-factor contract (`transform_ncs_noise`) and the inflow-slack bounds
-//!   (`transform_inflow_noise`, `apply_inflow_slack_col_bounds`).
+//!   (`realize_inflow`, `apply_inflow_slack_col_bounds`).
 //! - [`noise_key`] — σ-weighted noise keys for the backward solve order.
 //! - [`inflow_method`] — the closed
 //!   [`InflowNonNegativityMethod`](inflow_method::InflowNonNegativityMethod)

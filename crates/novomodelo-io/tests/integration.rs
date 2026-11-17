@@ -10,7 +10,7 @@
 mod helpers;
 
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use arrow::array::{Array, Int32Array};
 use arrow::record_batch::RecordBatch;
@@ -331,7 +331,6 @@ fn test_inflow_history_wired_into_system() {
             Field::new("stage_id", DataType::Int32, false),
             Field::new("lag", DataType::Int32, false),
             Field::new("coefficient", DataType::Float64, false),
-            Field::new("residual_std_ratio", DataType::Float64, false),
         ]));
         let ar_batch = RecordBatch::try_new(
             Arc::clone(&ar_schema),
@@ -340,7 +339,6 @@ fn test_inflow_history_wired_into_system() {
                 Arc::new(Int32Array::from(vec![0, 1, 0, 1, 0, 1])),
                 Arc::new(Int32Array::from(vec![1, 1, 1, 1, 1, 1])),
                 Arc::new(Float64Array::from(vec![0.3, 0.25, 0.4, 0.35, 0.2, 0.15])),
-                Arc::new(Float64Array::from(vec![0.95, 0.92, 0.90, 0.88, 0.93, 0.91])),
             ],
         )
         .unwrap();
@@ -858,7 +856,6 @@ fn test_lead_time_single_decider_on_disk_load() {
     // makes to the padded thermal-bounds axis pads no region a real study
     // ever reads.
     for stage in 0..system.n_stages() {
-        let b = system.bounds().thermal_bounds(THERMAL_IDX_ANT, stage);
         let bb = system.bounds().thermal_block_base(THERMAL_IDX_ANT, stage);
         assert!(
             (bb.min_generation_mw - 0.0).abs() < f64::EPSILON,
@@ -871,9 +868,9 @@ fn test_lead_time_single_decider_on_disk_load() {
             bb.max_generation_mw
         );
         assert!(
-            (b.cost_per_mwh - 10.0).abs() < f64::EPSILON,
+            (bb.cost_per_mwh - 10.0).abs() < f64::EPSILON,
             "stage {stage}: cost_per_mwh mismatch, got {}",
-            b.cost_per_mwh
+            bb.cost_per_mwh
         );
     }
 }
@@ -942,7 +939,7 @@ fn test_full_anticipation_lead_stages_reaching_only_post_study_loads() {
         root,
         "post_study_stages.json",
         r#"{
-    "stages": [ { "start_date": "2024-02-01", "duration_hours": 696.0 } ],
+    "thermal_stages": [ { "start_date": "2024-02-01", "duration_hours": 696.0 } ],
     "thermal_bounds": []
 }"#,
     );
@@ -1069,6 +1066,7 @@ fn make_hydro_write_record(
         outflow_slack_below_m3s: 0.0,
         outflow_slack_above_m3s: 0.0,
         generation_slack_mw: 0.0,
+        fpha_violation_mw: 0.0,
         storage_violation_below_hm3: 0.0,
         filling_target_violation_hm3: 0.0,
         evaporation_violation_pos_m3s: 0.0,
@@ -1577,9 +1575,9 @@ fn test_thermal_bounds_duplicate_row_rejected_by_load_case() {
     }
 }
 
-/// `block_id` on stage-level-only `cost_per_mwh` column is rejected naming the entity and stage.
+/// A block-level `cost_per_mwh` row loads and reaches the resolved block cost, leaving the stage cost untouched.
 #[test]
-fn test_thermal_bounds_block_id_on_stage_level_cost_column_rejected_by_load_case() {
+fn test_thermal_bounds_block_row_cost_accepted_by_load_case() {
     let dir = TempDir::new().unwrap();
     helpers::make_multi_entity_case(&dir);
 
@@ -1595,26 +1593,33 @@ fn test_thermal_bounds_block_id_on_stage_level_cost_column_rejected_by_load_case
         }],
     );
 
-    match load_case(dir.path()) {
-        Err(err) => {
-            let display = err.to_string();
-            assert!(
-                display.contains("thermal_id=1"),
-                "message must name the entity: {display}"
-            );
-            assert!(
-                display.contains("stage_id=0"),
-                "message must name the stage: {display}"
-            );
-            assert!(
-                display.contains("cost_per_mwh"),
-                "message must name the offending stage-level-only column: {display}"
-            );
-        }
-        Ok(_) => panic!(
-            "expected Err for a block_id on the stage-level-only cost_per_mwh column, got Ok"
-        ),
-    }
+    let system = load_case(dir.path()).unwrap_or_else(|e| {
+        panic!("load_case must accept a block-level thermal cost row, got: {e}")
+    });
+    let idx = system
+        .thermals()
+        .iter()
+        .position(|t| t.id == EntityId::from(1))
+        .unwrap_or_else(|| panic!("thermal 1 is declared by the case"));
+
+    assert_eq!(
+        system
+            .bounds()
+            .thermal_bounds_at_block(idx, 0, 0)
+            .cost_per_mwh
+            .to_bits(),
+        999.0_f64.to_bits(),
+        "block 0 must carry the row's cost"
+    );
+    assert_eq!(
+        system
+            .bounds()
+            .thermal_block_base(idx, 0)
+            .cost_per_mwh
+            .to_bits(),
+        80.0_f64.to_bits(),
+        "the stage-level cost must stay the registry value"
+    );
 }
 
 /// Recursively copies `src` into `dst`, skipping `output` directories.
@@ -1661,4 +1666,90 @@ fn test_d56_ar1_sigma_zero_inflow_rejected_by_validate_case() {
         }
         Ok(_) => panic!("expected the AR(1) + sigma=0 external inflow deck to be rejected, got Ok"),
     }
+}
+
+fn collect_case_dirs(dir: &Path, found: &mut Vec<PathBuf>) {
+    let entries =
+        std::fs::read_dir(dir).unwrap_or_else(|e| panic!("cannot read {}: {e}", dir.display()));
+    for entry in entries {
+        let entry = entry.unwrap();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if entry.file_type().unwrap().is_dir() {
+            if name != "target" && !name.starts_with('.') {
+                collect_case_dirs(&entry.path(), found);
+            }
+        } else if name == "penalties.json" {
+            found.push(dir.to_path_buf());
+        }
+    }
+}
+
+fn committed_case_dirs() -> Vec<PathBuf> {
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut dirs = Vec::new();
+    for root in ["examples", "crates", "tests"] {
+        collect_case_dirs(&repo.join(root), &mut dirs);
+    }
+    assert!(
+        !dirs.is_empty(),
+        "no penalties.json found under {}",
+        repo.display()
+    );
+    dirs.sort();
+    dirs
+}
+
+#[test]
+fn every_committed_penalties_json_declares_fpha_violation_cost() {
+    for dir in committed_case_dirs() {
+        let file = dir.join("penalties.json");
+        let text = std::fs::read_to_string(&file).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&text)
+            .unwrap_or_else(|e| panic!("{} is not JSON: {e}", file.display()));
+        let price = json
+            .pointer("/hydro/fpha_violation_cost")
+            .and_then(serde_json::Value::as_f64);
+        assert!(
+            price.is_some_and(|value| value > 0.0),
+            "{}: hydro.fpha_violation_cost must be a number > 0, got {price:?}",
+            file.display()
+        );
+    }
+}
+
+#[test]
+fn no_committed_case_raises_an_fpha_plane_or_price_warning() {
+    let mut fpha_cases = 0_usize;
+    for dir in committed_case_dirs() {
+        let declares_fpha =
+            std::fs::read_to_string(dir.join("system/hydro_production_models.json"))
+                .is_ok_and(|text| text.contains("\"fpha\""));
+        fpha_cases += usize::from(declares_fpha);
+        match validate_case(&dir) {
+            Ok((_, report)) => {
+                let raised: Vec<&str> = report
+                    .warnings
+                    .iter()
+                    .map(|w| w.message.as_str())
+                    .filter(|m| {
+                        m.contains("FPHA price ordering violation")
+                            || m.starts_with("FPHA plane below zero at zero turbining:")
+                    })
+                    .collect();
+                assert!(raised.is_empty(), "{}: {raised:?}", dir.display());
+            }
+            Err(e) => {
+                assert!(
+                    !declares_fpha,
+                    "{}: an FPHA case must validate, got: {e}",
+                    dir.display()
+                );
+            }
+        }
+    }
+    assert!(
+        fpha_cases > 0,
+        "no committed case declares an FPHA production model"
+    );
 }
