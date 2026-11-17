@@ -2,7 +2,7 @@
 //!
 //! Owns the head-conversion constant [`K`] and [`ProductionFunction`], the
 //! evaluable bundle of forebay table + tailrace + hydraulic-loss + efficiency that
-//! computes `phi(v, q, s)`.
+//! computes `phi(v, q, lateral_flow)`.
 
 use novomodelo_core::{EfficiencyModel, HydraulicLossesModel, TailraceModel};
 
@@ -16,7 +16,7 @@ use super::tailrace::TailraceFamilies;
 ///
 /// A plant without a `tailrace_curves` table resolves to [`TailraceSource::Entity`]
 /// and must fit bit-for-bit to the same planes as before the families path
-/// existed: `net_head` evaluates the same `evaluate_tailrace(model, q + s)`.
+/// existed: `net_head` evaluates the same `evaluate_tailrace(model, q + lateral_flow)`.
 /// Routing a table-less plant through the `Families` arm would silently perturb
 /// its fitted γ values and is forbidden.
 #[derive(Debug, Clone)]
@@ -38,13 +38,15 @@ pub(crate) enum TailraceSource {
 /// converting `phi = K·eta·q·h_net` from hydraulic power (W) to MW.
 const K: f64 = 9.81 / 1000.0;
 
-/// Complete hydro production function `phi(v, q, s)` with analytical derivatives —
+/// Complete hydro production function `phi(v, q, lateral_flow)` with analytical derivatives —
 /// the forebay table, optional tailrace and loss models, and a constant turbine
 /// efficiency bundled into one evaluable object yielding power in MW. All
 /// validation is upstream; [`Self::new`] is infallible.
 ///
-/// Both `net_head` and `evaluate` take `(v, q, s)`: reservoir volume \[hm³\],
-/// turbined flow \[m³/s\], spillage flow \[m³/s\].
+/// Both `net_head` and `evaluate` take `(v, q, lateral_flow)`: reservoir volume
+/// \[hm³\], turbined flow \[m³/s\], tailrace lateral flow \[m³/s\] — the own
+/// spill when no tailrace-flow declaration applies. The tailrace is read at
+/// `q + lateral_flow`.
 #[derive(Debug, Clone)]
 pub(crate) struct ProductionFunction {
     /// Forebay height interpolation table.
@@ -102,15 +104,15 @@ impl ProductionFunction {
     }
 
     /// Net head at the turbine \[m\]:
-    /// `h_net = h_fore(v) − h_tail(q+s) − h_loss(gross_head, q)`, clamped to
+    /// `h_net = h_fore(v) − h_tail(q+lateral_flow) − h_loss(gross_head, q)`, clamped to
     /// `max(0.0, h_net)` (negative net head is physically impossible). The
     /// [`HydraulicLossesModel::Factor`] variant simplifies to
     /// `(1 − k)·(h_fore − h_tail)`.
-    pub(crate) fn net_head(&self, v: f64, q: f64, s: f64) -> f64 {
+    pub(crate) fn net_head(&self, v: f64, q: f64, lateral_flow: f64) -> f64 {
         let h_fore = self.forebay.height(v);
         // The `Entity` arm MUST call `evaluate_tailrace(model, q_out)` verbatim —
         // the inert-fallback contract on [`TailraceSource`].
-        let q_out = q + s;
+        let q_out = q + lateral_flow;
         let h_tail = match &self.tailrace {
             TailraceSource::Entity(model) => {
                 model.as_ref().map_or(0.0, |m| evaluate_tailrace(m, q_out))
@@ -133,20 +135,21 @@ impl ProductionFunction {
     ///
     /// The installed-capacity ceiling is NOT applied here (see
     /// [`Self::evaluate_capped`]): the lateral secant fits on this uncapped value so
-    /// spillage sensitivity is read from the raw head curve, not flattened where the
+    /// lateral-flow sensitivity is read from the raw head curve, not flattened where the
     /// ceiling binds.
-    pub(crate) fn evaluate(&self, v: f64, q: f64, s: f64) -> f64 {
-        let h_net = self.net_head(v, q, s);
+    pub(crate) fn evaluate(&self, v: f64, q: f64, lateral_flow: f64) -> f64 {
+        let h_net = self.net_head(v, q, lateral_flow);
         K * self.efficiency * q * h_net
     }
 
     /// Production clipped to the installed-capacity ceiling \[MW\]:
-    /// `min(evaluate(v, q, s), max_generation_mw)`.
+    /// `min(evaluate(v, q, lateral_flow), max_generation_mw)`.
     ///
     /// The cloud and α regression use this so the fitted envelope gains a flat
     /// `generation ≤ max_generation_mw` facet; the lateral secant uses the uncapped
     /// [`Self::evaluate`] instead.
-    pub(crate) fn evaluate_capped(&self, v: f64, q: f64, s: f64) -> f64 {
-        self.evaluate(v, q, s).min(self.max_generation_mw)
+    pub(crate) fn evaluate_capped(&self, v: f64, q: f64, lateral_flow: f64) -> f64 {
+        self.evaluate(v, q, lateral_flow)
+            .min(self.max_generation_mw)
     }
 }
