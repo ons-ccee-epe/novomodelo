@@ -372,8 +372,11 @@ fn push_local_inflow_rate(
 ) {
     let plant = HydroSys::new(plant_idx);
     inflow_out.push((plant_idx, 1.0));
-    if ctx.study_dims.inflow_method.truncates() {
-        out.push((layout.geometry.inflow_slack_col(plant), 1.0));
+    if let Some(slack) = layout
+        .geometry
+        .effective_inflow_slack_col(ctx.study_dims.inflow_method, plant)
+    {
+        out.push((slack, 1.0));
     }
 
     if !layout.geometry.diversion.is_empty() {
@@ -461,9 +464,7 @@ fn push_upstream_release_rate(
 }
 
 /// Push plant `u_idx`'s release columns (every cell's turbine column, then
-/// spillage) onto `out` at `coeff`: a plant's release is `Σ_c q_c + s` over a
-/// disjoint cell partition, so `coeff` is replicated across cells, never divided
-/// (mirrors `push_plant_release` in `lp/builder/entries.rs`).
+/// spillage) onto `out` at `coeff`.
 fn push_release_columns(
     u_idx: usize,
     blk: BlockIdx,
@@ -472,14 +473,12 @@ fn push_release_columns(
     layout: &StageLayout<'_>,
     out: &mut Vec<(usize, f64)>,
 ) {
-    let sys_up = HydroSys::new(u_idx);
-    for cell in ctx.hydro_cell_index.cells_of(sys_up) {
-        out.push((
-            layout.geometry.turbine_col(HydroCell::new(cell), blk),
-            coeff,
-        ));
+    for col in layout
+        .geometry
+        .plant_release_cols(ctx.hydro_cell_index, HydroSys::new(u_idx), blk)
+    {
+        out.push((col, coeff));
     }
-    out.push((layout.geometry.spillage_col(sys_up, blk), coeff));
 }
 
 /// Resolve `HydroEvaporation` to the evaporation-outflow column for the matching

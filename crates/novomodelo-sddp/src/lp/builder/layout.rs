@@ -21,6 +21,7 @@ use crate::indexer::{
     anticipated_resolution_for, for_each_live_commitment_slot,
     is_anticipated_decision_active_for_delivery,
 };
+use crate::inflow_method::InflowNonNegativityMethod;
 use crate::time_value::TimeValue;
 
 use super::hydro_state::{
@@ -2215,6 +2216,23 @@ impl StageGeometry {
         self.block_flat(&self.spillage, h.get(), blk)
     }
 
+    /// Columns of plant `h`'s release in block `blk`: each cell's turbine column
+    /// in `cells_of(h)` order, then the plant's spillage column. The release is
+    /// `Σ_c q_c + s`, so a per-plant coefficient is replicated across the cells,
+    /// never divided.
+    #[inline]
+    pub(crate) fn plant_release_cols<'s>(
+        &'s self,
+        cells: &'s HydroCellIndex,
+        h: HydroSys,
+        blk: BlockIdx,
+    ) -> impl Iterator<Item = usize> + 's {
+        cells
+            .cells_of(h)
+            .map(move |c| self.turbine_col(HydroCell::new(c), blk))
+            .chain(std::iter::once(self.spillage_col(h, blk)))
+    }
+
     /// Diversion-flow column for hydro `h`, block `blk`.
     #[inline]
     #[must_use]
@@ -2393,6 +2411,19 @@ impl StageGeometry {
     #[must_use]
     pub fn inflow_slack_col(&self, h: HydroSys) -> usize {
         entity_flat(&self.inflow_slack, h.get())
+    }
+
+    /// The slack column that belongs to plant `h`'s effective (truncated) local
+    /// inflow. Under `Penalty` and `None` the effective inflow is the realized
+    /// inflow alone, so there is none.
+    #[inline]
+    #[must_use]
+    pub(crate) fn effective_inflow_slack_col(
+        &self,
+        method: InflowNonNegativityMethod,
+        h: HydroSys,
+    ) -> Option<usize> {
+        method.truncates().then(|| self.inflow_slack_col(h))
     }
 
     /// Hydro `h`'s below-withdrawal-target slack column.

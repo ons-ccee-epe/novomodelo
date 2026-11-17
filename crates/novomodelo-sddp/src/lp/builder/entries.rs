@@ -320,16 +320,13 @@ fn push_plant_release(
     coeff: f64,
     col_entries: &mut [Vec<(usize, f64)>],
 ) {
-    for c in ctx.hydro_cell_index.cells_of(HydroSys::new(u_idx)) {
-        col_entries[layout
-            .geometry
-            .turbine_col(HydroCell::new(c), BlockIdx::new(blk))]
-        .push((row, coeff));
+    for col in layout.geometry.plant_release_cols(
+        ctx.hydro_cell_index,
+        HydroSys::new(u_idx),
+        BlockIdx::new(blk),
+    ) {
+        col_entries[col].push((row, coeff));
     }
-    col_entries[layout
-        .geometry
-        .spillage_col(HydroSys::new(u_idx), BlockIdx::new(blk))]
-    .push((row, coeff));
 }
 
 /// One upstream release's per-block contribution to the downstream water balance

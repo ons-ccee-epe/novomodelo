@@ -1236,6 +1236,55 @@ fn inflow_slack_col_rejects_a_hydro_past_the_family() {
     let _ = geometry.inflow_slack_col(HydroSys::new(3));
 }
 
+/// `plant_release_cols` lists a split plant's cell turbine columns in cell
+/// order, then its spillage column.
+#[test]
+fn plant_release_cols_lists_every_cell_turbine_then_the_spillage() {
+    let mut fixtures = TwoHydroMultiBusFixtures::new(true);
+    let ctx = fixtures.make_ctx();
+    let stage = stage_with_blocks(BlockMode::Parallel, 3);
+    let layout = StageLayout::new(&ctx, &stage, 0);
+    let geometry = &layout.geometry;
+    let plant = HydroSys::new(1);
+    let blk = BlockIdx::new(1);
+
+    let release: Vec<usize> = geometry
+        .plant_release_cols(ctx.hydro_cell_index, plant, blk)
+        .collect();
+
+    assert_eq!(
+        release,
+        vec![
+            geometry.turbine_col(HydroCell::new(1), blk),
+            geometry.turbine_col(HydroCell::new(2), blk),
+            geometry.spillage_col(plant, blk),
+        ]
+    );
+}
+
+/// `effective_inflow_slack_col` yields the plant's slack column under the two
+/// truncation methods and `None` under `Penalty` and `None`.
+#[test]
+fn effective_inflow_slack_col_is_some_only_under_truncation() {
+    use super::StageGeometry;
+    use crate::inflow_method::InflowNonNegativityMethod;
+
+    let geometry = StageGeometry {
+        inflow_slack: 10..13,
+        ..crate::test_support::equipment_free_geometry(&[0]).remove(0)
+    };
+    let plant = HydroSys::new(1);
+    let slack_of = |method| geometry.effective_inflow_slack_col(method, plant);
+
+    assert_eq!(slack_of(InflowNonNegativityMethod::Truncation), Some(11));
+    assert_eq!(
+        slack_of(InflowNonNegativityMethod::TruncationWithPenalty),
+        Some(11)
+    );
+    assert_eq!(slack_of(InflowNonNegativityMethod::Penalty), None);
+    assert_eq!(slack_of(InflowNonNegativityMethod::None), None);
+}
+
 // ── FPHA-local inverse map ───────────────────────────────────────────────
 
 /// Owns the data needed to construct a three-hydro `TemplateBuildCtx` with a
