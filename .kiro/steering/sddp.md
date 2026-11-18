@@ -720,11 +720,12 @@ coupling-sink section above), the slack bound `l*` and outgoing lag 0.
 the multi-resolution lag accumulator (`advance_lag_chain`) — with no clamp, so
 it may be negative (it never clamps inflow lags; they are unbounded in the state
 box). The correction is
-the hydro's own inflow-slack column. Whenever the family exists it carries
-exactly the hydro's water-row entries (`push_local_inflow_coupling`); only under
-the truncation methods does it also carry `+1` in the generic `hydro_inflow`
-term (`push_local_inflow_rate`). Its template bounds are `[0, 0]`
-(`fill_inflow_slack_columns`), and every solve patches them to `[l*, l*]` at
+the hydro's own inflow-slack column. Whenever the family exists it carries the
+hydro's water-row entries (`push_local_inflow_coupling`); only under the
+truncation methods does it also carry `+1` in the generic `hydro_inflow` term
+(`push_local_inflow_rate`) and the FPHA plane-row entries of every plant that
+declares the hydro in `incremental_inflow_influences` (`fill_fpha_entries`).
+Its template bounds are `[0, 0]` (`fill_inflow_slack_columns`), and every solve patches them to `[l*, l*]` at
 cost 0 under `truncation` or to `[0, l*]` at `c_inf·T` (the hydro's
 `inflow_nonnegativity_cost` times the stage hours) under
 `truncation_with_penalty`, with `l* = max(−ẑ, 0)` written as `+0.0` when
