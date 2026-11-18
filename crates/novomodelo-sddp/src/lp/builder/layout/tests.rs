@@ -39,7 +39,7 @@ use super::super::DeliveryRing;
 use super::super::entries::build_stage_inflow_coupling;
 use super::super::test_support::zero_hydro_penalties;
 use super::{
-    RangeCursor, StageLayout, StageProductionRole, StateSpace, TemplateBuildCtx,
+    RangeCursor, StageGeometry, StageLayout, StageProductionRole, StateSpace, TemplateBuildCtx,
     build_anticipated_decision_row_pos, build_anticipated_fishing_row_pos,
     build_anticipated_slot_row_pos, build_transit_bucket_row_pos, entity_flat,
     evaporation_slot_boundaries, fold_endpoint, variable_ref_is_block_independent,
@@ -1135,8 +1135,6 @@ fn parallel_inflow_coupling_enters_each_target_water_row_once() {
 /// hydro on a chronological stage.
 #[test]
 fn water_balance_row_collapses_parallel_blocks_and_strides_chronological_blocks() {
-    use super::StageGeometry;
-
     let parallel = StageGeometry {
         water_balance: BlockRowFamily::one_per_entity(2..4),
         n_blks: 3,
@@ -1172,8 +1170,6 @@ fn water_balance_row_collapses_parallel_blocks_and_strides_chronological_blocks(
 /// regardless of `block_mode`.
 #[test]
 fn load_balance_row_strides_buses_by_the_block_count() {
-    use super::StageGeometry;
-
     let geometry = StageGeometry {
         load_balance: BlockRowFamily::per_block(10..22),
         n_blks: 4,
@@ -1194,8 +1190,6 @@ fn load_balance_row_strides_buses_by_the_block_count() {
 /// `family.start + local`.
 #[test]
 fn stage_geometry_entity_col_accessors_match_hand_offsets() {
-    use super::StageGeometry;
-
     let geometry = StageGeometry {
         anticipated_decision: 40..43,
         inflow_slack: 10..13,
@@ -1227,8 +1221,6 @@ fn stage_geometry_entity_col_accessors_match_hand_offsets() {
 #[test]
 #[should_panic(expected = "outside")]
 fn inflow_slack_col_rejects_a_hydro_past_the_family() {
-    use super::StageGeometry;
-
     let geometry = StageGeometry {
         inflow_slack: 10..13,
         ..crate::test_support::equipment_free_geometry(&[0]).remove(0)
@@ -1266,7 +1258,6 @@ fn plant_release_cols_lists_every_cell_turbine_then_the_spillage() {
 /// truncation methods and `None` under `Penalty` and `None`.
 #[test]
 fn effective_inflow_slack_col_is_some_only_under_truncation() {
-    use super::StageGeometry;
     use crate::inflow_method::InflowNonNegativityMethod;
 
     let geometry = StageGeometry {

@@ -85,7 +85,7 @@ impl ProductionFunction {
         max_turbined_m3s: f64,
         hydro_name: String,
     ) -> Self {
-        let efficiency_value = match efficiency {
+        let efficiency = match efficiency {
             Some(EfficiencyModel::Constant { value }) => *value,
             None => 1.0,
         };
@@ -93,7 +93,7 @@ impl ProductionFunction {
             forebay,
             tailrace,
             hydraulic_losses: hydraulic_losses.copied(),
-            efficiency: efficiency_value,
+            efficiency,
             own_outflow_factor: 1.0,
             max_turbined_m3s,
             max_generation_mw: f64::INFINITY,
@@ -134,9 +134,8 @@ impl ProductionFunction {
     }
 
     /// Net head at the turbine \[m\]:
-    /// `h_net = h_fore(v) − h_tail(own_outflow_factor·q + lateral_flow) −
-    /// h_loss(gross_head, q)`, clamped to
-    /// `max(0.0, h_net)` (negative net head is physically impossible). The
+    /// `h_net = h_fore(v) − h_tail(f) − h_loss(gross_head, q)`, with `f` the
+    /// [`Self::tailrace_flow`], clamped at 0 (negative net head is physically impossible). The
     /// [`HydraulicLossesModel::Factor`] variant simplifies to
     /// `(1 − k)·(h_fore − h_tail)`.
     pub(crate) fn net_head(&self, v: f64, q: f64, lateral_flow: f64) -> f64 {
