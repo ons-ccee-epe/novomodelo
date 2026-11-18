@@ -12,8 +12,8 @@ use crate::resolved_parameters::ResolvedParameters;
 use crate::time_value::TimeValue;
 
 /// One hydro's tailrace-flow terms with every influencing plant resolved to its
-/// [`HydroSys`] index, each list in ascending index order; all factors are
-/// dimensionless weights.
+/// [`HydroSys`] index, each list in ascending hydro-id order (not index order:
+/// hydros are indexed by start date first); all factors are dimensionless weights.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ResolvedTailraceLateral {
     /// Weight on the hydro's own turbined plus spilled outflow.

@@ -158,24 +158,25 @@ fn resolve_diversion_upstream(hydros: &[Hydro]) -> HashMap<EntityId, Vec<usize>>
 ///
 /// An id naming no hydro is skipped: the loader refuses it before setup.
 pub(crate) fn resolve_tailrace_lateral(hydros: &[Hydro]) -> Vec<ResolvedTailraceLateral> {
+    // The slice is ordered by (operational_start_date, id), not by id alone.
+    let index_of: HashMap<EntityId, usize> = hydros
+        .iter()
+        .enumerate()
+        .map(|(h_idx, hydro)| (hydro.id, h_idx))
+        .collect();
     let resolve = |influences: &[TailraceFlowInfluence]| -> Vec<(HydroSys, f64)> {
         let resolved: Vec<(HydroSys, f64)> = influences
             .iter()
             .filter_map(|influence| {
-                hydros
-                    .binary_search_by_key(&influence.hydro_id.0, |h| h.id.0)
-                    .ok()
-                    .map(|h_idx| (HydroSys::new(h_idx), influence.factor))
+                index_of
+                    .get(&influence.hydro_id)
+                    .map(|&h_idx| (HydroSys::new(h_idx), influence.factor))
             })
             .collect();
         debug_assert_eq!(
             resolved.len(),
             influences.len(),
             "a tailrace influence names no hydro"
-        );
-        debug_assert!(
-            resolved.windows(2).all(|w| w[0].0.get() < w[1].0.get()),
-            "tailrace influences are not strictly ascending in hydro index"
         );
         resolved
     };
@@ -660,6 +661,36 @@ mod tests {
                     incremental_inflow: vec![(HydroSys::new(1), 0.07)],
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn resolve_tailrace_lateral_finds_hydros_ordered_by_start_date_before_id() {
+        let mut hydros: Vec<Hydro> = [30, 10, 20]
+            .into_iter()
+            .map(|id| vtarget_filling_hydro(id, 1, 2))
+            .collect();
+        hydros[0].operational_start_date = NaiveDate::from_ymd_opt(2020, 1, 1).unwrap();
+        hydros[2].tailrace_flow = TailraceFlow {
+            own_outflow_factor: 1.0,
+            outflow_influences: vec![
+                TailraceFlowInfluence {
+                    hydro_id: EntityId(10),
+                    factor: 0.5,
+                },
+                TailraceFlowInfluence {
+                    hydro_id: EntityId(30),
+                    factor: 0.25,
+                },
+            ],
+            incremental_inflow_influences: Vec::new(),
+        };
+
+        let resolved = resolve_tailrace_lateral(&hydros);
+
+        assert_eq!(
+            resolved[2].outflow,
+            vec![(HydroSys::new(1), 0.5), (HydroSys::new(0), 0.25)]
         );
     }
 }
