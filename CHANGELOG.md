@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `system/hydros.json` accepts `spillage` with `min_spillage_m3s` and
+  `max_spillage_m3s` (m3/s), bounding the plant's spillage in every block;
+  `constraints/hydro_bounds.parquet` values replace them. Negative values
+  and a minimum above the maximum are refused.
+
 ### Removed
 
 - **BREAKING:** `post_study_stages.json` with a `stages` key is refused. Migrate

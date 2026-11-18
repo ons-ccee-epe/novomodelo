@@ -5823,6 +5823,234 @@ fn write_plant_bounds(dest: &Path, rows: &[PlantBoundsRow]) {
     writer.close().expect("close hydro_bounds writer");
 }
 
+/// Applies `edit` to `system/hydros.json` of a case copy.
+fn edit_hydros_json(case: &Path, edit: impl FnOnce(&mut serde_json::Value)) {
+    edit_json(&case.join("system/hydros.json"), edit);
+}
+
+/// Writes a one-row `hydro_bounds.parquet` that sets `max_spillage_m3s` for one (hydro, stage).
+fn write_spillage_max_bound(dest: &Path, hydro_id: i32, stage_id: i32, max_spillage_m3s: f64) {
+    use arrow::array::{Float64Array, Int32Array};
+    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::record_batch::RecordBatch;
+    use parquet::arrow::ArrowWriter;
+    use std::sync::Arc;
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("hydro_id", DataType::Int32, false),
+        Field::new("stage_id", DataType::Int32, false),
+        Field::new("max_spillage_m3s", DataType::Float64, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![hydro_id])),
+            Arc::new(Int32Array::from(vec![stage_id])),
+            Arc::new(Float64Array::from(vec![max_spillage_m3s])),
+        ],
+    )
+    .expect("hydro_bounds RecordBatch");
+    std::fs::create_dir_all(dest.parent().expect("dest has a parent")).expect("create constraints");
+    let file = std::fs::File::create(dest).expect("create hydro_bounds.parquet");
+    let mut writer = ArrowWriter::try_new(file, schema, None).expect("ArrowWriter");
+    writer.write(&batch).expect("write hydro_bounds batch");
+    writer.close().expect("close hydro_bounds writer");
+}
+
+/// Copies d03 into a tempdir, removes H0's outflow cap, lowers H0's turbine limit so turbining
+/// no longer absorbs all its water, and gives H1 turbine headroom, so water H0 spills can be
+/// turbined at H1; `ceiling` adds H0's `spillage.max_spillage_m3s`.
+fn spill_cascade_twin(d03: &Path, ceiling: Option<f64>) -> tempfile::TempDir {
+    let twin = copy_case_dir(d03);
+    edit_hydros_json(twin.path(), |json| {
+        let h0 = &mut json["hydros"][0];
+        h0["outflow"]["max_outflow_m3s"] = serde_json::Value::Null;
+        h0["generation"]["max_turbined_m3s"] = 15.0.into();
+        h0["generation"]["max_generation_mw"] = 15.0.into();
+        h0["unit_groups"][0]["max_turbined_m3s"] = 15.0.into();
+        h0["unit_groups"][0]["max_generation_mw"] = 15.0.into();
+        let h1 = &mut json["hydros"][1];
+        h1["outflow"]["max_outflow_m3s"] = 100.0.into();
+        h1["generation"]["max_turbined_m3s"] = 100.0.into();
+        h1["generation"]["max_generation_mw"] = 100.0.into();
+        h1["unit_groups"][0]["max_turbined_m3s"] = 100.0.into();
+        h1["unit_groups"][0]["max_generation_mw"] = 100.0.into();
+        if let Some(ceiling) = ceiling {
+            json["hydros"][0]["spillage"] = serde_json::json!({ "max_spillage_m3s": ceiling });
+        }
+    });
+    twin
+}
+
+fn h0_rows(
+    results: &[novomodelo_sddp::SimulationScenarioResult],
+) -> Vec<&novomodelo_sddp::SimulationHydroResult> {
+    results
+        .iter()
+        .flat_map(|scenario| &scenario.stages)
+        .flat_map(|stage| &stage.hydros)
+        .filter(|row| row.hydro_id == 0)
+        .collect()
+}
+
+/// An entity `spillage.max_spillage_m3s` binds in a solved cascade, and a
+/// `hydro_bounds.parquet` row replaces it for its own stage.
+///
+/// A spillage ceiling is active at an optimum only when spilling has value: H0's outflow is
+/// uncapped and H1 can turbine whatever H0 spills, displacing thermal generation. The ceiling
+/// sits strictly between the forced-spill floor (H0 inflow above its turbine limit) and the
+/// baseline's peak H0 spill. A finite ceiling can leave excess water no outlet, so the
+/// baseline's own simulation must show a spill that was a choice (P1, P2) from a reservoir
+/// that started within its box (P3); with the ceiling at or above the floor in every stage and
+/// identical inflows in every pass, turbining `min(inflow, limit)` and spilling the rest then
+/// keeps storage at or below its start, so the ceiling and override twins are feasible. The
+/// assertions are bound invariants: the edited case has no hand-derived optimum.
+#[test]
+fn entity_spillage_ceiling_binds_and_hydro_bounds_row_replaces_it() {
+    let d03 = Path::new("../../examples/deterministic/d03-two-hydro-cascade");
+    let read_json = |path: std::path::PathBuf| -> serde_json::Value {
+        serde_json::from_slice(&std::fs::read(&path).expect("read json")).expect("parse json")
+    };
+
+    let baseline = spill_cascade_twin(d03, None);
+    assert_eq!(
+        std::fs::read(baseline.path().join("initial_conditions.json")).expect("read baseline"),
+        std::fs::read(d03.join("initial_conditions.json")).expect("read committed"),
+        "the baseline twin must not edit initial_conditions.json"
+    );
+    let hydros = read_json(baseline.path().join("system/hydros.json"));
+    let h0_turbine_limit = hydros["hydros"][0]["generation"]["max_turbined_m3s"]
+        .as_f64()
+        .expect("H0 max_turbined_m3s");
+    let h0_max_storage = hydros["hydros"][0]["reservoir"]["max_storage_hm3"]
+        .as_f64()
+        .expect("H0 max_storage_hm3");
+    let h0_initial_storage = read_json(baseline.path().join("initial_conditions.json"))["storage"]
+        .as_array()
+        .expect("storage array")
+        .iter()
+        .find(|entry| entry["hydro_id"] == 0)
+        .and_then(|entry| entry["value_hm3"].as_f64())
+        .expect("H0 initial storage");
+
+    let (_result, baseline_results, _summary) = run_with_simulation(baseline.path());
+    let baseline_rows = h0_rows(&baseline_results);
+    let floor = baseline_rows
+        .iter()
+        .map(|row| (row.inflow_m3s - h0_turbine_limit).max(0.0))
+        .fold(0.0, f64::max);
+    let peak_row = baseline_rows
+        .iter()
+        .max_by(|a, b| a.spillage_m3s.total_cmp(&b.spillage_m3s))
+        .expect("baseline simulates H0");
+    let peak = peak_row.spillage_m3s;
+    let s_star = peak_row.stage_id;
+
+    assert!(
+        peak > floor + 1e-3,
+        "ceiling-twin precondition violated: P1 no economic H0 spillage above the forced floor \
+         (peak {peak}, floor {floor}, s_star {s_star})"
+    );
+    assert!(
+        peak_row.storage_final_hm3 < h0_max_storage - 1e-6,
+        "ceiling-twin precondition violated: P2 H0 reservoir full at s_star \
+         (storage_final_hm3 {}, max {h0_max_storage}, s_star {s_star}, peak {peak})",
+        peak_row.storage_final_hm3
+    );
+    assert!(
+        h0_initial_storage <= h0_max_storage,
+        "ceiling-twin precondition violated: P3 H0 initial storage above max \
+         (initial {h0_initial_storage}, max {h0_max_storage})"
+    );
+
+    let c = floor + (peak - floor) / 2.0;
+
+    let ceiling_twin = spill_cascade_twin(d03, Some(c));
+    let (_result, ceiling_results, _summary) = run_with_simulation(ceiling_twin.path());
+    let ceiling_rows = h0_rows(&ceiling_results);
+    for row in &ceiling_rows {
+        assert!(
+            row.spillage_m3s <= c + 1e-6,
+            "ceiling twin stage {}: H0 spillage {} exceeds the entity ceiling {c}",
+            row.stage_id,
+            row.spillage_m3s
+        );
+    }
+    assert!(
+        ceiling_rows
+            .iter()
+            .any(|row| (row.spillage_m3s - c).abs() <= 1e-6),
+        "ceiling twin: no H0 row spills at the ceiling {c}"
+    );
+
+    let override_twin = spill_cascade_twin(d03, Some(c));
+    write_spillage_max_bound(
+        &override_twin
+            .path()
+            .join("constraints/hydro_bounds.parquet"),
+        0,
+        i32::try_from(s_star).expect("stage id fits i32"),
+        peak,
+    );
+    let (_result, override_results, _summary) = run_with_simulation(override_twin.path());
+    let override_rows = h0_rows(&override_results);
+    assert!(
+        override_rows
+            .iter()
+            .any(|row| row.stage_id == s_star && row.spillage_m3s > c + 1e-6),
+        "override twin: the hydro_bounds row at stage {s_star} did not replace the entity ceiling {c}"
+    );
+    for row in override_rows.iter().filter(|row| row.stage_id != s_star) {
+        assert!(
+            row.spillage_m3s <= c + 1e-6,
+            "override twin stage {}: H0 spillage {} exceeds the entity ceiling {c}",
+            row.stage_id,
+            row.spillage_m3s
+        );
+    }
+}
+
+/// The `PreFilling` spillage freeze outranks an entity `spillage.min_spillage_m3s`: H_new
+/// (hydro 0, entry stage 2) spills nothing while dormant and at least the floor from its entry
+/// stage on. A floor the freeze failed to override would make the dormant plant spill.
+#[test]
+fn prefilling_pin_outranks_entity_spillage_floor() {
+    const ENTRY_STAGE_ID: u32 = 2;
+    const FLOOR_M3S: f64 = 1.0;
+
+    let case = copy_case_dir(Path::new(
+        "../../examples/deterministic/d42-nonfilling-hydro-commissioning",
+    ));
+    edit_hydros_json(case.path(), |json| {
+        json["hydros"][0]["spillage"] = serde_json::json!({ "min_spillage_m3s": FLOOR_M3S });
+    });
+
+    let (_result, results, _summary) = run_with_simulation(case.path());
+    let (dormant, active): (Vec<_>, Vec<_>) = h0_rows(&results)
+        .into_iter()
+        .partition(|row| row.stage_id < ENTRY_STAGE_ID);
+    assert!(
+        !dormant.is_empty() && !active.is_empty(),
+        "H_new must report rows both before and from its entry stage"
+    );
+    for row in dormant {
+        assert!(
+            row.spillage_m3s.abs() <= 1e-9,
+            "stage {}: dormant H_new spillage {} is not frozen at zero",
+            row.stage_id,
+            row.spillage_m3s
+        );
+    }
+    for row in active {
+        assert!(
+            row.spillage_m3s >= FLOOR_M3S - 1e-6,
+            "stage {}: H_new spillage {} is below the entity floor {FLOOR_M3S}",
+            row.stage_id,
+            row.spillage_m3s
+        );
+    }
+}
+
 /// D51: per-`(stage, block)` bit-exact sum of the split plant's
 /// `hydro_bus_generation` rows against its own `hydros` row.
 ///
