@@ -572,6 +572,8 @@ pub fn make_hydro(id: i32, downstream_id: Option<i32>) -> Hydro {
         max_storage_hm3: 1000.0,
         min_outflow_m3s: 0.0,
         max_outflow_m3s: None,
+        min_spillage_m3s: None,
+        max_spillage_m3s: None,
         generation_model: HydroGenerationModel::ConstantProductivity,
         min_turbined_m3s: 0.0,
         max_turbined_m3s: 1000.0,

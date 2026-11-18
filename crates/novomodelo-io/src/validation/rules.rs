@@ -364,6 +364,9 @@ declare_rules! {
     SEMANTIC_HARD_STORAGE_FLOOR_RISES = "semantic.5a.67",
         Semantic, ModelQuality, Warning,
         "A hydro's minimum storage rises above the previous stage's floor, which a stage with too little inflow cannot reach";
+    SEMANTIC_HYDRO_SPILLAGE_BOUNDS_INVERTED = "semantic.5a.69",
+        Semantic, InvalidValue, Error,
+        "A hydro's min_spillage_m3s exceeds its max_spillage_m3s";
     TRAVEL_TIME_INVALID = "travel_time.1",
         Semantic, InvalidValue, Error,
         "A hydro's travel_time_hours is negative or not finite";

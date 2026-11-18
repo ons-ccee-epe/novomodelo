@@ -81,8 +81,8 @@ pub(super) fn check_cascade_acyclic(data: &ParsedData, ctx: &mut ValidationConte
     }
 }
 
-/// Rules 2-5: `min <= max` for a hydro's storage, turbined, outflow (when
-/// `Some`), and generation bounds.
+/// Rules 2-5 and 68: `min <= max` for a hydro's storage, turbined, outflow (when
+/// `Some`), generation, and spillage (when both `Some`) bounds.
 pub(super) fn check_hydro_bounds(data: &ParsedData, ctx: &mut ValidationContext) {
     for hydro in &data.hydros {
         let entity_str = format!("Hydro {}", hydro.id.0);
@@ -121,6 +121,20 @@ pub(super) fn check_hydro_bounds(data: &ParsedData, ctx: &mut ValidationContext)
                 format!(
                     "{entity_str}: min_outflow_m3s ({}) > max_outflow_m3s ({}); outflow bounds are inconsistent",
                     hydro.min_outflow_m3s, max_outflow
+                ),
+            );
+        }
+
+        if let (Some(min_spillage), Some(max_spillage)) =
+            (hydro.min_spillage_m3s, hydro.max_spillage_m3s)
+            && min_spillage > max_spillage
+        {
+            ctx.emit(
+                &rules::SEMANTIC_HYDRO_SPILLAGE_BOUNDS_INVERTED,
+                "system/hydros.json",
+                Some(&entity_str),
+                format!(
+                    "{entity_str}: min_spillage_m3s ({min_spillage}) > max_spillage_m3s ({max_spillage}); spillage bounds are inconsistent"
                 ),
             );
         }
@@ -1039,6 +1053,7 @@ pub(super) fn check_hydro_unit_groups(data: &ParsedData, ctx: &mut ValidationCon
 )]
 mod tests {
     use super::super::validate_semantic_hydro_thermal;
+    use super::check_hydro_bounds;
     use crate::FphaHyperplaneRow;
     use crate::constraints::HydroBoundsRow;
     use crate::test_support::*;
@@ -1270,6 +1285,63 @@ mod tests {
         let mut ctx = ValidationContext::new();
         validate_semantic_hydro_thermal(&data, &mut ctx);
         assert!(ctx.has_errors());
+    }
+
+    // ── Hydro spillage bounds tests ───────────────────────────────────────────
+
+    fn spillage_bounds_errors(spillage_bounds: &[(Option<f64>, Option<f64>)]) -> ValidationContext {
+        let hydros = spillage_bounds
+            .iter()
+            .zip(1..)
+            .map(|(&(min, max), id)| {
+                let mut hydro = make_hydro(id, None);
+                hydro.min_spillage_m3s = min;
+                hydro.max_spillage_m3s = max;
+                hydro
+            })
+            .collect();
+        let data = make_data(hydros, vec![], vec![], make_stages(vec![0]), vec![], vec![]);
+        let mut ctx = ValidationContext::new();
+        check_hydro_bounds(&data, &mut ctx);
+        ctx
+    }
+
+    #[test]
+    fn test_hydro_spillage_min_greater_than_max() {
+        let ctx = spillage_bounds_errors(&[(Some(10.0), Some(5.0))]);
+        let errors = ctx.errors();
+        assert_eq!(errors.len(), 1, "got: {errors:?}");
+        assert_eq!(
+            crate::validation::rules::SEMANTIC_HYDRO_SPILLAGE_BOUNDS_INVERTED.id,
+            "semantic.5a.69"
+        );
+        assert_eq!(errors[0].kind, ErrorKind::InvalidValue);
+        assert!(
+            errors[0]
+                .message
+                .contains("min_spillage_m3s (10) > max_spillage_m3s (5)"),
+            "got: {}",
+            errors[0].message
+        );
+    }
+
+    #[test]
+    fn test_hydro_spillage_one_sided_or_equal_no_error() {
+        let ctx = spillage_bounds_errors(&[
+            (Some(10.0), None),
+            (None, Some(5.0)),
+            (Some(5.0), Some(5.0)),
+        ]);
+        assert!(!ctx.has_errors(), "got: {:?}", ctx.errors());
+    }
+
+    #[test]
+    fn test_hydro_spillage_inversion_reports_every_hydro() {
+        let ctx = spillage_bounds_errors(&[(Some(10.0), Some(5.0)), (Some(8.0), Some(2.0))]);
+        let errors = ctx.errors();
+        assert_eq!(errors.len(), 2, "got: {errors:?}");
+        assert_eq!(errors[0].entity.as_deref(), Some("Hydro 1"));
+        assert_eq!(errors[1].entity.as_deref(), Some("Hydro 2"));
     }
 
     // ── Diversion requires channel tests ──────────────────────────────────────

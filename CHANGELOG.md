@@ -31,6 +31,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `novomodelo validate` warns when a hydro's minimum storage in
   `constraints/hydro_bounds.parquet` rises above the previous stage's, which
   can make a stage infeasible.
+- `system/hydros.json` accepts `spillage` with `min_spillage_m3s` and
+  `max_spillage_m3s` (m3/s), bounding the plant's spillage in every block;
+  `constraints/hydro_bounds.parquet` values replace them. Negative values
+  and a minimum above the maximum are refused.
 
 ### Changed
 

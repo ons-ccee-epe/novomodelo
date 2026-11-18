@@ -129,6 +129,10 @@ pub struct HydroSpec {
     pub min_outflow_m3s: f64,
     /// Maximum outflow; None = unbounded.
     pub max_outflow_m3s: Option<f64>,
+    /// Minimum spillage (m³/s); None = no lower bound.
+    pub min_spillage_m3s: Option<f64>,
+    /// Maximum spillage (m³/s); None = no upper bound.
+    pub max_spillage_m3s: Option<f64>,
     /// Generation model.
     pub generation_model: HydroGenerationModel,
     /// Minimum turbined flow (m³/s).
@@ -175,6 +179,8 @@ impl Default for HydroSpec {
             max_storage_hm3: 0.0,
             min_outflow_m3s: 0.0,
             max_outflow_m3s: None,
+            min_spillage_m3s: None,
+            max_spillage_m3s: None,
             generation_model: HydroGenerationModel::ConstantProductivity,
             min_turbined_m3s: 0.0,
             max_turbined_m3s: 0.0,
@@ -232,6 +238,8 @@ pub fn make_hydro(
         max_storage_hm3,
         min_outflow_m3s,
         max_outflow_m3s,
+        min_spillage_m3s,
+        max_spillage_m3s,
         generation_model,
         min_turbined_m3s,
         max_turbined_m3s,
@@ -261,6 +269,8 @@ pub fn make_hydro(
         max_storage_hm3,
         min_outflow_m3s,
         max_outflow_m3s,
+        min_spillage_m3s,
+        max_spillage_m3s,
         generation_model,
         min_turbined_m3s,
         max_turbined_m3s,
