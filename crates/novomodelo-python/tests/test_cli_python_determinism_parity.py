@@ -42,6 +42,17 @@ file-set equality, but its bytes are not compared, because the manifest embeds
 selection) and compares the `policy/states/` files byte for byte, since they
 carry no timestamp.
 
+A fourth leg runs a lognormal deck: the 1dtoy case with
+`modeling.inflow_residual.distribution = "lognormal_3p"`, truncation as the
+non-negativity method, and the seasonal mean of one stage set to zero so that
+every solve of that stage takes the kernel's fallback. A front end that drops
+the option trains and simulates under the normal residual and writes
+different values; no run-time line or count reports it, so only this
+comparison catches it. A reach test reads the CLI simulation rows of that deck
+and fails when the fallback stage has no positive non-negativity slack, when a
+stage-0 inflow differs from the lognormal formula applied to the normal run's
+draw, or when no stage-0 inflow differs from the normal run's.
+
 Run with (from the repo root):
 
     pytest crates/novomodelo-python/tests/test_cli_python_determinism_parity.py -v \\
@@ -55,12 +66,14 @@ Or as part of the full suite:
 from __future__ import annotations
 
 import json
+import math
 import pathlib
 import re
 import shutil
 from collections.abc import Mapping
 from typing import Any
 
+import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
@@ -447,6 +460,57 @@ def states_python_output(
     return output_dir
 
 
+_LOGNORMAL_FALLBACK_STAGE = 2
+_TOY_INFLOW_MEAN_M3S = 40.0
+_TOY_INFLOW_STD_M3S = 10.0
+
+
+def _lognormal_fallback_case(root: pathlib.Path) -> pathlib.Path:
+    case = root / "case"
+    shutil.copytree(TOY_CASE, case)
+    config_path = case / "config.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["modeling"]["inflow_residual"] = {"distribution": "lognormal_3p"}
+    config["modeling"]["inflow_non_negativity"] = {"method": "truncation"}
+    config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
+
+    stats_path = case / "scenarios" / "inflow_seasonal_stats.parquet"
+    table = pq.ParquetFile(stats_path).read()
+    rows = table.to_pylist()
+    edited = [row for row in rows if row["stage_id"] == _LOGNORMAL_FALLBACK_STAGE]
+    assert len(edited) == 1, f"expected one stage-{_LOGNORMAL_FALLBACK_STAGE} row"
+    assert edited[0]["mean_m3s"] > 0.0, "the edited seasonal mean must start positive"
+    edited[0]["mean_m3s"] = 0.0
+    pq.write_table(
+        pa.Table.from_pylist(rows, schema=table.schema), stats_path, compression="zstd"
+    )
+    return case
+
+
+@pytest.fixture(scope="module")
+def lognormal_cli_output(
+    tmp_path_factory: pytest.TempPathFactory, cli_binary: pathlib.Path
+) -> pathlib.Path:
+    """Run the lognormal fallback deck through the compiled CLI binary."""
+    case = _lognormal_fallback_case(tmp_path_factory.mktemp("lognormal_cli_case"))
+    output_dir = tmp_path_factory.mktemp("lognormal_cli_out")
+    run_cli(case, output_dir, cli_binary)
+    return output_dir
+
+
+@pytest.fixture(scope="module")
+def lognormal_python_output(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> pathlib.Path:
+    """Run the lognormal fallback deck through `novomodelo.run.run()`."""
+    import novomodelo.run
+
+    case = _lognormal_fallback_case(tmp_path_factory.mktemp("lognormal_python_case"))
+    output_dir = tmp_path_factory.mktemp("lognormal_python_out")
+    novomodelo.run.run(str(case), output_dir=str(output_dir))
+    return output_dir
+
+
 def test_cli_python_output_file_sets_are_equal(
     toy_cli_output: pathlib.Path, toy_python_output: pathlib.Path
 ) -> None:
@@ -525,6 +589,87 @@ def test_exported_states_under_dynamic_selection_are_identical_on_cli_and_python
 def _states_files(output_dir: pathlib.Path) -> dict[str, bytes]:
     states_dir = output_dir / "policy" / "states"
     return {path.name: path.read_bytes() for path in sorted(states_dir.glob("*.bin"))}
+
+
+def test_lognormal_fallback_cli_python_output_file_sets_are_equal(
+    lognormal_cli_output: pathlib.Path, lognormal_python_output: pathlib.Path
+) -> None:
+    """On the lognormal fallback deck, the CLI and Python write the same file set."""
+    _assert_file_sets_equal(lognormal_cli_output, lognormal_python_output)
+
+
+def test_lognormal_fallback_cli_python_json_files_match(
+    lognormal_cli_output: pathlib.Path, lognormal_python_output: pathlib.Path
+) -> None:
+    """On the lognormal fallback deck, the compared JSON files match."""
+    _assert_json_files_match(lognormal_cli_output, lognormal_python_output)
+
+
+def test_lognormal_fallback_cli_python_parquet_files_match(
+    lognormal_cli_output: pathlib.Path, lognormal_python_output: pathlib.Path
+) -> None:
+    """On the lognormal fallback deck, the Parquet files match outside the masks."""
+    _assert_parquet_files_match(lognormal_cli_output, lognormal_python_output)
+
+
+def _simulation_hydro_rows(
+    output_dir: pathlib.Path,
+) -> dict[tuple[int, int, int, int], dict[str, Any]]:
+    key_columns = ("scenario_id", "stage_id", "block_id", "hydro_id")
+    rows: dict[tuple[int, int, int, int], dict[str, Any]] = {}
+    for path in sorted((output_dir / "simulation" / "hydros").rglob("*.parquet")):
+        for row in pq.ParquetFile(path).read().to_pylist():
+            rows[tuple(row[column] for column in key_columns)] = row
+    return rows
+
+
+def test_lognormal_fallback_case_reaches_both_residual_branches(
+    lognormal_cli_output: pathlib.Path, toy_cli_output: pathlib.Path
+) -> None:
+    """The lognormal deck takes the fallback at one stage and the lognormal term at stage 0.
+
+    Fallback branch: with a zero conditional mean the stage realizes `σ·η`, so
+    some simulation row of that stage carries a positive
+    `inflow_nonnegativity_slack_m3s`. Lognormal branch: stage 0 keeps its mean
+    of 40, so each realized inflow equals `p + p·expm1(s·η − s²/2)` for the
+    draw `η` the normal run (same seed, same keys) realized as `p + σ·η`, with
+    `s² = ln(1 + (σ/p)²)`. Power: at least one stage-0 inflow differs from the
+    normal run's, so the formula is not met by the identity.
+    """
+    lognormal = _simulation_hydro_rows(lognormal_cli_output)
+    normal = _simulation_hydro_rows(toy_cli_output)
+
+    fallback_rows = [
+        row for key, row in lognormal.items() if key[1] == _LOGNORMAL_FALLBACK_STAGE
+    ]
+    assert any(row["inflow_nonnegativity_slack_m3s"] > 0.0 for row in fallback_rows), (
+        f"fallback branch not reached: no stage-{_LOGNORMAL_FALLBACK_STAGE} row "
+        f"has a positive inflow_nonnegativity_slack_m3s "
+        f"({len(fallback_rows)} rows checked)"
+    )
+
+    stage0_keys = sorted(key for key in lognormal if key[1] == 0)
+    assert stage0_keys == sorted(key for key in normal if key[1] == 0), (
+        "the lognormal and normal runs must hold the same stage-0 keys"
+    )
+
+    mean = _TOY_INFLOW_MEAN_M3S
+    s2 = math.log1p((_TOY_INFLOW_STD_M3S / mean) ** 2)
+    largest_shift = 0.0
+    for key in stage0_keys:
+        z_normal = normal[key]["incremental_inflow_m3s"]
+        z_lognormal = lognormal[key]["incremental_inflow_m3s"]
+        eta = (z_normal - mean) / _TOY_INFLOW_STD_M3S
+        expected = mean + mean * math.expm1(math.sqrt(s2) * eta - s2 / 2)
+        assert math.isclose(z_lognormal, expected, rel_tol=1e-12), (
+            f"lognormal branch: key {key} realized {z_lognormal!r}, "
+            f"the lognormal formula gives {expected!r}"
+        )
+        largest_shift = max(largest_shift, abs(z_lognormal - z_normal))
+    assert largest_shift > 1e-3, (
+        f"lognormal branch not reached: no stage-0 inflow differs from the "
+        f"normal run's ({len(stage0_keys)} keys checked)"
+    )
 
 
 def test_compared_surface_is_non_vacuous(

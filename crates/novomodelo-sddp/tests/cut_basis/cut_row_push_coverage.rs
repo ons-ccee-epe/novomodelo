@@ -3,16 +3,18 @@ use std::sync::mpsc;
 
 use novomodelo_io::Config;
 use novomodelo_io::config::{
-    BackwardScheduler, SelectionMethod, SimulationSelection, TrainingSelection,
+    BackwardScheduler, InflowResidualDistribution, SelectionMethod, SimulationSelection,
+    TrainingSelection,
 };
 use novomodelo_sddp::cut::SlotOrigin;
-use novomodelo_sddp::indexer::StateDim;
-use novomodelo_sddp::setup::StageIdx;
+use novomodelo_sddp::indexer::{LagPointMode, StateDim};
+use novomodelo_sddp::setup::{NodePos, StageIdx};
 use novomodelo_sddp::test_support::bound_recording::{
     AppendedCutRowBound, CutRowPushLog, CutRowPushRecord, CutRowPushRecorder,
 };
 use novomodelo_sddp::test_support::decks::{SLOW_DECKS, committed_decks};
 use novomodelo_sddp::test_support::external_distinct_fan_setup_heterogeneous_cut_state;
+use novomodelo_sddp::test_support::node_opening_noise;
 use novomodelo_sddp::test_support::pool_cut_state_dimensions;
 use novomodelo_sddp::test_support::solve_sites::SolveSiteKind;
 use novomodelo_sddp::test_support::template_structure::state_lag_dims;
@@ -20,11 +22,17 @@ use novomodelo_sddp::{
     CutPool, SimulationScenarioResult, SolverProfiles, StudySetup, TrainingResult,
 };
 use novomodelo_solver::ActiveSolver;
+use novomodelo_stochastic::{
+    add_noise_term_batch, evaluate_lognormal_noise_term_batch, evaluate_par_noise_term_batch,
+};
 
-use crate::common::expanded_solve::{OracleLagPoint, realized_inflow};
+use crate::common::expanded_solve::{OracleLagPoint, realized_inflow, realized_inflow_with};
 use crate::common::in_code_studies::{
     FphaLagOptions, SAME_PATH_LAG_SEED_M3S, WEEKLY_PARTIAL_SUM_INITIAL_STORAGE_HM3,
     fpha_lag_study_with, weekly_partial_sum_study,
+};
+use crate::common::lognormal_branches::{
+    assert_the_stored_pins_reach_both_branches, conditional_means,
 };
 use crate::common::oracle_tolerance::rhs_tolerance;
 use crate::common::stored_cut_oracles::{
@@ -71,6 +79,8 @@ struct RunSpec {
     seed_window: u32,
     backward_scheduler: BackwardScheduler,
     simulate: bool,
+    distribution: InflowResidualDistribution,
+    reach_the_fallback: bool,
 }
 
 const SAMPLED: RunSpec = RunSpec {
@@ -81,6 +91,8 @@ const SAMPLED: RunSpec = RunSpec {
     seed_window: SEED_WINDOW,
     backward_scheduler: BackwardScheduler::ByScenario {},
     simulate: true,
+    distribution: InflowResidualDistribution::Normal,
+    reach_the_fallback: false,
 };
 
 const SAMPLED_BY_NODE: RunSpec = RunSpec {
@@ -131,6 +143,40 @@ const WEEKLY_DYNAMIC: RunSpec = RunSpec {
     ..WEEKLY_SAMPLED
 };
 
+const LOGNORMAL_SAMPLED: RunSpec = RunSpec {
+    selection: TrainingSelection::Sampled { forward_passes: 4 },
+    distribution: InflowResidualDistribution::Lognormal3p,
+    reach_the_fallback: true,
+    ..SAMPLED
+};
+
+const LOGNORMAL_BY_NODE: RunSpec = RunSpec {
+    backward_scheduler: BackwardScheduler::ByNode { block_size: None },
+    simulate: false,
+    ..LOGNORMAL_SAMPLED
+};
+
+const LOGNORMAL_DYNAMIC: RunSpec = RunSpec {
+    dynamic_cut_selection: true,
+    seed_window: 0,
+    ..LOGNORMAL_SAMPLED
+};
+
+const LOGNORMAL_WEEKLY_SAMPLED: RunSpec = RunSpec {
+    distribution: InflowResidualDistribution::Lognormal3p,
+    ..WEEKLY_SAMPLED
+};
+
+const LOGNORMAL_WEEKLY_BY_NODE: RunSpec = RunSpec {
+    distribution: InflowResidualDistribution::Lognormal3p,
+    ..WEEKLY_BY_NODE
+};
+
+const LOGNORMAL_WEEKLY_DYNAMIC: RunSpec = RunSpec {
+    distribution: InflowResidualDistribution::Lognormal3p,
+    ..WEEKLY_DYNAMIC
+};
+
 #[derive(Clone, Copy)]
 enum Witness {
     PhaseSolves(&'static str),
@@ -152,6 +198,26 @@ fn recorder_config(kind: SolveSiteKind) -> (RunSpec, Witness) {
         SolveSiteKind::BackwardReplicated => (ENUMERATED, Witness::PhaseSolves(BACKWARD)),
         SolveSiteKind::FusedTerminal => (TERMINAL_FAN, Witness::BoundaryRows),
         SolveSiteKind::DynamicCutSelection => (DYNAMIC, Witness::SelectionRound),
+    }
+}
+
+/// `None` where the setup refuses the site's configuration under the option: enumerated training
+/// selection and external inflow.
+fn lognormal_recorder_config(kind: SolveSiteKind) -> Option<(RunSpec, Witness)> {
+    match kind {
+        SolveSiteKind::SampledForward => {
+            Some((LOGNORMAL_SAMPLED, Witness::WorkerPhaseSolves(FORWARD)))
+        }
+        SolveSiteKind::BackwardByScenario => {
+            Some((LOGNORMAL_SAMPLED, Witness::PhaseSolves(BACKWARD)))
+        }
+        SolveSiteKind::LowerBound => Some((LOGNORMAL_SAMPLED, Witness::LowerBoundSolves)),
+        SolveSiteKind::Simulation => Some((LOGNORMAL_SAMPLED, Witness::SimulationCutRows)),
+        SolveSiteKind::BackwardByNode => Some((LOGNORMAL_BY_NODE, Witness::PhaseSolves(BACKWARD))),
+        SolveSiteKind::DynamicCutSelection => Some((LOGNORMAL_DYNAMIC, Witness::SelectionRound)),
+        SolveSiteKind::EnumeratedForward
+        | SolveSiteKind::BackwardReplicated
+        | SolveSiteKind::FusedTerminal => None,
     }
 }
 
@@ -191,6 +257,7 @@ fn configure(config: &mut Config, spec: &RunSpec) {
         apply_oracle_config(config);
     }
     config.training.selection = Some(spec.selection);
+    config.modeling.inflow_residual.distribution = spec.distribution;
     if spec.simulate {
         enable_simulation(config);
     }
@@ -201,10 +268,15 @@ fn build_setup(spec: &RunSpec) -> StudySetup {
         Fixture::LagStudy => {
             let (system, mut config, hydro_models) = fpha_lag_study_with(FphaLagOptions {
                 openings: spec.openings,
+                reach_the_fallback: spec.reach_the_fallback,
                 ..FphaLagOptions::default()
             });
             configure(&mut config, spec);
-            build_setup_in_code_with_models(system, &config, hydro_models)
+            let mut setup = build_setup_in_code_with_models(system, &config, hydro_models);
+            if spec.distribution == InflowResidualDistribution::Lognormal3p {
+                setup.set_export_states(true);
+            }
+            setup
         }
         Fixture::Weekly => {
             let (system, mut config, hydro_models) = weekly_partial_sum_study(spec.openings);
@@ -476,6 +548,31 @@ fn partial_sum_arm(kind: SolveSiteKind) -> PartialSumArm {
         }
         SolveSiteKind::DynamicCutSelection => Weekly(WEEKLY_DYNAMIC, Witness::SelectionRound),
         SolveSiteKind::FusedTerminal => Fan,
+    }
+}
+
+/// `None` where the setup refuses the site's configuration under the option: enumerated training
+/// selection and external inflow.
+fn lognormal_partial_sum_arm(kind: SolveSiteKind) -> Option<(RunSpec, Witness)> {
+    match kind {
+        SolveSiteKind::SampledForward => Some((
+            LOGNORMAL_WEEKLY_SAMPLED,
+            Witness::WorkerPhaseSolves(FORWARD),
+        )),
+        SolveSiteKind::BackwardByScenario => {
+            Some((LOGNORMAL_WEEKLY_SAMPLED, Witness::PhaseSolves(BACKWARD)))
+        }
+        SolveSiteKind::LowerBound => Some((LOGNORMAL_WEEKLY_SAMPLED, Witness::LowerBoundSolves)),
+        SolveSiteKind::Simulation => Some((LOGNORMAL_WEEKLY_SAMPLED, Witness::SimulationCutRows)),
+        SolveSiteKind::BackwardByNode => {
+            Some((LOGNORMAL_WEEKLY_BY_NODE, Witness::PhaseSolves(BACKWARD)))
+        }
+        SolveSiteKind::DynamicCutSelection => {
+            Some((LOGNORMAL_WEEKLY_DYNAMIC, Witness::SelectionRound))
+        }
+        SolveSiteKind::EnumeratedForward
+        | SolveSiteKind::BackwardReplicated
+        | SolveSiteKind::FusedTerminal => None,
     }
 }
 
@@ -942,6 +1039,169 @@ fn stores_a_lag_cut(setup: &StudySetup) -> bool {
     })
 }
 
+/// derived: a root solve of the lower bound pushes the cut row of pool 0's slot `k` at
+/// `α_k + Σ_h β_k(h, 0)·ẑ_h(o) + Σ_h Σ_{l ≥ 1} β_k(h, l)·â(h, l − 1)` for a root opening `o`, the lag
+/// slots read lag-major (slot `full().start + l·N + h` holds `(h, l)`) and `â` the initial lags, with
+/// `ẑ(o) = p + w` for the conditional mean `p` at the initial state and the noise term `w` of
+/// `distribution`. Returns each opening's value per written slot and their tolerance.
+fn root_candidates(
+    setup: &StudySetup,
+    distribution: InflowResidualDistribution,
+) -> (Vec<Vec<f64>>, f64) {
+    let training_ctx = setup.training_ctx();
+    let par = training_ctx.stochastic.par();
+    let state = training_ctx.state;
+    let n_hydros = state.hydro_count;
+    let layout = &training_ctx.cut_state_layouts[0];
+    let lag_slots = layout.lag_point().full();
+    assert_eq!(
+        layout.lag_point().mode(),
+        LagPointMode::Shifted,
+        "pool 0 reads the shifted lag point"
+    );
+    assert_eq!(
+        layout.n_slots(),
+        state.n_state,
+        "pool 0 projects every state dimension"
+    );
+    assert_eq!(
+        lag_slots.len(),
+        n_hydros * state.max_par_order,
+        "pool 0 holds every lag slot"
+    );
+    let initial = training_ctx.initial_state;
+    let lags = &initial[state_lag_dims(state)];
+    let means = conditional_means(setup, 0, initial);
+    let pool = &setup.fcf.pools[0];
+    let slots: Vec<usize> = written_slots(pool).collect();
+
+    let mut magnitude = lags.iter().fold(0.0_f64, |top, lag| top.max(lag.abs()));
+    let mut candidates = Vec::new();
+    for opening in 0..setup.inputs.node_graph.nodes[NodePos(0)].openings.len {
+        let noise = node_opening_noise(setup, NodePos(0), opening);
+        let eta = &noise[..n_hydros];
+        let mut term = vec![0.0; n_hydros];
+        match distribution {
+            InflowResidualDistribution::Normal => {
+                evaluate_par_noise_term_batch(par, 0, eta, &mut term);
+            }
+            InflowResidualDistribution::Lognormal3p => {
+                evaluate_lognormal_noise_term_batch(par, 0, &means, eta, &mut term);
+            }
+        }
+        let mut inflow = vec![0.0; n_hydros];
+        add_noise_term_batch(&means, &term, &mut inflow);
+        magnitude = inflow.iter().fold(magnitude, |top, z| top.max(z.abs()));
+        candidates.push(
+            slots
+                .iter()
+                .map(|&slot| {
+                    let row = pool.coefficient_row(slot);
+                    let lag_terms: f64 = lag_slots
+                        .clone()
+                        .enumerate()
+                        .map(|(j, at)| {
+                            let phi = if j < n_hydros {
+                                inflow[j]
+                            } else {
+                                lags[j - n_hydros]
+                            };
+                            row[at] * phi
+                        })
+                        .sum();
+                    pool.intercept(slot) + lag_terms
+                })
+                .collect(),
+        );
+    }
+    let cuts: Vec<(f64, f64)> = slots
+        .iter()
+        .map(|&slot| {
+            let lag_row = &pool.coefficient_row(slot)[lag_slots.clone()];
+            (pool.intercept(slot), lag_row.iter().map(|b| b.abs()).sum())
+        })
+        .collect();
+    (candidates, tolerance(&cuts, magnitude))
+}
+
+fn assert_lower_bound_pushes_at_the_lognormal_inflow(label: &str, run: &RecordedRun) {
+    let (lognormal, tolerance) =
+        root_candidates(&run.setup, InflowResidualDistribution::Lognormal3p);
+    let (normal, normal_tolerance) =
+        root_candidates(&run.setup, InflowResidualDistribution::Normal);
+    let fits = |pushed: &[f64], candidates: &[Vec<f64>], tolerance: f64| {
+        candidates
+            .iter()
+            .any(|values| is_sub_multiset(pushed, values, tolerance))
+    };
+    let pushing: Vec<&CutRowPushRecord> = run
+        .lower_bound
+        .iter()
+        .filter(|record| !record.cut_row_rhs.is_empty())
+        .collect();
+    assert!(!pushing.is_empty(), "{label}: no record has cut rows");
+    for (index, record) in pushing.iter().enumerate() {
+        assert!(
+            fits(&record.cut_row_rhs, &lognormal, tolerance),
+            "{label}: record {index} pushes {:?}, which is no root opening's α + β·Φ at the \
+             lognormal inflow {lognormal:?} (tolerance {tolerance:e})",
+            record.cut_row_rhs
+        );
+    }
+    assert!(
+        pushing
+            .iter()
+            .any(|record| !fits(&record.cut_row_rhs, &normal, normal_tolerance)),
+        "{label}: every record also fits the normal candidates {normal:?}, so the check could \
+         hold vacuously"
+    );
+}
+
+fn assert_realized_inflows_are_lognormal(
+    kinds: &[SolveSiteKind],
+    spec: &RunSpec,
+    run: &RecordedRun,
+) {
+    let setup = &run.setup;
+    let differs = (0..=CLOSING_STAGE).any(|stage| {
+        weekly_inflows(setup, stage, SAME_PATH_LAG_SEED_M3S)
+            .iter()
+            .enumerate()
+            .any(|(opening, &lognormal)| {
+                let normal = realized_inflow_with(
+                    setup,
+                    stage,
+                    opening,
+                    &[SAME_PATH_LAG_SEED_M3S],
+                    InflowResidualDistribution::Normal,
+                );
+                !close(lognormal, normal)
+            })
+    });
+    assert!(
+        differs,
+        "{kinds:?}: the lognormal and normal inflows agree at every opening of stages \
+         0..={CLOSING_STAGE}, so the check could hold vacuously"
+    );
+    assert_eq!(
+        run.simulated.is_empty(),
+        !spec.simulate,
+        "{kinds:?} simulation: the run simulates exactly when its spec does"
+    );
+    for scenario in &run.simulated {
+        for (stage, result) in scenario.stages.iter().enumerate().take(CLOSING_STAGE + 1) {
+            let inflow = result.hydros[0].incremental_inflow_m3s;
+            let drawn = weekly_inflows(setup, stage, SAME_PATH_LAG_SEED_M3S);
+            assert!(
+                drawn.iter().any(|&lognormal| close(lognormal, inflow)),
+                "{kinds:?} simulation: scenario {} realizes {inflow} at stage {stage}, none of \
+                 the lognormal inflows {drawn:?}",
+                scenario.scenario_id
+            );
+        }
+    }
+}
+
 type SitesByRun = Vec<(RunSpec, Vec<(SolveSiteKind, Witness)>)>;
 
 fn push_site(runs: &mut SitesByRun, spec: RunSpec, kind: SolveSiteKind, witness: Witness) {
@@ -1007,6 +1267,52 @@ fn every_solve_site_pushes_cut_rows_at_its_own_partial_sum() {
         assert_witness(kind, Witness::BoundaryRows, &run);
     }
     assert_fan_boundary_values(&fan, &run);
+}
+
+#[test]
+fn every_solve_site_patches_every_resident_cut_row_at_every_solve_under_lognormal() {
+    let mut runs = SitesByRun::new();
+    for kind in SolveSiteKind::ALL {
+        if let Some((spec, witness)) = lognormal_recorder_config(kind) {
+            push_site(&mut runs, spec, kind, witness);
+        }
+    }
+
+    for (spec, sites) in &runs {
+        let kinds: Vec<SolveSiteKind> = sites.iter().map(|&(kind, _)| kind).collect();
+        let run = run_recorded(spec);
+        let records: usize = run.logs().iter().map(|(_, records)| records.len()).sum();
+        assert!(records >= 1, "{kinds:?}: the run recorded no solve");
+        for &(kind, witness) in sites {
+            assert_witness(kind, witness, &run);
+        }
+        assert_no_stale_rows(&kinds, &run);
+        assert_the_stored_pins_reach_both_branches(&format!("{kinds:?}"), &run.setup);
+        if *spec == LOGNORMAL_SAMPLED {
+            let label = format!("{kinds:?} {:?} lower bound", spec.fixture);
+            assert_lower_bound_pushes_at_the_lognormal_inflow(&label, &run);
+        }
+    }
+}
+
+#[test]
+fn every_solve_site_pushes_cut_rows_at_its_own_partial_sum_under_lognormal() {
+    let mut weekly = SitesByRun::new();
+    for kind in SolveSiteKind::ALL {
+        if let Some((spec, witness)) = lognormal_partial_sum_arm(kind) {
+            push_site(&mut weekly, spec, kind, witness);
+        }
+    }
+
+    for (spec, sites) in &weekly {
+        let kinds: Vec<SolveSiteKind> = sites.iter().map(|&(kind, _)| kind).collect();
+        let run = run_recorded(spec);
+        for &(kind, witness) in sites {
+            assert_witness(kind, witness, &run);
+        }
+        assert_weekly_pushes(&kinds, spec, &run);
+        assert_realized_inflows_are_lognormal(&kinds, spec, &run);
+    }
 }
 
 #[test]

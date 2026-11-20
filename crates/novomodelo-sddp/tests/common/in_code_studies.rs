@@ -2826,7 +2826,7 @@ fn fpha_lag_stages(options: FphaLagOptions) -> Vec<Stage> {
 
 /// One model per hydro for the study stages and for the two stages before
 /// them, which only supply the lag statistics the coefficient conversion reads.
-fn fpha_lag_inflow_models() -> Vec<InflowModel> {
+fn fpha_lag_inflow_models(reach_the_fallback: bool) -> Vec<InflowModel> {
     [FPHA_LAG_UPSTREAM_ID, FPHA_LAG_DOWNSTREAM_ID]
         .into_iter()
         .enumerate()
@@ -2836,7 +2836,14 @@ fn fpha_lag_inflow_models() -> Vec<InflowModel> {
                 InflowModel {
                     hydro_id,
                     stage_id,
-                    mean_m3s: FPHA_LAG_INFLOW_MEAN_M3S[h][k],
+                    mean_m3s: if reach_the_fallback
+                        && hydro_id == FPHA_LAG_DOWNSTREAM_ID
+                        && stage_id == 1
+                    {
+                        0.0
+                    } else {
+                        FPHA_LAG_INFLOW_MEAN_M3S[h][k]
+                    },
                     std_m3s: FPHA_LAG_INFLOW_STD_M3S[h][k],
                     ar_coefficients: if stage_id >= 0 {
                         FPHA_LAG_AR_COEFFICIENTS[h].to_vec()
@@ -3132,7 +3139,7 @@ fn build_fpha_lag_system(options: FphaLagOptions) -> novomodelo_core::System {
         ))
         .thermals(declared("thermal", fpha_lag_thermals(), reverse))
         .stages(fpha_lag_stages(options))
-        .inflow_models(fpha_lag_inflow_models())
+        .inflow_models(fpha_lag_inflow_models(options.reach_the_fallback))
         .load_models(load_models)
         .bounds(fpha_lag_bounds())
         .penalties(fpha_lag_penalties(options.fpha_violation_cost))
@@ -3191,6 +3198,8 @@ pub fn fpha_lag_study() -> (novomodelo_core::System, Config, PrepareHydroModelsR
 }
 
 /// Each field is one variation of [`fpha_lag_study`]; the default is the study itself.
+// Rationale (struct_excessive_bools): each flag is an independent variation of the study.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Copy, Debug)]
 pub struct FphaLagOptions {
     /// Noise openings at every stage.
@@ -3203,6 +3212,8 @@ pub struct FphaLagOptions {
     pub reverse_declaration_order: bool,
     /// Replaces the study's FPHA price, in the hydro entities and the resolved penalties, when set.
     pub fpha_violation_cost: Option<f64>,
+    /// Sets the downstream mean of the second study stage to zero and the inflow method to truncation, so some solves have a non-positive conditional mean.
+    pub reach_the_fallback: bool,
 }
 
 impl Default for FphaLagOptions {
@@ -3214,6 +3225,7 @@ impl Default for FphaLagOptions {
             risk_config: StageRiskConfig::Expectation,
             reverse_declaration_order: false,
             fpha_violation_cost: None,
+            reach_the_fallback: false,
         }
     }
 }
@@ -3230,7 +3242,11 @@ pub fn fpha_lag_study_with(
     );
     let system = build_fpha_lag_system(options);
     let hydro_models = fpha_lag_hydro_models(&system);
-    (system, build_config(), hydro_models)
+    let mut config = build_config();
+    if options.reach_the_fallback {
+        config.modeling.inflow_non_negativity.method = CfgInflowMethod::Truncation;
+    }
+    (system, config, hydro_models)
 }
 
 /// The in-code studies the structural sweep (`for_each_study`) visits after the

@@ -6,12 +6,16 @@ use std::sync::mpsc;
 
 use novomodelo_core::TrainingEvent;
 use novomodelo_io::Config;
-use novomodelo_io::config::{RowSelectionConfig, SelectionMethod, StoppingRuleConfig};
+use novomodelo_io::config::{
+    InflowResidualDistribution, RowSelectionConfig, SelectionMethod, StoppingRuleConfig,
+};
+use novomodelo_sddp::context::TrainingContext;
 use novomodelo_sddp::cut::CutPool;
 use novomodelo_sddp::forward::{ForwardPassBatch, run_forward_pass};
 use novomodelo_sddp::indexer::{CutSlot, CutStateProjection};
 use novomodelo_sddp::setup::{NodePos, StageIdx};
 use novomodelo_sddp::test_support::bound_recording::{BoundRecordingSolver, BoundWrite};
+use novomodelo_sddp::test_support::template_structure::state_lag_dims;
 use novomodelo_sddp::test_support::{
     ProbeCut, ProbeCuts, ProbeOpening, inflow_slack_bounds_for_probe, opening_cut_for_probe,
     prep_for_probe_with_partial_sum, solve_probe_opening, stage_state_box_bounds,
@@ -19,7 +23,9 @@ use novomodelo_sddp::test_support::{
 use novomodelo_sddp::workspace::{BasisStore, SolverWorkspace};
 use novomodelo_sddp::{FutureCostFunction, SddpError, StudySetup, TrajectoryRecord};
 use novomodelo_solver::{ActiveSolver, SolverInterface, StageTemplate};
-use novomodelo_stochastic::OpeningTreeView;
+use novomodelo_stochastic::{
+    OpeningTreeView, evaluate_lognormal_noise_term_batch, evaluate_par_conditional_mean_batch,
+};
 
 use super::expanded_solve::{CutRowSet, load_compact_cut_rows};
 use super::oracle_tolerance::value_tolerance;
@@ -70,12 +76,14 @@ pub struct CutOracleReport {
     pub off_mask_slots_checked: usize,
     /// The minimum, over every checked pool, of its own feasible-point count.
     pub min_feasible_points: usize,
-    /// (point, slack-bound signature) pairs whose successor value was re-solved
-    /// with the slack bounds frozen at a cut's own trial state.
+    /// (point, cut freeze) pairs whose successor value was re-solved frozen at a
+    /// cut's own trial state.
     pub frozen_resolves: usize,
     /// Of [`Self::frozen_resolves`], the re-solves that came back infeasible
     /// (the cut is then trivially valid at that point).
     pub frozen_infeasible: usize,
+    /// The largest `|Q_frozen − Q_unfrozen|` over the feasible re-solves whose freeze carries noise terms.
+    pub max_frozen_noise_gap: f64,
     /// Cut-validity violations.
     pub validity: Vec<String>,
     /// Under-tightness violations at a final-iteration trial point.
@@ -98,6 +106,7 @@ impl Default for CutOracleReport {
             min_feasible_points: usize::MAX,
             frozen_resolves: 0,
             frozen_infeasible: 0,
+            max_frozen_noise_gap: 0.0,
             validity: Vec::new(),
             tightness: Vec::new(),
             mask: Vec::new(),
@@ -435,15 +444,39 @@ pub fn successor_objective_at(
     inflow_slack_bounds: Option<(&[f64], &[f64])>,
     partial_sum: &[f64],
 ) -> Result<f64, SddpError> {
+    successor_objective_under(
+        setup,
+        &setup.training_ctx(),
+        ws,
+        rows,
+        x,
+        raw_noise,
+        inflow_slack_bounds,
+        partial_sum,
+    )
+}
+
+// Rationale (too_many_arguments): `successor_objective_at`'s arguments plus the context the
+// frozen-noise-term solve overrides; bundling them would only relocate the same borrows.
+#[allow(clippy::too_many_arguments)]
+fn successor_objective_under(
+    setup: &StudySetup,
+    training_ctx: &TrainingContext<'_>,
+    ws: &mut SolverWorkspace<ActiveSolver>,
+    rows: &CutRowSet,
+    x: &[f64],
+    raw_noise: &[f64],
+    inflow_slack_bounds: Option<(&[f64], &[f64])>,
+    partial_sum: &[f64],
+) -> Result<f64, SddpError> {
     let stage_ctx = setup.stage_ctx();
-    let training_ctx = setup.training_ctx();
     let s = rows.resident_pool;
     let pool = &setup.fcf.pools[s];
     reload_successor_rows(setup, ws, rows);
     let (view, _) = solve_probe_opening(
         ws,
         &stage_ctx,
-        &training_ctx,
+        training_ctx,
         &ProbeOpening {
             stage: StageIdx(s),
             pinned_state: x,
@@ -459,6 +492,53 @@ pub fn successor_objective_at(
         Some(partial_sum),
     )?;
     Ok(view.objective)
+}
+
+/// [`successor_objective_at`] with the opening's lognormal noise term frozen at `noise_terms`: the
+/// solve runs under the normal residual with each hydro's noise replaced by `η' = w / σ` (`0.0`
+/// where `σ = 0`), so the prep writes `ẑ = p(x) + σ·η'`.
+///
+/// derived: `σ·(w / σ) = w`, rounded once by the division and once by the product per hydro.
+// Rationale (too_many_arguments): `successor_objective_at`'s arguments plus the frozen terms of
+// the opening; bundling them would only relocate the same borrows.
+#[allow(clippy::too_many_arguments)]
+fn successor_objective_with_frozen_noise_term(
+    setup: &StudySetup,
+    ws: &mut SolverWorkspace<ActiveSolver>,
+    rows: &CutRowSet,
+    x: &[f64],
+    raw_noise: &[f64],
+    noise_terms: &[f64],
+    inflow_slack_bounds: Option<(&[f64], &[f64])>,
+    partial_sum: &[f64],
+) -> Result<f64, SddpError> {
+    let training_ctx = TrainingContext {
+        inflow_residual: InflowResidualDistribution::Normal,
+        ..setup.training_ctx()
+    };
+    let s = rows.resident_pool;
+    let par = training_ctx.stochastic.par();
+    let mut frozen_noise = raw_noise.to_vec();
+    let hydro_noise = &mut frozen_noise[training_ctx.stochastic.class_dimensions().hydro_range()];
+    assert_eq!(
+        hydro_noise.len(),
+        noise_terms.len(),
+        "one frozen noise term per hydro"
+    );
+    for (h, (eta, &w)) in hydro_noise.iter_mut().zip(noise_terms).enumerate() {
+        let sigma = par.sigma(s, h);
+        *eta = if sigma == 0.0 { 0.0 } else { w / sigma };
+    }
+    successor_objective_under(
+        setup,
+        &training_ctx,
+        ws,
+        rows,
+        x,
+        &frozen_noise,
+        inflow_slack_bounds,
+        partial_sum,
+    )
 }
 
 /// The RHS the production prep writes for the row of cut `slot` of pool `stage` when `stage`'s LP
@@ -614,6 +694,38 @@ pub fn bits_eq(a: &[f64], b: &[f64]) -> bool {
     a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits())
 }
 
+/// Per successor opening, the lognormal noise term of every hydro at `x`, from the kernel at
+/// `x`'s conditional mean; empty under the normal residual.
+fn noise_term_signature(occ: &OracleCtx<'_>, s: usize, x: &[f64]) -> Vec<Vec<f64>> {
+    let training_ctx = occ.setup.training_ctx();
+    match training_ctx.inflow_residual {
+        InflowResidualDistribution::Normal => return Vec::new(),
+        InflowResidualDistribution::Lognormal3p => {}
+    }
+    let par = training_ctx.stochastic.par();
+    let hydro_range = training_ctx.stochastic.class_dimensions().hydro_range();
+    let mut conditional_mean = vec![0.0; par.n_hydros()];
+    evaluate_par_conditional_mean_batch(
+        par,
+        s,
+        &x[state_lag_dims(training_ctx.state)],
+        &mut conditional_mean,
+    );
+    (0..occ.tree_view.n_openings(s))
+        .map(|o| {
+            let mut noise_term = vec![0.0; par.n_hydros()];
+            evaluate_lognormal_noise_term_batch(
+                par,
+                s,
+                &conditional_mean,
+                &occ.tree_view.opening(s, o)[hydro_range.clone()],
+                &mut noise_term,
+            );
+            noise_term
+        })
+        .collect()
+}
+
 fn signature_eq(a: &SlackSignature, b: &SlackSignature) -> bool {
     a.len() == b.len()
         && a.iter()
@@ -621,8 +733,9 @@ fn signature_eq(a: &SlackSignature, b: &SlackSignature) -> bool {
             .all(|((la, ua), (lb, ub))| bits_eq(la, lb) && bits_eq(ua, ub))
 }
 
-/// The successor value at `x` with the cut rows pinned at `partial_sum` and, when `signature` is
-/// given, every opening's slack bounds frozen at it, or `+∞` when an opening is infeasible there.
+/// The successor value at `x` with the cut rows pinned at `partial_sum`, when `signature` is
+/// given every opening's slack bounds frozen at it, and when `noise_terms` is not empty every
+/// opening's noise term frozen at its entry, or `+∞` when an opening is infeasible there.
 // Rationale (too_many_arguments): `rows` selects the successor cut rows per
 // call, so it cannot ride on the per-run `OracleCtx` with the other borrows.
 #[allow(clippy::too_many_arguments)]
@@ -636,21 +749,28 @@ fn q_hat_at_partial_sum(
     x: &[f64],
     signature: Option<&SlackSignature>,
     partial_sum: &[f64],
+    noise_terms: &[Vec<f64>],
 ) -> f64 {
     let n_openings = occ.tree_view.n_openings(s);
     let weight = 1.0 / n_openings as f64;
     let mut q_hat = 0.0_f64;
     for o in 0..n_openings {
         let frozen = signature.map(|signature| (&signature[o].0[..], &signature[o].1[..]));
-        match successor_objective_at(
-            occ.setup,
-            ws,
-            rows,
-            x,
-            occ.tree_view.opening(s, o),
-            frozen,
-            partial_sum,
-        ) {
+        let raw_noise = occ.tree_view.opening(s, o);
+        let objective = match noise_terms.get(o) {
+            None => successor_objective_at(occ.setup, ws, rows, x, raw_noise, frozen, partial_sum),
+            Some(noise_term) => successor_objective_with_frozen_noise_term(
+                occ.setup,
+                ws,
+                rows,
+                x,
+                raw_noise,
+                noise_term,
+                frozen,
+                partial_sum,
+            ),
+        };
+        match objective {
             Ok(objective) => q_hat += weight * objective,
             Err(SddpError::Infeasible { .. }) => return f64::INFINITY,
             Err(other) => {
@@ -661,17 +781,25 @@ fn q_hat_at_partial_sum(
     q_hat
 }
 
-/// What a checked cut's successor value is frozen at: the inflow-slack bounds of its own trial
-/// state and the partial sum its generating visit read at the successor stage.
+/// What a checked cut's successor value is frozen at: the inflow-slack bounds and the lognormal
+/// noise terms of its own trial state, and the partial sum its generating visit read at the
+/// successor stage.
 struct CutFreeze {
     signature: SlackSignature,
     partial_sum: Vec<f64>,
+    noise_terms: Vec<Vec<f64>>,
 }
 
 impl CutFreeze {
     fn same_as(&self, other: &Self) -> bool {
         signature_eq(&self.signature, &other.signature)
             && bits_eq(&self.partial_sum, &other.partial_sum)
+            && self.noise_terms.len() == other.noise_terms.len()
+            && self
+                .noise_terms
+                .iter()
+                .zip(&other.noise_terms)
+                .all(|(a, b)| bits_eq(a, b))
     }
 }
 
@@ -712,6 +840,7 @@ fn cut_signatures_at_trial_states(
             CutFreeze {
                 signature: slack_signature(occ, ws, s, x_hat),
                 partial_sum: occ.partial_sums.of_cut(pool, *slot, s),
+                noise_terms: noise_term_signature(occ, s, x_hat),
             },
         );
     }
@@ -719,13 +848,13 @@ fn cut_signatures_at_trial_states(
 }
 
 /// Every populated slot of pool `t` under the one, empty signature of a successor
-/// stage `s` with no truncation slack bounds, where the frozen successor value
-/// does not depend on a cut's trial state.
+/// stage `s` with no truncation slack bounds and a normal residual, where the frozen
+/// successor value does not depend on a cut's trial state.
 ///
 /// # Panics
 ///
-/// Panics if stage `s` has truncation slack bounds at `probe_state`, or if the
-/// pool has a never-written slot.
+/// Panics if stage `s` has truncation slack bounds at `probe_state`, if the inflow
+/// residual is lognormal, or if the pool has a never-written slot.
 fn state_free_cut_signatures(
     label: &str,
     occ: &OracleCtx<'_>,
@@ -744,6 +873,13 @@ fn state_free_cut_signatures(
          trial states of cuts older than the selection window are not available from the run, \
          so the inflow-slack bounds those cuts are frozen at cannot be computed"
     );
+    assert!(
+        occ.setup.training_ctx().inflow_residual == InflowResidualDistribution::Normal,
+        "{label}: pool {t}: the inflow residual is lognormal and the run applies cut selection: \
+         the trial states of cuts older than the selection window are not available from the \
+         run, so the noise terms those cuts are frozen at cannot be computed"
+    );
+    let noise_terms = noise_term_signature(occ, s, probe_state);
     assert_eq!(
         pool.populated(),
         pool.generated(),
@@ -759,6 +895,7 @@ fn state_free_cut_signatures(
             CutFreeze {
                 signature: signature.clone(),
                 partial_sum: occ.partial_sums.of_cut(pool, slot, s),
+                noise_terms: noise_terms.clone(),
             },
         );
     }
@@ -874,7 +1011,8 @@ fn check_pool(
                     .distinct
                     .iter()
                     .map(|freeze| {
-                        if signature_eq(&freeze.signature, &point_signature)
+                        if freeze.noise_terms.is_empty()
+                            && signature_eq(&freeze.signature, &point_signature)
                             && all_zero(&freeze.partial_sum)
                         {
                             validity_q_hat
@@ -890,9 +1028,14 @@ fn check_pool(
                                 x,
                                 Some(&freeze.signature),
                                 &freeze.partial_sum,
+                                &freeze.noise_terms,
                             );
                             if value == f64::INFINITY {
                                 report.frozen_infeasible += 1;
+                            } else if !freeze.noise_terms.is_empty() {
+                                report.max_frozen_noise_gap = report
+                                    .max_frozen_noise_gap
+                                    .max((value - validity_q_hat).abs());
                             }
                             value
                         }
@@ -934,6 +1077,7 @@ fn check_pool(
                             x,
                             None,
                             &trial_partial_sums[idx],
+                            &[],
                         );
                         assert!(
                             value.is_finite(),
@@ -1079,8 +1223,9 @@ fn final_trial_points(
 /// cut, active or not, on the validity, under-tightness, and mask-soundness
 /// oracles over each producer stage `t` whose pool has at least one populated cut.
 /// The successor value is the folded solve of stage `t + 1`.
-/// Validity compares each cut with the successor value whose inflow-slack bounds
-/// are frozen at that cut's own trial state, read from the pool's per-slot store.
+/// Validity compares each cut with the successor value whose inflow-slack bounds, and under
+/// `"lognormal_3p"` the noise term, are frozen at that cut's own trial state, read from the
+/// pool's per-slot store.
 ///
 /// # Panics
 ///

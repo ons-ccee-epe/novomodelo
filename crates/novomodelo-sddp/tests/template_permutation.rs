@@ -9,7 +9,7 @@
 mod common;
 
 use novomodelo_io::config::InflowNonNegativityMethod as CfgInflowMethod;
-use novomodelo_io::config::{StoppingRuleConfig, TrainingSelection};
+use novomodelo_io::config::{InflowResidualDistribution, StoppingRuleConfig, TrainingSelection};
 use novomodelo_sddp::test_support::decks::{SLOW_DECKS, committed_decks};
 use novomodelo_sddp::test_support::template_fact_groups;
 use novomodelo_sddp::{StudySetup, TrainingResult};
@@ -19,6 +19,7 @@ use common::in_code_studies::{
     ChronologicalNoiseSpec, FphaLagOptions, chronological_noise_study, fpha_lag_study_with,
     mixed_lead_anticipated_study, negative_draw_par1_spec, prefilling_withdrawal_route_study,
 };
+use common::lognormal_branches::assert_the_stored_pins_reach_both_branches;
 use common::permute::permute_case;
 use common::selection_fingerprint::SelectionFingerprint;
 use common::{
@@ -256,12 +257,19 @@ fn every_lag_deck_compact_template_is_invariant_to_declaration_order() {
     );
 }
 
-fn train_compact_lag_study(reverse_declaration_order: bool) -> (StudySetup, TrainingResult) {
+/// Under `Lognormal3p` the study reaches the fallback and stores its trial states.
+fn train_compact_lag_study(
+    distribution: InflowResidualDistribution,
+    reverse_declaration_order: bool,
+) -> (StudySetup, TrainingResult) {
+    let lognormal = distribution == InflowResidualDistribution::Lognormal3p;
     let (system, mut config, hydro_models) = fpha_lag_study_with(FphaLagOptions {
         openings: LAG_STUDY_OPENINGS,
         reverse_declaration_order,
+        reach_the_fallback: lognormal,
         ..FphaLagOptions::default()
     });
+    config.modeling.inflow_residual.distribution = distribution;
     config.training.selection = Some(TrainingSelection::Sampled {
         forward_passes: LAG_STUDY_FORWARD_PASSES,
     });
@@ -270,6 +278,9 @@ fn train_compact_lag_study(reverse_declaration_order: bool) -> (StudySetup, Trai
     }]);
     config.training.cut_selection.max_active_per_stage = Some(BUDGET_THAT_EVICTS_NOTHING);
     let mut setup = build_setup_in_code_with_models(system, &config, hydro_models);
+    if lognormal {
+        setup.set_export_states(true);
+    }
     let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
     let outcome = setup
         .train(&mut solver, &StubComm, 1, ActiveSolver::new, None, None)
@@ -319,12 +330,30 @@ fn assert_lag_bearing_binding_cut(setup: &StudySetup, result: &TrainingResult) {
 
 #[test]
 fn the_compact_lag_study_trains_to_the_same_bits_in_either_declaration_order() {
-    let (base_setup, base_result) = train_compact_lag_study(false);
+    let (base_setup, base_result) =
+        train_compact_lag_study(InflowResidualDistribution::Normal, false);
     assert_lag_bearing_binding_cut(&base_setup, &base_result);
-    let (reversed_setup, reversed_result) = train_compact_lag_study(true);
+    let (reversed_setup, reversed_result) =
+        train_compact_lag_study(InflowResidualDistribution::Normal, true);
 
     SelectionFingerprint::capture(&reversed_setup, &reversed_result).assert_matches(
         &SelectionFingerprint::capture(&base_setup, &base_result),
         "compact lag study, reversed declaration order",
+    );
+}
+
+#[test]
+fn the_compact_lognormal_lag_study_trains_to_the_same_bits_in_either_declaration_order() {
+    let label = "compact lognormal lag study";
+    let (base_setup, base_result) =
+        train_compact_lag_study(InflowResidualDistribution::Lognormal3p, false);
+    assert_lag_bearing_binding_cut(&base_setup, &base_result);
+    assert_the_stored_pins_reach_both_branches(label, &base_setup);
+    let (reversed_setup, reversed_result) =
+        train_compact_lag_study(InflowResidualDistribution::Lognormal3p, true);
+
+    SelectionFingerprint::capture(&reversed_setup, &reversed_result).assert_matches(
+        &SelectionFingerprint::capture(&base_setup, &base_result),
+        &format!("{label}, reversed declaration order"),
     );
 }

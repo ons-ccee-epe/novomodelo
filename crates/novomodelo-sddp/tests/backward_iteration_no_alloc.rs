@@ -1,6 +1,7 @@
 //! Pins one warm backward phase to zero Rust heap allocation on every thread, under each
-//! backward scheduler, with the bracket slab and the noise-term tables on. Allocations inside the
-//! linked C++ solver are not counted.
+//! backward scheduler and each inflow residual distribution, with the bracket slab on. The
+//! noise-term tables are on under the normal residual and off under the lognormal one, whose
+//! study reaches both kernel branches. Allocations inside the linked C++ solver are not counted.
 //!
 //! The counter is global, so this binary holds exactly one test.
 
@@ -10,7 +11,9 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use novomodelo_io::config::{BackwardScheduler, StoppingRuleConfig, TrainingSelection};
+use novomodelo_io::config::{
+    BackwardScheduler, InflowResidualDistribution, StoppingRuleConfig, TrainingSelection,
+};
 use novomodelo_sddp::test_support::with_backward_phase_probe;
 
 mod common;
@@ -62,15 +65,25 @@ static ALLOCATOR: CountingAllocator = CountingAllocator;
 
 #[test]
 fn a_warm_backward_iteration_allocates_nothing_on_any_thread() {
-    for backward_scheduler in [
-        BackwardScheduler::ByScenario {},
-        BackwardScheduler::ByNode { block_size: None },
-    ] {
-        let label = format!("{backward_scheduler:?}");
+    for (distribution, reach_the_fallback, backward_scheduler) in [
+        (InflowResidualDistribution::Normal, false),
+        (InflowResidualDistribution::Lognormal3p, true),
+    ]
+    .into_iter()
+    .flat_map(|(distribution, reach_the_fallback)| {
+        [
+            BackwardScheduler::ByScenario {},
+            BackwardScheduler::ByNode { block_size: None },
+        ]
+        .map(|scheduler| (distribution, reach_the_fallback, scheduler))
+    }) {
+        let label = format!("{distribution:?} {backward_scheduler:?}");
         let (system, mut config, hydro_models) = fpha_lag_study_with(FphaLagOptions {
             openings: OPENINGS,
+            reach_the_fallback,
             ..FphaLagOptions::default()
         });
+        config.modeling.inflow_residual.distribution = distribution;
         apply_oracle_config(&mut config);
         config.training.selection = Some(TrainingSelection::Sampled {
             forward_passes: FORWARD_PASSES,

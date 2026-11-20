@@ -14,8 +14,8 @@ use std::path::{Path, PathBuf};
 use novomodelo_core::System;
 use novomodelo_core::scenario::ScenarioSource;
 use novomodelo_io::config::{
-    BoundaryPolicy, Config, SelectionMethod, SimulationRowSet, StoppingRuleConfig,
-    TrainingSelection,
+    BoundaryPolicy, Config, InflowResidualDistribution, SelectionMethod, SimulationRowSet,
+    StoppingRuleConfig, TrainingSelection,
 };
 use novomodelo_io::{OwnedPolicyCutRecord, read_policy_checkpoint};
 use novomodelo_sddp::cut::{CutPool, CutSet, SlotOrigin};
@@ -1192,5 +1192,84 @@ fn a_dynamic_simulation_of_all_loads_boundary_cuts_a_cap_evicted() {
             .iter()
             .any(|record| !record.scored && !record.is_active),
         "power: the boundary must hold an unscored inactive row"
+    );
+}
+
+fn residual_under(distribution: InflowResidualDistribution) -> impl FnOnce(&mut Config) {
+    move |config| config.modeling.inflow_residual.distribution = distribution
+}
+
+fn recorded_final_lower_bound(policy_dir: &Path) -> f64 {
+    read_policy_checkpoint(policy_dir)
+        .expect("read checkpoint")
+        .metadata
+        .producer
+        .final_lower_bound
+}
+
+/// The residual distribution is a run setting recorded in neither the policy nor
+/// the checkpoint: a 1dtoy policy trained under `trained_under` loads under
+/// `loaded_under` for every load kind, with no refusal and no warning, and simulates.
+fn assert_cross_load_simulates_silently(
+    trained_under: InflowResidualDistribution,
+    loaded_under: InflowResidualDistribution,
+) {
+    let (_trained, policy_dir) = toy_checkpoint(1, residual_under(trained_under));
+    let (_other, other_dir) = toy_checkpoint(1, residual_under(loaded_under));
+    assert_ne!(
+        recorded_final_lower_bound(&policy_dir).to_bits(),
+        recorded_final_lower_bound(&other_dir).to_bits(),
+        "power: the two distributions must record different final lower bounds"
+    );
+
+    for kind in [
+        FullFcfLoadKind::SimulationOnly,
+        FullFcfLoadKind::WarmStart,
+        FullFcfLoadKind::Resume,
+    ] {
+        let label = format!(
+            "{kind:?} of a policy trained under {trained_under:?}, loaded under {loaded_under:?}"
+        );
+        let (system, mut setup) = toy_setup(1, 4, residual_under(loaded_under));
+        let mut warnings = Vec::new();
+        let checked = check_full_fcf_load(kind, &policy_dir, &system, &setup, &mut |message| {
+            warnings.push(message.to_string());
+        })
+        .unwrap_or_else(|err| panic!("{label}: refused: {err}"));
+        assert!(warnings.is_empty(), "{label}: warned: {warnings:?}");
+
+        let results = if kind == FullFcfLoadKind::SimulationOnly {
+            let (fcf, result) = checked.into_simulation_policy();
+            setup.replace_fcf(fcf);
+            common::simulate_policy(&mut setup, &result)
+        } else {
+            checked.apply_to_training(&mut setup);
+            common::run_simulation(&mut setup, 1)
+        };
+        assert_eq!(
+            results.len(),
+            usize::try_from(setup.simulation_config.n_scenarios).unwrap(),
+            "{label}: scenarios simulated"
+        );
+        assert!(
+            results.iter().all(|result| result.total_cost.is_finite()),
+            "{label}: every scenario must have a finite total cost"
+        );
+    }
+}
+
+#[test]
+fn a_lognormal_residual_policy_loads_and_simulates_under_normal_with_no_warning() {
+    assert_cross_load_simulates_silently(
+        InflowResidualDistribution::Lognormal3p,
+        InflowResidualDistribution::Normal,
+    );
+}
+
+#[test]
+fn a_normal_residual_policy_loads_and_simulates_under_lognormal_with_no_warning() {
+    assert_cross_load_simulates_silently(
+        InflowResidualDistribution::Normal,
+        InflowResidualDistribution::Lognormal3p,
     );
 }

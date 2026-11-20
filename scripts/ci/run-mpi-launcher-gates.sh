@@ -45,6 +45,7 @@ readonly GATES=(
     "test_mpi_sync_cuts_invariant k_fan_branching_rank_invariance::k_fan_final_lb_bitwise_invariant_across_world_size"
     "periodic_checkpoint a_failed_periodic_write_on_the_world_leaves_the_last_whole_checkpoint_and_a_partial_beside_it"
     "mpi_wire compact_fold_determinism::compact_lag_study_is_world_size_invariant"
+    "mpi_wire compact_fold_determinism::compact_lognormal_lag_study_is_world_size_invariant"
     "mpi_wire compact_fold_determinism::compact_d43_is_world_size_invariant"
     "mpi_wire compact_fold_determinism::compact_fused_slice_is_world_size_invariant"
     "cut_basis solve_cache_equivalence::fpha_lag_study_trains_to_the_same_bits_with_the_solve_caches_bypassed_on_the_world"
