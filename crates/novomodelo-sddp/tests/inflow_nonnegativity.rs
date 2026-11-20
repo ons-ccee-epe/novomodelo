@@ -543,6 +543,7 @@ fn train_fixture_into(
                     rules: vec![StoppingRule::IterationLimit { limit: iterations }],
                     mode: StoppingMode::Any,
                 },
+                storage_grid: None,
             },
             cut_management: CutManagementConfig {
                 cut_selection: None,

@@ -5,8 +5,8 @@ use std::path::Path;
 use novomodelo_core::ScalarParameter;
 use novomodelo_io::Config;
 use novomodelo_io::config::{
-    BackwardScheduler, CheckpointSchedule, ForwardPassesResolution, NumScenariosResolution,
-    PhaseSolverProfileConfig, SimulationRowSet, StoppingRuleConfig,
+    BackwardScheduler, CheckpointSchedule, FirstIterationTrialStorage, ForwardPassesResolution,
+    NumScenariosResolution, PhaseSolverProfileConfig, SimulationRowSet, StoppingRuleConfig,
 };
 use serde::{Deserialize, Serialize};
 
@@ -122,6 +122,9 @@ pub struct StudyParams {
     /// layer re-resolves [`Self::forward_passes`] from the node graph once it
     /// exists (config load holds no graph to derive the count from).
     pub training_enumerated: bool,
+    /// `training.selection.first_iteration_trial_storage`, resolved by
+    /// [`Config::first_iteration_trial_storage`](novomodelo_io::Config::first_iteration_trial_storage).
+    pub first_iteration_trial_storage: FirstIterationTrialStorage,
     /// Stopping rule set (rules + mode) governing when training halts.
     pub stopping_rule_set: StoppingRuleSet,
     /// Number of simulation scenarios (0 if simulation is disabled, or a
@@ -326,6 +329,7 @@ impl StudyParams {
             seed,
             forward_passes,
             training_enumerated,
+            first_iteration_trial_storage: config.first_iteration_trial_storage(),
             stopping_rule_set,
             n_scenarios,
             simulation_enumerated,
@@ -455,7 +459,7 @@ mod tests {
                 solver: TrainingSolverConfig::default(),
                 parallelism: ParallelismConfig::default(),
                 scenario_source: None,
-                selection: Some(TrainingSelection::Sampled { forward_passes: 1 }),
+                selection: Some(TrainingSelection::sampled(1)),
             },
             upper_bound_evaluation: UpperBoundEvaluationConfig::default(),
             policy: PolicyConfig::default(),
@@ -469,7 +473,7 @@ mod tests {
     /// budget-below-forward-passes warning fires.
     fn config_with_budget_below_forward_passes() -> Config {
         let mut config = base_test_config();
-        config.training.selection = Some(TrainingSelection::Sampled { forward_passes: 2 });
+        config.training.selection = Some(TrainingSelection::sampled(2));
         config.training.cut_selection = RowSelectionConfig {
             max_active_per_stage: Some(1),
             ..RowSelectionConfig::default()
@@ -864,7 +868,7 @@ mod tests {
     #[test]
     fn from_config_resolves_forward_passes_from_selection() {
         let mut via_selection = base_test_config();
-        via_selection.training.selection = Some(TrainingSelection::Sampled { forward_passes: 8 });
+        via_selection.training.selection = Some(TrainingSelection::sampled(8));
         let params_selection = StudyParams::from_config(&via_selection, Vec::new())
             .expect("sampled selection is a valid forward-pass source");
         assert_eq!(params_selection.forward_passes, 8);

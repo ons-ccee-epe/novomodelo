@@ -918,7 +918,7 @@ mod basis_reconstruct_churn {
         let config_path = case_dir.join("config.json");
         let mut config = novomodelo_io::parse_config(&config_path).expect("config must parse");
 
-        config.training.selection = Some(TrainingSelection::Sampled { forward_passes: 3 });
+        config.training.selection = Some(TrainingSelection::sampled(3));
         config.training.stopping_rules =
             Some(vec![StoppingRuleConfig::IterationLimit { limit: 8 }]);
 
@@ -1050,7 +1050,7 @@ mod basis_reconstruct_churn {
         let config_path = case_dir.join("config.json");
         let mut config = novomodelo_io::parse_config(&config_path).expect("config must parse");
 
-        config.training.selection = Some(TrainingSelection::Sampled { forward_passes: 2 });
+        config.training.selection = Some(TrainingSelection::sampled(2));
         config.training.stopping_rules =
             Some(vec![StoppingRuleConfig::IterationLimit { limit: 3 }]);
 
@@ -1131,7 +1131,7 @@ mod basis_reconstruct_churn {
         // Two IterationLimit rules in "any" mode: limit 2 sizes the FCF pool to
         // (2+1) × forward_passes slots/stage (capacity headroom); limit 1 fires first
         // and stops after iteration 1.
-        config.training.selection = Some(TrainingSelection::Sampled { forward_passes: 2 });
+        config.training.selection = Some(TrainingSelection::sampled(2));
         config.training.stopping_rules = Some(vec![
             StoppingRuleConfig::IterationLimit { limit: 2 },
             StoppingRuleConfig::IterationLimit { limit: 1 },
@@ -1307,7 +1307,7 @@ mod basis_reconstruct_churn {
 
         // 2 iterations so iter 2's forward pass captures a basis with non-empty
         // cut_row_slots into basis_cache for the simulation warm-start.
-        config.training.selection = Some(TrainingSelection::Sampled { forward_passes: 2 });
+        config.training.selection = Some(TrainingSelection::sampled(2));
         config.training.stopping_rules =
             Some(vec![StoppingRuleConfig::IterationLimit { limit: 2 }]);
 
@@ -1473,9 +1473,7 @@ mod selection_in_a_training_run {
             .join("examples/1dtoy");
         let mut config =
             novomodelo_io::parse_config(&case_dir.join("config.json")).expect("config must parse");
-        config.training.selection = Some(TrainingSelection::Sampled {
-            forward_passes: FORWARD_PASSES,
-        });
+        config.training.selection = Some(TrainingSelection::sampled(FORWARD_PASSES));
         config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit {
             limit: iterations,
         }]);
@@ -2277,7 +2275,7 @@ mod selection_in_a_training_run {
         };
         let lp_solves = |forward: f64, backward: f64| {
             let mut setup = super::common::fresh_setup_with_openings(&case_dir, 5, |config| {
-                config.training.selection = Some(TrainingSelection::Sampled { forward_passes: 4 });
+                config.training.selection = Some(TrainingSelection::sampled(4));
                 config.training.stopping_rules =
                     Some(vec![StoppingRuleConfig::IterationLimit { limit: 10 }]);
                 config.training.cut_selection.selection = Some(SelectionMethod::Dynamic {
@@ -2770,7 +2768,7 @@ mod trial_state_store {
         selection: Option<SelectionMethod>,
     ) -> impl FnOnce(&mut Config) {
         move |config| {
-            config.training.selection = Some(TrainingSelection::Sampled { forward_passes });
+            config.training.selection = Some(TrainingSelection::sampled(forward_passes));
             config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit {
                 limit: ITERATIONS,
             }]);
@@ -4485,7 +4483,7 @@ mod range_warm_start_determinism {
                 solver: TrainingSolverConfig::default(),
                 parallelism: ParallelismConfig::default(),
                 scenario_source: None,
-                selection: Some(TrainingSelection::Sampled { forward_passes: 1 }),
+                selection: Some(TrainingSelection::sampled(1)),
             },
             upper_bound_evaluation: novomodelo_io::config::UpperBoundEvaluationConfig::default(),
             policy: PolicyConfig::default(),
@@ -5288,9 +5286,7 @@ mod simulation_cut_set {
             .join("examples/deterministic/d03-two-hydro-cascade");
         let mut config =
             novomodelo_io::parse_config(&case_dir.join("config.json")).expect("config must parse");
-        config.training.selection = Some(TrainingSelection::Sampled {
-            forward_passes: FORWARD_PASSES,
-        });
+        config.training.selection = Some(TrainingSelection::sampled(FORWARD_PASSES));
         config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit {
             limit: ITERATIONS,
         }]);
@@ -5521,7 +5517,7 @@ mod solve_cache_equivalence {
             openings,
             ..FphaLagOptions::default()
         });
-        config.training.selection = Some(TrainingSelection::Sampled { forward_passes });
+        config.training.selection = Some(TrainingSelection::sampled(forward_passes));
         config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit {
             limit: iterations,
         }]);
@@ -5866,6 +5862,110 @@ mod solve_cache_equivalence {
         assert!(
             powered_decks > 0,
             "no deck stored a lag cut and recomputed a bracket under the bypass"
+        );
+    }
+}
+
+mod first_iteration_trial_storage {
+    use novomodelo_core::System;
+    use novomodelo_io::config::{
+        FirstIterationTrialStorage, InflowNonNegativityMethod as CfgInflowMethod,
+        StoppingRuleConfig, TrainingSelection,
+    };
+    use novomodelo_sddp::setup::NodePos;
+
+    use super::common::in_code_studies::{
+        chronological_noise_hydro_models, chronological_noise_study, negative_draw_water_value_spec,
+    };
+    use super::common::{
+        build_setup_in_code_with_models, stored_trial_states, train_storing_trial_states,
+    };
+
+    const FORWARD_PASSES: usize = 4;
+    const N_HYDROS: usize = 2;
+
+    fn study() -> (System, novomodelo_io::Config) {
+        chronological_noise_study(&negative_draw_water_value_spec(CfgInflowMethod::Truncation))
+    }
+
+    /// The root stage's trial states of every iteration, in slot order.
+    fn root_trial_states(
+        first_iteration_trial_storage: FirstIterationTrialStorage,
+        iterations: u32,
+    ) -> Vec<Vec<f64>> {
+        let spec = negative_draw_water_value_spec(CfgInflowMethod::Truncation);
+        let (system, mut config) = chronological_noise_study(&spec);
+        config.training.selection = Some(TrainingSelection::Sampled {
+            forward_passes: u32::try_from(FORWARD_PASSES).expect("forward passes fit u32"),
+            first_iteration_trial_storage,
+        });
+        config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit {
+            limit: iterations,
+        }]);
+        let hydro_models = chronological_noise_hydro_models(&spec, &system);
+        let mut setup = build_setup_in_code_with_models(system, &config, hydro_models);
+        train_storing_trial_states("storage grid study", &mut setup);
+        stored_trial_states(&setup, NodePos(0))
+    }
+
+    /// derived: pass `k` of `N` holds `min + (k / N) * (max - min)` of each hydro.
+    fn grid_storage(pass: usize) -> Vec<f64> {
+        let (system, _) = study();
+        let share = [0.25, 0.5, 0.75, 1.0][pass];
+        system
+            .hydros()
+            .iter()
+            .map(|h| h.min_storage_hm3 + share * (h.max_storage_hm3 - h.min_storage_hm3))
+            .collect()
+    }
+
+    #[test]
+    fn the_first_backward_pass_visits_the_even_storage_grid() {
+        let states = root_trial_states(FirstIterationTrialStorage::StorageGrid, 1);
+
+        assert_eq!(states.len(), FORWARD_PASSES);
+        for (pass, state) in states.iter().enumerate() {
+            assert_eq!(state[..N_HYDROS], grid_storage(pass)[..], "pass {pass}");
+        }
+    }
+
+    #[test]
+    fn without_the_option_the_first_backward_pass_visits_the_forward_storage() {
+        let states = root_trial_states(FirstIterationTrialStorage::Forward, 1);
+
+        assert!(
+            (0..FORWARD_PASSES).any(|pass| states[pass][..N_HYDROS] != grid_storage(pass)[..]),
+            "the forward path must differ from the grid for the grid test to have power"
+        );
+    }
+
+    #[test]
+    fn the_grid_keeps_the_inflow_lags_of_the_forward_path() {
+        let on_grid = root_trial_states(FirstIterationTrialStorage::StorageGrid, 1);
+        let forward = root_trial_states(FirstIterationTrialStorage::Forward, 1);
+
+        assert!(
+            on_grid[0].len() > N_HYDROS,
+            "the study must carry inflow lags"
+        );
+        for (pass, (grid_state, forward_state)) in on_grid.iter().zip(&forward).enumerate() {
+            assert_eq!(
+                grid_state[N_HYDROS..],
+                forward_state[N_HYDROS..],
+                "pass {pass}"
+            );
+        }
+    }
+
+    #[test]
+    fn iterations_after_the_first_visit_the_forward_storage() {
+        let states = root_trial_states(FirstIterationTrialStorage::StorageGrid, 2);
+
+        assert_eq!(states.len(), 2 * FORWARD_PASSES);
+        assert!(
+            (0..FORWARD_PASSES)
+                .any(|pass| states[FORWARD_PASSES + pass][..N_HYDROS] != grid_storage(pass)[..]),
+            "iteration 2 must leave the grid"
         );
     }
 }

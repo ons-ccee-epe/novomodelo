@@ -1260,6 +1260,7 @@ mod determinism {
                 resume_lower_bound_history: Vec::new(),
                 n_fwd_threads: 1,
                 stopping_rules: iteration_limit(n_iterations),
+                storage_grid: None,
             },
             cut_management: CutManagementConfig {
                 cut_selection: None,
@@ -2154,7 +2155,7 @@ mod water_travel_time_no_arc_byte_identity {
                 solver: TrainingSolverConfig::default(),
                 parallelism: novomodelo_io::config::ParallelismConfig::default(),
                 scenario_source: None,
-                selection: Some(TrainingSelection::Sampled { forward_passes: 1 }),
+                selection: Some(TrainingSelection::sampled(1)),
             },
             upper_bound_evaluation: UpperBoundEvaluationConfig::default(),
             policy: PolicyConfig::default(),

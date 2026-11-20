@@ -387,6 +387,7 @@ fn test_stochastic_load_training_completes() {
             resume_lower_bound_history: Vec::new(),
             n_fwd_threads: 1,
             stopping_rules: iteration_limit(3),
+            storage_grid: None,
         },
         cut_management: CutManagementConfig {
             cut_selection: None,
@@ -515,6 +516,7 @@ fn test_deterministic_load_training_matches_baseline() {
                 resume_lower_bound_history: Vec::new(),
                 n_fwd_threads: 1,
                 stopping_rules: iteration_limit(3),
+                storage_grid: None,
             },
             cut_management: CutManagementConfig {
                 cut_selection: None,
@@ -599,6 +601,7 @@ fn test_stochastic_load_seed_determinism() {
                 resume_lower_bound_history: Vec::new(),
                 n_fwd_threads: 1,
                 stopping_rules: iteration_limit(3),
+                storage_grid: None,
             },
             cut_management: CutManagementConfig {
                 cut_selection: None,

@@ -76,7 +76,7 @@ struct RunSpec {
 const SAMPLED: RunSpec = RunSpec {
     fixture: Fixture::LagStudy,
     openings: 3,
-    selection: TrainingSelection::Sampled { forward_passes: 1 },
+    selection: TrainingSelection::sampled(1),
     dynamic_cut_selection: false,
     seed_window: SEED_WINDOW,
     backward_scheduler: BackwardScheduler::ByScenario {},
@@ -108,7 +108,7 @@ const DYNAMIC: RunSpec = RunSpec {
 
 const WEEKLY_SAMPLED: RunSpec = RunSpec {
     fixture: Fixture::Weekly,
-    selection: TrainingSelection::Sampled { forward_passes: 4 },
+    selection: TrainingSelection::sampled(4),
     ..SAMPLED
 };
 

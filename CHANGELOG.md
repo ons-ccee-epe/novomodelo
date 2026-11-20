@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `training.selection.first_iteration_trial_storage` in `config.json`:
+  `"storage_grid"` builds the first iteration's cuts at an even grid of
+  storage levels instead of the forward passes' storage. `"forward"`, the
+  default, keeps the earlier behaviour.
+
 ### Removed
 
 - **BREAKING:** `post_study_stages.json` with a `stages` key is refused. Migrate

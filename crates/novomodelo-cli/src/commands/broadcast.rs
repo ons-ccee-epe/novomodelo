@@ -6,7 +6,9 @@ use novomodelo_comm::Communicator;
 use novomodelo_core::scenario::ScenarioSource;
 use novomodelo_io::Config;
 use novomodelo_io::PolicyMode;
-use novomodelo_io::config::{BackwardScheduler, CheckpointSchedule, PhaseSolverProfileConfig};
+use novomodelo_io::config::{
+    BackwardScheduler, CheckpointSchedule, FirstIterationTrialStorage, PhaseSolverProfileConfig,
+};
 use novomodelo_sddp::{
     BoundaryStateRequirements, CutSelectionStrategy, InflowNonNegativityMethod, StoppingMode,
     StoppingRule, StoppingRuleSet, StudyParams,
@@ -92,6 +94,8 @@ pub(crate) struct BroadcastConfig {
     /// re-resolves `forward_passes` from the (identically-broadcast-derived)
     /// node graph once it exists.
     pub(crate) training_enumerated: bool,
+    /// `training.selection.first_iteration_trial_storage`, which every rank applies to its own trials.
+    pub(crate) first_iteration_trial_storage: FirstIterationTrialStorage,
     pub(crate) stopping_rules: Vec<BroadcastStoppingRule>,
     pub(crate) stopping_mode: BroadcastStoppingMode,
     pub(crate) n_scenarios: u32,
@@ -189,6 +193,7 @@ impl BroadcastConfig {
             seed: params.seed,
             forward_passes: params.forward_passes,
             training_enumerated: params.training_enumerated,
+            first_iteration_trial_storage: params.first_iteration_trial_storage,
             stopping_rules,
             stopping_mode,
             n_scenarios: params.n_scenarios,

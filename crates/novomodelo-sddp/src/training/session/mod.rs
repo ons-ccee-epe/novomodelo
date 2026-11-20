@@ -51,6 +51,7 @@ use crate::{
         aggregate_solver_statistics, pack_delta_scalars, unpack_delta_scalars,
     },
     state_exchange::ExchangeBuffers,
+    training::storage_grid::GridTrials,
     training::training::{CheckpointBasisStore, LoadedPolicy, gather_basis_store, global_scenario},
     training::{TrainingOutcome, TrainingResult, broadcast_basis_cache},
     workspace::{BasisStore, NoisePreallocation, WorkspacePool, WorkspaceSizing},
@@ -561,6 +562,7 @@ where
         let lazy_totals_before = self.lazy_solve_local_totals();
 
         let (forward_result, sync_result, fwd_solve_time_ms) = self.run_forward_phase(iteration)?;
+        self.place_first_iteration_on_storage_grid(iteration);
         let (backward_result, bwd_solve_time_ms) = self.run_backward_phase(iteration)?;
 
         // Reduced across ranks so the reported figures are work-distribution
@@ -956,6 +958,27 @@ where
     }
 
     // ── Private phase helpers ──────────────────────────────────────────────
+
+    /// Moves the first iteration's trial points onto the configured storage grid.
+    /// A resumed run never reaches iteration 1.
+    fn place_first_iteration_on_storage_grid(&mut self, iteration: u64) {
+        if iteration != 1 {
+            return;
+        }
+        if let Some(grid) = &self.config.loop_config.storage_grid {
+            grid.overwrite_storage(
+                &mut self.scratch.records,
+                self.stage_ctx.state_boxes,
+                self.training_ctx.state.state_dim_storage_range(),
+                self.training_ctx.horizon.num_stages(),
+                GridTrials {
+                    first: self.ranks.my_fwd_offset,
+                    local: self.ranks.my_actual_fwd,
+                    total: self.ranks.num_total_forward_passes,
+                },
+            );
+        }
+    }
 
     /// Run the forward pass and forward synchronisation for one iteration.
     pub(crate) fn run_forward_phase(
@@ -2212,6 +2235,7 @@ mod tests {
                 resume_lower_bound_history: Vec::new(),
                 n_fwd_threads: 1,
                 stopping_rules: iteration_limit_rules(limit),
+                storage_grid: None,
             },
             cut_management: CutManagementConfig {
                 cut_selection: None,

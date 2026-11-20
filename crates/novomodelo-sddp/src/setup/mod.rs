@@ -36,7 +36,7 @@ use novomodelo_core::temporal::SeasonMap;
 use novomodelo_core::temporal::StageLagTransition;
 use novomodelo_core::temporal::StageStateConfig;
 use novomodelo_io::Config;
-use novomodelo_io::config::BackwardScheduler;
+use novomodelo_io::config::{BackwardScheduler, FirstIterationTrialStorage};
 use novomodelo_solver::ActiveProfile;
 use novomodelo_stochastic::DerivedInflowSeeds;
 use novomodelo_stochastic::DerivedSeed;
@@ -56,6 +56,7 @@ use crate::scaling_report::ScalingReport;
 use crate::simulation::SimulationConfig;
 use crate::solve::solver_phase::{Phase, validate_phase_solver_config};
 use crate::stochastic::noise_key::build_noise_key_table;
+use crate::training::StorageGrid;
 mod accessors;
 mod lag_points;
 pub(crate) mod lp_build_inputs;
@@ -442,6 +443,8 @@ impl StudySetup {
         let (loop_params, simulation_config) = resolve_phase_configs(
             &node_graph,
             &config,
+            system.hydros(),
+            &study_stage_ids,
             simulation_profile,
             stochastic_pipeline::forward_seed_for(simulation_source),
         )?;
@@ -1717,6 +1720,8 @@ fn build_checked_node_graph(
 fn resolve_phase_configs(
     node_graph: &NodeGraph,
     config: &StudyParams,
+    hydros: &[Hydro],
+    study_stage_ids: &[i32],
     simulation_profile: ActiveProfile,
     simulation_forward_seed: Option<u64>,
 ) -> Result<(LoopParams, SimulationConfig), SddpError> {
@@ -1741,6 +1746,10 @@ fn resolve_phase_configs(
         SimulationEnumeratedRequest::Sampled => config.n_scenarios,
     };
     let max_iterations = max_iterations_from_rules(&config.stopping_rule_set)?;
+    let storage_grid = match config.first_iteration_trial_storage {
+        FirstIterationTrialStorage::Forward => None,
+        FirstIterationTrialStorage::StorageGrid => Some(StorageGrid::new(hydros, study_stage_ids)),
+    };
 
     Ok((
         LoopParams {
@@ -1751,6 +1760,7 @@ fn resolve_phase_configs(
             start_iteration: 0,
             resume_lower_bound_history: Vec::new(),
             stopping_rules: config.stopping_rule_set.clone(),
+            storage_grid,
         },
         SimulationConfig {
             n_scenarios,

@@ -17,7 +17,7 @@ use super::selection_fingerprint::SelectionFingerprint;
 pub const BUDGET_THAT_EVICTS_NOTHING: u32 = 100_000;
 
 pub fn sample(config: &mut Config, forward_passes: u32, iterations: u32) {
-    config.training.selection = Some(TrainingSelection::Sampled { forward_passes });
+    config.training.selection = Some(TrainingSelection::sampled(forward_passes));
     config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit {
         limit: iterations,
     }]);

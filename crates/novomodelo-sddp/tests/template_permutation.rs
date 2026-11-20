@@ -262,9 +262,7 @@ fn train_compact_lag_study(reverse_declaration_order: bool) -> (StudySetup, Trai
         reverse_declaration_order,
         ..FphaLagOptions::default()
     });
-    config.training.selection = Some(TrainingSelection::Sampled {
-        forward_passes: LAG_STUDY_FORWARD_PASSES,
-    });
+    config.training.selection = Some(TrainingSelection::sampled(LAG_STUDY_FORWARD_PASSES));
     config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit {
         limit: LAG_STUDY_ITERATIONS,
     }]);

@@ -622,7 +622,7 @@ fn fixture_config() -> Config {
             solver: TrainingSolverConfig::default(),
             parallelism: ParallelismConfig::default(),
             scenario_source: None,
-            selection: Some(TrainingSelection::Sampled { forward_passes: 1 }),
+            selection: Some(TrainingSelection::sampled(1)),
         },
         upper_bound_evaluation: UpperBoundEvaluationConfig::default(),
         policy: PolicyConfig::default(),
@@ -2271,9 +2271,7 @@ fn train_weeks_then_month_deck(
     backward_scheduler: BackwardScheduler,
 ) -> (StudySetup, TerminalBoundaryPushes) {
     let (system, mut config, hydro_models) = weeks_then_month_study();
-    config.training.selection = Some(TrainingSelection::Sampled {
-        forward_passes: WEEKS_THEN_MONTH_FORWARD_PASSES,
-    });
+    config.training.selection = Some(TrainingSelection::sampled(WEEKS_THEN_MONTH_FORWARD_PASSES));
     let mut setup = build_setup_in_code_with_models(system, &config, hydro_models);
 
     let lag = lag_dim(&setup, 0, 0);

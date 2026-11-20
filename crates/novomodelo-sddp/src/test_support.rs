@@ -3076,7 +3076,7 @@ pub(crate) fn k_fan_config(forward_passes: u32, max_iterations: u32) -> Config {
             solver: TrainingSolverConfig::default(),
             parallelism: ParallelismConfig::default(),
             scenario_source: None,
-            selection: Some(TrainingSelection::Sampled { forward_passes }),
+            selection: Some(TrainingSelection::sampled(forward_passes)),
         },
         upper_bound_evaluation: UpperBoundEvaluationConfig::default(),
         policy: PolicyConfig::default(),
@@ -3900,7 +3900,7 @@ fn kinked_oracle_study(
     let (external_rows, inflow_std, openings, config, class_schemes) = match traversal {
         // A sampled forward admits no scenario id, so no node is pinned and
         // the trial states differ through the openings each pass draws.
-        TrainingSelection::Sampled { forward_passes } => (
+        TrainingSelection::Sampled { forward_passes, .. } => (
             Vec::new(),
             KINKED_SAMPLED_INFLOW_STD_M3S,
             KINKED_SAMPLED_OPENINGS,
@@ -4943,7 +4943,7 @@ pub fn branching_tree_setup_sampled_with_selection(
     oracle_setup(
         branching_tree_policy_graph(false),
         OracleSystem::Kinked,
-        TrainingSelection::Sampled { forward_passes },
+        TrainingSelection::sampled(forward_passes),
         max_iterations,
         Some(selection),
     )
@@ -4964,7 +4964,7 @@ pub fn branching_tree_setup_sampled_with_selection_reversed(
     oracle_setup(
         branching_tree_policy_graph(true),
         OracleSystem::Kinked,
-        TrainingSelection::Sampled { forward_passes },
+        TrainingSelection::sampled(forward_passes),
         max_iterations,
         Some(selection),
     )

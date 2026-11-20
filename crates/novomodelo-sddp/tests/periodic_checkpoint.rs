@@ -64,7 +64,7 @@ fn checkpointing_setup(
     forward_passes: u32,
 ) -> (System, StudySetup) {
     fresh_system_and_setup_with(&toy_case(), |config| {
-        config.training.selection = Some(TrainingSelection::Sampled { forward_passes });
+        config.training.selection = Some(TrainingSelection::sampled(forward_passes));
         config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit {
             limit: iteration_limit,
         }]);
@@ -736,9 +736,7 @@ impl Leg {
         iteration_limit: u32,
     ) -> (System, StudySetup) {
         fresh_system_and_setup_with(case, |config| {
-            config.training.selection = Some(TrainingSelection::Sampled {
-                forward_passes: self.forward_passes,
-            });
+            config.training.selection = Some(TrainingSelection::sampled(self.forward_passes));
             config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit {
                 limit: iteration_limit,
             }]);

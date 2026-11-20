@@ -414,6 +414,7 @@ fn train_completes_with_iteration_limit() {
             resume_lower_bound_history: Vec::new(),
             n_fwd_threads: 1,
             stopping_rules: iteration_limit_rules(5),
+            storage_grid: None,
         },
         cut_management: CutManagementConfig {
             cut_selection: None,
@@ -497,6 +498,7 @@ fn train_returns_partial_on_infeasible() {
             resume_lower_bound_history: Vec::new(),
             n_fwd_threads: 1,
             stopping_rules: iteration_limit_rules(5),
+            storage_grid: None,
         },
         cut_management: CutManagementConfig {
             cut_selection: None,
@@ -593,6 +595,7 @@ fn train_emits_correct_event_sequence() {
             resume_lower_bound_history: Vec::new(),
             n_fwd_threads: 1,
             stopping_rules: iteration_limit_rules(2),
+            storage_grid: None,
         },
         cut_management: CutManagementConfig {
             cut_selection: None,
@@ -773,6 +776,7 @@ fn worker_timing_per_worker_event_count_and_setup_invariant() {
             resume_lower_bound_history: Vec::new(),
             n_fwd_threads: 4,
             stopping_rules: iteration_limit_rules(1),
+            storage_grid: None,
         },
         cut_management: CutManagementConfig {
             cut_selection: None,
@@ -924,6 +928,7 @@ fn train_result_fields_populated() {
             resume_lower_bound_history: Vec::new(),
             n_fwd_threads: 1,
             stopping_rules: iteration_limit_rules(5),
+            storage_grid: None,
         },
         cut_management: CutManagementConfig {
             cut_selection: None,
@@ -1014,6 +1019,7 @@ fn train_with_no_event_sender() {
             resume_lower_bound_history: Vec::new(),
             n_fwd_threads: 1,
             stopping_rules: iteration_limit_rules(2),
+            storage_grid: None,
         },
         cut_management: CutManagementConfig {
             cut_selection: None,
@@ -1094,6 +1100,7 @@ fn total_time_ms_is_non_negative() {
             resume_lower_bound_history: Vec::new(),
             n_fwd_threads: 1,
             stopping_rules: iteration_limit_rules(1),
+            storage_grid: None,
         },
         cut_management: CutManagementConfig {
             cut_selection: None,
@@ -1182,6 +1189,7 @@ fn cut_selection_none_skips_step() {
             resume_lower_bound_history: Vec::new(),
             n_fwd_threads: 1,
             stopping_rules: iteration_limit_rules(5),
+            storage_grid: None,
         },
         cut_management: CutManagementConfig {
             cut_selection: None,
@@ -1272,6 +1280,7 @@ fn existing_train_tests_pass_with_none() {
             resume_lower_bound_history: Vec::new(),
             n_fwd_threads: 1,
             stopping_rules: iteration_limit_rules(3),
+            storage_grid: None,
         },
         cut_management: CutManagementConfig {
             cut_selection: None,
@@ -1357,6 +1366,7 @@ fn train_partial_result_on_mid_iteration_failure() {
             resume_lower_bound_history: Vec::new(),
             n_fwd_threads: 1,
             stopping_rules: iteration_limit_rules(5),
+            storage_grid: None,
         },
         cut_management: CutManagementConfig {
             cut_selection: None,
@@ -1467,6 +1477,7 @@ fn start_iteration_resumes_from_offset() {
             resume_lower_bound_history: Vec::new(),
             n_fwd_threads: 1,
             stopping_rules: iteration_limit_rules(5),
+            storage_grid: None,
         },
         cut_management: CutManagementConfig {
             cut_selection: None,
@@ -1552,6 +1563,7 @@ fn start_iteration_at_or_beyond_max_runs_zero_iterations() {
             resume_lower_bound_history: Vec::new(),
             n_fwd_threads: 1,
             stopping_rules: iteration_limit_rules(5),
+            storage_grid: None,
         },
         cut_management: CutManagementConfig {
             cut_selection: None,
@@ -2144,6 +2156,7 @@ fn template_freeze_event_emitted() {
             resume_lower_bound_history: Vec::new(),
             n_fwd_threads: 1,
             stopping_rules: iteration_limit_rules(2),
+            storage_grid: None,
         },
         cut_management: CutManagementConfig {
             cut_selection: None,
