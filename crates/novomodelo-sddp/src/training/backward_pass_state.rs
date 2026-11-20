@@ -295,7 +295,7 @@ pub struct BackwardPassState {
     /// [`Self::set_binding_tracking`], which states the rank contract.
     binding_tracking: bool,
 
-    /// Whether every pin recomputes its brackets and every solve its σ·η and cut-row W.
+    /// Whether every pin recomputes its brackets and every solve its noise term and cut-row W.
     #[cfg(any(test, feature = "test-support"))]
     solve_cache_bypass: bool,
 

@@ -122,12 +122,13 @@ pub(crate) enum BracketSource<'a> {
     Slab(Option<&'a [f64]>),
 }
 
-/// Where the opening phase takes the noise term σ·η and the cut-row terms W from.
+/// Where the opening phase takes the noise term ε and the cut-row terms W from.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum NoiseTermSource<'a> {
-    /// The opening computes σ·η and each W from its own raw noise.
+    /// The opening computes ε and each W from its own raw noise and the solve's p.
     OnTheFly,
-    /// σ·η per hydro, and `cut_noise[i]` the W of `cut_rows.slots[i]`, both computed once for the stage.
+    /// ε = σ·η per hydro, and `cut_noise[i]` the W of `cut_rows.slots[i]`, both computed once
+    /// for the stage; normal residual only, since the lognormal ε depends on the solve's p.
     Stage {
         noise_term: &'a [f64],
         cut_noise: &'a [f64],

@@ -1705,7 +1705,7 @@ fn build_checked_node_graph(
     let simulation_runs = config.n_scenarios > 0 || simulation_enumerated;
     reject_unsupported_combinations_under_lognormal(
         config.inflow_residual,
-        stochastic.n_hydros() > 0 && stochastic.par().n_stages() > 0,
+        has_par_model(stochastic),
         (
             training_source.inflow_scheme,
             simulation_runs.then_some(simulation_source.inflow_scheme),
@@ -2635,6 +2635,11 @@ fn reject_scenario_id_under_sampled_selection(
         )));
     }
     Ok(())
+}
+
+/// Whether the study has a PAR inflow model, the only case `modeling.inflow_residual` acts on.
+pub(crate) fn has_par_model(stochastic: &StochasticContext) -> bool {
+    stochastic.n_hydros() > 0 && stochastic.par().n_stages() > 0
 }
 
 /// Reject the inputs `modeling.inflow_residual.distribution = "lognormal_3p"` cannot

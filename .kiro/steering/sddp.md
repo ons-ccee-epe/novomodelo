@@ -910,8 +910,10 @@ error naming every conflict, together with an `external` or `historical` inflow
 scheme, a stage whose `sampling_method` is `historical_residuals`, a node with a
 `scenario_id`, or `enumerated` selection in training or simulation. The
 enumerated-forward, fused-terminal and replicated-backward solve sites therefore
-never run under it. `novomodelo validate` warns (`inflow_residual_warnings`)
-where solves take the normal term: a seasonal mean at or below 0, and
+never run under it; the refusal stands until the `every_solve_site_*` tests in
+`tests/cut_basis/cut_row_push_coverage.rs` gain lognormal legs for them.
+`novomodelo validate` warns (`inflow_residual_warnings`) where solves take the
+normal term: a seasonal mean at or below 0, and
 `modeling.inflow_non_negativity.method = "none"`, under which those solves can
 realize negative inflows. A run counts and reports no fallback solve; a test
 reads the branch a solve took from the bits of `ẑ` (`classify` in

@@ -27,7 +27,7 @@ use crate::policy::full_fcf_load::{
     CheckedFullFcfLoad, FullFcfLoadError, FullFcfLoadKind, check_full_fcf_load, locate_policy_dir,
 };
 use crate::policy::policy_load::check_resume_boundary;
-use crate::setup::RunPhasePlan;
+use crate::setup::{RunPhasePlan, has_par_model};
 use crate::{
     BoundaryReconciliation, ErrorClass, SddpError, StudyParams, StudySetup, prepare_stochastic,
     reconcile_boundary_policy, resolve_boundary_state_requirements,
@@ -424,7 +424,7 @@ pub fn validate_study(request: ValidateRequest<'_>) -> Result<ValidatedStudy, Va
     let residual_warnings = inflow_residual_warnings(
         config,
         &prepared.system,
-        prepared.stochastic.n_hydros() > 0 && prepared.stochastic.par().n_stages() > 0,
+        has_par_model(&prepared.stochastic),
     );
     let hydro_models =
         prepare_hydro_models_from_artifacts(&prepared.system, &artifacts, false, None)

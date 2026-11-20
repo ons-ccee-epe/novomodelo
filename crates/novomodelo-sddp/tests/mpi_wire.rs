@@ -1275,7 +1275,6 @@ mod by_node_scratch {
     //! backward pass and have no observable surface through the public
     //! `StudySetup::train` entry point.
 
-    use novomodelo_io::config::InflowResidualDistribution;
     use std::num::NonZeroUsize;
 
     use novomodelo_core::scenario::{
@@ -1284,7 +1283,7 @@ mod by_node_scratch {
     };
     use novomodelo_core::temporal::{NoiseMethod, ScenarioSourceConfig};
     use novomodelo_core::{EntityId, HydroGenerationModel, SystemBuilder};
-    use novomodelo_io::config::BackwardScheduler;
+    use novomodelo_io::config::{BackwardScheduler, InflowResidualDistribution};
     use novomodelo_sddp::{
         BackwardPassInputs, BackwardPassState, ExchangeBuffers,
         context::TrainingContext,

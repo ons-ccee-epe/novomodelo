@@ -1095,6 +1095,22 @@ mod tests {
     }
 
     #[test]
+    fn lognormal_term_rounds_each_operation_in_the_documented_order() {
+        let par_lp = make_ar0_par(&[0.7, 3.0, 40.0]);
+        let p = [2.3, 0.9, 1.7];
+        for eta in [-2.4, -0.3, 0.6, 1.9] {
+            let w = lognormal_term(&par_lp, p, [eta; 3]);
+            for h in 0..3 {
+                let c = par_lp.sigma(0, h) / p[h];
+                let s2 = (c * c).ln_1p();
+                let x = s2.sqrt() * eta - s2 / 2.0;
+                let expected = p[h] * x.exp_m1();
+                assert_eq!(w[h].to_bits(), expected.to_bits(), "h {h}, eta {eta}");
+            }
+        }
+    }
+
+    #[test]
     fn lognormal_fallback_has_the_bits_of_the_normal_term() {
         let par_lp = make_split_par([EntityId(3), EntityId(5)]);
         let mut normal = [f64::NAN; 2];

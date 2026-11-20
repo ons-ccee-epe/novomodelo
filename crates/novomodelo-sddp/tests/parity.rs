@@ -763,7 +763,6 @@ mod determinism {
     //! Each test runs with 1 workspace, then with 4 workspaces, and asserts
     //! bit-exact equality on all outputs.
 
-    use novomodelo_io::config::InflowResidualDistribution;
     use std::collections::{BTreeMap, HashMap};
     use std::sync::mpsc;
 
@@ -780,6 +779,7 @@ mod determinism {
             StageStateConfig,
         },
     };
+    use novomodelo_io::config::InflowResidualDistribution;
     use novomodelo_sddp::{
         LoadedPolicy, Phase, SolverProfiles, StoppingMode, StoppingRule, StoppingRuleSet,
         TrainingConfig,

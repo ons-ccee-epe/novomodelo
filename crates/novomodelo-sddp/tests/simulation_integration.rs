@@ -14,8 +14,9 @@
 // seam from `common::builders` — a no-op today, not dead code.
 #![allow(clippy::needless_update)]
 
-use novomodelo_io::config::InflowResidualDistribution;
-use novomodelo_io::config::{SimulationSelection, StoppingRuleConfig, TrainingSelection};
+use novomodelo_io::config::{
+    InflowResidualDistribution, SimulationSelection, StoppingRuleConfig, TrainingSelection,
+};
 use novomodelo_io::test_support::{producer_block_defaults, stage_cuts_payload_defaults};
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;

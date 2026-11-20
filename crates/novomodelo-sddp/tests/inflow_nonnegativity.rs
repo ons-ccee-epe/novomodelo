@@ -20,7 +20,6 @@
 // seam from `common::builders` — a no-op today, not dead code.
 #![allow(clippy::needless_update)]
 
-use novomodelo_io::config::InflowResidualDistribution;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::mpsc;
 
@@ -38,6 +37,7 @@ use novomodelo_core::{
         StageStateConfig,
     },
 };
+use novomodelo_io::config::InflowResidualDistribution;
 use novomodelo_sddp::{
     LoadedPolicy, Phase, ResolvedParameters, SolverProfiles, StoppingMode, StoppingRule,
     StoppingRuleSet, TrainingConfig, build_stage_templates_resolving_layout,
