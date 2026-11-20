@@ -90,10 +90,8 @@ use novomodelo_io::write_solver_stats;
 use novomodelo_io::write_success_marker;
 use novomodelo_io::write_training_results;
 use novomodelo_sddp::HydroFitTimings;
-use novomodelo_sddp::RowViolationReport;
 use novomodelo_sddp::SddpError;
 use novomodelo_sddp::SimulationWeighting;
-use novomodelo_sddp::SolveTotals;
 use novomodelo_sddp::StatsFoldMode;
 use novomodelo_sddp::TrainingResult;
 use novomodelo_sddp::aggregate_simulation;
@@ -233,8 +231,6 @@ pub(crate) struct RunSummary {
 pub(crate) struct SimSummary {
     pub(crate) n_scenarios: u32,
     pub(crate) completed: u32,
-    /// Solver-stats aggregate over every simulated scenario; zero when skipped.
-    pub(crate) solve_stats: SolverStatsDelta,
 }
 
 /// Validate that `threads`, when given, is >= 1.
@@ -788,7 +784,6 @@ pub(crate) fn run_simulation_phase_py(
     Ok(SimSummary {
         n_scenarios: sim_out.n_scenarios,
         completed: sim_out.completed,
-        solve_stats: agg,
     })
 }
 
@@ -818,7 +813,6 @@ pub(crate) fn write_skipped_simulation_py(
     Ok(SimSummary {
         n_scenarios,
         completed: 0,
-        solve_stats: SolverStatsDelta::default(),
     })
 }
 
@@ -1189,12 +1183,6 @@ pub(crate) fn run_via_study(
             };
 
             let result = policy.training_result();
-            let training_totals =
-                aggregate_solver_stats_log(&result.solver_stats_log, StatsFoldMode::AllEntries);
-            warn_on_row_violations(&RowViolationReport::new(
-                &training_totals,
-                simulation.as_ref().map(|sim| &sim.solve_stats),
-            ));
             Ok(RunSummary {
                 converged: policy.converged,
                 iterations: result.iterations,
@@ -1211,12 +1199,7 @@ pub(crate) fn run_via_study(
         }
         RunPhasePlan::SimulateFromPolicy => {
             let policy = study.load_policy_native(None)?;
-            let simulation = study.simulate_native(&policy, None)?;
-            warn_on_row_violations(&RowViolationReport::new(
-                &SolveTotals::default(),
-                Some(&simulation.solve_stats),
-            ));
-            let simulation = Some(simulation);
+            let simulation = Some(study.simulate_native(&policy, None)?);
 
             let result = policy.training_result();
             Ok(RunSummary {
@@ -1246,13 +1229,6 @@ pub(crate) fn run_via_study(
             hydro_models,
             provenance,
         }),
-    }
-}
-
-/// Print the end-of-run row-violation warning when any solve was counted.
-fn warn_on_row_violations(report: &RowViolationReport) {
-    if report.should_emit() {
-        eprintln!("novomodelo-python: warning: {report}");
     }
 }
 
@@ -1886,7 +1862,6 @@ mod tests {
     fn aggregate_training_solve_stats_folds_and_splits_by_phase() {
         let forward_delta = SolverStatsDelta {
             lp_solves: 10,
-            row_violations: 2,
             first_try_successes: 7,
             lp_successes: 9,
             lp_failures: 1,
@@ -1921,17 +1896,6 @@ mod tests {
         // Phase split with /1000.0 ms→s conversion.
         assert_eq!(totals.forward_solve_seconds, 2.5);
         assert_eq!(totals.backward_solve_seconds, 1.5);
-        assert_eq!(
-            (
-                totals.row_violations.forward,
-                totals.row_violations.backward
-            ),
-            (2, 0)
-        );
-        assert_eq!(
-            (totals.lp_solves.forward, totals.lp_solves.backward),
-            (10, 4)
-        );
     }
 
     #[test]
