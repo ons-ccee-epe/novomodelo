@@ -336,12 +336,13 @@ ranges, lag-major, so slot `lag0.start + l·N + h` holds `(h, l)`. `full` spans
 every lag slot whatever the mode. `lag0` and `shifted` follow the mode: under
 `Carry`, `lag0` is empty and `shifted` is `full`, so a Carry pool reads every
 slot against the lag it holds. `mean_lane` and `noise_lane` write the operands
-the P and W dots read, `b + c ⊙ p` and `c ⊙ σ·η` under `Closing`, the input
-slice itself otherwise. The chain rule branches on the resident pool's
-`CutLagPoint::mode`, and `has_lag_slots` reads `full`. The cut-row RHS
-functions of `cut/rhs.rs` and the chain rule, through `ChainRuleSlots::compose`,
-which composes the extracted and resident projections by global dimension, read
-it; no call site computes a lag slot, a mode or a coefficient.
+the P and W dots read, `b + c ⊙ p` and `c ⊙ ε` under `Closing` (`ε` the noise
+term of the cut-row RHS section below), the input slice itself otherwise. The
+chain rule branches on the resident pool's `CutLagPoint::mode`, and
+`has_lag_slots` reads `full`. The cut-row RHS functions of `cut/rhs.rs` and the
+chain rule, through `ChainRuleSlots::compose`, which composes the extracted and
+resident projections by global dimension, read it; no call site computes a lag
+slot, a mode or a coefficient.
 
 A stage that rebuilds its lags from the downstream ring keeps `Shifted` and warns
 once at setup: its cuts evaluate the lags as at a single-resolution stage. The
@@ -503,11 +504,12 @@ guard the rank-local partial sum rests on (`training/session/mod.rs`); and, in
 
 A cut row's RHS is `fl(fl(fl(α + S) + P) + W)`: `S` dots the cut's shifted lag
 slots (`l ≥ 1`) with the trial lags they read, `P` its lag-0 slots with the
-conditional mean `p(â)`, and `W` its lag-0 slots with the noise term `σ·η`
-(the lag point of the section above). Each is an ascending-slot dot from +0.0
-(the chain-rule subsection above) with no fused multiply-add, and
-`ẑ = p + σ·η` is never dotted in one piece. The bracket `B = fl(fl(α + S) + P)`
-is written by `cut_brackets_into`, with lanes across rows only, and
+conditional mean `p(â)` at the lag point of the section above, and `W` its lag-0
+slots with the noise term `ε` (`σ·η` under the normal residual; the lognormal
+section below). Each is an ascending-slot dot from +0.0 (the chain-rule
+subsection above) with no fused multiply-add, and `ẑ = p + ε` is never dotted in
+one piece. The bracket `B = fl(fl(α + S) + P)` is written by
+`cut_brackets_into`, with lanes across rows only, and
 `rhs_reference::cut_bracket` is its scalar statement; `cut_noise_terms_into`
 writes `W` the same way, with `rhs_reference::cut_noise_term` as its scalar
 statement; `cut_rhs_into` and `cut_rhs_from_noise_terms_into` write `fl(B + W)`. The
@@ -515,12 +517,12 @@ value of a row therefore does not depend on the batch it is computed in.
 
 A cache holds only values these functions produced: a trajectory record's
 `FrozenBrackets` slab holds the brackets `cut_brackets_into` wrote for the
-node's frozen rows, and `StageNoiseTable` holds the `σ·η` that
-`evaluate_par_noise_term_batch` wrote and the `W` that `cut_noise_terms_into` wrote
-for each outcome. A solve with a cache gives the bits of the solve without it.
-The RHS reaches the solver through `StageOpeningSolver::push_cut_rhs` on a
-frozen LP, and through the rows a lazy solve makes resident from
-`ActiveCutRhs`.
+node's frozen rows, and `StageNoiseTable`, which only a normal-residual study
+reserves, holds the `σ·η` that `evaluate_par_noise_term_batch` wrote and the `W`
+that `cut_noise_terms_into` wrote for each outcome. A solve with a cache gives
+the bits of the solve without it. The RHS reaches the solver through
+`StageOpeningSolver::push_cut_rhs` on a frozen LP, and through the rows a lazy
+solve makes resident from `ActiveCutRhs`.
 
 The slab is positional: entry `i` is the bracket of LP cut row `i` of the
 node's frozen template, in `active_cuts()` order, and the read compares the row
@@ -540,7 +542,7 @@ lengths in every build.
 
 The wrong-but-compiling alternatives:
 
-- one dot over `ẑ`: `fl(p + σ·η)` rounds before the products, so the RHS loses
+- one dot over `ẑ`: `fl(p + ε)` rounds before the products, so the RHS loses
   the bits of every writer that adds `W` last;
 - a fused multiply-add (`mul_add`) in a dot: each product is no longer rounded
   on its own;
@@ -700,15 +702,15 @@ lower bounds alone breaks the upper-side solve), with their twins, in
 ## Truncation keeps the PAR state raw; the correction is a bounded column
 
 Under `truncation` and `truncation_with_penalty` η is never clamped. One
-`realize_inflow` call per solve writes the realized inflow `ẑ = p(â) + σ·η`,
-where `p(â)` is the PAR conditional mean at this solve's pinned lags (`ẑ` is 0
-without a PAR model), and that one value feeds the coupled rows' shift (the
-coupling-sink section above), the slack bound `l*` and outgoing lag 0.
-`assemble_outgoing_state` builds outgoing lag 0 from `ẑ` — directly, or through
-the multi-resolution lag accumulator (`advance_lag_chain`) — with no clamp, so
-it may be negative (it never clamps inflow lags; they are unbounded in the state
-box). The correction is
-the hydro's own inflow-slack column. Whenever the family exists it carries
+`realize_inflow` call per solve writes the realized inflow `ẑ = p(â) + ε`, with
+`ε` the noise term (the cut-row RHS section above), where `p(â)` is the PAR
+conditional mean at this solve's pinned lags (`ẑ` is 0 without a PAR model), and
+that one value feeds the coupled rows' shift (the coupling-sink section above),
+the slack bound `l*` and outgoing lag 0. `assemble_outgoing_state` builds
+outgoing lag 0 from `ẑ` — directly, or through the multi-resolution lag
+accumulator (`advance_lag_chain`) — with no clamp, so it may be negative (it
+never clamps inflow lags; they are unbounded in the state box). The correction
+is the hydro's own inflow-slack column. Whenever the family exists it carries
 exactly the hydro's water-row entries (`push_local_inflow_coupling`); only under
 the truncation methods does it also carry `+1` in the generic `hydro_inflow`
 term (`push_local_inflow_rate`). Its template bounds are `[0, 0]`
@@ -755,7 +757,9 @@ reads `(UB − LB).max(0.0)`. This is not remedied. Each stored cut stays a
 valid minorant of the successor value with the slack bounds frozen at its own
 trial state, which is what the cut oracles assert (`check_pool` in
 `tests/common/stored_cut_oracles.rs`), so validity is checked on every truncation
-deck with no exclusion.
+deck with no exclusion. The lognormal residual's noise term depends on the trial
+state too, with the same limitation and the same frozen reference (the lognormal
+section below).
 
 Read: `stochastic/noise.rs` (`realize_inflow`, `apply_inflow_slack_col_bounds`),
 `training/stage_solve_prep.rs` (`StageSolvePrep::patch_opening`),
@@ -848,6 +852,183 @@ the sink's structural tests in `lp/builder/inflow_coupling/tests.rs`,
 declaration-order gates `every_lag_deck_compact_template_is_invariant_to_declaration_order`
 and `the_compact_lag_study_trains_to_the_same_bits_in_either_declaration_order`
 (`tests/template_permutation.rs`).
+
+## The lognormal residual is formed at the solve, from the pinned conditional mean
+
+Under `modeling.inflow_residual.distribution = "lognormal_3p"` the noise term
+`ε_h` of hydro `h` is formed at every solve from the PAR conditional mean `p_h`
+at the solve's pinned lags, the PAR `σ_h` of `PrecomputedPar` and the raw noise
+`η_h`:
+
+`ε_h = p_h·expm1(σ̃_h·η_h − σ̃_h²/2)`, with `σ̃_h² = ln_1p((σ_h/p_h)²)`.
+
+`p_h + ε_h` keeps the conditional mean `p_h` and the standard deviation `σ_h`
+and is never negative. Where `p_h` is not positive, or `(σ_h/p_h)²` is not
+finite, `ε_h` is the normal term `σ_h·η_h` with the bits of
+`evaluate_par_noise_term_batch`; under `"normal"`, the default, it is that term
+at every solve. `evaluate_lognormal_noise_term_batch` (`novomodelo-stochastic`)
+is the only owner of the formula, the fallback rule and the evaluation order:
+each operation rounded on its own, with no fused multiply-add, in the order its
+documentation gives. `realize_inflow` is the only place that chooses the
+kernel, on `TrainingContext::inflow_residual`.
+
+What does not change:
+
+- `ẑ = fl(p + ε)`, written by `add_noise_term_batch`, is the one value that
+  feeds the coupled rows' shift, the truncation slack bound `l*` and outgoing
+  lag 0 (the truncation section above); the PAR state stays raw.
+- The cut-row RHS reads `p` in P and `ε` in W (the cut-row RHS section above);
+  under `Closing`, `noise_lane` scales `ε` by the share `c_h`.
+- η, its sampling and the opening tree are the normal residual's; the option
+  changes the noise term only.
+- The chain rule, `β(h, l) = ψ_l·g_h + w(h, l)` (the cut-sign section above),
+  has no factor for the transform.
+- The policy, the checkpoint and the run metadata record nothing about the
+  option, so a policy trained under either value loads and simulates under the
+  other with no warning.
+
+**No cache of the noise term.** `ε` depends on the solve's pinned lags, so every
+solve computes it. Under the option `reserve_for_pool_capacity` reserves no
+`StageNoiseTable`, every backward opening takes `NoiseTermSource::OnTheFly`
+(`solve_backward_opening`), and a debug build refuses a cached noise term in
+`realize_inflow`.
+
+**The chain rule never differentiates the transform.** A cut's lag
+coefficients are its subgradient with the noise term frozen at the cut's own
+trial state, so each cut is tight at its trial point. A stored cut is a valid
+minorant of the successor value with the noise term frozen at its trial state,
+not of the successor value itself, and the lower bound is not guaranteed to stay
+below the upper bound: the truncation section's known limitation, for the noise
+term. The cut oracles compare each stored cut with the successor value at its
+own frozen noise term (`successor_objective_with_frozen_noise_term` and
+`CutFreeze` in `tests/common/stored_cut_oracles.rs`); against the unfrozen value
+they report sloped cuts unsound.
+
+**Where the option is refused or warned about.** With a PAR model,
+`reject_unsupported_combinations_under_lognormal` refuses the option, in one
+error naming every conflict, together with an `external` or `historical` inflow
+scheme, a stage whose `sampling_method` is `historical_residuals`, a node with a
+`scenario_id`, or `enumerated` selection in training or simulation. The
+enumerated-forward, fused-terminal and replicated-backward solve sites therefore
+never run under it. `novomodelo validate` warns (`inflow_residual_warnings`)
+where solves take the normal term: a seasonal mean at or below 0, and
+`modeling.inflow_non_negativity.method = "none"`, under which those solves can
+realize negative inflows. A run counts and reports no fallback solve; a test
+reads the branch a solve took from the bits of `ẑ` (`classify` in
+`tests/common/lognormal_branches.rs`).
+
+**Determinism and its preconditions.** The kernel is elementwise, with no
+reduction, so `ε` is invariant to declaration order, thread count and rank count
+wherever `p`, `σ` and `η` are. `exp_m1` and `ln_1p` come from the platform libm,
+whose last bits can differ between implementations: a run is reproducible on one
+build and one platform, and the ranks of a run need the same build, OS and ISA,
+which no run-time probe checks. Ranks whose `PrecomputedPar::fingerprint`
+differ are refused (`refuse_rank_disagreement`). At the far tail of `η` with
+`(σ_h/p_h)²` near `f64::MAX`, `exp_m1` overflows to infinity; generated noise
+does not reach it, only a hand-written opening-tree file can, and no run-time
+check guards it (the kernel's documentation states the bound).
+
+The wrong-but-compiling alternatives:
+
+- a cache of `ε` or W per (stage, opening), as a `StageNoiseTable` under the
+  option or a store in `solve_backward_opening`: every trial state then reads
+  the noise term of the trial that filled it, so the cut follows the thread and
+  rank that filled it;
+- `ε` taken from a forward path, or from a store keyed by opening alone: the
+  backward openings and the lower bound pin other lags than the path;
+- the exact derivative of the transform in the chain rule (each opening's `g`
+  times `∂ẑ/∂p`), or any other slope: its cuts are not valid either, and the
+  frozen-slope closed forms move;
+- `exp(…) − 1`, `ln(1 + (σ_h/p_h)²)` or `fl(p_h·exp(…)) − p_h`: they cancel near
+  the Gaussian limit, and the last also changes the bits of `ẑ`;
+- the kernels swapped in `realize_inflow`, or the fallback written as another
+  expression than the normal kernel's: `ẑ` loses the bits of the residual the
+  study names;
+- a reordered evaluation or a fused multiply-add in the kernel: the last bits of
+  every lognormal result move. No test pins this one; the kernel's
+  documentation owns the order;
+- a cut oracle that compares a stored cut with the unfrozen successor value: the
+  cuts this contract admits fail it, so it checks a property they do not have;
+- an allocation in either branch of the kernel or in `realize_inflow`: the hot
+  path allocates at every solve;
+- `#[default]` moved to `InflowResidualDistribution::Lognormal3p`: a study
+  without the key changes results;
+- one dot over `ẑ`: the cut-row RHS section forbids it.
+
+Read: `crates/novomodelo-stochastic/src/par/evaluate.rs`
+(`evaluate_lognormal_noise_term_batch`, `add_noise_term_batch`),
+`stochastic/noise.rs` (`realize_inflow`), `training/session/mod.rs`
+(`reserve_for_pool_capacity`), `training/backward/opening_solve.rs`
+(`solve_backward_opening`), `training/stage_solve_prep.rs` (`NoiseTermSource`),
+`setup/mod.rs` (`reject_unsupported_combinations_under_lognormal`),
+`validate_phases.rs` (`inflow_residual_warnings`),
+`crates/novomodelo-io/src/config/modeling.rs` (`InflowResidualDistribution`),
+`crates/novomodelo-stochastic/src/par/precompute.rs`
+(`PrecomputedPar::fingerprint`) and
+`crates/novomodelo-cli/src/commands/run/setup.rs` (`refuse_rank_disagreement`).
+Pinned by, in `crates/novomodelo-stochastic/src/par/evaluate.rs`,
+`lognormal_term_keeps_the_conditional_mean_and_std` (quadrature gives the mean
+`p` and the standard deviation `σ`),
+`lognormal_term_matches_the_second_order_gaussian_limit` (each cancelling form
+above fails it),
+`lognormal_inflow_is_finite_and_non_negative_at_sampler_extremes`,
+`lognormal_fallback_has_the_bits_of_the_normal_term`,
+`lognormal_zero_sigma_leaves_the_conditional_mean` and
+`lognormal_term_is_invariant_to_hydro_order`; in `stochastic/noise.rs`,
+`realize_inflow_under_lognormal_writes_the_kernel_term` and
+`realize_inflow_under_lognormal_takes_the_normal_term_where_the_mean_is_not_positive`
+(swapped kernels fail both), their normal twin
+`realize_inflow_under_normal_writes_sigma_eta_where_the_mean_is_not_positive`
+and `realize_inflow_under_lognormal_refuses_a_cached_noise_term` (debug
+builds); the reach of both branches, in `tests/inflow_nonnegativity.rs`,
+`the_forward_pass_reaches_both_lognormal_branches`,
+`the_backward_openings_reach_both_lognormal_branches`,
+`the_simulation_reaches_both_lognormal_branches` and
+`lognormal_branch_solves_need_no_truncation_correction`; the absent cache,
+`lognormal_lag_study_reserves_no_stage_noise_table` (`training/session/mod.rs`),
+`compact_by_node_cvar_thread_shapes_agree_on_the_lognormal_lag_study` and
+`compact_lognormal_lag_study_is_world_size_invariant` (`tests/mpi_wire.rs`, the
+latter registered in `scripts/ci/run-mpi-launcher-gates.sh`; a per-(stage,
+opening) store fails both); the frozen slope, in
+`tests/cut_oracles/analytical_fold_cuts.rs`,
+`a_lognormal_terminal_stage_prices_a_par1_lag_at_the_frozen_residual_slope` and
+`a_lognormal_terminal_stage_prices_a_par1_lag_at_the_frozen_residual_slope_on_another_psi_and_stage_length`
+(a derivative through the transform, or another slope, moves the coefficient off
+the closed form); the frozen reference, in `tests/cut_oracles.rs`,
+`cut_oracles_hold_with_the_noise_term_frozen_on_the_lognormal_lag_study` and
+`cut_oracles_hold_with_the_noise_term_frozen_on_the_fallback_reaching_lognormal_lag_study`
+(every stored cut is a minorant of its frozen-noise successor value; an unfrozen
+reference or another slope fails them); every solve site, in
+`tests/cut_basis/cut_row_push_coverage.rs`,
+`every_solve_site_patches_every_resident_cut_row_at_every_solve_under_lognormal`
+and `every_solve_site_pushes_cut_rows_at_its_own_partial_sum_under_lognormal`;
+`the_compact_lognormal_lag_study_trains_to_the_same_bits_in_either_declaration_order`
+(`tests/template_permutation.rs`) and
+`lognormal_lag_study_trains_to_the_same_bits_with_the_solve_caches_bypassed`
+(`tests/cut_basis.rs`);
+`a_warm_backward_iteration_allocates_nothing_on_any_thread`
+(`tests/backward_iteration_no_alloc.rs`) and
+`a_lognormal_folded_solve_and_its_cut_allocate_nothing_after_warm_up`
+(`tests/forward_sampler_no_alloc.rs`); the default,
+`d19_an_explicit_normal_residual_trains_to_the_bits_of_an_absent_key`
+(`tests/deterministic.rs`), and the cross-load,
+`a_lognormal_residual_policy_loads_and_simulates_under_normal_with_no_warning`
+and `a_normal_residual_policy_loads_and_simulates_under_lognormal_with_no_warning`
+(`tests/full_fcf_load.rs`); the refusals, in `setup/tests.rs`,
+`lognormal_3p_refuses_external_and_historical_inflow_schemes`,
+`lognormal_3p_refuses_a_historical_residuals_stage_and_a_scenario_id_node`,
+`lognormal_3p_refuses_enumerated_selection_in_either_phase`,
+`lognormal_3p_refuses_every_conflict_in_one_error` and
+`lognormal_3p_refuses_nothing_under_normal_or_without_a_par_model`; the
+warnings, in `validate_phases.rs`,
+`validate_study_under_lognormal_3p_warns_once_about_nonpositive_seasonal_means`,
+`validate_study_under_lognormal_3p_names_a_shared_season_once`,
+`validate_study_under_lognormal_3p_with_method_none_warns_about_negative_inflows`
+and `validate_study_under_lognormal_3p_without_a_par_model_adds_no_warning`; and
+the rank check, `fingerprint_changes_with_one_ulp_in_each_table`
+(`crates/novomodelo-stochastic/src/par/precompute.rs`) and
+`refuse_rank_disagreement_names_both_fingerprints_when_ranks_differ`
+(`crates/novomodelo-cli/src/commands/run/setup.rs`).
 
 ## FPHA uses average storage
 
@@ -2879,8 +3060,7 @@ The independence is pinned for up to `PINNED_MAX_ROWS` rows,
 `INNER_DIMS` (`gemm.rs`), and nowhere else. The kernel's column block (`D_NC`)
 is never reached, because a call passes at most `M_BLOCK` states. An inner
 dimension above the largest of `INNER_DIMS` is summed in further blocks of
-`D_KC` and is drawn by no property; the inexact property draws 3, 257, 300 and
-600.
+`D_KC` and is drawn by no property; the inexact property draws 3, 257, 300 and 600.
 
 The wrong-but-compiling alternatives:
 
@@ -6250,7 +6430,7 @@ ring-carry drift at its source; the basis-factorization drift at the deposit row
 is what the seam absorbs, since exactness there is the solver's to give and it
 does not give it.
 
-A *genuine* over-commitment — past the delivery bound by more than solver noise —
+A _genuine_ over-commitment — past the delivery bound by more than solver noise —
 is NOT a runtime verdict and NOT the seam's to catch: it is rejected before the
 study runs, at `novomodelo-io` load time, by `check_committed_value_bounds`
 (`validation/semantic/thermal.rs`), which checks each committed value against the
