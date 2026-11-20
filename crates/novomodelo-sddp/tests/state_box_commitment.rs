@@ -37,9 +37,9 @@ use novomodelo_core::{
 };
 use novomodelo_io::config::{
     Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
-    InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, PolicyConfig, RowSelectionConfig,
-    SimulationConfig as IoSimulationConfig, StoppingRuleConfig, TrainingConfig, TrainingSelection,
-    TrainingSolverConfig, UpperBoundEvaluationConfig,
+    InflowNonNegativityMethod as CfgInflowMethod, InflowResidualConfig, ModelingConfig,
+    PolicyConfig, RowSelectionConfig, SimulationConfig as IoSimulationConfig, StoppingRuleConfig,
+    TrainingConfig, TrainingSelection, TrainingSolverConfig, UpperBoundEvaluationConfig,
 };
 
 use common::build_setup_in_code;
@@ -372,6 +372,7 @@ fn build_config() -> Config {
             inflow_non_negativity: InflowNonNegativityConfig {
                 method: CfgInflowMethod::Penalty,
             },
+            inflow_residual: InflowResidualConfig::default(),
             cost_scale_factor: None,
         },
         training: TrainingConfig {

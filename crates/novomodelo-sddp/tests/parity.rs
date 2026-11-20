@@ -2131,9 +2131,9 @@ mod water_travel_time_no_arc_byte_identity {
     fn build_config() -> novomodelo_io::Config {
         use novomodelo_io::config::{
             Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
-            InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, PolicyConfig,
-            RowSelectionConfig, SimulationConfig as IoSimulationConfig, StoppingRuleConfig,
-            TrainingConfig, TrainingSolverConfig, UpperBoundEvaluationConfig,
+            InflowNonNegativityMethod as CfgInflowMethod, InflowResidualConfig, ModelingConfig,
+            PolicyConfig, RowSelectionConfig, SimulationConfig as IoSimulationConfig,
+            StoppingRuleConfig, TrainingConfig, TrainingSolverConfig, UpperBoundEvaluationConfig,
         };
 
         Config {
@@ -2142,6 +2142,7 @@ mod water_travel_time_no_arc_byte_identity {
                 inflow_non_negativity: InflowNonNegativityConfig {
                     method: CfgInflowMethod::None,
                 },
+                inflow_residual: InflowResidualConfig::default(),
 
                 cost_scale_factor: None,
             },

@@ -457,8 +457,8 @@ impl Fixture {
 
 fn make_config() -> Config {
     use novomodelo_io::config::{
-        CheckpointingConfig, ExportsConfig, InflowNonNegativityConfig, ModelingConfig,
-        PolicyConfig, RowSelectionConfig, SimulationConfig as IoSimulationConfig,
+        CheckpointingConfig, ExportsConfig, InflowNonNegativityConfig, InflowResidualConfig,
+        ModelingConfig, PolicyConfig, RowSelectionConfig, SimulationConfig as IoSimulationConfig,
         StoppingRuleConfig, TrainingConfig as IoTrainingConfig, TrainingSolverConfig,
         UpperBoundEvaluationConfig,
     };
@@ -466,6 +466,7 @@ fn make_config() -> Config {
         schema: None,
         modeling: ModelingConfig {
             inflow_non_negativity: InflowNonNegativityConfig::default(),
+            inflow_residual: InflowResidualConfig::default(),
             cost_scale_factor: None,
         },
         training: IoTrainingConfig {

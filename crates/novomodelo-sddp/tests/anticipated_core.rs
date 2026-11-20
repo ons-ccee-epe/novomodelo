@@ -27,9 +27,9 @@ mod common;
 use novomodelo_core::HydroPenalties;
 use novomodelo_io::config::{
     Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
-    InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, PolicyConfig, RowSelectionConfig,
-    SimulationConfig as IoSimulationConfig, StoppingRuleConfig, TrainingConfig,
-    TrainingSolverConfig, UpperBoundEvaluationConfig,
+    InflowNonNegativityMethod as CfgInflowMethod, InflowResidualConfig, ModelingConfig,
+    PolicyConfig, RowSelectionConfig, SimulationConfig as IoSimulationConfig, StoppingRuleConfig,
+    TrainingConfig, TrainingSolverConfig, UpperBoundEvaluationConfig,
 };
 use novomodelo_io::config::{SimulationSelection, TrainingSelection};
 
@@ -66,6 +66,7 @@ fn build_config(iterations: usize) -> Config {
             inflow_non_negativity: InflowNonNegativityConfig {
                 method: CfgInflowMethod::Penalty,
             },
+            inflow_residual: InflowResidualConfig::default(),
 
             cost_scale_factor: None,
         },
@@ -116,9 +117,9 @@ mod anticipated_backward_cut {
     use novomodelo_io::config::TrainingSelection;
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
-        InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, PolicyConfig,
-        RowSelectionConfig, SimulationConfig as IoSimulationConfig, StoppingRuleConfig,
-        TrainingConfig, TrainingSolverConfig, UpperBoundEvaluationConfig,
+        InflowNonNegativityMethod as CfgInflowMethod, InflowResidualConfig, ModelingConfig,
+        PolicyConfig, RowSelectionConfig, SimulationConfig as IoSimulationConfig,
+        StoppingRuleConfig, TrainingConfig, TrainingSolverConfig, UpperBoundEvaluationConfig,
     };
     use novomodelo_solver::ActiveSolver;
 
@@ -458,6 +459,7 @@ mod anticipated_backward_cut {
                 inflow_non_negativity: InflowNonNegativityConfig {
                     method: CfgInflowMethod::Penalty,
                 },
+                inflow_residual: InflowResidualConfig::default(),
 
                 cost_scale_factor: None,
             },
@@ -856,9 +858,9 @@ mod hm_distribute_conservation {
     use novomodelo_io::config::TrainingSelection;
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
-        InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, PolicyConfig,
-        RowSelectionConfig, SimulationConfig as IoSimulationConfig, StoppingRuleConfig,
-        TrainingConfig, TrainingSolverConfig, UpperBoundEvaluationConfig,
+        InflowNonNegativityMethod as CfgInflowMethod, InflowResidualConfig, ModelingConfig,
+        PolicyConfig, RowSelectionConfig, SimulationConfig as IoSimulationConfig,
+        StoppingRuleConfig, TrainingConfig, TrainingSolverConfig, UpperBoundEvaluationConfig,
     };
     use novomodelo_solver::ActiveSolver;
 
@@ -1163,6 +1165,7 @@ mod hm_distribute_conservation {
                 inflow_non_negativity: InflowNonNegativityConfig {
                     method: CfgInflowMethod::Penalty,
                 },
+                inflow_residual: InflowResidualConfig::default(),
                 cost_scale_factor: Some(COST_SCALE_FACTOR),
             },
             training: TrainingConfig {
@@ -2824,9 +2827,9 @@ mod anticipated_forward_pass {
     use novomodelo_io::config::TrainingSelection;
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
-        InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, PolicyConfig,
-        RowSelectionConfig, SimulationConfig as IoSimulationConfig, StoppingRuleConfig,
-        TrainingConfig, TrainingSolverConfig, UpperBoundEvaluationConfig,
+        InflowNonNegativityMethod as CfgInflowMethod, InflowResidualConfig, ModelingConfig,
+        PolicyConfig, RowSelectionConfig, SimulationConfig as IoSimulationConfig,
+        StoppingRuleConfig, TrainingConfig, TrainingSolverConfig, UpperBoundEvaluationConfig,
     };
     use novomodelo_solver::ActiveSolver;
 
@@ -3121,6 +3124,7 @@ mod anticipated_forward_pass {
                 inflow_non_negativity: InflowNonNegativityConfig {
                     method: CfgInflowMethod::Penalty,
                 },
+                inflow_residual: InflowResidualConfig::default(),
 
                 cost_scale_factor: None,
             },
@@ -3435,9 +3439,9 @@ mod anticipated_closed_form_lb_k1_single_thermal {
     use novomodelo_io::config::TrainingSelection;
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
-        InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, PolicyConfig,
-        RowSelectionConfig, SimulationConfig as IoSimulationConfig, StoppingRuleConfig,
-        TrainingConfig, TrainingSolverConfig, UpperBoundEvaluationConfig,
+        InflowNonNegativityMethod as CfgInflowMethod, InflowResidualConfig, ModelingConfig,
+        PolicyConfig, RowSelectionConfig, SimulationConfig as IoSimulationConfig,
+        StoppingRuleConfig, TrainingConfig, TrainingSolverConfig, UpperBoundEvaluationConfig,
     };
     use novomodelo_solver::ActiveSolver;
 
@@ -3722,6 +3726,7 @@ mod anticipated_closed_form_lb_k1_single_thermal {
                 inflow_non_negativity: InflowNonNegativityConfig {
                     method: CfgInflowMethod::Penalty,
                 },
+                inflow_residual: InflowResidualConfig::default(),
 
                 cost_scale_factor: None,
             },
@@ -3929,9 +3934,9 @@ mod lead_time_single_decider_end_to_end {
     use novomodelo_io::config::TrainingSelection;
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
-        InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, PolicyConfig,
-        RowSelectionConfig, SimulationConfig as IoSimulationConfig, StoppingRuleConfig,
-        TrainingConfig, TrainingSolverConfig, UpperBoundEvaluationConfig,
+        InflowNonNegativityMethod as CfgInflowMethod, InflowResidualConfig, ModelingConfig,
+        PolicyConfig, RowSelectionConfig, SimulationConfig as IoSimulationConfig,
+        StoppingRuleConfig, TrainingConfig, TrainingSolverConfig, UpperBoundEvaluationConfig,
     };
     use novomodelo_solver::ActiveSolver;
 
@@ -4185,6 +4190,7 @@ mod lead_time_single_decider_end_to_end {
                 inflow_non_negativity: InflowNonNegativityConfig {
                     method: CfgInflowMethod::Penalty,
                 },
+                inflow_residual: InflowResidualConfig::default(),
 
                 cost_scale_factor: None,
             },
@@ -6228,9 +6234,9 @@ mod a1c_stage_count_mode_anchor {
     use novomodelo_io::config::TrainingSelection;
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
-        InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, PolicyConfig,
-        RowSelectionConfig, SimulationConfig as IoSimulationConfig, StoppingRuleConfig,
-        TrainingConfig, TrainingSolverConfig, UpperBoundEvaluationConfig,
+        InflowNonNegativityMethod as CfgInflowMethod, InflowResidualConfig, ModelingConfig,
+        PolicyConfig, RowSelectionConfig, SimulationConfig as IoSimulationConfig,
+        StoppingRuleConfig, TrainingConfig, TrainingSolverConfig, UpperBoundEvaluationConfig,
     };
     use novomodelo_sddp::lead_time::{AnticipatedResolution, DeliveryAxis, LeadTime};
     use novomodelo_solver::ActiveSolver;
@@ -6629,6 +6635,7 @@ mod a1c_stage_count_mode_anchor {
                 inflow_non_negativity: InflowNonNegativityConfig {
                     method: CfgInflowMethod::Penalty,
                 },
+                inflow_residual: InflowResidualConfig::default(),
 
                 cost_scale_factor: None,
             },
@@ -7745,9 +7752,9 @@ mod anticipated_no_boundary_fixed_value_inertness {
     use novomodelo_io::config::TrainingSelection;
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
-        InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, PolicyConfig,
-        RowSelectionConfig, SimulationConfig as IoSimulationConfig, StoppingRuleConfig,
-        TrainingConfig, TrainingSolverConfig, UpperBoundEvaluationConfig,
+        InflowNonNegativityMethod as CfgInflowMethod, InflowResidualConfig, ModelingConfig,
+        PolicyConfig, RowSelectionConfig, SimulationConfig as IoSimulationConfig,
+        StoppingRuleConfig, TrainingConfig, TrainingSolverConfig, UpperBoundEvaluationConfig,
     };
     use novomodelo_solver::ActiveSolver;
 
@@ -7990,6 +7997,7 @@ mod anticipated_no_boundary_fixed_value_inertness {
                 inflow_non_negativity: InflowNonNegativityConfig {
                     method: CfgInflowMethod::Penalty,
                 },
+                inflow_residual: InflowResidualConfig::default(),
                 cost_scale_factor: None,
             },
             training: TrainingConfig {
@@ -8077,9 +8085,9 @@ mod fixed_delivery_output {
     use novomodelo_io::config::TrainingSelection;
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
-        InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, PolicyConfig,
-        RowSelectionConfig, SimulationConfig as IoSimulationConfig, StoppingRuleConfig,
-        TrainingConfig, TrainingSolverConfig, UpperBoundEvaluationConfig,
+        InflowNonNegativityMethod as CfgInflowMethod, InflowResidualConfig, ModelingConfig,
+        PolicyConfig, RowSelectionConfig, SimulationConfig as IoSimulationConfig,
+        StoppingRuleConfig, TrainingConfig, TrainingSolverConfig, UpperBoundEvaluationConfig,
     };
     use novomodelo_io::{FixedDeliveryRow, write_fixed_delivery};
     use novomodelo_sddp::hydro_models::PrepareHydroModelsResult;
@@ -8343,6 +8351,7 @@ mod fixed_delivery_output {
                 inflow_non_negativity: InflowNonNegativityConfig {
                     method: CfgInflowMethod::Penalty,
                 },
+                inflow_residual: InflowResidualConfig::default(),
                 cost_scale_factor: None,
             },
             training: TrainingConfig {

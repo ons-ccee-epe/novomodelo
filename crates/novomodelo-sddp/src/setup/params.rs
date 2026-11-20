@@ -358,10 +358,11 @@ mod tests {
     use novomodelo_core::{EntityId, ParameterKind, ScalarParameter};
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
-        InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, ParallelismConfig,
-        PolicyConfig, RowSelectionConfig, SimulationConfig as IoSimulationConfig, SimulationRowSet,
-        SimulationSelection, StoppingMode, StoppingRuleConfig, TrainingConfig, TrainingSelection,
-        TrainingSolverConfig, UpperBoundEvaluationConfig,
+        InflowNonNegativityMethod as CfgInflowMethod, InflowResidualConfig, ModelingConfig,
+        ParallelismConfig, PolicyConfig, RowSelectionConfig,
+        SimulationConfig as IoSimulationConfig, SimulationRowSet, SimulationSelection,
+        StoppingMode, StoppingRuleConfig, TrainingConfig, TrainingSelection, TrainingSolverConfig,
+        UpperBoundEvaluationConfig,
     };
     use tracing::{Event, Level, Metadata, Subscriber, span};
 
@@ -444,6 +445,7 @@ mod tests {
                 inflow_non_negativity: InflowNonNegativityConfig {
                     method: CfgInflowMethod::Penalty,
                 },
+                inflow_residual: InflowResidualConfig::default(),
                 cost_scale_factor: None,
             },
             training: TrainingConfig {

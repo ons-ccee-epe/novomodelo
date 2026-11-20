@@ -925,4 +925,56 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn config_schema_documents_the_inflow_residual_distribution() {
+        const REFUSAL: &str = "`\"lognormal_3p\"` is accepted only with the `in_sample` and `out_of_sample` inflow schemes; it is refused with `enumerated` selection, `historical_residuals` stages and nodes that declare `scenario_id`.";
+        let schemas = generate_schemas().unwrap();
+        let config = schema_named(&schemas, "config.schema.json");
+        let pointer = "/$defs/InflowResidualDistribution";
+        let definition = config
+            .pointer(pointer)
+            .unwrap_or_else(|| panic!("config.schema.json has no {pointer}"));
+
+        let listed: Vec<&Value> = match (definition.get("oneOf"), definition.get("enum")) {
+            (Some(Value::Array(variants)), _) => {
+                variants.iter().map(|variant| &variant["const"]).collect()
+            }
+            (_, Some(Value::Array(values))) => values.iter().collect(),
+            _ => panic!("{pointer} has neither a oneOf nor an enum array: {definition}"),
+        };
+        let mut accepted: Vec<&str> = listed
+            .into_iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .unwrap_or_else(|| panic!("{pointer} lists a non-string value: {value}"))
+            })
+            .collect();
+        accepted.sort_unstable();
+        assert_eq!(accepted, ["lognormal_3p", "normal"]);
+
+        let description = definition
+            .get("description")
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| panic!("{pointer} has no description"));
+        let collapsed = description.split_whitespace().collect::<Vec<_>>().join(" ");
+        for expected in ["lower bound can exceed the upper bound", REFUSAL] {
+            assert!(
+                collapsed.contains(expected),
+                "{pointer} description lacks {expected:?}: {collapsed:?}"
+            );
+        }
+
+        let distribution_pointer =
+            "/$defs/InflowResidualConfig/properties/distribution/description";
+        let distribution = config
+            .pointer(distribution_pointer)
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| panic!("config.schema.json has no {distribution_pointer}"));
+        assert!(
+            distribution.contains("novomodelo validate"),
+            "{distribution_pointer} does not name `novomodelo validate`: {distribution:?}"
+        );
+    }
 }

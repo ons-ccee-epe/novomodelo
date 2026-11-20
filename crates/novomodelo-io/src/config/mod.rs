@@ -35,7 +35,10 @@ pub mod training;
 
 pub use estimation::{EstimationConfig, OrderSelectionMethod};
 pub use exports::ExportsConfig;
-pub use modeling::{InflowNonNegativityConfig, InflowNonNegativityMethod, ModelingConfig};
+pub use modeling::{
+    InflowNonNegativityConfig, InflowNonNegativityMethod, InflowResidualConfig,
+    InflowResidualDistribution, ModelingConfig,
+};
 pub use policy::{
     BoundaryPolicy, CheckpointSchedule, CheckpointingConfig, PolicyConfig, PolicyDirIntent,
     PolicyMode,
@@ -1092,6 +1095,86 @@ mod tests {
             ),
             "expected parse/schema error for unknown method, got: {err:?}"
         );
+    }
+
+    fn parse_with_modeling(modeling_entry: &str) -> Result<Config, LoadError> {
+        const TRAINING: &str = r#""training": {"selection": {"method": "sampled", "forward_passes": 10}, "stopping_rules": [{"type": "iteration_limit", "limit": 5}]}"#;
+        let f = write_config(&format!("{{{modeling_entry}{TRAINING}}}"));
+        parse_config(f.path())
+    }
+
+    #[test]
+    fn inflow_residual_absent_or_empty_parses_as_normal() {
+        for modeling_entry in [
+            "",
+            r#""modeling": {},"#,
+            r#""modeling": {"inflow_residual": {}},"#,
+            r#""modeling": {"inflow_residual": {"distribution": "normal"}},"#,
+        ] {
+            let cfg = parse_with_modeling(modeling_entry).unwrap();
+            assert_eq!(
+                cfg.modeling.inflow_residual.distribution,
+                InflowResidualDistribution::Normal,
+                "{modeling_entry:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn inflow_residual_accepts_lognormal_3p() {
+        let cfg = parse_with_modeling(
+            r#""modeling": {"inflow_residual": {"distribution": "lognormal_3p"}},"#,
+        )
+        .unwrap();
+        assert_eq!(
+            cfg.modeling.inflow_residual.distribution,
+            InflowResidualDistribution::Lognormal3p
+        );
+    }
+
+    #[test]
+    fn inflow_residual_rejects_unknown_spellings() {
+        for spelling in ["lognormal3p", "lognormal", "Lognormal_3p"] {
+            let err = parse_with_modeling(&format!(
+                r#""modeling": {{"inflow_residual": {{"distribution": "{spelling}"}}}},"#
+            ))
+            .unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    LoadError::SchemaError { .. } | LoadError::ParseError { .. }
+                ),
+                "expected parse/schema error for {spelling:?}, got: {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn inflow_residual_rejects_a_cv_cap_key() {
+        let err = parse_with_modeling(
+            r#""modeling": {"inflow_residual": {"distribution": "lognormal_3p", "max_conditional_cv": 2}},"#,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                LoadError::SchemaError { .. } | LoadError::ParseError { .. }
+            ),
+            "expected parse/schema error for max_conditional_cv, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn inflow_residual_as_str_matches_the_serde_spelling() {
+        for distribution in [
+            InflowResidualDistribution::Normal,
+            InflowResidualDistribution::Lognormal3p,
+        ] {
+            assert_eq!(
+                serde_json::to_string(&distribution).unwrap(),
+                format!("\"{}\"", distribution.as_str())
+            );
+        }
     }
 
     /// `config.json` without `"estimation"` section → all three defaults applied.

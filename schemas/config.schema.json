@@ -260,6 +260,33 @@
         }
       ]
     },
+    "InflowResidualConfig": {
+      "additionalProperties": false,
+      "description": "Inflow residual settings (`config.json → modeling.inflow_residual`).",
+      "properties": {
+        "distribution": {
+          "$ref": "#/$defs/InflowResidualDistribution",
+          "default": "normal",
+          "description": "Residual distribution: `\"normal\"` or `\"lognormal_3p\"`.\n\nDefault: `\"normal\"`. Combines with every `modeling.inflow_non_negativity.method`. Two\nwarnings show only in `novomodelo validate` and Python `novomodelo.io.validate`, not in\n`novomodelo run` or Python `run`: seasons whose fitted mean inflow is at or below\nzero, and `\"lognormal_3p\"` with `modeling.inflow_non_negativity.method = \"none\"`."
+        }
+      },
+      "type": "object"
+    },
+    "InflowResidualDistribution": {
+      "description": "Distribution of the PAR(p) inflow residual.\n\nAccepted values in `config.json → modeling.inflow_residual.distribution`:\n\n- `\"normal\"` — the inflow is the PAR(p) conditional mean plus `σ·η`.\n- `\"lognormal_3p\"` — a three-parameter lognormal residual whose lower bound is zero\n  inflow. The inflow keeps the conditional mean and the standard deviation `σ`, and is\n  never negative. Where a solve's conditional mean is at or below zero, or `(σ/mean)²`\n  is not finite, that hydro takes the `\"normal\"` residual, and\n  `modeling.inflow_non_negativity.method` treats a negative inflow as it does under\n  `\"normal\"`.\n\n`\"lognormal_3p\"` is accepted only with the `in_sample` and `out_of_sample` inflow\nschemes; it is refused with `enumerated` selection, `historical_residuals` stages and\nnodes that declare `scenario_id`.\n\nUnder `\"lognormal_3p\"` the residual depends on the incoming state, so the lower bound\ncan exceed the upper bound, and a `gap` stopping rule can then report convergence that\nhas not occurred.",
+      "oneOf": [
+        {
+          "const": "normal",
+          "description": "PAR(p) conditional mean plus `σ·η`.",
+          "type": "string"
+        },
+        {
+          "const": "lognormal_3p",
+          "description": "Three-parameter lognormal residual bounded below at zero inflow; the normal residual\nwhere the conditional mean is not positive.",
+          "type": "string"
+        }
+      ]
+    },
     "LipschitzConfig": {
       "additionalProperties": false,
       "description": "Lipschitz constant settings for inner approximation.",
@@ -312,6 +339,13 @@
             "method": "truncation_with_penalty"
           },
           "description": "Strategy for handling non-negative inflow constraints."
+        },
+        "inflow_residual": {
+          "$ref": "#/$defs/InflowResidualConfig",
+          "default": {
+            "distribution": "normal"
+          },
+          "description": "Distribution of the inflow residual."
         }
       },
       "type": "object"
@@ -1351,6 +1385,9 @@
         "cost_scale_factor": null,
         "inflow_non_negativity": {
           "method": "truncation_with_penalty"
+        },
+        "inflow_residual": {
+          "distribution": "normal"
         }
       },
       "description": "Modeling options (inflow non-negativity treatment)."

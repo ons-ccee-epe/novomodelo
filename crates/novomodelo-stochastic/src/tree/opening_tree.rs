@@ -4,6 +4,7 @@
 //! iterative optimisation algorithms.
 
 use crate::error::StochasticError;
+use crate::fnv1a::{FNV1A_OFFSET, fnv1a_fold};
 
 /// Fixed opening tree of pre-generated noise realisations, read-only after
 /// construction.
@@ -424,15 +425,6 @@ fn is_permutation(order: &[u32], n: usize) -> bool {
         seen[idx] = true;
     }
     true
-}
-
-const FNV1A_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-const FNV1A_PRIME: u64 = 0x0000_0100_0000_01b3;
-
-fn fnv1a_fold(hash: u64, bytes: &[u8]) -> u64 {
-    bytes.iter().fold(hash, |hash, &byte| {
-        (hash ^ u64::from(byte)).wrapping_mul(FNV1A_PRIME)
-    })
 }
 
 #[cfg(test)]

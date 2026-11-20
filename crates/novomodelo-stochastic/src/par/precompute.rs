@@ -51,7 +51,11 @@ use novomodelo_core::{
     temporal::{SeasonCycles, SeasonMap, Stage},
 };
 
-use crate::{StochasticError, season_cast::StitchedSeasonMap};
+use crate::{
+    StochasticError,
+    fnv1a::{FNV1A_OFFSET, fnv1a_fold},
+    season_cast::StitchedSeasonMap,
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -410,6 +414,30 @@ impl PrecomputedPar {
     pub fn max_order(&self) -> usize {
         self.max_order
     }
+
+    /// 64-bit FNV-1a hash of the stage count, the series count, the maximum order,
+    /// the per-series orders and annual flags, and the bit patterns of the
+    /// deterministic base, sigma and psi tables, in that order; equal tables give
+    /// equal values.
+    #[must_use]
+    pub fn fingerprint(&self) -> u64 {
+        let counts = [self.n_stages, self.n_hydros, self.max_order]
+            .into_iter()
+            .chain(self.orders.iter().copied());
+        let hash = counts.fold(FNV1A_OFFSET, |hash, count| {
+            fnv1a_fold(hash, &(count as u64).to_le_bytes())
+        });
+        let hash = self
+            .has_annual
+            .iter()
+            .fold(hash, |hash, &annual| fnv1a_fold(hash, &[u8::from(annual)]));
+        [&self.deterministic_base, &self.sigma, &self.psi]
+            .into_iter()
+            .flat_map(|table| table.iter())
+            .fold(hash, |hash, value| {
+                fnv1a_fold(hash, &value.to_bits().to_le_bytes())
+            })
+    }
 }
 
 impl Default for PrecomputedPar {
@@ -747,8 +775,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn two_hydros_three_stages_varying_orders() {
+    fn varying_orders_table() -> PrecomputedPar {
         let hydro_ids = [EntityId(3), EntityId(5)];
 
         let stages: Vec<Stage> = (0..3)
@@ -773,7 +800,12 @@ mod tests {
         let mut all_models: Vec<InflowModel> = prestudy_models;
         all_models.extend(study_models);
 
-        let lp = PrecomputedPar::build(&all_models, &stages, &hydro_ids, None).unwrap();
+        PrecomputedPar::build(&all_models, &stages, &hydro_ids, None).unwrap()
+    }
+
+    #[test]
+    fn two_hydros_three_stages_varying_orders() {
+        let lp = varying_orders_table();
 
         assert_eq!(lp.n_stages(), 3);
         assert_eq!(lp.n_hydros(), 2);
@@ -815,6 +847,47 @@ mod tests {
         assert_eq!(psi_h5_s0.len(), 2);
         assert!((psi_h5_s0[0] - 0.5 * 18.0 / 15.0).abs() < 1e-10);
         assert!((psi_h5_s0[1]).abs() < 1e-10);
+    }
+
+    fn bump_first_ulp(table: &mut [f64]) {
+        table[0] = f64::from_bits(table[0].to_bits() + 1);
+    }
+
+    #[test]
+    fn equal_tables_have_equal_fingerprints() {
+        assert_eq!(
+            varying_orders_table().fingerprint(),
+            varying_orders_table().fingerprint()
+        );
+    }
+
+    #[test]
+    fn fingerprint_changes_with_one_ulp_in_each_table() {
+        let base = varying_orders_table().fingerprint();
+
+        let mut base_bumped = varying_orders_table();
+        bump_first_ulp(&mut base_bumped.deterministic_base);
+        let mut sigma_bumped = varying_orders_table();
+        bump_first_ulp(&mut sigma_bumped.sigma);
+        let mut psi_bumped = varying_orders_table();
+        bump_first_ulp(&mut psi_bumped.psi);
+
+        assert_ne!(base, base_bumped.fingerprint());
+        assert_ne!(base, sigma_bumped.fingerprint());
+        assert_ne!(base, psi_bumped.fingerprint());
+    }
+
+    #[test]
+    fn fingerprint_changes_with_the_orders_and_annual_flags() {
+        let base = varying_orders_table().fingerprint();
+
+        let mut lower_order = varying_orders_table();
+        lower_order.orders[0] -= 1;
+        let mut flipped_annual = varying_orders_table();
+        flipped_annual.has_annual[0] = !flipped_annual.has_annual[0];
+
+        assert_ne!(base, lower_order.fingerprint());
+        assert_ne!(base, flipped_annual.fingerprint());
     }
 
     #[test]

@@ -1347,14 +1347,16 @@ pub mod output {
     pub fn make_config() -> Config {
         use crate::config::{
             CheckpointingConfig, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
-            ModelingConfig, ParallelismConfig, PolicyConfig, PolicyMode, RowSelectionConfig,
-            SimulationConfig, SimulationRowSet, StoppingMode, StoppingRuleConfig, TrainingConfig,
-            TrainingSelection, TrainingSolverConfig, UpperBoundEvaluationConfig,
+            InflowResidualConfig, ModelingConfig, ParallelismConfig, PolicyConfig, PolicyMode,
+            RowSelectionConfig, SimulationConfig, SimulationRowSet, StoppingMode,
+            StoppingRuleConfig, TrainingConfig, TrainingSelection, TrainingSolverConfig,
+            UpperBoundEvaluationConfig,
         };
         Config {
             schema: None,
             modeling: ModelingConfig {
                 inflow_non_negativity: InflowNonNegativityConfig::default(),
+                inflow_residual: InflowResidualConfig::default(),
                 cost_scale_factor: None,
             },
             training: TrainingConfig {

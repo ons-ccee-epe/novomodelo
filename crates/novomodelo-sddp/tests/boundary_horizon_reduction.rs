@@ -43,9 +43,9 @@ use novomodelo_core::{
 };
 use novomodelo_io::config::{
     BoundaryPolicy, Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
-    InflowNonNegativityMethod, ModelingConfig, ParallelismConfig, PolicyConfig, RowSelectionConfig,
-    SimulationConfig, StoppingMode, StoppingRuleConfig, TrainingConfig, TrainingSelection,
-    TrainingSolverConfig, UpperBoundEvaluationConfig,
+    InflowNonNegativityMethod, InflowResidualConfig, ModelingConfig, ParallelismConfig,
+    PolicyConfig, RowSelectionConfig, SimulationConfig, StoppingMode, StoppingRuleConfig,
+    TrainingConfig, TrainingSelection, TrainingSolverConfig, UpperBoundEvaluationConfig,
 };
 use novomodelo_io::{SEASON_CYCLE_CODE_MONTHLY, encode_slot_date, read_policy_checkpoint};
 use novomodelo_sddp::policy::orchestration::{
@@ -394,6 +394,7 @@ fn full_config() -> Config {
             inflow_non_negativity: InflowNonNegativityConfig {
                 method: InflowNonNegativityMethod::Penalty,
             },
+            inflow_residual: InflowResidualConfig::default(),
             cost_scale_factor: Some(COST_SCALE_FACTOR),
         },
         training: TrainingConfig {

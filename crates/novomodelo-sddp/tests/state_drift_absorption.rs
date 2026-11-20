@@ -53,7 +53,7 @@ use novomodelo_core::{
 };
 use novomodelo_io::config::{
     Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig, InflowNonNegativityMethod,
-    ModelingConfig, ParallelismConfig, PolicyConfig, RowSelectionConfig,
+    InflowResidualConfig, ModelingConfig, ParallelismConfig, PolicyConfig, RowSelectionConfig,
     SimulationConfig as IoSimulationConfig, SimulationSelection, StoppingMode, StoppingRuleConfig,
     TrainingConfig, TrainingSelection, TrainingSolverConfig, UpperBoundEvaluationConfig,
 };
@@ -153,6 +153,7 @@ fn build_config(iteration_limit: u32) -> Config {
             inflow_non_negativity: InflowNonNegativityConfig {
                 method: InflowNonNegativityMethod::Penalty,
             },
+            inflow_residual: InflowResidualConfig::default(),
             cost_scale_factor: None,
         },
         training: TrainingConfig {

@@ -25,9 +25,9 @@ use novomodelo_core::{
 };
 use novomodelo_io::config::{
     Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig, InflowNonNegativityMethod,
-    ModelingConfig, ParallelismConfig, PolicyConfig, RowSelectionConfig, SimulationConfig,
-    StoppingMode, StoppingRuleConfig, TrainingConfig, TrainingSelection, TrainingSolverConfig,
-    UpperBoundEvaluationConfig,
+    InflowResidualConfig, ModelingConfig, ParallelismConfig, PolicyConfig, RowSelectionConfig,
+    SimulationConfig, StoppingMode, StoppingRuleConfig, TrainingConfig, TrainingSelection,
+    TrainingSolverConfig, UpperBoundEvaluationConfig,
 };
 use novomodelo_io::test_support::{piece_defaults, stage_cuts_payload_defaults};
 use novomodelo_io::{
@@ -170,6 +170,7 @@ fn build_config() -> Config {
             inflow_non_negativity: InflowNonNegativityConfig {
                 method: InflowNonNegativityMethod::Penalty,
             },
+            inflow_residual: InflowResidualConfig::default(),
             cost_scale_factor: None,
         },
         training: TrainingConfig {

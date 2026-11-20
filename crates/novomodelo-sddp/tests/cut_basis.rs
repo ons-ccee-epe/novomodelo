@@ -4112,10 +4112,10 @@ mod range_warm_start_determinism {
     };
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
-        InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, ParallelismConfig,
-        PolicyConfig, RowSelectionConfig, SimulationConfig as IoSimulationConfig,
-        SimulationSelection, StoppingMode, StoppingRuleConfig, TrainingConfig, TrainingSelection,
-        TrainingSolverConfig,
+        InflowNonNegativityMethod as CfgInflowMethod, InflowResidualConfig, ModelingConfig,
+        ParallelismConfig, PolicyConfig, RowSelectionConfig,
+        SimulationConfig as IoSimulationConfig, SimulationSelection, StoppingMode,
+        StoppingRuleConfig, TrainingConfig, TrainingSelection, TrainingSolverConfig,
     };
     use novomodelo_io::output::policy::{read_policy_checkpoint, write_policy_checkpoint};
     use novomodelo_io::test_support::producer_block_defaults;
@@ -4474,6 +4474,7 @@ mod range_warm_start_determinism {
                 inflow_non_negativity: InflowNonNegativityConfig {
                     method: CfgInflowMethod::None,
                 },
+                inflow_residual: InflowResidualConfig::default(),
                 cost_scale_factor: None,
             },
             training: TrainingConfig {

@@ -41,10 +41,11 @@ use novomodelo_core::{
 };
 use novomodelo_io::config::{
     Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
-    InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, PolicyConfig,
-    RawClassConfigEntry, RawSamplingScheme, RawScenarioSourceConfig, RowSelectionConfig,
-    SimulationConfig as IoSimulationConfig, SimulationSelection, StoppingMode, StoppingRuleConfig,
-    TrainingConfig, TrainingSelection, TrainingSolverConfig, UpperBoundEvaluationConfig,
+    InflowNonNegativityMethod as CfgInflowMethod, InflowResidualConfig, ModelingConfig,
+    PolicyConfig, RawClassConfigEntry, RawSamplingScheme, RawScenarioSourceConfig,
+    RowSelectionConfig, SimulationConfig as IoSimulationConfig, SimulationSelection, StoppingMode,
+    StoppingRuleConfig, TrainingConfig, TrainingSelection, TrainingSolverConfig,
+    UpperBoundEvaluationConfig,
 };
 use novomodelo_stochastic::{
     ClassSchemes, DerivedInflowSeeds, OpeningTreeInputs, build_stochastic_context,
@@ -524,6 +525,7 @@ fn minimal_config(forward_passes: u32, max_iterations: u32) -> Config {
             inflow_non_negativity: InflowNonNegativityConfig {
                 method: CfgInflowMethod::Penalty,
             },
+            inflow_residual: InflowResidualConfig::default(),
             cost_scale_factor: None,
         },
         training: TrainingConfig {
@@ -1550,6 +1552,7 @@ fn study_params_from_config_defaults() {
             inflow_non_negativity: InflowNonNegativityConfig {
                 method: CfgInflowMethod::None,
             },
+            inflow_residual: InflowResidualConfig::default(),
             cost_scale_factor: None,
         },
         training: TrainingConfig {
@@ -1649,6 +1652,7 @@ fn study_params_from_config_explicit() {
             inflow_non_negativity: InflowNonNegativityConfig {
                 method: CfgInflowMethod::Penalty,
             },
+            inflow_residual: InflowResidualConfig::default(),
             cost_scale_factor: None,
         },
         training: TrainingConfig {
@@ -1734,6 +1738,7 @@ fn minimal_prepare_config() -> novomodelo_io::Config {
             inflow_non_negativity: InflowNonNegativityConfig {
                 method: CfgInflowMethod::None,
             },
+            inflow_residual: InflowResidualConfig::default(),
             cost_scale_factor: None,
         },
         training: TrainingConfig {

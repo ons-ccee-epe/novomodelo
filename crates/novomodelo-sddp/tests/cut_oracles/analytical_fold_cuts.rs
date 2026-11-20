@@ -28,9 +28,10 @@ use novomodelo_core::{
 use novomodelo_io::Config;
 use novomodelo_io::config::{
     BackwardScheduler, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
-    InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, ParallelismConfig, PolicyConfig,
-    RowSelectionConfig, SimulationConfig as IoSimulationConfig, StoppingMode, StoppingRuleConfig,
-    TrainingConfig, TrainingSelection, TrainingSolverConfig, UpperBoundEvaluationConfig,
+    InflowNonNegativityMethod as CfgInflowMethod, InflowResidualConfig, ModelingConfig,
+    ParallelismConfig, PolicyConfig, RowSelectionConfig, SimulationConfig as IoSimulationConfig,
+    StoppingMode, StoppingRuleConfig, TrainingConfig, TrainingSelection, TrainingSolverConfig,
+    UpperBoundEvaluationConfig,
 };
 use novomodelo_sddp::hydro_models::{
     EvaporationCoefficientSign, EvaporationModel, EvaporationModelSet, FphaPlane,
@@ -611,6 +612,7 @@ fn fixture_config() -> Config {
             inflow_non_negativity: InflowNonNegativityConfig {
                 method: CfgInflowMethod::None,
             },
+            inflow_residual: InflowResidualConfig::default(),
             cost_scale_factor: None,
         },
         training: TrainingConfig {

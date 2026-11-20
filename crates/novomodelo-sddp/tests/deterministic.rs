@@ -7531,9 +7531,10 @@ mod chronological_telescoping {
     };
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
-        InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, PolicyConfig,
-        RowSelectionConfig, SimulationConfig as IoSimulationConfig, StoppingRuleConfig,
-        TrainingConfig, TrainingSelection, TrainingSolverConfig, UpperBoundEvaluationConfig,
+        InflowNonNegativityMethod as CfgInflowMethod, InflowResidualConfig, ModelingConfig,
+        PolicyConfig, RowSelectionConfig, SimulationConfig as IoSimulationConfig,
+        StoppingRuleConfig, TrainingConfig, TrainingSelection, TrainingSolverConfig,
+        UpperBoundEvaluationConfig,
     };
     use novomodelo_solver::ActiveSolver;
 
@@ -7782,6 +7783,7 @@ mod chronological_telescoping {
                 inflow_non_negativity: InflowNonNegativityConfig {
                     method: CfgInflowMethod::None,
                 },
+                inflow_residual: InflowResidualConfig::default(),
                 cost_scale_factor: None,
             },
             training: TrainingConfig {
@@ -8267,9 +8269,10 @@ mod season_descriptor_checkpoint_round_trip {
     };
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
-        InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, PolicyConfig,
-        RowSelectionConfig, SimulationConfig as IoSimulationConfig, StoppingRuleConfig,
-        TrainingConfig, TrainingSelection, TrainingSolverConfig, UpperBoundEvaluationConfig,
+        InflowNonNegativityMethod as CfgInflowMethod, InflowResidualConfig, ModelingConfig,
+        PolicyConfig, RowSelectionConfig, SimulationConfig as IoSimulationConfig,
+        StoppingRuleConfig, TrainingConfig, TrainingSelection, TrainingSolverConfig,
+        UpperBoundEvaluationConfig,
     };
     use novomodelo_solver::ActiveSolver;
 
@@ -8544,6 +8547,7 @@ mod season_descriptor_checkpoint_round_trip {
                 inflow_non_negativity: InflowNonNegativityConfig {
                     method: CfgInflowMethod::None,
                 },
+                inflow_residual: InflowResidualConfig::default(),
                 cost_scale_factor: None,
             },
             training: TrainingConfig {
@@ -8657,9 +8661,10 @@ mod boundary_season_gate_round_trip {
     };
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
-        InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, PolicyConfig,
-        RowSelectionConfig, SimulationConfig as IoSimulationConfig, StoppingRuleConfig,
-        TrainingConfig, TrainingSelection, TrainingSolverConfig, UpperBoundEvaluationConfig,
+        InflowNonNegativityMethod as CfgInflowMethod, InflowResidualConfig, ModelingConfig,
+        PolicyConfig, RowSelectionConfig, SimulationConfig as IoSimulationConfig,
+        StoppingRuleConfig, TrainingConfig, TrainingSelection, TrainingSolverConfig,
+        UpperBoundEvaluationConfig,
     };
     use novomodelo_solver::ActiveSolver;
 
@@ -8917,6 +8922,7 @@ mod boundary_season_gate_round_trip {
                 inflow_non_negativity: InflowNonNegativityConfig {
                     method: CfgInflowMethod::None,
                 },
+                inflow_residual: InflowResidualConfig::default(),
                 cost_scale_factor: None,
             },
             training: TrainingConfig {
@@ -9027,9 +9033,10 @@ mod transit_arrival_interval_checkpoint_round_trip {
     };
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
-        InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, PolicyConfig,
-        RowSelectionConfig, SimulationConfig as IoSimulationConfig, StoppingRuleConfig,
-        TrainingConfig, TrainingSelection, TrainingSolverConfig, UpperBoundEvaluationConfig,
+        InflowNonNegativityMethod as CfgInflowMethod, InflowResidualConfig, ModelingConfig,
+        PolicyConfig, RowSelectionConfig, SimulationConfig as IoSimulationConfig,
+        StoppingRuleConfig, TrainingConfig, TrainingSelection, TrainingSolverConfig,
+        UpperBoundEvaluationConfig,
     };
     use novomodelo_solver::ActiveSolver;
 
@@ -9275,6 +9282,7 @@ mod transit_arrival_interval_checkpoint_round_trip {
                 inflow_non_negativity: InflowNonNegativityConfig {
                     method: CfgInflowMethod::None,
                 },
+                inflow_residual: InflowResidualConfig::default(),
                 cost_scale_factor: None,
             },
             training: TrainingConfig {
@@ -9400,9 +9408,9 @@ mod chronological_attribution {
     use novomodelo_io::config::TrainingSelection;
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
-        InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, PolicyConfig,
-        RowSelectionConfig, SimulationConfig as IoSimulationConfig, StoppingRuleConfig,
-        TrainingConfig, TrainingSolverConfig, UpperBoundEvaluationConfig,
+        InflowNonNegativityMethod as CfgInflowMethod, InflowResidualConfig, ModelingConfig,
+        PolicyConfig, RowSelectionConfig, SimulationConfig as IoSimulationConfig,
+        StoppingRuleConfig, TrainingConfig, TrainingSolverConfig, UpperBoundEvaluationConfig,
     };
     use novomodelo_sddp::lead_time::resolve_spread;
     use novomodelo_sddp::test_support::assert_all_templates_byte_identical;
@@ -9703,6 +9711,7 @@ mod chronological_attribution {
                 inflow_non_negativity: InflowNonNegativityConfig {
                     method: CfgInflowMethod::None,
                 },
+                inflow_residual: InflowResidualConfig::default(),
                 cost_scale_factor: None,
             },
             training: TrainingConfig {
@@ -12731,9 +12740,10 @@ mod enumerated_cvar_gap {
     };
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
-        InflowNonNegativityMethod, ModelingConfig, PolicyConfig, RowSelectionConfig,
-        SimulationConfig as IoSimulationConfig, StoppingMode, StoppingRuleConfig, TrainingConfig,
-        TrainingSelection, TrainingSolverConfig, UpperBoundEvaluationConfig,
+        InflowNonNegativityMethod, InflowResidualConfig, ModelingConfig, PolicyConfig,
+        RowSelectionConfig, SimulationConfig as IoSimulationConfig, StoppingMode,
+        StoppingRuleConfig, TrainingConfig, TrainingSelection, TrainingSolverConfig,
+        UpperBoundEvaluationConfig,
     };
     use novomodelo_solver::ActiveSolver;
 
@@ -12943,6 +12953,7 @@ mod enumerated_cvar_gap {
                 inflow_non_negativity: InflowNonNegativityConfig {
                     method: InflowNonNegativityMethod::Penalty,
                 },
+                inflow_residual: InflowResidualConfig::default(),
                 cost_scale_factor: Some(1.0),
             },
             training: TrainingConfig {
