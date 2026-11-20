@@ -20,6 +20,7 @@
 // seam from `common::builders` — a no-op today, not dead code.
 #![allow(clippy::needless_update)]
 
+use novomodelo_io::config::InflowResidualDistribution;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::mpsc;
 
@@ -566,6 +567,7 @@ fn train_fixture_into(
             cut_state_layouts: &all_enabled_cut_state_layouts(&fx.state, n_stages),
             study_dims: &fx.study_dims,
             inflow_method: &fx.inflow_method,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &fx.stochastic,
             initial_state: &fx.initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -608,6 +610,7 @@ fn simulate_fixture(
         cut_state_layouts: &all_enabled_cut_state_layouts(&fx.state, N_STAGES),
         study_dims: &fx.study_dims,
         inflow_method: &fx.inflow_method,
+        inflow_residual: InflowResidualDistribution::Normal,
         stochastic: &fx.stochastic,
         initial_state: &fx.initial_state,
         inflow_scheme: SamplingScheme::InSample,

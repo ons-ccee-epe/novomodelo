@@ -6,7 +6,9 @@ use novomodelo_comm::Communicator;
 use novomodelo_core::scenario::ScenarioSource;
 use novomodelo_io::Config;
 use novomodelo_io::PolicyMode;
-use novomodelo_io::config::{BackwardScheduler, CheckpointSchedule, PhaseSolverProfileConfig};
+use novomodelo_io::config::{
+    BackwardScheduler, CheckpointSchedule, InflowResidualDistribution, PhaseSolverProfileConfig,
+};
 use novomodelo_sddp::{
     BoundaryStateRequirements, CutSelectionStrategy, InflowNonNegativityMethod, StoppingMode,
     StoppingRule, StoppingRuleSet, StudyParams,
@@ -103,6 +105,7 @@ pub(crate) struct BroadcastConfig {
     pub(crate) io_channel_capacity: u32,
     pub(crate) policy_path: String,
     pub(crate) inflow_method: InflowNonNegativityMethod,
+    pub(crate) inflow_residual: InflowResidualDistribution,
     pub(crate) cut_selection: Option<CutSelectionStrategy>,
     pub(crate) cut_activity_tolerance: f64,
     /// When `false`, all ranks skip training and proceed to simulation (or exit).
@@ -197,6 +200,7 @@ impl BroadcastConfig {
             io_channel_capacity: u32::try_from(params.io_channel_capacity).unwrap_or(64),
             policy_path: params.policy_path,
             inflow_method: params.inflow_method,
+            inflow_residual: params.inflow_residual,
             cut_selection: params.cut_selection,
             cut_activity_tolerance: params.cut_activity_tolerance,
             training_enabled: config.training.enabled,
@@ -827,6 +831,53 @@ mod tests {
         let decoded: BroadcastConfig =
             postcard::from_bytes(&bytes).expect("postcard deserialization must succeed");
         assert_eq!(decoded.simulation_cut_set, CutSet::Active);
+    }
+
+    #[test]
+    fn broadcast_config_carries_the_inflow_residual() {
+        use super::BroadcastConfig;
+        use novomodelo_io::config::InflowResidualDistribution;
+
+        let json = r#"{
+            "modeling": { "inflow_residual": { "distribution": "lognormal_3p" } },
+            "training": {
+                "stopping_rules": [{ "type": "iteration_limit", "limit": 10 }]
+            }
+        }"#;
+        let config: novomodelo_io::Config = serde_json::from_str(json).unwrap();
+        let original = BroadcastConfig::from_config(&config).unwrap();
+        assert_eq!(
+            original.inflow_residual,
+            InflowResidualDistribution::Lognormal3p
+        );
+
+        let bytes = postcard::to_allocvec(&original).expect("postcard serialization must succeed");
+        let decoded: BroadcastConfig =
+            postcard::from_bytes(&bytes).expect("postcard deserialization must succeed");
+        assert_eq!(
+            decoded.inflow_residual,
+            InflowResidualDistribution::Lognormal3p
+        );
+    }
+
+    #[test]
+    fn broadcast_config_defaults_the_inflow_residual_to_normal() {
+        use super::BroadcastConfig;
+        use novomodelo_io::config::InflowResidualDistribution;
+
+        let json = r#"{
+            "training": {
+                "stopping_rules": [{ "type": "iteration_limit", "limit": 10 }]
+            }
+        }"#;
+        let config: novomodelo_io::Config = serde_json::from_str(json).unwrap();
+        let original = BroadcastConfig::from_config(&config).unwrap();
+        assert_eq!(original.inflow_residual, InflowResidualDistribution::Normal);
+
+        let bytes = postcard::to_allocvec(&original).expect("postcard serialization must succeed");
+        let decoded: BroadcastConfig =
+            postcard::from_bytes(&bytes).expect("postcard deserialization must succeed");
+        assert_eq!(decoded.inflow_residual, InflowResidualDistribution::Normal);
     }
 
     #[test]

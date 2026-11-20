@@ -755,6 +755,7 @@ mod lb_conformance {
 
     use novomodelo_core::SystemBuilder;
     use novomodelo_core::scenario::SamplingScheme;
+    use novomodelo_io::config::InflowResidualDistribution;
     use novomodelo_sddp::{
         context::TrainingContext,
         horizon_mode::HorizonMode,
@@ -852,6 +853,7 @@ mod lb_conformance {
             cut_state_layouts: &cut_state_layouts,
             study_dims: &study_dims,
             inflow_method: &inflow_method,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,

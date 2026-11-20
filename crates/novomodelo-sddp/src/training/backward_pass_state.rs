@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use novomodelo_comm::{Communicator, ReduceOp};
 use novomodelo_core::{TrainingEvent, WorkerPhaseTimings, WorkerTimingPhase};
-use novomodelo_io::config::BackwardScheduler;
+use novomodelo_io::config::{BackwardScheduler, InflowResidualDistribution};
 use novomodelo_solver::{
     ActiveProfile, RowBatch, SolverInterface, SolverStatistics, StageTemplate,
 };
@@ -2038,10 +2038,11 @@ fn compute_one_backward_node<S: SolverInterface + Send, C: Communicator>(
         n_openings,
         "the reified successor outcome set must have as many outcomes as flattened weights"
     );
+    let normal_residual = training_ctx.inflow_residual == InflowResidualDistribution::Normal;
     #[cfg(any(test, feature = "test-support"))]
-    let stage_noise_table = !state.solve_cache_bypass;
+    let stage_noise_table = normal_residual && !state.solve_cache_bypass;
     #[cfg(not(any(test, feature = "test-support")))]
-    let stage_noise_table = true;
+    let stage_noise_table = normal_residual;
     let fill_result = if stage_noise_table && !trial_points.is_empty() {
         state
             .stage_noise
@@ -2393,6 +2394,7 @@ mod tests {
     use crate::test_support::RankStub;
     use novomodelo_comm::{CommData, CommError, Communicator, ReduceOp};
     use novomodelo_core::scenario::{InflowModel, SamplingScheme};
+    use novomodelo_io::config::InflowResidualDistribution;
     use novomodelo_solver::{
         Basis, LpSolution, ProfiledSolver, RowBatch, SolverError, SolverInterface,
         SolverStatistics, StageTemplate,
@@ -3232,6 +3234,7 @@ mod tests {
             cut_state_layouts: &all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &study_dims,
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &[],
             inflow_scheme: SamplingScheme::InSample,
@@ -3426,6 +3429,7 @@ mod tests {
             cut_state_layouts: &all_enabled_cut_state_layouts(&layout, n_stages),
             study_dims: &study_dims,
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &[],
             inflow_scheme: SamplingScheme::InSample,
@@ -3613,6 +3617,7 @@ mod tests {
             cut_state_layouts: &all_enabled_cut_state_layouts(state, n_stages),
             study_dims: &study_dims,
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic,
             initial_state: &[],
             inflow_scheme: SamplingScheme::InSample,
@@ -3995,6 +4000,7 @@ mod tests {
             cut_state_layouts: &all_enabled_cut_state_layouts(state, node_graph.n_pools),
             study_dims: &study_dims,
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic,
             initial_state: &[],
             inflow_scheme: SamplingScheme::InSample,
@@ -4213,6 +4219,7 @@ mod tests {
             cut_state_layouts: &all_enabled_cut_state_layouts(&state, node_graph.n_pools),
             study_dims: &study_dims,
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic,
             initial_state: &[],
             inflow_scheme: SamplingScheme::InSample,
@@ -4706,6 +4713,7 @@ mod tests {
             cut_state_layouts: &all_enabled_cut_state_layouts(&state_layout_fixture, n_stages),
             study_dims: &study_dims,
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &[],
             inflow_scheme: SamplingScheme::InSample,
@@ -4833,6 +4841,7 @@ mod tests {
             cut_state_layouts: &all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &study_dims,
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &[],
             inflow_scheme: SamplingScheme::InSample,
@@ -5471,6 +5480,7 @@ mod tests {
             cut_state_layouts: &setup.inputs.cut_state_layouts,
             study_dims: &setup.inputs.stage_data.study_dims,
             inflow_method: &setup.inputs.stage_data.study_dims.inflow_method,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &setup.inputs.stochastic,
             initial_state: &setup.inputs.initial.state,
             inflow_scheme: tr.inflow_scheme,

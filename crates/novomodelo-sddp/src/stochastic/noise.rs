@@ -4,9 +4,11 @@
 //! call site (forward, backward, lower-bound).
 
 use novomodelo_core::commissioning::commissioning_active;
+use novomodelo_io::config::InflowResidualDistribution;
 use novomodelo_solver::SolverInterface;
 use novomodelo_stochastic::{
-    StochasticContext, add_noise_term_batch, evaluate_par_noise_term_batch,
+    StochasticContext, add_noise_term_batch, evaluate_lognormal_noise_term_batch,
+    evaluate_par_noise_term_batch,
 };
 
 use crate::indexer::{BlockIdx, HydroSys, NcsSys};
@@ -16,10 +18,11 @@ use crate::{
     workspace::ScratchBuffers,
 };
 
-/// Realized inflow ẑ from the conditional mean in the scratch, the noise term
-/// `σ·η` the cut right-hand sides read, and, under the truncation methods, the
-/// inflow-slack bounds from ẑ. With `noise_term` given, ẑ adds those `σ·η` values
-/// and the scratch's noise term is left unwritten.
+/// Realized inflow ẑ from the conditional mean in the scratch, the noise term the
+/// cut right-hand sides read (`σ·η`, or the lognormal term under `"lognormal_3p"`),
+/// and, under the truncation methods, the inflow-slack bounds from ẑ. With
+/// `noise_term` given, ẑ adds those `σ·η` values and the scratch's noise term is
+/// left unwritten.
 pub(crate) fn realize_inflow(
     raw_noise: &[f64],
     stage: StageIdx,
@@ -35,23 +38,39 @@ pub(crate) fn realize_inflow(
     scratch.realized_inflow_buf.resize(dims.n_hydros, 0.0);
     match (par_lp.n_stages() > 0, noise_term) {
         (true, None) => {
-            evaluate_par_noise_term_batch(
-                par_lp,
-                stage.0,
-                hydro_noise,
-                &mut scratch.par_noise_term_buf,
-            );
+            match training_ctx.inflow_residual {
+                InflowResidualDistribution::Normal => evaluate_par_noise_term_batch(
+                    par_lp,
+                    stage.0,
+                    hydro_noise,
+                    &mut scratch.par_noise_term_buf,
+                ),
+                InflowResidualDistribution::Lognormal3p => evaluate_lognormal_noise_term_batch(
+                    par_lp,
+                    stage.0,
+                    &scratch.par_mean_buf,
+                    hydro_noise,
+                    &mut scratch.par_noise_term_buf,
+                    &mut scratch.inflow_residual_fallbacks,
+                ),
+            }
             add_noise_term_batch(
                 &scratch.par_mean_buf,
                 &scratch.par_noise_term_buf,
                 &mut scratch.realized_inflow_buf,
             );
         }
-        (true, Some(noise_term)) => add_noise_term_batch(
-            &scratch.par_mean_buf,
-            noise_term,
-            &mut scratch.realized_inflow_buf,
-        ),
+        (true, Some(noise_term)) => {
+            debug_assert!(
+                training_ctx.inflow_residual == InflowResidualDistribution::Normal,
+                "a cached noise term is the normal term; the lognormal term depends on the solve's conditional mean"
+            );
+            add_noise_term_batch(
+                &scratch.par_mean_buf,
+                noise_term,
+                &mut scratch.realized_inflow_buf,
+            );
+        }
         (false, None) => scratch.par_noise_term_buf.fill(0.0),
         (false, Some(_)) => {}
     }
@@ -421,14 +440,15 @@ mod tests {
         StageStateConfig,
     };
     use novomodelo_core::{Bus, DeficitSegment, EntityId, SystemBuilder};
+    use novomodelo_io::config::InflowResidualDistribution;
     use novomodelo_solver::{
         Basis, RowBatch, SolutionView, SolverError, SolverInterface, SolverStatistics,
         StageTemplate,
     };
-    use novomodelo_stochastic::StochasticContext;
     use novomodelo_stochastic::context::{
         ClassSchemes, OpeningTreeInputs, build_stochastic_context,
     };
+    use novomodelo_stochastic::{StochasticContext, evaluate_lognormal_noise_term_batch};
     use std::collections::BTreeMap;
 
     use crate::{
@@ -820,6 +840,7 @@ mod tests {
             cut_state_layouts: &[],
             study_dims: &study_dims,
             inflow_method: &inflow_method,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &current_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -840,6 +861,148 @@ mod tests {
 
         assert_eq!(scratch.realized_inflow_buf.len(), 1);
         assert!((scratch.realized_inflow_buf[0] - (-3.0)).abs() < 1e-12);
+    }
+
+    fn realize_under(
+        residual: InflowResidualDistribution,
+        stochastic: &StochasticContext,
+        raw_noise: &[f64],
+        scratch: &mut ScratchBuffers,
+        noise_term: Option<&[f64]>,
+    ) {
+        let state = test_support::state_layout(1, 0);
+        let current_state = vec![0.0; state.n_state];
+        let inflow_method = InflowNonNegativityMethod::None;
+        let horizon = HorizonMode::Finite { num_stages: 1 };
+        let study_dims = test_support::study_dims();
+        let training_ctx = TrainingContext {
+            node_graph: &crate::test_support::chain_node_graph(stochastic),
+            horizon: &horizon,
+            state: &state,
+            cut_state_layouts: &[],
+            study_dims: &study_dims,
+            inflow_method: &inflow_method,
+            inflow_residual: residual,
+            stochastic,
+            initial_state: &current_state,
+            inflow_scheme: SamplingScheme::InSample,
+            load_scheme: SamplingScheme::InSample,
+            ncs_scheme: SamplingScheme::InSample,
+            stages: &[],
+            historical_library: None,
+            external_inflow_library: None,
+            external_load_library: None,
+            external_ncs_library: None,
+            lag_accum_seed: &[],
+            lag_weight_seed: &[],
+            dcs: None,
+        };
+        realize_inflow(raw_noise, StageIdx(0), &training_ctx, scratch, noise_term);
+    }
+
+    #[test]
+    fn realize_inflow_under_lognormal_writes_the_kernel_term() {
+        let stochastic = make_one_hydro_stochastic(1);
+        let mut scratch = ScratchBuffers::for_test(1);
+        scratch.par_mean_buf[0] = 2.0;
+        let mut expected = [0.0];
+        let mut counts = [0_u64];
+        evaluate_lognormal_noise_term_batch(
+            stochastic.par(),
+            0,
+            &[2.0],
+            &[0.5],
+            &mut expected,
+            &mut counts,
+        );
+
+        realize_under(
+            InflowResidualDistribution::Lognormal3p,
+            &stochastic,
+            &[0.5],
+            &mut scratch,
+            None,
+        );
+
+        assert_eq!(
+            scratch.par_noise_term_buf[0].to_bits(),
+            expected[0].to_bits()
+        );
+        assert_eq!(
+            scratch.realized_inflow_buf[0].to_bits(),
+            (2.0 + expected[0]).to_bits()
+        );
+        assert!(expected[0] != 0.5, "the term is not σ·η");
+        assert_eq!(scratch.inflow_residual_fallbacks, vec![0]);
+    }
+
+    #[test]
+    fn realize_inflow_under_lognormal_counts_each_fallback_solve() {
+        let stochastic = make_one_hydro_stochastic(1);
+        let mut scratch = ScratchBuffers::for_test(1);
+        scratch.par_mean_buf[0] = 0.0;
+
+        realize_under(
+            InflowResidualDistribution::Lognormal3p,
+            &stochastic,
+            &[-3.0],
+            &mut scratch,
+            None,
+        );
+
+        assert_eq!(
+            scratch.par_noise_term_buf[0].to_bits(),
+            (-3.0_f64).to_bits()
+        );
+        assert_eq!(scratch.realized_inflow_buf, vec![-3.0]);
+        assert_eq!(scratch.inflow_residual_fallbacks, vec![1]);
+
+        realize_under(
+            InflowResidualDistribution::Lognormal3p,
+            &stochastic,
+            &[-3.0],
+            &mut scratch,
+            None,
+        );
+
+        assert_eq!(scratch.inflow_residual_fallbacks, vec![2]);
+    }
+
+    #[test]
+    fn realize_inflow_under_normal_counts_no_fallback() {
+        let stochastic = make_one_hydro_stochastic(1);
+        let mut scratch = ScratchBuffers::for_test(1);
+        scratch.par_mean_buf[0] = 0.0;
+
+        realize_under(
+            InflowResidualDistribution::Normal,
+            &stochastic,
+            &[-3.0],
+            &mut scratch,
+            None,
+        );
+
+        assert_eq!(
+            scratch.par_noise_term_buf[0].to_bits(),
+            (-3.0_f64).to_bits()
+        );
+        assert_eq!(scratch.inflow_residual_fallbacks, vec![0]);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "a cached noise term is the normal term")]
+    fn realize_inflow_under_lognormal_refuses_a_cached_noise_term() {
+        let stochastic = make_one_hydro_stochastic(1);
+        let mut scratch = ScratchBuffers::for_test(1);
+
+        realize_under(
+            InflowResidualDistribution::Lognormal3p,
+            &stochastic,
+            &[0.5],
+            &mut scratch,
+            Some(&[0.5]),
+        );
     }
 
     /// Truncation keeps the realized inflow raw and fixes the slack at the truncation amount: PAR(0)
@@ -863,6 +1026,7 @@ mod tests {
             cut_state_layouts: &[],
             study_dims: &study_dims,
             inflow_method: &inflow_method,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &current_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -907,6 +1071,7 @@ mod tests {
             cut_state_layouts: &[],
             study_dims: &study_dims,
             inflow_method: &inflow_method,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &current_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -965,6 +1130,7 @@ mod tests {
             cut_state_layouts: &[],
             study_dims: &study_dims,
             inflow_method: &inflow_method,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &current_state,
             inflow_scheme: SamplingScheme::InSample,

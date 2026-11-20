@@ -2,6 +2,7 @@
 //! simulation contexts all borrow from.
 
 use novomodelo_core::scenario::SamplingScheme;
+use novomodelo_io::config::InflowResidualDistribution;
 use novomodelo_stochastic::StochasticContext;
 
 use crate::{
@@ -39,6 +40,8 @@ pub struct SolveInputs {
     pub(crate) study_stage_ids: Vec<i32>,
     /// Study horizon mode (finite vs. infinite-horizon approximation).
     pub(crate) horizon: HorizonMode,
+    /// Inflow residual distribution every context of the study reads.
+    pub(crate) inflow_residual: InflowResidualDistribution,
     /// Two-stage cut management pipeline configuration.
     pub(crate) cut_management: CutManagementConfig,
     /// Per-pool cut-state projection, indexed by pool id, paired 1:1 with
@@ -79,6 +82,7 @@ impl SolveInputs {
             cut_state_layouts: &self.cut_state_layouts,
             study_dims: &self.stage_data.study_dims,
             inflow_method: &self.stage_data.study_dims.inflow_method,
+            inflow_residual: self.inflow_residual,
             stochastic: &self.stochastic,
             initial_state: &self.initial.state,
             inflow_scheme: tr.inflow_scheme,

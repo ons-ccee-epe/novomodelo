@@ -41,8 +41,8 @@ use novomodelo_core::{
 };
 use novomodelo_io::config::{
     Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
-    InflowNonNegativityMethod as CfgInflowMethod, InflowResidualConfig, ModelingConfig,
-    PolicyConfig, RawClassConfigEntry, RawSamplingScheme, RawScenarioSourceConfig,
+    InflowNonNegativityMethod as CfgInflowMethod, InflowResidualConfig, InflowResidualDistribution,
+    ModelingConfig, PolicyConfig, RawClassConfigEntry, RawSamplingScheme, RawScenarioSourceConfig,
     RowSelectionConfig, SimulationConfig as IoSimulationConfig, SimulationSelection, StoppingMode,
     StoppingRuleConfig, TrainingConfig, TrainingSelection, TrainingSolverConfig,
     UpperBoundEvaluationConfig,
@@ -964,6 +964,83 @@ fn simulation_ctx_propagates_dynamic_dcs_from_setup() {
         Some(expected),
         "simulation_ctx().dcs must carry the configured dynamic DcsConfig, got {:?}",
         ctx.dcs
+    );
+}
+
+#[test]
+fn training_and_simulation_contexts_carry_the_inflow_residual() {
+    let system = minimal_system(3);
+    let mut config = minimal_config(2, 10);
+    config.modeling.inflow_residual.distribution = InflowResidualDistribution::Lognormal3p;
+    let stochastic = build_stochastic_context(
+        &system,
+        42,
+        None,
+        &[],
+        &[],
+        OpeningTreeInputs::default(),
+        ClassSchemes {
+            inflow: Some(SamplingScheme::InSample),
+            load: Some(SamplingScheme::InSample),
+            ncs: Some(SamplingScheme::InSample),
+        },
+    )
+    .expect("stochastic context");
+
+    let setup = StudySetup::new(
+        &system,
+        &config,
+        stochastic,
+        PrepareHydroModelsResult::default_from_system(&system),
+        Vec::new(),
+    )
+    .expect("setup");
+
+    assert_eq!(
+        setup.training_ctx().inflow_residual,
+        InflowResidualDistribution::Lognormal3p
+    );
+    assert_eq!(
+        setup.simulation_ctx().inflow_residual,
+        InflowResidualDistribution::Lognormal3p
+    );
+}
+
+#[test]
+fn training_and_simulation_contexts_default_the_inflow_residual_to_normal() {
+    let system = minimal_system(3);
+    let config = minimal_config(2, 10);
+    let stochastic = build_stochastic_context(
+        &system,
+        42,
+        None,
+        &[],
+        &[],
+        OpeningTreeInputs::default(),
+        ClassSchemes {
+            inflow: Some(SamplingScheme::InSample),
+            load: Some(SamplingScheme::InSample),
+            ncs: Some(SamplingScheme::InSample),
+        },
+    )
+    .expect("stochastic context");
+
+    let setup = StudySetup::new(
+        &system,
+        &config,
+        stochastic,
+        PrepareHydroModelsResult::default_from_system(&system),
+        Vec::new(),
+    )
+    .expect("setup");
+
+    assert_eq!(
+        setup.training_ctx().inflow_residual,
+        InflowResidualDistribution::Normal
+    );
+    assert_eq!(
+        setup.simulation_ctx().inflow_residual,
+        InflowResidualDistribution::Normal
     );
 }
 

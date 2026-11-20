@@ -5268,6 +5268,7 @@ mod anticipated_convergence_slow {
         PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
         ResolvedPenalties, SystemBuilder, ThermalBlockBounds,
     };
+    use novomodelo_io::config::InflowResidualDistribution;
     use novomodelo_sddp::{
         InflowNonNegativityMethod, StoppingMode, StoppingRule, StoppingRuleSet, StudySetup,
         TrainingOutcome,
@@ -5614,6 +5615,7 @@ mod anticipated_convergence_slow {
             io_channel_capacity: 0,
             policy_path: String::new(),
             inflow_method,
+            inflow_residual: InflowResidualDistribution::Normal,
             cut_selection: None,
             cut_activity_tolerance: 0.0,
             budget: None,

@@ -1,6 +1,7 @@
 //! Context structs for reducing parameter count in hot-path functions.
 
 use novomodelo_core::{Stage, scenario::SamplingScheme, temporal::StageLagTransition};
+use novomodelo_io::config::InflowResidualDistribution;
 use novomodelo_solver::StageTemplate;
 use novomodelo_stochastic::par::resolve_stage_lag_transition;
 use novomodelo_stochastic::{
@@ -184,6 +185,8 @@ pub struct TrainingContext<'a> {
     pub study_dims: &'a StudyDimensions,
     /// Inflow non-negativity enforcement strategy.
     pub inflow_method: &'a InflowNonNegativityMethod,
+    /// Distribution of the PAR inflow residual (`modeling.inflow_residual.distribution`).
+    pub inflow_residual: InflowResidualDistribution,
     /// Stochastic context providing noise generation and PAR model.
     pub stochastic: &'a StochasticContext,
     /// Initial state vector for stage 0.

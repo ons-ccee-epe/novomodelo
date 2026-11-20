@@ -763,6 +763,7 @@ mod determinism {
     //! Each test runs with 1 workspace, then with 4 workspaces, and asserts
     //! bit-exact equality on all outputs.
 
+    use novomodelo_io::config::InflowResidualDistribution;
     use std::collections::{BTreeMap, HashMap};
     use std::sync::mpsc;
 
@@ -1301,6 +1302,7 @@ mod determinism {
                         cut_state_layouts: &all_enabled_cut_state_layouts(&fx.state, fx.n_stages),
                         study_dims: &study_dims(),
                         inflow_method: &InflowNonNegativityMethod::None,
+                        inflow_residual: InflowResidualDistribution::Normal,
                         stochastic: &fx.stochastic,
                         initial_state: &fx.initial_state,
                         inflow_scheme: SamplingScheme::InSample,
@@ -1375,6 +1377,7 @@ mod determinism {
             cut_state_layouts: &all_enabled_cut_state_layouts(&fx.state, fx.n_stages),
             study_dims: &study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &fx.stochastic,
             initial_state: &fx.initial_state,
             inflow_scheme: SamplingScheme::InSample,

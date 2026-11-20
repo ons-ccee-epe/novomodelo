@@ -1,5 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::panic, clippy::too_many_lines)]
 
+use novomodelo_io::config::InflowResidualDistribution;
 use std::collections::HashMap;
 use std::sync::mpsc;
 
@@ -714,6 +715,7 @@ fn simulation_load_patches_applied() {
             cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -866,6 +868,7 @@ fn simulation_no_load_buses_patches_only_inflow_rows() {
             cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -984,6 +987,7 @@ fn simulation_state_set_profile_reaches_current_profile_after_run() {
             cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -1077,6 +1081,7 @@ fn loaded_template(
                 cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
                 study_dims: &test_support::study_dims(),
                 inflow_method: &InflowNonNegativityMethod::None,
+                inflow_residual: InflowResidualDistribution::Normal,
                 stochastic: &stochastic,
                 initial_state: &initial_state,
                 inflow_scheme: SamplingScheme::InSample,
@@ -1222,6 +1227,7 @@ fn simulation_inflow_extraction_unaffected() {
             cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -1489,6 +1495,7 @@ fn simulation_truncation_keeps_the_raw_rhs_and_fixes_the_slack_bounds() {
             cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::Truncation,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -1606,6 +1613,7 @@ fn simulation_none_method_produces_raw_negative_noise() {
             cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, n_stages),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -1674,6 +1682,7 @@ fn simulation_none_method_produces_raw_negative_noise() {
 // which distinguishes the converged theta and so catches a wrong (frozen)
 // template load.
 mod dcs_simulation {
+    use novomodelo_io::config::InflowResidualDistribution;
     use std::collections::HashMap;
     use std::sync::mpsc;
 
@@ -1824,6 +1833,7 @@ mod dcs_simulation {
             cut_state_layouts: &cut_state_layouts,
             study_dims: &study_dims,
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -1927,6 +1937,7 @@ mod dcs_simulation {
             cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, 1),
             study_dims: &study_dims,
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &[],
             inflow_scheme: SamplingScheme::InSample,
@@ -2109,6 +2120,7 @@ mod dcs_simulation {
 /// so a residual shift reintroduced in either path diverges the captured
 /// trajectories or trips that assert.
 mod anticipated_ring_matches_forward_propagation {
+    use novomodelo_io::config::InflowResidualDistribution;
     use std::collections::HashMap;
     use std::sync::mpsc;
 
@@ -2462,6 +2474,7 @@ mod anticipated_ring_matches_forward_propagation {
             cut_state_layouts: &cut_state_layouts,
             study_dims: &study_dims,
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &[],
             inflow_scheme: SamplingScheme::InSample,

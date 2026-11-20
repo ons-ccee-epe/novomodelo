@@ -1275,6 +1275,7 @@ mod by_node_scratch {
     //! backward pass and have no observable surface through the public
     //! `StudySetup::train` entry point.
 
+    use novomodelo_io::config::InflowResidualDistribution;
     use std::num::NonZeroUsize;
 
     use novomodelo_core::scenario::{
@@ -1631,6 +1632,7 @@ mod by_node_scratch {
             cut_state_layouts: &all_enabled_cut_state_layouts(&state_layout_fixture, n_stages),
             study_dims: &study_dims_fixture,
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &[],
             inflow_scheme: SamplingScheme::InSample,
@@ -1755,6 +1757,7 @@ mod by_node_scratch {
             cut_state_layouts: &all_enabled_cut_state_layouts(&state_layout_fixture, n_stages),
             study_dims: &study_dims_fixture,
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &[],
             inflow_scheme: SamplingScheme::InSample,

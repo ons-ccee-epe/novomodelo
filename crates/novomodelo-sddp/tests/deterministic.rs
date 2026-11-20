@@ -11178,6 +11178,7 @@ mod enumerated_external {
             StageStateConfig, Transition,
         },
     };
+    use novomodelo_io::config::InflowResidualDistribution;
     use novomodelo_sddp::{
         DEFAULT_COST_SCALE_FACTOR, InflowNonNegativityMethod, SimulationScenarioResult,
         StoppingMode, StoppingRule, StoppingRuleSet, StudySetup,
@@ -11452,6 +11453,7 @@ mod enumerated_external {
             io_channel_capacity: 0,
             policy_path: String::new(),
             inflow_method: InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             cut_selection: None,
             cut_activity_tolerance: 0.0,
             budget: None,

@@ -489,6 +489,7 @@ impl StudySetup {
                 ncs,
                 study_stage_ids,
                 horizon,
+                inflow_residual: config.inflow_residual,
                 cut_management: CutManagementConfig {
                     cut_selection: config.cut_selection,
                     budget: config.budget,

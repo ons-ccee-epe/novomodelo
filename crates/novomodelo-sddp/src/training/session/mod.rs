@@ -5,6 +5,7 @@
 
 use novomodelo_comm::CommError::CollectiveFailed;
 use novomodelo_io::StageStatesReadResult;
+use novomodelo_io::config::InflowResidualDistribution;
 use novomodelo_solver::SolverError;
 use novomodelo_solver::freeze_rows_into_template;
 
@@ -1619,10 +1620,12 @@ fn reserve_for_pool_capacity<S: SolverInterface + Send>(
     let max_pool_capacity = fcf.pools.iter().map(|p| p.capacity).max().unwrap_or(0);
     fwd_pool.reserve_pool_scratch(training_ctx, sizing, max_pool_capacity);
     bwd_state.reserve_by_node_aggregate(training_ctx.cut_state_layouts, max_pool_capacity);
-    bwd_state.reserve_stage_noise(
-        training_ctx.stochastic.class_dimensions().total(),
-        max_pool_capacity,
-    );
+    if training_ctx.inflow_residual == InflowResidualDistribution::Normal {
+        bwd_state.reserve_stage_noise(
+            training_ctx.stochastic.class_dimensions().total(),
+            max_pool_capacity,
+        );
+    }
     scratch
         .lb_noise_scratch
         .reserve_cut_rows(fcf.pools[lb_root_pool(training_ctx.node_graph)?].capacity);
@@ -1723,6 +1726,7 @@ fn next_iteration_cut_bound(pool: &CutPool, forward_passes: u32) -> usize {
     clippy::needless_range_loop
 )]
 mod tests {
+    use novomodelo_io::config::InflowResidualDistribution;
     use std::collections::BTreeMap;
     use std::sync::mpsc;
 
@@ -2253,6 +2257,7 @@ mod tests {
             cut_state_layouts,
             study_dims,
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic,
             initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -4438,6 +4443,82 @@ mod tests {
                 .zip(final_cut_rows.iter().step_by(2))
                 .any(|(capacity, len)| len > capacity),
             "no basis outgrew its first cut-row capacity, so the pin never crossed a doubling"
+        );
+    }
+
+    fn stage_noise_capacities(session: &TrainingSession<'_, ActiveSolver, StubComm>) -> [usize; 4] {
+        session
+            .bwd_state
+            .stage_noise()
+            .buffer_identity()
+            .map(|(_, capacity)| capacity)
+    }
+
+    #[test]
+    fn lognormal_lag_study_reserves_no_stage_noise_table() {
+        {
+            let mut setup = dual_folding_setup(LagFold::Unfolded, 2, 6);
+            let stage_ctx = setup.inputs.stage_ctx();
+            let training_ctx = setup.inputs.training_ctx();
+            let n_stages = training_ctx.horizon.num_stages();
+            let config = make_config(setup.loop_params.forward_passes, 6, 6, n_stages);
+            let mut solver = ActiveSolver::new().unwrap();
+            let session = TrainingSession::new(
+                &mut solver,
+                config,
+                &mut setup.fcf,
+                &stage_ctx,
+                &training_ctx,
+                &StubComm,
+                ActiveSolver::new,
+                Vec::new(),
+                SolverProfiles {
+                    backward_scheduler: BackwardScheduler::ByScenario {},
+                    ..SolverProfiles::default()
+                },
+            )
+            .unwrap();
+            assert!(
+                stage_noise_capacities(&session).iter().any(|&c| c > 0),
+                "normal: the session reserved no stage noise table"
+            );
+        }
+
+        let mut setup = dual_folding_setup(LagFold::Unfolded, 2, 6);
+        let stage_ctx = setup.inputs.stage_ctx();
+        let training_ctx = TrainingContext {
+            inflow_residual: InflowResidualDistribution::Lognormal3p,
+            ..setup.inputs.training_ctx()
+        };
+        let n_stages = training_ctx.horizon.num_stages();
+        let config = make_config(setup.loop_params.forward_passes, 6, 6, n_stages);
+        let mut solver = ActiveSolver::new().unwrap();
+        let mut session = TrainingSession::new(
+            &mut solver,
+            config,
+            &mut setup.fcf,
+            &stage_ctx,
+            &training_ctx,
+            &StubComm,
+            ActiveSolver::new,
+            Vec::new(),
+            SolverProfiles {
+                backward_scheduler: BackwardScheduler::ByScenario {},
+                ..SolverProfiles::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            stage_noise_capacities(&session),
+            [0; 4],
+            "lognormal: construction reserved a stage noise table"
+        );
+        session.prime_frozen_templates();
+        let _ = session.run_iteration(1).unwrap();
+        assert_eq!(
+            stage_noise_capacities(&session),
+            [0; 4],
+            "lognormal: the boundary reserve grew a stage noise table"
         );
     }
 }

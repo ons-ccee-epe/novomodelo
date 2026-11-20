@@ -1,3 +1,4 @@
+use novomodelo_io::config::InflowResidualDistribution;
 use std::collections::BTreeMap;
 
 use chrono::NaiveDate;
@@ -653,6 +654,7 @@ fn two_scenarios_three_stages_fixed_solution() {
             ),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -764,6 +766,7 @@ fn infeasible_at_stage_1_scenario_0_returns_infeasible_error() {
             ),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -879,6 +882,7 @@ fn cost_statistics_accumulated_correctly() {
             ),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -1511,6 +1515,7 @@ fn run_one_iteration(
             ),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -1654,6 +1659,7 @@ fn test_forward_pass_parallel_cost_agreement() {
             ),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -1700,6 +1706,7 @@ fn test_forward_pass_parallel_cost_agreement() {
             ),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -1793,6 +1800,7 @@ fn test_forward_pass_work_distribution() {
             ),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -2056,6 +2064,7 @@ fn run_single_stage_forward(
             ),
             study_dims: &test_support::study_dims(),
             inflow_method: &inflow_method,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -2190,6 +2199,7 @@ fn none_method_records_the_untruncated_stage_cost() {
             ),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -2424,6 +2434,7 @@ fn test_forward_pass_parallel_infeasibility() {
             ),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -2537,6 +2548,7 @@ fn forward_pass_load_noise_positive_realization() {
             ),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -2647,6 +2659,7 @@ fn forward_pass_load_noise_clamped_to_zero() {
             ),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -2736,6 +2749,7 @@ fn forward_pass_no_load_buses_patches_only_inflow_rows() {
             ),
             study_dims: &test_support::study_dims(),
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -3158,6 +3172,7 @@ fn build_delta_cut_row_batch_into_skips_warm_start_slots() {
 // determinate at the pinned state.
 mod dcs_forward {
     use novomodelo_core::scenario::SamplingScheme;
+    use novomodelo_io::config::InflowResidualDistribution;
     use novomodelo_solver::{ActiveSolver, SolverInterface, StageTemplate};
 
     use super::super::{StageKey, run_forward_stage};
@@ -3293,6 +3308,7 @@ mod dcs_forward {
             cut_state_layouts: &cut_state_layouts,
             study_dims: &study_dims,
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -3396,6 +3412,7 @@ mod dcs_forward {
             ),
             study_dims: &study_dims,
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &[],
             inflow_scheme: SamplingScheme::InSample,
@@ -3589,6 +3606,7 @@ mod dcs_forward {
 // never on the bucket (2) or anticipated-slot (3) indices.
 mod transit_bucket_copy_gap {
     use novomodelo_core::scenario::SamplingScheme;
+    use novomodelo_io::config::InflowResidualDistribution;
     use novomodelo_solver::{LpSolution, SolverInterface, StageTemplate};
     use novomodelo_stochastic::evaluate_par_conditional_mean_batch;
 
@@ -3684,6 +3702,7 @@ mod transit_bucket_copy_gap {
             cut_state_layouts: &cut_state_layouts,
             study_dims: &study_dims,
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -3746,6 +3765,7 @@ mod transit_bucket_copy_gap {
             cut_state_layouts: &test_support::all_enabled_cut_state_layouts(&state, 1),
             study_dims: &study_dims,
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &[],
             inflow_scheme: SamplingScheme::InSample,

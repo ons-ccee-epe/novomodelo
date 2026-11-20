@@ -5,8 +5,8 @@ use std::path::Path;
 use novomodelo_core::ScalarParameter;
 use novomodelo_io::Config;
 use novomodelo_io::config::{
-    BackwardScheduler, CheckpointSchedule, ForwardPassesResolution, NumScenariosResolution,
-    PhaseSolverProfileConfig, SimulationRowSet, StoppingRuleConfig,
+    BackwardScheduler, CheckpointSchedule, ForwardPassesResolution, InflowResidualDistribution,
+    NumScenariosResolution, PhaseSolverProfileConfig, SimulationRowSet, StoppingRuleConfig,
 };
 use serde::{Deserialize, Serialize};
 
@@ -142,6 +142,8 @@ pub struct StudyParams {
     pub policy_path: String,
     /// Inflow non-negativity enforcement method.
     pub inflow_method: InflowNonNegativityMethod,
+    /// Inflow residual distribution (`modeling.inflow_residual.distribution`).
+    pub inflow_residual: InflowResidualDistribution,
     /// Optional cut selection strategy (None means cut selection is disabled).
     pub cut_selection: Option<CutSelectionStrategy>,
     /// `training.cut_selection.row_activity_tolerance`. Described on
@@ -276,6 +278,7 @@ impl StudyParams {
         let policy_path = config.policy.path.clone();
 
         let inflow_method = InflowNonNegativityMethod::from(&config.modeling.inflow_non_negativity);
+        let inflow_residual = config.modeling.inflow_residual.distribution;
 
         let cut_selection = parse_cut_selection_config(&config.training.cut_selection)
             .map_err(|msg| SddpError::Validation(format!("cut_selection config error: {msg}")))?;
@@ -333,6 +336,7 @@ impl StudyParams {
             io_channel_capacity,
             policy_path,
             inflow_method,
+            inflow_residual,
             cut_selection,
             cut_activity_tolerance,
             budget,

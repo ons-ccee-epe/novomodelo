@@ -14,6 +14,7 @@ use novomodelo_core::temporal::{
     Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig, StageStateConfig,
 };
 use novomodelo_core::{Bus, DeficitSegment, EntityId, SystemBuilder};
+use novomodelo_io::config::InflowResidualDistribution;
 use novomodelo_solver::{
     Basis, RowBatch, SolutionView, SolverError, SolverInterface, SolverStatistics, StageTemplate,
 };
@@ -286,6 +287,7 @@ impl PrepContext {
             cut_state_layouts: &self.cut_state_layouts,
             study_dims,
             inflow_method,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic,
             initial_state: &[],
             inflow_scheme: SamplingScheme::InSample,
