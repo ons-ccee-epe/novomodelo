@@ -828,9 +828,6 @@ pub struct ScratchBuffers {
     /// The noise term per hydro for the current opening: `σ·η`, or the lognormal term under
     /// `"lognormal_3p"`.
     pub(crate) par_noise_term_buf: Vec<f64>,
-    /// Solves per hydro that took the normal noise term under the lognormal residual, counted over
-    /// the workspace's lifetime.
-    pub(crate) inflow_residual_fallbacks: Vec<u64>,
     pub(crate) closing_mean_buf: Vec<f64>,
     pub(crate) closing_noise_buf: Vec<f64>,
     /// Pool slot of each cut row of the loaded LP, in LP row order.
@@ -1043,7 +1040,6 @@ impl ScratchBuffers {
             realized_inflow_buf: Vec::with_capacity(hydro_count),
             par_mean_buf: vec![0.0; hydro_count],
             par_noise_term_buf: vec![0.0; hydro_count],
-            inflow_residual_fallbacks: vec![0; hydro_count],
             closing_mean_buf: vec![0.0; hydro_count],
             closing_noise_buf: vec![0.0; hydro_count],
             cut_slots_buf: Vec::with_capacity(initial_pool_capacity),
@@ -1513,7 +1509,6 @@ impl ScratchBuffers {
             realized_inflow_buf: Vec::with_capacity(hydro_count),
             par_mean_buf: vec![0.0; hydro_count],
             par_noise_term_buf: vec![0.0; hydro_count],
-            inflow_residual_fallbacks: vec![0; hydro_count],
             closing_mean_buf: vec![0.0; hydro_count],
             closing_noise_buf: vec![0.0; hydro_count],
             cut_slots_buf: Vec::new(),

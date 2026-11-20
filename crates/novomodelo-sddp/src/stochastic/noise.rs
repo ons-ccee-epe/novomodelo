@@ -51,7 +51,6 @@ pub(crate) fn realize_inflow(
                     &scratch.par_mean_buf,
                     hydro_noise,
                     &mut scratch.par_noise_term_buf,
-                    &mut scratch.inflow_residual_fallbacks,
                 ),
             }
             add_noise_term_batch(
@@ -906,15 +905,7 @@ mod tests {
         let mut scratch = ScratchBuffers::for_test(1);
         scratch.par_mean_buf[0] = 2.0;
         let mut expected = [0.0];
-        let mut counts = [0_u64];
-        evaluate_lognormal_noise_term_batch(
-            stochastic.par(),
-            0,
-            &[2.0],
-            &[0.5],
-            &mut expected,
-            &mut counts,
-        );
+        evaluate_lognormal_noise_term_batch(stochastic.par(), 0, &[2.0], &[0.5], &mut expected);
 
         realize_under(
             InflowResidualDistribution::Lognormal3p,
@@ -933,11 +924,10 @@ mod tests {
             (2.0 + expected[0]).to_bits()
         );
         assert!(expected[0] != 0.5, "the term is not σ·η");
-        assert_eq!(scratch.inflow_residual_fallbacks, vec![0]);
     }
 
     #[test]
-    fn realize_inflow_under_lognormal_counts_each_fallback_solve() {
+    fn realize_inflow_under_lognormal_takes_the_normal_term_where_the_mean_is_not_positive() {
         let stochastic = make_one_hydro_stochastic(1);
         let mut scratch = ScratchBuffers::for_test(1);
         scratch.par_mean_buf[0] = 0.0;
@@ -955,21 +945,10 @@ mod tests {
             (-3.0_f64).to_bits()
         );
         assert_eq!(scratch.realized_inflow_buf, vec![-3.0]);
-        assert_eq!(scratch.inflow_residual_fallbacks, vec![1]);
-
-        realize_under(
-            InflowResidualDistribution::Lognormal3p,
-            &stochastic,
-            &[-3.0],
-            &mut scratch,
-            None,
-        );
-
-        assert_eq!(scratch.inflow_residual_fallbacks, vec![2]);
     }
 
     #[test]
-    fn realize_inflow_under_normal_counts_no_fallback() {
+    fn realize_inflow_under_normal_writes_sigma_eta_where_the_mean_is_not_positive() {
         let stochastic = make_one_hydro_stochastic(1);
         let mut scratch = ScratchBuffers::for_test(1);
         scratch.par_mean_buf[0] = 0.0;
@@ -986,7 +965,6 @@ mod tests {
             scratch.par_noise_term_buf[0].to_bits(),
             (-3.0_f64).to_bits()
         );
-        assert_eq!(scratch.inflow_residual_fallbacks, vec![0]);
     }
 
     #[cfg(debug_assertions)]

@@ -385,19 +385,16 @@ pub(super) fn broadcast_and_build_setup(
     )?;
 
     if ctx.comm.size() > 1 {
-        let fingerprint = setup.inputs.stochastic.opening_tree().fingerprint();
-        let (min, max) =
-            min_max_across_ranks(&ctx.comm, fingerprint).map_err(|e| CliError::Internal {
-                message: format!("opening tree fingerprint exchange failed: {e}"),
-            })?;
-        if min != max {
-            return Err(CliError::Internal {
-                message: format!(
-                    "opening tree differs across MPI ranks (fingerprints {min:#018x} to \
-                     {max:#018x}); every rank must build the same tree from the broadcast inputs"
-                ),
-            });
-        }
+        refuse_rank_disagreement(
+            &ctx.comm,
+            "opening tree",
+            setup.inputs.stochastic.opening_tree().fingerprint(),
+        )?;
+        refuse_rank_disagreement(
+            &ctx.comm,
+            "PAR model",
+            setup.inputs.stochastic.par().fingerprint(),
+        )?;
     }
 
     if let Some(timings) = root_setup_timings.as_mut() {
@@ -415,6 +412,25 @@ pub(super) fn broadcast_and_build_setup(
         policy_mode,
         setup_timings: root_setup_timings,
     })
+}
+
+fn refuse_rank_disagreement<C: Communicator>(
+    comm: &C,
+    what: &str,
+    fingerprint: u64,
+) -> Result<(), CliError> {
+    let (min, max) = min_max_across_ranks(comm, fingerprint).map_err(|e| CliError::Internal {
+        message: format!("{what} fingerprint exchange failed: {e}"),
+    })?;
+    if min != max {
+        return Err(CliError::Internal {
+            message: format!(
+                "{what} differs across MPI ranks (fingerprints {min:#018x} to {max:#018x}); \
+                 every rank must build the same {what} from the broadcast inputs"
+            ),
+        });
+    }
+    Ok(())
 }
 
 fn user_supplied_opening_tree(
@@ -657,6 +673,7 @@ fn run_root_exports(
 
 #[cfg(test)]
 mod tests {
+    use std::any::Any;
     use std::collections::BTreeMap;
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -666,6 +683,7 @@ mod tests {
     use serde::de::DeserializeOwned;
     use tempfile::TempDir;
 
+    use novomodelo_comm::{CommData, CommError, Communicator, ReduceOp};
     use novomodelo_core::ScalarParameter;
     use novomodelo_core::System;
     use novomodelo_io::BroadcastScalarParameter;
@@ -680,7 +698,7 @@ mod tests {
 
     use super::{
         build_study_setup, load_case_and_config, reconstruct_stochastic_context_non_root,
-        user_supplied_opening_tree,
+        refuse_rank_disagreement, user_supplied_opening_tree,
     };
     use crate::commands::broadcast::BroadcastOpeningTree;
     use crate::commands::resolve_output_dir;
@@ -1064,5 +1082,123 @@ mod tests {
 
             assert_eq!(setup.simulation_cut_set, cut_set);
         }
+    }
+
+    struct TwoRankComm {
+        peer: Option<u64>,
+    }
+
+    impl TwoRankComm {
+        fn with_peer(peer: u64) -> Self {
+            Self { peer: Some(peer) }
+        }
+
+        fn failing() -> Self {
+            Self { peer: None }
+        }
+    }
+
+    fn refused(operation: &'static str) -> CommError {
+        CommError::CollectiveFailed {
+            operation,
+            mpi_error_code: 1,
+            message: "the stub peer refused the collective".to_string(),
+        }
+    }
+
+    impl Communicator for TwoRankComm {
+        fn allgatherv<T: CommData>(
+            &self,
+            _send: &[T],
+            _recv: &mut [T],
+            _counts: &[usize],
+            _displs: &[usize],
+        ) -> Result<(), CommError> {
+            Err(refused("allgatherv"))
+        }
+
+        fn allreduce<T: CommData>(
+            &self,
+            send: &[T],
+            recv: &mut [T],
+            op: ReduceOp,
+        ) -> Result<(), CommError> {
+            let Some(peer) = self.peer else {
+                return Err(refused("allreduce"));
+            };
+            if op != ReduceOp::Max || send.len() != 2 || recv.len() != 2 {
+                return Err(refused("allreduce"));
+            }
+            for ((mine, out), theirs) in send.iter().zip(recv.iter_mut()).zip([!peer, peer]) {
+                let (Some(&mine), Some(out)) = (
+                    (mine as &dyn Any).downcast_ref::<u64>(),
+                    (out as &mut dyn Any).downcast_mut::<u64>(),
+                ) else {
+                    return Err(refused("allreduce"));
+                };
+                *out = mine.max(theirs);
+            }
+            Ok(())
+        }
+
+        fn broadcast<T: CommData>(&self, _buf: &mut [T], _root: usize) -> Result<(), CommError> {
+            Err(refused("broadcast"))
+        }
+
+        fn barrier(&self) -> Result<(), CommError> {
+            Err(refused("barrier"))
+        }
+
+        fn rank(&self) -> usize {
+            0
+        }
+
+        fn size(&self) -> usize {
+            2
+        }
+
+        fn abort(&self, _error_code: i32) -> ! {
+            unreachable!("refuse_rank_disagreement never aborts")
+        }
+    }
+
+    #[test]
+    fn refuse_rank_disagreement_passes_when_every_rank_agrees() {
+        let comm = TwoRankComm::with_peer(0x0000_0000_0000_00aa);
+        refuse_rank_disagreement(&comm, "PAR model", 0x0000_0000_0000_00aa)
+            .expect("ranks holding the same fingerprint must pass");
+    }
+
+    #[test]
+    fn refuse_rank_disagreement_names_both_fingerprints_when_ranks_differ() {
+        let expected = "PAR model differs across MPI ranks (fingerprints 0x00000000000000aa to \
+                        0x00000000000000bb); every rank must build the same PAR model from the \
+                        broadcast inputs";
+        for (local, peer) in [
+            (0x0000_0000_0000_00aa, 0x0000_0000_0000_00bb),
+            (0x0000_0000_0000_00bb, 0x0000_0000_0000_00aa),
+        ] {
+            let err = refuse_rank_disagreement(&TwoRankComm::with_peer(peer), "PAR model", local)
+                .expect_err("ranks holding different fingerprints must refuse");
+            assert!(
+                matches!(&err, CliError::Internal { message } if message == expected),
+                "local {local:#x}, peer {peer:#x}: got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn refuse_rank_disagreement_reports_a_failed_exchange() {
+        let err =
+            refuse_rank_disagreement(&TwoRankComm::failing(), "PAR model", 0x0000_0000_0000_00aa)
+                .expect_err("a failed exchange must refuse");
+        assert!(
+            matches!(
+                &err,
+                CliError::Internal { message }
+                    if message.starts_with("PAR model fingerprint exchange failed: ")
+            ),
+            "got {err:?}"
+        );
     }
 }

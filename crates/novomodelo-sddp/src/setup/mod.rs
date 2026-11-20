@@ -31,12 +31,14 @@
 use chrono::NaiveDate;
 use novomodelo_core::ContractType;
 use novomodelo_core::commissioning::hard_storage_floor;
+use novomodelo_core::temporal::NoiseMethod;
 use novomodelo_core::temporal::SeasonCycleType::Monthly;
 use novomodelo_core::temporal::SeasonMap;
 use novomodelo_core::temporal::StageLagTransition;
 use novomodelo_core::temporal::StageStateConfig;
 use novomodelo_io::Config;
 use novomodelo_io::config::BackwardScheduler;
+use novomodelo_io::config::InflowResidualDistribution;
 use novomodelo_solver::ActiveProfile;
 use novomodelo_stochastic::DerivedInflowSeeds;
 use novomodelo_stochastic::DerivedSeed;
@@ -436,7 +438,9 @@ impl StudySetup {
             &stochastic,
             &study_stage_ids,
             n_stages,
-            config.training_enumerated,
+            &config,
+            training_source,
+            simulation_source,
         )?;
 
         let (loop_params, simulation_config) = resolve_phase_configs(
@@ -1673,6 +1677,7 @@ const FULL_STATE_CONFIG: StageStateConfig = StageStateConfig {
 /// # Errors
 ///
 /// Propagates [`node_graph::build_node_graph`]'s construction error,
+/// [`reject_unsupported_combinations_under_lognormal`],
 /// [`reject_scenario_id_under_sampled_selection`], and
 /// [`reject_insample_class_under_external_nodes`].
 fn build_checked_node_graph(
@@ -1680,7 +1685,9 @@ fn build_checked_node_graph(
     stochastic: &StochasticContext,
     study_stage_ids: &[i32],
     n_stages: usize,
-    training_enumerated: bool,
+    config: &StudyParams,
+    training_source: &ScenarioSource,
+    simulation_source: &ScenarioSource,
 ) -> Result<NodeGraph, SddpError> {
     // Binds after `build_scenario_libraries`: an `External`-bound node's Ω
     // addresses the standardized library's raw scenario axis, so binding
@@ -1693,7 +1700,28 @@ fn build_checked_node_graph(
         stochastic,
     )?;
 
-    reject_scenario_id_under_sampled_selection(&node_graph, training_enumerated)?;
+    let simulation_enumerated =
+        config.simulation_enumerated == SimulationEnumeratedRequest::Enumerated;
+    let simulation_runs = config.n_scenarios > 0 || simulation_enumerated;
+    reject_unsupported_combinations_under_lognormal(
+        config.inflow_residual,
+        stochastic.n_hydros() > 0 && stochastic.par().n_stages() > 0,
+        (
+            training_source.inflow_scheme,
+            simulation_runs.then_some(simulation_source.inflow_scheme),
+        ),
+        (config.training_enumerated, simulation_enumerated),
+        system
+            .stages()
+            .iter()
+            .find(|s| {
+                s.id >= 0 && s.scenario_config.noise_method == NoiseMethod::HistoricalResiduals
+            })
+            .map(|s| s.id),
+        find_external_bound_node(&node_graph)
+            .map(|(pos, node)| (node_graph.node_ids[pos], node.stage)),
+    )?;
+    reject_scenario_id_under_sampled_selection(&node_graph, config.training_enumerated)?;
     let prov = stochastic.provenance();
     reject_insample_class_under_external_nodes(
         &node_graph,
@@ -2607,6 +2635,69 @@ fn reject_scenario_id_under_sampled_selection(
         )));
     }
     Ok(())
+}
+
+/// Reject the inputs `modeling.inflow_residual.distribution = "lognormal_3p"` cannot
+/// serve, naming every conflict in one error. Inert under `normal` and without a PAR
+/// model. Takes plain values so it is unit-testable without a [`StochasticContext`].
+///
+/// # Errors
+///
+/// Returns [`SddpError::Validation`] listing each conflicting key, in a fixed order.
+fn reject_unsupported_combinations_under_lognormal(
+    distribution: InflowResidualDistribution,
+    has_par_model: bool,
+    (training_scheme, simulation_scheme): (SamplingScheme, Option<SamplingScheme>),
+    (training_enumerated, simulation_enumerated): (bool, bool),
+    historical_residuals_stage: Option<i32>,
+    scenario_id_node: Option<(NodeId, StageIdx)>,
+) -> Result<(), SddpError> {
+    if distribution != InflowResidualDistribution::Lognormal3p || !has_par_model {
+        return Ok(());
+    }
+    let given_scheme = |scheme| match scheme {
+        SamplingScheme::External => Some("external"),
+        SamplingScheme::Historical => Some("historical"),
+        SamplingScheme::InSample | SamplingScheme::OutOfSample => None,
+    };
+    let mut conflicts = Vec::new();
+    if let Some((node, stage)) = scenario_id_node {
+        conflicts.push(format!(
+            "policy_graph.nodes[].scenario_id (node {node}, stage {stage})"
+        ));
+    }
+    if let Some(scheme) = given_scheme(training_scheme) {
+        conflicts.push(format!(
+            "training.scenario_source.inflow.scheme = \"{scheme}\""
+        ));
+    }
+    if let Some(scheme) = simulation_scheme
+        .filter(|scheme| *scheme != training_scheme)
+        .and_then(given_scheme)
+    {
+        conflicts.push(format!(
+            "simulation.scenario_source.inflow.scheme = \"{scheme}\""
+        ));
+    }
+    if let Some(stage) = historical_residuals_stage {
+        conflicts.push(format!(
+            "stages[].sampling_method = \"historical_residuals\" (stage {stage})"
+        ));
+    }
+    if training_enumerated {
+        conflicts.push("training.selection.method = \"enumerated\"".to_string());
+    }
+    if simulation_enumerated {
+        conflicts.push("simulation.selection.method = \"enumerated\"".to_string());
+    }
+    if conflicts.is_empty() {
+        return Ok(());
+    }
+    Err(SddpError::Validation(format!(
+        "modeling.inflow_residual.distribution = \"{}\" does not support {}",
+        distribution.as_str(),
+        conflicts.join("; ")
+    )))
 }
 
 /// Reject a non-empty in-sample class alongside an external-column node graph. An

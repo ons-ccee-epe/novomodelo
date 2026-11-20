@@ -10493,6 +10493,180 @@ fn insample_classes_without_external_nodes_are_admitted() {
     .expect("a generated-only graph admits in-sample classes");
 }
 
+// ---------------------------------------------------------------------------
+// reject_unsupported_combinations_under_lognormal: the lognormal_3p refusals
+// ---------------------------------------------------------------------------
+
+const LOGNORMAL_3P_PREFIX: &str =
+    "modeling.inflow_residual.distribution = \"lognormal_3p\" does not support ";
+
+fn lognormal_3p_check(
+    schemes: (SamplingScheme, Option<SamplingScheme>),
+    enumerated: (bool, bool),
+    historical_residuals_stage: Option<i32>,
+    scenario_id_node: Option<(NodeId, super::StageIdx)>,
+) -> Result<(), SddpError> {
+    super::reject_unsupported_combinations_under_lognormal(
+        InflowResidualDistribution::Lognormal3p,
+        true,
+        schemes,
+        enumerated,
+        historical_residuals_stage,
+        scenario_id_node,
+    )
+}
+
+fn refusal_items(result: Result<(), SddpError>) -> String {
+    match result {
+        Err(SddpError::Validation(msg)) => msg
+            .strip_prefix(LOGNORMAL_3P_PREFIX)
+            .unwrap_or_else(|| panic!("message lacks the lognormal_3p prefix: {msg}"))
+            .to_string(),
+        other => panic!("expected a lognormal_3p Validation error, got {other:?}"),
+    }
+}
+
+#[test]
+fn lognormal_3p_refuses_external_and_historical_inflow_schemes() {
+    use SamplingScheme::{External, Historical, InSample, OutOfSample};
+    let items = |schemes| refusal_items(lognormal_3p_check(schemes, (false, false), None, None));
+
+    assert_eq!(
+        items((External, None)),
+        "training.scenario_source.inflow.scheme = \"external\""
+    );
+    assert_eq!(
+        items((Historical, None)),
+        "training.scenario_source.inflow.scheme = \"historical\""
+    );
+    assert_eq!(
+        items((InSample, Some(External))),
+        "simulation.scenario_source.inflow.scheme = \"external\""
+    );
+    assert_eq!(
+        items((OutOfSample, Some(Historical))),
+        "simulation.scenario_source.inflow.scheme = \"historical\""
+    );
+    assert_eq!(
+        items((External, Some(External))),
+        "training.scenario_source.inflow.scheme = \"external\"",
+        "a simulation scheme inherited from training is not named"
+    );
+    assert_eq!(
+        items((External, Some(Historical))),
+        "training.scenario_source.inflow.scheme = \"external\"; \
+         simulation.scenario_source.inflow.scheme = \"historical\""
+    );
+
+    for schemes in [
+        (InSample, None),
+        (OutOfSample, Some(InSample)),
+        (InSample, Some(OutOfSample)),
+    ] {
+        lognormal_3p_check(schemes, (false, false), None, None)
+            .expect("in-sample and out-of-sample inflow schemes are admitted");
+    }
+}
+
+#[test]
+fn lognormal_3p_refuses_a_historical_residuals_stage_and_a_scenario_id_node() {
+    let in_sample = (SamplingScheme::InSample, None);
+
+    assert_eq!(
+        refusal_items(lognormal_3p_check(in_sample, (false, false), Some(3), None)),
+        "stages[].sampling_method = \"historical_residuals\" (stage 3)"
+    );
+    assert_eq!(
+        refusal_items(lognormal_3p_check(
+            in_sample,
+            (false, false),
+            None,
+            Some((NodeId(9), super::StageIdx(1))),
+        )),
+        "policy_graph.nodes[].scenario_id (node 9, stage 1)"
+    );
+}
+
+#[test]
+fn lognormal_3p_refuses_enumerated_selection_in_either_phase() {
+    let in_sample = (SamplingScheme::InSample, Some(SamplingScheme::InSample));
+    let items = |enumerated| refusal_items(lognormal_3p_check(in_sample, enumerated, None, None));
+
+    assert_eq!(
+        items((true, false)),
+        "training.selection.method = \"enumerated\""
+    );
+    assert_eq!(
+        items((false, true)),
+        "simulation.selection.method = \"enumerated\""
+    );
+    assert_eq!(
+        items((true, true)),
+        "training.selection.method = \"enumerated\"; \
+         simulation.selection.method = \"enumerated\""
+    );
+}
+
+#[test]
+fn lognormal_3p_refuses_every_conflict_in_one_error() {
+    let all = lognormal_3p_check(
+        (SamplingScheme::External, Some(SamplingScheme::Historical)),
+        (true, true),
+        Some(0),
+        Some((NodeId(9), super::StageIdx(1))),
+    );
+    assert_eq!(
+        refusal_items(all),
+        "policy_graph.nodes[].scenario_id (node 9, stage 1); \
+         training.scenario_source.inflow.scheme = \"external\"; \
+         simulation.scenario_source.inflow.scheme = \"historical\"; \
+         stages[].sampling_method = \"historical_residuals\" (stage 0); \
+         training.selection.method = \"enumerated\"; \
+         simulation.selection.method = \"enumerated\""
+    );
+
+    let four = lognormal_3p_check(
+        (SamplingScheme::External, Some(SamplingScheme::External)),
+        (false, true),
+        Some(2),
+        Some((NodeId(4), super::StageIdx(2))),
+    );
+    assert_eq!(
+        refusal_items(four),
+        "policy_graph.nodes[].scenario_id (node 4, stage 2); \
+         training.scenario_source.inflow.scheme = \"external\"; \
+         stages[].sampling_method = \"historical_residuals\" (stage 2); \
+         simulation.selection.method = \"enumerated\""
+    );
+}
+
+#[test]
+fn lognormal_3p_refuses_nothing_under_normal_or_without_a_par_model() {
+    let conflicts = (
+        (SamplingScheme::External, Some(SamplingScheme::Historical)),
+        (true, true),
+        Some(0),
+        Some((NodeId(9), super::StageIdx(1))),
+    );
+    for (distribution, has_par_model) in [
+        (InflowResidualDistribution::Normal, true),
+        (InflowResidualDistribution::Normal, false),
+        (InflowResidualDistribution::Lognormal3p, false),
+    ] {
+        super::reject_unsupported_combinations_under_lognormal(
+            distribution,
+            has_par_model,
+            conflicts.0,
+            conflicts.1,
+            conflicts.2,
+            conflicts.3,
+        )
+        .unwrap_or_else(|e| {
+            panic!("{distribution:?} with has_par_model = {has_par_model} refused: {e:?}")
+        });
+    }
+}
+
 /// Documented exhaustive-destructure guard (a compile-fail proxy; trybuild is
 /// not wired in this workspace). `is_effective_non_expectation` destructures
 /// `RiskMeasure` and `rule_is_gap` destructures `StoppingRule` with every field

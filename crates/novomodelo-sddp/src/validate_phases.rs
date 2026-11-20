@@ -15,9 +15,11 @@
 //! (that would create a cycle), so the shared logic must live in `novomodelo-sddp` or
 //! above it in the dependency graph.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use novomodelo_core::System;
+use novomodelo_core::{EntityId, System};
+use novomodelo_io::config::{InflowNonNegativityMethod, InflowResidualDistribution};
 use novomodelo_io::{CaseArtifacts, Config, ErrorKind, LoadError, PolicyMode, ReportEntry};
 
 use crate::hydro_models::prepare_hydro_models_from_artifacts;
@@ -296,6 +298,74 @@ pub fn check_configured_full_fcf_load(
     Ok(Some((checked, report)))
 }
 
+/// Warnings for a `lognormal_3p` study whose solves can take the normal residual. Raised
+/// by validation only; inert under `normal` and without a PAR model.
+fn inflow_residual_warnings(
+    config: &Config,
+    system: &System,
+    has_par_model: bool,
+) -> Vec<ReportEntry> {
+    let lognormal = InflowResidualDistribution::Lognormal3p;
+    if config.modeling.inflow_residual.distribution != lognormal || !has_par_model {
+        return Vec::new();
+    }
+    let warning = |file: &str, message: String| ReportEntry {
+        kind: format!("{:?}", ErrorKind::ModelQuality),
+        file: file.to_owned(),
+        entity: None,
+        message,
+    };
+    let key = format!(
+        "modeling.inflow_residual.distribution = \"{}\"",
+        lognormal.as_str()
+    );
+
+    let nonpositive_means: BTreeSet<(EntityId, usize, &str)> = system
+        .inflow_models()
+        .iter()
+        .filter(|model| model.mean_m3s <= 0.0)
+        .filter_map(|model| {
+            // A pre-study stage has a negative id.
+            let stage = usize::try_from(model.stage_id).ok()?;
+            let season = system
+                .stages()
+                .iter()
+                .find(|candidate| candidate.id == model.stage_id)
+                .and_then(|candidate| candidate.season_id);
+            Some(match season {
+                Some(season) => (model.hydro_id, season, "season"),
+                None => (model.hydro_id, stage, "stage"),
+            })
+        })
+        .collect();
+
+    let mut warnings = Vec::new();
+    if !nonpositive_means.is_empty() {
+        let items = nonpositive_means
+            .iter()
+            .map(|(hydro, number, kind)| format!("hydro {hydro} {kind} {number}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        warnings.push(warning(
+            "scenarios/",
+            format!(
+                "{key}: the seasonal mean inflow is <= 0 at {items}; solves near the mean \
+                 state there take the normal residual"
+            ),
+        ));
+    }
+    if config.modeling.inflow_non_negativity.method == InflowNonNegativityMethod::None {
+        warnings.push(warning(
+            "config.json",
+            format!(
+                "{key} with modeling.inflow_non_negativity.method = \"none\": solves that \
+                 take the normal residual can realize negative inflows"
+            ),
+        ));
+    }
+    warnings
+}
+
 /// Run every pre-solver check `novomodelo run` reaches before it starts solving, in
 /// the order the run reaches them, stopping at the first failure.
 ///
@@ -351,6 +421,11 @@ pub fn validate_study(request: ValidateRequest<'_>) -> Result<ValidatedStudy, Va
         requirements.inflow_lag_depth(),
     )
     .map_err(at(PrepPhase::Stochastic))?;
+    let residual_warnings = inflow_residual_warnings(
+        config,
+        &prepared.system,
+        prepared.stochastic.n_hydros() > 0 && prepared.stochastic.par().n_stages() > 0,
+    );
     let hydro_models =
         prepare_hydro_models_from_artifacts(&prepared.system, &artifacts, false, None)
             .map_err(at(PrepPhase::HydroModels))?;
@@ -397,12 +472,12 @@ pub fn validate_study(request: ValidateRequest<'_>) -> Result<ValidatedStudy, Va
         .transpose()
         .map_err(at(PrepPhase::Boundary))?;
 
-    let (policy_load, warnings) =
+    let (policy_load, policy_warnings) =
         policy_load.map_or((None, Vec::new()), |r| (Some(r.summary), r.warnings));
     Ok(ValidatedStudy {
         system: prepared.system,
         boundary,
-        warnings,
+        warnings: [residual_warnings, policy_warnings].concat(),
         policy_load,
     })
 }
@@ -462,7 +537,8 @@ mod tests {
     use std::fs;
     use std::io;
 
-    use novomodelo_io::OutputError;
+    use novomodelo_io::output::write_inflow_seasonal_stats;
+    use novomodelo_io::{InflowSeasonalStatsRow, OutputError};
     use novomodelo_stochastic::StochasticError;
     use serde_json::{Value, json};
     use tempfile::TempDir;
@@ -488,10 +564,15 @@ mod tests {
         fs::write(path, serde_json::to_string_pretty(&value).unwrap()).unwrap();
     }
 
-    fn validate_toy_case(mutate: impl FnOnce(&Path)) -> Result<ValidatedStudy, ValidateFailure> {
+    fn validate_case(
+        base: &str,
+        mutate: impl FnOnce(&Path),
+    ) -> Result<ValidatedStudy, ValidateFailure> {
         let case = TempDir::new().unwrap();
         copy_dir(
-            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/1dtoy"),
+            &Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../examples")
+                .join(base),
             case.path(),
         );
         mutate(case.path());
@@ -504,6 +585,49 @@ mod tests {
             artifacts: loaded.artifacts,
             output_dir: &case.path().join("output"),
         })
+    }
+
+    fn validate_toy_case(mutate: impl FnOnce(&Path)) -> Result<ValidatedStudy, ValidateFailure> {
+        validate_case("1dtoy", mutate)
+    }
+
+    fn set_inflow_modeling(case: &Path, distribution: &str, method: &str) {
+        edit_json(&case.join("config.json"), |config| {
+            config["modeling"]["inflow_residual"] = json!({"distribution": distribution});
+            config["modeling"]["inflow_non_negativity"] = json!({"method": method});
+        });
+    }
+
+    fn write_zero_means_at_stages_0_and_2_in_reverse_order(case: &Path) {
+        let rows: Vec<_> = (0..4)
+            .rev()
+            .map(|stage_id| InflowSeasonalStatsRow {
+                hydro_id: EntityId(0),
+                stage_id,
+                mean_m3s: if stage_id % 2 == 0 { 0.0 } else { 40.0 },
+                std_m3s: 10.0,
+            })
+            .collect();
+        write_inflow_seasonal_stats(&case.join("scenarios/inflow_seasonal_stats.parquet"), &rows)
+            .unwrap();
+    }
+
+    fn nonpositive_mean_message(items: &str) -> String {
+        format!(
+            "modeling.inflow_residual.distribution = \"lognormal_3p\": the seasonal mean inflow \
+             is <= 0 at {items}; solves near the mean state there take the normal residual"
+        )
+    }
+
+    const NEGATIVE_INFLOW_MESSAGE: &str = "modeling.inflow_residual.distribution = \"lognormal_3p\" \
+         with modeling.inflow_non_negativity.method = \"none\": solves that take the normal \
+         residual can realize negative inflows";
+
+    fn only_warning(validated: &ValidatedStudy) -> &ReportEntry {
+        match validated.warnings.as_slice() {
+            [warning] => warning,
+            other => panic!("expected one warning, got {other:?}"),
+        }
     }
 
     fn phase_failure(result: Result<ValidatedStudy, ValidateFailure>) -> PhaseFailure {
@@ -519,6 +643,78 @@ mod tests {
         assert!(validated.boundary.is_none());
         assert!(validated.warnings.is_empty());
         assert!(validated.policy_load.is_none());
+    }
+
+    #[test]
+    fn validate_study_under_lognormal_3p_warns_once_about_nonpositive_seasonal_means() {
+        let validated = validate_toy_case(|case| {
+            set_inflow_modeling(case, "lognormal_3p", "truncation");
+            write_zero_means_at_stages_0_and_2_in_reverse_order(case);
+        })
+        .unwrap();
+        let warning = only_warning(&validated);
+        assert_eq!(warning.kind, "ModelQuality");
+        assert_eq!(warning.file, "scenarios/");
+        assert_eq!(warning.entity, None);
+        assert_eq!(
+            warning.message,
+            nonpositive_mean_message("hydro 0 stage 0, hydro 0 stage 2")
+        );
+    }
+
+    #[test]
+    fn validate_study_under_lognormal_3p_names_a_shared_season_once() {
+        let validated = validate_toy_case(|case| {
+            set_inflow_modeling(case, "lognormal_3p", "truncation");
+            write_zero_means_at_stages_0_and_2_in_reverse_order(case);
+            edit_json(&case.join("stages.json"), |stages| {
+                for (stage, season) in stages["stages"]
+                    .as_array_mut()
+                    .unwrap()
+                    .iter_mut()
+                    .zip([0, 1, 0, 1])
+                {
+                    stage["season_id"] = json!(season);
+                }
+            });
+        })
+        .unwrap();
+        let warning = only_warning(&validated);
+        assert_eq!(warning.file, "scenarios/");
+        assert_eq!(
+            warning.message,
+            nonpositive_mean_message("hydro 0 season 0")
+        );
+    }
+
+    #[test]
+    fn validate_study_under_lognormal_3p_with_method_none_warns_about_negative_inflows() {
+        let validated =
+            validate_toy_case(|case| set_inflow_modeling(case, "lognormal_3p", "none")).unwrap();
+        let warning = only_warning(&validated);
+        assert_eq!(warning.kind, "ModelQuality");
+        assert_eq!(warning.file, "config.json");
+        assert_eq!(warning.entity, None);
+        assert_eq!(warning.message, NEGATIVE_INFLOW_MESSAGE);
+    }
+
+    #[test]
+    fn validate_study_under_normal_adds_no_inflow_residual_warning() {
+        let validated = validate_toy_case(|case| {
+            set_inflow_modeling(case, "normal", "none");
+            write_zero_means_at_stages_0_and_2_in_reverse_order(case);
+        })
+        .unwrap();
+        assert!(validated.warnings.is_empty(), "{:?}", validated.warnings);
+    }
+
+    #[test]
+    fn validate_study_under_lognormal_3p_without_a_par_model_adds_no_warning() {
+        let validated = validate_case("deterministic/d01-thermal-dispatch", |case| {
+            set_inflow_modeling(case, "lognormal_3p", "none");
+        })
+        .unwrap();
+        assert!(validated.warnings.is_empty(), "{:?}", validated.warnings);
     }
 
     #[test]

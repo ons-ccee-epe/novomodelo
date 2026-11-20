@@ -215,11 +215,11 @@ pub fn evaluate_par_noise_term_batch(
 /// `p_h + w_h` keeps the conditional mean `p_h` and the standard deviation
 /// `sigma_h` and is never negative. Where `p_h` is not positive or
 /// `(sigma_h / p_h)^2` is not finite, writes `sigma_h * eta_h` with the bits of
-/// [`evaluate_par_noise_term_batch`] and adds one to `fallback_counts[h]` when
-/// `sigma_h != 0`. Each operation is rounded separately (no fused multiply-add),
-/// in the order shown. For `|eta_h|` near 40 with `(sigma_h / p_h)^2` near
-/// `f64::MAX`, `exp_m1` overflows to infinity; generated noise does not reach
-/// this, only a hand-written opening-tree file can.
+/// [`evaluate_par_noise_term_batch`]. Each operation is rounded separately (no
+/// fused multiply-add), in the order shown. For `|eta_h|` near 40 with
+/// `(sigma_h / p_h)^2` near `f64::MAX`, `exp_m1` overflows to infinity;
+/// generated noise does not reach this, only a hand-written opening-tree file
+/// can.
 ///
 /// Every slice has length `par_lp.n_hydros()`.
 pub fn evaluate_lognormal_noise_term_batch(
@@ -228,7 +228,6 @@ pub fn evaluate_lognormal_noise_term_batch(
     conditional_mean: &[f64],
     noise: &[f64],
     output: &mut [f64],
-    fallback_counts: &mut [u64],
 ) {
     let n_series = par_lp.n_hydros();
     debug_assert_eq!(
@@ -238,11 +237,6 @@ pub fn evaluate_lognormal_noise_term_batch(
     );
     debug_assert_eq!(noise.len(), n_series, "noise.len() must equal n_series");
     debug_assert_eq!(output.len(), n_series, "output.len() must equal n_series");
-    debug_assert_eq!(
-        fallback_counts.len(),
-        n_series,
-        "fallback_counts.len() must equal n_series"
-    );
 
     for h in 0..n_series {
         let sigma = par_lp.sigma(stage, h);
@@ -260,9 +254,6 @@ pub fn evaluate_lognormal_noise_term_batch(
             }
         }
         output[h] = sigma * eta;
-        if sigma != 0.0 {
-            fallback_counts[h] += 1;
-        }
     }
 }
 
@@ -1004,11 +995,10 @@ mod tests {
         par_lp: &PrecomputedPar,
         p: [f64; N],
         eta: [f64; N],
-    ) -> ([f64; N], [u64; N]) {
+    ) -> [f64; N] {
         let mut w = [f64::NAN; N];
-        let mut counts = [0; N];
-        evaluate_lognormal_noise_term_batch(par_lp, 0, &p, &eta, &mut w, &mut counts);
-        (w, counts)
+        evaluate_lognormal_noise_term_batch(par_lp, 0, &p, &eta, &mut w);
+        w
     }
 
     fn normal_pdf(eta: f64) -> f64 {
@@ -1036,7 +1026,7 @@ mod tests {
         for cv in [0.01, 0.1, 0.5, 1.0, 3.0, 10.0] {
             let p = sigma / cv;
             let hi = 2.0 * (cv * cv).ln_1p().sqrt() + 12.0;
-            let z_at = |eta: f64| p + lognormal_term(&par_lp, [p], [eta]).0[0];
+            let z_at = |eta: f64| p + lognormal_term(&par_lp, [p], [eta])[0];
             let moments = |step: f64| {
                 let mean = trapezoid(-12.0, hi, step, |eta| z_at(eta) * normal_pdf(eta));
                 let var = trapezoid(-12.0, hi, step, |eta| {
@@ -1070,7 +1060,7 @@ mod tests {
             let par_lp = make_ar0_par(&[c]);
             let sigma = par_lp.sigma(0, 0);
             for &eta in etas {
-                let w = lognormal_term(&par_lp, [1.0], [eta]).0[0];
+                let w = lognormal_term(&par_lp, [1.0], [eta])[0];
                 let w2 = sigma * eta + sigma * c * (eta * eta - 1.0) / 2.0;
                 assert!(
                     (w - w2).abs() <= 1e-12 * w2.abs(),
@@ -1086,7 +1076,7 @@ mod tests {
         let p = [1.0, 1e-300, 1.0, 5e-324];
 
         for eta in [-38.5, -8.6, 8.6, 38.5] {
-            let (w, counts) = lognormal_term(&par_lp, p, [eta; 4]);
+            let w = lognormal_term(&par_lp, p, [eta; 4]);
             let mut z = [f64::NAN; 4];
             add_noise_term_batch(&p, &w, &mut z);
 
@@ -1095,7 +1085,11 @@ mod tests {
                 assert!(z[h].is_finite(), "{case}: z {}", z[h]);
                 assert!(z[h] >= 0.0, "{case}: z {}", z[h]);
                 assert_ne!(z[h].to_bits(), (-0.0f64).to_bits(), "{case}: z is -0.0");
-                assert_eq!(counts[h], 0, "{case}: the fallback ran");
+                assert_ne!(
+                    w[h].to_bits(),
+                    (par_lp.sigma(0, h) * eta).to_bits(),
+                    "{case}: the fallback ran"
+                );
             }
         }
     }
@@ -1108,63 +1102,23 @@ mod tests {
 
         for p in [[-3.0, 0.0], [-0.0, 1e-300]] {
             let mut w = [f64::NAN; 2];
-            let mut counts = [0u64; 2];
-            for calls in 1..=2 {
-                evaluate_lognormal_noise_term_batch(
-                    &par_lp,
-                    0,
-                    &p,
-                    &SPLIT_NOISE,
-                    &mut w,
-                    &mut counts,
-                );
-                assert_eq!(bits(&w), bits(&normal), "p {p:?}, call {calls}");
-                assert_eq!(counts, [calls, calls], "p {p:?}, call {calls}");
-            }
+            evaluate_lognormal_noise_term_batch(&par_lp, 0, &p, &SPLIT_NOISE, &mut w);
+            assert_eq!(bits(&w), bits(&normal), "p {p:?}");
         }
-    }
-
-    #[test]
-    fn lognormal_fallback_counts_only_hydros_with_nonzero_sigma() {
-        let par_lp = make_ar0_par(&[4.0, 0.0]);
-        assert_eq!(par_lp.sigma(0, 1).to_bits(), 0.0f64.to_bits());
-        let mut w = [f64::NAN; 2];
-        let mut counts = [0u64; 2];
-
-        for _ in 0..2 {
-            evaluate_lognormal_noise_term_batch(
-                &par_lp,
-                0,
-                &[-1.0, -1.0],
-                &[0.37, -0.83],
-                &mut w,
-                &mut counts,
-            );
-        }
-        assert_eq!(counts, [2, 0]);
-
-        evaluate_lognormal_noise_term_batch(
-            &par_lp,
-            0,
-            &[2.0, 2.0],
-            &[0.37, -0.83],
-            &mut w,
-            &mut counts,
-        );
-        assert_eq!(counts, [2, 0]);
     }
 
     #[test]
     fn lognormal_zero_sigma_leaves_the_conditional_mean() {
         let par_lp = make_ar0_par(&[0.0]);
-        for eta in [1.5, -1.5, 0.0, -0.0] {
-            let (w, counts) = lognormal_term(&par_lp, [5.0], [eta]);
-            let mut z = [f64::NAN];
-            add_noise_term_batch(&[5.0], &w, &mut z);
+        for p in [5.0, -1.0] {
+            for eta in [1.5, -1.5, 0.0, -0.0] {
+                let w = lognormal_term(&par_lp, [p], [eta]);
+                let mut z = [f64::NAN];
+                add_noise_term_batch(&[p], &w, &mut z);
 
-            assert_eq!(w[0].to_bits(), (0.0 * eta).to_bits(), "eta {eta}");
-            assert_eq!(z[0].to_bits(), 5.0f64.to_bits(), "eta {eta}");
-            assert_eq!(counts, [0], "eta {eta}");
+                assert_eq!(w[0].to_bits(), (0.0 * eta).to_bits(), "p {p}, eta {eta}");
+                assert_eq!(z[0].to_bits(), p.to_bits(), "p {p}, eta {eta}");
+            }
         }
     }
 
@@ -1179,13 +1133,11 @@ mod tests {
             let canonical = make_split_par([EntityId(3), EntityId(5)]);
             let permuted = make_split_par([EntityId(5), EntityId(3)]);
 
-            let (w_c, counts_c) = lognormal_term(&canonical, [p0, p1], [eta0, eta1]);
-            let (w_p, counts_p) = lognormal_term(&permuted, [p1, p0], [eta1, eta0]);
+            let w_c = lognormal_term(&canonical, [p0, p1], [eta0, eta1]);
+            let w_p = lognormal_term(&permuted, [p1, p0], [eta1, eta0]);
 
             prop_assert_eq!(w_c[0].to_bits(), w_p[1].to_bits());
             prop_assert_eq!(w_c[1].to_bits(), w_p[0].to_bits());
-            prop_assert_eq!(counts_c[0], counts_p[1]);
-            prop_assert_eq!(counts_c[1], counts_p[0]);
         }
     }
 }

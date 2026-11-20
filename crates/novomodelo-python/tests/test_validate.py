@@ -15,10 +15,23 @@ import pathlib
 import shutil
 import tempfile
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
 VALID_CASE_1DTOY = "examples/1dtoy"
 VALID_CASE_4REE = "examples/4ree"
+
+_NONPOSITIVE_MEAN = (
+    'modeling.inflow_residual.distribution = "lognormal_3p": the seasonal mean '
+    "inflow is <= 0 at hydro 0 stage 0, hydro 0 stage 2; solves near the mean "
+    "state there take the normal residual"
+)
+_NEGATIVE_INFLOW = (
+    'modeling.inflow_residual.distribution = "lognormal_3p" with '
+    'modeling.inflow_non_negativity.method = "none": solves that take the '
+    "normal residual can realize negative inflows"
+)
 
 
 # ── helper ────────────────────────────────────────────────────────────────────
@@ -129,6 +142,67 @@ def test_validate_emits_penalty_ordering_warning() -> None:
             "expected a ModelQuality penalty-ordering warning, got: "
             f"{result['warnings']}"
         )
+    finally:
+        shutil.rmtree(case_dir.parent, ignore_errors=True)
+
+
+def _write_zero_means_at_stages_0_and_2(case_dir: pathlib.Path) -> None:
+    stage_ids = [0, 1, 2, 3]
+    table = pa.table(
+        {
+            "hydro_id": pa.array([0] * len(stage_ids), type=pa.int32()),
+            "stage_id": pa.array(stage_ids, type=pa.int32()),
+            "mean_m3s": pa.array(
+                [0.0 if stage % 2 == 0 else 40.0 for stage in stage_ids],
+                type=pa.float64(),
+            ),
+            "std_m3s": pa.array([10.0] * len(stage_ids), type=pa.float64()),
+        }
+    )
+    pq.write_table(
+        table,
+        case_dir / "scenarios" / "inflow_seasonal_stats.parquet",
+        compression="none",
+    )
+
+
+def _set_inflow_residual_distribution(
+    case_dir: pathlib.Path, distribution: str
+) -> None:
+    config_path = case_dir / "config.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["modeling"]["inflow_residual"] = {"distribution": distribution}
+    config["modeling"]["inflow_non_negativity"] = {"method": "none"}
+    config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
+
+
+def test_validate_lognormal_3p_warns_about_a_fallback_prone_study() -> None:
+    """validate() returns both inflow-residual warnings under lognormal_3p, none under normal."""
+    import novomodelo.io
+
+    case_dir = copy_case_to_tempdir(VALID_CASE_1DTOY)
+    try:
+        _write_zero_means_at_stages_0_and_2(case_dir)
+
+        _set_inflow_residual_distribution(case_dir, "lognormal_3p")
+        result = novomodelo.io.validate(str(case_dir))
+        assert result["valid"] is True, result["errors"]
+        inflow_residual = [
+            (w["kind"], w["file"], w["message"])
+            for w in result["warnings"]
+            if "modeling.inflow_residual" in w["message"]
+        ]
+        assert inflow_residual == [
+            ("ModelQuality", "scenarios/", _NONPOSITIVE_MEAN),
+            ("ModelQuality", "config.json", _NEGATIVE_INFLOW),
+        ]
+
+        _set_inflow_residual_distribution(case_dir, "normal")
+        result = novomodelo.io.validate(str(case_dir))
+        assert result["valid"] is True, result["errors"]
+        assert not [
+            w for w in result["warnings"] if "modeling.inflow_residual" in w["message"]
+        ]
     finally:
         shutil.rmtree(case_dir.parent, ignore_errors=True)
 

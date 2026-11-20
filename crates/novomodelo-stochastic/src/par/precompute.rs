@@ -891,6 +891,22 @@ mod tests {
     }
 
     #[test]
+    fn fingerprint_changes_with_each_leading_count_alone() {
+        let base = varying_orders_table().fingerprint();
+
+        let mut more_stages = varying_orders_table();
+        more_stages.n_stages += 1;
+        let mut more_hydros = varying_orders_table();
+        more_hydros.n_hydros += 1;
+        let mut higher_max_order = varying_orders_table();
+        higher_max_order.max_order += 1;
+
+        assert_ne!(base, more_stages.fingerprint());
+        assert_ne!(base, more_hydros.fingerprint());
+        assert_ne!(base, higher_max_order.fingerprint());
+    }
+
+    #[test]
     fn declaration_order_invariance() {
         let stage = make_stage(0, 0, Some(0));
 

@@ -497,16 +497,67 @@ def _active_row_cap_with_dynamic_selection(case: pathlib.Path) -> None:
 
 
 def _active_row_cap_with_enumerated_training(case: pathlib.Path) -> None:
-    def one_opening_per_stage(stages: Any) -> None:
-        for stage in stages["stages"]:
-            stage["num_openings"] = 1
-
     def enumerated(config: Any) -> None:
         config["training"]["selection"] = {"method": "enumerated"}
 
-    _edit_json(case / "stages.json", one_opening_per_stage)
+    _one_opening_per_stage(case)
     _edit_json(case / "config.json", enumerated)
     _set_cut_selection(case, {"max_active_per_stage": 8})
+
+
+def _lognormal_3p(case: pathlib.Path) -> None:
+    def edit(config: Any) -> None:
+        config["modeling"]["inflow_residual"] = {"distribution": "lognormal_3p"}
+
+    _edit_json(case / "config.json", edit)
+
+
+def _one_opening_per_stage(case: pathlib.Path) -> None:
+    def edit(stages: Any) -> None:
+        for stage in stages["stages"]:
+            stage["num_openings"] = 1
+
+    _edit_json(case / "stages.json", edit)
+
+
+def _lognormal_3p_with_a_historical_training_scheme(case: pathlib.Path) -> None:
+    _lognormal_3p(case)
+
+    def edit(config: Any) -> None:
+        config["training"].setdefault("scenario_source", {})["inflow"] = {
+            "scheme": "historical"
+        }
+
+    _edit_json(case / "config.json", edit)
+
+
+def _lognormal_3p_with_a_historical_residuals_stage(case: pathlib.Path) -> None:
+    _lognormal_3p(case)
+
+    def edit(stages: Any) -> None:
+        stages["stages"][0]["sampling_method"] = "historical_residuals"
+
+    _edit_json(case / "stages.json", edit)
+
+
+def _lognormal_3p_with_enumerated_training(case: pathlib.Path) -> None:
+    _lognormal_3p(case)
+    _one_opening_per_stage(case)
+
+    def edit(config: Any) -> None:
+        config["training"]["selection"] = {"method": "enumerated"}
+
+    _edit_json(case / "config.json", edit)
+
+
+def _lognormal_3p_with_enumerated_simulation(case: pathlib.Path) -> None:
+    _lognormal_3p(case)
+    _one_opening_per_stage(case)
+
+    def edit(config: Any) -> None:
+        config["simulation"]["selection"] = {"method": "enumerated"}
+
+    _edit_json(case / "config.json", edit)
 
 
 def _dynamic_simulation_over_deactivated_cuts(case: pathlib.Path) -> None:
@@ -933,6 +984,46 @@ ROWS = [
             "activity, so the cap would evict by generation order alone — remove "
             "the cap, or use sampled forward selection"
         ),
+        error_class_name="ValidationError",
+    ),
+    _row(
+        name="lognormal_3p_with_an_external_training_scheme",
+        base_case="deterministic/d28-decomp-weekly-monthly",
+        mutate=_lognormal_3p,
+        outcome="PlainRefusal",
+        fragment='training.scenario_source.inflow.scheme = "external"',
+        error_class_name="ValidationError",
+    ),
+    _row(
+        name="lognormal_3p_with_a_historical_training_scheme",
+        base_case="deterministic/d26-estimated-par2",
+        mutate=_lognormal_3p_with_a_historical_training_scheme,
+        outcome="PlainRefusal",
+        fragment='training.scenario_source.inflow.scheme = "historical"',
+        error_class_name="ValidationError",
+    ),
+    _row(
+        name="lognormal_3p_with_a_historical_residuals_stage",
+        base_case="deterministic/d26-estimated-par2",
+        mutate=_lognormal_3p_with_a_historical_residuals_stage,
+        outcome="PlainRefusal",
+        fragment='stages[].sampling_method = "historical_residuals" (stage 0)',
+        error_class_name="ValidationError",
+    ),
+    _row(
+        name="lognormal_3p_with_enumerated_training",
+        base_case="1dtoy",
+        mutate=_lognormal_3p_with_enumerated_training,
+        outcome="PlainRefusal",
+        fragment='training.selection.method = "enumerated"',
+        error_class_name="ValidationError",
+    ),
+    _row(
+        name="lognormal_3p_with_enumerated_simulation",
+        base_case="1dtoy",
+        mutate=_lognormal_3p_with_enumerated_simulation,
+        outcome="PlainRefusal",
+        fragment='simulation.selection.method = "enumerated"',
         error_class_name="ValidationError",
     ),
     _row(
