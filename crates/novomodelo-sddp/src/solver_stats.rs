@@ -1184,7 +1184,7 @@ mod tests {
     }
 
     #[test]
-    fn aggregate_solver_stats_log_folds_phase_counts() {
+    fn aggregate_solver_stats_log_totals_attempts_and_phase_solve_seconds() {
         let forward_delta = SolverStatsDelta {
             first_try_successes: 7,
             lp_successes: 9,
