@@ -26,8 +26,8 @@ use novomodelo_core::{
     AnticipatedConfig, BoundsCountsSpec, BoundsDefaults, Bus, BusStagePenalties,
     ContractBlockBounds, DeficitSegment, EntityId, HydroBlockBounds, HydroPenalties,
     HydroStageBounds, LineBlockBounds, LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec,
-    PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds, ResolvedPenalties, SystemBuilder,
-    ThermalBlockBounds, scenario::InflowModel,
+    PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds, ResolvedDeficitSegments,
+    ResolvedPenalties, SystemBuilder, ThermalBlockBounds, scenario::InflowModel,
 };
 use novomodelo_stochastic::normal::precompute::PrecomputedNormal;
 use novomodelo_stochastic::par::precompute::PrecomputedPar;
@@ -1830,12 +1830,31 @@ fn multi_segment_system(buses: Vec<Bus>, block_hours: f64) -> novomodelo_core::S
 }
 
 /// [`multi_segment_system`] carrying the given generic constraints and bounds.
-#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
 fn multi_segment_system_with_generic(
     buses: Vec<Bus>,
     block_hours: f64,
     generic_constraints: Vec<novomodelo_core::GenericConstraint>,
     generic_bounds: novomodelo_core::ResolvedGenericConstraintBounds,
+) -> novomodelo_core::System {
+    deficit_test_system(
+        buses,
+        &[&[block_hours]],
+        generic_constraints,
+        generic_bounds,
+        None,
+    )
+}
+
+/// No-hydro, no-thermal, no-line system with one stage per `stage_block_hours`
+/// entry (stage `i` spans calendar month `i + 1` of 2024) and one block per hour
+/// value. An installed `deficit_table` replaces the one the builder seeds.
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+fn deficit_test_system(
+    buses: Vec<Bus>,
+    stage_block_hours: &[&[f64]],
+    generic_constraints: Vec<novomodelo_core::GenericConstraint>,
+    generic_bounds: novomodelo_core::ResolvedGenericConstraintBounds,
+    deficit_table: Option<ResolvedDeficitSegments>,
 ) -> novomodelo_core::System {
     use chrono::NaiveDate;
     use novomodelo_core::scenario::LoadModel;
@@ -1844,40 +1863,53 @@ fn multi_segment_system_with_generic(
     };
 
     let n_buses = buses.len();
+    let n_stages = stage_block_hours.len();
     let load_models: Vec<LoadModel> = buses
         .iter()
-        .map(|b| LoadModel {
-            bus_id: b.id,
-            stage_id: 0,
-            mean_mw: 0.0,
-            std_mw: 0.0,
+        .flat_map(|b| {
+            (0..n_stages).map(move |stage| LoadModel {
+                bus_id: b.id,
+                stage_id: stage as i32,
+                mean_mw: 0.0,
+                std_mw: 0.0,
+            })
         })
         .collect();
 
-    let stage = make_stage(
-        0,
-        StageSpec {
-            start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            end_date: NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-            season_id: None,
-            blocks: vec![Block {
-                index: 0,
-                name: "S".to_string(),
-                duration_hours: block_hours,
-            }],
-            block_mode: BlockMode::Parallel,
-            state_config: StageStateConfig {
-                storage: false,
-                inflow_lags: false,
-            },
-            risk_config: StageRiskConfig::Expectation,
-            scenario_config: ScenarioSourceConfig {
-                branching_factor: 1,
-                noise_method: NoiseMethod::Saa,
-            },
-            ..Default::default()
-        },
-    );
+    let stages: Vec<_> = stage_block_hours
+        .iter()
+        .enumerate()
+        .map(|(i, hours)| {
+            make_stage(
+                i,
+                StageSpec {
+                    start_date: NaiveDate::from_ymd_opt(2024, i as u32 + 1, 1).unwrap(),
+                    end_date: NaiveDate::from_ymd_opt(2024, i as u32 + 2, 1).unwrap(),
+                    season_id: None,
+                    blocks: hours
+                        .iter()
+                        .enumerate()
+                        .map(|(k, &duration_hours)| Block {
+                            index: k,
+                            name: format!("S{k}"),
+                            duration_hours,
+                        })
+                        .collect(),
+                    block_mode: BlockMode::Parallel,
+                    state_config: StageStateConfig {
+                        storage: false,
+                        inflow_lags: false,
+                    },
+                    risk_config: StageRiskConfig::Expectation,
+                    scenario_config: ScenarioSourceConfig {
+                        branching_factor: 1,
+                        noise_method: NoiseMethod::Saa,
+                    },
+                    ..Default::default()
+                },
+            )
+        })
+        .collect();
 
     let bounds = ResolvedBounds::new(
         &BoundsCountsSpec {
@@ -1886,7 +1918,7 @@ fn multi_segment_system_with_generic(
             n_lines: 0,
             n_pumping: 0,
             n_contracts: 0,
-            n_stages: 1,
+            n_stages,
             k_max: 0,
         },
         &BoundsDefaults {
@@ -1912,13 +1944,13 @@ fn multi_segment_system_with_generic(
             },
         },
     );
-    let penalties = ResolvedPenalties::new(
+    let mut penalties = ResolvedPenalties::new(
         &PenaltiesCountsSpec {
             n_hydros: 0,
             n_buses,
             n_lines: 0,
             n_ncs: 0,
-            n_stages: 1,
+            n_stages,
         },
         &PenaltiesDefaults {
             hydro: default_hydro_penalties(),
@@ -1930,9 +1962,13 @@ fn multi_segment_system_with_generic(
         },
     );
 
+    if let Some(table) = deficit_table {
+        penalties.set_bus_deficit(table);
+    }
+
     SystemBuilder::new()
         .buses(buses)
-        .stages(vec![stage])
+        .stages(stages)
         .load_models(load_models)
         .bounds(bounds)
         .penalties(penalties)

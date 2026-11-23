@@ -541,8 +541,12 @@ fn fill_deficit_and_excess_columns(
 ) {
     for (b_idx, bus) in ctx.buses.iter().enumerate() {
         let bp = ctx.resolved.penalties.bus_penalties(b_idx, stage_idx);
-        for (seg_idx, segment) in bus.deficit_segments.iter().enumerate() {
+        for seg_idx in 0..bus.deficit_segments.len() {
             for blk in 0..layout.clock.n_blks() {
+                let segment = ctx
+                    .resolved
+                    .penalties
+                    .bus_deficit_segment_at_block(b_idx, stage_idx, blk, seg_idx);
                 let col_def = layout.deficit_col(BusSys::new(b_idx), seg_idx, BlockIdx::new(blk));
                 let block_hours = stage.blocks[blk].duration_hours;
                 bufs.col_upper[col_def] = segment.depth_mw.unwrap_or(f64::INFINITY);

@@ -305,6 +305,118 @@ fn spare_deficit_slots_are_pinned_to_zero() {
     assert!((t.objective[b1_seg0] - 1000.0 * block_hours / COST_SCALE_FACTOR).abs() < 1e-12);
 }
 
+const OVERRIDE_STAGE_BLOCK_HOURS: [&[f64]; 2] = [&[730.0], &[200.0, 472.0]];
+
+fn override_buses() -> Vec<Bus> {
+    let bus = |id, depth_mw, cost_per_mwh, final_cost_per_mwh| {
+        make_bus(
+            EntityId(id),
+            BusSpec {
+                name: format!("Bus{id}"),
+                deficit_segments: vec![
+                    DeficitSegment {
+                        depth_mw: Some(depth_mw),
+                        cost_per_mwh,
+                    },
+                    DeficitSegment {
+                        depth_mw: None,
+                        cost_per_mwh: final_cost_per_mwh,
+                    },
+                ],
+                ..Default::default()
+            },
+        )
+    };
+    vec![bus(1, 10.0, 500.0, 5000.0), bus(2, 20.0, 800.0, 3000.0)]
+}
+
+/// Baseline and overridden systems over [`override_buses`]: a block override at
+/// (stage 1, block 0, bus 0, segment 0) and a stage-wide override at
+/// (stage 0, bus 1, segment 0).
+fn baseline_and_overridden_deficit_systems() -> (novomodelo_core::System, novomodelo_core::System) {
+    let buses = override_buses();
+    let mut table = ResolvedDeficitSegments::seeded(&buses, 2, 2);
+    *table.block_segment_mut(0, 1, 0, 0).expect("cell") = Some(DeficitSegment {
+        depth_mw: Some(3.0),
+        cost_per_mwh: 500.0,
+    });
+    *table.stage_segment_mut(1, 0, 0).expect("cell") = DeficitSegment {
+        depth_mw: Some(7.0),
+        cost_per_mwh: 900.0,
+    };
+    let system = |deficit_table| {
+        deficit_test_system(
+            buses.clone(),
+            &OVERRIDE_STAGE_BLOCK_HOURS,
+            vec![],
+            novomodelo_core::ResolvedGenericConstraintBounds::empty(),
+            deficit_table,
+        )
+    };
+    (system(None), system(Some(table)))
+}
+
+fn differing_columns(base: &[f64], overridden: &[f64]) -> Vec<usize> {
+    (0..base.len())
+        .filter(|&c| base[c].to_bits() != overridden[c].to_bits())
+        .collect()
+}
+
+#[test]
+fn deficit_block_override_reaches_only_its_stage_and_block() {
+    let (baseline, overridden) = baseline_and_overridden_deficit_systems();
+    let base = build_templates_for(&baseline);
+    let over = build_templates_for(&overridden);
+
+    // S = 2: stage 0 (K = 1) bus 1 segment 0 is column 3; stage 1 (K = 2)
+    // bus 0 segment 0 is column 1 at block 0 and column 2 at block 1.
+    assert_eq!(
+        differing_columns(&base[0].col_upper, &over[0].col_upper),
+        [3]
+    );
+    assert_eq!(
+        differing_columns(&base[0].objective, &over[0].objective),
+        [3]
+    );
+    assert_eq!(
+        differing_columns(&base[1].col_upper, &over[1].col_upper),
+        [1]
+    );
+    assert_eq!(
+        differing_columns(&base[1].objective, &over[1].objective),
+        Vec::<usize>::new(),
+        "the block cell keeps the base cost"
+    );
+
+    assert_eq!(over[0].col_upper[3], 7.0);
+    assert!((over[0].objective[3] - 900.0 * 730.0 / COST_SCALE_FACTOR).abs() < 1e-12);
+    assert_eq!(over[1].col_upper[1], 3.0);
+    assert_eq!(
+        over[1].col_upper[2], 10.0,
+        "block 1 reads the stage cell: only block 0 is overridden"
+    );
+}
+
+#[test]
+fn deficit_override_leaves_lp_structure_unchanged() {
+    let (baseline, overridden) = baseline_and_overridden_deficit_systems();
+    let base = build_templates_for(&baseline);
+    let over = build_templates_for(&overridden);
+
+    assert_eq!(base.len(), over.len());
+    for (stage, (b, o)) in base.iter().zip(&over).enumerate() {
+        assert_eq!(b.num_cols, o.num_cols, "stage {stage} num_cols");
+        assert_eq!(b.num_rows, o.num_rows, "stage {stage} num_rows");
+        assert_eq!(b.num_nz, o.num_nz, "stage {stage} num_nz");
+        assert_eq!(b.col_starts, o.col_starts, "stage {stage} col_starts");
+        assert_eq!(b.row_indices, o.row_indices, "stage {stage} row_indices");
+        assert_eq!(b.values, o.values, "stage {stage} values");
+        assert_eq!(b.col_lower, o.col_lower, "stage {stage} col_lower");
+        assert_eq!(b.row_lower, o.row_lower, "stage {stage} row_lower");
+        assert_eq!(b.row_upper, o.row_upper, "stage {stage} row_upper");
+    }
+}
+
 #[test]
 fn test_single_segment_backward_compat() {
     let cost = 1000.0_f64;

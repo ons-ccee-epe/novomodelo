@@ -4386,3 +4386,287 @@ mod generic_slack_penalty_basis {
         });
     }
 }
+
+mod deficit_cost_follows_lp {
+    //! The simulation's reported deficit cost follows the per-block deficit
+    //! coefficients the stage LP carries, so a block override of a bus's
+    //! deficit curve reaches the cost of exactly its stage and block.
+
+    use chrono::NaiveDate;
+    use novomodelo_core::temporal::{
+        Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
+        StageStateConfig,
+    };
+    use novomodelo_core::{
+        BoundsCountsSpec, BoundsDefaults, BusStagePenalties, ContractBlockBounds, DeficitSegment,
+        EntityId, HydroBlockBounds, HydroStageBounds, LineBlockBounds, LineStagePenalties,
+        LoadModel, NcsStagePenalties, PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds,
+        ResolvedBounds, ResolvedDeficitSegments, ResolvedPenalties, System, SystemBuilder,
+        ThermalBlockBounds,
+    };
+    use novomodelo_io::config::{
+        Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
+        InflowNonNegativityMethod, ModelingConfig, ParallelismConfig, PolicyConfig,
+        RowSelectionConfig, SimulationConfig as IoSimulationConfig, SimulationSelection,
+        StoppingMode, StoppingRuleConfig, TrainingConfig, TrainingSelection, TrainingSolverConfig,
+        UpperBoundEvaluationConfig,
+    };
+
+    use super::common::builders::{BusSpec, HydroSpec, StageSpec, make_bus, make_stage};
+    use super::common::{build_setup_in_code, run_simulation};
+
+    const BUS_ID: i32 = 1;
+    const LOAD_MW: f64 = 50.0;
+    const FIRST_SEGMENT_COST: f64 = 500.0;
+    const LAST_SEGMENT_COST: f64 = 5000.0;
+    const BASE_DEPTH_MW: f64 = 10.0;
+    const OVERRIDE_DEPTH_MW: f64 = 30.0;
+    const STAGE0_HOURS: f64 = 744.0;
+    const OVERRIDDEN_BLOCK_HOURS: f64 = 200.0;
+    const OTHER_BLOCK_HOURS: f64 = 472.0;
+    const STAGE_BLOCK_HOURS: [&[f64]; 2] = [
+        &[STAGE0_HOURS],
+        &[OVERRIDDEN_BLOCK_HOURS, OTHER_BLOCK_HOURS],
+    ];
+    const MAX_BLOCKS: usize = 2;
+    const OVERRIDE_SEGMENT: DeficitSegment = DeficitSegment {
+        depth_mw: Some(OVERRIDE_DEPTH_MW),
+        cost_per_mwh: FIRST_SEGMENT_COST,
+    };
+
+    /// derived: the first segment covers `BASE_DEPTH_MW` of the load at its cost and the
+    /// last covers the remainder, per hour.
+    const BASE_COST_PER_HOUR: f64 =
+        BASE_DEPTH_MW * FIRST_SEGMENT_COST + (LOAD_MW - BASE_DEPTH_MW) * LAST_SEGMENT_COST;
+    /// derived: the block override deepens the first segment to `OVERRIDE_DEPTH_MW` at the
+    /// same cost.
+    const OVERRIDE_COST_PER_HOUR: f64 =
+        OVERRIDE_DEPTH_MW * FIRST_SEGMENT_COST + (LOAD_MW - OVERRIDE_DEPTH_MW) * LAST_SEGMENT_COST;
+    /// derived: stage 0 has no override.
+    const STAGE0_COST: f64 = BASE_COST_PER_HOUR * STAGE0_HOURS;
+    /// derived: only block 0 of stage 1 is overridden.
+    const STAGE1_OVERRIDE_COST: f64 =
+        OVERRIDE_COST_PER_HOUR * OVERRIDDEN_BLOCK_HOURS + BASE_COST_PER_HOUR * OTHER_BLOCK_HOURS;
+    /// derived: the twin without the table prices every hour of stage 1 at the base curve.
+    const STAGE1_BASE_COST: f64 = BASE_COST_PER_HOUR * (OVERRIDDEN_BLOCK_HOURS + OTHER_BLOCK_HOURS);
+
+    fn stages() -> Vec<Stage> {
+        let mut start = NaiveDate::from_ymd_opt(2024, 1, 1).expect("valid date");
+        STAGE_BLOCK_HOURS
+            .iter()
+            .enumerate()
+            .map(|(i, hours)| {
+                let end = start + chrono::Duration::hours(hours.iter().sum::<f64>() as i64);
+                let stage = make_stage(
+                    i,
+                    StageSpec {
+                        start_date: start,
+                        end_date: end,
+                        blocks: hours
+                            .iter()
+                            .enumerate()
+                            .map(|(k, &duration_hours)| Block {
+                                index: k,
+                                name: format!("S{k}"),
+                                duration_hours,
+                            })
+                            .collect(),
+                        block_mode: BlockMode::Parallel,
+                        state_config: StageStateConfig {
+                            storage: true,
+                            inflow_lags: false,
+                        },
+                        risk_config: StageRiskConfig::Expectation,
+                        scenario_config: ScenarioSourceConfig {
+                            branching_factor: 1,
+                            noise_method: NoiseMethod::Saa,
+                        },
+                        ..Default::default()
+                    },
+                );
+                start = end;
+                stage
+            })
+            .collect()
+    }
+
+    /// One bus, no supply and a fixed load, so the deficit is the whole load. A
+    /// `block_override` replaces the first segment at block 0 of stage 1.
+    fn system(block_override: Option<DeficitSegment>) -> System {
+        let bus = make_bus(
+            EntityId(BUS_ID),
+            BusSpec {
+                deficit_segments: vec![
+                    DeficitSegment {
+                        depth_mw: Some(BASE_DEPTH_MW),
+                        cost_per_mwh: FIRST_SEGMENT_COST,
+                    },
+                    DeficitSegment {
+                        depth_mw: None,
+                        cost_per_mwh: LAST_SEGMENT_COST,
+                    },
+                ],
+                excess_cost: 0.0,
+                ..Default::default()
+            },
+        );
+        let n_stages = STAGE_BLOCK_HOURS.len();
+        let load_models: Vec<LoadModel> = (0..n_stages)
+            .map(|i| LoadModel {
+                bus_id: EntityId(BUS_ID),
+                stage_id: i as i32,
+                mean_mw: LOAD_MW,
+                std_mw: 0.0,
+            })
+            .collect();
+        let bounds = ResolvedBounds::new(
+            &BoundsCountsSpec {
+                n_hydros: 0,
+                n_thermals: 0,
+                n_lines: 0,
+                n_pumping: 0,
+                n_contracts: 0,
+                n_stages,
+                k_max: 0,
+            },
+            &BoundsDefaults {
+                hydro: HydroStageBounds {
+                    min_storage_hm3: 0.0,
+                    max_storage_hm3: 0.0,
+                    filling_min_rate_m3s: 0.0,
+                    water_withdrawal_m3s: 0.0,
+                },
+                hydro_block: HydroBlockBounds::default(),
+                thermal_block: ThermalBlockBounds {
+                    min_generation_mw: 0.0,
+                    max_generation_mw: 0.0,
+                    cost_per_mwh: 0.0,
+                },
+                line_block: LineBlockBounds {
+                    direct_mw: 0.0,
+                    reverse_mw: 0.0,
+                },
+                pumping_block: PumpingBlockBounds {
+                    min_flow_m3s: 0.0,
+                    max_flow_m3s: 0.0,
+                },
+                contract_block: ContractBlockBounds {
+                    min_mw: 0.0,
+                    max_mw: 0.0,
+                    price_per_mwh: 0.0,
+                },
+            },
+        );
+        let mut penalties = ResolvedPenalties::new(
+            &PenaltiesCountsSpec {
+                n_hydros: 0,
+                n_buses: 1,
+                n_lines: 0,
+                n_ncs: 0,
+                n_stages,
+            },
+            &PenaltiesDefaults {
+                hydro: HydroSpec::default().penalties,
+                bus: BusStagePenalties { excess_cost: 0.0 },
+                line: LineStagePenalties { exchange_cost: 0.0 },
+                ncs: NcsStagePenalties {
+                    curtailment_cost: 0.0,
+                },
+            },
+        );
+        if let Some(segment) = block_override {
+            let mut table =
+                ResolvedDeficitSegments::seeded(std::slice::from_ref(&bus), n_stages, MAX_BLOCKS);
+            *table
+                .block_segment_mut(0, 1, 0, 0)
+                .expect("override cell is in range") = Some(segment);
+            penalties.set_bus_deficit(table);
+        }
+        SystemBuilder::new()
+            .buses(vec![bus])
+            .stages(stages())
+            .load_models(load_models)
+            .bounds(bounds)
+            .penalties(penalties)
+            .build()
+            .expect("deficit_cost_follows_lp: valid one-bus system")
+    }
+
+    fn config() -> Config {
+        Config {
+            schema: None,
+            modeling: ModelingConfig {
+                inflow_non_negativity: InflowNonNegativityConfig {
+                    method: InflowNonNegativityMethod::None,
+                },
+                cost_scale_factor: None,
+            },
+            training: TrainingConfig {
+                enabled: true,
+                tree_seed: Some(42),
+                stopping_rules: Some(vec![StoppingRuleConfig::IterationLimit { limit: 3 }]),
+                stopping_mode: StoppingMode::Any,
+                cut_selection: RowSelectionConfig::default(),
+                solver: TrainingSolverConfig::default(),
+                parallelism: ParallelismConfig::default(),
+                scenario_source: None,
+                selection: Some(TrainingSelection::Sampled { forward_passes: 1 }),
+            },
+            upper_bound_evaluation: UpperBoundEvaluationConfig::default(),
+            policy: PolicyConfig::default(),
+            simulation: IoSimulationConfig {
+                enabled: true,
+                io_channel_capacity: 16,
+                selection: Some(SimulationSelection::Sampled { num_scenarios: 1 }),
+                ..IoSimulationConfig::default()
+            },
+            exports: ExportsConfig::default(),
+            estimation: EstimationConfig::default(),
+        }
+    }
+
+    /// The stage-level `deficit_cost` the simulation reports for each stage.
+    fn stage_deficit_costs(system: System) -> Vec<f64> {
+        let mut setup = build_setup_in_code(system, &config());
+        let results = run_simulation(&mut setup, 3);
+        assert_eq!(results.len(), 1, "exactly one scenario must be produced");
+        results[0]
+            .stages
+            .iter()
+            .map(|stage| {
+                stage
+                    .costs
+                    .iter()
+                    .find(|cost| cost.block_id.is_none())
+                    .expect("one stage-level cost record")
+                    .deficit_cost
+            })
+            .collect()
+    }
+
+    fn assert_stage_costs(actual: &[f64], expected: [f64; 2]) {
+        assert_eq!(actual.len(), expected.len());
+        for (stage, (&cost, expected)) in actual.iter().zip(expected).enumerate() {
+            assert!(
+                (cost - expected).abs() <= 1e-9 * expected.abs(),
+                "stage {stage}: expected a deficit cost of {expected}, got {cost}"
+            );
+        }
+    }
+
+    #[test]
+    fn deficit_cost_follows_the_overridden_lp_coefficient() {
+        assert_ne!(
+            STAGE1_OVERRIDE_COST, STAGE1_BASE_COST,
+            "the override must move the stage-1 cost"
+        );
+        let costs = stage_deficit_costs(system(Some(OVERRIDE_SEGMENT)));
+        assert_stage_costs(&costs, [STAGE0_COST, STAGE1_OVERRIDE_COST]);
+    }
+
+    #[test]
+    fn deficit_cost_twin_without_override_follows_the_base_curve() {
+        let costs = stage_deficit_costs(system(None));
+        assert_stage_costs(&costs, [STAGE0_COST, STAGE1_BASE_COST]);
+    }
+}
