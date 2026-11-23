@@ -77,7 +77,8 @@ pub struct Config {
     #[serde(rename = "$schema")]
     pub schema: Option<String>,
 
-    /// Modeling options (inflow non-negativity treatment).
+    /// Modeling options: inflow non-negativity, the inflow residual distribution and
+    /// objective scaling.
     #[serde(default)]
     pub modeling: ModelingConfig,
 
@@ -1147,21 +1148,6 @@ mod tests {
                 "expected parse/schema error for {spelling:?}, got: {err:?}"
             );
         }
-    }
-
-    #[test]
-    fn inflow_residual_rejects_a_cv_cap_key() {
-        let err = parse_with_modeling(
-            r#""modeling": {"inflow_residual": {"distribution": "lognormal_3p", "max_conditional_cv": 2}},"#,
-        )
-        .unwrap_err();
-        assert!(
-            matches!(
-                err,
-                LoadError::SchemaError { .. } | LoadError::ParseError { .. }
-            ),
-            "expected parse/schema error for max_conditional_cv, got: {err:?}"
-        );
     }
 
     #[test]

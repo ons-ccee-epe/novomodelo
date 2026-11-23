@@ -24,13 +24,13 @@ VALID_CASE_4REE = "examples/4ree"
 
 _NONPOSITIVE_MEAN = (
     'modeling.inflow_residual.distribution = "lognormal_3p": the seasonal mean '
-    "inflow is <= 0 at hydro 0 stage 0, hydro 0 stage 2; solves near the mean "
-    "state there take the normal residual"
+    "inflow is <= 0 at hydro 0 (stages 0, 2); there the inflow takes the normal "
+    "residual whenever its conditional mean is not positive"
 )
 _NEGATIVE_INFLOW = (
     'modeling.inflow_residual.distribution = "lognormal_3p" with '
-    'modeling.inflow_non_negativity.method = "none": solves that take the '
-    "normal residual can realize negative inflows"
+    'modeling.inflow_non_negativity.method = "none": an inflow that takes the '
+    "normal residual can be negative"
 )
 
 

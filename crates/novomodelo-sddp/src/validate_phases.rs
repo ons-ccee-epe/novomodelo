@@ -15,7 +15,7 @@
 //! (that would create a cycle), so the shared logic must live in `novomodelo-sddp` or
 //! above it in the dependency graph.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use novomodelo_core::{EntityId, System};
@@ -320,37 +320,35 @@ fn inflow_residual_warnings(
         lognormal.as_str()
     );
 
-    let nonpositive_means: BTreeSet<(EntityId, usize, &str)> = system
-        .inflow_models()
-        .iter()
-        .filter(|model| model.mean_m3s <= 0.0)
-        .filter_map(|model| {
-            // A pre-study stage has a negative id.
-            let stage = usize::try_from(model.stage_id).ok()?;
-            let season = system
-                .stages()
-                .iter()
-                .find(|candidate| candidate.id == model.stage_id)
-                .and_then(|candidate| candidate.season_id);
-            Some(match season {
-                Some(season) => (model.hydro_id, season, "season"),
-                None => (model.hydro_id, stage, "stage"),
-            })
-        })
-        .collect();
+    let mut nonpositive_means = NonpositiveMeans::new();
+    for model in system.inflow_models() {
+        if model.mean_m3s > 0.0 {
+            continue;
+        }
+        // A pre-study stage has a negative id.
+        let Ok(stage) = usize::try_from(model.stage_id) else {
+            continue;
+        };
+        let season = system
+            .stages()
+            .iter()
+            .find(|candidate| candidate.id == model.stage_id)
+            .and_then(|candidate| candidate.season_id);
+        let (seasons, stages) = nonpositive_means.entry(model.hydro_id).or_default();
+        match season {
+            Some(season) => seasons.insert(season),
+            None => stages.insert(stage),
+        };
+    }
 
     let mut warnings = Vec::new();
     if !nonpositive_means.is_empty() {
-        let items = nonpositive_means
-            .iter()
-            .map(|(hydro, number, kind)| format!("hydro {hydro} {kind} {number}"))
-            .collect::<Vec<_>>()
-            .join(", ");
+        let list = nonpositive_mean_list(&nonpositive_means);
         warnings.push(warning(
             "scenarios/",
             format!(
-                "{key}: the seasonal mean inflow is <= 0 at {items}; solves near the mean \
-                 state there take the normal residual"
+                "{key}: the seasonal mean inflow is <= 0 at {list}; there the inflow takes the \
+                 normal residual whenever its conditional mean is not positive"
             ),
         ));
     }
@@ -358,12 +356,61 @@ fn inflow_residual_warnings(
         warnings.push(warning(
             "config.json",
             format!(
-                "{key} with modeling.inflow_non_negativity.method = \"none\": solves that \
-                 take the normal residual can realize negative inflows"
+                "{key} with modeling.inflow_non_negativity.method = \"none\": an inflow that \
+                 takes the normal residual can be negative"
             ),
         ));
     }
     warnings
+}
+
+/// Seasons and, for stages without a season, stage ids, per hydro.
+type NonpositiveMeans = BTreeMap<EntityId, (BTreeSet<usize>, BTreeSet<usize>)>;
+
+const NONPOSITIVE_MEAN_HYDROS_NAMED: usize = 10;
+
+fn nonpositive_mean_list(means: &NonpositiveMeans) -> String {
+    let mut items: Vec<String> = means
+        .iter()
+        .take(NONPOSITIVE_MEAN_HYDROS_NAMED)
+        .map(|(hydro, (seasons, stages))| {
+            let periods: Vec<String> = [("season", seasons), ("stage", stages)]
+                .into_iter()
+                .filter(|(_, numbers)| !numbers.is_empty())
+                .map(|(kind, numbers)| {
+                    let plural = if numbers.len() == 1 { "" } else { "s" };
+                    format!("{kind}{plural} {}", consecutive_ranges(numbers))
+                })
+                .collect();
+            format!("hydro {hydro} ({})", periods.join("; "))
+        })
+        .collect();
+    let unnamed = means.len().saturating_sub(NONPOSITIVE_MEAN_HYDROS_NAMED);
+    if unnamed > 0 {
+        items.push(format!("and {unnamed} more"));
+    }
+    items.join(", ")
+}
+
+fn consecutive_ranges(numbers: &BTreeSet<usize>) -> String {
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    for &number in numbers {
+        match ranges.last_mut() {
+            Some((_, end)) if *end + 1 == number => *end = number,
+            _ => ranges.push((number, number)),
+        }
+    }
+    ranges
+        .iter()
+        .map(|&(start, end)| {
+            if start == end {
+                start.to_string()
+            } else {
+                format!("{start}-{end}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Run every pre-solver check `novomodelo run` reaches before it starts solving, in
@@ -615,13 +662,14 @@ mod tests {
     fn nonpositive_mean_message(items: &str) -> String {
         format!(
             "modeling.inflow_residual.distribution = \"lognormal_3p\": the seasonal mean inflow \
-             is <= 0 at {items}; solves near the mean state there take the normal residual"
+             is <= 0 at {items}; there the inflow takes the normal residual whenever its \
+             conditional mean is not positive"
         )
     }
 
     const NEGATIVE_INFLOW_MESSAGE: &str = "modeling.inflow_residual.distribution = \"lognormal_3p\" \
-         with modeling.inflow_non_negativity.method = \"none\": solves that take the normal \
-         residual can realize negative inflows";
+         with modeling.inflow_non_negativity.method = \"none\": an inflow that takes the normal \
+         residual can be negative";
 
     fn only_warning(validated: &ValidatedStudy) -> &ReportEntry {
         match validated.warnings.as_slice() {
@@ -658,7 +706,7 @@ mod tests {
         assert_eq!(warning.entity, None);
         assert_eq!(
             warning.message,
-            nonpositive_mean_message("hydro 0 stage 0, hydro 0 stage 2")
+            nonpositive_mean_message("hydro 0 (stages 0, 2)")
         );
     }
 
@@ -683,7 +731,29 @@ mod tests {
         assert_eq!(warning.file, "scenarios/");
         assert_eq!(
             warning.message,
-            nonpositive_mean_message("hydro 0 season 0")
+            nonpositive_mean_message("hydro 0 (season 0)")
+        );
+    }
+
+    #[test]
+    fn nonpositive_mean_list_joins_periods_and_counts_unnamed_hydros() {
+        let mut means = NonpositiveMeans::new();
+        means.insert(
+            EntityId(0),
+            (BTreeSet::from([0, 1, 2, 5]), BTreeSet::from([7])),
+        );
+        for hydro in 1..12 {
+            means.insert(EntityId(hydro), (BTreeSet::from([3]), BTreeSet::new()));
+        }
+        let named: Vec<String> = (1..10)
+            .map(|hydro| format!("hydro {hydro} (season 3)"))
+            .collect();
+        assert_eq!(
+            nonpositive_mean_list(&means),
+            format!(
+                "hydro 0 (seasons 0-2, 5; stage 7), {}, and 2 more",
+                named.join(", ")
+            )
         );
     }
 

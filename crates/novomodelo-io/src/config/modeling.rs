@@ -91,30 +91,26 @@ impl Default for InflowNonNegativityConfig {
 ///
 /// Accepted values in `config.json → modeling.inflow_residual.distribution`:
 ///
-/// - `"normal"` — the inflow is the PAR(p) conditional mean plus `σ·η`.
-/// - `"lognormal_3p"` — a three-parameter lognormal residual whose lower bound is zero
-///   inflow. The inflow keeps the conditional mean and the standard deviation `σ`, and is
-///   never negative. Where a solve's conditional mean is at or below zero, or `(σ/mean)²`
-///   is not finite, that hydro takes the `"normal"` residual, and
-///   `modeling.inflow_non_negativity.method` treats a negative inflow as it does under
+/// - `"normal"` — Gaussian residual (default).
+/// - `"lognormal_3p"` — experimental: a three-parameter lognormal residual with the PAR(p)
+///   conditional mean and standard deviation of the hydro's incremental inflow, bounded
+///   below at zero inflow. Where the conditional mean is not positive the hydro takes the
+///   normal residual, and `modeling.inflow_non_negativity.method` applies as under
 ///   `"normal"`.
 ///
-/// `"lognormal_3p"` is accepted only with the `in_sample` and `out_of_sample` inflow
-/// schemes; it is refused with `enumerated` selection, `historical_residuals` stages and
-/// nodes that declare `scenario_id`.
-///
-/// Under `"lognormal_3p"` the residual depends on the incoming state, so the lower bound
-/// can exceed the upper bound, and a `gap` stopping rule can then report convergence that
-/// has not occurred.
+/// `"lognormal_3p"` is refused with the `external` and `historical` inflow schemes,
+/// `enumerated` selection, `historical_residuals` stages and nodes that declare
+/// `scenario_id`. As under the truncation methods, the lower bound can exceed the upper
+/// bound.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum InflowResidualDistribution {
-    /// PAR(p) conditional mean plus `σ·η`.
+    /// Gaussian residual.
     #[default]
     Normal,
-    /// Three-parameter lognormal residual bounded below at zero inflow; the normal residual
-    /// where the conditional mean is not positive.
+    /// Experimental: three-parameter lognormal residual bounded below at zero inflow; the
+    /// normal residual where the conditional mean is not positive.
     #[serde(rename = "lognormal_3p")]
     Lognormal3p,
 }
@@ -137,9 +133,6 @@ impl InflowResidualDistribution {
 pub struct InflowResidualConfig {
     /// Residual distribution: `"normal"` or `"lognormal_3p"`.
     ///
-    /// Default: `"normal"`. Combines with every `modeling.inflow_non_negativity.method`. Two
-    /// warnings show only in `novomodelo validate` and Python `novomodelo.io.validate`, not in
-    /// `novomodelo run` or Python `run`: seasons whose fitted mean inflow is at or below
-    /// zero, and `"lognormal_3p"` with `modeling.inflow_non_negativity.method = "none"`.
+    /// Default: `"normal"`. Combines with every `modeling.inflow_non_negativity.method`.
     pub distribution: InflowResidualDistribution,
 }

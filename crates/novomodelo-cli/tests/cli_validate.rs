@@ -768,11 +768,11 @@ fn simulation_out_of_sample_with_its_own_seed_passes_validate_and_run() {
 #[test]
 fn lognormal_3p_validate_warns_about_a_fallback_prone_study_and_run_stays_silent() {
     const NONPOSITIVE_MEAN: &str = "modeling.inflow_residual.distribution = \"lognormal_3p\": \
-        the seasonal mean inflow is <= 0 at hydro 0 stage 0, hydro 0 stage 2; solves near the \
-        mean state there take the normal residual";
+        the seasonal mean inflow is <= 0 at hydro 0 (stages 0, 2); there the inflow takes the \
+        normal residual whenever its conditional mean is not positive";
     const NEGATIVE_INFLOW: &str = "modeling.inflow_residual.distribution = \"lognormal_3p\" \
-        with modeling.inflow_non_negativity.method = \"none\": solves that take the normal \
-        residual can realize negative inflows";
+        with modeling.inflow_non_negativity.method = \"none\": an inflow that takes the normal \
+        residual can be negative";
 
     let dir = TempDir::new().unwrap();
     copy_dir_recursive(&common::case_dir("1dtoy"), dir.path());

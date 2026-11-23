@@ -12,9 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `modeling.inflow_residual.distribution` in `config.json`: `"lognormal_3p"`
-  draws inflow residuals from a three-parameter lognormal with the PAR(p) mean
-  and variance; default `"normal"`. Refused with external or historical inflows
-  or enumerated selection; `novomodelo validate` warns where it does not apply.
+  draws inflow residuals from a three-parameter lognormal bounded below at zero
+  inflow; default `"normal"`. Refused with `external` or `historical` inflows,
+  `enumerated` selection, `historical_residuals` stages or `scenario_id` nodes.
 
 ### Removed
 
