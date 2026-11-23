@@ -46,6 +46,7 @@ crates/novomodelo-sddp/src/lp/builder/columns.rs::cell_column_bound_tests::zero_
 crates/novomodelo-sddp/src/lp/builder/columns.rs::ncs_objective_tests::penalties_with  # geometry-pinning
 crates/novomodelo-sddp/src/lp/builder/entries.rs::zero_cost_tests::AntFixtures::bounds_with_n_stages  # geometry-pinning
 crates/novomodelo-sddp/src/lp/builder/layout/tests.rs::bounds_with_entities  # geometry-pinning
+crates/novomodelo-sddp/src/lp/builder/layout/tests.rs::fpha_mix_with_dead_blocks  # geometry-pinning
 crates/novomodelo-sddp/src/lp/builder/generic_constraints/tests.rs::ResolverFixture::new  # geometry-pinning
 crates/novomodelo-sddp/src/policy/policy_export.rs::system_lag_only  # n-stages-mismatch
 crates/novomodelo-sddp/tests/template_integration.rs::one_bus_system  # n-stages-mismatch

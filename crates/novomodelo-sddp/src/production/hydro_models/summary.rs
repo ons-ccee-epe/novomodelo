@@ -142,12 +142,10 @@ fn hydro_name(system: &System, entity_id: EntityId) -> String {
 mod tests {
     use chrono::{Months, NaiveDate};
     use novomodelo_core::{
-        BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, DeficitSegment, EntityId, Hydro,
-        HydroBlockBounds, HydroStageBounds, HydroUnitGroup, LineBlockBounds, PumpingBlockBounds,
-        ResolvedBounds, SystemBuilder, ThermalBlockBounds,
+        DeficitSegment, EntityId, Hydro, HydroUnitGroup, ResolvedBounds, SystemBuilder,
         entities::hydro::{HydroGenerationModel, HydroPenalties},
         scenario::CorrelationModel,
-        temporal::{Block, NoiseMethod, ScenarioSourceConfig},
+        temporal::{Block, NoiseMethod, ScenarioSourceConfig, Stage},
     };
 
     // The summary tests construct production and evaporation result types owned by
@@ -156,7 +154,7 @@ mod tests {
     use crate::HydroEnergyProductivityOverride;
     use crate::production::hydro_models::*;
     use crate::test_support::builders::{BusSpec, HydroSpec, StageSpec};
-    use crate::test_support::{make_unit_group, minimal_hydros};
+    use crate::test_support::{build_with_resolved_tables, make_unit_group, minimal_hydros};
 
     // ── Test helpers ──────────────────────────────────────────────────────────
 
@@ -189,9 +187,12 @@ mod tests {
     }
 
     /// Build the single-bus `System` of [`make_system_for_summary`] with `n_stages`
-    /// one-block study stages and a resolved bounds table whose every (hydro, stage)
-    /// holds capacity, then let `edit` change it. `edit` addresses hydros by
-    /// canonical position.
+    /// one-block study stages and the bounds the hydros' own limits resolve to, then
+    /// let `edit` change them. `edit` addresses hydros by canonical position.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "build_with_resolved_tables runs its make closure twice, so hydros is cloned into each build"
+    )]
     fn make_system_with_bounds(
         hydros: Vec<Hydro>,
         n_stages: usize,
@@ -209,7 +210,7 @@ mod tests {
             },
         );
         let first_start = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
-        let stages = (0..n_stages)
+        let stages: Vec<Stage> = (0..n_stages)
             .map(|index| {
                 let months = u32::try_from(index).unwrap();
                 crate::test_support::builders::make_stage(
@@ -232,57 +233,17 @@ mod tests {
                 )
             })
             .collect();
-        let mut bounds = ResolvedBounds::new(
-            &BoundsCountsSpec {
-                n_hydros: hydros.len(),
-                n_thermals: 0,
-                n_lines: 0,
-                n_pumping: 0,
-                n_contracts: 0,
-                n_stages,
-                k_max: 0,
+        build_with_resolved_tables(
+            || {
+                SystemBuilder::new()
+                    .buses(vec![bus.clone()])
+                    .hydros(hydros.clone())
+                    .stages(stages.clone())
+                    .correlation(CorrelationModel::default())
             },
-            &BoundsDefaults {
-                hydro: HydroStageBounds {
-                    min_storage_hm3: 0.0,
-                    max_storage_hm3: 0.0,
-                    filling_min_rate_m3s: 0.0,
-                    water_withdrawal_m3s: 0.0,
-                },
-                hydro_block: HydroBlockBounds {
-                    max_turbined_m3s: 500.0,
-                    max_generation_mw: 1000.0,
-                    ..HydroBlockBounds::default()
-                },
-                thermal_block: ThermalBlockBounds {
-                    min_generation_mw: 0.0,
-                    max_generation_mw: 0.0,
-                    cost_per_mwh: 0.0,
-                },
-                line_block: LineBlockBounds {
-                    direct_mw: 0.0,
-                    reverse_mw: 0.0,
-                },
-                pumping_block: PumpingBlockBounds {
-                    min_flow_m3s: 0.0,
-                    max_flow_m3s: 0.0,
-                },
-                contract_block: ContractBlockBounds {
-                    min_mw: 0.0,
-                    max_mw: 0.0,
-                    price_per_mwh: 0.0,
-                },
-            },
-        );
-        edit(&mut bounds);
-        SystemBuilder::new()
-            .buses(vec![bus])
-            .hydros(hydros)
-            .stages(stages)
-            .bounds(bounds)
-            .correlation(CorrelationModel::default())
-            .build()
-            .unwrap()
+            0,
+            |_, bounds, _| edit(bounds),
+        )
     }
 
     /// Build a `PrepareHydroModelsResult` for a set of hydro IDs where every
