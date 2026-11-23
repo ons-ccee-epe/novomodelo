@@ -70,14 +70,14 @@ pub(crate) enum FphaFittingError {
 
     /// A discretization count was too small to define a valid grid interval.
     ///
-    /// `n_flow_points`/`n_spillage_points` must be `>= 2` and `max_planes_per_hydro`
-    /// `>= 1`; `n_volume_points` must be `>= 2` on the multi-volume path only — the
-    /// single-volume path synthesizes its own two samples and is exempt.
+    /// `n_flow_points` must be `>= 2`; `n_volume_points` must be `>= 2` on the
+    /// multi-volume path only — the single-volume path synthesizes its own two
+    /// samples and is exempt.
     InsufficientDiscretization {
         hydro_name: String,
-        /// `"volume"`, `"turbine"`, `"spillage"`, or `"max_planes_per_hydro"`.
+        /// `"volume"` or `"turbine"`.
         dimension: String,
-        /// The provided value (< 2 for grid dimensions, < 1 for max planes).
+        /// The provided value (< 2).
         value: usize,
     },
 

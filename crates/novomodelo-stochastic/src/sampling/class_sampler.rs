@@ -898,9 +898,9 @@ mod tests {
     }
 
     #[test]
-    fn test_external_fill_scenario_selection_still_deterministic() {
+    fn test_external_fill_scenario_selection_is_deterministic() {
         // fill()'s scenario selection is independent of apply_initial_state,
-        // mirroring test_historical_fill_window_selection_still_deterministic.
+        // mirroring test_historical_fill_window_selection_is_deterministic.
         let lib = make_external_library();
         let sampler = ClassSampler::External { library: &lib };
 
@@ -1124,7 +1124,7 @@ mod tests {
     }
 
     #[test]
-    fn test_historical_fill_window_selection_still_deterministic() {
+    fn test_historical_fill_window_selection_is_deterministic() {
         // fill()'s window selection is independent of apply_initial_state.
         let lib = make_historical_library_with_lags();
         let sampler = ClassSampler::Historical { library: &lib };

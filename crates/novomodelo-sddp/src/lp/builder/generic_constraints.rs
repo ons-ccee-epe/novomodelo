@@ -198,10 +198,10 @@ pub(super) fn resolve_variable_ref(
 
 /// One `(column, multiplier)` pair per cell of the plant addressed by
 /// `hydro_id` in the `Turbine` family, or exactly one pair when `bus_id` names
-/// one of the plant's cells — the correct plant-level resolution now that the
-/// family is sized by cell, not by plant: a `VariableRef` with `bus_id: None`
-/// means the whole plant, i.e. every cell's column, matching today's single
-/// pair under the identity partition. `Some(b)` resolves through
+/// one of the plant's cells — the plant-level resolution for a family sized by
+/// cell, not by plant: a `VariableRef` with `bus_id: None` means the whole plant,
+/// i.e. every cell's column (a single pair under the identity partition).
+/// `Some(b)` resolves through
 /// `ctx.hydro_cell_index.cell_of_bus`, never `Hydro::bus_id`: the cell's bus comes
 /// from a unit group's `bus_id`, an independent value the plant's own field
 /// need not match. Returns an empty vec on an `EntityPositions::hydro` miss (mirrors every

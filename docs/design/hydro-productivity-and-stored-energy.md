@@ -24,9 +24,8 @@ tag (`ComputedParameter` in `novomodelo-core`'s parameter model), serialized in
 | **own** | `equivalent_productivity` | `integrated_equivalent_productivity` |
 | **cascade** | `accumulated_productivity` | `integrated_accumulated_productivity` |
 
-The two reference-point tags are unchanged: their JSON shape and their wire
-payload carry no head field and no basis field, byte-identical to how they
-existed before the mean evaluator was added. Scope is expressed entirely by
+The two reference-point tags carry no head field and no basis field, in their
+JSON shape or their wire payload. Scope is expressed entirely by
 the tag name, not by a field on the tag. The cascade mean-evaluator cell also
 feeds a fifth computed tag, `max_stored_energy`, described below.
 
@@ -139,7 +138,7 @@ shortfall on every stage regardless of the stage's length.
 `hm3 * MW/(m3/s)` directly to MWh with a fixed hm3-to-seconds factor — no
 stage duration enters the computation. `stored_energy_{initial,final}_mw` is
 derived from it: `_mwh` divided by the stage's total block hours. The source
-models this feature's inputs originate from (NEWAVE, DECOMP) report a
+models these inputs are converted from (NEWAVE, DECOMP) report a
 comparable quantity on a month-based unit; reconciling that unit against
 novomodelo's stage-hours-based `_mw` column, when the two differ, is a consumer-side
 concern — novomodelo reports the stage's own duration-normalized value and takes no
@@ -279,17 +278,6 @@ block's duration to be finite and strictly positive. This is the invariant
 the `stored_energy_*_mw` division (`_mwh` divided by the stage's summed block
 hours) relies on to never divide by zero or a non-finite value.
 
-## The declared stored-energy value change
-
-`stored_energy_{initial,final}_mwh` now reads the
-`integrated_accumulated_productivity` grid and the physical `V_lo`, in place
-of what it read before this feature. This is a declared, intentional value
-change for any study whose mean and reference-point evaluators diverge (any
-plant with a genuine, non-collapsed physical range and resolvable geometry) —
-not a silent rebaseline. A study where every hydro's physical range is
-collapsed, or where no hydro has resolvable VHA geometry, sees the two
-evaluators coincide and the column is byte-neutral.
-
 ## Bridge-facing deviations
 
 A bridge authoring a security curve against this contract writes a `computed`
@@ -297,8 +285,8 @@ scalar parameter with `"tag": "integrated_accumulated_productivity"` as
 described above — never a `"basis"` field on `computed_spec`, and never a
 `"head"` field on the existing `equivalent_productivity` /
 `accumulated_productivity` tags (see the 2x2 table: scope and evaluator are
-both expressed by tag name, not by a field). Two designs considered earlier in
-this feature's development are retired and should not be re-attempted: moving
+both expressed by tag name, not by a field). Two designs are rejected and should
+not be re-attempted: moving
 the flood-control ceiling and similar per-stage operative limits out of
 `hydro_bounds` into a separate physical-range-purity channel (see "The
 physical/operative split" above — the two ranges stay exactly where they
@@ -334,5 +322,5 @@ exists for it today.
 
 `docs/design/wire-format-evolution.md` owns the postcard discriminant ledger
 for the tail-appended `VariableRef` and `BroadcastComputedParameter` variants
-this feature adds. This page does not restate that ledger; consult it
+these tags use. This page does not restate that ledger; consult it
 directly for the wire-format assignments.

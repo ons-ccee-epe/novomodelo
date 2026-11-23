@@ -123,8 +123,6 @@ pub(crate) struct TemplateBuildCtx<'a> {
     /// reachability mask, and the three resolved arc tables — stage-clock
     /// weights, chronological spread, arrival density), threaded from
     /// setup's single owner (`crate::bucket_topology::build_transit_bucket_topology`).
-    /// This ctx used to carry four of its tables as its own clones; see
-    /// [`crate::bucket_topology::TransitBucketTopology`].
     pub(crate) topology: &'a TransitBucketTopology,
 }
 
@@ -1186,9 +1184,9 @@ fn enumerate_generic_constraint_rows(
 
 /// One hydro's resolved LP production role at one stage — the single
 /// classifier [`StageLayout::stage_production_role`] resolves, so
-/// `fill_load_balance_entries` and `fill_operational_violation_entries` can
-/// no longer disagree about a plant's role the way two independent
-/// `ProductionModelSet::model()` re-queries once did.
+/// `fill_load_balance_entries` and `fill_operational_violation_entries`
+/// cannot disagree about a plant's role, as two independent
+/// `ProductionModelSet::model()` re-queries could.
 #[derive(Debug, Clone, Copy)]
 pub(super) enum StageProductionRole {
     /// Prices through the plant's FPHA generation column(s), at this
@@ -2019,8 +2017,7 @@ impl StageLayout<'_> {
 /// after `turbine` has a base `turbine.start + Σ(prior)·n_blks` and length
 /// `count·n_blks`, both striped by stage 0's block count, so at any stage with a
 /// differing block count the stage-0 base/length addresses the WRONG primal
-/// columns. The per-stage `n_blks` stride was already correct; this closes the
-/// matching base/length gap. Uniform-block studies coincide with stage 0.
+/// columns. Uniform-block studies coincide with stage 0.
 #[derive(Debug, Clone)]
 pub struct StageGeometry {
     /// Turbined-flow column range (one per hydro per block). `turbine.start` is
@@ -2488,7 +2485,7 @@ mod collapse_stage_level_tests {
     }
 
     #[test]
-    fn block_invariant_coefficient_still_collapses() {
+    fn block_invariant_coefficient_collapses() {
         let param = unbounded(expr(LinearTerm {
             coefficient: ScalarExpr::param(EntityId(43)),
             variable: hydro_storage(),

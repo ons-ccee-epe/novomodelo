@@ -831,9 +831,9 @@ pub(super) fn check_external_library_coherence(data: &ParsedData, ctx: &mut Vali
 
 /// Extract one external class, running A2 (`stage_id` resolution, rule 47), A1
 /// (exact `scenario_id` set, rule 46), and rule 50's inflow-only σ check as it
-/// builds the [`ClassExternal`]. Rule 50 no longer applies to load/NCS: under
+/// builds the [`ClassExternal`]. Rule 50 does not apply to load/NCS: under
 /// External their μ is defined by the external file itself, so there is no
-/// seasonal μ left to disagree with. For inflow, σ is derived from these SAME
+/// seasonal μ to disagree with. For inflow, σ is derived from these SAME
 /// external cells via [`derive_external_sample_moments`] -- the reduction the
 /// engine also uses, so the validator and the engine agree on "σ = 0" --
 /// rather than from `inflow_seasonal_stats`; a constant (σ = 0) column is
@@ -2096,8 +2096,6 @@ mod tests {
             source: "precomputed".to_string(),
             volume_discretization_points: None,
             turbine_discretization_points: None,
-            spillage_discretization_points: None,
-            max_planes_per_hydro: None,
             fitting_window: None,
             spillage_fit_max_m3s: None,
             turbined_fit_max_m3s: None,
@@ -2562,7 +2560,7 @@ mod tests {
     }
 
     /// A stationary mixed-order (`orders = [3, 1, 2, 1]`) hydro -- the same
-    /// fixture `t2_mixed_orders_gate_passes` verifies stationary --
+    /// fixture `mixed_orders_pass_stationarity_gate` verifies stationary --
     /// produces no stationarity rejection.
     #[test]
     fn par_gate_accepts_stationary() {
@@ -2790,7 +2788,7 @@ mod tests {
     /// `LoadFactorEntry` with a `block_id` not present in the stage's blocks
     /// still produces 1 rule-17 `BusinessRuleViolation` error.
     #[test]
-    fn test_rule17_invalid_block_id_still_errors() {
+    fn test_rule17_invalid_block_id_errors() {
         let mut data = make_data_5b(
             vec![],
             make_stages_with_block(0),
@@ -2834,8 +2832,7 @@ mod tests {
     /// A deterministic load (`std_mw == 0.0`) with defined block factors
     /// produces zero ModelQuality warnings mentioning "deterministic" or "no
     /// effect" — block factors are applied at σ = 0 (see
-    /// `test_block_factors_applied_at_zero_sigma` in `novomodelo-stochastic`), so
-    /// the retired rule-18 claim does not resurface.
+    /// `test_block_factors_applied_at_zero_sigma` in `novomodelo-stochastic`).
     #[test]
     fn test_deterministic_load_emits_no_factor_warning() {
         let mut data = make_data_5b(
@@ -3526,7 +3523,7 @@ mod tests {
     /// tolerance is still rejected — the tolerance must have power, not just
     /// admit the reported round-off.
     #[test]
-    fn test_filling_sufficiency_beyond_tolerance_still_errors() {
+    fn test_filling_sufficiency_beyond_tolerance_errors() {
         let zeta = 720.0 * M3S_TO_HM3;
         let rate = 30.0;
         let capacity = zeta * rate + zeta * rate;
@@ -4276,9 +4273,8 @@ mod tests {
 
     /// A zero σ at stage 0 — the single-node trunk every path shares — is
     /// rejected for an AR(p > 0) hydro, naming the entity and the stage, even
-    /// though stage 0 never branches; the message states the real,
-    /// deterministic-PAR-output reason and never repeats the retired
-    /// "inversion is undefined" phrasing.
+    /// though stage 0 never branches; the message states the
+    /// deterministic-PAR-output reason, not an "inversion is undefined" one.
     #[test]
     fn rule_50_inflow_ar_positive_zero_sigma_rejects_at_trunk_stage() {
         let mut data = trunk_and_fan_graph(1, 20.0, 30.0);
@@ -4299,7 +4295,7 @@ mod tests {
             !error_msgs(&ctx)
                 .iter()
                 .any(|m| m.contains("inversion is undefined")),
-            "the rejection must not repeat the retired 'inversion is undefined' phrasing: {:?}",
+            "the rejection must not use the 'inversion is undefined' phrasing: {:?}",
             error_msgs(&ctx)
         );
     }
@@ -4327,8 +4323,7 @@ mod tests {
 
     /// An AR(0) hydro's deterministic (σ = 0) external inflow is accepted:
     /// its deterministic base is exactly μ, so the constant external value
-    /// simply IS that base — no rule 50 error, the flip of the retired
-    /// unconditional-inflow-reject behavior.
+    /// simply IS that base — no rule 50 error.
     #[test]
     fn rule_50_inflow_ar0_zero_sigma_accepted() {
         let data = external_data(
@@ -4350,8 +4345,7 @@ mod tests {
     }
 
     /// An External-scheme deck with NO seasonal-stats file for that class (an
-    /// absent `load_seasonal_stats.parquet`, the file that used to be the
-    /// sole source of rule 50's load σ) validates without error —
+    /// absent `load_seasonal_stats.parquet`) validates without error —
     /// seasonal-stats files are optional under External.
     #[test]
     fn external_load_deck_validates_without_error_when_seasonal_stats_absent() {
@@ -4383,7 +4377,7 @@ mod tests {
     }
 
     /// A σ = 0 external NCS column whose values all equal μ is accepted --
-    /// rule 50 no longer applies any σ check to NCS at all, so the seasonal μ
+    /// rule 50 applies no σ check to NCS at all, so the seasonal μ
     /// is irrelevant either way (see the "differs" companion below).
     #[test]
     fn rule_50_ncs_zero_sigma_accepts_when_value_equals_mean() {
@@ -4418,9 +4412,7 @@ mod tests {
 
     /// The same σ = 0 NCS column with one value diverging from μ is likewise
     /// accepted: under External, NCS's μ is defined by the external file
-    /// itself, so there is no seasonal μ left to disagree with — the retired
-    /// "σ = 0 requires every value to equal μ" branch no longer applies to
-    /// load/NCS.
+    /// itself, so there is no seasonal μ to disagree with.
     #[test]
     fn rule_50_ncs_zero_sigma_accepts_when_value_differs_from_seasonal_mean() {
         let ncs = vec![
@@ -4488,8 +4480,8 @@ mod tests {
 
     /// A σ = 0 external load column with a value differing from the seasonal
     /// μ is accepted: under External, load's μ is defined by the external
-    /// file itself, so editing `load_seasonal_stats.parquet` is no longer
-    /// required to keep a deterministic load value from being rejected.
+    /// file itself, so the seasonal μ in `load_seasonal_stats.parquet` does not
+    /// constrain a deterministic load value.
     #[test]
     fn rule_50_load_zero_sigma_accepts_when_value_differs_from_seasonal_mean() {
         let load = vec![
@@ -4563,7 +4555,7 @@ mod tests {
     /// The same `std_m3s == 0.0` row under the default (generated) inflow
     /// scheme still emits rule 12's warning.
     #[test]
-    fn rule_12_still_fires_for_generated_inflow_scheme() {
+    fn rule_12_fires_for_generated_inflow_scheme() {
         let data = make_data_5b(
             vec![make_hydro_ordered_penalties(1)],
             make_stages_5b(vec![0]),

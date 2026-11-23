@@ -325,11 +325,11 @@ fn valid_case_piped_stdout_has_no_ansi_escapes() {
 /// An unknown `cut_selection` key is a hard schema error under
 /// `deny_unknown_fields`, not silently ignored.
 #[test]
-fn removed_cut_selection_field_fails_validate() {
+fn unknown_cut_selection_key_fails_validate() {
     let dir = TempDir::new().unwrap();
     make_valid_case(&dir);
 
-    let removed_field_config = r#"{
+    let unknown_key_config = r#"{
         "training": {
             "selection": { "method": "sampled", "forward_passes": 10 },
             "stopping_rules": [
@@ -339,7 +339,7 @@ fn removed_cut_selection_field_fails_validate() {
             "cut_selection": { "basis_activity_window": 100 }
         }
     }"#;
-    write_file(dir.path(), "config.json", removed_field_config);
+    write_file(dir.path(), "config.json", unknown_key_config);
 
     novomodelo()
         .args(["validate", dir.path().to_str().unwrap()])
@@ -2043,36 +2043,6 @@ fn deprecation_lines(output: &std::process::Output) -> Vec<String> {
         .filter(|line| line.contains("is deprecated"))
         .map(str::to_owned)
         .collect()
-}
-
-#[test]
-fn validate_warns_once_on_legacy_post_study_format() {
-    let dir = TempDir::new().unwrap();
-    copy_dir_recursive(
-        &common::case_dir("deterministic/d55-post-study-anticipated-lanes"),
-        dir.path(),
-    );
-    write_file(
-        dir.path(),
-        "post_study_stages.json",
-        r#"{
-            "stages": [{ "start_date": "2024-07-01", "duration_hours": 744.0 }],
-            "thermal_bounds": [
-                { "thermal_id": 1, "post_study_stage_index": 0, "cost_per_mwh": 5.0, "min_mw": 0.0, "max_mw": 150.0 }
-            ]
-        }"#,
-    );
-
-    let output = novomodelo()
-        .env_remove("RUST_LOG")
-        .args(["validate", dir.path().to_str().unwrap()])
-        .output()
-        .unwrap();
-
-    assert!(output.status.success(), "{output:?}");
-    let lines = deprecation_lines(&output);
-    assert_eq!(lines.len(), 1, "{lines:?}");
-    assert!(lines[0].contains("thermal_stages"), "{lines:?}");
 }
 
 #[test]

@@ -218,7 +218,7 @@ fn boundary_injection_matching_lag_reference_date_tally_matches_sentinel() {
 /// no warning is emitted; the symmetric case (dated source, sentinel target)
 /// behaves identically.
 #[test]
-fn boundary_injection_undated_source_lag_still_copies() {
+fn boundary_injection_undated_source_lag_copies_by_identity() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let manifest = vec![inflow_lag_slot(1, 2)];
     write_checkpoint(tmp.path(), &manifest, &[10.0]);
@@ -823,7 +823,7 @@ fn boundary_injection_dated_anticipated_fan_out_matrix() {
     assert_eq!(cuts.len(), 1);
     assert_eq!(
         cuts[0].coefficients[0], 10.0,
-        "the storage slot still copies its identity-matched coefficient"
+        "the storage slot copies its identity-matched coefficient"
     );
 
     let h_m = 30.0 * 24.0;
@@ -1121,10 +1121,9 @@ fn boundary_injection_report_empty_manifest_is_unreconciled() {
 /// then the coefficients equal the `Blend` (`π_M · overlap/H_M`, the same value
 /// `boundary_injection_dated_anticipated_fan_out_matrix` asserts for a 7-day
 /// lane) and `Renormalize` (`π_M · H_w/H_M`) values — reconcile keys on the
-/// slot's interval, never the ring `subindex`, so ring provenance reconciles
-/// identically to the retired lane shape.
+/// slot's interval, never the ring `subindex`.
 #[test]
-fn boundary_injection_ring_sourced_post_study_fan_out_matches_pre_switchover() {
+fn boundary_injection_ring_sourced_post_study_fan_out_reconciles_by_interval() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let source_manifest = vec![
         storage_slot(1),
@@ -1161,7 +1160,7 @@ fn boundary_injection_ring_sourced_post_study_fan_out_matches_pre_switchover() {
     assert_eq!(cuts.len(), 1);
     assert_eq!(
         cuts[0].coefficients[0], 10.0,
-        "the storage slot still copies its identity-matched coefficient"
+        "the storage slot copies its identity-matched coefficient"
     );
 
     let h_m = 30.0 * 24.0;

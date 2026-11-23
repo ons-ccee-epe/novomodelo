@@ -723,11 +723,11 @@ mod highs_tests {
         );
     }
 
-    /// Each of the 7 new fields overrides the base constant when set to a
+    /// Each of the 7 tuning-override fields overrides the base constant when set to a
     /// valid non-default value, and `presolve` maps through `PresolveKind`;
     /// fields not set here keep the base constant's values.
     #[test]
-    fn resolve_profile_new_fields_apply_overrides() {
+    fn resolve_profile_set_tuning_overrides_replace_the_base_values() {
         let config = PhaseSolverProfileConfig {
             dual_feasibility_tolerance: Some(1e-8),
             presolve: Some(PresolveMode::Off),
@@ -892,9 +892,9 @@ mod highs_tests {
         );
     }
 
-    /// Every new field set to a valid non-default value is accepted.
+    /// Every tuning-override field set to a valid non-default value is accepted.
     #[test]
-    fn validate_phase_solver_config_accepts_new_fields_at_valid_values() {
+    fn validate_phase_solver_config_accepts_tuning_overrides_at_valid_values() {
         let config = PhaseSolverProfileConfig {
             dual_feasibility_tolerance: Some(1e-8),
             presolve: Some(PresolveMode::Off),
@@ -1068,10 +1068,10 @@ mod clp_tests {
         assert!(err.to_string().contains("clp"));
     }
 
-    /// Each of the 7 new fields is hard-rejected on CLP when it is the only
+    /// Each of the 7 tuning-override fields is hard-rejected on CLP when it is the only
     /// field set, naming both the backend and the field.
     #[test]
-    fn validate_phase_solver_config_rejects_clp_new_fields() {
+    fn validate_phase_solver_config_rejects_each_tuning_override_on_clp() {
         assert_clp_rejects_field(
             &PhaseSolverProfileConfig {
                 dual_feasibility_tolerance: Some(1e-8),

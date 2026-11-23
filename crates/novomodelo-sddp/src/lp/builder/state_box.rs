@@ -194,7 +194,7 @@ mod tests {
         )
     }
 
-    /// AC: a storage column bounded `[0.0, 50.0]` box-copies verbatim.
+    /// A storage column bounded `[0.0, 50.0]` box-copies verbatim.
     #[test]
     fn state_box_storage_takes_the_outgoing_column_bounds() {
         let layout = state_layout_full(1, 0, Vec::new());
@@ -258,7 +258,7 @@ mod tests {
         assert_eq!(state_box.upper[lag_j], f64::INFINITY);
     }
 
-    /// AC: an inflow-lag dimension stays at the unbounded default.
+    /// An inflow-lag dimension stays at the unbounded default.
     #[test]
     fn state_box_inflow_lag_is_unbounded() {
         let layout = state_layout_full(1, 1, Vec::new());
@@ -280,7 +280,7 @@ mod tests {
         assert_eq!(state_box.upper[lag_j], f64::INFINITY);
     }
 
-    /// AC: a transit-bucket column box-copies its own reachable `[0, ∞)` / frozen
+    /// A transit-bucket column box-copies its own reachable `[0, ∞)` / frozen
     /// `[0, 0]` bounds verbatim, exactly like storage.
     #[test]
     fn state_box_transit_bucket_reachable_is_zero_to_inf_frozen_is_zero_zero() {

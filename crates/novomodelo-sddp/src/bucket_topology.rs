@@ -121,7 +121,7 @@ fn resolve_travel_time_arcs(hydros: &[Hydro]) -> Vec<TravelTimeArc> {
 
 /// The resolution base for one arc: the water calendar exactly under a
 /// [`WaterDeliveryBasis::Declared`] basis, with no padding and no fallback;
-/// under [`WaterDeliveryBasis::Legacy`] [`extend_for_resolution`]'s padded base.
+/// under [`WaterDeliveryBasis::PaddedThermal`] [`extend_for_resolution`]'s padded base.
 /// The basis is passed in, never stored on [`DeliveryCalendar`], which feeds the
 /// frozen digest.
 fn resolution_base<'a>(
@@ -131,13 +131,13 @@ fn resolution_base<'a>(
 ) -> Cow<'a, [f64]> {
     match basis {
         WaterDeliveryBasis::Declared(_) => Cow::Borrowed(calendar.total_hours()),
-        WaterDeliveryBasis::Legacy => {
+        WaterDeliveryBasis::PaddedThermal => {
             Cow::Owned(extend_for_resolution(calendar.total_hours(), t_v))
         }
     }
 }
 
-/// The legacy-path base only, for a deck without a declared water calendar:
+/// The padded-thermal base only, for a deck without a declared water calendar:
 /// extends the base calendar ([`DeliveryCalendar::total_hours`]) with copies of
 /// its trailing duration so [`resolve_spread`] never sees a window it cannot
 /// absorb; its conservation check panics otherwise. Horizon capping is a
@@ -720,7 +720,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_fine_first_coarse_next_ic_anchor_deepens_beyond_in_study_max() {
+    fn padded_thermal_fine_first_coarse_next_ic_anchor_deepens_beyond_in_study_max() {
         let downstream = hydro(1, None, None);
         let upstream = hydro(2, Some(1), Some(30.0));
         let durations = [24.0, 720.0, 720.0, 720.0];
@@ -757,7 +757,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_uniform_calendar_ic_anchor_does_not_deepen() {
+    fn padded_thermal_uniform_calendar_ic_anchor_does_not_deepen() {
         let downstream = hydro(1, None, None);
         let upstream = hydro(2, Some(1), Some(24.0));
         let durations = vec![24.0; 6];
@@ -782,7 +782,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_horizon_cap_drops_lag_targeting_past_last_stage() {
+    fn padded_thermal_horizon_cap_drops_lag_targeting_past_last_stage() {
         let downstream = hydro(1, None, None);
         let upstream = hydro(2, Some(1), Some(72.0));
         let durations = [24.0, 24.0, 24.0];
@@ -1255,7 +1255,7 @@ mod tests {
     /// (`extend_for_resolution` on the study-only vector) instead replicates
     /// 24h stages, whose window `[72, 96)` lands squarely on a single 24h pad
     /// copy (`stage_reach = 3`) — the value
-    /// `legacy_horizon_cap_drops_lag_targeting_past_last_stage` pins for the
+    /// `padded_thermal_horizon_cap_drops_lag_targeting_past_last_stage` pins for the
     /// same arc with no post-study calendar declared.
     #[test]
     fn post_study_calendar_replaces_the_synthetic_pad_in_arrival_resolution() {
@@ -1371,7 +1371,7 @@ mod tests {
     }
 
     #[test]
-    fn post_study_calendar_shorter_than_travel_time_still_pads() {
+    fn post_study_calendar_shorter_than_travel_time_pads() {
         let downstream = hydro(1, None, None);
         let upstream = hydro(2, Some(1), Some(72.0));
         let durations = [24.0, 24.0, 24.0];

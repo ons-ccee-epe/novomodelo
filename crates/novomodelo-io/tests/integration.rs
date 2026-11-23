@@ -1661,7 +1661,7 @@ fn test_d56_ar1_sigma_zero_inflow_rejected_by_validate_case() {
             );
             assert!(
                 !msg.contains("inversion is undefined"),
-                "message must not repeat the retired 'inversion is undefined' phrasing: {msg}"
+                "message must not use the 'inversion is undefined' phrasing: {msg}"
             );
         }
         Ok(_) => panic!("expected the AR(1) + sigma=0 external inflow deck to be rejected, got Ok"),

@@ -3589,11 +3589,11 @@ mod tests {
     }
 
     #[test]
-    fn hydros_schema_drops_old_productivity_field() {
+    fn hydros_schema_has_no_productivity_field() {
         let schema = hydros_schema();
         assert!(
             schema.field_with_name("productivity_mw_per_m3s").is_err(),
-            "productivity_mw_per_m3s must not exist in the updated schema"
+            "productivity_mw_per_m3s must not exist in the hydros schema"
         );
     }
 
@@ -3616,7 +3616,7 @@ mod tests {
     }
 
     #[test]
-    fn hydros_batch_round_trips_new_columns() {
+    fn hydros_batch_round_trips_energy_columns() {
         let tmp = tempfile::tempdir().expect("tempdir must succeed");
         std::fs::create_dir_all(tmp.path().join("simulation")).unwrap();
 

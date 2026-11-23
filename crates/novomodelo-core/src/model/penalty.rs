@@ -629,7 +629,7 @@ mod tests {
     }
 
     #[test]
-    fn entity_symmetric_override_still_sets_both_directions() {
+    fn entity_symmetric_override_sets_both_directions() {
         let global = make_global_with_directional_costs();
         let overrides = HydroPenaltyOverrides {
             water_withdrawal_violation_cost: Some(999.0),

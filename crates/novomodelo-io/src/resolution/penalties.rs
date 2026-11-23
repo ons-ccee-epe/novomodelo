@@ -987,12 +987,12 @@ mod tests {
         }
     }
 
-    // ── Test: acceptance criterion — hydro spillage_cost ─────────────────────
+    // ── Test: hydro spillage_cost ────────────────────────────────────────────
 
     /// 2 hydros, 3 stages, override row for
     /// hydro_id=0, stage_id=1, spillage_cost=Some(0.05). Verifies exact cells.
     #[test]
-    fn test_ac_hydro_spillage_cost_override() {
+    fn test_hydro_spillage_cost_override() {
         let hydros = vec![make_hydro(0, 0.01), make_hydro(1, 0.01)];
         let override_row = HydroPenaltyOverrideRow {
             hydro_id: EntityId::from(0),
@@ -1013,12 +1013,12 @@ mod tests {
         assert!((result.hydro_penalties(1, 1).spillage_cost - 0.01).abs() < f64::EPSILON);
     }
 
-    // ── Test: acceptance criterion — bus excess_cost ───────────────────────────
+    // ── Test: bus excess_cost ──────────────────────────────────────────────────
 
     /// 1 bus with excess_cost=100.0, 2 stages,
     /// override at stage 0 to 250.0. Verifies exact cells.
     #[test]
-    fn test_ac_bus_excess_cost_override() {
+    fn test_bus_excess_cost_override() {
         let buses = vec![make_bus(0, 100.0)];
         let override_row = BusPenaltyOverrideRow {
             bus_id: EntityId::from(0),
@@ -1032,13 +1032,13 @@ mod tests {
         assert!((result.bus_penalties(0, 1).excess_cost - 100.0).abs() < f64::EPSILON);
     }
 
-    // ── Test: acceptance criterion — filling_target_violation_cost only ────────
+    // ── Test: filling_target_violation_cost only ───────────────────────────────
 
     /// a hydro override where only
     /// filling_target_violation_cost is Some(99999.0) and all other 10 fields
     /// are None. Verifies only that field is updated.
     #[test]
-    fn test_ac_single_field_filling_target_violation_cost() {
+    fn test_single_field_filling_target_violation_cost() {
         let hydros = vec![make_hydro_distinct_penalties(0)];
         let override_row = HydroPenaltyOverrideRow {
             hydro_id: EntityId::from(0),

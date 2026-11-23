@@ -323,7 +323,7 @@ impl GroupBoundLookup<'_> {
 /// term and a cell can turbine past its own groups' capacity: the cap row bounds
 /// only the cells' total. The plant term is a no-op only for a plant
 /// with no declared groups (never a same-bus plant with several) — inert on
-/// today's fixtures, not provably inert, since both admission rules allow an
+/// the shipped fixtures, not provably inert, since both admission rules allow an
 /// envelope tolerance no shipped fixture exercises.
 ///
 /// Each member group's own cap fed into the fold is its RESOLVED per-block
@@ -752,7 +752,7 @@ pub(crate) fn warn_on_inert_plant_floor_overrides(
 }
 
 /// The hydros with a study stage without turbine capacity, or a minimum the stage
-/// LP no longer charges, ascending by id. Capacity and floors are read through
+/// LP does not charge, ascending by id. Capacity and floors are read through
 /// [`cell_has_capacity`], [`GroupBoundLookup::has_capacity`], [`PlantFloor`] and
 /// [`is_suspended`], never re-derived from a limit, so the rows agree with the LP.
 pub(crate) fn frozen_turbining_hydros(

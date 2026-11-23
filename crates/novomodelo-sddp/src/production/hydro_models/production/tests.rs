@@ -138,8 +138,6 @@ fn precomputed_fpha_config(hydro_id: i32) -> ProductionModelConfig {
                     source: "precomputed".to_string(),
                     volume_discretization_points: None,
                     turbine_discretization_points: None,
-                    spillage_discretization_points: None,
-                    max_planes_per_hydro: None,
                     fitting_window: None,
                     spillage_fit_max_m3s: None,
                     turbined_fit_max_m3s: None,
@@ -163,8 +161,6 @@ fn computed_fpha_config(hydro_id: i32) -> ProductionModelConfig {
                     source: "computed".to_string(),
                     volume_discretization_points: None,
                     turbine_discretization_points: None,
-                    spillage_discretization_points: None,
-                    max_planes_per_hydro: None,
                     fitting_window: None,
                     spillage_fit_max_m3s: None,
                     turbined_fit_max_m3s: None,
@@ -1309,8 +1305,6 @@ fn computed_layout_with_window(min: Option<f64>, max: Option<f64>) -> FphaColumn
         source: "computed".to_string(),
         volume_discretization_points: None,
         turbine_discretization_points: None,
-        spillage_discretization_points: None,
-        max_planes_per_hydro: None,
         fitting_window: Some(FittingWindow {
             volume_min_hm3: min,
             volume_max_hm3: max,
@@ -2606,7 +2600,7 @@ fn fpha_plant_with_both_limits_emits_no_capacity_warning() {
 }
 
 #[test]
-fn computed_fpha_without_turbine_capacity_still_requires_its_prerequisites() {
+fn computed_fpha_without_turbine_capacity_requires_its_prerequisites() {
     let mut hydro = make_sobradinho_computed_hydro(0);
     hydro.max_turbined_m3s = 0.0;
     hydro.tailrace = None;

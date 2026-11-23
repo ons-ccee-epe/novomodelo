@@ -2,7 +2,7 @@
 //! `examples/deterministic/d56-external-authoritative` into a deck whose
 //! external inflow and load libraries hold 3 scenarios per stage against 5
 //! openings, so the external clamp leaves 3 openings per stage, trained with 3
-//! forward passes under the given `openings.moment_matching` spelling.
+//! forward passes.
 
 use std::fs::{self, File};
 use std::path::Path;
@@ -19,7 +19,7 @@ const SCENARIO_IDS: [i32; 6] = [0, 1, 2, 0, 1, 2];
 const INFLOW_M3S: [f64; 6] = [60.0, 80.0, 100.0, 70.0, 90.0, 110.0];
 const LOAD_MW: [f64; 6] = [110.0, 123.0, 136.0, 115.0, 123.0, 131.0];
 
-pub fn write_varying_external_deck(case: &Path, moment_matching: &str) {
+pub fn write_varying_external_deck(case: &Path) {
     edit_json(&case.join("stages.json"), |stages| {
         for stage in stages["stages"]
             .as_array_mut()
@@ -30,8 +30,6 @@ pub fn write_varying_external_deck(case: &Path, moment_matching: &str) {
     });
     edit_json(&case.join("config.json"), |config| {
         config["training"]["selection"]["forward_passes"] = json!(3);
-        config["training"]["scenario_source"]["openings"] =
-            json!({"source": "generated", "moment_matching": moment_matching});
     });
     let scenarios = case.join("scenarios");
     write_external_library(

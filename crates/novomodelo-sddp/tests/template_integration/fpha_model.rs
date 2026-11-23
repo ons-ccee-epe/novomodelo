@@ -198,7 +198,7 @@ fn test_fpha_model_accepted() {
 
     assert!(
         result.is_ok(),
-        "Fpha entity model with ConstantProductivity resolved model must now succeed: {result:?}"
+        "Fpha entity model with ConstantProductivity resolved model must succeed: {result:?}"
     );
 
     // A rejection would name the plant in the error message; assert it is absent.

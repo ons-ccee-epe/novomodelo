@@ -392,7 +392,7 @@ fn assign_scenarios_single_rank() {
 
 #[test]
 fn assign_scenarios_uneven_rank1() {
-    // Derived from acceptance criteria: rank 1 is a lean rank with 3 scenarios
+    // Rank 1 is a lean rank with 3 scenarios
     // starting at offset 4 (end of rank 0's fat slice).
     assert_eq!(assign_scenarios(10, 1, 3), 4..7);
 }
@@ -491,7 +491,7 @@ fn geometry_row_capacity(geom: &StageGeometry) -> usize {
 
 #[test]
 fn extract_costs_has_one_entry_matching_stage_id() {
-    // Acceptance criterion: costs contains exactly one entry whose stage_id
+    // costs contains exactly one entry whose stage_id
     // matches the input stage and whose future_cost == primal[state.theta].
     let study_dims = test_support::study_dims();
     let state = test_support::state_layout(2, 1);
@@ -503,9 +503,8 @@ fn extract_costs_has_one_entry_matching_stage_id() {
     };
     let mut primal = make_primal_2_1([100.0, 200.0], [90.0, 180.0], 999.5);
     primal.resize(indexer.withdrawal_slack_pos.end, 0.0);
-    // theta's coefficient must stay 1.0 (the `objective_coeffs.get(theta)`
-    // default an empty slice used to give) for `future_cost` below to still
-    // equal `primal[theta] * cost_scale_factor`.
+    // theta's coefficient must be 1.0 for `future_cost` below to equal
+    // `primal[theta] * cost_scale_factor`.
     let mut objective_coeffs = vec![0.0; primal.len()];
     objective_coeffs[state.theta] = 1.0;
     let dual = vec![0.0; 4];
@@ -571,8 +570,7 @@ fn extract_cost_splits_objective_correctly() {
     let objective = 800.0;
     let mut primal = make_primal_2_1([0.0; 2], [0.0; 2], theta_val);
     primal.resize(indexer.withdrawal_slack_pos.end, 0.0);
-    // theta's coefficient must stay 1.0 (the `objective_coeffs.get(theta)`
-    // default an empty slice used to give) so objective still splits into
+    // theta's coefficient must be 1.0 so objective splits into
     // immediate_cost + future_cost as asserted below.
     let mut objective_coeffs = vec![0.0; primal.len()];
     objective_coeffs[state.theta] = 1.0;
@@ -3325,7 +3323,7 @@ fn make_indexer_2h_1fpha_1blk() -> StageGeometry {
     test_support::geometry(&counts_2h_1fpha_1blk(), vec![0], &[2], vec![])
 }
 
-/// Acceptance criterion: FPHA hydro's `generation_mw` equals the LP generation
+/// FPHA hydro's `generation_mw` equals the LP generation
 /// variable (not turbined * productivity = 0).
 #[test]
 fn fpha_generation_read_from_lp_column() {
@@ -3347,7 +3345,7 @@ fn fpha_generation_read_from_lp_column() {
     primal[6] = 30.0; // turbine h1 b0
     primal[7] = 0.0; // spillage h0 b0
     primal[8] = 0.0; // spillage h1 b0
-    primal[11] = 75.0; // FPHA generation h0 b0 — acceptance criterion value
+    primal[11] = 75.0; // FPHA generation h0 b0
 
     let obj = vec![0.0_f64; n_cols];
     let dual = vec![0.0_f64; geometry_row_capacity(&indexer)];
@@ -3422,7 +3420,7 @@ fn fpha_generation_read_from_lp_column() {
     );
 }
 
-/// Acceptance criterion: both FPHA and constant-productivity hydros report
+/// Both FPHA and constant-productivity hydros report
 /// the `equivalent_productivity_mw_per_m3s` produced by the supplied
 /// `EnergyConversionSet`. With a zero-valued set the field is `0.0` for
 /// every hydro regardless of generation model.
@@ -3524,7 +3522,7 @@ fn make_indexer_1h_evap_1blk() -> StageGeometry {
     test_support::geometry(&counts_1h_evap_1blk(), vec![], &[], vec![0])
 }
 
-/// Acceptance criterion: `evaporation_m3s` equals the LP evaporation-outflow variable value.
+/// `evaporation_m3s` equals the LP evaporation-outflow variable value.
 #[test]
 fn evaporation_read_from_lp_column() {
     let indexer = make_indexer_1h_evap_1blk();
@@ -3543,7 +3541,7 @@ fn evaporation_read_from_lp_column() {
     primal[2] = 0.0; // theta
     primal[3] = 10.0; // turbine h0 b0
     primal[4] = 0.0; // spillage h0 b0
-    primal[6] = 3.5; // evaporation outflow — acceptance criterion value
+    primal[6] = 3.5; // evaporation outflow
 
     let obj = vec![0.0_f64; n_cols];
     let dual = vec![0.0_f64; geometry_row_capacity(&indexer)];
@@ -3611,7 +3609,7 @@ fn evaporation_read_from_lp_column() {
     );
 }
 
-/// Acceptance criterion: directional evaporation violations are extracted
+/// Directional evaporation violations are extracted
 /// separately from the LP's `f_evap_plus` (under-evaporation / neg) and
 /// `f_evap_minus` (over-evaporation / pos) columns.
 #[test]
@@ -3695,7 +3693,7 @@ fn evaporation_violation_is_sum_of_slacks() {
     );
 }
 
-/// Acceptance criterion: `turbined_cost` equals the sum of primal * obj\_coeff
+/// `turbined_cost` equals the sum of primal * obj\_coeff
 /// over turbine columns (every hydro, every block), multiplied by
 /// `COST_SCALE_FACTOR`.
 ///

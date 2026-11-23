@@ -155,7 +155,7 @@ mod tests {
         assert_stats_nan_mean, assert_stats_negative_std, make_stats_batch, write_parquet,
     };
 
-    // ── AC: valid file with 4 rows, verify sort order and field values ─────────
+    // ── valid file with 4 rows, verify sort order and field values ─────────────
 
     #[test]
     fn test_valid_4_rows_sorted_by_bus_stage() {
@@ -168,7 +168,7 @@ mod tests {
         );
     }
 
-    // ── AC: std_mw = 0.0 (deterministic) is accepted ─────────────────────────
+    // ── std_mw = 0.0 (deterministic) is accepted ─────────────────────────────
 
     #[test]
     fn test_zero_std_mw_is_accepted() {
@@ -180,35 +180,35 @@ mod tests {
         assert!(rows[0].std_mw.abs() < f64::EPSILON);
     }
 
-    // ── AC: std_mw negative -> SchemaError ───────────────────────────────────
+    // ── std_mw negative -> SchemaError ───────────────────────────────────────
 
     #[test]
     fn test_negative_std_mw() {
         assert_stats_negative_std(parse_load_seasonal_stats, "bus_id", "mean_mw", "std_mw");
     }
 
-    // ── AC: mean_mw NaN -> SchemaError ───────────────────────────────────────
+    // ── mean_mw NaN -> SchemaError ───────────────────────────────────────────
 
     #[test]
     fn test_nan_mean_mw() {
         assert_stats_nan_mean(parse_load_seasonal_stats, "bus_id", "mean_mw", "std_mw");
     }
 
-    // ── AC: missing required column -> SchemaError ────────────────────────────
+    // ── missing required column -> SchemaError ────────────────────────────────
 
     #[test]
     fn test_missing_mean_mw_column() {
         assert_stats_missing_column(parse_load_seasonal_stats, "bus_id", "mean_mw", "std_mw");
     }
 
-    // ── AC: empty file -> Ok(vec![]) ──────────────────────────────────────────
+    // ── empty file -> Ok(vec![]) ──────────────────────────────────────────────
 
     #[test]
     fn test_empty_parquet_returns_empty_vec() {
         assert_stats_empty_file(parse_load_seasonal_stats, "bus_id", "mean_mw", "std_mw");
     }
 
-    // ── AC: declaration-order invariance ─────────────────────────────────────
+    // ── declaration-order invariance ─────────────────────────────────────────
 
     #[test]
     fn test_declaration_order_invariance() {

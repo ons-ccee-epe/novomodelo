@@ -1388,7 +1388,7 @@ mod tests {
 
     #[test]
     #[allow(clippy::float_cmp)] // both paths run the identical arithmetic; the comparison must be bit-exact
-    fn test_season_occurrence_matches_pre_refactor_helper_sequence() {
+    fn test_season_occurrence_matches_its_helper_composition() {
         let season_map = twelve_month_season_map();
         let season_def = &season_map.seasons[3];
         let first_stage = stage_with_width(0, NaiveDate::from_ymd_opt(2026, 4, 4).unwrap(), 28);

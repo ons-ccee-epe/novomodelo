@@ -29,13 +29,13 @@ use novomodelo_io::config::{
     StoppingMode, StoppingRuleConfig, TrainingConfig, TrainingSelection, TrainingSolverConfig,
     UpperBoundEvaluationConfig,
 };
-use novomodelo_io::test_support::owned_piece_defaults;
+use novomodelo_io::test_support::{piece_defaults, stage_cuts_payload_defaults};
 use novomodelo_io::{
-    EntitySlot, OwnedPolicyCutRecord, STAGE_CUTS_PRICED_STATE_DATE_SENTINEL, StageCutsReadResult,
+    EntitySlot, GraphManifest, PolicyCutRecord, ProducerBlock, StageCutsPayload, encode_slot_date,
+    write_policy_checkpoint,
 };
 use novomodelo_sddp::{
-    LEGACY_COST_SCALE_FACTOR, SddpError, compare_manifest_slot_identity,
-    rescale_checkpoint_cuts_for_load,
+    BoundaryLoadRequest, SddpError, compare_manifest_slot_identity, load_boundary_cuts,
 };
 
 use common::build_setup_in_code;
@@ -268,83 +268,72 @@ fn anticipated_ring_columns_carry_unit_col_scale() {
     }
 }
 
-fn sample_cut_records() -> Vec<OwnedPolicyCutRecord> {
-    vec![
-        OwnedPolicyCutRecord {
-            slot_index: 0,
-            iteration: 0,
-            intercept: 10.0,
-            coefficients: vec![1.0, -2.0, 3.5],
-            is_active: true,
-            ..owned_piece_defaults()
-        },
-        OwnedPolicyCutRecord {
-            slot_index: 1,
-            iteration: 0,
-            intercept: -4.0,
-            coefficients: vec![0.0, 7.25, -1.0],
-            is_active: true,
-            ..owned_piece_defaults()
-        },
-    ]
-}
+const SAMPLE_CUTS: [(f64, [f64; 3]); 2] = [(10.0, [1.0, -2.0, 3.5]), (-4.0, [0.0, 7.25, -1.0])];
 
-fn sample_stage_cuts() -> Vec<StageCutsReadResult> {
-    vec![StageCutsReadResult {
+/// Invariant 3: the intercept and every coefficient of a loaded cut scale by
+/// the identical `source / loading_cost_scale_factor` factor — no per-family
+/// branch a commitment-block coefficient could fall outside of.
+#[test]
+fn boundary_load_scales_every_coefficient_uniformly() {
+    let tmp = tempfile::tempdir().unwrap();
+    let date = novomodelo_sddp::test_support::fixture_priced_date(
+        novomodelo_sddp::test_support::ymd(2030, 1, 1),
+        0,
+    );
+    let cuts: Vec<PolicyCutRecord> = SAMPLE_CUTS
+        .iter()
+        .enumerate()
+        .map(|(slot, (intercept, coefficients))| PolicyCutRecord {
+            slot_index: slot as u32,
+            iteration: 0,
+            intercept: *intercept,
+            coefficients,
+            is_active: true,
+            ..piece_defaults()
+        })
+        .collect();
+    let payload = StageCutsPayload {
         stage_id: 0,
         state_dimension: 3,
         capacity: 2,
-        warm_start_count: 2,
+        cuts: &cuts,
         populated_count: 2,
-        cuts: sample_cut_records(),
-        entity_manifest: Vec::new(),
-        cost_scale_factor: None,
-        node_id: -1,
-        graph_stage_id: -1,
-        priced_state_date: STAGE_CUTS_PRICED_STATE_DATE_SENTINEL,
-    }]
-}
-
-/// Invariant 3 (marked-source path): every coefficient AND the intercept scale
-/// by the identical `1 / loading_cost_scale_factor` factor — no per-family
-/// branch a commitment-block coefficient could fall outside of.
-#[test]
-fn rescale_checkpoint_cuts_scales_every_coefficient_uniformly_marked_source() {
-    let before = sample_cut_records();
-    let mut stage_cuts = sample_stage_cuts();
+        entity_manifest: &[],
+        cost_scale_factor: 1.0,
+        node_id: 0,
+        graph_stage_id: 0,
+        priced_state_date: encode_slot_date(date),
+        ..stage_cuts_payload_defaults()
+    };
+    let metadata = novomodelo_sddp::test_support::checkpoint_metadata(
+        1,
+        GraphManifest::default(),
+        ProducerBlock {
+            completed_iterations: 1,
+            max_iterations: 1,
+            forward_passes: 1,
+            ..novomodelo_sddp::test_support::producer_block()
+        },
+    );
+    write_policy_checkpoint(tmp.path(), &[payload], &[], &metadata, &[]).unwrap();
     let loading_cost_scale_factor = 2_000_000.0;
 
-    rescale_checkpoint_cuts_for_load(&mut stage_cuts, Some(1.0), loading_cost_scale_factor);
+    let loaded = load_boundary_cuts(&BoundaryLoadRequest::new(
+        tmp.path(),
+        date,
+        3,
+        &[],
+        loading_cost_scale_factor,
+    ))
+    .unwrap();
 
-    for (b, a) in before.iter().zip(&stage_cuts[0].cuts) {
-        assert_eq!(a.intercept, b.intercept / loading_cost_scale_factor);
-        for (bc, ac) in b.coefficients.iter().zip(&a.coefficients) {
+    assert_eq!(loaded.len(), SAMPLE_CUTS.len());
+    for ((intercept, coefficients), cut) in SAMPLE_CUTS.iter().zip(loaded.iter()) {
+        assert_eq!(cut.intercept, intercept / loading_cost_scale_factor);
+        for (before, after) in coefficients.iter().zip(&cut.coefficients) {
             assert_eq!(
-                *ac,
-                bc / loading_cost_scale_factor,
-                "every coefficient must scale by the identical factor as the intercept",
-            );
-        }
-    }
-}
-
-/// Invariant 3 (legacy-source path): the alternate branch of the same function
-/// also scales the intercept and every coefficient by one identical ratio.
-#[test]
-fn rescale_checkpoint_cuts_scales_every_coefficient_uniformly_legacy_source() {
-    let before = sample_cut_records();
-    let mut stage_cuts = sample_stage_cuts();
-    let loading_cost_scale_factor = 2_000_000.0;
-    let ratio = LEGACY_COST_SCALE_FACTOR / loading_cost_scale_factor;
-
-    rescale_checkpoint_cuts_for_load(&mut stage_cuts, None, loading_cost_scale_factor);
-
-    for (b, a) in before.iter().zip(&stage_cuts[0].cuts) {
-        assert_eq!(a.intercept, b.intercept * ratio);
-        for (bc, ac) in b.coefficients.iter().zip(&a.coefficients) {
-            assert_eq!(
-                *ac,
-                bc * ratio,
+                *after,
+                before / loading_cost_scale_factor,
                 "every coefficient must scale by the identical factor as the intercept",
             );
         }

@@ -307,7 +307,7 @@ mod tests {
             /// permutation) must not change the validation outcome: both the
             /// canonical and the shuffled order validate `Ok`.
             #[test]
-            fn shuffled_valid_records_still_validate(
+            fn shuffled_valid_records_validate(
                 n_entities in 1_i32..=4,
                 windows_per_entity in 1_usize..=4,
                 shuffle_keys in prop::collection::vec(0_u32..1000, 1..=16),

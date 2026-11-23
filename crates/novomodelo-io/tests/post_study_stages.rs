@@ -11,7 +11,6 @@
 
 use std::path::Path;
 
-use novomodelo_core::WaterBucketStages;
 use novomodelo_io::{load_case, validate_case};
 use tempfile::TempDir;
 
@@ -1270,17 +1269,16 @@ fn test_v2_v3_v4_and_v5_violations_are_all_reported() {
     );
 }
 
-// ── the retired no-carrier advice never resurfaces ────────────────────────
+// ── no diagnostic advises shortening the lead ─────────────────────────────
 
 /// Every diagnostic collected from the reference-shaped deck (this file's
 /// `test_reference_shaped_fixed_post_horizon_deck_loads` fixture) and from
 /// the tiled pre-study-decided fixture (`test_pre_study_decided_post_study_delivery_loads_when_tiled`)
-/// must never mention the retired no-carrier advice to shorten the lead — a
-/// substring-absence check over every collected diagnostic, so a future
-/// reintroduction fails loudly instead of silently regressing the matrix.
+/// must never advise shortening the lead or name a missing carrier — a
+/// substring-absence check over every collected diagnostic.
 #[test]
-fn test_retired_no_carrier_advice_is_absent_from_every_diagnostic() {
-    const RETIRED_ADVICE_FRAGMENTS: [&str; 2] = ["no carrier", "Shorten the lead"];
+fn test_no_diagnostic_advises_shortening_the_lead() {
+    const FORBIDDEN_ADVICE_FRAGMENTS: [&str; 2] = ["no carrier", "Shorten the lead"];
 
     let mut diagnostics: Vec<String> = Vec::new();
 
@@ -1342,11 +1340,11 @@ fn test_retired_no_carrier_advice_is_absent_from_every_diagnostic() {
     diagnostics.extend(report2.errors.into_iter().map(|entry| entry.message));
     diagnostics.extend(report2.warnings.into_iter().map(|entry| entry.message));
 
-    for fragment in RETIRED_ADVICE_FRAGMENTS {
+    for fragment in FORBIDDEN_ADVICE_FRAGMENTS {
         assert!(
             !diagnostics.iter().any(|m| m.contains(fragment)),
-            "the retired no-carrier advice fragment {fragment:?} must never appear in any \
-             collected diagnostic, got: {diagnostics:?}"
+            "the advice fragment {fragment:?} must never appear in any collected \
+             diagnostic, got: {diagnostics:?}"
         );
     }
 }
@@ -1403,67 +1401,17 @@ fn test_commitment_window_declaration_order_invariance_through_system() {
     );
 }
 
-// ── legacy `stages` shape ─────────────────────────────────────────────────
+// ── thermal_bounds index range ────────────────────────────────────────────
 
 #[test]
-fn legacy_stages_file_loads_and_sorts_both_collections() {
+fn thermal_bound_index_out_of_range_rejected() {
     let dir = TempDir::new().unwrap();
     make_minimal_case(&dir);
     write_file(
         dir.path(),
         "post_study_stages.json",
         r#"{
-          "stages": [
-            { "start_date": "2024-03-01", "duration_hours": 744.0 },
-            { "start_date": "2024-02-01", "duration_hours": 696.0 }
-          ],
-          "thermal_bounds": [
-            { "thermal_id": 86, "post_study_stage_index": 1, "cost_per_mwh": 220.0, "min_mw": 0.0, "max_mw": 300.0 },
-            { "thermal_id": 86, "post_study_stage_index": 0, "cost_per_mwh": 210.0, "min_mw": 0.0, "max_mw": 350.0 }
-          ]
-        }"#,
-    );
-
-    let system = load_case(dir.path()).unwrap_or_else(|e| panic!("expected Ok(System), got: {e}"));
-    let ps = system
-        .post_study_stages()
-        .expect("post_study_stages must be Some");
-
-    assert_eq!(ps.thermal_stages.len(), 2);
-    assert_eq!(
-        ps.thermal_stages[0].start_date,
-        chrono::NaiveDate::from_ymd_opt(2024, 2, 1).unwrap()
-    );
-    assert_eq!(ps.thermal_bounds[0].post_study_stage_index, 0);
-    assert_eq!(ps.water_bucket_stages, WaterBucketStages::FromThermalStages);
-}
-
-#[test]
-fn legacy_file_missing_thermal_bounds_rejected() {
-    let dir = TempDir::new().unwrap();
-    make_minimal_case(&dir);
-    write_file(
-        dir.path(),
-        "post_study_stages.json",
-        r#"{ "stages": [ { "start_date": "2024-02-01", "duration_hours": 696.0 } ] }"#,
-    );
-
-    let msg = load_case(dir.path()).unwrap_err().to_string();
-    assert!(
-        msg.contains("missing field `thermal_bounds`"),
-        "error should name the missing key, got: {msg}"
-    );
-}
-
-#[test]
-fn legacy_thermal_bound_index_out_of_range_rejected() {
-    let dir = TempDir::new().unwrap();
-    make_minimal_case(&dir);
-    write_file(
-        dir.path(),
-        "post_study_stages.json",
-        r#"{
-          "stages": [ { "start_date": "2024-02-01", "duration_hours": 696.0 } ],
+          "thermal_stages": [ { "start_date": "2024-02-01", "duration_hours": 696.0 } ],
           "thermal_bounds": [
             { "thermal_id": 86, "post_study_stage_index": 3, "cost_per_mwh": 210.0, "min_mw": 0.0, "max_mw": 350.0 }
           ]

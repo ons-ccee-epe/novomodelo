@@ -158,8 +158,8 @@ struct RawNamedExpression {
 ///
 /// `name_to_id` maps parameter definition names to their [`EntityId`]. Pass
 /// `&HashMap::new()` when no parameters have been loaded; expressions that
-/// contain `@name` tokens will then fail with a schema error. The real mapping
-/// is wired in by the caller once the parameter loader output is available.
+/// contain `@name` tokens will then fail with a schema error. The case load
+/// builds the map from the loaded scalar parameters.
 ///
 /// `line_index` resolves the `line_exchange(source_bus=X, target_bus=Y)` addressing
 /// form to a line id; pass [`LineBusPairIndex::default`] when no line topology is
@@ -481,7 +481,7 @@ mod tests {
     /// canonicalize; `bound_upper` carries the constant,
     /// `bound_lower` stays `None`.
     #[test]
-    fn ac1_inline_constant_and_variable_rhs_normalizes() {
+    fn inline_constant_and_variable_rhs_normalizes() {
         let json = r#"{
   "constraints": [
     { "id": 0, "name": "c0", "expression": "thermal_generation(5) <= 0.87 * hydro_generation(140) + 73", "slack": { "enabled": false } }
@@ -521,7 +521,7 @@ mod tests {
     /// `line_exchange(3) >= @target` where `target` is a loaded parameter
     /// reads that parameter on the lower endpoint, leaving the upper `None`.
     #[test]
-    fn ac2_inline_lower_bound_bare_param_reference() {
+    fn inline_lower_bound_bare_param_reference() {
         let json = r#"{
   "constraints": [
     { "id": 0, "name": "c0", "expression": "line_exchange(3) >= @target", "slack": { "enabled": false } }
@@ -542,7 +542,7 @@ mod tests {
     /// term list (the net-zero column dropped) and `bound_upper` carries
     /// the constant `5`.
     #[test]
-    fn ac3_net_zero_column_drops_and_constant_bound_survives() {
+    fn net_zero_column_drops_and_constant_bound_survives() {
         let json = r#"{
   "constraints": [
     { "id": 0, "name": "c0", "expression": "hydro_generation(0) - hydro_generation(0) <= 5", "slack": { "enabled": false } }
@@ -916,10 +916,11 @@ mod tests {
         }
     }
 
-    /// The retired `bound_upper_ref` JSON field is now an unknown field under
-    /// `deny_unknown_fields` — a symbolic endpoint is authored inline instead.
+    /// A `bound_upper_ref` JSON field is an unknown field under
+    /// `deny_unknown_fields`: a symbolic endpoint is authored inline in the
+    /// expression.
     #[test]
-    fn test_parse_retired_bound_upper_ref_field_is_unknown_field_error() {
+    fn test_parse_bound_upper_ref_field_is_unknown_field_error() {
         let json = r#"{
   "constraints": [
     {
@@ -937,12 +938,12 @@ mod tests {
                 .unwrap_err();
         assert!(
             matches!(err, LoadError::ParseError { .. }),
-            "expected ParseError for the retired \"bound_upper_ref\" field, got: {err:?}"
+            "expected ParseError for the \"bound_upper_ref\" field, got: {err:?}"
         );
     }
 
-    /// A constraint declaring neither bound reference parses with both fields `None`
-    /// (existing files are unaffected).
+    /// A constraint whose expression carries no inline bound parses with
+    /// `bound_lower` and `bound_upper` both `None`.
     #[test]
     fn test_parse_absent_bound_refs_are_none() {
         let f = write_json(VALID_JSON);

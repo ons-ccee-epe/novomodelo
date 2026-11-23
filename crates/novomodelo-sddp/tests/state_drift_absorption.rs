@@ -400,7 +400,7 @@ fn anticipated_commitment_over_cap_seed_is_clamped() {
     assert!(
         outcome.error.is_none(),
         "a genuine over-cap commitment seed is clamped at setup time and must train \
-         to completion — the retired runtime verdict must not resurface. Got: {:?}",
+         to completion with no runtime verdict. Got: {:?}",
         outcome.error
     );
     assert!(

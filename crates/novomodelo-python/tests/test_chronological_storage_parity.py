@@ -225,7 +225,7 @@ def test_chronological_per_block_evaporation_varies_across_blocks() -> None:
     )
 
 
-def test_chronological_hydros_schema_is_unchanged() -> None:
+def test_chronological_hydros_schema_equals_the_known_field_set() -> None:
     """Chronological run: the hydros parquet column set equals the known field set.
 
     Per-block resolution reuses the existing columns; it must add none, so the

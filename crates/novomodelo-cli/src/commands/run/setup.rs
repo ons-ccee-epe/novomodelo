@@ -445,7 +445,6 @@ fn reconstruct_stochastic_context_non_root(
         &bcast_config.training_source,
         bcast_config.boundary.inflow_lag_depth(),
         user_tree,
-        bcast_config.training_moment_matching.into(),
     )
     .map_err(CliError::from)
 }
@@ -698,78 +697,55 @@ mod tests {
     /// exercise.
     #[test]
     fn non_root_opening_tree_matches_rank_0_under_shared_noise_groups() {
-        let mut leg_bits = Vec::new();
-        for moment_matching in ["none", "per_coordinate"] {
-            let case = TempDir::new().expect("tempdir");
-            copy_dir_recursive(&d29_case_dir(), case.path());
-            set_moment_matching(case.path(), moment_matching);
-            let (system, rank0, non_root) = load_rank0_and_rebuild_non_root(case.path());
-            let ids = study_stage_noise_group_ids(&system);
-            assert!(
-                ids.windows(2).any(|w| w[0] == w[1]),
-                "D29 fixture must exercise shared noise groups; got {ids:?}",
-            );
-            assert_same_tree(
-                rank0.opening_tree(),
-                non_root.opening_tree(),
-                &format!("shared noise groups, {moment_matching}"),
-            );
-            leg_bits.push(tree_bits(rank0.opening_tree()));
-        }
-        assert_ne!(
-            leg_bits[0], leg_bits[1],
-            "per_coordinate must change the D29 tree, or the rank comparison above has no power"
+        let case = TempDir::new().expect("tempdir");
+        copy_dir_recursive(&d29_case_dir(), case.path());
+        let (system, rank0, non_root) = load_rank0_and_rebuild_non_root(case.path());
+        let ids = study_stage_noise_group_ids(&system);
+        assert!(
+            ids.windows(2).any(|w| w[0] == w[1]),
+            "D29 fixture must exercise shared noise groups; got {ids:?}",
         );
+        assert_same_tree(
+            rank0.opening_tree(),
+            non_root.opening_tree(),
+            "shared noise groups",
+        );
+        assert_hydro_openings_sum_to_zero(rank0.opening_tree());
     }
 
     #[test]
     fn non_root_opening_tree_matches_rank_0_when_external_scenarios_clamp_openings() {
-        let mut leg_bits = Vec::new();
-        for moment_matching in ["none", "per_coordinate"] {
-            let case = d56_with_num_openings(3, moment_matching);
-            let (_system, rank0, non_root) = load_rank0_and_rebuild_non_root(case.path());
-            assert_eq!(
-                rank0.opening_tree().openings_per_stage_slice(),
-                &[1, 1],
-                "fixture must clamp every stage to the external library's scenario count"
-            );
-            assert_same_tree(
-                rank0.opening_tree(),
-                non_root.opening_tree(),
-                &format!("external clamp, {moment_matching}"),
-            );
-            leg_bits.push(tree_bits(rank0.opening_tree()));
-        }
+        let case = d56_with_num_openings(3);
+        let (_system, rank0, non_root) = load_rank0_and_rebuild_non_root(case.path());
         assert_eq!(
-            leg_bits[0], leg_bits[1],
-            "per_coordinate must leave a one-opening stage as drawn"
+            rank0.opening_tree().openings_per_stage_slice(),
+            &[1, 1],
+            "fixture must clamp every stage to the external library's scenario count"
+        );
+        assert_same_tree(
+            rank0.opening_tree(),
+            non_root.opening_tree(),
+            "external clamp",
         );
     }
 
     #[test]
     fn non_root_opening_tree_matches_rank_0_when_external_scenarios_clamp_a_matched_tree() {
-        let mut leg_bits = Vec::new();
-        for moment_matching in ["none", "per_coordinate"] {
-            let case = TempDir::new().expect("tempdir");
-            copy_dir_recursive(&d56_case_dir(), case.path());
-            crate::varying_external_deck::write_varying_external_deck(case.path(), moment_matching);
-            let (_system, rank0, non_root) = load_rank0_and_rebuild_non_root(case.path());
-            assert_eq!(
-                rank0.opening_tree().openings_per_stage_slice(),
-                &[3, 3],
-                "fixture must clamp the 5 openings of every stage to the 3 external scenarios"
-            );
-            assert_same_tree(
-                rank0.opening_tree(),
-                non_root.opening_tree(),
-                &format!("external clamp, {moment_matching}"),
-            );
-            leg_bits.push(tree_bits(rank0.opening_tree()));
-        }
-        assert_ne!(
-            leg_bits[0], leg_bits[1],
-            "per_coordinate must change a clamped stage with several openings, or the rank comparison above has no power"
+        let case = TempDir::new().expect("tempdir");
+        copy_dir_recursive(&d56_case_dir(), case.path());
+        crate::varying_external_deck::write_varying_external_deck(case.path());
+        let (_system, rank0, non_root) = load_rank0_and_rebuild_non_root(case.path());
+        assert_eq!(
+            rank0.opening_tree().openings_per_stage_slice(),
+            &[3, 3],
+            "fixture must clamp the 5 openings of every stage to the 3 external scenarios"
         );
+        assert_same_tree(
+            rank0.opening_tree(),
+            non_root.opening_tree(),
+            "external clamp",
+        );
+        assert_hydro_openings_sum_to_zero(rank0.opening_tree());
     }
 
     fn load_rank0_and_rebuild_non_root(
@@ -833,11 +809,22 @@ mod tests {
         tree.data().iter().map(|v| v.to_bits()).collect()
     }
 
-    fn set_moment_matching(case: &Path, moment_matching: &str) {
-        crate::varying_external_deck::edit_json(&case.join("config.json"), |config| {
-            config["training"]["scenario_source"]["openings"] =
-                serde_json::json!({"source": "generated", "moment_matching": moment_matching});
-        });
+    fn assert_hydro_openings_sum_to_zero(tree: &OpeningTree) {
+        assert!(
+            tree.openings_per_stage_slice().iter().any(|&n| n >= 2),
+            "the tree must hold a stage with several openings, or per-coordinate matching is not exercised"
+        );
+        for stage in 0..tree.n_stages() {
+            let n = tree.n_openings(stage);
+            if n < 2 {
+                continue;
+            }
+            let sum: f64 = (0..n).map(|k| tree.opening(stage, k)[0]).sum();
+            assert!(
+                sum.abs() < 1e-12,
+                "stage {stage}: the first hydro's openings must sum to zero, got {sum}"
+            );
+        }
     }
 
     fn d56_case_dir() -> PathBuf {
@@ -845,10 +832,9 @@ mod tests {
             .join("../../examples/deterministic/d56-external-authoritative")
     }
 
-    fn d56_with_num_openings(num_openings: u32, moment_matching: &str) -> TempDir {
+    fn d56_with_num_openings(num_openings: u32) -> TempDir {
         let case = TempDir::new().expect("tempdir");
         copy_dir_recursive(&d56_case_dir(), case.path());
-        set_moment_matching(case.path(), moment_matching);
         crate::varying_external_deck::edit_json(&case.path().join("stages.json"), |stages| {
             for stage in stages["stages"]
                 .as_array_mut()

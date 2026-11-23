@@ -1677,7 +1677,7 @@ mod anticipated_pre_horizon_seed_delivery {
     /// Verifies that the 100 MW seed is delivered at stage 0 and that the commitment-hold
     /// delivery propagates in-study decisions for stages 1–4 (committed seed at stage 0,
     /// decision saturation, commitment-hold delivery, cost upper bound — derived inline at
-    /// each AC block below).
+    /// each assertion block below).
     ///
     /// Cost bound: stage-0 backup carries 150 − 100 = 50 MW × $5000/MWh × 744 h =
     /// $186,000,000 (the 100 MW seed delivers at zero LP cost); the active-decision
@@ -1730,8 +1730,8 @@ mod anticipated_pre_horizon_seed_delivery {
         let c0 = committed_at(0).expect(
             "committed_at(0) is None. \
          The always-active fishing predicate is not delivering the 100 MW seed \
-         at stage 0. Legacy behaviour: predicate `K_i > stage_idx` gated \
-         fishing off at stage 0 with K=1.",
+         at stage 0; a `K_i > stage_idx` predicate gates fishing off at stage 0 \
+         with K=1.",
         );
         assert!(
             (c0 - 100.0).abs() < 1e-6,
@@ -1804,7 +1804,7 @@ mod anticipated_pre_horizon_seed_delivery {
          Breakdown: STAGE_0_BACKUP_COST_USD=${STAGE_0_BACKUP_COST_USD:.2}, \
          MAX_DECISION_COST_USD=${MAX_DECISION_COST_USD:.2}, \
          COST_TOLERANCE_USD=${COST_TOLERANCE_USD:.2}. \
-         If the seed is not delivered (legacy predicate), stage-0 backup covers \
+         If the seed is not delivered, stage-0 backup covers \
          150 MW instead of 50 MW, producing ~$558M >> $191.95M.",
         );
     }
@@ -1902,8 +1902,8 @@ mod anticipated_pre_horizon_seed_delivery {
         let c0 = committed_at(0).expect(
             "committed_at(0) is None. \
          The always-active fishing predicate is not delivering the 80 MW seed \
-         at stage 0. Legacy behaviour: predicate `K_i > stage_idx` gated \
-         fishing off at pre-horizon stages.",
+         at stage 0; a `K_i > stage_idx` predicate gates fishing off at pre-horizon \
+         stages.",
         );
         assert!(
             (c0 - 80.0).abs() < 1e-6,
@@ -2105,8 +2105,8 @@ mod anticipated_pre_horizon_seed_delivery {
         let c0 = committed_at(0).expect(
             "committed_at(0) is None. \
          The always-active fishing predicate is not delivering the 50 MW seed \
-         at stage 0. Legacy behaviour: predicate `K_i > stage_idx` gated \
-         fishing off at pre-horizon stages.",
+         at stage 0; a `K_i > stage_idx` predicate gates fishing off at pre-horizon \
+         stages.",
         );
         assert!(
             (c0 - 50.0).abs() < 1e-6,
@@ -5156,14 +5156,14 @@ mod anticipated_bridge_st_cruz_nova_k1 {
         };
 
         let c0 = committed_at(0).expect(
-            "AC-delivery FAIL: committed_at(0) is None. \
+            "delivery FAIL: committed_at(0) is None. \
          The always-active fishing predicate is not delivering the 204.5647 MW seed \
-         at stage 0. Legacy behaviour: predicate `K_i > stage_idx` gated \
-         fishing off at stage 0 with K=1.",
+         at stage 0; a `K_i > stage_idx` predicate gates fishing off at stage 0 \
+         with K=1.",
         );
         assert!(
             (c0 - 204.5647).abs() < 1e-3,
-            "AC-delivery FAIL: committed_at(0) = {c0} MW, expected 204.5647 MW within \
+            "delivery FAIL: committed_at(0) = {c0} MW, expected 204.5647 MW within \
          1e-3 MW tolerance. The fishing equality at stage 0 must pin the anticipated \
          thermal to slot 0 = 204.5647 MW of the ring buffer.",
         );
@@ -5171,7 +5171,7 @@ mod anticipated_bridge_st_cruz_nova_k1 {
         for t in 0..4_usize {
             let dt = decision_at(t).unwrap_or_else(|| {
                 panic!(
-                    "AC-decision-nonzero FAIL: decision_at({t}) is None; anticipated \
+                    "decision-nonzero FAIL: decision_at({t}) is None; anticipated \
                  thermal id=61 was not found in stage {t} thermals or \
                  anticipated_decision_mw is absent (stage {t} is an active-decision \
                  stage: {t} + 1 < 5)",
@@ -5179,13 +5179,13 @@ mod anticipated_bridge_st_cruz_nova_k1 {
             });
             assert!(
                 dt.abs() > 1e-6,
-                "AC-decision-nonzero FAIL: decision_at({t}) = {dt} MW is zero (≤ 1e-6). \
+                "decision-nonzero FAIL: decision_at({t}) = {dt} MW is zero (≤ 1e-6). \
              The LP should commit a non-trivial anticipated amount at stage {t} \
              to avoid $5000/MWh backup at the delivery stage.",
             );
             assert!(
                 dt <= 350.0 + 1e-6,
-                "AC-decision-nonzero FAIL: decision_at({t}) = {dt} MW exceeds \
+                "decision-nonzero FAIL: decision_at({t}) = {dt} MW exceeds \
              max_gen=350 MW. This indicates a bounds violation in the LP.",
             );
         }
@@ -5195,21 +5195,21 @@ mod anticipated_bridge_st_cruz_nova_k1 {
         for t in 1..5_usize {
             let ct = committed_at(t).unwrap_or_else(|| {
                 panic!(
-                    "AC-ring-buffer FAIL: committed_at({t}) is None; expected a matured \
+                    "ring-buffer FAIL: committed_at({t}) is None; expected a matured \
                  commitment from decision at stage {}",
                     t - 1,
                 )
             });
             let d_prev = decision_at(t - 1).unwrap_or_else(|| {
                 panic!(
-                    "AC-ring-buffer FAIL: decision_at({}) is None (needed to check \
+                    "ring-buffer FAIL: decision_at({}) is None (needed to check \
                  delivery-lag invariant at stage {t})",
                     t - 1,
                 )
             });
             assert!(
                 (ct - d_prev).abs() < 1e-6,
-                "AC-ring-buffer FAIL: committed_at({t}) = {ct} MW should equal \
+                "ring-buffer FAIL: committed_at({t}) = {ct} MW should equal \
              decision_at({}) = {d_prev} MW (within 1e-6 MW). The ring buffer is \
              not correctly propagating in-study decisions.",
                 t - 1,
@@ -5226,12 +5226,12 @@ mod anticipated_bridge_st_cruz_nova_k1 {
 
         assert!(
             observed_total <= EXPECTED_TOTAL_UPPER_BOUND_USD,
-            "AC-cost-bound FAIL: observed_total = ${observed_total:.2} exceeds upper \
+            "cost-bound FAIL: observed_total = ${observed_total:.2} exceeds upper \
          bound ${EXPECTED_TOTAL_UPPER_BOUND_USD:.2}. \
          Breakdown: STAGE_0_BACKUP_COST_USD=${STAGE_0_BACKUP_COST_USD:.2}, \
          MAX_DECISION_COST_USD=${MAX_DECISION_COST_USD:.2}, \
          COST_TOLERANCE_USD=${COST_TOLERANCE_USD:.2}. \
-         If the seed is not delivered (legacy predicate), stage-0 backup covers \
+         If the seed is not delivered, stage-0 backup covers \
          250 MW instead of 45.4353 MW, producing ~$927M >> this bound.",
         );
     }

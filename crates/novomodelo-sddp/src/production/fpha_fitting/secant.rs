@@ -184,8 +184,6 @@ mod tests {
             v_max: 30_000.0,
             n_volume_points: 3,
             n_flow_points: 3,
-            n_spillage_points: 2,
-            max_planes_per_hydro: 10,
             single_volume: false,
         }
     }

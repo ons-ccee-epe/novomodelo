@@ -669,14 +669,14 @@ mod tests {
         }
     }
 
-    /// Acceptance criterion: 2 constant + 2 FPHA (10 planes) + 3 evaporation / 1 without.
+    /// 2 constant + 2 FPHA (10 planes) + 3 evaporation / 1 without.
 
     #[test]
-    // Rationale: acceptance test exercises constant + FPHA + evaporation counts
+    // Rationale: the test exercises constant + FPHA + evaporation counts
     // in a single fixture; splitting into helpers would obscure the coverage
     // contract.
     #[allow(clippy::too_many_lines)]
-    fn build_hydro_model_summary_acceptance_criterion() {
+    fn build_hydro_model_summary_mixed_system() {
         // IDs 1,2 constant; IDs 3,4 FPHA with 5 planes each.
         // IDs 1,2,3 have evaporation; ID 4 does not.
         let constant_ids = [1i32, 2];

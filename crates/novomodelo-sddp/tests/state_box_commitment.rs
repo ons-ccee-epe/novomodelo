@@ -473,6 +473,6 @@ fn state_box_commitment_carried_interior_slot_takes_its_own_held_delivery_target
     assert_eq!(upper[j], INTERIOR_MAX_MW);
     assert_ne!(
         upper[j], 0.0,
-        "the old fresh-decision-only sweep left every carried interior slot at [0, 0]"
+        "a carried interior slot must not be left at [0, 0]"
     );
 }

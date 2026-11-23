@@ -250,7 +250,7 @@ pub(crate) fn build_external_load_library(
 /// Standardizes against `ncs_normal`/`normal_ncs_ids` — the SAME
 /// `PrecomputedNormal` and entity list `novomodelo_stochastic::context` builds for
 /// reconstruction — rather than re-deriving moments independently, mirroring
-/// [`build_external_load_library`]'s own fix (see its doc for the
+/// [`build_external_load_library`] (see its doc for the
 /// TRAINING-scheme-gated `normal_ncs_ids` vs. this library's own
 /// `External`-gated `ncs_ids` distinction).
 ///
@@ -392,9 +392,8 @@ mod tests {
     /// the deterministic value trips `solve_par_noise`'s `NEG_INFINITY`
     /// sentinel. `build_external_inflow_library` must surface it as a V3.7
     /// rejection through the real `standardize`-then-`validate` wiring, not
-    /// silently accept it (the wiring previously ran `validate` against the
-    /// still-zero-filled buffer, before `standardize_external_inflow` ever
-    /// wrote eta, so V3.7 could never fire).
+    /// silently accept it (a `validate` run before `standardize_external_inflow`
+    /// writes eta would see a zero-filled buffer, so V3.7 could never fire).
     #[test]
     fn external_inflow_sigma_zero_mismatch_rejected_by_v3_7() {
         let hydro_id = EntityId(1);
@@ -470,8 +469,8 @@ mod tests {
         assert!(result.is_ok(), "expected Ok(()), got: {result:?}");
     }
 
-    /// AC1: a σ=0 External LOAD bus reconstructs the external value, not a
-    /// deliberately-disagreeing seasonal `mean_mw` (design doc §3/§4.1).
+    /// A σ=0 External LOAD bus reconstructs the external value, not a
+    /// deliberately-disagreeing seasonal `mean_mw`.
     #[test]
     fn external_load_sigma_zero_reconstructs_external_value_not_seasonal_mean() {
         let bus_id = EntityId(1);
@@ -546,13 +545,12 @@ mod tests {
     /// `novomodelo_stochastic::context` builds for the training-gated
     /// reconstruction, never re-derive independently from `external_rows`.
     /// Two distinct external scenarios give a nonzero external sample sigma
-    /// (25.0), so a re-derivation would standardize a genuinely nonzero eta;
-    /// pre-fix, `build_external_load_library` always called
-    /// `derive_external_sample_moments` over the external sample regardless
-    /// of which phase invoked it, so this bus's standardization sigma (25.0)
-    /// disagreed with the training-gated reconstruction sigma (`0.0`, since a
-    /// σ=0 bus is not an `InSample` noise member at all) — a silent
-    /// divergence this test pins shut.
+    /// (25.0), so a re-derivation would standardize a genuinely nonzero eta:
+    /// calling `derive_external_sample_moments` over the external sample
+    /// regardless of which phase invoked it would give this bus a
+    /// standardization sigma (25.0) that disagrees with the training-gated
+    /// reconstruction sigma (`0.0`, since a σ=0 bus is not an `InSample` noise
+    /// member at all) — a silent divergence this test pins shut.
     #[test]
     fn external_load_divergent_sim_only_scheme_standardizes_against_training_gated_normal() {
         let bus_id = EntityId(1);
@@ -606,7 +604,7 @@ mod tests {
         // Simulation's own scheme is External: external-additive
         // membership widens this library's own bus_ids to include the
         // sigma=0 bus, strictly wider than normal_load_bus_ids above --
-        // exactly the divergent-scheme case the fix must not mis-standardize.
+        // exactly the divergent-scheme case the library must not mis-standardize.
         let library = build_external_load_library(
             &system,
             SamplingScheme::External,
@@ -629,12 +627,11 @@ mod tests {
         }
     }
 
-    /// AC2 + regression proof: a σ=0 External AR(0) inflow reconstructs the
+    /// A σ=0 External AR(0) inflow reconstructs the
     /// external value, including at a stage whose real scenario count is
-    /// SMALLER than another stage's — a branching root's sole observation,
-    /// the non-uniform shape the V3.7-vs-padding-order fix (design doc
-    /// §3/§4.2) must not reject — and the padded phantom slot replicates the
-    /// correct value, not a rejected/garbage sentinel.
+    /// SMALLER than another stage's — a branching root's sole observation, a
+    /// non-uniform shape V3.7 must not reject — and the padded phantom slot
+    /// replicates the correct value, not a rejected/garbage sentinel.
     #[test]
     fn external_inflow_ar0_nonuniform_scenario_counts_reconstructs_external_values() {
         let hydro_id = EntityId(1);
@@ -742,18 +739,18 @@ mod tests {
     /// (`sampling/external.rs`) replicates a stage's real raw values to
     /// uniform width BEFORE `run_eta_inversion`'s lag-chain advance for
     /// exactly this reason. `lag_realized` below is sourced independently of
-    /// that fix: the branching root's own external value, recovered via this
-    /// AR(1) hydro's own stage-0 stored eta (verified equal to the root's raw
-    /// value) — never the lag the inversion used internally, which would mask
-    /// a real bug were the fix ever weakened.
+    /// that replication: the branching root's own external value, recovered via
+    /// this AR(1) hydro's own stage-0 stored eta (verified equal to the root's
+    /// raw value) — never the lag the inversion used internally, which would
+    /// mask a regression in that replication.
     #[test]
     fn external_inflow_ar1_nonuniform_scenario_counts_round_trip() {
         let hydro_id = EntityId(1);
         let hydro_ids = vec![hydro_id];
         let stages = vec![single_stage(0), single_stage(1)];
 
-        // AR(1), untouched seasonal model: this ticket never overrides an
-        // AR(p > 0) hydro's moments with derived external samples.
+        // AR(1), untouched seasonal model: the `External` moment override
+        // passes an AR(p > 0) hydro's models through unchanged.
         let seasonal_model = |stage_id| InflowModel {
             hydro_id,
             stage_id,
@@ -838,9 +835,9 @@ mod tests {
     /// Regression: a gapped/non-0-based External LOAD deck
     /// (declared stage ids `2`/`5`, never `0`/`1`) must resolve through the
     /// same canonical `stage_id -> index` mapping novomodelo-io's rule-47
-    /// validator uses. Pre-fix, `rows_per_stage`'s `row.stage_id as usize`
-    /// bound-check (`< n_stages`) silently dropped every row of a gapped
-    /// deck outright, since the raw ids (2, 5) both exceed `n_stages` (2).
+    /// validator uses. A raw `row.stage_id as usize` bound-check (`< n_stages`)
+    /// in `rows_per_stage` would silently drop every row of a gapped deck,
+    /// since the raw ids (2, 5) both exceed `n_stages` (2).
     #[test]
     fn external_load_library_resolves_gapped_stage_ids() {
         let bus_id = EntityId(1);
@@ -881,7 +878,7 @@ mod tests {
             .build()
             .expect("system must build");
 
-        // Resolve the declared ids the same way the fixed engine now must:
+        // Resolve the declared ids the same way the engine does:
         // gapped id 2 -> canonical position 0, gapped id 5 -> position 1.
         let resolved_rows: Vec<(EntityId, i32, i32, f64)> = external_rows
             .iter()
@@ -937,8 +934,8 @@ mod tests {
     /// External INFLOW deck (declared stage ids `2`/`5`) must resolve
     /// through the same canonical mapping — both in the `rows_per_stage`
     /// count feeding V3.7 and in `standardize_external_inflow`'s own
-    /// per-stage fill. Pre-fix, both silently dropped every row of this
-    /// deck, since the raw ids exceed `n_stages` (2).
+    /// per-stage fill. A raw-id read in either would silently drop every row
+    /// of this deck, since the raw ids exceed `n_stages` (2).
     #[test]
     fn external_inflow_library_resolves_gapped_stage_ids() {
         let hydro_id = EntityId(1);

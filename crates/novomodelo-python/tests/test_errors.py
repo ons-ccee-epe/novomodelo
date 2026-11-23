@@ -103,7 +103,7 @@ def test_run_empty_dir_error_mentions_missing_files(tmp_path: pathlib.Path) -> N
 def test_study_empty_dir_raises_validation_error(tmp_path: pathlib.Path) -> None:
     """Study() construction raises ValidationError for a directory missing required case files.
 
-    Proves that the constructor and run() now agree on the exception class.
+    Proves that the constructor and run() agree on the exception class.
     """
     import novomodelo.errors
 

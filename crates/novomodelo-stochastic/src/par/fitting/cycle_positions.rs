@@ -87,21 +87,6 @@ impl CyclePositions {
         }
     }
 
-    pub(super) fn estimates_to_positions(
-        &self,
-        estimates: &[ArCoefficientEstimate],
-    ) -> Vec<ArCoefficientEstimate> {
-        estimates
-            .iter()
-            .filter_map(|estimate| {
-                Some(ArCoefficientEstimate {
-                    season_id: self.position(estimate.season_id)?,
-                    ..estimate.clone()
-                })
-            })
-            .collect()
-    }
-
     pub(super) fn estimates_to_raw(
         &self,
         estimates: Vec<ArCoefficientEstimate>,

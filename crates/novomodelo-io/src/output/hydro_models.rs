@@ -376,7 +376,7 @@ mod tests {
         }
     }
 
-    // ── AC: round-trip identity ───────────────────────────────────────────────
+    // ── round-trip identity ───────────────────────────────────────────────────
 
     /// Write 5 rows for hydro_id=66, read back with parse_fpha_hyperplanes.
     /// All 11 fields must match within 1e-10 tolerance.
@@ -491,7 +491,7 @@ mod tests {
         }
     }
 
-    // ── AC: empty slice produces valid Parquet with 0 rows ────────────────────
+    // ── empty slice produces valid Parquet with 0 rows ────────────────────────
 
     /// Write an empty slice. The output must be a valid Parquet with 0 rows
     /// and the correct 11-column schema.
@@ -507,7 +507,7 @@ mod tests {
         assert!(parsed.is_empty(), "must have 0 rows for empty input");
     }
 
-    // ── AC: schema validation — exactly 11 fields ─────────────────────────────
+    // ── schema validation — exactly 11 fields ─────────────────────────────────
 
     /// Write rows, open with ParquetRecordBatchReaderBuilder, verify exactly
     /// 11 fields with correct names and types.
@@ -557,7 +557,7 @@ mod tests {
         }
     }
 
-    // ── AC: nullable columns round-trip as None ───────────────────────────────
+    // ── nullable columns round-trip as None ───────────────────────────────────
 
     /// Write rows with stage_id=None and all validity range fields as None.
     /// Read back and assert these fields are None in the parsed output.
@@ -600,7 +600,7 @@ mod tests {
         );
     }
 
-    // ── AC: multi-hydro rows sorted by (hydro_id, stage_id, plane_id) ─────────
+    // ── multi-hydro rows sorted by (hydro_id, stage_id, plane_id) ─────────────
 
     /// Write rows for hydros 5 and 10 in unsorted order.
     /// parse_fpha_hyperplanes must return them sorted by (hydro_id, stage_id, plane_id).
@@ -634,7 +634,7 @@ mod tests {
         assert_eq!(parsed[4].plane_id, 1);
     }
 
-    // ── AC: parent directory created automatically ────────────────────────────
+    // ── parent directory created automatically ────────────────────────────────
 
     /// write_fpha_hyperplanes must create non-existent parent directories.
     #[test]

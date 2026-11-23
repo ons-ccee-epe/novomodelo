@@ -247,9 +247,9 @@ fn resolve_evaporation_core(
 
             let stage_hours = BlockClock::new(stage).total_hours();
 
-            // A zero-duration stage no longer surfaces as a non-finite coefficient
-            // below (the divisor is now the calendar month, never zero), so reject
-            // it explicitly here.
+            // The divisor below is the calendar month, never zero, so a
+            // zero-duration stage would not surface as a non-finite coefficient;
+            // reject it explicitly here.
             if stage_hours <= 0.0 {
                 return Err(SddpError::Validation(format!(
                     "hydro {} (id={}) stage {}: total block duration is {stage_hours} h; \
@@ -730,7 +730,7 @@ mod tests {
 
     /// resolve_evaporation_models core logic: known geometry + coefficient gives correct intercept and slope.
     ///
-    /// Spec (acceptance criterion 2):
+    /// Fixture:
     ///   hydro: v_min=100, v_max=500, evaporation_coefficients_mm=[5.0; 12]
     ///   geometry: volumes [100, 200, 300, 400, 500], areas [1.0, 1.5, 2.0, 2.5, 3.0]
     ///   reference_volume = (100 + 500) / 2 = 300
@@ -1022,7 +1022,7 @@ mod tests {
 
     /// resolve_evaporation_models core logic: 4 hydros where 2 have evaporation and 2 do not.
     ///
-    /// Acceptance criterion 1: returns 2 Linearized and 2 None models.
+    /// Returns 2 Linearized and 2 None models.
     #[test]
     fn resolve_evaporation_mixed_system_returns_correct_model_mix() {
         let evap_mm = [5.0f64; 12];
@@ -1082,8 +1082,8 @@ mod tests {
     }
 
     /// resolve_evaporation_core: a zero-duration stage is rejected by the
-    /// explicit `stage_hours > 0` guard (the divisor is the calendar month now,
-    /// so a zero-duration stage no longer surfaces as a non-finite coefficient).
+    /// explicit `stage_hours > 0` guard (the divisor is the calendar month, so
+    /// a zero-duration stage does not surface as a non-finite coefficient).
     #[test]
     fn resolve_evaporation_zero_duration_stage_is_rejected() {
         let evap_mm = [5.0f64; 12];
@@ -1398,10 +1398,10 @@ mod tests {
     }
 
     /// resolve_evaporation_core: a Weekly-cycle evaporating stage
-    /// (`season_id >= 12`) no longer hard-errors — the month is derived from
+    /// (`season_id >= 12`) resolves: the month is derived from
     /// `start_date` regardless of `season_id`'s range.
     #[test]
-    fn resolve_evaporation_weekly_cycle_no_longer_errors_on_season_id_ge_12() {
+    fn resolve_evaporation_weekly_cycle_resolves_season_id_ge_12() {
         let evap_mm = [5.0f64; 12];
         let hydro = make_hydro_with_evaporation(0, 100.0, 500.0, Some(evap_mm));
 
@@ -1417,7 +1417,7 @@ mod tests {
 
         let (models, provenance, _) =
             super::resolve_evaporation_core(&[hydro], &geometry_map, &stage_refs)
-                .expect("season_id >= 12 (Weekly) must no longer error");
+                .expect("season_id >= 12 (Weekly) must resolve");
 
         assert_eq!(provenance[0].1, EvaporationSource::LinearizedFromGeometry);
         assert!(matches!(

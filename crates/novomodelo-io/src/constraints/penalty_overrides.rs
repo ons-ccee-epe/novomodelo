@@ -895,7 +895,7 @@ mod tests {
         .expect("valid batch")
     }
 
-    /// AC: 3 rows parsed correctly, sorted by (bus_id, stage_id).
+    /// 3 rows parsed correctly, sorted by (bus_id, stage_id).
     #[test]
     fn test_bus_valid_3_rows_sorted() {
         // Scrambled: (3,0), (1,1), (1,0) -> sorted: (1,0),(1,1),(3,0).
@@ -919,7 +919,7 @@ mod tests {
         assert!((rows[2].excess_cost.unwrap() - 500.0).abs() < f64::EPSILON);
     }
 
-    /// AC: missing required `bus_id` column -> SchemaError with field "bus_id".
+    /// Missing required `bus_id` column -> SchemaError with field "bus_id".
     #[test]
     fn test_bus_missing_bus_id() {
         let schema = Arc::new(Schema::new(vec![
@@ -948,7 +948,7 @@ mod tests {
         }
     }
 
-    /// AC: negative penalty value -> SchemaError with "must be > 0.0".
+    /// Negative penalty value -> SchemaError with "must be > 0.0".
     #[test]
     fn test_bus_negative_excess_cost() {
         let batch = make_bus_batch(&[1], &[0], vec![Some(-5.0)]);
@@ -970,7 +970,7 @@ mod tests {
         }
     }
 
-    /// AC: NaN penalty value -> SchemaError mentioning "finite".
+    /// NaN penalty value -> SchemaError mentioning "finite".
     #[test]
     fn test_bus_nan_excess_cost() {
         let batch = make_bus_batch(&[1], &[0], vec![Some(f64::NAN)]);
@@ -992,7 +992,7 @@ mod tests {
         }
     }
 
-    /// AC: empty file (0 rows) -> Ok(Vec::new()).
+    /// Empty file (0 rows) -> Ok(Vec::new()).
     #[test]
     fn test_bus_empty_parquet() {
         let batch = make_bus_batch(&[], &[], vec![]);
@@ -1001,7 +1001,7 @@ mod tests {
         assert!(rows.is_empty());
     }
 
-    /// AC: load_penalty_overrides_bus(None) -> Ok(Vec::new()).
+    /// load_penalty_overrides_bus(None) -> Ok(Vec::new()).
     #[test]
     fn test_load_bus_none() {
         let rows = super::super::load_penalty_overrides_bus(None).unwrap();
@@ -1034,7 +1034,7 @@ mod tests {
         .expect("valid batch")
     }
 
-    /// AC: 2 rows parsed correctly, sorted by (line_id, stage_id).
+    /// 2 rows parsed correctly, sorted by (line_id, stage_id).
     #[test]
     fn test_line_valid_2_rows_sorted() {
         // Scrambled: (5,1),(5,0) -> sorted: (5,0),(5,1).
@@ -1051,7 +1051,7 @@ mod tests {
         assert!((rows[1].exchange_cost.unwrap() - 2000.0).abs() < f64::EPSILON);
     }
 
-    /// AC: missing required `line_id` column -> SchemaError with field "line_id".
+    /// Missing required `line_id` column -> SchemaError with field "line_id".
     #[test]
     fn test_line_missing_line_id() {
         let schema = Arc::new(Schema::new(vec![
@@ -1080,7 +1080,7 @@ mod tests {
         }
     }
 
-    /// AC: negative penalty in exchange_cost -> SchemaError with "must be > 0.0".
+    /// Negative penalty in exchange_cost -> SchemaError with "must be > 0.0".
     #[test]
     fn test_line_negative_exchange_cost() {
         let batch = make_line_batch(&[1], &[0], vec![Some(-5.0)]);
@@ -1102,7 +1102,7 @@ mod tests {
         }
     }
 
-    /// AC: NaN in exchange_cost -> SchemaError mentioning "finite".
+    /// NaN in exchange_cost -> SchemaError mentioning "finite".
     #[test]
     fn test_line_nan_exchange_cost() {
         let batch = make_line_batch(&[1], &[0], vec![Some(f64::NAN)]);
@@ -1124,7 +1124,7 @@ mod tests {
         }
     }
 
-    /// AC: empty file (0 rows) -> Ok(Vec::new()).
+    /// Empty file (0 rows) -> Ok(Vec::new()).
     #[test]
     fn test_line_empty_parquet() {
         let batch = make_line_batch(&[], &[], vec![]);
@@ -1133,7 +1133,7 @@ mod tests {
         assert!(rows.is_empty());
     }
 
-    /// AC: load_penalty_overrides_line(None) -> Ok(Vec::new()).
+    /// load_penalty_overrides_line(None) -> Ok(Vec::new()).
     #[test]
     fn test_load_line_none() {
         let rows = super::super::load_penalty_overrides_line(None).unwrap();
@@ -1161,7 +1161,7 @@ mod tests {
         ]))
     }
 
-    /// AC: 2 rows for 1 hydro at 2 stages, only spillage_cost and
+    /// 2 rows for 1 hydro at 2 stages, only spillage_cost and
     /// storage_violation_below_cost have non-null values; the other fields are None.
     #[test]
     fn test_hydro_two_columns_non_null_rest_none() {
@@ -1213,7 +1213,7 @@ mod tests {
         assert!((rows[1].storage_violation_below_cost.unwrap() - 8888.0).abs() < f64::EPSILON);
     }
 
-    /// AC: valid file with every `hydro_full_schema` column present, mix of null and non-null.
+    /// Valid file with every `hydro_full_schema` column present, mix of null and non-null.
     #[test]
     fn test_hydro_full_schema_columns_mixed() {
         let batch = RecordBatch::try_new(
@@ -1257,7 +1257,7 @@ mod tests {
         assert!(r.water_withdrawal_violation_cost.is_none());
     }
 
-    /// AC: only 2 of 11 optional columns present in the Parquet schema.
+    /// Only 2 of 11 optional columns present in the Parquet schema.
     #[test]
     fn test_hydro_only_2_columns_in_schema() {
         let schema = Arc::new(Schema::new(vec![
@@ -1298,7 +1298,7 @@ mod tests {
         assert!((rows[1].storage_violation_below_cost.unwrap() - 100.0).abs() < f64::EPSILON);
     }
 
-    /// AC: missing required `hydro_id` column -> SchemaError with field "hydro_id".
+    /// Missing required `hydro_id` column -> SchemaError with field "hydro_id".
     #[test]
     fn test_hydro_missing_hydro_id() {
         let schema = Arc::new(Schema::new(vec![
@@ -1327,7 +1327,7 @@ mod tests {
         }
     }
 
-    /// AC: negative penalty in hydro spillage_cost -> SchemaError with "must be > 0.0".
+    /// Negative penalty in hydro spillage_cost -> SchemaError with "must be > 0.0".
     #[test]
     fn test_hydro_negative_spillage_cost() {
         let schema = Arc::new(Schema::new(vec![
@@ -1362,7 +1362,7 @@ mod tests {
         }
     }
 
-    /// AC: NaN in any hydro penalty column -> SchemaError mentioning "finite".
+    /// NaN in any hydro penalty column -> SchemaError mentioning "finite".
     #[test]
     fn test_hydro_nan_penalty() {
         let schema = Arc::new(Schema::new(vec![
@@ -1397,7 +1397,7 @@ mod tests {
         }
     }
 
-    /// AC: empty file (0 rows) -> Ok(Vec::new()).
+    /// Empty file (0 rows) -> Ok(Vec::new()).
     #[test]
     fn test_hydro_empty_parquet() {
         let schema = Arc::new(Schema::new(vec![
@@ -1417,7 +1417,7 @@ mod tests {
         assert!(rows.is_empty());
     }
 
-    /// AC: load_penalty_overrides_hydro(None) -> Ok(Vec::new()).
+    /// load_penalty_overrides_hydro(None) -> Ok(Vec::new()).
     #[test]
     fn test_load_hydro_none() {
         let rows = super::super::load_penalty_overrides_hydro(None).unwrap();
@@ -1490,7 +1490,7 @@ mod tests {
         assert!(r.water_withdrawal_violation_cost.is_none());
     }
 
-    /// AC: negative value in a directional column -> SchemaError mentioning the column name.
+    /// Negative value in a directional column -> SchemaError mentioning the column name.
     #[test]
     fn test_hydro_directional_column_negative_rejected() {
         let schema = Arc::new(Schema::new(vec![
@@ -1581,7 +1581,7 @@ mod tests {
         assert!(rows.iter().all(|r| r.fpha_violation_cost.is_none()));
     }
 
-    /// AC: scrambled input order -> output sorted by (hydro_id, stage_id).
+    /// Scrambled input order -> output sorted by (hydro_id, stage_id).
     #[test]
     fn test_hydro_declaration_order_invariance() {
         let schema = Arc::new(Schema::new(vec![
@@ -1659,7 +1659,7 @@ mod tests {
         .expect("valid batch")
     }
 
-    /// AC: 3 rows for 2 NCS entities, correctly sorted by (source_id, stage_id).
+    /// 3 rows for 2 NCS entities, correctly sorted by (source_id, stage_id).
     #[test]
     fn test_ncs_valid_3_rows_sorted() {
         // Scrambled: (2,0),(1,1),(1,0) -> sorted: (1,0),(1,1),(2,0).
@@ -1681,7 +1681,7 @@ mod tests {
 
     /// Missing id column -> error names the `ncs_id` spelling.
     #[test]
-    fn test_ncs_missing_id_column_errors_new_spelling() {
+    fn test_ncs_missing_id_column_errors_naming_ncs_id() {
         let schema = Arc::new(Schema::new(vec![
             Field::new("stage_id", DataType::Int32, false),
             Field::new("curtailment_cost", DataType::Float64, true),
@@ -1773,7 +1773,7 @@ mod tests {
     }
 
     #[test]
-    fn test_hydro_zero_spillage_cost_still_rejected() {
+    fn test_hydro_zero_spillage_cost_rejected() {
         let tmp = write_parquet(&make_single_hydro_column_batch("spillage_cost", 0.0));
         let err = parse_penalty_overrides_hydro(tmp.path()).unwrap_err();
         match &err {
@@ -1785,7 +1785,7 @@ mod tests {
         }
     }
 
-    /// AC: NaN in curtailment_cost -> SchemaError mentioning "finite".
+    /// NaN in curtailment_cost -> SchemaError mentioning "finite".
     #[test]
     fn test_ncs_nan_curtailment_cost() {
         let batch = make_ncs_batch(&[1], &[0], vec![Some(f64::NAN)]);
@@ -1807,7 +1807,7 @@ mod tests {
         }
     }
 
-    /// AC: empty file (0 rows) -> Ok(Vec::new()).
+    /// Empty file (0 rows) -> Ok(Vec::new()).
     #[test]
     fn test_ncs_empty_parquet() {
         let batch = make_ncs_batch(&[], &[], vec![]);
@@ -1816,7 +1816,7 @@ mod tests {
         assert!(rows.is_empty());
     }
 
-    /// AC: load_penalty_overrides_ncs(None) -> Ok(Vec::new()).
+    /// load_penalty_overrides_ncs(None) -> Ok(Vec::new()).
     #[test]
     fn test_load_ncs_none() {
         let rows = super::super::load_penalty_overrides_ncs(None).unwrap();

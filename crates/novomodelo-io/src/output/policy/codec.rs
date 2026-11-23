@@ -1993,7 +1993,7 @@ mod tests {
     /// 6/7/8) round-trip through the writer/reader pair, each independently of
     /// the others.
     #[test]
-    fn entity_slot_new_date_fields_round_trip() {
+    fn entity_slot_date_fields_round_trip() {
         let coeffs = [1.0_f64, 2.0];
         let cut = PolicyCutRecord {
             iteration: 1,

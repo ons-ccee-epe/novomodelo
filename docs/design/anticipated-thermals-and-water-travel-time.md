@@ -73,8 +73,7 @@ Two structural facts that recur below:
   is column bounds).
 - **`n_state` counts each dimension once** (out and in describe the same
   dimensions). With no arc / no anticipated plant, the corresponding range
-  collapses to `0..0` and the whole layout reproduces the pre-feature bytes
-  exactly.
+  collapses to `0..0` and adds nothing to the layout.
 
 ### 1.2 The `DeliveryRing` primitive
 
@@ -147,17 +146,16 @@ The water calendar is never digested. The two calendars are independent: a
 thermal-only deck needs no water key, and a deck with a travel-time arc declares
 the water key whatever its thermals do.
 
-**New format.** On a deck with a travel-time arc the water key is required. The
-declared calendar is used exactly — no padding, no fallback to `thermal_stages` —
-and must cover the deepest travel time, or setup refuses the study. The rule codes
-for the format checks are owned by `crates/novomodelo-io/src/validation/rules.rs`
-(the `POST_STUDY_*` rules); the table is not copied here.
+**Declared water calendar.** On a deck with a travel-time arc the water key is
+required. The declared calendar is used exactly — no padding, no fallback to
+`thermal_stages` — and must cover the deepest travel time, or setup refuses the
+study. The rule codes for the format checks are owned by
+`crates/novomodelo-io/src/validation/rules.rs` (the `POST_STUDY_*` rules); the
+table is not copied here.
 
-**Deprecated format.** The legacy `stages` key (or a travel-time arc with no
-post-study file) keeps today's behavior: the water calendar is the thermal one,
-padded for resolution. The validator warns on it and names the migration script
-`scripts/migrate/post_study_stages.py`. Removing the legacy path is a later
-decision, not part of the new format.
+**No post-study file.** A deck with a travel-time arc and no post-study file takes
+the water calendar from the thermal one, padded for resolution. The validator
+warns on it and names the migration script `scripts/migrate/post_study_stages.py`.
 
 `.claude/rules/sddp.md` (§ "Water calendar paths") owns the contracts of the two
 paths and the quantity-class rebind weights used when a boundary policy is loaded.
@@ -240,18 +238,19 @@ column_order = [(j, 1), (j, 2), …, (j, L_j)] for each plant j in canonical ord
 `extended` is the **resolution base**, one of two (`resolution_base`,
 `bucket_topology.rs`), selected by `WaterDeliveryBasis`:
 
-- **Declared water calendar (new format):** the study calendar followed by
+- **Declared water calendar:** the study calendar followed by
   `water_bucket_stages`, **unpadded**. If it does not cover the deepest
   travel-time arc, setup refuses the study (`resolve_state_and_topology`) rather
   than extending it.
-- **Legacy deck:** the study calendar followed by the thermal post-study `stages`,
-  padded with copies of its trailing duration only past what that base already
-  covers (`extend_for_resolution`). A short legacy calendar is padded, never
-  refused. With no post-study calendar the base is the study-only vector.
+- **Padded thermal (no post-study file):** the study calendar followed by the thermal
+  post-study stages, if any, padded with copies of its trailing duration only past
+  what that base already covers (`extend_for_resolution`). A short thermal water
+  calendar is padded, never refused. With no post-study calendar the base is the
+  study-only vector.
 
 For a water calendar that covers every arc the two bases build the same topology.
-Bucket slots of a new-format deck are dated from `water_bucket_stages`, with or
-without a loaded boundary; legacy slots are dated from the thermal post-study
+Bucket slots of a deck declaring `water_bucket_stages` are dated from it, with or
+without a loaded boundary; padded-thermal slots are dated from the thermal post-study
 stages.
 
 There is no water analog of the boundary-absent post-study warning of §3.5, by
@@ -381,21 +380,25 @@ study + post-study calendar that `build_extended_delivery_axis` assembles and
 `extended_deciders` walks.
 
 A pre-study-decided, post-study-delivered commitment — a **fixed post-horizon
-commitment** — is representable: the
-`initial_conditions.past_anticipated_commitments` surface (above) extends
-unchanged to carry it — its windows are allowed to sit past the study horizon;
-no new field, no schema reshape. It is a declared constant that never
-enters the ring, priced by the boundary intercept fold and reported at its real
-delivery date (§3.5). The commitment windows must **tile exactly** the plant's
-pre-study-decided delivery set — the leading in-study stages and, past the
-horizon, the stages the plant also decides before the study — at coverage
-`1.0`: a gap (a pre-study-decided stage left uncovered) and an over-coverage (a
-window reaching a stage the study itself decides, or one beyond the plant's
-decision reach) are both rejected. The committed value must lie inside the
-delivery stage's generation bounds, in-study and post-horizon alike; and —
-load-bearing for the LP — `check_block_id_on_anticipated_thermal` rejects any
-per-block bound row on an anticipated thermal, which is what licenses the LP's
-overlay-ignoring bound read (§3.4).
+commitment** — is declared on the same `initial_conditions.past_anticipated_commitments`
+surface (above), by a window that sits past the study horizon. It is a declared
+constant that never enters the ring, priced by the boundary intercept fold and
+reported at its real delivery date (§3.5). The study horizon is never extended to
+hold it, and no pre-study decision is carried through the ring into the
+post-study. Three choices are owner-ratified and not reopened: one input surface
+for both pre-study-decided classes, the sunk-cost booking (§3.5) and the
+gap-excised ring axis (§3.2).
+
+The commitment windows must **tile exactly** the plant's pre-study-decided
+delivery set — the leading in-study stages and, past the horizon, the stages the
+plant also decides before the study — at coverage `1.0`: a gap (a
+pre-study-decided stage left uncovered) and an over-coverage (a window reaching a
+stage the study itself decides, or one beyond the plant's decision reach) are both
+rejected. The committed value must lie inside the delivery stage's generation
+bounds, in-study and post-horizon alike; and — load-bearing for the LP —
+`check_block_id_on_anticipated_thermal` rejects any per-block bound row on an
+anticipated thermal, which is what licenses the LP's overlay-ignoring bound read
+(§3.4).
 
 ### 3.2 Resolution & sizing — how many ring slots
 
@@ -427,17 +430,15 @@ plant's leading pre-study (`None`-decider) run inside the decision axis alone.
 Sizing from `occupancy_max` alone under-counts the one moment every
 simultaneous pre-study seed is in flight — stage 0, before the first fishing —
 whenever that run outlives the occupancy term: the last seeded stage then
-silently delivers an earlier stage's MW (the ring-depth under-sizing defect
-this form closes). Sizing from `depth` instead under-counts even earlier and
-collides a carry row with a deposit row the moment a pre-study seed outlives
-the in-study in-flight count; `occupancy` and `depth` coincide only on a
-uniform-calendar lead (`occupancy[t] = depth[t] + max(0, n_none − 1 − t)`,
+silently delivers an earlier stage's MW. Sizing from `depth` instead under-counts
+even earlier and collides a carry row with a deposit row the moment a pre-study
+seed outlives the in-study in-flight count; `occupancy` and `depth` coincide only
+on a uniform-calendar lead (`occupancy[t] = depth[t] + max(0, n_none − 1 − t)`,
 `n_none` = the leading pre-study run), so a pure-`LeadStages` study still gets
-`k_max = max_i ℓ_i` byte-for-byte — `LeadStages(l)` returns `l` **verbatim**
-(the pre-delivery-anchor sizing anchor). `k_max` is a pure function of the
-per-plant leads and the delivery calendar — independent of `n_blks`,
-`block_mode`, or the number of decisions. It is computed in
-`AnticipatedResolution::resolve`, and the final widen is
+`k_max = max_i ℓ_i` byte-for-byte — `LeadStages(l)` returns `l` **verbatim**.
+`k_max` is a pure function of the per-plant leads and the delivery calendar —
+independent of `n_blks`, `block_mode`, or the number of decisions. It is computed
+in `AnticipatedResolution::resolve`, and the final widen is
 `AnticipatedResolution::ring_size`, called by `resolve_state_layout`
 (`crates/novomodelo-sddp/src/setup/mod.rs`).
 
@@ -461,6 +462,15 @@ collide onto one slot. (The trap: `depth[t]` **excludes** pre-study occupancy,
 so it is _not_ the ring's per-stage occupancy boundary — the
 interior/deposit/padding split is decided per delivery target, not from
 `depth`.)
+
+Two correct alternatives to the excision are rejected. Identity indexing with
+`k_max` sized to the residency span on the raw axis, holes included, keeps `g_i`
+never-live slots per plant in every cut, state vector and boundary checkpoint, and
+needs sentinel dating for them. A setup-time slot table (interval colouring)
+reaches the same depth but replaces the modular key at every addressing site —
+deposit, carry, fishing, `slot_lane_at`'s closed-form inverse and the manifest
+dating — for no gain. The excision keeps the modular key and the true occupancy,
+costs one setup-time subtraction per plant, and is the identity when `g_i = 0`.
 
 Two sizing-adjacent gates:
 
@@ -510,8 +520,8 @@ the plant declares no fixed post-horizon commitment:
   directly from the decision's delivery stage, never a `depth`-derived boundary.
 - **Interior carry / hold** (`fill_anticipated_slot_definition_entries` →
   `emit_carry_rows`): an in-flight, not-yet-due slot is pinned to its **own**
-  incoming column — `out[slot] − in[slot] = 0`, the **same slot**. This replaces
-  the retired Markov-1 shift (`out[slot] − in[slot+1] = 0`): a commitment does not
+  incoming column — `out[slot] − in[slot] = 0`, the **same slot**, never a shift
+  to the next slot (`out[slot] − in[slot+1] = 0`): a commitment does not
   migrate slots, it is _held_ at its delivery-target residue until it matures. (The
   water ring keeps `emit_shift_rows` because its physics genuinely shift — this is
   the single most important difference between the two rings.)
@@ -579,6 +589,33 @@ channel as the `K = 0` advisory but a distinct condition — do not conflate it 
 Silence is the opposite failure: it hides a modelling error where the user expected
 the commitment valued against a real future.
 
+A fixed post-horizon commitment (§3.1) has no ring slot, so it never reaches the
+`β·state` projection. When a boundary is declared, `load_boundary_cuts` folds it
+into each boundary cut's intercept as a constant, with the source-interval overlap
+weights the ring slots are rebound with (`build_boundary_fold`):
+
+```text
+intercept' = intercept + Σ_w Σ_M coeff[M] · (overlap_hours(w, M) / H_M) · v_w
+```
+
+over each fixed window `w` (value `v_w` MW) and each source anticipated slot `M`
+overlapping it. The fold lands on the raw intercept, before the load's cost-scale
+rescale, and a window that overlaps no source interval contributes
+nothing (`.claude/rules/sddp.md` § "Dated forward-family fan-out reconciliation"
+owns the frame contract). With no boundary the fixed values are inert; the advisory
+above also names a plant whose fixed windows carry a non-zero value, since the user
+presumably expected it priced, and stays silent on an all-zero tiling, which is
+provably inert.
+
+A fixed commitment is never booked as cost: the revision that decided it charged
+its fuel, and charging it again would double-count across the revisions of a
+rolling study chain. A constant in the objective cannot change the policy, so the
+choice is about honest reported totals. Its MW is echoed at its real delivery dates
+in the run-level `anticipated/fixed_deliveries.parquet`, one row per plant × fixed
+window, written by both the CLI and the Python bindings; it stays out of the
+per-scenario `anticipated_lanes` partition, which would repeat the constant per
+scenario.
+
 ---
 
 ## 4. Side by side
@@ -599,8 +636,8 @@ They differ in the call-site-local ways the table lists:
 | Masked terminal slot     | drops a **genuine** deposited share — only on the horizon-capped no-boundary path | provably **zero** (no commitment targets a masked slot)                         |
 | Terminal live-state gate | needs `config.policy.boundary` (not inert)                                        | post-study slot **existence** on declared `post_study_stages.json` + lead reach |
 
-These last two rows carry the deepest asymmetry, and it **survives** the
-ring-native re-derivation rather than collapsing into one rule. On the masked slot:
+These last two rows carry the deepest asymmetry, and it does not collapse into one
+rule. On the masked slot:
 the water ring _discards a real end-of-horizon release share_ (a documented
 target-stage imprecision, safe only because a finite horizon's terminal value is
 zero), whereas an anticipated masked slot is _provably_ vacuous — no commitment
@@ -619,7 +656,7 @@ reachable and priced through the same generic `β·state` projection, never a
 boundary-conditional block; with no post-study calendar the axis is study-only and
 every `m >= n_stages` slot is masked. Water gates terminal live-**state** on a
 loaded boundary; anticipated gates post-study slot **existence** on the declared
-calendar and lead reach — the same asymmetry, re-derived (`.claude/rules/sddp.md` §
+calendar and lead reach — the same asymmetry (`.claude/rules/sddp.md` §
 "Delivery-family right-boundary pricing").
 
 ---

@@ -1,14 +1,14 @@
 """Python-parity tests for the unified `Study.load_policy` validation path.
 
-Every policy load (warm-start, resume, simulation-only, `Study.load_policy`) now
+Every policy load (warm-start, resume, simulation-only, `Study.load_policy`)
 routes unconditionally through the shared `novomodelo_sddp::validate_policy_load`
 entry point -- there is no per-call opt-out. This module verifies the
-Python-facing consequences of the unified validation path: the removed opt-out
-kwarg raises `TypeError`, a policy whose terminal entity manifest disagrees with
-the current study raises `ValueError`, and a policy version mismatch raises
-`PolicyIncompatibleError`, as does a policy the study's `dynamic` simulation of
-all cuts cannot serve. A stored basis that does not fit the study is skipped
-with one warning. The compatible-load path is already exercised by
+Python-facing consequences of the unified validation path: a policy whose
+terminal entity manifest disagrees with the current study raises `ValueError`,
+and a policy version mismatch raises `PolicyIncompatibleError`, as does a
+policy the study's `dynamic` simulation of all cuts cannot serve. A stored
+basis that does not fit the study is skipped with one warning. The
+compatible-load path is already exercised by
 `test_load_policy_then_simulate_matches_run` in `test_study.py`.
 
 Run with (from the repo root):
@@ -28,12 +28,6 @@ import pytest
 
 _REPO_ROOT = pathlib.Path(__file__).parents[3]
 VALID_CASE = str(_REPO_ROOT / "examples" / "1dtoy")
-
-# The retired opt-out kwarg's name, assembled from fragments so the literal
-# token never appears as a contiguous string: a tree-wide grep gate asserts the
-# kwarg is gone from the binding, and this proof test is the sole place it would
-# otherwise resurface. Do not fold back into one literal.
-_REMOVED_OPTOUT_KWARG = "validate_" + "compatibility"
 
 
 def _copy_case_with_renamed_hydro(
@@ -136,25 +130,6 @@ def _restamp_policy_version(policy_dir: pathlib.Path) -> str:
     other = (b"8" if running.startswith(b"9") else b"9") + running[1:]
     manifest.write_bytes(data.replace(running, other))
     return other.decode()
-
-
-def test_load_policy_removed_optout_kwarg_raises_typeerror(
-    tmp_path: pathlib.Path,
-) -> None:
-    """The removed opt-out kwarg raises TypeError.
-
-    Validation is now unconditional, so the parameter no longer exists on
-    `load_policy`; passing it must fail loudly, not be silently ignored.
-    """
-    import novomodelo
-
-    study = novomodelo.Study(VALID_CASE, output_dir=str(tmp_path))
-
-    with pytest.raises(TypeError):
-        study.load_policy(
-            output_dir=str(tmp_path),
-            **{_REMOVED_OPTOUT_KWARG: False},
-        )
 
 
 def test_load_policy_mismatched_entity_manifest_raises_valueerror(

@@ -479,7 +479,7 @@ mod tests {
 
     #[test]
     fn accessor_consistency_across_stages() {
-        // 2 entities, 3 stages, 2 blocks — the acceptance criterion scenario.
+        // 2 entities, 3 stages, 2 blocks.
         let stages = [make_stage(0, 0), make_stage(1, 1), make_stage(2, 2)];
         let entity_ids = [EntityId(5), EntityId(7)];
 
@@ -533,7 +533,7 @@ mod tests {
     }
 
     #[test]
-    fn acceptance_criterion_mean_stage1_entity0() {
+    fn mean_stage1_entity0() {
         let stages = [make_stage(0, 0), make_stage(1, 1), make_stage(2, 2)];
         let entity_ids = [EntityId(3), EntityId(9)];
 

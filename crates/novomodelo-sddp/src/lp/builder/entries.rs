@@ -29,17 +29,16 @@ use super::layout::{
 /// `fill_anticipated_columns`), so its `in_col` carries `0` and this equality
 /// pins that stage's thermal generation to `0` — the correct, harmless
 /// outcome for a delivery the plant's window cannot receive. Carrying it
-/// instead (the retired alternative) collided with the SAME stage's fresh
-/// latch for the next delivery sharing the same modular residue whenever a
-/// plant's own lead defines `k_max` (no other anticipated plant reaches
-/// deeper): two definition rows on one `out_col` pinned a freshly-costed
-/// decision to a stale carried value, producing a false `Infeasible` or a
-/// silent zero-commit release-mode (`debug_assert` compiled out). Fishing
+/// instead would collide with the SAME stage's fresh latch for the next
+/// delivery sharing the same modular residue whenever a plant's own lead
+/// defines `k_max` (no other anticipated plant reaches deeper): two definition
+/// rows on one `out_col` would pin a freshly-costed decision to a stale carried
+/// value, producing a false `Infeasible` or a silent zero-commit in release
+/// mode (`debug_assert` compiled out). Fishing
 /// reads only `in_col` and never writes `out_col`, so it cannot collide with
 /// the latch — sums per-block thermal energy against the maturing slot's
-/// committed power scaled to `MWh` (`MW × block_hours`), preserving the
-/// pre-migration `+h_b`/`−H` coefficient shape exactly; only its slot
-/// addressing is modular (`stage_idx mod k_max`, via
+/// committed power scaled to `MWh` (`MW × block_hours`) as `+h_b`/`−H`
+/// coefficients; only its slot addressing is modular (`stage_idx mod k_max`, via
 /// [`crate::indexer::StateSpace::commitment_hold_in_study_offset`]).
 /// `stage_idx` is in-study by construction
 /// (`build_anticipated_fishing_row_pos` returns an empty mapping once
@@ -131,10 +130,9 @@ pub(super) fn fill_anticipated_state_out_def_entries(
 
 /// Encode the future-window commitment-carry rows (same-slot hold,
 /// `slot^out − slot^in = 0`) via [`DeliveryRing::emit_carry_rows`] — the
-/// same-slot hold identity replacing the retired Markov-1
-/// [`DeliveryRing::emit_shift_rows`] for the anticipated family (the water
-/// travel-time ring keeps `emit_shift_rows` unchanged; its physics genuinely
-/// shift). `anticipated_slot_row_pos` carries every STRICTLY FUTURE,
+/// same-slot hold identity, never the Markov-1 shift
+/// [`DeliveryRing::emit_shift_rows`] the water travel-time ring uses (its
+/// physics genuinely shift). `anticipated_slot_row_pos` carries every STRICTLY FUTURE,
 /// not-yet-due in-flight slot; the commitment maturing THIS stage is always
 /// fished ([`fill_anticipated_fishing_entries`], never carried), so this
 /// family never duplicates it. A slot with no row here is beyond the study
@@ -340,7 +338,7 @@ fn push_plant_release(
 /// once-per-stage `ζ`-family.
 ///
 /// `ctx.topology.arc_stage_weights` has no entry for an undeclared arc, so this emits exactly
-/// today's `-τ_blk` and no deposit (the B==0 byte-identity anchor).
+/// `-τ_blk` and no deposit (the B==0 byte-identity anchor).
 fn fill_arc_release_block_entries(
     ctx: &TemplateBuildCtx<'_>,
     layout: &StageLayout,
@@ -526,7 +524,7 @@ fn fill_chronological_water_entries(
 /// `Σ_b w_b·χ_{b,d} == k_d` once per (arc, stage) (`blk == 0`).
 ///
 /// `arc_spread_chrono` has no entry for an undeclared arc (or a `Parallel`-mode stage),
-/// so this emits today's `-τ_blk` and no routing/deposit — the B==0/K==1 byte-identity
+/// so this emits exactly `-τ_blk` and no routing/deposit — the B==0/K==1 byte-identity
 /// anchor.
 fn fill_arc_release_chrono_block_entries(
     ctx: &TemplateBuildCtx<'_>,
@@ -2158,13 +2156,13 @@ mod parameter_resolution_tests {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Test 3: regression — Literal coefficients still work after wiring
+    // Literal coefficients fold to their bit-exact product
     // ─────────────────────────────────────────────────────────────────────────
 
     /// The literal program `5.0 * 3.0` folds to one literal and must produce a CSC
-    /// entry of exactly `15.0`, unchanged by the parameter-resolution wiring.
+    /// entry of exactly `15.0`.
     #[test]
-    fn literal_coefficient_still_works_after_wiring() {
+    fn literal_coefficient_folds_to_its_bit_exact_product() {
         let thermal_id = EntityId(2);
         let constraint_id = EntityId(10);
         let coef = 5.0_f64;
@@ -2654,7 +2652,7 @@ mod zero_cost_tests {
         let k_max = 3_usize;
         // Hold deposit slot = delivery mod k_max (delivery = stage 0 + lead), the
         // modular slot fill_anticipated_columns re-frees for an active decision —
-        // not the retired shift newest-slot K-1. plant 0 (K=2) -> slot 2, plant 1
+        // not a shift ring's newest slot K-1. plant 0 (K=2) -> slot 2, plant 1
         // (K=3) -> slot 0.
         let deposit_cols: Vec<usize> = leads
             .iter()
@@ -2753,8 +2751,8 @@ mod zero_cost_tests {
     /// At stage 0 with `K=[2,3]` and `n_stages=6`, both plants are active.
     /// For each active plant `i`, the latch (deposit) CSC entry list must contain:
     /// - `(def_row_i, +1.0)` on plant `i`'s own delivery slot `delivery mod k_max`
-    ///   (`delivery = 0 + K_i`: plant 0 -> slot 2, plant 1 -> slot 0), not the retired
-    ///   shift newest-slot `K-1`
+    ///   (`delivery = 0 + K_i`: plant 0 -> slot 2, plant 1 -> slot 0), not a shift
+    ///   ring's newest slot `K-1`
     /// - `(def_row_i, -1.0)` on `geometry.anticipated_decision.start + i`
     #[test]
     fn test_fill_anticipated_state_out_def_entries_two_active_plants() {
@@ -2893,7 +2891,7 @@ mod zero_cost_tests {
     /// `DeliveryRing::emit_carry_rows` routing reproduces the open-coded carry
     /// identity (`+1` on `commit_out.start + global_slot`, `-1` on
     /// `commit_in.start + global_slot` — the SAME slot, `out(slot) - in(slot) = 0`,
-    /// never the retired shift target `in(slot + 1)`) for every reachable global
+    /// never the shift target `in(slot + 1)`) for every reachable global
     /// slot on a fixed two-plant, heterogeneous-`K` fixture (`K = [3, 2]`).
     #[test]
     fn fill_anticipated_slot_definition_entries_matches_open_coded_carry_formula_across_heterogeneous_plants()
@@ -2932,7 +2930,7 @@ mod zero_cost_tests {
         );
         assert_eq!(
             actual, expected,
-            "ring-routed entries must match the pre-migration open-coded formula"
+            "ring-routed entries must match the open-coded formula"
         );
     }
 
@@ -4483,7 +4481,7 @@ mod pumping_water_tests {
         }
     }
 
-    /// AC: a contracts-bearing system with a generic constraint referencing
+    /// A contracts-bearing system with a generic constraint referencing
     /// `ContractImport` assembles its full stage matrix in a debug build with no
     /// `debug_assert!` firing — the mandatory tripwire's terminal condition.
     #[test]
@@ -5321,7 +5319,7 @@ mod pumping_water_tests {
     }
 
     /// The two power-side operational-violation families (min-turbine,
-    /// min-generation) are now CELL-keyed — one row per `(cell, block)`, each
+    /// min-generation) are CELL-keyed — one row per `(cell, block)`, each
     /// row coupling ONLY that cell's own columns — while the two flow
     /// families (min/max-outflow) stay plant-keyed. Plant 1's second cell is
     /// `cell_idx = 2`; block 1 numerically coincides with plant 1's own
@@ -5351,12 +5349,12 @@ mod pumping_water_tests {
         assert_eq!(
             layout.oper_violation.min_turbine.len(),
             n_cells * n_blks,
-            "min_turbine family is now sized n_cells * n_blks"
+            "min_turbine family is sized n_cells * n_blks"
         );
         assert_eq!(
             layout.oper_violation.min_generation.len(),
             n_cells * n_blks,
-            "min_generation family is now sized n_cells * n_blks"
+            "min_generation family is sized n_cells * n_blks"
         );
 
         let grid = layout.block_grid();
@@ -7727,7 +7725,7 @@ mod pumping_water_tests {
     /// carries real flow because the spillage column is actually free at this
     /// stage, not a coefficient on a column pinned to zero.
     #[test]
-    fn filling_upstream_spillage_still_deposits_into_transit_bucket() {
+    fn filling_upstream_spillage_deposits_into_transit_bucket() {
         use novomodelo_core::entities::hydro::FillingConfig;
 
         let up = 1;
@@ -8016,7 +8014,7 @@ mod pumping_water_tests {
     /// own contiguous group) on a fixed three-plant fixture: one plant with 3 lags,
     /// one with 1 lag, and one with no declared arc at all (absent from `column_order`).
     #[test]
-    fn fill_transit_bucket_definition_entries_matches_pre_migration_formula_across_ragged_plants() {
+    fn fill_transit_bucket_definition_entries_matches_open_coded_formula_across_ragged_plants() {
         let h_down3 = 10;
         let h_down1 = 20;
         let h_none = 30;
@@ -8068,7 +8066,7 @@ mod pumping_water_tests {
     }
 
     /// `B == 0` (no declared arc, `state.n_buckets == 0`): the emitted water
-    /// entries are byte-identical to today's shape — no bucket-definition rows
+    /// entries are byte-identical to the undeclared-arc shape — no bucket-definition rows
     /// exist at all (`load_balance` collapses back onto `water_balance.end`)
     /// and the upstream release carries exactly `-tau_h` (the `n_buckets` == 0
     /// byte-identity anchor).
@@ -8409,8 +8407,7 @@ mod pumping_water_tests {
     /// The `Σ_d k_d == 1.0` stage-clock conservation (row 8) fires at the
     /// CHRONOLOGICAL deposit site too, independently of the per-column and
     /// aggregation identities below it — mirrors the parallel-site guard
-    /// (`declared_arc_non_conserving_k_panics_in_debug`), closing the gap
-    /// where only the chrono-specific identities were fill-time-asserted.
+    /// (`declared_arc_non_conserving_k_panics_in_debug`).
     #[test]
     #[cfg(debug_assertions)]
     #[should_panic(expected = "stage-clock weights must sum to 1.0")]
@@ -8569,8 +8566,8 @@ mod pumping_water_tests {
     /// and the resolver skips it, returning the sole travel-time arc's density —
     /// never a false heterogeneous-confluence panic (debug) nor a wrong uniform
     /// split (release). The plain tributary sorts first in `cascade.upstream`
-    /// (id 0 < id 1), so the pre-fix code would seed `chosen` with the uniform
-    /// fallback before the travel-time arc disagrees. The `novomodelo-io`
+    /// (id 0 < id 1), so a resolver that kept it would seed `chosen` with the
+    /// uniform fallback before the travel-time arc disagrees. The `novomodelo-io`
     /// `check_chronological_confluence_heterogeneous_travel_time` gate cannot
     /// catch this: it counts travel-time arcs only, so one arc plus one plain
     /// tributary is `< 2` and passes config validation.
@@ -8593,7 +8590,7 @@ mod pumping_water_tests {
         let up_idx = fixtures.hydro_pos[&EntityId(up)];
 
         // Only the travel-time arc is in the arrival-frame table, and its entry
-        // is deliberately non-uniform so the pre-fix uniform fallback disagrees.
+        // is deliberately non-uniform so a uniform fallback disagrees.
         let arrival_density = vec![0.25, 0.75];
         let mut arc_arrival_density = HashMap::new();
         arc_arrival_density.insert(up_idx, vec![None, Some(arrival_density.clone())]);
@@ -9083,7 +9080,7 @@ mod pumping_water_tests {
         );
     }
 
-    /// AC: a two-sided row (both `bound_lower` and `bound_upper` present) carries
+    /// A two-sided row (both `bound_lower` and `bound_upper` present) carries
     /// `row_lower = bound_lower` and `row_upper = bound_upper`, and — with slack
     /// enabled — TWO slack columns (plus then minus): the two-sidedness test in
     /// `allocate_generic_slack_cols` must derive from the row's own endpoint pair,
@@ -9789,7 +9786,7 @@ mod pumping_water_tests {
     /// `σ^{v-}` family legitimately adds exactly one row + column for the single
     /// filling hydro AFTER the empty `σ_fill` block, so the `σ_fill` cursor sits one
     /// short of `num_rows`/`num_cols` — the `σ_fill` block is still empty
-    /// (`n_target_rows == 0`), it is simply no longer the last family.
+    /// (`n_target_rows == 0`), it is just not the last family.
     #[test]
     fn sigma_fill_absent_off_filling_phase() {
         // id 1 is PreFilling (start = 2 > 0, stage_id < start); id 4 is Operating.
@@ -9820,17 +9817,17 @@ mod pumping_water_tests {
     /// ζ_3·rate_3`, strictly BELOW the dead volume — NOT `min_storage` at every
     /// stage. This is the per-stage trajectory: the reservoir is only required to
     /// hold the running minimum by stage 2, with the full dead volume due at stage 3.
-    /// Uses the AC schedule (`min_storage = 60`, per-stage ζ = 2.592, rate = 5) so
-    /// `V_target[3] = 60`, `V_target[2] = 60 − 2.592·5 = 47.04`.
+    /// With `min_storage = 60`, per-stage ζ = 2.592 and rate = 5, `V_target[3] = 60`
+    /// and `V_target[2] = 60 − 2.592·5 = 47.04`.
     #[test]
     fn sigma_fill_row_rhs_is_backward_anchored_v_target_at_early_filling_stage() {
-        // AC values. The fixture's `build_filling_v_target` maps ids 2 and 3 to
+        // The fixture's `build_filling_v_target` maps ids 2 and 3 to
         // stage_idx 0; set H2's resolved dead volume and per-stage fill rate at
         // stage_idx 0 so the fold reads them.
-        const AC_MIN_STORAGE: f64 = 60.0;
-        const AC_RATE_M3S: f64 = 5.0;
-        // ζ = total_hours · M3S_TO_HM3 = 720 · 0.0036 = 2.592 (the AC ζ).
-        const AC_TOTAL_HOURS: f64 = 720.0;
+        const MIN_STORAGE: f64 = 60.0;
+        const RATE_M3S: f64 = 5.0;
+        // ζ = total_hours · M3S_TO_HM3 = 720 · 0.0036 = 2.592.
+        const TOTAL_HOURS: f64 = 720.0;
 
         let mut fixtures = PumpFixtures::new(
             vec![
@@ -9844,33 +9841,33 @@ mod pumping_water_tests {
             .base
             .bounds
             .hydro_bounds_mut(h2_idx, 0)
-            .min_storage_hm3 = AC_MIN_STORAGE;
+            .min_storage_hm3 = MIN_STORAGE;
         fixtures
             .base
             .bounds
             .hydro_bounds_mut(h2_idx, 0)
-            .filling_min_rate_m3s = AC_RATE_M3S;
+            .filling_min_rate_m3s = RATE_M3S;
         // The fixture-default stage_zetas is 744 · M3S_TO_HM3; rebuild the ctx's
-        // V_target map with the AC ζ (720 h → ζ = 2.592) so the fold matches the AC.
-        let ac_filling_v_target = crate::test_support::build_filling_v_target(
+        // V_target map with the 720 h ζ = 2.592.
+        let filling_v_target = crate::test_support::build_filling_v_target(
             &fixtures.base.hydros,
             &fixtures.base.bounds,
-            &[AC_TOTAL_HOURS * M3S_TO_HM3],
+            &[TOTAL_HOURS * M3S_TO_HM3],
             &(0..=8_i32).map(|id| (id, 0_usize)).collect(),
         );
         let mut ctx = fixtures.make_ctx();
-        ctx.filling_v_target = &ac_filling_v_target;
+        ctx.filling_v_target = &filling_v_target;
 
         // V_target[3] (last Filling stage) == min_storage.
         let v_target_last = ctx.filling_v_target[&(h2_idx, RET_FILLING_ID)];
         assert!(
-            (v_target_last - AC_MIN_STORAGE).abs() < 1e-9,
+            (v_target_last - MIN_STORAGE).abs() < 1e-9,
             "V_target[3] == min_storage (anchor), got {v_target_last}"
         );
 
         // V_target[2] (early Filling stage) == 60 − 2.592·5 == 47.04.
         let v_target_early = ctx.filling_v_target[&(h2_idx, RET_START_STAGE_ID)];
-        let expected_early = AC_MIN_STORAGE - AC_TOTAL_HOURS * M3S_TO_HM3 * AC_RATE_M3S;
+        let expected_early = MIN_STORAGE - TOTAL_HOURS * M3S_TO_HM3 * RATE_M3S;
         assert!(
             (v_target_early - 47.04).abs() < 1e-9,
             "V_target[2] == 47.04 (backward fold), got {v_target_early}"
@@ -10426,7 +10423,7 @@ mod pumping_water_tests {
     }
 
     /// Sink case: a `PreFilling` hydro with `downstream_id == None` drops its water
-    /// from the system (exactly as a terminal hydro's outflow today). No downstream
+    /// from the system (exactly as a terminal hydro's outflow does). No downstream
     /// row receives the inflow/upstream/withdrawal, and `H2`'s own row is still the
     /// frozen identity. Builds `H1 → H2(filling, terminal)`.
     #[test]
@@ -11036,7 +11033,7 @@ mod pumping_water_tests {
             assert_eq!(row_upper[row], 0.0, "{label}: frozen RHS upper == 0");
         };
 
-        // H2's row clean (NOT corrupted by H1's terms — the bug this fix removes).
+        // H2's row clean (NOT corrupted by H1's terms).
         assert_clean_frozen(off.water_row_h2, off.h2_idx, off.col_storage_in_h2, "H2");
         // H1's row likewise clean.
         assert_clean_frozen(off.water_row_h1, off.h1_idx, off.col_storage_in_h1, "H1");
@@ -11209,7 +11206,7 @@ mod pumping_water_tests {
         (csc, row_lower, row_upper, layout, offsets)
     }
 
-    /// AC#1: a chronological `K = 2` `PreFilling` hydro H2 emits `K` block-major
+    /// A chronological `K = 2` `PreFilling` hydro H2 emits `K` block-major
     /// frozen-identity rows `row_water + h·K + (k−1)`, each carrying EXACTLY two
     /// entries: `+1.0` on `Sᵏ` and `−1.0` on `Sᵏ⁻¹`, and nothing else (no
     /// flow/inflow/loss/withdrawal term — any coupling makes `β_h` stale-nonzero).
@@ -11257,7 +11254,7 @@ mod pumping_water_tests {
         }
     }
 
-    /// AC#2: H2's per-block short-circuit lands `−τ_k` on the DOWNSTREAM target H3's
+    /// H2's per-block short-circuit lands `−τ_k` on the DOWNSTREAM target H3's
     /// block-`k` rows — H2's incremental inflow (`z_{H2}`) and H2's upstream H1
     /// releases — and NOTHING on H2's own (frozen) block rows. H1 is NOT a standard
     /// upstream of H3 (the cascade edge is H1→H2→H3), so a nonzero `−τ_k` on H1's
@@ -11355,7 +11352,7 @@ mod pumping_water_tests {
         }
     }
 
-    /// AC#3: a chronological `K = 1` `PreFilling` build is byte-identical to the
+    /// A chronological `K = 1` `PreFilling` build is byte-identical to the
     /// parallel `PreFilling` build — `τ_1 = ζ`, no interior boundary, the single
     /// chained frozen row IS the parallel frozen row, and the per-block short-circuit
     /// collapses to the single-row `−ζ`/`−ζ·withdrawal` parallel form. Covers the CSC
@@ -11610,7 +11607,7 @@ mod pumping_water_tests {
         (csc, row_lower, row_upper, cols, layout)
     }
 
-    /// AC#1: a chronological `K = 2` FPHA plane row for block `k` carries `−γᵥ/2`
+    /// A chronological `K = 2` FPHA plane row for block `k` carries `−γᵥ/2`
     /// on BOTH `block_storage_col(h, k−1)` (Sᵏ⁻¹) and `block_storage_col(h, k)` (Sᵏ)
     /// — the block-local average storage, both columns (D06), never one.
     #[test]
@@ -11653,7 +11650,7 @@ mod pumping_water_tests {
         assert_ne!(s0, s2, "S⁰ and Sᴷ distinct");
     }
 
-    /// AC#2: a chronological `K = 2` evaporating hydro emits `K` evaporation rows,
+    /// A chronological `K = 2` evaporating hydro emits `K` evaporation rows,
     /// each with `−slope/2` on its own `(Sᵏ⁻¹, Sᵏ)` pair; each block's evaporation
     /// flow appears in that block's water row with `+τ_k`; each block's flow column
     /// is BOUNDED `[0, +q_max]` (the wrong-bounds bug: leaving the extra
@@ -11729,7 +11726,7 @@ mod pumping_water_tests {
         }
     }
 
-    /// AC#3: a chronological `K = 1` FPHA + evaporation build is byte-identical to
+    /// A chronological `K = 1` FPHA + evaporation build is byte-identical to
     /// the parallel build — one water row, one FPHA plane row on `(S⁰, Sᴷ)`, one
     /// evaporation row/triple, and the flow's single `+ζ` water term. Covers the
     /// CSC arrays, both RHS vectors, and the column bound/objective vectors.
@@ -11860,9 +11857,9 @@ mod pumping_water_tests {
         PumpFixtures::new(vec![dormant], Vec::new()).with_production_models(production_models)
     }
 
-    /// AC1: the LP builds (no `unreachable!` panic) and the dormant plant is
+    /// The LP builds (no `unreachable!` panic) and the dormant plant is
     /// excluded from the FPHA index, exactly as a resolved-Fpha commissioning
-    /// plant that never reaches a stage template today would be.
+    /// plant that never reaches a stage template would be.
     #[test]
     fn test_dormant_fpha_plant_is_excluded_from_fpha_index() {
         let mut fixture = dormant_fpha_fixture();
@@ -11880,7 +11877,7 @@ mod pumping_water_tests {
         );
     }
 
-    /// AC2: `fill_load_balance_entries` does not panic on a dormant FPHA plant
+    /// `fill_load_balance_entries` does not panic on a dormant FPHA plant
     /// and credits its bus with zero generation — never priced as
     /// `ConstantProductivity` on its frozen turbine column.
     #[test]
@@ -11916,7 +11913,7 @@ mod pumping_water_tests {
         }
     }
 
-    /// AC3: `fill_operational_violation_entries` does not panic on a dormant
+    /// `fill_operational_violation_entries` does not panic on a dormant
     /// FPHA plant; the suspended plant's floor is dropped (RHS 0) and the
     /// min-generation row carries its own slack alone, not a `var_c` term
     /// coupling a column the plant has none of.

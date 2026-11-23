@@ -1453,11 +1453,10 @@ mod tests {
         assert!(!ctx.has_errors());
     }
 
-    /// A hydro whose plant `bus_id` names a nonexistent bus is no longer
-    /// checked at plant level: with a group on a valid bus, Layer 3 reports
-    /// no error at all.
+    /// A hydro with a unit group on an existing bus produces no referential
+    /// error: the bus check is per unit group, and `Hydro` has no bus of its own.
     #[test]
-    fn test_hydro_invalid_plant_bus_with_valid_group_bus_produces_no_error() {
+    fn test_hydro_unit_group_on_existing_bus_produces_no_error() {
         let dir = TempDir::new().unwrap();
         make_minimal_case(&dir);
         let mut data = parse_case(&dir);

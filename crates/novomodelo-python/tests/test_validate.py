@@ -133,27 +133,13 @@ def test_validate_emits_penalty_ordering_warning() -> None:
         shutil.rmtree(case_dir.parent, ignore_errors=True)
 
 
-def test_validate_warns_on_legacy_post_study_format() -> None:
-    """validate() surfaces the deprecated post-study format as one warning."""
+def test_validate_warns_on_arc_deck_without_post_study_file() -> None:
+    """validate() surfaces a travel-time deck without a post-study file as one warning."""
     import novomodelo.io
 
-    case_dir = copy_case_to_tempdir(
-        "examples/deterministic/d55-post-study-anticipated-lanes"
-    )
+    case_dir = copy_case_to_tempdir("examples/deterministic/d44-travel-time-substage")
     try:
-        legacy = {
-            "stages": [{"start_date": "2024-07-01", "duration_hours": 744.0}],
-            "thermal_bounds": [
-                {
-                    "thermal_id": 1,
-                    "post_study_stage_index": 0,
-                    "cost_per_mwh": 5.0,
-                    "min_mw": 0.0,
-                    "max_mw": 150.0,
-                }
-            ],
-        }
-        (case_dir / "post_study_stages.json").write_text(json.dumps(legacy))
+        (case_dir / "post_study_stages.json").unlink(missing_ok=True)
 
         result = novomodelo.io.validate(str(case_dir))
 
@@ -206,10 +192,10 @@ def test_validate_missing_directory_returns_invalid() -> None:
 
 
 def test_validate_basis_activity_window_is_rejected() -> None:
-    """basis_activity_window was removed in the cut_selection restructure.
+    """A basis_activity_window key under cut_selection is rejected.
 
     cut_selection (RowSelectionConfig) uses deny_unknown_fields, so a config
-    that still carries the removed basis_activity_window field fails to load.
+    that carries a basis_activity_window field fails to load.
     validate() must surface this as valid=False and name the offending field,
     rather than silently ignoring it.
     """
@@ -230,12 +216,12 @@ def test_validate_basis_activity_window_is_rejected() -> None:
 
         result = novomodelo.io.validate(str(case_dir))
         assert result["valid"] is False, (
-            "expected valid=False for the removed basis_activity_window field, "
+            "expected valid=False for the unknown basis_activity_window field, "
             f"got: {result!r}"
         )
         assert any(
             "basis_activity_window" in err["message"] for err in result["errors"]
-        ), f"an error must name the removed field, got: {result['errors']!r}"
+        ), f"an error must name the unknown field, got: {result['errors']!r}"
     finally:
         shutil.rmtree(case_dir.parent, ignore_errors=True)
 
@@ -346,10 +332,8 @@ def test_validate_config_overrides_unsupported_value_raises_value_error() -> Non
 
 def test_validate_missing_boundary_checkpoint_returns_invalid() -> None:
     """A case pointing to a non-existent boundary checkpoint returns valid=False
-    with a BoundaryReconciliationError naming manifest.bin.
-
-    Pre-fix: this same call returned {"valid": True, "errors": []}, diverging from
-    the CLI validate which exited 1 for the identical case.
+    with a BoundaryReconciliationError naming manifest.bin, as the CLI validate
+    exits 1 for the same case.
     """
     import novomodelo.io
 
@@ -379,10 +363,8 @@ def test_validate_missing_boundary_checkpoint_returns_invalid() -> None:
         shutil.rmtree(case_dir.parent, ignore_errors=True)
 
 
-def test_validate_without_boundary_policy_is_unchanged() -> None:
-    """Validate with no boundary policy skips phase 11 and returns the same
-    result as before the phase 11 addition.
-    """
+def test_validate_without_boundary_policy_is_valid() -> None:
+    """Validate with no boundary policy skips phase 11 and reports the case valid."""
     import novomodelo.io
 
     result = novomodelo.io.validate(VALID_CASE_1DTOY)
@@ -393,7 +375,7 @@ def test_validate_without_boundary_policy_is_unchanged() -> None:
 
 # ── Phase 11: scalar-parameter table gap classes ──────────────────────────────
 #
-# `StudySetup::new_with_boundary_requirements` now receives the caller-loaded
+# `StudySetup::new_with_boundary_requirements` receives the caller-loaded
 # `constraints/generic_parameters.json` table (never an empty placeholder), so
 # a boundary-configured study whose table has a genuine gap is rejected here
 # exactly as the CLI's `novomodelo validate` rejects it.
@@ -530,8 +512,8 @@ def _write_scalar_parameters(
 def test_validate_rejects_non_boundary_scalar_parameter_gap() -> None:
     """A non-boundary deck whose scalar-parameter table has a resolution gap (a
     `seasonal` param with no entry for the resolved season; 1dtoy resolves every
-    stage to season 0) is rejected as GenericConstraintValidationError, closing
-    the gap that previously let it pass validate while `novomodelo run` failed.
+    stage to season 0) is rejected as GenericConstraintValidationError, as
+    `novomodelo run` rejects it.
     """
     import novomodelo.io
 
@@ -560,7 +542,7 @@ def test_validate_rejects_non_boundary_scalar_parameter_gap() -> None:
 
 def test_validate_accepts_non_boundary_resolved_scalar_parameter() -> None:
     """A non-boundary deck whose scalar-parameter table resolves cleanly still
-    validates with zero errors (the new guard raises no false rejection)."""
+    validates with zero errors (the resolution guard raises no false rejection)."""
     import novomodelo.io
 
     case_dir = copy_case_to_tempdir(VALID_CASE_1DTOY)

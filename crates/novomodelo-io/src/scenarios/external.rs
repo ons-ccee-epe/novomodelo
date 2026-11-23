@@ -748,7 +748,7 @@ mod tests {
 
     /// Missing value column -> error names the `availability_factor` spelling.
     #[test]
-    fn test_parse_external_ncs_missing_value_column_errors_new_spelling() {
+    fn test_parse_external_ncs_missing_value_column_errors_naming_availability_factor() {
         let schema = Arc::new(Schema::new(vec![
             Field::new("stage_id", DataType::Int32, false),
             Field::new("scenario_id", DataType::Int32, false),

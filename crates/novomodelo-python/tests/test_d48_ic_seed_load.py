@@ -7,8 +7,8 @@ accepts that windowed shape from Python: `novomodelo.io.load_case` and
 `novomodelo.io.validate` succeed (belt-and-suspenders for the Rust load path), and a
 `novomodelo.Study` constructs — exercising the front-half lifecycle (load ->
 stochastic preprocessing -> hydro models -> StudySetup, where the windowed seed
-is unrolled) end to end from Python. The epic changes no output schema, so no
-output assertion is needed.
+is unrolled) end to end from Python. The windowed seed writes no output of its
+own, so no output assertion is needed.
 
 Run with (from the repo root):
     pytest crates/novomodelo-python/tests/test_d48_ic_seed_load.py -v

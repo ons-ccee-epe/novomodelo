@@ -2473,7 +2473,7 @@ mod tests {
     /// A `height_m` decrease beyond the tolerance (an order of magnitude
     /// larger) is still rejected — the tolerance must have power.
     #[test]
-    fn test_geometry_height_beyond_tolerance_still_errors() {
+    fn test_geometry_height_beyond_tolerance_errors() {
         let geometry = vec![
             make_geom_row(2, 10.0, 100.0, 1.0),
             // Decrease of 1e-6, an order of magnitude above the 1e-7 tolerance.
@@ -2532,7 +2532,7 @@ mod tests {
     /// An `area_km2` decrease beyond the tolerance (an order of magnitude
     /// larger) is still rejected — the tolerance must have power.
     #[test]
-    fn test_geometry_area_beyond_tolerance_still_errors() {
+    fn test_geometry_area_beyond_tolerance_errors() {
         let geometry = vec![
             make_geom_row(2, 10.0, 100.0, 1.0),
             // Decrease of 1e-8, an order of magnitude above the 1e-9 floor tolerance.
@@ -2781,11 +2781,9 @@ mod tests {
         );
     }
 
-    // ── Acceptance criteria tests ─────────────────────────────────────────────
-
-    /// AC 1: Valid data produces no errors.
+    /// Valid data produces no errors.
     #[test]
-    fn test_ac1_valid_data_no_errors() {
+    fn test_valid_data_no_errors() {
         let geometry = vec![
             make_geom_row(1, 10.0, 100.0, 1.0),
             make_geom_row(1, 20.0, 110.0, 2.0),
@@ -2809,10 +2807,10 @@ mod tests {
         );
     }
 
-    /// AC 2: Hydro id=5 with inverted storage bounds produces exactly 1 InvalidValue
+    /// Hydro id=5 with inverted storage bounds produces exactly 1 InvalidValue
     /// entry whose message contains "Hydro 5" and "storage".
     #[test]
-    fn test_ac2_hydro_storage_bounds_error() {
+    fn test_hydro_storage_bounds_error() {
         let mut hydro = make_hydro(5, None);
         hydro.min_storage_hm3 = 200.0;
         hydro.max_storage_hm3 = 100.0;
@@ -2838,9 +2836,9 @@ mod tests {
         assert!(msg.contains("storage"), "message must contain 'storage'");
     }
 
-    /// AC 3: Cycle A->B->C->A produces at least 1 CycleDetected error.
+    /// Cycle A->B->C->A produces at least 1 CycleDetected error.
     #[test]
-    fn test_ac3_cycle_detected() {
+    fn test_cycle_detected() {
         let hydros = vec![
             make_hydro(1, Some(2)),
             make_hydro(2, Some(3)),
@@ -2857,10 +2855,10 @@ mod tests {
         );
     }
 
-    /// AC 4: Non-monotonic volume for hydro id=3 produces BusinessRuleViolation
+    /// Non-monotonic volume for hydro id=3 produces BusinessRuleViolation
     /// with "Hydro 3" and "volume" in the message.
     #[test]
-    fn test_ac4_geometry_non_monotonic_volume_error() {
+    fn test_geometry_non_monotonic_volume_error() {
         // Use equal volumes (10.0, 20.0, 20.0) to trigger the strict-increase check.
         let geometry = vec![
             make_geom_row(3, 10.0, 100.0, 1.0),
@@ -2889,9 +2887,9 @@ mod tests {
         assert!(msg.contains("volume"), "must contain 'volume': {msg}");
     }
 
-    /// AC 5: Empty geometry and FPHA produce no errors from rules 8-12.
+    /// Empty geometry and FPHA produce no errors from rules 8-12.
     #[test]
-    fn test_ac5_empty_geometry_and_fpha_no_false_positives() {
+    fn test_empty_geometry_and_fpha_no_false_positives() {
         let data = make_data(
             vec![make_hydro(1, None)],
             vec![],
@@ -3771,8 +3769,6 @@ mod tests {
                         source: source.into(),
                         volume_discretization_points: None,
                         turbine_discretization_points: None,
-                        spillage_discretization_points: None,
-                        max_planes_per_hydro: None,
                         fitting_window: None,
                         spillage_fit_max_m3s: None,
                         turbined_fit_max_m3s: None,

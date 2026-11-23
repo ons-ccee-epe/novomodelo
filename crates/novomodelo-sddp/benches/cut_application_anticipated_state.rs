@@ -10,7 +10,7 @@
 //! plus `n_anticipated`=10 × `K_max`=10 anticipated slots (sparse path). Changing
 //! either case's sizing breaks the comparison.
 //!
-//! ## Acceptance criterion
+//! ## Expected ratio
 //!
 //! The extended/baseline mean-time ratio must lie in `[0.5, 1.60]`. The
 //! anticipated-state path carries ~46% per-coefficient overhead vs. the

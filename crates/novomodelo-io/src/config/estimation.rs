@@ -57,38 +57,6 @@ impl<'de> serde::Deserialize<'de> for OrderSelectionMethod {
     }
 }
 
-/// Series the estimated spatial inflow correlation is computed from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
-#[serde(rename_all = "snake_case")]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub enum CorrelationTarget {
-    /// Residuals of the fitted PAR lags.
-    Residuals,
-    /// Standardized historical inflows.
-    #[default]
-    Inflows,
-}
-
-impl CorrelationTarget {
-    /// The `config.json` spelling.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Residuals => "residuals",
-            Self::Inflows => "inflows",
-        }
-    }
-}
-
-impl From<CorrelationTarget> for novomodelo_stochastic::par::fitting::CorrelationTarget {
-    fn from(target: CorrelationTarget) -> Self {
-        match target {
-            CorrelationTarget::Residuals => Self::Residuals,
-            CorrelationTarget::Inflows => Self::Inflows,
-        }
-    }
-}
-
 /// Time series estimation settings (`config.json → estimation`).
 ///
 /// Controls automatic parameter estimation when historical inflow data is
@@ -118,12 +86,6 @@ pub struct EstimationConfig {
     #[serde(default)]
     pub max_coefficient_magnitude: Option<f64>,
 
-    /// Series the spatial inflow correlation is estimated from when no
-    /// `scenarios/correlation.json` is supplied: `"inflows"` (default) or `"residuals"`.
-    ///
-    /// Evaluation option, expected to be removed once evaluated.
-    pub correlation_target: CorrelationTarget,
-
     /// Years of `scenarios/inflow_history.parquet` the inflow model is estimated
     /// from, as an inclusive `{"from", "to"}` range of the years season
     /// occurrences start in. Absent: every year. A range reaching outside the
@@ -139,7 +101,6 @@ impl Default for EstimationConfig {
             order_selection: OrderSelectionMethod::default(),
             min_observations_per_season: 30,
             max_coefficient_magnitude: None,
-            correlation_target: CorrelationTarget::default(),
             history_years: None,
         }
     }

@@ -726,7 +726,7 @@ cut's own trial state.
 
 Wrong-but-compiling alternatives:
 
-- clamping η before the solve (the old mechanism): it censors the PAR state,
+- clamping η before the solve: it censors the PAR state,
   so the lag carries `ẑ⁺` instead of `ẑ` and every successor cut is evaluated
   at the wrong lag;
 - computing `l*` from a precomputed scenario path instead of the pinned lags:
@@ -3523,9 +3523,9 @@ Integration job's rank-invariance comparison on `examples/4ree`.
 ## By-node scheduler is warm-start-only
 
 The live scheduler spellings are `by_scenario` (the default) and `by_node`, both
-under `training.parallelism.backward_scheduler`. The retired `trial_point` /
-`opening_block` spellings are unknown-variant deserialize errors — a clean break
-with no `serde(alias)` fallback — pinned by
+under `training.parallelism.backward_scheduler`. The spellings `trial_point` /
+`opening_block` are unknown-variant deserialize errors, with no `serde(alias)`
+fallback, pinned by
 `retired_scheduler_spellings_are_deserialize_error`
 (`crates/novomodelo-io/src/config/training.rs`).
 
@@ -4154,7 +4154,9 @@ pool's factor is bit-equal (`to_bits`) to the loading study's, the records are
 used unchanged, so a same-factor round trip, a resume included, is bit for bit;
 otherwise every value becomes `(value * source) / loading`, multiplying first.
 `value * (source / loading)` rounds the ratio first and moves the bits of a
-pool written at `1.0`.
+pool written at `1.0`. A pool whose factor is absent, not finite or not positive
+is refused by `pool_cost_scale_factor`, naming the pool; no factor is assumed
+for it.
 
 The wrong-but-compiling alternatives:
 
@@ -4162,7 +4164,9 @@ The wrong-but-compiling alternatives:
   not cancel at a factor that is not a power of two, the default included, so a
   resumed run drifts from the run it continues;
 - ignoring the source factor on load (dividing by the loading factor alone): a
-  checkpoint written at another factor loads at the wrong scale.
+  checkpoint written at another factor loads at the wrong scale;
+- assuming a default factor for a pool that records none: its values load at a
+  scale the checkpoint does not state.
 
 Read: `policy/policy_export.rs` (`build_stage_cut_records`),
 `policy/policy_load.rs` (`rescale_cut_records_for_load`, `pool_cost_scale_factor`,
@@ -4249,8 +4253,8 @@ local-row key and under rank 0's rows only),
 0 returns the decode error after consuming every collective the peer issued) and
 `a_payload_length_that_does_not_fit_an_i32_count_fails_naming_its_rank` (a `-1`
 length is refused naming its rank and node), with the `complete` flag of a clean
-end and of a failure exit in `ac_train_result_fields_populated` and
-`ac_train_partial_result_on_mid_iteration_failure`; and by
+end and of a failure exit in `train_result_fields_populated` and
+`train_partial_result_on_mid_iteration_failure`; and by
 `periodic_checkpoint_with_several_forward_passes_holds_every_scenario_basis_and_equals_the_final_one`
 (`tests/periodic_checkpoint.rs`: three forward passes, the periodic and the final
 checkpoint at the same iteration hold scenarios 0, 1 and 2 at every node with a
@@ -4596,7 +4600,7 @@ matching zero pools, or more than one pool, REJECTS — naming the boundary date
 and every pool's own priced date, or every matching pool id, respectively; a
 resolved pool whose `cost_scale_factor` reads `None` (a pre-self-describing
 `.bin`) REJECTS (`boundary_predates_self_describing_cuts`, advising
-re-export), never silently defaulting to `LEGACY_COST_SCALE_FACTOR`; and a
+re-export), never assuming a factor for it; and a
 resolved pool whose `node_id` is the `-1` sentinel (a shared, multi-owner
 pool) REJECTS — a boundary source must be a single-node terminal pool. The
 `FullFcf` path mirrors the `cost_scale_factor` read and its rejects through the
@@ -4604,8 +4608,8 @@ per-pool check `pool_cost_scale_factor`, applied to every pool by
 `convert_checkpoint_cuts_for_load`: each pool converts by its own factor, and a
 factor that is absent, not finite or not positive is refused naming the pool. Resurrecting a read of `metadata.graph_manifest` or
 `metadata.producer.cost_scale_factor` on either load path is the
-wrong-but-compiling alternative this contract rules out: `metadata.json` is
-retired — the study-global graph, `num_stages`, and provenance now live on the
+wrong-but-compiling alternative this contract rules out: no `metadata.json`
+exists — the study-global graph, `num_stages`, and provenance live on the
 `manifest.bin` `CheckpointManifest` root, consumed only by the `FullFcf`
 graph-identity check — so a metadata read would fail to compile or silently
 reintroduce a stale-scale bug.
@@ -4721,9 +4725,9 @@ study's own opinion can be absent; a source that priced a season the study
 never visited is not, on that account alone, treated as absent.
 `StudySeasonManifest::to_season_manifest` projects every `None` to `0` when
 `write_checkpoint` builds the outgoing wire manifest, so a study's own
-checkpoint is byte-identical to what it was before this relaxation existed —
+checkpoint bytes do not depend on it —
 the "no opinion" state lives only on the study-side type, never on the wire.
-This is why a pure horizon reduction against a longer source now loads: the
+This is why a pure horizon reduction against a longer source loads: the
 reduction's stages reference a strict subset of the source's seasons, and the
 seasons only the source visited are skipped rather than compared against the
 reduction's zero allocation.
@@ -4739,14 +4743,13 @@ distinct messages the reject tier requires, and it would report a hydro-SET
 difference (a missing hydro) as if it were a PAR-ORDER difference.
 
 The wire-side `SeasonManifest`'s ascending-`hydro_id` order and each hydro's
-`orders.len() == n_seasons` are no longer assumed from the writer alone: `novomodelo-io`
+`orders.len() == n_seasons` are not assumed from the writer alone: `novomodelo-io`
 rejects a decoded manifest violating either shape before this gate ever runs,
 pinned by `checkpoint_manifest_rejects_unsorted_season_hydro_orders` and
 `checkpoint_manifest_rejects_season_orders_length_mismatch` in
 `crates/novomodelo-io/src/output/policy/codec.rs`.
 
-`orchestration::build_season_manifest` (renamed from the file-private
-`season_manifest`, now `pub`) is the single owner both the checkpoint writer
+`orchestration::build_season_manifest` is the single owner both the checkpoint writer
 (`write_checkpoint`) and this gate build their descriptor from via
 `BoundaryLoadRequest::with_study_seasons`, so the two sides can never be
 constructed by diverging code. This makes the gate's read of
@@ -4799,7 +4802,7 @@ examined here — that is `BoundaryReconciliationReport::superset_summary`'s and
 path emits no warning for a dropped source slot.
 
 `reconcile::resolve_storage`/`resolve_inflow_lag`'s own `RebindOp::Reject` arms
-are UNCHANGED: through `load_boundary_cuts` they are now unreachable once the
+stay: through `load_boundary_cuts` they are unreachable once the
 gate has passed, but they remain `build_rebind`'s own postcondition for a direct
 in-crate caller. Downgrading either arm to a `debug_assert!` instead is the
 wrong-but-compiling alternative this contract forbids: it would let a future gate
@@ -4878,7 +4881,7 @@ span, never a single anchor — `HydroInflowLag` is the one family keyed on a
 single `reference_date` instead (a past stage, not a delivery target).
 
 The calendar-`subindex` relaxation the parent section reserves for a date family
-IS this fan-out, and it now covers BOTH forward-dated families —
+IS this fan-out, and it covers BOTH forward-dated families —
 `AnticipatedThermalState` and `HydroTransitBucket` — inside `load_boundary_cuts`,
 dispatched through the single `resolve_by_interval_overlap` resolver, which takes
 one `on_source_miss` op. `resolve_target_slot` chooses it per family and the
@@ -4892,10 +4895,8 @@ reconciles each target slot `w` against the source intervals `M` of the SAME fam
 it overlaps **by real calendar date**, not by subindex. The weight depends on
 the family's `QuantityClass` (`quantity_class` in `policy/reconcile.rs`, an
 exhaustive match with no wildcard arm, so a new `StateFamily` variant must declare
-its class before it compiles). The rule applies to every deck, legacy included.
-It moves a legacy deck's results only when that deck loads a boundary policy whose
-source and target bucket grids differ. The old source-hours weight for volumes is
-replaced, not kept behind a flag.
+its class before it compiles). The rule applies to every deck and has no opt-out
+flag.
 
 - **`Rate` (`AnticipatedThermalState`, MW).** Full coverage yields
   `RebindOp::Blend` with per-interval weight `overlap_hours(w, M) / H_M`, divided
@@ -4974,20 +4975,20 @@ the terminal stage's own delivery class, the same slot the always-fish arm
 reads via `in_col` that stage — is NOT this in-study case. Resolved at the
 outgoing anchor (one stage past the terminal stage), its next same-residue
 ring-axis target is always a full `k_max` stages past the terminal stage:
-the slot now dates and intervals onto its REAL post-study delivery and fans
+the slot dates and intervals onto its REAL post-study delivery and fans
 out (`interval_end` past `boundary_date`, `Blend`/`Renormalize`) whenever a
 declared post-study calendar reaches that far, or reads the sentinel — still
 `Zero`, but because no calendar exists to date it against, never because the
 delivery is discharged in-study — when none does. Anchoring this slot on the
-entering `current_stage_idx` instead of the outgoing anchor — the RETIRED
-behavior — is now the wrong-but-compiling alternative: it dates the terminal
+entering `current_stage_idx` instead of the outgoing anchor is the
+wrong-but-compiling alternative: it dates the terminal
 maturing residue onto the terminal stage's own in-study month, silently
 zeroing a real post-study delivery a declared post-study calendar should
 have priced. Pinned by
 `terminal_maturing_residue_dates_onto_its_post_study_delivery` and
 `terminal_maturing_residue_stays_sentinel_without_a_post_study_calendar`
-(`policy/policy_export.rs`). Two further wrong-but-compiling alternatives,
-retired earlier and still forbidden: `RebindOp::Reject` here aborts a
+(`policy/policy_export.rs`). Two further wrong-but-compiling alternatives:
+`RebindOp::Reject` here aborts a
 legitimate boundary load the moment any anticipated thermal targets an
 in-study delivery (the `K = 0` case); resolving an in-study slot an
 in-horizon interval and fanning it out would wrongly `Blend` a within-horizon
@@ -5026,7 +5027,7 @@ maturity lag) plays no part in the join, for a reason distinct from anticipated'
 non-monotone-residue one: two buckets of one downstream plant at different lags
 have disjoint arrival intervals (each stamped from its own arrival stage on the
 study stages extended by the water calendar — the declared
-`water_bucket_stages`, or the thermal post-study `stages` on the legacy path;
+`water_bucket_stages`, or the thermal post-study stages on the padded-thermal path;
 Water calendar paths below) and are told apart by that alone; re-introducing
 `subindex` into the join would reject a legitimate source whose lag indexing
 differs from the current study's. Under an identical source/current arrival
@@ -5035,7 +5036,7 @@ interval the overlap is full and the single term's weight is
 reconciliation report tallies that slot as `fan_out`, never `copy`: the
 coefficients are unchanged, the JOIN MECHANISM is not, and collapsing a
 full-coverage single term back into `RebindOp::Copy` would hide that the family is
-now date-validated (and would have to apply to the anticipated family's own
+date-validated (and would have to apply to the anticipated family's own
 copy-equivalent, fully-inside-one-source-interval case too, silently changing its
 tally as well). A dated transit miss that is NOT the storage-fill case above —
 both sides declare transit arcs but their intervals do not overlap — still resolves
@@ -5056,12 +5057,12 @@ mirroring `RebindOp::Zero`, never an error — and the fold's own filter drops
 every exact `0.0` factor rather than emit a zero-weighted term. `load_boundary_cuts`
 adds the fold onto each cut's RAW intercept (`record.intercept += Σ
 coeff[source_pos] · factor`) BEFORE `rescale_cut_records_for_load`'s cost-scale
-and legacy-ratio transforms, in the same source-coefficient frame `rebind_cut`
-reads — so the folded future-cost term rides both rescale transforms with the
-rest of the intercept. Folding after rescale, or reading a rescaled coefficient
-into the fold sum, is the wrong-but-compiling alternative: the transforms are
-not idempotent across that boundary, so a post-rescale fold prices the fixed
-commitment at the wrong scale.
+conversion, in the same source-coefficient frame `rebind_cut` reads — so the
+folded future-cost term rides the conversion with the rest of the intercept.
+Folding after rescale, or reading a rescaled coefficient into the fold sum, is
+the wrong-but-compiling alternative: the conversion is not idempotent across
+that boundary, so a post-rescale fold prices the fixed commitment at the wrong
+scale.
 Read: `policy/reconcile.rs` (`QuantityClass`, `quantity_class`,
 `resolve_by_interval_overlap`, `build_rebind`, `FillFromStorage`,
 `receiver_storage_fill`, `rebind_cut`, `build_source_interval_index`, `overlap_hours`, `build_boundary_fold`,
@@ -5411,7 +5412,7 @@ Un-masking the water terminal slots UNCONDITIONALLY — dropping the
 `config.policy.boundary` gate — is the wrong-but-compiling alternative. It
 re-enables the terminal deposit and outgoing columns for every study, so a
 zero-terminal-value water-travel-time study, whose terminal value is still zero,
-now routes the end-of-horizon release into a bucket slot it used to drop; the LP
+routes the end-of-horizon release into a bucket slot the gated LP drops; the LP
 the solver sees changes, silently perturbing every existing water-travel-time
 golden even though the optimal cost is unchanged. Byte-neutrality for the
 no-boundary case is the property the gate protects.
@@ -5470,7 +5471,7 @@ imprecision, not a bug to patch by capping `TransitBucketTopology::column_order`
 too — it sizes from the global max over every anchor and must retain what the
 earliest stages need. Both
 drop sites (`fill_arc_release_block_entries`, `fill_arc_release_chrono_block_entries`)
-now assert the confinement directly: a debug-only check at the `None` row-lookup
+assert the confinement directly: a debug-only check at the `None` row-lookup
 arm requires the dropped lag `d` at stage `t` to satisfy `t + d >= n_stages`,
 so the drop is provably confined to a target past the horizon and unreachable
 once `boundary_present` un-caps the mask; the `HashMap` lookup the check needs
@@ -5501,10 +5502,10 @@ The bucket state stays a pure function of stage lengths, never of
   reaches the depth arithmetic through one of two paths (Water calendar paths
   below): a deck declaring `water_bucket_stages` is resolved on the study
   stages plus that calendar UNPADDED, and must cover the deepest travel time
-  or setup refuses it; a deck without it (the legacy `stages` key of
-  `post_study_stages.json`, or no file) is resolved on the study stages plus
-  the thermal post-study `stages`, padded by `extend_for_resolution`, which is
-  reachable only through `resolution_base`'s `WaterDeliveryBasis::Legacy` arm.
+  or setup refuses it; a deck without `post_study_stages.json` is resolved on
+  the study stages plus the thermal post-study stages, padded by
+  `extend_for_resolution`, which is reachable only through `resolution_base`'s
+  `WaterDeliveryBasis::PaddedThermal` arm.
   Either way the base is a list of stage lengths, so the property holds on both
   paths. Pinned by
   `setup::calendar_cross_wire_tests::water_consumers_ignore_the_thermal_calendar`,
@@ -5556,26 +5557,25 @@ by `WaterDeliveryBasis::of` from the core `WaterBucketStages` carried on
   `post_study_stages.json`).** `DeliveryCalendar::water` is the study stages plus
   the declared water stages, and `resolution_base`'s `Declared` arm borrows it
   UNPADDED — no padding, no fallback to the thermal calendar.
-- **Legacy (`WaterBucketStages::FromThermalStages`, the core default: the
-  deprecated `stages` key, or no post-study file).** `DeliveryCalendar::water` is
-  `DeliveryCalendar::thermal`, and `resolution_base`'s `Legacy` arm pads it with
-  `extend_for_resolution`. That arm is `extend_for_resolution`'s only production
-  caller; the pad never exists on the declared path. This path is recorded
-  debt: it exists for decks still in the deprecated format and is removed
-  together with that format, not on its own.
+- **Padded thermal (`WaterBucketStages::FromThermalStages`, the core default: no
+  post-study file).** `DeliveryCalendar::water` is `DeliveryCalendar::thermal`,
+  and `resolution_base`'s `PaddedThermal` arm pads it with `extend_for_resolution`. That
+  arm is `extend_for_resolution`'s only production caller; the pad never exists
+  on the declared path. This path is recorded debt: it exists for decks without
+  a post-study file and is removed together with that case, not on its own.
 
 The basis is passed by value and never stored on `DeliveryCalendar`, which feeds
 the frozen digest. Four invariants hold across the two paths:
 
 - **Pad-free neutrality.** For any water calendar covering the deepest travel
-  time, the declared-unpadded and the legacy-padded bases build a bit-identical
+  time, the declared-unpadded and the padded-thermal bases build a bit-identical
   `TransitBucketTopology` — `column_order`, `per_stage_mask`, stage weights, the
   chronological spreads (`stage_reach` included) and `arc_arrival_density` —
   with and without a loaded boundary: a covering calendar already holds every
   travel-time window, so the pad is never read. This is what makes the declared
   path a format change, not a results change, for a deck whose migrated water
   calendar covers its arcs. `scripts/migrate/post_study_stages.py` writes such a
-  calendar: the legacy one extended with copies of its last stage, the periods the
+  calendar: the thermal one extended with copies of its last stage, the periods the
   pad reads. Pinned by the
   `declared_and_padded_bases_agree_on_covering_water_calendars` property test
   and `declared_and_padded_bases_agree_at_equality_coverage`
@@ -5584,20 +5584,20 @@ the frozen digest. Four invariants hold across the two paths:
   `resolve_state_and_topology` calls `deepest_uncovered_travel_time_arc`
   (core) before building the topology and returns `SddpError::Validation` naming
   the hydro, its travel time and the declared span. Padding the declared
-  calendar, or falling back to the legacy base, is the wrong-but-compiling
+  calendar, or falling back to the padded-thermal base, is the wrong-but-compiling
   alternative: it silently invents water stages the deck did not declare. Pinned
   by `resolve_state_and_topology_refuses_uncovered_declared_water_calendar` and
   `resolve_state_and_topology_accepts_covering_declared_water_calendar`
   (`setup/tests.rs`).
-- **A short legacy calendar is padded, never refused.** The refusal is scoped to
-  the declared path; applying it to a legacy deck rejects decks the deprecated
-  format accepts. Pinned by
-  `resolve_state_and_topology_pads_a_short_legacy_water_calendar`.
+- **A short thermal water calendar is padded, never refused.** The refusal is
+  scoped to the declared path; applying it to the padded-thermal path rejects
+  decks that path accepts. Pinned by
+  `resolve_state_and_topology_pads_a_short_thermal_water_calendar`.
 - **Bucket slots are dated from the water calendar, never from the pad.**
   `build_stage_entity_manifest` dates a `HydroTransitBucket` slot's arrival
   interval over the study stages extended by `DeliveryCalendar::water`: the
   declared `water_bucket_stages` on the declared path, with or without a loaded
-  boundary; the thermal post-study stages on the legacy path, as before. A slot
+  boundary; the thermal post-study stages on the padded-thermal path. A slot
   whose arrival lands past that calendar carries the sentinel. Anticipated ring
   slots stay on `DeliveryCalendar::thermal`. Dating a bucket from the thermal
   calendar on the declared path moves every bucket interval a boundary fan-out
@@ -5709,13 +5709,11 @@ A class-4 delivery — pre-study-decided, post-study-delivered — is
 representable as a DECLARED CONSTANT that NEVER ENTERS THE RING once its
 window tiles exactly: priced by the boundary intercept fold, reported at its
 real delivery date, with no decision column, no ring slot, and no carry row.
-The retired reject that used to fire on any window reaching past the horizon
-is gone, but the scope boundary it protected is NOT: no pre-study decision is
+A window reaching past the horizon is accepted, but no pre-study decision is
 EVER carried through the ring into the post-study — the fixed commitment
 bypasses the ring precisely to keep that boundary. Carrying a class-4
-delivery through the ring instead — the boundary that retired reject used to
-enforce — is the wrong-but-compiling alternative this contract still
-forbids.
+delivery through the ring instead is the wrong-but-compiling alternative this
+contract forbids.
 
 The DECLARATION requirement above is commissioning-FILTERED — a
 `commissioning_inactive` post-study stage needs NO declared window at all (V2
@@ -5814,8 +5812,8 @@ per-plant lead `k_i` (`StateSpace::anticipated_lead_stages`, the
 `LeadTime` arm) both read it. The `LeadStages(l)` arm instead returns `l`
 VERBATIM — the byte-identity anchor `n_none_in_study <= l` by construction
 makes safe (`debug_assert!(ring_depth() <= l)`). Sizing from `occupancy_max`
-alone is the wrong-but-plausible under-sizing alternative this closes — the
-filed ring-depth under-sizing defect: `occupancy_max` SUBTRACTS the seed
+alone is the wrong-but-plausible under-sizing alternative:
+`occupancy_max` SUBTRACTS the seed
 maturing at stage 0, so it under-counts the one moment
 every simultaneous pre-study seed is in flight (stage 0, before the first
 fishing) — the last seeded stage then silently delivers an earlier stage's MW,
@@ -5852,7 +5850,7 @@ The interior transition is the same-slot HOLD identity, not a Markov-1 shift. An
 in-flight, not-yet-due slot's outgoing column is pinned to its OWN incoming column,
 `slot^out − slot^in = 0`, via `DeliveryRing::emit_carry_rows` (`+1` on
 `out_col(slot, lane)`, `−1` on `in_col(slot, lane)` — the SAME slot), routed by
-`fill_anticipated_slot_definition_entries`. This REPLACES the retired Markov-1
+`fill_anticipated_slot_definition_entries`. It is never the Markov-1
 shift `slot_k^out − slot_{k+1}^in = 0` (`emit_shift_rows`, whose `−1` lands on the
 NEXT slot): a commitment does not migrate slots stage-to-stage — it is held at its
 delivery-target residue until it matures. The water travel-time ring keeps
@@ -5892,7 +5890,7 @@ directly through the generic `β·state` projection (Delivery-family right-bound
 pricing above). The surviving masking asymmetry is anticipated-vs-water, stated at
 the shared skeleton's "Masked terminal slot" contrast (an anticipated masked slot
 never held a value), not a per-slot freeze exemption here. Treating any slot as
-freeze-exempt — the retired appended-block rule — is the wrong-but-compiling
+freeze-exempt is the wrong-but-compiling
 alternative: a masked (unreachable) slot left open `(-inf, inf)` with no definition
 row is a free, undefined state column the projection still prices, an
 out-of-nowhere commitment value.
@@ -5907,17 +5905,16 @@ target `r >= t_out` in the slot's residue class (`delta = (slot_idx + k_max −
 t_out mod k_max) mod k_max`, `r = t_out + delta`), mapped to the physical
 delivery stage `m = physical_target(r)` (The ring axis subsection above)
 before dating. Three wrong-but-compiling alternatives: anchoring on the
-entering `current_stage_idx` instead of `t_out` — the RETIRED form this
-section itself described before the re-anchoring — dates the terminal pool's
+entering `current_stage_idx` instead of `t_out` dates the terminal pool's
 own maturing-residue slot onto the terminal stage's own in-study month
 instead of a full `k_max` stages past it, silently zeroing a real post-study
-delivery; `t_out + slot_idx` (the older retired shift-ring form, wrong
+delivery; `t_out + slot_idx` (the shift-ring form, wrong
 whenever `t_out mod k_max != 0`); and dating the raw ring-axis `r` directly
 instead of `physical_target(r)` — it lands on the excised fixed post-horizon
 window's stub stage whenever a plant declares one. A ring slot is live at
 the pool's stage `t` if and only if `for_each_live_commitment_slot` visits
 it: its target lands in the window `{t+1 ..= t+k_max}`, inside the delivery
-calendar, and is ready (`PointResolution::is_ready_at`). The retired
+calendar, and is ready (`PointResolution::is_ready_at`). A
 per-plant lead bound `slot_idx < k_i` is the wrong-but-compiling
 alternative — under residue keying a short-lead plant cycles through every
 residue, so a slot beyond its own lead can still be a live carry or
@@ -6007,8 +6004,8 @@ release-silent LP corruption surfacing as a false `Infeasible` or a silent
 zero-commit (the guarding `debug_assert` is compiled out of release).
 Carry-to-terminal is owned SOLELY by the ring's interior-carry rows
 (`DeliveryRing::emit_carry_rows`, routed by `fill_anticipated_slot_definition_entries`),
-never the maturity arm. The always-fish `+h_b`/`−H` coefficient shape is exactly
-the pre-migration one; only its slot addressing is modular
+never the maturity arm. The always-fish row carries `+h_b`/`−H` coefficients;
+only its slot addressing is modular
 (`ring_index(stage_idx) mod k_max`, identity for an in-study index — The ring
 axis subsection above — via `commitment_hold_in_study_offset`).
 
@@ -6302,9 +6299,17 @@ a post-study target with no boundary; do not conflate them). Hard-rejecting inst
 of warning is the wrong-but-compiling alternative: it turns a legitimate
 no-boundary replay deck into a spurious setup failure. Silence is the opposite
 failure — it hides a modelling error where the user expected the commitment valued
-against a real future.
+against a real future. The same advisory also names a plant whose fixed
+post-horizon windows carry a non-zero value: with no boundary the fold has no
+target, so the value is inert where the user presumably expected it priced. An
+all-zero tiling stays silent: a zero value is provably inert, so a warning on it
+is noise.
 Read: `setup/mod.rs` (`warn_on_boundary_absent_post_study_delivery`,
 `warn_on_sub_stage_lead`). Pinned by
-`warn_on_boundary_absent_post_study_delivery_fires_once_when_boundary_absent` and
-`warn_on_boundary_absent_post_study_delivery_silent_when_boundary_present`
-(`setup/tests.rs`).
+`warn_on_boundary_absent_post_study_delivery_fires_once_when_boundary_absent`,
+`warn_on_boundary_absent_post_study_delivery_silent_when_boundary_present`,
+`warn_on_boundary_absent_fires_for_nonzero_fixed_value_without_boundary`,
+`warn_on_boundary_absent_silent_for_all_zero_stub_without_boundary` and
+`warn_on_boundary_absent_names_dual_cause_plant_once` (`setup/tests.rs`), and
+`no_boundary_nonzero_fixed_value_leaves_solved_cost_untouched`
+(`tests/anticipated_core.rs`).

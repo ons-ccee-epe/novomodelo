@@ -2,11 +2,10 @@
 #
 # check-no-past-inflows.sh — past_inflows data-token regression gate.
 #
-# The legacy `past_inflows` / `HydroPastInflows` field was retired from every
-# deterministic fixture in favor of the windowed `inflow_history` record and
-# `recent_observations` conditioning layers. This gate pins that removal: no
-# example case or test-data fixture may reintroduce a `past_inflows` data
-# token.
+# The loader refuses a `past_inflows` / `HydroPastInflows` field: historical
+# inflow is seeded through the windowed `inflow_history` record and the
+# `recent_observations` conditioning layers. This gate keeps every example case
+# and test-data fixture free of a `past_inflows` data token.
 #
 # Scope: examples/ (all deterministic + other case directories) and
 #   crates/*/tests/ (integration-test fixture trees, e.g.
@@ -14,9 +13,9 @@
 #   `grep -rl past_inflows examples/ crates/*/tests/`.
 #
 # Deliberately NOT scanned: crates/*/src/ — the loader-rejection regression
-# `test_legacy_past_inflows_field_is_rejected`
+# `test_past_inflows_field_is_rejected`
 # (crates/novomodelo-io/src/initial_conditions.rs) legitimately constructs a JSON
-# literal carrying the retired field name to assert the loader rejects it;
+# literal carrying the field name to assert the loader rejects it;
 # this gate must never flag that literal. Excluding crates/*/src/ from the
 # scan scope keeps the gate's own PATTERN out of the range it searches, so no
 # self-referential-match workaround is needed here (contrast
@@ -62,10 +61,10 @@ if [[ -n "$violations" ]]; then
     echo ""
     echo "$violations"
     echo ""
-    echo "The past_inflows field is retired; seed historical inflow via"
+    echo "The loader refuses past_inflows; seed historical inflow via"
     echo "windowed inflow_history record rows and/or recent_observations"
     echo "conditioning instead. If this hit is"
-    echo "test_legacy_past_inflows_field_is_rejected's own JSON literal, that"
+    echo "test_past_inflows_field_is_rejected's own JSON literal, that"
     echo "test lives under crates/*/src/ and is out of this gate's scan"
     echo "scope — check for a stray copy elsewhere."
     exit 1

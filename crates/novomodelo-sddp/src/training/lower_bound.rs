@@ -614,10 +614,9 @@ mod tests {
     /// [`StochasticContext`] carrying `n_hydros` bare hydro entities and no
     /// load/NCS/inflow models (`n_stochastic_ncs() == 0`,
     /// `par().n_stages() == 0`), so a test can pass a real `&StochasticContext`
-    /// in place of the retired `stochastic: None` field with a hydro count that
-    /// agrees with the LP-side `StateSpace::hydro_count` the caller's fixture
-    /// derives independently. `user_tree` bypasses generation entirely, so the
-    /// injected tree's shape is preserved verbatim.
+    /// whose hydro count agrees with the LP-side `StateSpace::hydro_count` the
+    /// caller's fixture derives independently. `user_tree` bypasses generation
+    /// entirely, so the injected tree's shape is preserved verbatim.
     #[allow(clippy::cast_possible_wrap)]
     fn wrap_opening_tree(n_hydros: usize, tree: OpeningTree) -> StochasticContext {
         use novomodelo_core::test_support::{BusSpec, HydroSpec, make_bus, make_hydro};
@@ -991,7 +990,7 @@ mod tests {
 
     // ── Unit tests ───────────────────────────────────────────────────────────
 
-    /// AC1: 1 opening, Expectation — LB equals the single LP objective.
+    /// 1 opening, Expectation — LB equals the single LP objective.
     #[test]
     fn one_opening_expectation_lb_equals_single_objective() {
         let fixture = SimpleLbFixture::new(
@@ -1037,7 +1036,7 @@ mod tests {
         );
     }
 
-    /// AC2: 3 openings, Expectation — LB equals mean of objectives.
+    /// 3 openings, Expectation — LB equals mean of objectives.
     #[test]
     fn three_openings_expectation_lb_equals_mean() {
         let fixture = SimpleLbFixture::new(
@@ -1084,7 +1083,7 @@ mod tests {
         );
     }
 
-    /// AC3: 2 openings, CVaR(alpha=0.5, lambda=1.0) — pure `CVaR` selects worst.
+    /// 2 openings, CVaR(alpha=0.5, lambda=1.0) — pure `CVaR` selects worst.
     #[test]
     fn two_openings_pure_cvar_alpha_half_lb_equals_worst() {
         let fixture = SimpleLbFixture::new(
@@ -1138,7 +1137,7 @@ mod tests {
         );
     }
 
-    /// AC4 (extra): 2 openings, CVaR(alpha=1.0, lambda=1.0) = Expectation.
+    /// 2 openings, CVaR(alpha=1.0, lambda=1.0) = Expectation.
     #[test]
     fn two_openings_cvar_alpha_one_equals_expectation() {
         let fixture = SimpleLbFixture::new(
@@ -1228,7 +1227,7 @@ mod tests {
         );
     }
 
-    /// AC5: solver returns Infeasible for the first opening — must propagate as `SddpError::Infeasible`.
+    /// Solver returns Infeasible for the first opening — must propagate as `SddpError::Infeasible`.
     #[test]
     fn infeasible_solve_maps_to_sddp_infeasible() {
         let fixture = SimpleLbFixture::new(
@@ -1273,7 +1272,7 @@ mod tests {
         );
     }
 
-    /// AC6: broadcast failure maps to `SddpError::Communication`.
+    /// Broadcast failure maps to `SddpError::Communication`.
     #[test]
     fn broadcast_failure_maps_to_communication_error() {
         let fixture = SimpleLbFixture::new(
@@ -2460,10 +2459,10 @@ mod tests {
         .unwrap()
     }
 
-    /// AC1: the lower-bound `StageTemplate` (= forward/backward `templates[0]`)
+    /// The lower-bound `StageTemplate` (= forward/backward `templates[0]`)
     /// carries the filling row families present in the production template — the
-    /// per-stage `filling_target`/`σ_fill` family at EVERY Filling stage (the
-    /// per-stage widening, not only the terminal `entry − 1` stage) and the renamed
+    /// per-stage `filling_target`/`σ_fill` family at EVERY Filling stage (not
+    /// only the terminal `entry − 1` stage) and the
     /// `filled_min_storage_floor`/`σ^{v-}` operating-floor family — and the
     /// `PreFilling` hydro's inflow coupling reaches no water row.
     ///
@@ -2513,11 +2512,11 @@ mod tests {
             geom0.filling_target_col
         );
 
-        // Per-stage widening: the `filling_target`/`σ_fill` family fires at EVERY
-        // Filling stage (`start ≤ id < entry`), not only the terminal `entry − 1`
-        // one. H_A (start 0, entry 1) is Filling at id 0 only; H_B (start 2, entry 4)
-        // is Filling at ids 2 AND 3. A pre-widening build that emitted the family only
-        // at the terminal stage would leave stages 2/3 empty — the regression pinned.
+        // The `filling_target`/`σ_fill` family fires at EVERY Filling stage
+        // (`start ≤ id < entry`), not only the terminal `entry − 1` one. H_A
+        // (start 0, entry 1) is Filling at id 0 only; H_B (start 2, entry 4) is
+        // Filling at ids 2 AND 3. A build that emitted the family only at the
+        // terminal stage would leave stages 2/3 empty.
         let filling_stage_ids = [0_usize, 2, 3];
         for &fs in &filling_stage_ids {
             let geom = &templates.geometry_per_stage[fs];
@@ -2586,14 +2585,14 @@ mod tests {
         );
     }
 
-    /// AC2: the lower-bound evaluation code references NO filling-specific symbol —
+    /// The lower-bound evaluation code references NO filling-specific symbol —
     /// filling structure arrives ONLY via the loaded template, never via a
     /// hand-written per-opening patch.
     ///
     /// Modeled on the `builder_never_references_dual_extraction` guard: a
     /// future "simplification" that hand-wires a filling patch into `lb_init_rank0`
     /// / `lb_evaluate_stage_0` (mirroring the NCS per-opening patch, which filling
-    /// does NOT need because it is stage-deterministic) would re-introduce the
+    /// does NOT need because it is stage-deterministic) would put the
     /// filling symbols here and fail. The needles are assembled from char fragments
     /// so this guard's own source text does not contain the literals (else the test
     /// would flag itself), exactly as that guard's source-text scan does — the
@@ -2603,12 +2602,8 @@ mod tests {
         // Filling-gating symbols assembled from fragments so they are absent from
         // this file's own bytes (the source text scanned below is this very file).
         // The needle set tracks the live filling row families: the per-stage
-        // `σ_fill`/`filling_target` family and the renamed `filled_min_storage_floor`
-        // (`σ^{v-}`) operating-floor family. There is no `filling_retention` needle:
-        // the retention family was removed (the Filling phase keeps PAR noise via
-        // its own inflow coupling, not a retention row), so referencing it would
-        // itself be a stale symbol — the rename/removal is mirrored here so the
-        // guard cannot rot back to the abandoned family name.
+        // `σ_fill`/`filling_target` family and the `filled_min_storage_floor`
+        // (`σ^{v-}`) operating-floor family.
         let needles: [String; 4] = [
             ["filling", "_phase"].concat(),
             ["Phase", "::"].concat(),
@@ -2618,8 +2613,8 @@ mod tests {
 
         // The full lower-bound module source. Only the PRODUCTION region (above the
         // `#[cfg(test)] mod tests` line) is the code under test; the test module
-        // legitimately names filling symbols (this guard, the fixture, the AC1/AC3
-        // assertions), so scanning the whole file would flag the tests themselves.
+        // legitimately names filling symbols (this guard, the fixture, the template
+        // and filling-solve assertions), so scanning the whole file would flag the tests themselves.
         // Split on the test module attribute and scan only the production prefix.
         let src = include_str!("lower_bound.rs");
         let prod_src = src
@@ -2641,7 +2636,7 @@ mod tests {
         );
     }
 
-    /// AC3: `evaluate_lower_bound` returns a finite, valid bound for a filling-hydro
+    /// `evaluate_lower_bound` returns a finite, valid bound for a filling-hydro
     /// system whose stage-0 LP carries the filling slack columns (`σ_fill`/`σ^{v-}`).
     ///
     /// Runs against the REAL solver (`ActiveSolver`) loading the production
@@ -2900,7 +2895,7 @@ mod tests {
         )
     }
 
-    /// AC1: a multi-node root successor set with distinct edge (`0.25`/`0.75`)
+    /// A multi-node root successor set with distinct edge (`0.25`/`0.75`)
     /// and within-node (`0.5`/`0.25`) weights assembles to the flat
     /// canonical-order product-weight vector — child A's openings (ascending
     /// child node id) before child B's, un-re-normalized.
@@ -2918,7 +2913,7 @@ mod tests {
         );
     }
 
-    /// AC1: the analytical expectation regression — the K-fan's assembled
+    /// The analytical expectation regression — the K-fan's assembled
     /// weights, applied to a hand-supplied objective vector via
     /// `evaluate_risk`, equal `Σ_(n,ω) P(root→n)·q_(n,ω)·objective ·
     /// cost_scale_factor` exactly (every input is dyadic).
@@ -2942,7 +2937,7 @@ mod tests {
         );
     }
 
-    /// AC2: the `CVaR` regression on the same K-fan fixture — `evaluate_risk`'s
+    /// The `CVaR` regression on the same K-fan fixture — `evaluate_risk`'s
     /// own weighted-`CVaR` value (a hand-computed greedy allocation), no second
     /// `CVaR` α introduced in this module.
     #[test]
@@ -3054,7 +3049,7 @@ mod tests {
     /// `nodes[0].pool_id` is the shared leaf pool, distinct from the root's pool.
     /// With the root pool carrying a different active-cut count than the leaf
     /// pool, the built LB cut batch's row count reveals which pool was resolved:
-    /// the pre-fix `nodes[0].pool_id` read yields the leaf pool's count and
+    /// a `nodes[0].pool_id` read yields the leaf pool's count and
     /// fails this assertion; the stage-resolved root yields the root pool's.
     #[test]
     fn lb_init_rank0_resolves_root_pool_by_stage_not_array_position() {
@@ -3109,7 +3104,7 @@ mod tests {
             vec![StageIdx(0), StageIdx(1)],
         );
 
-        // Power precondition: the buggy nodes[0] read and the stage-resolved root
+        // Power precondition: a nodes[0] read and the stage-resolved root
         // genuinely disagree on which pool is the root's.
         let root_pos = find_root_position(&fixture.node_graph).unwrap();
         let root_pool = fixture.node_graph.nodes[root_pos].pool_id;

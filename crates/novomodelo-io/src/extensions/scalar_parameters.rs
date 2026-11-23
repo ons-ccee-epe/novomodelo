@@ -90,9 +90,8 @@
 //! - An `"expression"` kind without an `expression` body.
 //! - An `"expression"` reference cycle, at `scalar_parameters`.
 //!
-//! Top-level parse failures (malformed JSON) and unknown JSON fields, such as a
-//! stale `"values_source"`, return [`crate::LoadError::ParseError`].  I/O
-//! failures return [`crate::LoadError`].
+//! Top-level parse failures (malformed JSON) and unknown JSON fields return
+//! [`crate::LoadError::ParseError`].  I/O failures return [`crate::LoadError`].
 //!
 //! ## Output ordering
 //!
@@ -129,9 +128,6 @@ pub(crate) struct ScalarParametersFile {
 }
 
 /// One parameter entry.
-///
-/// An unknown key, such as the retired `values_source`, is a parse error that
-/// names the key.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]

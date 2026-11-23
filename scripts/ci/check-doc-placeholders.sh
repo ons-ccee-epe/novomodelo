@@ -22,10 +22,6 @@
 #   followed by production code would incorrectly skip that trailing code. In
 #   practice novomodelo files follow the tail-block convention.
 #
-#   (The former book-prose pass — every *.md under book/src/ — was retired with
-#   book/ (mdBook decommission); the unified docs site at docs.modelossetoreletrico.org.br owns
-#   placeholder hygiene for user-facing prose now.)
-#
 # Flagged patterns:
 #   \bTBD\b         — the literal token TBD, word-boundary anchored so a
 #                     substring (e.g. `aTBDb`) does not over-match.

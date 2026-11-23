@@ -272,7 +272,7 @@ mod tests {
     use super::*;
     use crate::test_support::write_json;
 
-    // ── AC: valid contracts with import and export types ───────────────────────
+    // ── valid contracts with import and export types ───────────────────────────
 
     /// Given a valid `energy_contracts.json` with one import and one export
     /// contract, `parse_energy_contracts` returns `Ok(vec)` where the import has
@@ -330,7 +330,7 @@ mod tests {
         assert!((contracts[1].max_mw - 500.0).abs() < f64::EPSILON);
     }
 
-    // ── AC: unknown contract type → ParseError ────────────────────────────────
+    // ── unknown contract type → ParseError ────────────────────────────────────
 
     /// Given a contract with unknown `type` value, `parse_energy_contracts` returns
     /// `Err(LoadError::ParseError)` (serde cannot deserialize the unknown variant).
@@ -354,7 +354,7 @@ mod tests {
         );
     }
 
-    // ── AC: duplicate ID detection ─────────────────────────────────────────────
+    // ── duplicate ID detection ─────────────────────────────────────────────────
 
     /// Given `energy_contracts.json` with duplicate `id` values,
     /// `parse_energy_contracts` returns `Err(LoadError::SchemaError)`.
@@ -393,7 +393,7 @@ mod tests {
         }
     }
 
-    // ── AC: negative limits → SchemaError ─────────────────────────────────────
+    // ── negative limits → SchemaError ─────────────────────────────────────────
 
     /// Negative `limits.min_mw` → `SchemaError`.
     #[test]
@@ -455,7 +455,7 @@ mod tests {
         }
     }
 
-    // ── AC: negative price_per_mwh is valid for export contracts ─────────────
+    // ── negative price_per_mwh is valid for export contracts ─────────────────
 
     /// Export contracts with negative `price_per_mwh` are valid (export revenue).
     #[test]
@@ -480,7 +480,7 @@ mod tests {
         assert!((contracts[0].price_per_mwh - (-500.0)).abs() < f64::EPSILON);
     }
 
-    // ── AC: declaration-order invariance ──────────────────────────────────────
+    // ── declaration-order invariance ──────────────────────────────────────────
 
     /// Given contracts in reverse ID order in JSON, `parse_energy_contracts`
     /// returns a `Vec` sorted by ascending `id`.
@@ -532,7 +532,7 @@ mod tests {
         assert_eq!(contracts1[1].id, EntityId(1));
     }
 
-    // ── AC: file not found → IoError ─────────────────────────────────────────
+    // ── file not found → IoError ─────────────────────────────────────────────
 
     /// Given a nonexistent path, `parse_energy_contracts` returns
     /// `Err(LoadError::IoError)`.
@@ -548,7 +548,7 @@ mod tests {
         }
     }
 
-    // ── AC: invalid JSON → ParseError ─────────────────────────────────────────
+    // ── invalid JSON → ParseError ─────────────────────────────────────────────
 
     /// Given invalid JSON, `parse_energy_contracts` returns
     /// `Err(LoadError::ParseError)`.
