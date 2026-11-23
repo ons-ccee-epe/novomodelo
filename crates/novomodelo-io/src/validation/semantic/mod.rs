@@ -31,6 +31,7 @@
 use super::{ValidationContext, schema::ParsedData};
 
 mod block_bounds;
+mod bus_deficit_overrides;
 mod constraints;
 mod correlation;
 mod hydro;
@@ -83,6 +84,8 @@ pub(crate) fn validate_semantic_hydro_thermal(data: &ParsedData, ctx: &mut Valid
     block_bounds::check_bound_raises_declared_capacity(data, ctx);
     block_bounds::check_bound_widens_reservoir_range(data, ctx);
     block_bounds::check_group_bound_raises_declared_capacity(data, ctx);
+    bus_deficit_overrides::check_override_key_completeness(data, ctx);
+    bus_deficit_overrides::check_override_curves(data, ctx);
     pumping::check_pumping_semantics(data, ctx);
     pumping::check_pumping_operating_window(data, ctx);
     travel_time::validate_travel_time(data, ctx);

@@ -24,15 +24,16 @@ use crate::{
     LoadError,
     config::{Config, parse_config},
     constraints::{
-        BusPenaltyOverrideRow, ContractBoundsRow, GenericConstraintBoundsRow, HydroBoundsRow,
-        HydroPenaltyOverrideRow, HydroUnitGroupBoundsRow, LineBoundsRow, LinePenaltyOverrideRow,
-        NcsBoundsRow, NcsPenaltyOverrideRow, PumpingBoundsRow, ThermalBoundsRow,
-        build_line_bus_pair_index,
+        BusDeficitOverrideRow, BusPenaltyOverrideRow, ContractBoundsRow,
+        GenericConstraintBoundsRow, HydroBoundsRow, HydroPenaltyOverrideRow,
+        HydroUnitGroupBoundsRow, LineBoundsRow, LinePenaltyOverrideRow, NcsBoundsRow,
+        NcsPenaltyOverrideRow, PumpingBoundsRow, ThermalBoundsRow, build_line_bus_pair_index,
         generic::{NamedSourcesByConstraint, parse_generic_constraints_with_provenance},
         load_contract_bounds, load_generic_constraint_bounds, load_hydro_bounds,
         load_hydro_unit_group_bounds, load_line_bounds, load_ncs_bounds,
-        load_penalty_overrides_bus, load_penalty_overrides_hydro, load_penalty_overrides_line,
-        load_penalty_overrides_ncs, load_pumping_bounds, load_thermal_bounds,
+        load_penalty_overrides_bus, load_penalty_overrides_bus_deficit,
+        load_penalty_overrides_hydro, load_penalty_overrides_line, load_penalty_overrides_ncs,
+        load_pumping_bounds, load_thermal_bounds,
     },
     extensions::{
         FphaHyperplaneRow, HydroEnergyProductivityRow, HydroGeometryRow, PlaneReductionConfig,
@@ -163,6 +164,8 @@ pub(crate) struct ParsedData {
     pub(crate) ncs_bounds: Vec<NcsBoundsRow>,
     /// `constraints/hydro_unit_group_bounds.parquet`.
     pub(crate) hydro_unit_group_bounds: Vec<HydroUnitGroupBoundsRow>,
+    /// `constraints/penalty_overrides_bus_deficit.parquet`.
+    pub(crate) penalty_overrides_bus_deficit: Vec<BusDeficitOverrideRow>,
 }
 
 // ── Error mapping helper ──────────────────────────────────────────────────────
@@ -657,6 +660,18 @@ pub(crate) fn validate_schema(
         ctx,
     );
 
+    let penalty_overrides_bus_deficit = optional_or_error(
+        manifest.present(InputFile::ConstraintsPenaltyOverridesBusDeficitParquet),
+        || {
+            load_penalty_overrides_bus_deficit(Some(
+                &case_root.join("constraints/penalty_overrides_bus_deficit.parquet"),
+            ))
+        },
+        Vec::new,
+        "constraints/penalty_overrides_bus_deficit.parquet",
+        ctx,
+    );
+
     if ctx.error_count() > error_count_before {
         return None;
     }
@@ -714,6 +729,7 @@ pub(crate) fn validate_schema(
         penalty_overrides_ncs,
         ncs_bounds,
         hydro_unit_group_bounds,
+        penalty_overrides_bus_deficit,
     })
 }
 

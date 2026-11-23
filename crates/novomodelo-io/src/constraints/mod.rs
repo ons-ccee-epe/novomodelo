@@ -29,6 +29,7 @@ pub mod generic_bounds;
 pub mod hydro_unit_group_bounds;
 pub mod ncs_bounds;
 pub mod penalty_overrides;
+pub mod penalty_overrides_bus_deficit;
 pub(crate) mod reference_cycles;
 
 pub use crate::expression::catalog::{LineBusPairIndex, build_line_bus_pair_index};
@@ -45,6 +46,9 @@ pub use penalty_overrides::{
     BusPenaltyOverrideRow, HydroPenaltyOverrideRow, LinePenaltyOverrideRow, NcsPenaltyOverrideRow,
     parse_penalty_overrides_bus, parse_penalty_overrides_hydro, parse_penalty_overrides_line,
     parse_penalty_overrides_ncs,
+};
+pub use penalty_overrides_bus_deficit::{
+    BusDeficitOverrideRow, parse_penalty_overrides_bus_deficit,
 };
 
 use novomodelo_core::{EntityId, GenericConstraint};
@@ -325,4 +329,24 @@ pub fn load_hydro_unit_group_bounds(
     path: Option<&Path>,
 ) -> Result<Vec<HydroUnitGroupBoundsRow>, LoadError> {
     load_optional(path, parse_hydro_unit_group_bounds)
+}
+
+/// Load `constraints/penalty_overrides_bus_deficit.parquet` (optional file; see the module doc).
+///
+/// # Errors
+///
+/// Propagates [`LoadError`] from [`parse_penalty_overrides_bus_deficit`] when `path` is `Some`.
+///
+/// # Examples
+///
+/// ```
+/// use novomodelo_io::constraints::load_penalty_overrides_bus_deficit;
+///
+/// let rows = load_penalty_overrides_bus_deficit(None).expect("no file is fine");
+/// assert!(rows.is_empty());
+/// ```
+pub fn load_penalty_overrides_bus_deficit(
+    path: Option<&Path>,
+) -> Result<Vec<BusDeficitOverrideRow>, LoadError> {
+    load_optional(path, parse_penalty_overrides_bus_deficit)
 }

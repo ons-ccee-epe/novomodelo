@@ -17,7 +17,7 @@ use arrow::record_batch::RecordBatch;
 use novomodelo_core::AnticipatedConfig;
 use novomodelo_core::EntityId;
 use novomodelo_core::System;
-use novomodelo_io::constraints::ThermalBoundsRow;
+use novomodelo_io::constraints::{BusDeficitOverrideRow, ThermalBoundsRow};
 use novomodelo_io::output::simulation_writer::{
     HydroBusWriteRecord, HydroWriteRecord, ScenarioWritePayload, SimulationParquetWriter,
     StageWritePayload, write_paths,
@@ -1620,6 +1620,192 @@ fn test_thermal_bounds_block_row_cost_accepted_by_load_case() {
         80.0_f64.to_bits(),
         "the stage-level cost must stay the registry value"
     );
+}
+
+// ── bus deficit override file ────────────────────────────────────────────────
+
+/// Writes `constraints/penalty_overrides_bus_deficit.parquet` from explicit rows.
+fn write_bus_deficit_override_parquet(dir: &Path, rows: &[BusDeficitOverrideRow]) {
+    use arrow::array::Float64Array;
+    use arrow::datatypes::{DataType, Field, Schema};
+    use parquet::arrow::ArrowWriter;
+    use std::sync::Arc;
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("bus_id", DataType::Int32, false),
+        Field::new("stage_id", DataType::Int32, false),
+        Field::new("block_id", DataType::Int32, true),
+        Field::new("segment_index", DataType::Int32, false),
+        Field::new("depth_mw", DataType::Float64, true),
+    ]));
+
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(
+                rows.iter().map(|r| r.bus_id.0).collect::<Vec<_>>(),
+            )),
+            Arc::new(Int32Array::from(
+                rows.iter().map(|r| r.stage_id).collect::<Vec<_>>(),
+            )),
+            Arc::new(Int32Array::from(
+                rows.iter().map(|r| r.block_id).collect::<Vec<_>>(),
+            )),
+            Arc::new(Int32Array::from(
+                rows.iter().map(|r| r.segment_index).collect::<Vec<_>>(),
+            )),
+            Arc::new(Float64Array::from(
+                rows.iter().map(|r| r.depth_mw).collect::<Vec<_>>(),
+            )),
+        ],
+    )
+    .unwrap();
+
+    std::fs::create_dir_all(dir.join("constraints")).unwrap();
+    let file = std::fs::File::create(dir.join("constraints/penalty_overrides_bus_deficit.parquet"))
+        .unwrap();
+    let mut writer = ArrowWriter::try_new(file, batch.schema(), None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+}
+
+/// An override naming an undeclared bus is refused once per bus, not once per row.
+#[test]
+fn test_bus_deficit_override_unknown_bus_rejected_by_load_case() {
+    let dir = TempDir::new().unwrap();
+    helpers::make_multi_entity_case(&dir);
+
+    write_bus_deficit_override_parquet(
+        dir.path(),
+        &[
+            BusDeficitOverrideRow {
+                bus_id: EntityId::from(9),
+                stage_id: 0,
+                block_id: None,
+                segment_index: 0,
+                depth_mw: Some(100.0),
+            },
+            BusDeficitOverrideRow {
+                bus_id: EntityId::from(9),
+                stage_id: 0,
+                block_id: None,
+                segment_index: 1,
+                depth_mw: None,
+            },
+        ],
+    );
+
+    match load_case(dir.path()) {
+        Err(err) => {
+            let display = err.to_string();
+            assert_eq!(
+                display
+                    .matches("references non-existent Bus 9 via field 'bus_id'")
+                    .count(),
+                1,
+                "the undeclared bus must be reported exactly once: {display}"
+            );
+        }
+        Ok(_) => panic!("expected Err for a deficit override naming an undeclared bus, got Ok"),
+    }
+}
+
+/// A stage-wide override of a declared bus's full curve loads.
+#[test]
+fn test_bus_deficit_override_valid_file_loads() {
+    let dir = TempDir::new().unwrap();
+    helpers::make_multi_entity_case(&dir);
+
+    write_bus_deficit_override_parquet(
+        dir.path(),
+        &[
+            BusDeficitOverrideRow {
+                bus_id: EntityId::from(1),
+                stage_id: 0,
+                block_id: None,
+                segment_index: 0,
+                depth_mw: Some(250.0),
+            },
+            BusDeficitOverrideRow {
+                bus_id: EntityId::from(1),
+                stage_id: 0,
+                block_id: None,
+                segment_index: 1,
+                depth_mw: None,
+            },
+        ],
+    );
+
+    if let Err(e) = load_case(dir.path()) {
+        panic!("expected Ok for a valid bus deficit override file, got Err: {e}");
+    }
+}
+
+/// An override key that leaves out a segment of the bus's curve is refused.
+#[test]
+fn test_bus_deficit_override_incomplete_key_rejected_by_load_case() {
+    let dir = TempDir::new().unwrap();
+    helpers::make_multi_entity_case(&dir);
+
+    write_bus_deficit_override_parquet(
+        dir.path(),
+        &[BusDeficitOverrideRow {
+            bus_id: EntityId::from(1),
+            stage_id: 0,
+            block_id: None,
+            segment_index: 0,
+            depth_mw: Some(250.0),
+        }],
+    );
+
+    match load_case(dir.path()) {
+        Err(err) => {
+            let display = err.to_string();
+            assert!(
+                display.contains("lists segment_index [0] but bus 1 has 2 deficit segment(s)"),
+                "{display}"
+            );
+        }
+        Ok(_) => panic!("expected Err for an incomplete bus deficit override key, got Ok"),
+    }
+}
+
+/// An override curve with a negative depth is refused.
+#[test]
+fn test_bus_deficit_override_negative_depth_rejected_by_load_case() {
+    let dir = TempDir::new().unwrap();
+    helpers::make_multi_entity_case(&dir);
+
+    write_bus_deficit_override_parquet(
+        dir.path(),
+        &[
+            BusDeficitOverrideRow {
+                bus_id: EntityId::from(1),
+                stage_id: 0,
+                block_id: None,
+                segment_index: 0,
+                depth_mw: Some(-10.0),
+            },
+            BusDeficitOverrideRow {
+                bus_id: EntityId::from(1),
+                stage_id: 0,
+                block_id: None,
+                segment_index: 1,
+                depth_mw: None,
+            },
+        ],
+    );
+
+    match load_case(dir.path()) {
+        Err(err) => {
+            let display = err.to_string();
+            assert!(
+                display.contains("segment_index=0: depth_mw must be >= 0.0, got -10"),
+                "{display}"
+            );
+        }
+        Ok(_) => panic!("expected Err for a negative bus deficit override depth, got Ok"),
+    }
 }
 
 /// Recursively copies `src` into `dst`, skipping `output` directories.

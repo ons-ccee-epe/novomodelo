@@ -127,6 +127,8 @@ pub enum InputFile {
     ConstraintsNcsBoundsParquet,
     /// `constraints/hydro_unit_group_bounds.parquet`.
     ConstraintsHydroUnitGroupBoundsParquet,
+    /// `constraints/penalty_overrides_bus_deficit.parquet`.
+    ConstraintsPenaltyOverridesBusDeficitParquet,
 }
 
 /// One row of the input-file registry: the compiler-checked key, its path
@@ -360,6 +362,11 @@ const INPUT_FILES: &[FileEntry] = &[
     FileEntry {
         key: InputFile::ConstraintsHydroUnitGroupBoundsParquet,
         relative: "constraints/hydro_unit_group_bounds.parquet",
+        required: false,
+    },
+    FileEntry {
+        key: InputFile::ConstraintsPenaltyOverridesBusDeficitParquet,
+        relative: "constraints/penalty_overrides_bus_deficit.parquet",
         required: false,
     },
 ];
@@ -938,6 +945,48 @@ mod tests {
         );
     }
 
+    /// AC: `constraints/penalty_overrides_bus_deficit.parquet` present -> manifest
+    /// flag `true`; absent (a separate case directory) -> `false`, no error either way.
+    #[test]
+    fn test_manifest_penalty_overrides_bus_deficit() {
+        let dir = TempDir::new().unwrap();
+        make_case_with_required(&dir);
+        let constraints_dir = dir.path().join("constraints");
+        fs::create_dir_all(&constraints_dir).unwrap();
+        fs::write(
+            constraints_dir.join("penalty_overrides_bus_deficit.parquet"),
+            b"",
+        )
+        .unwrap();
+
+        let mut ctx = ValidationContext::new();
+        let manifest = validate_structure(dir.path(), &mut ctx);
+
+        assert!(
+            !ctx.has_errors(),
+            "present optional file should not produce errors"
+        );
+        assert!(
+            manifest.present(InputFile::ConstraintsPenaltyOverridesBusDeficitParquet),
+            "constraints/penalty_overrides_bus_deficit.parquet should be true when file is present"
+        );
+
+        let absent_dir = TempDir::new().unwrap();
+        make_case_with_required(&absent_dir);
+
+        let mut absent_ctx = ValidationContext::new();
+        let absent_manifest = validate_structure(absent_dir.path(), &mut absent_ctx);
+
+        assert!(
+            !absent_ctx.has_errors(),
+            "absent optional file should not produce errors"
+        );
+        assert!(
+            !absent_manifest.present(InputFile::ConstraintsPenaltyOverridesBusDeficitParquet),
+            "constraints/penalty_overrides_bus_deficit.parquet should be false when file is absent"
+        );
+    }
+
     #[test]
     fn removed_exchange_factors_file_is_rejected() {
         let dir = TempDir::new().unwrap();
@@ -1106,6 +1155,7 @@ mod tests {
         assert!(!manifest.present(InputFile::ConstraintsPenaltyOverridesNcsParquet));
         assert!(!manifest.present(InputFile::ConstraintsNcsBoundsParquet));
         assert!(!manifest.present(InputFile::ConstraintsHydroUnitGroupBoundsParquet));
+        assert!(!manifest.present(InputFile::ConstraintsPenaltyOverridesBusDeficitParquet));
     }
 
     #[test]

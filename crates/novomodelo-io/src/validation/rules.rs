@@ -367,6 +367,12 @@ declare_rules! {
     SEMANTIC_BOUND_ROW_WIDENS_RESERVOIR_RANGE = "semantic.5a.68",
         Semantic, InvalidValue, Error,
         "A hydro_bounds row sets max_storage_hm3 above the reservoir's max_storage_hm3 or min_storage_hm3 below its min_storage_hm3";
+    SEMANTIC_BUS_DEFICIT_OVERRIDE_INCOMPLETE = "semantic.5a.69",
+        Semantic, BusinessRuleViolation, Error,
+        "A bus deficit override key does not list each of the bus's deficit segment indices exactly once";
+    SEMANTIC_BUS_DEFICIT_OVERRIDE_CURVE_INVALID = "semantic.5a.70",
+        Semantic, InvalidValue, Error,
+        "A bus deficit override curve has a negative or non-finite depth_mw, or a last segment that is not the only uncapped one";
     TRAVEL_TIME_INVALID = "travel_time.1",
         Semantic, InvalidValue, Error,
         "A hydro's travel_time_hours is negative or not finite";

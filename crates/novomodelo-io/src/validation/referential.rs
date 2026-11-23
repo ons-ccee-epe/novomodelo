@@ -236,6 +236,11 @@ const BUS_PENALTY_OVERRIDE_ROW_BUS: DanglingRefDescriptor = DanglingRefDescripto
     target_entity: "Bus",
     field: "bus_id",
 };
+const BUS_DEFICIT_OVERRIDE_ROW_BUS: DanglingRefDescriptor = DanglingRefDescriptor {
+    file: "constraints/penalty_overrides_bus_deficit.parquet",
+    target_entity: "Bus",
+    field: "bus_id",
+};
 const LINE_PENALTY_OVERRIDE_ROW_LINE: DanglingRefDescriptor = DanglingRefDescriptor {
     file: "constraints/penalty_overrides_line.parquet",
     target_entity: "Line",
@@ -777,6 +782,26 @@ fn check_penalty_override_references(
                 "BusPenaltyOverrideRow",
                 i,
                 row.bus_id.0,
+                ctx,
+            );
+        }
+    }
+
+    // One finding per bus, at its first row: deduplicating against the previous
+    // row relies on `parse_penalty_overrides_bus_deficit` sorting rows by bus.
+    let mut previous_bus: Option<i32> = None;
+    for (i, row) in data.penalty_overrides_bus_deficit.iter().enumerate() {
+        let bus = row.bus_id.0;
+        if previous_bus == Some(bus) {
+            continue;
+        }
+        previous_bus = Some(bus);
+        if !bus_ids.contains(&bus) {
+            emit_dangling_ref(
+                &BUS_DEFICIT_OVERRIDE_ROW_BUS,
+                "BusDeficitOverrideRow",
+                i,
+                bus,
                 ctx,
             );
         }

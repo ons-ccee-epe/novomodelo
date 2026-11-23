@@ -115,9 +115,20 @@ where
     Ok(())
 }
 
+/// `true` iff `distinct_sorted_indices` is exactly `0, 1, ..., n_segments - 1`.
+pub(crate) fn indices_cover_curve(distinct_sorted_indices: &[i32], n_segments: usize) -> bool {
+    distinct_sorted_indices.len() == n_segments
+        && distinct_sorted_indices
+            .iter()
+            .enumerate()
+            .all(|(position, &index)| usize::try_from(index) == Ok(position))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{CurveDefect, CurveLocation, SegmentField, check_deficit_curve};
+    use super::{
+        CurveDefect, CurveLocation, SegmentField, check_deficit_curve, indices_cover_curve,
+    };
 
     fn refused(location: CurveLocation, message: &str) -> Result<(), CurveDefect> {
         Err(CurveDefect {
@@ -201,6 +212,21 @@ mod tests {
             check_deficit_curve([(Some(0.0), 500.0), (None, 5000.0)]),
             Ok(()),
         );
+    }
+
+    #[test]
+    fn indices_cover_curve_accepts_only_zero_to_n() {
+        assert!(indices_cover_curve(&[0, 1], 2));
+        for (indices, n) in [
+            (&[0][..], 2),
+            (&[0, 1, 2], 2),
+            (&[0, 2], 2),
+            (&[1, 2], 2),
+            (&[-1, 0], 2),
+            (&[], 1),
+        ] {
+            assert!(!indices_cover_curve(indices, n), "{indices:?} vs {n}");
+        }
     }
 
     #[test]

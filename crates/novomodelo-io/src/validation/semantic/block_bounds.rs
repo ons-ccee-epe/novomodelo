@@ -1,4 +1,4 @@
-//! Layer 5a — bound-override-family validation: block-axis rules for the seven
+//! Layer 5a — bound-override-family validation: block-axis rules for the
 //! Parquet families, plus block_id-agnostic stage-wide envelope rules (e.g.
 //! `check_bound_raises_declared_capacity`, rule 43, and its group-axis mirror
 //! `check_group_bound_raises_declared_capacity`, rule 45).
@@ -78,6 +78,13 @@ const GENERIC_CONSTRAINT: FamilyMeta = FamilyMeta {
     file: "constraints/generic_constraint_bounds.parquet",
 };
 
+const BUS_DEFICIT: FamilyMeta = FamilyMeta {
+    family: "Bus",
+    entity_label: "bus_id",
+    row_label: "penalty_overrides_bus_deficit",
+    file: "constraints/penalty_overrides_bus_deficit.parquet",
+};
+
 /// `", hydro_unit_group_id={g}"` for `Some(g)`, else empty — the extra key
 /// axis a group row's `entity` field carries that the five plant-level
 /// families never set.
@@ -107,9 +114,11 @@ fn block_id_clause(block_id: Option<i32>) -> String {
 }
 
 /// Rule 35: rejects a bound-override row whose `block_id` is negative or outside
-/// `[0, n_blocks)` for the stage it names, across all seven block-eligible
-/// bound families in the fixed order thermal, hydro, line, pumping, contract,
-/// hydro unit group, generic constraint.
+/// `[0, n_blocks)` for the stage it names, across the block-eligible bound
+/// families in the fixed order thermal, hydro, line, pumping, contract, hydro
+/// unit group, generic constraint, then the bus deficit override family. A bus
+/// deficit key carries one row per curve segment and is reported once per
+/// `(bus_id, stage_id, block_id)`.
 ///
 /// A row whose `stage_id` is not a study stage is skipped without a finding —
 /// that is a stage-axis defect this rule does not own.
@@ -199,6 +208,24 @@ pub(super) fn check_bound_block_id_range(data: &ParsedData, ctx: &mut Validation
             ctx,
         );
     }
+
+    let mut previous = None;
+    for row in &data.penalty_overrides_bus_deficit {
+        let key = (row.bus_id.0, row.stage_id, row.block_id);
+        if previous == Some(key) {
+            continue;
+        }
+        previous = Some(key);
+        check_row(
+            &BUS_DEFICIT,
+            row.bus_id.0,
+            None,
+            row.stage_id,
+            row.block_id,
+            &stage_block_counts,
+            ctx,
+        );
+    }
 }
 
 fn check_row(
@@ -238,10 +265,15 @@ fn check_row(
 }
 
 /// Rule 49: rejects a bound-override row whose `stage_id` names no declared study
-/// stage, across the six bound families. Admission is membership in the
-/// declared id set — the same map [`resolve_bounds`](crate::resolution::resolve_bounds) keys on — never a
+/// stage, across the thermal, hydro, line, pumping, contract and hydro unit
+/// group bound families and the bus deficit override family. Admission is
+/// membership in the declared id set — the same map
+/// [`resolve_bounds`](crate::resolution::resolve_bounds) keys on — never a
 /// `[0, n)` position test: study ids may be gapped or start at 1. NCS is
 /// excluded because the Layer-3 referential check already owns its stage axis.
+///
+/// A bus deficit stage carries one row per curve segment and block, and is
+/// reported once per `(bus_id, stage_id)`.
 pub(super) fn check_bound_stage_id_range(data: &ParsedData, ctx: &mut ValidationContext) {
     let study_stage_ids: HashSet<i32> = data
         .stages
@@ -311,6 +343,23 @@ pub(super) fn check_bound_stage_id_range(data: &ParsedData, ctx: &mut Validation
             ctx,
         );
     }
+
+    let mut previous = None;
+    for row in &data.penalty_overrides_bus_deficit {
+        let key = (row.bus_id.0, row.stage_id);
+        if previous == Some(key) {
+            continue;
+        }
+        previous = Some(key);
+        check_row_stage_range(
+            &BUS_DEFICIT,
+            row.bus_id.0,
+            None,
+            row.stage_id,
+            &study_stage_ids,
+            ctx,
+        );
+    }
 }
 
 fn check_row_stage_range(
@@ -351,6 +400,11 @@ fn check_row_stage_range(
 /// disjoint columns for the same `(entity, stage, block)` are legitimate
 /// sparse input, never a collision — the key is scoped per column, not per
 /// row.
+///
+/// The bus deficit override family is keyed on `(bus_id, stage_id, block_id,
+/// segment_index)` and is checked apart from [`check_row_columns`]: a null
+/// `depth_mw` is a real value there, so a repeated key collides whatever its
+/// depths. A key repeated any number of times is reported once.
 ///
 /// [`resolve_bounds`]: crate::resolution::resolve_bounds
 pub(super) fn check_duplicate_bound_rows(data: &ParsedData, ctx: &mut ValidationContext) {
@@ -480,6 +534,40 @@ pub(super) fn check_duplicate_bound_rows(data: &ParsedData, ctx: &mut Validation
             ],
             &mut generic_constraint_seen,
             ctx,
+        );
+    }
+
+    check_duplicate_bus_deficit_rows(data, ctx);
+}
+
+fn check_duplicate_bus_deficit_rows(data: &ParsedData, ctx: &mut ValidationContext) {
+    let keys = data
+        .penalty_overrides_bus_deficit
+        .iter()
+        .map(|r| (r.bus_id.0, r.stage_id, r.block_id, r.segment_index));
+    let mut last_reported = None;
+    for (previous, key) in keys.clone().zip(keys.skip(1)) {
+        if key != previous || last_reported == Some(key) {
+            continue;
+        }
+        last_reported = Some(key);
+        let (bus_id, stage_id, block_id, segment_index) = key;
+        let block_str = match block_id {
+            Some(b) => format!("block_id={b}"),
+            None => "stage-wide".to_string(),
+        };
+        ctx.emit(
+            &rules::SEMANTIC_BOUND_ROW_DUPLICATE,
+            BUS_DEFICIT.file,
+            Some(format!(
+                "{}={bus_id}, stage_id={stage_id}",
+                BUS_DEFICIT.entity_label
+            )),
+            format!(
+                "{} {bus_id}: {} sets depth_mw of segment_index={segment_index} twice for \
+                 stage_id={stage_id}, {block_str}",
+                BUS_DEFICIT.family, BUS_DEFICIT.row_label
+            ),
         );
     }
 }
@@ -883,7 +971,8 @@ mod tests {
 
     use novomodelo_core::temporal::PolicyGraphType;
     use novomodelo_core::{
-        AnticipatedCommitmentHistory, AnticipatedConfig, EntityId, HorizonGraph, Hydro, Thermal,
+        AnticipatedCommitmentHistory, AnticipatedConfig, DeficitSegment, EntityId, HorizonGraph,
+        Hydro, Thermal,
     };
 
     use chrono::NaiveDate;
@@ -891,8 +980,8 @@ mod tests {
     use super::super::validate_semantic_hydro_thermal;
     use crate::ValidationEntry;
     use crate::constraints::{
-        ContractBoundsRow, GenericConstraintBoundsRow, HydroBoundsRow, HydroUnitGroupBoundsRow,
-        LineBoundsRow, PumpingBoundsRow, ThermalBoundsRow,
+        BusDeficitOverrideRow, ContractBoundsRow, GenericConstraintBoundsRow, HydroBoundsRow,
+        HydroUnitGroupBoundsRow, LineBoundsRow, PumpingBoundsRow, ThermalBoundsRow,
     };
     use crate::stages::StagesData;
     use crate::test_support::*;
@@ -1051,6 +1140,65 @@ mod tests {
                     && e.file == std::path::Path::new("constraints/hydro_unit_group_bounds.parquet")
             })
             .map(|e| (*e).clone())
+            .collect()
+    }
+
+    fn deficit_row(
+        bus_id: i32,
+        stage_id: i32,
+        block_id: Option<i32>,
+        segment_index: i32,
+        depth_mw: Option<f64>,
+    ) -> BusDeficitOverrideRow {
+        BusDeficitOverrideRow {
+            bus_id: EntityId::from(bus_id),
+            stage_id,
+            block_id,
+            segment_index,
+            depth_mw,
+        }
+    }
+
+    /// Two-segment bus 1 over [`two_stage_study_stages`]; `rows` must already be
+    /// in the parser's `(bus, stage, block, segment)` order.
+    fn bus_deficit_data(rows: Vec<BusDeficitOverrideRow>) -> ParsedData {
+        let mut bus = make_bus_with_deficit(1, 500.0);
+        bus.deficit_segments = vec![
+            DeficitSegment {
+                depth_mw: Some(100.0),
+                cost_per_mwh: 500.0,
+            },
+            DeficitSegment {
+                depth_mw: None,
+                cost_per_mwh: 5000.0,
+            },
+        ];
+        ParsedData {
+            penalty_overrides_bus_deficit: rows,
+            ..base_parsed_data(two_stage_study_stages(), vec![bus])
+        }
+    }
+
+    /// Runs the full Layer 5a dispatch and returns every finding, of any kind
+    /// and severity, raised against
+    /// `constraints/penalty_overrides_bus_deficit.parquet`.
+    fn bus_deficit_findings(data: &ParsedData) -> Vec<ValidationEntry> {
+        let mut ctx = ValidationContext::new();
+        validate_semantic_hydro_thermal(data, &mut ctx);
+        ctx.errors()
+            .into_iter()
+            .chain(ctx.warnings())
+            .filter(|e| {
+                e.file == std::path::Path::new("constraints/penalty_overrides_bus_deficit.parquet")
+            })
+            .cloned()
+            .collect()
+    }
+
+    fn bus_deficit_errors_of_kind(data: &ParsedData, kind: ErrorKind) -> Vec<ValidationEntry> {
+        bus_deficit_findings(data)
+            .into_iter()
+            .filter(|e| e.kind == kind)
             .collect()
     }
 
@@ -1936,6 +2084,94 @@ mod tests {
                     && e.message.contains("stage_id=-1")
                     && e.message.contains("not a declared study stage")),
             "expected a stage_id=-1 finding: {errors:?}"
+        );
+    }
+
+    // ── bus deficit override family (penalty_overrides_bus_deficit) ──────────
+
+    #[test]
+    fn test_bus_deficit_override_block_id_out_of_range_reported_once_per_key() {
+        let data = bus_deficit_data(vec![
+            deficit_row(1, 1, Some(4), 0, Some(100.0)),
+            deficit_row(1, 1, Some(4), 1, None),
+        ]);
+
+        let errors = bus_deficit_errors_of_kind(&data, ErrorKind::BusinessRuleViolation);
+        assert_eq!(
+            errors.len(),
+            1,
+            "expected exactly one error, got: {errors:?}"
+        );
+        assert!(
+            errors[0].message.contains(
+                "Bus 1: penalty_overrides_bus_deficit row at stage_id=1 has block_id=4 but \
+                 stage 1 declares only 2 block(s)"
+            ),
+            "message: {}",
+            errors[0].message
+        );
+    }
+
+    #[test]
+    fn test_bus_deficit_override_undeclared_stage_reported_once() {
+        let data = bus_deficit_data(vec![
+            deficit_row(1, 7, None, 0, Some(100.0)),
+            deficit_row(1, 7, None, 1, None),
+            deficit_row(1, 7, Some(0), 0, Some(100.0)),
+            deficit_row(1, 7, Some(0), 1, None),
+        ]);
+
+        let errors = bus_deficit_errors_of_kind(&data, ErrorKind::BusinessRuleViolation);
+        assert_eq!(
+            errors.len(),
+            1,
+            "expected exactly one error, got: {errors:?}"
+        );
+        assert!(
+            errors[0].message.contains(
+                "Bus 1: penalty_overrides_bus_deficit override names stage_id=7, which is not a \
+                 declared study stage"
+            ),
+            "message: {}",
+            errors[0].message
+        );
+    }
+
+    #[test]
+    fn test_bus_deficit_override_duplicate_segment_index_rejected() {
+        let data = bus_deficit_data(vec![
+            deficit_row(1, 0, None, 0, Some(100.0)),
+            deficit_row(1, 0, None, 1, None),
+            deficit_row(1, 0, None, 1, None),
+            deficit_row(1, 0, None, 1, None),
+        ]);
+
+        let errors = bus_deficit_errors_of_kind(&data, ErrorKind::DuplicateId);
+        assert_eq!(
+            errors.len(),
+            1,
+            "expected exactly one error, got: {errors:?}"
+        );
+        assert_eq!(
+            errors[0].message,
+            "Bus 1: penalty_overrides_bus_deficit sets depth_mw of segment_index=1 twice for \
+             stage_id=0, stage-wide"
+        );
+    }
+
+    #[test]
+    fn test_bus_deficit_override_stage_and_block_rows_are_not_duplicates() {
+        let data = bus_deficit_data(vec![
+            deficit_row(1, 0, None, 0, Some(100.0)),
+            deficit_row(1, 0, None, 1, None),
+            deficit_row(1, 0, Some(0), 0, Some(100.0)),
+            deficit_row(1, 0, Some(0), 1, None),
+        ]);
+
+        let findings = bus_deficit_findings(&data);
+        assert!(
+            findings.is_empty(),
+            "a stage-wide key and a block key of one (bus, stage) are distinct: {findings:?}"
         );
     }
 
