@@ -60,7 +60,7 @@ pub(crate) fn realize_inflow(
             );
         }
         (true, Some(noise_term)) => {
-            debug_assert!(
+            assert!(
                 training_ctx.inflow_residual == InflowResidualDistribution::Normal,
                 "a cached noise term is the normal term; the lognormal term depends on the solve's conditional mean"
             );
@@ -967,7 +967,6 @@ mod tests {
         );
     }
 
-    #[cfg(debug_assertions)]
     #[test]
     #[should_panic(expected = "a cached noise term is the normal term")]
     fn realize_inflow_under_lognormal_refuses_a_cached_noise_term() {

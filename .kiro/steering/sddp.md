@@ -890,8 +890,7 @@ What does not change:
 **No cache of the noise term.** `ε` depends on the solve's pinned lags, so every
 solve computes it. Under the option `reserve_for_pool_capacity` reserves no
 `StageNoiseTable`, every backward opening takes `NoiseTermSource::OnTheFly`
-(`solve_backward_opening`), and a debug build refuses a cached noise term in
-`realize_inflow`.
+(`solve_backward_opening`), and `realize_inflow` refuses a cached noise term.
 
 **The chain rule never differentiates the transform.** A cut's lag
 coefficients are its subgradient with the noise term frozen at the cut's own
@@ -924,11 +923,12 @@ reduction, so `ε` is invariant to declaration order, thread count and rank coun
 wherever `p`, `σ` and `η` are. `exp_m1` and `ln_1p` come from the platform libm,
 whose last bits can differ between implementations: a run is reproducible on one
 build and one platform, and the ranks of a run need the same build, OS and ISA,
-which no run-time probe checks. Ranks whose `PrecomputedPar::fingerprint`
-differ are refused (`refuse_rank_disagreement`). At the far tail of `η` with
-`(σ_h/p_h)²` near `f64::MAX`, `exp_m1` overflows to infinity; generated noise
-does not reach it, only a hand-written opening-tree file can, and no run-time
-check guards it (the kernel's documentation states the bound).
+which no run-time probe checks: `refuse_rank_disagreement` refuses ranks whose
+PAR tables differ (`PrecomputedPar::fingerprint`), not ranks whose libm differs.
+At the far tail of `η` with `(σ_h/p_h)²` near `f64::MAX`, `exp_m1` overflows to
+infinity; generated noise does not reach it, only a hand-written opening-tree
+file can, and no run-time check guards it (the kernel's documentation states the
+bound).
 
 The wrong-but-compiling alternatives:
 
@@ -947,8 +947,7 @@ The wrong-but-compiling alternatives:
   expression than the normal kernel's: `ẑ` loses the bits of the residual the
   study names;
 - a reordered evaluation or a fused multiply-add in the kernel: the last bits of
-  every lognormal result move. No test pins this one; the kernel's
-  documentation owns the order;
+  every lognormal result move;
 - a cut oracle that compares a stored cut with the unfrozen successor value: the
   cuts this contract admits fail it, so it checks a property they do not have;
 - an allocation in either branch of the kernel or in `realize_inflow`: the hot
@@ -974,6 +973,8 @@ Pinned by, in `crates/novomodelo-stochastic/src/par/evaluate.rs`,
 `lognormal_term_matches_the_second_order_gaussian_limit` (each cancelling form
 above fails it),
 `lognormal_inflow_is_finite_and_non_negative_at_sampler_extremes`,
+`lognormal_term_rounds_each_operation_in_the_documented_order` (a reordered
+evaluation or a fused multiply-add fails it),
 `lognormal_fallback_has_the_bits_of_the_normal_term`,
 `lognormal_zero_sigma_leaves_the_conditional_mean` and
 `lognormal_term_is_invariant_to_hydro_order`; in `stochastic/noise.rs`,
@@ -981,8 +982,8 @@ above fails it),
 `realize_inflow_under_lognormal_takes_the_normal_term_where_the_mean_is_not_positive`
 (swapped kernels fail both), their normal twin
 `realize_inflow_under_normal_writes_sigma_eta_where_the_mean_is_not_positive`
-and `realize_inflow_under_lognormal_refuses_a_cached_noise_term` (debug
-builds); the reach of both branches, in `tests/inflow_nonnegativity.rs`,
+and `realize_inflow_under_lognormal_refuses_a_cached_noise_term`; the reach of
+both branches, in `tests/inflow_nonnegativity.rs`,
 `the_forward_pass_reaches_both_lognormal_branches`,
 `the_backward_openings_reach_both_lognormal_branches`,
 `the_simulation_reaches_both_lognormal_branches` and
@@ -1025,8 +1026,9 @@ and `a_normal_residual_policy_loads_and_simulates_under_lognormal_with_no_warnin
 warnings, in `validate_phases.rs`,
 `validate_study_under_lognormal_3p_warns_once_about_nonpositive_seasonal_means`,
 `validate_study_under_lognormal_3p_names_a_shared_season_once`,
-`validate_study_under_lognormal_3p_with_method_none_warns_about_negative_inflows`
-and `validate_study_under_lognormal_3p_without_a_par_model_adds_no_warning`; and
+`validate_study_under_lognormal_3p_with_method_none_warns_about_negative_inflows`,
+`validate_study_under_lognormal_3p_without_a_par_model_adds_no_warning` and
+`nonpositive_mean_list_joins_periods_and_counts_unnamed_hydros`; and
 the rank check, `fingerprint_changes_with_one_ulp_in_each_table`
 (`crates/novomodelo-stochastic/src/par/precompute.rs`) and
 `refuse_rank_disagreement_names_both_fingerprints_when_ranks_differ`
@@ -3062,7 +3064,8 @@ The independence is pinned for up to `PINNED_MAX_ROWS` rows,
 `INNER_DIMS` (`gemm.rs`), and nowhere else. The kernel's column block (`D_NC`)
 is never reached, because a call passes at most `M_BLOCK` states. An inner
 dimension above the largest of `INNER_DIMS` is summed in further blocks of
-`D_KC` and is drawn by no property; the inexact property draws 3, 257, 300 and 600.
+`D_KC` and is drawn by no property; the inexact property draws 3, 257, 300 and
+600.
 
 The wrong-but-compiling alternatives:
 
@@ -6432,7 +6435,7 @@ ring-carry drift at its source; the basis-factorization drift at the deposit row
 is what the seam absorbs, since exactness there is the solver's to give and it
 does not give it.
 
-A _genuine_ over-commitment — past the delivery bound by more than solver noise —
+A *genuine* over-commitment — past the delivery bound by more than solver noise —
 is NOT a runtime verdict and NOT the seam's to catch: it is rejected before the
 study runs, at `novomodelo-io` load time, by `check_committed_value_bounds`
 (`validation/semantic/thermal.rs`), which checks each committed value against the
