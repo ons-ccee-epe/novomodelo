@@ -134,12 +134,13 @@ samples. So for AR(p > 0):
   > instead (`realize_inflow` and `apply_inflow_slack_col_bounds` in
   > `novomodelo-sddp` `stochastic/noise.rs`). The external realizations still
   > round-trip through η unchanged; the correction bound no longer acts on η.
-- σ = 0 is **kept rejected** (decision, §7): a deterministic AR(p > 0) inflow would
-  require the external series to follow the exact deterministic PAR recursion at every
-  stage — a whole-trajectory constraint of marginal value. The rejection stays; only
-  its _message_ is corrected (see §5, F2): it is not that "η inversion is undefined,"
-  it is that the value must equal the deterministic PAR output the loader cannot
-  compute upstream.
+- σ = 0 (a constant external column) is **accepted** (decision, §7). The inversion
+  uses the model's σ, not the column's, and `validate_par_parameters` keeps that σ
+  positive at AR order > 0, so a constant column inverts to a finite η at every stage
+  and replays as recorded, like any σ > 0 column. This record first kept the case
+  rejected on the premise that the column would have to follow the deterministic PAR
+  recursion; that premise was wrong, and the io check (rule 50, `semantic.5b.50`) is
+  retired.
 
 ### 4.4 What is unchanged
 
@@ -155,9 +156,9 @@ samples. So for AR(p > 0):
 
 - **Rule 50 rewrite.** The σ = 0 "must equal μ" branch is removed for load and NCS:
   under External, μ is _defined by_ the external file, so there is nothing to
-  disagree with. The rule's remaining job is the σ = 0 inflow decision: accept AR(0),
-  reject AR(p > 0) with an accurate message. Its regression tests
-  (`rule_50_*`) are re-pointed accordingly.
+  disagree with. The rule's remaining job was the σ = 0 inflow decision: accept AR(0),
+  reject AR(p > 0) with an accurate message. The AR(p > 0) rejection was later retired
+  with the rule itself (§4.3).
 - **Seasonal-stats optionality.** Under External, an absent seasonal-stats file for
   that class is no longer an implicit error; the dimensional coverage check remains
   conditional on the file being present.
@@ -188,8 +189,9 @@ samples. So for AR(p > 0):
 
 ## 7. Decisions
 
-- **AR(p > 0) deterministic external inflow: rejected, message corrected.** Not
-  supported in this change; the whole-trajectory constraint is of marginal value.
+- **AR(p > 0) deterministic external inflow: accepted.** First kept rejected with a
+  corrected message; the rejection was retired once the replay was shown to need no
+  whole-trajectory constraint (§4.3).
 - **Vehicle: design doc + progressive plan.** This proposal is the plan's spec.
 
 ## 8. Downstream (out of scope here)

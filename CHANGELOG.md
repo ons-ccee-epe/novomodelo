@@ -24,9 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `scenario_source.inflow.scheme` `"historical"` and `"external"` refused a
-  case with a zero inflow standard deviation at some hydro and season (`V2.3`,
-  `V3.7`). That hydro now takes the model's deterministic inflow in those
-  seasons instead of the recorded value.
+  zero inflow standard deviation at a hydro and season (`V2.3`, `V3.7`). That
+  season now takes the model's deterministic inflow, not the recorded one.
+  `"external"` also refused a constant inflow column under an AR(p > 0) model.
 
 ## [0.21.0] - 2026-11-16
 
