@@ -1143,7 +1143,7 @@ fn two_stage_system_two_trial_states_generates_two_cuts_at_stage_0() {
 
 #[test]
 fn cut_inserted_with_correct_stage_iteration_and_forward_pass_index() {
-    // Acceptance criterion: iteration=2, forward_passes=3, global
+    // iteration=2, forward_passes=3, global
     // trial point m=1 → fcf.add_cut(NodeId(0),stage=0, iteration=2, fpi=1, ...).
     // slot = warm_start + 2*3 + 1 = 7.
     let n_stages = 2_usize;
@@ -1899,7 +1899,7 @@ fn single_rank_backward_pass_with_local_backend_produces_correct_fcf() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn forward_pass_index_matches_global_scenario_index() {
-    // Acceptance criterion: when a cut is generated for global trial point
+    // When a cut is generated for global trial point
     // m=5, then `fcf.add_cut(NodeId(0),stage, iteration, 5, ...)` is called with
     // forward_pass_index = m = 5.
     //
@@ -2808,7 +2808,7 @@ fn backward_pass_load_patches_applied() {
 /// stays empty.
 #[test]
 #[allow(clippy::too_many_lines)]
-fn backward_pass_no_load_buses_unchanged() {
+fn backward_pass_no_load_buses_patches_only_inflow_rows() {
     let n_stages = 2_usize;
     let n_openings = 2_usize;
     let stochastic = make_stochastic_context(n_stages, n_openings);
@@ -3078,7 +3078,7 @@ fn backward_pass_cut_coefficients_unaffected() {
 /// called per-stage inside the loop) and exercises the full code path.
 #[test]
 #[allow(clippy::too_many_lines)]
-fn per_stage_cut_sync_invariant_after_bug1_fix() {
+fn per_stage_cut_sync_runs_inside_the_backward_loop() {
     use novomodelo_comm::LocalBackend;
 
     let n_stages = 4_usize;
@@ -3741,7 +3741,7 @@ fn run_backward_pass_with_n_workers(n_workers: usize) -> FutureCostFunction {
 
 #[test]
 fn work_stealing_produces_identical_results_across_worker_counts() {
-    // Acceptance criterion: the FCF state after running the backward pass
+    // The FCF state after running the backward pass
     // with 1 workspace must be bit-identical to the state after running
     // with 3 workspaces, given the same inputs. This verifies that the
     // sort-by-trial_state_idx post-processing in the work-stealing
@@ -3874,7 +3874,7 @@ fn decompose_four_workers_different_solve_times() {
     assert_eq!(scheduling_ms, 50, "scheduling overhead = wall - max_worker");
 }
 
-/// Acceptance criterion: `setup_time_ms` is the sum of all workers' non-solve
+/// `setup_time_ms` is the sum of all workers' non-solve
 /// work.
 ///
 /// Workers have setup costs (load+add+bounds+basis): 20, 25, 15, 22 ms.
@@ -5475,8 +5475,8 @@ fn backward_dcs_cut_equals_all_cuts_cut() {
     );
 }
 
-/// `dcs = None` ⇒ the frozen all-cuts path is taken and the cut is identical
-/// to the pre-DCS baseline (same fixture run with `None`).
+/// `dcs = None` ⇒ the frozen all-cuts path is taken, and two runs of the same
+/// fixture produce identical cuts.
 #[test]
 fn backward_dcs_off_is_identical_to_baseline() {
     let (cut_a, coefficients_a, _) = run_dcs_backward_trial_state(None, 5);
@@ -5720,7 +5720,7 @@ fn backward_dcs_exactness_sweep() {
 /// frozen template as its core, the LP would carry the spurious floor-10
 /// constraint and the produced cut would be `theta = 10, gradient = 5` —
 /// observably different from the correct all-cuts cut. Loading the cut-free
-/// base (the fix) ignores this frozen row, so the DCS cut matches all-cuts.
+/// base ignores this frozen row, so the DCS cut matches all-cuts.
 fn dcs_frozen_template_with_one_cut() -> StageTemplate {
     StageTemplate {
         num_cols: 3,
@@ -5741,8 +5741,8 @@ fn dcs_frozen_template_with_one_cut() -> StageTemplate {
     }
 }
 
-/// Regression for the frozen-template-as-core bug: when freeze is active
-/// (`frozen_template.num_rows > template_num_rows`), the DCS path must load
+/// When freeze is active (`frozen_template.num_rows > template_num_rows`), the
+/// DCS path must load
 /// the cut-free base `ctx.templates[s]` — NOT `succ.frozen_template`, which
 /// already carries the active cut rows. Loading the frozen template would
 /// leave its frozen cut rows resident in the LP even though the lazy loop's
@@ -5752,12 +5752,10 @@ fn dcs_frozen_template_with_one_cut() -> StageTemplate {
 /// Here `succ.frozen_template` carries one frozen cut row
 /// (`dcs_frozen_template_with_one_cut`, `num_rows = 2`) that is a spurious
 /// floor-10 / gradient-5 constraint NOT present in the DCS pool, while
-/// `ctx.templates[s]` is the cut-free base (`num_rows = 1`). With the fix
-/// the DCS cut equals the all-cuts cut (gradient 2) within 1e-9. Against the
-/// old `core = succ.frozen_template`, the spurious frozen cut dominates the
-/// solve and DCS returns gradient 5 — observably wrong — failing this
-/// assertion. (Verified: this test fails on the buggy code, passes on the
-/// fix.)
+/// `ctx.templates[s]` is the cut-free base (`num_rows = 1`). The DCS cut must
+/// equal the all-cuts cut (gradient 2) within 1e-9; with
+/// `core = succ.frozen_template` the spurious frozen cut dominates the solve
+/// and DCS returns gradient 5, failing this assertion.
 #[test]
 // Rationale: one end-to-end DCS-vs-frozen scenario whose setup (templates, fcf,
 // SuccessorSpec, contexts) and sequential assertions form a single coherent
@@ -5935,9 +5933,9 @@ fn backward_dcs_frozen_cuts_present_no_duplicate_rows() {
     // The all-cuts reference cut (cut-free base + full pool, no DCS).
     let (allcuts, allcuts_coefficients, _) = run_dcs_backward_trial_state(None, iteration);
 
-    // With the fix (core = cut-free ctx.templates[s]), the binding cut is
-    // added exactly once and the DCS cut matches the all-cuts cut. With the
-    // bug (core = frozen_template), the frozen cut is double-added and the
+    // With core = cut-free ctx.templates[s], the binding cut is added exactly
+    // once and the DCS cut matches the all-cuts cut. With
+    // core = frozen_template, the frozen cut is double-added and the
     // solve/extraction is malformed, so this fails.
     assert!(
         (dcs_cut.intercept - allcuts.intercept).abs() < 1e-9,

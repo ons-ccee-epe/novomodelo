@@ -44,7 +44,7 @@
 //!
 //! `correlation.json` is handled independently: if present, the existing
 //! `system.correlation()` is kept; if absent, the correlation is estimated from
-//! the series `estimation.correlation_target` selects.
+//! the standardized historical inflows.
 //!
 //! ## PACF order selection
 //!
@@ -76,7 +76,7 @@ use novomodelo_stochastic::{
 use crate::LoadError::ConstraintError;
 use crate::{
     Config, FileManifest, InputFile, LoadError, OrderSelectionMethod, ValidationContext,
-    config::{CorrelationTarget, HistoricalYearRange},
+    config::HistoricalYearRange,
     parse_inflow_ar_coefficients, parse_inflow_history,
     scenarios::{
         InflowAnnualComponentRow, InflowArCoefficientRow, InflowHistoryRow, InflowSeasonalStatsRow,
@@ -155,11 +155,8 @@ impl EstimationPath {
 pub enum CorrelationOrigin {
     /// Read from `scenarios/correlation.json`.
     UserFile,
-    /// Estimated from inflow history.
-    Estimated {
-        /// Series it was estimated from.
-        target: CorrelationTarget,
-    },
+    /// Estimated from the standardized inflow history.
+    Estimated,
     /// Neither supplied nor estimated.
     NotApplicable,
 }
@@ -220,12 +217,7 @@ pub fn estimate_from_history(
     } else {
         EstimationPath::Deterministic
     };
-    let correlation_origin = resolve_correlation_origin(
-        &manifest,
-        path,
-        &system,
-        config.estimation.correlation_target,
-    );
+    let correlation_origin = resolve_correlation_origin(&manifest, path, &system);
 
     match path {
         EstimationPath::Deterministic
@@ -276,7 +268,6 @@ fn resolve_correlation_origin(
     manifest: &FileManifest,
     path: EstimationPath,
     system: &System,
-    target: CorrelationTarget,
 ) -> CorrelationOrigin {
     if manifest.present(InputFile::ScenariosCorrelationJson) {
         return CorrelationOrigin::UserFile;
@@ -288,7 +279,7 @@ fn resolve_correlation_origin(
             | EstimationPath::UserArHistoryStats
     );
     if estimating && !system.hydros().is_empty() {
-        CorrelationOrigin::Estimated { target }
+        CorrelationOrigin::Estimated
     } else {
         CorrelationOrigin::NotApplicable
     }
@@ -347,12 +338,10 @@ fn run_estimation(
     } else {
         estimate_correlation_with_season_map(
             &observations,
-            &ar_estimates,
             &seasonal_stats,
             stages,
             &hydro_ids,
             season_map,
-            config.estimation.correlation_target.into(),
         )?
     };
 
@@ -453,12 +442,10 @@ fn run_partial_estimation(
     } else {
         estimate_correlation_with_season_map(
             &observations,
-            &ar_estimates,
             &fitting_stats,
             stages,
             &hydro_ids,
             season_map,
-            config.estimation.correlation_target.into(),
         )?
     };
 
@@ -790,19 +777,15 @@ fn run_user_ar_estimation(
     let ar_path = case_dir.join("scenarios/inflow_ar_coefficients.parquet");
     let user_ar_rows = parse_inflow_ar_coefficients(&ar_path)?;
 
-    let user_ar_estimates = ar_rows_to_estimates(&user_ar_rows, stages);
-
     let correlation = if correlation_origin == CorrelationOrigin::UserFile {
         system.correlation().clone()
     } else {
         estimate_correlation_with_season_map(
             &observations,
-            &user_ar_estimates,
             &seasonal_stats,
             extended,
             &hydro_ids,
             season_map,
-            config.estimation.correlation_target.into(),
         )?
     };
 
@@ -824,67 +807,6 @@ fn run_user_ar_estimation(
 
     let system = system.with_scenario_models(inflow_models, correlation)?;
     Ok((system, estimation_report))
-}
-
-/// Convert [`InflowArCoefficientRow`] entries to [`ArCoefficientEstimate`] values.
-///
-/// This is the inverse of [`ar_estimates_to_rows`]: it groups coefficient rows by
-/// `(hydro_id, season_id)` — using the stage-to-season mapping from `stages` —
-/// and produces one [`ArCoefficientEstimate`] per group.
-///
-/// When multiple stages map to the same season, each stage produces duplicate
-/// rows in the `InflowArCoefficientRow` format (all lags repeated for every stage
-/// in the season). This function deduplicates by processing only the first stage
-/// encountered for each season per hydro. Coefficient order is preserved (lag 1,
-/// lag 2, …). The innovation scale is derived downstream by
-/// [`crate::scenarios::populate_derived_residual_ratios`] on the assembled
-/// `InflowModel`s — it is not part of the estimate.
-///
-/// The result is sorted by `(hydro_id, season_id)` ascending, matching the
-/// canonical ordering expected by `estimate_correlation_with_season_map`.
-fn ar_rows_to_estimates(
-    rows: &[InflowArCoefficientRow],
-    stages: &[Stage],
-) -> Vec<ArCoefficientEstimate> {
-    let stage_id_to_season: HashMap<i32, usize> = stages
-        .iter()
-        .filter_map(|s| s.season_id.map(|sid| (s.id, sid)))
-        .collect();
-
-    // Rows are pre-sorted by (hydro_id, stage_id, lag), so the first stage per
-    // season is canonical; later same-season stages are duplicates emitted by
-    // ar_estimates_to_rows and are skipped.
-    let mut first_stage: HashMap<(EntityId, usize), i32> = HashMap::new();
-
-    // BTreeMap for deterministic (hydro_id, season_id) output ordering.
-    let mut groups: BTreeMap<(EntityId, usize), Vec<f64>> = BTreeMap::new();
-
-    for row in rows {
-        let Some(&season_id) = stage_id_to_season.get(&row.stage_id) else {
-            continue;
-        };
-
-        let key = (row.hydro_id, season_id);
-
-        let canonical_stage = first_stage.entry(key).or_insert(row.stage_id);
-        if *canonical_stage != row.stage_id {
-            continue;
-        }
-
-        groups.entry(key).or_default().push(row.coefficient);
-    }
-
-    groups
-        .into_iter()
-        .map(
-            |((hydro_id, season_id), coefficients)| ArCoefficientEstimate {
-                hydro_id,
-                season_id,
-                coefficients,
-                annual: None,
-            },
-        )
-        .collect()
 }
 
 /// Extract user-provided seasonal stats from `system.inflow_models()` as

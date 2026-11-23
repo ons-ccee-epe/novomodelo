@@ -375,7 +375,7 @@ mod tests {
         }
     }
 
-    // ── AC: multi-segment family sorted ascending by segment_id ────────────────
+    // ── multi-segment family sorted ascending by segment_id ────────────────────
 
     /// Two segments for hydro 1 / family 1 written in segment order `[2, 1]`
     /// come back sorted ascending: `rows[0].segment_id == 1`, `rows[1] == 2`.
@@ -392,7 +392,7 @@ mod tests {
         assert_eq!(rows[0].downstream_reference_level_m, Some(885.3));
     }
 
-    // ── AC: negative quartic coefficient accepted ──────────────────────────────
+    // ── negative quartic coefficient accepted ──────────────────────────────────
 
     /// A negative `coefficient_2` is preserved to bit precision (no sign constraint).
     #[test]
@@ -407,7 +407,7 @@ mod tests {
         assert_eq!(rows[0].coefficient_2.to_bits(), (-3.1521e-17_f64).to_bits());
     }
 
-    // ── AC: NULL downstream_reference_level_m maps to None ───────────────────────────────────────
+    // ── NULL downstream_reference_level_m maps to None ───────────────────────────────────────────
 
     /// A NULL `downstream_reference_level_m` parses to `None` and the row is otherwise accepted.
     #[test]
@@ -420,7 +420,7 @@ mod tests {
         assert_eq!(rows[0].downstream_reference_level_m, None);
     }
 
-    // ── AC: inverted window rejected ───────────────────────────────────────────
+    // ── inverted window rejected ───────────────────────────────────────────────
 
     /// `outflow_max_m3s < outflow_min_m3s` -> SchemaError naming the column and row.
     #[test]
@@ -447,7 +447,7 @@ mod tests {
         }
     }
 
-    // ── AC: declaration-order invariance ───────────────────────────────────────
+    // ── declaration-order invariance ───────────────────────────────────────────
 
     /// Two clouds of identical rows supplied in different record-batch orders
     /// parse to element-for-element equal `Vec`s (integer-key sort is total).

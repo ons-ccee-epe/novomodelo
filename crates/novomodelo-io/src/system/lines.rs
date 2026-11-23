@@ -262,7 +262,7 @@ mod tests {
     use super::*;
     use crate::test_support::{make_global, write_json};
 
-    // ── AC: valid lines with and without entity-level exchange_cost override ──
+    // ── valid lines with and without entity-level exchange_cost override ──────
 
     /// Given a valid `lines.json` with 2 lines (one with entity-level `exchange_cost`
     /// override, one without), `parse_lines` returns `Ok(vec)` with 2 `Line` entries
@@ -330,7 +330,7 @@ mod tests {
         );
     }
 
-    // ── AC: duplicate ID detection ─────────────────────────────────────────────
+    // ── duplicate ID detection ─────────────────────────────────────────────────
 
     /// Given `lines.json` with duplicate `id` values, `parse_lines` returns
     /// `Err(LoadError::SchemaError)` with field containing `"lines[1].id"` and
@@ -367,7 +367,7 @@ mod tests {
         }
     }
 
-    // ── AC: negative capacity → SchemaError ───────────────────────────────────
+    // ── negative capacity → SchemaError ───────────────────────────────────────
 
     /// Negative `direct_mw` → `SchemaError`.
     #[test]
@@ -457,7 +457,7 @@ mod tests {
         }
     }
 
-    // ── AC: declaration-order invariance ──────────────────────────────────────
+    // ── declaration-order invariance ──────────────────────────────────────────
 
     /// Given lines in reverse ID order in JSON, `parse_lines` returns a
     /// `Vec<Line>` sorted by ascending `id`.
@@ -502,7 +502,7 @@ mod tests {
         assert_eq!(lines1[1].id, EntityId(1));
     }
 
-    // ── AC: file not found → IoError ─────────────────────────────────────────
+    // ── file not found → IoError ─────────────────────────────────────────────
 
     /// Given a nonexistent path, `parse_lines` returns `Err(LoadError::IoError)`.
     #[test]
@@ -518,7 +518,7 @@ mod tests {
         }
     }
 
-    // ── AC: invalid JSON → ParseError ─────────────────────────────────────────
+    // ── invalid JSON → ParseError ─────────────────────────────────────────────
 
     /// Given invalid JSON, `parse_lines` returns `Err(LoadError::ParseError)`.
     #[test]

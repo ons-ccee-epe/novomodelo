@@ -3059,7 +3059,7 @@ mod selection_on_determinism {
     //! evidence. It trains on the calling thread, over the ambient rayon pool:
     //! the communicator admits calls only from the thread that initialised it.
 
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::fmt::Debug;
     use std::num::NonZeroU32;
     use std::path::Path;
@@ -3281,16 +3281,22 @@ mod selection_on_determinism {
         (0..pool.populated()).filter(|&slot| pool.role(slot).origin == SlotOrigin::Generated)
     }
 
-    fn stored_state_bits(pool: &CutPool) -> BTreeSet<Vec<u64>> {
-        (0..pool.populated())
-            .filter_map(|slot| pool.trial_state(slot))
-            .map(|state| {
-                state
-                    .iter()
-                    .map(|coordinate| coordinate.to_bits())
-                    .collect()
-            })
-            .collect()
+    fn stored_states_by_iteration(pool: &CutPool) -> BTreeMap<u64, BTreeSet<Vec<u64>>> {
+        let mut by_iteration: BTreeMap<u64, BTreeSet<Vec<u64>>> = BTreeMap::new();
+        for slot in 0..pool.populated() {
+            if let Some(state) = pool.trial_state(slot) {
+                by_iteration
+                    .entry(pool.metadata(slot).iteration_generated)
+                    .or_default()
+                    .insert(
+                        state
+                            .iter()
+                            .map(|coordinate| coordinate.to_bits())
+                            .collect(),
+                    );
+            }
+        }
+        by_iteration
     }
 
     /// The two fan pools of the sampled branching tree, after asserting that
@@ -3311,8 +3317,9 @@ mod selection_on_determinism {
     }
 
     /// [`level1_power`] of a sampled fan run, after asserting that each fan pool
-    /// stores one state per generated cut, that the two pools store different
-    /// states, and that some fan pool holds two different cuts.
+    /// stores one state per generated cut, that at some iteration both pools
+    /// stored states at the two store different ones, and that some fan pool holds
+    /// two different cuts.
     fn fan_power(run: &TrainedRun<'_>) -> Level1Power {
         let pools = fan_pools(run);
         for pool in pools {
@@ -3326,11 +3333,15 @@ mod selection_on_determinism {
                 run.shape
             );
         }
-        assert_ne!(
-            stored_state_bits(pools[0]),
-            stored_state_bits(pools[1]),
-            "{}: the two fan pools store the same trial states, so a state stored in the \
-             sibling's pool would not show",
+        let [first, second] = pools.map(stored_states_by_iteration);
+        assert!(
+            first.iter().any(|(iteration, states)| {
+                second
+                    .get(iteration)
+                    .is_some_and(|sibling| sibling != states)
+            }),
+            "{}: at every iteration both fan pools stored states at, they stored the same \
+             ones, so a state stored in the sibling's pool would not show",
             run.shape
         );
         assert!(

@@ -555,10 +555,10 @@ pub fn build_stage_cuts_payloads<'a>(
 /// order, via `to_discriminant_code`.
 ///
 /// The canonical discriminant space (`0..=6`) is a strict superset of the `HiGHS`
-/// code space this format previously stored, so pre-existing checkpoints (bytes
-/// `0..=4`) decode identically — while a CLP-captured `Superbasic`/`Fixed`, which
-/// `to_highs_code` would fold, now survives reload. Mirrored on load by
-/// `build_basis_cache_from_checkpoint`'s `from_discriminant_code`.
+/// code space (`0..=4`), so a checkpoint holding `HiGHS` codes decodes identically,
+/// and a CLP-captured `Superbasic`/`Fixed`, which `to_highs_code` folds, survives
+/// reload. Mirrored on load by `build_basis_cache_from_checkpoint`'s
+/// `from_discriminant_code`.
 #[must_use]
 pub fn convert_basis_store(bases: &CheckpointBasisStore) -> Vec<Vec<(Vec<u8>, Vec<u8>)>> {
     bases
@@ -1167,10 +1167,10 @@ mod tests {
         );
     }
 
-    /// A transit-bucket lag reaching a declared post-study stage now dates onto
+    /// A transit-bucket lag reaching a declared post-study stage dates onto
     /// that stage's own `[start, end)` interval, exactly as the anticipated
-    /// ring already does; a lag past the extended calendar still stays
-    /// sentinel in every date field. On this single-study-stage fixture lag 1
+    /// ring does; a lag past the extended calendar stays sentinel in every
+    /// date field. On this single-study-stage fixture lag 1
     /// (`t + lag == 1`) resolves to the declared post-study stage while lag 2
     /// (`t + lag == 2`) lands past it.
     #[test]
@@ -2060,7 +2060,7 @@ mod tests {
 
     /// Leads `(1, 3)`, `k_max = 3`, 4 study stages, no post-study calendar:
     /// every anticipated slot's date must match the LP's own latch set
-    /// (carry plus deposit), never the retired per-plant-lead-bounded rule,
+    /// (carry plus deposit), never a per-plant-lead-bounded rule,
     /// under which the ℓ=1 plant's slot 1 (a fresh deposit at stage 0) would
     /// read the sentinel instead of its real date.
     #[test]
@@ -2262,7 +2262,7 @@ mod tests {
     /// terminal stage's own class, the "maturing residue" — recurs at `m=5`,
     /// also past the 1-stage-deep extended calendar: at the terminal stage
     /// the outgoing anchor is itself already one past the horizon, so no
-    /// residue can resolve in-study any more.
+    /// residue can resolve in-study.
     #[test]
     fn ring_slot_targeting_post_study_carries_a_real_anchor() {
         let start = chrono::NaiveDate::from_ymd_opt(2024, 7, 1).unwrap();

@@ -9,7 +9,7 @@
 //! [`novomodelo_io::LoadError`] variants are routed through the single
 //! [`crate::errors::convert_error`] mapping site to the `novomodelo.errors` hierarchy
 //! (each leaf subclasses the matching builtin, so `except OSError` /
-//! `except ValueError` keeps catching):
+//! `except ValueError` catches it):
 //!
 //! | Rust variant                        | Python exception (subclass of) |
 //! |-------------------------------------|--------------------------------|

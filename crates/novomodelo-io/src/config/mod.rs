@@ -33,7 +33,7 @@ pub mod scenario_source;
 pub mod simulation;
 pub mod training;
 
-pub use estimation::{CorrelationTarget, EstimationConfig, OrderSelectionMethod};
+pub use estimation::{EstimationConfig, OrderSelectionMethod};
 pub use exports::ExportsConfig;
 pub use modeling::{InflowNonNegativityConfig, InflowNonNegativityMethod, ModelingConfig};
 pub use policy::{
@@ -41,7 +41,7 @@ pub use policy::{
     PolicyMode,
 };
 pub use scenario_source::{
-    HistoricalYearRange, MomentMatching, Openings, RawClassConfigEntry, RawHistoricalYearsConfig,
+    HistoricalYearRange, Openings, RawClassConfigEntry, RawHistoricalYearsConfig,
     RawSamplingScheme, RawScenarioSourceConfig,
 };
 pub use simulation::{
@@ -468,18 +468,6 @@ impl Config {
             .and_then(|s| s.openings.as_ref())
     }
 
-    /// The effective training moment-matching mode. Single owner of the
-    /// training moment-matching lookup: an absent `openings` block yields the
-    /// default and a `file` tree yields `none`.
-    #[must_use]
-    pub fn training_moment_matching(&self) -> MomentMatching {
-        match self.training_openings() {
-            Some(Openings::Generated { moment_matching }) => *moment_matching,
-            None => MomentMatching::default(),
-            Some(Openings::File {}) => MomentMatching::None,
-        }
-    }
-
     /// Resolve the effective training forward-pass method from
     /// `training.selection`.
     ///
@@ -656,11 +644,10 @@ mod tests {
         assert_eq!(cfg.policy.path, "./policy");
     }
 
-    /// The retired `state_space` section (inflow-lag depth is now always inferred
-    /// from the boundary policy) is a `deny_unknown_fields` reject, not a silent
-    /// ignore — a stale `config.json` fails loudly with the field name.
+    /// A `state_space` section is a `deny_unknown_fields` reject, not a silent
+    /// ignore: the error names the field.
     #[test]
-    fn test_retired_state_space_section_is_rejected() {
+    fn test_state_space_section_is_rejected() {
         let f = write_config(
             r#"{"training": {"selection": {"method": "sampled", "forward_passes": 1}, "stopping_rules": [{"type": "iteration_limit", "limit": 10}]}, "state_space": {"inflow_lag_depth": 12}}"#,
         );
@@ -946,10 +933,10 @@ mod tests {
         );
     }
 
-    /// The retired `simulation` stopping-rule type (replaced by `gap`) is
-    /// rejected as an unknown variant, not a recognized-but-invalid one.
+    /// A `simulation` stopping-rule type is rejected as an unknown variant, not a
+    /// recognized-but-invalid one.
     #[test]
-    fn old_simulation_stopping_rule_type_is_unknown_variant() {
+    fn simulation_stopping_rule_type_is_unknown_variant() {
         let f = write_config(
             r#"{"training": {"selection": {"method": "sampled", "forward_passes": 10}, "stopping_rules": [
                 {"type": "simulation", "replications": 100, "period": 20,
@@ -959,14 +946,13 @@ mod tests {
         let err = parse_config(f.path()).unwrap_err();
         assert!(
             matches!(err, LoadError::SchemaError { .. }),
-            "expected SchemaError for the retired simulation rule type, got: {err:?}"
+            "expected SchemaError for the `simulation` stopping-rule type, got: {err:?}"
         );
     }
 
-    /// `Config` has no `version` field — the struct does not
-    /// expose `.version` and the field is not present after deserialization.
+    /// A config without `"$schema"` deserializes with `schema` set to `None`.
     #[test]
-    fn test_config_has_no_version_field() {
+    fn test_config_schema_is_none_when_absent() {
         let f = write_config(
             r#"{"training": {"selection": {"method": "sampled", "forward_passes": 1}, "stopping_rules": [{"type": "iteration_limit", "limit": 10}]}}"#,
         );
@@ -1010,11 +996,10 @@ mod tests {
         );
     }
 
-    /// JSON that contains the dead `"version"` property must now be rejected
-    /// because `Config` uses `deny_unknown_fields`. Old case dirs that still
-    /// contain this key will fail to parse — which is the desired behaviour.
+    /// JSON that contains a `"version"` property is rejected: `Config` uses
+    /// `deny_unknown_fields`.
     #[test]
-    fn test_legacy_version_field_rejected() {
+    fn test_version_field_rejected() {
         let f = write_config(
             r#"{
             "version": "1.0.0",
@@ -1034,9 +1019,9 @@ mod tests {
         );
     }
 
-    /// A config that still sets the removed `policy.validate_compatibility` flag
-    /// is rejected: `PolicyConfig` uses `deny_unknown_fields`, so the stale key
-    /// fails deserialization with an error naming the field.
+    /// A config that sets `policy.validate_compatibility` is rejected:
+    /// `PolicyConfig` uses `deny_unknown_fields`, so the key fails
+    /// deserialization with an error naming the field.
     #[test]
     fn test_stale_validate_compatibility_field_rejected() {
         let f = write_config(
@@ -1124,7 +1109,7 @@ mod tests {
         assert_eq!(cfg.estimation.min_observations_per_season, 30);
     }
 
-    /// `"order_selection": "fixed"` is now a hard parse error.
+    /// `"order_selection": "fixed"` is a hard parse error.
     #[test]
     fn test_estimation_config_order_selection_fixed_rejected() {
         let f = write_config(
@@ -1136,7 +1121,7 @@ mod tests {
         let result = parse_config(f.path());
         assert!(
             result.is_err(),
-            "\"fixed\" order_selection must now be a parse error"
+            "\"fixed\" order_selection must be a parse error"
         );
     }
 
@@ -1189,47 +1174,17 @@ mod tests {
     }
 
     #[test]
-    fn correlation_target_defaults_to_inflows() {
-        for estimation in [None, Some(r#"{"max_order": 3}"#)] {
-            let cfg = parse_minimal_with_estimation(estimation).unwrap();
-            assert_eq!(
-                cfg.estimation.correlation_target,
-                CorrelationTarget::Inflows,
-                "estimation: {estimation:?}"
-            );
-        }
-        assert_eq!(
-            EstimationConfig::default().correlation_target,
-            CorrelationTarget::Inflows
-        );
-    }
-
-    #[test]
-    fn correlation_target_accepts_each_value() {
-        for (spelling, expected) in [
-            ("residuals", CorrelationTarget::Residuals),
-            ("inflows", CorrelationTarget::Inflows),
-        ] {
-            let cfg = parse_minimal_with_estimation(Some(&format!(
-                r#"{{"correlation_target": "{spelling}"}}"#
-            )))
-            .unwrap();
-            assert_eq!(cfg.estimation.correlation_target, expected);
-        }
-    }
-
-    #[test]
-    fn correlation_target_rejects_an_unknown_value_naming_the_variants() {
-        let err =
-            parse_minimal_with_estimation(Some(r#"{"correlation_target": "flows"}"#)).unwrap_err();
+    fn estimation_refuses_the_correlation_target_key() {
+        let err = parse_minimal_with_estimation(Some(r#"{"correlation_target": "inflows"}"#))
+            .unwrap_err();
         match &err {
-            LoadError::SchemaError { message, .. } => {
+            LoadError::ParseError { message, .. } => {
                 assert!(
-                    message.contains("residuals") && message.contains("inflows"),
-                    "message should name both variants, got: {message}"
+                    message.contains("unknown field") && message.contains("correlation_target"),
+                    "unexpected message: {message}"
                 );
             }
-            other => panic!("expected SchemaError, got: {other:?}"),
+            other => panic!("expected ParseError, got: {other:?}"),
         }
     }
 
@@ -1257,34 +1212,6 @@ mod tests {
             }
             other => panic!("expected SchemaError, got: {other:?}"),
         }
-    }
-
-    #[test]
-    fn correlation_target_as_str_matches_its_serde_spelling() {
-        let variants = std::iter::successors(Some(CorrelationTarget::Residuals), |v| match v {
-            CorrelationTarget::Residuals => Some(CorrelationTarget::Inflows),
-            CorrelationTarget::Inflows => None,
-        });
-        for v in variants {
-            assert_eq!(
-                serde_json::to_value(v).unwrap(),
-                serde_json::Value::String(v.as_str().to_string())
-            );
-        }
-    }
-
-    #[test]
-    fn correlation_target_converts_to_the_same_library_target() {
-        use novomodelo_stochastic::par::fitting;
-
-        assert_eq!(
-            fitting::CorrelationTarget::from(CorrelationTarget::Residuals),
-            fitting::CorrelationTarget::Residuals
-        );
-        assert_eq!(
-            fitting::CorrelationTarget::from(CorrelationTarget::Inflows),
-            fitting::CorrelationTarget::Inflows
-        );
     }
 
     /// `exports.stochastic: true` deserializes correctly.
@@ -1569,7 +1496,7 @@ mod tests {
     }
 
     #[test]
-    fn historical_inflow_with_out_of_sample_load_still_requires_the_seed() {
+    fn historical_inflow_with_out_of_sample_load_requires_the_seed() {
         let f = write_with_training_scenario_source(
             r#"{"inflow": {"scheme": "historical"}, "load": {"scheme": "out_of_sample"}}"#,
         );
@@ -1587,7 +1514,7 @@ mod tests {
     }
 
     #[test]
-    fn external_scheme_still_requires_the_seed() {
+    fn external_scheme_requires_the_seed() {
         let f = write_with_training_scenario_source(r#"{"inflow": {"scheme": "external"}}"#);
         let err = parse_config(f.path()).unwrap_err();
         match &err {
@@ -1670,8 +1597,8 @@ mod tests {
         assert_eq!(source, ScenarioSource::default());
     }
 
-    /// The dropped `external` openings source is now an unknown-variant parse
-    /// error — the arm no longer exists (`generated` and `file` remain).
+    /// An `external` openings source is an unknown-variant parse error: the
+    /// sources are `generated` and `file`.
     #[test]
     fn openings_external_is_unknown_variant_parse_error() {
         let f = write_with_training_scenario_source(r#"{"openings": {"source": "external"}}"#);
@@ -1696,11 +1623,10 @@ mod tests {
         cfg.training_scenario_source(f.path())
             .expect("file openings source must load under training");
         assert_eq!(cfg.training_openings(), Some(&Openings::File {}));
-        assert_eq!(cfg.training_moment_matching(), MomentMatching::None);
     }
 
-    /// The dropped `path` field on the `file` openings source is now an
-    /// unknown-field parse error — the arm is convention-located, no user path.
+    /// A `path` field on the `file` openings source is an unknown-field parse
+    /// error: the file is convention-located, with no user path.
     #[test]
     fn openings_file_path_field_rejected() {
         let f = write_with_training_scenario_source(
@@ -1746,86 +1672,34 @@ mod tests {
     }
 
     #[test]
-    fn moment_matching_defaults_to_per_coordinate_when_openings_is_absent() {
-        let f = write_with_training_scenario_source("{}");
-        let cfg = parse_config(f.path()).unwrap();
-        assert_eq!(cfg.training_openings(), None);
-        assert_eq!(
-            cfg.training_moment_matching(),
-            MomentMatching::PerCoordinate
-        );
-    }
-
-    #[test]
-    fn moment_matching_defaults_to_per_coordinate_for_a_bare_generated_block() {
+    fn openings_generated_variant_round_trips() {
         let f = write_with_training_scenario_source(r#"{"openings": {"source": "generated"}}"#);
         let cfg = parse_config(f.path()).unwrap();
-        assert_eq!(
-            cfg.training_openings(),
-            Some(&Openings::Generated {
-                moment_matching: MomentMatching::PerCoordinate
-            })
-        );
-        assert_eq!(
-            cfg.training_moment_matching(),
-            MomentMatching::PerCoordinate
-        );
+        assert_eq!(cfg.training_openings(), Some(&Openings::Generated {}));
     }
 
     #[test]
-    fn moment_matching_accepts_each_value() {
-        for (spelling, expected) in [
-            ("none", MomentMatching::None),
-            ("per_coordinate", MomentMatching::PerCoordinate),
-        ] {
+    fn openings_refuses_the_moment_matching_key_under_either_source() {
+        for source in ["generated", "file"] {
             let f = write_with_training_scenario_source(&format!(
-                r#"{{"openings": {{"source": "generated", "moment_matching": "{spelling}"}}}}"#
+                r#"{{"openings": {{"source": "{source}", "moment_matching": "per_coordinate"}}}}"#
             ));
-            let cfg = parse_config(f.path()).unwrap();
-            cfg.training_scenario_source(f.path()).unwrap();
-            assert_eq!(cfg.training_moment_matching(), expected);
-        }
-    }
-
-    #[test]
-    fn moment_matching_rejects_an_unknown_value() {
-        let f = write_with_training_scenario_source(
-            r#"{"openings": {"source": "generated", "moment_matching": "per_stage"}}"#,
-        );
-        let err = parse_config(f.path()).unwrap_err();
-        match &err {
-            LoadError::SchemaError { message, .. } => {
-                assert!(
-                    message.contains("unknown variant") && message.contains("per_stage"),
-                    "unexpected message: {message}"
-                );
+            let err = parse_config(f.path()).unwrap_err();
+            match &err {
+                LoadError::ParseError { message, .. } => {
+                    assert!(
+                        message.contains("unknown field") && message.contains("moment_matching"),
+                        "{source}: unexpected message: {message}"
+                    );
+                }
+                other => panic!("{source}: expected ParseError, got: {other:?}"),
             }
-            other => panic!("expected SchemaError, got: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn moment_matching_under_a_file_tree_is_rejected() {
-        let f = write_with_training_scenario_source(
-            r#"{"openings": {"source": "file", "moment_matching": "per_coordinate"}}"#,
-        );
-        let err = parse_config(f.path()).unwrap_err();
-        match &err {
-            LoadError::ParseError { message, .. } => {
-                assert!(
-                    message.contains("unknown field") && message.contains("moment_matching"),
-                    "unexpected message: {message}"
-                );
-            }
-            other => panic!("expected ParseError, got: {other:?}"),
         }
     }
 
     #[test]
     fn openings_without_source_is_rejected_naming_the_tag() {
-        let f = write_with_training_scenario_source(
-            r#"{"openings": {"moment_matching": "per_coordinate"}}"#,
-        );
+        let f = write_with_training_scenario_source(r#"{"openings": {}}"#);
         let err = parse_config(f.path()).unwrap_err();
         match &err {
             LoadError::SchemaError { message, .. } => {
@@ -1838,39 +1712,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn moment_matching_as_str_matches_its_serde_spelling() {
-        let variants = std::iter::successors(Some(MomentMatching::None), |v| match v {
-            MomentMatching::None => Some(MomentMatching::PerCoordinate),
-            MomentMatching::PerCoordinate => None,
-        });
-        for v in variants {
-            assert_eq!(
-                serde_json::to_value(v).unwrap(),
-                serde_json::Value::String(v.as_str().to_string())
-            );
-        }
-    }
-
-    #[test]
-    fn moment_matching_converts_both_ways_to_the_library_value() {
-        use novomodelo_stochastic::tree;
-
-        for (io, library) in [
-            (MomentMatching::None, tree::MomentMatching::None),
-            (
-                MomentMatching::PerCoordinate,
-                tree::MomentMatching::PerCoordinate,
-            ),
-        ] {
-            assert_eq!(tree::MomentMatching::from(io), library);
-            assert_eq!(MomentMatching::from(library), io);
-        }
-    }
-
-    /// `simulation.sampling_scheme` (dead field) is now rejected because
-    /// `SimulationConfig` uses `deny_unknown_fields`. Old case dirs must remove
-    /// this key before loading.
+    /// `simulation.sampling_scheme` is rejected: `SimulationConfig` uses
+    /// `deny_unknown_fields`.
     #[test]
     fn test_dead_sampling_scheme_field_rejected() {
         let f = write_config(
@@ -1959,12 +1802,12 @@ mod tests {
         assert_eq!(boundary.path, "../monthly/policy");
     }
 
-    /// A deck carrying the removed `source_stage` key under `policy.boundary`
-    /// fails to parse under `deny_unknown_fields`, naming the key; an unrelated
-    /// unknown key under `boundary` is rejected the same way.
+    /// A deck carrying a `source_stage` key under `policy.boundary` fails to
+    /// parse under `deny_unknown_fields`, naming the key; an unrelated unknown
+    /// key under `boundary` is rejected the same way.
     #[test]
-    fn test_boundary_policy_rejects_removed_source_stage_key() {
-        let removed_key_json = r#"{
+    fn test_boundary_policy_rejects_a_source_stage_key() {
+        let source_stage_json = r#"{
             "training": {
                 "selection": {"method": "sampled", "forward_passes": 10},
                 "stopping_rules": [{"type": "iteration_limit", "limit": 5}]
@@ -1974,11 +1817,11 @@ mod tests {
                 "boundary": { "path": "../monthly/policy", "source_stage": 3 }
             }
         }"#;
-        let err = serde_json::from_str::<Config>(removed_key_json)
-            .expect_err("source_stage was removed from BoundaryPolicy and must be rejected");
+        let err = serde_json::from_str::<Config>(source_stage_json)
+            .expect_err("a source_stage key under policy.boundary must be rejected");
         assert!(
             err.to_string().contains("source_stage"),
-            "rejection must name the removed key: {err}"
+            "rejection must name the source_stage key: {err}"
         );
 
         let unknown_key_json = r#"{
@@ -1993,7 +1836,7 @@ mod tests {
         }"#;
         assert!(
             serde_json::from_str::<Config>(unknown_key_json).is_err(),
-            "an unknown key under policy.boundary must still be rejected"
+            "an unknown key under policy.boundary must be rejected"
         );
     }
 
@@ -2111,12 +1954,11 @@ mod tests {
         assert!(boundary.strict);
     }
 
-    /// Stale `exports` keys (`training`, `cuts`, `vertices`, `simulation`,
-    /// `forward_detail`, `backward_detail`, `compression`) are now rejected
-    /// because `ExportsConfig` uses `deny_unknown_fields`. Old case dirs that
-    /// still contain these keys must remove them before loading.
+    /// The `exports` keys `training`, `cuts`, `vertices`, `simulation`,
+    /// `forward_detail`, `backward_detail` and `compression` are rejected:
+    /// `ExportsConfig` uses `deny_unknown_fields`.
     #[test]
-    fn parse_config_rejects_removed_exports_fields() {
+    fn parse_config_rejects_unknown_exports_fields() {
         let json = r#"{
             "training": { "selection": {"method": "sampled", "forward_passes": 4}, "stopping_rules": [] },
             "exports": {
@@ -2132,7 +1974,7 @@ mod tests {
         let result = serde_json::from_str::<Config>(json);
         assert!(
             result.is_err(),
-            "expected parse error for stale exports fields, got Ok"
+            "expected parse error for unknown exports fields, got Ok"
         );
     }
 
@@ -2177,7 +2019,7 @@ mod tests {
         );
     }
 
-    /// `"fixed"` is no longer a valid value and must hard-error on parse.
+    /// `"fixed"` is not a valid value and must hard-error on parse.
     #[test]
     fn order_selection_fixed_rejected() {
         let result: Result<OrderSelectionMethod, _> = serde_json::from_str("\"fixed\"");
@@ -2454,8 +2296,8 @@ mod tests {
         );
     }
 
-    /// The removed key is named under `level1` only; under `dynamic`, which
-    /// never took it, it stays an unknown field.
+    /// The removed key is named under `level1` only; under `dynamic` it stays
+    /// an unknown field.
     #[test]
     fn parse_config_rejects_the_removed_tie_tolerance_key() {
         let mut config = base_value(OVERRIDE_BASE_CONFIG);
@@ -3222,12 +3064,12 @@ mod tests {
         );
     }
 
-    /// A config setting the removed root `training.forward_passes` alias fails
-    /// to load under `deny_unknown_fields`, the error naming the unknown field;
-    /// a flat `simulation.num_scenarios` alias likewise. The count lives solely
-    /// in the `selection.sampled` arm.
+    /// A config setting a root `training.forward_passes` key fails to load under
+    /// `deny_unknown_fields`, the error naming the unknown field; a flat
+    /// `simulation.num_scenarios` key likewise. The count lives solely in the
+    /// `selection.sampled` arm.
     #[test]
-    fn removed_selection_aliases_fail_to_load() {
+    fn root_forward_passes_and_flat_num_scenarios_fail_to_load() {
         let root_fp = write_config(
             r#"{"training": {"forward_passes": 8, "stopping_rules": [{"type": "iteration_limit", "limit": 5}]}}"#,
         );

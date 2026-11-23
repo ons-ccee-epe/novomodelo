@@ -1020,8 +1020,8 @@ fn block_storage_col_resolves_all_boundaries() {
 /// `StageLayout::block_storage_col` and `StageGeometry::block_storage_col` both
 /// resolve their endpoint arms to the exact same columns `StateSpace`'s own
 /// `storage_incoming_col`/`storage_outgoing_col` accessors return, for every
-/// hydro — the migration-proof pin for routing `StorageBoundaryGrid`'s endpoint
-/// arms through those accessors instead of its own copied state bases.
+/// hydro, so `StorageBoundaryGrid`'s endpoint arms route through those
+/// accessors, never through copied state bases.
 #[test]
 fn storage_boundary_endpoints_match_state_space_accessors() {
     let mut fixtures = TwoHydroFixtures::new();
@@ -2205,7 +2205,7 @@ fn anticipated_decision_columns_placed_between_thermal_and_line_fwd() {
 ///
 /// `n_ant_state = n_anticipated * k_max = 2 * 3 = 6` and the in-LP ring's TWO
 /// `n_ant_state`-wide blocks (`commit_out` outgoing +
-/// `commit_in` incoming) together shift `theta` from the legacy
+/// `commit_in` incoming) together shift `theta` from the anticipation-free
 /// `N*(3+L) = 0` to `0 + 2*6 = 12`, so decisions begin at 13.
 ///
 /// The general formula (any N, L, B) is
@@ -2413,8 +2413,8 @@ fn build_anticipated_slot_row_pos_study_only_byte_identity() {
 /// 2`, depth `2` reaches delivery target `m = 5` — a POST-STUDY stage
 /// (`m >= n_decision`). `decider[5] = Some(1)`: not a fresh deposit at stage
 /// 2 (`Some(1) != Some(2)`) and ready (`1 <= 2`), so slot `5 % 4 = 1` must be
-/// `Some` — an interior carry — rather than masked by the retired
-/// `m >= n_stages` bound.
+/// `Some` — an interior carry — rather than masked by an
+/// `m >= n_stages` study-horizon bound.
 #[test]
 fn build_anticipated_slot_row_pos_extended_axis_carries_post_study_target_m5() {
     let k_max = 4;
@@ -2659,8 +2659,8 @@ fn anticipated_slot_row_pos_masks_per_plant_at_the_extended_axis_bound() {
 /// Leads `(1, 3)`, `k_max = 3`, 4 study stages, no post-study calendar. At
 /// every stage the mask's commitment-hold tail must equal the union, over
 /// every stage, of the LP's own carry map ([`build_anticipated_slot_row_pos`])
-/// plus its deposit map ([`build_anticipated_decision_row_pos`]) — never the
-/// retired per-plant-lead-bounded rule, under which the lead-1 plant's slot 1
+/// plus its deposit map ([`build_anticipated_decision_row_pos`]) — never a
+/// per-plant-lead-bounded rule, under which the lead-1 plant's slot 1
 /// at stage 0 would be excluded even though the LP latches it (a fresh
 /// deposit).
 #[test]
@@ -2895,7 +2895,7 @@ fn test_layout_state_out_def_rows_zero_when_all_inactive() {
 
 /// Zero-anticipated layouts emit no `anticipated_state_out_def` rows.
 #[test]
-fn test_layout_no_anticipated_unchanged_num_cols() {
+fn test_layout_no_anticipated_emits_no_state_out_def_rows() {
     let mut fixtures = ZeroEntityFixtures::new();
     let ctx = fixtures.make_ctx(vec![], &[]);
     let stage = minimal_stage();
@@ -3021,7 +3021,7 @@ impl PumpingFixtures {
 ///
 /// Pinning `n_pumping == 0`, `col_pumping_start == col_ncs_start`, and the
 /// exact `num_cols`/equipment starts proves that reserving the pumping region
-/// does not move any pre-existing column when there are no stations.
+/// does not move any other column when there are no stations.
 #[test]
 fn pumping_layout_inert_when_no_stations() {
     let mut fixtures = ZeroEntityFixtures::new();
@@ -3047,7 +3047,7 @@ fn pumping_layout_inert_when_no_stations() {
         "col_pumping_start must equal col_ncs_start (col_ncs_end) when no stations"
     );
 
-    // Pre-existing column starts for the zero-entity, single-block layout:
+    // Column starts for the zero-entity, single-block layout:
     // theta == 0, every equipment/slack/NCS region empty starting at theta+1.
     let idx = state_layout(ctx.hydros.len(), ctx.state.max_par_order);
     let expected_start = idx.theta + 1;
@@ -4076,11 +4076,10 @@ fn transit_bucket_addressing_matches_state_space_bucket_accessors() {
 
 /// Compares every index of the builder's eight hand-built row families on
 /// `layout` against a frozen reference formula (job 3,
-/// `docs/design/lp-builder-contract.md`): the left side below is written
-/// once and never changes across this migration's commits; the right side
-/// tracks each site's own production expression, so this test pins the new
-/// accessor or primitive against the old derivation as production moves onto
-/// it. Returns how many addresses each family compared, in family order
+/// `docs/design/lp-builder-contract.md`): the left side below is the frozen
+/// reference, the right side each site's own production expression, so any
+/// change to a production row address fails here. Returns how many addresses
+/// each family compared, in family order
 /// (fishing, state-out-def, slot definition, transit definition, filling
 /// target, floor, evaporation, generic); a family empty on this particular
 /// `layout` compares zero.

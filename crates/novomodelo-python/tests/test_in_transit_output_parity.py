@@ -78,7 +78,7 @@ def _assert_in_transit_table_shape(parquet_path: pathlib.Path) -> None:
         f"got {sorted(schema_names)}"
     )
 
-    # Read the single file directly: scenario_id is now both the Hive partition
+    # Read the single file directly: scenario_id is both the Hive partition
     # key and an in-file column, so pq.read_table's dataset path would try to
     # merge the two same-named fields and error. ParquetFile reads only the file.
     table = pq.ParquetFile(parquet_path).read(columns=sorted(IN_TRANSIT_SCHEMA_FIELDS))

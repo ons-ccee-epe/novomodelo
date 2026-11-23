@@ -1254,10 +1254,8 @@ mod tests {
         );
     }
 
-    /// Deliberate behavior change: a generic-constraint bounds row's `block_id`
-    /// range used to be checked in Layer 3 (`referential.rs`) as
-    /// `ErrorKind::InvalidValue`; owning it through Layer 5a's shared
-    /// `check_row` now reports `BusinessRuleViolation`, exactly like the other
+    /// A generic-constraint bounds row's `block_id` range is checked by Layer 5a's
+    /// shared `check_row` and reports `BusinessRuleViolation`, exactly like the other
     /// six families ([`test_negative_block_id_and_out_of_horizon_stage_both_rejected`]).
     #[test]
     fn test_generic_constraint_bounds_block_id_range_is_business_rule_violation() {
@@ -1590,13 +1588,12 @@ mod tests {
         );
     }
 
-    /// Deliberate behavior change: `check_generic_constraint_bounds_validity`
-    /// (Layer 3) used to key duplicates per ROW `(constraint_id, stage_id,
-    /// block_id)`, rejecting this pair; owning the family through Layer 5a's
-    /// per-COLUMN key — the same rule the other six families already have —
-    /// now accepts it, exactly like [`test_disjoint_columns_on_same_entity_stage_block_accepted`].
+    /// Generic-constraint bounds duplicates are keyed per COLUMN by Layer 5a, the
+    /// same rule as the other six families, so two rows sharing `(constraint_id,
+    /// stage_id, block_id)` that set disjoint columns are accepted, exactly like
+    /// [`test_disjoint_columns_on_same_entity_stage_block_accepted`].
     #[test]
-    fn test_generic_constraint_bounds_disjoint_column_duplicate_now_accepted() {
+    fn test_generic_constraint_bounds_disjoint_column_duplicate_accepted() {
         let mut data = make_data(
             vec![],
             vec![],
@@ -1750,9 +1747,8 @@ mod tests {
     }
 
     /// Two rows for the same `(hydro_id, stage_id, block_id)` both setting
-    /// `min_spillage_m3s` collide — pins that the widened duplicate-row column
-    /// list registers the new spillage/diversion axes, not just the
-    /// pre-existing seven.
+    /// `min_spillage_m3s` collide — pins that the duplicate-row column list
+    /// covers the spillage and diversion columns.
     #[test]
     fn test_duplicate_min_spillage_m3s_rejected() {
         let mut data = make_data(
@@ -1824,7 +1820,7 @@ mod tests {
         assert!(msg.contains("unit group 3"), "message: {msg}");
     }
 
-    /// Pins the whole point of the widened duplicate key: two DIFFERENT
+    /// The group duplicate key carries the group id: two DIFFERENT
     /// groups of one plant overriding the same column at the same
     /// `(stage_id, block_id)` is the file's designed usage, not a collision.
     #[test]

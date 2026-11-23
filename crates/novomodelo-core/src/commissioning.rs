@@ -193,8 +193,8 @@ mod tests {
     /// `filling.is_none()` with `entry/exit = None` ⇒ `Operating` at every stage —
     /// the parity-neutrality contract: an un-commissioned-window hydro is
     /// bit-identical to a normal operating hydro. The forbidden alternative — letting
-    /// the new dormant branch push a window-free hydro into `PreFilling` — would
-    /// change every existing D-case's physics.
+    /// the dormant branch push a window-free hydro into `PreFilling` — would
+    /// change every D-case's physics.
     #[test]
     fn none_filling_none_window_is_operating_at_every_stage() {
         for stage_id in [-1, 0, 1, 4, 100] {

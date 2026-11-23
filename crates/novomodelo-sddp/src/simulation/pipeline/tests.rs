@@ -825,7 +825,7 @@ fn simulation_load_patches_applied() {
 /// With one hydro coupled to one row, `fill_inflow_shift_patches` fills exactly
 /// one patch.
 #[test]
-fn simulation_no_load_buses_unchanged() {
+fn simulation_no_load_buses_patches_only_inflow_rows() {
     let n_stages = 1;
     let templates = vec![test_support::hydro_only_bus_template()];
 

@@ -309,7 +309,7 @@ mod tests {
         assert_eq!(summary.mean_cost, expected);
         assert!(
             (summary.mean_cost - 150.0).abs() < 1e-9,
-            "mean_cost {} not within 1e-9 of the old sum/n value 150.0",
+            "mean_cost {} not within 1e-9 of the sum/n value 150.0",
             summary.mean_cost
         );
         assert_eq!(summary.n_scenarios, 3);
@@ -426,36 +426,6 @@ mod tests {
         assert_eq!(mean_cost, 999.0);
         assert_eq!(std_cost, 0.0);
         assert_eq!(n_scenarios, 1);
-    }
-
-    // A grep-asserted inspection test: `compute_cvar`, `CVAR_ALPHA`,
-    // `compute_local_min_max`, `pack_category_costs`, `compute_category_stats`,
-    // `N_CATEGORIES`, and `CATEGORY_NAMES` are not just unreferenced but ABSENT
-    // from the crate source — the actual `cvar`/`cvar_alpha` field removal is
-    // pinned by the struct-shape test above, which would fail to compile if
-    // either field returned.
-    #[test]
-    fn removed_cvar_and_category_symbols_are_absent_from_source() {
-        // Declaration-form needles (`fn X(`/`const X`), assembled at runtime
-        // via `format!` so this test's own needle text never appears
-        // contiguously in the source it inspects — `include_str!` brings in
-        // the whole file verbatim, including this test.
-        let source = include_str!("aggregation.rs");
-        let needles = [
-            format!("fn compute_{}(", "cvar"),
-            format!("const CVAR_{}", "ALPHA"),
-            format!("fn compute_local_{}(", "min_max"),
-            format!("fn pack_{}(", "category_costs"),
-            format!("fn compute_{}(", "category_stats"),
-            format!("const N_{}", "CATEGORIES"),
-            format!("const {}_NAMES", "CATEGORY"),
-        ];
-        for needle in &needles {
-            assert!(
-                !source.contains(needle.as_str()),
-                "removed declaration {needle} must not reappear in aggregation.rs"
-            );
-        }
     }
 
     // ── Unit-level repeat check; the rank/thread-shape gate lives in

@@ -718,8 +718,8 @@ fn resolve_computed(
             ComputedParameter::ReferenceVolume { .. } => {
                 // Intentionally NO parquet `v_ref` override tier — unlike the
                 // sibling `ReferenceTurbine` below, which consults the `q_ref`
-                // override. Re-adding one "for symmetry" resurrects a retired
-                // second source of truth that silently shadows the JSON value.
+                // override. Adding one "for symmetry" creates a second source of
+                // truth that silently shadows the JSON value.
                 energy_conversion
                     .conversion(hydro_idx, t)
                     .reference_volume_hm3
@@ -947,7 +947,7 @@ mod tests {
     }
 
     // -------------------------------------------------------------------------
-    // AC-1: Constant kind fills all stages
+    // Constant kind fills all stages
     // -------------------------------------------------------------------------
 
     #[test]
@@ -977,7 +977,7 @@ mod tests {
     }
 
     // -------------------------------------------------------------------------
-    // AC-2: PerStage length mismatch errors
+    // PerStage length mismatch errors
     // -------------------------------------------------------------------------
 
     #[test]
@@ -1015,7 +1015,7 @@ mod tests {
     }
 
     // -------------------------------------------------------------------------
-    // AC-3: Seasonal kind maps stage to value
+    // Seasonal kind maps stage to value
     // -------------------------------------------------------------------------
 
     #[test]
@@ -1049,7 +1049,7 @@ mod tests {
     }
 
     // -------------------------------------------------------------------------
-    // AC-4: Computed EquivalentProductivity reads EnergyConversionSet
+    // Computed EquivalentProductivity reads EnergyConversionSet
     // -------------------------------------------------------------------------
 
     #[test]
@@ -1358,7 +1358,7 @@ mod tests {
     }
 
     // -------------------------------------------------------------------------
-    // AC-5: SpecificProductivity missing returns error
+    // SpecificProductivity missing returns error
     // -------------------------------------------------------------------------
 
     #[test]
@@ -1490,7 +1490,7 @@ mod tests {
     }
 
     // -------------------------------------------------------------------------
-    // AC-6: Declaration-order invariance
+    // Declaration-order invariance
     // -------------------------------------------------------------------------
 
     #[test]

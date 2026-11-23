@@ -6,11 +6,9 @@
 # justifying comment. The gate evaluates only NEW/CHANGED suppressions, diffed
 # against the merge base.
 #
-# This file used to grandfather the pre-existing un-rationaled backlog so the
-# gate could land green. That backlog has been burned down: every production
-# suppression now carries a `// Rationale:` comment explaining why its
-# length/complexity/dead item is load-bearing. The git-diff gate is therefore
-# the sole guard, with no allowlist escape hatch.
+# Every production suppression carries a `// Rationale:` comment explaining why
+# its length/complexity/dead item is load-bearing, so the git-diff gate is the
+# sole guard, with no allowlist escape hatch.
 #
 # KEEP THIS FILE EMPTY. Add a key only as a deliberate, temporary exception —
 # a legacy site that genuinely cannot be rationaled in the same change — and

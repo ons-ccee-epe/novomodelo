@@ -405,10 +405,10 @@ mod tests {
         );
     }
 
-    /// Regression: with `n_anticipated == 0`, the patch buffer must size
-    /// identically to the pre-anticipated layout.
+    /// With `n_anticipated == 0`, the patch buffer holds the per-hydro rows
+    /// alone: no anticipated entries.
     #[test]
-    fn iteration_scratch_new_patch_buffer_zero_anticipated_unchanged() {
+    fn iteration_scratch_new_patch_buffer_zero_anticipated_holds_only_hydro_rows() {
         let max_local_fwd = 1;
         let num_stages = 2;
         let lb_root_pool_capacity = 4;
@@ -436,12 +436,12 @@ mod tests {
             &stage_ctx,
         );
 
-        // With A=0 and K=0, row capacity is still M*B + shifted rows = 0 + N.
+        // With A=0 and K=0, row capacity is M*B + shifted rows = 0 + N.
         let expected_capacity = hydro_count;
         assert_eq!(
             scratch.patch_buf.indices.len(),
             expected_capacity,
-            "zero-anticipated patch_buf must match the pre-anticipated layout",
+            "zero-anticipated patch_buf must hold the per-hydro rows alone",
         );
     }
 

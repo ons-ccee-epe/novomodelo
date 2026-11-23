@@ -1061,7 +1061,7 @@ mod tests {
         .expect("valid batch")
     }
 
-    /// AC: 3 rows for 2 thermals across 2 stages, valid happy path, correct sort order.
+    /// 3 rows for 2 thermals across 2 stages, valid happy path, correct sort order.
     #[test]
     fn test_thermal_valid_3_rows_sorted() {
         // Scrambled: (3,0), (1,1), (1,0) — result must be sorted (1,0),(1,1),(3,0).
@@ -1087,7 +1087,7 @@ mod tests {
         assert!((rows[2].max_generation_mw.unwrap() - 100.0).abs() < f64::EPSILON);
     }
 
-    /// AC: missing `stage_id` column -> SchemaError with field "stage_id".
+    /// Missing `stage_id` column -> SchemaError with field "stage_id".
     #[test]
     fn test_thermal_missing_stage_id() {
         let schema = Arc::new(Schema::new(vec![
@@ -1116,7 +1116,7 @@ mod tests {
         }
     }
 
-    /// AC: NaN in `max_generation_mw` -> SchemaError mentioning "max_generation_mw" and "finite".
+    /// NaN in `max_generation_mw` -> SchemaError mentioning "max_generation_mw" and "finite".
     #[test]
     fn test_thermal_nan_max_generation() {
         let batch = make_thermal_batch(&[1], &[0], vec![Some(10.0)], vec![Some(f64::NAN)]);
@@ -1138,7 +1138,7 @@ mod tests {
         }
     }
 
-    /// AC: empty file (0 rows) -> Ok(Vec::new()).
+    /// Empty file (0 rows) -> Ok(Vec::new()).
     #[test]
     fn test_thermal_empty_parquet() {
         let batch = make_thermal_batch(&[], &[], vec![], vec![]);
@@ -1147,7 +1147,7 @@ mod tests {
         assert!(rows.is_empty());
     }
 
-    /// AC: scrambled input order -> output sorted by (thermal_id, stage_id, block_id).
+    /// Scrambled input order -> output sorted by (thermal_id, stage_id, block_id).
     #[test]
     fn test_thermal_declaration_order_invariance() {
         // (thermal_id, stage_id, block_id, min_generation_mw, cost_per_mwh)
@@ -1209,7 +1209,7 @@ mod tests {
         assert_eq!(parse(&ascending), parse(&scrambled));
     }
 
-    /// AC: load_thermal_bounds(None) returns Ok(Vec::new()).
+    /// load_thermal_bounds(None) returns Ok(Vec::new()).
     #[test]
     fn test_load_thermal_bounds_none() {
         let rows = super::super::load_thermal_bounds(None).unwrap();
@@ -1408,7 +1408,7 @@ mod tests {
         ]))
     }
 
-    /// AC: valid file with all 14 optional columns, some null and some filled.
+    /// Valid file with all 14 optional columns, some null and some filled.
     #[test]
     fn test_hydro_all_14_columns_mixed_null() {
         let batch = RecordBatch::try_new(
@@ -1456,7 +1456,7 @@ mod tests {
         assert!(r.water_withdrawal_m3s.is_none());
     }
 
-    /// AC: only a subset of optional columns present in the schema.
+    /// Only a subset of optional columns present in the schema.
     #[test]
     fn test_hydro_subset_of_optional_columns() {
         let schema = Arc::new(Schema::new(vec![
@@ -1498,7 +1498,7 @@ mod tests {
         assert!(r.water_withdrawal_m3s.is_none());
     }
 
-    /// AC: missing `stage_id` column -> SchemaError with field "stage_id".
+    /// Missing `stage_id` column -> SchemaError with field "stage_id".
     #[test]
     fn test_hydro_missing_stage_id() {
         let schema = Arc::new(Schema::new(vec![
@@ -1527,7 +1527,7 @@ mod tests {
         }
     }
 
-    /// AC: NaN in a present optional column -> SchemaError mentioning column and "finite".
+    /// NaN in a present optional column -> SchemaError mentioning column and "finite".
     #[test]
     fn test_hydro_nan_in_optional_column() {
         let schema = Arc::new(Schema::new(vec![
@@ -1596,7 +1596,7 @@ mod tests {
         }
     }
 
-    /// AC: negative `min_diversion_m3s` -> SchemaError mentioning the column and ">= 0.0".
+    /// Negative `min_diversion_m3s` -> SchemaError mentioning the column and ">= 0.0".
     #[test]
     fn test_hydro_negative_min_diversion() {
         let schema = Arc::new(Schema::new(vec![
@@ -1631,7 +1631,7 @@ mod tests {
         }
     }
 
-    /// AC: negative `min_spillage_m3s` -> SchemaError mentioning the column and ">= 0.0".
+    /// Negative `min_spillage_m3s` -> SchemaError mentioning the column and ">= 0.0".
     #[test]
     fn test_hydro_negative_min_spillage() {
         let schema = Arc::new(Schema::new(vec![
@@ -1666,7 +1666,7 @@ mod tests {
         }
     }
 
-    /// AC: negative `max_spillage_m3s` -> SchemaError mentioning the column and ">= 0.0".
+    /// Negative `max_spillage_m3s` -> SchemaError mentioning the column and ">= 0.0".
     #[test]
     fn test_hydro_negative_max_spillage() {
         let schema = Arc::new(Schema::new(vec![
@@ -1701,7 +1701,7 @@ mod tests {
         }
     }
 
-    /// AC: `min_spillage_m3s > max_spillage_m3s` (both present, same row) -> SchemaError
+    /// `min_spillage_m3s > max_spillage_m3s` (both present, same row) -> SchemaError
     /// whose `field` is `hydro_bounds[0].max_spillage_m3s`.
     #[test]
     fn test_hydro_min_spillage_exceeds_max_spillage() {
@@ -1736,7 +1736,7 @@ mod tests {
         }
     }
 
-    /// AC: empty file -> Ok(Vec::new()).
+    /// Empty file -> Ok(Vec::new()).
     #[test]
     fn test_hydro_empty_parquet() {
         let schema = Arc::new(Schema::new(vec![
@@ -1756,7 +1756,7 @@ mod tests {
         assert!(rows.is_empty());
     }
 
-    /// AC: scrambled input order -> output sorted by (hydro_id, stage_id).
+    /// Scrambled input order -> output sorted by (hydro_id, stage_id).
     #[test]
     fn test_hydro_declaration_order_invariance() {
         let schema = Arc::new(Schema::new(vec![
@@ -1798,14 +1798,14 @@ mod tests {
         assert_eq!(keys_asc, keys_desc);
     }
 
-    /// AC: load_hydro_bounds(None) returns Ok(Vec::new()).
+    /// load_hydro_bounds(None) returns Ok(Vec::new()).
     #[test]
     fn test_load_hydro_bounds_none() {
         let rows = super::super::load_hydro_bounds(None).unwrap();
         assert!(rows.is_empty());
     }
 
-    /// AC: no `block_id` column in the file — every row's `block_id` is `None`
+    /// No `block_id` column in the file — every row's `block_id` is `None`
     /// and every present bound column parses unchanged.
     #[test]
     fn test_hydro_bounds_missing_block_id_column_is_none() {
@@ -1853,7 +1853,7 @@ mod tests {
         assert!(r.water_withdrawal_m3s.is_none());
     }
 
-    /// AC: rows with `block_id` set to `0`, `2`, and null parse to `Some(0)`,
+    /// Rows with `block_id` set to `0`, `2`, and null parse to `Some(0)`,
     /// `Some(2)`, and `None` respectively.
     #[test]
     fn test_hydro_bounds_block_id_column_is_parsed() {
@@ -1918,7 +1918,7 @@ mod tests {
         .expect("valid batch")
     }
 
-    /// AC: valid line bounds, correct sort order.
+    /// Valid line bounds, correct sort order.
     #[test]
     fn test_line_valid_rows_sorted() {
         let batch = make_line_batch(
@@ -1940,7 +1940,7 @@ mod tests {
         assert_eq!(rows[2].line_id, EntityId::from(5));
     }
 
-    /// AC: missing `stage_id` -> SchemaError.
+    /// Missing `stage_id` -> SchemaError.
     #[test]
     fn test_line_missing_stage_id() {
         let schema = Arc::new(Schema::new(vec![
@@ -1966,7 +1966,7 @@ mod tests {
         }
     }
 
-    /// AC: NaN in `direct_mw` -> SchemaError mentioning "direct_mw" and "finite".
+    /// NaN in `direct_mw` -> SchemaError mentioning "direct_mw" and "finite".
     #[test]
     fn test_line_nan_direct_mw() {
         let batch = make_line_batch(&[1], &[0], vec![Some(f64::NAN)], vec![Some(100.0)]);
@@ -1982,7 +1982,7 @@ mod tests {
         }
     }
 
-    /// AC: empty file -> Ok(Vec::new()).
+    /// Empty file -> Ok(Vec::new()).
     #[test]
     fn test_line_empty_parquet() {
         let batch = make_line_batch(&[], &[], vec![], vec![]);
@@ -1990,7 +1990,7 @@ mod tests {
         assert!(parse_line_bounds(tmp.path()).unwrap().is_empty());
     }
 
-    /// AC: scrambled input -> sorted output.
+    /// Scrambled input -> sorted output.
     #[test]
     fn test_line_declaration_order_invariance() {
         let asc = make_line_batch(
@@ -2019,7 +2019,7 @@ mod tests {
         assert_eq!(keys_asc, keys_desc);
     }
 
-    /// AC: load_line_bounds(None) returns Ok(Vec::new()).
+    /// load_line_bounds(None) returns Ok(Vec::new()).
     #[test]
     fn test_load_line_bounds_none() {
         let rows = super::super::load_line_bounds(None).unwrap();
@@ -2055,7 +2055,7 @@ mod tests {
         .expect("valid batch")
     }
 
-    /// AC: valid pumping bounds, correct sort order.
+    /// Valid pumping bounds, correct sort order.
     #[test]
     fn test_pumping_valid_rows_sorted() {
         let batch = make_pumping_batch(
@@ -2079,7 +2079,7 @@ mod tests {
 
     /// Missing id column -> error names the `pumping_station_id` spelling.
     #[test]
-    fn test_pumping_missing_id_column_errors_new_spelling() {
+    fn test_pumping_missing_id_column_errors_naming_pumping_station_id() {
         let schema = Arc::new(Schema::new(vec![
             Field::new("stage_id", DataType::Int32, false),
             Field::new("min_m3s", DataType::Float64, true),
@@ -2106,7 +2106,7 @@ mod tests {
         }
     }
 
-    /// AC: missing `stage_id` -> SchemaError.
+    /// Missing `stage_id` -> SchemaError.
     #[test]
     fn test_pumping_missing_stage_id() {
         let schema = Arc::new(Schema::new(vec![
@@ -2132,7 +2132,7 @@ mod tests {
         }
     }
 
-    /// AC: NaN in `max_m3s` -> SchemaError mentioning "max_m3s" and "finite".
+    /// NaN in `max_m3s` -> SchemaError mentioning "max_m3s" and "finite".
     #[test]
     fn test_pumping_nan_max_m3s() {
         let batch = make_pumping_batch(&[1], &[0], vec![Some(0.0)], vec![Some(f64::NAN)]);
@@ -2148,7 +2148,7 @@ mod tests {
         }
     }
 
-    /// AC: negative `min_m3s` -> SchemaError mentioning "min_m3s" and ">= 0.0".
+    /// Negative `min_m3s` -> SchemaError mentioning "min_m3s" and ">= 0.0".
     #[test]
     fn test_pumping_negative_min_m3s() {
         let batch = make_pumping_batch(&[1], &[0], vec![Some(-1.0)], vec![Some(10.0)]);
@@ -2164,7 +2164,7 @@ mod tests {
         }
     }
 
-    /// AC: negative `max_m3s` -> SchemaError mentioning "max_m3s" and ">= 0.0".
+    /// Negative `max_m3s` -> SchemaError mentioning "max_m3s" and ">= 0.0".
     #[test]
     fn test_pumping_negative_max_m3s() {
         let batch = make_pumping_batch(&[1], &[0], vec![None], vec![Some(-5.0)]);
@@ -2180,7 +2180,7 @@ mod tests {
         }
     }
 
-    /// AC: `min_m3s > max_m3s` (both present) -> SchemaError mentioning "max_m3s".
+    /// `min_m3s > max_m3s` (both present) -> SchemaError mentioning "max_m3s".
     #[test]
     fn test_pumping_min_exceeds_max() {
         let batch = make_pumping_batch(&[1], &[0], vec![Some(80.0)], vec![Some(10.0)]);
@@ -2196,7 +2196,7 @@ mod tests {
         }
     }
 
-    /// AC: empty file -> Ok(Vec::new()).
+    /// Empty file -> Ok(Vec::new()).
     #[test]
     fn test_pumping_empty_parquet() {
         let batch = make_pumping_batch(&[], &[], vec![], vec![]);
@@ -2204,7 +2204,7 @@ mod tests {
         assert!(parse_pumping_bounds(tmp.path()).unwrap().is_empty());
     }
 
-    /// AC: scrambled input -> sorted output.
+    /// Scrambled input -> sorted output.
     #[test]
     fn test_pumping_declaration_order_invariance() {
         let asc = make_pumping_batch(
@@ -2235,7 +2235,7 @@ mod tests {
         assert_eq!(keys_asc, keys_desc);
     }
 
-    /// AC: load_pumping_bounds(None) returns Ok(Vec::new()).
+    /// load_pumping_bounds(None) returns Ok(Vec::new()).
     #[test]
     fn test_load_pumping_bounds_none() {
         let rows = super::super::load_pumping_bounds(None).unwrap();
@@ -2274,7 +2274,7 @@ mod tests {
         .expect("valid batch")
     }
 
-    /// AC: valid contract bounds, correct sort order.
+    /// Valid contract bounds, correct sort order.
     #[test]
     fn test_contract_valid_rows_sorted() {
         let batch = make_contract_batch(
@@ -2299,7 +2299,7 @@ mod tests {
         assert_eq!(rows[2].contract_id, EntityId::from(7));
     }
 
-    /// AC: missing `stage_id` -> SchemaError.
+    /// Missing `stage_id` -> SchemaError.
     #[test]
     fn test_contract_missing_stage_id() {
         let schema = Arc::new(Schema::new(vec![
@@ -2325,7 +2325,7 @@ mod tests {
         }
     }
 
-    /// AC: NaN in `price_per_mwh` -> SchemaError mentioning "price_per_mwh" and "finite".
+    /// NaN in `price_per_mwh` -> SchemaError mentioning "price_per_mwh" and "finite".
     #[test]
     fn test_contract_nan_price() {
         let batch = make_contract_batch(
@@ -2347,7 +2347,7 @@ mod tests {
         }
     }
 
-    /// AC: empty file -> Ok(Vec::new()).
+    /// Empty file -> Ok(Vec::new()).
     #[test]
     fn test_contract_empty_parquet() {
         let batch = make_contract_batch(&[], &[], vec![], vec![], vec![]);
@@ -2355,7 +2355,7 @@ mod tests {
         assert!(parse_contract_bounds(tmp.path()).unwrap().is_empty());
     }
 
-    /// AC: scrambled input -> sorted output.
+    /// Scrambled input -> sorted output.
     #[test]
     fn test_contract_declaration_order_invariance() {
         let asc = make_contract_batch(
@@ -2388,7 +2388,7 @@ mod tests {
         assert_eq!(keys_asc, keys_desc);
     }
 
-    /// AC: load_contract_bounds(None) returns Ok(Vec::new()).
+    /// load_contract_bounds(None) returns Ok(Vec::new()).
     #[test]
     fn test_load_contract_bounds_none() {
         let rows = super::super::load_contract_bounds(None).unwrap();
@@ -2397,7 +2397,7 @@ mod tests {
 
     // ── Combined line/contract/pumping block_id tests ────────────────────────
 
-    /// AC: `line_bounds.parquet`, `contract_bounds.parquet`, and
+    /// `line_bounds.parquet`, `contract_bounds.parquet`, and
     /// `pumping_bounds.parquet` each written without a `block_id` column — every
     /// row's `block_id` is `None` and every other field parses unchanged.
     #[test]
@@ -2429,7 +2429,7 @@ mod tests {
         assert_eq!(pumping_rows[0].max_m3s, Some(100.0));
     }
 
-    /// AC: each of the three files written with a `block_id` column holding
+    /// Each of the three files written with a `block_id` column holding
     /// `Some(2)` and null — the rows carry `Some(2)` and `None` respectively.
     #[test]
     fn test_line_contract_pumping_block_id_column_is_parsed() {

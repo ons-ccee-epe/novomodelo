@@ -20,9 +20,30 @@ use novomodelo_core::{
 pub use novomodelo_stochastic::test_support::{InflowModelSpec, make_inflow_model};
 use novomodelo_stochastic::{
     ClassDimensions, ClassSchemes, ForwardNoiseTables, ForwardSampler, ForwardSamplerConfig,
-    OpeningTreeInputs, StochasticContext, build_stochastic_context,
-    correlation::resolve::DecomposedCorrelation,
+    OpeningTree, OpeningTreeInputs, StochasticContext, build_stochastic_context,
+    correlation::resolve::DecomposedCorrelation, tree::generate::unmatched_stage_noise,
 };
+
+/// The first stage's openings as drawn and correlated, before moment matching.
+pub fn drawn_tree(
+    base_seed: u64,
+    stages: &[Stage],
+    correlation: &DecomposedCorrelation,
+    dims: ClassDimensions,
+) -> OpeningTree {
+    let n_openings = stages[0].scenario_config.branching_factor;
+    let noise = unmatched_stage_noise(
+        base_seed,
+        &stages[0],
+        0,
+        n_openings,
+        dims,
+        None,
+        correlation,
+    )
+    .unwrap();
+    OpeningTree::from_parts(noise, vec![n_openings], dims.total())
+}
 
 /// The shared [`CorrelationModel`]: one `"default"` profile with a single group `"g1"` of
 /// inflow entities whose off-diagonal correlation is `rho`.

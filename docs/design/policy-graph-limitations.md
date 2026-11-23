@@ -9,8 +9,8 @@ implementation is a deliberate **subset of**, or **differs in convention from**,
 general Markovian policy graph, so the boundaries are explicit for anyone porting a
 model from SDDP.jl or extending the engine. It also reconciles the two independent
 probability axes the engine carries with its separate treatment of discounting, and
-records the standing engine behaviors that replaced the structural validation rules
-retired when the graph became node-native.
+records the structural properties the engine guarantees by construction instead of
+validating them.
 
 ## Compatible core
 
@@ -205,30 +205,30 @@ generated node at that stage. So a node with its own distinct multi-opening
 distribution — different from its siblings at the same stage — is not yet expressible:
 siblings either share the stage's generated set or are pinned to single external
 columns (`build_declared_node_graph`, `crates/novomodelo-sddp/src/setup/node_graph.rs`).
-That per-node opening-weight axis is a **deferred future feature** — it would return
+That per-node opening-weight axis is a **deferred future feature** — it would come
 with a per-node Markov configuration — not an input a study supplies today.
 
-## Standing behaviors that replaced retired validation rules
+## Structural properties guaranteed by construction
 
-The move to a node-native graph removed a family of collapse-era structural rules.
-Their intent survives as standing engine behavior, not as re-added validation:
+These properties hold by standing engine behavior, so no validation rule checks
+them and none is to be added:
 
 - **A node's realization is defined by its own pointer.** A node's `scenario_id`
   fixes its realization directly; there is no descendant-agreement or trunk
-  constancy to enforce across a shared trunk. The only surviving pointer rule is
-  the per-class bound (rule 37).
-- **Output identity re-keys to the leaf node id.** Per-node outputs and the
-  simulation summary key on the node id, so injectivity across realizations is
-  automatic rather than validated.
+  constancy to enforce across a shared trunk. The only pointer rule is the
+  per-class bound (rule 37).
+- **Output identity is the node id.** Per-node outputs and the simulation summary
+  key on the node id, so injectivity across realizations is automatic rather than
+  validated.
 - **Probability totals come from the normalized transitions.** The census
   enumerates the graph's leaves and `scenario_summary` keys by leaf node id, so
-  library exhaustion is no longer a soundness condition — the totals are the
-  normalized out-edge weights. Coverage is not a validation rule.
+  library exhaustion is not a soundness condition — the totals are the normalized
+  out-edge weights. Coverage is not a validation rule.
 - **Genuine branching is admissible.** A node with multiple successors — including
-  sibling successors that share a realization pointer — loads without error. The
-  admissibility predicate and the duplicate-pointer / degenerate-branching
-  rejections are gone; a structurally recombinable signature draws a warning
-  (rule 40), not a rejection. `check_node_graph`'s surviving structural rules
+  sibling successors that share a realization pointer — loads without error. No
+  admissibility predicate and no duplicate-pointer or degenerate-branching
+  rejection exists; a structurally recombinable signature draws a warning
+  (rule 40), not a rejection. `check_node_graph`'s structural rules
   (well-formedness, every edge `t → t+1`, the pointer bound) are the whole gate.
 
 Retired rule ids in the novomodelo-io validation rule table
@@ -243,6 +243,3 @@ behavior across the project's life.
   <https://sddp.dev/stable/guides/create_a_general_policy_graph/>
 - SDDP.jl Markov chain approach — <https://sddp.dev/stable/tutorial/arma/>
 - SDDP.jl source — <https://github.com/odow/SDDP.jl>
-</content>
-
-</invoke>

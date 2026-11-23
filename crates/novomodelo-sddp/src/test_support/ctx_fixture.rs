@@ -157,7 +157,7 @@ impl CtxFixture {
     /// `tailrace_lateral` can borrow a backing store with `self`'s own
     /// lifetime. `state` attaches
     /// `self.anticipated_resolution` as-is when a test set it explicitly (it
-    /// is no longer `AnticipatedResolution::default`), else the
+    /// differs from `AnticipatedResolution::default`), else the
     /// saturating-default [`constant_lead_resolution`] over this fixture's
     /// own `anticipated_lead_stages`. A test that needs a derived field's
     /// value to disagree with its own slices sets the fixture's owner field

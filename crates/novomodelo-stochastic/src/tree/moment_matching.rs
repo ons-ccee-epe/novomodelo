@@ -5,17 +5,6 @@
 //! shares that stage's openings, so per stage equals per node. Noise-group
 //! copies inherit the matched values of the stage they copy.
 
-/// Moment-matching mode for the openings of a generated tree.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum MomentMatching {
-    /// Keep the generated openings as drawn.
-    #[default]
-    None,
-    /// Shift and scale each inflow coordinate of each generated stage over its
-    /// openings to mean 0 and the variance its correlation factor implies.
-    PerCoordinate,
-}
-
 /// Standard-deviation ratio at or below which a coordinate counts as constant.
 const DEGENERATE_SD_RATIO: f64 = 1e-12;
 

@@ -1,12 +1,5 @@
 # Backward-pass warm-start channels
 
-> **Terminology**: this note predates a naming pass. In current code the "PN"
-> scheduler is the opening-block scheduler
-> (`training.parallelism.backward_scheduler`,
-> `training/backward/opening_block.rs`), "LPT" is the hardest-first claim order
-> (`hardest_first_block_order`), and the "TSP" opening order is the intrinsic
-> shortest-chain order (`noise_key::apply_chain_order`; no config field).
-
 > **Status**: Design evaluation — no implementation in this document. It records
 > one measured-and-closed channel (H3) and evaluates two open, cluster-gated
 > channels (H1, H2) for lowering backward-pass solve cost by warm-starting from a
@@ -14,18 +7,17 @@
 > plant-level network granularity a backward opening cannot be made free, so the
 > remaining upside is fewer _pivots per solve_, never fewer _solves_.
 >
-> **Companions** (the two standalone design notes were retired with the naming
-> pass; the code and rules below are the surviving anchors):
+> **Companions**:
 >
-> - `crates/novomodelo-sddp/src/stochastic/noise_key.rs` (`apply_chain_order`) — the
->   warm-start-friendly opening solve order (shortest-chain path; σ-key kept
->   below three openings) that H1 rotates; the mechanism H1 builds on.
-> - `crates/novomodelo-sddp/src/training/backward/opening_block.rs` — the
->   opening-block claim scheduler (hardest-first claim order) whose
->   per-`(stage, block)` structure H2 keys its cache on. Its retired note was
->   also the house precedent for the pre-registered, matched-epoch
->   decision-rule register used below.
-> - `.claude/rules/sddp.md` — the opening-order, opening-block-scheduler, and
+> - `crates/novomodelo-sddp/src/stochastic/noise_key.rs` (`build_noise_key_table`,
+>   `apply_chain_order`) — the warm-start-friendly opening solve order
+>   (shortest-chain path; σ-key kept below three openings) that H1 rotates; the
+>   mechanism H1 builds on.
+> - `crates/novomodelo-sddp/src/training/backward/by_node.rs` — the by-node
+>   scheduler (`training.parallelism.backward_scheduler = { method = by_node }`,
+>   hardest-first claim order `hardest_first_block_order`) whose
+>   per-`(stage, block)` structure H2 keys its cache on.
+> - `.claude/rules/sddp.md` — the opening-order, by-node-scheduler, and
 >   slot-identity basis-reconstruction contracts H1 and H2 must not disturb.
 
 ## The motivating question
@@ -121,14 +113,14 @@ per-opening mechanism.
 ## H1 — chain anchoring at the sampled opening
 
 **Mechanism.** In the frozen backward arm, each trial point's opening chain is
-solved in the installed `solve_order` permutation (`build_noise_key_table`;
-`BackwardOpeningOrder::Tsp` by default computes a lowest-cost Hamiltonian path,
-`tsp_path`, over the openings' noise-prefix L2 distances). The chain's _head_ —
+solved in the installed `solve_order` permutation (`build_noise_key_table`: the
+shortest-chain order, a nearest-neighbor + 2-opt minimum-distance path over the
+openings' inflow-noise vectors). The chain's _head_ —
 `solve_order` position 0 — is warm-started from the forward-captured basis for
 that `(trial point, stage)` slot (`CapturedBasis`, written at the forward solve).
 But the forward pass solved and captured at exactly one opening: the _sampled_
-opening `ξ`. Its basis is near-exact for `ξ` and only for `ξ`. Because the TSP
-path starts at position 0, generally not `ξ`, the head pays a `ξ → ω₀`
+opening `ξ`. Its basis is near-exact for `ξ` and only for `ξ`. Because the
+shortest-chain path starts at position 0, generally not `ξ`, the head pays a `ξ → ω₀`
 perturbation — it applies a near-exact basis to the wrong opening.
 
 H1 removes that jump. Compute the opening order as a _cycle_ (Hamiltonian cycle)
@@ -157,10 +149,10 @@ order is identical across thread and rank counts, and run-to-run reproducibility
 and declaration-order invariance are preserved — the determinism suites remain the
 correctness gate.
 
-**Interaction with PN.** Under the opening-block scheduler each block is its own
+**Interaction with the by-node scheduler.** Each by-node block is its own
 sub-chain with its own head, so only the block containing `ξ` can be anchored at
 `ξ`; the other blocks' heads still pay a jump. H1 is therefore cleanest on the
-single-chain trial-point path; the other block heads are H2's target.
+single-chain `by_scenario` path; the other block heads are H2's target.
 
 **Pre-registered go/no-go (cluster-measured).** Arms: two builds — H1-on (cycle +
 per-trial rotation to `ξ`) versus H1-off (current path from position 0) — same
@@ -175,7 +167,7 @@ or rank-invariance regresses.
 
 ## H2 — cross-iteration backward-basis cache per `(stage, block)`
 
-**Mechanism.** Under the opening-block scheduler (`process_stage_backward_opening_block`)
+**Mechanism.** Under the by-node scheduler (`process_stage_backward_by_node`)
 each work unit is an opening-block of one trial point, its head anchored on the
 forward capture and warm-continued across the block. The forward capture carries
 the primal geometry of the sampled `ξ` but not the `ω`-specific dual geometry of
@@ -196,7 +188,7 @@ absorbed, not rejected.
 
 **Memory sizing.** Cache size is (number of cached bases) × (per-basis size). A
 per-`(stage, block)` cache holds `Σ_stages n_blocks(stage)` bases
-(`pn_block_count`), which at production block counts is **order tens of MB per
+(`by_node_block_count`), which at production block counts is **order tens of MB per
 rank**. Keying per-`(stage, ω)` instead multiplies the count by the block size —
 `Σ_stages n_openings(stage)` bases — pushing the cache to **order hundreds of MB**
 for no dual information the block head needs. Per-`(stage, ω)` is therefore
@@ -218,7 +210,7 @@ remain the correctness gate.
 
 **Pre-registered go/no-go (cluster-measured).** Arms: H2-on (per-`(stage, block)`
 cross-iteration cache, forward-capture fallback) versus H2-off (forward-capture
-anchor only), under the opening-block scheduler on a production-scale plant-level
+anchor only), under the by-node scheduler on a production-scale plant-level
 case. Primary metric: total backward `simplex_iterations` and matched-epoch
 backward wall. **Go** if H2-on lowers backward pivots and wall beyond the cluster
 noise band, the tens-of-MB/rank footprint holds, the determinism suites stay
@@ -239,7 +231,7 @@ sampled opening `ξ` by rotating the opening _cycle_. Ceiling ≈ one solve in `
 Go/no-go pre-registered above.
 
 **H2 — open, cluster-gated.** Cache the previous iteration's backward basis per
-`(stage, block)` and warm PN block heads from it, with a forward-capture fallback
+`(stage, block)` and warm by-node block heads from it, with a forward-capture fallback
 on miss. Footprint order tens of MB per rank at block granularity. Go/no-go
 pre-registered above.
 

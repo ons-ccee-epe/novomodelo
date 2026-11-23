@@ -777,7 +777,7 @@ mod tests {
     }
 
     #[test]
-    fn row_pool_statistics_serializes_with_new_fields() {
+    fn row_pool_statistics_serializes_cuts_active_and_row_counters() {
         let stats = RowPoolStatistics {
             total_generated: 10,
             total_active: 7,

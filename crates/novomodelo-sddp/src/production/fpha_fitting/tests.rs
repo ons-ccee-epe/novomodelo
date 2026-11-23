@@ -255,7 +255,7 @@ fn tailrace_polynomial_linear_two_coefficients() {
 }
 
 #[test]
-fn tailrace_polynomial_quadratic_acceptance_criterion() {
+fn tailrace_polynomial_quadratic_known_value() {
     let model = TailraceModel::Polynomial {
         coefficients: vec![5.0, 0.001, -1e-7],
     };
@@ -275,8 +275,7 @@ fn tailrace_polynomial_quartic_five_coefficients() {
 
 // ── Tailrace evaluation: Piecewise ────────────────────────────────────────
 
-/// Build the 3-point piecewise model from the acceptance criteria.
-fn ac_piecewise() -> TailraceModel {
+fn three_point_piecewise() -> TailraceModel {
     TailraceModel::Piecewise {
         points: vec![
             TailracePoint {
@@ -296,15 +295,15 @@ fn ac_piecewise() -> TailraceModel {
 }
 
 #[test]
-fn tailrace_piecewise_midpoint_first_segment_acceptance_criterion() {
-    let model = ac_piecewise();
+fn tailrace_piecewise_midpoint_first_segment() {
+    let model = three_point_piecewise();
     let expected = 3.0 + (4.5 - 3.0) * 2500.0 / 5000.0;
     assert!((evaluate_tailrace(&model, 2500.0) - expected).abs() < 1e-10);
 }
 
 #[test]
 fn tailrace_piecewise_at_breakpoints_exact() {
-    let model = ac_piecewise();
+    let model = three_point_piecewise();
     assert!((evaluate_tailrace(&model, 0.0) - 3.0).abs() < 1e-10);
     assert!((evaluate_tailrace(&model, 5000.0) - 4.5).abs() < 1e-10);
     assert!((evaluate_tailrace(&model, 15_000.0) - 6.2).abs() < 1e-10);
@@ -312,20 +311,20 @@ fn tailrace_piecewise_at_breakpoints_exact() {
 
 #[test]
 fn tailrace_piecewise_clamp_below_range() {
-    let model = ac_piecewise();
+    let model = three_point_piecewise();
     assert!((evaluate_tailrace(&model, -500.0) - 3.0).abs() < 1e-10);
 }
 
 #[test]
 fn tailrace_piecewise_clamp_above_range() {
-    let model = ac_piecewise();
+    let model = three_point_piecewise();
     assert!((evaluate_tailrace(&model, 99_999.0) - 6.2).abs() < 1e-10);
 }
 
 // ── Hydraulic losses: Factor ──────────────────────────────────────────────
 
 #[test]
-fn losses_factor_acceptance_criterion() {
+fn losses_factor_known_value() {
     let model = HydraulicLossesModel::Factor { value: 0.03 };
     assert!((evaluate_losses(&model, 100.0, 0.0) - 3.0).abs() < 1e-10);
 }
@@ -348,7 +347,7 @@ fn losses_factor_turbined_has_no_effect() {
 // ── Hydraulic losses: Constant ────────────────────────────────────────────
 
 #[test]
-fn losses_constant_acceptance_criterion() {
+fn losses_constant_known_value() {
     let model = HydraulicLossesModel::Constant { value_m: 2.5 };
     assert!((evaluate_losses(&model, 0.0, 0.0) - 2.5).abs() < 1e-10);
     assert!((evaluate_losses(&model, 999.0, 0.0) - 2.5).abs() < 1e-10);
@@ -426,7 +425,7 @@ fn net_head_no_tailrace_no_losses_equals_h_fore() {
 }
 
 #[test]
-fn net_head_polynomial_tailrace_constant_losses_acceptance_criterion() {
+fn net_head_polynomial_tailrace_constant_losses() {
     let forebay = flat_forebay_400m();
     let tailrace = linear_tailrace_5_5_at_3000();
     let losses = HydraulicLossesModel::Constant { value_m: 2.0 };
@@ -449,7 +448,7 @@ fn net_head_polynomial_tailrace_constant_losses_acceptance_criterion() {
 #[test]
 fn net_head_piecewise_tailrace_factor_losses() {
     let forebay = flat_forebay_400m();
-    let tailrace = ac_piecewise();
+    let tailrace = three_point_piecewise();
     let losses = HydraulicLossesModel::Factor { value: 0.03 };
     let pf = ProductionFunction::new(
         forebay,
@@ -494,7 +493,7 @@ fn net_head_clamped_to_zero_when_losses_exceed_forebay() {
 // ── evaluate tests ────────────────────────────────────────────────────────
 
 #[test]
-fn evaluate_acceptance_criterion() {
+fn evaluate_known_value() {
     let forebay = flat_forebay_400m();
     let tailrace = linear_tailrace_5_5_at_3000();
     let losses = HydraulicLossesModel::Constant { value_m: 2.0 };
@@ -592,8 +591,6 @@ fn default_config() -> FphaColumnLayout {
         source: "computed".to_owned(),
         volume_discretization_points: None,
         turbine_discretization_points: None,
-        spillage_discretization_points: None,
-        max_planes_per_hydro: None,
         fitting_window: None,
         spillage_fit_max_m3s: None,
         turbined_fit_max_m3s: None,
@@ -613,7 +610,7 @@ fn resolve_bounds(
 
 /// Given config with no fitting window and all discretization fields None,
 /// resolve_fitting_bounds uses the plant storage range, which is narrower than
-/// the forebay table, and defaults all counts to 5, max_planes_per_hydro to 10.
+/// the forebay table, and defaults all counts to 5.
 #[test]
 fn no_fitting_window_uses_the_plant_storage_range() {
     let config = default_config();
@@ -626,8 +623,6 @@ fn no_fitting_window_uses_the_plant_storage_range() {
     assert_eq!(bounds.v_max, 30_000.0);
     assert_eq!(bounds.n_volume_points, 5);
     assert_eq!(bounds.n_flow_points, 5);
-    assert_eq!(bounds.n_spillage_points, 5);
-    assert_eq!(bounds.max_planes_per_hydro, 10);
 }
 
 // ── Empty range — v_min >= v_max ─────────────────────────────────────────
@@ -838,7 +833,6 @@ fn discretization_all_none_defaults_to_five() {
 
     assert_eq!(bounds.n_volume_points, 5);
     assert_eq!(bounds.n_flow_points, 5);
-    assert_eq!(bounds.n_spillage_points, 5);
 }
 
 /// Explicit discretization values are passed through unchanged.
@@ -847,8 +841,6 @@ fn discretization_explicit_values_passed_through() {
     let config = FphaColumnLayout {
         volume_discretization_points: Some(8),
         turbine_discretization_points: Some(6),
-        spillage_discretization_points: Some(10),
-        max_planes_per_hydro: Some(20),
         ..default_config()
     };
     let hydro = make_hydro(0.0, 34_116.0);
@@ -858,14 +850,12 @@ fn discretization_explicit_values_passed_through() {
 
     assert_eq!(bounds.n_volume_points, 8);
     assert_eq!(bounds.n_flow_points, 6);
-    assert_eq!(bounds.n_spillage_points, 10);
-    assert_eq!(bounds.max_planes_per_hydro, 20);
 }
 
 // ── Insufficient discretization ──────────────────────────────────────────
 
-// Note: `volume_discretization_points = 1` (NPTV = 1) is no longer rejected —
-// it is a run-of-river request rerouted through the single-volume path. See
+// `volume_discretization_points = 1` (NPTV = 1) is not rejected: it is a
+// run-of-river request rerouted through the single-volume path. See
 // `explicit_single_volume_point_reroutes_not_rejected`.
 
 /// volume_discretization_points = 0 -> InsufficientDiscretization.
@@ -929,77 +919,6 @@ fn turbine_discretization_one_returns_error() {
             if dimension == "turbine"
         ),
         "expected InsufficientDiscretization for turbine=1, got: {err:?}"
-    );
-}
-
-/// spillage_discretization_points = 1 -> InsufficientDiscretization { dimension: "spillage", value: 1 }.
-#[test]
-fn spillage_discretization_one_returns_error() {
-    let config = FphaColumnLayout {
-        spillage_discretization_points: Some(1),
-        ..default_config()
-    };
-    let hydro = make_hydro(0.0, 34_116.0);
-    let forebay = sobradinho_forebay();
-
-    let err = resolve_bounds(&config, &hydro, forebay).unwrap_err();
-    assert!(
-        matches!(
-            err,
-            FphaFittingError::InsufficientDiscretization { ref dimension, value: 1, .. }
-            if dimension == "spillage"
-        ),
-        "expected InsufficientDiscretization for spillage=1, got: {err:?}"
-    );
-}
-
-// ── Max_planes_per_hydro ──────────────────────────────────────────────────
-
-/// max_planes_per_hydro = None -> defaults to 10.
-#[test]
-fn max_planes_per_hydro_none_defaults_to_ten() {
-    let config = default_config();
-    let hydro = make_hydro(0.0, 34_116.0);
-    let forebay = sobradinho_forebay();
-
-    let bounds = resolve_bounds(&config, &hydro, forebay).unwrap();
-
-    assert_eq!(bounds.max_planes_per_hydro, 10);
-}
-
-/// max_planes_per_hydro = Some(5) -> 5.
-#[test]
-fn max_planes_per_hydro_explicit_value() {
-    let config = FphaColumnLayout {
-        max_planes_per_hydro: Some(5),
-        ..default_config()
-    };
-    let hydro = make_hydro(0.0, 34_116.0);
-    let forebay = sobradinho_forebay();
-
-    let bounds = resolve_bounds(&config, &hydro, forebay).unwrap();
-
-    assert_eq!(bounds.max_planes_per_hydro, 5);
-}
-
-/// max_planes_per_hydro = Some(0) -> InsufficientDiscretization.
-#[test]
-fn max_planes_per_hydro_zero_returns_error() {
-    let config = FphaColumnLayout {
-        max_planes_per_hydro: Some(0),
-        ..default_config()
-    };
-    let hydro = make_hydro(0.0, 34_116.0);
-    let forebay = sobradinho_forebay();
-
-    let err = resolve_bounds(&config, &hydro, forebay).unwrap_err();
-    assert!(
-        matches!(
-            err,
-            FphaFittingError::InsufficientDiscretization { ref dimension, value: 0, .. }
-            if dimension == "max_planes_per_hydro"
-        ),
-        "expected InsufficientDiscretization for max_planes_per_hydro=0, got: {err:?}"
     );
 }
 
@@ -1705,7 +1624,7 @@ fn fit_fpha_planes_turbined_fit_max_bounds_flow_axis() {
     assert_ne!(bounded.planes, default.planes);
 }
 
-/// AC (integration): a run-of-river hydro (NPTV = 1) fits end-to-end through
+/// A run-of-river hydro (NPTV = 1) fits end-to-end through
 /// the single-volume path, producing a valid outer approximation with every
 /// plane's `γ_V` exactly 0. `volume_discretization_points = 1` is the reference
 /// run-of-river config; the reroute fires inside `resolve_fitting_bounds`.
@@ -2239,7 +2158,7 @@ fn fitted_min_envelope_tracks_production_on_concave_reservoir() {
 // ── Tailrace-source seam ──────────────────────────────────────────────────
 
 /// Regression pin: a `TailraceSource::Entity` production function computes the
-/// EXACT pre-families net head — `h_fore − evaluate_tailrace(model, q + s) −
+/// EXACT entity-tailrace net head — `h_fore − evaluate_tailrace(model, q + s) −
 /// h_loss`. The `Entity` arm must keep calling `evaluate_tailrace(model, q_out)`
 /// verbatim; any drift here means the inert fallback is no longer inert.
 #[test]
@@ -2670,8 +2589,6 @@ fn reduce_planes_huge_tolerance_preserves_origin_plane_both_methods() {
         v_max: 30_000.0,
         n_volume_points: 6,
         n_flow_points: 6,
-        n_spillage_points: 2,
-        max_planes_per_hydro: 10,
         single_volume: false,
     };
 
@@ -2777,8 +2694,6 @@ fn hull_fit_emits_exactly_one_origin_plane() {
         v_max: 30_000.0,
         n_volume_points: 6,
         n_flow_points: 6,
-        n_spillage_points: 2,
-        max_planes_per_hydro: 10,
         single_volume: false,
     };
 

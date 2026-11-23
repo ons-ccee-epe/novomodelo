@@ -253,27 +253,8 @@ fn provenance_ar_detail(report: &ModelProvenanceReport) -> String {
     }
 }
 
-/// Returns `" (target: T)"` when the correlation was estimated, or an empty
-/// string when it was not.
-fn provenance_correlation_detail(report: &ModelProvenanceReport) -> String {
-    match report.inflow.correlation_target {
-        Some(target) => format!(" (target: {})", target.as_str()),
-        None => String::new(),
-    }
-}
-
-/// Returns `" (moment matching: M)"` for a generated opening tree, or an empty string.
-fn provenance_opening_tree_detail(report: &ModelProvenanceReport) -> String {
-    match report.inflow.opening_tree_moment_matching {
-        Some(matching) => format!(" (moment matching: {})", matching.as_str()),
-        None => String::new(),
-    }
-}
-
 fn provenance_summary_lines(report: &ModelProvenanceReport) -> Vec<String> {
     let ar_detail = provenance_ar_detail(report);
-    let correlation_detail = provenance_correlation_detail(report);
-    let opening_tree_detail = provenance_opening_tree_detail(report);
     vec![
         console::style("Model provenance").bold().to_string(),
         format!("  Estimation path: {}", report.inflow.estimation_path),
@@ -282,14 +263,8 @@ fn provenance_summary_lines(report: &ModelProvenanceReport) -> Vec<String> {
             "  AR coefficients: {}{}",
             report.inflow.ar_coefficients_source, ar_detail
         ),
-        format!(
-            "  Correlation:     {}{}",
-            report.inflow.correlation_source, correlation_detail
-        ),
-        format!(
-            "  Opening tree:    {}{}",
-            report.inflow.opening_tree_source, opening_tree_detail
-        ),
+        format!("  Correlation:     {}", report.inflow.correlation_source),
+        format!("  Opening tree:    {}", report.inflow.opening_tree_source),
     ]
 }
 
@@ -301,7 +276,7 @@ pub fn print_provenance_summary(out: &Term, report: &ModelProvenanceReport) {
 }
 
 /// Wording is independent of [`BoundaryReconciliationReport::summary_line`]
-/// (legacy "N source slots dropped" for `novomodelo validate`); totals come from
+/// (the "N source slots dropped" line `novomodelo validate` prints); totals come from
 /// [`BoundaryReconciliationReport::tally_totals`].
 fn format_boundary_reconciliation_row(report: &BoundaryReconciliationReport) -> String {
     if !report.reconciled {
@@ -1530,7 +1505,7 @@ mod tests {
         }
     }
 
-    /// Acceptance criterion: 2 FPHA hydros → output contains "2 FPHA" and "planes"
+    /// 2 FPHA hydros → output contains "2 FPHA" and "planes"
     /// and does NOT contain the relocated source qualifiers.
     #[test]
     fn format_hydro_model_summary_with_fpha_contains_key_terms() {
@@ -1559,7 +1534,7 @@ mod tests {
         );
     }
 
-    /// Acceptance criterion: 0 FPHA hydros → output contains "constant" and NOT "FPHA".
+    /// 0 FPHA hydros → output contains "constant" and NOT "FPHA".
     #[test]
     fn format_hydro_model_summary_without_fpha_contains_constant_not_fpha() {
         let summary = make_hydro_model_summary_all_constant();
@@ -1575,7 +1550,7 @@ mod tests {
         );
     }
 
-    /// AC: pure-FPHA (`n_constant = 0`) — output contains "2 FPHA" and "7 planes"
+    /// Pure-FPHA (`n_constant = 0`) — output contains "2 FPHA" and "7 planes"
     /// and does NOT contain any relocated production-source qualifier.
     #[test]
     fn format_hydro_model_summary_pure_fpha_counts_only() {
@@ -1680,7 +1655,7 @@ mod tests {
         );
     }
 
-    /// AC (C2): `n_evaporation=1, n_no_evaporation=1, n_user_supplied_ref=1` →
+    /// `n_evaporation=1, n_no_evaporation=1, n_user_supplied_ref=1` →
     /// output contains the literal `"1 linearized"` (count-only, no noun) and
     /// none of the relocated reference-source qualifiers.
     #[test]
@@ -1728,7 +1703,7 @@ mod tests {
         );
     }
 
-    /// Acceptance criterion: `print_hydro_model_summary` does not panic with buffered stderr.
+    /// `print_hydro_model_summary` does not panic with buffered stderr.
     #[test]
     fn print_hydro_model_summary_does_not_panic() {
         let summary = make_hydro_model_summary_mixed();
@@ -1749,7 +1724,7 @@ mod tests {
 
     // ── format_evaporation_line count-only tests ─────────────────────────────
 
-    /// AC: all-midpoint refs — line shows counts only, no `v_ref` qualifier.
+    /// All-midpoint refs — line shows counts only, no `v_ref` qualifier.
     #[test]
     fn test_evaporation_line_all_midpoint() {
         let summary = HydroModelSummary {
@@ -1779,7 +1754,7 @@ mod tests {
         );
     }
 
-    /// AC: all-user-supplied refs — line shows counts only, no `v_ref` qualifier.
+    /// All-user-supplied refs — line shows counts only, no `v_ref` qualifier.
     #[test]
     fn test_evaporation_line_all_user_supplied() {
         let summary = HydroModelSummary {
@@ -1813,7 +1788,7 @@ mod tests {
         );
     }
 
-    /// AC: mixed refs — line shows counts only, no `v_ref` qualifiers.
+    /// Mixed refs — line shows counts only, no `v_ref` qualifiers.
     #[test]
     fn test_evaporation_line_mixed() {
         let summary = HydroModelSummary {
@@ -1847,7 +1822,7 @@ mod tests {
         );
     }
 
-    /// AC: no evaporation — line does NOT contain "`v_ref`".
+    /// No evaporation — line does NOT contain "`v_ref`".
     #[test]
     fn test_evaporation_line_no_evaporation() {
         let summary = make_hydro_model_summary_all_constant();
@@ -1919,7 +1894,7 @@ mod tests {
         }
     }
 
-    /// AC: the rendered body carries the header and every phase label.
+    /// The rendered body carries the header and every phase label.
     #[test]
     fn format_setup_summary_contains_phase_labels() {
         let timings = make_setup_timings();
@@ -1959,7 +1934,6 @@ mod tests {
 
     // ── ModelProvenanceReport tests ───────────────────────────────────────────
 
-    use novomodelo_io::config::{CorrelationTarget, MomentMatching};
     use novomodelo_sddp::{HydroProductionProvenance, InflowProvenance, ProvenanceSource};
 
     use super::{ModelProvenanceReport, print_provenance_summary, provenance_summary_lines};
@@ -1971,9 +1945,7 @@ mod tests {
                 seasonal_stats_source: ProvenanceSource::Estimated,
                 ar_coefficients_source: ProvenanceSource::Estimated,
                 correlation_source: ProvenanceSource::Estimated,
-                correlation_target: None,
                 opening_tree_source: ProvenanceSource::Estimated,
-                opening_tree_moment_matching: None,
                 n_hydros: 3,
                 ar_method: Some("PACF".to_string()),
                 ar_max_order: Some(6),
@@ -1991,9 +1963,7 @@ mod tests {
                 seasonal_stats_source: ProvenanceSource::NotApplicable,
                 ar_coefficients_source: ProvenanceSource::NotApplicable,
                 correlation_source: ProvenanceSource::NotApplicable,
-                correlation_target: None,
                 opening_tree_source: ProvenanceSource::NotApplicable,
-                opening_tree_moment_matching: None,
                 n_hydros: 0,
                 ar_method: None,
                 ar_max_order: None,
@@ -2086,9 +2056,7 @@ mod tests {
                 seasonal_stats_source: ProvenanceSource::UserFile,
                 ar_coefficients_source: ProvenanceSource::UserFile,
                 correlation_source: ProvenanceSource::Estimated,
-                correlation_target: None,
                 opening_tree_source: ProvenanceSource::Estimated,
-                opening_tree_moment_matching: None,
                 n_hydros: 2,
                 ar_method: None,
                 ar_max_order: None,
@@ -2109,72 +2077,25 @@ mod tests {
     }
 
     #[test]
-    fn provenance_summary_names_the_correlation_target_only_when_estimated() {
-        let cases = [
-            (
-                make_provenance_report_full_estimation(),
-                ProvenanceSource::Estimated,
-                Some(CorrelationTarget::Inflows),
-                "  Correlation:     estimated (target: inflows)",
-            ),
-            (
-                make_provenance_report_full_estimation(),
-                ProvenanceSource::Estimated,
-                Some(CorrelationTarget::Residuals),
-                "  Correlation:     estimated (target: residuals)",
-            ),
-            (
-                make_provenance_report_full_estimation(),
-                ProvenanceSource::UserFile,
-                None,
-                "  Correlation:     user_file",
-            ),
-            (
-                make_provenance_report_deterministic(),
-                ProvenanceSource::NotApplicable,
-                None,
-                "  Correlation:     n/a",
-            ),
-        ];
-        for (mut report, source, target, expected) in cases {
-            report.inflow.correlation_source = source;
-            report.inflow.correlation_target = target;
-            let lines = provenance_summary_lines(&report);
-            assert!(
-                lines.iter().any(|line| line == expected),
-                "expected the line {expected:?}, got: {lines:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn provenance_summary_names_the_moment_matching_of_a_generated_tree() {
-        let cases = [
-            (
-                ProvenanceSource::Estimated,
-                Some(MomentMatching::PerCoordinate),
-                "  Opening tree:    estimated (moment matching: per_coordinate)",
-            ),
-            (
-                ProvenanceSource::Estimated,
-                Some(MomentMatching::None),
-                "  Opening tree:    estimated (moment matching: none)",
-            ),
-            (
-                ProvenanceSource::UserFile,
-                None,
-                "  Opening tree:    user_file",
-            ),
-        ];
-        for (source, matching, expected) in cases {
+    fn provenance_summary_names_the_correlation_and_opening_tree_sources() {
+        for (source, name) in [
+            (ProvenanceSource::Estimated, "estimated"),
+            (ProvenanceSource::UserFile, "user_file"),
+            (ProvenanceSource::NotApplicable, "n/a"),
+        ] {
             let mut report = make_provenance_report_full_estimation();
+            report.inflow.correlation_source = source.clone();
             report.inflow.opening_tree_source = source;
-            report.inflow.opening_tree_moment_matching = matching;
             let lines = provenance_summary_lines(&report);
-            assert!(
-                lines.iter().any(|line| line == expected),
-                "expected the line {expected:?}, got: {lines:?}"
-            );
+            for expected in [
+                format!("  Correlation:     {name}"),
+                format!("  Opening tree:    {name}"),
+            ] {
+                assert!(
+                    lines.contains(&expected),
+                    "expected the line {expected:?}, got: {lines:?}"
+                );
+            }
         }
     }
 
@@ -2187,9 +2108,7 @@ mod tests {
                 seasonal_stats_source: ProvenanceSource::Estimated,
                 ar_coefficients_source: ProvenanceSource::Estimated,
                 correlation_source: ProvenanceSource::Estimated,
-                correlation_target: None,
                 opening_tree_source: ProvenanceSource::Estimated,
-                opening_tree_moment_matching: None,
                 n_hydros: 3,
                 ar_method: Some("PACF".to_string()),
                 ar_max_order: Some(6),

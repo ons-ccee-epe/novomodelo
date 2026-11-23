@@ -1,5 +1,5 @@
-//! Constants below were captured on the pre-change code; a diff in them means the
-//! forward noise stream moved.
+//! The constants below pin the forward noise stream; a diff in them means the
+//! stream moved.
 
 #![allow(
     clippy::unwrap_used,
@@ -11,8 +11,7 @@
 use novomodelo_core::{EntityId, NoiseMethod, SamplingScheme};
 use novomodelo_stochastic::{
     ClassDimensions, DecomposedCorrelation, SampleRequest, build_forward_sampler,
-    generate_opening_tree,
-    tree::{MomentMatching, OpeningTreeGenerationInputs},
+    tree::generate::unmatched_stage_noise,
 };
 
 mod common;
@@ -231,47 +230,26 @@ fn wide_correlation_group_opening_tree_golden() {
     )
     .unwrap();
 
-    let stages = vec![
+    let stages = [
         method_stage(0, 0, 3, NoiseMethod::Saa),
         method_stage(1, 1, 3, NoiseMethod::Saa),
     ];
 
-    let tree = generate_opening_tree(
-        42,
-        &stages,
-        &corr,
-        &entity_order,
-        dims,
-        &OpeningTreeGenerationInputs {
-            moment_matching: MomentMatching::None,
-            ..Default::default()
-        },
-    )
-    .unwrap();
+    let stage_noise = |stage_idx: usize| {
+        unmatched_stage_noise(42, &stages[stage_idx], stage_idx, 3, dims, None, &corr).unwrap()
+    };
+    let s0 = stage_noise(0);
+    let s1 = stage_noise(1);
+    let opening = |noise: &[f64], o: usize| noise[o * 70..(o + 1) * 70].to_vec();
 
-    let s0_o0 = tree.opening(0, 0);
-    for (d, &v) in s0_o0.iter().enumerate() {
+    for (d, &v) in opening(&s0, 0).iter().enumerate() {
         assert_eq!(v, GOLDEN_WIDE_S0_O0[d], "stage=0 opening=0 dim={d}");
     }
 
-    assert_eq!(
-        tree.opening(0, 2)[0],
-        GOLDEN_WIDE_S0_O2_D0,
-        "stage=0 opening=2 dim=0"
-    );
-    assert_eq!(
-        tree.opening(0, 2)[69],
-        GOLDEN_WIDE_S0_O2_D69,
-        "stage=0 opening=2 dim=69"
-    );
-    assert_eq!(
-        tree.opening(1, 1)[0],
-        GOLDEN_WIDE_S1_O1_D0,
-        "stage=1 opening=1 dim=0"
-    );
-    assert_eq!(
-        tree.opening(1, 1)[69],
-        GOLDEN_WIDE_S1_O1_D69,
-        "stage=1 opening=1 dim=69"
-    );
+    let s0_o2 = opening(&s0, 2);
+    assert_eq!(s0_o2[0], GOLDEN_WIDE_S0_O2_D0, "stage=0 opening=2 dim=0");
+    assert_eq!(s0_o2[69], GOLDEN_WIDE_S0_O2_D69, "stage=0 opening=2 dim=69");
+    let s1_o1 = opening(&s1, 1);
+    assert_eq!(s1_o1[0], GOLDEN_WIDE_S1_O1_D0, "stage=1 opening=1 dim=0");
+    assert_eq!(s1_o1[69], GOLDEN_WIDE_S1_O1_D69, "stage=1 opening=1 dim=69");
 }

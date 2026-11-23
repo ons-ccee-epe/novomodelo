@@ -2065,8 +2065,8 @@ mod tests {
     /// Two hydros, one stage: hydro A carries a full-coverage weight seed
     /// (1.0), hydro B a half-coverage weight seed (0.5). After the
     /// trajectory-start reset, `ws.scratch.lag_weight_accum` must carry each
-    /// hydro's OWN weight — a shared scalar (the pre-widening behavior) would
-    /// instead broadcast one value to both entities.
+    /// hydro's OWN weight — a shared scalar would instead broadcast one value
+    /// to both entities.
     #[test]
     fn forward_reset_copies_per_entity_weight_seed() {
         let state = state_layout(2, 0);
@@ -2473,7 +2473,7 @@ mod tests {
 
     /// The forward path carries no graph-shape dispatch — chain parity is
     /// degeneracy (the node-native path running on the one-node-per-stage
-    /// graph), never a fork to preserved legacy code. Banned tokens are
+    /// graph), never a shape-selected fork. Banned tokens are
     /// assembled from char arrays so this check is not itself a false-positive
     /// hit for the same predicate it looks for.
     #[test]

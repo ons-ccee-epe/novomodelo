@@ -9,7 +9,6 @@
     clippy::float_cmp
 )]
 
-use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -18,13 +17,11 @@ use arrow::record_batch::RecordBatch;
 use assert_cmd::prelude::*;
 use novomodelo_io::scenarios::parse_inflow_annual_component;
 use novomodelo_io::{EntitySlot, StateFamily, deserialize_stage_cuts};
-use novomodelo_sddp::test_support::legacy_inputs::{materialize, overlay_dir};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use predicates::prelude::*;
 use tempfile::TempDir;
 
 mod common;
-use common::varying_external_deck::edit_json;
 use common::{
     case_dir, copy_dir_recursive, make_valid_case, novomodelo, restamp_policy_version,
     snapshot_files, write_file, write_supplied_correlation_case, write_supplied_opening_tree_case,
@@ -2476,11 +2473,6 @@ fn a_supplied_correlation_on_an_estimated_path_is_reported_as_user_file() {
     );
     assert_eq!(inflow["estimation_path"], "full_estimation");
     assert_eq!(inflow["correlation_source"], "user_file");
-    assert_eq!(
-        inflow.as_object().unwrap().get("correlation_target"),
-        Some(&serde_json::Value::Null),
-        "correlation_target must be written as null, got: {inflow}"
-    );
 
     let control = TempDir::new().unwrap();
     copy_dir_recursive(
@@ -2495,11 +2487,10 @@ fn a_supplied_correlation_on_an_estimated_path_is_reported_as_user_file() {
     assert!(
         stdout
             .lines()
-            .any(|line| line == "  Correlation:     estimated (target: inflows)"),
-        "stdout must name the estimation target, got: {stdout}"
+            .any(|line| line == "  Correlation:     estimated"),
+        "stdout must name the estimated correlation, got: {stdout}"
     );
     assert_eq!(inflow["correlation_source"], "estimated");
-    assert_eq!(inflow["correlation_target"], "inflows");
 }
 
 // ── A failed run keeps the last whole checkpoint ──────────────────────────────
@@ -2693,7 +2684,7 @@ mod mpi {
             &case_dir("deterministic/d56-external-authoritative"),
             case.path(),
         );
-        write_varying_external_deck(case.path(), "per_coordinate");
+        write_varying_external_deck(case.path());
         let case_path = case.path().to_str().unwrap();
 
         let single = TempDir::new().unwrap();
@@ -2735,7 +2726,7 @@ mod mpi {
             &case_dir("deterministic/d56-external-authoritative"),
             case.path(),
         );
-        write_varying_external_deck(case.path(), "per_coordinate");
+        write_varying_external_deck(case.path());
         let case_path = case.path().to_str().unwrap();
         let clamp_warnings = |stderr: &[u8]| {
             String::from_utf8_lossy(stderr)
@@ -2819,81 +2810,4 @@ fn run_reports_no_row_violation_warning_on_4ree() {
         "unexpected row-violation warning: {stderr}"
     );
     assert!(output.path().join("simulation/_SUCCESS").exists());
-}
-
-/// Outputs that hold the run's wall-clock time or solver timings, so two runs of
-/// the same inputs never write them identically.
-const RUN_IDENTITY_OUTPUTS: [&str; 8] = [
-    "policy/manifest.bin",
-    "simulation/metadata.json",
-    "simulation/solver/",
-    "training/convergence.parquet",
-    "training/dictionaries/codes.json",
-    "training/metadata.json",
-    "training/solver/",
-    "training/timing/",
-];
-
-fn result_outputs(output: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
-    snapshot_files(output)
-        .into_iter()
-        .filter(|(path, _)| {
-            let path = path.to_str().unwrap();
-            !RUN_IDENTITY_OUTPUTS
-                .iter()
-                .any(|identity| path.starts_with(identity))
-        })
-        .collect()
-}
-
-#[test]
-fn legacy_post_study_deck_writes_the_outputs_of_its_migrated_deck() {
-    const DECK: &str = "deterministic/d55-post-study-anticipated-lanes";
-    let [migrated, legacy] = [false, true].map(|legacy| {
-        let case = TempDir::new().unwrap();
-        copy_dir_recursive(&case_dir(DECK), case.path());
-        if legacy {
-            materialize(&overlay_dir(&format!("examples/{DECK}")), case.path()).unwrap();
-            let post_study =
-                fs::read_to_string(case.path().join("post_study_stages.json")).unwrap();
-            assert!(
-                post_study.contains("\"stages\"") && !post_study.contains("thermal_stages"),
-                "the overlay must restore the deprecated format: {post_study}"
-            );
-        }
-        edit_json(&case.path().join("config.json"), |config| {
-            config["simulation"] = serde_json::json!({
-                "enabled": true,
-                "selection": { "method": "sampled", "num_scenarios": 1 }
-            });
-        });
-        let output = TempDir::new().unwrap();
-        novomodelo()
-            .args(["run", case.path().to_str().unwrap()])
-            .args(["--output", output.path().to_str().unwrap(), "--quiet"])
-            .assert()
-            .success();
-        result_outputs(output.path())
-    });
-
-    for compared in ["policy/cuts/", "simulation/anticipated_lanes/"] {
-        assert!(
-            migrated
-                .keys()
-                .any(|path| path.to_str().unwrap().starts_with(compared)),
-            "the comparison has no power unless it covers {compared}"
-        );
-    }
-    assert!(
-        migrated.keys().eq(legacy.keys()),
-        "output files: migrated {:?}, legacy {:?}",
-        migrated.keys().collect::<Vec<_>>(),
-        legacy.keys().collect::<Vec<_>>()
-    );
-    let differing: Vec<_> = migrated
-        .iter()
-        .filter(|(path, bytes)| legacy[*path] != **bytes)
-        .map(|(path, _)| path)
-        .collect();
-    assert!(differing.is_empty(), "outputs differ: {differing:?}");
 }

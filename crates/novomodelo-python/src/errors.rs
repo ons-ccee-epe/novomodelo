@@ -1,11 +1,10 @@
 //! The `novomodelo.errors` exception hierarchy and the single error-mapping site.
 //!
 //! Every leaf class subclasses BOTH `NovomodeloError` and the matching builtin
-//! (`OSError`, `ValueError`, `RuntimeError`), so existing `except OSError` /
-//! `except ValueError` / `except RuntimeError` code keeps catching while new code
-//! can catch the typed class or the common `NovomodeloError` base. The qualified name
-//! of every class is `novomodelo.errors.<Name>` so tracebacks read
-//! `novomodelo.errors.SolverError`.
+//! (`OSError`, `ValueError`, `RuntimeError`), so a leaf is caught by `except` on
+//! that builtin as well as on its typed class or the common `NovomodeloError` base.
+//! The qualified name of every class is `novomodelo.errors.<Name>` so tracebacks
+//! read `novomodelo.errors.SolverError`.
 //!
 //! [`convert_error`] is the ONLY place Rust errors become Python exceptions for
 //! the raising paths. It accepts a concrete [`ErrorSource`] enum (never a

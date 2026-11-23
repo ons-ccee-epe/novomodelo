@@ -1696,7 +1696,7 @@ mod tests {
     /// productivity of 0.9, every stage receives 0.9. Regression for the
     /// JSON-only path.
     #[test]
-    fn test_non_fpha_json_only_path_unchanged() {
+    fn test_non_fpha_json_only_path_uses_json_productivity_at_every_stage() {
         let n_stages = 2;
         let hydros = vec![make_hydro_with(
             1,

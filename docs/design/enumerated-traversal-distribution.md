@@ -121,10 +121,9 @@ what the exchange and output-assembly require. Neither dominates in general.
   path-partitioned across ranks, per-rank dedup, shared ancestors replicated,
   no sweep-time exchange.
 - The enumerated **simulation** pass uses **replicate**, mirroring the forward
-  step-for-step (a fork of the sampled simulation on the traversal axis; the
-  sampled arm is byte-identical). It shares the forward's distribution
-  primitives (the claim cursor, the canonical scatter, the own-set marking and
-  node arena) rather than forking its own copy.
+  step-for-step (a fork of the sampled simulation on the traversal axis). It
+  shares the forward's distribution primitives (the claim cursor, the canonical
+  scatter, the own-set marking and node arena) rather than forking its own copy.
 - The enumerated **backward** pass uses a **third** variant that is neither A nor
   B: it splits a single node's openings across all ranks to parallelize the cut
   aggregation, but consumes each node's incoming state without a matching

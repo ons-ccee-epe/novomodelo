@@ -113,8 +113,7 @@ pub struct PostStudyStages {
 pub enum WaterBucketStages {
     /// The water calendar, used exactly: no padding, no fallback.
     Declared(Vec<PostStudyStage>),
-    /// The water calendar is [`PostStudyStages::thermal_stages`] — the format a
-    /// deck used before the water calendar could be declared separately.
+    /// The water calendar is [`PostStudyStages::thermal_stages`].
     #[default]
     FromThermalStages,
 }

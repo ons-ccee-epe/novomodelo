@@ -416,7 +416,7 @@ mod tests {
         }
     }
 
-    // ── AC 1: Valid coverage — no errors ──────────────────────────────────────
+    // ── Valid coverage — no errors ────────────────────────────────────────────
 
     /// Given ParsedData where every hydro has InflowModel entries for every
     /// study stage and all other coverage rules are satisfied,
@@ -447,7 +447,7 @@ mod tests {
         );
     }
 
-    // ── AC 2: Missing inflow stats for one hydro at one stage → 1 error ───────
+    // ── Missing inflow stats for one hydro at one stage → 1 error ─────────────
 
     /// Given ParsedData with 3 hydros and 2 study stages where hydro id=2 is
     /// missing inflow stats for stage id=1, exactly 1 DimensionMismatch error
@@ -494,7 +494,7 @@ mod tests {
         );
     }
 
-    // ── AC 3: Correlation matrix row count mismatch → 1 error ─────────────────
+    // ── Correlation matrix row count mismatch → 1 error ───────────────────────
 
     /// Given a ParsedData where a CorrelationGroup named "Southeast" has
     /// 3 entities but a 2x2 matrix, one DimensionMismatch error is produced
@@ -546,7 +546,7 @@ mod tests {
         );
     }
 
-    // ── AC 4: Correlation matrix non-square → 1 error ─────────────────────────
+    // ── Correlation matrix non-square → 1 error ───────────────────────────────
 
     /// Given a CorrelationGroup with 2 entities but one row has only 1 column,
     /// one DimensionMismatch error is produced.
@@ -590,7 +590,7 @@ mod tests {
         );
     }
 
-    // ── AC 5: Empty optional data — no false positives ────────────────────────
+    // ── Empty optional data — no false positives ──────────────────────────────
 
     /// Given ParsedData with empty inflow_seasonal_stats, empty
     /// load_seasonal_stats, and empty fpha_hyperplanes, no DimensionMismatch
@@ -611,7 +611,7 @@ mod tests {
         );
     }
 
-    // ── AC 6: FPHA hydro missing hyperplane rows → 1 error ───────────────────
+    // ── FPHA hydro missing hyperplane rows → 1 error ─────────────────────────
 
     /// Given a ParsedData where a hydro uses HydroGenerationModel::Fpha but
     /// fpha_hyperplanes has no rows for that hydro, one DimensionMismatch error
@@ -745,7 +745,7 @@ mod tests {
         );
     }
 
-    // ── AC 7: Hydro with entry_stage_id skips earlier stages ─────────────────
+    // ── Hydro with entry_stage_id skips earlier stages ───────────────────────
 
     /// Given a hydro with entry_stage_id=1, inflow stats are only required
     /// for stage 1, not stage 0. Providing only stage 1 produces no errors.
@@ -771,7 +771,7 @@ mod tests {
         );
     }
 
-    // ── AC 8: Hydro with exit_stage_id skips later stages ────────────────────
+    // ── Hydro with exit_stage_id skips later stages ──────────────────────────
 
     /// Given a hydro with exit_stage_id=1 (exclusive), inflow stats are
     /// only required for stage 0. Providing only stage 0 produces no errors.
@@ -797,7 +797,7 @@ mod tests {
         );
     }
 
-    // ── AC 9: Pre-study stages are not checked ────────────────────────────────
+    // ── Pre-study stages are not checked ──────────────────────────────────────
 
     /// Pre-study stages (negative IDs) must not appear in the coverage check.
     #[test]
@@ -830,7 +830,7 @@ mod tests {
         );
     }
 
-    // ── AC 10: Load stats coverage missing ────────────────────────────────────
+    // ── Load stats coverage missing ───────────────────────────────────────────
 
     /// Given a bus that has no load stats for one stage, exactly 1 error is
     /// produced.
@@ -868,7 +868,7 @@ mod tests {
         );
     }
 
-    // ── AC 12: Correlation schedule references non-existent profile ───────────
+    // ── Correlation schedule references non-existent profile ──────────────────
 
     /// A schedule entry referencing a profile name that does not exist in
     /// `profiles` produces one DimensionMismatch error.
@@ -944,7 +944,7 @@ mod tests {
         );
     }
 
-    // ── AC 14: All 7 rules checked independently ─────────────────────────────
+    // ── All 7 rules checked independently ────────────────────────────────────
 
     /// Errors in one rule do not suppress checking of subsequent rules.
     #[test]

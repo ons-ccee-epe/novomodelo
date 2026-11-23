@@ -256,7 +256,7 @@ mod tests {
     use super::*;
     use crate::test_support::write_json;
 
-    // ── AC: valid pumping stations ─────────────────────────────────────────────
+    // ── valid pumping stations ─────────────────────────────────────────────────
 
     /// Given a valid `pumping_stations.json` with 2 stations,
     /// `parse_pumping_stations` returns `Ok(vec)` with 2 entries sorted by `id`.
@@ -313,7 +313,7 @@ mod tests {
         assert!((stations[1].max_flow_m3s - 200.0).abs() < f64::EPSILON);
     }
 
-    // ── AC: duplicate ID detection ─────────────────────────────────────────────
+    // ── duplicate ID detection ─────────────────────────────────────────────────
 
     /// Given `pumping_stations.json` with duplicate `id` values,
     /// `parse_pumping_stations` returns `Err(LoadError::SchemaError)`.
@@ -352,7 +352,7 @@ mod tests {
         }
     }
 
-    // ── AC: negative values → SchemaError ─────────────────────────────────────
+    // ── negative values → SchemaError ─────────────────────────────────────────
 
     /// Negative `consumption_mw_per_m3s` → `SchemaError`.
     #[test]
@@ -444,7 +444,7 @@ mod tests {
         }
     }
 
-    // ── AC: declaration-order invariance ──────────────────────────────────────
+    // ── declaration-order invariance ──────────────────────────────────────────
 
     /// Given stations in reverse ID order in JSON, `parse_pumping_stations`
     /// returns a `Vec` sorted by ascending `id`.
@@ -496,7 +496,7 @@ mod tests {
         assert_eq!(stations1[1].id, EntityId(1));
     }
 
-    // ── AC: file not found → IoError ─────────────────────────────────────────
+    // ── file not found → IoError ─────────────────────────────────────────────
 
     /// Given a nonexistent path, `parse_pumping_stations` returns
     /// `Err(LoadError::IoError)`.
@@ -512,7 +512,7 @@ mod tests {
         }
     }
 
-    // ── AC: invalid JSON → ParseError ─────────────────────────────────────────
+    // ── invalid JSON → ParseError ─────────────────────────────────────────────
 
     /// Given invalid JSON, `parse_pumping_stations` returns
     /// `Err(LoadError::ParseError)`.

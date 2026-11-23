@@ -227,7 +227,7 @@ mod tests {
         (0..n).map(|i| (i32::try_from(i).unwrap(), i)).collect()
     }
 
-    /// AC1: three plants declaring 1, 3, and 2 groups and an empty row slice
+    /// Three plants declaring 1, 3, and 2 groups and an empty row slice
     /// leave the table empty, and `override_at_block` returns the all-`None`
     /// default for every in-range and out-of-range index without panicking.
     #[test]
@@ -259,7 +259,7 @@ mod tests {
         }
     }
 
-    /// AC2: a stage-wide row on `(hydro_id=1, group=11, stage=2)` sets
+    /// A stage-wide row on `(hydro_id=1, group=11, stage=2)` sets
     /// `max_turbined_m3s` and `min_generation_mw`; a block row on the same
     /// group at `block=1` sets only `max_turbined_m3s`. Column-independent
     /// resolution must keep `min_generation_mw` from the stage-wide row at
@@ -300,7 +300,7 @@ mod tests {
         );
     }
 
-    /// AC3: plants declare `[1, 3, 2]` groups; a row names plant index 2's
+    /// Plants declare `[1, 3, 2]` groups; a row names plant index 2's
     /// group at position 1. The written slot is `plant_group_start[2] + 1 ==
     /// 5`, and plant 1's group position 1 (slot 2) stays untouched — the
     /// ragged CSR axis must not alias across plants.
@@ -333,7 +333,7 @@ mod tests {
         );
     }
 
-    /// AC4: a row naming an unknown group, a row with an out-of-study
+    /// A row naming an unknown group, a row with an out-of-study
     /// `stage_id`, and a row whose `block_id` equals its stage's block count
     /// are all skipped; the table stays empty and nothing panics.
     ///

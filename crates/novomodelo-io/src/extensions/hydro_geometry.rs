@@ -200,7 +200,7 @@ mod tests {
         .expect("valid batch construction")
     }
 
-    // ── AC: valid single-hydro file ───────────────────────────────────────────
+    // ── valid single-hydro file ───────────────────────────────────────────────
 
     /// A Sobradinho-style 5-point VHA curve for one hydro, returned sorted by volume.
     #[test]
@@ -222,7 +222,7 @@ mod tests {
         assert_eq!(volumes, vec![0.0, 2_000.0, 10_000.0, 24_500.0, 34_116.0]);
     }
 
-    // ── AC: sorted output for multiple hydros ─────────────────────────────────
+    // ── sorted output for multiple hydros ─────────────────────────────────────
 
     /// Rows for 2 hydros in arbitrary order -> result sorted by (hydro_id, volume_hm3).
     #[test]
@@ -252,7 +252,7 @@ mod tests {
         assert_eq!(rows[4].volume_hm3, 500.0);
     }
 
-    // ── AC: missing required column ────────────────────────────────────────────────────
+    // ── missing required column ────────────────────────────────────────────────────────
 
     /// Parquet file missing `area_km2` column -> SchemaError with field "area_km2"
     /// and message containing "missing required column".
@@ -320,7 +320,7 @@ mod tests {
         }
     }
 
-    // ── AC: wrong column type ─────────────────────────────────────────────────
+    // ── wrong column type ─────────────────────────────────────────────────────
 
     /// `hydro_id` provided as Float64 instead of Int32 -> SchemaError.
     #[test]
@@ -352,7 +352,7 @@ mod tests {
         }
     }
 
-    // ── AC: negative value ────────────────────────────────────────────────────
+    // ── negative value ────────────────────────────────────────────────────────
 
     /// Negative `volume_hm3` value -> SchemaError with field containing "volume_hm3".
     #[test]
@@ -407,7 +407,7 @@ mod tests {
         }
     }
 
-    // ── AC: file not found ────────────────────────────────────────────────────
+    // ── file not found ────────────────────────────────────────────────────────
 
     /// Non-existent path -> IoError with the matching path.
     #[test]
@@ -423,7 +423,7 @@ mod tests {
         }
     }
 
-    // ── AC: empty file ────────────────────────────────────────────────────────
+    // ── empty file ────────────────────────────────────────────────────────────
 
     /// Empty Parquet (zero rows) -> Ok(Vec::new()).
     #[test]

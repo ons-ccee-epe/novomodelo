@@ -864,7 +864,7 @@ fn assert_fixed_no_boundary_shape(shape: TerminalPoolShape) {
     );
 }
 
-/// A wide (`k = 8`) terminal-Generated fan: the primary AC-mandated fixture.
+/// A wide (`k = 8`) terminal-Generated fan.
 /// Training must leave the shared terminal pool's capacity, loaded-cut count,
 /// active-cut count, and populated high-water mark bit-for-bit unchanged.
 #[test]

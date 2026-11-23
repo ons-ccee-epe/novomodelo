@@ -23,8 +23,8 @@ _REPO_ROOT = pathlib.Path(__file__).parents[3]
 
 # No single deck declares both travel-time arcs and post-study stages, so the
 # two feature classes are exercised by their respective decks; together they
-# make the four families a hardcoded reader list historically omitted
-# (in_transit, transit_seed, anticipated_lanes, hydro_bus_generation) present.
+# make the in_transit, transit_seed, anticipated_lanes and hydro_bus_generation
+# families present.
 TRAVEL_TIME_CASE = (
     _REPO_ROOT / "crates" / "novomodelo-sddp" / "tests" / "fixtures" / "travel_time_arc"
 )
@@ -516,9 +516,9 @@ def test_load_simulation_keys_cover_every_present_family(
 ) -> None:
     """The no-argument load returns a key for every present family directory.
 
-    Exercises the two feature classes whose families the reader historically
-    omitted: the travel-time deck must surface ``in_transit`` and the post-study
-    deck ``anticipated_lanes``, and on each deck no present family directory may
+    Exercises the two feature classes that write their own families: the
+    travel-time deck must surface ``in_transit`` and the post-study deck
+    ``anticipated_lanes``, and on each deck no present family directory may
     be missing from the returned mapping.
     """
     import novomodelo.results

@@ -25,7 +25,6 @@ use novomodelo_stochastic::build_stochastic_context;
 use novomodelo_stochastic::noise_entity_order;
 use novomodelo_stochastic::normal::precompute::EntityFactorEntry;
 use novomodelo_stochastic::par::lag_transition::precompute_noise_groups;
-use novomodelo_stochastic::tree::MomentMatching;
 use novomodelo_stochastic::{OpeningTreeInputs, StochasticContext, context::OpeningTree};
 
 use super::resolve_inflow_seeds;
@@ -342,7 +341,6 @@ pub fn prepare_stochastic(
         training_source,
         inflow_lag_depth,
         user_opening_tree,
-        config.training_moment_matching().into(),
     )?;
 
     Ok(PrepareStochasticResult {
@@ -360,10 +358,8 @@ pub fn prepare_stochastic(
 /// when `user_tree` is `None`), and the forward seed. Both rank 0 (via
 /// [`prepare_stochastic`], after PAR estimation and user-tree loading) and the CLI
 /// non-root reconstruction call this one builder, so the two paths cannot drift.
-/// `moment_matching` is `Config::training_moment_matching`'s value, which rank 0
-/// reads from the config and a non-root rank receives in its broadcast config, so
-/// it is identical on every rank. `user_tree` is the only input that differs by
-/// rank: rank 0 loads it, and a non-root rank receives it over the wire.
+/// `user_tree` is the only input that differs by rank: rank 0 loads it, and a
+/// non-root rank receives it over the wire.
 ///
 /// # Errors
 ///
@@ -376,7 +372,6 @@ pub fn build_stochastic_context_for_study(
     training_source: &ScenarioSource,
     inflow_lag_depth: Option<u32>,
     user_tree: Option<OpeningTree>,
-    moment_matching: MomentMatching,
 ) -> Result<StochasticContext, SddpError> {
     let load_factor_entries = load_load_factors_for_stochastic(case_dir)?;
     let block_pairs: Vec<Vec<BlockFactorPair>> = load_factor_entries
@@ -417,7 +412,6 @@ pub fn build_stochastic_context_for_study(
             historical_library: opening_tree_library.as_ref(),
             external_scenario_counts: compute_external_scenario_counts(system, training_source),
             noise_group_ids: Some(study_stage_noise_group_ids(system)),
-            moment_matching,
         },
         class_schemes_for(training_source),
     )?)
@@ -836,10 +830,9 @@ mod tests {
     /// Drive `advance_lag_chain::<LagMajor>` across `fx`'s stages with lag
     /// width `lag_width`, returning the incoming (pre-advance) lag vector at
     /// `at_stage` — the values the PAR model there reads. `downstream_par_order
-    /// = 0` (`accumulator`/`completed_lags` empty) reproduces the literal-`0`
-    /// regression `build_opening_tree_library` used to pass to
-    /// `standardize_historical_windows`; a positive value reproduces the
-    /// ring-aware, fixed behavior.
+    /// = 0` (`accumulator`/`completed_lags` empty) reproduces a literal `0`
+    /// passed to `standardize_historical_windows` (the primary-only advance); a
+    /// positive value reproduces the ring-aware behavior.
     fn ring_incoming_lags(
         fx: &RingFixture,
         transitions: &[StageLagTransition],
@@ -898,7 +891,7 @@ mod tests {
     /// `derive_downstream_par_order`'s result into `standardize_historical_windows`,
     /// not a literal `0`: the resulting eta at the quarterly transition must
     /// match the independent ring-aware forward-chain oracle and differ from
-    /// the primary-only advance the literal-`0` regression produces.
+    /// the primary-only advance a literal `0` produces.
     #[test]
     fn build_opening_tree_library_ring_aware_eta_at_quarterly_transition() {
         let fx = build_ring_fixture();
@@ -1073,7 +1066,6 @@ mod tests {
             &training_source,
             Some(3),
             None,
-            MomentMatching::None,
         )
         .expect("stochastic context must build");
 
@@ -1239,7 +1231,6 @@ mod tests {
             &training_source,
             None,
             None,
-            MomentMatching::None,
         )
         .expect("stochastic context must build");
         let applied = stochastic.par();
@@ -1767,11 +1758,11 @@ mod tests {
         (system, training_source)
     }
 
-    /// Cross-source regression at the SAME declared depth (24, the worked
-    /// acceptance example): `resolve_state_layout` (the dense-stride + mask
+    /// Cross-source regression at the SAME declared depth (24):
+    /// `resolve_state_layout` (the dense-stride + mask
     /// source) still widens past the fixture's AR(0) order to exactly 24, but
     /// the historical library's width is the applied PAR's own
-    /// order — the two sources address different facts and no longer agree.
+    /// order — the two sources address different facts, so their widths differ.
     /// A forward twin built from the same applied PAR and the same depth-24
     /// seed (`resolve_inflow_seeds` at `state_layout.max_par_order`, the one
     /// seed owner at one depth) must be bit-identical to the tree: same
@@ -2422,7 +2413,6 @@ mod tests {
             &ScenarioSource::default(),
             None,
             Some(ring_user_tree()),
-            MomentMatching::None,
         )
         .expect("a supplied opening tree must not need the historical library");
         assert_eq!(
@@ -2453,7 +2443,6 @@ mod tests {
             &ScenarioSource::default(),
             None,
             Some(OpeningTree::from_parts(data.clone(), vec![2; 5], 1)),
-            MomentMatching::PerCoordinate,
         )
         .expect("a supplied two-opening tree must build");
 
@@ -2461,7 +2450,6 @@ mod tests {
             ctx.provenance().opening_tree,
             ComponentProvenance::UserSupplied
         );
-        assert_eq!(ctx.provenance().opening_tree_moment_matching, None);
         assert_eq!(
             ctx.opening_tree()
                 .data()
@@ -2473,7 +2461,7 @@ mod tests {
     }
 
     #[test]
-    fn generated_opening_tree_still_refuses_a_historical_library_that_fails_validation() {
+    fn generated_opening_tree_refuses_a_historical_library_that_fails_validation() {
         let tmp = tempfile::TempDir::new().expect("tempdir");
         let result = build_stochastic_context_for_study(
             &ring_with_failing_historical_library(),
@@ -2482,7 +2470,6 @@ mod tests {
             &ScenarioSource::default(),
             None,
             None,
-            MomentMatching::None,
         );
         match result {
             Err(SddpError::Stochastic(StochasticError::InsufficientData { context })) => {

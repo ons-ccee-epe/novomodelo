@@ -85,12 +85,12 @@ fn producer_block() -> ProducerBlock {
 
 /// Write a single-stage, single-cut source checkpoint whose one cut carries
 /// `coefficients`, one per `manifest` slot in the same order, at rest under
-/// `cost_scale_factor` (`None` = legacy).
+/// `cost_scale_factor`.
 fn write_source_checkpoint(
     dir: &std::path::Path,
     manifest: &[EntitySlot],
     coefficients: &[f64],
-    cost_scale_factor: Option<f64>,
+    cost_scale_factor: f64,
 ) {
     let state_dimension = u32::try_from(coefficients.len()).expect("small coefficient count");
     let cut = PolicyCutRecord {
@@ -109,7 +109,7 @@ fn write_source_checkpoint(
         cuts: &cuts,
         populated_count: 1,
         entity_manifest: manifest,
-        cost_scale_factor: cost_scale_factor.unwrap_or(1_000_000.0),
+        cost_scale_factor,
         node_id: 0,
         priced_state_date: encode_slot_date(fixture_priced_date(0)),
         ..stage_cuts_payload_defaults()
@@ -118,7 +118,7 @@ fn write_source_checkpoint(
         1,
         chain_graph_manifest(1),
         ProducerBlock {
-            cost_scale_factor,
+            cost_scale_factor: Some(cost_scale_factor),
             ..producer_block()
         },
     );
@@ -229,7 +229,7 @@ fn newave_source_reconciles_into_decomp_current() {
         tmp.path(),
         &source_manifest,
         &source_coefficients,
-        Some(RUN_LOADING_FACTOR),
+        RUN_LOADING_FACTOR,
     );
 
     let current = decomp_current_manifest();
@@ -344,7 +344,7 @@ fn newave_source_without_receiver_storage_keeps_transit_zero() {
         tmp.path(),
         &source_manifest,
         &newave_source_coefficients(),
-        Some(RUN_LOADING_FACTOR),
+        RUN_LOADING_FACTOR,
     );
 
     let current = decomp_current_manifest();
@@ -765,7 +765,7 @@ fn run_injected_decomp() -> f64 {
         tmp.path(),
         &source_manifest,
         &source_coefficients,
-        Some(RUN_LOADING_FACTOR),
+        RUN_LOADING_FACTOR,
     );
 
     let cuts = load_boundary_cuts(

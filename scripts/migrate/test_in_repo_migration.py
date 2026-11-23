@@ -1,4 +1,4 @@
-"""The committed migrated decks are exactly the script's output on their legacy inputs."""
+"""The committed migrated decks are exactly the script's output on their unmigrated inputs."""
 
 from __future__ import annotations
 
@@ -15,12 +15,12 @@ import post_study_stages as pss
 
 _ROOT = Path(__file__).resolve().parents[2]
 _OVERLAY_ROOT = (
-    _ROOT / "crates" / "novomodelo-sddp" / "tests" / "unswept_fixtures" / "legacy_inputs"
+    _ROOT / "crates" / "novomodelo-sddp" / "tests" / "unswept_fixtures" / "unmigrated_inputs"
 )
 _ABSENT = "absent.json"
 
 _OVERLAYS = sorted(path for path in _OVERLAY_ROOT.iterdir() if path.is_dir())
-assert _OVERLAYS, f"no legacy-input overlay under {_OVERLAY_ROOT}"
+assert _OVERLAYS, f"no unmigrated-input overlay under {_OVERLAY_ROOT}"
 
 
 def materialize(overlay: Path, deck: Path) -> None:
@@ -43,16 +43,16 @@ def is_unmigrated(deck: Path) -> bool:
 
 
 @pytest.mark.parametrize("overlay", _OVERLAYS, ids=lambda path: path.name)
-def test_main_on_the_legacy_inputs_reproduces_the_committed_migrated_decks(
+def test_main_on_the_unmigrated_inputs_reproduces_the_committed_migrated_decks(
     tmp_path: Path, overlay: Path
 ) -> None:
     committed = _ROOT / overlay.name.replace("__", "/")
-    legacy = tmp_path / "deck"
-    shutil.copytree(committed, legacy, ignore=shutil.ignore_patterns("scenarios"))
-    materialize(overlay, legacy)
-    assert is_unmigrated(legacy)
+    deck = tmp_path / "deck"
+    shutil.copytree(committed, deck, ignore=shutil.ignore_patterns("scenarios"))
+    materialize(overlay, deck)
+    assert is_unmigrated(deck)
 
-    assert pss.main([str(legacy)]) == 0
+    assert pss.main([str(deck)]) == 0
 
     migrated = committed / pss.FILE_NAME
-    assert (legacy / pss.FILE_NAME).read_bytes() == migrated.read_bytes()
+    assert (deck / pss.FILE_NAME).read_bytes() == migrated.read_bytes()

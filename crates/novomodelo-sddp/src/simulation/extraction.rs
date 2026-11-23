@@ -913,8 +913,7 @@ fn extract_hydro_per_block<'a>(
     (0..n_blks).map(move |b| {
         let blk = BlockIdx::new(b);
         // Plant `h`'s turbined flow is the sum over its cells (ascending, so the
-        // sum is reproducible); under single-bus identity staging this is the
-        // one-term sum the pre-cell code always computed.
+        // sum is reproducible); under single-bus identity staging it has one term.
         let turbined: f64 = spec
             .hydro_cell_index
             .cells_of(HydroSys::new(h))

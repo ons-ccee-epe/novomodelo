@@ -1740,9 +1740,8 @@ mod tests {
 
     #[test]
     fn one_spelling_per_axis_across_every_output_schema() {
-        // Every output parquet spells each axis with a single canonical name.
-        // A renamed axis's OLD spelling must never reappear in any schema, and a
-        // later file cannot reintroduce a variant without failing this one test.
+        // Every output parquet spells each axis with a single canonical name; a
+        // variant spelling in any schema fails this test.
         let names: Vec<String> = OUTPUT_SCHEMAS
             .iter()
             .flat_map(|entry| {
@@ -1754,7 +1753,7 @@ mod tests {
             })
             .collect();
 
-        // Forbidden variant spellings, each superseded by one canonical axis.
+        // Forbidden variant spellings, each paired with its canonical axis.
         let forbidden = [
             ("stage", "stage_id"),
             ("opening", "opening_index"),

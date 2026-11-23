@@ -172,10 +172,6 @@ pub struct FphaColumnLayout {
     pub volume_discretization_points: Option<i32>,
     /// Number of turbine flow discretization points used when computing hyperplanes.
     pub turbine_discretization_points: Option<i32>,
-    /// Number of spillage discretization points used when computing hyperplanes.
-    pub spillage_discretization_points: Option<i32>,
-    /// Maximum number of planes per hydro after heuristic selection.
-    pub max_planes_per_hydro: Option<i32>,
     /// Optional fitting window within the plant's storage range; absent = the
     /// whole range, `min_storage_hm3` to `max_storage_hm3`.
     pub fitting_window: Option<FittingWindow>,
@@ -672,12 +668,6 @@ struct RawFphaColumnLayout {
     /// Number of turbine flow discretization points used when computing
     /// hyperplanes. Absent = algorithm default (5).
     turbine_discretization_points: Option<i32>,
-    /// Number of spillage discretization points used when computing
-    /// hyperplanes. Absent = algorithm default (5).
-    spillage_discretization_points: Option<i32>,
-    /// Maximum number of planes per hydro after heuristic selection. Absent =
-    /// algorithm default (10).
-    max_planes_per_hydro: Option<i32>,
     /// Optional volume fitting window for hyperplane computation. Absent or
     /// null = the plant's storage range, `min_storage_hm3` to
     /// `max_storage_hm3`. `system/hydro_geometry.parquet` must cover that
@@ -997,11 +987,6 @@ fn validate_fpha_discretization_counts(
             cfg.turbine_discretization_points,
             "turbine_discretization_points",
         ),
-        (
-            cfg.spillage_discretization_points,
-            "spillage_discretization_points",
-        ),
-        (cfg.max_planes_per_hydro, "max_planes_per_hydro"),
     ] {
         if let Some(count) = value
             && count < 0
@@ -1236,8 +1221,6 @@ fn convert_fpha_column_layout(raw: RawFphaColumnLayout) -> FphaColumnLayout {
         source: raw.source,
         volume_discretization_points: raw.volume_discretization_points,
         turbine_discretization_points: raw.turbine_discretization_points,
-        spillage_discretization_points: raw.spillage_discretization_points,
-        max_planes_per_hydro: raw.max_planes_per_hydro,
         fitting_window: raw.fitting_window.map(|fw| FittingWindow {
             volume_min_hm3: fw.volume_min_hm3,
             volume_max_hm3: fw.volume_max_hm3,
@@ -1280,7 +1263,7 @@ mod tests {
     use super::*;
     use crate::test_support::{make_stage, write_json};
 
-    // ── AC: valid stage_ranges mode ───────────────────────────────────────────
+    // ── valid stage_ranges mode ───────────────────────────────────────────────
 
     /// Given a valid file with one hydro using `stage_ranges` mode, returns Ok with
     /// one entry containing the correct SelectionMode variant.
@@ -1340,7 +1323,7 @@ mod tests {
         }
     }
 
-    // ── AC: valid seasonal mode ───────────────────────────────────────────────
+    // ── valid seasonal mode ───────────────────────────────────────────────────
 
     /// Given a valid file with one hydro using `seasonal` mode, returns Ok with one
     /// entry containing the correct SelectionMode variant with default_model and seasons.
@@ -1393,7 +1376,7 @@ mod tests {
         }
     }
 
-    // ── AC: mixed — one stage_ranges, one seasonal ────────────────────────────
+    // ── mixed — one stage_ranges, one seasonal ────────────────────────────────
 
     /// Given a valid file with one hydro in stage_ranges mode and one in seasonal mode,
     /// returns Ok with 2 entries sorted by hydro_id.
@@ -1437,7 +1420,7 @@ mod tests {
         ));
     }
 
-    // ── AC: duplicate hydro_id -> SchemaError ─────────────────────────────────
+    // ── duplicate hydro_id -> SchemaError ─────────────────────────────────────
 
     /// Duplicate hydro_id in the file -> SchemaError mentioning the duplicate.
     #[test]
@@ -1473,7 +1456,7 @@ mod tests {
         }
     }
 
-    // ── AC: invalid stage range (start > end) -> SchemaError ─────────────────
+    // ── invalid stage range (start > end) -> SchemaError ─────────────────────
 
     /// stage_ranges with start_stage_id > end_stage_id -> SchemaError with
     /// field containing "stage_ranges" and message containing "start_stage_id".
@@ -1509,7 +1492,7 @@ mod tests {
         }
     }
 
-    // ── AC: equal start == end is valid ───────────────────────────────────────
+    // ── equal start == end is valid ───────────────────────────────────────────
 
     /// start_stage_id == end_stage_id is valid (single-stage range).
     #[test]
@@ -1535,7 +1518,7 @@ mod tests {
         );
     }
 
-    // ── AC: mutually exclusive fitting window -> SchemaError ─────────────────
+    // ── mutually exclusive fitting window -> SchemaError ─────────────────────
 
     /// Both volume_min_hm3 and volume_min_percentile set -> SchemaError with
     /// message containing "mutually exclusive".
@@ -1638,10 +1621,10 @@ mod tests {
         );
     }
 
-    // ── AC: None path wrapper returns empty vec ───────────────────────────────
+    // ── None path wrapper returns empty vec ───────────────────────────────────
     // (tested in extensions/mod.rs — see load_production_models)
 
-    // ── AC: file not found -> IoError ────────────────────────────────────────
+    // ── file not found -> IoError ────────────────────────────────────────────
 
     /// Non-existent path -> IoError.
     #[test]
@@ -1656,7 +1639,7 @@ mod tests {
         }
     }
 
-    // ── AC: unknown selection_mode -> SchemaError ─────────────────────────────
+    // ── unknown selection_mode -> SchemaError ─────────────────────────────────
 
     /// Unknown selection_mode -> SchemaError (tagged union deserialization failure).
     #[test]
@@ -1699,11 +1682,11 @@ mod tests {
     }
 
     #[test]
-    fn retired_linearized_head_model_name_is_rejected() {
+    fn linearized_head_model_name_is_rejected() {
         assert_model_name_rejected(r#""model": "linearized_head""#);
     }
 
-    // ── AC: empty production_models array -> Ok(vec![]) ──────────────────────
+    // ── empty production_models array -> Ok(vec![]) ──────────────────────────
 
     /// An empty `production_models` array deserialises to `Ok(Vec::new())`.
     #[test]
@@ -1714,7 +1697,7 @@ mod tests {
         assert!(models.is_empty());
     }
 
-    // ── AC: declaration-order invariance ─────────────────────────────────────
+    // ── declaration-order invariance ─────────────────────────────────────────
 
     /// Reordering the entries in the JSON does not change the output ordering.
     #[test]
@@ -1753,7 +1736,7 @@ mod tests {
         assert_eq!(ids_asc, vec![1, 5, 99]);
     }
 
-    // ── AC: fpha_config without fitting_window is valid ───────────────────────
+    // ── fpha_config without fitting_window is valid ───────────────────────────
 
     /// FPHA config with no fitting_window field at all is valid.
     #[test]
@@ -2015,9 +1998,9 @@ mod tests {
         }
     }
 
-    /// Regression guard: FPHA stage range with `productivity_mw_per_m3s` set is still rejected.
+    /// An FPHA stage range with `productivity_mw_per_m3s` set is rejected.
     #[test]
-    fn test_fpha_stage_range_with_productivity_still_rejected() {
+    fn test_fpha_stage_range_with_productivity_rejected() {
         let json = r#"{
           "production_models": [{
             "hydro_id": 0,
@@ -2045,9 +2028,9 @@ mod tests {
         }
     }
 
-    /// Regression guard: negative `productivity_mw_per_m3s` is still rejected when present.
+    /// A negative `productivity_mw_per_m3s` is rejected.
     #[test]
-    fn test_negative_productivity_still_rejected() {
+    fn test_negative_productivity_rejected() {
         let json = r#"{
           "production_models": [{
             "hydro_id": 0,
@@ -2448,7 +2431,7 @@ mod tests {
 
     // ── FPHA discretization-count non-negativity ──────────────────────────────
 
-    /// Each of the four FPHA discretization counts, set negative in turn, is
+    /// Each of the two FPHA discretization counts, set negative in turn, is
     /// rejected with a SchemaError whose field names the offending count and
     /// whose message names the hydro.
     #[test]
@@ -2456,8 +2439,6 @@ mod tests {
         for field_name in [
             "volume_discretization_points",
             "turbine_discretization_points",
-            "spillage_discretization_points",
-            "max_planes_per_hydro",
         ] {
             let json = format!(
                 r#"{{
@@ -2502,7 +2483,7 @@ mod tests {
             "seasons": [{
               "season_id": 0,
               "model": "fpha",
-              "fpha_config": { "source": "computed", "max_planes_per_hydro": -3 }
+              "fpha_config": { "source": "computed", "turbine_discretization_points": -3 }
             }]
           }]
         }"#;
@@ -2511,8 +2492,8 @@ mod tests {
         match &err {
             LoadError::SchemaError { field, message, .. } => {
                 assert!(
-                    field.contains("max_planes_per_hydro"),
-                    "field should name max_planes_per_hydro, got: {field}"
+                    field.contains("turbine_discretization_points"),
+                    "field should name turbine_discretization_points, got: {field}"
                 );
                 assert!(
                     message.contains("hydro_id 9"),
@@ -2523,8 +2504,35 @@ mod tests {
         }
     }
 
+    /// `spillage_discretization_points` and `max_planes_per_hydro` are not keys of
+    /// `fpha_config`; `deny_unknown_fields` refuses them.
+    #[test]
+    fn fpha_config_refuses_spillage_points_and_plane_ceiling() {
+        for key in ["spillage_discretization_points", "max_planes_per_hydro"] {
+            let json = format!(
+                r#"{{
+              "production_models": [{{
+                "hydro_id": 4,
+                "selection_mode": "stage_ranges",
+                "stage_ranges": [{{
+                  "start_stage_id": 0, "end_stage_id": null,
+                  "model": "fpha",
+                  "fpha_config": {{ "source": "computed", "{key}": 5 }}
+                }}]
+              }}]
+            }}"#
+            );
+            let f = write_json(&json);
+            let err = parse_production_models(f.path()).unwrap_err();
+            assert!(
+                err.to_string().contains(key),
+                "{key} must be refused as an unknown field, got: {err}"
+            );
+        }
+    }
+
     /// Absent (`None`) and non-negative FPHA discretization counts pass validation
-    /// unchanged — the `unwrap_or` default and existing decks are unaffected.
+    /// unchanged.
     #[test]
     fn fpha_absent_or_nonnegative_discretization_counts_accepted() {
         let absent = r#"{
@@ -2554,9 +2562,7 @@ mod tests {
               "fpha_config": {
                 "source": "computed",
                 "volume_discretization_points": 0,
-                "turbine_discretization_points": 7,
-                "spillage_discretization_points": 3,
-                "max_planes_per_hydro": 10
+                "turbine_discretization_points": 7
               }
             }]
           }]
@@ -2650,8 +2656,6 @@ mod tests {
             source: source.to_string(),
             volume_discretization_points: None,
             turbine_discretization_points: None,
-            spillage_discretization_points: None,
-            max_planes_per_hydro: None,
             fitting_window: None,
             spillage_fit_max_m3s: None,
             turbined_fit_max_m3s: None,

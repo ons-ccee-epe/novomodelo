@@ -3,17 +3,14 @@
 use std::path::Path;
 use std::process::Command;
 
-/// The 0.14 clean break retired every plan-introduced deprecated-with-fallback
-/// spelling with no whitelist: the aliased-parquet-column extractor mechanism
-/// (`extract_required_int32_aliased` / `extract_required_float64_aliased` /
-/// their shared `resolve_required_column` resolver) and any `#[serde(alias =
-/// "…")]` kept for a retired config spelling. This gate fails the moment either
-/// reappears anywhere under `crates/novomodelo-io/src`.
+/// `novomodelo-io` keeps no deprecated-with-fallback spelling, with no
+/// whitelist: no aliased-parquet-column extractor (`extract_*_aliased`) and no
+/// `#[serde(alias = "…")]`. This gate fails if either appears anywhere under
+/// `crates/novomodelo-io/src`.
 ///
-/// Complements, and does not replace, the per-site behaviour tests that already
-/// pin the individual removals: `retired_scheduler_spellings_are_deserialize_error`
+/// The per-site behaviour tests pin the individual refusals: `trial_point_and_opening_block_scheduler_spellings_are_deserialize_errors`
 /// and `a_removed_selection_method_names_level1` (`src/config/training.rs`),
-/// `test_num_scenarios_removed_field_rejected`
+/// `test_num_scenarios_field_rejected_and_num_openings_accepted`
 /// (`src/stages.rs`), and the `domination_count` `FlatBuffers` conformance check
 /// (`tests/flatbuffers_schema_conformance.rs`).
 fn novomodelo_io_src(workspace_root: &Path) -> std::path::PathBuf {
@@ -29,7 +26,7 @@ fn workspace_root() -> std::path::PathBuf {
 }
 
 #[test]
-fn no_aliased_parquet_column_extractor_remains() {
+fn no_aliased_parquet_column_extractor_under_io_sources() {
     let root = workspace_root();
     let src = novomodelo_io_src(&root);
 
@@ -38,20 +35,20 @@ fn no_aliased_parquet_column_extractor_remains() {
         .arg(&src)
         .current_dir(&root)
         .output()
-        .expect("no_aliased_parquet_column_extractor_remains: failed to execute grep");
+        .expect("no_aliased_parquet_column_extractor_under_io_sources: failed to execute grep");
 
     assert_eq!(
         output.status.code(),
         Some(1),
-        "an aliased parquet-column extractor (preferred-then-legacy column \
-         resolution) reappeared under crates/novomodelo-io/src — the 0.14 clean break \
-         removed this mechanism with no whitelist:\n{}",
+        "an aliased parquet-column extractor (preferred-then-fallback column \
+         resolution) appeared under crates/novomodelo-io/src — every parquet column \
+         is read under exactly one name:\n{}",
         String::from_utf8_lossy(&output.stdout)
     );
 }
 
 #[test]
-fn no_serde_alias_for_retired_spelling() {
+fn no_serde_alias_under_io_sources() {
     let root = workspace_root();
     let src = novomodelo_io_src(&root);
 
@@ -60,14 +57,13 @@ fn no_serde_alias_for_retired_spelling() {
         .arg(&src)
         .current_dir(&root)
         .output()
-        .expect("no_serde_alias_for_retired_spelling: failed to execute grep");
+        .expect("no_serde_alias_under_io_sources: failed to execute grep");
 
     assert_eq!(
         output.status.code(),
         Some(1),
-        "a #[serde(alias = \"…\")] reappeared under crates/novomodelo-io/src — the 0.14 \
-         clean break accepts exactly one spelling per config key, with no \
-         deprecated-alias whitelist:\n{}",
+        "a #[serde(alias = \"…\")] appeared under crates/novomodelo-io/src — every config \
+         key accepts exactly one spelling, with no alias:\n{}",
         String::from_utf8_lossy(&output.stdout)
     );
 }

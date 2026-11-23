@@ -1283,7 +1283,7 @@ mod tests {
     // test.
     #[allow(clippy::too_many_lines)]
     #[test]
-    fn apply_ncs_col_bounds_matches_pre_collapse_gather_and_set() {
+    fn apply_ncs_col_bounds_matches_explicit_gather_and_set() {
         let ncs_entity_id = EntityId(10);
         let bus = Bus {
             id: EntityId(0),
@@ -1391,8 +1391,8 @@ mod tests {
             ..test_support::equipment_free_geometry(&[n_blks]).remove(0)
         };
 
-        // ---- reference: transform, then the pre-collapse gather+set called
-        // directly (independent of `apply_ncs_col_bounds`) ----
+        // ---- reference: transform, then gather+set called directly
+        // (independent of `apply_ncs_col_bounds`) ----
         let mut reference_scratch = ScratchBuffers::for_test(0);
         transform_ncs_noise(
             &raw_noise,
@@ -1425,8 +1425,7 @@ mod tests {
             &reference_scratch.ncs_col_upper_active_buf,
         );
 
-        // ---- owner: transform (unchanged), then the collapsed
-        // `apply_ncs_col_bounds` ----
+        // ---- owner: transform, then `apply_ncs_col_bounds` ----
         let mut owner_scratch = ScratchBuffers::for_test(0);
         transform_ncs_noise(
             &raw_noise,
@@ -1450,7 +1449,7 @@ mod tests {
 
         assert_eq!(
             owner_solver.col_bounds_calls, reference_solver.col_bounds_calls,
-            "apply_ncs_col_bounds must match the pre-collapse gather+set output"
+            "apply_ncs_col_bounds must match the explicit gather+set output"
         );
         assert_eq!(owner_solver.col_bounds_calls.len(), 1);
         let (indices, lower, upper) = &owner_solver.col_bounds_calls[0];

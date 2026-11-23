@@ -1081,7 +1081,7 @@ mod tests {
 
     #[test]
     fn test_pack_unpack_delta_scalars_identity_for_lp_solves_600() {
-        // Acceptance criterion: identity property for allreduce with LocalBackend.
+        // Identity property for allreduce with LocalBackend.
         let delta = make_delta(600);
         let packed = pack_delta_scalars(&delta);
         let unpacked = unpack_delta_scalars(&packed);
@@ -1090,7 +1090,7 @@ mod tests {
 
     #[test]
     fn test_pack_unpack_scenario_stats_round_trip_three_entries() {
-        // Acceptance criterion: pack/unpack round-trip for Vec<(u32, SolverStatsDelta)>
+        // Pack/unpack round-trip for Vec<(u32, SolverStatsDelta)>
         // with scenario IDs 7, 12, 25.
         let stats = vec![
             (7u32, make_delta(100)),
@@ -1144,7 +1144,7 @@ mod tests {
 
     #[test]
     fn test_accumulate_into_all_fields() {
-        // AC-001: accumulate_into sums every scalar field and extends the histogram.
+        // accumulate_into sums every scalar field and extends the histogram.
         let mut dst = make_delta(10);
         dst.retry_level_histogram = vec![1, 0, 2, 0];
         let rhs = make_delta(5);

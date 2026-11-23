@@ -17,7 +17,7 @@ fn empty_cut_batch() -> RowBatch {
 }
 
 #[test]
-fn fpha_ac1_dimensions_one_fpha_hydro_five_planes() {
+fn fpha_dimensions_one_fpha_hydro_five_planes() {
     let (system, production) = one_fpha_hydro_system(5);
 
     let fpha_result = build_stage_templates_resolving_layout(
@@ -199,7 +199,7 @@ fn fpha_slack_absent_without_fpha() {
 }
 
 #[test]
-fn fpha_ac2_generation_column_entries() {
+fn fpha_generation_column_entries() {
     let n_planes = 5;
     let (system, production) = one_fpha_hydro_system(n_planes);
 
@@ -244,7 +244,7 @@ fn fpha_ac2_generation_column_entries() {
 
 /// The `v_in` column carries `-gamma_v/2` in every FPHA row; gamma_v = 0.5 → -0.25.
 #[test]
-fn fpha_ac3_v_in_column_entries() {
+fn fpha_v_in_column_entries() {
     let n_planes = 5;
     let (system, production) = one_fpha_hydro_system(n_planes);
 
@@ -278,7 +278,7 @@ fn fpha_ac3_v_in_column_entries() {
 
 /// The outgoing-storage column `v` carries `-gamma_v/2` in every FPHA row; -0.25 here.
 #[test]
-fn fpha_ac4_v_out_column_entries() {
+fn fpha_v_out_column_entries() {
     let n_planes = 5;
     let (system, production) = one_fpha_hydro_system(n_planes);
 
@@ -311,7 +311,7 @@ fn fpha_ac4_v_out_column_entries() {
 }
 
 #[test]
-fn fpha_ac5_mixed_system_load_balance_uses_generation_col() {
+fn fpha_mixed_system_load_balance_uses_generation_col() {
     let (system, production) = four_hydro_mixed_system();
 
     let result = build_stage_templates_resolving_layout(

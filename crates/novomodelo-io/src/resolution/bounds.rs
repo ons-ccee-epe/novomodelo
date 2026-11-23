@@ -1483,12 +1483,12 @@ mod tests {
         // No thermal dimension to query — verifying no panic above is sufficient.
     }
 
-    // ── Test: acceptance criterion — AC1: hydro min_storage_hm3 override ───────
+    // ── Test: hydro min_storage_hm3 override ───────────────────────────────────
 
-    /// AC1: 1 hydro, min_storage_hm3=10.0, max_storage_hm3=200.0, 3 stages,
+    /// 1 hydro, min_storage_hm3=10.0, max_storage_hm3=200.0, 3 stages,
     /// override at stage_id=1 with min_storage_hm3=Some(20.0), all other fields None.
     #[test]
-    fn test_ac1_hydro_storage_override() {
+    fn test_hydro_storage_override() {
         let hydros = vec![make_hydro(0, 10.0, 200.0, None, None, None)];
         let override_row = HydroBoundsRow {
             min_storage_hm3: Some(20.0),
@@ -1519,12 +1519,12 @@ mod tests {
         }
     }
 
-    // ── Test: acceptance criterion — AC2: thermal max_generation_mw override ───
+    // ── Test: thermal max_generation_mw override ───────────────────────────────
 
-    /// AC2: 2 thermals (max=400.0 and 600.0), 2 stages,
+    /// 2 thermals (max=400.0 and 600.0), 2 stages,
     /// override thermal_id=1 at stage_id=0, max_generation_mw=Some(500.0).
     #[test]
-    fn test_ac2_thermal_max_generation_override() {
+    fn test_thermal_max_generation_override() {
         let thermals = vec![make_thermal(0, 0.0, 400.0), make_thermal(1, 0.0, 600.0)];
         let override_row = ThermalBoundsRow {
             thermal_id: EntityId::from(1),
@@ -1555,11 +1555,11 @@ mod tests {
         assert!((result.thermal_block_base(0, 0).max_generation_mw - 400.0).abs() < f64::EPSILON);
     }
 
-    // ── Test: acceptance criterion — AC3: hydro with diversion no filling ──────
+    // ── Test: hydro with diversion no filling ──────────────────────────────────
 
-    /// AC3: hydro with diversion channel (max_flow_m3s=50.0) and no filling config.
+    /// Hydro with diversion channel (max_flow_m3s=50.0) and no filling config.
     #[test]
-    fn test_ac3_hydro_diversion_no_filling() {
+    fn test_hydro_diversion_no_filling() {
         let diversion = DiversionChannel {
             downstream_id: EntityId::from(2),
             max_flow_m3s: Some(50.0),
@@ -1588,11 +1588,11 @@ mod tests {
         assert!((b.water_withdrawal_m3s - 0.0).abs() < f64::EPSILON);
     }
 
-    // ── Test: acceptance criterion — AC4: empty overrides, base values ─────────
+    // ── Test: empty overrides, base values ─────────────────────────────────────
 
-    /// AC4: all five override slices empty, every cell equals entity base value.
+    /// All five override slices empty, every cell equals entity base value.
     #[test]
-    fn test_ac4_empty_overrides_base_values() {
+    fn test_empty_overrides_base_values() {
         let hydros = vec![make_hydro(0, 5.0, 50.0, None, None, None)];
         let thermals = vec![make_thermal(0, 10.0, 200.0)];
         let lines = vec![make_line(0, 500.0, 300.0)];
@@ -1634,11 +1634,11 @@ mod tests {
         }
     }
 
-    // ── Test: acceptance criterion — AC5: contract price_per_mwh override ──────
+    // ── Test: contract price_per_mwh override ──────────────────────────────────
 
-    /// AC5: contract override with price_per_mwh=Some(90.0) at stage 1.
+    /// Contract override with price_per_mwh=Some(90.0) at stage 1.
     #[test]
-    fn test_ac5_contract_price_override() {
+    fn test_contract_price_override() {
         let contracts = vec![make_contract(0, 0.0, 200.0, 80.0)];
         let override_row = ContractBoundsRow {
             contract_id: EntityId::from(0),
@@ -1701,7 +1701,7 @@ mod tests {
         assert!((result.hydro_bounds(0, 1).water_withdrawal_m3s - 0.0).abs() < f64::EPSILON);
     }
 
-    // ── Tests: thermal cost override acceptance criteria ─────────────────────
+    // ── Tests: thermal cost override ─────────────────────────────────────────
 
     /// cost_per_mwh override with null block_id — applied.
     /// thermal T1, stages 0 and 1, cost overrides 50.0 and 100.0.
@@ -2243,9 +2243,9 @@ mod tests {
     // ── Tests: thermal per-block overlay activation ───────────────────────────
 
     /// A thermal row with `block_id = Some(1)` and `max_generation_mw = Some(100.0)`
-    /// is no longer skipped: the value reaches the per-block overlay.
+    /// reaches the per-block overlay.
     #[test]
-    fn test_thermal_block_id_is_no_longer_skipped() {
+    fn test_thermal_block_id_row_reaches_the_per_block_overlay() {
         let thermals = vec![make_thermal(0, 0.0, 400.0)];
         let override_row = ThermalBoundsRow {
             thermal_id: EntityId::from(0),

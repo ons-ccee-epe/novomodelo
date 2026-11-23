@@ -349,7 +349,7 @@ mod tests {
       ]
     }"#;
 
-    // ── AC: valid thermals with and without anticipated config ─────────────────
+    // ── valid thermals with and without anticipated config ─────────────────────
 
     /// Given a valid `thermals.json` with 2 thermals (one with anticipated config,
     /// one without), `parse_thermals` returns `Ok(vec)` with 2 `Thermal` entries
@@ -394,7 +394,7 @@ mod tests {
         );
     }
 
-    // ── AC: duplicate ID detection ─────────────────────────────────────────────
+    // ── duplicate ID detection ─────────────────────────────────────────────────
 
     /// Given `thermals.json` with duplicate `id` values, `parse_thermals` returns
     /// `Err(LoadError::SchemaError)` mentioning "duplicate".
@@ -431,7 +431,7 @@ mod tests {
         }
     }
 
-    // ── AC: cost_per_mwh 75.0 round-trips through parser ───────────────────
+    // ── cost_per_mwh 75.0 round-trips through parser ───────────────────────
 
     /// Given a `thermals.json` with `"cost_per_mwh": 75.0`, the parser
     /// produces `Thermal { cost_per_mwh: 75.0, .. }`.
@@ -456,13 +456,12 @@ mod tests {
         );
     }
 
-    // ── AC: old array-based cost format fails to parse ──────────────────────
+    // ── missing cost_per_mwh fails to parse ─────────────────────────────────
 
-    /// Given `thermals.json` using the old array-based cost format (removed in
-    /// this version), `parse_thermals` returns `Err(LoadError::ParseError)` —
-    /// the old format is a breaking change with no backward compat.
+    /// Given a thermal with no `cost_per_mwh` key, `parse_thermals` returns
+    /// `Err(LoadError::ParseError)`.
     #[test]
-    fn test_legacy_array_cost_format_fails() {
+    fn test_thermal_without_cost_per_mwh_fails() {
         let json = r#"{
           "thermals": [
             {
@@ -475,11 +474,11 @@ mod tests {
         let err = parse_thermals(f.path()).unwrap_err();
         assert!(
             matches!(err, LoadError::ParseError { .. }),
-            "expected ParseError for legacy array-based cost format, got: {err:?}"
+            "expected ParseError for a thermal without cost_per_mwh, got: {err:?}"
         );
     }
 
-    // ── AC: negative cost_per_mwh → SchemaError ──────────────────────────────
+    // ── negative cost_per_mwh → SchemaError ──────────────────────────────────
 
     /// Negative `cost_per_mwh` → `SchemaError`.
     #[test]
@@ -506,7 +505,7 @@ mod tests {
         }
     }
 
-    // ── AC: generation bound validation ───────────────────────────────────────
+    // ── generation bound validation ───────────────────────────────────────────
 
     /// Negative `min_mw` → `SchemaError`.
     #[test]
@@ -595,7 +594,7 @@ mod tests {
         }
     }
 
-    // ── AC: declaration-order invariance ──────────────────────────────────────
+    // ── declaration-order invariance ──────────────────────────────────────────
 
     /// Given thermals in reverse ID order in JSON, `parse_thermals` returns a
     /// `Vec<Thermal>` sorted by ascending `id`.
@@ -643,7 +642,7 @@ mod tests {
         assert_eq!(thermals1[1].id, EntityId(1));
     }
 
-    // ── AC: anticipated thermals accepted without rejection ───────────────────
+    // ── anticipated thermals accepted without rejection ───────────────────────
 
     /// Anticipated thermals are parsed and accepted at this layer (semantic
     /// rejection is deferred).
@@ -658,19 +657,19 @@ mod tests {
         );
     }
 
-    // ── AC: legacy anticipated-config key (pre-rename) fails with unknown field ─
+    // ── banned anticipated-config key name fails with unknown field ───────────
 
-    /// Given a `thermals.json` that still uses the pre-rename anticipated-config
-    /// key, `parse_thermals` returns `Err(LoadError::ParseError)` whose message
-    /// contains the old key name as an unknown field.
+    /// Given a `thermals.json` that spells the anticipated-config key with the
+    /// banned name built below, `parse_thermals` returns
+    /// `Err(LoadError::ParseError)` whose message names the key as an unknown field.
     #[test]
-    fn test_legacy_anticipated_config_key_fails_with_unknown_field() {
-        // Build the old key names at runtime so no banned literal appears in
-        // source; the strings themselves are what the parser must reject.
-        let old_key: String = ['g', 'n', 'l', '_', 'c', 'o', 'n', 'f', 'i', 'g']
+    fn test_banned_anticipated_config_key_fails_with_unknown_field() {
+        // Build the key names at runtime so no banned literal appears in source;
+        // the strings themselves are what the parser must reject.
+        let banned_key: String = ['g', 'n', 'l', '_', 'c', 'o', 'n', 'f', 'i', 'g']
             .iter()
             .collect();
-        let old_sub: String = ['l', 'a', 'g', '_', 's', 't', 'a', 'g', 'e', 's']
+        let banned_sub: String = ['l', 'a', 'g', '_', 's', 't', 'a', 'g', 'e', 's']
             .iter()
             .collect();
         let json = format!(
@@ -680,7 +679,7 @@ mod tests {
               "id": 0, "name": "Alpha", "operational_start_date": "2024-01-01", "bus_id": 0,
               "cost_per_mwh": 50.0,
               "generation": {{ "min_mw": 0.0, "max_mw": 100.0 }},
-              "{old_key}": {{ "{old_sub}": 2 }}
+              "{banned_key}": {{ "{banned_sub}": 2 }}
             }}
           ]
         }}"#
@@ -690,17 +689,17 @@ mod tests {
         match &err {
             LoadError::ParseError { message, .. } => {
                 assert!(
-                    message.contains(&old_key),
-                    "error message should mention the old key as unknown field, got: {message}"
+                    message.contains(&banned_key),
+                    "error message should name the banned key as an unknown field, got: {message}"
                 );
             }
             other => {
-                panic!("expected ParseError for legacy anticipated-config key, got: {other:?}")
+                panic!("expected ParseError for the banned anticipated-config key, got: {other:?}")
             }
         }
     }
 
-    // ── AC: file not found → IoError ─────────────────────────────────────────
+    // ── file not found → IoError ─────────────────────────────────────────────
 
     /// Given a nonexistent path, `parse_thermals` returns `Err(LoadError::IoError)`.
     #[test]
@@ -715,7 +714,7 @@ mod tests {
         }
     }
 
-    // ── AC: invalid JSON → ParseError ─────────────────────────────────────────
+    // ── invalid JSON → ParseError ─────────────────────────────────────────────
 
     /// Given invalid JSON, `parse_thermals` returns `Err(LoadError::ParseError)`.
     #[test]
@@ -757,7 +756,7 @@ mod tests {
         assert_eq!(thermals[0].exit_stage_id, None);
     }
 
-    // ── AC: anticipated_config.lead_stages validation ────────────────────────
+    // ── anticipated_config.lead_stages validation ────────────────────────────
 
     /// `anticipated_config.lead_stages == 0` → `SchemaError` with the precise
     /// field path and "must be >= 1, got 0" in the message.
@@ -848,7 +847,7 @@ mod tests {
         );
     }
 
-    // ── AC: lead_time_hours mode ──────────────────────────────────────────────
+    // ── lead_time_hours mode ──────────────────────────────────────────────────
 
     /// Given a thermal JSON `"anticipated_config": {"lead_stages": 2}`, when
     /// `parse_thermals` runs, then `Thermal.anticipated_config` equals

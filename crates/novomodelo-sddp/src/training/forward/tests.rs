@@ -581,11 +581,11 @@ fn make_stages_3() -> Vec<Stage> {
     vec![make_stage(0, 0), make_stage(1, 1), make_stage(2, 2)]
 }
 
-// ── Acceptance criteria integration tests ───────────────────────────────
+// ── Integration tests ───────────────────────────────────────────────────
 
 #[test]
 #[allow(clippy::too_many_lines)]
-fn ac_two_scenarios_three_stages_fixed_solution() {
+fn two_scenarios_three_stages_fixed_solution() {
     // State layout: N=1, L=0 → n_state=1, theta=3, num_cols=4
     let state = test_support::state_layout(1, 0);
     let solution = fixed_solution(3, 100.0, state.theta, 30.0);
@@ -694,7 +694,7 @@ fn ac_two_scenarios_three_stages_fixed_solution() {
 
 #[test]
 #[allow(clippy::too_many_lines)]
-fn ac_infeasible_at_stage_1_scenario_0_returns_infeasible_error() {
+fn infeasible_at_stage_1_scenario_0_returns_infeasible_error() {
     let state = test_support::state_layout(1, 0);
     let solution = fixed_solution(3, 100.0, state.theta, 30.0);
     // Stage-first loop: with 2 scenarios and 3 stages, the solve order is
@@ -801,7 +801,7 @@ fn ac_infeasible_at_stage_1_scenario_0_returns_infeasible_error() {
 }
 
 #[test]
-fn ac_global_scenario_index_rank1_scenario0() {
+fn global_scenario_index_rank1_scenario0() {
     // global_scenario = rank * forward_passes + m = 1 * 3 + 0 = 3
     let rank = 1usize;
     let forward_passes = 3usize;
@@ -991,14 +991,14 @@ fn ub_statistics_four_scenarios_correct_mean_and_std() {
 
 /// 4 scenarios, costs [60,70,80,90].
 ///
-/// Matches the exact acceptance criterion values: `global_ub_mean` = 75.0,
+/// Expected values: `global_ub_mean` = 75.0,
 /// `global_ub_std` > 0.
 ///
 /// The sequential summation of [60, 70, 80, 90] gives:
 /// `cost_sum` = 300, `cost_sum_sq` = 23000, N = 4, mean = 75.
 /// std = sqrt((23000 - 4*75^2) / 3) = sqrt(500/3) ≈ 12.910.
 #[test]
-fn acceptance_criterion_ub_mean() {
+fn ub_mean_of_four_scenario_costs() {
     let local = ForwardResult {
         scenario_costs: vec![60.0, 70.0, 80.0, 90.0],
         elapsed_ms: 0,
@@ -2125,7 +2125,7 @@ fn truncation_fixes_the_slack_at_zero_when_inflow_is_positive() {
 
 #[test]
 #[allow(clippy::too_many_lines)]
-fn none_method_unchanged_with_truncation_code_present() {
+fn none_method_records_the_untruncated_stage_cost() {
     let state = test_support::state_layout(1, 0);
     let solution = fixed_solution(3, 100.0, state.theta, 30.0);
     let solver = MockSolver::always_ok(solution);
@@ -2698,7 +2698,7 @@ fn forward_pass_load_noise_clamped_to_zero() {
 }
 
 #[test]
-fn forward_pass_no_load_buses_unchanged() {
+fn forward_pass_no_load_buses_patches_only_inflow_rows() {
     let stochastic = make_stochastic_context_1_hydro(3, true);
     let stages = make_stages_3();
     let state = test_support::state_layout(1, 0);

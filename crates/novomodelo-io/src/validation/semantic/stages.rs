@@ -132,8 +132,8 @@ pub(super) fn check_inflow_lags_vs_par_order(data: &ParsedData, ctx: &mut Valida
 /// (rule 38: unknown/duplicate node id, unresolved stage, empty stage,
 /// unreachable node, cycle, mid-horizon leaf), the every-edge `t → t+1` rule
 /// (rule 39), and the recombinable-signature warning (rule 40). A no-op when
-/// `nodes` is empty — the chain dialect is unchanged (its endpoints are stage
-/// ids, validated by [`check_stage_structure`]).
+/// `nodes` is empty: the chain dialect's endpoints are stage ids, validated by
+/// [`check_stage_structure`].
 pub(super) fn check_node_graph(data: &ParsedData, ctx: &mut ValidationContext) {
     let graph = &data.stages.policy_graph;
     if graph.nodes.is_empty() {
@@ -736,7 +736,7 @@ pub(super) fn check_nodes_and_noise_openings(data: &ParsedData, ctx: &mut Valida
 
 /// Rule 44: `sampling_method` is inert under external openings and ill-defined
 /// at a multi-node stage; a warning names such a stage and the load succeeds.
-/// Declared `nodes[]` only — the chain dialect's `sampling_method` is unchanged.
+/// Declared `nodes[]` only; a chain-dialect deck is not checked.
 pub(super) fn check_sampling_method_meaningfulness(data: &ParsedData, ctx: &mut ValidationContext) {
     let graph = &data.stages.policy_graph;
     if graph.nodes.is_empty() {
@@ -1394,14 +1394,10 @@ mod tests {
     }
 
     /// A genuine fan whose two sibling successors carry the same realization
-    /// pointer — the duplicate-pointer / degenerate-branching shape a retired
-    /// admissibility predicate would have rejected — now loads with no error. A
-    /// node's realization is defined by its own `scenario_id` (the per-class
-    /// pointer bound is the only surviving pointer rule), so duplicate sibling
-    /// pointers are admissible; the structurally identical siblings draw only the
-    /// recombinable-signature warning, never a rejection. Asserts an OLD rule does
-    /// NOT fire — the counterpart to the sibling tests that assert a surviving rule
-    /// does.
+    /// pointer loads with no error. A node's realization is defined by its own
+    /// `scenario_id` (the per-class pointer bound is the only pointer rule), so
+    /// duplicate sibling pointers are admissible; the structurally identical
+    /// siblings draw only the recombinable-signature warning, never a rejection.
     #[test]
     fn test_node_graph_duplicate_sibling_pointer_branch_admitted() {
         // Root (stage 0, generated) fans to two stage-1 leaves both pointing at

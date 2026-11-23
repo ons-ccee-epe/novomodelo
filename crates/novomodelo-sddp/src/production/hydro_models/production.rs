@@ -664,8 +664,9 @@ fn fit_computed_planes_per_stage(
             // stay 1.0 — any other value re-scales already-corrected coefficients on
             // read-back (double-correction).
             //
-            // Rationale: plane counts are bounded by max_planes_per_hydro (default
-            // <= 30), far below i32::MAX, so truncation and wrap are unreachable.
+            // Rationale: a plane count is its fitted hull's facet count, which the
+            // fitting grid bounds far below i32::MAX, so truncation and wrap are
+            // unreachable.
             #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
             export_rows.push(FphaHyperplaneRow {
                 hydro_id: hydro.id,

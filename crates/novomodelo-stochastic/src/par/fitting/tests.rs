@@ -210,7 +210,7 @@ fn classify_history_helpers_round_trip() {
 }
 
 // -----------------------------------------------------------------------
-// Acceptance criterion: 2 hydros x 12 seasons = 24 rows
+// 2 hydros x 12 seasons = 24 rows
 // -----------------------------------------------------------------------
 
 #[test]
@@ -250,7 +250,7 @@ fn estimate_seasonal_stats_two_hydros_twelve_seasons() {
 }
 
 // -----------------------------------------------------------------------
-// Acceptance criterion: known mean and population-divisor (1/N) std
+// Known mean and population-divisor (1/N) std
 // -----------------------------------------------------------------------
 
 #[test]
@@ -297,7 +297,7 @@ fn estimate_seasonal_stats_known_values() {
 }
 
 // -----------------------------------------------------------------------
-// Acceptance criterion: Bessel correction uses N-1 divisor
+// Bessel correction uses N-1 divisor
 // -----------------------------------------------------------------------
 
 #[test]
@@ -331,7 +331,7 @@ fn estimate_seasonal_stats_population_divisor() {
 }
 
 // -----------------------------------------------------------------------
-// Acceptance criterion: fewer than 2 observations => error
+// Fewer than 2 observations => error
 // -----------------------------------------------------------------------
 
 #[test]
@@ -352,7 +352,7 @@ fn estimate_seasonal_stats_insufficient_data_one_obs() {
 }
 
 // -----------------------------------------------------------------------
-// Acceptance criterion: unmapped date => error
+// Unmapped date => error
 // -----------------------------------------------------------------------
 
 #[test]
@@ -374,7 +374,7 @@ fn estimate_seasonal_stats_unmapped_date() {
 }
 
 // -----------------------------------------------------------------------
-// Acceptance criterion: unknown hydros silently ignored
+// Unknown hydros silently ignored
 // -----------------------------------------------------------------------
 
 #[test]
@@ -479,10 +479,7 @@ fn estimate_seasonal_stats_thirty_years_single_season() {
 // estimate_correlation_with_season_map tests
 // -----------------------------------------------------------------------
 
-use super::{
-    ArCoefficientEstimate, CorrelationTarget, SeasonalStats,
-    estimate_ar_coefficients_with_season_map, estimate_correlation_with_season_map,
-};
+use super::{SeasonalStats, estimate_correlation_with_season_map};
 
 /// Helper: build a single-season study over `n_years` monthly stages.
 /// Season 0 covers month `month` of each year.
@@ -526,26 +523,9 @@ fn estimate_correlation_identical_series() {
 
     let stats =
         estimate_seasonal_stats_with_season_map(&observations, &stages, &hydro_ids, None).unwrap();
-    let estimates = estimate_ar_coefficients_with_season_map(
-        &observations,
-        &stats,
-        &stages,
-        &hydro_ids,
-        0,
-        None,
-    )
-    .unwrap();
-
-    let corr = estimate_correlation_with_season_map(
-        &observations,
-        &estimates,
-        &stats,
-        &stages,
-        &hydro_ids,
-        None,
-        CorrelationTarget::Residuals,
-    )
-    .unwrap();
+    let corr =
+        estimate_correlation_with_season_map(&observations, &stats, &stages, &hydro_ids, None)
+            .unwrap();
 
     let matrix = &corr.profiles["default"].groups[0].matrix;
     assert_eq!(matrix.len(), 2);
@@ -586,26 +566,9 @@ fn estimate_correlation_single_hydro() {
 
     let stats =
         estimate_seasonal_stats_with_season_map(&observations, &stages, &hydro_ids, None).unwrap();
-    let estimates = estimate_ar_coefficients_with_season_map(
-        &observations,
-        &stats,
-        &stages,
-        &hydro_ids,
-        0,
-        None,
-    )
-    .unwrap();
-
-    let corr = estimate_correlation_with_season_map(
-        &observations,
-        &estimates,
-        &stats,
-        &stages,
-        &hydro_ids,
-        None,
-        CorrelationTarget::Residuals,
-    )
-    .unwrap();
+    let corr =
+        estimate_correlation_with_season_map(&observations, &stats, &stages, &hydro_ids, None)
+            .unwrap();
 
     let profile = &corr.profiles["default"];
     assert_eq!(profile.groups.len(), 1);
@@ -625,18 +588,10 @@ fn estimate_correlation_empty_hydros() {
     let hydro_ids: Vec<EntityId> = Vec::new();
     let observations: Vec<(EntityId, NaiveDate, f64)> = Vec::new();
     let stats: Vec<SeasonalStats> = Vec::new();
-    let estimates: Vec<ArCoefficientEstimate> = Vec::new();
 
-    let corr = estimate_correlation_with_season_map(
-        &observations,
-        &estimates,
-        &stats,
-        &stages,
-        &hydro_ids,
-        None,
-        CorrelationTarget::Residuals,
-    )
-    .unwrap();
+    let corr =
+        estimate_correlation_with_season_map(&observations, &stats, &stages, &hydro_ids, None)
+            .unwrap();
 
     assert!(corr.profiles.contains_key("default"));
     assert!(
@@ -664,26 +619,9 @@ fn estimate_correlation_canonical_order() {
 
     let stats =
         estimate_seasonal_stats_with_season_map(&observations, &stages, &hydro_ids, None).unwrap();
-    let estimates = estimate_ar_coefficients_with_season_map(
-        &observations,
-        &stats,
-        &stages,
-        &hydro_ids,
-        0,
-        None,
-    )
-    .unwrap();
-
-    let corr = estimate_correlation_with_season_map(
-        &observations,
-        &estimates,
-        &stats,
-        &stages,
-        &hydro_ids,
-        None,
-        CorrelationTarget::Residuals,
-    )
-    .unwrap();
+    let corr =
+        estimate_correlation_with_season_map(&observations, &stats, &stages, &hydro_ids, None)
+            .unwrap();
 
     let group = &corr.profiles["default"].groups[0];
     assert_eq!(group.entities.len(), 3);
@@ -712,26 +650,9 @@ fn estimate_correlation_symmetric() {
 
     let stats =
         estimate_seasonal_stats_with_season_map(&observations, &stages, &hydro_ids, None).unwrap();
-    let estimates = estimate_ar_coefficients_with_season_map(
-        &observations,
-        &stats,
-        &stages,
-        &hydro_ids,
-        0,
-        None,
-    )
-    .unwrap();
-
-    let corr = estimate_correlation_with_season_map(
-        &observations,
-        &estimates,
-        &stats,
-        &stages,
-        &hydro_ids,
-        None,
-        CorrelationTarget::Residuals,
-    )
-    .unwrap();
+    let corr =
+        estimate_correlation_with_season_map(&observations, &stats, &stages, &hydro_ids, None)
+            .unwrap();
 
     let matrix = &corr.profiles["default"].groups[0].matrix;
     #[allow(clippy::needless_range_loop)]
@@ -763,26 +684,9 @@ fn estimate_correlation_unit_diagonal() {
 
     let stats =
         estimate_seasonal_stats_with_season_map(&observations, &stages, &hydro_ids, None).unwrap();
-    let estimates = estimate_ar_coefficients_with_season_map(
-        &observations,
-        &stats,
-        &stages,
-        &hydro_ids,
-        0,
-        None,
-    )
-    .unwrap();
-
-    let corr = estimate_correlation_with_season_map(
-        &observations,
-        &estimates,
-        &stats,
-        &stages,
-        &hydro_ids,
-        None,
-        CorrelationTarget::Residuals,
-    )
-    .unwrap();
+    let corr =
+        estimate_correlation_with_season_map(&observations, &stats, &stages, &hydro_ids, None)
+            .unwrap();
 
     let matrix = &corr.profiles["default"].groups[0].matrix;
     #[allow(clippy::needless_range_loop)]
@@ -798,9 +702,9 @@ fn estimate_correlation_unit_diagonal() {
 #[test]
 fn estimate_correlation_pooled_matrix_order_invariant() {
     // Ascending and reversed `hydro_ids` give bit-identical matrices once re-indexed
-    // by entity id: the pooled matrix of white-noise estimates, and every profile of
-    // lagged estimates under each target. The series are correlated but distinct, so
-    // a reordering-induced drift would show in the off-diagonals.
+    // by entity id, in the pooled profile and every seasonal profile. The series are
+    // correlated but distinct, so a reordering-induced drift would show in the
+    // off-diagonals.
     let stages = multi_season_stages(2000, 40, 12);
     let observations = mixed_splitmix_history(&stages);
     let fixture = CorrelationFixture::new(stages, three_plants(), observations);
@@ -833,24 +737,14 @@ fn estimate_correlation_pooled_matrix_order_invariant() {
             }
         };
 
-    let white_noise = fixture.white_noise();
-    assert_bit_identical_by_entity(
-        &fixture.correlation(&white_noise, CorrelationTarget::Residuals),
-        &fixture.correlation_for(&reversed_ids, &white_noise, CorrelationTarget::Residuals),
-        "default",
+    let corr_fwd = fixture.correlation();
+    let corr_rev = fixture.correlation_for(&reversed_ids);
+    assert!(
+        corr_fwd.profiles.keys().eq(corr_rev.profiles.keys()),
+        "profile sets differ"
     );
-
-    let lagged = fixture.order_one(0.4);
-    for target in [CorrelationTarget::Residuals, CorrelationTarget::Inflows] {
-        let corr_fwd = fixture.correlation(&lagged, target);
-        let corr_rev = fixture.correlation_for(&reversed_ids, &lagged, target);
-        assert!(
-            corr_fwd.profiles.keys().eq(corr_rev.profiles.keys()),
-            "{target:?}: profile sets differ"
-        );
-        for name in corr_fwd.profiles.keys() {
-            assert_bit_identical_by_entity(&corr_fwd, &corr_rev, name);
-        }
+    for name in corr_fwd.profiles.keys() {
+        assert_bit_identical_by_entity(&corr_fwd, &corr_rev, name);
     }
 }
 
@@ -879,25 +773,9 @@ fn estimate_correlation_independent_series() {
 
     let stats =
         estimate_seasonal_stats_with_season_map(&observations, &stages, &hydro_ids, None).unwrap();
-    let estimates = estimate_ar_coefficients_with_season_map(
-        &observations,
-        &stats,
-        &stages,
-        &hydro_ids,
-        0,
-        None,
-    )
-    .unwrap();
-    let corr = estimate_correlation_with_season_map(
-        &observations,
-        &estimates,
-        &stats,
-        &stages,
-        &hydro_ids,
-        None,
-        CorrelationTarget::Residuals,
-    )
-    .unwrap();
+    let corr =
+        estimate_correlation_with_season_map(&observations, &stats, &stages, &hydro_ids, None)
+            .unwrap();
 
     let matrix = &corr.profiles["default"].groups[0].matrix;
     assert!(
@@ -958,25 +836,9 @@ fn estimate_correlation_multi_season_produces_per_season_profiles() {
 
     let stats =
         estimate_seasonal_stats_with_season_map(&observations, &stages, &hydro_ids, None).unwrap();
-    let estimates = estimate_ar_coefficients_with_season_map(
-        &observations,
-        &stats,
-        &stages,
-        &hydro_ids,
-        0,
-        None,
-    )
-    .unwrap();
-    let corr = estimate_correlation_with_season_map(
-        &observations,
-        &estimates,
-        &stats,
-        &stages,
-        &hydro_ids,
-        None,
-        CorrelationTarget::Residuals,
-    )
-    .unwrap();
+    let corr =
+        estimate_correlation_with_season_map(&observations, &stats, &stages, &hydro_ids, None)
+            .unwrap();
 
     assert_eq!(corr.profiles.len(), n_seasons + 1);
     assert!(corr.profiles.contains_key("default"));
@@ -1017,25 +879,9 @@ fn estimate_correlation_multi_season_schedule_maps_stages_to_seasons() {
 
     let stats =
         estimate_seasonal_stats_with_season_map(&observations, &stages, &hydro_ids, None).unwrap();
-    let estimates = estimate_ar_coefficients_with_season_map(
-        &observations,
-        &stats,
-        &stages,
-        &hydro_ids,
-        0,
-        None,
-    )
-    .unwrap();
-    let corr = estimate_correlation_with_season_map(
-        &observations,
-        &estimates,
-        &stats,
-        &stages,
-        &hydro_ids,
-        None,
-        CorrelationTarget::Residuals,
-    )
-    .unwrap();
+    let corr =
+        estimate_correlation_with_season_map(&observations, &stats, &stages, &hydro_ids, None)
+            .unwrap();
 
     assert_eq!(corr.schedule.len(), 160);
     for (i, entry) in corr.schedule.iter().enumerate() {
@@ -1077,25 +923,9 @@ fn estimate_correlation_multi_season_per_season_values_differ() {
 
     let stats =
         estimate_seasonal_stats_with_season_map(&observations, &stages, &hydro_ids, None).unwrap();
-    let estimates = estimate_ar_coefficients_with_season_map(
-        &observations,
-        &stats,
-        &stages,
-        &hydro_ids,
-        0,
-        None,
-    )
-    .unwrap();
-    let corr = estimate_correlation_with_season_map(
-        &observations,
-        &estimates,
-        &stats,
-        &stages,
-        &hydro_ids,
-        None,
-        CorrelationTarget::Residuals,
-    )
-    .unwrap();
+    let corr =
+        estimate_correlation_with_season_map(&observations, &stats, &stages, &hydro_ids, None)
+            .unwrap();
 
     let matrix_s0 = &corr.profiles["season_0"].groups[0].matrix;
     assert!(matrix_s0[0][1] > 0.9);
@@ -1110,10 +940,10 @@ fn estimate_correlation_multi_season_per_season_values_differ() {
 }
 
 // -----------------------------------------------------------------------
-// CorrelationTarget tests
+// standardized-inflow correlation tests
 // -----------------------------------------------------------------------
 
-use novomodelo_core::scenario::{AnnualComponent, CorrelationModel};
+use novomodelo_core::scenario::CorrelationModel;
 
 use crate::test_support::WarnRecorder;
 
@@ -1166,106 +996,24 @@ impl CorrelationFixture {
         }
     }
 
-    fn white_noise(&self) -> Vec<ArCoefficientEstimate> {
-        estimate_ar_coefficients_with_season_map(
-            &self.observations,
-            &self.stats,
-            &self.stages,
-            &self.hydro_ids,
-            0,
-            None,
-        )
-        .unwrap()
+    fn correlation(&self) -> CorrelationModel {
+        self.correlation_for(&self.hydro_ids)
     }
 
-    /// Order-1 estimates with lag coefficient `psi` and an annual term, for every
-    /// `(plant, season)` of the fitted statistics.
-    fn order_one(&self, psi: f64) -> Vec<ArCoefficientEstimate> {
-        self.stats
-            .iter()
-            .map(|stats| ArCoefficientEstimate {
-                hydro_id: stats.entity_id,
-                season_id: self
-                    .stages
-                    .iter()
-                    .find(|stage| stage.id == stats.stage_id)
-                    .and_then(|stage| stage.season_id)
-                    .unwrap(),
-                coefficients: vec![psi],
-                annual: Some(AnnualComponent {
-                    coefficient: 0.2,
-                    mean_m3s: stats.mean,
-                    std_m3s: 15.0,
-                }),
-            })
-            .collect()
-    }
-
-    fn correlation(
-        &self,
-        estimates: &[ArCoefficientEstimate],
-        target: CorrelationTarget,
-    ) -> CorrelationModel {
-        self.correlation_for(&self.hydro_ids, estimates, target)
-    }
-
-    fn correlation_for(
-        &self,
-        hydro_ids: &[EntityId],
-        estimates: &[ArCoefficientEstimate],
-        target: CorrelationTarget,
-    ) -> CorrelationModel {
+    fn correlation_for(&self, hydro_ids: &[EntityId]) -> CorrelationModel {
         estimate_correlation_with_season_map(
             &self.observations,
-            estimates,
             &self.stats,
             &self.stages,
             hydro_ids,
             None,
-            target,
         )
         .unwrap()
     }
 }
 
-fn profile_bits(model: &CorrelationModel) -> Vec<(String, Vec<Vec<u64>>)> {
-    model
-        .profiles
-        .iter()
-        .map(|(name, profile)| {
-            let bits = profile.groups[0]
-                .matrix
-                .iter()
-                .map(|row| row.iter().map(|v| v.to_bits()).collect())
-                .collect();
-            (name.clone(), bits)
-        })
-        .collect()
-}
-
-fn assert_correlation_bits_equal(left: &CorrelationModel, right: &CorrelationModel) {
-    assert_eq!(profile_bits(left), profile_bits(right));
-    assert_eq!(left.schedule, right.schedule);
-}
-
 #[test]
-fn inflows_target_equals_residuals_target_at_order_zero() {
-    let stages = make_monthly_stages(2000, 40);
-    let observations = mixed_splitmix_history(&stages);
-    let fixture = CorrelationFixture::new(stages, three_plants(), observations);
-
-    let residuals = fixture.correlation(&fixture.white_noise(), CorrelationTarget::Residuals);
-    let inflows_at_order_zero =
-        fixture.correlation(&fixture.white_noise(), CorrelationTarget::Inflows);
-    let inflows_at_order_one =
-        fixture.correlation(&fixture.order_one(0.4), CorrelationTarget::Inflows);
-
-    assert_correlation_bits_equal(&inflows_at_order_zero, &residuals);
-    assert_correlation_bits_equal(&inflows_at_order_one, &residuals);
-}
-
-#[test]
-fn inflows_target_matches_direct_pearson_of_standardized_history() {
+fn correlation_matches_direct_pearson_of_standardized_history() {
     let stages = multi_season_stages(1980, 40, 2);
     let mut level = [0.0_f64; 3];
     let observations: Vec<_> = mixed_splitmix_history(&stages)
@@ -1277,7 +1025,7 @@ fn inflows_target_matches_direct_pearson_of_standardized_history() {
         })
         .collect();
     let fixture = CorrelationFixture::new(stages, three_plants(), observations);
-    let model = fixture.correlation(&fixture.order_one(0.6), CorrelationTarget::Inflows);
+    let model = fixture.correlation();
 
     let bessel_pearson = |x: &[f64], y: &[f64]| {
         let n = x.len() as f64;
@@ -1333,30 +1081,26 @@ fn inflows_target_matches_direct_pearson_of_standardized_history() {
 }
 
 #[test]
-fn inflows_target_counts_the_first_records() {
+fn correlation_counts_the_first_records() {
     let stages = make_monthly_stages(1990, 30);
     let observations = mixed_splitmix_history(&stages)
         .into_iter()
         .filter(|&(plant, _, _)| plant != EntityId::from(3))
         .collect();
     let fixture = CorrelationFixture::new(stages, three_plants()[..2].to_vec(), observations);
-    let lagged = fixture.order_one(0.5);
 
-    let profile_names = |target| {
+    let expected = std::iter::once("default".to_string())
+        .chain((0..12).map(|season| format!("season_{season:02}")))
+        .collect::<Vec<_>>();
+
+    assert_eq!(
         fixture
-            .correlation(&lagged, target)
+            .correlation()
             .profiles
             .into_keys()
-            .collect::<Vec<_>>()
-    };
-    let expected = |seasons: std::ops::Range<usize>| {
-        std::iter::once("default".to_string())
-            .chain(seasons.map(|season| format!("season_{season:02}")))
-            .collect::<Vec<_>>()
-    };
-
-    assert_eq!(profile_names(CorrelationTarget::Residuals), expected(1..12));
-    assert_eq!(profile_names(CorrelationTarget::Inflows), expected(0..12));
+            .collect::<Vec<_>>(),
+        expected
+    );
 }
 
 fn degenerate_season_fixture() -> CorrelationFixture {
@@ -1378,7 +1122,7 @@ fn degenerate_season_fixture() -> CorrelationFixture {
 }
 
 #[test]
-fn inflows_target_zeroes_a_degenerate_season() {
+fn a_degenerate_season_correlates_to_zero() {
     let fixture = degenerate_season_fixture();
     let std_of = |plant: i32, stage_id: i32| {
         fixture
@@ -1391,7 +1135,7 @@ fn inflows_target_zeroes_a_degenerate_season() {
     assert_eq!(std_of(1, 4), 0.0);
     assert_eq!(std_of(2, 7), 0.0);
 
-    let model = fixture.correlation(&[], CorrelationTarget::Inflows);
+    let model = fixture.correlation();
     let off_diagonal = |profile: &str, row: usize| -> Vec<f64> {
         model.profiles[profile].groups[0].matrix[row]
             .iter()
@@ -1408,33 +1152,19 @@ fn inflows_target_zeroes_a_degenerate_season() {
 }
 
 #[test]
-fn degenerate_warning_names_the_target_series() {
+fn degenerate_warning_names_the_standardized_inflow_series() {
     let fixture = degenerate_season_fixture();
-    let warnings_under = |target| {
-        let (subscriber, messages) = WarnRecorder::new();
-        tracing::subscriber::with_default(subscriber, || {
-            fixture.correlation(&[], target);
-        });
-        messages.lock().unwrap().clone()
-    };
+    let (subscriber, messages) = WarnRecorder::new();
+    tracing::subscriber::with_default(subscriber, || {
+        fixture.correlation();
+    });
 
-    let residual_warnings = warnings_under(CorrelationTarget::Residuals);
     assert!(
-        residual_warnings
-            .iter()
-            .any(|message| message.contains("near-zero residual variance"))
-    );
-
-    let inflow_warnings = warnings_under(CorrelationTarget::Inflows);
-    assert!(
-        inflow_warnings
+        messages
+            .lock()
+            .unwrap()
             .iter()
             .any(|message| message.contains("near-zero standardized inflow variance"))
-    );
-    assert!(
-        !inflow_warnings
-            .iter()
-            .any(|message| message.contains("residual variance"))
     );
 }
 
@@ -1444,13 +1174,13 @@ mod psd {
 
     use crate::correlation::spectral::jacobi_eigen;
 
-    use super::{CorrelationFixture, CorrelationTarget, EntityId, make_monthly_stages, splitmix};
+    use super::{CorrelationFixture, EntityId, make_monthly_stages, splitmix};
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(64))]
 
         #[test]
-        fn inflows_target_is_psd_on_complete_history(
+        fn correlation_is_psd_on_complete_history(
             n_plants in 2usize..=8,
             n_years in 30usize..=40,
             seed: u64,
@@ -1470,7 +1200,7 @@ mod psd {
             let hydro_ids = (1..=n_plants as i32).map(EntityId::from).collect();
             let fixture = CorrelationFixture::new(stages, hydro_ids, observations);
 
-            let model = fixture.correlation(&[], CorrelationTarget::Inflows);
+            let model = fixture.correlation();
 
             prop_assert_eq!(model.profiles.len(), 13);
             for (name, profile) in &model.profiles {
@@ -2801,7 +2531,7 @@ fn periodic_pacf_two_season_par2_analytical_verification() {
 }
 
 // -----------------------------------------------------------------------
-// estimate_correlation_with_season_map fallback and backward-compatibility tests
+// estimate_correlation_with_season_map fallback and single-season tests
 // -----------------------------------------------------------------------
 
 #[test]
@@ -2833,25 +2563,9 @@ fn estimate_correlation_min_sample_fallback() {
 
     let stats =
         estimate_seasonal_stats_with_season_map(&observations, &stages, &hydro_ids, None).unwrap();
-    let estimates = estimate_ar_coefficients_with_season_map(
-        &observations,
-        &stats,
-        &stages,
-        &hydro_ids,
-        0,
-        None,
-    )
-    .unwrap();
-    let corr = estimate_correlation_with_season_map(
-        &observations,
-        &estimates,
-        &stats,
-        &stages,
-        &hydro_ids,
-        None,
-        CorrelationTarget::Residuals,
-    )
-    .unwrap();
+    let corr =
+        estimate_correlation_with_season_map(&observations, &stats, &stages, &hydro_ids, None)
+            .unwrap();
 
     assert!(corr.profiles.contains_key("default"));
     assert!(corr.profiles.contains_key("season_0"));
@@ -2881,7 +2595,7 @@ fn estimate_correlation_min_sample_fallback() {
 }
 
 #[test]
-fn estimate_correlation_single_season_backward_compat() {
+fn estimate_correlation_single_season_yields_one_default_profile() {
     let stages = single_season_stages(2000, 20, 1);
     let hydro_ids = vec![EntityId::from(1), EntityId::from(2)];
 
@@ -2895,25 +2609,9 @@ fn estimate_correlation_single_season_backward_compat() {
 
     let stats =
         estimate_seasonal_stats_with_season_map(&observations, &stages, &hydro_ids, None).unwrap();
-    let estimates = estimate_ar_coefficients_with_season_map(
-        &observations,
-        &stats,
-        &stages,
-        &hydro_ids,
-        0,
-        None,
-    )
-    .unwrap();
-    let corr = estimate_correlation_with_season_map(
-        &observations,
-        &estimates,
-        &stats,
-        &stages,
-        &hydro_ids,
-        None,
-        CorrelationTarget::Residuals,
-    )
-    .unwrap();
+    let corr =
+        estimate_correlation_with_season_map(&observations, &stats, &stages, &hydro_ids, None)
+            .unwrap();
 
     assert_eq!(corr.profiles.len(), 1);
     assert!(corr.profiles.contains_key("default"));
@@ -3962,10 +3660,10 @@ fn conditional_facp_partitioned_two_season_hand_computed() {
 /// Strict per-entry verification of `assemble_partitioned_covariance` at k=3
 /// with n_seasons=3.
 ///
-/// The earlier `_two_season_hand_computed` test only pinned down k=1 (closed
-/// form) and k=2 boundedness — it called the same helpers (`periodic_auto…`,
-/// `cross_correlation_*`) to derive its expectations, so any indexing bug in
-/// the assembly would be invisible to it. This test instead computes every
+/// The `_two_season_hand_computed` test pins only k=1 (closed form) and k=2
+/// boundedness and derives its expectations from the same helpers
+/// (`periodic_auto…`, `cross_correlation_*`), so an indexing bug in the
+/// assembly would be invisible to it. This test instead computes every
 /// entry of Σ_11, Σ_22, and Σ_12 from raw scalar arithmetic on the
 /// observation arrays, with no helper calls in the expected-value path.
 ///
@@ -4294,7 +3992,7 @@ fn select_order_pacf_annual_structural_zero_at_lag3_selects_the_significant_lag1
 }
 
 #[test]
-fn select_order_pacf_annual_interior_insignificant_lag_still_selects_the_outer_lag() {
+fn select_order_pacf_annual_interior_insignificant_lag_selects_the_outer_lag() {
     // threshold = 1.96 / sqrt(100) = 0.196
     // conditional_facp = [0.5, 0.01, 0.4]: lag 1 and lag 3 are significant,
     // lag 2 (0.01) is not. Lag 2 stays in the model because the order names

@@ -413,10 +413,9 @@ def test_load_policy_self_describing_fields_survive_rewrite(
     survive a load_policy -> write_policy_checkpoint -> reload cycle — the
     load -> edit -> write round-trip the binding advertises.
 
-    Regression: load_policy previously omitted these per-stage fields, so the
-    rewrite defaulted the missing keys back to the -1 node/graph sentinel (and
-    cost_scale_factor to None), collapsing a genuine single-node pool and
-    breaking boundary-cut load. This test fails unless load_policy surfaces them.
+    load_policy must surface these per-stage fields: a rewrite without them
+    defaults the keys to the -1 node/graph sentinel (and cost_scale_factor to
+    None), collapsing a genuine single-node pool and breaking boundary-cut load.
     """
     import novomodelo
     import novomodelo.results

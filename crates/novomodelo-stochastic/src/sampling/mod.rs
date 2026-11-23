@@ -766,7 +766,6 @@ mod tests {
         context::{ClassSchemes, OpeningTreeInputs, build_stochastic_context},
         sample_forward,
         test_support::{WarnRecorder, uniform_tree},
-        tree::MomentMatching,
         tree::generate::ClassDimensions,
         tree::lhs::{sample_lhs_point, sample_lhs_point_reference},
     };
@@ -2000,7 +1999,6 @@ mod tests {
                 historical_library: None,
                 external_scenario_counts: None,
                 noise_group_ids: None,
-                moment_matching: MomentMatching::None,
             },
             ClassSchemes {
                 inflow: Some(SamplingScheme::OutOfSample),
@@ -2116,7 +2114,6 @@ mod tests {
                 historical_library: None,
                 external_scenario_counts: None,
                 noise_group_ids: None,
-                moment_matching: MomentMatching::None,
             },
             ClassSchemes {
                 inflow: Some(SamplingScheme::InSample),
@@ -2178,7 +2175,6 @@ mod tests {
                 historical_library: None,
                 external_scenario_counts: None,
                 noise_group_ids: None,
-                moment_matching: MomentMatching::None,
             },
             ClassSchemes {
                 inflow: Some(SamplingScheme::OutOfSample),

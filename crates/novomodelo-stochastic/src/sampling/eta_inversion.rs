@@ -31,10 +31,10 @@ use crate::seeds::DerivedSeed;
 // (outer × stage × entity) loop in strict sequence; extracting further
 // helpers would pass them by mutable ref across several call boundaries.
 #[allow(clippy::too_many_lines)]
-// Rationale: `seed` folds the former lag/accum/weight arguments into one
-// aggregate; the remaining dimension counts, the PAR model, the
-// lag-transition table, and the two per-scheme callbacks are independent
-// inputs with no further shared aggregate.
+// Rationale: `seed` already aggregates the lag/accumulator/weight state; the
+// remaining dimension counts, the PAR model, the lag-transition table, and the
+// two per-scheme callbacks are independent inputs with no further shared
+// aggregate.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_eta_inversion<F, W>(
     n_stages: usize,

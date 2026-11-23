@@ -3429,7 +3429,7 @@ mod transit_seed_round_trip_tests {
     }
 }
 
-/// The scalar-parameter table is now a `StudySetup` constructor input (never an
+/// The scalar-parameter table is a `StudySetup` constructor input (never an
 /// empty placeholder — see [`StudyParams::from_config`]): each gap class
 /// `build_resolved_parameters` can raise surfaces through
 /// [`StudySetup::new_with_boundary_requirements`], and a generic constraint

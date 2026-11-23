@@ -1790,7 +1790,7 @@ mod tests {
     // ---- Extended System tests ----------------------------------------------
 
     #[test]
-    fn test_system_backward_compat() {
+    fn test_empty_system_builder_builds_an_empty_system() {
         let system = SystemBuilder::new().build().expect("empty system is valid");
         assert_eq!(system.n_buses(), 0);
         assert_eq!(system.n_hydros(), 0);

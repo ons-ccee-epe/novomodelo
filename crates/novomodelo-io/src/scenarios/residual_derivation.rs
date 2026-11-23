@@ -344,8 +344,8 @@ mod tests {
     /// Uniform AR(1) order across every season decouples the periodic closure
     /// (each season's `implied_periodic_acf` row only ever hits the `j == kp`
     /// branch), so `r_m = sqrt(1 - psi_m^2)` exactly — an analytically known
-    /// closure value, giving an exact (not approximate) "previously stored"
-    /// oracle to compare against. Two stages share season 0 to also exercise
+    /// closure value, giving an exact (not approximate) `stored` oracle to
+    /// compare against. Two stages share season 0 to also exercise
     /// "every stage of a hydro gets its season's r".
     #[test]
     fn derived_ratio_uniform_matches_stored() {
@@ -371,13 +371,13 @@ mod tests {
         }
     }
 
-    /// Reproduces the `t2_mixed_orders_gate_passes` fixture bit-for-bit
+    /// Reproduces the `mixed_orders_pass_stationarity_gate` fixture bit-for-bit
     /// (`orders = [3, 1, 2, 1]` against the periodic Yule-Walker fit of a
     /// plausible sample ACF table) — the closure-derived `r` and the YW-fitted
     /// `r` are known (from that test) to differ only in season 0 (the
     /// max-order season), by a gap in `[1e-5, 1e-3)`, and to agree elsewhere to
-    /// better than `1e-9`. Here the YW-fitted values stand in for the
-    /// "previously stored" column value that assembly used to trust.
+    /// better than `1e-9`. Here `stored` holds the YW-fitted values, seeded as
+    /// each model's `residual_std_ratio` before the derivation overwrites it.
     #[test]
     fn derived_ratio_mixed_order_shifts() {
         let psi: [Vec<f64>; 4] = [
@@ -540,12 +540,11 @@ mod tests {
     }
 
     /// [`resolve_stage_seasons`] must densify sparse/non-contiguous raw
-    /// `season_id`s (e.g. a `Weekly` cycle's `21`/`26`) to `0..n_seasons` —
-    /// pins a downstream regression where a `Weekly`-cycle case with 2
-    /// declared seasons (ids 21 and 26) panicked with "index out of bounds:
-    /// the len is 2 but the index is 21" because the raw id was previously
-    /// used as the array index directly. Both the `season_map`-present and the
-    /// no-`season_map` fallback paths must densify identically.
+    /// `season_id`s (e.g. a `Weekly` cycle's `21`/`26`) to `0..n_seasons`: on a
+    /// `Weekly`-cycle case with 2 declared seasons (ids 21 and 26), using the raw
+    /// id as the array index panics with "index out of bounds: the len is 2 but
+    /// the index is 21". Both the `season_map`-present and the no-`season_map`
+    /// fallback paths must densify identically.
     #[test]
     fn resolve_stage_seasons_densifies_sparse_ids() {
         let stages = vec![stage_with_season(0, 0, 21), stage_with_season(1, 1, 26)];

@@ -564,7 +564,7 @@ mod tests {
     /// beyond the relative tolerance) is still rejected — the tolerance must
     /// have power, not just admit the reported calibration residual.
     #[test]
-    fn c0_metre_scale_gap_beyond_tolerance_is_still_rejected() {
+    fn c0_metre_scale_gap_beyond_tolerance_is_rejected() {
         let b = 416.0;
         let rows = vec![
             row(1, 0.0, b, [775.0, 0.0, 0.0, 0.0, 0.0]),
@@ -737,7 +737,7 @@ mod tests {
     }
 
     #[test]
-    fn family_id_order_inverted_from_level_order_still_brackets_by_level() {
+    fn family_id_order_inverted_from_level_order_brackets_by_level() {
         // family_id=1 carries the HIGHER level (890) and family_id=2 the LOWER
         // (880): the per-plant family_id order is the reverse of the level order.
         // Ordering by level (not family_id) is what makes `evaluate`'s clamp

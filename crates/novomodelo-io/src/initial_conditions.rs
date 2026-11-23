@@ -605,7 +605,7 @@ mod tests {
       ]
     }"#;
 
-    // ── AC: parse valid initial conditions ────────────────────────────────────
+    // ── parse valid initial conditions ────────────────────────────────────────
 
     /// Given a valid `initial_conditions.json` with 2 storage entries and
     /// 1 filling entry, `parse_initial_conditions` returns `Ok(ic)` with
@@ -639,7 +639,7 @@ mod tests {
         );
     }
 
-    // ── AC: empty arrays → Ok ─────────────────────────────────────────────────
+    // ── empty arrays → Ok ─────────────────────────────────────────────────────
 
     /// Given an `initial_conditions.json` with empty arrays, `parse_initial_conditions`
     /// returns `Ok(ic)` with empty storage and `filling_storage` vectors.
@@ -652,7 +652,7 @@ mod tests {
         assert!(ic.filling_storage.is_empty());
     }
 
-    // ── AC: negative value_hm3 → SchemaError ─────────────────────────────────
+    // ── negative value_hm3 → SchemaError ─────────────────────────────────────
 
     /// Given an `initial_conditions.json` with a negative `value_hm3` in
     /// `storage`, `parse_initial_conditions` returns `Err(LoadError::SchemaError)`
@@ -710,7 +710,7 @@ mod tests {
         }
     }
 
-    // ── AC: duplicate hydro_id within storage → SchemaError ───────────────────
+    // ── duplicate hydro_id within storage → SchemaError ───────────────────────
 
     /// Given an `initial_conditions.json` where the same `hydro_id` appears
     /// twice in `storage`, `parse_initial_conditions` returns
@@ -770,7 +770,7 @@ mod tests {
         }
     }
 
-    // ── AC: hydro_id in both lists → SchemaError ──────────────────────────────
+    // ── hydro_id in both lists → SchemaError ──────────────────────────────────
 
     /// Given an `initial_conditions.json` where the same `hydro_id` appears in
     /// both `storage` and `filling_storage`, `parse_initial_conditions` returns
@@ -802,7 +802,7 @@ mod tests {
         }
     }
 
-    // ── AC: file not found → IoError ─────────────────────────────────────────
+    // ── file not found → IoError ─────────────────────────────────────────────
 
     /// Given a nonexistent path, `parse_initial_conditions` returns
     /// `Err(LoadError::IoError)` with the matching path.
@@ -909,7 +909,7 @@ mod tests {
         );
     }
 
-    // ── AC: recent_observations absent → empty Vec (backward compat) ──────────
+    // ── recent_observations absent → empty Vec (backward compat) ──────────────
 
     /// Given a `initial_conditions.json` without a `recent_observations` key,
     /// `parse_initial_conditions` returns `Ok(ic)` with an empty
@@ -938,7 +938,7 @@ mod tests {
         assert!(ic.recent_observations.is_empty());
     }
 
-    // ── AC: valid recent_observations → parsed and sorted ─────────────────────
+    // ── valid recent_observations → parsed and sorted ─────────────────────────
 
     /// Given two valid `recent_observations` entries for the same hydro with
     /// adjacent (non-overlapping) date ranges, `parse_initial_conditions` returns
@@ -969,7 +969,7 @@ mod tests {
         assert!((ic.recent_observations[1].value_m3s - 480.0).abs() < f64::EPSILON);
     }
 
-    // ── AC: invalid start_date format → SchemaError ───────────────────────────
+    // ── invalid start_date format → SchemaError ───────────────────────────────
 
     /// Given a `recent_observations` entry with an invalid `start_date` format
     /// (slash-separated), `parse_initial_conditions` returns
@@ -1021,7 +1021,7 @@ mod tests {
         }
     }
 
-    // ── AC: end_date == start_date → SchemaError ──────────────────────────────
+    // ── end_date == start_date → SchemaError ──────────────────────────────────
 
     /// Given a `recent_observations` entry where `end_date == start_date`,
     /// `parse_initial_conditions` returns `Err(LoadError::SchemaError)` with
@@ -1081,7 +1081,7 @@ mod tests {
         }
     }
 
-    // ── AC: negative value_m3s loads (incremental inflow) ────────────────────
+    // ── negative value_m3s loads (incremental inflow) ────────────────────────
 
     #[test]
     fn test_recent_observations_negative_value_accepted() {
@@ -1098,7 +1098,7 @@ mod tests {
         assert!((ic.recent_observations[0].value_m3s - (-1.0)).abs() < f64::EPSILON);
     }
 
-    // ── AC: overlapping date ranges → SchemaError ─────────────────────────────
+    // ── overlapping date ranges → SchemaError ─────────────────────────────────
 
     /// Given two `recent_observations` entries for the same hydro with
     /// overlapping date ranges, `parse_initial_conditions` returns
@@ -1126,7 +1126,7 @@ mod tests {
         }
     }
 
-    // ── AC: adjacent non-overlapping ranges → Ok ──────────────────────────────
+    // ── adjacent non-overlapping ranges → Ok ──────────────────────────────────
 
     /// Given two `recent_observations` entries for the same hydro where
     /// `start == prev_end` (adjacent, exclusive-end convention), they are
@@ -1149,7 +1149,7 @@ mod tests {
         );
     }
 
-    // ── AC: declaration-order invariance ──────────────────────────────────────
+    // ── declaration-order invariance ──────────────────────────────────────────
 
     /// Given `recent_observations` entries for `hydro_id`s [1, 0] in that order,
     /// the result is sorted by `(hydro_id, start_date)` with `hydro_id` 0 first.
@@ -1215,7 +1215,7 @@ mod tests {
         );
     }
 
-    // ── AC: past_anticipated_commitments ─────────────────────────────────────
+    // ── past_anticipated_commitments ─────────────────────────────────────────
 
     /// Given an `initial_conditions.json` with one `past_anticipated_commitments`
     /// entry, `parse_initial_conditions` returns the correct parsed value.
@@ -1417,7 +1417,7 @@ mod tests {
     // `windowed_history`'s test module, which builds a `WindowedRecord` with
     // `f64::NAN` instead of going through JSON text.
 
-    // ── AC: past_defluences absent → empty; present → parsed and sorted ───────
+    // ── past_defluences absent → empty; present → parsed and sorted ───────────
 
     /// Given a `initial_conditions.json` without a `past_defluences` key,
     /// `parse_initial_conditions` returns `Ok(ic)` with an empty
@@ -1544,12 +1544,12 @@ mod tests {
         }
     }
 
-    // ── AC: legacy past_inflows field → rejected ──────────────────────────────
+    // ── past_inflows field → rejected ─────────────────────────────────────────
 
-    /// A legacy `initial_conditions.json` still carrying a `past_inflows` array
+    /// An `initial_conditions.json` carrying a `past_inflows` array
     /// is rejected by `deny_unknown_fields` rather than silently dropped.
     #[test]
-    fn test_legacy_past_inflows_field_is_rejected() {
+    fn test_past_inflows_field_is_rejected() {
         let json = r#"{
           "storage": [],
           "filling_storage": [],
@@ -1570,15 +1570,14 @@ mod tests {
         }
     }
 
-    // ── AC: retired future_anticipated_deliveries field → rejected ────────────
+    // ── future_anticipated_deliveries field → rejected ────────────────────────
 
-    /// A stale `initial_conditions.json` still declaring a
+    /// An `initial_conditions.json` declaring a
     /// `future_anticipated_deliveries` array is rejected by `deny_unknown_fields`
-    /// rather than silently dropped — the field's retirement is a breaking
-    /// input-contract change, and the unknown-field message routes to
+    /// rather than silently dropped, and the unknown-field message routes to
     /// `ParseError` (via serde), not `SchemaError`.
     #[test]
-    fn test_retired_future_anticipated_deliveries_field_is_rejected() {
+    fn test_future_anticipated_deliveries_field_is_rejected() {
         let json = r#"{
           "storage": [],
           "filling_storage": [],

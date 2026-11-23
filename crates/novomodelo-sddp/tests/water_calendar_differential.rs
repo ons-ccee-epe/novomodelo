@@ -1,4 +1,4 @@
-//! A current-format deck that changes only `water_bucket_stages` moves the water
+//! A deck that changes only `water_bucket_stages` moves the water
 //! facts (bucket slots, the state dimension they size) and leaves every thermal
 //! fact (`time_value.*`, the anticipated ring slots) unchanged.
 
