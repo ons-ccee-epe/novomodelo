@@ -388,14 +388,8 @@ mod tests {
             .expect("system must build")
     }
 
-    /// A `sigma=0` hydro (deterministic PAR) whose external row does not match
-    /// the deterministic value trips `solve_par_noise`'s `NEG_INFINITY`
-    /// sentinel. `build_external_inflow_library` must surface it as a V3.7
-    /// rejection through the real `standardize`-then-`validate` wiring, not
-    /// silently accept it (a `validate` run before `standardize_external_inflow`
-    /// writes eta would see a zero-filled buffer, so V3.7 could never fire).
     #[test]
-    fn external_inflow_sigma_zero_mismatch_rejected_by_v3_7() {
+    fn external_inflow_sigma_zero_takes_zero_noise_for_a_row_away_from_the_mean() {
         let hydro_id = EntityId(1);
         let hydro_ids = vec![hydro_id];
         let stages = vec![single_stage(0)];
@@ -420,53 +414,11 @@ mod tests {
         let transitions = vec![finalizing_transition()];
         let system = inflow_system(hydro_id, &stages, rows);
 
-        let result =
-            build_external_inflow_library(&system, &par, empty_derived_seed(), &transitions, 1, 0);
+        let library =
+            build_external_inflow_library(&system, &par, empty_derived_seed(), &transitions, 1, 0)
+                .expect("a sigma=0 hydro must not refuse the library");
 
-        match result {
-            Err(SddpError::Stochastic(StochasticError::InsufficientData { context })) => {
-                assert!(
-                    context.contains("V3.7"),
-                    "expected a V3.7 rejection, got: {context}"
-                );
-            }
-            other => panic!("expected a V3.7 rejection, got: {other:?}"),
-        }
-    }
-
-    /// Negative control for the test above: when the external row matches the
-    /// deterministic value exactly, `solve_par_noise` returns `0.0` (not the
-    /// `NEG_INFINITY` sentinel) and the library builds successfully.
-    #[test]
-    fn external_inflow_sigma_zero_match_accepted() {
-        let hydro_id = EntityId(1);
-        let hydro_ids = vec![hydro_id];
-        let stages = vec![single_stage(0)];
-
-        let models = vec![InflowModel {
-            hydro_id,
-            stage_id: 0,
-            mean_m3s: 100.0,
-            std_m3s: 0.0,
-            ar_coefficients: vec![],
-            residual_std_ratio: 1.0,
-            annual: None,
-        }];
-        let par = PrecomputedPar::build(&models, &stages, &hydro_ids, None).unwrap();
-
-        let rows = vec![ExternalScenarioRow {
-            stage_id: 0,
-            scenario_id: 0,
-            hydro_id,
-            value_m3s: 100.0,
-        }];
-        let transitions = vec![finalizing_transition()];
-        let system = inflow_system(hydro_id, &stages, rows);
-
-        let result =
-            build_external_inflow_library(&system, &par, empty_derived_seed(), &transitions, 1, 0);
-
-        assert!(result.is_ok(), "expected Ok(()), got: {result:?}");
+        assert_eq!(library.eta_slice(0, 0)[0].to_bits(), 0.0_f64.to_bits());
     }
 
     /// A σ=0 External LOAD bus reconstructs the external value, not a

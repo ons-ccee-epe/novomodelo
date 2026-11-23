@@ -5,8 +5,13 @@
 use std::fs;
 use std::path::Path;
 use std::process::Command;
+use std::sync::Arc;
 
+use arrow::array::{Float64Array, Int32Array};
+use arrow::datatypes::{DataType, Field, Schema};
+use arrow::record_batch::RecordBatch;
 use assert_cmd::prelude::*;
+use parquet::arrow::ArrowWriter;
 use predicates::prelude::*;
 use tempfile::TempDir;
 
@@ -760,6 +765,72 @@ fn simulation_out_of_sample_with_its_own_seed_passes_validate_and_run() {
         ])
         .assert()
         .success();
+}
+
+#[test]
+fn historical_scheme_with_a_zero_deviation_season_passes_validate_and_run() {
+    let dir = TempDir::new().unwrap();
+    copy_dir_recursive(
+        &common::case_dir("deterministic/d26-estimated-par2"),
+        dir.path(),
+    );
+    let config_path = dir.path().join("config.json");
+    let mut config: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
+    config["training"]["scenario_source"] =
+        serde_json::json!({ "seed": 1, "inflow": { "scheme": "historical" } });
+    config["training"]["stopping_rules"] =
+        serde_json::json!([{ "type": "iteration_limit", "limit": 3 }]);
+    config["estimation"] = serde_json::json!({ "max_order": 0 });
+    fs::write(&config_path, config.to_string()).unwrap();
+    write_inflow_seasonal_stats_with_zero_deviation_at_stage_3(
+        &dir.path().join("scenarios/inflow_seasonal_stats.parquet"),
+    );
+
+    novomodelo()
+        .args(["validate", dir.path().to_str().unwrap()])
+        .assert()
+        .success();
+
+    let output = TempDir::new().unwrap();
+    novomodelo()
+        .args([
+            "run",
+            dir.path().to_str().unwrap(),
+            "--output",
+            output.path().to_str().unwrap(),
+            "--quiet",
+        ])
+        .assert()
+        .success();
+}
+
+fn write_inflow_seasonal_stats_with_zero_deviation_at_stage_3(path: &Path) {
+    let stage_ids: Vec<i32> = (-2..=11).collect();
+    let rows = stage_ids.len();
+    let std_m3s: Vec<f64> = stage_ids
+        .iter()
+        .map(|&stage| if stage == 3 { 0.0 } else { 50.0 })
+        .collect();
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("hydro_id", DataType::Int32, false),
+        Field::new("stage_id", DataType::Int32, false),
+        Field::new("mean_m3s", DataType::Float64, false),
+        Field::new("std_m3s", DataType::Float64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(Int32Array::from(vec![0; rows])),
+            Arc::new(Int32Array::from(stage_ids)),
+            Arc::new(Float64Array::from(vec![200.0; rows])),
+            Arc::new(Float64Array::from(std_m3s)),
+        ],
+    )
+    .unwrap();
+    let mut writer = ArrowWriter::try_new(fs::File::create(path).unwrap(), schema, None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
 }
 
 #[test]

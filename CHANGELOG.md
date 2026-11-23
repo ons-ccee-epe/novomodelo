@@ -21,6 +21,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `fpha_config` of `system/hydro_production_models.json` are refused; delete
   them. Results do not change.
 
+### Fixed
+
+- `scenario_source.inflow.scheme` `"historical"` and `"external"` refused a
+  case with a zero inflow standard deviation at some hydro and season (`V2.3`,
+  `V3.7`). That hydro now takes the model's deterministic inflow in those
+  seasons instead of the recorded value.
+
 ## [0.21.0] - 2026-11-16
 
 ### Added

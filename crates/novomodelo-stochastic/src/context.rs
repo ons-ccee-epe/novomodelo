@@ -505,8 +505,8 @@ where
 /// default (`order`/`has_annual` start at their zero value for a hydro with no
 /// models), so it is synthesized here from `moments` rather than left out:
 /// otherwise the override never fires for that hydro and `PrecomputedPar`
-/// defaults its mean/std to `0.0`, which V3.7 then rejects as a
-/// deterministic-anchor mismatch against the real external value.
+/// defaults its mean/std to `0.0`, which replays zero inflow in place of the
+/// external values.
 fn external_ar0_inflow_models(
     system: &System,
     hydro_ids: &[EntityId],
@@ -2187,6 +2187,50 @@ mod tests {
             external_ctx.par().psi_slice(0, 1),
             seasonal_ctx.par().psi_slice(0, 1)
         );
+    }
+
+    #[test]
+    fn external_inflow_without_seasonal_stats_takes_the_external_sample_moments() {
+        let external_rows = vec![
+            ExternalScenarioRow {
+                stage_id: 0,
+                scenario_id: 0,
+                hydro_id: EntityId(1),
+                value_m3s: 10.0,
+            },
+            ExternalScenarioRow {
+                stage_id: 0,
+                scenario_id: 1,
+                hydro_id: EntityId(1),
+                value_m3s: 30.0,
+            },
+        ];
+        let system = SystemBuilder::new()
+            .buses(vec![make_bus(0)])
+            .hydros(vec![make_hydro(1)])
+            .stages(vec![make_stage(0, 0, 1)])
+            .correlation(identity_correlation(&[1]))
+            .external_scenarios(external_rows)
+            .build()
+            .unwrap();
+
+        let ctx = build_stochastic_context(
+            &system,
+            42,
+            None,
+            &[],
+            &[],
+            OpeningTreeInputs::default(),
+            ClassSchemes {
+                inflow: Some(SamplingScheme::External),
+                load: Some(SamplingScheme::InSample),
+                ncs: Some(SamplingScheme::InSample),
+            },
+        )
+        .unwrap();
+
+        assert!((ctx.par().deterministic_base(0, 0) - 20.0).abs() < 1e-10);
+        assert!((ctx.par().sigma(0, 0) - 10.0).abs() < 1e-10);
     }
 
     /// Regression: a GAPPED (non-0-based) declared study-stage id must
