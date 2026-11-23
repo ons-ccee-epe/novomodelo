@@ -301,7 +301,7 @@ pub fn print_provenance_summary(out: &Term, report: &ModelProvenanceReport) {
 }
 
 /// Wording is independent of [`BoundaryReconciliationReport::summary_line`]
-/// (legacy "N source slots dropped" for `novomodelo validate`); totals come from
+/// (the "N source slots dropped" line `novomodelo validate` prints); totals come from
 /// [`BoundaryReconciliationReport::tally_totals`].
 fn format_boundary_reconciliation_row(report: &BoundaryReconciliationReport) -> String {
     if !report.reconciled {
@@ -1530,7 +1530,7 @@ mod tests {
         }
     }
 
-    /// Acceptance criterion: 2 FPHA hydros → output contains "2 FPHA" and "planes"
+    /// 2 FPHA hydros → output contains "2 FPHA" and "planes"
     /// and does NOT contain the relocated source qualifiers.
     #[test]
     fn format_hydro_model_summary_with_fpha_contains_key_terms() {
@@ -1559,7 +1559,7 @@ mod tests {
         );
     }
 
-    /// Acceptance criterion: 0 FPHA hydros → output contains "constant" and NOT "FPHA".
+    /// 0 FPHA hydros → output contains "constant" and NOT "FPHA".
     #[test]
     fn format_hydro_model_summary_without_fpha_contains_constant_not_fpha() {
         let summary = make_hydro_model_summary_all_constant();
@@ -1575,7 +1575,7 @@ mod tests {
         );
     }
 
-    /// AC: pure-FPHA (`n_constant = 0`) — output contains "2 FPHA" and "7 planes"
+    /// Pure-FPHA (`n_constant = 0`) — output contains "2 FPHA" and "7 planes"
     /// and does NOT contain any relocated production-source qualifier.
     #[test]
     fn format_hydro_model_summary_pure_fpha_counts_only() {
@@ -1680,7 +1680,7 @@ mod tests {
         );
     }
 
-    /// AC (C2): `n_evaporation=1, n_no_evaporation=1, n_user_supplied_ref=1` →
+    /// `n_evaporation=1, n_no_evaporation=1, n_user_supplied_ref=1` →
     /// output contains the literal `"1 linearized"` (count-only, no noun) and
     /// none of the relocated reference-source qualifiers.
     #[test]
@@ -1728,7 +1728,7 @@ mod tests {
         );
     }
 
-    /// Acceptance criterion: `print_hydro_model_summary` does not panic with buffered stderr.
+    /// `print_hydro_model_summary` does not panic with buffered stderr.
     #[test]
     fn print_hydro_model_summary_does_not_panic() {
         let summary = make_hydro_model_summary_mixed();
@@ -1749,7 +1749,7 @@ mod tests {
 
     // ── format_evaporation_line count-only tests ─────────────────────────────
 
-    /// AC: all-midpoint refs — line shows counts only, no `v_ref` qualifier.
+    /// All-midpoint refs — line shows counts only, no `v_ref` qualifier.
     #[test]
     fn test_evaporation_line_all_midpoint() {
         let summary = HydroModelSummary {
@@ -1779,7 +1779,7 @@ mod tests {
         );
     }
 
-    /// AC: all-user-supplied refs — line shows counts only, no `v_ref` qualifier.
+    /// All-user-supplied refs — line shows counts only, no `v_ref` qualifier.
     #[test]
     fn test_evaporation_line_all_user_supplied() {
         let summary = HydroModelSummary {
@@ -1813,7 +1813,7 @@ mod tests {
         );
     }
 
-    /// AC: mixed refs — line shows counts only, no `v_ref` qualifiers.
+    /// Mixed refs — line shows counts only, no `v_ref` qualifiers.
     #[test]
     fn test_evaporation_line_mixed() {
         let summary = HydroModelSummary {
@@ -1847,7 +1847,7 @@ mod tests {
         );
     }
 
-    /// AC: no evaporation — line does NOT contain "`v_ref`".
+    /// No evaporation — line does NOT contain "`v_ref`".
     #[test]
     fn test_evaporation_line_no_evaporation() {
         let summary = make_hydro_model_summary_all_constant();
@@ -1919,7 +1919,7 @@ mod tests {
         }
     }
 
-    /// AC: the rendered body carries the header and every phase label.
+    /// The rendered body carries the header and every phase label.
     #[test]
     fn format_setup_summary_contains_phase_labels() {
         let timings = make_setup_timings();

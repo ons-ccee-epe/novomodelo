@@ -1654,8 +1654,8 @@ mod tests {
 
     /// Per-row reference for the batched scorer: replays the EXACT filter / gather
     /// order of `score_violated_candidates`, but scores each surviving candidate
-    /// with its own `gemm_block(coef, x*, 1, n_state, 1, ..)` call (the old
-    /// per-candidate path). The reduced-index → LP-column mapping uses the per-pool
+    /// with its own `gemm_block(coef, x*, 1, n_state, 1, ..)` call. The
+    /// reduced-index → LP-column mapping uses the per-pool
     /// `cut_state` projection (`n_slots`), resolving each slot through
     /// `global_state_index` and the global resolver instead of `outgoing_pairs`,
     /// so the reference is a true oracle for a reduced projection, not only the
@@ -3004,8 +3004,8 @@ mod tests {
     /// carried resident cut rows, and the warm basis from the first solve. Each
     /// opening must converge to the all-cuts optimum for its own pinned state,
     /// and the second must add the cut (slot 3) that binds only at x0 = 10 on top
-    /// of the carried residents {0,1,2}. This is the now-mandatory backward
-    /// opening-reuse mechanism (ReuseContinue) exercised in isolation.
+    /// of the carried residents {0,1,2}. This is the backward opening-reuse
+    /// mechanism (ReuseContinue) exercised in isolation.
     ///
     /// A third opening C continues at x0 = 2 where the binding cut (slot 2)
     /// is ALREADY resident from the carried set, so the lazy loop adds nothing and
@@ -3239,7 +3239,7 @@ mod tests {
     /// scoring pass (no growth): the accumulator advances by that single pass and
     /// the result is the binding-cut optimum.
     #[test]
-    fn scoring_time_single_pass_result_unchanged() {
+    fn scoring_time_single_pass_yields_the_binding_cut_optimum() {
         let indexer = lazy_indexer();
         let pool = make_three_cut_pool();
         let mut solver = active_profiled();

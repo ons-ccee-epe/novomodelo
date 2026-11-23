@@ -472,7 +472,7 @@ mod tests {
     }
 
     #[test]
-    fn test_none_season_map_backward_compat() {
+    fn test_none_season_map_uses_calendar_month_seasons() {
         let hydro1 = EntityId(1);
         let mut history = monthly_history(hydro1, 1990, 2010);
         history.extend(monthly_history(EntityId(2), 1990, 2010));

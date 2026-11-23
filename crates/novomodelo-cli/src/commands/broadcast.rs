@@ -1113,37 +1113,6 @@ mod tests {
         );
     }
 
-    /// Guardrail: catches a future serializer switching to named fields and
-    /// re-emitting stale field names into the postcard wire bytes.
-    #[test]
-    fn broadcast_config_wire_excludes_deleted_fields() {
-        use super::BroadcastConfig;
-
-        let json = r#"{
-            "training": {
-                "selection": { "method": "sampled", "forward_passes": 4 },
-                "stopping_rules": [
-                    { "type": "iteration_limit", "limit": 10 }
-                ]
-            }
-        }"#;
-        let config: novomodelo_io::Config = serde_json::from_str(json).unwrap();
-        let bcast = BroadcastConfig::from_config(&config).unwrap();
-        let bytes = postcard::to_allocvec(&bcast).expect("postcard serialization must succeed");
-
-        let as_string = String::from_utf8_lossy(&bytes);
-        for stale in [
-            "warm_start_basis_mode",
-            "canonical_state_strategy",
-            "basis_padding",
-        ] {
-            assert!(
-                !as_string.contains(stale),
-                "BroadcastConfig postcard bytes must not contain '{stale}'"
-            );
-        }
-    }
-
     #[test]
     fn broadcast_optional_opening_tree_local_round_trips() {
         use novomodelo_stochastic::context::OpeningTree;

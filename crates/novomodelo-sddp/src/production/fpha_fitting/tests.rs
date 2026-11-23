@@ -255,7 +255,7 @@ fn tailrace_polynomial_linear_two_coefficients() {
 }
 
 #[test]
-fn tailrace_polynomial_quadratic_acceptance_criterion() {
+fn tailrace_polynomial_quadratic_known_value() {
     let model = TailraceModel::Polynomial {
         coefficients: vec![5.0, 0.001, -1e-7],
     };
@@ -275,8 +275,7 @@ fn tailrace_polynomial_quartic_five_coefficients() {
 
 // ── Tailrace evaluation: Piecewise ────────────────────────────────────────
 
-/// Build the 3-point piecewise model from the acceptance criteria.
-fn ac_piecewise() -> TailraceModel {
+fn three_point_piecewise() -> TailraceModel {
     TailraceModel::Piecewise {
         points: vec![
             TailracePoint {
@@ -296,15 +295,15 @@ fn ac_piecewise() -> TailraceModel {
 }
 
 #[test]
-fn tailrace_piecewise_midpoint_first_segment_acceptance_criterion() {
-    let model = ac_piecewise();
+fn tailrace_piecewise_midpoint_first_segment() {
+    let model = three_point_piecewise();
     let expected = 3.0 + (4.5 - 3.0) * 2500.0 / 5000.0;
     assert!((evaluate_tailrace(&model, 2500.0) - expected).abs() < 1e-10);
 }
 
 #[test]
 fn tailrace_piecewise_at_breakpoints_exact() {
-    let model = ac_piecewise();
+    let model = three_point_piecewise();
     assert!((evaluate_tailrace(&model, 0.0) - 3.0).abs() < 1e-10);
     assert!((evaluate_tailrace(&model, 5000.0) - 4.5).abs() < 1e-10);
     assert!((evaluate_tailrace(&model, 15_000.0) - 6.2).abs() < 1e-10);
@@ -312,20 +311,20 @@ fn tailrace_piecewise_at_breakpoints_exact() {
 
 #[test]
 fn tailrace_piecewise_clamp_below_range() {
-    let model = ac_piecewise();
+    let model = three_point_piecewise();
     assert!((evaluate_tailrace(&model, -500.0) - 3.0).abs() < 1e-10);
 }
 
 #[test]
 fn tailrace_piecewise_clamp_above_range() {
-    let model = ac_piecewise();
+    let model = three_point_piecewise();
     assert!((evaluate_tailrace(&model, 99_999.0) - 6.2).abs() < 1e-10);
 }
 
 // ── Hydraulic losses: Factor ──────────────────────────────────────────────
 
 #[test]
-fn losses_factor_acceptance_criterion() {
+fn losses_factor_known_value() {
     let model = HydraulicLossesModel::Factor { value: 0.03 };
     assert!((evaluate_losses(&model, 100.0, 0.0) - 3.0).abs() < 1e-10);
 }
@@ -348,7 +347,7 @@ fn losses_factor_turbined_has_no_effect() {
 // ── Hydraulic losses: Constant ────────────────────────────────────────────
 
 #[test]
-fn losses_constant_acceptance_criterion() {
+fn losses_constant_known_value() {
     let model = HydraulicLossesModel::Constant { value_m: 2.5 };
     assert!((evaluate_losses(&model, 0.0, 0.0) - 2.5).abs() < 1e-10);
     assert!((evaluate_losses(&model, 999.0, 0.0) - 2.5).abs() < 1e-10);
@@ -480,7 +479,7 @@ fn net_head_no_tailrace_no_losses_equals_h_fore() {
 }
 
 #[test]
-fn net_head_polynomial_tailrace_constant_losses_acceptance_criterion() {
+fn net_head_polynomial_tailrace_constant_losses() {
     let forebay = flat_forebay_400m();
     let tailrace = linear_tailrace_5_5_at_3000();
     let losses = HydraulicLossesModel::Constant { value_m: 2.0 };
@@ -548,7 +547,7 @@ fn net_head_clamped_to_zero_when_losses_exceed_forebay() {
 // ── evaluate tests ────────────────────────────────────────────────────────
 
 #[test]
-fn evaluate_acceptance_criterion() {
+fn evaluate_known_value() {
     let forebay = flat_forebay_400m();
     let tailrace = linear_tailrace_5_5_at_3000();
     let losses = HydraulicLossesModel::Constant { value_m: 2.0 };
@@ -912,8 +911,8 @@ fn discretization_explicit_values_passed_through() {
 
 // ── Insufficient discretization ──────────────────────────────────────────
 
-// Note: `volume_discretization_points = 1` (NPTV = 1) is no longer rejected —
-// it is a run-of-river request rerouted through the single-volume path. See
+// `volume_discretization_points = 1` (NPTV = 1) is not rejected: it is a
+// run-of-river request rerouted through the single-volume path. See
 // `explicit_single_volume_point_reroutes_not_rejected`.
 
 /// volume_discretization_points = 0 -> InsufficientDiscretization.
@@ -1690,7 +1689,7 @@ fn fit_fpha_planes_turbined_fit_max_bounds_flow_axis() {
     assert_ne!(bounded.planes, default.planes);
 }
 
-/// AC (integration): a run-of-river hydro (NPTV = 1) fits end-to-end through
+/// A run-of-river hydro (NPTV = 1) fits end-to-end through
 /// the single-volume path, producing a valid outer approximation with every
 /// plane's `γ_V` exactly 0. `volume_discretization_points = 1` is the reference
 /// run-of-river config; the reroute fires inside `resolve_fitting_bounds`.
@@ -2287,7 +2286,7 @@ fn fitted_min_envelope_tracks_production_on_concave_reservoir() {
 // ── Tailrace-source seam ──────────────────────────────────────────────────
 
 /// Regression pin: a `TailraceSource::Entity` production function computes the
-/// EXACT pre-families net head — `h_fore − evaluate_tailrace(model, q + s) −
+/// EXACT entity-tailrace net head — `h_fore − evaluate_tailrace(model, q + s) −
 /// h_loss`. The `Entity` arm must keep calling `evaluate_tailrace(model, q_out)`
 /// verbatim; any drift here means the inert fallback is no longer inert.
 #[test]

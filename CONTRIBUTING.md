@@ -81,7 +81,7 @@ cargo test --workspace --no-default-features --features clp
 
 To exercise the same surface CI does — every non-solver optional feature, run
 once per backend — add the non-solver feature set explicitly (this needs MPICH
-and `flatc` installed, just as `--all-features` previously did):
+and `flatc` installed):
 
 ```bash
 # HiGHS (default) backend
@@ -347,13 +347,6 @@ The automated suite already proves the mechanical half of this: a trained full-h
 checkpoint reconciled into a truncated study with zero dropped couplings, both with and
 without a season map. This manual run is the residue — expected-cost fidelity on a deck
 large enough for the comparison to be meaningful — not a re-check of the tallies above.
-
-A pre-change baseline cannot be reconstructed to diff against: the
-`policy.boundary.source_stage` key the previous implementation read was removed and is now
-rejected by `deny_unknown_fields`, and a checkpoint that implementation wrote carries a
-`format_version` that `read_policy_checkpoint` now rejects before parsing any payload. The
-check is forward-only; the off-by-one this work removed has nothing left to reproduce it
-against.
 
 ### Project Structure
 

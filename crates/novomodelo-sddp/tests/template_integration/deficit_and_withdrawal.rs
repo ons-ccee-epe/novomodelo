@@ -254,7 +254,7 @@ fn test_multi_segment_deficit_bounds_and_objective() {
 }
 
 #[test]
-fn test_single_segment_backward_compat() {
+fn test_single_deficit_segment_is_unbounded_at_its_cost() {
     let cost = 1000.0_f64;
     let block_hours = 744.0_f64;
 

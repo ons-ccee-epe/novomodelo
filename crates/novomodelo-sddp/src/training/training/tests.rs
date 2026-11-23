@@ -393,7 +393,7 @@ fn iteration_limit_rules(limit: u64) -> StoppingRuleSet {
 }
 
 #[test]
-fn ac_train_completes_with_iteration_limit() {
+fn train_completes_with_iteration_limit() {
     let n_stages = 2;
     let state = test_support::state_layout(1, 0);
     let templates = vec![minimal_template(); n_stages];
@@ -476,7 +476,7 @@ fn ac_train_completes_with_iteration_limit() {
 }
 
 #[test]
-fn ac_train_returns_partial_on_infeasible() {
+fn train_returns_partial_on_infeasible() {
     let n_stages = 2;
     let state = test_support::state_layout(1, 0);
     let templates = vec![minimal_template(); n_stages];
@@ -570,7 +570,7 @@ fn ac_train_returns_partial_on_infeasible() {
 }
 
 #[test]
-fn ac_train_emits_correct_event_sequence() {
+fn train_emits_correct_event_sequence() {
     let n_stages = 2;
     let state = test_support::state_layout(1, 0);
     let templates = vec![minimal_template(); n_stages];
@@ -750,7 +750,7 @@ fn ac_train_emits_correct_event_sequence() {
 }
 
 #[test]
-fn ac_worker_timing_per_worker_event_count_and_setup_invariant() {
+fn worker_timing_per_worker_event_count_and_setup_invariant() {
     let n_stages = 2;
     let state = test_support::state_layout(1, 0);
     let templates = vec![minimal_template(); n_stages];
@@ -903,7 +903,7 @@ fn ac_worker_timing_per_worker_event_count_and_setup_invariant() {
 }
 
 #[test]
-fn ac_train_result_fields_populated() {
+fn train_result_fields_populated() {
     let n_stages = 2;
     let state = test_support::state_layout(1, 0);
     let templates = vec![minimal_template(); n_stages];
@@ -993,7 +993,7 @@ fn ac_train_result_fields_populated() {
 }
 
 #[test]
-fn ac_train_with_no_event_sender() {
+fn train_with_no_event_sender() {
     let n_stages = 2;
     let state = test_support::state_layout(1, 0);
     let templates = vec![minimal_template(); n_stages];
@@ -1073,7 +1073,7 @@ fn ac_train_with_no_event_sender() {
 }
 
 #[test]
-fn ac_total_time_ms_is_non_negative() {
+fn total_time_ms_is_non_negative() {
     let n_stages = 2;
     let state = test_support::state_layout(1, 0);
     let templates = vec![minimal_template(); n_stages];
@@ -1334,7 +1334,7 @@ fn existing_train_tests_pass_with_none() {
 }
 
 #[test]
-fn ac_train_partial_result_on_mid_iteration_failure() {
+fn train_partial_result_on_mid_iteration_failure() {
     let n_stages = 2;
     let state = test_support::state_layout(1, 0);
     let templates = vec![minimal_template(); n_stages];
@@ -1621,7 +1621,7 @@ fn start_iteration_at_or_beyond_max_runs_zero_iterations() {
 // ── broadcast_basis_cache unit tests ─────────────────────────────────────
 
 #[test]
-fn ac_broadcast_basis_cache_uses_scenario_0_not_last() {
+fn broadcast_basis_cache_uses_scenario_0_not_last() {
     use super::broadcast_basis_cache;
     use crate::setup::NodePos;
     use crate::workspace::{BasisStore, CapturedBasis};
@@ -1688,7 +1688,7 @@ fn ac_broadcast_basis_cache_uses_scenario_0_not_last() {
 }
 
 #[test]
-fn ac_broadcast_basis_cache_none_slots_preserved() {
+fn broadcast_basis_cache_none_slots_preserved() {
     use super::broadcast_basis_cache;
     use crate::workspace::BasisStore;
 
@@ -1938,8 +1938,7 @@ fn broadcast_basis_cache_multi_rank_round_trips_full_metadata() {
     assert_eq!(
         cb0.node_id,
         NodeId(3),
-        "node_id now rides the wire; rank 1 must recover rank 0's captured \
-         value, no longer an out-of-band fill from a per-stage node array"
+        "node_id rides the wire; rank 1 must recover rank 0's captured value"
     );
     assert!(cache[1].is_none(), "stage 1 had no basis → None");
 }
@@ -2254,7 +2253,7 @@ fn template_freeze_event_emitted() {
 /// if any field is renamed, reordered, or removed without a corresponding
 /// update to the constructor signature.
 #[test]
-fn ac_training_result_new_assigns_all_fields() {
+fn training_result_new_assigns_all_fields() {
     use crate::workspace::CapturedBasis;
 
     let basis_cache = vec![Some(CapturedBasis {
@@ -2556,7 +2555,7 @@ fn a_two_rank_gather_numbers_each_peer_row_from_its_offset() {
 }
 
 #[test]
-fn a_gather_that_cannot_decode_a_peer_segment_still_issues_every_collective() {
+fn a_gather_that_cannot_decode_a_peer_segment_issues_every_collective() {
     use super::gather_basis_store;
     use crate::training::session::rank_distribution::RankDistribution;
     use crate::workspace::BASIS_BROADCAST_FORMAT_TAG;

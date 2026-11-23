@@ -1,9 +1,9 @@
 # Post-horizon input schema unification
 
 > **Status:** Proposal (not yet implemented). A target design for the input
-> surface that declares post-horizon anticipated-thermal commitments. Supersedes
-> the `post_study_stages.json` shape shipped in 0.15.0. Timing (whether it lands
-> before or after 0.15.0) is an open owner decision — see §9.
+> surface that declares post-horizon anticipated-thermal commitments, replacing
+> the thermal half of `post_study_stages.json` (`thermal_stages`,
+> `thermal_bounds`). When it lands is an owner decision — see §9.
 
 **Scope:** how a study declares (a) the post-horizon calendar and (b) the
 cost/bounds of an anticipated thermal's post-horizon delivery. Narrows both onto
@@ -14,13 +14,12 @@ keys everything by stage `id` instead of an array index.
 
 ## 1. Problem statement
 
-The post-horizon feature (0.15.0) introduced `post_study_stages.json`, a file
-that bundles two unrelated concerns and breaks with every convention the rest of
-the input model follows:
+`post_study_stages.json` bundles two unrelated concerns and breaks with every
+convention the rest of the input model follows:
 
 ```json
 {
-  "stages": [{ "start_date": "2026-11-01", "duration_hours": 720.0 }],
+  "thermal_stages": [{ "start_date": "2026-11-01", "duration_hours": 720.0 }],
   "thermal_bounds": [
     {
       "thermal_id": 86,
@@ -157,8 +156,8 @@ one consistent identity story: the window's dates resolve against the same
 ## 4. Semantics & derivation
 
 - **Derived cell existence.** Which `(thermal, post-stage)` cells exist is
-  derived from the plant's lead and the extended calendar, exactly as today. The
-  input no longer restates that set; it supplies only per-cell _overrides_.
+  derived from the plant's lead and the extended calendar, as it is now. The
+  input does not restate that set; it supplies only per-cell _overrides_.
 - **Defaulting.** For each reached post-study stage, the effective cell is
   `(cost_per_mwh ?? plant.cost_per_mwh, min_mw ?? plant.generation.min_mw, max_mw
 ?? plant.generation.max_mw)`, then a `post_horizon_delivery` entry for that
@@ -200,9 +199,9 @@ one consistent identity story: the window's dates resolve against the same
 
 ## 7. Migration
 
-The transform from the 0.15.0 shape is mechanical:
+The transform from the current shape is mechanical:
 
-1. Move each `post_study_stages.json` `stages[]` entry into `stages.json`
+1. Move each `post_study_stages.json` `thermal_stages[]` entry into `stages.json`
    `post_study_stages[]`, assigning ascending positive ids past the last study id
    and converting `duration_hours` to an `end_date` (`start + duration`).
 2. For each `thermal_bounds` row, add a `post_horizon_delivery` entry to that
@@ -210,17 +209,15 @@ The transform from the 0.15.0 shape is mechanical:
    `stage_id`; drop any field equal to the plant's own default.
 3. Delete `post_study_stages.json`.
 
-The post-horizon feature is **new in 0.15.0**, so if the redesign lands before
-0.15.0 has real adopters the migration burden is ~nil (see §9). A converter
-(`novomodelo-bridge`) emitting the old shape updates once.
+A converter (`novomodelo-bridge`) emitting the current shape updates once.
 
 ## 8. Byte-neutrality & determinism
 
 - No golden `parity_hash_*` or `mpi_wire` baseline exercises a post-horizon
   anticipated deck; the only exercisers are the `d55` deck and the anticipated
   unit/analytical tests. The change is **result-neutral by coverage**: after the
-  d55 deck is migrated, its solved outputs must be bit-identical to the 0.15.0
-  outputs (the internal state space is unchanged — §4). A moved hash is an
+  d55 deck is migrated, its solved outputs must be bit-identical to its outputs
+  before the change (the internal state space is unchanged — §4). A moved hash is an
   escalation signal, never a re-baseline.
 - Moment/geometry derivation is untouched; declaration-order invariance holds
   because the calendar sorts by `(start_date)` and bounds resolve through the
@@ -230,18 +227,9 @@ The post-horizon feature is **new in 0.15.0**, so if the redesign lands before
 
 ## 9. Sequencing (owner decision)
 
-The redesign is a breaking input-schema change regardless of when it lands. Two
-paths:
-
-- **Ship 0.15.0 as-is, redesign in 0.16.0.** The large, ready 0.15.0 work
-  (external scenarios, self-describing checkpoints, the anticipated ring) ships
-  now; the redesign is the first breaking change of 0.16.0, before real adoption.
-  The awkward schema appears in exactly one release.
-- **Hold 0.15.0, redesign first.** The awkward schema never ships and no migration
-  ever exists, at the cost of delaying all the other ready 0.15.0 work behind this
-  one sub-feature's schema.
-
-This document does not decide the fork; it makes either path executable.
+The redesign is a breaking input-schema change whenever it lands: it needs a
+BREAKING changelog entry, the migration of §7 and the bridge update. When it lands
+is an owner decision.
 
 ## 10. Non-goals
 
@@ -260,4 +248,8 @@ This document does not decide the fork; it makes either path executable.
   declaration cannot express (e.g. a plant not yet in service in-study)? If so,
   confirm the plant's `generation` still provides a sane default or require an
   explicit entry for such plants.
-- Confirm `novomodelo-bridge`'s emitter is the only external producer of the old shape.
+- Confirm `novomodelo-bridge`'s emitter is the only external producer of the
+  current shape.
+- `post_study_stages.json` also carries the water calendar `water_bucket_stages`,
+  which this design does not place. Retiring the file (§3.1, §7) needs a home for
+  it: a second id-keyed calendar in `stages.json`, or the file kept for water alone.

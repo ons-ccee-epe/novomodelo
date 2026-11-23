@@ -1,5 +1,5 @@
-//! Constants below were captured on the pre-change code; a diff in them means the
-//! forward noise stream moved.
+//! The constants below pin the forward noise stream; a diff in them means the
+//! stream moved.
 
 #![allow(
     clippy::unwrap_used,

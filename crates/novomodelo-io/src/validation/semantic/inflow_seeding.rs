@@ -202,7 +202,7 @@ fn merged_windows_by_hydro(data: &ParsedData) -> HashMap<EntityId, Vec<RealizedW
     merged
 }
 
-/// Test oracle: the retired per-hydro scan for equivalence validation.
+/// Test oracle: the per-hydro filter-then-merge that `merged_windows_by_hydro` must match.
 #[cfg(test)]
 fn merged_windows_for_hydro_reference(
     data: &ParsedData,
@@ -888,7 +888,7 @@ mod tests {
     }
 
     #[test]
-    fn test_annual_component_non_monthly_still_rejects_from_inflow_seeding() {
+    fn test_annual_component_non_monthly_rejects_from_inflow_seeding() {
         let mut data = par_cycle_data(season_map_with_cycle(SeasonCycleType::Weekly));
         data.inflow_annual_components = vec![annual_component_row(1)];
 
@@ -1044,7 +1044,7 @@ mod tests {
     // ── merged_windows_by_hydro: bucketed-map equivalence ──────────────────
 
     /// The bucketed one-pass map's merged windows must match, hydro-for-hydro
-    /// and window-for-window, the retired per-hydro filter-then-merge
+    /// and window-for-window, the per-hydro filter-then-merge reference
     /// ([`merged_windows_for_hydro_reference`]). Hydro 1's two overlapping
     /// `inflow_history` rows make this discriminating: [`merge_layered_windows`]
     /// resolves an overlap to the first-listed covering window, so a bucket

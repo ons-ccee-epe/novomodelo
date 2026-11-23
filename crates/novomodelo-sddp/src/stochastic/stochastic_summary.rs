@@ -1060,7 +1060,7 @@ mod tests {
     /// Verify the per-class scheme fields are populated from provenance and that
     /// `correlation_dim` reflects the full noise dimension (not just `n_hydros`).
     #[test]
-    fn build_stochastic_summary_new_fields_and_correlation_dim() {
+    fn build_stochastic_summary_scheme_fields_and_correlation_dim() {
         let system = make_system_with_hydro();
         let stochastic = build_stochastic_context(
             &system,

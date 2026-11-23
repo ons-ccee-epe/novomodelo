@@ -686,7 +686,7 @@ mod tests {
 
     /// A parameter coefficient that resolves to `0.0` at one stage still echoes its row.
     #[test]
-    fn term_resolving_to_zero_still_emits_its_row() {
+    fn term_resolving_to_zero_emits_its_row() {
         let constraints = vec![constraint(
             1,
             "zero_at_stage_1",

@@ -834,10 +834,9 @@ mod tests {
     /// Drive `advance_lag_chain::<LagMajor>` across `fx`'s stages with lag
     /// width `lag_width`, returning the incoming (pre-advance) lag vector at
     /// `at_stage` — the values the PAR model there reads. `downstream_par_order
-    /// = 0` (`accumulator`/`completed_lags` empty) reproduces the literal-`0`
-    /// regression `build_opening_tree_library` used to pass to
-    /// `standardize_historical_windows`; a positive value reproduces the
-    /// ring-aware, fixed behavior.
+    /// = 0` (`accumulator`/`completed_lags` empty) reproduces a literal `0`
+    /// passed to `standardize_historical_windows` (the primary-only advance); a
+    /// positive value reproduces the ring-aware behavior.
     fn ring_incoming_lags(
         fx: &RingFixture,
         transitions: &[StageLagTransition],
@@ -896,7 +895,7 @@ mod tests {
     /// `derive_downstream_par_order`'s result into `standardize_historical_windows`,
     /// not a literal `0`: the resulting eta at the quarterly transition must
     /// match the independent ring-aware forward-chain oracle and differ from
-    /// the primary-only advance the literal-`0` regression produces.
+    /// the primary-only advance a literal `0` produces.
     #[test]
     fn build_opening_tree_library_ring_aware_eta_at_quarterly_transition() {
         let fx = build_ring_fixture();
@@ -1764,11 +1763,11 @@ mod tests {
         (system, training_source)
     }
 
-    /// Cross-source regression at the SAME declared depth (24, the worked
-    /// acceptance example): `resolve_state_layout` (the dense-stride + mask
+    /// Cross-source regression at the SAME declared depth (24):
+    /// `resolve_state_layout` (the dense-stride + mask
     /// source) still widens past the fixture's AR(0) order to exactly 24, but
     /// the historical library's width is the applied PAR's own
-    /// order — the two sources address different facts and no longer agree.
+    /// order — the two sources address different facts, so their widths differ.
     /// A forward twin built from the same applied PAR and the same depth-24
     /// seed (`resolve_inflow_seeds` at `state_layout.max_par_order`, the one
     /// seed owner at one depth) must be bit-identical to the tree: same
@@ -2469,7 +2468,7 @@ mod tests {
     }
 
     #[test]
-    fn generated_opening_tree_still_refuses_a_historical_library_that_fails_validation() {
+    fn generated_opening_tree_refuses_a_historical_library_that_fails_validation() {
         let tmp = tempfile::TempDir::new().expect("tempdir");
         let result = build_stochastic_context_for_study(
             &ring_with_failing_historical_library(),

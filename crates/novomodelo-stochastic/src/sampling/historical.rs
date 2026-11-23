@@ -1534,7 +1534,7 @@ mod tests {
     /// value depends on whether the ring fired.
     ///
     /// Oracle: ring average = (130+140+150)/3 = 140.0. The negative control
-    /// hand-computes stage 4's eta under the old primary-only advance (stage
+    /// hand-computes stage 4's eta under a primary-only advance (stage
     /// 3's own raw value 500.0 shifted into the lag instead of the ring
     /// average) and asserts it differs from the kernel-routed result.
     #[test]
@@ -1650,8 +1650,8 @@ mod tests {
             "eta[stage=4] = {eta_4}, expected {expected_eta_4} (ring average lag = {ring_average})"
         );
 
-        // Negative control: the old primary-only advance would have shifted
-        // stage 3's own raw value (500.0), not the ring average, into the lag.
+        // Negative control: a primary-only advance would shift stage 3's own
+        // raw value (500.0), not the ring average, into the lag.
         let naive_lag = raw_values[3];
         let naive_eta_4 = (raw_values[4] - det_base - psi * naive_lag) / sigma;
         assert!(
@@ -1685,7 +1685,7 @@ mod tests {
     }
 
     #[test]
-    fn test_standardize_none_season_map_backward_compat() {
+    fn test_standardize_none_season_map_uses_calendar_month_seasons() {
         let hydro = EntityId(1);
         let stages = vec![make_monthly_stage(0, 0)];
         let models = vec![InflowModel {
@@ -1726,7 +1726,7 @@ mod tests {
         let expected = (110.0 - 90.0) / 10.0; // = 2.0
         assert!(
             (eta - expected).abs() < 1e-10,
-            "None season_map backward compat: expected eta={expected}, got {eta}"
+            "None season_map uses month0() seasons: expected eta={expected}, got {eta}"
         );
     }
 

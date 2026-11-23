@@ -59,7 +59,7 @@ POST_STUDY_CASE = (
 # the partition must NOT appear for it (the symmetric negative).
 NO_POST_STUDY_CASE = _REPO_ROOT / "examples" / "1dtoy"
 
-# The four value columns the acceptance criterion names. `stage_id`/`node_id`
+# The four value columns compared row by row. `stage_id`/`node_id`
 # are read too, but only as the row sort key, mirroring
 # `test_anticipated_output_parity.py`'s `stage_id`/`block_id`/`thermal_id` key.
 _LANE_VALUE_COLUMNS = (

@@ -154,9 +154,9 @@ pub fn prepare_hydro_models_from_artifacts(
 }
 
 /// Build a [`novomodelo_io::CaseArtifacts`] by reading the case directory directly,
-/// backing the legacy [`prepare_hydro_models`] signature; production pipelines
-/// should call [`novomodelo_io::load_case_with_artifacts`] so the full validation runs
-/// once.
+/// for [`prepare_hydro_models`]; a pipeline that already called
+/// [`novomodelo_io::load_case_with_artifacts`] passes its artifacts to
+/// [`prepare_hydro_models_from_artifacts`] so the full validation runs once.
 fn load_artifacts_for_hydro_models(case_dir: &Path) -> Result<CaseArtifacts, SddpError> {
     let mut ctx = ValidationContext::new();
     let manifest = validate_structure(case_dir, &mut ctx);

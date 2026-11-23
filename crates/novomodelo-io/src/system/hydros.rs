@@ -1020,7 +1020,7 @@ mod tests {
       ]
     }"#;
 
-    // ── AC: parse valid hydros — full and minimal ──────────────────────────────
+    // ── parse valid hydros — full and minimal ──────────────────────────────────
 
     /// Given a valid `hydros.json` with 2 hydros (one full, one minimal), `parse_hydros`
     /// returns `Ok(vec)` sorted by `id`; the full hydro has all optional fields mapped.
@@ -1097,7 +1097,7 @@ mod tests {
         assert!((h1.penalties.spillage_cost - 0.01).abs() < f64::EPSILON);
     }
 
-    // ── AC: FPHA generation model ──────────────────────────────────────────────
+    // ── FPHA generation model ──────────────────────────────────────────────────
 
     /// Given a hydro with `generation.model: "fpha"`, the resulting `Hydro` has
     /// `generation_model: HydroGenerationModel::Fpha` (no `productivity_mw_per_m3s`).
@@ -1135,7 +1135,7 @@ mod tests {
     }
 
     #[test]
-    fn test_retired_linearized_head_generation_model_is_rejected() {
+    fn test_linearized_head_generation_model_is_rejected() {
         let json = r#"{
           "hydros": [{
             "id": 0, "name": "LH Plant",
@@ -1166,7 +1166,7 @@ mod tests {
         );
     }
 
-    // ── AC: tailrace piecewise variant ────────────────────────────────────────
+    // ── tailrace piecewise variant ────────────────────────────────────────────
 
     /// Tailrace with `"type": "piecewise"` is parsed correctly.
     #[test]
@@ -1212,7 +1212,7 @@ mod tests {
         );
     }
 
-    // ── AC: hydraulic losses constant variant ─────────────────────────────────
+    // ── hydraulic losses constant variant ─────────────────────────────────────
 
     /// Hydraulic losses with `"type": "constant"` is parsed correctly.
     #[test]
@@ -1252,7 +1252,7 @@ mod tests {
         );
     }
 
-    // ── AC: entity-level penalty partial override ─────────────────────────────
+    // ── entity-level penalty partial override ─────────────────────────────────
 
     /// Entity-level penalty partial override: overridden fields use entity value,
     /// non-overridden fields use global default.
@@ -1444,7 +1444,7 @@ mod tests {
         );
     }
 
-    // ── AC: entity-level penalty all-default (no penalties block) ─────────────
+    // ── entity-level penalty all-default (no penalties block) ─────────────────
 
     /// No `penalties` block in JSON → all hydro penalties use global defaults.
     #[test]
@@ -1507,7 +1507,7 @@ mod tests {
         );
     }
 
-    // ── AC: filling config with absent filling_min_rate_m3s ───────────────────
+    // ── filling config with absent filling_min_rate_m3s ───────────────────────
 
     /// Filling config with no `filling_min_rate_m3s` field defaults to 0.0 (passive filling).
     #[test]
@@ -1547,7 +1547,7 @@ mod tests {
         ));
     }
 
-    // ── AC: duplicate ID detection ─────────────────────────────────────────────
+    // ── duplicate ID detection ─────────────────────────────────────────────────
 
     /// Given `hydros.json` with duplicate `id` values, `parse_hydros` returns
     /// `Err(LoadError::SchemaError)` with field containing `"hydros[N].id"` and
@@ -1585,7 +1585,7 @@ mod tests {
         }
     }
 
-    // ── AC: reservoir validation ───────────────────────────────────────────────
+    // ── reservoir validation ───────────────────────────────────────────────────
 
     /// `min_storage_hm3 > max_storage_hm3` → `SchemaError` with field containing
     /// `"reservoir"` and message containing `"min_storage_hm3"`.
@@ -1675,7 +1675,7 @@ mod tests {
         );
     }
 
-    // ── AC: generation bound validation ───────────────────────────────────────
+    // ── generation bound validation ───────────────────────────────────────────
 
     /// `max_generation_mw < min_generation_mw` → `SchemaError`.
     #[test]
@@ -1819,7 +1819,7 @@ mod tests {
         );
     }
 
-    // ── AC: evaporation array length validation ────────────────────────────────
+    // ── evaporation array length validation ────────────────────────────────────
 
     /// Evaporation array with wrong element count → `SchemaError`.
     #[test]
@@ -1857,7 +1857,7 @@ mod tests {
         }
     }
 
-    // ── AC: unknown generation model → SchemaError ────────────────────────────
+    // ── unknown generation model → SchemaError ────────────────────────────────
 
     /// Unknown `generation.model` value → `SchemaError`.
     #[test]
@@ -1885,7 +1885,7 @@ mod tests {
         );
     }
 
-    // ── AC: travel_time_hours (cascade arc) ───────────────────────────────────
+    // ── travel_time_hours (cascade arc) ───────────────────────────────────────
 
     /// Given a hydro with `"travel_time_hours": 360.0`, `parse_hydros` returns a
     /// `Hydro` with `travel_time_hours == Some(360.0)`.
@@ -1919,7 +1919,7 @@ mod tests {
     }
 
     /// Given a hydro with no `travel_time_hours` key, `parse_hydros` returns a
-    /// `Hydro` with `travel_time_hours == None` (backward compatible).
+    /// `Hydro` with `travel_time_hours == None`.
     #[test]
     fn test_travel_time_hours_absent_is_none() {
         let json = format!(r#"{{ "hydros": [{MINIMAL_HYDRO_JSON}] }}"#);
@@ -1930,7 +1930,7 @@ mod tests {
         assert_eq!(hydros[0].travel_time_hours, None);
     }
 
-    // ── AC: declaration-order invariance ──────────────────────────────────────
+    // ── declaration-order invariance ──────────────────────────────────────────
 
     /// Given hydros in reverse ID order in JSON, `parse_hydros` returns a
     /// `Vec<Hydro>` sorted by ascending `id`.
@@ -1988,7 +1988,7 @@ mod tests {
         assert_eq!(hydros1[1].id, EntityId(1));
     }
 
-    // ── AC: file not found → IoError ─────────────────────────────────────────
+    // ── file not found → IoError ─────────────────────────────────────────────
 
     /// Given a nonexistent path, `parse_hydros` returns `Err(LoadError::IoError)`.
     #[test]
@@ -2004,7 +2004,7 @@ mod tests {
         }
     }
 
-    // ── AC: invalid JSON → ParseError ─────────────────────────────────────────
+    // ── invalid JSON → ParseError ─────────────────────────────────────────────
 
     /// Given invalid JSON, `parse_hydros` returns `Err(LoadError::ParseError)`.
     #[test]
@@ -2061,7 +2061,7 @@ mod tests {
         );
     }
 
-    // ── AC: evaporation reference_volumes_hm3 ─────────────────────────────────
+    // ── evaporation reference_volumes_hm3 ─────────────────────────────────────
 
     /// Helper: reservoir with min=1000 hm³, max=20000 hm³ and evaporation coefficients.
     const HYDRO_WITH_EVAP_BASE: &str = r#"{
@@ -2129,7 +2129,7 @@ mod tests {
 
     /// Given a `hydros.json` where the evaporation block has no
     /// `reference_volumes_hm3` key, the returned `Hydro` has
-    /// `evaporation_reference_volumes_hm3 == None` (backward compatible).
+    /// `evaporation_reference_volumes_hm3 == None`.
     #[test]
     fn test_evaporation_reference_volumes_absent_is_none() {
         let json = r#"{
@@ -2325,7 +2325,7 @@ mod tests {
     // ── Additional edge case: no evaporation block → reference volumes also None ─
 
     /// When the entire `evaporation` block is absent, both evaporation fields are
-    /// `None` (backward compatible).
+    /// `None`.
     #[test]
     fn test_no_evaporation_block_both_fields_none() {
         let json = format!(r#"{{ "hydros": [{HYDRO_WITH_EVAP_BASE}] }}"#);
@@ -2337,18 +2337,15 @@ mod tests {
         assert!(hydros[0].evaporation_reference_volumes_hm3.is_none());
     }
 
-    // ── AC: legacy productivity_mw_per_m3s is rejected ───────────────────────
+    // ── inline productivity_mw_per_m3s is rejected ───────────────────────────
 
-    /// Given a `hydros.json` whose `generation` block contains the legacy
+    /// Given a `hydros.json` whose `generation` block contains a
     /// `productivity_mw_per_m3s` field, `parse_hydros` returns an `Err` whose
-    /// message contains the substring `"productivity_mw_per_m3s"`.
-    ///
-    /// This guards against silent acceptance of stale case files: the field is
-    /// no longer a member of any `RawGeneration` variant, and
-    /// `#[serde(deny_unknown_fields)]` ensures the presence of the legacy key
-    /// surfaces as a hard parse error rather than being silently ignored.
+    /// message contains the substring `"productivity_mw_per_m3s"`: no
+    /// `RawGeneration` variant has the field, and `#[serde(deny_unknown_fields)]`
+    /// makes it a hard parse error rather than a silently ignored key.
     #[test]
-    fn hydros_json_rejects_legacy_inline_productivity() {
+    fn hydros_json_rejects_inline_productivity() {
         let json = r#"{
           "hydros": [{
             "id": 0, "name": "LegacyPlant",
@@ -2376,16 +2373,17 @@ mod tests {
         );
     }
 
-    // ── AC: legacy plant-level bus_id is rejected ────────────────────────────
+    // ── a plant-level bus_id is rejected ─────────────────────────────────────
 
-    /// Given a `hydros.json` whose hydro still carries the removed plant-level
-    /// `"bus_id"` key, `parse_hydros` returns `Err(LoadError::ParseError)` — serde's
+    /// Given a `hydros.json` whose hydro carries a plant-level `"bus_id"` key,
+    /// `parse_hydros` returns `Err(LoadError::ParseError)` — serde's
     /// `deny_unknown_fields` message is "unknown field", which does not match
     /// `parse_hydros`'s "unknown variant" / "missing field" reclassification, so it
     /// falls through to `LoadError::parse` rather than `LoadError::SchemaError`.
-    /// The message names `bus_id`; `unit_groups[].bus_id` is the replacement.
+    /// The message names `bus_id`; the bus is declared per unit group
+    /// (`unit_groups[].bus_id`).
     #[test]
-    fn test_legacy_plant_bus_id_is_rejected() {
+    fn test_plant_level_bus_id_is_rejected() {
         let json = r#"{
           "hydros": [{
             "id": 0, "name": "Legacy", "bus_id": 0,
@@ -2410,7 +2408,7 @@ mod tests {
         let err = parse_hydros(f.path(), &global).unwrap_err();
         assert!(
             matches!(err, LoadError::ParseError { .. }),
-            "expected ParseError for a deck still carrying plant-level bus_id, got: {err:?}"
+            "expected ParseError for a plant-level bus_id, got: {err:?}"
         );
         let msg = err.to_string();
         assert!(
@@ -2451,7 +2449,7 @@ mod tests {
         );
     }
 
-    // ── AC: unit_groups — absent, null, empty-array rejection ─────────────────
+    // ── unit_groups — absent, null, empty-array rejection ─────────────────────
 
     /// Given two hydros declaring no `unit_groups` key, `parse_hydros` rejects
     /// the first one with a `SchemaError` naming `hydros[0].unit_groups`.

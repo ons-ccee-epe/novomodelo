@@ -325,11 +325,11 @@ fn valid_case_piped_stdout_has_no_ansi_escapes() {
 /// An unknown `cut_selection` key is a hard schema error under
 /// `deny_unknown_fields`, not silently ignored.
 #[test]
-fn removed_cut_selection_field_fails_validate() {
+fn unknown_cut_selection_key_fails_validate() {
     let dir = TempDir::new().unwrap();
     make_valid_case(&dir);
 
-    let removed_field_config = r#"{
+    let unknown_key_config = r#"{
         "training": {
             "selection": { "method": "sampled", "forward_passes": 10 },
             "stopping_rules": [
@@ -339,7 +339,7 @@ fn removed_cut_selection_field_fails_validate() {
             "cut_selection": { "basis_activity_window": 100 }
         }
     }"#;
-    write_file(dir.path(), "config.json", removed_field_config);
+    write_file(dir.path(), "config.json", unknown_key_config);
 
     novomodelo()
         .args(["validate", dir.path().to_str().unwrap()])

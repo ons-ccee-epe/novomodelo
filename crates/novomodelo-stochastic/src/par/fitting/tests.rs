@@ -210,7 +210,7 @@ fn classify_history_helpers_round_trip() {
 }
 
 // -----------------------------------------------------------------------
-// Acceptance criterion: 2 hydros x 12 seasons = 24 rows
+// 2 hydros x 12 seasons = 24 rows
 // -----------------------------------------------------------------------
 
 #[test]
@@ -250,7 +250,7 @@ fn estimate_seasonal_stats_two_hydros_twelve_seasons() {
 }
 
 // -----------------------------------------------------------------------
-// Acceptance criterion: known mean and population-divisor (1/N) std
+// Known mean and population-divisor (1/N) std
 // -----------------------------------------------------------------------
 
 #[test]
@@ -297,7 +297,7 @@ fn estimate_seasonal_stats_known_values() {
 }
 
 // -----------------------------------------------------------------------
-// Acceptance criterion: Bessel correction uses N-1 divisor
+// Bessel correction uses N-1 divisor
 // -----------------------------------------------------------------------
 
 #[test]
@@ -331,7 +331,7 @@ fn estimate_seasonal_stats_population_divisor() {
 }
 
 // -----------------------------------------------------------------------
-// Acceptance criterion: fewer than 2 observations => error
+// Fewer than 2 observations => error
 // -----------------------------------------------------------------------
 
 #[test]
@@ -352,7 +352,7 @@ fn estimate_seasonal_stats_insufficient_data_one_obs() {
 }
 
 // -----------------------------------------------------------------------
-// Acceptance criterion: unmapped date => error
+// Unmapped date => error
 // -----------------------------------------------------------------------
 
 #[test]
@@ -374,7 +374,7 @@ fn estimate_seasonal_stats_unmapped_date() {
 }
 
 // -----------------------------------------------------------------------
-// Acceptance criterion: unknown hydros silently ignored
+// Unknown hydros silently ignored
 // -----------------------------------------------------------------------
 
 #[test]
@@ -2801,7 +2801,7 @@ fn periodic_pacf_two_season_par2_analytical_verification() {
 }
 
 // -----------------------------------------------------------------------
-// estimate_correlation_with_season_map fallback and backward-compatibility tests
+// estimate_correlation_with_season_map fallback and single-season tests
 // -----------------------------------------------------------------------
 
 #[test]
@@ -2881,7 +2881,7 @@ fn estimate_correlation_min_sample_fallback() {
 }
 
 #[test]
-fn estimate_correlation_single_season_backward_compat() {
+fn estimate_correlation_single_season_yields_one_default_profile() {
     let stages = single_season_stages(2000, 20, 1);
     let hydro_ids = vec![EntityId::from(1), EntityId::from(2)];
 
@@ -3962,10 +3962,10 @@ fn conditional_facp_partitioned_two_season_hand_computed() {
 /// Strict per-entry verification of `assemble_partitioned_covariance` at k=3
 /// with n_seasons=3.
 ///
-/// The earlier `_two_season_hand_computed` test only pinned down k=1 (closed
-/// form) and k=2 boundedness — it called the same helpers (`periodic_auto…`,
-/// `cross_correlation_*`) to derive its expectations, so any indexing bug in
-/// the assembly would be invisible to it. This test instead computes every
+/// The `_two_season_hand_computed` test pins only k=1 (closed form) and k=2
+/// boundedness and derives its expectations from the same helpers
+/// (`periodic_auto…`, `cross_correlation_*`), so an indexing bug in the
+/// assembly would be invisible to it. This test instead computes every
 /// entry of Σ_11, Σ_22, and Σ_12 from raw scalar arithmetic on the
 /// observation arrays, with no helper calls in the expected-value path.
 ///
@@ -4294,7 +4294,7 @@ fn select_order_pacf_annual_structural_zero_at_lag3_selects_the_significant_lag1
 }
 
 #[test]
-fn select_order_pacf_annual_interior_insignificant_lag_still_selects_the_outer_lag() {
+fn select_order_pacf_annual_interior_insignificant_lag_selects_the_outer_lag() {
     // threshold = 1.96 / sqrt(100) = 0.196
     // conditional_facp = [0.5, 0.01, 0.4]: lag 1 and lag 3 are significant,
     // lag 2 (0.01) is not. Lag 2 stays in the model because the order names

@@ -195,8 +195,9 @@ fn grid_max_gh(pf: &ProductionFunction, grid: &GridParams) -> f64 {
 /// the seed depend on how many neighbours the tail already absorbed. The slot
 /// indices are stable under the cascade, so they are the correct seed identity.
 fn pair_seed(hydro_id: i32, entry_level_bits: u64, tail_slot: usize, candidate_slot: usize) -> u64 {
-    // Plane counts are bounded by `max_planes_per_hydro`, far below u32::MAX, so
-    // the saturating cast cannot lose a distinguishing slot index.
+    // A plane count is its fitted hull's facet count, which the fitting grid
+    // bounds far below u32::MAX, so the saturating cast cannot lose a
+    // distinguishing slot index.
     let tail_slot_u32 = u32::try_from(tail_slot).unwrap_or(u32::MAX);
     let candidate_slot_u32 = u32::try_from(candidate_slot).unwrap_or(u32::MAX);
 

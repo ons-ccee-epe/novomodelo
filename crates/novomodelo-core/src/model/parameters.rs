@@ -792,7 +792,7 @@ mod tests {
 
     #[cfg(feature = "serde")]
     #[test]
-    fn computed_parameter_existing_tags_are_byte_identical() {
+    fn computed_parameter_tags_serialize_to_their_pinned_json() {
         let eq = ComputedParameter::EquivalentProductivity {
             hydro_id: EntityId(7),
         };

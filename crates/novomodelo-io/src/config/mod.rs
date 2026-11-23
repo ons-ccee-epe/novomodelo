@@ -656,11 +656,10 @@ mod tests {
         assert_eq!(cfg.policy.path, "./policy");
     }
 
-    /// The retired `state_space` section (inflow-lag depth is now always inferred
-    /// from the boundary policy) is a `deny_unknown_fields` reject, not a silent
-    /// ignore — a stale `config.json` fails loudly with the field name.
+    /// A `state_space` section is a `deny_unknown_fields` reject, not a silent
+    /// ignore: the error names the field.
     #[test]
-    fn test_retired_state_space_section_is_rejected() {
+    fn test_state_space_section_is_rejected() {
         let f = write_config(
             r#"{"training": {"selection": {"method": "sampled", "forward_passes": 1}, "stopping_rules": [{"type": "iteration_limit", "limit": 10}]}, "state_space": {"inflow_lag_depth": 12}}"#,
         );
@@ -946,10 +945,10 @@ mod tests {
         );
     }
 
-    /// The retired `simulation` stopping-rule type (replaced by `gap`) is
-    /// rejected as an unknown variant, not a recognized-but-invalid one.
+    /// A `simulation` stopping-rule type is rejected as an unknown variant, not a
+    /// recognized-but-invalid one.
     #[test]
-    fn old_simulation_stopping_rule_type_is_unknown_variant() {
+    fn simulation_stopping_rule_type_is_unknown_variant() {
         let f = write_config(
             r#"{"training": {"selection": {"method": "sampled", "forward_passes": 10}, "stopping_rules": [
                 {"type": "simulation", "replications": 100, "period": 20,
@@ -959,14 +958,13 @@ mod tests {
         let err = parse_config(f.path()).unwrap_err();
         assert!(
             matches!(err, LoadError::SchemaError { .. }),
-            "expected SchemaError for the retired simulation rule type, got: {err:?}"
+            "expected SchemaError for the `simulation` stopping-rule type, got: {err:?}"
         );
     }
 
-    /// `Config` has no `version` field — the struct does not
-    /// expose `.version` and the field is not present after deserialization.
+    /// A config without `"$schema"` deserializes with `schema` set to `None`.
     #[test]
-    fn test_config_has_no_version_field() {
+    fn test_config_schema_is_none_when_absent() {
         let f = write_config(
             r#"{"training": {"selection": {"method": "sampled", "forward_passes": 1}, "stopping_rules": [{"type": "iteration_limit", "limit": 10}]}}"#,
         );
@@ -1010,11 +1008,10 @@ mod tests {
         );
     }
 
-    /// JSON that contains the dead `"version"` property must now be rejected
-    /// because `Config` uses `deny_unknown_fields`. Old case dirs that still
-    /// contain this key will fail to parse — which is the desired behaviour.
+    /// JSON that contains a `"version"` property is rejected: `Config` uses
+    /// `deny_unknown_fields`.
     #[test]
-    fn test_legacy_version_field_rejected() {
+    fn test_version_field_rejected() {
         let f = write_config(
             r#"{
             "version": "1.0.0",
@@ -1034,9 +1031,9 @@ mod tests {
         );
     }
 
-    /// A config that still sets the removed `policy.validate_compatibility` flag
-    /// is rejected: `PolicyConfig` uses `deny_unknown_fields`, so the stale key
-    /// fails deserialization with an error naming the field.
+    /// A config that sets `policy.validate_compatibility` is rejected:
+    /// `PolicyConfig` uses `deny_unknown_fields`, so the key fails
+    /// deserialization with an error naming the field.
     #[test]
     fn test_stale_validate_compatibility_field_rejected() {
         let f = write_config(
@@ -1124,7 +1121,7 @@ mod tests {
         assert_eq!(cfg.estimation.min_observations_per_season, 30);
     }
 
-    /// `"order_selection": "fixed"` is now a hard parse error.
+    /// `"order_selection": "fixed"` is a hard parse error.
     #[test]
     fn test_estimation_config_order_selection_fixed_rejected() {
         let f = write_config(
@@ -1136,7 +1133,7 @@ mod tests {
         let result = parse_config(f.path());
         assert!(
             result.is_err(),
-            "\"fixed\" order_selection must now be a parse error"
+            "\"fixed\" order_selection must be a parse error"
         );
     }
 
@@ -1569,7 +1566,7 @@ mod tests {
     }
 
     #[test]
-    fn historical_inflow_with_out_of_sample_load_still_requires_the_seed() {
+    fn historical_inflow_with_out_of_sample_load_requires_the_seed() {
         let f = write_with_training_scenario_source(
             r#"{"inflow": {"scheme": "historical"}, "load": {"scheme": "out_of_sample"}}"#,
         );
@@ -1587,7 +1584,7 @@ mod tests {
     }
 
     #[test]
-    fn external_scheme_still_requires_the_seed() {
+    fn external_scheme_requires_the_seed() {
         let f = write_with_training_scenario_source(r#"{"inflow": {"scheme": "external"}}"#);
         let err = parse_config(f.path()).unwrap_err();
         match &err {
@@ -1670,8 +1667,8 @@ mod tests {
         assert_eq!(source, ScenarioSource::default());
     }
 
-    /// The dropped `external` openings source is now an unknown-variant parse
-    /// error — the arm no longer exists (`generated` and `file` remain).
+    /// An `external` openings source is an unknown-variant parse error: the
+    /// sources are `generated` and `file`.
     #[test]
     fn openings_external_is_unknown_variant_parse_error() {
         let f = write_with_training_scenario_source(r#"{"openings": {"source": "external"}}"#);
@@ -1699,8 +1696,8 @@ mod tests {
         assert_eq!(cfg.training_moment_matching(), MomentMatching::None);
     }
 
-    /// The dropped `path` field on the `file` openings source is now an
-    /// unknown-field parse error — the arm is convention-located, no user path.
+    /// A `path` field on the `file` openings source is an unknown-field parse
+    /// error: the file is convention-located, with no user path.
     #[test]
     fn openings_file_path_field_rejected() {
         let f = write_with_training_scenario_source(
@@ -1868,9 +1865,8 @@ mod tests {
         }
     }
 
-    /// `simulation.sampling_scheme` (dead field) is now rejected because
-    /// `SimulationConfig` uses `deny_unknown_fields`. Old case dirs must remove
-    /// this key before loading.
+    /// `simulation.sampling_scheme` is rejected: `SimulationConfig` uses
+    /// `deny_unknown_fields`.
     #[test]
     fn test_dead_sampling_scheme_field_rejected() {
         let f = write_config(
@@ -1959,12 +1955,12 @@ mod tests {
         assert_eq!(boundary.path, "../monthly/policy");
     }
 
-    /// A deck carrying the removed `source_stage` key under `policy.boundary`
-    /// fails to parse under `deny_unknown_fields`, naming the key; an unrelated
-    /// unknown key under `boundary` is rejected the same way.
+    /// A deck carrying a `source_stage` key under `policy.boundary` fails to
+    /// parse under `deny_unknown_fields`, naming the key; an unrelated unknown
+    /// key under `boundary` is rejected the same way.
     #[test]
-    fn test_boundary_policy_rejects_removed_source_stage_key() {
-        let removed_key_json = r#"{
+    fn test_boundary_policy_rejects_a_source_stage_key() {
+        let source_stage_json = r#"{
             "training": {
                 "selection": {"method": "sampled", "forward_passes": 10},
                 "stopping_rules": [{"type": "iteration_limit", "limit": 5}]
@@ -1974,11 +1970,11 @@ mod tests {
                 "boundary": { "path": "../monthly/policy", "source_stage": 3 }
             }
         }"#;
-        let err = serde_json::from_str::<Config>(removed_key_json)
-            .expect_err("source_stage was removed from BoundaryPolicy and must be rejected");
+        let err = serde_json::from_str::<Config>(source_stage_json)
+            .expect_err("a source_stage key under policy.boundary must be rejected");
         assert!(
             err.to_string().contains("source_stage"),
-            "rejection must name the removed key: {err}"
+            "rejection must name the source_stage key: {err}"
         );
 
         let unknown_key_json = r#"{
@@ -1993,7 +1989,7 @@ mod tests {
         }"#;
         assert!(
             serde_json::from_str::<Config>(unknown_key_json).is_err(),
-            "an unknown key under policy.boundary must still be rejected"
+            "an unknown key under policy.boundary must be rejected"
         );
     }
 
@@ -2111,12 +2107,11 @@ mod tests {
         assert!(boundary.strict);
     }
 
-    /// Stale `exports` keys (`training`, `cuts`, `vertices`, `simulation`,
-    /// `forward_detail`, `backward_detail`, `compression`) are now rejected
-    /// because `ExportsConfig` uses `deny_unknown_fields`. Old case dirs that
-    /// still contain these keys must remove them before loading.
+    /// The `exports` keys `training`, `cuts`, `vertices`, `simulation`,
+    /// `forward_detail`, `backward_detail` and `compression` are rejected:
+    /// `ExportsConfig` uses `deny_unknown_fields`.
     #[test]
-    fn parse_config_rejects_removed_exports_fields() {
+    fn parse_config_rejects_unknown_exports_fields() {
         let json = r#"{
             "training": { "selection": {"method": "sampled", "forward_passes": 4}, "stopping_rules": [] },
             "exports": {
@@ -2132,7 +2127,7 @@ mod tests {
         let result = serde_json::from_str::<Config>(json);
         assert!(
             result.is_err(),
-            "expected parse error for stale exports fields, got Ok"
+            "expected parse error for unknown exports fields, got Ok"
         );
     }
 
@@ -2177,7 +2172,7 @@ mod tests {
         );
     }
 
-    /// `"fixed"` is no longer a valid value and must hard-error on parse.
+    /// `"fixed"` is not a valid value and must hard-error on parse.
     #[test]
     fn order_selection_fixed_rejected() {
         let result: Result<OrderSelectionMethod, _> = serde_json::from_str("\"fixed\"");
@@ -2454,8 +2449,8 @@ mod tests {
         );
     }
 
-    /// The removed key is named under `level1` only; under `dynamic`, which
-    /// never took it, it stays an unknown field.
+    /// The removed key is named under `level1` only; under `dynamic` it stays
+    /// an unknown field.
     #[test]
     fn parse_config_rejects_the_removed_tie_tolerance_key() {
         let mut config = base_value(OVERRIDE_BASE_CONFIG);
@@ -3222,12 +3217,12 @@ mod tests {
         );
     }
 
-    /// A config setting the removed root `training.forward_passes` alias fails
-    /// to load under `deny_unknown_fields`, the error naming the unknown field;
-    /// a flat `simulation.num_scenarios` alias likewise. The count lives solely
-    /// in the `selection.sampled` arm.
+    /// A config setting a root `training.forward_passes` key fails to load under
+    /// `deny_unknown_fields`, the error naming the unknown field; a flat
+    /// `simulation.num_scenarios` key likewise. The count lives solely in the
+    /// `selection.sampled` arm.
     #[test]
-    fn removed_selection_aliases_fail_to_load() {
+    fn root_forward_passes_and_flat_num_scenarios_fail_to_load() {
         let root_fp = write_config(
             r#"{"training": {"forward_passes": 8, "stopping_rules": [{"type": "iteration_limit", "limit": 5}]}}"#,
         );

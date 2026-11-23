@@ -3953,7 +3953,7 @@ mod tests {
     // ── dictionary unit/description tests ────────────────────────────────────
 
     #[test]
-    fn new_energy_columns_have_units() {
+    fn energy_columns_have_units() {
         assert_eq!(
             unit_for("hydros", "equivalent_productivity_mw_per_m3s"),
             "MW/(m3/s)"
@@ -4573,7 +4573,7 @@ mod tests {
     }
 
     #[test]
-    fn new_energy_columns_have_descriptions() {
+    fn energy_columns_have_descriptions() {
         assert!(
             !description_for("hydros", "equivalent_productivity_mw_per_m3s").is_empty(),
             "equivalent_productivity_mw_per_m3s must have a description"

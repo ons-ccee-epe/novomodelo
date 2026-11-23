@@ -60,8 +60,8 @@ field name.
 
 ## 1. The Deletion Test (the one gate)
 
-Replaces the older "Earned-Comment Test": that test asked "does this add
-_anything_?" and almost everything passed. This one is biased toward deletion.
+The test is biased toward deletion: asking "does this comment add
+_anything_?" passes almost every comment.
 
 > **Delete the comment.** Now — reading only the code, would a competent engineer
 > (a) introduce a bug, (b) "simplify" something correct into something wrong, or

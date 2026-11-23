@@ -11,7 +11,7 @@
 //! `grid` is the single authoritative owner of the uniform grid formula
 //! (`GridParams` + `build_grid`), shared by the hull cloud, the α regression, the
 //! deviation diagnostic, and the secant's representative-point scan. `deviation`
-//! is the fit-quality measure that replaces the retired `kappa` shrink. The
+//! owns the fit-quality measure of the final plane set. The
 //! remaining submodules (`error`, `geometry`, `production`, `hull_fit`, `alpha`,
 //! `secant`, `tailrace`, `reduction`, `rng`, `selection`) own one pipeline stage
 //! each, documented at their own module headers.
@@ -91,8 +91,8 @@ pub(crate) struct FphaFitResult {
     /// Fit-quality deviation of the FINAL (post-reduction) plane set — the set the
     /// LP applies — from the exact production function on the spill = 0 grid.
     ///
-    /// The operator-facing signal that replaces the retired low-`kappa` warning;
-    /// the resolver warns when [`FphaFitDeviation::exceeds_warn_threshold`].
+    /// The operator-facing fit-quality signal: the resolver warns when
+    /// [`FphaFitDeviation::exceeds_warn_threshold`].
     pub deviation: FphaFitDeviation,
     /// Per-sampled-point residuals the [`Self::deviation`] aggregate was reduced
     /// from, on the same spill = 0 grid.

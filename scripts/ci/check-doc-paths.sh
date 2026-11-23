@@ -36,10 +36,6 @@
 #      file. Resolve the longest wildcard-free ancestor (e.g. crates/novomodelo-sddp/
 #      for `crates/novomodelo-sddp/**/*.rs`); a rotted directory prefix still fails.
 #
-#   (The former Check 2 — intra-book relative link resolution — was retired
-#   with book/ (mdBook decommission); the unified docs site at
-#   docs.modelossetoreletrico.org.br owns link integrity for user-facing prose now.)
-#
 # Exclusions (MUST NOT be flagged), per §6.4's scope bound:
 #   - Absolute URLs: http://, https://, mailto:, ftp://.
 #   - Any token containing the substring `novomodelo-docs` (the external methodology

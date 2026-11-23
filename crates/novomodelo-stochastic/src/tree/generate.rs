@@ -965,7 +965,7 @@ mod tests {
     /// correlation on [1, 2].
     #[test]
     #[allow(clippy::float_cmp)]
-    fn saa_bitwise_compatible_with_pre_refactor_golden_values() {
+    fn saa_bitwise_matches_golden_values() {
         let stages = vec![
             make_stage(0, 0, 3),
             make_stage(1, 1, 3),
@@ -1715,8 +1715,7 @@ mod tests {
         assert_eq!(tree.n_openings(2), 5, "stage 2 must be clamped to 5");
     }
 
-    /// Passing `external_scenario_counts = None` leaves opening counts unchanged
-    /// (backward-compatible behaviour).
+    /// Passing `external_scenario_counts = None` leaves opening counts unchanged.
     #[test]
     fn test_external_clamping_none_no_effect() {
         let stages = vec![make_stage(0, 0, 5), make_stage(1, 1, 5)];
@@ -1824,9 +1823,9 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// Calling `generate_opening_tree` with `noise_group_ids = None` produces the
-    /// same output as calling it with all-unique group IDs (backward compatibility).
+    /// same output as calling it with all-unique group IDs.
     #[test]
-    fn test_opening_tree_noise_group_none_backward_compat() {
+    fn test_opening_tree_noise_group_none_matches_all_unique_groups() {
         let stages = vec![
             make_stage(0, 0, 3),
             make_stage(1, 1, 3),

@@ -610,7 +610,7 @@ fn test_is_ready_at_monotonic_prefix_for_constant_lead() {
 // assertion untouched.
 
 #[test]
-fn migration_equivalence_spread_monthly_half_split() {
+fn pinned_spread_monthly_half_split() {
     let resolution = resolve_spread(360.0, 0, &[720.0, 720.0, 720.0], None);
     assert_eq!(
         resolution,
@@ -625,7 +625,7 @@ fn migration_equivalence_spread_monthly_half_split() {
 }
 
 #[test]
-fn migration_equivalence_spread_weekly_to_monthly() {
+fn pinned_spread_weekly_to_monthly() {
     let resolution = resolve_spread(
         360.0,
         0,
@@ -645,7 +645,7 @@ fn migration_equivalence_spread_weekly_to_monthly() {
 }
 
 #[test]
-fn migration_equivalence_spread_daily_chronological_block() {
+fn pinned_spread_daily_chronological_block() {
     let resolution = resolve_spread(6.0, 0, &[24.0, 24.0, 24.0], Some(&[1.0; 24]));
 
     assert_eq!(resolution.stage_reach, 1);
@@ -669,7 +669,7 @@ fn migration_equivalence_spread_daily_chronological_block() {
 }
 
 #[test]
-fn migration_equivalence_point_pmo_end_anchored() {
+fn pinned_point_pmo_end_anchored() {
     let resolution = resolve_point(
         LeadTime::Time(720.0),
         DeliveryAxis {
@@ -689,7 +689,7 @@ fn migration_equivalence_point_pmo_end_anchored() {
 }
 
 #[test]
-fn migration_equivalence_point_k0_degeneracy() {
+fn pinned_point_k0_degeneracy() {
     let resolution = resolve_point(
         LeadTime::Time(720.0),
         DeliveryAxis {
@@ -709,9 +709,9 @@ fn migration_equivalence_point_k0_degeneracy() {
 }
 
 // resolve_point's decider/decision_sets/depth/occupancy stay byte-identical to a
-// captured baseline; k_max now derives from ring_depth, so this fixture's plant-0
+// captured baseline; k_max derives from ring_depth, so this fixture's plant-0
 // LeadTime shape (leading None-run 4 > occupancy max 3, which subtracts the seed
-// maturing at stage 0) grows from the old occupancy-derived 3 to 4.
+// maturing at stage 0) sizes the ring at 4, not the occupancy max 3.
 #[test]
 fn test_in_study_path_byte_identity_regression() {
     let stage_lengths_hours = [168.0, 168.0, 168.0, 168.0, 720.0, 720.0, 720.0];
@@ -759,7 +759,7 @@ fn test_in_study_path_byte_identity_regression() {
 }
 
 #[test]
-fn migration_equivalence_point_stage_count() {
+fn pinned_point_stage_count() {
     let resolution = resolve_point(
         LeadTime::Stages(2),
         DeliveryAxis {
@@ -796,11 +796,10 @@ fn migration_equivalence_point_stage_count() {
     );
 }
 
-// Equal-domain axis (n_decision == n_delivery): resolve_point reproduces the
-// pre-split result exactly. Hand-written expected value (not a recomputation)
-// so a projection-kernel perturbation of one field is caught.
+// Equal-domain axis (n_decision == n_delivery): hand-written expected value
+// (not a recomputation) so a projection-kernel perturbation of one field is caught.
 #[test]
-fn test_delivery_axis_equal_domains_matches_pre_split() {
+fn test_delivery_axis_equal_domains_matches_hand_written_resolution() {
     let axis = DeliveryAxis {
         study_stage_hours: &[100.0; 4],
         post_study_stage_hours: &[],
@@ -1002,8 +1001,7 @@ fn ring_depth_covers_every_simultaneous_pre_study_seed() {
 }
 
 // A uniform stage-count lead whose leading None-run never exceeds the in-flight
-// occupancy: ring_depth is inert, agreeing bit-for-bit with the occupancy max
-// the pre-fix sizing already used.
+// occupancy: ring_depth is inert, agreeing bit-for-bit with the occupancy max.
 #[test]
 fn ring_depth_equals_the_occupancy_max_when_no_seed_overflows() {
     let resolution = resolve_point(

@@ -245,10 +245,9 @@ fn stage_id_to_index(stages: &[Stage]) -> HashMap<i32, usize> {
 /// # Panics
 ///
 /// Panics in debug builds if dimension mismatches are detected.
-// Rationale: `seed` folds the former lag/accum/weight arguments into one
-// aggregate; the remaining library/rows/entity-list/stage-list/par-model/
-// lag-transition/downstream-order inputs are independent, with no further
-// shared aggregate.
+// Rationale: `seed` already aggregates the lag/accumulator/weight state; the
+// remaining library/rows/entity-list/stage-list/par-model/lag-transition/
+// downstream-order inputs are independent, with no further shared aggregate.
 #[allow(clippy::too_many_arguments)]
 pub fn standardize_external_inflow(
     library: &mut ExternalScenarioLibrary,
@@ -1365,10 +1364,10 @@ mod tests {
     ///
     /// Oracle: ring average = (130+140+150)/3 = 140.0 (mirrors the forward
     /// `noise.rs` ring's weighted-accumulate-then-average). The negative control
-    /// hand-computes what stage 4's eta would be under the old primary-only
-    /// advance (ignoring `rebuild_from_downstream`, so stage 3's own raw value
-    /// 500.0 — not the ring average — would have shifted into the lag) and
-    /// asserts it differs from the kernel-routed result.
+    /// hand-computes what stage 4's eta would be under a primary-only advance
+    /// (ignoring `rebuild_from_downstream`, so stage 3's own raw value 500.0 —
+    /// not the ring average — would shift into the lag) and asserts it differs
+    /// from the kernel-routed result.
     #[test]
     fn quarterly_ring_sampler_external_matches_oracle() {
         let hydro_id = EntityId(1);
@@ -1458,8 +1457,8 @@ mod tests {
             "eta[stage=4] = {eta_4}, expected {expected_eta_4} (ring average lag = {ring_average})"
         );
 
-        // Negative control: the old primary-only advance would have shifted
-        // stage 3's own raw value (500.0), not the ring average, into the lag.
+        // Negative control: a primary-only advance would shift stage 3's own
+        // raw value (500.0), not the ring average, into the lag.
         let naive_lag = raw_values[3];
         let naive_eta_4 = (raw_values[4] - det_base - psi * naive_lag) / sigma;
         assert!(
@@ -1503,7 +1502,7 @@ mod tests {
     /// The standardization bound is defensive, not load-bearing: novomodelo-io's A1
     /// (exact `scenario_id` set) rejects an out-of-range `scenario_id` at load. An
     /// index equal to `n_scenarios` must be dropped here, never written into the
-    /// next stage's realization 0 (the release-build corruption A1 now prevents).
+    /// next stage's realization 0 (a silent corruption in a release build).
     #[test]
     fn external_standardization_bound_is_defensive() {
         let bus_id = EntityId(1);
@@ -2269,7 +2268,7 @@ mod tests {
     }
 
     #[test]
-    fn test_v34_still_rejects_indivisible_rows() {
+    fn test_v34_rejects_indivisible_rows() {
         let n_entities = 2;
         let n_stages = 2;
         let lib = make_valid_library(n_stages, 2, n_entities, "inflow");

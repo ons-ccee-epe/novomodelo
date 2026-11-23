@@ -10134,7 +10134,7 @@ mod custom_weekly_evaporation_regression {
         let pr = prepare_stochastic(system, dir, &config, 42, &ScenarioSource::default(), None)
             .expect("prepare_stochastic must succeed");
         let hydro_models = prepare_hydro_models(&pr.system, dir, false)
-            .expect("prepare_hydro_models must succeed (season_id >= 12 must no longer error)");
+            .expect("prepare_hydro_models must succeed (season_id >= 12 must resolve)");
         hydro_models.evaporation
     }
 
@@ -10242,7 +10242,7 @@ mod custom_weekly_evaporation_regression {
     /// [`super::run_deterministic`] panics on this fixture inside
     /// `prepare_hydro_models`'s `.expect("prepare_hydro_models must succeed")`.
     #[test]
-    fn weekly_cycle_evaporation_no_longer_errors_and_setup_completes() {
+    fn weekly_cycle_evaporation_sets_up_and_converges() {
         let dir = weekly_case_dir();
 
         let models = resolve_evaporation(&dir);
@@ -10260,7 +10260,7 @@ mod custom_weekly_evaporation_regression {
         );
         assert!(
             result.final_gap.abs() < 1e-6,
-            "weekly evaporation case must still converge: gap={:.2e}",
+            "weekly evaporation case must converge: gap={:.2e}",
             result.final_gap
         );
     }
@@ -10506,7 +10506,7 @@ mod k_fan_branching_sampled_coverage {
 
         assert!(
             result.iterations >= 3,
-            "the K-fan must train past the pre-fix ~2-iteration infeasibility point (ran {})",
+            "the K-fan must train at least 3 iterations (ran {})",
             result.iterations
         );
         assert!(result.final_lb.is_finite(), "final_lb must be finite");

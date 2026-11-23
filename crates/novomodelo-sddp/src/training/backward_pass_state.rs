@@ -280,9 +280,8 @@ pub struct BackwardPassState {
 
     /// Backward-pass work-unit scheduler, carrying the opening-block size
     /// when the `ByNode` method is selected. Defaults to
-    /// [`BackwardScheduler::ByScenario`] (byte-neutral with the pre-scheduler
-    /// path); override with [`Self::set_scheduler`] before the first `run()`
-    /// call.
+    /// [`BackwardScheduler::ByScenario`]; override with [`Self::set_scheduler`]
+    /// before the first `run()` call.
     scheduler: BackwardScheduler,
 
     /// Whether the by-node scheduler claims hardest-`(stage,
@@ -649,8 +648,7 @@ impl BackwardPassState {
     /// (`ForwardPassState::run`'s `Traversal::Enumerated` match arm):
     /// `Traversal::Enumerated` routes to the node-native
     /// [`Self::run_enumerated_backward`], `Traversal::Sampled` to
-    /// [`Self::run_sampled_backward`] (the pre-existing per-level driver,
-    /// byte-frozen).
+    /// [`Self::run_sampled_backward`] (the per-level driver).
     ///
     /// # Errors
     ///
@@ -1618,8 +1616,8 @@ fn assert_predecessor_states_distinct(
 /// A single-node level carries exactly one node at its stage (a mid-horizon
 /// leaf beside it is rejected at setup), so every trial point that reached the
 /// stage visited that node: route all with no per-record lookup. This is the
-/// chain and terminal-fan case, and reproduces the pre-routing `0..local_work`
-/// slice byte-for-byte. Only a multi-node level reads `TrajectoryRecord::node_id`
+/// chain and terminal-fan case: the routed set is the whole `0..local_work`
+/// slice. Only a multi-node level reads `TrajectoryRecord::node_id`
 /// to split siblings that own distinct pools.
 fn build_trial_routing(
     node_graph: &NodeGraph,
@@ -2306,7 +2304,7 @@ pub(crate) fn process_stage_backward<S: SolverInterface + Send>(
         // routed subset is scattered across the global scenario axis, so an
         // even split of `trial_points.len()` would misalign with the
         // contiguous per-worker basis window and index out of the slice. On a
-        // single-node level the window tiling reproduces the pre-routing
+        // single-node level the window tiling equals the
         // `partition(local_work, n_workers, w)` assignment exactly.
         let (w_start, w_end) = basis_slice.scenario_window();
         let owns = move |m: usize| w_start <= m && m < w_end;
@@ -3784,13 +3782,13 @@ mod tests {
         );
     }
 
-    /// U1 regression: the successor pool must be resolved by the child's NODE
-    /// POSITION, never by conflating it with the successor's STAGE index. With
+    /// The successor pool must be resolved by the child's NODE POSITION, never
+    /// by conflating it with the successor's STAGE index. With
     /// `NodeGraph::nodes`/`successors` typed `TypedVec<NodePos, _>`, indexing
-    /// with a `StageIdx` is now a COMPILE ERROR — `ng.nodes[successor_stage]`
-    /// does not type-check — so the historical runtime misindex this test used
-    /// to construct by hand is unrepresentable without an explicit, visible
-    /// re-wrap. What this test still pins: on a genuine fan, the child's own
+    /// with a `StageIdx` is a COMPILE ERROR — `ng.nodes[successor_stage]`
+    /// does not type-check — so a stage-for-node misindex is unrepresentable
+    /// without an explicit, visible re-wrap. What this test pins: on a genuine
+    /// fan, the child's own
     /// `NodePos` and a `NodePos` reconstructed from the successor stage's raw
     /// value resolve to DIFFERENT, non-interchangeable pools — proving the two
     /// index spaces are not numeric synonyms on this fixture, so the type-level
@@ -3858,11 +3856,11 @@ mod tests {
         let interior_pos = NodePos(1);
         let child = ng.successors[interior_pos][0].child;
         let successor_stage = ng.nodes[interior_pos].stage.next();
-        // The wrong-but-once-compiling alternative, now reachable only through
-        // an explicit re-wrap: `ng.nodes[successor_stage]` itself is a compile
-        // error (a `StageIdx` cannot index a `NodePos`-typed array), so a
-        // maintainer must deliberately reconstruct a `NodePos` from the raw
-        // stage value to even express the historical bug.
+        // The wrong alternative, reachable only through an explicit re-wrap:
+        // `ng.nodes[successor_stage]` itself is a compile error (a `StageIdx`
+        // cannot index a `NodePos`-typed array), so a maintainer must
+        // deliberately reconstruct a `NodePos` from the raw stage value to
+        // express it.
         let stage_misindexed_as_node_pos = NodePos(successor_stage.0);
 
         let pool_by_node_position = ng.nodes[child].pool_id;
@@ -4479,10 +4477,10 @@ mod tests {
         assert_predecessor_states_distinct(&predecessors, &arena);
     }
 
-    /// The false positive the old wrong-axis assert produced under CLP: two
-    /// DISTINCT nodes (a deterministic trunk's parent and child) settle on the
-    /// SAME persisted state. Each is a single predecessor of a different node,
-    /// so no node has >= 2 predecessors — the helper is vacuous and does NOT fire.
+    /// Two DISTINCT nodes (a deterministic trunk's parent and child) settle on
+    /// the SAME persisted state, as they can under CLP. Each is a single
+    /// predecessor of a different node, so no node has >= 2 predecessors — the
+    /// helper is vacuous and does NOT fire.
     #[cfg(debug_assertions)]
     #[test]
     fn predecessor_states_distinct_ignores_parent_child_same_state() {
@@ -4889,9 +4887,9 @@ mod tests {
         );
     }
 
-    /// AC2: a cut generated at iteration `g` that binds at a later
+    /// A cut generated at iteration `g` that binds at a later
     /// iteration `i > g` under DCS must have its `last_active_iter` advanced to
-    /// `i` by the (unchanged) per-stage metadata sync, fed by the DCS-maintained
+    /// `i` by the per-stage metadata sync, fed by the DCS-maintained
     /// binding-count contribution.
     ///
     /// This drives the real [`BackwardPassState::sync_stage_metadata`] with a
@@ -5101,7 +5099,7 @@ mod tests {
         }
     }
 
-    /// AC: analytical product-weighted cut regression. `aggregate_cut`'s
+    /// Analytical product-weighted cut regression. `aggregate_cut`'s
     /// result over the assembled weights must equal the closed-form flat sum
     /// `Σ_(m,ψ) P(n→m)·q_{m,ψ}·outcome`, with the outcome vector ordered by
     /// ascending child node id then ω.
@@ -5160,7 +5158,7 @@ mod tests {
         assert!((coefficients[1] - expected_c1).abs() < 1e-12);
     }
 
-    /// AC: `CVaR` tie-break order. Two tied-objective outcomes with distinct
+    /// `CVaR` tie-break order. Two tied-objective outcomes with distinct
     /// product weights: `CVaR`'s greedy allocation processes tied entries in
     /// their array (= canonical child-id-then-ω) index order — `child 1`
     /// (index 0) is allocated its full upper bound first, `child 2` (index 1)
@@ -5291,7 +5289,7 @@ mod tests {
         let state = state_layout(3, 0);
         let horizon = HorizonMode::Finite { num_stages: 5 };
 
-        // No scheduler set ⇒ empty (the pre-existing ByScenario/sampled default).
+        // No scheduler set ⇒ empty (the ByScenario/sampled default).
         let baseline = BackwardPassState::new(1, 1, 4, 2, &state, &horizon);
         assert_eq!(baseline.by_node_scratch_location_capacity(), 0);
 
@@ -5335,7 +5333,7 @@ mod tests {
         }
 
         // Synthesized chain: successor node position == successor stage, so the
-        // backward basis key `(m, successor_node)` is the pre-change
+        // backward basis key `(m, successor_node)` is the
         // `(m, successor_stage)` flat slot `[m*num_nodes + node]` byte-for-byte
         // (num_nodes == num_stages on the chain).
         let n_stages = 4usize;
@@ -5363,7 +5361,7 @@ mod tests {
     #[test]
     fn backward_engine_has_no_graph_shape_dispatch() {
         // Chain parity is degeneracy, not dispatch: no backward engine path
-        // branches on a graph-shape predicate to reach preserved legacy code.
+        // branches on a graph-shape predicate.
         let sources: [(&str, &str); 6] = [
             (
                 "backward_pass_state",
@@ -5399,7 +5397,7 @@ mod tests {
         }
     }
 
-    // ── fusion: real-solver AC1/AC2 solve-count checks ─────────────────────
+    // ── fusion: real-solver solve-count checks ─────────────────────────────
 
     /// Run one real (`ActiveSolver`) enumerated forward+backward round on
     /// `setup`'s whole graph, returning the raw [`BackwardResult`] — in
@@ -5588,7 +5586,7 @@ mod tests {
         (result, state_machine)
     }
 
-    /// AC1: on an all-External terminal fan (every child of the sole
+    /// On an all-External terminal fan (every child of the sole
     /// cut-generating node is a fusion-eligible External terminal leaf), the
     /// real backward performs ZERO LP solves — every child's outcome is
     /// filled from the forward-captured fused slice instead of being solved.
@@ -5606,11 +5604,11 @@ mod tests {
         );
     }
 
-    /// AC2: on a terminal-Generated fan (no child is fusion-eligible), the
+    /// On a terminal-Generated fan (no child is fusion-eligible), the
     /// real backward still solves every opening of every child — exhaustive
     /// integration is unaffected by fusion.
     #[test]
-    fn enumerated_backward_still_solves_every_opening_for_generated_terminal_fan() {
+    fn enumerated_backward_solves_every_opening_for_generated_terminal_fan() {
         let mut setup = crate::test_support::terminal_generated_fan_setup(2, 1);
         let (result, _) = run_real_enumerated_round(&mut setup, None);
         assert!(

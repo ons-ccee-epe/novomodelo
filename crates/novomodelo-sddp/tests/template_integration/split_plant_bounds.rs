@@ -112,7 +112,7 @@ fn cell_generation_bounds_at(
 /// resolved envelope falls back to its declared `60.0` MW — above both
 /// groups — and every cell resolves to its own group term.
 #[test]
-fn split_plant_ac1_resolved_cell_bound_matches_group_wise_overlay() {
+fn split_plant_resolved_cell_bound_matches_group_wise_overlay() {
     let (system, templates) = build_d51_templates();
 
     let cases: [(usize, f64, f64); 2] = [(0, 28.0, 20.0), (1, 30.0, 20.0)];
@@ -151,7 +151,7 @@ fn split_plant_ac1_resolved_cell_bound_matches_group_wise_overlay() {
 /// exactly the plant's own resolved envelope, discarding H0-B1's cell
 /// entirely).
 #[test]
-fn split_plant_ac2_available_capacity_is_not_the_fold_after_sum_plant_product() {
+fn split_plant_available_capacity_is_not_the_fold_after_sum_plant_product() {
     let (system, templates) = build_d51_templates();
 
     let (cell0_bound, cell1_bound) = cell_generation_bounds_at(&system, &templates, 0, 0);

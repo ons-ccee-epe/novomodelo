@@ -714,7 +714,7 @@ mod tests {
     }
 
     #[test]
-    fn ar_order_1_acceptance_criterion() {
+    fn ar_order_1_known_values() {
         // Stage 0 (study stage, id=0, season=0) — the stage being computed.
         let study_stage = make_stage(0, 0, Some(0));
 
@@ -922,7 +922,7 @@ mod tests {
     }
 
     #[test]
-    fn acceptance_criterion_ar_order_zero_std_zero() {
+    fn ar_order_zero_std_zero() {
         let stage = make_stage(0, 0, Some(0));
         let model = make_model(1, 0, 50.0, 0.0, vec![], 1.0);
         let lp = PrecomputedPar::build(&[model], &[stage], &[EntityId(1)], None).unwrap();
@@ -1396,7 +1396,7 @@ mod tests {
     #[test]
     fn march_start_ar1_resolves_to_february() {
         // Stage 0 = March (season 2), AR(1). Lag-1 → stage -1 → season 1 (Feb).
-        // Without the season offset fix, stage -1 resolves to season 11 (Dec).
+        // Without the start-season offset, stage -1 would resolve to season 11 (Dec).
         let stages = make_march_start_stages();
         let models = make_march_start_models(1, 0, &[0.5], 0.9);
 
@@ -1425,7 +1425,7 @@ mod tests {
             lp.deterministic_base(0, 0)
         );
 
-        // Verify it does NOT match the old (wrong) December resolution.
+        // It must NOT match the offset-free December resolution.
         let s_dec = season_std(11); // 42.0
         let wrong_psi = 0.5 * s_mar / s_dec;
         assert!(

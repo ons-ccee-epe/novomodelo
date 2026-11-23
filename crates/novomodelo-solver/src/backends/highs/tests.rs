@@ -660,7 +660,7 @@ fn test_solve_warm_start_non_alien_success() {
 fn test_solve_warm_start_rejects_inconsistent_basis() {
     use crate::types::SolverError;
 
-    // Arrange: non-alien setter is now the only warm-start path.
+    // Arrange: the non-alien setter is the only warm-start path.
     let template = make_fixture_stage_template();
     let mut solver = HighsSolver::new().expect("HighsSolver::new() must succeed");
 
@@ -1456,7 +1456,7 @@ mod research_tests {
         );
         assert!(
             solver.statistics().retry_count >= 1,
-            "INFEASIBLE must now enter the escalation (>= 1 cold-restart attempt); got retry_count {}",
+            "INFEASIBLE must enter the escalation (>= 1 cold-restart attempt); got retry_count {}",
             solver.statistics().retry_count
         );
     }

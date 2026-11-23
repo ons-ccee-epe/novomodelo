@@ -266,9 +266,9 @@ file. Each such binary embeds the solver object code + debug info + the crate
 rlib — on the order of hundreds of MB in a debug build — and pays a full C++
 static link (several seconds) at build time. This is the dominant steady-state
 contributor to `target/` size and CI link wall-time _after_ a clean build.
-(Cause separation: the multi-hundred-GB `target/` that first motivated the work
-was mostly stale accumulated artifacts, addressed separately by build hygiene —
-`CONTRIBUTING.md` → "Reclaiming disk space". Layer 1 addresses only the
+(Cause separation: a multi-hundred-GB `target/` is mostly stale accumulated
+artifacts, which build hygiene reclaims — `CONTRIBUTING.md` → "Reclaiming disk
+space". Layer 1 addresses only the
 steady-state cost that survives `cargo clean`: binary count × solver-link
 size/time.) Consolidation also brings the suite back into compliance with
 `.claude/rules/testing.md`, which mandates grouping related tests with `mod`
@@ -420,7 +420,7 @@ The convention:
 - **`novomodelo-python` dev-depends on `novomodelo-sddp`'s `test-support`**, which (with the
   §5.11 CI wiring) lets its Rust tests share the same fixtures.
 
-**Adoption (2026-09-15).** The convention is the adopted standard for the crates that own
+**Adoption.** The convention is the adopted standard for the crates that own
 shareable fixtures: each exposes them behind its own `test-support` feature under the gate
 above, and consumers enable it as a dev-dependency feature. Two of its bullets are not yet
 carried out: `crates/novomodelo-sddp/tests/common/` still holds its own fixture directory rather

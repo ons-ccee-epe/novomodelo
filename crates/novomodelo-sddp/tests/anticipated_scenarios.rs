@@ -1705,7 +1705,7 @@ mod anticipated_generic_constraint_e2e {
     const CONSTRAINT_BOUND_MW: f64 = 20.0;
 
     const ANT_THERMAL_ID: EntityId = EntityId(2);
-    /// Non-anticipated — the AC rejection target.
+    /// Non-anticipated, so the validator rejects an `anticipated_decision` reference to it.
     const BACKUP_THERMAL_ID: EntityId = EntityId(3);
     const BUS_ID: EntityId = EntityId(1);
 

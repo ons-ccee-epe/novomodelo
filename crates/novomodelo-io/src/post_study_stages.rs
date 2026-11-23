@@ -569,7 +569,7 @@ mod tests {
     }
 
     #[test]
-    fn test_stages_with_a_new_key_is_mixed_without_carrier() {
+    fn test_stages_with_a_current_format_key_is_mixed_without_carrier() {
         for json in [
             r#"{ "stages": [], "thermal_bounds": [], "thermal_stages": [] }"#,
             r#"{ "stages": [], "thermal_bounds": [], "water_bucket_stages": [] }"#,

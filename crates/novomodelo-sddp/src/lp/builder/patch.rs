@@ -746,7 +746,7 @@ mod tests {
     // Load-balance unit tests
     // -------------------------------------------------------------------------
 
-    /// AC (capacity): a 1-bus load region up to 3 blocks → row capacity
+    /// A 1-bus load region up to 3 blocks → row capacity
     /// M*B = 3. Also covers 2 load buses, up to 3 blocks → M*B = 6.
     #[test]
     fn new_with_load_allocates_correct_capacity() {

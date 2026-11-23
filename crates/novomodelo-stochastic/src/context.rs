@@ -925,7 +925,7 @@ mod tests {
         assert_send_sync::<super::StochasticContext>();
     }
 
-    /// AC: build succeeds with a valid system; accessors return expected dimensions.
+    /// Build succeeds with a valid system; accessors return expected dimensions.
     #[test]
     fn build_succeeds_with_valid_system() {
         let hydros = vec![make_hydro(1), make_hydro(2)];
@@ -972,7 +972,7 @@ mod tests {
         assert_eq!(ctx.base_seed(), 42);
     }
 
-    /// AC: `par_lp()` returns a cache with the expected dimensions.
+    /// `par_lp()` returns a cache with the expected dimensions.
     #[test]
     fn par_lp_has_expected_dimensions() {
         let hydros = vec![make_hydro(1), make_hydro(2)];
@@ -1018,7 +1018,7 @@ mod tests {
         assert_eq!(ctx.par().n_stages(), 3);
     }
 
-    /// AC: `opening_tree()` has the expected stage and dimension counts.
+    /// `opening_tree()` has the expected stage and dimension counts.
     #[test]
     fn opening_tree_has_expected_dimensions() {
         let hydros = vec![make_hydro(1), make_hydro(2)];
@@ -1064,7 +1064,7 @@ mod tests {
         assert_eq!(ctx.opening_tree().dim(), 2);
     }
 
-    /// AC: `tree_view()` returns a view with matching dimensions.
+    /// `tree_view()` returns a view with matching dimensions.
     #[test]
     fn tree_view_returns_valid_view() {
         let hydros = vec![make_hydro(1), make_hydro(2)];
@@ -1106,7 +1106,7 @@ mod tests {
         assert_eq!(view.opening(0, 0), ctx.opening_tree().opening(0, 0));
     }
 
-    /// AC: invalid PAR parameters (AR order > 0 with zero std) returns `InvalidParParameters`.
+    /// Invalid PAR parameters (AR order > 0 with zero std) returns `InvalidParParameters`.
     #[test]
     fn build_fails_on_invalid_par() {
         let hydros = vec![make_hydro(1)];
@@ -1143,7 +1143,7 @@ mod tests {
         );
     }
 
-    /// AC: `build_inflow_par` validates PAR parameters itself — a caller that
+    /// `build_inflow_par` validates PAR parameters itself — a caller that
     /// reaches it without going through `build_stochastic_context` (e.g. the
     /// opening-tree path) must still see an AR(1) model's zero standard
     /// deviation rejected.
@@ -1171,7 +1171,7 @@ mod tests {
         );
     }
 
-    /// AC: non-positive-definite correlation matrix succeeds with spectral decomposition.
+    /// Non-positive-definite correlation matrix succeeds with spectral decomposition.
     #[test]
     fn build_succeeds_on_non_pd_correlation() {
         let hydros = vec![make_hydro(1), make_hydro(2)];
@@ -1344,7 +1344,7 @@ mod tests {
         }
     }
 
-    /// AC: system with hydros + load buses produces correct dim and `n_load_buses`.
+    /// System with hydros + load buses produces correct dim and `n_load_buses`.
     #[test]
     fn context_with_load_buses_has_expanded_dim() {
         let hydros = vec![make_hydro(1), make_hydro(2)];
@@ -1506,9 +1506,9 @@ mod tests {
         );
     }
 
-    /// AC: system with hydros only produces `dim` = `n_hydros` and `n_load_buses` = 0.
+    /// A system with hydros only produces `dim` = `n_hydros` and `n_load_buses` = 0.
     #[test]
-    fn context_without_load_has_original_dim() {
+    fn context_without_load_has_hydro_only_dim() {
         let hydros = vec![make_hydro(1), make_hydro(2)];
         let stages = vec![
             make_stage(0, 0, 3),
@@ -1556,7 +1556,7 @@ mod tests {
         );
     }
 
-    /// AC: buses with `std_mw == 0.0` are excluded from the noise dimension.
+    /// Buses with `std_mw == 0.0` are excluded from the noise dimension.
     #[test]
     fn context_load_bus_deterministic_excluded() {
         let hydros = vec![make_hydro(1)];
@@ -1608,7 +1608,7 @@ mod tests {
         );
     }
 
-    /// AC: opening tree noise slices have length = `n_hydros` + `n_load_buses`.
+    /// Opening tree noise slices have length = `n_hydros` + `n_load_buses`.
     #[test]
     fn opening_tree_noise_length_matches_expanded_dim() {
         let hydros = vec![make_hydro(1), make_hydro(2)];
@@ -1659,7 +1659,7 @@ mod tests {
         );
     }
 
-    /// AC: `normal_lp()` accessor returns correctly built `PrecomputedNormal`.
+    /// `normal_lp()` accessor returns correctly built `PrecomputedNormal`.
     #[test]
     fn normal_lp_accessible_from_context() {
         let hydros = vec![make_hydro(1)];
@@ -1727,12 +1727,9 @@ mod tests {
         );
     }
 
-    /// AC: `None` produces an identical result to the original 3-argument call.
-    ///
-    /// Verifies that passing `None` as `user_opening_tree` leaves behaviour
-    /// unchanged relative to the pre-refactor signature.
+    /// With no user-supplied tree, the opening tree is generated from the system.
     #[test]
-    fn build_with_none_matches_original() {
+    fn build_with_no_user_tree_generates_the_opening_tree() {
         let hydros = vec![make_hydro(1), make_hydro(2)];
         let stages = vec![
             make_stage(0, 0, 3),
@@ -1784,7 +1781,7 @@ mod tests {
         );
     }
 
-    /// AC: a pre-constructed `OpeningTree` passed as `Some(tree)` is used as-is.
+    /// A pre-constructed `OpeningTree` passed as `Some(tree)` is used as-is.
     ///
     /// Verifies that `par_lp`, `correlation`, and `normal_lp` are still built
     /// from the system while tree generation is bypassed.
@@ -1879,7 +1876,7 @@ mod tests {
         assert_eq!(ctx.n_load_buses(), 0, "no load buses in this system");
     }
 
-    /// AC: `entity_order()` returns the canonical `hydro_ids` ++ `load_bus_ids` order.
+    /// `entity_order()` returns the canonical `hydro_ids` ++ `load_bus_ids` order.
     #[test]
     fn test_entity_order_accessor() {
         let hydros = vec![make_hydro(1), make_hydro(2)];
@@ -1934,7 +1931,7 @@ mod tests {
         );
     }
 
-    /// AC: `entity_order()` is populated even when a user-supplied tree is given.
+    /// `entity_order()` is populated even when a user-supplied tree is given.
     #[test]
     fn test_entity_order_with_user_tree() {
         use crate::context::OpeningTree;
@@ -2002,7 +1999,7 @@ mod tests {
         );
     }
 
-    /// AC: `forward_seed()` returns Some(seed) when `scenario_source.seed` is supplied.
+    /// `forward_seed()` returns Some(seed) when `scenario_source.seed` is supplied.
     #[test]
     fn test_forward_seed_from_config() {
         let hydros = vec![make_hydro(1), make_hydro(2)];
@@ -2051,7 +2048,7 @@ mod tests {
         );
     }
 
-    /// AC: `forward_seed()` returns None when `scenario_source.seed` is absent.
+    /// `forward_seed()` returns None when `scenario_source.seed` is absent.
     #[test]
     fn test_forward_seed_none_when_absent() {
         let hydros = vec![make_hydro(1), make_hydro(2)];
@@ -2100,7 +2097,7 @@ mod tests {
         );
     }
 
-    /// AC (Unit Test): the AR-order branch selects derived-vs-seasonal
+    /// The AR-order branch selects derived-vs-seasonal
     /// correctly under `External` — an AR(0) hydro's PAR moments come from
     /// the external samples, while an AR(p > 0) hydro's stay byte-identical
     /// to the seasonal, unmodified build.
@@ -2204,8 +2201,8 @@ mod tests {
     /// Regression: a GAPPED (non-0-based) declared study-stage id must
     /// resolve to its canonical position — the same resolution novomodelo-io's
     /// rule-47 validator performs — never be treated as already being that
-    /// position. Study stages are declared `2, 5` (not `0, 1`); under the
-    /// pre-fix bug, `stage_idx = declared_id` always exceeds `n_stages` here,
+    /// position. Study stages are declared `2, 5` (not `0, 1`); read as
+    /// `stage_idx = declared_id`, the id always exceeds `n_stages` here,
     /// so the AR(0)/load overrides would silently never fire and the
     /// (deliberately disagreeing) seasonal stats would survive untouched.
     #[test]

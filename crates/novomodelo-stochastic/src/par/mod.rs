@@ -24,10 +24,9 @@ pub use closure::{
 pub use contribution::{
     check_negative_contributions, compute_contributions, find_max_valid_order, has_negative_phi1,
 };
-#[allow(deprecated)]
 pub use evaluate::{
     add_noise_term_batch, evaluate_par, evaluate_par_batch, evaluate_par_conditional_mean_batch,
-    evaluate_par_inflow, evaluate_par_inflows, evaluate_par_noise_term_batch, solve_par_noise,
+    evaluate_par_noise_term_batch, solve_par_noise,
 };
 pub use fitting::{
     AicSelectionResult, AnnualSeasonalStats, ArCoefficientEstimate, ArEstimationConfig,

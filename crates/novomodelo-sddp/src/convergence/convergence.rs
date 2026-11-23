@@ -464,7 +464,7 @@ mod tests {
     }
 
     #[test]
-    fn ac_iteration_limit_triggers_at_third_call() {
+    fn iteration_limit_triggers_at_third_call() {
         let rule_set = StoppingRuleSet {
             rules: vec![StoppingRule::IterationLimit { limit: 3 }],
             mode: StoppingMode::Any,
@@ -488,7 +488,7 @@ mod tests {
     }
 
     #[test]
-    fn ac_gap_formula_with_ub_110_lb_100() {
+    fn gap_formula_with_ub_110_lb_100() {
         let mut monitor =
             ConvergenceMonitor::new(make_rule_set(StoppingRule::IterationLimit { limit: 100 }));
         let sync = SyncResult {
@@ -497,7 +497,6 @@ mod tests {
             ci_95_half_width: 2.0,
             sync_time_ms: 10,
         };
-        // 4 updates simulating BoundStalling AC scenario
         monitor.update(90.0, &sync, 0.0);
         monitor.update(99.0, &sync, 0.0);
         monitor.update(99.5, &sync, 0.0);
@@ -526,7 +525,7 @@ mod tests {
     }
 
     #[test]
-    fn ac_lb_and_iteration_count_track_correctly() {
+    fn lb_and_iteration_count_track_correctly() {
         let mut monitor =
             ConvergenceMonitor::new(make_rule_set(StoppingRule::IterationLimit { limit: 100 }));
         monitor.update(50.0, &default_sync(), 0.0);

@@ -673,8 +673,6 @@ pub(crate) fn run_simulation_phase_py(
             &training_result.basis_cache,
         )
         .map_err(|e| {
-            // Build the message from the original `SimulationError` before
-            // wrapping, so the text stays byte-identical to the old string path.
             let message = format!("{SIMULATION_ERROR_PREFIX}: {e}");
             PhaseError::Sddp {
                 message,
@@ -2091,10 +2089,9 @@ mod tests {
     /// sequential calls in the same process with different thread counts each
     /// receive the value they were configured with.
     ///
-    /// This is the per-call replacement for the old process-global pool, whose
-    /// configuration only took effect on the first call per process. The closure
-    /// receives `n = threads.map_or(1, |t| t as usize)`, so distinct
-    /// requests yield distinct values regardless of call order.
+    /// A process-global pool would apply only the first call's thread count.
+    /// The closure receives `n = threads.map_or(1, |t| t as usize)`, so
+    /// distinct requests yield distinct values regardless of call order.
     #[test]
     fn scoped_pool_honors_per_call_thread_count() {
         let first = run_in_scoped_pool(Some(2), |n| n);
@@ -2128,8 +2125,8 @@ mod tests {
         }
     }
 
-    /// The fifth acceptance criterion: the override path and the edited-config
-    /// path are equivalent. Running the unedited 1dtoy case with
+    /// The override path and the edited-config path are equivalent. Running the
+    /// unedited 1dtoy case with
     /// `config_overrides={"training.tree_seed": 7}` must produce the same
     /// `final_lower_bound` as physically editing `config.json` to set
     /// `tree_seed = 7` and running it. This proves overrides flow through the

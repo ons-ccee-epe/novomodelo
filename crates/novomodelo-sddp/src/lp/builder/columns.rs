@@ -1578,7 +1578,7 @@ mod diversion_bound_tests {
 
     // Declaration-time diversion capacity on the entity. The test makes the
     // resolved per-stage override distinct from this so the two reads disagree:
-    // reading the entity directly (the pre-fix bug) would yield this value.
+    // a read of the entity instead of the resolved bound would yield this value.
     const DECLARATION_MAX_FLOW_M3S: f64 = 200.0;
     const N_STAGES: usize = 1;
     const STAGE_IDX: usize = 0;
@@ -1792,8 +1792,8 @@ mod diversion_bound_tests {
     }
 
     /// A per-stage resolved override distinct from the declaration value flows
-    /// into every diversion block's `col_upper`. Fails against the pre-fix code,
-    /// which read `hydro.diversion.max_flow_m3s` (= `DECLARATION_MAX_FLOW_M3S`).
+    /// into every diversion block's `col_upper`. Fails against a read of
+    /// `hydro.diversion.max_flow_m3s` (= `DECLARATION_MAX_FLOW_M3S`).
     #[test]
     fn resolved_diversion_override_flows_into_col_upper() {
         let override_value = 37.5;
@@ -1880,8 +1880,8 @@ mod diversion_bound_tests {
         }
     }
 
-    /// No resolved floor (`min_diversion_m3s = None`) preserves today's `col_lower`
-    /// of `0.0` — bit-identical byte-neutrality for every study that never sets it.
+    /// No resolved floor (`min_diversion_m3s = None`) keeps `col_lower` at `0.0`
+    /// for every study that never sets it.
     #[test]
     fn absent_floor_preserves_zero_col_lower() {
         let mut fixtures = DivFixtures::new();
@@ -2180,9 +2180,9 @@ mod filling_phase_gating_tests {
         run_spillage_fill_at(fixtures, &stage)
     }
 
-    /// [`run_spillage_fill`], but over a three-block stage — needed for the
-    /// per-block override AC, whose `block_id = 2` target has no counterpart on a
-    /// two-block stage.
+    /// [`run_spillage_fill`], but over a three-block stage — needed by
+    /// `per_block_spillage_cap_binds_only_its_own_block`, whose `block_id = 2` target has
+    /// no counterpart on a two-block stage.
     fn run_spillage_fill_three_block(
         fixtures: &mut Fixtures,
         stage_id: i32,
@@ -3368,9 +3368,9 @@ mod anticipated_objective_tests {
     const PSA_N_STAGES: usize = 3;
     const PSA_LEAD: u32 = 2;
     const PSA_STUDY_HOURS: f64 = 730.0;
-    /// `(min, max, cost)` at each in-study stage. Only stage 2 (AC1's
-    /// delivery target) carries non-default values; stage 1 (AC2-4's
-    /// decision stage) is never read by those post-study cases.
+    /// `(min, max, cost)` at each in-study stage. Only stage 2 (the study-only
+    /// case's delivery target) carries non-default values; stage 1 (the
+    /// extended-axis cases' decision stage) is never read by those cases.
     const PSA_IN_STUDY: [(f64, f64, f64); PSA_N_STAGES] =
         [(0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (5.0, 55.0, 555.0)];
 
@@ -3573,10 +3573,10 @@ mod anticipated_objective_tests {
         }
     }
 
-    /// AC1: study-only axis (`n_post = 0`, so `n_delivery == n_stages`).
+    /// Study-only axis (`n_post = 0`, so `n_delivery == n_stages`).
     /// Decision at `stage_idx = 0` delivers at `delivery_stage = 2` — the
-    /// last in-study stage — so the generalized branch still takes the
-    /// in-study arm, byte-identical to the pre-ticket read.
+    /// last in-study stage — so the generalized branch takes the in-study arm
+    /// and reads the thermal block base.
     #[test]
     fn post_study_anchor_study_only_axis_reads_thermal_block_base() {
         let mut fixtures = PostStudyAnchorFixtures::new(0, &[]);
@@ -3607,7 +3607,7 @@ mod anticipated_objective_tests {
         );
     }
 
-    /// AC2: extended axis (3 study + 2 post-study stages). Decision at
+    /// Extended axis (3 study + 2 post-study stages). Decision at
     /// `stage_idx = 1` delivers at `delivery_stage = 3` (post-study stage
     /// `0`), where the deck declares `(cost 42.0, min 10.0, max 50.0)`.
     #[test]
@@ -3639,7 +3639,7 @@ mod anticipated_objective_tests {
         );
     }
 
-    /// AC3: same extended axis, no post-study cell declared for `(thermal,
+    /// Same extended axis, no post-study cell declared for `(thermal,
     /// post-study stage 0)`. The decision column degrades to the dormant
     /// `[0, 0]` treatment, with no panic.
     #[test]
@@ -3667,7 +3667,7 @@ mod anticipated_objective_tests {
         );
     }
 
-    /// AC4: a fixed-replay post-study cell (`min_mw == max_mw`) pins the
+    /// A fixed-replay post-study cell (`min_mw == max_mw`) pins the
     /// decision column to that value from the post-study table alone — no
     /// second interval intersected.
     #[test]
@@ -3962,7 +3962,7 @@ mod block_family_slack_tests {
             // `fixture_hydro` mirrors the entity's OWN (zero) min_turbined_m3s/
             // min_generation_mw into its single group at construction time, before
             // this spec's intended activation state is known; the cell-keyed
-            // min-floor families now read the GROUP's own resolved minimum
+            // min-floor families read the GROUP's own resolved minimum
             // (`cell_min_turbined`/`cell_min_generation`), so the mirror must be
             // overwritten here to carry each spec's value — otherwise every cell
             // reads back 0.0 regardless of `spec.min_turbined_m3s`/`min_generation_mw`.
@@ -4024,9 +4024,9 @@ mod block_family_slack_tests {
     }
 
     /// One cell-keyed family's expected contract — the min-floor mirror of
-    /// [`FamilyCheck`]: the `StageGeometry` accessor now takes a [`HydroCell`],
+    /// [`FamilyCheck`]: the `StageGeometry` accessor takes a [`HydroCell`],
     /// never a [`HydroSys`], since a plant's min-turbine/min-generation floor is
-    /// now a per-cell sum, not a plant-level aggregate.
+    /// a per-cell sum, not a plant-level aggregate.
     struct CellFamilyCheck {
         name: &'static str,
         predicate: fn(&HydroSpec) -> bool,
@@ -4043,7 +4043,7 @@ mod block_family_slack_tests {
     /// fixture hydro carries exactly one (mirrored) group, so `HydroCell::new(h_idx)`
     /// is that hydro's own cell under the single-bus identity partition.
     #[test]
-    fn block_family_driver_matches_legacy_slack_fills() {
+    fn block_family_driver_matches_the_per_family_slack_contract() {
         let specs = hydro_specs();
         let mut fixtures = SlackFixtures::new(&specs);
         let stage = two_block_stage(STAGE_IDX, [BLOCK_HOURS[0], BLOCK_HOURS[1]]);
@@ -4415,7 +4415,7 @@ mod evaporation_slack_objective_tests {
 
     /// In chronological K ≥ 2 each block's evaporation-violation slack objective is
     /// the directional cost times THAT block's `duration_hours` — not the stage-total
-    /// hours on every block (the pre-fix inflation) — and the per-block sum telescopes
+    /// hours on every block — and the per-block sum telescopes
     /// to `cost * total_stage_hours` (the single-slack parallel total).
     #[test]
     fn chronological_evap_slack_objective_is_block_weighted() {
@@ -5833,7 +5833,7 @@ mod hydro_block_bound_tests {
             min_turbined_m3s: 0.0,
             // Deliberately non-binding, not a realistic install capacity: this
             // plant's own bound becomes its mirrored group's box
-            // (declare_mirror_unit_group), which every cell column bound now
+            // (declare_mirror_unit_group), which every cell column bound
             // sums against and would otherwise cap below the resolved bounds
             // this module's tests exercise — a bounds row raising a plant
             // above its declared capacity is rejected in a real deck, so this
@@ -6023,7 +6023,7 @@ mod hydro_block_bound_tests {
         /// Also syncs `hydro.unit_groups[0]`'s `min_turbined_m3s`/`min_generation_mw`
         /// to `hb`'s: `fixture_hydro`'s `declare_mirror_unit_group` mirrors the
         /// entity's (hard-coded zero) declared minimum at construction time, before
-        /// this per-stage bound is known, and the min-floor rows now read the
+        /// this per-stage bound is known, and the min-floor rows read the
         /// GROUP's own resolved minimum, never `HydroBlockBounds`. Every fixture
         /// hydro carries exactly one group at position 0, and this module's
         /// `N_STAGES == 1`, so overwriting it here tracks the single call's value
@@ -6633,8 +6633,7 @@ mod hydro_block_bound_tests {
 
     /// A hydro with a declared group `min_turbined_m3s = 0.0` and a group
     /// `block_id = 1` override to `75.0` (`hydro_unit_group_bounds.parquet`'s
-    /// per-cell floor overlay — BU-F1's previously-unconsumed override column,
-    /// now the min-turbine row's sole RHS source) binds ONLY block 1's
+    /// per-cell floor overlay, the min-turbine row's sole RHS source) binds ONLY block 1's
     /// min-turbine row lower bound. The stage-wide `HydroBlockBounds.min_turbined_m3s`
     /// set below stays `0.0` throughout and is NOT what the row reads.
     #[test]
@@ -8035,7 +8034,7 @@ mod cell_column_bound_tests {
     /// sum-then-fold's `min(110,150) = 110` — switching the input source did not
     /// reorder the fold.
     #[test]
-    fn test_resolved_group_box_still_folds_before_summing() {
+    fn test_resolved_group_box_folds_before_summing() {
         let same_bus = EntityId(600);
         let group_a = make_unit_group(EntityId(31), same_bus, 0.0, 50.0, 0.0, 40.0);
         let group_b = make_unit_group(EntityId(32), same_bus, 0.0, 100.0, 0.0, 10.0);

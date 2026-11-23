@@ -152,10 +152,9 @@ pub fn derive_inflow_seeds(
     seeds
 }
 
-/// Reference oracle for [`derive_inflow_seeds`]: the retired per-hydro
-/// full-slice filter and per-`k` [`StageCalendar::season_occurrence`]
-/// restart, kept to prove the bucketed, incrementally-walked derivation is
-/// bit-identical to a direct filter-then-restart derivation.
+/// Reference oracle for [`derive_inflow_seeds`]: a direct per-hydro full-slice
+/// filter with a per-`k` [`StageCalendar::season_occurrence`] restart, to which
+/// the bucketed, incrementally-walked derivation must be bit-identical.
 #[cfg(test)]
 fn derive_inflow_seeds_reference(
     record: &[InflowHistoryRow],

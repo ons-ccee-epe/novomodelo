@@ -573,7 +573,7 @@ mod tests {
 
     #[test]
     fn build_with_schedule_mapping() {
-        // Acceptance criterion: profiles "default" and "wet", schedule maps stage 0 -> "wet".
+        // Profiles "default" and "wet", schedule maps stage 0 -> "wet".
         let mut profiles = BTreeMap::new();
         profiles.insert(
             "default".to_string(),

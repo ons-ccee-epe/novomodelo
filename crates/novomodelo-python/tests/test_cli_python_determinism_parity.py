@@ -32,7 +32,7 @@ constants name the excluded paths and columns, with the reason each is masked:
 - `_MASKED_JSON_POINTERS`: maps each JSON file to the tuple of slash-separated
   key paths dropped before comparison. Every path is wall-clock-related,
   including the `setup` section (per-phase setup timings) that both the CLI
-  and Python now write to `training/metadata.json`.
+  and Python write to `training/metadata.json`.
 - `_MASKED_PARQUET_COLUMNS`: the frozen set of wall-clock column names dropped
   from every Parquet comparison.
 

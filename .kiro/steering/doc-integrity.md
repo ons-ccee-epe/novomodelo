@@ -89,10 +89,8 @@ A code comment is co-located with one code site, so these cannot arise there:
 1. **Single-source fan-out (cache coherency).** One authoritative fact cached
    into N audience docs that drift apart. _Rule:_ one owner per fact; every other
    doc is a shape-only pointer or a guard-pinned literal.
-   _Example (historical):_ MSRV 1.86 (book) vs 1.88 (Cargo.toml) — the guard
-   that caught this (`check_book_version.py`) was retired with book/ (mdBook
-   decommission); the failure mode remains live for any multi-doc fact without
-   a comparable guard.
+   _Example:_ an MSRV of 1.86 in one doc against 1.88 in `Cargo.toml`; any
+   multi-doc fact without a guard drifts this way.
 
 2. **Stale current-state snapshots presented as standing truth.** A census or
    completeness claim that rots silently (no adjacent diff forces an edit).

@@ -202,7 +202,7 @@
     },
     "ExportsConfig": {
       "additionalProperties": false,
-      "description": "Export flags controlling which outputs are written to disk\n(`config.json → exports`).\n\nOnly the active fields below are accepted. Legacy keys (`training`, `cuts`,\n`vertices`, `simulation`, `forward_detail`, `backward_detail`,\n`compression`) must be removed from existing `config.json` files before\nloading — they are now rejected as unknown fields.",
+      "description": "Export flags controlling which outputs are written to disk\n(`config.json → exports`).",
       "properties": {
         "fpha_deviation_points": {
           "default": false,

@@ -292,8 +292,7 @@ pub fn build_periodic_yw_matrix_into(
 /// - `n_seasons` — total number of seasons in the periodic cycle.
 /// - `observations_by_season` — chronological `Z` observations grouped by season.
 /// - `stats_by_season` — `(mean, std)` for each `Z` season.
-/// - `z_year_starts` — first PDF year of each `Z` bucket; equal entries recover
-///   the legacy by-index pairing.
+/// - `z_year_starts` — first PDF year of each `Z` bucket, indexed by season.
 /// - `annual_observations_by_season` — `A` observations grouped by season.
 /// - `annual_stats_by_season` — `(mean, std)` for each `A` season.
 /// - `a_year_starts` — first PDF year of each `A` bucket, indexed by season.

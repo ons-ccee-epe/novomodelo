@@ -5,8 +5,8 @@
 //! resolved from the node graph's `node → pool` map
 //! ([`crate::setup::node_graph::NodeGraph::n_pools`],
 //! `NodeRuntime.pool_id`); on the degenerate one-node-per-stage graph
-//! (`nodes[]` absent), `pool_id == stage`, so every read below reduces
-//! byte-for-byte to the pre-node-native stage read.
+//! (`nodes[]` absent), `pool_id == stage`, so every read below is a read by
+//! stage.
 //!
 //! ## Pool-id indexing
 //!
@@ -645,7 +645,7 @@ mod tests {
     }
 
     #[test]
-    fn new_uniform_zero_counts_matches_old_scalar_zero_behavior() {
+    fn new_uniform_zero_counts_gives_every_pool_base_capacity_at_slot_zero() {
         let fcf = FutureCostFunction::new(3, 4, 2, 10, &[0, 0, 0]);
         for pool in &fcf.pools {
             // capacity = 0 + 10*2 = 20
@@ -808,13 +808,13 @@ mod tests {
     }
 
     #[test]
-    fn ac_new_5_pools_pools_len_is_5() {
+    fn new_5_pools_pools_len_is_5() {
         let fcf = FutureCostFunction::new(5, 9, 10, 100, &[0; 5]);
         assert_eq!(fcf.pools.len(), 5);
     }
 
     #[test]
-    fn ac_active_cuts_at_pool_with_cut_yields_it() {
+    fn active_cuts_at_pool_with_cut_yields_it() {
         let mut fcf = FutureCostFunction::new(5, 3, 1, 10, &[0; 5]);
         let coeffs = [1.0, 2.0, 3.0];
         fcf.add_cut(NodeId(0), 2, 0, 0, 99.0, &coeffs);
@@ -824,7 +824,7 @@ mod tests {
     }
 
     #[test]
-    fn ac_active_cuts_at_different_pool_yields_none() {
+    fn active_cuts_at_different_pool_yields_none() {
         let mut fcf = FutureCostFunction::new(5, 3, 1, 10, &[0; 5]);
         fcf.add_cut(NodeId(0), 2, 0, 0, 99.0, &[1.0, 2.0, 3.0]);
 
@@ -833,7 +833,7 @@ mod tests {
     }
 
     #[test]
-    fn ac_total_active_cuts_is_sum_across_pools() {
+    fn total_active_cuts_is_sum_across_pools() {
         let mut fcf = FutureCostFunction::new(5, 1, 1, 10, &[0; 5]);
         fcf.add_cut(NodeId(0), 0, 0, 0, 1.0, &[1.0]);
         fcf.add_cut(NodeId(0), 1, 0, 0, 2.0, &[2.0]);
@@ -936,18 +936,17 @@ mod tests {
     }
 
     #[test]
-    fn from_deserialized_evaluate_at_state_matches_original() {
-        // Build original FCF with known cuts, then reconstruct via deserialized.
-        let mut original = FutureCostFunction::new(2, 2, 1, 10, &[0; 2]);
-        original.add_cut(NodeId(0), 0, 0, 0, 10.0, &[1.0, 0.0]);
-        original.add_cut(NodeId(0), 0, 1, 0, 5.0, &[0.0, 2.0]);
-        original.add_cut(NodeId(0), 1, 0, 0, 3.0, &[1.0, 1.0]);
+    fn from_deserialized_evaluate_at_state_matches_the_add_cut_built_fcf() {
+        let mut built = FutureCostFunction::new(2, 2, 1, 10, &[0; 2]);
+        built.add_cut(NodeId(0), 0, 0, 0, 10.0, &[1.0, 0.0]);
+        built.add_cut(NodeId(0), 0, 1, 0, 5.0, &[0.0, 2.0]);
+        built.add_cut(NodeId(0), 1, 0, 0, 3.0, &[1.0, 1.0]);
 
         let state = [3.0, 4.0];
-        let orig_val_s0 = original.evaluate_at_state(0, &state);
-        let orig_val_s1 = original.evaluate_at_state(1, &state);
+        let built_val_s0 = built.evaluate_at_state(0, &state);
+        let built_val_s1 = built.evaluate_at_state(1, &state);
 
-        // Construct deserialized data matching the original cuts.
+        // The same cuts as deserialized records.
         let stages = vec![
             make_stage(
                 0,
@@ -963,8 +962,8 @@ mod tests {
         let proof = crate::test_support::trivial_full_fcf_proof(2, 2);
         let reconstructed =
             FutureCostFunction::from_deserialized(&proof, &stages, &[2, 2]).unwrap();
-        assert_eq!(reconstructed.evaluate_at_state(0, &state), orig_val_s0);
-        assert_eq!(reconstructed.evaluate_at_state(1, &state), orig_val_s1);
+        assert_eq!(reconstructed.evaluate_at_state(0, &state), built_val_s0);
+        assert_eq!(reconstructed.evaluate_at_state(1, &state), built_val_s1);
     }
 
     #[test]

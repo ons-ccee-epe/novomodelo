@@ -40,7 +40,7 @@ fn test_with_scenario_models_replaces_fields() {
         excess_cost: 0.0,
     };
 
-    let old_model = InflowModel {
+    let replaced_model = InflowModel {
         hydro_id: EntityId(1),
         stage_id: 0,
         mean_m3s: 10.0,
@@ -51,8 +51,8 @@ fn test_with_scenario_models_replaces_fields() {
     };
     let system = SystemBuilder::new()
         .buses(vec![bus])
-        .inflow_models(vec![old_model.clone(), {
-            let mut m = old_model.clone();
+        .inflow_models(vec![replaced_model.clone(), {
+            let mut m = replaced_model.clone();
             m.stage_id = 1;
             m
         }])
@@ -2609,7 +2609,7 @@ fn estimate_from_history_pacf_classical_keeps_annual_none() {
 }
 
 #[test]
-fn estimate_ar_coefficients_with_selection_classical_path_unchanged() {
+fn estimate_ar_coefficients_with_selection_classical_path_uses_pacf_without_annual() {
     let h1 = EntityId(1);
     let h2 = EntityId(2);
     let n_years = 30;

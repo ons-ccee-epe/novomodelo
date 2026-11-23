@@ -93,8 +93,8 @@ def write_policy_checkpoint(
 
     Raises ``ValueError`` when:
     - a pool dict holds "active_cut_indices", a cut dict "cut_id", or a basis
-      dict "num_cut_rows", "num_columns" or "num_rows" (retired keys, named with
-      their position; remove them);
+      dict "num_cut_rows", "num_columns" or "num_rows" (keys the format does not
+      have; the error names each with its position);
     - a pool's "cost_scale_factor" is missing, not finite or not positive;
     - a cut's "coefficients" length differs from its pool's "state_dimension",
       or "inflow_lag_coefficients" is given without ``inflow_lag_depth``;

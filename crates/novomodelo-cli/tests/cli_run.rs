@@ -2847,9 +2847,9 @@ fn result_outputs(output: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
 }
 
 #[test]
-fn legacy_post_study_deck_writes_the_outputs_of_its_migrated_deck() {
+fn legacy_post_study_deck_writes_the_outputs_of_its_thermal_stages_deck() {
     const DECK: &str = "deterministic/d55-post-study-anticipated-lanes";
-    let [migrated, legacy] = [false, true].map(|legacy| {
+    let [thermal_stages, legacy] = [false, true].map(|legacy| {
         let case = TempDir::new().unwrap();
         copy_dir_recursive(&case_dir(DECK), case.path());
         if legacy {
@@ -2858,7 +2858,7 @@ fn legacy_post_study_deck_writes_the_outputs_of_its_migrated_deck() {
                 fs::read_to_string(case.path().join("post_study_stages.json")).unwrap();
             assert!(
                 post_study.contains("\"stages\"") && !post_study.contains("thermal_stages"),
-                "the overlay must restore the deprecated format: {post_study}"
+                "the overlay must write the legacy `stages` format: {post_study}"
             );
         }
         edit_json(&case.path().join("config.json"), |config| {
@@ -2878,19 +2878,19 @@ fn legacy_post_study_deck_writes_the_outputs_of_its_migrated_deck() {
 
     for compared in ["policy/cuts/", "simulation/anticipated_lanes/"] {
         assert!(
-            migrated
+            thermal_stages
                 .keys()
                 .any(|path| path.to_str().unwrap().starts_with(compared)),
             "the comparison has no power unless it covers {compared}"
         );
     }
     assert!(
-        migrated.keys().eq(legacy.keys()),
-        "output files: migrated {:?}, legacy {:?}",
-        migrated.keys().collect::<Vec<_>>(),
+        thermal_stages.keys().eq(legacy.keys()),
+        "output files: thermal_stages {:?}, legacy {:?}",
+        thermal_stages.keys().collect::<Vec<_>>(),
         legacy.keys().collect::<Vec<_>>()
     );
-    let differing: Vec<_> = migrated
+    let differing: Vec<_> = thermal_stages
         .iter()
         .filter(|(path, bytes)| legacy[*path] != **bytes)
         .map(|(path, _)| path)

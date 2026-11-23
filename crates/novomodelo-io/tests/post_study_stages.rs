@@ -1270,17 +1270,16 @@ fn test_v2_v3_v4_and_v5_violations_are_all_reported() {
     );
 }
 
-// ── the retired no-carrier advice never resurfaces ────────────────────────
+// ── no diagnostic advises shortening the lead ─────────────────────────────
 
 /// Every diagnostic collected from the reference-shaped deck (this file's
 /// `test_reference_shaped_fixed_post_horizon_deck_loads` fixture) and from
 /// the tiled pre-study-decided fixture (`test_pre_study_decided_post_study_delivery_loads_when_tiled`)
-/// must never mention the retired no-carrier advice to shorten the lead — a
-/// substring-absence check over every collected diagnostic, so a future
-/// reintroduction fails loudly instead of silently regressing the matrix.
+/// must never advise shortening the lead or name a missing carrier — a
+/// substring-absence check over every collected diagnostic.
 #[test]
-fn test_retired_no_carrier_advice_is_absent_from_every_diagnostic() {
-    const RETIRED_ADVICE_FRAGMENTS: [&str; 2] = ["no carrier", "Shorten the lead"];
+fn test_no_diagnostic_advises_shortening_the_lead() {
+    const FORBIDDEN_ADVICE_FRAGMENTS: [&str; 2] = ["no carrier", "Shorten the lead"];
 
     let mut diagnostics: Vec<String> = Vec::new();
 
@@ -1342,11 +1341,11 @@ fn test_retired_no_carrier_advice_is_absent_from_every_diagnostic() {
     diagnostics.extend(report2.errors.into_iter().map(|entry| entry.message));
     diagnostics.extend(report2.warnings.into_iter().map(|entry| entry.message));
 
-    for fragment in RETIRED_ADVICE_FRAGMENTS {
+    for fragment in FORBIDDEN_ADVICE_FRAGMENTS {
         assert!(
             !diagnostics.iter().any(|m| m.contains(fragment)),
-            "the retired no-carrier advice fragment {fragment:?} must never appear in any \
-             collected diagnostic, got: {diagnostics:?}"
+            "the advice fragment {fragment:?} must never appear in any collected \
+             diagnostic, got: {diagnostics:?}"
         );
     }
 }

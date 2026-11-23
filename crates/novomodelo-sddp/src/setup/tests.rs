@@ -4333,7 +4333,7 @@ fn build_initial_state_anticipated_seed_correct_under_staggered_commissioning_da
 }
 
 #[test]
-fn build_initial_state_no_anticipated_state_unchanged() {
+fn build_initial_state_no_anticipated_is_all_zero() {
     use super::build_initial_state;
 
     let system = minimal_system(2);
@@ -6852,8 +6852,8 @@ fn test_sim_historical_library_built_when_sim_scheme_is_historical() {
 }
 
 /// [`minimal_system_with_anticipated_and_commitments`] with no
-/// `past_anticipated_commitments` — the pre-existing thermal-only system every
-/// caller but the seed-walk fixtures wants.
+/// `past_anticipated_commitments` — the thermal-only system every caller but
+/// the seed-walk fixtures wants.
 fn minimal_system_with_anticipated(
     stage_hours: &[f64],
     anticipated_config: AnticipatedConfig,
@@ -7376,11 +7376,11 @@ fn test_anticipated_resolve_point_fanout_calendar() {
     assert_eq!(resolution.anchored_depth(), 4);
 }
 
-/// The bug doc's reproduction shape as a `System`: a `LeadTime(1160)` thermal
-/// whose lead resolves all four study deliveries pre-study, plus one post-study
-/// month. `resolve_anticipated_commitments_core` widens the per-plant lead to
-/// the ring depth `4` — every simultaneous pre-study seed — matching
-/// `resolution.anchored_depth()`, not the occupancy max `3` the pre-fix sizing reported.
+/// A `System` with a `LeadTime(1160)` thermal whose lead resolves all four study
+/// deliveries pre-study, plus one post-study month.
+/// `resolve_anticipated_commitments_core` widens the per-plant lead to the ring
+/// depth `4` — every simultaneous pre-study seed — matching
+/// `resolution.anchored_depth()`, not the occupancy max `3`.
 #[test]
 fn resolve_anticipated_commitments_widens_lead_time_plant_lead_to_the_ring_depth() {
     let post_study = PostStudyStages {
@@ -8330,7 +8330,7 @@ fn cut_pool_sizing_t_plus_1_reduces_pool_zero_for_lagless_successor() {
 
 /// Result-neutrality: when every stage enables all dimensions (the default
 /// for every shipped case), every pool's `state_dimension` equals the global
-/// `StateSpace::n_state`. This is the bit-identical-to-today guarantee.
+/// `StateSpace::n_state`.
 #[test]
 fn cut_pool_sizing_all_enabled_matches_global_n_state() {
     let lags = StageStateConfig {
@@ -10098,8 +10098,8 @@ fn enumeration_asymmetry_symmetric_declarations_do_not_warn() {
 /// (each `|Ω| = 1`): a single-predecessor tree with no within-node opening and
 /// no recombination, whose derived scenario count is the leaf count,
 /// `K = 3` — the shape both `resolve_enumerated_training_count` and
-/// `resolve_enumerated_simulation_count` must admit now that the derived-≥-1
-/// census gate is open.
+/// `resolve_enumerated_simulation_count` must admit under the open derived-≥-1
+/// census gate.
 fn terminal_fan_tree_node_graph() -> super::NodeGraph {
     super::NodeGraph::new(
         vec![NodeId(0), NodeId(1), NodeId(2), NodeId(3)].into(),
@@ -10117,7 +10117,7 @@ fn terminal_fan_tree_node_graph() -> super::NodeGraph {
 }
 
 /// A `K = 3` branching tree is admitted for TRAINING through the shared
-/// guard — unchanged behavior, pinning the refactor byte-neutral.
+/// guard.
 #[test]
 fn resolve_enumerated_training_count_admits_branching_tree() {
     let ng = terminal_fan_tree_node_graph();
@@ -10610,7 +10610,7 @@ fn bucket_seed_defluence_window(
 /// 100 m³/s ⇒ `b_1 = k_1 · D = 1/2 · D` (`D` the width-scaled volume,
 /// mirroring how an in-study release is already volume-scaled by `τ`).
 #[test]
-fn test_single_arc_unroll_matches_ac1() {
+fn test_single_arc_unroll_seeds_k1_share_of_window_volume() {
     let downstream = bucket_seed_hydro(1, None, None);
     let upstream = bucket_seed_hydro(2, Some(1), Some(24.0));
     let system = bucket_seed_build_system(

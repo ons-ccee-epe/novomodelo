@@ -1742,10 +1742,10 @@ fn ar_fit_on_an_out_of_calendar_order_map_equals_the_fit_on_its_calendar_ordered
     assert_fit_equals_twin_fit(&permuted_quarterly_twins());
 }
 
-/// characterization: the fit indexed seasons by raw id before relabeling
-/// existed, and raw id equals calendar position on this map.
+/// Characterization: raw id equals calendar position on this map, so the
+/// relabeled fit equals the raw-id-indexed fit pinned here.
 #[test]
-fn fit_on_a_dense_calendar_ordered_custom_map_is_unchanged() {
+fn fit_on_a_dense_calendar_ordered_custom_map_matches_pinned_bits() {
     const FIT_BITS: [&[u64]; 4] = [
         &[4_604_888_768_224_172_012],
         &[4_598_513_797_465_689_831, 4_602_842_188_588_550_407],

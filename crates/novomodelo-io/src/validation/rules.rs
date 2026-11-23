@@ -14,20 +14,16 @@
 //! - a rule a module table numbers takes that module's namespace (`dimensional.6`,
 //!   `scalar_parameters.A`, `travel_time.12`);
 //! - a Layer 5 rule takes `semantic.5a.N` or `semantic.5b.N` from its layer table;
-//! - a module that numbered nothing had its rules numbered `1`, `2`, … in the source order
-//!   of their first emit (`structural.1`, `referential.3`).
+//! - a module whose own table numbers nothing has its rules numbered `1`, `2`, … here
+//!   (`structural.1`, `referential.3`).
 //!
-//! Labels were assigned once, when the table was first built from the existing numbering.
-//! A rule added later, or a kind and severity pair added later to a listed rule, takes the
-//! next free number in its namespace, past every number the namespace has listed or retired.
-//! A listed id is never renamed, split or renumbered, and a retired id is never reused.
+//! A listed id is never renamed, split or renumbered, and a retired id is never reused. A new
+//! rule, or a new kind and severity pair on a listed rule, sub-labelled or not, takes the next
+//! free number in its namespace, past every number the namespace has listed or retired.
 //!
-//! When the table was first built, a numbered row whose sites emitted more than one kind and
-//! severity pair got one entry per pair, labelled `<row>.<k>`, with `k` counted once from 1 in
-//! that build's source order, and its bare number is not an id.
-//! Sub-labels are assigned only then. A pair added later to a listed rule, sub-labelled or not,
-//! takes the next free number in its namespace, and no listed id is renamed, split or
-//! renumbered to make room for it.
+//! A sub-labelled id `<row>.<k>` (`k` counting from 1) is one kind and severity pair of a
+//! numbered row whose sites emit more than one pair, and that row's bare number is not an id.
+//! No new sub-label is assigned.
 //!
 //! # Granularity
 //!

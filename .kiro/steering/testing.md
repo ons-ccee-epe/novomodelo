@@ -74,8 +74,7 @@ rule; the rules below are the Novomodelo-specific ones.
     cut-state dimension differs from its neighbours' (`d43-storage-only-cut`
     is the non-uniform reference case), not only a fixture where every
     stage projects the same dimension. Uniform-only coverage on this axis
-    previously let a per-stage cut-state-projection crash class through
-    undetected; a new backward-path gate is incomplete until it covers
+    misses a per-stage cut-state-projection crash class; a new backward-path gate is incomplete until it covers
     both, or the omission is justified.
   - A scheduler-determinism gate asserts same-scheduler reproducibility and
     thread/rank-shape invariance; it never asserts opening-block-vs-

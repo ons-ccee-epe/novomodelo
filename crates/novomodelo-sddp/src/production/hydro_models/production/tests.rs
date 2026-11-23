@@ -2606,7 +2606,7 @@ fn fpha_plant_with_both_limits_emits_no_capacity_warning() {
 }
 
 #[test]
-fn computed_fpha_without_turbine_capacity_still_requires_its_prerequisites() {
+fn computed_fpha_without_turbine_capacity_requires_its_prerequisites() {
     let mut hydro = make_sobradinho_computed_hydro(0);
     hydro.max_turbined_m3s = 0.0;
     hydro.tailrace = None;

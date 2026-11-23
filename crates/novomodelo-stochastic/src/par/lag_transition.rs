@@ -1166,13 +1166,12 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Migration-equivalence: window_period_overlaps route vs the
-    // pre-migration days_in_period * 24.0 route
+    // Equivalence: window_period_overlaps route vs the reference
+    // days_in_period * 24.0 route
     // -----------------------------------------------------------------------
 
-    /// Private copy of the pre-migration `days_in_period` formula, kept only
-    /// to assert bit-equality against the `window_period_overlaps` route the
-    /// production code now uses exclusively.
+    /// Reference whole-day `days_in_period` formula, asserted bit-equal to the
+    /// `window_period_overlaps` route the production code uses.
     fn reference_days_in_period(
         stage_start: NaiveDate,
         stage_end: NaiveDate,
@@ -1201,7 +1200,7 @@ mod tests {
     }
 
     #[test]
-    fn test_migration_equivalence_window_period_overlaps_bit_identical_to_days_in_period() {
+    fn test_window_period_overlaps_bit_identical_to_days_in_period() {
         // (a) stage straddling a monthly boundary: accumulate + nonzero spillover.
         let stage_monthly = make_stage(0, d(2026, 1, 28), d(2026, 2, 4), Some(0));
         let jan_start = d(2026, 1, 1);

@@ -241,27 +241,27 @@ mod tests {
         assert!((slice[0].bound_lower.expect("lower present") - 100.0).abs() < f64::EPSILON);
     }
 
-    /// Acceptance criterion: constraint 0 at stage 0 `is_active` returns true.
+    /// Constraint 0 at stage 0 `is_active` returns true.
     #[test]
-    fn test_ac_is_active_true() {
+    fn test_is_active_true() {
         let constraints = vec![make_constraint(0), make_constraint(1)];
         let rows = vec![make_row(0, 0, None, 100.0), make_row(0, 1, None, 150.0)];
         let table = resolve_generic_constraint_bounds(&constraints, &rows);
         assert!(table.is_active(0, 0));
     }
 
-    /// Acceptance criterion: constraint 1 at stage 0 `is_active` returns false when no bounds.
+    /// Constraint 1 at stage 0 `is_active` returns false when no bounds.
     #[test]
-    fn test_ac_is_active_false() {
+    fn test_is_active_false() {
         let constraints = vec![make_constraint(0), make_constraint(1)];
         let rows = vec![make_row(0, 0, None, 100.0)];
         let table = resolve_generic_constraint_bounds(&constraints, &rows);
         assert!(!table.is_active(1, 0));
     }
 
-    /// Acceptance criterion: `bounds_for_stage` returns `bound_lower = Some(100.0)` and no `bound_upper` for a single bound row.
+    /// `bounds_for_stage` returns `bound_lower = Some(100.0)` and no `bound_upper` for a single bound row.
     #[test]
-    fn test_ac_bounds_for_stage() {
+    fn test_bounds_for_stage() {
         let constraints = vec![make_constraint(0)];
         let rows = vec![make_row(0, 0, None, 100.0)];
         let table = resolve_generic_constraint_bounds(&constraints, &rows);

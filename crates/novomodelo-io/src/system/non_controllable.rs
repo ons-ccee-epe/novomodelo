@@ -258,7 +258,7 @@ mod tests {
     use super::*;
     use crate::test_support::{make_global, write_json};
 
-    // ── AC: valid NCS with and without entity-level curtailment_cost ──────────
+    // ── valid NCS with and without entity-level curtailment_cost ──────────────
 
     /// Given a valid `non_controllable_sources.json` with 2 sources (one with
     /// entity-level `curtailment_cost` override, one without), `parse_non_controllable_sources`
@@ -351,7 +351,7 @@ mod tests {
         assert!(sources[1].allow_curtailment, "curtailable source");
     }
 
-    // ── AC: duplicate ID detection ─────────────────────────────────────────────
+    // ── duplicate ID detection ─────────────────────────────────────────────────
 
     /// Given `non_controllable_sources.json` with duplicate `id` values,
     /// `parse_non_controllable_sources` returns `Err(LoadError::SchemaError)`.
@@ -381,7 +381,7 @@ mod tests {
         }
     }
 
-    // ── AC: negative capacity → SchemaError ───────────────────────────────────
+    // ── negative capacity → SchemaError ───────────────────────────────────────
 
     /// Negative `max_generation_mw` → `SchemaError`.
     #[test]
@@ -442,7 +442,7 @@ mod tests {
         }
     }
 
-    // ── AC: declaration-order invariance ──────────────────────────────────────
+    // ── declaration-order invariance ──────────────────────────────────────────
 
     /// Given sources in reverse ID order in JSON, `parse_non_controllable_sources`
     /// returns a `Vec` sorted by ascending `id`.
@@ -475,7 +475,7 @@ mod tests {
         assert_eq!(sources1[1].id, EntityId(1));
     }
 
-    // ── AC: file not found → IoError ─────────────────────────────────────────
+    // ── file not found → IoError ─────────────────────────────────────────────
 
     /// Given a nonexistent path, `parse_non_controllable_sources` returns
     /// `Err(LoadError::IoError)`.
@@ -492,7 +492,7 @@ mod tests {
         }
     }
 
-    // ── AC: invalid JSON → ParseError ─────────────────────────────────────────
+    // ── invalid JSON → ParseError ─────────────────────────────────────────────
 
     /// Given invalid JSON, `parse_non_controllable_sources` returns
     /// `Err(LoadError::ParseError)`.

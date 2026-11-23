@@ -173,7 +173,7 @@ fn max_par_order_uses_par_lp_when_annual_present() {
 
 /// Classical PAR systems are unaffected: `max_par_order` equals the AR order.
 #[test]
-fn max_par_order_classical_unchanged() {
+fn max_par_order_classical_equals_the_ar_order() {
     let inflow_models = two_hydro_inflow_models(&[0.3, 0.2, 0.1], false);
 
     let system = two_hydro_par_system(3, inflow_models.clone());
@@ -187,7 +187,7 @@ fn max_par_order_classical_unchanged() {
     assert_eq!(
         state.n_state,
         2 * (1 + 3),
-        "classical PAR order must remain 3, so n_state == N*(1+3); got {}",
+        "classical PAR order must be 3, so n_state == N*(1+3); got {}",
         state.n_state
     );
 }
@@ -709,7 +709,7 @@ fn test_anticipated_delivery_thermal_cost_is_zero() {
 /// stage — including pre-horizon stages before K_i matures — leaving the cost at
 /// its 0.0 initialization default.
 #[test]
-fn test_anticipated_pre_delivery_thermal_cost_unchanged() {
+fn test_anticipated_thermal_cost_is_zero_at_every_stage() {
     let lead_stages = 2_usize;
     let system = two_thermal_one_anticipated_system(4, lead_stages as u32);
     let result = build_stage_templates_resolving_layout(
@@ -1429,7 +1429,7 @@ fn test_anticipated_thermals_lp_roundtrip_k2() {
         let t0 = &result.templates[0];
         let out_slot1 = 1 + 1; // outgoing slot 1: one hydro's storage precedes the block
         let in_slot1 = col_ant_state + 1; // incoming slot 1
-        let in_slot0 = col_ant_state; // incoming slot 0 (the retired shift target)
+        let in_slot0 = col_ant_state; // incoming slot 0 (the slot a shift would read)
         let carry_row = (0..t0.num_rows)
             .find(|&r| csc_entries_at(t0, out_slot1, r) == vec![1.0])
             .expect("K=2: a carry definition row with out(slot 1) = +1.0 must exist");
@@ -1440,7 +1440,7 @@ fn test_anticipated_thermals_lp_roundtrip_k2() {
         );
         assert!(
             csc_entries_at(t0, in_slot0, carry_row).is_empty(),
-            "K=2 carry row must NOT touch in(slot 0) — the retired shift target in(slot+1)"
+            "K=2 carry row must NOT touch in(slot 0) — the carry holds identity, it does not shift"
         );
     }
 }

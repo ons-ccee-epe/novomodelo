@@ -1371,7 +1371,7 @@ mod tests {
     }
 
     #[test]
-    fn post_study_calendar_shorter_than_travel_time_still_pads() {
+    fn post_study_calendar_shorter_than_travel_time_pads() {
         let downstream = hydro(1, None, None);
         let upstream = hydro(2, Some(1), Some(72.0));
         let durations = [24.0, 24.0, 24.0];

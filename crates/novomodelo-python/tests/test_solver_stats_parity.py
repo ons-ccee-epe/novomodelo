@@ -6,9 +6,9 @@ Parquet file to the `novomodelo` CLI for the D01 deterministic case.
 ## What "parity" means here
 
 The Parquet file contains timing columns (`solve_time_ms`, `load_model_time_ms`,
-`add_rows_time_ms`, `set_bounds_time_ms`, `basis_set_time_ms`) that record
-wall-clock durations.  These values differ between any two independent runs
-even when the logical outputs are identical.  Therefore:
+`set_bounds_time_ms`, `basis_set_time_ms`) that record wall-clock durations.
+These values differ between any two independent runs even when the logical
+outputs are identical.  Therefore:
 
 - **Byte-for-byte SHA256 identity is NOT guaranteed** and is not tested here.
   The solver-stats parquet cannot be bit-for-bit reproducible across runs
@@ -49,7 +49,6 @@ TIMING_COLS = frozenset(
 )
 
 # Expected schema for training/solver/iterations.parquet.
-# rank and worker_id are present; add_rows_time_ms was removed.
 EXPECTED_COLUMNS = [
     "iteration",
     "scenario_id",
@@ -187,8 +186,8 @@ def test_python_matches_cli_nontiming_columns(
 ) -> None:
     """All non-timing columns are identical between CLI and Python runs.
 
-    Timing columns (solve_time_ms, load_model_time_ms, add_rows_time_ms,
-    set_bounds_time_ms, basis_set_time_ms) record wall-clock durations and
+    Timing columns (solve_time_ms, load_model_time_ms, set_bounds_time_ms,
+    basis_set_time_ms) record wall-clock durations and
     legitimately differ between runs.  All other columns must be identical
     for the same deterministic case.
 

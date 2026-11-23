@@ -76,47 +76,6 @@ pub fn evaluate_par(
     a_h + sigma * eta
 }
 
-/// Evaluate the PAR(p) model equation for a single series element at a single stage.
-///
-/// # Deprecation
-///
-/// Renamed to [`evaluate_par`] for infrastructure-crate genericity.
-/// This alias will be removed in a future minor version.
-///
-/// # Examples
-///
-/// AR(0) — mean plus noise:
-///
-/// ```
-/// #[allow(deprecated)]
-/// use novomodelo_stochastic::evaluate_par_inflow;
-///
-/// let a_h = evaluate_par_inflow(100.0, &[], &[], 30.0, 1.5);
-/// assert!((a_h - 145.0).abs() < 1e-10);
-/// ```
-///
-/// AR(1) — one lag:
-///
-/// ```
-/// #[allow(deprecated)]
-/// use novomodelo_stochastic::evaluate_par_inflow;
-///
-/// // a_h = 70.0 + 0.48 * 90.0 + 28.62 * 0.5 = 127.51
-/// let a_h = evaluate_par_inflow(70.0, &[0.48], &[90.0], 28.62, 0.5);
-/// assert!((a_h - 127.51).abs() < 1e-10);
-/// ```
-#[must_use]
-#[deprecated(since = "0.1.2", note = "use evaluate_par instead")]
-pub fn evaluate_par_inflow(
-    deterministic_base: f64,
-    psi: &[f64],
-    lags: &[f64],
-    sigma: f64,
-    eta: f64,
-) -> f64 {
-    evaluate_par(deterministic_base, psi, lags, sigma, eta)
-}
-
 #[inline]
 fn conditional_mean_at(
     par_lp: &PrecomputedPar,
@@ -267,61 +226,6 @@ pub fn add_noise_term_batch(conditional_mean: &[f64], noise_term: &[f64], output
     }
 }
 
-/// Evaluate the PAR(p) model equation for all series elements at a given stage.
-///
-/// # Deprecation
-///
-/// Renamed to [`evaluate_par_batch`] for infrastructure-crate genericity.
-/// This alias will be removed in a future minor version.
-///
-/// # Examples
-///
-/// ```
-/// use novomodelo_core::{EntityId, scenario::InflowModel, temporal::{Stage, Block, BlockMode, StageStateConfig, StageRiskConfig, ScenarioSourceConfig, NoiseMethod}};
-/// use novomodelo_stochastic::par::precompute::PrecomputedPar;
-/// #[allow(deprecated)]
-/// use novomodelo_stochastic::evaluate_par_inflows;
-/// use chrono::NaiveDate;
-///
-/// let date = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
-/// let stage = Stage {
-///     index: 0, id: 0,
-///     start_date: date,
-///     end_date: NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-///     season_id: Some(0),
-///     blocks: vec![Block { index: 0, name: "SINGLE".to_string(), duration_hours: 744.0 }],
-///     block_mode: BlockMode::Parallel,
-///     state_config: StageStateConfig { storage: true, inflow_lags: false },
-///     risk_config: StageRiskConfig::Expectation,
-///     scenario_config: ScenarioSourceConfig { branching_factor: 10, noise_method: NoiseMethod::Saa },
-/// };
-/// let model = InflowModel {
-///     hydro_id: EntityId(1), stage_id: 0,
-///     mean_m3s: 100.0, std_m3s: 30.0,
-///     ar_coefficients: vec![],
-///     residual_std_ratio: 1.0,
-///     annual: None,
-/// };
-/// let par_lp = PrecomputedPar::build(&[model], &[stage], &[EntityId(1)], None).unwrap();
-///
-/// let lag_matrix: Vec<f64> = vec![]; // no lags for AR(0)
-/// let noise = vec![0.5];
-/// let mut output = vec![0.0];
-/// #[allow(deprecated)]
-/// evaluate_par_inflows(&par_lp, 0, &lag_matrix, &noise, &mut output);
-/// assert!((output[0] - 115.0).abs() < 1e-10); // 100.0 + 30.0 * 0.5
-/// ```
-#[deprecated(since = "0.1.2", note = "use evaluate_par_batch instead")]
-pub fn evaluate_par_inflows(
-    par_lp: &PrecomputedPar,
-    stage: usize,
-    lag_matrix: &[f64],
-    noise: &[f64],
-    output: &mut [f64],
-) {
-    evaluate_par_batch(par_lp, stage, lag_matrix, noise, output);
-}
-
 /// Solve the PAR(p) equation for the noise `η` producing a given `target` output
 /// (set `a_h = target` in the PAR equation and solve):
 ///
@@ -400,7 +304,6 @@ pub fn solve_par_noise(
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-#[allow(deprecated)]
 mod tests {
     use novomodelo_core::{
         EntityId,
@@ -413,8 +316,7 @@ mod tests {
 
     use super::{
         add_noise_term_batch, evaluate_par, evaluate_par_batch,
-        evaluate_par_conditional_mean_batch, evaluate_par_inflow, evaluate_par_inflows,
-        evaluate_par_noise_term_batch, solve_par_noise,
+        evaluate_par_conditional_mean_batch, evaluate_par_noise_term_batch, solve_par_noise,
     };
     use crate::noise::rng::rng_from_seed;
     use crate::par::precompute::PrecomputedPar;
@@ -456,7 +358,7 @@ mod tests {
     #[test]
     fn ar0_produces_mean_plus_noise() {
         // a_h = 100.0 + 0 (no lags) + 30.0 * 1.5 = 145.0
-        let a_h = evaluate_par_inflow(100.0, &[], &[], 30.0, 1.5);
+        let a_h = evaluate_par(100.0, &[], &[], 30.0, 1.5);
         assert!(
             (a_h - 145.0).abs() < 1e-10,
             "AR(0): expected 145.0, got {a_h}"
@@ -464,9 +366,9 @@ mod tests {
     }
 
     #[test]
-    fn ar1_acceptance_criterion() {
+    fn ar1_known_values() {
         // a_h = 70.0 + 0.48 * 90.0 + 28.62 * 0.5 = 70.0 + 43.2 + 14.31 = 127.51
-        let a_h = evaluate_par_inflow(70.0, &[0.48], &[90.0], 28.62, 0.5);
+        let a_h = evaluate_par(70.0, &[0.48], &[90.0], 28.62, 0.5);
         assert!(
             (a_h - 127.51).abs() < 1e-10,
             "AR(1): expected 127.51, got {a_h}"
@@ -478,7 +380,7 @@ mod tests {
         // a_h = 50.0 + 0.4 * 80.0 + 0.2 * 60.0 + 20.0 * (-0.5)
         //     = 50.0 + 32.0 + 12.0 - 10.0
         //     = 84.0
-        let a_h = evaluate_par_inflow(50.0, &[0.4, 0.2], &[80.0, 60.0], 20.0, -0.5);
+        let a_h = evaluate_par(50.0, &[0.4, 0.2], &[80.0, 60.0], 20.0, -0.5);
         assert!(
             (a_h - 84.0).abs() < 1e-10,
             "AR(2): expected 84.0, got {a_h}"
@@ -488,7 +390,7 @@ mod tests {
     #[test]
     fn zero_sigma_returns_deterministic_value() {
         // a_h = 100.0 + 0.3 * 90.0 + 0.0 * anything = 100.0 + 27.0 = 127.0
-        let a_h = evaluate_par_inflow(100.0, &[0.3], &[90.0], 0.0, 999.0);
+        let a_h = evaluate_par(100.0, &[0.3], &[90.0], 0.0, 999.0);
         assert!(
             (a_h - 127.0).abs() < 1e-10,
             "zero sigma: expected 127.0, got {a_h}"
@@ -499,7 +401,7 @@ mod tests {
     fn negative_noise_can_produce_negative_inflow() {
         // a_h = 10.0 + 0.0 (no lags) + 100.0 * (-1.0) = -90.0
         // Truncation is not this function's responsibility.
-        let a_h = evaluate_par_inflow(10.0, &[], &[], 100.0, -1.0);
+        let a_h = evaluate_par(10.0, &[], &[], 100.0, -1.0);
         assert!(
             a_h < 0.0,
             "expected negative inflow for large negative noise, got {a_h}"
@@ -514,7 +416,7 @@ mod tests {
         // positions. This test simulates that shape directly.
         // a_h = 50.0 + 0.4*80.0 + 0.9*60.0 + 0.9*40.0 + 20.0*0.0
         //     = 50.0 + 32.0 + 54.0 + 36.0 = 172.0
-        let a_h = evaluate_par_inflow(50.0, &[0.4, 0.9, 0.9], &[80.0, 60.0, 40.0], 20.0, 0.0);
+        let a_h = evaluate_par(50.0, &[0.4, 0.9, 0.9], &[80.0, 60.0, 40.0], 20.0, 0.0);
         assert!(
             (a_h - 172.0).abs() < 1e-10,
             "full-psi iteration: expected 172.0, got {a_h}"
@@ -566,14 +468,14 @@ mod tests {
         let noise = vec![0.3_f64, -0.4_f64];
         let mut output = vec![0.0_f64; 2];
 
-        evaluate_par_inflows(&par_lp, 1, &lag_matrix, &noise, &mut output);
+        evaluate_par_batch(&par_lp, 1, &lag_matrix, &noise, &mut output);
 
         let n_hydros = par_lp.n_hydros();
         let psi_h0 = par_lp.psi_slice(1, 0);
         let lags_h0: Vec<f64> = (0..psi_h0.len())
             .map(|l| lag_matrix[l * n_hydros])
             .collect();
-        let expected_h0 = evaluate_par_inflow(
+        let expected_h0 = evaluate_par(
             par_lp.deterministic_base(1, 0),
             psi_h0,
             &lags_h0,
@@ -584,7 +486,7 @@ mod tests {
         let lags_h1: Vec<f64> = (0..psi_h1.len())
             .map(|l| lag_matrix[l * n_hydros + 1])
             .collect();
-        let expected_h1 = evaluate_par_inflow(
+        let expected_h1 = evaluate_par(
             par_lp.deterministic_base(1, 1),
             psi_h1,
             &lags_h1,
@@ -617,18 +519,18 @@ mod tests {
         let noise = vec![1.0_f64, -0.2_f64];
         let mut output = vec![0.0_f64; 2];
 
-        evaluate_par_inflows(&par_lp, 0, &lag_matrix, &noise, &mut output);
+        evaluate_par_batch(&par_lp, 0, &lag_matrix, &noise, &mut output);
 
         // max_order=2, so per-hydro lag buffers must be length 2.
         // Hydro 1 (AR(1)) gets a zero in the unused lag-1 slot — psi[1]==0 there.
-        let expected_h0 = evaluate_par_inflow(
+        let expected_h0 = evaluate_par(
             par_lp.deterministic_base(0, 0),
             par_lp.psi_slice(0, 0),
             &[lag0_h0, lag1_h0],
             par_lp.sigma(0, 0),
             noise[0],
         );
-        let expected_h1 = evaluate_par_inflow(
+        let expected_h1 = evaluate_par(
             par_lp.deterministic_base(0, 1),
             par_lp.psi_slice(0, 1),
             &[lag0_h1, 0.0],
@@ -680,14 +582,14 @@ mod tests {
         let mut output_canonical = vec![0.0_f64; 2];
         let mut output_reversed = vec![0.0_f64; 2];
 
-        evaluate_par_inflows(
+        evaluate_par_batch(
             &par_canonical,
             0,
             &lag_matrix,
             &noise,
             &mut output_canonical,
         );
-        evaluate_par_inflows(&par_reversed, 0, &lag_matrix, &noise, &mut output_reversed);
+        evaluate_par_batch(&par_reversed, 0, &lag_matrix, &noise, &mut output_reversed);
 
         // Both must produce bit-for-bit identical results.
         assert_eq!(
@@ -730,14 +632,14 @@ mod tests {
 
     #[test]
     fn solve_noise_roundtrip_zero_target() {
-        // Given η from solve_par_noise(..., 0.0), evaluate_par_inflow(..., η) must be 0.0.
+        // Given η from solve_par_noise(..., 0.0), evaluate_par(..., η) must be 0.0.
         let det_base = 70.0_f64;
         let psi = [0.48_f64];
         let lags = [90.0_f64];
         let sigma = 28.62_f64;
 
         let eta = solve_par_noise(det_base, &psi, &lags, sigma, 0.0);
-        let inflow = evaluate_par_inflow(det_base, &psi, &lags, sigma, eta);
+        let inflow = evaluate_par(det_base, &psi, &lags, sigma, eta);
         assert!(
             inflow.abs() < 1e-10,
             "roundtrip: inflow with solved η must be 0.0, got {inflow}"
@@ -752,7 +654,7 @@ mod tests {
         let sigma = 20.0_f64;
 
         let eta = solve_par_noise(det_base, &psi, &lags, sigma, 0.0);
-        let inflow = evaluate_par_inflow(det_base, &psi, &lags, sigma, eta);
+        let inflow = evaluate_par(det_base, &psi, &lags, sigma, eta);
         assert!(
             inflow.abs() < 1e-10,
             "AR(2) roundtrip: expected 0.0, got {inflow}"
@@ -769,7 +671,7 @@ mod tests {
         let target = 42.0_f64;
 
         let eta = solve_par_noise(det_base, &psi, &lags, sigma, target);
-        let inflow = evaluate_par_inflow(det_base, &psi, &lags, sigma, eta);
+        let inflow = evaluate_par(det_base, &psi, &lags, sigma, eta);
         assert!(
             (inflow - target).abs() < 1e-10,
             "roundtrip with target={target}: expected {target}, got {inflow}"
@@ -854,58 +756,6 @@ mod tests {
             "negative deterministic inflow: η for zero target must be positive, got {eta}"
         );
         assert!((eta - 2.5).abs() < 1e-10, "expected 2.5, got {eta}");
-    }
-
-    // -----------------------------------------------------------------------
-    // New generic API tests
-    // -----------------------------------------------------------------------
-
-    /// `evaluate_par` and `evaluate_par_inflow` must produce bitwise identical
-    /// results for the same inputs.
-    #[test]
-    fn test_evaluate_par_matches_inflow() {
-        type EvalCase<'a> = (f64, &'a [f64], &'a [f64], f64, f64);
-        let cases: &[EvalCase<'_>] = &[
-            (100.0, &[], &[], 30.0, 1.5),
-            (70.0, &[0.48], &[90.0], 28.62, 0.5),
-            (50.0, &[0.4, 0.2], &[80.0, 60.0], 20.0, -0.5),
-            (100.0, &[0.3], &[90.0], 0.0, 999.0),
-        ];
-        for &(base, psi, lags, sigma, eta) in cases {
-            let via_new = evaluate_par(base, psi, lags, sigma, eta);
-            let via_old = evaluate_par_inflow(base, psi, lags, sigma, eta);
-            assert_eq!(
-                via_new.to_bits(),
-                via_old.to_bits(),
-                "evaluate_par / evaluate_par_inflow mismatch for base={base} eta={eta}"
-            );
-        }
-    }
-
-    /// `evaluate_par_batch` and `evaluate_par_inflows` must fill output slices
-    /// with bitwise identical values.
-    #[test]
-    fn test_evaluate_par_batch_matches_inflows() {
-        let par_lp = make_two_hydro_three_stage_par();
-
-        let lag_matrix = vec![85.0, 55.0, 0.0, 0.0];
-        let noise = vec![0.3_f64, -0.4_f64];
-        let mut output_new = vec![0.0_f64; 2];
-        let mut output_old = vec![0.0_f64; 2];
-
-        evaluate_par_batch(&par_lp, 1, &lag_matrix, &noise, &mut output_new);
-        evaluate_par_inflows(&par_lp, 1, &lag_matrix, &noise, &mut output_old);
-
-        assert_eq!(
-            output_new[0].to_bits(),
-            output_old[0].to_bits(),
-            "evaluate_par_batch / evaluate_par_inflows mismatch at h=0"
-        );
-        assert_eq!(
-            output_new[1].to_bits(),
-            output_old[1].to_bits(),
-            "evaluate_par_batch / evaluate_par_inflows mismatch at h=1"
-        );
     }
 
     // Lag-major `[lag * 2 + hydro]`; non-integral lags and noise.
