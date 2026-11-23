@@ -13,9 +13,9 @@ use crate::{
     Bus, CascadeTopology, CorrelationModel, EnergyContract, EntityId, ExternalLoadRow,
     ExternalNcsRow, ExternalScenarioRow, GenericConstraint, HorizonGraph, Hydro, InflowHistoryRow,
     InflowModel, InitialConditions, Line, LoadModel, NcsModel, NonControllableSource,
-    PostStudyStages, PumpingStation, ResolvedBounds, ResolvedGenericConstraintBounds,
-    ResolvedLoadFactors, ResolvedNcsBounds, ResolvedNcsFactors, ResolvedPenalties, Stage, Thermal,
-    ValidationError,
+    PostStudyStages, PumpingStation, ResolvedBounds, ResolvedDeficitSegments,
+    ResolvedGenericConstraintBounds, ResolvedLoadFactors, ResolvedNcsBounds, ResolvedNcsFactors,
+    ResolvedPenalties, Stage, Thermal, ValidationError,
 };
 
 /// Builder for constructing a validated, immutable [`System`].
@@ -326,6 +326,8 @@ impl SystemBuilder {
     ///   `entry_stage_id`).
     /// - Any of `inflow_models`, `load_models`, `ncs_models` is not in its documented
     ///   canonical order.
+    /// - A pre-built bus deficit table disagrees with the buses on stage count, bus count or a
+    ///   bus's segment count.
     // Rationale: sort, duplicate/cross-ref/cycle checks, and `System` assembly share
     // one `errors` accumulator and the intermediate index maps; splitting them would
     // thread those through every call and lose the fail-fast-on-duplicates short-circuit.
@@ -401,6 +403,7 @@ impl SystemBuilder {
             "ncs_models",
             &mut errors,
         );
+        seed_or_check_bus_deficit(&self.buses, &mut self.penalties, &mut errors);
 
         if !errors.is_empty() {
             return Err(errors);
@@ -521,13 +524,58 @@ pub(crate) fn check_canonical_order<T, K: Ord>(
     }
 }
 
+/// Seed an unseeded bus deficit table from each bus's base curve. A seeded table
+/// is never overwritten: its counts must match `buses`, which are in canonical order.
+fn seed_or_check_bus_deficit(
+    buses: &[Bus],
+    penalties: &mut ResolvedPenalties,
+    errors: &mut Vec<ValidationError>,
+) {
+    let n_stages = penalties.n_stages();
+    let table = penalties.bus_deficit();
+    if !table.is_seeded() {
+        penalties.set_bus_deficit(ResolvedDeficitSegments::seeded(buses, n_stages, 0));
+        return;
+    }
+    if table.n_stages() != n_stages {
+        errors.push(ValidationError::DeficitTableShapeMismatch {
+            dimension: "stage count",
+            bus_id: None,
+            expected: n_stages,
+            found: table.n_stages(),
+        });
+    }
+    if table.n_buses() != buses.len() {
+        errors.push(ValidationError::DeficitTableShapeMismatch {
+            dimension: "bus count",
+            bus_id: None,
+            expected: buses.len(),
+            found: table.n_buses(),
+        });
+        return;
+    }
+    for (b, bus) in buses.iter().enumerate() {
+        let expected = bus.deficit_segments.len();
+        let found = table.bus_segment_count(b);
+        if found != Some(expected) {
+            errors.push(ValidationError::DeficitTableShapeMismatch {
+                dimension: "segment count",
+                bus_id: Some(bus.id),
+                expected,
+                found: found.unwrap_or(0),
+            });
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_support::{BusSpec, HydroSpec, MirrorUnitGroup, make_bus, make_hydro};
     use crate::{
-        Block, BlockMode, DeficitSegment, HydroPenalties, NoiseMethod, ScenarioSourceConfig,
-        StageRiskConfig, StageStateConfig,
+        Block, BlockMode, BusStagePenalties, DeficitSegment, HydroPenalties, LineStagePenalties,
+        NcsStagePenalties, NoiseMethod, PenaltiesCountsSpec, PenaltiesDefaults,
+        ScenarioSourceConfig, StageRiskConfig, StageStateConfig,
     };
 
     pub(super) fn zero_penalties() -> HydroPenalties {
@@ -820,6 +868,169 @@ mod tests {
         assert_eq!(system.inflow_models().len(), 3);
         assert_eq!(system.load_models().len(), 3);
         assert_eq!(system.ncs_models().len(), 3);
+    }
+
+    fn bus_with_segment_costs(id: i32, costs: &[f64]) -> Bus {
+        make_bus(BusSpec {
+            id,
+            deficit_segments: costs
+                .iter()
+                .map(|&cost_per_mwh| DeficitSegment {
+                    depth_mw: None,
+                    cost_per_mwh,
+                })
+                .collect(),
+            ..Default::default()
+        })
+    }
+
+    fn penalties_for(n_buses: usize, n_stages: usize) -> ResolvedPenalties {
+        ResolvedPenalties::new(
+            &PenaltiesCountsSpec {
+                n_hydros: 0,
+                n_buses,
+                n_lines: 0,
+                n_ncs: 0,
+                n_stages,
+            },
+            &PenaltiesDefaults {
+                hydro: zero_penalties(),
+                bus: BusStagePenalties { excess_cost: 0.0 },
+                line: LineStagePenalties { exchange_cost: 0.0 },
+                ncs: NcsStagePenalties {
+                    curtailment_cost: 0.0,
+                },
+            },
+        )
+    }
+
+    /// Buses declared out of canonical order are seeded in canonical order, so
+    /// each table row reads its own bus's base curve at every stage.
+    #[test]
+    fn build_seeds_bus_deficit_from_canonical_base_curves() {
+        let system = SystemBuilder::new()
+            .buses(vec![
+                bus_with_segment_costs(2, &[300.0, 600.0, 900.0]),
+                bus_with_segment_costs(1, &[500.0, 1000.0]),
+            ])
+            .penalties(penalties_for(2, 2))
+            .build()
+            .expect("two buses with a fresh penalties table must build");
+
+        let table = system.penalties().bus_deficit();
+        for (b, bus) in system.buses().iter().enumerate() {
+            assert_eq!(table.bus_segment_count(b), Some(bus.deficit_segments.len()));
+            for stage in 0..2 {
+                for (seg, expected) in bus.deficit_segments.iter().enumerate() {
+                    assert_eq!(
+                        system
+                            .penalties()
+                            .bus_deficit_segment_at_block(b, stage, 0, seg),
+                        *expected
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn build_seeds_empty_penalties_with_counts_only() {
+        let system = SystemBuilder::new()
+            .buses(vec![
+                bus_with_segment_costs(1, &[500.0, 1000.0]),
+                bus_with_segment_costs(2, &[300.0]),
+            ])
+            .build()
+            .expect("buses with default penalties must build");
+
+        let table = system.penalties().bus_deficit();
+        assert!(table.is_seeded());
+        assert_eq!(table.n_stages(), 0);
+        assert_eq!(table.n_buses(), system.n_buses());
+        for (b, bus) in system.buses().iter().enumerate() {
+            assert_eq!(table.bus_segment_count(b), Some(bus.deficit_segments.len()));
+        }
+    }
+
+    fn mismatch_of(errors: &[ValidationError]) -> (&'static str, Option<EntityId>, usize, usize) {
+        let [
+            ValidationError::DeficitTableShapeMismatch {
+                dimension,
+                bus_id,
+                expected,
+                found,
+            },
+        ] = errors
+        else {
+            panic!("expected exactly one DeficitTableShapeMismatch, got {errors:?}");
+        };
+        (dimension, *bus_id, *expected, *found)
+    }
+
+    /// Each of the three shape disagreements is refused with its own error, and a
+    /// bus-count mismatch reports no per-bus error.
+    #[test]
+    fn build_refuses_mismatched_bus_deficit_table() {
+        let buses = vec![
+            bus_with_segment_costs(1, &[500.0, 1000.0]),
+            bus_with_segment_costs(2, &[300.0, 600.0]),
+        ];
+        let errors_with = |table_buses: &[Bus], table_stages: usize| {
+            let mut penalties = penalties_for(2, 2);
+            penalties.set_bus_deficit(ResolvedDeficitSegments::seeded(
+                table_buses,
+                table_stages,
+                0,
+            ));
+            SystemBuilder::new()
+                .buses(buses.clone())
+                .penalties(penalties)
+                .build()
+                .expect_err("a mismatched table must be refused")
+        };
+
+        let short_segments = [buses[0].clone(), bus_with_segment_costs(2, &[300.0])];
+        assert_eq!(
+            mismatch_of(&errors_with(&short_segments, 2)),
+            ("segment count", Some(EntityId(2)), 2, 1)
+        );
+        assert_eq!(
+            mismatch_of(&errors_with(&buses, 3)),
+            ("stage count", None, 2, 3)
+        );
+        assert_eq!(
+            mismatch_of(&errors_with(&buses[..1], 2)),
+            ("bus count", None, 2, 1)
+        );
+    }
+
+    #[test]
+    fn build_keeps_matching_seeded_bus_deficit_table() {
+        let buses = vec![
+            bus_with_segment_costs(1, &[500.0, 1000.0]),
+            bus_with_segment_costs(2, &[300.0, 600.0]),
+        ];
+        let mut table = ResolvedDeficitSegments::seeded(&buses, 2, 0);
+        table
+            .stage_segment_mut(1, 1, 0)
+            .expect("bus 1, stage 1, segment 0 is in range")
+            .depth_mw = Some(7.0);
+        let mut penalties = penalties_for(2, 2);
+        penalties.set_bus_deficit(table);
+
+        let system = SystemBuilder::new()
+            .buses(buses)
+            .penalties(penalties)
+            .build()
+            .expect("a matching seeded table must build");
+
+        assert_eq!(
+            system
+                .penalties()
+                .bus_deficit_segment_at_block(1, 1, 0, 0)
+                .depth_mw,
+            Some(7.0)
+        );
     }
 }
 

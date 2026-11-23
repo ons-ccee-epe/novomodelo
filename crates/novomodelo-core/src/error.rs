@@ -67,6 +67,17 @@ pub enum ValidationError {
         /// equal adjacent keys are allowed.
         position: usize,
     },
+    /// A pre-built bus deficit table does not match the buses it covers.
+    DeficitTableShapeMismatch {
+        /// Dimension that disagrees: `"bus count"`, `"stage count"` or `"segment count"`.
+        dimension: &'static str,
+        /// Bus whose segment count disagrees; `None` for the bus and stage counts.
+        bus_id: Option<EntityId>,
+        /// Value the system requires.
+        expected: usize,
+        /// Value the table holds.
+        found: usize,
+    },
 }
 
 impl fmt::Display for ValidationError {
@@ -103,6 +114,24 @@ impl fmt::Display for ValidationError {
             Self::UnsortedModelTable { table, position } => write!(
                 f,
                 "{table} is not sorted by its documented (id, stage_id) key: row {position} is out of order"
+            ),
+            Self::DeficitTableShapeMismatch {
+                dimension,
+                bus_id: Some(id),
+                expected,
+                found,
+            } => write!(
+                f,
+                "bus deficit table {dimension} for bus {id} is {found}, expected {expected}"
+            ),
+            Self::DeficitTableShapeMismatch {
+                dimension,
+                bus_id: None,
+                expected,
+                found,
+            } => write!(
+                f,
+                "bus deficit table {dimension} is {found}, expected {expected}"
             ),
         }
     }
@@ -160,6 +189,30 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains('4'), "missing hydro id: {msg}");
         assert!(msg.contains("unit group"), "missing mention: {msg}");
+    }
+
+    #[test]
+    fn test_display_deficit_table_shape_mismatch() {
+        let with_bus = ValidationError::DeficitTableShapeMismatch {
+            dimension: "segment count",
+            bus_id: Some(EntityId(2)),
+            expected: 2,
+            found: 1,
+        };
+        assert_eq!(
+            with_bus.to_string(),
+            "bus deficit table segment count for bus 2 is 1, expected 2"
+        );
+        let without_bus = ValidationError::DeficitTableShapeMismatch {
+            dimension: "stage count",
+            bus_id: None,
+            expected: 2,
+            found: 3,
+        };
+        assert_eq!(
+            without_bus.to_string(),
+            "bus deficit table stage count is 3, expected 2"
+        );
     }
 
     #[test]

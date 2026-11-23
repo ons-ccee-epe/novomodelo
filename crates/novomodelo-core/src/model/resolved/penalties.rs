@@ -4,7 +4,8 @@
 //! `data[entity_idx * n_stages + stage_idx]`. Populated by `novomodelo-io` after the
 //! three-tier penalty cascade is applied; never modified after construction.
 
-use crate::HydroPenalties;
+use super::ResolvedDeficitSegments;
+use crate::{DeficitSegment, HydroPenalties};
 
 /// Bus penalty values for a given (bus, stage) pair.
 ///
@@ -117,6 +118,7 @@ pub struct ResolvedPenalties {
     bus: Vec<BusStagePenalties>,
     line: Vec<LineStagePenalties>,
     ncs: Vec<NcsStagePenalties>,
+    bus_deficit: ResolvedDeficitSegments,
 }
 
 /// Entity counts for constructing a [`ResolvedPenalties`] table.
@@ -168,6 +170,7 @@ impl ResolvedPenalties {
             bus: Vec::new(),
             line: Vec::new(),
             ncs: Vec::new(),
+            bus_deficit: ResolvedDeficitSegments::empty(),
         }
     }
 
@@ -182,6 +185,7 @@ impl ResolvedPenalties {
             bus: vec![defaults.bus; counts.n_buses * counts.n_stages],
             line: vec![defaults.line; counts.n_lines * counts.n_stages],
             ncs: vec![defaults.ncs; counts.n_ncs * counts.n_stages],
+            bus_deficit: ResolvedDeficitSegments::empty(),
         }
     }
 
@@ -259,6 +263,31 @@ impl ResolvedPenalties {
     pub fn n_stages(&self) -> usize {
         self.n_stages
     }
+
+    /// Return the installed bus deficit segment table.
+    #[must_use]
+    pub fn bus_deficit(&self) -> &ResolvedDeficitSegments {
+        &self.bus_deficit
+    }
+
+    /// Install the bus deficit segment table, replacing the unseeded default.
+    pub fn set_bus_deficit(&mut self, table: ResolvedDeficitSegments) {
+        self.bus_deficit = table;
+    }
+
+    /// Return the deficit segment of `bus` at `(stage, block)`: the block cell
+    /// when one is set, else the stage cell.
+    #[inline]
+    #[must_use]
+    pub fn bus_deficit_segment_at_block(
+        &self,
+        bus: usize,
+        stage: usize,
+        block: usize,
+        seg: usize,
+    ) -> DeficitSegment {
+        self.bus_deficit.segment_at_block(bus, stage, block, seg)
+    }
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -266,6 +295,8 @@ impl ResolvedPenalties {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "serde")]
+    use crate::test_support::{BusSpec, make_bus};
 
     fn make_hydro_penalties() -> HydroPenalties {
         HydroPenalties {
@@ -432,7 +463,7 @@ mod tests {
             curtailment_cost: 50.0,
         };
 
-        let original = ResolvedPenalties::new(
+        let mut original = ResolvedPenalties::new(
             &PenaltiesCountsSpec {
                 n_hydros: 2,
                 n_buses: 1,
@@ -447,8 +478,45 @@ mod tests {
                 ncs: np,
             },
         );
+        let bus = make_bus(BusSpec {
+            id: 1,
+            deficit_segments: vec![
+                DeficitSegment {
+                    depth_mw: Some(100.0),
+                    cost_per_mwh: 500.0,
+                },
+                DeficitSegment {
+                    depth_mw: None,
+                    cost_per_mwh: 1000.0,
+                },
+            ],
+            ..Default::default()
+        });
+        let mut table = ResolvedDeficitSegments::seeded(&[bus], 3, 2);
+        table
+            .stage_segment_mut(0, 1, 0)
+            .expect("in-range stage cell")
+            .cost_per_mwh = 600.0;
+        let written = DeficitSegment {
+            depth_mw: Some(40.0),
+            cost_per_mwh: 700.0,
+        };
+        *table
+            .block_segment_mut(0, 2, 1, 1)
+            .expect("in-range block cell") = Some(written);
+        original.set_bus_deficit(table);
+
         let json = serde_json::to_string(&original).expect("serialize");
         let restored: ResolvedPenalties = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(original, restored);
+        assert_eq!(restored.bus_deficit_segment_at_block(0, 2, 1, 1), written);
+        assert!(
+            (restored
+                .bus_deficit_segment_at_block(0, 1, 0, 0)
+                .cost_per_mwh
+                - 600.0)
+                .abs()
+                < f64::EPSILON
+        );
     }
 }

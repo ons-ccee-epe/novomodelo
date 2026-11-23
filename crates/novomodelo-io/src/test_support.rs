@@ -881,6 +881,20 @@ pub fn make_bus_with_deficit(id: i32, cost_per_mwh: f64) -> Bus {
     }
 }
 
+/// Build a bus with `n` deficit segments: depth 100 MW except the last
+/// (uncapped), cost `500 * j` for segment `j` counted from 1.
+#[must_use]
+pub fn make_bus_with_segments(id: i32, n: u8) -> Bus {
+    let mut bus = make_bus_with_deficit(id, 500.0);
+    bus.deficit_segments = (1..=n)
+        .map(|j| DeficitSegment {
+            depth_mw: (j < n).then_some(100.0),
+            cost_per_mwh: 500.0 * f64::from(j),
+        })
+        .collect();
+    bus
+}
+
 // ── Geometry and FPHA row builders ────────────────────────────────────────────
 
 /// Build a minimal `FphaHyperplaneRow` with the given parameters.

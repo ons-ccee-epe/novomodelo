@@ -108,26 +108,15 @@ fn key_site(first: &BusDeficitOverrideRow) -> String {
 
 #[cfg(test)]
 mod tests {
-    use novomodelo_core::{Bus, DeficitSegment, EntityId};
+    use novomodelo_core::{Bus, EntityId};
 
     use super::super::super::{ErrorKind, ValidationContext};
     use super::super::validate_semantic_hydro_thermal;
     use super::{FILE, check_override_curves, check_override_key_completeness};
     use crate::ValidationEntry;
     use crate::constraints::BusDeficitOverrideRow;
-    use crate::test_support::{base_parsed_data, make_bus_with_deficit, make_stages};
+    use crate::test_support::{base_parsed_data, make_bus_with_segments, make_stages};
     use crate::validation::schema::ParsedData;
-
-    fn bus_with_segments(id: i32, n: u8) -> Bus {
-        let mut bus = make_bus_with_deficit(id, 500.0);
-        bus.deficit_segments = (1..=n)
-            .map(|j| DeficitSegment {
-                depth_mw: (j < n).then_some(100.0),
-                cost_per_mwh: 500.0 * f64::from(j),
-            })
-            .collect();
-        bus
-    }
 
     fn key_rows(
         bus_id: i32,
@@ -187,7 +176,7 @@ mod tests {
     #[test]
     fn missing_segment_index_is_refused() {
         let findings = completeness_findings(&data(
-            vec![bus_with_segments(1, 2)],
+            vec![make_bus_with_segments(1, 2)],
             key_rows(1, 0, None, &[0]),
         ));
 
@@ -206,7 +195,7 @@ mod tests {
 
     #[test]
     fn extra_or_gapped_segment_index_is_refused() {
-        let buses = vec![bus_with_segments(1, 2)];
+        let buses = vec![make_bus_with_segments(1, 2)];
 
         let extra =
             completeness_findings(&data(buses.clone(), key_rows(1, 0, Some(1), &[0, 1, 2])));
@@ -231,7 +220,7 @@ mod tests {
     #[test]
     fn repeated_index_is_not_reported_as_incomplete() {
         let findings = completeness_findings(&data(
-            vec![bus_with_segments(1, 2)],
+            vec![make_bus_with_segments(1, 2)],
             key_rows(1, 0, None, &[0, 1, 1]),
         ));
 
@@ -241,7 +230,7 @@ mod tests {
     #[test]
     fn unknown_bus_key_is_skipped() {
         let findings = completeness_findings(&data(
-            vec![bus_with_segments(1, 2)],
+            vec![make_bus_with_segments(1, 2)],
             key_rows(9, 0, None, &[0]),
         ));
 
@@ -250,7 +239,7 @@ mod tests {
 
     #[test]
     fn each_bus_uses_its_own_segment_count() {
-        let buses = vec![bus_with_segments(1, 2), bus_with_segments(2, 3)];
+        let buses = vec![make_bus_with_segments(1, 2), make_bus_with_segments(2, 3)];
         let rows = |bus_2_indices: &[i32]| {
             let mut rows = key_rows(1, 0, None, &[0, 1]);
             rows.extend(key_rows(2, 0, None, bus_2_indices));
@@ -271,7 +260,10 @@ mod tests {
 
     #[test]
     fn completeness_rule_runs_in_layer_5a() {
-        let data = data(vec![bus_with_segments(1, 2)], key_rows(1, 0, None, &[0]));
+        let data = data(
+            vec![make_bus_with_segments(1, 2)],
+            key_rows(1, 0, None, &[0]),
+        );
         let mut ctx = ValidationContext::new();
         validate_semantic_hydro_thermal(&data, &mut ctx);
 
@@ -289,7 +281,7 @@ mod tests {
     #[test]
     fn zero_depth_override_is_accepted() {
         let findings = curve_findings(&data(
-            vec![bus_with_segments(1, 2)],
+            vec![make_bus_with_segments(1, 2)],
             depth_rows(1, 0, None, &[(0, Some(0.0)), (1, None)]),
         ));
 
@@ -299,7 +291,7 @@ mod tests {
     #[test]
     fn negative_depth_override_is_refused() {
         let findings = curve_findings(&data(
-            vec![bus_with_segments(1, 2)],
+            vec![make_bus_with_segments(1, 2)],
             depth_rows(1, 0, None, &[(0, Some(-1.0)), (1, None)]),
         ));
 
@@ -319,7 +311,7 @@ mod tests {
     fn non_finite_depth_override_is_refused() {
         for depth in [f64::NAN, f64::INFINITY] {
             let findings = curve_findings(&data(
-                vec![bus_with_segments(1, 2)],
+                vec![make_bus_with_segments(1, 2)],
                 depth_rows(1, 0, None, &[(0, Some(depth)), (1, None)]),
             ));
 
@@ -335,7 +327,7 @@ mod tests {
     #[test]
     fn misplaced_uncapped_segment_override_is_refused() {
         let early_null = curve_findings(&data(
-            vec![bus_with_segments(1, 3)],
+            vec![make_bus_with_segments(1, 3)],
             depth_rows(1, 0, None, &[(0, Some(100.0)), (1, None), (2, None)]),
         ));
         assert_eq!(early_null.len(), 1, "{early_null:?}");
@@ -348,7 +340,7 @@ mod tests {
         );
 
         let capped_last = curve_findings(&data(
-            vec![bus_with_segments(1, 2)],
+            vec![make_bus_with_segments(1, 2)],
             depth_rows(1, 0, None, &[(0, Some(100.0)), (1, Some(200.0))]),
         ));
         assert_eq!(capped_last.len(), 1, "{capped_last:?}");
@@ -364,7 +356,7 @@ mod tests {
     #[test]
     fn block_key_defect_names_the_block() {
         let findings = curve_findings(&data(
-            vec![bus_with_segments(1, 2)],
+            vec![make_bus_with_segments(1, 2)],
             depth_rows(1, 0, Some(1), &[(0, Some(-5.0)), (1, None)]),
         ));
 
@@ -380,7 +372,7 @@ mod tests {
 
     #[test]
     fn refused_keys_are_not_curve_checked() {
-        let buses = vec![bus_with_segments(1, 2)];
+        let buses = vec![make_bus_with_segments(1, 2)];
 
         let incomplete = curve_findings(&data(
             buses.clone(),

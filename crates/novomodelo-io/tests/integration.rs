@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use arrow::array::{Array, Int32Array};
 use arrow::record_batch::RecordBatch;
 use novomodelo_core::AnticipatedConfig;
+use novomodelo_core::DeficitSegment;
 use novomodelo_core::EntityId;
 use novomodelo_core::System;
 use novomodelo_io::constraints::{BusDeficitOverrideRow, ThermalBoundsRow};
@@ -1710,35 +1711,85 @@ fn test_bus_deficit_override_unknown_bus_rejected_by_load_case() {
     }
 }
 
-/// A stage-wide override of a declared bus's full curve loads.
+/// Block rows beat stage rows beat the global curve, and the loaded table survives the
+/// postcard round-trip the broadcast uses.
 #[test]
-fn test_bus_deficit_override_valid_file_loads() {
+fn test_bus_deficit_override_resolves_into_loaded_system() {
     let dir = TempDir::new().unwrap();
     helpers::make_multi_entity_case(&dir);
 
+    let row = |stage_id, block_id, segment_index, depth_mw| BusDeficitOverrideRow {
+        bus_id: EntityId::from(1),
+        stage_id,
+        block_id,
+        segment_index,
+        depth_mw,
+    };
     write_bus_deficit_override_parquet(
         dir.path(),
         &[
-            BusDeficitOverrideRow {
-                bus_id: EntityId::from(1),
-                stage_id: 0,
-                block_id: None,
-                segment_index: 0,
-                depth_mw: Some(250.0),
-            },
-            BusDeficitOverrideRow {
-                bus_id: EntityId::from(1),
-                stage_id: 0,
-                block_id: None,
-                segment_index: 1,
-                depth_mw: None,
-            },
+            row(0, None, 0, Some(250.0)),
+            row(0, None, 1, None),
+            row(1, None, 0, Some(300.0)),
+            row(1, None, 1, None),
+            row(1, Some(0), 0, Some(400.0)),
+            row(1, Some(0), 1, None),
         ],
     );
 
-    if let Err(e) = load_case(dir.path()) {
-        panic!("expected Ok for a valid bus deficit override file, got Err: {e}");
+    let system = match load_case(dir.path()) {
+        Ok(system) => system,
+        Err(e) => panic!("expected Ok for a valid bus deficit override file, got Err: {e}"),
+    };
+    let position = |id: i32| {
+        system
+            .buses()
+            .iter()
+            .position(|b| b.id == EntityId::from(id))
+            .unwrap()
+    };
+    let (bus1, bus2) = (position(1), position(2));
+    let penalties = system.penalties();
+    let segment = |depth_mw, cost_per_mwh| DeficitSegment {
+        depth_mw,
+        cost_per_mwh,
+    };
+
+    assert_eq!(
+        penalties.bus_deficit_segment_at_block(bus1, 0, 0, 0),
+        segment(Some(250.0), 1000.0)
+    );
+    assert_eq!(
+        penalties.bus_deficit_segment_at_block(bus1, 1, 0, 0),
+        segment(Some(400.0), 1000.0)
+    );
+    assert_eq!(
+        penalties.bus_deficit_segment_at_block(bus1, 1, 0, 1),
+        segment(None, 5000.0)
+    );
+    for stage in 0..2 {
+        assert_eq!(
+            penalties.bus_deficit_segment_at_block(bus2, stage, 0, 0),
+            segment(Some(500.0), 1000.0)
+        );
+        assert_eq!(
+            penalties.bus_deficit_segment_at_block(bus2, stage, 0, 1),
+            segment(None, 5000.0)
+        );
     }
+    assert_eq!(penalties.bus_deficit().bus_segment_count(bus1), Some(2));
+    assert_eq!(penalties.bus_deficit().bus_segment_count(bus2), Some(2));
+
+    let bytes = postcard::to_allocvec(&system).unwrap();
+    let decoded: System = postcard::from_bytes(&bytes).unwrap();
+    assert_eq!(decoded, system);
+    assert_eq!(
+        decoded
+            .penalties()
+            .bus_deficit_segment_at_block(bus1, 1, 0, 0)
+            .depth_mw,
+        Some(400.0)
+    );
 }
 
 /// An override key that leaves out a segment of the bus's curve is refused.

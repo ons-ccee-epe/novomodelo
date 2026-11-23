@@ -12,6 +12,7 @@
 
 mod block_bounds;
 mod bounds;
+mod bus_deficit;
 mod factors;
 mod generic;
 mod group_bounds;
@@ -25,6 +26,7 @@ pub use bounds::{
     BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, HydroBlockBounds, HydroStageBounds,
     LineBlockBounds, PumpingBlockBounds, ResolvedBounds, ThermalBlockBounds,
 };
+pub use bus_deficit::ResolvedDeficitSegments;
 pub use factors::{ResolvedLoadFactors, ResolvedNcsBounds, ResolvedNcsFactors};
 pub use generic::{GenericConstraintBoundEntry, ResolvedGenericConstraintBounds};
 pub use group_bounds::{

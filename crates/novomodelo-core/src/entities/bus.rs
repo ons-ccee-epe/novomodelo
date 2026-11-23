@@ -7,7 +7,7 @@ use chrono::NaiveDate;
 ///
 /// Segments are cumulative: each covers its own `depth_mw` at its own
 /// `cost_per_mwh`; the final segment has `depth_mw` = None (extends to infinity).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DeficitSegment {
     /// Deficit covered by this segment \[MW\]. None for the final unbounded segment.

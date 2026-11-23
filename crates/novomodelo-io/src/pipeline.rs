@@ -12,8 +12,9 @@ use crate::{
     report::{ValidationReport, generate_report},
     resolution::{
         BoundsEntitySlices, BoundsOverrides, PenaltiesEntitySlices, PenaltiesOverrides,
-        resolve_bounds, resolve_generic_constraint_bounds, resolve_hydro_unit_group_bounds,
-        resolve_load_factors, resolve_ncs_bounds, resolve_ncs_factors, resolve_penalties,
+        resolve_bounds, resolve_bus_deficit, resolve_generic_constraint_bounds,
+        resolve_hydro_unit_group_bounds, resolve_load_factors, resolve_ncs_bounds,
+        resolve_ncs_factors, resolve_penalties,
     },
     scenarios::assembly::{assemble_inflow_models, assemble_load_models},
     scenarios::residual_derivation::{populate_derived_residual_ratios, resolve_stage_seasons},
@@ -104,7 +105,7 @@ pub(crate) fn run_pipeline_with_artifacts(
     let stage_resolver = StageIdResolver::from_study_stage_ids(&study_stage_ids);
     let stage_index = stage_resolver.index_map();
 
-    let penalties = resolve_penalties(
+    let mut penalties = resolve_penalties(
         &PenaltiesEntitySlices {
             hydros: &data.hydros,
             buses: &data.buses,
@@ -162,6 +163,13 @@ pub(crate) fn run_pipeline_with_artifacts(
         n_stages,
         stage_index,
         &data.hydro_unit_group_bounds,
+        &blocks_per_stage,
+    ));
+    penalties.set_bus_deficit(resolve_bus_deficit(
+        &data.buses,
+        n_stages,
+        stage_index,
+        &data.penalty_overrides_bus_deficit,
         &blocks_per_stage,
     ));
 

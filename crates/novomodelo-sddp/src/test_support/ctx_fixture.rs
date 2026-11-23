@@ -4,9 +4,9 @@ use std::collections::{BTreeMap, HashMap};
 
 use novomodelo_core::{
     Bus, CascadeTopology, EnergyContract, EntityId, GenericConstraint, Hydro, Line, LoadModel,
-    NonControllableSource, PumpingStation, ResolvedBounds, ResolvedGenericConstraintBounds,
-    ResolvedLoadFactors, ResolvedNcsBounds, ResolvedNcsFactors, ResolvedPenalties, StageId,
-    Thermal,
+    NonControllableSource, PumpingStation, ResolvedBounds, ResolvedDeficitSegments,
+    ResolvedGenericConstraintBounds, ResolvedLoadFactors, ResolvedNcsBounds, ResolvedNcsFactors,
+    ResolvedPenalties, StageId, Thermal,
 };
 use novomodelo_stochastic::par::precompute::PrecomputedPar;
 
@@ -143,10 +143,11 @@ impl CtxFixture {
     /// Derives `positions`, `state`, and `study_dims` from this fixture's own
     /// slices, the way [`EntityPositions::build`]/`build_study_dimensions` do,
     /// `time_value`'s one-step discount factors as one `1.0` per `bounds`
-    /// stage, and `resolved_generic_coefficients` over stage ids `0..n` with a
+    /// stage, `resolved_generic_coefficients` over stage ids `0..n` with a
     /// uniform block count, `n` and the count each the widest of `bounds` and
-    /// `resolved_parameters`; every other field is copied through unchanged.
-    /// `&mut self`: all five are recomputed into `self`'s own fields on every
+    /// `resolved_parameters`, and the bus deficit table of `penalties` from each
+    /// bus's base curve; every other field is copied through unchanged.
+    /// `&mut self`: all six are recomputed into `self`'s own fields on every
     /// call, so [`TemplateBuildCtx::positions`]/`state`/`study_dims` can borrow
     /// a backing store with `self`'s own lifetime. `state` attaches
     /// `self.anticipated_resolution` as-is when a test set it explicitly (it
@@ -166,6 +167,12 @@ impl CtxFixture {
         reason = "a fixture whose generic constraints do not resolve is a broken test setup, not a runtime condition to recover from"
     )]
     pub(crate) fn ctx(&mut self) -> TemplateBuildCtx<'_> {
+        self.penalties
+            .set_bus_deficit(ResolvedDeficitSegments::seeded(
+                &self.buses,
+                self.penalties.n_stages(),
+                0,
+            ));
         self.positions = EntityPositions::from_slices(
             self.hydros.iter().map(|h| h.id),
             self.thermals.iter().map(|t| t.id),
@@ -279,5 +286,66 @@ impl CtxFixture {
             self.anticipated_lead_stages.clone(),
             resolution,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use novomodelo_core::test_support::{BusSpec, make_bus};
+    use novomodelo_core::{
+        BusStagePenalties, DeficitSegment, HydroPenalties, LineStagePenalties, NcsStagePenalties,
+        PenaltiesCountsSpec, PenaltiesDefaults, ResolvedPenalties,
+    };
+
+    use super::CtxFixture;
+
+    #[test]
+    fn ctx_reseeds_bus_deficit_on_every_call() {
+        let segment = |cost_per_mwh| DeficitSegment {
+            depth_mw: Some(100.0),
+            cost_per_mwh,
+        };
+        let mut fixture = CtxFixture {
+            buses: vec![make_bus(BusSpec {
+                id: 1,
+                deficit_segments: vec![segment(500.0), segment(1000.0)],
+                ..Default::default()
+            })],
+            penalties: ResolvedPenalties::new(
+                &PenaltiesCountsSpec {
+                    n_hydros: 0,
+                    n_buses: 1,
+                    n_lines: 0,
+                    n_ncs: 0,
+                    n_stages: 1,
+                },
+                &PenaltiesDefaults {
+                    hydro: HydroPenalties::uniform(0.0),
+                    bus: BusStagePenalties { excess_cost: 0.0 },
+                    line: LineStagePenalties { exchange_cost: 0.0 },
+                    ncs: NcsStagePenalties {
+                        curtailment_cost: 0.0,
+                    },
+                },
+            ),
+            ..CtxFixture::default()
+        };
+
+        let first = fixture
+            .ctx()
+            .resolved
+            .penalties
+            .bus_deficit_segment_at_block(0, 0, 0, 0)
+            .depth_mw;
+        assert_eq!(first, Some(100.0));
+
+        fixture.buses[0].deficit_segments[0].depth_mw = Some(77.0);
+        let second = fixture
+            .ctx()
+            .resolved
+            .penalties
+            .bus_deficit_segment_at_block(0, 0, 0, 0)
+            .depth_mw;
+        assert_eq!(second, Some(77.0));
     }
 }
