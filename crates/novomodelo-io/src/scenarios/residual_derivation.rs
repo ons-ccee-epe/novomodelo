@@ -371,7 +371,7 @@ mod tests {
         }
     }
 
-    /// Reproduces the `t2_mixed_orders_gate_passes` fixture bit-for-bit
+    /// Reproduces the `mixed_orders_pass_stationarity_gate` fixture bit-for-bit
     /// (`orders = [3, 1, 2, 1]` against the periodic Yule-Walker fit of a
     /// plausible sample ACF table) — the closure-derived `r` and the YW-fitted
     /// `r` are known (from that test) to differ only in season 0 (the

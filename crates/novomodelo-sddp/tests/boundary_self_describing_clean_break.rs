@@ -26,7 +26,7 @@ fn fixture_priced_date(pool: u32) -> NaiveDate {
 
 /// A minimal producer block for artifact-writing test helpers. Its own
 /// `cost_scale_factor` is deliberately `None` in every fixture below: the
-/// boundary path no longer reads it, so leaving it absent proves the load
+/// boundary path does not read it, so leaving it absent proves the load
 /// result cannot be coming from this field.
 fn producer_block() -> ProducerBlock {
     ProducerBlock {
@@ -39,13 +39,10 @@ fn producer_block() -> ProducerBlock {
 
 /// The boundary load reads its source cost scale from the resolved pool's own
 /// `cuts/<pool>.bin` (`cost_scale_factor`), never from `metadata.producer`: a
-/// checkpoint with `metadata.producer.cost_scale_factor: None` (the legacy,
-/// now-unread field) but a marked `.bin` (`Some(_)`) still takes the MARKED
-/// conversion (`value * marker / loading_factor`) rather than the LEGACY branch
-/// (a `LEGACY_COST_SCALE_FACTOR / loading_factor` ratio multiply) — the two
-/// disagree numerically whenever the marker is not `LEGACY_COST_SCALE_FACTOR`,
-/// so this discriminates a regression that resurrects the
-/// `metadata.producer` read.
+/// checkpoint with `metadata.producer.cost_scale_factor: None` but a marked
+/// `.bin` (`Some(_)`) still converts by the `.bin`'s marker
+/// (`value * marker / loading_factor`), so this discriminates a regression that
+/// resurrects the `metadata.producer` read.
 #[test]
 fn boundary_load_reads_cost_scale_from_bin() {
     let tmp = tempfile::tempdir().unwrap();
@@ -97,7 +94,7 @@ fn boundary_load_reads_cost_scale_from_bin() {
     assert!(
         (cuts[0].intercept - expected_intercept).abs() < expected_intercept.abs() * 1e-9,
         "intercept {} must equal at_rest * marker / loading_factor = {expected_intercept} (the \
-         MARKED conversion); a LEGACY-branch result would prove the load still reads \
+         marked conversion); any other value would prove the load still reads \
          metadata.producer.cost_scale_factor",
         cuts[0].intercept
     );

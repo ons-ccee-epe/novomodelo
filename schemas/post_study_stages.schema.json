@@ -40,7 +40,7 @@
           "type": "number"
         },
         "post_study_stage_index": {
-          "description": "Index into `thermal_stages` (`stages` in the deprecated format). Must be\nless than that list's length.",
+          "description": "Index into `thermal_stages`. Must be less than that list's length.",
           "format": "uint",
           "minimum": 0,
           "type": "integer"
@@ -63,48 +63,15 @@
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "Root object of `post_study_stages.json`.\n\nA file uses either the deprecated `stages` key or the `thermal_stages` and\n`water_bucket_stages` keys, never both. `scripts/migrate/post_study_stages.py`\nrewrites the former into the latter.",
-  "oneOf": [
-    {
-      "not": {
-        "anyOf": [
-          {
-            "required": [
-              "thermal_stages"
-            ]
-          },
-          {
-            "required": [
-              "water_bucket_stages"
-            ]
-          }
-        ]
-      },
-      "required": [
-        "stages",
-        "thermal_bounds"
-      ]
-    },
-    {
-      "dependentRequired": {
-        "thermal_bounds": [
-          "thermal_stages"
-        ],
-        "thermal_stages": [
-          "thermal_bounds"
-        ]
-      },
-      "not": {
-        "anyOf": [
-          {
-            "required": [
-              "stages"
-            ]
-          }
-        ]
-      }
-    }
-  ],
+  "dependentRequired": {
+    "thermal_bounds": [
+      "thermal_stages"
+    ],
+    "thermal_stages": [
+      "thermal_bounds"
+    ]
+  },
+  "description": "Root object of `post_study_stages.json`.\n\n`thermal_stages` and `thermal_bounds` are declared together.",
   "properties": {
     "$schema": {
       "description": "JSON schema URI — informational, not validated.",
@@ -113,19 +80,8 @@
         "null"
       ]
     },
-    "stages": {
-      "deprecated": true,
-      "description": "Deprecated: replaced by `thermal_stages`. Cannot be combined with\n`thermal_stages` or `water_bucket_stages`.",
-      "items": {
-        "$ref": "#/$defs/RawPostStudyStage"
-      },
-      "type": [
-        "array",
-        "null"
-      ]
-    },
     "thermal_bounds": {
-      "description": "Per-`(thermal, post-study stage)` cost and generation bounds. Required\nwith the deprecated `stages` key.",
+      "description": "Per-`(thermal, post-study stage)` cost and generation bounds. Declared\ntogether with `thermal_stages`.",
       "items": {
         "$ref": "#/$defs/RawPostStudyThermalBound"
       },

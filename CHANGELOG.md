@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **BREAKING:** `post_study_stages.json` with a `stages` key is refused. Migrate
+  each deck with `python3 scripts/migrate/post_study_stages.py <deck-dir>`.
+- **BREAKING:** `estimation.correlation_target` and
+  `training.scenario_source.openings.moment_matching` in `config.json` are
+  refused; delete them. `training/model_provenance.json` no longer records
+  `inflow.correlation_target` and `inflow.opening_tree_moment_matching`.
+- **BREAKING:** `spillage_discretization_points` and `max_planes_per_hydro` in
+  `fpha_config` of `system/hydro_production_models.json` are refused; delete
+  them. Results do not change.
+
 ## [0.21.0] - 2026-11-16
 
 ### Added
@@ -60,8 +72,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   partial inflow is path-independent; a month-to-quarter stage warns once.
 - PAR(p) folding: the inflow model leaves the stage LP. Each stage's inflow is
   computed from its lags before the solve, so the LP drops the lag columns and
-  inflow rows and is smaller. Results change. A 0.20.0 policy still loads; its
-  stored bases are skipped with a `stored bases not used` warning.
+  inflow rows and is smaller. Results change. A 0.20.0 policy is refused at
+  load; retrain it.
 
 #### Hydro plants
 

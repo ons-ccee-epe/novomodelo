@@ -289,9 +289,9 @@ The drop list above, as it shows up in drafts:
 
 | Cut                                | As seen in a draft                                                   |
 | ---------------------------------- | -------------------------------------------------------------------- |
-| The option's status or plans       | "an evaluation option expected to be removed once evaluated"         |
-| Rationale or provenance            | "the correlation NEWAVE takes as input"                              |
-| Mechanism                          | "shifts and scales each generated stage's inflow openings so that …" |
+| The option's status or plans       | "a new option that may later accept a list of ranges"                |
+| Rationale or provenance            | "as a study that distrusts its early records needs"                  |
+| Mechanism                          | "filters the rows by year before the seasonal statistics are …"      |
 | Scope carve-outs the user docs own | "It has no effect when `scenarios/correlation.json` is supplied."    |
 | The fix restated after its symptom | "Multi-rank runs now complete and match the single-rank run."        |
 
@@ -300,19 +300,19 @@ it only if, without it, the user would not know what changed, what to do, or
 that results change. A draft:
 
 ```markdown
-- `training.scenario_source.openings.moment_matching` in `config.json`, an
-  evaluation option expected to be removed once evaluated. `"per_coordinate"`
-  shifts and scales each generated stage's inflow openings so that every
-  hydro's opening mean is 0 and its variance is the model variance. `"none"`,
-  the default, keeps the tree as drawn. Stages using `historical_residuals`
-  and trees read from file are not changed.
+- `estimation.history_years` in `config.json`, a new option that may later
+  accept a list of ranges. `{"from", "to"}` filters the rows of
+  `scenarios/inflow_history.parquet` by year before the seasonal statistics
+  are computed, so the inflow model is estimated from those years only, as a
+  study that distrusts its early records needs. Absent, every year is used. A
+  range reaching outside the file's years is refused.
 ```
 
 and its cut:
 
 ```markdown
-- `training.scenario_source.openings.moment_matching` in `config.json`:
-  `"per_coordinate"` gives each hydro's generated inflow openings mean 0 and
-  the model variance at every stage. `"none"`, the default, keeps the tree as
-  drawn.
+- `estimation.history_years` in `config.json`, as `{"from", "to"}`, limits the
+  years of `scenarios/inflow_history.parquet` the inflow model is estimated
+  from; absent, every year is used. A range reaching outside the file's years
+  is refused.
 ```

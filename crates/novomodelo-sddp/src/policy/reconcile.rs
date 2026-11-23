@@ -1500,7 +1500,7 @@ mod tests {
     }
 
     /// Given a weekly-dated source bucket index read by a monthly-dated
-    /// target slot — the shape any deck, legacy included, has when it loads
+    /// target slot — the shape a deck has when it loads
     /// a boundary policy on a foreign bucket grid — when `build_rebind`
     /// runs, then the target takes `overlap / H_target` volume weights:
     /// full coverage blends to an hours-average, and a target reaching past

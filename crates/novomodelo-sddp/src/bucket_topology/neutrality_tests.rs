@@ -228,7 +228,10 @@ fn assert_neutral(case: &Case) -> TransitBucketTopology {
         WaterDeliveryBasis::of(&declared),
         WaterDeliveryBasis::Declared(_)
     ));
-    assert_eq!(WaterDeliveryBasis::of(&padded), WaterDeliveryBasis::Legacy);
+    assert_eq!(
+        WaterDeliveryBasis::of(&padded),
+        WaterDeliveryBasis::PaddedThermal
+    );
 
     let a = topology(&declared, case.boundary_present);
     let b = topology(&padded, case.boundary_present);

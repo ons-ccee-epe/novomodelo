@@ -146,16 +146,16 @@ The water calendar is never digested. The two calendars are independent: a
 thermal-only deck needs no water key, and a deck with a travel-time arc declares
 the water key whatever its thermals do.
 
-**Current format.** On a deck with a travel-time arc the water key is required. The
-declared calendar is used exactly — no padding, no fallback to `thermal_stages` —
-and must cover the deepest travel time, or setup refuses the study. The rule codes
-for the format checks are owned by `crates/novomodelo-io/src/validation/rules.rs`
-(the `POST_STUDY_*` rules); the table is not copied here.
+**Declared water calendar.** On a deck with a travel-time arc the water key is
+required. The declared calendar is used exactly — no padding, no fallback to
+`thermal_stages` — and must cover the deepest travel time, or setup refuses the
+study. The rule codes for the format checks are owned by
+`crates/novomodelo-io/src/validation/rules.rs` (the `POST_STUDY_*` rules); the
+table is not copied here.
 
-**Legacy format.** The deprecated `stages` key (or a travel-time arc with no
-post-study file) takes the water calendar from the thermal one, padded for
-resolution. The validator warns on it and names the migration script
-`scripts/migrate/post_study_stages.py`.
+**No post-study file.** A deck with a travel-time arc and no post-study file takes
+the water calendar from the thermal one, padded for resolution. The validator
+warns on it and names the migration script `scripts/migrate/post_study_stages.py`.
 
 `.claude/rules/sddp.md` (§ "Water calendar paths") owns the contracts of the two
 paths and the quantity-class rebind weights used when a boundary policy is loaded.
@@ -238,18 +238,19 @@ column_order = [(j, 1), (j, 2), …, (j, L_j)] for each plant j in canonical ord
 `extended` is the **resolution base**, one of two (`resolution_base`,
 `bucket_topology.rs`), selected by `WaterDeliveryBasis`:
 
-- **Declared water calendar (current format):** the study calendar followed by
+- **Declared water calendar:** the study calendar followed by
   `water_bucket_stages`, **unpadded**. If it does not cover the deepest
   travel-time arc, setup refuses the study (`resolve_state_and_topology`) rather
   than extending it.
-- **Legacy deck:** the study calendar followed by the thermal post-study `stages`,
-  padded with copies of its trailing duration only past what that base already
-  covers (`extend_for_resolution`). A short legacy calendar is padded, never
-  refused. With no post-study calendar the base is the study-only vector.
+- **Padded thermal (no post-study file):** the study calendar followed by the thermal
+  post-study stages, if any, padded with copies of its trailing duration only past
+  what that base already covers (`extend_for_resolution`). A short thermal water
+  calendar is padded, never refused. With no post-study calendar the base is the
+  study-only vector.
 
 For a water calendar that covers every arc the two bases build the same topology.
-Bucket slots of a current-format deck are dated from `water_bucket_stages`, with or
-without a loaded boundary; legacy slots are dated from the thermal post-study
+Bucket slots of a deck declaring `water_bucket_stages` are dated from it, with or
+without a loaded boundary; padded-thermal slots are dated from the thermal post-study
 stages.
 
 There is no water analog of the boundary-absent post-study warning of §3.5, by
@@ -599,7 +600,7 @@ intercept' = intercept + Σ_w Σ_M coeff[M] · (overlap_hours(w, M) / H_M) · v_
 
 over each fixed window `w` (value `v_w` MW) and each source anticipated slot `M`
 overlapping it. The fold lands on the raw intercept, before the load's cost-scale
-and legacy-ratio rescale, and a window that overlaps no source interval contributes
+rescale, and a window that overlaps no source interval contributes
 nothing (`.claude/rules/sddp.md` § "Dated forward-family fan-out reconciliation"
 owns the frame contract). With no boundary the fixed values are inert; the advisory
 above also names a plant whose fixed windows carry a non-zero value, since the user

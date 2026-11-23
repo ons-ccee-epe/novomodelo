@@ -94,7 +94,7 @@ fn advance_lag_state_uniform(lag_state: &mut [f64], realised: f64, max_order: us
 }
 
 // ---------------------------------------------------------------------------
-// T1: AR(1)+PAR-A, derived lag seed == window pre-study lags
+// AR(1)+PAR-A, derived lag seed == window pre-study lags
 // ---------------------------------------------------------------------------
 
 /// AR(1) + PAR(p)-A on a single hydro, the derived lag seed == the window's
@@ -207,14 +207,14 @@ fn par_a_historical_replay_roundtrip() {
 }
 
 // ---------------------------------------------------------------------------
-// T2: AR(1)+PAR-A, derived lag seed deliberately differs from window pre-study lags
+// AR(1)+PAR-A, derived lag seed deliberately differs from window pre-study lags
 // ---------------------------------------------------------------------------
 
 /// The derived lag seed differs from the window's antecedent lags: η is
 /// inverted against the derived seed, so a forward pass from that seed
 /// reproduces the target exactly while one from the window lags would diverge.
 #[test]
-fn t2_derived_seed_differs_from_window_lags_roundtrip() {
+fn derived_seed_differs_from_window_lags_roundtrip() {
     let hydro = EntityId(1);
     let stages: Vec<Stage> = (0..12).map(|i| monthly_stage(i, i)).collect();
 
@@ -313,13 +313,13 @@ fn t2_derived_seed_differs_from_window_lags_roundtrip() {
 }
 
 // ---------------------------------------------------------------------------
-// T3: AR(0), derived lag seed == window lags (no-AR regression baseline)
+// AR(0), derived lag seed == window lags (no-AR regression baseline)
 // ---------------------------------------------------------------------------
 
 /// AR(0)+PAR-A: with no AR coefficient, `η = (obs - det_base) / sigma`, so a
 /// replay from a derived seed matching the window lags reproduces each observation.
 #[test]
-fn t3_ar0_par_a_roundtrip() {
+fn ar0_par_a_roundtrip() {
     let hydro = EntityId(1);
     let stages: Vec<Stage> = (0..12).map(|i| monthly_stage(i, i)).collect();
 
@@ -414,14 +414,14 @@ fn t3_ar0_par_a_roundtrip() {
 }
 
 // ---------------------------------------------------------------------------
-// T4: AR(1), derived lag seed has fewer entries than max_order (absent = 0)
+// AR(1), derived lag seed has fewer entries than max_order (absent = 0)
 // ---------------------------------------------------------------------------
 
 /// A derived lag seed shorter than `max_order`: missing lag slots default
 /// to `0.0`, and a replay seeded from the same truncated state still reproduces
 /// every study observation.
 #[test]
-fn t4_derived_seed_shorter_than_max_order_roundtrip() {
+fn derived_seed_shorter_than_max_order_roundtrip() {
     let hydro = EntityId(1);
     let stages: Vec<Stage> = (0..4).map(|i| monthly_stage(i, i)).collect();
 
@@ -522,11 +522,11 @@ fn t4_derived_seed_shorter_than_max_order_roundtrip() {
 }
 
 // ---------------------------------------------------------------------------
-// T5: Two windows, derived lag seed shared; both windows replay exactly
+// Two windows, derived lag seed shared; both windows replay exactly
 // ---------------------------------------------------------------------------
 
 #[test]
-fn t5_two_windows_shared_derived_seed_roundtrip() {
+fn two_windows_shared_derived_seed_roundtrip() {
     let hydro = EntityId(1);
     let stages: Vec<Stage> = (0..12).map(|i| monthly_stage(i, i)).collect();
 

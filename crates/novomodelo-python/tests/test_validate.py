@@ -133,27 +133,13 @@ def test_validate_emits_penalty_ordering_warning() -> None:
         shutil.rmtree(case_dir.parent, ignore_errors=True)
 
 
-def test_validate_warns_on_legacy_post_study_format() -> None:
-    """validate() surfaces the deprecated post-study format as one warning."""
+def test_validate_warns_on_arc_deck_without_post_study_file() -> None:
+    """validate() surfaces a travel-time deck without a post-study file as one warning."""
     import novomodelo.io
 
-    case_dir = copy_case_to_tempdir(
-        "examples/deterministic/d55-post-study-anticipated-lanes"
-    )
+    case_dir = copy_case_to_tempdir("examples/deterministic/d44-travel-time-substage")
     try:
-        legacy = {
-            "stages": [{"start_date": "2024-07-01", "duration_hours": 744.0}],
-            "thermal_bounds": [
-                {
-                    "thermal_id": 1,
-                    "post_study_stage_index": 0,
-                    "cost_per_mwh": 5.0,
-                    "min_mw": 0.0,
-                    "max_mw": 150.0,
-                }
-            ],
-        }
-        (case_dir / "post_study_stages.json").write_text(json.dumps(legacy))
+        (case_dir / "post_study_stages.json").unlink(missing_ok=True)
 
         result = novomodelo.io.validate(str(case_dir))
 

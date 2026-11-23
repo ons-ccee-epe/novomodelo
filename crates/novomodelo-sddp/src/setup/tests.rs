@@ -10929,10 +10929,10 @@ fn resolve_state_and_topology_accepts_covering_declared_water_calendar() {
 }
 
 #[test]
-fn resolve_state_and_topology_pads_a_short_legacy_water_calendar() {
+fn resolve_state_and_topology_pads_a_short_thermal_water_calendar() {
     let system = system_with_water_arc(None);
 
-    resolve_water_arc_system(&system).expect("the legacy calendar is padded, not refused");
+    resolve_water_arc_system(&system).expect("the thermal water calendar is padded, not refused");
 }
 
 // ── study_horizon_end ───────────────────────────────────────────────────────

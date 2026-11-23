@@ -3857,7 +3857,7 @@ fn d30_multi_resolution_loads_and_trains() {
 }
 
 /// The frozen-template simulation path must produce bit-for-bit identical
-/// per-scenario costs to the legacy fallback path (rel error == 0.0, within
+/// per-scenario costs to the fallback path (rel error == 0.0, within
 /// 1e-12), confirming `freeze_rows_into_template` builds a mathematically
 /// equivalent LP to `load_model + add_rows`. Trained on D01, which runs >= 2
 /// iterations so `frozen_templates` is `Some`.
@@ -3941,7 +3941,7 @@ fn frozen_vs_fallback_simulation_costs_are_identical() {
             &comm,
             &tx_fallback,
             None,
-            None, // force legacy path
+            None, // no frozen templates: the fallback path
             &training_result.basis_cache,
         )
         .expect("fallback-path simulate must return Ok");

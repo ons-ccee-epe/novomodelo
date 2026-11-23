@@ -9,29 +9,19 @@ use crate::post_study_stages::PostStudyFormat;
 const WATER_CALENDAR_KEY: &str = "water_bucket_stages";
 const THERMAL_CALENDAR_KEY: &str = "thermal_stages";
 
-/// Rule `semantic.5a.59`: the deprecated `stages` key without a new key, or a deck with a
-/// travel-time arc and no file. Rule `semantic.5a.60`: the deprecated `stages` key together
-/// with `thermal_stages` or `water_bucket_stages`. Rule `semantic.5a.63`: a current file declaring only one of
-/// `thermal_stages` and `thermal_bounds`. Rules `semantic.5a.61` and `semantic.5a.62`: a
-/// current file that omits the water calendar, or declares one too short, on a deck with a
-/// travel-time arc. Rules `semantic.5a.64` and `semantic.5a.65`: a current file declaring
+/// Rule `semantic.5a.59`: a deck with a travel-time arc and no file. Rule `semantic.5a.63`: a
+/// file declaring only one of `thermal_stages` and `thermal_bounds`. Rules `semantic.5a.61` and
+/// `semantic.5a.62`: a file that omits the water calendar, or declares one too short, on a deck
+/// with a travel-time arc. Rules `semantic.5a.64` and `semantic.5a.65`: a file declaring
 /// `water_bucket_stages` on a deck with no travel-time arc, or `thermal_stages` on a deck with
 /// no anticipated thermal.
 pub(super) fn check_post_study_format(data: &ParsedData, ctx: &mut ValidationContext) {
     match data.post_study_format {
-        Some(PostStudyFormat::Legacy) => ctx.emit(
-            &rules::POST_STUDY_LEGACY_FORMAT_DEPRECATED,
-            "post_study_stages.json",
-            None::<String>,
-            "`stages` in post_study_stages.json is deprecated: rename it to `thermal_stages`, \
-             declare `water_bucket_stages` when the case has a travel-time arc, or run \
-             `python3 scripts/migrate/post_study_stages.py <case>`",
-        ),
         Some(PostStudyFormat::Absent)
             if data.hydros.iter().any(Hydro::declares_travel_time_arc) =>
         {
             ctx.emit(
-                &rules::POST_STUDY_LEGACY_FORMAT_DEPRECATED,
+                &rules::POST_STUDY_FILE_MISSING,
                 "post_study_stages.json",
                 None::<String>,
                 "the case declares a travel-time arc without `water_bucket_stages` and runs on the \
@@ -40,16 +30,7 @@ pub(super) fn check_post_study_format(data: &ParsedData, ctx: &mut ValidationCon
                  `python3 scripts/migrate/post_study_stages.py <case>`",
             );
         }
-        Some(PostStudyFormat::Mixed) => ctx.emit(
-            &rules::POST_STUDY_MIXED_FORMAT,
-            "post_study_stages.json",
-            None::<String>,
-            "post_study_stages.json declares `stages` together with `thermal_stages` or \
-             `water_bucket_stages`; `stages` is the deprecated spelling of `thermal_stages`, so \
-             the two formats cannot be mixed. Run `scripts/migrate/post_study_stages.py` to \
-             convert the file.",
-        ),
-        Some(PostStudyFormat::Current {
+        Some(PostStudyFormat::Present {
             thermal_stages,
             thermal_bounds,
             ..
@@ -73,7 +54,7 @@ pub(super) fn check_post_study_format(data: &ParsedData, ctx: &mut ValidationCon
         _ => {}
     }
 
-    if let Some(PostStudyFormat::Current {
+    if let Some(PostStudyFormat::Present {
         thermal_stages,
         water_bucket_stages,
         ..

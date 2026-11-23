@@ -639,8 +639,6 @@ fn default_config() -> FphaColumnLayout {
         source: "computed".to_owned(),
         volume_discretization_points: None,
         turbine_discretization_points: None,
-        spillage_discretization_points: None,
-        max_planes_per_hydro: None,
         fitting_window: None,
         spillage_fit_max_m3s: None,
         turbined_fit_max_m3s: None,
@@ -660,7 +658,7 @@ fn resolve_bounds(
 
 /// Given config with no fitting window and all discretization fields None,
 /// resolve_fitting_bounds uses the plant storage range, which is narrower than
-/// the forebay table, and defaults all counts to 5, max_planes_per_hydro to 10.
+/// the forebay table, and defaults all counts to 5.
 #[test]
 fn no_fitting_window_uses_the_plant_storage_range() {
     let config = default_config();
@@ -673,8 +671,6 @@ fn no_fitting_window_uses_the_plant_storage_range() {
     assert_eq!(bounds.v_max, 30_000.0);
     assert_eq!(bounds.n_volume_points, 5);
     assert_eq!(bounds.n_flow_points, 5);
-    assert_eq!(bounds.n_spillage_points, 5);
-    assert_eq!(bounds.max_planes_per_hydro, 10);
 }
 
 // ── Empty range — v_min >= v_max ─────────────────────────────────────────
@@ -885,7 +881,6 @@ fn discretization_all_none_defaults_to_five() {
 
     assert_eq!(bounds.n_volume_points, 5);
     assert_eq!(bounds.n_flow_points, 5);
-    assert_eq!(bounds.n_spillage_points, 5);
 }
 
 /// Explicit discretization values are passed through unchanged.
@@ -894,8 +889,6 @@ fn discretization_explicit_values_passed_through() {
     let config = FphaColumnLayout {
         volume_discretization_points: Some(8),
         turbine_discretization_points: Some(6),
-        spillage_discretization_points: Some(10),
-        max_planes_per_hydro: Some(20),
         ..default_config()
     };
     let hydro = make_hydro(0.0, 34_116.0);
@@ -905,8 +898,6 @@ fn discretization_explicit_values_passed_through() {
 
     assert_eq!(bounds.n_volume_points, 8);
     assert_eq!(bounds.n_flow_points, 6);
-    assert_eq!(bounds.n_spillage_points, 10);
-    assert_eq!(bounds.max_planes_per_hydro, 20);
 }
 
 // ── Insufficient discretization ──────────────────────────────────────────
@@ -976,77 +967,6 @@ fn turbine_discretization_one_returns_error() {
             if dimension == "turbine"
         ),
         "expected InsufficientDiscretization for turbine=1, got: {err:?}"
-    );
-}
-
-/// spillage_discretization_points = 1 -> InsufficientDiscretization { dimension: "spillage", value: 1 }.
-#[test]
-fn spillage_discretization_one_returns_error() {
-    let config = FphaColumnLayout {
-        spillage_discretization_points: Some(1),
-        ..default_config()
-    };
-    let hydro = make_hydro(0.0, 34_116.0);
-    let forebay = sobradinho_forebay();
-
-    let err = resolve_bounds(&config, &hydro, forebay).unwrap_err();
-    assert!(
-        matches!(
-            err,
-            FphaFittingError::InsufficientDiscretization { ref dimension, value: 1, .. }
-            if dimension == "spillage"
-        ),
-        "expected InsufficientDiscretization for spillage=1, got: {err:?}"
-    );
-}
-
-// ── Max_planes_per_hydro ──────────────────────────────────────────────────
-
-/// max_planes_per_hydro = None -> defaults to 10.
-#[test]
-fn max_planes_per_hydro_none_defaults_to_ten() {
-    let config = default_config();
-    let hydro = make_hydro(0.0, 34_116.0);
-    let forebay = sobradinho_forebay();
-
-    let bounds = resolve_bounds(&config, &hydro, forebay).unwrap();
-
-    assert_eq!(bounds.max_planes_per_hydro, 10);
-}
-
-/// max_planes_per_hydro = Some(5) -> 5.
-#[test]
-fn max_planes_per_hydro_explicit_value() {
-    let config = FphaColumnLayout {
-        max_planes_per_hydro: Some(5),
-        ..default_config()
-    };
-    let hydro = make_hydro(0.0, 34_116.0);
-    let forebay = sobradinho_forebay();
-
-    let bounds = resolve_bounds(&config, &hydro, forebay).unwrap();
-
-    assert_eq!(bounds.max_planes_per_hydro, 5);
-}
-
-/// max_planes_per_hydro = Some(0) -> InsufficientDiscretization.
-#[test]
-fn max_planes_per_hydro_zero_returns_error() {
-    let config = FphaColumnLayout {
-        max_planes_per_hydro: Some(0),
-        ..default_config()
-    };
-    let hydro = make_hydro(0.0, 34_116.0);
-    let forebay = sobradinho_forebay();
-
-    let err = resolve_bounds(&config, &hydro, forebay).unwrap_err();
-    assert!(
-        matches!(
-            err,
-            FphaFittingError::InsufficientDiscretization { ref dimension, value: 0, .. }
-            if dimension == "max_planes_per_hydro"
-        ),
-        "expected InsufficientDiscretization for max_planes_per_hydro=0, got: {err:?}"
     );
 }
 
@@ -2717,8 +2637,6 @@ fn reduce_planes_huge_tolerance_preserves_origin_plane_both_methods() {
         v_max: 30_000.0,
         n_volume_points: 6,
         n_flow_points: 6,
-        n_spillage_points: 2,
-        max_planes_per_hydro: 10,
         single_volume: false,
     };
 
@@ -2824,8 +2742,6 @@ fn hull_fit_emits_exactly_one_origin_plane() {
         v_max: 30_000.0,
         n_volume_points: 6,
         n_flow_points: 6,
-        n_spillage_points: 2,
-        max_planes_per_hydro: 10,
         single_volume: false,
     };
 

@@ -272,21 +272,21 @@ pub(crate) fn resolve_post_study_artifacts(
 }
 
 /// Which water calendar a deck carries. `Declared` is a water calendar used
-/// exactly; `Legacy` is a deck without a declared water calendar, whose water
+/// exactly; `PaddedThermal` is a deck without a declared water calendar, whose water
 /// calendar is the thermal calendar, padded by the bucket topology. Resolved
 /// once per study from the [`System`] by [`Self::of`], passed by value and
 /// never stored on a digested struct.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum WaterDeliveryBasis<'a> {
     Declared(&'a [PostStudyStage]),
-    Legacy,
+    PaddedThermal,
 }
 
 impl<'a> WaterDeliveryBasis<'a> {
     pub(crate) fn of(system: &'a System) -> Self {
         match system.post_study_stages().map(|p| &p.water_bucket_stages) {
             Some(WaterBucketStages::Declared(w)) => Self::Declared(w),
-            Some(WaterBucketStages::FromThermalStages) | None => Self::Legacy,
+            Some(WaterBucketStages::FromThermalStages) | None => Self::PaddedThermal,
         }
     }
 }
@@ -325,7 +325,7 @@ impl DeliveryCalendar {
     pub(crate) fn water(system: &System, basis: WaterDeliveryBasis<'_>) -> Self {
         match basis {
             WaterDeliveryBasis::Declared(water) => Self::from_post_study(system, Some(water)),
-            WaterDeliveryBasis::Legacy => Self::thermal(system),
+            WaterDeliveryBasis::PaddedThermal => Self::thermal(system),
         }
     }
 
@@ -806,17 +806,20 @@ mod tests {
     }
 
     #[test]
-    fn water_delivery_basis_maps_absent_and_from_thermal_stages_to_legacy() {
+    fn water_delivery_basis_maps_absent_and_from_thermal_stages_to_padded_thermal() {
         let absent = SystemBuilder::new()
             .stages(two_study_stages())
             .build()
             .expect("a system without a post-study carrier must build");
-        assert_eq!(WaterDeliveryBasis::of(&absent), WaterDeliveryBasis::Legacy);
+        assert_eq!(
+            WaterDeliveryBasis::of(&absent),
+            WaterDeliveryBasis::PaddedThermal
+        );
 
         let from_thermal = system_with_post_study(WaterBucketStages::FromThermalStages);
         assert_eq!(
             WaterDeliveryBasis::of(&from_thermal),
-            WaterDeliveryBasis::Legacy
+            WaterDeliveryBasis::PaddedThermal
         );
 
         let declared_stages = vec![PostStudyStage {
@@ -831,7 +834,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_water_calendar_equals_thermal_calendar() {
+    fn padded_thermal_water_calendar_equals_thermal_calendar() {
         let system = system_with_post_study(WaterBucketStages::FromThermalStages);
 
         let water = DeliveryCalendar::water(&system, WaterDeliveryBasis::of(&system));

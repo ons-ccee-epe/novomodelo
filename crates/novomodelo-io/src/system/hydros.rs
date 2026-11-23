@@ -2348,7 +2348,7 @@ mod tests {
     fn hydros_json_rejects_inline_productivity() {
         let json = r#"{
           "hydros": [{
-            "id": 0, "name": "LegacyPlant",
+            "id": 0, "name": "Plant",
             "operational_start_date": "2024-01-01",
             "downstream_id": null,
             "reservoir": { "min_storage_hm3": 0.0, "max_storage_hm3": 1000.0 },
@@ -2386,7 +2386,7 @@ mod tests {
     fn test_plant_level_bus_id_is_rejected() {
         let json = r#"{
           "hydros": [{
-            "id": 0, "name": "Legacy", "bus_id": 0,
+            "id": 0, "name": "Plant", "bus_id": 0,
             "operational_start_date": "2024-01-01",
             "downstream_id": null,
             "reservoir": { "min_storage_hm3": 0.0, "max_storage_hm3": 1000.0 },
@@ -2397,7 +2397,7 @@ mod tests {
               "min_generation_mw": 0.0, "max_generation_mw": 250.0
             },
             "unit_groups": [
-              { "id": 0, "name": "Legacy", "bus_id": 0,
+              { "id": 0, "name": "G0", "bus_id": 0,
                 "min_generation_mw": 0.0, "max_generation_mw": 250.0,
                 "min_turbined_m3s": 0.0, "max_turbined_m3s": 500.0 }
             ]

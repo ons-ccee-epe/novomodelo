@@ -2096,8 +2096,6 @@ mod tests {
             source: "precomputed".to_string(),
             volume_discretization_points: None,
             turbine_discretization_points: None,
-            spillage_discretization_points: None,
-            max_planes_per_hydro: None,
             fitting_window: None,
             spillage_fit_max_m3s: None,
             turbined_fit_max_m3s: None,
@@ -2562,7 +2560,7 @@ mod tests {
     }
 
     /// A stationary mixed-order (`orders = [3, 1, 2, 1]`) hydro -- the same
-    /// fixture `t2_mixed_orders_gate_passes` verifies stationary --
+    /// fixture `mixed_orders_pass_stationarity_gate` verifies stationary --
     /// produces no stationarity rejection.
     #[test]
     fn par_gate_accepts_stationary() {

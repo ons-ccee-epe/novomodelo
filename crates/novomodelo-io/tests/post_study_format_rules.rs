@@ -1,5 +1,5 @@
-//! Classification of `post_study_stages.json` into its legacy, current, and
-//! mixed formats, driven through the public `validate_case` pipeline.
+//! Classification of `post_study_stages.json` by the keys it declares, driven
+//! through the public `validate_case` pipeline.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, missing_docs)]
 
@@ -11,16 +11,11 @@ use tempfile::TempDir;
 mod helpers;
 use helpers::{make_minimal_case, write_file};
 
-enum Water {
-    FromThermalStages,
-    Declared(usize),
-}
-
 enum Expected {
     Carrier {
         thermal_stages: usize,
         thermal_bounds: usize,
-        water: Water,
+        water_stages: usize,
     },
     Rejected {
         message: &'static str,
@@ -57,47 +52,30 @@ struct UnusedCase {
     unused_keys: &'static [&'static str],
 }
 
-enum LegacyOutcome {
-    Warnings(usize),
-    MixedRejected,
-}
-
-struct LegacyCase {
+struct DeprecationCase {
     name: &'static str,
     deck: Deck,
     post_study: Option<&'static str>,
-    outcome: LegacyOutcome,
+    warnings: usize,
 }
 
-const MIGRATION_SCRIPT: &str = "scripts/migrate/post_study_stages.py";
 const THERMAL_PAIR_MESSAGE: &str =
     "`thermal_stages` and `thermal_bounds` must be declared together";
 
 fn cases() -> Vec<Case> {
     vec![
         Case {
-            name: "legacy",
+            name: "stages key",
             json: r#"{
               "stages": [{ "start_date": "2024-02-01", "duration_hours": 696.0 }],
-              "thermal_bounds": [
-                { "thermal_id": 86, "post_study_stage_index": 0, "cost_per_mwh": 210.0, "min_mw": 0.0, "max_mw": 350.0 }
-              ]
+              "thermal_bounds": []
             }"#,
-            expected: Expected::Carrier {
-                thermal_stages: 1,
-                thermal_bounds: 1,
-                water: Water::FromThermalStages,
-            },
-        },
-        Case {
-            name: "legacy missing thermal_bounds",
-            json: r#"{ "stages": [{ "start_date": "2024-02-01", "duration_hours": 696.0 }] }"#,
             expected: Expected::Rejected {
-                message: "missing field `thermal_bounds`",
+                message: "unknown field `stages`",
             },
         },
         Case {
-            name: "current full",
+            name: "full",
             json: r#"{
               "thermal_stages": [{ "start_date": "2024-02-01", "duration_hours": 696.0 }],
               "thermal_bounds": [
@@ -111,16 +89,16 @@ fn cases() -> Vec<Case> {
             expected: Expected::Carrier {
                 thermal_stages: 1,
                 thermal_bounds: 1,
-                water: Water::Declared(2),
+                water_stages: 2,
             },
         },
         Case {
-            name: "current water only",
+            name: "water only",
             json: r#"{ "water_bucket_stages": [{ "start_date": "2024-02-01", "duration_hours": 696.0 }] }"#,
             expected: Expected::Carrier {
                 thermal_stages: 0,
                 thermal_bounds: 0,
-                water: Water::Declared(1),
+                water_stages: 1,
             },
         },
         Case {
@@ -129,46 +107,11 @@ fn cases() -> Vec<Case> {
             expected: Expected::Carrier {
                 thermal_stages: 0,
                 thermal_bounds: 0,
-                water: Water::Declared(0),
+                water_stages: 0,
             },
         },
         Case {
-            name: "mixed stages and thermal_stages",
-            json: r#"{
-              "stages": [{ "start_date": "2024-02-01", "duration_hours": 696.0 }],
-              "thermal_stages": [{ "start_date": "2024-02-01", "duration_hours": 696.0 }],
-              "thermal_bounds": []
-            }"#,
-            expected: Expected::Rejected {
-                message: MIGRATION_SCRIPT,
-            },
-        },
-        Case {
-            name: "mixed stages and water_bucket_stages",
-            json: r#"{
-              "stages": [{ "start_date": "2024-02-01", "duration_hours": 696.0 }],
-              "thermal_bounds": [],
-              "water_bucket_stages": [{ "start_date": "2024-02-01", "duration_hours": 696.0 }]
-            }"#,
-            expected: Expected::Rejected {
-                message: MIGRATION_SCRIPT,
-            },
-        },
-        Case {
-            name: "legacy calendar diagnostics name stages",
-            json: r#"{
-              "stages": [
-                { "start_date": "2024-02-01", "duration_hours": 696.0 },
-                { "start_date": "2024-04-01", "duration_hours": 720.0 }
-              ],
-              "thermal_bounds": []
-            }"#,
-            expected: Expected::Rejected {
-                message: "(stages start_date=2024-04-01)",
-            },
-        },
-        Case {
-            name: "current calendar diagnostics name thermal_stages",
+            name: "calendar diagnostics name thermal_stages",
             json: r#"{
               "thermal_stages": [
                 { "start_date": "2024-02-01", "duration_hours": 696.0 },
@@ -200,7 +143,7 @@ fn cases() -> Vec<Case> {
             expected: Expected::Carrier {
                 thermal_stages: 0,
                 thermal_bounds: 0,
-                water: Water::Declared(0),
+                water_stages: 0,
             },
         },
         Case {
@@ -225,7 +168,7 @@ fn post_study_file_format_table() {
             Expected::Carrier {
                 thermal_stages,
                 thermal_bounds,
-                water,
+                water_stages,
             } => {
                 let (system, _) = result.unwrap_or_else(|e| panic!("{}: {e}", case.name));
                 let ps = system
@@ -233,13 +176,10 @@ fn post_study_file_format_table() {
                     .unwrap_or_else(|| panic!("{}: carrier missing", case.name));
                 assert_eq!(ps.thermal_stages.len(), thermal_stages, "{}", case.name);
                 assert_eq!(ps.thermal_bounds.len(), thermal_bounds, "{}", case.name);
-                match (water, &ps.water_bucket_stages) {
-                    (Water::FromThermalStages, WaterBucketStages::FromThermalStages) => {}
-                    (Water::Declared(n), WaterBucketStages::Declared(stages)) => {
-                        assert_eq!(stages.len(), n, "{}", case.name);
-                    }
-                    (_, actual) => panic!("{}: unexpected water carrier {actual:?}", case.name),
-                }
+                let WaterBucketStages::Declared(stages) = &ps.water_bucket_stages else {
+                    panic!("{}: unexpected water carrier", case.name);
+                };
+                assert_eq!(stages.len(), water_stages, "{}", case.name);
             }
             Expected::Rejected { message } => {
                 let Err(LoadError::ConstraintError { description }) = result else {
@@ -441,17 +381,6 @@ fn water_cases() -> Vec<WaterCase> {
             },
         },
         WaterCase {
-            name: "arc deck, legacy file",
-            deck: Deck::Arc,
-            post_study: Some(
-                r#"{
-                  "stages": [{ "start_date": "2024-02-01", "duration_hours": 696.0 }],
-                  "thermal_bounds": []
-                }"#,
-            ),
-            outcome: WaterOutcome::Accepted,
-        },
-        WaterCase {
             name: "arc deck, no file",
             deck: Deck::Arc,
             post_study: None,
@@ -496,105 +425,67 @@ fn water_calendar_table() {
     }
 }
 
-fn legacy_cases() -> Vec<LegacyCase> {
+fn deprecation_cases() -> Vec<DeprecationCase> {
     vec![
-        LegacyCase {
-            name: "legacy file",
-            deck: Deck::NoArc,
-            post_study: Some(
-                r#"{
-                  "stages": [{ "start_date": "2024-02-01", "duration_hours": 696.0 }],
-                  "thermal_bounds": []
-                }"#,
-            ),
-            outcome: LegacyOutcome::Warnings(1),
-        },
-        LegacyCase {
+        DeprecationCase {
             name: "arc deck, no file",
             deck: Deck::Arc,
             post_study: None,
-            outcome: LegacyOutcome::Warnings(1),
+            warnings: 1,
         },
-        LegacyCase {
+        DeprecationCase {
             name: "no-arc deck, no file",
             deck: Deck::NoArc,
             post_study: None,
-            outcome: LegacyOutcome::Warnings(0),
+            warnings: 0,
         },
-        LegacyCase {
-            name: "current file",
+        DeprecationCase {
+            name: "file",
             deck: Deck::NoArc,
             post_study: Some(
                 r#"{ "thermal_stages": [], "thermal_bounds": [], "water_bucket_stages": [] }"#,
             ),
-            outcome: LegacyOutcome::Warnings(0),
-        },
-        LegacyCase {
-            name: "mixed file",
-            deck: Deck::NoArc,
-            post_study: Some(
-                r#"{
-                  "stages": [{ "start_date": "2024-02-01", "duration_hours": 696.0 }],
-                  "thermal_stages": [{ "start_date": "2024-02-01", "duration_hours": 696.0 }],
-                  "thermal_bounds": []
-                }"#,
-            ),
-            outcome: LegacyOutcome::MixedRejected,
+            warnings: 0,
         },
     ]
 }
 
 #[test]
-fn legacy_format_warning_table() {
-    for case in legacy_cases() {
+fn deprecation_warning_table() {
+    for case in deprecation_cases() {
         let dir = TempDir::new().unwrap();
         write_cascade_deck(&dir, &case.deck);
         if let Some(json) = case.post_study {
             write_file(dir.path(), "post_study_stages.json", json);
         }
-        let result = validate_case(dir.path());
+        let (_, report) =
+            validate_case(dir.path()).unwrap_or_else(|e| panic!("{}: {e}", case.name));
 
-        match case.outcome {
-            LegacyOutcome::Warnings(expected) => {
-                let (_, report) = result.unwrap_or_else(|e| panic!("{}: {e}", case.name));
-                let deprecations: Vec<_> = report
-                    .warnings
-                    .iter()
-                    .filter(|entry| {
-                        entry.file.ends_with("post_study_stages.json")
-                            && entry.message.contains("is deprecated")
-                    })
-                    .collect();
-                assert_eq!(
-                    deprecations.len(),
-                    expected,
-                    "{}: {deprecations:?}",
-                    case.name
-                );
-                for entry in deprecations {
-                    for name in [
-                        "thermal_stages",
-                        "water_bucket_stages",
-                        "scripts/migrate/post_study_stages.py",
-                    ] {
-                        assert!(
-                            entry.message.contains(name),
-                            "{}: {}",
-                            case.name,
-                            entry.message
-                        );
-                    }
-                }
-            }
-            LegacyOutcome::MixedRejected => {
-                let Err(LoadError::ConstraintError { description }) = result else {
-                    panic!("{}: expected a validation error", case.name);
-                };
+        let deprecations: Vec<_> = report
+            .warnings
+            .iter()
+            .filter(|entry| {
+                entry.file.ends_with("post_study_stages.json")
+                    && entry.message.contains("is deprecated")
+            })
+            .collect();
+        assert_eq!(
+            deprecations.len(),
+            case.warnings,
+            "{}: {deprecations:?}",
+            case.name
+        );
+        for entry in deprecations {
+            for name in [
+                "thermal_stages",
+                "water_bucket_stages",
+                "scripts/migrate/post_study_stages.py",
+            ] {
                 assert!(
-                    description.contains("cannot be mixed")
-                        && !description.contains("is deprecated"),
-                    "{}: {description}",
-                    case.name
+                    entry.message.contains(name),
+                    "{}: {}",
+                    case.name,
+                    entry.message
                 );
             }
         }
@@ -620,15 +511,6 @@ fn unused_cases() -> Vec<UnusedCase> {
             deck: Deck::NoArc,
             post_study: r#"{ "thermal_stages": [], "thermal_bounds": [] }"#,
             unused_keys: &["thermal_stages"],
-        },
-        UnusedCase {
-            name: "legacy file, deck with neither",
-            deck: Deck::NoArc,
-            post_study: r#"{
-              "stages": [{ "start_date": "2024-02-01", "duration_hours": 696.0 }],
-              "thermal_bounds": []
-            }"#,
-            unused_keys: &[],
         },
         UnusedCase {
             name: "arc deck, covering water calendar",
@@ -725,7 +607,7 @@ fn anticipated_thermal_deck_does_not_warn_on_thermal_stages() {
 }
 
 #[test]
-fn legacy_format_rule_is_a_registered_warning() {
+fn missing_file_rule_is_a_registered_warning() {
     let rule = RULES
         .iter()
         .find(|rule| rule.id == "semantic.5a.59")
@@ -748,12 +630,7 @@ fn unused_calendar_rules_are_registered_warnings() {
 
 #[test]
 fn post_study_format_rules_are_registered_errors() {
-    for id in [
-        "semantic.5a.60",
-        "semantic.5a.61",
-        "semantic.5a.62",
-        "semantic.5a.63",
-    ] {
+    for id in ["semantic.5a.61", "semantic.5a.62", "semantic.5a.63"] {
         let rule = RULES
             .iter()
             .find(|rule| rule.id == id)

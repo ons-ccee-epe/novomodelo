@@ -65,8 +65,6 @@ use novomodelo_io::ReportEntry;
 use novomodelo_io::SetupTimings;
 use novomodelo_io::SolverStatsRow;
 use novomodelo_io::TrainingOutput;
-use novomodelo_io::config::CorrelationTarget;
-use novomodelo_io::config::MomentMatching;
 use novomodelo_io::get_hostname;
 use novomodelo_io::now_iso8601;
 use novomodelo_io::output::simulation_writer::{
@@ -1329,20 +1327,10 @@ pub(crate) fn stochastic_summary_to_dict<'py>(
         "correlation_source",
         stochastic_source_str(&summary.correlation_source),
     )?;
-    dict.set_item(
-        "correlation_target",
-        summary.correlation_target.map(CorrelationTarget::as_str),
-    )?;
     dict.set_item("correlation_dim", summary.correlation_dim.as_deref())?;
     dict.set_item(
         "opening_tree_source",
         stochastic_source_str(&summary.opening_tree_source),
-    )?;
-    dict.set_item(
-        "opening_tree_moment_matching",
-        summary
-            .opening_tree_moment_matching
-            .map(MomentMatching::as_str),
     )?;
     dict.set_item("openings_per_stage", summary.openings_per_stage.clone())?;
     dict.set_item("n_stages", summary.n_stages)?;
@@ -1371,22 +1359,8 @@ pub(crate) fn provenance_to_dict<'py>(
         report.inflow.correlation_source.to_string(),
     )?;
     dict.set_item(
-        "correlation_target",
-        report
-            .inflow
-            .correlation_target
-            .map(CorrelationTarget::as_str),
-    )?;
-    dict.set_item(
         "opening_tree_source",
         report.inflow.opening_tree_source.to_string(),
-    )?;
-    dict.set_item(
-        "opening_tree_moment_matching",
-        report
-            .inflow
-            .opening_tree_moment_matching
-            .map(MomentMatching::as_str),
     )?;
     dict.set_item("n_hydros", report.inflow.n_hydros)?;
     dict.set_item("ar_method", report.inflow.ar_method.as_deref())?;

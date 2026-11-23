@@ -113,21 +113,6 @@
       },
       "type": "object"
     },
-    "CorrelationTarget": {
-      "description": "Series the estimated spatial inflow correlation is computed from.",
-      "oneOf": [
-        {
-          "const": "residuals",
-          "description": "Residuals of the fitted PAR lags.",
-          "type": "string"
-        },
-        {
-          "const": "inflows",
-          "description": "Standardized historical inflows.",
-          "type": "string"
-        }
-      ]
-    },
     "DualEdgeWeight": {
       "description": "Dual simplex edge-weight (pricing) strategy.",
       "oneOf": [
@@ -152,11 +137,6 @@
       "additionalProperties": false,
       "description": "Time series estimation settings (`config.json → estimation`).\n\nControls automatic parameter estimation when historical inflow data is\nprovided without explicit model statistics or coefficients.",
       "properties": {
-        "correlation_target": {
-          "$ref": "#/$defs/CorrelationTarget",
-          "default": "inflows",
-          "description": "Series the spatial inflow correlation is estimated from when no\n`scenarios/correlation.json` is supplied: `\"inflows\"` (default) or `\"residuals\"`.\n\nEvaluation option, expected to be removed once evaluated."
-        },
         "history_years": {
           "anyOf": [
             {
@@ -336,33 +316,13 @@
       },
       "type": "object"
     },
-    "MomentMatching": {
-      "description": "How generated openings are corrected after the correlation is applied.",
-      "oneOf": [
-        {
-          "const": "none",
-          "description": "Keep the openings as drawn.",
-          "type": "string"
-        },
-        {
-          "const": "per_coordinate",
-          "description": "Shift and scale each hydro's openings to mean 0 and the variance of its correlated noise.",
-          "type": "string"
-        }
-      ]
-    },
     "Openings": {
       "description": "Where a stage's openings originate (`config.json` scenario-source `source`).\n\nThe tag key is `source` and the field is `openings`, deliberately distinct\nfrom the per-class `scheme` key: `openings.source` selects where a stage's\nopenings come from, while `scheme` selects how a class's noise is modelled.\nA single word would otherwise carry both axes. An absent `openings`\ndeclaration is equivalent to `generated`.",
       "oneOf": [
         {
           "additionalProperties": false,
-          "description": "Openings come from noise generation (the default when `openings` is absent).",
+          "description": "Openings come from noise generation (the default when `openings` is absent).\n\nEach generated stage's inflow openings are shifted and scaled so that\nevery hydro's opening mean is 0 and its variance is that of its\ncorrelated noise: 1, or more where factoring the correlation clips a\nnegative eigenvalue. Stages using `historical_residuals`, stages with\none opening and hydros whose openings are all equal are left as drawn;\nload and non-controllable-source noise is never matched.",
           "properties": {
-            "moment_matching": {
-              "$ref": "#/$defs/MomentMatching",
-              "default": "per_coordinate",
-              "description": "`per_coordinate` (default) shifts and scales each generated stage's\ninflow openings so that every hydro's opening mean is 0 and its\nvariance is that of its correlated noise: 1, or more where factoring\nthe correlation clips a negative eigenvalue; `none` keeps the\nopenings as drawn. Stages using `historical_residuals`, stages with\none opening and hydros whose openings are all equal are left as\ndrawn; load and non-controllable-source noise is never matched.\n\nEvaluation option, expected to be removed once evaluated."
-            },
             "source": {
               "const": "generated",
               "type": "string"
@@ -1368,7 +1328,6 @@
     "estimation": {
       "$ref": "#/$defs/EstimationConfig",
       "default": {
-        "correlation_target": "inflows",
         "history_years": null,
         "max_coefficient_magnitude": null,
         "max_order": 6,

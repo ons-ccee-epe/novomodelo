@@ -172,12 +172,6 @@ pub struct FphaColumnLayout {
     pub volume_discretization_points: Option<i32>,
     /// Number of turbine flow discretization points used when computing hyperplanes.
     pub turbine_discretization_points: Option<i32>,
-    /// Number of spillage discretization points, validated (`>= 2`); no fitting
-    /// step builds a spillage grid axis, so it does not change the fitted planes.
-    pub spillage_discretization_points: Option<i32>,
-    /// Plane-count ceiling, validated (`>= 1`); the fit keeps every
-    /// upper-envelope facet, so it does not change the fitted planes.
-    pub max_planes_per_hydro: Option<i32>,
     /// Optional fitting window within the plant's storage range; absent = the
     /// whole range, `min_storage_hm3` to `max_storage_hm3`.
     pub fitting_window: Option<FittingWindow>,
@@ -672,14 +666,6 @@ struct RawFphaColumnLayout {
     /// Number of turbine flow discretization points used when computing
     /// hyperplanes. Absent = algorithm default (5).
     turbine_discretization_points: Option<i32>,
-    /// Number of spillage discretization points, validated (`>= 2`). No fitting
-    /// step builds a spillage grid axis, so the value does not change the
-    /// fitted planes. Absent = 5.
-    spillage_discretization_points: Option<i32>,
-    /// Plane-count ceiling, validated (`>= 1`). The fit keeps every
-    /// upper-envelope facet, so the value does not change the fitted planes.
-    /// Absent = 10.
-    max_planes_per_hydro: Option<i32>,
     /// Optional volume fitting window for hyperplane computation. Absent or
     /// null = the plant's storage range, `min_storage_hm3` to
     /// `max_storage_hm3`. `system/hydro_geometry.parquet` must cover that
@@ -997,11 +983,6 @@ fn validate_fpha_discretization_counts(
             cfg.turbine_discretization_points,
             "turbine_discretization_points",
         ),
-        (
-            cfg.spillage_discretization_points,
-            "spillage_discretization_points",
-        ),
-        (cfg.max_planes_per_hydro, "max_planes_per_hydro"),
     ] {
         if let Some(count) = value
             && count < 0
@@ -1236,8 +1217,6 @@ fn convert_fpha_column_layout(raw: RawFphaColumnLayout) -> FphaColumnLayout {
         source: raw.source,
         volume_discretization_points: raw.volume_discretization_points,
         turbine_discretization_points: raw.turbine_discretization_points,
-        spillage_discretization_points: raw.spillage_discretization_points,
-        max_planes_per_hydro: raw.max_planes_per_hydro,
         fitting_window: raw.fitting_window.map(|fw| FittingWindow {
             volume_min_hm3: fw.volume_min_hm3,
             volume_max_hm3: fw.volume_max_hm3,
@@ -2448,7 +2427,7 @@ mod tests {
 
     // ── FPHA discretization-count non-negativity ──────────────────────────────
 
-    /// Each of the four FPHA discretization counts, set negative in turn, is
+    /// Each of the two FPHA discretization counts, set negative in turn, is
     /// rejected with a SchemaError whose field names the offending count and
     /// whose message names the hydro.
     #[test]
@@ -2456,8 +2435,6 @@ mod tests {
         for field_name in [
             "volume_discretization_points",
             "turbine_discretization_points",
-            "spillage_discretization_points",
-            "max_planes_per_hydro",
         ] {
             let json = format!(
                 r#"{{
@@ -2502,7 +2479,7 @@ mod tests {
             "seasons": [{
               "season_id": 0,
               "model": "fpha",
-              "fpha_config": { "source": "computed", "max_planes_per_hydro": -3 }
+              "fpha_config": { "source": "computed", "turbine_discretization_points": -3 }
             }]
           }]
         }"#;
@@ -2511,8 +2488,8 @@ mod tests {
         match &err {
             LoadError::SchemaError { field, message, .. } => {
                 assert!(
-                    field.contains("max_planes_per_hydro"),
-                    "field should name max_planes_per_hydro, got: {field}"
+                    field.contains("turbine_discretization_points"),
+                    "field should name turbine_discretization_points, got: {field}"
                 );
                 assert!(
                     message.contains("hydro_id 9"),
@@ -2520,6 +2497,33 @@ mod tests {
                 );
             }
             other => panic!("expected SchemaError, got: {other:?}"),
+        }
+    }
+
+    /// `spillage_discretization_points` and `max_planes_per_hydro` are not keys of
+    /// `fpha_config`; `deny_unknown_fields` refuses them.
+    #[test]
+    fn fpha_config_refuses_spillage_points_and_plane_ceiling() {
+        for key in ["spillage_discretization_points", "max_planes_per_hydro"] {
+            let json = format!(
+                r#"{{
+              "production_models": [{{
+                "hydro_id": 4,
+                "selection_mode": "stage_ranges",
+                "stage_ranges": [{{
+                  "start_stage_id": 0, "end_stage_id": null,
+                  "model": "fpha",
+                  "fpha_config": {{ "source": "computed", "{key}": 5 }}
+                }}]
+              }}]
+            }}"#
+            );
+            let f = write_json(&json);
+            let err = parse_production_models(f.path()).unwrap_err();
+            assert!(
+                err.to_string().contains(key),
+                "{key} must be refused as an unknown field, got: {err}"
+            );
         }
     }
 
@@ -2554,9 +2558,7 @@ mod tests {
               "fpha_config": {
                 "source": "computed",
                 "volume_discretization_points": 0,
-                "turbine_discretization_points": 7,
-                "spillage_discretization_points": 3,
-                "max_planes_per_hydro": 10
+                "turbine_discretization_points": 7
               }
             }]
           }]
@@ -2650,8 +2652,6 @@ mod tests {
             source: source.to_string(),
             volume_discretization_points: None,
             turbine_discretization_points: None,
-            spillage_discretization_points: None,
-            max_planes_per_hydro: None,
             fitting_window: None,
             spillage_fit_max_m3s: None,
             turbined_fit_max_m3s: None,

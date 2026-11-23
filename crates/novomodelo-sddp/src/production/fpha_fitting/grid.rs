@@ -24,8 +24,7 @@ pub(crate) struct GridParams {
 /// The flow axis starts at `q = 0` (zero production): that column anchors the
 /// cloud at the zero-flow origin and forms its lower closure, so `hull_fit` needs
 /// no synthetic closing point. Spillage is not a grid axis — the cloud and the α
-/// regression fix `s = 0`, and the lateral secant sweeps its own `S_max` sample
-/// independent of `bounds.n_spillage_points`.
+/// regression fix `s = 0`, and the lateral secant sweeps its own `S_max` sample.
 pub(crate) fn build_grid(pf: &ProductionFunction, bounds: &FittingBounds) -> GridParams {
     let n_v = bounds.n_volume_points;
     let n_q = bounds.n_flow_points;

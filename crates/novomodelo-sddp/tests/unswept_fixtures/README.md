@@ -23,5 +23,7 @@ One overlay per committed deck whose post-study input was migrated to
 migration, plus `absent.json`, the files it did not have.
 `novomodelo_sddp::test_support::legacy_inputs::materialize` applies an overlay to a
 deck copy. `scripts/migrate/test_in_repo_migration.py` migrates every overlay and
-compares the result with the committed deck, and the legacy-vs-migrated tests
-run a deck from its overlay.
+compares the result with the committed deck. `tests/parity.rs` runs a deck from an
+overlay that only removes `post_study_stages.json`; an overlay that writes a
+`stages` file is read by the migration test alone, because the loader refuses
+that key.

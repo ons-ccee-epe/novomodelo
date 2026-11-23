@@ -333,15 +333,12 @@ declare_rules! {
     SEMANTIC_GENERIC_STAGE_VOLUME_BLOCK_BOUND_ROW = "semantic.5a.58",
         Semantic, BusinessRuleViolation, Error,
         "A generic_constraint_bounds.parquet row gives a block_id to a constraint with a stage-volume term";
-    POST_STUDY_LEGACY_FORMAT_DEPRECATED = "semantic.5a.59",
+    POST_STUDY_FILE_MISSING = "semantic.5a.59",
         Semantic, ModelQuality, Warning,
-        "post_study_stages.json uses the deprecated stages key, or a deck declaring a travel-time arc has no post_study_stages.json";
-    POST_STUDY_MIXED_FORMAT = "semantic.5a.60",
-        Semantic, BusinessRuleViolation, Error,
-        "post_study_stages.json declares stages together with thermal_stages or water_bucket_stages";
+        "A deck declaring a travel-time arc has no post_study_stages.json";
     POST_STUDY_WATER_CALENDAR_MISSING = "semantic.5a.61",
         Semantic, BusinessRuleViolation, Error,
-        "A current-format post_study_stages.json on a deck declaring a travel-time arc has no water_bucket_stages key";
+        "A post_study_stages.json on a deck declaring a travel-time arc has no water_bucket_stages key";
     POST_STUDY_WATER_CALENDAR_SHORT = "semantic.5a.62",
         Semantic, BusinessRuleViolation, Error,
         "The declared water_bucket_stages calendar covers fewer hours than the deepest travel-time arc";
@@ -350,10 +347,10 @@ declare_rules! {
         "post_study_stages.json declares one of thermal_stages and thermal_bounds without the other; the two must be declared together";
     POST_STUDY_WATER_CALENDAR_UNUSED = "semantic.5a.64",
         Semantic, ModelQuality, Warning,
-        "A current-format post_study_stages.json declares water_bucket_stages on a deck with no travel-time arc, so the key has no effect";
+        "A post_study_stages.json declares water_bucket_stages on a deck with no travel-time arc, so the key has no effect";
     POST_STUDY_THERMAL_CALENDAR_UNUSED = "semantic.5a.65",
         Semantic, ModelQuality, Warning,
-        "A current-format post_study_stages.json declares thermal_stages on a deck with no anticipated thermal, so the key has no effect";
+        "A post_study_stages.json declares thermal_stages on a deck with no anticipated thermal, so the key has no effect";
     SEMANTIC_FPHA_GEOMETRY_DOES_NOT_COVER_STORAGE = "semantic.5a.66",
         Semantic, BusinessRuleViolation, Error,
         "A computed-FPHA hydro's hydro_geometry.parquet volumes do not cover its storage range";
@@ -571,6 +568,7 @@ mod tests {
         "semantic.5a.27",
         "semantic.5a.42",
         "semantic.5a.48",
+        "semantic.5a.60",
         "semantic.5b.4",
         "semantic.5b.5",
         "semantic.5b.6",

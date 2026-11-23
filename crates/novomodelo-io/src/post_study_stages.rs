@@ -25,10 +25,6 @@
 //! }
 //! ```
 //!
-//! `stages` is the deprecated spelling of `thermal_stages`; a file using it and
-//! neither new key is [`PostStudyFormat::Legacy`], and one using it together with
-//! a new key is [`PostStudyFormat::Mixed`].
-//!
 //! ## Validation
 //!
 //! The reader enforces the per-file invariants; the cross-file invariants
@@ -42,8 +38,7 @@
 //!    `start_date`.
 //! 2. Every `duration_hours` is finite and `> 0.0`.
 //! 3. Every `cost_per_mwh`, `min_mw`, and `max_mw` is finite, and `min_mw <= max_mw`.
-//! 4. Every `post_study_stage_index` is `< thermal_stages.len()` (`stages.len()` in the
-//!    deprecated format).
+//! 4. Every `post_study_stage_index` is `< thermal_stages.len()`.
 //! 5. No two thermal-bound rows share a `(thermal_id, post_study_stage_index)`.
 
 use std::collections::HashSet;
@@ -56,7 +51,7 @@ use novomodelo_core::{
 use schemars::Schema;
 use serde::Deserialize;
 #[cfg(feature = "schema")]
-use serde_json::{Value, json};
+use serde_json::json;
 
 use crate::LoadError;
 use crate::windowed_history::parse_iso_date;
@@ -65,23 +60,19 @@ use crate::windowed_history::parse_iso_date;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PostStudyFormat {
     Absent,
-    Legacy,
     /// Each flag records key presence; an empty list counts as present.
-    Current {
+    Present {
         thermal_stages: bool,
         thermal_bounds: bool,
         water_bucket_stages: bool,
     },
-    Mixed,
 }
 
 // ── Intermediate serde types ──────────────────────────────────────────────────
 
 /// Root object of `post_study_stages.json`.
 ///
-/// A file uses either the deprecated `stages` key or the `thermal_stages` and
-/// `water_bucket_stages` keys, never both. `scripts/migrate/post_study_stages.py`
-/// rewrites the former into the latter.
+/// `thermal_stages` and `thermal_bounds` are declared together.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "schema", schemars(transform = post_study_file_schema))]
 #[derive(Deserialize)]
@@ -91,10 +82,6 @@ pub(crate) struct RawPostStudyStagesFile {
     #[serde(rename = "$schema")]
     _schema: Option<String>,
 
-    /// Deprecated: replaced by `thermal_stages`. Cannot be combined with
-    /// `thermal_stages` or `water_bucket_stages`.
-    stages: Option<Vec<RawPostStudyStage>>,
-
     /// Ordered post-horizon thermal calendar stages; they date thermal
     /// deliveries and `thermal_bounds`.
     thermal_stages: Option<Vec<RawPostStudyStage>>,
@@ -103,38 +90,20 @@ pub(crate) struct RawPostStudyStagesFile {
     /// slots.
     water_bucket_stages: Option<Vec<RawPostStudyStage>>,
 
-    /// Per-`(thermal, post-study stage)` cost and generation bounds. Required
-    /// with the deprecated `stages` key.
+    /// Per-`(thermal, post-study stage)` cost and generation bounds. Declared
+    /// together with `thermal_stages`.
     thermal_bounds: Option<Vec<RawPostStudyThermalBound>>,
 }
 
 #[cfg(feature = "schema")]
 fn post_study_file_schema(schema: &mut Schema) {
     schema.insert(
-        "oneOf".to_owned(),
-        json!([
-            {
-                "required": ["stages", "thermal_bounds"],
-                "not": { "anyOf": [
-                    { "required": ["thermal_stages"] },
-                    { "required": ["water_bucket_stages"] },
-                ] },
-            },
-            {
-                "not": { "anyOf": [{ "required": ["stages"] }] },
-                "dependentRequired": {
-                    "thermal_stages": ["thermal_bounds"],
-                    "thermal_bounds": ["thermal_stages"],
-                },
-            },
-        ]),
+        "dependentRequired".to_owned(),
+        json!({
+            "thermal_stages": ["thermal_bounds"],
+            "thermal_bounds": ["thermal_stages"],
+        }),
     );
-    if let Some(stages) = schema
-        .pointer_mut("/properties/stages")
-        .and_then(Value::as_object_mut)
-    {
-        stages.insert("deprecated".to_owned(), Value::Bool(true));
-    }
 }
 
 /// One post-horizon calendar stage: a `[start_date, start_date + duration_hours)`
@@ -156,8 +125,7 @@ struct RawPostStudyStage {
 struct RawPostStudyThermalBound {
     /// Thermal plant identifier. Must reference an anticipated thermal.
     thermal_id: i32,
-    /// Index into `thermal_stages` (`stages` in the deprecated format). Must be
-    /// less than that list's length.
+    /// Index into `thermal_stages`. Must be less than that list's length.
     post_study_stage_index: usize,
     /// Fuel cost (`$/MWh`) at this cell. Must be finite.
     cost_per_mwh: f64,
@@ -172,16 +140,15 @@ struct RawPostStudyThermalBound {
 
 /// Load, classify, and validate `post_study_stages.json` from `path`.
 ///
-/// Returns `(Mixed, None)` for a file that declares `stages` together with
-/// `thermal_stages` or `water_bucket_stages`, and `(Current, None)` for a current file that
-/// declares only one of `thermal_stages` and `thermal_bounds`; the semantic layer reports both.
+/// Returns `(Present, None)` for a file that declares only one of `thermal_stages` and
+/// `thermal_bounds`; the semantic layer reports it.
 ///
 /// # Errors
 ///
 /// | Condition                                                        | Error variant              |
 /// | ---------------------------------------------------------------- | -------------------------- |
 /// | File not found / read failure                                    | [`LoadError::IoError`]     |
-/// | Invalid JSON, unknown key, legacy file without `thermal_bounds`  | [`LoadError::ParseError`]  |
+/// | Invalid JSON, unknown key                                        | [`LoadError::ParseError`]  |
 /// | Invalid `start_date` / duplicate `start_date`                    | [`LoadError::SchemaError`] |
 /// | Non-finite or non-positive `duration_hours`                      | [`LoadError::SchemaError`] |
 /// | Non-finite cost/bound, `min_mw > max_mw`                         | [`LoadError::SchemaError`] |
@@ -195,27 +162,7 @@ pub(crate) fn parse_post_study_file(
     let raw: RawPostStudyStagesFile =
         serde_json::from_str(&raw_text).map_err(|e| LoadError::parse(path, e.to_string()))?;
 
-    if let Some(legacy_stages) = &raw.stages {
-        if raw.thermal_stages.is_some() || raw.water_bucket_stages.is_some() {
-            return Ok((PostStudyFormat::Mixed, None));
-        }
-        let legacy_bounds = raw
-            .thermal_bounds
-            .as_deref()
-            .ok_or_else(|| LoadError::parse(path, "missing field `thermal_bounds`"))?;
-        let thermal_stages = convert_stages(legacy_stages, "stages", path)?;
-        let thermal_bounds = convert_thermal_bounds(legacy_bounds, thermal_stages.len(), path)?;
-        return Ok((
-            PostStudyFormat::Legacy,
-            Some(PostStudyStages {
-                thermal_stages,
-                thermal_bounds,
-                water_bucket_stages: WaterBucketStages::FromThermalStages,
-            }),
-        ));
-    }
-
-    let format = PostStudyFormat::Current {
+    let format = PostStudyFormat::Present {
         thermal_stages: raw.thermal_stages.is_some(),
         thermal_bounds: raw.thermal_bounds.is_some(),
         water_bucket_stages: raw.water_bucket_stages.is_some(),
@@ -365,7 +312,7 @@ mod tests {
 
     const VALID_JSON: &str = r#"{
       "$schema": "https://raw.githubusercontent.com/ons-ccee-epe/novomodelo/refs/heads/main/schemas/post_study_stages.schema.json",
-      "stages": [
+      "thermal_stages": [
         { "start_date": "2026-11-01", "duration_hours": 720.0 },
         { "start_date": "2026-12-01", "duration_hours": 744.0 }
       ],
@@ -387,7 +334,14 @@ mod tests {
     fn test_parse_valid_sorts_both_collections() {
         let (format, ps) = parse(VALID_JSON);
         let ps = ps.unwrap();
-        assert_eq!(format, PostStudyFormat::Legacy);
+        assert_eq!(
+            format,
+            PostStudyFormat::Present {
+                thermal_stages: true,
+                thermal_bounds: true,
+                water_bucket_stages: false,
+            }
+        );
         assert_eq!(ps.thermal_stages.len(), 2);
         assert_eq!(
             ps.thermal_stages[0].start_date,
@@ -396,13 +350,13 @@ mod tests {
         // thermal_bounds sorted by (thermal_id, post_study_stage_index).
         assert_eq!(ps.thermal_bounds[0].post_study_stage_index, 0);
         assert_eq!(ps.thermal_bounds[1].post_study_stage_index, 1);
-        assert_eq!(ps.water_bucket_stages, WaterBucketStages::FromThermalStages);
+        assert_eq!(ps.water_bucket_stages, WaterBucketStages::Declared(vec![]));
     }
 
     #[test]
     fn test_declaration_order_invariance() {
         let reversed = r#"{
-          "stages": [
+          "thermal_stages": [
             { "start_date": "2026-12-01", "duration_hours": 744.0 },
             { "start_date": "2026-11-01", "duration_hours": 720.0 }
           ],
@@ -416,7 +370,7 @@ mod tests {
 
     #[test]
     fn test_non_positive_duration_rejected() {
-        let json = r#"{ "stages": [{ "start_date": "2026-11-01", "duration_hours": 0.0 }], "thermal_bounds": [] }"#;
+        let json = r#"{ "thermal_stages": [{ "start_date": "2026-11-01", "duration_hours": 0.0 }], "thermal_bounds": [] }"#;
         match parse_err(json) {
             LoadError::SchemaError { field, .. } => assert!(field.contains("duration_hours")),
             other => panic!("expected SchemaError, got {other:?}"),
@@ -426,7 +380,7 @@ mod tests {
     #[test]
     fn test_inverted_bounds_rejected() {
         let json = r#"{
-          "stages": [{ "start_date": "2026-11-01", "duration_hours": 720.0 }],
+          "thermal_stages": [{ "start_date": "2026-11-01", "duration_hours": 720.0 }],
           "thermal_bounds": [{ "thermal_id": 1, "post_study_stage_index": 0, "cost_per_mwh": 1.0, "min_mw": 10.0, "max_mw": 5.0 }]
         }"#;
         match parse_err(json) {
@@ -438,7 +392,7 @@ mod tests {
     #[test]
     fn test_stage_index_out_of_range_rejected() {
         let json = r#"{
-          "stages": [{ "start_date": "2026-11-01", "duration_hours": 720.0 }],
+          "thermal_stages": [{ "start_date": "2026-11-01", "duration_hours": 720.0 }],
           "thermal_bounds": [{ "thermal_id": 1, "post_study_stage_index": 3, "cost_per_mwh": 1.0, "min_mw": 0.0, "max_mw": 5.0 }]
         }"#;
         match parse_err(json) {
@@ -452,7 +406,7 @@ mod tests {
     #[test]
     fn test_duplicate_cell_rejected() {
         let json = r#"{
-          "stages": [{ "start_date": "2026-11-01", "duration_hours": 720.0 }],
+          "thermal_stages": [{ "start_date": "2026-11-01", "duration_hours": 720.0 }],
           "thermal_bounds": [
             { "thermal_id": 1, "post_study_stage_index": 0, "cost_per_mwh": 1.0, "min_mw": 0.0, "max_mw": 5.0 },
             { "thermal_id": 1, "post_study_stage_index": 0, "cost_per_mwh": 2.0, "min_mw": 0.0, "max_mw": 6.0 }
@@ -466,22 +420,22 @@ mod tests {
 
     #[test]
     fn test_unknown_field_rejected() {
-        let json = r#"{ "stages": [], "thermal_bounds": [], "extra": 1 }"#;
+        let json = r#"{ "thermal_stages": [], "thermal_bounds": [], "extra": 1 }"#;
         assert!(matches!(parse_err(json), LoadError::ParseError { .. }));
     }
 
     #[test]
-    fn test_legacy_without_thermal_bounds_rejected() {
-        match parse_err(r#"{ "stages": [] }"#) {
+    fn test_stages_key_rejected() {
+        match parse_err(r#"{ "stages": [], "thermal_bounds": [] }"#) {
             LoadError::ParseError { message, .. } => {
-                assert!(message.contains("missing field `thermal_bounds`"));
+                assert!(message.contains("unknown field `stages`"), "{message}");
             }
             other => panic!("expected ParseError, got {other:?}"),
         }
     }
 
     #[test]
-    fn test_current_full_declares_water_bucket_stages() {
+    fn test_full_declares_water_bucket_stages() {
         let json = r#"{
           "thermal_stages": [{ "start_date": "2026-11-01", "duration_hours": 720.0 }],
           "thermal_bounds": [{ "thermal_id": 1, "post_study_stage_index": 0, "cost_per_mwh": 1.0, "min_mw": 0.0, "max_mw": 5.0 }],
@@ -494,7 +448,7 @@ mod tests {
         let ps = ps.unwrap();
         assert_eq!(
             format,
-            PostStudyFormat::Current {
+            PostStudyFormat::Present {
                 thermal_stages: true,
                 thermal_bounds: true,
                 water_bucket_stages: true,
@@ -512,13 +466,13 @@ mod tests {
     }
 
     #[test]
-    fn test_current_water_only_leaves_thermal_side_empty() {
+    fn test_water_only_leaves_thermal_side_empty() {
         let json = r#"{ "water_bucket_stages": [{ "start_date": "2026-11-01", "duration_hours": 720.0 }] }"#;
         let (format, ps) = parse(json);
         let ps = ps.unwrap();
         assert_eq!(
             format,
-            PostStudyFormat::Current {
+            PostStudyFormat::Present {
                 thermal_stages: false,
                 thermal_bounds: false,
                 water_bucket_stages: true,
@@ -533,11 +487,11 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_object_is_current_with_everything_absent() {
+    fn test_empty_object_is_present_with_everything_absent() {
         let (format, ps) = parse("{}");
         assert_eq!(
             format,
-            PostStudyFormat::Current {
+            PostStudyFormat::Present {
                 thermal_stages: false,
                 thermal_bounds: false,
                 water_bucket_stages: false,
@@ -559,7 +513,7 @@ mod tests {
         let (format, ps) = parse(json);
         assert_eq!(
             format,
-            PostStudyFormat::Current {
+            PostStudyFormat::Present {
                 thermal_stages: true,
                 thermal_bounds: true,
                 water_bucket_stages: true,
@@ -569,18 +523,7 @@ mod tests {
     }
 
     #[test]
-    fn test_stages_with_a_current_format_key_is_mixed_without_carrier() {
-        for json in [
-            r#"{ "stages": [], "thermal_bounds": [], "thermal_stages": [] }"#,
-            r#"{ "stages": [], "thermal_bounds": [], "water_bucket_stages": [] }"#,
-            r#"{ "stages": [], "thermal_stages": [], "water_bucket_stages": [] }"#,
-        ] {
-            assert_eq!(parse(json), (PostStudyFormat::Mixed, None), "{json}");
-        }
-    }
-
-    #[test]
-    fn test_incomplete_thermal_pair_is_current_without_carrier() {
+    fn test_incomplete_thermal_pair_is_present_without_carrier() {
         for (json, thermal_stages, thermal_bounds) in [
             (
                 r#"{ "thermal_stages": [{ "start_date": "2026-11-01", "duration_hours": -1.0 }] }"#,
@@ -596,7 +539,7 @@ mod tests {
             assert_eq!(
                 parse(json),
                 (
-                    PostStudyFormat::Current {
+                    PostStudyFormat::Present {
                         thermal_stages,
                         thermal_bounds,
                         water_bucket_stages: false,
@@ -642,35 +585,20 @@ mod schema_tests {
     use super::RawPostStudyStagesFile;
 
     #[test]
-    fn post_study_schema_encodes_both_formats() {
+    fn post_study_schema_requires_the_thermal_pair_together() {
         let schema = schema_for!(RawPostStudyStagesFile).to_value();
 
-        let branches = &schema["oneOf"];
-        assert_eq!(branches.as_array().map(Vec::len), Some(2));
-        assert_eq!(branches[0]["required"], json!(["stages", "thermal_bounds"]));
         assert_eq!(
-            branches[0]["not"],
-            json!({ "anyOf": [
-                { "required": ["thermal_stages"] },
-                { "required": ["water_bucket_stages"] },
-            ] })
-        );
-        assert_eq!(
-            branches[1]["not"],
-            json!({ "anyOf": [{ "required": ["stages"] }] })
-        );
-        assert_eq!(
-            branches[1]["dependentRequired"],
+            schema["dependentRequired"],
             json!({
                 "thermal_stages": ["thermal_bounds"],
                 "thermal_bounds": ["thermal_stages"],
             })
         );
-
-        assert_eq!(schema["properties"]["stages"]["deprecated"], json!(true));
+        assert!(schema["properties"]["stages"].is_null());
 
         let stage_item = json!({ "$ref": "#/$defs/RawPostStudyStage" });
-        for key in ["stages", "thermal_stages", "water_bucket_stages"] {
+        for key in ["thermal_stages", "water_bucket_stages"] {
             assert_eq!(schema["properties"][key]["items"], stage_item, "{key}");
         }
         assert!(schema["$defs"]["RawPostStudyStage"].is_object());

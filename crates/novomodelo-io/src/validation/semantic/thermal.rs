@@ -18,7 +18,6 @@ use super::envelope_tolerance;
 use super::post_study_calendar::build_post_study_calendar;
 use super::travel_time::study_stage_durations;
 use crate::StageIdResolver;
-use crate::post_study_stages::PostStudyFormat;
 use crate::resolution::{BoundsEntitySlices, BoundsOverrides, resolve_bounds};
 
 /// Rule 13: `min_generation_mw <= max_generation_mw` for a thermal.
@@ -1144,12 +1143,8 @@ pub(super) fn check_post_study_stages(data: &ParsedData, ctx: &mut ValidationCon
         .rfind(|s| s.id >= 0)
         .map(|s| s.end_date);
 
-    let calendar_key = match data.post_study_format {
-        Some(PostStudyFormat::Current { .. }) => "thermal_stages",
-        _ => "stages",
-    };
     let (calendar_stages, well_formed) =
-        build_post_study_calendar(&post_study.thermal_stages, calendar_key, study_end, ctx);
+        build_post_study_calendar(&post_study.thermal_stages, "thermal_stages", study_end, ctx);
     if !well_formed || calendar_stages.is_empty() {
         return;
     }

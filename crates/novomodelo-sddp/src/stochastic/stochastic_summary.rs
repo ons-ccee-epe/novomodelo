@@ -9,7 +9,6 @@
 use novomodelo_core::EntityId;
 use novomodelo_core::InflowModel;
 use novomodelo_core::{System, scenario::SamplingScheme};
-use novomodelo_io::config::{CorrelationTarget, MomentMatching};
 use novomodelo_io::output::{FittingReductionEntry, FittingReport, HydroFittingEntry};
 use novomodelo_io::scenarios::{
     InflowAnnualComponentRow, InflowArCoefficientRow, InflowSeasonalStatsRow,
@@ -114,14 +113,10 @@ pub struct StochasticSummary {
     pub ar_summary: Option<ArOrderSummary>,
     /// Source of correlation data.
     pub correlation_source: StochasticSource,
-    /// Series the correlation was estimated from; `None` unless it was estimated.
-    pub correlation_target: Option<CorrelationTarget>,
     /// Dimension of the correlation matrix (e.g., `"5x5"`).
     pub correlation_dim: Option<String>,
     /// Source of the opening tree.
     pub opening_tree_source: StochasticSource,
-    /// Moment matching applied to a generated opening tree; `None` when the tree was not generated.
-    pub opening_tree_moment_matching: Option<MomentMatching>,
     /// Number of openings at each stage.
     pub openings_per_stage: Vec<usize>,
     /// Number of stages in the stochastic context.
@@ -197,13 +192,11 @@ fn build_ar_order_summary(
     })
 }
 
-fn correlation_source_and_target(
-    origin: CorrelationOrigin,
-) -> (StochasticSource, Option<CorrelationTarget>) {
+fn correlation_source(origin: CorrelationOrigin) -> StochasticSource {
     match origin {
-        CorrelationOrigin::UserFile => (StochasticSource::Loaded, None),
-        CorrelationOrigin::Estimated { target } => (StochasticSource::Estimated, Some(target)),
-        CorrelationOrigin::NotApplicable => (StochasticSource::None, None),
+        CorrelationOrigin::UserFile => StochasticSource::Loaded,
+        CorrelationOrigin::Estimated => StochasticSource::Estimated,
+        CorrelationOrigin::NotApplicable => StochasticSource::None,
     }
 }
 
@@ -213,7 +206,7 @@ fn correlation_source_and_target(
 /// estimation report, and correlation origin. All fields derive from
 /// already-validated inputs; construction is infallible.
 ///
-/// The correlation source and target follow `correlation_origin`, the opening-tree
+/// The correlation source follows `correlation_origin`, the opening-tree
 /// source follows component provenance, and the inflow source follows
 /// `estimation_report`.
 #[must_use]
@@ -245,8 +238,7 @@ pub fn build_stochastic_summary(
 
     let ar_summary = build_ar_order_summary(system, estimation_report, n_hydros);
 
-    let (correlation_source, correlation_target) =
-        correlation_source_and_target(correlation_origin);
+    let correlation_source = correlation_source(correlation_origin);
 
     // Full noise dimension (hydros + load buses + NCS), not just n_hydros.
     let n_correlated = stochastic.dim();
@@ -277,10 +269,8 @@ pub fn build_stochastic_summary(
         n_seasons,
         ar_summary,
         correlation_source,
-        correlation_target,
         correlation_dim,
         opening_tree_source,
-        opening_tree_moment_matching: provenance.opening_tree_moment_matching.map(Into::into),
         openings_per_stage,
         n_stages,
         n_load_buses,
@@ -408,10 +398,7 @@ mod tests {
     };
     use novomodelo_stochastic::{
         ArCoefficientEstimate, ClassSchemes, OpeningTreeInputs, build_stochastic_context,
-        tree::MomentMatching,
     };
-
-    use novomodelo_io::config::CorrelationTarget;
 
     use super::{
         StochasticSource, build_stochastic_summary, estimation_report_to_fitting_report,
@@ -883,7 +870,6 @@ mod tests {
                 historical_library: None,
                 external_scenario_counts: None,
                 noise_group_ids: None,
-                moment_matching: MomentMatching::None,
             },
             ClassSchemes {
                 inflow: Some(SamplingScheme::InSample),
@@ -940,45 +926,6 @@ mod tests {
     }
 
     #[test]
-    fn summary_records_the_moment_matching_of_a_generated_tree() {
-        use novomodelo_stochastic::context::OpeningTree;
-
-        let system = make_system_with_hydro();
-        let schemes = || ClassSchemes {
-            inflow: Some(SamplingScheme::InSample),
-            load: Some(SamplingScheme::InSample),
-            ncs: Some(SamplingScheme::InSample),
-        };
-        let summary_of = |inputs: OpeningTreeInputs<'_>| {
-            let stochastic =
-                build_stochastic_context(&system, 42, None, &[], &[], inputs, schemes()).unwrap();
-            build_stochastic_summary(
-                &system,
-                &stochastic,
-                None,
-                CorrelationOrigin::NotApplicable,
-                42,
-            )
-        };
-
-        let generated = summary_of(OpeningTreeInputs {
-            moment_matching: MomentMatching::PerCoordinate,
-            ..Default::default()
-        });
-        let supplied = summary_of(OpeningTreeInputs {
-            user_tree: Some(OpeningTree::from_parts(vec![1.0_f64; 2 * 2], vec![2, 2], 1)),
-            moment_matching: MomentMatching::PerCoordinate,
-            ..Default::default()
-        });
-
-        assert_eq!(
-            generated.opening_tree_moment_matching,
-            Some(novomodelo_io::config::MomentMatching::PerCoordinate)
-        );
-        assert_eq!(supplied.opening_tree_moment_matching, None);
-    }
-
-    #[test]
     fn summary_correlation_source_follows_the_correlation_origin() {
         let stages = vec![make_stage(0, 0), make_stage(1, 1)];
         let inflow_models = vec![make_inflow_model(10, 0), make_inflow_model(10, 1)];
@@ -1023,31 +970,17 @@ mod tests {
         };
 
         let cases = [
-            (CorrelationOrigin::UserFile, ("Loaded", None)),
-            (
-                CorrelationOrigin::Estimated {
-                    target: CorrelationTarget::Residuals,
-                },
-                ("Estimated", Some(CorrelationTarget::Residuals)),
-            ),
-            (
-                CorrelationOrigin::Estimated {
-                    target: CorrelationTarget::Inflows,
-                },
-                ("Estimated", Some(CorrelationTarget::Inflows)),
-            ),
-            (CorrelationOrigin::NotApplicable, ("None", None)),
+            (CorrelationOrigin::UserFile, "Loaded"),
+            (CorrelationOrigin::Estimated, "Estimated"),
+            (CorrelationOrigin::NotApplicable, "None"),
         ];
-        for (origin, (source, target)) in cases {
+        for (origin, source) in cases {
             for estimation_report in [Some(&report), None] {
                 let summary =
                     build_stochastic_summary(&system, &stochastic, estimation_report, origin, 1);
                 assert_eq!(
-                    (
-                        format!("{:?}", summary.correlation_source),
-                        summary.correlation_target
-                    ),
-                    (source.to_string(), target),
+                    format!("{:?}", summary.correlation_source),
+                    source,
                     "origin {origin:?} with estimation report present: {}",
                     estimation_report.is_some()
                 );

@@ -27,9 +27,10 @@ use novomodelo_io::{
 };
 use novomodelo_sddp::setup::{NodeGraph, NodePos};
 use novomodelo_sddp::test_support::k_fan_setup;
-use novomodelo_sddp::{
-    BoundaryLoadRequest, LEGACY_COST_SCALE_FACTOR, inject_boundary_cuts, load_boundary_cuts,
-};
+use novomodelo_sddp::{BoundaryLoadRequest, inject_boundary_cuts, load_boundary_cuts};
+
+/// The cost scale the fixture checkpoints are written at and loaded at.
+const COST_SCALE_FACTOR: f64 = 1_000_000.0;
 
 /// Pool `pool`'s fixture `priced_state_date`: `2030-01-01` plus `pool`
 /// months.
@@ -97,7 +98,7 @@ fn write_synthetic_checkpoint(
         cuts: &cuts,
         populated_count: intercepts.len() as u32,
         entity_manifest: &[],
-        cost_scale_factor: 1_000_000.0,
+        cost_scale_factor: COST_SCALE_FACTOR,
         node_id,
         graph_stage_id,
         priced_state_date: encode_slot_date(fixture_priced_date(pool_id)),
@@ -171,7 +172,7 @@ fn single_node_source_injects_into_the_one_pool_every_terminal_fan_leaf_shares()
         fixture_priced_date(0),
         state_dimension,
         &[],
-        LEGACY_COST_SCALE_FACTOR,
+        COST_SCALE_FACTOR,
     ))
     .expect(
         "a single-node source boundary must load into a fanned terminal target, not reject on \
@@ -227,7 +228,7 @@ fn multi_node_shared_pool_is_rejected() {
         fixture_priced_date(0),
         2,
         &[],
-        LEGACY_COST_SCALE_FACTOR,
+        COST_SCALE_FACTOR,
     ));
 
     let err = result.expect_err(

@@ -545,8 +545,7 @@ fn test_partial_estimation_preserves_user_stats() {
 }
 
 #[test]
-fn correlation_target_reaches_the_estimator() {
-    use crate::config::CorrelationTarget;
+fn estimated_correlation_keeps_every_history_record() {
     use tempfile::TempDir;
 
     const N_YEARS: usize = 30;
@@ -554,30 +553,21 @@ fn correlation_target_reaches_the_estimator() {
     let case_dir = dir.path();
     setup_partial_estimation_case(case_dir, N_YEARS);
 
-    let correlation_under = |target: CorrelationTarget| {
-        let mut config = default_config();
-        config.estimation.correlation_target = target;
-        let HistoryEstimate {
-            system: updated,
-            path,
-            ..
-        } = estimate_from_history(build_system_with_user_stats(N_YEARS), case_dir, &config)
-            .expect("partial estimation must succeed");
-        assert_eq!(path, EstimationPath::PartialEstimation);
-        updated.correlation().clone()
-    };
+    let HistoryEstimate {
+        system: updated,
+        path,
+        ..
+    } = estimate_from_history(
+        build_system_with_user_stats(N_YEARS),
+        case_dir,
+        &default_config(),
+    )
+    .expect("partial estimation must succeed");
 
+    assert_eq!(path, EstimationPath::PartialEstimation);
     assert!(
-        !correlation_under(CorrelationTarget::Residuals)
-            .profiles
-            .contains_key("season_0"),
-        "season 0 loses its first record to the lag, leaving 29 pairs"
-    );
-    assert!(
-        correlation_under(CorrelationTarget::Inflows)
-            .profiles
-            .contains_key("season_0"),
-        "inflows keep every record, 30 pairs"
+        updated.correlation().profiles.contains_key("season_0"),
+        "season 0 keeps its first record, 30 pairs"
     );
 }
 
@@ -603,8 +593,7 @@ const CORRELATION_JSON: &str = r#"{
 }"#;
 
 #[test]
-fn correlation_target_has_no_effect_when_correlation_json_is_present() {
-    use crate::config::CorrelationTarget;
+fn estimation_keeps_the_correlation_when_correlation_json_is_present() {
     use tempfile::TempDir;
 
     const N_YEARS: usize = 30;
@@ -617,27 +606,22 @@ fn correlation_target_has_no_effect_when_correlation_json_is_present() {
     )
     .unwrap();
 
-    for target in [CorrelationTarget::Residuals, CorrelationTarget::Inflows] {
-        let system = build_system_with_user_stats(N_YEARS);
-        let input_correlation = system.correlation().clone();
-        let mut config = default_config();
-        config.estimation.correlation_target = target;
+    let system = build_system_with_user_stats(N_YEARS);
+    let input_correlation = system.correlation().clone();
 
-        let HistoryEstimate {
-            system: updated,
-            path,
-            ..
-        } = estimate_from_history(system, case_dir, &config)
-            .expect("partial estimation must succeed");
+    let HistoryEstimate {
+        system: updated,
+        path,
+        ..
+    } = estimate_from_history(system, case_dir, &default_config())
+        .expect("partial estimation must succeed");
 
-        assert_eq!(path, EstimationPath::PartialEstimation);
-        assert_eq!(updated.correlation(), &input_correlation, "{target:?}");
-    }
+    assert_eq!(path, EstimationPath::PartialEstimation);
+    assert_eq!(updated.correlation(), &input_correlation);
 }
 
 #[test]
 fn correlation_origin_follows_the_manifest_the_path_and_the_hydros() {
-    use crate::config::CorrelationTarget;
     use crate::{FileManifest, InputFile};
     use CorrelationOrigin::{Estimated, NotApplicable, UserFile};
 
@@ -672,15 +656,9 @@ fn correlation_origin_follows_the_manifest_the_path_and_the_hydros() {
                 NotApplicable,
                 NotApplicable,
                 NotApplicable,
-                Estimated {
-                    target: CorrelationTarget::Inflows,
-                },
-                Estimated {
-                    target: CorrelationTarget::Inflows,
-                },
-                Estimated {
-                    target: CorrelationTarget::Inflows,
-                },
+                Estimated,
+                Estimated,
+                Estimated,
                 NotApplicable,
             ],
         ),
@@ -695,7 +673,7 @@ fn correlation_origin_follows_the_manifest_the_path_and_the_hydros() {
     for (label, manifest, system, expected) in cases {
         for (path, expected) in paths.into_iter().zip(expected) {
             assert_eq!(
-                resolve_correlation_origin(manifest, path, system, CorrelationTarget::Inflows),
+                resolve_correlation_origin(manifest, path, system),
                 expected,
                 "{label}, {path:?}"
             );
@@ -757,8 +735,7 @@ fn correlation_origin_is_user_file_when_correlation_json_is_present_on_the_deter
 }
 
 #[test]
-fn correlation_origin_is_estimated_with_the_configured_target() {
-    use crate::config::CorrelationTarget;
+fn correlation_origin_is_estimated_without_correlation_json_on_an_estimating_path() {
     use tempfile::TempDir;
 
     const N_YEARS: usize = 30;
@@ -766,20 +743,19 @@ fn correlation_origin_is_estimated_with_the_configured_target() {
     let case_dir = dir.path();
     setup_partial_estimation_case(case_dir, N_YEARS);
 
-    for target in [CorrelationTarget::Residuals, CorrelationTarget::Inflows] {
-        let mut config = default_config();
-        config.estimation.correlation_target = target;
+    let HistoryEstimate {
+        path,
+        correlation_origin,
+        ..
+    } = estimate_from_history(
+        build_system_with_user_stats(N_YEARS),
+        case_dir,
+        &default_config(),
+    )
+    .expect("partial estimation must succeed");
 
-        let HistoryEstimate {
-            path,
-            correlation_origin,
-            ..
-        } = estimate_from_history(build_system_with_user_stats(N_YEARS), case_dir, &config)
-            .expect("partial estimation must succeed");
-
-        assert_eq!(path, EstimationPath::PartialEstimation);
-        assert_eq!(correlation_origin, CorrelationOrigin::Estimated { target });
-    }
+    assert_eq!(path, EstimationPath::PartialEstimation);
+    assert_eq!(correlation_origin, CorrelationOrigin::Estimated);
 }
 
 #[test]
@@ -1057,14 +1033,13 @@ fn test_partial_estimation_partial_year_study_orders_canonically() {
 }
 
 fn default_config() -> Config {
-    use crate::config::{CorrelationTarget, EstimationConfig, OrderSelectionMethod};
+    use crate::config::{EstimationConfig, OrderSelectionMethod};
     let mut cfg: Config = serde_json::from_str(MINIMAL_CONFIG_JSON).unwrap();
     cfg.estimation = EstimationConfig {
         max_order: 2,
         order_selection: OrderSelectionMethod::Pacf,
         min_observations_per_season: 2,
         max_coefficient_magnitude: None,
-        correlation_target: CorrelationTarget::Residuals,
         history_years: None,
     };
     cfg
@@ -1463,120 +1438,6 @@ fn make_two_season_stage(
             noise_method: NoiseMethod::Saa,
         },
     }
-}
-
-/// Groups AR coefficients by season (2 hydros × 2 seasons = 4 estimates).
-#[test]
-#[allow(clippy::cast_sign_loss)]
-fn test_ar_rows_to_estimates_groups_by_season() {
-    use novomodelo_core::temporal::{
-        Block, BlockMode, NoiseMethod, ScenarioSourceConfig, StageRiskConfig, StageStateConfig,
-    };
-
-    let make_stage = |id: i32, season_id: usize| Stage {
-        index: id as usize,
-        id,
-        start_date: chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap(),
-        end_date: chrono::NaiveDate::from_ymd_opt(1970, 7, 1).unwrap(),
-        season_id: Some(season_id),
-        blocks: vec![Block {
-            index: 0,
-            name: "T".to_string(),
-            duration_hours: 1.0,
-        }],
-        block_mode: BlockMode::Parallel,
-        state_config: StageStateConfig {
-            storage: false,
-            inflow_lags: false,
-        },
-        risk_config: StageRiskConfig::Expectation,
-        scenario_config: ScenarioSourceConfig {
-            branching_factor: 1,
-            noise_method: NoiseMethod::Saa,
-        },
-    };
-
-    let stages = vec![make_stage(0, 0), make_stage(1, 0), make_stage(2, 1)];
-
-    // AR(1) rows, sorted by (hydro_id, stage_id, lag).
-    let rows = vec![
-        InflowArCoefficientRow {
-            hydro_id: EntityId(1),
-            stage_id: 0,
-            lag: 1,
-            coefficient: 0.50,
-        },
-        InflowArCoefficientRow {
-            hydro_id: EntityId(1),
-            stage_id: 1,
-            lag: 1,
-            coefficient: 0.50,
-        },
-        InflowArCoefficientRow {
-            hydro_id: EntityId(1),
-            stage_id: 2,
-            lag: 1,
-            coefficient: 0.60,
-        },
-        InflowArCoefficientRow {
-            hydro_id: EntityId(2),
-            stage_id: 0,
-            lag: 1,
-            coefficient: 0.40,
-        },
-        InflowArCoefficientRow {
-            hydro_id: EntityId(2),
-            stage_id: 1,
-            lag: 1,
-            coefficient: 0.40,
-        },
-        InflowArCoefficientRow {
-            hydro_id: EntityId(2),
-            stage_id: 2,
-            lag: 1,
-            coefficient: 0.35,
-        },
-    ];
-
-    let estimates = ar_rows_to_estimates(&rows, &stages);
-
-    assert_eq!(
-        estimates.len(),
-        4,
-        "expected 4 estimates (2 hydros * 2 seasons), got {}",
-        estimates.len()
-    );
-
-    let e = estimates
-        .iter()
-        .find(|e| e.hydro_id == EntityId(1) && e.season_id == 0)
-        .expect("hydro 1, season 0 estimate must exist");
-    assert_eq!(e.coefficients.len(), 1, "AR(1) must have 1 coefficient");
-    assert!(
-        (e.coefficients[0] - 0.50).abs() < f64::EPSILON,
-        "coeff must be 0.50, got {}",
-        e.coefficients[0]
-    );
-    let e = estimates
-        .iter()
-        .find(|e| e.hydro_id == EntityId(1) && e.season_id == 1)
-        .expect("hydro 1, season 1 estimate must exist");
-    assert_eq!(e.coefficients.len(), 1);
-    assert!((e.coefficients[0] - 0.60).abs() < f64::EPSILON);
-
-    let e = estimates
-        .iter()
-        .find(|e| e.hydro_id == EntityId(2) && e.season_id == 0)
-        .expect("hydro 2, season 0 estimate must exist");
-    assert_eq!(e.coefficients.len(), 1);
-    assert!((e.coefficients[0] - 0.40).abs() < f64::EPSILON);
-
-    let e = estimates
-        .iter()
-        .find(|e| e.hydro_id == EntityId(2) && e.season_id == 1)
-        .expect("hydro 2, season 1 estimate must exist");
-    assert_eq!(e.coefficients.len(), 1);
-    assert!((e.coefficients[0] - 0.35).abs() < f64::EPSILON);
 }
 
 /// Writes one AR(1) lag-1 row per stage.
@@ -2506,7 +2367,7 @@ fn write_monthly_inflow_history_two_hydros(path: &std::path::Path, n_years: usiz
 
 #[test]
 fn estimate_from_history_pacf_annual_populates_annual_field() {
-    use crate::config::{CorrelationTarget, EstimationConfig, OrderSelectionMethod};
+    use crate::config::{EstimationConfig, OrderSelectionMethod};
     use tempfile::TempDir;
 
     const N_YEARS: usize = 5;
@@ -2526,7 +2387,6 @@ fn estimate_from_history_pacf_annual_populates_annual_field() {
         order_selection: OrderSelectionMethod::PacfAnnual,
         min_observations_per_season: 2,
         max_coefficient_magnitude: None,
-        correlation_target: CorrelationTarget::Residuals,
         history_years: None,
     };
 
@@ -2558,7 +2418,7 @@ fn estimate_from_history_pacf_annual_populates_annual_field() {
 
 #[test]
 fn estimate_from_history_pacf_classical_keeps_annual_none() {
-    use crate::config::{CorrelationTarget, EstimationConfig, OrderSelectionMethod};
+    use crate::config::{EstimationConfig, OrderSelectionMethod};
     use tempfile::TempDir;
 
     const N_YEARS: usize = 5;
@@ -2578,7 +2438,6 @@ fn estimate_from_history_pacf_classical_keeps_annual_none() {
         order_selection: OrderSelectionMethod::Pacf,
         min_observations_per_season: 2,
         max_coefficient_magnitude: None,
-        correlation_target: CorrelationTarget::Residuals,
         history_years: None,
     };
 

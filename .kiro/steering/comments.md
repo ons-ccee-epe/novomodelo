@@ -397,8 +397,10 @@ would do.
 - **N4 — No plan/workstream leakage** in shipped code, `README.md`, `CHANGELOG`, or
   inline test/bench comments. Ban `Epic`/`ticket`/`T0NN`/`sprint` and workstream
   forms `F-NNN`, `FN-NNN`, `W-N`. When a banned token is a trailing tag on a
-  contract/rationale line, amputate only the tag, preserve the invariant. Plan refs
-  in **test names** remain allowed.
+  contract/rationale line, amputate only the tag, preserve the invariant. **Test
+  names** state the property the test pins, never a plan, ticket or
+  acceptance-criterion id (`t1_`, `ticket_016_`); the gate scans prose, so review
+  checks the names.
 - **N5 — No banners fencing groups inside one long function** — extract a function.
   Decorative dividers between top-level items, in `extern "C"` blocks, and in
   `#[cfg(test)]` modules are fine.

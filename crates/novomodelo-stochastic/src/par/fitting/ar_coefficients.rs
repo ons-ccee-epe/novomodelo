@@ -51,7 +51,6 @@ pub(super) struct SeasonLookups<'a> {
     pub(super) stage_index: Vec<(NaiveDate, NaiveDate, i32, usize)>,
     pub(super) stats_lookup: HashMap<(EntityId, usize), &'a SeasonalStats>,
     pub(super) entity_obs: HashMap<EntityId, Vec<(NaiveDate, f64)>>,
-    pub(super) entity_date_index: HashMap<EntityId, HashMap<NaiveDate, usize>>,
     pub(super) n_seasons: usize,
 }
 
@@ -100,23 +99,10 @@ pub(super) fn build_season_lookups<'a>(
     for obs_vec in entity_obs.values_mut() {
         obs_vec.sort_unstable_by_key(|(d, _)| *d);
     }
-    let entity_date_index: HashMap<EntityId, HashMap<NaiveDate, usize>> = entity_obs
-        .iter()
-        .map(|(&eid, obs_vec)| {
-            let idx_map: HashMap<NaiveDate, usize> = obs_vec
-                .iter()
-                .enumerate()
-                .map(|(i, (d, _))| (*d, i))
-                .collect();
-            (eid, idx_map)
-        })
-        .collect();
-
     SeasonLookups {
         stage_index,
         stats_lookup,
         entity_obs,
-        entity_date_index,
         n_seasons,
     }
 }

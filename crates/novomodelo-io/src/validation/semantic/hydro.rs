@@ -3769,8 +3769,6 @@ mod tests {
                         source: source.into(),
                         volume_discretization_points: None,
                         turbine_discretization_points: None,
-                        spillage_discretization_points: None,
-                        max_planes_per_hydro: None,
                         fitting_window: None,
                         spillage_fit_max_m3s: None,
                         turbined_fit_max_m3s: None,
