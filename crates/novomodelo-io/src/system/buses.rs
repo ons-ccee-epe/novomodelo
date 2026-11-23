@@ -31,6 +31,7 @@
 //!    - all costs must be strictly positive (> 0.0).
 //!    - the last segment must have `depth_mw: null` (unbounded).
 //!    - costs must be monotonically increasing across segments.
+//!    - every segment but the last must have a finite `depth_mw` of 0.0 or more.
 //!
 //! Penalty resolution uses `resolve_bus_deficit_segments` and
 //! `resolve_bus_excess_cost` for the global → entity penalty cascade.
@@ -51,6 +52,7 @@ use std::path::Path;
 
 use super::parse_operational_start_date;
 use crate::LoadError;
+use crate::deficit_curve::check_deficit_curve;
 
 /// Root object of `buses.json`.
 #[derive(Deserialize)]
@@ -112,6 +114,7 @@ pub(crate) struct RawDeficitSegment {
 /// | Deficit segment cost ≤ 0.0                         | [`LoadError::SchemaError`] |
 /// | Last deficit segment has `depth_mw` set (not null) | [`LoadError::SchemaError`] |
 /// | Deficit segment costs not monotonically increasing | [`LoadError::SchemaError`] |
+/// | Non-last segment `depth_mw` null or negative       | [`LoadError::SchemaError`] |
 ///
 /// # Examples
 ///
@@ -163,61 +166,18 @@ fn validate_no_duplicate_bus_ids(buses: &[RawBus], path: &Path) -> Result<(), Lo
     Ok(())
 }
 
-/// Mirrors the global deficit segment validation in `penalties.rs`; the two
-/// must stay consistent.
 fn validate_deficit_segments(
     segments: &[RawDeficitSegment],
     bus_index: usize,
     path: &Path,
 ) -> Result<(), LoadError> {
-    if segments.is_empty() {
-        return Err(LoadError::SchemaError {
+    check_deficit_curve(segments.iter().map(|s| (s.depth_mw, s.cost))).map_err(|defect| {
+        LoadError::SchemaError {
             path: path.to_path_buf(),
-            field: format!("buses[{bus_index}].deficit_segments"),
-            message: "deficit_segments must not be empty".to_string(),
-        });
-    }
-
-    for (j, seg) in segments.iter().enumerate() {
-        if seg.cost <= 0.0 {
-            return Err(LoadError::SchemaError {
-                path: path.to_path_buf(),
-                field: format!("buses[{bus_index}].deficit_segments[{j}].cost"),
-                message: format!("penalty value must be > 0.0, got {}", seg.cost),
-            });
+            field: defect.field_path(&format!("buses[{bus_index}].deficit_segments")),
+            message: defect.message,
         }
-    }
-
-    let last_idx = segments.len() - 1;
-    if segments[last_idx].depth_mw.is_some() {
-        return Err(LoadError::SchemaError {
-            path: path.to_path_buf(),
-            field: format!("buses[{bus_index}].deficit_segments[{last_idx}].depth_mw"),
-            message: "the last deficit segment must have depth_mw: null (uncapped final segment)"
-                .to_string(),
-        });
-    }
-
-    for j in 1..segments.len() {
-        let prev_cost = segments[j - 1].cost;
-        let curr_cost = segments[j].cost;
-        if curr_cost <= prev_cost {
-            return Err(LoadError::SchemaError {
-                path: path.to_path_buf(),
-                field: format!("buses[{bus_index}].deficit_segments[{j}].cost"),
-                message: format!(
-                    "deficit segment costs must be monotonically increasing: \
-                     segment[{}].cost ({}) must be > segment[{}].cost ({})",
-                    j,
-                    curr_cost,
-                    j - 1,
-                    prev_cost,
-                ),
-            });
-        }
-    }
-
-    Ok(())
+    })
 }
 
 fn convert_buses(
@@ -503,6 +463,88 @@ mod tests {
             }
             other => panic!("expected SchemaError, got: {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_entity_deficit_segment_negative_depth_refused() {
+        let json = r#"{
+          "buses": [
+            {
+              "id": 0,
+              "name": "Bad",
+              "operational_start_date": "2024-01-01",
+              "deficit_segments": [
+                { "depth_mw": -5.0, "cost": 500.0 },
+                { "depth_mw": null, "cost": 5000.0 }
+              ]
+            }
+          ]
+        }"#;
+        let f = write_json(json);
+        let global = make_global();
+        let err = parse_buses(f.path(), &global).unwrap_err();
+        match &err {
+            LoadError::SchemaError { field, message, .. } => {
+                assert_eq!(field, "buses[0].deficit_segments[0].depth_mw");
+                assert!(
+                    message.contains(">= 0.0, got -5"),
+                    "message should name the negative depth, got: {message}"
+                );
+            }
+            other => panic!("expected SchemaError, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_entity_deficit_segment_middle_null_depth_refused() {
+        let json = r#"{
+          "buses": [
+            {
+              "id": 0,
+              "name": "Bad",
+              "operational_start_date": "2024-01-01",
+              "deficit_segments": [
+                { "depth_mw": 100.0, "cost": 500.0 },
+                { "depth_mw": null, "cost": 1000.0 },
+                { "depth_mw": null, "cost": 5000.0 }
+              ]
+            }
+          ]
+        }"#;
+        let f = write_json(json);
+        let global = make_global();
+        let err = parse_buses(f.path(), &global).unwrap_err();
+        match &err {
+            LoadError::SchemaError { field, message, .. } => {
+                assert_eq!(field, "buses[0].deficit_segments[1].depth_mw");
+                assert_eq!(
+                    message,
+                    "only the last deficit segment may have depth_mw: null"
+                );
+            }
+            other => panic!("expected SchemaError, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_entity_deficit_segment_zero_depth_accepted() {
+        let json = r#"{
+          "buses": [
+            {
+              "id": 0,
+              "name": "Ok",
+              "operational_start_date": "2024-01-01",
+              "deficit_segments": [
+                { "depth_mw": 0.0, "cost": 500.0 },
+                { "depth_mw": null, "cost": 5000.0 }
+              ]
+            }
+          ]
+        }"#;
+        let f = write_json(json);
+        let global = make_global();
+        let buses = parse_buses(f.path(), &global).unwrap();
+        assert_eq!(buses[0].deficit_segments[0].depth_mw, Some(0.0));
     }
 
     // ── AC: file not found → IoError ─────────────────────────────────────────

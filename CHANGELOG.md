@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING:** `deficit_segments` in `system/buses.json` and
+  `bus.deficit_segments` in `penalties.json` refuse a negative `depth_mw`, and
+  a `null` `depth_mw` on any segment but the last. Give each segment but the
+  last a depth of 0 or more.
+
+### Fixed
+
+- A `bus_deficit` term in `constraints/generic_constraints.json`, on a bus with
+  fewer deficit segments than another bus, could be met at no cost and the bus
+  reported deficit it was never charged for. Results change for such cases.
+
 ## [0.21.0] - 2026-11-16
 
 ### Added

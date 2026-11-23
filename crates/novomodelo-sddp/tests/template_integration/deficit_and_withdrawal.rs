@@ -254,6 +254,58 @@ fn test_multi_segment_deficit_bounds_and_objective() {
 }
 
 #[test]
+fn spare_deficit_slots_are_pinned_to_zero() {
+    let bus_two_segments = make_bus(
+        EntityId(1),
+        BusSpec {
+            name: "Bus1".to_string(),
+            deficit_segments: vec![
+                DeficitSegment {
+                    depth_mw: Some(10.0),
+                    cost_per_mwh: 500.0,
+                },
+                DeficitSegment {
+                    depth_mw: None,
+                    cost_per_mwh: 5000.0,
+                },
+            ],
+            ..Default::default()
+        },
+    );
+    let bus_one_segment = make_bus(
+        EntityId(2),
+        BusSpec {
+            name: "Bus2".to_string(),
+            deficit_segments: vec![DeficitSegment {
+                depth_mw: None,
+                cost_per_mwh: 1000.0,
+            }],
+            ..Default::default()
+        },
+    );
+
+    let block_hours = 730.0_f64;
+    let system = multi_segment_system(vec![bus_two_segments, bus_one_segment], block_hours);
+    let t = &build_templates_for(&system)[0];
+
+    // S=2, K=1, no thermals/lines: col = 1 + b*S*K + seg*K + blk.
+    let (b0_seg0, b0_seg1) = (1_usize, 2_usize);
+    let (b1_seg0, b1_spare) = (3_usize, 4_usize);
+
+    assert_eq!(t.col_lower[b1_spare], 0.0, "spare slot lower bound");
+    assert_eq!(t.col_upper[b1_spare], 0.0, "spare slot upper bound");
+    assert_eq!(t.objective[b1_spare], 0.0, "spare slot objective");
+
+    assert_eq!(t.col_upper[b0_seg0], 10.0);
+    assert!(t.col_upper[b0_seg1].is_infinite() && t.col_upper[b0_seg1] > 0.0);
+    assert!((t.objective[b0_seg0] - 500.0 * block_hours / COST_SCALE_FACTOR).abs() < 1e-12);
+    assert!((t.objective[b0_seg1] - 5000.0 * block_hours / COST_SCALE_FACTOR).abs() < 1e-12);
+
+    assert!(t.col_upper[b1_seg0].is_infinite() && t.col_upper[b1_seg0] > 0.0);
+    assert!((t.objective[b1_seg0] - 1000.0 * block_hours / COST_SCALE_FACTOR).abs() < 1e-12);
+}
+
+#[test]
 fn test_single_segment_backward_compat() {
     let cost = 1000.0_f64;
     let block_hours = 744.0_f64;

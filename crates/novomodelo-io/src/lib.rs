@@ -42,6 +42,7 @@ pub mod schema;
 pub mod broadcast;
 pub mod config;
 pub mod constraints;
+pub(crate) mod deficit_curve;
 pub mod error;
 pub(crate) mod expression;
 pub mod extensions;

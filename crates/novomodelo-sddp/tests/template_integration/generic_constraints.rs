@@ -695,6 +695,88 @@ fn generic_constraint_thermal_ge_row_bounds() {
     );
 }
 
+#[test]
+fn bus_deficit_generic_row_spans_a_pinned_spare_slot() {
+    use novomodelo_core::ResolvedGenericConstraintBounds;
+    use novomodelo_core::{ConstraintExpression, GenericConstraint, LinearTerm, VariableRef};
+    use std::collections::HashMap;
+
+    let bus_two_segments = make_bus(
+        EntityId(1),
+        BusSpec {
+            name: "Bus1".to_string(),
+            deficit_segments: vec![
+                DeficitSegment {
+                    depth_mw: Some(10.0),
+                    cost_per_mwh: 500.0,
+                },
+                DeficitSegment {
+                    depth_mw: None,
+                    cost_per_mwh: 5000.0,
+                },
+            ],
+            ..Default::default()
+        },
+    );
+    let bus_one_segment = make_bus(
+        EntityId(2),
+        BusSpec {
+            name: "Bus2".to_string(),
+            deficit_segments: vec![DeficitSegment {
+                depth_mw: None,
+                cost_per_mwh: 1000.0,
+            }],
+            ..Default::default()
+        },
+    );
+
+    let constraint = GenericConstraint {
+        id: EntityId(10),
+        name: "gc_bus_deficit_ge".to_string(),
+        description: None,
+        expression: ConstraintExpression {
+            terms: vec![LinearTerm::literal(
+                1.0,
+                VariableRef::BusDeficit {
+                    bus_id: EntityId(2),
+                    block_id: None,
+                },
+            )],
+        },
+        slack: None,
+        bound_lower: None,
+        bound_upper: None,
+    };
+    let id_map: HashMap<i32, usize> = [(10_i32, 0)].into_iter().collect();
+    let rows = vec![(10_i32, 0_i32, None::<i32>, Some(5.0_f64), None)];
+    let generic_bounds = ResolvedGenericConstraintBounds::new(&id_map, rows.into_iter());
+
+    let system = multi_segment_system_with_generic(
+        vec![bus_two_segments, bus_one_segment],
+        730.0,
+        vec![constraint],
+        generic_bounds,
+    );
+    let t = &build_templates_for(&system)[0];
+
+    // S=2, K=1, no thermals/lines: bus 2 (position 1) owns columns 3 (its
+    // segment) and 4 (the spare slot). The generic row follows the two
+    // load-balance rows.
+    let (own_segment, spare_slot) = (3_usize, 4_usize);
+    let generic_row = t.num_rows - 1;
+
+    for col in [own_segment, spare_slot] {
+        let total: f64 = csc_entries_at(t, col, generic_row).iter().sum();
+        assert!(
+            (total - 1.0).abs() < f64::EPSILON,
+            "bus_deficit term must carry +1.0 at column {col}, got {total}"
+        );
+    }
+    assert_eq!(t.col_lower[spare_slot], 0.0);
+    assert_eq!(t.col_upper[spare_slot], 0.0);
+    assert_eq!(t.objective[spare_slot], 0.0);
+}
+
 /// A lower-only row (`bound_lower` present, `bound_upper` absent) on a
 /// slack-enabled constraint allocates exactly ONE slack column with `+1.0` at
 /// the generic row — the mirror image of the upper-only `-1.0` case above.

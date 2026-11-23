@@ -1820,8 +1820,23 @@ fn evap_hydro_system_with_violation_cost(
 // ─── Multi-segment deficit tests ──────────────────────────────────────────
 
 /// No-hydro, no-thermal, no-line system over the given buses, 1 stage / 1 block.
-#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
 fn multi_segment_system(buses: Vec<Bus>, block_hours: f64) -> novomodelo_core::System {
+    multi_segment_system_with_generic(
+        buses,
+        block_hours,
+        vec![],
+        novomodelo_core::ResolvedGenericConstraintBounds::empty(),
+    )
+}
+
+/// [`multi_segment_system`] carrying the given generic constraints and bounds.
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+fn multi_segment_system_with_generic(
+    buses: Vec<Bus>,
+    block_hours: f64,
+    generic_constraints: Vec<novomodelo_core::GenericConstraint>,
+    generic_bounds: novomodelo_core::ResolvedGenericConstraintBounds,
+) -> novomodelo_core::System {
     use chrono::NaiveDate;
     use novomodelo_core::scenario::LoadModel;
     use novomodelo_core::temporal::{
@@ -1921,6 +1936,8 @@ fn multi_segment_system(buses: Vec<Bus>, block_hours: f64) -> novomodelo_core::S
         .load_models(load_models)
         .bounds(bounds)
         .penalties(penalties)
+        .generic_constraints(generic_constraints)
+        .resolved_generic_bounds(generic_bounds)
         .build()
         .expect("multi_segment_system: valid")
 }

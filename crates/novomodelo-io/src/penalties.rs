@@ -18,6 +18,7 @@ use serde::Deserialize;
 use std::path::Path;
 
 use crate::LoadError;
+use crate::deficit_curve::check_deficit_curve;
 
 /// Root object of `penalties.json`.
 #[derive(Deserialize)]
@@ -137,6 +138,7 @@ pub(crate) struct RawNcsPenalties {
 /// | Penalty value ≤ 0.0                            | [`LoadError::SchemaError`] |
 /// | Last deficit segment has `depth_mw` set        | [`LoadError::SchemaError`] |
 /// | Deficit costs are not monotonically increasing | [`LoadError::SchemaError`] |
+/// | Non-last deficit `depth_mw` null or negative   | [`LoadError::SchemaError`] |
 ///
 /// # Examples
 ///
@@ -179,55 +181,13 @@ fn validate_bus(raw: &RawPenalties, path: &Path) -> Result<(), LoadError> {
         });
     }
 
-    if bus.deficit_segments.is_empty() {
-        return Err(LoadError::SchemaError {
+    check_deficit_curve(bus.deficit_segments.iter().map(|s| (s.depth_mw, s.cost))).map_err(
+        |defect| LoadError::SchemaError {
             path: path.to_path_buf(),
-            field: "bus.deficit_segments".to_string(),
-            message: "deficit_segments must not be empty".to_string(),
-        });
-    }
-
-    for (i, seg) in bus.deficit_segments.iter().enumerate() {
-        if seg.cost <= 0.0 {
-            return Err(LoadError::SchemaError {
-                path: path.to_path_buf(),
-                field: format!("bus.deficit_segments[{i}].cost"),
-                message: format!("penalty value must be > 0.0, got {}", seg.cost),
-            });
-        }
-    }
-
-    let last_idx = bus.deficit_segments.len() - 1;
-    let last = &bus.deficit_segments[last_idx];
-    if last.depth_mw.is_some() {
-        return Err(LoadError::SchemaError {
-            path: path.to_path_buf(),
-            field: format!("bus.deficit_segments[{last_idx}].depth_mw"),
-            message: "the last deficit segment must have depth_mw: null (uncapped final segment)"
-                .to_string(),
-        });
-    }
-
-    for i in 1..bus.deficit_segments.len() {
-        let prev_cost = bus.deficit_segments[i - 1].cost;
-        let curr_cost = bus.deficit_segments[i].cost;
-        if curr_cost <= prev_cost {
-            return Err(LoadError::SchemaError {
-                path: path.to_path_buf(),
-                field: format!("bus.deficit_segments[{i}].cost"),
-                message: format!(
-                    "deficit segment costs must be monotonically increasing: \
-                     segment[{}].cost ({}) must be > segment[{}].cost ({})",
-                    i,
-                    curr_cost,
-                    i - 1,
-                    prev_cost,
-                ),
-            });
-        }
-    }
-
-    Ok(())
+            field: defect.field_path("bus.deficit_segments"),
+            message: defect.message,
+        },
+    )
 }
 
 fn validate_line(raw: &RawPenalties, path: &Path) -> Result<(), LoadError> {
@@ -1016,5 +976,117 @@ mod tests {
         assert_eq!(defaults.bus_deficit_segments[0].depth_mw, Some(500.0));
         assert_eq!(defaults.bus_deficit_segments[1].depth_mw, Some(1000.0));
         assert!(defaults.bus_deficit_segments[2].depth_mw.is_none());
+    }
+
+    #[test]
+    fn test_parse_penalties_negative_deficit_depth_refused() {
+        let json = r#"{
+          "bus": {
+            "deficit_segments": [
+              { "depth_mw": -1.0, "cost": 500.0 },
+              { "depth_mw": null, "cost": 5000.0 }
+            ],
+            "excess_cost": 100.0
+          },
+          "line": { "exchange_cost": 2.0 },
+          "hydro": {
+            "spillage_cost": 0.01, "turbined_cost": 0.05,
+            "diversion_cost": 0.1, "storage_violation_below_cost": 10000.0,
+            "filling_target_violation_cost": 50000.0,
+            "turbined_violation_below_cost": 500.0,
+            "outflow_violation_below_cost": 500.0,
+            "outflow_violation_above_cost": 500.0,
+            "generation_violation_below_cost": 1000.0,
+            "fpha_violation_cost": 60000.0,
+            "evaporation_violation_cost": 5000.0,
+            "water_withdrawal_violation_cost": 1000.0
+          },
+          "non_controllable_source": { "curtailment_cost": 0.005 }
+        }"#;
+
+        let f = write_json(json);
+        let err = parse_penalties(f.path()).unwrap_err();
+        match &err {
+            LoadError::SchemaError { field, message, .. } => {
+                assert_eq!(field, "bus.deficit_segments[0].depth_mw");
+                assert!(
+                    message.contains(">= 0.0, got -1"),
+                    "message should name the negative depth, got: {message}"
+                );
+            }
+            other => panic!("expected SchemaError, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_penalties_middle_null_deficit_depth_refused() {
+        let json = r#"{
+          "bus": {
+            "deficit_segments": [
+              { "depth_mw": 500.0, "cost": 1000.0 },
+              { "depth_mw": null, "cost": 3000.0 },
+              { "depth_mw": null, "cost": 5000.0 }
+            ],
+            "excess_cost": 100.0
+          },
+          "line": { "exchange_cost": 2.0 },
+          "hydro": {
+            "spillage_cost": 0.01, "turbined_cost": 0.05,
+            "diversion_cost": 0.1, "storage_violation_below_cost": 10000.0,
+            "filling_target_violation_cost": 50000.0,
+            "turbined_violation_below_cost": 500.0,
+            "outflow_violation_below_cost": 500.0,
+            "outflow_violation_above_cost": 500.0,
+            "generation_violation_below_cost": 1000.0,
+            "fpha_violation_cost": 60000.0,
+            "evaporation_violation_cost": 5000.0,
+            "water_withdrawal_violation_cost": 1000.0
+          },
+          "non_controllable_source": { "curtailment_cost": 0.005 }
+        }"#;
+
+        let f = write_json(json);
+        let err = parse_penalties(f.path()).unwrap_err();
+        match &err {
+            LoadError::SchemaError { field, message, .. } => {
+                assert_eq!(field, "bus.deficit_segments[1].depth_mw");
+                assert_eq!(
+                    message,
+                    "only the last deficit segment may have depth_mw: null"
+                );
+            }
+            other => panic!("expected SchemaError, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_penalties_zero_deficit_depth_accepted() {
+        let json = r#"{
+          "bus": {
+            "deficit_segments": [
+              { "depth_mw": 0.0, "cost": 1000.0 },
+              { "depth_mw": null, "cost": 5000.0 }
+            ],
+            "excess_cost": 100.0
+          },
+          "line": { "exchange_cost": 2.0 },
+          "hydro": {
+            "spillage_cost": 0.01, "turbined_cost": 0.05,
+            "diversion_cost": 0.1, "storage_violation_below_cost": 10000.0,
+            "filling_target_violation_cost": 50000.0,
+            "turbined_violation_below_cost": 500.0,
+            "outflow_violation_below_cost": 500.0,
+            "outflow_violation_above_cost": 500.0,
+            "generation_violation_below_cost": 1000.0,
+            "fpha_violation_cost": 60000.0,
+            "evaporation_violation_cost": 5000.0,
+            "water_withdrawal_violation_cost": 1000.0
+          },
+          "non_controllable_source": { "curtailment_cost": 0.005 }
+        }"#;
+
+        let f = write_json(json);
+        let defaults = parse_penalties(f.path()).unwrap();
+        assert_eq!(defaults.bus_deficit_segments[0].depth_mw, Some(0.0));
     }
 }

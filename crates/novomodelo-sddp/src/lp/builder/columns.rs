@@ -530,8 +530,8 @@ fn fill_line_columns(
 /// Deficit and excess columns per bus per block.
 ///
 /// The deficit region uses a uniform per-bus stride of `max_deficit_segments`
-/// (column address owned by `deficit_col`). Buses with fewer segments leave the
-/// trailing slots at the `[0, 0]` vec default, presolve-eliminated.
+/// (column address owned by `deficit_col`). A bus's spare slots are pinned to
+/// `[0, 0]` because the `BusDeficit` generic-constraint term spans every slot.
 fn fill_deficit_and_excess_columns(
     ctx: &TemplateBuildCtx<'_>,
     stage: &Stage,
@@ -547,6 +547,12 @@ fn fill_deficit_and_excess_columns(
                 let block_hours = stage.blocks[blk].duration_hours;
                 bufs.col_upper[col_def] = segment.depth_mw.unwrap_or(f64::INFINITY);
                 bufs.objective[col_def] = segment.cost_per_mwh * block_hours;
+            }
+        }
+        for seg_idx in bus.deficit_segments.len()..layout.equipment.max_deficit_segments {
+            for blk in 0..layout.clock.n_blks() {
+                let col_def = layout.deficit_col(BusSys::new(b_idx), seg_idx, BlockIdx::new(blk));
+                bufs.col_upper[col_def] = 0.0;
             }
         }
         for blk in 0..layout.clock.n_blks() {
