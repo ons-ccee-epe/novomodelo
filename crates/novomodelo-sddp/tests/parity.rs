@@ -2337,14 +2337,14 @@ mod water_travel_time_gate_byte_neutrality {
     //! The second is the arrival-calendar gate: the topology sizing derived
     //! from a declared post-study calendar only diverges from the synthetic
     //! pad when the declared calendar changes the transit depth. This deck
-    //! declares its water calendar, and its legacy-input overlay does not, so
+    //! declares its water calendar, and its unmigrated-input overlay does not, so
     //! the gate is pinned by building both and comparing the state topology
     //! and the bucket masks.
 
     use std::path::Path;
 
     use novomodelo_io::config::BoundaryPolicy;
-    use novomodelo_sddp::test_support::legacy_inputs::{materialize, overlay_dir};
+    use novomodelo_sddp::test_support::unmigrated_inputs::{materialize, overlay_dir};
     use novomodelo_solver::ActiveSolver;
     use tempfile::TempDir;
 

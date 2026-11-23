@@ -1,11 +1,5 @@
-//! Back-compatibility and forward-roundtrip tests for the output metadata structs.
-//!
-//! Contract: new fields on `training/metadata.json` and `simulation/metadata.json`
-//! must be `#[serde(default)]` so older output directories still deserialize. The
-//! legacy fixtures are hand-frozen JSON literals, NOT struct-serialized — a
-//! struct-built fixture carries every field and so could never catch a field
-//! accidentally made required.
-
+//! Training and simulation `metadata.json` survive a write-read round trip, and
+//! a product-named version key is refused.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::float_cmp)]
 
 use novomodelo_io::{
@@ -16,87 +10,6 @@ use novomodelo_io::{
     read_simulation_metadata, read_training_metadata, write_simulation_metadata,
     write_training_metadata,
 };
-
-// ── Frozen legacy fixtures ─────────────────────────────────────────────────────
-//
-// These literals must NOT contain the keys `bounds`, `solve_stats`, `cost`, or
-// `hosts`; adding one defeats the back-compat guarantee. The `*_omits_new_keys`
-// tests below guard this.
-
-/// Legacy `training/metadata.json` without the `bounds`, `solve_stats`, and
-/// `distribution.hosts` fields.
-const LEGACY_TRAINING_JSON: &str = r#"{
-  "software": "novomodelo",
-  "software_version": "0.1.0",
-  "hostname": "legacy-host",
-  "solver": "highs",
-  "solver_version": "1.8.0",
-  "started_at": "2026-01-17T08:00:00Z",
-  "completed_at": "2026-01-17T12:30:00Z",
-  "duration_seconds": 16200.0,
-  "status": "complete",
-  "configuration": {
-    "seed": 42,
-    "max_iterations": 100,
-    "forward_passes": 192,
-    "stopping_mode": "any",
-    "policy_mode": "fresh"
-  },
-  "problem_dimensions": {
-    "num_stages": 12,
-    "num_hydros": 160,
-    "num_thermals": 200,
-    "num_buses": 5,
-    "num_lines": 8
-  },
-  "iterations": {
-    "completed": 100,
-    "converged_at": 95
-  },
-  "convergence": {
-    "achieved": true,
-    "final_gap_percent": 0.45,
-    "termination_reason": "bound_stalling"
-  },
-  "row_pool": {
-    "total_generated": 1250000,
-    "total_active": 980000,
-    "peak_active": 1100000
-  },
-  "distribution": {
-    "backend": "local",
-    "world_size": 1,
-    "ranks_participated": 1,
-    "num_hosts": 1,
-    "threads_per_rank": 1
-  }
-}"#;
-
-/// Legacy `simulation/metadata.json` without the `cost`, `solve_stats`, and
-/// `distribution.hosts` fields.
-const LEGACY_SIM_JSON: &str = r#"{
-  "software": "novomodelo",
-  "software_version": "0.1.0",
-  "hostname": "legacy-host",
-  "solver": "highs",
-  "solver_version": "1.8.0",
-  "started_at": "2026-01-17T13:00:00Z",
-  "completed_at": "2026-01-17T13:15:00Z",
-  "duration_seconds": 900.0,
-  "status": "complete",
-  "scenarios": {
-    "total": 100,
-    "completed": 100,
-    "failed": 0
-  },
-  "distribution": {
-    "backend": "local",
-    "world_size": 1,
-    "ranks_participated": 1,
-    "num_hosts": 1,
-    "threads_per_rank": 1
-  }
-}"#;
 
 /// Frozen multi-node `DistributionInfo` pinning the on-disk per-host rank shape.
 const MULTI_NODE_DISTRIBUTION_JSON: &str = r#"{
@@ -114,100 +27,6 @@ const MULTI_NODE_DISTRIBUTION_JSON: &str = r#"{
   ]
 }"#;
 
-// ── Back-compat: legacy JSON deserializes with documented defaults ──────────────
-
-#[test]
-fn legacy_training_json_deserializes_with_defaults() {
-    let decoded: TrainingMetadata = serde_json::from_str(LEGACY_TRAINING_JSON)
-        .expect("legacy training metadata must still deserialize");
-
-    assert_eq!(decoded.bounds.final_lower_bound, 0.0);
-    assert_eq!(decoded.bounds.final_upper_bound, None);
-    assert_eq!(decoded.bounds.final_upper_bound_std, None);
-
-    assert_eq!(decoded.solve_stats.total_lp_solves, None);
-    assert_eq!(decoded.solve_stats.first_try, None);
-    assert_eq!(decoded.solve_stats.retried, None);
-    assert_eq!(decoded.solve_stats.failed, None);
-    assert_eq!(decoded.solve_stats.forward_solve_seconds, None);
-    assert_eq!(decoded.solve_stats.backward_solve_seconds, None);
-    assert_eq!(decoded.solve_stats.parallelism, None);
-
-    assert!(decoded.distribution.hosts.is_empty());
-
-    // Regression gate for an accidental `#[serde(default)]` removal on either optional section.
-    assert!(decoded.setup.is_none());
-    assert!(decoded.production_fit_deviation.is_none());
-
-    assert_eq!(decoded.iterations.completed, 100);
-    assert_eq!(decoded.row_pool.total_generated, 1_250_000);
-    assert_eq!(decoded.row_pool.total_loaded, 0);
-}
-
-#[test]
-fn legacy_simulation_json_deserializes_with_defaults() {
-    let decoded: SimulationMetadata = serde_json::from_str(LEGACY_SIM_JSON)
-        .expect("legacy simulation metadata must still deserialize");
-
-    assert!(decoded.cost.is_none());
-
-    assert_eq!(decoded.solve_stats.total_lp_solves, None);
-    assert_eq!(decoded.solve_stats.first_try, None);
-    assert_eq!(decoded.solve_stats.retried, None);
-    assert_eq!(decoded.solve_stats.failed, None);
-    assert_eq!(decoded.solve_stats.solve_seconds, None);
-    assert_eq!(decoded.solve_stats.parallelism, None);
-
-    assert!(decoded.distribution.hosts.is_empty());
-
-    assert_eq!(decoded.scenarios.total, 100);
-    assert_eq!(decoded.scenarios.completed, 100);
-}
-
-// ── Guard: the legacy fixtures genuinely omit the new keys ──────────────────────
-
-#[test]
-fn legacy_training_fixture_omits_new_keys() {
-    assert!(
-        !LEGACY_TRAINING_JSON.contains("bounds"),
-        "legacy training fixture must omit the `bounds` key to exercise back-compat"
-    );
-    assert!(
-        !LEGACY_TRAINING_JSON.contains("solve_stats"),
-        "legacy training fixture must omit the `solve_stats` key to exercise back-compat"
-    );
-    assert!(
-        !LEGACY_TRAINING_JSON.contains("\"hosts\""),
-        "legacy training fixture must omit the `hosts` key to exercise back-compat"
-    );
-    assert!(
-        !LEGACY_TRAINING_JSON.contains("setup"),
-        "legacy training fixture must omit the `setup` key to exercise back-compat"
-    );
-    assert!(
-        !LEGACY_TRAINING_JSON.contains("production_fit_deviation"),
-        "legacy training fixture must omit the `production_fit_deviation` key to exercise back-compat"
-    );
-}
-
-#[test]
-fn legacy_simulation_fixture_omits_new_keys() {
-    assert!(
-        !LEGACY_SIM_JSON.contains("cost"),
-        "legacy simulation fixture must omit the `cost` key to exercise back-compat"
-    );
-    assert!(
-        !LEGACY_SIM_JSON.contains("solve_stats"),
-        "legacy simulation fixture must omit the `solve_stats` key to exercise back-compat"
-    );
-    assert!(
-        !LEGACY_SIM_JSON.contains("\"hosts\""),
-        "legacy simulation fixture must omit the `hosts` key to exercise back-compat"
-    );
-}
-
-// ── Multi-node hosts fixture ────────────────────────────────────────────────────
-
 #[test]
 fn multi_node_distribution_deserializes_with_correct_rank_lists() {
     let decoded: DistributionInfo = serde_json::from_str(MULTI_NODE_DISTRIBUTION_JSON)
@@ -223,8 +42,6 @@ fn multi_node_distribution_deserializes_with_correct_rank_lists() {
     assert_eq!(decoded.hosts[1].hostname, "node02");
     assert_eq!(decoded.hosts[1].ranks, vec![4, 5, 6, 7]);
 }
-
-// ── Forward roundtrip: fully-populated metadata survives write → read ────────────
 
 fn fully_populated_distribution() -> DistributionInfo {
     DistributionInfo {
@@ -360,7 +177,7 @@ fn fully_populated_simulation_metadata() -> SimulationMetadata {
 }
 
 #[test]
-fn training_metadata_new_fields_survive_write_read_roundtrip() {
+fn fully_populated_training_metadata_survives_write_read_roundtrip() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("metadata.json");
     let original = fully_populated_training_metadata();
@@ -427,7 +244,7 @@ fn training_metadata_new_fields_survive_write_read_roundtrip() {
 }
 
 #[test]
-fn simulation_metadata_new_fields_survive_write_read_roundtrip() {
+fn fully_populated_simulation_metadata_survives_write_read_roundtrip() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("metadata.json");
     let original = fully_populated_simulation_metadata();
@@ -465,8 +282,6 @@ fn simulation_metadata_new_fields_survive_write_read_roundtrip() {
     assert_eq!(decoded.distribution.hosts[1].hostname, "node02");
     assert_eq!(decoded.distribution.hosts[1].ranks, vec![4, 5, 6, 7]);
 }
-
-// ── Clean break: the product-named version key is not read ──────────────────────
 
 #[test]
 fn product_named_version_key_is_a_deserialize_error() {

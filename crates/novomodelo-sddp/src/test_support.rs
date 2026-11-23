@@ -118,9 +118,9 @@ use novomodelo_solver::{
 pub mod bound_recording;
 pub mod decks;
 pub mod expander;
-pub mod legacy_inputs;
 pub mod solve_sites;
 pub mod template_structure;
+pub mod unmigrated_inputs;
 
 pub(crate) mod ctx_fixture;
 use bound_recording::BoundRecordingSolver;

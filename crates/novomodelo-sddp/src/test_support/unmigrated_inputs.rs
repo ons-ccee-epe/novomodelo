@@ -1,12 +1,12 @@
-//! Legacy-input overlays: for a deck whose committed files were migrated, the
-//! directory holding the files the legacy deck had, plus `absent.json`, a JSON
-//! array of the relative paths it did not have.
+//! Unmigrated-input overlays: for a deck whose committed files were migrated, the
+//! directory holding the files the deck had before migration, plus `absent.json`,
+//! a JSON array of the relative paths it did not have.
 
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-const OVERLAY_ROOT: &str = "tests/unswept_fixtures/legacy_inputs";
+const OVERLAY_ROOT: &str = "tests/unswept_fixtures/unmigrated_inputs";
 const ABSENT_FILE: &str = "absent.json";
 
 /// The overlay directory name of a deck key: each `/` becomes `__`.
@@ -96,15 +96,15 @@ mod tests {
         let overlay = TempDir::new().unwrap();
         let copy = TempDir::new().unwrap();
         write(overlay.path(), "absent.json", "[]");
-        write(overlay.path(), "a.json", "legacy");
-        write(overlay.path(), "sub/new.json", "legacy new");
+        write(overlay.path(), "a.json", "overlay");
+        write(overlay.path(), "sub/new.json", "overlay new");
         write(copy.path(), "a.json", "migrated");
         write(copy.path(), "sub/kept.json", "migrated");
 
         materialize(overlay.path(), copy.path()).unwrap();
 
-        assert_eq!(read(copy.path(), "a.json"), "legacy");
-        assert_eq!(read(copy.path(), "sub/new.json"), "legacy new");
+        assert_eq!(read(copy.path(), "a.json"), "overlay");
+        assert_eq!(read(copy.path(), "sub/new.json"), "overlay new");
         assert_eq!(read(copy.path(), "sub/kept.json"), "migrated");
         assert!(!copy.path().join("absent.json").exists());
     }
@@ -146,7 +146,7 @@ mod tests {
         let overlay = TempDir::new().unwrap();
         let copy = TempDir::new().unwrap();
         write(overlay.path(), "absent.json", r#"{"not": "an array"}"#);
-        write(overlay.path(), "a.json", "legacy");
+        write(overlay.path(), "a.json", "overlay");
         write(copy.path(), "a.json", "migrated");
 
         let malformed = materialize(overlay.path(), copy.path()).unwrap_err();
