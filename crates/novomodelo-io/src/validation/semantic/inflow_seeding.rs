@@ -16,6 +16,7 @@ use novomodelo_stochastic::season_cast::{
 };
 
 use super::super::{ValidationContext, rules, schema::ParsedData};
+use crate::config::InflowNonNegativityMethod;
 
 pub(super) fn validate_inflow_seeding(data: &ParsedData, ctx: &mut ValidationContext) {
     let merged_by_hydro = merged_windows_by_hydro(data);
@@ -32,6 +33,7 @@ pub(super) fn validate_inflow_seeding(data: &ParsedData, ctx: &mut ValidationCon
 /// incremental inflow, a sign-flipped series is not, and only the magnitude
 /// separates them.
 fn report_negative_realized_inflows(data: &ParsedData, ctx: &mut ValidationContext) {
+    let treatment = negative_inflow_treatment(data.config.modeling.inflow_non_negativity.method);
     let mut report = |negatives: Vec<(i32, f64)>, file: &str, field: &str| {
         let Some((worst_hydro, worst_value)) =
             negatives.iter().copied().min_by(|a, b| a.1.total_cmp(&b.1))
@@ -45,8 +47,8 @@ fn report_negative_realized_inflows(data: &ParsedData, ctx: &mut ValidationConte
             None::<String>,
             format!(
                 "{count} {field} value(s) are negative (most negative {worst_value} m³/s at \
-                 hydro {worst_hydro}); accepted as incremental inflow, which the LP prices \
-                 through the inflow non-negativity slack"
+                 hydro {worst_hydro}); accepted as incremental inflow, and the inflow \
+                 non-negativity method {treatment}"
             ),
         );
     };
@@ -70,6 +72,25 @@ fn report_negative_realized_inflows(data: &ParsedData, ctx: &mut ValidationConte
         "initial_conditions.json",
         "recent_observations",
     );
+}
+
+fn negative_inflow_treatment(method: InflowNonNegativityMethod) -> &'static str {
+    match method {
+        InflowNonNegativityMethod::None => {
+            "`none` adds no water to a negative inflow, so a stage may become infeasible"
+        }
+        InflowNonNegativityMethod::Truncation => {
+            "`truncation` lifts a negative inflow to zero at no cost"
+        }
+        InflowNonNegativityMethod::Penalty => {
+            "`penalty` lets the LP add water to a negative inflow at \
+             penalties.json hydro.inflow_nonnegativity_cost"
+        }
+        InflowNonNegativityMethod::TruncationWithPenalty => {
+            "`truncation_with_penalty` lets the LP lift a negative inflow up to zero at \
+             penalties.json hydro.inflow_nonnegativity_cost"
+        }
+    }
 }
 
 /// Rejects a study supplying an inflow annual component
@@ -1021,6 +1042,39 @@ mod tests {
                 && w.message.contains("hydro 1")),
             "expected the observation warning to name its own worst offender, got: {warnings:?}"
         );
+    }
+
+    #[test]
+    fn test_negative_realized_inflow_warning_states_the_configured_method() {
+        let cases = [
+            (InflowNonNegativityMethod::None, "`none` adds no water"),
+            (
+                InflowNonNegativityMethod::Truncation,
+                "`truncation` lifts a negative inflow to zero at no cost",
+            ),
+            (
+                InflowNonNegativityMethod::Penalty,
+                "`penalty` lets the LP add water to a negative inflow",
+            ),
+            (
+                InflowNonNegativityMethod::TruncationWithPenalty,
+                "`truncation_with_penalty` lets the LP lift a negative inflow up to zero",
+            ),
+        ];
+        for (method, expected) in cases {
+            let mut data = negative_inflow_data();
+            data.config.modeling.inflow_non_negativity.method = method;
+
+            let mut ctx = ValidationContext::new();
+            report_negative_realized_inflows(&data, &mut ctx);
+
+            let warnings = ctx.warnings();
+            assert_eq!(warnings.len(), 2, "{method:?}: {warnings:?}");
+            assert!(
+                warnings.iter().all(|w| w.message.contains(expected)),
+                "{method:?} must state its treatment, got: {warnings:?}"
+            );
+        }
     }
 
     #[test]
