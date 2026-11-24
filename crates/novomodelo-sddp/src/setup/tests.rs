@@ -20,6 +20,7 @@ use novomodelo_io::test_support::owned_piece_defaults;
 use novomodelo_stochastic::ExternalScenarioLibrary;
 use novomodelo_stochastic::par::precompute::PrecomputedPar;
 use novomodelo_stochastic::season_cast::StageCalendar;
+use novomodelo_stochastic::test_support::WarnRecorder;
 
 use chrono::{Duration, NaiveDate};
 use novomodelo_core::{
@@ -6606,67 +6607,6 @@ fn chain_rule_slots_of_a_pool_pair_follow_each_pools_layout() {
 // ---------------------------------------------------------------------------
 // K = 0 sub-stage lead (`c(m) = m`) — exclude-with-advisory
 // ---------------------------------------------------------------------------
-
-/// WARN-capturing `tracing::Subscriber`, mirroring `params::tests::WarnRecorder`.
-struct WarnRecorder {
-    messages: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
-}
-
-impl WarnRecorder {
-    fn new() -> (Self, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
-        let messages = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        (
-            Self {
-                messages: std::sync::Arc::clone(&messages),
-            },
-            messages,
-        )
-    }
-}
-
-impl tracing::Subscriber for WarnRecorder {
-    fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
-        *metadata.level() <= tracing::Level::WARN
-    }
-
-    fn new_span(&self, _attrs: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-        tracing::span::Id::from_u64(1)
-    }
-
-    fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
-
-    fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
-
-    fn event(&self, event: &tracing::Event<'_>) {
-        if *event.metadata().level() == tracing::Level::WARN {
-            struct MessageVisitor(String);
-            impl tracing::field::Visit for MessageVisitor {
-                fn record_debug(
-                    &mut self,
-                    field: &tracing::field::Field,
-                    value: &dyn std::fmt::Debug,
-                ) {
-                    if field.name() == "message" {
-                        self.0 = format!("{value:?}");
-                    }
-                }
-
-                fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
-                    if field.name() == "message" {
-                        self.0 = value.to_string();
-                    }
-                }
-            }
-            let mut visitor = MessageVisitor(String::new());
-            event.record(&mut visitor);
-            self.messages.lock().unwrap().push(visitor.0);
-        }
-    }
-
-    fn enter(&self, _span: &tracing::span::Id) {}
-
-    fn exit(&self, _span: &tracing::span::Id) {}
-}
 
 /// Hand-derived: a `LeadTime(720.0)` plant on the uniform 31-day-month
 /// calendar `[744, 744, 744, 744]` h resolves `c(m) = m` at every delivery

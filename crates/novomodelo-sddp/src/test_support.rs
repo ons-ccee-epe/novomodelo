@@ -418,6 +418,35 @@ pub(crate) fn bucket_seed_state(system: &System, topology: &TransitBucketTopolog
     )
 }
 
+/// Runs `run` under a plain-text `tracing_subscriber::fmt` subscriber and returns
+/// what it logged.
+#[cfg(test)]
+pub(crate) fn captured_log(run: impl FnOnce()) -> String {
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone)]
+    struct Log(Arc<Mutex<Vec<u8>>>);
+    impl std::io::Write for Log {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    novomodelo_stochastic::test_support::keep_callsite_interest_dynamic();
+    let log = Log(Arc::new(Mutex::new(Vec::new())));
+    let writer = log.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_writer(move || writer.clone())
+        .finish();
+    tracing::subscriber::with_default(subscriber, run);
+    String::from_utf8(log.0.lock().unwrap().clone()).unwrap()
+}
+
 /// Setup steps a builder-module test needs without a direct
 /// `lp::builder` → `setup` import edge.
 #[cfg(test)]
