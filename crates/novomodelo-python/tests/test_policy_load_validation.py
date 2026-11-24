@@ -61,12 +61,12 @@ def _copy_case_with_renamed_hydro(
             model["hydro_id"] = new_hydro_id
     models_path.write_text(json.dumps(models))
 
-    ic_path = dest / "initial_conditions.json"
-    initial_conditions = json.loads(ic_path.read_text())
-    for entry in initial_conditions["storage"]:
+    boundary_path = dest / "boundary_conditions.json"
+    boundary_conditions = json.loads(boundary_path.read_text())
+    for entry in boundary_conditions["hydros"]:
         if entry["hydro_id"] == old_id:
             entry["hydro_id"] = new_hydro_id
-    ic_path.write_text(json.dumps(initial_conditions))
+    boundary_path.write_text(json.dumps(boundary_conditions))
 
     # ZSTD to match the shipped example's codec: novomodelo's Rust parquet reader
     # is built without the "snap" feature, so pyarrow's default (Snappy)

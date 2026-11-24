@@ -15,7 +15,7 @@ use std::path::Path;
 /// Template files to embed, relative to `templates/1dtoy/`.
 const TEMPLATE_FILES: &[&str] = &[
     "config.json",
-    "initial_conditions.json",
+    "boundary_conditions.json",
     "penalties.json",
     "stages.json",
     "system/buses.json",

@@ -35,12 +35,12 @@ static DTOY1_FILES: &[TemplateFile] = &[
         description: "Algorithm configuration: training (forward passes, stopping rules) and simulation settings",
     },
     TemplateFile {
-        relative_path: "initial_conditions.json",
+        relative_path: "boundary_conditions.json",
         content: include_bytes!(concat!(
             env!("OUT_DIR"),
-            "/templates/1dtoy/initial_conditions.json"
+            "/templates/1dtoy/boundary_conditions.json"
         )),
-        description: "Initial reservoir storage volumes for each hydro plant at the start of the planning horizon",
+        description: "Boundary conditions: initial reservoir storage of each hydro plant at the start of the planning horizon",
     },
     TemplateFile {
         relative_path: "penalties.json",
