@@ -82,7 +82,7 @@ follows:
   - each `end_date` equals the next stage's `start_date`;
   - ids are distinct, and the list is ordered by `start_date`.
 - **The water calendar must still cover the deepest travel time.** This is the
-  existing check in `setup/mod.rs` (`UncoveredArc`).
+  existing check in `novomodelo-core`'s `model/post_study.rs` (`UncoveredArc`).
 
 ### 3.2 `boundary_conditions.json`
 

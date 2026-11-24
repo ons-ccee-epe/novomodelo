@@ -563,8 +563,8 @@ struct ExtendedDeliveryAxis {
     n_stages: usize,
 }
 
-/// The only place the post-study thermal id continuation is computed; the solver's
-/// `delivery_stage_ids` must agree.
+/// Must agree with the loader's `validate_thermal_continuation` in `stages.rs` and the
+/// solver's `delivery_stage_ids`.
 fn post_study_thermal_stage_id(max_study_id: i32, j: usize) -> i32 {
     max_study_id + 1 + i32::try_from(j).unwrap_or(i32::MAX)
 }
