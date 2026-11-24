@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `boundary_conditions.json`, `post_study_thermal_stages` and
+  `post_study_water_stages` (in `stages.json`) replace the deprecated
+  `initial_conditions.json` and `post_study_stages.json`, which now warn; mixing
+  them is refused. Run `python3 scripts/migrate/boundary_conditions.py <case>`.
+
+### Changed
+
+- A deck with a travel-time arc, once converted to `boundary_conditions.json`,
+  writes dated transit-bucket slots past the horizon in `policy/cuts/*.bin`.
+
 ## [0.22.0] - 2026-11-24
 
 ### Added
