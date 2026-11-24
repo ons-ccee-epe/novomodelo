@@ -23,6 +23,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `novomodelo run` no longer warns when `lp_row_violations` in
   `solver/iterations.parquet` is nonzero; the column is still written.
 
+### Fixed
+
+- `novomodelo validate` said that negative values in
+  `scenarios/inflow_history.parquet` and `initial_conditions.json`
+  `recent_observations` are priced by the LP, whatever
+  `modeling.inflow_non_negativity.method` is set to.
+
 ## [0.21.0] - 2026-11-16
 
 ### Added
