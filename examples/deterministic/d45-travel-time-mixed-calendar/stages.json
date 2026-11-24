@@ -57,5 +57,22 @@
       ],
       "num_openings": 1
     }
+  ],
+  "post_study_water_stages": [
+    {
+      "id": 4,
+      "start_date": "2024-02-21",
+      "end_date": "2024-02-28"
+    },
+    {
+      "id": 5,
+      "start_date": "2024-02-28",
+      "end_date": "2024-03-06"
+    },
+    {
+      "id": 6,
+      "start_date": "2024-03-06",
+      "end_date": "2024-03-13"
+    }
   ]
 }

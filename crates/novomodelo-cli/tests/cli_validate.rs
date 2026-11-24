@@ -14,6 +14,7 @@ use assert_cmd::prelude::*;
 use novomodelo_core::EntityId;
 use novomodelo_io::InflowSeasonalStatsRow;
 use novomodelo_io::output::write_inflow_seasonal_stats;
+use novomodelo_sddp::test_support::unmigrated_inputs::{Generation, materialize_twin};
 use parquet::arrow::ArrowWriter;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use predicates::prelude::*;
@@ -2311,15 +2312,15 @@ fn deprecation_lines(output: &std::process::Output) -> Vec<String> {
 
 #[test]
 fn validate_warns_once_on_arc_deck_without_post_study_file() {
+    const DECK: &str = "deterministic/d44-travel-time-substage";
     let dir = TempDir::new().unwrap();
-    copy_dir_recursive(
-        &common::case_dir("deterministic/d44-travel-time-substage"),
+    copy_dir_recursive(&common::case_dir(DECK), dir.path());
+    materialize_twin(
+        Generation::PostStudyStagesKey,
+        &format!("examples/{DECK}"),
         dir.path(),
-    );
-    let post_study = dir.path().join("post_study_stages.json");
-    if post_study.exists() {
-        fs::remove_file(post_study).unwrap();
-    }
+    )
+    .unwrap();
 
     let output = novomodelo()
         .env_remove("RUST_LOG")

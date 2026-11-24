@@ -9,7 +9,13 @@
       "id": 0,
       "start_date": "2024-01-01",
       "end_date": "2024-02-01",
-      "blocks": [{ "id": 0, "name": "FLAT", "hours": 730 }],
+      "blocks": [
+        {
+          "id": 0,
+          "name": "FLAT",
+          "hours": 730
+        }
+      ],
       "num_openings": 1
     },
     {
@@ -17,9 +23,21 @@
       "start_date": "2024-02-01",
       "end_date": "2024-03-01",
       "blocks": [
-        { "id": 0, "name": "PEAK", "hours": 200 },
-        { "id": 1, "name": "SHOULDER", "hours": 300 },
-        { "id": 2, "name": "OFF_PEAK", "hours": 230 }
+        {
+          "id": 0,
+          "name": "PEAK",
+          "hours": 200
+        },
+        {
+          "id": 1,
+          "name": "SHOULDER",
+          "hours": 300
+        },
+        {
+          "id": 2,
+          "name": "OFF_PEAK",
+          "hours": 230
+        }
       ],
       "num_openings": 1
     },
@@ -28,8 +46,16 @@
       "start_date": "2024-03-01",
       "end_date": "2024-04-01",
       "blocks": [
-        { "id": 0, "name": "LIGHT", "hours": 400 },
-        { "id": 1, "name": "HEAVY", "hours": 330 }
+        {
+          "id": 0,
+          "name": "LIGHT",
+          "hours": 400
+        },
+        {
+          "id": 1,
+          "name": "HEAVY",
+          "hours": 330
+        }
       ],
       "num_openings": 1
     },
@@ -38,9 +64,21 @@
       "start_date": "2024-04-01",
       "end_date": "2024-05-01",
       "blocks": [
-        { "id": 0, "name": "PEAK", "hours": 220 },
-        { "id": 1, "name": "SHOULDER", "hours": 280 },
-        { "id": 2, "name": "OFF_PEAK", "hours": 220 }
+        {
+          "id": 0,
+          "name": "PEAK",
+          "hours": 220
+        },
+        {
+          "id": 1,
+          "name": "SHOULDER",
+          "hours": 280
+        },
+        {
+          "id": 2,
+          "name": "OFF_PEAK",
+          "hours": 220
+        }
       ],
       "num_openings": 1
     },
@@ -48,7 +86,13 @@
       "id": 4,
       "start_date": "2024-05-01",
       "end_date": "2024-06-01",
-      "blocks": [{ "id": 0, "name": "FLAT", "hours": 744 }],
+      "blocks": [
+        {
+          "id": 0,
+          "name": "FLAT",
+          "hours": 744
+        }
+      ],
       "num_openings": 1
     },
     {
@@ -56,10 +100,25 @@
       "start_date": "2024-06-01",
       "end_date": "2024-07-01",
       "blocks": [
-        { "id": 0, "name": "LIGHT", "hours": 360 },
-        { "id": 1, "name": "HEAVY", "hours": 360 }
+        {
+          "id": 0,
+          "name": "LIGHT",
+          "hours": 360
+        },
+        {
+          "id": 1,
+          "name": "HEAVY",
+          "hours": 360
+        }
       ],
       "num_openings": 1
+    }
+  ],
+  "post_study_thermal_stages": [
+    {
+      "id": 6,
+      "start_date": "2024-07-01",
+      "end_date": "2024-08-01"
     }
   ]
 }

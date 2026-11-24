@@ -1,0 +1,46 @@
+{
+  "$schema": "https://raw.githubusercontent.com/ons-ccee-epe/novomodelo/refs/heads/main/schemas/stages.schema.json",
+  "policy_graph": {
+    "type": "finite_horizon",
+    "annual_discount_rate": 0.0
+  },
+  "stages": [
+    {
+      "id": 0,
+      "start_date": "2024-01-01",
+      "end_date": "2024-02-01",
+      "block_mode": "chronological",
+      "blocks": [
+        {
+          "id": 0,
+          "name": "B0",
+          "hours": 240
+        },
+        {
+          "id": 1,
+          "name": "B1",
+          "hours": 240
+        },
+        {
+          "id": 2,
+          "name": "B2",
+          "hours": 240
+        }
+      ],
+      "num_openings": 1
+    },
+    {
+      "id": 1,
+      "start_date": "2024-02-01",
+      "end_date": "2024-03-01",
+      "blocks": [
+        {
+          "id": 0,
+          "name": "SINGLE",
+          "hours": 720
+        }
+      ],
+      "num_openings": 1
+    }
+  ]
+}

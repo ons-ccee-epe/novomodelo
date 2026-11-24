@@ -13,11 +13,18 @@ from __future__ import annotations
 import json
 import pathlib
 import shutil
+import sys
 import tempfile
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+
+sys.path.append(
+    str(pathlib.Path(__file__).resolve().parents[3] / "scripts" / "migrate")
+)
+
+import legacy_overlays
 
 VALID_CASE_1DTOY = "examples/1dtoy"
 VALID_CASE_4REE = "examples/4ree"
@@ -211,9 +218,10 @@ def test_validate_warns_on_arc_deck_without_post_study_file() -> None:
     """validate() surfaces a travel-time deck without a post-study file as one warning."""
     import novomodelo.io
 
-    case_dir = copy_case_to_tempdir("examples/deterministic/d44-travel-time-substage")
+    deck = "examples/deterministic/d44-travel-time-substage"
+    case_dir = copy_case_to_tempdir(deck)
     try:
-        (case_dir / "post_study_stages.json").unlink(missing_ok=True)
+        legacy_overlays.materialize_twin("post_study_stages_key", deck, case_dir)
 
         result = novomodelo.io.validate(str(case_dir))
 

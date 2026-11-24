@@ -10,6 +10,7 @@ use std::fs;
 use std::path::Path;
 
 use novomodelo_io::{StateFamily, validate_case};
+use novomodelo_sddp::test_support::unmigrated_inputs::{Generation, materialize_twin};
 use novomodelo_sddp::test_support::{state_space, template_fact_groups};
 use novomodelo_solver::highs::HighsSolver;
 use tempfile::TempDir;
@@ -26,12 +27,15 @@ const THERMAL_KEYS_EMPTY: &str = r#"{
 }"#;
 
 fn copy_with_post_study(json: &str) -> TempDir {
+    const DECK: &str = "examples/deterministic/d44-travel-time-substage";
     let dir = TempDir::new().expect("tempdir");
     copy_toy_case(
         &Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../examples/deterministic/d44-travel-time-substage"),
+            .join("../..")
+            .join(DECK),
         dir.path(),
     );
+    materialize_twin(Generation::InitialConditions, DECK, dir.path()).expect("legacy twin");
     fs::write(dir.path().join("post_study_stages.json"), json)
         .expect("write post_study_stages.json");
     dir
