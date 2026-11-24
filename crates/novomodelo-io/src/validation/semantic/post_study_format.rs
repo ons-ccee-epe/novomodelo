@@ -9,9 +9,6 @@ use super::super::{
 use super::post_study_calendar::build_post_study_calendar;
 use crate::legacy::post_study_stages::PostStudyFormat;
 
-const WATER_CALENDAR_KEY: &str = "water_bucket_stages";
-const THERMAL_CALENDAR_KEY: &str = "thermal_stages";
-
 #[derive(Clone, Copy)]
 struct CalendarWording {
     file: &'static str,
@@ -21,8 +18,8 @@ struct CalendarWording {
 
 const LEGACY_WORDING: CalendarWording = CalendarWording {
     file: "post_study_stages.json",
-    water_key: WATER_CALENDAR_KEY,
-    thermal_key: THERMAL_CALENDAR_KEY,
+    water_key: "water_bucket_stages",
+    thermal_key: "thermal_stages",
 };
 
 const CURRENT_WORDING: CalendarWording = CalendarWording {

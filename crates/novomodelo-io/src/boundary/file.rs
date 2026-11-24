@@ -2,10 +2,9 @@
 //! edges of its horizon, keyed by plant.
 //!
 //! [`parse_boundary_conditions_file`] reads the file alone and returns a
-//! [`BoundaryConditionsFile`] with plants sorted by id, windows by `start_date`
-//! and bound rows by `stage_id`. Resolving plant ids against `hydros.json` and
-//! `thermals.json`, and `stage_id` against `stages.json`, is left to the step
-//! that assembles the file into core types.
+//! [`BoundaryConditionsFile`] in declaration order. Sorting, resolving plant
+//! ids against `hydros.json` and `thermals.json`, and `stage_id` against
+//! `stages.json`, is left to the step that assembles the file into core types.
 //!
 //! ## JSON structure
 //!
@@ -178,14 +177,14 @@ struct RawPostStudyBound {
 
 // ── Parsed types ──────────────────────────────────────────────────────────────
 
-/// A validated `boundary_conditions.json`, sorted by plant id.
+/// A validated `boundary_conditions.json`, in declaration order.
 #[derive(Debug, PartialEq)]
 pub(crate) struct BoundaryConditionsFile {
     pub(crate) hydros: Vec<HydroBoundary>,
     pub(crate) thermals: Vec<ThermalBoundary>,
 }
 
-/// Boundary values of one hydro plant; windows sorted by `start_date`.
+/// Boundary values of one hydro plant.
 #[derive(Debug, PartialEq)]
 pub(crate) struct HydroBoundary {
     pub(crate) hydro_id: i32,
@@ -194,8 +193,7 @@ pub(crate) struct HydroBoundary {
     pub(crate) past_defluences: Vec<Window>,
 }
 
-/// Boundary values of one thermal plant; `commitments` sorted by `start_date`
-/// and `post_study_bounds` by `stage_id`.
+/// Boundary values of one thermal plant.
 #[derive(Debug, PartialEq)]
 pub(crate) struct ThermalBoundary {
     pub(crate) thermal_id: i32,
@@ -256,20 +254,18 @@ pub(crate) fn parse_boundary_conditions_file(
         path,
     )?;
 
-    let mut hydros = raw
+    let hydros = raw
         .hydros
         .iter()
         .enumerate()
         .map(|(k, hydro)| convert_hydro(k, hydro, path))
         .collect::<Result<Vec<_>, _>>()?;
-    let mut thermals = raw
+    let thermals = raw
         .thermals
         .iter()
         .enumerate()
         .map(|(k, thermal)| convert_thermal(k, thermal, path))
         .collect::<Result<Vec<_>, _>>()?;
-    hydros.sort_by_key(|hydro| hydro.hydro_id);
-    thermals.sort_by_key(|thermal| thermal.thermal_id);
 
     Ok(BoundaryConditionsFile { hydros, thermals })
 }
@@ -327,8 +323,8 @@ fn convert_hydro(
     Ok(HydroBoundary {
         hydro_id: raw.hydro_id,
         storage_hm3: raw.storage_hm3,
-        recent_inflows: into_sorted_windows(recent_inflows),
-        past_defluences: into_sorted_windows(past_defluences),
+        recent_inflows: into_windows(recent_inflows),
+        past_defluences: into_windows(past_defluences),
     })
 }
 
@@ -372,7 +368,7 @@ fn convert_thermal(
         "stage_id",
         path,
     )?;
-    let mut post_study_bounds: Vec<PostStudyBound> = raw
+    let post_study_bounds: Vec<PostStudyBound> = raw
         .post_study_bounds
         .iter()
         .map(|bound| PostStudyBound {
@@ -382,11 +378,10 @@ fn convert_thermal(
             max_mw: bound.max_mw,
         })
         .collect();
-    post_study_bounds.sort_by_key(|bound| bound.stage_id);
 
     Ok(ThermalBoundary {
         thermal_id: raw.thermal_id,
-        commitments: into_sorted_windows(commitments),
+        commitments: into_windows(commitments),
         post_study_bounds,
     })
 }
@@ -415,8 +410,7 @@ fn parse_windows<'a>(
         .collect()
 }
 
-fn into_sorted_windows(mut records: Vec<WindowedRecord>) -> Vec<Window> {
-    records.sort_by_key(|record| record.start_date);
+fn into_windows(records: Vec<WindowedRecord>) -> Vec<Window> {
     records
         .into_iter()
         .map(|record| Window {
@@ -571,75 +565,6 @@ mod tests {
         )
         .unwrap();
         assert!((file.hydros[0].recent_inflows[0].value - -2.5).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn output_is_sorted_whatever_the_declaration_order() {
-        let forward = r#"{
-            "hydros": [
-                { "hydro_id": 3, "recent_inflows": [
-                    { "start_date": "2026-01-01", "end_date": "2026-01-04", "value_m3s": 1.0 },
-                    { "start_date": "2026-01-04", "end_date": "2026-01-08", "value_m3s": 2.0 }
-                ]},
-                { "hydro_id": 5 }
-            ],
-            "thermals": [
-                { "thermal_id": 2,
-                  "commitments": [
-                    { "start_date": "2026-01-01", "end_date": "2026-02-01", "value_mw": 1.0 },
-                    { "start_date": "2026-02-01", "end_date": "2026-03-01", "value_mw": 2.0 }
-                  ],
-                  "post_study_bounds": [
-                    { "stage_id": 10, "cost_per_mwh": 1.0, "min_mw": 0.0, "max_mw": 5.0 },
-                    { "stage_id": 11, "cost_per_mwh": 2.0, "min_mw": 0.0, "max_mw": 6.0 }
-                  ] },
-                { "thermal_id": 9 }
-            ]
-        }"#;
-        let reversed = r#"{
-            "hydros": [
-                { "hydro_id": 5 },
-                { "hydro_id": 3, "recent_inflows": [
-                    { "start_date": "2026-01-04", "end_date": "2026-01-08", "value_m3s": 2.0 },
-                    { "start_date": "2026-01-01", "end_date": "2026-01-04", "value_m3s": 1.0 }
-                ]}
-            ],
-            "thermals": [
-                { "thermal_id": 9 },
-                { "thermal_id": 2,
-                  "commitments": [
-                    { "start_date": "2026-02-01", "end_date": "2026-03-01", "value_mw": 2.0 },
-                    { "start_date": "2026-01-01", "end_date": "2026-02-01", "value_mw": 1.0 }
-                  ],
-                  "post_study_bounds": [
-                    { "stage_id": 11, "cost_per_mwh": 2.0, "min_mw": 0.0, "max_mw": 6.0 },
-                    { "stage_id": 10, "cost_per_mwh": 1.0, "min_mw": 0.0, "max_mw": 5.0 }
-                  ] }
-            ]
-        }"#;
-        let sorted = parse(forward).unwrap();
-        assert_eq!(sorted, parse(reversed).unwrap());
-        assert_eq!(
-            sorted.hydros.iter().map(|h| h.hydro_id).collect::<Vec<_>>(),
-            [3, 5]
-        );
-        assert_eq!(
-            sorted
-                .thermals
-                .iter()
-                .map(|t| t.thermal_id)
-                .collect::<Vec<_>>(),
-            [2, 9]
-        );
-        assert_eq!(
-            sorted.hydros[0].recent_inflows[0].start_date,
-            date(2026, 1, 1)
-        );
-        assert_eq!(
-            sorted.thermals[0].commitments[0].start_date,
-            date(2026, 1, 1)
-        );
-        assert_eq!(sorted.thermals[0].post_study_bounds[0].stage_id, 10);
     }
 
     #[test]

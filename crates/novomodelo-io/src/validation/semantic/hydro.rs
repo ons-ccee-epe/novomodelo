@@ -403,6 +403,7 @@ pub(super) fn check_filling_config(data: &ParsedData, ctx: &mut ValidationContex
 ///    exists, so a nonzero seed asserts impounded water in a reservoir not yet
 ///    built. A nonzero seed is valid only mid-filling (`start_stage_id == 0`).
 pub(super) fn check_filling_guards(data: &ParsedData, ctx: &mut ValidationContext) {
+    let format = data.boundary_format_or_legacy();
     let horizon =
         i32::try_from(data.stages.stages.iter().filter(|s| s.id >= 0).count()).unwrap_or(i32::MAX);
 
@@ -467,10 +468,11 @@ pub(super) fn check_filling_guards(data: &ParsedData, ctx: &mut ValidationContex
                     "system/hydros.json",
                     Some(&entity_str),
                     format!(
-                        "{entity_str}: filling_storage seed ({}) must lie in \
+                        "{entity_str}: {} must lie in \
                          [0, min_storage_hm3) = [0, {}); the seed must be strictly below \
                          the dead volume",
-                        seed.value_hm3, hydro.min_storage_hm3
+                        filling_seed_label(format, seed.value_hm3),
+                        hydro.min_storage_hm3
                     ),
                 );
             }
@@ -497,10 +499,11 @@ pub(super) fn check_filling_guards(data: &ParsedData, ctx: &mut ValidationContex
                     "system/hydros.json",
                     Some(&entity_str),
                     format!(
-                        "{entity_str}: filling_storage seed ({}) must be 0 (empty pit) \
+                        "{entity_str}: {} must be 0 (empty pit) \
                          when start_stage_id ({}) > 0; a PreFilling phase freezes storage \
                          at the seed before the dam exists",
-                        seed.value_hm3, filling.start_stage_id
+                        filling_seed_label(format, seed.value_hm3),
+                        filling.start_stage_id
                     ),
                 );
             }
@@ -646,6 +649,13 @@ fn initial_storage_label(format: BoundaryFormat, seed: f64) -> String {
     match format {
         BoundaryFormat::Legacy(_) => format!("initial storage ({seed})"),
         BoundaryFormat::Current => format!("initial storage (storage_hm3 = {seed})"),
+    }
+}
+
+fn filling_seed_label(format: BoundaryFormat, seed: f64) -> String {
+    match format {
+        BoundaryFormat::Legacy(_) => format!("filling_storage seed ({seed})"),
+        BoundaryFormat::Current => format!("boundary_conditions.json storage_hm3 seed ({seed})"),
     }
 }
 
@@ -1150,8 +1160,7 @@ pub(super) fn check_hydro_unit_groups(data: &ParsedData, ctx: &mut ValidationCon
 )]
 mod tests {
     use super::super::validate_semantic_hydro_thermal;
-    use super::check_hydro_bounds;
-    use super::check_initial_storage_array;
+    use super::{check_filling_guards, check_hydro_bounds, check_initial_storage_array};
     use crate::FphaHyperplaneRow;
     use crate::constraints::HydroBoundsRow;
     use crate::test_support::*;
@@ -3517,6 +3526,74 @@ mod tests {
         let mut ctx = ValidationContext::new();
         check_initial_storage_array(&data, &mut ctx);
         assert!(ctx.errors().is_empty(), "got: {:?}", ctx.errors());
+    }
+
+    /// `check_filling_guards` messages for a filling hydro (dead volume 200)
+    /// seeded with `seed`, under `format` (`None` ⇒ no boundary source).
+    fn filling_seed_guard_messages(
+        start_stage_id: i32,
+        entry_stage_id: i32,
+        seed: f64,
+        format: Option<BoundaryFormat>,
+    ) -> Vec<String> {
+        let mut hydro = make_filling_hydro(1, start_stage_id, entry_stage_id, 50.0);
+        hydro.min_storage_hm3 = 200.0;
+        let mut data = initial_storage_data(hydro, &[], &[seed], vec![]);
+        data.boundary_format = format;
+        let mut ctx = ValidationContext::new();
+        check_filling_guards(&data, &mut ctx);
+        ctx.errors().iter().map(|e| e.message.clone()).collect()
+    }
+
+    #[test]
+    fn legacy_filling_seed_range_guard_names_filling_storage() {
+        assert_eq!(
+            filling_seed_guard_messages(0, 2, 200.0, None),
+            vec![
+                "Hydro 1: filling_storage seed (200) must lie in [0, min_storage_hm3) = \
+                 [0, 200); the seed must be strictly below the dead volume"
+                    .to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn current_filling_seed_range_guard_names_boundary_file() {
+        assert_eq!(
+            filling_seed_guard_messages(0, 2, 200.0, Some(BoundaryFormat::Current)),
+            vec![
+                "Hydro 1: boundary_conditions.json storage_hm3 seed (200) must lie in \
+                 [0, min_storage_hm3) = [0, 200); the seed must be strictly below the \
+                 dead volume"
+                    .to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn legacy_filling_empty_pit_guard_names_filling_storage() {
+        assert_eq!(
+            filling_seed_guard_messages(1, 3, 50.0, None),
+            vec![
+                "Hydro 1: filling_storage seed (50) must be 0 (empty pit) when \
+                 start_stage_id (1) > 0; a PreFilling phase freezes storage at the seed \
+                 before the dam exists"
+                    .to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn current_filling_empty_pit_guard_names_boundary_file() {
+        assert_eq!(
+            filling_seed_guard_messages(1, 3, 50.0, Some(BoundaryFormat::Current)),
+            vec![
+                "Hydro 1: boundary_conditions.json storage_hm3 seed (50) must be 0 \
+                 (empty pit) when start_stage_id (1) > 0; a PreFilling phase freezes \
+                 storage at the seed before the dam exists"
+                    .to_string()
+            ]
+        );
     }
 
     #[test]

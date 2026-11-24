@@ -1659,8 +1659,8 @@ fn assert_twins_agree(legacy_dir: &Path, current_dir: &Path) {
 }
 
 /// Both decks fail validation with the same number of error lines and the same
-/// multiset of `[ErrorKind]` prefixes. Returns the `(legacy, new-format)` error text.
-fn assert_twins_rejected_alike(legacy_dir: &Path, current_dir: &Path) -> (String, String) {
+/// multiset of `[ErrorKind]` prefixes. Returns the new-format error text.
+fn assert_twins_rejected_alike(legacy_dir: &Path, current_dir: &Path) -> String {
     fn rejection(dir: &Path, label: &str) -> String {
         match validate_case(dir) {
             Err(LoadError::ConstraintError { description }) => description,
@@ -1689,7 +1689,7 @@ fn assert_twins_rejected_alike(legacy_dir: &Path, current_dir: &Path) -> (String
         kinds(&current),
         "the readers must report the same error kinds\nlegacy:\n{legacy}\nnew format:\n{current}"
     );
-    (legacy, current)
+    current
 }
 
 #[test]
@@ -1740,7 +1740,7 @@ fn test_missing_post_study_bound_cell_rejected_twin() {
         &[("2024-02-01", 29)],
         &[],
     );
-    let (_, current_msg) = assert_twins_rejected_alike(legacy.path(), current.path());
+    let current_msg = assert_twins_rejected_alike(legacy.path(), current.path());
     assert!(
         current_msg.contains("boundary_conditions.json")
             && current_msg.contains("stage 1 is decided in-study")

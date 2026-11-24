@@ -13,8 +13,6 @@
 
 mod helpers;
 
-use std::path::Path;
-
 use novomodelo_core::EntityId;
 use novomodelo_io::load_case;
 use serde_json::{Value, json};
@@ -524,7 +522,7 @@ fn anticipated_thermal_json(id: i32) -> Value {
 /// thermal stages), with the boundary data supplied by `boundary_conditions.json`.
 fn write_boundary_case(dir: &TempDir, post_study_lists: &str, boundary_conditions: &str) {
     helpers::make_multi_entity_case(dir);
-    let root: &Path = dir.path();
+    let root = dir.path();
 
     std::fs::remove_file(root.join("initial_conditions.json")).unwrap();
     helpers::write_file(

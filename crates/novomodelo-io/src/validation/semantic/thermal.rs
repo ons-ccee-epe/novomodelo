@@ -21,7 +21,6 @@ use super::envelope_tolerance;
 use super::post_study_calendar::build_post_study_calendar;
 use super::travel_time::study_stage_durations;
 use crate::StageIdResolver;
-use crate::legacy::post_study_stages::PostStudyFormat;
 use crate::resolution::{BoundsEntitySlices, BoundsOverrides, resolve_bounds};
 
 /// Rule 13: `min_generation_mw <= max_generation_mw` for a thermal.
@@ -94,7 +93,7 @@ pub(super) fn check_anticipated_thermals(data: &ParsedData, ctx: &mut Validation
     let horizon_end = study_stages.last().map(|s| s.end_date);
 
     let extended_axis = build_extended_delivery_axis(data);
-    let format = boundary_format(data);
+    let format = data.boundary_format_or_legacy();
 
     for thermal in &data.thermals {
         let Some(cfg) = thermal.anticipated_config else {
@@ -166,8 +165,8 @@ pub(super) fn check_anticipated_thermals(data: &ParsedData, ctx: &mut Validation
         }
     }
 
-    let ic = &data.initial_conditions;
-    let windows_by_id = group_commitments_by_thermal(&ic.past_anticipated_commitments);
+    let windows_by_id =
+        group_commitments_by_thermal(&data.initial_conditions.past_anticipated_commitments);
 
     // The resolver is only consulted for a thermal that carries commitment
     // windows; skip building it (and its ordered-calendar precondition) when
@@ -411,11 +410,6 @@ fn collect_anticipated_thermal_ids(data: &ParsedData) -> HashSet<EntityId> {
         .filter(|t| t.anticipated_config.is_some())
         .map(|t| t.id)
         .collect()
-}
-
-fn boundary_format(data: &ParsedData) -> BoundaryFormat {
-    data.boundary_format
-        .unwrap_or(BoundaryFormat::Legacy(PostStudyFormat::Absent))
 }
 
 fn commitments_subject(format: BoundaryFormat, thermal_id: EntityId) -> String {
@@ -1278,7 +1272,7 @@ pub(super) fn check_post_study_stages(data: &ParsedData, ctx: &mut ValidationCon
         .rfind(|s| s.id >= 0)
         .map(|s| s.end_date);
 
-    let format = boundary_format(data);
+    let format = data.boundary_format_or_legacy();
     let (calendar_stages, well_formed) = build_post_study_calendar(
         &post_study.thermal_stages,
         format.post_study_calendar_file(),
@@ -1407,10 +1401,6 @@ fn check_fixed_post_study_tiling(
     names: PostStudyNames<'_>,
     ctx: &mut ValidationContext,
 ) {
-    if fixed_post_study.is_empty() {
-        return;
-    }
-
     let uncovered: Vec<usize> = fixed_post_study
         .iter()
         .copied()

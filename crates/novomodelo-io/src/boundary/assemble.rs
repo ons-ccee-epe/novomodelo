@@ -472,15 +472,25 @@ mod tests {
             water: None,
         };
         let (ic, post_study) = assemble(
-            file(vec![hydro_5, hydro_2], vec![thermal_20, thermal_10]),
+            file(
+                vec![hydro_5, hydro_2, hydro(9, Some(3.0)), hydro(7, Some(4.0))],
+                vec![thermal_20, thermal_10],
+            ),
             &calendars,
-            &[],
+            &[9, 7],
         )
         .unwrap();
 
         assert_eq!(
             ic.storage.iter().map(|s| s.hydro_id.0).collect::<Vec<_>>(),
             [2, 5]
+        );
+        assert_eq!(
+            ic.filling_storage
+                .iter()
+                .map(|s| s.hydro_id.0)
+                .collect::<Vec<_>>(),
+            [7, 9]
         );
         assert_eq!(
             ic.recent_observations

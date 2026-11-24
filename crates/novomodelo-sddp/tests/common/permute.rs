@@ -40,11 +40,12 @@ use tempfile::TempDir;
 /// `novomodelo_io::constraints::generic::convert` sorts `constraints` by `gc.id`;
 /// `novomodelo_io::system::pumping_stations::convert_pumping` sorts
 /// `pumping_stations` by `s.id`; `novomodelo_io::legacy::post_study_stages::convert_stages`
-/// rejects a duplicate `start_date` and sorts `stages`, `thermal_stages` and
+/// rejects a duplicate `start_date` and sorts `thermal_stages` and
 /// `water_bucket_stages` by it, and `convert_thermal_bounds` sorts
 /// `thermal_bounds` by `(thermal_id, post_study_stage_index)`;
-/// `novomodelo_io::boundary::file::parse_boundary_conditions_file` sorts `hydros` and
-/// `thermals` by plant id and every window and bound list nested in a plant;
+/// `novomodelo_io::boundary::assemble::assemble_boundary` sorts every initial-condition
+/// list by plant id and `start_date`, and `thermal_bounds` by
+/// `(thermal_id, post_study_stage_index)`;
 /// `novomodelo_io::stages::convert_stages` sorts `post_study_thermal_stages` and
 /// `post_study_water_stages` by `start_date`.
 const SHUFFLE_WHITELIST: &[(&str, &[&str])] = &[
@@ -89,12 +90,7 @@ const SHUFFLE_WHITELIST: &[(&str, &[&str])] = &[
     ("system/pumping_stations.json", &["pumping_stations"]),
     (
         "post_study_stages.json",
-        &[
-            "stages",
-            "thermal_stages",
-            "thermal_bounds",
-            "water_bucket_stages",
-        ],
+        &["thermal_stages", "thermal_bounds", "water_bucket_stages"],
     ),
     ("boundary_conditions.json", &["hydros", "thermals"]),
 ];
