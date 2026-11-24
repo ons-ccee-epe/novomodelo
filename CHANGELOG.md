@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `outflow_influences`, `incremental_inflow_influences`); bad entries are
   refused and `validate` warns without FPHA. `simulation/hydros` adds
   `tailrace_flow_m3s`, `tailrace_level_m` and `net_head_m`.
+- `system/hydros.json` accepts `spillage` with `min_spillage_m3s` and
+  `max_spillage_m3s` (m3/s), bounding the plant's spillage in every block;
+  `constraints/hydro_bounds.parquet` values replace them. Negative values
+  and a minimum above the maximum are refused.
 - `training.selection.first_iteration_trial_storage` in `config.json`:
   `"storage_grid"` builds the first iteration's cuts at an even grid of
   storage levels instead of the forward passes' storage. `"forward"`, the

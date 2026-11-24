@@ -360,6 +360,9 @@ declare_rules! {
     SEMANTIC_BOUND_ROW_WIDENS_RESERVOIR_RANGE = "semantic.5a.68",
         Semantic, InvalidValue, Error,
         "A hydro_bounds row sets max_storage_hm3 above the reservoir's max_storage_hm3 or min_storage_hm3 below its min_storage_hm3";
+    SEMANTIC_HYDRO_SPILLAGE_BOUNDS_INVERTED = "semantic.5a.69",
+        Semantic, InvalidValue, Error,
+        "A hydro's min_spillage_m3s exceeds its max_spillage_m3s";
     SEMANTIC_TAILRACE_FLOW_NO_EFFECT = "semantic.5a.70",
         Semantic, ModelQuality, Warning,
         "A hydro's tailrace_flow declaration has no effect because the hydro uses FPHA at no study stage";

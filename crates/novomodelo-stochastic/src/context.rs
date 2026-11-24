@@ -191,6 +191,8 @@ pub fn noise_entity_order(system: &System, schemes: &ClassSchemes) -> NoiseEntit
 /// #         max_storage_hm3: 100.0,
 /// #         min_outflow_m3s: 0.0,
 /// #         max_outflow_m3s: None,
+/// #         min_spillage_m3s: None,
+/// #         max_spillage_m3s: None,
 /// #         generation_model: HydroGenerationModel::ConstantProductivity,
 /// #         specific_productivity_mw_per_m3s_per_m: None,
 /// #         min_turbined_m3s: 0.0,

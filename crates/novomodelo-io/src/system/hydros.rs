@@ -21,6 +21,7 @@
 //!     ],
 //!     "reservoir": { "min_storage_hm3": 5733.0, "max_storage_hm3": 22950.0 },
 //!     "outflow": { "min_outflow_m3s": 0.0, "max_outflow_m3s": null },
+//!     "spillage": { "max_spillage_m3s": 500.0 },
 //!     "generation": {
 //!       "model": "constant_productivity",
 //!       "min_turbined_m3s": 0.0, "max_turbined_m3s": 1692.0,
@@ -41,7 +42,8 @@
 //!
 //! 1. No two hydros share the same `id`.
 //! 2. `min_storage_hm3 >= 0`, `max_storage_hm3 >= 0`, `min_storage_hm3 <= max_storage_hm3`.
-//! 3. `min_outflow_m3s >= 0`; `diversion.max_flow_m3s >= 0` when present.
+//! 3. `min_outflow_m3s >= 0`; `diversion.max_flow_m3s >= 0` when present;
+//!    `spillage.min_spillage_m3s >= 0` and `spillage.max_spillage_m3s >= 0` when present.
 //! 4. `min_turbined_m3s >= 0`, `max_turbined_m3s >= 0`, `min_turbined_m3s <= max_turbined_m3s`.
 //! 5. `min_generation_mw <= max_generation_mw`.
 //! 6. Evaporation array, if present, must have exactly 12 elements.
@@ -111,6 +113,9 @@ pub(crate) struct RawHydro {
     reservoir: RawReservoir,
     /// Total outflow bounds.
     outflow: RawOutflow,
+    /// Spillage bounds. Absent or null = unbounded.
+    #[serde(default)]
+    spillage: Option<RawSpillage>,
     /// Generation model configuration (tagged union on `model` field).
     generation: RawGeneration,
     /// Tailrace elevation model. Absent or null = no tailrace.
@@ -181,6 +186,22 @@ pub(crate) struct RawOutflow {
     min_outflow_m3s: f64,
     /// Maximum total outflow (m³/s). `null` = no upper bound.
     max_outflow_m3s: Option<f64>,
+}
+
+/// The `spillage` sub-object.
+///
+/// A `null` or omitted key leaves that side unbounded. Spillage values in
+/// `constraints/hydro_bounds.parquet` replace these per stage or block.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub(crate) struct RawSpillage {
+    /// Minimum spillage (m³/s).
+    #[serde(default)]
+    min_spillage_m3s: Option<f64>,
+    /// Maximum spillage (m³/s).
+    #[serde(default)]
+    max_spillage_m3s: Option<f64>,
 }
 
 /// The `generation` sub-object.
@@ -479,6 +500,7 @@ pub(crate) struct RawHydroPenaltyOverrides {
 /// | `min_storage_hm3 < 0` or `max_storage_hm3 < 0`    | [`LoadError::SchemaError`] |
 /// | `min_storage_hm3 > max_storage_hm3`                | [`LoadError::SchemaError`] |
 /// | `min_outflow_m3s < 0`                              | [`LoadError::SchemaError`] |
+/// | `spillage.min_spillage_m3s < 0` or `spillage.max_spillage_m3s < 0` | [`LoadError::SchemaError`] |
 /// | `diversion.max_flow_m3s < 0`                       | [`LoadError::SchemaError`] |
 /// | `min_turbined_m3s < 0` or `max_turbined_m3s < 0`  | [`LoadError::SchemaError`] |
 /// | `max_turbined_m3s < min_turbined_m3s`              | [`LoadError::SchemaError`] |
@@ -532,6 +554,7 @@ fn validate_raw_hydros(raw: &RawHydroFile, path: &Path) -> Result<(), LoadError>
     for (i, hydro) in raw.hydros.iter().enumerate() {
         validate_reservoir(&hydro.reservoir, i, path)?;
         validate_outflow(&hydro.outflow, i, path)?;
+        validate_spillage(hydro.spillage.as_ref(), i, path)?;
         validate_diversion(hydro.diversion.as_ref(), i, path)?;
         validate_tailrace_flow(hydro.tailrace_flow.as_ref(), hydro.id, i, path)?;
         validate_generation(&hydro.generation, i, path)?;
@@ -655,6 +678,31 @@ fn validate_outflow(
                 outflow.min_outflow_m3s
             ),
         });
+    }
+    Ok(())
+}
+
+fn validate_spillage(
+    spillage: Option<&RawSpillage>,
+    hydro_index: usize,
+    path: &Path,
+) -> Result<(), LoadError> {
+    let Some(spillage) = spillage else {
+        return Ok(());
+    };
+    for (key, value) in [
+        ("min_spillage_m3s", spillage.min_spillage_m3s),
+        ("max_spillage_m3s", spillage.max_spillage_m3s),
+    ] {
+        if let Some(value) = value
+            && value < 0.0
+        {
+            return Err(LoadError::SchemaError {
+                path: path.to_path_buf(),
+                field: format!("hydros[{hydro_index}].spillage.{key}"),
+                message: format!("{key} must be >= 0, got {value}"),
+            });
+        }
     }
     Ok(())
 }
@@ -938,6 +986,8 @@ fn convert_hydros(
                 max_storage_hm3: raw_hydro.reservoir.max_storage_hm3,
                 min_outflow_m3s: raw_hydro.outflow.min_outflow_m3s,
                 max_outflow_m3s: raw_hydro.outflow.max_outflow_m3s,
+                min_spillage_m3s: raw_hydro.spillage.as_ref().and_then(|s| s.min_spillage_m3s),
+                max_spillage_m3s: raw_hydro.spillage.as_ref().and_then(|s| s.max_spillage_m3s),
                 generation_model,
                 min_turbined_m3s,
                 max_turbined_m3s,
@@ -1885,6 +1935,106 @@ mod tests {
         assert!(
             matches!(&err, LoadError::SchemaError { field, .. } if field.contains("min_outflow_m3s")),
             "expected SchemaError for negative min_outflow_m3s, got: {err:?}"
+        );
+    }
+
+    /// One hydro per entry, ids `0..`; each entry is the raw `"spillage": ...,`
+    /// member (trailing comma included) or an empty string for an absent key.
+    fn parse_with_spillage(spillage_members: &[&str]) -> Result<Vec<Hydro>, LoadError> {
+        let hydros = spillage_members
+            .iter()
+            .enumerate()
+            .map(|(id, spillage)| {
+                format!(
+                    r#"{{
+            "id": {id}, "name": "H{id}",
+            "operational_start_date": "2024-01-01",
+            "downstream_id": null,
+            "reservoir": {{ "min_storage_hm3": 0.0, "max_storage_hm3": 1000.0 }},
+            "outflow": {{ "min_outflow_m3s": 0.0, "max_outflow_m3s": null }},
+            {spillage}
+            "generation": {{
+              "model": "constant_productivity",
+              "min_turbined_m3s": 0.0, "max_turbined_m3s": 500.0,
+              "min_generation_mw": 0.0, "max_generation_mw": 250.0
+            }},
+            "unit_groups": [
+              {{ "id": 0, "name": "G", "bus_id": 0,
+                "min_generation_mw": 0.0, "max_generation_mw": 250.0,
+                "min_turbined_m3s": 0.0, "max_turbined_m3s": 500.0 }}
+            ]
+          }}"#
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        let f = write_json(&format!(r#"{{ "hydros": [{hydros}] }}"#));
+        parse_hydros(f.path(), &make_global())
+    }
+
+    #[test]
+    fn spillage_absent_null_and_empty_are_unbounded() {
+        let hydros =
+            parse_with_spillage(&["", r#""spillage": null,"#, r#""spillage": {},"#]).unwrap();
+        assert_eq!(hydros.len(), 3);
+        for hydro in &hydros {
+            assert_eq!(hydro.min_spillage_m3s, None);
+            assert_eq!(hydro.max_spillage_m3s, None);
+        }
+    }
+
+    #[test]
+    fn spillage_values_are_copied() {
+        let hydros = parse_with_spillage(&[
+            r#""spillage": { "min_spillage_m3s": 2.0, "max_spillage_m3s": 500.0 },"#,
+            r#""spillage": { "max_spillage_m3s": 500.0 },"#,
+            r#""spillage": { "min_spillage_m3s": 2.0, "max_spillage_m3s": null },"#,
+            r#""spillage": { "min_spillage_m3s": 0.0, "max_spillage_m3s": 0.0 },"#,
+        ])
+        .unwrap();
+        let bounds: Vec<_> = hydros
+            .iter()
+            .map(|h| (h.min_spillage_m3s, h.max_spillage_m3s))
+            .collect();
+        assert_eq!(
+            bounds,
+            [
+                (Some(2.0), Some(500.0)),
+                (None, Some(500.0)),
+                (Some(2.0), None),
+                (Some(0.0), Some(0.0)),
+            ]
+        );
+    }
+
+    #[test]
+    fn negative_max_spillage_is_schema_error() {
+        let err =
+            parse_with_spillage(&[r#""spillage": { "max_spillage_m3s": -1.0 },"#]).unwrap_err();
+        assert!(
+            matches!(&err, LoadError::SchemaError { field, .. }
+                if field == "hydros[0].spillage.max_spillage_m3s"),
+            "expected SchemaError for negative max_spillage_m3s, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn negative_min_spillage_is_schema_error() {
+        let err =
+            parse_with_spillage(&[r#""spillage": { "min_spillage_m3s": -1.0 },"#]).unwrap_err();
+        assert!(
+            matches!(&err, LoadError::SchemaError { field, .. }
+                if field == "hydros[0].spillage.min_spillage_m3s"),
+            "expected SchemaError for negative min_spillage_m3s, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn unknown_spillage_key_is_refused() {
+        let err = parse_with_spillage(&[r#""spillage": { "max_spill": 1.0 },"#]).unwrap_err();
+        assert!(
+            err.to_string().contains("unknown field"),
+            "expected an unknown-field error, got: {err}"
         );
     }
 

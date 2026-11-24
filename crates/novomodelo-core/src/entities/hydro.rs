@@ -301,6 +301,12 @@ pub struct Hydro {
     /// non-diverted channel and exclude `diversion`, which is capped separately by
     /// its own channel limit.
     pub max_outflow_m3s: Option<f64>,
+    /// Minimum spillage \[m³/s\]. None = no lower bound.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub min_spillage_m3s: Option<f64>,
+    /// Maximum spillage \[m³/s\]. None = no upper bound.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub max_spillage_m3s: Option<f64>,
     /// Production function model for this plant.
     pub generation_model: HydroGenerationModel,
     /// Minimum turbined flow \[m³/s\].
@@ -408,6 +414,7 @@ impl Hydro {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{HydroSpec, make_hydro};
 
     fn penalties_all(v: f64) -> HydroPenalties {
         HydroPenalties {
@@ -428,6 +435,8 @@ mod tests {
             max_storage_hm3: 2000.0,
             min_outflow_m3s: 500.0,
             max_outflow_m3s: None,
+            min_spillage_m3s: None,
+            max_spillage_m3s: None,
             generation_model: model,
             min_turbined_m3s: 200.0,
             max_turbined_m3s: 12_600.0,
@@ -502,6 +511,14 @@ mod tests {
     }
 
     #[test]
+    fn hydro_spillage_bounds_default_to_none() {
+        let hydro = make_hydro(HydroSpec::default());
+
+        assert_eq!(hydro.min_spillage_m3s, None);
+        assert_eq!(hydro.max_spillage_m3s, None);
+    }
+
+    #[test]
     fn test_hydro_optional_fields_some() {
         let mut hydro = Hydro {
             id: EntityId::from(2),
@@ -515,6 +532,8 @@ mod tests {
             max_storage_hm3: 45_000.0,
             min_outflow_m3s: 1000.0,
             max_outflow_m3s: Some(100_000.0),
+            min_spillage_m3s: None,
+            max_spillage_m3s: None,
             generation_model: HydroGenerationModel::Fpha,
             min_turbined_m3s: 500.0,
             max_turbined_m3s: 22_500.0,
@@ -692,6 +711,8 @@ mod tests {
             max_storage_hm3: 45_000.0,
             min_outflow_m3s: 1000.0,
             max_outflow_m3s: Some(100_000.0),
+            min_spillage_m3s: None,
+            max_spillage_m3s: None,
             generation_model: HydroGenerationModel::ConstantProductivity,
             min_turbined_m3s: 500.0,
             max_turbined_m3s: 22_500.0,

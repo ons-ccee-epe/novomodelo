@@ -135,6 +135,8 @@ pub struct BoundsOverrides<'a> {
 ///     max_storage_hm3: 200.0,
 ///     min_outflow_m3s: 0.0,
 ///     max_outflow_m3s: None,
+///     min_spillage_m3s: None,
+///     max_spillage_m3s: None,
 ///     generation_model: HydroGenerationModel::ConstantProductivity,
 ///     specific_productivity_mw_per_m3s_per_m: None,
 ///     min_turbined_m3s: 0.0,
@@ -779,8 +781,8 @@ fn hydro_base_block_bounds(hydro: &Hydro) -> HydroBlockBounds {
             .diversion
             .as_ref()
             .map_or(Some(0.0), |d| d.max_flow_m3s),
-        min_spillage_m3s: None,
-        max_spillage_m3s: None,
+        min_spillage_m3s: hydro.min_spillage_m3s,
+        max_spillage_m3s: hydro.max_spillage_m3s,
     }
 }
 
@@ -2178,6 +2180,106 @@ mod tests {
         let b = result.hydro_bounds_at_block(0, 0, 1);
         assert!((b.max_turbined_m3s - 999.0).abs() < f64::EPSILON);
         assert!((b.min_turbined_m3s - 5.0).abs() < f64::EPSILON);
+    }
+
+    // ── Tests: entity spillage as the base layer ──────────────────────────────
+
+    fn make_spillage_hydro(min: Option<f64>, max: Option<f64>) -> Hydro {
+        let mut hydro = make_hydro(0, 10.0, 200.0, None, None, None);
+        hydro.min_spillage_m3s = min;
+        hydro.max_spillage_m3s = max;
+        hydro
+    }
+
+    fn resolve_spillage_bounds(hydro: Hydro, rows: &[HydroBoundsRow]) -> ResolvedBounds {
+        resolve_bounds(
+            &[hydro],
+            &[],
+            &[],
+            &[],
+            &[],
+            2,
+            0,
+            rows,
+            &[],
+            &[],
+            &[],
+            &[],
+            &[2, 2],
+        )
+    }
+
+    #[test]
+    fn entity_spillage_seeds_every_block_cell() {
+        let result = resolve_spillage_bounds(make_spillage_hydro(Some(2.0), Some(40.0)), &[]);
+
+        for s in 0..2 {
+            for b in 0..2 {
+                let bounds = result.hydro_bounds_at_block(0, s, b);
+                assert_eq!(bounds.min_spillage_m3s, Some(2.0));
+                assert_eq!(bounds.max_spillage_m3s, Some(40.0));
+            }
+        }
+    }
+
+    #[test]
+    fn stage_row_replaces_entity_spillage_per_field() {
+        let stage_row = HydroBoundsRow {
+            max_spillage_m3s: Some(60.0),
+            ..all_none_hydro_row(0, 1)
+        };
+
+        let result =
+            resolve_spillage_bounds(make_spillage_hydro(Some(2.0), Some(40.0)), &[stage_row]);
+
+        for b in 0..2 {
+            let stage_0 = result.hydro_bounds_at_block(0, 0, b);
+            assert_eq!(stage_0.min_spillage_m3s, Some(2.0));
+            assert_eq!(stage_0.max_spillage_m3s, Some(40.0));
+            let stage_1 = result.hydro_bounds_at_block(0, 1, b);
+            assert_eq!(stage_1.min_spillage_m3s, Some(2.0));
+            assert_eq!(stage_1.max_spillage_m3s, Some(60.0));
+        }
+    }
+
+    #[test]
+    fn block_row_replaces_stage_resolved_spillage() {
+        let stage_row = HydroBoundsRow {
+            max_spillage_m3s: Some(60.0),
+            ..all_none_hydro_row(0, 1)
+        };
+        let block_row = HydroBoundsRow {
+            max_spillage_m3s: Some(10.0),
+            block_id: Some(1),
+            ..all_none_hydro_row(0, 1)
+        };
+
+        let result = resolve_spillage_bounds(
+            make_spillage_hydro(Some(2.0), Some(40.0)),
+            &[stage_row, block_row],
+        );
+
+        assert_eq!(
+            result.hydro_bounds_at_block(0, 1, 1).max_spillage_m3s,
+            Some(10.0)
+        );
+        assert_eq!(
+            result.hydro_bounds_at_block(0, 1, 0).max_spillage_m3s,
+            Some(60.0)
+        );
+    }
+
+    #[test]
+    fn absent_entity_spillage_keeps_cells_unbounded() {
+        let result = resolve_spillage_bounds(make_spillage_hydro(None, None), &[]);
+
+        for s in 0..2 {
+            for b in 0..2 {
+                let bounds = result.hydro_bounds_at_block(0, s, b);
+                assert_eq!(bounds.min_spillage_m3s, None);
+                assert_eq!(bounds.max_spillage_m3s, None);
+            }
+        }
     }
 
     // ── Tests: thermal per-block overlay activation ───────────────────────────
