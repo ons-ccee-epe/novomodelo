@@ -7,11 +7,14 @@
 //!
 //! The primary entry point is `validate_referential_integrity`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use novomodelo_core::ScalarExpr;
 
-use super::{ValidationContext, rules, schema::ParsedData};
+use super::{
+    ValidationContext, rules,
+    schema::{BoundaryFormat, ParsedData},
+};
 
 // ── validate_referential_integrity ───────────────────────────────────────────
 
@@ -64,6 +67,7 @@ pub(crate) fn validate_referential_integrity(data: &ParsedData, ctx: &mut Valida
     check_generic_constraint_expression_references(data, ctx, &ids);
     check_generic_constraint_bounds_validity(data, ctx);
     check_ncs_bounds_and_factors(data, ctx, &ids.ncs);
+    check_boundary_plant_references(data, ctx, &ids);
 }
 
 /// O(1) lookup sets for all entity registries, built once and shared across helpers.
@@ -199,6 +203,16 @@ const NCS_MODEL_NCS: DanglingRefDescriptor = DanglingRefDescriptor {
 const THERMAL_BOUNDS_ROW_THERMAL: DanglingRefDescriptor = DanglingRefDescriptor {
     file: "constraints/thermal_bounds.parquet",
     target_entity: "Thermal",
+    field: "thermal_id",
+};
+const BOUNDARY_PLANT_HYDRO: DanglingRefDescriptor = DanglingRefDescriptor {
+    file: "boundary_conditions.json",
+    target_entity: "hydro",
+    field: "hydro_id",
+};
+const BOUNDARY_PLANT_THERMAL: DanglingRefDescriptor = DanglingRefDescriptor {
+    file: "boundary_conditions.json",
+    target_entity: "thermal",
     field: "thermal_id",
 };
 const HYDRO_BOUNDS_ROW_HYDRO: DanglingRefDescriptor = DanglingRefDescriptor {
@@ -793,6 +807,58 @@ fn check_bounds_references(data: &ParsedData, ctx: &mut ValidationContext, ids: 
     }
 }
 
+/// `boundary_conditions.json` plant ids -> entity references.
+fn check_boundary_plant_references(
+    data: &ParsedData,
+    ctx: &mut ValidationContext,
+    ids: &LookupSets,
+) {
+    if data.boundary_format_or_legacy() != BoundaryFormat::Current {
+        return;
+    }
+    let conditions = &data.initial_conditions;
+
+    let undeclared_hydros: BTreeSet<i32> = conditions
+        .storage
+        .iter()
+        .chain(&conditions.filling_storage)
+        .map(|seed| seed.hydro_id.0)
+        .chain(conditions.recent_observations.iter().map(|w| w.hydro_id.0))
+        .chain(conditions.past_defluences.iter().map(|w| w.hydro_id.0))
+        .filter(|id| !ids.hydro.contains(id))
+        .collect();
+    for id in undeclared_hydros {
+        emit_dangling_ref_at(
+            &BOUNDARY_PLANT_HYDRO,
+            &format!("hydros[hydro_id={id}]"),
+            id,
+            ctx,
+        );
+    }
+
+    let undeclared_thermals: BTreeSet<i32> = data
+        .post_study_stages
+        .iter()
+        .flat_map(|stages| &stages.thermal_bounds)
+        .map(|bound| bound.thermal_id.0)
+        .filter(|id| !ids.thermal.contains(id))
+        .filter(|id| {
+            !conditions
+                .past_anticipated_commitments
+                .iter()
+                .any(|window| window.thermal_id.0 == *id)
+        })
+        .collect();
+    for id in undeclared_thermals {
+        emit_dangling_ref_at(
+            &BOUNDARY_PLANT_THERMAL,
+            &format!("thermals[thermal_id={id}]"),
+            id,
+            ctx,
+        );
+    }
+}
+
 /// Penalty override rows -> entity references.
 fn check_penalty_override_references(
     data: &ParsedData,
@@ -1220,8 +1286,11 @@ fn validate_variable_ref_entity(
 )]
 mod tests {
     use super::*;
+    use chrono::NaiveDate;
     use novomodelo_core::{
-        EntityId, TailraceFlow, TailraceFlowInfluence,
+        AnticipatedCommitmentHistory, EntityId, HydroPastDefluence, HydroStorage, PostStudyStages,
+        PostStudyThermalBound, RecentObservation, TailraceFlow, TailraceFlowInfluence,
+        WaterBucketStages,
         entities::{DiversionChannel, Line, NonControllableSource, PumpingStation},
         scenario::{CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile},
     };
@@ -1235,6 +1304,7 @@ mod tests {
             ThermalBoundsRow,
         },
         extensions::HydroGeometryRow,
+        legacy::post_study_stages::PostStudyFormat,
         scenarios::{
             BlockFactor, InflowSeasonalStatsRow, LoadFactorEntry, LoadSeasonalStatsRow,
             NcsFactorEntry,
@@ -3530,5 +3600,120 @@ mod tests {
                 entry.message
             );
         }
+    }
+
+    fn undeclared_hydro_seed(data: &mut ParsedData, hydro_id: i32) {
+        data.initial_conditions.storage = vec![HydroStorage {
+            hydro_id: EntityId::from(hydro_id),
+            value_hm3: 100.0,
+        }];
+    }
+
+    fn boundary_invalid_refs(ctx: &ValidationContext) -> Vec<crate::validation::ValidationEntry> {
+        ctx.errors()
+            .into_iter()
+            .filter(|e| e.kind == ErrorKind::InvalidReference)
+            .cloned()
+            .collect()
+    }
+
+    #[test]
+    fn undeclared_boundary_hydro_is_referential_1() {
+        let dir = TempDir::new().unwrap();
+        make_minimal_case(&dir);
+        let mut data = parse_case(&dir);
+        data.boundary_format = Some(BoundaryFormat::Current);
+        undeclared_hydro_seed(&mut data, 999);
+        let mut ctx = ValidationContext::new();
+        validate_referential_integrity(&data, &mut ctx);
+        let inv = boundary_invalid_refs(&ctx);
+        assert_eq!(inv.len(), 1, "got: {inv:?}");
+        assert_eq!(
+            inv[0].file,
+            std::path::Path::new("boundary_conditions.json")
+        );
+        assert_eq!(inv[0].entity.as_deref(), Some("hydros[hydro_id=999]"));
+        assert!(inv[0].message.contains("hydro_id"));
+    }
+
+    #[test]
+    fn undeclared_boundary_hydro_is_reported_once() {
+        let dir = TempDir::new().unwrap();
+        make_minimal_case(&dir);
+        let mut data = parse_case(&dir);
+        data.boundary_format = Some(BoundaryFormat::Current);
+        undeclared_hydro_seed(&mut data, 999);
+        let start = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
+        let end = NaiveDate::from_ymd_opt(2024, 1, 8).unwrap();
+        data.initial_conditions.recent_observations = vec![RecentObservation {
+            hydro_id: EntityId::from(999),
+            start_date: start,
+            end_date: end,
+            value_m3s: 10.0,
+        }];
+        data.initial_conditions.past_defluences = vec![HydroPastDefluence {
+            hydro_id: EntityId::from(999),
+            start_date: start,
+            end_date: end,
+            value_m3s: 10.0,
+        }];
+        let mut ctx = ValidationContext::new();
+        validate_referential_integrity(&data, &mut ctx);
+        let inv = boundary_invalid_refs(&ctx);
+        assert_eq!(inv.len(), 1, "got: {inv:?}");
+        assert_eq!(inv[0].entity.as_deref(), Some("hydros[hydro_id=999]"));
+    }
+
+    #[test]
+    fn undeclared_bounds_only_thermal_is_referential_1() {
+        let dir = TempDir::new().unwrap();
+        make_minimal_case(&dir);
+        let mut data = parse_case(&dir);
+        data.boundary_format = Some(BoundaryFormat::Current);
+        data.post_study_stages = Some(PostStudyStages {
+            thermal_stages: vec![],
+            thermal_bounds: vec![PostStudyThermalBound {
+                thermal_id: EntityId::from(777),
+                post_study_stage_index: 0,
+                cost_per_mwh: 1.0,
+                min_mw: 0.0,
+                max_mw: 10.0,
+            }],
+            water_bucket_stages: WaterBucketStages::Declared(vec![]),
+        });
+        let mut ctx = ValidationContext::new();
+        validate_referential_integrity(&data, &mut ctx);
+        let inv = boundary_invalid_refs(&ctx);
+        assert_eq!(inv.len(), 1, "got: {inv:?}");
+        assert_eq!(
+            inv[0].file,
+            std::path::Path::new("boundary_conditions.json")
+        );
+        assert_eq!(inv[0].entity.as_deref(), Some("thermals[thermal_id=777]"));
+
+        data.initial_conditions.past_anticipated_commitments = vec![AnticipatedCommitmentHistory {
+            thermal_id: EntityId::from(777),
+            start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
+            end_date: NaiveDate::from_ymd_opt(2024, 1, 8).unwrap(),
+            value_mw: 5.0,
+        }];
+        let mut ctx = ValidationContext::new();
+        validate_referential_integrity(&data, &mut ctx);
+        assert!(
+            boundary_invalid_refs(&ctx).is_empty(),
+            "a thermal with commitments is reported by semantic.5a.15 only"
+        );
+    }
+
+    #[test]
+    fn legacy_boundary_format_keeps_undeclared_seed_silent() {
+        let dir = TempDir::new().unwrap();
+        make_minimal_case(&dir);
+        let mut data = parse_case(&dir);
+        data.boundary_format = Some(BoundaryFormat::Legacy(PostStudyFormat::Absent));
+        undeclared_hydro_seed(&mut data, 999);
+        let mut ctx = ValidationContext::new();
+        validate_referential_integrity(&data, &mut ctx);
+        assert!(boundary_invalid_refs(&ctx).is_empty());
     }
 }
