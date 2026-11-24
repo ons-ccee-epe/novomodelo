@@ -171,7 +171,7 @@ impl CtxFixture {
             .set_bus_deficit(ResolvedDeficitSegments::seeded(
                 &self.buses,
                 self.penalties.n_stages(),
-                0,
+                ResolvedDeficitSegments::NO_BLOCK_LAYER,
             ));
         self.positions = EntityPositions::from_slices(
             self.hydros.iter().map(|h| h.id),

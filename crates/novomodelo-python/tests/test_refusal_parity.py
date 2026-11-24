@@ -170,6 +170,33 @@ def _misspelled_hydro_bounds_column(case: pathlib.Path) -> None:
     )
 
 
+def _incomplete_bus_deficit_override_key(case: pathlib.Path) -> None:
+    schema = pa.schema(
+        [
+            pa.field("bus_id", pa.int32(), nullable=False),
+            pa.field("stage_id", pa.int32(), nullable=False),
+            pa.field("block_id", pa.int32()),
+            pa.field("segment_index", pa.int32(), nullable=False),
+            pa.field("depth_mw", pa.float64()),
+        ]
+    )
+    table = pa.table(
+        {
+            "bus_id": [0],
+            "stage_id": [1],
+            "block_id": [None],
+            "segment_index": [0],
+            "depth_mw": [5.0],
+        },
+        schema=schema,
+    )
+    pq.write_table(
+        table,
+        case / "constraints" / "penalty_overrides_bus_deficit.parquet",
+        compression="none",
+    )
+
+
 def _set_policy_path(case: pathlib.Path, policy_path: str) -> None:
     def edit(config: Any) -> None:
         config.setdefault("policy", {})["path"] = policy_path
@@ -642,6 +669,15 @@ ROWS = [
         outcome="BracketedRefusal",
         kind="SchemaViolation",
         fragment='unknown column "max_turbined_m3"; did you mean "max_turbined_m3s"?',
+        error_class_name="ValidationError",
+    ),
+    _row(
+        name="bus_deficit_override_incomplete_key",
+        base_case="deterministic/d63-stage-varying-deficit",
+        mutate=_incomplete_bus_deficit_override_key,
+        outcome="BracketedRefusal",
+        kind="BusinessRuleViolation",
+        fragment="lists segment_index [0] but bus 0 has 2 deficit segment(s)",
         error_class_name="ValidationError",
     ),
     _row(

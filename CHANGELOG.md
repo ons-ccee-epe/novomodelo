@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `constraints/penalty_overrides_bus_deficit.parquet` sets a bus's deficit
+  segment depths per stage, or per block with `block_id`. Each override lists
+  every `segment_index` of the bus's curve; costs stay the curve's. Releases
+  up to 0.21.0 ignore the file.
+
 ### Changed
 
 - **BREAKING:** `deficit_segments` in `system/buses.json` and

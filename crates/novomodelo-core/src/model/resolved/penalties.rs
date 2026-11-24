@@ -9,8 +9,7 @@ use crate::{DeficitSegment, HydroPenalties};
 
 /// Bus penalty values for a given (bus, stage) pair.
 ///
-/// Only `excess_cost`: deficit segments are **not** stage-varying (Penalty System
-/// spec SS3), so the piecewise deficit structure is not duplicated per stage.
+/// The per-stage deficit curve lives in [`ResolvedDeficitSegments`], not here.
 ///
 /// # Examples
 ///

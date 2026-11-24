@@ -34,6 +34,9 @@ pub struct ResolvedDeficitSegments {
 }
 
 impl ResolvedDeficitSegments {
+    /// `max_blocks` for a table that takes no block write; every block reads its stage cell.
+    pub const NO_BLOCK_LAYER: usize = 0;
+
     /// Create the unseeded table that carries no bus.
     #[must_use]
     pub fn empty() -> Self {

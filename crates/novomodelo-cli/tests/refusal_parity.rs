@@ -152,6 +152,15 @@ const ROWS: &[ParityRow] = &[
         fragment: "unknown column \"max_turbined_m3\"; did you mean \"max_turbined_m3s\"?",
     },
     ParityRow {
+        name: "bus_deficit_override_incomplete_key",
+        base_case: "deterministic/d63-stage-varying-deficit",
+        mutate: incomplete_bus_deficit_override_key,
+        outcome: Outcome::BracketedRefusal {
+            kind: "BusinessRuleViolation",
+        },
+        fragment: "lists segment_index [0] but bus 0 has 2 deficit segment(s)",
+    },
+    ParityRow {
         name: "policy_path_empty",
         base_case: "1dtoy",
         mutate: empty_policy_path,
@@ -551,6 +560,31 @@ fn misspelled_hydro_bounds_column(case: &Path) {
     .unwrap();
     fs::create_dir_all(case.join("constraints")).unwrap();
     let path = case.join("constraints/hydro_bounds.parquet");
+    let mut writer = ArrowWriter::try_new(fs::File::create(path).unwrap(), schema, None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+}
+
+fn incomplete_bus_deficit_override_key(case: &Path) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("bus_id", DataType::Int32, false),
+        Field::new("stage_id", DataType::Int32, false),
+        Field::new("block_id", DataType::Int32, true),
+        Field::new("segment_index", DataType::Int32, false),
+        Field::new("depth_mw", DataType::Float64, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(Int32Array::from(vec![0])),
+            Arc::new(Int32Array::from(vec![1])),
+            Arc::new(Int32Array::from(vec![None::<i32>])),
+            Arc::new(Int32Array::from(vec![0])),
+            Arc::new(Float64Array::from(vec![5.0])),
+        ],
+    )
+    .unwrap();
+    let path = case.join("constraints/penalty_overrides_bus_deficit.parquet");
     let mut writer = ArrowWriter::try_new(fs::File::create(path).unwrap(), schema, None).unwrap();
     writer.write(&batch).unwrap();
     writer.close().unwrap();

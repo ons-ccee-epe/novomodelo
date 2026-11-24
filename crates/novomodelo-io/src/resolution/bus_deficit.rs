@@ -2,8 +2,7 @@
 //! stage, block, segment)` deficit table: a stage-wide row replaces the stage
 //! layer's segment, a block row the block layer's, and rows carry depth only, so
 //! cost always comes from the base curve. Validation upstream guarantees
-//! complete keys over known buses, study stages and in-range blocks;
-//! [`resolve_bus_deficit`] skips whatever still fails to resolve, silently.
+//! complete keys over known buses, study stages and in-range blocks.
 
 use std::collections::HashMap;
 

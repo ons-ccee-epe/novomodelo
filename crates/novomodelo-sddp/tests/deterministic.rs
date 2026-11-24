@@ -6904,6 +6904,171 @@ fn d61_stored_water_value_under_the_stage_cost_fold_is_the_substitute_cost() {
     }
 }
 
+// Costs are $/MWh and equal the committed d63 deck's values.
+const D63_CASE: &str = "../../examples/deterministic/d63-stage-varying-deficit";
+const D63_THERMAL_MW: f64 = 30.0;
+const D63_THERMAL_COST: f64 = 10.0;
+const D63_LOAD_MW: f64 = 50.0;
+const D63_ENTITY_DEPTH_MW: f64 = 10.0;
+const D63_STAGE_KEY_DEPTH_MW: f64 = 0.0;
+const D63_BLOCK_KEY_DEPTH_MW: f64 = 18.0;
+const D63_SEG0_COST: f64 = 500.0;
+const D63_SEG1_COST: f64 = 5000.0;
+const D63_STAGE0_HOURS: f64 = 730.0;
+const D63_PEAK_HOURS: f64 = 240.0;
+const D63_OFFPEAK_HOURS: f64 = 490.0;
+const D63_REL_TOL: f64 = 1e-9;
+/// derived: stage 1 holds the PEAK and OFFPEAK blocks.
+const D63_STAGE1_HOURS: f64 = D63_PEAK_HOURS + D63_OFFPEAK_HOURS;
+
+/// derived: `g(d) = 500·d + 5000·(20 − d)`, the deficit part of `f(d)`; the thermal serves its
+/// full 30 MW, so the deficit is `load − thermal = 20` MW and `d` MW of it sit in segment 0.
+const fn d63_deficit_per_hour(depth_mw: f64) -> f64 {
+    D63_SEG0_COST * depth_mw + D63_SEG1_COST * (D63_LOAD_MW - D63_THERMAL_MW - depth_mw)
+}
+
+/// derived: `f(d) = 30·10 + 500·d + 5000·(20 − d)`.
+const fn d63_cost_per_hour(depth_mw: f64) -> f64 {
+    D63_THERMAL_MW * D63_THERMAL_COST + d63_deficit_per_hour(depth_mw)
+}
+
+/// derived: stage 0 prices every hour at the entity curve, `730·g(10)`.
+const D63_STAGE0_DEFICIT_COST: f64 = D63_STAGE0_HOURS * d63_deficit_per_hour(D63_ENTITY_DEPTH_MW);
+/// derived: stage 1 prices PEAK at the block key and OFFPEAK at the stage key,
+/// `240·g(18) + 490·g(0)`.
+const D63_STAGE1_DEFICIT_COST: f64 = D63_PEAK_HOURS * d63_deficit_per_hour(D63_BLOCK_KEY_DEPTH_MW)
+    + D63_OFFPEAK_HOURS * d63_deficit_per_hour(D63_STAGE_KEY_DEPTH_MW);
+/// derived: `730·f(10) + 240·f(18) + 490·f(0)`.
+const D63_EXPECTED_COST: f64 = D63_STAGE0_HOURS * d63_cost_per_hour(D63_ENTITY_DEPTH_MW)
+    + D63_PEAK_HOURS * d63_cost_per_hour(D63_BLOCK_KEY_DEPTH_MW)
+    + D63_OFFPEAK_HOURS * d63_cost_per_hour(D63_STAGE_KEY_DEPTH_MW);
+
+fn d63_stage_deficit_costs(
+    scenario_results: &[novomodelo_sddp::SimulationScenarioResult],
+) -> [f64; 2] {
+    [0, 1].map(|stage| {
+        scenario_results[0].stages[stage]
+            .costs
+            .iter()
+            .find(|cost| cost.block_id.is_none())
+            .unwrap_or_else(|| panic!("D63: stage {stage} cost row must exist"))
+            .deficit_cost
+    })
+}
+
+/// A bus deficit curve overridden per stage and per block prices each hour at the curve of its
+/// own key: the trained bound and each stage's simulated deficit cost equal the closed form,
+/// and none of the listed mistakes would reproduce it.
+#[test]
+fn d63_override_deck_matches_closed_form_oracle() {
+    let (result, scenario_results, _summary) = run_with_simulation(Path::new(D63_CASE));
+
+    assert_cost(
+        result.final_lb,
+        D63_EXPECTED_COST,
+        D63_REL_TOL * D63_EXPECTED_COST.abs(),
+        "D63 LB",
+    );
+    assert_cost(
+        result.final_lb,
+        result.final_ub,
+        D63_REL_TOL * result.final_ub.abs(),
+        "D63 LB vs UB",
+    );
+    let [stage0, stage1] = d63_stage_deficit_costs(&scenario_results);
+    assert_cost(
+        stage0,
+        D63_STAGE0_DEFICIT_COST,
+        D63_REL_TOL * D63_STAGE0_DEFICIT_COST.abs(),
+        "D63 stage 0 deficit cost",
+    );
+    assert_cost(
+        stage1,
+        D63_STAGE1_DEFICIT_COST,
+        D63_REL_TOL * D63_STAGE1_DEFICIT_COST.abs(),
+        "D63 stage 1 deficit cost",
+    );
+
+    let entity = d63_cost_per_hour(D63_ENTITY_DEPTH_MW);
+    let stage_key = d63_cost_per_hour(D63_STAGE_KEY_DEPTH_MW);
+    let block_key = d63_cost_per_hour(D63_BLOCK_KEY_DEPTH_MW);
+    let (h0, h1) = (D63_STAGE0_HOURS, D63_STAGE1_HOURS);
+    let (peak, offpeak) = (D63_PEAK_HOURS, D63_OFFPEAK_HOURS);
+    let vectors: [(&str, f64, f64); 8] = [
+        (
+            "the correct costs",
+            h0 * entity,
+            peak * block_key + offpeak * stage_key,
+        ),
+        ("override ignored", h0 * entity, h1 * entity),
+        ("block rows ignored", h0 * entity, h1 * stage_key),
+        (
+            "stage row ignored",
+            h0 * entity,
+            peak * block_key + offpeak * entity,
+        ),
+        (
+            "block row applied to every block",
+            h0 * entity,
+            h1 * block_key,
+        ),
+        (
+            "block row on the wrong block",
+            h0 * entity,
+            peak * stage_key + offpeak * block_key,
+        ),
+        (
+            "stage row leaks into stage 0",
+            h0 * stage_key,
+            peak * block_key + offpeak * stage_key,
+        ),
+        ("stage index shifted", h0 * block_key, h1 * entity),
+    ];
+    for (i, &(name, stage0_cost, stage1_cost)) in vectors.iter().enumerate() {
+        for &(other, other_stage0_cost, other_stage1_cost) in &vectors[i + 1..] {
+            assert!(
+                (stage0_cost - other_stage0_cost).abs() > 1.0
+                    || (stage1_cost - other_stage1_cost).abs() > 1.0,
+                "D63: the oracle cannot tell \"{name}\" ({stage0_cost}, {stage1_cost}) from \
+                 \"{other}\" ({other_stage0_cost}, {other_stage1_cost})"
+            );
+        }
+    }
+}
+
+/// The same deck without its override file prices every hour at the entity curve, so it trains
+/// to the single-block total of d09 and each stage's deficit cost is that of its own hours.
+#[test]
+fn d63_twin_without_override_reproduces_d09() {
+    let case = copy_case_dir(Path::new(D63_CASE));
+    std::fs::remove_file(
+        case.path()
+            .join("constraints/penalty_overrides_bus_deficit.parquet"),
+    )
+    .expect("D63 twin: the deck must carry the override file this test removes");
+
+    let (result, scenario_results, _summary) = run_with_simulation(case.path());
+
+    assert_cost(
+        result.final_lb,
+        D09_EXPECTED_COST,
+        D63_REL_TOL * D09_EXPECTED_COST.abs(),
+        "D63 twin LB",
+    );
+    let entity_deficit_per_hour = d63_deficit_per_hour(D63_ENTITY_DEPTH_MW);
+    let stage_hours = [D63_STAGE0_HOURS, D63_STAGE1_HOURS];
+    let costs = d63_stage_deficit_costs(&scenario_results);
+    for (stage, (cost, hours)) in costs.into_iter().zip(stage_hours).enumerate() {
+        let expected = hours * entity_deficit_per_hour;
+        assert_cost(
+            cost,
+            expected,
+            D63_REL_TOL * expected.abs(),
+            &format!("D63 twin stage {stage} deficit cost"),
+        );
+    }
+}
+
 /// D53: a per-cell min-turbine floor genuinely BINDS under water starvation —
 /// the behavioral fixture for the per-cell min-floor reversal (spec §7.9,
 /// `.claude/rules/sddp.md`'s min-floor contract).

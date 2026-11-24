@@ -14,8 +14,8 @@
 //! | `stage_id`     | INT32  | Yes      | Stage ID                          |
 //! | `excess_cost`  | DOUBLE | No       | Excess injection cost (USD/`MWh`) |
 //!
-//! Note: Bus deficit segments are NOT stage-varying (Penalty System spec SS3).
-//! Only `excess_cost` is overrideable per stage for buses.
+//! Bus deficit-segment depths are overridden per stage in
+//! [`penalty_overrides_bus_deficit`](super::penalty_overrides_bus_deficit), not here.
 //!
 //! ### `penalty_overrides_line`
 //!
@@ -95,9 +95,6 @@ fn optional_value(col: Option<&Float64Array>, row: usize) -> Option<f64> {
 /// Carries a stage-varying penalty cost override for a bus. The `excess_cost`
 /// field is `None` when the column is absent or null in the Parquet file
 /// (sparse storage: absent means "use entity-level or global default").
-///
-/// Note: Bus deficit segment costs are NOT stage-varying per the Penalty System
-/// spec (SS3). Only `excess_cost` is overrideable per stage.
 ///
 /// # Examples
 ///

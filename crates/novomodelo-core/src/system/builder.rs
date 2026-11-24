@@ -534,7 +534,11 @@ fn seed_or_check_bus_deficit(
     let n_stages = penalties.n_stages();
     let table = penalties.bus_deficit();
     if !table.is_seeded() {
-        penalties.set_bus_deficit(ResolvedDeficitSegments::seeded(buses, n_stages, 0));
+        penalties.set_bus_deficit(ResolvedDeficitSegments::seeded(
+            buses,
+            n_stages,
+            ResolvedDeficitSegments::NO_BLOCK_LAYER,
+        ));
         return;
     }
     if table.n_stages() != n_stages {
@@ -980,7 +984,7 @@ mod tests {
             penalties.set_bus_deficit(ResolvedDeficitSegments::seeded(
                 table_buses,
                 table_stages,
-                0,
+                ResolvedDeficitSegments::NO_BLOCK_LAYER,
             ));
             SystemBuilder::new()
                 .buses(buses.clone())
@@ -1010,7 +1014,8 @@ mod tests {
             bus_with_segment_costs(1, &[500.0, 1000.0]),
             bus_with_segment_costs(2, &[300.0, 600.0]),
         ];
-        let mut table = ResolvedDeficitSegments::seeded(&buses, 2, 0);
+        let mut table =
+            ResolvedDeficitSegments::seeded(&buses, 2, ResolvedDeficitSegments::NO_BLOCK_LAYER);
         table
             .stage_segment_mut(1, 1, 0)
             .expect("bus 1, stage 1, segment 0 is in range")

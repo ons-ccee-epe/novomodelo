@@ -48,10 +48,12 @@ impl PyBus {
         &self.bus().name
     }
 
-    /// Pre-resolved piecewise-linear deficit cost segments.
+    /// The bus's base piecewise-linear deficit cost curve.
     ///
     /// Each segment is returned as a dict with keys `"depth_mw"` (float or
     /// `None` for the final unbounded segment) and `"cost_per_mwh"` (float).
+    /// Per-stage and per-block depths from
+    /// `constraints/penalty_overrides_bus_deficit.parquet` are not reflected.
     #[getter]
     fn deficit_segments<'py>(&self, py: Python<'py>) -> PyResult<Vec<Bound<'py, PyDict>>> {
         self.bus()
