@@ -5299,7 +5299,9 @@ maturity lag) plays no part in the join, for a reason distinct from anticipated'
 non-monotone-residue one: two buckets of one downstream plant at different lags
 have disjoint arrival intervals (each stamped from its own arrival stage on the
 study stages extended by the water calendar — the declared
-`water_bucket_stages`, or the thermal post-study stages on the padded-thermal path;
+`post_study_water_stages` in `stages.json` (or the `water_bucket_stages` key of
+the deprecated `post_study_stages.json`), or the thermal post-study stages on
+the padded-thermal path;
 Water calendar paths below) and are told apart by that alone; re-introducing
 `subindex` into the join would reject a legitimate source whose lag indexing
 differs from the current study's. Under an identical source/current arrival
@@ -5654,8 +5656,10 @@ that must not be flattened into one shared keep-live helper:
   the ring's own slots, held open `(-inf, inf)` by `fill_anticipated_slot_columns`
   whenever reachable — the `freeze_masked_columns` reachability geometry over the
   whole `anticipated_slot_row_pos`, never a boundary-conditional appended block. Its
-  EXISTENCE is gated on the study declaring a `post_study_stages.json` calendar (the
-  only thing that extends the delivery axis past the horizon:
+  EXISTENCE is gated on the study declaring a post-study thermal calendar —
+  `post_study_thermal_stages` in `stages.json`, or the
+  deprecated `post_study_stages.json` (the only thing that extends the delivery
+  axis past the horizon:
   `StateSpace::n_delivery` is the attached resolution's decider length, the
   study stages plus the post-study continuation, so
   `build_anticipated_slot_row_pos` gates reachability on `m < n_delivery`, not
@@ -5664,7 +5668,9 @@ that must not be flattened into one shared keep-live helper:
   `m >= n_stages` slot is masked `[0, 0]`, none created (End-of-horizon masking
   above). This is the re-derived form of the asymmetry, NOT its collapse: water
   gates terminal live-STATE on `config.policy.boundary` presence; anticipated gates
-  post-study slot EXISTENCE on a declared `post_study_stages.json` plus lead reach.
+  post-study slot EXISTENCE on a declared post-study thermal calendar
+  (`post_study_thermal_stages`, or the deprecated `post_study_stages.json`) plus
+  lead reach.
   Applying water's `config.policy.boundary` gate to the anticipated ring — masking a
   reachable post-study slot `[0, 0]` unless a boundary is loaded — is the
   wrong-but-compiling alternative: a legitimate `min_mw == max_mw` replay deck with
@@ -5772,9 +5778,11 @@ The bucket state stays a pure function of stage lengths, never of
   Deriving any part of the depth inside a block-aware code path re-couples the
   state dimension to how a stage happens to be resolved. The water calendar
   reaches the depth arithmetic through one of two paths (Water calendar paths
-  below): a deck declaring `water_bucket_stages` is resolved on the study
+  below): a deck declaring a water calendar (`post_study_water_stages` in
+  `stages.json`, or the `water_bucket_stages` key of the
+  deprecated `post_study_stages.json`) is resolved on the study
   stages plus that calendar UNPADDED, and must cover the deepest travel time
-  or setup refuses it; a deck without `post_study_stages.json` is resolved on
+  or setup refuses it; a deck declaring no water calendar is resolved on
   the study stages plus the thermal post-study stages, padded by
   `extend_for_resolution`, which is reachable only through `resolution_base`'s
   `WaterDeliveryBasis::PaddedThermal` arm.
@@ -5825,12 +5833,16 @@ The transit-bucket water calendar has exactly two paths, selected once per study
 by `WaterDeliveryBasis::of` from the core `WaterBucketStages` carried on
 `PostStudyStages`:
 
-- **Declared (`WaterBucketStages::Declared`, the `water_bucket_stages` key of
-  `post_study_stages.json`).** `DeliveryCalendar::water` is the study stages plus
+- **Declared (`WaterBucketStages::Declared`: `post_study_water_stages` in
+  `stages.json`, or the `water_bucket_stages` key of the
+  deprecated `post_study_stages.json`).** `DeliveryCalendar::water` is the study stages plus
   the declared water stages, and `resolution_base`'s `Declared` arm borrows it
   UNPADDED — no padding, no fallback to the thermal calendar.
 - **Padded thermal (`WaterBucketStages::FromThermalStages`, the core default: no
-  post-study file).** `DeliveryCalendar::water` is `DeliveryCalendar::thermal`,
+  post-study calendar in `stages.json` and no deprecated `post_study_stages.json`;
+  on a deck with a travel-time arc only the legacy file set reaches it, since the
+  current format refuses an arc deck without `post_study_water_stages`).**
+  `DeliveryCalendar::water` is `DeliveryCalendar::thermal`,
   and `resolution_base`'s `PaddedThermal` arm pads it with `extend_for_resolution`. That
   arm is `extend_for_resolution`'s only production caller; the pad never exists
   on the declared path. This path is recorded debt: it exists for decks without
@@ -5868,7 +5880,8 @@ the frozen digest. Four invariants hold across the two paths:
 - **Bucket slots are dated from the water calendar, never from the pad.**
   `build_stage_entity_manifest` dates a `HydroTransitBucket` slot's arrival
   interval over the study stages extended by `DeliveryCalendar::water`: the
-  declared `water_bucket_stages` on the declared path, with or without a loaded
+  declared `post_study_water_stages` (or the deprecated `water_bucket_stages`)
+  on the declared path, with or without a loaded
   boundary; the thermal post-study stages on the padded-thermal path. A slot
   whose arrival lands past that calendar carries the sentinel. Anticipated ring
   slots stay on `DeliveryCalendar::thermal`. Dating a bucket from the thermal
@@ -6042,6 +6055,35 @@ converted class-4 record carries no reject/infeasibility language),
 `test_v2_v3_v4_and_v5_violations_are_all_reported` (multi-violation), and
 `test_reference_shaped_fixed_post_horizon_deck_loads` (a reference-shaped
 deck loads clean).
+
+### Post-study thermal ids continue the delivery axis
+
+Stage `j` of `post_study_thermal_stages`, taken in `start_date` order, has id
+`max_study_id + 1 + j`: the post-study thermal calendar continues the study's
+delivery axis without a gap. The parse-time check `validate_thermal_continuation`
+refuses any other declared id. Both sides compute the same continuation: io's
+`post_study_thermal_stage_id` (used by `build_extended_delivery_axis` and the
+current-format diagnostics) and sddp's `TimeValue::delivery_stage_ids` (the study
+ids chained with the last study id plus one onward, a strictly increasing sequence
+`commissioning_active` relies on). A legacy deck, which declares no ids, gets
+the identical synthesized sequence on both sides.
+
+Numbering post-study stages by declaration order or from the water calendar, or
+letting one side read the declared ids while the other synthesizes them, is the
+wrong-but-compiling alternative: either drift makes a `post_study_bounds`
+`stage_id`, a diagnostic and the solver's commissioning gate name different
+delivery stages. Pinned by
+`extended_delivery_axis_continues_into_the_declared_post_study_ids`
+(`crates/novomodelo-io/src/validation/semantic/thermal.rs`) and
+`delivery_stage_ids_continue_into_the_declared_post_study_ids`
+(`crates/novomodelo-sddp/src/time_value.rs`); each compares its side to the ids
+declared in `stages.json`.
+
+Read: `crates/novomodelo-io/src/validation/semantic/thermal.rs`
+(`post_study_thermal_stage_id`, `build_extended_delivery_axis`),
+`crates/novomodelo-io/src/stages.rs` (`validate_thermal_continuation`),
+`crates/novomodelo-sddp/src/time_value.rs` (`TimeValue::from_system`,
+`delivery_stage_ids`).
 
 ### The ring axis: the delivery axis with the fixed post-horizon window excised
 
