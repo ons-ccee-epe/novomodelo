@@ -11,7 +11,10 @@
 
 use std::path::Path;
 
+use novomodelo_core::System;
+use novomodelo_io::LoadError;
 use novomodelo_io::{load_case, validate_case};
+use serde_json::json;
 use tempfile::TempDir;
 
 mod helpers;
@@ -1424,4 +1427,701 @@ fn thermal_bound_index_out_of_range_rejected() {
             && msg.contains("post_study_stage_index 3 is out of range for 1 post-study stage(s)"),
         "error should name the out-of-range index, got: {msg}"
     );
+}
+
+// ── new-format twins ──────────────────────────────────────────────────────
+
+/// `(start_date, days)` of the seven contiguous 30-day post-study stages that
+/// start at the four-stage study's horizon end ([`write_four_stage_study`]).
+const SEVEN_STAGES: [(&str, u32); 7] = [
+    ("2024-04-30", 30),
+    ("2024-05-30", 30),
+    ("2024-06-29", 30),
+    ("2024-07-29", 30),
+    ("2024-08-28", 30),
+    ("2024-09-27", 30),
+    ("2024-10-27", 30),
+];
+
+/// Zero-MW windows tiling the four study stages and post-study stages 0-2.
+const TILED_WINDOWS: [(&str, &str, f64); 7] = [
+    ("2024-01-01", "2024-01-31", 0.0),
+    ("2024-01-31", "2024-03-01", 0.0),
+    ("2024-03-01", "2024-03-31", 0.0),
+    ("2024-03-31", "2024-04-30", 0.0),
+    ("2024-04-30", "2024-05-30", 0.0),
+    ("2024-05-30", "2024-06-29", 0.0),
+    ("2024-06-29", "2024-07-29", 0.0),
+];
+
+/// `(post_study_stage_index, cost_per_mwh, min_mw, max_mw)` for post-study
+/// stages 3-6, the ones a 5040h lead leaves to the study.
+const CARRIED_BOUNDS: [(usize, f64, f64, f64); 4] = [
+    (3, 100.0, 0.0, 300.0),
+    (4, 100.0, 0.0, 300.0),
+    (5, 100.0, 0.0, 300.0),
+    (6, 100.0, 0.0, 300.0),
+];
+
+fn write_plain_thermal_86(root: &Path) {
+    write_file(
+        root,
+        "system/thermals.json",
+        r#"{
+          "thermals": [
+            {
+                "id": 86,
+                "name": "T_PLAIN",
+                "operational_start_date": "2024-01-01",
+                "bus_id": 1,
+                "cost_per_mwh": 10.0,
+                "generation": { "min_mw": 0.0, "max_mw": 300.0 }
+            }
+          ]
+        }"#,
+    );
+}
+
+fn four_stage_lead_5040(root: &Path) {
+    write_four_stage_study(root);
+    write_anticipated_thermal_86(root, 5040.0);
+}
+
+/// Rewrites the deck in `root` to the `boundary_conditions.json` file set,
+/// carrying thermal 86's `commitments` and `bounds`
+/// (`(post_study_stage_index, cost_per_mwh, min_mw, max_mw)`). `post_study_days`
+/// (`(start_date, days)`, any order) become `post_study_thermal_stages` in
+/// `stages.json`, with ids `max_study_id + 1 + j` in start-date order; the
+/// legacy files are deleted.
+fn write_boundary_twin(
+    root: &Path,
+    commitments: &[(&str, &str, f64)],
+    post_study_days: &[(&str, u32)],
+    bounds: &[(usize, f64, f64, f64)],
+) {
+    let mut stages: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(root.join("stages.json")).unwrap()).unwrap();
+    let max_study_id = stages["stages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|stage| stage["id"].as_i64().unwrap())
+        .max()
+        .unwrap();
+    let stage_id = |index: usize| max_study_id + 1 + i64::try_from(index).unwrap();
+
+    let mut calendar: Vec<(chrono::NaiveDate, chrono::NaiveDate)> = post_study_days
+        .iter()
+        .map(|(start, days)| {
+            let start: chrono::NaiveDate = start.parse().unwrap();
+            (start, start + chrono::Days::new(u64::from(*days)))
+        })
+        .collect();
+    calendar.sort();
+    if !calendar.is_empty() {
+        stages["post_study_thermal_stages"] = calendar
+            .iter()
+            .enumerate()
+            .map(|(index, (start, end))| {
+                json!({
+                    "id": stage_id(index),
+                    "start_date": start.to_string(),
+                    "end_date": end.to_string(),
+                })
+            })
+            .collect();
+    }
+    write_file(root, "stages.json", &stages.to_string());
+
+    let thermals = if commitments.is_empty() && bounds.is_empty() {
+        Vec::new()
+    } else {
+        vec![json!({
+            "thermal_id": 86,
+            "commitments": commitments
+                .iter()
+                .map(|(start_date, end_date, value_mw)| {
+                    json!({ "start_date": start_date, "end_date": end_date, "value_mw": value_mw })
+                })
+                .collect::<Vec<_>>(),
+            "post_study_bounds": bounds
+                .iter()
+                .map(|(index, cost_per_mwh, min_mw, max_mw)| {
+                    json!({
+                        "stage_id": stage_id(*index),
+                        "cost_per_mwh": cost_per_mwh,
+                        "min_mw": min_mw,
+                        "max_mw": max_mw,
+                    })
+                })
+                .collect::<Vec<_>>(),
+        })]
+    };
+    write_file(
+        root,
+        "boundary_conditions.json",
+        &json!({ "hydros": [], "thermals": thermals }).to_string(),
+    );
+    for legacy_file in ["initial_conditions.json", "post_study_stages.json"] {
+        let _ = std::fs::remove_file(root.join(legacy_file));
+    }
+}
+
+/// Writes the legacy `post_study_stages.json` for the data
+/// [`write_boundary_twin`] takes; no file when `post_study_days` is empty.
+fn write_legacy_post_study(
+    root: &Path,
+    post_study_days: &[(&str, u32)],
+    bounds: &[(usize, f64, f64, f64)],
+) {
+    if post_study_days.is_empty() {
+        return;
+    }
+    write_file(
+        root,
+        "post_study_stages.json",
+        &json!({
+            "thermal_stages": post_study_days
+                .iter()
+                .map(|(start_date, days)| {
+                    json!({ "start_date": start_date, "duration_hours": f64::from(*days) * 24.0 })
+                })
+                .collect::<Vec<_>>(),
+            "thermal_bounds": bounds
+                .iter()
+                .map(|(index, cost_per_mwh, min_mw, max_mw)| {
+                    json!({
+                        "thermal_id": 86,
+                        "post_study_stage_index": index,
+                        "cost_per_mwh": cost_per_mwh,
+                        "min_mw": min_mw,
+                        "max_mw": max_mw,
+                    })
+                })
+                .collect::<Vec<_>>(),
+        })
+        .to_string(),
+    );
+}
+
+/// A legacy deck and its new-format twin carrying the same boundary data;
+/// `setup` writes the study calendar and thermal declarations both share.
+fn twin_decks(
+    setup: impl Fn(&Path),
+    commitments: &[(&str, &str, f64)],
+    post_study_days: &[(&str, u32)],
+    bounds: &[(usize, f64, f64, f64)],
+) -> (TempDir, TempDir) {
+    let legacy = TempDir::new().unwrap();
+    make_minimal_case(&legacy);
+    setup(legacy.path());
+    write_ic_with_commitments(legacy.path(), commitments);
+    write_legacy_post_study(legacy.path(), post_study_days, bounds);
+
+    let current = TempDir::new().unwrap();
+    make_minimal_case(&current);
+    setup(current.path());
+    write_boundary_twin(current.path(), commitments, post_study_days, bounds);
+    (legacy, current)
+}
+
+/// Both decks load to the same initial conditions and post-study stages,
+/// `duration_hours` bit for bit.
+fn assert_twins_agree(legacy_dir: &Path, current_dir: &Path) {
+    let legacy =
+        load_case(legacy_dir).unwrap_or_else(|e| panic!("the legacy deck must load, got: {e}"));
+    let current = load_case(current_dir)
+        .unwrap_or_else(|e| panic!("the new-format deck must load, got: {e}"));
+    assert_eq!(
+        legacy.initial_conditions(),
+        current.initial_conditions(),
+        "the readers must agree on the initial conditions"
+    );
+    assert_eq!(
+        legacy.post_study_stages(),
+        current.post_study_stages(),
+        "the readers must agree on the post-study stages"
+    );
+    let duration_bits = |system: &System| {
+        system.post_study_stages().map(|post_study| {
+            post_study
+                .thermal_stages
+                .iter()
+                .map(|stage| stage.duration_hours.to_bits())
+                .collect::<Vec<_>>()
+        })
+    };
+    assert_eq!(
+        duration_bits(&legacy),
+        duration_bits(&current),
+        "the readers must agree on every duration_hours bit pattern"
+    );
+}
+
+/// Both decks fail validation with the same number of error lines and the same
+/// multiset of `[ErrorKind]` prefixes. Returns the `(legacy, new-format)` error text.
+fn assert_twins_rejected_alike(legacy_dir: &Path, current_dir: &Path) -> (String, String) {
+    fn rejection(dir: &Path, label: &str) -> String {
+        match validate_case(dir) {
+            Err(LoadError::ConstraintError { description }) => description,
+            Err(other) => panic!("the {label} deck must fail with a ConstraintError, got: {other}"),
+            Ok(_) => panic!("the {label} deck must be rejected"),
+        }
+    }
+    fn kinds(description: &str) -> Vec<&str> {
+        let mut kinds: Vec<&str> = description
+            .lines()
+            .map(|line| line.split(']').next().unwrap_or(line))
+            .collect();
+        kinds.sort_unstable();
+        kinds
+    }
+
+    let legacy = rejection(legacy_dir, "legacy");
+    let current = rejection(current_dir, "new-format");
+    assert_eq!(
+        legacy.lines().count(),
+        current.lines().count(),
+        "the readers must report the same number of errors\nlegacy:\n{legacy}\nnew format:\n{current}"
+    );
+    assert_eq!(
+        kinds(&legacy),
+        kinds(&current),
+        "the readers must report the same error kinds\nlegacy:\n{legacy}\nnew format:\n{current}"
+    );
+    (legacy, current)
+}
+
+#[test]
+fn test_present_carries_sorted_post_study_stages_onto_system_twin() {
+    let (legacy, current) = twin_decks(
+        write_plain_thermal_86,
+        &[],
+        &[("2024-03-01", 31), ("2024-02-01", 29)],
+        &[(1, 220.0, 0.0, 300.0), (0, 210.0, 0.0, 350.0)],
+    );
+    assert_twins_agree(legacy.path(), current.path());
+}
+
+#[test]
+fn test_absent_yields_none_and_is_additive_twin() {
+    let (legacy, current) = twin_decks(|_| {}, &[], &[], &[]);
+    assert_twins_agree(legacy.path(), current.path());
+}
+
+#[test]
+fn test_first_start_not_study_end_rejected_twin() {
+    let (legacy, current) = twin_decks(|_| {}, &[], &[("2024-03-01", 31)], &[]);
+    assert_twins_rejected_alike(legacy.path(), current.path());
+}
+
+#[test]
+fn test_non_contiguous_stages_rejected_twin() {
+    let (legacy, current) = twin_decks(|_| {}, &[], &[("2024-02-01", 29), ("2024-04-01", 30)], &[]);
+    assert_twins_rejected_alike(legacy.path(), current.path());
+}
+
+#[test]
+fn test_lead_exceeds_horizon_without_post_study_rejected_twin() {
+    let (legacy, current) = twin_decks(
+        |root| write_anticipated_thermal_86(root, 1440.0),
+        &[("2024-01-01", "2024-02-01", 0.0)],
+        &[],
+        &[],
+    );
+    assert_twins_rejected_alike(legacy.path(), current.path());
+}
+
+#[test]
+fn test_missing_post_study_bound_cell_rejected_twin() {
+    let (legacy, current) = twin_decks(
+        |root| write_anticipated_thermal_86(root, 744.0),
+        &[("2024-01-01", "2024-02-01", 0.0)],
+        &[("2024-02-01", 29)],
+        &[],
+    );
+    let (_, current_msg) = assert_twins_rejected_alike(legacy.path(), current.path());
+    assert!(
+        current_msg.contains("boundary_conditions.json")
+            && current_msg.contains("stage 1 is decided in-study")
+            && !current_msg.contains("post_study_stage_index"),
+        "the new-format error should name the stage id and boundary_conditions.json, got: {current_msg}"
+    );
+}
+
+#[test]
+fn test_pre_study_decided_post_study_delivery_loads_when_tiled_twin() {
+    let (legacy, current) = twin_decks(
+        |root| write_anticipated_thermal_86(root, 1440.0),
+        &[
+            ("2024-01-01", "2024-02-01", 0.0),
+            ("2024-02-01", "2024-03-01", 0.0),
+        ],
+        &[("2024-02-01", 29), ("2024-03-01", 31)],
+        &[(1, 220.0, 0.0, 350.0)],
+    );
+    assert_twins_agree(legacy.path(), current.path());
+}
+
+#[test]
+fn test_valid_covered_delivery_loads_twin() {
+    let (legacy, current) = twin_decks(
+        |root| write_anticipated_thermal_86(root, 744.0),
+        &[("2024-01-01", "2024-02-01", 0.0)],
+        &[("2024-02-01", 29)],
+        &[(0, 210.0, 0.0, 350.0)],
+    );
+    assert_twins_agree(legacy.path(), current.path());
+}
+
+#[test]
+fn test_declaration_order_invariance_through_system_twin() {
+    for (days, bounds) in [
+        (
+            [("2024-02-01", 29), ("2024-03-01", 31)],
+            [(0, 210.0, 0.0, 350.0), (1, 220.0, 0.0, 300.0)],
+        ),
+        (
+            [("2024-03-01", 31), ("2024-02-01", 29)],
+            [(1, 220.0, 0.0, 300.0), (0, 210.0, 0.0, 350.0)],
+        ),
+    ] {
+        let (legacy, current) = twin_decks(write_plain_thermal_86, &[], &days, &bounds);
+        assert_twins_agree(legacy.path(), current.path());
+    }
+}
+
+#[test]
+fn test_straddling_commitment_window_rejected_twin() {
+    let (legacy, current) = twin_decks(
+        |root| write_anticipated_thermal_86(root, 744.0),
+        &[("2024-01-15", "2024-02-15", 0.0)],
+        &[],
+        &[],
+    );
+    assert_twins_rejected_alike(legacy.path(), current.path());
+}
+
+#[test]
+fn test_horizon_split_commitment_window_pair_loads_cleanly_twin() {
+    let (legacy, current) = twin_decks(
+        |root| write_anticipated_thermal_86(root, 1440.0),
+        &[
+            ("2024-01-01", "2024-02-01", 0.0),
+            ("2024-02-01", "2024-03-01", 0.0),
+        ],
+        &[("2024-02-01", 29), ("2024-03-01", 31)],
+        &[(1, 220.0, 0.0, 350.0)],
+    );
+    assert_twins_agree(legacy.path(), current.path());
+}
+
+#[test]
+fn test_fixed_post_horizon_windows_tiling_class_four_stages_loads_twin() {
+    let (legacy, current) = twin_decks(
+        four_stage_lead_5040,
+        &TILED_WINDOWS,
+        &SEVEN_STAGES,
+        &CARRIED_BOUNDS,
+    );
+    assert_twins_agree(legacy.path(), current.path());
+}
+
+#[test]
+fn test_untiled_fixed_post_horizon_stage_rejected_twin() {
+    let (legacy, current) = twin_decks(
+        four_stage_lead_5040,
+        &TILED_WINDOWS[..6],
+        &SEVEN_STAGES,
+        &CARRIED_BOUNDS,
+    );
+    assert_twins_rejected_alike(legacy.path(), current.path());
+}
+
+#[test]
+fn test_empty_class_four_set_requires_no_post_horizon_window_twin() {
+    let (legacy, current) = twin_decks(
+        |root| write_anticipated_thermal_86(root, 744.0),
+        &[("2024-01-01", "2024-02-01", 0.0)],
+        &[("2024-02-01", 29)],
+        &[(0, 210.0, 0.0, 350.0)],
+    );
+    assert_twins_agree(legacy.path(), current.path());
+}
+
+#[test]
+fn test_commissioning_inactive_post_study_stage_requires_no_window_twin() {
+    let (legacy, current) = twin_decks(
+        |root| write_anticipated_thermal_86_with_exit(root, 744.0, 1),
+        &[("2024-01-01", "2024-02-01", 0.0)],
+        &[("2024-02-01", 29), ("2024-03-01", 31), ("2024-04-01", 30)],
+        &[],
+    );
+    assert_twins_agree(legacy.path(), current.path());
+}
+
+#[test]
+fn test_missing_bound_cell_and_untiled_fixed_window_both_reported_twin() {
+    let (legacy, current) = twin_decks(
+        four_stage_lead_5040,
+        &TILED_WINDOWS[..6],
+        &SEVEN_STAGES,
+        &CARRIED_BOUNDS[1..],
+    );
+    assert_twins_rejected_alike(legacy.path(), current.path());
+}
+
+#[test]
+fn test_window_on_a_study_decided_post_study_stage_rejected_twin() {
+    let windows = [&TILED_WINDOWS[..], &[("2024-07-29", "2024-08-28", 0.0)]].concat();
+    let (legacy, current) = twin_decks(
+        four_stage_lead_5040,
+        &windows,
+        &SEVEN_STAGES,
+        &CARRIED_BOUNDS,
+    );
+    assert_twins_rejected_alike(legacy.path(), current.path());
+}
+
+#[test]
+fn test_window_beyond_the_decision_reach_rejected_twin() {
+    let (legacy, current) = twin_decks(
+        |root| {
+            write_four_stage_study(root);
+            write_anticipated_thermal_86(root, 1440.0);
+        },
+        &[
+            ("2024-01-01", "2024-01-31", 0.0),
+            ("2024-01-31", "2024-03-01", 0.0),
+            ("2024-10-27", "2024-11-26", 0.0),
+        ],
+        &SEVEN_STAGES,
+        &[(0, 100.0, 0.0, 300.0), (1, 100.0, 0.0, 300.0)],
+    );
+    assert_twins_rejected_alike(legacy.path(), current.path());
+}
+
+#[test]
+fn test_window_confined_to_the_fixed_set_accepted_twin() {
+    let (legacy, current) = twin_decks(
+        four_stage_lead_5040,
+        &TILED_WINDOWS,
+        &SEVEN_STAGES,
+        &CARRIED_BOUNDS,
+    );
+    assert_twins_agree(legacy.path(), current.path());
+}
+
+#[test]
+fn test_window_on_a_commissioning_inactive_post_study_stage_accepted_twin() {
+    let (legacy, current) = twin_decks(
+        |root| write_anticipated_thermal_86_with_exit(root, 744.0, 1),
+        &[
+            ("2024-01-01", "2024-02-01", 0.0),
+            ("2024-02-01", "2024-03-01", 0.0),
+        ],
+        &[("2024-02-01", 29), ("2024-03-01", 31), ("2024-04-01", 30)],
+        &[],
+    );
+    assert_twins_agree(legacy.path(), current.path());
+}
+
+#[test]
+fn test_v2_and_v3_failures_both_reported_twin() {
+    let windows = [&TILED_WINDOWS[..6], &[("2024-07-29", "2024-08-28", 0.0)]].concat();
+    let (legacy, current) = twin_decks(
+        four_stage_lead_5040,
+        &windows,
+        &SEVEN_STAGES,
+        &CARRIED_BOUNDS,
+    );
+    assert_twins_rejected_alike(legacy.path(), current.path());
+}
+
+#[test]
+fn test_untiled_fixed_window_and_out_of_envelope_value_both_reported_twin() {
+    let (legacy, current) = twin_decks(
+        four_stage_lead_5040,
+        &[
+            ("2024-01-01", "2024-01-31", 0.0),
+            ("2024-01-31", "2024-03-01", 0.0),
+            ("2024-03-01", "2024-03-31", 0.0),
+            ("2024-03-31", "2024-04-30", 0.0),
+            ("2024-04-30", "2024-05-30", 500.0),
+            ("2024-05-30", "2024-06-29", 0.0),
+        ],
+        &SEVEN_STAGES,
+        &CARRIED_BOUNDS,
+    );
+    assert_twins_rejected_alike(legacy.path(), current.path());
+}
+
+#[test]
+fn test_nonzero_fixed_commitment_outside_commissioning_window_rejected_twin() {
+    let (legacy, current) = twin_decks(
+        |root| write_anticipated_thermal_86_with_exit(root, 744.0, 1),
+        &[
+            ("2024-01-01", "2024-02-01", 0.0),
+            ("2024-02-01", "2024-05-01", 120.0),
+        ],
+        &[("2024-02-01", 29), ("2024-03-01", 31), ("2024-04-01", 30)],
+        &[],
+    );
+    assert_twins_rejected_alike(legacy.path(), current.path());
+}
+
+#[test]
+fn test_zero_fixed_commitment_outside_commissioning_window_accepted_twin() {
+    let (legacy, current) = twin_decks(
+        |root| write_anticipated_thermal_86_with_exit(root, 744.0, 1),
+        &[
+            ("2024-01-01", "2024-02-01", 0.0),
+            ("2024-02-01", "2024-05-01", 0.0),
+        ],
+        &[("2024-02-01", 29), ("2024-03-01", 31), ("2024-04-01", 30)],
+        &[],
+    );
+    assert_twins_agree(legacy.path(), current.path());
+}
+
+#[test]
+fn test_windowless_plant_fixed_commitment_accepted_twin() {
+    let (legacy, current) = twin_decks(
+        |root| write_anticipated_thermal_86(root, 1440.0),
+        &[
+            ("2024-01-01", "2024-02-01", 0.0),
+            ("2024-02-01", "2024-03-01", 120.0),
+        ],
+        &[("2024-02-01", 29), ("2024-03-01", 31)],
+        &[(1, 220.0, 0.0, 350.0)],
+    );
+    assert_twins_agree(legacy.path(), current.path());
+}
+
+#[test]
+fn test_fixed_commitment_inside_commissioning_window_accepted_twin() {
+    let mut windows = TILED_WINDOWS;
+    windows[5].2 = 150.0;
+    let (legacy, current) = twin_decks(
+        |root| {
+            write_four_stage_study(root);
+            write_anticipated_thermal_86_with_exit(root, 5040.0, 100);
+        },
+        &windows,
+        &SEVEN_STAGES,
+        &CARRIED_BOUNDS,
+    );
+    assert_twins_agree(legacy.path(), current.path());
+}
+
+#[test]
+fn test_fixed_commitment_window_message_makes_no_infeasibility_claim_twin() {
+    let (legacy, current) = twin_decks(
+        |root| write_anticipated_thermal_86_with_exit(root, 744.0, 1),
+        &[
+            ("2024-01-01", "2024-02-01", 0.0),
+            ("2024-02-01", "2024-03-01", 120.0),
+        ],
+        &[("2024-02-01", 29)],
+        &[],
+    );
+    assert_twins_rejected_alike(legacy.path(), current.path());
+}
+
+#[test]
+fn test_reference_shaped_fixed_post_horizon_deck_loads_twin() {
+    let (legacy, current) = twin_decks(
+        four_stage_lead_5040,
+        &TILED_WINDOWS,
+        &SEVEN_STAGES,
+        &CARRIED_BOUNDS,
+    );
+    assert_twins_agree(legacy.path(), current.path());
+}
+
+#[test]
+fn test_v2_v3_v4_and_v5_violations_are_all_reported_twin() {
+    let (legacy, current) = twin_decks(
+        |root| {
+            write_four_stage_study(root);
+            write_anticipated_thermal_86_with_exit(root, 5040.0, 9);
+        },
+        &[
+            ("2024-01-01", "2024-01-31", 0.0),
+            ("2024-01-31", "2024-03-01", 0.0),
+            ("2024-03-01", "2024-03-31", 0.0),
+            ("2024-03-31", "2024-04-30", 0.0),
+            ("2024-04-30", "2024-05-30", 500.0),
+            ("2024-05-30", "2024-06-29", 0.0),
+            ("2024-07-29", "2024-08-28", 0.0),
+            ("2024-09-27", "2024-10-27", 120.0),
+        ],
+        &SEVEN_STAGES,
+        &CARRIED_BOUNDS[..2],
+    );
+    assert_twins_rejected_alike(legacy.path(), current.path());
+}
+
+#[test]
+fn test_no_diagnostic_advises_shortening_the_lead_twin() {
+    const FORBIDDEN_ADVICE_FRAGMENTS: [&str; 2] = ["no carrier", "Shorten the lead"];
+
+    let mut diagnostics: Vec<String> = Vec::new();
+    for (legacy, current) in [
+        twin_decks(
+            four_stage_lead_5040,
+            &TILED_WINDOWS,
+            &SEVEN_STAGES,
+            &CARRIED_BOUNDS,
+        ),
+        twin_decks(
+            |root| write_anticipated_thermal_86(root, 1440.0),
+            &[
+                ("2024-01-01", "2024-02-01", 0.0),
+                ("2024-02-01", "2024-03-01", 0.0),
+            ],
+            &[("2024-02-01", 29), ("2024-03-01", 31)],
+            &[(1, 220.0, 0.0, 350.0)],
+        ),
+    ] {
+        assert_twins_agree(legacy.path(), current.path());
+        let (_, report) = validate_case(current.path())
+            .unwrap_or_else(|e| panic!("the new-format deck must load, got: {e}"));
+        diagnostics.extend(report.errors.into_iter().map(|entry| entry.message));
+        diagnostics.extend(report.warnings.into_iter().map(|entry| entry.message));
+    }
+
+    for fragment in FORBIDDEN_ADVICE_FRAGMENTS {
+        assert!(
+            !diagnostics.iter().any(|m| m.contains(fragment)),
+            "the advice fragment {fragment:?} must never appear in any new-format \
+             diagnostic, got: {diagnostics:?}"
+        );
+    }
+}
+
+#[test]
+fn test_commitment_window_declaration_order_invariance_through_system_twin() {
+    let mut reversed_windows = TILED_WINDOWS;
+    reversed_windows.reverse();
+    for windows in [TILED_WINDOWS, reversed_windows] {
+        let (legacy, current) = twin_decks(
+            four_stage_lead_5040,
+            &windows,
+            &SEVEN_STAGES,
+            &CARRIED_BOUNDS,
+        );
+        assert_twins_agree(legacy.path(), current.path());
+    }
+}
+
+#[test]
+fn thermal_bound_index_out_of_range_rejected_twin() {
+    let (legacy, current) = twin_decks(
+        |_| {},
+        &[],
+        &[("2024-02-01", 29)],
+        &[(3, 210.0, 0.0, 350.0)],
+    );
+    assert_twins_rejected_alike(legacy.path(), current.path());
 }
