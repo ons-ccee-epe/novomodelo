@@ -2396,7 +2396,7 @@ mod arc_deck_legacy_twin_topology {
     const REFUSED_KEY_TWIN: &str =
         "crates/novomodelo-sddp/tests/unswept_fixtures/dual_calendar_boundary";
 
-    fn deck_path(deck_key: &str) -> PathBuf {
+    pub(super) fn deck_path(deck_key: &str) -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
             .join(deck_key)
@@ -2526,6 +2526,83 @@ mod arc_deck_legacy_twin_topology {
         assert_eq!(
             covered, expected,
             "every arc deck with a loadable legacy twin must be compared with its twin"
+        );
+    }
+}
+
+mod boundary_reader_twin_agreement {
+    //! Every migrated deck builds the `System` of its legacy twin
+    //! (`Generation::InitialConditions`): the boundary-conditions reader on the
+    //! committed files and the legacy reader on the twin agree. `PartialEq`
+    //! equates `0.0` and `-0.0`, which `serde_json` writes apart, so the
+    //! serialized bytes are compared as well.
+
+    use std::path::Path;
+
+    use novomodelo_core::System;
+    use novomodelo_io::load_case;
+    use novomodelo_sddp::test_support::unmigrated_inputs::{
+        Generation, deck_keys, materialize_twin,
+    };
+    use tempfile::TempDir;
+
+    use super::arc_deck_legacy_twin_topology::deck_path;
+    use super::common::copy_toy_case;
+
+    const OVERLAY_DIR: &str = "tests/unswept_fixtures/unmigrated_inputs/initial_conditions";
+
+    fn load_with_bytes(deck_key: &str, side: &str, dir: &Path) -> (System, Vec<u8>) {
+        let system = load_case(dir)
+            .unwrap_or_else(|e| panic!("{deck_key}: loading the {side} deck failed: {e}"));
+        let bytes = serde_json::to_vec(&system)
+            .unwrap_or_else(|e| panic!("{deck_key}: serializing the {side} System failed: {e}"));
+        (system, bytes)
+    }
+
+    // Read the overlay directory itself, not through `deck_keys`, so the loop
+    // under test and its oracle share no listing code.
+    fn overlay_dir_count() -> usize {
+        std::fs::read_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join(OVERLAY_DIR))
+            .expect("read the overlay directory")
+            .filter(|entry| {
+                entry
+                    .as_ref()
+                    .expect("overlay directory entry")
+                    .path()
+                    .is_dir()
+            })
+            .count()
+    }
+
+    #[test]
+    fn every_migrated_deck_builds_the_system_of_its_legacy_twin() {
+        let mut covered = 0;
+        for deck_key in deck_keys(Generation::InitialConditions) {
+            let (migrated, migrated_bytes) =
+                load_with_bytes(&deck_key, "migrated", &deck_path(&deck_key));
+
+            let twin_dir = TempDir::new().unwrap_or_else(|e| panic!("{deck_key}: tempdir: {e}"));
+            copy_toy_case(&deck_path(&deck_key), twin_dir.path());
+            materialize_twin(Generation::InitialConditions, &deck_key, twin_dir.path())
+                .unwrap_or_else(|e| panic!("{deck_key}: the legacy overlay must materialize: {e}"));
+            let (twin, twin_bytes) = load_with_bytes(&deck_key, "legacy twin", twin_dir.path());
+
+            assert!(
+                migrated_bytes == twin_bytes,
+                "{deck_key}: the migrated System serializes differently from its legacy twin's"
+            );
+            assert!(
+                migrated == twin,
+                "{deck_key}: the migrated System differs from its legacy twin's"
+            );
+            covered += 1;
+        }
+
+        assert!(covered > 0, "no deck has an initial_conditions overlay");
+        assert_eq!(
+            covered,
+            overlay_dir_count(),
+            "every initial_conditions overlay must be compared with its deck"
         );
     }
 }
