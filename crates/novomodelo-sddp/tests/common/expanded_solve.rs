@@ -5,6 +5,7 @@
 use std::collections::{HashMap, HashSet};
 
 use novomodelo_core::temporal::StageLagTransition;
+use novomodelo_io::config::InflowResidualDistribution;
 use novomodelo_sddp::indexer::{CutSlot, CutStateProjection, HydroSys, StateDim};
 use novomodelo_sddp::setup::StageIdx;
 use novomodelo_sddp::test_support::bound_recording::{
@@ -23,6 +24,7 @@ use novomodelo_solver::{
     ActiveSolver, Basis, BasisStatus, FreezeScratch, LpSolution, RowBatch, SolverInterface,
     StageTemplate, freeze_rows_into_template,
 };
+use novomodelo_stochastic::{add_noise_term_batch, evaluate_lognormal_noise_term_batch};
 
 use super::StubComm;
 use super::oracle_tolerance::{
@@ -273,10 +275,29 @@ pub fn hydro_noise_slot(setup: &StudySetup) -> usize {
         .start
 }
 
-/// derived: the realized inflow of hydro 0 at `stage` for opening `opening`,
-/// `ẑ = (b + Σ_l ψ_l·a_l) + σ·η`, with `a_l` the incoming lag `lags[l]` and `η` the opening's hydro
-/// noise; independent of the production inflow and lag code.
+/// derived: [`realized_inflow_with`] under the study's own `inflow_residual`.
 pub fn realized_inflow(setup: &StudySetup, stage: usize, opening: usize, lags: &[f64]) -> f64 {
+    realized_inflow_with(
+        setup,
+        stage,
+        opening,
+        lags,
+        setup.training_ctx().inflow_residual,
+    )
+}
+
+/// derived: the realized inflow of hydro 0 at `stage` for opening `opening`, with
+/// `p = b + Σ_l ψ_l·a_l` for the incoming lag `a_l = lags[l]` and `η` the opening's hydro noise;
+/// independent of the production inflow and lag code. Under `Normal` it is `ẑ = p + σ·η`; under
+/// `Lognormal3p` it is `ẑ = p + w`, with `w` the lognormal noise term at `p` and `η` of a study
+/// with one hydro.
+pub fn realized_inflow_with(
+    setup: &StudySetup,
+    stage: usize,
+    opening: usize,
+    lags: &[f64],
+    distribution: InflowResidualDistribution,
+) -> f64 {
     let training_ctx = setup.training_ctx();
     let par = training_ctx.stochastic.par();
     let mean = par.deterministic_base(stage, 0)
@@ -286,8 +307,21 @@ pub fn realized_inflow(setup: &StudySetup, stage: usize, opening: usize, lags: &
             .enumerate()
             .map(|(l, psi)| psi * lags[l])
             .sum::<f64>();
-    mean + par.sigma(stage, 0)
-        * training_ctx.stochastic.tree_view().opening(stage, opening)[hydro_noise_slot(setup)]
+    let noise =
+        training_ctx.stochastic.tree_view().opening(stage, opening)[hydro_noise_slot(setup)];
+    match distribution {
+        InflowResidualDistribution::Normal => mean + par.sigma(stage, 0) * noise,
+        InflowResidualDistribution::Lognormal3p => {
+            assert_eq!(
+                training_ctx.state.hydro_count, 1,
+                "realized_inflow_with: the lognormal form reads one hydro"
+            );
+            let (mut term, mut realized) = ([0.0], [0.0]);
+            evaluate_lognormal_noise_term_batch(par, stage, &[mean], &[noise], &mut term);
+            add_noise_term_batch(&[mean], &term, &mut realized);
+            realized[0]
+        }
+    }
 }
 
 fn row_entry(coefficient: f64, weight: f64, col_scale: f64) -> f64 {

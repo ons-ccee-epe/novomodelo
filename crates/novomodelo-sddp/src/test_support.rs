@@ -33,11 +33,11 @@ use novomodelo_core::{
 use novomodelo_io::StageIdResolver;
 use novomodelo_io::config::{
     BackwardScheduler, Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
-    InflowNonNegativityMethod, ModelingConfig, ParallelismConfig, PolicyConfig,
-    RawClassConfigEntry, RawSamplingScheme, RawScenarioSourceConfig, RowSelectionConfig,
-    SelectionMethod, SimulationConfig as IoSimulationConfig, SimulationSelection, StoppingMode,
-    StoppingRuleConfig, TrainingConfig, TrainingSelection, TrainingSolverConfig,
-    UpperBoundEvaluationConfig,
+    InflowNonNegativityMethod, InflowResidualConfig, InflowResidualDistribution, ModelingConfig,
+    ParallelismConfig, PolicyConfig, RawClassConfigEntry, RawSamplingScheme,
+    RawScenarioSourceConfig, RowSelectionConfig, SelectionMethod,
+    SimulationConfig as IoSimulationConfig, SimulationSelection, StoppingMode, StoppingRuleConfig,
+    TrainingConfig, TrainingSelection, TrainingSolverConfig, UpperBoundEvaluationConfig,
 };
 use novomodelo_io::test_support::{
     checkpoint_manifest_defaults, piece_defaults, producer_block_defaults,
@@ -1239,6 +1239,7 @@ impl TrainingContextFixture {
             cut_state_layouts: &self.cut_state_layouts,
             study_dims: &self.study_dims,
             inflow_method: &self.study_dims.inflow_method,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &self.stochastic,
             initial_state: &self.initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -3065,6 +3066,7 @@ pub(crate) fn k_fan_config(forward_passes: u32, max_iterations: u32) -> Config {
             inflow_non_negativity: InflowNonNegativityConfig {
                 method: InflowNonNegativityMethod::None,
             },
+            inflow_residual: InflowResidualConfig::default(),
             cost_scale_factor: None,
         },
         training: TrainingConfig {

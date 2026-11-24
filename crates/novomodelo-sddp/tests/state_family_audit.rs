@@ -45,9 +45,9 @@ mod inflow_lag_audit {
     };
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
-        InflowNonNegativityMethod, ModelingConfig, ParallelismConfig, PolicyConfig,
-        RowSelectionConfig, SimulationConfig, StoppingMode, StoppingRuleConfig, TrainingConfig,
-        TrainingSelection, TrainingSolverConfig, UpperBoundEvaluationConfig,
+        InflowNonNegativityMethod, InflowResidualConfig, ModelingConfig, ParallelismConfig,
+        PolicyConfig, RowSelectionConfig, SimulationConfig, StoppingMode, StoppingRuleConfig,
+        TrainingConfig, TrainingSelection, TrainingSolverConfig, UpperBoundEvaluationConfig,
     };
     use novomodelo_sddp::StudySetup;
     use novomodelo_sddp::setup::StageIdx;
@@ -267,6 +267,7 @@ mod inflow_lag_audit {
                 inflow_non_negativity: InflowNonNegativityConfig {
                     method: InflowNonNegativityMethod::Penalty,
                 },
+                inflow_residual: InflowResidualConfig::default(),
                 cost_scale_factor: None,
             },
             training: TrainingConfig {
@@ -369,9 +370,9 @@ mod prefilling_audit {
     };
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
-        InflowNonNegativityMethod, ModelingConfig, ParallelismConfig, PolicyConfig,
-        RowSelectionConfig, SimulationConfig, StoppingMode, StoppingRuleConfig, TrainingConfig,
-        TrainingSelection, TrainingSolverConfig, UpperBoundEvaluationConfig,
+        InflowNonNegativityMethod, InflowResidualConfig, ModelingConfig, ParallelismConfig,
+        PolicyConfig, RowSelectionConfig, SimulationConfig, StoppingMode, StoppingRuleConfig,
+        TrainingConfig, TrainingSelection, TrainingSolverConfig, UpperBoundEvaluationConfig,
     };
     use novomodelo_sddp::test_support::stage_state_box_bounds;
 
@@ -589,6 +590,7 @@ mod prefilling_audit {
                 inflow_non_negativity: InflowNonNegativityConfig {
                     method: InflowNonNegativityMethod::Penalty,
                 },
+                inflow_residual: InflowResidualConfig::default(),
                 cost_scale_factor: None,
             },
             training: TrainingConfig {

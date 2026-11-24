@@ -925,4 +925,32 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn config_schema_lists_the_inflow_residual_distributions() {
+        let schemas = generate_schemas().unwrap();
+        let config = schema_named(&schemas, "config.schema.json");
+        let pointer = "/$defs/InflowResidualDistribution";
+        let definition = config
+            .pointer(pointer)
+            .unwrap_or_else(|| panic!("config.schema.json has no {pointer}"));
+
+        let listed: Vec<&Value> = match (definition.get("oneOf"), definition.get("enum")) {
+            (Some(Value::Array(variants)), _) => {
+                variants.iter().map(|variant| &variant["const"]).collect()
+            }
+            (_, Some(Value::Array(values))) => values.iter().collect(),
+            _ => panic!("{pointer} has neither a oneOf nor an enum array: {definition}"),
+        };
+        let mut accepted: Vec<&str> = listed
+            .into_iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .unwrap_or_else(|| panic!("{pointer} lists a non-string value: {value}"))
+            })
+            .collect();
+        accepted.sort_unstable();
+        assert_eq!(accepted, ["lognormal_3p", "normal"]);
+    }
 }

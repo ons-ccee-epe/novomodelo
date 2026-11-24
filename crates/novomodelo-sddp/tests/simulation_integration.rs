@@ -14,7 +14,9 @@
 // seam from `common::builders` — a no-op today, not dead code.
 #![allow(clippy::needless_update)]
 
-use novomodelo_io::config::{SimulationSelection, StoppingRuleConfig, TrainingSelection};
+use novomodelo_io::config::{
+    InflowResidualDistribution, SimulationSelection, StoppingRuleConfig, TrainingSelection,
+};
 use novomodelo_io::test_support::{producer_block_defaults, stage_cuts_payload_defaults};
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
@@ -457,8 +459,8 @@ impl Fixture {
 
 fn make_config() -> Config {
     use novomodelo_io::config::{
-        CheckpointingConfig, ExportsConfig, InflowNonNegativityConfig, ModelingConfig,
-        PolicyConfig, RowSelectionConfig, SimulationConfig as IoSimulationConfig,
+        CheckpointingConfig, ExportsConfig, InflowNonNegativityConfig, InflowResidualConfig,
+        ModelingConfig, PolicyConfig, RowSelectionConfig, SimulationConfig as IoSimulationConfig,
         StoppingRuleConfig, TrainingConfig as IoTrainingConfig, TrainingSolverConfig,
         UpperBoundEvaluationConfig,
     };
@@ -466,6 +468,7 @@ fn make_config() -> Config {
         schema: None,
         modeling: ModelingConfig {
             inflow_non_negativity: InflowNonNegativityConfig::default(),
+            inflow_residual: InflowResidualConfig::default(),
             cost_scale_factor: None,
         },
         training: IoTrainingConfig {
@@ -653,6 +656,7 @@ fn train_simulate_write_cycle() {
         cut_state_layouts: &cut_state_layouts,
         study_dims: &study_dims,
         inflow_method: &InflowNonNegativityMethod::None,
+        inflow_residual: InflowResidualDistribution::Normal,
         stochastic: &fx.stochastic,
         initial_state: &fx.initial_state,
         inflow_scheme: SamplingScheme::InSample,
@@ -1322,6 +1326,7 @@ fn simulation_min_outflow_slack_extracted_from_primal() {
         cut_state_layouts: &cut_state_layouts,
         study_dims: &study_dims,
         inflow_method: &InflowNonNegativityMethod::None,
+        inflow_residual: InflowResidualDistribution::Normal,
         stochastic: &stochastic,
         initial_state: &initial_state,
         inflow_scheme: SamplingScheme::InSample,
@@ -1490,6 +1495,7 @@ fn enumerated_census_k1_matches_sampled_single_scenario() {
         cut_state_layouts: &cut_state_layouts,
         study_dims: &study_dims,
         inflow_method: &InflowNonNegativityMethod::None,
+        inflow_residual: InflowResidualDistribution::Normal,
         stochastic: &fx.stochastic,
         initial_state: &fx.initial_state,
         inflow_scheme: SamplingScheme::InSample,

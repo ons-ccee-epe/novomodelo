@@ -11,6 +11,9 @@ use arrow::array::{ArrayRef, Float64Array, Int32Array};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use assert_cmd::prelude::*;
+use novomodelo_core::EntityId;
+use novomodelo_io::InflowSeasonalStatsRow;
+use novomodelo_io::output::write_inflow_seasonal_stats;
 use parquet::arrow::ArrowWriter;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use predicates::prelude::*;
@@ -766,6 +769,72 @@ fn simulation_out_of_sample_with_its_own_seed_passes_validate_and_run() {
         ])
         .assert()
         .success();
+}
+
+#[test]
+fn lognormal_3p_validate_warns_about_a_fallback_prone_study_and_run_stays_silent() {
+    const NONPOSITIVE_MEAN: &str = "modeling.inflow_residual.distribution = \"lognormal_3p\": \
+        the seasonal mean inflow is <= 0 at hydro 0 (stages 0, 2); there the inflow takes the \
+        normal residual whenever its conditional mean is not positive";
+    const NEGATIVE_INFLOW: &str = "modeling.inflow_residual.distribution = \"lognormal_3p\" \
+        with modeling.inflow_non_negativity.method = \"none\": an inflow that takes the normal \
+        residual can be negative";
+
+    let dir = TempDir::new().unwrap();
+    copy_dir_recursive(&common::case_dir("1dtoy"), dir.path());
+    let config_path = dir.path().join("config.json");
+    let mut config: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
+    config["modeling"]["inflow_residual"] = serde_json::json!({ "distribution": "lognormal_3p" });
+    config["modeling"]["inflow_non_negativity"] = serde_json::json!({ "method": "none" });
+    config["training"]["stopping_rules"] =
+        serde_json::json!([{ "type": "iteration_limit", "limit": 2 }]);
+    config["simulation"]["selection"]["num_scenarios"] = serde_json::json!(4);
+    fs::write(&config_path, config.to_string()).unwrap();
+    let rows: Vec<_> = (0..4)
+        .map(|stage_id| InflowSeasonalStatsRow {
+            hydro_id: EntityId(0),
+            stage_id,
+            mean_m3s: if stage_id % 2 == 0 { 0.0 } else { 40.0 },
+            std_m3s: 10.0,
+        })
+        .collect();
+    write_inflow_seasonal_stats(
+        &dir.path().join("scenarios/inflow_seasonal_stats.parquet"),
+        &rows,
+    )
+    .unwrap();
+
+    let validate = novomodelo()
+        .args(["validate", dir.path().to_str().unwrap()])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&validate.get_output().stdout).into_owned();
+    for message in [NONPOSITIVE_MEAN, NEGATIVE_INFLOW] {
+        assert_eq!(stdout.matches(message).count(), 1, "stdout: {stdout}");
+    }
+
+    // The run is infeasible at stage 2 (a negative inflow under "none"); only its output is checked.
+    let output = TempDir::new().unwrap();
+    let run = novomodelo()
+        .args([
+            "run",
+            dir.path().to_str().unwrap(),
+            "--output",
+            output.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    let run_stdout = String::from_utf8_lossy(&run.stdout);
+    let run_stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(
+        run_stdout.contains("Training"),
+        "run did not reach training: {run_stdout}{run_stderr}"
+    );
+    for message in [NONPOSITIVE_MEAN, NEGATIVE_INFLOW] {
+        assert!(!run_stdout.contains(message), "stdout: {run_stdout}");
+        assert!(!run_stderr.contains(message), "stderr: {run_stderr}");
+    }
 }
 
 #[test]

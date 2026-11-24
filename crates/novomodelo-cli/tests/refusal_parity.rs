@@ -387,6 +387,41 @@ const ROWS: &[ParityRow] = &[
                    cap, or use sampled forward selection",
     },
     ParityRow {
+        name: "lognormal_3p_with_an_external_training_scheme",
+        base_case: "deterministic/d28-decomp-weekly-monthly",
+        mutate: lognormal_3p,
+        outcome: Outcome::PlainRefusal,
+        fragment: "training.scenario_source.inflow.scheme = \"external\"",
+    },
+    ParityRow {
+        name: "lognormal_3p_with_a_historical_training_scheme",
+        base_case: "deterministic/d26-estimated-par2",
+        mutate: lognormal_3p_with_a_historical_training_scheme,
+        outcome: Outcome::PlainRefusal,
+        fragment: "training.scenario_source.inflow.scheme = \"historical\"",
+    },
+    ParityRow {
+        name: "lognormal_3p_with_a_historical_residuals_stage",
+        base_case: "deterministic/d26-estimated-par2",
+        mutate: lognormal_3p_with_a_historical_residuals_stage,
+        outcome: Outcome::PlainRefusal,
+        fragment: "stages[].sampling_method = \"historical_residuals\" (stage 0)",
+    },
+    ParityRow {
+        name: "lognormal_3p_with_enumerated_training",
+        base_case: "1dtoy",
+        mutate: lognormal_3p_with_enumerated_training,
+        outcome: Outcome::PlainRefusal,
+        fragment: "training.selection.method = \"enumerated\"",
+    },
+    ParityRow {
+        name: "lognormal_3p_with_enumerated_simulation",
+        base_case: "1dtoy",
+        mutate: lognormal_3p_with_enumerated_simulation,
+        outcome: Outcome::PlainRefusal,
+        fragment: "simulation.selection.method = \"enumerated\"",
+    },
+    ParityRow {
         name: "dynamic_simulation_over_deactivated_cuts",
         base_case: "1dtoy",
         mutate: dynamic_simulation_over_deactivated_cuts,
@@ -861,15 +896,55 @@ fn active_row_cap_with_dynamic_selection(case: &Path) {
 }
 
 fn active_row_cap_with_enumerated_training(case: &Path) {
+    one_opening_per_stage(case);
+    edit_json(&case.join("config.json"), |config| {
+        config["training"]["selection"] = json!({"method": "enumerated"});
+    });
+    set_cut_selection(case, json!({"max_active_per_stage": 8}));
+}
+
+fn lognormal_3p(case: &Path) {
+    edit_json(&case.join("config.json"), |config| {
+        config["modeling"]["inflow_residual"] = json!({"distribution": "lognormal_3p"});
+    });
+}
+
+fn one_opening_per_stage(case: &Path) {
     edit_json(&case.join("stages.json"), |stages| {
         for stage in stages["stages"].as_array_mut().unwrap() {
             stage["num_openings"] = json!(1);
         }
     });
+}
+
+fn lognormal_3p_with_a_historical_training_scheme(case: &Path) {
+    lognormal_3p(case);
+    edit_json(&case.join("config.json"), |config| {
+        config["training"]["scenario_source"]["inflow"] = json!({"scheme": "historical"});
+    });
+}
+
+fn lognormal_3p_with_a_historical_residuals_stage(case: &Path) {
+    lognormal_3p(case);
+    edit_json(&case.join("stages.json"), |stages| {
+        stages["stages"][0]["sampling_method"] = json!("historical_residuals");
+    });
+}
+
+fn lognormal_3p_with_enumerated_training(case: &Path) {
+    lognormal_3p(case);
+    one_opening_per_stage(case);
     edit_json(&case.join("config.json"), |config| {
         config["training"]["selection"] = json!({"method": "enumerated"});
     });
-    set_cut_selection(case, json!({"max_active_per_stage": 8}));
+}
+
+fn lognormal_3p_with_enumerated_simulation(case: &Path) {
+    lognormal_3p(case);
+    one_opening_per_stage(case);
+    edit_json(&case.join("config.json"), |config| {
+        config["simulation"]["selection"] = json!({"method": "enumerated"});
+    });
 }
 
 /// A `level1` run deactivates cuts; a `dynamic` simulation of the default

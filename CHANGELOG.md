@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `modeling.inflow_residual.distribution` in `config.json`: `"lognormal_3p"`
+  draws inflow residuals from a three-parameter lognormal bounded below at zero
+  inflow; default `"normal"`. Refused with `external` or `historical` inflows,
+  `enumerated` selection, `historical_residuals` stages or `scenario_id` nodes.
 - `system/hydros.json` accepts `tailrace_flow` (`own_outflow_factor`,
   `outflow_influences`, `incremental_inflow_influences`); bad entries are
   refused and `validate` warns without FPHA. `simulation/hydros` adds

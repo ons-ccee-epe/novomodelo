@@ -42,9 +42,9 @@ use novomodelo_core::{
 };
 use novomodelo_io::config::{
     Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
-    InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, PolicyConfig, RowSelectionConfig,
-    SimulationConfig as IoSimulationConfig, StoppingRuleConfig, TrainingConfig, TrainingSelection,
-    TrainingSolverConfig, UpperBoundEvaluationConfig,
+    InflowNonNegativityMethod as CfgInflowMethod, InflowResidualConfig, ModelingConfig,
+    PolicyConfig, RowSelectionConfig, SimulationConfig as IoSimulationConfig, StoppingRuleConfig,
+    TrainingConfig, TrainingSelection, TrainingSolverConfig, UpperBoundEvaluationConfig,
 };
 use novomodelo_sddp::StudySetup;
 use novomodelo_sddp::hydro_models::{
@@ -330,6 +330,7 @@ fn build_config() -> Config {
             inflow_non_negativity: InflowNonNegativityConfig {
                 method: CfgInflowMethod::None,
             },
+            inflow_residual: InflowResidualConfig::default(),
             cost_scale_factor: None,
         },
         training: TrainingConfig {
@@ -2826,7 +2827,7 @@ fn fpha_lag_stages(options: FphaLagOptions) -> Vec<Stage> {
 
 /// One model per hydro for the study stages and for the two stages before
 /// them, which only supply the lag statistics the coefficient conversion reads.
-fn fpha_lag_inflow_models() -> Vec<InflowModel> {
+fn fpha_lag_inflow_models(reach_the_fallback: bool) -> Vec<InflowModel> {
     [FPHA_LAG_UPSTREAM_ID, FPHA_LAG_DOWNSTREAM_ID]
         .into_iter()
         .enumerate()
@@ -2836,7 +2837,14 @@ fn fpha_lag_inflow_models() -> Vec<InflowModel> {
                 InflowModel {
                     hydro_id,
                     stage_id,
-                    mean_m3s: FPHA_LAG_INFLOW_MEAN_M3S[h][k],
+                    mean_m3s: if reach_the_fallback
+                        && hydro_id == FPHA_LAG_DOWNSTREAM_ID
+                        && stage_id == 1
+                    {
+                        0.0
+                    } else {
+                        FPHA_LAG_INFLOW_MEAN_M3S[h][k]
+                    },
                     std_m3s: FPHA_LAG_INFLOW_STD_M3S[h][k],
                     ar_coefficients: if stage_id >= 0 {
                         FPHA_LAG_AR_COEFFICIENTS[h].to_vec()
@@ -3147,7 +3155,7 @@ fn build_fpha_lag_system(options: FphaLagOptions) -> novomodelo_core::System {
         .hydros(declared("hydro", fpha_lag_hydros(options), reverse))
         .thermals(declared("thermal", fpha_lag_thermals(), reverse))
         .stages(fpha_lag_stages(options))
-        .inflow_models(fpha_lag_inflow_models())
+        .inflow_models(fpha_lag_inflow_models(options.reach_the_fallback))
         .load_models(load_models)
         .bounds(fpha_lag_bounds())
         .penalties(fpha_lag_penalties(options.fpha_violation_cost))
@@ -3213,6 +3221,8 @@ pub struct LateralFactors {
 }
 
 /// Each field is one variation of [`fpha_lag_study`]; the default is the study itself.
+// Rationale (struct_excessive_bools): each flag is an independent variation of the study.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Copy, Debug)]
 pub struct FphaLagOptions {
     /// Noise openings at every stage.
@@ -3227,6 +3237,8 @@ pub struct FphaLagOptions {
     pub fpha_violation_cost: Option<f64>,
     /// Lists `H1` in both influence lists of `H0`'s tailrace flow with these weights, when set.
     pub h0_lateral_from_h1: Option<LateralFactors>,
+    /// Sets the downstream mean of the second study stage to zero and the inflow method to truncation, so some solves have a non-positive conditional mean.
+    pub reach_the_fallback: bool,
 }
 
 impl Default for FphaLagOptions {
@@ -3239,6 +3251,7 @@ impl Default for FphaLagOptions {
             reverse_declaration_order: false,
             fpha_violation_cost: None,
             h0_lateral_from_h1: None,
+            reach_the_fallback: false,
         }
     }
 }
@@ -3267,7 +3280,11 @@ pub fn fpha_lag_study_with(
     );
     let system = build_fpha_lag_system(options);
     let hydro_models = fpha_lag_hydro_models(&system);
-    (system, build_config(), hydro_models)
+    let mut config = build_config();
+    if options.reach_the_fallback {
+        config.modeling.inflow_non_negativity.method = CfgInflowMethod::Truncation;
+    }
+    (system, config, hydro_models)
 }
 
 /// The in-code studies the structural sweep (`for_each_study`) visits after the

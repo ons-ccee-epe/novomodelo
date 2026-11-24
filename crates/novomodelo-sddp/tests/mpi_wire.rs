@@ -1283,7 +1283,7 @@ mod by_node_scratch {
     };
     use novomodelo_core::temporal::{NoiseMethod, ScenarioSourceConfig};
     use novomodelo_core::{EntityId, HydroGenerationModel, SystemBuilder};
-    use novomodelo_io::config::BackwardScheduler;
+    use novomodelo_io::config::{BackwardScheduler, InflowResidualDistribution};
     use novomodelo_sddp::{
         BackwardPassInputs, BackwardPassState, ExchangeBuffers,
         context::TrainingContext,
@@ -1631,6 +1631,7 @@ mod by_node_scratch {
             cut_state_layouts: &all_enabled_cut_state_layouts(&state_layout_fixture, n_stages),
             study_dims: &study_dims_fixture,
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &[],
             inflow_scheme: SamplingScheme::InSample,
@@ -1755,6 +1756,7 @@ mod by_node_scratch {
             cut_state_layouts: &all_enabled_cut_state_layouts(&state_layout_fixture, n_stages),
             study_dims: &study_dims_fixture,
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &[],
             inflow_scheme: SamplingScheme::InSample,
@@ -4098,12 +4100,18 @@ mod compact_fold_determinism {
     //! slice: its leaf pool projects storage and lag but receives no cut, its root
     //! pool storage only. No stub leg runs on the fan: its backward level has
     //! several nodes, where the stub leaves the per-pool count buffer stale.
+    //!
+    //! The lognormal lag study runs the thread and world legs only. It has no
+    //! non-uniform projection leg because the lognormal noise term changes neither a
+    //! projection nor a cut layout, so `d43` under `"normal"` covers that axis; and
+    //! it has no rank-stub or opening-order leg because the world leg covers the rank
+    //! shape and the opening order does not reach the per-trial noise term.
 
     use std::collections::BTreeSet;
     use std::path::Path;
 
     use novomodelo_comm::{BackendKind, LocalBackend, create_communicator};
-    use novomodelo_io::config::BackwardScheduler;
+    use novomodelo_io::config::{BackwardScheduler, InflowResidualDistribution};
     use novomodelo_sddp::indexer::CutStateProjection;
     use novomodelo_sddp::setup::NodePos;
     use novomodelo_sddp::test_support::{
@@ -4116,11 +4124,14 @@ mod compact_fold_determinism {
         assert_world_splits_the_trials, sample, train,
     };
     use crate::common::in_code_studies::{FphaLagOptions, fpha_lag_study_with};
+    use crate::common::lognormal_branches::assert_the_stored_pins_reach_both_branches;
     use crate::common::{
         Rank0Of2, StubComm, build_setup_in_code_with_models, fresh_setup_with_openings,
+        train_storing_trial_states,
     };
 
     const LAG_STUDY: &str = "lag study";
+    const LOGNORMAL_LAG_STUDY: &str = "lognormal lag study";
     const LAG_STUDY_OPENINGS: usize = 3;
     const LAG_STUDY_ITERATIONS: u32 = 3;
     const D43: &str = "d43";
@@ -4142,12 +4153,43 @@ mod compact_fold_determinism {
     };
 
     fn lag_study(forward_passes: u32, iterations: u32) -> StudySetup {
+        lag_study_under(
+            InflowResidualDistribution::Normal,
+            forward_passes,
+            iterations,
+        )
+    }
+
+    fn lognormal_lag_study(forward_passes: u32, iterations: u32) -> StudySetup {
+        lag_study_under(
+            InflowResidualDistribution::Lognormal3p,
+            forward_passes,
+            iterations,
+        )
+    }
+
+    /// The lag study under `distribution`; under `Lognormal3p` it reaches the fallback.
+    fn lag_study_under(
+        distribution: InflowResidualDistribution,
+        forward_passes: u32,
+        iterations: u32,
+    ) -> StudySetup {
         let (system, mut config, hydro_models) = fpha_lag_study_with(FphaLagOptions {
             openings: LAG_STUDY_OPENINGS,
+            reach_the_fallback: distribution == InflowResidualDistribution::Lognormal3p,
             ..FphaLagOptions::default()
         });
+        config.modeling.inflow_residual.distribution = distribution;
         sample(&mut config, forward_passes, iterations);
         build_setup_in_code_with_models(system, &config, hydro_models)
+    }
+
+    /// Trains a probe of the lognormal lag study with its trial states stored, apart
+    /// from the setups the gates compare, and asserts its pins reach both branches.
+    fn assert_the_lognormal_lag_study_reaches_both_branches(forward_passes: u32) {
+        let mut probe = lognormal_lag_study(forward_passes, LAG_STUDY_ITERATIONS);
+        train_storing_trial_states(LOGNORMAL_LAG_STUDY, &mut probe);
+        assert_the_stored_pins_reach_both_branches(LOGNORMAL_LAG_STUDY, &probe);
     }
 
     fn d43(forward_passes: u32, iterations: u32) -> StudySetup {
@@ -4297,6 +4339,14 @@ mod compact_fold_determinism {
     }
 
     #[test]
+    fn compact_by_node_cvar_thread_shapes_agree_on_the_lognormal_lag_study() {
+        assert_the_lognormal_lag_study_reaches_both_branches(THREAD_LEG_FORWARD_PASSES);
+        assert_by_node_cvar_thread_shapes_agree(LOGNORMAL_LAG_STUDY, || {
+            lognormal_lag_study(THREAD_LEG_FORWARD_PASSES, LAG_STUDY_ITERATIONS)
+        });
+    }
+
+    #[test]
     fn compact_by_node_cvar_rank_stub_matches_single_rank_on_the_lag_study() {
         assert_by_node_cvar_rank_stub_matches_single_rank(LAG_STUDY, || {
             lag_study(1, LAG_STUDY_ITERATIONS)
@@ -4387,6 +4437,31 @@ mod compact_fold_determinism {
         let budget = Some(BUDGET_THAT_EVICTS_NOTHING);
         let reference = train(build(), &LocalBackend, 1, LAG_STUDY, budget);
         let on_world = train(build(), &world, 1, LAG_STUDY, budget);
+        assert_matches_single_rank(&world, &on_world, &reference);
+    }
+
+    /// The lognormal twin of [`compact_lag_study_is_world_size_invariant`]. Under
+    /// `cargo test` the world has one rank and the comparison is an identity.
+    #[test]
+    #[cfg_attr(not(feature = "slow-tests"), ignore = "slow: trains on the MPI world")]
+    fn compact_lognormal_lag_study_is_world_size_invariant() {
+        let world =
+            create_communicator(BackendKind::Auto).expect("communicator construction must succeed");
+        let trials = usize::try_from(WORLD_FORWARD_PASSES).unwrap();
+        assert_world_splits_the_trials(LOGNORMAL_LAG_STUDY, &world, trials);
+        assert_the_lognormal_lag_study_reaches_both_branches(WORLD_FORWARD_PASSES);
+
+        let build = || {
+            let setup = by_node_cvar(lognormal_lag_study(
+                WORLD_FORWARD_PASSES,
+                LAG_STUDY_ITERATIONS,
+            ));
+            assert_has_multi_block_stage(LOGNORMAL_LAG_STUDY, &setup);
+            setup
+        };
+        let budget = Some(BUDGET_THAT_EVICTS_NOTHING);
+        let reference = train(build(), &LocalBackend, 1, LOGNORMAL_LAG_STUDY, budget);
+        let on_world = train(build(), &world, 1, LOGNORMAL_LAG_STUDY, budget);
         assert_matches_single_rank(&world, &on_world, &reference);
     }
 

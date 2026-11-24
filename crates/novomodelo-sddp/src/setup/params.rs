@@ -6,7 +6,8 @@ use novomodelo_core::ScalarParameter;
 use novomodelo_io::Config;
 use novomodelo_io::config::{
     BackwardScheduler, CheckpointSchedule, FirstIterationTrialStorage, ForwardPassesResolution,
-    NumScenariosResolution, PhaseSolverProfileConfig, SimulationRowSet, StoppingRuleConfig,
+    InflowResidualDistribution, NumScenariosResolution, PhaseSolverProfileConfig, SimulationRowSet,
+    StoppingRuleConfig,
 };
 use serde::{Deserialize, Serialize};
 
@@ -145,6 +146,8 @@ pub struct StudyParams {
     pub policy_path: String,
     /// Inflow non-negativity enforcement method.
     pub inflow_method: InflowNonNegativityMethod,
+    /// Inflow residual distribution (`modeling.inflow_residual.distribution`).
+    pub inflow_residual: InflowResidualDistribution,
     /// Optional cut selection strategy (None means cut selection is disabled).
     pub cut_selection: Option<CutSelectionStrategy>,
     /// `training.cut_selection.row_activity_tolerance`. Described on
@@ -279,6 +282,7 @@ impl StudyParams {
         let policy_path = config.policy.path.clone();
 
         let inflow_method = InflowNonNegativityMethod::from(&config.modeling.inflow_non_negativity);
+        let inflow_residual = config.modeling.inflow_residual.distribution;
 
         let cut_selection = parse_cut_selection_config(&config.training.cut_selection)
             .map_err(|msg| SddpError::Validation(format!("cut_selection config error: {msg}")))?;
@@ -337,6 +341,7 @@ impl StudyParams {
             io_channel_capacity,
             policy_path,
             inflow_method,
+            inflow_residual,
             cut_selection,
             cut_activity_tolerance,
             budget,
@@ -362,10 +367,11 @@ mod tests {
     use novomodelo_core::{EntityId, ParameterKind, ScalarParameter};
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
-        InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, ParallelismConfig,
-        PolicyConfig, RowSelectionConfig, SimulationConfig as IoSimulationConfig, SimulationRowSet,
-        SimulationSelection, StoppingMode, StoppingRuleConfig, TrainingConfig, TrainingSelection,
-        TrainingSolverConfig, UpperBoundEvaluationConfig,
+        InflowNonNegativityMethod as CfgInflowMethod, InflowResidualConfig, ModelingConfig,
+        ParallelismConfig, PolicyConfig, RowSelectionConfig,
+        SimulationConfig as IoSimulationConfig, SimulationRowSet, SimulationSelection,
+        StoppingMode, StoppingRuleConfig, TrainingConfig, TrainingSelection, TrainingSolverConfig,
+        UpperBoundEvaluationConfig,
     };
     use tracing::{Event, Level, Metadata, Subscriber, span};
 
@@ -448,6 +454,7 @@ mod tests {
                 inflow_non_negativity: InflowNonNegativityConfig {
                     method: CfgInflowMethod::Penalty,
                 },
+                inflow_residual: InflowResidualConfig::default(),
                 cost_scale_factor: None,
             },
             training: TrainingConfig {

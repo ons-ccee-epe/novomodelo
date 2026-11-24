@@ -16,7 +16,7 @@ use novomodelo_io::test_support::owned_piece_defaults;
 use novomodelo_io::{Config, OwnedPolicyCutRecord};
 use novomodelo_sddp::{
     BoundaryLoadRequest, BoundaryStateRequirements, CutPool, SddpError, SimulationScenarioResult,
-    StudySetup,
+    StudySetup, TrainingResult,
     hydro_models::{PrepareHydroModelsResult, prepare_hydro_models},
     indexer::{CutSlot, CutStateProjection},
     inject_boundary_cuts, load_boundary_cuts,
@@ -36,6 +36,7 @@ pub mod determinism_gates;
 pub mod expanded_solve;
 pub mod forward_replay;
 pub mod in_code_studies;
+pub mod lognormal_branches;
 pub mod oracle_tolerance;
 pub mod parity_hash;
 pub mod parquet_fixtures;
@@ -791,21 +792,14 @@ pub fn stored_trial_states(setup: &StudySetup, node: NodePos) -> Vec<Vec<f64>> {
         .unwrap_or_else(|| panic!("the pool of node {node} must project every state dimension"))
 }
 
-/// Train `iterations`, then run the one-scenario simulation and return the drained
+/// Train on `n_threads` threads, then run the simulation and return the drained
 /// per-scenario results.
-pub fn run_simulation(setup: &mut StudySetup, iterations: usize) -> Vec<SimulationScenarioResult> {
+pub fn run_simulation(setup: &mut StudySetup, n_threads: usize) -> Vec<SimulationScenarioResult> {
     let comm = StubComm;
     let mut solver = ActiveSolver::new().expect("ActiveSolver::new: must succeed");
 
     let outcome = setup
-        .train(
-            &mut solver,
-            &comm,
-            iterations,
-            ActiveSolver::new,
-            None,
-            None,
-        )
+        .train(&mut solver, &comm, n_threads, ActiveSolver::new, None, None)
         .expect("training error: train() must not return Err");
     assert!(
         outcome.error.is_none(),
@@ -813,6 +807,16 @@ pub fn run_simulation(setup: &mut StudySetup, iterations: usize) -> Vec<Simulati
         outcome.error,
     );
 
+    simulate_policy(setup, &outcome.result)
+}
+
+/// Run the simulation of `setup` over the policy and bases `result` holds and return
+/// the drained per-scenario results.
+pub fn simulate_policy(
+    setup: &mut StudySetup,
+    result: &TrainingResult,
+) -> Vec<SimulationScenarioResult> {
+    let comm = StubComm;
     let mut pool = setup
         .create_workspace_pool(&comm, 1, ActiveSolver::new)
         .expect("workspace pool error: create_workspace_pool must succeed");
@@ -827,7 +831,7 @@ pub fn run_simulation(setup: &mut StudySetup, iterations: usize) -> Vec<Simulati
             &result_tx,
             None,
             None,
-            &outcome.result.basis_cache,
+            &result.basis_cache,
         )
         .expect("simulation error: simulate() must not return Err");
     // Drop the sender before the join below; a live result_tx keeps

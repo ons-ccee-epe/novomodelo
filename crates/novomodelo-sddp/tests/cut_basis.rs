@@ -4110,10 +4110,10 @@ mod range_warm_start_determinism {
     };
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
-        InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, ParallelismConfig,
-        PolicyConfig, RowSelectionConfig, SimulationConfig as IoSimulationConfig,
-        SimulationSelection, StoppingMode, StoppingRuleConfig, TrainingConfig, TrainingSelection,
-        TrainingSolverConfig,
+        InflowNonNegativityMethod as CfgInflowMethod, InflowResidualConfig, ModelingConfig,
+        ParallelismConfig, PolicyConfig, RowSelectionConfig,
+        SimulationConfig as IoSimulationConfig, SimulationSelection, StoppingMode,
+        StoppingRuleConfig, TrainingConfig, TrainingSelection, TrainingSolverConfig,
     };
     use novomodelo_io::output::policy::{read_policy_checkpoint, write_policy_checkpoint};
     use novomodelo_io::test_support::producer_block_defaults;
@@ -4472,6 +4472,7 @@ mod range_warm_start_determinism {
                 inflow_non_negativity: InflowNonNegativityConfig {
                     method: CfgInflowMethod::None,
                 },
+                inflow_residual: InflowResidualConfig::default(),
                 cost_scale_factor: None,
             },
             training: TrainingConfig {
@@ -5476,7 +5477,8 @@ mod solve_cache_equivalence {
 
     use novomodelo_comm::{BackendKind, Communicator, LocalBackend, create_communicator};
     use novomodelo_io::config::{
-        BackwardScheduler, SelectionMethod, StoppingRuleConfig, TrainingSelection,
+        BackwardScheduler, InflowResidualDistribution, SelectionMethod, StoppingRuleConfig,
+        TrainingSelection,
     };
     use novomodelo_sddp::test_support::decks::committed_decks;
     use novomodelo_sddp::test_support::template_structure::state_lag_dims;
@@ -5522,6 +5524,20 @@ mod solve_cache_equivalence {
             limit: iterations,
         }]);
         config.training.cut_selection.selection = selection;
+        build_setup_in_code_with_models(system, &config, hydro_models)
+    }
+
+    fn lognormal_lag_study() -> StudySetup {
+        let (system, mut config, hydro_models) = fpha_lag_study_with(FphaLagOptions {
+            openings: WORLD_OPENINGS,
+            ..FphaLagOptions::default()
+        });
+        config.training.selection = Some(TrainingSelection::sampled(FORWARD_PASSES));
+        config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit {
+            limit: ITERATIONS,
+        }]);
+        config.training.cut_selection.selection = None;
+        config.modeling.inflow_residual.distribution = InflowResidualDistribution::Lognormal3p;
         build_setup_in_code_with_models(system, &config, hydro_models)
     }
 
@@ -5659,6 +5675,22 @@ mod solve_cache_equivalence {
                 bypassed.1.slab_misses > 0,
                 "{label}: the bypass recomputed no bracket"
             );
+        }
+    }
+
+    #[test]
+    fn lognormal_lag_study_trains_to_the_same_bits_with_the_solve_caches_bypassed() {
+        for backward_scheduler in [BY_SCENARIO, BY_NODE] {
+            let (cached, bypassed) =
+                train_cached_and_bypassed(lognormal_lag_study, &StubComm, backward_scheduler);
+            let label = format!("lognormal {backward_scheduler:?}");
+
+            assert!(
+                stores_a_lag_cut(&cached.0),
+                "{label}: no stored cut has a nonzero lag coefficient"
+            );
+            assert_same_bits(&label, &cached, &bypassed);
+            assert_eq!(cached.1.slab_misses, 0, "{label}: cached slab misses");
         }
     }
 

@@ -482,6 +482,7 @@ mod tests {
     use novomodelo_comm::{CommData, CommError, Communicator, ReduceOp};
     use novomodelo_core::SystemBuilder;
     use novomodelo_core::scenario::SamplingScheme;
+    use novomodelo_io::config::InflowResidualDistribution;
     use novomodelo_solver::ActiveSolver;
     use novomodelo_solver::{
         Basis, RowBatch, SolverError, SolverInterface, SolverStatistics, StageTemplate,
@@ -970,6 +971,7 @@ mod tests {
                 cut_state_layouts: &self.cut_state_layouts,
                 study_dims: &self.study_dims,
                 inflow_method: &self.study_dims.inflow_method,
+                inflow_residual: InflowResidualDistribution::Normal,
                 stochastic: &self.stochastic,
                 initial_state: &self.initial_state,
                 inflow_scheme: SamplingScheme::InSample,
@@ -1883,6 +1885,7 @@ mod tests {
             cut_state_layouts: &cut_state_layouts,
             study_dims: &study_dims,
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stoch,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -2700,6 +2703,7 @@ mod tests {
             cut_state_layouts: &cut_state_layouts,
             study_dims: &study_dims,
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -2784,6 +2788,7 @@ mod tests {
             cut_state_layouts: &cut_state_layouts,
             study_dims: &study_dims,
             inflow_method: &InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &stochastic,
             initial_state: &initial_state,
             inflow_scheme: SamplingScheme::InSample,

@@ -29,9 +29,10 @@ use novomodelo_core::{
 use novomodelo_io::Config;
 use novomodelo_io::config::{
     BackwardScheduler, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
-    InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, ParallelismConfig, PolicyConfig,
-    RowSelectionConfig, SimulationConfig as IoSimulationConfig, StoppingMode, StoppingRuleConfig,
-    TrainingConfig, TrainingSelection, TrainingSolverConfig, UpperBoundEvaluationConfig,
+    InflowNonNegativityMethod as CfgInflowMethod, InflowResidualConfig, InflowResidualDistribution,
+    ModelingConfig, ParallelismConfig, PolicyConfig, RowSelectionConfig,
+    SimulationConfig as IoSimulationConfig, StoppingMode, StoppingRuleConfig, TrainingConfig,
+    TrainingSelection, TrainingSolverConfig, UpperBoundEvaluationConfig,
 };
 use novomodelo_sddp::hydro_models::{
     EvaporationCoefficientSign, EvaporationModel, EvaporationModelSet, FphaPlane,
@@ -54,6 +55,10 @@ use novomodelo_sddp::{
     DEFAULT_COST_SCALE_FACTOR, SolverProfiles, StudySetup, build_cut_row_batch_into,
 };
 use novomodelo_solver::{ActiveSolver, SolverInterface};
+use novomodelo_stochastic::{
+    add_noise_term_batch, evaluate_lognormal_noise_term_batch, evaluate_par_conditional_mean_batch,
+    evaluate_par_noise_term_batch,
+};
 
 use crate::common::builders::{
     BusSpec, HydroSpec, StageSpec, ThermalSpec, make_bus, make_hydro, make_stage, make_thermal,
@@ -649,6 +654,7 @@ fn fixture_config() -> Config {
             inflow_non_negativity: InflowNonNegativityConfig {
                 method: CfgInflowMethod::None,
             },
+            inflow_residual: InflowResidualConfig::default(),
             cost_scale_factor: None,
         },
         training: TrainingConfig {
@@ -709,8 +715,9 @@ fn fixture_hydro_models(case: &StudyCase, system: &System) -> PrepareHydroModels
     models
 }
 
-/// The untrained compact setup of `case` and κ of its stage `stage`, in hm³ per m³/s.
-fn compact_study(case: &StudyCase, stage: usize) -> (StudySetup, f64) {
+/// The untrained compact setup of `case` under `config` and κ of its stage `stage`, in hm³ per
+/// m³/s.
+fn compact_study_with(case: &StudyCase, stage: usize, config: &Config) -> (StudySetup, f64) {
     let system = build_system(case);
     let stage_hours: f64 = system.stages()[stage]
         .blocks
@@ -718,8 +725,13 @@ fn compact_study(case: &StudyCase, stage: usize) -> (StudySetup, f64) {
         .map(|block| block.duration_hours)
         .sum();
     let models = fixture_hydro_models(case, &system);
-    let setup = build_setup_in_code_with_models(system, &fixture_config(), models);
+    let setup = build_setup_in_code_with_models(system, config, models);
     (setup, stage_hours * M3S_TO_HM3)
+}
+
+/// [`compact_study_with`] under [`fixture_config`].
+fn compact_study(case: &StudyCase, stage: usize) -> (StudySetup, f64) {
+    compact_study_with(case, stage, &fixture_config())
 }
 
 /// Appends to `pool` one cut of intercept [`INJECTED_INTERCEPT`] whose coefficient at each
@@ -950,14 +962,24 @@ fn assert_terminal_stage_lag_price(psi_coefficient: f64, block_hours: f64) {
     let fixture = case.name;
     let (setup, kappa) = compact_study(&case, STAGE);
     let x_hat = oracle_initial_state(&setup);
-    let training_ctx = setup.training_ctx();
     let noise = opening_noise(&setup, STAGE);
     let cut = compact_cut(&setup, STAGE, &x_hat, &noise, &[], fixture);
+    assert_terminal_coefficients(fixture, &setup, STAGE, kappa, &cut);
+}
 
-    let extracted = &training_ctx.cut_state_layouts[STAGE - 1];
+/// Checks the storage coefficient of a [`terminal_par1_case`] cut at `stage` against `λ` and its
+/// lag-0 coefficient against `ψ·κ·λ`; returns the lag-0 closed form's bound.
+fn assert_terminal_coefficients(
+    fixture: &str,
+    setup: &StudySetup,
+    stage: usize,
+    kappa: f64,
+    cut: &ProbeCut,
+) -> f64 {
+    let extracted = &setup.training_ctx().cut_state_layouts[stage - 1];
     let storage = storage_slot(extracted, 0);
     let lag = lag_slot(extracted, 1, 0, 0);
-    let psi = psi_at(&setup, STAGE, 0)[0];
+    let psi = psi_at(setup, stage, 0)[0];
     assert_has_power(fixture, "storage coefficient", cut.coefficients[storage]);
     assert_non_degenerate(fixture, "lag-1 coefficient ψ", psi);
     assert_non_degenerate(fixture, "inflow coupling κ", kappa);
@@ -973,21 +995,22 @@ fn assert_terminal_stage_lag_price(psi_coefficient: f64, block_hours: f64) {
         want: lambda,
         n: 5,
         abs_sum: lambda.abs(),
-        added: tol.reduced_cost(incoming_storage_col_scale(&setup, STAGE, 0)),
+        added: tol.reduced_cost(incoming_storage_col_scale(setup, stage, 0)),
     }
     .assert_solved(cut.coefficients[storage]);
     // n = 13: λ (4), κ (2), ψ·κ·λ (2); d·row_scale, G·π, ψ·g and G = −κ (2) solve it;
     // added: |ψ|·κ times the water balance's row-dual tolerance.
-    ClosedForm {
+    let lag_price = ClosedForm {
         fixture,
         quantity: "lag-0 coefficient",
         slot: Some(lag),
         want: psi * kappa * lambda,
         n: 13,
         abs_sum: (psi * kappa * lambda).abs(),
-        added: psi.abs() * kappa * tol.row_dual(coupled_row_scale(&setup, STAGE, 0)),
-    }
-    .assert_solved(cut.coefficients[lag]);
+        added: psi.abs() * kappa * tol.row_dual(coupled_row_scale(setup, stage, 0)),
+    };
+    lag_price.assert_solved(cut.coefficients[lag]);
+    lag_price.bound()
 }
 
 /// derived: the hydro empties into a marginal thermal with no future, so the storage coefficient
@@ -1004,6 +1027,171 @@ fn a_terminal_stage_prices_a_par1_lag_at_psi_kappa_times_the_water_value() {
 fn a_terminal_stage_prices_a_par1_lag_at_psi_kappa_times_the_water_value_on_another_psi_and_stage_length()
  {
     assert_terminal_stage_lag_price(TERMINAL_TWIN_PSI, FORTNIGHT_HOURS);
+}
+
+/// Hydro draws η away from ±1, where `∂w/∂p` vanishes to second order.
+const LOGNORMAL_DRAWS: [f64; 3] = [-1.8, -0.6, 1.5];
+const LOGNORMAL_MEAN_STEP: f64 = 1e-4;
+const LOGNORMAL_TERM_MARGIN: f64 = 10.0;
+
+struct LognormalDraw {
+    eta: f64,
+    z_hat: f64,
+    objective: f64,
+    objective_abs_sum: f64,
+    lognormal_shift: f64,
+}
+
+/// derived: under `"lognormal_3p"` the LP receives `ẑ = p + w(p, σ, η)` and the chain rule
+/// freezes `w` at the trial state, so the storage coefficient is `λ` and the lag-0 coefficient
+/// `ψ·κ·λ`, with no `ψ·κ·λ·∂w/∂p` term; the thermal stays marginal and the storage empties at
+/// every draw, so the objective moves by `λ·κ` per m³/s of realized inflow.
+fn assert_lognormal_terminal_stage_lag_price(psi_coefficient: f64, block_hours: f64) {
+    const STAGE: usize = 1;
+    let case = StudyCase {
+        name: "terminal PAR(1) under a lognormal residual",
+        ..terminal_par1_case(psi_coefficient, block_hours)
+    };
+    let fixture = case.name;
+    let mut config = fixture_config();
+    config.modeling.inflow_residual.distribution = InflowResidualDistribution::Lognormal3p;
+    let (setup, kappa) = compact_study_with(&case, STAGE, &config);
+    let x_hat = oracle_initial_state(&setup);
+    let training_ctx = setup.training_ctx();
+    let par = training_ctx.stochastic.par();
+    let mut mean = [0.0];
+    evaluate_par_conditional_mean_batch(
+        par,
+        STAGE,
+        &x_hat[state_lag_dims(training_ctx.state)],
+        &mut mean,
+    );
+    let [p] = mean;
+    let sigma = par.sigma(STAGE, 0);
+    let ratio = sigma / p;
+    assert!(
+        p > 0.0 && (ratio * ratio).is_finite(),
+        "{fixture}: the conditional mean {p:e} at σ {sigma:e} takes the normal term, so no draw \
+         reaches the lognormal one"
+    );
+    let lognormal_term = |mean: f64, eta: f64| {
+        let mut term = [0.0];
+        evaluate_lognormal_noise_term_batch(par, STAGE, &[mean], &[eta], &mut term);
+        term[0]
+    };
+    let lambda = water_value(PRODUCTIVITY);
+    let frozen_slope = psi_at(&setup, STAGE, 0)[0] * kappa * lambda;
+    let template = &setup.inputs.stage_data.stage_templates.templates[STAGE];
+    let noise_slot = hydro_noise_slot(&setup);
+    let mut noise = opening_noise(&setup, STAGE);
+
+    let draws: Vec<LognormalDraw> = LOGNORMAL_DRAWS
+        .iter()
+        .map(|&eta| {
+            let label = format!("{fixture}: η = {eta}");
+            noise[noise_slot] = eta;
+            let cut = compact_cut(&setup, STAGE, &x_hat, &noise, &[], &label);
+            let w = lognormal_term(p, eta);
+            let mut z_hat = [0.0];
+            add_noise_term_batch(&mean, &[w], &mut z_hat);
+            let [z_hat] = z_hat;
+            assert!(
+                cut.realized_inflow[0].to_bits() == z_hat.to_bits(),
+                "{label}: realized inflow: derived {z_hat:e}, solved {:e}, not the same bits",
+                cut.realized_inflow[0]
+            );
+
+            let p_up = p * (1.0 + LOGNORMAL_MEAN_STEP);
+            let p_down = p * (1.0 - LOGNORMAL_MEAN_STEP);
+            let dw_dp = (lognormal_term(p_up, eta) - lognormal_term(p_down, eta)) / (p_up - p_down);
+            let lag_bound = assert_terminal_coefficients(&label, &setup, STAGE, kappa, &cut);
+            let slope_term = (frozen_slope * dw_dp).abs();
+            assert!(
+                slope_term > LOGNORMAL_TERM_MARGIN * lag_bound,
+                "{label}: |ψ·κ·λ·∂w/∂p| {slope_term:e} is within {LOGNORMAL_TERM_MARGIN} lag-0 \
+                 bounds {lag_bound:e}, so a chain rule that differentiates w could pass"
+            );
+
+            let mut normal_term = [0.0];
+            evaluate_par_noise_term_batch(par, STAGE, &[eta], &mut normal_term);
+            LognormalDraw {
+                eta,
+                z_hat,
+                objective: cut.objective,
+                objective_abs_sum: template
+                    .objective
+                    .iter()
+                    .zip(&cut.primal)
+                    .map(|(cost, value)| (cost * value).abs())
+                    .sum(),
+                lognormal_shift: (lambda * kappa * (w - normal_term[0])).abs(),
+            }
+        })
+        .collect();
+
+    let pairs: Vec<(&LognormalDraw, &LognormalDraw)> = draws
+        .iter()
+        .enumerate()
+        .flat_map(|(i, a)| draws[i + 1..].iter().map(move |b| (a, b)))
+        .collect();
+    let labels: Vec<String> = pairs
+        .iter()
+        .map(|(a, b)| format!("{fixture}: η = {} against η = {}", a.eta, b.eta))
+        .collect();
+    let differences: Vec<ClosedForm> = pairs
+        .iter()
+        .zip(&labels)
+        .map(|((a, b), label)| {
+            let want = lambda * kappa * (a.z_hat - b.z_hat);
+            // n = 10: λ (4), κ (2), ẑ_a − ẑ_b and its two products derive it, Q_a − Q_b solves
+            // it; added: 2γ over the stage's columns times the two solves' Σ|c·x|.
+            ClosedForm {
+                fixture: label,
+                quantity: "objective difference",
+                slot: None,
+                want,
+                n: 10,
+                abs_sum: want.abs(),
+                added: 2.0
+                    * rounding_factor(template.num_cols)
+                    * (a.objective_abs_sum + b.objective_abs_sum),
+            }
+        })
+        .collect();
+    let largest_bound = differences
+        .iter()
+        .map(ClosedForm::bound)
+        .fold(0.0, f64::max);
+    let largest_shift = draws
+        .iter()
+        .map(|draw| draw.lognormal_shift)
+        .fold(0.0, f64::max);
+    assert!(
+        largest_shift > LOGNORMAL_TERM_MARGIN * largest_bound,
+        "{fixture}: the largest |λ·κ·(w − σ·η)| {largest_shift:e} is within \
+         {LOGNORMAL_TERM_MARGIN} objective-difference bounds {largest_bound:e}, so an LP that \
+         receives σ·η could pass"
+    );
+    for ((a, b), difference) in pairs.iter().zip(&differences) {
+        difference.assert_solved(a.objective - b.objective);
+    }
+}
+
+/// derived: under `"lognormal_3p"` the realized inflow is `ẑ = p + w(p, σ, η)`, and the chain rule
+/// freezes `w` at the trial state, so the lag coefficient stays `ψ·κ·λ` at every draw of
+/// [`LOGNORMAL_DRAWS`] and two draws' objectives differ by `λ·κ·(ẑ_a − ẑ_b)`. A chain rule that
+/// adds `ψ·κ·λ·∂w/∂p`, or an LP that receives `σ·η` in place of `w`, misses it.
+#[test]
+fn a_lognormal_terminal_stage_prices_a_par1_lag_at_the_frozen_residual_slope() {
+    assert_lognormal_terminal_stage_lag_price(TERMINAL_PSI, MONTH_HOURS);
+}
+
+/// derived: the same frozen slope `ψ·κ·λ` and objective step `λ·κ` at ψ = 0.6 and a 336-hour
+/// stage, so `κ = 336·M`; a slope or step at another ψ or κ misses it.
+#[test]
+fn a_lognormal_terminal_stage_prices_a_par1_lag_at_the_frozen_residual_slope_on_another_psi_and_stage_length()
+ {
+    assert_lognormal_terminal_stage_lag_price(TERMINAL_TWIN_PSI, FORTNIGHT_HOURS);
 }
 
 fn injected_cut_case() -> StudyCase {

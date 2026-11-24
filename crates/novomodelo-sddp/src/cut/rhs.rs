@@ -1,8 +1,8 @@
 //! Canonical cut-row RHS: B = fl(fl(α + S) + P) and RHS = fl(B + W), the one association both RHS
 //! writers (`cut_rhs_into` and `cut_rhs_from_noise_terms_into`) use. S, P and W are ascending-slot
 //! dots from +0.0: the shifted slots against â, the lag-0 slots against p, and the lag-0 slots
-//! against σ·η. Not one dot over ẑ = fl(p + σ·η), not the blocked GEMM kernel for S, not a dot
-//! started from an iterator sum's −0.0, no fused multiply-add.
+//! against the noise term ε. Not one dot over ẑ = fl(p + ε), not the blocked GEMM kernel for S,
+//! not a dot started from an iterator sum's −0.0, no fused multiply-add.
 //!
 //! `cut_brackets_into` and `cut_noise_terms_into` take `LANES` rows at a time, lanes across rows
 //! only, each row ascending from +0.0; `rhs_reference` is the scalar statement they equal bit for

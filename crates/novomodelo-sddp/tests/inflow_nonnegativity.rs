@@ -37,6 +37,7 @@ use novomodelo_core::{
         StageStateConfig,
     },
 };
+use novomodelo_io::config::InflowResidualDistribution;
 use novomodelo_sddp::{
     LoadedPolicy, Phase, ResolvedParameters, SolverProfiles, StoppingMode, StoppingRule,
     StoppingRuleSet, TrainingConfig, build_stage_templates_resolving_layout,
@@ -567,6 +568,7 @@ fn train_fixture_into(
             cut_state_layouts: &all_enabled_cut_state_layouts(&fx.state, n_stages),
             study_dims: &fx.study_dims,
             inflow_method: &fx.inflow_method,
+            inflow_residual: InflowResidualDistribution::Normal,
             stochastic: &fx.stochastic,
             initial_state: &fx.initial_state,
             inflow_scheme: SamplingScheme::InSample,
@@ -609,6 +611,7 @@ fn simulate_fixture(
         cut_state_layouts: &all_enabled_cut_state_layouts(&fx.state, N_STAGES),
         study_dims: &fx.study_dims,
         inflow_method: &fx.inflow_method,
+        inflow_residual: InflowResidualDistribution::Normal,
         stochastic: &fx.stochastic,
         initial_state: &fx.initial_state,
         inflow_scheme: SamplingScheme::InSample,
@@ -2108,6 +2111,334 @@ mod truncation_order_invariance {
         assert!(
             base.bounds == reversed.bounds,
             "slack bounds differ under declaration-order reversal"
+        );
+    }
+}
+
+mod lognormal_branches {
+    use novomodelo_io::config::{
+        InflowResidualDistribution, SimulationSelection, StoppingRuleConfig, TrainingSelection,
+    };
+    use novomodelo_sddp::indexer::LagPointMode;
+    use novomodelo_sddp::setup::{NodePos, StageIdx};
+    use novomodelo_sddp::test_support::{
+        ProbeCut, inflow_slack_bounds_for_probe, node_opening_noise,
+    };
+    use novomodelo_sddp::{SimulationStageResult, StudySetup};
+    use novomodelo_solver::ActiveSolver;
+    use novomodelo_stochastic::evaluate_par_noise_term_batch;
+
+    use super::common::expanded_solve::CutRowSet;
+    use super::common::in_code_studies::{FphaLagOptions, fpha_lag_study_with};
+    use super::common::lognormal_branches::{Branch, classify, conditional_means};
+    use super::common::stored_cut_oracles::solve_successor_opening;
+    use super::common::{
+        StubComm, build_setup_in_code_with_models, run_simulation, stored_trial_states,
+        train_storing_trial_states,
+    };
+
+    const OPENINGS: usize = 3;
+    const FORWARD_PASSES: u32 = 4;
+    const ITERATIONS: u32 = 3;
+    const SCENARIOS: u32 = 20;
+
+    fn switched_setup(distribution: InflowResidualDistribution, simulate: bool) -> StudySetup {
+        let (system, mut config, hydro_models) = fpha_lag_study_with(FphaLagOptions {
+            openings: OPENINGS,
+            reach_the_fallback: true,
+            ..FphaLagOptions::default()
+        });
+        config.modeling.inflow_residual.distribution = distribution;
+        config.training.selection = Some(TrainingSelection::sampled(FORWARD_PASSES));
+        config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit {
+            limit: ITERATIONS,
+        }]);
+        if simulate {
+            config.simulation.enabled = true;
+            config.simulation.selection = Some(SimulationSelection::Sampled {
+                num_scenarios: SCENARIOS,
+            });
+        }
+        build_setup_in_code_with_models(system, &config, hydro_models)
+    }
+
+    fn tagged(at: &str, branches: Vec<Branch>) -> impl Iterator<Item = (String, Branch)> {
+        let at = at.to_owned();
+        branches
+            .into_iter()
+            .enumerate()
+            .map(move |(hydro, branch)| (format!("{at} hydro {hydro}"), branch))
+    }
+
+    fn simulated_conditional_means(
+        setup: &StudySetup,
+        stage: &SimulationStageResult,
+        at: &str,
+    ) -> (Vec<i32>, Vec<f64>) {
+        let space = setup.stage_state();
+        let n_hydros = space.hydro_count;
+        let mut hydro_ids: Vec<i32> = stage.hydros.iter().map(|hydro| hydro.hydro_id).collect();
+        hydro_ids.sort_unstable();
+        hydro_ids.dedup();
+        let mut incoming = vec![0.0; space.n_state];
+        for lag in &stage.inflow_lags {
+            let hydro = hydro_ids
+                .binary_search(&lag.hydro_id)
+                .unwrap_or_else(|_| panic!("{at}: lag of unknown hydro {}", lag.hydro_id));
+            incoming[n_hydros * (1 + lag.lag_index as usize) + hydro] = lag.inflow_m3s;
+        }
+        let means = conditional_means(setup, stage.stage_id as usize, &incoming);
+        (hydro_ids, means)
+    }
+
+    fn assert_both_branches(label: &str, entries: &[(String, Branch)]) {
+        for (at, branch) in entries {
+            assert!(
+                !matches!(branch, Branch::Unmatched | Branch::Normal),
+                "{label}: {at} took {branch:?}"
+            );
+        }
+        for wanted in [Branch::Lognormal, Branch::Fallback] {
+            assert!(
+                entries.iter().any(|(_, branch)| *branch == wanted),
+                "{label}: no entry took {wanted:?} among {} entries",
+                entries.len()
+            );
+        }
+    }
+
+    fn forward_entries(label: &str, setup: &StudySetup) -> Vec<(String, Branch)> {
+        let training_ctx = setup.training_ctx();
+        for pool in [0, 1] {
+            let layout = &training_ctx.cut_state_layouts[pool];
+            assert_eq!(
+                layout.n_slots(),
+                training_ctx.state.n_state,
+                "{label}: pool {pool} drops a state dimension"
+            );
+            assert_eq!(
+                layout.lag_point().mode(),
+                LagPointMode::Shifted,
+                "{label}: pool {pool} is not Shifted"
+            );
+        }
+        let pool0 = stored_trial_states(setup, NodePos(0));
+        let pool1 = stored_trial_states(setup, NodePos(1));
+        assert_eq!(
+            pool0.len(),
+            pool1.len(),
+            "{label}: pools 0 and 1 store different numbers of trial states"
+        );
+        let n_hydros = training_ctx.state.hydro_count;
+        let lag0 = n_hydros..2 * n_hydros;
+        let initial_means = conditional_means(setup, 0, training_ctx.initial_state);
+        let mut entries = Vec::new();
+        for (trial, (outgoing0, outgoing1)) in pool0.iter().zip(&pool1).enumerate() {
+            entries.extend(tagged(
+                &format!("stage 0 trial {trial}"),
+                classify(setup, NodePos(0), &initial_means, &outgoing0[lag0.clone()]),
+            ));
+            entries.extend(tagged(
+                &format!("stage 1 trial {trial}"),
+                classify(
+                    setup,
+                    NodePos(1),
+                    &conditional_means(setup, 1, outgoing0),
+                    &outgoing1[lag0.clone()],
+                ),
+            ));
+        }
+        entries
+    }
+
+    #[test]
+    fn the_forward_pass_reaches_both_lognormal_branches() {
+        let label = "forward";
+        let mut setup = switched_setup(InflowResidualDistribution::Lognormal3p, false);
+        train_storing_trial_states(label, &mut setup);
+
+        assert_both_branches(label, &forward_entries(label, &setup));
+    }
+
+    #[test]
+    fn the_backward_openings_reach_both_lognormal_branches() {
+        let label = "backward";
+        let mut setup = switched_setup(InflowResidualDistribution::Lognormal3p, false);
+        train_storing_trial_states(label, &mut setup);
+
+        let rows = CutRowSet::active(&setup.fcf, 1, 0);
+        let mut workspaces = setup
+            .create_workspace_pool(&StubComm, 1, ActiveSolver::new)
+            .expect("the workspace pool must build");
+        let ws = &mut workspaces.workspaces[0];
+        let mut cut = ProbeCut::new(&setup.training_ctx());
+        let mut entries = Vec::new();
+        for (trial, pin) in stored_trial_states(&setup, NodePos(0)).iter().enumerate() {
+            let means = conditional_means(&setup, 1, pin);
+            for opening in 0..OPENINGS {
+                let at = format!("stage 1 trial {trial} opening {opening}");
+                let raw_noise = node_opening_noise(&setup, NodePos(1), opening);
+                solve_successor_opening(&setup, ws, &rows, pin, &raw_noise, None, &mut cut)
+                    .unwrap_or_else(|error| panic!("{at}: the solve failed: {error:?}"));
+                entries.extend(tagged(
+                    &at,
+                    classify(&setup, NodePos(1), &means, &cut.realized_inflow),
+                ));
+            }
+        }
+
+        assert_both_branches(label, &entries);
+    }
+
+    #[test]
+    fn the_simulation_reaches_both_lognormal_branches() {
+        let label = "simulation";
+        let mut setup = switched_setup(InflowResidualDistribution::Lognormal3p, true);
+        let scenarios = run_simulation(&mut setup, ITERATIONS as usize);
+
+        let mut entries = Vec::new();
+        for scenario in &scenarios {
+            for stage in &scenario.stages {
+                let at = format!("scenario {} stage {}", scenario.scenario_id, stage.stage_id);
+                let (hydro_ids, means) = simulated_conditional_means(&setup, stage, &at);
+                let realized: Vec<f64> = hydro_ids
+                    .iter()
+                    .map(|id| {
+                        stage
+                            .hydros
+                            .iter()
+                            .find(|hydro| hydro.hydro_id == *id)
+                            .map(|hydro| hydro.incremental_inflow_m3s)
+                            .expect("a hydro id read from the stage has a row")
+                    })
+                    .collect();
+                let node = NodePos(stage.stage_id as usize);
+                entries.extend(tagged(&at, classify(&setup, node, &means, &realized)));
+            }
+        }
+
+        assert_both_branches(label, &entries);
+    }
+
+    #[test]
+    fn the_switched_study_under_normal_takes_the_normal_term_everywhere() {
+        let label = "normal control";
+        let mut setup = switched_setup(InflowResidualDistribution::Normal, false);
+        train_storing_trial_states(label, &mut setup);
+
+        let entries = forward_entries(label, &setup);
+        for (at, branch) in &entries {
+            assert!(
+                matches!(branch, Branch::Normal | Branch::Fallback | Branch::Tied),
+                "{label}: {at} took {branch:?}"
+            );
+        }
+        assert!(
+            entries.iter().any(|(_, branch)| *branch == Branch::Normal),
+            "{label}: no entry took the normal term with a positive conditional mean"
+        );
+    }
+
+    #[test]
+    fn lognormal_branch_solves_need_no_truncation_correction() {
+        let label = "no truncation correction";
+        let mut setup = switched_setup(InflowResidualDistribution::Lognormal3p, false);
+        train_storing_trial_states(label, &mut setup);
+
+        let rows = CutRowSet::active(&setup.fcf, 1, 0);
+        let mut workspaces = setup
+            .create_workspace_pool(&StubComm, 1, ActiveSolver::new)
+            .expect("the workspace pool must build");
+        let ws = &mut workspaces.workspaces[0];
+        let training_ctx = setup.training_ctx();
+        let par = training_ctx.stochastic.par();
+        let n_hydros = training_ctx.state.hydro_count;
+        let mut cut = ProbeCut::new(&training_ctx);
+        let mut normal_term = vec![0.0; n_hydros];
+        let (mut normal_would_correct, mut bound_above_zero) = (false, false);
+        for (trial, pin) in stored_trial_states(&setup, NodePos(0)).iter().enumerate() {
+            let means = conditional_means(&setup, 1, pin);
+            for opening in 0..OPENINGS {
+                let at = format!("{label}: stage 1 trial {trial} opening {opening}");
+                let raw_noise = node_opening_noise(&setup, NodePos(1), opening);
+                solve_successor_opening(&setup, ws, &rows, pin, &raw_noise, None, &mut cut)
+                    .unwrap_or_else(|error| panic!("{at}: the solve failed: {error:?}"));
+                let (lower, upper) =
+                    inflow_slack_bounds_for_probe(ws, &training_ctx, StageIdx(1), pin, &raw_noise);
+                evaluate_par_noise_term_batch(par, 1, &raw_noise[..n_hydros], &mut normal_term);
+                for (name, len) in [
+                    ("realized inflow", cut.realized_inflow.len()),
+                    ("inflow slack", cut.inflow_slack.len()),
+                    ("lower slack bound", lower.len()),
+                    ("upper slack bound", upper.len()),
+                ] {
+                    assert_eq!(
+                        len, n_hydros,
+                        "{at}: the {name} does not hold one per hydro"
+                    );
+                }
+                for (hydro, &p) in means.iter().enumerate() {
+                    if p > 0.0 {
+                        let z = cut.realized_inflow[hydro];
+                        assert!(
+                            z.is_finite() && z >= 0.0 && z.to_bits() != (-0.0_f64).to_bits(),
+                            "{at} hydro {hydro}: realized inflow {z} with a conditional mean {p}"
+                        );
+                        for (name, bound) in [("lower", lower[hydro]), ("upper", upper[hydro])] {
+                            assert_eq!(
+                                bound.to_bits(),
+                                0.0_f64.to_bits(),
+                                "{at} hydro {hydro}: {name} slack bound {bound} with a conditional mean {p}"
+                            );
+                        }
+                        assert_eq!(
+                            cut.inflow_slack[hydro], 0.0,
+                            "{at} hydro {hydro}: solved slack with a conditional mean {p}"
+                        );
+                        normal_would_correct |= normal_term[hydro] < -p;
+                    } else {
+                        bound_above_zero |= upper[hydro] > 0.0;
+                    }
+                }
+            }
+        }
+        assert!(
+            normal_would_correct,
+            "{label}: no checked solve has a normal term below minus its conditional mean"
+        );
+        assert!(
+            bound_above_zero,
+            "{label}: no solve with a conditional mean at or below zero has an upper slack bound above zero"
+        );
+
+        let mut setup = switched_setup(InflowResidualDistribution::Lognormal3p, true);
+        let scenarios = run_simulation(&mut setup, ITERATIONS as usize);
+        let mut checked_rows = 0;
+        for scenario in &scenarios {
+            for stage in &scenario.stages {
+                let at = format!(
+                    "{label}: scenario {} stage {}",
+                    scenario.scenario_id, stage.stage_id
+                );
+                let (hydro_ids, means) = simulated_conditional_means(&setup, stage, &at);
+                for row in &stage.hydros {
+                    let hydro = hydro_ids
+                        .binary_search(&row.hydro_id)
+                        .expect("a hydro id read from the stage has a row");
+                    if means[hydro] > 0.0 {
+                        checked_rows += 1;
+                        assert_eq!(
+                            row.inflow_nonnegativity_slack_m3s, 0.0,
+                            "{at} hydro id {}: simulated slack with a conditional mean {}",
+                            row.hydro_id, means[hydro]
+                        );
+                    }
+                }
+            }
+        }
+        assert!(
+            checked_rows > 0,
+            "{label}: no simulated hydro row has a conditional mean above zero"
         );
     }
 }

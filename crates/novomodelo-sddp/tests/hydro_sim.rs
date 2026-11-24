@@ -1618,9 +1618,9 @@ mod transit_seed_output {
     };
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
-        InflowNonNegativityMethod, ModelingConfig, PolicyConfig, RowSelectionConfig,
-        SimulationConfig as IoSimulationConfig, SimulationSelection, StoppingMode,
-        StoppingRuleConfig, TrainingConfig, TrainingSelection, TrainingSolverConfig,
+        InflowNonNegativityMethod, InflowResidualConfig, ModelingConfig, PolicyConfig,
+        RowSelectionConfig, SimulationConfig as IoSimulationConfig, SimulationSelection,
+        StoppingMode, StoppingRuleConfig, TrainingConfig, TrainingSelection, TrainingSolverConfig,
         UpperBoundEvaluationConfig,
     };
     use novomodelo_io::output::simulation_writer::{ScenarioWritePayload, SimulationParquetWriter};
@@ -1859,6 +1859,7 @@ mod transit_seed_output {
                 inflow_non_negativity: InflowNonNegativityConfig {
                     method: InflowNonNegativityMethod::Penalty,
                 },
+                inflow_residual: InflowResidualConfig::default(),
                 cost_scale_factor: Some(1.0),
             },
             training: TrainingConfig {
@@ -2011,9 +2012,9 @@ mod transit_seed_round_trip {
     };
     use novomodelo_io::config::{
         BoundaryPolicy, Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
-        InflowNonNegativityMethod, ModelingConfig, PolicyConfig, RowSelectionConfig,
-        SimulationConfig as IoSimulationConfig, SimulationSelection, StoppingMode,
-        StoppingRuleConfig, TrainingConfig, TrainingSelection, TrainingSolverConfig,
+        InflowNonNegativityMethod, InflowResidualConfig, ModelingConfig, PolicyConfig,
+        RowSelectionConfig, SimulationConfig as IoSimulationConfig, SimulationSelection,
+        StoppingMode, StoppingRuleConfig, TrainingConfig, TrainingSelection, TrainingSolverConfig,
         UpperBoundEvaluationConfig,
     };
     use novomodelo_sddp::SimulationScenarioResult;
@@ -2265,6 +2266,7 @@ mod transit_seed_round_trip {
                 inflow_non_negativity: InflowNonNegativityConfig {
                     method: InflowNonNegativityMethod::Penalty,
                 },
+                inflow_residual: InflowResidualConfig::default(),
                 cost_scale_factor: Some(1.0),
             },
             training: TrainingConfig {
@@ -2580,9 +2582,9 @@ mod diversion_outflow_bounds {
     };
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
-        InflowNonNegativityMethod, ModelingConfig, PolicyConfig, RowSelectionConfig,
-        SimulationConfig as IoSimulationConfig, SimulationSelection, StoppingMode,
-        StoppingRuleConfig, TrainingConfig, TrainingSelection, TrainingSolverConfig,
+        InflowNonNegativityMethod, InflowResidualConfig, ModelingConfig, PolicyConfig,
+        RowSelectionConfig, SimulationConfig as IoSimulationConfig, SimulationSelection,
+        StoppingMode, StoppingRuleConfig, TrainingConfig, TrainingSelection, TrainingSolverConfig,
         UpperBoundEvaluationConfig,
     };
     use novomodelo_sddp::SimulationScenarioResult;
@@ -2864,6 +2866,7 @@ mod diversion_outflow_bounds {
                 inflow_non_negativity: InflowNonNegativityConfig {
                     method: InflowNonNegativityMethod::Penalty,
                 },
+                inflow_residual: InflowResidualConfig::default(),
                 cost_scale_factor: Some(1.0),
             },
             training: TrainingConfig {
@@ -3092,9 +3095,9 @@ mod water_arc_and_post_study_anticipated_coexist_on_extended_layout {
     };
     use novomodelo_io::config::{
         BoundaryPolicy, Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
-        InflowNonNegativityMethod, ModelingConfig, ParallelismConfig, PolicyConfig,
-        RowSelectionConfig, SimulationConfig, StoppingMode, StoppingRuleConfig, TrainingConfig,
-        TrainingSelection, TrainingSolverConfig, UpperBoundEvaluationConfig,
+        InflowNonNegativityMethod, InflowResidualConfig, ModelingConfig, ParallelismConfig,
+        PolicyConfig, RowSelectionConfig, SimulationConfig, StoppingMode, StoppingRuleConfig,
+        TrainingConfig, TrainingSelection, TrainingSolverConfig, UpperBoundEvaluationConfig,
     };
     use novomodelo_sddp::indexer::StateDim;
     use novomodelo_sddp::setup::StageIdx;
@@ -3406,6 +3409,7 @@ mod water_arc_and_post_study_anticipated_coexist_on_extended_layout {
                 inflow_non_negativity: InflowNonNegativityConfig {
                     method: InflowNonNegativityMethod::Penalty,
                 },
+                inflow_residual: InflowResidualConfig::default(),
                 // Unscaled: the priced `theta` and the propagated cut
                 // coefficient compare directly against ALPHA/BETA_* with no
                 // COST_SCALE_FACTOR back-out.
@@ -3892,9 +3896,9 @@ mod generic_slack_penalty_basis {
     };
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
-        InflowNonNegativityMethod, ModelingConfig, PolicyConfig, RowSelectionConfig,
-        SimulationConfig as IoSimulationConfig, SimulationSelection, StoppingMode,
-        StoppingRuleConfig, TrainingConfig, TrainingSelection, TrainingSolverConfig,
+        InflowNonNegativityMethod, InflowResidualConfig, ModelingConfig, PolicyConfig,
+        RowSelectionConfig, SimulationConfig as IoSimulationConfig, SimulationSelection,
+        StoppingMode, StoppingRuleConfig, TrainingConfig, TrainingSelection, TrainingSolverConfig,
         UpperBoundEvaluationConfig,
     };
     use novomodelo_sddp::StudySetup;
@@ -4222,6 +4226,7 @@ mod generic_slack_penalty_basis {
                 inflow_non_negativity: InflowNonNegativityConfig {
                     method: InflowNonNegativityMethod::None,
                 },
+                inflow_residual: InflowResidualConfig::default(),
                 cost_scale_factor: None,
             },
             training: TrainingConfig {

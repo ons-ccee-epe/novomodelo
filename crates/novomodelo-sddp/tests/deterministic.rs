@@ -16,7 +16,8 @@
 )]
 
 use novomodelo_io::config::{
-    BackwardScheduler, Config, SelectionMethod, SimulationSelection, StoppingRuleConfig,
+    BackwardScheduler, Config, InflowResidualDistribution, SelectionMethod, SimulationSelection,
+    StoppingRuleConfig,
 };
 use novomodelo_io::test_support::{producer_block_defaults, stage_cuts_payload_defaults};
 use std::num::NonZeroU32;
@@ -39,6 +40,7 @@ use novomodelo_solver::{ActiveSolver, SolverInterface};
 use novomodelo_stochastic::par::HydroEstimationEntry;
 
 mod common;
+use common::selection_fingerprint::SelectionFingerprint;
 use common::{
     D03_EXPECTED_COST, StubComm, build_setup_for_case, d51_with_dead_bus1_group, edit_json,
     fresh_setup_with,
@@ -2605,18 +2607,31 @@ fn d19_multi_hydro_par_truncation() {
 /// Train a TempDir copy of D19 after `edit` rewrites its input files, under the
 /// converged rule pair (`iteration_limit` 500 plus `bound_stalling` 5 / `1e-9`).
 fn train_d19_variant(edit: impl FnOnce(&Path)) -> novomodelo_sddp::TrainingResult {
-    let tmp = copy_case_dir(Path::new(
-        "../../examples/deterministic/d19-multi-hydro-par",
-    ));
-    edit(tmp.path());
-    let mut setup = fresh_setup_with(tmp.path(), |config| {
-        config.training.stopping_rules = Some(vec![
+    train_d19_copy(
+        edit,
+        vec![
             StoppingRuleConfig::IterationLimit { limit: 500 },
             StoppingRuleConfig::BoundStalling {
                 iterations: 5,
                 tolerance: 1e-9,
             },
-        ]);
+        ],
+    )
+    .1
+}
+
+/// Train a TempDir copy of D19 after `edit` rewrites its input files, under
+/// `stopping_rules`, and return the trained setup with its result.
+fn train_d19_copy(
+    edit: impl FnOnce(&Path),
+    stopping_rules: Vec<StoppingRuleConfig>,
+) -> (StudySetup, novomodelo_sddp::TrainingResult) {
+    let tmp = copy_case_dir(Path::new(
+        "../../examples/deterministic/d19-multi-hydro-par",
+    ));
+    edit(tmp.path());
+    let mut setup = fresh_setup_with(tmp.path(), |config| {
+        config.training.stopping_rules = Some(stopping_rules);
     });
     let comm = StubComm;
     let mut solver = ActiveSolver::new().expect("ActiveSolver::new must succeed");
@@ -2624,7 +2639,49 @@ fn train_d19_variant(edit: impl FnOnce(&Path)) -> novomodelo_sddp::TrainingResul
         .train(&mut solver, &comm, 1, ActiveSolver::new, None, None)
         .expect("train must return Ok");
     assert!(outcome.error.is_none(), "expected no training error");
-    outcome.result
+    (setup, outcome.result)
+}
+
+/// An explicit `"normal"` `modeling.inflow_residual.distribution` trains to the bits of an
+/// absent key, so the key changes nothing for an existing study; `"lognormal_3p"` moves the
+/// bounds, so the comparison has power.
+#[test]
+fn d19_an_explicit_normal_residual_trains_to_the_bits_of_an_absent_key() {
+    let train = |distribution: Option<&str>| {
+        let (setup, result) = train_d19_copy(
+            |dir| {
+                if let Some(distribution) = distribution {
+                    edit_json(&dir.join("config.json"), |config| {
+                        config["modeling"]["inflow_residual"] =
+                            serde_json::json!({ "distribution": distribution });
+                    });
+                }
+            },
+            vec![StoppingRuleConfig::IterationLimit { limit: 10 }],
+        );
+        (
+            setup.training_ctx().inflow_residual,
+            SelectionFingerprint::capture(&setup, &result),
+        )
+    };
+    let (absent_read, absent) = train(None);
+    let (normal_read, normal) = train(Some("normal"));
+    let (lognormal_read, lognormal) = train(Some("lognormal_3p"));
+
+    assert_eq!(
+        [absent_read, normal_read, lognormal_read],
+        [
+            InflowResidualDistribution::Normal,
+            InflowResidualDistribution::Normal,
+            InflowResidualDistribution::Lognormal3p,
+        ],
+        "D19: the residual distribution the absent, normal and lognormal runs read"
+    );
+    absent.assert_matches(&normal, "D19: absent key vs explicit normal residual");
+    assert_ne!(
+        normal.bounds, lognormal.bounds,
+        "D19 power: the lognormal run must move the bounds of the normal run"
+    );
 }
 
 /// Operational violation slacks: 1 hydro with active min_outflow, max_outflow,
@@ -7531,9 +7588,10 @@ mod chronological_telescoping {
     };
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
-        InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, PolicyConfig,
-        RowSelectionConfig, SimulationConfig as IoSimulationConfig, StoppingRuleConfig,
-        TrainingConfig, TrainingSelection, TrainingSolverConfig, UpperBoundEvaluationConfig,
+        InflowNonNegativityMethod as CfgInflowMethod, InflowResidualConfig, ModelingConfig,
+        PolicyConfig, RowSelectionConfig, SimulationConfig as IoSimulationConfig,
+        StoppingRuleConfig, TrainingConfig, TrainingSelection, TrainingSolverConfig,
+        UpperBoundEvaluationConfig,
     };
     use novomodelo_solver::ActiveSolver;
 
@@ -7782,6 +7840,7 @@ mod chronological_telescoping {
                 inflow_non_negativity: InflowNonNegativityConfig {
                     method: CfgInflowMethod::None,
                 },
+                inflow_residual: InflowResidualConfig::default(),
                 cost_scale_factor: None,
             },
             training: TrainingConfig {
@@ -8267,9 +8326,10 @@ mod season_descriptor_checkpoint_round_trip {
     };
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
-        InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, PolicyConfig,
-        RowSelectionConfig, SimulationConfig as IoSimulationConfig, StoppingRuleConfig,
-        TrainingConfig, TrainingSelection, TrainingSolverConfig, UpperBoundEvaluationConfig,
+        InflowNonNegativityMethod as CfgInflowMethod, InflowResidualConfig, ModelingConfig,
+        PolicyConfig, RowSelectionConfig, SimulationConfig as IoSimulationConfig,
+        StoppingRuleConfig, TrainingConfig, TrainingSelection, TrainingSolverConfig,
+        UpperBoundEvaluationConfig,
     };
     use novomodelo_solver::ActiveSolver;
 
@@ -8544,6 +8604,7 @@ mod season_descriptor_checkpoint_round_trip {
                 inflow_non_negativity: InflowNonNegativityConfig {
                     method: CfgInflowMethod::None,
                 },
+                inflow_residual: InflowResidualConfig::default(),
                 cost_scale_factor: None,
             },
             training: TrainingConfig {
@@ -8657,9 +8718,10 @@ mod boundary_season_gate_round_trip {
     };
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
-        InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, PolicyConfig,
-        RowSelectionConfig, SimulationConfig as IoSimulationConfig, StoppingRuleConfig,
-        TrainingConfig, TrainingSelection, TrainingSolverConfig, UpperBoundEvaluationConfig,
+        InflowNonNegativityMethod as CfgInflowMethod, InflowResidualConfig, ModelingConfig,
+        PolicyConfig, RowSelectionConfig, SimulationConfig as IoSimulationConfig,
+        StoppingRuleConfig, TrainingConfig, TrainingSelection, TrainingSolverConfig,
+        UpperBoundEvaluationConfig,
     };
     use novomodelo_solver::ActiveSolver;
 
@@ -8917,6 +8979,7 @@ mod boundary_season_gate_round_trip {
                 inflow_non_negativity: InflowNonNegativityConfig {
                     method: CfgInflowMethod::None,
                 },
+                inflow_residual: InflowResidualConfig::default(),
                 cost_scale_factor: None,
             },
             training: TrainingConfig {
@@ -9027,9 +9090,10 @@ mod transit_arrival_interval_checkpoint_round_trip {
     };
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
-        InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, PolicyConfig,
-        RowSelectionConfig, SimulationConfig as IoSimulationConfig, StoppingRuleConfig,
-        TrainingConfig, TrainingSelection, TrainingSolverConfig, UpperBoundEvaluationConfig,
+        InflowNonNegativityMethod as CfgInflowMethod, InflowResidualConfig, ModelingConfig,
+        PolicyConfig, RowSelectionConfig, SimulationConfig as IoSimulationConfig,
+        StoppingRuleConfig, TrainingConfig, TrainingSelection, TrainingSolverConfig,
+        UpperBoundEvaluationConfig,
     };
     use novomodelo_solver::ActiveSolver;
 
@@ -9275,6 +9339,7 @@ mod transit_arrival_interval_checkpoint_round_trip {
                 inflow_non_negativity: InflowNonNegativityConfig {
                     method: CfgInflowMethod::None,
                 },
+                inflow_residual: InflowResidualConfig::default(),
                 cost_scale_factor: None,
             },
             training: TrainingConfig {
@@ -9400,9 +9465,9 @@ mod chronological_attribution {
     use novomodelo_io::config::TrainingSelection;
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
-        InflowNonNegativityMethod as CfgInflowMethod, ModelingConfig, PolicyConfig,
-        RowSelectionConfig, SimulationConfig as IoSimulationConfig, StoppingRuleConfig,
-        TrainingConfig, TrainingSolverConfig, UpperBoundEvaluationConfig,
+        InflowNonNegativityMethod as CfgInflowMethod, InflowResidualConfig, ModelingConfig,
+        PolicyConfig, RowSelectionConfig, SimulationConfig as IoSimulationConfig,
+        StoppingRuleConfig, TrainingConfig, TrainingSolverConfig, UpperBoundEvaluationConfig,
     };
     use novomodelo_sddp::lead_time::resolve_spread;
     use novomodelo_sddp::test_support::assert_all_templates_byte_identical;
@@ -9703,6 +9768,7 @@ mod chronological_attribution {
                 inflow_non_negativity: InflowNonNegativityConfig {
                     method: CfgInflowMethod::None,
                 },
+                inflow_residual: InflowResidualConfig::default(),
                 cost_scale_factor: None,
             },
             training: TrainingConfig {
@@ -11169,6 +11235,7 @@ mod enumerated_external {
             StageStateConfig, Transition,
         },
     };
+    use novomodelo_io::config::InflowResidualDistribution;
     use novomodelo_sddp::{
         DEFAULT_COST_SCALE_FACTOR, InflowNonNegativityMethod, SimulationScenarioResult,
         StoppingMode, StoppingRule, StoppingRuleSet, StudySetup,
@@ -11445,6 +11512,7 @@ mod enumerated_external {
             io_channel_capacity: 0,
             policy_path: String::new(),
             inflow_method: InflowNonNegativityMethod::None,
+            inflow_residual: InflowResidualDistribution::Normal,
             cut_selection: None,
             cut_activity_tolerance: 0.0,
             budget: None,
@@ -12733,9 +12801,10 @@ mod enumerated_cvar_gap {
     };
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
-        InflowNonNegativityMethod, ModelingConfig, PolicyConfig, RowSelectionConfig,
-        SimulationConfig as IoSimulationConfig, StoppingMode, StoppingRuleConfig, TrainingConfig,
-        TrainingSelection, TrainingSolverConfig, UpperBoundEvaluationConfig,
+        InflowNonNegativityMethod, InflowResidualConfig, ModelingConfig, PolicyConfig,
+        RowSelectionConfig, SimulationConfig as IoSimulationConfig, StoppingMode,
+        StoppingRuleConfig, TrainingConfig, TrainingSelection, TrainingSolverConfig,
+        UpperBoundEvaluationConfig,
     };
     use novomodelo_solver::ActiveSolver;
 
@@ -12945,6 +13014,7 @@ mod enumerated_cvar_gap {
                 inflow_non_negativity: InflowNonNegativityConfig {
                     method: InflowNonNegativityMethod::Penalty,
                 },
+                inflow_residual: InflowResidualConfig::default(),
                 cost_scale_factor: Some(1.0),
             },
             training: TrainingConfig {

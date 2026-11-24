@@ -4,8 +4,9 @@
 //! group wider than `apply_groups_for_class`'s stack-allocated fast path.
 //!
 //! It also pins one folded stage solve and its cut, single-threaded after
-//! warm-up, to zero Rust heap allocation. Allocations inside the linked C++
-//! solver are not counted.
+//! warm-up, to zero Rust heap allocation, under the normal inflow residual and
+//! under the lognormal one on a study whose pinned states take both kernel
+//! branches. Allocations inside the linked C++ solver are not counted.
 
 #![allow(
     clippy::unwrap_used,
@@ -329,6 +330,7 @@ fn out_of_sample_forward_draw_allocates_nothing() {
 }
 
 mod folded_solve {
+    use novomodelo_io::config::{InflowResidualDistribution, TrainingSelection};
     use novomodelo_sddp::cut::chain_rule::{
         AggregateScratch, ChainRuleInputs, ChildOpenings, OpeningDuals, aggregate_first_cut_into,
     };
@@ -344,6 +346,7 @@ mod folded_solve {
     use super::{alloc_count, reset_alloc_count};
     use crate::common::expanded_solve::CutRowSet;
     use crate::common::in_code_studies::{FphaLagOptions, fpha_lag_study_with};
+    use crate::common::lognormal_branches::conditional_means;
     use crate::common::stored_cut_oracles::apply_oracle_config;
     use crate::common::{
         StubComm, build_setup_in_code_with_models, train_storing_trial_states,
@@ -354,6 +357,7 @@ mod folded_solve {
     const RESIDENT_POOL: usize = 1;
     const EXTRACTED_POOL: usize = 0;
     const OPENINGS: usize = 3;
+    const FORWARD_PASSES: u32 = 4;
 
     fn trained_lag_study() -> StudySetup {
         let (system, mut config, hydro_models) = fpha_lag_study_with(FphaLagOptions {
@@ -366,9 +370,25 @@ mod folded_solve {
         setup
     }
 
-    #[test]
-    fn a_folded_solve_and_its_cut_allocate_nothing_after_warm_up() {
-        let setup = trained_lag_study();
+    fn trained_lognormal_study() -> StudySetup {
+        let (system, mut config, hydro_models) = fpha_lag_study_with(FphaLagOptions {
+            openings: OPENINGS,
+            reach_the_fallback: true,
+            ..FphaLagOptions::default()
+        });
+        config.modeling.inflow_residual.distribution = InflowResidualDistribution::Lognormal3p;
+        apply_oracle_config(&mut config);
+        config.training.selection = Some(TrainingSelection::sampled(FORWARD_PASSES));
+        let mut setup = build_setup_in_code_with_models(system, &config, hydro_models);
+        train_storing_trial_states("lognormal folded no-alloc lag study", &mut setup);
+        setup
+    }
+
+    fn assert_a_folded_solve_allocates_nothing(
+        label: &str,
+        setup: &StudySetup,
+        states: [&[f64]; 2],
+    ) {
         let ctx = setup.stage_ctx();
         let training_ctx = setup.training_ctx();
         let layouts = &training_ctx.cut_state_layouts;
@@ -392,16 +412,8 @@ mod folded_solve {
         ws.solver.load_model(template);
         ws.solver.add_rows(&cut_rows);
 
-        let stored = try_stored_trial_states(&setup, NodePos(STAGE - 1))
-            .expect("pool 0 projects every state dimension");
-        assert!(
-            stored.len() >= 2,
-            "pool 0 stores {} trial states, two are needed",
-            stored.len()
-        );
-        let states: [&[f64]; 2] = [&stored[0], &stored[1]];
         let noise: [Vec<f64>; OPENINGS] =
-            std::array::from_fn(|w| node_opening_noise(&setup, NodePos(STAGE), w));
+            std::array::from_fn(|w| node_opening_noise(setup, NodePos(STAGE), w));
         let mut outs: [ProbeCut; OPENINGS] = std::array::from_fn(|_| ProbeCut::new(&training_ctx));
 
         let chain_slots = ChainRuleSlots::compose(
@@ -477,33 +489,33 @@ mod folded_solve {
 
         assert!(
             !slots.is_empty(),
-            "stage {STAGE}'s LP has no cut rows, so the cut-row passes do not run"
+            "{label}: stage {STAGE}'s LP has no cut rows, so the cut-row passes do not run"
         );
         assert!(
             layouts[RESIDENT_POOL].has_lag_slots(),
-            "pool {RESIDENT_POOL} has no lag slots, so the cut-row duals are not extracted"
+            "{label}: pool {RESIDENT_POOL} has no lag slots, so the cut-row duals are not extracted"
         );
         assert!(
             cut_dual_seen,
-            "no warm-up opening has a non-zero cut-row dual, so the chain rule's cut-dual sum does not run"
+            "{label}: no warm-up opening has a non-zero cut-row dual, so the chain rule's cut-dual sum does not run"
         );
         assert_ne!(
             bits(states[0]),
             bits(states[1]),
-            "the two pinned states are bit-identical"
+            "{label}: the two pinned states are bit-identical"
         );
         for a in 0..OPENINGS {
             for b in a + 1..OPENINGS {
                 assert_ne!(
                     bits(&noise[a]),
                     bits(&noise[b]),
-                    "openings {a} and {b} have bit-identical noise"
+                    "{label}: openings {a} and {b} have bit-identical noise"
                 );
             }
         }
         assert!(
             warm_up.iter().all(Result::is_ok),
-            "a warm-up round failed: {warm_up:?}"
+            "{label}: a warm-up round failed: {warm_up:?}"
         );
 
         reset_alloc_count();
@@ -516,12 +528,52 @@ mod folded_solve {
 
         assert!(
             measured.iter().all(Result::is_ok),
-            "a measured round failed: {measured:?}"
+            "{label}: a measured round failed: {measured:?}"
         );
         assert_eq!(
             observed, 0,
-            "a folded solve round allocated {observed} times across the measured rounds \
+            "{label}: a folded solve round allocated {observed} times across the measured rounds \
              (state 0, state 1, state 0 again)"
+        );
+    }
+
+    #[test]
+    fn a_folded_solve_and_its_cut_allocate_nothing_after_warm_up() {
+        let setup = trained_lag_study();
+        let stored = try_stored_trial_states(&setup, NodePos(STAGE - 1))
+            .expect("pool 0 projects every state dimension");
+        assert!(
+            stored.len() >= 2,
+            "pool 0 stores {} trial states, two are needed",
+            stored.len()
+        );
+        assert_a_folded_solve_allocates_nothing("normal", &setup, [&stored[0], &stored[1]]);
+    }
+
+    #[test]
+    fn a_lognormal_folded_solve_and_its_cut_allocate_nothing_after_warm_up() {
+        let setup = trained_lognormal_study();
+        let stored = try_stored_trial_states(&setup, NodePos(STAGE - 1))
+            .expect("pool 0 projects every state dimension");
+        let (reaching_the_fallback, lognormal_only): (Vec<_>, Vec<_>) =
+            stored.iter().partition(|state| {
+                conditional_means(&setup, STAGE, state)
+                    .iter()
+                    .any(|&mean| mean <= 0.0)
+            });
+        let (Some(fallback_state), Some(lognormal_state)) =
+            (reaching_the_fallback.first(), lognormal_only.first())
+        else {
+            panic!(
+                "pool 0 holds {} states with a conditional mean at or below zero and {} with every conditional mean above zero, one of each is needed",
+                reaching_the_fallback.len(),
+                lognormal_only.len()
+            );
+        };
+        assert_a_folded_solve_allocates_nothing(
+            "lognormal",
+            &setup,
+            [fallback_state, lognormal_state],
         );
     }
 }

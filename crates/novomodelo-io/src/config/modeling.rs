@@ -43,6 +43,10 @@ pub struct ModelingConfig {
     #[serde(default)]
     pub inflow_non_negativity: InflowNonNegativityConfig,
 
+    /// Distribution of the inflow residual.
+    #[serde(default)]
+    pub inflow_residual: InflowResidualConfig,
+
     /// Divisor applied to every non-theta objective coefficient at template
     /// build time, multiplied back at every cost-domain reporting boundary.
     /// Default `1_000_000.0` — the value every golden parity baseline is pinned at.
@@ -81,4 +85,54 @@ impl Default for InflowNonNegativityConfig {
             method: InflowNonNegativityMethod::TruncationWithPenalty,
         }
     }
+}
+
+/// Distribution of the PAR(p) inflow residual.
+///
+/// Accepted values in `config.json → modeling.inflow_residual.distribution`:
+///
+/// - `"normal"` — Gaussian residual (default).
+/// - `"lognormal_3p"` — experimental: a three-parameter lognormal residual with the PAR(p)
+///   conditional mean and standard deviation of the hydro's incremental inflow, bounded
+///   below at zero inflow. Where the conditional mean is not positive the hydro takes the
+///   normal residual, and `modeling.inflow_non_negativity.method` applies as under
+///   `"normal"`.
+///
+/// `"lognormal_3p"` is refused with the `external` and `historical` inflow schemes,
+/// `enumerated` selection, `historical_residuals` stages and nodes that declare
+/// `scenario_id`. As under the truncation methods, the lower bound can exceed the upper
+/// bound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub enum InflowResidualDistribution {
+    /// Gaussian residual.
+    #[default]
+    Normal,
+    /// Experimental: three-parameter lognormal residual bounded below at zero inflow; the
+    /// normal residual where the conditional mean is not positive.
+    #[serde(rename = "lognormal_3p")]
+    Lognormal3p,
+}
+
+impl InflowResidualDistribution {
+    /// The `config.json` spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Lognormal3p => "lognormal_3p",
+        }
+    }
+}
+
+/// Inflow residual settings (`config.json → modeling.inflow_residual`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct InflowResidualConfig {
+    /// Residual distribution: `"normal"` or `"lognormal_3p"`.
+    ///
+    /// Default: `"normal"`. Combines with every `modeling.inflow_non_negativity.method`.
+    pub distribution: InflowResidualDistribution,
 }

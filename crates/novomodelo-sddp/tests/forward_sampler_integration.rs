@@ -38,6 +38,7 @@ use novomodelo_core::{
         SeasonMap, Stage, StageLagTransition, StageRiskConfig, StageStateConfig,
     },
 };
+use novomodelo_io::config::InflowResidualDistribution;
 use novomodelo_sddp::{
     InflowNonNegativityMethod, StoppingMode, StoppingRule, StoppingRuleSet, StudySetup,
     cut::CutSet,
@@ -551,6 +552,7 @@ fn run_programmatic(
         io_channel_capacity: 0,
         policy_path: String::new(),
         inflow_method,
+        inflow_residual: InflowResidualDistribution::Normal,
         cut_selection: None,
         cut_activity_tolerance: 0.0,
         budget: None,
@@ -900,6 +902,7 @@ fn run_with_setup(
         io_channel_capacity: 0,
         policy_path: String::new(),
         inflow_method: InflowNonNegativityMethod::None,
+        inflow_residual: InflowResidualDistribution::Normal,
         cut_selection: None,
         cut_activity_tolerance: 0.0,
         budget: None,

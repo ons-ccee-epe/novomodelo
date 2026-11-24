@@ -275,6 +275,33 @@
         }
       ]
     },
+    "InflowResidualConfig": {
+      "additionalProperties": false,
+      "description": "Inflow residual settings (`config.json → modeling.inflow_residual`).",
+      "properties": {
+        "distribution": {
+          "$ref": "#/$defs/InflowResidualDistribution",
+          "default": "normal",
+          "description": "Residual distribution: `\"normal\"` or `\"lognormal_3p\"`.\n\nDefault: `\"normal\"`. Combines with every `modeling.inflow_non_negativity.method`."
+        }
+      },
+      "type": "object"
+    },
+    "InflowResidualDistribution": {
+      "description": "Distribution of the PAR(p) inflow residual.\n\nAccepted values in `config.json → modeling.inflow_residual.distribution`:\n\n- `\"normal\"` — Gaussian residual (default).\n- `\"lognormal_3p\"` — experimental: a three-parameter lognormal residual with the PAR(p)\n  conditional mean and standard deviation of the hydro's incremental inflow, bounded\n  below at zero inflow. Where the conditional mean is not positive the hydro takes the\n  normal residual, and `modeling.inflow_non_negativity.method` applies as under\n  `\"normal\"`.\n\n`\"lognormal_3p\"` is refused with the `external` and `historical` inflow schemes,\n`enumerated` selection, `historical_residuals` stages and nodes that declare\n`scenario_id`. As under the truncation methods, the lower bound can exceed the upper\nbound.",
+      "oneOf": [
+        {
+          "const": "normal",
+          "description": "Gaussian residual.",
+          "type": "string"
+        },
+        {
+          "const": "lognormal_3p",
+          "description": "Experimental: three-parameter lognormal residual bounded below at zero inflow; the\nnormal residual where the conditional mean is not positive.",
+          "type": "string"
+        }
+      ]
+    },
     "LipschitzConfig": {
       "additionalProperties": false,
       "description": "Lipschitz constant settings for inner approximation.",
@@ -327,6 +354,13 @@
             "method": "truncation_with_penalty"
           },
           "description": "Strategy for handling non-negative inflow constraints."
+        },
+        "inflow_residual": {
+          "$ref": "#/$defs/InflowResidualConfig",
+          "default": {
+            "distribution": "normal"
+          },
+          "description": "Distribution of the inflow residual."
         }
       },
       "type": "object"
@@ -1371,9 +1405,12 @@
         "cost_scale_factor": null,
         "inflow_non_negativity": {
           "method": "truncation_with_penalty"
+        },
+        "inflow_residual": {
+          "distribution": "normal"
         }
       },
-      "description": "Modeling options (inflow non-negativity treatment)."
+      "description": "Modeling options: inflow non-negativity, the inflow residual distribution and\nobjective scaling."
     },
     "policy": {
       "$ref": "#/$defs/PolicyConfig",

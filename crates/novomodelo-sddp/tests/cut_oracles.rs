@@ -17,8 +17,8 @@ use std::path::Path;
 use novomodelo_core::System;
 use novomodelo_io::Config;
 use novomodelo_io::config::{
-    InflowNonNegativityMethod as CfgInflowMethod, SelectionMethod, StoppingRuleConfig,
-    TrainingSelection,
+    InflowNonNegativityMethod as CfgInflowMethod, InflowResidualDistribution, SelectionMethod,
+    StoppingRuleConfig, TrainingSelection,
 };
 use novomodelo_sddp::setup::StageIdx;
 use novomodelo_sddp::test_support::decks::committed_decks;
@@ -31,18 +31,19 @@ use novomodelo_solver::ActiveSolver;
 
 use common::expanded_solve::CutRowSet;
 use common::in_code_studies::{
-    ChronologicalNoiseSpec, chronological_noise_hydro_models, chronological_noise_study,
-    discounted_anticipated_study, mixed_lead_anticipated_study, negative_draw_par1_spec,
-    negative_draw_water_value_spec, parallel_multiblock_evaporation_study,
-    stochastic_parallel_study,
+    ChronologicalNoiseSpec, FphaLagOptions, chronological_noise_hydro_models,
+    chronological_noise_study, discounted_anticipated_study, fpha_lag_study_with,
+    mixed_lead_anticipated_study, negative_draw_par1_spec, negative_draw_water_value_spec,
+    parallel_multiblock_evaporation_study, stochastic_parallel_study,
 };
+use common::lognormal_branches::assert_the_stored_pins_reach_both_branches;
 use common::stored_cut_oracles::{
     apply_oracle_config, apply_oracle_config_with_selection, run_cut_oracles,
     solve_successor_opening,
 };
 use common::{
     StubComm, build_setup_in_code, build_setup_in_code_with_models, fresh_system_and_setup_with,
-    positive,
+    positive, train_storing_trial_states,
 };
 
 const D19_DIR: &str = "../../examples/deterministic/d19-multi-hydro-par";
@@ -243,6 +244,52 @@ fn cut_oracles_hold_with_sloped_cuts_on_the_negative_draw_water_value_study() {
             "{label}: the second training run stored a different number of cuts than the oracle checked"
         );
     }
+}
+
+fn lognormal_lag_oracle_setup(reach_the_fallback: bool) -> StudySetup {
+    let (system, mut config, hydro_models) = fpha_lag_study_with(FphaLagOptions {
+        openings: 3,
+        reach_the_fallback,
+        ..FphaLagOptions::default()
+    });
+    config.modeling.inflow_residual.distribution = InflowResidualDistribution::Lognormal3p;
+    apply_oracle_config(&mut config);
+    config.training.selection = Some(TrainingSelection::sampled(4));
+    build_setup_in_code_with_models(system, &config, hydro_models)
+}
+
+fn assert_sound_with_the_noise_term_frozen(label: &str, setup: StudySetup) {
+    let report = run_cut_oracles(label, setup);
+    eprintln!(
+        "{label}: frozen_resolves={} frozen_infeasible={} max_frozen_noise_gap={}",
+        report.frozen_resolves, report.frozen_infeasible, report.max_frozen_noise_gap
+    );
+    assert!(
+        report.frozen_resolves > report.frozen_infeasible,
+        "{label}: every frozen-noise-term re-solve was infeasible, so no cut was compared"
+    );
+    report.assert_sound(label);
+    assert!(
+        report.max_frozen_noise_gap > 0.0,
+        "{label}: freezing the noise term moved no successor value"
+    );
+}
+
+#[test]
+fn cut_oracles_hold_with_the_noise_term_frozen_on_the_lognormal_lag_study() {
+    assert_sound_with_the_noise_term_frozen(
+        "lognormal_lag_study",
+        lognormal_lag_oracle_setup(false),
+    );
+}
+
+#[test]
+fn cut_oracles_hold_with_the_noise_term_frozen_on_the_fallback_reaching_lognormal_lag_study() {
+    let label = "fallback_reaching_lognormal_lag_study";
+    let mut probe = lognormal_lag_oracle_setup(true);
+    train_storing_trial_states(label, &mut probe);
+    assert_the_stored_pins_reach_both_branches(label, &probe);
+    assert_sound_with_the_noise_term_frozen(label, lognormal_lag_oracle_setup(true));
 }
 
 #[test]

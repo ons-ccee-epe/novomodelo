@@ -204,6 +204,59 @@ pub fn evaluate_par_noise_term_batch(
     }
 }
 
+/// Evaluate the noise term of a lognormal residual bounded below at the series'
+/// non-negativity limit, writing into `output` without allocating:
+///
+/// ```text
+/// w_h = p_h * expm1(s_h * eta_h - s_h^2 / 2)
+/// s_h^2 = ln_1p((sigma_h / p_h)^2)
+/// ```
+///
+/// `p_h + w_h` keeps the conditional mean `p_h` and the standard deviation
+/// `sigma_h` and is never negative. Where `p_h` is not positive or
+/// `(sigma_h / p_h)^2` is not finite, writes `sigma_h * eta_h` with the bits of
+/// [`evaluate_par_noise_term_batch`]. Each operation is rounded separately (no
+/// fused multiply-add), in the order shown. For `|eta_h|` near 40 with
+/// `(sigma_h / p_h)^2` near `f64::MAX`, `exp_m1` overflows to infinity;
+/// generated noise does not reach this, only a hand-written opening-tree file
+/// can.
+///
+/// Every slice has length `par_lp.n_hydros()`.
+pub fn evaluate_lognormal_noise_term_batch(
+    par_lp: &PrecomputedPar,
+    stage: usize,
+    conditional_mean: &[f64],
+    noise: &[f64],
+    output: &mut [f64],
+) {
+    let n_series = par_lp.n_hydros();
+    debug_assert_eq!(
+        conditional_mean.len(),
+        n_series,
+        "conditional_mean.len() must equal n_series"
+    );
+    debug_assert_eq!(noise.len(), n_series, "noise.len() must equal n_series");
+    debug_assert_eq!(output.len(), n_series, "output.len() must equal n_series");
+
+    for h in 0..n_series {
+        let sigma = par_lp.sigma(stage, h);
+        let p = conditional_mean[h];
+        let eta = noise[h];
+        if p > 0.0 {
+            let c = sigma / p;
+            let c2 = c * c;
+            if c2.is_finite() {
+                let s2 = c2.ln_1p();
+                let s = s2.sqrt();
+                let x = s * eta - 0.5 * s2;
+                output[h] = p * x.exp_m1();
+                continue;
+            }
+        }
+        output[h] = sigma * eta;
+    }
+}
+
 /// Add a noise term to a conditional mean element-wise, writing
 /// `output[h] = conditional_mean[h] + noise_term[h]` without allocating. Each
 /// element is one rounded addition (no fused multiply-add).
@@ -297,11 +350,13 @@ mod tests {
         test_support::{StageSpec, single_block},
     };
 
+    use proptest::{prop_assert_eq, proptest};
     use rand::RngExt;
 
     use super::{
-        add_noise_term_batch, evaluate_par, evaluate_par_batch,
-        evaluate_par_conditional_mean_batch, evaluate_par_noise_term_batch, solve_par_noise,
+        add_noise_term_batch, evaluate_lognormal_noise_term_batch, evaluate_par,
+        evaluate_par_batch, evaluate_par_conditional_mean_batch, evaluate_par_noise_term_batch,
+        solve_par_noise,
     };
     use crate::noise::rng::rng_from_seed;
     use crate::par::precompute::PrecomputedPar;
@@ -877,6 +932,182 @@ mod tests {
             evaluate_par_batch(&par_lp, 0, &lags, &noise, &mut fused);
 
             assert_eq!(bits(&added), bits(&fused), "draw {draw}");
+        }
+    }
+
+    fn make_ar0_par(stds: &[f64]) -> PrecomputedPar {
+        let ids: Vec<EntityId> = (1..).map(EntityId).take(stds.len()).collect();
+        let models: Vec<_> = ids
+            .iter()
+            .zip(stds)
+            .map(|(id, &std)| make_model(id.0, 0, 100.0, std, vec![], 1.0))
+            .collect();
+        PrecomputedPar::build(&models, &[make_stage(0, 0, Some(0))], &ids, None).unwrap()
+    }
+
+    fn lognormal_term<const N: usize>(
+        par_lp: &PrecomputedPar,
+        p: [f64; N],
+        eta: [f64; N],
+    ) -> [f64; N] {
+        let mut w = [f64::NAN; N];
+        evaluate_lognormal_noise_term_batch(par_lp, 0, &p, &eta, &mut w);
+        w
+    }
+
+    fn normal_pdf(eta: f64) -> f64 {
+        (-0.5 * eta * eta).exp() / (2.0 * std::f64::consts::PI).sqrt()
+    }
+
+    fn trapezoid(lo: f64, hi: f64, step: f64, f: impl Fn(f64) -> f64) -> f64 {
+        let mut sum = 0.0;
+        let mut last = 0.0;
+        let mut i = 0u32;
+        while lo + f64::from(i) * step <= hi {
+            last = f(lo + f64::from(i) * step);
+            sum += if i == 0 { 0.5 * last } else { last };
+            i += 1;
+        }
+        (sum - 0.5 * last) * step
+    }
+
+    #[test]
+    fn lognormal_term_keeps_the_conditional_mean_and_std() {
+        let par_lp = make_ar0_par(&[1.0]);
+        assert_eq!(par_lp.sigma(0, 0).to_bits(), 1.0f64.to_bits());
+        let sigma = par_lp.sigma(0, 0);
+
+        for cv in [0.01, 0.1, 0.5, 1.0, 3.0, 10.0] {
+            let p = sigma / cv;
+            let hi = 2.0 * (cv * cv).ln_1p().sqrt() + 12.0;
+            let z_at = |eta: f64| p + lognormal_term(&par_lp, [p], [eta])[0];
+            let moments = |step: f64| {
+                let mean = trapezoid(-12.0, hi, step, |eta| z_at(eta) * normal_pdf(eta));
+                let var = trapezoid(-12.0, hi, step, |eta| {
+                    (z_at(eta) - p) * (z_at(eta) - p) * normal_pdf(eta)
+                });
+                (mean, var.sqrt())
+            };
+            let (mean, sd) = moments(1e-3);
+            let (mean_coarse, sd_coarse) = moments(2e-3);
+
+            assert!((mean - p).abs() / p <= 1e-8, "cv {cv}: mean {mean}, p {p}");
+            assert!(
+                (sd - sigma).abs() / sigma <= 1e-8,
+                "cv {cv}: sd {sd}, sigma {sigma}"
+            );
+            assert!(
+                (mean - mean_coarse).abs() / mean <= 1e-10,
+                "cv {cv}: mean {mean} vs coarse {mean_coarse}"
+            );
+            assert!(
+                (sd - sd_coarse).abs() / sd <= 1e-10,
+                "cv {cv}: sd {sd} vs coarse {sd_coarse}"
+            );
+        }
+    }
+
+    #[test]
+    fn lognormal_term_matches_the_second_order_gaussian_limit() {
+        let cases: [(f64, &[f64]); 2] = [(1e-6, &[-2.0, -1.5, 1.5, 2.0]), (1e-10, &[2.0])];
+        for (c, etas) in cases {
+            let par_lp = make_ar0_par(&[c]);
+            let sigma = par_lp.sigma(0, 0);
+            for &eta in etas {
+                let w = lognormal_term(&par_lp, [1.0], [eta])[0];
+                let w2 = sigma * eta + sigma * c * (eta * eta - 1.0) / 2.0;
+                assert!(
+                    (w - w2).abs() <= 1e-12 * w2.abs(),
+                    "c {c}, eta {eta}: w {w:e}, second order {w2:e}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn lognormal_inflow_is_finite_and_non_negative_at_sampler_extremes() {
+        let par_lp = make_ar0_par(&[1.0, 1e-290, 1e150, 1e-320]);
+        let p = [1.0, 1e-300, 1.0, 5e-324];
+
+        for eta in [-38.5, -8.6, 8.6, 38.5] {
+            let w = lognormal_term(&par_lp, p, [eta; 4]);
+            let mut z = [f64::NAN; 4];
+            add_noise_term_batch(&p, &w, &mut z);
+
+            for h in 0..4 {
+                let case = format!("eta {eta}, p {:e}, sigma {:e}", p[h], par_lp.sigma(0, h));
+                assert!(z[h].is_finite(), "{case}: z {}", z[h]);
+                assert!(z[h] >= 0.0, "{case}: z {}", z[h]);
+                assert_ne!(z[h].to_bits(), (-0.0f64).to_bits(), "{case}: z is -0.0");
+                assert_ne!(
+                    w[h].to_bits(),
+                    (par_lp.sigma(0, h) * eta).to_bits(),
+                    "{case}: the fallback ran"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn lognormal_term_rounds_each_operation_in_the_documented_order() {
+        let par_lp = make_ar0_par(&[0.7, 3.0, 40.0]);
+        let p = [2.3, 0.9, 1.7];
+        for eta in [-2.4, -0.3, 0.6, 1.9] {
+            let w = lognormal_term(&par_lp, p, [eta; 3]);
+            for h in 0..3 {
+                let c = par_lp.sigma(0, h) / p[h];
+                let s2 = (c * c).ln_1p();
+                let x = s2.sqrt() * eta - s2 / 2.0;
+                let expected = p[h] * x.exp_m1();
+                assert_eq!(w[h].to_bits(), expected.to_bits(), "h {h}, eta {eta}");
+            }
+        }
+    }
+
+    #[test]
+    fn lognormal_fallback_has_the_bits_of_the_normal_term() {
+        let par_lp = make_split_par([EntityId(3), EntityId(5)]);
+        let mut normal = [f64::NAN; 2];
+        evaluate_par_noise_term_batch(&par_lp, 0, &SPLIT_NOISE, &mut normal);
+
+        for p in [[-3.0, 0.0], [-0.0, 1e-300]] {
+            let mut w = [f64::NAN; 2];
+            evaluate_lognormal_noise_term_batch(&par_lp, 0, &p, &SPLIT_NOISE, &mut w);
+            assert_eq!(bits(&w), bits(&normal), "p {p:?}");
+        }
+    }
+
+    #[test]
+    fn lognormal_zero_sigma_leaves_the_conditional_mean() {
+        let par_lp = make_ar0_par(&[0.0]);
+        for p in [5.0, -1.0] {
+            for eta in [1.5, -1.5, 0.0, -0.0] {
+                let w = lognormal_term(&par_lp, [p], [eta]);
+                let mut z = [f64::NAN];
+                add_noise_term_batch(&[p], &w, &mut z);
+
+                assert_eq!(w[0].to_bits(), (0.0 * eta).to_bits(), "p {p}, eta {eta}");
+                assert_eq!(z[0].to_bits(), p.to_bits(), "p {p}, eta {eta}");
+            }
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn lognormal_term_is_invariant_to_hydro_order(
+            p0 in -50.0..500.0f64,
+            p1 in -50.0..500.0f64,
+            eta0 in -9.0..9.0f64,
+            eta1 in -9.0..9.0f64,
+        ) {
+            let canonical = make_split_par([EntityId(3), EntityId(5)]);
+            let permuted = make_split_par([EntityId(5), EntityId(3)]);
+
+            let w_c = lognormal_term(&canonical, [p0, p1], [eta0, eta1]);
+            let w_p = lognormal_term(&permuted, [p1, p0], [eta1, eta0]);
+
+            prop_assert_eq!(w_c[0].to_bits(), w_p[1].to_bits());
+            prop_assert_eq!(w_c[1].to_bits(), w_p[0].to_bits());
         }
     }
 }

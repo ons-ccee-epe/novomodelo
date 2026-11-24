@@ -1,6 +1,7 @@
 //! Per-opening chain rule: the cut lag coefficients and intercept rebuilt from the compact LP's
-//! duals through ẑ = p(â) + σ·η. In unscaled cost units, with ψ the PAR coefficient per lag,
-//! `G` the stored coupling, `π` the base-row duals and `y` the resident cut duals:
+//! duals through ẑ = p(â) + ε, the noise term ε held constant in â. In unscaled cost units, with
+//! ψ the PAR coefficient per lag, `G` the stored coupling, `π` the base-row duals and `y` the
+//! resident cut duals:
 //!
 //! ```text
 //! g(h)      = -(Gᵀπ)(h) + Σ_k y(k)·β(k, (h, 0))

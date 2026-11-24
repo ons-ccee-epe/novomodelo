@@ -110,8 +110,8 @@ impl CutLagPoint {
         }
     }
 
-    /// Slots of (h, 0), read against p and σ·η; empty under `Carry`, whose every slot is read
-    /// against the incoming lag it holds.
+    /// Slots of (h, 0), read against p and the noise term ε; empty under `Carry`, whose every slot
+    /// is read against the incoming lag it holds.
     #[inline]
     #[must_use]
     pub fn lag0(&self) -> Range<usize> {
@@ -207,7 +207,7 @@ impl CutLagPoint {
     }
 
     /// The lag-0 noise term a cut row's W dot reads: `noise_term` itself, or under `Closing`
-    /// `c ⊙ σ·η` written into `out`.
+    /// `c ⊙ noise_term` written into `out`.
     pub fn noise_lane<'a>(&self, noise_term: &'a [f64], out: &'a mut [f64]) -> &'a [f64] {
         let n_hydros = self.lag0.len();
         debug_assert!(

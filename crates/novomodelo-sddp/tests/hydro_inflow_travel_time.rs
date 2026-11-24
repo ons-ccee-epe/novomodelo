@@ -35,9 +35,9 @@ use novomodelo_core::{
 };
 use novomodelo_io::config::{
     Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig, InflowNonNegativityMethod,
-    ModelingConfig, PolicyConfig, RowSelectionConfig, SimulationConfig as IoSimulationConfig,
-    SimulationSelection, StoppingMode, StoppingRuleConfig, TrainingConfig, TrainingSelection,
-    TrainingSolverConfig, UpperBoundEvaluationConfig,
+    InflowResidualConfig, ModelingConfig, PolicyConfig, RowSelectionConfig,
+    SimulationConfig as IoSimulationConfig, SimulationSelection, StoppingMode, StoppingRuleConfig,
+    TrainingConfig, TrainingSelection, TrainingSolverConfig, UpperBoundEvaluationConfig,
 };
 use novomodelo_sddp::hydro_models::{
     FphaPlane, PrepareHydroModelsResult, ProductionModelSet, ResolvedProductionModel,
@@ -755,6 +755,7 @@ fn config_with(method: InflowNonNegativityMethod) -> Config {
         schema: None,
         modeling: ModelingConfig {
             inflow_non_negativity: InflowNonNegativityConfig { method },
+            inflow_residual: InflowResidualConfig::default(),
             cost_scale_factor: Some(1.0),
         },
         training: TrainingConfig {
