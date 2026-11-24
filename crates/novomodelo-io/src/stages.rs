@@ -1206,7 +1206,7 @@ fn parse_date(s: &str, field: &str, path: &Path) -> Result<NaiveDate, LoadError>
 }
 
 /// Parse and order-validate one stage's `start_date`/`end_date` pair, field-pathed
-/// under `prefix[i]` (`"stages"` or `"pre_study_stages"`).
+/// under `prefix[i]`.
 fn parse_stage_date_range(
     prefix: &str,
     i: usize,

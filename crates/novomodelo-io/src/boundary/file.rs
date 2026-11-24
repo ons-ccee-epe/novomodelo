@@ -433,7 +433,7 @@ fn reject_duplicate_ids(
     id_label: &str,
     path: &Path,
 ) -> Result<(), LoadError> {
-    let mut seen: HashSet<i32> = HashSet::new();
+    let mut seen = HashSet::new();
     for (i, id) in ids.enumerate() {
         if !seen.insert(id) {
             return Err(LoadError::SchemaError {

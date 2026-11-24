@@ -219,7 +219,8 @@ The old files remain accepted for a deprecation period.
 | ---------------------------------------------------------------- | -------------------------------------------------------------- |
 | `boundary_conditions.json`                                       | new                                                            |
 | `initial_conditions.json` (± `post_study_stages.json`)           | legacy, with one deprecation warning                           |
-| both `boundary_conditions.json` and `initial_conditions.json`    | error                                                          |
+| `boundary_conditions.json` with `initial_conditions.json` or `post_study_stages.json` | error                                     |
+| neither `boundary_conditions.json` nor `initial_conditions.json` | error (the existing missing-file error)                        |
 | `post_study_stages.json` + any `post_study_*` list in `stages.json` | error (mixed)                                               |
 
 - **Both readers build the same core types:** `InitialConditions` and
@@ -240,7 +241,7 @@ The old files remain accepted for a deprecation period.
 | `novomodelo-cli`        | `templates.rs` / `build.rs` write the new format.                                                                                                                                                                                                            |
 | `novomodelo-python`     | Reads through `novomodelo-io`, so output parity holds without extra work. Any file-name mentions are updated.                                                                                                                                               |
 | `schemas/`              | Add `boundary_conditions.schema.json` and update `stages.schema.json`. The legacy schemas stay while the legacy reader exists.                                                                                                                              |
-| `novomodelo-bridge`     | The DECOMP (`converters/anticipated.py`, `travel_time.py`, `pipeline.py`) and NEWAVE (`converters/inflow_windows.py`, `pipeline.py`) emitters write the new format. Because the old files are still read, this can ship independently.                     |
+| `novomodelo-bridge`     | The DECOMP (`converters/anticipated.py`, `travel_time.py`, `pipeline.py`) and NEWAVE (`converters/inflow_windows.py`, `pipeline.py`) emitters write the new format. The switch ships after the first `novomodelo` release that contains the new reader.                     |
 | Decks / docs            | Migrate the example decks with a converter, alongside `scripts/migrate/post_study_stages.py`. Update `anticipated-thermals-and-water-travel-time.md` (it names `thermal_stages` / `water_bucket_stages`) and the docs site. The CHANGELOG entry is a deprecation plus a new format. |
 
 ## 8. Migration

@@ -14,7 +14,7 @@
 #
 # Deliberately NOT scanned: crates/*/src/ — the loader-rejection regression
 # `test_past_inflows_field_is_rejected`
-# (crates/novomodelo-io/src/initial_conditions.rs) legitimately constructs a JSON
+# (crates/novomodelo-io/src/legacy/initial_conditions.rs) legitimately constructs a JSON
 # literal carrying the field name to assert the loader rejects it;
 # this gate must never flag that literal. Excluding crates/*/src/ from the
 # scan scope keeps the gate's own PATTERN out of the range it searches, so no
