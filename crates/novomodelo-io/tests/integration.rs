@@ -976,6 +976,72 @@ fn test_lead_stages_exceeding_horizon_without_post_study_stages_rejected_by_both
     );
 }
 
+// ── boundary_conditions.json ──────────────────────────────────────────────────
+
+/// A case carrying only `boundary_conditions.json` loads to the same initial conditions as
+/// the same seed in `initial_conditions.json`.
+#[test]
+fn boundary_conditions_only_case_loads() {
+    let legacy_dir = TempDir::new().unwrap();
+    helpers::make_multi_entity_case(&legacy_dir);
+    helpers::write_file(
+        legacy_dir.path(),
+        "initial_conditions.json",
+        r#"{ "storage": [{ "hydro_id": 1, "value_hm3": 500.0 }], "filling_storage": [] }"#,
+    );
+    let legacy = load_case(legacy_dir.path()).unwrap();
+
+    let dir = TempDir::new().unwrap();
+    helpers::make_multi_entity_case(&dir);
+    std::fs::remove_file(dir.path().join("initial_conditions.json")).unwrap();
+    helpers::write_file(
+        dir.path(),
+        "boundary_conditions.json",
+        r#"{ "hydros": [{ "hydro_id": 1, "storage_hm3": 500.0 }] }"#,
+    );
+
+    let system = load_case(dir.path()).unwrap_or_else(|e| {
+        panic!("load_case must accept a case with only boundary_conditions.json, got: {e}")
+    });
+
+    assert_eq!(system.initial_conditions().storage.len(), 1);
+    assert_eq!(system.initial_conditions(), legacy.initial_conditions());
+}
+
+/// A `post_study_bounds` row naming a `stage_id` absent from the thermal calendar is a schema
+/// error on `boundary_conditions.json`.
+#[test]
+fn unknown_post_study_stage_id_is_schema_3() {
+    let dir = TempDir::new().unwrap();
+    helpers::make_minimal_case(&dir);
+    std::fs::remove_file(dir.path().join("initial_conditions.json")).unwrap();
+    helpers::write_file(
+        dir.path(),
+        "boundary_conditions.json",
+        r#"{
+    "thermals": [
+        {
+            "thermal_id": 1,
+            "post_study_bounds": [
+                { "stage_id": 777, "cost_per_mwh": 10.0, "min_mw": 0.0, "max_mw": 5.0 }
+            ]
+        }
+    ]
+}"#,
+    );
+
+    let message = validate_case(dir.path()).unwrap_err().to_string();
+
+    assert!(
+        message.contains("boundary_conditions.json") && message.contains("777"),
+        "the error must name boundary_conditions.json and the unknown stage id, got: {message}"
+    );
+    assert!(
+        !message.contains("initial_conditions.json"),
+        "no initial_conditions.json diagnostic may appear, got: {message}"
+    );
+}
+
 // ── test_postcard_round_trip ──────────────────────────────────────────────────
 
 #[test]

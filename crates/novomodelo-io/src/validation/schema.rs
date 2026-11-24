@@ -9,7 +9,7 @@
 //! bundle holding every parsed output when all files parse cleanly, or `None`
 //! when any parse or schema error is encountered.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
 use novomodelo_core::{
@@ -22,6 +22,7 @@ use novomodelo_core::{
 
 use crate::{
     LoadError,
+    boundary::{assemble::assemble_boundary, file::parse_boundary_conditions_file},
     config::{Config, parse_config},
     constraints::{
         BusPenaltyOverrideRow, ContractBoundsRow, GenericConstraintBoundsRow, HydroBoundsRow,
@@ -60,7 +61,7 @@ use crate::{
     },
     validation::{
         ValidationContext, rules,
-        structural::{FileManifest, InputFile},
+        structural::{BoundaryInputSource, FileManifest, InputFile},
     },
 };
 
@@ -70,12 +71,14 @@ use crate::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BoundaryFormat {
     Legacy(PostStudyFormat),
+    Current,
 }
 
 impl BoundaryFormat {
     pub(crate) fn thermal_calendar_key(self) -> &'static str {
         match self {
             Self::Legacy(_) => "thermal_stages",
+            Self::Current => "post_study_thermal_stages",
         }
     }
 }
@@ -90,11 +93,13 @@ pub(crate) struct ParsedData {
     pub(crate) config: Config,
     /// `stages.json`.
     pub(crate) stages: StagesData,
-    /// `initial_conditions.json`.
+    /// `initial_conditions.json`, or the initial conditions assembled from
+    /// `boundary_conditions.json`.
     pub(crate) initial_conditions: InitialConditions,
-    /// `post_study_stages.json`. `None` when absent.
+    /// `post_study_stages.json`, or the post-study stages assembled from
+    /// `boundary_conditions.json` and `stages.json`. `None` when neither declares any.
     pub(crate) post_study_stages: Option<PostStudyStages>,
-    /// Boundary format; `None` when the file failed to parse.
+    /// Boundary format; `None` when the legacy `post_study_stages.json` failed to parse.
     pub(crate) boundary_format: Option<BoundaryFormat>,
 
     /// `system/buses.json`.
@@ -268,25 +273,41 @@ pub(crate) fn validate_schema(
         ctx,
     );
 
-    let initial_conditions = parse_or_error(
-        parse_initial_conditions(&case_root.join("initial_conditions.json")),
-        "initial_conditions.json",
-        ctx,
-    );
+    let (boundary_file, initial_conditions, post_study_stages, boundary_format) =
+        match manifest.boundary_source() {
+            Some(BoundaryInputSource::Legacy { post_study_file }) => {
+                let initial_conditions = parse_or_error(
+                    parse_initial_conditions(&case_root.join("initial_conditions.json")),
+                    "initial_conditions.json",
+                    ctx,
+                );
 
-    // `Option` (not the aggregate): callers distinguish "no file" from an empty deck.
-    let post_study_file_present = manifest.present(InputFile::PostStudyStagesJson);
-    let (boundary_format, post_study_stages) = match optional_or_error(
-        post_study_file_present,
-        || parse_post_study_file(&case_root.join("post_study_stages.json")).map(Some),
-        || None,
-        "post_study_stages.json",
-        ctx,
-    ) {
-        Some((format, stages)) => (Some(BoundaryFormat::Legacy(format)), stages),
-        None if post_study_file_present => (None, None),
-        None => (Some(BoundaryFormat::Legacy(PostStudyFormat::Absent)), None),
-    };
+                // `Option` (not the aggregate): callers distinguish "no file" from an empty deck.
+                let (boundary_format, post_study_stages) = match optional_or_error(
+                    post_study_file,
+                    || parse_post_study_file(&case_root.join("post_study_stages.json")).map(Some),
+                    || None,
+                    "post_study_stages.json",
+                    ctx,
+                ) {
+                    Some((format, stages)) => (Some(BoundaryFormat::Legacy(format)), stages),
+                    None if post_study_file => (None, None),
+                    None => (Some(BoundaryFormat::Legacy(PostStudyFormat::Absent)), None),
+                };
+                (None, initial_conditions, post_study_stages, boundary_format)
+            }
+            Some(BoundaryInputSource::Current) => (
+                parse_or_error(
+                    parse_boundary_conditions_file(&case_root.join("boundary_conditions.json")),
+                    "boundary_conditions.json",
+                    ctx,
+                ),
+                None,
+                None,
+                Some(BoundaryFormat::Current),
+            ),
+            None => (None, None, None, None),
+        };
 
     // Fall back to a sentinel when penalties failed to parse, so penalty-dependent
     // parsers still run and their own errors are collected in this pass.
@@ -311,6 +332,32 @@ pub(crate) fn validate_schema(
         "system/hydros.json",
         ctx,
     );
+
+    let (initial_conditions, post_study_stages) = match (boundary_file, &stages, &hydros) {
+        (Some(file), Some(stages), Some(hydros)) => {
+            let filling_ids: HashSet<i32> = hydros
+                .iter()
+                .filter(|hydro| hydro.filling.is_some())
+                .map(|hydro| hydro.id.0)
+                .collect();
+            match parse_or_error(
+                assemble_boundary(
+                    file,
+                    &stages.post_study,
+                    &filling_ids,
+                    &case_root.join("boundary_conditions.json"),
+                ),
+                "boundary_conditions.json",
+                ctx,
+            ) {
+                Some((initial_conditions, post_study_stages)) => {
+                    (Some(initial_conditions), post_study_stages)
+                }
+                None => (None, None),
+            }
+        }
+        _ => (initial_conditions, post_study_stages),
+    };
 
     let thermals = optional_or_error(
         manifest.present(InputFile::SystemThermalsJson),
@@ -833,6 +880,10 @@ mod tests {
             thermal_bounds: true,
             water_bucket_stages: false,
         });
+        assert_eq!(
+            BoundaryFormat::Current.thermal_calendar_key(),
+            "post_study_thermal_stages"
+        );
         for format in [present, BoundaryFormat::Legacy(PostStudyFormat::Absent)] {
             assert_eq!(format.thermal_calendar_key(), "thermal_stages");
         }

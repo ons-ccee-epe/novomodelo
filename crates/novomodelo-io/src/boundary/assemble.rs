@@ -22,8 +22,6 @@ use crate::stages::{PostStudyCalendarStage, PostStudyCalendars};
 ///
 /// [`LoadError::SchemaError`] when a `post_study_bounds` row names a `stage_id`
 /// absent from the thermal calendar.
-// Rationale: read by the schema-layer dispatch.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn assemble_boundary(
     file: BoundaryConditionsFile,
     calendars: &PostStudyCalendars,
