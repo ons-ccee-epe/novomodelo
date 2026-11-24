@@ -83,5 +83,39 @@
       ],
       "num_openings": 1
     }
+  ],
+  "post_study_thermal_stages": [
+    {
+      "id": 6,
+      "start_date": "2024-07-01",
+      "end_date": "2024-08-01"
+    },
+    {
+      "id": 7,
+      "start_date": "2024-08-01",
+      "end_date": "2024-09-01"
+    },
+    {
+      "id": 8,
+      "start_date": "2024-09-01",
+      "end_date": "2024-10-01"
+    }
+  ],
+  "post_study_water_stages": [
+    {
+      "id": 9,
+      "start_date": "2024-07-01",
+      "end_date": "2024-08-01"
+    },
+    {
+      "id": 10,
+      "start_date": "2024-08-01",
+      "end_date": "2024-09-01"
+    },
+    {
+      "id": 11,
+      "start_date": "2024-09-01",
+      "end_date": "2024-10-01"
+    }
   ]
 }

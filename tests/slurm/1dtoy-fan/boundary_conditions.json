@@ -1,0 +1,10 @@
+{
+  "$schema": "https://raw.githubusercontent.com/ons-ccee-epe/novomodelo/refs/heads/main/schemas/boundary_conditions.schema.json",
+  "hydros": [
+    {
+      "hydro_id": 0,
+      "storage_hm3": 83.222
+    }
+  ],
+  "thermals": []
+}

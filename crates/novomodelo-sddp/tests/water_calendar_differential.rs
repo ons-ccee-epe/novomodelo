@@ -1,4 +1,4 @@
-//! A deck that changes only `water_bucket_stages` moves the water
+//! A deck that changes only `post_study_water_stages` moves the water
 //! facts (bucket slots, the state dimension they size) and leaves every thermal
 //! fact (`time_value.*`, the anticipated ring slots) unchanged.
 
@@ -20,21 +20,25 @@ use tempfile::TempDir;
 
 use common::{copy_toy_case, fresh_system_and_setup_with};
 
+/// Above the deck's `post_study_thermal_stages` ids.
+const FIRST_WATER_STAGE_ID: u32 = 9;
+
 struct WaterStage {
     start: NaiveDate,
     days: u32,
 }
 
 impl WaterStage {
-    fn json(&self) -> serde_json::Value {
-        json!({ "start_date": self.start.to_string(), "duration_hours": f64::from(self.days) * 24.0 })
+    fn end(&self) -> NaiveDate {
+        self.start + Days::new(u64::from(self.days))
+    }
+
+    fn json(&self, id: u32) -> serde_json::Value {
+        json!({ "id": id, "start_date": self.start.to_string(), "end_date": self.end().to_string() })
     }
 
     fn interval(&self) -> (i32, i32) {
-        (
-            encode_slot_date(self.start),
-            encode_slot_date(self.start + Days::new(u64::from(self.days))),
-        )
+        (encode_slot_date(self.start), encode_slot_date(self.end()))
     }
 }
 
@@ -66,29 +70,20 @@ fn case_with_water_bucket_stages(water: &[WaterStage]) -> TempDir {
     let dir = TempDir::new().expect("tempdir");
     copy_toy_case(&fixture, dir.path());
 
-    let thermal_bound = |post_study_stage_index: u32| {
-        json!({
-            "thermal_id": 1,
-            "post_study_stage_index": post_study_stage_index,
-            "cost_per_mwh": 5.0,
-            "min_mw": 0.0,
-            "max_mw": 150.0
-        })
-    };
-    let post_study = json!({
-        "thermal_stages": [
-            { "start_date": "2024-07-01", "duration_hours": 744.0 },
-            { "start_date": "2024-08-01", "duration_hours": 744.0 },
-            { "start_date": "2024-09-01", "duration_hours": 720.0 }
-        ],
-        "thermal_bounds": [thermal_bound(0), thermal_bound(1), thermal_bound(2)],
-        "water_bucket_stages": water.iter().map(WaterStage::json).collect::<Vec<_>>()
-    });
+    let stages_path = dir.path().join("stages.json");
+    let mut stages: serde_json::Value =
+        serde_json::from_slice(&fs::read(&stages_path).expect("read stages.json"))
+            .expect("parse stages.json");
+    stages["post_study_water_stages"] = water
+        .iter()
+        .zip(FIRST_WATER_STAGE_ID..)
+        .map(|(stage, id)| stage.json(id))
+        .collect();
     fs::write(
-        dir.path().join("post_study_stages.json"),
-        serde_json::to_vec_pretty(&post_study).expect("serialize post_study_stages"),
+        &stages_path,
+        serde_json::to_vec_pretty(&stages).expect("serialize stages.json"),
     )
-    .expect("write post_study_stages.json");
+    .expect("write stages.json");
     dir
 }
 
