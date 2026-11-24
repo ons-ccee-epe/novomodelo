@@ -35,6 +35,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Results change for FPHA hydros declaring `tailrace_flow`: `gamma_s` in
   `system/fpha_hyperplanes.parquet` and the `fpha_hyperplanes` output is the
   lateral-flow slope per m3/s (spill slope if none).
+- Results change for hydros with `fpha_config.source: "computed"`: planes keep
+  their fitted spill slope (`gamma_s`), so a spilling plant generates less. It
+  may again turbine water at 0 MW in `simulation/hydros`, as before 0.21.0.
+  `novomodelo validate` now warns only on planes below 0 MW without spillage.
 
 ### Removed
 
