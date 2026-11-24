@@ -2259,11 +2259,9 @@ mod water_travel_time_no_arc_byte_identity {
 }
 
 mod water_travel_time_gate_byte_neutrality {
-    //! Byte-neutrality of two independent gates on the same DECLARED-ARC deck
-    //! (D44, distinct from [`super::water_travel_time_no_arc_byte_identity`]'s
-    //! no-arc D06).
-    //!
-    //! The first is the water-travel-time terminal keep-live gate when
+    //! Byte-neutrality of the water-travel-time terminal keep-live gate on a
+    //! DECLARED-ARC deck (D44, distinct from
+    //! [`super::water_travel_time_no_arc_byte_identity`]'s no-arc D06) when
     //! `config.policy.boundary` is absent: a gated-off study must reproduce
     //! `final_lb` bit-for-bit across two independent, freshly-constructed
     //! runs, and the gated-off state layout must keep every terminal deep-lag
@@ -2274,22 +2272,13 @@ mod water_travel_time_gate_byte_neutrality {
     //! companion evidence that no baseline moved; this module adds the
     //! run-to-run reproducibility and mask-invariance checks a golden hash
     //! alone does not pin.
-    //!
-    //! The second is the arrival-calendar gate: the topology sizing derived
-    //! from a declared post-study calendar only diverges from the synthetic
-    //! pad when the declared calendar changes the transit depth. This deck
-    //! declares its water calendar, and its unmigrated-input overlay does not, so
-    //! the gate is pinned by building both and comparing the state topology
-    //! and the bucket masks.
 
     use std::path::Path;
 
     use novomodelo_io::config::BoundaryPolicy;
-    use novomodelo_sddp::test_support::unmigrated_inputs::{Generation, materialize_twin};
     use novomodelo_solver::ActiveSolver;
-    use tempfile::TempDir;
 
-    use super::common::{StubComm, copy_toy_case, fresh_setup_with};
+    use super::common::{StubComm, fresh_setup_with};
 
     const CASE_KEY: &str = "examples/deterministic/d44-travel-time-substage";
 
@@ -2381,31 +2370,125 @@ mod water_travel_time_gate_byte_neutrality {
              [0,0] with no boundary present"
         );
     }
+}
 
-    #[test]
-    fn declared_arc_golden_deck_topology_matches_its_legacy_overlay() {
-        let legacy_case = TempDir::new().expect("tempdir");
-        copy_toy_case(&case_dir(), legacy_case.path());
-        materialize_twin(Generation::PostStudyStagesKey, CASE_KEY, legacy_case.path())
-            .expect("the legacy overlay must materialize");
+mod arc_deck_legacy_twin_topology {
+    //! The arrival-calendar gate on every deck that declares a travel-time
+    //! arc and has a loadable legacy twin: the transit-bucket topology built from the deck's declared water
+    //! calendar equals the one the legacy reader pads for its legacy twin
+    //! (`Generation::PostStudyStagesKey`), in state dimension, bucket column
+    //! order, stage count and per-stage bucket bounds.
 
-        let migrated = fresh_setup_with(&case_dir(), |_cfg| {});
-        let legacy = fresh_setup_with(legacy_case.path(), |_cfg| {});
+    use std::collections::BTreeSet;
+    use std::path::{Path, PathBuf};
 
-        let (state_migrated, state_legacy) = (migrated.stage_state(), legacy.stage_state());
+    use novomodelo_sddp::StudySetup;
+    use novomodelo_sddp::test_support::unmigrated_inputs::{
+        Generation, deck_keys, materialize_twin,
+    };
+    use tempfile::TempDir;
+
+    use super::common::{copy_toy_case, fresh_setup_with};
+
+    const OVERLAY_DIR: &str = "tests/unswept_fixtures/unmigrated_inputs/post_study_stages_key";
+
+    // Main's reader refuses the `stages` key this deck's twin overlay writes.
+    const REFUSED_KEY_TWIN: &str =
+        "crates/novomodelo-sddp/tests/unswept_fixtures/dual_calendar_boundary";
+
+    fn deck_path(deck_key: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join(deck_key)
+    }
+
+    fn declares_arc(deck_key: &str) -> bool {
+        let path = deck_path(deck_key).join("system/hydros.json");
+        let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("{deck_key}: read hydros: {e}"));
+        let document: serde_json::Value = serde_json::from_slice(&bytes)
+            .unwrap_or_else(|e| panic!("{deck_key}: parse hydros: {e}"));
+        document["hydros"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{deck_key}: hydros.json has no `hydros` array"))
+            .iter()
+            .any(|hydro| {
+                hydro["travel_time_hours"].as_f64().is_some_and(|h| h > 0.0)
+                    && !hydro["downstream_id"].is_null()
+            })
+    }
+
+    fn is_compared(deck_key: &str) -> bool {
+        deck_key != REFUSED_KEY_TWIN && declares_arc(deck_key)
+    }
+
+    fn assert_excluded_twin_still_carries_the_refused_key() {
+        let overlay = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(OVERLAY_DIR)
+            .join(REFUSED_KEY_TWIN.replace('/', "__"))
+            .join("post_study_stages.json");
+        let bytes = std::fs::read(&overlay)
+            .unwrap_or_else(|e| panic!("{REFUSED_KEY_TWIN}: read twin overlay: {e}"));
+        let document: serde_json::Value = serde_json::from_slice(&bytes)
+            .unwrap_or_else(|e| panic!("{REFUSED_KEY_TWIN}: parse twin overlay: {e}"));
         assert!(
-            state_migrated.n_buckets > 0,
-            "fixture has no power unless it declares at least one travel-time bucket"
+            document.get("stages").is_some(),
+            "{REFUSED_KEY_TWIN}: its twin overlay no longer carries the `stages` key, so the \
+             exclusion must be dropped"
         );
-        assert_eq!(state_migrated.n_state, state_legacy.n_state);
+    }
+
+    // Read the overlay directory itself, not through `deck_keys`, so the loop
+    // under test and its oracle share no listing code.
+    fn arc_decks_with_an_overlay() -> BTreeSet<String> {
+        std::fs::read_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join(OVERLAY_DIR))
+            .expect("read the overlay directory")
+            .map(|entry| {
+                entry
+                    .expect("overlay directory entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .replace("__", "/")
+            })
+            .filter(|deck_key| is_compared(deck_key))
+            .collect()
+    }
+
+    // `fresh_setup_with` panics without naming the deck it was given.
+    fn build_setup(deck_key: &str, side: &str, dir: &Path) -> StudySetup {
+        std::panic::catch_unwind(|| fresh_setup_with(dir, |_cfg| {}))
+            .unwrap_or_else(|_| panic!("{deck_key}: building the {side} setup panicked"))
+    }
+
+    fn assert_twin_topology_matches(deck_key: &str) {
+        let twin_dir = TempDir::new().unwrap_or_else(|e| panic!("{deck_key}: tempdir: {e}"));
+        copy_toy_case(&deck_path(deck_key), twin_dir.path());
+        materialize_twin(Generation::PostStudyStagesKey, deck_key, twin_dir.path())
+            .unwrap_or_else(|e| panic!("{deck_key}: the legacy overlay must materialize: {e}"));
+
+        let committed = build_setup(deck_key, "committed", &deck_path(deck_key));
+        let twin = build_setup(deck_key, "legacy twin", twin_dir.path());
+
+        let (state_committed, state_twin) = (committed.stage_state(), twin.stage_state());
+        assert!(
+            state_committed.n_buckets > 0,
+            "{deck_key}: fixture has no power unless it declares at least one travel-time bucket"
+        );
         assert_eq!(
-            state_migrated.transit_bucket_column_order,
-            state_legacy.transit_bucket_column_order
+            state_committed.n_state, state_twin.n_state,
+            "{deck_key}: n_state must equal the legacy twin's"
+        );
+        assert_eq!(
+            state_committed.transit_bucket_column_order, state_twin.transit_bucket_column_order,
+            "{deck_key}: transit_bucket_column_order must equal the legacy twin's"
         );
 
-        assert_eq!(migrated.num_stages(), legacy.num_stages());
-        let buckets = state_migrated.transit_buckets_out.clone();
-        let bounds = |setup: &novomodelo_sddp::StudySetup, stage: usize| {
+        assert_eq!(
+            committed.num_stages(),
+            twin.num_stages(),
+            "{deck_key}: num_stages must equal the legacy twin's"
+        );
+        let buckets = state_committed.transit_buckets_out.clone();
+        let bounds = |setup: &StudySetup, stage: usize| {
             let template = &setup.stage_ctx().templates[stage];
             buckets
                 .clone()
@@ -2417,13 +2500,33 @@ mod water_travel_time_gate_byte_neutrality {
                 })
                 .collect::<Vec<_>>()
         };
-        for stage in 0..migrated.num_stages() {
+        for stage in 0..committed.num_stages() {
             assert_eq!(
-                bounds(&migrated, stage),
-                bounds(&legacy, stage),
-                "stage {stage}: the bucket masks must equal the legacy overlay's"
+                bounds(&committed, stage),
+                bounds(&twin, stage),
+                "{deck_key}, stage {stage}: the bucket masks must equal the legacy twin's"
             );
         }
+    }
+
+    #[test]
+    fn every_arc_deck_topology_matches_its_legacy_twin() {
+        assert_excluded_twin_still_carries_the_refused_key();
+
+        let mut covered = BTreeSet::new();
+        for deck_key in deck_keys(Generation::PostStudyStagesKey) {
+            if is_compared(&deck_key) {
+                assert_twin_topology_matches(&deck_key);
+                covered.insert(deck_key);
+            }
+        }
+
+        let expected = arc_decks_with_an_overlay();
+        assert!(!expected.is_empty(), "no arc deck has a legacy overlay");
+        assert_eq!(
+            covered, expected,
+            "every arc deck with a loadable legacy twin must be compared with its twin"
+        );
     }
 }
 
