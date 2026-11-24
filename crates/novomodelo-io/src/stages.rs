@@ -57,6 +57,9 @@ use std::path::Path;
 
 use crate::LoadError;
 
+const POST_STUDY_THERMAL_KEY: &str = "post_study_thermal_stages";
+const POST_STUDY_WATER_KEY: &str = "post_study_water_stages";
+
 // ── Intermediate serde types ──────────────────────────────────────────────────
 
 /// Root object of `stages.json`.
@@ -88,6 +91,19 @@ pub(crate) struct RawStagesFile {
 
     /// Study stages (non-negative IDs).
     stages: Vec<RawStage>,
+
+    /// Thermal-delivery stages after the study horizon, in any order; they are
+    /// sorted by `start_date`. Ids continue the study sequence: the earliest stage
+    /// has id `max(stages[].id) + 1`, the next one `+ 1`, and so on. Absent means
+    /// the key is not declared.
+    #[serde(default)]
+    post_study_thermal_stages: Option<Vec<RawPostStudyCalendarStage>>,
+
+    /// Water-bucket stages after the study horizon, in any order; they are sorted
+    /// by `start_date`. Ids must exceed every study stage id. Absent means the key
+    /// is not declared.
+    #[serde(default)]
+    post_study_water_stages: Option<Vec<RawPostStudyCalendarStage>>,
 }
 
 /// The `season_definitions` sub-object.
@@ -335,6 +351,20 @@ pub(crate) struct RawPreStudyStage {
     season_id: Option<usize>,
 }
 
+/// A post-study stage entry: a date window with no blocks, openings, risk measure
+/// or season.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub(crate) struct RawPostStudyCalendarStage {
+    /// Stage identifier; unique across pre-study, study and post-study stages.
+    id: i32,
+    /// Start date (inclusive) as ISO 8601 string; unique within its list.
+    start_date: String,
+    /// End date (exclusive) as ISO 8601 string; must be after `start_date`.
+    end_date: String,
+}
+
 /// One load block.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -417,8 +447,9 @@ pub struct PostStudyCalendarStage {
     pub end_date: NaiveDate,
 }
 
-/// The post-horizon calendars of `stages.json`. `None` means the key is absent
-/// from the file; `Some(vec![])` means it is declared empty.
+/// The post-horizon calendars of `stages.json`, each sorted ascending by
+/// `start_date`. `None` means the key is absent from the file; `Some(vec![])` means
+/// it is declared empty.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PostStudyCalendars {
     /// `post_study_thermal_stages`.
@@ -479,6 +510,7 @@ pub struct StagesData {
 /// | `CVaR` `lambda` not in [0.0, 1.0] | [`LoadError::SchemaError`] |
 /// | Date parse failure | [`LoadError::SchemaError`] |
 /// | `start_date >= end_date` | [`LoadError::SchemaError`] |
+/// | Post-study stage: repeated `start_date`, id collision, water id not above the study ids, or thermal id off the continuation | [`LoadError::SchemaError`] |
 ///
 /// # Examples
 ///
@@ -522,6 +554,7 @@ fn validate_raw_stages(raw: &RawStagesFile, path: &Path) -> Result<(), LoadError
         path,
     )?;
     validate_no_id_collision_between_sets(&raw.stages, &raw.pre_study_stages, path)?;
+    validate_post_study_ids(raw, path)?;
     let nodes_declared = !raw.policy_graph.nodes.is_empty();
     for (i, stage) in raw.stages.iter().enumerate() {
         validate_num_openings(stage.num_openings, nodes_declared, i, path)?;
@@ -579,6 +612,55 @@ fn validate_no_id_collision_between_sets(
                     pss.id
                 ),
             });
+        }
+    }
+    Ok(())
+}
+
+/// Largest study stage id; `-1` when there are none, so the first post-study thermal
+/// id is `0`. Pre-study ids are negative and never count.
+fn max_study_id(stages: &[RawStage]) -> i32 {
+    stages
+        .iter()
+        .map(|s| s.id)
+        .filter(|&id| id >= 0)
+        .max()
+        .unwrap_or(-1)
+}
+
+/// Post-study ids are unique across pre-study, study and both post-study lists, and
+/// water ids sit above every study id. Thermal ids are pinned to the start-date order
+/// in [`validate_thermal_continuation`].
+fn validate_post_study_ids(raw: &RawStagesFile, path: &Path) -> Result<(), LoadError> {
+    let mut taken: HashSet<i32> = raw
+        .stages
+        .iter()
+        .map(|s| s.id)
+        .chain(raw.pre_study_stages.iter().map(|s| s.id))
+        .collect();
+    let max_study_id = max_study_id(&raw.stages);
+    for (key, entries) in [
+        (POST_STUDY_THERMAL_KEY, &raw.post_study_thermal_stages),
+        (POST_STUDY_WATER_KEY, &raw.post_study_water_stages),
+    ] {
+        for (i, entry) in entries.iter().flatten().enumerate() {
+            if !taken.insert(entry.id) {
+                return Err(LoadError::SchemaError {
+                    path: path.to_path_buf(),
+                    field: format!("{key}[{i}].id"),
+                    message: format!("{key} id {} collides with another stage id", entry.id),
+                });
+            }
+            if key == POST_STUDY_WATER_KEY && entry.id <= max_study_id {
+                return Err(LoadError::SchemaError {
+                    path: path.to_path_buf(),
+                    field: format!("{key}[{i}].id"),
+                    message: format!(
+                        "{key} id {} must exceed the largest study stage id {max_study_id}",
+                        entry.id
+                    ),
+                });
+            }
         }
     }
     Ok(())
@@ -688,6 +770,12 @@ fn validate_risk_measure(
 /// `id` ascending. `index` is not assigned here — see [`Stage::index`].
 fn convert_stages(raw: RawStagesFile, path: &Path) -> Result<StagesData, LoadError> {
     let season_map = convert_season_definitions(raw.season_definitions, path)?;
+    let post_study = convert_post_study_calendars(
+        raw.post_study_thermal_stages.as_deref(),
+        raw.post_study_water_stages.as_deref(),
+        max_study_id(&raw.stages),
+        path,
+    )?;
 
     let nodes_declared = !raw.policy_graph.nodes.is_empty();
     let openings_declared: HashSet<i32> = raw
@@ -804,8 +892,87 @@ fn convert_stages(raw: RawStagesFile, path: &Path) -> Result<StagesData, LoadErr
         stages: all_stages,
         policy_graph,
         openings_declared,
-        post_study: PostStudyCalendars::default(),
+        post_study,
     })
+}
+
+fn convert_post_study_calendars(
+    thermal: Option<&[RawPostStudyCalendarStage]>,
+    water: Option<&[RawPostStudyCalendarStage]>,
+    max_study_id: i32,
+    path: &Path,
+) -> Result<PostStudyCalendars, LoadError> {
+    let thermal = thermal
+        .map(|entries| convert_post_study_calendar(entries, POST_STUDY_THERMAL_KEY, path))
+        .transpose()?;
+    if let Some(sorted) = &thermal {
+        validate_thermal_continuation(sorted, max_study_id, path)?;
+    }
+    let water = water
+        .map(|entries| convert_post_study_calendar(entries, POST_STUDY_WATER_KEY, path))
+        .transpose()?;
+    let without_declared_index = |sorted: Vec<(usize, PostStudyCalendarStage)>| {
+        sorted.into_iter().map(|(_, stage)| stage).collect()
+    };
+    Ok(PostStudyCalendars {
+        thermal: thermal.map(without_declared_index),
+        water: water.map(without_declared_index),
+    })
+}
+
+/// Parses and validates one post-study list, returning each stage with its declared
+/// index, sorted ascending by `start_date`.
+fn convert_post_study_calendar(
+    entries: &[RawPostStudyCalendarStage],
+    key: &str,
+    path: &Path,
+) -> Result<Vec<(usize, PostStudyCalendarStage)>, LoadError> {
+    let mut stages = Vec::with_capacity(entries.len());
+    let mut seen_starts: HashSet<NaiveDate> = HashSet::new();
+    for (i, entry) in entries.iter().enumerate() {
+        let (start_date, end_date) =
+            parse_stage_date_range(key, i, &entry.start_date, &entry.end_date, path)?;
+        if !seen_starts.insert(start_date) {
+            return Err(LoadError::SchemaError {
+                path: path.to_path_buf(),
+                field: format!("{key}[{i}].start_date"),
+                message: format!("duplicate start_date {start_date} in {key}"),
+            });
+        }
+        stages.push((
+            i,
+            PostStudyCalendarStage {
+                id: entry.id,
+                start_date,
+                end_date,
+            },
+        ));
+    }
+    stages.sort_by_key(|(_, stage)| stage.start_date);
+    Ok(stages)
+}
+
+/// Thermal stage `j` in start-date order has id `max_study_id + 1 + j`, the id the
+/// delivery-axis builder and the commissioning gate assign it.
+fn validate_thermal_continuation(
+    sorted: &[(usize, PostStudyCalendarStage)],
+    max_study_id: i32,
+    path: &Path,
+) -> Result<(), LoadError> {
+    for (expected, (i, stage)) in (i64::from(max_study_id) + 1..).zip(sorted) {
+        if i64::from(stage.id) != expected {
+            return Err(LoadError::SchemaError {
+                path: path.to_path_buf(),
+                field: format!("{POST_STUDY_THERMAL_KEY}[{i}].id"),
+                message: format!(
+                    "stage starting {} has id {}, expected {expected} \
+                     (the largest study stage id + 1 + its position in start_date order)",
+                    stage.start_date, stage.id
+                ),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn convert_policy_graph(raw: RawPolicyGraph, path: &Path) -> Result<HorizonGraph, LoadError> {
@@ -1394,6 +1561,242 @@ mod tests {
         let f = write_json(VALID_JSON);
         let data = parse_stages(f.path()).unwrap();
         assert_eq!(data.post_study, PostStudyCalendars::default());
+    }
+
+    /// Twelve monthly study stages (ids 0..=11, 2024) plus the given extra top-level
+    /// keys, each written as `"key": value`.
+    fn study_json_with(extra_keys: &[&str]) -> String {
+        let stages: Vec<String> = (1..=12_u32)
+            .map(|month| {
+                let id = month - 1;
+                let end = if month == 12 {
+                    "2025-01-01".to_owned()
+                } else {
+                    format!("2024-{:02}-01", month + 1)
+                };
+                format!(
+                    r#"{{ "id": {id}, "start_date": "2024-{month:02}-01", "end_date": "{end}",
+                      "blocks": [{{ "id": 0, "name": "LEVE", "hours": 720.0 }}], "num_openings": 1 }}"#
+                )
+            })
+            .collect();
+        let extra = if extra_keys.is_empty() {
+            String::new()
+        } else {
+            format!(",{}", extra_keys.join(","))
+        };
+        format!(
+            r#"{{ "policy_graph": {{ "type": "finite_horizon", "annual_discount_rate": 0.0, "transitions": [] }},
+              "stages": [{}]{extra} }}"#,
+            stages.join(",")
+        )
+    }
+
+    fn parse_study_json_with(extra_keys: &[&str]) -> Result<StagesData, LoadError> {
+        let f = write_json(&study_json_with(extra_keys));
+        parse_stages(f.path())
+    }
+
+    fn date(s: &str) -> NaiveDate {
+        NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
+    }
+
+    #[test]
+    fn post_study_calendars_are_sorted_and_kept_out_of_stages() {
+        let data = parse_study_json_with(&[
+            r#""post_study_thermal_stages": [
+                 { "id": 13, "start_date": "2025-01-08", "end_date": "2025-01-15" },
+                 { "id": 12, "start_date": "2025-01-01", "end_date": "2025-01-08" }
+               ]"#,
+            r#""post_study_water_stages": [
+                 { "id": 21, "start_date": "2025-02-01", "end_date": "2025-03-01" },
+                 { "id": 20, "start_date": "2025-01-01", "end_date": "2025-02-01" }
+               ]"#,
+        ])
+        .unwrap();
+
+        let thermal = data.post_study.thermal.unwrap();
+        assert_eq!(thermal.iter().map(|s| s.id).collect::<Vec<_>>(), [12, 13]);
+        assert_eq!(thermal[0].start_date, date("2025-01-01"));
+        assert_eq!(thermal[0].end_date, date("2025-01-08"));
+        let water = data.post_study.water.unwrap();
+        assert_eq!(water.iter().map(|s| s.id).collect::<Vec<_>>(), [20, 21]);
+        assert_eq!(data.stages.len(), 12);
+        assert!(data.stages.iter().all(|s| s.id <= 11));
+    }
+
+    #[test]
+    fn post_study_calendar_rejections() {
+        const PRE_STUDY: &str = r#""pre_study_stages": [
+            { "id": -1, "start_date": "2023-12-01", "end_date": "2024-01-01" }
+          ]"#;
+        // (case, extra keys, expected field, expected message fragment)
+        let cases: [(&str, Vec<&str>, &str, &str); 12] = [
+            (
+                "2a unparsable thermal start_date",
+                vec![
+                    r#""post_study_thermal_stages": [
+                         { "id": 12, "start_date": "2025-13-01", "end_date": "2025-01-08" }
+                       ]"#,
+                ],
+                "post_study_thermal_stages[0].start_date",
+                "invalid date",
+            ),
+            (
+                "2a unparsable water end_date",
+                vec![
+                    r#""post_study_water_stages": [
+                         { "id": 20, "start_date": "2025-01-01", "end_date": "soon" }
+                       ]"#,
+                ],
+                "post_study_water_stages[0].end_date",
+                "invalid date",
+            ),
+            (
+                "2b end_date equals start_date",
+                vec![
+                    r#""post_study_thermal_stages": [
+                         { "id": 12, "start_date": "2025-01-01", "end_date": "2025-01-01" }
+                       ]"#,
+                ],
+                "post_study_thermal_stages[0].end_date",
+                "must be after start_date",
+            ),
+            (
+                "2c repeated start_date",
+                vec![
+                    r#""post_study_thermal_stages": [
+                         { "id": 12, "start_date": "2025-01-01", "end_date": "2025-01-08" },
+                         { "id": 13, "start_date": "2025-01-01", "end_date": "2025-01-15" }
+                       ]"#,
+                ],
+                "post_study_thermal_stages[1].start_date",
+                "duplicate start_date 2025-01-01 in post_study_thermal_stages",
+            ),
+            (
+                "2d thermal id equals a study id",
+                vec![
+                    r#""post_study_thermal_stages": [
+                         { "id": 11, "start_date": "2025-01-01", "end_date": "2025-01-08" }
+                       ]"#,
+                ],
+                "post_study_thermal_stages[0].id",
+                "post_study_thermal_stages id 11 collides with another stage id",
+            ),
+            (
+                "2d thermal id equals a pre-study id",
+                vec![
+                    PRE_STUDY,
+                    r#""post_study_thermal_stages": [
+                         { "id": -1, "start_date": "2025-01-01", "end_date": "2025-01-08" }
+                       ]"#,
+                ],
+                "post_study_thermal_stages[0].id",
+                "collides with another stage id",
+            ),
+            (
+                "2d id repeated within one list",
+                vec![
+                    r#""post_study_thermal_stages": [
+                         { "id": 12, "start_date": "2025-01-01", "end_date": "2025-01-08" },
+                         { "id": 12, "start_date": "2025-01-08", "end_date": "2025-01-15" }
+                       ]"#,
+                ],
+                "post_study_thermal_stages[1].id",
+                "collides with another stage id",
+            ),
+            (
+                "2d water id equals a thermal id",
+                vec![
+                    r#""post_study_thermal_stages": [
+                         { "id": 12, "start_date": "2025-01-01", "end_date": "2025-01-08" }
+                       ]"#,
+                    r#""post_study_water_stages": [
+                         { "id": 12, "start_date": "2025-01-01", "end_date": "2025-02-01" }
+                       ]"#,
+                ],
+                "post_study_water_stages[0].id",
+                "post_study_water_stages id 12 collides with another stage id",
+            ),
+            (
+                "2e water id not above the study ids",
+                vec![
+                    r#""post_study_water_stages": [
+                         { "id": -5, "start_date": "2025-01-01", "end_date": "2025-02-01" }
+                       ]"#,
+                ],
+                "post_study_water_stages[0].id",
+                "must exceed the largest study stage id 11",
+            ),
+            (
+                "2g thermal id gap",
+                vec![
+                    r#""post_study_thermal_stages": [
+                         { "id": 12, "start_date": "2025-01-01", "end_date": "2025-01-08" },
+                         { "id": 14, "start_date": "2025-01-08", "end_date": "2025-01-15" }
+                       ]"#,
+                ],
+                "post_study_thermal_stages[1].id",
+                "stage starting 2025-01-08 has id 14, expected 13",
+            ),
+            (
+                "2g thermal ids reversed against start_date order, declared index reported",
+                vec![
+                    r#""post_study_thermal_stages": [
+                         { "id": 12, "start_date": "2025-01-08", "end_date": "2025-01-15" },
+                         { "id": 13, "start_date": "2025-01-01", "end_date": "2025-01-08" }
+                       ]"#,
+                ],
+                "post_study_thermal_stages[1].id",
+                "stage starting 2025-01-01 has id 13, expected 12",
+            ),
+            (
+                "2g first thermal id not the continuation",
+                vec![
+                    r#""post_study_thermal_stages": [
+                         { "id": 13, "start_date": "2025-01-01", "end_date": "2025-01-08" }
+                       ]"#,
+                ],
+                "post_study_thermal_stages[0].id",
+                "stage starting 2025-01-01 has id 13, expected 12",
+            ),
+        ];
+
+        for (case, extra_keys, expected_field, expected_message) in cases {
+            match parse_study_json_with(&extra_keys) {
+                Err(LoadError::SchemaError { field, message, .. }) => {
+                    assert_eq!(field, expected_field, "{case}: {message}");
+                    assert!(
+                        message.contains(expected_message),
+                        "{case}: message {message:?} lacks {expected_message:?}"
+                    );
+                }
+                other => panic!("{case}: expected SchemaError, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn post_study_calendar_keys_keep_their_presence() {
+        let data = parse_study_json_with(&[r#""post_study_water_stages": []"#]).unwrap();
+        assert_eq!(data.post_study.water, Some(vec![]));
+        assert_eq!(data.post_study.thermal, None);
+    }
+
+    #[test]
+    fn post_study_calendar_stage_rejects_keys_it_does_not_carry() {
+        for key in [r#""season_id": 0"#, r#""duration_hours": 168.0"#] {
+            let stage = format!(
+                r#""post_study_thermal_stages": [
+                     {{ "id": 12, "start_date": "2025-01-01", "end_date": "2025-01-08", {key} }}
+                   ]"#
+            );
+            let err = parse_study_json_with(&[&stage]).unwrap_err();
+            assert!(
+                matches!(err, LoadError::ParseError { .. }),
+                "{key}: expected ParseError, got {err:?}"
+            );
+        }
     }
 
     /// Given a `stages.json` with `"scenario_source": {"seed": 42}`,

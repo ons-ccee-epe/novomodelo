@@ -185,6 +185,31 @@
         }
       ]
     },
+    "RawPostStudyCalendarStage": {
+      "additionalProperties": false,
+      "description": "A post-study stage entry: a date window with no blocks, openings, risk measure\nor season.",
+      "properties": {
+        "end_date": {
+          "description": "End date (exclusive) as ISO 8601 string; must be after `start_date`.",
+          "type": "string"
+        },
+        "id": {
+          "description": "Stage identifier; unique across pre-study, study and post-study stages.",
+          "format": "int32",
+          "type": "integer"
+        },
+        "start_date": {
+          "description": "Start date (inclusive) as ISO 8601 string; unique within its list.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "start_date",
+        "end_date"
+      ],
+      "type": "object"
+    },
     "RawPreStudyStage": {
       "additionalProperties": false,
       "description": "A pre-study stage entry (negative IDs).",
@@ -477,6 +502,26 @@
     "policy_graph": {
       "$ref": "#/$defs/RawPolicyGraph",
       "description": "Policy graph: horizon type, discount rate, and transitions."
+    },
+    "post_study_thermal_stages": {
+      "description": "Thermal-delivery stages after the study horizon, in any order; they are\nsorted by `start_date`. Ids continue the study sequence: the earliest stage\nhas id `max(stages[].id) + 1`, the next one `+ 1`, and so on. Absent means\nthe key is not declared.",
+      "items": {
+        "$ref": "#/$defs/RawPostStudyCalendarStage"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
+    },
+    "post_study_water_stages": {
+      "description": "Water-bucket stages after the study horizon, in any order; they are sorted\nby `start_date`. Ids must exceed every study stage id. Absent means the key\nis not declared.",
+      "items": {
+        "$ref": "#/$defs/RawPostStudyCalendarStage"
+      },
+      "type": [
+        "array",
+        "null"
+      ]
     },
     "pre_study_stages": {
       "description": "Pre-study stages (negative IDs). Absent or null means empty.",
