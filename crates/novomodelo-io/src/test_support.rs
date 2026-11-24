@@ -48,7 +48,7 @@ use crate::{
     config::Config,
     extensions::{FphaHyperplaneRow, HydroGeometryRow},
     parse_config,
-    stages::{PostStudyCalendars, StagesData},
+    stages::{PostStudyCalendars, StagesData, parse_stages},
 };
 #[cfg(test)]
 use crate::{
@@ -483,6 +483,47 @@ pub fn make_minimal_case(dir: &TempDir) {
     write_file(root, "system/lines.json", VALID_LINES_JSON);
     write_file(root, "system/hydros.json", VALID_HYDROS_JSON);
     write_file(root, "system/thermals.json", VALID_THERMALS_JSON);
+}
+
+/// The `id`s of `stages.json`'s `post_study_thermal_stages` under `case_dir`,
+/// empty when the deck declares none.
+///
+/// # Panics
+///
+/// If `stages.json` does not parse; the message names its path.
+#[must_use]
+#[allow(clippy::panic)]
+// Rationale: an unparsable committed deck is a broken checkout, not a runtime condition.
+pub fn declared_post_study_thermal_ids(case_dir: &Path) -> Vec<i32> {
+    let path = case_dir.join("stages.json");
+    parse_stages(&path)
+        .unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+        .post_study
+        .thermal
+        .map_or_else(Vec::new, |stages| stages.iter().map(|s| s.id).collect())
+}
+
+/// Whether `case_dir/system/thermals.json` holds a thermal with a non-null
+/// `anticipated_config`; `false` when the deck has no `system/thermals.json`.
+///
+/// # Panics
+///
+/// If `system/thermals.json` exists but cannot be read or parsed; the message
+/// names its path.
+#[must_use]
+#[allow(clippy::panic)]
+// Rationale: an unreadable committed deck is a broken checkout, not a runtime condition.
+pub fn declares_anticipated_thermal(case_dir: &Path) -> bool {
+    let path = case_dir.join("system/thermals.json");
+    if !path.is_file() {
+        return false;
+    }
+    let text = fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let json: serde_json::Value =
+        serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    json["thermals"]
+        .as_array()
+        .is_some_and(|thermals| thermals.iter().any(|t| !t["anticipated_config"].is_null()))
 }
 
 // ── Penalty helpers ───────────────────────────────────────────────────────────

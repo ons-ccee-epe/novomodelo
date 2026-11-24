@@ -1502,6 +1502,8 @@ mod tests {
     };
 
     use chrono::{NaiveDate, TimeDelta};
+    use std::fs;
+    use std::path::{Path, PathBuf};
 
     use super::super::validate_semantic_hydro_thermal;
     use super::{
@@ -1512,7 +1514,8 @@ mod tests {
     use crate::constraints::ThermalBoundsRow;
     use crate::stages::{PostStudyCalendars, StagesData};
     use crate::test_support::*;
-    use crate::validation::schema::{BoundaryFormat, ParsedData};
+    use crate::validation::schema::{BoundaryFormat, ParsedData, validate_schema};
+    use crate::validation::structural::validate_structure;
     use crate::validation::{ErrorKind, ValidationContext};
 
     // ── Helper: build a thermal with anticipated_config ───────────────────────
@@ -2668,6 +2671,57 @@ mod tests {
         assert_eq!(axis.n_stages, 2);
         assert_eq!(axis.durations, vec![720.0, 720.0, 696.0, 744.0]);
         assert_eq!(axis.stage_ids, vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn extended_delivery_axis_continues_into_the_declared_post_study_ids() {
+        let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
+        let mut decks: Vec<PathBuf> = fs::read_dir(examples.join("deterministic"))
+            .unwrap_or_else(|e| panic!("read examples/deterministic: {e}"))
+            .map(|entry| {
+                entry
+                    .unwrap_or_else(|e| panic!("examples/deterministic entry: {e}"))
+                    .path()
+            })
+            .collect();
+        decks.push(examples.join("1dtoy"));
+        decks.push(examples.join("4ree"));
+        decks.retain(|dir| declares_anticipated_thermal(dir));
+        assert!(
+            !decks.is_empty(),
+            "no example deck declares an anticipated thermal"
+        );
+
+        let mut any_declared = false;
+        for dir in &decks {
+            let deck = dir.display();
+            let declared = declared_post_study_thermal_ids(dir);
+            any_declared |= !declared.is_empty();
+
+            let mut ctx = ValidationContext::new();
+            let manifest = validate_structure(dir, &mut ctx);
+            let data = validate_schema(dir, &manifest, &mut ctx)
+                .unwrap_or_else(|| panic!("{deck}: schema validation failed"));
+            let axis = build_extended_delivery_axis(&data);
+
+            assert_eq!(
+                axis.is_some(),
+                !declared.is_empty(),
+                "{deck}: the axis exists iff the deck declares post-study thermal ids"
+            );
+            let continuation = axis
+                .as_ref()
+                .map_or(&[][..], |axis| &axis.stage_ids[axis.n_stages..]);
+            assert_eq!(
+                continuation,
+                declared.as_slice(),
+                "{deck}: the axis continuation must equal the ids declared in stages.json"
+            );
+        }
+        assert!(
+            any_declared,
+            "no scanned deck declares post-study thermal ids"
+        );
     }
 
     // ── Rule 1 (missing bound cell) and V2 (fixed post-horizon tiling) ────────

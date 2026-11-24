@@ -868,8 +868,13 @@ fn stage(id: i32, start: chrono::NaiveDate, end: chrono::NaiveDate) -> Stage {
 mod from_system_tests {
     use super::{AnticipatedPlants, DeliveryCalendar, TimeValue, stage};
     use crate::test_support::builders::{self, BusSpec, ThermalSpec};
+    use crate::test_support::decks::{Deck, committed_decks};
     use crate::test_support::ymd;
     use novomodelo_core::{AnticipatedConfig, DeficitSegment, EntityId, SystemBuilder};
+    use novomodelo_io::test_support::{
+        declared_post_study_thermal_ids, declares_anticipated_thermal,
+    };
+    use std::path::Path;
 
     /// A two-stage system with one anticipated thermal resolves through
     /// `from_system` to the same `delivery_stage_ids` a study-only-axis
@@ -913,6 +918,49 @@ mod from_system_tests {
         let tv = TimeValue::from_system(&system, &anticipated_plants, calendar);
 
         assert_eq!(tv.delivery_stage_ids(), &[0, 1]);
+    }
+
+    #[test]
+    fn delivery_stage_ids_continue_into_the_declared_post_study_ids() {
+        let unswept = Deck {
+            key: "crates/novomodelo-sddp/tests/unswept_fixtures/dual_calendar_boundary".to_string(),
+            dir: Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/unswept_fixtures/dual_calendar_boundary"),
+        };
+        let decks: Vec<Deck> = committed_decks()
+            .into_iter()
+            .chain([unswept])
+            .filter(|deck| declares_anticipated_thermal(&deck.dir))
+            .collect();
+        let mut keys: Vec<&str> = decks.iter().map(|deck| deck.key.as_str()).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "crates/novomodelo-sddp/tests/unswept_fixtures/dual_calendar_boundary",
+                "examples/deterministic/d34-anticipated-varying-blocks",
+                "examples/deterministic/d37-anticipated-commissioning",
+                "examples/deterministic/d55-post-study-anticipated-lanes",
+            ]
+        );
+
+        for deck in &decks {
+            let system = novomodelo_io::load_case(&deck.dir)
+                .unwrap_or_else(|e| panic!("{}: load_case failed: {e}", deck.key));
+            let anticipated_plants = AnticipatedPlants::build(system.thermals());
+            let tv = TimeValue::from_system(
+                &system,
+                &anticipated_plants,
+                DeliveryCalendar::thermal(&system),
+            );
+            let n_study = system.stages().iter().filter(|s| s.id >= 0).count();
+            assert_eq!(
+                &tv.delivery_stage_ids()[n_study..],
+                declared_post_study_thermal_ids(&deck.dir).as_slice(),
+                "{}: the delivery stage ids must continue into the ids declared in stages.json",
+                deck.key
+            );
+        }
     }
 }
 
