@@ -253,17 +253,7 @@ pub(crate) struct RawAnticipatedCommitmentHistory {
 /// | Duplicate `hydro_id` within `filling_storage`         | [`LoadError::SchemaError`] |
 /// | `hydro_id` in both `storage` and `filling_storage`    | [`LoadError::SchemaError`] |
 /// | Invalid date / non-finite value / overlap in `past_defluences` | [`LoadError::SchemaError`] |
-///
-/// # Examples
-///
-/// ```no_run
-/// use novomodelo_io::initial_conditions::parse_initial_conditions;
-/// use std::path::Path;
-///
-/// let ic = parse_initial_conditions(Path::new("case/initial_conditions.json")).unwrap();
-/// assert_eq!(ic.storage.len(), 2);
-/// ```
-pub fn parse_initial_conditions(path: &Path) -> Result<InitialConditions, LoadError> {
+pub(crate) fn parse_initial_conditions(path: &Path) -> Result<InitialConditions, LoadError> {
     let raw_text = std::fs::read_to_string(path).map_err(|e| LoadError::io(path, e))?;
 
     let raw: RawInitialConditions =

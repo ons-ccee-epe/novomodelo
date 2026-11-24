@@ -40,9 +40,11 @@ use crate::{
         load_hydro_energy_productivity, load_production_models, parse_hydro_geometry,
         parse_scalar_parameters_json,
     },
-    initial_conditions::parse_initial_conditions,
+    legacy::{
+        initial_conditions::parse_initial_conditions,
+        post_study_stages::{PostStudyFormat, parse_post_study_file},
+    },
     penalties::parse_penalties,
-    post_study_stages::{PostStudyFormat, parse_post_study_file},
     scenarios::{
         ExternalLoadRow, ExternalNcsRow, ExternalScenarioRow, InflowAnnualComponentRow,
         InflowArCoefficientRow, InflowHistoryRow, InflowSeasonalStatsRow, LoadFactorEntry,

@@ -22,9 +22,8 @@ use crate::{
     extensions::{
         production_models::RawProductionModelFile, scalar_parameters::ScalarParametersFile,
     },
-    initial_conditions::RawInitialConditions,
+    legacy::{initial_conditions::RawInitialConditions, post_study_stages::RawPostStudyStagesFile},
     penalties::RawPenalties,
-    post_study_stages::RawPostStudyStagesFile,
     scenarios::{
         correlation::RawCorrelationFile, load_factors::RawLoadFactorsFile,
         non_controllable_factors::RawNcsFactorsFile,

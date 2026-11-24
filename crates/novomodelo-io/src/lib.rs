@@ -45,12 +45,11 @@ pub mod constraints;
 pub mod error;
 pub(crate) mod expression;
 pub mod extensions;
-pub mod initial_conditions;
+pub(crate) mod legacy;
 pub mod output;
 pub(crate) mod parquet_helpers;
 pub mod penalties;
 pub(crate) mod pipeline;
-pub(crate) mod post_study_stages;
 pub mod report;
 pub mod resolution;
 pub mod scenarios;
@@ -89,7 +88,6 @@ pub use extensions::{
     parse_hydro_energy_productivity, parse_hydro_geometry, parse_production_models,
     parse_scalar_parameters_json,
 };
-pub use initial_conditions::parse_initial_conditions;
 pub use output::policy::codec::{deserialize_checkpoint_manifest, serialize_checkpoint_manifest};
 pub use output::policy::records::CheckpointManifest;
 pub use output::policy::{

@@ -52,7 +52,8 @@ use crate::{
 };
 #[cfg(test)]
 use crate::{
-    InflowSeasonalStatsRow, post_study_stages::PostStudyFormat, validation::schema::ParsedData,
+    InflowSeasonalStatsRow, legacy::post_study_stages::PostStudyFormat,
+    validation::schema::ParsedData,
 };
 use parquet::arrow::ArrowWriter;
 use std::fmt::Debug;

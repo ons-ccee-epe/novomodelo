@@ -4,7 +4,7 @@ use novomodelo_core::{Hydro, WaterBucketStages, deepest_uncovered_travel_time_ar
 
 use super::super::{ValidationContext, rules, schema::ParsedData};
 use super::post_study_calendar::build_post_study_calendar;
-use crate::post_study_stages::PostStudyFormat;
+use crate::legacy::post_study_stages::PostStudyFormat;
 
 const WATER_CALENDAR_KEY: &str = "water_bucket_stages";
 const THERMAL_CALENDAR_KEY: &str = "thermal_stages";
