@@ -182,9 +182,9 @@ Rules that follow:
   the resolver cannot reproduce it: a System-free table that pins LP geometry by counts; a
   fixture whose stage ids the resolver does not keep; a fixture handed finished tables, or
   one that declares a deliberate count mismatch. Such a table is recorded in
-  `scripts/ci/fixture-tables-allowlist.txt`. `scripts/ci/check-fixture-tables.sh` flags
-  any other new hand-built table in test code. The check is advisory and never fails the
-  build.
+  `scripts/ci/fixture-tables-allowlist.txt`. `scripts/ci/check-fixture-tables.sh` fails
+  CI on any other hand-built table in sddp test code and on an allowlist row that exempts
+  none.
 - **`make` runs twice**: once to build a probe `System`, once for the final one. Fixture
   arguments taken by value are cloned into each build, so `clippy::needless_pass_by_value`
   is answered with `#[expect(clippy::needless_pass_by_value, reason = "...")]`, never with

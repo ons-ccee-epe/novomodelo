@@ -2,14 +2,15 @@
 #
 # Test code builds its ResolvedBounds / ResolvedPenalties tables from the
 # entities with build_with_resolved_tables / resolved_tables
-# (crates/novomodelo-sddp/src/test_support/table_resolution.rs). The advisory
-# check flags a newly added hand-built table. A site listed here is exempt: its
-# table has to stay literal.
+# (crates/novomodelo-sddp/src/test_support/table_resolution.rs). The check fails
+# on every hand-built table in novomodelo-sddp test code that no row exempts, and
+# on every row that exempts none. A site listed here is exempt: its table has to
+# stay literal.
 #
 # Key format, one per line:
 #     path/to/file.rs::qualified_fn  # class
-# A key carries no line number and no count; both drift. An added line matches a
-# key when its path is equal and the innermost fn enclosing it is named like the
+# A key carries no line number and no count; both drift. A table matches a key
+# when its path is equal and the innermost fn enclosing it is named like the
 # last `::` segment of the key's fn. Text from the first `#` is an annotation.
 #
 # Classes:
@@ -19,8 +20,8 @@
 #   helper-shape-gap   the fixture receives finished tables from its caller, or
 #                      declares a deliberate count mismatch.
 #
-# Homes (crates/<crate>/src/test_support.rs and crates/<crate>/src/test_support/)
-# are excluded by the check and need no row.
+# The homes, crates/novomodelo-sddp/src/test_support.rs and
+# crates/novomodelo-sddp/src/test_support/, are not scanned and need no row.
 #
 # Add a row when a table must stay literal under one of these classes. Otherwise
 # build the table from its System.
