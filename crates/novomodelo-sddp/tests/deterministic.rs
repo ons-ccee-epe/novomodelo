@@ -32,7 +32,9 @@ use novomodelo_io::{
 };
 use novomodelo_sddp::{
     FrozenTurbiningHydro, SimulationWeighting, StudySetup, aggregate_simulation,
-    hydro_models::prepare_hydro_models, indexer::HydroSys, lead_time::resolve_spread,
+    hydro_models::prepare_hydro_models,
+    indexer::{BlockIdx, HydroSys},
+    lead_time::resolve_spread,
     setup::prepare_stochastic,
 };
 use novomodelo_solver::{ActiveSolver, SolverInterface};
@@ -41,7 +43,7 @@ use novomodelo_stochastic::par::HydroEstimationEntry;
 mod common;
 use common::{
     D03_EXPECTED_COST, StubComm, build_setup_for_case, d51_with_dead_bus1_group, edit_json,
-    fresh_setup_with,
+    fresh_setup_with, fresh_system_and_setup_with,
 };
 
 /// Train a case (`StubComm`, `ActiveSolver`, seed 42, 1 thread) and return the
@@ -5893,20 +5895,46 @@ fn h0_rows(
         .collect()
 }
 
-/// An entity `spillage.max_spillage_m3s` binds in a solved cascade, and a
-/// `hydro_bounds.parquet` row replaces it for its own stage.
+/// H0's spillage column upper bound, unscaled to m³/s, for every (stage id, block) of the
+/// case's stage LPs.
+fn h0_spillage_uppers(case: &Path) -> Vec<(i32, f64)> {
+    let (system, setup) = fresh_system_and_setup_with(case, |_| {});
+    let stage_templates = &setup.inputs.stage_data.stage_templates;
+    assert_eq!(
+        stage_templates.templates.len(),
+        system.stages().len(),
+        "one stage LP per stage"
+    );
+    system
+        .stages()
+        .iter()
+        .zip(&stage_templates.templates)
+        .zip(&stage_templates.geometry_per_stage)
+        .flat_map(|((stage, template), geometry)| {
+            (0..geometry.n_blks).map(move |blk| {
+                let col = geometry.spillage_col(HydroSys::new(0), BlockIdx::new(blk));
+                (stage.id, template.col_upper[col] * template.col_scale[col])
+            })
+        })
+        .collect()
+}
+
+/// An entity `spillage.max_spillage_m3s` sets H0's spillage upper bound in every stage LP
+/// and caps the solved spillage, and a `hydro_bounds.parquet` row replaces it for its own
+/// stage.
 ///
-/// A spillage ceiling is active at an optimum only when spilling has value: H0's outflow is
-/// uncapped and H1 can turbine whatever H0 spills, displacing thermal generation. The ceiling
-/// sits strictly between the forced-spill floor (H0 inflow above its turbine limit) and the
-/// baseline's peak H0 spill. A finite ceiling can leave excess water no outlet, so the
-/// baseline's own simulation must show a spill that was a choice (P1, P2) from a reservoir
-/// that started within its box (P3); with the ceiling at or above the floor in every stage and
-/// identical inflows in every pass, turbining `min(inflow, limit)` and spilling the rest then
-/// keeps storage at or below its start, so the ceiling and override twins are feasible. The
-/// assertions are bound invariants: the edited case has no hand-derived optimum.
+/// Spilling has value here: H0's outflow is uncapped and H1 can turbine whatever H0 spills,
+/// displacing thermal generation. The ceiling sits strictly between the forced-spill floor
+/// (H0 inflow above its turbine limit) and the baseline's peak H0 spill, so it cuts off the
+/// baseline's policy. A finite ceiling can leave excess water no outlet, so the baseline's own
+/// simulation must show a spill that was a choice (P1, P2) from a reservoir that started
+/// within its box (P3); with the ceiling at or above the floor in every stage and identical
+/// inflows in every pass, turbining `min(inflow, limit)` and spilling the rest then keeps
+/// storage at or below its start, so the ceiling and override twins are feasible. Solved rows
+/// are held to bound invariants only: the edited case has no hand-derived optimum, and
+/// solvers may report different optimal vertices.
 #[test]
-fn entity_spillage_ceiling_binds_and_hydro_bounds_row_replaces_it() {
+fn entity_spillage_ceiling_caps_spillage_and_hydro_bounds_row_replaces_it() {
     let d03 = Path::new("../../examples/deterministic/d03-two-hydro-cascade");
     let read_json = |path: std::path::PathBuf| -> serde_json::Value {
         serde_json::from_slice(&std::fs::read(&path).expect("read json")).expect("parse json")
@@ -5964,11 +5992,18 @@ fn entity_spillage_ceiling_binds_and_hydro_bounds_row_replaces_it() {
     );
 
     let c = floor + (peak - floor) / 2.0;
+    let close = |value: f64, expected: f64| (value - expected).abs() <= 1e-12 * expected.abs();
 
     let ceiling_twin = spill_cascade_twin(d03, Some(c));
+    for (stage_id, upper) in h0_spillage_uppers(ceiling_twin.path()) {
+        assert!(
+            close(upper, c),
+            "ceiling twin stage {stage_id}: H0 spillage upper bound {upper}, expected the entity \
+             ceiling {c}"
+        );
+    }
     let (_result, ceiling_results, _summary) = run_with_simulation(ceiling_twin.path());
-    let ceiling_rows = h0_rows(&ceiling_results);
-    for row in &ceiling_rows {
+    for row in h0_rows(&ceiling_results) {
         assert!(
             row.spillage_m3s <= c + 1e-6,
             "ceiling twin stage {}: H0 spillage {} exceeds the entity ceiling {c}",
@@ -5976,34 +6011,37 @@ fn entity_spillage_ceiling_binds_and_hydro_bounds_row_replaces_it() {
             row.spillage_m3s
         );
     }
-    assert!(
-        ceiling_rows
-            .iter()
-            .any(|row| (row.spillage_m3s - c).abs() <= 1e-6),
-        "ceiling twin: no H0 row spills at the ceiling {c}"
-    );
 
+    let s_star_id = i32::try_from(s_star).expect("stage id fits i32");
     let override_twin = spill_cascade_twin(d03, Some(c));
     write_spillage_max_bound(
         &override_twin
             .path()
             .join("constraints/hydro_bounds.parquet"),
         0,
-        i32::try_from(s_star).expect("stage id fits i32"),
+        s_star_id,
         peak,
     );
-    let (_result, override_results, _summary) = run_with_simulation(override_twin.path());
-    let override_rows = h0_rows(&override_results);
+    let override_uppers = h0_spillage_uppers(override_twin.path());
     assert!(
-        override_rows
+        override_uppers
             .iter()
-            .any(|row| row.stage_id == s_star && row.spillage_m3s > c + 1e-6),
-        "override twin: the hydro_bounds row at stage {s_star} did not replace the entity ceiling {c}"
+            .any(|&(stage_id, _)| stage_id == s_star_id),
+        "override twin: no stage LP for stage {s_star}"
     );
-    for row in override_rows.iter().filter(|row| row.stage_id != s_star) {
+    for (stage_id, upper) in override_uppers {
+        let expected = if stage_id == s_star_id { peak } else { c };
         assert!(
-            row.spillage_m3s <= c + 1e-6,
-            "override twin stage {}: H0 spillage {} exceeds the entity ceiling {c}",
+            close(upper, expected),
+            "override twin stage {stage_id}: H0 spillage upper bound {upper}, expected {expected}"
+        );
+    }
+    let (_result, override_results, _summary) = run_with_simulation(override_twin.path());
+    for row in h0_rows(&override_results) {
+        let ceiling = if row.stage_id == s_star { peak } else { c };
+        assert!(
+            row.spillage_m3s <= ceiling + 1e-6,
+            "override twin stage {}: H0 spillage {} exceeds its ceiling {ceiling}",
             row.stage_id,
             row.spillage_m3s
         );
