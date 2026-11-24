@@ -2364,10 +2364,9 @@ mod tests {
         }
     }
 
-    /// The ring fixture with deterministic order-0 inflow (`std_m3s = 0`), so the
-    /// stage-0 observation 80 against the mean 100 fails the historical library's
-    /// V2.3 check.
-    fn ring_with_failing_historical_library() -> System {
+    /// The ring fixture with deterministic order-0 inflow (`std_m3s = 0`, mean
+    /// 100) under a history that differs from the mean at every stage.
+    fn ring_with_zero_deviation_inflow() -> System {
         let fx = build_ring_fixture();
         let models = fx
             .system
@@ -2419,11 +2418,6 @@ mod tests {
     }
 
     #[test]
-    fn supplied_opening_tree_ignores_a_historical_library_that_fails_validation() {
-        assert_supplied_tree_reaches_context(&ring_with_failing_historical_library());
-    }
-
-    #[test]
     fn supplied_opening_tree_needs_no_inflow_history() {
         assert_supplied_tree_reaches_context(&ring_without_inflow_history());
     }
@@ -2457,10 +2451,32 @@ mod tests {
     }
 
     #[test]
-    fn generated_opening_tree_refuses_a_historical_library_that_fails_validation() {
+    fn generated_opening_tree_has_zero_noise_at_a_zero_deviation_season() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let ctx = build_stochastic_context_for_study(
+            &ring_with_zero_deviation_inflow(),
+            tmp.path(),
+            42,
+            &ScenarioSource::default(),
+            None,
+            None,
+        )
+        .expect("a zero-deviation season must not refuse the historical library");
+        assert!(
+            ctx.opening_tree()
+                .data()
+                .iter()
+                .all(|v| v.to_bits() == 0.0_f64.to_bits()),
+            "got {:?}",
+            ctx.opening_tree().data()
+        );
+    }
+
+    #[test]
+    fn generated_opening_tree_still_refuses_a_case_without_historical_windows() {
         let tmp = tempfile::TempDir::new().expect("tempdir");
         let result = build_stochastic_context_for_study(
-            &ring_with_failing_historical_library(),
+            &ring_without_inflow_history(),
             tmp.path(),
             42,
             &ScenarioSource::default(),
@@ -2469,10 +2485,13 @@ mod tests {
         );
         match result {
             Err(SddpError::Stochastic(StochasticError::InsufficientData { context })) => {
-                assert!(context.starts_with("V2.3"), "got: {context}");
+                assert!(
+                    context.starts_with("no valid historical windows found"),
+                    "got: {context}"
+                );
             }
-            Err(other) => panic!("expected a V2.3 refusal, got: {other:?}"),
-            Ok(_) => panic!("a generated tree over a failing library must be refused"),
+            Err(other) => panic!("expected the no-windows refusal, got: {other:?}"),
+            Ok(_) => panic!("a generated tree without historical windows must be refused"),
         }
     }
 }

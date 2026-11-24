@@ -496,7 +496,7 @@ pub fn standardize_historical_windows(
 /// | ID  | Kind    | Description                                                   |
 /// |-----|---------|---------------------------------------------------------------|
 /// | V2.5 | Error  | At least one window must be discovered when `user_pool` is `None`. |
-/// | V2.3 | Error  | No eta value may be `NEG_INFINITY` or NaN; the refusal names the window year, the stage id and the hydro id. |
+/// | V2.3 | Error  | Every eta value is finite; the refusal names the window year, the stage id and the hydro id. |
 /// | V2.6 | Warning| `library.n_windows() < forward_passes` — log a warning.      |
 /// | V2.2 | Assert | Window contiguity — `debug_assert` only (construction invariant). |
 /// | V2.4 | Assert | User pool validity — `debug_assert` only (construction invariant). |
@@ -576,21 +576,18 @@ pub fn validate_historical_library(
         hydro_ids.len(),
     );
 
-    // V2.3 / V2.8 — no eta may be NEG_INFINITY (the sigma=0 non-matching-observation
-    // sentinel from standardize_historical_windows) or NaN.
     for w in 0..library.n_windows() {
         for (t, stage) in stages.iter().enumerate().take(library.n_stages()) {
             let eta = library.eta_slice(w, t);
             for (h, &value) in eta.iter().enumerate() {
-                if value == f64::NEG_INFINITY || value.is_nan() {
+                if !value.is_finite() {
                     let year = library.window_year(w);
                     let stage_id = stage.id;
                     let hydro_id = hydro_ids[h];
                     return Err(StochasticError::InsufficientData {
                         context: format!(
-                            "V2.3: historical library contains non-finite eta (NEG_INFINITY or NaN) \
-                             at window year {year}, stage id {stage_id}, hydro id {hydro_id} — sigma=0 with \
-                             non-matching historical observation or numerical failure",
+                            "V2.3: historical library contains non-finite eta {value} at window \
+                             year {year}, stage id {stage_id}, hydro id {hydro_id}",
                         ),
                     });
                 }
@@ -1109,9 +1106,8 @@ mod tests {
         assert!((e11[1] - (-0.5)).abs() < 1e-10, "w=1,t=1,h=1: {}", e11[1]);
     }
 
-    /// sigma=0 with an observation that matches the deterministic value.
     #[test]
-    fn test_sigma_zero_returns_zero_eta() {
+    fn sigma_zero_gives_zero_eta_for_an_observation_away_from_the_mean() {
         let hydro = EntityId(1);
         let stages = vec![make_monthly_stage(0, 0)];
         let models = vec![InflowModel {
@@ -1125,7 +1121,7 @@ mod tests {
         }];
         let par = PrecomputedPar::build(&models, &stages, &[hydro], None).unwrap();
 
-        let history = vec![make_row(hydro, 2000, 0, 50.0)];
+        let history = vec![make_row(hydro, 2000, 0, 80.0)];
 
         let mut lib = HistoricalScenarioLibrary::new(1, 1, 1, 0, vec![2000]);
         let hydro_ids = [hydro];
@@ -1148,10 +1144,9 @@ mod tests {
         );
 
         let eta = lib.eta_slice(0, 0)[0];
-        assert!(
-            eta == 0.0,
-            "sigma=0 with obs matching deterministic value must give eta=0.0, got {eta}"
-        );
+        assert_eq!(eta.to_bits(), 0.0_f64.to_bits(), "got {eta}");
+        validate_historical_library(&structure, &lib, 0, None, 1)
+            .expect("a sigma=0 cell must not refuse the library");
     }
 
     // -----------------------------------------------------------------------
@@ -1211,7 +1206,7 @@ mod tests {
     }
 
     #[test]
-    fn test_neg_infinity_eta_fails_v2_3() {
+    fn test_infinite_eta_fails_v2_3() {
         let n_windows = 5;
         let n_stages = 12;
         let n_hydros = 3;
@@ -1237,8 +1232,8 @@ mod tests {
                     "expected message to contain 'V2.3', got: {context}"
                 );
                 assert!(
-                    context.contains("NEG_INFINITY"),
-                    "expected message to contain 'NEG_INFINITY', got: {context}"
+                    context.contains("non-finite eta -inf"),
+                    "expected message to name the value, got: {context}"
                 );
             }
             other => panic!("expected Err(InsufficientData), got: {other:?}"),
@@ -1264,9 +1259,8 @@ mod tests {
         match result {
             Err(StochasticError::InsufficientData { context }) => assert_eq!(
                 context,
-                "V2.3: historical library contains non-finite eta (NEG_INFINITY or NaN) \
-                 at window year 1992, stage id 106, hydro id 12 — sigma=0 with \
-                 non-matching historical observation or numerical failure"
+                "V2.3: historical library contains non-finite eta -inf at window year 1992, \
+                 stage id 106, hydro id 12"
             ),
             other => panic!("expected Err(InsufficientData), got: {other:?}"),
         }

@@ -215,12 +215,6 @@ fn stage_id_to_index(stages: &[Stage]) -> HashMap<i32, usize> {
 /// within a period; shifted with the period's weighted-average raw value at
 /// each `finalize_period` boundary).
 ///
-/// A `f64::NEG_INFINITY` from `solve_par_noise` (sigma=0, non-matching target)
-/// is stored as-is; V3.7 in [`validate_external_library`] rejects it for a
-/// stage's real (pre-padding) scenarios. A phantom padding slot may also hold
-/// the sentinel, harmlessly — [`pad_library_to_uniform`] overwrites it with a
-/// real replica before the library is ever read.
-///
 /// A stage with fewer real scenarios than another stage has its raw values
 /// replicated to the library's uniform width BEFORE inversion (the same
 /// wrap-around convention [`pad_library_to_uniform`] applies to the eta
@@ -650,7 +644,7 @@ pub fn standardize_external_ncs(
 /// | V3.4 | Error   | Each stage's row count must be divisible by `n_entities` (non-uniform counts allowed). |
 /// | V3.5 | Error   | Every entity ID in `row_entity_ids` must exist in `entity_ids`.          |
 /// | V3.6 | Assert  | All values in raw rows are finite (parser invariant — `debug_assert`).   |
-/// | V3.7 | Error   | No eta value at a stage's real (pre-padding) scenario may be `f64::NEG_INFINITY` or `NaN`. |
+/// | V3.7 | Error   | Every eta value at a stage's real (pre-padding) scenarios is finite.     |
 /// | V3.8 | Warning | `library.n_scenarios() < forward_passes` — log a warning.               |
 ///
 /// The caller pre-extracts `row_entity_ids` (entity IDs present in the raw rows)
@@ -754,26 +748,20 @@ pub fn validate_external_library(
         "V3.6: row_entity_ids contains IDs not in entity_id_set (parser invariant violated)",
     );
 
-    // V3.7 — no eta may be NEG_INFINITY (the sigma=0 non-matching-target sentinel
-    // from standardize_external_inflow) or NaN (numerical failure). Bounded to
-    // `raw_scenarios_per_stage` (each stage's REAL scenario count), never
-    // `library.n_scenarios()` (the padded, uniform width): a phantom slot beyond
-    // the real count is unconditionally overwritten by the later
-    // `pad_library_to_uniform` call with a real replica, so checking the padded
-    // width here would reject a stage that legitimately has fewer real scenarios
-    // than another stage (e.g. a branching root's single external observation).
+    // Bounded to `raw_scenarios_per_stage`, never `library.n_scenarios()`: the
+    // later `pad_library_to_uniform` call overwrites every slot beyond a stage's
+    // real count with a real replica.
     for stage in 0..library.n_stages() {
         let real_scenarios = library.raw_scenarios_per_stage()[stage];
         for scenario in 0..real_scenarios {
             let eta = library.eta_slice(stage, scenario);
             for (entity_idx, &value) in eta.iter().enumerate() {
-                if value == f64::NEG_INFINITY || value.is_nan() {
+                if !value.is_finite() {
                     return Err(StochasticError::InsufficientData {
                         context: format!(
                             "V3.7: external {class} library contains non-finite eta at \
                              stage {stage}, scenario {scenario}, entity {entity_idx} \
-                             (value = {value}) — sigma=0 with non-matching external value \
-                             or numerical failure",
+                             (value = {value})",
                         ),
                     });
                 }

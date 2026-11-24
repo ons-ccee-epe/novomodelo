@@ -5,8 +5,14 @@
 use std::fs;
 use std::path::Path;
 use std::process::Command;
+use std::sync::Arc;
 
+use arrow::array::{ArrayRef, Float64Array, Int32Array};
+use arrow::datatypes::{DataType, Field, Schema};
+use arrow::record_batch::RecordBatch;
 use assert_cmd::prelude::*;
+use parquet::arrow::ArrowWriter;
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use predicates::prelude::*;
 use tempfile::TempDir;
 
@@ -760,6 +766,195 @@ fn simulation_out_of_sample_with_its_own_seed_passes_validate_and_run() {
         ])
         .assert()
         .success();
+}
+
+#[test]
+fn historical_scheme_with_a_zero_deviation_season_passes_validate_and_run() {
+    let dir = TempDir::new().unwrap();
+    copy_dir_recursive(
+        &common::case_dir("deterministic/d26-estimated-par2"),
+        dir.path(),
+    );
+    let config_path = dir.path().join("config.json");
+    let mut config: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
+    config["training"]["scenario_source"] =
+        serde_json::json!({ "seed": 1, "inflow": { "scheme": "historical" } });
+    config["training"]["stopping_rules"] =
+        serde_json::json!([{ "type": "iteration_limit", "limit": 3 }]);
+    config["estimation"] = serde_json::json!({ "max_order": 0 });
+    fs::write(&config_path, config.to_string()).unwrap();
+    write_inflow_seasonal_stats_with_zero_deviation_at_stage_3(
+        &dir.path().join("scenarios/inflow_seasonal_stats.parquet"),
+    );
+
+    novomodelo()
+        .args(["validate", dir.path().to_str().unwrap()])
+        .assert()
+        .success();
+
+    let output = TempDir::new().unwrap();
+    novomodelo()
+        .args([
+            "run",
+            dir.path().to_str().unwrap(),
+            "--output",
+            output.path().to_str().unwrap(),
+            "--quiet",
+        ])
+        .assert()
+        .success();
+}
+
+fn write_inflow_seasonal_stats_with_zero_deviation_at_stage_3(path: &Path) {
+    let stage_ids: Vec<i32> = (-2..=11).collect();
+    let rows = stage_ids.len();
+    let std_m3s: Vec<f64> = stage_ids
+        .iter()
+        .map(|&stage| if stage == 3 { 0.0 } else { 50.0 })
+        .collect();
+    write_parquet(
+        path,
+        vec![
+            ("hydro_id", Column::Int32(vec![0; rows])),
+            ("stage_id", Column::Int32(stage_ids)),
+            ("mean_m3s", Column::Float64(vec![200.0; rows])),
+            ("std_m3s", Column::Float64(std_m3s)),
+        ],
+    );
+}
+
+#[test]
+fn external_constant_inflow_column_under_an_ar_model_replays_as_recorded() {
+    let dir = TempDir::new().unwrap();
+    copy_dir_recursive(
+        &common::case_dir("deterministic/d56-external-authoritative"),
+        dir.path(),
+    );
+    edit_json(&dir.path().join("config.json"), |config| {
+        config["simulation"] = serde_json::json!({
+            "enabled": true,
+            "selection": { "method": "sampled", "num_scenarios": 1 }
+        });
+    });
+    edit_json(&dir.path().join("stages.json"), |stages| {
+        for stage in stages["stages"].as_array_mut().unwrap() {
+            stage["state_variables"] = serde_json::json!({ "storage": true, "inflow_lags": true });
+        }
+    });
+    let scenarios = dir.path().join("scenarios");
+    write_parquet(
+        &scenarios.join("external_inflow_scenarios.parquet"),
+        vec![
+            ("stage_id", Column::Int32(vec![0, 1])),
+            ("scenario_id", Column::Int32(vec![0, 0])),
+            ("hydro_id", Column::Int32(vec![1, 1])),
+            ("value_m3s", Column::Float64(vec![100.0, 100.0])),
+        ],
+    );
+    write_parquet(
+        &scenarios.join("inflow_seasonal_stats.parquet"),
+        vec![
+            ("hydro_id", Column::Int32(vec![1, 1])),
+            ("stage_id", Column::Int32(vec![0, 1])),
+            ("mean_m3s", Column::Float64(vec![160.0, 160.0])),
+            ("std_m3s", Column::Float64(vec![25.0, 25.0])),
+        ],
+    );
+    write_parquet(
+        &scenarios.join("inflow_ar_coefficients.parquet"),
+        vec![
+            ("hydro_id", Column::Int32(vec![1, 1])),
+            ("stage_id", Column::Int32(vec![0, 1])),
+            ("lag", Column::Int32(vec![1, 1])),
+            ("coefficient", Column::Float64(vec![0.5, 0.5])),
+        ],
+    );
+
+    novomodelo()
+        .args(["validate", dir.path().to_str().unwrap()])
+        .assert()
+        .success();
+
+    let output = TempDir::new().unwrap();
+    novomodelo()
+        .args([
+            "run",
+            dir.path().to_str().unwrap(),
+            "--output",
+            output.path().to_str().unwrap(),
+            "--quiet",
+        ])
+        .assert()
+        .success();
+
+    let hydros = fs::File::open(
+        output
+            .path()
+            .join("simulation/hydros/scenario_id=0000/data.parquet"),
+    )
+    .unwrap();
+    let mut inflow_by_stage = Vec::new();
+    for batch in ParquetRecordBatchReaderBuilder::try_new(hydros)
+        .unwrap()
+        .build()
+        .unwrap()
+    {
+        let batch = batch.unwrap();
+        let column = |name: &str| batch.column_by_name(name).unwrap().clone();
+        let stage_ids = column("stage_id");
+        let inflows = column("incremental_inflow_m3s");
+        let stage_ids = stage_ids.as_any().downcast_ref::<Int32Array>().unwrap();
+        let inflows = inflows.as_any().downcast_ref::<Float64Array>().unwrap();
+        inflow_by_stage.extend(
+            stage_ids
+                .values()
+                .iter()
+                .copied()
+                .zip(inflows.values().iter().copied()),
+        );
+    }
+    inflow_by_stage.sort_by_key(|&(stage_id, _)| stage_id);
+
+    assert_eq!(
+        inflow_by_stage
+            .iter()
+            .map(|&(stage_id, _)| stage_id)
+            .collect::<Vec<_>>(),
+        [0, 1]
+    );
+    for (stage_id, inflow) in inflow_by_stage {
+        assert!(
+            (inflow - 100.0).abs() < 1e-9,
+            "stage {stage_id} must replay the recorded 100 m3/s, got {inflow}"
+        );
+    }
+}
+
+enum Column {
+    Int32(Vec<i32>),
+    Float64(Vec<f64>),
+}
+
+fn write_parquet(path: &Path, columns: Vec<(&str, Column)>) {
+    let (fields, arrays): (Vec<Field>, Vec<ArrayRef>) = columns
+        .into_iter()
+        .map(|(name, column)| match column {
+            Column::Int32(values) => (
+                Field::new(name, DataType::Int32, false),
+                Arc::new(Int32Array::from(values)) as ArrayRef,
+            ),
+            Column::Float64(values) => (
+                Field::new(name, DataType::Float64, false),
+                Arc::new(Float64Array::from(values)) as ArrayRef,
+            ),
+        })
+        .unzip();
+    let schema = Arc::new(Schema::new(fields));
+    let batch = RecordBatch::try_new(schema.clone(), arrays).unwrap();
+    let mut writer = ArrowWriter::try_new(fs::File::create(path).unwrap(), schema, None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
 }
 
 #[test]

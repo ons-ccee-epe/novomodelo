@@ -233,9 +233,8 @@ pub fn add_noise_term_batch(conditional_mean: &[f64], noise_term: &[f64], output
 /// η = (target - deterministic_base - Σ psi[l] * lags[l]) / sigma
 /// ```
 ///
-/// When `sigma == 0.0` noise cannot move the output: returns `0.0` if `target`
-/// matches the deterministic output (within `1e-10`), else `f64::NEG_INFINITY`
-/// to signal that no finite noise can reach `target`.
+/// When `sigma == 0.0` noise cannot move the output, so the noise is `0.0`
+/// whatever `target` is.
 ///
 /// The caller must supply at least `psi.len()` lag values.
 ///
@@ -252,24 +251,14 @@ pub fn add_noise_term_batch(conditional_mean: &[f64], noise_term: &[f64], output
 /// assert!((eta - expected).abs() < 1e-10);
 /// ```
 ///
-/// Zero sigma with a matching target returns `0.0`:
+/// Zero sigma gives zero noise, even for a target away from the deterministic
+/// output `100.0 + 0.5 * 50.0 = 125.0`:
 ///
 /// ```
 /// use novomodelo_stochastic::solve_par_noise;
 ///
-/// // deterministic_value = 100.0 + 0.5 * 50.0 = 125.0; target matches → 0.0
-/// let eta = solve_par_noise(100.0, &[0.5], &[50.0], 0.0, 125.0);
-/// assert_eq!(eta, 0.0_f64);
-/// ```
-///
-/// Zero sigma with a non-matching target returns `f64::NEG_INFINITY`:
-///
-/// ```
-/// use novomodelo_stochastic::solve_par_noise;
-///
-/// // deterministic_value = 125.0; target = 0.0 → impossible → NEG_INFINITY
 /// let eta = solve_par_noise(100.0, &[0.5], &[50.0], 0.0, 0.0);
-/// assert_eq!(eta, f64::NEG_INFINITY);
+/// assert_eq!(eta, 0.0_f64);
 /// ```
 #[must_use]
 pub fn solve_par_noise(
@@ -285,16 +274,12 @@ pub fn solve_par_noise(
         lags.len(),
         psi.len()
     );
+    if sigma == 0.0 {
+        return 0.0;
+    }
     let mut deterministic_value = deterministic_base;
     for (l, &p) in psi.iter().enumerate() {
         deterministic_value += p * lags[l];
-    }
-    if sigma == 0.0 {
-        return if (target - deterministic_value).abs() < 1e-10 {
-            0.0
-        } else {
-            f64::NEG_INFINITY
-        };
     }
     (target - deterministic_value) / sigma
 }
@@ -692,46 +677,15 @@ mod tests {
     }
 
     #[test]
-    fn solve_noise_zero_sigma_returns_neg_infinity() {
-        let eta = solve_par_noise(100.0, &[0.5], &[50.0], 0.0, 0.0);
-        assert!(
-            eta.is_infinite() && eta.is_sign_negative(),
-            "zero sigma: expected NEG_INFINITY, got {eta}"
-        );
-    }
-
-    #[test]
-    #[allow(clippy::float_cmp)]
-    fn test_solve_par_noise_sigma_zero_matching_target() {
-        // deterministic_value = 100.0 + 0.5 * 50.0 = 125.0; target matches → 0.0
-        let eta = solve_par_noise(100.0, &[0.5], &[50.0], 0.0, 125.0);
-        assert_eq!(
-            eta, 0.0_f64,
-            "sigma=0, matching target: expected 0.0, got {eta}"
-        );
-    }
-
-    #[test]
-    #[allow(clippy::float_cmp)]
-    fn test_solve_par_noise_sigma_zero_non_matching_target() {
-        // deterministic_value = 125.0; target = 200.0 → residual = 75.0 → NEG_INFINITY
-        let eta = solve_par_noise(100.0, &[0.5], &[50.0], 0.0, 200.0);
-        assert_eq!(
-            eta,
-            f64::NEG_INFINITY,
-            "sigma=0, non-matching target: expected NEG_INFINITY, got {eta}"
-        );
-    }
-
-    #[test]
-    #[allow(clippy::float_cmp)]
-    fn test_solve_par_noise_sigma_zero_near_matching_target() {
-        // deterministic_value = 125.0; target within 1e-11 → still matches
-        let eta = solve_par_noise(100.0, &[0.5], &[50.0], 0.0, 125.0 + 1e-11);
-        assert_eq!(
-            eta, 0.0_f64,
-            "sigma=0, target within 1e-11: expected 0.0, got {eta}"
-        );
+    fn zero_sigma_gives_zero_noise_whatever_the_target() {
+        for target in [0.0, 125.0, 125.0 + 1e-11, 200.0, -50.0] {
+            let eta = solve_par_noise(100.0, &[0.5], &[50.0], 0.0, target);
+            assert_eq!(
+                eta.to_bits(),
+                0.0_f64.to_bits(),
+                "sigma=0, target {target}: expected 0.0, got {eta}"
+            );
+        }
     }
 
     #[test]

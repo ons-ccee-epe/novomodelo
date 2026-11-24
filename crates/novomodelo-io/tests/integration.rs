@@ -1622,52 +1622,6 @@ fn test_thermal_bounds_block_row_cost_accepted_by_load_case() {
     );
 }
 
-/// Recursively copies `src` into `dst`, skipping `output` directories.
-fn copy_case_dir_into(src: &Path, dst: &Path) {
-    std::fs::create_dir_all(dst).unwrap();
-    for entry in std::fs::read_dir(src).unwrap() {
-        let entry = entry.unwrap();
-        let file_type = entry.file_type().unwrap();
-        let src_path = entry.path();
-        if file_type.is_dir() {
-            if entry.file_name() == "output" {
-                continue;
-            }
-            copy_case_dir_into(&src_path, &dst.join(entry.file_name()));
-        } else {
-            std::fs::copy(&src_path, dst.join(entry.file_name())).unwrap();
-        }
-    }
-}
-
-/// AR(1) model with sigma=0 external inflow is rejected naming the deterministic PAR output reason.
-#[test]
-fn test_d56_ar1_sigma_zero_inflow_rejected_by_validate_case() {
-    let src = Path::new("../../examples/deterministic/d56-external-authoritative");
-    let dir = TempDir::new().unwrap();
-    copy_case_dir_into(src, dir.path());
-    std::fs::copy(
-        Path::new("tests/fixtures/d56_reject_ar_coefficients.parquet"),
-        dir.path().join("scenarios/inflow_ar_coefficients.parquet"),
-    )
-    .unwrap();
-
-    match validate_case(dir.path()) {
-        Err(e) => {
-            let msg = e.to_string();
-            assert!(
-                msg.contains("deterministic PAR output"),
-                "message must name the deterministic PAR output reason: {msg}"
-            );
-            assert!(
-                !msg.contains("inversion is undefined"),
-                "message must not use the 'inversion is undefined' phrasing: {msg}"
-            );
-        }
-        Ok(_) => panic!("expected the AR(1) + sigma=0 external inflow deck to be rejected, got Ok"),
-    }
-}
-
 fn collect_case_dirs(dir: &Path, found: &mut Vec<PathBuf>) {
     let entries =
         std::fs::read_dir(dir).unwrap_or_else(|e| panic!("cannot read {}: {e}", dir.display()));

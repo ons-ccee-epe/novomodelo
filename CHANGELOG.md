@@ -25,6 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `scenario_source.inflow.scheme` `"historical"` and `"external"` refused a
+  zero inflow standard deviation at a hydro and season (`V2.3`, `V3.7`). That
+  season now takes the model's deterministic inflow, not the recorded one.
+  `"external"` also refused a constant inflow column under an AR(p > 0) model.
 - `novomodelo validate` said that negative values in
   `scenarios/inflow_history.parquet` and `initial_conditions.json`
   `recent_observations` are priced by the LP, whatever

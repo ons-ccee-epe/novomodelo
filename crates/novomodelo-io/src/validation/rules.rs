@@ -513,9 +513,6 @@ declare_rules! {
     SEMANTIC_EXTERNAL_PREFIX_INCOHERENT = "semantic.5b.48",
         Semantic, ModelQuality, Warning,
         "Along a node-graph edge, an external class's pointed columns disagree over their shared history prefix";
-    SEMANTIC_EXTERNAL_INFLOW_CONSTANT_UNDER_AR_MODEL = "semantic.5b.50",
-        Semantic, BusinessRuleViolation, Error,
-        "An external inflow library is constant at a stage for a hydro whose inflow model has autoregressive order above zero";
     SEMANTIC_STAGE_BLOCKS = "semantic.5b.52",
         Semantic, InvalidValue, Error,
         "A study stage declares no block, or a block whose duration_hours is not finite and positive";
@@ -581,6 +578,7 @@ mod tests {
         "semantic.5b.26",
         "semantic.5b.32",
         "semantic.5b.49",
+        "semantic.5b.50",
     ];
 
     // Spelled from chars so the source grep in `tests/genericity_gate.rs` does not match this file.
