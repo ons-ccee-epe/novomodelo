@@ -135,7 +135,7 @@ pub struct System {
     external_ncs_scenarios: Vec<ExternalNcsRow>,
 
     /// Post-study boundary calendar and per-`(thermal, post-study stage)`
-    /// cost/bounds; `None` when `post_study_stages.json` is absent (inert).
+    /// cost/bounds; `None` when the case declares no post-study input (inert).
     /// Boundary-only input: never a dispatched stage in `system.stages()`.
     post_study_stages: Option<PostStudyStages>,
 }
@@ -537,7 +537,7 @@ impl System {
     }
 
     /// Returns the post-study boundary calendar and cost/bounds, or `None` when
-    /// `post_study_stages.json` was absent at case-load time.
+    /// the case declares no post-study input.
     #[must_use]
     pub fn post_study_stages(&self) -> Option<&PostStudyStages> {
         self.post_study_stages.as_ref()

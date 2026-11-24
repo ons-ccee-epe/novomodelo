@@ -369,7 +369,7 @@ pub(super) fn fill_thermal_columns(
 /// `[min, max]` and `cost_per_mwh`. Post study,
 /// `ctx.time_value.post_study().anticipated_bound` supplies `(cost, min_mw,
 /// max_mw)` from the post-study table ALONE — no intersection with a second
-/// declaration, since `post_study_stages.json` is the sole post-horizon bound
+/// declaration, since the post-study bound table is the sole post-horizon bound
 /// surface. Both branches read delivery hours from the EXTENDED
 /// `ctx.time_value.delivery_total_hours` vector, price via
 /// `ctx.time_value.relative_delivery_discount(stage_idx, delivery_stage)`, and

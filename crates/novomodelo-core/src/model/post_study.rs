@@ -2,7 +2,7 @@
 //!
 //! An in-study GNL commitment delivered after the dispatch horizon has no
 //! dispatched stage to anchor its delivery-stage hours, fuel cost, or generation
-//! bounds against. `post_study_stages.json` is the sole post-horizon surface:
+//! bounds against. The post-study input is the sole post-horizon surface:
 //! [`PostStudyStages`] is the standalone boundary input carrying an ordered
 //! post-horizon calendar segment plus a per-`(thermal, post-study stage)`
 //! cost/bounds table those commitments resolve into by date.
@@ -91,8 +91,8 @@ pub struct PostStudyThermalBound {
 /// Two calendars are carried: `thermal_stages` dates thermal deliveries and the
 /// bounds table; `water_bucket_stages` dates water-bucket slots.
 ///
-/// `None` on [`System`](crate::System) when `post_study_stages.json` is absent —
-/// inert and additive. Both vectors are stored in canonical order:
+/// `None` on [`System`](crate::System) when the case declares no post-study
+/// input — inert and additive. Both vectors are stored in canonical order:
 /// `thermal_stages` ascending by `start_date`; `thermal_bounds` by
 /// `(thermal_id, post_study_stage_index)` (declaration-order invariance).
 #[derive(Debug, Clone, PartialEq, Default)]

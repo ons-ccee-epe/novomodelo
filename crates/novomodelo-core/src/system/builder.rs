@@ -300,8 +300,8 @@ impl SystemBuilder {
         self
     }
 
-    /// Set the post-study boundary calendar and cost/bounds; `None` when
-    /// `post_study_stages.json` is absent.
+    /// Set the post-study boundary calendar and cost/bounds; `None` when the
+    /// case declares no post-study input.
     #[must_use]
     pub fn post_study_stages(mut self, post_study_stages: Option<PostStudyStages>) -> Self {
         self.post_study_stages = post_study_stages;
