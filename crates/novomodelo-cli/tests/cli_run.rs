@@ -9,6 +9,7 @@
     clippy::float_cmp
 )]
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -16,12 +17,17 @@ use arrow::array::{Array, BooleanArray, Float64Array, Int32Array, Int64Array, St
 use arrow::record_batch::RecordBatch;
 use assert_cmd::prelude::*;
 use novomodelo_io::scenarios::parse_inflow_annual_component;
-use novomodelo_io::{EntitySlot, StateFamily, deserialize_stage_cuts};
+use novomodelo_io::{
+    ENTITY_SLOT_DATE_SENTINEL, EntitySlot, OwnedPolicyCutRecord, StageCutsReadResult, StateFamily,
+    decode_slot_date, deserialize_stage_cuts,
+};
+use novomodelo_sddp::test_support::unmigrated_inputs::{Generation, deck_keys, materialize_twin};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use predicates::prelude::*;
 use tempfile::TempDir;
 
 mod common;
+use common::varying_external_deck::edit_json;
 use common::{
     case_dir, copy_dir_recursive, make_valid_case, novomodelo, restamp_policy_version,
     snapshot_files, write_file, write_supplied_correlation_case, write_supplied_opening_tree_case,
@@ -2770,4 +2776,290 @@ mod mpi {
             "external-scenario clamp warnings on stderr, two ranks vs one process"
         );
     }
+}
+
+/// Outputs that hold the run's wall-clock time or solver timings, so two runs of
+/// the same inputs never write them identically.
+const RUN_IDENTITY_OUTPUTS: [&str; 8] = [
+    "policy/manifest.bin",
+    "simulation/metadata.json",
+    "simulation/solver/",
+    "training/convergence.parquet",
+    "training/dictionaries/codes.json",
+    "training/metadata.json",
+    "training/solver/",
+    "training/timing/",
+];
+
+fn result_outputs(output: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+    snapshot_files(output)
+        .into_iter()
+        .filter(|(path, _)| {
+            let path = path.to_str().unwrap();
+            !RUN_IDENTITY_OUTPUTS
+                .iter()
+                .any(|identity| path.starts_with(identity))
+        })
+        .collect()
+}
+
+const LEGACY_TWIN_DECKS: [(&str, Generation); 13] = [
+    (
+        "crates/novomodelo-sddp/tests/fixtures/exited_plant_transit",
+        Generation::PostStudyStagesKey,
+    ),
+    (
+        "crates/novomodelo-sddp/tests/fixtures/travel_time_arc",
+        Generation::PostStudyStagesKey,
+    ),
+    (
+        "examples/deterministic/d44-travel-time-substage",
+        Generation::PostStudyStagesKey,
+    ),
+    (
+        "examples/deterministic/d45-travel-time-mixed-calendar",
+        Generation::PostStudyStagesKey,
+    ),
+    (
+        "examples/deterministic/d46-travel-time-chronological",
+        Generation::PostStudyStagesKey,
+    ),
+    (
+        "examples/deterministic/d47-travel-time-confluence",
+        Generation::PostStudyStagesKey,
+    ),
+    (
+        "examples/deterministic/d48-travel-time-ic-seed",
+        Generation::PostStudyStagesKey,
+    ),
+    (
+        "examples/deterministic/d49-travel-time-chronological-arrival",
+        Generation::PostStudyStagesKey,
+    ),
+    (
+        "examples/deterministic/d50-travel-time-plain-tributary-confluence",
+        Generation::PostStudyStagesKey,
+    ),
+    (
+        "examples/deterministic/d12-par-annual",
+        Generation::InitialConditions,
+    ),
+    (
+        "examples/deterministic/d37-anticipated-commissioning",
+        Generation::InitialConditions,
+    ),
+    (
+        "examples/deterministic/d38-dead-volume-filling",
+        Generation::InitialConditions,
+    ),
+    (
+        "examples/deterministic/d48-travel-time-ic-seed",
+        Generation::InitialConditions,
+    ),
+];
+
+/// Decks whose `post_study_stages_key` twin writes the `stages` key, which the
+/// reader refuses, so the twin cannot run.
+const REFUSED_KEY_TWINS: [&str; 2] = [
+    "crates/novomodelo-sddp/tests/unswept_fixtures/dual_calendar_boundary",
+    "examples/deterministic/d55-post-study-anticipated-lanes",
+];
+
+/// A legacy twin pads the water calendar rather than declaring it, so its
+/// transit-bucket slots carry the date sentinel where the migrated deck carries
+/// arrival dates. That difference, in those two fields of those slots only, is
+/// accepted; every other field of every cut pool is compared exactly.
+fn cut_pool_ignoring_transit_dates(pool: &mut StageCutsReadResult, what: &str) -> String {
+    for slot in pool
+        .entity_manifest
+        .iter_mut()
+        .filter(|slot| slot.entity_type == StateFamily::HydroTransitBucket.code())
+    {
+        for date in [&mut slot.interval_start, &mut slot.interval_end] {
+            assert!(
+                *date == ENTITY_SLOT_DATE_SENTINEL || decode_slot_date(*date).is_some(),
+                "{what}: transit-bucket interval {date} is neither a date nor the sentinel"
+            );
+            *date = ENTITY_SLOT_DATE_SENTINEL;
+        }
+    }
+    format!("{pool:?}")
+}
+
+fn twin_outputs_agree(path: &Path, migrated: &[u8], legacy: &[u8]) -> bool {
+    let path_str = path.to_str().unwrap();
+    if !path.starts_with("policy/cuts") || path.extension().is_none_or(|ext| ext != "bin") {
+        return migrated == legacy;
+    }
+    let [migrated, legacy] = [migrated, legacy].map(|bytes| {
+        let mut pool = deserialize_stage_cuts(bytes)
+            .unwrap_or_else(|e| panic!("failed to decode {path_str}: {e:?}"));
+        cut_pool_ignoring_transit_dates(&mut pool, path_str)
+    });
+    migrated == legacy
+}
+
+fn deck_copy(deck_key: &str) -> TempDir {
+    let case = TempDir::new().unwrap();
+    let repository_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    copy_dir_recursive(&repository_root.join(deck_key), case.path());
+    case
+}
+
+fn run_twin_side(
+    deck_key: &str,
+    generation: Generation,
+    legacy: bool,
+) -> BTreeMap<PathBuf, Vec<u8>> {
+    let case = deck_copy(deck_key);
+    if legacy {
+        materialize_twin(generation, deck_key, case.path())
+            .unwrap_or_else(|e| panic!("{deck_key} {generation:?}: {e}"));
+    }
+    edit_json(&case.path().join("config.json"), |config| {
+        config["simulation"] = serde_json::json!({
+            "enabled": true,
+            "selection": { "method": "sampled", "num_scenarios": 1 }
+        });
+    });
+    let output = TempDir::new().unwrap();
+    let run = novomodelo()
+        .args(["run", case.path().to_str().unwrap()])
+        .args(["--output", output.path().to_str().unwrap(), "--quiet"])
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "{deck_key} {generation:?} (legacy twin: {legacy}): {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    result_outputs(output.path())
+}
+
+#[test]
+fn legacy_twin_writes_the_outputs_of_its_migrated_deck() {
+    let mut first_generation: Vec<&str> = LEGACY_TWIN_DECKS
+        .iter()
+        .filter(|(_, generation)| *generation == Generation::PostStudyStagesKey)
+        .map(|(deck_key, _)| *deck_key)
+        .chain(REFUSED_KEY_TWINS)
+        .collect();
+    first_generation.sort_unstable();
+    assert_eq!(
+        first_generation,
+        deck_keys(Generation::PostStudyStagesKey),
+        "every first-generation overlay must have a row or be in REFUSED_KEY_TWINS"
+    );
+    for deck_key in REFUSED_KEY_TWINS {
+        let case = deck_copy(deck_key);
+        materialize_twin(Generation::PostStudyStagesKey, deck_key, case.path())
+            .unwrap_or_else(|e| panic!("{deck_key}: {e}"));
+        let post_study: serde_json::Value =
+            serde_json::from_slice(&fs::read(case.path().join("post_study_stages.json")).unwrap())
+                .unwrap();
+        assert!(
+            post_study.get("stages").is_some(),
+            "{deck_key}: its twin no longer writes the `stages` key, so drop it from REFUSED_KEY_TWINS"
+        );
+    }
+
+    for (deck_key, generation) in LEGACY_TWIN_DECKS {
+        let [migrated, legacy] =
+            [false, true].map(|legacy| run_twin_side(deck_key, generation, legacy));
+
+        for compared in ["policy/cuts/", "simulation/"] {
+            assert!(
+                migrated
+                    .keys()
+                    .any(|path| path.to_str().unwrap().starts_with(compared)),
+                "{deck_key} {generation:?}: the comparison has no power unless it covers {compared}"
+            );
+        }
+        assert!(
+            migrated.keys().eq(legacy.keys()),
+            "{deck_key} {generation:?}: output files: migrated {:?}, legacy {:?}",
+            migrated.keys().collect::<Vec<_>>(),
+            legacy.keys().collect::<Vec<_>>()
+        );
+        let differing: Vec<_> = migrated
+            .iter()
+            .filter(|(path, bytes)| !twin_outputs_agree(path, bytes, &legacy[*path]))
+            .map(|(path, _)| path)
+            .collect();
+        assert!(
+            differing.is_empty(),
+            "{deck_key} {generation:?}: outputs differ: {differing:?}"
+        );
+        eprintln!("compared {deck_key} {generation:?}");
+    }
+}
+
+fn sample_cut_pool() -> StageCutsReadResult {
+    StageCutsReadResult {
+        stage_id: 1,
+        state_dimension: 3,
+        capacity: 4,
+        warm_start_count: 0,
+        populated_count: 1,
+        cuts: vec![OwnedPolicyCutRecord {
+            slot_index: 0,
+            iteration: 1,
+            forward_pass_index: 0,
+            intercept: 10.0,
+            coefficients: vec![1.0, 2.0, 3.0],
+            is_active: true,
+            scored: false,
+            active_count: None,
+            last_active_iteration: None,
+        }],
+        entity_manifest: vec![
+            EntitySlot::storage(12, true),
+            EntitySlot::transit_bucket(3, 1, true).with_interval(20_240_301, 20_240_331),
+            EntitySlot::anticipated(7, 1, true).with_interval(20_240_501, 20_240_601),
+        ],
+        cost_scale_factor: Some(1.0),
+        node_id: 0,
+        graph_stage_id: 1,
+        priced_state_date: 20_240_331,
+    }
+}
+
+#[test]
+fn twin_cut_comparison_ignores_only_transit_bucket_dates() {
+    type Mutation = fn(&mut StageCutsReadResult);
+    let normalized =
+        |mut pool: StageCutsReadResult| cut_pool_ignoring_transit_dates(&mut pool, "pool");
+    let reference = normalized(sample_cut_pool());
+
+    let mut padded = sample_cut_pool();
+    padded.entity_manifest[1] = EntitySlot::transit_bucket(3, 1, true);
+    assert_eq!(normalized(padded), reference);
+
+    let mutations: [(&str, Mutation); 4] = [
+        ("coefficient", |pool| pool.cuts[0].coefficients[1] += 1e-9),
+        ("intercept", |pool| pool.cuts[0].intercept += 1e-9),
+        ("anticipated interval", |pool| {
+            pool.entity_manifest[2].interval_start = ENTITY_SLOT_DATE_SENTINEL;
+        }),
+        ("transit subindex", |pool| {
+            pool.entity_manifest[1].subindex = 2;
+        }),
+    ];
+    for (name, mutate) in mutations {
+        let mut pool = sample_cut_pool();
+        mutate(&mut pool);
+        assert_ne!(
+            normalized(pool),
+            reference,
+            "the {name} mutation must be detected"
+        );
+    }
+}
+
+#[test]
+#[should_panic(expected = "neither a date nor the sentinel")]
+fn twin_cut_comparison_rejects_a_malformed_transit_date() {
+    let mut pool = sample_cut_pool();
+    pool.entity_manifest[1].interval_end = 13;
+    cut_pool_ignoring_transit_dates(&mut pool, "pool");
 }
