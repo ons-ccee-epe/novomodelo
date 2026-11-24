@@ -11,33 +11,14 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+import legacy_overlays as lo
 import post_study_stages as pss
 
 _ROOT = Path(__file__).resolve().parents[2]
-_OVERLAY_ROOT = (
-    _ROOT
-    / "crates"
-    / "novomodelo-sddp"
-    / "tests"
-    / "unswept_fixtures"
-    / "unmigrated_inputs"
-    / "post_study_stages_key"
-)
-_ABSENT = "absent.json"
+_GENERATION = "post_study_stages_key"
 
-_OVERLAYS = sorted(path for path in _OVERLAY_ROOT.iterdir() if path.is_dir())
-assert _OVERLAYS, f"no unmigrated-input overlay under {_OVERLAY_ROOT}"
-
-
-def materialize(overlay: Path, deck: Path) -> None:
-    absent: list[str] = json.loads((overlay / _ABSENT).read_text(encoding="utf-8"))
-    for file in sorted(overlay.rglob("*")):
-        relative = file.relative_to(overlay)
-        if file.is_file() and relative != Path(_ABSENT):
-            (deck / relative).parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(file, deck / relative)
-    for relative_path in absent:
-        (deck / relative_path).unlink(missing_ok=True)
+_DECK_KEYS = lo.deck_keys(_GENERATION)
+assert _DECK_KEYS, f"no {_GENERATION} unmigrated-input overlay under {lo.OVERLAY_ROOT}"
 
 
 def is_unmigrated(deck: Path) -> bool:
@@ -48,17 +29,23 @@ def is_unmigrated(deck: Path) -> bool:
     return pss.classify_file(doc) is pss.FileFormat.LEGACY
 
 
-@pytest.mark.parametrize("overlay", _OVERLAYS, ids=lambda path: path.name)
+@pytest.mark.parametrize("deck_key", _DECK_KEYS, ids=lambda key: key.replace("/", "__"))
 def test_main_on_the_unmigrated_inputs_reproduces_the_committed_migrated_decks(
-    tmp_path: Path, overlay: Path
+    tmp_path: Path, deck_key: str
 ) -> None:
-    committed = _ROOT / overlay.name.replace("__", "/")
-    deck = tmp_path / "deck"
-    shutil.copytree(committed, deck, ignore=shutil.ignore_patterns("scenarios"))
-    materialize(overlay, deck)
-    assert is_unmigrated(deck)
+    committed = _ROOT / deck_key
+    expected_deck = tmp_path / "expected"
+    shutil.copytree(
+        committed, expected_deck, ignore=shutil.ignore_patterns("scenarios")
+    )
+    lo.apply_newer(_GENERATION, deck_key, expected_deck)
+    expected = (expected_deck / pss.FILE_NAME).read_bytes()
 
-    assert pss.main([str(deck)]) == 0
+    legacy = tmp_path / "deck"
+    shutil.copytree(committed, legacy, ignore=shutil.ignore_patterns("scenarios"))
+    lo.materialize_twin(_GENERATION, deck_key, legacy)
+    assert is_unmigrated(legacy)
 
-    migrated = committed / pss.FILE_NAME
-    assert (deck / pss.FILE_NAME).read_bytes() == migrated.read_bytes()
+    assert pss.main([str(legacy)]) == 0
+
+    assert (legacy / pss.FILE_NAME).read_bytes() == expected

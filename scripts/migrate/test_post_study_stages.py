@@ -17,6 +17,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent))
 
 import post_study_stages as pss
+from legacy_overlays import apply_newer
 
 _EXAMPLES = Path(__file__).resolve().parents[2] / "examples" / "deterministic"
 _SCHEMA = "schema-uri"
@@ -762,6 +763,7 @@ def test_write_atomic_replaces_the_file_through_a_sibling_temp_file(
 def copy_committed_deck(name: str, destination: Path, *, with_scenarios: bool) -> Path:
     ignore = None if with_scenarios else shutil.ignore_patterns("scenarios")
     shutil.copytree(_EXAMPLES / name, destination, ignore=ignore)
+    apply_newer("post_study_stages_key", f"examples/deterministic/{name}", destination)
     (destination / pss.FILE_NAME).unlink(missing_ok=True)
     return destination
 
@@ -809,7 +811,9 @@ def test_main_committed_arc_deck_gets_the_expected_water_calendar(
 
 
 @pytest.mark.parametrize("name", [_ARC_DECK, _NO_ARC_DECK], ids=["arc", "no-arc"])
-def test_migrated_decks_raise_no_post_study_warning(tmp_path: Path, name: str) -> None:
+def test_legacy_deck_is_refused_and_its_migration_validates_without_warning(
+    tmp_path: Path, name: str
+) -> None:
     binary = os.environ.get("NOVOMODELO_BIN")
     if not binary:
         pytest.skip("NOVOMODELO_BIN is unset; point it at a built novomodelo binary")
@@ -836,7 +840,9 @@ def test_migrated_decks_raise_no_post_study_warning(tmp_path: Path, name: str) -
         ]
         return proc.returncode, warnings, output
 
-    assert validate(unmigrated)[1]
+    code, _, output = validate(unmigrated)
+    assert code != 0, output
+    assert f"error: [ParseError] {pss.FILE_NAME}" in output, output
     assert pss.main([str(migrated)]) == 0
     code, warnings, output = validate(migrated)
     assert code == 0, output
