@@ -14,7 +14,8 @@ use assert_cmd::prelude::*;
 use novomodelo_core::EntityId;
 use novomodelo_io::InflowSeasonalStatsRow;
 use novomodelo_io::output::write_inflow_seasonal_stats;
-use novomodelo_sddp::test_support::unmigrated_inputs::{Generation, materialize_twin};
+use novomodelo_sddp::test_support::decks::committed_decks;
+use novomodelo_sddp::test_support::unmigrated_inputs::{Generation, deck_keys, materialize_twin};
 use parquet::arrow::ArrowWriter;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use predicates::prelude::*;
@@ -2301,11 +2302,14 @@ fn validate_help_lists_the_output_flag() {
         .stdout(predicate::str::contains("<DIR>"));
 }
 
-fn deprecation_lines(output: &std::process::Output) -> Vec<String> {
+const POST_STUDY_CONVERTER: &str = "scripts/migrate/post_study_stages.py";
+const BOUNDARY_CONVERTER: &str = "scripts/migrate/boundary_conditions.py";
+
+fn deprecation_lines(output: &std::process::Output, converter: &str) -> Vec<String> {
     String::from_utf8_lossy(&output.stdout)
         .lines()
         .chain(String::from_utf8_lossy(&output.stderr).lines())
-        .filter(|line| line.contains("is deprecated"))
+        .filter(|line| line.contains(converter))
         .map(str::to_owned)
         .collect()
 }
@@ -2329,9 +2333,62 @@ fn validate_warns_once_on_arc_deck_without_post_study_file() {
         .unwrap();
 
     assert!(output.status.success(), "{output:?}");
-    let lines = deprecation_lines(&output);
+    let lines = deprecation_lines(&output, POST_STUDY_CONVERTER);
     assert_eq!(lines.len(), 1, "{lines:?}");
     assert!(lines[0].contains("water_bucket_stages"), "{lines:?}");
+    let converter_lines = deprecation_lines(&output, BOUNDARY_CONVERTER);
+    assert_eq!(converter_lines.len(), 1, "{converter_lines:?}");
+}
+
+const LEGACY_ONLY_DECKS: &[&str] = &["crates/novomodelo-sddp/tests/fixtures/travel_time_arc"];
+
+const DECKS_OUTSIDE_THE_COMMITTED_SWEEP: &[&str] = &[
+    "crates/novomodelo-sddp/tests/unswept_fixtures/dual_calendar_boundary",
+    "tests/slurm/1dtoy-fan",
+];
+
+fn boundary_converter_warnings(deck: &Path) -> usize {
+    let (_system, report) = novomodelo_io::validate_case(deck).unwrap();
+    report
+        .warnings
+        .iter()
+        .filter(|warning| warning.message.contains(BOUNDARY_CONVERTER))
+        .count()
+}
+
+#[test]
+fn only_the_legacy_only_deck_warns_on_its_boundary_file_set() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+
+    let mut keys: Vec<String> = committed_decks().into_iter().map(|deck| deck.key).collect();
+    keys.extend(
+        DECKS_OUTSIDE_THE_COMMITTED_SWEEP
+            .iter()
+            .map(|key| (*key).to_owned()),
+    );
+    let warned: Vec<&str> = keys
+        .iter()
+        .filter(|key| boundary_converter_warnings(&root.join(key)) > 0)
+        .map(String::as_str)
+        .collect();
+    assert_eq!(warned, LEGACY_ONLY_DECKS);
+
+    let mut covered = 0;
+    for key in deck_keys(Generation::InitialConditions) {
+        let twin = TempDir::new().unwrap();
+        copy_dir_recursive(&root.join(&key), twin.path());
+        materialize_twin(Generation::InitialConditions, &key, twin.path()).unwrap();
+        assert_eq!(boundary_converter_warnings(twin.path()), 1, "{key}");
+        covered += 1;
+    }
+    let overlay_dirs = fs::read_dir(root.join(
+        "crates/novomodelo-sddp/tests/unswept_fixtures/unmigrated_inputs/initial_conditions",
+    ))
+    .unwrap()
+    .filter(|entry| entry.as_ref().unwrap().path().is_dir())
+    .count();
+    assert!(covered > 0, "no deck has an initial_conditions overlay");
+    assert_eq!(covered, overlay_dirs);
 }
 
 #[test]

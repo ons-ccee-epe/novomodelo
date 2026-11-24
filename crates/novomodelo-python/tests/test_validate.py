@@ -237,6 +237,24 @@ def test_validate_warns_on_arc_deck_without_post_study_file() -> None:
         shutil.rmtree(case_dir.parent, ignore_errors=True)
 
 
+def test_validate_warns_on_legacy_boundary_file_set() -> None:
+    """validate() reports the deprecated boundary file set once, and a current deck never."""
+    import novomodelo.io
+
+    converter = "scripts/migrate/boundary_conditions.py"
+
+    legacy = novomodelo.io.validate(
+        "crates/novomodelo-sddp/tests/fixtures/travel_time_arc"
+    )
+    assert legacy["valid"] is True, legacy["errors"]
+    legacy_hits = [w for w in legacy["warnings"] if converter in w["message"]]
+    assert len(legacy_hits) == 1, legacy["warnings"]
+
+    current = novomodelo.io.validate(VALID_CASE_1DTOY)
+    current_hits = [w for w in current["warnings"] if converter in w["message"]]
+    assert current_hits == [], current["warnings"]
+
+
 def test_validate_clean_case_accepts_pathlib_path() -> None:
     """validate() accepts a pathlib.Path, not just a str."""
     import novomodelo.io

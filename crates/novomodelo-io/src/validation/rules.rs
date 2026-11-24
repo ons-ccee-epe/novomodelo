@@ -119,6 +119,9 @@ declare_rules! {
     STRUCTURAL_BOUNDARY_FILE_SETS_MIXED = "structural.3",
         Structural, BusinessRuleViolation, Error,
         "Both the current and the deprecated boundary-condition file sets are present";
+    STRUCTURAL_LEGACY_BOUNDARY_FILE_SET = "structural.4",
+        Structural, ModelQuality, Warning,
+        "The case supplies the deprecated boundary-condition file set";
     SCHEMA_FILE_UNREADABLE = "schema.1",
         Schema, FileNotFound, Error,
         "A case input file cannot be read";

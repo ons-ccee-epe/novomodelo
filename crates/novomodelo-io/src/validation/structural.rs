@@ -539,6 +539,21 @@ fn resolve_boundary_source(
     }
 
     if initial_conditions {
+        let legacy_files = if post_study {
+            "'initial_conditions.json' and 'post_study_stages.json'"
+        } else {
+            "'initial_conditions.json'"
+        };
+        ctx.emit(
+            &rules::STRUCTURAL_LEGACY_BOUNDARY_FILE_SET,
+            "initial_conditions.json",
+            None::<&str>,
+            format!(
+                "the case reads its boundary conditions from the deprecated {legacy_files}; \
+                 'boundary_conditions.json' replaces them: convert the case with \
+                 `python3 scripts/migrate/boundary_conditions.py <case>`"
+            ),
+        );
         return Some(BoundaryInputSource::Legacy {
             post_study_file: post_study,
         });
@@ -721,6 +736,50 @@ mod tests {
                     );
                 }
             }
+
+            let warnings = ctx.warnings();
+            if matches!(expected_source, Some(Legacy { .. })) {
+                assert_eq!(warnings.len(), 1, "files: {files:?}, got: {warnings:?}");
+                assert_eq!(
+                    warnings[0].kind,
+                    ErrorKind::ModelQuality,
+                    "files: {files:?}"
+                );
+                assert_eq!(
+                    warnings[0].file.to_string_lossy(),
+                    "initial_conditions.json",
+                    "files: {files:?}"
+                );
+            } else {
+                assert!(warnings.is_empty(), "files: {files:?}, got: {warnings:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_boundary_file_set_warning_names_the_converter_and_each_legacy_file() {
+        for post_study_present in [false, true] {
+            let dir = TempDir::new().unwrap();
+            make_case_with_required(&dir);
+            if post_study_present {
+                fs::write(dir.path().join("post_study_stages.json"), b"{}").unwrap();
+            }
+
+            let mut ctx = ValidationContext::new();
+            let _manifest = validate_structure(dir.path(), &mut ctx);
+
+            let message = &ctx.warnings()[0].message;
+            assert!(message.contains("'boundary_conditions.json'"), "{message}");
+            assert!(
+                message.contains("scripts/migrate/boundary_conditions.py"),
+                "{message}"
+            );
+            assert!(message.contains("'initial_conditions.json'"), "{message}");
+            assert_eq!(
+                message.contains("post_study_stages.json"),
+                post_study_present,
+                "{message}"
+            );
         }
     }
 
