@@ -102,6 +102,20 @@ impl BoundaryFormat {
             Self::Current => "stages.json",
         }
     }
+
+    pub(crate) fn hydro_seed_file(self) -> &'static str {
+        match self {
+            Self::Legacy(_) => "initial_conditions.json",
+            Self::Current => "boundary_conditions.json",
+        }
+    }
+
+    pub(crate) fn recent_inflows_key(self) -> &'static str {
+        match self {
+            Self::Legacy(_) => "recent_observations",
+            Self::Current => "recent_inflows",
+        }
+    }
 }
 
 /// All parsed file outputs produced by Layer 2 schema validation.
@@ -205,6 +219,13 @@ pub(crate) struct ParsedData {
     pub(crate) ncs_bounds: Vec<NcsBoundsRow>,
     /// `constraints/hydro_unit_group_bounds.parquet`.
     pub(crate) hydro_unit_group_bounds: Vec<HydroUnitGroupBoundsRow>,
+}
+
+impl ParsedData {
+    pub(crate) fn boundary_format_or_legacy(&self) -> BoundaryFormat {
+        self.boundary_format
+            .unwrap_or(BoundaryFormat::Legacy(PostStudyFormat::Absent))
+    }
 }
 
 // ── Error mapping helper ──────────────────────────────────────────────────────
@@ -927,6 +948,21 @@ mod tests {
         assert_eq!(
             BoundaryFormat::Current.post_study_calendar_file(),
             "stages.json"
+        );
+    }
+
+    #[test]
+    fn hydro_seed_vocabulary_follows_the_format() {
+        let legacy = BoundaryFormat::Legacy(PostStudyFormat::Absent);
+        assert_eq!(legacy.hydro_seed_file(), "initial_conditions.json");
+        assert_eq!(legacy.recent_inflows_key(), "recent_observations");
+        assert_eq!(
+            BoundaryFormat::Current.hydro_seed_file(),
+            "boundary_conditions.json"
+        );
+        assert_eq!(
+            BoundaryFormat::Current.recent_inflows_key(),
+            "recent_inflows"
         );
     }
 

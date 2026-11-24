@@ -260,7 +260,7 @@ declare_rules! {
         "An inflow lag slot that the model never reads is not fully covered by realized inflow records";
     SEMANTIC_INFLOW_SEED_CONDITIONING_PAST_STUDY_START = "semantic.5a.32",
         Semantic, InvalidValue, Error,
-        "A recent_observations window extends past the study start";
+        "A recent_inflows window (recent_observations in the deprecated initial_conditions.json) extends past the study start";
     SEMANTIC_INFLOW_SEED_PARTIAL_CURRENT_PERIOD = "semantic.5a.33",
         Semantic, ModelQuality, Warning,
         "The in-progress period before the study start is only partly covered by realized inflow records";
@@ -323,7 +323,7 @@ declare_rules! {
         "A hydro's initial storage lies outside its own storage range";
     SEMANTIC_INITIAL_STORAGE_WRONG_ARRAY = "semantic.5a.54",
         Semantic, InvalidValue, Error,
-        "A filling hydro's initial storage is listed under storage, or a non-filling hydro's under filling_storage";
+        "In the deprecated initial_conditions.json, a filling hydro's initial storage is listed under storage, or a non-filling hydro's under filling_storage";
     SEMANTIC_INITIAL_STORAGE_OUTSIDE_FIRST_STAGE_BOUNDS = "semantic.5a.55",
         Semantic, ModelQuality, Warning,
         "A hydro's initial storage lies outside the storage bounds at the end of its first operating stage";

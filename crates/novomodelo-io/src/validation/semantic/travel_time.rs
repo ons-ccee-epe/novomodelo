@@ -331,7 +331,7 @@ fn check_defluence_coverage(
         if w.end_date > start_0 {
             ctx.emit(
                 &rules::TRAVEL_TIME_DEFLUENCE_FUTURE_DATED,
-                "initial_conditions.json",
+                data.boundary_format_or_legacy().hydro_seed_file(),
                 Some(format!("Hydro {hydro_id}")),
                 format!(
                     "Hydro {hydro_id}: past_defluences window [{}, {}) ends after the study \
@@ -363,7 +363,7 @@ fn check_defluence_coverage(
 
     ctx.emit(
         &rules::TRAVEL_TIME_DEFLUENCES_UNCOVERED,
-        "initial_conditions.json",
+        data.boundary_format_or_legacy().hydro_seed_file(),
         Some(format!("Hydro {hydro_id}")),
         format!(
             "Hydro {hydro_id}: declared arc (travel_time_hours={t}) requires past_defluences \
@@ -389,6 +389,7 @@ mod tests {
     use crate::stages::{PostStudyCalendars, StagesData};
     use crate::test_support::*;
     use crate::validation::ErrorKind;
+    use crate::validation::schema::BoundaryFormat;
     use novomodelo_core::entities::Hydro;
     use novomodelo_core::temporal::{Block, PolicyGraphType, Stage};
     use novomodelo_core::{EntityId, HorizonGraph, HydroPastDefluence};
@@ -764,6 +765,39 @@ mod tests {
                 && e.message.contains("after the study start")),
             "error must flag the future-dated window naming the hydro, got: {errors:?}"
         );
+    }
+
+    #[test]
+    fn current_format_defluence_diagnostics_name_boundary_file() {
+        let hydro = make_hydro_with_travel_time(1, 2, Some(48.0));
+        let stages = make_stages_with_pre_study(3, 720.0, 2, 720.0);
+        let mut data = make_data(vec![hydro], vec![], vec![], stages, vec![], vec![]);
+        let mut legacy = ValidationContext::new();
+        validate_travel_time(&data, &mut legacy);
+        assert_eq!(
+            legacy.errors()[0].file.to_string_lossy(),
+            "initial_conditions.json"
+        );
+        data.boundary_format = Some(BoundaryFormat::Current);
+
+        let mut uncovered = ValidationContext::new();
+        validate_travel_time(&data, &mut uncovered);
+        let errors = uncovered.errors();
+        assert_eq!(errors.len(), 1, "got: {errors:?}");
+        assert_eq!(errors[0].file.to_string_lossy(), "boundary_conditions.json");
+        assert!(errors[0].message.contains("past_defluences"));
+
+        data.initial_conditions.past_defluences = vec![defluence_window(
+            1,
+            chrono::NaiveDate::from_ymd_opt(2023, 12, 30).unwrap(),
+            chrono::NaiveDate::from_ymd_opt(2024, 1, 5).unwrap(),
+        )];
+        let mut future = ValidationContext::new();
+        validate_travel_time(&data, &mut future);
+        let errors = future.errors();
+        assert_eq!(errors.len(), 1, "got: {errors:?}");
+        assert_eq!(errors[0].file.to_string_lossy(), "boundary_conditions.json");
+        assert!(errors[0].message.contains("past_defluences"));
     }
 
     // ── Row 6: chronological confluence with heterogeneous travel time ───────

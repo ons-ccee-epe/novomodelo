@@ -7,7 +7,10 @@ use novomodelo_core::commissioning::{
 };
 use novomodelo_core::{EntityId, Hydro, ResolvedBounds, TailraceFlow};
 
-use super::super::{ValidationContext, rules, schema::ParsedData};
+use super::super::{
+    ValidationContext, rules,
+    schema::{BoundaryFormat, ParsedData},
+};
 use super::{envelope_tolerance, range_covers};
 use crate::StageIdResolver;
 use crate::config::InflowNonNegativityMethod;
@@ -511,6 +514,7 @@ pub(super) fn check_filling_guards(data: &ParsedData, ctx: &mut ValidationContex
 /// clamped: clamping would change the declared water without a diagnostic. A
 /// hydro with inverted bounds is left to rule 2.
 pub(super) fn check_initial_storage_range(data: &ParsedData, ctx: &mut ValidationContext) {
+    let format = data.boundary_format_or_legacy();
     let seed_by_hydro = storage_seed_by_hydro(data);
     for hydro in &data.hydros {
         let Some(&seed) = seed_by_hydro.get(&hydro.id) else {
@@ -525,11 +529,12 @@ pub(super) fn check_initial_storage_range(data: &ParsedData, ctx: &mut Validatio
             let entity_str = format!("Hydro {}", hydro.id.0);
             ctx.emit(
                 &rules::SEMANTIC_INITIAL_STORAGE_OUT_OF_RANGE,
-                "initial_conditions.json",
+                format.hydro_seed_file(),
                 Some(&entity_str),
                 format!(
-                    "{entity_str}: initial storage ({seed}) must lie in \
-                     [min_storage_hm3, max_storage_hm3] = [{floor}, {ceiling}]"
+                    "{entity_str}: {} must lie in \
+                     [min_storage_hm3, max_storage_hm3] = [{floor}, {ceiling}]",
+                    initial_storage_label(format, seed)
                 ),
             );
         }
@@ -539,8 +544,12 @@ pub(super) fn check_initial_storage_range(data: &ParsedData, ctx: &mut Validatio
 /// Rule 54: a seed sits in the array that holds its hydro's range check —
 /// `filling_storage` for a hydro with a `filling` configuration, `storage` for
 /// one without. Setup reads both arrays into the same storage state, so a seed
-/// in the other array would escape both checks.
+/// in the other array would escape both checks. The current-format reader routes
+/// each seed by `filling`, so only the legacy format can disagree.
 pub(super) fn check_initial_storage_array(data: &ParsedData, ctx: &mut ValidationContext) {
+    if data.boundary_format_or_legacy() == BoundaryFormat::Current {
+        return;
+    }
     let has_filling: HashMap<EntityId, bool> = data
         .hydros
         .iter()
@@ -586,6 +595,7 @@ pub(super) fn check_initial_storage_first_stage_bounds(
     data: &ParsedData,
     ctx: &mut ValidationContext,
 ) {
+    let format = data.boundary_format_or_legacy();
     let seed_by_hydro = storage_seed_by_hydro(data);
     let (study_stage_ids, bounds) = resolve_study_hydro_bounds(data);
 
@@ -622,10 +632,20 @@ pub(super) fn check_initial_storage_first_stage_bounds(
         let entity_str = format!("Hydro {}", hydro.id.0);
         ctx.emit(
             &rules::SEMANTIC_INITIAL_STORAGE_OUTSIDE_FIRST_STAGE_BOUNDS,
-            "initial_conditions.json",
+            format.hydro_seed_file(),
             Some(&entity_str),
-            format!("{entity_str}: initial storage ({seed}) lies {gap}"),
+            format!(
+                "{entity_str}: {} lies {gap}",
+                initial_storage_label(format, seed)
+            ),
         );
+    }
+}
+
+fn initial_storage_label(format: BoundaryFormat, seed: f64) -> String {
+    match format {
+        BoundaryFormat::Legacy(_) => format!("initial storage ({seed})"),
+        BoundaryFormat::Current => format!("initial storage (storage_hm3 = {seed})"),
     }
 }
 
@@ -1131,9 +1151,11 @@ pub(super) fn check_hydro_unit_groups(data: &ParsedData, ctx: &mut ValidationCon
 mod tests {
     use super::super::validate_semantic_hydro_thermal;
     use super::check_hydro_bounds;
+    use super::check_initial_storage_array;
     use crate::FphaHyperplaneRow;
     use crate::constraints::HydroBoundsRow;
     use crate::test_support::*;
+    use crate::validation::schema::{BoundaryFormat, ParsedData};
     use crate::validation::{ErrorKind, ValidationContext, ValidationEntry};
     use novomodelo_core::DiversionChannel;
 
@@ -3276,14 +3298,14 @@ mod tests {
         hydro
     }
 
-    /// Validate `hydro` over study stages 0-3 with `storage` and
-    /// `filling_storage` seeds and `hydro_bounds` rows; return the context.
-    fn validate_initial_storage(
+    /// `hydro` over study stages 0-3 with `storage` and `filling_storage`
+    /// seeds and `hydro_bounds` rows.
+    fn initial_storage_data(
         hydro: Hydro,
         storage: &[f64],
         filling_storage: &[f64],
         hydro_bounds: Vec<HydroBoundsRow>,
-    ) -> ValidationContext {
+    ) -> ParsedData {
         let hydro_id = hydro.id;
         let seeds = |values: &[f64]| {
             values
@@ -3305,6 +3327,17 @@ mod tests {
         data.initial_conditions.storage = seeds(storage);
         data.initial_conditions.filling_storage = seeds(filling_storage);
         data.hydro_bounds = hydro_bounds;
+        data
+    }
+
+    /// Validate `initial_storage_data`; return the context.
+    fn validate_initial_storage(
+        hydro: Hydro,
+        storage: &[f64],
+        filling_storage: &[f64],
+        hydro_bounds: Vec<HydroBoundsRow>,
+    ) -> ValidationContext {
+        let data = initial_storage_data(hydro, storage, filling_storage, hydro_bounds);
         let mut ctx = ValidationContext::new();
         validate_semantic_hydro_thermal(&data, &mut ctx);
         ctx
@@ -3416,6 +3449,74 @@ mod tests {
                     .to_string()
             ]
         );
+    }
+
+    #[test]
+    fn current_format_storage_out_of_range_names_boundary_file() {
+        let mut data = initial_storage_data(make_ranged_hydro(1), &[50.0], &[], vec![]);
+        data.boundary_format = Some(BoundaryFormat::Current);
+        let mut ctx = ValidationContext::new();
+        validate_semantic_hydro_thermal(&data, &mut ctx);
+
+        let errors = ctx.errors();
+        let range: Vec<_> = errors
+            .iter()
+            .filter(|e| e.message.contains("must lie in"))
+            .collect();
+        assert_eq!(range.len(), 1, "got: {errors:?}");
+        assert_eq!(range[0].file.to_string_lossy(), "boundary_conditions.json");
+        assert_eq!(range[0].entity.as_deref(), Some("Hydro 1"));
+        assert_eq!(
+            range[0].message,
+            "Hydro 1: initial storage (storage_hm3 = 50) must lie in \
+             [min_storage_hm3, max_storage_hm3] = [100, 1000]"
+        );
+    }
+
+    #[test]
+    fn current_format_first_stage_bounds_warning_names_boundary_file() {
+        let below = HydroBoundsRow {
+            hydro_id: EntityId::from(1),
+            stage_id: 0,
+            min_storage_hm3: Some(800.0),
+            ..Default::default()
+        };
+        let mut data = initial_storage_data(make_ranged_hydro(1), &[500.0], &[], vec![below]);
+        data.boundary_format = Some(BoundaryFormat::Current);
+        let mut ctx = ValidationContext::new();
+        validate_semantic_hydro_thermal(&data, &mut ctx);
+
+        let warnings = ctx.warnings();
+        let first_stage: Vec<_> = warnings
+            .iter()
+            .filter(|w| w.message.contains("first operating stage"))
+            .collect();
+        assert_eq!(first_stage.len(), 1, "got: {warnings:?}");
+        assert_eq!(
+            first_stage[0].file.to_string_lossy(),
+            "boundary_conditions.json"
+        );
+        assert!(
+            first_stage[0]
+                .message
+                .starts_with("Hydro 1: initial storage (storage_hm3 = 500) lies below"),
+            "got: {}",
+            first_stage[0].message
+        );
+    }
+
+    #[test]
+    fn current_format_skips_the_wrong_array_check() {
+        let mut data =
+            initial_storage_data(make_filling_hydro(1, 0, 2, 50.0), &[50.0], &[], vec![]);
+        let mut legacy_ctx = ValidationContext::new();
+        check_initial_storage_array(&data, &mut legacy_ctx);
+        assert_eq!(legacy_ctx.errors().len(), 1, "control: legacy must emit");
+
+        data.boundary_format = Some(BoundaryFormat::Current);
+        let mut ctx = ValidationContext::new();
+        check_initial_storage_array(&data, &mut ctx);
+        assert!(ctx.errors().is_empty(), "got: {:?}", ctx.errors());
     }
 
     #[test]

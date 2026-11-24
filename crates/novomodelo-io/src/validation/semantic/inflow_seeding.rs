@@ -34,6 +34,7 @@ pub(super) fn validate_inflow_seeding(data: &ParsedData, ctx: &mut ValidationCon
 /// separates them.
 fn report_negative_realized_inflows(data: &ParsedData, ctx: &mut ValidationContext) {
     let treatment = negative_inflow_treatment(data.config.modeling.inflow_non_negativity.method);
+    let format = data.boundary_format_or_legacy();
     let mut report = |negatives: Vec<(i32, f64)>, file: &str, field: &str| {
         let Some((worst_hydro, worst_value)) =
             negatives.iter().copied().min_by(|a, b| a.1.total_cmp(&b.1))
@@ -69,8 +70,8 @@ fn report_negative_realized_inflows(data: &ParsedData, ctx: &mut ValidationConte
             .filter(|entry| entry.value_m3s < 0.0)
             .map(|entry| (entry.hydro_id.0, entry.value_m3s))
             .collect(),
-        "initial_conditions.json",
-        "recent_observations",
+        format.hydro_seed_file(),
+        format.recent_inflows_key(),
     );
 }
 
@@ -301,6 +302,7 @@ fn check_slot_coverage(
         })
         .collect();
 
+    let recent_inflows = data.boundary_format_or_legacy().recent_inflows_key();
     for k in 1..=l_state {
         let Some(occurrence) = nth_previous_occurrence(season_map, season_def, &anchor, k) else {
             continue;
@@ -326,8 +328,8 @@ fn check_slot_coverage(
                 None::<String>,
                 format!(
                     "slot {k} lag seed requires full coverage (coverage == 1.0) at load time but \
-                     is not fully covered for: {names}; supply inflow_history/recent_observations \
-                     windows spanning slot {k}'s season occurrence"
+                     is not fully covered for: {names}; supply \
+                     inflow_history/{recent_inflows} windows spanning slot {k}'s season occurrence"
                 ),
             );
         } else {
@@ -345,25 +347,29 @@ fn check_slot_coverage(
     }
 }
 
-/// Rejects `recent_observations` extending past study start
-/// (mirrors `travel_time.rs` defluence ban).
+/// Rejects `recent_observations` (`recent_inflows` in the current format)
+/// extending past study start (mirrors `travel_time.rs` defluence ban).
 fn check_conditioning_window_bound(data: &ParsedData, ctx: &mut ValidationContext) {
     let Some(study_start) = first_study_stage(data).map(|s| s.start_date) else {
         return;
     };
+    let format = data.boundary_format_or_legacy();
     for obs in &data.initial_conditions.recent_observations {
         if obs.end_date <= study_start {
             continue;
         }
         ctx.emit(
             &rules::SEMANTIC_INFLOW_SEED_CONDITIONING_PAST_STUDY_START,
-            "initial_conditions.json",
+            format.hydro_seed_file(),
             Some(format!("Hydro {}", obs.hydro_id.0)),
             format!(
-                "Hydro {}: recent_observations window [{}, {}) extends past the study start \
+                "Hydro {}: {} window [{}, {}) extends past the study start \
                  {study_start}, into the solved study itself; a conditioning window must stay \
                  entirely pre-study",
-                obs.hydro_id.0, obs.start_date, obs.end_date
+                obs.hydro_id.0,
+                format.recent_inflows_key(),
+                obs.start_date,
+                obs.end_date
             ),
         );
     }
@@ -392,6 +398,7 @@ fn check_inprogress_partial_coverage(
     };
 
     let in_progress = season_period_window(season_map, season_def, first_stage);
+    let recent_inflows = data.boundary_format_or_legacy().recent_inflows_key();
 
     for hydro in &data.hydros {
         let windows: &[RealizedWindow] = merged_by_hydro.get(&hydro.id).map_or(&[], Vec::as_slice);
@@ -406,7 +413,7 @@ fn check_inprogress_partial_coverage(
             Some(format!("Hydro {hydro_id}")),
             format!(
                 "Hydro {hydro_id}: the in-progress period [{}, {}) is covered only a fraction \
-                 {} of the way by inflow_history/recent_observations; the accumulator seed \
+                 {} of the way by inflow_history/{recent_inflows}; the accumulator seed \
                  reflects this partial period",
                 in_progress.start, first_stage.start_date, projection.coverage
             ),
@@ -441,13 +448,15 @@ fn warn_unresolvable_first_stage_season(data: &ParsedData, ctx: &mut ValidationC
         .map(|h| format!("hydro {}", h.id.0))
         .collect::<Vec<_>>()
         .join(", ");
+    let format = data.boundary_format_or_legacy();
     ctx.emit(
         &rules::SEMANTIC_INFLOW_SEED_FIRST_SEASON_UNRESOLVED,
-        "initial_conditions.json",
+        format.hydro_seed_file(),
         None::<String>,
         format!(
             "{names}: initial inflow lags seed to 0 — no resolvable season; provide \
-             season_map/season_id or recent_observations"
+             season_map/season_id or {}",
+            format.recent_inflows_key()
         ),
     );
 }
@@ -466,6 +475,7 @@ mod tests {
     use crate::scenarios::InflowAnnualComponentRow;
     use crate::test_support::*;
     use crate::validation::ErrorKind;
+    use crate::validation::schema::BoundaryFormat;
     use novomodelo_core::test_support::{MonthlyLabels, monthly_season_map, single_block};
     use novomodelo_core::{RecentObservation, SeasonMap};
 
@@ -752,6 +762,131 @@ mod tests {
                 .any(|e| e.kind == ErrorKind::InvalidValue),
             "a fully pre-study window ending exactly at study_start must not error, got: {:?}",
             ctx.errors()
+        );
+    }
+
+    #[test]
+    fn current_format_conditioning_diagnostics_name_boundary_file() {
+        let mut data = make_data(
+            vec![make_hydro(1, None)],
+            vec![],
+            vec![],
+            make_stages(vec![0, 1, 2]),
+            vec![],
+            vec![],
+        );
+        data.initial_conditions.recent_observations = vec![RecentObservation {
+            hydro_id: EntityId::from(1),
+            start_date: date(2023, 12, 20),
+            end_date: date(2024, 1, 10),
+            value_m3s: -4.0,
+        }];
+        let mut legacy = ValidationContext::new();
+        validate_inflow_seeding(&data, &mut legacy);
+        assert!(
+            legacy
+                .errors()
+                .iter()
+                .chain(legacy.warnings().iter())
+                .all(|e| {
+                    e.file.to_string_lossy() == "initial_conditions.json"
+                        && e.message.contains("recent_observations")
+                }),
+            "control: legacy wording, got: {:?}",
+            legacy.errors()
+        );
+
+        data.boundary_format = Some(BoundaryFormat::Current);
+        let mut ctx = ValidationContext::new();
+        validate_inflow_seeding(&data, &mut ctx);
+
+        let (errors, warnings) = (ctx.errors(), ctx.warnings());
+        assert_eq!(errors.len(), 1, "got: {errors:?}");
+        assert_eq!(warnings.len(), 1, "got: {warnings:?}");
+        for entry in errors.into_iter().chain(warnings) {
+            assert_eq!(entry.file.to_string_lossy(), "boundary_conditions.json");
+            assert!(
+                entry.message.contains("recent_inflows")
+                    && !entry.message.contains("recent_observations"),
+                "got: {}",
+                entry.message
+            );
+        }
+    }
+
+    #[test]
+    fn current_format_lag_seed_diagnostics_name_recent_inflows() {
+        let mut stages = make_stages_with_seasons(60, true);
+        stages.stages[0].season_id = Some(0);
+        let mut data = make_data(
+            vec![make_hydro(7, None)],
+            vec![],
+            vec![],
+            stages,
+            vec![],
+            vec![],
+        );
+        data.inflow_ar_coefficients = (1..=6).map(|lag| make_ar_row(7, 0, lag)).collect();
+        data.inflow_history = vec![
+            history_row(7, date(1999, 7, 1), date(1999, 10, 1)),
+            history_row(7, date(1999, 11, 1), date(2000, 1, 1)),
+        ];
+        let slot_gap = |ctx: &ValidationContext| {
+            let errors = ctx.errors();
+            let gaps: Vec<_> = errors
+                .iter()
+                .filter(|e| e.message.contains("slot 3"))
+                .collect();
+            assert_eq!(gaps.len(), 1, "got: {errors:?}");
+            assert_eq!(
+                gaps[0].file.to_string_lossy(),
+                "scenarios/inflow_history.parquet"
+            );
+            gaps[0].message.clone()
+        };
+
+        let mut legacy = ValidationContext::new();
+        validate_inflow_seeding(&data, &mut legacy);
+        assert!(slot_gap(&legacy).ends_with(
+            "supply inflow_history/recent_observations windows spanning slot 3's season occurrence"
+        ),);
+
+        data.boundary_format = Some(BoundaryFormat::Current);
+        let mut ctx = ValidationContext::new();
+        validate_inflow_seeding(&data, &mut ctx);
+        assert!(slot_gap(&ctx).ends_with(
+            "supply inflow_history/recent_inflows windows spanning slot 3's season occurrence"
+        ),);
+    }
+
+    #[test]
+    fn current_format_unresolvable_season_warning_names_boundary_file() {
+        let mut data = make_data(
+            vec![make_hydro(1, None)],
+            vec![],
+            vec![],
+            make_stages(vec![0, 1, 2]),
+            vec![],
+            vec![],
+        );
+        data.inflow_ar_coefficients = vec![make_ar_row(1, 0, 1)];
+        data.boundary_format = Some(BoundaryFormat::Current);
+
+        let mut ctx = ValidationContext::new();
+        validate_inflow_seeding(&data, &mut ctx);
+
+        let warnings = ctx.warnings();
+        assert_eq!(warnings.len(), 1, "got: {warnings:?}");
+        assert_eq!(
+            warnings[0].file.to_string_lossy(),
+            "boundary_conditions.json"
+        );
+        assert!(
+            warnings[0]
+                .message
+                .ends_with("provide season_map/season_id or recent_inflows"),
+            "got: {}",
+            warnings[0].message
         );
     }
 
