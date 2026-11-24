@@ -767,7 +767,7 @@ const ENERGY_FACTOR: f64 = 1.0e6 / 3600.0;
 const D02_RHO_EQ: f64 = 1.0;
 const D02_RHO_ACUM: f64 = 1.0;
 
-/// Stage-0 initial storage for D02 H0 \[hm³\] from `initial_conditions.json`.
+/// Stage-0 initial storage for D02 H0 \[hm³\] from `boundary_conditions.json`.
 const D02_H0_V_INIT: f64 = 100.0;
 
 /// Deterministic stage-0 inflow for D02 H0 \[m³/s\].
@@ -794,10 +794,10 @@ const D03_H0_RHO_ACUM: f64 = 2.0;
 const D03_H1_RHO_EQ: f64 = 1.0;
 const D03_H1_RHO_ACUM: f64 = 1.0;
 
-/// Stage-0 initial storage for D03 H0 \[hm³\] from `initial_conditions.json`.
+/// Stage-0 initial storage for D03 H0 \[hm³\] from `boundary_conditions.json`.
 const D03_H0_V_INIT: f64 = 80.0;
 
-/// Stage-0 initial storage for D03 H1 \[hm³\] from `initial_conditions.json`.
+/// Stage-0 initial storage for D03 H1 \[hm³\] from `boundary_conditions.json`.
 const D03_H1_V_INIT: f64 = 50.0;
 
 /// Verify the natural-inflow-energy and stored-energy columns in
@@ -2502,7 +2502,7 @@ fn incremental_lb_reduces_load_model_count() {
 ///     storage 0–150 hm3, PAR(2) with psi = [0.4, 0.2], mean = 25 m3/s
 /// - Deterministic load: 100 MW per stage
 /// - Initial storage: H0 = 100 hm3, H1 = 75 hm3
-/// - Pre-study lag seed (Nov/Dec 2023 `recent_observations`): H0 = [50, 45] m3/s,
+/// - Pre-study lag seed (Nov/Dec 2023 `recent_inflows`): H0 = [50, 45] m3/s,
 ///   H1 = [30, 28] m3/s
 /// - 3 stages × 730 h, `inflow_non_negativity: {method: "truncation"}`
 ///
@@ -2524,24 +2524,28 @@ fn incremental_lb_reduces_load_model_count() {
 fn d19_multi_hydro_par_truncation() {
     let real = train_d19_variant(|_| {});
     let zero = train_d19_variant(|dir| {
-        edit_json(&dir.join("initial_conditions.json"), |v| {
-            for obs in v["recent_observations"].as_array_mut().unwrap() {
-                obs["value_m3s"] = serde_json::json!(0.0);
+        edit_json(&dir.join("boundary_conditions.json"), |v| {
+            for hydro in v["hydros"].as_array_mut().unwrap() {
+                for obs in hydro["recent_inflows"].as_array_mut().unwrap() {
+                    obs["value_m3s"] = serde_json::json!(0.0);
+                }
             }
         });
     });
     let wrong_major = train_d19_variant(|dir| {
-        edit_json(&dir.join("initial_conditions.json"), |v| {
-            for obs in v["recent_observations"].as_array_mut().unwrap() {
-                let hydro = obs["hydro_id"].as_i64().unwrap();
-                let december = obs["start_date"].as_str().unwrap() == "2023-12-01";
-                let value = match (hydro, december) {
-                    (0, true) => 50.0,
-                    (0, false) => 30.0,
-                    (1, true) => 45.0,
-                    (_, _) => 28.0,
-                };
-                obs["value_m3s"] = serde_json::json!(value);
+        edit_json(&dir.join("boundary_conditions.json"), |v| {
+            for hydro in v["hydros"].as_array_mut().unwrap() {
+                let hydro_id = hydro["hydro_id"].as_i64().unwrap();
+                for obs in hydro["recent_inflows"].as_array_mut().unwrap() {
+                    let december = obs["start_date"].as_str().unwrap() == "2023-12-01";
+                    let value = match (hydro_id, december) {
+                        (0, true) => 50.0,
+                        (0, false) => 30.0,
+                        (1, true) => 45.0,
+                        (_, _) => 28.0,
+                    };
+                    obs["value_m3s"] = serde_json::json!(value);
+                }
             }
         });
     });
@@ -3658,7 +3662,7 @@ fn d27_per_stage_thermal_cost() {
 /// - Non-uniform `num_scenarios` (1 per weekly stage, 5 for the monthly stage)
 /// - `season_definitions` with monthly cycle (12 seasons)
 /// - External inflow scenario source
-/// - `recent_observations` in initial conditions
+/// - `recent_inflows` in boundary conditions
 ///
 /// The test only checks that training completes at least 1 iteration; no
 /// expected cost is asserted here
@@ -5999,9 +6003,9 @@ fn entity_spillage_ceiling_caps_spillage_and_hydro_bounds_row_replaces_it() {
 
     let baseline = spill_cascade_twin(d03, None);
     assert_eq!(
-        std::fs::read(baseline.path().join("initial_conditions.json")).expect("read baseline"),
-        std::fs::read(d03.join("initial_conditions.json")).expect("read committed"),
-        "the baseline twin must not edit initial_conditions.json"
+        std::fs::read(baseline.path().join("boundary_conditions.json")).expect("read baseline"),
+        std::fs::read(d03.join("boundary_conditions.json")).expect("read committed"),
+        "the baseline twin must not edit boundary_conditions.json"
     );
     let hydros = read_json(baseline.path().join("system/hydros.json"));
     let h0_turbine_limit = hydros["hydros"][0]["generation"]["max_turbined_m3s"]
@@ -6010,12 +6014,12 @@ fn entity_spillage_ceiling_caps_spillage_and_hydro_bounds_row_replaces_it() {
     let h0_max_storage = hydros["hydros"][0]["reservoir"]["max_storage_hm3"]
         .as_f64()
         .expect("H0 max_storage_hm3");
-    let h0_initial_storage = read_json(baseline.path().join("initial_conditions.json"))["storage"]
+    let h0_initial_storage = read_json(baseline.path().join("boundary_conditions.json"))["hydros"]
         .as_array()
-        .expect("storage array")
+        .expect("hydros array")
         .iter()
         .find(|entry| entry["hydro_id"] == 0)
-        .and_then(|entry| entry["value_hm3"].as_f64())
+        .and_then(|entry| entry["storage_hm3"].as_f64())
         .expect("H0 initial storage");
 
     let (_result, baseline_results, _summary) = run_with_simulation(baseline.path());
@@ -6630,9 +6634,12 @@ fn d61_thermal_only_case(block_rows: &[(i32, Option<f64>, Option<f64>)]) -> temp
             thermal["generation"]["max_mw"] = serde_json::json!(D61_UNCAPPED_MW);
         }
     });
-    edit_json(&case.path().join("initial_conditions.json"), |conditions| {
-        conditions["storage"][0]["value_hm3"] = serde_json::json!(0.0);
-    });
+    edit_json(
+        &case.path().join("boundary_conditions.json"),
+        |conditions| {
+            conditions["hydros"][0]["storage_hm3"] = serde_json::json!(0.0);
+        },
+    );
     write_seasonal_stats(
         &case.path().join("scenarios/inflow_seasonal_stats.parquet"),
         "hydro_id",

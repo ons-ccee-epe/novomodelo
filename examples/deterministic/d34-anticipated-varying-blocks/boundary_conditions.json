@@ -1,0 +1,21 @@
+{
+  "$schema": "https://raw.githubusercontent.com/ons-ccee-epe/novomodelo/refs/heads/main/schemas/boundary_conditions.schema.json",
+  "hydros": [
+    {
+      "hydro_id": 0,
+      "storage_hm3": 5.0
+    }
+  ],
+  "thermals": [
+    {
+      "thermal_id": 1,
+      "commitments": [
+        {
+          "start_date": "2024-01-01",
+          "end_date": "2024-02-01",
+          "value_mw": 0.0
+        }
+      ]
+    }
+  ]
+}
