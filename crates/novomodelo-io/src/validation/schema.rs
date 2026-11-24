@@ -66,6 +66,20 @@ use crate::{
 
 // ── ParsedData ────────────────────────────────────────────────────────────────
 
+/// Boundary file set the case was read from; owns the per-format diagnostic wording.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BoundaryFormat {
+    Legacy(PostStudyFormat),
+}
+
+impl BoundaryFormat {
+    pub(crate) fn thermal_calendar_key(self) -> &'static str {
+        match self {
+            Self::Legacy(_) => "thermal_stages",
+        }
+    }
+}
+
 /// All parsed file outputs produced by Layer 2 schema validation.
 ///
 /// One field per input file (the field doc names the file), plus side tables recorded while
@@ -80,8 +94,8 @@ pub(crate) struct ParsedData {
     pub(crate) initial_conditions: InitialConditions,
     /// `post_study_stages.json`. `None` when absent.
     pub(crate) post_study_stages: Option<PostStudyStages>,
-    /// Format of `post_study_stages.json`; `None` when the file failed to parse.
-    pub(crate) post_study_format: Option<PostStudyFormat>,
+    /// Boundary format; `None` when the file failed to parse.
+    pub(crate) boundary_format: Option<BoundaryFormat>,
 
     /// `system/buses.json`.
     pub(crate) buses: Vec<Bus>,
@@ -262,16 +276,16 @@ pub(crate) fn validate_schema(
 
     // `Option` (not the aggregate): callers distinguish "no file" from an empty deck.
     let post_study_file_present = manifest.present(InputFile::PostStudyStagesJson);
-    let (post_study_format, post_study_stages) = match optional_or_error(
+    let (boundary_format, post_study_stages) = match optional_or_error(
         post_study_file_present,
         || parse_post_study_file(&case_root.join("post_study_stages.json")).map(Some),
         || None,
         "post_study_stages.json",
         ctx,
     ) {
-        Some((format, stages)) => (Some(format), stages),
+        Some((format, stages)) => (Some(BoundaryFormat::Legacy(format)), stages),
         None if post_study_file_present => (None, None),
-        None => (Some(PostStudyFormat::Absent), None),
+        None => (Some(BoundaryFormat::Legacy(PostStudyFormat::Absent)), None),
     };
 
     // Fall back to a sentinel when penalties failed to parse, so penalty-dependent
@@ -676,7 +690,7 @@ pub(crate) fn validate_schema(
         stages,
         initial_conditions,
         post_study_stages,
-        post_study_format,
+        boundary_format,
         buses,
         thermals,
         hydros,
@@ -811,6 +825,18 @@ mod tests {
     use crate::validation::{ErrorKind, ValidationContext, structural::validate_structure};
     use std::fs;
     use tempfile::TempDir;
+
+    #[test]
+    fn thermal_calendar_key_follows_the_legacy_format() {
+        let present = BoundaryFormat::Legacy(PostStudyFormat::Present {
+            thermal_stages: true,
+            thermal_bounds: true,
+            water_bucket_stages: false,
+        });
+        for format in [present, BoundaryFormat::Legacy(PostStudyFormat::Absent)] {
+            assert_eq!(format.thermal_calendar_key(), "thermal_stages");
+        }
+    }
 
     /// Given a case directory with all required files containing valid JSON,
     /// `validate_schema` returns `Some(ParsedData)` with all required fields

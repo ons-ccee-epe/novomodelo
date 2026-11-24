@@ -52,8 +52,9 @@ use crate::{
 };
 #[cfg(test)]
 use crate::{
-    InflowSeasonalStatsRow, legacy::post_study_stages::PostStudyFormat,
-    validation::schema::ParsedData,
+    InflowSeasonalStatsRow,
+    legacy::post_study_stages::PostStudyFormat,
+    validation::schema::{BoundaryFormat, ParsedData},
 };
 use parquet::arrow::ArrowWriter;
 use std::fmt::Debug;
@@ -792,7 +793,7 @@ pub(crate) fn base_parsed_data(stages: StagesData, buses: Vec<Bus>) -> ParsedDat
             past_defluences: vec![],
         },
         post_study_stages: None,
-        post_study_format: Some(PostStudyFormat::Absent),
+        boundary_format: Some(BoundaryFormat::Legacy(PostStudyFormat::Absent)),
         buses,
         thermals: vec![],
         hydros: vec![],

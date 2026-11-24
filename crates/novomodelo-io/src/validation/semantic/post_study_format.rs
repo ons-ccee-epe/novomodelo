@@ -2,7 +2,10 @@
 
 use novomodelo_core::{Hydro, WaterBucketStages, deepest_uncovered_travel_time_arc};
 
-use super::super::{ValidationContext, rules, schema::ParsedData};
+use super::super::{
+    ValidationContext, rules,
+    schema::{BoundaryFormat, ParsedData},
+};
 use super::post_study_calendar::build_post_study_calendar;
 use crate::legacy::post_study_stages::PostStudyFormat;
 
@@ -16,8 +19,8 @@ const THERMAL_CALENDAR_KEY: &str = "thermal_stages";
 /// `water_bucket_stages` on a deck with no travel-time arc, or `thermal_stages` on a deck with
 /// no anticipated thermal.
 pub(super) fn check_post_study_format(data: &ParsedData, ctx: &mut ValidationContext) {
-    match data.post_study_format {
-        Some(PostStudyFormat::Absent)
+    match data.boundary_format {
+        Some(BoundaryFormat::Legacy(PostStudyFormat::Absent))
             if data.hydros.iter().any(Hydro::declares_travel_time_arc) =>
         {
             ctx.emit(
@@ -30,11 +33,11 @@ pub(super) fn check_post_study_format(data: &ParsedData, ctx: &mut ValidationCon
                  `python3 scripts/migrate/post_study_stages.py <case>`",
             );
         }
-        Some(PostStudyFormat::Present {
+        Some(BoundaryFormat::Legacy(PostStudyFormat::Present {
             thermal_stages,
             thermal_bounds,
             ..
-        }) if thermal_stages != thermal_bounds => {
+        })) if thermal_stages != thermal_bounds => {
             let (present, missing) = if thermal_stages {
                 ("thermal_stages", "thermal_bounds")
             } else {
@@ -54,11 +57,11 @@ pub(super) fn check_post_study_format(data: &ParsedData, ctx: &mut ValidationCon
         _ => {}
     }
 
-    if let Some(PostStudyFormat::Present {
+    if let Some(BoundaryFormat::Legacy(PostStudyFormat::Present {
         thermal_stages,
         water_bucket_stages,
         ..
-    }) = data.post_study_format
+    })) = data.boundary_format
     {
         check_water_calendar(data, water_bucket_stages, ctx);
         if thermal_stages

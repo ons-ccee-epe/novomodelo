@@ -13,7 +13,10 @@ use novomodelo_core::{
 };
 use novomodelo_stochastic::season_cast::{DatedWindow, StageCalendar};
 
-use super::super::{ValidationContext, rules, schema::ParsedData};
+use super::super::{
+    ValidationContext, rules,
+    schema::{BoundaryFormat, ParsedData},
+};
 use super::envelope_tolerance;
 use super::post_study_calendar::build_post_study_calendar;
 use super::travel_time::study_stage_durations;
@@ -1143,8 +1146,11 @@ pub(super) fn check_post_study_stages(data: &ParsedData, ctx: &mut ValidationCon
         .rfind(|s| s.id >= 0)
         .map(|s| s.end_date);
 
+    let calendar_key = data
+        .boundary_format
+        .map_or("thermal_stages", BoundaryFormat::thermal_calendar_key);
     let (calendar_stages, well_formed) =
-        build_post_study_calendar(&post_study.thermal_stages, "thermal_stages", study_end, ctx);
+        build_post_study_calendar(&post_study.thermal_stages, calendar_key, study_end, ctx);
     if !well_formed || calendar_stages.is_empty() {
         return;
     }
