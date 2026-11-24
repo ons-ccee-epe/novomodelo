@@ -1310,14 +1310,27 @@ fn corner_tolerance(plane: &FphaPlane, v_min_hm3: f64, s_max_m3s: f64) -> f64 {
     )
 }
 
+/// Whether some plane carries a spill slope that takes it below 0 at the window
+/// corner, which a bound on `γₛ` at that corner forbids.
+fn some_plane_is_below_zero_at_the_corner(
+    planes: &[FphaPlane],
+    v_min_hm3: f64,
+    s_max_m3s: f64,
+) -> bool {
+    planes.iter().any(|plane| {
+        plane.gamma_s < 0.0
+            && corner_at_zero_turbining(plane, v_min_hm3, s_max_m3s)
+                < -corner_tolerance(plane, v_min_hm3, s_max_m3s)
+    })
+}
+
 /// derived: with `max_generation_mw` 20 000 the cap never binds, the long-term mean
-/// inflow is 0 and `max_turbined_m3s` is 3 000, so `S_max = 2 · 3 000`. A plane
-/// `P = γ₀ + γᵥ·v + γq·q + γₛ·s` with `γᵥ ≥ 0` and `γₛ ≤ 0` is smallest at
-/// `(v_min, 0, S_max)`, so a corner at or above 0 keeps it at or above 0 MW at zero
-/// turbining over the whole window. The origin plane has `γ₀ = γᵥ = 0`, so its
-/// corner bound is 0 and `γₛ` ends at +0.0.
+/// inflow is 0 and `max_turbined_m3s` is 3 000, so `S_max = 2 · 3 000`. The origin
+/// plane has `γ₀ = γᵥ = 0`, so it reads 0 at `(v_min, 0, 0)` and a bound at the
+/// corner would hold its `γₛ` at +0.0; the rising tailrace gives it a negative
+/// mean, which it keeps.
 #[test]
-fn fit_fpha_planes_puts_every_plane_at_or_above_zero_at_the_window_corner() {
+fn fit_fpha_planes_keeps_the_secant_slope_below_zero_at_the_window_corner() {
     let rows = sobradinho_rows();
     let hydro = uncapped_sobradinho_hydro();
     let s_max = 6_000.0;
@@ -1346,33 +1359,19 @@ fn fit_fpha_planes_puts_every_plane_at_or_above_zero_at_the_window_corner() {
         .expect("fit should succeed")
         .planes;
 
-        for (idx, plane) in planes.iter().enumerate() {
-            let corner = corner_at_zero_turbining(plane, v_min, s_max);
-            let tolerance = corner_tolerance(plane, v_min, s_max);
-            assert!(
-                corner >= -tolerance,
-                "v_min={v_min} plane {idx}: corner={corner} must be >= -{tolerance}"
-            );
-        }
         assert!(
-            planes.iter().any(|plane| {
-                plane.gamma_s < 0.0
-                    && corner_at_zero_turbining(plane, v_min, s_max).abs()
-                        <= corner_tolerance(plane, v_min, s_max)
-            }),
-            "v_min={v_min}: some plane must sit at its limit with gamma_s < 0"
+            some_plane_is_below_zero_at_the_corner(&planes, v_min, s_max),
+            "v_min={v_min}: some plane must keep a spill slope below 0 at the corner"
         );
-
         let origin: Vec<&FphaPlane> = planes
             .iter()
             .filter(|plane| plane.intercept.abs() <= 1e-9 && plane.gamma_v.abs() <= 1e-9)
             .collect();
         assert!(!origin.is_empty(), "v_min={v_min}: no origin plane");
         for plane in origin {
-            assert_eq!(
-                plane.gamma_s.to_bits(),
-                0.0_f64.to_bits(),
-                "v_min={v_min}: origin plane gamma_s={} must be +0.0",
+            assert!(
+                plane.gamma_s < 0.0,
+                "v_min={v_min}: origin plane gamma_s={} must keep its negative mean",
                 plane.gamma_s
             );
         }
@@ -1380,9 +1379,9 @@ fn fit_fpha_planes_puts_every_plane_at_or_above_zero_at_the_window_corner() {
 }
 
 /// derived: on the single-volume path `γᵥ = 0`, so the corner is
-/// `γ₀ + γₛ·S_max` with `S_max = 2 · 3 000`, and the limit holds it at or above 0.
+/// `γ₀ + γₛ·S_max` with `S_max = 2 · 3 000`.
 #[test]
-fn fit_fpha_planes_limits_gamma_s_on_the_single_volume_path() {
+fn fit_fpha_planes_keeps_the_secant_slope_on_the_single_volume_path() {
     let rows = vec![row(1_500.0, 386.5)];
     let mut hydro = uncapped_sobradinho_hydro();
     hydro.min_storage_hm3 = 1_500.0;
@@ -1402,25 +1401,18 @@ fn fit_fpha_planes_limits_gamma_s_on_the_single_volume_path() {
     .expect("single-volume fit should succeed")
     .planes;
 
-    for (idx, plane) in planes.iter().enumerate() {
-        let corner = corner_at_zero_turbining(plane, 1_500.0, 6_000.0);
-        let tolerance = corner_tolerance(plane, 1_500.0, 6_000.0);
-        assert!(
-            corner >= -tolerance,
-            "plane {idx}: corner={corner} must be >= -{tolerance}"
-        );
-    }
     assert!(
-        planes.iter().any(|plane| plane.gamma_s < 0.0),
-        "a rising tailrace must leave some plane with gamma_s < 0"
+        some_plane_is_below_zero_at_the_corner(&planes, 1_500.0, 6_000.0),
+        "some single-volume plane must keep a spill slope below 0 at the corner"
     );
 }
 
-/// The corner is linear in the coefficients, so a midpoint merge of two planes at or
-/// above 0 there stays at or above 0. The checks that the limit binds, that planes
-/// merge and that a merged plane keeps `γₛ < 0` keep the test from passing vacuously.
+/// `mean_plane` merges coefficient-wise, so a reduced plane carries the midpoint
+/// of its pair's secant slopes, with no bound at the corner. The checks that
+/// planes merge and that the unreduced fit reaches below 0 there keep the test
+/// from passing vacuously.
 #[test]
-fn reduce_planes_keeps_every_plane_at_or_above_zero_at_the_window_corner() {
+fn reduce_planes_keeps_the_merged_secant_slope_below_zero_at_the_window_corner() {
     let rows = sobradinho_rows();
     let hydro = uncapped_sobradinho_hydro();
     // derived: no `spillage_fit_max_m3s` and a long-term mean inflow of 0, so S_max is
@@ -1468,12 +1460,8 @@ fn reduce_planes_keeps_every_plane_at_or_above_zero_at_the_window_corner() {
         let unreduced = fit(&config, None)
             .unwrap_or_else(|err| panic!("v_min={v_min} unreduced: fit should succeed: {err}"));
         assert!(
-            unreduced.iter().any(|plane| {
-                plane.gamma_s < 0.0
-                    && corner_at_zero_turbining(plane, v_min, s_max).abs()
-                        <= corner_tolerance(plane, v_min, s_max)
-            }),
-            "v_min={v_min} unreduced: some plane must sit at its limit with gamma_s < 0"
+            some_plane_is_below_zero_at_the_corner(&unreduced, v_min, s_max),
+            "v_min={v_min} unreduced: some plane must keep a spill slope below 0 at the corner"
         );
 
         for reduction in &reductions {
@@ -1486,17 +1474,10 @@ fn reduce_planes_keeps_every_plane_at_or_above_zero_at_the_window_corner() {
                 reduced.len(),
                 unreduced.len()
             );
-            for (idx, plane) in reduced.iter().enumerate() {
-                let corner = corner_at_zero_turbining(plane, v_min, s_max);
-                let tolerance = corner_tolerance(plane, v_min, s_max);
-                assert!(
-                    corner >= -tolerance,
-                    "v_min={v_min} {reduction:?} plane {idx}: corner={corner} must be >= -{tolerance}"
-                );
-            }
             assert!(
-                reduced.iter().any(|plane| plane.gamma_s < 0.0),
-                "v_min={v_min} {reduction:?}: some reduced plane must carry a limited gamma_s < 0"
+                some_plane_is_below_zero_at_the_corner(&reduced, v_min, s_max),
+                "v_min={v_min} {reduction:?}: some reduced plane must keep a spill slope below 0 \
+                 at the corner"
             );
 
             let origin: Vec<&FphaPlane> = reduced
@@ -1509,10 +1490,9 @@ fn reduce_planes_keeps_every_plane_at_or_above_zero_at_the_window_corner() {
                     origin.len()
                 );
             };
-            assert_eq!(
-                origin.gamma_s.to_bits(),
-                0.0_f64.to_bits(),
-                "v_min={v_min} {reduction:?}: origin plane gamma_s={} must be +0.0",
+            assert!(
+                origin.gamma_s < 0.0,
+                "v_min={v_min} {reduction:?}: origin plane gamma_s={} must keep its negative mean",
                 origin.gamma_s
             );
         }

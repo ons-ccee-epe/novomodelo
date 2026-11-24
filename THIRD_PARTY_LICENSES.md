@@ -10,8 +10,8 @@ propagated Apache-2.0 `NOTICE` text lives in `NOTICE`.
 
 ## Overview
 
-- Apache License 2.0: 170 crate(s)
-- MIT License: 30 crate(s)
+- Apache License 2.0: 165 crate(s)
+- MIT License: 28 crate(s)
 - BSD 3-Clause &quot;New&quot; or &quot;Revised&quot; License: 3 crate(s)
 - Creative Commons Zero v1.0 Universal: 1 crate(s)
 - Unicode License v3: 1 crate(s)
@@ -2170,7 +2170,6 @@ limitations under the License.
 Used by:
 - addr2line 0.25.1
 - ahash 0.8.12
-- atomic-polyfill 1.0.3
 - backtrace 0.3.76
 - base64 0.23.1
 - bitflags 2.13.2
@@ -2179,7 +2178,6 @@ Used by:
 - const-random-macro 0.1.16
 - const-random 0.1.18
 - core-foundation-sys 0.8.7
-- critical-section 1.2.0
 - crossbeam-deque 0.8.8
 - crossbeam-epoch 0.9.21
 - crossbeam-utils 0.8.23
@@ -2188,9 +2186,7 @@ Used by:
 - fastrand 2.5.0
 - gethostname 1.1.0
 - gimli 0.32.3
-- hash32 0.2.1
 - hashbrown 0.17.1
-- heapless 0.7.17
 - heck 0.5.0
 - js-sys 0.3.106
 - lazy_static 1.5.1
@@ -2215,12 +2211,11 @@ Used by:
 - regex 1.13.1
 - rustc-demangle 0.1.28
 - rustc-hash 1.1.0
-- rustix 1.1.5
+- rustix 1.1.6
 - scopeguard 1.2.0
 - signal-hook-registry 1.4.8
 - signal-hook 0.3.18
 - smallvec 1.16.2
-- stable_deref_trait 1.2.1
 - tempfile 3.27.0
 - thousands 0.2.0
 - thread_local 1.1.10
@@ -3687,18 +3682,18 @@ limitations under the License.
 ## Apache License 2.0
 
 Used by:
-- novomodelo 0.21.0
-- novomodelo-cli 0.21.0
-- novomodelo-comm 0.21.0
-- novomodelo-core 0.21.0
-- novomodelo-emt 0.21.0
-- novomodelo-flow 0.21.0
-- novomodelo-io 0.21.0
-- novomodelo-sddp 0.21.0
-- novomodelo-solver 0.21.0
-- novomodelo-stochastic 0.21.0
-- novomodelo-tui 0.21.0
-- novomodelo-uc 0.21.0
+- novomodelo 0.22.0
+- novomodelo-cli 0.22.0
+- novomodelo-comm 0.22.0
+- novomodelo-core 0.22.0
+- novomodelo-emt 0.22.0
+- novomodelo-flow 0.22.0
+- novomodelo-io 0.22.0
+- novomodelo-sddp 0.22.0
+- novomodelo-solver 0.22.0
+- novomodelo-stochastic 0.22.0
+- novomodelo-tui 0.22.0
+- novomodelo-uc 0.22.0
 - android_system_properties 0.1.6
 - dhat 0.3.3
 - dyn-clone 1.0.20
@@ -4631,37 +4626,7 @@ DEALINGS IN THE SOFTWARE.
 ## MIT License
 
 Used by:
-- spin 0.9.9
-
-```
-The MIT License (MIT)
-
-Copyright (c) 2014 Mathijs van de Nes
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the &quot;Software&quot;), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED &quot;AS IS&quot;, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-```
-
-## MIT License
-
-Used by:
 - aho-corasick 1.1.5
-- byteorder 1.5.0
 - csv-core 0.1.13
 - csv 1.4.0
 - memchr 2.8.3

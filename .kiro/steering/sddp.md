@@ -1207,89 +1207,79 @@ its bounds, price and plane-row entries); and
 the bounds, the price and a `−1` in each plane row and nowhere else, and no
 column without FPHA).
 
-## A computed plane is ≥ 0 at zero turbining over its fitting window
+## A computed plane keeps its fitted secant spill slope
 
-A computed plane `P = γ₀ + γᵥ·v + γ_q·q + γₛ·s` has `γᵥ ≥ 0` and `γₛ ≤ 0`
-(`validate_fitted_planes` refuses any other sign beyond round-off), so at
-`q = 0` over `v ∈ [v_min, v_max]` and `s ∈ [0, S_max]` its minimum is the corner
-`(v_min, 0, S_max)`, where it reads `γ₀ + γᵥ·v_min + γₛ·S_max`. A plane below 0
-there needs `σ ≥ −P > 0` even at `g = 0`, so a plant that spills without
-turbining pays plane slack and reports `fpha_violation_mw`.
+A computed plane `P = γ₀ + γᵥ·v + γ_q·q + γₛ·s` takes γₛ from
+`fit_gamma_s_for_planes`: the mean zero-anchored secant slope over the grid
+points where the plane binds, with no bound tied to the fitting window.
+`validate_fitted_planes` refuses `γᵥ < 0` and `γₛ > 0` beyond round-off, and
+the `GAMMA_S_SNAP_EPS` snap maps a mean above `−GAMMA_S_SNAP_EPS`, a positive one
+or a tiny negative residual, to +0.0. `S_max ≤ 0` leaves γₛ at +0.0.
 
-`fit_gamma_s_for_planes` limits each plane's γₛ by
-`γₛ ← max(γₛ, min(0, −(γ₀ + γᵥ·v_min) / S_max))`, which puts the corner at or
-above 0 whenever `γ₀ + γᵥ·v_min ≥ 0`; `min(0, ·)` keeps `γₛ ≤ 0`. `v_min` is
+A plane can therefore fall below 0 at `q = 0` once the plant spills: the origin
+plane (`γ₀ = γᵥ = 0`) does at every `s > 0` when its γₛ is negative. There the LP
+meets `g ≤ P` by turbining water at 0 MW, since `γ_q·q` lifts the plane back to 0
+at no cost, or, where the turbines cannot lift it, with the plane slack `σ`, which
+`fpha_violation_mw` reports. A spilling plant can then show turbined flow at 0 MW
+in `simulation/hydros`. This is DECOMP's secant convention (its reference manual,
+ch. 5, "Modelagem do Vertimento"), which turbines at 0 MW at the same plants.
+
+`reduce_planes` merges a pair by the coefficient-wise `f64::midpoint`
+(`mean_plane`), so a merged plane carries the midpoint of the pair's slopes; the
+origin plane is never merged. The single-volume path fits γₛ the same way, with
+`γᵥ = 0`.
+
+Precomputed planes are read as given. `semantic.5b.55`
+(`check_fpha_precomputed_plane_at_zero_turbining`) warns on a precomputed plane the
+LP reads at an FPHA stage that is below 0 at `(v_min, 0, 0)`, with the LP
+intercept `κ·γ₀`, by more than `envelope_tolerance` of its larger term. `v_min` is
 the lower bound of the fitting window that
-`FphaColumnLayout::resolve_fitting_window` resolves, and `S_max` is
-`FphaColumnLayout::resolve_spillage_fit_max_m3s` of the long-term mean inflow
-that `long_term_mean_inflow_by_hydro` (`novomodelo_core`) gives; the warning
-below calls the same functions. The single-volume path is
-limited too: its `bounds.v_min` sits a synthetic half-width below the window's
-lower bound, and with `γᵥ = 0` there (the table is pinned at that bound) the
-corner does not depend on `v`.
-
-The limit runs before the `GAMMA_S_SNAP_EPS` snap, so the snap maps a limit
-inside its band to +0.0, the origin plane's included (`γ₀ = γᵥ = 0`, so its
-limit is 0), and no negative residual reaches the spillage column. It is skipped
-when `S_max ≤ 0`; `S_max = 0` leaves γₛ at +0.0.
-
-`reduce_planes` runs after the limit and keeps the bound with no second pass:
-`mean_plane` merges a pair by the coefficient-wise `f64::midpoint`, and the
-corner is linear in the coefficients, so a merged plane's corner is the midpoint
-of two corners at or above 0. The origin plane is never merged.
-
-Precomputed planes are not limited. `semantic.5b.55`
-(`check_fpha_precomputed_plane_at_zero_turbining`) warns on a precomputed plane
-the LP reads at an FPHA stage whose corner, taken with the LP intercept `κ·γ₀`
-and the same `v_min` and `S_max`, is below 0 by more than `envelope_tolerance`
-of its largest term, the margin the fit's corner pins read. A computed plane
-exported with `κ = 1` and read back as precomputed under the same `fpha_config`
-therefore raises nothing.
+`FphaColumnLayout::resolve_fitting_window` resolves, where the plane is lowest
+because `γᵥ ≥ 0`. Such a plane turbines at 0 MW or pays plane slack while the
+plant does not spill at all. A plane that falls below 0 only as the plant spills
+follows the convention above and raises nothing, so computed planes exported with
+`κ = 1` and read back as precomputed under the same `fpha_config` raise nothing.
 
 The wrong-but-compiling alternatives:
 
-- the limit after the snap: a sub-snap negative γₛ survives in the spillage
-  column. Pinned by `gamma_s_limit_runs_before_the_snap`
-  (`production/fpha_fitting/secant.rs`: a limit inside the snap band and the
-  origin plane both end at +0.0 bits);
-- only the origin plane limited, or γₛ forced to 0 for every plane: the first
-  leaves every other plane whose mean is steeper than its limit below 0 at the
-  corner, and the second drops the spillage effect of every plane. Pinned by
-  `gamma_s_limit_puts_the_plane_at_zero_at_the_window_corner`
-  (`production/fpha_fitting/secant.rs`: a plane whose limit binds sits at the
-  limit with its corner at 0, and its twin, whose limit does not bind, keeps the
-  hand mean of its slopes);
-- the limit at `min_storage_hm3` or at 0 in place of the window's `v_min`: it
-  over-limits γₛ wherever the window starts above the plant minimum. Pinned by
-  `gamma_s_limit_puts_the_plane_at_zero_at_the_window_corner`, whose window
-  starts above its storage range's lower end;
-- the limit at a `v` above the window's `v_min`, or the warning at a `v` below
-  it: the fit and the check then disagree on the corner. Pinned by
+- a bound on γₛ that keeps every plane at or above 0 at `(v_min, 0, S_max)`, such
+  as `γₛ ← max(γₛ, min(0, −(γ₀ + γᵥ·v_min) / S_max))`: most planes then sit at
+  the bound instead of the secant, so a spilling plant generates more than its
+  production function gives. Pinned by
+  `gamma_s_keeps_its_mean_below_zero_at_the_window_corner`
+  (`production/fpha_fitting/secant.rs`), and by
+  `fit_fpha_planes_keeps_the_secant_slope_below_zero_at_the_window_corner` (with
+  and without a window, the origin plane's γₛ negative),
+  `fit_fpha_planes_keeps_the_secant_slope_on_the_single_volume_path` and
+  `reduce_planes_keeps_the_merged_secant_slope_below_zero_at_the_window_corner`
+  (Angle and Distance reduction, with and without a window), in
+  `production/fpha_fitting/tests.rs`;
+- `mean.min(0.0)` in place of the snap: a tiny negative residual survives into
+  the spillage column and wrecks its scaling. Pinned by
+  `gamma_s_snap_maps_a_positive_mean_and_a_tiny_negative_residual_to_positive_zero`
+  (`production/fpha_fitting/secant.rs`: a positive mean and one inside the band
+  both end at +0.0 bits), with `degenerate_s_max_zero_is_neutral` for
+  `S_max = 0`;
+- `semantic.5b.55` evaluated at the spillage end `(v_min, 0, S_max)`: it warns on
+  computed planes read back, which fall below 0 there by design. Pinned by
+  `precomputed_plane_below_zero_only_while_spilling_is_silent`
+  (`crates/novomodelo-io/src/validation/semantic/scenarios.rs`) and
   `computed_fpha_planes_round_trip_without_a_zero_turbining_warning`
   (`tests/deterministic.rs`: on a D07 copy with a sloped tailrace and a window
-  above `min_storage_hm3`, the first fails its check that the limit binds at the
-  window corner, and the second warns on the read-back planes);
-- the single-volume path left unlimited: a run-of-river plant keeps corners
-  below 0. Pinned by `fit_fpha_planes_limits_gamma_s_on_the_single_volume_path`
-  (`production/fpha_fitting/tests.rs`);
-- a merge that is not a convex combination of the coefficients, such as keeping
-  the steeper γₛ: merged planes fall below 0 at the corner. Pinned by
-  `reduce_planes_keeps_every_plane_at_or_above_zero_at_the_window_corner`
-  (`production/fpha_fitting/tests.rs`: Angle and Distance reduction, with and
-  without a window).
+  from 50 hm³, some read-back plane is below 0 at `(v_min, 0, S_max)`, none warns,
+  and a twin shifted below 0 at zero flow warns once);
+- the check at a storage below the window's `v_min`, such as `min_storage_hm3`: it
+  warns on a plane the window never reads that low. Pinned by
+  `precomputed_plane_check_reads_v_min_from_the_fitting_window` (`scenarios.rs`)
+  and the same round-trip test, where some read-back plane is below 0 at
+  `(min_storage_hm3, 0, 0)`.
 
-Read: `production/fpha_fitting/secant.rs` (`fit_gamma_s_for_planes`),
-`production/fpha_fitting/reduction.rs` (`mean_plane`),
+Read: `production/fpha_fitting/secant.rs` (`fit_gamma_s_for_planes`,
+`GAMMA_S_SNAP_EPS`), `production/fpha_fitting/reduction.rs` (`mean_plane`),
 `crates/novomodelo-io/src/extensions/production_models.rs`
-(`FphaColumnLayout::resolve_fitting_window`,
-`FphaColumnLayout::resolve_spillage_fit_max_m3s`) and
+(`FphaColumnLayout::resolve_fitting_window`) and
 `crates/novomodelo-io/src/validation/semantic/scenarios.rs`
-(`check_fpha_precomputed_plane_at_zero_turbining`). Pinned also by
-`fit_fpha_planes_puts_every_plane_at_or_above_zero_at_the_window_corner`
-(`production/fpha_fitting/tests.rs`: every plane of uncapped Sobradinho at or
-above 0 at the corner, with and without a window, with the origin plane at +0.0)
-and `degenerate_s_max_zero_is_neutral` (`production/fpha_fitting/secant.rs`:
-`S_max = 0` leaves γₛ at +0.0 bits).
+(`check_fpha_precomputed_plane_at_zero_turbining`).
 
 ## Parallel evaporation is one stage-level slot
 
@@ -3166,8 +3156,7 @@ The independence is pinned for up to `PINNED_MAX_ROWS` rows,
 `INNER_DIMS` (`gemm.rs`), and nowhere else. The kernel's column block (`D_NC`)
 is never reached, because a call passes at most `M_BLOCK` states. An inner
 dimension above the largest of `INNER_DIMS` is summed in further blocks of
-`D_KC` and is drawn by no property; the inexact property draws 3, 257, 300 and
-600.
+`D_KC` and is drawn by no property; the inexact property draws 3, 257, 300 and 600.
 
 The wrong-but-compiling alternatives:
 
@@ -6537,7 +6526,7 @@ ring-carry drift at its source; the basis-factorization drift at the deposit row
 is what the seam absorbs, since exactness there is the solver's to give and it
 does not give it.
 
-A *genuine* over-commitment — past the delivery bound by more than solver noise —
+A _genuine_ over-commitment — past the delivery bound by more than solver noise —
 is NOT a runtime verdict and NOT the seam's to catch: it is rejected before the
 study runs, at `novomodelo-io` load time, by `check_committed_value_bounds`
 (`validation/semantic/thermal.rs`), which checks each committed value against the

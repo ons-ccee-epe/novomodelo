@@ -7711,23 +7711,24 @@ fn dormant_fpha_plant_trains_at_the_d57_closed_form() {
 }
 
 /// D07's computed planes, read back as `precomputed` under the same `fpha_config`,
-/// raise no zero-turbining warning; the twin shifts them below zero and proves the
-/// check live. The sloped tailrace makes spillage matter, and the fitting window from
-/// 50 hm³ makes the spillage limit bind at a corner other than `min_storage_hm3`.
+/// raise no zero-turbining warning although some fall below 0 MW once the plant
+/// spills; the twin shifts them below zero at zero flow and proves the check live.
+/// The sloped tailrace makes spillage matter, and the fitting window from 50 hm³
+/// puts the storage the check reads above `min_storage_hm3`.
 #[test]
 fn computed_fpha_planes_round_trip_without_a_zero_turbining_warning() {
+    /// derived: D07's `min_storage_hm3`.
+    const MIN_STORAGE_HM3: f64 = 0.0;
     /// derived: the edited fitting window's `volume_min_hm3`.
     const V_MIN_HM3: f64 = 50.0;
     /// derived: twice `max_turbined_m3s` 50, with no inflow history and no
     /// `spillage_fit_max_m3s`.
     const S_MAX_M3S: f64 = 100.0;
     const ZERO_TURBINING_PREFIX: &str = "FPHA plane below zero at zero turbining:";
-    /// derived: after the shift every plane is <= -10 MW at s = 0 for storage in
-    /// [0, 200], so s* = 0 for all 22 pairs, and the tie-break takes stage 0, plane 0.
+    /// derived: after the shift every plane is <= -10 MW at q = s = 0 for storage in
+    /// [0, 200], so all 22 pairs fall below 0 at the window's v_min.
     const SHIFTED_PAIRS: &str = "Hydro 0 -- 22 (stage, plane) pair(s) at stages 0-1";
-    /// derived: as [`SHIFTED_PAIRS`], at the window's v_min and the S_max above.
-    const SHIFTED_EARLIEST: &str = "at 0 m³/s of spillage (stage 0, plane 0, storage 50 hm³, \
-                                    spillage up to 100 m³/s)";
+    const SHIFTED_STORAGE: &str = "storage 50 hm³)";
 
     let d07_dir = Path::new("../../examples/deterministic/d07-fpha-computed");
     let fit_sloped_tailrace_copy = || {
@@ -7766,40 +7767,38 @@ fn computed_fpha_planes_round_trip_without_a_zero_turbining_warning() {
             .filter(|message| message.starts_with(ZERO_TURBINING_PREFIX))
             .collect()
     };
-
-    let (round_trip, rows) = fit_sloped_tailrace_copy();
-    let corner_at_window_min = |row: &FphaHyperplaneRow| {
+    let below_zero_at = |row: &FphaHyperplaneRow, storage_hm3: f64, spillage_m3s: f64| {
         let terms = [
             row.kappa * row.gamma_0,
-            row.gamma_v * V_MIN_HM3,
-            row.gamma_s * S_MAX_M3S,
+            row.gamma_v * storage_hm3,
+            row.gamma_s * spillage_m3s,
         ];
         let magnitude = terms.iter().map(|term| term.abs()).fold(0.0, f64::max);
-        (terms.iter().sum::<f64>(), magnitude)
+        terms.iter().sum::<f64>()
+            < -novomodelo_io::validation::semantic::envelope_tolerance(magnitude)
     };
+
+    let (round_trip, rows) = fit_sloped_tailrace_copy();
     let summary: Vec<String> = rows
         .iter()
         .map(|row| {
             format!(
-                "(stage {:?}, plane {}, gamma_s {}, corner {})",
-                row.stage_id,
-                row.plane_id,
-                row.gamma_s,
-                corner_at_window_min(row).0
+                "(stage {:?}, plane {}, gamma_0 {}, gamma_v {}, gamma_s {})",
+                row.stage_id, row.plane_id, row.gamma_0, row.gamma_v, row.gamma_s
             )
         })
         .collect();
     assert!(
-        rows.iter().any(|row| row.gamma_s < 0.0),
-        "the sloped tailrace must give some plane gamma_s < 0: {summary:?}"
+        rows.iter()
+            .any(|row| below_zero_at(row, V_MIN_HM3, S_MAX_M3S)),
+        "some plane must fall below 0 at (v_min {V_MIN_HM3}, 0, S_max {S_MAX_M3S}), \
+         where a check at the spillage end would warn: {summary:?}"
     );
     assert!(
-        rows.iter().filter(|row| row.gamma_s < 0.0).any(|row| {
-            let (corner, magnitude) = corner_at_window_min(row);
-            corner.abs() <= novomodelo_io::validation::semantic::envelope_tolerance(magnitude)
-        }),
-        "the spillage limit must bind on some plane at (v_min {V_MIN_HM3}, 0, S_max \
-         {S_MAX_M3S}): {summary:?}"
+        rows.iter()
+            .any(|row| below_zero_at(row, MIN_STORAGE_HM3, 0.0)),
+        "some plane must fall below 0 at (min_storage_hm3 {MIN_STORAGE_HM3}, 0, 0), where a \
+         check below the window would warn: {summary:?}"
     );
     assert!(
         rows.iter().all(|row| row.kappa == 1.0),
@@ -7824,8 +7823,8 @@ fn computed_fpha_planes_round_trip_without_a_zero_turbining_warning() {
         "shifted planes must raise one zero-turbining warning: {raised:?}"
     );
     assert!(
-        raised[0].contains(SHIFTED_PAIRS) && raised[0].contains(SHIFTED_EARLIEST),
-        "shifted planes' warning must name {SHIFTED_PAIRS:?} and {SHIFTED_EARLIEST:?}: {}",
+        raised[0].contains(SHIFTED_PAIRS) && raised[0].contains(SHIFTED_STORAGE),
+        "shifted planes' warning must name {SHIFTED_PAIRS:?} and {SHIFTED_STORAGE:?}: {}",
         raised[0]
     );
 }

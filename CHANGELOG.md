@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-11-24
+
 ### Added
 
 - `modeling.inflow_residual.distribution` in `config.json`: `"lognormal_3p"`
@@ -33,6 +35,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Results change for FPHA hydros declaring `tailrace_flow`: `gamma_s` in
   `system/fpha_hyperplanes.parquet` and the `fpha_hyperplanes` output is the
   lateral-flow slope per m3/s (spill slope if none).
+- Results change for hydros with `fpha_config.source: "computed"`: planes keep
+  their fitted spill slope (`gamma_s`), so a spilling plant generates less. It
+  may again turbine water at 0 MW in `simulation/hydros`, as before 0.21.0.
+  `novomodelo validate` now warns only on planes below 0 MW without spillage.
 
 ### Removed
 
@@ -54,10 +60,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   zero inflow standard deviation at a hydro and season (`V2.3`, `V3.7`). That
   season now takes the model's deterministic inflow, not the recorded one.
   `"external"` also refused a constant inflow column under an AR(p > 0) model.
-- `novomodelo validate` said that negative values in
+- `novomodelo validate` warned that the LP prices negative values in
   `scenarios/inflow_history.parquet` and `initial_conditions.json`
-  `recent_observations` are priced by the LP, whatever
-  `modeling.inflow_non_negativity.method` is set to.
+  `recent_observations`. It said so whatever
+  `modeling.inflow_non_negativity.method` was set to.
 
 ## [0.21.0] - 2026-11-16
 
@@ -2040,7 +2046,8 @@ target_bus)`.
 
 <!-- next-url -->
 
-[Unreleased]: https://github.com/ons-ccee-epe/novomodelo/compare/v0.21.0...HEAD
+[Unreleased]: https://github.com/ons-ccee-epe/novomodelo/compare/v0.22.0...HEAD
+[0.22.0]: https://github.com/ons-ccee-epe/novomodelo/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/ons-ccee-epe/novomodelo/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/ons-ccee-epe/novomodelo/compare/v0.19.1...v0.20.0
 [0.19.1]: https://github.com/ons-ccee-epe/novomodelo/compare/v0.19.0...v0.19.1

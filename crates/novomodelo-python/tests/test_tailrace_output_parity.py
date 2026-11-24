@@ -17,7 +17,6 @@ import pathlib
 import shutil
 
 import pyarrow as pa
-import pyarrow.compute as pc
 import pyarrow.parquet as pq
 import pytest
 
@@ -151,14 +150,18 @@ def test_declared_hydro_columns_non_null(
 ) -> None:
     """The declaring hydro has every tailrace column set and a positive flow."""
     for label, output_dir in (("CLI", cli_out), ("Python", py_out)):
-        table = _read_hydros(output_dir)
-        declared = table.filter(pc.equal(table["hydro_id"], DECLARED_HYDRO_ID))
+        rows = [
+            row
+            for row in _read_hydros(output_dir).to_pylist()
+            if row["hydro_id"] == DECLARED_HYDRO_ID
+        ]
+        assert rows, f"{label} hydros has no rows for hydro {DECLARED_HYDRO_ID}"
         for col in TAILRACE_COLUMNS:
-            nulls = pc.sum(pc.is_null(declared[col])).as_py()
+            nulls = sum(row[col] is None for row in rows)
             assert nulls == 0, (
                 f"{label} '{col}' has {nulls} null rows for hydro {DECLARED_HYDRO_ID}"
             )
-        flow_max = pc.max(declared["tailrace_flow_m3s"]).as_py()
+        flow_max = max(row["tailrace_flow_m3s"] for row in rows)
         assert flow_max > 0, (
             f"{label} tailrace_flow_m3s must be positive on at least one row for "
             f"hydro {DECLARED_HYDRO_ID}, max is {flow_max}"
