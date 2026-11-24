@@ -2611,13 +2611,13 @@ limitations under the License.
 ## Apache License 2.0
 
 Used by:
-- novomodelo-comm 0.21.0
-- novomodelo-core 0.21.0
-- novomodelo-io 0.21.0
-- novomodelo-python 0.21.0
-- novomodelo-sddp 0.21.0
-- novomodelo-solver 0.21.0
-- novomodelo-stochastic 0.21.0
+- novomodelo-comm 0.22.0
+- novomodelo-core 0.22.0
+- novomodelo-io 0.22.0
+- novomodelo-python 0.22.0
+- novomodelo-sddp 0.22.0
+- novomodelo-solver 0.22.0
+- novomodelo-stochastic 0.22.0
 - android_system_properties 0.1.6
 - dyn-clone 1.0.20
 - flatbuffers 25.12.19
