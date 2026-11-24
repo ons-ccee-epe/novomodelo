@@ -625,6 +625,8 @@ fn geometry_evaporation_models(
 }
 
 /// Single-stage [`Stage`] fixture: `n_blks` uniform blocks, [`BlockMode::Parallel`].
+///
+/// [`BlockMode::Parallel`]: novomodelo_core::BlockMode::Parallel
 fn geometry_stage(n_blks: usize) -> Stage {
     make_stage(
         0,
@@ -3044,6 +3046,8 @@ pub fn k_fan_setup_enumerated_reversed(k: usize, max_iterations: u32) -> KFanFix
 /// `Some(f)` prescales the LP by `f` — `Some(1.0)` runs it unscaled, the two
 /// settings the canonical-units pinning regression compares. Otherwise identical
 /// to [`k_fan_setup_enumerated`] (fixed seed, iteration limit `max_iterations`).
+///
+/// [`StageRiskConfig::Expectation`]: novomodelo_core::StageRiskConfig::Expectation
 #[must_use]
 pub fn k_fan_setup_gap(
     k: usize,
