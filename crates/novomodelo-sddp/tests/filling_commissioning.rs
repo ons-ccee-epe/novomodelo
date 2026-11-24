@@ -106,7 +106,7 @@ mod d38_dead_volume_filling_simulation {
     /// `H4`'s reservoir bounds (hm³), mirroring `system/hydros.json`.
     const H4_MIN_STORAGE_HM3: f64 = 0.0;
     const H4_MAX_STORAGE_HM3: f64 = 200.0;
-    /// `H4`'s stage-0 seed (hm³), mirroring `initial_conditions.json`.
+    /// `H4`'s stage-0 seed (hm³), mirroring `boundary_conditions.json` `storage_hm3`.
     const H4_SEED_HM3: f64 = 100.0;
 
     /// m³/s → hm³ per hour. Mirrors `crate::lp::builder::M3S_TO_HM3` (a private const
@@ -655,7 +655,7 @@ mod d40_filling_cascade_simulation {
     /// `H_ctrl`'s reservoir bounds (hm³), mirroring `system/hydros.json`.
     const H_CTRL_MIN_STORAGE_HM3: f64 = 0.0;
     const H_CTRL_MAX_STORAGE_HM3: f64 = 200.0;
-    /// `H_ctrl`'s stage-0 seed (hm³), mirroring `initial_conditions.json`.
+    /// `H_ctrl`'s stage-0 seed (hm³), mirroring `boundary_conditions.json` `storage_hm3`.
     const H_CTRL_SEED_HM3: f64 = 100.0;
 
     /// m³/s → hm³ per hour. Mirrors `crate::lp::builder::M3S_TO_HM3` (a private const
@@ -2298,7 +2298,7 @@ mod d42_nonfilling_hydro_commissioning {
     const H_NEW_INCR_M3S: f64 = 40.0;
     /// `H_down`'s own incremental inflow (m³/s). Mirrors id 1.
     const H_DOWN_INCR_M3S: f64 = 20.0;
-    /// Initial-condition storage seeds (hm³). Mirrors `initial_conditions.json`; the
+    /// Initial-condition storage seeds (hm³). Mirrors `boundary_conditions.json` `storage_hm3`; the
     /// dormant hydros pin to their IC value (NOT `[0, 0]`, NOT `min_storage`).
     const H_NEW_SEED_HM3: f64 = 50.0;
     const H_TAIL_SEED_HM3: f64 = 30.0;

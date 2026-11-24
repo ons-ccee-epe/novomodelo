@@ -16,17 +16,13 @@ anticipated_lanes/**/data.parquet`, and asserts the rows are element-wise
 equal. It also asserts the symmetric negative — a study with no post-study
 continuation writes no `anticipated_lanes/` directory at all.
 
-Runtime dependency
--------------------
-The row-parity guard needs an on-disk case that declares
-`post_study_stages.json` AND whose anticipated thermal's lead reaches a
-post-study delivery target, so the partition is genuinely populated (a study
-with no such reach writes no `anticipated_lanes/` directory — see the
-symmetric-negative test below). No such case exists in the repository yet;
-`POST_STUDY_CASE` names the expected location as a forward dependency, so the
-guard starts asserting the real CLI/Python read-back the moment that case
-lands, with no change to this file. Until then the row-parity test skips
-loudly rather than asserting against a synthetic-but-unrepresentative fixture.
+Post-study case
+---------------
+The row-parity guard runs `POST_STUDY_CASE`, the committed case whose
+`stages.json` declares `post_study_thermal_stages` AND whose anticipated
+thermal's lead reaches a post-study delivery target, so the partition is
+genuinely populated (a study with no such reach writes no `anticipated_lanes/`
+directory — see the symmetric-negative test below).
 
 Run with (from the repo root):
     pytest crates/novomodelo-python/tests/test_anticipated_lanes_output_parity.py -v
@@ -40,7 +36,6 @@ import pathlib
 import shutil
 
 import pyarrow.parquet as pq
-import pytest
 
 from _novomodelo_cli import run_cli
 
@@ -48,9 +43,8 @@ from _novomodelo_cli import run_cli
 # working directory (never a CWD-relative path).
 _REPO_ROOT = pathlib.Path(__file__).parents[3]
 
-# Named forward dependency: a case declaring `post_study_stages.json` whose
-# anticipated thermal's lead reaches a post-study delivery target. Not yet
-# shipped — see the module docstring's "Runtime dependency" section.
+# The committed case whose `stages.json` declares `post_study_thermal_stages` and
+# whose anticipated thermal's lead reaches a post-study delivery target.
 POST_STUDY_CASE = (
     _REPO_ROOT / "examples" / "deterministic" / "d55-post-study-anticipated-lanes"
 )
@@ -99,18 +93,10 @@ def _make_case_with_simulation(src: pathlib.Path, dest: pathlib.Path) -> None:
 
 
 def _require_post_study_case() -> None:
-    """Skip loudly when the named post-study case dependency is absent.
-
-    Not worked around with a synthetic-but-unrepresentative fixture: see the
-    module docstring's "Runtime dependency" section.
-    """
-    if not POST_STUDY_CASE.is_dir():
-        pytest.skip(
-            f"no on-disk post-study case at {POST_STUDY_CASE}; this guard's "
-            "case (one declaring post_study_stages.json, with an anticipated "
-            "lead reaching a post-study delivery) is a named forward "
-            "dependency, not yet shipped in examples/deterministic/"
-        )
+    """Fail when the committed post-study case is missing from the checkout."""
+    assert POST_STUDY_CASE.is_dir(), (
+        f"the committed post-study case must exist at {POST_STUDY_CASE}"
+    )
 
 
 def _read_lane_rows(parquet: pathlib.Path) -> list[dict[str, object]]:

@@ -9,7 +9,7 @@ mod common;
 
 use std::path::PathBuf;
 
-/// derived: the decks' `initial_conditions.json` storage of hydro 0.
+/// derived: the decks' `boundary_conditions.json` `storage_hm3` of hydro 0.
 const INITIAL_STORAGE_HM3: f64 = 100.0;
 const N_BLOCKS: usize = 3;
 const N_STAGES: usize = 2;
