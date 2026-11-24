@@ -1343,7 +1343,7 @@ mod tests {
             BlockFactor, InflowAnnualComponentRow, InflowArCoefficientRow, InflowHistoryRow,
             InflowSeasonalStatsRow, LoadFactorEntry, LoadSeasonalStatsRow,
         },
-        stages::StagesData,
+        stages::{PostStudyCalendars, StagesData},
         validation::{ErrorKind, ValidationContext, ValidationEntry, schema::ParsedData},
     };
     use novomodelo_core::{
@@ -1367,6 +1367,7 @@ mod tests {
         }];
         StagesData {
             openings_declared: std::collections::HashSet::new(),
+            post_study: PostStudyCalendars::default(),
             stages: vec![stage],
             policy_graph: HorizonGraph {
                 stage_discount_rate_overrides: std::collections::BTreeMap::new(),
@@ -2373,6 +2374,7 @@ mod tests {
             .collect();
         StagesData {
             openings_declared: std::collections::HashSet::new(),
+            post_study: PostStudyCalendars::default(),
             stages,
             policy_graph: HorizonGraph {
                 stage_discount_rate_overrides: std::collections::BTreeMap::new(),
@@ -3211,6 +3213,7 @@ mod tests {
             .collect();
         StagesData {
             openings_declared: std::collections::HashSet::new(),
+            post_study: PostStudyCalendars::default(),
             stages,
             policy_graph: HorizonGraph {
                 stage_discount_rate_overrides: std::collections::BTreeMap::new(),

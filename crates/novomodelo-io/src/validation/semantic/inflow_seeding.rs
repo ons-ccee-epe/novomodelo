@@ -605,6 +605,7 @@ mod tests {
 
         crate::stages::StagesData {
             openings_declared: std::collections::HashSet::new(),
+            post_study: crate::stages::PostStudyCalendars::default(),
             stages,
             policy_graph: HorizonGraph {
                 stage_discount_rate_overrides: std::collections::BTreeMap::new(),

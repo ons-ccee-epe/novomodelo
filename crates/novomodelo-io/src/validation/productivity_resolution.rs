@@ -144,7 +144,7 @@ mod tests {
         extensions::{
             HydroEnergyProductivityRow, ProductionModelConfig, SelectionMode, StageRange,
         },
-        stages::StagesData,
+        stages::{PostStudyCalendars, StagesData},
         test_support::make_bus_with_deficit,
         validation::{ErrorKind, ValidationContext},
     };
@@ -202,6 +202,7 @@ mod tests {
     fn stages() -> StagesData {
         StagesData {
             openings_declared: std::collections::HashSet::new(),
+            post_study: PostStudyCalendars::default(),
             stages: vec![make_stage(0)],
             policy_graph: HorizonGraph::default(),
         }

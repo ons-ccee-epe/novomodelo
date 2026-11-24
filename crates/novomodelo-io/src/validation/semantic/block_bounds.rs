@@ -894,7 +894,7 @@ mod tests {
         ContractBoundsRow, GenericConstraintBoundsRow, HydroBoundsRow, HydroUnitGroupBoundsRow,
         LineBoundsRow, PumpingBoundsRow, ThermalBoundsRow,
     };
-    use crate::stages::StagesData;
+    use crate::stages::{PostStudyCalendars, StagesData};
     use crate::test_support::*;
     use crate::validation::schema::ParsedData;
     use crate::validation::{ErrorKind, ValidationContext};
@@ -921,6 +921,7 @@ mod tests {
         stage_1.end_date = NaiveDate::from_ymd_opt(2024, 3, 1).unwrap();
         StagesData {
             openings_declared: std::collections::HashSet::new(),
+            post_study: PostStudyCalendars::default(),
             stages: vec![stage_0, stage_1],
             policy_graph: HorizonGraph {
                 stage_discount_rate_overrides: std::collections::BTreeMap::new(),
@@ -1171,6 +1172,7 @@ mod tests {
             vec![],
             StagesData {
                 openings_declared: std::collections::HashSet::new(),
+                post_study: PostStudyCalendars::default(),
                 stages: vec![make_stage_with_blocks(0, 1), make_stage_with_blocks(1, 3)],
                 policy_graph: HorizonGraph {
                     stage_discount_rate_overrides: std::collections::BTreeMap::new(),
@@ -1795,6 +1797,7 @@ mod tests {
             vec![],
             StagesData {
                 openings_declared: std::collections::HashSet::new(),
+                post_study: PostStudyCalendars::default(),
                 stages: vec![make_stage_with_blocks(0, 2)],
                 policy_graph: HorizonGraph {
                     stage_discount_rate_overrides: std::collections::BTreeMap::new(),

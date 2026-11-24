@@ -1370,7 +1370,7 @@ mod tests {
         check_post_study_stages, classify_deliveries, extended_deciders, lead_delivery_stage_count,
     };
     use crate::constraints::ThermalBoundsRow;
-    use crate::stages::StagesData;
+    use crate::stages::{PostStudyCalendars, StagesData};
     use crate::test_support::*;
     use crate::validation::schema::ParsedData;
     use crate::validation::{ErrorKind, ValidationContext};
@@ -1483,6 +1483,7 @@ mod tests {
     ) -> ParsedData {
         let stages_data = StagesData {
             openings_declared: std::collections::HashSet::new(),
+            post_study: PostStudyCalendars::default(),
             stages: contiguous_stages(durations_hours),
             policy_graph: HorizonGraph {
                 stage_discount_rate_overrides: std::collections::BTreeMap::new(),

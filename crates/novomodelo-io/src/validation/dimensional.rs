@@ -355,6 +355,7 @@ mod tests {
     fn stages() -> crate::stages::StagesData {
         crate::stages::StagesData {
             openings_declared: std::collections::HashSet::new(),
+            post_study: crate::stages::PostStudyCalendars::default(),
             stages: vec![make_stage(0), make_stage(1)],
             policy_graph: HorizonGraph::default(),
         }
@@ -746,11 +747,12 @@ mod tests {
     /// Pre-study stages (negative IDs) must not appear in the coverage check.
     #[test]
     fn test_pre_study_stages_not_checked() {
-        use crate::stages::StagesData;
+        use crate::stages::{PostStudyCalendars, StagesData};
         let mut data = crate::test_support::base_parsed_data(stages(), vec![]);
         // Include one pre-study stage (id = -1) alongside the study stages.
         data.stages = StagesData {
             openings_declared: std::collections::HashSet::new(),
+            post_study: PostStudyCalendars::default(),
             stages: vec![make_pre_study_stage(-1), make_stage(0), make_stage(1)],
             policy_graph: HorizonGraph::default(),
         };

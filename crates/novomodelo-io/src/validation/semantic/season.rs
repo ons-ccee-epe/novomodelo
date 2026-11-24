@@ -397,7 +397,7 @@ mod tests {
     use crate::{
         config::HistoricalYearRange,
         scenarios::{InflowArCoefficientRow, InflowHistoryRow, InflowSeasonalStatsRow},
-        stages::StagesData,
+        stages::{PostStudyCalendars, StagesData},
         validation::{ErrorKind, ValidationContext},
     };
     use novomodelo_core::test_support::{
@@ -509,6 +509,7 @@ mod tests {
             .collect();
         StagesData {
             openings_declared: std::collections::HashSet::new(),
+            post_study: PostStudyCalendars::default(),
             stages,
             policy_graph: HorizonGraph {
                 stage_discount_rate_overrides: std::collections::BTreeMap::new(),
@@ -551,6 +552,7 @@ mod tests {
             .collect();
         StagesData {
             openings_declared: std::collections::HashSet::new(),
+            post_study: PostStudyCalendars::default(),
             stages,
             policy_graph: HorizonGraph {
                 stage_discount_rate_overrides: std::collections::BTreeMap::new(),
@@ -1459,6 +1461,7 @@ mod tests {
             .collect();
         let stages = StagesData {
             openings_declared: std::collections::HashSet::new(),
+            post_study: PostStudyCalendars::default(),
             stages: stages_vec,
             policy_graph: HorizonGraph {
                 stage_discount_rate_overrides: std::collections::BTreeMap::new(),

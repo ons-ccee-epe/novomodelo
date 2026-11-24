@@ -48,7 +48,7 @@ use crate::{
     config::Config,
     extensions::{FphaHyperplaneRow, HydroGeometryRow},
     parse_config,
-    stages::StagesData,
+    stages::{PostStudyCalendars, StagesData},
 };
 #[cfg(test)]
 use crate::{
@@ -769,6 +769,7 @@ fn make_horizon_graph(season_map: Option<SeasonMap>) -> HorizonGraph {
 pub fn make_stages(ids: Vec<i32>) -> StagesData {
     StagesData {
         openings_declared: std::collections::HashSet::new(),
+        post_study: PostStudyCalendars::default(),
         stages: ids.into_iter().map(make_stage).collect(),
         policy_graph: make_horizon_graph(None),
     }
@@ -1234,6 +1235,7 @@ pub fn make_stages_with_seasons(n_months: usize, with_season_map: bool) -> Stage
     }
     StagesData {
         openings_declared: std::collections::HashSet::new(),
+        post_study: PostStudyCalendars::default(),
         stages,
         policy_graph: make_horizon_graph(with_season_map.then(|| {
             novomodelo_core::test_support::monthly_season_map(

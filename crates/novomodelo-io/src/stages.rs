@@ -406,6 +406,27 @@ fn default_true() -> bool {
 
 // ── Output type ───────────────────────────────────────────────────────────────
 
+/// One post-horizon stage, `[start_date, end_date)`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PostStudyCalendarStage {
+    /// Post-study stage id; positive, never a [`Stage`] id.
+    pub id: i32,
+    /// First day of the stage (inclusive).
+    pub start_date: NaiveDate,
+    /// Day after the stage's last day (exclusive).
+    pub end_date: NaiveDate,
+}
+
+/// The post-horizon calendars of `stages.json`. `None` means the key is absent
+/// from the file; `Some(vec![])` means it is declared empty.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PostStudyCalendars {
+    /// `post_study_thermal_stages`.
+    pub thermal: Option<Vec<PostStudyCalendarStage>>,
+    /// `post_study_water_stages`.
+    pub water: Option<Vec<PostStudyCalendarStage>>,
+}
+
 /// Parsed output from `stages.json`: all stages (study + pre-study) sorted by
 /// `id` ascending, plus the policy graph. Scenario source configuration lives in
 /// `config.json` (`parse_config`), not here.
@@ -430,6 +451,8 @@ pub struct StagesData {
     /// distinguish an absent count from a present one after conversion collapses it
     /// into `ScenarioSourceConfig::branching_factor`.
     pub openings_declared: HashSet<i32>,
+    /// Post-horizon calendars; these never enter `stages`.
+    pub post_study: PostStudyCalendars,
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -781,6 +804,7 @@ fn convert_stages(raw: RawStagesFile, path: &Path) -> Result<StagesData, LoadErr
         stages: all_stages,
         policy_graph,
         openings_declared,
+        post_study: PostStudyCalendars::default(),
     })
 }
 
@@ -1363,6 +1387,13 @@ mod tests {
         }"#;
         let f = write_json(json);
         parse_stages(f.path()).unwrap();
+    }
+
+    #[test]
+    fn parse_stages_leaves_post_study_calendars_absent() {
+        let f = write_json(VALID_JSON);
+        let data = parse_stages(f.path()).unwrap();
+        assert_eq!(data.post_study, PostStudyCalendars::default());
     }
 
     /// Given a `stages.json` with `"scenario_source": {"seed": 42}`,

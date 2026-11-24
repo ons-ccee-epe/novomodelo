@@ -386,7 +386,7 @@ fn check_defluence_coverage(
 )]
 mod tests {
     use super::*;
-    use crate::stages::StagesData;
+    use crate::stages::{PostStudyCalendars, StagesData};
     use crate::test_support::*;
     use crate::validation::ErrorKind;
     use novomodelo_core::entities::Hydro;
@@ -432,6 +432,7 @@ mod tests {
         }
         StagesData {
             openings_declared: std::collections::HashSet::new(),
+            post_study: PostStudyCalendars::default(),
             stages,
             policy_graph: HorizonGraph {
                 stage_discount_rate_overrides: std::collections::BTreeMap::new(),
