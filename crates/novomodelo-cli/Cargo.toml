@@ -26,7 +26,7 @@ novomodelo-comm = { version = "0.21.0", path = "../novomodelo-comm" }
 novomodelo-stochastic = { version = "0.21.0", path = "../novomodelo-stochastic" }
 chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
 clap = { version = "4", features = ["derive"] }
-postcard = { version = "1", features = ["alloc"] }
+postcard = { version = "1", default-features = false, features = ["alloc"] }
 console = "0.16"
 indicatif = "0.18"
 rayon = "1"

@@ -8,9 +8,9 @@ targets = []
 [advisories]
 # Deny crates with known security vulnerabilities.
 version = 2
+# By default only direct dependencies fail on an unsound advisory.
+unsound = "all"
 ignore = [
-    # atomic-polyfill via postcard -> heapless; no upgrade available for postcard 1.x
-    "RUSTSEC-2023-0089",
     # chrono via arrow/parquet and our own NaiveDate dates; unmaintained with no
     # release to move to, and arrow still depends on it
     "RUSTSEC-2026-0543",
