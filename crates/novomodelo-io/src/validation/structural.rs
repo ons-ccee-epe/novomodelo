@@ -48,6 +48,8 @@ pub enum InputFile {
     InitialConditionsJson,
     /// `post_study_stages.json`.
     PostStudyStagesJson,
+    /// `boundary_conditions.json`.
+    BoundaryConditionsJson,
 
     /// `system/buses.json`.
     SystemBusesJson,
@@ -157,15 +159,20 @@ const INPUT_FILES: &[FileEntry] = &[
         relative: "stages.json",
         required: true,
     },
+    // Root-level — optional; `resolve_boundary_source` requires one boundary-condition file set
     FileEntry {
         key: InputFile::InitialConditionsJson,
         relative: "initial_conditions.json",
-        required: true,
+        required: false,
     },
-    // Root-level — optional
     FileEntry {
         key: InputFile::PostStudyStagesJson,
         relative: "post_study_stages.json",
+        required: false,
+    },
+    FileEntry {
+        key: InputFile::BoundaryConditionsJson,
+        relative: "boundary_conditions.json",
         required: false,
     },
     // system/ — required
@@ -368,6 +375,18 @@ const INPUT_FILE_COUNT: usize = INPUT_FILES.len();
 
 // ── FileManifest ─────────────────────────────────────────────────────────────
 
+/// Which boundary-condition file set a case supplies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoundaryInputSource {
+    /// `boundary_conditions.json`.
+    Current,
+    /// The deprecated `initial_conditions.json`, with `post_study_stages.json` when present.
+    Legacy {
+        /// Whether `post_study_stages.json` is present.
+        post_study_file: bool,
+    },
+}
+
 /// Records which [`InputFile`]s are present in the case directory.
 ///
 /// Flags default to `false`; [`validate_structure`] sets one to `true` for
@@ -375,12 +394,14 @@ const INPUT_FILE_COUNT: usize = INPUT_FILES.len();
 #[derive(Debug, Clone)]
 pub struct FileManifest {
     flags: [bool; INPUT_FILE_COUNT],
+    boundary_source: Option<BoundaryInputSource>,
 }
 
 impl Default for FileManifest {
     fn default() -> Self {
         Self {
             flags: [false; INPUT_FILE_COUNT],
+            boundary_source: None,
         }
     }
 }
@@ -390,6 +411,13 @@ impl FileManifest {
     #[must_use]
     pub fn present(&self, file: InputFile) -> bool {
         self.flags[file as usize]
+    }
+
+    /// The boundary-condition file set the case supplies; `None` when
+    /// [`validate_structure`] found none, or both sets.
+    #[must_use]
+    pub fn boundary_source(&self) -> Option<BoundaryInputSource> {
+        self.boundary_source
     }
 
     /// Records that `file` was found on disk.
@@ -433,6 +461,11 @@ const REMOVED_FILES: &[RemovedFile] = &[
 /// adds an `ErrorKind::FileNotFound` error; an absent **optional** file leaves
 /// its flag `false` with no error. A present file listed in `REMOVED_FILES`
 /// adds an `ErrorKind::BusinessRuleViolation` error naming its replacement.
+/// The boundary-condition file set is then resolved into
+/// [`FileManifest::boundary_source`]: a case without
+/// `boundary_conditions.json` or `initial_conditions.json` adds a `FileNotFound`
+/// error, and one with `boundary_conditions.json` beside either deprecated file
+/// adds a `BusinessRuleViolation` error.
 /// This function does **not** read or parse any file content.
 #[must_use]
 pub fn validate_structure(case_root: &Path, ctx: &mut ValidationContext) -> FileManifest {
@@ -468,7 +501,57 @@ pub fn validate_structure(case_root: &Path, ctx: &mut ValidationContext) -> File
         }
     }
 
+    manifest.boundary_source = resolve_boundary_source(&manifest, ctx);
+
     manifest
+}
+
+fn resolve_boundary_source(
+    manifest: &FileManifest,
+    ctx: &mut ValidationContext,
+) -> Option<BoundaryInputSource> {
+    let initial_conditions = manifest.present(InputFile::InitialConditionsJson);
+    let post_study = manifest.present(InputFile::PostStudyStagesJson);
+
+    if manifest.present(InputFile::BoundaryConditionsJson) {
+        if !initial_conditions && !post_study {
+            return Some(BoundaryInputSource::Current);
+        }
+        let legacy_present: Vec<&str> = [
+            (initial_conditions, "'initial_conditions.json'"),
+            (post_study, "'post_study_stages.json'"),
+        ]
+        .into_iter()
+        .filter_map(|(present, name)| present.then_some(name))
+        .collect();
+        ctx.emit(
+            &rules::STRUCTURAL_BOUNDARY_FILE_SETS_MIXED,
+            "boundary_conditions.json",
+            None::<&str>,
+            format!(
+                "'boundary_conditions.json' is present together with the deprecated {}; \
+                 keep one set: 'boundary_conditions.json', or the deprecated \
+                 'initial_conditions.json' with an optional 'post_study_stages.json'",
+                legacy_present.join(" and ")
+            ),
+        );
+        return None;
+    }
+
+    if initial_conditions {
+        return Some(BoundaryInputSource::Legacy {
+            post_study_file: post_study,
+        });
+    }
+
+    ctx.emit(
+        &rules::STRUCTURAL_REQUIRED_FILE_MISSING,
+        "boundary_conditions.json",
+        None::<&str>,
+        "required file 'boundary_conditions.json' (or the deprecated \
+         'initial_conditions.json') not found in case directory",
+    );
+    None
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -484,6 +567,7 @@ pub(crate) fn input_file_relative_paths() -> impl Iterator<Item = &'static str> 
 mod tests {
     use super::*;
     use crate::validation::ErrorKind;
+    use crate::validation::rules::ValidationRule;
     use std::fs;
     use tempfile::TempDir;
 
@@ -547,6 +631,133 @@ mod tests {
         assert!(
             manifest.present(InputFile::SystemThermalsJson),
             "system/thermals.json should be present"
+        );
+    }
+
+    #[test]
+    fn legacy_initial_conditions_only_resolves_to_legacy_without_error() {
+        let dir = TempDir::new().unwrap();
+        make_case_with_required(&dir);
+
+        let mut ctx = ValidationContext::new();
+        let manifest = validate_structure(dir.path(), &mut ctx);
+
+        assert!(!ctx.has_errors(), "got: {:?}", ctx.errors());
+        assert_eq!(
+            manifest.boundary_source(),
+            Some(BoundaryInputSource::Legacy {
+                post_study_file: false
+            })
+        );
+    }
+
+    #[test]
+    fn boundary_source_truth_table() {
+        use BoundaryInputSource::{Current, Legacy};
+
+        let missing = &rules::STRUCTURAL_REQUIRED_FILE_MISSING;
+        let mixed = &rules::STRUCTURAL_BOUNDARY_FILE_SETS_MIXED;
+        let rows: [(
+            &[&str],
+            Option<BoundaryInputSource>,
+            Option<&ValidationRule>,
+        ); 7] = [
+            (&["boundary_conditions.json"], Some(Current), None),
+            (
+                &["initial_conditions.json"],
+                Some(Legacy {
+                    post_study_file: false,
+                }),
+                None,
+            ),
+            (
+                &["initial_conditions.json", "post_study_stages.json"],
+                Some(Legacy {
+                    post_study_file: true,
+                }),
+                None,
+            ),
+            (
+                &["boundary_conditions.json", "initial_conditions.json"],
+                None,
+                Some(mixed),
+            ),
+            (
+                &["boundary_conditions.json", "post_study_stages.json"],
+                None,
+                Some(mixed),
+            ),
+            (&["post_study_stages.json"], None, Some(missing)),
+            (&[], None, Some(missing)),
+        ];
+
+        for (files, expected_source, expected_rule) in rows {
+            let dir = TempDir::new().unwrap();
+            make_case_with_required(&dir);
+            fs::remove_file(dir.path().join("initial_conditions.json")).unwrap();
+            for file in files {
+                fs::write(dir.path().join(file), b"{}").unwrap();
+            }
+
+            let mut ctx = ValidationContext::new();
+            let manifest = validate_structure(dir.path(), &mut ctx);
+
+            assert_eq!(
+                manifest.boundary_source(),
+                expected_source,
+                "files: {files:?}"
+            );
+            let emitted = ctx.errors();
+            match expected_rule {
+                None => assert!(emitted.is_empty(), "files: {files:?}, got: {emitted:?}"),
+                Some(rule) => {
+                    assert_eq!(emitted.len(), 1, "files: {files:?}, got: {emitted:?}");
+                    assert_eq!(emitted[0].kind, rule.kind, "files: {files:?}");
+                    assert_eq!(emitted[0].severity, rule.severity, "files: {files:?}");
+                    assert_eq!(
+                        emitted[0].file.to_string_lossy(),
+                        "boundary_conditions.json",
+                        "files: {files:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn mixed_boundary_sets_message_names_each_legacy_file_present() {
+        let dir = TempDir::new().unwrap();
+        make_case_with_required(&dir);
+        fs::write(dir.path().join("boundary_conditions.json"), b"{}").unwrap();
+        fs::write(dir.path().join("post_study_stages.json"), b"{}").unwrap();
+
+        let mut ctx = ValidationContext::new();
+        let _manifest = validate_structure(dir.path(), &mut ctx);
+
+        let entry = ctx.errors()[0];
+        assert_eq!(entry.kind, ErrorKind::BusinessRuleViolation);
+        assert!(
+            entry
+                .message
+                .contains("'initial_conditions.json' and 'post_study_stages.json'")
+        );
+    }
+
+    #[test]
+    fn missing_boundary_files_message_names_both_sets() {
+        let dir = TempDir::new().unwrap();
+        make_case_with_required(&dir);
+        fs::remove_file(dir.path().join("initial_conditions.json")).unwrap();
+
+        let mut ctx = ValidationContext::new();
+        let _manifest = validate_structure(dir.path(), &mut ctx);
+
+        let entry = ctx.errors()[0];
+        assert_eq!(entry.kind, ErrorKind::FileNotFound);
+        assert_eq!(
+            entry.message,
+            "required file 'boundary_conditions.json' (or the deprecated \
+             'initial_conditions.json') not found in case directory"
         );
     }
 
@@ -670,7 +881,7 @@ mod tests {
 
     /// Registry invariants: every row's relative path is unique, the table
     /// covers every [`InputFile`] variant exactly once in declaration order,
-    /// and the required set is exactly the six files documented above.
+    /// and the required set is exactly the five files documented above.
     #[test]
     fn test_input_files_registry_invariants() {
         assert_eq!(
@@ -705,7 +916,6 @@ mod tests {
             "config.json",
             "penalties.json",
             "stages.json",
-            "initial_conditions.json",
             "system/buses.json",
             "system/hydros.json",
         ]
@@ -713,7 +923,7 @@ mod tests {
         .collect();
         assert_eq!(
             required_paths, expected_required,
-            "the required set must be exactly the six files documented today"
+            "the required set must be exactly the five files documented today"
         );
     }
 

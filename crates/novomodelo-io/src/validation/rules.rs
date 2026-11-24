@@ -116,6 +116,9 @@ declare_rules! {
     STRUCTURAL_REQUIRED_FILE_MISSING = "structural.2",
         Structural, FileNotFound, Error,
         "A required case input file is missing";
+    STRUCTURAL_BOUNDARY_FILE_SETS_MIXED = "structural.3",
+        Structural, BusinessRuleViolation, Error,
+        "Both the current and the deprecated boundary-condition file sets are present";
     SCHEMA_FILE_UNREADABLE = "schema.1",
         Schema, FileNotFound, Error,
         "A case input file cannot be read";
