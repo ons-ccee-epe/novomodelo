@@ -1,6 +1,6 @@
 # Boundary-conditions input
 
-> **Status:** Proposal (not yet implemented). Replaces `initial_conditions.json`
+> **Status:** Implemented (retained pending fold into the live spec). Replaces `initial_conditions.json`
 > and `post_study_stages.json` with one plant-keyed `boundary_conditions.json`,
 > and moves the post-horizon calendars into `stages.json`. The change is to the
 > input format only: the core types, the LP, the state space and the outputs are
@@ -242,11 +242,11 @@ The old files remain accepted for a deprecation period.
 | `novomodelo-python`     | Reads through `novomodelo-io`, so output parity holds without extra work. Any file-name mentions are updated.                                                                                                                                               |
 | `schemas/`              | Add `boundary_conditions.schema.json` and update `stages.schema.json`. The legacy schemas stay while the legacy reader exists.                                                                                                                              |
 | `novomodelo-bridge`     | The DECOMP (`converters/anticipated.py`, `travel_time.py`, `pipeline.py`) and NEWAVE (`converters/inflow_windows.py`, `pipeline.py`) emitters write the new format. The switch ships after the first `novomodelo` release that contains the new reader.                     |
-| Decks / docs            | Migrate the example decks with a converter, alongside `scripts/migrate/post_study_stages.py`. Update `anticipated-thermals-and-water-travel-time.md` (it names `thermal_stages` / `water_bucket_stages`) and the docs site. The CHANGELOG entry is a deprecation plus a new format. |
+| Decks / docs            | Migrate the example decks with the converter `scripts/migrate/boundary_conditions.py`. Update `anticipated-thermals-and-water-travel-time.md` and the docs site to name the new surfaces. The CHANGELOG entry is a deprecation plus a new format. |
 
 ## 8. Migration
 
-The converter is mechanical:
+The converter, `scripts/migrate/boundary_conditions.py`, is mechanical:
 
 1. **Calendars.**
    - Move `thermal_stages[]` (or the deprecated `stages[]`) to
@@ -266,15 +266,20 @@ The converter is mechanical:
 calendar, padded by the bucket topology. A declared water calendar is used
 exactly, with no padding, so copying the thermal calendar into
 `post_study_water_stages` is **not** guaranteed to give the same result for a
-deck with travel-time arcs. For such a deck the converter must write out the
-padded calendar the bucket topology would have built, or leave the deck on the
+deck with travel-time arcs. For such a deck the converter writes out the
+padded calendar the legacy reader resolves to. A stage that does not last a
+whole number of days is refused, and a deck with such a stage stays on the
 legacy reader. A deck without travel-time arcs is unaffected.
 
 ## 9. Acceptance
 
 1. **Migration changes no result.** Every migrated deck's outputs are
    bit-identical to its legacy copy. A moved hash means something must be
-   investigated; it is never re-baselined.
+   investigated; it is never re-baselined. The one exception is a deck with a
+   travel-time arc and no declared water calendar: after migration it writes
+   dated transit-bucket slots in `policy/cuts/*.bin`, where the legacy deck
+   writes the past-calendar sentinel, and cut coefficients and intercepts are
+   unchanged.
 2. **The two readers agree.** Each legacy fixture gets a new-format twin, and
    the pair must produce identical core types and identical solved outputs.
 3. **Declaration order doesn't matter.** Order-invariance tests cover the new

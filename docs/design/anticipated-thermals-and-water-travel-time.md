@@ -133,13 +133,14 @@ coefficient `β` lands on directly, via the one generic `β·state` projection
 
 ### 1.6 Post-study calendars
 
-`post_study_stages.json` carries **one calendar per kind**
-(`PostStudyStages`, `crates/novomodelo-core/src/model/post_study.rs`):
+`stages.json` carries **one post-study calendar per kind**, read into
+`PostStudyStages` (`crates/novomodelo-core/src/model/post_study.rs`):
 
-- `thermal_stages` (with `thermal_bounds`) dates **thermal** deliveries. It feeds
+- `post_study_thermal_stages` (with the per-thermal `post_study_bounds` in
+  `boundary_conditions.json`) dates **thermal** deliveries. It feeds
   the discounting continuation, delivery ids, ring sizing and dating, the
   anticipated bounds, and `anticipated_lanes`.
-- `water_bucket_stages` (`WaterBucketStages`) dates **water** buckets. It feeds the
+- `post_study_water_stages` (`WaterBucketStages`) dates **water** buckets. It feeds the
   bucket topology and arrival dating.
 
 The water calendar is never digested. The two calendars are independent: a
@@ -148,14 +149,12 @@ the water key whatever its thermals do.
 
 **Declared water calendar.** On a deck with a travel-time arc the water key is
 required. The declared calendar is used exactly — no padding, no fallback to
-`thermal_stages` — and must cover the deepest travel time, or setup refuses the
+the thermal calendar — and must cover the deepest travel time, or setup refuses the
 study. The rule codes for the format checks are owned by
 `crates/novomodelo-io/src/validation/rules.rs` (the `POST_STUDY_*` rules); the
 table is not copied here.
 
-**No post-study file.** A deck with a travel-time arc and no post-study file takes
-the water calendar from the thermal one, padded for resolution. The validator
-warns on it and names the migration script `scripts/migrate/post_study_stages.py`.
+**Deprecated format.** The legacy file set is `initial_conditions.json` and `post_study_stages.json`, with its `thermal_stages` / `water_bucket_stages` / `thermal_bounds` keys; the older `stages` key of `post_study_stages.json` is refused when the file is parsed. The legacy set still loads, and `novomodelo validate` warns and names the converter `scripts/migrate/boundary_conditions.py`. Only a legacy deck can fall back to the padded thermal calendar for the water calendar, and only when it has a travel-time arc and no `post_study_stages.json`; the validator warns on that fallback. In the new format a deck with a travel-time arc and no `post_study_water_stages` is refused. Removing the legacy reader is a later decision.
 
 `.claude/rules/sddp.md` (§ "Water calendar paths") owns the contracts of the two
 paths and the quantity-class rebind weights used when a boundary policy is loaded.
@@ -239,7 +238,7 @@ column_order = [(j, 1), (j, 2), …, (j, L_j)] for each plant j in canonical ord
 `bucket_topology.rs`), selected by `WaterDeliveryBasis`:
 
 - **Declared water calendar:** the study calendar followed by
-  `water_bucket_stages`, **unpadded**. If it does not cover the deepest
+  `post_study_water_stages`, **unpadded**. If it does not cover the deepest
   travel-time arc, setup refuses the study (`resolve_state_and_topology`) rather
   than extending it.
 - **Padded thermal (no post-study file):** the study calendar followed by the thermal
@@ -249,7 +248,7 @@ column_order = [(j, 1), (j, 2), …, (j, L_j)] for each plant j in canonical ord
   study-only vector.
 
 For a water calendar that covers every arc the two bases build the same topology.
-Bucket slots of a deck declaring `water_bucket_stages` are dated from it, with or
+Bucket slots of a deck declaring `post_study_water_stages` are dated from it, with or
 without a loaded boundary; padded-thermal slots are dated from the thermal post-study
 stages.
 
@@ -354,13 +353,15 @@ mechanism.
 There is **no delivery-window field on the config**. The delivered quantities live
 on two separate surfaces:
 
-- `initial_conditions.past_anticipated_commitments[]`
-  (`AnticipatedCommitmentHistory { thermal_id, start_date, end_date, value_mw }`) —
+- the per-thermal `commitments` in `boundary_conditions.json`
+  (core type `AnticipatedCommitmentHistory { thermal_id, start_date, end_date, value_mw }`) —
   pre-study **decided** MW windows that deliver into the study's leading stages
   (the stage-0 ring seed; sunk cost, never in the objective).
-- `post_study_stages.json` (`crates/novomodelo-core/src/model/post_study.rs`) — the
+- `post_study_thermal_stages` in `stages.json` and the per-thermal
+  `post_study_bounds` in `boundary_conditions.json`
+  (`crates/novomodelo-core/src/model/post_study.rs`) — the
   **sole** post-study declaration surface: the ordered post-study calendar
-  `thermal_stages` (the water calendar `water_bucket_stages` is separate; §1.6) plus a per-`(thermal, post-study stage)` `cost_per_mwh`/`min_mw`/`max_mw`
+  (the water calendar `post_study_water_stages` is separate; §1.6) plus a per-`(thermal, post-study stage)` `cost_per_mwh`/`min_mw`/`max_mw`
   an in-study decision delivering past the horizon is priced and bounded against.
   It extends the delivery axis to `n_delivery = n_stages + n_post` — the runtime
   axis is `DeliveryCalendar::total_hours`, read by `resolve_anticipated_commitments_core`
@@ -380,7 +381,7 @@ study + post-study calendar that `build_extended_delivery_axis` assembles and
 `extended_deciders` walks.
 
 A pre-study-decided, post-study-delivered commitment — a **fixed post-horizon
-commitment** — is declared on the same `initial_conditions.past_anticipated_commitments`
+commitment** — is declared on the same per-thermal `commitments`
 surface (above), by a window that sits past the study horizon. It is a declared
 constant that never enters the ring, priced by the boundary intercept fold and
 reported at its real delivery date (§3.5). The study horizon is never extended to
@@ -404,7 +405,7 @@ anticipated thermal, which is what licenses the LP's overlay-ignoring bound read
 
 The lead resolves to a **decider** `c(m)` = the decision stage for each delivery
 stage `m` on the **extended delivery axis** `[0, n_delivery)` (`n_delivery =
-n_stages + n_post`, study-only when no `thermal_stages` calendar is declared), via
+n_stages + n_post`, study-only when no `post_study_thermal_stages` calendar is declared), via
 `PointResolution` (`crates/novomodelo-sddp/src/lead_time/mod.rs`):
 
 - `LeadTime` (`resolve_decider_physical`): `c(m)` is the stage containing
@@ -491,7 +492,7 @@ The anticipated ring occupies the whole merged **commitment-hold** region
 (`commit_out` / `commit_in`), spanning exactly `A·k_max` slots —
 slot-major/plant-minor, keyed by delivery-target residue. There is no separate
 appended block: a slot whose delivery target lands past the horizon (`m >=
-n_stages`, reachable only when `post_study_stages.json` extends the delivery axis)
+n_stages`, reachable only when `post_study_thermal_stages` extends the delivery axis)
 is one of the ring's own slots, not a trailing lane. A plant's commitment for
 delivery `m` occupies slot `ring_index(m) mod k_max`, so every plant cycles
 through all `k_max` slots over the horizon; only a slot the LP never latches
@@ -634,7 +635,7 @@ They differ in the call-site-local ways the table lists:
 | Depth sizing             | overlap measure (`stage_reach`, IC overlap)                                       | `max(occupancy_max, n_none_in_study)` per plant                                 |
 | Reachable column bound   | `[0, inf)` (a volume)                                                             | `(-inf, inf)` (a signed MW value)                                               |
 | Masked terminal slot     | drops a **genuine** deposited share — only on the horizon-capped no-boundary path | provably **zero** (no commitment targets a masked slot)                         |
-| Terminal live-state gate | needs `config.policy.boundary` (not inert)                                        | post-study slot **existence** on declared `post_study_stages.json` + lead reach |
+| Terminal live-state gate | needs `config.policy.boundary` (not inert)                                        | post-study slot **existence** on declared `post_study_thermal_stages` + lead reach |
 
 These last two rows carry the deepest asymmetry, and it does not collapse into one
 rule. On the masked slot:
@@ -649,7 +650,7 @@ gate: un-masking the water ring's horizon-capped deep-lag slots re-enables their
 definition rows, deposit share, and outgoing columns — a live LP change — so it
 **must** be gated on `config.policy.boundary` presence, keeping a no-boundary study
 byte-for-byte. The anticipated ring gates the **existence** of a post-study slot
-instead — on a declared `post_study_stages.json` extending the delivery axis past
+instead — on a declared `post_study_thermal_stages` extending the delivery axis past
 the horizon, plus the plant's own lead reaching that target. A post-study-targeted
 slot is one of the ring's **own** reachable slots, held open `(-inf, inf)` whenever
 reachable and priced through the same generic `β·state` projection, never a
