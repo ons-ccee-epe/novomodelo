@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use novomodelo_core::scenario::LoadModel;
-use novomodelo_core::{EntityId, Hydro, ResolvedBounds, System};
+use novomodelo_core::{EntityId, Hydro, ResolvedBounds, System, TailraceFlowInfluence};
 #[cfg(any(test, feature = "test-support"))]
 use novomodelo_core::{Stage, StageId};
 use novomodelo_io::StageIdResolver;
@@ -22,12 +22,12 @@ use crate::hydro_models::EvaporationModelSet;
 use crate::hydro_models::{ProductionModelSet, ResolvedProductionModel};
 #[cfg(any(test, feature = "test-support"))]
 use crate::inflow_method::InflowNonNegativityMethod;
-use crate::lp::builder::LpBuildInputs;
+use crate::lp::builder::{LpBuildInputs, ResolvedTailraceLateral};
 #[cfg(any(test, feature = "test-support"))]
 use crate::lp::builder::{StageTemplates, build_stage_templates};
 #[cfg(any(test, feature = "test-support"))]
 use crate::lp::indexer::StateSpace;
-use crate::lp::indexer::{EntityPositions, HydroCellIndex, StudyDimensions};
+use crate::lp::indexer::{EntityPositions, HydroCellIndex, HydroSys, StudyDimensions};
 use crate::policy::resolved_generic_coefficients::ResolvedGenericCoefficients;
 use crate::resolved_parameters::ResolvedParameters;
 use crate::time_value::TimeValue;
@@ -153,6 +153,46 @@ fn resolve_diversion_upstream(hydros: &[Hydro]) -> HashMap<EntityId, Vec<usize>>
     diversion_upstream
 }
 
+/// Each hydro's tailrace-flow terms with influencing plants resolved to
+/// system indices, one record per hydro in slice order.
+///
+/// An id naming no hydro is skipped: the loader refuses it before setup.
+pub(crate) fn resolve_tailrace_lateral(hydros: &[Hydro]) -> Vec<ResolvedTailraceLateral> {
+    // The slice is ordered by (operational_start_date, id), not by id alone.
+    let index_of: HashMap<EntityId, usize> = hydros
+        .iter()
+        .enumerate()
+        .map(|(h_idx, hydro)| (hydro.id, h_idx))
+        .collect();
+    let resolve = |influences: &[TailraceFlowInfluence]| -> Vec<(HydroSys, f64)> {
+        let resolved: Vec<(HydroSys, f64)> = influences
+            .iter()
+            .filter_map(|influence| {
+                index_of
+                    .get(&influence.hydro_id)
+                    .map(|&h_idx| (HydroSys::new(h_idx), influence.factor))
+            })
+            .collect();
+        debug_assert_eq!(
+            resolved.len(),
+            influences.len(),
+            "a tailrace influence names no hydro"
+        );
+        resolved
+    };
+    hydros
+        .iter()
+        .map(|hydro| {
+            let flow = &hydro.tailrace_flow;
+            ResolvedTailraceLateral {
+                own_outflow_factor: flow.own_outflow_factor,
+                outflow: resolve(&flow.outflow_influences),
+                incremental_inflow: resolve(&flow.incremental_inflow_influences),
+            }
+        })
+        .collect()
+}
+
 /// Per-stage hydro productivities (MW per m³/s), over `(0..n_study) ×
 /// (0..n_hydros)`; FPHA hydros carry `0.0`.
 fn resolve_hydro_productivities_per_stage(
@@ -197,6 +237,7 @@ pub(crate) fn resolve_lp_build_inputs<'a>(
         filling_v_target: resolve_filling_v_target(system),
         deterministic_load_models: resolve_deterministic_load_models(system, load_bus_ids),
         diversion_upstream: resolve_diversion_upstream(system.hydros()),
+        tailrace_lateral: resolve_tailrace_lateral(system.hydros()),
         hydro_productivities_per_stage: resolve_hydro_productivities_per_stage(
             n_study,
             system.hydros().len(),
@@ -328,11 +369,14 @@ mod tests {
     use novomodelo_core::{
         BoundsCountsSpec, BoundsDefaults, ContractBlockBounds, EntityId, FillingConfig, Hydro,
         HydroBlockBounds, HydroGenerationModel, HydroPenalties, HydroStageBounds, LineBlockBounds,
-        PumpingBlockBounds, ResolvedBounds, ThermalBlockBounds,
+        PumpingBlockBounds, ResolvedBounds, TailraceFlow, TailraceFlowInfluence,
+        ThermalBlockBounds,
     };
 
-    use super::build_filling_v_target;
+    use super::{build_filling_v_target, resolve_tailrace_lateral};
     use crate::block_clock::M3S_TO_HM3;
+    use crate::lp::builder::ResolvedTailraceLateral;
+    use crate::lp::indexer::HydroSys;
 
     fn default_hydro_bounds() -> HydroStageBounds {
         HydroStageBounds {
@@ -414,6 +458,7 @@ mod tests {
                 filling_min_rate_m3s: 0.0,
             }),
             penalties: hydro_penalties_zero(),
+            tailrace_flow: TailraceFlow::default(),
         };
         hydro.declare_mirror_unit_group(EntityId(1));
         hydro
@@ -582,6 +627,70 @@ mod tests {
         assert!(
             v_target.is_empty(),
             "non-filling hydro ⇒ empty V_target map"
+        );
+    }
+
+    #[test]
+    fn resolve_tailrace_lateral_maps_ids_to_system_indices() {
+        let mut hydros: Vec<Hydro> = [10, 20, 30]
+            .into_iter()
+            .map(|id| vtarget_filling_hydro(id, 1, 2))
+            .collect();
+        hydros[2].tailrace_flow = TailraceFlow {
+            own_outflow_factor: 1.03,
+            outflow_influences: vec![TailraceFlowInfluence {
+                hydro_id: EntityId(10),
+                factor: 1.17,
+            }],
+            incremental_inflow_influences: vec![TailraceFlowInfluence {
+                hydro_id: EntityId(20),
+                factor: 0.07,
+            }],
+        };
+
+        let resolved = resolve_tailrace_lateral(&hydros);
+
+        assert_eq!(
+            resolved,
+            vec![
+                ResolvedTailraceLateral::undeclared(),
+                ResolvedTailraceLateral::undeclared(),
+                ResolvedTailraceLateral {
+                    own_outflow_factor: 1.03,
+                    outflow: vec![(HydroSys::new(0), 1.17)],
+                    incremental_inflow: vec![(HydroSys::new(1), 0.07)],
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn resolve_tailrace_lateral_finds_hydros_ordered_by_start_date_before_id() {
+        let mut hydros: Vec<Hydro> = [30, 10, 20]
+            .into_iter()
+            .map(|id| vtarget_filling_hydro(id, 1, 2))
+            .collect();
+        hydros[0].operational_start_date = NaiveDate::from_ymd_opt(2020, 1, 1).unwrap();
+        hydros[2].tailrace_flow = TailraceFlow {
+            own_outflow_factor: 1.0,
+            outflow_influences: vec![
+                TailraceFlowInfluence {
+                    hydro_id: EntityId(10),
+                    factor: 0.5,
+                },
+                TailraceFlowInfluence {
+                    hydro_id: EntityId(30),
+                    factor: 0.25,
+                },
+            ],
+            incremental_inflow_influences: Vec::new(),
+        };
+
+        let resolved = resolve_tailrace_lateral(&hydros);
+
+        assert_eq!(
+            resolved[2].outflow,
+            vec![(HydroSys::new(1), 0.5), (HydroSys::new(0), 0.25)]
         );
     }
 }

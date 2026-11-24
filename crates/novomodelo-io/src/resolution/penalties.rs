@@ -57,7 +57,7 @@ pub struct PenaltiesOverrides<'a> {
 /// ```
 /// use chrono::NaiveDate;
 /// use novomodelo_core::EntityId;
-/// use novomodelo_core::entities::{Bus, DeficitSegment, Hydro, HydroPenalties, HydroGenerationModel, Line, NonControllableSource};
+/// use novomodelo_core::entities::{Bus, DeficitSegment, Hydro, HydroPenalties, HydroGenerationModel, Line, NonControllableSource, TailraceFlow};
 /// use novomodelo_io::constraints::HydroPenaltyOverrideRow;
 /// use novomodelo_io::resolution::{resolve_penalties, PenaltiesEntitySlices, PenaltiesOverrides};
 ///
@@ -109,6 +109,7 @@ pub struct PenaltiesOverrides<'a> {
 ///     diversion: None,
 ///     filling: None,
 ///     penalties,
+///     tailrace_flow: TailraceFlow::default(),
 /// };
 ///
 /// let hydros = vec![make_hydro(0), make_hydro(1)];
@@ -423,6 +424,7 @@ mod tests {
     use chrono::NaiveDate;
     use novomodelo_core::entities::{
         Bus, DeficitSegment, HydroGenerationModel, HydroPenalties, Line, NonControllableSource,
+        TailraceFlow,
     };
     use novomodelo_core::{HydroPenaltyOverrides, resolve_hydro_penalties};
 
@@ -513,6 +515,7 @@ mod tests {
                 evaporation_violation_neg_cost: penalty_value,
                 inflow_nonnegativity_cost: 1000.0,
             },
+            tailrace_flow: TailraceFlow::default(),
         }
     }
 
@@ -563,6 +566,7 @@ mod tests {
                 evaporation_violation_neg_cost: 150.0,
                 inflow_nonnegativity_cost: 1000.0,
             },
+            tailrace_flow: TailraceFlow::default(),
         }
     }
 

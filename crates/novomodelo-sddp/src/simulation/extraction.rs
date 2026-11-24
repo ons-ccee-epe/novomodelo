@@ -1059,6 +1059,9 @@ fn extract_hydro_per_block<'a>(
                 .integrated_accumulated_productivity_mw_per_m3s,
             stored_energy_initial_mw,
             stored_energy_final_mw,
+            tailrace_flow_m3s: None,
+            tailrace_level_m: None,
+            net_head_m: None,
         }
     })
 }
@@ -2005,6 +2008,9 @@ mod transit_seed_tests {
             integrated_accumulated_productivity_mw_per_m3s: 0.0,
             stored_energy_initial_mw: 0.0,
             stored_energy_final_mw: 0.0,
+            tailrace_flow_m3s: None,
+            tailrace_level_m: None,
+            net_head_m: None,
         }
     }
 

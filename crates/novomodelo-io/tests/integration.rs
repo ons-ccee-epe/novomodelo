@@ -1078,6 +1078,9 @@ fn make_hydro_write_record(
         integrated_accumulated_productivity_mw_per_m3s: 0.0,
         stored_energy_initial_mw: 0.0,
         stored_energy_final_mw: 0.0,
+        tailrace_flow_m3s: None,
+        tailrace_level_m: None,
+        net_head_m: None,
     }
 }
 

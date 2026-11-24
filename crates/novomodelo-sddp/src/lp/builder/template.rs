@@ -437,7 +437,7 @@ fn build_template_build_ctx<'a>(
     topology: &'a TransitBucketTopology,
     inputs: &'a LpBuildInputs<'a>,
 ) -> TemplateBuildCtx<'a> {
-    TemplateBuildCtx {
+    let ctx = TemplateBuildCtx {
         hydros: system.hydros(),
         thermals: system.thermals(),
         lines: system.lines(),
@@ -468,7 +468,14 @@ fn build_template_build_ctx<'a>(
         time_value: inputs.time_value,
         filling_v_target: &inputs.filling_v_target,
         topology,
-    }
+        tailrace_lateral: &inputs.tailrace_lateral,
+    };
+    debug_assert_eq!(
+        ctx.tailrace_lateral.len(),
+        ctx.hydros.len(),
+        "one tailrace-flow record per hydro"
+    );
+    ctx
 }
 
 /// Transpose the per-stage `Vec<StageBuildOutput>` into the parallel per-stage

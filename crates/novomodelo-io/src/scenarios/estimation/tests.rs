@@ -12,7 +12,9 @@
 
 use super::*;
 use novomodelo_core::scenario::{CorrelationModel, InflowModel};
-use novomodelo_core::{EntityId, Hydro, HydroPenalties, SeasonMap, Stage, SystemBuilder};
+use novomodelo_core::{
+    EntityId, Hydro, HydroPenalties, SeasonMap, Stage, SystemBuilder, TailraceFlow,
+};
 use novomodelo_stochastic::PrecomputedPar;
 
 fn minimal_system_with_inflow_models(models: Vec<InflowModel>) -> System {
@@ -950,6 +952,7 @@ fn build_partial_year_system_with_user_stats() -> System {
             evaporation_violation_neg_cost: 0.0,
             inflow_nonnegativity_cost: 1000.0,
         },
+        tailrace_flow: TailraceFlow::default(),
     };
     hydro.declare_mirror_unit_group(EntityId(10));
 
@@ -1805,6 +1808,7 @@ fn make_hydro(hydro_id: EntityId, bus_id: EntityId) -> Hydro {
             evaporation_violation_neg_cost: 0.0,
             inflow_nonnegativity_cost: 1000.0,
         },
+        tailrace_flow: TailraceFlow::default(),
     };
     hydro.declare_mirror_unit_group(bus_id);
     hydro

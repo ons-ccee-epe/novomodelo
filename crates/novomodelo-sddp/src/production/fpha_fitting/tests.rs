@@ -1,6 +1,6 @@
 use novomodelo_core::{
     EfficiencyModel, EntityId, HydraulicLossesModel, Hydro, HydroGenerationModel, HydroPenalties,
-    TailraceModel, TailracePoint,
+    TailraceFlow, TailraceModel, TailracePoint,
 };
 use novomodelo_io::PlaneReductionConfig;
 use novomodelo_io::extensions::{
@@ -389,47 +389,13 @@ fn interpolation_second_segment_correct() {
 
 /// A 2-point ForebayTable returning a constant 400 m for all v.
 fn flat_forebay_400m() -> ForebayTable {
-    ForebayTable::new(
-        &[
-            HydroGeometryRow {
-                hydro_id: EntityId::from(1),
-                volume_hm3: 0.0,
-                height_m: 400.0,
-                area_km2: 0.0,
-            },
-            HydroGeometryRow {
-                hydro_id: EntityId::from(1),
-                volume_hm3: 20_000.0,
-                height_m: 400.0,
-                area_km2: 0.0,
-            },
-        ],
-        "TestPlant",
-    )
-    .unwrap()
+    ForebayTable::new(&[row(0.0, 400.0), row(20_000.0, 400.0)], "TestPlant").unwrap()
 }
 
 /// Build a sloped ForebayTable: h_fore = 380 + v * 2e-3 m (slope = 2e-3 m/hm3).
 /// At v = 10000 hm3: h_fore = 380 + 10000 * 2e-3 = 400 m.
 fn sloped_forebay() -> ForebayTable {
-    ForebayTable::new(
-        &[
-            HydroGeometryRow {
-                hydro_id: EntityId::from(1),
-                volume_hm3: 0.0,
-                height_m: 380.0,
-                area_km2: 0.0,
-            },
-            HydroGeometryRow {
-                hydro_id: EntityId::from(1),
-                volume_hm3: 10_000.0,
-                height_m: 400.0,
-                area_km2: 0.0,
-            },
-        ],
-        "TestPlant",
-    )
-    .unwrap()
+    ForebayTable::new(&[row(0.0, 380.0), row(10_000.0, 400.0)], "TestPlant").unwrap()
 }
 
 /// A linear tailrace `h = (5.5 / 3000)·q`, giving `h_tail = 5.5 m` at q = 3000.
@@ -437,26 +403,6 @@ fn linear_tailrace_5_5_at_3000() -> TailraceModel {
     let slope = 5.5 / 3000.0;
     TailraceModel::Polynomial {
         coefficients: vec![0.0, slope],
-    }
-}
-
-/// Build the 3-point piecewise tailrace from the existing test helper (reused).
-fn piecewise_tailrace() -> TailraceModel {
-    TailraceModel::Piecewise {
-        points: vec![
-            TailracePoint {
-                outflow_m3s: 0.0,
-                height_m: 3.0,
-            },
-            TailracePoint {
-                outflow_m3s: 5000.0,
-                height_m: 4.5,
-            },
-            TailracePoint {
-                outflow_m3s: 15_000.0,
-                height_m: 6.2,
-            },
-        ],
     }
 }
 
@@ -502,7 +448,7 @@ fn net_head_polynomial_tailrace_constant_losses() {
 #[test]
 fn net_head_piecewise_tailrace_factor_losses() {
     let forebay = flat_forebay_400m();
-    let tailrace = piecewise_tailrace();
+    let tailrace = three_point_piecewise();
     let losses = HydraulicLossesModel::Factor { value: 0.03 };
     let pf = ProductionFunction::new(
         forebay,
@@ -569,9 +515,9 @@ fn evaluate_known_value() {
 
 // ── Helpers for resolve_fitting_bounds tests ──────────────────────────────
 
-/// Build a minimal `Hydro` with the given storage bounds.
-fn make_hydro(min_storage_hm3: f64, max_storage_hm3: f64) -> Hydro {
-    let zero_penalties = HydroPenalties {
+/// All-zero penalties, except the inflow non-negativity cost.
+fn zero_hydro_penalties() -> HydroPenalties {
+    HydroPenalties {
         spillage_cost: 0.0,
         diversion_cost: 0.0,
         turbined_cost: 0.0,
@@ -589,7 +535,12 @@ fn make_hydro(min_storage_hm3: f64, max_storage_hm3: f64) -> Hydro {
         evaporation_violation_pos_cost: 0.0,
         evaporation_violation_neg_cost: 0.0,
         inflow_nonnegativity_cost: 1000.0,
-    };
+    }
+}
+
+/// Build a minimal `Hydro` with the given storage bounds.
+fn make_hydro(min_storage_hm3: f64, max_storage_hm3: f64) -> Hydro {
+    let zero_penalties = zero_hydro_penalties();
     let mut hydro = Hydro {
         unit_groups: Vec::new(),
         id: EntityId::from(1),
@@ -617,6 +568,7 @@ fn make_hydro(min_storage_hm3: f64, max_storage_hm3: f64) -> Hydro {
         diversion: None,
         filling: None,
         penalties: zero_penalties,
+        tailrace_flow: TailraceFlow::default(),
     };
     hydro.declare_mirror_unit_group(EntityId::from(10));
     hydro
@@ -1144,25 +1096,7 @@ fn validate_fitted_planes_near_zero_gamma_s_within_tolerance_passes() {
 
 /// Build a Hydro entity with Sobradinho-style geometry and optional models.
 fn make_sobradinho_hydro() -> Hydro {
-    let zero_penalties = HydroPenalties {
-        spillage_cost: 0.0,
-        diversion_cost: 0.0,
-        turbined_cost: 0.0,
-        storage_violation_below_cost: 0.0,
-        filling_target_violation_cost: 0.0,
-        turbined_violation_below_cost: 0.0,
-        outflow_violation_below_cost: 0.0,
-        outflow_violation_above_cost: 0.0,
-        generation_violation_below_cost: 0.0,
-        fpha_violation_cost: 0.0,
-        evaporation_violation_cost: 0.0,
-        water_withdrawal_violation_cost: 0.0,
-        water_withdrawal_violation_pos_cost: 0.0,
-        water_withdrawal_violation_neg_cost: 0.0,
-        evaporation_violation_pos_cost: 0.0,
-        evaporation_violation_neg_cost: 0.0,
-        inflow_nonnegativity_cost: 1000.0,
-    };
+    let zero_penalties = zero_hydro_penalties();
     let mut hydro = Hydro {
         unit_groups: Vec::new(),
         id: EntityId::from(1),
@@ -1192,6 +1126,7 @@ fn make_sobradinho_hydro() -> Hydro {
         diversion: None,
         filling: None,
         penalties: zero_penalties,
+        tailrace_flow: TailraceFlow::default(),
     };
     hydro.declare_mirror_unit_group(EntityId::from(10));
     hydro
@@ -1205,22 +1140,7 @@ fn make_sobradinho_hydro() -> Hydro {
 /// pointwise outer-approximation guarantee is owned by the `hull_fit` unit tests.
 #[test]
 fn fit_fpha_planes_sobradinho_style_end_to_end() {
-    let rows = sobradinho_rows();
-    let hydro = make_sobradinho_hydro();
-    let config = default_config();
-
-    let result = fit_fpha_planes(
-        &rows,
-        &hydro,
-        &config,
-        0.0,
-        TailraceSource::Entity(hydro.tailrace.clone()),
-        None,
-        1,
-        0,
-        false,
-    )
-    .expect("fit_fpha_planes should succeed");
+    let result = fit_sobradinho(&make_sobradinho_hydro());
     let planes = &result.planes;
 
     // The hull yields at least one upper-envelope face for a realistic hydro.
@@ -1250,6 +1170,131 @@ fn fit_fpha_planes_sobradinho_style_end_to_end() {
     }
 }
 
+/// The tailrace is read at `f·q + L`, so the net head over a linear tailrace and
+/// lossless penstock is `h_fore(v) − (a₀ + a₁·(f·q + L))`.
+#[test]
+fn net_head_reads_the_tailrace_at_the_scaled_own_outflow_plus_lateral_flow() {
+    let forebay = ForebayTable::new(&sobradinho_rows(), "Linear").expect("valid VHA curve");
+    let (a0, a1, own_outflow_factor) = (5.0, 0.001, 1.03);
+    let pf = ProductionFunction::new(
+        forebay.clone(),
+        TailraceSource::Entity(Some(TailraceModel::Polynomial {
+            coefficients: vec![a0, a1],
+        })),
+        None,
+        None,
+        3_000.0,
+        "Linear".to_owned(),
+    )
+    .with_own_outflow_factor(own_outflow_factor);
+
+    for (v, q, lateral_flow) in [
+        (10_000.0, 0.0, 0.0),
+        (10_000.0, 1_500.0, 0.0),
+        (24_500.0, 1_500.0, 800.0),
+        (34_116.0, 3_000.0, 2_500.0),
+    ] {
+        let expected = forebay.height(v) - (a0 + a1 * (own_outflow_factor * q + lateral_flow));
+        let net_head = pf.net_head(v, q, lateral_flow);
+        assert!(
+            (net_head - expected).abs() < 1e-12,
+            "v={v}, q={q}, lateral_flow={lateral_flow}: net_head={net_head}, expected={expected}"
+        );
+    }
+}
+
+fn fit_sobradinho(hydro: &Hydro) -> FphaFitResult {
+    fit_fpha_planes(
+        &sobradinho_rows(),
+        hydro,
+        &default_config(),
+        0.0,
+        TailraceSource::Entity(hydro.tailrace.clone()),
+        None,
+        1,
+        0,
+        false,
+    )
+    .expect("fit should succeed")
+}
+
+fn with_own_factor(mut hydro: Hydro, own_outflow_factor: f64) -> Hydro {
+    hydro.tailrace_flow = TailraceFlow {
+        own_outflow_factor,
+        ..TailraceFlow::default()
+    };
+    hydro
+}
+
+fn plane_bits(fit: &FphaFitResult) -> Vec<[u64; 4]> {
+    fit.planes
+        .iter()
+        .map(|p| [p.intercept, p.gamma_v, p.gamma_q, p.gamma_s].map(f64::to_bits))
+        .collect()
+}
+
+/// A declared factor of exactly `1.0` is `1.0 * q`, bit for bit the undeclared fit.
+#[test]
+fn fit_with_unit_own_factor_matches_the_undeclared_fit() {
+    let undeclared = fit_sobradinho(&make_sobradinho_hydro());
+    let explicit = fit_sobradinho(&with_own_factor(make_sobradinho_hydro(), 1.0));
+
+    assert_eq!(plane_bits(&undeclared), plane_bits(&explicit));
+    assert_eq!(undeclared.alpha.to_bits(), explicit.alpha.to_bits());
+}
+
+/// The retained function reads the tailrace at `f·q + L` and takes the net head
+/// from that level, so the three published values share one code path.
+#[test]
+fn tailrace_methods_compose_into_net_head() {
+    let hydro = with_own_factor(make_sobradinho_hydro(), 1.2);
+    let function = fit_sobradinho(&hydro)
+        .production_function
+        .expect("a computed fit keeps its production function");
+    let (q, lateral_flow, v) = (1_000.0, 250.0, 17_058.0);
+
+    assert_eq!(function.tailrace_flow(q, lateral_flow), 1_450.0);
+
+    let level = evaluate_tailrace(hydro.tailrace.as_ref().unwrap(), 1_450.0);
+    assert_eq!(function.tailrace_level(1_450.0), level);
+
+    let gross_head = sobradinho_forebay().height(v) - level;
+    let losses = evaluate_losses(hydro.hydraulic_losses.as_ref().unwrap(), gross_head, q);
+    assert_eq!(
+        function.net_head(v, q, lateral_flow),
+        (gross_head - losses).max(0.0)
+    );
+}
+
+/// The hull runs at `L = 0`, so a factor above one reads the tailrace higher at
+/// every `q` and the fitted `γ_q` falls. The generation cap is lifted: it would
+/// otherwise pin the largest `γ_q` at its own slope for every factor.
+#[test]
+fn own_factor_above_one_lowers_gamma_q() {
+    let max_gamma_q = |fit: &FphaFitResult| {
+        fit.planes
+            .iter()
+            .map(|plane| plane.gamma_q)
+            .fold(f64::NEG_INFINITY, f64::max)
+    };
+    let mut uncapped = make_sobradinho_hydro();
+    uncapped.max_generation_mw = f64::INFINITY;
+    let undeclared = fit_sobradinho(&uncapped);
+    let scaled = fit_sobradinho(&with_own_factor(uncapped, 1.2));
+
+    assert_ne!(
+        plane_bits(&undeclared),
+        plane_bits(&scaled),
+        "the planes must differ"
+    );
+    assert!(
+        max_gamma_q(&scaled) < max_gamma_q(&undeclared),
+        "max gamma_q {} must fall below the undeclared fit's {}",
+        max_gamma_q(&scaled),
+        max_gamma_q(&undeclared)
+    );
+}
+
 /// A computed-FPHA fixture with a spillage-sensitive tailrace yields planes
 /// with `γ_S < 0` that still form a valid outer approximation.
 ///
@@ -1260,22 +1305,7 @@ fn fit_fpha_planes_sobradinho_style_end_to_end() {
 /// fitted negative `γ_S`.
 #[test]
 fn fit_fpha_planes_spill_sensitive_yields_negative_gamma_s() {
-    let rows = sobradinho_rows();
-    let hydro = make_sobradinho_hydro();
-    let config = default_config();
-
-    let result = fit_fpha_planes(
-        &rows,
-        &hydro,
-        &config,
-        0.0,
-        TailraceSource::Entity(hydro.tailrace.clone()),
-        None,
-        1,
-        0,
-        false,
-    )
-    .expect("fit should succeed");
+    let result = fit_sobradinho(&make_sobradinho_hydro());
     let planes = &result.planes;
     assert!(!planes.is_empty(), "expected at least one plane");
 
@@ -1542,22 +1572,7 @@ fn reduce_planes_keeps_every_plane_at_or_above_zero_at_the_window_corner() {
 /// Fit_fpha_planes intercepts are finite for the Sobradinho fixture.
 #[test]
 fn fit_fpha_planes_intercepts_are_finite() {
-    let rows = sobradinho_rows();
-    let hydro = make_sobradinho_hydro();
-    let config = default_config();
-
-    let result = fit_fpha_planes(
-        &rows,
-        &hydro,
-        &config,
-        0.0,
-        TailraceSource::Entity(hydro.tailrace.clone()),
-        None,
-        1,
-        0,
-        false,
-    )
-    .expect("fit should succeed");
+    let result = fit_sobradinho(&make_sobradinho_hydro());
 
     for (idx, plane) in result.planes.iter().enumerate() {
         assert!(
@@ -1617,20 +1632,7 @@ fn fit_fpha_planes_turbined_fit_max_bounds_flow_axis() {
 fn fit_fpha_planes_run_of_river_yields_zero_gamma_v_end_to_end() {
     // Flat forebay over the whole band (no storage head gain) + the Sobradinho
     // tailrace (head drops with outflow) → strictly concave in Q, flat in V.
-    let flat_rows = vec![
-        HydroGeometryRow {
-            hydro_id: EntityId::from(1),
-            volume_hm3: 0.0,
-            height_m: 400.0,
-            area_km2: 0.0,
-        },
-        HydroGeometryRow {
-            hydro_id: EntityId::from(1),
-            volume_hm3: 5_000.0,
-            height_m: 400.0,
-            area_km2: 0.0,
-        },
-    ];
+    let flat_rows = vec![row(0.0, 400.0), row(5_000.0, 400.0)];
     let mut hydro = make_sobradinho_hydro();
     hydro.name = "RunOfRiver".to_owned();
     // Run-of-river: no useful storage.
@@ -1678,39 +1680,8 @@ fn fit_fpha_planes_run_of_river_yields_zero_gamma_v_end_to_end() {
 /// produces exactly 1 plane.
 #[test]
 fn fit_fpha_planes_linear_function_produces_one_plane() {
-    let flat_rows = vec![
-        HydroGeometryRow {
-            hydro_id: EntityId::from(1),
-            volume_hm3: 0.0,
-            height_m: 400.0,
-            area_km2: 0.0,
-        },
-        HydroGeometryRow {
-            hydro_id: EntityId::from(1),
-            volume_hm3: 20_000.0,
-            height_m: 400.0,
-            area_km2: 0.0,
-        },
-    ];
-    let zero_penalties = HydroPenalties {
-        spillage_cost: 0.0,
-        diversion_cost: 0.0,
-        turbined_cost: 0.0,
-        storage_violation_below_cost: 0.0,
-        filling_target_violation_cost: 0.0,
-        turbined_violation_below_cost: 0.0,
-        outflow_violation_below_cost: 0.0,
-        outflow_violation_above_cost: 0.0,
-        generation_violation_below_cost: 0.0,
-        fpha_violation_cost: 0.0,
-        evaporation_violation_cost: 0.0,
-        water_withdrawal_violation_cost: 0.0,
-        water_withdrawal_violation_pos_cost: 0.0,
-        water_withdrawal_violation_neg_cost: 0.0,
-        evaporation_violation_pos_cost: 0.0,
-        evaporation_violation_neg_cost: 0.0,
-        inflow_nonnegativity_cost: 1000.0,
-    };
+    let flat_rows = vec![row(0.0, 400.0), row(20_000.0, 400.0)];
+    let zero_penalties = zero_hydro_penalties();
     let mut hydro = Hydro {
         unit_groups: Vec::new(),
         id: EntityId::from(1),
@@ -1738,6 +1709,7 @@ fn fit_fpha_planes_linear_function_produces_one_plane() {
         diversion: None,
         filling: None,
         penalties: zero_penalties,
+        tailrace_flow: TailraceFlow::default(),
     };
     hydro.declare_mirror_unit_group(EntityId::from(10));
     let config = default_config();
@@ -1815,12 +1787,7 @@ fn fit_fpha_planes_propagates_forebay_error_on_empty_rows() {
 /// no `DegenerateProductionCloud`.
 #[test]
 fn single_volume_run_of_river_fits_with_zero_gamma_v() {
-    let rows = vec![HydroGeometryRow {
-        hydro_id: EntityId::from(1),
-        volume_hm3: 1500.0,
-        height_m: 386.5,
-        area_km2: 0.0,
-    }];
+    let rows = vec![row(1500.0, 386.5)];
     let mut hydro = make_sobradinho_hydro();
     hydro.min_storage_hm3 = 1_500.0;
     hydro.max_storage_hm3 = 1_500.0;
@@ -1993,22 +1960,7 @@ fn display_invalid_coefficient_contains_name_and_index_and_detail() {
 /// divide cleanly by α (the single correction factor) in the Sobradinho fixture.
 #[test]
 fn fit_fpha_planes_result_alpha_positive_and_intercept_consistent() {
-    let rows = sobradinho_rows();
-    let hydro = make_sobradinho_hydro();
-    let config = default_config();
-
-    let result = fit_fpha_planes(
-        &rows,
-        &hydro,
-        &config,
-        0.0,
-        TailraceSource::Entity(hydro.tailrace.clone()),
-        None,
-        1,
-        0,
-        false,
-    )
-    .expect("fit should succeed");
+    let result = fit_sobradinho(&make_sobradinho_hydro());
 
     // alpha must be finite and strictly positive.
     assert!(

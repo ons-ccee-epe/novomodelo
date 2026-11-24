@@ -318,16 +318,13 @@ fn push_plant_release(
     coeff: f64,
     col_entries: &mut [Vec<(usize, f64)>],
 ) {
-    for c in ctx.hydro_cell_index.cells_of(HydroSys::new(u_idx)) {
-        col_entries[layout
-            .geometry
-            .turbine_col(HydroCell::new(c), BlockIdx::new(blk))]
-        .push((row, coeff));
+    for col in layout.geometry.plant_release_cols(
+        ctx.hydro_cell_index,
+        HydroSys::new(u_idx),
+        BlockIdx::new(blk),
+    ) {
+        col_entries[col].push((row, coeff));
     }
-    col_entries[layout
-        .geometry
-        .spillage_col(HydroSys::new(u_idx), BlockIdx::new(blk))]
-    .push((row, coeff));
 }
 
 /// One upstream release's per-block contribution to the downstream water balance
@@ -1005,12 +1002,21 @@ pub(super) fn fill_load_balance_entries(
 }
 
 /// Fill FPHA hyperplane constraint entries, one row per `(FPHA cell, block, plane)`,
-/// implementing `g_c − ε_c − σ_c·γᵥ/2·v − σ_c·γᵥ/2·v_in − γ_q·q_c − σ_c·γ_s·s ≤ σ_c·γ₀`
+/// implementing `g_c − ε_c − σ_c·γᵥ/2·v − σ_c·γᵥ/2·v_in − γ_q·q_c − σ_c·γ_s·L ≤ σ_c·γ₀`
 /// (`σ_c·γ₀` in the row upper bound set by `rows::fill_fpha_rows`). `ε_c` is the
 /// cell-and-block plane slack (`StageGeometry::fpha_slack`), `−1` unscaled in
 /// every plane row of that cell and block and in no other row. `σ_c`
 /// apportions the plane's flow-independent part by the cell's share of the plant's
 /// declared maximum turbined flow; `γ_q` stays unscaled on the cell's own flow `q_c`.
+///
+/// `L` is the plant's tailrace flow `f_i·s_i + Σ_j f_ij·(Σ_c q_j,c + s_j) + Σ_k f_ik·z_k`,
+/// and each of its three terms takes the `σ_c·γ_s` slope. The own spillage column
+/// carries `f_i`, always pushed: `1.0` for an undeclared plant gives the bits of
+/// the plain `σ_c·γ_s` entry. Each outflow influence `j` lands its factor on every
+/// column of `j`'s release in the block. Each incremental-inflow influence `k`
+/// (possibly the plant itself) is recorded into `sink`, the only route for `z_k`,
+/// and lands on `k`'s inflow-slack column under the truncation methods only. An
+/// influence entry whose coefficient is exactly `0.0` is skipped.
 ///
 /// FPHA uses AVERAGE storage `(V_in + V_out)/2`, so `−σ_c·γᵥ/2` lands on BOTH the
 /// outgoing- and incoming-storage columns. Putting it on `V_out` alone compiles and
@@ -1027,6 +1033,7 @@ pub(super) fn fill_fpha_entries(
     stage: &Stage,
     stage_idx: usize,
     layout: &StageLayout,
+    sink: &mut InflowCouplingSink,
     col_entries: &mut [Vec<(usize, f64)>],
 ) {
     let geom = &layout.geometry;
@@ -1056,6 +1063,7 @@ pub(super) fn fill_fpha_entries(
         // flow (only `A ≡ γ₀ + γ_V·V̄ + γ_s·s` fails the homogeneity that makes
         // same-bus aggregation exact — the cell partition's whole safety argument).
         let sigma_c = ctx.hydro_cell_index.share_of(visit.cell);
+        let lateral = &ctx.tailrace_lateral[visit.plant.get()];
 
         col_entries[col_g].push((visit.row, 1.0));
         col_entries[col_slack].push((visit.row, -1.0));
@@ -1064,7 +1072,27 @@ pub(super) fn fill_fpha_entries(
         col_entries[col_v_in].push((visit.row, sigma_c * (-plane.gamma_v / 2.0)));
         col_entries[col_v].push((visit.row, sigma_c * (-plane.gamma_v / 2.0)));
         col_entries[col_q].push((visit.row, -plane.gamma_q));
-        col_entries[col_s].push((visit.row, sigma_c * (-plane.gamma_s)));
+        let unit = sigma_c * (-plane.gamma_s);
+        col_entries[col_s].push((visit.row, unit * lateral.own_outflow_factor));
+        for &(j, factor) in &lateral.outflow {
+            let coeff = unit * factor;
+            if is_exact_zero(coeff) {
+                continue;
+            }
+            for col in geom.plant_release_cols(ctx.hydro_cell_index, j, visit.blk) {
+                col_entries[col].push((visit.row, coeff));
+            }
+        }
+        for &(k, factor) in &lateral.incremental_inflow {
+            let coeff = unit * factor;
+            if is_exact_zero(coeff) {
+                continue;
+            }
+            sink.record(k, visit.row, coeff);
+            if let Some(slack) = geom.effective_inflow_slack_col(ctx.study_dims.inflow_method, k) {
+                col_entries[slack].push((visit.row, coeff));
+            }
+        }
     });
 }
 
@@ -1505,7 +1533,7 @@ pub(super) fn build_stage_matrix_entries(
     fill_anticipated_slot_definition_entries(layout, &mut col_entries);
     fill_load_balance_entries(ctx, stage_idx, layout, &mut col_entries);
     fill_ncs_load_balance_entries(ctx, layout, &mut col_entries);
-    fill_fpha_entries(ctx, stage, stage_idx, layout, &mut col_entries);
+    fill_fpha_entries(ctx, stage, stage_idx, layout, sink, &mut col_entries);
     fill_evaporation_entries(ctx, stage, stage_idx, layout, &mut col_entries);
     fill_operational_violation_entries(ctx, stage_idx, layout, &mut col_entries);
     fill_plant_cap_entries(ctx, stage_idx, layout, &mut col_entries);
@@ -3416,7 +3444,7 @@ mod pumping_water_tests {
         LineBlockBounds, LineStagePenalties, LinearTerm, NcsStagePenalties, PenaltiesCountsSpec,
         PenaltiesDefaults, PenaltyBasis, PumpingBlockBounds, PumpingStation, ResolvedBlockBounds,
         ResolvedBounds, ResolvedGenericConstraintBounds, ResolvedPenalties, SlackConfig, Stage,
-        Thermal, ThermalBlockBounds, VariableRef,
+        TailraceFlow, Thermal, ThermalBlockBounds, VariableRef,
     };
     use novomodelo_io::validation::semantic::envelope_tolerance;
     use novomodelo_stochastic::par::precompute::PrecomputedPar;
@@ -3440,7 +3468,7 @@ mod pumping_water_tests {
     use super::super::columns::{fill_pumping_columns, fill_stage_columns};
     use super::super::delivery_ring::ColumnBufs;
     use super::super::hydro_state::{MaxCap, MinFloor, warn_on_inert_plant_floor_overrides};
-    use super::super::inflow_coupling::InflowCoupling;
+    use super::super::inflow_coupling::{InflowCoupling, InflowCouplingSink};
     use super::super::layout::{StageLayout, TemplateBuildCtx};
     use super::super::rows::fill_stage_rows;
     use super::super::test_support::{
@@ -3492,6 +3520,7 @@ mod pumping_water_tests {
             diversion: None,
             filling: None,
             penalties: zero_hydro_penalties(),
+            tailrace_flow: TailraceFlow::default(),
         };
         hydro.declare_mirror_unit_group(EntityId(1));
         hydro
@@ -7397,7 +7426,8 @@ mod pumping_water_tests {
         let layout = StageLayout::new(&ctx, &stage, 0);
 
         let mut col_entries: Vec<Vec<(usize, f64)>> = vec![Vec::new(); layout.num_cols];
-        fill_fpha_entries(&ctx, &stage, 0, &layout, &mut col_entries);
+        let mut sink = InflowCouplingSink::new(layout.state.hydro_count);
+        fill_fpha_entries(&ctx, &stage, 0, &layout, &mut sink, &mut col_entries);
         let (_row_lower, row_upper) = fill_stage_rows(&ctx, &stage, 0, &layout);
 
         // `assemble_csc` asserts each column is row-ascending, and the plant-level
@@ -7526,7 +7556,8 @@ mod pumping_water_tests {
         let layout = StageLayout::new(&ctx, &stage, 0);
 
         let mut col_entries: Vec<Vec<(usize, f64)>> = vec![Vec::new(); layout.num_cols];
-        fill_fpha_entries(&ctx, &stage, 0, &layout, &mut col_entries);
+        let mut sink = InflowCouplingSink::new(layout.state.hydro_count);
+        fill_fpha_entries(&ctx, &stage, 0, &layout, &mut sink, &mut col_entries);
         let (_row_lower, row_upper) = fill_stage_rows(&ctx, &stage, 0, &layout);
 
         let plant = HydroSys::new(0);
@@ -9250,6 +9281,7 @@ mod pumping_water_tests {
                 filling_min_rate_m3s: 0.0,
             }),
             penalties: zero_hydro_penalties(),
+            tailrace_flow: TailraceFlow::default(),
         };
         hydro.declare_mirror_unit_group(EntityId(1));
         hydro

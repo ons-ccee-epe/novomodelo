@@ -463,7 +463,7 @@ mod tests {
     use novomodelo_core::{
         Block, BlockMode, Bus, DeficitSegment, Hydro, HydroGenerationModel, HydroPenalties,
         NoiseMethod, PostStudyStage, PostStudyStages, ScenarioSourceConfig, Stage, StageRiskConfig,
-        StageStateConfig, SystemBuilder, WaterBucketStages,
+        StageStateConfig, SystemBuilder, TailraceFlow, WaterBucketStages,
     };
 
     fn zero_penalties() -> HydroPenalties {
@@ -520,6 +520,7 @@ mod tests {
             diversion: None,
             filling: None,
             penalties: zero_penalties(),
+            tailrace_flow: TailraceFlow::default(),
         };
         hydro.declare_mirror_unit_group(EntityId(1));
         hydro

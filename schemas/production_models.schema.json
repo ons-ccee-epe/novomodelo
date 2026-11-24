@@ -74,7 +74,7 @@
           "type": "string"
         },
         "spillage_fit_max_m3s": {
-          "description": "Upper end of the spillage range (m³/s) the spillage coefficient is fit\nover. Absent = twice the hydro's long-term mean inflow, or twice its\nmaximum turbined flow when it has no inflow history.",
+          "description": "Upper end (m³/s) of the tailrace lateral-flow range the `gamma_s`\ncoefficient is fitted over (the spill alone when the hydro declares no\n`tailrace_flow` in `system/hydros.json`); lateral flows above it\nextrapolate the plane linearly. Absent = twice the hydro's long-term mean\ninflow, or twice its maximum turbined flow when it has no inflow history.",
           "format": "double",
           "type": [
             "number",

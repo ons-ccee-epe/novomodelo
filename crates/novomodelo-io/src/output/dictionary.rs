@@ -281,6 +281,8 @@ const NAMED_UNITS: &[(&str, &str, &str)] = &[
     ("buses", "spot_price", "$/MWh"),
     ("contracts", "price_per_mwh", "$/MWh"),
     ("hydros", "water_value_per_hm3", "$/hm3"),
+    ("hydros", "tailrace_level_m", "m"),
+    ("hydros", "net_head_m", "m"),
     ("convergence", "lower_bound", "$"),
     ("convergence", "upper_bound", "$"),
     ("convergence", "upper_bound_std", "$"),
@@ -582,6 +584,21 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
         "hydros",
         "water_withdrawal_violation_neg_m3s",
         "Under-withdrawal constraint violation",
+    ),
+    (
+        "hydros",
+        "tailrace_flow_m3s",
+        "Tailrace flow: the hydro's own release scaled by its outflow factor plus the lateral flow of the plants and incremental inflows that influence it; null unless the hydro uses computed FPHA at the stage.",
+    ),
+    (
+        "hydros",
+        "tailrace_level_m",
+        "Tailrace level at the tailrace flow; null unless the hydro uses computed FPHA at the stage.",
+    ),
+    (
+        "hydros",
+        "net_head_m",
+        "Net head: forebay level at the block-average storage minus the tailrace level and hydraulic losses, floored at 0; null unless the hydro uses computed FPHA at the stage.",
     ),
     ("hydro_bus_generation", "stage_id", "Stage index"),
     (
@@ -1344,7 +1361,11 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
     ("fpha_hyperplanes", "gamma_0", "Intercept coefficient"),
     ("fpha_hyperplanes", "gamma_v", "Stored-volume coefficient"),
     ("fpha_hyperplanes", "gamma_q", "Turbined-flow coefficient"),
-    ("fpha_hyperplanes", "gamma_s", "Spillage coefficient"),
+    (
+        "fpha_hyperplanes",
+        "gamma_s",
+        "Tailrace lateral-flow coefficient (spill when no tailrace_flow is declared)",
+    ),
     (
         "fpha_hyperplanes",
         "kappa",
@@ -2091,7 +2112,8 @@ mod tests {
     use novomodelo_core::{
         Block, BlockMode, Bus, ContractType, DeficitSegment, EnergyContract, EntityId, Hydro,
         HydroGenerationModel, HydroPenalties, HydroUnitGroup, Line, NoiseMethod, PumpingStation,
-        ScenarioSourceConfig, Stage, StageRiskConfig, StageStateConfig, SystemBuilder, Thermal,
+        ScenarioSourceConfig, Stage, StageRiskConfig, StageStateConfig, SystemBuilder,
+        TailraceFlow, Thermal,
         resolved::{
             BlockBoundsCountsSpec, BoundsCountsSpec, BoundsDefaults, ContractBlockBounds,
             HydroBlockBounds, HydroStageBounds, HydroUnitGroupBoundsCountsSpec, LineBlockBounds,
@@ -2152,6 +2174,7 @@ mod tests {
             diversion: None,
             filling: None,
             penalties: hydro_penalties_zero(),
+            tailrace_flow: TailraceFlow::default(),
         };
         hydro.declare_mirror_unit_group(EntityId(bus_id));
         hydro
@@ -3026,8 +3049,8 @@ mod tests {
 
         let row_count = rdr.records().count();
         assert_eq!(
-            row_count, 255,
-            "variables.csv must have exactly 255 data rows (one per column across all schemas)"
+            row_count, 258,
+            "variables.csv must have exactly 258 data rows (one per column across all schemas)"
         );
     }
 
@@ -3993,6 +4016,8 @@ mod tests {
         ("buses", "spot_price", "$/MWh"),
         ("contracts", "price_per_mwh", "$/MWh"),
         ("hydros", "water_value_per_hm3", "$/hm3"),
+        ("hydros", "tailrace_level_m", "m"),
+        ("hydros", "net_head_m", "m"),
         ("convergence", "lower_bound", "$"),
         ("convergence", "upper_bound", "$"),
         ("convergence", "upper_bound_std", "$"),
@@ -4385,6 +4410,7 @@ mod tests {
             "(m3/s)/hm3",
             "%",
             "ms",
+            "m",
             "varies",
         ];
         let problems: Vec<String> = registry_columns()
@@ -4570,6 +4596,16 @@ mod tests {
             description_for("costs", "scenario_id"),
             "0-based scenario identifier"
         );
+    }
+
+    #[test]
+    fn tailrace_columns_state_their_null_condition() {
+        for column in ["tailrace_flow_m3s", "tailrace_level_m", "net_head_m"] {
+            assert!(
+                description_for("hydros", column).contains("computed FPHA"),
+                "{column} must state when it is null"
+            );
+        }
     }
 
     #[test]

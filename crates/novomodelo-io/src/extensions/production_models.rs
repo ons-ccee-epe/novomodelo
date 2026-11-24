@@ -175,8 +175,10 @@ pub struct FphaColumnLayout {
     /// Optional fitting window within the plant's storage range; absent = the
     /// whole range, `min_storage_hm3` to `max_storage_hm3`.
     pub fitting_window: Option<FittingWindow>,
-    /// Upper end (m³/s) of the spillage range the spillage coefficient is fit over.
-    /// Finite and `> 0.0` when present.
+    /// Upper end (m³/s) of the tailrace lateral-flow range the `gamma_s`
+    /// coefficient is fitted over (the spill alone when the hydro declares no
+    /// `tailrace_flow` in `system/hydros.json`); lateral flows above it
+    /// extrapolate the plane linearly. Finite and `> 0.0` when present.
     pub spillage_fit_max_m3s: Option<f64>,
     /// Upper end (m³/s) of the turbined-flow range the planes are fit over.
     /// Finite and `> 0.0` when present.
@@ -438,12 +440,12 @@ impl FphaColumnLayout {
         Ok((v_min, v_max))
     }
 
-    /// Resolve the upper end (m³/s) of the spillage range the spillage coefficient
-    /// is fit over: `spillage_fit_max_m3s` when the layout sets it, else twice the
+    /// Resolve the upper end (m³/s) of the tailrace lateral-flow range `gamma_s`
+    /// is fitted over: `spillage_fit_max_m3s` when the layout sets it, else twice the
     /// long-term mean inflow when that is positive, else twice `max_turbined_m3s`.
     ///
     /// The mean test is strict: a hydro without history passes `0.0` and takes the
-    /// turbine-limit fallback, where `>= 0.0` would give a zero spillage range.
+    /// turbine-limit fallback, where `>= 0.0` would give a zero fit range.
     #[must_use]
     pub fn resolve_spillage_fit_max_m3s(
         layout: Option<&Self>,
@@ -671,9 +673,11 @@ struct RawFphaColumnLayout {
     /// `max_storage_hm3`. `system/hydro_geometry.parquet` must cover that
     /// range whether or not a window is set.
     fitting_window: Option<RawFittingWindow>,
-    /// Upper end of the spillage range (m³/s) the spillage coefficient is fit
-    /// over. Absent = twice the hydro's long-term mean inflow, or twice its
-    /// maximum turbined flow when it has no inflow history.
+    /// Upper end (m³/s) of the tailrace lateral-flow range the `gamma_s`
+    /// coefficient is fitted over (the spill alone when the hydro declares no
+    /// `tailrace_flow` in `system/hydros.json`); lateral flows above it
+    /// extrapolate the plane linearly. Absent = twice the hydro's long-term mean
+    /// inflow, or twice its maximum turbined flow when it has no inflow history.
     spillage_fit_max_m3s: Option<f64>,
     /// Upper end of the turbined-flow range (m³/s) the planes are fit over.
     /// Absent = the hydro's maximum turbined flow.

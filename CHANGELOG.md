@@ -11,10 +11,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `system/hydros.json` accepts `tailrace_flow` (`own_outflow_factor`,
+  `outflow_influences`, `incremental_inflow_influences`); bad entries are
+  refused and `validate` warns without FPHA. `simulation/hydros` adds
+  `tailrace_flow_m3s`, `tailrace_level_m` and `net_head_m`.
 - `training.selection.first_iteration_trial_storage` in `config.json`:
   `"storage_grid"` builds the first iteration's cuts at an even grid of
   storage levels instead of the forward passes' storage. `"forward"`, the
   default, keeps the earlier behaviour.
+
+### Changed
+
+- Results change for FPHA hydros declaring `tailrace_flow`: `gamma_s` in
+  `system/fpha_hyperplanes.parquet` and the `fpha_hyperplanes` output is the
+  lateral-flow slope per m3/s (spill slope if none).
 
 ### Removed
 

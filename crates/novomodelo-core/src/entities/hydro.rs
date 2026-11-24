@@ -25,6 +25,57 @@ pub struct DiversionChannel {
     pub max_flow_m3s: Option<f64>,
 }
 
+/// A weighted contribution of another hydro plant's flow to a tailrace flow.
+///
+/// `factor` is a weight, not a share: weights need not sum to one.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct TailraceFlowInfluence {
+    /// Plant whose flow contributes.
+    pub hydro_id: EntityId,
+    /// Dimensionless weight applied to that plant's flow.
+    pub factor: f64,
+}
+
+/// The flow that drives a plant's tailrace level \[m³/s\]:
+///
+/// `own_outflow_factor · (turbined + spilled)`
+/// `+ Σ factor · (outflow of hydro_id)`
+/// `+ Σ factor · (incremental inflow of hydro_id)`.
+///
+/// The default is the inert declaration: the plant's own total outflow, no
+/// influences. Factors are weights, not shares.
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct TailraceFlow {
+    /// Dimensionless weight on the plant's own turbined plus spilled outflow.
+    pub own_outflow_factor: f64,
+    /// Other plants whose outflow adds to the tailrace flow.
+    pub outflow_influences: Vec<TailraceFlowInfluence>,
+    /// Other plants whose incremental inflow adds to the tailrace flow.
+    pub incremental_inflow_influences: Vec<TailraceFlowInfluence>,
+}
+
+impl Default for TailraceFlow {
+    fn default() -> Self {
+        Self {
+            own_outflow_factor: 1.0,
+            outflow_influences: Vec::new(),
+            incremental_inflow_influences: Vec::new(),
+        }
+    }
+}
+
+impl TailraceFlow {
+    /// Puts both influence lists in canonical `hydro_id` order so results do
+    /// not depend on declaration order.
+    pub fn sort_influences(&mut self) {
+        self.outflow_influences.sort_by_key(|i| i.hydro_id.0);
+        self.incremental_inflow_influences
+            .sort_by_key(|i| i.hydro_id.0);
+    }
+}
+
 /// Configuration for a commissioned reservoir that impounds water toward its
 /// dead volume before it begins generating.
 ///
@@ -293,6 +344,9 @@ pub struct Hydro {
     /// Entity-level penalty costs, resolved from the global → entity cascade.
     /// Always populated — falls back to global defaults when no entity override exists.
     pub penalties: HydroPenalties,
+    /// Flow that drives the tailrace level; the default is the plant's own outflow.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub tailrace_flow: TailraceFlow,
 }
 
 const TURBINE_CAPACITY_EPS: f64 = 1e-9;
@@ -389,6 +443,7 @@ mod tests {
             diversion: None,
             filling: None,
             penalties: penalties_all(0.0),
+            tailrace_flow: TailraceFlow::default(),
         };
         hydro.declare_mirror_unit_group(EntityId::from(10));
         hydro
@@ -488,6 +543,7 @@ mod tests {
                 filling_min_rate_m3s: 100.0,
             }),
             penalties: penalties_all(1.0),
+            tailrace_flow: TailraceFlow::default(),
         };
         hydro.declare_mirror_unit_group(EntityId::from(20));
 
@@ -682,6 +738,7 @@ mod tests {
                 evaporation_violation_neg_cost: 7.0,
                 inflow_nonnegativity_cost: 1000.0,
             },
+            tailrace_flow: TailraceFlow::default(),
         };
         hydro.declare_mirror_unit_group(EntityId::from(20));
         let json = serde_json::to_string(&hydro).unwrap();
@@ -1017,6 +1074,39 @@ mod tests {
 
         let ids: Vec<i32> = hydro.unit_groups.iter().map(|g| g.id.0).collect();
         assert_eq!(ids, vec![2, 5, 9]);
+    }
+
+    #[test]
+    fn tailrace_flow_default_is_the_inert_declaration() {
+        let flow = TailraceFlow::default();
+
+        assert_eq!(flow.own_outflow_factor.to_bits(), 1.0_f64.to_bits());
+        assert!(flow.outflow_influences.is_empty());
+        assert!(flow.incremental_inflow_influences.is_empty());
+    }
+
+    #[test]
+    fn sort_influences_orders_both_lists_by_hydro_id() {
+        let influence = |id: i32, factor: f64| TailraceFlowInfluence {
+            hydro_id: EntityId(id),
+            factor,
+        };
+        let mut flow = TailraceFlow {
+            own_outflow_factor: 1.0,
+            outflow_influences: vec![influence(7, 0.7), influence(3, 0.3), influence(5, 0.5)],
+            incremental_inflow_influences: vec![influence(9, 0.9), influence(2, 0.2)],
+        };
+
+        flow.sort_influences();
+
+        assert_eq!(
+            flow.outflow_influences,
+            vec![influence(3, 0.3), influence(5, 0.5), influence(7, 0.7)]
+        );
+        assert_eq!(
+            flow.incremental_inflow_influences,
+            vec![influence(2, 0.2), influence(9, 0.9)]
+        );
     }
 
     /// derived: the rule is a conjunction, so only the quadrant with both limits

@@ -26,6 +26,7 @@ use crate::{
         error::SimulationError,
         extraction::EntityCounts,
         state::{SimulationInputs, SimulationState},
+        tailrace::SimulationTailrace,
     },
     solve::solver_phase::Phase,
     test_support::{self, StageContextFixture, permissive_state_boxes},
@@ -287,7 +288,9 @@ fn make_stochastic_context(n_stages: usize) -> StochasticContext {
     use std::collections::BTreeMap;
 
     use chrono::NaiveDate;
-    use novomodelo_core::entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties};
+    use novomodelo_core::entities::hydro::{
+        Hydro, HydroGenerationModel, HydroPenalties, TailraceFlow,
+    };
     use novomodelo_core::scenario::{
         CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile, InflowModel,
     };
@@ -355,6 +358,7 @@ fn make_stochastic_context(n_stages: usize) -> StochasticContext {
             evaporation_violation_neg_cost: 0.0,
             inflow_nonnegativity_cost: 1000.0,
         },
+        tailrace_flow: TailraceFlow::default(),
     };
     hydro.declare_mirror_unit_group(EntityId(0));
     let make_stage = |idx: usize, id: i32| Stage {
@@ -517,7 +521,9 @@ fn make_stochastic_context_1_hydro_1_load_bus_sim(mean_mw: f64, std_mw: f64) -> 
     use std::collections::BTreeMap;
 
     use chrono::NaiveDate;
-    use novomodelo_core::entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties};
+    use novomodelo_core::entities::hydro::{
+        Hydro, HydroGenerationModel, HydroPenalties, TailraceFlow,
+    };
     use novomodelo_core::scenario::{CorrelationModel, InflowModel, LoadModel};
     use novomodelo_core::temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
@@ -593,6 +599,7 @@ fn make_stochastic_context_1_hydro_1_load_bus_sim(mean_mw: f64, std_mw: f64) -> 
             evaporation_violation_neg_cost: 0.0,
             inflow_nonnegativity_cost: 1000.0,
         },
+        tailrace_flow: TailraceFlow::default(),
     };
     hydro.declare_mirror_unit_group(EntityId(0));
     let stage = Stage {
@@ -739,6 +746,7 @@ fn simulation_load_patches_applied() {
             contract_prices_per_stage: &[Vec::new()],
             contract_slots: &[],
             diversion_upstream: &HashMap::new(),
+            tailrace: &SimulationTailrace::default(),
             hydro_productivities_per_stage: &hprod,
             energy_conversion: &ec,
             hydro_min_storage_hm3: &[0.0],
@@ -891,6 +899,7 @@ fn simulation_no_load_buses_patches_only_inflow_rows() {
             contract_prices_per_stage: &[Vec::new()],
             contract_slots: &[],
             diversion_upstream: &HashMap::new(),
+            tailrace: &SimulationTailrace::default(),
             hydro_productivities_per_stage: &hprod,
             energy_conversion: &ec,
             hydro_min_storage_hm3: &[0.0],
@@ -1009,6 +1018,7 @@ fn simulation_state_set_profile_reaches_current_profile_after_run() {
             contract_prices_per_stage: &[Vec::new()],
             contract_slots: &[],
             diversion_upstream: &HashMap::new(),
+            tailrace: &SimulationTailrace::default(),
             hydro_productivities_per_stage: &hprod,
             energy_conversion: &ec,
             hydro_min_storage_hm3: &[0.0],
@@ -1102,6 +1112,7 @@ fn loaded_template(
                 contract_prices_per_stage: &[Vec::new()],
                 contract_slots: &[],
                 diversion_upstream: &HashMap::new(),
+                tailrace: &SimulationTailrace::default(),
                 hydro_productivities_per_stage: &hprod,
                 energy_conversion: &ec,
                 hydro_min_storage_hm3: &[0.0],
@@ -1247,6 +1258,7 @@ fn simulation_inflow_extraction_unaffected() {
             contract_prices_per_stage: &[Vec::new()],
             contract_slots: &[],
             diversion_upstream: &HashMap::new(),
+            tailrace: &SimulationTailrace::default(),
             hydro_productivities_per_stage: &hprod,
             energy_conversion: &ec,
             hydro_min_storage_hm3: &[0.0],
@@ -1291,7 +1303,9 @@ fn make_stochastic_1h_1s(mean_m3s: f64, std_m3s: f64) -> StochasticContext {
     use std::collections::BTreeMap;
 
     use chrono::NaiveDate;
-    use novomodelo_core::entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties};
+    use novomodelo_core::entities::hydro::{
+        Hydro, HydroGenerationModel, HydroPenalties, TailraceFlow,
+    };
     use novomodelo_core::scenario::{
         CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile, InflowModel,
     };
@@ -1359,6 +1373,7 @@ fn make_stochastic_1h_1s(mean_m3s: f64, std_m3s: f64) -> StochasticContext {
             evaporation_violation_neg_cost: 0.0,
             inflow_nonnegativity_cost: 1000.0,
         },
+        tailrace_flow: TailraceFlow::default(),
     };
     hydro.declare_mirror_unit_group(EntityId(0));
     let stage = Stage {
@@ -1514,6 +1529,7 @@ fn simulation_truncation_keeps_the_raw_rhs_and_fixes_the_slack_bounds() {
             contract_prices_per_stage: &[Vec::new()],
             contract_slots: &[],
             diversion_upstream: &HashMap::new(),
+            tailrace: &SimulationTailrace::default(),
             hydro_productivities_per_stage: &hprod,
             energy_conversion: &ec,
             hydro_min_storage_hm3: &[0.0],
@@ -1631,6 +1647,7 @@ fn simulation_none_method_produces_raw_negative_noise() {
             contract_prices_per_stage: &[Vec::new()],
             contract_slots: &[],
             diversion_upstream: &HashMap::new(),
+            tailrace: &SimulationTailrace::default(),
             hydro_productivities_per_stage: &hprod,
             energy_conversion: &ec,
             hydro_min_storage_hm3: &[0.0],
@@ -1690,6 +1707,7 @@ mod dcs_simulation {
     use crate::energy_conversion::{EnergyConversion, EnergyConversionSet};
     use crate::horizon_mode::HorizonMode;
     use crate::setup::NodePos;
+    use crate::simulation::tailrace::SimulationTailrace;
     use crate::solver_phase::Phase;
     use crate::test_support::StageContextFixture;
 
@@ -1954,6 +1972,7 @@ mod dcs_simulation {
             contract_prices_per_stage: &[Vec::new()],
             contract_slots: &[],
             diversion_upstream: &diversion,
+            tailrace: &SimulationTailrace::default(),
             hydro_productivities_per_stage: &hprod,
             energy_conversion: &ec,
             hydro_min_storage_hm3: &[0.0],
@@ -2131,6 +2150,7 @@ mod anticipated_ring_matches_forward_propagation {
     use crate::setup::NodePos;
     use crate::setup::node_graph::StageIdx;
     use crate::simulation::extraction::EntityCounts;
+    use crate::simulation::tailrace::SimulationTailrace;
     use crate::solver_phase::Phase;
     use crate::test_support;
     use crate::test_support::{StageContextFixture, equipment_free_geometry};
@@ -2369,6 +2389,7 @@ mod anticipated_ring_matches_forward_propagation {
             contract_prices_per_stage: &[Vec::new(), Vec::new(), Vec::new()],
             contract_slots: &[],
             diversion_upstream: &diversion,
+            tailrace: &SimulationTailrace::default(),
             hydro_productivities_per_stage: &hprod,
             energy_conversion: &ec,
             hydro_min_storage_hm3: &[],

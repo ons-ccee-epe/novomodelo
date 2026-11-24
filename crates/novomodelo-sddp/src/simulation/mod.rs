@@ -11,6 +11,7 @@ pub mod error;
 pub mod extraction;
 pub mod pipeline;
 pub(crate) mod state;
+pub mod tailrace;
 pub mod types;
 
 pub use aggregation::{SimulationWeighting, aggregate_simulation};
@@ -21,6 +22,7 @@ pub use extraction::{
     extract_stage_result,
 };
 pub use pipeline::{SimulationOutputSpec, SimulationRunResult, simulate};
+pub use tailrace::SimulationTailrace;
 pub use types::{
     ScenarioCategoryCosts, SimulationBusResult, SimulationContractResult, SimulationCostResult,
     SimulationExchangeResult, SimulationGenericViolationResult, SimulationHydroResult,

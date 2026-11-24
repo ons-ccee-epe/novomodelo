@@ -4,19 +4,19 @@
 //! `output/hydro_models/fpha_hyperplanes.parquet` using the same 11-column schema
 //! as the input file `system/fpha_hyperplanes.parquet`:
 //!
-//! | Column            | Type    | Required | Description                              |
-//! | ----------------- | ------- | -------- | ---------------------------------------- |
-//! | `hydro_id`        | INT32   | Yes      | Hydro plant identifier                   |
-//! | `stage_id`        | INT32?  | No       | Stage (`null` = valid for all stages)    |
-//! | `plane_id`        | INT32   | Yes      | Plane index within hydro                 |
-//! | `gamma_0`         | DOUBLE  | Yes      | Intercept coefficient (MW), unscaled     |
-//! | `gamma_v`         | DOUBLE  | Yes      | Volume coefficient (MW/hm³)              |
-//! | `gamma_q`         | DOUBLE  | Yes      | Turbined flow coefficient (MW per m³/s)  |
-//! | `gamma_s`         | DOUBLE  | Yes      | Spillage coefficient (MW per m³/s)       |
-//! | `kappa`           | DOUBLE? | No       | Correction factor                        |
-//! | `valid_v_min_hm3` | DOUBLE? | No       | Volume range minimum                     |
-//! | `valid_v_max_hm3` | DOUBLE? | No       | Volume range maximum                     |
-//! | `valid_q_max_m3s` | DOUBLE? | No       | Maximum turbined flow validity           |
+//! | Column            | Type    | Required | Description                                                                                                                                                                                        |
+//! | ----------------- | ------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+//! | `hydro_id`        | INT32   | Yes      | Hydro plant identifier                                                                                                                                                                             |
+//! | `stage_id`        | INT32?  | No       | Stage (`null` = valid for all stages)                                                                                                                                                              |
+//! | `plane_id`        | INT32   | Yes      | Plane index within hydro                                                                                                                                                                           |
+//! | `gamma_0`         | DOUBLE  | Yes      | Intercept coefficient (MW), unscaled                                                                                                                                                               |
+//! | `gamma_v`         | DOUBLE  | Yes      | Volume coefficient (MW/hm³)                                                                                                                                                                        |
+//! | `gamma_q`         | DOUBLE  | Yes      | Turbined flow coefficient (MW per m³/s)                                                                                                                                                            |
+//! | `gamma_s`         | DOUBLE  | Yes      | Tailrace lateral-flow coefficient (MW per m³/s): spill times the own-outflow factor plus the declared influences of other plants; the spill coefficient when the hydro declares no `tailrace_flow` |
+//! | `kappa`           | DOUBLE? | No       | Correction factor                                                                                                                                                                                  |
+//! | `valid_v_min_hm3` | DOUBLE? | No       | Volume range minimum                                                                                                                                                                               |
+//! | `valid_v_max_hm3` | DOUBLE? | No       | Volume range maximum                                                                                                                                                                               |
+//! | `valid_q_max_m3s` | DOUBLE? | No       | Maximum turbined flow validity                                                                                                                                                                     |
 //!
 //! The output file is readable by [`crate::extensions::parse_fpha_hyperplanes`],
 //! enabling a round-trip between computed and precomputed hyperplane workflows.

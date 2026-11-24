@@ -1030,16 +1030,24 @@ fn assert_fpha_row_identity(
 
 /// The inflow-coupling identity for hydro `h`: the entries the chronological
 /// stage couples `h`'s inflow into its block rows sum to the parallel stage's
-/// entries.
+/// entries. FPHA rows are left out of both sums: they take the rate once per
+/// block row, so their entries do not add up to the stage's rate.
 fn assert_coupling_sum_identity(
     key: &str,
     s: usize,
     h: HydroSys,
-    chrono: &InflowCoupling,
-    parallel: &InflowCoupling,
+    chrono: (&StageGeometry, &InflowCoupling),
+    parallel: (&StageGeometry, &InflowCoupling),
 ) {
-    let chrono_sum: f64 = chrono.hydro_entries(h).map(|(_, c)| c).sum();
-    let parallel_sum: f64 = parallel.hydro_entries(h).map(|(_, c)| c).sum();
+    let outside_fpha = |(geom, coupling): (&StageGeometry, &InflowCoupling)| -> f64 {
+        coupling
+            .hydro_entries(h)
+            .filter(|(r, _)| !geom.fpha.contains(r))
+            .map(|(_, c)| c)
+            .sum()
+    };
+    let chrono_sum = outside_fpha(chrono);
+    let parallel_sum = outside_fpha(parallel);
     assert!(
         sum_approx_eq(chrono_sum, parallel_sum),
         "{key} stage {s}: hydro {h:?} inflow coupling sums to {chrono_sum} chronologically and \
@@ -1131,8 +1139,11 @@ fn compare_block_mode_pair(
                 key,
                 s,
                 hydro,
-                &chrono_templates.inflow_coupling_per_stage[s],
-                &parallel_templates.inflow_coupling_per_stage[s],
+                (chrono_geom, &chrono_templates.inflow_coupling_per_stage[s]),
+                (
+                    parallel_geom,
+                    &parallel_templates.inflow_coupling_per_stage[s],
+                ),
             );
         }
 

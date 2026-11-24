@@ -199,7 +199,9 @@ impl Communicator for StubComm {
 
 /// Minimal `StochasticContext` for `train` with `n_stages` stages, one hydro, branching factor `n_openings`.
 fn make_stochastic_context(n_stages: usize, n_openings: usize) -> StochasticContext {
-    use novomodelo_core::entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties};
+    use novomodelo_core::entities::hydro::{
+        Hydro, HydroGenerationModel, HydroPenalties, TailraceFlow,
+    };
     use novomodelo_core::scenario::InflowModel;
 
     let bus = Bus {
@@ -257,6 +259,7 @@ fn make_stochastic_context(n_stages: usize, n_openings: usize) -> StochasticCont
             evaporation_violation_neg_cost: 0.0,
             inflow_nonnegativity_cost: 1000.0,
         },
+        tailrace_flow: TailraceFlow::default(),
     };
     hydro.declare_mirror_unit_group(EntityId(0));
 

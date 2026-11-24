@@ -388,7 +388,7 @@ mod tests {
 
     use chrono::NaiveDate;
     use novomodelo_core::{
-        Bus, DeficitSegment, EntityId, SystemBuilder,
+        Bus, DeficitSegment, EntityId, SystemBuilder, TailraceFlow,
         entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties},
         scenario::{AnnualComponent, CorrelationModel, InflowModel, SamplingScheme},
         temporal::{
@@ -468,6 +468,7 @@ mod tests {
                 evaporation_violation_neg_cost: 0.0,
                 inflow_nonnegativity_cost: 1000.0,
             },
+            tailrace_flow: TailraceFlow::default(),
         };
         hydro.declare_mirror_unit_group(EntityId(1));
         hydro

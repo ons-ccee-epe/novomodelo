@@ -202,6 +202,14 @@ pub struct SimulationHydroResult {
     /// Stored energy at the end of the block, averaged over the STAGE's total
     /// hours (`stored_energy_final_mwh / Σ block_hours`) \[MW\].
     pub stored_energy_final_mw: f64,
+    /// Flow that sets the tailrace level in m³/s; [`None`] where the plant has no
+    /// computed production function at the stage.
+    pub tailrace_flow_m3s: Option<f64>,
+    /// Tailrace level in m at [`Self::tailrace_flow_m3s`]; [`None`] with it.
+    pub tailrace_level_m: Option<f64>,
+    /// Net head in m at the block's mean storage; [`None`] with
+    /// [`Self::tailrace_flow_m3s`].
+    pub net_head_m: Option<f64>,
 }
 
 /// Per-cell hydro dispatch result for one (stage, block, hydro, bus) tuple —
@@ -721,6 +729,9 @@ mod tests {
             integrated_accumulated_productivity_mw_per_m3s: 0.9,
             stored_energy_initial_mw: 25.0,
             stored_energy_final_mw: 24.0,
+            tailrace_flow_m3s: None,
+            tailrace_level_m: None,
+            net_head_m: None,
         };
 
         assert_eq!(r.hydro_id, 5);
@@ -780,6 +791,9 @@ mod tests {
             integrated_accumulated_productivity_mw_per_m3s: 9.0,
             stored_energy_initial_mw: 0.4,
             stored_energy_final_mw: 0.5,
+            tailrace_flow_m3s: None,
+            tailrace_level_m: None,
+            net_head_m: None,
         };
 
         let json = serde_json::to_string(&original).expect("serialize");

@@ -2671,7 +2671,9 @@ mod tests {
         branching_factor: usize,
     ) -> novomodelo_stochastic::StochasticContext {
         use chrono::NaiveDate;
-        use novomodelo_core::entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties};
+        use novomodelo_core::entities::hydro::{
+            Hydro, HydroGenerationModel, HydroPenalties, TailraceFlow,
+        };
         use novomodelo_core::{
             Bus, DeficitSegment, EntityId, SystemBuilder,
             scenario::{CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile},
@@ -2740,6 +2742,7 @@ mod tests {
                 evaporation_violation_neg_cost: 0.0,
                 inflow_nonnegativity_cost: 1000.0,
             },
+            tailrace_flow: TailraceFlow::default(),
         };
         hydro.declare_mirror_unit_group(EntityId(0));
 

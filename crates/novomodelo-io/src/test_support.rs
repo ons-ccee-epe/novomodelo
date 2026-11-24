@@ -28,7 +28,8 @@ use chrono::NaiveDate;
 use novomodelo_core::{
     CorrelationGroup, CorrelationModel, EntityId, HorizonGraph, SeasonMap,
     entities::{
-        Bus, DeficitSegment, Hydro, HydroGenerationModel, HydroPenalties, HydroUnitGroup, Thermal,
+        Bus, DeficitSegment, Hydro, HydroGenerationModel, HydroPenalties, HydroUnitGroup,
+        TailraceFlow, Thermal,
     },
     penalty::GlobalPenaltyDefaults,
     temporal::{
@@ -585,6 +586,7 @@ pub fn make_hydro(id: i32, downstream_id: Option<i32>) -> Hydro {
         diversion: None,
         filling: None,
         penalties: penalties_all(1.0),
+        tailrace_flow: TailraceFlow::default(),
     }
 }
 

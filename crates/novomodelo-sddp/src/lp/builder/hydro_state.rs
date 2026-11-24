@@ -869,7 +869,7 @@ fn frozen_turbining_of(
 mod tests {
     use novomodelo_core::{
         CascadeTopology, EntityId, FillingConfig, Hydro, HydroGenerationModel, HydroPenalties,
-        HydroStageBounds,
+        HydroStageBounds, TailraceFlow,
     };
 
     use crate::hydro_models::{EvaporationCoefficientSign, LinearizedEvaporation};
@@ -913,6 +913,7 @@ mod tests {
             diversion: None,
             filling: None,
             penalties: HydroPenalties::uniform(0.0),
+            tailrace_flow: TailraceFlow::default(),
         }
     }
 

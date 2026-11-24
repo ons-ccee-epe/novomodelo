@@ -68,7 +68,7 @@ pub use state_box::StateBox;
 pub use template::StageTemplates;
 
 // --- Crate-internal re-exports ---
-pub(crate) use build_inputs::LpBuildInputs;
+pub(crate) use build_inputs::{LpBuildInputs, ResolvedTailraceLateral};
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) use entries::assemble_csc;
 pub(crate) use hydro_state::{frozen_turbining_hydros, warn_on_inert_plant_floor_overrides};

@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use chrono::NaiveDate;
 use novomodelo_core::{
     Bus, EfficiencyModel, EntityId, HydraulicLossesModel, StudyPos, SystemBuilder, TailraceModel,
-    entities::hydro::{HydroGenerationModel, HydroPenalties},
+    entities::hydro::{HydroGenerationModel, HydroPenalties, TailraceFlow},
     temporal::{
         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
         StageStateConfig,
@@ -105,6 +105,7 @@ fn make_hydro(id: i32, model: HydroGenerationModel) -> Hydro {
         diversion: None,
         filling: None,
         penalties: zero_penalties(),
+        tailrace_flow: TailraceFlow::default(),
     };
     hydro.declare_mirror_unit_group(EntityId::from(10));
     hydro
@@ -989,7 +990,7 @@ fn computed_export_rows_round_trip_through_parquet() {
     let mut export_rows = Vec::new();
     let families_map = empty_families_map();
     let (system, fractions) = entity_fit_context(&hydro);
-    let per_stage = super::fit_computed_planes_per_stage(
+    let (per_stage, _) = super::fit_computed_planes_per_stage(
         &hydro,
         Some(&config),
         &geometry_map,
@@ -1352,7 +1353,7 @@ fn per_range_fits_differ_when_windows_differ() {
     let mut export_rows = Vec::new();
     let families_map = empty_families_map();
     let (system, fractions) = entity_fit_context(&hydro);
-    let per_stage = super::fit_computed_planes_per_stage(
+    let (per_stage, _) = super::fit_computed_planes_per_stage(
         &hydro,
         Some(&config),
         &geometry_map,
@@ -1416,7 +1417,7 @@ fn per_season_fits_differ_when_season_configs_differ() {
     let mut export_rows = Vec::new();
     let families_map = empty_families_map();
     let (system, fractions) = entity_fit_context(&hydro);
-    let per_stage = super::fit_computed_planes_per_stage(
+    let (per_stage, _) = super::fit_computed_planes_per_stage(
         &hydro,
         Some(&config),
         &geometry_map,
@@ -1453,7 +1454,7 @@ fn single_config_dedup_yields_identical_planes_across_stages() {
     let mut export_rows = Vec::new();
     let families_map = empty_families_map();
     let (system, fractions) = entity_fit_context(&hydro);
-    let per_stage = super::fit_computed_planes_per_stage(
+    let (per_stage, _) = super::fit_computed_planes_per_stage(
         &hydro,
         Some(&config),
         &geometry_map,
@@ -1630,7 +1631,7 @@ fn constant_productivity_stage_range_is_not_fit() {
     let mut export_rows = Vec::new();
     let families_map = empty_families_map();
     let (system, fractions) = entity_fit_context(&hydro);
-    let per_stage = super::fit_computed_planes_per_stage(
+    let (per_stage, _) = super::fit_computed_planes_per_stage(
         &hydro,
         Some(&config),
         &geometry_map,
@@ -1994,7 +1995,7 @@ fn dedup_key_separates_distinct_downstream_levels() {
     let stage_refs: Vec<&Stage> = stages.to_vec();
 
     let mut export_rows = Vec::new();
-    let per_stage = super::fit_computed_planes_per_stage(
+    let (per_stage, _) = super::fit_computed_planes_per_stage(
         &upstream,
         Some(&config),
         &geometry_map,
@@ -2129,7 +2130,7 @@ fn fit_computed_planes_per_stage_records_every_distinct_fit() {
 
     let mut export_rows = Vec::new();
     let mut diagnostics = Vec::new();
-    let per_stage = super::fit_computed_planes_per_stage(
+    let (per_stage, _) = super::fit_computed_planes_per_stage(
         &upstream,
         Some(&config),
         &geometry_map,
@@ -2493,6 +2494,70 @@ fn resolve_single_computed_hydro(hydro: Hydro) -> ResolveProductionResult {
         .expect("computed-FPHA system builds");
     super::resolve_production_models_from_artifacts(&system, &artifacts, false)
         .expect("resolve must succeed for a computed-FPHA case")
+}
+
+#[test]
+fn computed_stage_keeps_its_production_function() {
+    let mut hydro = make_sobradinho_computed_hydro(0);
+    hydro.tailrace_flow = TailraceFlow {
+        own_outflow_factor: 1.2,
+        ..TailraceFlow::default()
+    };
+
+    let (set, ..) = resolve_single_computed_hydro(hydro);
+
+    for stage_idx in 0..2 {
+        let function = set
+            .fpha_production_function(0, stage_idx)
+            .unwrap_or_else(|| panic!("stage {stage_idx}: no production function kept"));
+        assert_eq!(function.tailrace_flow(1_000.0, 0.0), 1.2 * 1_000.0);
+    }
+}
+
+#[test]
+fn precomputed_and_constant_stages_keep_no_production_function() {
+    let mut capacity_less = make_sobradinho_computed_hydro(2);
+    capacity_less.max_turbined_m3s = 0.0;
+    let system = SystemBuilder::new()
+        .buses(vec![make_bus()])
+        .hydros(vec![
+            make_hydro(0, HydroGenerationModel::Fpha),
+            make_sobradinho_computed_hydro(1),
+            capacity_less,
+        ])
+        .stages(vec![make_stage(0), make_stage(1)])
+        .build()
+        .expect("mixed-source system builds");
+    let artifacts = novomodelo_io::CaseArtifacts {
+        production_models: vec![
+            precomputed_fpha_config(0),
+            computed_fpha_config(1),
+            computed_fpha_config(2),
+        ],
+        fpha_hyperplanes: (0..3)
+            .map(|plane_id| valid_row(0, None, plane_id))
+            .collect(),
+        hydro_geometry: [
+            make_sobradinho_geometry_rows(1),
+            make_sobradinho_geometry_rows(2),
+        ]
+        .concat(),
+        ..Default::default()
+    };
+
+    let (set, ..) = super::resolve_production_models_from_artifacts(&system, &artifacts, false)
+        .expect("mixed-source resolve must succeed");
+
+    assert!(
+        set.fpha_production_function(1, 0).is_some(),
+        "the computed hydro keeps its function, so the None reads below are not vacuous"
+    );
+    for stage_idx in 0..2 {
+        assert!(set.fpha_production_function(0, stage_idx).is_none());
+        assert!(set.fpha_production_function(2, stage_idx).is_none());
+    }
+    assert!(set.fpha_production_function(0, 2).is_none());
+    assert!(set.fpha_production_function(3, 0).is_none());
 }
 
 #[test]

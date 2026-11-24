@@ -98,6 +98,9 @@ HYDROS_SCHEMA_FIELDS = {
     "integrated_accumulated_productivity_mw_per_m3s",
     "stored_energy_initial_mw",
     "stored_energy_final_mw",
+    "tailrace_flow_m3s",
+    "tailrace_level_m",
+    "net_head_m",
 }
 
 

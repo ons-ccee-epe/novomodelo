@@ -144,7 +144,7 @@ mod tests {
     use novomodelo_core::{
         BoundsCountsSpec, BoundsDefaults, Bus, ContractBlockBounds, DeficitSegment, EntityId,
         Hydro, HydroBlockBounds, HydroStageBounds, HydroUnitGroup, LineBlockBounds,
-        PumpingBlockBounds, ResolvedBounds, SystemBuilder, ThermalBlockBounds,
+        PumpingBlockBounds, ResolvedBounds, SystemBuilder, TailraceFlow, ThermalBlockBounds,
         entities::hydro::{HydroGenerationModel, HydroPenalties},
         scenario::CorrelationModel,
         temporal::{
@@ -212,6 +212,7 @@ mod tests {
             diversion: None,
             filling: None,
             penalties: zero_penalties(),
+            tailrace_flow: TailraceFlow::default(),
         };
         hydro.declare_mirror_unit_group(EntityId::from(10));
         hydro

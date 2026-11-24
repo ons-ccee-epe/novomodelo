@@ -23,7 +23,8 @@ use novomodelo_core::{
     HydroStageBounds, HydroStorage, InitialConditions, LineBlockBounds, LineStagePenalties,
     LinearTerm, NcsStagePenalties, PenaltiesCountsSpec, PenaltiesDefaults, PenaltyBasis,
     PumpingBlockBounds, ResolvedBounds, ResolvedGenericConstraintBounds, ResolvedPenalties,
-    SlackConfig, System, SystemBuilder, ThermalBlockBounds, TrainingEvent, VariableRef,
+    SlackConfig, System, SystemBuilder, TailraceFlow, TailraceFlowInfluence, ThermalBlockBounds,
+    TrainingEvent, VariableRef,
 };
 use novomodelo_io::Config;
 use novomodelo_io::config::{
@@ -81,6 +82,9 @@ const THERMAL_ID: EntityId = EntityId(20);
 const SOLE_HYDRO_ID: EntityId = EntityId(1);
 const UPSTREAM_ID: EntityId = EntityId(1);
 const TARGET_ID: EntityId = EntityId(2);
+const INFLUENCING_ID: EntityId = EntityId(2);
+/// The system index of [`INFLUENCING_ID`] in [`lateral_fpha_case`].
+const INFLUENCING: usize = 1;
 
 const THERMAL_COST_PER_MWH: f64 = 100.0;
 const THERMAL_MAX_MW: f64 = 1_000.0;
@@ -151,6 +155,13 @@ const GENERATION_FLOOR: GenerationFloor = GenerationFloor {
 };
 /// How many `ClosedForm` bounds the head term must exceed, so a closed form without it fails.
 const HEAD_TERM_MARGIN: f64 = 100.0;
+/// [`FPHA_PLANE`] with a tailrace slope, so a lateral inflow lowers the plane.
+const LATERAL_FPHA_PLANE: FphaPlane = FphaPlane {
+    gamma_s: -0.1,
+    ..FPHA_PLANE
+};
+/// `f_k`: the weight of the influencing hydro's incremental inflow in the tailrace flow.
+const LATERAL_FACTOR: f64 = 0.8;
 
 /// The thermal cost [`chronological_noise_study`] writes inline.
 const NEGATIVE_DRAW_THERMAL_COST_PER_MWH: f64 = 100.0;
@@ -219,12 +230,15 @@ struct GenerationFloor {
     penalty_per_hour: f64,
 }
 
-/// The sole hydro produces through `plane` at every stage, its slack σ priced at `violation_cost`.
+/// The case's first hydro produces through `plane` at every stage, its slack σ priced at
+/// `violation_cost`; `lateral_inflow` adds another hydro's incremental inflow, at a factor, to its
+/// tailrace flow.
 #[derive(Clone, Copy)]
 struct FphaCase {
     plane: FphaPlane,
     violation_cost: f64,
     generation_floor: Option<GenerationFloor>,
+    lateral_inflow: Option<(EntityId, f64)>,
 }
 
 /// One parallel block per monthly stage; the hydros are declared in ascending id order, so
@@ -295,7 +309,23 @@ fn case_penalties(case: &StudyCase) -> HydroPenalties {
     }
 }
 
-fn fixture_hydro(hydro: &HydroCase, penalties: HydroPenalties) -> Hydro {
+/// The tailrace flow of the hydro at `position` in `case`: the FPHA hydro's carries the case's
+/// lateral inflow.
+fn case_tailrace_flow(case: &StudyCase, position: usize) -> TailraceFlow {
+    match case.fpha.and_then(|fpha| fpha.lateral_inflow) {
+        Some((hydro_id, factor)) if position == 0 => TailraceFlow {
+            incremental_inflow_influences: vec![TailraceFlowInfluence { hydro_id, factor }],
+            ..TailraceFlow::default()
+        },
+        _ => TailraceFlow::default(),
+    }
+}
+
+fn fixture_hydro(
+    hydro: &HydroCase,
+    penalties: HydroPenalties,
+    tailrace_flow: TailraceFlow,
+) -> Hydro {
     make_hydro(
         hydro.id,
         HydroSpec {
@@ -310,6 +340,7 @@ fn fixture_hydro(hydro: &HydroCase, penalties: HydroPenalties) -> Hydro {
             max_generation_mw: MAX_GENERATION_MW,
             generation_model: HydroGenerationModel::ConstantProductivity,
             penalties,
+            tailrace_flow,
             ..Default::default()
         },
     )
@@ -483,7 +514,14 @@ fn build_system(case: &StudyCase) -> System {
         .hydros(
             case.hydros
                 .iter()
-                .map(|hydro| fixture_hydro(hydro, case_penalties(case)))
+                .enumerate()
+                .map(|(position, hydro)| {
+                    fixture_hydro(
+                        hydro,
+                        case_penalties(case),
+                        case_tailrace_flow(case, position),
+                    )
+                })
                 .collect(),
         )
         .stages(fixture_stages(case))
@@ -634,20 +672,16 @@ fn fixture_config() -> Config {
 
 fn fixture_hydro_models(case: &StudyCase, system: &System) -> PrepareHydroModelsResult {
     let mut models = PrepareHydroModelsResult::default_from_system(system);
-    assert!(
-        case.fpha.is_none() || case.hydros.len() == 1,
-        "{}: an FPHA case has one hydro",
-        case.name
-    );
     models.production = ProductionModelSet::new(
         case.hydros
             .iter()
-            .map(|hydro| {
+            .enumerate()
+            .map(|(position, hydro)| {
                 let model = match case.fpha {
-                    Some(fpha) => ResolvedProductionModel::Fpha {
+                    Some(fpha) if position == 0 => ResolvedProductionModel::Fpha {
                         planes: vec![fpha.plane],
                     },
-                    None => ResolvedProductionModel::ConstantProductivity {
+                    _ => ResolvedProductionModel::ConstantProductivity {
                         productivity: hydro.productivity,
                     },
                 };
@@ -2551,6 +2585,7 @@ fn fpha_case(
             plane: FPHA_PLANE,
             violation_cost,
             generation_floor,
+            lateral_inflow: None,
         }),
         ..terminal_par1_case(TERMINAL_PSI, MONTH_HOURS)
     }
@@ -2724,4 +2759,182 @@ fn a_generation_floor_activates_the_fpha_slack_above_the_two_term_sum() {
     .assert_solved(plane.abs());
 
     assert_fpha_storage_coefficient(&case, &setup, &cut, FLOOR_FPHA_VIOLATION_COST);
+}
+
+/// The lateral part of the influencing hydro's lag-0 coefficient: one more m³/s of lag raises
+/// `z_k` by `ψ_k`, which lowers the plane by `σ_c·(−γ_s)·f_k·ψ_k` MW, each MW displacing `price`
+/// over `hours`.
+fn lateral_lag_value(
+    price: f64,
+    plane: &FphaPlane,
+    share: f64,
+    factor: f64,
+    psi: f64,
+    hours: f64,
+) -> f64 {
+    -(price * hours * share * plane.gamma_s * factor * psi) / DEFAULT_COST_SCALE_FACTOR
+}
+
+/// Two independent terminal PAR(1) hydros: the first on [`LATERAL_FPHA_PLANE`], σ priced at
+/// `violation_cost`, whose tailrace flow takes the second's incremental inflow at `factor`; the
+/// second at constant productivity.
+fn lateral_fpha_case(name: &'static str, violation_cost: f64, factor: f64) -> StudyCase {
+    StudyCase {
+        name,
+        hydros: vec![
+            HydroCase::sole(vec![TERMINAL_PSI]),
+            HydroCase {
+                id: INFLUENCING_ID,
+                name: "K",
+                ..HydroCase::sole(vec![TERMINAL_TWIN_PSI])
+            },
+        ],
+        fpha: Some(FphaCase {
+            plane: LATERAL_FPHA_PLANE,
+            violation_cost,
+            generation_floor: None,
+            lateral_inflow: Some((INFLUENCING_ID, factor)),
+        }),
+        ..terminal_par1_case(TERMINAL_PSI, MONTH_HOURS)
+    }
+}
+
+/// Asserts the influencing hydro's lag-0 coefficient of `declared` exceeds that of `zeroed`, the
+/// same solve at a zero factor, by `lateral_lag_value(price, ..)`; both solves share a basis, so
+/// the water-balance term cancels in the difference.
+fn assert_lateral_lag_coefficient(
+    declared: (&StudyCase, &StudySetup, &ProbeCut),
+    zeroed: (&StudyCase, &StudySetup, &ProbeCut),
+    price: f64,
+) {
+    let (case, setup, cut) = declared;
+    let fixture = case.name;
+    let extracted = &setup.training_ctx().cut_state_layouts[FPHA_STAGE - 1];
+    let lag = lag_slot(extracted, case.hydros.len(), INFLUENCING, 0);
+    let psi = psi_at(setup, FPHA_STAGE, INFLUENCING)[0];
+    assert_non_degenerate(fixture, "influencing lag-1 coefficient ψ_k", psi);
+    assert_non_degenerate(fixture, "lateral factor f_k", LATERAL_FACTOR);
+    let hours = case.block_hours;
+    let want = lateral_lag_value(
+        price,
+        &LATERAL_FPHA_PLANE,
+        FPHA_CELL_SHARE,
+        LATERAL_FACTOR,
+        psi,
+        hours,
+    );
+    let water_term = psi * hours * price * PRODUCTIVITY / DEFAULT_COST_SCALE_FACTOR;
+    let tol = UnscaledTolerance::from_active_profile();
+    // n = 22: price·h, ·σ_c, ·γ_s, ·f_k, ·ψ and ÷ K derive it (6); the declared solve's
+    // d·row_scale and G·π on both coupled rows, their sum, ψ·g, G = −κ (2) and
+    // G = σ_c·(−γ_s)·f_k (2) give 10, the zeroed solve's single coupled row gives 5, and their
+    // difference 1; the water term `ψ·κ·λ_k` enters both solves before it cancels, so it counts
+    // twice in abs_sum; added: |ψ| times both solves' coupled rows' |G|·row-dual tolerance.
+    let closed_form = ClosedForm {
+        fixture,
+        quantity: "influencing lag-0 coefficient, declared minus zero factor",
+        slot: Some(lag),
+        want,
+        n: 22,
+        abs_sum: want.abs() + 2.0 * water_term.abs(),
+        added: psi.abs()
+            * (coupled_dual_tolerance(setup, FPHA_STAGE, INFLUENCING, tol)
+                + coupled_dual_tolerance(zeroed.1, FPHA_STAGE, INFLUENCING, tol)),
+    };
+    assert!(
+        want > HEAD_TERM_MARGIN * closed_form.bound(),
+        "{fixture}: the lateral term {want:e} is within {HEAD_TERM_MARGIN} bounds {:e} of zero, \
+         so a cut without it could pass",
+        closed_form.bound()
+    );
+    let zeroed_lag = lag_slot(
+        &zeroed.1.training_ctx().cut_state_layouts[FPHA_STAGE - 1],
+        zeroed.0.hydros.len(),
+        INFLUENCING,
+        0,
+    );
+    assert_eq!(lag, zeroed_lag, "{fixture}: both solves share the lag slot");
+    closed_form.assert_solved(cut.coefficients[lag] - zeroed.2.coefficients[lag]);
+}
+
+/// derived: σ is priced far above the thermal, so in both solves the thermal covers the load the
+/// plane leaves and the plane dual is `−c·h/K`. `z_k = … + ψ_k·lag` enters the plane row at
+/// `σ_c·(−γ_s)·f_k`, so the lag coefficient gains `−c·h·σ_c·γ_s·f_k·ψ_k/K`, positive for
+/// `γ_s < 0`: a higher tailrace costs thermal energy, against the negative water term `ψ_k·κ·λ_k`
+/// that both solves share.
+#[test]
+fn a_lateral_inflow_prices_the_influencing_lag_through_the_fpha_plane_when_the_slack_is_idle() {
+    let declared = lateral_fpha_case(
+        "lateral inflow on an FPHA plane, slack idle",
+        IDLE_FPHA_VIOLATION_COST,
+        LATERAL_FACTOR,
+    );
+    let zeroed = lateral_fpha_case(
+        "lateral inflow on an FPHA plane at a zero factor, slack idle",
+        IDLE_FPHA_VIOLATION_COST,
+        0.0,
+    );
+    let (declared_setup, declared_cut, declared_sigma) = solve_fpha_case(&declared);
+    let (zeroed_setup, zeroed_cut, zeroed_sigma) = solve_fpha_case(&zeroed);
+    for (case, sigma_mw) in [(&declared, declared_sigma), (&zeroed, zeroed_sigma)] {
+        assert!(
+            sigma_mw <= POWER_FLOOR,
+            "{}: the FPHA slack {sigma_mw:e} MW must stay within {POWER_FLOOR:e} of zero at the \
+             price {IDLE_FPHA_VIOLATION_COST}",
+            case.name
+        );
+    }
+    assert_lateral_lag_coefficient(
+        (&declared, &declared_setup, &declared_cut),
+        (&zeroed, &zeroed_setup, &zeroed_cut),
+        THERMAL_COST_PER_MWH,
+    );
+}
+
+/// derived: σ is priced below the thermal, so in both solves σ covers the load the plane leaves
+/// and the plane dual is `−p·h/K`: the lag coefficient gains `−p·h·σ_c·γ_s·f_k·ψ_k/K`, positive
+/// for `γ_s < 0`. A plane dual read at the thermal cost misses it by the same term at `c − p`.
+#[test]
+fn a_lateral_inflow_prices_the_influencing_lag_through_the_fpha_plane_when_the_slack_is_active() {
+    let declared = lateral_fpha_case(
+        "lateral inflow on an FPHA plane, slack active",
+        ACTIVE_FPHA_VIOLATION_COST,
+        LATERAL_FACTOR,
+    );
+    let zeroed = lateral_fpha_case(
+        "lateral inflow on an FPHA plane at a zero factor, slack active",
+        ACTIVE_FPHA_VIOLATION_COST,
+        0.0,
+    );
+    let (declared_setup, declared_cut, declared_sigma) = solve_fpha_case(&declared);
+    let (zeroed_setup, zeroed_cut, zeroed_sigma) = solve_fpha_case(&zeroed);
+    assert_has_power(declared.name, "FPHA slack", declared_sigma);
+    assert_has_power(zeroed.name, "FPHA slack", zeroed_sigma);
+
+    let psi = psi_at(&declared_setup, FPHA_STAGE, INFLUENCING)[0];
+    let lateral = |price| {
+        lateral_lag_value(
+            price,
+            &LATERAL_FPHA_PLANE,
+            FPHA_CELL_SHARE,
+            LATERAL_FACTOR,
+            psi,
+            declared.block_hours,
+        )
+    };
+    let (idle, active) = (
+        lateral(THERMAL_COST_PER_MWH),
+        lateral(ACTIVE_FPHA_VIOLATION_COST),
+    );
+    assert!(
+        (active - idle).abs() > SEPARATION_FLOOR * active.abs().max(idle.abs()),
+        "{}: the idle and active lateral values {idle:e} and {active:e} must differ by more than \
+         {SEPARATION_FLOOR:e} relative",
+        declared.name
+    );
+    assert_lateral_lag_coefficient(
+        (&declared, &declared_setup, &declared_cut),
+        (&zeroed, &zeroed_setup, &zeroed_cut),
+        ACTIVE_FPHA_VIOLATION_COST,
+    );
 }

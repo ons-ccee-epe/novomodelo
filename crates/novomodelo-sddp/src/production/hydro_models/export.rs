@@ -151,7 +151,7 @@ pub fn build_deviation_summary(entries: &[FphaFitDeviationEntry]) -> Option<Devi
 mod tests {
     use chrono::NaiveDate;
     use novomodelo_core::{
-        Bus, DeficitSegment, EntityId, Hydro, SystemBuilder,
+        Bus, DeficitSegment, EntityId, Hydro, SystemBuilder, TailraceFlow,
         entities::hydro::{HydroGenerationModel, HydroPenalties},
         scenario::CorrelationModel,
         temporal::{
@@ -214,6 +214,7 @@ mod tests {
             diversion: None,
             filling: None,
             penalties: zero_penalties(),
+            tailrace_flow: TailraceFlow::default(),
         };
         hydro.declare_mirror_unit_group(EntityId::from(10));
         hydro

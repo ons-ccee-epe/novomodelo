@@ -27,7 +27,7 @@ use novomodelo_core::{
     ContractBlockBounds, DeficitSegment, EntityId, HydroBlockBounds, HydroPenalties,
     HydroStageBounds, LineBlockBounds, LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec,
     PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds, ResolvedPenalties, SystemBuilder,
-    ThermalBlockBounds, scenario::InflowModel,
+    TailraceFlow, ThermalBlockBounds, scenario::InflowModel,
 };
 use novomodelo_stochastic::normal::precompute::PrecomputedNormal;
 use novomodelo_stochastic::par::precompute::PrecomputedPar;
@@ -1159,12 +1159,20 @@ fn one_fpha_hydro_system_with_block_bounds(
 /// 1-bus, 4-hydro, 1-stage, 1-block system. EntityId-sorted: 100 (const),
 /// 101 (const), 102 (fpha), 103 (fpha) → hydro indices 0,1 are constant
 /// productivity; indices 2,3 are FPHA (3 planes each).
+fn four_hydro_mixed_system() -> (novomodelo_core::System, ProductionModelSet) {
+    four_hydro_mixed_system_with(TailraceFlow::default())
+}
+
+/// [`four_hydro_mixed_system`] with hydro 102's tailrace-flow declaration chosen
+/// by the caller.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_possible_wrap,
     clippy::too_many_lines
 )]
-fn four_hydro_mixed_system() -> (novomodelo_core::System, ProductionModelSet) {
+fn four_hydro_mixed_system_with(
+    tailrace_flow_102: TailraceFlow,
+) -> (novomodelo_core::System, ProductionModelSet) {
     use chrono::NaiveDate;
     use novomodelo_core::entities::hydro::{HydroGenerationModel, HydroPenalties};
     use novomodelo_core::scenario::{InflowModel, LoadModel};
@@ -1295,6 +1303,7 @@ fn four_hydro_mixed_system() -> (novomodelo_core::System, ProductionModelSet) {
                 diversion: None,
                 filling: None,
                 penalties: hydro_penalties,
+                tailrace_flow: tailrace_flow_102,
                 ..Default::default()
             },
         ),

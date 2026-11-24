@@ -19,7 +19,7 @@ use novomodelo_core::EntityId;
 use novomodelo_core::entities::bus::{Bus, DeficitSegment};
 use novomodelo_core::entities::hydro::{
     DiversionChannel, EfficiencyModel, FillingConfig, HydraulicLossesModel, Hydro,
-    HydroGenerationModel, HydroPenalties, HydroUnitGroup, TailraceModel,
+    HydroGenerationModel, HydroPenalties, HydroUnitGroup, TailraceFlow, TailraceModel,
 };
 use novomodelo_core::entities::thermal::{AnticipatedConfig, Thermal};
 use novomodelo_core::temporal::{
@@ -152,6 +152,8 @@ pub struct HydroSpec {
     pub filling: Option<FillingConfig>,
     /// Resolved entity-level penalty costs.
     pub penalties: HydroPenalties,
+    /// Flow that drives the tailrace level.
+    pub tailrace_flow: TailraceFlow,
 }
 
 impl Default for HydroSpec {
@@ -183,6 +185,7 @@ impl Default for HydroSpec {
             diversion: None,
             filling: None,
             penalties: neutral_hydro_penalties(),
+            tailrace_flow: TailraceFlow::default(),
         }
     }
 }
@@ -239,6 +242,7 @@ pub fn make_hydro(
         diversion,
         filling,
         penalties,
+        tailrace_flow,
     }: HydroSpec,
 ) -> Hydro {
     let mut hydro = Hydro {
@@ -268,6 +272,7 @@ pub fn make_hydro(
         diversion,
         filling,
         penalties,
+        tailrace_flow,
     };
     hydro.declare_mirror_unit_group(bus_id);
     hydro

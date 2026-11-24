@@ -37,7 +37,8 @@ use novomodelo_core::{
     NonControllableSource, PenaltiesCountsSpec, PenaltiesDefaults, PenaltyBasis, PostStudyStage,
     PostStudyStages, PostStudyThermalBound, PumpingBlockBounds, PumpingStation, RecentObservation,
     ResolvedBounds, ResolvedGenericConstraintBounds, ResolvedPenalties, SlackConfig, SystemBuilder,
-    Thermal, ThermalBlockBounds, VariableRef, WaterBucketStages,
+    TailraceFlow, TailraceFlowInfluence, Thermal, ThermalBlockBounds, VariableRef,
+    WaterBucketStages,
 };
 use novomodelo_io::config::{
     Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
@@ -2877,7 +2878,21 @@ fn fpha_lag_recent_observations() -> Vec<RecentObservation> {
         .collect()
 }
 
-fn fpha_lag_hydros(fpha_violation_cost: Option<f64>) -> Vec<Hydro> {
+fn fpha_lag_upstream_tailrace_flow(lateral: Option<LateralFactors>) -> TailraceFlow {
+    let influence = |factor| {
+        vec![TailraceFlowInfluence {
+            hydro_id: FPHA_LAG_DOWNSTREAM_ID,
+            factor,
+        }]
+    };
+    lateral.map_or_else(TailraceFlow::default, |factors| TailraceFlow {
+        outflow_influences: influence(factors.outflow),
+        incremental_inflow_influences: influence(factors.incremental_inflow),
+        ..TailraceFlow::default()
+    })
+}
+
+fn fpha_lag_hydros(options: FphaLagOptions) -> Vec<Hydro> {
     let hydro = |id, downstream_id, fpha: bool| {
         let (max_storage_hm3, max_turbined_m3s, max_generation_mw) = if fpha {
             (
@@ -2902,7 +2917,12 @@ fn fpha_lag_hydros(fpha_violation_cost: Option<f64>) -> Vec<Hydro> {
                 max_storage_hm3,
                 max_turbined_m3s,
                 max_generation_mw,
-                penalties: fpha_lag_hydro_penalties(fpha_violation_cost),
+                penalties: fpha_lag_hydro_penalties(options.fpha_violation_cost),
+                tailrace_flow: if fpha {
+                    fpha_lag_upstream_tailrace_flow(options.h0_lateral_from_h1)
+                } else {
+                    TailraceFlow::default()
+                },
                 ..Default::default()
             },
         )
@@ -3124,11 +3144,7 @@ fn build_fpha_lag_system(options: FphaLagOptions) -> novomodelo_core::System {
 
     SystemBuilder::new()
         .buses(vec![bus])
-        .hydros(declared(
-            "hydro",
-            fpha_lag_hydros(options.fpha_violation_cost),
-            reverse,
-        ))
+        .hydros(declared("hydro", fpha_lag_hydros(options), reverse))
         .thermals(declared("thermal", fpha_lag_thermals(), reverse))
         .stages(fpha_lag_stages(options))
         .inflow_models(fpha_lag_inflow_models())
@@ -3189,6 +3205,13 @@ pub fn fpha_lag_study() -> (novomodelo_core::System, Config, PrepareHydroModelsR
     fpha_lag_study_with(FphaLagOptions::default())
 }
 
+/// The weights `H0`'s tailrace flow puts on `H1`'s outflow and incremental inflow.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LateralFactors {
+    pub outflow: f64,
+    pub incremental_inflow: f64,
+}
+
 /// Each field is one variation of [`fpha_lag_study`]; the default is the study itself.
 #[derive(Clone, Copy, Debug)]
 pub struct FphaLagOptions {
@@ -3202,6 +3225,8 @@ pub struct FphaLagOptions {
     pub reverse_declaration_order: bool,
     /// Replaces the study's FPHA price, in the hydro entities and the resolved penalties, when set.
     pub fpha_violation_cost: Option<f64>,
+    /// Lists `H1` in both influence lists of `H0`'s tailrace flow with these weights, when set.
+    pub h0_lateral_from_h1: Option<LateralFactors>,
 }
 
 impl Default for FphaLagOptions {
@@ -3213,8 +3238,21 @@ impl Default for FphaLagOptions {
             risk_config: StageRiskConfig::Expectation,
             reverse_declaration_order: false,
             fpha_violation_cost: None,
+            h0_lateral_from_h1: None,
         }
     }
+}
+
+/// [`fpha_lag_study`] with `H0`'s tailrace flow reading `H1`'s outflow and incremental inflow.
+#[must_use]
+pub fn fpha_lateral_lag_study() -> (novomodelo_core::System, Config, PrepareHydroModelsResult) {
+    fpha_lag_study_with(FphaLagOptions {
+        h0_lateral_from_h1: Some(LateralFactors {
+            outflow: 0.6,
+            incremental_inflow: 0.4,
+        }),
+        ..FphaLagOptions::default()
+    })
 }
 
 /// [`fpha_lag_study`] varied by `options`; panics when `options.openings` is 0.
@@ -3240,9 +3278,10 @@ pub fn fpha_lag_study_with(
 /// evaporating hydro; and [`parallel_inflow_slack_study`]'s multi-block
 /// parallel inflow slack: the smallest in-code study that reaches the
 /// inflow-slack-per-block mutation check, unreachable on every committed deck
-/// and every other in-code study; and [`fpha_lag_study`]'s FPHA, PAR(2),
+/// and every other in-code study; [`fpha_lag_study`]'s FPHA, PAR(2),
 /// evaporation, soft inflow cap and anticipated lane on one chronological
-/// stage.
+/// stage; and [`fpha_lateral_lag_study`]'s lateral tailrace terms on its FPHA
+/// hydro.
 ///
 /// Each study's builder is called twice — once for the returned `System`,
 /// once for the `System` `build_setup_in_code*` consumes by value — since
@@ -3264,6 +3303,9 @@ pub fn structural_studies() -> Vec<(String, novomodelo_core::System, StudySetup)
     let (slack_system_for_setup, _) = parallel_inflow_slack_study();
     let (fpha_lag_system, fpha_lag_config, _) = fpha_lag_study();
     let (fpha_lag_system_for_setup, _, fpha_lag_hydro_models_for_setup) = fpha_lag_study();
+    let (fpha_lateral_system, fpha_lateral_config, _) = fpha_lateral_lag_study();
+    let (fpha_lateral_system_for_setup, _, fpha_lateral_hydro_models_for_setup) =
+        fpha_lateral_lag_study();
     vec![
         (
             "in-code/discounted-anticipated".to_string(),
@@ -3305,6 +3347,15 @@ pub fn structural_studies() -> Vec<(String, novomodelo_core::System, StudySetup)
                 fpha_lag_system_for_setup,
                 &fpha_lag_config,
                 fpha_lag_hydro_models_for_setup,
+            ),
+        ),
+        (
+            "structural/fpha-lateral-lag".to_string(),
+            fpha_lateral_system,
+            super::build_setup_in_code_with_models(
+                fpha_lateral_system_for_setup,
+                &fpha_lateral_config,
+                fpha_lateral_hydro_models_for_setup,
             ),
         ),
     ]

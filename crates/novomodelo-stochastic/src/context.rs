@@ -150,7 +150,7 @@ pub fn noise_entity_order(system: &System, schemes: &ClassSchemes) -> NoiseEntit
 ///         Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
 ///         StageStateConfig,
 ///     },
-///     entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties},
+///     entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties, TailraceFlow},
 /// };
 /// use novomodelo_stochastic::context::{ClassSchemes, OpeningTreeInputs, build_stochastic_context};
 /// use chrono::NaiveDate;
@@ -216,6 +216,7 @@ pub fn noise_entity_order(system: &System, schemes: &ClassSchemes) -> NoiseEntit
 /// #             evaporation_violation_pos_cost: 0.0, evaporation_violation_neg_cost: 0.0,
 /// #             inflow_nonnegativity_cost: 1000.0,
 /// #         },
+/// #         tailrace_flow: TailraceFlow::default(),
 /// #     };
 /// #     hydro.declare_mirror_unit_group(EntityId(0));
 /// #     hydro

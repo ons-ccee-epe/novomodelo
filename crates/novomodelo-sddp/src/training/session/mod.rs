@@ -2029,7 +2029,9 @@ mod tests {
 
     #[allow(clippy::cast_possible_wrap)]
     fn make_stochastic_context(n_stages: usize, n_openings: usize) -> StochasticContext {
-        use novomodelo_core::entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties};
+        use novomodelo_core::entities::hydro::{
+            Hydro, HydroGenerationModel, HydroPenalties, TailraceFlow,
+        };
 
         let bus = Bus {
             id: EntityId(0),
@@ -2086,6 +2088,7 @@ mod tests {
                 evaporation_violation_neg_cost: 0.0,
                 inflow_nonnegativity_cost: 1000.0,
             },
+            tailrace_flow: TailraceFlow::default(),
         };
         hydro.declare_mirror_unit_group(EntityId(0));
 

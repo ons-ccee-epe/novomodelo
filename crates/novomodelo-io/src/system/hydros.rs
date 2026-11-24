@@ -57,7 +57,8 @@ use novomodelo_core::{
     EntityId,
     entities::{
         DiversionChannel, EfficiencyModel, FillingConfig, HydraulicLossesModel, Hydro,
-        HydroGenerationModel, HydroUnitGroup, TailraceModel, TailracePoint,
+        HydroGenerationModel, HydroUnitGroup, TailraceFlow, TailraceFlowInfluence, TailraceModel,
+        TailracePoint,
     },
     penalty::{GlobalPenaltyDefaults, HydroPenaltyOverrides, resolve_hydro_penalties},
 };
@@ -127,6 +128,10 @@ pub(crate) struct RawHydro {
     /// Diversion channel configuration. Absent or null = no diversion channel.
     #[serde(default)]
     diversion: Option<RawDiversionChannel>,
+    /// Flow that drives the tailrace level. Absent or null = the plant's own
+    /// total outflow, no influences.
+    #[serde(default)]
+    tailrace_flow: Option<RawTailraceFlow>,
     /// Reservoir filling configuration. Absent or null = no filling operation.
     #[serde(default)]
     filling: Option<RawFillingConfig>,
@@ -333,6 +338,40 @@ pub(crate) struct RawDiversionChannel {
     max_flow_m3s: Option<f64>,
 }
 
+/// The `tailrace_flow` sub-object: the flow (m³/s) whose value sets the
+/// tailrace level, `own_outflow_factor · own outflow + Σ factor · outflow of
+/// each listed hydro + Σ factor · incremental inflow of each listed hydro`.
+/// Factors are non-negative dimensionless weights and need not sum to 1.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub(crate) struct RawTailraceFlow {
+    /// Weight on this plant's own turbined plus spilled outflow (m³/s).
+    /// Absent or null = 1.0.
+    #[serde(default)]
+    own_outflow_factor: Option<f64>,
+    /// Other hydros whose total outflow (m³/s) adds to this plant's tailrace
+    /// flow. Absent = none. May not name the declaring hydro: its own outflow
+    /// is weighted by `own_outflow_factor` alone.
+    #[serde(default)]
+    outflow_influences: Vec<RawTailraceFlowInfluence>,
+    /// Hydros whose incremental inflow (m³/s) adds to this plant's tailrace
+    /// flow. Absent = none. May name the declaring hydro.
+    #[serde(default)]
+    incremental_inflow_influences: Vec<RawTailraceFlowInfluence>,
+}
+
+/// One weighted entry of a `tailrace_flow` influence list.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub(crate) struct RawTailraceFlowInfluence {
+    /// Identifier of the influencing hydro plant; at most once per list.
+    hydro_id: i32,
+    /// Non-negative dimensionless weight on that plant's flow.
+    factor: f64,
+}
+
 /// The `filling` sub-object.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -494,6 +533,7 @@ fn validate_raw_hydros(raw: &RawHydroFile, path: &Path) -> Result<(), LoadError>
         validate_reservoir(&hydro.reservoir, i, path)?;
         validate_outflow(&hydro.outflow, i, path)?;
         validate_diversion(hydro.diversion.as_ref(), i, path)?;
+        validate_tailrace_flow(hydro.tailrace_flow.as_ref(), hydro.id, i, path)?;
         validate_generation(&hydro.generation, i, path)?;
         if let Some(evap) = &hydro.evaporation {
             validate_evaporation(
@@ -632,6 +672,68 @@ fn validate_diversion(
             field: format!("hydros[{hydro_index}].diversion.max_flow_m3s"),
             message: format!("max_flow_m3s must be >= 0, got {max_flow}"),
         });
+    }
+    Ok(())
+}
+
+fn validate_tailrace_flow(
+    flow: Option<&RawTailraceFlow>,
+    hydro_id: i32,
+    hydro_index: usize,
+    path: &Path,
+) -> Result<(), LoadError> {
+    let Some(flow) = flow else {
+        return Ok(());
+    };
+    let prefix = format!("hydros[{hydro_index}].tailrace_flow");
+    let schema_error = |field: String, message: String| LoadError::SchemaError {
+        path: path.to_path_buf(),
+        field,
+        message,
+    };
+    if let Some(own) = flow.own_outflow_factor
+        && (!own.is_finite() || own < 0.0)
+    {
+        return Err(schema_error(
+            format!("{prefix}.own_outflow_factor"),
+            format!("own_outflow_factor must be finite and >= 0, got {own}"),
+        ));
+    }
+    for (list_name, list) in [
+        ("outflow_influences", &flow.outflow_influences),
+        (
+            "incremental_inflow_influences",
+            &flow.incremental_inflow_influences,
+        ),
+    ] {
+        let mut seen: HashSet<i32> = HashSet::new();
+        for (j, influence) in list.iter().enumerate() {
+            let entry = format!("{prefix}.{list_name}[{j}]");
+            if !influence.factor.is_finite() || influence.factor < 0.0 {
+                return Err(schema_error(
+                    format!("{entry}.factor"),
+                    format!("factor must be finite and >= 0, got {}", influence.factor),
+                ));
+            }
+            if !seen.insert(influence.hydro_id) {
+                return Err(schema_error(
+                    format!("{entry}.hydro_id"),
+                    format!(
+                        "hydro {} is listed more than once in {list_name}",
+                        influence.hydro_id
+                    ),
+                ));
+            }
+            if list_name == "outflow_influences" && influence.hydro_id == hydro_id {
+                return Err(schema_error(
+                    format!("{entry}.hydro_id"),
+                    format!(
+                        "hydro {hydro_id} lists itself in outflow_influences; a hydro's own \
+                         outflow is set by own_outflow_factor, not by listing itself"
+                    ),
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -796,6 +898,10 @@ fn convert_hydros(
                 max_flow_m3s: d.max_flow_m3s,
             });
 
+            let tailrace_flow = raw_hydro
+                .tailrace_flow
+                .map_or_else(TailraceFlow::default, convert_tailrace_flow);
+
             let filling = raw_hydro.filling.map(|f| FillingConfig {
                 start_stage_id: f.start_stage_id,
                 filling_min_rate_m3s: f.filling_min_rate_m3s,
@@ -848,8 +954,10 @@ fn convert_hydros(
                 diversion,
                 filling,
                 penalties,
+                tailrace_flow,
             };
             hydro.sort_unit_groups();
+            hydro.tailrace_flow.sort_influences();
             Ok(hydro)
         })
         .collect::<Result<_, LoadError>>()?;
@@ -888,6 +996,22 @@ fn convert_tailrace(raw: RawTailrace) -> TailraceModel {
                 })
                 .collect(),
         },
+    }
+}
+
+fn convert_tailrace_flow(raw: RawTailraceFlow) -> TailraceFlow {
+    let convert_list = |list: Vec<RawTailraceFlowInfluence>| {
+        list.into_iter()
+            .map(|i| TailraceFlowInfluence {
+                hydro_id: EntityId(i.hydro_id),
+                factor: i.factor,
+            })
+            .collect()
+    };
+    TailraceFlow {
+        own_outflow_factor: raw.own_outflow_factor.unwrap_or(1.0),
+        outflow_influences: convert_list(raw.outflow_influences),
+        incremental_inflow_influences: convert_list(raw.incremental_inflow_influences),
     }
 }
 
@@ -1816,6 +1940,159 @@ mod tests {
         assert!(
             matches!(&err, LoadError::SchemaError { field, .. } if field == "hydros[0].diversion.max_flow_m3s"),
             "got: {err:?}"
+        );
+    }
+
+    fn hydro_with_tailrace_flow(id: i32, tailrace_flow: &str) -> String {
+        format!(
+            r#"{{
+            "id": {id}, "name": "H{id}",
+            "operational_start_date": "2024-01-01",
+            "downstream_id": null,
+            "reservoir": {{ "min_storage_hm3": 0.0, "max_storage_hm3": 1000.0 }},
+            "outflow": {{ "min_outflow_m3s": 0.0, "max_outflow_m3s": null }},
+            "generation": {{
+              "model": "constant_productivity",
+              "min_turbined_m3s": 0.0, "max_turbined_m3s": 500.0,
+              "min_generation_mw": 0.0, "max_generation_mw": 250.0
+            }},
+            "unit_groups": [
+              {{ "id": 0, "name": "G", "bus_id": 0,
+                "min_generation_mw": 0.0, "max_generation_mw": 250.0,
+                "min_turbined_m3s": 0.0, "max_turbined_m3s": 500.0 }}
+            ]{tailrace_flow}
+          }}"#
+        )
+    }
+
+    fn parse_tailrace_flow_hydros(entries: &[String]) -> Result<Vec<Hydro>, LoadError> {
+        let json = format!(r#"{{ "hydros": [{}] }}"#, entries.join(","));
+        let f = write_json(&json);
+        parse_hydros(f.path(), &make_global())
+    }
+
+    fn parse_single_tailrace_flow(tailrace_flow: &str) -> Result<Vec<Hydro>, LoadError> {
+        parse_tailrace_flow_hydros(&[hydro_with_tailrace_flow(
+            10,
+            &format!(r#", "tailrace_flow": {tailrace_flow}"#),
+        )])
+    }
+
+    #[test]
+    fn tailrace_flow_parses_and_sorts_influences() {
+        let hydros = parse_single_tailrace_flow(
+            r#"{
+              "own_outflow_factor": 1.03,
+              "outflow_influences": [
+                { "hydro_id": 30, "factor": 0.25 },
+                { "hydro_id": 20, "factor": 1.17 }
+              ],
+              "incremental_inflow_influences": [{ "hydro_id": 40, "factor": 0.07 }]
+            }"#,
+        )
+        .unwrap();
+        let flow = &hydros[0].tailrace_flow;
+        assert_eq!(flow.own_outflow_factor.to_bits(), 1.03_f64.to_bits());
+        let outflow: Vec<(i32, u64)> = flow
+            .outflow_influences
+            .iter()
+            .map(|i| (i.hydro_id.0, i.factor.to_bits()))
+            .collect();
+        assert_eq!(
+            outflow,
+            vec![(20, 1.17_f64.to_bits()), (30, 0.25_f64.to_bits())]
+        );
+        let incremental: Vec<(i32, u64)> = flow
+            .incremental_inflow_influences
+            .iter()
+            .map(|i| (i.hydro_id.0, i.factor.to_bits()))
+            .collect();
+        assert_eq!(incremental, vec![(40, 0.07_f64.to_bits())]);
+    }
+
+    #[test]
+    fn tailrace_flow_absent_is_the_inert_default() {
+        let absent = parse_tailrace_flow_hydros(&[hydro_with_tailrace_flow(10, "")]).unwrap();
+        assert_eq!(absent[0].tailrace_flow, TailraceFlow::default());
+        let empty = parse_single_tailrace_flow("{}").unwrap();
+        assert_eq!(empty[0].tailrace_flow, TailraceFlow::default());
+    }
+
+    #[test]
+    fn tailrace_flow_refuses_self_outflow_duplicate_and_bad_factors() {
+        for (flow, expected_field) in [
+            (
+                r#"{ "outflow_influences": [{ "hydro_id": 10, "factor": 1.0 }] }"#,
+                "hydros[0].tailrace_flow.outflow_influences[0].hydro_id",
+            ),
+            (
+                r#"{ "incremental_inflow_influences": [
+                    { "hydro_id": 20, "factor": 1.0 }, { "hydro_id": 20, "factor": 0.5 }
+                ] }"#,
+                "hydros[0].tailrace_flow.incremental_inflow_influences[1].hydro_id",
+            ),
+            (
+                r#"{ "outflow_influences": [{ "hydro_id": 20, "factor": -0.1 }] }"#,
+                "hydros[0].tailrace_flow.outflow_influences[0].factor",
+            ),
+            (
+                r#"{ "own_outflow_factor": -1.0 }"#,
+                "hydros[0].tailrace_flow.own_outflow_factor",
+            ),
+        ] {
+            let err = parse_single_tailrace_flow(flow).unwrap_err();
+            assert!(
+                matches!(&err, LoadError::SchemaError { field, .. } if field == expected_field),
+                "tailrace_flow = {flow}: got {err:?}"
+            );
+        }
+
+        let err = parse_single_tailrace_flow(r#"{ "factor_turbined": 1.0 }"#).unwrap_err();
+        assert!(
+            matches!(&err, LoadError::ParseError { .. }),
+            "expected ParseError for an unknown tailrace_flow key, got: {err:?}"
+        );
+        assert!(err.to_string().contains("factor_turbined"), "got: {err}");
+
+        parse_single_tailrace_flow(
+            r#"{
+              "own_outflow_factor": 0.0,
+              "outflow_influences": [{ "hydro_id": 20, "factor": 0.0 }],
+              "incremental_inflow_influences": [{ "hydro_id": 30, "factor": 0.0 }]
+            }"#,
+        )
+        .unwrap();
+
+        parse_tailrace_flow_hydros(&[
+            hydro_with_tailrace_flow(
+                10,
+                r#", "tailrace_flow": { "outflow_influences": [{ "hydro_id": 20, "factor": 1.0 }] }"#,
+            ),
+            hydro_with_tailrace_flow(
+                20,
+                r#", "tailrace_flow": { "outflow_influences": [{ "hydro_id": 10, "factor": 1.0 }] }"#,
+            ),
+        ])
+        .unwrap();
+    }
+
+    #[test]
+    fn tailrace_flow_accepts_a_self_incremental_inflow_influence() {
+        let hydros = parse_single_tailrace_flow(
+            r#"{ "incremental_inflow_influences": [
+                { "hydro_id": 10, "factor": 0.07 }, { "hydro_id": 20, "factor": 0.5 }
+            ] }"#,
+        )
+        .unwrap();
+        let incremental: Vec<(i32, u64)> = hydros[0]
+            .tailrace_flow
+            .incremental_inflow_influences
+            .iter()
+            .map(|i| (i.hydro_id.0, i.factor.to_bits()))
+            .collect();
+        assert_eq!(
+            incremental,
+            vec![(10, 0.07_f64.to_bits()), (20, 0.5_f64.to_bits())]
         );
     }
 

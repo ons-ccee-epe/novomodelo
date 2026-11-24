@@ -16,7 +16,7 @@ use novomodelo_core::{
     PenaltiesCountsSpec, PenaltiesDefaults, PenaltyBasis, PumpingBlockBounds, PumpingStation,
     ResolvedBlockBounds, ResolvedBounds, ResolvedGenericConstraintBounds, ResolvedPenalties,
     ScalarExpr, ScenarioSourceConfig, SlackConfig, Stage, StageRiskConfig, StageStateConfig,
-    Thermal, ThermalBlockBounds, VariableRef,
+    TailraceFlow, Thermal, ThermalBlockBounds, VariableRef,
 };
 
 use crate::hydro_models::{EvaporationModelSet, ProductionModelSet};
@@ -39,7 +39,7 @@ use super::super::DeliveryRing;
 use super::super::entries::build_stage_inflow_coupling;
 use super::super::test_support::zero_hydro_penalties;
 use super::{
-    RangeCursor, StageLayout, StageProductionRole, StateSpace, TemplateBuildCtx,
+    RangeCursor, StageGeometry, StageLayout, StageProductionRole, StateSpace, TemplateBuildCtx,
     build_anticipated_decision_row_pos, build_anticipated_fishing_row_pos,
     build_anticipated_slot_row_pos, build_transit_bucket_row_pos, entity_flat,
     evaporation_slot_boundaries, fold_endpoint, variable_ref_is_block_independent,
@@ -241,6 +241,7 @@ fn membership_hydro(
         diversion: None,
         filling,
         penalties: zero_hydro_penalties(),
+        tailrace_flow: TailraceFlow::default(),
     };
     hydro.declare_mirror_unit_group(EntityId(1));
     hydro
@@ -1134,8 +1135,6 @@ fn parallel_inflow_coupling_enters_each_target_water_row_once() {
 /// hydro on a chronological stage.
 #[test]
 fn water_balance_row_collapses_parallel_blocks_and_strides_chronological_blocks() {
-    use super::StageGeometry;
-
     let parallel = StageGeometry {
         water_balance: BlockRowFamily::one_per_entity(2..4),
         n_blks: 3,
@@ -1171,8 +1170,6 @@ fn water_balance_row_collapses_parallel_blocks_and_strides_chronological_blocks(
 /// regardless of `block_mode`.
 #[test]
 fn load_balance_row_strides_buses_by_the_block_count() {
-    use super::StageGeometry;
-
     let geometry = StageGeometry {
         load_balance: BlockRowFamily::per_block(10..22),
         n_blks: 4,
@@ -1193,8 +1190,6 @@ fn load_balance_row_strides_buses_by_the_block_count() {
 /// `family.start + local`.
 #[test]
 fn stage_geometry_entity_col_accessors_match_hand_offsets() {
-    use super::StageGeometry;
-
     let geometry = StageGeometry {
         anticipated_decision: 40..43,
         inflow_slack: 10..13,
@@ -1226,13 +1221,59 @@ fn stage_geometry_entity_col_accessors_match_hand_offsets() {
 #[test]
 #[should_panic(expected = "outside")]
 fn inflow_slack_col_rejects_a_hydro_past_the_family() {
-    use super::StageGeometry;
-
     let geometry = StageGeometry {
         inflow_slack: 10..13,
         ..crate::test_support::equipment_free_geometry(&[0]).remove(0)
     };
     let _ = geometry.inflow_slack_col(HydroSys::new(3));
+}
+
+/// `plant_release_cols` lists a split plant's cell turbine columns in cell
+/// order, then its spillage column.
+#[test]
+fn plant_release_cols_lists_every_cell_turbine_then_the_spillage() {
+    let mut fixtures = TwoHydroMultiBusFixtures::new(true);
+    let ctx = fixtures.make_ctx();
+    let stage = stage_with_blocks(BlockMode::Parallel, 3);
+    let layout = StageLayout::new(&ctx, &stage, 0);
+    let geometry = &layout.geometry;
+    let plant = HydroSys::new(1);
+    let blk = BlockIdx::new(1);
+
+    let release: Vec<usize> = geometry
+        .plant_release_cols(ctx.hydro_cell_index, plant, blk)
+        .collect();
+
+    assert_eq!(
+        release,
+        vec![
+            geometry.turbine_col(HydroCell::new(1), blk),
+            geometry.turbine_col(HydroCell::new(2), blk),
+            geometry.spillage_col(plant, blk),
+        ]
+    );
+}
+
+/// `effective_inflow_slack_col` yields the plant's slack column under the two
+/// truncation methods and `None` under `Penalty` and `None`.
+#[test]
+fn effective_inflow_slack_col_is_some_only_under_truncation() {
+    use crate::inflow_method::InflowNonNegativityMethod;
+
+    let geometry = StageGeometry {
+        inflow_slack: 10..13,
+        ..crate::test_support::equipment_free_geometry(&[0]).remove(0)
+    };
+    let plant = HydroSys::new(1);
+    let slack_of = |method| geometry.effective_inflow_slack_col(method, plant);
+
+    assert_eq!(slack_of(InflowNonNegativityMethod::Truncation), Some(11));
+    assert_eq!(
+        slack_of(InflowNonNegativityMethod::TruncationWithPenalty),
+        Some(11)
+    );
+    assert_eq!(slack_of(InflowNonNegativityMethod::Penalty), None);
+    assert_eq!(slack_of(InflowNonNegativityMethod::None), None);
 }
 
 // ── FPHA-local inverse map ───────────────────────────────────────────────

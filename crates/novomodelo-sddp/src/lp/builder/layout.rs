@@ -21,6 +21,7 @@ use crate::indexer::{
     anticipated_resolution_for, for_each_live_commitment_slot,
     is_anticipated_decision_active_for_delivery,
 };
+use crate::inflow_method::InflowNonNegativityMethod;
 use crate::time_value::TimeValue;
 
 use super::hydro_state::{
@@ -29,7 +30,7 @@ use super::hydro_state::{
 };
 use super::{
     EVAP_COLS_PER_HYDRO, EVAP_F_MINUS_OFFSET, EVAP_F_PLUS_OFFSET, EVAP_FLOW_OFFSET,
-    GenericConstraintRowEntry,
+    GenericConstraintRowEntry, ResolvedTailraceLateral,
 };
 use crate::block_clock::BlockClock;
 use crate::policy::resolved_generic_coefficients::{BoundSide, ResolvedGenericCoefficients};
@@ -93,6 +94,10 @@ pub(crate) struct TemplateBuildCtx<'a> {
     /// single `resolve_lp_build_inputs` resolution
     /// (`LpBuildInputs::diversion_upstream`).
     pub(crate) diversion_upstream: &'a HashMap<EntityId, Vec<usize>>,
+    /// Per-hydro tailrace-flow terms, one record per hydro in system order.
+    /// Borrowed from setup's single `resolve_lp_build_inputs` resolution
+    /// (`LpBuildInputs::tailrace_lateral`).
+    pub(crate) tailrace_lateral: &'a [ResolvedTailraceLateral],
     /// The role-(a) state layout, from setup's single owner
     /// (`resolve_state_layout`), which owns `anticipated_lead_stages` and
     /// `anticipated_resolution`.
@@ -2212,6 +2217,23 @@ impl StageGeometry {
         self.block_flat(&self.spillage, h.get(), blk)
     }
 
+    /// Columns of plant `h`'s release in block `blk`: each cell's turbine column
+    /// in `cells_of(h)` order, then the plant's spillage column. The release is
+    /// `Σ_c q_c + s`, so a per-plant coefficient is replicated across the cells,
+    /// never divided.
+    #[inline]
+    pub(crate) fn plant_release_cols<'s>(
+        &'s self,
+        cells: &'s HydroCellIndex,
+        h: HydroSys,
+        blk: BlockIdx,
+    ) -> impl Iterator<Item = usize> + 's {
+        cells
+            .cells_of(h)
+            .map(move |c| self.turbine_col(HydroCell::new(c), blk))
+            .chain(std::iter::once(self.spillage_col(h, blk)))
+    }
+
     /// Diversion-flow column for hydro `h`, block `blk`.
     #[inline]
     #[must_use]
@@ -2390,6 +2412,19 @@ impl StageGeometry {
     #[must_use]
     pub fn inflow_slack_col(&self, h: HydroSys) -> usize {
         entity_flat(&self.inflow_slack, h.get())
+    }
+
+    /// The slack column that belongs to plant `h`'s effective (truncated) local
+    /// inflow. Under `Penalty` and `None` the effective inflow is the realized
+    /// inflow alone, so there is none.
+    #[inline]
+    #[must_use]
+    pub(crate) fn effective_inflow_slack_col(
+        &self,
+        method: InflowNonNegativityMethod,
+        h: HydroSys,
+    ) -> Option<usize> {
+        method.truncates().then(|| self.inflow_slack_col(h))
     }
 
     /// Hydro `h`'s below-withdrawal-target slack column.
