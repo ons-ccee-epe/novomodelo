@@ -3363,7 +3363,7 @@ mod pumping_water_tests {
         self, BusSpec, ContractSpec, HydroSpec, LineSpec, PumpingSpec, StageSpec, ThermalSpec,
     };
     use crate::test_support::ctx_fixture::CtxFixture;
-    use crate::test_support::make_unit_group;
+    use crate::test_support::{captured_log, make_unit_group};
     use crate::time_value::{PostStudyResolved, TimeValue};
 
     use super::super::columns::{fill_pumping_columns, fill_stage_columns};
@@ -6321,32 +6321,6 @@ mod pumping_water_tests {
         let mut hydro = min_floor_fixture();
         hydro.unit_groups[0] = make_unit_group(EntityId(200), EntityId(30), 0.0, 0.0, 5.0, 500.0);
         hydro
-    }
-
-    /// Run `run` under a subscriber and return what it logged.
-    fn captured_log(run: impl FnOnce()) -> String {
-        use std::sync::{Arc, Mutex};
-
-        #[derive(Clone)]
-        struct Log(Arc<Mutex<Vec<u8>>>);
-        impl std::io::Write for Log {
-            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-                self.0.lock().unwrap().extend_from_slice(bytes);
-                Ok(bytes.len())
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
-        }
-
-        let log = Log(Arc::new(Mutex::new(Vec::new())));
-        let writer = log.clone();
-        let subscriber = tracing_subscriber::fmt()
-            .with_ansi(false)
-            .with_writer(move || writer.clone())
-            .finish();
-        tracing::subscriber::with_default(subscriber, run);
-        String::from_utf8(log.0.lock().unwrap().clone()).unwrap()
     }
 
     /// A `hydro_bounds` override below the cells' summed minimum cannot lower

@@ -77,6 +77,7 @@ arrow = { version = "60", default-features = false, features = ["prettyprint"] }
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 novomodelo-core = { version = "0.21.0", path = "../novomodelo-core", features = ["test-support"] }
 novomodelo-io = { version = "0.21.0", path = "../novomodelo-io", features = ["test-support"] }
+novomodelo-stochastic = { version = "0.21.0", path = "../novomodelo-stochastic", features = ["test-support"] }
 criterion = { version = "0.8", default-features = false }
 # Used only by the `dcs_batched_scoring` bench to reproduce the pre-batching
 # per-candidate `dgemm` baseline (the crate's own `gemm_block` wrapper is

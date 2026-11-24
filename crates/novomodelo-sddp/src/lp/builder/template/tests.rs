@@ -20,6 +20,7 @@ use novomodelo_core::{
 use novomodelo_stochastic::PrecomputedNormal;
 use novomodelo_stochastic::par::precompute::PrecomputedPar;
 use novomodelo_stochastic::season_cast::post_study_calendar_stages;
+use novomodelo_stochastic::test_support::WarnRecorder;
 
 use crate::block_clock::M3S_TO_HM3;
 use crate::hydro_models::PrepareHydroModelsResult;
@@ -4750,69 +4751,6 @@ fn template_leadstages_byte_identical_to_setup_and_fallback() {
         "LeadStages fallback must stay byte-identical to the threaded resolution"
     );
     assert_eq!(template_decider, vec![None, Some(0), Some(1)]);
-}
-
-/// Minimal WARN-capturing `tracing::Subscriber`, mirroring setup's own
-/// `WarnRecorder` test fixture (the established setup-time advisory-test
-/// pattern for this crate).
-struct WarnRecorder {
-    messages: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
-}
-
-impl WarnRecorder {
-    fn new() -> (Self, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
-        let messages = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        (
-            Self {
-                messages: std::sync::Arc::clone(&messages),
-            },
-            messages,
-        )
-    }
-}
-
-impl tracing::Subscriber for WarnRecorder {
-    fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
-        *metadata.level() <= tracing::Level::WARN
-    }
-
-    fn new_span(&self, _attrs: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-        tracing::span::Id::from_u64(1)
-    }
-
-    fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
-
-    fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
-
-    fn event(&self, event: &tracing::Event<'_>) {
-        if *event.metadata().level() == tracing::Level::WARN {
-            struct MessageVisitor(String);
-            impl tracing::field::Visit for MessageVisitor {
-                fn record_debug(
-                    &mut self,
-                    field: &tracing::field::Field,
-                    value: &dyn std::fmt::Debug,
-                ) {
-                    if field.name() == "message" {
-                        self.0 = format!("{value:?}");
-                    }
-                }
-
-                fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
-                    if field.name() == "message" {
-                        self.0 = value.to_string();
-                    }
-                }
-            }
-            let mut visitor = MessageVisitor(String::new());
-            event.record(&mut visitor);
-            self.messages.lock().unwrap().push(visitor.0);
-        }
-    }
-
-    fn enter(&self, _span: &tracing::span::Id) {}
-
-    fn exit(&self, _span: &tracing::span::Id) {}
 }
 
 /// `build_stage_templates` does not resolve anticipated commitments itself
