@@ -165,7 +165,7 @@ struct RawWindowMw {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawPostStudyBound {
-    /// Identifier of a post-study thermal stage declared in `stages.json`.
+    /// Id of an entry of `post_study_thermal_stages` in `stages.json`.
     stage_id: i32,
     /// Fuel cost (`$/MWh`) at this stage. Must be finite.
     cost_per_mwh: f64,

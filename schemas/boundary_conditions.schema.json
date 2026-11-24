@@ -1,0 +1,181 @@
+{
+  "$defs": {
+    "RawHydroBoundary": {
+      "additionalProperties": false,
+      "description": "Boundary values of one hydro plant.",
+      "properties": {
+        "hydro_id": {
+          "description": "Hydro plant identifier. Must be unique within `hydros`.",
+          "format": "int32",
+          "type": "integer"
+        },
+        "past_defluences": {
+          "description": "Past release windows of the plant, on the pre-study calendar. Windows\nmust not overlap; adjacent windows (start == previous end) are\naccepted. Optional; defaults to empty.",
+          "items": {
+            "$ref": "#/$defs/RawWindowM3s"
+          },
+          "type": "array"
+        },
+        "recent_inflows": {
+          "description": "Observed inflow for partial periods before the study start. Windows\nmust not overlap; adjacent windows (start == previous end) are\naccepted. Optional; defaults to empty.",
+          "items": {
+            "$ref": "#/$defs/RawWindowM3s"
+          },
+          "type": "array"
+        },
+        "storage_hm3": {
+          "description": "Reservoir volume at the study start (hm³). Must be >= 0.0. Optional.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "hydro_id"
+      ],
+      "type": "object"
+    },
+    "RawPostStudyBound": {
+      "additionalProperties": false,
+      "description": "Cost and generation bounds for one post-study stage of a thermal plant.",
+      "properties": {
+        "cost_per_mwh": {
+          "description": "Fuel cost (`$/MWh`) at this stage. Must be finite.",
+          "format": "double",
+          "type": "number"
+        },
+        "max_mw": {
+          "description": "Upper bound of the delivered MW rate at this stage. Must be finite and\n`>= min_mw`.",
+          "format": "double",
+          "type": "number"
+        },
+        "min_mw": {
+          "description": "Lower bound of the delivered MW rate at this stage. Must be finite.",
+          "format": "double",
+          "type": "number"
+        },
+        "stage_id": {
+          "description": "Id of an entry of `post_study_thermal_stages` in `stages.json`.",
+          "format": "int32",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "stage_id",
+        "cost_per_mwh",
+        "min_mw",
+        "max_mw"
+      ],
+      "type": "object"
+    },
+    "RawThermalBoundary": {
+      "additionalProperties": false,
+      "description": "Boundary values of one thermal plant.",
+      "properties": {
+        "commitments": {
+          "description": "Committed MW windows decided before the study, covering the leading\nin-study delivery stages or the post-horizon deliveries. Windows must\nnot overlap or share a `start_date`; adjacent windows (start ==\nprevious end) are accepted. Optional; defaults to empty.",
+          "items": {
+            "$ref": "#/$defs/RawWindowMw"
+          },
+          "type": "array"
+        },
+        "post_study_bounds": {
+          "description": "Cost and generation bounds per post-study stage the study decides. A\n`stage_id` may appear once per plant. Optional; defaults to empty.",
+          "items": {
+            "$ref": "#/$defs/RawPostStudyBound"
+          },
+          "type": "array"
+        },
+        "thermal_id": {
+          "description": "Thermal plant identifier. Must be unique within `thermals`.",
+          "format": "int32",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "thermal_id"
+      ],
+      "type": "object"
+    },
+    "RawWindowM3s": {
+      "additionalProperties": false,
+      "description": "A `[start_date, end_date)` window carrying a flow rate in m³/s.",
+      "properties": {
+        "end_date": {
+          "description": "End of the window (exclusive), as an ISO 8601 date (YYYY-MM-DD). Must be\nafter `start_date`.",
+          "type": "string"
+        },
+        "start_date": {
+          "description": "Start of the window (inclusive), as an ISO 8601 date (YYYY-MM-DD).",
+          "type": "string"
+        },
+        "value_m3s": {
+          "description": "Average rate over the window (m³/s). Must be finite.",
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "start_date",
+        "end_date",
+        "value_m3s"
+      ],
+      "type": "object"
+    },
+    "RawWindowMw": {
+      "additionalProperties": false,
+      "description": "A `[start_date, end_date)` window carrying a power rate in MW.",
+      "properties": {
+        "end_date": {
+          "description": "End of the window (exclusive), as an ISO 8601 date (YYYY-MM-DD). Must be\nafter `start_date`.",
+          "type": "string"
+        },
+        "start_date": {
+          "description": "Start of the window (inclusive), as an ISO 8601 date (YYYY-MM-DD).",
+          "type": "string"
+        },
+        "value_mw": {
+          "description": "Committed rate held constant over the window (MW). Must be finite.",
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "start_date",
+        "end_date",
+        "value_mw"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Root object of `boundary_conditions.json`.",
+  "properties": {
+    "$schema": {
+      "description": "JSON schema URI — informational, not validated.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "hydros": {
+      "description": "Boundary values per hydro plant. A plant with none may be left out.\nOptional; defaults to empty.",
+      "items": {
+        "$ref": "#/$defs/RawHydroBoundary"
+      },
+      "type": "array"
+    },
+    "thermals": {
+      "description": "Boundary values per thermal plant. A plant with none may be left out.\nOptional; defaults to empty.",
+      "items": {
+        "$ref": "#/$defs/RawThermalBoundary"
+      },
+      "type": "array"
+    }
+  },
+  "title": "RawBoundaryConditionsFile",
+  "type": "object"
+}

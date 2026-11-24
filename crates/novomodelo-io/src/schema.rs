@@ -17,6 +17,7 @@
 //! ```
 
 use crate::{
+    boundary::file::RawBoundaryConditionsFile,
     config::Config,
     constraints::generic::RawGenericConstraintsFile,
     extensions::{
@@ -64,7 +65,7 @@ use serde_json::{Error, Value};
 /// use novomodelo_io::schema::generate_schemas;
 ///
 /// let schemas = generate_schemas().expect("schema generation must not fail");
-/// assert!(schemas.len() >= 17);
+/// assert!(schemas.len() >= 19);
 /// let config_schema = schemas.iter().find(|(name, _)| name == "config.schema.json");
 /// assert!(config_schema.is_some());
 /// ```
@@ -91,6 +92,10 @@ pub fn generate_schemas() -> Result<Vec<(String, Value)>, Error> {
             schemars::schema_for!(RawPumpingFile),
         ),
         ("stages.schema.json", schemars::schema_for!(RawStagesFile)),
+        (
+            "boundary_conditions.schema.json",
+            schemars::schema_for!(RawBoundaryConditionsFile),
+        ),
         ("penalties.schema.json", schemars::schema_for!(RawPenalties)),
         (
             "generic_constraints.schema.json",
@@ -213,8 +218,8 @@ mod tests {
     fn test_generate_schemas_returns_expected_count() {
         let schemas = generate_schemas().unwrap();
         assert!(
-            schemas.len() >= 17,
-            "expected at least 17 schema entries, got {}",
+            schemas.len() >= 19,
+            "expected at least 19 schema entries, got {}",
             schemas.len()
         );
     }
@@ -402,6 +407,7 @@ mod tests {
             "non_controllable_sources.schema.json",
             "pumping_stations.schema.json",
             "stages.schema.json",
+            "boundary_conditions.schema.json",
             "penalties.schema.json",
             "generic_constraints.schema.json",
             "load_factors.schema.json",
