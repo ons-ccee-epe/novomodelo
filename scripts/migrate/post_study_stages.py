@@ -190,7 +190,8 @@ def _entries(deck: Path, relative: str, key: str) -> list[dict[str, Any]]:
     return entries
 
 
-def _declares_arc(hydro: dict[str, Any]) -> bool:
+def declares_arc(hydro: dict[str, Any]) -> bool:
+    """Whether `hydro` has a positive `travel_time_hours` and a downstream."""
     hours = hydro.get("travel_time_hours")
     return (
         isinstance(hours, int | float)
@@ -199,7 +200,8 @@ def _declares_arc(hydro: dict[str, Any]) -> bool:
     )
 
 
-def _last_study_stage(deck: Path) -> LastStage:
+def last_study_stage(deck: Path) -> LastStage:
+    """The last in-study stage of `deck`'s `stages.json`: its end date and block hours."""
     in_study = [
         stage
         for stage in _entries(deck, "stages.json", "stages")
@@ -217,6 +219,29 @@ def _last_study_stage(deck: Path) -> LastStage:
         raise Refusal(
             f"stages.json: stage {stage['id']} is malformed ({exc!r})"
         ) from exc
+
+
+def deepest_arc_hours(deck: Path) -> float:
+    """The largest `travel_time_hours` of a hydro of `deck` with an arc, `0.0` when none."""
+    return max(
+        (
+            hydro["travel_time_hours"]
+            for hydro in _entries(deck, "system/hydros.json", "hydros")
+            if declares_arc(hydro)
+        ),
+        default=0.0,
+    )
+
+
+def padded_water_calendar(
+    deck: Path, legacy_stages: object | None
+) -> list[dict[str, Any]] | None:
+    """The padded water calendar of `deck` (`legacy_stages` seeds it), `None` without an arc."""
+    deepest_hours = deepest_arc_hours(deck)
+    if deepest_hours == 0.0:
+        return None
+    seed = legacy_water_seed(legacy_stages) if legacy_stages is not None else []
+    return water_stages(seed, last_study_stage(deck), deepest_hours)
 
 
 def layout_error(deck: Path) -> str | None:
@@ -242,15 +267,7 @@ def plan_deck(deck: Path) -> DeckPlan:
     if file_format is FileFormat.CURRENT:
         return DeckPlan(deck, "already current", None)
 
-    deepest_hours = max(
-        (
-            hydro["travel_time_hours"]
-            for hydro in _entries(deck, "system/hydros.json", "hydros")
-            if _declares_arc(hydro)
-        ),
-        default=0.0,
-    )
-    has_arc = deepest_hours > 0
+    has_arc = deepest_arc_hours(deck) > 0
     anticipates_thermal = any(
         thermal.get("anticipated_config") is not None
         for thermal in _entries(deck, "system/thermals.json", "thermals")
@@ -270,11 +287,13 @@ def plan_deck(deck: Path) -> DeckPlan:
         outcome = (
             "migrated" if has_arc else "renamed" if anticipates_thermal else "cleared"
         )
-    if has_arc:
-        seed = legacy_water_seed(doc["stages"]) if doc is not None else []
-        migrated["water_bucket_stages"] = water_stages(
-            seed, _last_study_stage(deck), deepest_hours
-        )
+    # `stages: null` must refuse here; padded_water_calendar reads None as no file.
+    legacy_seed = (
+        legacy_water_seed(doc["stages"]) if has_arc and doc is not None else None
+    )
+    water = padded_water_calendar(deck, legacy_seed)
+    if water is not None:
+        migrated["water_bucket_stages"] = water
     if outcome == "no change":
         return DeckPlan(deck, outcome, None)
     return DeckPlan(

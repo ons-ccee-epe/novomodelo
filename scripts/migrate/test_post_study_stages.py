@@ -260,6 +260,56 @@ def test_legacy_water_seed_refuses_a_malformed_stage(
         pss.legacy_water_seed(stages)
 
 
+def test_padded_water_calendar_matches_the_created_outcome(tmp_path: Path) -> None:
+    deck = make_deck(tmp_path, "deck", stages=_WEEKLY, travel_time_hours=1000.0)
+    copy = tmp_path / "copy"
+    shutil.copytree(deck, copy)
+
+    assert pss.main([str(copy)]) == 0
+
+    assert (
+        pss.padded_water_calendar(deck, None)
+        == migrated_doc(copy)["water_bucket_stages"]
+    )
+
+
+def test_padded_water_calendar_matches_the_migrated_outcome(tmp_path: Path) -> None:
+    legacy = {"stages": _MONTHLY_SEED, "thermal_bounds": []}
+    deck = make_deck(
+        tmp_path,
+        "deck",
+        stages=_WEEKLY,
+        travel_time_hours=1500.0,
+        post_study=legacy,
+    )
+    copy = tmp_path / "copy"
+    shutil.copytree(deck, copy)
+
+    assert pss.main([str(copy)]) == 0
+
+    assert (
+        pss.padded_water_calendar(deck, legacy["stages"])
+        == migrated_doc(copy)["water_bucket_stages"]
+    )
+
+
+def test_padded_water_calendar_is_none_without_an_arc(tmp_path: Path) -> None:
+    deck = make_deck(tmp_path, stages=_WEEKLY)
+
+    assert pss.padded_water_calendar(deck, None) is None
+    assert pss.padded_water_calendar(deck, []) is None
+
+
+def test_padded_water_calendar_keeps_a_non_whole_day_seed(tmp_path: Path) -> None:
+    deck = make_deck(tmp_path, stages=_WEEKLY, travel_time_hours=700.0)
+    seed = water(("2024-01-15", 730.0))
+
+    got = pss.padded_water_calendar(deck, seed)
+
+    assert got is not None
+    assert got[0]["duration_hours"] == 730.0
+
+
 def test_main_arc_deck_without_a_file_gets_only_water_bucket_stages(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -548,6 +598,24 @@ def test_main_arc_deck_whose_water_calendar_cannot_be_built_is_refused(
     assert (code, out) == (1, "")
     assert err.startswith(f"{deck}: ")
     assert re.search(reason, err)
+    assert snapshot(deck) == before
+
+
+def test_main_arc_deck_with_null_legacy_stages_is_refused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    deck = make_deck(
+        tmp_path,
+        stages=_WEEKLY,
+        travel_time_hours=360.0,
+        post_study={"stages": None, "thermal_bounds": []},
+    )
+    before = snapshot(deck)
+
+    code, out, err = run(capsys, deck)
+
+    assert (code, out) == (1, "")
+    assert err == f"{deck}: {pss.FILE_NAME}: `stages` must be a list of objects\n"
     assert snapshot(deck) == before
 
 
