@@ -5,10 +5,8 @@
 //! The deltas are stored per-iteration and per-phase for later Parquet output and
 //! CLI display.
 
-use std::fmt;
-
 use novomodelo_io::SolverStatsRow;
-use novomodelo_solver::{ROW_VIOLATION_RELATIVE_ALLOWANCE, SolverStatistics};
+use novomodelo_solver::SolverStatistics;
 
 /// Delta of solver counters between two snapshots.
 ///
@@ -347,34 +345,6 @@ pub enum StatsFoldMode {
     },
 }
 
-/// A training counter split by phase.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct PhaseCounts {
-    /// Forward-pass count.
-    pub forward: u64,
-    /// Backward-pass count.
-    pub backward: u64,
-    /// Lower-bound evaluation count.
-    pub lower_bound: u64,
-}
-
-impl PhaseCounts {
-    /// Sum over the three phases.
-    #[must_use]
-    pub fn total(&self) -> u64 {
-        self.forward + self.backward + self.lower_bound
-    }
-
-    fn add(&mut self, phase: &str, value: u64) {
-        match phase {
-            "forward" => self.forward += value,
-            "backward" => self.backward += value,
-            "lower_bound" => self.lower_bound += value,
-            _ => {}
-        }
-    }
-}
-
 /// Training-run totals folded from a solver-stats log by
 /// [`aggregate_solver_stats_log`].
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -389,11 +359,6 @@ pub struct SolveTotals {
     pub forward_solve_seconds: f64,
     /// Backward-pass solve time, in seconds.
     pub backward_solve_seconds: f64,
-    /// Solves whose returned primal solution misses a row bound.
-    pub row_violations: PhaseCounts,
-    /// Solves counted over the same entries as `row_violations`; the
-    /// denominator of [`RowViolationReport`] only.
-    pub lp_solves: PhaseCounts,
 }
 
 /// Fold a solver-stats log into the training-run [`SolveTotals`].
@@ -402,9 +367,6 @@ pub struct SolveTotals {
 /// the per-iteration convergence records (`IterationRecord.lp_solves`), which
 /// can diverge from this log's own per-entry `lp_solves` on a multi-stage
 /// case. Pinned by `aggregate_solver_stats_log_ignores_lp_solves`.
-/// [`SolveTotals::lp_solves`] sums the log's `lp_solves` over the same entries
-/// as [`SolveTotals::row_violations`], so a report's count never exceeds its
-/// solves.
 #[must_use]
 pub fn aggregate_solver_stats_log(
     entries: &[SolverStatsLogEntry],
@@ -432,8 +394,6 @@ pub fn aggregate_solver_stats_log(
         totals.first_try += delta.first_try_successes;
         totals.retried += delta.lp_successes.saturating_sub(delta.first_try_successes);
         totals.failed += delta.lp_failures;
-        totals.row_violations.add(entry.phase, delta.row_violations);
-        totals.lp_solves.add(entry.phase, delta.lp_solves);
         match entry.phase {
             "forward" => forward_solve_ms += delta.solve_time_ms,
             "backward" => backward_solve_ms += delta.solve_time_ms,
@@ -443,62 +403,6 @@ pub fn aggregate_solver_stats_log(
     totals.forward_solve_seconds = forward_solve_ms / 1000.0;
     totals.backward_solve_seconds = backward_solve_ms / 1000.0;
     totals
-}
-
-/// End-of-run summary of LP solves whose returned primal solution misses a
-/// row bound, printed as one warning line.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct RowViolationReport {
-    training_violations: PhaseCounts,
-    training_solves: PhaseCounts,
-    simulation_violations: u64,
-    simulation_solves: u64,
-}
-
-impl RowViolationReport {
-    /// Build the report from the reduced training totals and, when a
-    /// simulation ran, its reduced solver-stats aggregate.
-    #[must_use]
-    pub fn new(training: &SolveTotals, simulation: Option<&SolverStatsDelta>) -> Self {
-        Self {
-            training_violations: training.row_violations,
-            training_solves: training.lp_solves,
-            simulation_violations: simulation.map_or(0, |s| s.row_violations),
-            simulation_solves: simulation.map_or(0, |s| s.lp_solves),
-        }
-    }
-
-    /// Whether any solve was counted.
-    #[must_use]
-    pub fn should_emit(&self) -> bool {
-        self.violations() > 0
-    }
-
-    fn violations(&self) -> u64 {
-        self.training_violations.total() + self.simulation_violations
-    }
-
-    fn solves(&self) -> u64 {
-        self.training_solves.total() + self.simulation_solves
-    }
-}
-
-impl fmt::Display for RowViolationReport {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "LP solves returned a primal solution that misses a row bound by more than the \
-             primal feasibility tolerance plus {ROW_VIOLATION_RELATIVE_ALLOWANCE:e} of the row's \
-             magnitude: {} of {} (forward {}, backward {}, lower bound {}, simulation {}); \
-             per-stage counts are in the lp_row_violations column of solver/iterations.parquet",
-            self.violations(),
-            self.solves(),
-            self.training_violations.forward,
-            self.training_violations.backward,
-            self.training_violations.lower_bound,
-            self.simulation_violations,
-        )
-    }
 }
 
 /// Map a per-iteration solver-stats log into Parquet rows.
@@ -1280,30 +1184,24 @@ mod tests {
     }
 
     #[test]
-    fn aggregate_solver_stats_log_folds_phase_counts() {
+    fn aggregate_solver_stats_log_totals_attempts_and_phase_solve_seconds() {
         let forward_delta = SolverStatsDelta {
-            lp_solves: 10,
             first_try_successes: 7,
             lp_successes: 9,
             lp_failures: 1,
-            row_violations: 2,
             solve_time_ms: 2500.0,
             ..SolverStatsDelta::default()
         };
         let backward_delta = SolverStatsDelta {
-            lp_solves: 4,
             first_try_successes: 2,
             lp_successes: 4,
             lp_failures: 0,
-            row_violations: 1,
             solve_time_ms: 1500.0,
             ..SolverStatsDelta::default()
         };
         let lower_bound_delta = SolverStatsDelta {
-            lp_solves: 3,
             first_try_successes: 3,
             lp_successes: 3,
-            row_violations: 3,
             solve_time_ms: 900.0,
             ..SolverStatsDelta::default()
         };
@@ -1320,22 +1218,6 @@ mod tests {
         assert_eq!(totals.failed, 1);
         assert_eq!(totals.forward_solve_seconds, 2.5);
         assert_eq!(totals.backward_solve_seconds, 1.5);
-        assert_eq!(
-            totals.row_violations,
-            PhaseCounts {
-                forward: 2,
-                backward: 1,
-                lower_bound: 3,
-            }
-        );
-        assert_eq!(
-            totals.lp_solves,
-            PhaseCounts {
-                forward: 10,
-                backward: 4,
-                lower_bound: 3,
-            }
-        );
     }
 
     #[test]
@@ -1357,18 +1239,14 @@ mod tests {
         // The per-rank MpiRank folds, summed as the CLI allreduce does, must
         // reconstruct each phase once regardless of the backward rank split.
         let global_forward = SolverStatsDelta {
-            lp_solves: 111,
             first_try_successes: 100,
             lp_successes: 110,
             lp_failures: 1,
-            row_violations: 4,
             ..SolverStatsDelta::default()
         };
         let global_lb = SolverStatsDelta {
-            lp_solves: 20,
             first_try_successes: 20,
             lp_successes: 20,
-            row_violations: 1,
             ..SolverStatsDelta::default()
         };
 
@@ -1384,10 +1262,8 @@ mod tests {
                 0,
                 0,
                 SolverStatsDelta {
-                    lp_solves: 36,
                     first_try_successes: 30,
                     lp_successes: 36,
-                    row_violations: 3,
                     ..SolverStatsDelta::default()
                 },
             ),
@@ -1404,10 +1280,8 @@ mod tests {
                     0,
                     0,
                     SolverStatsDelta {
-                        lp_solves: 24,
                         first_try_successes: 20,
                         lp_successes: 24,
-                        row_violations: 2,
                         ..SolverStatsDelta::default()
                     },
                 ),
@@ -1419,10 +1293,8 @@ mod tests {
                     1,
                     0,
                     SolverStatsDelta {
-                        lp_solves: 12,
                         first_try_successes: 10,
                         lp_successes: 12,
-                        row_violations: 1,
                         ..SolverStatsDelta::default()
                     },
                 ),
@@ -1462,16 +1334,6 @@ mod tests {
 
         // first-try: forward 100 + lb 20 + backward 30 = 150; retried: forward
         // 10 + backward 6 = 16; failed: forward 1 — on both shapes.
-        let expected_violations = PhaseCounts {
-            forward: 4,
-            backward: 3,
-            lower_bound: 1,
-        };
-        let expected_solves = PhaseCounts {
-            forward: 111,
-            backward: 36,
-            lower_bound: 20,
-        };
         assert_eq!(
             (
                 single_totals.first_try,
@@ -1480,10 +1342,7 @@ mod tests {
             ),
             (150, 16, 1)
         );
-        assert_eq!(single_totals.row_violations, expected_violations);
-        assert_eq!(single_totals.lp_solves, expected_solves);
 
-        let sum = |f: fn(&PhaseCounts) -> u64, a: &PhaseCounts, b: &PhaseCounts| f(a) + f(b);
         assert_eq!(
             (
                 r0.first_try + r1.first_try,
@@ -1492,24 +1351,12 @@ mod tests {
             ),
             (150, 16, 1)
         );
-        for (r0_counts, r1_counts, expected) in [
-            (&r0.row_violations, &r1.row_violations, &expected_violations),
-            (&r0.lp_solves, &r1.lp_solves, &expected_solves),
-        ] {
-            assert_eq!(sum(|c| c.forward, r0_counts, r1_counts), expected.forward);
-            assert_eq!(sum(|c| c.backward, r0_counts, r1_counts), expected.backward);
-            assert_eq!(
-                sum(|c| c.lower_bound, r0_counts, r1_counts),
-                expected.lower_bound
-            );
-        }
     }
 
     #[test]
     fn aggregate_solver_stats_log_ignores_lp_solves() {
         // total_lp_solves is sourced from the convergence records, never from
-        // this fold: varying delta.lp_solves alone must not change the summary
-        // counts; it moves only the per-phase solve counts.
+        // this fold: varying delta.lp_solves alone must not change the totals.
         let low = SolverStatsLogEntry::from_raw(
             0,
             "forward",
@@ -1543,113 +1390,7 @@ mod tests {
 
         let low = aggregate_solver_stats_log(&[low], StatsFoldMode::AllEntries);
         let high = aggregate_solver_stats_log(&[high], StatsFoldMode::AllEntries);
-        assert_eq!(
-            SolveTotals {
-                lp_solves: PhaseCounts::default(),
-                ..low
-            },
-            SolveTotals {
-                lp_solves: PhaseCounts::default(),
-                ..high
-            }
-        );
-        assert_eq!((low.lp_solves.forward, high.lp_solves.forward), (1, 999));
-    }
-
-    #[test]
-    fn row_violation_report_text() {
-        let training = SolveTotals {
-            row_violations: PhaseCounts {
-                forward: 2,
-                backward: 1,
-                lower_bound: 0,
-            },
-            lp_solves: PhaseCounts {
-                forward: 40,
-                backward: 30,
-                lower_bound: 10,
-            },
-            ..SolveTotals::default()
-        };
-        let simulation = SolverStatsDelta {
-            lp_solves: 20,
-            row_violations: 3,
-            ..SolverStatsDelta::default()
-        };
-
-        let report = RowViolationReport::new(&training, Some(&simulation));
-
-        assert!(report.should_emit());
-        assert_eq!(
-            report.to_string(),
-            "LP solves returned a primal solution that misses a row bound by more than the \
-             primal feasibility tolerance plus 1e-11 of the row's magnitude: 6 of 100 \
-             (forward 2, backward 1, lower bound 0, simulation 3); per-stage counts are in \
-             the lp_row_violations column of solver/iterations.parquet"
-        );
-    }
-
-    #[test]
-    fn row_violation_report_is_silent_when_nothing_is_counted() {
-        let training = SolveTotals {
-            lp_solves: PhaseCounts {
-                forward: 40,
-                backward: 30,
-                lower_bound: 10,
-            },
-            ..SolveTotals::default()
-        };
-        let simulation = SolverStatsDelta {
-            lp_solves: 20,
-            ..SolverStatsDelta::default()
-        };
-
-        assert!(!RowViolationReport::new(&training, Some(&simulation)).should_emit());
-        assert!(!RowViolationReport::new(&training, None).should_emit());
-    }
-
-    #[test]
-    fn row_violation_report_simulation_only() {
-        let simulation = SolverStatsDelta {
-            lp_solves: 50,
-            row_violations: 4,
-            ..SolverStatsDelta::default()
-        };
-
-        let report = RowViolationReport::new(&SolveTotals::default(), Some(&simulation));
-
-        assert!(report.should_emit());
-        assert!(
-            report
-                .to_string()
-                .contains(": 4 of 50 (forward 0, backward 0, lower bound 0, simulation 4);")
-        );
-    }
-
-    #[test]
-    fn row_violation_report_training_only() {
-        let training = SolveTotals {
-            row_violations: PhaseCounts {
-                forward: 1,
-                backward: 0,
-                lower_bound: 2,
-            },
-            lp_solves: PhaseCounts {
-                forward: 5,
-                backward: 7,
-                lower_bound: 3,
-            },
-            ..SolveTotals::default()
-        };
-
-        let report = RowViolationReport::new(&training, None);
-
-        assert!(report.should_emit());
-        assert!(
-            report
-                .to_string()
-                .contains(": 3 of 15 (forward 1, backward 0, lower bound 2, simulation 0);")
-        );
+        assert_eq!(low, high);
     }
 
     /// per-stage forward `stage_stats` summed element-wise across workers.

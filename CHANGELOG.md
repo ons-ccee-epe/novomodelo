@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **BREAKING:** `spillage_discretization_points` and `max_planes_per_hydro` in
   `fpha_config` of `system/hydro_production_models.json` are refused; delete
   them. Results do not change.
+- `novomodelo run` no longer warns when `lp_row_violations` in
+  `solver/iterations.parquet` is nonzero; the column is still written.
 
 ## [0.21.0] - 2026-11-16
 
