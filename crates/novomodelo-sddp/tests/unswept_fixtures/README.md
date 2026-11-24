@@ -18,12 +18,30 @@ tree.
 
 ## `unmigrated_inputs/`
 
-One overlay per committed deck whose post-study input was migrated to
-`thermal_stages`/`water_bucket_stages`: the files the deck had before
-migration, plus `absent.json`, the files it did not have.
-`novomodelo_sddp::test_support::unmigrated_inputs::materialize` applies an overlay to a
-deck copy. `scripts/migrate/test_in_repo_migration.py` migrates every overlay and
-compares the result with the committed deck. `tests/parity.rs` runs a deck from an
-overlay that only removes `post_study_stages.json`; an overlay that writes a
-`stages` file is read by the migration test alone, because the loader refuses
-that key.
+Overlays that turn a migrated committed deck into its legacy twin:
+`unmigrated_inputs/<generation>/<flat deck key>/` holds the files the deck had
+before that generation's migration, plus `absent.json`, a JSON array of the paths
+it did not have. The flat key is the deck's repository-relative path with each
+`/` written `__`.
+
+Each generation patches the deck as the next-newer generation left it; they are
+listed newest first:
+
+1. `initial_conditions/`: the files before `boundary_conditions.json` replaced
+   `initial_conditions.json`, `stages.json` and `post_study_stages.json`.
+2. `post_study_stages_key/`: the files before the post-study input moved from the
+   `stages` key, or from no file, to `thermal_stages` and `water_bucket_stages`.
+
+A deck has an overlay in a generation only when that migration changed it; a
+missing generation directory means no overlays.
+
+Every consumer goes through
+`novomodelo_sddp::test_support::unmigrated_inputs::materialize_twin`. It applies
+the newer generations that hold an overlay for the deck, newest first, then the
+requested one, and fails unless the result holds `initial_conditions.json` and no
+`boundary_conditions.json`. `deck_keys` lists the decks a generation covers.
+`scripts/migrate/test_in_repo_migration.py` migrates every overlay and compares
+the result with the committed deck. `tests/parity.rs` runs a deck from a
+`post_study_stages_key/` overlay that only removes `post_study_stages.json`; an
+overlay that writes a `stages` file is read by the migration test alone, because
+the loader refuses that key.

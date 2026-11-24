@@ -2285,7 +2285,7 @@ mod water_travel_time_gate_byte_neutrality {
     use std::path::Path;
 
     use novomodelo_io::config::BoundaryPolicy;
-    use novomodelo_sddp::test_support::unmigrated_inputs::{materialize, overlay_dir};
+    use novomodelo_sddp::test_support::unmigrated_inputs::{Generation, materialize_twin};
     use novomodelo_solver::ActiveSolver;
     use tempfile::TempDir;
 
@@ -2386,7 +2386,7 @@ mod water_travel_time_gate_byte_neutrality {
     fn declared_arc_golden_deck_topology_matches_its_legacy_overlay() {
         let legacy_case = TempDir::new().expect("tempdir");
         copy_toy_case(&case_dir(), legacy_case.path());
-        materialize(&overlay_dir(CASE_KEY), legacy_case.path())
+        materialize_twin(Generation::PostStudyStagesKey, CASE_KEY, legacy_case.path())
             .expect("the legacy overlay must materialize");
 
         let migrated = fresh_setup_with(&case_dir(), |_cfg| {});
