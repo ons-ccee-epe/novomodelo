@@ -19,7 +19,7 @@ not the max-side envelope collapse d51 already exercises).
 H0-B1 (unit group 1) declares a nonzero `min_turbined_m3s = 27.0` directly in
 system/hydros.json (no override needed -- the floor is the declared value).
 Inflow is deliberately low (mean_m3s = 3.0 at stage 0, 2.0 at stage 1) so
-that, summed with the initial storage (120.0 hm3, `initial_conditions.json`),
+that, summed with the initial storage (120.0 hm3, `boundary_conditions.json` `storage_hm3`),
 the reservoir cannot sustain B1's 27.0 m3/s floor for both stages even with
 B0's cell turbining nothing at all: total water available is 120.0 + (3.0 +
 2.0) * 730 * 0.0036 = 133.14 hm3, while B1's floor alone demands 27.0 * 730 *

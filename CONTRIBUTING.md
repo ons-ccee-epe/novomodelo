@@ -277,11 +277,11 @@ these properties:
 - At least one thermal's `anticipated_config` (`LeadStages` or `LeadTime`) reaches past the
   reduced horizon, so the reconciliation folds in an anticipated-family coupling, not just
   storage state.
-- The reduced case declares `post_study_stages.json`, covering at least the ring depth of
+- The reduced case declares `post_study_thermal_stages` in `stages.json`, covering at least the ring depth of
   its anticipated commitments — the count of simultaneously open commitments the removed
-  stages still need to represent. Without the file, case validation rejects the deck
+  stages still need to represent. Without the calendar, case validation rejects the deck
   outright: a thermal whose lead reaches past the horizon can never deliver, so nothing
-  loads. With the file present but short of the ring depth, the load succeeds and the
+  loads. With the calendar present but short of the ring depth, the load succeeds and the
   zero-dropped-couplings invariant below is what fails; correct the deck before drawing
   any conclusion from the run.
 

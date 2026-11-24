@@ -37,7 +37,7 @@ during Filling. H1 is a normal generating plant directly upstream of H2, so its
 turbined/spilled release routes onto H2's water-balance row while H2 is Filling
 (during PreFilling the same release short-circuits onto H3 instead, since H2's
 dam is absent). H1 is therefore starved before H2 enters Operating: its seed is
-0.0 hm3 (initial_conditions.json) and its inflow is only 2.0 m3/s in PreFilling
+0.0 hm3 (boundary_conditions.json `storage_hm3`) and its inflow is only 2.0 m3/s in PreFilling
 (stages 0-1) and 0.0 m3/s in Filling (stages 2-3). Its total drainable water over
 that window is at most zeta * 2 * 2.0 = 10.368 hm3, so even if H1 released ALL of
 it into H2 at the first filling stage, H2 would reach only 12.96 + 10.368 = 23.328

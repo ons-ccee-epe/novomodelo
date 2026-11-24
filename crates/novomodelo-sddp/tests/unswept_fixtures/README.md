@@ -9,7 +9,8 @@ it explicitly.
 ## `dual_calendar_boundary/`
 
 A travel-time arc (H0 -> H1), a lead-time anticipated thermal whose lead reaches
-past the horizon, `post_study_stages.json`, and `config.policy.boundary`.
+past the horizon, `boundary_conditions.json`, the `post_study_thermal_stages` /
+`post_study_water_stages` calendars in `stages.json`, and `config.policy.boundary`.
 
 `water_calendar_differential.rs` builds its setups from this deck; the declared
 boundary keeps the terminal bucket slots live. The boundary policy is not
