@@ -41,12 +41,7 @@ def _copy_case_with_renamed_hydro(
     "same dimension, different hydro id" shape `validate_policy_load`'s
     slot-identity check must reject.
     """
-    for item in src.iterdir():
-        target = dest / item.name
-        if item.is_dir():
-            shutil.copytree(item, target)
-        else:
-            shutil.copy2(item, target)
+    shutil.copytree(src, dest, dirs_exist_ok=True)
 
     hydros_path = dest / "system" / "hydros.json"
     hydros = json.loads(hydros_path.read_text())
@@ -89,12 +84,7 @@ def _copy_case_with_extra_thermal(src: pathlib.Path, dest: pathlib.Path) -> None
     dimension, stage count, pools and slot manifest) and reaches the
     stored-basis fit rule.
     """
-    for item in src.iterdir():
-        target = dest / item.name
-        if item.is_dir():
-            shutil.copytree(item, target)
-        else:
-            shutil.copy2(item, target)
+    shutil.copytree(src, dest, dirs_exist_ok=True)
 
     thermals_path = dest / "system" / "thermals.json"
     thermals = json.loads(thermals_path.read_text())

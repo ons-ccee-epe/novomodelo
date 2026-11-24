@@ -159,10 +159,6 @@ mod d38_dead_volume_filling_simulation {
 
     /// Train the d38 dead-volume-filling case, simulate one deterministic scenario,
     /// and assert the obligations the parity hash cannot see.
-    // Rationale: splitting the body into per-criterion helpers would re-run the one
-    // expensive train+simulate pipeline per helper (or thread the whole scenario
-    // through opaque args).
-    #[allow(clippy::too_many_lines)]
     #[test]
     fn dead_volume_filling_binds_and_routes_in_simulation() {
         let case_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -729,10 +725,6 @@ mod d40_filling_cascade_simulation {
     /// Train the d40 filling-cascade case, simulate one deterministic scenario, and
     /// assert the per-floor independence and release-only cascade coupling the parity
     /// hash cannot see.
-    // Rationale: splitting the body into per-criterion helpers would re-run the one
-    // expensive train+simulate pipeline per helper (or thread the whole scenario
-    // through opaque args).
-    #[allow(clippy::too_many_lines)]
     #[test]
     fn filling_cascade_floors_are_independent_and_couple_release_only() {
         let case_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -2356,9 +2348,6 @@ mod d42_nonfilling_hydro_commissioning {
     /// dormant-non-filling reformulation: feasibility (no trapped water), the routed
     /// inflow landing on the downstream reservoir, the sink discard, and the
     /// dormant-vs-active output transition at `entry`.
-    // Rationale: the four assertion blocks share one train+simulate run; splitting them
-    // would re-run the pipeline per block or thread the scenario through opaque args.
-    #[allow(clippy::too_many_lines)]
     #[test]
     fn nonfilling_commissioning_routes_inflow_and_is_feasible() {
         let case_dir = Path::new(env!("CARGO_MANIFEST_DIR"))

@@ -765,9 +765,9 @@ mod tests {
             .expect("two-study-stage, two-post-study-stage system must build")
     }
 
-    /// The new owner: `DeliveryCalendar` splits a deck's study
-    /// and post-study hours into disjoint prefix/suffix slices, and the split
-    /// point matches `n_study`/`n_post`.
+    /// `DeliveryCalendar` splits a deck's study and post-study hours into
+    /// disjoint prefix/suffix slices, and the split point matches
+    /// `n_study`/`n_post`.
     #[test]
     fn delivery_calendar_splits_study_and_post_study_hours() {
         let system = system_with_post_study(WaterBucketStages::FromThermalStages);

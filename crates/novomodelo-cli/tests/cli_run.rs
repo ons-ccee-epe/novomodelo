@@ -27,7 +27,6 @@ use predicates::prelude::*;
 use tempfile::TempDir;
 
 mod common;
-use common::varying_external_deck::edit_json;
 use common::{
     case_dir, copy_dir_recursive, make_valid_case, novomodelo, restamp_policy_version,
     snapshot_files, write_file, write_supplied_correlation_case, write_supplied_opening_tree_case,
@@ -2916,7 +2915,7 @@ fn run_twin_side(
         materialize_twin(generation, deck_key, case.path())
             .unwrap_or_else(|e| panic!("{deck_key} {generation:?}: {e}"));
     }
-    edit_json(&case.path().join("config.json"), |config| {
+    rewrite_json(&case.path().join("config.json"), |config| {
         config["simulation"] = serde_json::json!({
             "enabled": true,
             "selection": { "method": "sampled", "num_scenarios": 1 }

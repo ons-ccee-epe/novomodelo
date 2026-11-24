@@ -150,9 +150,7 @@ def water_stages(
         )
     else:
         hours, start = last.hours, last.end
-    covered = 0.0
-    for stage in stages:
-        covered += stage["duration_hours"]
+    covered = sum(stage["duration_hours"] for stage in stages)
     if covered < deepest_hours and _whole_days(hours) < 1:
         raise Refusal(
             f"the last stage lasts {hours:g} h, under the whole day a water stage needs"
