@@ -305,7 +305,7 @@ declare_rules! {
         "A hydro_bounds row sets a positive min_diversion_m3s or max_diversion_m3s for a hydro that declares no diversion channel";
     POST_STUDY_BOUNDARY_INCONSISTENT = "semantic.5a.47",
         Semantic, BusinessRuleViolation, Error,
-        "post_study_stages.json is not date-contiguous from the study horizon end, lacks a bound an anticipated lead reaches, or its commitments mis-tile post-study stages or fall outside the commissioning window";
+        "The post-study boundary input (post_study_stages.json, or boundary_conditions.json with the post-study thermal calendar in stages.json) is not date-contiguous from the study horizon end, lacks a bound an anticipated lead reaches, or its commitments mis-tile post-study stages or fall outside the commissioning window";
     SEMANTIC_BOUND_ROW_STAGE_UNKNOWN = "semantic.5a.49",
         Semantic, BusinessRuleViolation, Error,
         "A bound-override row's stage_id is not a study stage";

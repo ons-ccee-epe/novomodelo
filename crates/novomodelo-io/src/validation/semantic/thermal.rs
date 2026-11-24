@@ -21,6 +21,7 @@ use super::envelope_tolerance;
 use super::post_study_calendar::build_post_study_calendar;
 use super::travel_time::study_stage_durations;
 use crate::StageIdResolver;
+use crate::legacy::post_study_stages::PostStudyFormat;
 use crate::resolution::{BoundsEntitySlices, BoundsOverrides, resolve_bounds};
 
 /// Rule 13: `min_generation_mw <= max_generation_mw` for a thermal.
@@ -93,6 +94,7 @@ pub(super) fn check_anticipated_thermals(data: &ParsedData, ctx: &mut Validation
     let horizon_end = study_stages.last().map(|s| s.end_date);
 
     let extended_axis = build_extended_delivery_axis(data);
+    let format = boundary_format(data);
 
     for thermal in &data.thermals {
         let Some(cfg) = thermal.anticipated_config else {
@@ -179,8 +181,6 @@ pub(super) fn check_anticipated_thermals(data: &ParsedData, ctx: &mut Validation
     let bounds = (!windows_by_id.is_empty())
         .then(|| build_thermal_delivery_bounds(data, study_stages, n_stages, &study_stage_ids));
 
-    let anticipated_thermal_ids = collect_anticipated_thermal_ids(data);
-
     for (thermal_pos, thermal) in data.thermals.iter().enumerate() {
         let Some(cfg) = thermal.anticipated_config else {
             continue;
@@ -189,20 +189,23 @@ pub(super) fn check_anticipated_thermals(data: &ParsedData, ctx: &mut Validation
 
         match windows_by_id.get(&thermal_id) {
             None => {
+                let (entity, message) = missing_commitments_wording(format, thermal_id);
                 ctx.emit(
                     &rules::SEMANTIC_ANTICIPATED_COMMITMENTS_INCONSISTENT,
-                    "initial_conditions.json",
-                    Some("initial_conditions.past_anticipated_commitments"),
-                    format!(
-                        "Thermal {}: missing entry in initial_conditions.past_anticipated_commitments; \
-                         every anticipated thermal must have at least one commitment window",
-                        thermal_id.0
-                    ),
+                    format.commitments_file(),
+                    Some(entity),
+                    message,
                 );
             }
             Some(records) => {
                 if let Some(horizon_end) = horizon_end
-                    && !check_no_straddling_commitment_window(thermal_id, records, horizon_end, ctx)
+                    && !check_no_straddling_commitment_window(
+                        thermal_id,
+                        records,
+                        horizon_end,
+                        format,
+                        ctx,
+                    )
                 {
                     continue;
                 }
@@ -219,6 +222,7 @@ pub(super) fn check_anticipated_thermals(data: &ParsedData, ctx: &mut Validation
                     calendar,
                     k_i,
                     &study_stage_ids,
+                    format,
                     ctx,
                 ) {
                     let delivery_box = DeliveryBoxContext {
@@ -227,13 +231,21 @@ pub(super) fn check_anticipated_thermals(data: &ParsedData, ctx: &mut Validation
                         calendar,
                         study_stage_ids: &study_stage_ids,
                     };
-                    check_committed_value_bounds(thermal, thermal_id, records, &delivery_box, ctx);
+                    check_committed_value_bounds(
+                        thermal,
+                        thermal_id,
+                        records,
+                        &delivery_box,
+                        format,
+                        ctx,
+                    );
                     check_seed_within_window(
                         thermal,
                         thermal_id,
                         records,
                         calendar,
                         &study_stage_ids,
+                        format,
                         ctx,
                     );
                 }
@@ -241,23 +253,26 @@ pub(super) fn check_anticipated_thermals(data: &ParsedData, ctx: &mut Validation
         }
     }
 
+    check_commitments_reference_anticipated_thermals(data, format, ctx);
+}
+
+fn check_commitments_reference_anticipated_thermals(
+    data: &ParsedData,
+    format: BoundaryFormat,
+    ctx: &mut ValidationContext,
+) {
+    let anticipated_thermal_ids = collect_anticipated_thermal_ids(data);
     let mut reported: HashSet<EntityId> = HashSet::new();
-    for history in &ic.past_anticipated_commitments {
+    for history in &data.initial_conditions.past_anticipated_commitments {
         if !anticipated_thermal_ids.contains(&history.thermal_id)
             && reported.insert(history.thermal_id)
         {
+            let (entity, message) = unanticipated_commitments_wording(format, history.thermal_id);
             ctx.emit(
                 &rules::SEMANTIC_ANTICIPATED_COMMITMENTS_INCONSISTENT,
-                "initial_conditions.json",
-                Some(format!(
-                    "initial_conditions.past_anticipated_commitments[thermal_id={}]",
-                    history.thermal_id.0
-                )),
-                format!(
-                    "Thermal {}: referenced in past_anticipated_commitments \
-                     but is not an anticipated thermal (anticipated_config is None or thermal does not exist)",
-                    history.thermal_id.0
-                ),
+                format.commitments_file(),
+                Some(entity),
+                message,
             );
         }
     }
@@ -398,6 +413,107 @@ fn collect_anticipated_thermal_ids(data: &ParsedData) -> HashSet<EntityId> {
         .collect()
 }
 
+fn boundary_format(data: &ParsedData) -> BoundaryFormat {
+    data.boundary_format
+        .unwrap_or(BoundaryFormat::Legacy(PostStudyFormat::Absent))
+}
+
+fn commitments_subject(format: BoundaryFormat, thermal_id: EntityId) -> String {
+    match format {
+        BoundaryFormat::Legacy(_) => {
+            format!("Thermal {}: past_anticipated_commitments", thermal_id.0)
+        }
+        BoundaryFormat::Current => format!("thermal {}: commitments", thermal_id.0),
+    }
+}
+
+fn missing_commitments_wording(format: BoundaryFormat, thermal_id: EntityId) -> (String, String) {
+    let id = thermal_id.0;
+    match format {
+        BoundaryFormat::Legacy(_) => (
+            "initial_conditions.past_anticipated_commitments".to_owned(),
+            format!(
+                "Thermal {id}: missing entry in initial_conditions.past_anticipated_commitments; \
+                 every anticipated thermal must have at least one commitment window"
+            ),
+        ),
+        BoundaryFormat::Current => (
+            format!("thermals[thermal_id={id}].commitments"),
+            format!(
+                "thermal {id}: no commitments in {}; every anticipated thermal must have at \
+                 least one commitment window",
+                format.commitments_file()
+            ),
+        ),
+    }
+}
+
+fn unanticipated_commitments_wording(
+    format: BoundaryFormat,
+    thermal_id: EntityId,
+) -> (String, String) {
+    let id = thermal_id.0;
+    match format {
+        BoundaryFormat::Legacy(_) => (
+            format!("initial_conditions.past_anticipated_commitments[thermal_id={id}]"),
+            format!(
+                "Thermal {id}: referenced in past_anticipated_commitments \
+                 but is not an anticipated thermal (anticipated_config is None or thermal does not exist)"
+            ),
+        ),
+        BoundaryFormat::Current => (
+            format!("thermals[thermal_id={id}].commitments"),
+            format!(
+                "thermal {id}: referenced in commitments \
+                 but is not an anticipated thermal (anticipated_config is None or thermal does not exist)"
+            ),
+        ),
+    }
+}
+
+#[derive(Clone, Copy)]
+struct PostStudyNames<'a> {
+    format: BoundaryFormat,
+    /// Post-study thermal stage ids, indexed by post-study stage index.
+    stage_ids: &'a [i32],
+}
+
+impl PostStudyNames<'_> {
+    fn stage(self, j: usize) -> String {
+        match self.format {
+            BoundaryFormat::Legacy(_) => format!("post-study stage index {j}"),
+            BoundaryFormat::Current => format!("post-study stage {}", self.stage_ids[j]),
+        }
+    }
+
+    fn stages(self, indices: &[usize]) -> String {
+        match self.format {
+            BoundaryFormat::Legacy(_) => format!("post-study stage index(es) {indices:?}"),
+            BoundaryFormat::Current => {
+                let ids: Vec<i32> = indices.iter().map(|&j| self.stage_ids[j]).collect();
+                format!("post-study stage(s) {ids:?}")
+            }
+        }
+    }
+
+    fn missing_bound_message(self, thermal_id: EntityId, j: usize) -> String {
+        match self.format {
+            BoundaryFormat::Legacy(_) => format!(
+                "Thermal {}: anticipated lead reaches post-study stage index {j}, but \
+                 post_study_stages.json has no thermal_bounds entry for (thermal_id {}, \
+                 post_study_stage_index {j}).",
+                thermal_id.0, thermal_id.0
+            ),
+            BoundaryFormat::Current => format!(
+                "thermal {}: stage {} is decided in-study and needs a post_study_bounds row in {}.",
+                thermal_id.0,
+                self.stage_ids[j],
+                self.format.post_study_bounds_file()
+            ),
+        }
+    }
+}
+
 /// Calendar-derived count of leading pre-study-committed delivery stages (the
 /// study-only prefix `past_anticipated_commitments` must tile): `LeadStages(l)`
 /// clamps `l` to `n_stages`; `LeadTime(delta)` counts the leading study stages
@@ -453,6 +569,12 @@ struct ExtendedDeliveryAxis {
     n_stages: usize,
 }
 
+/// The only place the post-study thermal id continuation is computed; the solver's
+/// `delivery_stage_ids` must agree.
+fn post_study_thermal_stage_id(max_study_id: i32, j: usize) -> i32 {
+    max_study_id + 1 + i32::try_from(j).unwrap_or(i32::MAX)
+}
+
 /// Build the concatenated delivery axis, or `None` when `post_study_stages` is
 /// absent. See `ExtendedDeliveryAxis` for the concatenation contract.
 fn build_extended_delivery_axis(data: &ParsedData) -> Option<ExtendedDeliveryAxis> {
@@ -476,7 +598,7 @@ fn build_extended_delivery_axis(data: &ParsedData) -> Option<ExtendedDeliveryAxi
         .into_iter()
         .chain(
             (0..post_study.thermal_stages.len())
-                .map(|j| max_study_id + 1 + i32::try_from(j).unwrap_or(i32::MAX)),
+                .map(|j| post_study_thermal_stage_id(max_study_id, j)),
         )
         .collect();
     Some(ExtendedDeliveryAxis {
@@ -653,23 +775,25 @@ fn check_no_straddling_commitment_window(
     thermal_id: EntityId,
     records: &[&AnticipatedCommitmentHistory],
     horizon_end: NaiveDate,
+    format: BoundaryFormat,
     ctx: &mut ValidationContext,
 ) -> bool {
     let mut valid = true;
     let entity_str = format!("thermals[id={}].anticipated_config", thermal_id.0);
+    let subject = commitments_subject(format, thermal_id);
     for record in records {
         if record.start_date < horizon_end && record.end_date > horizon_end {
             ctx.emit(
                 &rules::SEMANTIC_ANTICIPATED_COMMITMENTS_INCONSISTENT,
-                "initial_conditions.json",
+                format.commitments_file(),
                 Some(&entity_str),
                 format!(
-                    "Thermal {}: past_anticipated_commitments window [{}, {}) straddles the \
+                    "{subject} window [{}, {}) straddles the \
                      study horizon end ({horizon_end}); a single window may not cover both \
                      in-study and post-study delivery. Declare two windows split at the \
                      horizon instead: one ending at {horizon_end} for the in-study coverage, \
                      one starting at {horizon_end} for the post-study coverage.",
-                    thermal_id.0, record.start_date, record.end_date
+                    record.start_date, record.end_date
                 ),
             );
             valid = false;
@@ -698,6 +822,7 @@ fn check_commitment_coverage(
     calendar: &StageCalendar,
     k_i: usize,
     study_stage_ids: &[i32],
+    format: BoundaryFormat,
     ctx: &mut ValidationContext,
 ) -> bool {
     let windows: Vec<DatedWindow> = records
@@ -716,6 +841,7 @@ fn check_commitment_coverage(
     }
 
     let entity_str = format!("thermals[id={}].anticipated_config", thermal_id.0);
+    let subject = commitments_subject(format, thermal_id);
     let mut valid = true;
 
     if !calendar.covers_exactly(&windows, k_i) {
@@ -725,14 +851,13 @@ fn check_commitment_coverage(
             .collect();
         ctx.emit(
             &rules::SEMANTIC_ANTICIPATED_COMMITMENTS_INCONSISTENT,
-            "initial_conditions.json",
+            format.commitments_file(),
             Some(&entity_str),
             format!(
-                "Thermal {}: past_anticipated_commitments do not tile the leading {k_i} \
+                "{subject} do not tile the leading {k_i} \
                  delivery stage(s) at coverage 1.0; study stage id(s) {uncovered:?} are not \
                  covered exactly once. Write a commitment window (a committed 0 MW is explicit) \
-                 for every leading delivery stage.",
-                thermal_id.0
+                 for every leading delivery stage."
             ),
         );
         valid = false;
@@ -745,15 +870,14 @@ fn check_commitment_coverage(
     if !over_covered.is_empty() {
         ctx.emit(
             &rules::SEMANTIC_ANTICIPATED_COMMITMENTS_INCONSISTENT,
-            "initial_conditions.json",
+            format.commitments_file(),
             Some(&entity_str),
             format!(
-                "Thermal {}: past_anticipated_commitments cover study stage id(s) {over_covered:?} \
+                "{subject} cover study stage id(s) {over_covered:?} \
                  beyond the leading {k_i} calendar-derived delivery stage(s); a commitment window \
                  may not cover a study stage the study itself decides. Shorten the plant's \
                  anticipated_config lead so its window stays within the leading {k_i} delivery \
-                 stage(s).",
-                thermal_id.0
+                 stage(s)."
             ),
         );
         valid = false;
@@ -803,6 +927,7 @@ fn check_committed_value_bounds(
     thermal_id: EntityId,
     records: &[&AnticipatedCommitmentHistory],
     delivery_box: &DeliveryBoxContext<'_, '_>,
+    format: BoundaryFormat,
     ctx: &mut ValidationContext,
 ) {
     let min_mw = thermal.min_generation_mw;
@@ -812,6 +937,7 @@ fn check_committed_value_bounds(
     let entry = thermal.entry_stage_id;
     let exit = thermal.exit_stage_id;
     let entity_str = format!("thermals[id={}].anticipated_config", thermal_id.0);
+    let subject = commitments_subject(format, thermal_id);
 
     for record in records {
         let v = record.value_mw;
@@ -825,14 +951,14 @@ fn check_committed_value_bounds(
             if v < min_mw - min_tolerance || v > max_mw + max_tolerance {
                 ctx.emit(
                     &rules::SEMANTIC_ANTICIPATED_COMMITMENTS_INCONSISTENT,
-                    "initial_conditions.json",
+                    format.commitments_file(),
                     Some(&entity_str),
                     format!(
-                        "Thermal {}: past_anticipated_commitments window [{}, {}) value_mw = {v} \
+                        "{subject} window [{}, {}) value_mw = {v} \
                          is outside the plant's generation bounds [{min_mw}, {max_mw}]; \
                          the LP delivery equality on the covered stage(s) cannot be \
                          satisfied and the LP will be infeasible",
-                        thermal_id.0, record.start_date, record.end_date
+                        record.start_date, record.end_date
                     ),
                 );
             }
@@ -855,13 +981,13 @@ fn check_committed_value_bounds(
             if lb > ub {
                 ctx.emit(
                     &rules::SEMANTIC_ANTICIPATED_COMMITMENTS_INCONSISTENT,
-                    "initial_conditions.json",
+                    format.commitments_file(),
                     Some(&entity_str),
                     format!(
-                        "Thermal {}: past_anticipated_commitments window [{}, {}) — \
+                        "{subject} window [{}, {}) — \
                          delivery stage id {stage_id} has an empty resolved generation box \
                          [{lb}, {ub}] (lower > upper); the committed value cannot be delivered.",
-                        thermal_id.0, record.start_date, record.end_date
+                        record.start_date, record.end_date
                     ),
                 );
                 continue;
@@ -871,14 +997,14 @@ fn check_committed_value_bounds(
             if v < lb - lb_tolerance || v > ub + ub_tolerance {
                 ctx.emit(
                     &rules::SEMANTIC_ANTICIPATED_COMMITMENTS_INCONSISTENT,
-                    "initial_conditions.json",
+                    format.commitments_file(),
                     Some(&entity_str),
                     format!(
-                        "Thermal {}: past_anticipated_commitments window [{}, {}) \
+                        "{subject} window [{}, {}) \
                          value_mw = {v} is outside the resolved generation box [{lb}, {ub}] at \
                          delivery stage id {stage_id}; the LP delivery equality on that stage \
                          cannot be satisfied and the LP will be infeasible.",
-                        thermal_id.0, record.start_date, record.end_date
+                        record.start_date, record.end_date
                     ),
                 );
             }
@@ -904,6 +1030,7 @@ fn check_seed_within_window(
     records: &[&AnticipatedCommitmentHistory],
     calendar: &StageCalendar,
     study_stage_ids: &[i32],
+    format: BoundaryFormat,
     ctx: &mut ValidationContext,
 ) {
     let entry = thermal.entry_stage_id;
@@ -912,6 +1039,7 @@ fn check_seed_within_window(
         return;
     }
     let entity_str = format!("thermals[id={}].anticipated_config", thermal_id.0);
+    let subject = commitments_subject(format, thermal_id);
     for record in records {
         let v = record.value_mw;
         if v == 0.0 {
@@ -929,16 +1057,16 @@ fn check_seed_within_window(
             if !commissioning_active(entry, exit, stage_id) {
                 ctx.emit(
                     &rules::SEMANTIC_ANTICIPATED_COMMITMENTS_INCONSISTENT,
-                    "initial_conditions.json",
+                    format.commitments_file(),
                     Some(&entity_str),
                     format!(
-                        "Thermal {}: past_anticipated_commitments window [{}, {}) value_mw = {v} \
+                        "{subject} window [{}, {}) value_mw = {v} \
                          matures at study stage id {stage_id}, which is outside the \
                          plant's commissioning window [entry={entry:?}, exit={exit:?}); \
                          the matured generation column is pinned to [0, 0] there, so the \
                          fishing equality reads 0 == {v} and the LP is infeasible. \
                          Commit a zero rate at this stage or widen the window.",
-                        thermal_id.0, record.start_date, record.end_date
+                        record.start_date, record.end_date
                     ),
                 );
             }
@@ -969,6 +1097,7 @@ fn check_fixed_commitment_within_window(
     records: &[&AnticipatedCommitmentHistory],
     post_calendar: &StageCalendar,
     commissioning_inactive: &[usize],
+    names: PostStudyNames<'_>,
     ctx: &mut ValidationContext,
 ) {
     let entry = thermal.entry_stage_id;
@@ -977,6 +1106,7 @@ fn check_fixed_commitment_within_window(
         return;
     }
     let entity_str = format!("thermals[id={}].anticipated_config", thermal_id.0);
+    let subject = commitments_subject(names.format, thermal_id);
     for record in records {
         let v = record.value_mw;
         if v == 0.0 {
@@ -993,15 +1123,17 @@ fn check_fixed_commitment_within_window(
             }
             ctx.emit(
                 &rules::POST_STUDY_BOUNDARY_INCONSISTENT,
-                "post_study_stages.json",
+                names.format.post_study_bounds_file(),
                 Some(&entity_str),
                 format!(
-                    "Thermal {}: past_anticipated_commitments window [{}, {}) value_mw = {v} \
-                     covers post-study stage index {j}, which is outside the plant's \
+                    "{subject} window [{}, {}) value_mw = {v} \
+                     covers {}, which is outside the plant's \
                      commissioning window [entry={entry:?}, exit={exit:?}); the plant is not \
                      in service for this stage and the fixed commitment cannot be delivered. \
                      Declare a zero commitment at this stage, or widen the commissioning window.",
-                    thermal_id.0, record.start_date, record.end_date
+                    record.start_date,
+                    record.end_date,
+                    names.stage(j)
                 ),
             );
         }
@@ -1146,13 +1278,11 @@ pub(super) fn check_post_study_stages(data: &ParsedData, ctx: &mut ValidationCon
         .rfind(|s| s.id >= 0)
         .map(|s| s.end_date);
 
-    let calendar_key = data
-        .boundary_format
-        .map_or("thermal_stages", BoundaryFormat::thermal_calendar_key);
+    let format = boundary_format(data);
     let (calendar_stages, well_formed) = build_post_study_calendar(
         &post_study.thermal_stages,
-        "post_study_stages.json",
-        calendar_key,
+        format.post_study_calendar_file(),
+        format.thermal_calendar_key(),
         study_end,
         ctx,
     );
@@ -1164,6 +1294,10 @@ pub(super) fn check_post_study_stages(data: &ParsedData, ctx: &mut ValidationCon
         return;
     };
     let study_durations = study_stage_durations(data);
+    let names = PostStudyNames {
+        format,
+        stage_ids: &axis.stage_ids[axis.n_stages..],
+    };
 
     let bound_cells: HashSet<(EntityId, usize)> = post_study
         .thermal_bounds
@@ -1192,14 +1326,9 @@ pub(super) fn check_post_study_stages(data: &ParsedData, ctx: &mut ValidationCon
             if !bound_cells.contains(&(thermal.id, j)) {
                 ctx.emit(
                     &rules::POST_STUDY_BOUNDARY_INCONSISTENT,
-                    "post_study_stages.json",
+                    format.post_study_bounds_file(),
                     Some(&entity_str),
-                    format!(
-                        "Thermal {}: anticipated lead reaches post-study stage index {j}, but \
-                         post_study_stages.json has no thermal_bounds entry for (thermal_id {}, \
-                         post_study_stage_index {j}).",
-                        thermal.id.0, thermal.id.0
-                    ),
+                    names.missing_bound_message(thermal.id, j),
                 );
             }
         }
@@ -1210,12 +1339,19 @@ pub(super) fn check_post_study_stages(data: &ParsedData, ctx: &mut ValidationCon
             .unwrap_or_default();
         let per_stage =
             post_study_coverage_per_stage(windows, &post_calendar, calendar_stages.len());
-        check_fixed_post_study_tiling(thermal.id, &per_stage, &classes.fixed_post_study, ctx);
+        check_fixed_post_study_tiling(
+            thermal.id,
+            &per_stage,
+            &classes.fixed_post_study,
+            names,
+            ctx,
+        );
         check_post_study_window_excludes_unreachable_stages(
             thermal.id,
             &per_stage,
             &classes.carried,
             &classes.beyond_reach,
+            names,
             ctx,
         );
         check_fixed_commitment_within_window(
@@ -1224,6 +1360,7 @@ pub(super) fn check_post_study_stages(data: &ParsedData, ctx: &mut ValidationCon
             windows,
             &post_calendar,
             &classes.commissioning_inactive,
+            names,
             ctx,
         );
     }
@@ -1267,6 +1404,7 @@ fn check_fixed_post_study_tiling(
     thermal_id: EntityId,
     per_stage: &[f64],
     fixed_post_study: &[usize],
+    names: PostStudyNames<'_>,
     ctx: &mut ValidationContext,
 ) {
     if fixed_post_study.is_empty() {
@@ -1285,13 +1423,13 @@ fn check_fixed_post_study_tiling(
     let entity_str = format!("thermals[id={}].anticipated_config", thermal_id.0);
     ctx.emit(
         &rules::POST_STUDY_BOUNDARY_INCONSISTENT,
-        "post_study_stages.json",
+        names.format.post_study_bounds_file(),
         Some(&entity_str),
         format!(
-            "Thermal {}: past_anticipated_commitments do not tile post-study stage \
-             index(es) {uncovered:?} at coverage 1.0; declare the fixed commitment for \
+            "{} do not tile {} at coverage 1.0; declare the fixed commitment for \
              each (a committed 0 MW is explicit).",
-            thermal_id.0
+            commitments_subject(names.format, thermal_id),
+            names.stages(&uncovered)
         ),
     );
 }
@@ -1310,9 +1448,11 @@ fn check_post_study_window_excludes_unreachable_stages(
     per_stage: &[f64],
     carried: &[usize],
     beyond_reach: &[usize],
+    names: PostStudyNames<'_>,
     ctx: &mut ValidationContext,
 ) {
     let entity_str = format!("thermals[id={}].anticipated_config", thermal_id.0);
+    let subject = commitments_subject(names.format, thermal_id);
 
     let covered_carried: Vec<usize> = carried
         .iter()
@@ -1322,15 +1462,14 @@ fn check_post_study_window_excludes_unreachable_stages(
     if !covered_carried.is_empty() {
         ctx.emit(
             &rules::POST_STUDY_BOUNDARY_INCONSISTENT,
-            "post_study_stages.json",
+            names.format.post_study_bounds_file(),
             Some(&entity_str),
             format!(
-                "Thermal {}: past_anticipated_commitments cover post-study stage \
-                 index(es) {covered_carried:?}, which the study itself decides; a declared \
+                "{subject} cover {}, which the study itself decides; a declared \
                  fixed value there contradicts the study's own decision. Remove the window, \
                  or lengthen anticipated_config's lead so the delivery becomes \
                  pre-study-decided.",
-                thermal_id.0
+                names.stages(&covered_carried)
             ),
         );
     }
@@ -1343,14 +1482,13 @@ fn check_post_study_window_excludes_unreachable_stages(
     if !covered_beyond_reach.is_empty() {
         ctx.emit(
             &rules::POST_STUDY_BOUNDARY_INCONSISTENT,
-            "post_study_stages.json",
+            names.format.post_study_bounds_file(),
             Some(&entity_str),
             format!(
-                "Thermal {}: past_anticipated_commitments cover post-study stage \
-                 index(es) {covered_beyond_reach:?}, which are past the plant's decision \
+                "{subject} cover {}, which are past the plant's decision \
                  reach and cannot be represented. Remove the window, or shorten \
                  anticipated_config's lead so the delivery falls inside the reach.",
-                thermal_id.0
+                names.stages(&covered_beyond_reach)
             ),
         );
     }
@@ -1379,11 +1517,12 @@ mod tests {
     use super::{
         ExtendedDeliveryAxis, build_extended_delivery_axis, check_anticipated_thermals,
         check_post_study_stages, classify_deliveries, extended_deciders, lead_delivery_stage_count,
+        post_study_thermal_stage_id,
     };
     use crate::constraints::ThermalBoundsRow;
     use crate::stages::{PostStudyCalendars, StagesData};
     use crate::test_support::*;
-    use crate::validation::schema::ParsedData;
+    use crate::validation::schema::{BoundaryFormat, ParsedData};
     use crate::validation::{ErrorKind, ValidationContext};
 
     // ── Helper: build a thermal with anticipated_config ───────────────────────
@@ -3898,6 +4037,236 @@ mod tests {
         assert!(
             relevant.is_empty(),
             "thermal_generation on a non-anticipated thermal must not emit SemanticAmbiguity, got: {relevant:?}"
+        );
+    }
+
+    // ── New-format wording: post-study stage ids and boundary_conditions.json ──
+
+    fn current(mut data: ParsedData) -> ParsedData {
+        data.boundary_format = Some(BoundaryFormat::Current);
+        data
+    }
+
+    fn emitted(
+        data: &ParsedData,
+        check: fn(&ParsedData, &mut ValidationContext),
+    ) -> Vec<(String, String)> {
+        let mut ctx = ValidationContext::new();
+        check(data, &mut ctx);
+        ctx.errors()
+            .iter()
+            .map(|e| (e.file.to_string_lossy().into_owned(), e.message.clone()))
+            .collect()
+    }
+
+    fn assert_emits(emitted: &[(String, String)], file: &str, fragment: &str) {
+        assert!(
+            emitted
+                .iter()
+                .any(|(f, m)| f == file && m.contains(fragment)),
+            "expected an error in {file} containing {fragment:?}, got: {emitted:?}"
+        );
+    }
+
+    #[test]
+    fn post_study_stage_id_continues_the_study() {
+        assert_eq!(post_study_thermal_stage_id(11, 0), 12);
+        assert_eq!(post_study_thermal_stage_id(11, 2), 14);
+    }
+
+    #[test]
+    fn current_format_missing_bound_names_stage_id() {
+        let durations = [720.0; 12];
+        let post_study = post_study_from(&durations, &[720.0], &[]);
+        let data = current(data_with_post_study(
+            vec![make_anticipated_thermal(86, 1, None, None)],
+            &durations,
+            vec![],
+            post_study,
+        ));
+        let emitted = emitted(&data, check_post_study_stages);
+        assert_eq!(emitted.len(), 1, "got: {emitted:?}");
+        let (file, message) = &emitted[0];
+        assert_eq!(file, "boundary_conditions.json");
+        assert!(
+            message.contains("thermal 86:")
+                && message.contains("stage 12")
+                && !message.contains("post_study_stage_index"),
+            "got: {message}"
+        );
+        assert_eq!(
+            message,
+            "thermal 86: stage 12 is decided in-study and needs a post_study_bounds row in \
+             boundary_conditions.json."
+        );
+    }
+
+    #[test]
+    fn current_format_untiled_fixed_window_names_stage_ids() {
+        let durations = [720.0, 720.0];
+        let post_study = post_study_from(&durations, &[720.0, 720.0], &[(1, 1, 0.0, 500.0)]);
+        let data = current(data_with_post_study(
+            vec![make_lead_time_anticipated_thermal(1, 2500.0, None, None)],
+            &durations,
+            vec![],
+            post_study,
+        ));
+        assert_emits(
+            &emitted(&data, check_post_study_stages),
+            "boundary_conditions.json",
+            "thermal 1: commitments do not tile post-study stage(s) [2] at coverage 1.0;",
+        );
+    }
+
+    #[test]
+    fn current_format_windows_on_unreachable_stages_name_stage_ids() {
+        let durations = [720.0, 720.0];
+        let post_study = post_study_from(&durations, &[720.0, 720.0], &[(1, 0, 0.0, 500.0)]);
+        let data = current(data_with_post_study(
+            vec![make_lead_time_anticipated_thermal(1, 800.0, None, None)],
+            &durations,
+            commitments_on(1, &[0.0; 4], &[720.0; 4]),
+            post_study,
+        ));
+        let emitted = emitted(&data, check_post_study_stages);
+        assert_emits(
+            &emitted,
+            "boundary_conditions.json",
+            "thermal 1: commitments cover post-study stage(s) [2], which the study itself decides;",
+        );
+        assert_emits(
+            &emitted,
+            "boundary_conditions.json",
+            "thermal 1: commitments cover post-study stage(s) [3], which are past the plant's \
+             decision reach",
+        );
+    }
+
+    #[test]
+    fn current_format_inactive_stage_window_names_stage_id() {
+        let durations = [720.0, 720.0];
+        let post_study = post_study_from(&durations, &[720.0], &[]);
+        let data = current(data_with_post_study(
+            vec![make_anticipated_thermal(1, 1, None, Some(1))],
+            &durations,
+            commitments_on(1, &[0.0, 0.0, 50.0], &[720.0; 3]),
+            post_study,
+        ));
+        assert_emits(
+            &emitted(&data, check_post_study_stages),
+            "boundary_conditions.json",
+            "thermal 1: commitments window [2024-03-01, 2024-03-31) value_mw = 50 covers \
+             post-study stage 2, which is outside the plant's commissioning window",
+        );
+    }
+
+    #[test]
+    fn current_format_post_study_calendar_names_stages_json() {
+        let durations = [720.0, 720.0];
+        let mut post_study = post_study_from(&durations, &[720.0], &[]);
+        post_study.thermal_stages[0].start_date += TimeDelta::days(1);
+        let data = current(data_with_post_study(
+            vec![make_anticipated_thermal(1, 1, None, None)],
+            &durations,
+            vec![],
+            post_study,
+        ));
+        assert_emits(
+            &emitted(&data, check_post_study_stages),
+            "stages.json",
+            "post-study calendar must begin exactly",
+        );
+    }
+
+    #[test]
+    fn current_format_missing_and_stray_commitments_name_the_new_key() {
+        let data = current(make_data_anticipated(
+            vec![make_anticipated_thermal(1, 2, None, None)],
+            5,
+            commitments(9, &[0.0]),
+        ));
+        let emitted = emitted(&data, check_anticipated_thermals);
+        assert_emits(
+            &emitted,
+            "boundary_conditions.json",
+            "thermal 1: no commitments in boundary_conditions.json;",
+        );
+        assert_emits(
+            &emitted,
+            "boundary_conditions.json",
+            "thermal 9: referenced in commitments but is not an anticipated thermal",
+        );
+    }
+
+    #[test]
+    fn current_format_coverage_errors_lead_with_the_thermal() {
+        let gap = current(make_data_anticipated(
+            vec![make_anticipated_thermal(1, 2, None, None)],
+            5,
+            commitments(1, &[0.0]),
+        ));
+        assert_emits(
+            &emitted(&gap, check_anticipated_thermals),
+            "boundary_conditions.json",
+            "thermal 1: commitments do not tile the leading 2 delivery stage(s)",
+        );
+        let over = current(make_data_anticipated(
+            vec![make_anticipated_thermal(1, 2, None, None)],
+            5,
+            commitments(1, &[0.0, 0.0, 0.0]),
+        ));
+        assert_emits(
+            &emitted(&over, check_anticipated_thermals),
+            "boundary_conditions.json",
+            "thermal 1: commitments cover study stage id(s) [2] beyond the leading 2",
+        );
+    }
+
+    #[test]
+    fn current_format_value_rules_lead_with_the_thermal() {
+        let out_of_box = current(make_data_anticipated(
+            vec![make_anticipated_thermal(3, 2, None, None)],
+            5,
+            commitments(3, &[600.0, 200.0]),
+        ));
+        assert_emits(
+            &emitted(&out_of_box, check_anticipated_thermals),
+            "boundary_conditions.json",
+            "thermal 3: commitments window [2024-01-01, 2024-01-31) value_mw = 600 is outside \
+             the resolved generation box [0, 500] at delivery stage id 0",
+        );
+        let seed = current(make_data_anticipated(
+            vec![make_anticipated_thermal(1, 2, Some(2), Some(4))],
+            5,
+            commitments(1, &[100.0, 0.0]),
+        ));
+        assert_emits(
+            &emitted(&seed, check_anticipated_thermals),
+            "boundary_conditions.json",
+            "thermal 1: commitments window [2024-01-01, 2024-01-31) value_mw = 100 matures at \
+             study stage id 0",
+        );
+    }
+
+    #[test]
+    fn current_format_straddling_window_leads_with_the_thermal() {
+        let boundaries = stage_boundaries(&[720.0; 3]);
+        let straddling = vec![AnticipatedCommitmentHistory {
+            thermal_id: EntityId::from(1),
+            start_date: boundaries[1],
+            end_date: boundaries[3],
+            value_mw: 0.0,
+        }];
+        let data = current(make_data_anticipated(
+            vec![make_anticipated_thermal(1, 1, None, None)],
+            2,
+            straddling,
+        ));
+        assert_emits(
+            &emitted(&data, check_anticipated_thermals),
+            "boundary_conditions.json",
+            "thermal 1: commitments window [2024-01-31, 2024-03-31) straddles the study horizon \
+             end (2024-03-01)",
         );
     }
 }

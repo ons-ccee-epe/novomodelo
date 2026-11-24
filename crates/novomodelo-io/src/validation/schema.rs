@@ -81,6 +81,27 @@ impl BoundaryFormat {
             Self::Current => "post_study_thermal_stages",
         }
     }
+
+    pub(crate) fn commitments_file(self) -> &'static str {
+        match self {
+            Self::Legacy(_) => "initial_conditions.json",
+            Self::Current => "boundary_conditions.json",
+        }
+    }
+
+    pub(crate) fn post_study_bounds_file(self) -> &'static str {
+        match self {
+            Self::Legacy(_) => "post_study_stages.json",
+            Self::Current => "boundary_conditions.json",
+        }
+    }
+
+    pub(crate) fn post_study_calendar_file(self) -> &'static str {
+        match self {
+            Self::Legacy(_) => "post_study_stages.json",
+            Self::Current => "stages.json",
+        }
+    }
 }
 
 /// All parsed file outputs produced by Layer 2 schema validation.
@@ -887,6 +908,26 @@ mod tests {
         for format in [present, BoundaryFormat::Legacy(PostStudyFormat::Absent)] {
             assert_eq!(format.thermal_calendar_key(), "thermal_stages");
         }
+    }
+
+    #[test]
+    fn boundary_files_follow_the_format() {
+        let legacy = BoundaryFormat::Legacy(PostStudyFormat::Absent);
+        assert_eq!(legacy.commitments_file(), "initial_conditions.json");
+        assert_eq!(legacy.post_study_bounds_file(), "post_study_stages.json");
+        assert_eq!(legacy.post_study_calendar_file(), "post_study_stages.json");
+        assert_eq!(
+            BoundaryFormat::Current.commitments_file(),
+            "boundary_conditions.json"
+        );
+        assert_eq!(
+            BoundaryFormat::Current.post_study_bounds_file(),
+            "boundary_conditions.json"
+        );
+        assert_eq!(
+            BoundaryFormat::Current.post_study_calendar_file(),
+            "stages.json"
+        );
     }
 
     /// Given a case directory with all required files containing valid JSON,
