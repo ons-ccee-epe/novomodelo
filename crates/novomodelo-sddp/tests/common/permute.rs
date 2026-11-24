@@ -42,9 +42,21 @@ use tempfile::TempDir;
 /// `pumping_stations` by `s.id`; `novomodelo_io::legacy::post_study_stages::convert_stages`
 /// rejects a duplicate `start_date` and sorts `stages`, `thermal_stages` and
 /// `water_bucket_stages` by it, and `convert_thermal_bounds` sorts
-/// `thermal_bounds` by `(thermal_id, post_study_stage_index)`.
+/// `thermal_bounds` by `(thermal_id, post_study_stage_index)`;
+/// `novomodelo_io::boundary::file::parse_boundary_conditions_file` sorts `hydros` and
+/// `thermals` by plant id and every window and bound list nested in a plant;
+/// `novomodelo_io::stages::convert_stages` sorts `post_study_thermal_stages` and
+/// `post_study_water_stages` by `start_date`.
 const SHUFFLE_WHITELIST: &[(&str, &[&str])] = &[
-    ("stages.json", &["stages", "pre_study_stages"]),
+    (
+        "stages.json",
+        &[
+            "stages",
+            "pre_study_stages",
+            "post_study_thermal_stages",
+            "post_study_water_stages",
+        ],
+    ),
     (
         "initial_conditions.json",
         &[
@@ -84,6 +96,7 @@ const SHUFFLE_WHITELIST: &[(&str, &[&str])] = &[
             "water_bucket_stages",
         ],
     ),
+    ("boundary_conditions.json", &["hydros", "thermals"]),
 ];
 
 /// `(case-relative path, top-level keys)` entries whose JSON array order IS
