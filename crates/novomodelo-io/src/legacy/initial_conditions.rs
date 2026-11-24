@@ -103,6 +103,7 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use crate::LoadError;
+use crate::boundary::checks::{reject_duplicate_window_starts, reject_negative_window_values};
 use crate::windowed_history::{WindowedRecord, parse_iso_date, validate_windowed_records};
 
 // ── Intermediate serde types ──────────────────────────────────────────────────
@@ -289,7 +290,12 @@ fn validate_raw(raw: &RawInitialConditions, path: &Path) -> Result<(), LoadError
 
     let anticipated_commitment_windows =
         parse_anticipated_commitment_windows(&raw.past_anticipated_commitments, path)?;
-    validate_no_duplicate_commitment_windows(&anticipated_commitment_windows, path)?;
+    reject_duplicate_window_starts(
+        &anticipated_commitment_windows,
+        "past_anticipated_commitments",
+        "thermal_id",
+        path,
+    )?;
     validate_windowed_records(
         &anticipated_commitment_windows,
         "past_anticipated_commitments",
@@ -306,7 +312,12 @@ fn validate_raw(raw: &RawInitialConditions, path: &Path) -> Result<(), LoadError
         "value_m3s",
         path,
     )?;
-    validate_past_defluences_non_negative(&raw.past_defluences, path)?;
+    reject_negative_window_values(
+        &past_defluence_windows,
+        "past_defluences",
+        "value_m3s",
+        path,
+    )?;
 
     Ok(())
 }
@@ -448,53 +459,6 @@ fn validate_mutual_exclusion(raw: &RawInitialConditions, path: &Path) -> Result<
                     "hydro_id {} appears in both storage and filling_storage; \
                      a hydro must appear in exactly one of the two arrays",
                     entry.hydro_id
-                ),
-            });
-        }
-    }
-    Ok(())
-}
-
-/// Reject two commitment windows sharing a `(thermal_id, start_date)` — the
-/// windowed successor to the "duplicate `thermal_id`" rule. A thermal legitimately
-/// carries multiple windows at distinct start dates; only a repeated start on
-/// the same thermal is a duplicate. Date/overlap/finiteness are enforced by
-/// [`validate_windowed_records`].
-fn validate_no_duplicate_commitment_windows(
-    windows: &[WindowedRecord],
-    path: &Path,
-) -> Result<(), LoadError> {
-    let mut seen: HashSet<(i32, NaiveDate)> = HashSet::new();
-    for (i, window) in windows.iter().enumerate() {
-        if !seen.insert((window.entity_id, window.start_date)) {
-            return Err(LoadError::SchemaError {
-                path: path.to_path_buf(),
-                field: format!("past_anticipated_commitments[{i}].start_date"),
-                message: format!(
-                    "duplicate (thermal_id {}, start_date {}) in past_anticipated_commitments",
-                    window.entity_id, window.start_date
-                ),
-            });
-        }
-    }
-    Ok(())
-}
-
-/// Reject negative `value_m3s` — the sign policy that distinguishes
-/// `past_defluences` from `recent_observations`/`inflow_history` (finiteness
-/// is enforced by [`validate_windowed_records`]).
-fn validate_past_defluences_non_negative(
-    entries: &[RawHydroPastDefluence],
-    path: &Path,
-) -> Result<(), LoadError> {
-    for (i, entry) in entries.iter().enumerate() {
-        if entry.value_m3s < 0.0 {
-            return Err(LoadError::SchemaError {
-                path: path.to_path_buf(),
-                field: format!("past_defluences[{i}].value_m3s"),
-                message: format!(
-                    "past_defluences[{i}].value_m3s must be >= 0.0, got {}",
-                    entry.value_m3s
                 ),
             });
         }

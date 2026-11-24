@@ -39,6 +39,7 @@
 #[cfg(feature = "schema")]
 pub mod schema;
 
+pub(crate) mod boundary;
 pub mod broadcast;
 pub mod config;
 pub mod constraints;

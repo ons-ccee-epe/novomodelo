@@ -54,6 +54,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::LoadError;
+use crate::boundary::checks::check_bound_values;
 use crate::windowed_history::parse_iso_date;
 
 /// Format of a deck's `post_study_stages.json`.
@@ -245,30 +246,17 @@ fn convert_thermal_bounds(
     let mut bounds: Vec<PostStudyThermalBound> = Vec::with_capacity(entries.len());
     let mut seen: HashSet<(i32, usize)> = HashSet::new();
     for (i, entry) in entries.iter().enumerate() {
-        for (value, name) in [
-            (entry.cost_per_mwh, "cost_per_mwh"),
-            (entry.min_mw, "min_mw"),
-            (entry.max_mw, "max_mw"),
-        ] {
-            if !value.is_finite() {
-                return Err(LoadError::SchemaError {
-                    path: path.to_path_buf(),
-                    field: format!("thermal_bounds[{i}].{name}"),
-                    message: format!("{name} must be a finite number, got {value}"),
-                });
-            }
-        }
-        if entry.min_mw > entry.max_mw {
-            return Err(LoadError::SchemaError {
-                path: path.to_path_buf(),
-                field: format!("thermal_bounds[{i}].max_mw"),
-                message: format!(
-                    "max_mw ({}) must be >= min_mw ({}) for thermal_id {}, \
-                     post_study_stage_index {}",
-                    entry.max_mw, entry.min_mw, entry.thermal_id, entry.post_study_stage_index
-                ),
-            });
-        }
+        check_bound_values(
+            entry.cost_per_mwh,
+            entry.min_mw,
+            entry.max_mw,
+            &format!("thermal_bounds[{i}]"),
+            &format!(
+                "thermal_id {}, post_study_stage_index {}",
+                entry.thermal_id, entry.post_study_stage_index
+            ),
+            path,
+        )?;
         if entry.post_study_stage_index >= num_stages {
             return Err(LoadError::SchemaError {
                 path: path.to_path_buf(),
