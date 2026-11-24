@@ -84,12 +84,49 @@ pub enum TrainingSelection {
     Sampled {
         /// Number of forward-pass trajectories per iteration.
         forward_passes: u32,
+        /// Storage at which the first training iteration's backward pass builds
+        /// its cuts. `forward`, the default, uses the storage each forward pass
+        /// reached. `storage_grid` holds trial `k` of `N` (`N` =
+        /// `forward_passes`) at `k/N` of the way from each reservoir's minimum
+        /// to its maximum storage at every stage, so the lowest trial sits `1/N`
+        /// above the minimum and the highest at the maximum. Inflow history and
+        /// the first iteration's upper bound stay those of the forward pass, and
+        /// reservoirs that are filling or out of service keep the forward pass's
+        /// storage.
+        #[serde(default)]
+        first_iteration_trial_storage: FirstIterationTrialStorage,
     },
     /// Exhaustive enumeration of the scenario openings.
     // A braced variant, not a unit one: serde enforces `deny_unknown_fields`
     // only for braced variants of an internally tagged enum, and this variant
     // must reject a stray `forward_passes`.
     Enumerated {},
+}
+
+impl TrainingSelection {
+    /// A `sampled` selection of `forward_passes` trajectories that keeps the
+    /// forward pass's storage in the first iteration.
+    #[must_use]
+    pub const fn sampled(forward_passes: u32) -> Self {
+        Self::Sampled {
+            forward_passes,
+            first_iteration_trial_storage: FirstIterationTrialStorage::Forward,
+        }
+    }
+}
+
+/// Trial storage of the first training iteration's backward pass
+/// (`config.json → training.selection.first_iteration_trial_storage`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub enum FirstIterationTrialStorage {
+    /// The storage each forward pass reached.
+    #[default]
+    Forward,
+    /// An even grid of storage levels between each reservoir's minimum and
+    /// maximum storage.
+    StorageGrid,
 }
 
 /// Effective training forward-pass resolution
@@ -772,9 +809,9 @@ pub struct LipschitzConfig {
 )]
 mod tests {
     use super::{
-        BackwardScheduler, DualEdgeWeight, NonZeroU32, NonZeroUsize, PresolveMode, PriceStrategy,
-        RowSelectionConfig, ScaleStrategy, SelectionMethod, StoppingRuleConfig, TrainingConfig,
-        TrainingSelection,
+        BackwardScheduler, DualEdgeWeight, FirstIterationTrialStorage, NonZeroU32, NonZeroUsize,
+        PresolveMode, PriceStrategy, RowSelectionConfig, ScaleStrategy, SelectionMethod,
+        StoppingRuleConfig, TrainingConfig, TrainingSelection,
     };
     use crate::config::tests::removed_selection_method_names;
 
@@ -1341,10 +1378,7 @@ mod tests {
             "selection": { "method": "sampled", "forward_passes": 8 }
         }"#;
         let cfg: TrainingConfig = serde_json::from_str(json).unwrap();
-        assert_eq!(
-            cfg.selection,
-            Some(TrainingSelection::Sampled { forward_passes: 8 })
-        );
+        assert_eq!(cfg.selection, Some(TrainingSelection::sampled(8)));
     }
 
     /// A root `forward_passes` key is an unknown-field deserialize error under
@@ -1366,10 +1400,45 @@ mod tests {
             "stopping_rules": [{ "type": "iteration_limit", "limit": 100 }]
         }"#;
         let cfg: TrainingConfig = serde_json::from_str(arm).unwrap();
+        assert_eq!(cfg.selection, Some(TrainingSelection::sampled(4)));
+    }
+
+    #[test]
+    fn sampled_selection_reads_the_first_iteration_trial_storage() {
+        let parse = |selection: &str| {
+            serde_json::from_str::<TrainingConfig>(&format!(
+                r#"{{
+                    "stopping_rules": [{{ "type": "iteration_limit", "limit": 100 }}],
+                    "selection": {selection}
+                }}"#
+            ))
+            .expect("valid training config")
+            .selection
+        };
+
         assert_eq!(
-            cfg.selection,
-            Some(TrainingSelection::Sampled { forward_passes: 4 })
+            parse(r#"{ "method": "sampled", "forward_passes": 4 }"#),
+            Some(TrainingSelection::sampled(4))
         );
+        assert_eq!(
+            parse(
+                r#"{ "method": "sampled", "forward_passes": 4,
+                     "first_iteration_trial_storage": "storage_grid" }"#
+            ),
+            Some(TrainingSelection::Sampled {
+                forward_passes: 4,
+                first_iteration_trial_storage: FirstIterationTrialStorage::StorageGrid,
+            })
+        );
+    }
+
+    #[test]
+    fn enumerated_selection_with_trial_storage_is_deserialize_error() {
+        let json = r#"{
+            "stopping_rules": [{ "type": "iteration_limit", "limit": 100 }],
+            "selection": { "method": "enumerated", "first_iteration_trial_storage": "storage_grid" }
+        }"#;
+        assert!(serde_json::from_str::<TrainingConfig>(json).is_err());
     }
 
     /// A count under `enumerated` is unrepresentable — `deny_unknown_fields` on

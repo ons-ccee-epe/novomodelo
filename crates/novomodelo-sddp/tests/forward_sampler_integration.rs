@@ -543,6 +543,7 @@ fn run_programmatic(
         seed: 42,
         forward_passes,
         training_enumerated: false,
+        first_iteration_trial_storage: novomodelo_io::config::FirstIterationTrialStorage::Forward,
         stopping_rule_set,
         n_scenarios: 0, // simulation disabled
         simulation_enumerated: SimulationEnumeratedRequest::Sampled,
@@ -891,6 +892,7 @@ fn run_with_setup(
         seed: 42,
         forward_passes,
         training_enumerated: false,
+        first_iteration_trial_storage: novomodelo_io::config::FirstIterationTrialStorage::Forward,
         stopping_rule_set,
         n_scenarios: 0,
         simulation_enumerated: SimulationEnumeratedRequest::Sampled,

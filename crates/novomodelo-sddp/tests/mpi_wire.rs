@@ -3594,8 +3594,7 @@ mod selection_on_determinism {
         assert_thread_shapes_agree(
             || {
                 fresh_setup_with(Path::new(UNIFORM_CASE), |config| {
-                    config.training.selection =
-                        Some(TrainingSelection::Sampled { forward_passes: 4 });
+                    config.training.selection = Some(TrainingSelection::sampled(4));
                     config.training.stopping_rules =
                         Some(vec![StoppingRuleConfig::IterationLimit { limit: 10 }]);
                     config.training.cut_selection.selection = Some(level1(2));
@@ -3618,8 +3617,7 @@ mod selection_on_determinism {
                 Path::new(NON_UNIFORM_CASE),
                 NON_UNIFORM_OPENINGS,
                 |config| {
-                    config.training.selection =
-                        Some(TrainingSelection::Sampled { forward_passes: 4 });
+                    config.training.selection = Some(TrainingSelection::sampled(4));
                     config.training.stopping_rules =
                         Some(vec![StoppingRuleConfig::IterationLimit { limit: 10 }]);
                     config.training.cut_selection.selection = Some(level1(1));
@@ -3644,7 +3642,7 @@ mod selection_on_determinism {
     fn level1_two_rank_stub_matches_single_rank_on_the_uniform_fixture() {
         let build = || {
             fresh_setup_with(Path::new(UNIFORM_CASE), |config| {
-                config.training.selection = Some(TrainingSelection::Sampled { forward_passes: 1 });
+                config.training.selection = Some(TrainingSelection::sampled(1));
                 config.training.stopping_rules =
                     Some(vec![StoppingRuleConfig::IterationLimit { limit: 12 }]);
                 config.training.cut_selection.selection = Some(level1(1));
@@ -3669,8 +3667,7 @@ mod selection_on_determinism {
                 Path::new(NON_UNIFORM_CASE),
                 NON_UNIFORM_OPENINGS,
                 |config| {
-                    config.training.selection =
-                        Some(TrainingSelection::Sampled { forward_passes: 1 });
+                    config.training.selection = Some(TrainingSelection::sampled(1));
                     config.training.stopping_rules =
                         Some(vec![StoppingRuleConfig::IterationLimit { limit: 12 }]);
                     config.training.cut_selection.selection = Some(level1(1));
@@ -3699,8 +3696,7 @@ mod selection_on_determinism {
             &[STAGES],
             |case_dir| {
                 fresh_setup_with(case_dir, |config| {
-                    config.training.selection =
-                        Some(TrainingSelection::Sampled { forward_passes: 2 });
+                    config.training.selection = Some(TrainingSelection::sampled(2));
                     config.training.stopping_rules =
                         Some(vec![StoppingRuleConfig::IterationLimit { limit: 10 }]);
                     config.training.cut_selection.selection = Some(level1(1));
@@ -3748,8 +3744,7 @@ mod selection_on_determinism {
         assert_thread_shapes_agree(
             || {
                 fresh_setup_with(Path::new(UNIFORM_CASE), |config| {
-                    config.training.selection =
-                        Some(TrainingSelection::Sampled { forward_passes: 4 });
+                    config.training.selection = Some(TrainingSelection::sampled(4));
                     config.training.stopping_rules =
                         Some(vec![StoppingRuleConfig::IterationLimit { limit: 12 }]);
                     config.training.cut_selection.selection = Some(windowed_level1(2));
@@ -3775,8 +3770,7 @@ mod selection_on_determinism {
                 Path::new(NON_UNIFORM_CASE),
                 NON_UNIFORM_OPENINGS,
                 |config| {
-                    config.training.selection =
-                        Some(TrainingSelection::Sampled { forward_passes: 4 });
+                    config.training.selection = Some(TrainingSelection::sampled(4));
                     config.training.stopping_rules =
                         Some(vec![StoppingRuleConfig::IterationLimit { limit: 12 }]);
                     config.training.cut_selection.selection = Some(windowed_level1(2));
@@ -3809,8 +3803,7 @@ mod selection_on_determinism {
             &[STAGES, HYDROS],
             |case_dir| {
                 fresh_setup_with(case_dir, |config| {
-                    config.training.selection =
-                        Some(TrainingSelection::Sampled { forward_passes: 3 });
+                    config.training.selection = Some(TrainingSelection::sampled(3));
                     config.training.stopping_rules =
                         Some(vec![StoppingRuleConfig::IterationLimit { limit: 8 }]);
                     config.training.cut_selection.selection = Some(level1(1));
@@ -3937,8 +3930,7 @@ mod selection_on_determinism {
         assert_thread_shapes_agree(
             || {
                 fresh_setup_with(Path::new(UNIFORM_CASE), |config| {
-                    config.training.selection =
-                        Some(TrainingSelection::Sampled { forward_passes: 4 });
+                    config.training.selection = Some(TrainingSelection::sampled(4));
                     config.training.stopping_rules =
                         Some(vec![StoppingRuleConfig::IterationLimit { limit: 20 }]);
                     config.training.cut_selection.selection = Some(dynamic_selection(5));
@@ -3959,8 +3951,7 @@ mod selection_on_determinism {
         assert_two_rank_stub_matches_single_rank(
             || {
                 fresh_setup_with(Path::new(UNIFORM_CASE), |config| {
-                    config.training.selection =
-                        Some(TrainingSelection::Sampled { forward_passes: 1 });
+                    config.training.selection = Some(TrainingSelection::sampled(1));
                     config.training.stopping_rules =
                         Some(vec![StoppingRuleConfig::IterationLimit { limit: 20 }]);
                     config.training.cut_selection.selection = Some(dynamic_selection(5));
@@ -3981,8 +3972,7 @@ mod selection_on_determinism {
         assert_thread_shapes_agree(
             || {
                 fresh_setup_with(Path::new(UNIFORM_CASE), |config| {
-                    config.training.selection =
-                        Some(TrainingSelection::Sampled { forward_passes: 4 });
+                    config.training.selection = Some(TrainingSelection::sampled(4));
                     config.training.stopping_rules =
                         Some(vec![StoppingRuleConfig::IterationLimit { limit: 10 }]);
                     config.training.cut_selection.selection = Some(level1(1));
@@ -4004,8 +3994,7 @@ mod selection_on_determinism {
         assert_two_rank_stub_matches_single_rank(
             || {
                 fresh_setup_with(Path::new(UNIFORM_CASE), |config| {
-                    config.training.selection =
-                        Some(TrainingSelection::Sampled { forward_passes: 1 });
+                    config.training.selection = Some(TrainingSelection::sampled(1));
                     config.training.stopping_rules =
                         Some(vec![StoppingRuleConfig::IterationLimit { limit: 10 }]);
                     config.training.cut_selection.selection = Some(level1(1));
@@ -4030,8 +4019,7 @@ mod selection_on_determinism {
         assert_thread_shapes_agree(
             || {
                 fresh_setup_with(Path::new(UNIFORM_CASE), |config| {
-                    config.training.selection =
-                        Some(TrainingSelection::Sampled { forward_passes: 4 });
+                    config.training.selection = Some(TrainingSelection::sampled(4));
                     config.training.stopping_rules =
                         Some(vec![StoppingRuleConfig::IterationLimit { limit: 10 }]);
                     config.training.cut_selection.selection = None;
@@ -4056,8 +4044,7 @@ mod selection_on_determinism {
         assert_two_rank_stub_matches_single_rank(
             || {
                 fresh_setup_with(Path::new(UNIFORM_CASE), |config| {
-                    config.training.selection =
-                        Some(TrainingSelection::Sampled { forward_passes: 1 });
+                    config.training.selection = Some(TrainingSelection::sampled(1));
                     config.training.stopping_rules =
                         Some(vec![StoppingRuleConfig::IterationLimit { limit: 10 }]);
                     config.training.cut_selection.selection = None;
@@ -4081,8 +4068,7 @@ mod selection_on_determinism {
                 Path::new(NON_UNIFORM_CASE),
                 NON_UNIFORM_OPENINGS,
                 |config| {
-                    config.training.selection =
-                        Some(TrainingSelection::Sampled { forward_passes: 4 });
+                    config.training.selection = Some(TrainingSelection::sampled(4));
                     config.training.stopping_rules =
                         Some(vec![StoppingRuleConfig::IterationLimit { limit: 10 }]);
                     config.training.cut_selection.selection = Some(dynamic_selection(0));

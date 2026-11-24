@@ -561,6 +561,7 @@ fn run_one_deterministic_pass(
                 resume_lower_bound_history: Vec::new(),
                 n_fwd_threads: 1,
                 stopping_rules: iteration_limit(limit),
+                storage_grid: None,
             },
             cut_management: CutManagementConfig {
                 cut_selection: None,
@@ -622,6 +623,7 @@ fn train_converges_with_mock_solver() {
             resume_lower_bound_history: Vec::new(),
             n_fwd_threads: 1,
             stopping_rules: iteration_limit(10),
+            storage_grid: None,
         },
         cut_management: CutManagementConfig {
             cut_selection: None,
@@ -721,6 +723,7 @@ fn train_lb_monotonically_nondecreasing() {
             resume_lower_bound_history: Vec::new(),
             n_fwd_threads: 1,
             stopping_rules: iteration_limit(6),
+            storage_grid: None,
         },
         cut_management: CutManagementConfig {
             cut_selection: None,
@@ -809,6 +812,7 @@ fn train_emits_correct_event_sequence() {
             resume_lower_bound_history: Vec::new(),
             n_fwd_threads: 1,
             stopping_rules: iteration_limit(3),
+            storage_grid: None,
         },
         cut_management: CutManagementConfig {
             cut_selection: None,
@@ -912,6 +916,7 @@ fn train_stops_at_iteration_limit() {
                 resume_lower_bound_history: Vec::new(),
                 n_fwd_threads: 1,
                 stopping_rules: iteration_limit(3),
+                storage_grid: None,
             },
             cut_management: CutManagementConfig {
                 cut_selection: None,
@@ -997,6 +1002,7 @@ fn train_with_a_shutdown_during_iteration_1(
                 resume_lower_bound_history: Vec::new(),
                 n_fwd_threads: 1,
                 stopping_rules: rules,
+                storage_grid: None,
             },
             cut_management: CutManagementConfig {
                 cut_selection: None,
@@ -1160,6 +1166,7 @@ fn train_propagates_infeasible_error() {
                 resume_lower_bound_history: Vec::new(),
                 n_fwd_threads: 1,
                 stopping_rules: iteration_limit(10),
+                storage_grid: None,
             },
             cut_management: CutManagementConfig {
                 cut_selection: None,
@@ -1304,6 +1311,7 @@ fn frozen_backward_pass_smoke_test() {
                 resume_lower_bound_history: Vec::new(),
                 n_fwd_threads: 1,
                 stopping_rules: iteration_limit(n_iter),
+                storage_grid: None,
             },
             cut_management: CutManagementConfig {
                 cut_selection: None,

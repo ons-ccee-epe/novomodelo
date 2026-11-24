@@ -104,7 +104,7 @@ fn main() {
     let config_path = case_dir.join("config.json");
     let mut config = parse_config(&config_path).expect("config must parse");
 
-    config.training.selection = Some(TrainingSelection::Sampled { forward_passes: 3 });
+    config.training.selection = Some(TrainingSelection::sampled(3));
     config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit { limit: 10 }]);
 
     let system = novomodelo_io::load_case(case_dir).expect("load_case must succeed");

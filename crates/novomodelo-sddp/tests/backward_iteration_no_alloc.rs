@@ -72,9 +72,7 @@ fn a_warm_backward_iteration_allocates_nothing_on_any_thread() {
             ..FphaLagOptions::default()
         });
         apply_oracle_config(&mut config);
-        config.training.selection = Some(TrainingSelection::Sampled {
-            forward_passes: FORWARD_PASSES,
-        });
+        config.training.selection = Some(TrainingSelection::sampled(FORWARD_PASSES));
         config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit {
             limit: MAX_WARM_UP_ITERATIONS + 1,
         }]);

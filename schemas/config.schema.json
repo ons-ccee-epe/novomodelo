@@ -202,6 +202,21 @@
       },
       "type": "object"
     },
+    "FirstIterationTrialStorage": {
+      "description": "Trial storage of the first training iteration's backward pass\n(`config.json → training.selection.first_iteration_trial_storage`).",
+      "oneOf": [
+        {
+          "const": "forward",
+          "description": "The storage each forward pass reached.",
+          "type": "string"
+        },
+        {
+          "const": "storage_grid",
+          "description": "An even grid of storage levels between each reservoir's minimum and\nmaximum storage.",
+          "type": "string"
+        }
+      ]
+    },
     "HistoricalYearRange": {
       "additionalProperties": false,
       "description": "Inclusive `{\"from\", \"to\"}` year range.",
@@ -1144,6 +1159,11 @@
               "additionalProperties": false,
               "description": "Sampled forward passes: `forward_passes` trajectories per iteration.",
               "properties": {
+                "first_iteration_trial_storage": {
+                  "$ref": "#/$defs/FirstIterationTrialStorage",
+                  "default": "forward",
+                  "description": "Storage at which the first training iteration's backward pass builds\nits cuts. `forward`, the default, uses the storage each forward pass\nreached. `storage_grid` holds trial `k` of `N` (`N` =\n`forward_passes`) at `k/N` of the way from each reservoir's minimum\nto its maximum storage at every stage, so the lowest trial sits `1/N`\nabove the minimum and the highest at the maximum. Inflow history and\nthe first iteration's upper bound stay those of the forward pass, and\nreservoirs that are filling or out of service keep the forward pass's\nstorage."
+                },
                 "forward_passes": {
                   "description": "Number of forward-pass trajectories per iteration.",
                   "format": "uint32",

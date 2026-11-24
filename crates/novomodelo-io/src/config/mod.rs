@@ -48,10 +48,10 @@ pub use simulation::{
     NumScenariosResolution, SimulationConfig, SimulationRowSet, SimulationSelection,
 };
 pub use training::{
-    BackwardScheduler, DualEdgeWeight, ForwardPassesResolution, LipschitzConfig, ParallelismConfig,
-    PhaseSolverProfileConfig, PresolveMode, PriceStrategy, RowSelectionConfig, ScaleStrategy,
-    SelectionMethod, StoppingMode, StoppingRuleConfig, TrainingConfig, TrainingSelection,
-    TrainingSolverConfig, UpperBoundEvaluationConfig,
+    BackwardScheduler, DualEdgeWeight, FirstIterationTrialStorage, ForwardPassesResolution,
+    LipschitzConfig, ParallelismConfig, PhaseSolverProfileConfig, PresolveMode, PriceStrategy,
+    RowSelectionConfig, ScaleStrategy, SelectionMethod, StoppingMode, StoppingRuleConfig,
+    TrainingConfig, TrainingSelection, TrainingSolverConfig, UpperBoundEvaluationConfig,
 };
 
 use simulation::DEFAULT_NUM_SCENARIOS;
@@ -479,10 +479,24 @@ impl Config {
     pub fn resolve_forward_passes(&self) -> Option<ForwardPassesResolution> {
         match &self.training.selection {
             Some(TrainingSelection::Enumerated {}) => Some(ForwardPassesResolution::Enumerated),
-            Some(TrainingSelection::Sampled { forward_passes }) => {
+            Some(TrainingSelection::Sampled { forward_passes, .. }) => {
                 Some(ForwardPassesResolution::Sampled(*forward_passes))
             }
             None => None,
+        }
+    }
+
+    /// The first training iteration's trial storage from `training.selection`:
+    /// [`FirstIterationTrialStorage::Forward`] unless a `sampled` selection asks
+    /// for another.
+    #[must_use]
+    pub fn first_iteration_trial_storage(&self) -> FirstIterationTrialStorage {
+        match &self.training.selection {
+            Some(TrainingSelection::Sampled {
+                first_iteration_trial_storage,
+                ..
+            }) => *first_iteration_trial_storage,
+            Some(TrainingSelection::Enumerated {}) | None => FirstIterationTrialStorage::Forward,
         }
     }
 

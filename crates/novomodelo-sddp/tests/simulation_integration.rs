@@ -477,7 +477,7 @@ fn make_config() -> Config {
             solver: TrainingSolverConfig::default(),
             parallelism: novomodelo_io::config::ParallelismConfig::default(),
             scenario_source: None,
-            selection: Some(TrainingSelection::Sampled { forward_passes: 1 }),
+            selection: Some(TrainingSelection::sampled(1)),
         },
         upper_bound_evaluation: UpperBoundEvaluationConfig::default(),
         policy: PolicyConfig {
@@ -623,6 +623,7 @@ fn train_simulate_write_cycle() {
             resume_lower_bound_history: Vec::new(),
             n_fwd_threads: 1,
             stopping_rules: iteration_limit(3),
+            storage_grid: None,
         },
         cut_management: CutManagementConfig {
             cut_selection: None,
@@ -1296,6 +1297,7 @@ fn simulation_min_outflow_slack_extracted_from_primal() {
             resume_lower_bound_history: Vec::new(),
             n_fwd_threads: 1,
             stopping_rules: iteration_limit(1),
+            storage_grid: None,
         },
         cut_management: CutManagementConfig {
             cut_selection: None,
@@ -1452,6 +1454,7 @@ fn enumerated_census_k1_matches_sampled_single_scenario() {
             resume_lower_bound_history: Vec::new(),
             n_fwd_threads: 1,
             stopping_rules: iteration_limit(3),
+            storage_grid: None,
         },
         cut_management: CutManagementConfig {
             cut_selection: None,

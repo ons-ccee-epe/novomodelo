@@ -331,7 +331,7 @@ fn config() -> novomodelo_io::config::Config {
             solver: TrainingSolverConfig::default(),
             parallelism: ParallelismConfig::default(),
             scenario_source: None,
-            selection: Some(TrainingSelection::Sampled { forward_passes: 1 }),
+            selection: Some(TrainingSelection::sampled(1)),
         },
         upper_bound_evaluation: UpperBoundEvaluationConfig::default(),
         policy: PolicyConfig::default(),

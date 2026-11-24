@@ -1366,7 +1366,7 @@ pub mod output {
                 solver: TrainingSolverConfig::default(),
                 parallelism: ParallelismConfig::default(),
                 scenario_source: None,
-                selection: Some(TrainingSelection::Sampled { forward_passes: 4 }),
+                selection: Some(TrainingSelection::sampled(4)),
             },
             upper_bound_evaluation: UpperBoundEvaluationConfig::default(),
             policy: PolicyConfig {
@@ -1456,7 +1456,7 @@ mod tests {
                 solver: TrainingSolverConfig::default(),
                 parallelism: ParallelismConfig::default(),
                 scenario_source: None,
-                selection: Some(TrainingSelection::Sampled { forward_passes: 10 }),
+                selection: Some(TrainingSelection::sampled(10)),
             },
             upper_bound_evaluation: UpperBoundEvaluationConfig::default(),
             policy: PolicyConfig::default(),

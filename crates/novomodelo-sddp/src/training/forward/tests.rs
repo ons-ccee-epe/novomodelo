@@ -602,6 +602,7 @@ fn two_scenarios_three_stages_fixed_solution() {
                 rules: vec![StoppingRule::IterationLimit { limit: 100 }],
                 mode: StoppingMode::Any,
             },
+            storage_grid: None,
         },
         cut_management: CutManagementConfig {
             cut_selection: None,
@@ -713,6 +714,7 @@ fn infeasible_at_stage_1_scenario_0_returns_infeasible_error() {
                 rules: vec![StoppingRule::IterationLimit { limit: 100 }],
                 mode: StoppingMode::Any,
             },
+            storage_grid: None,
         },
         cut_management: CutManagementConfig {
             cut_selection: None,
@@ -828,6 +830,7 @@ fn cost_statistics_accumulated_correctly() {
                 rules: vec![StoppingRule::IterationLimit { limit: 100 }],
                 mode: StoppingMode::Any,
             },
+            storage_grid: None,
         },
         cut_management: CutManagementConfig {
             cut_selection: None,
@@ -1463,6 +1466,7 @@ fn run_one_iteration(
                 rules: vec![StoppingRule::IterationLimit { limit: 100 }],
                 mode: StoppingMode::Any,
             },
+            storage_grid: None,
         },
         cut_management: CutManagementConfig {
             cut_selection: None,
@@ -2140,6 +2144,7 @@ fn none_method_records_the_untruncated_stage_cost() {
                 rules: vec![StoppingRule::IterationLimit { limit: 100 }],
                 mode: StoppingMode::Any,
             },
+            storage_grid: None,
         },
         cut_management: CutManagementConfig {
             cut_selection: None,

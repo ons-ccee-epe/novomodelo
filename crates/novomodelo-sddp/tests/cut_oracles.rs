@@ -111,9 +111,7 @@ fn cut_oracles_hold_on_deactivated_cuts_under_level1() {
         config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit {
             limit: LEVEL1_ITERATIONS,
         }]);
-        config.training.selection = Some(TrainingSelection::Sampled {
-            forward_passes: LEVEL1_FORWARD_PASSES,
-        });
+        config.training.selection = Some(TrainingSelection::sampled(LEVEL1_FORWARD_PASSES));
     });
     let report = run_cut_oracles(ONE_D_TOY, setup);
     assert!(

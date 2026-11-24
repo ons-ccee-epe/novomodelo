@@ -139,6 +139,7 @@ impl StudySetup {
                 resume_lower_bound_history: self.loop_params.resume_lower_bound_history.clone(),
                 n_fwd_threads: n_threads,
                 stopping_rules: self.loop_params.stopping_rules.clone(),
+                storage_grid: self.loop_params.storage_grid.clone(),
             },
             cut_management: CutManagementConfig {
                 cut_selection: self.inputs.cut_management.cut_selection.clone(),

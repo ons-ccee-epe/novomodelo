@@ -537,7 +537,7 @@ fn minimal_config(forward_passes: u32, max_iterations: u32) -> Config {
             solver: TrainingSolverConfig::default(),
             parallelism: novomodelo_io::config::ParallelismConfig::default(),
             scenario_source: None,
-            selection: Some(TrainingSelection::Sampled { forward_passes }),
+            selection: Some(TrainingSelection::sampled(forward_passes)),
         },
         upper_bound_evaluation: UpperBoundEvaluationConfig::default(),
         policy: PolicyConfig::default(),
@@ -1663,7 +1663,7 @@ fn study_params_from_config_explicit() {
             solver: TrainingSolverConfig::default(),
             parallelism: novomodelo_io::config::ParallelismConfig::default(),
             scenario_source: None,
-            selection: Some(TrainingSelection::Sampled { forward_passes: 5 }),
+            selection: Some(TrainingSelection::sampled(5)),
         },
         upper_bound_evaluation: UpperBoundEvaluationConfig::default(),
         policy: PolicyConfig {

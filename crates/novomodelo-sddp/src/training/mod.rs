@@ -35,11 +35,13 @@ pub(crate) mod rank_reconcile;
 pub(crate) mod session;
 pub(crate) mod stage_solve_prep;
 pub(crate) mod state_exchange;
+pub(crate) mod storage_grid;
 pub(crate) mod training_output;
 pub(crate) mod trajectory;
 
 pub use forward::SyncResult;
 pub use state_exchange::ExchangeBuffers;
+pub use storage_grid::StorageGrid;
 pub use training::{LoadedPolicy, TrainingOutcome, TrainingResult, train};
 pub use training_output::build_training_output;
 pub use trajectory::TrajectoryRecord;

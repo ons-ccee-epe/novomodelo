@@ -55,7 +55,7 @@ fn build_setup() -> (StudySetup, System) {
 fn build_setup_with(forward_passes: u32, iteration_limit: u32) -> (StudySetup, System) {
     let case_dir = d01_case_dir();
     let mut config = novomodelo_io::parse_config(&case_dir.join("config.json")).expect("config");
-    config.training.selection = Some(TrainingSelection::Sampled { forward_passes });
+    config.training.selection = Some(TrainingSelection::sampled(forward_passes));
     config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit {
         limit: iteration_limit,
     }]);
@@ -370,7 +370,7 @@ fn toy_setup(
     common::fresh_system_and_setup_with(
         &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/1dtoy"),
         |config| {
-            config.training.selection = Some(TrainingSelection::Sampled { forward_passes });
+            config.training.selection = Some(TrainingSelection::sampled(forward_passes));
             config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit {
                 limit: iteration_limit,
             }]);
@@ -792,7 +792,7 @@ fn a_resume_reports_the_first_refusal_in_its_fixed_order() {
 fn a_level1_resume_of_a_study_without_an_interior_pool_needs_no_history() {
     let trained = train_and_write_checkpoint();
     let (system, setup) = common::fresh_system_and_setup_with(&d01_case_dir(), |config| {
-        config.training.selection = Some(TrainingSelection::Sampled { forward_passes: 1 });
+        config.training.selection = Some(TrainingSelection::sampled(1));
         with_level1(None)(config);
     });
     let policy_dir = trained.output.path().join(&setup.policy_path);
@@ -1034,7 +1034,7 @@ fn boundary_run_setup(
         strict: false,
     };
     let (system, setup) = common::fresh_system_and_setup_with(case.path(), |config| {
-        config.training.selection = Some(TrainingSelection::Sampled { forward_passes: 2 });
+        config.training.selection = Some(TrainingSelection::sampled(2));
         config.training.stopping_rules = Some(vec![StoppingRuleConfig::IterationLimit {
             limit: iteration_limit,
         }]);
@@ -1084,7 +1084,7 @@ fn a_boundary_replaces_the_loaded_terminal_pool_the_dynamic_check_reads() {
         strict: false,
     };
     let (system, setup) = common::fresh_system_and_setup_with(case.path(), |config| {
-        config.training.selection = Some(TrainingSelection::Sampled { forward_passes: 2 });
+        config.training.selection = Some(TrainingSelection::sampled(2));
         dynamic_simulating(SimulationRowSet::All)(config);
         config.policy.boundary = Some(boundary.clone());
     });

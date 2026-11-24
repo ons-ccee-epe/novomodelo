@@ -469,6 +469,7 @@ fn build_study_setup(
         seed: bcast_config.seed,
         forward_passes: bcast_config.forward_passes,
         training_enumerated: bcast_config.training_enumerated,
+        first_iteration_trial_storage: bcast_config.first_iteration_trial_storage,
         stopping_rule_set,
         n_scenarios: bcast_config.n_scenarios,
         simulation_enumerated: bcast_config.simulation_enumerated,
