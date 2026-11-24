@@ -21,7 +21,6 @@
     clippy::cast_possible_truncation,
     clippy::cast_possible_wrap,
     clippy::doc_markdown,
-    clippy::needless_update,
     clippy::too_many_lines
 )]
 
@@ -30,18 +29,10 @@ mod common;
 mod inflow_lag_audit {
     use chrono::{NaiveDate, TimeDelta};
     use novomodelo_core::entities::bus::DeficitSegment;
-    use novomodelo_core::entities::hydro::HydroGenerationModel;
     use novomodelo_core::scenario::{InflowModel, LoadModel};
-    use novomodelo_core::temporal::{
-        Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
-        StageStateConfig,
-    };
+    use novomodelo_core::temporal::{Block, Stage, StageStateConfig};
     use novomodelo_core::{
-        BoundsCountsSpec, BoundsDefaults, BusStagePenalties, ContractBlockBounds, EntityId,
-        HydroBlockBounds, HydroPenalties, HydroStageBounds, HydroStorage, InitialConditions,
-        LineBlockBounds, LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec,
-        PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds, ResolvedPenalties, SystemBuilder,
-        ThermalBlockBounds,
+        EntityId, HydroPenalties, HydroStorage, InitialConditions, SystemBuilder,
     };
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
@@ -99,12 +90,11 @@ mod inflow_lag_audit {
             BUS_ID,
             BusSpec {
                 name: "B1".to_string(),
-                operational_start_date: anchor,
                 deficit_segments: vec![DeficitSegment {
                     depth_mw: None,
                     cost_per_mwh: 500.0,
                 }],
-                excess_cost: 0.0,
+                ..Default::default()
             },
         );
 
@@ -112,16 +102,9 @@ mod inflow_lag_audit {
             HYDRO_ID,
             HydroSpec {
                 name: "H1".to_string(),
-                operational_start_date: anchor,
                 bus_id: BUS_ID,
-                generation_model: HydroGenerationModel::ConstantProductivity,
-                min_storage_hm3: 0.0,
                 max_storage_hm3: MAX_STORAGE_HM3,
-                min_outflow_m3s: 0.0,
-                max_outflow_m3s: None,
-                min_turbined_m3s: 0.0,
                 max_turbined_m3s: 100.0,
-                min_generation_mw: 0.0,
                 max_generation_mw: 250.0,
                 penalties: hydro_penalties(),
                 ..Default::default()
@@ -141,15 +124,9 @@ mod inflow_lag_audit {
                             name: "S".to_string(),
                             duration_hours: 744.0,
                         }],
-                        block_mode: BlockMode::Parallel,
                         state_config: StageStateConfig {
                             storage: true,
                             inflow_lags: true,
-                        },
-                        risk_config: StageRiskConfig::Expectation,
-                        scenario_config: ScenarioSourceConfig {
-                            branching_factor: 1,
-                            noise_method: NoiseMethod::Saa,
                         },
                         ..Default::default()
                     },
@@ -178,67 +155,6 @@ mod inflow_lag_audit {
             })
             .collect();
 
-        let bounds = ResolvedBounds::new(
-            &BoundsCountsSpec {
-                n_hydros: 1,
-                n_thermals: 0,
-                n_lines: 0,
-                n_pumping: 0,
-                n_contracts: 0,
-                n_stages: N_STAGES,
-                k_max: 0,
-            },
-            &BoundsDefaults {
-                hydro: HydroStageBounds {
-                    min_storage_hm3: 0.0,
-                    max_storage_hm3: MAX_STORAGE_HM3,
-                    filling_min_rate_m3s: 0.0,
-                    water_withdrawal_m3s: 0.0,
-                },
-                hydro_block: HydroBlockBounds {
-                    max_turbined_m3s: 100.0,
-                    max_generation_mw: 250.0,
-                    ..Default::default()
-                },
-                thermal_block: ThermalBlockBounds {
-                    min_generation_mw: 0.0,
-                    max_generation_mw: 0.0,
-                    cost_per_mwh: 0.0,
-                },
-                line_block: LineBlockBounds {
-                    direct_mw: 0.0,
-                    reverse_mw: 0.0,
-                },
-                pumping_block: PumpingBlockBounds {
-                    min_flow_m3s: 0.0,
-                    max_flow_m3s: 0.0,
-                },
-                contract_block: ContractBlockBounds {
-                    min_mw: 0.0,
-                    max_mw: 0.0,
-                    price_per_mwh: 0.0,
-                },
-            },
-        );
-
-        let penalties = ResolvedPenalties::new(
-            &PenaltiesCountsSpec {
-                n_hydros: 1,
-                n_buses: 1,
-                n_lines: 0,
-                n_ncs: 0,
-                n_stages: N_STAGES,
-            },
-            &PenaltiesDefaults {
-                hydro: hydro_penalties(),
-                bus: BusStagePenalties { excess_cost: 0.0 },
-                line: LineStagePenalties { exchange_cost: 0.0 },
-                ncs: NcsStagePenalties {
-                    curtailment_cost: 0.0,
-                },
-            },
-        );
-
         let initial_conditions = InitialConditions {
             storage: vec![HydroStorage {
                 hydro_id: HYDRO_ID,
@@ -247,17 +163,19 @@ mod inflow_lag_audit {
             ..Default::default()
         };
 
-        SystemBuilder::new()
-            .buses(vec![bus])
-            .hydros(vec![hydro])
-            .stages(stages)
-            .inflow_models(inflow_models)
-            .load_models(load_models)
-            .bounds(bounds)
-            .penalties(penalties)
-            .initial_conditions(initial_conditions)
-            .build()
-            .expect("inflow-lag audit fixture: system must build")
+        novomodelo_sddp::test_support::build_with_resolved_tables(
+            || {
+                SystemBuilder::new()
+                    .buses(vec![bus.clone()])
+                    .hydros(vec![hydro.clone()])
+                    .stages(stages.clone())
+                    .inflow_models(inflow_models.clone())
+                    .load_models(load_models.clone())
+                    .initial_conditions(initial_conditions.clone())
+            },
+            0,
+            |_, _, _| {},
+        )
     }
 
     fn build_config() -> Config {
@@ -355,18 +273,10 @@ mod inflow_lag_audit {
 mod prefilling_audit {
     use chrono::{NaiveDate, TimeDelta};
     use novomodelo_core::entities::bus::DeficitSegment;
-    use novomodelo_core::entities::hydro::HydroGenerationModel;
     use novomodelo_core::scenario::{InflowModel, LoadModel};
-    use novomodelo_core::temporal::{
-        Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
-        StageStateConfig,
-    };
+    use novomodelo_core::temporal::{Block, Stage};
     use novomodelo_core::{
-        BoundsCountsSpec, BoundsDefaults, BusStagePenalties, ContractBlockBounds, EntityId,
-        HydroBlockBounds, HydroPenalties, HydroStageBounds, HydroStorage, InitialConditions,
-        LineBlockBounds, LineStagePenalties, NcsStagePenalties, PenaltiesCountsSpec,
-        PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds, ResolvedPenalties, SystemBuilder,
-        ThermalBlockBounds,
+        EntityId, HydroPenalties, HydroStorage, InitialConditions, SystemBuilder,
     };
     use novomodelo_io::config::{
         Config, EstimationConfig, ExportsConfig, InflowNonNegativityConfig,
@@ -422,12 +332,11 @@ mod prefilling_audit {
             BUS_ID,
             BusSpec {
                 name: "B1".to_string(),
-                operational_start_date: anchor,
                 deficit_segments: vec![DeficitSegment {
                     depth_mw: None,
                     cost_per_mwh: 500.0,
                 }],
-                excess_cost: 0.0,
+                ..Default::default()
             },
         );
 
@@ -435,17 +344,11 @@ mod prefilling_audit {
             HYDRO_ID,
             HydroSpec {
                 name: "H1".to_string(),
-                operational_start_date: anchor,
                 bus_id: BUS_ID,
                 entry_stage_id: Some(ENTRY_STAGE_ID),
-                generation_model: HydroGenerationModel::ConstantProductivity,
                 min_storage_hm3: MIN_STORAGE_HM3,
                 max_storage_hm3: MAX_STORAGE_HM3,
-                min_outflow_m3s: 0.0,
-                max_outflow_m3s: None,
-                min_turbined_m3s: 0.0,
                 max_turbined_m3s: 100.0,
-                min_generation_mw: 0.0,
                 max_generation_mw: 200.0,
                 penalties: hydro_penalties(),
                 ..Default::default()
@@ -464,16 +367,6 @@ mod prefilling_audit {
                             name: "S".to_string(),
                             duration_hours: 744.0,
                         }],
-                        block_mode: BlockMode::Parallel,
-                        state_config: StageStateConfig {
-                            storage: true,
-                            inflow_lags: false,
-                        },
-                        risk_config: StageRiskConfig::Expectation,
-                        scenario_config: ScenarioSourceConfig {
-                            branching_factor: 1,
-                            noise_method: NoiseMethod::Saa,
-                        },
                         ..Default::default()
                     },
                 )
@@ -501,67 +394,6 @@ mod prefilling_audit {
             })
             .collect();
 
-        let bounds = ResolvedBounds::new(
-            &BoundsCountsSpec {
-                n_hydros: 1,
-                n_thermals: 0,
-                n_lines: 0,
-                n_pumping: 0,
-                n_contracts: 0,
-                n_stages: N_STAGES,
-                k_max: 0,
-            },
-            &BoundsDefaults {
-                hydro: HydroStageBounds {
-                    min_storage_hm3: MIN_STORAGE_HM3,
-                    max_storage_hm3: MAX_STORAGE_HM3,
-                    filling_min_rate_m3s: 0.0,
-                    water_withdrawal_m3s: 0.0,
-                },
-                hydro_block: HydroBlockBounds {
-                    max_turbined_m3s: 100.0,
-                    max_generation_mw: 200.0,
-                    ..Default::default()
-                },
-                thermal_block: ThermalBlockBounds {
-                    min_generation_mw: 0.0,
-                    max_generation_mw: 0.0,
-                    cost_per_mwh: 0.0,
-                },
-                line_block: LineBlockBounds {
-                    direct_mw: 0.0,
-                    reverse_mw: 0.0,
-                },
-                pumping_block: PumpingBlockBounds {
-                    min_flow_m3s: 0.0,
-                    max_flow_m3s: 0.0,
-                },
-                contract_block: ContractBlockBounds {
-                    min_mw: 0.0,
-                    max_mw: 0.0,
-                    price_per_mwh: 0.0,
-                },
-            },
-        );
-
-        let penalties = ResolvedPenalties::new(
-            &PenaltiesCountsSpec {
-                n_hydros: 1,
-                n_buses: 1,
-                n_lines: 0,
-                n_ncs: 0,
-                n_stages: N_STAGES,
-            },
-            &PenaltiesDefaults {
-                hydro: hydro_penalties(),
-                bus: BusStagePenalties { excess_cost: 0.0 },
-                line: LineStagePenalties { exchange_cost: 0.0 },
-                ncs: NcsStagePenalties {
-                    curtailment_cost: 0.0,
-                },
-            },
-        );
-
         let initial_conditions = InitialConditions {
             storage: vec![HydroStorage {
                 hydro_id: HYDRO_ID,
@@ -570,17 +402,19 @@ mod prefilling_audit {
             ..Default::default()
         };
 
-        SystemBuilder::new()
-            .buses(vec![bus])
-            .hydros(vec![hydro])
-            .stages(stages)
-            .inflow_models(inflow_models)
-            .load_models(load_models)
-            .bounds(bounds)
-            .penalties(penalties)
-            .initial_conditions(initial_conditions)
-            .build()
-            .expect("PreFilling audit fixture: system must build")
+        novomodelo_sddp::test_support::build_with_resolved_tables(
+            || {
+                SystemBuilder::new()
+                    .buses(vec![bus.clone()])
+                    .hydros(vec![hydro.clone()])
+                    .stages(stages.clone())
+                    .inflow_models(inflow_models.clone())
+                    .load_models(load_models.clone())
+                    .initial_conditions(initial_conditions.clone())
+            },
+            0,
+            |_, _, _| {},
+        )
     }
 
     fn build_config() -> Config {

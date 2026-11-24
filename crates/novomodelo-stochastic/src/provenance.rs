@@ -35,68 +35,19 @@ mod tests {
     use std::collections::BTreeMap;
 
     use novomodelo_core::{
-        Bus, DeficitSegment, EntityId, Hydro, SystemBuilder,
+        EntityId, SystemBuilder,
         scenario::{
-            CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile, InflowModel,
+            CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile,
             SamplingScheme,
         },
-        temporal::{NoiseMethod, ScenarioSourceConfig, Stage},
-        test_support::{BusSpec, HydroSpec, StageSpec, single_block},
+        test_support::{InflowModelSpec, make_inflow_model},
     };
 
     use crate::{
         ComponentProvenance,
         context::{ClassSchemes, OpeningTree, OpeningTreeInputs, build_stochastic_context},
+        test_support::{deficit_bus, saa_stage, sized_hydro},
     };
-
-    fn make_stage(index: usize, id: i32, branching_factor: usize) -> Stage {
-        novomodelo_core::test_support::make_stage(StageSpec {
-            id,
-            index: Some(index),
-            season_id: Some(0),
-            blocks: single_block("SINGLE", 744.0),
-            scenario_config: ScenarioSourceConfig {
-                branching_factor,
-                noise_method: NoiseMethod::Saa,
-            },
-            ..Default::default()
-        })
-    }
-
-    fn make_bus(id: i32) -> Bus {
-        novomodelo_core::test_support::make_bus(BusSpec {
-            id,
-            name: format!("Bus{id}"),
-            deficit_segments: vec![DeficitSegment {
-                depth_mw: None,
-                cost_per_mwh: 1000.0,
-            }],
-            ..Default::default()
-        })
-    }
-
-    fn make_hydro(id: i32) -> Hydro {
-        novomodelo_core::test_support::make_hydro(HydroSpec {
-            id,
-            name: format!("H{id}"),
-            max_storage_hm3: 100.0,
-            max_turbined_m3s: 100.0,
-            max_generation_mw: 100.0,
-            ..Default::default()
-        })
-    }
-
-    fn make_inflow_model(hydro_id: i32, stage_id: i32) -> InflowModel {
-        InflowModel {
-            hydro_id: EntityId(hydro_id),
-            stage_id,
-            mean_m3s: 100.0,
-            std_m3s: 30.0,
-            ar_coefficients: vec![],
-            residual_std_ratio: 1.0,
-            annual: None,
-        }
-    }
 
     fn identity_correlation(entity_ids: &[i32]) -> CorrelationModel {
         let n = entity_ids.len();
@@ -129,12 +80,23 @@ mod tests {
 
     #[test]
     fn provenance_with_user_tree() {
-        let hydros = vec![make_hydro(1)];
-        let stages = vec![make_stage(0, 0, 3), make_stage(1, 1, 3)];
-        let inflow_models = vec![make_inflow_model(1, 0), make_inflow_model(1, 1)];
+        let hydros = vec![sized_hydro(1)];
+        let stages = vec![saa_stage(0, 0, 3), saa_stage(1, 1, 3)];
+        let inflow_models = vec![
+            make_inflow_model(InflowModelSpec {
+                hydro_id: 1,
+                stage_id: 0,
+                ..Default::default()
+            }),
+            make_inflow_model(InflowModelSpec {
+                hydro_id: 1,
+                stage_id: 1,
+                ..Default::default()
+            }),
+        ];
 
         let system = SystemBuilder::new()
-            .buses(vec![make_bus(0)])
+            .buses(vec![deficit_bus(0)])
             .hydros(hydros)
             .stages(stages)
             .inflow_models(inflow_models)
@@ -172,12 +134,23 @@ mod tests {
 
     #[test]
     fn provenance_without_user_tree() {
-        let hydros = vec![make_hydro(1)];
-        let stages = vec![make_stage(0, 0, 3), make_stage(1, 1, 3)];
-        let inflow_models = vec![make_inflow_model(1, 0), make_inflow_model(1, 1)];
+        let hydros = vec![sized_hydro(1)];
+        let stages = vec![saa_stage(0, 0, 3), saa_stage(1, 1, 3)];
+        let inflow_models = vec![
+            make_inflow_model(InflowModelSpec {
+                hydro_id: 1,
+                stage_id: 0,
+                ..Default::default()
+            }),
+            make_inflow_model(InflowModelSpec {
+                hydro_id: 1,
+                stage_id: 1,
+                ..Default::default()
+            }),
+        ];
 
         let system = SystemBuilder::new()
-            .buses(vec![make_bus(0)])
+            .buses(vec![deficit_bus(0)])
             .hydros(hydros)
             .stages(stages)
             .inflow_models(inflow_models)
@@ -211,8 +184,8 @@ mod tests {
     fn provenance_no_entities() {
         // A system with no hydros and no stochastic load buses has dim == 0.
         let system = SystemBuilder::new()
-            .buses(vec![make_bus(0)])
-            .stages(vec![make_stage(0, 0, 3)])
+            .buses(vec![deficit_bus(0)])
+            .stages(vec![saa_stage(0, 0, 3)])
             .build()
             .unwrap();
 
@@ -240,12 +213,23 @@ mod tests {
 
     #[test]
     fn provenance_inflow_with_hydros() {
-        let hydros = vec![make_hydro(1)];
-        let stages = vec![make_stage(0, 0, 3), make_stage(1, 1, 3)];
-        let inflow_models = vec![make_inflow_model(1, 0), make_inflow_model(1, 1)];
+        let hydros = vec![sized_hydro(1)];
+        let stages = vec![saa_stage(0, 0, 3), saa_stage(1, 1, 3)];
+        let inflow_models = vec![
+            make_inflow_model(InflowModelSpec {
+                hydro_id: 1,
+                stage_id: 0,
+                ..Default::default()
+            }),
+            make_inflow_model(InflowModelSpec {
+                hydro_id: 1,
+                stage_id: 1,
+                ..Default::default()
+            }),
+        ];
 
         let system = SystemBuilder::new()
-            .buses(vec![make_bus(0)])
+            .buses(vec![deficit_bus(0)])
             .hydros(hydros)
             .stages(stages)
             .inflow_models(inflow_models)
@@ -278,8 +262,8 @@ mod tests {
     #[test]
     fn provenance_inflow_without_hydros() {
         let system = SystemBuilder::new()
-            .buses(vec![make_bus(0)])
-            .stages(vec![make_stage(0, 0, 3)])
+            .buses(vec![deficit_bus(0)])
+            .stages(vec![saa_stage(0, 0, 3)])
             .build()
             .unwrap();
 
@@ -308,8 +292,8 @@ mod tests {
     #[test]
     fn test_provenance_per_class_schemes_populated() {
         let system = SystemBuilder::new()
-            .buses(vec![make_bus(0)])
-            .stages(vec![make_stage(0, 0, 3)])
+            .buses(vec![deficit_bus(0)])
+            .stages(vec![saa_stage(0, 0, 3)])
             .build()
             .unwrap();
 

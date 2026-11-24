@@ -1,7 +1,10 @@
 use std::collections::{BTreeMap, HashMap};
 
 use chrono::{Datelike, Days, Months, NaiveDate, Weekday};
-use novomodelo_core::test_support::{StageSpec, date, make_stage};
+use novomodelo_core::test_support::{
+    MonthlyLabels, StageSpec, date, make_stage, monthly_season_map, quarterly_season_map,
+    single_block, weekly_season_map,
+};
 use novomodelo_core::{EntityId, SeasonMap, Stage};
 
 use novomodelo_core::scenario::AnnualComponent;
@@ -21,9 +24,6 @@ use crate::par::fitting::cycle_positions::twin_fixtures::{
 use crate::par::fitting::{
     ArCoefficientEstimate, PeriodicYwAnnualResult, SeasonalStats,
     estimate_periodic_ar_annual_coefficients,
-};
-use crate::test_support::{
-    MonthlyLabels, monthly_season_map, quarterly_season_map, weekly_season_map,
 };
 
 /// Test-only: magnitude bound + contribution-based order validation over all
@@ -203,44 +203,23 @@ fn make_two_season_stage(
     year: i32,
     first_half: bool,
 ) -> Stage {
-    use novomodelo_core::temporal::{
-        Block, BlockMode, NoiseMethod, ScenarioSourceConfig, StageRiskConfig, StageStateConfig,
-    };
-
     let (start_date, end_date) = if first_half {
-        (
-            NaiveDate::from_ymd_opt(year, 1, 1).unwrap(),
-            NaiveDate::from_ymd_opt(year, 7, 1).unwrap(),
-        )
+        (date(year, 1, 1), date(year, 7, 1))
     } else {
-        (
-            NaiveDate::from_ymd_opt(year, 7, 1).unwrap(),
-            NaiveDate::from_ymd_opt(year + 1, 1, 1).unwrap(),
-        )
+        (date(year, 7, 1), date(year + 1, 1, 1))
     };
 
-    Stage {
-        index,
+    let mut stage = make_stage(StageSpec {
         id,
+        index: Some(index),
         start_date,
         end_date,
         season_id: Some(season_id),
-        blocks: vec![Block {
-            index: 0,
-            name: "SINGLE".to_string(),
-            duration_hours: 4380.0,
-        }],
-        block_mode: BlockMode::Parallel,
-        state_config: StageStateConfig {
-            storage: false,
-            inflow_lags: false,
-        },
-        risk_config: StageRiskConfig::Expectation,
-        scenario_config: ScenarioSourceConfig {
-            branching_factor: 1,
-            noise_method: NoiseMethod::Saa,
-        },
-    }
+        blocks: single_block("SINGLE", 4380.0),
+        ..Default::default()
+    });
+    stage.state_config.storage = false;
+    stage
 }
 
 /// Build a 2-season `SeasonMap` (H1: Jan–Jun, H2: Jul–Dec).
@@ -282,9 +261,6 @@ fn pacf_annual_config(max_order: usize) -> ArEstimationConfig<'static> {
 /// Build a 12-season monthly stage sequence spanning `n_years` starting from
 /// year 2000. Stage IDs are 0-based sequential; season IDs cycle 0..12.
 fn make_monthly_stages_for_annual(n_years: usize) -> Vec<Stage> {
-    use novomodelo_core::temporal::{
-        Block, BlockMode, NoiseMethod, ScenarioSourceConfig, StageRiskConfig, StageStateConfig,
-    };
     let mut stages = Vec::new();
     let mut idx = 0usize;
     for year in 0..n_years {
@@ -292,28 +268,15 @@ fn make_monthly_stages_for_annual(n_years: usize) -> Vec<Stage> {
             let y = 2000 + year as i32;
             let m = month as u32 + 1;
             let (ey, em) = if m == 12 { (y + 1, 1u32) } else { (y, m + 1) };
-            stages.push(Stage {
-                index: idx,
+            stages.push(make_stage(StageSpec {
                 id: idx as i32,
-                start_date: NaiveDate::from_ymd_opt(y, m, 1).unwrap(),
-                end_date: NaiveDate::from_ymd_opt(ey, em, 1).unwrap(),
+                index: Some(idx),
+                start_date: date(y, m, 1),
+                end_date: date(ey, em, 1),
                 season_id: Some(month),
-                blocks: vec![Block {
-                    index: 0,
-                    name: "SINGLE".to_string(),
-                    duration_hours: 744.0,
-                }],
-                block_mode: BlockMode::Parallel,
-                state_config: StageStateConfig {
-                    storage: true,
-                    inflow_lags: false,
-                },
-                risk_config: StageRiskConfig::Expectation,
-                scenario_config: ScenarioSourceConfig {
-                    branching_factor: 1,
-                    noise_method: NoiseMethod::Saa,
-                },
-            });
+                blocks: single_block("SINGLE", 744.0),
+                ..Default::default()
+            }));
             idx += 1;
         }
     }
@@ -1752,7 +1715,7 @@ fn fit_on_a_dense_calendar_ordered_custom_map_matches_pinned_bits() {
         &[4_600_539_182_485_145_474, 4_602_924_096_865_316_619],
         &[4_604_971_852_568_177_276],
     ];
-    let season_map = crate::test_support::quarterly_season_map();
+    let season_map = quarterly_season_map();
     let (estimates, report) = fit_calendar_history(&season_map, &[0, 1, 2, 3]);
     let entry = &report.entries[&EntityId(1)];
     assert_eq!(estimates.len(), FIT_BITS.len());

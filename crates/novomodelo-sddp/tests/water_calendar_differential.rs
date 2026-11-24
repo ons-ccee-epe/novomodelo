@@ -14,7 +14,7 @@ use novomodelo_core::System;
 use novomodelo_io::StateFamily;
 use novomodelo_io::output::policy::{ENTITY_SLOT_DATE_SENTINEL, EntitySlot, encode_slot_date};
 use novomodelo_sddp::StudySetup;
-use novomodelo_sddp::test_support::{state_space, template_fact_groups};
+use novomodelo_sddp::test_support::{state_space, template_fact_groups, ymd};
 use serde_json::json;
 use tempfile::TempDir;
 
@@ -38,18 +38,14 @@ impl WaterStage {
     }
 }
 
-fn date(year: i32, month: u32, day: u32) -> NaiveDate {
-    NaiveDate::from_ymd_opt(year, month, day).expect("valid date")
-}
-
 fn monthly_water_stages() -> Vec<WaterStage> {
     vec![
         WaterStage {
-            start: date(2024, 7, 1),
+            start: ymd(2024, 7, 1),
             days: 31,
         },
         WaterStage {
-            start: date(2024, 8, 1),
+            start: ymd(2024, 8, 1),
             days: 31,
         },
     ]
@@ -58,7 +54,7 @@ fn monthly_water_stages() -> Vec<WaterStage> {
 fn weekly_water_stages() -> Vec<WaterStage> {
     (0..9)
         .map(|week| WaterStage {
-            start: date(2024, 7, 1) + Days::new(7 * week),
+            start: ymd(2024, 7, 1) + Days::new(7 * week),
             days: 7,
         })
         .collect()

@@ -868,12 +868,12 @@ fn frozen_turbining_of(
 #[cfg(test)]
 mod tests {
     use novomodelo_core::{
-        CascadeTopology, EntityId, FillingConfig, Hydro, HydroGenerationModel, HydroPenalties,
-        HydroStageBounds, TailraceFlow,
+        CascadeTopology, EntityId, FillingConfig, Hydro, HydroPenalties, HydroStageBounds,
     };
 
     use crate::hydro_models::{EvaporationCoefficientSign, LinearizedEvaporation};
     use crate::indexer::{Boundary, EntityPositions};
+    use crate::test_support::builders::{HydroSpec, make_hydro};
 
     use super::{
         ReachableStorage, effective_withdrawals, evaporation_slot_reachable_storage,
@@ -886,47 +886,32 @@ mod tests {
     /// A cascade hydro with a caller-chosen `downstream_id` and `entry_stage_id`,
     /// no `FillingConfig` (a `PreFilling`/`Operating` chain needs none).
     fn chain_hydro(id: i32, downstream: Option<i32>, entry_stage_id: Option<i32>) -> Hydro {
-        Hydro {
-            id: EntityId(id),
-            name: format!("H{id}"),
-            operational_start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            downstream_id: downstream.map(EntityId),
-            travel_time_hours: None,
-            entry_stage_id,
-            exit_stage_id: None,
-            min_storage_hm3: 0.0,
-            max_storage_hm3: 100.0,
-            min_outflow_m3s: 0.0,
-            max_outflow_m3s: None,
-            generation_model: HydroGenerationModel::ConstantProductivity,
-            min_turbined_m3s: 0.0,
-            max_turbined_m3s: 50.0,
-            specific_productivity_mw_per_m3s_per_m: None,
-            min_generation_mw: 0.0,
-            max_generation_mw: 45.0,
-            unit_groups: Vec::new(),
-            tailrace: None,
-            hydraulic_losses: None,
-            efficiency: None,
-            evaporation_coefficients_mm: None,
-            evaporation_reference_volumes_hm3: None,
-            diversion: None,
-            filling: None,
-            penalties: HydroPenalties::uniform(0.0),
-            tailrace_flow: TailraceFlow::default(),
-        }
+        let mut hydro = make_hydro(
+            EntityId(id),
+            HydroSpec {
+                name: format!("H{id}"),
+                downstream_id: downstream.map(EntityId),
+                entry_stage_id,
+                max_storage_hm3: 100.0,
+                max_turbined_m3s: 50.0,
+                max_generation_mw: 45.0,
+                penalties: HydroPenalties::uniform(0.0),
+                ..HydroSpec::default()
+            },
+        );
+        hydro.unit_groups = Vec::new();
+        hydro
     }
 
     fn filling_hydro(start_stage_id: i32, entry_stage_id: Option<i32>) -> Hydro {
-        Hydro {
-            min_storage_hm3: 100.0,
-            max_storage_hm3: 200.0,
-            filling: Some(FillingConfig {
-                start_stage_id,
-                filling_min_rate_m3s: 0.0,
-            }),
-            ..chain_hydro(1, None, entry_stage_id)
-        }
+        let mut hydro = chain_hydro(1, None, entry_stage_id);
+        hydro.min_storage_hm3 = 100.0;
+        hydro.max_storage_hm3 = 200.0;
+        hydro.filling = Some(FillingConfig {
+            start_stage_id,
+            filling_min_rate_m3s: 0.0,
+        });
+        hydro
     }
 
     fn stage_bounds(min_storage_hm3: f64, max_storage_hm3: f64) -> HydroStageBounds {
@@ -1109,11 +1094,9 @@ mod tests {
 
     #[test]
     fn reachable_storage_reads_the_seed_clamp_never_the_stage_box() {
-        let hydro = Hydro {
-            min_storage_hm3: 5.0,
-            max_storage_hm3: 200.0,
-            ..chain_hydro(1, None, None)
-        };
+        let mut hydro = chain_hydro(1, None, None);
+        hydro.min_storage_hm3 = 5.0;
+        hydro.max_storage_hm3 = 200.0;
         let bounds = stage_bounds(40.0, 200.0);
 
         let slot = evaporation_slot_reachable_storage(
@@ -1179,11 +1162,9 @@ mod tests {
 
     #[test]
     fn reachable_storage_reads_the_seed_clamp_after_a_prefilling_predecessor() {
-        let hydro = Hydro {
-            min_storage_hm3: 5.0,
-            max_storage_hm3: 200.0,
-            ..chain_hydro(1, None, Some(2))
-        };
+        let mut hydro = chain_hydro(1, None, Some(2));
+        hydro.min_storage_hm3 = 5.0;
+        hydro.max_storage_hm3 = 200.0;
         let previous = stage_bounds(40.0, 300.0);
         let bounds = stage_bounds(30.0, 180.0);
 

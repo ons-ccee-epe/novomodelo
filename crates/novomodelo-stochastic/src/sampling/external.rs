@@ -865,13 +865,15 @@ pub fn pad_library_to_uniform(library: &mut ExternalScenarioLibrary) {
 mod tests {
     use chrono::NaiveDate;
     use novomodelo_core::{
-        EntityId, Hydro, InflowHistoryRow, RecentObservation,
+        EntityId, InflowHistoryRow, RecentObservation,
         scenario::{
             AnnualComponent, ExternalLoadRow, ExternalNcsRow, ExternalScenarioRow, InflowModel,
             LoadModel, NcsModel,
         },
         temporal::{Stage, StageLagTransition},
-        test_support::{HydroSpec, MirrorUnitGroup, StageSpec, date, single_block},
+        test_support::{
+            InflowModelSpec, MonthlyLabels, StageSpec, date, monthly_season_map, single_block,
+        },
     };
 
     use super::{
@@ -885,24 +887,30 @@ mod tests {
         precompute::PrecomputedPar,
         precompute_stage_lag_transitions,
     };
-    use crate::test_support::{MonthlyLabels, monthly_season_map};
+    use crate::test_support::unmirrored_hydro;
+
+    /// A primary-lag-only transition: no downstream-ring involvement.
+    fn lag_transition(
+        accumulate_weight: f64,
+        spillover_weight: f64,
+        finalize_period: bool,
+    ) -> StageLagTransition {
+        StageLagTransition {
+            accumulate_weight,
+            spillover_weight,
+            finalize_period,
+            accumulate_downstream: false,
+            downstream_accumulate_weight: 0.0,
+            downstream_spillover_weight: 0.0,
+            downstream_finalize: false,
+            rebuild_from_downstream: false,
+        }
+    }
 
     /// Build `n_stages` uniform-monthly transitions: each stage finalizes its own
     /// period with full weight and no spillover (the simple per-stage path).
     fn uniform_monthly_transitions(n_stages: usize) -> Vec<StageLagTransition> {
-        vec![
-            StageLagTransition {
-                accumulate_weight: 1.0,
-                spillover_weight: 0.0,
-                finalize_period: true,
-                accumulate_downstream: false,
-                downstream_accumulate_weight: 0.0,
-                downstream_spillover_weight: 0.0,
-                downstream_finalize: false,
-                rebuild_from_downstream: false,
-            };
-            n_stages
-        ]
+        vec![lag_transition(1.0, 0.0, true); n_stages]
     }
 
     // -----------------------------------------------------------------------
@@ -926,15 +934,14 @@ mod tests {
         std: f64,
         ar: Vec<f64>,
     ) -> InflowModel {
-        InflowModel {
-            hydro_id: EntityId(hydro_id),
+        novomodelo_core::test_support::make_inflow_model(InflowModelSpec {
+            hydro_id,
             stage_id,
             mean_m3s: mean,
             std_m3s: std,
             ar_coefficients: ar,
-            residual_std_ratio: 1.0,
-            annual: None,
-        }
+            ..Default::default()
+        })
     }
 
     // -----------------------------------------------------------------------
@@ -1119,36 +1126,9 @@ mod tests {
         let par = PrecomputedPar::build(&models, &stages, &hydro_ids, None).unwrap();
 
         let transitions = vec![
-            StageLagTransition {
-                accumulate_weight: 0.4,
-                spillover_weight: 0.0,
-                finalize_period: false,
-                accumulate_downstream: false,
-                downstream_accumulate_weight: 0.0,
-                downstream_spillover_weight: 0.0,
-                downstream_finalize: false,
-                rebuild_from_downstream: false,
-            },
-            StageLagTransition {
-                accumulate_weight: 0.4,
-                spillover_weight: 0.0,
-                finalize_period: false,
-                accumulate_downstream: false,
-                downstream_accumulate_weight: 0.0,
-                downstream_spillover_weight: 0.0,
-                downstream_finalize: false,
-                rebuild_from_downstream: false,
-            },
-            StageLagTransition {
-                accumulate_weight: 0.2,
-                spillover_weight: 0.0,
-                finalize_period: true,
-                accumulate_downstream: false,
-                downstream_accumulate_weight: 0.0,
-                downstream_spillover_weight: 0.0,
-                downstream_finalize: false,
-                rebuild_from_downstream: false,
-            },
+            lag_transition(0.4, 0.0, false),
+            lag_transition(0.4, 0.0, false),
+            lag_transition(0.2, 0.0, true),
         ];
 
         let mut lib = ExternalScenarioLibrary::new(3, 1, 1, "inflow", vec![1, 1, 1]);
@@ -1261,26 +1241,8 @@ mod tests {
         let par = PrecomputedPar::build(&models, &stages, &hydro_ids, None).unwrap();
 
         let transitions = vec![
-            StageLagTransition {
-                accumulate_weight: 0.7,
-                spillover_weight: 0.3,
-                finalize_period: true,
-                accumulate_downstream: false,
-                downstream_accumulate_weight: 0.0,
-                downstream_spillover_weight: 0.0,
-                downstream_finalize: false,
-                rebuild_from_downstream: false,
-            },
-            StageLagTransition {
-                accumulate_weight: 1.0,
-                spillover_weight: 0.0,
-                finalize_period: true,
-                accumulate_downstream: false,
-                downstream_accumulate_weight: 0.0,
-                downstream_spillover_weight: 0.0,
-                downstream_finalize: false,
-                rebuild_from_downstream: false,
-            },
+            lag_transition(0.7, 0.3, true),
+            lag_transition(1.0, 0.0, true),
         ];
 
         let mut lib = ExternalScenarioLibrary::new(2, 1, 1, "inflow", vec![1, 1]);
@@ -2046,56 +2008,13 @@ mod tests {
         let weight_weekly = 7.0 * 24.0 / 720.0;
         let weight_may = 30.0 * 24.0 / 744.0;
         let stage_lag_transitions = vec![
-            StageLagTransition {
-                accumulate_weight: weight_w1,
-                spillover_weight: 0.0,
-                finalize_period: false,
-                accumulate_downstream: false,
-                downstream_accumulate_weight: 0.0,
-                downstream_spillover_weight: 0.0,
-                downstream_finalize: false,
-                rebuild_from_downstream: false,
-            },
-            StageLagTransition {
-                accumulate_weight: weight_weekly,
-                spillover_weight: 0.0,
-                finalize_period: false,
-                accumulate_downstream: false,
-                downstream_accumulate_weight: 0.0,
-                downstream_spillover_weight: 0.0,
-                downstream_finalize: false,
-                rebuild_from_downstream: false,
-            },
-            StageLagTransition {
-                accumulate_weight: weight_weekly,
-                spillover_weight: 0.0,
-                finalize_period: false,
-                accumulate_downstream: false,
-                downstream_accumulate_weight: 0.0,
-                downstream_spillover_weight: 0.0,
-                downstream_finalize: false,
-                rebuild_from_downstream: false,
-            },
-            StageLagTransition {
-                accumulate_weight: weight_weekly,
-                spillover_weight: 0.0,
-                finalize_period: true, // last April stage → finalize the April period
-                accumulate_downstream: false,
-                downstream_accumulate_weight: 0.0,
-                downstream_spillover_weight: 0.0,
-                downstream_finalize: false,
-                rebuild_from_downstream: false,
-            },
-            StageLagTransition {
-                accumulate_weight: weight_may,
-                spillover_weight: 0.0,
-                finalize_period: true, // only May stage → finalizes itself
-                accumulate_downstream: false,
-                downstream_accumulate_weight: 0.0,
-                downstream_spillover_weight: 0.0,
-                downstream_finalize: false,
-                rebuild_from_downstream: false,
-            },
+            lag_transition(weight_w1, 0.0, false),
+            lag_transition(weight_weekly, 0.0, false),
+            lag_transition(weight_weekly, 0.0, false),
+            // last April stage → finalize the April period
+            lag_transition(weight_weekly, 0.0, true),
+            // only May stage → finalizes itself
+            lag_transition(weight_may, 0.0, true),
         ];
 
         let targets = [
@@ -2387,19 +2306,6 @@ mod tests {
         })
     }
 
-    fn make_hydro(id: i32) -> Hydro {
-        novomodelo_core::test_support::make_hydro(HydroSpec {
-            id,
-            name: format!("H{id}"),
-            max_storage_hm3: 100.0,
-            max_turbined_m3s: 100.0,
-            max_generation_mw: 100.0,
-            operational_start_date: date(2020, 1, 1),
-            mirror_unit_group: MirrorUnitGroup::None,
-            ..Default::default()
-        })
-    }
-
     /// With no conditioning, the derived lag seed carries exactly the same
     /// values a pre-windowing literal seed would have held, so threading it
     /// through the per-(stage, hydro) `solve_par_noise` calls reproduces the
@@ -2411,7 +2317,7 @@ mod tests {
         let h1 = EntityId(1);
         let h2 = EntityId(2);
         let hydro_ids = vec![h1, h2];
-        let hydros = vec![make_hydro(1), make_hydro(2)];
+        let hydros = vec![unmirrored_hydro(1), unmirrored_hydro(2)];
         let season_map = monthly_season_map(MonthlyLabels::OneBased);
 
         let stages = vec![dated_stage(0, 0, date(2024, 1, 1), date(2024, 2, 1), 0)];
@@ -2524,7 +2430,7 @@ mod tests {
     fn external_eta_round_trip_exact_under_conditioning() {
         let hydro_id = EntityId(1);
         let hydro_ids = vec![hydro_id];
-        let hydros = vec![make_hydro(1)];
+        let hydros = vec![unmirrored_hydro(1)];
         let season_map = monthly_season_map(MonthlyLabels::OneBased);
 
         let stages = vec![
@@ -2715,7 +2621,7 @@ mod tests {
     fn external_eta_round_trip_exact_mid_coarse_period() {
         let hydro_id = EntityId(1);
         let hydro_ids = vec![hydro_id];
-        let hydros = vec![make_hydro(1)];
+        let hydros = vec![unmirrored_hydro(1)];
         let season_map = monthly_season_map(MonthlyLabels::OneBased);
 
         // Stage 0 starts April 11: the in-progress occurrence [April 1,

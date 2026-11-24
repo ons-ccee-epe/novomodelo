@@ -1719,12 +1719,8 @@ mod assemble_csc_tests {
 )]
 mod parameter_resolution_tests {
     use novomodelo_core::{
-        BoundsCountsSpec, BoundsDefaults, Bus, BusStagePenalties, ConstraintExpression,
-        ContractBlockBounds, DeficitSegment, EntityId, GenericConstraint, HydroBlockBounds,
-        HydroPenalties, HydroStageBounds, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
-        ParameterKind, PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
-        ResolvedGenericConstraintBounds, ResolvedPenalties, ScalarExpr, ScalarParameter, StageId,
-        SystemBuilder, ThermalBlockBounds,
+        ConstraintExpression, DeficitSegment, EntityId, GenericConstraint, ParameterKind,
+        ResolvedGenericConstraintBounds, ScalarExpr, ScalarParameter, StageId, SystemBuilder,
     };
     use novomodelo_core::{LinearTerm, VariableRef};
     use novomodelo_stochastic::normal::precompute::PrecomputedNormal;
@@ -1736,6 +1732,8 @@ mod parameter_resolution_tests {
     use crate::hydro_models::PrepareHydroModelsResult;
     use crate::inflow_method::InflowNonNegativityMethod;
     use crate::resolved_parameters::{ResolvedParameters, build_resolved_parameters};
+    use crate::test_support::build_with_resolved_tables;
+    use crate::test_support::builders::{self, BusSpec, StageSpec, ThermalSpec};
 
     /// `StageId(0)..StageId(n_stages - 1)`: the 0-based domain ids these
     /// fixtures use (no `Computed` parameter reads the override table here).
@@ -1756,107 +1754,62 @@ mod parameter_resolution_tests {
             .collect()
     }
 
-    fn default_hydro_bounds() -> HydroStageBounds {
-        HydroStageBounds {
-            min_storage_hm3: 0.0,
-            max_storage_hm3: 200.0,
-            filling_min_rate_m3s: 0.0,
-            water_withdrawal_m3s: 0.0,
-        }
-    }
-
-    fn default_hydro_block_bounds() -> HydroBlockBounds {
-        HydroBlockBounds {
-            max_turbined_m3s: 100.0,
-            max_generation_mw: 250.0,
-            ..Default::default()
-        }
-    }
-
-    fn default_hydro_penalties() -> HydroPenalties {
-        HydroPenalties {
-            spillage_cost: 0.01,
-            diversion_cost: 0.0,
-            turbined_cost: 0.0,
-            storage_violation_below_cost: 0.0,
-            filling_target_violation_cost: 0.0,
-            turbined_violation_below_cost: 0.0,
-            outflow_violation_below_cost: 0.0,
-            outflow_violation_above_cost: 0.0,
-            generation_violation_below_cost: 0.0,
-            fpha_violation_cost: 0.0,
-            evaporation_violation_cost: 0.0,
-            water_withdrawal_violation_cost: 0.0,
-            water_withdrawal_violation_pos_cost: 0.0,
-            water_withdrawal_violation_neg_cost: 0.0,
-            evaporation_violation_pos_cost: 0.0,
-            evaporation_violation_neg_cost: 0.0,
-            inflow_nonnegativity_cost: 1000.0,
-        }
-    }
-
     /// Build a one-bus, one-thermal system with `n_stages` stages and one
     /// generic constraint. Each stage has a single block of 744 hours.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "build_with_resolved_tables runs its make closure twice, so the by-value arguments are cloned into each build"
+    )]
     fn one_thermal_n_stages(
         n_stages: usize,
         thermal_entity_id: EntityId,
         constraints: Vec<GenericConstraint>,
         bounds: ResolvedGenericConstraintBounds,
     ) -> novomodelo_core::System {
-        use chrono::NaiveDate;
-        use novomodelo_core::entities::thermal::Thermal;
         use novomodelo_core::scenario::LoadModel;
-        use novomodelo_core::temporal::{
-            Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
-            StageStateConfig,
-        };
+        use novomodelo_core::temporal::{Block, Stage, StageStateConfig};
 
-        let bus = Bus {
-            id: EntityId(1),
-            name: "B1".to_string(),
-            operational_start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            deficit_segments: vec![DeficitSegment {
-                depth_mw: None,
-                cost_per_mwh: 500.0,
-            }],
-            excess_cost: 0.0,
-        };
+        let bus = builders::make_bus(
+            EntityId(1),
+            BusSpec {
+                name: "B1".to_string(),
+                deficit_segments: vec![DeficitSegment {
+                    depth_mw: None,
+                    cost_per_mwh: 500.0,
+                }],
+                ..BusSpec::default()
+            },
+        );
 
-        let thermal = Thermal {
-            id: thermal_entity_id,
-            name: "T1".to_string(),
-            operational_start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId(1),
-            min_generation_mw: 0.0,
-            max_generation_mw: 100.0,
-            cost_per_mwh: 50.0,
-            anticipated_config: None,
-            entry_stage_id: None,
-            exit_stage_id: None,
-        };
+        let thermal = builders::make_thermal(
+            thermal_entity_id,
+            ThermalSpec {
+                name: "T1".to_string(),
+                bus_id: EntityId(1),
+                max_generation_mw: 100.0,
+                cost_per_mwh: 50.0,
+                ..ThermalSpec::default()
+            },
+        );
 
         let stages: Vec<Stage> = (0..n_stages)
-            .map(|i| Stage {
-                index: i,
-                id: i as i32,
-                start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-                end_date: NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-                season_id: Some(0),
-                blocks: vec![Block {
-                    index: 0,
-                    name: "BLK0".to_string(),
-                    duration_hours: 744.0,
-                }],
-                block_mode: BlockMode::Parallel,
-                state_config: StageStateConfig {
-                    storage: false,
-                    inflow_lags: false,
-                },
-                risk_config: StageRiskConfig::Expectation,
-                scenario_config: ScenarioSourceConfig {
-                    branching_factor: 1,
-                    noise_method: NoiseMethod::Saa,
-                },
+            .map(|i| {
+                builders::make_stage(
+                    i,
+                    StageSpec {
+                        season_id: Some(0),
+                        blocks: vec![Block {
+                            index: 0,
+                            name: "BLK0".to_string(),
+                            duration_hours: 744.0,
+                        }],
+                        state_config: StageStateConfig {
+                            storage: false,
+                            inflow_lags: false,
+                        },
+                        ..StageSpec::default()
+                    },
+                )
             })
             .collect();
 
@@ -1869,68 +1822,23 @@ mod parameter_resolution_tests {
             })
             .collect();
 
-        let resolved_bounds = ResolvedBounds::new(
-            &BoundsCountsSpec {
-                n_hydros: 0,
-                n_thermals: 1,
-                n_lines: 0,
-                n_pumping: 0,
-                n_contracts: 0,
-                n_stages,
-                k_max: 0,
+        build_with_resolved_tables(
+            || {
+                SystemBuilder::new()
+                    .buses(vec![bus.clone()])
+                    .thermals(vec![thermal.clone()])
+                    .stages(stages.clone())
+                    .load_models(load_models.clone())
+                    .generic_constraints(constraints.clone())
+                    .resolved_generic_bounds(bounds.clone())
             },
-            &BoundsDefaults {
-                hydro: default_hydro_bounds(),
-                hydro_block: default_hydro_block_bounds(),
-                thermal_block: ThermalBlockBounds {
-                    min_generation_mw: 0.0,
-                    max_generation_mw: 100.0,
-                    cost_per_mwh: 0.0,
-                },
-                line_block: LineBlockBounds {
-                    direct_mw: 0.0,
-                    reverse_mw: 0.0,
-                },
-                pumping_block: PumpingBlockBounds {
-                    min_flow_m3s: 0.0,
-                    max_flow_m3s: 0.0,
-                },
-                contract_block: ContractBlockBounds {
-                    min_mw: 0.0,
-                    max_mw: 0.0,
-                    price_per_mwh: 0.0,
-                },
+            0,
+            |_, bounds, _| {
+                for s in 0..n_stages {
+                    bounds.thermal_block_base_mut(0, s).cost_per_mwh = 0.0;
+                }
             },
-        );
-        let penalties = ResolvedPenalties::new(
-            &PenaltiesCountsSpec {
-                n_hydros: 0,
-                n_buses: 1,
-                n_lines: 0,
-                n_ncs: 0,
-                n_stages,
-            },
-            &PenaltiesDefaults {
-                hydro: default_hydro_penalties(),
-                bus: BusStagePenalties { excess_cost: 0.0 },
-                line: LineStagePenalties { exchange_cost: 0.0 },
-                ncs: NcsStagePenalties {
-                    curtailment_cost: 0.0,
-                },
-            },
-        );
-
-        SystemBuilder::new()
-            .buses(vec![bus])
-            .thermals(vec![thermal])
-            .stages(stages)
-            .load_models(load_models)
-            .bounds(resolved_bounds)
-            .penalties(penalties)
-            .generic_constraints(constraints)
-            .resolved_generic_bounds(bounds)
-            .build()
-            .expect("one_thermal_n_stages: valid system")
+        )
     }
 
     /// Build templates for the given system using the supplied `ResolvedParameters`.
@@ -2233,6 +2141,7 @@ mod zero_cost_tests {
     use crate::lead_time::{AnticipatedResolution, DeliveryAxis, LeadTime, PointResolution};
 
     use crate::test_support::anticipated_plants_at;
+    use crate::test_support::builders::{self, ThermalSpec};
     use crate::test_support::ctx_fixture::CtxFixture;
     use crate::time_value::{PostStudyResolved, TimeValue};
 
@@ -2252,18 +2161,13 @@ mod zero_cost_tests {
     /// `make_ctx`'s `n_thermals` needs only the count `ctx.thermals.len()`
     /// reserves in `StageLayout`, never a bound or cost.
     fn dormant_thermal(idx: usize) -> Thermal {
-        Thermal {
-            id: EntityId(i32::try_from(idx).unwrap_or(i32::MAX)),
-            name: String::new(),
-            operational_start_date: NaiveDate::default(),
-            bus_id: EntityId(0),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            cost_per_mwh: 0.0,
-            min_generation_mw: 0.0,
-            max_generation_mw: 0.0,
-            anticipated_config: None,
-        }
+        builders::make_thermal(
+            EntityId(i32::try_from(idx).unwrap_or(i32::MAX)),
+            ThermalSpec {
+                operational_start_date: NaiveDate::default(),
+                ..ThermalSpec::default()
+            },
+        )
     }
 
     /// Owns data for a context with anticipated thermals and zero other entities.
@@ -2374,36 +2278,32 @@ mod zero_cost_tests {
     #[test]
     fn fill_thermal_columns_skips_objective_for_anticipated_plants() {
         use novomodelo_core::entities::thermal::AnticipatedConfig;
-        use novomodelo_core::{EntityId, Thermal};
 
         const ANT_COST: f64 = 30.0;
         const STD_COST: f64 = 40.0;
 
         let thermals = vec![
-            Thermal {
-                id: EntityId(1),
-                name: "T_ant".to_string(),
-                operational_start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-                bus_id: EntityId(1),
-                min_generation_mw: 0.0,
-                max_generation_mw: 100.0,
-                cost_per_mwh: ANT_COST,
-                anticipated_config: Some(AnticipatedConfig::LeadStages(1)),
-                entry_stage_id: None,
-                exit_stage_id: None,
-            },
-            Thermal {
-                id: EntityId(2),
-                name: "T_std".to_string(),
-                operational_start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-                bus_id: EntityId(1),
-                min_generation_mw: 0.0,
-                max_generation_mw: 100.0,
-                cost_per_mwh: STD_COST,
-                anticipated_config: None,
-                entry_stage_id: None,
-                exit_stage_id: None,
-            },
+            builders::make_thermal(
+                EntityId(1),
+                ThermalSpec {
+                    name: "T_ant".to_string(),
+                    bus_id: EntityId(1),
+                    max_generation_mw: 100.0,
+                    cost_per_mwh: ANT_COST,
+                    anticipated_config: Some(AnticipatedConfig::LeadStages(1)),
+                    ..ThermalSpec::default()
+                },
+            ),
+            builders::make_thermal(
+                EntityId(2),
+                ThermalSpec {
+                    name: "T_std".to_string(),
+                    bus_id: EntityId(1),
+                    max_generation_mw: 100.0,
+                    cost_per_mwh: STD_COST,
+                    ..ThermalSpec::default()
+                },
+            ),
         ];
 
         let mut fixtures = AntFixtures::new();
@@ -3437,14 +3337,12 @@ mod pumping_water_tests {
     use std::collections::{BTreeMap, HashMap};
 
     use novomodelo_core::{
-        BlockBoundsCountsSpec, BlockMode, BoundsCountsSpec, BoundsDefaults, Bus, BusStagePenalties,
-        CascadeTopology, ConstraintExpression, ContractBlockBounds, ContractType, DeficitSegment,
-        EnergyContract, EntityId, GenericConstraint, Hydro, HydroBlockBounds, HydroBlockOverride,
-        HydroGenerationModel, HydroPenalties, HydroStageBounds, HydroUnitGroup, Line,
-        LineBlockBounds, LineStagePenalties, LinearTerm, NcsStagePenalties, PenaltiesCountsSpec,
-        PenaltiesDefaults, PenaltyBasis, PumpingBlockBounds, PumpingStation, ResolvedBlockBounds,
-        ResolvedBounds, ResolvedGenericConstraintBounds, ResolvedPenalties, SlackConfig, Stage,
-        TailraceFlow, Thermal, ThermalBlockBounds, VariableRef,
+        BlockBoundsCountsSpec, BlockMode, Bus, CascadeTopology, ConstraintExpression,
+        ContractBlockBounds, ContractType, DeficitSegment, EnergyContract, EntityId,
+        GenericConstraint, Hydro, HydroBlockOverride, HydroPenalties, HydroUnitGroup, Line,
+        LineBlockBounds, LinearTerm, PenaltyBasis, PumpingBlockBounds, PumpingStation,
+        ResolvedBlockBounds, ResolvedGenericConstraintBounds, ResolvedPenalties, SlackConfig,
+        Stage, SystemBuilder, Thermal, ThermalBlockBounds, VariableRef,
     };
     use novomodelo_io::validation::semantic::envelope_tolerance;
     use novomodelo_stochastic::par::precompute::PrecomputedPar;
@@ -3461,6 +3359,9 @@ mod pumping_water_tests {
     use crate::lead_time::{SpreadResolution, resolve_spread};
 
     use crate::InflowNonNegativityMethod;
+    use crate::test_support::builders::{
+        self, BusSpec, ContractSpec, HydroSpec, LineSpec, PumpingSpec, StageSpec, ThermalSpec,
+    };
     use crate::test_support::ctx_fixture::CtxFixture;
     use crate::test_support::make_unit_group;
     use crate::time_value::{PostStudyResolved, TimeValue};
@@ -3471,9 +3372,7 @@ mod pumping_water_tests {
     use super::super::inflow_coupling::{InflowCoupling, InflowCouplingSink};
     use super::super::layout::{StageLayout, TemplateBuildCtx};
     use super::super::rows::fill_stage_rows;
-    use super::super::test_support::{
-        BLOCK_HOURS, three_block_stage, two_block_stage, zero_hydro_penalties,
-    };
+    use super::super::test_support::{BLOCK_HOURS, three_block_stage, two_block_stage};
     use super::{
         GenericConstraintFill, assemble_csc, build_stage_inflow_coupling,
         build_stage_matrix_entries_for_test, fill_fpha_entries, fill_generic_constraints_for_test,
@@ -3493,86 +3392,39 @@ mod pumping_water_tests {
     /// cascade can be built from the fixture hydros. `fixture_hydro` delegates
     /// here with `None`, keeping every existing caller's cascade empty.
     fn fixture_hydro_ds(id: i32, downstream_id: Option<i32>) -> Hydro {
-        let mut hydro = Hydro {
-            unit_groups: Vec::new(),
-            id: EntityId(id),
-            name: format!("H{id}"),
-            operational_start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            downstream_id: downstream_id.map(EntityId),
-            travel_time_hours: None,
-            entry_stage_id: None,
-            exit_stage_id: None,
-            min_storage_hm3: 0.0,
-            max_storage_hm3: 100.0,
-            min_outflow_m3s: 0.0,
-            max_outflow_m3s: None,
-            generation_model: HydroGenerationModel::ConstantProductivity,
-            min_turbined_m3s: 0.0,
-            max_turbined_m3s: 50.0,
-            specific_productivity_mw_per_m3s_per_m: None,
-            min_generation_mw: 0.0,
-            max_generation_mw: 45.0,
-            tailrace: None,
-            hydraulic_losses: None,
-            efficiency: None,
-            evaporation_coefficients_mm: None,
-            evaporation_reference_volumes_hm3: None,
-            diversion: None,
-            filling: None,
-            penalties: zero_hydro_penalties(),
-            tailrace_flow: TailraceFlow::default(),
-        };
-        hydro.declare_mirror_unit_group(EntityId(1));
-        hydro
-    }
-
-    fn default_bounds_defaults() -> BoundsDefaults {
-        BoundsDefaults {
-            hydro: HydroStageBounds {
-                min_storage_hm3: 0.0,
+        builders::make_hydro(
+            EntityId(id),
+            HydroSpec {
+                name: format!("H{id}"),
+                bus_id: EntityId(1),
+                downstream_id: downstream_id.map(EntityId),
                 max_storage_hm3: 100.0,
-                filling_min_rate_m3s: 0.0,
-                water_withdrawal_m3s: 0.0,
-            },
-            hydro_block: HydroBlockBounds {
                 max_turbined_m3s: 50.0,
                 max_generation_mw: 45.0,
-                ..Default::default()
+                penalties: HydroPenalties {
+                    fpha_violation_cost: 10000.0,
+                    ..HydroPenalties::uniform(0.0)
+                },
+                ..HydroSpec::default()
             },
-            thermal_block: ThermalBlockBounds {
-                min_generation_mw: 0.0,
-                max_generation_mw: 0.0,
-                cost_per_mwh: 0.0,
-            },
-            line_block: LineBlockBounds {
-                direct_mw: 0.0,
-                reverse_mw: 0.0,
-            },
-            pumping_block: PumpingBlockBounds {
-                min_flow_m3s: 0.0,
-                max_flow_m3s: 0.0,
-            },
-            contract_block: ContractBlockBounds {
-                min_mw: 0.0,
-                max_mw: 0.0,
-                price_per_mwh: 0.0,
-            },
-        }
+        )
     }
 
     /// A single bus with one unbounded deficit segment, on `EntityId(1)` (the bus
     /// the fixture hydros and `station` helper reference).
     fn fixture_bus(id: i32) -> Bus {
-        Bus {
-            id: EntityId(id),
-            name: format!("B{id}"),
-            operational_start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            deficit_segments: vec![DeficitSegment {
-                depth_mw: None,
-                cost_per_mwh: 1000.0,
-            }],
-            excess_cost: 1.0,
-        }
+        builders::make_bus(
+            EntityId(id),
+            BusSpec {
+                name: format!("B{id}"),
+                deficit_segments: vec![DeficitSegment {
+                    depth_mw: None,
+                    cost_per_mwh: 1000.0,
+                }],
+                excess_cost: 1.0,
+                ..BusSpec::default()
+            },
+        )
     }
 
     /// A pumping station on `EntityId(1)` with explicit source/destination/flow
@@ -3599,19 +3451,19 @@ mod pumping_water_tests {
         bus_id: i32,
         consumption_mw_per_m3s: f64,
     ) -> PumpingStation {
-        PumpingStation {
-            id: EntityId(id),
-            name: format!("P{id}"),
-            operational_start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId(bus_id),
-            source_hydro_id: EntityId(source),
-            destination_hydro_id: EntityId(destination),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            consumption_mw_per_m3s,
-            min_flow_m3s: min_flow,
-            max_flow_m3s: max_flow,
-        }
+        builders::make_pumping_station(
+            EntityId(id),
+            PumpingSpec {
+                name: format!("P{id}"),
+                bus_id: EntityId(bus_id),
+                source_hydro_id: EntityId(source),
+                destination_hydro_id: EntityId(destination),
+                consumption_mw_per_m3s,
+                min_flow_m3s: min_flow,
+                max_flow_m3s: max_flow,
+                ..PumpingSpec::default()
+            },
+        )
     }
 
     /// A bus with a caller-chosen deficit-segment count and excess cost so the
@@ -3621,35 +3473,36 @@ mod pumping_water_tests {
     /// column block bus-position-dependent — a bus permutation that escaped the
     /// ID-sort would land the wrong segment count in the wrong column block.
     fn fixture_bus_with(id: i32, n_segments: usize, excess_cost: f64) -> Bus {
-        Bus {
-            id: EntityId(id),
-            name: format!("B{id}"),
-            operational_start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            deficit_segments: (0..n_segments)
-                .map(|_| DeficitSegment {
-                    depth_mw: None,
-                    cost_per_mwh: 1000.0,
-                })
-                .collect(),
-            excess_cost,
-        }
+        builders::make_bus(
+            EntityId(id),
+            BusSpec {
+                name: format!("B{id}"),
+                deficit_segments: (0..n_segments)
+                    .map(|_| DeficitSegment {
+                        depth_mw: None,
+                        cost_per_mwh: 1000.0,
+                    })
+                    .collect(),
+                excess_cost,
+                ..BusSpec::default()
+            },
+        )
     }
 
     /// A thermal plant on `bus_id` with distinct generation bounds and cost so a
     /// permutation that mislabelled which thermal owns which column is observable.
     fn fixture_thermal(id: i32, bus_id: i32, min_gen: f64, max_gen: f64, cost: f64) -> Thermal {
-        Thermal {
-            id: EntityId(id),
-            name: format!("T{id}"),
-            operational_start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId(bus_id),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            cost_per_mwh: cost,
-            min_generation_mw: min_gen,
-            max_generation_mw: max_gen,
-            anticipated_config: None,
-        }
+        builders::make_thermal(
+            EntityId(id),
+            ThermalSpec {
+                name: format!("T{id}"),
+                bus_id: EntityId(bus_id),
+                cost_per_mwh: cost,
+                min_generation_mw: min_gen,
+                max_generation_mw: max_gen,
+                ..ThermalSpec::default()
+            },
+        )
     }
 
     /// A transmission line between `source_bus`/`target_bus` with distinct
@@ -3657,19 +3510,17 @@ mod pumping_water_tests {
     /// (±1.0 into source/target bus rows) line-position- and bus-position-
     /// dependent, so a permutation that escaped either ID-sort changes the CSC.
     fn fixture_line(id: i32, source_bus: i32, target_bus: i32, direct: f64, reverse: f64) -> Line {
-        Line {
-            id: EntityId(id),
-            name: format!("L{id}"),
-            operational_start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            source_bus_id: EntityId(source_bus),
-            target_bus_id: EntityId(target_bus),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            direct_capacity_mw: direct,
-            reverse_capacity_mw: reverse,
-            losses_percent: 0.0,
-            exchange_cost: 0.0,
-        }
+        builders::make_line(
+            EntityId(id),
+            LineSpec {
+                name: format!("L{id}"),
+                source_bus_id: EntityId(source_bus),
+                target_bus_id: EntityId(target_bus),
+                direct_capacity_mw: direct,
+                reverse_capacity_mw: reverse,
+                ..LineSpec::default()
+            },
+        )
     }
 
     /// Owns the data backing a two-hydro `TemplateBuildCtx` carrying pumping
@@ -3761,18 +3612,71 @@ mod pumping_water_tests {
             let hydro_pos: BTreeMap<EntityId, usize> =
                 hydros.iter().enumerate().map(|(i, h)| (h.id, i)).collect();
 
-            let mut bounds = ResolvedBounds::new(
-                &BoundsCountsSpec {
-                    n_hydros: hydros.len(),
-                    n_thermals: thermals.len(),
-                    n_lines: lines.len(),
-                    n_pumping: stations.len(),
-                    n_contracts: contracts.len(),
-                    n_stages: N_STAGES,
-                    k_max: 0,
-                },
-                &default_bounds_defaults(),
-            );
+            let probe = SystemBuilder::new()
+                .buses(vec![builders::make_bus(EntityId(0), BusSpec::default())])
+                .hydros(
+                    (0..hydros.len())
+                        .map(|i| {
+                            builders::make_hydro(
+                                EntityId(i32::try_from(i).unwrap()),
+                                HydroSpec {
+                                    max_storage_hm3: 100.0,
+                                    max_turbined_m3s: 50.0,
+                                    max_generation_mw: 45.0,
+                                    ..HydroSpec::default()
+                                },
+                            )
+                        })
+                        .collect(),
+                )
+                .thermals(
+                    (0..thermals.len())
+                        .map(|i| {
+                            builders::make_thermal(
+                                EntityId(i32::try_from(i).unwrap()),
+                                ThermalSpec::default(),
+                            )
+                        })
+                        .collect(),
+                )
+                .lines(
+                    (0..lines.len())
+                        .map(|i| {
+                            builders::make_line(
+                                EntityId(i32::try_from(i).unwrap()),
+                                LineSpec::default(),
+                            )
+                        })
+                        .collect(),
+                )
+                .pumping_stations(
+                    (0..stations.len())
+                        .map(|i| {
+                            builders::make_pumping_station(
+                                EntityId(i32::try_from(i).unwrap()),
+                                PumpingSpec::default(),
+                            )
+                        })
+                        .collect(),
+                )
+                .contracts(
+                    (0..contracts.len())
+                        .map(|i| {
+                            builders::make_contract(
+                                EntityId(i32::try_from(i).unwrap()),
+                                ContractSpec::default(),
+                            )
+                        })
+                        .collect(),
+                )
+                .stages(
+                    (0..N_STAGES)
+                        .map(|s| builders::make_stage(s, StageSpec::default()))
+                        .collect(),
+                )
+                .build()
+                .expect("probe system builds");
+            let mut bounds = crate::test_support::resolved_tables(&probe, 0).0;
             // Distinct per-contract bounds from the sorted slice so a column/bound
             // mislabel under permutation is observable.
             for (c_idx, c) in contracts.iter().enumerate() {
@@ -3931,42 +3835,51 @@ mod pumping_water_tests {
         /// `ResolvedPenalties::empty()` because `build_stage_matrix_entries` never
         /// reads penalties; the solver-backed duals test needs this.
         fn with_resolved_penalties(mut self) -> Self {
-            let hydro = HydroPenalties {
-                spillage_cost: 0.01,
-                diversion_cost: 0.0,
-                turbined_cost: 0.0,
-                storage_violation_below_cost: 0.0,
-                filling_target_violation_cost: 0.0,
-                turbined_violation_below_cost: 0.0,
-                outflow_violation_below_cost: 0.0,
-                outflow_violation_above_cost: 0.0,
-                generation_violation_below_cost: 0.0,
-                fpha_violation_cost: 0.0,
-                evaporation_violation_cost: 0.0,
-                water_withdrawal_violation_cost: 0.0,
-                water_withdrawal_violation_pos_cost: 0.0,
-                water_withdrawal_violation_neg_cost: 0.0,
-                evaporation_violation_pos_cost: 0.0,
-                evaporation_violation_neg_cost: 0.0,
-                inflow_nonnegativity_cost: 0.0,
-            };
-            self.base.penalties = ResolvedPenalties::new(
-                &PenaltiesCountsSpec {
-                    n_hydros: self.base.hydros.len(),
-                    n_buses: self.base.buses.len(),
-                    n_lines: self.base.lines.len(),
-                    n_ncs: 0,
-                    n_stages: N_STAGES,
-                },
-                &PenaltiesDefaults {
-                    hydro,
-                    bus: BusStagePenalties { excess_cost: 0.0 },
-                    line: LineStagePenalties { exchange_cost: 0.0 },
-                    ncs: NcsStagePenalties {
-                        curtailment_cost: 0.0,
-                    },
-                },
-            );
+            let probe = SystemBuilder::new()
+                .buses(
+                    (0..self.base.buses.len())
+                        .map(|i| {
+                            builders::make_bus(
+                                EntityId(i32::try_from(i).unwrap()),
+                                BusSpec::default(),
+                            )
+                        })
+                        .collect(),
+                )
+                .hydros(
+                    (0..self.base.hydros.len())
+                        .map(|i| {
+                            builders::make_hydro(
+                                EntityId(i32::try_from(i).unwrap()),
+                                HydroSpec {
+                                    penalties: HydroPenalties {
+                                        spillage_cost: 0.01,
+                                        ..HydroPenalties::uniform(0.0)
+                                    },
+                                    ..HydroSpec::default()
+                                },
+                            )
+                        })
+                        .collect(),
+                )
+                .lines(
+                    (0..self.base.lines.len())
+                        .map(|i| {
+                            builders::make_line(
+                                EntityId(i32::try_from(i).unwrap()),
+                                LineSpec::default(),
+                            )
+                        })
+                        .collect(),
+                )
+                .stages(
+                    (0..N_STAGES)
+                        .map(|s| builders::make_stage(s, StageSpec::default()))
+                        .collect(),
+                )
+                .build()
+                .expect("probe system builds");
+            self.base.penalties = crate::test_support::resolved_tables(&probe, 0).1;
             self
         }
 
@@ -3974,42 +3887,53 @@ mod pumping_water_tests {
         /// violation costs so the per-block `f_evap_plus`/`f_evap_minus` slack
         /// objectives are observable in the column build.
         fn with_evap_penalties(mut self, neg_cost: f64, pos_cost: f64) -> Self {
-            let hydro = HydroPenalties {
-                spillage_cost: 0.0,
-                diversion_cost: 0.0,
-                turbined_cost: 0.0,
-                storage_violation_below_cost: 0.0,
-                filling_target_violation_cost: 0.0,
-                turbined_violation_below_cost: 0.0,
-                outflow_violation_below_cost: 0.0,
-                outflow_violation_above_cost: 0.0,
-                generation_violation_below_cost: 0.0,
-                fpha_violation_cost: 10000.0,
-                evaporation_violation_cost: 0.0,
-                water_withdrawal_violation_cost: 0.0,
-                water_withdrawal_violation_pos_cost: 0.0,
-                water_withdrawal_violation_neg_cost: 0.0,
-                evaporation_violation_pos_cost: pos_cost,
-                evaporation_violation_neg_cost: neg_cost,
-                inflow_nonnegativity_cost: 0.0,
-            };
-            self.base.penalties = ResolvedPenalties::new(
-                &PenaltiesCountsSpec {
-                    n_hydros: self.base.hydros.len(),
-                    n_buses: self.base.buses.len(),
-                    n_lines: self.base.lines.len(),
-                    n_ncs: 0,
-                    n_stages: N_STAGES,
-                },
-                &PenaltiesDefaults {
-                    hydro,
-                    bus: BusStagePenalties { excess_cost: 0.0 },
-                    line: LineStagePenalties { exchange_cost: 0.0 },
-                    ncs: NcsStagePenalties {
-                        curtailment_cost: 0.0,
-                    },
-                },
-            );
+            let probe = SystemBuilder::new()
+                .buses(
+                    (0..self.base.buses.len())
+                        .map(|i| {
+                            builders::make_bus(
+                                EntityId(i32::try_from(i).unwrap()),
+                                BusSpec::default(),
+                            )
+                        })
+                        .collect(),
+                )
+                .hydros(
+                    (0..self.base.hydros.len())
+                        .map(|i| {
+                            builders::make_hydro(
+                                EntityId(i32::try_from(i).unwrap()),
+                                HydroSpec {
+                                    penalties: HydroPenalties {
+                                        fpha_violation_cost: 10000.0,
+                                        evaporation_violation_pos_cost: pos_cost,
+                                        evaporation_violation_neg_cost: neg_cost,
+                                        ..HydroPenalties::uniform(0.0)
+                                    },
+                                    ..HydroSpec::default()
+                                },
+                            )
+                        })
+                        .collect(),
+                )
+                .lines(
+                    (0..self.base.lines.len())
+                        .map(|i| {
+                            builders::make_line(
+                                EntityId(i32::try_from(i).unwrap()),
+                                LineSpec::default(),
+                            )
+                        })
+                        .collect(),
+                )
+                .stages(
+                    (0..N_STAGES)
+                        .map(|s| builders::make_stage(s, StageSpec::default()))
+                        .collect(),
+                )
+                .build()
+                .expect("probe system builds");
+            self.base.penalties = crate::test_support::resolved_tables(&probe, 0).1;
             self
         }
 
@@ -4333,18 +4257,16 @@ mod pumping_water_tests {
     /// An import-only `EnergyContract` on `bus_id` carrying `id`/`bus_id`/
     /// `contract_type`; every other field inert.
     fn contract(id: i32, bus_id: i32, contract_type: ContractType) -> EnergyContract {
-        EnergyContract {
-            id: EntityId(id),
-            name: format!("C{id}"),
-            operational_start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId(bus_id),
-            contract_type,
-            entry_stage_id: None,
-            exit_stage_id: None,
-            price_per_mwh: 0.0,
-            min_mw: 0.0,
-            max_mw: 100.0,
-        }
+        builders::make_contract(
+            EntityId(id),
+            ContractSpec {
+                name: format!("C{id}"),
+                bus_id: EntityId(bus_id),
+                contract_type,
+                max_mw: 100.0,
+                ..ContractSpec::default()
+            },
+        )
     }
 
     /// An import contract enters its bus load-balance row with `+1.0` per block —
@@ -4635,12 +4557,7 @@ mod pumping_water_tests {
             let ctx = fixtures.make_ctx();
             let stage = two_block_stage(0, [300.0, 444.0]);
             let layout = StageLayout::new(&ctx, &stage, 0);
-            let mut entries = build_stage_matrix_entries_for_test(&ctx, &stage, 0, &layout);
-            // Mirror the production per-column row-sort (see build_single_stage_template).
-            for col in &mut entries {
-                col.sort_unstable_by_key(|&(row, _)| row);
-            }
-            assemble_csc(&entries)
+            build_sorted_csc(&ctx, &stage, 0, &layout)
         };
 
         // Two reservoirs (ids 1, 2) and two stations moving water in opposite
@@ -4910,13 +4827,7 @@ mod pumping_water_tests {
             let layout = StageLayout::new(&ctx, &stage, 0);
             let (row_lower, row_upper) =
                 super::super::rows::fill_stage_rows(&ctx, &stage, 0, &layout);
-            let csc = {
-                let mut entries = build_stage_matrix_entries_for_test(&ctx, &stage, 0, &layout);
-                for col in &mut entries {
-                    col.sort_unstable_by_key(|&(row, _)| row);
-                }
-                assemble_csc(&entries)
-            };
+            let csc = build_sorted_csc(&ctx, &stage, 0, &layout);
             (csc, row_lower, row_upper)
         };
 
@@ -4982,28 +4893,7 @@ mod pumping_water_tests {
         let ctx = cascade_fixtures.make_ctx();
         let stage = two_block_stage(0, [300.0, 444.0]);
         let layout = StageLayout::new(&ctx, &stage, 0);
-        let csc = {
-            let mut entries = build_stage_matrix_entries_for_test(&ctx, &stage, 0, &layout);
-            // Mirror the production per-column row-sort (see
-            // build_single_stage_template) before assembling the CSC.
-            for col in &mut entries {
-                col.sort_unstable_by_key(|&(row, _)| row);
-            }
-            assemble_csc(&entries)
-        };
-
-        // Sum the CSC values landing on `(col, row)` — mirrors the permutation
-        // test's probe; multiple per-block pushes to one cell would otherwise hide.
-        let coeff_at = |col: usize, row: i32| -> f64 {
-            let start = usize::try_from(csc.0[col]).unwrap();
-            let end = usize::try_from(csc.0[col + 1]).unwrap();
-            csc.1[start..end]
-                .iter()
-                .zip(&csc.2[start..end])
-                .filter(|&(&r, _)| r == row)
-                .map(|(_, &v)| v)
-                .sum()
-        };
+        let csc = build_sorted_csc(&ctx, &stage, 0, &layout);
 
         let up_idx = 0; // H_up id 1.
         let down_idx = 1; // H_down id 2.
@@ -5016,6 +4906,7 @@ mod pumping_water_tests {
 
             assert_eq!(
                 coeff_at(
+                    &csc,
                     layout
                         .geometry
                         .turbine_col(HydroCell::new(up_idx), BlockIdx::new(blk)),
@@ -5027,6 +4918,7 @@ mod pumping_water_tests {
             );
             assert_eq!(
                 coeff_at(
+                    &csc,
                     layout
                         .geometry
                         .spillage_col(HydroSys::new(up_idx), BlockIdx::new(blk)),
@@ -5038,6 +4930,7 @@ mod pumping_water_tests {
             );
             assert_eq!(
                 coeff_at(
+                    &csc,
                     layout
                         .geometry
                         .turbine_col(HydroCell::new(down_idx), BlockIdx::new(blk)),
@@ -5521,41 +5414,39 @@ mod pumping_water_tests {
     /// Prices only the two power floors (turbined 7, generation 11 per hour of
     /// shortfall), so a floor slack's objective coefficient is unambiguous.
     fn min_floor_penalties(n_hydros: usize, n_buses: usize) -> ResolvedPenalties {
-        ResolvedPenalties::new(
-            &PenaltiesCountsSpec {
-                n_hydros,
-                n_buses,
-                n_lines: 0,
-                n_ncs: 0,
-                n_stages: N_STAGES,
-            },
-            &PenaltiesDefaults {
-                hydro: HydroPenalties {
-                    spillage_cost: 0.0,
-                    diversion_cost: 0.0,
-                    turbined_cost: 0.0,
-                    storage_violation_below_cost: 0.0,
-                    filling_target_violation_cost: 0.0,
-                    turbined_violation_below_cost: 7.0,
-                    outflow_violation_below_cost: 0.0,
-                    outflow_violation_above_cost: 0.0,
-                    generation_violation_below_cost: 11.0,
-                    fpha_violation_cost: 0.0,
-                    evaporation_violation_cost: 0.0,
-                    water_withdrawal_violation_cost: 0.0,
-                    water_withdrawal_violation_pos_cost: 0.0,
-                    water_withdrawal_violation_neg_cost: 0.0,
-                    evaporation_violation_pos_cost: 0.0,
-                    evaporation_violation_neg_cost: 0.0,
-                    inflow_nonnegativity_cost: 0.0,
-                },
-                bus: BusStagePenalties { excess_cost: 0.0 },
-                line: LineStagePenalties { exchange_cost: 0.0 },
-                ncs: NcsStagePenalties {
-                    curtailment_cost: 0.0,
-                },
-            },
-        )
+        let probe = SystemBuilder::new()
+            .buses(
+                (0..n_buses)
+                    .map(|i| {
+                        builders::make_bus(EntityId(i32::try_from(i).unwrap()), BusSpec::default())
+                    })
+                    .collect(),
+            )
+            .hydros(
+                (0..n_hydros)
+                    .map(|i| {
+                        builders::make_hydro(
+                            EntityId(i32::try_from(i).unwrap()),
+                            HydroSpec {
+                                penalties: HydroPenalties {
+                                    turbined_violation_below_cost: 7.0,
+                                    generation_violation_below_cost: 11.0,
+                                    ..HydroPenalties::uniform(0.0)
+                                },
+                                ..HydroSpec::default()
+                            },
+                        )
+                    })
+                    .collect(),
+            )
+            .stages(
+                (0..N_STAGES)
+                    .map(|s| builders::make_stage(s, StageSpec::default()))
+                    .collect(),
+            )
+            .build()
+            .expect("probe system builds");
+        crate::test_support::resolved_tables(&probe, 0).1
     }
 
     /// The min-floor contract, end to end: RHS is the plain sum of a cell's OWN
@@ -9251,40 +9142,27 @@ mod pumping_water_tests {
     /// optional `FillingConfig`, so an upstream→downstream cascade with a filling
     /// downstream can be built. Constant productivity (no FPHA columns).
     fn ret_hydro(id: i32, downstream: Option<i32>, entry: Option<i32>, filling: bool) -> Hydro {
-        let mut hydro = Hydro {
-            unit_groups: Vec::new(),
-            id: EntityId(id),
-            name: format!("H{id}"),
-            operational_start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            downstream_id: downstream.map(EntityId),
-            travel_time_hours: None,
-            entry_stage_id: entry,
-            exit_stage_id: None,
-            min_storage_hm3: 0.0,
-            max_storage_hm3: 100.0,
-            min_outflow_m3s: 0.0,
-            max_outflow_m3s: None,
-            generation_model: HydroGenerationModel::ConstantProductivity,
-            min_turbined_m3s: 0.0,
-            max_turbined_m3s: 50.0,
-            specific_productivity_mw_per_m3s_per_m: None,
-            min_generation_mw: 0.0,
-            max_generation_mw: 45.0,
-            tailrace: None,
-            hydraulic_losses: None,
-            efficiency: None,
-            evaporation_coefficients_mm: None,
-            evaporation_reference_volumes_hm3: None,
-            diversion: None,
-            filling: filling.then_some(FillingConfig {
-                start_stage_id: RET_START_STAGE_ID,
-                filling_min_rate_m3s: 0.0,
-            }),
-            penalties: zero_hydro_penalties(),
-            tailrace_flow: TailraceFlow::default(),
-        };
-        hydro.declare_mirror_unit_group(EntityId(1));
-        hydro
+        builders::make_hydro(
+            EntityId(id),
+            HydroSpec {
+                name: format!("H{id}"),
+                bus_id: EntityId(1),
+                downstream_id: downstream.map(EntityId),
+                entry_stage_id: entry,
+                max_storage_hm3: 100.0,
+                max_turbined_m3s: 50.0,
+                max_generation_mw: 45.0,
+                filling: filling.then_some(FillingConfig {
+                    start_stage_id: RET_START_STAGE_ID,
+                    filling_min_rate_m3s: 0.0,
+                }),
+                penalties: HydroPenalties {
+                    fpha_violation_cost: 10000.0,
+                    ..HydroPenalties::uniform(0.0)
+                },
+                ..HydroSpec::default()
+            },
+        )
     }
 
     /// Sum the CSC values stored at `(col, row)`.

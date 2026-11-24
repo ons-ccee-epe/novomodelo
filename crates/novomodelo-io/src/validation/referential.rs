@@ -1220,13 +1220,9 @@ fn validate_variable_ref_entity(
 )]
 mod tests {
     use super::*;
-    use chrono::NaiveDate;
     use novomodelo_core::{
-        EntityId,
-        entities::{
-            Bus, DiversionChannel, HydroUnitGroup, Line, NonControllableSource, PumpingStation,
-            TailraceFlow, TailraceFlowInfluence, Thermal,
-        },
+        EntityId, TailraceFlow, TailraceFlowInfluence,
+        entities::{DiversionChannel, Line, NonControllableSource, PumpingStation},
         scenario::{CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile},
     };
     use std::collections::BTreeMap;
@@ -1243,7 +1239,10 @@ mod tests {
             BlockFactor, InflowSeasonalStatsRow, LoadFactorEntry, LoadSeasonalStatsRow,
             NcsFactorEntry,
         },
-        test_support::{make_hydro, make_minimal_case, make_unit_group},
+        test_support::{
+            make_bus_with_deficit, make_hydro, make_minimal_case, make_pumping_station,
+            make_thermal, make_unit_group,
+        },
         validation::{
             ErrorKind,
             schema::{ParsedData, validate_schema},
@@ -1272,49 +1271,23 @@ mod tests {
     }
 
     fn make_line(id: i32, source_bus: i32, target_bus: i32) -> Line {
-        Line {
-            id: EntityId::from(id),
-            name: format!("Line_{id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            source_bus_id: EntityId::from(source_bus),
-            target_bus_id: EntityId::from(target_bus),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            direct_capacity_mw: 100.0,
-            reverse_capacity_mw: 100.0,
-            losses_percent: 0.0,
-            exchange_cost: 0.0,
-        }
+        let mut line = crate::test_support::make_line(id, source_bus, target_bus);
+        line.name = format!("Line_{id}");
+        line
     }
 
     fn make_ncs(id: i32, bus_id: i32) -> NonControllableSource {
-        NonControllableSource {
-            id: EntityId::from(id),
-            name: format!("Ncs_{id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId::from(bus_id),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            max_generation_mw: 50.0,
-            allow_curtailment: true,
-            curtailment_cost: 1.0,
-        }
+        let mut ncs = crate::test_support::make_ncs(id, bus_id);
+        ncs.name = format!("Ncs_{id}");
+        ncs.max_generation_mw = 50.0;
+        ncs.curtailment_cost = 1.0;
+        ncs
     }
 
     fn make_pumping(id: i32, bus_id: i32, src_hydro: i32, dst_hydro: i32) -> PumpingStation {
-        PumpingStation {
-            id: EntityId::from(id),
-            name: format!("Pump_{id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId::from(bus_id),
-            source_hydro_id: EntityId::from(src_hydro),
-            destination_hydro_id: EntityId::from(dst_hydro),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            consumption_mw_per_m3s: 0.5,
-            min_flow_m3s: 0.0,
-            max_flow_m3s: 100.0,
-        }
+        let mut station = make_pumping_station(id, bus_id, src_hydro, dst_hydro);
+        station.name = format!("Pump_{id}");
+        station
     }
 
     /// Given a `ParsedData` where all entity cross-references are valid,
@@ -1510,18 +1483,11 @@ mod tests {
         // Line with bad target_bus_id (bus 999 does not exist)
         data.lines = vec![make_line(5, 1, 999)];
         // Thermal with bad bus_id (bus 777 does not exist)
-        data.thermals = vec![Thermal {
-            id: EntityId::from(20),
-            name: "T20".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId::from(777), // bad
-            entry_stage_id: None,
-            exit_stage_id: None,
-            cost_per_mwh: 50.0,
-            min_generation_mw: 0.0,
-            max_generation_mw: 100.0,
-            anticipated_config: None,
-        }];
+        let mut thermal = make_thermal(20, 0.0, 100.0);
+        thermal.name = "T20".to_string();
+        thermal.bus_id = EntityId::from(777); // bad
+        thermal.cost_per_mwh = 50.0;
+        data.thermals = vec![thermal];
         // HydroGeometryRow referencing non-existent hydro (888)
         data.hydro_geometry = vec![HydroGeometryRow {
             hydro_id: EntityId::from(888),
@@ -1671,35 +1637,22 @@ mod tests {
         let dir = TempDir::new().unwrap();
         make_minimal_case(&dir);
         let mut data = parse_case(&dir);
-        data.buses.push(Bus {
-            id: EntityId::from(0),
-            name: "BUS_0".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            deficit_segments: vec![],
-            excess_cost: 100.0,
-        });
+        let mut bus0 = make_bus_with_deficit(0, 0.0);
+        bus0.name = "BUS_0".to_string();
+        bus0.deficit_segments = Vec::new();
+        data.buses.push(bus0);
 
         let mut hydro1 = make_hydro(1, None);
-        hydro1.unit_groups = vec![HydroUnitGroup {
-            id: EntityId::from(4),
-            name: "Group A".to_string(),
-            bus_id: EntityId::from(0), // bus 0 exists, distinct from hydro1's own bus 1
-            min_generation_mw: 0.0,
-            max_generation_mw: 100.0,
-            min_turbined_m3s: 0.0,
-            max_turbined_m3s: 100.0,
-        }];
+        // bus 0 exists, distinct from hydro1's own bus 1
+        let mut group_a = make_unit_group(4, 0, 0.0, 100.0, 0.0, 100.0);
+        group_a.name = "Group A".to_string();
+        hydro1.unit_groups = vec![group_a];
 
         let mut hydro2 = make_hydro(2, None);
-        hydro2.unit_groups = vec![HydroUnitGroup {
-            id: EntityId::from(7),
-            name: "Group B".to_string(),
-            bus_id: EntityId::from(42), // does not exist
-            min_generation_mw: 0.0,
-            max_generation_mw: 100.0,
-            min_turbined_m3s: 0.0,
-            max_turbined_m3s: 100.0,
-        }];
+        // bus 42 does not exist
+        let mut group_b = make_unit_group(7, 42, 0.0, 100.0, 0.0, 100.0);
+        group_b.name = "Group B".to_string();
+        hydro2.unit_groups = vec![group_b];
 
         data.hydros = vec![hydro1, hydro2];
 
@@ -3252,20 +3205,14 @@ mod tests {
     /// bus lookup.
     fn make_split_plant_bus_selector_fixture(dir: &TempDir) -> ParsedData {
         let mut data = parse_case(dir);
-        data.buses.push(Bus {
-            id: EntityId::from(4),
-            name: "BUS_4".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            deficit_segments: vec![],
-            excess_cost: 100.0,
-        });
-        data.buses.push(Bus {
-            id: EntityId::from(9),
-            name: "BUS_9".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            deficit_segments: vec![],
-            excess_cost: 100.0,
-        });
+        let mut bus4 = make_bus_with_deficit(4, 0.0);
+        bus4.name = "BUS_4".to_string();
+        bus4.deficit_segments = Vec::new();
+        data.buses.push(bus4);
+        let mut bus9 = make_bus_with_deficit(9, 0.0);
+        bus9.name = "BUS_9".to_string();
+        bus9.deficit_segments = Vec::new();
+        data.buses.push(bus9);
 
         let mut hydro7 = make_hydro(7, None);
         hydro7.unit_groups = vec![

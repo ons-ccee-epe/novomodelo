@@ -92,65 +92,16 @@ fn test_multi_segment_deficit_column_count() {
         },
     );
 
-    let bounds = ResolvedBounds::new(
-        &BoundsCountsSpec {
-            n_hydros: 0,
-            n_thermals: 0,
-            n_lines: 0,
-            n_pumping: 0,
-            n_contracts: 0,
-            n_stages: 1,
-            k_max: 0,
+    let system = novomodelo_sddp::test_support::build_with_resolved_tables(
+        || {
+            SystemBuilder::new()
+                .buses(vec![bus0.clone(), bus1.clone()])
+                .stages(vec![stage.clone()])
+                .load_models(load_models.clone())
         },
-        &BoundsDefaults {
-            hydro: default_hydro_bounds(),
-            hydro_block: default_hydro_block_bounds(),
-            thermal_block: ThermalBlockBounds {
-                min_generation_mw: 0.0,
-                max_generation_mw: 0.0,
-                cost_per_mwh: 0.0,
-            },
-            line_block: LineBlockBounds {
-                direct_mw: 0.0,
-                reverse_mw: 0.0,
-            },
-            pumping_block: PumpingBlockBounds {
-                min_flow_m3s: 0.0,
-                max_flow_m3s: 0.0,
-            },
-            contract_block: ContractBlockBounds {
-                min_mw: 0.0,
-                max_mw: 0.0,
-                price_per_mwh: 0.0,
-            },
-        },
+        0,
+        |_, _, _| {},
     );
-    let penalties = ResolvedPenalties::new(
-        &PenaltiesCountsSpec {
-            n_hydros: 0,
-            n_buses: 2,
-            n_lines: 0,
-            n_ncs: 0,
-            n_stages: 1,
-        },
-        &PenaltiesDefaults {
-            hydro: default_hydro_penalties(),
-            bus: BusStagePenalties { excess_cost: 0.0 },
-            line: LineStagePenalties { exchange_cost: 0.0 },
-            ncs: NcsStagePenalties {
-                curtailment_cost: 0.0,
-            },
-        },
-    );
-
-    let system = SystemBuilder::new()
-        .buses(vec![bus0, bus1])
-        .stages(vec![stage])
-        .load_models(load_models)
-        .bounds(bounds)
-        .penalties(penalties)
-        .build()
-        .expect("2-bus 2-block system: valid");
 
     let result = build_stage_templates_resolving_layout(
         &system,
@@ -636,163 +587,84 @@ fn two_hydro_withdrawal_slack_entries_per_hydro() {
         std_mw: 0.0,
     }];
 
-    let hydro_bounds_default = HydroStageBounds {
-        min_storage_hm3: 0.0,
-        max_storage_hm3: 200.0,
-        filling_min_rate_m3s: 0.0,
-        water_withdrawal_m3s: 0.0,
-    };
-    let hydro_bounds_default_block = HydroBlockBounds {
-        max_turbined_m3s: 100.0,
-        max_generation_mw: 250.0,
-        ..Default::default()
-    };
-    let mut bounds = ResolvedBounds::new(
-        &BoundsCountsSpec {
-            n_hydros: 2,
-            n_thermals: 0,
-            n_lines: 0,
-            n_pumping: 0,
-            n_contracts: 0,
-            n_stages: 1,
-            k_max: 0,
+    let system = novomodelo_sddp::test_support::build_with_resolved_tables(
+        || {
+            SystemBuilder::new()
+                .buses(vec![bus.clone()])
+                .hydros(vec![
+                    make_hydro(
+                        EntityId(2),
+                        HydroSpec {
+                            name: "H2".to_string(),
+                            bus_id: EntityId(1),
+                            max_storage_hm3: 200.0,
+                            generation_model: HydroGenerationModel::ConstantProductivity,
+                            max_turbined_m3s: 100.0,
+                            max_generation_mw: 250.0,
+                            penalties: HydroPenalties {
+                                spillage_cost: 0.01,
+                                diversion_cost: 0.0,
+                                turbined_cost: 0.0,
+                                storage_violation_below_cost: 0.0,
+                                filling_target_violation_cost: 0.0,
+                                turbined_violation_below_cost: 0.0,
+                                outflow_violation_below_cost: 0.0,
+                                outflow_violation_above_cost: 0.0,
+                                generation_violation_below_cost: 0.0,
+                                fpha_violation_cost: 0.0,
+                                evaporation_violation_cost: 0.0,
+                                water_withdrawal_violation_cost: 2_000.0,
+                                water_withdrawal_violation_pos_cost: 2_000.0,
+                                water_withdrawal_violation_neg_cost: 2_000.0,
+                                evaporation_violation_pos_cost: 0.0,
+                                evaporation_violation_neg_cost: 0.0,
+                                inflow_nonnegativity_cost: 1000.0,
+                            },
+                            ..Default::default()
+                        },
+                    ),
+                    make_hydro(
+                        EntityId(3),
+                        HydroSpec {
+                            name: "H3".to_string(),
+                            bus_id: EntityId(1),
+                            max_storage_hm3: 200.0,
+                            generation_model: HydroGenerationModel::ConstantProductivity,
+                            max_turbined_m3s: 100.0,
+                            max_generation_mw: 250.0,
+                            penalties: HydroPenalties {
+                                spillage_cost: 0.01,
+                                diversion_cost: 0.0,
+                                turbined_cost: 0.0,
+                                storage_violation_below_cost: 0.0,
+                                filling_target_violation_cost: 0.0,
+                                turbined_violation_below_cost: 0.0,
+                                outflow_violation_below_cost: 0.0,
+                                outflow_violation_above_cost: 0.0,
+                                generation_violation_below_cost: 0.0,
+                                fpha_violation_cost: 0.0,
+                                evaporation_violation_cost: 0.0,
+                                water_withdrawal_violation_cost: 2_000.0,
+                                water_withdrawal_violation_pos_cost: 2_000.0,
+                                water_withdrawal_violation_neg_cost: 2_000.0,
+                                evaporation_violation_pos_cost: 0.0,
+                                evaporation_violation_neg_cost: 0.0,
+                                inflow_nonnegativity_cost: 1000.0,
+                            },
+                            ..Default::default()
+                        },
+                    ),
+                ])
+                .stages(stages.clone())
+                .inflow_models(inflow_models.clone())
+                .load_models(load_models.clone())
         },
-        &BoundsDefaults {
-            hydro: hydro_bounds_default,
-            hydro_block: hydro_bounds_default_block,
-            thermal_block: ThermalBlockBounds {
-                min_generation_mw: 0.0,
-                max_generation_mw: 0.0,
-                cost_per_mwh: 0.0,
-            },
-            line_block: LineBlockBounds {
-                direct_mw: 0.0,
-                reverse_mw: 0.0,
-            },
-            pumping_block: PumpingBlockBounds {
-                min_flow_m3s: 0.0,
-                max_flow_m3s: 0.0,
-            },
-            contract_block: ContractBlockBounds {
-                min_mw: 0.0,
-                max_mw: 0.0,
-                price_per_mwh: 0.0,
-            },
-        },
-    );
-    bounds.hydro_bounds_mut(0, 0).water_withdrawal_m3s = 8.0;
-    bounds.hydro_bounds_mut(1, 0).water_withdrawal_m3s = 12.0;
-
-    let hydro_penalties_default = HydroPenalties {
-        spillage_cost: 0.01,
-        diversion_cost: 0.0,
-        turbined_cost: 0.0,
-        storage_violation_below_cost: 0.0,
-        filling_target_violation_cost: 0.0,
-        turbined_violation_below_cost: 0.0,
-        outflow_violation_below_cost: 0.0,
-        outflow_violation_above_cost: 0.0,
-        generation_violation_below_cost: 0.0,
-        fpha_violation_cost: 0.0,
-        evaporation_violation_cost: 0.0,
-        water_withdrawal_violation_cost: 2_000.0,
-        water_withdrawal_violation_pos_cost: 2_000.0,
-        water_withdrawal_violation_neg_cost: 2_000.0,
-        evaporation_violation_pos_cost: 0.0,
-        evaporation_violation_neg_cost: 0.0,
-        inflow_nonnegativity_cost: 1000.0,
-    };
-    let penalties = ResolvedPenalties::new(
-        &PenaltiesCountsSpec {
-            n_hydros: 2,
-            n_buses: 1,
-            n_lines: 0,
-            n_ncs: 0,
-            n_stages: 1,
-        },
-        &PenaltiesDefaults {
-            hydro: hydro_penalties_default,
-            bus: BusStagePenalties { excess_cost: 0.0 },
-            line: LineStagePenalties { exchange_cost: 0.0 },
-            ncs: NcsStagePenalties {
-                curtailment_cost: 0.0,
-            },
+        0,
+        |_, bounds, _| {
+            bounds.hydro_bounds_mut(0, 0).water_withdrawal_m3s = 8.0;
+            bounds.hydro_bounds_mut(1, 0).water_withdrawal_m3s = 12.0;
         },
     );
-
-    let system = SystemBuilder::new()
-        .buses(vec![bus])
-        .hydros(vec![
-            make_hydro(
-                EntityId(2),
-                HydroSpec {
-                    name: "H2".to_string(),
-                    bus_id: EntityId(1),
-                    max_storage_hm3: 200.0,
-                    generation_model: HydroGenerationModel::ConstantProductivity,
-                    max_turbined_m3s: 100.0,
-                    max_generation_mw: 250.0,
-                    penalties: HydroPenalties {
-                        spillage_cost: 0.01,
-                        diversion_cost: 0.0,
-                        turbined_cost: 0.0,
-                        storage_violation_below_cost: 0.0,
-                        filling_target_violation_cost: 0.0,
-                        turbined_violation_below_cost: 0.0,
-                        outflow_violation_below_cost: 0.0,
-                        outflow_violation_above_cost: 0.0,
-                        generation_violation_below_cost: 0.0,
-                        fpha_violation_cost: 0.0,
-                        evaporation_violation_cost: 0.0,
-                        water_withdrawal_violation_cost: 2_000.0,
-                        water_withdrawal_violation_pos_cost: 2_000.0,
-                        water_withdrawal_violation_neg_cost: 2_000.0,
-                        evaporation_violation_pos_cost: 0.0,
-                        evaporation_violation_neg_cost: 0.0,
-                        inflow_nonnegativity_cost: 1000.0,
-                    },
-                    ..Default::default()
-                },
-            ),
-            make_hydro(
-                EntityId(3),
-                HydroSpec {
-                    name: "H3".to_string(),
-                    bus_id: EntityId(1),
-                    max_storage_hm3: 200.0,
-                    generation_model: HydroGenerationModel::ConstantProductivity,
-                    max_turbined_m3s: 100.0,
-                    max_generation_mw: 250.0,
-                    penalties: HydroPenalties {
-                        spillage_cost: 0.01,
-                        diversion_cost: 0.0,
-                        turbined_cost: 0.0,
-                        storage_violation_below_cost: 0.0,
-                        filling_target_violation_cost: 0.0,
-                        turbined_violation_below_cost: 0.0,
-                        outflow_violation_below_cost: 0.0,
-                        outflow_violation_above_cost: 0.0,
-                        generation_violation_below_cost: 0.0,
-                        fpha_violation_cost: 0.0,
-                        evaporation_violation_cost: 0.0,
-                        water_withdrawal_violation_cost: 2_000.0,
-                        water_withdrawal_violation_pos_cost: 2_000.0,
-                        water_withdrawal_violation_neg_cost: 2_000.0,
-                        evaporation_violation_pos_cost: 0.0,
-                        evaporation_violation_neg_cost: 0.0,
-                        inflow_nonnegativity_cost: 1000.0,
-                    },
-                    ..Default::default()
-                },
-            ),
-        ])
-        .stages(stages)
-        .inflow_models(inflow_models)
-        .load_models(load_models)
-        .bounds(bounds)
-        .penalties(penalties)
-        .build()
-        .expect("two_hydro_with_withdrawal: valid");
 
     let result = build_stage_templates_resolving_layout(
         &system,
@@ -911,189 +783,116 @@ fn three_hydro_num_cols_includes_three_withdrawal_slacks() {
         std_mw: 0.0,
     }];
 
-    let bounds = ResolvedBounds::new(
-        &BoundsCountsSpec {
-            n_hydros: 3,
-            n_thermals: 0,
-            n_lines: 0,
-            n_pumping: 0,
-            n_contracts: 0,
-            n_stages: 1,
-            k_max: 0,
+    let system = novomodelo_sddp::test_support::build_with_resolved_tables(
+        || {
+            SystemBuilder::new()
+                .buses(vec![bus.clone()])
+                .hydros(vec![
+                    make_hydro(
+                        EntityId(1),
+                        HydroSpec {
+                            name: "H1".to_string(),
+                            bus_id: EntityId(1),
+                            max_storage_hm3: 200.0,
+                            generation_model: HydroGenerationModel::ConstantProductivity,
+                            max_turbined_m3s: 100.0,
+                            max_generation_mw: 250.0,
+                            penalties: HydroPenalties {
+                                spillage_cost: 0.01,
+                                diversion_cost: 0.0,
+                                turbined_cost: 0.0,
+                                storage_violation_below_cost: 0.0,
+                                filling_target_violation_cost: 0.0,
+                                turbined_violation_below_cost: 0.0,
+                                outflow_violation_below_cost: 0.0,
+                                outflow_violation_above_cost: 0.0,
+                                generation_violation_below_cost: 0.0,
+                                fpha_violation_cost: 0.0,
+                                evaporation_violation_cost: 0.0,
+                                water_withdrawal_violation_cost: 1_000.0,
+                                water_withdrawal_violation_pos_cost: 1_000.0,
+                                water_withdrawal_violation_neg_cost: 1_000.0,
+                                evaporation_violation_pos_cost: 0.0,
+                                evaporation_violation_neg_cost: 0.0,
+                                inflow_nonnegativity_cost: 1000.0,
+                            },
+                            ..Default::default()
+                        },
+                    ),
+                    make_hydro(
+                        EntityId(2),
+                        HydroSpec {
+                            name: "H2".to_string(),
+                            bus_id: EntityId(1),
+                            max_storage_hm3: 200.0,
+                            generation_model: HydroGenerationModel::ConstantProductivity,
+                            max_turbined_m3s: 100.0,
+                            max_generation_mw: 250.0,
+                            penalties: HydroPenalties {
+                                spillage_cost: 0.01,
+                                diversion_cost: 0.0,
+                                turbined_cost: 0.0,
+                                storage_violation_below_cost: 0.0,
+                                filling_target_violation_cost: 0.0,
+                                turbined_violation_below_cost: 0.0,
+                                outflow_violation_below_cost: 0.0,
+                                outflow_violation_above_cost: 0.0,
+                                generation_violation_below_cost: 0.0,
+                                fpha_violation_cost: 0.0,
+                                evaporation_violation_cost: 0.0,
+                                water_withdrawal_violation_cost: 1_000.0,
+                                water_withdrawal_violation_pos_cost: 1_000.0,
+                                water_withdrawal_violation_neg_cost: 1_000.0,
+                                evaporation_violation_pos_cost: 0.0,
+                                evaporation_violation_neg_cost: 0.0,
+                                inflow_nonnegativity_cost: 1000.0,
+                            },
+                            ..Default::default()
+                        },
+                    ),
+                    make_hydro(
+                        EntityId(3),
+                        HydroSpec {
+                            name: "H3".to_string(),
+                            bus_id: EntityId(1),
+                            max_storage_hm3: 200.0,
+                            generation_model: HydroGenerationModel::ConstantProductivity,
+                            max_turbined_m3s: 100.0,
+                            max_generation_mw: 250.0,
+                            penalties: HydroPenalties {
+                                spillage_cost: 0.01,
+                                diversion_cost: 0.0,
+                                turbined_cost: 0.0,
+                                storage_violation_below_cost: 0.0,
+                                filling_target_violation_cost: 0.0,
+                                turbined_violation_below_cost: 0.0,
+                                outflow_violation_below_cost: 0.0,
+                                outflow_violation_above_cost: 0.0,
+                                generation_violation_below_cost: 0.0,
+                                fpha_violation_cost: 0.0,
+                                evaporation_violation_cost: 0.0,
+                                water_withdrawal_violation_cost: 1_000.0,
+                                water_withdrawal_violation_pos_cost: 1_000.0,
+                                water_withdrawal_violation_neg_cost: 1_000.0,
+                                evaporation_violation_pos_cost: 0.0,
+                                evaporation_violation_neg_cost: 0.0,
+                                inflow_nonnegativity_cost: 1000.0,
+                            },
+                            ..Default::default()
+                        },
+                    ),
+                ])
+                .stages(stages.clone())
+                .inflow_models(inflow_models.clone())
+                .load_models(load_models.clone())
         },
-        &BoundsDefaults {
-            hydro: HydroStageBounds {
-                min_storage_hm3: 0.0,
-                max_storage_hm3: 200.0,
-                filling_min_rate_m3s: 0.0,
-                water_withdrawal_m3s: 5.0,
-            },
-            hydro_block: HydroBlockBounds {
-                max_turbined_m3s: 100.0,
-                max_generation_mw: 250.0,
-                ..Default::default()
-            },
-            thermal_block: ThermalBlockBounds {
-                min_generation_mw: 0.0,
-                max_generation_mw: 0.0,
-                cost_per_mwh: 0.0,
-            },
-            line_block: LineBlockBounds {
-                direct_mw: 0.0,
-                reverse_mw: 0.0,
-            },
-            pumping_block: PumpingBlockBounds {
-                min_flow_m3s: 0.0,
-                max_flow_m3s: 0.0,
-            },
-            contract_block: ContractBlockBounds {
-                min_mw: 0.0,
-                max_mw: 0.0,
-                price_per_mwh: 0.0,
-            },
+        0,
+        |_, bounds, _| {
+            for h in 0..3 {
+                bounds.hydro_bounds_mut(h, 0).water_withdrawal_m3s = 5.0;
+            }
         },
     );
-
-    let penalties = ResolvedPenalties::new(
-        &PenaltiesCountsSpec {
-            n_hydros: 3,
-            n_buses: 1,
-            n_lines: 0,
-            n_ncs: 0,
-            n_stages: 1,
-        },
-        &PenaltiesDefaults {
-            hydro: HydroPenalties {
-                spillage_cost: 0.01,
-                diversion_cost: 0.0,
-                turbined_cost: 0.0,
-                storage_violation_below_cost: 0.0,
-                filling_target_violation_cost: 0.0,
-                turbined_violation_below_cost: 0.0,
-                outflow_violation_below_cost: 0.0,
-                outflow_violation_above_cost: 0.0,
-                generation_violation_below_cost: 0.0,
-                fpha_violation_cost: 0.0,
-                evaporation_violation_cost: 0.0,
-                water_withdrawal_violation_cost: 1_000.0,
-                water_withdrawal_violation_pos_cost: 1_000.0,
-                water_withdrawal_violation_neg_cost: 1_000.0,
-                evaporation_violation_pos_cost: 0.0,
-                evaporation_violation_neg_cost: 0.0,
-                inflow_nonnegativity_cost: 1000.0,
-            },
-            bus: BusStagePenalties { excess_cost: 0.0 },
-            line: LineStagePenalties { exchange_cost: 0.0 },
-            ncs: NcsStagePenalties {
-                curtailment_cost: 0.0,
-            },
-        },
-    );
-
-    let system = SystemBuilder::new()
-        .buses(vec![bus])
-        .hydros(vec![
-            make_hydro(
-                EntityId(1),
-                HydroSpec {
-                    name: "H1".to_string(),
-                    bus_id: EntityId(1),
-                    max_storage_hm3: 200.0,
-                    generation_model: HydroGenerationModel::ConstantProductivity,
-                    max_turbined_m3s: 100.0,
-                    max_generation_mw: 250.0,
-                    penalties: HydroPenalties {
-                        spillage_cost: 0.01,
-                        diversion_cost: 0.0,
-                        turbined_cost: 0.0,
-                        storage_violation_below_cost: 0.0,
-                        filling_target_violation_cost: 0.0,
-                        turbined_violation_below_cost: 0.0,
-                        outflow_violation_below_cost: 0.0,
-                        outflow_violation_above_cost: 0.0,
-                        generation_violation_below_cost: 0.0,
-                        fpha_violation_cost: 0.0,
-                        evaporation_violation_cost: 0.0,
-                        water_withdrawal_violation_cost: 1_000.0,
-                        water_withdrawal_violation_pos_cost: 1_000.0,
-                        water_withdrawal_violation_neg_cost: 1_000.0,
-                        evaporation_violation_pos_cost: 0.0,
-                        evaporation_violation_neg_cost: 0.0,
-                        inflow_nonnegativity_cost: 1000.0,
-                    },
-                    ..Default::default()
-                },
-            ),
-            make_hydro(
-                EntityId(2),
-                HydroSpec {
-                    name: "H2".to_string(),
-                    bus_id: EntityId(1),
-                    max_storage_hm3: 200.0,
-                    generation_model: HydroGenerationModel::ConstantProductivity,
-                    max_turbined_m3s: 100.0,
-                    max_generation_mw: 250.0,
-                    penalties: HydroPenalties {
-                        spillage_cost: 0.01,
-                        diversion_cost: 0.0,
-                        turbined_cost: 0.0,
-                        storage_violation_below_cost: 0.0,
-                        filling_target_violation_cost: 0.0,
-                        turbined_violation_below_cost: 0.0,
-                        outflow_violation_below_cost: 0.0,
-                        outflow_violation_above_cost: 0.0,
-                        generation_violation_below_cost: 0.0,
-                        fpha_violation_cost: 0.0,
-                        evaporation_violation_cost: 0.0,
-                        water_withdrawal_violation_cost: 1_000.0,
-                        water_withdrawal_violation_pos_cost: 1_000.0,
-                        water_withdrawal_violation_neg_cost: 1_000.0,
-                        evaporation_violation_pos_cost: 0.0,
-                        evaporation_violation_neg_cost: 0.0,
-                        inflow_nonnegativity_cost: 1000.0,
-                    },
-                    ..Default::default()
-                },
-            ),
-            make_hydro(
-                EntityId(3),
-                HydroSpec {
-                    name: "H3".to_string(),
-                    bus_id: EntityId(1),
-                    max_storage_hm3: 200.0,
-                    generation_model: HydroGenerationModel::ConstantProductivity,
-                    max_turbined_m3s: 100.0,
-                    max_generation_mw: 250.0,
-                    penalties: HydroPenalties {
-                        spillage_cost: 0.01,
-                        diversion_cost: 0.0,
-                        turbined_cost: 0.0,
-                        storage_violation_below_cost: 0.0,
-                        filling_target_violation_cost: 0.0,
-                        turbined_violation_below_cost: 0.0,
-                        outflow_violation_below_cost: 0.0,
-                        outflow_violation_above_cost: 0.0,
-                        generation_violation_below_cost: 0.0,
-                        fpha_violation_cost: 0.0,
-                        evaporation_violation_cost: 0.0,
-                        water_withdrawal_violation_cost: 1_000.0,
-                        water_withdrawal_violation_pos_cost: 1_000.0,
-                        water_withdrawal_violation_neg_cost: 1_000.0,
-                        evaporation_violation_pos_cost: 0.0,
-                        evaporation_violation_neg_cost: 0.0,
-                        inflow_nonnegativity_cost: 1000.0,
-                    },
-                    ..Default::default()
-                },
-            ),
-        ])
-        .stages(stages)
-        .inflow_models(inflow_models)
-        .load_models(load_models)
-        .bounds(bounds)
-        .penalties(penalties)
-        .build()
-        .expect("three_hydro_system: valid");
 
     let result = build_stage_templates_resolving_layout(
         &system,
@@ -1272,81 +1071,23 @@ fn prefilling_pair_system(
         })
         .collect::<Vec<_>>();
 
-    let mut bounds = ResolvedBounds::new(
-        &BoundsCountsSpec {
-            n_hydros: HYDRO_IDS.len(),
-            n_thermals: 0,
-            n_lines: 0,
-            n_pumping: 0,
-            n_contracts: 0,
-            n_stages: N_STAGES,
-            k_max: 0,
+    novomodelo_sddp::test_support::build_with_resolved_tables(
+        || {
+            SystemBuilder::new()
+                .buses(vec![bus.clone()])
+                .hydros(hydros.clone())
+                .stages(stages.clone())
+                .inflow_models(inflow_models.clone())
+                .load_models(load_models.clone())
         },
-        &BoundsDefaults {
-            hydro: HydroStageBounds {
-                min_storage_hm3: 0.0,
-                max_storage_hm3: 200.0,
-                filling_min_rate_m3s: 0.0,
-                water_withdrawal_m3s: 0.0,
-            },
-            hydro_block: HydroBlockBounds {
-                max_turbined_m3s: 100.0,
-                max_generation_mw: 250.0,
-                ..Default::default()
-            },
-            thermal_block: ThermalBlockBounds {
-                min_generation_mw: 0.0,
-                max_generation_mw: 0.0,
-                cost_per_mwh: 0.0,
-            },
-            line_block: LineBlockBounds {
-                direct_mw: 0.0,
-                reverse_mw: 0.0,
-            },
-            pumping_block: PumpingBlockBounds {
-                min_flow_m3s: 0.0,
-                max_flow_m3s: 0.0,
-            },
-            contract_block: ContractBlockBounds {
-                min_mw: 0.0,
-                max_mw: 0.0,
-                price_per_mwh: 0.0,
-            },
+        0,
+        |_, bounds, _| {
+            for stage in 0..N_STAGES {
+                bounds.hydro_bounds_mut(0, stage).water_withdrawal_m3s = target_withdrawal_m3s;
+                bounds.hydro_bounds_mut(1, stage).water_withdrawal_m3s = prefilling_withdrawal_m3s;
+            }
         },
-    );
-    let mut penalties = ResolvedPenalties::new(
-        &PenaltiesCountsSpec {
-            n_hydros: HYDRO_IDS.len(),
-            n_buses: 1,
-            n_lines: 0,
-            n_ncs: 0,
-            n_stages: N_STAGES,
-        },
-        &PenaltiesDefaults {
-            hydro: target_penalties,
-            bus: BusStagePenalties { excess_cost: 0.0 },
-            line: LineStagePenalties { exchange_cost: 0.0 },
-            ncs: NcsStagePenalties {
-                curtailment_cost: 0.0,
-            },
-        },
-    );
-    for stage in 0..N_STAGES {
-        bounds.hydro_bounds_mut(0, stage).water_withdrawal_m3s = target_withdrawal_m3s;
-        bounds.hydro_bounds_mut(1, stage).water_withdrawal_m3s = prefilling_withdrawal_m3s;
-        *penalties.hydro_penalties_mut(1, stage) = prefilling_penalties;
-    }
-
-    SystemBuilder::new()
-        .buses(vec![bus])
-        .hydros(hydros)
-        .stages(stages)
-        .inflow_models(inflow_models)
-        .load_models(load_models)
-        .bounds(bounds)
-        .penalties(penalties)
-        .build()
-        .expect("prefilling_pair_system: valid")
+    )
 }
 
 /// derived: `neg ∈ [0, T]` and `pos ∈ [0, ∞)` for `T > 0`; `neg ∈ [0, 0]` and

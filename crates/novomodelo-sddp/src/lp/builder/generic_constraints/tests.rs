@@ -19,6 +19,9 @@ use crate::lp::builder::{StageLayout, TemplateBuildCtx};
 use crate::lp::indexer::{
     AnticipatedPlants, Boundary, EntityPositions, FphaLocal, HydroCell, HydroCellIndex, HydroSys,
 };
+use crate::test_support::builders::{
+    self, BusSpec, ContractSpec, HydroSpec, LineSpec, PumpingSpec, StageSpec, ThermalSpec,
+};
 use crate::test_support::ctx_fixture::CtxFixture;
 use crate::test_support::{
     geometry_hydro, geometry_hydro_with_groups, make_unit_group, minimal_hydros,
@@ -29,9 +32,9 @@ use novomodelo_core::{
     AnticipatedConfig, Block, BlockMode, BoundsCountsSpec, BoundsDefaults, Bus, CascadeTopology,
     ConstraintExpression, ContractBlockBounds, ContractType, DeficitSegment, EnergyContract,
     EntityId, GenericConstraint, Hydro, HydroBlockBounds, HydroStageBounds, Line, LineBlockBounds,
-    LinearTerm, NoiseMethod, PumpingBlockBounds, PumpingStation, ResolvedBounds,
-    ResolvedGenericConstraintBounds, ScenarioSourceConfig, Stage, StageRiskConfig,
-    StageStateConfig, TailraceFlow, Thermal, ThermalBlockBounds, VariableRef,
+    LinearTerm, PumpingBlockBounds, PumpingStation, ResolvedBounds,
+    ResolvedGenericConstraintBounds, Stage, StageStateConfig, Thermal, ThermalBlockBounds,
+    VariableRef,
 };
 
 // ── Test helpers ──────────────────────────────────────────────────────────
@@ -42,30 +45,24 @@ use novomodelo_core::{
 /// `stage.block_mode` after construction (see `chronological_default_fixture`)
 /// to give the interior-boundary family a genuinely non-empty column range.
 fn fixture_stage(n_blks: usize) -> Stage {
-    Stage {
-        index: 0,
-        id: 0,
-        start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        end_date: chrono::NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-        season_id: Some(0),
-        blocks: (0..n_blks)
-            .map(|index| Block {
-                index,
-                name: format!("BLK{index}"),
-                duration_hours: 744.0,
-            })
-            .collect(),
-        block_mode: BlockMode::Parallel,
-        state_config: StageStateConfig {
-            storage: false,
-            inflow_lags: false,
+    builders::make_stage(
+        0,
+        StageSpec {
+            season_id: Some(0),
+            blocks: (0..n_blks)
+                .map(|index| Block {
+                    index,
+                    name: format!("BLK{index}"),
+                    duration_hours: 744.0,
+                })
+                .collect(),
+            state_config: StageStateConfig {
+                storage: false,
+                inflow_lags: false,
+            },
+            ..StageSpec::default()
         },
-        risk_config: StageRiskConfig::Expectation,
-        scenario_config: ScenarioSourceConfig {
-            branching_factor: 1,
-            noise_method: NoiseMethod::Saa,
-        },
-    }
+    )
 }
 
 /// Owns every borrow target for a resolver test's `TemplateBuildCtx`/
@@ -181,35 +178,18 @@ impl ResolverFixture {
 /// A `Thermal` carrying only the `id`/`anticipated_config` the resolver and
 /// `StageLayout::new` read; every other field is an inert value.
 fn make_thermal(id: i32, anticipated_config: Option<AnticipatedConfig>) -> Thermal {
-    Thermal {
-        id: EntityId(id),
-        name: String::new(),
-        operational_start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        bus_id: EntityId(0),
-        entry_stage_id: None,
-        exit_stage_id: None,
-        cost_per_mwh: 0.0,
-        min_generation_mw: 0.0,
-        max_generation_mw: 0.0,
-        anticipated_config,
-    }
+    builders::make_thermal(
+        EntityId(id),
+        ThermalSpec {
+            anticipated_config,
+            ..ThermalSpec::default()
+        },
+    )
 }
 
 /// A `Line` carrying only the `id`; every other field is an inert value.
 fn make_line(id: i32) -> Line {
-    Line {
-        id: EntityId(id),
-        name: String::new(),
-        operational_start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        source_bus_id: EntityId(0),
-        target_bus_id: EntityId(0),
-        entry_stage_id: None,
-        exit_stage_id: None,
-        direct_capacity_mw: 0.0,
-        reverse_capacity_mw: 0.0,
-        losses_percent: 0.0,
-        exchange_cost: 0.0,
-    }
+    builders::make_line(EntityId(id), LineSpec::default())
 }
 
 /// A `Bus` carrying the `id` and `max_deficit_segments` deficit segments —
@@ -217,19 +197,19 @@ fn make_line(id: i32) -> Line {
 /// `ctx.buses.iter().map(|b| b.deficit_segments.len()).max()`, so every bus
 /// must carry the caller's count for that derivation to reproduce it.
 fn make_bus(id: i32, max_deficit_segments: usize) -> Bus {
-    Bus {
-        id: EntityId(id),
-        name: String::new(),
-        operational_start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        deficit_segments: vec![
-            DeficitSegment {
-                depth_mw: None,
-                cost_per_mwh: 0.0,
-            };
-            max_deficit_segments
-        ],
-        excess_cost: 0.0,
-    }
+    builders::make_bus(
+        EntityId(id),
+        BusSpec {
+            deficit_segments: vec![
+                DeficitSegment {
+                    depth_mw: None,
+                    cost_per_mwh: 0.0,
+                };
+                max_deficit_segments
+            ],
+            ..BusSpec::default()
+        },
+    )
 }
 
 /// A single-stage [`ProductionModelSet`] where every one of `n_hydros` hydros
@@ -348,56 +328,20 @@ fn anticipated_fixture() -> ResolverFixture {
 /// Minimal `Hydro` carrying only the `id`/`downstream_id` that
 /// [`CascadeTopology::build`] reads; every other field is an inert default.
 fn make_hydro(id: i32, downstream_id: Option<i32>) -> Hydro {
-    let zero_penalties = HydroPenalties {
-        spillage_cost: 0.0,
-        diversion_cost: 0.0,
-        turbined_cost: 0.0,
-        storage_violation_below_cost: 0.0,
-        filling_target_violation_cost: 0.0,
-        turbined_violation_below_cost: 0.0,
-        outflow_violation_below_cost: 0.0,
-        outflow_violation_above_cost: 0.0,
-        generation_violation_below_cost: 0.0,
-        fpha_violation_cost: 0.0,
-        evaporation_violation_cost: 0.0,
-        water_withdrawal_violation_cost: 0.0,
-        water_withdrawal_violation_pos_cost: 0.0,
-        water_withdrawal_violation_neg_cost: 0.0,
-        evaporation_violation_pos_cost: 0.0,
-        evaporation_violation_neg_cost: 0.0,
-        inflow_nonnegativity_cost: 1000.0,
-    };
-    let mut hydro = Hydro {
-        unit_groups: Vec::new(),
-        id: EntityId(id),
-        name: String::new(),
-        operational_start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        downstream_id: downstream_id.map(EntityId),
-        travel_time_hours: None,
-        entry_stage_id: None,
-        exit_stage_id: None,
-        min_storage_hm3: 0.0,
-        max_storage_hm3: 1.0,
-        min_outflow_m3s: 0.0,
-        max_outflow_m3s: None,
-        generation_model: HydroGenerationModel::ConstantProductivity,
-        min_turbined_m3s: 0.0,
-        max_turbined_m3s: 1.0,
-        specific_productivity_mw_per_m3s_per_m: None,
-        min_generation_mw: 0.0,
-        max_generation_mw: 1.0,
-        tailrace: None,
-        hydraulic_losses: None,
-        efficiency: None,
-        evaporation_coefficients_mm: None,
-        evaporation_reference_volumes_hm3: None,
-        diversion: None,
-        filling: None,
-        penalties: zero_penalties,
-        tailrace_flow: TailraceFlow::default(),
-    };
-    hydro.declare_mirror_unit_group(EntityId(0));
-    hydro
+    builders::make_hydro(
+        EntityId(id),
+        HydroSpec {
+            downstream_id: downstream_id.map(EntityId),
+            max_storage_hm3: 1.0,
+            max_turbined_m3s: 1.0,
+            max_generation_mw: 1.0,
+            penalties: HydroPenalties {
+                inflow_nonnegativity_cost: 1000.0,
+                ..HydroPenalties::uniform(0.0)
+            },
+            ..HydroSpec::default()
+        },
+    )
 }
 
 fn make_production_models() -> ProductionModelSet {
@@ -457,18 +401,14 @@ fn call_with_inflow(
 /// An energy contract carrying only the `id`/`bus_id`/`contract_type` the
 /// resolver and load-balance fill read; every other field is an inert value.
 fn make_contract(id: i32, contract_type: ContractType) -> EnergyContract {
-    EnergyContract {
-        id: EntityId(id),
-        name: String::new(),
-        operational_start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        bus_id: EntityId(0),
-        contract_type,
-        entry_stage_id: None,
-        exit_stage_id: None,
-        price_per_mwh: 0.0,
-        min_mw: 0.0,
-        max_mw: 1.0,
-    }
+    builders::make_contract(
+        EntityId(id),
+        ContractSpec {
+            contract_type,
+            max_mw: 1.0,
+            ..ContractSpec::default()
+        },
+    )
 }
 
 /// A pumping station carrying a `consumption_mw_per_m3s` rate and its
@@ -480,19 +420,16 @@ fn make_pumping_station(
     source_hydro_id: EntityId,
     destination_hydro_id: EntityId,
 ) -> PumpingStation {
-    PumpingStation {
-        id: EntityId(id),
-        name: String::new(),
-        operational_start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        bus_id: EntityId(0),
-        source_hydro_id,
-        destination_hydro_id,
-        entry_stage_id: None,
-        exit_stage_id: None,
-        consumption_mw_per_m3s,
-        min_flow_m3s: 0.0,
-        max_flow_m3s: 1.0,
-    }
+    builders::make_pumping_station(
+        EntityId(id),
+        PumpingSpec {
+            source_hydro_id,
+            destination_hydro_id,
+            consumption_mw_per_m3s,
+            max_flow_m3s: 1.0,
+            ..PumpingSpec::default()
+        },
+    )
 }
 
 // ── ThermalGeneration tests ───────────────────────────────────────────────

@@ -2336,142 +2336,54 @@ fn build_anticipated_lanes_batch<'a>(
 )]
 mod tests {
     use super::*;
-    use crate::test_support::output::read_first_batch;
-    use chrono::NaiveDate;
-    use novomodelo_core::{
-        Block, BlockMode, Bus, DeficitSegment, EntityId, Hydro, HydroGenerationModel,
-        HydroPenalties, Line, NoiseMethod, PumpingStation, ScenarioSourceConfig, Stage,
-        StageRiskConfig, StageStateConfig, SystemBuilder, TailraceFlow, Thermal,
+    use crate::test_support::{
+        make_bus_with_deficit, make_line, make_pumping_station, make_thermal,
+        output::read_first_batch, penalties_all,
     };
+    use novomodelo_core::{EntityId, Hydro, Stage, SystemBuilder};
 
     // -----------------------------------------------------------------------
     // Test fixture helpers
     // -----------------------------------------------------------------------
 
-    fn make_hydro_penalties_zero() -> HydroPenalties {
-        HydroPenalties {
-            spillage_cost: 0.0,
-            diversion_cost: 0.0,
-            turbined_cost: 0.0,
-            storage_violation_below_cost: 0.0,
-            filling_target_violation_cost: 0.0,
-            turbined_violation_below_cost: 0.0,
-            outflow_violation_below_cost: 0.0,
-            outflow_violation_above_cost: 0.0,
-            generation_violation_below_cost: 0.0,
-            fpha_violation_cost: 0.0,
-            evaporation_violation_cost: 0.0,
-            water_withdrawal_violation_cost: 0.0,
-            water_withdrawal_violation_pos_cost: 0.0,
-            water_withdrawal_violation_neg_cost: 0.0,
-            evaporation_violation_pos_cost: 0.0,
-            evaporation_violation_neg_cost: 0.0,
-            inflow_nonnegativity_cost: 1000.0,
-        }
-    }
-
     fn make_hydro(id: i32) -> Hydro {
-        let mut hydro = Hydro {
-            unit_groups: Vec::new(),
-            id: EntityId(id),
-            name: format!("H{id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            downstream_id: None,
-            travel_time_hours: None,
-            entry_stage_id: None,
-            exit_stage_id: None,
-            min_storage_hm3: 0.0,
-            max_storage_hm3: 1000.0,
-            min_outflow_m3s: 0.0,
-            max_outflow_m3s: None,
-            generation_model: HydroGenerationModel::ConstantProductivity,
-            min_turbined_m3s: 0.0,
-            max_turbined_m3s: 1000.0,
-            specific_productivity_mw_per_m3s_per_m: None,
-            min_generation_mw: 0.0,
-            max_generation_mw: 900.0,
-            tailrace: None,
-            hydraulic_losses: None,
-            efficiency: None,
-            evaporation_coefficients_mm: None,
-            evaporation_reference_volumes_hm3: None,
-            diversion: None,
-            filling: None,
-            penalties: make_hydro_penalties_zero(),
-            tailrace_flow: TailraceFlow::default(),
-        };
+        let mut hydro = crate::test_support::make_hydro(id, None);
+        hydro.name = format!("H{id}");
+        hydro.max_generation_mw = 900.0;
+        hydro.penalties = penalties_all(0.0);
         hydro.declare_mirror_unit_group(EntityId(1));
         hydro
     }
 
     fn make_stage(id: i32, duration_hours: f64) -> Stage {
-        Stage {
-            index: u32::try_from(id.max(0)).unwrap_or(0) as usize,
-            id,
-            start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            end_date: NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-            season_id: Some(0),
-            blocks: vec![Block {
-                index: 0,
-                name: "SINGLE".to_string(),
-                duration_hours,
-            }],
-            block_mode: BlockMode::Parallel,
-            state_config: StageStateConfig {
-                storage: true,
-                inflow_lags: false,
-            },
-            risk_config: StageRiskConfig::Expectation,
-            scenario_config: ScenarioSourceConfig {
-                branching_factor: 10,
-                noise_method: NoiseMethod::Saa,
-            },
-        }
+        let mut stage = crate::test_support::make_stage(id);
+        stage.index = u32::try_from(id.max(0)).unwrap_or(0) as usize;
+        stage.season_id = Some(0);
+        stage.blocks[0].name = "SINGLE".to_string();
+        stage.blocks[0].duration_hours = duration_hours;
+        stage.scenario_config.branching_factor = 10;
+        stage
     }
 
     /// A minimal two-stage, one-block-per-stage system with 2 hydros,
     /// 1 thermal, 1 bus, and 1 line (2.5% losses).
     fn make_test_system() -> System {
-        let bus = Bus {
-            id: EntityId(1),
-            name: "B1".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            deficit_segments: vec![DeficitSegment {
-                depth_mw: None,
-                cost_per_mwh: 1000.0,
-            }],
-            excess_cost: 0.0,
-        };
+        let mut bus = make_bus_with_deficit(1, 1000.0);
+        bus.name = "B1".to_string();
+        bus.excess_cost = 0.0;
 
-        let line = Line {
-            id: EntityId(1),
-            name: "L1".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            source_bus_id: EntityId(1),
-            target_bus_id: EntityId(1),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            direct_capacity_mw: 500.0,
-            reverse_capacity_mw: 500.0,
-            losses_percent: 2.5,
-            exchange_cost: 0.0,
-        };
+        let mut line = make_line(1, 1, 1);
+        line.name = "L1".to_string();
+        line.direct_capacity_mw = 500.0;
+        line.reverse_capacity_mw = 500.0;
+        line.losses_percent = 2.5;
 
         let hydro1 = make_hydro(1);
         let hydro2 = make_hydro(2);
 
-        let thermal = Thermal {
-            id: EntityId(1),
-            name: "T1".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId(1),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            cost_per_mwh: 50.0,
-            min_generation_mw: 0.0,
-            max_generation_mw: 100.0,
-            anticipated_config: None,
-        };
+        let mut thermal = make_thermal(1, 0.0, 100.0);
+        thermal.name = "T1".to_string();
+        thermal.cost_per_mwh = 50.0;
 
         // Stage 0: duration 720h; Stage 1: duration 744h.
         let stage0 = make_stage(0, 720.0);
@@ -2491,44 +2403,19 @@ mod tests {
     /// `n_pumping_stations() > 0` and the writer's directory gate fires. The
     /// station references bus 1 and hydros 1/2, all present in the base system.
     fn make_test_system_with_pumping() -> System {
-        let bus = Bus {
-            id: EntityId(1),
-            name: "B1".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            deficit_segments: vec![DeficitSegment {
-                depth_mw: None,
-                cost_per_mwh: 1000.0,
-            }],
-            excess_cost: 0.0,
-        };
+        let mut bus = make_bus_with_deficit(1, 1000.0);
+        bus.name = "B1".to_string();
+        bus.excess_cost = 0.0;
 
-        let line = Line {
-            id: EntityId(1),
-            name: "L1".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            source_bus_id: EntityId(1),
-            target_bus_id: EntityId(1),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            direct_capacity_mw: 500.0,
-            reverse_capacity_mw: 500.0,
-            losses_percent: 2.5,
-            exchange_cost: 0.0,
-        };
+        let mut line = make_line(1, 1, 1);
+        line.name = "L1".to_string();
+        line.direct_capacity_mw = 500.0;
+        line.reverse_capacity_mw = 500.0;
+        line.losses_percent = 2.5;
 
-        let pumping_station = PumpingStation {
-            id: EntityId(1),
-            name: "P1".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId(1),
-            source_hydro_id: EntityId(1),
-            destination_hydro_id: EntityId(2),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            consumption_mw_per_m3s: 0.5,
-            min_flow_m3s: 0.0,
-            max_flow_m3s: 150.0,
-        };
+        let mut pumping_station = make_pumping_station(1, 1, 1, 2);
+        pumping_station.name = "P1".to_string();
+        pumping_station.max_flow_m3s = 150.0;
 
         SystemBuilder::new()
             .buses(vec![bus])
@@ -3760,16 +3647,9 @@ mod tests {
     /// [`make_test_system`] plus a declared travel-time arc (hydro 2 → hydro 1,
     /// 720 h), so the writer's `in_transit` directory gate fires.
     fn make_test_system_with_travel_time() -> System {
-        let bus = Bus {
-            id: EntityId(1),
-            name: "B1".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            deficit_segments: vec![DeficitSegment {
-                depth_mw: None,
-                cost_per_mwh: 1000.0,
-            }],
-            excess_cost: 0.0,
-        };
+        let mut bus = make_bus_with_deficit(1, 1000.0);
+        bus.name = "B1".to_string();
+        bus.excess_cost = 0.0;
         let downstream = make_hydro(1);
         let mut upstream = make_hydro(2);
         upstream.downstream_id = Some(EntityId(1));

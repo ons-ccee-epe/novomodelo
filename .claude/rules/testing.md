@@ -1,6 +1,8 @@
 ---
 paths:
   - "crates/**/tests/**/*.rs"
+  - "crates/*/src/test_support.rs"
+  - "crates/*/src/test_support/**/*.rs"
   - "examples/deterministic/**"
 ---
 
@@ -146,13 +148,50 @@ Rules that follow:
 - `novomodelo-solver` statically links HiGHS/CLP into every dependent `tests/*.rs`, so each
   new integration-test **binary** pays a full C++ link. Add a test function to an
   existing domain binary rather than a new file; group related tests with `mod`.
-- The shared harness helpers (`StubComm`, `build_setup_in_code`, `build_setup_for_case`,
-  `run_simulation`) and entity construction (`Stage`/`Hydro`/`Bus`/`Thermal` through the
-  `make_*` builders) live once in `tests/common/` — never re-defined per file. Because
-  every `tests/*.rs` construction routes through the shared builder, adding a required
-  field to one of those `novomodelo-core` entities is a one-place change in
-  `tests/common/builders.rs` (the `<Entity>Spec` default + the `make_<entity>` mapping);
-  no `tests/*.rs` consumer is touched.
-- That one-place property is scoped to the integration-test layer and does NOT hold
-  workspace-wide: production parquet readers and inline `#[cfg(test)]` `--lib` unit-test
-  literals construct these entities directly and must each wire a new field themselves.
+- **Harness helpers.** `StubComm`, `build_setup_in_code`, `build_setup_for_case` and
+  `run_simulation` live once in `crates/novomodelo-sddp/tests/common/`. They are never
+  re-defined per file.
+- **One fixture home per crate.** Each crate's tests build system data through that
+  crate's own home: `crates/novomodelo-core/src/test_support.rs`,
+  `crates/novomodelo-io/src/test_support.rs`,
+  `crates/novomodelo-stochastic/src/test_support.rs`,
+  `crates/novomodelo-sddp/src/test_support.rs`, and the sddp entity builders in
+  `crates/novomodelo-sddp/src/test_support/builders.rs`. Integration tests reach a home
+  through the crate's `test-support` feature (sddp's `tests/common/mod.rs` re-exports its
+  builders). A fixture used by `src/**` `#[cfg(test)]` modules lives under
+  `src/test_support`, not only in `tests/common`.
+- **Ownership.** A crate's test support provides fixtures for the types that crate owns,
+  and downstream crates may consume them. A cross-crate test-support import is legitimate
+  only under this rule.
+- **One literal per entity per home.** In each home that builds an entity,
+  `make_<entity>` holds the only struct literal of it. That literal is complete (no `..`)
+  and destructures its `<Entity>Spec` exhaustively. Every other preset in the home builds
+  through it. Elsewhere in test code, an entity struct literal is allowed only in
+  literal-required tests: core `SystemBuilder` and validation tests, serde and schema
+  round-trips, per-field validation tests, the raw permuted input of order-invariance
+  tests, io resolver-driven fixtures, and tier-3 `StageTemplate` literals. Builders
+  forward entities in the order given and never sort them.
+- **Ripple of a new required field.** Adding a required entity field touches the entity
+  definition, one `make_<entity>` per home that builds the entity, the literal-required
+  sites, and the production readers. It does not touch consumer tests.
+- **Resolved tables come from the resolvers.** sddp test code builds `ResolvedBounds` /
+  `ResolvedPenalties` with `build_with_resolved_tables(make, k_max, adjust)` or
+  `resolved_tables(&system, k_max)`
+  (`crates/novomodelo-sddp/src/test_support/table_resolution.rs`), which run io's
+  production resolvers, and never sorts fixture input. A table stays hand-built only when
+  the resolver cannot reproduce it: a System-free table that pins LP geometry by counts; a
+  fixture whose stage ids the resolver does not keep; a fixture handed finished tables, or
+  one that declares a deliberate count mismatch. Such a table is recorded in
+  `scripts/ci/fixture-tables-allowlist.txt`. `scripts/ci/check-fixture-tables.sh` fails
+  CI on any other hand-built table in sddp test code and on an allowlist row that exempts
+  none.
+- **`make` runs twice**: once to build a probe `System`, once for the final one. Fixture
+  arguments taken by value are cloned into each build, so `clippy::needless_pass_by_value`
+  is answered with `#[expect(clippy::needless_pass_by_value, reason = "...")]`, never with
+  a signature change. Thermal tables span `thermal_stage_axis_len()` (the study stages
+  plus the anticipated lead stages), so a restoring write covers the whole axis.
+- **Explicit oracle.** Every value an assertion depends on is written at the call site: a
+  `Spec` field, a post-build write, or a restoring write in `adjust`. A value that differs
+  from the home default, or from what the resolver derives, is written explicitly and
+  never inherited. A home default is never part of a test's oracle, so a home default can
+  change without moving any assertion.

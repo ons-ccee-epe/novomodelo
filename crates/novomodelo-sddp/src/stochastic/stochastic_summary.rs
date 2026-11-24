@@ -386,15 +386,11 @@ pub fn inflow_models_to_annual_component_rows(
 mod tests {
     use std::collections::BTreeMap;
 
-    use chrono::NaiveDate;
     use novomodelo_core::{
-        Bus, DeficitSegment, EntityId, SystemBuilder, TailraceFlow,
-        entities::hydro::{Hydro, HydroGenerationModel, HydroPenalties},
+        Bus, DeficitSegment, EntityId, SystemBuilder,
+        entities::hydro::{Hydro, HydroPenalties},
         scenario::{AnnualComponent, CorrelationModel, InflowModel, SamplingScheme},
-        temporal::{
-            Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
-            StageStateConfig,
-        },
+        temporal::{Block, NoiseMethod, ScenarioSourceConfig, Stage},
     };
     use novomodelo_stochastic::{
         ArCoefficientEstimate, ClassSchemes, OpeningTreeInputs, build_stochastic_context,
@@ -404,99 +400,63 @@ mod tests {
         StochasticSource, build_stochastic_summary, estimation_report_to_fitting_report,
         inflow_models_to_ar_rows, inflow_models_to_stats_rows,
     };
+    use crate::test_support::builders::{self, BusSpec, HydroSpec, StageSpec};
     use crate::{CorrelationOrigin, EstimationReport};
     use novomodelo_stochastic::par::fitting::HydroEstimationEntry;
 
     // ── Test helpers ──────────────────────────────────────────────────────────
 
     fn make_bus(id: i32) -> Bus {
-        Bus {
-            id: EntityId(id),
-            name: format!("B{id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            deficit_segments: vec![DeficitSegment {
-                depth_mw: None,
-                cost_per_mwh: 1000.0,
-            }],
-            excess_cost: 0.0,
-        }
+        builders::make_bus(
+            EntityId(id),
+            BusSpec {
+                name: format!("B{id}"),
+                deficit_segments: vec![DeficitSegment {
+                    depth_mw: None,
+                    cost_per_mwh: 1000.0,
+                }],
+                ..BusSpec::default()
+            },
+        )
     }
 
     fn make_hydro(id: i32) -> Hydro {
-        let mut hydro = Hydro {
-            unit_groups: Vec::new(),
-            id: EntityId(id),
-            name: format!("H{id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            downstream_id: None,
-            travel_time_hours: None,
-            entry_stage_id: None,
-            exit_stage_id: None,
-            min_storage_hm3: 0.0,
-            max_storage_hm3: 100.0,
-            min_outflow_m3s: 0.0,
-            max_outflow_m3s: None,
-            generation_model: HydroGenerationModel::ConstantProductivity,
-            min_turbined_m3s: 0.0,
-            max_turbined_m3s: 100.0,
-            specific_productivity_mw_per_m3s_per_m: None,
-            min_generation_mw: 0.0,
-            max_generation_mw: 100.0,
-            tailrace: None,
-            hydraulic_losses: None,
-            efficiency: None,
-            evaporation_coefficients_mm: None,
-            evaporation_reference_volumes_hm3: None,
-            diversion: None,
-            filling: None,
-            penalties: HydroPenalties {
-                spillage_cost: 0.0,
-                diversion_cost: 0.0,
-                turbined_cost: 0.0,
-                storage_violation_below_cost: 0.0,
-                filling_target_violation_cost: 0.0,
-                turbined_violation_below_cost: 0.0,
-                outflow_violation_below_cost: 0.0,
-                outflow_violation_above_cost: 0.0,
-                generation_violation_below_cost: 0.0,
-                fpha_violation_cost: 0.0,
-                evaporation_violation_cost: 0.0,
-                water_withdrawal_violation_cost: 0.0,
-                water_withdrawal_violation_pos_cost: 0.0,
-                water_withdrawal_violation_neg_cost: 0.0,
-                evaporation_violation_pos_cost: 0.0,
-                evaporation_violation_neg_cost: 0.0,
-                inflow_nonnegativity_cost: 1000.0,
+        builders::make_hydro(
+            EntityId(id),
+            HydroSpec {
+                name: format!("H{id}"),
+                bus_id: EntityId(1),
+                max_storage_hm3: 100.0,
+                max_turbined_m3s: 100.0,
+                max_generation_mw: 100.0,
+                penalties: HydroPenalties {
+                    inflow_nonnegativity_cost: 1000.0,
+                    ..HydroPenalties::uniform(0.0)
+                },
+                ..HydroSpec::default()
             },
-            tailrace_flow: TailraceFlow::default(),
-        };
-        hydro.declare_mirror_unit_group(EntityId(1));
-        hydro
+        )
     }
 
     fn make_stage(idx: usize, id: i32) -> Stage {
-        Stage {
-            index: idx,
-            id,
-            start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            end_date: NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-            season_id: Some(id.unsigned_abs() as usize),
-            blocks: vec![Block {
-                index: 0,
-                name: "S".to_string(),
-                duration_hours: 744.0,
-            }],
-            block_mode: BlockMode::Parallel,
-            state_config: StageStateConfig {
-                storage: true,
-                inflow_lags: false,
+        let mut stage = builders::make_stage(
+            idx,
+            StageSpec {
+                season_id: Some(id.unsigned_abs() as usize),
+                blocks: vec![Block {
+                    index: 0,
+                    name: "S".to_string(),
+                    duration_hours: 744.0,
+                }],
+                scenario_config: ScenarioSourceConfig {
+                    branching_factor: 3,
+                    noise_method: NoiseMethod::Saa,
+                },
+                ..StageSpec::default()
             },
-            risk_config: StageRiskConfig::Expectation,
-            scenario_config: ScenarioSourceConfig {
-                branching_factor: 3,
-                noise_method: NoiseMethod::Saa,
-            },
-        }
+        );
+        stage.id = id;
+        stage
     }
 
     fn make_inflow_model(hydro_id: i32, stage_id: i32) -> InflowModel {

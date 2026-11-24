@@ -59,6 +59,7 @@ still carry the canonical boundary regex).
 | `check-comment-banners.sh`           | Flags in-function banner-divider comments (advisory).                                                      |
 | `check-comment-bloat.sh`             | Ranks comment-bloat candidates (advisory; also surfaced by `quality-report.sh`).                           |
 | `check-allow-rationale.sh`           | Every `#[allow]` carries a `// Rationale:` (E4; diff-scoped via `BASE_REF`).                               |
+| `check-fixture-tables.sh`            | No hand-built bounds/penalties table in `novomodelo-sddp` test code outside its allowlist (`--verify`).    |
 | `check-infra-genericity.sh`          | No algorithm-specific vocabulary in the infrastructure crates.                                             |
 | `check-cut-selection-determinism.sh` | No fast-math, runtime CPU detection or target feature/cpu flag in own or build-read code; see `deny.toml`. |
 | `check-deny.sh`                      | cargo-deny on the workspace and on `crates/novomodelo-python` (all checks on both), at the version it pins (`--print-version`). |
@@ -70,6 +71,7 @@ still carry the canonical boundary regex).
 | `quality-report.sh`                  | Advisory code-quality hotspot report; also runs the comment-bloat advisory.                                |
 | `lib/comment_scan.sh`                | Shared `cfg(test)`-boundary helpers, sourced by the comment gates.                                         |
 | `allow-rationale-allowlist.txt`      | Allowlist consumed by `check-allow-rationale.sh`.                                                          |
+| `fixture-tables-allowlist.txt`       | Allowlist consumed by `check-fixture-tables.sh`.                                                           |
 
 ## `gen/` — generators
 

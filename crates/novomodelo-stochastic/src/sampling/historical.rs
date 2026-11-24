@@ -697,13 +697,13 @@ mod tests {
 
     use chrono::{Datelike, Months, NaiveDate, TimeDelta, Weekday};
     use novomodelo_core::{
-        EntityId, Hydro,
+        EntityId,
         scenario::{InflowHistoryRow, InflowModel},
-        temporal::{
-            Block, BlockMode, NoiseMethod, ScenarioSourceConfig, SeasonCycleType, SeasonDefinition,
-            StageLagTransition, StageRiskConfig, StageStateConfig,
+        temporal::{SeasonCycleType, SeasonDefinition, StageLagTransition},
+        test_support::{
+            MonthlyLabels, StageSpec, date, monthly_season_map, quarterly_season_map, single_block,
+            weekly_season_map,
         },
-        test_support::{HydroSpec, MirrorUnitGroup, StageSpec, date, single_block},
     };
 
     use super::{
@@ -716,36 +716,21 @@ mod tests {
         precompute::PrecomputedPar,
         precompute_stage_lag_transitions,
     };
-    use crate::test_support::{
-        MonthlyLabels, monthly_season_map, quarterly_season_map, weekly_season_map,
-    };
+    use crate::test_support::unmirrored_hydro;
 
     /// `season_id` is 0-based (0=Jan .. 11=Dec).
     #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
     fn make_monthly_stage(index: usize, season_id: usize) -> Stage {
         let month = (season_id as u32) + 1;
-        Stage {
-            index,
+        novomodelo_core::test_support::make_stage(StageSpec {
             id: index as i32,
+            index: Some(index),
             start_date: NaiveDate::from_ymd_opt(2024, month, 1).unwrap(),
             end_date: NaiveDate::from_ymd_opt(2024, month, 28).unwrap(),
             season_id: Some(season_id),
-            blocks: vec![Block {
-                index: 0,
-                name: "SINGLE".to_string(),
-                duration_hours: 720.0,
-            }],
-            block_mode: BlockMode::Parallel,
-            state_config: StageStateConfig {
-                storage: true,
-                inflow_lags: false,
-            },
-            risk_config: StageRiskConfig::Expectation,
-            scenario_config: ScenarioSourceConfig {
-                branching_factor: 1,
-                noise_method: NoiseMethod::Saa,
-            },
-        }
+            blocks: single_block("SINGLE", 720.0),
+            ..Default::default()
+        })
     }
 
     /// `month0` is 0-based (0=Jan, 11=Dec), matching the `season_id` that
@@ -1158,28 +1143,13 @@ mod tests {
 
     #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
     fn make_validate_stage(index: usize, season_id: Option<usize>) -> Stage {
-        Stage {
-            index,
+        novomodelo_core::test_support::make_stage(StageSpec {
             id: index as i32,
-            start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            end_date: NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
+            index: Some(index),
             season_id,
-            blocks: vec![Block {
-                index: 0,
-                name: "B".to_string(),
-                duration_hours: 720.0,
-            }],
-            block_mode: BlockMode::Parallel,
-            state_config: StageStateConfig {
-                storage: true,
-                inflow_lags: false,
-            },
-            risk_config: StageRiskConfig::Expectation,
-            scenario_config: ScenarioSourceConfig {
-                branching_factor: 1,
-                noise_method: NoiseMethod::Saa,
-            },
-        }
+            blocks: single_block("B", 720.0),
+            ..Default::default()
+        })
     }
 
     #[test]
@@ -1247,9 +1217,10 @@ mod tests {
         lib.eta_slice_mut(2, 5)[1] = f64::NEG_INFINITY;
         let stages: Vec<Stage> = (101_i32..)
             .zip(0..n_stages)
-            .map(|(id, i)| Stage {
-                id,
-                ..make_validate_stage(i, Some(i % 12))
+            .map(|(id, i)| {
+                let mut stage = make_validate_stage(i, Some(i % 12));
+                stage.id = id;
+                stage
             })
             .collect();
         let hydro_ids: Vec<EntityId> = (11..=13).map(EntityId).collect();
@@ -1408,9 +1379,9 @@ mod tests {
     #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
     fn make_quarterly_stage(index: usize, season_id: usize) -> Stage {
         let month = (season_id as u32) * 3 + 1;
-        Stage {
-            index,
+        novomodelo_core::test_support::make_stage(StageSpec {
             id: index as i32,
+            index: Some(index),
             start_date: NaiveDate::from_ymd_opt(2024, month, 1).unwrap(),
             end_date: NaiveDate::from_ymd_opt(
                 2024,
@@ -1419,22 +1390,9 @@ mod tests {
             )
             .unwrap(),
             season_id: Some(season_id),
-            blocks: vec![Block {
-                index: 0,
-                name: "SINGLE".to_string(),
-                duration_hours: 2160.0,
-            }],
-            block_mode: BlockMode::Parallel,
-            state_config: StageStateConfig {
-                storage: true,
-                inflow_lags: false,
-            },
-            risk_config: StageRiskConfig::Expectation,
-            scenario_config: ScenarioSourceConfig {
-                branching_factor: 1,
-                noise_method: NoiseMethod::Saa,
-            },
-        }
+            blocks: single_block("SINGLE", 2160.0),
+            ..Default::default()
+        })
     }
 
     #[test]
@@ -1717,7 +1675,7 @@ mod tests {
         );
 
         let eta = lib.eta_slice(0, 0)[0];
-        let expected = (110.0 - 90.0) / 10.0; // = 2.0
+        let expected = (110.0 - 90.0) / 10.0;
         assert!(
             (eta - expected).abs() < 1e-10,
             "None season_map uses month0() seasons: expected eta={expected}, got {eta}"
@@ -1838,19 +1796,6 @@ mod tests {
     // the forward pass, so z == v.
     // -----------------------------------------------------------------------
 
-    fn make_hydro(id: i32) -> Hydro {
-        novomodelo_core::test_support::make_hydro(HydroSpec {
-            id,
-            name: format!("H{id}"),
-            max_storage_hm3: 100.0,
-            max_turbined_m3s: 100.0,
-            max_generation_mw: 100.0,
-            operational_start_date: date(2020, 1, 1),
-            mirror_unit_group: MirrorUnitGroup::None,
-            ..Default::default()
-        })
-    }
-
     /// With no conditioning, the derived lag seed carries exactly the same
     /// values an explicit literal seed would hold, so threading it
     /// through the per-(stage, hydro) `solve_par_noise` calls reproduces the
@@ -1862,7 +1807,7 @@ mod tests {
         let h1 = EntityId(1);
         let h2 = EntityId(2);
         let hydro_ids = vec![h1, h2];
-        let hydros = vec![make_hydro(1), make_hydro(2)];
+        let hydros = vec![unmirrored_hydro(1), unmirrored_hydro(2)];
         let season_map = monthly_season_map(MonthlyLabels::ZeroBased);
 
         // Two monthly study stages (Jan, Feb) so lag lookups resolve through
@@ -2028,7 +1973,7 @@ mod tests {
     fn historical_replay_round_trip_exact_mid_coarse_period() {
         let hydro_id = EntityId(1);
         let hydro_ids = vec![hydro_id];
-        let hydros = vec![make_hydro(1)];
+        let hydros = vec![unmirrored_hydro(1)];
         let season_map = monthly_season_map(MonthlyLabels::ZeroBased);
 
         // Stage 0 starts April 11: the in-progress occurrence [April 1,

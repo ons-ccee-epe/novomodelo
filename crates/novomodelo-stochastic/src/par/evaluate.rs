@@ -347,7 +347,7 @@ mod tests {
         EntityId,
         scenario::InflowModel,
         temporal::{NoiseMethod, ScenarioSourceConfig, Stage},
-        test_support::{StageSpec, single_block},
+        test_support::{InflowModelSpec, StageSpec, single_block},
     };
 
     use proptest::{prop_assert_eq, proptest};
@@ -360,7 +360,6 @@ mod tests {
     };
     use crate::noise::rng::rng_from_seed;
     use crate::par::precompute::PrecomputedPar;
-    use crate::test_support::InflowModelSpec;
 
     fn make_stage(index: usize, id: i32, season_id: Option<usize>) -> Stage {
         novomodelo_core::test_support::make_stage(StageSpec {
@@ -384,7 +383,7 @@ mod tests {
         coeffs: Vec<f64>,
         residual_ratio: f64,
     ) -> InflowModel {
-        crate::test_support::make_inflow_model(InflowModelSpec {
+        novomodelo_core::test_support::make_inflow_model(InflowModelSpec {
             hydro_id,
             stage_id,
             mean_m3s: mean,

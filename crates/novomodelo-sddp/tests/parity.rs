@@ -1912,11 +1912,8 @@ mod water_travel_time_no_arc_byte_identity {
     use novomodelo_core::scenario::{InflowModel, LoadModel};
     use novomodelo_core::temporal::{BlockMode, Stage};
     use novomodelo_core::{
-        BoundsCountsSpec, BoundsDefaults, BusStagePenalties, ContractBlockBounds, DeficitSegment,
-        EntityId, HydroBlockBounds, HydroGenerationModel, HydroPenalties, HydroStageBounds,
-        HydroStorage, InitialConditions, LineBlockBounds, LineStagePenalties, NcsStagePenalties,
-        PenaltiesCountsSpec, PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds,
-        ResolvedPenalties, SystemBuilder, ThermalBlockBounds,
+        DeficitSegment, EntityId, HydroGenerationModel, HydroPenalties, HydroStorage,
+        InitialConditions, SystemBuilder,
     };
     use novomodelo_sddp::{
         StudySetup,
@@ -2032,70 +2029,6 @@ mod water_travel_time_no_arc_byte_identity {
             })
             .collect();
 
-        let default_hydro_bounds = || HydroStageBounds {
-            min_storage_hm3: 0.0,
-            max_storage_hm3: 500.0,
-            filling_min_rate_m3s: 0.0,
-            water_withdrawal_m3s: 0.0,
-        };
-        let default_hydro_bounds_block = || HydroBlockBounds {
-            max_turbined_m3s: 100.0,
-            max_generation_mw: 250.0,
-            ..Default::default()
-        };
-
-        let bounds = ResolvedBounds::new(
-            &BoundsCountsSpec {
-                n_hydros: 1,
-                n_thermals: 1,
-                n_lines: 0,
-                n_pumping: 0,
-                n_contracts: 0,
-                n_stages: N_STAGES,
-                k_max: 0,
-            },
-            &BoundsDefaults {
-                hydro: default_hydro_bounds(),
-                hydro_block: default_hydro_bounds_block(),
-                thermal_block: ThermalBlockBounds {
-                    min_generation_mw: 0.0,
-                    max_generation_mw: 400.0,
-                    cost_per_mwh: 100.0,
-                },
-                line_block: LineBlockBounds {
-                    direct_mw: 0.0,
-                    reverse_mw: 0.0,
-                },
-                pumping_block: PumpingBlockBounds {
-                    min_flow_m3s: 0.0,
-                    max_flow_m3s: 0.0,
-                },
-                contract_block: ContractBlockBounds {
-                    min_mw: 0.0,
-                    max_mw: 0.0,
-                    price_per_mwh: 0.0,
-                },
-            },
-        );
-
-        let penalties = ResolvedPenalties::new(
-            &PenaltiesCountsSpec {
-                n_hydros: 1,
-                n_buses: 1,
-                n_lines: 0,
-                n_ncs: 0,
-                n_stages: N_STAGES,
-            },
-            &PenaltiesDefaults {
-                hydro: zero_hydro_penalties(),
-                bus: BusStagePenalties { excess_cost: 0.0 },
-                line: LineStagePenalties { exchange_cost: 0.0 },
-                ncs: NcsStagePenalties {
-                    curtailment_cost: 0.0,
-                },
-            },
-        );
-
         let initial_conditions = InitialConditions {
             storage: vec![HydroStorage {
                 hydro_id: EntityId(HYDRO_ID),
@@ -2107,30 +2040,32 @@ mod water_travel_time_no_arc_byte_identity {
             past_defluences: vec![],
         };
 
-        SystemBuilder::new()
-            .buses(vec![bus])
-            .thermals(vec![make_thermal(
-                EntityId(3),
-                ThermalSpec {
-                    name: "T_backup".to_string(),
-                    operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-                    bus_id: EntityId(2),
-                    cost_per_mwh: 100.0,
-                    min_generation_mw: 0.0,
-                    max_generation_mw: 400.0,
-                    anticipated_config: None,
-                    ..Default::default()
-                },
-            )])
-            .hydros(vec![hydro])
-            .stages(stages)
-            .inflow_models(inflow_models)
-            .load_models(load_models)
-            .bounds(bounds)
-            .penalties(penalties)
-            .initial_conditions(initial_conditions)
-            .build()
-            .expect("build_system: valid no-arc single-block study")
+        novomodelo_sddp::test_support::build_with_resolved_tables(
+            || {
+                SystemBuilder::new()
+                    .buses(vec![bus.clone()])
+                    .thermals(vec![make_thermal(
+                        EntityId(3),
+                        ThermalSpec {
+                            name: "T_backup".to_string(),
+                            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
+                            bus_id: EntityId(2),
+                            cost_per_mwh: 100.0,
+                            min_generation_mw: 0.0,
+                            max_generation_mw: 400.0,
+                            anticipated_config: None,
+                            ..Default::default()
+                        },
+                    )])
+                    .hydros(vec![hydro.clone()])
+                    .stages(stages.clone())
+                    .inflow_models(inflow_models.clone())
+                    .load_models(load_models.clone())
+                    .initial_conditions(initial_conditions.clone())
+            },
+            0,
+            |_, _, _| {},
+        )
     }
 
     fn build_config() -> novomodelo_io::Config {

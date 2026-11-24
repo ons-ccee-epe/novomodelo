@@ -846,40 +846,30 @@ mod tests {
 }
 
 #[cfg(test)]
-use novomodelo_core::temporal::{
-    BlockMode, NoiseMethod, ScenarioSourceConfig, StageRiskConfig, StageStateConfig,
-};
+use crate::test_support::builders::{self, StageSpec};
 
 /// A minimal parallel-mode, no-block stage for a delivery-calendar fixture.
 #[cfg(test)]
 fn stage(id: i32, start: chrono::NaiveDate, end: chrono::NaiveDate) -> Stage {
-    Stage {
-        index: 0,
-        id,
-        start_date: start,
-        end_date: end,
-        season_id: None,
-        blocks: vec![],
-        block_mode: BlockMode::Parallel,
-        state_config: StageStateConfig {
-            storage: true,
-            inflow_lags: false,
+    let mut stage = builders::make_stage(
+        0,
+        StageSpec {
+            start_date: start,
+            end_date: end,
+            blocks: vec![],
+            ..StageSpec::default()
         },
-        risk_config: StageRiskConfig::Expectation,
-        scenario_config: ScenarioSourceConfig {
-            branching_factor: 1,
-            noise_method: NoiseMethod::Saa,
-        },
-    }
+    );
+    stage.id = id;
+    stage
 }
 
 #[cfg(test)]
 mod from_system_tests {
     use super::{AnticipatedPlants, DeliveryCalendar, TimeValue, stage};
+    use crate::test_support::builders::{self, BusSpec, ThermalSpec};
     use crate::test_support::ymd;
-    use novomodelo_core::{
-        AnticipatedConfig, Bus, DeficitSegment, EntityId, SystemBuilder, Thermal,
-    };
+    use novomodelo_core::{AnticipatedConfig, DeficitSegment, EntityId, SystemBuilder};
 
     /// A two-stage system with one anticipated thermal resolves through
     /// `from_system` to the same `delivery_stage_ids` a study-only-axis
@@ -889,28 +879,28 @@ mod from_system_tests {
     fn from_system_derives_study_stages_and_anticipated_ids_then_resolves() {
         let s0 = stage(0, ymd(2024, 1, 1), ymd(2024, 2, 1));
         let s1 = stage(1, ymd(2024, 2, 1), ymd(2024, 3, 1));
-        let bus = Bus {
-            id: EntityId(1),
-            name: "B1".to_string(),
-            operational_start_date: ymd(2024, 1, 1),
-            deficit_segments: vec![DeficitSegment {
-                depth_mw: None,
-                cost_per_mwh: 1000.0,
-            }],
-            excess_cost: 0.0,
-        };
-        let thermal = Thermal {
-            id: EntityId(7),
-            name: "T1".to_string(),
-            operational_start_date: ymd(2024, 1, 1),
-            bus_id: EntityId(1),
-            min_generation_mw: 0.0,
-            max_generation_mw: 100.0,
-            cost_per_mwh: 10.0,
-            anticipated_config: Some(AnticipatedConfig::LeadStages(1)),
-            entry_stage_id: None,
-            exit_stage_id: None,
-        };
+        let bus = builders::make_bus(
+            EntityId(1),
+            BusSpec {
+                name: "B1".to_string(),
+                deficit_segments: vec![DeficitSegment {
+                    depth_mw: None,
+                    cost_per_mwh: 1000.0,
+                }],
+                ..BusSpec::default()
+            },
+        );
+        let thermal = builders::make_thermal(
+            EntityId(7),
+            ThermalSpec {
+                name: "T1".to_string(),
+                bus_id: EntityId(1),
+                max_generation_mw: 100.0,
+                cost_per_mwh: 10.0,
+                anticipated_config: Some(AnticipatedConfig::LeadStages(1)),
+                ..ThermalSpec::default()
+            },
+        );
         let system = SystemBuilder::new()
             .buses(vec![bus])
             .stages(vec![s0, s1])
@@ -932,7 +922,7 @@ mod post_study_resolution_tests {
         PostStudyResolved, compute_cumulative_discount_factors, compute_per_stage_discount_factors,
         resolve_post_study_artifacts,
     };
-    use chrono::NaiveDate;
+    use crate::test_support::ymd;
     use novomodelo_core::{
         EntityId, HorizonGraph, PostStudyStage, PostStudyStages, PostStudyThermalBound,
         WaterBucketStages,
@@ -943,13 +933,11 @@ mod post_study_resolution_tests {
         PostStudyStages {
             thermal_stages: vec![
                 PostStudyStage {
-                    start_date: NaiveDate::from_ymd_opt(2026, 11, 1)
-                        .unwrap_or_else(|| unreachable!("hardcoded date is valid")),
+                    start_date: ymd(2026, 11, 1),
                     duration_hours: 720.0,
                 },
                 PostStudyStage {
-                    start_date: NaiveDate::from_ymd_opt(2026, 12, 1)
-                        .unwrap_or_else(|| unreachable!("hardcoded date is valid")),
+                    start_date: ymd(2026, 12, 1),
                     duration_hours: 744.0,
                 },
             ],
@@ -1083,33 +1071,23 @@ mod post_study_resolution_tests {
 #[allow(clippy::unwrap_used, clippy::float_cmp)]
 mod discount_factor_tests {
     use super::{compute_cumulative_discount_factors, compute_per_stage_discount_factors};
-    use chrono::NaiveDate;
+    use crate::test_support::builders::{self, StageSpec};
+    use crate::test_support::ymd;
     use novomodelo_core::HorizonGraph;
-    use novomodelo_core::temporal::{
-        BlockMode, NoiseMethod, PolicyGraphType, ScenarioSourceConfig, Stage, StageRiskConfig,
-        StageStateConfig,
-    };
+    use novomodelo_core::temporal::{PolicyGraphType, Stage};
     use std::collections::BTreeMap;
 
     fn one_year_stage(id: i32) -> Stage {
-        Stage {
-            index: 0,
-            id,
-            start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            end_date: NaiveDate::from_ymd_opt(2025, 1, 1).unwrap(),
-            season_id: None,
-            blocks: vec![],
-            block_mode: BlockMode::Parallel,
-            state_config: StageStateConfig {
-                storage: true,
-                inflow_lags: false,
+        let mut stage = builders::make_stage(
+            0,
+            StageSpec {
+                end_date: ymd(2025, 1, 1),
+                blocks: vec![],
+                ..StageSpec::default()
             },
-            risk_config: StageRiskConfig::Expectation,
-            scenario_config: ScenarioSourceConfig {
-                branching_factor: 1,
-                noise_method: NoiseMethod::Saa,
-            },
-        }
+        );
+        stage.id = id;
+        stage
     }
 
     /// A `stages[].annual_discount_rate_override` (carried on

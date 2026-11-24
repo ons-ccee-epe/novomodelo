@@ -533,23 +533,13 @@ fn line_pair_from_call(
 mod tests {
     use super::*;
     use crate::expression::parser::{ExprKind, parse};
+    use crate::test_support::make_line;
 
     /// Build a one-line index: a line `id` connecting `source_bus_id`→`target_bus_id`.
     fn line(id: i32, source: i32, target: i32) -> Line {
-        Line {
-            id: EntityId(id),
-            name: format!("L{id}"),
-            operational_start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1)
-                .expect("valid date"),
-            source_bus_id: EntityId(source),
-            target_bus_id: EntityId(target),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            direct_capacity_mw: 100.0,
-            reverse_capacity_mw: 100.0,
-            losses_percent: 0.0,
-            exchange_cost: 0.0,
-        }
+        let mut line = make_line(id, source, target);
+        line.name = format!("L{id}");
+        line
     }
 
     /// `hydro_inflow` is block-capable: a bare entity id parses with `block_id: None`.

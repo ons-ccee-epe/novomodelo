@@ -17,18 +17,43 @@ use novomodelo_stochastic::{
 
 mod common;
 use common::{
-    default_inflow_model, deficit_bus, identity_correlation_model, saa_stage, sized_hydro,
+    InflowModelSpec, deficit_bus, identity_correlation_model, make_inflow_model, saa_stage,
+    sized_hydro,
 };
 
 fn build_fixture(hydros: Vec<Hydro>, base_seed: u64) -> novomodelo_stochastic::StochasticContext {
     let stages = vec![saa_stage(0, 0, 5), saa_stage(1, 1, 5), saa_stage(2, 2, 5)];
     let inflow_models = vec![
-        default_inflow_model(1, 0),
-        default_inflow_model(1, 1),
-        default_inflow_model(1, 2),
-        default_inflow_model(2, 0),
-        default_inflow_model(2, 1),
-        default_inflow_model(2, 2),
+        make_inflow_model(InflowModelSpec {
+            hydro_id: 1,
+            stage_id: 0,
+            ..Default::default()
+        }),
+        make_inflow_model(InflowModelSpec {
+            hydro_id: 1,
+            stage_id: 1,
+            ..Default::default()
+        }),
+        make_inflow_model(InflowModelSpec {
+            hydro_id: 1,
+            stage_id: 2,
+            ..Default::default()
+        }),
+        make_inflow_model(InflowModelSpec {
+            hydro_id: 2,
+            stage_id: 0,
+            ..Default::default()
+        }),
+        make_inflow_model(InflowModelSpec {
+            hydro_id: 2,
+            stage_id: 1,
+            ..Default::default()
+        }),
+        make_inflow_model(InflowModelSpec {
+            hydro_id: 2,
+            stage_id: 2,
+            ..Default::default()
+        }),
     ];
 
     let system = SystemBuilder::new()

@@ -22,11 +22,7 @@ use std::collections::BTreeMap;
 
 use chrono::NaiveDate;
 use novomodelo_core::{
-    BoundsCountsSpec, BoundsDefaults, BusStagePenalties, ContractBlockBounds, DeficitSegment,
-    EntityId, HydroBlockBounds, HydroPenalties, HydroStageBounds, LineBlockBounds,
-    LineStagePenalties, NcsStagePenalties, NonControllableSource, PenaltiesCountsSpec,
-    PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds, ResolvedPenalties, ScenarioSource,
-    SystemBuilder, ThermalBlockBounds,
+    DeficitSegment, EntityId, HydroPenalties, ScenarioSource, SystemBuilder,
     entities::hydro::HydroGenerationModel,
     scenario::{
         CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile, ExternalLoadRow,
@@ -57,91 +53,13 @@ use novomodelo_stochastic::{
 
 mod common;
 use common::StubComm;
-use common::builders::{BusSpec, HydroSpec, StageSpec, make_bus, make_hydro, make_stage};
+use common::builders::{
+    BusSpec, HydroSpec, NcsSpec, StageSpec, make_bus, make_hydro, make_ncs, make_stage,
+};
 
 // ---------------------------------------------------------------------------
 // Shared test infrastructure
 // ---------------------------------------------------------------------------
-
-fn hydro_stage_bounds() -> HydroStageBounds {
-    HydroStageBounds {
-        min_storage_hm3: 0.0,
-        max_storage_hm3: 100.0,
-        filling_min_rate_m3s: 0.0,
-        water_withdrawal_m3s: 0.0,
-    }
-}
-
-fn hydro_block_bounds() -> HydroBlockBounds {
-    HydroBlockBounds {
-        max_turbined_m3s: 100.0,
-        max_generation_mw: 100.0,
-        ..Default::default()
-    }
-}
-
-fn hydro_stage_penalties() -> HydroPenalties {
-    HydroPenalties {
-        spillage_cost: 0.0,
-        diversion_cost: 0.0,
-        turbined_cost: 0.0,
-        storage_violation_below_cost: 0.0,
-        filling_target_violation_cost: 0.0,
-        turbined_violation_below_cost: 0.0,
-        outflow_violation_below_cost: 0.0,
-        outflow_violation_above_cost: 0.0,
-        generation_violation_below_cost: 0.0,
-        fpha_violation_cost: 0.0,
-        evaporation_violation_cost: 0.0,
-        water_withdrawal_violation_cost: 0.0,
-        water_withdrawal_violation_pos_cost: 0.0,
-        water_withdrawal_violation_neg_cost: 0.0,
-        evaporation_violation_pos_cost: 0.0,
-        evaporation_violation_neg_cost: 0.0,
-        inflow_nonnegativity_cost: 1000.0,
-    }
-}
-
-fn build_resolved_bounds(n_hydros: usize, n_stages: usize) -> ResolvedBounds {
-    let n_st = n_stages.max(1);
-    ResolvedBounds::new(
-        &BoundsCountsSpec {
-            n_hydros,
-            n_thermals: 0,
-            n_lines: 0,
-            n_pumping: 0,
-            n_contracts: 0,
-            n_stages: n_st,
-            k_max: 0,
-        },
-        &BoundsDefaults {
-            hydro: hydro_stage_bounds(),
-            hydro_block: hydro_block_bounds(),
-            thermal_block: ThermalBlockBounds {
-                min_generation_mw: 0.0,
-                max_generation_mw: 0.0,
-                cost_per_mwh: 0.0,
-            },
-            line_block: LineBlockBounds {
-                direct_mw: 0.0,
-                reverse_mw: 0.0,
-            },
-            pumping_block: PumpingBlockBounds {
-                min_flow_m3s: 0.0,
-                max_flow_m3s: 0.0,
-            },
-            contract_block: ContractBlockBounds {
-                min_mw: 0.0,
-                max_mw: 0.0,
-                price_per_mwh: 0.0,
-            },
-        },
-    )
-}
-
-fn build_resolved_penalties(n_hydros: usize, n_buses: usize, n_stages: usize) -> ResolvedPenalties {
-    build_resolved_penalties_with_ncs(n_hydros, n_buses, 0, n_stages)
-}
 
 fn make_correlation(entity_ids: &[EntityId]) -> CorrelationModel {
     let n = entity_ids.len();
@@ -175,6 +93,32 @@ fn make_correlation(entity_ids: &[EntityId]) -> CorrelationModel {
     }
 }
 
+fn bus_spec() -> BusSpec {
+    BusSpec {
+        name: "B0".to_string(),
+        deficit_segments: vec![DeficitSegment {
+            depth_mw: None,
+            cost_per_mwh: 1000.0,
+        }],
+        ..Default::default()
+    }
+}
+
+fn hydro_spec(raw_id: i32) -> HydroSpec {
+    HydroSpec {
+        name: format!("H{raw_id}"),
+        max_storage_hm3: 100.0,
+        max_outflow_m3s: None,
+        max_turbined_m3s: 100.0,
+        max_generation_mw: 100.0,
+        penalties: HydroPenalties {
+            inflow_nonnegativity_cost: 1000.0,
+            ..HydroSpec::default().penalties
+        },
+        ..Default::default()
+    }
+}
+
 fn build_single_hydro_system(
     hydro_id: i32,
     n_stages: usize,
@@ -182,69 +126,10 @@ fn build_single_hydro_system(
     sampling_scheme: SamplingScheme,
     forward_seed: Option<i64>,
 ) -> (novomodelo_core::System, ScenarioSource) {
-    let bus = make_bus(
-        EntityId(0),
-        BusSpec {
-            name: "B0".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            deficit_segments: vec![DeficitSegment {
-                depth_mw: None,
-                cost_per_mwh: 1000.0,
-            }],
-            excess_cost: 0.0,
-            ..Default::default()
-        },
-    );
+    let bus = make_bus(EntityId(0), bus_spec());
 
     let id = EntityId(hydro_id);
-    let hydro = make_hydro(
-        id,
-        HydroSpec {
-            name: format!("H{hydro_id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId(0),
-            downstream_id: None,
-            entry_stage_id: None,
-            exit_stage_id: None,
-            min_storage_hm3: 0.0,
-            max_storage_hm3: 100.0,
-            min_outflow_m3s: 0.0,
-            max_outflow_m3s: None,
-            generation_model: HydroGenerationModel::ConstantProductivity,
-            min_turbined_m3s: 0.0,
-            max_turbined_m3s: 100.0,
-            specific_productivity_mw_per_m3s_per_m: None,
-            min_generation_mw: 0.0,
-            max_generation_mw: 100.0,
-            tailrace: None,
-            hydraulic_losses: None,
-            efficiency: None,
-            evaporation_coefficients_mm: None,
-            evaporation_reference_volumes_hm3: None,
-            diversion: None,
-            filling: None,
-            penalties: HydroPenalties {
-                spillage_cost: 0.0,
-                diversion_cost: 0.0,
-                turbined_cost: 0.0,
-                storage_violation_below_cost: 0.0,
-                filling_target_violation_cost: 0.0,
-                turbined_violation_below_cost: 0.0,
-                outflow_violation_below_cost: 0.0,
-                outflow_violation_above_cost: 0.0,
-                generation_violation_below_cost: 0.0,
-                fpha_violation_cost: 0.0,
-                evaporation_violation_cost: 0.0,
-                water_withdrawal_violation_cost: 0.0,
-                water_withdrawal_violation_pos_cost: 0.0,
-                water_withdrawal_violation_neg_cost: 0.0,
-                evaporation_violation_pos_cost: 0.0,
-                evaporation_violation_neg_cost: 0.0,
-                inflow_nonnegativity_cost: 1000.0,
-            },
-            ..Default::default()
-        },
-    );
+    let hydro = make_hydro(id, hydro_spec(hydro_id));
 
     let stages: Vec<Stage> = (0..n_stages)
         .map(|i| {
@@ -288,8 +173,6 @@ fn build_single_hydro_system(
         .collect();
 
     let correlation = make_correlation(&[id]);
-    let bounds = build_resolved_bounds(1, n_stages);
-    let penalties = build_resolved_penalties(1, 1, n_stages);
 
     let source = ScenarioSource {
         inflow_scheme: sampling_scheme,
@@ -299,16 +182,18 @@ fn build_single_hydro_system(
         historical_years: None,
     };
 
-    let system = SystemBuilder::new()
-        .buses(vec![bus])
-        .hydros(vec![hydro])
-        .stages(stages)
-        .inflow_models(inflow_models)
-        .correlation(correlation)
-        .bounds(bounds)
-        .penalties(penalties)
-        .build()
-        .expect("SystemBuilder must produce a valid system");
+    let system = novomodelo_sddp::test_support::build_with_resolved_tables(
+        || {
+            SystemBuilder::new()
+                .buses(vec![bus.clone()])
+                .hydros(vec![hydro.clone()])
+                .stages(stages.clone())
+                .inflow_models(inflow_models.clone())
+                .correlation(correlation.clone())
+        },
+        0,
+        |_, _, _| {},
+    );
 
     (system, source)
 }
@@ -320,118 +205,12 @@ fn build_two_hydro_system(
     sampling_scheme: SamplingScheme,
     forward_seed: Option<i64>,
 ) -> (novomodelo_core::System, ScenarioSource) {
-    let bus = make_bus(
-        EntityId(0),
-        BusSpec {
-            name: "B0".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            deficit_segments: vec![DeficitSegment {
-                depth_mw: None,
-                cost_per_mwh: 1000.0,
-            }],
-            excess_cost: 0.0,
-            ..Default::default()
-        },
-    );
+    let bus = make_bus(EntityId(0), bus_spec());
 
-    let hydros = vec![
-        make_hydro(
-            EntityId(hydro_id_order[0]),
-            HydroSpec {
-                name: format!("H{}", hydro_id_order[0]),
-                operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-                bus_id: EntityId(0),
-                downstream_id: None,
-                entry_stage_id: None,
-                exit_stage_id: None,
-                min_storage_hm3: 0.0,
-                max_storage_hm3: 100.0,
-                min_outflow_m3s: 0.0,
-                max_outflow_m3s: None,
-                generation_model: HydroGenerationModel::ConstantProductivity,
-                min_turbined_m3s: 0.0,
-                max_turbined_m3s: 100.0,
-                specific_productivity_mw_per_m3s_per_m: None,
-                min_generation_mw: 0.0,
-                max_generation_mw: 100.0,
-                tailrace: None,
-                hydraulic_losses: None,
-                efficiency: None,
-                evaporation_coefficients_mm: None,
-                evaporation_reference_volumes_hm3: None,
-                diversion: None,
-                filling: None,
-                penalties: HydroPenalties {
-                    spillage_cost: 0.0,
-                    diversion_cost: 0.0,
-                    turbined_cost: 0.0,
-                    storage_violation_below_cost: 0.0,
-                    filling_target_violation_cost: 0.0,
-                    turbined_violation_below_cost: 0.0,
-                    outflow_violation_below_cost: 0.0,
-                    outflow_violation_above_cost: 0.0,
-                    generation_violation_below_cost: 0.0,
-                    fpha_violation_cost: 0.0,
-                    evaporation_violation_cost: 0.0,
-                    water_withdrawal_violation_cost: 0.0,
-                    water_withdrawal_violation_pos_cost: 0.0,
-                    water_withdrawal_violation_neg_cost: 0.0,
-                    evaporation_violation_pos_cost: 0.0,
-                    evaporation_violation_neg_cost: 0.0,
-                    inflow_nonnegativity_cost: 1000.0,
-                },
-                ..Default::default()
-            },
-        ),
-        make_hydro(
-            EntityId(hydro_id_order[1]),
-            HydroSpec {
-                name: format!("H{}", hydro_id_order[1]),
-                operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-                bus_id: EntityId(0),
-                downstream_id: None,
-                entry_stage_id: None,
-                exit_stage_id: None,
-                min_storage_hm3: 0.0,
-                max_storage_hm3: 100.0,
-                min_outflow_m3s: 0.0,
-                max_outflow_m3s: None,
-                generation_model: HydroGenerationModel::ConstantProductivity,
-                min_turbined_m3s: 0.0,
-                max_turbined_m3s: 100.0,
-                specific_productivity_mw_per_m3s_per_m: None,
-                min_generation_mw: 0.0,
-                max_generation_mw: 100.0,
-                tailrace: None,
-                hydraulic_losses: None,
-                efficiency: None,
-                evaporation_coefficients_mm: None,
-                evaporation_reference_volumes_hm3: None,
-                diversion: None,
-                filling: None,
-                penalties: HydroPenalties {
-                    spillage_cost: 0.0,
-                    diversion_cost: 0.0,
-                    turbined_cost: 0.0,
-                    storage_violation_below_cost: 0.0,
-                    filling_target_violation_cost: 0.0,
-                    turbined_violation_below_cost: 0.0,
-                    outflow_violation_below_cost: 0.0,
-                    outflow_violation_above_cost: 0.0,
-                    generation_violation_below_cost: 0.0,
-                    fpha_violation_cost: 0.0,
-                    evaporation_violation_cost: 0.0,
-                    water_withdrawal_violation_cost: 0.0,
-                    water_withdrawal_violation_pos_cost: 0.0,
-                    water_withdrawal_violation_neg_cost: 0.0,
-                    evaporation_violation_pos_cost: 0.0,
-                    evaporation_violation_neg_cost: 0.0,
-                    inflow_nonnegativity_cost: 1000.0,
-                },
-                ..Default::default()
-            },
-        ),
-    ];
+    let hydros: Vec<_> = hydro_id_order
+        .iter()
+        .map(|&raw_id| make_hydro(EntityId(raw_id), hydro_spec(raw_id)))
+        .collect();
 
     let stages: Vec<Stage> = (0..n_stages)
         .map(|i| {
@@ -482,8 +261,6 @@ fn build_two_hydro_system(
     // `build_stochastic_context` — this is the invariance path under test.
     let entity_ids: Vec<EntityId> = hydro_id_order.iter().map(|&id| EntityId(id)).collect();
     let correlation = make_correlation(&entity_ids);
-    let bounds = build_resolved_bounds(2, n_stages);
-    let penalties = build_resolved_penalties(2, 1, n_stages);
 
     let source = ScenarioSource {
         inflow_scheme: sampling_scheme,
@@ -493,16 +270,18 @@ fn build_two_hydro_system(
         historical_years: None,
     };
 
-    let system = SystemBuilder::new()
-        .buses(vec![bus])
-        .hydros(hydros)
-        .stages(stages)
-        .inflow_models(inflow_models)
-        .correlation(correlation)
-        .bounds(bounds)
-        .penalties(penalties)
-        .build()
-        .expect("SystemBuilder must produce a valid system");
+    let system = novomodelo_sddp::test_support::build_with_resolved_tables(
+        || {
+            SystemBuilder::new()
+                .buses(vec![bus.clone()])
+                .hydros(hydros.clone())
+                .stages(stages.clone())
+                .inflow_models(inflow_models.clone())
+                .correlation(correlation.clone())
+        },
+        0,
+        |_, _, _| {},
+    );
 
     (system, source)
 }
@@ -830,8 +609,6 @@ fn build_historical_system(
         .collect();
     let history = build_inflow_history(id, n_history_years);
     let correlation = make_correlation(&[id]);
-    let bounds = build_resolved_bounds(1, 4);
-    let penalties = build_resolved_penalties(1, 1, 4);
 
     let source = ScenarioSource {
         inflow_scheme: SamplingScheme::Historical,
@@ -841,17 +618,19 @@ fn build_historical_system(
         historical_years: None,
     };
 
-    let system = SystemBuilder::new()
-        .buses(vec![bus])
-        .hydros(vec![hydro])
-        .stages(stages)
-        .inflow_models(inflow_models)
-        .inflow_history(history)
-        .correlation(correlation)
-        .bounds(bounds)
-        .penalties(penalties)
-        .build()
-        .expect("SystemBuilder for historical must succeed");
+    let system = novomodelo_sddp::test_support::build_with_resolved_tables(
+        || {
+            SystemBuilder::new()
+                .buses(vec![bus.clone()])
+                .hydros(vec![hydro.clone()])
+                .stages(stages.clone())
+                .inflow_models(inflow_models.clone())
+                .inflow_history(history.clone())
+                .correlation(correlation.clone())
+        },
+        0,
+        |_, _, _| {},
+    );
 
     (system, source)
 }
@@ -1064,8 +843,6 @@ fn build_external_system(
         .collect();
     let ext_rows = build_external_inflow_rows(id, 3, n_scenarios);
     let correlation = make_correlation(&[id]);
-    let bounds = build_resolved_bounds(1, 3);
-    let penalties = build_resolved_penalties(1, 1, 3);
 
     let source = ScenarioSource {
         inflow_scheme: SamplingScheme::External,
@@ -1075,45 +852,21 @@ fn build_external_system(
         historical_years: None,
     };
 
-    let system = SystemBuilder::new()
-        .buses(vec![bus])
-        .hydros(vec![hydro])
-        .stages(stages)
-        .inflow_models(inflow_models)
-        .external_scenarios(ext_rows)
-        .correlation(correlation)
-        .bounds(bounds)
-        .penalties(penalties)
-        .build()
-        .expect("SystemBuilder for external must succeed");
+    let system = novomodelo_sddp::test_support::build_with_resolved_tables(
+        || {
+            SystemBuilder::new()
+                .buses(vec![bus.clone()])
+                .hydros(vec![hydro.clone()])
+                .stages(stages.clone())
+                .inflow_models(inflow_models.clone())
+                .external_scenarios(ext_rows.clone())
+                .correlation(correlation.clone())
+        },
+        0,
+        |_, _, _| {},
+    );
 
     (system, source)
-}
-
-fn build_resolved_penalties_with_ncs(
-    n_hydros: usize,
-    n_buses: usize,
-    n_ncs: usize,
-    n_stages: usize,
-) -> ResolvedPenalties {
-    let n_st = n_stages.max(1);
-    ResolvedPenalties::new(
-        &PenaltiesCountsSpec {
-            n_hydros,
-            n_buses,
-            n_lines: 0,
-            n_ncs,
-            n_stages: n_st,
-        },
-        &PenaltiesDefaults {
-            hydro: hydro_stage_penalties(),
-            bus: BusStagePenalties { excess_cost: 0.0 },
-            line: LineStagePenalties { exchange_cost: 0.0 },
-            ncs: NcsStagePenalties {
-                curtailment_cost: 0.0,
-            },
-        },
-    )
 }
 
 fn assert_no_external_libraries(setup: &StudySetup) {
@@ -1218,17 +971,14 @@ fn build_mixed_system(
             ..Default::default()
         },
     );
-    let ncs = NonControllableSource {
-        id: EntityId(10),
-        name: "NCS0".to_string(),
-        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        bus_id: EntityId(0),
-        entry_stage_id: None,
-        exit_stage_id: None,
-        max_generation_mw: 30.0,
-        allow_curtailment: true,
-        curtailment_cost: 0.0,
-    };
+    let ncs = make_ncs(
+        EntityId(10),
+        NcsSpec {
+            name: "NCS0".to_string(),
+            max_generation_mw: 30.0,
+            ..NcsSpec::default()
+        },
+    );
     let stages: Vec<Stage> = (0..3)
         .map(|i| {
             let month = (i % 12) as u32 + 1;
@@ -1289,8 +1039,6 @@ fn build_mixed_system(
         })
         .collect();
     let correlation = make_correlation(&[EntityId(1)]);
-    let bounds = build_resolved_bounds(1, 3);
-    let penalties = build_resolved_penalties_with_ncs(1, 1, 1, 3);
 
     let source = ScenarioSource {
         inflow_scheme,
@@ -1300,19 +1048,21 @@ fn build_mixed_system(
         historical_years: None,
     };
 
-    let system = SystemBuilder::new()
-        .buses(vec![bus])
-        .hydros(vec![hydro])
-        .non_controllable_sources(vec![ncs])
-        .stages(stages)
-        .inflow_models(inflow_models)
-        .load_models(load_models)
-        .ncs_models(ncs_models)
-        .correlation(correlation)
-        .bounds(bounds)
-        .penalties(penalties)
-        .build()
-        .expect("SystemBuilder for mixed must succeed");
+    let system = novomodelo_sddp::test_support::build_with_resolved_tables(
+        || {
+            SystemBuilder::new()
+                .buses(vec![bus.clone()])
+                .hydros(vec![hydro.clone()])
+                .non_controllable_sources(vec![ncs.clone()])
+                .stages(stages.clone())
+                .inflow_models(inflow_models.clone())
+                .load_models(load_models.clone())
+                .ncs_models(ncs_models.clone())
+                .correlation(correlation.clone())
+        },
+        0,
+        |_, _, _| {},
+    );
 
     (system, source)
 }
@@ -1679,8 +1429,6 @@ fn build_external_load_system(
         .collect();
     let ext_load_rows = build_external_load_rows(EntityId(0), 3, n_scenarios);
     let correlation = make_correlation(&[EntityId(1)]);
-    let bounds = build_resolved_bounds(1, 3);
-    let penalties = build_resolved_penalties(1, 1, 3);
 
     let source = ScenarioSource {
         inflow_scheme: SamplingScheme::InSample,
@@ -1690,18 +1438,20 @@ fn build_external_load_system(
         historical_years: None,
     };
 
-    let system = SystemBuilder::new()
-        .buses(vec![bus])
-        .hydros(vec![hydro])
-        .stages(stages)
-        .inflow_models(inflow_models)
-        .load_models(load_models)
-        .external_load_scenarios(ext_load_rows)
-        .correlation(correlation)
-        .bounds(bounds)
-        .penalties(penalties)
-        .build()
-        .expect("SystemBuilder for external load must succeed");
+    let system = novomodelo_sddp::test_support::build_with_resolved_tables(
+        || {
+            SystemBuilder::new()
+                .buses(vec![bus.clone()])
+                .hydros(vec![hydro.clone()])
+                .stages(stages.clone())
+                .inflow_models(inflow_models.clone())
+                .load_models(load_models.clone())
+                .external_load_scenarios(ext_load_rows.clone())
+                .correlation(correlation.clone())
+        },
+        0,
+        |_, _, _| {},
+    );
 
     (system, source)
 }
@@ -1775,17 +1525,14 @@ fn build_external_ncs_system(
             ..Default::default()
         },
     );
-    let ncs = NonControllableSource {
-        id: EntityId(10),
-        name: "NCS0".to_string(),
-        operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        bus_id: EntityId(0),
-        entry_stage_id: None,
-        exit_stage_id: None,
-        max_generation_mw: 30.0,
-        allow_curtailment: true,
-        curtailment_cost: 0.0,
-    };
+    let ncs = make_ncs(
+        EntityId(10),
+        NcsSpec {
+            name: "NCS0".to_string(),
+            max_generation_mw: 30.0,
+            ..NcsSpec::default()
+        },
+    );
     let stages: Vec<Stage> = (0..3)
         .map(|i| {
             let month = (i % 12) as u32 + 1;
@@ -1839,8 +1586,6 @@ fn build_external_ncs_system(
         .collect();
     let ext_ncs_rows = build_external_ncs_rows(EntityId(10), 3, n_scenarios);
     let correlation = make_correlation(&[EntityId(1)]);
-    let bounds = build_resolved_bounds(1, 3);
-    let penalties = build_resolved_penalties_with_ncs(1, 1, 1, 3);
 
     let source = ScenarioSource {
         inflow_scheme: SamplingScheme::InSample,
@@ -1850,19 +1595,21 @@ fn build_external_ncs_system(
         historical_years: None,
     };
 
-    let system = SystemBuilder::new()
-        .buses(vec![bus])
-        .hydros(vec![hydro])
-        .non_controllable_sources(vec![ncs])
-        .stages(stages)
-        .inflow_models(inflow_models)
-        .ncs_models(ncs_models)
-        .external_ncs_scenarios(ext_ncs_rows)
-        .correlation(correlation)
-        .bounds(bounds)
-        .penalties(penalties)
-        .build()
-        .expect("SystemBuilder for external NCS must succeed");
+    let system = novomodelo_sddp::test_support::build_with_resolved_tables(
+        || {
+            SystemBuilder::new()
+                .buses(vec![bus.clone()])
+                .hydros(vec![hydro.clone()])
+                .non_controllable_sources(vec![ncs.clone()])
+                .stages(stages.clone())
+                .inflow_models(inflow_models.clone())
+                .ncs_models(ncs_models.clone())
+                .external_ncs_scenarios(ext_ncs_rows.clone())
+                .correlation(correlation.clone())
+        },
+        0,
+        |_, _, _| {},
+    );
 
     (system, source)
 }
@@ -2095,8 +1842,6 @@ fn build_monthly_unique_groups_system(
         .collect();
 
     let correlation = make_correlation(&[EntityId(1)]);
-    let bounds = build_resolved_bounds(1, n_stages);
-    let penalties = build_resolved_penalties(1, 1, n_stages);
 
     let source = ScenarioSource {
         inflow_scheme: SamplingScheme::InSample,
@@ -2106,16 +1851,18 @@ fn build_monthly_unique_groups_system(
         historical_years: None,
     };
 
-    let system = SystemBuilder::new()
-        .buses(vec![bus])
-        .hydros(vec![hydro])
-        .stages(stages)
-        .inflow_models(inflow_models)
-        .correlation(correlation)
-        .bounds(bounds)
-        .penalties(penalties)
-        .build()
-        .expect("SystemBuilder must produce a valid system");
+    let system = novomodelo_sddp::test_support::build_with_resolved_tables(
+        || {
+            SystemBuilder::new()
+                .buses(vec![bus.clone()])
+                .hydros(vec![hydro.clone()])
+                .stages(stages.clone())
+                .inflow_models(inflow_models.clone())
+                .correlation(correlation.clone())
+        },
+        0,
+        |_, _, _| {},
+    );
 
     (system, source)
 }

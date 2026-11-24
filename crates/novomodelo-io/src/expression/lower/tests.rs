@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use novomodelo_core::{EntityId, Line, ScalarExpr, VariableRef};
+use novomodelo_core::{EntityId, ScalarExpr, VariableRef};
 
 use super::{
     Fault, LinearForm, LoweredRelation, Lowering, NamedTable, Scope, Slot, lower_relation,
@@ -11,6 +11,7 @@ use super::{
 use crate::expression::Diagnostic;
 use crate::expression::catalog::{LineBusPairIndex, build_line_bus_pair_index};
 use crate::expression::parser::{Expr, parse};
+use crate::test_support::make_line;
 
 fn params() -> HashMap<String, EntityId> {
     HashMap::from([
@@ -198,19 +199,8 @@ fn with_named<T>(decls: &[(&str, &str)], f: impl FnOnce(&Scope) -> T) -> T {
 
 /// A single line 5 running from bus 3 to bus 7.
 fn line_index() -> LineBusPairIndex {
-    let line = Line {
-        id: EntityId(5),
-        name: "L5".to_owned(),
-        operational_start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-        source_bus_id: EntityId(3),
-        target_bus_id: EntityId(7),
-        entry_stage_id: None,
-        exit_stage_id: None,
-        direct_capacity_mw: 100.0,
-        reverse_capacity_mw: 100.0,
-        losses_percent: 0.0,
-        exchange_cost: 0.0,
-    };
+    let mut line = make_line(5, 3, 7);
+    line.name = "L5".to_owned();
     build_line_bus_pair_index(&[line]).unwrap()
 }
 

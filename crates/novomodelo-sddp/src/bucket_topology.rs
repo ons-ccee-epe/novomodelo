@@ -459,107 +459,53 @@ mod neutrality_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::NaiveDate;
+    use crate::test_support::builders::{self, BusSpec, HydroSpec, StageSpec};
+    use crate::test_support::ymd;
+    use novomodelo_core::entities::hydro::HydroPenalties;
     use novomodelo_core::{
-        Block, BlockMode, Bus, DeficitSegment, Hydro, HydroGenerationModel, HydroPenalties,
-        NoiseMethod, PostStudyStage, PostStudyStages, ScenarioSourceConfig, Stage, StageRiskConfig,
-        StageStateConfig, SystemBuilder, TailraceFlow, WaterBucketStages,
+        Block, BlockMode, Bus, DeficitSegment, Hydro, PostStudyStage, PostStudyStages, Stage,
+        SystemBuilder, WaterBucketStages,
     };
 
-    fn zero_penalties() -> HydroPenalties {
-        HydroPenalties {
-            spillage_cost: 0.0,
-            diversion_cost: 0.0,
-            turbined_cost: 0.0,
-            storage_violation_below_cost: 0.0,
-            filling_target_violation_cost: 0.0,
-            turbined_violation_below_cost: 0.0,
-            outflow_violation_below_cost: 0.0,
-            outflow_violation_above_cost: 0.0,
-            generation_violation_below_cost: 0.0,
-            fpha_violation_cost: 0.0,
-            evaporation_violation_cost: 0.0,
-            water_withdrawal_violation_cost: 0.0,
-            water_withdrawal_violation_pos_cost: 0.0,
-            water_withdrawal_violation_neg_cost: 0.0,
-            evaporation_violation_pos_cost: 0.0,
-            evaporation_violation_neg_cost: 0.0,
-            inflow_nonnegativity_cost: 0.0,
-        }
-    }
-
-    fn date(y: i32, m: u32, d: u32) -> NaiveDate {
-        NaiveDate::from_ymd_opt(y, m, d).unwrap()
-    }
-
     fn hydro(id: i32, downstream_id: Option<i32>, travel_time_hours: Option<f64>) -> Hydro {
-        let mut hydro = Hydro {
-            unit_groups: Vec::new(),
-            id: EntityId(id),
-            name: format!("H{id}"),
-            operational_start_date: date(2024, 1, 1),
-            downstream_id: downstream_id.map(EntityId),
-            travel_time_hours,
-            entry_stage_id: None,
-            exit_stage_id: None,
-            min_storage_hm3: 0.0,
-            max_storage_hm3: 100.0,
-            min_outflow_m3s: 0.0,
-            max_outflow_m3s: None,
-            generation_model: HydroGenerationModel::ConstantProductivity,
-            min_turbined_m3s: 0.0,
-            max_turbined_m3s: 100.0,
-            specific_productivity_mw_per_m3s_per_m: None,
-            min_generation_mw: 0.0,
-            max_generation_mw: 100.0,
-            tailrace: None,
-            hydraulic_losses: None,
-            efficiency: None,
-            evaporation_coefficients_mm: None,
-            evaporation_reference_volumes_hm3: None,
-            diversion: None,
-            filling: None,
-            penalties: zero_penalties(),
-            tailrace_flow: TailraceFlow::default(),
-        };
-        hydro.declare_mirror_unit_group(EntityId(1));
-        hydro
+        builders::make_hydro(
+            EntityId(id),
+            HydroSpec {
+                name: format!("H{id}"),
+                bus_id: EntityId(1),
+                downstream_id: downstream_id.map(EntityId),
+                travel_time_hours,
+                max_storage_hm3: 100.0,
+                max_turbined_m3s: 100.0,
+                max_generation_mw: 100.0,
+                penalties: HydroPenalties::uniform(0.0),
+                ..HydroSpec::default()
+            },
+        )
     }
 
     fn stage_with_durations(id: i32, block_hours: &[f64]) -> Stage {
-        Stage {
-            index: usize::try_from(id).unwrap_or(0),
-            id,
-            start_date: date(2024, 1, 1),
-            end_date: date(2024, 2, 1),
-            season_id: None,
-            blocks: block_hours
-                .iter()
-                .enumerate()
-                .map(|(i, &h)| Block {
-                    index: i,
-                    name: format!("B{i}"),
-                    duration_hours: h,
-                })
-                .collect(),
-            block_mode: BlockMode::Parallel,
-            state_config: StageStateConfig {
-                storage: true,
-                inflow_lags: false,
+        builders::make_stage(
+            usize::try_from(id).unwrap_or(0),
+            StageSpec {
+                blocks: block_hours
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &h)| Block {
+                        index: i,
+                        name: format!("B{i}"),
+                        duration_hours: h,
+                    })
+                    .collect(),
+                ..StageSpec::default()
             },
-            risk_config: StageRiskConfig::Expectation,
-            scenario_config: ScenarioSourceConfig {
-                branching_factor: 1,
-                noise_method: NoiseMethod::Saa,
-            },
-        }
+        )
     }
 
     fn chronological_stage_with_durations(id: i32, block_hours: &[f64]) -> Stage {
-        Stage {
-            block_mode: BlockMode::Chronological,
-            ..stage_with_durations(id, block_hours)
-        }
+        let mut stage = stage_with_durations(id, block_hours);
+        stage.block_mode = BlockMode::Chronological;
+        stage
     }
 
     fn stages_with_durations(durations: &[f64]) -> Vec<Stage> {
@@ -575,16 +521,17 @@ mod tests {
     }
 
     fn test_bus() -> Bus {
-        Bus {
-            id: EntityId(1),
-            name: "B1".to_string(),
-            operational_start_date: date(2024, 1, 1),
-            deficit_segments: vec![DeficitSegment {
-                depth_mw: None,
-                cost_per_mwh: 500.0,
-            }],
-            excess_cost: 0.0,
-        }
+        builders::make_bus(
+            EntityId(1),
+            BusSpec {
+                name: "B1".to_string(),
+                deficit_segments: vec![DeficitSegment {
+                    depth_mw: None,
+                    cost_per_mwh: 500.0,
+                }],
+                ..BusSpec::default()
+            },
+        )
     }
 
     fn build_system(hydros: Vec<Hydro>, stages: Vec<Stage>) -> novomodelo_core::System {
@@ -621,7 +568,7 @@ mod tests {
                 .iter()
                 .enumerate()
                 .map(|(i, &duration_hours)| PostStudyStage {
-                    start_date: date(2024, 4 + u32::try_from(i).unwrap_or(0), 1),
+                    start_date: ymd(2024, 4 + u32::try_from(i).unwrap_or(0), 1),
                     duration_hours,
                 })
                 .collect(),

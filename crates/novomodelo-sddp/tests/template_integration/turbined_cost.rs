@@ -63,53 +63,23 @@ fn turbined_cost_multi_block_uses_per_block_hours() {
 fn turbined_cost_mixed_system_all_hydros_carry_cost() {
     let (system, production) = four_hydro_mixed_system();
 
-    let hydro_pen = HydroPenalties {
-        spillage_cost: 0.01,
-        diversion_cost: 0.0,
-        turbined_cost: 1.0,
-        storage_violation_below_cost: 0.0,
-        filling_target_violation_cost: 0.0,
-        turbined_violation_below_cost: 0.0,
-        outflow_violation_below_cost: 0.0,
-        outflow_violation_above_cost: 0.0,
-        generation_violation_below_cost: 0.0,
-        fpha_violation_cost: 5000.0,
-        evaporation_violation_cost: 0.0,
-        water_withdrawal_violation_cost: 0.0,
-        water_withdrawal_violation_pos_cost: 0.0,
-        water_withdrawal_violation_neg_cost: 0.0,
-        evaporation_violation_pos_cost: 0.0,
-        evaporation_violation_neg_cost: 0.0,
-        inflow_nonnegativity_cost: 1000.0,
-    };
-    let penalties = ResolvedPenalties::new(
-        &PenaltiesCountsSpec {
-            n_hydros: 4,
-            n_buses: 1,
-            n_lines: 0,
-            n_ncs: 0,
-            n_stages: 1,
+    let system = novomodelo_sddp::test_support::build_with_resolved_tables(
+        || {
+            SystemBuilder::new()
+                .buses(system.buses().to_vec())
+                .hydros(system.hydros().to_vec())
+                .stages(system.stages().to_vec())
+                .inflow_models(system.inflow_models().to_vec())
+                .load_models(system.load_models().to_vec())
         },
-        &PenaltiesDefaults {
-            hydro: hydro_pen,
-            bus: BusStagePenalties { excess_cost: 0.0 },
-            line: LineStagePenalties { exchange_cost: 0.0 },
-            ncs: NcsStagePenalties {
-                curtailment_cost: 0.0,
-            },
+        0,
+        |_, bounds, penalties| {
+            *bounds = system.bounds().clone();
+            for h in 0..4 {
+                penalties.hydro_penalties_mut(h, 0).turbined_cost = 1.0;
+            }
         },
     );
-
-    let system = SystemBuilder::new()
-        .buses(system.buses().to_vec())
-        .hydros(system.hydros().to_vec())
-        .stages(system.stages().to_vec())
-        .inflow_models(system.inflow_models().to_vec())
-        .load_models(system.load_models().to_vec())
-        .bounds(system.bounds().clone())
-        .penalties(penalties)
-        .build()
-        .expect("mixed system with turbined cost");
 
     let result = build_stage_templates_resolving_layout(
         &system,

@@ -133,14 +133,10 @@ fn parquet_lookup(
     clippy::too_many_lines
 )]
 mod tests {
-    use chrono::NaiveDate;
     use novomodelo_core::{
-        DeficitSegment, EntityId, HorizonGraph, Hydro, TailraceFlow,
+        EntityId, HorizonGraph, Hydro,
         entities::{Bus, HydroGenerationModel},
-        temporal::{
-            Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
-            StageStateConfig,
-        },
+        temporal::Stage,
     };
 
     use super::validate_productivity_resolution;
@@ -149,67 +145,27 @@ mod tests {
             HydroEnergyProductivityRow, ProductionModelConfig, SelectionMode, StageRange,
         },
         stages::StagesData,
+        test_support::make_bus_with_deficit,
         validation::{ErrorKind, ValidationContext},
     };
 
     // ── helpers ───────────────────────────────────────────────────────────────
 
     fn make_stage(id: i32) -> Stage {
-        let index = usize::try_from(id).expect("stage id is non-negative in tests");
-        Stage {
-            index,
-            id,
-            start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            end_date: NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-            season_id: None,
-            blocks: vec![Block {
-                index: 0,
-                name: "FLAT".to_string(),
-                duration_hours: 744.0,
-            }],
-            block_mode: BlockMode::Parallel,
-            state_config: StageStateConfig {
-                storage: true,
-                inflow_lags: false,
-            },
-            risk_config: StageRiskConfig::Expectation,
-            scenario_config: ScenarioSourceConfig {
-                branching_factor: 50,
-                noise_method: NoiseMethod::Saa,
-            },
-        }
+        let mut stage = crate::test_support::make_stage(id);
+        stage.index = usize::try_from(id).expect("stage id is non-negative in tests");
+        stage.blocks[0].name = "FLAT".to_string();
+        stage.blocks[0].duration_hours = 744.0;
+        stage.scenario_config.branching_factor = 50;
+        stage
     }
 
     fn make_hydro(id: i32, model: HydroGenerationModel) -> Hydro {
-        Hydro {
-            unit_groups: Vec::new(),
-            id: EntityId(id),
-            name: format!("Hydro {id}"),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            downstream_id: None,
-            travel_time_hours: None,
-            entry_stage_id: None,
-            exit_stage_id: None,
-            min_storage_hm3: 0.0,
-            max_storage_hm3: 1000.0,
-            min_outflow_m3s: 0.0,
-            max_outflow_m3s: None,
-            generation_model: model,
-            min_turbined_m3s: 0.0,
-            max_turbined_m3s: 100.0,
-            specific_productivity_mw_per_m3s_per_m: None,
-            min_generation_mw: 0.0,
-            max_generation_mw: 500.0,
-            tailrace: None,
-            hydraulic_losses: None,
-            efficiency: None,
-            evaporation_coefficients_mm: None,
-            evaporation_reference_volumes_hm3: None,
-            diversion: None,
-            filling: None,
-            penalties: crate::test_support::penalties_all(1.0),
-            tailrace_flow: TailraceFlow::default(),
-        }
+        let mut hydro = crate::test_support::make_hydro(id, None);
+        hydro.generation_model = model;
+        hydro.max_turbined_m3s = 100.0;
+        hydro.max_generation_mw = 500.0;
+        hydro
     }
 
     fn parquet_row(
@@ -252,16 +208,9 @@ mod tests {
     }
 
     fn buses() -> Vec<Bus> {
-        vec![Bus {
-            id: EntityId(1),
-            name: "BUS_1".to_string(),
-            operational_start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            deficit_segments: vec![DeficitSegment {
-                depth_mw: None,
-                cost_per_mwh: 1000.0,
-            }],
-            excess_cost: 100.0,
-        }]
+        let mut bus = make_bus_with_deficit(1, 1000.0);
+        bus.name = "BUS_1".to_string();
+        vec![bus]
     }
 
     // ── Unit tests ─────────────────────────────────────────────────────────────

@@ -474,14 +474,18 @@ mod tests {
             NodeGraph, NodeId, NodeOpenings, NodePos, NodeRuntime, NodeSuccessor, OpeningSource,
         },
         test_support::{
-            self, StageContextFixture, empty_row_batch, equipment_free_geometry,
-            inflow_coupling_with_entries, permissive_state_boxes,
+            self, StageContextFixture,
+            builders::{
+                BusSpec, HydroSpec, NcsSpec, StageSpec, make_bus, make_hydro, make_ncs, make_stage,
+            },
+            empty_row_batch, equipment_free_geometry, inflow_coupling_with_entries,
+            permissive_state_boxes,
         },
         workspace::{ScratchBuffers, WorkspaceSizing},
     };
     use novomodelo_comm::{CommData, CommError, Communicator, ReduceOp};
-    use novomodelo_core::SystemBuilder;
     use novomodelo_core::scenario::SamplingScheme;
+    use novomodelo_core::{HydroPenalties, SystemBuilder};
     use novomodelo_io::config::InflowResidualDistribution;
     use novomodelo_solver::ActiveSolver;
     use novomodelo_solver::{
@@ -528,41 +532,31 @@ mod tests {
     ///
     /// `dim = 1` throughout (single hydro, the N=1, L=0 state layout).
     fn simple_opening_tree(n_openings: usize) -> OpeningTree {
-        use chrono::NaiveDate;
         use novomodelo_core::{
             EntityId,
             scenario::{CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile},
-            temporal::{
-                Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
-                StageStateConfig,
-            },
+            temporal::{Block, NoiseMethod, ScenarioSourceConfig},
         };
         use novomodelo_stochastic::correlation::resolve::DecomposedCorrelation;
         use std::collections::BTreeMap;
 
         // Single study stage with the requested branching factor.
-        let stage = Stage {
-            index: 0,
-            id: 0,
-            start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            end_date: NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-            season_id: Some(0),
-            blocks: vec![Block {
-                index: 0,
-                name: "S".to_string(),
-                duration_hours: 744.0,
-            }],
-            block_mode: BlockMode::Parallel,
-            state_config: StageStateConfig {
-                storage: true,
-                inflow_lags: false,
+        let stage = make_stage(
+            0,
+            StageSpec {
+                season_id: Some(0),
+                blocks: vec![Block {
+                    index: 0,
+                    name: "S".to_string(),
+                    duration_hours: 744.0,
+                }],
+                scenario_config: ScenarioSourceConfig {
+                    branching_factor: n_openings,
+                    noise_method: NoiseMethod::Saa,
+                },
+                ..StageSpec::default()
             },
-            risk_config: StageRiskConfig::Expectation,
-            scenario_config: ScenarioSourceConfig {
-                branching_factor: n_openings,
-                noise_method: NoiseMethod::Saa,
-            },
-        };
+        );
 
         let entity_id = EntityId(1);
         let mut profiles = BTreeMap::new();
@@ -620,21 +614,32 @@ mod tests {
     /// entirely, so the injected tree's shape is preserved verbatim.
     #[allow(clippy::cast_possible_wrap)]
     fn wrap_opening_tree(n_hydros: usize, tree: OpeningTree) -> StochasticContext {
-        use novomodelo_core::test_support::{BusSpec, HydroSpec, make_bus, make_hydro};
+        use novomodelo_core::{EntityId, HydroPenalties};
 
         let system = SystemBuilder::new()
-            .buses(vec![make_bus(BusSpec {
-                id: 0,
-                ..Default::default()
-            })])
+            .buses(vec![make_bus(
+                EntityId(0),
+                BusSpec {
+                    deficit_segments: Vec::new(),
+                    ..BusSpec::default()
+                },
+            )])
             .hydros(
                 (0..n_hydros)
                     .map(|i| {
-                        make_hydro(HydroSpec {
-                            id: i as i32 + 1,
-                            bus_id: 0,
-                            ..Default::default()
-                        })
+                        make_hydro(
+                            EntityId(i as i32 + 1),
+                            HydroSpec {
+                                max_turbined_m3s: 1.0,
+                                max_generation_mw: 1.0,
+                                max_storage_hm3: 1.0,
+                                penalties: HydroPenalties {
+                                    inflow_nonnegativity_cost: 1000.0,
+                                    ..HydroPenalties::uniform(0.0)
+                                },
+                                ..HydroSpec::default()
+                            },
+                        )
                     })
                     .collect(),
             )
@@ -889,7 +894,7 @@ mod tests {
         }
 
         fn get_basis(&mut self, out: &mut Basis) {
-            crate::test_support::fill_consistent_basis(out);
+            test_support::fill_consistent_basis(out);
         }
 
         fn statistics(&self) -> SolverStatistics {
@@ -1705,15 +1710,11 @@ mod tests {
     #[test]
     fn lb_evaluate_stage_0_patches_ncs_bounds_per_opening() {
         use novomodelo_core::{
-            Bus, DeficitSegment, EntityId, SystemBuilder,
-            entities::non_controllable::NonControllableSource,
+            DeficitSegment, EntityId, SystemBuilder,
             scenario::{
                 CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile, NcsModel,
             },
-            temporal::{
-                Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
-                StageStateConfig,
-            },
+            temporal::{Block, NoiseMethod, ScenarioSourceConfig, StageStateConfig},
         };
         use novomodelo_stochastic::context::{
             ClassSchemes, OpeningTreeInputs, build_stochastic_context,
@@ -1726,51 +1727,46 @@ mod tests {
         let ncs_entity_id = EntityId(10);
 
         // Build a minimal System with one bus and one NCS entity.
-        let bus = Bus {
-            id: EntityId(0),
-            name: "B0".to_string(),
-            operational_start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            deficit_segments: vec![DeficitSegment {
-                depth_mw: None,
-                cost_per_mwh: 1000.0,
-            }],
-            excess_cost: 0.0,
-        };
-
-        let ncs_source = NonControllableSource {
-            id: ncs_entity_id,
-            name: "W1".to_string(),
-            operational_start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            bus_id: EntityId(0),
-            entry_stage_id: None,
-            exit_stage_id: None,
-            max_generation_mw: 100.0,
-            allow_curtailment: true,
-            curtailment_cost: 0.0,
-        };
-
-        let stage = Stage {
-            index: 0,
-            id: 0,
-            start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            end_date: chrono::NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-            season_id: Some(0),
-            blocks: vec![Block {
-                index: 0,
-                name: "S".to_string(),
-                duration_hours: 744.0,
-            }],
-            block_mode: BlockMode::Parallel,
-            state_config: StageStateConfig {
-                storage: false,
-                inflow_lags: false,
+        let bus = make_bus(
+            EntityId(0),
+            BusSpec {
+                name: "B0".to_string(),
+                deficit_segments: vec![DeficitSegment {
+                    depth_mw: None,
+                    cost_per_mwh: 1000.0,
+                }],
+                ..BusSpec::default()
             },
-            risk_config: StageRiskConfig::Expectation,
-            scenario_config: ScenarioSourceConfig {
-                branching_factor: n_openings,
-                noise_method: NoiseMethod::Saa,
+        );
+
+        let ncs_source = make_ncs(
+            ncs_entity_id,
+            NcsSpec {
+                name: "W1".to_string(),
+                ..NcsSpec::default()
             },
-        };
+        );
+
+        let stage = make_stage(
+            0,
+            StageSpec {
+                season_id: Some(0),
+                blocks: vec![Block {
+                    index: 0,
+                    name: "S".to_string(),
+                    duration_hours: 744.0,
+                }],
+                state_config: StageStateConfig {
+                    storage: false,
+                    inflow_lags: false,
+                },
+                scenario_config: ScenarioSourceConfig {
+                    branching_factor: n_openings,
+                    noise_method: NoiseMethod::Saa,
+                },
+                ..StageSpec::default()
+            },
+        );
 
         // NCS model: mean=0.5, std=0.1 availability factor.
         let ncs_model = NcsModel {
@@ -1879,7 +1875,7 @@ mod tests {
         let cut_state_layouts = test_support::all_enabled_cut_state_layouts(&state, 1);
         let initial_state: Vec<f64> = Vec::new();
         let training_ctx = TrainingContext {
-            node_graph: &crate::test_support::chain_node_graph(&stoch),
+            node_graph: &test_support::chain_node_graph(&stoch),
             horizon: &horizon,
             state: &state,
             cut_state_layouts: &cut_state_layouts,
@@ -2087,133 +2083,67 @@ mod tests {
     ///
     /// Returns the built [`StageTemplates`] plus the system indices of the two
     /// hydros (id-sorted, so `H_A`→0, `H_B`→1).
-    // Rationale: this is a verbose `System`-builder fixture (bounds, penalties,
-    // inflow models, two hydros over five stages); the nested default-bounds /
-    // default-penalties `fn` helpers keep the per-field defaults local to the
-    // fixture. Splitting it or hoisting the helpers out would scatter the fixture
-    // without making it clearer — the same allow-set the sibling `minimal_system`
-    // fixtures in `setup` carry.
-    #[allow(
-        clippy::too_many_lines,
-        clippy::items_after_statements,
-        clippy::cast_possible_truncation,
-        clippy::cast_possible_wrap
-    )]
     fn filling_study_templates() -> (StageTemplates, usize, usize) {
-        use chrono::NaiveDate;
         use novomodelo_core::scenario::InflowModel;
         use novomodelo_core::{
-            Block, BlockMode, BoundsCountsSpec, BoundsDefaults, Bus, BusStagePenalties,
-            ContractBlockBounds, DeficitSegment, EntityId, FillingConfig, Hydro, HydroBlockBounds,
-            HydroGenerationModel, HydroPenalties, HydroStageBounds, LineBlockBounds,
-            LineStagePenalties, NcsStagePenalties, NoiseMethod, PenaltiesCountsSpec,
-            PenaltiesDefaults, PumpingBlockBounds, ResolvedBounds, ResolvedPenalties,
-            ScenarioSourceConfig, Stage, StageRiskConfig, StageStateConfig, SystemBuilder,
-            TailraceFlow, ThermalBlockBounds,
+            Block, DeficitSegment, EntityId, FillingConfig, Stage, SystemBuilder,
         };
         use novomodelo_stochastic::par::precompute::PrecomputedPar;
 
-        let n_hydros = 2_usize;
         // Five study stages (ids 0..=4) span every filling phase of both hydros.
         let n_stages = 5_usize;
-
-        fn zero_hydro_penalties() -> HydroPenalties {
-            HydroPenalties {
-                spillage_cost: 0.0,
-                diversion_cost: 0.0,
-                turbined_cost: 0.0,
-                storage_violation_below_cost: 0.0,
-                filling_target_violation_cost: 0.0,
-                turbined_violation_below_cost: 0.0,
-                outflow_violation_below_cost: 0.0,
-                outflow_violation_above_cost: 0.0,
-                generation_violation_below_cost: 0.0,
-                fpha_violation_cost: 0.0,
-                evaporation_violation_cost: 0.0,
-                water_withdrawal_violation_cost: 0.0,
-                water_withdrawal_violation_pos_cost: 0.0,
-                water_withdrawal_violation_neg_cost: 0.0,
-                evaporation_violation_pos_cost: 0.0,
-                evaporation_violation_neg_cost: 0.0,
-                inflow_nonnegativity_cost: 0.0,
-            }
-        }
 
         // A filling hydro with the given start/entry stage ids. ConstantProductivity
         // keeps the LP simple (no FPHA rows); the soft-floor/target slacks come from
         // the filling family, not the generation model.
         let filling_hydro = |id: i32, start_stage_id: i32, entry: i32| {
-            let mut hydro = Hydro {
-                unit_groups: Vec::new(),
-                id: EntityId(id),
-                name: format!("H{id}"),
-                operational_start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-                downstream_id: None,
-                travel_time_hours: None,
-                entry_stage_id: Some(entry),
-                exit_stage_id: None,
-                min_storage_hm3: 0.0,
-                max_storage_hm3: 200.0,
-                min_outflow_m3s: 0.0,
-                max_outflow_m3s: None,
-                generation_model: HydroGenerationModel::ConstantProductivity,
-                min_turbined_m3s: 0.0,
-                max_turbined_m3s: 100.0,
-                specific_productivity_mw_per_m3s_per_m: None,
-                min_generation_mw: 0.0,
-                max_generation_mw: 250.0,
-                tailrace: None,
-                hydraulic_losses: None,
-                efficiency: None,
-                evaporation_coefficients_mm: None,
-                evaporation_reference_volumes_hm3: None,
-                diversion: None,
-                filling: Some(FillingConfig {
-                    start_stage_id,
-                    filling_min_rate_m3s: 0.0,
-                }),
-                penalties: zero_hydro_penalties(),
-                tailrace_flow: TailraceFlow::default(),
-            };
-            hydro.declare_mirror_unit_group(EntityId(1));
-            hydro
+            make_hydro(
+                EntityId(id),
+                HydroSpec {
+                    name: format!("H{id}"),
+                    bus_id: EntityId(1),
+                    entry_stage_id: Some(entry),
+                    max_storage_hm3: 200.0,
+                    max_turbined_m3s: 100.0,
+                    max_generation_mw: 250.0,
+                    filling: Some(FillingConfig {
+                        start_stage_id,
+                        filling_min_rate_m3s: 0.0,
+                    }),
+                    penalties: HydroPenalties::uniform(0.0),
+                    ..HydroSpec::default()
+                },
+            )
         };
 
-        let bus = Bus {
-            id: EntityId(1),
-            name: "B1".to_string(),
-            operational_start_date: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            deficit_segments: vec![DeficitSegment {
-                depth_mw: None,
-                cost_per_mwh: 500.0,
-            }],
-            excess_cost: 0.0,
-        };
+        let bus = make_bus(
+            EntityId(1),
+            BusSpec {
+                name: "B1".to_string(),
+                deficit_segments: vec![DeficitSegment {
+                    depth_mw: None,
+                    cost_per_mwh: 500.0,
+                }],
+                ..BusSpec::default()
+            },
+        );
 
         let hydros = vec![filling_hydro(3, 0, 1), filling_hydro(4, 2, 4)];
 
         let stages: Vec<Stage> = (0..n_stages)
-            .map(|i| Stage {
-                index: i,
-                id: i as i32,
-                start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-                end_date: NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-                season_id: Some(0),
-                blocks: vec![Block {
-                    index: 0,
-                    name: "S".to_string(),
-                    duration_hours: 744.0,
-                }],
-                block_mode: BlockMode::Parallel,
-                state_config: StageStateConfig {
-                    storage: true,
-                    inflow_lags: false,
-                },
-                risk_config: StageRiskConfig::Expectation,
-                scenario_config: ScenarioSourceConfig {
-                    branching_factor: 1,
-                    noise_method: NoiseMethod::Saa,
-                },
+            .map(|i| {
+                make_stage(
+                    i,
+                    StageSpec {
+                        season_id: Some(0),
+                        blocks: vec![Block {
+                            index: 0,
+                            name: "S".to_string(),
+                            duration_hours: 744.0,
+                        }],
+                        ..StageSpec::default()
+                    },
+                )
             })
             .collect();
 
@@ -2234,106 +2164,25 @@ mod tests {
             })
             .collect();
 
-        fn default_hydro_bounds() -> HydroStageBounds {
-            HydroStageBounds {
-                min_storage_hm3: 0.0,
-                max_storage_hm3: 200.0,
-                filling_min_rate_m3s: 0.0,
-                water_withdrawal_m3s: 0.0,
-            }
-        }
-
-        fn default_hydro_block_bounds() -> HydroBlockBounds {
-            HydroBlockBounds {
-                max_turbined_m3s: 100.0,
-                max_generation_mw: 250.0,
-                ..Default::default()
-            }
-        }
-
-        fn default_hydro_penalties() -> HydroPenalties {
-            HydroPenalties {
-                spillage_cost: 0.0,
-                diversion_cost: 0.0,
-                turbined_cost: 0.0,
-                storage_violation_below_cost: 500.0,
-                filling_target_violation_cost: 100.0,
-                turbined_violation_below_cost: 0.0,
-                outflow_violation_below_cost: 0.0,
-                outflow_violation_above_cost: 0.0,
-                generation_violation_below_cost: 0.0,
-                fpha_violation_cost: 0.0,
-                evaporation_violation_cost: 0.0,
-                water_withdrawal_violation_cost: 0.0,
-                water_withdrawal_violation_pos_cost: 0.0,
-                water_withdrawal_violation_neg_cost: 0.0,
-                evaporation_violation_pos_cost: 0.0,
-                evaporation_violation_neg_cost: 0.0,
-                inflow_nonnegativity_cost: 0.0,
-            }
-        }
-
-        let bounds = ResolvedBounds::new(
-            &BoundsCountsSpec {
-                n_hydros,
-                n_thermals: 0,
-                n_lines: 0,
-                n_pumping: 0,
-                n_contracts: 0,
-                n_stages,
-                k_max: 0,
+        let system = test_support::build_with_resolved_tables(
+            || {
+                SystemBuilder::new()
+                    .buses(vec![bus.clone()])
+                    .hydros(hydros.clone())
+                    .stages(stages.clone())
+                    .inflow_models(inflow_models.clone())
             },
-            &BoundsDefaults {
-                hydro: default_hydro_bounds(),
-                hydro_block: default_hydro_block_bounds(),
-                thermal_block: ThermalBlockBounds {
-                    min_generation_mw: 0.0,
-                    max_generation_mw: 100.0,
-                    cost_per_mwh: 0.0,
-                },
-                line_block: LineBlockBounds {
-                    direct_mw: 0.0,
-                    reverse_mw: 0.0,
-                },
-                pumping_block: PumpingBlockBounds {
-                    min_flow_m3s: 0.0,
-                    max_flow_m3s: 0.0,
-                },
-                contract_block: ContractBlockBounds {
-                    min_mw: 0.0,
-                    max_mw: 0.0,
-                    price_per_mwh: 0.0,
-                },
+            0,
+            |system, _, penalties| {
+                for h in 0..system.hydros().len() {
+                    for s in 0..n_stages {
+                        let hydro = penalties.hydro_penalties_mut(h, s);
+                        hydro.storage_violation_below_cost = 500.0;
+                        hydro.filling_target_violation_cost = 100.0;
+                    }
+                }
             },
         );
-
-        let penalties = ResolvedPenalties::new(
-            &PenaltiesCountsSpec {
-                n_hydros,
-                n_buses: 1,
-                n_lines: 0,
-                n_ncs: 0,
-                n_stages,
-            },
-            &PenaltiesDefaults {
-                hydro: default_hydro_penalties(),
-                bus: BusStagePenalties { excess_cost: 0.0 },
-                line: LineStagePenalties { exchange_cost: 0.0 },
-                ncs: NcsStagePenalties {
-                    curtailment_cost: 0.0,
-                },
-            },
-        );
-
-        let system = SystemBuilder::new()
-            .buses(vec![bus])
-            .hydros(hydros)
-            .stages(stages)
-            .inflow_models(inflow_models)
-            .bounds(bounds)
-            .penalties(penalties)
-            .build()
-            .expect("filling_study_templates: valid system");
 
         // Every fixture stage has id >= 0, so the full slices match the study-stage
         // filter `build_stage_templates` applies internally (it filters id >= 0 too).
@@ -2376,40 +2225,30 @@ mod tests {
     /// tree (the sibling `simple_opening_tree`) would under-size it. Identity correlation
     /// between the two inflow entities keeps the tree shape trivial.
     fn filling_opening_tree(n_openings: usize) -> OpeningTree {
-        use chrono::NaiveDate;
         use novomodelo_core::{
             EntityId,
             scenario::{CorrelationEntity, CorrelationGroup, CorrelationModel, CorrelationProfile},
-            temporal::{
-                Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
-                StageStateConfig,
-            },
+            temporal::{Block, NoiseMethod, ScenarioSourceConfig},
         };
         use novomodelo_stochastic::correlation::resolve::DecomposedCorrelation;
         use std::collections::BTreeMap;
 
-        let stage = Stage {
-            index: 0,
-            id: 0,
-            start_date: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            end_date: NaiveDate::from_ymd_opt(2024, 2, 1).unwrap(),
-            season_id: Some(0),
-            blocks: vec![Block {
-                index: 0,
-                name: "S".to_string(),
-                duration_hours: 744.0,
-            }],
-            block_mode: BlockMode::Parallel,
-            state_config: StageStateConfig {
-                storage: true,
-                inflow_lags: false,
+        let stage = make_stage(
+            0,
+            StageSpec {
+                season_id: Some(0),
+                blocks: vec![Block {
+                    index: 0,
+                    name: "S".to_string(),
+                    duration_hours: 744.0,
+                }],
+                scenario_config: ScenarioSourceConfig {
+                    branching_factor: n_openings,
+                    noise_method: NoiseMethod::Saa,
+                },
+                ..StageSpec::default()
             },
-            risk_config: StageRiskConfig::Expectation,
-            scenario_config: ScenarioSourceConfig {
-                branching_factor: n_openings,
-                noise_method: NoiseMethod::Saa,
-            },
-        };
+        );
 
         let entity_order = vec![EntityId(3), EntityId(4)];
         let mut profiles = BTreeMap::new();

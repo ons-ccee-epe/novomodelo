@@ -664,16 +664,15 @@ mod tests {
     use chrono::{Months, NaiveDate};
     use novomodelo_core::{
         EntityId,
-        scenario::InflowModel,
+        scenario::{AnnualComponent, InflowModel},
         temporal::{NoiseMethod, ScenarioSourceConfig, Stage},
-        test_support::{StageSpec, date, f64_bits_eq, single_block},
+        test_support::{
+            InflowModelSpec, MonthlyLabels, StageSpec, date, f64_bits_eq,
+            monthly_quarterly_season_map, monthly_season_map, single_block, sparse_ring_season_map,
+        },
     };
 
     use super::{PrecomputedPar, resolve_season_id};
-    use crate::test_support::{
-        InflowModelSpec, MonthlyLabels, monthly_quarterly_season_map, monthly_season_map,
-        sparse_ring_season_map,
-    };
 
     fn make_stage(index: usize, id: i32, season_id: Option<usize>) -> Stage {
         novomodelo_core::test_support::make_stage(StageSpec {
@@ -697,7 +696,7 @@ mod tests {
         coeffs: Vec<f64>,
         residual_ratio: f64,
     ) -> InflowModel {
-        crate::test_support::make_inflow_model(InflowModelSpec {
+        novomodelo_core::test_support::make_inflow_model(InflowModelSpec {
             hydro_id,
             stage_id,
             mean_m3s: mean,
@@ -1599,8 +1598,6 @@ mod tests {
     // PAR(p)-A annual component tests
     // -----------------------------------------------------------------------
 
-    use novomodelo_core::scenario::AnnualComponent;
-
     /// Build an `InflowModel` carrying a `Some(AnnualComponent)`.
     fn make_model_with_annual(
         hydro_id: i32,
@@ -1611,7 +1608,7 @@ mod tests {
         residual_ratio: f64,
         annual: AnnualComponent,
     ) -> InflowModel {
-        crate::test_support::make_inflow_model(InflowModelSpec {
+        novomodelo_core::test_support::make_inflow_model(InflowModelSpec {
             hydro_id,
             stage_id,
             mean_m3s: mean,

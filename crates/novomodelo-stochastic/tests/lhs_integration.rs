@@ -23,9 +23,9 @@ use novomodelo_stochastic::{
 
 mod common;
 use common::{
-    StageSpec, correlated_correlation, default_inflow_model, deficit_bus, drawn_tree,
-    identity_correlation, identity_correlation_model, make_stage, norm_cdf, single_block,
-    sized_hydro,
+    InflowModelSpec, StageSpec, correlated_correlation, deficit_bus, drawn_tree,
+    identity_correlation, identity_correlation_model, make_inflow_model, make_stage, norm_cdf,
+    single_block, sized_hydro,
 };
 
 // ---------------------------------------------------------------------------
@@ -85,7 +85,11 @@ fn build_lhs_context(
     let mut inflow_models: Vec<InflowModel> = Vec::new();
     for &hid in &hydro_ids {
         for &sid in &[0_i32, 1, 2] {
-            inflow_models.push(default_inflow_model(hid, sid));
+            inflow_models.push(make_inflow_model(InflowModelSpec {
+                hydro_id: hid,
+                stage_id: sid,
+                ..Default::default()
+            }));
         }
     }
 

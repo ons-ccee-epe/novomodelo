@@ -75,11 +75,10 @@ pub fn validate_par_parameters(inflow_models: &[InflowModel]) -> Result<(), Stoc
 
 #[cfg(test)]
 mod tests {
-    use novomodelo_core::InflowModel;
+    use novomodelo_core::{InflowModel, test_support::InflowModelSpec};
 
     use super::validate_par_parameters;
     use crate::StochasticError;
-    use crate::test_support::InflowModelSpec;
 
     fn make_model(
         hydro_id: i32,
@@ -88,7 +87,7 @@ mod tests {
         ar_coefficients: Vec<f64>,
         residual_std_ratio: f64,
     ) -> InflowModel {
-        crate::test_support::make_inflow_model(InflowModelSpec {
+        novomodelo_core::test_support::make_inflow_model(InflowModelSpec {
             hydro_id,
             stage_id,
             std_m3s,
@@ -106,7 +105,7 @@ mod tests {
         residual_std_ratio: f64,
     ) -> InflowModel {
         use novomodelo_core::scenario::AnnualComponent;
-        crate::test_support::make_inflow_model(InflowModelSpec {
+        novomodelo_core::test_support::make_inflow_model(InflowModelSpec {
             hydro_id,
             stage_id,
             std_m3s,

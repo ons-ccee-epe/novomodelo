@@ -206,34 +206,12 @@ impl HydroCellIndex {
 #[cfg(test)]
 mod tests {
     use chrono::NaiveDate;
-    use novomodelo_core::{
-        EntityId, Hydro, HydroGenerationModel, HydroPenalties, HydroUnitGroup, TailraceFlow,
-    };
+    use novomodelo_core::entities::hydro::HydroPenalties;
+    use novomodelo_core::{EntityId, Hydro, HydroUnitGroup};
 
     use super::{HydroCell, HydroCellIndex, HydroSys};
+    use crate::test_support::builders::{HydroSpec, make_hydro};
     use crate::test_support::{geometry_hydro, make_unit_group};
-
-    fn zero_penalties() -> HydroPenalties {
-        HydroPenalties {
-            spillage_cost: 0.0,
-            diversion_cost: 0.0,
-            turbined_cost: 0.0,
-            storage_violation_below_cost: 0.0,
-            filling_target_violation_cost: 0.0,
-            turbined_violation_below_cost: 0.0,
-            outflow_violation_below_cost: 0.0,
-            outflow_violation_above_cost: 0.0,
-            generation_violation_below_cost: 0.0,
-            fpha_violation_cost: 0.0,
-            evaporation_violation_cost: 0.0,
-            water_withdrawal_violation_cost: 0.0,
-            water_withdrawal_violation_pos_cost: 0.0,
-            water_withdrawal_violation_neg_cost: 0.0,
-            evaporation_violation_pos_cost: 0.0,
-            evaporation_violation_neg_cost: 0.0,
-            inflow_nonnegativity_cost: 0.0,
-        }
-    }
 
     /// A minimal constant-productivity hydro at `id`/`unit_groups` the caller
     /// chooses; every other field is an inert default. `unit_groups` passes
@@ -241,35 +219,20 @@ mod tests {
     /// order calls `Hydro::declare_mirror_unit_group`/`Hydro::sort_unit_groups`
     /// itself.
     fn base_hydro(id: i32, unit_groups: Vec<HydroUnitGroup>) -> Hydro {
-        Hydro {
-            unit_groups,
-            id: EntityId(id),
-            name: format!("H{id}"),
-            operational_start_date: NaiveDate::default(),
-            downstream_id: None,
-            travel_time_hours: None,
-            entry_stage_id: None,
-            exit_stage_id: None,
-            min_storage_hm3: 0.0,
-            max_storage_hm3: 1.0,
-            min_outflow_m3s: 0.0,
-            max_outflow_m3s: None,
-            generation_model: HydroGenerationModel::ConstantProductivity,
-            min_turbined_m3s: 0.0,
-            max_turbined_m3s: 1.0,
-            specific_productivity_mw_per_m3s_per_m: None,
-            min_generation_mw: 0.0,
-            max_generation_mw: 1.0,
-            tailrace: None,
-            hydraulic_losses: None,
-            efficiency: None,
-            evaporation_coefficients_mm: None,
-            evaporation_reference_volumes_hm3: None,
-            diversion: None,
-            filling: None,
-            penalties: zero_penalties(),
-            tailrace_flow: TailraceFlow::default(),
-        }
+        let mut hydro = make_hydro(
+            EntityId(id),
+            HydroSpec {
+                name: format!("H{id}"),
+                operational_start_date: NaiveDate::default(),
+                max_storage_hm3: 1.0,
+                max_turbined_m3s: 1.0,
+                max_generation_mw: 1.0,
+                penalties: HydroPenalties::uniform(0.0),
+                ..HydroSpec::default()
+            },
+        );
+        hydro.unit_groups = unit_groups;
+        hydro
     }
 
     /// Three plants: plant 0 declares no groups, so the mirror helper gives it a

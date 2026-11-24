@@ -178,14 +178,11 @@ fn parse_date32(
 )]
 mod tests {
     use super::*;
-    use crate::test_support::write_parquet;
+    use crate::test_support::{make_stage, write_parquet};
     use arrow::array::{Date32Array, Float64Array, Int32Array};
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
-    use novomodelo_core::temporal::{
-        Block, BlockMode, NoiseMethod, ScenarioSourceConfig, Stage, StageRiskConfig,
-        StageStateConfig,
-    };
+    use novomodelo_core::temporal::{Block, Stage};
     use std::sync::Arc;
 
     fn schema() -> Arc<Schema> {
@@ -480,28 +477,17 @@ mod tests {
                 } else {
                     (year, month + 1)
                 };
-                Stage {
-                    index: i,
-                    id: i as i32,
-                    start_date: NaiveDate::from_ymd_opt(year, month, 1).unwrap(),
-                    end_date: NaiveDate::from_ymd_opt(end_year, end_month, 1).unwrap(),
-                    season_id: Some(i),
-                    blocks: vec![Block {
-                        index: 0,
-                        name: "SINGLE".to_string(),
-                        duration_hours: 720.0,
-                    }],
-                    block_mode: BlockMode::Parallel,
-                    state_config: StageStateConfig {
-                        storage: true,
-                        inflow_lags: false,
-                    },
-                    risk_config: StageRiskConfig::Expectation,
-                    scenario_config: ScenarioSourceConfig {
-                        branching_factor: 1,
-                        noise_method: NoiseMethod::Saa,
-                    },
-                }
+                let mut stage = make_stage(i as i32);
+                stage.index = i;
+                stage.start_date = NaiveDate::from_ymd_opt(year, month, 1).unwrap();
+                stage.end_date = NaiveDate::from_ymd_opt(end_year, end_month, 1).unwrap();
+                stage.season_id = Some(i);
+                stage.blocks = vec![Block {
+                    index: 0,
+                    name: "SINGLE".to_string(),
+                    duration_hours: 720.0,
+                }];
+                stage
             })
             .collect()
     }
