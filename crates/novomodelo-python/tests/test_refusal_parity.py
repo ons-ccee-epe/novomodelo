@@ -570,6 +570,42 @@ def _fpha_geometry_short_of_storage_range(case: pathlib.Path) -> None:
     _edit_json(case / "system" / "hydros.json", edit)
 
 
+def _write_legacy_initial_conditions(case: pathlib.Path) -> None:
+    legacy = {
+        "storage": [{"hydro_id": 0, "value_hm3": 83.222}],
+        "filling_storage": [],
+    }
+    (case / "initial_conditions.json").write_text(
+        json.dumps(legacy, indent=2), encoding="utf-8"
+    )
+
+
+def _missing_boundary_file(case: pathlib.Path) -> None:
+    (case / "boundary_conditions.json").unlink()
+
+
+def _boundary_file_beside_legacy_file(case: pathlib.Path) -> None:
+    _write_legacy_initial_conditions(case)
+
+
+def _post_study_calendars_with_legacy_files(case: pathlib.Path) -> None:
+    def edit(stages: Any) -> None:
+        stages["post_study_thermal_stages"] = [
+            {"id": 4, "start_date": "2024-05-01", "end_date": "2024-06-01"}
+        ]
+
+    _missing_boundary_file(case)
+    _write_legacy_initial_conditions(case)
+    _edit_json(case / "stages.json", edit)
+
+
+def _boundary_conditions_unknown_field(case: pathlib.Path) -> None:
+    def edit(boundary: Any) -> None:
+        boundary["storage"] = []
+
+    _edit_json(case / "boundary_conditions.json", edit)
+
+
 ROWS = [
     _row(
         name="travel_time_negative",
@@ -1044,6 +1080,45 @@ ROWS = [
         outcome="BracketedRefusal",
         kind="BusinessRuleViolation",
         fragment="does not cover its storage range",
+        error_class_name="ValidationError",
+    ),
+    _row(
+        name="boundary_file_missing",
+        base_case="1dtoy",
+        mutate=_missing_boundary_file,
+        outcome="BracketedRefusal",
+        kind="FileNotFound",
+        fragment="not found in case directory",
+        error_class_name="ValidationError",
+    ),
+    _row(
+        name="boundary_file_sets_mixed",
+        base_case="1dtoy",
+        mutate=_boundary_file_beside_legacy_file,
+        outcome="BracketedRefusal",
+        kind="BusinessRuleViolation",
+        fragment="is present together with the deprecated",
+        error_class_name="ValidationError",
+    ),
+    _row(
+        name="post_study_calendars_with_legacy_files",
+        base_case="1dtoy",
+        mutate=_post_study_calendars_with_legacy_files,
+        outcome="BracketedRefusal",
+        kind="BusinessRuleViolation",
+        fragment=(
+            "declares a post_study_* list, but the case reads its boundary data "
+            "from the deprecated"
+        ),
+        error_class_name="ValidationError",
+    ),
+    _row(
+        name="boundary_conditions_unknown_field",
+        base_case="1dtoy",
+        mutate=_boundary_conditions_unknown_field,
+        outcome="BracketedRefusal",
+        kind="ParseError",
+        fragment="unknown field",
         error_class_name="ValidationError",
     ),
 ]

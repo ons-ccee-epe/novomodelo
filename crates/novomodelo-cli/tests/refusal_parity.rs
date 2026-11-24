@@ -473,6 +473,41 @@ const ROWS: &[ParityRow] = &[
         },
         fragment: "does not cover its storage range",
     },
+    ParityRow {
+        name: "boundary_file_missing",
+        base_case: "1dtoy",
+        mutate: missing_boundary_file,
+        outcome: Outcome::BracketedRefusal {
+            kind: "FileNotFound",
+        },
+        fragment: "not found in case directory",
+    },
+    ParityRow {
+        name: "boundary_file_sets_mixed",
+        base_case: "1dtoy",
+        mutate: boundary_file_beside_legacy_file,
+        outcome: Outcome::BracketedRefusal {
+            kind: "BusinessRuleViolation",
+        },
+        fragment: "is present together with the deprecated",
+    },
+    ParityRow {
+        name: "post_study_calendars_with_legacy_files",
+        base_case: "1dtoy",
+        mutate: post_study_calendars_with_legacy_files,
+        outcome: Outcome::BracketedRefusal {
+            kind: "BusinessRuleViolation",
+        },
+        fragment: "declares a post_study_* list, but the case reads its boundary data from \
+                   the deprecated",
+    },
+    ParityRow {
+        name: "boundary_conditions_unknown_field",
+        base_case: "1dtoy",
+        mutate: boundary_conditions_unknown_field,
+        outcome: Outcome::BracketedRefusal { kind: "ParseError" },
+        fragment: "unknown field",
+    },
 ];
 
 fn edit_json(path: &Path, edit: impl FnOnce(&mut Value)) {
@@ -989,6 +1024,41 @@ fn unknown_simulation_cut_set(case: &Path) {
 fn fpha_geometry_short_of_storage_range(case: &Path) {
     edit_json(&case.join("system/hydros.json"), |hydros| {
         hydros["hydros"][0]["reservoir"]["max_storage_hm3"] = json!(250.0);
+    });
+}
+
+fn write_legacy_initial_conditions(case: &Path) {
+    let legacy = json!({
+        "storage": [{"hydro_id": 0, "value_hm3": 83.222}],
+        "filling_storage": []
+    });
+    fs::write(
+        case.join("initial_conditions.json"),
+        serde_json::to_string_pretty(&legacy).unwrap(),
+    )
+    .unwrap();
+}
+
+fn missing_boundary_file(case: &Path) {
+    fs::remove_file(case.join("boundary_conditions.json")).unwrap();
+}
+
+fn boundary_file_beside_legacy_file(case: &Path) {
+    write_legacy_initial_conditions(case);
+}
+
+fn post_study_calendars_with_legacy_files(case: &Path) {
+    missing_boundary_file(case);
+    write_legacy_initial_conditions(case);
+    edit_json(&case.join("stages.json"), |stages| {
+        stages["post_study_thermal_stages"] =
+            json!([{"id": 4, "start_date": "2024-05-01", "end_date": "2024-06-01"}]);
+    });
+}
+
+fn boundary_conditions_unknown_field(case: &Path) {
+    edit_json(&case.join("boundary_conditions.json"), |boundary| {
+        boundary["storage"] = json!([]);
     });
 }
 
