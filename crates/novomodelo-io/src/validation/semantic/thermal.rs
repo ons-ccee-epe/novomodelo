@@ -1149,8 +1149,13 @@ pub(super) fn check_post_study_stages(data: &ParsedData, ctx: &mut ValidationCon
     let calendar_key = data
         .boundary_format
         .map_or("thermal_stages", BoundaryFormat::thermal_calendar_key);
-    let (calendar_stages, well_formed) =
-        build_post_study_calendar(&post_study.thermal_stages, calendar_key, study_end, ctx);
+    let (calendar_stages, well_formed) = build_post_study_calendar(
+        &post_study.thermal_stages,
+        "post_study_stages.json",
+        calendar_key,
+        study_end,
+        ctx,
+    );
     if !well_formed || calendar_stages.is_empty() {
         return;
     }

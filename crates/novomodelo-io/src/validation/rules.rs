@@ -341,19 +341,19 @@ declare_rules! {
         "A deck declaring a travel-time arc has no post_study_stages.json";
     POST_STUDY_WATER_CALENDAR_MISSING = "semantic.5a.61",
         Semantic, BusinessRuleViolation, Error,
-        "A post_study_stages.json on a deck declaring a travel-time arc has no water_bucket_stages key";
+        "A deck declaring a travel-time arc has no water calendar (post_study_water_stages in stages.json, or water_bucket_stages in the deprecated post_study_stages.json)";
     POST_STUDY_WATER_CALENDAR_SHORT = "semantic.5a.62",
         Semantic, BusinessRuleViolation, Error,
-        "The declared water_bucket_stages calendar covers fewer hours than the deepest travel-time arc";
+        "The declared water calendar (post_study_water_stages in stages.json, or water_bucket_stages in the deprecated post_study_stages.json) covers fewer hours than the deepest travel-time arc";
     POST_STUDY_THERMAL_PAIR_INCOMPLETE = "semantic.5a.63",
         Semantic, BusinessRuleViolation, Error,
         "post_study_stages.json declares one of thermal_stages and thermal_bounds without the other; the two must be declared together";
     POST_STUDY_WATER_CALENDAR_UNUSED = "semantic.5a.64",
         Semantic, ModelQuality, Warning,
-        "A post_study_stages.json declares water_bucket_stages on a deck with no travel-time arc, so the key has no effect";
+        "A water calendar (post_study_water_stages in stages.json, or water_bucket_stages in the deprecated post_study_stages.json) is declared on a deck with no travel-time arc, so the key has no effect";
     POST_STUDY_THERMAL_CALENDAR_UNUSED = "semantic.5a.65",
         Semantic, ModelQuality, Warning,
-        "A post_study_stages.json declares thermal_stages on a deck with no anticipated thermal, so the key has no effect";
+        "A thermal calendar (post_study_thermal_stages in stages.json, or thermal_stages in the deprecated post_study_stages.json) is declared on a deck with no anticipated thermal, so the key has no effect";
     SEMANTIC_FPHA_GEOMETRY_DOES_NOT_COVER_STORAGE = "semantic.5a.66",
         Semantic, BusinessRuleViolation, Error,
         "A computed-FPHA hydro's hydro_geometry.parquet volumes do not cover its storage range";
@@ -369,6 +369,9 @@ declare_rules! {
     SEMANTIC_TAILRACE_FLOW_NO_EFFECT = "semantic.5a.70",
         Semantic, ModelQuality, Warning,
         "A hydro's tailrace_flow declaration has no effect because the hydro uses FPHA at no study stage";
+    POST_STUDY_CALENDARS_WITH_LEGACY_FILES = "semantic.5a.71",
+        Semantic, BusinessRuleViolation, Error,
+        "stages.json declares a post_study_* list while the case uses the deprecated initial_conditions.json file set";
     TRAVEL_TIME_INVALID = "travel_time.1",
         Semantic, InvalidValue, Error,
         "A hydro's travel_time_hours is negative or not finite";

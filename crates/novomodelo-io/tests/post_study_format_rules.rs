@@ -52,6 +52,25 @@ struct UnusedCase {
     unused_keys: &'static [&'static str],
 }
 
+enum Boundary {
+    Current,
+    Legacy(Option<&'static str>),
+}
+
+enum ListOutcome {
+    Accepted,
+    Rejected { fragments: &'static [&'static str] },
+    Warned { key: &'static str },
+}
+
+struct ListCase {
+    name: &'static str,
+    boundary: Boundary,
+    deck: Deck,
+    lists: &'static str,
+    outcome: ListOutcome,
+}
+
 struct DeprecationCase {
     name: &'static str,
     deck: Deck,
@@ -557,6 +576,242 @@ fn unused_calendar_warning_table() {
     }
 }
 
+const WATER_LIST_COVERING_ARC: &str = r#""post_study_water_stages": [
+  { "id": 10, "start_date": "2024-02-01", "end_date": "2024-02-08" },
+  { "id": 11, "start_date": "2024-02-08", "end_date": "2024-02-16" }
+]"#;
+const WATER_LIST_ONE_DAY_SHORT: &str = r#""post_study_water_stages": [
+  { "id": 10, "start_date": "2024-02-01", "end_date": "2024-02-08" },
+  { "id": 11, "start_date": "2024-02-08", "end_date": "2024-02-15" }
+]"#;
+const WATER_LIST_ONE_STAGE: &str = r#""post_study_water_stages": [
+  { "id": 10, "start_date": "2024-02-01", "end_date": "2024-03-01" }
+]"#;
+const THERMAL_LIST_ONE_STAGE: &str = r#""post_study_thermal_stages": [
+  { "id": 1, "start_date": "2024-02-01", "end_date": "2024-03-01" }
+]"#;
+const LEGACY_FILE: &str =
+    r#"{ "thermal_stages": [], "thermal_bounds": [], "water_bucket_stages": [] }"#;
+
+fn list_cases() -> Vec<ListCase> {
+    const WATER_MISSING: ListOutcome = ListOutcome::Rejected {
+        fragments: &[
+            "(post_study_water_stages): ",
+            "omits `post_study_water_stages`",
+            "hydro 1",
+        ],
+    };
+    const STAGES_JSON_WITH_LEGACY_FILES: ListOutcome = ListOutcome::Rejected {
+        fragments: &[
+            ": stages.json declares a post_study_* list",
+            "initial_conditions.json",
+            "boundary_conditions.json",
+        ],
+    };
+    vec![
+        ListCase {
+            name: "arc deck, no post-study list",
+            boundary: Boundary::Current,
+            deck: Deck::Arc,
+            lists: "",
+            outcome: WATER_MISSING,
+        },
+        ListCase {
+            name: "arc deck, thermal list only",
+            boundary: Boundary::Current,
+            deck: Deck::Arc,
+            lists: THERMAL_LIST_ONE_STAGE,
+            outcome: WATER_MISSING,
+        },
+        ListCase {
+            name: "arc deck, empty water list",
+            boundary: Boundary::Current,
+            deck: Deck::Arc,
+            lists: r#""post_study_water_stages": []"#,
+            outcome: ListOutcome::Rejected {
+                fragments: &["(post_study_water_stages): ", "covers 0 h", "arc of 360 h"],
+            },
+        },
+        ListCase {
+            name: "arc deck, water list one day short",
+            boundary: Boundary::Current,
+            deck: Deck::Arc,
+            lists: WATER_LIST_ONE_DAY_SHORT,
+            outcome: ListOutcome::Rejected {
+                fragments: &[
+                    "(post_study_water_stages): ",
+                    "covers 336 h",
+                    "arc of 360 h",
+                ],
+            },
+        },
+        ListCase {
+            name: "arc deck, covering water list",
+            boundary: Boundary::Current,
+            deck: Deck::Arc,
+            lists: WATER_LIST_COVERING_ARC,
+            outcome: ListOutcome::Accepted,
+        },
+        ListCase {
+            name: "no-arc deck, no post-study list",
+            boundary: Boundary::Current,
+            deck: Deck::NoArc,
+            lists: "",
+            outcome: ListOutcome::Accepted,
+        },
+        ListCase {
+            name: "no-arc deck, water list",
+            boundary: Boundary::Current,
+            deck: Deck::NoArc,
+            lists: WATER_LIST_ONE_STAGE,
+            outcome: ListOutcome::Warned {
+                key: "post_study_water_stages",
+            },
+        },
+        ListCase {
+            name: "no anticipated thermal, thermal list",
+            boundary: Boundary::Current,
+            deck: Deck::NoArc,
+            lists: THERMAL_LIST_ONE_STAGE,
+            outcome: ListOutcome::Warned {
+                key: "post_study_thermal_stages",
+            },
+        },
+        ListCase {
+            name: "legacy deck without post_study_stages.json, water list",
+            boundary: Boundary::Legacy(None),
+            deck: Deck::NoArc,
+            lists: WATER_LIST_ONE_STAGE,
+            outcome: STAGES_JSON_WITH_LEGACY_FILES,
+        },
+        ListCase {
+            name: "legacy deck with post_study_stages.json, thermal list",
+            boundary: Boundary::Legacy(Some(LEGACY_FILE)),
+            deck: Deck::NoArc,
+            lists: THERMAL_LIST_ONE_STAGE,
+            outcome: STAGES_JSON_WITH_LEGACY_FILES,
+        },
+    ]
+}
+
+fn write_list_case(dir: &TempDir, case: &ListCase) {
+    write_cascade_deck(dir, &case.deck);
+    let lists = if case.lists.is_empty() {
+        String::new()
+    } else {
+        format!(", {}", case.lists)
+    };
+    write_file(
+        dir.path(),
+        "stages.json",
+        &format!(
+            r#"{{
+              "policy_graph": {{
+                "type": "finite_horizon",
+                "annual_discount_rate": 0.06,
+                "transitions": []
+              }},
+              "stages": [{{
+                "id": 0,
+                "start_date": "2024-01-01",
+                "end_date": "2024-02-01",
+                "blocks": [{{ "id": 0, "name": "FLAT", "hours": 744.0 }}],
+                "num_openings": 50
+              }}]{lists}
+            }}"#
+        ),
+    );
+    match &case.boundary {
+        Boundary::Current => {
+            std::fs::remove_file(dir.path().join("initial_conditions.json")).unwrap();
+            let boundary = match case.deck {
+                Deck::Arc => {
+                    r#"{ "hydros": [{ "hydro_id": 1, "past_defluences": [
+                      { "start_date": "2023-12-01", "end_date": "2024-01-01", "value_m3s": 200.0 }
+                    ] }] }"#
+                }
+                Deck::NoArc => "{}",
+            };
+            write_file(dir.path(), "boundary_conditions.json", boundary);
+        }
+        Boundary::Legacy(post_study) => {
+            if let Some(json) = post_study {
+                write_file(dir.path(), "post_study_stages.json", json);
+            }
+        }
+    }
+}
+
+#[test]
+fn stages_json_post_study_list_table() {
+    for case in list_cases() {
+        let dir = TempDir::new().unwrap();
+        write_list_case(&dir, &case);
+        let result = validate_case(dir.path());
+
+        match case.outcome {
+            ListOutcome::Accepted => {
+                let (_, report) = result.unwrap_or_else(|e| panic!("{}: {e}", case.name));
+                assert!(
+                    !report
+                        .warnings
+                        .iter()
+                        .any(|entry| entry.message.contains("has no effect")),
+                    "{}: {:?}",
+                    case.name,
+                    report.warnings
+                );
+            }
+            ListOutcome::Rejected { fragments } => {
+                let Err(LoadError::ConstraintError { description }) = result else {
+                    panic!("{}: expected a validation error", case.name);
+                };
+                let [entry] = description.lines().collect::<Vec<_>>()[..] else {
+                    panic!(
+                        "{}: expected exactly one error, got:\n{description}",
+                        case.name
+                    );
+                };
+                assert!(
+                    entry.starts_with("[BusinessRuleViolation] stages.json"),
+                    "{}: unexpected error entry: {entry}",
+                    case.name
+                );
+                for fragment in fragments {
+                    assert!(
+                        entry.contains(fragment),
+                        "{}: `{fragment}` missing from: {entry}",
+                        case.name
+                    );
+                }
+            }
+            ListOutcome::Warned { key } => {
+                let (_, report) = result.unwrap_or_else(|e| panic!("{}: {e}", case.name));
+                let unused: Vec<_> = report
+                    .warnings
+                    .iter()
+                    .filter(|entry| entry.message.contains("has no effect"))
+                    .collect();
+                let [entry] = unused[..] else {
+                    panic!(
+                        "{}: expected exactly one warning, got: {unused:?}",
+                        case.name
+                    );
+                };
+                assert_eq!(entry.file, "stages.json", "{}", case.name);
+                assert_eq!(entry.entity.as_deref(), Some(key), "{}", case.name);
+                assert!(
+                    entry.message.starts_with("stages.json declares")
+                        && entry.message.contains(&format!("`{key}`")),
+                    "{}: {}",
+                    case.name,
+                    entry.message
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn anticipated_thermal_deck_does_not_warn_on_thermal_stages() {
     let dir = TempDir::new().unwrap();
@@ -630,7 +885,12 @@ fn unused_calendar_rules_are_registered_warnings() {
 
 #[test]
 fn post_study_format_rules_are_registered_errors() {
-    for id in ["semantic.5a.61", "semantic.5a.62", "semantic.5a.63"] {
+    for id in [
+        "semantic.5a.61",
+        "semantic.5a.62",
+        "semantic.5a.63",
+        "semantic.5a.71",
+    ] {
         let rule = RULES
             .iter()
             .find(|rule| rule.id == id)

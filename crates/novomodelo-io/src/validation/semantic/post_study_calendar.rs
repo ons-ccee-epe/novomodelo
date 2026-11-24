@@ -8,16 +8,20 @@ use novomodelo_core::temporal::{
 
 use super::super::{ValidationContext, rules};
 
+const LEGACY_FILE: &str = "post_study_stages.json";
+
 /// Build a post-study calendar as `Stage`s (each `end_date` = `start_date`
 /// advanced by `duration_hours` rounded to whole days — the whole-day alignment
 /// [`StageCalendar`](novomodelo_stochastic::season_cast::StageCalendar) coverage
 /// needs, mirroring the pre-study duration→days round in `travel_time`),
-/// enforcing invariant (a). `key` is the calendar key the user wrote and names
-/// the field path of every diagnostic. Returns the stages and whether they are
+/// enforcing invariant (a). `file` is the file declaring the calendar and `key`
+/// the calendar key the user wrote; they name the file and field path of every
+/// diagnostic. Returns the stages and whether they are
 /// well-formed; a non-well-formed calendar suppresses the coverage pass so its
 /// errors are not noise on a broken calendar.
 pub(super) fn build_post_study_calendar(
     stages: &[PostStudyStage],
+    file: &str,
     key: &str,
     study_end: Option<NaiveDate>,
     ctx: &mut ValidationContext,
@@ -38,7 +42,7 @@ pub(super) fn build_post_study_calendar(
             _ => {
                 ctx.emit(
                     &rules::POST_STUDY_BOUNDARY_INCONSISTENT,
-                    "post_study_stages.json",
+                    file,
                     Some(format!("{key}[{i}]")),
                     format!(
                         "post-study stage starting {} has duration_hours {} that rounds to a \
@@ -55,7 +59,7 @@ pub(super) fn build_post_study_calendar(
         (Some(first), Some(end)) if first.start_date != end => {
             ctx.emit(
                 &rules::POST_STUDY_BOUNDARY_INCONSISTENT,
-                "post_study_stages.json",
+                file,
                 Some(format!("{key}[0].start_date")),
                 format!(
                     "first post-study stage starts {} but the study horizon ends {}; the \
@@ -66,13 +70,19 @@ pub(super) fn build_post_study_calendar(
             well_formed = false;
         }
         (Some(_), None) => {
+            let declaration = if file == LEGACY_FILE {
+                format!("{file} is declared")
+            } else {
+                format!("{file} declares a post-study calendar")
+            };
             ctx.emit(
                 &rules::POST_STUDY_BOUNDARY_INCONSISTENT,
-                "post_study_stages.json",
+                file,
                 Some(key),
-                "post_study_stages.json is declared but the study has no study stages to anchor \
-                 the post-study calendar against."
-                    .to_string(),
+                format!(
+                    "{declaration} but the study has no study stages to anchor the post-study \
+                     calendar against."
+                ),
             );
             well_formed = false;
         }
@@ -83,7 +93,7 @@ pub(super) fn build_post_study_calendar(
         if pair[0].end_date != pair[1].start_date {
             ctx.emit(
                 &rules::POST_STUDY_BOUNDARY_INCONSISTENT,
-                "post_study_stages.json",
+                file,
                 Some(format!("{key} start_date={}", pair[1].start_date)),
                 format!(
                     "post-study stages are not date-contiguous: the stage starting {} ends {} \
@@ -161,19 +171,63 @@ mod tests {
                 start_date: start + TimeDelta::days(14),
                 duration_hours: 168.0,
             },
+            PostStudyStage {
+                start_date: start + TimeDelta::days(28),
+                duration_hours: 1.0,
+            },
         ];
         let mut ctx = ValidationContext::new();
 
-        let (_, well_formed) =
-            build_post_study_calendar(&stages, "water_bucket_stages", Some(start), &mut ctx);
+        let (_, well_formed) = build_post_study_calendar(
+            &stages,
+            "stages.json",
+            "post_study_water_stages",
+            Some(start - TimeDelta::days(1)),
+            &mut ctx,
+        );
+        build_post_study_calendar(
+            &stages[..1],
+            "stages.json",
+            "post_study_water_stages",
+            None,
+            &mut ctx,
+        );
 
         assert!(!well_formed);
         let errors = ctx.errors();
-        assert_eq!(errors.len(), 1, "got: {errors:?}");
-        let entity = errors[0].entity.as_deref().unwrap();
-        assert!(
-            entity.starts_with("water_bucket_stages"),
-            "field path must name the given key, got: {entity}"
+        assert_eq!(errors.len(), 4, "got: {errors:?}");
+        for entry in errors {
+            assert_eq!(entry.file.to_str(), Some("stages.json"), "{entry:?}");
+            let entity = entry.entity.as_deref().unwrap();
+            assert!(
+                entity.starts_with("post_study_water_stages"),
+                "field path must name the given key, got: {entity}"
+            );
+        }
+    }
+
+    #[test]
+    fn anchorless_calendar_message_follows_the_file() {
+        let start = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
+        let stages = [PostStudyStage {
+            start_date: start,
+            duration_hours: 168.0,
+        }];
+        let message = |file: &str| {
+            let mut ctx = ValidationContext::new();
+            build_post_study_calendar(&stages, file, "key", None, &mut ctx);
+            ctx.errors()[0].message.clone()
+        };
+
+        assert_eq!(
+            message("post_study_stages.json"),
+            "post_study_stages.json is declared but the study has no study stages to anchor \
+             the post-study calendar against."
+        );
+        assert_eq!(
+            message("stages.json"),
+            "stages.json declares a post-study calendar but the study has no study stages to \
+             anchor the post-study calendar against."
         );
     }
 }
