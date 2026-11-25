@@ -6092,6 +6092,63 @@ Read: `crates/novomodelo-core/src/model/post_study.rs`
 `crates/novomodelo-sddp/src/time_value.rs` (`TimeValue::from_system`,
 `delivery_stage_ids`).
 
+### Output dates share the manifest's dating functions
+
+An output date is dated by the functions that date the policy manifest's slots,
+over the same extended calendars; no output recomputes one. `ExtendedStageDates`
+holds the tables: `StudySetup` builds them once from `extended_delivery_stages` and
+`stage_interval` (`build_extended_delivery_dates`, `build_extended_arrival_dates`)
+and reads an arrival through `bucket_arrival`, the helpers
+`build_stage_entity_manifest` dates its slots with. `extract_stage_result` leaves
+the transit-bucket arrival dates `None` and the anticipated lanes empty; the
+simulation pipeline's post-step `extract_sim_stage_result` fills both from those
+tables.
+
+- **Arrival anchor.** An `in_transit` row `(t, lag)`, `t` the 0-based study
+  position of its stage and `lag` the 1-based maturity bucket, is dated by stage
+  `t + lag` of the study stages followed by the water post-study calendar, through
+  `bucket_arrival`: `b_d^out(t)` arrives at `t + d`, never `t + 1 + d`. The dates
+  describe `in_transit_volume_hm3`, the outgoing bucket, not `delayed_arrival_hm3`,
+  the lag-1 volume maturing onto the balance row.
+- **Exclusive end.** Every end date is the stage's exclusive `end_date` through
+  `stage_interval`, never the last inclusive day.
+- **Null is the sentinel.** An arrival past the end of the calendar carries
+  `ENTITY_SLOT_DATE_SENTINEL` in the manifest and is null in the output, start and
+  end together. The sentinel is never written as a date, and no date is invented in
+  its place.
+- **Padded thermal path.** The arrival dates run over the unpadded water calendar,
+  as the manifest's bucket slots do (`### Water calendar paths`): an arrival in the
+  runtime padding of `extend_for_resolution` is null.
+- **Anticipated lanes.** `delivery_start_date` and `delivery_end_date` are
+  `stage_interval` of delivery target `m`, on the axis described in
+  `### Post-study thermal ids continue the delivery axis`; `delivery_date` keeps
+  its month anchor.
+
+Re-deriving a date in an extractor or writer, with `t + 1 + lag`, an inclusive end,
+a padded calendar or the sentinel passed through as a date, is the
+wrong-but-compiling alternative: it moves an output row off the manifest slot that
+dates the same volume or commitment, so a join by date between the two drops or
+mismatches rows. Pinned by `bucket_arrival_dates_stage_t_plus_lag`,
+`stage_interval_end_is_exclusive` and
+`padded_basis_arrival_dates_use_unpadded_calendar`
+(`crates/novomodelo-sddp/src/setup/tests.rs`),
+`arrival_dates_equal_manifest_bucket_slots_on_every_row`,
+`arrival_dates_null_past_padded_water_calendar`,
+`arrival_dates_pin_hand_computed_intervals` and
+`arrival_dates_invariant_to_declaration_order`
+(`crates/novomodelo-sddp/tests/in_transit_arrival_dating.rs`),
+`delivery_dates_match_manifest_ring_slots`, `delivery_dates_pin_mid_month_stage`
+and `delivery_date_keeps_month_anchor`
+(`crates/novomodelo-sddp/tests/anticipated_lane_delivery_dating.rs`).
+
+Read: `crates/novomodelo-sddp/src/setup/mod.rs` (`ExtendedStageDates`,
+`stage_interval`, `bucket_arrival`, `extended_delivery_stages`),
+`crates/novomodelo-sddp/src/policy/policy_export.rs`
+(`build_stage_entity_manifest`),
+`crates/novomodelo-sddp/src/simulation/pipeline.rs` (`extract_sim_stage_result`),
+`crates/novomodelo-sddp/src/simulation/extraction.rs`
+(`fill_transit_arrival_dates`, `extract_anticipated_lanes`).
+
 ### The ring axis: the delivery axis with the fixed post-horizon window excised
 
 Every `m mod k_max` statement below is a RING-AXIS statement: indices are
