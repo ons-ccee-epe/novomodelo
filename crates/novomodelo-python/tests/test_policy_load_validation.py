@@ -68,16 +68,13 @@ def _copy_case_with_renamed_hydro(
             entry["hydro_id"] = new_hydro_id
     ic_path.write_text(json.dumps(initial_conditions))
 
-    # ZSTD to match the shipped example's codec: novomodelo's Rust parquet reader
-    # is built without the "snap" feature, so pyarrow's default (Snappy)
-    # produces an unreadable file.
     inflow_path = dest / "scenarios" / "inflow_seasonal_stats.parquet"
     table = pq.read_table(inflow_path)
     renamed_hydro_id = pa.array([new_hydro_id] * table.num_rows, type=pa.int32())
     table = table.set_column(
         table.schema.get_field_index("hydro_id"), "hydro_id", renamed_hydro_id
     )
-    pq.write_table(table, inflow_path, compression="zstd")
+    pq.write_table(table, inflow_path, compression="snappy")
 
 
 def _copy_case_with_extra_thermal(src: pathlib.Path, dest: pathlib.Path) -> None:
