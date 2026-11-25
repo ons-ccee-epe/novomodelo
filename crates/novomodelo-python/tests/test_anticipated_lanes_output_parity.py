@@ -43,8 +43,6 @@ from _novomodelo_cli import run_cli
 # working directory (never a CWD-relative path).
 _REPO_ROOT = pathlib.Path(__file__).parents[3]
 
-# The committed case whose `stages.json` declares `post_study_thermal_stages` and
-# whose anticipated thermal's lead reaches a post-study delivery target.
 POST_STUDY_CASE = (
     _REPO_ROOT / "examples" / "deterministic" / "d55-post-study-anticipated-lanes"
 )
@@ -208,8 +206,7 @@ def test_no_post_study_continuation_produces_no_anticipated_lanes_partition(
     The symmetric negative, checked on both surfaces: this guards against a
     future regression that emits the partition (empty or otherwise)
     unconditionally rather than only when a genuine post-study decision
-    exists. Unlike the row-parity test, this needs no post-study fixture, so
-    it runs unconditionally.
+    exists.
     """
     import novomodelo.run
 

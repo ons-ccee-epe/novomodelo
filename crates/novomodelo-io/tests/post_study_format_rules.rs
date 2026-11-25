@@ -81,6 +81,16 @@ struct DeprecationCase {
 const THERMAL_PAIR_MESSAGE: &str =
     "`thermal_stages` and `thermal_bounds` must be declared together";
 
+fn sole_error_entry<T>(name: &str, result: Result<T, LoadError>) -> String {
+    let Err(LoadError::ConstraintError { description }) = result else {
+        panic!("{name}: expected a validation error");
+    };
+    let [entry] = description.lines().collect::<Vec<_>>()[..] else {
+        panic!("{name}: expected exactly one error, got:\n{description}");
+    };
+    entry.to_owned()
+}
+
 fn cases() -> Vec<Case> {
     vec![
         Case {
@@ -201,15 +211,7 @@ fn post_study_file_format_table() {
                 assert_eq!(stages.len(), water_stages, "{}", case.name);
             }
             Expected::Rejected { message } => {
-                let Err(LoadError::ConstraintError { description }) = result else {
-                    panic!("{}: expected a validation error", case.name);
-                };
-                let [entry] = description.lines().collect::<Vec<_>>()[..] else {
-                    panic!(
-                        "{}: expected exactly one error, got:\n{description}",
-                        case.name
-                    );
-                };
+                let entry = sole_error_entry(case.name, result);
                 assert!(
                     entry.contains("post_study_stages.json") && entry.contains(message),
                     "{}: unexpected error entry: {entry}",
@@ -423,15 +425,7 @@ fn water_calendar_table() {
                 result.unwrap_or_else(|e| panic!("{}: {e}", case.name));
             }
             WaterOutcome::Rejected { fragments } => {
-                let Err(LoadError::ConstraintError { description }) = result else {
-                    panic!("{}: expected a validation error", case.name);
-                };
-                let [entry] = description.lines().collect::<Vec<_>>()[..] else {
-                    panic!(
-                        "{}: expected exactly one error, got:\n{description}",
-                        case.name
-                    );
-                };
+                let entry = sole_error_entry(case.name, result);
                 for fragment in fragments {
                     assert!(
                         entry.contains("post_study_stages.json") && entry.contains(fragment),
@@ -763,15 +757,7 @@ fn stages_json_post_study_list_table() {
                 );
             }
             ListOutcome::Rejected { fragments } => {
-                let Err(LoadError::ConstraintError { description }) = result else {
-                    panic!("{}: expected a validation error", case.name);
-                };
-                let [entry] = description.lines().collect::<Vec<_>>()[..] else {
-                    panic!(
-                        "{}: expected exactly one error, got:\n{description}",
-                        case.name
-                    );
-                };
+                let entry = sole_error_entry(case.name, result);
                 assert!(
                     entry.starts_with("[BusinessRuleViolation] stages.json"),
                     "{}: unexpected error entry: {entry}",

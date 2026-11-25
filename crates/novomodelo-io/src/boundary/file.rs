@@ -368,21 +368,19 @@ fn convert_thermal(
         "stage_id",
         path,
     )?;
-    let post_study_bounds: Vec<PostStudyBound> = raw
-        .post_study_bounds
-        .iter()
-        .map(|bound| PostStudyBound {
-            stage_id: bound.stage_id,
-            cost_per_mwh: bound.cost_per_mwh,
-            min_mw: bound.min_mw,
-            max_mw: bound.max_mw,
-        })
-        .collect();
-
     Ok(ThermalBoundary {
         thermal_id: raw.thermal_id,
         commitments: into_windows(commitments),
-        post_study_bounds,
+        post_study_bounds: raw
+            .post_study_bounds
+            .iter()
+            .map(|bound| PostStudyBound {
+                stage_id: bound.stage_id,
+                cost_per_mwh: bound.cost_per_mwh,
+                min_mw: bound.min_mw,
+                max_mw: bound.max_mw,
+            })
+            .collect(),
     })
 }
 

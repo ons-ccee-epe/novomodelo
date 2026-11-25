@@ -320,6 +320,7 @@ fn check_defluence_coverage(
         return;
     }
     let hydro_id = hydro.id.0;
+    let seed_file = data.boundary_format_or_legacy().hydro_seed_file();
 
     let mut windows: Vec<(f64, f64)> = Vec::new();
     for w in data
@@ -331,7 +332,7 @@ fn check_defluence_coverage(
         if w.end_date > start_0 {
             ctx.emit(
                 &rules::TRAVEL_TIME_DEFLUENCE_FUTURE_DATED,
-                data.boundary_format_or_legacy().hydro_seed_file(),
+                seed_file,
                 Some(format!("Hydro {hydro_id}")),
                 format!(
                     "Hydro {hydro_id}: past_defluences window [{}, {}) ends after the study \
@@ -363,7 +364,7 @@ fn check_defluence_coverage(
 
     ctx.emit(
         &rules::TRAVEL_TIME_DEFLUENCES_UNCOVERED,
-        data.boundary_format_or_legacy().hydro_seed_file(),
+        seed_file,
         Some(format!("Hydro {hydro_id}")),
         format!(
             "Hydro {hydro_id}: declared arc (travel_time_hours={t}) requires past_defluences \
