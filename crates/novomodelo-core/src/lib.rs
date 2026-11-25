@@ -86,7 +86,7 @@ pub use model::penalty::{
 };
 pub use model::post_study::{
     PostStudyStage, PostStudyStages, PostStudyThermalBound, UncoveredArc, WaterBucketStages,
-    deepest_uncovered_travel_time_arc,
+    deepest_uncovered_travel_time_arc, post_study_thermal_stage_id,
 };
 pub use model::resolved::{
     BlockBoundsCountsSpec, BoundsCountsSpec, BoundsDefaults, BusStagePenalties,

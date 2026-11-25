@@ -167,6 +167,18 @@ pub fn deepest_uncovered_travel_time_arc(
     }
 }
 
+/// Id of the post-study thermal stage at `position` in `start_date` order:
+/// `max_study_id + 1 + position`, continuing the study's stage ids without a gap.
+///
+/// `max_study_id` is the largest study stage id, or `-1` for a study with no
+/// stage. `None` when the id would overflow `i32`.
+#[must_use]
+pub fn post_study_thermal_stage_id(max_study_id: i32, position: usize) -> Option<i32> {
+    i32::try_from(position)
+        .ok()
+        .and_then(|position| max_study_id.checked_add(1)?.checked_add(position))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -332,5 +344,20 @@ mod tests {
             deepest_uncovered_travel_time_arc(&hydros, &water_calendar(&[168.0, 168.0])),
             None
         );
+    }
+
+    #[test]
+    fn post_study_thermal_stage_id_continues_the_study_ids() {
+        assert_eq!(post_study_thermal_stage_id(11, 0), Some(12));
+        assert_eq!(post_study_thermal_stage_id(11, 2), Some(14));
+        assert_eq!(post_study_thermal_stage_id(-1, 0), Some(0));
+    }
+
+    #[test]
+    fn post_study_thermal_stage_id_is_none_on_overflow() {
+        assert_eq!(post_study_thermal_stage_id(i32::MAX - 1, 0), Some(i32::MAX));
+        assert_eq!(post_study_thermal_stage_id(i32::MAX - 1, 1), None);
+        assert_eq!(post_study_thermal_stage_id(i32::MAX, 0), None);
+        assert_eq!(post_study_thermal_stage_id(0, usize::MAX), None);
     }
 }

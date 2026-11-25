@@ -6061,26 +6061,29 @@ deck loads clean).
 Stage `j` of `post_study_thermal_stages`, taken in `start_date` order, has id
 `max_study_id + 1 + j`: the post-study thermal calendar continues the study's
 delivery axis without a gap. The parse-time check `validate_thermal_continuation`
-refuses any other declared id. Both sides compute the same continuation: io's
-`post_study_thermal_stage_id` (used by `build_extended_delivery_axis` and the
-current-format diagnostics) and sddp's `TimeValue::delivery_stage_ids` (the study
-ids chained with the last study id plus one onward, a strictly increasing sequence
+refuses any other declared id. The continuation has one owner,
+`novomodelo_core::post_study_thermal_stage_id`, called by that check, by io's
+`build_extended_delivery_axis` (the current-format diagnostics) and by sddp's
+`TimeValue::delivery_stage_ids` (a strictly increasing sequence
 `commissioning_active` relies on). A legacy deck, which declares no ids, gets
-the identical synthesized sequence on both sides.
+the identical synthesized sequence on both sides through the same function.
 
 Numbering post-study stages by declaration order or from the water calendar, or
 letting one side read the declared ids while the other synthesizes them, is the
 wrong-but-compiling alternative: either drift makes a `post_study_bounds`
 `stage_id`, a diagnostic and the solver's commissioning gate name different
-delivery stages. Pinned by
+delivery stages. Pinned by the owner's unit tests
+(`crates/novomodelo-core/src/model/post_study.rs`),
 `extended_delivery_axis_continues_into_the_declared_post_study_ids`
 (`crates/novomodelo-io/src/validation/semantic/thermal.rs`) and
 `delivery_stage_ids_continue_into_the_declared_post_study_ids`
-(`crates/novomodelo-sddp/src/time_value.rs`); each compares its side to the ids
-declared in `stages.json`.
+(`crates/novomodelo-sddp/src/time_value.rs`); each deck scan compares its side to
+the ids declared in `stages.json`.
 
-Read: `crates/novomodelo-io/src/validation/semantic/thermal.rs`
-(`post_study_thermal_stage_id`, `build_extended_delivery_axis`),
+Read: `crates/novomodelo-core/src/model/post_study.rs`
+(`post_study_thermal_stage_id`),
+`crates/novomodelo-io/src/validation/semantic/thermal.rs`
+(`build_extended_delivery_axis`),
 `crates/novomodelo-io/src/stages.rs` (`validate_thermal_continuation`),
 `crates/novomodelo-sddp/src/time_value.rs` (`TimeValue::from_system`,
 `delivery_stage_ids`).

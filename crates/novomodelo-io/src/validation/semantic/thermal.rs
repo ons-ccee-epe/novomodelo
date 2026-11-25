@@ -9,7 +9,8 @@ use chrono::NaiveDate;
 use novomodelo_core::commissioning::commissioning_active;
 use novomodelo_core::temporal::Stage;
 use novomodelo_core::{
-    AnticipatedCommitmentHistory, AnticipatedConfig, EntityId, ResolvedBounds, Thermal, VariableRef,
+    AnticipatedCommitmentHistory, AnticipatedConfig, EntityId, ResolvedBounds, Thermal,
+    VariableRef, post_study_thermal_stage_id,
 };
 use novomodelo_stochastic::season_cast::{DatedWindow, StageCalendar};
 
@@ -563,12 +564,6 @@ struct ExtendedDeliveryAxis {
     n_stages: usize,
 }
 
-/// Must agree with the loader's `validate_thermal_continuation` in `stages.rs` and the
-/// solver's `delivery_stage_ids`.
-fn post_study_thermal_stage_id(max_study_id: i32, j: usize) -> i32 {
-    max_study_id + 1 + i32::try_from(j).unwrap_or(i32::MAX)
-}
-
 /// Build the concatenated delivery axis, or `None` when `post_study_stages` is
 /// absent. See `ExtendedDeliveryAxis` for the concatenation contract.
 fn build_extended_delivery_axis(data: &ParsedData) -> Option<ExtendedDeliveryAxis> {
@@ -592,7 +587,7 @@ fn build_extended_delivery_axis(data: &ParsedData) -> Option<ExtendedDeliveryAxi
         .into_iter()
         .chain(
             (0..post_study.thermal_stages.len())
-                .map(|j| post_study_thermal_stage_id(max_study_id, j)),
+                .map(|j| post_study_thermal_stage_id(max_study_id, j).unwrap_or(i32::MAX)),
         )
         .collect();
     Some(ExtendedDeliveryAxis {
@@ -1509,7 +1504,6 @@ mod tests {
     use super::{
         ExtendedDeliveryAxis, build_extended_delivery_axis, check_anticipated_thermals,
         check_post_study_stages, classify_deliveries, extended_deciders, lead_delivery_stage_count,
-        post_study_thermal_stage_id,
     };
     use crate::constraints::ThermalBoundsRow;
     use crate::stages::{PostStudyCalendars, StagesData};
@@ -4110,12 +4104,6 @@ mod tests {
                 .any(|(f, m)| f == file && m.contains(fragment)),
             "expected an error in {file} containing {fragment:?}, got: {emitted:?}"
         );
-    }
-
-    #[test]
-    fn post_study_stage_id_continues_the_study() {
-        assert_eq!(post_study_thermal_stage_id(11, 0), 12);
-        assert_eq!(post_study_thermal_stage_id(11, 2), 14);
     }
 
     #[test]

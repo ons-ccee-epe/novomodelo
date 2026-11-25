@@ -3,7 +3,7 @@
 
 use novomodelo_core::{
     EntityId, HorizonGraph, PostStudyStage, PostStudyStages, PostStudyThermalBound, Stage, System,
-    WaterBucketStages,
+    WaterBucketStages, post_study_thermal_stage_id,
 };
 use novomodelo_stochastic::season_cast::post_study_calendar_stages;
 
@@ -505,16 +505,16 @@ impl TimeValue {
         );
 
         let study_stage_ids: Vec<i32> = study_stages.iter().map(|s| s.id).collect();
-        // Synthetic continuation from `study_stage_ids.last()`, never
+        // Synthetic continuation from the last study id, never
         // `post_study_calendar_stages`'s own `Stage::id`: those restart at `0`
         // and would make a post-study delivery compare as an early study stage.
-        let next_delivery_id = study_stage_ids.last().map_or(0, |&last| last + 1);
-        let end_delivery_id =
-            next_delivery_id.saturating_add(i32::try_from(calendar.n_post()).unwrap_or(i32::MAX));
+        let max_study_id = study_stage_ids.last().copied().unwrap_or(-1);
         let delivery_stage_ids: Vec<i32> = study_stage_ids
             .iter()
             .copied()
-            .chain(next_delivery_id..end_delivery_id)
+            .chain((0..calendar.n_post()).map(|position| {
+                post_study_thermal_stage_id(max_study_id, position).unwrap_or(i32::MAX)
+            }))
             .collect();
         debug_assert_eq!(
             delivery_stage_ids.len(),

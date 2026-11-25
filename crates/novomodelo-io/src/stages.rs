@@ -45,12 +45,12 @@
 //! block hours sum equals stage duration) is deferred to the semantic layer.
 
 use chrono::{Datelike, NaiveDate};
-use novomodelo_core::HorizonGraph;
 use novomodelo_core::temporal::{
     Block, BlockMode, Node, NoiseMethod, PolicyGraphType, SUB_PERIOD_TOLERANCE_DAYS,
     ScenarioSourceConfig, SeasonCycleType, SeasonCycles, SeasonDefinition, SeasonMap, Stage,
     StageRiskConfig, StageStateConfig, Transition,
 };
+use novomodelo_core::{HorizonGraph, post_study_thermal_stage_id};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
@@ -952,15 +952,16 @@ fn convert_post_study_calendar(
     Ok(stages)
 }
 
-/// Thermal stage `j` in start-date order has id `max_study_id + 1 + j`, the id the
-/// delivery-axis builder and the commissioning gate assign it.
 fn validate_thermal_continuation(
     sorted: &[(usize, PostStudyCalendarStage)],
     max_study_id: i32,
     path: &Path,
 ) -> Result<(), LoadError> {
-    for (expected, (i, stage)) in (i64::from(max_study_id) + 1..).zip(sorted) {
-        if i64::from(stage.id) != expected {
+    for (position, (i, stage)) in sorted.iter().enumerate() {
+        let expected = post_study_thermal_stage_id(max_study_id, position);
+        if expected != Some(stage.id) {
+            let expected =
+                expected.map_or_else(|| "an id beyond i32".to_string(), |id| id.to_string());
             return Err(LoadError::SchemaError {
                 path: path.to_path_buf(),
                 field: format!("{POST_STUDY_THERMAL_KEY}[{i}].id"),
