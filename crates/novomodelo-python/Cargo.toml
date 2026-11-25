@@ -32,7 +32,7 @@ novomodelo-comm = { version = "0.22.0", path = "../novomodelo-comm" }
 chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
 rayon = "1"
 arrow = { version = "60", default-features = false, features = ["ipc"] }
-parquet = { version = "60", default-features = false, features = ["arrow"] }
+parquet = { version = "60", default-features = false, features = ["arrow", "zstd", "snap", "lz4", "flate2-zlib-rs"] }
 serde_json = "1"
 
 [dev-dependencies]

@@ -83,7 +83,7 @@ criterion = { version = "0.8", default-features = false }
 # per-candidate `dgemm` baseline (the crate's own `gemm_block` wrapper is
 # `pub(crate)` and so unreachable from a bench). Same pin as the normal dep.
 matrixmultiply = { workspace = true }
-parquet = { version = "60", default-features = false, features = ["arrow", "zstd"] }
+parquet = { version = "60", default-features = false, features = ["arrow", "zstd", "snap", "lz4", "flate2-zlib-rs"] }
 proptest = "1"
 rand = "0.10"
 rand_distr = "0.6"
