@@ -104,8 +104,10 @@ pub use policy::policy_load::{
     validate_policy_load,
 };
 pub use policy::provenance::{
-    HydroProductionProvenance, InflowProvenance, ModelProvenanceReport, ProvenanceSource,
-    build_provenance_report,
+    HydroProductionProvenance, InflowProvenance, ModelProvenanceReport, PaddedArcProvenance,
+    PostStudyCalendarOrigin, PostStudyCalendarProvenance, PostStudyProvenance,
+    PostStudyStageProvenance, ProvenanceSource, WaterCalendarPaddingProvenance,
+    build_post_study_provenance, build_provenance_report,
 };
 pub use policy::reconcile::{
     AnticipatedCoverage, BoundaryReconciliationReport, FamilyTally, SlotDetail,

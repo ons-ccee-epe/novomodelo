@@ -6,15 +6,18 @@
 
 use std::fmt;
 
+use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 
-use novomodelo_core::Hydro;
+use novomodelo_core::{Hydro, System};
 use novomodelo_io::scenarios::estimation::{CorrelationOrigin, EstimationPath, EstimationReport};
 use novomodelo_stochastic::{ComponentProvenance, StochasticProvenance};
 
+use crate::bucket_topology::{WaterCalendarPadding, water_calendar_padding};
 use crate::hydro_models::{
     EvaporationReferenceSource, EvaporationSource, HydroModelProvenance, ProductionModelSource,
 };
+use crate::time_value::{DeliveryCalendar, WaterDeliveryBasis};
 
 // ── ProvenanceSource ──────────────────────────────────────────────────────────
 
@@ -264,6 +267,144 @@ pub fn build_provenance_report(
     }
 }
 
+// ── PostStudyProvenance ───────────────────────────────────────────────────────
+
+/// The post-study calendars a deck carries and where the water calendar came
+/// from.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PostStudyProvenance {
+    /// The thermal calendar; absent when the deck has no post-study input.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thermal: Option<PostStudyCalendarProvenance>,
+    /// The water calendar.
+    pub water: PostStudyCalendarProvenance,
+}
+
+/// One post-study calendar: its origin and its dated stages.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PostStudyCalendarProvenance {
+    /// How the calendar was obtained.
+    pub origin: PostStudyCalendarOrigin,
+    /// The calendar's own stages in order, never the stages padding appends.
+    pub stages: Vec<PostStudyStageProvenance>,
+    /// The padding applied to a padded-thermal water calendar; absent when none
+    /// is applied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub padding: Option<WaterCalendarPaddingProvenance>,
+}
+
+/// How a post-study calendar was obtained.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PostStudyCalendarOrigin {
+    /// Listed in the deck's input files.
+    Declared,
+    /// The thermal calendar, padded by the runtime to cover the deepest
+    /// travel-time arc.
+    PaddedThermal,
+}
+
+/// One dated post-study stage.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PostStudyStageProvenance {
+    /// First day of the stage.
+    pub start_date: NaiveDate,
+    /// First day after the stage (exclusive).
+    pub end_date: NaiveDate,
+    /// Stage duration in hours.
+    pub hours: f64,
+}
+
+/// The trailing stages the runtime appends to a padded-thermal water calendar.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WaterCalendarPaddingProvenance {
+    /// Duration of each appended stage, copied from the calendar's last stage.
+    pub trailing_stage_hours: f64,
+    /// Number of appended stages.
+    pub padded_stage_count: usize,
+    /// The arc whose travel time sets the number of appended stages.
+    pub deepest_arc: PaddedArcProvenance,
+}
+
+/// The travel-time arc that sets the padded length.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PaddedArcProvenance {
+    /// Hydro the water leaves.
+    pub upstream_hydro_id: i32,
+    /// Hydro the water enters.
+    pub downstream_hydro_id: i32,
+    /// Travel time along the arc in hours.
+    pub travel_time_hours: f64,
+}
+
+impl From<WaterCalendarPadding> for WaterCalendarPaddingProvenance {
+    fn from(padding: WaterCalendarPadding) -> Self {
+        Self {
+            trailing_stage_hours: padding.trailing_stage_hours,
+            padded_stage_count: padding.padded_stage_count,
+            deepest_arc: PaddedArcProvenance {
+                upstream_hydro_id: padding.upstream_hydro_id.0,
+                downstream_hydro_id: padding.downstream_hydro_id.0,
+                travel_time_hours: padding.travel_time_hours,
+            },
+        }
+    }
+}
+
+fn stage_rows(calendar: &DeliveryCalendar) -> Vec<PostStudyStageProvenance> {
+    let rows: Vec<PostStudyStageProvenance> = calendar
+        .post_study_stages()
+        .iter()
+        .zip(calendar.post_study_total_hours())
+        .map(|(stage, &hours)| PostStudyStageProvenance {
+            start_date: stage.start_date,
+            end_date: stage.end_date,
+            hours,
+        })
+        .collect();
+    debug_assert!(
+        rows.windows(2).all(|w| w[0].start_date < w[1].start_date),
+        "post-study stage start dates must be strictly ascending"
+    );
+    rows
+}
+
+/// Build the `post_study` provenance section from `system`.
+///
+/// `None` when the deck has neither a post-study input nor a padded water
+/// calendar. Infallible and free of I/O.
+#[must_use]
+pub fn build_post_study_provenance(system: &System) -> Option<PostStudyProvenance> {
+    let padding = water_calendar_padding(system);
+    let has_input = system.post_study_stages().is_some();
+    if !has_input && padding.is_none() {
+        return None;
+    }
+
+    let thermal = has_input.then(|| PostStudyCalendarProvenance {
+        origin: PostStudyCalendarOrigin::Declared,
+        stages: stage_rows(&DeliveryCalendar::thermal(system)),
+        padding: None,
+    });
+
+    let basis = WaterDeliveryBasis::of(system);
+    let origin = match basis {
+        WaterDeliveryBasis::Declared(_) => PostStudyCalendarOrigin::Declared,
+        WaterDeliveryBasis::PaddedThermal => PostStudyCalendarOrigin::PaddedThermal,
+    };
+    debug_assert!(
+        padding.is_none() || origin == PostStudyCalendarOrigin::PaddedThermal,
+        "padding applies only to a padded-thermal water calendar"
+    );
+    let water = PostStudyCalendarProvenance {
+        origin,
+        stages: stage_rows(&DeliveryCalendar::water(system, basis)),
+        padding: padding.map(Into::into),
+    };
+
+    Some(PostStudyProvenance { thermal, water })
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -277,7 +418,12 @@ mod tests {
 
     use std::collections::BTreeMap;
 
-    use novomodelo_core::EntityId;
+    use chrono::NaiveDate;
+    use novomodelo_core::entities::hydro::HydroPenalties;
+    use novomodelo_core::{
+        Block, DeficitSegment, EntityId, Hydro, PostStudyStage, PostStudyStages, System,
+        SystemBuilder, WaterBucketStages,
+    };
     use novomodelo_io::scenarios::estimation::{
         CorrelationOrigin, EstimationPath, EstimationReport,
     };
@@ -286,11 +432,15 @@ mod tests {
     use crate::hydro_models::{
         EvaporationReferenceSource, EvaporationSource, HydroModelProvenance, ProductionModelSource,
     };
-    use crate::test_support::minimal_hydros;
+    use crate::test_support::builders::{self, BusSpec, HydroSpec, StageSpec};
+    use crate::test_support::{minimal_hydros, ymd};
     use novomodelo_stochastic::par::fitting::HydroEstimationEntry;
 
     use super::{
-        HydroProductionProvenance, ModelProvenanceReport, ProvenanceSource, build_provenance_report,
+        HydroProductionProvenance, ModelProvenanceReport, PaddedArcProvenance,
+        PostStudyCalendarOrigin, PostStudyCalendarProvenance, PostStudyProvenance,
+        PostStudyStageProvenance, ProvenanceSource, WaterCalendarPaddingProvenance,
+        build_post_study_provenance, build_provenance_report,
     };
 
     // Helper: build a `HydroModelProvenance` from aligned per-hydro source slices.
@@ -1056,5 +1206,260 @@ mod tests {
             report_b.hydro_production.n_evaporation_ref_default_midpoint,
             "default-midpoint reference count must be order invariant"
         );
+    }
+
+    // ── PostStudyProvenance ───────────────────────────────────────────────────
+
+    fn arc_hydro(id: i32, downstream_id: Option<i32>, travel_time_hours: Option<f64>) -> Hydro {
+        builders::make_hydro(
+            EntityId(id),
+            HydroSpec {
+                name: format!("H{id}"),
+                bus_id: EntityId(1),
+                downstream_id: downstream_id.map(EntityId),
+                travel_time_hours,
+                max_storage_hm3: 100.0,
+                max_turbined_m3s: 100.0,
+                max_generation_mw: 100.0,
+                penalties: HydroPenalties::uniform(0.0),
+                ..HydroSpec::default()
+            },
+        )
+    }
+
+    fn build_system(
+        hydros: Vec<Hydro>,
+        stage_hours: &[f64],
+        post_study: Option<PostStudyStages>,
+    ) -> System {
+        let bus = builders::make_bus(
+            EntityId(1),
+            BusSpec {
+                name: "B1".to_string(),
+                deficit_segments: vec![DeficitSegment {
+                    depth_mw: None,
+                    cost_per_mwh: 500.0,
+                }],
+                ..BusSpec::default()
+            },
+        );
+        let stages = stage_hours
+            .iter()
+            .enumerate()
+            .map(|(i, &duration_hours)| {
+                builders::make_stage(
+                    i,
+                    StageSpec {
+                        blocks: vec![Block {
+                            index: 0,
+                            name: "B0".to_string(),
+                            duration_hours,
+                        }],
+                        ..StageSpec::default()
+                    },
+                )
+            })
+            .collect();
+        SystemBuilder::new()
+            .buses(vec![bus])
+            .hydros(hydros)
+            .stages(stages)
+            .post_study_stages(post_study)
+            .build()
+            .expect("valid system")
+    }
+
+    fn post_study_stage(start_date: NaiveDate, duration_hours: f64) -> PostStudyStage {
+        PostStudyStage {
+            start_date,
+            duration_hours,
+        }
+    }
+
+    fn row(start_date: NaiveDate, end_date: NaiveDate, hours: f64) -> PostStudyStageProvenance {
+        PostStudyStageProvenance {
+            start_date,
+            end_date,
+            hours,
+        }
+    }
+
+    fn declared_deck() -> System {
+        build_system(
+            vec![arc_hydro(1, None, None)],
+            &[744.0],
+            Some(PostStudyStages {
+                thermal_stages: vec![
+                    post_study_stage(ymd(2024, 4, 1), 720.0),
+                    post_study_stage(ymd(2024, 5, 1), 744.0),
+                ],
+                thermal_bounds: Vec::new(),
+                water_bucket_stages: WaterBucketStages::Declared(vec![post_study_stage(
+                    ymd(2024, 4, 1),
+                    730.0,
+                )]),
+            }),
+        )
+    }
+
+    fn arc_hydros() -> Vec<Hydro> {
+        vec![
+            arc_hydro(1, None, None),
+            arc_hydro(2, Some(1), Some(100.0)),
+            arc_hydro(3, Some(1), Some(130.0)),
+        ]
+    }
+
+    fn padded_deck(hydros: Vec<Hydro>) -> System {
+        build_system(hydros, &[24.0, 24.0, 48.0], None)
+    }
+
+    fn padded_water_padding() -> WaterCalendarPaddingProvenance {
+        WaterCalendarPaddingProvenance {
+            trailing_stage_hours: 48.0,
+            padded_stage_count: 3,
+            deepest_arc: PaddedArcProvenance {
+                upstream_hydro_id: 3,
+                downstream_hydro_id: 1,
+                travel_time_hours: 130.0,
+            },
+        }
+    }
+
+    #[test]
+    fn post_study_provenance_none_without_input_or_arc() {
+        let system = build_system(vec![arc_hydro(1, None, None)], &[24.0, 24.0, 24.0], None);
+
+        assert_eq!(build_post_study_provenance(&system), None);
+    }
+
+    #[test]
+    fn post_study_provenance_lists_declared_calendars() {
+        let provenance = build_post_study_provenance(&declared_deck());
+
+        assert_eq!(
+            provenance,
+            Some(PostStudyProvenance {
+                thermal: Some(PostStudyCalendarProvenance {
+                    origin: PostStudyCalendarOrigin::Declared,
+                    stages: vec![
+                        row(ymd(2024, 4, 1), ymd(2024, 5, 1), 720.0),
+                        row(ymd(2024, 5, 1), ymd(2024, 6, 1), 744.0),
+                    ],
+                    padding: None,
+                }),
+                water: PostStudyCalendarProvenance {
+                    origin: PostStudyCalendarOrigin::Declared,
+                    stages: vec![row(ymd(2024, 4, 1), ymd(2024, 5, 1), 730.0)],
+                    padding: None,
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn post_study_provenance_reports_padded_water_calendar_without_thermal() {
+        let mut reversed = arc_hydros();
+        reversed.reverse();
+
+        for hydros in [arc_hydros(), reversed] {
+            let provenance = build_post_study_provenance(&padded_deck(hydros));
+
+            assert_eq!(
+                provenance,
+                Some(PostStudyProvenance {
+                    thermal: None,
+                    water: PostStudyCalendarProvenance {
+                        origin: PostStudyCalendarOrigin::PaddedThermal,
+                        stages: Vec::new(),
+                        padding: Some(padded_water_padding()),
+                    },
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn post_study_provenance_from_thermal_stages_lists_unpadded_thermal_stages() {
+        let system = build_system(
+            vec![arc_hydro(1, None, None), arc_hydro(2, Some(1), Some(130.0))],
+            &[24.0, 24.0, 48.0],
+            Some(PostStudyStages {
+                thermal_stages: vec![post_study_stage(ymd(2024, 4, 1), 720.0)],
+                ..PostStudyStages::default()
+            }),
+        );
+        let thermal_rows = vec![row(ymd(2024, 4, 1), ymd(2024, 5, 1), 720.0)];
+
+        assert_eq!(
+            build_post_study_provenance(&system),
+            Some(PostStudyProvenance {
+                thermal: Some(PostStudyCalendarProvenance {
+                    origin: PostStudyCalendarOrigin::Declared,
+                    stages: thermal_rows.clone(),
+                    padding: None,
+                }),
+                water: PostStudyCalendarProvenance {
+                    origin: PostStudyCalendarOrigin::PaddedThermal,
+                    stages: thermal_rows,
+                    padding: Some(WaterCalendarPaddingProvenance {
+                        trailing_stage_hours: 720.0,
+                        padded_stage_count: 1,
+                        deepest_arc: PaddedArcProvenance {
+                            upstream_hydro_id: 2,
+                            downstream_hydro_id: 1,
+                            travel_time_hours: 130.0,
+                        },
+                    }),
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn post_study_section_serializes_iso_dates_and_omits_absent_keys() {
+        let padded = serde_json::json!({
+            "water": {
+                "origin": "padded_thermal",
+                "stages": [],
+                "padding": {
+                    "trailing_stage_hours": 48.0,
+                    "padded_stage_count": 3,
+                    "deepest_arc": {
+                        "upstream_hydro_id": 3,
+                        "downstream_hydro_id": 1,
+                        "travel_time_hours": 130.0
+                    }
+                }
+            }
+        });
+        let declared = serde_json::json!({
+            "thermal": {
+                "origin": "declared",
+                "stages": [
+                    {"start_date": "2024-04-01", "end_date": "2024-05-01", "hours": 720.0},
+                    {"start_date": "2024-05-01", "end_date": "2024-06-01", "hours": 744.0}
+                ]
+            },
+            "water": {
+                "origin": "declared",
+                "stages": [
+                    {"start_date": "2024-04-01", "end_date": "2024-05-01", "hours": 730.0}
+                ]
+            }
+        });
+
+        for (system, expected) in [
+            (padded_deck(arc_hydros()), padded),
+            (declared_deck(), declared),
+        ] {
+            let provenance = build_post_study_provenance(&system).expect("a post-study section");
+
+            assert_eq!(serde_json::to_value(&provenance).unwrap(), expected);
+            assert_eq!(
+                serde_json::from_value::<PostStudyProvenance>(expected).unwrap(),
+                provenance
+            );
+        }
     }
 }

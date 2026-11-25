@@ -154,10 +154,6 @@ pub(crate) struct WaterCalendarPadding {
 ///
 /// The deepest arc has the largest travel time; ties go to the smallest
 /// `(downstream, upstream)` hydro id pair, never to declaration order.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "read by the post-study provenance builder")
-)]
 pub(crate) fn water_calendar_padding(system: &System) -> Option<WaterCalendarPadding> {
     let basis = WaterDeliveryBasis::of(system);
     let WaterDeliveryBasis::PaddedThermal = basis else {
