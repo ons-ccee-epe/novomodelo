@@ -119,7 +119,8 @@ use novomodelo_sddp::solver_stats_log_to_rows;
 use novomodelo_sddp::{
     ArOrderSummary, DEFAULT_SEED, HydroModelSummary, ModelProvenanceReport, SolverStatsDelta,
     StochasticSource, StochasticSummary, StudyParams, StudySetup, build_hydro_model_summary,
-    build_provenance_report, build_stochastic_summary, prepare_stochastic,
+    build_post_study_provenance, build_provenance_report, build_stochastic_summary,
+    prepare_stochastic,
 };
 use novomodelo_solver::ActiveSolver;
 use novomodelo_solver::active_solver_metadata_id;
@@ -1015,6 +1016,7 @@ pub(crate) fn build_study_setup(
         setup.inputs.stochastic.provenance(),
         system.hydros(),
         &setup.hydro_models.provenance,
+        build_post_study_provenance(&system),
     );
     // Fingerprint the derived lag seed (training-side library only) so
     // stale-library detection can compare against a fresh digest on later runs.

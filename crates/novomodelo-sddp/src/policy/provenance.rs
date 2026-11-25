@@ -122,6 +122,7 @@ pub struct HydroProductionProvenance {
 ///         historical_library_seed_digest: None,
 ///     },
 ///     hydro_production: HydroProductionProvenance::default(),
+///     post_study: None,
 /// };
 /// let json = serde_json::to_string_pretty(&report).unwrap();
 /// assert!(json.contains("\"full_estimation\""));
@@ -133,6 +134,10 @@ pub struct ModelProvenanceReport {
     /// Provenance of the hydro-production model's data sources.
     #[serde(default)]
     pub hydro_production: HydroProductionProvenance,
+    /// Post-study calendars, absent when the case has no post-study input and
+    /// the run does not pad the water calendar.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub post_study: Option<PostStudyProvenance>,
 }
 
 // ── build_provenance_report ───────────────────────────────────────────────────
@@ -211,6 +216,7 @@ pub fn build_provenance_report(
     provenance: &StochasticProvenance,
     hydros: &[Hydro],
     hydro_provenance: &HydroModelProvenance,
+    post_study: Option<PostStudyProvenance>,
 ) -> ModelProvenanceReport {
     let (seasonal_stats_source, ar_coefficients_source) = match estimation_path {
         EstimationPath::Deterministic => (
@@ -264,6 +270,7 @@ pub fn build_provenance_report(
             historical_library_seed_digest: None,
         },
         hydro_production: aggregate_hydro_production(hydro_provenance),
+        post_study,
     }
 }
 
@@ -555,6 +562,7 @@ mod tests {
             &prov_all_generated(),
             &minimal_hydros(2),
             &empty_hydro_provenance(2),
+            None,
         );
         assert!(
             report.inflow.historical_library_seed_digest.is_none(),
@@ -573,6 +581,7 @@ mod tests {
             &prov_all_generated(),
             &minimal_hydros(1),
             &empty_hydro_provenance(1),
+            None,
         );
         let digest: u64 = 0xDEAD_BEEF_CAFE_F00D;
         report.inflow.historical_library_seed_digest = Some(digest);
@@ -596,6 +605,7 @@ mod tests {
             &prov_not_applicable(),
             &minimal_hydros(0),
             &empty_hydro_provenance(0),
+            None,
         );
         let json = serde_json::to_string(&report).unwrap();
         assert!(
@@ -613,6 +623,7 @@ mod tests {
             &prov_not_applicable(),
             &minimal_hydros(0),
             &empty_hydro_provenance(0),
+            None,
         );
         assert!(
             matches!(
@@ -645,6 +656,7 @@ mod tests {
             &prov_all_generated(),
             &minimal_hydros(2),
             &empty_hydro_provenance(2),
+            None,
         );
         assert!(
             matches!(
@@ -672,6 +684,7 @@ mod tests {
             &prov_all_generated(),
             &minimal_hydros(2),
             &empty_hydro_provenance(2),
+            None,
         );
         assert!(
             matches!(
@@ -700,6 +713,7 @@ mod tests {
             &prov_all_generated(),
             &minimal_hydros(2),
             &empty_hydro_provenance(2),
+            None,
         );
         assert!(
             matches!(
@@ -730,6 +744,7 @@ mod tests {
             &prov_all_generated(),
             &minimal_hydros(1),
             &empty_hydro_provenance(1),
+            None,
         );
         assert!(
             matches!(
@@ -758,6 +773,7 @@ mod tests {
             &prov_all_generated(),
             &minimal_hydros(3),
             &empty_hydro_provenance(3),
+            None,
         );
         assert!(
             matches!(
@@ -786,6 +802,7 @@ mod tests {
             &prov_all_generated(),
             &minimal_hydros(4),
             &empty_hydro_provenance(4),
+            None,
         );
         assert!(
             matches!(
@@ -819,6 +836,7 @@ mod tests {
             &prov_user_tree(),
             &minimal_hydros(2),
             &empty_hydro_provenance(2),
+            None,
         );
         assert!(
             matches!(
@@ -855,6 +873,7 @@ mod tests {
                     &provenance,
                     &minimal_hydros(2),
                     &empty_hydro_provenance(2),
+                    None,
                 );
                 assert_eq!(
                     report.inflow.correlation_source.to_string(),
@@ -878,6 +897,7 @@ mod tests {
             &prov_all_generated(),
             &minimal_hydros(1),
             &empty_hydro_provenance(1),
+            None,
         );
         let json = serde_json::to_string_pretty(&report).unwrap();
         assert!(
@@ -904,6 +924,7 @@ mod tests {
             &prov_not_applicable(),
             &minimal_hydros(0),
             &empty_hydro_provenance(0),
+            None,
         );
         let json = serde_json::to_string_pretty(&report).unwrap();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -935,6 +956,7 @@ mod tests {
             &prov_all_generated(),
             &minimal_hydros(2),
             &empty_hydro_provenance(2),
+            None,
         );
         assert_eq!(
             report.inflow.white_noise_fallbacks,
@@ -952,6 +974,7 @@ mod tests {
             &prov_not_applicable(),
             &minimal_hydros(0),
             &empty_hydro_provenance(0),
+            None,
         );
         assert!(
             report.inflow.white_noise_fallbacks.is_empty(),
@@ -970,6 +993,7 @@ mod tests {
             &prov_all_generated(),
             &minimal_hydros(2),
             &empty_hydro_provenance(2),
+            None,
         );
         let json = serde_json::to_string(&report).unwrap();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -997,6 +1021,7 @@ mod tests {
             &prov_all_generated(),
             &minimal_hydros(2),
             &empty_hydro_provenance(2),
+            None,
         );
         let json = serde_json::to_string(&original).unwrap();
         let parsed: ModelProvenanceReport = serde_json::from_str(&json).unwrap();
@@ -1086,6 +1111,7 @@ mod tests {
             &prov_all_generated(),
             &minimal_hydros(5),
             &hp,
+            None,
         );
         assert_eq!(
             report.hydro_production.n_fpha_computed_from_geometry, 2,
@@ -1122,6 +1148,7 @@ mod tests {
             &prov_all_generated(),
             &minimal_hydros(2),
             &hp,
+            None,
         );
         assert_eq!(
             report.hydro_production.n_evaporation_ref_user_supplied, 1,
@@ -1177,6 +1204,7 @@ mod tests {
             &prov_all_generated(),
             &minimal_hydros(3),
             &hp_a,
+            None,
         );
         let report_b = build_provenance_report(
             EstimationPath::FullEstimation,
@@ -1185,6 +1213,7 @@ mod tests {
             &prov_all_generated(),
             &minimal_hydros(3),
             &hp_b,
+            None,
         );
         assert_eq!(
             report_a.hydro_production.n_fpha_computed_from_geometry,
@@ -1461,5 +1490,70 @@ mod tests {
                 provenance
             );
         }
+    }
+
+    fn deterministic_report(post_study: Option<PostStudyProvenance>) -> ModelProvenanceReport {
+        build_provenance_report(
+            EstimationPath::Deterministic,
+            None,
+            CorrelationOrigin::NotApplicable,
+            &prov_not_applicable(),
+            &minimal_hydros(0),
+            &empty_hydro_provenance(0),
+            post_study,
+        )
+    }
+
+    #[test]
+    fn post_study_key_omitted_when_none() {
+        let json = serde_json::to_string(&deterministic_report(None)).unwrap();
+
+        assert!(!json.contains("\"post_study\""), "{json}");
+    }
+
+    #[test]
+    fn post_study_section_round_trips_through_report_json() {
+        let post_study = PostStudyProvenance {
+            thermal: None,
+            water: PostStudyCalendarProvenance {
+                origin: PostStudyCalendarOrigin::PaddedThermal,
+                stages: Vec::new(),
+                padding: Some(padded_water_padding()),
+            },
+        };
+        let report = deterministic_report(Some(post_study.clone()));
+
+        let json = serde_json::to_string(&report).unwrap();
+        let parsed: ModelProvenanceReport = serde_json::from_str(&json).unwrap();
+
+        assert!(json.contains("\"post_study\""), "{json}");
+        assert_eq!(parsed.post_study, Some(post_study));
+    }
+
+    #[test]
+    fn report_deserializes_when_post_study_omitted() {
+        let json = r#"{
+            "inflow": {
+                "estimation_path": "full_estimation",
+                "seasonal_stats_source": "estimated",
+                "ar_coefficients_source": "estimated",
+                "correlation_source": "estimated",
+                "opening_tree_source": "estimated",
+                "n_hydros": 2,
+                "ar_method": "AIC",
+                "ar_max_order": 3,
+                "white_noise_fallbacks": []
+            },
+            "hydro_production": {
+                "n_fpha_computed_from_geometry": 0,
+                "n_fpha_precomputed_hyperplanes": 0,
+                "n_evaporation_ref_user_supplied": 0,
+                "n_evaporation_ref_default_midpoint": 0
+            }
+        }"#;
+
+        let parsed: ModelProvenanceReport = serde_json::from_str(json).unwrap();
+
+        assert_eq!(parsed.post_study, None);
     }
 }

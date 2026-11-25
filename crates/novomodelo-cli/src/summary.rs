@@ -1953,6 +1953,7 @@ mod tests {
                 historical_library_seed_digest: None,
             },
             hydro_production: HydroProductionProvenance::default(),
+            post_study: None,
         }
     }
 
@@ -1971,6 +1972,7 @@ mod tests {
                 historical_library_seed_digest: None,
             },
             hydro_production: HydroProductionProvenance::default(),
+            post_study: None,
         }
     }
 
@@ -2064,6 +2066,7 @@ mod tests {
                 historical_library_seed_digest: None,
             },
             hydro_production: HydroProductionProvenance::default(),
+            post_study: None,
         };
         let s = provenance_summary_lines(&report).join("\n");
         assert!(
@@ -2116,6 +2119,7 @@ mod tests {
                 historical_library_seed_digest: None,
             },
             hydro_production,
+            post_study: None,
         }
     }
 

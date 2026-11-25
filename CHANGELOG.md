@@ -25,6 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `delivery_date` keeps its values, the first day of the delivery month.
 - `simulation/in_transit` gains `arrival_start_date` and `arrival_end_date`,
   the `YYYYMMDD` dates of the stage where each bucket's water arrives.
+- `training/model_provenance.json` gains `post_study`: each post-study
+  calendar's stages and origin, and the padding the run applies when the
+  case declares no water calendar. Absent when the case has neither.
 
 ## [0.22.0] - 2026-11-24
 

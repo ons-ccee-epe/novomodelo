@@ -28,6 +28,7 @@ use novomodelo_io::write_provenance_report;
 use novomodelo_io::write_scaling_report;
 use novomodelo_sddp::EstimationPath;
 use novomodelo_sddp::HydroFitTimings;
+use novomodelo_sddp::build_post_study_provenance;
 use novomodelo_sddp::build_provenance_report;
 use novomodelo_sddp::hydro_models::prepare_hydro_models_from_artifacts;
 use novomodelo_sddp::policy::orchestration::export_stochastic_artifacts;
@@ -624,6 +625,7 @@ fn run_root_exports(
             setup.inputs.stochastic.provenance(),
             system.hydros(),
             &setup.hydro_models.provenance,
+            build_post_study_provenance(system),
         );
         // Stale-library detection compares this digest on later runs.
         provenance.inflow.historical_library_seed_digest = setup
