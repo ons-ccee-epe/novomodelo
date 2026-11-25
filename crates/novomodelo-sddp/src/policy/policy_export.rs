@@ -28,23 +28,17 @@ use crate::lp::indexer::{
     AnticipatedPlants, CutSlot, CutStateProjection, StateRegion, StateSpace,
     for_each_live_commitment_slot,
 };
-use crate::setup::{NodeGraph, extended_delivery_stages};
+use crate::setup::{NodeGraph, bucket_arrival, extended_delivery_stages, stage_interval};
 use crate::time_value::{DeliveryCalendar, WaterDeliveryBasis};
 use crate::training::training::CheckpointBasisStore;
 use crate::workspace::CapturedBasis;
 
-/// The sentinel-or-dated `(interval_start, interval_end)` pair for a resolved
-/// delivery `stage`: sentinel when `None`; otherwise the day-accurate
-/// `YYYYMMDD` interval endpoints ([`encode_slot_date`]) of `start_date`/`end_date`.
-fn slot_interval(stage: Option<&Stage>) -> (i32, i32) {
+/// The manifest's `(interval_start, interval_end)` pair for a resolved delivery
+/// `stage`: [`stage_interval`], or the sentinel pair when there is none.
+fn slot_interval_or_sentinel(stage: Option<&Stage>) -> (i32, i32) {
     stage.map_or(
         (ENTITY_SLOT_DATE_SENTINEL, ENTITY_SLOT_DATE_SENTINEL),
-        |stage| {
-            (
-                encode_slot_date(stage.start_date),
-                encode_slot_date(stage.end_date),
-            )
-        },
+        stage_interval,
     )
 }
 
@@ -152,9 +146,8 @@ pub(crate) fn build_stage_entity_manifest_dated(
     let pool_pos_in_all = system.stages().iter().position(|s| s.id == stage_id);
     let ring_stages = extended_delivery_stages(&study_stages, thermal_post_study);
     let arrival_stages = extended_delivery_stages(&study_stages, water_post_study);
-    // `b_d^out(t)` arrives at stage `t + d`, never `t + 1 + d`.
     let bucket_arrival_stage =
-        |lag: usize| current_stage_idx.and_then(|t| arrival_stages.get(t + lag).copied());
+        |lag: usize| current_stage_idx.and_then(|t| bucket_arrival(&arrival_stages, t, lag));
 
     let n_anticipated = global_layout.n_anticipated;
     let mut live_target = vec![None; n_anticipated * global_layout.k_max];
@@ -169,7 +162,7 @@ pub(crate) fn build_stage_entity_manifest_dated(
         let plant = anticipated_thermals[plant_pos];
         let resolved_stage = live_target[slot_idx * n_anticipated + plant_pos]
             .and_then(|m| ring_stages.get(m).copied());
-        let (interval_start, interval_end) = slot_interval(resolved_stage);
+        let (interval_start, interval_end) = slot_interval_or_sentinel(resolved_stage);
         EntitySlot::anticipated(
             plant.id.0,
             slot_idx as u32,
@@ -210,7 +203,8 @@ pub(crate) fn build_stage_entity_manifest_dated(
             StateRegion::Buckets => {
                 let (plant_idx, lag) = global_layout.transit_bucket_column_order[offset];
                 let hydro = &hydros[plant_idx.get()];
-                let (interval_start, interval_end) = slot_interval(bucket_arrival_stage(lag));
+                let (interval_start, interval_end) =
+                    slot_interval_or_sentinel(bucket_arrival_stage(lag));
                 EntitySlot::transit_bucket(hydro.id.0, lag as u32, operating_active(hydro))
                     .with_interval(interval_start, interval_end)
             }

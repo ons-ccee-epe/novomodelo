@@ -1,8 +1,8 @@
 use super::lag_points::classify_lag_points;
 use super::{
     BoundaryStateRequirements, NodeId, NodePos, PhaseLibraries, ScenarioLibraries, StudySetup,
-    assert_external_library_widths, build_contract_prices_per_stage, study_horizon_end,
-    validate_par_shape,
+    assert_external_library_widths, bucket_arrival, build_contract_prices_per_stage,
+    stage_interval, study_horizon_end, validate_par_shape,
 };
 use crate::SddpError;
 use crate::block_clock::M3S_TO_HM3;
@@ -9247,4 +9247,26 @@ fn lag_point_mode_of_a_rebuild_stage_warns_once_naming_the_stage() {
     let recorded = messages.lock().unwrap();
     assert_eq!(recorded.len(), 1, "got: {recorded:?}");
     assert!(recorded[0].contains("stage 7"), "got: {}", recorded[0]);
+}
+
+#[test]
+fn bucket_arrival_dates_stage_t_plus_lag() {
+    let extended = [10, 20, 30, 40];
+
+    assert_eq!(bucket_arrival(&extended, 1, 2), Some(40));
+    assert_eq!(bucket_arrival(&extended, 2, 2), None);
+}
+
+#[test]
+fn stage_interval_end_is_exclusive() {
+    let stage = builders::make_stage(
+        0,
+        StageSpec {
+            start_date: test_support::ymd(2024, 7, 1),
+            end_date: test_support::ymd(2024, 8, 1),
+            ..StageSpec::default()
+        },
+    );
+
+    assert_eq!(stage_interval(&stage), (20_240_701, 20_240_801));
 }

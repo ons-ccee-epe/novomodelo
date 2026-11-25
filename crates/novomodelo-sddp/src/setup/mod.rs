@@ -40,6 +40,7 @@ use novomodelo_io::Config;
 use novomodelo_io::config::{
     BackwardScheduler, FirstIterationTrialStorage, InflowResidualDistribution,
 };
+use novomodelo_io::output::policy::encode_slot_date;
 use novomodelo_solver::ActiveProfile;
 use novomodelo_stochastic::DerivedInflowSeeds;
 use novomodelo_stochastic::DerivedSeed;
@@ -1344,6 +1345,25 @@ pub(crate) fn extended_delivery_stages<'a>(
         .copied()
         .chain(post_study_calendar)
         .collect()
+}
+
+/// The `YYYYMMDD` `(start, end)` interval of `stage` ([`encode_slot_date`]);
+/// the end is the exclusive `end_date`, never the last inclusive day. Pinned by
+/// `stage_interval_end_is_exclusive`.
+pub(crate) fn stage_interval(stage: &Stage) -> (i32, i32) {
+    (
+        encode_slot_date(stage.start_date),
+        encode_slot_date(stage.end_date),
+    )
+}
+
+/// The entry of `extended` (from [`extended_delivery_stages`]) that bucket
+/// `lag` of the stage at study position `t` arrives in: `t` is 0-based and
+/// `lag` is the 1-based maturity bucket, so `b_d^out(t)` arrives at index
+/// `t + d`, never `t + 1 + d`. `None` past the end of `extended`. Pinned by
+/// `bucket_arrival_dates_stage_t_plus_lag`.
+pub(crate) fn bucket_arrival<T: Copy>(extended: &[T], t: usize, lag: usize) -> Option<T> {
+    extended.get(t + lag).copied()
 }
 
 /// Extended delivery-stage anchors: the `YYYYMM01` anchor of each delivery
