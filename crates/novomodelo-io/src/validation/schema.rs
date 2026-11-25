@@ -82,6 +82,13 @@ impl BoundaryFormat {
         }
     }
 
+    pub(crate) fn water_calendar_key(self) -> &'static str {
+        match self {
+            Self::Legacy(_) => "water_bucket_stages",
+            Self::Current => "post_study_water_stages",
+        }
+    }
+
     pub(crate) fn commitments_file(self) -> &'static str {
         match self {
             Self::Legacy(_) => "initial_conditions.json",
@@ -929,6 +936,18 @@ mod tests {
         for format in [present, BoundaryFormat::Legacy(PostStudyFormat::Absent)] {
             assert_eq!(format.thermal_calendar_key(), "thermal_stages");
         }
+    }
+
+    #[test]
+    fn water_calendar_key_follows_the_format() {
+        assert_eq!(
+            BoundaryFormat::Legacy(PostStudyFormat::Absent).water_calendar_key(),
+            "water_bucket_stages"
+        );
+        assert_eq!(
+            BoundaryFormat::Current.water_calendar_key(),
+            "post_study_water_stages"
+        );
     }
 
     #[test]

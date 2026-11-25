@@ -9,25 +9,6 @@ use super::super::{
 use super::post_study_calendar::build_post_study_calendar;
 use crate::legacy::post_study_stages::PostStudyFormat;
 
-#[derive(Clone, Copy)]
-struct CalendarWording {
-    file: &'static str,
-    water_key: &'static str,
-    thermal_key: &'static str,
-}
-
-const LEGACY_WORDING: CalendarWording = CalendarWording {
-    file: "post_study_stages.json",
-    water_key: "water_bucket_stages",
-    thermal_key: "thermal_stages",
-};
-
-const CURRENT_WORDING: CalendarWording = CalendarWording {
-    file: "stages.json",
-    water_key: "post_study_water_stages",
-    thermal_key: "post_study_thermal_stages",
-};
-
 /// Rule `semantic.5a.59`: a deck with a travel-time arc and no file. Rule `semantic.5a.63`: a
 /// file declaring only one of `thermal_stages` and `thermal_bounds`. Rules `semantic.5a.61` and
 /// `semantic.5a.62`: a file, or `stages.json` in the current boundary format, that omits the
@@ -80,7 +61,7 @@ pub(super) fn check_post_study_format(data: &ParsedData, ctx: &mut ValidationCon
     {
         ctx.emit(
             &rules::POST_STUDY_CALENDARS_WITH_LEGACY_FILES,
-            CURRENT_WORDING.file,
+            BoundaryFormat::Current.post_study_calendar_file(),
             None::<String>,
             "stages.json declares a post_study_* list, but the case reads its boundary data from \
              the deprecated initial_conditions.json file set, which ignores it; move the \
@@ -88,30 +69,31 @@ pub(super) fn check_post_study_format(data: &ParsedData, ctx: &mut ValidationCon
         );
     }
 
-    let (wording, declared_thermal, declared_water) = match data.boundary_format {
-        Some(BoundaryFormat::Legacy(PostStudyFormat::Present {
-            thermal_stages,
-            water_bucket_stages,
-            ..
-        })) => (LEGACY_WORDING, thermal_stages, water_bucket_stages),
-        Some(BoundaryFormat::Current) => (
-            CURRENT_WORDING,
+    let (format, declared_thermal, declared_water) = match data.boundary_format {
+        Some(
+            format @ BoundaryFormat::Legacy(PostStudyFormat::Present {
+                thermal_stages,
+                water_bucket_stages,
+                ..
+            }),
+        ) => (format, thermal_stages, water_bucket_stages),
+        Some(format @ BoundaryFormat::Current) => (
+            format,
             data.stages.post_study.thermal.is_some(),
             data.stages.post_study.water.is_some(),
         ),
         _ => return,
     };
 
-    check_water_calendar(data, wording, declared_water, ctx);
+    check_water_calendar(data, format, declared_water, ctx);
     if declared_thermal
         && !data
             .thermals
             .iter()
             .any(|thermal| thermal.anticipated_config.is_some())
     {
-        let CalendarWording {
-            file, thermal_key, ..
-        } = wording;
+        let file = format.post_study_calendar_file();
+        let thermal_key = format.thermal_calendar_key();
         ctx.emit(
             &rules::POST_STUDY_THERMAL_CALENDAR_UNUSED,
             file,
@@ -126,13 +108,12 @@ pub(super) fn check_post_study_format(data: &ParsedData, ctx: &mut ValidationCon
 
 fn check_water_calendar(
     data: &ParsedData,
-    wording: CalendarWording,
+    format: BoundaryFormat,
     declared: bool,
     ctx: &mut ValidationContext,
 ) {
-    let CalendarWording {
-        file, water_key, ..
-    } = wording;
+    let file = format.post_study_calendar_file();
+    let water_key = format.water_calendar_key();
     if !declared {
         if let Some(hydro) = data
             .hydros
