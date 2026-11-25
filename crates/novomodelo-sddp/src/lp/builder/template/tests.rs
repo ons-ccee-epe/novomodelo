@@ -1082,6 +1082,7 @@ fn stage_layout_geometry_empty_contracts_are_pumping_end_anchored() {
 /// in the bounds table) trips the `debug_assert_eq!` in
 /// `build_template_build_ctx`.
 #[test]
+#[cfg(debug_assertions)]
 #[should_panic(expected = "resolved-bounds")]
 fn build_template_build_ctx_contract_count_divergence_panics() {
     let bus = fixture_bus();

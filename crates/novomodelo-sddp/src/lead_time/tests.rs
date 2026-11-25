@@ -1433,6 +1433,7 @@ fn ring_index_degrades_to_the_identity_on_a_short_decider() {
 }
 
 #[test]
+#[cfg(debug_assertions)]
 #[should_panic(expected = "contiguous")]
 fn fixed_post_horizon_width_rejects_a_non_contiguous_none_run() {
     let point = PointResolution {

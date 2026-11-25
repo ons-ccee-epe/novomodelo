@@ -1224,6 +1224,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(debug_assertions)]
     #[should_panic(expected = "bucket/commitment-hold state must equal the LP primal's outgoing")]
     fn debug_assert_bucket_copy_gap_intact_panics_when_bucket_diverges() {
         let layout = state_layout_with_transit_buckets(
@@ -1247,6 +1248,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(debug_assertions)]
     #[should_panic(expected = "bucket/commitment-hold state must equal the LP primal's outgoing")]
     fn debug_assert_bucket_copy_gap_intact_panics_when_commitment_hold_diverges() {
         let layout = state_layout_with_transit_buckets(0, 0, vec![], vec![1, 1]);

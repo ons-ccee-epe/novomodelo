@@ -1345,6 +1345,7 @@ mod tests {
     /// the pin-time debug_assert — read-back is the single canonicalization
     /// point, so an out-of-box pin here means an entry point bypassed it.
     #[test]
+    #[cfg(debug_assertions)]
     #[should_panic(expected = "outside admissible box")]
     fn fill_col_state_patches_panics_on_out_of_box_pin() {
         let state = [10.0_f64, 20.0, 30.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0];

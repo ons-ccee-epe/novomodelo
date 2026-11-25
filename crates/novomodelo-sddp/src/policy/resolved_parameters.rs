@@ -1873,6 +1873,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(debug_assertions)]
     #[should_panic(expected = "block miss")]
     fn out_of_range_block_query_fires_the_block_specific_assert() {
         let params = vec![make_param(
