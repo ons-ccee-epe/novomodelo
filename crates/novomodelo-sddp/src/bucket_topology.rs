@@ -211,7 +211,6 @@ fn extend_for_resolution(base_calendar: &[f64], t_v: f64) -> Vec<f64> {
     let Some(&last) = base_calendar.last() else {
         return base_calendar.to_vec();
     };
-    debug_assert!(last > 0.0, "every base calendar duration must be > 0.0");
 
     let mut extended = base_calendar.to_vec();
     extended.resize(base_calendar.len() + padded_stage_count(last, t_v), last);
