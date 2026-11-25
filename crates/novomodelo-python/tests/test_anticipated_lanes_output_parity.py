@@ -80,23 +80,11 @@ def _make_case_with_simulation(src: pathlib.Path, dest: pathlib.Path) -> None:
     parity cases) need this so the simulation write path is exercised. Mirrors
     ``test_anticipated_output_parity.py``.
     """
-    for item in src.iterdir():
-        dst_item = dest / item.name
-        if item.is_dir():
-            shutil.copytree(item, dst_item)
-        else:
-            shutil.copy2(item, dst_item)
+    shutil.copytree(src, dest, dirs_exist_ok=True)
 
     config = json.loads((src / "config.json").read_text())
     config.setdefault("simulation", {})["enabled"] = True
     (dest / "config.json").write_text(json.dumps(config))
-
-
-def _require_post_study_case() -> None:
-    """Fail when the committed post-study case is missing from the checkout."""
-    assert POST_STUDY_CASE.is_dir(), (
-        f"the committed post-study case must exist at {POST_STUDY_CASE}"
-    )
 
 
 def _read_lane_rows(parquet: pathlib.Path) -> list[dict[str, object]]:
@@ -145,7 +133,9 @@ def test_cli_python_anticipated_lanes_row_parity(
     """
     import novomodelo.run
 
-    _require_post_study_case()
+    assert POST_STUDY_CASE.is_dir(), (
+        f"the committed post-study case must exist at {POST_STUDY_CASE}"
+    )
 
     case_dir = tmp_path / "post_study_case"
     case_dir.mkdir()

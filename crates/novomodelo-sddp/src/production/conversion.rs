@@ -362,7 +362,6 @@ mod tests {
 
     use super::*;
     use crate::simulation::ScenarioCategoryCosts;
-    use novomodelo_io::output::simulation_writer::ScenarioWritePayload;
 
     fn make_cost(stage_id: u32, block_id: u32) -> SimulationCostResult {
         SimulationCostResult {

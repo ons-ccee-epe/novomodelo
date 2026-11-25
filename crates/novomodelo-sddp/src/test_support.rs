@@ -4169,7 +4169,7 @@ fn build_external_distinct_fan_setup(
     leaf_state_config: StageStateConfig,
 ) -> StudySetup {
     assert!(
-        k >= 2 && k <= EXTERNAL_FAN_INFLOWS.len(),
+        (2..=EXTERNAL_FAN_INFLOWS.len()).contains(&k),
         "external fan k in 2..={}",
         EXTERNAL_FAN_INFLOWS.len()
     );
@@ -4280,7 +4280,7 @@ pub fn external_root_fan_setup(k: usize, max_iterations: u32) -> StudySetup {
     const STAGE0_COLUMNS: usize = 2;
 
     assert!(
-        k >= 2 && k <= EXTERNAL_FAN_INFLOWS.len(),
+        (2..=EXTERNAL_FAN_INFLOWS.len()).contains(&k),
         "external fan k in 2..={}",
         EXTERNAL_FAN_INFLOWS.len()
     );
@@ -4428,7 +4428,7 @@ pub fn water_binding_external_fan_setup_reversed(k: usize, max_iterations: u32) 
 )]
 fn build_water_binding_external_fan(k: usize, max_iterations: u32, reversed: bool) -> StudySetup {
     assert!(
-        k >= 2 && k <= WATER_BINDING_INFLOWS.len(),
+        (2..=WATER_BINDING_INFLOWS.len()).contains(&k),
         "water-binding fan k in 2..=3"
     );
 
@@ -5439,7 +5439,6 @@ pub fn assert_templates_byte_identical(a: &StageTemplate, b: &StageTemplate, lab
     assert_eq!(*num_nz, b.num_nz, "{label}: num_nz");
     assert_eq!(*col_starts, b.col_starts, "{label}: col_starts");
     assert_eq!(*row_indices, b.row_indices, "{label}: row_indices");
-    let bits = |xs: &[f64]| xs.iter().map(|v| v.to_bits()).collect::<Vec<u64>>();
     assert_eq!(bits(values), bits(&b.values), "{label}: values");
     assert_eq!(bits(col_lower), bits(&b.col_lower), "{label}: col_lower");
     assert_eq!(bits(col_upper), bits(&b.col_upper), "{label}: col_upper");

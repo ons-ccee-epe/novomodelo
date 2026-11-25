@@ -13,8 +13,8 @@ and the writer creates the `in_transit/` directory only when the system declares
 a travel-time arc. The write payload carries the shared `novomodelo-sddp` bucket
 extraction, so the Python surfaces emit the same table as the CLI. This module is
 the guard that proves it end-to-end: it loads a real travel-time study, runs it
-through both Python surfaces, and asserts the partition appears with the 5-column
-schema and the canonical `(downstream hydro_id, lag)` order. It also asserts the
+through both Python surfaces, and asserts the partition appears with the 9-column
+schema and the canonical `(stage_id, lag)` order. It also asserts the
 symmetric negative — a non-travel-time study produces no in-transit partition.
 
 Run with (from the repo root):
@@ -142,12 +142,12 @@ def _assert_in_transit_table_shape(parquet_path: pathlib.Path) -> None:
 
 
 def test_study_simulate_emits_in_transit_output_with_schema() -> None:
-    """Study.train().simulate() emits the in_transit partition with the 5-column
+    """Study.train().simulate() emits the in_transit partition with the 9-column
     schema and canonical order.
 
     Covers the `novomodelo.Study` Python surface: a clean validate, a
     `simulation/in_transit/` directory with at least one `data.parquet`, a schema
-    equal to exactly the 5 in_transit fields, and canonical (stage_id, lag) row
+    equal to exactly the 9 in_transit fields, and canonical (stage_id, lag) row
     order with the lag-1-only delivery contract.
     """
     import novomodelo
