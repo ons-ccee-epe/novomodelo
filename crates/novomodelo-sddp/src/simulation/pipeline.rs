@@ -147,7 +147,7 @@ pub struct SimulationOutputSpec<'a> {
     /// Optional event sender for streaming progress events to the CLI/UI.
     pub event_sender: Option<Sender<TrainingEvent>>,
 
-    /// Study-level dates the `anticipated_lanes` extractor reads.
+    /// Study-level dates read by the `anticipated_lanes` extractor and the transit-bucket arrival fill.
     pub extended_stage_dates: &'a ExtendedStageDates,
 
     /// Declared travel-time arcs for the rolling-seed emitter
