@@ -1,9 +1,9 @@
 use super::lag_points::classify_lag_points;
 use super::{
-    BoundaryStateRequirements, DeliveryStageDates, NodeId, NodePos, PhaseLibraries,
-    ScenarioLibraries, StudySetup, assert_external_library_widths, bucket_arrival,
-    build_contract_prices_per_stage, build_extended_delivery_dates, stage_interval,
-    study_horizon_end, validate_par_shape,
+    BoundaryStateRequirements, DeliveryStageDates, ExtendedStageDates, NodeId, NodePos,
+    PhaseLibraries, ScenarioLibraries, StudySetup, assert_external_library_widths, bucket_arrival,
+    build_contract_prices_per_stage, build_extended_arrival_dates, build_extended_delivery_dates,
+    stage_interval, study_horizon_end, validate_par_shape,
 };
 use crate::SddpError;
 use crate::block_clock::M3S_TO_HM3;
@@ -9320,5 +9320,69 @@ fn extended_delivery_dates_carry_exact_stage_interval() {
                 end: 20_240_815,
             },
         ]
+    );
+}
+
+fn monthly_arrival_system(post_study: Option<PostStudyStages>) -> System {
+    let stages = [(1, 2), (2, 3)]
+        .into_iter()
+        .enumerate()
+        .map(|(id, (from, to))| {
+            builders::make_stage(
+                id,
+                StageSpec {
+                    start_date: test_support::ymd(2024, from, 1),
+                    end_date: test_support::ymd(2024, to, 1),
+                    ..StageSpec::default()
+                },
+            )
+        })
+        .collect();
+    SystemBuilder::new()
+        .buses(vec![builders::make_bus(
+            EntityId(1),
+            BusSpec {
+                name: "B1".to_string(),
+                deficit_segments: vec![DeficitSegment {
+                    depth_mw: None,
+                    cost_per_mwh: 500.0,
+                }],
+                ..BusSpec::default()
+            },
+        )])
+        .hydros(vec![bucket_seed_hydro(1, None, None)])
+        .stages(stages)
+        .post_study_stages(post_study)
+        .build()
+        .expect("valid system")
+}
+
+#[test]
+fn arrival_dates_stage_t_plus_lag_over_water_calendar() {
+    let system = monthly_arrival_system(Some(PostStudyStages {
+        thermal_stages: vec![PostStudyStage {
+            start_date: test_support::ymd(2024, 3, 5),
+            duration_hours: 720.0,
+        }],
+        thermal_bounds: Vec::new(),
+        water_bucket_stages: WaterBucketStages::Declared(vec![PostStudyStage {
+            start_date: test_support::ymd(2024, 3, 1),
+            duration_hours: 744.0,
+        }]),
+    }));
+    let dates = ExtendedStageDates::new(Vec::new(), build_extended_arrival_dates(&system));
+
+    assert_eq!(dates.arrival(0, 2), Some((20_240_301, 20_240_401)));
+    assert_eq!(dates.arrival(1, 1), Some((20_240_301, 20_240_401)));
+    assert_eq!(dates.arrival(1, 2), None);
+}
+
+#[test]
+fn padded_basis_arrival_dates_use_unpadded_calendar() {
+    let system = monthly_arrival_system(None);
+
+    assert_eq!(
+        build_extended_arrival_dates(&system),
+        [(20_240_101, 20_240_201), (20_240_201, 20_240_301)]
     );
 }

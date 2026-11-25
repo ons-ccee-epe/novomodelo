@@ -422,6 +422,13 @@ pub struct SimulationTransitBucketResult {
     /// this stage — the incoming lag-1 bucket `b_1^in`. Non-zero only at
     /// `lag == 1` (deeper maturities deliver in later stages).
     pub delayed_arrival_hm3: f64,
+    /// First day of stage `t + lag`, `YYYYMMDD`: where `in_transit_volume_hm3`
+    /// (not `delayed_arrival_hm3`) arrives. `None` past the water calendar.
+    /// Filled by the simulation pipeline; `extract_stage_result` leaves it `None`.
+    pub arrival_start_date: Option<i32>,
+    /// Day after the arrival stage's last, `YYYYMMDD` (end exclusive); `None`
+    /// exactly when `arrival_start_date` is.
+    pub arrival_end_date: Option<i32>,
 }
 
 /// One rolling-seed release window for a declared travel-time arc's upstream
@@ -1035,6 +1042,8 @@ mod tests {
             lag: 1,
             in_transit_volume_hm3: 12.5,
             delayed_arrival_hm3: 3.0,
+            arrival_start_date: None,
+            arrival_end_date: None,
         };
 
         assert_eq!(r.stage_id, 4);

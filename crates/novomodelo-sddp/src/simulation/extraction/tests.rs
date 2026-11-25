@@ -11,7 +11,7 @@ use super::{
     EntityCounts, HydroReverseLookup, SimulationHydroResult, SolutionView, StageExtractionSpec,
     accumulate_category_costs, assign_scenarios, extract_anticipated_lanes, extract_contracts,
     extract_generic_violations, extract_pumping_stations, extract_stage_result,
-    extract_stub_collections,
+    extract_stub_collections, fill_transit_arrival_dates,
 };
 use novomodelo_core::{BlockMode, ContractType, PenaltyBasis, SlackConfig};
 
@@ -23,9 +23,10 @@ use crate::lp::indexer::{
     AnticipatedPlants, BlockIdx, BlockRowFamily, FillingTargetLocal, FloorLocal, FphaCellLocal,
     FphaLocal, HydroCellIndex, HydroSys, StateSpace, StudyDimensions,
 };
-use crate::setup::DeliveryStageDates;
+use crate::setup::{DeliveryStageDates, ExtendedStageDates};
 use crate::simulation::types::{
     ScenarioCategoryCosts, SimulationCostResult, SimulationInflowLagResult,
+    SimulationTransitBucketResult,
 };
 use crate::test_support;
 use crate::test_support::anticipated_plants_at;
@@ -6746,6 +6747,11 @@ fn extract_transit_buckets_shape_canonical_order_and_delayed_arrival() {
         tb[1].delayed_arrival_hm3, 0.0,
         "delayed arrival is non-zero only at the maturing lag 1"
     );
+    assert!(
+        tb.iter()
+            .all(|r| r.arrival_start_date.is_none() && r.arrival_end_date.is_none()),
+        "the shared builder leaves the arrival dates to the simulation pipeline"
+    );
 }
 
 /// Absent when undeclared: `n_buckets == 0` produces no in-transit rows, keeping
@@ -6889,6 +6895,51 @@ fn extract_transit_buckets_rows_follow_canonical_column_order() {
     assert_eq!(result.transit_buckets[1].delayed_arrival_hm3, 0.0);
     assert_eq!(result.transit_buckets[2].delayed_arrival_hm3, 9.0);
     assert_eq!(result.transit_buckets[2].in_transit_volume_hm3, 33.0);
+    assert!(
+        result
+            .transit_buckets
+            .iter()
+            .all(|r| r.arrival_start_date.is_none() && r.arrival_end_date.is_none()),
+        "the shared builder leaves the arrival dates to the simulation pipeline"
+    );
+}
+
+#[test]
+fn fill_transit_arrival_dates_dates_stage_t_plus_lag() {
+    let mut rows: Vec<SimulationTransitBucketResult> = (1..=3)
+        .map(|lag| SimulationTransitBucketResult {
+            stage_id: 0,
+            hydro_id: 10,
+            lag,
+            in_transit_volume_hm3: 1.0,
+            delayed_arrival_hm3: 0.0,
+            arrival_start_date: None,
+            arrival_end_date: None,
+        })
+        .collect();
+    let dates = ExtendedStageDates::new(
+        Vec::new(),
+        vec![
+            (2024_0101, 2024_0201),
+            (2024_0201, 2024_0301),
+            (2024_0301, 2024_0401),
+        ],
+    );
+
+    fill_transit_arrival_dates(&mut rows, 0, &dates);
+
+    let filled: Vec<_> = rows
+        .iter()
+        .map(|r| (r.arrival_start_date, r.arrival_end_date))
+        .collect();
+    assert_eq!(
+        filled,
+        [
+            (Some(2024_0201), Some(2024_0301)),
+            (Some(2024_0301), Some(2024_0401)),
+            (None, None),
+        ]
+    );
 }
 
 // -------------------------------------------------------------------------

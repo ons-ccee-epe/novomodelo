@@ -541,6 +541,8 @@ mod tests {
             lag,
             in_transit_volume_hm3: 12.0,
             delayed_arrival_hm3: if lag == 1 { 4.0 } else { 0.0 },
+            arrival_start_date: None,
+            arrival_end_date: None,
         }
     }
 

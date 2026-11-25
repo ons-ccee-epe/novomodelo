@@ -42,7 +42,7 @@ use crate::{
         extraction::{
             HydroReverseLookup, SolutionView, StageExtractionSpec, TransitSeedArc,
             accumulate_category_costs, build_transit_seed, extract_anticipated_lanes,
-            extract_stage_result_with_lookups,
+            extract_stage_result_with_lookups, fill_transit_arrival_dates,
         },
         tailrace::{SimulationTailrace, fill_tailrace_quantities},
         types::{ScenarioCategoryCosts, SimulationScenarioResult, SimulationStageResult},
@@ -698,6 +698,11 @@ pub(crate) fn extract_sim_stage_result(
         output.tailrace.stage(t.0),
         output.tailrace.lateral(),
         *training_ctx.inflow_method,
+    );
+    fill_transit_arrival_dates(
+        &mut result.transit_buckets,
+        t.0,
+        output.extended_stage_dates,
     );
     result.anticipated_lanes = extract_anticipated_lanes(
         &view,

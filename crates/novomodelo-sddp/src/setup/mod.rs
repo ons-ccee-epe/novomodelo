@@ -294,20 +294,27 @@ pub(crate) struct DeliveryStageDates {
 ///
 /// `delivery[m]` holds the dates of delivery target stage `m`, matching the
 /// policy manifest's `delivery_anchor_at` walk over the same extended calendar.
-/// `default()` is the empty table, valid only for studies with no post-study
-/// anticipated decision; tables with dates are built inside the crate.
+/// `arrival[m]` is the `YYYYMMDD` interval of water-calendar stage `m`, the dating
+/// the manifest gives its `HydroTransitBucket` slots. `default()` is the empty
+/// tables, valid only for studies with no post-study anticipated decision and no
+/// transit bucket; tables with dates are built inside the crate.
 #[derive(Debug, Clone, Default)]
 pub struct ExtendedStageDates {
     delivery: Vec<DeliveryStageDates>,
+    arrival: Vec<(i32, i32)>,
 }
 
 impl ExtendedStageDates {
-    pub(crate) fn new(delivery: Vec<DeliveryStageDates>) -> Self {
-        Self { delivery }
+    pub(crate) fn new(delivery: Vec<DeliveryStageDates>, arrival: Vec<(i32, i32)>) -> Self {
+        Self { delivery, arrival }
     }
 
     pub(crate) fn delivery(&self) -> &[DeliveryStageDates] {
         &self.delivery
+    }
+
+    pub(crate) fn arrival(&self, t: usize, lag: usize) -> Option<(i32, i32)> {
+        bucket_arrival(&self.arrival, t, lag)
     }
 }
 
@@ -514,10 +521,10 @@ impl StudySetup {
             config.budget,
         )?;
 
-        let extended_stage_dates = ExtendedStageDates::new(build_extended_delivery_dates(
-            system,
-            stage_data.time_value.calendar(),
-        ));
+        let extended_stage_dates = ExtendedStageDates::new(
+            build_extended_delivery_dates(system, stage_data.time_value.calendar()),
+            build_extended_arrival_dates(system),
+        );
 
         let simulation_tailrace =
             SimulationTailrace::build(&hydro_models.production, system.hydros());
@@ -1425,6 +1432,19 @@ fn build_extended_delivery_dates(
         calendar.n_delivery(),
     );
     delivery
+}
+
+/// The `YYYYMMDD` interval of each water-calendar stage — the study stages
+/// followed by [`DeliveryCalendar::water`]'s post-study stages, the manifest's own
+/// construction — so a deck with no declared water calendar dates over the
+/// unpadded thermal calendar and the runtime padding stays undated.
+fn build_extended_arrival_dates(system: &System) -> Vec<(i32, i32)> {
+    let study_stages: Vec<&Stage> = system.stages().iter().filter(|s| s.id >= 0).collect();
+    let water = DeliveryCalendar::water(system, WaterDeliveryBasis::of(system));
+    extended_delivery_stages(&study_stages, water.post_study_stages())
+        .into_iter()
+        .map(stage_interval)
+        .collect()
 }
 
 /// Declared travel-time arcs (upstream hydro id + travel time), projected

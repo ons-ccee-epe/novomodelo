@@ -28,7 +28,7 @@ use crate::lp::indexer::{
     PlantFloorLocal, PumpingSys, StateSpace, StudyDimensions, ThermalSys,
     anticipated_resolution_for, is_anticipated_decision_active_for_delivery,
 };
-use crate::setup::{DeliveryStageDates, NodeId};
+use crate::setup::{DeliveryStageDates, ExtendedStageDates, NodeId};
 use crate::simulation::types::{
     ScenarioCategoryCosts, SimulationAnticipatedLaneResult, SimulationBusResult,
     SimulationContractResult, SimulationCostResult, SimulationExchangeResult,
@@ -376,9 +376,23 @@ fn extract_transit_buckets(
             lag: lag as u32,
             in_transit_volume_hm3,
             delayed_arrival_hm3,
+            arrival_start_date: None,
+            arrival_end_date: None,
         });
     }
     results
+}
+
+pub(crate) fn fill_transit_arrival_dates(
+    buckets: &mut [SimulationTransitBucketResult],
+    stage_index: usize,
+    dates: &ExtendedStageDates,
+) {
+    for row in buckets {
+        let arrival = dates.arrival(stage_index, row.lag as usize);
+        row.arrival_start_date = arrival.map(|(start, _)| start);
+        row.arrival_end_date = arrival.map(|(_, end)| end);
+    }
 }
 
 /// One declared travel-time arc's upstream hydro identity, resolved once at
