@@ -83,6 +83,7 @@ use crate::noise::{apply_inflow_slack_col_bounds, realize_inflow};
 use crate::policy::policy_load::{
     FullFcf, PolicyLoadProof, PolicyStageManifest, validate_policy_load,
 };
+use crate::policy_export::build_stage_entity_manifest;
 use crate::risk_measure::BackwardOutcome;
 use crate::setup::node_graph::{
     NodeGraph, NodePos, OpeningSource, StageIdx, build_node_graph, enumerated_node_visit_counts,
@@ -5370,6 +5371,31 @@ pub fn trunk_fan_setup(
     max_iterations: u32,
 ) -> TrunkFanFixture {
     trunk_fan_fixture(t_trunk, k, k_fan_config(forward_passes, max_iterations))
+}
+
+/// Every cut pool's `(stage_id, manifest)`, the manifest built as
+/// [`StudySetup::build_terminal_entity_manifest`] builds the terminal one, with
+/// `stage_id` resolved through `node_graph.pool_stage` (the pool ordinal is not a
+/// study-stage index on a branching graph).
+#[must_use]
+pub fn stage_entity_manifests(setup: &StudySetup, system: &System) -> Vec<(i32, Vec<EntitySlot>)> {
+    let inputs = &setup.inputs;
+    inputs
+        .cut_state_layouts
+        .iter()
+        .enumerate()
+        .map(|(pool, layout)| {
+            let stage_id = inputs.study_stage_ids[inputs.node_graph.pool_stage[pool].0];
+            let manifest = build_stage_entity_manifest(
+                system,
+                &inputs.stage_data.state,
+                &inputs.stage_data.study_dims.anticipated_plants,
+                layout,
+                stage_id,
+            );
+            (stage_id, manifest)
+        })
+        .collect()
 }
 
 /// Canonical byte encoding of `setup`'s stage-LP builder facts, keyed by fact
