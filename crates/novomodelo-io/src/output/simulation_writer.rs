@@ -396,6 +396,13 @@ pub struct TransitBucketWriteRecord {
     /// Delivered volume in hm³ that matured this stage; non-zero only at
     /// `lag == 1`.
     pub delayed_arrival_hm3: f64,
+    /// First day (`YYYYMMDD`) of the stage the outgoing volume
+    /// (`in_transit_volume_hm3`) arrives at; `None` past the declared calendar.
+    /// It does not date `delayed_arrival_hm3`.
+    pub arrival_start_date: Option<i32>,
+    /// Day after that stage's last (`YYYYMMDD`, end exclusive); `None` exactly
+    /// when `arrival_start_date` is.
+    pub arrival_end_date: Option<i32>,
 }
 
 /// One windowed release record for an upstream entity — a rolling-seed
@@ -2182,6 +2189,8 @@ fn build_in_transit_batch<'a>(
     let mut lag = Int32Builder::with_capacity(n);
     let mut in_transit_volume_hm3 = Float64Builder::with_capacity(n);
     let mut delayed_arrival_hm3 = Float64Builder::with_capacity(n);
+    let mut arrival_start_date = Int32Builder::with_capacity(n);
+    let mut arrival_end_date = Int32Builder::with_capacity(n);
 
     for r in records {
         scenario_id_col.append_value(scenario_id);
@@ -2191,6 +2200,8 @@ fn build_in_transit_batch<'a>(
         lag.append_value(r.lag as i32);
         in_transit_volume_hm3.append_value(r.in_transit_volume_hm3);
         delayed_arrival_hm3.append_value(r.delayed_arrival_hm3);
+        arrival_start_date.append_option(r.arrival_start_date);
+        arrival_end_date.append_option(r.arrival_end_date);
     }
 
     RecordBatch::try_new(
@@ -2203,6 +2214,8 @@ fn build_in_transit_batch<'a>(
             Arc::new(lag.finish()),
             Arc::new(in_transit_volume_hm3.finish()),
             Arc::new(delayed_arrival_hm3.finish()),
+            Arc::new(arrival_start_date.finish()),
+            Arc::new(arrival_end_date.finish()),
         ],
     )
     .map_err(|e| OutputError::serialization("in_transit", e.to_string()))
@@ -3758,6 +3771,8 @@ mod tests {
                     lag: 1,
                     in_transit_volume_hm3: 11.0,
                     delayed_arrival_hm3: 7.0,
+                    arrival_start_date: Some(2024_0201),
+                    arrival_end_date: Some(2024_0301),
                 },
                 TransitBucketWriteRecord {
                     stage_id: 0,
@@ -3766,6 +3781,8 @@ mod tests {
                     lag: 2,
                     in_transit_volume_hm3: 22.0,
                     delayed_arrival_hm3: 0.0,
+                    arrival_start_date: None,
+                    arrival_end_date: None,
                 },
             ],
             generic_violations: vec![],
@@ -3818,6 +3835,22 @@ mod tests {
         assert_eq!((i32_col("hydro_id", 1), i32_col("lag", 1)), (1, 2));
         assert_eq!(f64_col("in_transit_volume_hm3", 1), 22.0);
         assert_eq!(f64_col("delayed_arrival_hm3", 1), 0.0);
+
+        let nullable_i32 = |name: &str, row: usize| {
+            batch
+                .column_by_name(name)
+                .unwrap_or_else(|| panic!("{name} column must exist"))
+                .as_any()
+                .downcast_ref::<arrow::array::Int32Array>()
+                .unwrap_or_else(|| panic!("{name} must be Int32Array"))
+                .iter()
+                .nth(row)
+                .unwrap()
+        };
+        assert_eq!(nullable_i32("arrival_start_date", 0), Some(2024_0201));
+        assert_eq!(nullable_i32("arrival_end_date", 0), Some(2024_0301));
+        assert_eq!(nullable_i32("arrival_start_date", 1), None);
+        assert_eq!(nullable_i32("arrival_end_date", 1), None);
     }
 
     #[test]
@@ -4275,5 +4308,53 @@ mod tests {
         assert_eq!(int32("delivery_date"), 2024_0401);
         assert_eq!(int32("delivery_start_date"), 2024_0415);
         assert_eq!(int32("delivery_end_date"), 2024_0515);
+    }
+
+    #[test]
+    fn in_transit_batch_appends_the_arrival_date_range_after_every_earlier_column() {
+        let records = [TransitBucketWriteRecord {
+            stage_id: 0,
+            node_id: 0,
+            hydro_id: 1,
+            lag: 1,
+            in_transit_volume_hm3: 11.0,
+            delayed_arrival_hm3: 7.0,
+            arrival_start_date: Some(2024_0201),
+            arrival_end_date: Some(2024_0301),
+        }];
+
+        let batch = build_in_transit_batch(&records, 3, records.len()).unwrap();
+
+        let schema = batch.schema();
+        let names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "scenario_id",
+                "stage_id",
+                "node_id",
+                "hydro_id",
+                "lag",
+                "in_transit_volume_hm3",
+                "delayed_arrival_hm3",
+                "arrival_start_date",
+                "arrival_end_date",
+            ]
+        );
+        for tail in ["arrival_start_date", "arrival_end_date"] {
+            let field = schema.field_with_name(tail).unwrap();
+            assert_eq!(field.data_type(), &arrow::datatypes::DataType::Int32);
+            assert!(field.is_nullable(), "{tail} must be nullable");
+        }
+        let column = |name: &str| {
+            batch
+                .column_by_name(name)
+                .unwrap()
+                .as_any()
+                .downcast_ref::<arrow::array::Int32Array>()
+                .unwrap()
+        };
+        assert_eq!(column("arrival_start_date").value(0), 2024_0201);
+        assert_eq!(column("arrival_end_date").value(0), 2024_0301);
     }
 }

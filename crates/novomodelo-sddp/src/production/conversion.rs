@@ -255,6 +255,8 @@ impl IntoWriteRecord for SimulationTransitBucketResult {
             lag: s.lag,
             in_transit_volume_hm3: s.in_transit_volume_hm3,
             delayed_arrival_hm3: s.delayed_arrival_hm3,
+            arrival_start_date: s.arrival_start_date,
+            arrival_end_date: s.arrival_end_date,
         }
     }
 }

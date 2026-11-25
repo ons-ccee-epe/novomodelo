@@ -359,6 +359,8 @@ fn build_in_transit_schema() -> Schema {
         Field::new("lag", DataType::Int32, false),
         Field::new("in_transit_volume_hm3", DataType::Float64, false),
         Field::new("delayed_arrival_hm3", DataType::Float64, false),
+        Field::new("arrival_start_date", DataType::Int32, true),
+        Field::new("arrival_end_date", DataType::Int32, true),
     ]);
     Schema::new(fields)
 }
@@ -1722,7 +1724,7 @@ mod tests {
             ("contracts", 10),
             ("non_controllables", 12),
             ("inflow_lags", 6),
-            ("in_transit", 7),
+            ("in_transit", 9),
             ("generic_violations", 7),
             ("paths", 3),
             ("convergence", 16),

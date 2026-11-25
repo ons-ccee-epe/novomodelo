@@ -787,6 +787,16 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
         "Water delivered this stage (non-zero only at lag 1)",
     ),
     (
+        "in_transit",
+        "arrival_start_date",
+        "Start date of the stage at which in_transit_volume_hm3 arrives (YYYYMMDD); does not date delayed_arrival_hm3; rows capped at the study horizon are dated past the study end by design; null past the post-study water calendar",
+    ),
+    (
+        "in_transit",
+        "arrival_end_date",
+        "End date of that stage (YYYYMMDD, exclusive; null past the post-study water calendar)",
+    ),
+    (
         "transit_seed",
         "hydro_id",
         "Upstream entity identifier whose release the window covers",
@@ -2919,8 +2929,8 @@ mod tests {
 
         let row_count = rdr.records().count();
         assert_eq!(
-            row_count, 258,
-            "variables.csv must have exactly 258 data rows (one per column across all schemas)"
+            row_count, 260,
+            "variables.csv must have exactly 260 data rows (one per column across all schemas)"
         );
     }
 
@@ -4015,7 +4025,15 @@ mod tests {
         ),
         (
             "in_transit",
-            &["scenario_id", "stage_id", "node_id", "hydro_id", "lag"],
+            &[
+                "scenario_id",
+                "stage_id",
+                "node_id",
+                "hydro_id",
+                "lag",
+                "arrival_start_date",
+                "arrival_end_date",
+            ],
         ),
         (
             "transit_seed",

@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `simulation/anticipated_lanes` gains `delivery_start_date` and
   `delivery_end_date`, the `YYYYMMDD` dates of the delivery stage.
   `delivery_date` keeps its values, the first day of the delivery month.
+- `simulation/in_transit` gains `arrival_start_date` and `arrival_end_date`,
+  the `YYYYMMDD` dates of the stage where each bucket's water arrives.
 
 ## [0.22.0] - 2026-11-24
 

@@ -42,9 +42,9 @@ TRAVEL_TIME_CASE = (
 # appear for it (the symmetric negative).
 NO_ARC_CASE = _REPO_ROOT / "examples" / "1dtoy"
 
-# The exact 5 fields of the in_transit output schema, owned by
-# `in_transit_schema()` in novomodelo-io's schemas.rs. A schema drift (added/removed/
-# renamed column) fails this test.
+# The fields of the in_transit output schema, owned by `in_transit_schema()` in
+# novomodelo-io's schemas.rs. A schema drift (added/removed/renamed column) fails
+# this test.
 IN_TRANSIT_SCHEMA_FIELDS = {
     "scenario_id",
     "stage_id",
@@ -53,7 +53,13 @@ IN_TRANSIT_SCHEMA_FIELDS = {
     "lag",
     "in_transit_volume_hm3",
     "delayed_arrival_hm3",
+    "arrival_start_date",
+    "arrival_end_date",
 }
+
+# Start date (YYYYMMDD) of each stage of the fixture's water calendar: the three
+# monthly study stages, then the two post-study water stages.
+WATER_STAGE_STARTS = [20240101, 20240201, 20240301, 20240401, 20240501]
 
 
 def _in_transit_parquets(output_dir: pathlib.Path) -> list[pathlib.Path]:
@@ -74,7 +80,7 @@ def _assert_in_transit_table_shape(parquet_path: pathlib.Path) -> None:
     """
     schema_names = set(pq.read_schema(parquet_path).names)
     assert schema_names == IN_TRANSIT_SCHEMA_FIELDS, (
-        "in_transit parquet schema must equal exactly the 5 in_transit fields; "
+        "in_transit parquet schema must equal exactly the in_transit fields; "
         f"got {sorted(schema_names)}"
     )
 
@@ -89,6 +95,8 @@ def _assert_in_transit_table_shape(parquet_path: pathlib.Path) -> None:
     lags = cols["lag"]
     hydro_ids = cols["hydro_id"]
     deliveries = cols["delayed_arrival_hm3"]
+    arrival_starts = cols["arrival_start_date"]
+    arrival_ends = cols["arrival_end_date"]
 
     # Canonical order: rows are grouped by stage, then ascending lag within a
     # stage (the single-downstream-plant column order). File order must equal the
@@ -113,6 +121,24 @@ def _assert_in_transit_table_shape(parquet_path: pathlib.Path) -> None:
                 f"delayed_arrival_hm3 must be 0.0 at lag {lag} (delivery matures "
                 f"only at lag 1); got {delivery}"
             )
+
+    # Arrival dates: the bucket at (stage_id, lag) arrives at the stage
+    # `stage_id + lag` of the water calendar, null past the calendar's end.
+    for stage_id, lag, start, end in zip(
+        stage_ids, lags, arrival_starts, arrival_ends, strict=True
+    ):
+        index = stage_id + lag
+        expected = (
+            WATER_STAGE_STARTS[index] if index < len(WATER_STAGE_STARTS) else None
+        )
+        assert start == expected, (
+            f"arrival_start_date at (stage {stage_id}, lag {lag}) must be "
+            f"{expected}; got {start}"
+        )
+        assert (end is None) == (start is None), (
+            f"arrival_end_date must be null exactly when arrival_start_date is; "
+            f"got start {start}, end {end}"
+        )
 
 
 def test_study_simulate_emits_in_transit_output_with_schema() -> None:
