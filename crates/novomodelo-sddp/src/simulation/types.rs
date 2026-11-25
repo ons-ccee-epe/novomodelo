@@ -490,6 +490,10 @@ pub struct SimulationAnticipatedLaneResult {
     pub deposited_decision_mw: f64,
     /// Carried committed value in MW, read from the lane's `commit_out` ring slot.
     pub carried_committed_mw: f64,
+    /// First day of the delivery stage, `YYYYMMDD`.
+    pub delivery_start_date: i32,
+    /// Day after the delivery stage's last, `YYYYMMDD` (end exclusive).
+    pub delivery_end_date: i32,
 }
 
 /// All simulation results for a single stage within one scenario.

@@ -1,8 +1,9 @@
 use super::lag_points::classify_lag_points;
 use super::{
-    BoundaryStateRequirements, NodeId, NodePos, PhaseLibraries, ScenarioLibraries, StudySetup,
-    assert_external_library_widths, bucket_arrival, build_contract_prices_per_stage,
-    stage_interval, study_horizon_end, validate_par_shape,
+    BoundaryStateRequirements, DeliveryStageDates, NodeId, NodePos, PhaseLibraries,
+    ScenarioLibraries, StudySetup, assert_external_library_widths, bucket_arrival,
+    build_contract_prices_per_stage, build_extended_delivery_dates, stage_interval,
+    study_horizon_end, validate_par_shape,
 };
 use crate::SddpError;
 use crate::block_clock::M3S_TO_HM3;
@@ -9269,4 +9270,55 @@ fn stage_interval_end_is_exclusive() {
     );
 
     assert_eq!(stage_interval(&stage), (20_240_701, 20_240_801));
+}
+
+#[test]
+fn extended_delivery_dates_carry_exact_stage_interval() {
+    let system = SystemBuilder::new()
+        .buses(vec![builders::make_bus(
+            EntityId(1),
+            BusSpec {
+                name: "B1".to_string(),
+                deficit_segments: vec![DeficitSegment {
+                    depth_mw: None,
+                    cost_per_mwh: 500.0,
+                }],
+                ..BusSpec::default()
+            },
+        )])
+        .hydros(vec![bucket_seed_hydro(1, None, None)])
+        .stages(bucket_seed_study_stages(2, 744.0))
+        .post_study_stages(Some(PostStudyStages {
+            thermal_stages: vec![PostStudyStage {
+                start_date: test_support::ymd(2024, 7, 15),
+                duration_hours: 744.0,
+            }],
+            thermal_bounds: Vec::new(),
+            water_bucket_stages: WaterBucketStages::FromThermalStages,
+        }))
+        .build()
+        .expect("valid system");
+
+    let dates = build_extended_delivery_dates(&system, &DeliveryCalendar::thermal(&system));
+
+    assert_eq!(
+        dates,
+        [
+            DeliveryStageDates {
+                anchor: 20_240_101,
+                start: 20_240_101,
+                end: 20_240_102,
+            },
+            DeliveryStageDates {
+                anchor: 20_240_101,
+                start: 20_240_102,
+                end: 20_240_103,
+            },
+            DeliveryStageDates {
+                anchor: 20_240_701,
+                start: 20_240_715,
+                end: 20_240_815,
+            },
+        ]
+    );
 }

@@ -279,26 +279,35 @@ pub(crate) fn unresolved_boundary_requirements(config: &Config) -> BoundaryState
     }
 }
 
+/// The dates of one delivery target stage: `anchor` is its `YYYYMM01` month key,
+/// `start`/`end` its exact `YYYYMMDD` interval, `end` exclusive
+/// ([`stage_interval`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DeliveryStageDates {
+    pub(crate) anchor: i32,
+    pub(crate) start: i32,
+    pub(crate) end: i32,
+}
+
 /// Study-level dates of the extended calendar (study stages then the synthetic
 /// post-study continuation), read by the simulation output post-steps.
 ///
-/// `delivery_anchors[m]` is the `YYYYMM01` anchor of delivery target stage `m`,
-/// matching the policy manifest's `delivery_anchor_at` walk over the same
-/// extended calendar. `default()` is the empty table, valid only for studies with
-/// no post-study anticipated decision; tables with dates are built inside the
-/// crate.
+/// `delivery[m]` holds the dates of delivery target stage `m`, matching the
+/// policy manifest's `delivery_anchor_at` walk over the same extended calendar.
+/// `default()` is the empty table, valid only for studies with no post-study
+/// anticipated decision; tables with dates are built inside the crate.
 #[derive(Debug, Clone, Default)]
 pub struct ExtendedStageDates {
-    delivery_anchors: Vec<i32>,
+    delivery: Vec<DeliveryStageDates>,
 }
 
 impl ExtendedStageDates {
-    pub(crate) fn new(delivery_anchors: Vec<i32>) -> Self {
-        Self { delivery_anchors }
+    pub(crate) fn new(delivery: Vec<DeliveryStageDates>) -> Self {
+        Self { delivery }
     }
 
-    pub(crate) fn delivery_anchors(&self) -> &[i32] {
-        &self.delivery_anchors
+    pub(crate) fn delivery(&self) -> &[DeliveryStageDates] {
+        &self.delivery
     }
 }
 
@@ -505,7 +514,7 @@ impl StudySetup {
             config.budget,
         )?;
 
-        let extended_stage_dates = ExtendedStageDates::new(build_extended_delivery_anchors(
+        let extended_stage_dates = ExtendedStageDates::new(build_extended_delivery_dates(
             system,
             stage_data.time_value.calendar(),
         ));
@@ -1352,7 +1361,7 @@ pub fn study_horizon_end(system: &System) -> Option<NaiveDate> {
 /// The extended dating calendar: the `study_stages` view chained with the
 /// borrowed `post_study_calendar`, so a slot maturing past the horizon dates
 /// onto its real post-study stage (study-only when the calendar is empty).
-/// Shared by [`build_extended_delivery_anchors`] and the policy manifest
+/// Shared by [`build_extended_delivery_dates`] and the policy manifest
 /// builders, so all derive one calendar.
 pub(crate) fn extended_delivery_stages<'a>(
     study_stages: &[&'a Stage],
@@ -1384,27 +1393,38 @@ pub(crate) fn bucket_arrival<T: Copy>(extended: &[T], t: usize, lag: usize) -> O
     extended.get(t + lag).copied()
 }
 
-/// Extended delivery-stage anchors: the `YYYYMM01` anchor of each delivery
+/// Extended delivery-stage dates: the [`DeliveryStageDates`] of each delivery
 /// target stage — the study stages (`id >= 0`) followed by the synthetic
 /// post-study continuation ([`DeliveryCalendar::post_study_stages`]) — indexed
 /// by delivery target `m`. The dating input the `anticipated_lanes` output
-/// extractor reads for a post-study-targeted decision (`delivery_dates[m]`),
+/// extractor reads for a post-study-targeted decision (`delivery[m]`),
 /// matching the policy manifest's `delivery_anchor_at` walk over the same
 /// extended calendar. Study-only, byte-identical to a study-stages walk, when
 /// no post-study stage is declared.
-fn build_extended_delivery_anchors(system: &System, calendar: &DeliveryCalendar) -> Vec<i32> {
+fn build_extended_delivery_dates(
+    system: &System,
+    calendar: &DeliveryCalendar,
+) -> Vec<DeliveryStageDates> {
     let study_stages: Vec<&Stage> = system.stages().iter().filter(|s| s.id >= 0).collect();
-    let anchors: Vec<i32> = extended_delivery_stages(&study_stages, calendar.post_study_stages())
-        .iter()
-        .map(|s| year_month_day_anchor(s.start_date))
-        .collect();
+    let delivery: Vec<DeliveryStageDates> =
+        extended_delivery_stages(&study_stages, calendar.post_study_stages())
+            .iter()
+            .map(|s| {
+                let (start, end) = stage_interval(s);
+                DeliveryStageDates {
+                    anchor: year_month_day_anchor(s.start_date),
+                    start,
+                    end,
+                }
+            })
+            .collect();
     debug_assert!(
-        anchors.len() >= calendar.n_delivery(),
-        "extended delivery anchors ({}) must cover the delivery axis ({})",
-        anchors.len(),
+        delivery.len() >= calendar.n_delivery(),
+        "extended delivery dates ({}) must cover the delivery axis ({})",
+        delivery.len(),
         calendar.n_delivery(),
     );
-    anchors
+    delivery
 }
 
 /// Declared travel-time arcs (upstream hydro id + travel time), projected

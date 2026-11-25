@@ -23,6 +23,7 @@ use crate::lp::indexer::{
     AnticipatedPlants, BlockIdx, BlockRowFamily, FillingTargetLocal, FloorLocal, FphaCellLocal,
     FphaLocal, HydroCellIndex, HydroSys, StateSpace, StudyDimensions,
 };
+use crate::setup::DeliveryStageDates;
 use crate::simulation::types::{
     ScenarioCategoryCosts, SimulationCostResult, SimulationInflowLagResult,
 };
@@ -1392,7 +1393,7 @@ fn extract_thermals_marks_anticipated_thermals_when_indices_nonempty() {
 /// delivery decided at stage 1 (`m = 2`). Distinct primal values on the two ring
 /// columns prove the extractor reads the two distinct columns; the post-study
 /// target `m = 2` lands in slot `(2 % 2) * 1 + 0 = 0` and dates onto
-/// `delivery_dates[2]`.
+/// `delivery[2]`.
 #[test]
 fn extract_anticipated_lanes_reads_ring_decision_and_slot_for_post_study_decision() {
     let resolution = AnticipatedResolution {
@@ -1433,7 +1434,23 @@ fn extract_anticipated_lanes_reads_ring_decision_and_slot_for_post_study_decisio
     let mut primal = vec![0.0_f64; 8];
     primal[state.commit_out.start] = 31.0; // ring slot the target lands in (carried)
     primal[geometry.anticipated_decision.start] = 30.0; // decision column (deposited)
-    let delivery_dates = [2024_0101_i32, 2024_0201, 2024_0401];
+    let delivery = [
+        DeliveryStageDates {
+            anchor: 2024_0101,
+            start: 2024_0101,
+            end: 2024_0201,
+        },
+        DeliveryStageDates {
+            anchor: 2024_0201,
+            start: 2024_0201,
+            end: 2024_0301,
+        },
+        DeliveryStageDates {
+            anchor: 2024_0401,
+            start: 2024_0415,
+            end: 2024_0515,
+        },
+    ];
 
     let hydro_cell_index = test_support::identity_hydro_cell_index(1);
     let ec = zero_energy_conversion(0, 2);
@@ -1474,12 +1491,14 @@ fn extract_anticipated_lanes_reads_ring_decision_and_slot_for_post_study_decisio
     };
 
     // Decider stage (m = 2 is post-study): exactly one row, reading the two
-    // distinct ring columns and dating onto delivery_dates[2].
-    let rows = extract_anticipated_lanes(&view, &spec, &delivery_dates, 1);
+    // distinct ring columns and dating onto delivery[2].
+    let rows = extract_anticipated_lanes(&view, &spec, &delivery, 1);
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].stage_id, 1);
     assert_eq!(rows[0].thermal_id, 7);
     assert_eq!(rows[0].delivery_date, 2024_0401);
+    assert_eq!(rows[0].delivery_start_date, 2024_0415);
+    assert_eq!(rows[0].delivery_end_date, 2024_0515);
     assert_eq!(rows[0].deposited_decision_mw, 30.0);
     assert_eq!(rows[0].carried_committed_mw, 31.0);
 
@@ -1489,7 +1508,7 @@ fn extract_anticipated_lanes_reads_ring_decision_and_slot_for_post_study_decisio
         stage_index: 0,
         ..spec
     };
-    let rows_stage0 = extract_anticipated_lanes(&view, &spec_stage0, &delivery_dates, 0);
+    let rows_stage0 = extract_anticipated_lanes(&view, &spec_stage0, &delivery, 0);
     assert!(
         rows_stage0.is_empty(),
         "an in-study-only decision emits no anticipated-lane row"

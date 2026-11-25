@@ -28,7 +28,7 @@ use crate::lp::indexer::{
     PlantFloorLocal, PumpingSys, StateSpace, StudyDimensions, ThermalSys,
     anticipated_resolution_for, is_anticipated_decision_active_for_delivery,
 };
-use crate::setup::NodeId;
+use crate::setup::{DeliveryStageDates, NodeId};
 use crate::simulation::types::{
     ScenarioCategoryCosts, SimulationAnticipatedLaneResult, SimulationBusResult,
     SimulationContractResult, SimulationCostResult, SimulationExchangeResult,
@@ -269,10 +269,10 @@ fn compute_anticipated_committed_mw(
 /// `carried_committed_mw` reads the ring slot the target lands in
 /// ([`StateSpace::commitment_hold_outgoing_col`]) — the SAME
 /// slot the deposit latches (`fill_anticipated_state_out_def_entries`), so the
-/// deposit row pins the two equal at the decider stage. `delivery_dates` is the
-/// extended delivery-stage anchor array indexed by delivery target `m` (study
-/// stages then the post-study continuation), the same calendar the policy
-/// manifest dates ring slots against via `delivery_anchor_at`. `thermal_id`
+/// deposit row pins the two equal at the decider stage. `delivery` is the
+/// extended delivery-stage dates indexed by delivery target `m` (study stages
+/// then the post-study continuation), the same calendar the policy manifest
+/// dates ring slots against via `delivery_anchor_at`. `thermal_id`
 /// resolves anticipated-local `local` through
 /// [`StudyDimensions::anticipated_plants`] into the system thermals, the
 /// canonical anticipated order the ring and manifest share.
@@ -284,7 +284,7 @@ fn compute_anticipated_committed_mw(
 pub(crate) fn extract_anticipated_lanes(
     view: &SolutionView<'_>,
     spec: &StageExtractionSpec<'_>,
-    delivery_dates: &[i32],
+    delivery: &[DeliveryStageDates],
     stage_id: u32,
 ) -> Vec<SimulationAnticipatedLaneResult> {
     let state = spec.state;
@@ -304,10 +304,11 @@ pub(crate) fn extract_anticipated_lanes(
                 view.primal.len(),
             );
             debug_assert!(
-                m < delivery_dates.len(),
-                "delivery target {m} out of delivery_dates bounds {}",
-                delivery_dates.len(),
+                m < delivery.len(),
+                "delivery target {m} out of delivery bounds {}",
+                delivery.len(),
             );
+            let row = delivery[m];
             let sys_thermal = spec
                 .study_dims
                 .anticipated_plants
@@ -316,9 +317,11 @@ pub(crate) fn extract_anticipated_lanes(
             results.push(SimulationAnticipatedLaneResult {
                 stage_id,
                 thermal_id: spec.entity_counts.thermal_ids[sys_thermal],
-                delivery_date: delivery_dates[m],
+                delivery_date: row.anchor,
                 deposited_decision_mw: view.primal[decision_col],
                 carried_committed_mw: view.primal[carried_col],
+                delivery_start_date: row.start,
+                delivery_end_date: row.end,
             });
         }
     }

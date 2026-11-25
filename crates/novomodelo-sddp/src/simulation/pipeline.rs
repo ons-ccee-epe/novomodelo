@@ -702,7 +702,7 @@ pub(crate) fn extract_sim_stage_result(
     result.anticipated_lanes = extract_anticipated_lanes(
         &view,
         &spec,
-        output.extended_stage_dates.delivery_anchors(),
+        output.extended_stage_dates.delivery(),
         ids.stage_id_u32,
     );
     (immediate_cost, result)

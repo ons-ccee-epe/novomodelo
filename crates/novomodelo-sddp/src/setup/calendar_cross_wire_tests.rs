@@ -6,7 +6,10 @@ use novomodelo_core::{
 };
 use novomodelo_stochastic::par::precompute::PrecomputedPar;
 
-use super::{ResolvedStateLayout, build_extended_delivery_anchors, resolve_state_and_topology};
+use super::{
+    DeliveryStageDates, ResolvedStateLayout, build_extended_delivery_dates,
+    resolve_state_and_topology,
+};
 use crate::bucket_topology::TransitBucketTopology;
 use crate::lp::builder::{FactGroups, encode_time_value_facts};
 use crate::lp::indexer::AnticipatedPlants;
@@ -128,7 +131,7 @@ struct ThermalFacts {
     time_value: FactGroups,
     n_delivery: usize,
     max_fanout: usize,
-    anchors: Vec<i32>,
+    delivery: Vec<DeliveryStageDates>,
 }
 
 fn thermal_facts(
@@ -147,7 +150,7 @@ fn thermal_facts(
         time_value,
         n_delivery: layout.state.n_delivery(),
         max_fanout: layout.state.anticipated_resolution.max_fanout(),
-        anchors: build_extended_delivery_anchors(system, thermal),
+        delivery: build_extended_delivery_dates(system, thermal),
     }
 }
 
@@ -219,5 +222,5 @@ fn thermal_consumers_follow_the_thermal_calendar() {
 
     assert!(from_b.n_delivery > from_a.n_delivery);
     assert_ne!(from_b.time_value, from_a.time_value);
-    assert!(from_b.anchors.len() > from_a.anchors.len());
+    assert!(from_b.delivery.len() > from_a.delivery.len());
 }
