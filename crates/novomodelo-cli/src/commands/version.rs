@@ -1,6 +1,9 @@
 //! `novomodelo version` subcommand.
 //!
-//! Prints the binary version, active solver backend, and build profile.
+//! Prints the binary version, active solver backend, input Parquet codecs, and
+//! build profile.
+
+use novomodelo_io::INPUT_PARQUET_CODECS;
 
 use crate::error::CliError;
 
@@ -24,6 +27,7 @@ pub fn execute() -> Result<(), CliError> {
         println!("comm:   local");
     }
     println!("zstd:   enabled");
+    println!("codecs: {}", INPUT_PARQUET_CODECS.join(", "));
     println!(
         "arch:   {}-{}",
         std::env::consts::ARCH,

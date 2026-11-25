@@ -90,6 +90,17 @@ fn version_stdout_contains_active_solver() {
 }
 
 #[test]
+fn version_stdout_lists_zstd_and_the_input_parquet_codecs() {
+    let codecs = format!("codecs: {}", novomodelo_io::INPUT_PARQUET_CODECS.join(", "));
+    novomodelo()
+        .arg("version")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("zstd:   enabled"))
+        .stdout(predicate::str::contains(codecs));
+}
+
+#[test]
 fn run_nonexistent_path_exits_2_with_io_error() {
     novomodelo()
         .args(["run", "/nonexistent/path"])

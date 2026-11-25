@@ -125,6 +125,7 @@ pub use output::{
     write_simulation_solver_stats, write_skipped_simulation_results, write_solver_stats,
     write_success_marker, write_training_metadata, write_training_results,
 };
+pub use parquet_helpers::INPUT_PARQUET_CODECS;
 pub use penalties::parse_penalties;
 pub use report::{ReportEntry, ValidationReport, generate_report};
 pub use resolution::{resolve_bounds, resolve_penalties};

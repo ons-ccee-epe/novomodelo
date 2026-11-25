@@ -12,6 +12,10 @@ use std::path::Path;
 
 use crate::LoadError;
 
+/// Compression codecs an input Parquet file may use; an uncompressed file is
+/// also read.
+pub const INPUT_PARQUET_CODECS: [&str; 4] = ["zstd", "snappy", "gzip", "lz4"];
+
 /// The columns one input Parquet file may carry: [`open_parquet_input`] refuses
 /// any other, and [`InputBatch`] reads only these.
 pub(crate) struct ParquetColumns {
@@ -233,7 +237,11 @@ mod tests {
     use super::*;
     use crate::test_support::{write_json, write_parquet, write_parquet_batches};
     use arrow::datatypes::{Field, Schema};
+    use parquet::arrow::ArrowWriter;
+    use parquet::basic::{Compression, GzipLevel, ZstdLevel};
+    use parquet::file::properties::WriterProperties;
     use std::sync::Arc;
+    use tempfile::NamedTempFile;
 
     static TEST_COLUMNS: ParquetColumns = ParquetColumns {
         known: &[
@@ -509,5 +517,94 @@ mod tests {
         assert_eq!(edit_distance("kitten", "sitting"), 3);
         assert_eq!(edit_distance("hydro_id", "hydro_id"), 0);
         assert_eq!(edit_distance("m³", "m3"), 1);
+    }
+
+    fn parquet_compressions(codec: &str) -> Vec<Compression> {
+        match codec {
+            "zstd" => vec![Compression::ZSTD(ZstdLevel::default())],
+            "snappy" => vec![Compression::SNAPPY],
+            "gzip" => vec![Compression::GZIP(GzipLevel::default())],
+            "lz4" => vec![Compression::LZ4, Compression::LZ4_RAW],
+            other => panic!("INPUT_PARQUET_CODECS lists {other}, which no fixture writes"),
+        }
+    }
+
+    fn codec_fixture_batch() -> RecordBatch {
+        let rows = 500_i32;
+        make_batch(
+            vec![
+                Field::new("hydro_id", DataType::Int32, false),
+                Field::new("mean_m3s", DataType::Float64, true),
+                Field::new("start_date", DataType::Date32, false),
+                Field::new("source", DataType::Utf8, false),
+            ],
+            vec![
+                Arc::new(Int32Array::from_iter_values((0..rows).map(|row| row % 7))),
+                Arc::new(
+                    (0..rows)
+                        .map(|row| (row % 5 != 0).then(|| f64::from(row) * 1.25))
+                        .collect::<Float64Array>(),
+                ),
+                Arc::new(Date32Array::from_iter_values(0..rows)),
+                Arc::new(StringArray::from_iter_values(
+                    (0..rows).map(|row| format!("plant-{}", row % 3)),
+                )),
+            ],
+        )
+    }
+
+    fn write_parquet_compressed(batch: &RecordBatch, compression: Compression) -> NamedTempFile {
+        let tmp = NamedTempFile::new().unwrap();
+        let properties = WriterProperties::builder()
+            .set_compression(compression)
+            .build();
+        let mut writer =
+            ArrowWriter::try_new(tmp.reopen().unwrap(), batch.schema(), Some(properties)).unwrap();
+        writer.write(batch).unwrap();
+        writer.close().unwrap();
+        tmp
+    }
+
+    fn file_compressions(path: &Path) -> Vec<Compression> {
+        let builder = ParquetRecordBatchReaderBuilder::try_new(File::open(path).unwrap()).unwrap();
+        let mut compressions = Vec::new();
+        for row_group in builder.metadata().row_groups() {
+            for column in row_group.columns() {
+                compressions.push(column.compression());
+            }
+        }
+        compressions
+    }
+
+    fn read_input_batches(path: &Path) -> Vec<RecordBatch> {
+        open_parquet_input(path, &TEST_COLUMNS)
+            .unwrap()
+            .map(|batch| batch.unwrap().batch)
+            .collect()
+    }
+
+    #[test]
+    fn every_listed_input_codec_reads_the_rows_of_the_uncompressed_file() {
+        let batch = codec_fixture_batch();
+        let uncompressed = write_parquet_compressed(&batch, Compression::UNCOMPRESSED);
+        let expected = read_input_batches(uncompressed.path());
+        assert_eq!(expected, vec![batch.clone()]);
+
+        for codec in INPUT_PARQUET_CODECS {
+            for compression in parquet_compressions(codec) {
+                let file = write_parquet_compressed(&batch, compression);
+                assert!(
+                    file_compressions(file.path())
+                        .iter()
+                        .all(|written| *written == compression),
+                    "the {codec} fixture must be written as {compression:?}"
+                );
+                assert_eq!(
+                    read_input_batches(file.path()),
+                    expected,
+                    "{compression:?} must read the rows of the uncompressed file"
+                );
+            }
+        }
     }
 }

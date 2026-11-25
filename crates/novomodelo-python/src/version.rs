@@ -2,6 +2,7 @@
 //!
 //! [`version_info`] assembles the same fields the `novomodelo version` CLI prints.
 
+use novomodelo_io::INPUT_PARQUET_CODECS;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
@@ -15,6 +16,8 @@ use pyo3::types::PyDict;
 /// * `"comm"` — always `"local"`; this crate is single-process and never
 ///   initializes MPI.
 /// * `"zstd"` — `"enabled"` (compression support is always compiled in).
+/// * `"codecs"` — the compression codecs an input Parquet file may use, as a
+///   list of names ([`INPUT_PARQUET_CODECS`]).
 /// * `"arch"` — the target architecture and OS, e.g. `"x86_64-linux"`.
 /// * `"build"` — `"debug"` or `"release"` depending on the build profile.
 ///
@@ -41,6 +44,7 @@ pub fn version_info(py: Python<'_>) -> PyResult<Py<PyAny>> {
     )?;
     dict.set_item("comm", "local")?;
     dict.set_item("zstd", "enabled")?;
+    dict.set_item("codecs", INPUT_PARQUET_CODECS.to_vec())?;
     dict.set_item(
         "arch",
         format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS),

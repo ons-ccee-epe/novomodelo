@@ -18,7 +18,7 @@ def test_version_info_returns_dict() -> None:
     info = novomodelo.version_info()
 
     assert isinstance(info, dict)
-    for key in ("version", "solver", "comm", "zstd", "arch", "build"):
+    for key in ("version", "solver", "comm", "zstd", "codecs", "arch", "build"):
         assert key in info
 
 
@@ -60,3 +60,13 @@ def test_zstd_enabled_and_build_known() -> None:
 
     assert info["zstd"] == "enabled"
     assert info["build"] in ("debug", "release")
+
+
+def test_codecs_lists_the_input_parquet_codecs() -> None:
+    """codecs names the compressions an input Parquet file may use, zstd first."""
+    import novomodelo
+
+    info = novomodelo.version_info()
+
+    assert info["codecs"] == ["zstd", "snappy", "gzip", "lz4"]
+    assert info["zstd"] == "enabled"

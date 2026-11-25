@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Input Parquet files compressed with Snappy, gzip or LZ4 are read, besides
+  zstd and uncompressed ones; Brotli stays refused. `novomodelo version`
+  lists the accepted codecs in a new `codecs` line.
+
 ## [0.22.0] - 2026-11-24
 
 ### Added
