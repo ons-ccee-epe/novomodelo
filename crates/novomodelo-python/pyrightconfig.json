@@ -4,6 +4,7 @@
   "pythonVersion": "3.12",
   "include": ["tests"],
   "stubPath": "stubs",
+  "extraPaths": ["../../scripts/migrate"],
   "reportMissingTypeStubs": "none",
   "reportMissingModuleSource": "none"
 }
