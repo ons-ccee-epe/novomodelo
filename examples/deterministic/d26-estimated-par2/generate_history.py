@@ -173,8 +173,8 @@ def main() -> None:
     )
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    # Use zstd compression — the Rust parquet crate is built with the
-    # "zstd" feature but NOT the "snap" (snappy) feature.
+    # zstd, the codec novomodelo writes its own outputs with; the reader also
+    # accepts snappy, gzip and lz4.
     pq.write_table(table, out_path, compression="zstd")
     print(f"\nWrote {len(inflows)} rows to {out_path}")
 

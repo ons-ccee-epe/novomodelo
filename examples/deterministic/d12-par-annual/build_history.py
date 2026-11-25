@@ -215,8 +215,8 @@ def main() -> None:
         }
     )
 
-    # zstd compression: consistent with the Rust parquet crate's default
-    # (the crate is built with "zstd" but not "snap").
+    # zstd, the codec novomodelo writes its own outputs with; the reader also
+    # accepts snappy, gzip and lz4.
     pq.write_table(table, out_path, compression="zstd")
 
     n_hydros = len(HYDRO_IDS)
