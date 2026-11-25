@@ -137,6 +137,75 @@ fn resolution_base<'a>(
     }
 }
 
+/// The padding the runtime applies to a deck without a declared water calendar:
+/// the deepest travel-time arc and the number of trailing-duration stages
+/// appended to cover it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct WaterCalendarPadding {
+    pub(crate) trailing_stage_hours: f64,
+    pub(crate) padded_stage_count: usize,
+    pub(crate) upstream_hydro_id: EntityId,
+    pub(crate) downstream_hydro_id: EntityId,
+    pub(crate) travel_time_hours: f64,
+}
+
+/// The padding [`extend_for_resolution`] applies for `system`; `None` when it
+/// pads nothing: a declared water calendar, or no travel-time arc.
+///
+/// The deepest arc has the largest travel time; ties go to the smallest
+/// `(downstream, upstream)` hydro id pair, never to declaration order.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "read by the post-study provenance builder")
+)]
+pub(crate) fn water_calendar_padding(system: &System) -> Option<WaterCalendarPadding> {
+    let basis = WaterDeliveryBasis::of(system);
+    let WaterDeliveryBasis::PaddedThermal = basis else {
+        return None;
+    };
+    let hydros = system.hydros();
+    let ids = |arc: &TravelTimeArc| {
+        (
+            hydros[arc.downstream.get()].id,
+            hydros[arc.upstream.get()].id,
+        )
+    };
+    let deepest = resolve_travel_time_arcs(hydros)
+        .into_iter()
+        .max_by(|a, b| {
+            a.travel_time_hours
+                .total_cmp(&b.travel_time_hours)
+                .then_with(|| ids(b).cmp(&ids(a)))
+        })?;
+    let trailing_stage_hours = *DeliveryCalendar::water(system, basis)
+        .total_hours()
+        .last()?;
+    let (downstream_hydro_id, upstream_hydro_id) = ids(&deepest);
+    Some(WaterCalendarPadding {
+        trailing_stage_hours,
+        padded_stage_count: padded_stage_count(trailing_stage_hours, deepest.travel_time_hours),
+        upstream_hydro_id,
+        downstream_hydro_id,
+        travel_time_hours: deepest.travel_time_hours,
+    })
+}
+
+/// How many `last`-hour stages [`extend_for_resolution`] appends to cover
+/// `t_v` hours, by the same repeated addition: a division can land one stage
+/// off on an inexact multiple. Pinned by
+/// `padded_stage_count_stops_on_an_exact_multiple`.
+fn padded_stage_count(last: f64, t_v: f64) -> usize {
+    debug_assert!(last > 0.0, "every base calendar duration must be > 0.0");
+
+    let mut count = 0;
+    let mut padded_hours = 0.0_f64;
+    while padded_hours < t_v {
+        padded_hours += last;
+        count += 1;
+    }
+    count
+}
+
 /// The padded-thermal base only, for a deck without a declared water calendar:
 /// extends the base calendar ([`DeliveryCalendar::total_hours`]) with copies of
 /// its trailing duration so [`resolve_spread`] never sees a window it cannot
@@ -149,11 +218,7 @@ fn extend_for_resolution(base_calendar: &[f64], t_v: f64) -> Vec<f64> {
     debug_assert!(last > 0.0, "every base calendar duration must be > 0.0");
 
     let mut extended = base_calendar.to_vec();
-    let mut padded_hours = 0.0_f64;
-    while padded_hours < t_v {
-        extended.push(last);
-        padded_hours += last;
-    }
+    extended.resize(base_calendar.len() + padded_stage_count(last, t_v), last);
     extended
 }
 
@@ -1345,6 +1410,91 @@ mod tests {
                 "k must conserve to 1.0 even though the declared post-study calendar (24h) is \
                  shorter than the travel time (72h), got {k:?}"
             );
+        }
+    }
+
+    #[test]
+    fn padded_stage_count_stops_on_an_exact_multiple() {
+        assert_eq!(padded_stage_count(730.0, 1460.0), 2);
+        assert_eq!(padded_stage_count(730.0, 1461.0), 3);
+        assert_eq!(padded_stage_count(24.0, 0.0), 0);
+    }
+
+    #[test]
+    fn water_calendar_padding_none_with_declared_water_calendar() {
+        let system = build_system_with_post_study(
+            vec![hydro(1, None, None), hydro(2, Some(1), Some(300.0))],
+            uniform_stages(3, 24.0),
+            PostStudyStages {
+                water_bucket_stages: declared_water_stages(&[168.0, 168.0]),
+                ..post_study_stages_hours(&[24.0])
+            },
+        );
+
+        assert_eq!(water_calendar_padding(&system), None);
+    }
+
+    #[test]
+    fn water_calendar_padding_none_without_arc() {
+        let system = build_system(vec![hydro(1, None, None)], uniform_stages(3, 24.0));
+
+        assert_eq!(water_calendar_padding(&system), None);
+    }
+
+    #[test]
+    fn water_calendar_padding_reports_deepest_arc_count_and_trailing_hours() {
+        let system = build_system(
+            vec![
+                hydro(1, None, None),
+                hydro(2, Some(1), Some(100.0)),
+                hydro(3, Some(1), Some(130.0)),
+            ],
+            stages_with_durations(&[24.0, 24.0, 48.0]),
+        );
+
+        let padding = water_calendar_padding(&system).expect("a padded-thermal deck with an arc");
+
+        assert_eq!(
+            padding,
+            WaterCalendarPadding {
+                trailing_stage_hours: 48.0,
+                padded_stage_count: 3,
+                upstream_hydro_id: EntityId(3),
+                downstream_hydro_id: EntityId(1),
+                travel_time_hours: 130.0,
+            }
+        );
+        let calendar = DeliveryCalendar::water(&system, WaterDeliveryBasis::of(&system));
+        let total_hours = calendar.total_hours();
+        assert_eq!(
+            padding.padded_stage_count,
+            extend_for_resolution(total_hours, padding.travel_time_hours).len() - total_hours.len()
+        );
+    }
+
+    /// The smaller `(downstream, upstream)` pair is the arc 7 -> 4, while the
+    /// arc 6 -> 5 has the smaller upstream id, so an `(upstream, downstream)`
+    /// order picks the wrong arc.
+    #[test]
+    fn water_calendar_padding_tie_breaks_on_smallest_downstream_then_upstream_id() {
+        let declared = || {
+            vec![
+                hydro(4, None, None),
+                hydro(5, None, None),
+                hydro(6, Some(5), Some(100.0)),
+                hydro(7, Some(4), Some(100.0)),
+            ]
+        };
+        let mut reversed = declared();
+        reversed.reverse();
+
+        for hydros in [declared(), reversed] {
+            let system = build_system(hydros, uniform_stages(3, 24.0));
+
+            let padding = water_calendar_padding(&system).expect("a padded-thermal deck with arcs");
+
+            assert_eq!(padding.downstream_hydro_id, EntityId(4));
+            assert_eq!(padding.upstream_hydro_id, EntityId(7));
         }
     }
 
