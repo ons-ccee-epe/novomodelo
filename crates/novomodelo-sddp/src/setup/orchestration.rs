@@ -245,7 +245,7 @@ impl StudySetup {
             energy_conversion: &self.energy_conversion,
             hydro_min_storage_hm3: &self.hydro_min_storage_hm3,
             event_sender,
-            extended_delivery_anchors: &self.extended_delivery_anchors,
+            extended_stage_dates: &self.extended_stage_dates,
             transit_seed_arcs: &self.transit_seed_arcs,
             past_defluences: &self.past_defluences,
             study_stage_dates: &self.study_stage_dates,

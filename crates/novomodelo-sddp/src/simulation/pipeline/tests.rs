@@ -21,7 +21,7 @@ use crate::{
     horizon_mode::HorizonMode,
     inflow_method::InflowNonNegativityMethod,
     lp::builder::PatchBuffer,
-    setup::{NodeId, node_graph::Traversal},
+    setup::{ExtendedStageDates, NodeId, node_graph::Traversal},
     simulation::{
         config::SimulationConfig,
         error::SimulationError,
@@ -669,7 +669,7 @@ fn simulation_load_patches_applied() {
             energy_conversion: &ec,
             hydro_min_storage_hm3: &[0.0],
             event_sender: None,
-            extended_delivery_anchors: &[],
+            extended_stage_dates: &ExtendedStageDates::default(),
             transit_seed_arcs: &[],
             past_defluences: &[],
             study_stage_dates: &[],
@@ -823,7 +823,7 @@ fn simulation_no_load_buses_patches_only_inflow_rows() {
             energy_conversion: &ec,
             hydro_min_storage_hm3: &[0.0],
             event_sender: None,
-            extended_delivery_anchors: &[],
+            extended_stage_dates: &ExtendedStageDates::default(),
             transit_seed_arcs: &[],
             past_defluences: &[],
             study_stage_dates: &[],
@@ -943,7 +943,7 @@ fn simulation_state_set_profile_reaches_current_profile_after_run() {
             energy_conversion: &ec,
             hydro_min_storage_hm3: &[0.0],
             event_sender: None,
-            extended_delivery_anchors: &[],
+            extended_stage_dates: &ExtendedStageDates::default(),
             transit_seed_arcs: &[],
             past_defluences: &[],
             study_stage_dates: &[],
@@ -1038,7 +1038,7 @@ fn loaded_template(
                 energy_conversion: &ec,
                 hydro_min_storage_hm3: &[0.0],
                 event_sender: None,
-                extended_delivery_anchors: &[],
+                extended_stage_dates: &ExtendedStageDates::default(),
                 transit_seed_arcs: &[],
                 past_defluences: &[],
                 study_stage_dates: &[],
@@ -1185,7 +1185,7 @@ fn simulation_inflow_extraction_unaffected() {
             energy_conversion: &ec,
             hydro_min_storage_hm3: &[0.0],
             event_sender: None,
-            extended_delivery_anchors: &[],
+            extended_stage_dates: &ExtendedStageDates::default(),
             transit_seed_arcs: &[],
             past_defluences: &[],
             study_stage_dates: &[],
@@ -1414,7 +1414,7 @@ fn simulation_truncation_keeps_the_raw_rhs_and_fixes_the_slack_bounds() {
             energy_conversion: &ec,
             hydro_min_storage_hm3: &[0.0],
             event_sender: None,
-            extended_delivery_anchors: &[],
+            extended_stage_dates: &ExtendedStageDates::default(),
             transit_seed_arcs: &[],
             past_defluences: &[],
             study_stage_dates: &[],
@@ -1533,7 +1533,7 @@ fn simulation_none_method_produces_raw_negative_noise() {
             energy_conversion: &ec,
             hydro_min_storage_hm3: &[0.0],
             event_sender: None,
-            extended_delivery_anchors: &[],
+            extended_stage_dates: &ExtendedStageDates::default(),
             transit_seed_arcs: &[],
             past_defluences: &[],
             study_stage_dates: &[],
@@ -1588,7 +1588,7 @@ mod dcs_simulation {
     use crate::dcs::DcsConfig;
     use crate::energy_conversion::{EnergyConversion, EnergyConversionSet};
     use crate::horizon_mode::HorizonMode;
-    use crate::setup::NodePos;
+    use crate::setup::{ExtendedStageDates, NodePos};
     use crate::simulation::tailrace::SimulationTailrace;
     use crate::solver_phase::Phase;
     use crate::test_support::StageContextFixture;
@@ -1861,7 +1861,7 @@ mod dcs_simulation {
             energy_conversion: &ec,
             hydro_min_storage_hm3: &[0.0],
             event_sender: None,
-            extended_delivery_anchors: &[],
+            extended_stage_dates: &ExtendedStageDates::default(),
             transit_seed_arcs: &[],
             past_defluences: &[],
             study_stage_dates: &[],
@@ -2031,9 +2031,8 @@ mod anticipated_ring_matches_forward_propagation {
     use crate::inflow_method::InflowNonNegativityMethod;
     use crate::lp::builder::{PatchBuffer, StateBox};
     use crate::lp::indexer::StateSpace;
-    use crate::setup::NodeId;
-    use crate::setup::NodePos;
     use crate::setup::node_graph::StageIdx;
+    use crate::setup::{ExtendedStageDates, NodeId, NodePos};
     use crate::simulation::extraction::EntityCounts;
     use crate::simulation::tailrace::SimulationTailrace;
     use crate::solver_phase::Phase;
@@ -2279,7 +2278,7 @@ mod anticipated_ring_matches_forward_propagation {
             energy_conversion: &ec,
             hydro_min_storage_hm3: &[],
             event_sender: None,
-            extended_delivery_anchors: &[],
+            extended_stage_dates: &ExtendedStageDates::default(),
             transit_seed_arcs: &[],
             past_defluences: &[],
             study_stage_dates: &[],

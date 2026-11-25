@@ -33,6 +33,7 @@ use crate::{
     FutureCostFunction, SddpError,
     context::{StageContext, TrainingContext},
     lp::indexer::HydroCellIndex,
+    setup::ExtendedStageDates,
     setup::node_graph::{NodeId, NodePos, StageIdx, Traversal, advance_sampled_node},
     simulation::{
         config::SimulationConfig,
@@ -146,12 +147,8 @@ pub struct SimulationOutputSpec<'a> {
     /// Optional event sender for streaming progress events to the CLI/UI.
     pub event_sender: Option<Sender<TrainingEvent>>,
 
-    /// Extended delivery-stage anchors: the `YYYYMM01` anchor of each delivery
-    /// target stage `m`, indexed by `m` (study stages then the synthetic
-    /// post-study continuation). The `anticipated_lanes` extractor dates a
-    /// post-study-targeted decision by `[m]`, matching the policy manifest's
-    /// `delivery_anchor_at` walk over the same extended calendar.
-    pub extended_delivery_anchors: &'a [i32],
+    /// Study-level dates the `anticipated_lanes` extractor reads.
+    pub extended_stage_dates: &'a ExtendedStageDates,
 
     /// Declared travel-time arcs for the rolling-seed emitter
     /// ([`crate::setup::StudySetup::transit_seed_arcs`]). Empty when the study
@@ -705,7 +702,7 @@ pub(crate) fn extract_sim_stage_result(
     result.anticipated_lanes = extract_anticipated_lanes(
         &view,
         &spec,
-        output.extended_delivery_anchors,
+        output.extended_stage_dates.delivery_anchors(),
         ids.stage_id_u32,
     );
     (immediate_cost, result)

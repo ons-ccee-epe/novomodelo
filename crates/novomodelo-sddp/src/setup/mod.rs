@@ -164,15 +164,8 @@ pub struct StudySetup {
     /// Pre-computed hydro production models (FPHA, turbine curves, etc.).
     pub hydro_models: PrepareHydroModelsResult,
 
-    /// Extended delivery-stage anchors ([`build_extended_delivery_anchors`]):
-    /// the `YYYYMM01` anchor of each delivery target stage, indexed by delivery
-    /// target `m` (study stages then the synthetic post-study continuation).
-    /// Threaded into the simulation
-    /// [`SimulationOutputSpec`](crate::simulation::SimulationOutputSpec)'s
-    /// `extended_delivery_anchors` so the `anticipated_lanes` extractor
-    /// dates a post-study-targeted decision without re-deriving the calendar
-    /// walk. Study-only when the study declares no post-study stage.
-    pub(crate) extended_delivery_anchors: Vec<i32>,
+    /// Threaded into [`SimulationOutputSpec`](crate::simulation::SimulationOutputSpec).
+    pub(crate) extended_stage_dates: ExtendedStageDates,
 
     /// Declared travel-time arcs (upstream hydro id + travel time), projected
     /// from the bucket topology's arc list ([`build_transit_seed_arcs`]).
@@ -283,6 +276,29 @@ pub(crate) fn unresolved_boundary_requirements(config: &Config) -> BoundaryState
         BoundaryStateRequirements::present(0)
     } else {
         BoundaryStateRequirements::none()
+    }
+}
+
+/// Study-level dates of the extended calendar (study stages then the synthetic
+/// post-study continuation), read by the simulation output post-steps.
+///
+/// `delivery_anchors[m]` is the `YYYYMM01` anchor of delivery target stage `m`,
+/// matching the policy manifest's `delivery_anchor_at` walk over the same
+/// extended calendar. `default()` is the empty table, valid only for studies with
+/// no post-study anticipated decision; tables with dates are built inside the
+/// crate.
+#[derive(Debug, Clone, Default)]
+pub struct ExtendedStageDates {
+    delivery_anchors: Vec<i32>,
+}
+
+impl ExtendedStageDates {
+    pub(crate) fn new(delivery_anchors: Vec<i32>) -> Self {
+        Self { delivery_anchors }
+    }
+
+    pub(crate) fn delivery_anchors(&self) -> &[i32] {
+        &self.delivery_anchors
     }
 }
 
@@ -489,8 +505,10 @@ impl StudySetup {
             config.budget,
         )?;
 
-        let extended_delivery_anchors =
-            build_extended_delivery_anchors(system, stage_data.time_value.calendar());
+        let extended_stage_dates = ExtendedStageDates::new(build_extended_delivery_anchors(
+            system,
+            stage_data.time_value.calendar(),
+        ));
 
         let simulation_tailrace =
             SimulationTailrace::build(&hydro_models.production, system.hydros());
@@ -516,7 +534,7 @@ impl StudySetup {
             },
             fcf,
             hydro_models,
-            extended_delivery_anchors,
+            extended_stage_dates,
             transit_seed_arcs,
             past_defluences: system.initial_conditions().past_defluences.clone(),
             study_stage_dates,

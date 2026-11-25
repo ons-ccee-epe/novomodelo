@@ -1384,10 +1384,8 @@ pub(crate) fn extract_stage_result_with_lookups(
         inflow_lags,
         transit_buckets: extract_transit_buckets(view, spec, stage_id),
         generic_violations,
-        // The window-indexed delivery-date array lives outside `StageExtractionSpec`
-        // (`SimulationOutputSpec::extended_delivery_anchors`); the hot path
-        // (`extract_sim_stage_result`) populates this field as a post-step via
-        // `extract_anticipated_lanes` instead of through this shared builder.
+        // Filled by the `extract_sim_stage_result` post-step: the dates it needs live
+        // in `SimulationOutputSpec::extended_stage_dates`, outside `StageExtractionSpec`.
         anticipated_lanes: Vec::new(),
     }
 }
