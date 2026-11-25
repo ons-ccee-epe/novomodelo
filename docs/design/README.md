@@ -26,7 +26,6 @@ Each doc carries a **status** at its top; this index is the map. Status vocabula
 | [`hydro-productivity-and-stored-energy.md`](hydro-productivity-and-stored-energy.md)             | Live spec                                              | The scope x evaluator productivity model, the physical/operative storage-range split, the per-column productivity-override reach, `max_stored_energy`/stored-energy units, and the security-curve authoring recipe                                              |
 | [`lp-builder-contract.md`](lp-builder-contract.md) | Live spec (normative) | The four jobs the stage-LP builder exists for (build, update, address, keep the algorithm's invariants) and the questions every change to the LP code must answer. |
 | [`par-folding.md`](par-folding.md) | Decision record | Why the stage LP carries no PAR(p) inflow model (ẑ and the cut-row lag terms are RHS constants, lag coefficients come from the chain rule): the caches, kernels and dual reads it chose and rejected, where each invariant is pinned, the local comparison, and the pre-registered production comparison |
-| [`boundary-conditions-input.md`](boundary-conditions-input.md) | Implemented (retained pending fold into the live spec) | Plant-keyed `boundary_conditions.json` replacing `initial_conditions.json` and `post_study_stages.json`, with the two post-study calendars moved into `stages.json`; input format only, no change to the LP or outputs |
 
 ## Maintenance convention
 

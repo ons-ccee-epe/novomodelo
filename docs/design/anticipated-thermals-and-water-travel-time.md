@@ -147,6 +147,21 @@ The water calendar is never digested. The two calendars are independent: a
 thermal-only deck needs no water key, and a deck with a travel-time arc declares
 the water key whatever its thermals do.
 
+**Stage ids.** Both calendars are id-bearing stage lists with whole-day
+durations, and every post-study reference resolves an id, never a list position.
+A thermal post-study id equals `max(study id) + 1 + j`, `j` being the stage's
+position in `start_date` order; water post-study ids are unique and above every
+study id.
+
+**Alternatives not taken.** One shared post-horizon calendar for both kinds was
+rejected: the thermal calendar's length follows the plant leads and the water
+calendar's follows the deepest travel-time arc, so a shared list either pads
+thermal stages that carry no delivery or truncates the water axis. Post-horizon
+cost and limits on `thermals.json` (`anticipated_config`, defaulting to the
+plant's own cost and limits) were rejected too: they are boundary data, so they
+sit with the plant's other boundary records as `post_study_bounds`, every value
+required, and `anticipated_config` declares only the lead.
+
 **Declared water calendar.** On a deck with a travel-time arc the water key is
 required. The declared calendar is used exactly — no padding, no fallback to
 the thermal calendar — and must cover the deepest travel time, or setup refuses the
@@ -378,7 +393,15 @@ delivers past the horizon, either decided in-study or decided pre-study as a
 **fixed post-horizon commitment** (below), and is exempt either way. Reach is
 resolved by `classify_deliveries`'s four-way partition over the concatenated
 study + post-study calendar that `build_extended_delivery_axis` assembles and
-`extended_deciders` walks.
+`extended_deciders` walks. Each `(plant, post-study stage)` cell falls in one
+class, so `commitments` and `post_study_bounds` never cover the same cell:
+
+| Class                    | Delivery decided      | Required input                                       |
+| ------------------------ | --------------------- | ---------------------------------------------------- |
+| `fixed_post_study`       | before the study      | a `commitments` window covering it exactly; no bound |
+| `carried`                | by an in-study decision | a `post_study_bounds` row; no window               |
+| `beyond_reach`           | after the horizon     | neither                                              |
+| `commissioning_inactive` | plant out of service  | neither; a window there must be 0 MW                 |
 
 A pre-study-decided, post-study-delivered commitment — a **fixed post-horizon
 commitment** — is declared on the same per-thermal `commitments`
