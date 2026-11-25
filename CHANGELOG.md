@@ -11,10 +11,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### Case files
+
 - `boundary_conditions.json`, `post_study_thermal_stages` and
   `post_study_water_stages` (in `stages.json`) replace the deprecated
   `initial_conditions.json` and `post_study_stages.json`, which now warn; mixing
   them is refused. Run `python3 scripts/migrate/boundary_conditions.py <case>`.
+
+#### Results and outputs
+
+- `simulation/anticipated_lanes` gains `delivery_start_date` and
+  `delivery_end_date`, the `YYYYMMDD` dates of the delivery stage.
+  `delivery_date` keeps its values, the first day of the delivery month.
 
 ## [0.22.0] - 2026-11-24
 

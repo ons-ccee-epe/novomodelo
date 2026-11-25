@@ -59,6 +59,8 @@ _LANE_VALUE_COLUMNS = (
     "delivery_date",
     "deposited_decision_mw",
     "carried_committed_mw",
+    "delivery_start_date",
+    "delivery_end_date",
 )
 _SORT_FIELDS = ("stage_id", "node_id", "thermal_id", "delivery_date")
 

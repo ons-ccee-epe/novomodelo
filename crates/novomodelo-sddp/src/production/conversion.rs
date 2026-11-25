@@ -270,6 +270,8 @@ impl IntoWriteRecord for SimulationAnticipatedLaneResult {
             delivery_date: s.delivery_date,
             deposited_decision_mw: s.deposited_decision_mw,
             carried_committed_mw: s.carried_committed_mw,
+            delivery_start_date: s.delivery_start_date,
+            delivery_end_date: s.delivery_end_date,
         }
     }
 }

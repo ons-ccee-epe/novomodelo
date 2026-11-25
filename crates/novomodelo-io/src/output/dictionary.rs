@@ -1224,7 +1224,7 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
     (
         "anticipated_lanes",
         "delivery_date",
-        "YYYYMM01 anchor of the lane's resolved post-study delivery stage",
+        "First day of the delivery month (YYYYMM01)",
     ),
     (
         "anticipated_lanes",
@@ -1235,6 +1235,16 @@ const DESCRIPTIONS: &[(&str, &str, &str)] = &[
         "anticipated_lanes",
         "carried_committed_mw",
         "Committed value carried by the lane",
+    ),
+    (
+        "anticipated_lanes",
+        "delivery_start_date",
+        "Start date of the delivery stage (YYYYMMDD)",
+    ),
+    (
+        "anticipated_lanes",
+        "delivery_end_date",
+        "End date of the delivery stage (YYYYMMDD, exclusive)",
     ),
     ("generic_constraint_echo", "stage_id", "Study stage id"),
     (
@@ -4089,6 +4099,8 @@ mod tests {
                 "node_id",
                 "thermal_id",
                 "delivery_date",
+                "delivery_start_date",
+                "delivery_end_date",
             ],
         ),
         (

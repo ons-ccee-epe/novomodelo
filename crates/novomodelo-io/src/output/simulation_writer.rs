@@ -460,12 +460,16 @@ pub struct AnticipatedLaneWriteRecord {
     pub node_id: i32,
     /// Thermal unit entity ID owning this lane.
     pub thermal_id: i32,
-    /// `YYYYMM01` anchor of the lane's resolved post-study delivery stage.
+    /// First day of the delivery month (`YYYYMM01`).
     pub delivery_date: i32,
     /// Deposited decision in MW.
     pub deposited_decision_mw: f64,
     /// Carried committed value in MW.
     pub carried_committed_mw: f64,
+    /// First day of the delivery stage (`YYYYMMDD`).
+    pub delivery_start_date: i32,
+    /// End of the delivery stage (`YYYYMMDD`, exclusive).
+    pub delivery_end_date: i32,
 }
 
 /// All simulation results for one stage within one scenario.
@@ -2295,6 +2299,8 @@ fn build_anticipated_lanes_batch<'a>(
     let mut delivery_date = Int32Builder::with_capacity(n);
     let mut deposited_decision_mw = Float64Builder::with_capacity(n);
     let mut carried_committed_mw = Float64Builder::with_capacity(n);
+    let mut delivery_start_date = Int32Builder::with_capacity(n);
+    let mut delivery_end_date = Int32Builder::with_capacity(n);
 
     for r in records {
         scenario_id_col.append_value(scenario_id);
@@ -2304,6 +2310,8 @@ fn build_anticipated_lanes_batch<'a>(
         delivery_date.append_value(r.delivery_date);
         deposited_decision_mw.append_value(r.deposited_decision_mw);
         carried_committed_mw.append_value(r.carried_committed_mw);
+        delivery_start_date.append_value(r.delivery_start_date);
+        delivery_end_date.append_value(r.delivery_end_date);
     }
 
     RecordBatch::try_new(
@@ -2316,6 +2324,8 @@ fn build_anticipated_lanes_batch<'a>(
             Arc::new(delivery_date.finish()),
             Arc::new(deposited_decision_mw.finish()),
             Arc::new(carried_committed_mw.finish()),
+            Arc::new(delivery_start_date.finish()),
+            Arc::new(delivery_end_date.finish()),
         ],
     )
     .map_err(|e| OutputError::serialization("anticipated_lanes", e.to_string()))
@@ -4215,5 +4225,55 @@ mod tests {
                 "the {blocker} blocker must be left in place"
             );
         }
+    }
+
+    #[test]
+    fn anticipated_lanes_batch_appends_the_delivery_date_range_after_every_earlier_column() {
+        let records = [AnticipatedLaneWriteRecord {
+            stage_id: 2,
+            node_id: 4,
+            thermal_id: 7,
+            delivery_date: 2024_0401,
+            deposited_decision_mw: 55.0,
+            carried_committed_mw: 60.0,
+            delivery_start_date: 2024_0415,
+            delivery_end_date: 2024_0515,
+        }];
+
+        let batch = build_anticipated_lanes_batch(&records, 3, records.len()).unwrap();
+
+        let schema = batch.schema();
+        let names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "scenario_id",
+                "stage_id",
+                "node_id",
+                "thermal_id",
+                "delivery_date",
+                "deposited_decision_mw",
+                "carried_committed_mw",
+                "delivery_start_date",
+                "delivery_end_date",
+            ]
+        );
+        for tail in ["delivery_start_date", "delivery_end_date"] {
+            let field = schema.field_with_name(tail).unwrap();
+            assert_eq!(field.data_type(), &arrow::datatypes::DataType::Int32);
+            assert!(!field.is_nullable(), "{tail} must be non-nullable");
+        }
+        let int32 = |name: &str| {
+            batch
+                .column_by_name(name)
+                .unwrap()
+                .as_any()
+                .downcast_ref::<arrow::array::Int32Array>()
+                .unwrap()
+                .value(0)
+        };
+        assert_eq!(int32("delivery_date"), 2024_0401);
+        assert_eq!(int32("delivery_start_date"), 2024_0415);
+        assert_eq!(int32("delivery_end_date"), 2024_0515);
     }
 }

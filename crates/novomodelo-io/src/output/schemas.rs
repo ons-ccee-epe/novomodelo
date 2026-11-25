@@ -424,6 +424,8 @@ fn build_anticipated_lanes_schema() -> Schema {
         Field::new("delivery_date", DataType::Int32, false),
         Field::new("deposited_decision_mw", DataType::Float64, false),
         Field::new("carried_committed_mw", DataType::Float64, false),
+        Field::new("delivery_start_date", DataType::Int32, false),
+        Field::new("delivery_end_date", DataType::Int32, false),
     ]);
     Schema::new(fields)
 }
