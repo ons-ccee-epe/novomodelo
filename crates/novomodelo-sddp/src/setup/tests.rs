@@ -9378,6 +9378,23 @@ fn arrival_dates_stage_t_plus_lag_over_water_calendar() {
 }
 
 #[test]
+fn extended_stage_dates_delivery_returns_the_dates_it_was_built_with() {
+    let study = DeliveryStageDates {
+        anchor: 20_240_101,
+        start: 20_240_101,
+        end: 20_240_102,
+    };
+    let post_study = DeliveryStageDates {
+        anchor: 20_240_701,
+        start: 20_240_715,
+        end: 20_240_815,
+    };
+    let dates = ExtendedStageDates::new(vec![study, post_study], Vec::new());
+
+    assert_eq!(dates.delivery(), [study, post_study]);
+}
+
+#[test]
 fn padded_basis_arrival_dates_use_unpadded_calendar() {
     let system = monthly_arrival_system(None);
 
