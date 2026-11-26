@@ -72,7 +72,8 @@ pub use stochastic::{
     write_inflow_seasonal_stats, write_load_seasonal_stats, write_noise_openings,
 };
 pub use training_writer::{
-    TrainingParquetWriter, remove_conditional_training_outputs, write_row_selection_records,
+    BOUNDARY_RECONCILIATION_FILE, TrainingParquetWriter, remove_conditional_training_outputs,
+    write_row_selection_records,
 };
 
 use fixed_delivery::FIXED_DELIVERIES_FILE;

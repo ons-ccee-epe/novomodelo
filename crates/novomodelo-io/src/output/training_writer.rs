@@ -33,6 +33,9 @@ use crate::output::solver_stats_writer::{
 
 pub(crate) const CUT_SELECTION_FILE: &str = "training/cut_selection/iterations.parquet";
 
+/// Written only when a boundary policy is applied.
+pub const BOUNDARY_RECONCILIATION_FILE: &str = "training/boundary_reconciliation.json";
+
 /// Writes training output to `training/convergence.parquet` and
 /// `training/timing/iterations.parquet`, each written atomically.
 ///
@@ -395,10 +398,15 @@ fn conditional_training_output_files(output_dir: &Path) -> [PathBuf; 8] {
 /// directory belongs: the entry is not one this writer wrote.
 pub fn remove_conditional_training_outputs(output_dir: &Path) -> Result<(), OutputError> {
     let files = conditional_training_output_files(output_dir);
-    for file in &files {
+    let boundary = output_dir.join(BOUNDARY_RECONCILIATION_FILE);
+    for file in files.iter().chain(std::iter::once(&boundary)) {
         remove_file_if_present(file)?;
     }
-    for dir in files.iter().filter_map(|file| file.parent()) {
+    for dir in files
+        .iter()
+        .chain(std::iter::once(&boundary))
+        .filter_map(|file| file.parent())
+    {
         remove_dir_if_empty(dir)?;
     }
     Ok(())
@@ -1175,8 +1183,10 @@ mod tests {
             .unwrap()
             .map(|entry| entry.unwrap().file_name().into_string().unwrap())
             .collect();
-        assert_eq!(entries, ["training"]);
-        assert_eq!(std::fs::read_dir(root.join("training")).unwrap().count(), 0);
+        assert!(
+            entries.is_empty(),
+            "the output root must be left empty, found {entries:?}"
+        );
     }
 
     #[test]
@@ -1184,6 +1194,52 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         remove_conditional_training_outputs(tmp.path()).unwrap();
         remove_conditional_training_outputs(&tmp.path().join("absent")).unwrap();
+    }
+
+    #[test]
+    fn conditional_training_output_remover_clears_a_stale_boundary_reconciliation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        seed_stale_file(root, BOUNDARY_RECONCILIATION_FILE);
+        seed_stale_file(root, "training/_SUCCESS");
+
+        remove_conditional_training_outputs(root).unwrap();
+
+        assert!(
+            !root.join(BOUNDARY_RECONCILIATION_FILE).exists(),
+            "{BOUNDARY_RECONCILIATION_FILE} must be removed"
+        );
+        assert!(
+            root.join("training/_SUCCESS").is_file(),
+            "training/_SUCCESS must be kept"
+        );
+    }
+
+    #[test]
+    fn conditional_training_output_remover_accepts_a_missing_boundary_reconciliation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+
+        remove_conditional_training_outputs(root).unwrap();
+
+        assert!(
+            !root.join(BOUNDARY_RECONCILIATION_FILE).exists(),
+            "{BOUNDARY_RECONCILIATION_FILE} must stay absent"
+        );
+    }
+
+    #[test]
+    fn conditional_training_output_remover_drops_a_training_dir_the_json_leaves_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        seed_stale_file(root, BOUNDARY_RECONCILIATION_FILE);
+
+        remove_conditional_training_outputs(root).unwrap();
+
+        assert!(
+            !root.join("training").exists(),
+            "an emptied training/ must be removed"
+        );
     }
 
     #[test]

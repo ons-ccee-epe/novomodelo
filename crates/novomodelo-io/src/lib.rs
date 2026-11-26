@@ -106,8 +106,8 @@ pub use output::policy::{
     serialize_stage_basis, serialize_stage_cuts, serialize_stage_states, write_policy_checkpoint,
 };
 pub use output::{
-    DeviationSummary, DeviationWorstEntry, DistributionInfo, EVAPORATION_MODELS_FILE,
-    FPHA_DEVIATION_POINTS_FILE, FPHA_HYPERPLANES_FILE, FixedDeliveryRow,
+    BOUNDARY_RECONCILIATION_FILE, DeviationSummary, DeviationWorstEntry, DistributionInfo,
+    EVAPORATION_MODELS_FILE, FPHA_DEVIATION_POINTS_FILE, FPHA_HYPERPLANES_FILE, FixedDeliveryRow,
     GENERIC_CONSTRAINT_ECHO_FILE, GenericConstraintEchoRow, HostLayout, IterationRecord,
     MetadataBounds, MetadataConfiguration, MetadataConvergence, MetadataCost, MetadataIterations,
     MetadataProblemDimensions, MetadataRowPool, MetadataScenarios, MetadataSimulationSolveStats,
