@@ -18,8 +18,9 @@ use arrow::record_batch::RecordBatch;
 use assert_cmd::prelude::*;
 use novomodelo_io::scenarios::parse_inflow_annual_component;
 use novomodelo_io::{
-    ENTITY_SLOT_DATE_SENTINEL, EntitySlot, OwnedPolicyCutRecord, StageCutsReadResult, StateFamily,
-    decode_slot_date, deserialize_stage_cuts,
+    ENTITY_SLOT_DATE_SENTINEL, EntitySlot, OwnedPolicyCutRecord, PolicyCutRecord, StageCutsPayload,
+    StageCutsReadResult, StateFamily, decode_slot_date, deserialize_stage_cuts,
+    serialize_stage_cuts,
 };
 use novomodelo_sddp::test_support::unmigrated_inputs::{Generation, deck_keys, materialize_twin};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
@@ -3142,6 +3143,69 @@ fn boundary_reconciliation_file_ignores_hydro_declaration_order() {
 
     assert!(!declared_file.is_empty());
     assert_eq!(declared_file, reversed_file);
+}
+
+fn strip_entity_manifests(policy: &Path) {
+    for entry in fs::read_dir(policy.join("cuts")).unwrap() {
+        let path = entry.unwrap().path();
+        let pool = deserialize_stage_cuts(&fs::read(&path).unwrap()).unwrap();
+        let cuts: Vec<PolicyCutRecord<'_>> = pool
+            .cuts
+            .iter()
+            .map(|cut| PolicyCutRecord {
+                slot_index: cut.slot_index,
+                iteration: cut.iteration,
+                forward_pass_index: cut.forward_pass_index,
+                intercept: cut.intercept,
+                coefficients: &cut.coefficients,
+                is_active: cut.is_active,
+                scored: cut.scored,
+                active_count: cut.active_count,
+                last_active_iteration: cut.last_active_iteration,
+            })
+            .collect();
+        let payload = StageCutsPayload {
+            stage_id: pool.stage_id,
+            state_dimension: pool.state_dimension,
+            capacity: pool.capacity,
+            warm_start_count: pool.warm_start_count,
+            cuts: &cuts,
+            populated_count: pool.populated_count,
+            entity_manifest: &[],
+            cost_scale_factor: pool.cost_scale_factor.unwrap(),
+            node_id: pool.node_id,
+            graph_stage_id: pool.graph_stage_id,
+            priced_state_date: pool.priced_state_date,
+        };
+        fs::write(&path, serialize_stage_cuts(&payload)).unwrap();
+    }
+}
+
+#[test]
+fn boundary_reconciliation_file_reports_a_dimension_only_load_without_an_entity_manifest() {
+    let source = boundary_case(None);
+    let policy = boundary_source_policy(source.path());
+    strip_entity_manifests(&policy);
+    let target = boundary_case(Some(&policy));
+    let output = TempDir::new().unwrap();
+    run_case(target.path(), output.path());
+
+    let written: serde_json::Value =
+        serde_json::from_slice(&reconciliation_file(output.path())).unwrap();
+    assert_eq!(written["boundary_date"], "2024-07-01");
+    assert_eq!(written["report"]["reconciled"], false);
+    assert_eq!(
+        written["report"]["transit_bucket_mapping"],
+        serde_json::json!([])
+    );
+
+    let validated = novomodelo()
+        .args(["validate", target.path().to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(validated.status.success());
+    let validated: serde_json::Value = serde_json::from_slice(&validated.stdout).unwrap();
+    assert_eq!(written["report"], validated["report"]);
 }
 
 fn sample_cut_pool() -> StageCutsReadResult {
