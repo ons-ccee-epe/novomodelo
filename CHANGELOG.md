@@ -28,6 +28,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `training/model_provenance.json` gains `post_study`: each post-study
   calendar's stages and origin, and the padding the run applies when the
   case declares no water calendar. Absent when the case has neither.
+- `training/boundary_reconciliation.json` is written when `policy.boundary`
+  applies: the boundary date and the reconciliation report. Its
+  `transit_bucket_mapping` lists each in-transit bucket's source buckets and
+  weights; `novomodelo validate --json` reports the same mapping.
 
 ## [0.22.0] - 2026-11-24
 

@@ -37,6 +37,7 @@ use novomodelo_io::encode_slot_date;
 use novomodelo_io::policy_checkpoint_remedy;
 use novomodelo_io::read_policy_checkpoint;
 use novomodelo_solver::{Basis, BasisStatus};
+use serde::Serialize;
 
 use crate::SddpError;
 use crate::cut::fcf::FutureCostFunction;
@@ -1622,6 +1623,26 @@ pub struct BoundaryReconciliation {
     pub checkpoint_path: PathBuf,
     /// The date the boundary pool was selected against.
     pub boundary_date: NaiveDate,
+}
+
+impl BoundaryReconciliation {
+    /// The `{boundary_date, report}` envelope written to the boundary reconciliation file.
+    #[must_use]
+    pub fn record(&self) -> BoundaryReconciliationRecord<'_> {
+        BoundaryReconciliationRecord {
+            boundary_date: self.boundary_date,
+            report: self.cuts.report(),
+        }
+    }
+}
+
+/// The borrowed `{boundary_date, report}` envelope of a [`BoundaryReconciliation`].
+#[derive(Debug, Serialize)]
+pub struct BoundaryReconciliationRecord<'a> {
+    /// The date the boundary pool was selected against.
+    pub boundary_date: NaiveDate,
+    /// The reconciliation report.
+    pub report: &'a BoundaryReconciliationReport,
 }
 
 /// Reconcile `bp`'s checkpoint against `setup`'s terminal entity manifest

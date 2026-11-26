@@ -10,6 +10,7 @@ use novomodelo_io::PolicyMode;
 use novomodelo_io::PolicyMode::Fresh;
 use novomodelo_io::PolicyMode::Resume;
 use novomodelo_io::PolicyMode::WarmStart;
+use novomodelo_io::write_provenance_report;
 use novomodelo_sddp::StudySetup;
 use novomodelo_sddp::TrainingResult;
 use novomodelo_sddp::ValidatedBoundaryCuts;
@@ -115,6 +116,14 @@ pub(super) fn apply_training_policy(
                 })?;
             let reconciled = reconcile_boundary_policy(setup, system, bp, &ctx.case_dir)
                 .map_err(CliError::from)?;
+            write_provenance_report(
+                &ctx.output_dir
+                    .join(novomodelo_io::BOUNDARY_RECONCILIATION_FILE),
+                &reconciled.record(),
+            )
+            .map_err(|e| CliError::Internal {
+                message: format!("failed to write boundary reconciliation: {e}"),
+            })?;
             if !ctx.quiet {
                 print_boundary_summary(
                     &ctx.stdout,

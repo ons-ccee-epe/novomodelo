@@ -2993,6 +2993,100 @@ fn legacy_twin_writes_the_outputs_of_its_migrated_deck() {
     }
 }
 
+const BOUNDARY_DECK: &str = "crates/novomodelo-sddp/tests/unswept_fixtures/dual_calendar_boundary";
+const BOUNDARY_RECONCILIATION_PATH: &str = "training/boundary_reconciliation.json";
+
+fn boundary_case(boundary_policy: Option<&Path>) -> TempDir {
+    let case = deck_copy(BOUNDARY_DECK);
+    rewrite_json(&case.path().join("config.json"), |config| {
+        config["training"]["stopping_rules"] =
+            serde_json::json!([{ "type": "iteration_limit", "limit": 1 }]);
+        config["simulation"] = serde_json::json!({ "enabled": false });
+        match boundary_policy {
+            Some(policy) => {
+                config["policy"]["boundary"]["path"] = serde_json::json!(policy.to_str().unwrap());
+            }
+            None => {
+                config["policy"].as_object_mut().unwrap().remove("boundary");
+            }
+        }
+    });
+    case
+}
+
+fn boundary_source_policy(case: &Path) -> PathBuf {
+    let output = case.join("output");
+    run_case(case, &output);
+    output.join("policy")
+}
+
+fn reconciliation_file(output: &Path) -> Vec<u8> {
+    fs::read(output.join(BOUNDARY_RECONCILIATION_PATH)).unwrap()
+}
+
+#[test]
+fn boundary_reconciliation_file_matches_validate_json() {
+    let source = boundary_case(None);
+    let target = boundary_case(Some(&boundary_source_policy(source.path())));
+    let output = TempDir::new().unwrap();
+    run_case(target.path(), output.path());
+
+    let written: serde_json::Value =
+        serde_json::from_slice(&reconciliation_file(output.path())).unwrap();
+    assert_eq!(written["boundary_date"], "2024-07-01");
+    assert_eq!(written["report"]["reconciled"], true);
+    assert!(
+        !written["report"]["transit_bucket_mapping"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
+    let validated = novomodelo()
+        .args(["validate", target.path().to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(validated.status.success());
+    let validated: serde_json::Value = serde_json::from_slice(&validated.stdout).unwrap();
+    assert_eq!(
+        written,
+        serde_json::json!({
+            "boundary_date": validated["boundary_date"],
+            "report": validated["report"],
+        })
+    );
+}
+
+#[test]
+fn boundary_reconciliation_file_is_absent_without_a_boundary() {
+    let case = boundary_case(None);
+    let output = TempDir::new().unwrap();
+    run_case(case.path(), output.path());
+
+    assert!(output.path().join("training/_SUCCESS").is_file());
+    assert!(!output.path().join(BOUNDARY_RECONCILIATION_PATH).exists());
+}
+
+#[test]
+fn boundary_reconciliation_file_ignores_hydro_declaration_order() {
+    let source = boundary_case(None);
+    let policy = boundary_source_policy(source.path());
+    let declared = boundary_case(Some(&policy));
+    let reversed = boundary_case(Some(&policy));
+    rewrite_json(&reversed.path().join("system/hydros.json"), |hydros| {
+        hydros["hydros"].as_array_mut().unwrap().reverse();
+    });
+
+    let [declared_file, reversed_file] = [&declared, &reversed].map(|case| {
+        let output = TempDir::new().unwrap();
+        run_case(case.path(), output.path());
+        reconciliation_file(output.path())
+    });
+
+    assert!(!declared_file.is_empty());
+    assert_eq!(declared_file, reversed_file);
+}
+
 fn sample_cut_pool() -> StageCutsReadResult {
     StageCutsReadResult {
         stage_id: 1,
