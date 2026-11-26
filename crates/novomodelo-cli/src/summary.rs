@@ -2190,6 +2190,7 @@ mod tests {
             dropped_source_slots: Vec::new(),
             straddling_slots: Vec::new(),
             filled_from_storage_slots: Vec::new(),
+            transit_bucket_mapping: Vec::new(),
         }
     }
 

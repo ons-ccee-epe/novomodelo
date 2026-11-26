@@ -704,6 +704,45 @@ fn slot_detail(slot: &EntitySlot) -> SlotDetail {
     }
 }
 
+/// How a target transit bucket's coefficient was resolved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TransitBucketResolution {
+    /// Taken verbatim from one source slot.
+    Copy,
+    /// An hours-weighted blend of source buckets.
+    FanOut,
+    /// A blend renormalized over a partially covered target bucket.
+    Straddling,
+    /// Taken from the receiving hydro's source storage slot.
+    FilledFromStorage,
+    /// No source applies; the coefficient is `0.0`.
+    DefaultZero,
+}
+
+/// One source slot feeding a [`TransitBucketMappingEntry`], with the weight
+/// applied to its coefficient.
+#[derive(Debug, Clone, Serialize)]
+pub struct TransitBucketSource {
+    /// The source slot.
+    pub slot: SlotDetail,
+    /// The applied weight.
+    pub weight: f64,
+}
+
+/// One target transit bucket's resolution, as rendered into
+/// [`BoundaryReconciliationReport::transit_bucket_mapping`].
+#[derive(Debug, Clone, Serialize)]
+pub struct TransitBucketMappingEntry {
+    /// The target bucket.
+    pub target: SlotDetail,
+    /// How its coefficient was resolved.
+    pub resolution: TransitBucketResolution,
+    /// The source slots and weights applied, in the op's term order; empty
+    /// for [`TransitBucketResolution::DefaultZero`].
+    pub sources: Vec<TransitBucketSource>,
+}
+
 /// The "which boundary policy we have + what got reconciled" diagnostic:
 /// [`build_reconciliation_report`]'s pure per-family tally of one
 /// `load_boundary_cuts` reconciliation.
@@ -732,6 +771,9 @@ pub struct BoundaryReconciliationReport {
     /// Every [`RebindOp::FillFromStorage`] target slot's own identity and
     /// dating, in ascending target position.
     pub filled_from_storage_slots: Vec<SlotDetail>,
+    /// One entry per non-pad `HydroTransitBucket` target slot, in ascending
+    /// target position.
+    pub transit_bucket_mapping: Vec<TransitBucketMappingEntry>,
 }
 
 impl BoundaryReconciliationReport {
@@ -920,6 +962,58 @@ fn classify_op(op: &RebindOp, slot: &EntitySlot, tally: &mut FamilyTally) {
     }
 }
 
+#[allow(clippy::expect_used)]
+fn source_entry(source: &[EntitySlot], pos: usize, weight: f64) -> TransitBucketSource {
+    let slot = source
+        .get(pos)
+        .expect("build_rebind only emits positions inside the source manifest");
+    TransitBucketSource {
+        slot: slot_detail(slot),
+        weight,
+    }
+}
+
+fn transit_mapping_entry(
+    slot: &EntitySlot,
+    op: &RebindOp,
+    source: &[EntitySlot],
+) -> TransitBucketMappingEntry {
+    let (resolution, sources) = match op {
+        RebindOp::Copy(pos) => (
+            TransitBucketResolution::Copy,
+            vec![source_entry(source, *pos, 1.0)],
+        ),
+        RebindOp::Blend(terms) => (
+            TransitBucketResolution::FanOut,
+            terms
+                .iter()
+                .map(|&(pos, weight)| source_entry(source, pos, weight))
+                .collect(),
+        ),
+        RebindOp::Renormalize(terms) => (
+            TransitBucketResolution::Straddling,
+            terms
+                .iter()
+                .map(|&(pos, weight)| source_entry(source, pos, weight))
+                .collect(),
+        ),
+        RebindOp::FillFromStorage(pos) => (
+            TransitBucketResolution::FilledFromStorage,
+            vec![source_entry(source, *pos, 1.0)],
+        ),
+        RebindOp::Zero => (TransitBucketResolution::DefaultZero, Vec::new()),
+        RebindOp::Reject { reason } => unreachable!(
+            "build_rebind must convert Reject into an error before build_reconciliation_report \
+             sees it: {reason}"
+        ),
+    };
+    TransitBucketMappingEntry {
+        target: slot_detail(slot),
+        resolution,
+        sources,
+    }
+}
+
 /// Build a [`BoundaryReconciliationReport`] over one `load_boundary_cuts`
 /// reconciliation: a pure pass over the aligned `target`/`rebind` vectors,
 /// against the same [`build_source_interval_index`] output [`build_rebind`]
@@ -951,6 +1045,11 @@ pub(crate) fn build_reconciliation_report(
             }
             _ => {}
         }
+        if family == Some(StateFamily::HydroTransitBucket) && !is_structural_pad(slot) {
+            report
+                .transit_bucket_mapping
+                .push(transit_mapping_entry(slot, op, source));
+        }
         classify_op(op, slot, report.tally_mut(family));
     }
 
@@ -978,9 +1077,9 @@ mod tests {
 
     use super::{
         BoundaryReconciliationReport, FamilyTally, QuantityClass, RebindOp, SlotDetail,
-        build_boundary_fold, build_identity_index, build_rebind, build_reconciliation_report,
-        build_source_interval_index, dropped_source_positions, quantity_class, rebind_cut,
-        slot_detail,
+        TransitBucketResolution, build_boundary_fold, build_identity_index, build_rebind,
+        build_reconciliation_report, build_source_interval_index, dropped_source_positions,
+        quantity_class, rebind_cut, slot_detail,
     };
     use crate::SddpError;
     use crate::test_support::{
@@ -2589,6 +2688,119 @@ mod tests {
         assert_eq!(detail.family, "transit-bucket");
         assert_eq!(detail.entity_id, 2);
         assert_eq!(detail.interval, Some((ymd(2026, 4, 8), ymd(2026, 4, 15))));
+    }
+
+    fn filled_transit_report() -> BoundaryReconciliationReport {
+        let source = vec![storage_slot(2)];
+        let target = vec![transit_bucket_slot_over(
+            2,
+            1,
+            encode_slot_date(ymd(2026, 4, 8)),
+            encode_slot_date(ymd(2026, 4, 15)),
+        )];
+        let rebind = rebind_via_index(&source, &target, ymd(2026, 4, 1)).unwrap();
+        report_via_index(&source, &target, &rebind)
+    }
+
+    /// Given an unreconciled default report and a report with one resolved
+    /// transit bucket, when each is serialized, then `transit_bucket_mapping`
+    /// is a JSON array both times — empty, then with one entry.
+    #[test]
+    fn transit_bucket_mapping_serializes_as_an_array() {
+        let empty = serde_json::to_value(BoundaryReconciliationReport::default()).unwrap();
+        assert_eq!(empty["transit_bucket_mapping"], serde_json::json!([]));
+
+        let filled = serde_json::to_value(filled_transit_report()).unwrap();
+        assert_eq!(
+            filled["transit_bucket_mapping"].as_array().map(Vec::len),
+            Some(1)
+        );
+    }
+
+    /// Given a source pricing hydro 2's storage and a target holding hydro
+    /// 2's post-boundary transit bucket, when the report is serialized, then
+    /// the entry is `filled_from_storage` with the receiver's storage slot as
+    /// its one source at weight `1.0`.
+    #[test]
+    fn transit_bucket_mapping_fill_names_the_receiver_storage() {
+        let report = filled_transit_report();
+        assert_eq!(
+            report.transit_bucket_mapping[0].resolution,
+            TransitBucketResolution::FilledFromStorage
+        );
+
+        let value = serde_json::to_value(&report).unwrap();
+        let entry = &value["transit_bucket_mapping"][0];
+        assert_eq!(entry["resolution"], "filled_from_storage");
+        assert_eq!(entry["target"]["family"], "transit-bucket");
+        assert_eq!(
+            entry["target"]["interval"],
+            serde_json::json!(["2026-04-08", "2026-04-15"])
+        );
+        let sources = entry["sources"].as_array().unwrap();
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0]["slot"]["family"], "storage");
+        assert_eq!(sources[0]["slot"]["entity_id"], 2);
+        assert_eq!(sources[0]["slot"]["subindex"], 0);
+        assert_eq!(sources[0]["weight"], 1.0);
+    }
+
+    /// Given a sentinel-interval transit-bucket target (a structural pad),
+    /// when the report is built, then the mapping holds no entry for it.
+    #[test]
+    fn transit_bucket_mapping_skips_structural_pads() {
+        let source = vec![transit_bucket_slot_over(
+            2,
+            1,
+            encode_slot_date(ymd(2026, 4, 1)),
+            encode_slot_date(ymd(2026, 5, 1)),
+        )];
+        let target = vec![transit_bucket_slot(2, 1)];
+        let rebind = rebind_via_index(&source, &target, arbitrary_boundary_date()).unwrap();
+        assert_eq!(rebind, vec![RebindOp::Zero]);
+
+        let report = report_via_index(&source, &target, &rebind);
+
+        assert!(report.transit_bucket_mapping.is_empty());
+    }
+
+    /// Given a storage target resolved by `Copy`, when the report is built,
+    /// then the mapping holds no entry for it.
+    #[test]
+    fn transit_bucket_mapping_skips_non_transit_targets() {
+        let source = vec![storage_slot(1)];
+        let target = vec![storage_slot(1)];
+        let rebind = rebind_via_index(&source, &target, arbitrary_boundary_date()).unwrap();
+        assert_eq!(rebind, vec![RebindOp::Copy(0)]);
+
+        let report = report_via_index(&source, &target, &rebind);
+
+        assert!(report.transit_bucket_mapping.is_empty());
+    }
+
+    /// Every resolution serializes as its `snake_case` name.
+    #[test]
+    fn transit_bucket_mapping_resolutions_serialize_in_snake_case() {
+        let names = [
+            TransitBucketResolution::Copy,
+            TransitBucketResolution::FanOut,
+            TransitBucketResolution::Straddling,
+            TransitBucketResolution::FilledFromStorage,
+            TransitBucketResolution::DefaultZero,
+        ]
+        .map(|resolution| serde_json::to_value(resolution).unwrap());
+
+        assert_eq!(
+            names,
+            [
+                "copy",
+                "fan_out",
+                "straddling",
+                "filled_from_storage",
+                "default_zero"
+            ]
+            .map(serde_json::Value::from)
+        );
     }
 
     /// A source manifest's two dropped slots (a transit bucket and an

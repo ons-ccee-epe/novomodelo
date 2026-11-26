@@ -111,6 +111,7 @@ pub use policy::provenance::{
 };
 pub use policy::reconcile::{
     AnticipatedCoverage, BoundaryReconciliationReport, FamilyTally, SlotDetail,
+    TransitBucketMappingEntry, TransitBucketResolution, TransitBucketSource,
 };
 pub use policy::resolved_parameters::{
     ResolvedParameters, ResolvedParametersError, build_resolved_parameters,
