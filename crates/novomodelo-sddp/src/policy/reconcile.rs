@@ -2803,6 +2803,211 @@ mod tests {
         );
     }
 
+    fn mapping_fixture() -> (Vec<EntitySlot>, Vec<EntitySlot>) {
+        let transit = |hydro, lag, start: NaiveDate, end: NaiveDate| {
+            transit_bucket_slot_over(hydro, lag, encode_slot_date(start), encode_slot_date(end))
+        };
+        let source = vec![
+            storage_slot(1),
+            storage_slot(2),
+            transit(1, 1, ymd(2027, 1, 1), ymd(2027, 1, 8)),
+            transit(1, 2, ymd(2027, 1, 8), ymd(2027, 1, 22)),
+        ];
+        let target = vec![
+            storage_slot(1),
+            transit(1, 1, ymd(2027, 1, 1), ymd(2027, 1, 11)),
+            transit(1, 2, ymd(2027, 1, 4), ymd(2027, 1, 25)),
+            transit(2, 1, ymd(2027, 1, 1), ymd(2027, 1, 8)),
+            transit(3, 1, ymd(2027, 2, 1), ymd(2027, 2, 8)),
+            transit_bucket_slot(1, 4),
+        ];
+        (source, target)
+    }
+
+    #[test]
+    fn transit_bucket_mapping_pins_hand_derived_weights() {
+        type Slot = (&'static str, i32, u32, Option<(NaiveDate, NaiveDate)>);
+        type Entry<'a> = (Slot, TransitBucketResolution, &'a [(Slot, f64)]);
+        let transit = |hydro, lag, start: NaiveDate, end: NaiveDate| -> Slot {
+            ("transit-bucket", hydro, lag, Some((start, end)))
+        };
+        let slot_key = |d: &SlotDetail| (d.family, d.entity_id, d.subindex, d.interval);
+
+        let (source, target) = mapping_fixture();
+        let rebind = rebind_via_index(&source, &target, ymd(2027, 1, 1)).unwrap();
+        assert_eq!(
+            rebind,
+            vec![
+                RebindOp::Copy(0),
+                RebindOp::Blend(vec![(2, 168.0 / 240.0), (3, 72.0 / 240.0)]),
+                RebindOp::Renormalize(vec![(2, 96.0 / 432.0), (3, 336.0 / 432.0)]),
+                RebindOp::FillFromStorage(1),
+                RebindOp::Zero,
+                RebindOp::Zero,
+            ]
+        );
+
+        let first_week = transit(1, 1, ymd(2027, 1, 1), ymd(2027, 1, 8));
+        let next_fortnight = transit(1, 2, ymd(2027, 1, 8), ymd(2027, 1, 22));
+        let expected: [Entry; 4] = [
+            (
+                transit(1, 1, ymd(2027, 1, 1), ymd(2027, 1, 11)),
+                TransitBucketResolution::FanOut,
+                &[(first_week, 168.0 / 240.0), (next_fortnight, 72.0 / 240.0)],
+            ),
+            (
+                transit(1, 2, ymd(2027, 1, 4), ymd(2027, 1, 25)),
+                TransitBucketResolution::Straddling,
+                &[(first_week, 96.0 / 432.0), (next_fortnight, 336.0 / 432.0)],
+            ),
+            (
+                transit(2, 1, ymd(2027, 1, 1), ymd(2027, 1, 8)),
+                TransitBucketResolution::FilledFromStorage,
+                &[(("storage", 2, 0, None), 1.0)],
+            ),
+            (
+                transit(3, 1, ymd(2027, 2, 1), ymd(2027, 2, 8)),
+                TransitBucketResolution::DefaultZero,
+                &[],
+            ),
+        ];
+
+        let report = report_via_index(&source, &target, &rebind);
+        let entries = &report.transit_bucket_mapping;
+        assert_eq!(entries.len(), expected.len());
+        for (i, (entry, (want_target, want_resolution, want_sources))) in
+            entries.iter().zip(expected).enumerate()
+        {
+            assert_eq!(
+                slot_key(&entry.target),
+                want_target,
+                "mapping entry {i}: target"
+            );
+            assert_eq!(
+                entry.resolution, want_resolution,
+                "mapping entry {i}: resolution"
+            );
+            assert_eq!(
+                entry.sources.len(),
+                want_sources.len(),
+                "mapping entry {i}: source count"
+            );
+            for (j, (got, &(want_slot, want_weight))) in
+                entry.sources.iter().zip(want_sources).enumerate()
+            {
+                assert_eq!(
+                    slot_key(&got.slot),
+                    want_slot,
+                    "mapping entry {i} source {j}: slot"
+                );
+                assert_eq!(
+                    got.weight.to_bits(),
+                    want_weight.to_bits(),
+                    "mapping entry {i} source {j}: weight {} != {want_weight}",
+                    got.weight
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn transit_bucket_mapping_rebuilds_the_applied_coefficients() {
+        fn position_of(manifest: &[EntitySlot], detail: &SlotDetail) -> usize {
+            manifest
+                .iter()
+                .position(|slot| {
+                    let candidate = slot_detail(slot);
+                    candidate.family == detail.family
+                        && candidate.entity_id == detail.entity_id
+                        && candidate.subindex == detail.subindex
+                        && candidate.interval == detail.interval
+                })
+                .unwrap_or_else(|| panic!("mapping names a slot the manifest lacks: {detail:?}"))
+        }
+
+        let (source, target) = mapping_fixture();
+        let rebind = rebind_via_index(&source, &target, ymd(2027, 1, 1)).unwrap();
+        let report = report_via_index(&source, &target, &rebind);
+        let cut = owned_cut(vec![-11.5, -7.25, -3.125, -1.0625]);
+        let applied = rebind_cut(&cut, &rebind);
+
+        assert_eq!(report.transit_bucket_mapping.len(), 4);
+        for entry in &report.transit_bucket_mapping {
+            let target_pos = position_of(&target, &entry.target);
+            let listed: Vec<usize> = entry
+                .sources
+                .iter()
+                .map(|s| position_of(&source, &s.slot))
+                .collect();
+
+            // a two-term f64 sum is commutative bit for bit; only this check sees a term reversal
+            let op_positions: Vec<usize> = match &rebind[target_pos] {
+                RebindOp::Copy(pos) | RebindOp::FillFromStorage(pos) => vec![*pos],
+                RebindOp::Blend(terms) | RebindOp::Renormalize(terms) => {
+                    terms.iter().map(|&(pos, _)| pos).collect()
+                }
+                RebindOp::Zero | RebindOp::Reject { .. } => Vec::new(),
+            };
+            assert_eq!(
+                listed, op_positions,
+                "target {target_pos}: mapped source positions must follow the op's term order"
+            );
+
+            let rebuilt: f64 = listed
+                .iter()
+                .zip(&entry.sources)
+                .map(|(&pos, s)| cut.coefficients[pos] * s.weight)
+                .sum();
+            let actual = applied[target_pos];
+            if entry.resolution == TransitBucketResolution::DefaultZero {
+                // an empty f64 sum can be -0.0, which to_bits tells apart from 0.0
+                assert!(
+                    rebuilt == 0.0 && actual == 0.0,
+                    "target {target_pos}: default_zero rebuilt {rebuilt}, applied {actual}"
+                );
+            } else {
+                assert_eq!(
+                    rebuilt.to_bits(),
+                    actual.to_bits(),
+                    "target {target_pos}: rebuilt {rebuilt}, applied {actual}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn transit_bucket_mapping_reports_a_copy_at_unit_weight() {
+        let (source, _) = mapping_fixture();
+        let target = vec![source[2].clone()];
+        let rebind = vec![RebindOp::Copy(2)];
+        let cut = owned_cut(vec![-11.5, -7.25, -3.125, -1.0625]);
+
+        let report = report_via_index(&source, &target, &rebind);
+
+        assert_eq!(report.transit_bucket_mapping.len(), 1);
+        let entry = &report.transit_bucket_mapping[0];
+        assert_eq!(entry.resolution, TransitBucketResolution::Copy);
+        assert_eq!(entry.sources.len(), 1);
+        let mapped = &entry.sources[0];
+        assert_eq!(mapped.weight.to_bits(), 1.0_f64.to_bits());
+
+        let pos = source
+            .iter()
+            .position(|slot| {
+                let candidate = slot_detail(slot);
+                candidate.family == mapped.slot.family
+                    && candidate.entity_id == mapped.slot.entity_id
+                    && candidate.subindex == mapped.slot.subindex
+                    && candidate.interval == mapped.slot.interval
+            })
+            .expect("the copy names a slot the source manifest lacks");
+        assert_eq!(pos, 2);
+        assert_eq!(
+            rebind_cut(&cut, &rebind)[0].to_bits(),
+            (cut.coefficients[pos] * mapped.weight).to_bits()
+        );
+    }
+
     /// A source manifest's two dropped slots (a transit bucket and an
     /// anticipated slot the target models neither of) are declared in one
     /// order; a second manifest declares the SAME two slots at swapped
