@@ -70,14 +70,14 @@ def test_boundary_load_reports_source_date_and_reconciliation(
     shutil.copytree(VALID_CASE, target_case)
     _set_boundary_policy(target_case, source_policy_dir)
 
+    target_output = tmp_path / "target_output"
     capfd.readouterr()  # discard the source run's own stderr
-    novomodelo.run.run(str(target_case), output_dir=str(tmp_path / "target_output"))
+    novomodelo.run.run(str(target_case), output_dir=str(target_output))
 
     err = capfd.readouterr().err
     assert str(source_policy_dir) in err, f"expected the source path in stderr: {err}"
-    assert re.search(r"priced at \d{4}-\d{2}-\d{2}", err), (
-        f"expected a 'priced at <date>' clause in stderr: {err}"
-    )
+    priced_at = re.search(r"priced at (\d{4}-\d{2}-\d{2})", err)
+    assert priced_at, f"expected a 'priced at <date>' clause in stderr: {err}"
     assert re.search(r"boundary cuts:\s*\d+\s*loaded from", err), (
         f"expected the loaded cut count in stderr: {err}"
     )
@@ -86,6 +86,20 @@ def test_boundary_load_reports_source_date_and_reconciliation(
     )
     assert err.index("boundary cuts:") < err.index("boundary reconciliation:"), (
         "the source/date/count line must precede the reconciliation summary"
+    )
+
+    reconciliation_path = target_output / "training" / "boundary_reconciliation.json"
+    assert reconciliation_path.is_file(), (
+        f"expected {reconciliation_path} to be written"
+    )
+    envelope = json.loads(reconciliation_path.read_text(encoding="utf-8"))
+    assert envelope["boundary_date"] == priced_at.group(1), (
+        f"{reconciliation_path.name}: boundary_date {envelope['boundary_date']!r} "
+        f"must equal the stderr priced-at date {priced_at.group(1)!r}"
+    )
+    assert envelope["report"]["reconciled"] is True, (
+        f"{reconciliation_path.name}: expected report.reconciled to be True, "
+        f"got {envelope['report']['reconciled']!r}"
     )
 
 

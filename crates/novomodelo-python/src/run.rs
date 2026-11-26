@@ -47,6 +47,7 @@ use novomodelo_io::LoadError;
 use novomodelo_comm::LocalBackend;
 use novomodelo_core::System;
 use novomodelo_core::TrainingEvent::IterationSummary;
+use novomodelo_io::BOUNDARY_RECONCILIATION_FILE;
 use novomodelo_io::Config;
 use novomodelo_io::DistributionInfo;
 use novomodelo_io::EVAPORATION_MODELS_FILE;
@@ -1115,6 +1116,13 @@ pub(crate) fn apply_training_policy_mode(
     if let Some(ref bp) = config.policy.boundary {
         let recon =
             reconcile_boundary_policy(setup, system, bp, case_dir).map_err(boundary_phase_error)?;
+        write_provenance_report(
+            &output_dir.join(BOUNDARY_RECONCILIATION_FILE),
+            &recon.record(),
+        )
+        .map_err(|e| {
+            format!("{OUTPUT_WRITE_ERROR_PREFIX}: failed to write boundary reconciliation: {e}")
+        })?;
         inject_boundary_cuts(setup, &recon.cuts).map_err(boundary_phase_error)?;
         let cut_count = recon.cuts.len();
         eprintln!(
