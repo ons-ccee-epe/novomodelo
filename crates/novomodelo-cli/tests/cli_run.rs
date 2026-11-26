@@ -2885,8 +2885,65 @@ fn cut_pool_ignoring_transit_dates(pool: &mut StageCutsReadResult, what: &str) -
     format!("{pool:?}")
 }
 
+/// The same padding gives the legacy twin a `padded_thermal` post-study
+/// provenance where the migrated deck reports a `declared` one; the rest of
+/// the file is compared exactly.
+fn provenance_ignoring_post_study(bytes: &[u8]) -> serde_json::Value {
+    let mut provenance: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    provenance.as_object_mut().unwrap().remove("post_study");
+    provenance
+}
+
+/// The same padding leaves an arrival in a padded stage undated in the legacy
+/// twin, so a null legacy arrival date matches any migrated one; every other
+/// cell is compared exactly.
+fn in_transit_agree_ignoring_padded_arrivals(migrated: &[u8], legacy: &[u8]) -> bool {
+    let [migrated, legacy] = [migrated, legacy].map(|bytes| {
+        let mut file = tempfile::tempfile().unwrap();
+        std::io::Write::write_all(&mut file, bytes).unwrap();
+        let batches: Vec<RecordBatch> = ParquetRecordBatchReaderBuilder::try_new(file)
+            .expect("build parquet reader")
+            .build()
+            .expect("build reader")
+            .map(|batch| batch.expect("read record batch"))
+            .collect();
+        arrow::compute::concat_batches(&batches[0].schema(), &batches).unwrap()
+    });
+    if migrated.schema() != legacy.schema() || migrated.num_rows() != legacy.num_rows() {
+        return false;
+    }
+    migrated.schema().fields().iter().all(|field| {
+        let name = field.name();
+        let (migrated_column, legacy_column) = (
+            migrated.column_by_name(name).unwrap(),
+            legacy.column_by_name(name).unwrap(),
+        );
+        if name != "arrival_start_date" && name != "arrival_end_date" {
+            return migrated_column == legacy_column;
+        }
+        let (migrated_dates, legacy_dates) = (
+            migrated_column
+                .as_any()
+                .downcast_ref::<Int32Array>()
+                .unwrap(),
+            legacy_column.as_any().downcast_ref::<Int32Array>().unwrap(),
+        );
+        (0..legacy_dates.len()).all(|row| {
+            legacy_dates.is_null(row)
+                || (migrated_dates.is_valid(row)
+                    && migrated_dates.value(row) == legacy_dates.value(row))
+        })
+    })
+}
+
 fn twin_outputs_agree(path: &Path, migrated: &[u8], legacy: &[u8]) -> bool {
     let path_str = path.to_str().unwrap();
+    if path == Path::new("training/model_provenance.json") {
+        return provenance_ignoring_post_study(migrated) == provenance_ignoring_post_study(legacy);
+    }
+    if path.starts_with("simulation/in_transit") {
+        return in_transit_agree_ignoring_padded_arrivals(migrated, legacy);
+    }
     if !path.starts_with("policy/cuts") || path.extension().is_none_or(|ext| ext != "bin") {
         return migrated == legacy;
     }
