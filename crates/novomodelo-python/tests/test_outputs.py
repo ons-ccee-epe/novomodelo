@@ -456,6 +456,7 @@ _STALE_CONDITIONAL_TRAINING_OUTPUTS = (
     "hydro_models/fpha_deviation_points.parquet",
     "generic_constraints/resolved_echo.parquet",
     "anticipated/fixed_deliveries.parquet",
+    "training/boundary_reconciliation.json",
 )
 
 

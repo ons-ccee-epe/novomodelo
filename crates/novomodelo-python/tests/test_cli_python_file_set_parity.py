@@ -46,6 +46,11 @@ generic-violation partition. It is here to check that both write paths emit
 The fourth case (`examples/deterministic/d60-stage-outflow-volume-cap`)
 declares a stage outflow-volume constraint, and its simulation writes a
 generic-violation partition.
+
+The fifth case (`boundary`) is a trimmed copy of `dual_calendar_boundary` whose
+`policy.boundary` loads a policy trained on the same deck. It is here to check
+that both write paths emit `training/boundary_reconciliation.json`, which no
+other case writes.
 """
 
 from __future__ import annotations
@@ -57,6 +62,7 @@ import shutil
 
 import pyarrow.parquet as pq
 import pytest
+from test_boundary_reconciliation_output_parity import build_self_boundary_case
 
 from _novomodelo_cli import resolve_cli_binary, run_cli
 
@@ -203,7 +209,37 @@ def d60_python_output(tmp_path_factory: pytest.TempPathFactory) -> pathlib.Path:
     return output_dir
 
 
-@pytest.mark.parametrize("case", ["d28", "d57", "d59", "d60"])
+@pytest.fixture(scope="module")
+def boundary_case(tmp_path_factory: pytest.TempPathFactory) -> pathlib.Path:
+    """Build the self-boundary case both write paths run."""
+    return build_self_boundary_case(tmp_path_factory.mktemp("boundary_case"))
+
+
+@pytest.fixture(scope="module")
+def boundary_cli_output(
+    tmp_path_factory: pytest.TempPathFactory,
+    boundary_case: pathlib.Path,
+    cli_binary: pathlib.Path,
+) -> pathlib.Path:
+    """Run the self-boundary case through the compiled CLI binary."""
+    output_dir = tmp_path_factory.mktemp("boundary_cli_out")
+    run_cli(boundary_case, output_dir, cli_binary)
+    return output_dir
+
+
+@pytest.fixture(scope="module")
+def boundary_python_output(
+    tmp_path_factory: pytest.TempPathFactory, boundary_case: pathlib.Path
+) -> pathlib.Path:
+    """Run the self-boundary case through the module-level Python bindings entry point."""
+    import novomodelo.run
+
+    output_dir = tmp_path_factory.mktemp("boundary_python_out")
+    novomodelo.run.run(str(boundary_case), output_dir=str(output_dir))
+    return output_dir
+
+
+@pytest.mark.parametrize("case", ["d28", "d57", "d59", "d60", "boundary"])
 def test_cli_python_output_file_sets_are_equal(
     case: str, request: pytest.FixtureRequest
 ) -> None:
@@ -295,6 +331,22 @@ def test_stage_volume_case_echoes_the_declared_coefficient_on_both_paths(
         columns = echo.to_pydict()
         assert columns["variable_kind"] == ["hydro_outflow_volume"] * 3, root
         assert columns["coefficient"] == [1.0] * 3, root
+
+
+def test_boundary_case_writes_the_reconciliation_file_on_both_paths(
+    boundary_cli_output: pathlib.Path, boundary_python_output: pathlib.Path
+) -> None:
+    """Both write paths emit the self-boundary case's reconciliation file.
+
+    Non-vacuity check for the boundary file-set case: without this path on
+    both sides, the file-set equality test would pass on a case that never
+    applied a boundary.
+    """
+    expected = "training/boundary_reconciliation.json"
+    for root in (boundary_cli_output, boundary_python_output):
+        assert expected in _relative_files(root), (
+            f"boundary output {root} is missing {expected}"
+        )
 
 
 def test_case_exercises_the_drift_prone_output_surface(
